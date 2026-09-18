@@ -1,0 +1,21 @@
+{
+  "name": "agent-harness",
+  "version": "0.1.0",
+  "description": "A project-agnostic agentic development harness: claim a ticket, build it, gate it, ship it, review it. Reads every project-specific fact from one config file, so the same commands, agents and hooks run on any repo.",
+  "author": {
+    "name": "Dominic Watts"
+  },
+  "license": "MIT",
+  "keywords": [
+    "tickets",
+    "claim",
+    "worktrees",
+    "gates",
+    "code-review",
+    "design-review",
+    "workflow"
+  ],
+  "commands": "./commands/",
+  "agents": "./agents/",
+  "skills": "./skills/"
+}
