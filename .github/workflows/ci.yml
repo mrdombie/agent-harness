@@ -1,0 +1,21 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  kit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifests parse
+        run: |
+          jq . .claude-plugin/plugin.json >/dev/null
+          jq . .claude-plugin/marketplace.json >/dev/null
+          jq . hooks/hooks.json >/dev/null
+      - name: Scripts and hooks parse
+        run: for f in scripts/*.sh hooks/*.sh; do bash -n "$f"; done
+      - name: Hook self-tests
+        run: |
+          fail=0
+          for t in hooks/*.test.sh; do echo "== $t"; bash "$t" || fail=1; done
+          exit $fail
+      - name: The kit names no project
+        run: bash scripts/check-project-agnostic.sh

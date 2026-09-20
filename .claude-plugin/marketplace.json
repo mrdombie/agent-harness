@@ -1,0 +1,11 @@
+{
+  "name": "agent-harness",
+  "owner": { "name": "Dominic Watts" },
+  "plugins": [
+    {
+      "name": "agent-harness",
+      "source": "./",
+      "description": "A project-agnostic agentic development harness: claim a ticket, build it, gate it, ship it, review it. Every project fact comes from the consuming repo's .claude/harness.json."
+    }
+  ]
+}

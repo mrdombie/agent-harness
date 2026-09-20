@@ -1,23 +1,41 @@
 # agent-harness
 
-A project-agnostic agentic development harness. One installable Claude Code plugin holding the commands, agents, hooks, skills and scripts that take a ticket from filed to merged — and **one config file per project** holding everything that differs between repos.
+A project-agnostic agentic development harness. One installable Claude Code plugin holding the skills, agents, hooks and scripts that take a ticket from filed to merged — and **one config file per project** holding everything that differs between repos.
 
-> **Status: empty shell.** The manifest and directory structure exist. Nothing has moved in yet. See *What is not here*.
+Extracted from [Maktura](https://github.com/mrdombie/maktura), where it ran for six months against ~900 tickets. The README is the one place the origin project is named; `scripts/check-project-agnostic.sh` fails CI if anything else does.
 
 ## The idea
 
-The harness this comes from works for any developer, but only on one repo: the GitHub slug, the label names, the branch prefix, the UI kit and the design law were written into 37 of its 94 harness files. That is the only thing standing between "our workflow" and "a workflow anyone can install".
-
 | Lives in the plugin | Lives in your repo |
 |---|---|
-| the commands, agents, hooks, skills | `.claude/harness.json` — your facts |
+| the skills, agents, hooks, scripts | `.claude/harness.json` — your facts |
 | the mechanics of claiming, gating, shipping | your own gate scripts and CI |
+| the git-safety guard rails | your project-specific rules |
 
 The kit names no project. When it needs a project fact it reads the config, and when the config lacks one it **refuses with the key name** rather than falling back — a silent fallback is how a kit keeps working on the repo it was born in and quietly breaks everywhere else.
 
+## Install
+
+The repo is its own marketplace. In the consuming repo's `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "agent-harness": { "source": { "source": "github", "repo": "mrdombie/agent-harness" } }
+  },
+  "enabledPlugins": { "agent-harness@agent-harness": true }
+}
+```
+
+Or per machine: `claude plugin marketplace add mrdombie/agent-harness && claude plugin install agent-harness@agent-harness`.
+
+**Depends on [superpowers](https://github.com/obra/superpowers)** — `brainstorming`, `writing-plans`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`. The kit's build chain invokes them by name and does not vendor them. Install it alongside.
+
+Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook self-tests only).
+
 ## The config
 
-`.claude/harness.json` in the consuming repo:
+`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat` and `law` is required; a missing one refuses by name.
 
 ```json
 {
@@ -25,32 +43,92 @@ The kit names no project. When it needs a project fact it reads the config, and 
   "integrationBranch": "develop",
   "branchPrefix": "tkt-",
   "stateDir": "~/.claude/your-tickets",
+  "sisterRepos": [],
+  "legacyEnvPrefix": "",
   "labels": {
+    "drafting": "status:drafting",
     "ready": "status:ready",
     "claimed": "status:claimed",
     "inReview": "status:in-review",
+    "gated": "status:gated",
+    "partial": "status:partial",
+    "blocked": "status:blocked",
+    "externalBlocked": "status:external-blocked",
+    "parked": "status:parked",
+    "needsHuman": "status:needs-human",
+    "pmDecision": "status:pm-decision",
+    "pmTrack": "status:pm-track",
     "hold": "needs:human-approval",
-    "decision": ["status:pm-track", "status:pm-decision"]
+    "decision": ["status:pm-track", "status:pm-decision", "needs:human-approval"]
   },
   "law": "docs/design/design-philosophy.md",
   "gates": {
     "local": ["npm run gates"],
     "requiredChecks": ["Typecheck + Unit tests", "Code gates"]
-  }
+  },
+  "design": { "kit": "@you/ui", "tokens": "packages/ui/src/tokens.ts" }
 }
 ```
 
-Read a value with `toolkit_cfg <dotted.key>`. Arrays join on spaces, so `for l in $(toolkit_cfg labels.decision)` reads naturally.
+- `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
+- `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
+- `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
+
+Read a value with `toolkit_cfg <dotted.key>` after sourcing `scripts/toolkit-env.sh`. Arrays join on spaces, so `for l in $(toolkit_cfg labels.decision)` reads naturally.
+
+Env overrides always win over the config: `HARNESS_STATE_DIR`, `HARNESS_REPO_ROOT`, `HARNESS_MAIN_REPO`, `HARNESS_SISTER_REPO`, `HARNESS_CFG_PATH`, `HARNESS_LOGIN`, `HARNESS_KIT_ROOT`.
+
+## What is here
+
+```
+skills/    file claim finish release release-stale queue needsme standup
+           work auto bug ui-gate cheatsheet claim-status sweep-worktrees project
+agents/    gate-runner frontend-gate design-critic
+hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
+scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
+           overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
+           check-project-agnostic.sh (CI)
+shared/    operator.md · agent-signoff.md
+```
+
+Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Claude Code. Agents are `agent-harness:<name>` in the Agent tool.
+
+### Hooks
+
+| Event | Hook | Does |
+|---|---|---|
+| SessionStart | `precedence.sh` | one line per kit skill this repo overrides |
+| PreToolUse (Bash) | `block-push-no-verify.sh` | refuses `git push --no-verify` |
+| PreToolUse (Bash) | `block-hookify-rules.sh` | the seven git-safety rules: hand-released claims, `commit -a`, `reset --hard`, `git add -A`, `npm install` in a worktree, hand-rolled PRs, hand-rolled ticket branches |
+| SessionEnd | `session-end-cleanup.sh` | drops the session's own scratch state |
+| Stop | `signoff-backstop.sh` | refuses a hand-back without the sign-off banner while work is live |
+| Stop | `ask-dont-narrate.sh` | refuses a hand-back that narrates a decision instead of asking it |
+
+The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
+
+### Scripts the skills expect in the consuming repo
+
+The kit's own scripts live here and are addressed from the plugin root. A few repo-side conventions are read from the consuming repo's `scripts/` (materialised from `origin/<integrationBranch>` by `toolkit_tools`) when present, and skipped when not: `programme-status.sh`, `programme-state-brief.sh`, `sweep-orphan-worktrees.sh`, `refresh-shared-manifests.sh`, `auto-promote-gated-children.sh`, `queue-health-report.sh`. Child 4 of the extraction (the gates contract) turns those into config.
 
 ## Precedence
 
-A repo-defined command shadows the plugin's, and the kit prints one line saying it was shadowed. Silent shadowing is how you spend an afternoon debugging the wrong file.
+Plugin skills are namespaced, so a repo's own `.claude/skills/<name>` never collides with the kit's copy: **the repo's is invoked bare (`/claim`), the kit's is always `/agent-harness:claim`.** The repo's copy is that project's override. Because the shadow is silent, `precedence.sh` prints one line at session start for every kit skill the repo shadows.
 
-## What is not here
+The same holds for a per-user `~/.claude/commands/<name>.md`: bare `/<name>` resolves to it, `/agent-harness:<name>` to the kit.
 
-Everything except the shape. The generic core moves in once the originating repo's harness stops naming itself — a sweep of 407 occurrences across 36 files that has to land first, or this plugin would ship the very coupling it exists to remove.
+## Running the tests
 
-The acceptance test for that move is blunt: a case-insensitive grep for the origin project's names, outside the docs, must return zero.
+```bash
+for t in hooks/*.test.sh; do bash "$t"; done
+bash scripts/check-project-agnostic.sh
+```
+
+CI runs both on every push. `check-project-agnostic.sh` reports a control alongside its count — a zero from a strictness probe means clean, suppressed, or never ran, and the control tells you which.
+
+## Not here yet
+
+- The design layer (`/design`, `/critic`, `/flows`, the on-theme reminder hook) still reads its origin repo's kit and law by path. Child 3 of the extraction puts it behind `design.*` in the config.
+- The gates contract: `/finish` still expects the consuming repo's `npm run gates` shape. Child 4.
 
 ## Licence
 
