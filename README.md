@@ -2,7 +2,11 @@
 
 A project-agnostic agentic development harness. One installable Claude Code plugin holding the skills, agents, hooks and scripts that take a ticket from filed to merged — and **one config file per project** holding everything that differs between repos.
 
-Extracted from [Maktura](https://github.com/mrdombie/maktura), where it ran for six months against ~900 tickets. The README is the one place the origin project is named; `scripts/check-project-agnostic.sh` fails CI if anything else does.
+Extracted from [Maktura](https://github.com/mrdombie/maktura), where it ran for six months against ~900 tickets. The README is the one place the origin project is named — `scripts/check-project-agnostic.sh` reads the list below and fails CI if anything else in the repo matches it.
+
+```
+origin-names: maktura|socialhub|social-hub|mrdombie
+```
 
 ## The idea
 
