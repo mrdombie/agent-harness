@@ -196,12 +196,27 @@ If anything is uncommitted, ask the user before proceeding.
 ### Step 2.5 — Changelog entry (BEFORE the gates — they enforce it)
 
 Decide the changelog NOW, not after. If the ticket is user-visible
-(`feat`/`fix`), add an entry to `apps/web/src/content/changelog.md` per
-`docs/changelog-authoring.md` and run `npm run changelog:build`. If it
-genuinely matches a skip rule (refactor / internal-only / CI-deps /
-staff-only), put `no-changelog: <reason>` in the commit body instead.
-`check:changelog-entry` (gates + pre-push + CI) fails the push if you
-do neither — /agent-harness:finish cannot complete without deciding. (#3778)
+(`feat`/`fix`), write the entry as **its own file** — never an edit to the
+shared `changelog.md`:
+
+```bash
+mkdir -p apps/web/src/content/changelog
+cat > "apps/web/src/content/changelog/${TICKET_KEY}.md" <<EOF
+## $(date -u +%Y-%m-%d)
+- [Fixed] **Short bold title** — one-sentence body in plain English. [→ /dashboard/route]
+EOF
+npm run changelog:build
+```
+
+Same line format as `docs/changelog-authoring.md`; `[New]` / `[Improved]` /
+`[Fixed]` is the whole vocabulary. The file is named for the ticket, so no two
+PRs write the same path: the shared file conflicted every open PR on every merge
+(6 of 8 re-gated in the first One Desk swarm, ~2 of 16 hours lost to it), and a
+fragment cannot. If the change genuinely matches a skip rule (refactor /
+internal-only / CI-deps / staff-only), put `no-changelog: <reason>` in the
+commit body instead. `check:changelog-entry` (gates + pre-push + CI) accepts
+the fragment as the entry and fails the push if you do neither — /agent-harness:finish
+cannot complete without deciding. (#3778, #10369)
 
 **Squash-retitle hazard (#3909):** this repo squash-merges with the PR
 TITLE as the develop commit subject. If your branch commits are `chore:`
@@ -866,7 +881,7 @@ If the PR includes a `prisma/migrations/` change, flag it: *"Migration X will ru
 
 `Also running:` is a live read of `claim-lock.sh list --json` taken **after** Step 7 released this ticket's own claim — read it before the release and you report yourself as a second agent.
 
-**Changelog reminder (#670):** if the change is user-visible — a new feature, an improvement to an existing one, or a customer-noticeable bug fix — append an entry to `apps/web/src/content/changelog.md` under today's date heading **before** opening the PR. Format:
+**Changelog reminder (#670):** if the change is user-visible — a new feature, an improvement to an existing one, or a customer-noticeable bug fix — write the entry as its own file, `apps/web/src/content/changelog/<issue>.md`, **before** opening the PR (Step 2.5). Never append to the shared `changelog.md` — that is the file every merge conflicted on. Format:
 
 ```
 ## YYYY-MM-DD
