@@ -34,7 +34,7 @@ Run gh pr create only through /agent-harness:finish; never git add -A
 EOF'
 t allow 'git worktree add /tmp/flows-abc origin/develop'
 echo "--- outside any checkout: no config, no env — the generic shapes still fire ---"
-u(){ want=$1; shift; out=$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | (cd /private/tmp && env -u CLAUDE_PROJECT_DIR -u HARNESS_STATE_DIR -u HARNESS_LEGACY_ENV_PREFIX HOME=/nonexistent bash "$H")); r=allow; [ -n "$out" ] && r=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'); mark=OK; [ "$r" = "$want" ] || { mark=MISMATCH; fail=1; }; printf '%-8s want=%-5s got=%-5s %s\n' "$mark" "$want" "$r" "$1"; }
+u(){ want=$1; shift; out=$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | (cd /tmp && env -u CLAUDE_PROJECT_DIR -u HARNESS_STATE_DIR -u HARNESS_LEGACY_ENV_PREFIX HOME=/nonexistent bash "$H")); r=allow; [ -n "$out" ] && r=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'); mark=OK; [ "$r" = "$want" ] || { mark=MISMATCH; fail=1; }; printf '%-8s want=%-5s got=%-5s %s\n' "$mark" "$want" "$r" "$1"; }
 u deny "git worktree add /tmp/x -b ${BRANCH_PREFIX}9999/x origin/develop"
 u deny 'git worktree add /tmp/x -b tkt-12/x origin/trunk'
 u deny 'rm -rf /some/state/claims/9822'

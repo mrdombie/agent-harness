@@ -36,7 +36,7 @@ SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
 MDIR="${TMPDIR:-/tmp}/claude-ask-dont-narrate"; mkdir -p "$MDIR"
 MARK="$MDIR/$SID"
 if [ -f "$MARK" ]; then
-  AGE=$(( $(date +%s) - $(stat -f %m "$MARK" 2>/dev/null || echo 0) ))
+  AGE=$(( $(date +%s) - $(stat -c %Y "$MARK" 2>/dev/null || stat -f %m "$MARK" 2>/dev/null || echo 0) ))
   [ "$AGE" -lt 600 ] && { say "exit0 cooldown ${AGE}s $SID"; exit 0; }
 fi
 

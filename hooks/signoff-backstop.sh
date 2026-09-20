@@ -31,7 +31,7 @@ SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
 MDIR="${TMPDIR:-/tmp}/claude-signoff-backstop"; mkdir -p "$MDIR"
 MARK="$MDIR/$SID"
 if [ -f "$MARK" ]; then
-  AGE=$(( $(date +%s) - $(stat -f %m "$MARK" 2>/dev/null || echo 0) ))
+  AGE=$(( $(date +%s) - $(stat -c %Y "$MARK" 2>/dev/null || stat -f %m "$MARK" 2>/dev/null || echo 0) ))
   [ "$AGE" -lt 600 ] && { say "exit0 cooldown ${AGE}s $SID"; exit 0; }
 fi
 
@@ -59,7 +59,7 @@ STATE_DIR="${STATE_DIR/#\~/$HOME}"
 [ -n "$STATE_DIR" ] || { say "exit0 no-state-dir"; exit 0; }
 LABEL_FILE="$STATE_DIR/.session-label"
 [ -f "$LABEL_FILE" ] || { say "exit0 no-label-file"; exit 0; }
-LAGE=$(( $(date +%s) - $(stat -f %m "$LABEL_FILE" 2>/dev/null || echo 0) ))
+LAGE=$(( $(date +%s) - $(stat -c %Y "$LABEL_FILE" 2>/dev/null || stat -f %m "$LABEL_FILE" 2>/dev/null || echo 0) ))
 [ "$LAGE" -gt 21600 ] && { say "exit0 label-stale ${LAGE}s"; exit 0; }
 SCOPE=$(cut -f1 < "$LABEL_FILE" | head -1)
 [ -n "$SCOPE" ] || { say "exit0 empty-scope"; exit 0; }
