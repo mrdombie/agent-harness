@@ -412,6 +412,23 @@ if [ "$PR_TOUCHES_UI" = "yes" ] && [ "$PR_UI_IS_DELETION_ONLY" = "yes" ]; then
   fi
   echo "✓ Gate 2 satisfied by removal evidence (deletion-only UI PR — nothing to render)."
 elif [ "$PR_TOUCHES_UI" = "yes" ]; then
+  # #10479 — a live PREVIEW is the strongest hand-over there is: a URL anyone
+  # can open from any machine, running this branch. The preview-url workflow
+  # writes it into the body between <!-- preview:begin/end --> markers when
+  # Railway's bot reports it. It never REPLACES the screenshot: the CI approval
+  # gate reads a SHA-pinned docs/evidence blob and the preview is gone after
+  # merge, so the capture below still runs whenever the body has no screenshot.
+  # The web URL is the one that matters; the api host answers 200 on a placeholder.
+  PREVIEW_URL=$(printf '%s\n' "$PR_BODY" | tr -d '\r' \
+    | awk 'index($0,"<!-- preview:begin -->"){f=1;next} index($0,"<!-- preview:end -->"){f=0} f' \
+    | grep -oE 'https://[A-Za-z0-9.-]+\.up\.railway\.app[^ )>"]*' | awk 'NR==1{first=$0} /:\/\/web/{print; exit} END{if(!found) print first}' | head -1)
+  if [ -n "$PREVIEW_URL" ]; then
+    if curl -sfL -m 8 -o /dev/null "$PREVIEW_URL"; then
+      echo "✓ live preview answers — $PREVIEW_URL (hand this over; the screenshot below is still the durable record)"
+    else
+      echo "⚠️  the preview URL in the body does not answer ($PREVIEW_URL) — torn down? the screenshot is the evidence"
+    fi
+  fi
   if echo "$PR_BODY" | grep -qE 'raw\.githubusercontent\.com'; then
     echo "❌ /agent-harness:finish REFUSED: evidence linked via raw.githubusercontent.com." >&2
     echo "   The repo is PRIVATE — raw URLs carry no token and render broken for every reader," >&2
