@@ -114,6 +114,15 @@ The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rul
 
 The kit's own scripts live here and are addressed from the plugin root. A few repo-side conventions are read from the consuming repo's `scripts/` (materialised from `origin/<integrationBranch>` by `toolkit_tools`) when present, and skipped when not: `programme-status.sh`, `programme-state-brief.sh`, `sweep-orphan-worktrees.sh`, `refresh-shared-manifests.sh`, `auto-promote-gated-children.sh`, `queue-health-report.sh`. Child 4 of the extraction (the gates contract) turns those into config.
 
+## What it costs
+
+`scripts/usage-report.sh [--since YYYY-MM-DD] [--by ticket|operator|week]` — spend per
+spawned run from the records the spawner already leaves (`runs/<id>.json` + the log's
+`result` line): ticket, operator, turns, cost, outcome (done / budget / error / died).
+Reads records only, never an API. A window writes no run record, so the total is a
+floor and the footer says so. `/standup` prints today's line; `/project` shows it per
+programme.
+
 ## Precedence
 
 Plugin skills are namespaced, so a repo's own `.claude/skills/<name>` never collides with the kit's copy: **the repo's is invoked bare (`/claim`), the kit's is always `/agent-harness:claim`.** The repo's copy is that project's override. Because the shadow is silent, `precedence.sh` prints one line at session start for every kit skill the repo shadows.

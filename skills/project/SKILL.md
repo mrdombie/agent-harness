@@ -204,6 +204,11 @@ Build a dependency graph, do not just sort by priority.
 
 ## Step 4 — the headline figure
 
+Under the headline, the programme's spawned spend so far, by ticket, from the run
+records (`usage-report.sh --by ticket`, filtered to the programme's ticket numbers).
+A window writes no run record, so this is a floor, and the line says so.
+
+
 **Effort-weighted either way, with the count beside it.** A ticket count treats an XL epic and a P3
 label rename as equal, which is how you get "23% done" on a programme whose single epic outweighs
 its ten ready tickets combined.
