@@ -47,6 +47,10 @@ npm run dev -- -p 3010
 
 Then open <the route> and either approve, or say what to change.
 
+Where the repo has Railway PR environments (#10479), the PR body carries a
+`## Preview` URL the moment the bot reports it — hand THAT over instead: it
+opens from any machine, not only the one this worktree lives on.
+
 **Built:** <what is done and working>
 **Stopped at:** <the exact pause point>
 **Needs:** <the specific decision, phrased so a yes/no or a pick answers it>

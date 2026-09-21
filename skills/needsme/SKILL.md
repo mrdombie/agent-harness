@@ -398,6 +398,11 @@ ask and they will notify.
 
 ## Step 4 — the walk, one 🔴 at a time
 
+**The link on a pixel card is the preview URL when it ANSWERS (#10479).** Read the
+body's `<!-- preview:begin/end -->` block; `curl -sfL -m 8` its web URL. If it answers,
+that is the link — it opens from any machine. If it does not (previews are torn down
+on merge and on idle), the card shows the SHA-pinned screenshot; never a dead link.
+
 Present item 1 with everything needed to decide. Then act, then item 2 — **do
 not re-ask permission to continue.**
 
