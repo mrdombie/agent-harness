@@ -11,7 +11,7 @@
 # Outcome is the RUN's own outcome (done / budget / error / died), not the PR's:
 # whether the PR merged lives on GitHub, and this report reads records only.
 set -uo pipefail
-STATE_DIR="${HARNESS_STATE_DIR:-${MAKTURA_STATE_DIR:-}}"  # harness:legacy-alias
+STATE_DIR="${HARNESS_STATE_DIR:-}"
 SINCE=""; BY=""
 while [ $# -gt 0 ]; do
   case "$1" in
