@@ -108,6 +108,15 @@ no ref.
 
 Cross-reference against the hydrated set. Report both directions of drift.
 
+## Step 3.5 — spend this session
+
+One line, from the run records (spawned agents only — a window writes none):
+
+```bash
+KIT=$(bash "$(git rev-parse --show-toplevel)/scripts/harness-kit.sh" 2>/dev/null || echo "${CLAUDE_PLUGIN_ROOT:-}")
+"$KIT/scripts/usage-report.sh" --since "$(date -u +%Y-%m-%d)" | tail -3 | head -1   # total  N  $X.XX
+```
+
 ## Step 4 — render
 
 Omit any table with no rows. Never print an empty table or a "none" row.

@@ -135,6 +135,7 @@ cat > "$RECORD" <<EOF
   "child_pid_started": "$CLAUDE_STARTED",
   "log": "$LOG",
   "ticket": "${TICKET:-}",
+  "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

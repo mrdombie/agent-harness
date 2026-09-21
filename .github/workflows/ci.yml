@@ -19,7 +19,7 @@ jobs:
       - name: Hook self-tests
         run: |
           fail=0
-          for t in hooks/*.test.sh; do echo "== $t"; bash "$t" || fail=1; done
+          for t in hooks/*.test.sh scripts/*.test.sh; do echo "== $t"; bash "$t" || fail=1; done
           exit $fail
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
