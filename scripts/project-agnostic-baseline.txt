@@ -1,0 +1,11 @@
+# Project-specific npm scripts the kit still names. THIS LIST MAY ONLY SHRINK.
+# Each line is a fact about ONE project that a kit installed elsewhere cannot
+# satisfy: `npm run <missing>` prints nothing and exits 1, reading as a gate failure.
+# Removed by #10170 — the kit carries the portable checks and reads the rest from
+# harness.json. Recorded 2026-09-23.
+scripts/claim-lock.sh -> lockfile:check
+skills/auto/SKILL.md -> check:deploy-trigger
+skills/bug/SKILL.md -> check:deploy-trigger
+skills/finish/SKILL.md -> changelog:build
+skills/finish/SKILL.md -> check:deploy-trigger
+skills/finish/SKILL.md -> check:orphan-routes
