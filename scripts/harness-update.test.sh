@@ -94,6 +94,75 @@ first=$(printf '%s' "$out" | grep -nE 'MARKETPLACES|STOP' | head -1 | cut -d: -f
 [ "$first" = "MARKETPLACES" ] && ok "the report comes before the verdict" \
                               || bad "the report comes before the verdict (saw '$first')"
 
+# --- 6. THE PIN DOES NOT MOVE PAST A RED KIT ----------------------------------
+# The one change that decides what a BUILD runs. A pin that moves past a kit
+# whose own suites fail is the defect this whole step exists to prevent, so it is
+# proved by planting a failing suite at the target ref — not by reading the code.
+#
+# A stub `claude` keeps the run away from the real plugin estate: without it the
+# apply path would call the actual CLI and update this machine.
+pin_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
+  # Two statements, not one: in `local a=$1 b="$SB/x-$a"`, bash expands the
+  # right-hand sides before the names become local, so $a is unbound under set -u
+  # and the fixture silently builds nothing — which then compares empty to empty
+  # and reports PASS. Cost two false passes before it was noticed.
+  local kind=$1
+  local root="$SB/pin-$kind"
+  mkdir -p "$root/plugins/marketplaces" "$root/bin" "$root/proj/.claude"
+  printf '{ "enabledPlugins": {} }\n' > "$root/settings.json"
+  printf '{ "plugins": {} }\n' > "$root/plugins/installed_plugins.json"
+  printf '#!/bin/sh\nexit 0\n' > "$root/bin/claude"; chmod +x "$root/bin/claude"
+
+  local origin="$root/origin.git" work="$root/work"
+  git init -q --bare -b main "$origin"
+  git clone -q "$origin" "$work" 2>/dev/null
+  mkdir -p "$work/scripts"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$work/scripts/a.test.sh"
+  git -C "$work" add -A
+  git -C "$work" -c user.email=t@f.local -c user.name=f commit -qm first
+  git -C "$work" push -q origin main
+  local base; base=$(git -C "$work" rev-parse HEAD)
+
+  # The second commit is what the pin would move TO.
+  if [ "$kind" = fail ]; then
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$work/scripts/a.test.sh"
+  else
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$work/scripts/b.test.sh"
+  fi
+  git -C "$work" add -A
+  git -C "$work" -c user.email=t@f.local -c user.name=f commit -qm second
+  git -C "$work" push -q origin main
+
+  # The marketplace clone the command reads, named after the repo's basename.
+  git clone -q "$origin" "$root/plugins/marketplaces/fakekit" 2>/dev/null
+  printf '{ "kit": { "repo": "acme/fakekit", "ref": "%s" } }\n' "$base" > "$root/proj/.claude/harness.json"
+  printf '%s' "$root"
+}
+
+pinned_ref() { jq -r '.kit.ref' "$1/proj/.claude/harness.json"; }
+
+r=$(pin_fixture fail)
+before=$(pinned_ref "$r")
+out=$(cd "$r/proj" && PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" \
+        HARNESS_CFG_PATH="$r/proj/.claude/harness.json" bash "$SUT" 2>&1); rc=$?
+after=$(pinned_ref "$r")
+[ "$before" = "$after" ] && ok "a failing kit suite leaves the pin UNCHANGED" \
+                         || bad "a failing kit suite leaves the pin UNCHANGED (moved to ${after:0:12})"
+[ "$rc" -ne 0 ] && ok "and the run exits non-zero" || bad "and the run exits non-zero (rc $rc)"
+printf '%s' "$out" | grep -q 'pin is UNCHANGED' \
+  && ok "and it says so plainly" || bad "and it says so plainly"
+
+r=$(pin_fixture pass)
+before=$(pinned_ref "$r")
+out=$(cd "$r/proj" && PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" \
+        HARNESS_CFG_PATH="$r/proj/.claude/harness.json" bash "$SUT" 2>&1)
+after=$(pinned_ref "$r")
+# The control. Without it every case above is satisfied by a pin that never moves.
+[ "$before" != "$after" ] && ok "a passing kit suite DOES move the pin" \
+                          || bad "a passing kit suite DOES move the pin (still ${after:0:12})"
+printf '%s' "$out" | grep -q 'pin moved' \
+  && ok "and it reports the move" || bad "and it reports the move"
+
 echo
 [ "$fail" -eq 0 ] && echo "harness-update fixture: all checks hold" \
                   || echo "harness-update fixture: FAILURES"
