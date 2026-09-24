@@ -94,6 +94,51 @@ first=$(printf '%s' "$out" | grep -nE 'MARKETPLACES|STOP' | head -1 | cut -d: -f
 [ "$first" = "MARKETPLACES" ] && ok "the report comes before the verdict" \
                               || bad "the report comes before the verdict (saw '$first')"
 
+# --- 5b. A COMMIT THAT MOVED WITHOUT A VERSION BUMP IS STILL BEHIND -----------
+# `claude plugin update` compares the manifest VERSION, not the commit, and exits
+# 0 saying "already at the latest version" when only the commit moved. The estate
+# then sits behind while the command reports it current — measured on this kit's
+# own plugin, eight commits behind at an unchanged 0.2.0.
+#
+# The plant is the disagreement itself: an installed sha that is not the clone's
+# HEAD. Asserting that a matching pair looks fine would pass on a probe that
+# never read either value.
+stale_fixture() { # $1 = "drifted" | "level" -> echoes the config dir
+  local kind=$1
+  local d="$SB/stale-$kind"
+  mkdir -p "$d/plugins/marketplaces"
+  local clone="$d/plugins/marketplaces/mkt"
+  git init -q -b main "$clone"
+  git -C "$clone" -c user.email=t@f.local -c user.name=f commit -q --allow-empty -m one
+  local first; first=$(git -C "$clone" rev-parse HEAD)
+  git -C "$clone" -c user.email=t@f.local -c user.name=f commit -q --allow-empty -m two
+  local head; head=$(git -C "$clone" rev-parse HEAD)
+  local recorded=$head
+  [ "$kind" = drifted ] && recorded=$first
+  printf '{ "enabledPlugins": { "thing@mkt": true } }\n' > "$d/settings.json"
+  printf '{ "plugins": { "thing@mkt": [{"version":"0.2.0","gitCommitSha":"%s","lastUpdated":"2026-09-20"}] } }\n' \
+    "$recorded" > "$d/plugins/installed_plugins.json"
+  printf '%s' "$d"
+}
+
+d=$(stale_fixture drifted)
+out=$(CLAUDE_CONFIG_DIR="$d" bash "$SUT" --check 2>&1); rc=$?
+printf '%s' "$out" | grep -q 'STALE INSTALLS' \
+  && ok "the report has a stale-installs section" || bad "the report has a stale-installs section"
+printf '%s' "$out" | grep -A2 'STALE INSTALLS' | grep -q 'thing@mkt' \
+  && ok "a commit that moved without a version bump is named" \
+  || bad "a commit that moved without a version bump is named (saw: $(printf '%s' "$out" | grep -A2 'STALE INSTALLS' | tr '\n' ' '))"
+printf '%s' "$out" | grep -q 'bump the version\|Bump the version' \
+  && ok "and it says what to do about it" || bad "and it says what to do about it"
+[ "$rc" -ne 0 ] && ok "and --check exits non-zero on it" || bad "and --check exits non-zero on it (rc $rc)"
+
+# The control. Without it the probe could satisfy every case by always reporting.
+d=$(stale_fixture level)
+out=$(CLAUDE_CONFIG_DIR="$d" bash "$SUT" --check 2>&1)
+printf '%s' "$out" | grep -A1 'STALE INSTALLS' | grep -q 'none' \
+  && ok "a matching sha is not reported as stale" \
+  || bad "a matching sha is not reported as stale (saw: $(printf '%s' "$out" | grep -A1 'STALE INSTALLS' | tr '\n' ' '))"
+
 # --- 6. THE PIN DOES NOT MOVE PAST A RED KIT ----------------------------------
 # The one change that decides what a BUILD runs. A pin that moves past a kit
 # whose own suites fail is the defect this whole step exists to prevent, so it is
