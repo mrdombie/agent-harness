@@ -124,28 +124,22 @@ Omit any table with no rows. Never print an empty table or a "none" row.
 **The description is the column that matters. The number is a reference, and it
 goes LAST.** A row that leads with `#9015` tells the operator nothing they can act on.
 
+**The body is the run sheet** — read `${CLAUDE_PLUGIN_ROOT}/shared/run-sheet.md` and
+follow it exactly. The same block as `/agent-harness:project` and `/agent-harness:work`,
+scoped to this session's tickets: one list, in the order they are being done, state on
+the left. It replaced the four state-bucket tables this step used to print, because the
+buckets held the same information and made the reader reassemble the running order in
+their head.
+
 ```
 🏷️ WORKING — project:welcome-flow · set 14:05
 
 📊 THIS SESSION — <YYYY-MM-DD HH:MM>   ·   N touched · N shipped · N open
 
-🔨 IN FLIGHT
-| What | Branch | Since | State | # |
-|---|---|---|---|---|
-
-⚠️ STALLED
-| What | Why it isn't moving | # |
-|---|---|---|
-
-✅ OPEN — READY
-| What it does | P | # |
-|---|---|---|
-| Invites land in the wrong workspace | P1 | 9019 |
-
-📦 SHIPPED THIS SESSION
-| What shipped | # |
-|---|---|
-| Three roles — Owner, Admin, Member | 9014 |
+ ✅ ┬ Three roles — Owner, Admin, Member                       9014
+ 🔨 ├ Managed accounts replace permission grants               9015  ◀ here
+ ⬜ ├ Invites land in the wrong workspace                       9019
+ 🙋 ┴ The welcome sequence                                      9922  ◀ approve the pixels
 
 ▶️ NEXT
 | Who | What to do | Run |

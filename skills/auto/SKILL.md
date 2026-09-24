@@ -366,7 +366,12 @@ Anything else: keep going.
 **Every handback ends with the sign-off banner** — the loop finishing, a stop
 condition tripping, a pause for the operator, an interruption. Not only the end of a run.
 
-Read `${CLAUDE_PLUGIN_ROOT}/shared/agent-signoff.md` and follow it exactly. The shape:
+**Render the run sheet first** — `${CLAUDE_PLUGIN_ROOT}/shared/run-sheet.md`, one list of
+every ticket in the labels this run took from, in the order it gets done, so the reader can
+see how far through the work is without asking. The triage board in Step 2 is for choosing
+what to take; the run sheet is for showing where the work stands. Both, in that order.
+
+Then read `${CLAUDE_PLUGIN_ROOT}/shared/agent-signoff.md` and follow it exactly. The shape:
 
 ```
 🏷️ Working on: the whole board (/agent-harness:auto)
