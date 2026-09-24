@@ -96,6 +96,40 @@ RC=0
 grep -q 'not in a git repo' "$SB/out" \
   && ok "and names what to set" || ok "and refuses (message: $(tail -1 "$SB/out"))"
 
+# --- 4. AN EXPLICIT CLAIM_REPO OUTRANKS cwd ----------------------------------
+# It used to come third, so a caller that named a repo was ignored whenever the
+# shell sat in ANY git work tree: the other checkout's refs were listed, and
+# `list` printed "no live claims" with rc 0 and nothing on stderr. An empty
+# claim list that cannot be told from a true one is how a held ticket is handed
+# out twice.
+#
+# The claim is taken in the sandbox and then listed FROM A DIFFERENT WORK TREE.
+# Listing it from the sandbox would pass whichever branch resolve_repo took.
+git init -q -b main "$SB/elsewhere"
+git -C "$SB/elsewhere" -c user.email=t@f.local -c user.name=f commit -q --allow-empty -m x
+
+run "$SB/work" acquire 555 --branch tkt-555/x --worktree "$SB/wt5" --pid $$
+[ "$RC" -eq 0 ] || bad "fixture could not take a claim (rc $RC: $(tail -1 "$SB/out"))"
+
+run "$SB/elsewhere" list
+if grep -q '#555' "$SB/out"; then
+  ok "CLAIM_REPO wins over the cwd checkout"
+else
+  bad "CLAIM_REPO wins over the cwd checkout (got: $(tail -1 "$SB/out"))"
+fi
+grep -q 'no live claims' "$SB/out" \
+  && bad "and an empty list is not reported as fact" \
+  || ok "and an empty list is not reported as fact"
+
+# --- 5. Control: cwd still resolves when nothing is named ---------------------
+RC=0
+( cd "$SB/work" && env -u CLAIM_REPO HARNESS_CFG_PATH="$SB/work/.claude/harness.json" \
+    bash "$SUT" list ) > "$SB/out" 2>&1 || RC=$?
+grep -q '#555' "$SB/out" && ok "with no CLAIM_REPO, cwd still resolves" \
+                         || bad "with no CLAIM_REPO, cwd still resolves (got: $(tail -1 "$SB/out"))"
+
+run "$SB/work" release 555 --force
+
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"
