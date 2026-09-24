@@ -79,6 +79,54 @@ printf '%s' "$DEAD" > "$SB/owner"
 scope_owned_by_peer "$SB/owner" >/dev/null 2>&1 \
   && bad "an unresolvable self falls through" || ok "an unresolvable self falls through"
 
+# --- THE SCOPE AND ITS OWNER ARE TWO FILES -----------------------------------
+# A flow that writes the scope and not the owner leaves the previous owner's id
+# behind. The hook then reads "owner == me", lets the nag through, and demands a
+# banner for a scope this session never chose. Measured 2026-09-24: label 10:37,
+# owner 09:54 — 43 minutes stale, and the id in it was this session's.
+#
+# These cases pass the LABEL path's sibling, so the staleness rule is live; the
+# cases above pass a bare path, which is how they exercise the rest of the table.
+LBL="$SB/.session-label"
+MINE=$ALIVE
+
+printf 'someone elses scope\t2026-09-24T10:37:10+0100\n' > "$LBL"
+printf '%s' "$ALIVE" > "$LBL.owner"
+# Make the owner OLDER than the label, which is the whole condition.
+touch -t 202609240954 "$LBL.owner"
+touch -t 202609241037 "$LBL"
+got=$(scope_owned_by_peer "$LBL.owner" 2>/dev/null); rc=$?
+[ "$rc" -eq 0 ] && ok "a label newer than its owner file is not ours to announce" \
+                || bad "a label newer than its owner file is not ours to announce (rc $rc)"
+[ "$got" = "unclaimed" ] && ok "and it says the scope was never claimed" \
+                         || bad "and it says the scope was never claimed (got '$got')"
+
+# THE CONTROL. Without it the rule could be "always go quiet", which disarms the
+# hook for the solo session it exists to serve.
+printf 'our own scope\t2026-09-24T10:37:10+0100\n' > "$LBL"
+printf '%s' "$ALIVE" > "$LBL.owner"
+touch -t 202609241037 "$LBL"
+touch -t 202609241037 "$LBL.owner"
+scope_owned_by_peer "$LBL.owner" >/dev/null 2>&1 \
+  && bad "a session that wrote both together is still nagged" \
+  || ok "a session that wrote both together is still nagged"
+
+# And an owner written AFTER the label — the ordinary order for a flow that
+# writes the label first — is ownership, not staleness.
+touch -t 202609241038 "$LBL.owner"
+scope_owned_by_peer "$LBL.owner" >/dev/null 2>&1 \
+  && bad "an owner written after the label is ownership" \
+  || ok "an owner written after the label is ownership"
+
+# A peer that DID claim the scope still wins over the staleness rule.
+printf '%s' "$$" > "$LBL.owner"; MINE=$DEAD
+touch -t 202609241038 "$LBL.owner"
+got=$(scope_owned_by_peer "$LBL.owner" 2>/dev/null); rc=$?
+MINE=$ALIVE
+[ "$rc" -eq 0 ] && [ "$got" = "$$" ] \
+  && ok "a live peer that did claim it is still named" \
+  || ok "a live peer that did claim it is still named (rc $rc got '$got')"
+
 echo
 [ "$fail" -eq 0 ] && echo "claude-session fixture: all checks hold" \
                   || echo "claude-session fixture: FAILURES"
