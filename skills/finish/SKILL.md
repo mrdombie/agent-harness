@@ -124,7 +124,7 @@ Claims without a `repo` field default to the main repo — no migration needed.
 ## Repo guard (run first)
 
 ```bash
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not in a git working tree. cd into your worktree first." >&2; exit 1; }
+[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || { echo "Not in a git working tree. cd into your worktree first." >&2; exit 1; }   # a BARE repo prints false and exits 0
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 PWD_ABS=$(pwd -P)
 # Refuse to run from a main repo clone — /agent-harness:claim should have placed us in a

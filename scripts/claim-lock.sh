@@ -70,7 +70,11 @@ die() { printf 'claim-lock: %s\n' "$*" >&2; exit 1; }
 # Resolve a repo to push from. Any worktree of the project will do — the refs live
 # on origin, not locally.
 resolve_repo() {
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Test the OUTPUT, never the exit code. A BARE repo prints "false" and exits
+  # 0, so an exit-code test takes this branch and --show-toplevel then dies
+  # with "must be run in a work tree" — before the CLAIM_REPO fallback below
+  # is ever reached, so setting CLAIM_REPO does not help either.
+  if [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
     git rev-parse --show-toplevel
   elif [ -n "${CLAIM_REPO:-$DEFAULT_REPO}" ] && git -C "${CLAIM_REPO:-$DEFAULT_REPO}" rev-parse --git-dir >/dev/null 2>&1; then
     echo "${CLAIM_REPO:-$DEFAULT_REPO}"
