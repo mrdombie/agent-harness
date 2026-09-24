@@ -99,6 +99,22 @@ t nag   'owner recorded but dead — uncertain falls through to demanding' 'All 
 rm -rf "$MDIR"; rm -f "$LABEL.owner"
 t nag   'no owner file at all — a solo session is unaffected'            'All done.' false p4
 
+rm -rf "$MDIR"
+# A scope written by a flow that did NOT claim it: the label is newer than the
+# owner file, and the id in that file is ours. Before the staleness rule this
+# read as "owner == me" and demanded a banner for a programme this session never
+# chose. Measured 2026-09-24 with 43 minutes between the two files.
+printf 'someone elses scope\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$LABEL"
+echo "$FAKE_ME" > "$LABEL.owner"
+touch -t 202609240954 "$LABEL.owner"
+t quiet 'a scope whose owner file is older than it is not demanded'   'All done.' false p5
+
+rm -rf "$MDIR"
+# The control: both written together is the solo session, and it is still nagged.
+printf 'our own scope\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$LABEL"
+echo "$FAKE_ME" > "$LABEL.owner"
+t nag   'both written together is a solo session, still demanded'     'All done.' false p6
+
 export PATH=$OLDPATH; rm -rf "$STUB"; rm -f "$LABEL.owner"
 unset FAKE_ME FAKE_LIVE
 
