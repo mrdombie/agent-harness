@@ -276,50 +276,46 @@ Only the **header block** differs by mode. Every section below it is identical.
    261 closed all-time  ·  biggest blocked bucket: drafting (19)
 ```
 
-Then, in both modes:
+Then, in both modes, **the run sheet** — one list, every ticket, in the order it gets
+done. Read `${CLAUDE_PLUGIN_ROOT}/shared/run-sheet.md` and follow it exactly. It replaces
+the five state-bucket sections this step used to print:
 
 ```
+📋 EVENT REGISTRY — 8 of 26 done · 14% by effort · 5 unestimated
 
-NEXT UP (runnable now, in dependency order)
-  1. #9053  P1 S  ready     evidencing sentence dropped by one SELECT
-  2. #8238  P1 M  ready     KEYWORD_QUERY sources over-report itemsPerWeek
-  3. #9248  P2 M  ready     Watch sweeps only the first 6 tracked parties
-     …
+ ✅ ┬ Concept sweep stops at page 1                            9685
+ ✅ ├ Newest articles, not most relevant                       9623
+ 🔨 ├ Category exclusions across the sweep                     9645  ◀ here
+ ⬜ ├ Evidencing sentence dropped by one SELECT                 9053
+ ⬜ ├ Sources over-report items per week                        8238
+ ⬜ ├ Watch sweeps only the first six tracked parties           9248
+ 🚧 ├ Variant rules relocate into the lab                       9718  ◀ waits on 9053
+ 🙋 ┴ Draft cards                                               9222  ◀ needs a mockup
+```
 
-IN FLIGHT
-  #9645  claimed  Dominics-MacBook-Pro  sh-9645/category-exclusions
-         ⚠️ 14 commits, NO PR — auto-closed when its stacked base merged
+Then, underneath it, the one section the run sheet does **not** absorb:
 
-WAITING ON A HUMAN
-  #7477  gated             blocked on EPIC #7475
-  #9718  drafting          needs a mockup before it can be built
-
-BLOCKED BY ANOTHER TICKET
-  #9718  ← #9053           needs the field on the wire first
-
-DONE (8)
-  #9685  2026-08-27  PR #9701   concept sweep stops at page 1
-  #9623  2026-08-25             newest articles, not most relevant
-  …
-
+```
 ⚠️ NEEDS ATTENTION
   #8016, #8017  closed and merged but still holding claim refs → /agent-harness:release
-  #9645         held by a claim with no PR → open one against develop
+  #9645         held by a claim with no PR → open one against the integration branch
   2 candidates found with no project: label → apply?
 ```
 
 Rules:
-- **NEXT UP is the answer to "what now"** — put it first, cap it at ~5, and only list genuinely
-  runnable tickets. A gated ticket in this list is a lie.
+- **The run sheet is the answer to "where is this up to"** — it is the body of the report,
+  and its order is the deliverable. Never re-group it by state; that is what it replaced.
 - Bar is 50 chars. Round the percentage; never show decimals.
 - **NEEDS ATTENTION is the point of the command.** A programme that looks 60% done with two zombie
   claims and an orphaned branch is not 60% done. Surface those above the tidy sections, and make
   each line say what to run.
 - Never report a percentage without the unestimated count next to it.
-- **MODE=AREA:** `DONE` is a lifetime count on the header line, not a list — 261 rows helps nobody.
-  Keep the section for programmes only.
-- **MODE=AREA on a big label needs a cut, not a truncation.** OPS is 106 open and a flat list is
-  unreadable. Group NEXT UP by the clusters actually present and say you did. Never silently cap.
+- **NEEDS ATTENTION sits below the run sheet** because a zombie claim is not a state a ticket
+  is in — it is a command to run. Make each line say which one.
+- **MODE=AREA:** the run sheet starts at 🔨 and the lifetime closed count goes on the header
+  line. A wall of ✅ rows helps nobody, and an area has no history worth replaying.
+- **MODE=AREA on a big label still shows every open row.** Group the ⬜ band by the clusters
+  actually present and say you did — but never cap it, and never silently trim.
 
 ## What you do not do
 

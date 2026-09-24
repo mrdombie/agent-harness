@@ -135,8 +135,11 @@ gated, blocked, or parked on a human. Report and stop. **Never widen to another 
 unblocks the next ticket, and a ticket that was blocked at the start of the window is often the
 best next thing by the end.
 
-**6. Close with the board, then the banner.** Render `/agent-harness:project <subject>` Steps 4–5, so the
-honest state is on screen rather than a diary of what you did — then sign off per
+**6. Close with the run sheet, then the banner.** Render `/agent-harness:project <subject>`
+Steps 4–5 — the headline figure and then **the run sheet**, one list of every ticket in the
+order it gets done, per `${CLAUDE_PLUGIN_ROOT}/shared/run-sheet.md`. That is the honest
+state, rather than a diary of what you did, and it is what says how far through the label
+is without anyone asking. Then sign off per
 `${CLAUDE_PLUGIN_ROOT}/shared/agent-signoff.md`, with the resolved label as the scope:
 
 ```
