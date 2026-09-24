@@ -28,7 +28,7 @@
 # resolver honours them.
 _cfg="${HARNESS_CFG_PATH:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}/.claude/harness.json}"
 if [ -f "$_cfg" ]; then
-  eval "$(jq -r '"BRANCH_PREFIX=\(.branchPrefix // "" | @sh) CFG_STATE_DIR=\(.stateDir // "" | @sh) CFG_LEGACY_PREFIX=\(.legacyEnvPrefix // "" | @sh)"' "$_cfg" 2>/dev/null)"
+  eval "$(jq -r '"BRANCH_PREFIX=\(.branchPrefix // "" | @sh) CFG_STATE_DIR=\(.stateDir // "" | @sh) CFG_LEGACY_PREFIX=\(.legacyEnvPrefix // "" | @sh) CFG_REPO=\(.repo // "" | @sh)"' "$_cfg" 2>/dev/null)"
 fi
 # A project may declare legacyEnvPrefix in harness.json (or HARNESS_LEGACY_ENV_PREFIX)
 # so an older env prefix its fixtures pin still counts; the kit names none itself.
@@ -55,7 +55,30 @@ has "${START}git$S+commit[^;&|]*$S(-[a-zA-Z]*a[a-zA-Z]*|--all)($S|$)" && deny "g
 has "${START}git$S+(reset$S+--hard|stash$S+pop|clean$S+-[a-zA-Z]*[fd])" && deny "reset --hard / stash pop / clean -f destroys a peer agent's uncommitted work in a shared worktree. Branch a backup first (git branch backup/<n>) and ask."
 has "${START}git$S+add$S+(-A|--all|\.)($S|$)" && deny "git add -A / . stages the node_modules symlink in a worktree. Add files by path."
 if has "${START}(sudo$S+)?npm$S+(install|i|ci)($S|$)" && ! hasF "--dry-run" && ! hasF "# in the main clone" && ! hasF "# main-clone install"; then deny "Worktrees share node_modules by symlink; npm install here breaks every other agent mid-build. Use --dry-run, or install at the MAIN CLONE with peers stopped and append '# main-clone install' (the same escape the hookify rule reads)."; fi
-if has "${START}gh$S+pr$S+create" && ! hasF "# via /finish"; then deny "Opening a PR is /agent-harness:finish's job (gates, UI-Gate trailer, .deploy-trigger, changelog, claim release). Run /agent-harness:finish. If you ARE /agent-harness:finish, append '# via /finish' to the command."; fi
+# The finish flow owns PRs against THE CONFIGURED PROJECT, because that is where
+# its gates, trailer, changelog and claim release apply. A PR against a DIFFERENT
+# repo — this kit itself, a sister repo — has none of those, and blocking it
+# leaves an agent with pushed work and only two ways out: claim to be the finish
+# flow, or abandon the work. Both are worse than the rule.
+#
+# A PreToolUse hook runs in the harness's environment, not inside the command it
+# judges, so an env override in that command never reaches here. And a session
+# working in another repo's clone — exactly when this exemption is wanted — has
+# no config to read. So the slug is cached: written whenever a configured session
+# sees it, read only when nothing else supplies it, and absent both it denies.
+REPO_SLUG="${HARNESS_REPO_SLUG:-${CFG_REPO:-}}"
+_slug_cache="$HOME/.claude/.harness-last-repo-slug"
+if [ -n "$REPO_SLUG" ]; then
+  [ "$(cat "$_slug_cache" 2>/dev/null)" = "$REPO_SLUG" ] || printf '%s' "$REPO_SLUG" > "$_slug_cache" 2>/dev/null || true
+else
+  REPO_SLUG=$(cat "$_slug_cache" 2>/dev/null || true)
+fi
+pr_targets_elsewhere() {
+  local target
+  target=$(printf '%s' "$cmd" | grep -oE -- '--repo[= ]+[A-Za-z0-9._-]+/[A-Za-z0-9._-]+' | head -1 | sed -E 's/--repo[= ]+//')
+  [ -n "$target" ] && [ -n "$REPO_SLUG" ] && [ "$target" != "$REPO_SLUG" ]
+}
+if has "${START}gh$S+pr$S+create" && ! hasF "# via /finish" && ! pr_targets_elsewhere; then deny "Opening a PR against ${REPO_SLUG:-the configured project} is /agent-harness:finish's job (gates, UI-Gate trailer, .deploy-trigger, changelog, claim release). Run /agent-harness:finish. If you ARE /agent-harness:finish, append '# via /finish' to the command. A PR against another repo needs an explicit --repo <owner>/<name>."; fi
 branch_re='[A-Za-z]{1,12}-[0-9]+/'; [ -n "${BRANCH_PREFIX:-}" ] && branch_re="${BRANCH_PREFIX}[0-9]+/|$branch_re"
 if has "${START}git$S+worktree$S+add[^|;&]*-b$S+($branch_re)" && ! hasF "# via /claim"; then deny "Ticket branches are /agent-harness:claim's job (claim ref, spec gate, anti-orphan gates, husky shims). Run /agent-harness:claim <n>. If you ARE /agent-harness:claim, append '# via /claim'."; fi
 exit 0
