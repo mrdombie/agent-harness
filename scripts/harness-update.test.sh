@@ -103,21 +103,46 @@ first=$(printf '%s' "$out" | grep -nE 'MARKETPLACES|STOP' | head -1 | cut -d: -f
 # The plant is the disagreement itself: an installed sha that is not the clone's
 # HEAD. Asserting that a matching pair looks fine would pass on a probe that
 # never read either value.
-stale_fixture() { # $1 = "drifted" | "level" -> echoes the config dir
+stale_fixture() { # $1 = drifted|level|catalogue|scoped -> echoes the config dir
   local kind=$1
   local d="$SB/stale-$kind"
   mkdir -p "$d/plugins/marketplaces"
   local clone="$d/plugins/marketplaces/mkt"
+  mkdir -p "$clone/.claude-plugin"
   git init -q -b main "$clone"
-  git -C "$clone" -c user.email=t@f.local -c user.name=f commit -q --allow-empty -m one
+  # A marketplace whose entry is a PATH is the plugin's own repo, so its HEAD is
+  # comparable. One whose entry is a url is a catalogue: its HEAD says nothing
+  # about the plugin, and comparing them is a confident false positive.
+  if [ "$kind" = catalogue ]; then
+    printf '{ "plugins": [ { "name": "thing", "source": { "source": "url", "url": "https://example.invalid/thing.git" } } ] }\n' \
+      > "$clone/.claude-plugin/marketplace.json"
+  else
+    printf '{ "plugins": [ { "name": "thing", "source": "./" } ] }\n' \
+      > "$clone/.claude-plugin/marketplace.json"
+    printf '{ "name": "thing", "version": "%s" }\n' "$([ "$kind" = scoped ] && echo 0.4.0 || echo 0.2.0)" \
+      > "$clone/.claude-plugin/plugin.json"
+  fi
+  git -C "$clone" add -A
+  git -C "$clone" -c user.email=t@f.local -c user.name=f commit -q -m one
   local first; first=$(git -C "$clone" rev-parse HEAD)
   git -C "$clone" -c user.email=t@f.local -c user.name=f commit -q --allow-empty -m two
   local head; head=$(git -C "$clone" rev-parse HEAD)
-  local recorded=$head
-  [ "$kind" = drifted ] && recorded=$first
+
   printf '{ "enabledPlugins": { "thing@mkt": true } }\n' > "$d/settings.json"
-  printf '{ "plugins": { "thing@mkt": [{"version":"0.2.0","gitCommitSha":"%s","lastUpdated":"2026-09-20"}] } }\n' \
-    "$recorded" > "$d/plugins/installed_plugins.json"
+  if [ "$kind" = scoped ]; then
+    # TWO records for one plugin. `claude plugin update` moves the user one
+    # only, so a stale project record hides behind a healthy user record — and
+    # a probe that reads .[0] reports neither.
+    printf '{ "plugins": { "thing@mkt": [
+      {"scope":"user","version":"0.4.0","gitCommitSha":"%s","lastUpdated":"2026-09-24"},
+      {"scope":"project","version":"0.2.0","gitCommitSha":"%s","lastUpdated":"2026-09-20"} ] } }\n' \
+      "$head" "$first" > "$d/plugins/installed_plugins.json"
+  else
+    local recorded=$head
+    [ "$kind" = level ] || recorded=$first
+    printf '{ "plugins": { "thing@mkt": [{"scope":"user","version":"0.2.0","gitCommitSha":"%s","lastUpdated":"2026-09-20"}] } }\n' \
+      "$recorded" > "$d/plugins/installed_plugins.json"
+  fi
   printf '%s' "$d"
 }
 
@@ -128,7 +153,7 @@ printf '%s' "$out" | grep -q 'STALE INSTALLS' \
 printf '%s' "$out" | grep -A2 'STALE INSTALLS' | grep -q 'thing@mkt' \
   && ok "a commit that moved without a version bump is named" \
   || bad "a commit that moved without a version bump is named (saw: $(printf '%s' "$out" | grep -A2 'STALE INSTALLS' | tr '\n' ' '))"
-printf '%s' "$out" | grep -q 'bump the version\|Bump the version' \
+printf '%s' "$out" | grep -qiE 'bump it in the plugin.s manifest' \
   && ok "and it says what to do about it" || bad "and it says what to do about it"
 [ "$rc" -ne 0 ] && ok "and --check exits non-zero on it" || bad "and --check exits non-zero on it (rc $rc)"
 
@@ -138,6 +163,32 @@ out=$(CLAUDE_CONFIG_DIR="$d" bash "$SUT" --check 2>&1)
 printf '%s' "$out" | grep -A1 'STALE INSTALLS' | grep -q 'none' \
   && ok "a matching sha is not reported as stale" \
   || bad "a matching sha is not reported as stale (saw: $(printf '%s' "$out" | grep -A1 'STALE INSTALLS' | tr '\n' ' '))"
+
+# --- 5c. A CATALOGUE MARKETPLACE IS NOT THE PLUGIN'S REPO ---------------------
+# THE FALSE POSITIVE. A marketplace whose entries point at other repositories has
+# a HEAD of its own that has nothing to do with any of them. Measured 2026-09-24:
+# an earlier version of this probe reported a plugin as ten commits stale against
+# a clone that has never contained it, and that reached the operator as a finding.
+d=$(stale_fixture catalogue)
+out=$(CLAUDE_CONFIG_DIR="$d" bash "$SUT" --check 2>&1)
+printf '%s' "$out" | grep -A1 'STALE INSTALLS' | grep -q 'none' \
+  && ok "a catalogue marketplace's HEAD is not compared" \
+  || bad "a catalogue marketplace's HEAD is not compared (saw: $(printf '%s' "$out" | grep -A2 'STALE INSTALLS' | tr '\n' ' '))"
+
+# --- 5d. EVERY RECORD, NOT THE FIRST -----------------------------------------
+# One plugin, two scopes: the user record current, the project record behind.
+# Reading .[0] reports neither, because the healthy one is first.
+d=$(stale_fixture scoped)
+out=$(CLAUDE_CONFIG_DIR="$d" bash "$SUT" --check 2>&1)
+printf '%s' "$out" | grep -q 'project' \
+  && ok "a stale record behind a healthy one is still found" \
+  || bad "a stale record behind a healthy one is still found (saw: $(printf '%s' "$out" | grep -A2 'STALE INSTALLS' | tr '\n' ' '))"
+printf '%s' "$out" | grep -q 'update did not reach this scope' \
+  && ok "and it says the update never reached that scope" \
+  || bad "and it says the update never reached that scope"
+printf '%s' "$out" | grep -q 'version did not move' \
+  && bad "and does not blame the manifest version, which did move" \
+  || ok "and does not blame the manifest version, which did move"
 
 # --- 6. THE PIN DOES NOT MOVE PAST A RED KIT ----------------------------------
 # The one change that decides what a BUILD runs. A pin that moves past a kit

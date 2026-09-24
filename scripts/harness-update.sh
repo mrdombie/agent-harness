@@ -41,6 +41,8 @@ command -v jq >/dev/null || { echo "harness-update: jq is required" >&2; exit 2;
 
 BEHIND=0     # anything at all is out of date
 BLOCKED=0    # something must be reconciled before updating
+stale_version=""   # an install the CLI will refuse to move
+stale_scope=""     # an install the update never reached
 
 hr() { printf '%s\n' "----------------------------------------------------------------"; }
 
@@ -88,27 +90,75 @@ fi
 #
 # So the REF is the truth here, exactly as it is for a claim. Compare the sha the
 # install recorded against the clone's HEAD and say when they disagree.
+#
+# EVERY RECORD, not the first. One plugin can be installed at more than one
+# scope, and `claude plugin update` moves the user-scope record only. Measured
+# 2026-09-24: this kit was current at user scope and ten commits behind at
+# project scope, and reading .[0] reported neither — the stale one was invisible
+# behind the healthy one. The scope is printed, because that is what makes the
+# row actionable.
 hr; echo "STALE INSTALLS"
 stale=""
 if [ -f "$INSTALLED" ] && [ -d "$MARKET_DIR" ]; then
-  while IFS=$'\t' read -r full sha ver; do
+  while IFS=$'\t' read -r full scope sha ver; do
     [ -n "$full" ] || continue
     mkt="${full##*@}"
     clone="$MARKET_DIR/$mkt"
     [ -d "$clone/.git" ] || continue
+
+    # ONLY WHEN THE PLUGIN LIVES IN THE MARKETPLACE REPO. A marketplace can be a
+    # catalogue whose entries point at other repositories ("source": {"source":
+    # "url", ...}); its own HEAD then says nothing about any of them, and
+    # comparing the two produces a confident false positive. Measured 2026-09-24:
+    # superpowers-marketplace holds ten such entries and two files, and this
+    # probe reported the superpowers plugin as stale against a clone that has
+    # never contained it.
+    #
+    # A path source ("./", "plugins/x") IS the repo, so the comparison holds.
+    bare="${full%%@*}"
+    src=$(jq -r --arg n "$bare" '
+            (.plugins // []) | map(select(.name == $n)) | .[0].source
+            | if type == "string" then . else "" end' \
+          "$clone/.claude-plugin/marketplace.json" 2>/dev/null)
+    [ -n "$src" ] || continue
+
     head=$(git -C "$clone" rev-parse HEAD 2>/dev/null) || continue
     [ -n "$sha" ] && [ "$sha" != "$head" ] || continue
-    printf '  %-36s installed %s  clone %s  both "%s"\n' "$full" "${sha:0:10}" "${head:0:10}" "$ver"
+    # Same version at a different commit is the CLI refusing to move. A DIFFERENT
+    # version means the update simply never reached this record — one plugin can
+    # be installed at more than one scope and only the user one is updated. The
+    # two need different advice, so read the clone's own manifest rather than
+    # guessing from the installed side alone.
+    cver=$(jq -r '.version // "-"' "$clone/${src#./}/.claude-plugin/plugin.json" 2>/dev/null \
+           || echo "-")
+    [ "$cver" != "-" ] || cver=$(jq -r '.version // "-"' "$clone/.claude-plugin/plugin.json" 2>/dev/null || echo "-")
+    if [ "$cver" = "$ver" ]; then
+      printf '  %-36s %-8s installed %s  clone %s  both "%s"  version did not move\n' \
+        "$full" "$scope" "${sha:0:10}" "${head:0:10}" "$ver"
+      stale_version="yes"
+    else
+      printf '  %-36s %-8s installed %s (%s)  clone %s (%s)  update did not reach this scope\n' \
+        "$full" "$scope" "${sha:0:10}" "$ver" "${head:0:10}" "$cver"
+      stale_scope="yes"
+    fi
     stale="yes"
   done <<EOF
 $(jq -r '(.plugins // .) | to_entries | .[]
-         | . as $e | ($e.value | if type=="array" then .[0] else . end) as $v
-         | [$e.key, ($v.gitCommitSha // ""), ($v.version // "-")] | @tsv' "$INSTALLED" 2>/dev/null)
+         | . as $e
+         | ($e.value | if type=="array" then . else [.] end)
+         | .[]
+         | [$e.key, (.scope // "-"), (.gitCommitSha // ""), (.version // "-")] | @tsv' "$INSTALLED" 2>/dev/null)
 EOF
 fi
 if [ -n "$stale" ]; then
-  echo "  -> the manifest version did not change, so the CLI will refuse to update."
-  echo "     Bump the version in the plugin's manifest, then run this again."
+  [ -n "${stale_version:-}" ] && {
+    echo "  -> version did not move: the CLI compares the manifest version, so it will"
+    echo "     refuse to update. Bump it in the plugin's manifest, then run this again."
+  }
+  [ -n "${stale_scope:-}" ] && {
+    echo "  -> update did not reach that scope: 'claude plugin update' moves the USER"
+    echo "     record. Re-install at that scope, or drop the extra record."
+  }
   BEHIND=1
 else
   echo "  none"
