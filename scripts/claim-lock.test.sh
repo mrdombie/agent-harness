@@ -28,6 +28,13 @@ bad() { echo "  FAIL — $1"; fail=1; }
 # A git hook exports GIT_DIR / GIT_WORK_TREE to everything it runs; inherited,
 # they would make every git call below act on the REAL checkout.
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# …then put back the one thing git cannot invent. claim-lock parks each claim in
+# a commit (`git commit-tree`), and a runner with no global user.name/user.email
+# dies with "fatal: empty ident name (for <runner@…>) not allowed" — green on a
+# developer's machine, red on every clean runner. Naming it here rather than
+# relying on ambient config is what makes the suite portable.
+export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@test.local
+export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@test.local
 
 # ---------------------------------------------------------------- the sandbox
 # Invented project. Nothing here names a real one, and nothing touches a live
