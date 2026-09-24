@@ -208,7 +208,14 @@ toolkit_repo_path() {
 # never touch the net.
 toolkit_login() {
   if [ -z "$(_hv LOGIN)" ]; then
-    local l="${CLAIM_AGENT%%@*}"
+    # ${CLAIM_AGENT%%@*} on an UNSET variable: bash 3.2 quietly yields "",
+    # bash 5 under set -u aborts with "CLAIM_AGENT: unbound variable". So the
+    # macOS suite went green and the Linux runner died on the same line —
+    # first caught 2026-09-24 by the first fixture to run claim-lock in a
+    # clean environment. Default first, strip second.
+    local l
+    l="${CLAIM_AGENT:-}"
+    l="${l%%@*}"
     [ -n "$l" ] && [ "$l" != "${CLAIM_AGENT:-}" ] || l=$(gh config get -h github.com user 2>/dev/null || true)
     [ -n "$l" ] || l=$(gh api user --jq .login 2>/dev/null || true)
     [ -n "$l" ] || { echo unknown; return; }

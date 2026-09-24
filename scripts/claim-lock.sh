@@ -70,10 +70,28 @@ die() { printf 'claim-lock: %s\n' "$*" >&2; exit 1; }
 # Resolve a repo to push from. Any worktree of the project will do — the refs live
 # on origin, not locally.
 resolve_repo() {
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # 1. An EXPLICIT CLAIM_REPO outranks cwd. It used to come third, so a caller
+  #    that named a repo was silently ignored whenever the shell happened to sit
+  #    in ANY git work tree — the refs of some other checkout were listed and
+  #    `list` printed "no live claims", rc 0, nothing on stderr. Measured
+  #    2026-09-24: a sandbox holding one claim reported none when the same call
+  #    ran from a different checkout. An empty claim list that cannot be told
+  #    from a true one is how a held ticket gets handed out twice.
+  # 2. Then cwd — any worktree of the project will do, the refs live on origin.
+  #    Test the OUTPUT, never the exit code: a BARE repo prints "false" and
+  #    EXITS 0, so an exit-code test took this branch and --show-toplevel died
+  #    with "must be run in a work tree".
+  # 3. Then the configured main repo, for a shell outside any checkout.
+  local explicit
+  explicit="${CLAIM_REPO:-}"
+  local configured
+  configured="${DEFAULT_REPO:-}"
+  if [ -n "$explicit" ] && git -C "$explicit" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "$explicit"
+  elif [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
     git rev-parse --show-toplevel
-  elif [ -n "${CLAIM_REPO:-$DEFAULT_REPO}" ] && git -C "${CLAIM_REPO:-$DEFAULT_REPO}" rev-parse --git-dir >/dev/null 2>&1; then
-    echo "${CLAIM_REPO:-$DEFAULT_REPO}"
+  elif [ -n "$configured" ] && git -C "$configured" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "$configured"
   else
     die "not in a git repo and '${CLAIM_REPO:-$DEFAULT_REPO}' is not one; run from a checkout, or set CLAIM_REPO / HARNESS_MAIN_REPO"
   fi
