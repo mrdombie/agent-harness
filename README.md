@@ -77,6 +77,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
+- `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
 
 Read a value with `toolkit_cfg <dotted.key>` after sourcing `scripts/toolkit-env.sh`. Arrays join on spaces, so `for l in $(toolkit_cfg labels.decision)` reads naturally.
 
@@ -87,11 +88,12 @@ Env overrides always win over the config: `HARNESS_STATE_DIR`, `HARNESS_REPO_ROO
 ```
 skills/    file claim finish release release-stale queue needsme standup
            work auto bug ui-gate cheatsheet claim-status sweep-worktrees project
+           panel (+ its five screen reviewers)
 agents/    gate-runner frontend-gate design-critic
 hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
-           check-project-agnostic.sh (CI)
+           check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
 shared/    operator.md · agent-signoff.md
 ```
 
@@ -113,6 +115,10 @@ The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rul
 ### Scripts the skills expect in the consuming repo
 
 The kit's own scripts live here and are addressed from the plugin root. A few repo-side conventions are read from the consuming repo's `scripts/` (materialised from `origin/<integrationBranch>` by `toolkit_tools`) when present, and skipped when not: `programme-status.sh`, `programme-state-brief.sh`, `sweep-orphan-worktrees.sh`, `refresh-shared-manifests.sh`, `auto-promote-gated-children.sh`, `queue-health-report.sh`. Child 4 of the extraction (the gates contract) turns those into config.
+
+## Adding a skill
+
+Every new skill, command, agent or hook starts **here**, not in a personal `~/.claude` folder: `skills/<name>/SKILL.md`, project facts read from `.claude/harness.json` (refusing by key name when one is missing), a test beside any script, a version bump, a PR. Then update the plugin on each machine. Something only one project needs goes in that project's `.claude/skills/` instead. A skill that exists only in one person's `~/.claude` is one machine away from being lost.
 
 ## What it costs
 
