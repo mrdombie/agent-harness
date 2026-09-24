@@ -78,6 +78,42 @@ else
   echo "  (no installed_plugins.json)"
 fi
 
+# --------------------------------------------------------------- stale installs
+# `claude plugin update` compares the VERSION STRING in the plugin manifest, not
+# the commit. A plugin whose repo has moved but whose version has not is reported
+# as "already at the latest version" and nothing is installed. Measured
+# 2026-09-24: this kit's own plugin sat at the commit it was first installed at
+# while its marketplace clone was eight commits ahead, both reading 0.2.0, and
+# the running copy was missing a guard that had been merged hours earlier.
+#
+# So the REF is the truth here, exactly as it is for a claim. Compare the sha the
+# install recorded against the clone's HEAD and say when they disagree.
+hr; echo "STALE INSTALLS"
+stale=""
+if [ -f "$INSTALLED" ] && [ -d "$MARKET_DIR" ]; then
+  while IFS=$'\t' read -r full sha ver; do
+    [ -n "$full" ] || continue
+    mkt="${full##*@}"
+    clone="$MARKET_DIR/$mkt"
+    [ -d "$clone/.git" ] || continue
+    head=$(git -C "$clone" rev-parse HEAD 2>/dev/null) || continue
+    [ -n "$sha" ] && [ "$sha" != "$head" ] || continue
+    printf '  %-36s installed %s  clone %s  both "%s"\n' "$full" "${sha:0:10}" "${head:0:10}" "$ver"
+    stale="yes"
+  done <<EOF
+$(jq -r '(.plugins // .) | to_entries | .[]
+         | . as $e | ($e.value | if type=="array" then .[0] else . end) as $v
+         | [$e.key, ($v.gitCommitSha // ""), ($v.version // "-")] | @tsv' "$INSTALLED" 2>/dev/null)
+EOF
+fi
+if [ -n "$stale" ]; then
+  echo "  -> the manifest version did not change, so the CLI will refuse to update."
+  echo "     Bump the version in the plugin's manifest, then run this again."
+  BEHIND=1
+else
+  echo "  none"
+fi
+
 # ------------------------------------------------------------------ duplicates
 # Two ENABLED plugins with the same bare name from different marketplaces. This
 # is the condition that stops the run: an estate that disagrees with itself
@@ -163,8 +199,18 @@ if command -v claude >/dev/null; then
   claude plugin marketplace update >/dev/null 2>&1 || { echo "  marketplace refresh failed"; APPLY_FAILED=1; }
   if [ -f "$INSTALLED" ]; then
     for p in $(jq -r '(.plugins // .) | keys[]' "$INSTALLED" 2>/dev/null); do
+      before=$(jq -r --arg k "$p" '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' "$INSTALLED" 2>/dev/null)
       if claude plugin update "$p" >/dev/null 2>&1; then
-        printf '  updated  %s\n' "$p"
+        after=$(jq -r --arg k "$p" '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' "$INSTALLED" 2>/dev/null)
+        if [ -n "$before" ] && [ "$before" = "$after" ] && [ -n "$stale" ]; then
+          # The CLI exits 0 saying "already at the latest version" when only the
+          # commit moved. Calling that "updated" is how an estate stays behind
+          # while a command reports it current.
+          printf '  NO-OP    %s  (still %s — bump its manifest version)\n' "$p" "${after:0:10}"
+          APPLY_FAILED=1
+        else
+          printf '  updated  %s\n' "$p"
+        fi
       else
         printf '  FAILED   %s\n' "$p"; APPLY_FAILED=1
       fi
