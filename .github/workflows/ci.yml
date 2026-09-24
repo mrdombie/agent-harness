@@ -15,11 +15,13 @@ jobs:
         # parsed fine and `claude plugin install` refused it (2026-09-20).
         run: npx --yes @anthropic-ai/claude-code@latest plugin validate .
       - name: Scripts and hooks parse
-        run: for f in scripts/*.sh hooks/*.sh; do bash -n "$f"; done
+        run: for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh; do bash -n "$f"; done
       - name: Hook self-tests
         run: |
           fail=0
-          for t in hooks/*.test.sh scripts/*.test.sh; do echo "== $t"; bash "$t" || fail=1; done
+          # hooks/lib/ too: a suite CI does not glob is a suite that is not run,
+          # and it reports green by never reporting at all.
+          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh; do echo "== $t"; bash "$t" || fail=1; done
           exit $fail
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh

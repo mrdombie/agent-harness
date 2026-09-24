@@ -54,5 +54,53 @@ t quiet 'label older than 6h — no live flow'             'All done.'          
 rm -rf "$MDIR"; printf '\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$LABEL"
 t quiet 'label file present but scope empty'             'All done.'                     false s8
 
+# ---------------------------------------------------------------- peer scope
+# .session-label is ONE global slot. Without this guard a session prints another
+# session's scope in its banner, which is the one line the operator acts on.
+#
+# `ps` is stubbed so the identity walk has a fixed answer: without it
+# claude_session_pid() finds no claude ancestor under a test runner, the guard
+# can never fire, and every case below would pass on a dead guard.
+STUB=$(mktemp -d "${TMPDIR:-/tmp}/signoff-ps-XXXXXX")
+cat > "$STUB/ps" <<'STUBEOF'
+#!/usr/bin/env bash
+# args: -p <pid> [-o comm=|-o ppid=]
+pid=""; field=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) pid=$2; shift 2 ;;
+    -o) field=$2; shift 2 ;;
+    *)  shift ;;
+  esac
+done
+case "$field" in
+  comm=) if [ "$pid" = "$FAKE_ME" ]; then echo "/opt/claude/native-binary/claude"; else echo "bash"; fi; exit 0 ;;
+  ppid=) if [ "$pid" = "$FAKE_ME" ]; then echo "1"; else echo "$FAKE_ME"; fi; exit 0 ;;
+  "")    case " $FAKE_LIVE " in *" $pid "*) exit 0 ;; *) exit 1 ;; esac ;;
+esac
+exit 0
+STUBEOF
+chmod +x "$STUB/ps"
+export FAKE_ME=424242
+export FAKE_LIVE="424242 515151"
+OLDPATH=$PATH; export PATH="$STUB:$PATH"
+
+printf 'content-lab\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$LABEL"
+
+rm -rf "$MDIR"; echo 515151 > "$LABEL.owner"
+t quiet 'scope owned by a LIVE peer session — do not demand its banner' 'All done.' false p1
+
+rm -rf "$MDIR"; echo 424242 > "$LABEL.owner"
+t nag   'scope owned by THIS session — still demanded'                  'All done.' false p2
+
+rm -rf "$MDIR"; echo 999999 > "$LABEL.owner"
+t nag   'owner recorded but dead — uncertain falls through to demanding' 'All done.' false p3
+
+rm -rf "$MDIR"; rm -f "$LABEL.owner"
+t nag   'no owner file at all — a solo session is unaffected'            'All done.' false p4
+
+export PATH=$OLDPATH; rm -rf "$STUB"; rm -f "$LABEL.owner"
+unset FAKE_ME FAKE_LIVE
+
 rm -rf "$MDIR"
 exit $fail

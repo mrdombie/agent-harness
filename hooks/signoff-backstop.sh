@@ -64,7 +64,24 @@ LAGE=$(( $(date +%s) - $(stat -c %Y "$LABEL_FILE" 2>/dev/null || stat -f %m "$LA
 SCOPE=$(cut -f1 < "$LABEL_FILE" | head -1)
 [ -n "$SCOPE" ] || { say "exit0 empty-scope"; exit 0; }
 
-# 4. The common path — the flow already complied.
+# 4. Is this scope even ours? .session-label is ONE global slot written by every
+#    work flow across every concurrent agent, so the scope it holds belongs to
+#    the last writer, not necessarily to this session. Demanding a banner for a
+#    peer's scope produces a WRONG banner, and agent-signoff.md is explicit that
+#    a stale roster is worse than none — it is the one fact the operator acts on.
+#    Measured 2026-09-18: this hook made one session print another session's
+#    area three times.
+#
+#    Unowned or stale-owned falls through, so a solo session is unaffected.
+# shellcheck source=lib/claude-session.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/claude-session.sh" 2>/dev/null || say "warn no-session-lib"
+if declare -F scope_owned_by_peer >/dev/null 2>&1; then
+  if PEER=$(scope_owned_by_peer "${LABEL_FILE}.owner"); then
+    say "exit0 not-my-scope owner=$PEER scope=$SCOPE"; exit 0
+  fi
+fi
+
+# 5. The common path — the flow already complied.
 LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 printf '%s' "$LAST" | grep -qF '🏷️ Working on:' && { say "exit0 banner-present $SCOPE"; exit 0; }
 
