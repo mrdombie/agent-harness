@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm, live</title>
+<style>
+:root{
+  --ground:#F3EADB; --card:#FFFCF7; --sunk:#FBEBD3; --ink:#1F1B16; --ink2:#5E554A; --ink3:#8A7F71;
+  --rule:#EADBC4; --ember:#E8590C; --good:#1B7F4C; --warn:#B7791F; --bad:#C0392B;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --ground:#16130F; --card:#1F1B16; --sunk:#2A241D; --ink:#F3EADB; --ink2:#C9BCA8; --ink3:#9A8D7B;
+  --rule:#3A3228; --ember:#F07A2A; --good:#4CC38A; --warn:#E0A840; --bad:#F06A5A; color-scheme:dark;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Inter",system-ui,sans-serif;padding-inline:16px}
+.page{max-width:1280px;margin:0 auto;padding-block:20px 48px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-bottom:16px}
+h1{font-size:22px;margin:0}
+.meta{color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums}
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin:22px 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:12px}
+@media (max-width:440px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.top{display:flex;gap:8px;align-items:flex-start}
+.dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none}
+.dot.ok{background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 20%,transparent);animation:pulse 2s infinite}
+.dot.slow{background:var(--warn)} .dot.stuck{background:var(--bad)}
+@keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--good) 0%,transparent)}}
+.title{font-weight:600;font-size:15px;line-height:1.3}
+.sub{color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums}
+.sub a{color:inherit}
+.now{background:var(--sunk);border-radius:7px;padding:8px 10px;font-size:14px}
+.now b{color:var(--ember);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:2px}
+.said{color:var(--ink2);font-size:13px;border-left:2px solid var(--rule);padding-left:9px}
+ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px}
+li{font-size:13px;color:var(--ink3);display:flex;gap:6px;min-width:0}
+li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+li.say span{font-style:italic}
+details summary{cursor:pointer;color:var(--ink3);font-size:13px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
+td{padding:8px 12px;border-top:1px solid var(--rule);font-size:13px;vertical-align:top}
+tr:first-child td{border-top:0}
+.pill{display:inline-block;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:600;white-space:nowrap}
+.pill.ok{background:color-mix(in srgb,var(--good) 18%,transparent);color:var(--good)}
+.pill.warn{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+.pill.bad{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink2)}
+.tablewrap{overflow-x:auto}
+.empty{color:var(--ink3)}
+</style>
+</head>
+<body>
+<div class="page">
+  <header><h1>Swarm, live</h1><span class="meta" id="meta">loading…</span></header>
+  <div id="groups"></div>
+  <h2 id="donehead">Recently finished</h2>
+  <div class="tablewrap"><table id="done"></table></div>
+</div>
+<script>
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+const ago = (sec) => sec == null ? '—' : sec < 60 ? `${sec}s ago` : sec < 3600 ? `${Math.round(sec/60)} min ago` : `${Math.round(sec/3600)} h ago`
+const dur = (min) => min < 60 ? `${min} min` : `${Math.floor(min/60)} h ${min%60} min`
+const nice = (p) => p ? p.replace(/-/g,' ').replace(/^./, c => c.toUpperCase()) : 'Other'
+let repo = ''
+
+function card(a){
+  const q = a.quietSec ?? 99999
+  const cls = q < 90 ? 'ok' : q < 600 ? 'slow' : 'stuck'
+  const doing = [...a.steps].reverse().find(s => s.kind === 'do')
+  const said = [...a.steps].reverse().find(s => s.kind === 'say')
+  const recent = a.steps.slice(-7, -1).reverse()
+  const link = repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(a.ticket)}" target="_blank" rel="noopener">#${esc(a.ticket)}</a>` : `#${esc(a.ticket)}`
+  return `<div class="card">
+    <div class="top"><span class="dot ${cls}" title="${cls}"></span><div style="min-width:0">
+      <div class="title">${esc(a.title)}</div>
+      <div class="sub">running ${dur(a.startedAgoMin)} · last active ${ago(a.quietSec)}${a.budget != null ? ` · budget $${esc(a.budget)}` : ''} · ${link}</div>
+    </div></div>
+    <div class="now"><b>Now</b>${esc(doing?.text || 'Starting up')}</div>
+    ${said ? `<div class="said">“${esc(said.text)}”</div>` : ''}
+    ${recent.length ? `<details><summary>Earlier steps</summary><ol>${recent.map(s => `<li class="${s.kind}"><span>${s.kind==='say'?'💬':'›'} ${esc(s.text)}</span></li>`).join('')}</ol></details>` : ''}
+  </div>`
+}
+
+function outcome(d){
+  if (d.outcome === 'error_max_budget_usd') return '<span class="pill warn">Ran out of budget</span>'
+  if (d.outcome === 'success') return '<span class="pill ok">Finished</span>'
+  return `<span class="pill bad">Stopped (${esc(d.exit)})</span>`
+}
+
+async function tick(){
+  try{
+    const r = await fetch('/api/agents', {cache:'no-store'}); const s = await r.json()
+    repo = s.repo || ''
+    document.getElementById('meta').textContent =
+      `${s.live.length} running · machine load ${s.load.toFixed(0)} · updated ${new Date(s.at).toLocaleTimeString()}`
+    const groups = {}
+    for (const a of s.live) (groups[a.project] ||= []).push(a)
+    // Biggest programme first. No programme is named here — the kit ships to
+    // projects whose programmes it cannot know.
+    const order = Object.keys(groups).sort((a,b) => groups[b].length - groups[a].length || a.localeCompare(b))
+    document.getElementById('groups').innerHTML = order.length
+      ? order.map(p => `<h2>${esc(nice(p))} · ${groups[p].length}</h2><div class="grid">${groups[p].map(card).join('')}</div>`).join('')
+      : '<p class="empty">No agents running.</p>'
+    document.getElementById('done').innerHTML = s.done.length ? s.done.map(d => `<tr>
+      <td>${outcome(d)}</td>
+      <td><b>${esc(d.title)}</b><details><summary>What it reported</summary><div class="said" style="margin-top:6px">${esc(d.summary || 'No report.')}</div></details></td>
+      <td class="num">${d.cost != null ? '$'+d.cost.toFixed(0) : '—'}</td>
+      <td class="num">${ago(d.endedAgoMin*60)}</td></tr>`).join('') : '<tr><td class="empty">Nothing yet.</td></tr>'
+  }catch(e){ document.getElementById('meta').textContent = 'Lost contact with the live view — is it still running?' }
+}
+tick(); setInterval(tick, 5000)
+</script>
+</body>
+</html>
