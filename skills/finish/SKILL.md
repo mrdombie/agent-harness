@@ -657,6 +657,25 @@ If the merge fails:
 - **CI required** → re-run with `--auto`. Auto-merge fires when CI completes.
 - **Anything else** → stop, paste gh output.
 
+**`--auto` MERGES NOW on a repo where auto-merge is switched off.** It is a repository
+setting, not a universal one, and when it is off `gh pr merge --auto` does not refuse and
+does not warn — it merges immediately, prints nothing, and exits 0. Every signal an agent
+reads says the merge is armed and waiting. It is not: it has already happened, at whatever
+commit was current, with the checks still running.
+
+That shipped a known-red commit to `main` on 2026-09-26 (agent-harness #16): CI reported
+failure four minutes after the merge, and the fix needed a second PR. Read the setting
+before trusting the flag, and read the PR back afterwards:
+
+```bash
+gh api "repos/$REPO_SLUG" -q '.allow_auto_merge'        # false → --auto merges NOW
+gh pr view "$PR_NUMBER" --json state,autoMergeRequest \
+  -q '"\(.state) auto=\(.autoMergeRequest != null)"'    # never assume; read it back
+```
+
+`false` means there is no armed state to be in: wait for the checks in the foreground and
+merge by hand.
+
 **HARD RULE — finish the review BEFORE arming `--auto` (PR #9137 incident, 2026-08-13).**
 `--auto` is a server-side promise that fires the instant CI goes green, whether or not
 anything else has finished. #9137 auto-merged **~25 minutes before its own code review
