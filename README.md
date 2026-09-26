@@ -94,6 +94,8 @@ hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
+swarm/     agents that run with no session open: scheduler · queue · repair-watch
+           live-view · report · install — see swarm/README.md
 shared/    operator.md · agent-signoff.md
 ```
 
@@ -120,6 +122,15 @@ The kit's own scripts live here and are addressed from the plugin root. A few re
 
 Every new skill, command, agent or hook starts **here**, not in a personal `~/.claude` folder: `skills/<name>/SKILL.md`, project facts read from `.claude/harness.json` (refusing by key name when one is missing), a test beside any script, a version bump, a PR. Then update the plugin on each machine. Something only one project needs goes in that project's `.claude/skills/` instead. A skill that exists only in one person's `~/.claude` is one machine away from being lost.
 
+## Running without a session open
+
+`swarm/install.sh` puts four timers on the machine: the live view everything
+else reads, a scheduler topping each programme up to three agents, a watcher
+that brings one agent back to a broken pull request and stops after three, and
+a reporter. `swarm/queue.sh add <ticket> --brief <file>` is how a ticket joins
+the queue — it replaces writing a launcher by hand. Full description, the rules
+it holds to and every setting: [`swarm/README.md`](swarm/README.md).
+
 ## What it costs
 
 `scripts/usage-report.sh [--since YYYY-MM-DD] [--by ticket|operator|week]` — spend per
@@ -138,11 +149,12 @@ The same holds for a per-user `~/.claude/commands/<name>.md`: bare `/<name>` res
 ## Running the tests
 
 ```bash
-for t in hooks/*.test.sh; do bash "$t"; done
+for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh; do bash "$t"; done
 bash scripts/check-project-agnostic.sh
 ```
 
-CI runs both on every push. `check-project-agnostic.sh` reports a control alongside its count — a zero from a strictness probe means clean, suppressed, or never ran, and the control tells you which.
+CI runs all of them on every push, and fails by name on a tracked suite no glob
+reached — a suite nothing runs reports green by never reporting at all. `check-project-agnostic.sh` reports a control alongside its count — a zero from a strictness probe means clean, suppressed, or never ran, and the control tells you which.
 
 ## Not here yet
 
