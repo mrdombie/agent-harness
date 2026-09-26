@@ -102,7 +102,10 @@ SH
   # ---- stub: the spawner ------------------------------------------------------
   cat > "$BIN/spawn" <<'SH'
 #!/usr/bin/env bash
-printf '%s\tbudget=%s\tbrief=%s\n' "$1" "${CLAIM_BUDGET_USD:-}" "${CLAIM_EXTRA:-}" >> "$SPAWNS"
+# The brief is flattened onto ONE line: a run is one row, so `grep -c .` counts
+# spawns rather than the lines of whatever brief they carried.
+printf '%s\tbudget=%s\tbrief=%s\n' "$1" "${CLAIM_BUDGET_USD:-}" \
+  "$(printf '%s' "${CLAIM_EXTRA:-}" | tr '\n' ' ')" >> "$SPAWNS"
 echo "→ spawned claim-$1"
 SH
 
@@ -172,4 +175,58 @@ fix_ready() {
   fix_issue_list "project:$p" "$arr"
   fix_issue_list "status:in-review" "[]"
   local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready,project:$p"; done
+}
+
+# ---- pull requests, comments and finished runs -------------------------------
+# The repair watcher reads three things the queue never does: the open pull
+# requests, an issue's comments, and the runs that have already ENDED.
+
+# fix_prs <tsv…> — one row per open PR:
+#   <pr> <ticket> <sha> <mergeState> <pendingChecks> <failedCheckName-or-->
+# mergeState CLEAN + 0 pending + "-" failed is a healthy PR nothing should touch.
+fix_prs() {
+  local out="[]" pr t sha ms pend fail row
+  for row in "$@"; do
+    set -- $row; pr=$1; t=$2; sha=$3; ms=$4; pend=$5; fail=${6:--}
+    out=$(printf '%s' "$out" | jq \
+      --argjson n "$pr" --arg br "${BRANCH_PREFIX:-tkt-}$t/work" --arg sha "$sha" \
+      --arg ms "$ms" --argjson pend "$pend" --arg fail "$fail" '
+      . + [{
+        number: $n, headRefName: $br, headRefOid: $sha, isDraft: false,
+        mergeStateStatus: $ms,
+        statusCheckRollup: (
+          [range($pend) | {name:"pending", status:"IN_PROGRESS", conclusion:null}]
+          + (if $fail == "-" then [] else [{name:$fail, status:"COMPLETED", conclusion:"FAILURE"}] end)
+          + [{name:"green", status:"COMPLETED", conclusion:"SUCCESS"}])
+      }]')
+  done
+  printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
+}
+
+# fix_comments <ticket> <body…> — the comments `gh issue view --json comments` returns
+fix_comments() {
+  local n=$1; shift
+  local c; c=$(printf '%s\n' "$@" | jq -R '{body: .}' | jq -s '.')
+  local f="$FIX/gh/issue-$n.json"
+  [ -f "$f" ] || fix_issue "$n" OPEN ""
+  jq --argjson c "$c" '.comments = $c' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+# fix_done <ticket> <endedAgoMin> <summary> — a finished run in the live view's
+# `done` list, which is where an infrastructure death is visible.
+fix_done() {
+  [ -f "$FIX/live.json" ] || fix_live "" 0
+  jq --arg t "$1" --argjson a "$2" --arg s "$3" \
+    '.done += [{ticket:$t, endedAgoMin:$a, summary:$s, exit:1}]' \
+    "$FIX/live.json" > "$FIX/live.json.tmp" && mv "$FIX/live.json.tmp" "$FIX/live.json"
+}
+
+# fix_at <epoch> — move the clock AND re-stamp the live view, so a test that
+# jumps forward does not accidentally assert on the staleness rule instead.
+fix_at() {
+  export SWARM_NOW="$1"
+  if [ -f "$FIX/live.json" ]; then
+    local at; at=$(date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq --arg at "$at" '.at = $at' "$FIX/live.json" > "$FIX/live.json.tmp" && mv "$FIX/live.json.tmp" "$FIX/live.json"
+  fi
 }
