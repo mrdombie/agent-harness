@@ -59,9 +59,9 @@ JSON
 # exit 0 so a script under test is never blocked by a question this stub has not
 # been taught — the assertion is on the recorded line, not on the stub's wit.
 printf '%s\n' "$*" >> "$GH_LOG"
-q=""; key=""; prev=""
+q=""; key=""; labels=""; prev=""
 for a in "$@"; do
-  case "$prev" in -q|--jq) q="$a" ;; esac
+  case "$prev" in -q|--jq) q="$a" ;; --label) labels="$labels${labels:+,}$a" ;; esac
   case "$a" in head:*) key="${a#head:}" ;; esac
   prev="$a"
 done
@@ -77,7 +77,10 @@ case "$1 $2" in
     [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
     emit "$f" ;;
   "issue list")
-    f="$FIX/gh/issue-list.json"
+    # Keyed by the --label arguments, so the "what is ready" question and the
+    # "who is in this programme" question can be given different answers.
+    f="$FIX/gh/issue-list-$labels.json"
+    [ -f "$f" ] || f="$FIX/gh/issue-list.json"
     [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
     emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
@@ -153,4 +156,20 @@ want_in() { # <label> <regex> <text>
 }
 want_not_in() { # <label> <regex> <text>
   if printf '%s' "$3" | grep -qE "$2"; then bad "$1 — found /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; else ok "$1"; fi
+}
+
+# fix_issue_list <label,label…> <json array> — what `gh issue list --label …`
+# answers for exactly that label set.
+fix_issue_list() { printf '%s\n' "$2" > "$FIX/gh/issue-list-$1.json"; }
+
+# fix_ready <programme> <ticket…> — the two answers a scheduler pass needs:
+# the ready list (which claimable-issues.sh reads) and the programme's members.
+fix_ready() {
+  local p=$1; shift
+  local arr; arr=$(printf '%s\n' "$@" | jq -R 'tonumber' | jq -s --arg p "$p" \
+    'map({number: ., title: "Ticket \(.)", labels: [{name:"status:ready"},{name:"P1"},{name:"area:OPS"},{name:("project:"+$p)}]})')
+  fix_issue_list "status:ready" "$arr"
+  fix_issue_list "project:$p" "$arr"
+  fix_issue_list "status:in-review" "[]"
+  local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready,project:$p"; done
 }
