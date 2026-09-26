@@ -11,6 +11,7 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | File | What it does |
 |---|---|
 | `swarm-env.sh` | Where everything is, and every call out of the process. Sourced by the rest. |
+| `time.sh` | The two clock conversions, on either `date`. Shared with the test fixture. |
 | `queue.sh` | One queue. `add` · `list` · `next` · `remove` · `clear` · `drain`. |
 | `scheduler.sh` | One pass: top each programme's queue up, drain it to the cap. |
 | `repair-watch.sh` | Repair a red or clashing pull request · unblock · restart after an outage · raise the alarm. |
