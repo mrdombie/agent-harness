@@ -15,13 +15,29 @@ jobs:
         # parsed fine and `claude plugin install` refused it (2026-09-20).
         run: npx --yes @anthropic-ai/claude-code@latest plugin validate .
       - name: Scripts and hooks parse
-        run: for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh; do bash -n "$f"; done
-      - name: Hook self-tests
+        run: for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh swarm/*.sh swarm/tests/*.sh; do bash -n "$f"; done
+      - name: Self-tests
         run: |
           fail=0
-          # hooks/lib/ too: a suite CI does not glob is a suite that is not run,
-          # and it reports green by never reporting at all.
-          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh; do echo "== $t"; bash "$t" || fail=1; done
+          # Every tracked suite, globbed by directory. A suite CI does not glob
+          # is a suite that is not run, and it reports green by never reporting
+          # at all — hooks/lib/ was invisible that way once, and swarm/tests/
+          # shipped six suites nothing here could see.
+          ran=$(mktemp)
+          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh; do
+            [ -f "$t" ] || continue
+            echo "== $t"; echo "$t" >> "$ran"
+            bash "$t" || fail=1
+          done
+          # The backstop for the next directory somebody adds: a tracked suite
+          # that no glob above reached fails the build by name rather than
+          # passing in silence.
+          missed=$(comm -23 <(git ls-files '*.test.sh' | sort) <(sort "$ran"))
+          if [ -n "$missed" ]; then
+            echo "these suites exist and nothing ran them — add their directory to the loop above:"
+            printf '%s\n' "$missed" | sed 's/^/  /'
+            fail=1
+          fi
           exit $fail
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
