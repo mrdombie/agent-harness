@@ -66,7 +66,9 @@ usage_hold() {
   ap=$(printf '%s' "$reset" | tr -dc a-z)
   [ "$ap" = "pm" ] && [ "$h" -lt 12 ] && h=$((h+12))
   [ "$ap" = "am" ] && [ "$h" -eq 12 ] && h=0
-  now_m=$(( 10#$(date -r "$(swarm_now)" +%H 2>/dev/null || date +%H) * 60 + 10#$(date -r "$(swarm_now)" +%M 2>/dev/null || date +%M) ))
+  # awk, not $(( )): "08" is eight to awk and an invalid octal literal to the
+  # shell, and 08:00 and 09:00 are the two hours a usage wall most often names.
+  now_m=$(swarm_clock "$(swarm_now)" | awk '{print $1 * 60 + $2}')
   reset_m=$(( h * 60 + 10#$m ))
   # The second test is the midnight wrap: a reset time that already passed by a
   # long way is yesterday's, not a hold that should last 23 hours.

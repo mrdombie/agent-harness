@@ -50,12 +50,13 @@ want_not_in "at the ceiling it still runs" 'above 32' "$out"
 echo "--- the plan's usage limit ---"
 reset_state; fix_live widgets 0
 printf 'You have hit your session limit · resets 11:30pm\n' > "$STATE/logs/claim-301-x.log"
-out=$(SWARM_NOW=$(date -j -f '%H:%M' '09:00' +%s 2>/dev/null || date -d 'today 09:00' +%s) sched --programme widgets)
+NINE=$(date '+%H %M %S' | awk -v n="$(date +%s)" '{print n - ($1*3600 + $2*60 + $3) + 9*3600}')
+out=$(SWARM_NOW=$NINE sched --programme widgets)
 want "nothing spawned while the limit holds" "0" "$(grep -c . "$SPAWNS")"
 want_in "the hold names the reset time"      'usage limit — holding until 11:30pm' "$out"
 # Past the reset time the hold lifts. "resets 8am" read at 09:00 is yesterday's.
 printf 'You have hit your weekly limit · resets 8am\n' > "$STATE/logs/claim-301-x.log"
-out=$(SWARM_NOW=$(date -j -f '%H:%M' '09:00' +%s 2>/dev/null || date -d 'today 09:00' +%s) sched --programme widgets)
+out=$(SWARM_NOW=$NINE sched --programme widgets)
 want_not_in "a reset time already past does not hold" 'usage limit' "$out"
 rm -f "$STATE/logs/claim-301-x.log"
 
@@ -97,7 +98,7 @@ echo "--- STALE data is not an answer either ---"
 # no longer exists. That has to read as busy, exactly like silence.
 fix_ready widgets 301 302 303 304          # the wave case closed two of them
 reset_state
-fix_live widgets 0 "$(date -u -r $(( $(date +%s) - 3600 )) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+fix_live widgets 0 "$(swarm_iso $(( $(date +%s) - 3600 )))"
 out=$(sched --programme widgets)
 want "nothing spawned on a stale snapshot" "0" "$(grep -c . "$SPAWNS")"
 want_in "and the hold says it was stale"   '99 agent\(s\) running' "$out"

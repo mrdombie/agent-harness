@@ -17,6 +17,7 @@
 #   $FIX/gh/prs-<key>.json   what a `gh pr list` matching <key> returns
 #   $FIX/live.json           what the live view answers; ABSENT = no answer
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/time.sh" || exit 1
 
 swarm_fixture() {
   FIX=$(mktemp -d)
@@ -134,7 +135,7 @@ fix_no_pr() { printf '[]\n' > "$FIX/gh/prs-${BRANCH_PREFIX:-tkt-}$1_.json"; }
 
 # A live-view answer: fix_live <programme> <count>  (no call = the view is down)
 fix_live() { # <programme> <count> [taken-at ISO]
-  local p=$1 n=$2 at=${3:-$(date -u +%Y-%m-%dT%H:%M:%SZ)} out
+  local p=$1 n=$2 at=${3:-$(swarm_iso "${SWARM_NOW:-$(date +%s)}")} out
   out=$(jq -n --arg p "$p" --argjson n "$n" --arg at "$at" \
         '{at: $at, live: [range($n) | {ticket:"x", project:$p, quietSec:10, startedAgoMin:5, steps:[]}], done: []}')
   printf '%s\n' "$out" > "$FIX/live.json"
@@ -226,10 +227,15 @@ fix_done() {
 
 # fix_at <epoch> — move the clock AND re-stamp the live view, so a test that
 # jumps forward does not accidentally assert on the staleness rule instead.
+#
+# It stamps through the SAME helper the code under test reads the clock with
+# (swarm/time.sh). Written twice, the two would disagree on Linux — where
+# `date -r <epoch>` reads a file — and every jumped-forward case would quietly
+# become a staleness case, green on one runner and red on the other.
 fix_at() {
   export SWARM_NOW="$1"
   if [ -f "$FIX/live.json" ]; then
-    local at; at=$(date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
-    jq --arg at "$at" '.at = $at' "$FIX/live.json" > "$FIX/live.json.tmp" && mv "$FIX/live.json.tmp" "$FIX/live.json"
+    jq --arg at "$(swarm_iso "$1")" '.at = $at' "$FIX/live.json" \
+      > "$FIX/live.json.tmp" && mv "$FIX/live.json.tmp" "$FIX/live.json"
   fi
 }

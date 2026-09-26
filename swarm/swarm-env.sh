@@ -31,6 +31,7 @@
 
 _swarm_self="${BASH_SOURCE[0]}"
 . "$(cd "$(dirname "$_swarm_self")/../scripts" && pwd)/toolkit-env.sh" || return 1 2>/dev/null || exit 1
+. "$(cd "$(dirname "$_swarm_self")" && pwd)/time.sh" || return 1 2>/dev/null || exit 1
 unset _swarm_self
 
 # gh keeps its token in the macOS keychain, which a launchd job cannot read: the
@@ -75,8 +76,8 @@ swarm_curl() { "$SWARM_CURL" "$@"; }
 # Epoch seconds. Overridable so a test can sit at a chosen minute instead of
 # sleeping through one.
 swarm_now() { if [ -n "${SWARM_NOW:-}" ]; then printf '%s' "$SWARM_NOW"; else date +%s; fi; }
-swarm_stamp() { date -u -r "$(swarm_now)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ; }
-swarm_day()   { date -u -r "$(swarm_now)" +%F 2>/dev/null || date -u +%F; }
+swarm_stamp() { swarm_iso "$(swarm_now)"; }
+swarm_day()   { swarm_iso "$(swarm_now)" | cut -dT -f1; }
 
 # The 1-minute load average, as a whole number. sysctl on macOS, /proc on Linux
 # — the CI runner is Linux and the operator's machine is not, so a script that
@@ -127,11 +128,6 @@ swarm_snapshot() {
 swarm_snapshot_why() {
   if [ -n "${_SWARM_SNAP_STALE:-}" ]; then printf 'its answer was %ss old' "$_SWARM_SNAP_STALE"
   else printf 'it did not answer'; fi
-}
-
-# An ISO-8601 Z timestamp as epoch seconds, on both BSD and GNU date.
-swarm_epoch() { # <2026-09-26T17:00:00Z>
-  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null || echo 0
 }
 
 # How many agents are running for one programme, per the live view.
