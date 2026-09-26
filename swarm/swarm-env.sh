@@ -98,11 +98,40 @@ swarm_log() { # <logfile> <message…>
 # ---- the live view -----------------------------------------------------------
 # One snapshot, cached for this process, so a pass that asks three questions
 # makes one request.
+#
+# STALE DATA IS NOT AN ANSWER. The snapshot carries the moment it was taken, and
+# a view that is still serving a page from twenty minutes ago is describing a
+# machine that no longer exists — a set of agents that have since exited, or a
+# set that has since started. An answer older than SWARM_STALE_SEC is discarded
+# here, which sends every caller down the same path as no answer at all: busy.
+SWARM_STALE_SEC="${SWARM_STALE_SEC:-$(swarm_opt swarm.staleSec 120)}"
 swarm_snapshot() {
   if [ -z "${_SWARM_SNAP+x}" ]; then
-    _SWARM_SNAP=$(swarm_curl -s -m 5 "$SWARM_LIVE_URL" 2>/dev/null || true)
+    local raw at age
+    raw=$(swarm_curl -s -m 5 "$SWARM_LIVE_URL" 2>/dev/null || true)
+    if [ -n "$raw" ]; then
+      at=$(printf '%s' "$raw" | jq -r '.at // empty' 2>/dev/null)
+      if [ -n "$at" ]; then
+        age=$(( $(swarm_now) - $(swarm_epoch "$at") ))
+        if [ "$age" -gt "$SWARM_STALE_SEC" ] || [ "$age" -lt -"$SWARM_STALE_SEC" ]; then
+          _SWARM_SNAP_STALE="$age"; raw=""
+        fi
+      fi
+    fi
+    _SWARM_SNAP="$raw"
   fi
   printf '%s' "$_SWARM_SNAP"
+}
+# Why the snapshot was unusable, for a log line that distinguishes "nothing
+# answered" from "something answered with yesterday".
+swarm_snapshot_why() {
+  if [ -n "${_SWARM_SNAP_STALE:-}" ]; then printf 'its answer was %ss old' "$_SWARM_SNAP_STALE"
+  else printf 'it did not answer'; fi
+}
+
+# An ISO-8601 Z timestamp as epoch seconds, on both BSD and GNU date.
+swarm_epoch() { # <2026-09-26T17:00:00Z>
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null || echo 0
 }
 
 # How many agents are running for one programme, per the live view.
@@ -217,4 +246,4 @@ swarm_ping_page() {
 
 export SWARM_DIR SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
 export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_GH SWARM_CURL SWARM_SPAWN
-export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE
+export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC

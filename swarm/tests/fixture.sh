@@ -130,10 +130,10 @@ fix_issue() {
 fix_no_pr() { printf '[]\n' > "$FIX/gh/prs-${BRANCH_PREFIX:-tkt-}$1_.json"; }
 
 # A live-view answer: fix_live <programme> <count>  (no call = the view is down)
-fix_live() {
-  local p=$1 n=$2 i out="[]"
-  out=$(jq -n --arg p "$p" --argjson n "$n" \
-        '{live: [range($n) | {ticket:"x", project:$p, quietSec:10, startedAgoMin:5, steps:[]}], done: []}')
+fix_live() { # <programme> <count> [taken-at ISO]
+  local p=$1 n=$2 at=${3:-$(date -u +%Y-%m-%dT%H:%M:%SZ)} out
+  out=$(jq -n --arg p "$p" --argjson n "$n" --arg at "$at" \
+        '{at: $at, live: [range($n) | {ticket:"x", project:$p, quietSec:10, startedAgoMin:5, steps:[]}], done: []}')
   printf '%s\n' "$out" > "$FIX/live.json"
 }
 fix_live_down() { rm -f "$FIX/live.json"; }

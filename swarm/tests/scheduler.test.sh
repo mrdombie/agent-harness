@@ -92,4 +92,19 @@ reset_state; fix_live widgets 0
 out=$(sched)
 want_in "the ready tickets' own labels are the list" 'widgets:' "$out"
 
+echo "--- STALE data is not an answer either ---"
+# A live view still serving a page from an hour ago is describing a machine that
+# no longer exists. That has to read as busy, exactly like silence.
+fix_ready widgets 301 302 303 304          # the wave case closed two of them
+reset_state
+fix_live widgets 0 "$(date -u -r $(( $(date +%s) - 3600 )) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+out=$(sched --programme widgets)
+want "nothing spawned on a stale snapshot" "0" "$(grep -c . "$SPAWNS")"
+want_in "and the hold says it was stale"   '99 agent\(s\) running' "$out"
+# A fresh snapshot of the same shape does spawn, so the case above is staleness
+# and not simply "the file was unreadable".
+reset_state; fix_live widgets 0
+sched --programme widgets >/dev/null
+want "a fresh snapshot spawns"             "3" "$(grep -c . "$SPAWNS")"
+
 exit $FAILED
