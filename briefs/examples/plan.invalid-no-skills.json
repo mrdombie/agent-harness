@@ -1,0 +1,13 @@
+{
+  "step": "plan",
+  "status": "planned",
+  "designSource": "ticket-body",
+  "premise": { "verdict": "still-true", "evidence": "src/queue/reader.ts:88" },
+  "tasks": [
+    {
+      "title": "A failed read is its own outcome",
+      "files": [{ "path": "src/queue/reader.ts", "action": "modify" }],
+      "tests": [{ "file": "src/queue/reader.test.ts", "behaviour": "a failed fetch is not an empty list" }]
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "$comment": "The contract between briefs/ and the driver. For each step: which brief to send, which contract the answer is validated against, which Superpowers skills the brief invokes, and every {{PLACEHOLDER}} the driver must substitute before sending. Nothing here names a project — the values come from the consuming repo's .claude/harness.json and from the run.",
+  "skills": {
+    "superpowers:writing-plans": "turns an approved spec into a decomposition with no placeholders",
+    "superpowers:systematic-debugging": "the first step on a bug: reproduce, isolate, prove red",
+    "superpowers:subagent-driven-development": "builds a plan one task at a time, a fresh helper per task and a review between them",
+    "superpowers:test-driven-development": "red before green, inside every task",
+    "superpowers:verification-before-completion": "observation before any claim of done",
+    "superpowers:requesting-code-review": "an independent reviewer on the finished change",
+    "superpowers:receiving-code-review": "acting on findings with rigour rather than agreement"
+  },
+  "notInvoked": {
+    "superpowers:brainstorming": "it waits on a person, so an unattended step cannot invoke it. The approved spec stands in for it."
+  },
+  "steps": {
+    "plan": {
+      "brief": "plan.md",
+      "schema": "schemas/plan.json",
+      "skills": ["superpowers:systematic-debugging", "superpowers:writing-plans"],
+      "facts": {
+        "TICKET": "the ticket body, verbatim, including its acceptance criteria and its type labels",
+        "DESIGN": "the approved design or spec this ticket builds to, and where that approval is recorded",
+        "PROGRAMME_BRIEF": "the programme's locked decisions, open questions and what shipped recently — the brief, never the whole state file",
+        "PREMISE_REPORT": "what the driver's premise gather printed: each path the ticket cites, marked present, moved or absent",
+        "IN_FLIGHT": "open pull requests, remote branches and live claims that touch the files this ticket names",
+        "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: trunk branch, gate commands, coding-standards path, the component kit, the design law"
+      }
+    },
+    "build": {
+      "brief": "build.md",
+      "schema": "schemas/build.json",
+      "skills": ["superpowers:subagent-driven-development", "superpowers:test-driven-development"],
+      "facts": {
+        "PLAN_TASK": "one task from the plan step's answer: its title, files, tests and risks",
+        "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: gate commands, changelog convention, the component kit",
+        "STANDARDS": "the coding-standards document this project holds a change to",
+        "SURFACE_RULES": "the project's rules for a screen — empty when this task touches none"
+      }
+    },
+    "compare": {
+      "brief": "compare.md",
+      "schema": "schemas/compare.json",
+      "skills": ["superpowers:verification-before-completion"],
+      "facts": {
+        "APPROVED": "what was approved, and where that approval is recorded",
+        "RENDERS": "the renders taken from the real route in this run: name, file, theme",
+        "ROUTE": "the route the renders were taken from, and how to reach it authed"
+      }
+    },
+    "review": {
+      "brief": "review.md",
+      "schema": "schemas/review.json",
+      "skills": ["superpowers:requesting-code-review"],
+      "facts": {
+        "DIFF": "the change under review, against the trunk it will merge into",
+        "RENDERS": "the renders of every screen the change touches, both themes — empty when it touches none",
+        "ROUND": "which review round this is: 1 or 2",
+        "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: the design law, the component kit, the gate commands"
+      }
+    },
+    "fix": {
+      "brief": "fix.md",
+      "schema": "schemas/fix.json",
+      "skills": ["superpowers:receiving-code-review", "superpowers:test-driven-development"],
+      "facts": {
+        "BLOCKERS": "the blockers from the review step's answer, each with its id, file, line, summary and proposed fix",
+        "DIFF": "the change as it stands, against the trunk it will merge into",
+        "ROUND": "which fix round this is: 1 or 2"
+      }
+    }
+  }
+}

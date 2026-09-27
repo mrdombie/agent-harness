@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "plan step answer",
+  "description": "What the plan step returns to the driver: a decomposition, or a question that parks the ticket.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["step", "skills", "status", "premise", "designSource"],
+  "properties": {
+    "step": { "const": "plan" },
+    "skills": {
+      "description": "Every Superpowers skill invoked in this step. The driver cross-checks this against the Skill calls in the run log, so a claim here that the log does not show is a failed step.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^superpowers:[a-z][a-z-]*$" }
+    },
+    "status": { "enum": ["planned", "park"] },
+    "designSource": { "enum": ["ticket-body", "brainstormed", "debugged"] },
+    "premise": {
+      "description": "The premise verdict. It has no automatic form: a mechanical path-exists check measured 0 true positives in 25, so the verdict is a reading and the evidence names where it was read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "evidence"],
+      "properties": {
+        "verdict": { "enum": ["still-true", "already-fixed", "changed-shape"] },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "files", "tests"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "action"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "action": { "enum": ["create", "modify", "delete"] }
+              }
+            }
+          },
+          "tests": {
+            "description": "The tests this task writes first. A task with no test cannot be built test-first, so the contract has no shape for one.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["file", "behaviour"],
+              "properties": {
+                "file": { "type": "string", "minLength": 1 },
+                "behaviour": { "type": "string", "minLength": 1 },
+                "redWhen": {
+                  "description": "The production change that makes this test fail. A test whose author cannot name one is measuring the shape of the code.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "risks": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        }
+      }
+    },
+    "question": {
+      "description": "Why the ticket cannot be planned. Answerable in a line: a yes/no or a pick.",
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": { "type": "string" }
+  },
+  "if": { "properties": { "status": { "const": "planned" } } },
+  "then": { "required": ["tasks"], "properties": { "tasks": { "type": "array", "minItems": 1 } } },
+  "else": { "required": ["question"] }
+}

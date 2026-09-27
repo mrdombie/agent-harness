@@ -15,7 +15,7 @@ jobs:
         # parsed fine and `claude plugin install` refused it (2026-09-20).
         run: npx --yes @anthropic-ai/claude-code@latest plugin validate .
       - name: Scripts and hooks parse
-        run: for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh swarm/*.sh swarm/tests/*.sh; do bash -n "$f"; done
+        run: for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh swarm/*.sh swarm/tests/*.sh briefs/*.sh briefs/tests/*.sh; do bash -n "$f"; done
       - name: Self-tests
         run: |
           fail=0
@@ -24,7 +24,7 @@ jobs:
           # at all — hooks/lib/ was invisible that way once, and swarm/tests/
           # shipped six suites nothing here could see.
           ran=$(mktemp)
-          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh; do
+          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh briefs/tests/*.test.sh; do
             [ -f "$t" ] || continue
             echo "== $t"; echo "$t" >> "$ran"
             bash "$t" || fail=1

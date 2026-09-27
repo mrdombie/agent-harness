@@ -1,0 +1,23 @@
+{
+  "step": "fix",
+  "skills": [
+    "superpowers:receiving-code-review",
+    "superpowers:test-driven-development"
+  ],
+  "status": "fixed",
+  "round": 1,
+  "cleared": [
+    {
+      "blockerId": "b1",
+      "change": [
+        {
+          "path": "src/queue/panel.tsx",
+          "action": "modify"
+        }
+      ],
+      "command": "npm test",
+      "failedBefore": true,
+      "passedAfter": true
+    }
+  ]
+}

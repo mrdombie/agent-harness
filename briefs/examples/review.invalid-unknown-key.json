@@ -1,0 +1,12 @@
+{
+  "step": "review",
+  "skills": [
+    "superpowers:requesting-code-review"
+  ],
+  "status": "reviewed",
+  "round": 2,
+  "verdict": "SHIP",
+  "blockers": [],
+  "notes": "one non-blocker left: the retry row's spacing is a step off the scale. Follow-up, not a blocker.",
+  "notAContractKey": "a step that invented a field"
+}
