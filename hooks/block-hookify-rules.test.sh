@@ -20,6 +20,29 @@ t deny 'git add .'
 t deny 'npm install lodash'
 t deny 'gh pr create --base develop --title "x"'
 t deny "git worktree add /tmp/${BRANCH_PREFIX}9999-x -b ${BRANCH_PREFIX}9999/x origin/develop"
+echo "--- a heredoc BODY is data, not shell ---"
+# Writing this ticket's own PR body was DENIED, because a markdown table row
+# opens with a literal pipe and the separator class reads one as a command
+# position: `| git -C /x reset --hard | allow |`. Every rule's text appears in
+# this repo's docs, PR bodies and skill files, so a guard that reads data as
+# shell blocks the documentation of itself.
+t allow 'cat > /tmp/pr.md <<'"'"'MD'"'"'
+| `git -C /x reset --hard` | allow | deny |
+| `git commit --no-verify` | allow | deny |
+MD'
+t allow 'cat <<EOF > notes.md
+Never run git add -A, and never git -C <dir> reset --hard.
+EOF'
+t allow 'gh pr comment 1 --body "$(cat <<'"'"'B'"'"'
+git -C /x clean -fd was allowed before this fix.
+B
+)"'
+# …and the body ending must not swallow a REAL command that follows it.
+t deny 'cat <<EOF > notes.md
+harmless text
+EOF
+git -C /x reset --hard'
+
 echo "--- git commit --no-verify skips the SECRET SCAN, so it is blocked too ---"
 # It succeeded 130 times across 40 runs because only the push form was blocked,
 # and both hooks said in prose that the commit form "only skips formatting".

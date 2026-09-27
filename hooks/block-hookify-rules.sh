@@ -43,7 +43,37 @@ set -euo pipefail
 payload=$(cat)
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -z "$cmd" ] && exit 0
-has(){ printf '%s' "$cmd" | grep -qE "$1"; }
+# Match against the command, with any heredoc BODY removed. A heredoc body is
+# DATA the command reads on stdin, not shell the command runs — and the rule text
+# in this repo's own docs, PR bodies and skill files is full of the shapes these
+# rules deny. There was already an allow-row for `cat <<EOF … never git add -A
+# EOF`; it passed only because the body's lines happened not to start a command
+# position. A markdown table row does: `| git -C /x reset --hard | allow |` opens
+# with a literal pipe, which the separator class reads as one, so writing this
+# very PR body was denied (2026-09-27).
+#
+# Known limit, deliberately left: `bash <<EOF` really does run its body, so a
+# destructive command hidden there is not caught. The wrapper forms that are
+# caught are the ones agents actually use (`bash -c "…"`).
+strip_heredocs() {
+  awk '
+    # Closing the current body?
+    inbody { if ($0 == term) { inbody = 0 }; next }
+    {
+      line = $0
+      # <<WORD, <<-WORD, <<"WORD", <<'"'"'WORD'"'"' — take the last one on the line.
+      if (match(line, /<<-?[ \t]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
+        t = substr(line, RSTART, RLENGTH)
+        sub(/^<<-?[ \t]*/, "", t)
+        gsub(/["'"'"']/, "", t)
+        term = t; inbody = 1
+      }
+      print line
+    }
+  '
+}
+cmd_code=$(printf '%s\n' "$cmd" | strip_heredocs)
+has(){ printf '%s' "$cmd_code" | grep -qE "$1"; }
 hasF(){ printf '%s' "$cmd" | grep -qF -- "$1"; }
 deny(){ jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 S='[[:space:]]'
