@@ -27,7 +27,7 @@
 #   0  the step finished
 #   20 the step asked a question — the ticket parks with it
 #   21 the brief named a Skill and the run log does not contain that Skill call
-#   22 the answer did not match the schema the brief must return
+#   22 the answer did not meet its contract, or the contract could not be read
 #   23 there is no brief for this step
 #   24 a refusal gate said no
 #   25 a command outran its time limit — a hang is not a failure to retry

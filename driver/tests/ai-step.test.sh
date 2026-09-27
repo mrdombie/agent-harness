@@ -156,6 +156,47 @@ driver_state_set 101 park_note ""
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "the same answer passes with the real one" "0" "$rc"
 
+echo "--- a contract that cannot be REACHED is not a contract that is absent ---"
+# `-f` alone answered "no schema, which is normal" to three states that are not
+# that, and each returned 0 with nothing said — this call's own thesis left standing
+# somewhere else. The first is the one that bites: DRIVER_SCHEMAS one directory off
+# disables the check for all seven steps at once.
+fix_schema compare "$SCHEMA_OBJ"
+fix_ai compare '{"differences":"none","mood":"smug"}' superpowers:requesting-code-review
+out=$(DRIVER_SCHEMAS="$FIX/briefs/typo-schemas" driver_ai_step 101 compare 2>&1); rc=$?
+want "a schemas directory that is not there refuses" "22" "$rc"
+want_in "and says nothing was checked" 'NOTHING about this answer was checked' "$out"
+driver_state_set 101 park_note ""
+
+mkdir -p "$DRIVER_SCHEMAS/isadir.json"
+fix_brief isadir superpowers:requesting-code-review
+fix_ai isadir '{"anything":"at all"}' superpowers:requesting-code-review
+out=$(driver_ai_step 101 isadir 2>&1); rc=$?
+want "a schema path that is a directory refuses" "22" "$rc"
+want_in "and says nothing was checked"  'NOTHING about this answer was checked' "$out"
+rmdir "$DRIVER_SCHEMAS/isadir.json"; driver_state_set 101 park_note ""
+
+ln -s "$DRIVER_SCHEMAS/gone.json" "$DRIVER_SCHEMAS/dangling.json"
+fix_brief dangling superpowers:requesting-code-review
+fix_ai dangling '{"anything":"at all"}' superpowers:requesting-code-review
+rc=0; driver_ai_step 101 dangling >/dev/null 2>&1 || rc=$?
+want "a dangling symlink refuses too" "22" "$rc"
+rm -f "$DRIVER_SCHEMAS/dangling.json"; driver_state_set 101 park_note ""
+
+echo "--- DRIVER_VALIDATE unset is not a pass either ---"
+# ai-step.sh skips sourcing driver-env.sh when DRIVER_DIR is already exported, so a
+# shell carrying an older driver-env's exports has DRIVER_DIR and not DRIVER_VALIDATE.
+# Unguarded, `bash "$DRIVER_VALIDATE"` died under `set -u` with status 1 — the "your
+# answer is wrong" branch, about an answer that was perfectly valid.
+fix_schema compare "$SCHEMA_OBJ"
+fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
+rc=0; ( unset DRIVER_VALIDATE; driver_ai_step 101 compare >/dev/null 2>&1 ) || rc=$?
+want "it falls back to the kit's validator rather than misreporting" "0" "$rc"
+fix_ai compare '{"differences":"none"}' superpowers:requesting-code-review
+rc=0; ( unset DRIVER_VALIDATE; driver_ai_step 101 compare >/dev/null 2>&1 ) || rc=$?
+want "and still refuses a wrong answer"                              "22" "$rc"
+driver_state_set 101 park_note ""
+
 echo "--- no schema on disk is normal: the briefs ticket may not have landed ---"
 rm -f "$DRIVER_SCHEMAS/compare.json"
 fix_ai compare '{"anything":1}' superpowers:requesting-code-review

@@ -55,7 +55,7 @@ briefs/validate.sh <step> <answer.json>
 |---|---|
 | 0 | the answer meets the contract |
 | 1 | it does not — the AI's answer is wrong |
-| 2 | the check could not be made: no step, an unknown step, a missing file, a schema that does not parse |
+| 2 | the check could not be made: no step, an unknown step, a missing file, a schema that does not parse, a validator that could not be reached |
 
 Two codes would make those last two indistinguishable, and a validator that
 answers 0 when it validated nothing reads exactly like one that validated
@@ -64,6 +64,12 @@ everything.
 `BRIEFS_AJV` overrides the validator, so a machine with the tool installed pays
 no download. `BRIEFS_SCHEMAS` overrides where the contracts are read from, which is
 how the driver calls this with its own `DRIVER_SCHEMAS` instead of re-deriving it.
+
+`$AJV` is a **launcher** by default, and npm exits 1 for an unfetchable package, an
+unreachable registry and a cold `only-if-cached` alike — indistinguishable from
+ajv's own "the data is invalid". Measured: all three come back as 1. ajv names the
+data file on its verdict line and npm never does, so that line is what separates a
+verdict from a failure to reach one, and everything else becomes an exit 2.
 
 ### Call this, rather than re-deriving it in the caller
 

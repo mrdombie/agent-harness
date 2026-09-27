@@ -21,7 +21,9 @@
 #   3. THE ANSWER MEETS ITS CONTRACT, when one exists. `briefs/schemas/<step>.json`
 #      belongs to the briefs ticket. Absent is normal and not an error — the
 #      driver must work before those land — but present and unmatched is a refusal,
-#      and so is a contract that could not be read. The check is one call to
+#      and so is a contract that could not be READ: an unparseable schema, a schemas
+#      directory that is not there, a path that is a directory or a dead symlink, a
+#      validator that could not be reached. The check is one call to
 #      `briefs/validate.sh`, which is the only thing here that reads a WHOLE schema.
 #
 # The checks are in that order on purpose. An answer that never ran its skill is
@@ -127,9 +129,32 @@ driver_ai_step() { # <ticket> <step> [context-file…]
   # exactly like one that validated everything, so a contract that could not be read
   # parks the ticket as well — and the park carries what could not be done rather than
   # a question about the brief's Return section.
-  local vout vrc
+  # AND A CONTRACT THAT CANNOT BE REACHED IS NOT A CONTRACT THAT IS ABSENT. `-f`
+  # alone answers "no schema, which is normal" to three states that are not that:
+  # a DRIVER_SCHEMAS pointing one directory off — which disables all seven steps at
+  # once — a schema path that is a directory, and a dangling symlink. Each returned
+  # 0 with nothing said, which is this call's own thesis left standing somewhere
+  # else. The directory has to exist; a path inside it that exists and is not a
+  # readable file is a refusal; only a genuinely missing file is the normal absence.
+  local vout vrc validator="${DRIVER_VALIDATE:-}"
+  # DRIVER_VALIDATE unbound is reachable: line 29 skips sourcing driver-env.sh when
+  # DRIVER_DIR is already exported, so a shell carrying an older driver-env's exports
+  # has DRIVER_DIR and not this. Unguarded, `bash "$DRIVER_VALIDATE"` died under
+  # `set -u` with status 1 — the "your answer is wrong" branch, about a valid answer.
+  [ -n "$validator" ] || validator="$DRIVER_HOME/../briefs/validate.sh"
+  if [ ! -d "$DRIVER_SCHEMAS" ]; then
+    driver_say "✋ $step: there are no contracts at $DRIVER_SCHEMAS, so NOTHING about this answer was checked."
+    driver_state_set "$t" park_note "the $step answer was never checked: DRIVER_SCHEMAS names $DRIVER_SCHEMAS and no such directory exists"
+    return "$DRIVER_E_SCHEMA"
+  fi
+  if { [ -e "$DRIVER_SCHEMAS/$step.json" ] || [ -L "$DRIVER_SCHEMAS/$step.json" ]; } \
+     && [ ! -f "$DRIVER_SCHEMAS/$step.json" ]; then
+    driver_say "✋ $step: briefs/schemas/$step.json is there and is not a readable file, so NOTHING about this answer was checked."
+    driver_state_set "$t" park_note "the $step answer was never checked: $DRIVER_SCHEMAS/$step.json is not a readable file"
+    return "$DRIVER_E_SCHEMA"
+  fi
   if [ -f "$DRIVER_SCHEMAS/$step.json" ]; then
-    vout=$(BRIEFS_SCHEMAS="$DRIVER_SCHEMAS" bash "$DRIVER_VALIDATE" "$step" "$ans" 2>&1); vrc=$?
+    vout=$(BRIEFS_SCHEMAS="$DRIVER_SCHEMAS" bash "$validator" "$step" "$ans" 2>&1); vrc=$?
     why=$(printf '%s' "$vout" | tr '\n' ' ' | cut -c1-400)
     if [ "$vrc" -eq 1 ]; then
       driver_say "✋ $step: the answer does not match briefs/schemas/$step.json — $why"

@@ -11,10 +11,16 @@
 #   GH_LOG    one line per gh call
 #   CLAUDE_LOG one line per agent invocation
 #
-# The stubs answer from files the test writes, so a suite never reaches the
-# network and never starts an agent:
+# The stubs answer from files the test writes, so a suite never starts an agent:
 #   $FIX/ai/<step>.jsonl   the stream-json transcript `claude -p` "produced"
 #   $FIX/gh/issue-<n>.json what `gh issue view <n>` returns
+#
+# ONE THING DOES leave the machine: the contract check shells out to `npx --yes
+# ajv-cli@5` once per schema case, because briefs/validate.sh is called rather than
+# re-derived and that is the whole point of the call. With a warm npx cache it is
+# about a second each; with no network the suite goes red, which is honest and is
+# not the same as a suite that cannot run offline being broken. `BRIEFS_AJV` points
+# it at an installed copy.
 #
 # The repo is REAL git, not a stub. The red-before-green proof is the driver's
 # headline guarantee and it is made of commits and worktrees; a stubbed git
@@ -136,6 +142,10 @@ SH
   # not a test of the code; it is a test of the machine it ran on.
   unset GH_TOKEN CLAIM_REPO CLAIM_AGENT_PID CLAIM_RUN_ID CLAIM_RUN_LOG CLAIM_EXTRA
   unset HARNESS_SISTER_REPO HARNESS_CFG_REF HARNESS_INTEGRATION_BRANCH HARNESS_LEGACY_ENV_PREFIX
+  # BRIEFS_AJV replaces the validator outright and BRIEFS_SCHEMAS moves the contracts,
+  # so an operator exporting either answers the contract cases from outside the fixture.
+  # `BRIEFS_AJV=/bin/true` makes every refusal case return 0.
+  unset BRIEFS_AJV BRIEFS_SCHEMAS DRIVER_VALIDATE
   export CLAIM_REPO="$REPO"
 }
 

@@ -104,7 +104,11 @@ guarantees the driver exists to make.
 
 `validate.sh` exit 2 — the contract could not be read at all — parks the ticket just
 as exit 1 does, because a validator answering 0 when it validated nothing reads
-exactly like one that validated everything.
+exactly like one that validated everything. So does a contract that could not be
+REACHED: a `DRIVER_SCHEMAS` naming a directory that is not there, a schema path that
+is a directory or a dead symlink, or a validator that could not be fetched. Only a
+genuinely missing `<step>.json` inside an existing schemas directory is the normal
+absence that passes.
 
 Superpowers is **called, never copied**. A brief that restates a skill's content
 is a copy that drifts and loses every upgrade.
