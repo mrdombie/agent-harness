@@ -41,3 +41,8 @@ jobs:
           exit $fail
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
+      - name: Our own skills are addressed with the kit
+        # A bare /claim in the kit's own instructions resolves to whichever copy
+        # the machine carries. Three were reachable on the origin machine and they
+        # disagreed by 474 lines; the one that loaded was never the kit's.
+        run: bash scripts/check-skill-namespacing.sh

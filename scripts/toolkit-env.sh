@@ -16,6 +16,9 @@
 #                 (or $HARNESS_SISTER_REPO); empty when absent
 #   PROGRAMMES_DIR docs/programmes in this checkout — the programme state files
 #   CL            scripts/claim-lock.sh
+#   toolkit_spawn_root echoes a checkout of the CURRENT integration branch — where
+#                 a spawned agent starts, so its skills, guard rules, reviewers and
+#                 CLAUDE.md are the branch's and not the invoking tree's
 #   toolkit_tools echoes a directory holding scripts/ exactly as on origin/develop,
 #                 materialised by `git archive` and keyed by that SHA
 #
@@ -260,6 +263,64 @@ toolkit_tools() {
     fi
   fi
   echo "$dir"
+}
+
+# The directory a SPAWNED agent STARTS IN — a checkout of the current integration
+# branch, and never the tree the spawner happened to be invoked from.
+#
+# WHY: the agent's cwd is where Claude Code resolves a project's skills, its
+# hookify guard rules, its reviewer subagents and its CLAUDE.md, so the cwd
+# decides which version of the tooling a run obeys. Spawners used to cd into the
+# shared object-store clone, whose loose working tree is updated by nothing.
+# Measured on the origin project, 2026-09-27: that tree was 210 commits behind,
+# so every spawned run loaded a /finish of 682 lines against the branch's 1,170,
+# six of twenty guard rules, and two reviewer briefs 45 and 20 lines short.
+# Nothing failed. The agents simply ran month-old tooling.
+#
+# Keyed by the branch SHA, so a checkout is immutable once built: concurrent
+# spawns at one commit share it, a new commit gets its own, and no running
+# agent's cwd is rewritten underneath it — which also keeps a run under the rules
+# it started with. REFUSES rather than handing back a tree it cannot vouch for; a
+# silent fallback to the invoking tree IS the defect.
+toolkit_spawn_root() {
+  local sha base dir lock n old
+  git -C "$MAIN_REPO" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
+  # --verify --quiet, not a bare rev-parse: a bare one ECHOES the ref it could not
+  # resolve to stdout while erroring on stderr, so a missing branch came back as
+  # the literal string "origin/develop" and keyed a checkout directory on it.
+  sha=$(git -C "$MAIN_REPO" rev-parse --verify --quiet "origin/$INTEGRATION_BRANCH^{commit}" 2>/dev/null || true)
+  if [ -z "$sha" ]; then
+    echo "toolkit-env: no origin/$INTEGRATION_BRANCH in '$MAIN_REPO' — refusing to start a run in a tree whose version nothing can name." >&2
+    return 1
+  fi
+  base="${TMPDIR:-/tmp}"; base="${base%/}"
+  dir="$base/harness-spawn-$(printf '%.12s' "$sha")"
+  if [ ! -f "$dir.ready" ]; then
+    lock="$dir.lock"
+    if mkdir "$lock" 2>/dev/null; then
+      rm -rf "$dir"
+      git -C "$MAIN_REPO" worktree prune >/dev/null 2>&1
+      git -C "$MAIN_REPO" worktree add --detach -q "$dir" "$sha" 2>/dev/null && : > "$dir.ready"
+      rmdir "$lock" 2>/dev/null
+    else
+      # A peer is building this one. Wait for it rather than build a second copy.
+      n=0; while [ ! -f "$dir.ready" ] && [ "$n" -lt 300 ]; do sleep 1; n=$((n+1)); done
+    fi
+  fi
+  if [ ! -f "$dir.ready" ]; then
+    echo "toolkit-env: could not check out origin/$INTEGRATION_BRANCH ($sha) from '$MAIN_REPO'." >&2
+    return 1
+  fi
+  # Retire checkouts nothing can still be reading. Anything touched in the last
+  # six hours is left alone: removing a directory a live agent is sitting in is
+  # worse than keeping a tree nobody reads.
+  find "$base" -maxdepth 1 -name 'harness-spawn-*' -type d -mmin +360 2>/dev/null | while read -r old; do
+    [ "$old" = "$dir" ] && continue
+    git -C "$MAIN_REPO" worktree remove --force "$old" >/dev/null 2>&1 || rm -rf "$old"
+    rm -f "$old.ready"
+  done
+  git -C "$MAIN_REPO" worktree prune >/dev/null 2>&1
+  printf '%s\n' "$dir"
 }
 
 export KIT_ROOT STATE_DIR REPO_ROOT MAIN_REPO SUPPORT_REPO PROGRAMMES_DIR CL HARNESS_CFG
