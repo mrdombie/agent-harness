@@ -99,20 +99,35 @@ while [ "$i" -lt "$N" ]; do
   i=$((i+1))
 done
 
-# The rework ceiling. The build step counts its own tries and parks at
-# DRIVER_MAX_BUILD_TRIES, so this only ever fires when a step returns "go back"
-# WITHOUT counting — a bug in a step. It is here so that bug shows up as a park
-# with a reason rather than as a run that never ends.
+# The rework ceiling, which is the SUM of the two budgets underneath it — not
+# either one of them. The build step parks itself after DRIVER_MAX_BUILD_TRIES
+# unproved attempts and the reviewer stops after DRIVER_MAX_REVIEW_ROUNDS, and both
+# of those return the same code, so one counter set to one of the numbers trips on a
+# run that is inside both: four build failures then two review rounds is six. That
+# park then accuses a step of not counting and the ticket never reaches its last
+# review pass. Past the sum, no honest combination remains, so it IS a step
+# returning rework without counting — which is the only thing this exists to catch.
 REWORKS=0
-REWORK_CEILING="$DRIVER_MAX_BUILD_TRIES"
+REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS ))
+
+# The steps that run on EVERY pass, finished or not. `start` is the re-entry check:
+# the hold label, the ticket's state and the claim are all read there, and a park
+# adds that label and releases the claim. Skipped on a resume, a ticket a person has
+# taken ownership of is built anyway, and the run pushes, marks the pull request
+# ready and arms auto-merge holding no claim at all — so a peer can cut a second
+# worktree on the same branch in the middle of it. What makes re-running safe is
+# that start is idempotent: it keeps the worktree and the branch already on the
+# record rather than cutting or naming new ones.
+DRIVER_ALWAYS_STEPS="${DRIVER_ALWAYS_STEPS:-start}"
+always() { case " $DRIVER_ALWAYS_STEPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 skipped=0
-ran=0
+ran=0        # steps that did real work — start re-checking itself is not work
 i=0
 while [ "$i" -lt "$N" ]; do
   step="${STEPS[$i]}"
 
-  if driver_state_is_done "$TICKET" "$step"; then
+  if driver_state_is_done "$TICKET" "$step" && ! always "$step"; then
     skipped=$((skipped+1)); i=$((i+1)); continue
   fi
 
@@ -120,8 +135,9 @@ while [ "$i" -lt "$N" ]; do
   # anything: a step batched with the next one reports on the shell reaching
   # that line, and a printed failure mid-batch has reached the trunk before.
   rc=0
+  was_done=0; driver_state_is_done "$TICKET" "$step" && was_done=1
   "$(step_fn "$step")" "$TICKET" || rc=$?
-  ran=$((ran+1))
+  [ "$was_done" -eq 1 ] && skipped=$((skipped+1)) || ran=$((ran+1))
 
   case "$rc" in
     "$DRIVER_OK")

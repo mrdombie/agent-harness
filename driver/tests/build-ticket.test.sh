@@ -72,9 +72,17 @@ want "the record lists them in order" "start,plan,build,self-check,review,record
   "$(driver_state_get 101 'done|join(",")')"
 
 echo "--- nothing is lost on a stop: a resumed run picks up where it stopped ---"
-# `plan` refuses the first time, so the run parks after `start`. The second run
-# must not re-run `start` — that is the whole difference between resuming and
-# restarting, and re-running start is what re-takes a claim and re-cuts a tree.
+# `plan` refuses the first time, so the run parks after `start`. The second run must
+# not re-do the WORK that is finished.
+#
+# start is the exception, and it is not an oversight. It is the re-entry check: the
+# hold label, the ticket's state and the claim are all read there, and a park adds
+# that label and RELEASES the claim. Skipped on a resume, the ticket a person has
+# taken ownership of is built anyway, and the run pushes, marks the pull request
+# ready and arms auto-merge while holding no claim at all — so a peer can cut a
+# second worktree on the same branch mid-push. So start runs every time, and what
+# makes that safe is that it is idempotent: it keeps the worktree and the branch it
+# already has.
 reset_fakes "plan:24 0"
 bt 102 >/dev/null; rc=$?
 want "the first run refuses"      "20" "$rc"
@@ -83,9 +91,11 @@ want "start is recorded finished" "start" "$(driver_state_get 102 'done|join(","
 : > "$RAN"
 out=$(bt 102); rc=$?
 want "the second run finishes"    "0" "$rc"
-want_not_in "start did not run again" '^start$' "$(cat "$RAN")"
-want "it resumed at plan"         "plan build self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want_in "and says what it skipped" 'resum|already' "$out"
+want_in "start ran again — it is the re-entry check" '^start$' "$(cat "$RAN")"
+want "and nothing else was repeated" "start plan build self-check review record ship" \
+  "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and plan ran in the resumed run" "1" "$(grep -c '^plan$' "$RAN")"
+want_in "and it says what it skipped" 'resum|already' "$out"
 
 echo "--- --restart runs the lot again ---"
 : > "$RAN"
@@ -126,6 +136,21 @@ want "the rework repeats build, self-check and review" \
 want "and plan was not repeated" "1" "$(grep -c '^plan$' "$RAN")"
 want_in "it says it is a rework round" 'rework|again|round' "$out"
 
+echo "--- a run that uses both budgets in full still finishes ---"
+# The build step's ceiling is its own (5 tries) and the reviewer's is its own (2
+# rounds). A single counter set to the build's number trips on the SUM: four build
+# failures then two review rounds is six, inside both budgets and over that ceiling.
+# The run then parks accusing a step of not counting, and never reaches its last
+# review pass.
+reset_fakes "build:30 30 30 30 0" "review:30 30 0"
+out=$(bt 121); rc=$?
+want "it finishes rather than accusing a step" "0" "$rc"
+want_not_in "and never says the loop did not settle" 'did not settle' "$(cat "$FIX/park.log")"
+# Five build calls for its own four failures plus the pass, and two more because
+# each review round rewinds to the build step: 7. The reviewer runs three times.
+want "build ran for its own tries and both rewinds" "7" "$(grep -c '^build$' "$RAN")"
+want "and the reviewer all three of its passes"     "3" "$(grep -c '^review$' "$RAN")"
+
 echo "--- a rework that never settles parks rather than spinning ---"
 # The real build step parks itself at five tries. A step that returns 30 for ever
 # must still terminate: an unbounded loop is a run that never finishes and never
@@ -162,13 +187,16 @@ if [ "$rc" -ne 0 ]; then ok "it refuses"; else bad "an empty step file must not 
 want_in "naming the function it wanted" 'driver_step_record' "$out"
 
 echo "--- an already-finished ticket is a no-op that says so ---"
+# start still re-runs, because it is the re-entry check and re-checking a finished
+# ticket's claim and labels costs nothing. Nothing else does, and the run says so
+# rather than reporting a second ship.
 reset_fakes
 bt 110 >/dev/null
 : > "$RAN"
 out=$(bt 110); rc=$?
-want "it finishes"           "0" "$rc"
-want "nothing ran again"     "" "$(tr -d '\n' < "$RAN")"
-want_in "and it says so"     'nothing left|already' "$out"
+want "it finishes"                  "0" "$rc"
+want "only the re-entry check ran"  "start" "$(tr -d '\n' < "$RAN")"
+want_in "and it says there is nothing left" 'nothing left|already' "$out"
 
 echo "--- a broken-shaped answer parks, naming the schema to look at ---"
 reset_fakes "plan:22"
@@ -296,6 +324,23 @@ want "the agent ran once per AI step and no more" "plan build review" \
   "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
 want "and three calls in total, not a fan-out" "3" "$(grep -c . "$CLAUDE_LOG")"
 want_not_in "the driver started nothing itself" 'spawn|--parallel|& *$' "$(cat "$CLAUDE_LOG")"
+
+echo "--- a resumed run is still stopped by the label a person owns it with ---"
+# This is the consequence of the re-entry rule, measured against the real start step.
+# A park adds the hold label and releases the claim; the only gates that read either
+# live in start. Skipped on a resume, the run pushes, marks the pull request ready
+# and arms auto-merge on a ticket a person has taken — holding no claim, so a peer
+# can cut a second worktree on the same branch while it does.
+rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"
+: > "$GH_LOG"
+fix_issue 203 OPEN "status:ready,needs:human-approval"
+driver_state_init 203 --worktree "$WT" --branch "tkt-$TICKET/work"
+for st in start plan build self-check review record; do driver_state_done 203 "$st"; done
+out=$(HARNESS_STATE_DIR="$STATE" bash "$BT" 203 2>&1); rc=$?
+want "it stops"                         "20" "$rc"
+want_in "because a person owns it"      'needs:human-approval' "$out"
+want_not_in "nothing was pushed ready"  'pr ready' "$(cat "$GH_LOG")"
+want_not_in "and auto was never armed"  'pr merge' "$(cat "$GH_LOG")"
 
 echo "--- the real steps park a real refusal: a skipped Skill is not a pass ---"
 # The same transcript with the Skill call removed. Nothing else changes, so what
