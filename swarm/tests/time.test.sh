@@ -94,6 +94,33 @@ else
 fi
 check "$OTHER" "$FIX/other:$PATH"
 
+echo "--- the shape the live view actually emits ---"
+# `new Date().toISOString()` ALWAYS carries milliseconds, so this is the only
+# shape swarm_epoch is ever handed in production. It answered 0 for it — which,
+# through `now - 0`, made every healthy snapshot read as 56 years stale, so
+# swarm_live_count answered 99 and the scheduler held forever on a machine with
+# room. Both of those reported success while doing nothing.
+MS=$(printf '%s' "$ISO" | sed 's/Z$/.176Z/')
+want "milliseconds parse, on this machine" "$E" "$(bash -c ". '$HERE/../time.sh'; swarm_epoch '$MS'")"
+want "and on the other implementation"     "$E" "$(PATH="$FIX/other:$PATH" bash -c ". '$HERE/../time.sh'; swarm_epoch '$MS'")"
+# A fraction of any length, since nothing promises three digits.
+want "one digit of fraction too"  "$E" "$(bash -c ". '$HERE/../time.sh'; swarm_epoch '$(printf '%s' "$ISO" | sed 's/Z$/.1Z/')'")"
+want "six digits of fraction too" "$E" "$(bash -c ". '$HERE/../time.sh'; swarm_epoch '$(printf '%s' "$ISO" | sed 's/Z$/.176000Z/')'")"
+
+echo "--- an offset stamp is never silently wrong ---"
+# Nothing passes one today, so this is not a live bug — it is the shape the
+# fraction strip nearly broke. `${t%%.*}Z` dropped the offset, and on GNU date
+# '…17:00:00.176+01:00' came back exactly 3600s wrong while reporting success.
+# Asserted as "right or zero", because BSD's -f cannot read an offset at all and
+# has always answered 0 for it: a wrong ANSWER is the defect, a refusal is not.
+OFF="2026-09-26T17:00:00+01:00"
+for t in "$OFF" "2026-09-26T17:00:00.176+01:00"; do
+  got=$(bash -c ". '$HERE/../time.sh'; swarm_epoch '$t'")
+  ref=$(bash -c ". '$FIX/real.sh'; r_epoch '$OFF' 2>/dev/null" || echo 0)
+  if [ "$got" = "0" ] || [ "$got" = "$ref" ]; then ok "offset: $t is right or refused ($got)"
+  else bad "offset: $t answered $got, and the instant is $ref"; fi
+done
+
 echo "--- an unparseable instant answers zero, it does not hang or guess ---"
 want "no date at all" "0" "$(bash -c ". '$HERE/../time.sh'; swarm_epoch 'not a date'" 2>/dev/null)"
 
