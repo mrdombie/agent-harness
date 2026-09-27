@@ -93,5 +93,45 @@ want_in "  and names the step"      "nosuchstep" "$out"
 out=$("$V" "$(printf '%s' "$steps" | head -1)" "$BRIEFS/does-not-exist.json" 2>&1); rc=$?; want "missing data file refuses" 2 "$rc"
 want_in "  and names the file"      "does-not-exist.json" "$out"
 
+# BRIEFS_SCHEMAS, the seam the driver calls through. Without it the driver would
+# have had to re-derive the check against its own DRIVER_SCHEMAS, which is how the
+# half a validator got written in the first place.
+TD=$(mktemp -d); trap 'rm -rf "$TD"' EXIT
+mkdir -p "$TD/schemas"
+first=$(printf '%s' "$steps" | head -1)
+cp "$BRIEFS/schemas/$first.json" "$TD/schemas/$first.json"
+BRIEFS_SCHEMAS="$TD/schemas" "$V" "$first" "$BRIEFS/examples/$first".valid.json >/dev/null 2>&1; rc=$?
+want "BRIEFS_SCHEMAS is honoured" 0 "$rc"
+printf '{"required": [\n' > "$TD/schemas/$first.json"
+BRIEFS_SCHEMAS="$TD/schemas" "$V" "$first" "$BRIEFS/examples/$first".valid.json >/dev/null 2>&1; rc=$?
+want "a schema that does not parse is a 2, not a 1" 2 "$rc"
+
+# A LAUNCHER'S EXIT 1 IS NOT AJV'S EXIT 1. `npx --yes ajv-cli@5` exits 1 for an
+# unfetchable package, an unreachable registry and a cold `only-if-cached` alike —
+# measured, all three identical to "the data is invalid". So a machine that could
+# not GET the validator was blaming the model for an answer nothing read. ajv names
+# the data file on its verdict line; npm never does.
+printf '#!/bin/sh\necho "npm error code ECONNREFUSED" >&2\nexit 1\n' > "$TD/nofetch"
+chmod +x "$TD/nofetch"
+BRIEFS_AJV="$TD/nofetch" "$V" "$first" "$BRIEFS/examples/$first".valid.json >/dev/null 2>&1; rc=$?
+want "a validator that could not be reached is a 2, not a 1" 2 "$rc"
+printf '#!/bin/sh\nfor a; do case "$a" in *.json) last=$a ;; esac; done\necho "$last invalid"\nexit 1\n' > "$TD/reject"
+chmod +x "$TD/reject"
+BRIEFS_AJV="$TD/reject" "$V" "$first" "$BRIEFS/examples/$first".valid.json >/dev/null 2>&1; rc=$?
+want "and a real verdict is still a 1"                        1 "$rc"
+
+# Several files in one call: 2 outranks 1 in either order, because "the answer is
+# wrong" must never be said about a batch part of which was never checked. Nothing
+# pinned this and a bare rc=1 passed the whole suite.
+BRIEFS_SCHEMAS="$BRIEFS/schemas" "$V" "$first" \
+  "$BRIEFS/examples/$first".valid.json "$BRIEFS/examples/$first".invalid-unknown-key.json >/dev/null 2>&1; rc=$?
+want "valid + invalid is 1"        1 "$rc"
+cp "$BRIEFS/schemas/$first.json" "$TD/schemas/$first.json"
+printf '#!/bin/sh\nfor a; do case "$a" in *invalid-unknown-key.json) echo "$a invalid" >&2; exit 1 ;; esac; done\nexit 2\n' > "$TD/mixed"
+chmod +x "$TD/mixed"
+BRIEFS_AJV="$TD/mixed" "$V" "$first" \
+  "$BRIEFS/examples/$first".invalid-unknown-key.json "$BRIEFS/examples/$first".valid.json >/dev/null 2>&1; rc=$?
+want "a 1 then a 2 is still a 2"   2 "$rc"
+
 [ "$FAILED" = 0 ] && echo "briefs/schemas: all good"
 exit "$FAILED"

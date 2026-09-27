@@ -93,6 +93,23 @@ project facts, the Superpowers skill to invoke, and the JSON it must hand back.
 The driver validates that answer against `briefs/schemas/<step>.json` **when that
 file exists**; absent is normal and not an error.
 
+The check is one call to `briefs/validate.sh`, which reads the whole schema through
+ajv. It is not re-derived here, and the strictness is the reason: it lives in
+`additionalProperties: false`, in nested `required`, in `failedBefore` pinned to
+`true`, and in the `if`/`then` that refuses `SHIP` beside an open blocker. A checker
+reading only top-level `required` and top-level property types accepted **19 of the
+24 invalid examples** in `briefs/examples` — among them a build whose test passed
+before the change, and a review that ships with blockers open, which are the two
+guarantees the driver exists to make.
+
+`validate.sh` exit 2 — the contract could not be read at all — parks the ticket just
+as exit 1 does, because a validator answering 0 when it validated nothing reads
+exactly like one that validated everything. So does a contract that could not be
+REACHED: a `DRIVER_SCHEMAS` naming a directory that is not there, a schema path that
+is a directory or a dead symlink, or a validator that could not be fetched. Only a
+genuinely missing `<step>.json` inside an existing schemas directory is the normal
+absence that passes.
+
 Superpowers is **called, never copied**. A brief that restates a skill's content
 is a copy that drifts and loses every upgrade.
 
@@ -105,7 +122,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 0 | the step finished |
 | 20 | the step asked a question — the ticket parks with it |
 | 21 | the brief named a Skill and the transcript does not show it |
-| 22 | the answer did not match its schema |
+| 22 | the answer did not meet its contract, or the contract could not be read |
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
@@ -125,6 +142,7 @@ layer's are: eight scripts that shelled out inline could not be tested at all.
 | `DRIVER_STEPS` | the order, one name per step |
 | `DRIVER_STEPS_DIR` | where the step files are found |
 | `DRIVER_BRIEFS` · `DRIVER_SCHEMAS` | the briefs and their schemas |
+| `DRIVER_VALIDATE` | the contract checker (default `briefs/validate.sh`) |
 | `DRIVER_MAX_BUILD_TRIES` · `DRIVER_MAX_REVIEW_ROUNDS` | the two ceilings |
 | `DRIVER_CMD_TIMEOUT` | how long a gate or test command may run |
 | `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check) |
