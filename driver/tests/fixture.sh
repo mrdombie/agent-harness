@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# fixture.sh — the world every driver test runs against: a throwaway repo with a
+# harness.json, a throwaway state dir, and recorders standing in for the agent
+# runner, gh and the claim lock.
+#
+# Sourced by each suite. `driver_fixture` sets up and exports:
+#   FIX       the temp root (removed by the caller's trap)
+#   REPO      a real git repo holding .claude/harness.json — worktrees cut from it
+#   STATE     the state dir: driver/, runs/, logs/
+#   BIN       the stub directory, first on PATH
+#   GH_LOG    one line per gh call
+#   CLAUDE_LOG one line per agent invocation
+#
+# The stubs answer from files the test writes, so a suite never reaches the
+# network and never starts an agent:
+#   $FIX/ai/<step>.jsonl   the stream-json transcript `claude -p` "produced"
+#   $FIX/gh/issue-<n>.json what `gh issue view <n>` returns
+#
+# The repo is REAL git, not a stub. The red-before-green proof is the driver's
+# headline guarantee and it is made of commits and worktrees; a stubbed git
+# would test the stub.
+set -uo pipefail
+
+driver_fixture() {
+  FIX=$(mktemp -d)
+  REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
+  GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"
+  mkdir -p "$REPO/.claude" "$STATE/driver" "$STATE/runs" "$STATE/logs" "$BIN" "$FIX/gh" "$FIX/ai"
+  : > "$GH_LOG"; : > "$CLAUDE_LOG"
+
+  git -C "$REPO" init -q -b develop
+  git -C "$REPO" config user.email t@example.invalid
+  git -C "$REPO" config user.name  Tester
+  cat > "$REPO/.claude/harness.json" <<'JSON'
+{
+  "repo": "acme/widgets",
+  "integrationBranch": "develop",
+  "branchPrefix": "tkt-",
+  "stateDir": "/nonexistent-must-be-overridden",
+  "sisterRepos": [],
+  "gates": { "lint": "echo lint-ok", "test": "echo test-ok" },
+  "labels": {
+    "drafting": "status:drafting",
+    "ready": "status:ready",
+    "claimed": "status:claimed",
+    "inReview": "status:in-review",
+    "gated": "status:gated",
+    "partial": "status:partial",
+    "blocked": "status:blocked",
+    "externalBlocked": "status:external-blocked",
+    "parked": "status:parked",
+    "needsHuman": "status:needs-human",
+    "pmDecision": "status:pm-decision",
+    "pmTrack": "status:pm-track",
+    "hold": "needs:human-approval",
+    "decision": ["status:pm-decision"]
+  }
+}
+JSON
+  git -C "$REPO" add -A
+  git -C "$REPO" commit -qm "root"
+
+  # ---- stub: gh ---------------------------------------------------------------
+  cat > "$BIN/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+q=""; prev=""
+for a in "$@"; do case "$prev" in -q|--jq) q="$a" ;; esac; prev="$a"; done
+emit() { if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi; }
+case "$1 $2" in
+  "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
+  "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  "pr create")  echo "https://github.com/acme/widgets/pull/42" ;;
+  "pr list")    f="$FIX/gh/prs.json"; [ -f "$f" ] || printf '[]\n' > "$f"; emit "$f" ;;
+  "pr view")    f="$FIX/gh/pr-view.json"; [ -f "$f" ] || printf '{}\n' > "$f"; emit "$f" ;;
+  *) : ;;
+esac
+exit 0
+SH
+
+  # ---- stub: the agent runner --------------------------------------------------
+  # Answers with the transcript the test wrote for that step. The step name is
+  # passed by the driver as --name, which is also how the stub finds its script.
+  cat > "$BIN/claude" <<'SH'
+#!/usr/bin/env bash
+step=""; prev=""
+for a in "$@"; do case "$prev" in --name) step="$a" ;; esac; prev="$a"; done
+printf '%s\n' "$step" >> "$CLAUDE_LOG"
+f="$FIX/ai/$step.jsonl"
+[ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
+cat "$f"
+SH
+
+  chmod +x "$BIN/gh" "$BIN/claude"
+
+  export FIX REPO STATE BIN GH_LOG CLAUDE_LOG
+  export PATH="$BIN:$PATH"
+  export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
+  export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
+  export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
+  export SWARM_GH="$BIN/gh" SWARM_CURL=/usr/bin/false SWARM_LOAD=1
+  export DRIVER_CLAUDE="$BIN/claude"
+  export DRIVER_BRIEFS="$FIX/briefs"
+  mkdir -p "$DRIVER_BRIEFS/schemas"
+  unset GH_TOKEN
+}
+
+# ---- writing an AI answer ----------------------------------------------------
+# fix_ai <step> <json-result> [skill-invoked]
+#
+# Builds the stream-json transcript `claude -p --output-format stream-json` emits:
+# assistant turns carrying content blocks, then one result line. When a skill is
+# named, a Skill tool_use block goes in — which is the ONE thing the driver reads
+# the transcript for.
+fix_ai() {
+  local step="$1" result="$2" skill="${3:-}" f="$FIX/ai/$step.jsonl"
+  : > "$f"
+  if [ -n "$skill" ]; then
+    jq -nc --arg s "$skill" \
+      '{type:"assistant", message:{content:[{type:"tool_use", name:"Skill", input:{skill:$s}}]}}' >> "$f"
+  fi
+  jq -nc --arg r "$result" '{type:"result", subtype:"success", is_error:false, result:$r}' >> "$f"
+}
+
+# fix_brief <step> <skill-or-empty> [body] — a brief file the driver will read.
+# The `skill:` front-matter line is how a brief names the Skill the driver then
+# insists on seeing in the transcript.
+fix_brief() {
+  local step="$1" skill="${2:-}" body="${3:-Do the $1 step.}"
+  { echo '---'
+    echo "step: $step"
+    [ -n "$skill" ] && echo "skill: $skill"
+    echo '---'
+    echo "$body"
+  } > "$DRIVER_BRIEFS/$step.md"
+}
+
+# fix_schema <step> <json-schema> — the schema #10886 owns; absent is normal.
+fix_schema() { printf '%s\n' "$2" > "$DRIVER_BRIEFS/schemas/$1.json"; }
+
+# fix_issue <n> <state> <labels-csv>
+fix_issue() {
+  jq -n --arg s "$2" --arg l "${3:-}" --arg t "Ticket $1" \
+    '{number:($ARGS.positional[0]|tonumber), state:$s, title:$t,
+      labels:($l|split(",")|map(select(length>0)|{name:.})), body:"spec"}' \
+    --args "$1" > "$FIX/gh/issue-$1.json"
+}
+
+# --- the tiny assertion kit every suite shares --------------------------------
+FAILED=0
+ok()   { printf 'OK       %s\n' "$1"; }
+bad()  { printf 'MISMATCH %s\n' "$1"; FAILED=1; }
+want() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 — wanted '$2', got '$3'"; fi; }
+want_in() {
+  if printf '%s' "$3" | grep -qE -- "$2"; then ok "$1"; else bad "$1 — no /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; fi
+}
+want_not_in() {
+  if printf '%s' "$3" | grep -qE -- "$2"; then bad "$1 — found /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; else ok "$1"; fi
+}
