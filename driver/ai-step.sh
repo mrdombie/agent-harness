@@ -18,9 +18,11 @@
 #   2. IT ANSWERED RATHER THAN ASKED. Any step may return a question instead;
 #      that parks the ticket with it, which is the design's "always asks rather
 #      than guesses".
-#   3. THE ANSWER MATCHES ITS SCHEMA, when one exists. `briefs/schemas/<step>.json`
+#   3. THE ANSWER MEETS ITS CONTRACT, when one exists. `briefs/schemas/<step>.json`
 #      belongs to the briefs ticket. Absent is normal and not an error — the
-#      driver must work before those land — but present and unmatched is a refusal.
+#      driver must work before those land — but present and unmatched is a refusal,
+#      and so is a contract that could not be read. The check is one call to
+#      `briefs/validate.sh`, which is the only thing here that reads a WHOLE schema.
 #
 # The checks are in that order on purpose. An answer that never ran its skill is
 # not made trustworthy by being well-shaped, so the shape is checked last.
@@ -49,51 +51,6 @@ driver_log_skills() {
 driver_log_result() {
   jq -r -s '[.[] | select(.type=="result")] | last | (.result // "")' "$1" 2>/dev/null \
     | sed -e '/^[[:space:]]*```[a-zA-Z]*[[:space:]]*$/d'
-}
-
-# driver_check_schema <schema.json> <answer.json> — `required` and each named
-# property's `type`, and nothing more.
-#
-# Deliberately not a JSON Schema implementation. The kit cannot take an npm
-# dependency for this, and the half a validator that a shell can honestly do is
-# worth more than the whole one it would fake: these two rules catch a missing
-# key and a string where an array belongs, which is every shape failure seen so
-# far. What it does NOT check, it does not claim to.
-driver_check_schema() {
-  local schema="$1" answer="$2" missing wrong
-  # THE SCHEMA HAS TO PARSE. Every read below ends in 2>/dev/null, so a schema file
-  # shipped with a syntax error made each one error into nothing — and empty output
-  # read as "nothing missing". The step with the broken schema became the one step
-  # with no validation, and said so nowhere.
-  if ! jq -e . "$schema" >/dev/null 2>&1; then
-    printf '%s does not parse as JSON, so nothing about this answer was checked' "$(basename "$schema")"
-    return 1
-  fi
-  # AND THE ANSWER HAS TO BE AN OBJECT. `has("k")` on an array or a string does not
-  # answer false — it errors, into the same /dev/null — so a JSON array or a bare
-  # quoted string satisfied a schema that required a key.
-  if [ "$(jq -r 'type' "$answer" 2>/dev/null)" != "object" ]; then
-    printf 'the answer is %s, and a schema describes an object' \
-      "$(jq -r '"a " + type' "$answer" 2>/dev/null || printf 'not JSON')"
-    return 1
-  fi
-  # Bound to $k: inside `has()` the dot is the object being asked, not the key,
-  # so the unbound form silently asked whether the answer has itself — and every
-  # missing key passed.
-  missing=$(jq -r --slurpfile a "$answer" \
-    '(.required // [])[] as $k | select(($a[0] | has($k)) | not) | $k' "$schema" 2>/dev/null)
-  [ -z "$missing" ] || { printf 'missing: %s' "$(printf '%s' "$missing" | tr '\n' ' ')"; return 1; }
-  wrong=$(jq -r --slurpfile a "$answer" '
-    (.properties // {}) | to_entries[]
-    | select(.value.type != null)
-    | . as $p
-    | ($a[0][$p.key]) as $v
-    | select($v != null)
-    | ($v | type) as $t
-    | select( if $p.value.type == "integer" then ($t != "number") else ($t != $p.value.type) end )
-    | "\($p.key) is \($t), wanted \($p.value.type)"' "$schema" 2>/dev/null)
-  [ -z "$wrong" ] || { printf '%s' "$(printf '%s' "$wrong" | tr '\n' '; ')"; return 1; }
-  return 0
 }
 
 driver_ai_step() { # <ticket> <step> [context-file…]
@@ -151,10 +108,36 @@ driver_ai_step() { # <ticket> <step> [context-file…]
     return "$DRIVER_E_QUESTION"
   fi
 
-  # 3. the schema, when the briefs ticket has landed one
+  # 3. the contract, when the briefs ticket has landed one.
+  #
+  # ONE CALL, because the strictness is not in `required`. What used to sit here was
+  # half a JSON Schema validator written in jq — top-level `required` plus top-level
+  # property `type`, and nothing else. Measured over briefs/examples: it accepted 19
+  # of the 24 invalid answers the contracts exist to refuse, two of them the epic's
+  # headline guarantees — a build whose test passed BEFORE the change, and a review
+  # that returns SHIP beside an open blocker. The rules that catch those live in
+  # `additionalProperties: false`, in nested `required`, in `failedBefore` pinned to
+  # `true`, and in an `if`/`then`; none of them is expressible in a shell.
+  #
+  # The reason it was hand-rolled — the kit cannot take an npm dependency — does not
+  # hold: validate.sh runs `npx --yes ajv-cli@5` on demand, nothing enters a manifest,
+  # and BRIEFS_AJV points at an installed copy where one exists.
+  #
+  # EXIT 2 IS NOT A PASS. A validator answering 0 when it validated nothing reads
+  # exactly like one that validated everything, so a contract that could not be read
+  # parks the ticket as well — and the park carries what could not be done rather than
+  # a question about the brief's Return section.
+  local vout vrc
   if [ -f "$DRIVER_SCHEMAS/$step.json" ]; then
-    if ! why=$(driver_check_schema "$DRIVER_SCHEMAS/$step.json" "$ans"); then
+    vout=$(BRIEFS_SCHEMAS="$DRIVER_SCHEMAS" bash "$DRIVER_VALIDATE" "$step" "$ans" 2>&1); vrc=$?
+    why=$(printf '%s' "$vout" | tr '\n' ' ' | cut -c1-400)
+    if [ "$vrc" -eq 1 ]; then
       driver_say "✋ $step: the answer does not match briefs/schemas/$step.json — $why"
+      driver_state_set "$t" park_note "$step answered outside briefs/schemas/$step.json: $why"
+      return "$DRIVER_E_SCHEMA"
+    elif [ "$vrc" -ne 0 ]; then
+      driver_say "✋ $step: briefs/schemas/$step.json could not be read, so NOTHING about this answer was checked — $why"
+      driver_state_set "$t" park_note "the $step answer was never checked against briefs/schemas/$step.json (validate.sh exited $vrc): $why"
       return "$DRIVER_E_SCHEMA"
     fi
   fi

@@ -13,6 +13,7 @@
 #   DRIVER_DIR       per-ticket run records: $STATE_DIR/driver/<ticket>
 #   DRIVER_BRIEFS    the AI step briefs (owned by the briefs ticket, read here)
 #   DRIVER_SCHEMAS   $DRIVER_BRIEFS/schemas — the JSON each brief must return
+#   DRIVER_VALIDATE  briefs/validate.sh — the one thing that reads a whole schema
 #   DRIVER_STEPS     the fixed order, one name per step
 #   DRIVER_MAX_BUILD_TRIES   red-before-green attempts before the ticket parks (5)
 #   DRIVER_MAX_REVIEW_ROUNDS review rounds before leftovers become a ticket (2)
@@ -39,6 +40,12 @@ unset _driver_self
 DRIVER_DIR="${DRIVER_DIR:-$STATE_DIR/driver}"
 DRIVER_BRIEFS="${DRIVER_BRIEFS:-$KIT_ROOT/briefs}"
 DRIVER_SCHEMAS="${DRIVER_SCHEMAS:-$DRIVER_BRIEFS/schemas}"
+# The validator is the kit's, not the briefs directory's. DRIVER_BRIEFS is a seam
+# a fixture points at a temp dir holding only the briefs it wrote, so resolving
+# the validator through it would have made it absent in every test — and an absent
+# validator that read as "nothing to check" is the failure this whole call exists
+# to end. It is separately overridable so a test can hand over one that refuses.
+DRIVER_VALIDATE="${DRIVER_VALIDATE:-$KIT_ROOT/briefs/validate.sh}"
 mkdir -p "$DRIVER_DIR" 2>/dev/null || true
 
 # The order. It is a list, not a set: "runs the steps in order" is the guarantee,
@@ -153,7 +160,7 @@ driver_bounded() { # <seconds> <command>
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
-export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_STEPS
+export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
 export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK

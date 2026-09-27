@@ -55,14 +55,15 @@ briefs/validate.sh <step> <answer.json>
 |---|---|
 | 0 | the answer meets the contract |
 | 1 | it does not — the AI's answer is wrong |
-| 2 | the check could not be made: no step, an unknown step, a missing file |
+| 2 | the check could not be made: no step, an unknown step, a missing file, a schema that does not parse |
 
 Two codes would make those last two indistinguishable, and a validator that
 answers 0 when it validated nothing reads exactly like one that validated
 everything.
 
 `BRIEFS_AJV` overrides the validator, so a machine with the tool installed pays
-no download.
+no download. `BRIEFS_SCHEMAS` overrides where the contracts are read from, which is
+how the driver calls this with its own `DRIVER_SCHEMAS` instead of re-deriving it.
 
 ### Call this, rather than re-deriving it in the caller
 
@@ -78,6 +79,10 @@ reading only top-level `required` and top-level types accepts **19 of the 24
 invalid examples in `examples/`** — measured, by running one over them — among
 them a build whose test passed before the change, and a review that ships with
 blockers open. Those two are the guarantees the driver exists to make.
+
+`driver/ai-step.sh` hand-rolled exactly that checker and shipped with it once.
+It now calls this script, and `driver/tests/ai-step.test.sh` holds each of the four
+rules above as its own case.
 
 ## Adding a step
 
