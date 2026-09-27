@@ -39,6 +39,10 @@ driver_step_start() { # <ticket>
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
+  # The subject, kept on the record. The ship step titles the pull request with it,
+  # and the title is what a squash merge ships as its commit message — so reading it
+  # once here beats a second call later, or a title that is the number twice.
+  driver_state_set "$t" title "$(printf '%s' "$meta" | cut -d$'\001' -f3)"
 
   if [ "$st" != "OPEN" ]; then
     driver_say "✋ start: #$t is $st. There is nothing to build."

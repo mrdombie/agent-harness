@@ -274,6 +274,8 @@ want "the real seven finish"        "0" "$rc"
 # The branch on the record is the branch that ships. A second name here would put
 # the worktree, the commits and the pull request on three different branches.
 want "start kept the branch it was given" "tkt-$TICKET/work" "$(driver_state_get "$TICKET" branch)"
+want "and recorded the ticket's subject for the PR title" "Ticket $TICKET" "$(driver_state_get "$TICKET" title)"
+want_in "which is what the pull request is titled with" "Ticket $TICKET" "$(cat "$GH_LOG")"
 want "every one is recorded"        "start,plan,build,self-check,review,record,ship" \
   "$(driver_state_get "$TICKET" 'done|join(",")')"
 want_in "the plan named its Skill and the log showed it" 'superpowers:writing-plans ran' "$out"

@@ -22,7 +22,7 @@
 
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
-  local wt branch dirty ahead verdict rounds sha head body
+  local wt branch dirty ahead verdict rounds sha head body trunk r title nblock
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); branch=$(driver_state_get "$t" branch)
 
@@ -42,9 +42,26 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  ahead=$(git -C "$wt" rev-list --count "$INTEGRATION_BRANCH..$branch" 2>/dev/null)
-  if [ "${ahead:-0}" -eq 0 ]; then
-    driver_say "✋ ship: $branch has no commits on it. There is nothing to ship."
+  # origin's ref FIRST, exactly as the start step resolves it. A clone whose only
+  # develop is origin/develop has no local ref of that name, and then rev-list
+  # errors, `ahead` comes back empty, and an empty string read as 0 says a finished
+  # branch has no commits — which refuses, and refuses again on every resume,
+  # because ship is by then the only unfinished step.
+  trunk=""
+  for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
+    git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
+  done
+  if [ -z "$trunk" ]; then
+    driver_say "✋ ship: neither origin/$INTEGRATION_BRANCH nor $INTEGRATION_BRANCH resolves in $wt, so there is nothing to measure the branch against."
+    return "$DRIVER_E_REFUSED"
+  fi
+  ahead=$(git -C "$wt" rev-list --count "$trunk..$branch" 2>/dev/null)
+  case "$ahead" in ''|*[!0-9]*)
+    driver_say "✋ ship: could not count $branch against $trunk. An unreadable count is not a count of zero."
+    return "$DRIVER_E_REFUSED" ;;
+  esac
+  if [ "$ahead" -eq 0 ]; then
+    driver_say "✋ ship: $branch has no commits on it against $trunk. There is nothing to ship."
     return "$DRIVER_E_REFUSED"
   fi
 
@@ -54,13 +71,19 @@ driver_step_ship() { # <ticket>
 
   verdict=$(jq -r '.verdict // ""' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null | tr '[:lower:]' '[:upper:]')
   rounds=$(driver_state_count "$t" review)
+  # The ticket's own subject. On the record when the start step put it there; asked
+  # for otherwise, because a pull request titled with the number twice tells a
+  # reader nothing, and the title is what a squash merge ships as its commit.
+  title=$(driver_state_get "$t" title)
+  [ -n "$title" ] || title=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title -q .title 2>/dev/null)
+  [ -n "$title" ] || title="see the ticket"
   sha=$(driver_state_get "$t" claimed_at_sha)
   head=$(git -C "$wt" rev-parse HEAD)
 
   body=$(cat <<PRBODY
 Closes #$t
 
-Built by the driver: $(driver_state_get "$t" 'done|join(" → "))' 2>/dev/null || true)
+Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 
 Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
 Claimed at: ${sha:-unknown}
@@ -69,14 +92,23 @@ PRBODY
 )
   swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
-    --title "#$t: $(driver_state_get "$t" 'ticket')" \
+    --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true
 
   # Ready, and only then auto. A draft is the only state an automerge workflow
   # will not land, so the draft is what holds the pull request while the review
   # is unfinished — and an unreviewed ticket stops HERE, with the work visible.
   if [ "$verdict" != "SHIP" ]; then
-    driver_say "✋ ship: the review verdict is '${verdict:-none}', so the pull request stays a draft. The work is pushed and visible; it is not landing."
+    # NAME THE BLOCKERS, not the code. review is recorded finished by the time this
+    # runs, so every resume walks straight back to here and refuses identically —
+    # and a blocker is a dead control, a broken flow or a data-honesty failure, none
+    # of which ship. The operator has to be handed the findings, or the ticket is
+    # simply stuck with "exit 24" as its only explanation.
+    nblock=$(jq -r '(.blockers // []) | length' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
+    driver_say "✋ ship: the review verdict is '${verdict:-none}' after ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS round(s), so the pull request stays a draft. The work is pushed and visible; it is not landing."
+    if [ "${nblock:-0}" -gt 0 ]; then
+      driver_say "   ship: ${nblock} blocker(s) to clear — $(jq -r '[.blockers[] | "\(.file // "?"):\(.line // "?") \(.finding // .summary // "")"] | join("; ")' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)"
+    fi
     return "$DRIVER_E_REFUSED"
   fi
 
