@@ -1,0 +1,11 @@
+{
+  "step": "plan",
+  "skills": ["superpowers:writing-plans"],
+  "status": "park",
+  "designSource": "ticket-body",
+  "premise": {
+    "verdict": "changed-shape",
+    "evidence": "the reader named at src/queue/reader.ts moved to src/queue/source/read.ts and now has two callers the ticket does not mention"
+  },
+  "question": "The ticket names one reader; there are now two. Fix both in this ticket, or only the one the bug was reported against?"
+}

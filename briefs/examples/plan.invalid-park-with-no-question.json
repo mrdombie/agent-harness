@@ -1,0 +1,7 @@
+{
+  "step": "plan",
+  "skills": ["superpowers:writing-plans"],
+  "status": "park",
+  "designSource": "ticket-body",
+  "premise": { "verdict": "changed-shape", "evidence": "the reader moved and gained a second caller" }
+}
