@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
+import { facts, plans, plansOf, progressOf, shortTitle } from './progress.mjs'
 
 const RUNS = process.env.SWARM_RUNS_DIR || path.join(os.homedir(), '.swarm/runs')
 const PORT = Number(process.env.SWARM_PORT || 4777)
@@ -24,6 +25,37 @@ const PREFIX = process.env.SWARM_PROGRAMME_PREFIX || 'project:'
 const TITLES = process.env.SWARM_TITLES || path.join(RUNS, '..', 'live-view-titles.json')
 const KEEP_HOURS = Number(process.env.SWARM_DONE_HOURS || 6)
 const TAIL = 400_000
+// How far along, cached: the facts are git and forge reads, far too slow for a
+// request that every other part of the swarm polls. Refreshed off the request
+// path, and a snapshot taken before the first refresh lands says `unknown` on
+// every step rather than inventing one.
+const PROGRESS_CACHE = process.env.SWARM_PROGRESS_CACHE
+  || path.join(RUNS, '..', 'swarm', 'progress.json')
+const PROGRESS_MS = Number(process.env.SWARM_PROGRESS_MS || 60_000)
+const DRIVER_DIR = process.env.DRIVER_DIR || path.join(RUNS, '..', 'driver')
+const QUEUE_REPO = process.env.SWARM_QUEUE_REPO || ''
+const PLAIN = process.env.SWARM_PLAIN_TITLES || path.join(RUNS, '..', 'plain-titles.json')
+
+let progressAt = 0, progress = { tickets: {}, plans: {} }
+try { progress = JSON.parse(fs.readFileSync(PROGRESS_CACHE, 'utf8')) } catch {}
+
+// SWARM_PROGRESS_SYNC makes the refresh happen in-line, which is what a test
+// wants: a background refresh is a race a test cannot win.
+function refreshProgress(tickets, ids, now) {
+  if (now - progressAt < PROGRESS_MS) return
+  progressAt = now
+  const gather = () => {
+    const next = { tickets: facts(tickets, { repo: REPO, queueRepo: QUEUE_REPO, driverDir: DRIVER_DIR }),
+                   plans: plans(ids, { repo: REPO, prefix: PREFIX }) }
+    progress = next
+    try {
+      fs.mkdirSync(path.dirname(PROGRESS_CACHE), { recursive: true })
+      fs.writeFileSync(PROGRESS_CACHE, JSON.stringify(next))
+    } catch {}
+  }
+  if (process.env.SWARM_PROGRESS_SYNC) { try { gather() } catch {} ; return }
+  setTimeout(() => { try { gather() } catch {} }, 0).unref?.()
+}
 
 let titles = {}
 try { titles = JSON.parse(fs.readFileSync(TITLES, 'utf8')) } catch {}
@@ -47,6 +79,10 @@ function fetchTitle(ticket) {
       } catch {}
     })
 }
+
+const plainName = (id) => String(id).split(/[-_ ]+/)
+  .map((w) => (/^(ai|api|ci|ui|uat|ux)$/i.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)))
+  .join(' ')
 
 // "fix(desk): the strip drops its last item" → "The strip drops its last item"
 function plainTitle(t) {
@@ -117,6 +153,8 @@ function parseLog(file) {
 // how a launcher once reported eight running with three alive.
 export function snapshot(now = Date.now()) {
   const live = []
+  let plainTitles = {}
+  try { plainTitles = JSON.parse(fs.readFileSync(PLAIN, 'utf8')) } catch {}
   const done = []
   let files = []
   try { files = fs.readdirSync(RUNS).filter((f) => /^claim-.*\.json$/.test(f)) } catch {}
@@ -130,10 +168,16 @@ export function snapshot(now = Date.now()) {
     fetchTitle(run.ticket)
     const log = parseLog(run.log || '')
     const t = titles[run.ticket] || {}
+    // NOT `f`: that is the loop's filename, and a second `const f` in this block
+    // shadows it into its own temporal dead zone — every read then throws into
+    // the catch above and every run record is skipped in silence.
+    const fct = progress.tickets[String(run.ticket)]
     const row = {
       ticket: String(run.ticket),
       title: t.title || `Ticket ${run.ticket}`,
+      short: shortTitle(t.title || `Ticket ${run.ticket}`, plainTitles[String(run.ticket)]),
       project: t.project || '',
+      progress: progressOf(fct, fct && fct.driver),
       startedAgoMin: Math.round((now - Date.parse(run.started_at)) / 60000),
       quietSec: log.mtime ? Math.round((now - log.mtime) / 1000) : null,
       budget: run.budget_usd,
@@ -151,9 +195,11 @@ export function snapshot(now = Date.now()) {
   }
   live.sort((a, b) => a.startedAgoMin - b.startedAgoMin)
   done.sort((a, b) => a.endedAgoMin - b.endedAgoMin)
+  refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.
-  return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0], live, done: done.slice(0, 20) }
+  return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
+           plans: plansOf(live, progress.plans, plainName), live, done: done.slice(0, 20) }
 }
 
 export function serve(port = PORT) {
