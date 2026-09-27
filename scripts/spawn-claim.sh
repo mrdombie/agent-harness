@@ -15,7 +15,7 @@
 # reconcile-claims.sh immediately. That covers every exit the agent can observe
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
-# Env: CLAIM_BUDGET_USD (default 15), CLAIM_PERMISSION_MODE (default auto)
+# Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto)
 
 set -uo pipefail
 
@@ -24,8 +24,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TICKETS_DIR="$STATE_DIR"
 RUNS_DIR="$TICKETS_DIR/runs"
 LOGS_DIR="$TICKETS_DIR/logs"
-BUDGET="${CLAIM_BUDGET_USD:-15}"
+BUDGET="${CLAIM_BUDGET_USD:-150}"
 PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
+
+# The spawner refreshes ITSELF, not only the agent's tree. It is reached through a
+# shell function pointing at one copy on the operator's machine, and that copy is
+# what went stale first — three days old on 2026-09-27, cd'ing every agent into a
+# tree 210 commits behind. Re-exec the integration branch's own copy once, so the
+# spawn logic can never be older than the rules it installs.
+if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ]; then
+  export SPAWN_CLAIM_CANONICAL=1
+  _spawn_canon="$(toolkit_tools 2>/dev/null)/scripts/spawn-claim.sh"
+  if [ -f "$_spawn_canon" ] && ! cmp -s "$_spawn_canon" "${BASH_SOURCE[0]}"; then
+    exec bash "$_spawn_canon" "$@"
+  fi
+  unset _spawn_canon
+fi
 
 FG=0
 TICKET=""
@@ -52,11 +66,38 @@ PROMPT="/agent-harness:claim"
 if [ "$FG" -eq 1 ]; then
   echo "→ interactive session, fresh context, running $PROMPT"
   echo "  no budget cap (--max-budget-usd only applies to --print runs)"
-  cd "$REPO_ROOT" || exit 1   # a checkout: the skills load from its .claude/
+  SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
+  cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, reviewers and CLAUDE.md load from its .claude/
   exec claude --permission-mode "$PERM_MODE" --name "claim-${TICKET:-next}" "$PROMPT"
 fi
 
+# The WHOLE detached spawn — wrapper subshell, reconcile, and the agent — runs in
+# its own session. The first attempt setsid'd only the claude process: the agent
+# survived its launcher dying, but the wrapper that writes .ended and runs
+# reconcile did not, so four daemon-spawned agents ran on as orphans that nothing
+# would ever record as finished. macOS has no setsid(1); perl's POSIX::setsid does
+# the same job. Re-exec once, then carry on.
+if [ -z "${SPAWN_CLAIM_SESSION:-}" ]; then
+  SPAWN_CLAIM_SESSION=1 exec perl -e 'use POSIX qw(setsid); setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' -- /bin/bash "$0" "$@"
+fi
+
 # --- detached: the default -----------------------------------------------------
+# PRINT-MODE RULE, prepended to every detached prompt. Measured 2026-09-19 on the
+# origin project's first swarm: three of the first eight agents ended their turn
+# with "running in the background; I'll pick it up when it completes" — a
+# screenshot run, a route capture, a Monitor on a log — and in `claude -p` ending
+# the turn ends the process. All three exited 0 with the fix built and tested,
+# nothing pushed and no PR, stranded in their worktrees. The pattern is
+# load-induced, so it recurs exactly when the swarm is biggest. CLAIM_EXTRA
+# carries a resume brief when re-spawning a stranded run.
+PRINT_MODE_RULE="You are running in print mode: the moment you end your turn, this process exits and nothing you left running survives. NEVER start something in the background and end your turn intending to pick it up — no Monitor you wait on, no 'I'll check when it completes', no backgrounded screenshot or capture. Wait for every check in the foreground, then continue. If a real-route capture is too slow under load, retry it in the foreground with a longer timeout; do not defer it. The turn ends when the PR is PUSHED and HANDED OFF — local gates green (lint:changed, typecheck, test:changed), both review trailers on the pushed head, PR ready with auto-merge armed, the hold label on if pixels changed, and a one-line 'Handed off at <sha>' comment on the PR. Do NOT wait for CI: a watcher brings an agent back if CI goes red or the PR conflicts. Or the turn ends when you have PARKED the ticket per /agent-harness:claim's park procedure: commit, push, draft PR, resume brief on the issue, label — all BEFORE the banner. An exit with unpushed work is a failed run. Kill only processes you started (record their PIDs); never pkill a pattern that could match another agent's."
+PROMPT="$PRINT_MODE_RULE
+
+$PROMPT"
+[ -n "${CLAIM_EXTRA:-}" ] && PROMPT="$PROMPT
+
+$CLAIM_EXTRA"
+
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RUN_ID="claim-${TICKET:-next}-$STAMP-$$"
 LOG="$LOGS_DIR/$RUN_ID.log"
@@ -69,7 +110,8 @@ export CLAIM_RUN_ID="$RUN_ID"
 export CLAIM_RUN_LOG="$LOG"
 export CLAIM_AGENT="$(toolkit_login)@$(hostname -s)"   # resolved once per run, inherited by every claim-lock call
 
-cd "$REPO_ROOT" || exit 1   # a checkout: the skills load from its .claude/
+SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
+cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, reviewers and CLAUDE.md load from its .claude/
 
 (
   # Backgrounded so the agent's OWN pid is knowable. The record used to carry
