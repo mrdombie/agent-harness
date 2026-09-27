@@ -26,6 +26,15 @@ want_in() {
 steps=$(ls "$BRIEFS/schemas"/*.json 2>/dev/null | while read -r f; do basename "$f" .json; done)
 [ -n "$steps" ] || { printf 'MISMATCH no schemas in %s/schemas — refusing to report clean\n' "$BRIEFS"; exit 1; }
 
+# The loop below is schema-driven, so an example whose step has NO schema is
+# invisible to it: nothing validates the file and nothing says so. Assert the
+# other direction first, by name.
+for f in "$BRIEFS/examples"/*.json; do
+  ex_step=$(basename "$f"); ex_step=${ex_step%%.*}
+  if [ -f "$BRIEFS/schemas/$ex_step.json" ]; then :
+  else bad "$(basename "$f") names step '$ex_step' and there is no schemas/$ex_step.json"; fi
+done
+
 for step in $steps; do
   valid=$(ls "$BRIEFS/examples/$step".valid*.json 2>/dev/null)
   invalid=$(ls "$BRIEFS/examples/$step".invalid-*.json 2>/dev/null)
