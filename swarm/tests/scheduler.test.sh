@@ -58,6 +58,52 @@ want_in "the hold names the reset time"      'usage limit — holding until 11:3
 printf 'You have hit your weekly limit · resets 8am\n' > "$STATE/logs/claim-301-x.log"
 out=$(SWARM_NOW=$NINE sched --programme widgets)
 want_not_in "a reset time already past does not hold" 'usage limit' "$out"
+
+# The WEEKLY wall names a date, and the session one does not. Both wordings are
+# real: across 245 logs carrying a limit line, 432 said "resets 7:20pm
+# (Europe/London)" and 4 said "resets Sep 29 at 9pm (Europe/London)". A regex
+# that requires a digit straight after "resets " matches the first and not the
+# second, so the weekly wall set no hold at all and the scheduler kept spawning
+# into it (2026-09-27).
+reset_state; fix_live widgets 0
+# The wording is built from a time two hours ahead, so the case does not turn
+# green or red depending on when the suite runs.
+AHEAD=$(date -r $(( $(date +%s) + 7200 )) '+%b %-d at %-I%p' 2>/dev/null \
+        || date -d "@$(( $(date +%s) + 7200 ))" '+%b %-d at %-I%p')
+AHEAD=$(printf '%s' "$AHEAD" | tr 'APM' 'apm')
+printf 'You have hit your weekly limit · resets %s (Europe/London)\n' "$AHEAD" > "$STATE/logs/claim-301-x.log"
+out=$(sched --programme widgets)
+want "nothing spawned on the weekly wall's wording" "0" "$(grep -c . "$SPAWNS")"
+want_in "and the hold says so"                       'usage limit' "$out"
+
+# The structured event is the primary reading: rate_limit_event carries an EPOCH
+# and names its window, so it needs no wording at all. Present in all 245 of the
+# limit-carrying logs measured on 2026-09-27; undocumented.
+reset_state; fix_live widgets 0
+SOON=$(( $(date +%s) + 7200 ))
+printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s,"rateLimitType":"seven_day"}}\n' "$SOON" \
+  > "$STATE/logs/claim-301-x.log"
+out=$(sched --programme widgets)
+want "nothing spawned on a rejected rate-limit event" "0" "$(grep -c . "$SPAWNS")"
+want_in "the hold names the window"                   'seven_day' "$out"
+
+# status is on EVERY event, and is "allowed" or "allowed_warning" 6,352 times
+# against 238 "rejected". Only the rejection is a wall.
+reset_state; fix_live widgets 0
+printf '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":%s,"rateLimitType":"seven_day"}}\n' "$SOON" \
+  > "$STATE/logs/claim-301-x.log"
+out=$(sched --programme widgets)
+want_not_in "a warning is not a wall" 'usage limit' "$out"
+want "and the wave still runs"        "3" "$(grep -c . "$SPAWNS")"
+
+# A rejection whose reset has already passed is history.
+reset_state; fix_live widgets 0
+PAST=$(( $(date +%s) - 7200 ))
+printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s,"rateLimitType":"five_hour"}}\n' "$PAST" \
+  > "$STATE/logs/claim-301-x.log"
+out=$(sched --programme widgets)
+want_not_in "a reset that has passed does not hold" 'usage limit' "$out"
+
 rm -f "$STATE/logs/claim-301-x.log"
 
 echo "--- waves: only the current wave runs, and it advances when spent ---"
