@@ -121,8 +121,6 @@ r=$(SWARM_DIR="$STATE/swarm" SWARM_LOGS="$STATE/logs" RUNS_DIR="$STATE/runs" \
     HARNESS_CFG_PATH="$REPO/.claude/harness.json" HARNESS_STATE_DIR="$STATE" HARNESS_MAIN_REPO="$REPO" \
     SWARM_LIVE_URL=http://x SWARM_CURL="$BIN/curl" SWARM_GH="$BIN/gh" \
     bash "$HERE/../report.sh" --json)
-[ -n "$r" ] || echo "REPORTER PRODUCED NOTHING"
-printf '%s' "$r" | head -c 200; echo
 want "the reporter passes the bar through" "bad" \
   "$(printf '%s' "$r" | jq -r '.live[0].progress.steps[5].state')"
 want "and the plan" "16" "$(printf '%s' "$r" | jq -r '.plans[0].pct')"
