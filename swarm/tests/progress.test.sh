@@ -64,9 +64,16 @@ echo "--- the bar never fills past its own cursor ---"
 # sequence: a repo that stamps no review verdict leaves Review unreadable while
 # its PR has merged, and the row then lights Merged on a card headed step 5.
 MERGED_BLIND='{claim:true,commits:17,pushed:true,trailers:[],stampsReviews:false,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
-want "a step proven passed is drawn passed" "done done done done done done done" "$(states "$MERGED_BLIND")"
-want "and is no longer listed as unread" "" \
+# Four of the seven are git-mechanical, so a merge entails them. Set up and
+# Review are about what somebody DID — a merge proves no reviewer looked, and
+# this project's approval rules exist because ~25 PRs merged without one. The
+# partition IS the validity condition.
+want "a step proven passed is drawn passed" "done done done done unknown done done" "$(states "$MERGED_BLIND")"
+want "but a merge never says a reviewer looked" "Review" \
   "$(ask "return P.progressOf($MERGED_BLIND,null).unreadable.join(',')")"
+BLIND_ALL='{claim:true,commits:null,pushed:null,trailers:[],stampsReviews:false,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
+want "with nothing else readable, the same partition holds" \
+  "done done done done unknown done done" "$(states "$BLIND_ALL")"
 # Nothing later proves a TRAILING unreadable step, so it stays unread.
 TAIL='{claim:true,commits:17,pushed:true,trailers:[],stampsReviews:false,prRead:false,pr:null}'
 want "a trailing unread step stays unread" "Review,PR,Merged" \

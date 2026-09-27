@@ -32,6 +32,9 @@ import { execFileSync } from 'node:child_process'
 export const STEPS = ['Set up', 'Plan', 'Build', 'Check', 'Review', 'PR', 'Merged']
 // The step-runner's own step names, in the same order.
 const DRIVER_STEP = { start: 0, plan: 1, build: 2, 'self-check': 3, review: 4, ship: 5 }
+// Which steps a LATER step being done proves, in order: Set up and Review are
+// about what somebody did and nothing downstream proves them. See progressOf.
+const ENTAILED = [false, true, true, true, false, true, true]
 // effort: -> weight. The same table as /project, so one plan cannot read two ways.
 export const WEIGHT = { S: 1, M: 3, L: 8, XL: 20 }
 const TRAILER = /^(UI-Gate|Design-Critic):/m
@@ -82,12 +85,19 @@ export function progressOf(f, driver) {
     ]
   }
   // The bar is a SEQUENCE, so a step nobody could read that sits BEFORE one known
-  // done was passed: a branch cannot merge without being pushed. Without this the
-  // row fills past its own cursor — Merged lit on a card headed step 5 of 7 — and
-  // a progress bar that does that means nothing.
+  // done was passed — a branch cannot merge without being pushed. Without this the
+  // row fills past its own cursor (Merged lit on a card headed step 5 of 7) and a
+  // progress bar that does that means nothing.
+  //
+  // But only four of the seven are entailed that way, and the partition IS the
+  // validity condition: Plan, Build, Check and PR are git-mechanical, so a later
+  // merge genuinely proves them. Set up and Review are about what somebody DID.
+  // A merge proves no reviewer looked — this project's approval-gate rules exist
+  // because ~25 PRs merged without one — so backfilling Review would put a claim
+  // about a person on the screen, deduced from a fact about git.
   for (let i = at.length - 1, seen = false; i >= 0; i--) {
     if (at[i] === true) seen = true
-    else if (seen && at[i] === null) at[i] = true
+    else if (seen && at[i] === null && ENTAILED[i]) at[i] = true
   }
   const redPr = !!(pr && pr.state === 'OPEN' && pr.fail > 0)
   // The step being walked is the first one KNOWN to be unfinished. A step nobody
