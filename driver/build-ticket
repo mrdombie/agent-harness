@@ -135,9 +135,12 @@ while [ "$i" -lt "$N" ]; do
   # anything: a step batched with the next one reports on the shell reaching
   # that line, and a printed failure mid-batch has reached the trunk before.
   rc=0
+  # An always-step re-running is neither work nor a skip: counting it as skipped made
+  # "N step(s) were already finished and did not run again" name the one step that did,
+  # and a finished ticket report "all 7 were already finished" having run start.
   was_done=0; driver_state_is_done "$TICKET" "$step" && was_done=1
   "$(step_fn "$step")" "$TICKET" || rc=$?
-  [ "$was_done" -eq 1 ] && skipped=$((skipped+1)) || ran=$((ran+1))
+  if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
   # A note a step left behind. An exit code says which check said no; it cannot say
   # WHAT, and a step that knows — the blockers a review found, a leftover that could
@@ -158,15 +161,22 @@ while [ "$i" -lt "$N" ]; do
             "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)
   [ -n "$asked" ] || asked="see the step output"
 
-  # WHY THE ARMS ONLY ASSIGN. An arm here used to call driver_park with a
-  # `"${note:-some literal text}"` argument, and bash 3.2 — the stock macOS shell this
-  # kit has to run on — mis-parses that inside a case body: an apostrophe or a nested
-  # `$( )` in the default closes the arm early and every arm after it, INCLUDING `*)`,
-  # is silently swallowed. The case then matches nothing for a refusal, so the loop
-  # neither parked nor advanced and the step ran for ever. `bash -n` is happy with it,
-  # so the only symptom was a run that hung: measured at 536 self-check calls with the
-  # park never reached. So the arms set two plain variables and the park happens once,
-  # below, where no parsing subtlety applies.
+  # WHY THE ARMS ONLY ASSIGN, measured rather than guessed.
+  #
+  # An arm here used to pass `"${note:-some literal text}"` to driver_park. In bash 3.2 —
+  # the stock macOS shell this kit runs on — an APOSTROPHE inside `${var:-…}` opens a
+  # single-quote context even within double quotes. One of them is a loud unterminated-
+  # quote error that `bash -n` catches. TWO of them BALANCE, so `bash -n` returns 0 and
+  # everything between the pair is swallowed — here, the arms between them and `*)`. The
+  # case then matched nothing for a refusal, the loop neither parked nor advanced, and
+  # the step ran for ever: measured at 573 self-check calls with the park never reached,
+  # on a file `bash -n` accepted.
+  #
+  # Bisected: `$( )` inside a `${:-}` default in an arm is FINE; one apostrophe fails
+  # loudly; two apostrophes fail silently. So the rule is not about command substitution
+  # and it is not about `case` — it is that a pair of apostrophes inside `${:-}` defeats
+  # the syntax check. The arms therefore set two plain variables and the park happens
+  # once, after the esac, where no default-expansion appears at all.
   park_reason=""; park_question=""
   case "$rc" in
     "$DRIVER_OK")

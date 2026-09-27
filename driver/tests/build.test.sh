@@ -171,6 +171,19 @@ done
 want "the last try refuses rather than looping" "24" "$rc"
 want "the tries are all counted" "$DRIVER_MAX_BUILD_TRIES" "$(driver_state_count 102 build)"
 
+echo "--- a hang in the proof is not retried five times and blamed on the tests ---"
+# Folded in with a failing test it went round the retry loop — at the default ceiling
+# five attempts times two proof halves of waiting — and parked saying the tests do not
+# prove the change. It has its own outcome, and the orchestrator parks on it at once.
+driver_state_init 505 --worktree "$REPO" --repo "$REPO"
+fix_ai build "$(jq -nc --arg t "$TEST_SHA" --arg i "$IMPL_SHA" \
+  '{items:[{id:"1", test_file:"feature.test.sh", test_command:"sleep 60",
+            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_step_build 505 2>&1) || rc=$?
+want "a hang is its own outcome, not a rework" "25" "$rc"
+want_in "and it says it ran out of time"       'time' "$out"
+want "and only one try was spent"              "1" "$(driver_state_count 505 build)"
+
 echo "--- a build that claims an item with no test at all ---"
 driver_state_init 202 --worktree "$REPO" --repo "$REPO"
 fix_ai build '{"items":[{"id":"1","impl_commit":"HEAD"}]}' superpowers:subagent-driven-development

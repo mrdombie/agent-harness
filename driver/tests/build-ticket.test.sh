@@ -95,7 +95,20 @@ want_in "start ran again — it is the re-entry check" '^start$' "$(cat "$RAN")"
 want "and nothing else was repeated" "start plan build self-check review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and plan ran in the resumed run" "1" "$(grep -c '^plan$' "$RAN")"
-want_in "and it says what it skipped" 'resum|already' "$out"
+# NOTHING was skipped in that run and it correctly says nothing: start re-ran as the
+# re-entry check, and plan onwards had never finished. The skip line belongs to a run
+# that really skipped something, which the next case builds.
+want_not_in "it claims no skipping it did not do" 'were already finished' "$out"
+
+echo "--- a run that really does skip says how many, not counting the re-entry check ---"
+reset_fakes "build:24 0"
+bt 119 >/dev/null
+want "start and plan finished" "start,plan" "$(driver_state_get 119 'done|join(",")')"
+: > "$RAN"
+out=$(bt 119); rc=$?
+want "it finishes"                     "0" "$rc"
+want_in "and counts the one real skip" 'resumed: 1 step\(s\)' "$out"
+want_in "start ran again all the same" '^start$' "$(cat "$RAN")"
 
 echo "--- --restart runs the lot again ---"
 : > "$RAN"
@@ -133,16 +146,63 @@ want "the run stops" "20" "$rc"
 want_in "and the park asks about the finding" 'the save button on a.ts:9 calls nothing' "$(cat "$FIX/park.log")"
 want_not_in "not about the exit code" 'which check said no' "$(cat "$FIX/park.log")"
 
-echo "--- and a stale note never leaks into the next park ---"
+echo "--- and a note from an earlier step never leaks into a later park ---"
+# The leak that matters is a note a step left while SUCCEEDING: nothing consumes it, so
+# without the clearing it sits on the record and becomes the question a later, unrelated
+# park asks. The first version of this case set the note before the run and called
+# `reset_fakes` between the two — which does `rm -rf "$STATE/driver"`, destroying the
+# record the note lives on, so "previous run" could never appear whatever the code did.
 : > "$FIX/park.log"
-reset_fakes "plan:24"
-driver_state_init 117
-driver_state_set 117 park_note "something from a previous run"
-bt 117 >/dev/null
-: > "$FIX/park.log"
-reset_fakes "review:24"
-out=$(bt 117); rc=$?
-want_not_in "the old note is gone" 'previous run' "$(cat "$FIX/park.log")"
+reset_fakes
+cat > "$FAKE/plan.sh" <<'SH'
+#!/usr/bin/env bash
+driver_step_plan() {
+  printf 'plan\n' >> "$RAN"
+  driver_state_set "$1" park_note "a note from the plan step, which then succeeded"
+  return 0
+}
+SH
+bt 118 >/dev/null; rc=$?
+want "the run finishes"                   "0" "$rc"
+want "and the note was cleared, unused"   "" "$(driver_state_get 118 park_note)"
+# Now a later step refuses, with no note of its own.
+: > "$FIX/park.log"; rm -f "$FIX"/n.*
+fake_step plan 0
+fake_step review 24
+out=$(bt 118 --restart); rc=$?
+want "the second run stops"               "20" "$rc"
+want_not_in "the plan's old note is gone" 'from the plan step' "$(cat "$FIX/park.log")"
+want_in "and the park says what really stopped it" 'review' "$(cat "$FIX/park.log")"
+
+echo "--- a refusal parks, with the reason, and does not fall through ---"
+reset_fakes "self-check:24"
+out=$(bt 103); rc=$?
+want "the run stops"                 "20" "$rc"
+want "it stopped AT the refusal"     "start plan build self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_not_in "review never ran"       'review' "$(cat "$RAN")"
+want_in "it parked"                  'PARK' "$(cat "$FIX/park.log")"
+want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
+
+echo "--- a note a step left behind becomes the question the park asks ---"
+# A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
+# — the blockers a review found, a follow-up that could not be filed — leaves the text
+# on the record, and the park brief asks about that rather than about the code.
+# The note is written by the step that refuses, which is the only way a real one
+# arrives: a note sitting on the record BEFORE the run belongs to a previous one and
+# is cleared, which the next case is about.
+reset_fakes
+cat > "$FAKE/self-check.sh" <<'SH'
+#!/usr/bin/env bash
+driver_step_self_check() {
+  printf 'self-check\n' >> "$RAN"
+  driver_state_set "$1" park_note "the save button on a.ts:9 calls nothing"
+  return 24
+}
+SH
+out=$(bt 116); rc=$?
+want "the run stops" "20" "$rc"
+want_in "and the park asks about the finding" 'the save button on a.ts:9 calls nothing' "$(cat "$FIX/park.log")"
+want_not_in "not about the exit code" 'which check said no' "$(cat "$FIX/park.log")"
 
 echo "--- a question parks with the question, not with a gate's wording ---"
 reset_fakes "plan:20"

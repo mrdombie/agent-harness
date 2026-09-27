@@ -74,34 +74,75 @@ driver_opt_early() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf 
 # driver_bounded <seconds> <command> — run a command with a ceiling on its life.
 #
 # NOTHING ELSE BOUNDS A STEP THAT NEVER RETURNS. The orchestrator bounds a step that
-# keeps saying "go back", and the build step bounds its own retries, but a command
-# that hangs is outside both: no park, no refusal, the claim held and the worktree
-# pinned — the one state the whole design exists to make impossible. And the build
-# step's command comes from the MODEL, so a reported watch-mode runner (`vitest`
-# without `run`, `jest --watch`, a dev server) hangs the run for ever on an answer
-# that looks perfectly reasonable.
+# keeps saying "go back", and the build step bounds its own retries, but a command that
+# hangs is outside both: no park, no refusal, the claim held and the worktree pinned —
+# the one state the whole design exists to make impossible. And the build step's command
+# comes from the MODEL, so a reported watch-mode runner (`vitest` without `run`,
+# `jest --watch`, a dev server) hangs the run for ever on an answer that looks perfectly
+# reasonable.
 #
-# Returns 124 on a timeout, which is the conventional code and is what a caller
-# names its refusal from. A command that genuinely exits 124 is indistinguishable;
-# that is the cost of having a bound at all, and it is worth it.
+# Returns 124 on a timeout, which is the conventional code and is what a caller names
+# its refusal from. A command that genuinely exits 124 is indistinguishable; that is the
+# cost of having a bound at all.
 #
-# `timeout` is GNU coreutils and is not on a stock mac, so perl's alarm is the
-# portable one — the same primitive the suite itself uses. The alarm survives the
-# exec (it is a property of the process, and SIGALRM's default action terminates),
-# which is what makes the one-liner work. Neither available: run it unbounded and
-# SAY SO, because a bound nobody applied must not read like one that held.
+# IT KILLS THE PROCESS GROUP, not just the command. `exec` plus a bare alarm terminates
+# the shell and orphans its children, so a watch-mode runner carries on inside the ticket
+# worktree after the bound has "held" — and the worktree is then removed from under a
+# live process. The child gets its own group and the group is signalled.
+#
+# `timeout` is GNU coreutils and is not on a stock mac, so perl is the portable one.
+# Neither available: run it unbounded and SAY SO, because a bound nobody applied must not
+# read like one that held.
 DRIVER_CMD_TIMEOUT="${DRIVER_CMD_TIMEOUT:-$(driver_opt_early cmdTimeout 900)}"
+
+# driver_warn_unbounded — say ONCE, through the ticket's own log, that the configured
+# time limit is not a number and therefore bounds nothing. driver_bounded also warns, but
+# a caller that redirects the command's output (self-check writes each gate to a file)
+# captures that warning into the file nobody is reading yet. This one goes where the
+# operator is looking.
+driver_check_timeout() {
+  case "${DRIVER_CMD_TIMEOUT:-}" in
+    ''|*[!0-9]*|0)
+      driver_say "⚠ the configured time limit is '${DRIVER_CMD_TIMEOUT:-}', which is not a number of seconds, so commands run UNBOUNDED — set cmdTimeout to a whole number."
+      return 1 ;;
+  esac
+  return 0
+}
+
 driver_bounded() { # <seconds> <command>
-  local secs="${1:-$DRIVER_CMD_TIMEOUT}" cmd="$2" rc
+  local secs cmd rc
+  # One name per line. bash expands the whole `local` command before assigning any of
+  # it, so `local secs="${1:-$X}" cmd="$2"` with $2 unset aborts on the SECOND word
+  # under `set -u` before the first default is ever applied.
+  secs="${1:-}"
+  cmd="${2:-}"
+  [ -n "$secs" ] || secs="$DRIVER_CMD_TIMEOUT"
+  # A NON-NUMBER IS NOT A CEILING. perl reads `alarm "15m"` as `alarm 0`, which CANCELS
+  # the alarm — so an operator writing "15m" or "900s" in the config silently removes
+  # every bound in the driver. Refuse to pretend: run it, and say the bound is not there.
+  case "$secs" in
+    ''|*[!0-9]*|0)
+      echo "driver: '$secs' is not a number of seconds, so '$cmd' runs UNBOUNDED — set cmdTimeout to a whole number of seconds." >&2
+      /bin/sh -c "$cmd"; return $? ;;
+  esac
   if command -v perl >/dev/null 2>&1; then
-    perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" /bin/sh -c "$cmd"
+    perl -e '
+      my $secs = shift; my @cmd = @ARGV;
+      my $pid = fork;
+      if (!defined $pid) { exit 127 }
+      if ($pid == 0) { setpgrp(0, 0); exec @cmd; exit 127 }
+      $SIG{ALRM} = sub { kill("TERM", -$pid); sleep 1; kill("KILL", -$pid); exit 124 };
+      alarm $secs;
+      waitpid($pid, 0);
+      my $st = $?;
+      alarm 0;
+      exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
+    ' "$secs" /bin/sh -c "$cmd"
     rc=$?
-    # 142 is 128+SIGALRM: the alarm fired. Name it 124 so every caller reads one code.
-    [ "$rc" -eq 142 ] && rc=124
   elif command -v timeout >/dev/null 2>&1; then
     timeout "$secs" /bin/sh -c "$cmd"; rc=$?
   else
-    echo "driver: neither perl nor timeout is available, so '$cmd' runs unbounded" >&2
+    echo "driver: neither perl nor timeout is available, so '$cmd' runs UNBOUNDED" >&2
     /bin/sh -c "$cmd"; rc=$?
   fi
   return "$rc"

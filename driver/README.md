@@ -149,10 +149,17 @@ replicas proves the kit and never the product.
 
 ## One note for anyone editing the step files
 
-**Never put `${var:-<literal text>}` or a command substitution inside a `case` arm.**
-bash 3.2 — the stock macOS shell this has to run on — mis-parses it: an apostrophe or a
-nested `$( )` in the default closes the arm early and every arm after it, including
-`*)`, is silently swallowed. The dispatch then matches nothing, the walk neither parks
-nor advances, and the step runs for ever. `bash -n` accepts it, so the only symptom is a
-run that hangs. That is why `build-ticket`'s arms only assign two variables and the park
-happens once, after the `esac`.
+**Never put `${var:-<literal text>}` inside a `case` arm** — or anywhere the text may
+contain an apostrophe.
+
+In bash 3.2, the stock macOS shell this has to run on, an apostrophe inside a `${var:-…}`
+default opens a single-quote context even within double quotes. **One** of them is a loud
+unterminated-quote error that `bash -n` catches. **Two** of them balance each other, so
+`bash -n` returns 0 and everything between the pair is swallowed. That is how a `case`
+lost the arms between two such defaults, including `*)`: the dispatch then matched
+nothing for a refusal, the walk neither parked nor advanced, and the step ran for ever —
+measured at 573 calls, on a file the syntax check accepted.
+
+Bisected, so the rule is narrow and true: `$( )` inside a default in an arm is fine, one
+apostrophe fails loudly, two fail silently. `build-ticket`'s arms therefore only assign
+two variables, and the park happens once after the `esac`.

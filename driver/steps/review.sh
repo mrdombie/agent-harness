@@ -59,7 +59,15 @@ driver_step_review() { # <ticket>
   # a blocker is a dead control, a broken flow or a data-honesty failure, and none of
   # those ship — the ship step refuses and names them, so filing one as a follow-up
   # too would record the same finding in two places with nobody owning either.
-  _driver_file_leftovers "$t" "$ans_file" "$round"
+  if ! _driver_file_leftovers "$t" "$ans_file" "$round"; then
+    # A LEFTOVER NOBODY FILED IS A LEFTOVER LOST, and the ceiling's whole justification
+    # is that nothing is lost by ending the loop. Returning OK here left the finding as
+    # one line of stdout inside the state directory — a file on the machine that ran it,
+    # which is the one place a handover must not depend on — and on a SHIP verdict no
+    # park ever happened, so nobody was ever told. Refusing makes the orchestrator park
+    # with the finding as the question.
+    return "$DRIVER_E_REFUSED"
+  fi
   driver_say "   review: $verdict after $round round(s)"
   return "$DRIVER_OK"
 }
@@ -97,7 +105,8 @@ _driver_file_leftovers() { # <ticket> <review.json> <round>
   if [ -n "$lost" ]; then
     driver_say "✋ review: $filed of $n finding(s) filed as follow-up ticket(s). These did NOT land and are not written down anywhere a person will find them: $lost"
     driver_state_set "$t" park_note "review leftovers that could not be filed as tickets: $lost"
-  else
-    driver_say "   review: $n finding(s) filed as follow-up ticket(s), each carrying the finding verbatim"
+    return 1
   fi
+  driver_say "   review: $n finding(s) filed as follow-up ticket(s), each carrying the finding verbatim"
+  return 0
 }

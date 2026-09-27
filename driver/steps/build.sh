@@ -135,11 +135,12 @@ driver_prove_red_green() {
 
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
-  local repo tries rc n bad item id tfile tcmd tsha isha why
+  local repo tries rc n bad item id tfile tcmd tsha isha why prc
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
 
+  driver_check_timeout || true
   driver_state_bump "$t" build
   tries=$(driver_state_count "$t" build)
 
@@ -178,8 +179,18 @@ driver_step_build() { # <ticket>
       driver_say "✋ build item $id names no test to prove it (needs test_file, test_command, test_commit, impl_commit)."
       bad=1; continue
     fi
-    if why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd"); then
+    why=""; prc=0
+    why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
+    if [ "$prc" -eq 0 ]; then
       driver_say "   build item $id — $why"
+    elif [ "$prc" -eq 4 ]; then
+      # A HANG IS NOT A FAILING TEST, so it does not go in the retry bucket. Folded in
+      # with the rest it was tried five times — at the default ceiling that is five
+      # attempts times two proof halves of waiting — and the ticket then parked blaming
+      # the change, which is what this step's own header forbids. It returns its own
+      # code so the orchestrator parks with the real reason immediately.
+      driver_say "✋ build item $id — $why"
+      return "$DRIVER_E_TIMEOUT"
     else
       driver_say "✋ build item $id — $why"
       bad=1

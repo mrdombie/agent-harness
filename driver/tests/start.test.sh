@@ -37,8 +37,15 @@ case "$1" in
       '{agent:$a, branch:$b, worktree:$w}' ;;
   release) awk -v t="$t" '$1!=t' "$CLAIMS" > "$CLAIMS.t"; mv "$CLAIMS.t" "$CLAIMS" ;;
   update)
-    b=$(argval branch= "$@"); w=$(argval worktree= "$@")
-    awk -F'\t' -v OFS='\t' -v t="$t" -v b="$(argval --branch "$@")" -v w="$(argval --worktree "$@")" \
+    # `key=value`, which is the form claim-lock.sh actually takes and the form start.sh
+    # actually sends. Parsed as `--branch X` the stub could never rewrite a row — so the
+    # two assertions that exist to prove a peer's claim was NOT rewritten were true of
+    # any code at all, including code that rewrote it.
+    b=""; w=""
+    for a in "$@"; do
+      case "$a" in branch=*) b="${a#branch=}" ;; worktree=*) w="${a#worktree=}" ;; esac
+    done
+    awk -F'\t' -v OFS='\t' -v t="$t" -v b="$b" -v w="$w" \
       '$1==t{ if (b!="") $3=b; if (w!="") $4=w } {print}' "$CLAIMS" > "$CLAIMS.t"; mv "$CLAIMS.t" "$CLAIMS" ;;
 esac
 SH
@@ -113,9 +120,12 @@ echo "--- OUR OWN claim, taken but not yet recorded, is not a peer's ---"
 # to clear a label for a state that was our own half-finished run — while the message
 # sends them looking for an agent that does not exist.
 fix_issue 107 OPEN "status:ready"
-# Our own: the branch on the claim is the one this step would compute, and no
-# worktree was recorded before the kill.
+# Our own: the claim names the branch and no worktree, AND OUR RECORD ALREADY NAMES THE
+# BRANCH — which is the state a run killed in that window is actually in, because start
+# writes the branch onto the record one statement after acquiring and the worktree only
+# after the fetch and the checkout.
 claim_row 107 "${CLAIM_AGENT:-tester@fixture}" "tkt-107/ticket-107" ""
+driver_state_init 107 --branch "tkt-107/ticket-107"
 out=$(driver_step_start 107 2>&1); rc=$?
 want "it carries on with the claim it holds" "0" "$rc"
 want_not_in "and never blames a peer"        'peer' "$out"
@@ -144,6 +154,20 @@ want "and its worktree too"                "$FIX/peer-wt" \
   "$(awk -F'\t' '$1==108{print $4}' "$CLAIMS")"
 want "no worktree was cut for us"          "" "$(driver_state_get 108 worktree)"
 
+echo "--- a sibling in the pre-worktree window names the SAME branch, and is still not us ---"
+# The branch is derived from the ticket and its title, so a sibling that acquired seconds
+# ago and has not recorded a worktree yet carries exactly the branch this run computes.
+# Matching on the branch alone therefore adopted it, cut a second worktree, and rewrote
+# the sibling's claim. What separates them is OUR record: this run writes the branch onto
+# it one statement after acquiring, so an empty record means we never acquired.
+fix_issue 110 OPEN "status:ready"
+claim_row 110 "${CLAIM_AGENT:-tester@fixture}" "tkt-110/ticket-110" ""
+out=$(driver_step_start 110 2>&1); rc=$?
+want "it is not adopted"                "24" "$rc"
+want_in "and says another run holds it" 'another|peer' "$out"
+want "no worktree was cut for us"       "" "$(driver_state_get 110 worktree)"
+want "and the sibling's claim is untouched" "" "$(awk -F'\t' '$1==110{print $4}' "$CLAIMS")"
+
 echo "--- and our own claim, recorded, is still ours on a resume ---"
 fix_issue 109 OPEN "status:ready"
 driver_state_init 109 --worktree "$FIX/ours-wt" --branch tkt-109/ours
@@ -159,7 +183,7 @@ want "an unreadable ticket refuses" "24" "$rc"
 want_in "and says it could not read it" 'could not be read' "$out"
 
 echo "--- the claim is released when a gate says no, never squatted ---"
-want "nothing claimed for the refused tickets" "101 107 108 109" \
+want "nothing claimed for the refused tickets" "101 107 108 110 109" \
   "$(awk '$1!=106{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//')"
 
 exit $FAILED

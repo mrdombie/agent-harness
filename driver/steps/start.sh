@@ -27,7 +27,7 @@
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
-  local meta st labels repo slug branch wt sha l hrc cw cb ow
+  local meta st labels repo slug branch wt sha l hrc cw cb ow ob
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
@@ -102,7 +102,15 @@ driver_step_start() { # <ticket>
         cw=$(bash "$CL" show "$t" 2>/dev/null | jq -r '.worktree // ""' 2>/dev/null)
         cb=$(bash "$CL" show "$t" 2>/dev/null | jq -r '.branch // ""' 2>/dev/null)
         ow=$(driver_state_get "$t" worktree)
-        if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } || { [ -z "$cw" ] && [ "$cb" = "$branch" ]; }; then
+        # THE BRANCH ON THE CLAIM IS NOT ENOUGH ON ITS OWN. It is derived from the ticket
+        # and its title, so a sibling that acquired seconds ago and has not recorded a
+        # worktree yet carries exactly the branch this run would compute — and matching
+        # on that adopted it. OUR RECORD is what separates them: this run writes the
+        # branch onto it one statement after acquiring, so an empty record means we never
+        # acquired, whatever the claim says.
+        ob=$(driver_state_get "$t" branch)
+        if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } \
+        || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   start: #$t is already ours — resuming"
         else
           driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."

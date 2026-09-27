@@ -54,9 +54,23 @@ jq '.gates = {"hang":"sleep 60"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv 
 t0=$(date +%s)
 out=$(DRIVER_CMD_TIMEOUT=2 driver_step_self_check 101 2>&1); rc=$?
 t1=$(date +%s)
-want "it refuses"                   "24" "$rc"
+# 25, not 24. A hang says nothing about the change, and the park question a reader needs
+# is "which command does not return", not "which check failed".
+want "a hang is its own outcome"    "25" "$rc"
 want_in "naming it as a time limit" 'time' "$out"
+want_in "and it leaves the command for the handover" 'sleep 60' "$(driver_state_get 101 park_note)"
 if [ $((t1 - t0)) -lt 30 ]; then ok "it came back in $((t1-t0))s"; else bad "waited $((t1-t0))s — the bound did not hold"; fi
+
+echo "--- a time limit that is not a number bounds nothing, and says so ---"
+# perl reads `alarm "15m"` as `alarm 0`, which CANCELS the alarm — so an operator writing
+# "15m" or "900s" in the config silently removes every bound in the driver, and a
+# watch-mode runner then hangs the run for ever with nothing printed. A bound nobody
+# applied must not read like one that held.
+jq '.gates = {"quick":"true"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+out=$(DRIVER_CMD_TIMEOUT=15m driver_step_self_check 101 2>&1); rc=$?
+want "the gate still runs"             "0" "$rc"
+want_in "and it says the bound is not there" 'UNBOUNDED' "$out"
+want_in "naming the value it could not use"  '15m' "$out"
 
 echo "--- a command that is only whitespace or a comment is not a gate that ran ---"
 # One keystroke from the empty case, and operator-authored: a placeholder left in

@@ -28,6 +28,9 @@ driver_step_self_check() { # <ticket>
   local wt names name cmd rc gtype failed=0 ran=0 empty=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  # Said before the gates run, and through the ticket's log: each gate's own output goes
+  # to a file, so a warning printed inside one is a warning nobody sees.
+  driver_check_timeout || true
 
   # The SHAPE first. `gates` written as a list reads as no names at all, and the
   # "nothing configured" guard below does not fire because the key is there — so one
@@ -57,8 +60,12 @@ driver_step_self_check() { # <ticket>
     ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$name.out" 2>&1
     rc=$?
     if [ "$rc" -eq 124 ]; then
-      failed=$((failed+1))
+      # Its own outcome, not a red gate. A gate that does not return says nothing about
+      # the change, and the park question a reader needs is "which command hangs", not
+      # "which check failed".
       driver_say "✋ self-check: $name ran out of time (over ${DRIVER_CMD_TIMEOUT}s). A gate that does not return is not a gate that passed."
+      driver_state_set "$t" park_note "the '$name' gate did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
+      return "$DRIVER_E_TIMEOUT"
     elif [ "$rc" -eq 0 ]; then
       driver_say "   self-check: $name ok"
     else

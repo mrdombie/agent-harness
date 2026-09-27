@@ -98,6 +98,7 @@ fix_gh_ok
 want_not_in "it does not claim the filing happened" 'review: 1 finding\(s\) filed' "$out"
 want_in "it says how many actually landed"           '0 of 1' "$out"
 want_in "and names what was not filed"               'the count is not shown' "$out"
+want "and it REFUSES, so a park carries the finding" "24" "$rc"
 want_in "and leaves it for the handover"             'the count is not shown' \
   "$(driver_state_get 106 park_note)"
 
