@@ -61,9 +61,18 @@ for step in $steps; do
     || ok "$step.md does not reach for brainstorming"
 
   # --- the contract it returns against ---------------------------------------
-  grep -qF "schemas/$step.json" "$brief" \
-    && ok "$step.md names its contract" \
-    || bad "$step.md never names schemas/$step.json"
+  # Read out of the ## Return SECTION, not the whole file. Grepping the file
+  # measured that the string exists somewhere; the driver's requirement is that
+  # the brief TELLS the AI what to hand back. Renaming the heading to `## Output`
+  # left the string in place and this assertion green — proved by planting it.
+  ret=$(awk '/^## Return[[:space:]]*$/ {inr=1; next} /^## / {inr=0} inr' "$brief")
+  if [ -z "$ret" ]; then
+    bad "$step.md has no '## Return' section — the driver has nothing telling the step what to hand back"
+  else
+    printf '%s' "$ret" | grep -qF "schemas/$step.json" \
+      && ok "$step.md's Return section names its contract" \
+      || bad "$step.md has a Return section that never names schemas/$step.json"
+  fi
 
   # --- placeholders: the only coupling with the driver ------------------------
   used=$(grep -oE '\{\{[^}]*\}\}' "$brief" | sed 's/^{{//; s/}}$//' | sort -u)
