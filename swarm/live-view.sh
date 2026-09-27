@@ -14,6 +14,14 @@ command -v node >/dev/null 2>&1 || { echo "live-view: node is not on PATH" >&2; 
 
 export SWARM_RUNS_DIR="$RUNS_DIR" SWARM_PORT SWARM_REPO="$REPO_SLUG" SWARM_GH
 export SWARM_PROGRAMME_PREFIX SWARM_TITLES="${SWARM_TITLES:-$SWARM_DIR/live-view-titles.json}"
+# How far along each agent and each plan is. The reads are git and forge calls, so
+# they are cached and refreshed off the request path; the claim ref is what names
+# the branch, so the queue's own clone has to be nameable here too.
+export SWARM_PROGRESS_MS="${SWARM_PROGRESS_MS:-$(( $(swarm_opt swarm.progressSec 60) * 1000 ))}"
+export SWARM_PROGRESS_CACHE="${SWARM_PROGRESS_CACHE:-$SWARM_DIR/progress.json}"
+export SWARM_PLAIN_TITLES="${SWARM_PLAIN_TITLES:-$STATE_DIR/plain-titles.json}"
+export SWARM_CLAIM_LOCK="${SWARM_CLAIM_LOCK:-$CL}" SWARM_QUEUE_REPO="${SWARM_QUEUE_REPO:-$MAIN_REPO}"
+export DRIVER_DIR="${DRIVER_DIR:-$STATE_DIR/driver}"
 SERVER="$(dirname "${BASH_SOURCE[0]}")/live-view/server.mjs"
 
 if [ "${1:-}" = "--print" ]; then

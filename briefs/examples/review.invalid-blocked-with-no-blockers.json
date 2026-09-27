@@ -1,0 +1,10 @@
+{
+  "step": "review",
+  "skills": [
+    "superpowers:requesting-code-review"
+  ],
+  "status": "reviewed",
+  "round": 1,
+  "verdict": "BLOCKED",
+  "blockers": []
+}

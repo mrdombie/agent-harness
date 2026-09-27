@@ -1,0 +1,41 @@
+{
+  "step": "fix",
+  "status": "fixed",
+  "round": 1,
+  "cleared": [
+    {
+      "blockerId": "b1",
+      "change": [
+        {
+          "path": "src/queue/panel.tsx",
+          "action": "modify"
+        }
+      ],
+      "test": {
+        "file": "src/queue/panel.test.tsx",
+        "behaviour": "a failed read renders the retry row, not the empty copy",
+        "redWhen": "the state === 'failed' branch is deleted"
+      },
+      "command": "npm test -- src/queue/panel.test.tsx",
+      "failedBefore": true,
+      "passedAfter": true
+    },
+    {
+      "blockerId": "b2",
+      "change": [
+        {
+          "path": "src/queue/reader.test.ts",
+          "action": "modify"
+        }
+      ],
+      "test": {
+        "file": "src/queue/reader.test.ts",
+        "behaviour": "read() against a throwing fetch returns state 'failed'",
+        "redWhen": "the catch block is deleted"
+      },
+      "command": "npm test -- src/queue/reader.test.ts",
+      "failedBefore": true,
+      "passedAfter": true
+    }
+  ]
+}

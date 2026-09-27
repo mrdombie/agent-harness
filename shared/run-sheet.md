@@ -40,7 +40,7 @@ Top to bottom is the order the work happens in. Build it once, then render it:
 |---|---|---|
 | 1 | **done** | `closedAt` ascending — the real history, oldest first |
 | 2 | **now** | claimed on this machine, or an open PR |
-| 3 | **next** | the dependency order from `/project` Step 3 — topological, then P0→P3, then effort ascending |
+| 3 | **next** | the dependency order from `/agent-harness:project` Step 3 — topological, then P0→P3, then effort ascending |
 | 4 | **held** | what each waits on |
 | 5 | **you** | what each needs from the operator |
 
@@ -95,7 +95,7 @@ this on 2026-09-13 over collapsing the done rows: a 36-row programme scrolls, an
 the correct cost. A truncated run sheet is the thing this block exists to stop — he is
 reading it precisely to see how much is behind and how much is ahead.
 
-The one exception is **MODE=AREA** in `/project`: an area has no finish line and 261
+The one exception is **MODE=AREA** in `/agent-harness:project`: an area has no finish line and 261
 closed rows help nobody. There, band 1 is a count on the header line and the rail starts
 at 🔨. Say so on the header: `261 closed all-time`.
 
@@ -105,7 +105,7 @@ at 🔨. Say so on the header: `261 closed all-time`.
 📋 <SUBJECT IN CAPS> — <done> of <total> done · <N>% by effort · <N> unestimated
 ```
 
-The figures come from `/project` Step 4 and its rules hold unchanged: effort-weighted,
+The figures come from `/agent-harness:project` Step 4 and its rules hold unchanged: effort-weighted,
 never a bare ticket count, and **never a percentage without the unestimated count beside
 it**. For MODE=AREA it is `<N>% of open work runnable`, never a completion figure.
 
@@ -118,12 +118,12 @@ title column at the terminal's width and the rail turns into ragged pipes.
 
 | Command | Where | Scope |
 |---|---|---|
-| `/project <subject>` | replaces Step 5's five sections | the whole subject |
-| `/work` | its close, and every pause for a decision | the resolved label |
-| `/auto` | its close | the labels it took from this run |
-| `/standup` | replaces its four state tables | this session's tickets |
+| `/agent-harness:project <subject>` | replaces Step 5's five sections | the whole subject |
+| `/agent-harness:work` | its close, and every pause for a decision | the resolved label |
+| `/agent-harness:auto` | its close | the labels it took from this run |
+| `/agent-harness:standup` | replaces its four state tables | this session's tickets |
 
-`NEEDS ATTENTION` survives underneath it in `/project` and `/auto` — zombie claims and
+`NEEDS ATTENTION` survives underneath it in `/agent-harness:project` and `/agent-harness:auto` — zombie claims and
 orphan branches are not a state a ticket is in, they are a thing to run a command about.
 The sign-off banner still comes last, per `~/.claude/shared/agent-signoff.md`.
 

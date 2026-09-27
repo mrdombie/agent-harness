@@ -17,6 +17,7 @@ jobs:
       - name: Scripts and hooks parse
         run: |
           for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh swarm/*.sh swarm/tests/*.sh \
+                   briefs/*.sh briefs/tests/*.sh \
                    driver/*.sh driver/steps/*.sh driver/tests/*.sh driver/build-ticket; do
             bash -n "$f"
           done
@@ -28,7 +29,7 @@ jobs:
           # at all — hooks/lib/ was invisible that way once, and swarm/tests/
           # shipped six suites nothing here could see.
           ran=$(mktemp)
-          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh driver/tests/*.test.sh; do
+          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh briefs/tests/*.test.sh driver/tests/*.test.sh; do
             [ -f "$t" ] || continue
             echo "== $t"; echo "$t" >> "$ran"
             bash "$t" || fail=1
@@ -45,3 +46,8 @@ jobs:
           exit $fail
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
+      - name: Our own skills are addressed with the kit
+        # A bare /claim in the kit's own instructions resolves to whichever copy
+        # the machine carries. Three were reachable on the origin machine and they
+        # disagreed by 474 lines; the one that loaded was never the kit's.
+        run: bash scripts/check-skill-namespacing.sh

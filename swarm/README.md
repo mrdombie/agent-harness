@@ -17,6 +17,7 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `repair-watch.sh` | Repair a red or clashing pull request · unblock · restart after an outage · raise the alarm. |
 | `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. |
 | `report.sh` | One screen, one JSON, one push. |
+| `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. |
 | `install.sh` | Writes and loads the timers. `status` reads back what is loaded. |
 | `detach.sh` | Runs a command in a session of its own. |
 
@@ -36,6 +37,46 @@ Write the token to a file the jobs can read:
 gh auth token > "$STATE_DIR/swarm/gh-token" && chmod 600 "$STATE_DIR/swarm/gh-token"
 ```
 
+## The status line
+
+One line at the bottom of every Claude Code window, from the same snapshot the
+live view serves plus the pull requests carrying the hold label:
+
+```
+3 agents working · 1 needs you
+```
+
+```sh
+swarm/status-line.sh --install     # point ~/.claude/settings.json at it
+swarm/status-line.sh --print       # compute it now, and see what it says
+swarm/status-line.sh --uninstall
+```
+
+A plugin cannot ship a `statusLine` — the CLI's plugin content list has no such
+entry — so `--install` writes the settings entry, refusing a settings file it
+cannot parse rather than overwriting one. The command it writes carries this
+copy's path, and a plugin's path carries its version, so **re-run `--install`
+after a kit update**.
+
+It says `swarm view not answering` rather than a count whenever it could not
+see: the view is down, its snapshot is older than `swarm.staleSec`, or the
+cached line is older than `SWARM_STATUS_MAX_AGE`. A hold count the forge never
+gave reads `approvals unknown`. None of those is zero — an operator who reads
+"no agents working" off a line that simply could not see starts more work on a
+machine that is already full.
+
+Claude Code runs this on every render, and the parts of the answer measure
+170 ms (sourcing `swarm-env.sh`), 95 ms (the live view) and 581 ms (the forge).
+So the render path reads one cached line and exits — 34 ms measured — and the
+recompute runs detached behind it. No render waits on the forge.
+
+| Variable | Default | What it is |
+|---|---|---|
+| `SWARM_STATUS_TTL` | 10 | Older than this, the line is refreshed behind you |
+| `SWARM_STATUS_MAX_AGE` | 120 | Older than this, the cached line is no answer |
+| `SWARM_STATUS_GH_TTL` | 120 | How long one forge answer is reused |
+| `CLAUDE_SETTINGS` | `~/.claude/settings.json` | What `--install` writes |
+
 ## Queue a ticket with a brief
 
 This is what the hand-written launchers were:
@@ -46,6 +87,45 @@ swarm/queue.sh add 1234 --reset      # release the claim and re-ready it AT DRAI
 swarm/queue.sh list
 ```
 
+## How far along
+
+Every live row carries a seven-step bar, and every plan with an agent working
+carries a progress bar. Both are in `swarm/live-view/progress.mjs`, and both are
+read from facts:
+
+| Step | The fact |
+|---|---|
+| Set up | the claim ref exists |
+| Plan | the branch has a commit |
+| Build | it has more than one |
+| Check | the branch is on origin, so the pre-push gates ran and passed |
+| Review | a review verdict trailer on the branch |
+| PR | a pull request, and its check rollup |
+| Merged | that pull request is merged |
+
+Where the step-runner has written its own step record, that is read instead of
+inferred. Where a fact cannot be read the step is `unknown` and its name travels
+with the row, so a reader is told rather than shown a guess. **Nothing on the bar
+comes from what an agent said about itself** — an agent's narration is the one
+thing on the machine that cannot be checked.
+
+Three pairs are kept apart because each one otherwise reads as the wrong answer:
+no PR versus the forge could not be asked; nothing committed versus the worktree
+was swept; no review on this branch versus this repo has never stamped one.
+
+The plan bar uses the same effort table as `/project` — S 1, M 3, L 8, XL 20 —
+excludes epics, and counts the unsized rather than zeroing them. A plan whose
+issue list could not be read keeps its row with no percentage: a row that
+vanishes reads as "no plan" and a zeroed one reads as "no progress".
+
+The reads are git and forge calls, so they are cached (`swarm.progressSec`,
+default 60) and refreshed off the request path. A snapshot taken before the
+first refresh lands says `unknown` on every step.
+
+`plain-titles.json` beside the run records maps a ticket to the short title a
+person should read; without one the title is cut back to the clause that names
+the thing.
+
 ## The rules it holds to
 
 - **The cap is per programme, and it is three.** Eight agents on one programme
@@ -54,7 +134,8 @@ swarm/queue.sh list
   may run three each; they do not share files.
 - **No answer from the live view means BUSY, never room.** A down view used to
   read as zero agents, so the scheduler filled every slot on a full machine.
-  A snapshot older than two minutes is discarded and takes the same path.
+  A snapshot older than two minutes is discarded and takes the same path. The
+  status line answers the same way, in words: `swarm view not answering`.
 - **A stop after three repairs is a label, not a count.** The count expired when
   the 24-hour window rolled and sent a fourth agent.
 - **Nothing leaves the machine that a person has not seen.** The reporter sends
@@ -72,6 +153,7 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.maxLoad` | 32 | Hold above this one-minute load average |
 | `swarm.port` | 4777 | The live view's port |
 | `swarm.staleSec` | 120 | A snapshot older than this is no answer |
+| `swarm.progressSec` | 60 | How often the step and plan facts are re-read |
 | `swarm.quietSec` | 1200 | An agent silent this long is stuck |
 | `swarm.idleMin` | 20 | Nothing running this long, with work waiting, is a stall |
 | `swarm.repairsPerPass` | 2 | Repairs started in one pass |

@@ -1,0 +1,28 @@
+{
+  "step": "fix",
+  "skills": [
+    "superpowers:receiving-code-review",
+    "superpowers:test-driven-development"
+  ],
+  "status": "fixed",
+  "round": 1,
+  "cleared": [
+    {
+      "blockerId": "b1",
+      "change": [
+        {
+          "path": "src/queue/panel.tsx",
+          "action": "modify"
+        }
+      ],
+      "test": {
+        "file": "src/queue/panel.test.tsx",
+        "behaviour": "a failed read renders the retry row, not the empty copy",
+        "redWhen": "the state === 'failed' branch is deleted"
+      },
+      "command": "npm test -- src/queue/panel.test.tsx",
+      "failedBefore": false,
+      "passedAfter": true
+    }
+  ]
+}

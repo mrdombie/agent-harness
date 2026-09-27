@@ -1,0 +1,42 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:subagent-driven-development",
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "A failed read is its own outcome, not an empty one",
+  "testFirst": {
+    "test": {
+      "file": "src/queue/reader.test.ts",
+      "behaviour": "a fetch that throws resolves to { state: 'failed' }, never to an empty list",
+      "redWhen": "the catch block is deleted so the throw propagates as []"
+    },
+    "command": "npm test -- src/queue/reader.test.ts",
+    "failedBefore": true,
+    "redOutput": "FAIL  expected 'failed', received undefined",
+    "passedAfter": true,
+    "greenOutput": "PASS  1 passed"
+  },
+  "changed": [
+    {
+      "path": "src/queue/reader.ts",
+      "action": "modify"
+    },
+    {
+      "path": "src/queue/reader.test.ts",
+      "action": "create"
+    },
+    {
+      "path": "src/queue/panel.tsx",
+      "action": "modify"
+    }
+  ],
+  "surfaces": [
+    "src/queue/panel.tsx renders the failed state; it read the same [] and said 'nothing here'"
+  ],
+  "changelog": {
+    "file": "changes/10886-failed-read.md"
+  },
+  "notAContractKey": "a step that invented a field"
+}

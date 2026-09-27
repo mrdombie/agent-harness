@@ -15,6 +15,7 @@
 # network and never starts an agent:
 #   $FIX/gh/issue-<n>.json   what `gh issue view <n>` returns
 #   $FIX/gh/prs-<key>.json   what a `gh pr list` matching <key> returns
+#   $FIX/gh/api-<endpoint>.json  what `gh api <endpoint>` returns; / ? & = -> _
 #   $FIX/live.json           what the live view answers; ABSENT = no answer
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/time.sh" || exit 1
@@ -85,6 +86,12 @@ case "$1 $2" in
     [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
     emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  "api "*|"api")
+    # Keyed by the endpoint with every / and ? flattened, so "the commits on the
+    # trunk" and "the branch compared with the trunk" can answer differently.
+    f="$FIX/gh/api-$(printf '%s' "$3" | tr '/?&=' '____').json"
+    [ -f "$f" ] || exit 1
+    emit "$f" ;;
   *) : ;;
 esac
 exit 0
