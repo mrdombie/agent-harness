@@ -68,10 +68,18 @@ driver_step_start() { # <ticket>
       return "$DRIVER_E_REFUSED"
     fi
   else
-    slug=$(printf '%s' "$meta" | cut -d$'\001' -f3 | tr '[:upper:]' '[:lower:]' \
-           | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-40)
-    [ -n "$slug" ] || slug="ticket-$t"
-    branch="${BRANCH_PREFIX}${t}/${slug}"
+    # A branch already on the record is KEPT. Naming a second one is how a resumed
+    # run ends up with its commits on a branch nobody ships: the worktree, the
+    # commits and the pull request are all on the first name, and everything after
+    # this line would look at the second. The worktree below is guarded that way
+    # already; the branch was not, and the two have to agree.
+    branch=$(driver_state_get "$t" branch)
+    if [ -z "$branch" ]; then
+      slug=$(printf '%s' "$meta" | cut -d$'\001' -f3 | tr '[:upper:]' '[:lower:]' \
+             | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-40)
+      [ -n "$slug" ] || slug="ticket-$t"
+      branch="${BRANCH_PREFIX}${t}/${slug}"
+    fi
     if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
       driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
       return "$DRIVER_E_REFUSED"

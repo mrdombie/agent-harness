@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# build-ticket — one ticket, from the claim to the hand-off, with the driver
+# deciding what happens next.
+#
+#   build-ticket <ticket> [--restart] [--steps "start plan …"]
+#
+# THIS FILE IS THE CHANGE THE EPIC IS ABOUT. Until now the order of the work was
+# a list an agent read in 49,657 words of instructions and then chose from: the
+# "mandatory" Superpowers steps were used in 3 of 161 runs, and test-first in
+# none of them. Not because the instructions were unclear — because deciding the
+# next step was the model's job, and a model under pressure decides to get on
+# with it. Here the order is a list in code, walked to the end, and the only
+# thing the model is asked is the thinking inside one step.
+#
+# The seven, and what each returns, live in driver-env.sh. What this file adds is
+# the three rules between them:
+#
+#   1. IN ORDER, AND EVERY ONE. A step is not skippable. A step named in the
+#      order whose file or function is missing is a REFUSAL, by name — because a
+#      walk that quietly skips what it cannot find reports exactly like a walk
+#      where that step passed, and "the gate did not run" has to look different
+#      from "the gate found nothing".
+#   2. NOTHING IS LOST ON A STOP. Each finished step is written to the record
+#      before the next one starts, so a killed run resumes at the one after it
+#      rather than re-taking the claim and re-cutting the tree.
+#   3. ANY REFUSAL PARKS. There is no fall-through. A step that refuses, asks a
+#      question, skipped its Skill or answered in the wrong shape ends the run
+#      through park.sh — pushed, draft pull request, resume brief, label, claim
+#      released — so the work is recoverable by somebody who is not this process.
+#
+# A review that finds blockers is the one code that is not an ending: it rewinds
+# to the build step and the steps between are reopened, which is what a rework
+# round is. That loop is bounded here as well as inside the build step, because
+# a step returning "go back" forever is indistinguishable from a hung agent.
+set -uo pipefail
+
+DRIVER_HOME_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$DRIVER_HOME_SELF/driver-env.sh" || exit 1
+. "$DRIVER_HOME_SELF/state.sh" || exit 1
+
+# The step files. A seam, so a test can walk the orchestrator over recorders and
+# get a clean answer about control flow — the same reason every call out of the
+# swarm layer is overridable.
+DRIVER_STEPS_DIR="${DRIVER_STEPS_DIR:-$DRIVER_HOME_SELF/steps}"
+
+die() { echo "build-ticket: $*" >&2; exit 2; }
+
+TICKET=""; RESTART=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --restart) RESTART=1; shift ;;
+    --steps)   DRIVER_STEPS="${2:?--steps needs a list}"; shift 2 ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)        die "unknown flag $1" ;;
+    *)         TICKET="$1"; shift ;;
+  esac
+done
+[ -n "$TICKET" ] || die "need a ticket number"
+case "$TICKET" in *[!0-9]*) die "'$TICKET' is not a ticket number" ;; esac
+export DRIVER_TICKET="$TICKET"
+
+# ---- load the steps, refusing by name --------------------------------------
+# Park first: it is the exit from every other step, so a run that cannot park is
+# a run that must not start. Loading it late would mean discovering that at the
+# exact moment it was needed.
+step_fn() { printf 'driver_step_%s' "$(printf '%s' "$1" | tr '-' '_')"; }
+
+[ -f "$DRIVER_STEPS_DIR/park.sh" ] \
+  || die "no park step at $DRIVER_STEPS_DIR/park.sh — every other step's refusal ends there, so nothing may start without it"
+. "$DRIVER_STEPS_DIR/park.sh" || die "could not load $DRIVER_STEPS_DIR/park.sh"
+command -v driver_park >/dev/null 2>&1 || die "$DRIVER_STEPS_DIR/park.sh defines no driver_park"
+
+for s in $DRIVER_STEPS; do
+  f="$DRIVER_STEPS_DIR/$s.sh"
+  [ -f "$f" ] || die "the order names the step '$s' and there is no $f. A step that cannot be found is refused here, not skipped: a walk that skips it reports the same as a walk where it passed."
+  . "$f" || die "could not load $f"
+  command -v "$(step_fn "$s")" >/dev/null 2>&1 \
+    || die "$f defines no $(step_fn "$s") — the step's file is there and the step is not."
+done
+
+# ---- the record ------------------------------------------------------------
+driver_state_init "$TICKET"
+if [ "$RESTART" -eq 1 ]; then
+  driver_state_reopen "$TICKET" $DRIVER_STEPS
+  driver_say "↻ #$TICKET restarting: every step will run again."
+fi
+
+# The steps as an indexable list, because a rework rewinds to a position.
+set -- $DRIVER_STEPS
+STEPS=("$@")
+N=${#STEPS[@]}
+
+# Where a rework goes back to. The build step, when the order has one — a review
+# that found blockers is asking for a different change, not a different review.
+BUILD_AT=-1
+i=0
+while [ "$i" -lt "$N" ]; do
+  [ "${STEPS[$i]}" = "build" ] && { BUILD_AT=$i; break; }
+  i=$((i+1))
+done
+
+# The rework ceiling. The build step counts its own tries and parks at
+# DRIVER_MAX_BUILD_TRIES, so this only ever fires when a step returns "go back"
+# WITHOUT counting — a bug in a step. It is here so that bug shows up as a park
+# with a reason rather than as a run that never ends.
+REWORKS=0
+REWORK_CEILING="$DRIVER_MAX_BUILD_TRIES"
+
+skipped=0
+ran=0
+i=0
+while [ "$i" -lt "$N" ]; do
+  step="${STEPS[$i]}"
+
+  if driver_state_is_done "$TICKET" "$step"; then
+    skipped=$((skipped+1)); i=$((i+1)); continue
+  fi
+
+  # Its own command, and the exit code is the verdict. Never batched with
+  # anything: a step batched with the next one reports on the shell reaching
+  # that line, and a printed failure mid-batch has reached the trunk before.
+  rc=0
+  "$(step_fn "$step")" "$TICKET" || rc=$?
+  ran=$((ran+1))
+
+  case "$rc" in
+    "$DRIVER_OK")
+      driver_state_done "$TICKET" "$step"
+      i=$((i+1))
+      ;;
+
+    "$DRIVER_E_REWORK")
+      if [ "$BUILD_AT" -lt 0 ]; then
+        driver_park "$TICKET" "$step asked for a rework and this run has no build step to go back to" \
+          "Should the order include a build step, or should $step stop asking for one?"
+        exit "$DRIVER_E_QUESTION"
+      fi
+      REWORKS=$((REWORKS+1))
+      if [ "$REWORKS" -gt "$REWORK_CEILING" ]; then
+        driver_park "$TICKET" "the rework loop did not settle: $REWORKS rounds and $step is still sending the work back" \
+          "The build step parks itself at $DRIVER_MAX_BUILD_TRIES tries, so a loop past that is a step returning rework without counting. Which is it?"
+        exit "$DRIVER_E_QUESTION"
+      fi
+      # Everything from the build step onwards has to happen again, so it has to
+      # leave the finished list — otherwise the resumed walk skips the very steps
+      # the rework exists to repeat.
+      driver_state_reopen "$TICKET" "${STEPS[@]:$BUILD_AT}"
+      driver_say "↩ rework round $REWORKS: back to ${STEPS[$BUILD_AT]} (${step} sent it back)"
+      i="$BUILD_AT"
+      ;;
+
+    "$DRIVER_E_QUESTION")
+      driver_park "$TICKET" "$step asked a question rather than guessing" \
+        "$(jq -r '(.question // .park // "see the step output")' "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)"
+      exit "$DRIVER_E_QUESTION"
+      ;;
+
+    "$DRIVER_E_NO_SKILL")
+      driver_park "$TICKET" "$step did not run the Skill its brief names" \
+        "Inside a ticket Superpowers does the work. Is the brief naming the wrong Skill, or is it not installed?"
+      exit "$DRIVER_E_QUESTION"
+      ;;
+
+    "$DRIVER_E_SCHEMA")
+      driver_park "$TICKET" "$step answered in a shape the driver cannot read" \
+        "Is the brief's Return section in step with briefs/schemas/$step.json?"
+      exit "$DRIVER_E_QUESTION"
+      ;;
+
+    "$DRIVER_E_NO_BRIEF")
+      driver_park "$TICKET" "there is no brief for the $step step" \
+        "The briefs are a separate deliverable — has briefs/$step.md landed yet?"
+      exit "$DRIVER_E_QUESTION"
+      ;;
+
+    *)
+      # Everything else, including DRIVER_E_REFUSED. A gate said no, and the
+      # local gate IS the gate: nothing goes past it and the claim is not held
+      # while somebody works out why.
+      driver_park "$TICKET" "$step refused (exit $rc)" \
+        "Read the step's own line above — it says which check said no."
+      exit "$DRIVER_E_QUESTION"
+      ;;
+  esac
+done
+
+if [ "$ran" -eq 0 ]; then
+  driver_say "✓ #$TICKET has nothing left to do — all $skipped step(s) were already finished."
+  exit "$DRIVER_OK"
+fi
+[ "$skipped" -eq 0 ] \
+  || driver_say "   resumed: $skipped step(s) were already finished and did not run again."
+driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')"
+exit "$DRIVER_OK"

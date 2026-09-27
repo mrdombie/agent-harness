@@ -102,7 +102,16 @@ SH
   export DRIVER_CLAUDE="$BIN/claude"
   export DRIVER_BRIEFS="$FIX/briefs"
   mkdir -p "$DRIVER_BRIEFS/schemas"
-  unset GH_TOKEN
+  # Anything the OPERATOR'S shell exports that would let a suite be answered by
+  # the real world instead of this one. CLAIM_REPO is the dangerous one: the claim
+  # lock resolves it ahead of the working directory, so a session that happens to
+  # export it makes every `holds` and `acquire` in the suite operate on a real
+  # repository — and the peer-claim refusals then measure that repo's refs rather
+  # than the fixture's. A test that can be answered from outside its fixture is
+  # not a test of the code; it is a test of the machine it ran on.
+  unset GH_TOKEN CLAIM_REPO CLAIM_AGENT_PID CLAIM_RUN_ID CLAIM_RUN_LOG CLAIM_EXTRA
+  unset HARNESS_SISTER_REPO HARNESS_CFG_REF HARNESS_INTEGRATION_BRANCH HARNESS_LEGACY_ENV_PREFIX
+  export CLAIM_REPO="$REPO"
 }
 
 # ---- writing an AI answer ----------------------------------------------------
