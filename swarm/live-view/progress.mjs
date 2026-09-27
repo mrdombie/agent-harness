@@ -100,9 +100,18 @@ export function progressOf(f, driver) {
   // A merge proves no reviewer looked — this project's approval-gate rules exist
   // because ~25 PRs merged without one — so backfilling Review would put a claim
   // about a person on the screen, deduced from a fact about git.
+  // Repairs `false` as well as `null`, and only a MECHANICAL done sets the mark.
+  //
+  // Both halves were learned the hard way. Merging deletes the branch, so
+  // `git ls-remote` then exits 2 — a genuine "no such ref" — and Check read
+  // false: a fact read correctly whose meaning had expired, drawing "the gates
+  // were never run" over work that merged through them. And a review trailer is
+  // earned BEFORE the push in this pipeline, so a `true` there proves nothing
+  // mechanical; counting it moved the cursor to PR on a branch that had never
+  // left the Mac.
   for (let i = at.length - 1, seen = false; i >= 0; i--) {
-    if (at[i] === true) seen = true
-    else if (seen && at[i] === null && ENTAILED[i]) at[i] = true
+    if (at[i] === true && ENTAILED[i]) seen = true
+    else if (seen && at[i] !== true && ENTAILED[i]) at[i] = true
   }
   const redPr = !!(pr && pr.state === 'OPEN' && pr.fail > 0)
   // Where the work IS, which is not the same as the first gap in the row. The
@@ -114,7 +123,7 @@ export function progressOf(f, driver) {
   // behind the cursor as an unlit cell, which is what a skipped step is.
   const firstFalse = at.findIndex((v) => v === false)
   const firstUnread = at.findIndex((v) => v === null)
-  const proven = at.lastIndexOf(true) + 1
+  const proven = at.reduce((p, v, i) => (v === true && ENTAILED[i] ? i + 1 : p), 0)
   const start = firstFalse >= 0 ? firstFalse : (firstUnread >= 0 ? firstUnread : 0)
   const now = Math.max(start, proven)
   const stepNo = Math.min(now + 1, STEPS.length)
