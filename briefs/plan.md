@@ -65,6 +65,14 @@ toward an exemption is the signal the step applies.
   finding set yourself, and check whether a heal already rode inside one of the
   pull requests in {{IN_FLIGHT}}.
 
+## Err broad on what counts as a surface
+
+The driver already refused a ticket that ships a screen and names no endpoint. Its
+trigger is deliberately wide, and keeping it wide is your job here too: a narrowed
+one missed a real UI ticket. Treat a ticket as touching a surface whenever it
+plausibly does, because a wrongly-included ticket costs you a sentence saying so,
+and a missed one ships a screen with nothing behind it.
+
 Refusing a fine ticket costs a clarification. Accepting an unplannable one costs
 the slice mistakes this gate exists to stop. Return a question instead.
 
