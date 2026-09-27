@@ -1,0 +1,175 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fix step answer",
+  "description": "One entry per blocker: the change, and the test that goes red when the blocker comes back. A blocker cleared without a test is a blocker that can return unnoticed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "skills",
+    "status",
+    "round"
+  ],
+  "properties": {
+    "step": {
+      "const": "fix"
+    },
+    "skills": {
+      "description": "Every Superpowers skill invoked in this step. The driver cross-checks this against the Skill calls in the run log, so a claim here the log does not show is a failed step.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^superpowers:[a-z][a-z-]*$"
+      }
+    },
+    "status": {
+      "enum": [
+        "fixed",
+        "park"
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cleared": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "blockerId",
+          "change",
+          "test",
+          "command",
+          "failedBefore",
+          "passedAfter"
+        ],
+        "properties": {
+          "blockerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "change": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "action"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "action": {
+                  "enum": [
+                    "create",
+                    "modify",
+                    "delete"
+                  ]
+                }
+              }
+            }
+          },
+          "test": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "behaviour",
+              "redWhen"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "behaviour": {
+                "type": "string",
+                "minLength": 1
+              },
+              "redWhen": {
+                "description": "The production change that makes this test fail \u2014 the fix deleted, not a typo introduced. A test whose author cannot name one is measuring the shape of the code.",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "failedBefore": {
+            "const": true
+          },
+          "passedAfter": {
+            "const": true
+          }
+        }
+      }
+    },
+    "deferred": {
+      "description": "A finding that is not a blocker, with where it went. A deferral with no follow-up is a finding dropped.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "blockerId",
+          "reason",
+          "followUp"
+        ],
+        "properties": {
+          "blockerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "followUp": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "question": {
+      "description": "Why this step cannot finish. Answerable in a line: a yes/no or a pick.",
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "const": "fixed"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "cleared"
+    ],
+    "properties": {
+      "cleared": {
+        "type": "array",
+        "minItems": 1
+      }
+    }
+  },
+  "else": {
+    "required": [
+      "question"
+    ]
+  }
+}

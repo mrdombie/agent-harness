@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "build step answer",
+  "description": "One plan item, built test-first. failedBefore and passedAfter are both const true: there is no shape in this contract for a change whose test did not fail first.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "skills",
+    "status",
+    "task"
+  ],
+  "properties": {
+    "step": {
+      "const": "build"
+    },
+    "skills": {
+      "description": "Every Superpowers skill invoked in this step. The driver cross-checks this against the Skill calls in the run log, so a claim here the log does not show is a failed step.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^superpowers:[a-z][a-z-]*$"
+      }
+    },
+    "status": {
+      "enum": [
+        "built",
+        "park"
+      ]
+    },
+    "task": {
+      "description": "The plan task this answer builds, by its title.",
+      "type": "string",
+      "minLength": 1
+    },
+    "testFirst": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "test",
+        "command",
+        "failedBefore",
+        "redOutput",
+        "passedAfter",
+        "greenOutput"
+      ],
+      "properties": {
+        "test": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "behaviour",
+            "redWhen"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "behaviour": {
+              "type": "string",
+              "minLength": 1
+            },
+            "redWhen": {
+              "description": "The production change that makes this test fail \u2014 the fix deleted, not a typo introduced. A test whose author cannot name one is measuring the shape of the code.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failedBefore": {
+          "const": true
+        },
+        "redOutput": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passedAfter": {
+          "const": true
+        },
+        "greenOutput": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "changed": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "action"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "enum": [
+              "create",
+              "modify",
+              "delete"
+            ]
+          }
+        }
+      }
+    },
+    "surfaces": {
+      "description": "Every other place that shows the state this change alters, and what was changed there. A state change that updates one surface of three is the most repeated review send-back.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "changelog": {
+      "description": "Either the entry file written, or the reason there is none. Never both, and never neither.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skipped": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "question": {
+      "description": "Why this step cannot finish. Answerable in a line: a yes/no or a pick.",
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "const": "built"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "testFirst",
+      "changed",
+      "changelog"
+    ]
+  },
+  "else": {
+    "required": [
+      "question"
+    ]
+  }
+}

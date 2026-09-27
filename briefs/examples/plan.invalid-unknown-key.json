@@ -1,0 +1,38 @@
+{
+  "step": "plan",
+  "skills": [
+    "superpowers:writing-plans"
+  ],
+  "status": "planned",
+  "designSource": "ticket-body",
+  "premise": {
+    "verdict": "still-true",
+    "evidence": "src/queue/reader.ts:88 still returns [] on a failed fetch, so the caller cannot tell empty from broken"
+  },
+  "tasks": [
+    {
+      "title": "A failed read is its own outcome, not an empty one",
+      "files": [
+        {
+          "path": "src/queue/reader.ts",
+          "action": "modify"
+        },
+        {
+          "path": "src/queue/reader.test.ts",
+          "action": "create"
+        }
+      ],
+      "tests": [
+        {
+          "file": "src/queue/reader.test.ts",
+          "behaviour": "a fetch that throws resolves to { state: 'failed' }, never to an empty list",
+          "redWhen": "the catch block is deleted and the throw propagates as []"
+        }
+      ],
+      "risks": [
+        "two callers read the old [] shape and must be updated in the same change"
+      ]
+    }
+  ],
+  "notAContractKey": "a step that invented a field"
+}

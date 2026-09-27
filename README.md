@@ -33,7 +33,9 @@ The repo is its own marketplace. In the consuming repo's `.claude/settings.json`
 
 Or per machine: `claude plugin marketplace add mrdombie/agent-harness && claude plugin install agent-harness@agent-harness`.
 
-**Depends on [superpowers](https://github.com/obra/superpowers)** — `brainstorming`, `writing-plans`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`. The kit's build chain invokes them by name and does not vendor them. Install it alongside.
+**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging`, `subagent-driven-development`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list. Install it alongside.
+
+`brainstorming` is deliberately NOT in that list. It waits on a person, so an unattended step cannot invoke it — the approved spec stands in for it, and `briefs/facts.json` records that under `notInvoked`.
 
 Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook self-tests only).
 

@@ -1,0 +1,17 @@
+{
+  "step": "review",
+  "skills": [
+    "superpowers:requesting-code-review"
+  ],
+  "status": "reviewed",
+  "round": 1,
+  "verdict": "BLOCKED",
+  "blockers": [
+    {
+      "id": "b1",
+      "file": "src/queue/panel.tsx",
+      "summary": "the failed state renders the empty copy",
+      "fix": "branch on state"
+    }
+  ]
+}

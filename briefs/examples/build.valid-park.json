@@ -1,0 +1,9 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:test-driven-development"
+  ],
+  "status": "park",
+  "task": "A failed read is its own outcome",
+  "question": "The failed state needs a label a user reads. Use the ticket's wording, or the one already on the sibling panel?"
+}

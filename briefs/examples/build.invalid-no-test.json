@@ -1,0 +1,29 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:subagent-driven-development",
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "A failed read is its own outcome, not an empty one",
+  "changed": [
+    {
+      "path": "src/queue/reader.ts",
+      "action": "modify"
+    },
+    {
+      "path": "src/queue/reader.test.ts",
+      "action": "create"
+    },
+    {
+      "path": "src/queue/panel.tsx",
+      "action": "modify"
+    }
+  ],
+  "surfaces": [
+    "src/queue/panel.tsx renders the failed state; it read the same [] and said 'nothing here'"
+  ],
+  "changelog": {
+    "file": "changes/10886-failed-read.md"
+  }
+}

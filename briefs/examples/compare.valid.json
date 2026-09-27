@@ -1,0 +1,38 @@
+{
+  "step": "compare",
+  "skills": [
+    "superpowers:verification-before-completion"
+  ],
+  "status": "compared",
+  "approved": {
+    "ref": "the sketch linked on the ticket, at the comment that approved it"
+  },
+  "renders": [
+    {
+      "name": "the queue panel, loaded",
+      "path": "evidence/10886/queue-light.png",
+      "theme": "light"
+    },
+    {
+      "name": "the queue panel, loaded",
+      "path": "evidence/10886/queue-dark.png",
+      "theme": "dark"
+    },
+    {
+      "name": "the queue panel, failed read",
+      "path": "evidence/10886/queue-failed-light.png",
+      "theme": "light"
+    }
+  ],
+  "differences": [
+    {
+      "what": "the failed row's icon sits left of the label; the sketch has it right",
+      "fixed": true
+    },
+    {
+      "what": "the sketch shows a count beside the title; there is no count on the wire",
+      "fixed": false,
+      "reason": "the endpoint returns rows, not a total, and adding one is a second query"
+    }
+  ]
+}

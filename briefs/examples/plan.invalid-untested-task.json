@@ -1,0 +1,14 @@
+{
+  "step": "plan",
+  "skills": ["superpowers:writing-plans"],
+  "status": "planned",
+  "designSource": "ticket-body",
+  "premise": { "verdict": "still-true", "evidence": "src/queue/reader.ts:88" },
+  "tasks": [
+    {
+      "title": "A failed read is its own outcome",
+      "files": [{ "path": "src/queue/reader.ts", "action": "modify" }],
+      "tests": []
+    }
+  ]
+}
