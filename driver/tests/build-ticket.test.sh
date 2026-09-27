@@ -170,6 +170,49 @@ want "it finishes"           "0" "$rc"
 want "nothing ran again"     "" "$(tr -d '\n' < "$RAN")"
 want_in "and it says so"     'nothing left|already' "$out"
 
+echo "--- a broken-shaped answer parks, naming the schema to look at ---"
+reset_fakes "plan:22"
+out=$(bt 111); rc=$?
+want "the run stops" "20" "$rc"
+want_in "and points at the schema" 'schemas/plan.json' "$(cat "$FIX/park.log")"
+
+echo "--- a missing brief parks, and says the briefs are a separate deliverable ---"
+# 23 is not a failure of the ticket. The briefs land under their own number, so a
+# driver that met this before they did has to say which is missing rather than
+# blaming the work.
+reset_fakes "build:23"
+out=$(bt 112); rc=$?
+want "the run stops" "20" "$rc"
+want_in "naming the brief file" 'briefs/build.md' "$(cat "$FIX/park.log")"
+
+echo "--- a rework with nowhere to go back to parks, it does not loop on itself ---"
+# An order without a build step cannot honour "go back to the build". Re-running
+# the reviewer would be a loop over the same tree for ever.
+reset_fakes "review:30"
+out=$(bt 113 --steps "start plan review ship"); rc=$?
+want "the run stops"  "20" "$rc"
+want_in "and says there is no build step" 'no build step' "$(cat "$FIX/park.log")"
+want "review ran once, not for ever" "1" "$(grep -c '^review$' "$RAN")"
+
+echo "--- --steps is honoured, so an order can be shortened deliberately ---"
+reset_fakes
+# Through the FLAG, not through DRIVER_STEPS. The env var is read by driver-env
+# and would pass with the flag deleted — which it did, until this line changed:
+# the assertion was named for --steps and measuring something else.
+out=$(bt 114 --steps "start plan"); rc=$?
+want "it finishes"             "0" "$rc"
+want "only those two ran"      "start plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- no park step: nothing may start ---"
+# Park is the exit from every other step, so discovering it is missing at the
+# moment it is needed is discovering it too late. It is checked before the walk.
+reset_fakes
+rm -f "$FAKE/park.sh"
+out=$(bt 115); rc=$?
+if [ "$rc" -ne 0 ]; then ok "it refuses before running anything"; else bad "a missing park step must not pass"; fi
+want "and no step ran"        "" "$(tr -d '\n' < "$RAN")"
+want_in "saying why it matters" "every other step's refusal" "$out"
+
 echo "--- refusals of the call itself ---"
 if bt >/dev/null 2>&1; then bad "no ticket must refuse"; else ok "no ticket refuses"; fi
 if bt abc >/dev/null 2>&1; then bad "a non-number must refuse"; else ok "a non-number refuses"; fi
