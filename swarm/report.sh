@@ -87,10 +87,13 @@ report_json() {
     {
       at: \$at,
       live: [.live[]? | {
-        ticket: (.ticket | tostring), title: (.title | scrub), project: (.project // \"\"),
+        ticket: (.ticket | tostring), title: (.title | scrub), short: ((.short // .title) | scrub),
+        project: (.project // \"\"),
         startedAgoMin: .startedAgoMin, quietSec: .quietSec,
-        steps: [.steps[]? | {kind: (if .kind == \"say\" then \"say\" else \"do\" end), text: (step_label | scrub)}]
+        steps: [.steps[]? | {kind: (if .kind == \"say\" then \"say\" else \"do\" end), text: (step_label | scrub)}],
+        progress: .progress
       }],
+      plans: [.plans[]? | {id, name: (.name | scrub), pct, done, jobs, working, unestimated}],
       queued: \$queued,
       stuck: [\$stuck[]? | {kind: .kind, detail: (.detail | scrub)}]
     }"
@@ -119,6 +122,9 @@ printf '%s' "$J" | jq -r '
   else "\n" + ([.live[] |
     "  #\(.ticket)  \(.title)"
     + "\n      \(.project // "—") · running \(.startedAgoMin) min · last active \(.quietSec // "?")s ago"
+    + (if .progress then "\n      step \(.progress.step) of \(.progress.of): \(.progress.steps[(.progress.step - 1)].name)"
+         + (if (.progress.unreadable | length) > 0 then " · cannot read: \(.progress.unreadable | join(", "))" else "" end)
+       else "" end)
     + ((.steps | map(select(.kind == "do")) | last) as $doing
        | if $doing then "\n      now: \($doing.text)" else "" end)
   ] | join("\n")) end'
