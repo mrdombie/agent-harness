@@ -46,6 +46,21 @@ out=$(driver_ai_step 101 plan 2>&1); rc=$?
 want "a question parks the ticket"  "20" "$rc"
 want_in "and the question survives" 'which table owns the org id' "$out"
 
+echo "--- a transcript with more than one result: the LAST one is the answer ---"
+# The reader slurps and takes the last result OBJECT, and the header records the
+# `tail -1` bug that cost: an answer spanning several lines had its closing brace read
+# as the answer. No case built a multi-result transcript, so a per-line reader would
+# have passed — and a retried turn produces exactly that shape.
+{ jq -nc --arg s superpowers:writing-plans \
+    '{type:"assistant", message:{content:[{type:"tool_use", name:"Skill", input:{skill:$s}}]}}'
+  jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\n  \"files\": [\"first\"]\n}"}'
+  jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\n  \"files\": [\"second\"]\n}"}'
+} > "$FIX/ai/plan.jsonl"
+rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?
+want "it reads an answer"            "0" "$rc"
+want "and it is the last result"     "second" \
+  "$(jq -r '.files[0]' "$(driver_state_dir 101)/steps/plan.json")"
+
 echo "--- no brief for the step ---"
 rm -f "$DRIVER_BRIEFS/plan.md"
 rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?

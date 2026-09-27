@@ -71,16 +71,33 @@ _driver_file_leftovers() { # <ticket> <review.json> <round>
   programme=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels \
     -q "[.labels[].name | select(startswith(\"$SWARM_PROGRAMME_PREFIX\"))] | first // \"\"" 2>/dev/null)
 
+  # EVERY CREATE'S EXIT CODE IS READ. The ceiling is justified by "nothing is lost by
+  # ending the loop", and with the call wrapped a rate limit, issues turned off, or a
+  # title still carrying a newline lost the finding while the log asserted the
+  # opposite. What did not land is named, and left on the record for the park brief —
+  # the state directory's own log is on this machine, and a handover must not be.
+  local filed=0 lost=""
   i=0
   while [ "$i" -lt "$n" ]; do
     finding=$(jq -r --argjson i "$i" '(.nonblocking // [])[$i]
                 | "\(.file // "?"):\(.line // "?") — \(.finding // .summary // "")"' "$f")
     body=$(printf 'Left over from the review of #%s after round %s of %s.\n\nThe finding, verbatim:\n\n> %s\n' \
              "$t" "$round" "$DRIVER_MAX_REVIEW_ROUNDS" "$finding")
-    swarm_gh issue create --repo "$REPO_SLUG" \
-      --title "review leftover from #$t: $(printf '%s' "$finding" | cut -c1-60)" \
-      --body "$body" ${programme:+--label "$programme"} >/dev/null 2>&1 || true
+    # The title is one line by construction: a newline inside it is what `gh` refuses,
+    # and `cut -c1-60` does not remove one.
+    if swarm_gh issue create --repo "$REPO_SLUG" \
+         --title "review leftover from #$t: $(printf '%s' "$finding" | tr '\n' ' ' | cut -c1-60)" \
+         --body "$body" ${programme:+--label "$programme"} >/dev/null 2>&1; then
+      filed=$((filed+1))
+    else
+      lost="$lost${lost:+; }$finding"
+    fi
     i=$((i+1))
   done
-  driver_say "   review: $n finding(s) filed as follow-up ticket(s), each carrying the finding verbatim"
+  if [ -n "$lost" ]; then
+    driver_say "✋ review: $filed of $n finding(s) filed as follow-up ticket(s). These did NOT land and are not written down anywhere a person will find them: $lost"
+    driver_state_set "$t" park_note "review leftovers that could not be filed as tickets: $lost"
+  else
+    driver_say "   review: $n finding(s) filed as follow-up ticket(s), each carrying the finding verbatim"
+  fi
 }

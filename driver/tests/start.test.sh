@@ -12,26 +12,40 @@ driver_fixture; trap 'rm -rf "$FIX"' EXIT
 
 # The claim seam: a recorder, so the suite never writes a ref to a real origin.
 #
-# IT CARRIES THE REAL EXIT CODES, and that is the whole point of it. `holds` in
-# claim-lock.sh answers "do WE own it" — 0 ours, 11 free, 12 a PEER holds it — and a
-# stub that returns 0 for a claim held by anybody cannot tell those apart. The
-# earlier version was `grep -qx "$2" "$CLAIMS"`, one line, and it made the case
-# labelled "a peer already holds the claim" exercise the we-own-it branch instead,
-# while asserting on the word "peer". Each row is <ticket> <owner>.
+# IT CARRIES THE REAL EXIT CODES AND THE REAL IDENTITY, and both halves matter.
+# `holds` in claim-lock.sh answers through `owns_claim`, and the identity it compares
+# is `CLAIM_AGENT`, which spawn-claim.sh sets to `<login>@<host>` — IDENTICAL for
+# every agent on the machine. So rc 0 means "somebody on this box holds it", never
+# "this run holds it", and a stub whose owner is per-run would hide that. Rows are
+# <ticket> <owner> <branch> <worktree>.
 CLAIMS="$FIX/claims"; : > "$CLAIMS"
 cat > "$BIN/claim-lock" <<'SH'
 #!/usr/bin/env bash
 me="${CLAIM_AGENT:-tester@fixture}"
-owner() { awk -v t="$2" '$1==t{print $2; exit}' "$CLAIMS"; }
+field() { awk -v t="$1" -v n="$2" '$1==t{print $n; exit}' "$CLAIMS"; }
+t="$2"
+argval() { local k="$1"; shift; while [ $# -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1" in
-  acquire) [ -n "$(owner "$@")" ] && exit 10; printf '%s\t%s\n' "$2" "$me" >> "$CLAIMS"; echo "acquired #$2" ;;
-  holds)   o=$(owner "$@"); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
-  release) awk -v t="$2" '$1!=t' "$CLAIMS" > "$CLAIMS.t"; mv "$CLAIMS.t" "$CLAIMS" ;;
-  update)  : ;;
+  acquire)
+    [ -n "$(field "$t" 2)" ] && exit 10
+    printf '%s\t%s\t%s\t%s\n' "$t" "$me" "$(argval --branch "$@")" "$(argval --worktree "$@")" >> "$CLAIMS"
+    echo "acquired #$t" ;;
+  holds) o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
+  show)
+    o=$(field "$t" 2); [ -n "$o" ] || { echo "#$t is not claimed" >&2; exit 11; }
+    jq -n --arg a "$o" --arg b "$(field "$t" 3)" --arg w "$(field "$t" 4)" \
+      '{agent:$a, branch:$b, worktree:$w}' ;;
+  release) awk -v t="$t" '$1!=t' "$CLAIMS" > "$CLAIMS.t"; mv "$CLAIMS.t" "$CLAIMS" ;;
+  update)
+    b=$(argval branch= "$@"); w=$(argval worktree= "$@")
+    awk -F'\t' -v OFS='\t' -v t="$t" -v b="$(argval --branch "$@")" -v w="$(argval --worktree "$@")" \
+      '$1==t{ if (b!="") $3=b; if (w!="") $4=w } {print}' "$CLAIMS" > "$CLAIMS.t"; mv "$CLAIMS.t" "$CLAIMS" ;;
 esac
 SH
 chmod +x "$BIN/claim-lock"; export CL="$BIN/claim-lock" CLAIMS
 claimed_tickets() { awk '{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//'; }
+# claim_row <ticket> <owner> <branch> <worktree>
+claim_row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-}" "${4:-}" >> "$CLAIMS"; }
 
 echo "--- a ready ticket starts ---"
 fix_issue 101 OPEN "status:ready,type:feature"
@@ -80,11 +94,17 @@ want_in "naming the status it wanted" 'status:ready' "$out"
 
 echo "--- a peer already holds the claim ---"
 fix_issue 106 OPEN "status:ready"
-printf '106\tsomebody@else\n' >> "$CLAIMS"
+claim_row 106 somebody@else tkt-106/theirs "$FIX/theirs"
 out=$(driver_step_start 106 2>&1); rc=$?
 want "a peer's claim is never adopted" "24" "$rc"
 want_in "and it says a peer holds it"  'peer' "$out"
 want "no worktree was cut"             ""     "$(driver_state_get 106 worktree)"
+# There are TWO ways a peer's claim shows up, and they get different wording because
+# they mean different things at three in the morning: the cache already knows (rc 12),
+# and the cache said free while a peer won the compare-and-swap. Without this line the
+# rc-12 arm is never entered — rc 12 falls to the default, `acquire` loses, and that
+# message also contains "peer", so the arm could be deleted with the suite green.
+want_in "the cache knowing says so, not 'took it first'" 'holds the claim' "$out"
 
 echo "--- OUR OWN claim, taken but not yet recorded, is not a peer's ---"
 # The window is real: a run killed between `acquire` and recording the worktree
@@ -93,7 +113,9 @@ echo "--- OUR OWN claim, taken but not yet recorded, is not a peer's ---"
 # to clear a label for a state that was our own half-finished run — while the message
 # sends them looking for an agent that does not exist.
 fix_issue 107 OPEN "status:ready"
-printf '107\t%s\n' "${CLAIM_AGENT:-tester@fixture}" >> "$CLAIMS"
+# Our own: the branch on the claim is the one this step would compute, and no
+# worktree was recorded before the kill.
+claim_row 107 "${CLAIM_AGENT:-tester@fixture}" "tkt-107/ticket-107" ""
 out=$(driver_step_start 107 2>&1); rc=$?
 want "it carries on with the claim it holds" "0" "$rc"
 want_not_in "and never blames a peer"        'peer' "$out"
@@ -102,13 +124,42 @@ want "a worktree was cut"                    "1" \
 want "the claim is still held once, not twice" "1" \
   "$(awk '$1==107' "$CLAIMS" | grep -c .)"
 
+echo "--- a SIBLING agent on this machine is not us, however the lock reads ---"
+# The identity the lock compares is <login>@<host>, the same string for every agent on
+# the box, so `holds` answers 0 for a claim a peer took. Believing that reads a live
+# peer's claim as our own: the step carries on, cuts a second worktree on a second
+# branch, and its `update` rewrites the peer's branch and worktree onto their claim —
+# so the peer's work becomes invisible to every reconciler while both agents build.
+# What tells them apart is the claim's OWN record, which names the branch and the
+# worktree it was taken for.
+fix_issue 108 OPEN "status:ready"
+claim_row 108 "${CLAIM_AGENT:-tester@fixture}" "tkt-108/a-peer-got-here-first" "$FIX/peer-wt"
+mkdir -p "$FIX/peer-wt"
+out=$(driver_step_start 108 2>&1); rc=$?
+want "a sibling's claim is not adopted" "24" "$rc"
+want_in "and it says another run holds it" 'another|peer' "$out"
+want "the sibling's branch is untouched"   "tkt-108/a-peer-got-here-first" \
+  "$(awk -F'\t' '$1==108{print $3}' "$CLAIMS")"
+want "and its worktree too"                "$FIX/peer-wt" \
+  "$(awk -F'\t' '$1==108{print $4}' "$CLAIMS")"
+want "no worktree was cut for us"          "" "$(driver_state_get 108 worktree)"
+
+echo "--- and our own claim, recorded, is still ours on a resume ---"
+fix_issue 109 OPEN "status:ready"
+driver_state_init 109 --worktree "$FIX/ours-wt" --branch tkt-109/ours
+mkdir -p "$FIX/ours-wt"
+claim_row 109 "${CLAIM_AGENT:-tester@fixture}" tkt-109/ours "$FIX/ours-wt"
+out=$(driver_step_start 109 2>&1); rc=$?
+want "it resumes"                  "0" "$rc"
+want "in the same worktree"        "$FIX/ours-wt" "$(driver_state_get 109 worktree)"
+
 echo "--- a ticket that does not resolve ---"
 out=$(driver_step_start 999 2>&1); rc=$?
 want "an unreadable ticket refuses" "24" "$rc"
 want_in "and says it could not read it" 'could not be read' "$out"
 
 echo "--- the claim is released when a gate says no, never squatted ---"
-want "nothing claimed for the refused tickets" "101 107" \
+want "nothing claimed for the refused tickets" "101 107 108 109" \
   "$(awk '$1!=106{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//')"
 
 exit $FAILED

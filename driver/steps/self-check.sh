@@ -46,12 +46,20 @@ driver_step_self_check() { # <ticket>
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     cmd=$(jq -r --arg n "$name" '.gates[$n]' "$HARNESS_CFG" 2>/dev/null)
-    if [ -z "$cmd" ] || [ "$cmd" = "null" ]; then empty="$empty $name"; continue; fi
+    # Trimmed before the emptiness test, and a comment is not a command. A
+    # placeholder left in harness.json counted as a gate that ran, printed "ok", and
+    # took the green count up with it — one keystroke from the empty case.
+    case "$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" in
+      ''|null|'#'*) empty="$empty $name"; continue ;;
+    esac
     ran=$((ran+1))
     # Its own command, its own exit code, nothing batched with it.
-    ( cd "$wt" && eval "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$name.out" 2>&1
+    ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$name.out" 2>&1
     rc=$?
-    if [ "$rc" -eq 0 ]; then
+    if [ "$rc" -eq 124 ]; then
+      failed=$((failed+1))
+      driver_say "✋ self-check: $name ran out of time (over ${DRIVER_CMD_TIMEOUT}s). A gate that does not return is not a gate that passed."
+    elif [ "$rc" -eq 0 ]; then
       driver_say "   self-check: $name ok"
     else
       failed=$((failed+1))

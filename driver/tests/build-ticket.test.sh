@@ -112,6 +112,38 @@ want_not_in "review never ran"       'review' "$(cat "$RAN")"
 want_in "it parked"                  'PARK' "$(cat "$FIX/park.log")"
 want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
+echo "--- a note a step left behind becomes the question the park asks ---"
+# A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
+# — the blockers a review found, a follow-up that could not be filed — leaves the text
+# on the record, and the park brief asks about that rather than about the code.
+# The note is written by the step that refuses, which is the only way a real one
+# arrives: a note sitting on the record BEFORE the run belongs to a previous one and
+# is cleared, which the next case is about.
+reset_fakes
+cat > "$FAKE/self-check.sh" <<'SH'
+#!/usr/bin/env bash
+driver_step_self_check() {
+  printf 'self-check\n' >> "$RAN"
+  driver_state_set "$1" park_note "the save button on a.ts:9 calls nothing"
+  return 24
+}
+SH
+out=$(bt 116); rc=$?
+want "the run stops" "20" "$rc"
+want_in "and the park asks about the finding" 'the save button on a.ts:9 calls nothing' "$(cat "$FIX/park.log")"
+want_not_in "not about the exit code" 'which check said no' "$(cat "$FIX/park.log")"
+
+echo "--- and a stale note never leaks into the next park ---"
+: > "$FIX/park.log"
+reset_fakes "plan:24"
+driver_state_init 117
+driver_state_set 117 park_note "something from a previous run"
+bt 117 >/dev/null
+: > "$FIX/park.log"
+reset_fakes "review:24"
+out=$(bt 117); rc=$?
+want_not_in "the old note is gone" 'previous run' "$(cat "$FIX/park.log")"
+
 echo "--- a question parks with the question, not with a gate's wording ---"
 reset_fakes "plan:20"
 out=$(bt 104); rc=$?
@@ -196,7 +228,10 @@ bt 110 >/dev/null
 out=$(bt 110); rc=$?
 want "it finishes"                  "0" "$rc"
 want "only the re-entry check ran"  "start" "$(tr -d '\n' < "$RAN")"
-want_in "and it says there is nothing left" 'nothing left|already' "$out"
+# Anchored on `nothing left` alone: `already` also appears in "N step(s) were already
+# finished", the line a resumed run prints — so deleting the no-op branch left this
+# green while the run reported a second ship.
+want_in "and it says there is nothing left" 'nothing left' "$out"
 
 echo "--- a broken-shaped answer parks, naming the schema to look at ---"
 reset_fakes "plan:22"

@@ -139,6 +139,35 @@ while [ "$i" -lt "$N" ]; do
   "$(step_fn "$step")" "$TICKET" || rc=$?
   [ "$was_done" -eq 1 ] && skipped=$((skipped+1)) || ran=$((ran+1))
 
+  # A note a step left behind. An exit code says which check said no; it cannot say
+  # WHAT, and a step that knows — the blockers a review found, a leftover that could
+  # not be filed — writes it here. Read once and cleared, so a note from an earlier
+  # refusal cannot become the question a later one asks.
+  note=""; asked=""; park_reason=""; park_question=""
+  note=$(driver_state_get "$TICKET" park_note)
+  [ -z "$note" ] || driver_state_set "$TICKET" park_note ""
+  # The step's own question, read HERE and not inside the case below.
+  #
+  # `${note:-$(jq …)}` inside a case ARM breaks bash 3.2's parser: the `)` of the
+  # command substitution closes the arm, and every arm after it — including `*)` —
+  # is silently swallowed. The case then matches NOTHING for a refusal, the loop
+  # neither parks nor advances, and the step runs for ever. `bash -n` is happy, so
+  # the only symptom is a run that hangs. Measured: 536 self-check calls, one park
+  # never reached, on the stock macOS bash this kit has to run on.
+  asked=$(jq -r '(.question // .park // "")' \
+            "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)
+  [ -n "$asked" ] || asked="see the step output"
+
+  # WHY THE ARMS ONLY ASSIGN. An arm here used to call driver_park with a
+  # `"${note:-some literal text}"` argument, and bash 3.2 — the stock macOS shell this
+  # kit has to run on — mis-parses that inside a case body: an apostrophe or a nested
+  # `$( )` in the default closes the arm early and every arm after it, INCLUDING `*)`,
+  # is silently swallowed. The case then matches nothing for a refusal, so the loop
+  # neither parked nor advanced and the step ran for ever. `bash -n` is happy with it,
+  # so the only symptom was a run that hung: measured at 536 self-check calls with the
+  # park never reached. So the arms set two plain variables and the park happens once,
+  # below, where no parsing subtlety applies.
+  park_reason=""; park_question=""
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
@@ -147,57 +176,65 @@ while [ "$i" -lt "$N" ]; do
 
     "$DRIVER_E_REWORK")
       if [ "$BUILD_AT" -lt 0 ]; then
-        driver_park "$TICKET" "$step asked for a rework and this run has no build step to go back to" \
-          "Should the order include a build step, or should $step stop asking for one?"
-        exit "$DRIVER_E_QUESTION"
+        park_reason="$step asked for a rework and this run has no build step to go back to"
+        park_question="Should the order include a build step, or should $step stop asking for one?"
+      else
+        REWORKS=$((REWORKS+1))
+        if [ "$REWORKS" -gt "$REWORK_CEILING" ]; then
+          park_reason="the rework loop did not settle: $REWORKS rounds and $step is still sending the work back"
+          park_question="The build step parks itself at $DRIVER_MAX_BUILD_TRIES tries and the reviewer stops after $DRIVER_MAX_REVIEW_ROUNDS rounds, so a loop past their sum is a step returning rework without counting. Which is it?"
+        else
+          # Everything from the build step onwards has to happen again, so it has to
+          # leave the finished list — otherwise the resumed walk skips the very steps
+          # the rework exists to repeat.
+          driver_state_reopen "$TICKET" "${STEPS[@]:$BUILD_AT}"
+          driver_say "↩ rework round $REWORKS: back to ${STEPS[$BUILD_AT]} (${step} sent it back)"
+          i="$BUILD_AT"
+        fi
       fi
-      REWORKS=$((REWORKS+1))
-      if [ "$REWORKS" -gt "$REWORK_CEILING" ]; then
-        driver_park "$TICKET" "the rework loop did not settle: $REWORKS rounds and $step is still sending the work back" \
-          "The build step parks itself at $DRIVER_MAX_BUILD_TRIES tries, so a loop past that is a step returning rework without counting. Which is it?"
-        exit "$DRIVER_E_QUESTION"
-      fi
-      # Everything from the build step onwards has to happen again, so it has to
-      # leave the finished list — otherwise the resumed walk skips the very steps
-      # the rework exists to repeat.
-      driver_state_reopen "$TICKET" "${STEPS[@]:$BUILD_AT}"
-      driver_say "↩ rework round $REWORKS: back to ${STEPS[$BUILD_AT]} (${step} sent it back)"
-      i="$BUILD_AT"
       ;;
 
     "$DRIVER_E_QUESTION")
-      driver_park "$TICKET" "$step asked a question rather than guessing" \
-        "$(jq -r '(.question // .park // "see the step output")' "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)"
-      exit "$DRIVER_E_QUESTION"
+      park_reason="$step asked a question rather than guessing"
+      park_question="$asked"
       ;;
 
     "$DRIVER_E_NO_SKILL")
-      driver_park "$TICKET" "$step did not run the Skill its brief names" \
-        "Inside a ticket Superpowers does the work. Is the brief naming the wrong Skill, or is it not installed?"
-      exit "$DRIVER_E_QUESTION"
+      park_reason="$step did not run the Skill its brief names"
+      park_question="Inside a ticket Superpowers does the work. Is the brief naming the wrong Skill, or is it not installed?"
       ;;
 
     "$DRIVER_E_SCHEMA")
-      driver_park "$TICKET" "$step answered in a shape the driver cannot read" \
-        "Is the brief's Return section in step with briefs/schemas/$step.json?"
-      exit "$DRIVER_E_QUESTION"
+      park_reason="$step answered in a shape the driver cannot read"
+      park_question="Is the brief's Return section in step with briefs/schemas/$step.json?"
       ;;
 
     "$DRIVER_E_NO_BRIEF")
-      driver_park "$TICKET" "there is no brief for the $step step" \
-        "The briefs are a separate deliverable — has briefs/$step.md landed yet?"
-      exit "$DRIVER_E_QUESTION"
+      park_reason="there is no brief for the $step step"
+      park_question="The briefs are a separate deliverable — has briefs/$step.md landed yet?"
+      ;;
+
+    "$DRIVER_E_TIMEOUT")
+      park_reason="$step ran past its time limit"
+      park_question="Something it ran does not return — a watch-mode test runner is the usual cause. Which command was it?"
       ;;
 
     *)
-      # Everything else, including DRIVER_E_REFUSED. A gate said no, and the
-      # local gate IS the gate: nothing goes past it and the claim is not held
-      # while somebody works out why.
-      driver_park "$TICKET" "$step refused (exit $rc)" \
-        "Read the step's own line above — it says which check said no."
-      exit "$DRIVER_E_QUESTION"
+      # Everything else, including DRIVER_E_REFUSED. A gate said no, and the local
+      # gate IS the gate: nothing goes past it and the claim is not held while
+      # somebody works out why.
+      park_reason="$step refused (exit $rc)"
+      park_question="Read the step's own line above — it says which check said no."
       ;;
   esac
+
+  # A note the step left on the record outranks the wording above: it is the actual
+  # finding rather than a description of the code that stopped.
+  if [ -n "$park_reason" ]; then
+    [ -z "$note" ] || park_question="$note"
+    driver_park "$TICKET" "$park_reason" "$park_question"
+    exit "$DRIVER_E_QUESTION"
+  fi
 done
 
 if [ "$ran" -eq 0 ]; then

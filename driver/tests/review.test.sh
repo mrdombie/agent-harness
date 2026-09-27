@@ -81,6 +81,26 @@ want_in "the non-blocking finding leaves as a ticket" 'the heading repeats the t
 want_not_in "the blocker does not"  'the button calls nothing' "$(cat "$GH_LOG")"
 want "exactly one ticket was filed" "1" "$(grep -c 'issue create' "$GH_LOG")"
 
+echo "--- a follow-up ticket that could not be filed is not a ticket ---"
+# The two-round ceiling is justified by "nothing is lost by ending the loop". With the
+# create wrapped, a rate limit, issues turned off, or a title still carrying a newline
+# meant the finding was lost AND the log asserted the opposite.
+: > "$GH_LOG"
+driver_state_init 106 --worktree "$REPO"
+fix_issue 106 OPEN "status:claimed,project:widgets"
+fix_ai review '{"verdict":"SHIP","blockers":[],"nonblocking":[{"file":"e.sh","line":2,"finding":"the count is not shown"}]}' \
+  superpowers:requesting-code-review
+fix_gh_fail "issue create"
+out=$(driver_step_review 106 2>&1); rc=$?
+fix_gh_ok
+# Anchored on the whole clean-path line. `1 finding\(s\) filed` alone is a SUBSTRING of
+# "0 of 1 finding(s) filed", so the pattern matched the honest message too.
+want_not_in "it does not claim the filing happened" 'review: 1 finding\(s\) filed' "$out"
+want_in "it says how many actually landed"           '0 of 1' "$out"
+want_in "and names what was not filed"               'the count is not shown' "$out"
+want_in "and leaves it for the handover"             'the count is not shown' \
+  "$(driver_state_get 106 park_note)"
+
 echo "--- a review that never ran its skill is not a review ---"
 driver_state_init 104 --worktree "$REPO"
 fix_issue 104 OPEN "status:claimed"

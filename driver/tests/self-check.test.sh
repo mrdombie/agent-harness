@@ -49,6 +49,23 @@ out=$(driver_step_self_check 101 2>&1); rc=$?
 want "nothing to run refuses" "24" "$rc"
 want_in "and says what to configure" 'gates' "$out"
 
+echo "--- a gate that never returns is refused, not waited on ---"
+jq '.gates = {"hang":"sleep 60"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+t0=$(date +%s)
+out=$(DRIVER_CMD_TIMEOUT=2 driver_step_self_check 101 2>&1); rc=$?
+t1=$(date +%s)
+want "it refuses"                   "24" "$rc"
+want_in "naming it as a time limit" 'time' "$out"
+if [ $((t1 - t0)) -lt 30 ]; then ok "it came back in $((t1-t0))s"; else bad "waited $((t1-t0))s — the bound did not hold"; fi
+
+echo "--- a command that is only whitespace or a comment is not a gate that ran ---"
+# One keystroke from the empty case, and operator-authored: a placeholder left in
+# harness.json counted as a gate, printed "ok", and took the green count up with it.
+jq '.gates = {"lint":"  ","test":"# TODO: wire this up"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+out=$(driver_step_self_check 101 2>&1); rc=$?
+want "it refuses"                  "24" "$rc"
+want_not_in "and never says green" 'green' "$out"
+
 echo "--- gates present but every command empty: nothing ran, so nothing passed ---"
 # This is the same failure as no gates at all, wearing a configured shape. The loop
 # skips an empty or null command, the counter stays at zero, and the step then

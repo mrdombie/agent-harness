@@ -29,6 +29,7 @@
 #   1  it passed WITHOUT the change — the test does not test the change
 #   2  it still failed WITH the change — the change does not do the job
 #   3  the commits could not be read
+#   4  a half ran out of time — a hang says nothing about the change
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -88,7 +89,7 @@ driver_prove_red_green() {
   _driver_proof_install "$repo" "$tmp/before"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
-  ( cd "$tmp/before" && eval "$cmd" ) >"$tmp/before.out" 2>&1
+  ( cd "$tmp/before" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
   git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
@@ -101,7 +102,7 @@ driver_prove_red_green() {
   # attributed to the change. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/after/$tfile"
-  ( cd "$tmp/after" && eval "$cmd" ) >"$tmp/after.out" 2>&1
+  ( cd "$tmp/after" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
 
   git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
@@ -111,6 +112,14 @@ driver_prove_red_green() {
   after_out=$(head -5 "$tmp/after.out" 2>/dev/null | tr '\n' ' ')
   rm -rf "$tmp"
 
+  # A HANG IS NOT A RED. Out of time says nothing about the change, and it is
+  # reported before the red/green reading so a watch-mode runner cannot be read as a
+  # test that failed honestly.
+  if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
+    printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
+      "$tfile" "$DRIVER_CMD_TIMEOUT"
+    return 4
+  fi
   if [ "$rc_red" -eq 0 ]; then
     printf '%s passes without the change — it does not test it. (%s)\n' "$tfile" "$red_out"
     return 1

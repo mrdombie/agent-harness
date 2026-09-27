@@ -79,13 +79,94 @@ want_in "naming the file"    'stray.txt' "$out"
 want_not_in "nothing pushed" 'pr create' "$(cat "$GH_LOG")"
 
 echo "--- never from the trunk itself ---"
+# The case has to be built so the TRUNK GUARD is the only thing that can refuse it.
+# Written against $REPO, whose develop equals origin/develop, the branch is zero
+# commits ahead and the later "nothing to ship" guard refuses it instead — so with the
+# trunk guard deleted the case still passed, and `want_in … 'develop'` was satisfied by
+# "no commits on it against origin/develop". Proved by building it properly: guard off,
+# the step pushes and MOVES origin/develop.
 : > "$GH_LOG"
-driver_state_init 104 --worktree "$REPO" --branch develop
+# A clone of its own, because the trunk cannot be checked out twice and $REPO
+# already has it. `git worktree add <path> develop` fails there, and the step then
+# refused for a missing worktree — which looks exactly like the guard firing.
+WT104="$FIX/wt104"
+git clone -q "$FIX/origin" "$WT104" 2>/dev/null
+# The bare origin's HEAD names a branch it does not have, so the clone lands on an
+# unborn branch and `push develop` then fails for a reason that has nothing to do with
+# the guard. Put it on the trunk explicitly.
+git -C "$WT104" checkout -q -B develop origin/develop
+git -C "$WT104" config user.email t@example.invalid
+git -C "$WT104" config user.name T
+want "the case really is ON the trunk" "develop" "$(git -C "$WT104" rev-parse --abbrev-ref HEAD)"
+printf 'straight onto the trunk\n' > "$WT104/oops.txt"
+git -C "$WT104" add oops.txt
+git -C "$WT104" commit -qm "feat: onto the trunk"
+want "and one commit ahead of origin" "1" "$(git -C "$WT104" rev-list --count origin/develop..develop)"
+TRUNK_BEFORE=$(git -C "$FIX/origin" rev-parse develop)
+driver_state_init 104 --worktree "$WT104" --branch develop
 driver_state_put 104 review '{"verdict":"SHIP","blockers":[]}'
 fix_issue 104 OPEN "status:claimed"
 out=$(driver_step_ship 104 2>&1); rc=$?
 want "shipping from the trunk refuses" "24" "$rc"
 want_in "and names the branch"         'develop' "$out"
+want_in "saying nothing goes straight to the trunk" 'straight to the trunk' "$out"
+want "and origin's trunk did not move" "$TRUNK_BEFORE" "$(git -C "$FIX/origin" rev-parse develop)"
+want_not_in "no pull request was opened" 'pr create' "$(cat "$GH_LOG")"
+
+echo "--- nor from a detached worktree, where the branch is no branch ---"
+# `push -u origin HEAD` from a detached head is the other half of the same guard and
+# had no case at all.
+: > "$GH_LOG"
+WT105="$FIX/wt105det"
+git -C "$REPO" worktree add -q --detach "$WT105" develop
+printf 'detached\n' > "$WT105/d.txt"
+git -C "$WT105" add d.txt
+git -C "$WT105" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: detached"
+driver_state_init 105 --worktree "$WT105" --branch ""
+driver_state_put 105 review '{"verdict":"SHIP","blockers":[]}'
+fix_issue 105 OPEN "status:claimed"
+out=$(driver_step_ship 105 2>&1); rc=$?
+want "a detached worktree refuses"       "24" "$rc"
+want_not_in "and nothing was pushed"     'pr create' "$(cat "$GH_LOG")"
+
+echo "--- GitHub refusing every write is not a completed hand-off ---"
+# Every gh call here is wrapped in `|| true`, so an expired token, a protected base or
+# a rate limit produced "pushed, pull request ready, auto-merge armed" with no pull
+# request in existence — and because the orchestrator then records ship as finished,
+# every later run reports "nothing left to do" and never comes back. The branch sits
+# on origin with nothing on the board and the claim still held.
+: > "$GH_LOG"
+setup_wt 108
+driver_state_put 108 review '{"verdict":"SHIP","blockers":[]}'
+fix_gh_fail "pr create"
+out=$(driver_step_ship 108 2>&1); rc=$?
+fix_gh_ok
+want "it refuses"                        "24" "$rc"
+want_not_in "and never claims a hand-off" 'Handing off' "$out"
+want_in "saying no pull request exists"   'pull request' "$out"
+want "the branch still reached origin"    "1" \
+  "$(git -C "$FIX/origin" rev-parse --verify tkt-108/work >/dev/null 2>&1 && echo 1)"
+
+echo "--- and neither is a pull request that could not be marked ready ---"
+: > "$GH_LOG"
+setup_wt 109
+driver_state_put 109 review '{"verdict":"SHIP","blockers":[]}'
+fix_gh_fail "pr ready"
+out=$(driver_step_ship 109 2>&1); rc=$?
+fix_gh_ok
+want "it refuses"                        "24" "$rc"
+want_not_in "and never claims a hand-off" 'Handing off' "$out"
+want_not_in "auto is not armed over it"   'pr merge' "$(cat "$GH_LOG")"
+
+echo "--- or one auto-merge would not arm on ---"
+: > "$GH_LOG"
+setup_wt 110
+driver_state_put 110 review '{"verdict":"SHIP","blockers":[]}'
+fix_gh_fail "pr merge"
+out=$(driver_step_ship 110 2>&1); rc=$?
+fix_gh_ok
+want "it refuses"                        "24" "$rc"
+want_not_in "and never claims a hand-off" 'Handing off' "$out"
 
 echo "--- the trunk is found on origin, not only locally ---"
 # start deliberately prefers origin/<trunk> because a fresh clone may have no local
@@ -124,14 +205,21 @@ want_in "and where it is"              'a.ts:9' "$out"
 want_in "and says the rounds are spent" "$DRIVER_MAX_REVIEW_ROUNDS" "$out"
 want_in "the work is still pushed and visible" 'pr create.*--draft' "$(cat "$GH_LOG")"
 want_not_in "but never marked ready"   'pr ready' "$(cat "$GH_LOG")"
+# AND THE BLOCKERS HAVE TO LEAVE THE MACHINE. driver_say writes stdout and a log file
+# in the state directory — the one place a handover must not depend on, because a park
+# exists to be read by somebody who is not this process. The note is what the park
+# brief asks the operator to act on.
+want_in "the blockers are left for the handover" 'the save button calls nothing' \
+  "$(driver_state_get 107 park_note)"
+want_in "with the file and line"                 'a.ts:9' "$(driver_state_get 107 park_note)"
 
 echo "--- a branch with no commits on it has nothing to ship ---"
 : > "$GH_LOG"
-git -C "$REPO" worktree add -q "$FIX/wt105" -b tkt-105/work develop
-driver_state_init 105 --worktree "$FIX/wt105" --branch tkt-105/work
-driver_state_put 105 review '{"verdict":"SHIP","blockers":[]}'
-fix_issue 105 OPEN "status:claimed"
-out=$(driver_step_ship 105 2>&1); rc=$?
+git -C "$REPO" worktree add -q "$FIX/wt111" -b tkt-111/work develop
+driver_state_init 111 --worktree "$FIX/wt111" --branch tkt-111/work
+driver_state_put 111 review '{"verdict":"SHIP","blockers":[]}'
+fix_issue 111 OPEN "status:claimed"
+out=$(driver_step_ship 111 2>&1); rc=$?
 want "an empty branch refuses" "24" "$rc"
 want_in "and says so"          'no commits' "$out"
 

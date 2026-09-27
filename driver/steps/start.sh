@@ -27,7 +27,7 @@
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
-  local meta st labels repo slug branch wt sha l hrc
+  local meta st labels repo slug branch wt sha l hrc cw cb ow
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
@@ -88,7 +88,26 @@ driver_step_start() { # <ticket>
   # not exist.
   bash "$CL" holds "$t" >/dev/null 2>&1; hrc=$?
   case "$hrc" in
-    0)  driver_say "   start: #$t is already ours — resuming" ;;
+    0)  # "OURS" IS ONLY AS FINE AS THE IDENTITY BEHIND IT, AND THAT IDENTITY IS THE
+        # MACHINE. The lock compares `<login>@<host>`, the same string for every agent
+        # on the box, so rc 0 means "somebody here holds it" — believing it reads a
+        # live peer's claim as our own, cuts a second worktree on a second branch, and
+        # then rewrites the peer's branch and worktree onto their claim, which makes
+        # their work invisible to every reconciler while both agents build the ticket.
+        #
+        # What tells the two apart is the claim's OWN record: it names the branch and
+        # worktree it was taken for. Ours iff that worktree is the one on our record,
+        # or — for a claim taken and then killed before the worktree existed — it
+        # names no worktree and the branch is the one we would use.
+        cw=$(bash "$CL" show "$t" 2>/dev/null | jq -r '.worktree // ""' 2>/dev/null)
+        cb=$(bash "$CL" show "$t" 2>/dev/null | jq -r '.branch // ""' 2>/dev/null)
+        ow=$(driver_state_get "$t" worktree)
+        if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } || { [ -z "$cw" ] && [ "$cb" = "$branch" ]; }; then
+          driver_say "   start: #$t is already ours — resuming"
+        else
+          driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."
+          return "$DRIVER_E_REFUSED"
+        fi ;;
     12) driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
         return "$DRIVER_E_REFUSED" ;;
     *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that

@@ -64,15 +64,40 @@ JSON
   cat > "$BIN/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
-q=""; prev=""
-for a in "$@"; do case "$prev" in -q|--jq) q="$a" ;; esac; prev="$a"; done
+# Induced failure, so "GitHub said no" is a case a suite can build. Every write in
+# this kit is wrapped in `|| true`, which means the difference between a completed
+# hand-off and a total outage is invisible unless a test can produce the outage.
+# $FIX/gh-fail holds one "<noun> <verb>" per line, e.g. `pr create`.
+if [ -f "$FIX/gh-fail" ] && grep -qxF "$1 $2" "$FIX/gh-fail"; then
+  echo "gh: refused $1 $2 (induced)" >&2; exit 1
+fi
+q=""; head=""; prev=""
+for a in "$@"; do
+  case "$prev" in -q|--jq) q="$a" ;; --head) head="$a" ;; esac
+  prev="$a"
+done
+mark() { printf '%s' "$FIX/pr-created-$(printf '%s' "$1" | tr '/' '_')"; }
 emit() { if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
-  "pr create")  echo "https://github.com/acme/widgets/pull/42" ;;
+  "pr create")  : > "$(mark "$head")"; echo "https://github.com/acme/widgets/pull/42" ;;
   "pr list")    f="$FIX/gh/prs.json"; [ -f "$f" ] || printf '[]\n' > "$f"; emit "$f" ;;
-  "pr view")    f="$FIX/gh/pr-view.json"; [ -f "$f" ] || printf '{}\n' > "$f"; emit "$f" ;;
+  "pr view")
+    # A pull request exists only when one was created. `pr view` on a branch with
+    # none exits non-zero, which is how a caller can tell a created PR from a
+    # swallowed failure — the stub has to do the same or that check is untestable.
+    # Keyed on a SUCCESSFUL create, not on the log. Every call is logged before the
+    # induced-failure check, so reading the log made a refused create look like a
+    # pull request that exists — and the very case being built then passed.
+    # PER BRANCH. A suite-wide marker is set by the first case that creates a pull
+    # request, so every later case reads as having one — which is how the very case
+    # being built here passed against the defect twice.
+    if [ -f "$(mark "$3")" ]; then
+      f="$FIX/gh/pr-view.json"; [ -f "$f" ] || printf '{"number":42,"isDraft":true}\n' > "$f"; emit "$f"
+    else
+      echo "gh: no pull requests found" >&2; exit 1
+    fi ;;
   *) : ;;
 esac
 exit 0
@@ -150,6 +175,11 @@ fix_brief() {
 
 # fix_schema <step> <json-schema> — the schema #10886 owns; absent is normal.
 fix_schema() { printf '%s\n' "$2" > "$DRIVER_BRIEFS/schemas/$1.json"; }
+
+# fix_gh_fail <noun verb…> — make those gh writes fail, the way an expired token,
+# a protected base or a rate limit does. No call: everything succeeds.
+fix_gh_fail() { printf '%s\n' "$@" > "$FIX/gh-fail"; }
+fix_gh_ok()   { rm -f "$FIX/gh-fail"; }
 
 # fix_issue <n> <state> <labels-csv>
 fix_issue() {

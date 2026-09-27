@@ -29,6 +29,7 @@
 #   22 the answer did not match the schema the brief must return
 #   23 there is no brief for this step
 #   24 a refusal gate said no
+#   25 a command outran its time limit — a hang is not a failure to retry
 #   30 the reviewer found blockers — go back to the build step
 _driver_self="${BASH_SOURCE[0]}"
 . "$(cd "$(dirname "$_driver_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
@@ -56,6 +57,7 @@ DRIVER_E_NO_SKILL=21
 DRIVER_E_SCHEMA=22
 DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
+DRIVER_E_TIMEOUT=25
 DRIVER_E_REWORK=30
 
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
@@ -67,12 +69,50 @@ driver_say() {
   printf '%s %s\n' "$(swarm_stamp)" "$*" >> "$DRIVER_DIR/$DRIVER_TICKET/log"
 }
 
+driver_opt_early() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
+
+# driver_bounded <seconds> <command> — run a command with a ceiling on its life.
+#
+# NOTHING ELSE BOUNDS A STEP THAT NEVER RETURNS. The orchestrator bounds a step that
+# keeps saying "go back", and the build step bounds its own retries, but a command
+# that hangs is outside both: no park, no refusal, the claim held and the worktree
+# pinned — the one state the whole design exists to make impossible. And the build
+# step's command comes from the MODEL, so a reported watch-mode runner (`vitest`
+# without `run`, `jest --watch`, a dev server) hangs the run for ever on an answer
+# that looks perfectly reasonable.
+#
+# Returns 124 on a timeout, which is the conventional code and is what a caller
+# names its refusal from. A command that genuinely exits 124 is indistinguishable;
+# that is the cost of having a bound at all, and it is worth it.
+#
+# `timeout` is GNU coreutils and is not on a stock mac, so perl's alarm is the
+# portable one — the same primitive the suite itself uses. The alarm survives the
+# exec (it is a property of the process, and SIGALRM's default action terminates),
+# which is what makes the one-liner work. Neither available: run it unbounded and
+# SAY SO, because a bound nobody applied must not read like one that held.
+DRIVER_CMD_TIMEOUT="${DRIVER_CMD_TIMEOUT:-$(driver_opt_early cmdTimeout 900)}"
+driver_bounded() { # <seconds> <command>
+  local secs="${1:-$DRIVER_CMD_TIMEOUT}" cmd="$2" rc
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" /bin/sh -c "$cmd"
+    rc=$?
+    # 142 is 128+SIGALRM: the alarm fired. Name it 124 so every caller reads one code.
+    [ "$rc" -eq 142 ] && rc=124
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" /bin/sh -c "$cmd"; rc=$?
+  else
+    echo "driver: neither perl nor timeout is available, so '$cmd' runs unbounded" >&2
+    /bin/sh -c "$cmd"; rc=$?
+  fi
+  return "$rc"
+}
+
 # driver_opt <dotted.key> <default> — an OPTIONAL project fact. toolkit_cfg
 # refuses a missing key by name, which is right for a fact the kit cannot invent;
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_STEPS
-export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE
+export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_REWORK
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK

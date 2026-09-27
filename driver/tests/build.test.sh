@@ -123,6 +123,19 @@ want_in "and it says red then green"            'red .* then green' "$out"
 want_not_in "not the version the tree happened to hold" 'still fails with the change' "$out"
 
 
+echo "--- a test command that never returns is refused, not waited on ---"
+# The command comes from the MODEL. A reported watch-mode runner — `vitest` without
+# `run`, `jest --watch`, a dev server — hangs the proof for ever: no park, no
+# refusal, the claim held and the worktree pinned, which is the one state the design
+# exists to make impossible. The retry ceiling cannot help; a step that never returns
+# is never counted.
+t0=$(date +%s)
+out=$(DRIVER_CMD_TIMEOUT=2 driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "sleep 60" 2>&1); rc=$?
+t1=$(date +%s)
+want "a hang is its own refusal" "4" "$rc"
+want_in "and says it ran out of time" 'time' "$out"
+if [ $((t1 - t0)) -lt 30 ]; then ok "it came back in $((t1-t0))s, not after the sleep"; else bad "waited $((t1-t0))s — the bound did not hold"; fi
+
 echo "--- the proof leaves nothing behind ---"
 want "no stray worktrees" "0" \
   "$(git -C "$REPO" worktree list | grep -c 'driver-proof' || true)"
