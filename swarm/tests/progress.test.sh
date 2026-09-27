@@ -55,7 +55,34 @@ NOSTAMP='{claim:true,commits:6,pushed:true,trailers:[],stampsReviews:false,prRea
 want "a repo that stamps none is unreadable, not unreviewed" \
   "done done done done unknown now todo" "$(states "$NOSTAMP")"
 SWEPT='{claim:true,commits:null,pushed:true,trailers:[],stampsReviews:true,prRead:true,pr:null}'
-want "a swept tree is not nothing committed" "done unknown unknown done now todo todo" "$(states "$SWEPT")"
+# The branch is ON ORIGIN, so it had commits whatever the swept tree can no
+# longer show: the sequence settles what the tree cannot.
+want "a swept tree is not nothing committed" "done done done done now todo todo" "$(states "$SWEPT")"
+
+echo "--- the bar never fills past its own cursor ---"
+# Every cell reads its own fact, which is right for honesty and wrong for a
+# sequence: a repo that stamps no review verdict leaves Review unreadable while
+# its PR has merged, and the row then lights Merged on a card headed step 5.
+MERGED_BLIND='{claim:true,commits:17,pushed:true,trailers:[],stampsReviews:false,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
+want "a step proven passed is drawn passed" "done done done done done done done" "$(states "$MERGED_BLIND")"
+want "and is no longer listed as unread" "" \
+  "$(ask "return P.progressOf($MERGED_BLIND,null).unreadable.join(',')")"
+# Nothing later proves a TRAILING unreadable step, so it stays unread.
+TAIL='{claim:true,commits:17,pushed:true,trailers:[],stampsReviews:false,prRead:false,pr:null}'
+want "a trailing unread step stays unread" "Review,PR,Merged" \
+  "$(ask "return P.progressOf($TAIL,null).unreadable.join(',')")"
+
+echo "--- a record that says nothing is not a record that says nothing is done ---"
+DONE_MERGED='{claim:true,commits:17,pushed:true,trailers:["UI-Gate"],stampsReviews:true,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
+want "an empty done-list is not a record" "7" \
+  "$(ask "return String(P.progressOf($DONE_MERGED,{done:[]}).step)")"
+# A step name this table does not know — spelled without quotes because ask()
+# passes its argument through a double-quoted shell word. Rename self-check
+# upstream and every card would quietly have reported step 1 of 7.
+want "nor is one naming steps we do not know" "7" \
+  "$(ask "return String(P.progressOf($DONE_MERGED,{done:[String.fromCharCode(120)]}).step)")"
+want "no record at all is not nought rounds" "null" \
+  "$(ask "return String(P.progressOf($DONE_MERGED,null).reviewRounds)")"
 
 echo "--- the step-runner's own record wins over the inference ---"
 DRIVER='{done:["start","plan","build","self-check"],step:"review",counters:{review_rounds:"1"}}'
@@ -87,6 +114,15 @@ want "a conventional-commit prefix goes" "The strip drops its last item" \
   "$(ask "return P.shortTitle('fix(desk): the strip drops its last item')")"
 want "the operator's own word wins" "The step-runner" \
   "$(ask "return P.shortTitle('Harness phase 1 · the driver: anything at all', 'The step-runner')")"
+# A programme labelling its own ticket is a prefix, not a name — otherwise three
+# agents on one programme render as three identically-named cards.
+NAME='(id) => id.split("-").map(w => w[0].toUpperCase()+w.slice(1)).join(" ")'
+want "a programme prefix is dropped" "Times inside quiet hours cannot be picked" \
+  "$(ask "return P.shortTitle('One Desk: times inside quiet hours cannot be picked', '', 'one-desk', $NAME)")"
+want "but a clause that is not one is kept" "The driver" \
+  "$(ask "return P.shortTitle('Harness phase 1 · the driver: build-ticket runs', '', 'harness-kit', $NAME)")"
+want "a ticket id prefix goes too" "The rules gate judged the draft" \
+  "$(ask "return P.shortTitle('SH-10104: the rules gate judged the draft', '', 'one-desk', $NAME)")"
 
 echo "--- the live view carries it, and so does the reporter ---"
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
