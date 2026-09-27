@@ -113,7 +113,11 @@ SH
 # named, a Skill tool_use block goes in — which is the ONE thing the driver reads
 # the transcript for.
 fix_ai() {
-  local step="$1" result="$2" skill="${3:-}" f="$FIX/ai/$step.jsonl"
+  # One name per line: bash expands the whole `local` command before it assigns
+  # any of it, so `f="…/$step.jsonl"` on the same line reads the OUTER step —
+  # unset, and under `set -u` that aborts the suite inside the fixture.
+  local step="$1" result="$2" skill="${3:-}"
+  local f="$FIX/ai/$step.jsonl"
   : > "$f"
   if [ -n "$skill" ]; then
     jq -nc --arg s "$skill" \
