@@ -21,9 +21,18 @@ swarm_iso() {
 }
 
 # swarm_epoch <2026-09-26T17:00:00Z> — the reverse, on either date.
+#
+# The fraction is stripped first, because that is the shape it is actually given:
+# the live view stamps `new Date().toISOString()`, which always carries
+# milliseconds, and BSD's -f matched the format literally and failed on them. The
+# `|| echo 0` then made a healthy snapshot look 56 years old, so swarm_snapshot
+# discarded every one of them, swarm_live_count answered 99, and the scheduler
+# held on a machine with room — all of it reported as success, because holding is
+# what a busy machine is supposed to do.
 swarm_epoch() {
-  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null \
-    || date -u -d "$1" +%s 2>/dev/null \
+  local t="${1%Z}"; t="${t%%.*}Z"
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$t" +%s 2>/dev/null \
+    || date -u -d "$t" +%s 2>/dev/null \
     || echo 0
 }
 
