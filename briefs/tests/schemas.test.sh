@@ -35,6 +35,16 @@ for f in "$BRIEFS/examples"/*.json; do
   else bad "$(basename "$f") names step '$ex_step' and there is no schemas/$ex_step.json"; fi
 done
 
+# The draft pin, which has no behavioural shadow and so has to be read off the
+# file. validate.sh passes --spec=draft7 explicitly, so that flag is the
+# load-bearing half at runtime; this asserts the schema SAYS the same thing, for
+# the next reader and for any other tool pointed at it.
+for f in "$BRIEFS/schemas"/*.json; do
+  s=$(basename "$f" .json)
+  want "schemas/$s.json pins its draft" \
+    "http://json-schema.org/draft-07/schema#" "$(jq -r '."$schema" // "(none)"' "$f")"
+done
+
 for step in $steps; do
   valid=$(ls "$BRIEFS/examples/$step".valid*.json 2>/dev/null)
   invalid=$(ls "$BRIEFS/examples/$step".invalid-*.json 2>/dev/null)
@@ -48,6 +58,17 @@ for step in $steps; do
       [ "$rc" = 0 ] || printf '         %s\n' "$out"
     done
   fi
+
+  # Two invalid examples every step must carry, named individually. Left to the
+  # generic "has at least one invalid example" demand, four of the five schemas
+  # could drop `skills` from `required` and both suites stayed green — measured
+  # by planting it. The driver cross-checks `skills` against the run log, so a
+  # step whose contract stops requiring it takes that check down silently.
+  for must in no-skills unknown-key; do
+    [ -f "$BRIEFS/examples/$step.invalid-$must.json" ] \
+      && ok "$step carries an invalid-$must example" \
+      || bad "$step has no examples/$step.invalid-$must.json — nothing pins that half of the contract"
+  done
 
   if [ -z "$invalid" ]; then bad "$step has no .invalid- example"; else
     for f in $invalid; do
