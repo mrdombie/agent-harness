@@ -158,7 +158,7 @@ echo "Branch: $BRANCH | Worktree: $WORKTREE | Ticket: $TICKET"
 
 # Sanity: the claim must exist (we should have claimed this).
 CLAIM=$("$CL" show "$TICKET_KEY" 2>/dev/null) \
-  || { echo "No claim ref for $TICKET — was this claimed via /claim?" >&2; exit 1; }
+  || { echo "No claim ref for $TICKET — was this claimed via /agent-harness:claim?" >&2; exit 1; }
 
 # Migration shim: claims adopted from the old lock dirs carry agent
 # "legacy-lock", so the holder check below cannot identify them. Drop this
