@@ -21,9 +21,13 @@ set -uo pipefail
 SUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$SUT_DIR/spawn-claim.sh" ] || { echo "missing $SUT_DIR/spawn-claim.sh"; exit 2; }
 
-SB="${TMPDIR:-/tmp}/spawn-claim-fixture-$$"
+SB="${TMPDIR:-/tmp}"; SB="${SB%/}/spawn-claim-fixture-$$"
 mkdir -p "$SB"
-trap 'rm -rf "$SB"; rm -rf "${TMPDIR:-/tmp}"/harness-spawn-* 2>/dev/null; rm -rf "${TMPDIR:-/tmp}"/harness-tools-* 2>/dev/null' EXIT
+# Only ever $SB. The spawn root and the materialised scripts/ land inside it
+# because every run below sets TMPDIR="$SB" — a glob for harness-spawn-* in the
+# real temp dir would delete the cwd of a live agent on the same machine, which
+# this suite did once.
+trap 'rm -rf "$SB"' EXIT
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -110,7 +114,7 @@ run() { # [args...] — invoke the spawner from the STALE tree, as the operator 
   HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
   HARNESS_CFG_PATH="$STORE/.claude/harness.json" \
   HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
-  SPAWN_CLAIM_CANONICAL="${CANON-1}" \
+  SPAWN_CLAIM_CANONICAL="${CANON-1}" TMPDIR="$SB" \
   bash "$SUT/spawn-claim.sh" "$@" 2>&1 || RC=$?
 }
 seen() { sed -n "s/^$1=//p" "$OUT/seen" 2>/dev/null; }
@@ -137,6 +141,10 @@ out=$(run --fg 4242)
   && ok "it sees every guard rule on the branch (2), not the tree's subset (1)" \
   || bad "it saw $(seen rules) guard rules, want 2"
 FIRST_CWD=$(seen cwd)
+case "$FIRST_CWD" in
+  "$SB"/*|/private"$SB"/*) ok "the checkout it built is inside this fixture's sandbox" ;;
+  *) bad "the fixture built a checkout OUTSIDE its sandbox ($FIRST_CWD) — its cleanup would reach a real one" ;;
+esac
 
 # --- 2. The same branch commit is one checkout, shared ------------------------
 # Immutable by SHA: two spawns at one commit must not each build a tree, and must
@@ -166,7 +174,7 @@ RC=0
 SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" PATH="$SB/bin:$PATH" \
 HARNESS_MAIN_REPO="$BARE" HARNESS_REPO_ROOT="$BARE" \
 HARNESS_CFG_PATH="$STORE/.claude/harness.json" \
-HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester SPAWN_CLAIM_CANONICAL=1 \
+HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester SPAWN_CLAIM_CANONICAL=1 TMPDIR="$SB" \
 bash "$SUT/spawn-claim.sh" --fg 4245 >"$OUT/refuse.log" 2>&1 || RC=$?
 [ "$RC" -ne 0 ] && ok "no resolvable integration branch stops the spawn" \
                 || bad "it spawned anyway (rc 0)"
