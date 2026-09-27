@@ -27,7 +27,7 @@
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
-  local meta st labels repo slug branch wt sha l
+  local meta st labels repo slug branch wt sha l hrc
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
@@ -65,32 +65,40 @@ driver_step_start() { # <ticket>
       return "$DRIVER_E_REFUSED" ;;
   esac
 
-  # The claim. Already ours is fine — a resumed run re-enters here.
-  if bash "$CL" holds "$t" >/dev/null 2>&1; then
-    if [ "$(driver_state_get "$t" worktree)" = "" ]; then
-      driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
-      return "$DRIVER_E_REFUSED"
-    fi
-  else
-    # A branch already on the record is KEPT. Naming a second one is how a resumed
-    # run ends up with its commits on a branch nobody ships: the worktree, the
-    # commits and the pull request are all on the first name, and everything after
-    # this line would look at the second. The worktree below is guarded that way
-    # already; the branch was not, and the two have to agree.
-    branch=$(driver_state_get "$t" branch)
-    if [ -z "$branch" ]; then
-      slug=$(printf '%s' "$meta" | cut -d$'\001' -f3 | tr '[:upper:]' '[:lower:]' \
-             | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-40)
-      [ -n "$slug" ] || slug="ticket-$t"
-      branch="${BRANCH_PREFIX}${t}/${slug}"
-    fi
-    if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
-      driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
-      return "$DRIVER_E_REFUSED"
-    fi
-    driver_state_set "$t" branch "$branch"
-  fi
+  # A branch already on the record is KEPT. Naming a second one is how a resumed run
+  # ends up with its commits on a branch nobody ships: the worktree, the commits and
+  # the pull request are all on the first name, and everything after this line would
+  # look at the second. The worktree below is guarded that way already; the branch
+  # was not, and the two have to agree.
   branch=$(driver_state_get "$t" branch)
+  if [ -z "$branch" ]; then
+    slug=$(printf '%s' "$meta" | cut -d$'\001' -f3 | tr '[:upper:]' '[:lower:]' \
+           | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-40)
+    [ -n "$slug" ] || slug="ticket-$t"
+    branch="${BRANCH_PREFIX}${t}/${slug}"
+  fi
+
+  # The claim, READ BY ITS EXIT CODE. `holds` answers "do WE own it": 0 ours, 11
+  # free, 12 a peer. Treating a plain success as "somebody has it" inverts the
+  # question — our own claim, taken but not yet carrying a worktree on the record,
+  # then reads as a peer's. That window spans a fetch and a worktree add, so a run
+  # killed inside it could never resume itself: it parked, the park added the hold
+  # label and released the claim, and a person had to clear a label for a state that
+  # was this run's own, while the message sent them looking for an agent that does
+  # not exist.
+  bash "$CL" holds "$t" >/dev/null 2>&1; hrc=$?
+  case "$hrc" in
+    0)  driver_say "   start: #$t is already ours — resuming" ;;
+    12) driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
+        return "$DRIVER_E_REFUSED" ;;
+    *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that
+        # settles it, and losing it means a peer won between the two calls.
+        if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
+          driver_say "✋ start: a peer took the claim on #$t first. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
+          return "$DRIVER_E_REFUSED"
+        fi ;;
+  esac
+  driver_state_set "$t" branch "$branch"
 
   # The worktree. A resumed run keeps the one it already has: cutting a second is
   # how a run ends up with its commits in a tree nobody ships.
