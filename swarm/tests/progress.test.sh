@@ -90,6 +90,26 @@ TAIL='{claim:true,commits:17,pushed:true,trailers:[],stampsReviews:false,prRead:
 want "a trailing unread step stays unread" "Review,PR,Merged" \
   "$(ask "return P.progressOf($TAIL,null).unreadable.join(',')")"
 
+echo "--- a fact whose meaning expired, and a trailer that proves nothing ---"
+# The DEFAULT post-merge shape: merging deletes the branch, so ls-remote exits 2
+# — a genuine "no such ref" — and pushed reads false. Read correctly; meaning
+# expired. The card then said the gates were never run on work that merged
+# through them, so the entailment repairs a false and not only an unread.
+GONE='{claim:true,commits:17,pushed:false,trailers:[],stampsReviews:true,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
+want "a branch deleted by its own merge" "done done done done todo done done" "$(states "$GONE")"
+want "and the cursor is at the end" "7" "$(ask "return String(P.progressOf($GONE,null).step)")"
+# Whichever flavour of no-answer the shell produced, the answer is the same.
+GONE2='{claim:true,commits:17,pushed:null,trailers:[],stampsReviews:true,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
+want "the flavour of no-answer does not change it" "done" \
+  "$(ask "return P.progressOf($GONE2,null).steps[3].state")"
+# A review verdict is stamped BEFORE the push here, so it proves nothing
+# mechanical: counting it moved the cursor to PR on a branch still on the Mac.
+LOCAL='{claim:true,commits:3,pushed:false,trailers:["UI-Gate"],stampsReviews:true,prRead:true,pr:null}'
+want "a trailer does not move the cursor past the push" "4" \
+  "$(ask "return String(P.progressOf($LOCAL,null).step)")"
+want "and it still sits ahead of it, which is the truth" "done" \
+  "$(ask "return P.progressOf($LOCAL,null).steps[4].state")"
+
 echo "--- a record that says nothing is not a record that says nothing is done ---"
 DONE_MERGED='{claim:true,commits:17,pushed:true,trailers:["UI-Gate"],stampsReviews:true,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
 want "an empty done-list is not a record" "7" \
