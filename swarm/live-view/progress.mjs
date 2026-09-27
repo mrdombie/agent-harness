@@ -75,8 +75,13 @@ export function progressOf(f, driver) {
   } else {
     at = [
       f && f.claim ? true : null,
+      // The ticket names two facts for this cell — "a plan file OR first commit"
+      // — so a written plan counts before anything is committed. Build is "commits
+      // on the branch", with no threshold named, so it is not given an invented
+      // one: the two move together on a run that writes no plan, which is what
+      // the spec says rather than what looks tidiest.
+      f && f.planFile ? true : has(f && f.commits) ? f.commits >= 1 : null,
       has(f && f.commits) ? f.commits >= 1 : null,
-      has(f && f.commits) ? f.commits >= 2 : null,
       f && has(f.pushed) ? !!f.pushed : null,
       f && Array.isArray(f.trailers) && f.trailers.length > 0 ? true
         : f && f.stampsReviews === true ? false : null,
@@ -100,15 +105,19 @@ export function progressOf(f, driver) {
     else if (seen && at[i] === null && ENTAILED[i]) at[i] = true
   }
   const redPr = !!(pr && pr.state === 'OPEN' && pr.fail > 0)
-  // The step being walked is the first one KNOWN to be unfinished. A step nobody
-  // could read is a gap, not a place to stop: treating it as the current step
-  // loses the marker for where the agent actually is, and every step after an
-  // unreadable one then reads as not-yet-reached.
-  const now = at.findIndex((v) => v === false)
+  // Where the work IS, which is not the same as the first gap in the row. The
+  // first gap alone put the cursor behind the work: a merged ticket whose branch
+  // carried no review trailer read "STEP 5 OF 7 · waiting on its reviewer", in
+  // the present tense and in the happening-now colour, about work that had
+  // already shipped. So the cursor is the later of the first known-unfinished
+  // step and the step after the furthest one PROVEN done — a skipped step sits
+  // behind the cursor as an unlit cell, which is what a skipped step is.
+  const firstFalse = at.findIndex((v) => v === false)
   const firstUnread = at.findIndex((v) => v === null)
-  const stepNo = now >= 0 ? now + 1
-    : at.every((v) => v === true) ? STEPS.length
-    : (firstUnread >= 0 ? firstUnread : 0) + 1
+  const proven = at.lastIndexOf(true) + 1
+  const start = firstFalse >= 0 ? firstFalse : (firstUnread >= 0 ? firstUnread : 0)
+  const now = Math.max(start, proven)
+  const stepNo = Math.min(now + 1, STEPS.length)
   const steps = STEPS.map((name, i) => ({
     name,
     state: i === 5 && redPr ? 'bad'
@@ -124,6 +133,11 @@ export function progressOf(f, driver) {
     reviewRounds: driver?.counters?.review_rounds == null ? null
       : Number(driver.counters.review_rounds) || 0,
     pr: pr ? String(pr.number) : '',
+    // The page has to tell a green PR waiting to merge from one that merged and
+    // from one somebody closed. Without the state it said "merged" about all
+    // three — the most consequential word this page prints, printed about open
+    // work.
+    prState: pr ? String(pr.state) : '',
     checksFail: pr ? num(pr.fail) : null,
     checksPending: pr ? num(pr.pending) : null,
     unreadable: steps.filter((s) => s.state === 'unknown').map((s) => s.name),
@@ -310,11 +324,15 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
     const slug = rec.repo ? `${owner}/${rec.repo}` : repo
     const { commits, trailers } = branchOf(slug, rec.branch, rec.worktree)
 
+    const dir = driverDir ? path.join(driverDir, String(t)) : ''
     out[String(t)] = {
       claim: true, branch: rec.branch, commits, pushed: pushedOf(slug, rec.branch),
+      // The ticket's wording for Plan is "a plan file or first commit", and the
+      // step-runner writes one before it commits anything.
+      planFile: !!(dir && fs.existsSync(path.join(dir, 'steps', 'plan.json'))),
       trailers: trailers || [], stampsReviews: stampsReviews(slug, seen),
       ...prOf(slug, rec.branch),
-      driver: driverDir ? json(path.join(driverDir, String(t), 'state.json'), null) : null,
+      driver: dir ? json(path.join(dir, 'state.json'), null) : null,
     }
   }
   return out

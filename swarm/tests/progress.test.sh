@@ -31,9 +31,20 @@ echo "--- each step comes from its own fact ---"
 JUST_CLAIMED='{claim:true,commits:0,pushed:false,trailers:[],stampsReviews:true,prRead:true,pr:null}'
 want "claimed, nothing else done" "done now todo todo todo todo todo" "$(states "$JUST_CLAIMED")"
 ONE='{claim:true,commits:1,pushed:false,trailers:[],stampsReviews:true,prRead:true,pr:null}'
-want "one commit is a plan, not a build" "done done now todo todo todo todo" "$(states "$ONE")"
+# The spec says "commits on the branch" and names no number, so Build is given no
+# invented threshold: on a run that writes no plan the two cells move together.
+want "a commit is both a plan and a build" "done done done now todo todo todo" "$(states "$ONE")"
+# The spec's other half: a written plan counts before anything is committed.
+PLANNED='{claim:true,commits:0,planFile:true,pushed:false,trailers:[],stampsReviews:true,prRead:true,pr:null}'
+want "a plan file is a plan" "done done now todo todo todo todo" "$(states "$PLANNED")"
 PUSHED='{claim:true,commits:6,pushed:true,trailers:[],stampsReviews:true,prRead:true,pr:null}'
 want "pushed means the gates ran" "done done done done now todo todo" "$(states "$PUSHED")"
+# The cursor is the later of the first gap and the step after the furthest one
+# PROVEN done: a merged ticket whose branch carried no review verdict used to read
+# "step 5 of 7 · waiting on its reviewer" about work that had already shipped.
+SKIPPED='{claim:true,commits:6,pushed:true,trailers:[],stampsReviews:true,prRead:true,pr:{number:9,state:"MERGED",fail:0,pending:0}}'
+want "a skipped step sits BEHIND the cursor" "done done done done todo done done" "$(states "$SKIPPED")"
+want "and the cursor is at the end" "7" "$(ask "return String(P.progressOf($SKIPPED,null).step)")"
 REVIEWED='{claim:true,commits:6,pushed:true,trailers:["UI-Gate"],stampsReviews:true,prRead:true,pr:null}'
 want "a trailer is the review" "done done done done done now todo" "$(states "$REVIEWED")"
 GREEN='{claim:true,commits:6,pushed:true,trailers:["UI-Gate"],stampsReviews:true,prRead:true,pr:{number:9,state:"OPEN",fail:0,pending:0}}'
