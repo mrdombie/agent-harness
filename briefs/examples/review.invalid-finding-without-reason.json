@@ -1,0 +1,19 @@
+{
+  "step": "review",
+  "skills": [
+    "superpowers:requesting-code-review"
+  ],
+  "status": "reviewed",
+  "round": 1,
+  "verdict": "BLOCKED",
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/queue/panel.tsx",
+      "line": 142,
+      "grade": "critical",
+      "summary": "the failed state renders the empty copy",
+      "fix": "branch on state === 'failed' and render the retry row"
+    }
+  ]
+}

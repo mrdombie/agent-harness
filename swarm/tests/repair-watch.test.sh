@@ -133,6 +133,11 @@ out=$(w --only alarm)
 want_in "after 20 minutes it does"     'ALARM opened' "$out"
 want_in "the issue names the programme" 'No agent has run on widgets' "$(cat "$GH_LOG")"
 want_in "and is labelled for the swarm" 'issue create .*--label swarm:stalled' "$(cat "$GH_LOG")"
+# GRADED LIKE EVERYTHING ELSE AN AGENT FILES. A stopped swarm is a Critical on the
+# harness's one scale, so the alarm carries the Critical priority — without it the
+# alarm sorts below whatever the queue happened to be showing, which is the same as
+# not raising it.
+want_in "and carries the Critical priority" 'issue create .*--label P0' "$(cat "$GH_LOG")"
 
 echo "--- the alarm closes itself when the agents run again ---"
 : > "$GH_LOG"

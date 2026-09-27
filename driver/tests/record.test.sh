@@ -19,7 +19,7 @@ driver_state_init 101 --worktree "$REPO"
 driver_state_set 101 claimed_at_sha deadbeefcafe
 
 echo "--- the verdict comes off the reviewer's own file ---"
-driver_state_put 101 review '{"verdict":"SHIP","blockers":[],"nonblocking":[]}'
+driver_state_put 101 review '{"verdict":"SHIP","findings":[]}'
 driver_state_bump 101 review
 out=$(driver_step_record 101 2>&1); rc=$?
 want "it finishes" "0" "$rc"
@@ -29,7 +29,7 @@ want_in "and the SHA it was claimed at" 'deadbeefcafe'        "$(cat "$CLAIMS")"
 
 echo "--- a verdict offered on the command line is ignored ---"
 : > "$CLAIMS"
-driver_state_put 101 review '{"verdict":"BLOCKED","blockers":[{"finding":"x"}]}'
+driver_state_put 101 review '{"verdict":"BLOCKED","findings":[{"grade":"major","summary":"x"}]}'
 out=$(driver_step_record 101 SHIP 2>&1); rc=$?
 want_in "the reviewer's BLOCKED is what lands" 'review_verdict=BLOCKED' "$(cat "$CLAIMS")"
 want_not_in "the argument never reaches the record" 'review_verdict=SHIP' "$(cat "$CLAIMS")"

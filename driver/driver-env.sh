@@ -31,7 +31,7 @@
 #   23 there is no brief for this step
 #   24 a refusal gate said no
 #   25 a command outran its time limit — a hang is not a failure to retry
-#   30 the reviewer found blockers — go back to the build step
+#   30 the reviewer found a Critical or a Major — go back to the build step
 _driver_self="${BASH_SOURCE[0]}"
 . "$(cd "$(dirname "$_driver_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
 DRIVER_HOME="$(cd "$(dirname "$_driver_self")" && pwd)"
@@ -160,7 +160,24 @@ driver_bounded() { # <seconds> <command>
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
+# THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
+# that files work grades what it raises, and the grade — not the list it arrived
+# in — decides the effect: a Critical or a Major sends work back, a Minor leaves
+# as one follow-up, a Nit is dropped. Two representations of the same judgement is
+# how a check and the thing it checks end up derived from different inputs.
+DRIVER_GRADES="${DRIVER_GRADES:-critical major minor nit}"
+
+# The priority a filed follow-up carries, read off the grade, so the queue orders
+# by the same judgement the reviewer made. P0-P3 is the kit's own vocabulary (the
+# same labels /queue, /work and /project already sort on); a project that names
+# them differently says so under labels.priority. A Nit is never filed, so it has
+# no label here.
+DRIVER_LABEL_CRITICAL="${DRIVER_LABEL_CRITICAL:-$(driver_opt labels.priority.critical P0)}"
+DRIVER_LABEL_MAJOR="${DRIVER_LABEL_MAJOR:-$(driver_opt labels.priority.major P1)}"
+DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)}"
+
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
+export DRIVER_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
 export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK

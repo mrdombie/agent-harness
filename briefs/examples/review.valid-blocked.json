@@ -6,20 +6,42 @@
   "status": "reviewed",
   "round": 1,
   "verdict": "BLOCKED",
-  "blockers": [
+  "findings": [
     {
-      "id": "b1",
+      "id": "f1",
       "file": "src/queue/panel.tsx",
       "line": 142,
-      "summary": "the failed state renders the empty copy, so a broken read reads as 'nothing here'",
+      "grade": "major",
+      "summary": "the failed state renders the empty copy",
+      "reason": "someone whose queue failed to load is told there is nothing in it, and stops looking",
       "fix": "branch on state === 'failed' and render the retry row"
     },
     {
-      "id": "b2",
+      "id": "f2",
       "file": "src/queue/reader.test.ts",
       "line": 18,
+      "grade": "major",
       "summary": "the test asserts the file contains the string 'failed' rather than calling the reader",
+      "reason": "the guard on that failure can be deleted and the suite stays green, so it comes back unnoticed",
       "fix": "call read() against a throwing fetch and assert the returned state"
+    },
+    {
+      "id": "f3",
+      "file": "src/queue/panel.tsx",
+      "line": 88,
+      "grade": "minor",
+      "summary": "the retry row sits a step off the spacing scale",
+      "reason": "the row reads as misaligned against the ones above it",
+      "fix": "use the scale step the sibling rows use"
+    },
+    {
+      "id": "f4",
+      "file": "src/queue/panel.tsx",
+      "line": 12,
+      "grade": "nit",
+      "summary": "the comma in the heading could be an em dash",
+      "reason": "taste",
+      "fix": "leave it"
     }
   ]
 }

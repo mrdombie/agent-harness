@@ -28,7 +28,7 @@ setup_wt() { # <ticket>
 
 echo "--- a reviewed ticket ships ---"
 setup_wt 101
-driver_state_put 101 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 101 review '{"verdict":"SHIP","findings":[]}'
 driver_state_bump 101 review
 # The state ship actually runs in: everything before it is finished. The body's step
 # list is read off that, so a record with nothing done cannot tell an empty line
@@ -71,7 +71,7 @@ want_in "and it says what is missing"  'review' "$out"
 echo "--- an uncommitted change is not shipped silently ---"
 : > "$GH_LOG"
 setup_wt 103
-driver_state_put 103 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 103 review '{"verdict":"SHIP","findings":[]}'
 printf 'stray\n' > "$FIX/wt103/stray.txt"
 out=$(driver_step_ship 103 2>&1); rc=$?
 want "a dirty tree refuses"  "24" "$rc"
@@ -104,7 +104,7 @@ git -C "$WT104" commit -qm "feat: onto the trunk"
 want "and one commit ahead of origin" "1" "$(git -C "$WT104" rev-list --count origin/develop..develop)"
 TRUNK_BEFORE=$(git -C "$FIX/origin" rev-parse develop)
 driver_state_init 104 --worktree "$WT104" --branch develop
-driver_state_put 104 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 104 review '{"verdict":"SHIP","findings":[]}'
 fix_issue 104 OPEN "status:claimed"
 out=$(driver_step_ship 104 2>&1); rc=$?
 want "shipping from the trunk refuses" "24" "$rc"
@@ -123,7 +123,7 @@ printf 'detached\n' > "$WT105/d.txt"
 git -C "$WT105" add d.txt
 git -C "$WT105" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: detached"
 driver_state_init 105 --worktree "$WT105" --branch ""
-driver_state_put 105 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 105 review '{"verdict":"SHIP","findings":[]}'
 fix_issue 105 OPEN "status:claimed"
 out=$(driver_step_ship 105 2>&1); rc=$?
 want "a detached worktree refuses"       "24" "$rc"
@@ -137,7 +137,7 @@ echo "--- GitHub refusing every write is not a completed hand-off ---"
 # on origin with nothing on the board and the claim still held.
 : > "$GH_LOG"
 setup_wt 108
-driver_state_put 108 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 108 review '{"verdict":"SHIP","findings":[]}'
 fix_gh_fail "pr create"
 out=$(driver_step_ship 108 2>&1); rc=$?
 fix_gh_ok
@@ -150,7 +150,7 @@ want "the branch still reached origin"    "1" \
 echo "--- and neither is a pull request that could not be marked ready ---"
 : > "$GH_LOG"
 setup_wt 109
-driver_state_put 109 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 109 review '{"verdict":"SHIP","findings":[]}'
 fix_gh_fail "pr ready"
 out=$(driver_step_ship 109 2>&1); rc=$?
 fix_gh_ok
@@ -161,7 +161,7 @@ want_not_in "auto is not armed over it"   'pr merge' "$(cat "$GH_LOG")"
 echo "--- or one auto-merge would not arm on ---"
 : > "$GH_LOG"
 setup_wt 110
-driver_state_put 110 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 110 review '{"verdict":"SHIP","findings":[]}'
 fix_gh_fail "pr merge"
 out=$(driver_step_ship 110 2>&1); rc=$?
 fix_gh_ok
@@ -175,7 +175,7 @@ echo "--- the trunk is found on origin, not only locally ---"
 # step, refused again on every resume.
 : > "$GH_LOG"
 setup_wt 106
-driver_state_put 106 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 106 review '{"verdict":"SHIP","findings":[]}'
 # `branch -D` refuses a branch that is checked out, and REPO's own HEAD is on it —
 # so the first version of this case deleted nothing and passed against the defect.
 # Detach first, and prove the ref is actually gone before running the step.
@@ -196,7 +196,7 @@ echo "--- past the review rounds with blockers still open: it refuses ONCE, answ
 # walks straight back here, and the operator needs the blockers, not exit 24.
 : > "$GH_LOG"
 setup_wt 107
-driver_state_put 107 review '{"verdict":"BLOCKED","blockers":[{"file":"a.ts","line":9,"finding":"the save button calls nothing"}]}'
+driver_state_put 107 review '{"verdict":"BLOCKED","findings":[{"file":"a.ts","line":9,"grade":"critical","summary":"the save button calls nothing","reason":"the person believes their work is saved and it is not"},{"file":"b.ts","line":4,"grade":"minor","summary":"the row is a spacing step out","reason":"it reads as misaligned"}]}'
 driver_state_bump 107 review; driver_state_bump 107 review; driver_state_bump 107 review
 out=$(driver_step_ship 107 2>&1); rc=$?
 want "it refuses"                      "24" "$rc"
@@ -212,12 +212,18 @@ want_not_in "but never marked ready"   'pr ready' "$(cat "$GH_LOG")"
 want_in "the blockers are left for the handover" 'the save button calls nothing' \
   "$(driver_state_get 107 park_note)"
 want_in "with the file and line"                 'a.ts:9' "$(driver_state_get 107 park_note)"
+# ONLY WHAT BLOCKS. A Minor left the review as its own follow-up ticket, so listing it
+# here hands the operator polish to "clear" before a merge — the exact weighting the
+# grade exists to remove. It must not appear on the refusal or in the park note.
+want_not_in "and the Minor is NOT something to clear" 'spacing step out' "$out"
+want_not_in "nor in the handover note"                'spacing step out' "$(driver_state_get 107 park_note)"
+want_in "the count is of what blocks, not of everything" '1 critical/major' "$out"
 
 echo "--- a branch with no commits on it has nothing to ship ---"
 : > "$GH_LOG"
 git -C "$REPO" worktree add -q "$FIX/wt111" -b tkt-111/work develop
 driver_state_init 111 --worktree "$FIX/wt111" --branch tkt-111/work
-driver_state_put 111 review '{"verdict":"SHIP","blockers":[]}'
+driver_state_put 111 review '{"verdict":"SHIP","findings":[]}'
 fix_issue 111 OPEN "status:claimed"
 out=$(driver_step_ship 111 2>&1); rc=$?
 want "an empty branch refuses" "24" "$rc"

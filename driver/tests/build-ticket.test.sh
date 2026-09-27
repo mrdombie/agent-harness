@@ -127,7 +127,7 @@ want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
 echo "--- a note a step left behind becomes the question the park asks ---"
 # A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
-# — the blockers a review found, a follow-up that could not be filed — leaves the text
+# — what a review graded critical or major, a follow-up that could not be filed — leaves the text
 # on the record, and the park brief asks about that rather than about the code.
 # The note is written by the step that refuses, which is the only way a real one
 # arrives: a note sitting on the record BEFORE the run belongs to a previous one and
@@ -185,7 +185,7 @@ want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
 echo "--- a note a step left behind becomes the question the park asks ---"
 # A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
-# — the blockers a review found, a follow-up that could not be filed — leaves the text
+# — what a review graded critical or major, a follow-up that could not be filed — leaves the text
 # on the record, and the park brief asks about that rather than about the code.
 # The note is written by the step that refuses, which is the only way a real one
 # arrives: a note sitting on the record BEFORE the run belongs to a previous one and
@@ -216,7 +216,7 @@ out=$(bt 105); rc=$?
 want "the run stops"    "20" "$rc"
 want_in "the park names the skill problem" 'Skill' "$(cat "$FIX/park.log")"
 
-echo "--- a review that finds blockers sends the work back to the build ---"
+echo "--- a review that grades something critical or major sends the work back ---"
 # BLOCKED on round 1, clean on round 2: build, self-check and review all run
 # twice, and `record` and `ship` still run once at the end.
 reset_fakes "review:30 0"
@@ -386,7 +386,7 @@ fix_ai build "$(jq -nc --arg ts "$TSHA" --arg is "$ISHA" \
     items:[{id:"1", test_file:"t/check.sh", test_command:"bash t/check.sh",
             test_commit:$ts, impl_commit:$is}]}')" \
   superpowers:subagent-driven-development
-fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"ok","verdict":"SHIP","blockers":[]}' \
+fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"ok","verdict":"SHIP","findings":[]}' \
   superpowers:requesting-code-review
 
 # The claim the start step re-enters through, and the worktree it works in.

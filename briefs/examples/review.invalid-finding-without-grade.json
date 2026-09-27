@@ -5,13 +5,15 @@
   ],
   "status": "reviewed",
   "round": 1,
-  "verdict": "BLOCKED",
-  "blockers": [
+  "verdict": "SHIP",
+  "findings": [
     {
-      "id": "b1",
+      "id": "f1",
       "file": "src/queue/panel.tsx",
+      "line": 142,
       "summary": "the failed state renders the empty copy",
-      "fix": "branch on state"
+      "reason": "someone whose queue failed to load is told there is nothing in it",
+      "fix": "branch on state === 'failed' and render the retry row"
     }
   ]
 }

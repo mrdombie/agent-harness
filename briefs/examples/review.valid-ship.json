@@ -6,6 +6,16 @@
   "status": "reviewed",
   "round": 2,
   "verdict": "SHIP",
-  "blockers": [],
-  "notes": "one non-blocker left: the retry row's spacing is a step off the scale. Follow-up, not a blocker."
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/queue/panel.tsx",
+      "line": 88,
+      "grade": "minor",
+      "summary": "the retry row sits a step off the spacing scale",
+      "reason": "the row reads as misaligned against the ones above it",
+      "fix": "use the scale step the sibling rows use"
+    }
+  ],
+  "notes": "one Minor left. It leaves as the follow-up; it never held this round."
 }

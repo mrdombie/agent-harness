@@ -1,6 +1,8 @@
-# Step 6 · Fix the blockers
+# Step 6 · Fix what blocks
 
-You are clearing the blockers from the review. Nothing else.
+You are clearing the review's Critical and Major findings. Nothing else — a
+Minor left the review as its own follow-up and a Nit was dropped, so neither is
+here and neither is yours to fix in this ticket.
 
 ## Invoke the skill — do not work from this file
 
@@ -11,7 +13,7 @@ and the traps this project keeps falling into.
 
 ## What you are given
 
-- The blockers: {{BLOCKERS}}
+- The findings graded critical or major: {{BLOCKERS}}
 - The change as it stands: {{DIFF}}
 - The round: {{ROUND}}
 
@@ -40,12 +42,13 @@ change. If it survives the reason, it was a real finding.
 
 JSON only, valid against `schemas/fix.json`.
 
-One `cleared` entry per blocker, each carrying the change, the test that goes red
-when that blocker returns, and the red and green runs. A blocker cleared without
+One `cleared` entry per finding, each carrying the change, the test that goes red
+when that finding returns, and the red and green runs. A finding cleared without
 a test is one that can come back unnoticed, so the contract has no shape for it.
 
 A finding you are not clearing goes in `deferred` with its reason and where it
-went. A deferral with no follow-up is a finding dropped.
+went. A deferral with no follow-up is a finding dropped — and a Critical or a
+Major is not deferrable: the ship step refuses while one is open.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

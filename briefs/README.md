@@ -80,11 +80,11 @@ the kit cannot depend on a validator — does not apply.
 
 It matters because the strictness is not in `required`. It is in
 `additionalProperties: false`, in nested `required`, in `failedBefore` pinned to
-`true`, and in the `if`/`then` that refuses `SHIP` beside a blocker. A checker
+`true`, and in the `if`/`then` that refuses `SHIP` beside a Critical or a Major. A checker
 reading only top-level `required` and top-level types accepts **19 of the 24
 invalid examples in `examples/`** — measured, by running one over them — among
 them a build whose test passed before the change, and a review that ships with
-blockers open. Those two are the guarantees the driver exists to make.
+a Critical or a Major open. Those two are the guarantees the driver exists to make.
 
 `driver/ai-step.sh` hand-rolled exactly that checker and shipped with it once.
 It now calls this script, and `driver/tests/ai-step.test.sh` holds each of the four
