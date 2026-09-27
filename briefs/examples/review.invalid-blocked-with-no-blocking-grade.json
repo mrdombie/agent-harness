@@ -4,8 +4,8 @@
     "superpowers:requesting-code-review"
   ],
   "status": "reviewed",
-  "round": 2,
-  "verdict": "SHIP",
+  "round": 1,
+  "verdict": "BLOCKED",
   "findings": [
     {
       "id": "f1",
@@ -13,10 +13,8 @@
       "line": 88,
       "grade": "minor",
       "summary": "the retry row sits a step off the spacing scale",
-      "reason": "the row reads as misaligned against the ones above it",
+      "reason": "the row reads as misaligned",
       "fix": "use the scale step the sibling rows use"
     }
-  ],
-  "notes": "one Minor left. It leaves as the follow-up; it never held this round.",
-  "notAContractKey": "a step that invented a field"
+  ]
 }

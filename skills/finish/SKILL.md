@@ -531,7 +531,8 @@ if [ "$PR_TOUCHES_UI_OR_KIT" = "yes" ]; then
     echo "❌ /agent-harness:finish REFUSED: this PR touches UI and has no SHIP verdict from /agent-harness:ui-gate." >&2
     echo "   Recorded verdict: $UI_GATE_VERDICT" >&2
     echo "   Action: run /agent-harness:ui-gate on this branch. On SHIP, re-run /agent-harness:finish." >&2
-    echo "   A SPIT-BACK is the gate doing its job — fix the blockers, then re-review." >&2
+    echo "   A SPIT-BACK is the gate doing its job — fix the Critical and Major findings, then re-review." >&2
+    echo "   Minors do NOT hold this merge: they leave as one follow-up ticket at the Minor priority, and Nits are dropped." >&2
     exit 1
   fi
 

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "review step answer",
-  "description": "A verdict, and the blockers behind it. SHIP with blockers and BLOCKED without them are both refused: the verdict is read off the list, never typed beside it.",
+  "description": "A verdict, and every finding behind it, each carrying the grade that decides what it costs. Critical and Major send the work back; a Minor leaves as one follow-up; a Nit is dropped. The verdict is read off the grades, never typed beside them: SHIP with a Critical or a Major, and BLOCKED with neither, are both refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,7 @@
     "status",
     "round",
     "verdict",
-    "blockers"
+    "findings"
   ],
   "properties": {
     "step": {
@@ -32,7 +32,7 @@
       ]
     },
     "round": {
-      "description": "Which review round this is. The driver allows two; leftovers after that become a follow-up.",
+      "description": "Which review round this is. The driver allows two; the Minors left after that become one follow-up.",
       "type": "integer",
       "minimum": 1
     },
@@ -42,8 +42,8 @@
         "BLOCKED"
       ]
     },
-    "blockers": {
-      "description": "A blocker is a dead control, a broken flow, or a data-honesty failure. Anything else is a follow-up, not a blocker.",
+    "findings": {
+      "description": "Everything this review raised, at every grade. One list, because the grade already says what each one costs — a second list saying the same thing is a second place for the two to disagree.",
       "type": "array",
       "items": {
         "type": "object",
@@ -52,7 +52,9 @@
           "id",
           "file",
           "line",
+          "grade",
           "summary",
+          "reason",
           "fix"
         ],
         "properties": {
@@ -68,7 +70,21 @@
             "type": "integer",
             "minimum": 1
           },
+          "grade": {
+            "description": "critical: wrong data, a security hole, lost work, something published unapproved. major: a person is misled or stuck — an untrue screen, a dead control, a failure shown as success. minor: polish — spacing, wording, a small visual slip. nit: taste.",
+            "enum": [
+              "critical",
+              "major",
+              "minor",
+              "nit"
+            ]
+          },
           "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "description": "One line, in a user's words, saying why this grade. A Critical or a Major names who is harmed and how; a grade with no harm behind it is a Minor wearing a blocker's label, and it costs a round a real defect needed.",
             "type": "string",
             "minLength": 1
           },
@@ -102,8 +118,23 @@
       },
       "then": {
         "properties": {
-          "blockers": {
-            "maxItems": 0
+          "findings": {
+            "not": {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "grade"
+                ],
+                "properties": {
+                  "grade": {
+                    "enum": [
+                      "critical",
+                      "major"
+                    ]
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -121,8 +152,21 @@
       },
       "then": {
         "properties": {
-          "blockers": {
-            "minItems": 1
+          "findings": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "grade"
+              ],
+              "properties": {
+                "grade": {
+                  "enum": [
+                    "critical",
+                    "major"
+                  ]
+                }
+              }
+            }
           }
         }
       }

@@ -63,7 +63,7 @@
       "schema": "schemas/fix.json",
       "skills": ["superpowers:receiving-code-review", "superpowers:test-driven-development"],
       "facts": {
-        "BLOCKERS": "the blockers from the review step's answer, each with its id, file, line, summary and proposed fix",
+        "BLOCKERS": "the review step's findings graded critical or major — the only two grades that come back here — each with its id, file, line, grade, summary, reason and proposed fix",
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "ROUND": "which fix round this is: 1 or 2"
       }

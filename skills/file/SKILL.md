@@ -43,6 +43,26 @@ gh issue create --repo "$REPO_SLUG" \
    `status:` — all hand-filed. Missing labels make a ticket invisible to the
    filtered views `/agent-harness:queue` and `/agent-harness:claim` run.
 
+   **The priority comes from the grade, not from a feeling.** Anything an agent
+   files off the back of a review, a gate, a watcher or an audit is graded on the
+   one scale the whole harness uses, and the grade picks the label:
+
+   | Grade | What it means | Label |
+   |---|---|---|
+   | Critical | wrong data, a security hole, lost work, something published unapproved | `P0` |
+   | Major | a person is misled or stuck: an untrue screen, a dead control, a failure shown as success | `P1` |
+   | Minor | polish: spacing, wording, a small visual slip | `P3` |
+   | Nit | taste | not filed at all |
+
+   A project that names those labels differently says so under `labels.priority` in
+   its `.claude/harness.json`; `P0`/`P1`/`P3` is what the kit uses otherwise. **A
+   Nit is never a ticket** — a queue of taste is a queue nobody reads. Several
+   Minors from one review are ONE ticket, not one each.
+
+   This table is the same one the review step, the frontend gate and the design
+   critic grade against. Say the grade in the issue body too, so the label can be
+   checked against the reasoning rather than taken on trust.
+
 5. **`$LBL_DRAFTING` (drafting) first.** Moving to `$LBL_READY` (ready) is a separate,
    deliberate act — it is the moment an agent may pick the ticket up. Don't
    combine the two.
@@ -73,7 +93,9 @@ about work nobody started.
 ## What this does not do
 
 - It does not write the implementation plan (Step 11 of `/agent-harness:claim`, at build time).
-- It does not decide priority or area for you. Those are PM calls.
+- It does not decide area for you — that is a PM call. Priority it DOES decide when an
+  agent is filing a graded finding: the grade picks the label, per the table above. A
+  human filing an idea still sets their own.
 - It does not set `$LBL_READY`.
 
 ## Epics

@@ -42,6 +42,11 @@ IDLE_MIN="${SWARM_IDLE_MIN:-$(swarm_opt swarm.idleMin 20)}"
 ALARM_LABEL="${SWARM_ALARM_LABEL:-$(swarm_opt swarm.alarmLabel "swarm:stalled")}"
 ALARM_MENTION="${SWARM_ALARM_MENTION:-$(swarm_opt swarm.alarmMention "")}"
 ALARM_TITLE="The swarm has stopped — needs a look"
+# GRADED, like everything else an agent files. A stopped swarm is a CRITICAL on the
+# harness's one scale — work is not landing and nobody has been told — so the alarm
+# carries the Critical priority. Without it the alarm sorted below whatever the queue
+# happened to be showing, which is the same as not raising it.
+ALARM_PRIORITY="${SWARM_ALARM_PRIORITY:-$(swarm_opt labels.priority.critical P0)}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -318,7 +323,8 @@ $reasons"
       fi
     else
       local n; n=$(swarm_gh issue create --repo "$REPO_SLUG" --title "$ALARM_TITLE" \
-                     --label "$ALARM_LABEL" --body "$body" 2>/dev/null | grep -oE '[0-9]+$')
+                     --label "$ALARM_LABEL" ${ALARM_PRIORITY:+--label "$ALARM_PRIORITY"} \
+                     --body "$body" 2>/dev/null | grep -oE '[0-9]+$')
       say "ALARM opened #${n:-?}"; swarm_ping_page
     fi
   elif [ -n "$existing" ] && [ "$DRY" != 1 ]; then

@@ -38,7 +38,7 @@ thinking inside one step.
 | 2 | `plan` | model | a plan the driver can enforce, or a question |
 | 3 | `build` | model | commits whose test the driver proves red then green |
 | 4 | `self-check` | driver | every gate run as its own command, read by exit code |
-| 5 | `review` | model | `SHIP`, or blockers with a file and a line |
+| 5 | `review` | model | `SHIP`, or findings with a file, a line and a grade |
 | 6 | `record` | driver | the verdict, off the reviewer's own file |
 | 7 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
 
@@ -64,7 +64,7 @@ released early is a ticket a peer can take against a branch that is not there.
   that line. Nothing configured is a refusal, not a pass.
 - **At most two review rounds.** Then the reviewer stops sending the work back.
   What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
-  and the parent's programme label. A **blocker** — a dead control, a broken flow or
+  and the parent's programme label. A **Critical or Major** — a dead control, a broken flow or
   a data-honesty failure — does not ship and does not leave: the ship step refuses
   and names it, so the finding is owned in one place rather than two.
 - **Verdicts are the reviewer's.** `record` reads the review step's own file and
@@ -74,7 +74,7 @@ released early is a ticket a peer can take against a branch that is not there.
   before the next one starts, so a killed run resumes at the one after it.
 - **It asks rather than guesses.** Any step may answer with a question instead of
   an answer; that parks the ticket with the question on it. A step that knows what
-  stopped it — the blockers a review found, a leftover that could not be filed —
+  stopped it — what a review graded critical or major, a leftover that could not be filed —
   leaves the text on the record, and that becomes the question the park brief asks
   rather than an exit code.
 - **Nothing runs unbounded.** Every gate and every test command has a ceiling
@@ -96,10 +96,10 @@ file exists**; absent is normal and not an error.
 The check is one call to `briefs/validate.sh`, which reads the whole schema through
 ajv. It is not re-derived here, and the strictness is the reason: it lives in
 `additionalProperties: false`, in nested `required`, in `failedBefore` pinned to
-`true`, and in the `if`/`then` that refuses `SHIP` beside an open blocker. A checker
+`true`, and in the `if`/`then` that refuses `SHIP` beside an open Critical or Major. A checker
 reading only top-level `required` and top-level property types accepted **19 of the
 24 invalid examples** in `briefs/examples` — among them a build whose test passed
-before the change, and a review that ships with blockers open, which are the two
+before the change, and a review that ships with a Critical or a Major open, which are the two
 guarantees the driver exists to make.
 
 `validate.sh` exit 2 — the contract could not be read at all — parks the ticket just
@@ -126,7 +126,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
-| 30 | the reviewer found blockers — back to the build step |
+| 30 | the reviewer found a Critical or a Major — back to the build step |
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
 when the call or the configuration was wrong.

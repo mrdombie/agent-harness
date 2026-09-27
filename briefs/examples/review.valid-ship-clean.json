@@ -5,6 +5,6 @@
   ],
   "status": "reviewed",
   "round": 1,
-  "verdict": "BLOCKED",
-  "blockers": []
+  "verdict": "SHIP",
+  "findings": []
 }
