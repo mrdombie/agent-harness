@@ -17,6 +17,7 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `repair-watch.sh` | Repair a red or clashing pull request · unblock · restart after an outage · raise the alarm. |
 | `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. |
 | `report.sh` | One screen, one JSON, one push. |
+| `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. |
 | `install.sh` | Writes and loads the timers. `status` reads back what is loaded. |
 | `detach.sh` | Runs a command in a session of its own. |
 
@@ -36,6 +37,46 @@ Write the token to a file the jobs can read:
 gh auth token > "$STATE_DIR/swarm/gh-token" && chmod 600 "$STATE_DIR/swarm/gh-token"
 ```
 
+## The status line
+
+One line at the bottom of every Claude Code window, from the same snapshot the
+live view serves plus the pull requests carrying the hold label:
+
+```
+3 agents working · 1 needs you
+```
+
+```sh
+swarm/status-line.sh --install     # point ~/.claude/settings.json at it
+swarm/status-line.sh --print       # compute it now, and see what it says
+swarm/status-line.sh --uninstall
+```
+
+A plugin cannot ship a `statusLine` — the CLI's plugin content list has no such
+entry — so `--install` writes the settings entry, refusing a settings file it
+cannot parse rather than overwriting one. The command it writes carries this
+copy's path, and a plugin's path carries its version, so **re-run `--install`
+after a kit update**.
+
+It says `swarm view not answering` rather than a count whenever it could not
+see: the view is down, its snapshot is older than `swarm.staleSec`, or the
+cached line is older than `SWARM_STATUS_MAX_AGE`. A hold count the forge never
+gave reads `approvals unknown`. None of those is zero — an operator who reads
+"no agents working" off a line that simply could not see starts more work on a
+machine that is already full.
+
+Claude Code runs this on every render, and the parts of the answer measure
+170 ms (sourcing `swarm-env.sh`), 95 ms (the live view) and 581 ms (the forge).
+So the render path reads one cached line and exits — 34 ms measured — and the
+recompute runs detached behind it. No render waits on the forge.
+
+| Variable | Default | What it is |
+|---|---|---|
+| `SWARM_STATUS_TTL` | 10 | Older than this, the line is refreshed behind you |
+| `SWARM_STATUS_MAX_AGE` | 120 | Older than this, the cached line is no answer |
+| `SWARM_STATUS_GH_TTL` | 120 | How long one forge answer is reused |
+| `CLAUDE_SETTINGS` | `~/.claude/settings.json` | What `--install` writes |
+
 ## Queue a ticket with a brief
 
 This is what the hand-written launchers were:
@@ -54,7 +95,8 @@ swarm/queue.sh list
   may run three each; they do not share files.
 - **No answer from the live view means BUSY, never room.** A down view used to
   read as zero agents, so the scheduler filled every slot on a full machine.
-  A snapshot older than two minutes is discarded and takes the same path.
+  A snapshot older than two minutes is discarded and takes the same path. The
+  status line answers the same way, in words: `swarm view not answering`.
 - **A stop after three repairs is a label, not a count.** The count expired when
   the 24-hour window rolled and sent a fourth agent.
 - **Nothing leaves the machine that a person has not seen.** The reporter sends
