@@ -53,7 +53,12 @@ export function progressOf(f, driver) {
   const merged = pr ? pr.state === 'MERGED' : null
   const prRead = !!(f && f.prRead)
   const green = pr ? pr.state === 'MERGED' || (pr.state === 'OPEN' && !pr.fail && !pr.pending) : false
-  const d = driver && Array.isArray(driver.done) ? driver.done : null
+  // A record has to SAY something to be read. An empty done-list, or one naming
+  // steps this table does not know, is not evidence that nothing is done — read
+  // as one it drew "step 1 of 7" over a ticket whose PR had already merged.
+  const claimed = driver && Array.isArray(driver.done)
+    ? driver.done.map((x) => DRIVER_STEP[x]) : null
+  const d = claimed && claimed.length && claimed.every((n) => n !== undefined) ? driver.done : null
 
   // Per step: true done, false not yet, null cannot be read.
   let at
@@ -75,6 +80,14 @@ export function progressOf(f, driver) {
       prRead ? green : null,
       prRead ? merged === true : null,
     ]
+  }
+  // The bar is a SEQUENCE, so a step nobody could read that sits BEFORE one known
+  // done was passed: a branch cannot merge without being pushed. Without this the
+  // row fills past its own cursor — Merged lit on a card headed step 5 of 7 — and
+  // a progress bar that does that means nothing.
+  for (let i = at.length - 1, seen = false; i >= 0; i--) {
+    if (at[i] === true) seen = true
+    else if (seen && at[i] === null) at[i] = true
   }
   const redPr = !!(pr && pr.state === 'OPEN' && pr.fail > 0)
   // The step being walked is the first one KNOWN to be unfinished. A step nobody
@@ -98,7 +111,8 @@ export function progressOf(f, driver) {
     of: STEPS.length,
     steps,
     commits: num(f && f.commits),
-    reviewRounds: Number(driver?.counters?.review_rounds ?? 0) || 0,
+    reviewRounds: driver?.counters?.review_rounds == null ? null
+      : Number(driver.counters.review_rounds) || 0,
     pr: pr ? String(pr.number) : '',
     checksFail: pr ? num(pr.fail) : null,
     checksPending: pr ? num(pr.pending) : null,
@@ -134,13 +148,28 @@ export function plansOf(live, plans, name = (id) => id) {
 // A title written as engineering notes is not a title a person can read. Prefer
 // the operator's own word for it; otherwise cut the notes back to the clause that
 // names the thing.
-export function shortTitle(title, override) {
+export function shortTitle(title, override, project, name = (x) => x) {
   if (override) return String(override)
-  let s = String(title ?? '').replace(/^[a-z]+(\([^)]*\))?:\s*/i, '').replace(/^#?\d+:\s*/, '')
+  const full = String(title ?? '')
+  let s = full.replace(/^[a-z]+(\([^)]*\))?:\s*/i, '').replace(/^#?([A-Za-z]+-)?\d+:\s*/, '')
   const parts = s.split(/\s+·\s+/)
   const withColon = parts.find((x) => /:\s/.test(x))
-  s = withColon ? withColon.split(/:\s/)[0] : parts[0]
+  if (withColon) {
+    const cut = withColon.indexOf(': ')
+    const before = withColon.slice(0, cut), after = withColon.slice(cut + 2).trim()
+    // "One Desk: times inside quiet hours" is a programme labelling its own
+    // ticket, so the name is what comes AFTER the colon. Otherwise three agents
+    // on one programme render as three identically-named cards on a page whose
+    // only job is telling them apart. "the driver: build-ticket runs …" is not
+    // that shape, and its name is the clause before.
+    const flat = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, '')
+    const label = flat(name(project))
+    s = (label && flat(before).startsWith(label) && after) ? after : before
+  } else {
+    s = parts[0]
+  }
   s = s.replace(/^([A-Za-z]+-)?\d+\s+/, '').trim()
+  if (!s) s = full.trim()
   if (s.length > 52) s = s.slice(0, 52).replace(/\s+\S*$/, '') + '…'
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
@@ -184,6 +213,17 @@ function stampsReviews(slug, seen) {
   }
   seen.set(slug, v)
   return v
+}
+
+// Exit 2 is "no such ref" — a real false. Anything else (128: no credential
+// helper on a private repo; the network down) is NOT an answer, and folding it
+// into false draws Check as a definite step from a call that never returned.
+function pushedOf(slug, branch) {
+  try {
+    execFileSync(GIT(), ['ls-remote', '--exit-code', '--heads', `https://github.com/${slug}.git`, branch],
+      { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'] })
+    return true
+  } catch (e) { return e && e.status === 2 ? false : null }
 }
 
 function prOf(slug, branch) {
@@ -259,10 +299,9 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
     if (!rec || !rec.branch) continue
     const slug = rec.repo ? `${owner}/${rec.repo}` : repo
     const { commits, trailers } = branchOf(slug, rec.branch, rec.worktree)
-    const pushed = sh(GIT(), ['ls-remote', '--exit-code', '--heads',
-      `https://github.com/${slug}.git`, rec.branch]) != null
+
     out[String(t)] = {
-      claim: true, branch: rec.branch, commits, pushed,
+      claim: true, branch: rec.branch, commits, pushed: pushedOf(slug, rec.branch),
       trailers: trailers || [], stampsReviews: stampsReviews(slug, seen),
       ...prOf(slug, rec.branch),
       driver: driverDir ? json(path.join(driverDir, String(t), 'state.json'), null) : null,

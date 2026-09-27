@@ -175,7 +175,7 @@ export function snapshot(now = Date.now()) {
     const row = {
       ticket: String(run.ticket),
       title: t.title || `Ticket ${run.ticket}`,
-      short: shortTitle(t.title || `Ticket ${run.ticket}`, plainTitles[String(run.ticket)]),
+      short: shortTitle(t.title || `Ticket ${run.ticket}`, plainTitles[String(run.ticket)], t.project, plainName),
       project: t.project || '',
       progress: progressOf(fct, fct && fct.driver),
       startedAgoMin: Math.round((now - Date.parse(run.started_at)) / 60000),
