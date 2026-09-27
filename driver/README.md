@@ -62,8 +62,11 @@ released early is a ticket a peer can take against a branch that is not there.
 - **Every gate runs, and its exit code is the verdict.** One gate, one command,
   never batched — a gate batched with anything else reports on the shell reaching
   that line. Nothing configured is a refusal, not a pass.
-- **At most two review rounds.** Then the pull request ships and whatever is left
-  becomes its own ticket, carrying the finding verbatim.
+- **At most two review rounds.** Then the reviewer stops sending the work back.
+  What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
+  and the parent's programme label. A **blocker** — a dead control, a broken flow or
+  a data-honesty failure — does not ship and does not leave: the ship step refuses
+  and names it, so the finding is owned in one place rather than two.
 - **Verdicts are the reviewer's.** `record` reads the review step's own file and
   takes no verdict from an argument. A trailer an agent writes for itself is
   indistinguishable from one a reviewer earned.
