@@ -33,7 +33,7 @@ The repo is its own marketplace. In the consuming repo's `.claude/settings.json`
 
 Or per machine: `claude plugin marketplace add mrdombie/agent-harness && claude plugin install agent-harness@agent-harness`.
 
-**Depends on [superpowers](https://github.com/obra/superpowers)** — `brainstorming`, `writing-plans`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`. The kit's build chain invokes them by name and does not vendor them. Install it alongside.
+**Depends on [superpowers](https://github.com/obra/superpowers)** — `brainstorming`, `writing-plans`, `subagent-driven-development`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`. The kit's build chain invokes them by name and does not vendor them: a copy drifts and loses every upgrade. Install it alongside. The driver goes further and **checks** — each AI step's brief names one skill, and the driver parks the ticket when the run's transcript does not show that Skill call.
 
 Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook self-tests only).
 
@@ -94,6 +94,8 @@ hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
+driver/    build-ticket: one ticket, seven fixed steps, the model called only for
+           the thinking — see driver/README.md
 swarm/     agents that run with no session open: scheduler · queue · repair-watch
            live-view · report · install — see swarm/README.md
 shared/    operator.md · agent-signoff.md
@@ -122,6 +124,20 @@ The kit's own scripts live here and are addressed from the plugin root. A few re
 
 Every new skill, command, agent or hook starts **here**, not in a personal `~/.claude` folder: `skills/<name>/SKILL.md`, project facts read from `.claude/harness.json` (refusing by key name when one is missing), a test beside any script, a version bump, a PR. Then update the plugin on each machine. Something only one project needs goes in that project's `.claude/skills/` instead. A skill that exists only in one person's `~/.claude` is one machine away from being lost.
 
+## Building one ticket
+
+`driver/build-ticket <ticket>` walks a ticket through seven fixed steps —
+start · plan · build · self-check · review · record · ship — calling a model only
+for the four that need thinking, one step at a time. It refuses to skip a step,
+resumes from the last one that finished, proves each new test red before green
+with its own hands, and parks the ticket with the question whenever a step asks
+one. Full description, the guarantees and every seam:
+[`driver/README.md`](driver/README.md).
+
+It is the replacement for the two hand-copied build commands, not an addition to
+them: `docs/design/claim-finish-inventory.md` maps all 178 of their rules to a
+driver step, a brief, a hook, a required check, or a named retirement.
+
 ## Running without a session open
 
 `swarm/install.sh` puts four timers on the machine: the live view everything
@@ -149,7 +165,7 @@ The same holds for a per-user `~/.claude/commands/<name>.md`: bare `/<name>` res
 ## Running the tests
 
 ```bash
-for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh; do bash "$t"; done
+for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh driver/tests/*.test.sh; do bash "$t"; done
 bash scripts/check-project-agnostic.sh
 ```
 

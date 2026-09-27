@@ -182,7 +182,7 @@ if bt 101 --nonsense >/dev/null 2>&1; then bad "an unknown flag must refuse"; el
 # only for the model. Nothing pins the wiring except a test that reads the wiring.
 echo "--- the real seven, one whole pass ---"
 rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"
-: > "$GH_LOG"
+: > "$GH_LOG"; : > "$CLAUDE_LOG"
 git init -q --bare "$FIX/origin"
 git -C "$REPO" remote add origin "$FIX/origin"
 git -C "$REPO" push -q origin develop
@@ -241,6 +241,16 @@ want "the branch really reached origin"     "1" \
 want_in "the pull request opened as a draft" 'pr create.*--draft' "$(cat "$GH_LOG")"
 want_in "and was marked ready once reviewed" 'pr ready' "$(cat "$GH_LOG")"
 want "the verdict recorded is the reviewer's" "SHIP" "$(driver_state_get "$TICKET" review_verdict)"
+
+# ONE AGENT PER STEP, AND NEVER SEVERAL ON ONE TICKET (Dom, 2026-09-27). Splitting
+# the work inside a ticket is Superpowers' job — the build brief invokes
+# subagent-driven-development and THAT fans out, with a fresh helper per task. The
+# driver fanning out itself is the thing being ruled out, and the only way to see
+# it is to count the runner's invocations: three AI steps, three calls, no more.
+want "the agent ran once per AI step and no more" "plan build review" \
+  "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "and three calls in total, not a fan-out" "3" "$(grep -c . "$CLAUDE_LOG")"
+want_not_in "the driver started nothing itself" 'spawn|--parallel|& *$' "$(cat "$CLAUDE_LOG")"
 
 echo "--- the real steps park a real refusal: a skipped Skill is not a pass ---"
 # The same transcript with the Skill call removed. Nothing else changes, so what
