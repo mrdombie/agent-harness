@@ -64,6 +64,21 @@ everything.
 `BRIEFS_AJV` overrides the validator, so a machine with the tool installed pays
 no download.
 
+### Call this, rather than re-deriving it in the caller
+
+There is no npm dependency to take. `npx --yes ajv-cli@5` is fetched on demand
+and nothing is added to any manifest, and `BRIEFS_AJV` points at an installed
+copy where one exists. So the reason to hand-roll a checker in the caller — that
+the kit cannot depend on a validator — does not apply.
+
+It matters because the strictness is not in `required`. It is in
+`additionalProperties: false`, in nested `required`, in `failedBefore` pinned to
+`true`, and in the `if`/`then` that refuses `SHIP` beside a blocker. A checker
+reading only top-level `required` and top-level types accepts **19 of the 24
+invalid examples in `examples/`** — measured, by running one over them — among
+them a build whose test passed before the change, and a review that ships with
+blockers open. Those two are the guarantees the driver exists to make.
+
 ## Adding a step
 
 1. `schemas/<step>.json` — draft-07, `additionalProperties: false`, requiring
