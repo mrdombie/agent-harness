@@ -83,6 +83,30 @@ driver_state_is_done() {
   jq -e --arg s "$2" '(.done // []) | index($s) != null' "$f" >/dev/null 2>&1
 }
 
+# driver_state_reopen <ticket> <step…> — forget those steps, keep the run.
+#
+# This is what a rework round is made of. A review that sends the work back does
+# not mean the build never happened; it means the build, the self-check and the
+# review have to happen AGAIN — so they have to leave the finished list, or the
+# resumed walk skips the very steps the rework exists to repeat.
+#
+# It removes from the LIST rather than truncating it, because a step order is not
+# a stack: `record` may already be finished when `build` reopens, and the walk
+# decides what to run from the list, not from a high-water mark.
+driver_state_reopen() {
+  local t="${1:?driver_state_reopen: need a ticket}"; shift
+  [ $# -gt 0 ] || return 0
+  local list; list=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+  # The root is bound before the walk: inside `select` the dot is the step
+  # STRING, so an unbound `.done` there asks a string for its done list and
+  # every step reads as never-finished.
+  _driver_state_edit "$t" --argjson r "$list" '
+    . as $root
+    | ([$r[] | select((($root.done // []) | index(.)) != null)] | first) as $first
+    | .done = ((.done // []) - $r)
+    | if $first != null then .step = $first else . end'
+}
+
 driver_state_count() {
   local f; f=$(_driver_state_file "$1")
   [ -f "$f" ] || { printf '0'; return 0; }
