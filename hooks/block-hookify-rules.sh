@@ -7,10 +7,11 @@
 # through unblocked from a non-repo directory). A settings.json hook reads the
 # command text before bash does and does not care about cwd.
 #
-# Mirrors: block-claim-tampering, block-commit-through-conflict (the -a/--all
-# half; `git commit --no-verify` stays ALLOWED per block-push-no-verify.sh),
-# block-destructive-git, block-git-add-all, block-npm-install-in-worktree,
-# no-handrolled-pr, no-handrolled-ticket-branch.
+# Mirrors: block-claim-tampering, block-commit-through-conflict (both halves —
+# `git commit --no-verify` is blocked as of 2026-09-27, because it skips the
+# secret scan and not just formatting), block-destructive-git,
+# block-git-add-all, block-npm-install-in-worktree, no-handrolled-pr,
+# no-handrolled-ticket-branch.
 #
 # Every rule is anchored to command position (start of the text, or after
 # ; & |) so a rule name quoted inside a heredoc or a commit message does
@@ -46,14 +47,43 @@ has(){ printf '%s' "$cmd" | grep -qE "$1"; }
 hasF(){ printf '%s' "$cmd" | grep -qF -- "$1"; }
 deny(){ jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 S='[[:space:]]'
-START="(^|[;&|]$S*|&&$S*)"
+# End of a command word: whitespace, end of text, or the quote that CLOSES a
+# shell wrapper — `sh -c 'git add -A'` ends in a quote, not a space, so a bare
+# ($S|$) read it as an unfinished flag and allowed it.
+EOW="($S|\$|['\"])"
+# A command starts at the text's start, after a separator — OR inside a shell
+# wrapper. `bash -c "git reset --hard"` put the command where a start-of-line
+# anchor could not see it, and it was allowed by every copy of this hook.
+START="(^|[;&|]$S*|&&$S*|(ba|z|da)?sh$S+-c$S*['\"]?)"
+# `git` plus its GLOBAL OPTIONS, so a rule can anchor on the SUBCOMMAND. Every
+# destructive rule below required the subcommand to sit immediately after `git `,
+# and `git -C <dir>` is the house style in this estate — so, measured with fake
+# tool input on 2026-09-27, `git -C /x reset --hard`, `git -C /x add -A` and
+# `git --git-dir=… reset --hard` were ALL allowed while the bare forms were
+# denied. Borrowed from block-push-no-verify.sh, which has handled -C all along.
+#
+# The options are enumerated rather than globbed: a loose `-\S+` would swallow the
+# subcommand and turn safe commands into denials. -C/-c take a separate value;
+# the long forms take an attached one.
+GITOPT="(-[Cc]$S+[^;&|[:space:]]+|--[a-z-]+(=[^;&|[:space:]]+)?|-[a-zA-Z]+)"
+GIT="git($S+$GITOPT)*$S+"
 
 claims_re='/claims/[0-9]+|\.lock'; [ -n "${STATE_DIR:-}" ] && claims_re="$(basename "$STATE_DIR")/claims|/claims/[0-9]+|\.lock"
 has "${START}rm$S+(-[a-zA-Z]+$S+)*[^;&|]*($claims_re)" && deny "Hand-releasing a claim. Use claim-lock.sh release <ticket>: it deletes refs/claims/<n> on origin and updates the labels."
-has "${START}git$S+[^;&|]*push$S+[^;&|]*(--delete|:)$S*refs/claims" && deny "Deleting refs/claims/<n> by hand. Use claim-lock.sh release <ticket>."
-has "${START}git$S+commit[^;&|]*$S(-[a-zA-Z]*a[a-zA-Z]*|--all)($S|$)" && deny "git commit -a / --all stages everything, including conflict markers mid-merge and the node_modules symlink. Stage files by name."
-has "${START}git$S+(reset$S+--hard|stash$S+pop|clean$S+-[a-zA-Z]*[fd])" && deny "reset --hard / stash pop / clean -f destroys a peer agent's uncommitted work in a shared worktree. Branch a backup first (git branch backup/<n>) and ask."
-has "${START}git$S+add$S+(-A|--all|\.)($S|$)" && deny "git add -A / . stages the node_modules symlink in a worktree. Add files by path."
+has "${START}${GIT}[^;&|]*push$S+[^;&|]*(--delete|:)$S*refs/claims" && deny "Deleting refs/claims/<n> by hand. Use claim-lock.sh release <ticket>."
+has "${START}${GIT}commit[^;&|]*$S(-[a-zA-Z]*a[a-zA-Z]*|--all)$EOW" && deny "git commit -a / --all stages everything, including conflict markers mid-merge and the node_modules symlink. Stage files by name."
+# `git commit --no-verify` was allowed on the stated grounds that it "only skips
+# formatting". That was measured on 2026-09-27 and is false: against
+# .husky/pre-commit it skips the SECRET SCAN (gitleaks protect --staged), the
+# .deploy-trigger stamp, and commitlint. It succeeded 130 times across 40 runs
+# because only the push form was ever blocked. `-n` is the short form on a
+# commit; on a push it means --dry-run, which is why this rule names `commit`.
+if has "${START}${GIT}commit[^;&|]*$S(--no-verify|-[a-zA-Z]*n[a-zA-Z]*)$EOW" \
+   && ! hasF "no-verify-ok:" && ! hasF "# via /finish"; then
+  deny "git commit --no-verify skips the SECRET SCAN (gitleaks protect --staged), the .deploy-trigger stamp and commitlint — not just formatting. Commit without it. If a commit genuinely must bypass them (a rendered-evidence commit that touches no source), append '# no-verify-ok: <reason>'."
+fi
+has "${START}${GIT}(reset$S+--hard|stash$S+pop|clean$S+-[a-zA-Z]*[fd])" && deny "reset --hard / stash pop / clean -f destroys a peer agent's uncommitted work in a shared worktree. Branch a backup first (git branch backup/<n>) and ask."
+has "${START}${GIT}add$S+(-A|--all|\.)$EOW" && deny "git add -A / . stages the node_modules symlink in a worktree. Add files by path."
 if has "${START}(sudo$S+)?npm$S+(install|i|ci)($S|$)" && ! hasF "--dry-run" && ! hasF "# in the main clone" && ! hasF "# main-clone install"; then deny "Worktrees share node_modules by symlink; npm install here breaks every other agent mid-build. Use --dry-run, or install at the MAIN CLONE with peers stopped and append '# main-clone install' (the same escape the hookify rule reads)."; fi
 # The finish flow owns PRs against THE CONFIGURED PROJECT, because that is where
 # its gates, trailer, changelog and claim release apply. A PR against a DIFFERENT

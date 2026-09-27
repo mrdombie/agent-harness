@@ -20,6 +20,49 @@ t deny 'git add .'
 t deny 'npm install lodash'
 t deny 'gh pr create --base develop --title "x"'
 t deny "git worktree add /tmp/${BRANCH_PREFIX}9999-x -b ${BRANCH_PREFIX}9999/x origin/develop"
+echo "--- git commit --no-verify skips the SECRET SCAN, so it is blocked too ---"
+# It succeeded 130 times across 40 runs because only the push form was blocked,
+# and both hooks said in prose that the commit form "only skips formatting".
+# Measured against .husky/pre-commit on 2026-09-27, it skips: gitleaks protect
+# --staged, the .deploy-trigger stamp, and commitlint. Formatting is the least
+# of it.
+t deny 'git commit --no-verify -m "x"'
+t deny 'git commit -m "x" --no-verify'
+t deny 'git -C /x commit --no-verify -m "x"'
+t deny 'git commit -n -m "x"'
+t allow 'git commit -m "x"'
+# The one caller that needs it says so. /finish commits rendered evidence with
+# --no-verify by design; a blanket block would stop the gate that produces it.
+t allow 'git commit -m "evidence(#1): shots" --no-verify  # no-verify-ok: evidence commit, no source changes'
+t allow 'git commit --no-verify -m "x" # via /finish'
+# -n on a PUSH is --dry-run, a different flag, and must not be caught here.
+t allow 'git push -n origin develop'
+
+echo "--- git's global options are not a way round the rule ---"
+# `git -C <dir>` is the HOUSE STYLE in this estate, and every destructive rule
+# required its subcommand to sit immediately after `git `. Measured with fake
+# tool input on 2026-09-27: every one of these was ALLOWED by every copy of the
+# hook, while the same command without the option was denied.
+t deny 'git -C /x reset --hard'
+t deny 'git -C /x reset --hard origin/develop'
+t deny 'git --git-dir=/x/.git reset --hard'
+t deny 'git --work-tree=/x -C /x clean -fd'
+t deny 'git -C /x add -A'
+t deny 'git -C /x add .'
+t deny 'git -C /x commit -am "x"'
+t deny 'git -C /x stash pop'
+t deny 'git -c user.name=t -C /x reset --hard'
+t deny 'git --no-pager -C /x add --all'
+# A shell wrapper hides the command from a start-of-line anchor.
+t deny 'bash -c "git reset --hard"'
+t deny "sh -c 'git add -A'"
+# …and the options must not turn a SAFE command into a denied one.
+t allow 'git -C /x add apps/web/src/x.tsx'
+t allow 'git -C /x commit -m "x"'
+t allow 'git --no-pager -C /x log --oneline -5'
+t allow 'git -C /x status --porcelain'
+t allow 'git -C /x reset apps/web/src/x.tsx'
+
 echo "--- must allow ---"
 t allow 'git commit --amend --no-edit'
 t allow 'git commit -m "x" -m "y"'

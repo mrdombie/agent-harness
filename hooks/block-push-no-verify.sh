@@ -34,6 +34,6 @@ jq -nc '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
-    permissionDecisionReason: "git push --no-verify skips all 26 checks in .husky/pre-push — changelog, deploy-trigger, migration order, ownership scoping, PII, secrets. Push without it. If a hook is genuinely wrong, fix the hook rather than bypassing every other one. (git commit --no-verify is still allowed — that only skips formatting.)"
+    permissionDecisionReason: "git push --no-verify skips all 26 checks in .husky/pre-push — changelog, deploy-trigger, migration order, ownership scoping, PII, secrets. Push without it. If a hook is genuinely wrong, fix the hook rather than bypassing every other one. (git commit --no-verify is blocked too, by block-hookify-rules.sh: measured against .husky/pre-commit it skips the secret scan, not just formatting.)"
   }
 }'
