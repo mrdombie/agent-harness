@@ -29,8 +29,14 @@ swarm_iso() {
 # discarded every one of them, swarm_live_count answered 99, and the scheduler
 # held on a machine with room — all of it reported as success, because holding is
 # what a busy machine is supposed to do.
+# The strip keeps whatever ENDED the stamp. `${t%%.*}Z` assumed a Z, so an offset
+# form lost its offset — '…17:00:00.176+01:00' came back an hour wrong, silently,
+# and '…17:00:00+01:00' came back 0, recreating the very failure below in a shared
+# helper. Nothing passes an offset today; the helper must not punish the first
+# caller that does.
 swarm_epoch() {
-  local t="${1%Z}"; t="${t%%.*}Z"
+  local t
+  t=$(printf '%s' "${1:-}" | sed -E 's/\.[0-9]+(Z|[+-][0-9:]+)?$/\1/')
   date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$t" +%s 2>/dev/null \
     || date -u -d "$t" +%s 2>/dev/null \
     || echo 0

@@ -8,18 +8,20 @@
 #   status-line.sh --uninstall  take it back out
 #
 # A MISSING ANSWER IS NEVER "NOTHING RUNNING". The live view can be down, its
-# snapshot can be twenty minutes old, and this cache can itself go stale — and in
-# every one of those cases a count would be a lie in the most expensive
-# direction, because an operator who reads "no agents working" off an idle-looking
-# line starts more work on a machine that is already full. So each of them prints
-# "swarm view not answering" instead. swarm_snapshot() already discards an answer
-# older than swarm.staleSec; this adds the same rule one layer up, to the cache.
+# snapshot can be twenty minutes old, the cache can itself go stale, and whatever
+# is listening on the port can answer 200 with something that is not a snapshot at
+# all — and in every one of those a count would be a lie in the most expensive
+# direction, because an operator who reads "no agents working" off an
+# idle-looking line starts more work on a machine that is already full. Each of
+# them prints "swarm view not answering" instead.
 #
 # WHY IT IS CACHED. Claude Code runs this on every render. Measured: 170 ms to
-# source swarm-env.sh, 95 ms for the live view, 581 ms for the GitHub call — 846 ms
-# of work per keystroke-ish. The render path therefore reads one file and exits,
-# and the recompute happens in a detached process behind it. No render waits on
-# GitHub, which is the whole point of the split.
+# source swarm-env.sh, 95 ms for the live view, 581 ms for the forge — 846 ms of
+# work per render. The render path therefore reads one file and exits, and the
+# recompute happens in a detached process behind it. THE RENDER PATH NEVER CALLS
+# THE FORGE, on any path including a cold start: the forge call has no timeout we
+# can set, and swarm-env.sh's own header records it hanging on a keychain prompt
+# with nowhere to show. A render that hangs is a window with no status line.
 #
 # A plugin cannot ship a statusLine: the CLI's plugin content list is
 # .claude-plugin/, commands/, skills/, agents/, hooks/, themes/, output-styles/,
@@ -30,18 +32,32 @@ set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 WARNING='swarm view not answering'
 
-# How long a cached line is current, and how long before it is a stale answer
-# rather than a slightly old one. The second number is the honesty limit.
-TTL="${SWARM_STATUS_TTL:-10}"
-MAX_AGE="${SWARM_STATUS_MAX_AGE:-120}"
-GH_TTL="${SWARM_STATUS_GH_TTL:-120}"
+# A number, or the default. Every one of these is read from the environment, and
+# `[ "$age" -gt "120s" ]` returns 2 — which a plain `if` reads as "not stale", so
+# one typo would show a stale count forever.
+num() { case "${1:-}" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }
+TTL=$(num "${SWARM_STATUS_TTL:-}" 10)          # older than this: refresh behind you
+MAX_AGE=$(num "${SWARM_STATUS_MAX_AGE:-}" 120) # older than this: no longer an answer
+GH_TTL=$(num "${SWARM_STATUS_GH_TTL:-}" 120)   # how long one forge answer is reused
 
 now() { if [ -n "${SWARM_NOW:-}" ]; then printf '%s' "$SWARM_NOW"; else date +%s; fi; }
 
-# mtime, on either stat. BSD and GNU disagree about the flag, and a script that
-# knows one of them reads every file as epoch 0 on the other — which would make
-# every cache look an eternity stale and print the warning forever.
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf 0; }
+# A file's mtime, on either stat, ALWAYS as digits.
+#
+# `stat -f %m` on GNU means file-SYSTEM: it treats %m as a filename, fails on
+# that, and still prints six lines of filesystem blurb TO STDOUT at exit 1. So
+# `stat -f %m || stat -c %Y` concatenated the blurb with the answer, and
+# `$(( now - <blurb> ))` died under set -u with "File: unbound variable" — a
+# blank status line and exit 1 on every Linux render, measured in ubuntu:latest.
+# Hence both halves: the GNU form is tried first, and the result is classified
+# rather than trusted.
+mtime() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null); case "$m" in ''|*[!0-9]*) m="" ;; esac
+  [ -n "$m" ] || { m=$(stat -f %m "$1" 2>/dev/null); case "$m" in ''|*[!0-9]*) m=0 ;; esac; }
+  printf '%s' "$m"
+}
+age_of() { printf '%s' "$(( $(now) - $(mtime "$1") ))"; }
 
 # ---- the render path ---------------------------------------------------------
 # Resolved WITHOUT sourcing anything: that is the 170 ms this path exists to not
@@ -53,11 +69,28 @@ cheap_state_dir() {
   [ -s "$f" ] && head -1 "$f"
 }
 
-refresh_detached() {
+# The recompute, in a session of its own so a closed window cannot take it down.
+#
+# ONE AT A TIME. Without the lock every render inside the refresh window started
+# another recompute — 20 renders, 20 processes, measured — and it is worst exactly
+# when it hurts, because a slow live view holds each one open for the full curl
+# timeout. The lock is a directory (an atomic create) with its age bounded, so a
+# child killed before its trap cannot wedge the refresh forever.
+#
+# Stdin is closed deliberately: the child inherits the statusLine's session-JSON
+# pipe otherwise, and holds it for as long as the recompute runs.
+refresh_detached() { # <cache-path>
   [ -n "${SWARM_STATUS_NO_REFRESH:-}" ] && return 0
-  local d; d="$(dirname "$SELF")/detach.sh"
+  # Overridable for the same reason every call out of the swarm is: a test that
+  # has to swap a tracked file in the worktree leaves the recorder behind when it
+  # dies mid-case, and the recorder can then be committed.
+  local d lock; d="${SWARM_DETACH:-$(dirname "$SELF")/detach.sh}"; lock="$1.lock"
   [ -x "$d" ] || return 0
-  "$d" bash "$SELF" --refresh >/dev/null 2>&1 &
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ "$(age_of "$lock")" -gt "$MAX_AGE" ] || return 0
+    rmdir "$lock" 2>/dev/null; mkdir "$lock" 2>/dev/null || return 0
+  fi
+  "$d" bash "$SELF" --refresh "$1" >/dev/null 2>&1 </dev/null &
   return 0
 }
 
@@ -66,17 +99,14 @@ render() {
   state=$(cheap_state_dir)
   cache="${state:+$state/swarm/status-line.txt}"
   # No cache at all is a COLD START, not a stale answer — so it computes, and the
-  # very first render is correct rather than a warning about nothing.
-  if [ -z "$cache" ] || [ ! -s "$cache" ]; then compute; return; fi
-  age=$(( $(now) - $(mtime "$cache") ))
-  # A negative age is a cache written "in the future" — a pinned clock or a skewed
-  # one. That is not staleness, so it reads as current.
-  if [ "$age" -gt "$MAX_AGE" ]; then
-    printf '%s\n' "$WARNING"
-  else
-    cat "$cache"
-  fi
-  [ "$age" -gt "$TTL" ] && refresh_detached
+  # very first render is correct rather than a warning about nothing. It computes
+  # WITHOUT the forge (--no-forge), because a render must not be able to hang.
+  if [ -z "$cache" ] || [ ! -s "$cache" ]; then compute --no-forge "$cache"; return; fi
+  age=$(age_of "$cache")
+  # A negative age is a cache written "in the future" — a pinned or skewed clock.
+  # That is not staleness, so it reads as current.
+  if [ "$age" -gt "$MAX_AGE" ]; then printf '%s\n' "$WARNING"; else cat "$cache"; fi
+  [ "$age" -gt "$TTL" ] && refresh_detached "$cache"
   return 0
 }
 
@@ -86,61 +116,73 @@ render() {
 #
 # Three outcomes, and the third is the one that matters: a number, a cached
 # number, or UNKNOWN. Never zero-because-we-could-not-ask.
-hold_count() {
-  local f="$SWARM_DIR/hold-prs.count" n age
+hold_count() { # <ask-the-forge: 1|0>
+  local f="$SWARM_DIR/hold-prs.count" n
   if [ -s "$f" ]; then
-    age=$(( $(now) - $(mtime "$f") ))
-    # ONE staleness rule for both caches: over the limit is stale, everything else
-    # is current. A negative age — a pinned or skewed clock — is not staleness, and
-    # the version that refetched on it made the GitHub call fire again whenever the
-    # clock disagreed with the filesystem.
-    [ "$age" -le "$GH_TTL" ] && { cat "$f"; return; }
+    # ONE staleness rule for both caches: over the limit is stale, everything
+    # else is current. A negative age is a clock disagreeing with the
+    # filesystem, not staleness, and refetching on it fired the forge call again
+    # every time the two differed.
+    [ "$(age_of "$f")" -le "$GH_TTL" ] && { cat "$f"; return; }
+  fi
+  if [ "${1:-1}" != 1 ]; then
+    # The render path. A number we already have is still an answer; asking is not
+    # allowed here, so with nothing cached the honest word is UNKNOWN.
+    if [ -s "$f" ]; then cat "$f"; else printf 'UNKNOWN'; fi
+    return
   fi
   n=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --label "$HOLD_LABEL" \
         --limit 100 --json number -q 'length' 2>/dev/null)
   case "$n" in
     ''|*[!0-9]*)
-      # It did not answer. A number we had earlier is still better than a guess;
-      # with nothing at all, say so rather than imply none.
       if [ -s "$f" ]; then cat "$f"; else printf 'UNKNOWN'; fi ;;
     *)
-      printf '%s\n' "$n" > "$f.$$" && mv "$f.$$" "$f"
+      mkdir -p "$SWARM_DIR" 2>/dev/null
+      printf '%s\n' "$n" > "$f.tmp" && mv "$f.tmp" "$f"
       printf '%s' "$n" ;;
   esac
 }
 
-compose() { # <agents-or-UNKNOWN> <holds-or-UNKNOWN>
-  local a="$1" h="$2" line
-  case "$a" in
-    UNKNOWN) line="$WARNING" ;;
-    0)       line='no agents working' ;;
-    1)       line='1 agent working' ;;
-    *)       line="$a agents working" ;;
+# Anything that is not a plain count is UNKNOWN. The catch-all used to print the
+# value it could not classify, so an empty count rendered as "·  need you".
+compose() { # <agents> <holds>
+  local line
+  case "${1:-}" in
+    ''|*[!0-9]*) line="$WARNING" ;;
+    0)           line='no agents working' ;;
+    1)           line='1 agent working' ;;
+    *)           line="$1 agents working" ;;
   esac
-  case "$h" in
-    UNKNOWN) line="$line · approvals unknown" ;;
-    0)       : ;;
-    1)       line="$line · 1 needs you" ;;
-    *)       line="$line · $h need you" ;;
+  case "${2:-}" in
+    ''|*[!0-9]*) line="$line · approvals unknown" ;;
+    0)           : ;;
+    1)           line="$line · 1 needs you" ;;
+    *)           line="$line · $2 need you" ;;
   esac
   printf '%s\n' "$line"
 }
 
-compute() {
+compute() { # [--no-forge] [cache-path]
+  local ask=1 want_cache=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --no-forge) ask=0 ;; *) want_cache="$1" ;; esac; shift
+  done
   . "$(dirname "$SELF")/swarm-env.sh" || { printf '%s\n' "$WARNING"; return 0; }
-  local snap agents holds line cache
+  local snap agents line cache
   snap=$(swarm_snapshot)
-  if [ -n "$snap" ]; then
-    agents=$(printf '%s' "$snap" | jq '.live | length' 2>/dev/null)
-    case "$agents" in ''|*[!0-9]*) agents=UNKNOWN ;; esac
-  else
-    agents=UNKNOWN
-  fi
-  holds=$(hold_count)
-  line=$(compose "$agents" "$holds")
-  cache="$SWARM_DIR/status-line.txt"
-  mkdir -p "$SWARM_DIR" 2>/dev/null
-  printf '%s\n' "$line" > "$cache.$$" && mv "$cache.$$" "$cache"
+  # The shape is checked, not assumed. `jq '.live | length'` answers 0 for a body
+  # with no `live` key at all — so anything on the port that returns 200 and is
+  # not a snapshot printed the one sentence this file exists to forbid. Its
+  # sibling swarm_live_count already fails safe this way.
+  agents=$(printf '%s' "$snap" \
+    | jq -e 'if (.live|type) == "array" then (.live|length) else error("not a snapshot") end' 2>/dev/null) || agents=UNKNOWN
+  line=$(compose "$agents" "$(hold_count "$ask")")
+  # The path the RENDER path resolved, when it gave one. Resolving it twice —
+  # once from the recorded state dir and once from the checkout's config — put a
+  # window on a machine with two projects reading a cache nothing was refreshing.
+  cache="${want_cache:-$SWARM_DIR/status-line.txt}"
+  mkdir -p "$(dirname "$cache")" 2>/dev/null
+  printf '%s\n' "$line" > "$cache.tmp" && mv "$cache.tmp" "$cache"
   printf '%s\n' "$line"
 }
 
@@ -151,18 +193,23 @@ settings_path() { printf '%s' "${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}";
 # file this script cannot read is never a settings file this script destroys.
 edit_settings() { # <jq program>
   local f; f=$(settings_path)
+  mkdir -p "$(dirname "$f")" 2>/dev/null
   [ -f "$f" ] || printf '{}\n' > "$f"
   jq -e . "$f" >/dev/null 2>&1 || {
     echo "status-line: $f is not valid JSON — refusing to write it." >&2; return 1; }
-  jq --arg cmd "bash $SELF" "$1" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  # @sh quotes the path, so a kit installed under a directory with a space in it
+  # does not write a command that silently resolves to nothing.
+  jq --arg self "$SELF" "$1" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
 case "${1:---render}" in
   --render)  render ;;
   --print)   compute ;;
-  --refresh) compute >/dev/null ;;
+  --refresh) shift; compute "$@" >/dev/null
+             [ -n "${1:-}" ] && rmdir "$1.lock" 2>/dev/null
+             exit 0 ;;
   --install)
-    edit_settings '.statusLine = {type: "command", command: $cmd}' || exit 1
+    edit_settings '.statusLine = {type: "command", command: ("bash " + ($self|@sh))}' || exit 1
     echo "status-line: $(settings_path) now runs $SELF"
     echo "             re-run --install after a kit update; the path carries its version." ;;
   --uninstall)
