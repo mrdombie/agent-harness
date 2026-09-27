@@ -73,7 +73,17 @@ released early is a ticket a peer can take against a branch that is not there.
 - **Nothing is lost on a stop.** Each finished step is written to the record
   before the next one starts, so a killed run resumes at the one after it.
 - **It asks rather than guesses.** Any step may answer with a question instead of
-  an answer; that parks the ticket with the question on it.
+  an answer; that parks the ticket with the question on it. A step that knows what
+  stopped it — the blockers a review found, a leftover that could not be filed —
+  leaves the text on the record, and that becomes the question the park brief asks
+  rather than an exit code.
+- **Nothing runs unbounded.** Every gate and every test command has a ceiling
+  (`DRIVER_CMD_TIMEOUT`, 900s). The build step's command comes from the model, so a
+  reported watch-mode runner would otherwise hang the run for ever — no park, no
+  refusal, the claim held.
+- **A hand-off is verified, not announced.** The pull request is confirmed to exist,
+  and marking it ready and arming auto-merge are read by their exit codes. An expired
+  token or a protected base otherwise reads exactly like a completed hand-off.
 
 ## The briefs
 
@@ -98,6 +108,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 22 | the answer did not match its schema |
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
+| 25 | a command outran its time limit — a hang is not a failure to retry |
 | 30 | the reviewer found blockers — back to the build step |
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
@@ -115,6 +126,8 @@ layer's are: eight scripts that shelled out inline could not be tested at all.
 | `DRIVER_STEPS_DIR` | where the step files are found |
 | `DRIVER_BRIEFS` · `DRIVER_SCHEMAS` | the briefs and their schemas |
 | `DRIVER_MAX_BUILD_TRIES` · `DRIVER_MAX_REVIEW_ROUNDS` | the two ceilings |
+| `DRIVER_CMD_TIMEOUT` | how long a gate or test command may run |
+| `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check) |
 | `SWARM_GH` · `SWARM_NOW` | inherited: the GitHub CLI and the clock |
 
 This layer sits **on** `swarm/swarm-env.sh` rather than beside it. The swarm
@@ -133,3 +146,13 @@ a control-flow question gets a clean answer, and against the real seven for one
 whole pass — a real repository, a real origin, real commits whose test goes red
 then green, with a transcript standing in only for the model. A suite full of
 replicas proves the kit and never the product.
+
+## One note for anyone editing the step files
+
+**Never put `${var:-<literal text>}` or a command substitution inside a `case` arm.**
+bash 3.2 — the stock macOS shell this has to run on — mis-parses it: an apostrophe or a
+nested `$( )` in the default closes the arm early and every arm after it, including
+`*)`, is silently swallowed. The dispatch then matches nothing, the walk neither parks
+nor advances, and the step runs for ever. `bash -n` accepts it, so the only symptom is a
+run that hangs. That is why `build-ticket`'s arms only assign two variables and the park
+happens once, after the `esac`.
