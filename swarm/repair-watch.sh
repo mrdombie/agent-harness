@@ -123,10 +123,22 @@ BRIEF
 }
 
 section_repair() {
-  local launched=0 row PR T SHA MSTATE PEND FAILS labs reason kind prog why
-  while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
+  local launched=0 row PR T SHA MSTATE PEND FAILS HUMAN labs reason kind prog why
+  while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS HUMAN; do
     [ -n "${PR:-}" ] || continue
     [ "$launched" -lt "$MAX_PER_PASS" ] || break
+
+    # A tab IS whitespace to `read`, so bash COLLAPSES a run of them and an empty
+    # middle field shifts every later one left: a PR with no red check and an
+    # ACTION_REQUIRED one read the approval gate as the failure and sent an agent
+    # to fix it. So the query emits "-" for an empty list and it is unpacked here.
+    [ "$FAILS" = "-" ] && FAILS=""
+    [ "$HUMAN" = "-" ] && HUMAN=""
+
+    # A check that asks a person to act is said out loud, once per pass, whether
+    # or not anything else is wrong. One of the six found on 2026-09-27 carried
+    # no hold LABEL, so the label alone could not surface it.
+    [ -n "${HUMAN:-}" ] && say "#$PR ($T) is waiting on a person: $HUMAN"
 
     reason=""
     if [ "$MSTATE" = "DIRTY" ]; then reason="it clashes with $INTEGRATION_BRANCH"; kind=conflict
@@ -165,7 +177,19 @@ section_repair() {
 }
 
 # Every open, non-draft PR on a ticket branch, as
-# pr \t ticket \t sha \t mergeState \t pendingChecks \t failedCheckNames
+# pr \t ticket \t sha \t mergeState \t pendingChecks \t redCheckNames \t humanCheckNames
+#
+# "red" is every check that has SETTLED WITHOUT SUCCEEDING, not only FAILURE.
+# CANCELLED, TIMED_OUT and STALE all carry status COMPLETED and a conclusion
+# that is not FAILURE, so counting failures alone read them as a healthy pull
+# request — and a required check reporting any of them never reports success, so
+# those PRs could never merge and nothing ever repaired them. Audit of the last
+# 40 open PRs on the origin project, 2026-09-27: 12 cancelled.
+#
+# ACTION_REQUIRED is kept SEPARATE, because it means a person has to act. All 6
+# of them that day were `approval-gate — waiting for sign-off`; an agent cannot
+# satisfy that check, and an agent that tried would be clearing a hold on its own
+# work. It is reported, never repaired.
 open_prs() {
   swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 100 \
     --json number,headRefName,headRefOid,isDraft,mergeStateStatus,statusCheckRollup \
@@ -174,7 +198,12 @@ open_prs() {
               (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
               .headRefOid, .mergeStateStatus,
               ([.statusCheckRollup[]? | select(.status != \"COMPLETED\")] | length),
-              ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\") | .name] | join(\";\"))]]
+              ([.statusCheckRollup[]?
+                | select(.conclusion == \"FAILURE\" or .conclusion == \"CANCELLED\"
+                         or .conclusion == \"TIMED_OUT\" or .conclusion == \"STALE\")
+                | .name] | if length == 0 then \"-\" else join(\";\") end),
+              ([.statusCheckRollup[]? | select(.conclusion == \"ACTION_REQUIRED\") | .name]
+                | if length == 0 then \"-\" else join(\";\") end)]]
            | .[] | @tsv" 2>/dev/null
 }
 

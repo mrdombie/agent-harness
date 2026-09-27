@@ -207,7 +207,14 @@ fix_prs() {
         mergeStateStatus: $ms,
         statusCheckRollup: (
           [range($pend) | {name:"pending", status:"IN_PROGRESS", conclusion:null}]
-          + (if $fail == "-" then [] else [{name:$fail, status:"COMPLETED", conclusion:"FAILURE"}] end)
+          # "name" means a FAILURE (the common case); "name=CONCLUSION" pins any
+          # other settled conclusion — CANCELLED, TIMED_OUT, ACTION_REQUIRED.
+          # All of them carry status COMPLETED, which is why counting only
+          # FAILURE read them as a healthy pull request.
+          + (if $fail == "-" then []
+             elif ($fail | test("=")) then
+               [{name:($fail | split("=")[0]), status:"COMPLETED", conclusion:($fail | split("=")[1])}]
+             else [{name:$fail, status:"COMPLETED", conclusion:"FAILURE"}] end)
           + [{name:"green", status:"COMPLETED", conclusion:"SUCCESS"}])
       }]')
   done

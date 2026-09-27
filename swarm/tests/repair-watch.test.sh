@@ -48,6 +48,46 @@ out=$(w --only repair)
 want "the clash still gets an agent"   "1" "$(grep -c . "$SPAWNS")"
 want_in "and says so"                  'clashes with develop' "$out"
 
+echo "--- a check that ENDED without succeeding is red too ---"
+# CANCELLED, TIMED_OUT and STALE all carry status COMPLETED, so the pending
+# count is zero, and none of them is a FAILURE — so the watcher read them as a
+# healthy pull request and sent nobody. A required check that reports any of
+# them never reports success, so the PR can never merge and nothing repairs it.
+# Audit of the last 40 open PRs on the origin project, 2026-09-27: 12 cancelled.
+for conc in CANCELLED TIMED_OUT STALE; do
+  : > "$SPAWNS"; : > "$TRIED"
+  fix_prs "11 101 e$(printf '%s' "$conc" | tr -dc a-z)1 CLEAN 0 build=$conc"
+  out=$(w --only repair)
+  want "$conc gets an agent"          "1" "$(grep -c . "$SPAWNS")"
+  want_in "and the brief names it"    "build" "$(cat "$SPAWNS")"
+done
+
+echo "--- ACTION_REQUIRED asks a HUMAN to act, so no agent is sent ---"
+# Measured on the origin project the same day: all 6 ACTION_REQUIRED checks on
+# open PRs were `approval-gate — waiting for sign-off`. An agent cannot satisfy
+# a check whose whole point is that a person has not signed off, and trying is
+# the failure AGENTS.md names ("an agent removing the label to unblock itself
+# defeats it"). It is reported instead, because one of those 6 carried no hold
+# LABEL at all — so the label was not enough to see it.
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "11 101 fffffffff1 CLEAN 0 approval-gate=ACTION_REQUIRED"
+out=$(w --only repair)
+want "no agent for a human-action check" "0" "$(grep -c . "$SPAWNS")"
+want_in "but it is reported"             'waiting on a person' "$out"
+
+echo "--- a human-action check does not mask red CI on the same PR ---"
+: > "$SPAWNS"; : > "$TRIED"
+printf '%s\n' '[]' > "$FIX/gh/prs-all.json"
+jq '. + [{number:11, headRefName:"'"${BRANCH_PREFIX:-tkt-}"'101/work", headRefOid:"ggggggggg1",
+  isDraft:false, mergeStateStatus:"CLEAN", statusCheckRollup:[
+    {name:"approval-gate", status:"COMPLETED", conclusion:"ACTION_REQUIRED"},
+    {name:"typecheck",     status:"COMPLETED", conclusion:"FAILURE"},
+    {name:"green",         status:"COMPLETED", conclusion:"SUCCESS"}]}]' \
+  "$FIX/gh/prs-all.json" > "$FIX/gh/prs-all.json.tmp" && mv "$FIX/gh/prs-all.json.tmp" "$FIX/gh/prs-all.json"
+out=$(w --only repair)
+want "the red check still gets an agent" "1" "$(grep -c . "$SPAWNS")"
+want_in "and the brief names it"         'typecheck' "$(cat "$SPAWNS")"
+
 echo "--- a healthy pull request is left alone ---"
 : > "$SPAWNS"
 fix_prs "13 102 ccccccccc1 CLEAN 0 -"
