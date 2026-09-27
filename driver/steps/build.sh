@@ -30,22 +30,62 @@
 #   2  it still failed WITH the change — the change does not do the job
 #   3  the commits could not be read
 #
-# The "without" tree is the implementation commit's PARENT with the test file
-# copied in from the commit that added it. Checking out the test commit itself
-# would not do: on a branch where the test and the change are adjacent that tree
-# is the same tree, and the proof would be of nothing.
+# BOTH trees are the reported test file copied into a checkout: the change's PARENT
+# for the red half, the change itself for the green half. Two things follow from
+# that and neither is incidental.
+#
+# Checking out the test commit itself would not do — on a branch where the test and
+# the change are adjacent that tree is the same tree, and the proof would be of
+# nothing.
+#
+# And the version has to be the REPORTED one in both halves. A test sharpened while
+# the change was built is ordinary, and then the change's own tree holds an earlier
+# version; running that one measures a different test in each half and attributes
+# both answers to the change. A first version that asserts the opposite of the
+# change is green before and red after, so the two readings disagree — and the
+# wrong one says "still fails with the change" about a change that works.
+# The two proof trees need what the TICKET worktree was given, or a test command
+# that resolves through the shared install — `npx x`, `./node_modules/.bin/x`,
+# `npm test` — fails with 127 in both of them. 127 in the second reads as "the
+# change does not do the job", the rework burns every try, and the ticket parks.
+# On a project with a gitignored install that is every ticket, so this is not a
+# nicety: without it the step's whole guarantee is unreachable there.
+_driver_proof_install() { # <repo> <tree>
+  [ -d "$1/node_modules" ] && ln -sfn "$1/node_modules" "$2/node_modules"
+  [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
+  return 0
+}
+
 driver_prove_red_green() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
+
+  # TWO COMMITS HAVE TO BE TWO. Reported as one, the parent holds neither the test
+  # nor the change, the test is copied in and goes red, and the commit makes it
+  # green — so a squash that did no test-first at all reads as a clean proof.
+  # Nothing about the trees can tell them apart; only the two shas can.
+  if [ "$(git -C "$repo" rev-parse --verify "$tsha" 2>/dev/null)" \
+     = "$(git -C "$repo" rev-parse --verify "$isha" 2>/dev/null)" ]; then
+    printf 'the test and the change are the same commit (%s) — one commit cannot show which came first\n' \
+      "$(printf '%s' "$isha" | cut -c1-8)"; return 3
+  fi
 
   base=$(git -C "$repo" rev-parse --verify "$isha^" 2>/dev/null) || {
     printf 'the change commit %s has no parent to compare against\n' "$isha"; return 3; }
   git -C "$repo" cat-file -e "$tsha:$tfile" 2>/dev/null || {
     printf 'no %s in %s — the commit named as adding the test does not contain it\n' "$tfile" "$tsha"; return 3; }
+  # AND IT HAS TO BE THERE WHEN THE CHANGE LANDS. The green half runs at $isha; if
+  # the test was committed afterwards it is absent there, and a suite-wide command
+  # then runs nothing and exits 0 — "then green" said about a run that never
+  # executed the test, which is exactly test-written-afterwards.
+  git -C "$repo" cat-file -e "$isha:$tfile" 2>/dev/null || {
+    printf '%s is not in the change commit %s — a test committed after the change cannot have come before it\n' \
+      "$tfile" "$(printf '%s' "$isha" | cut -c1-8)"; return 3; }
 
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-proof-XXXXXX")
   git -C "$repo" worktree add -q --detach "$tmp/before" "$base" 2>/dev/null || {
     rm -rf "$tmp"; printf 'could not check out %s\n' "$base"; return 3; }
+  _driver_proof_install "$repo" "$tmp/before"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
   ( cd "$tmp/before" && eval "$cmd" ) >"$tmp/before.out" 2>&1
@@ -54,6 +94,13 @@ driver_prove_red_green() {
   git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
     git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
     printf 'could not check out %s\n' "$isha"; return 3; }
+  _driver_proof_install "$repo" "$tmp/after"
+  # The SAME version of the test in both trees. A test sharpened while the change
+  # was built is ordinary, and then the change's own tree holds an EARLIER version:
+  # running that one measures a different test in each half, and the two answers get
+  # attributed to the change. One version, two trees.
+  mkdir -p "$(dirname "$tmp/after/$tfile")"
+  git -C "$repo" show "$tsha:$tfile" > "$tmp/after/$tfile"
   ( cd "$tmp/after" && eval "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
 
@@ -94,8 +141,10 @@ driver_step_build() { # <ticket>
   rc=0; driver_ai_step "$t" build "$(driver_state_dir "$t")/steps/plan.json" || rc=$?
   if [ "$rc" -ne 0 ]; then
     # A question, a skipped Skill or a broken answer is not a rework loop: those
-    # park. Only an UNPROVED build is worth another try.
-    _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
+    # park, and they park with their OWN reason. Running them through the ceiling
+    # would rewrite the model's question as "build refused (exit 24)" on the last
+    # try, and the operator would be handed a code in place of the question they
+    # have to answer. Only an UNPROVED build is worth another try.
     return "$rc"
   fi
 
