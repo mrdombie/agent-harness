@@ -65,6 +65,30 @@ fix_ai compare '{"differences":"none"}' superpowers:requesting-code-review
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "the wrong type refuses too"      "22" "$rc"
 
+echo "--- an answer that is not an object at all ---"
+# `has("differences")` on an array or a string is not false — it errors, the error
+# goes to /dev/null, and empty output reads as "nothing missing". So a JSON array or
+# a bare quoted string sailed through a schema requiring a key.
+fix_schema compare '{"required":["differences"],"properties":{"differences":{"type":"array"}}}'
+fix_ai compare '["not an object"]' superpowers:requesting-code-review
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "an array is refused"  "22" "$rc"
+want_in "and it says what it wanted" 'object' "$out"
+fix_ai compare '"just prose"' superpowers:requesting-code-review
+rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
+want "a bare string is refused too" "22" "$rc"
+
+echo "--- a schema file that does not parse disables nothing ---"
+# The header says present-and-unmatched is a refusal. A schema shipped with a syntax
+# error made every jq read error into /dev/null, which read as a pass — so the step
+# with the broken schema was the one step with no validation at all, and said so
+# nowhere.
+printf '{"required": [\n' > "$DRIVER_SCHEMAS/compare.json"
+fix_ai compare '{}' superpowers:requesting-code-review
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "a broken schema refuses"      "22" "$rc"
+want_in "naming the file to look at" 'compare.json' "$out"
+
 echo "--- no schema on disk is normal: the briefs ticket may not have landed ---"
 rm -f "$DRIVER_SCHEMAS/compare.json"
 fix_ai compare '{"anything":1}' superpowers:requesting-code-review

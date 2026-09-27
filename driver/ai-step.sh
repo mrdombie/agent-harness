@@ -61,6 +61,22 @@ driver_log_result() {
 # far. What it does NOT check, it does not claim to.
 driver_check_schema() {
   local schema="$1" answer="$2" missing wrong
+  # THE SCHEMA HAS TO PARSE. Every read below ends in 2>/dev/null, so a schema file
+  # shipped with a syntax error made each one error into nothing — and empty output
+  # read as "nothing missing". The step with the broken schema became the one step
+  # with no validation, and said so nowhere.
+  if ! jq -e . "$schema" >/dev/null 2>&1; then
+    printf '%s does not parse as JSON, so nothing about this answer was checked' "$(basename "$schema")"
+    return 1
+  fi
+  # AND THE ANSWER HAS TO BE AN OBJECT. `has("k")` on an array or a string does not
+  # answer false — it errors, into the same /dev/null — so a JSON array or a bare
+  # quoted string satisfied a schema that required a key.
+  if [ "$(jq -r 'type' "$answer" 2>/dev/null)" != "object" ]; then
+    printf 'the answer is %s, and a schema describes an object' \
+      "$(jq -r '"a " + type' "$answer" 2>/dev/null || printf 'not JSON')"
+    return 1
+  fi
   # Bound to $k: inside `has()` the dot is the object being asked, not the key,
   # so the unbound form silently asked whether the answer has itself — and every
   # missing key passed.

@@ -34,14 +34,40 @@ echo "--- EVERY gate runs, even after one has failed ---"
 # has run, and it reports green by never reporting at all.
 jq '.gates = {"a":"exit 1","b":"exit 0","c":"exit 1"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 out=$(driver_step_self_check 101 2>&1)
-want_in "the gate behind the failure ran" 'b' "$out"
-want_in "and the last one too"            'c' "$out"
+# Pinned on the GATE'S OWN LINE, not on a letter. `want_in … 'c'` is satisfied by
+# the "c" in "self-check", which every line of this step's output contains — so with
+# a break added after the first failure, gate c never ran and that assertion still
+# printed OK.
+want_in "the gate behind the failure ran" 'self-check: b ok' "$out"
+want_in "and the last one too"            'self-check: c failed' "$out"
+want "all three were counted"             "3" \
+  "$(printf '%s' "$out" | grep -cE 'self-check: [abc] (ok|failed)')"
 
 echo "--- no gates configured is a refusal, not a pass ---"
 jq 'del(.gates)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 out=$(driver_step_self_check 101 2>&1); rc=$?
 want "nothing to run refuses" "24" "$rc"
 want_in "and says what to configure" 'gates' "$out"
+
+echo "--- gates present but every command empty: nothing ran, so nothing passed ---"
+# This is the same failure as no gates at all, wearing a configured shape. The loop
+# skips an empty or null command, the counter stays at zero, and the step then
+# reports "0 gate(s) green" and returns OK — so ship pushes and arms auto-merge on
+# code nothing checked. A check that did not run has to look different from one that
+# found nothing wrong; that is the step's whole reason for existing.
+jq '.gates = {"lint":"","test":null}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+out=$(driver_step_self_check 101 2>&1); rc=$?
+want "it refuses"                 "24" "$rc"
+want_not_in "and never says green" 'green' "$out"
+want_in "naming what is empty"     'lint' "$out"
+
+echo "--- gates written as a list instead of an object ---"
+# One typo in harness.json. Read as an object it yields no names at all, and the
+# step's own "nothing configured" guard does not fire because the key IS there.
+jq '.gates = ["npm test"]' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+out=$(driver_step_self_check 101 2>&1); rc=$?
+want "it refuses"                  "24" "$rc"
+want_in "and says what shape it wanted" 'name to command|object' "$out"
 
 echo "--- the gates run in the ticket's worktree, not wherever the driver started ---"
 jq '.gates = {"here":"test -f marker"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"

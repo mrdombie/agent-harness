@@ -323,7 +323,13 @@ want "the verdict recorded is the reviewer's" "SHIP" "$(driver_state_get "$TICKE
 want "the agent ran once per AI step and no more" "plan build review" \
   "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
 want "and three calls in total, not a fan-out" "3" "$(grep -c . "$CLAUDE_LOG")"
-want_not_in "the driver started nothing itself" 'spawn|--parallel|& *$' "$(cat "$CLAUDE_LOG")"
+# The line that used to sit here grepped CLAUDE_LOG for `spawn|--parallel|&$`. That
+# file is written by the runner stub as one bare step name per line, so nothing the
+# driver could possibly do would put those strings in it: a driver that forked three
+# parallel agents would log "build build build" and the assertion would still pass.
+# The count above is what measures the rule; this measures that no step was reached
+# through anything but its own single call.
+want "no step was run twice in one pass" "0" "$(sort "$CLAUDE_LOG" | uniq -d | grep -c . || true)"
 
 echo "--- a resumed run is still stopped by the label a person owns it with ---"
 # This is the consequence of the re-entry rule, measured against the real start step.

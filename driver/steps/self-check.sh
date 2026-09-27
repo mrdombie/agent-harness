@@ -25,11 +25,19 @@
 
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
-  local wt names name cmd rc failed=0 ran=0
+  local wt names name cmd rc gtype failed=0 ran=0 empty=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
 
-  names=$(jq -r '(.gates // {}) | keys_unsorted[]' "$HARNESS_CFG" 2>/dev/null)
+  # The SHAPE first. `gates` written as a list reads as no names at all, and the
+  # "nothing configured" guard below does not fire because the key is there — so one
+  # typo in harness.json turned this whole step into a no-op reporting green.
+  gtype=$(jq -r '(.gates // {}) | type' "$HARNESS_CFG" 2>/dev/null)
+  if [ "$gtype" != "object" ]; then
+    driver_say "✋ self-check: harness.json's 'gates' is a ${gtype:-unreadable value}, and this reads an object of name to command."
+    return "$DRIVER_E_REFUSED"
+  fi
+  names=$(jq -r '.gates | keys_unsorted[]' "$HARNESS_CFG" 2>/dev/null)
   if [ -z "$names" ]; then
     driver_say "✋ self-check: harness.json configures no 'gates'. A check that never ran reports exactly like one that found nothing, so this refuses rather than passing."
     return "$DRIVER_E_REFUSED"
@@ -38,7 +46,7 @@ driver_step_self_check() { # <ticket>
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     cmd=$(jq -r --arg n "$name" '.gates[$n]' "$HARNESS_CFG" 2>/dev/null)
-    [ -n "$cmd" ] && [ "$cmd" != "null" ] || continue
+    if [ -z "$cmd" ] || [ "$cmd" = "null" ]; then empty="$empty $name"; continue; fi
     ran=$((ran+1))
     # Its own command, its own exit code, nothing batched with it.
     ( cd "$wt" && eval "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$name.out" 2>&1
@@ -53,6 +61,13 @@ driver_step_self_check() { # <ticket>
 $names
 EOS
 
+  # NOTHING RAN IS A REFUSAL. Every command empty is the same failure as no gates at
+  # all, wearing a configured shape — and it printed "0 gate(s) green" and returned
+  # OK, so ship pushed and armed auto-merge on code nothing had checked.
+  if [ "$ran" -eq 0 ]; then
+    driver_say "✋ self-check: every configured gate has an empty command (${empty# }), so nothing ran. Nothing having run is not everything having passed."
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ "$failed" -gt 0 ]; then
     driver_say "✋ self-check: $failed of $ran gate(s) red. The local gate IS the gate — nothing is pushed past it."
     return "$DRIVER_E_REFUSED"
