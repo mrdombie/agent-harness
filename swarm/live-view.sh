@@ -22,6 +22,9 @@ export SWARM_PROGRESS_CACHE="${SWARM_PROGRESS_CACHE:-$SWARM_DIR/progress.json}"
 export SWARM_PLAIN_TITLES="${SWARM_PLAIN_TITLES:-$STATE_DIR/plain-titles.json}"
 export SWARM_CLAIM_LOCK="${SWARM_CLAIM_LOCK:-$CL}" SWARM_QUEUE_REPO="${SWARM_QUEUE_REPO:-$MAIN_REPO}"
 export DRIVER_DIR="${DRIVER_DIR:-$STATE_DIR/driver}"
+# The bash this runs under, by full path: node's own PATH lookup finds System32's
+# WSL launcher first when started by Task Scheduler.
+command -v cygpath >/dev/null 2>&1 && export SWARM_BASH="${SWARM_BASH:-$(cygpath -w "$BASH")}"
 SERVER="$(dirname "${BASH_SOURCE[0]}")/live-view/server.mjs"
 
 if [ "${1:-}" = "--print" ]; then

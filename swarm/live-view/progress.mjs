@@ -326,7 +326,11 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
     if (!/^[0-9]+$/.test(String(t))) continue
     let rec = null
     if (cl) {
-      const raw = sh(cl, ['show', String(t)], { env: { ...env, CLAIM_REPO: queueRepo || env.CLAIM_REPO || '' } })
+      // Windows cannot exec a .sh file itself; hand it to bash by its full path.
+      // A bare 'bash' resolves to System32's WSL launcher under Task Scheduler.
+      const [cmd, args] = process.platform === 'win32' && /\.sh$/.test(cl)
+        ? [env.SWARM_BASH || 'bash', [cl, 'show', String(t)]] : [cl, ['show', String(t)]]
+      const raw = sh(cmd, args, { env: { ...env, CLAIM_REPO: queueRepo || env.CLAIM_REPO || '' } })
       if (raw != null) { try { rec = JSON.parse(raw) } catch {} }
     }
     if (!rec || !rec.branch) continue
