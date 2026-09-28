@@ -80,7 +80,7 @@ if [ -n "$REPO" ] && [ -d "$REPO/.claude" ]; then
   fi
   owned(){ printf '%s\n' "$2" | grep -qx "$1"; }
   declared=0
-  for n in "${SKILLS[@]}"; do
+  for n in ${SKILLS[@]+"${SKILLS[@]}"}; do
     [ -f "$REPO/.claude/skills/$n/SKILL.md" ] || continue
     if owned "$n" "$OWN_SKILLS"; then
       printf '  %-8s %-46s %s\n' "declared" ".claude/skills/$n" "an override this project declares in harness.json"
@@ -88,7 +88,7 @@ if [ -n "$REPO" ] && [ -d "$REPO/.claude" ]; then
     fi
     report DUPLICATE ".claude/skills/$n/SKILL.md" "the plugin ships /$n — delete this copy"
   done
-  for n in "${AGENTS[@]}"; do
+  for n in ${AGENTS[@]+"${AGENTS[@]}"}; do
     [ -f "$REPO/.claude/agents/$n" ] || continue
     if owned "$n" "$OWN_AGENTS"; then
       printf '  %-8s %-46s %s\n' "declared" ".claude/agents/$n" "an override this project declares in harness.json"
@@ -96,15 +96,22 @@ if [ -n "$REPO" ] && [ -d "$REPO/.claude" ]; then
     fi
     report DUPLICATE ".claude/agents/$n" "the plugin ships this agent — delete this copy"
   done
-  for n in "${HOOKS[@]}"; do
+  for n in ${HOOKS[@]+"${HOOKS[@]}"}; do
     [ -f "$REPO/.claude/hooks/$n" ] && \
       report DUPLICATE ".claude/hooks/$n" "the plugin registers this hook — delete this copy"
   done
   if [ -f "$REPO/.claude/settings.json" ] && command -v jq >/dev/null; then
+    # CAPTURED FIRST. A `|| exit` inside <( ) exits the SUBSHELL, so the gate
+    # printed jq's error and then reported PASS — a failed read reading as
+    # clean is the one answer this must never give.
+    if ! _rr=$(jq -r --argjson names "$HOOKS_JSON" -f "$KIT/hooks/registered-hooks.jq" \
+                  "$REPO/.claude/settings.json"); then
+      echo "  could not read $REPO/.claude/settings.json — refusing to report it clean" >&2
+      exit 2
+    fi
     while read -r n; do
       [ -n "$n" ] && report REGISTERED ".claude/settings.json -> $n" "fires twice; the plugin already registers it"
-    done < <(jq -r --argjson names "$HOOKS_JSON" -f "$KIT/hooks/registered-hooks.jq" \
-               "$REPO/.claude/settings.json" 2>/dev/null)
+    done <<< "$_rr"
   fi
   [ "$findings" -eq 0 ] && echo "  none"
   echo
@@ -114,21 +121,25 @@ repo_findings=$findings
 echo "ON THIS MACHINE  $C"
 home_findings=0
 hreport(){ home_findings=$((home_findings+1)); printf '  %-8s %-46s %s\n' "$1" "$2" "$3"; }
-for n in "${SKILLS[@]}"; do
+for n in ${SKILLS[@]+"${SKILLS[@]}"}; do
   [ -f "$C/commands/$n.md" ] && hreport DUPLICATE "commands/$n.md" "the plugin ships /$n"
   [ -f "$C/skills/$n/SKILL.md" ] && hreport DUPLICATE "skills/$n/SKILL.md" "the plugin ships /$n"
 done
-for n in "${AGENTS[@]}"; do
+for n in ${AGENTS[@]+"${AGENTS[@]}"}; do
   [ -f "$C/agents/$n" ] && hreport DUPLICATE "agents/$n" "the plugin ships this agent"
 done
-for n in "${HOOKS[@]}"; do
+for n in ${HOOKS[@]+"${HOOKS[@]}"}; do
   [ -f "$C/hooks/$n" ] && hreport DUPLICATE "hooks/$n" "the plugin registers this hook"
 done
 if [ -f "$C/settings.json" ] && command -v jq >/dev/null; then
+  if ! _hr=$(jq -r --argjson names "$HOOKS_JSON" -f "$KIT/hooks/registered-hooks.jq" \
+                "$C/settings.json"); then
+    echo "  could not read $C/settings.json — refusing to report it clean" >&2
+    exit 2
+  fi
   while read -r n; do
     [ -n "$n" ] && hreport REGISTERED "settings.json -> $n" "fires twice; the plugin already registers it"
-  done < <(jq -r --argjson names "$HOOKS_JSON" -f "$KIT/hooks/registered-hooks.jq" \
-             "$C/settings.json" 2>/dev/null)
+  done <<< "$_hr"
 fi
 [ "$home_findings" -eq 0 ] && echo "  none"
 echo

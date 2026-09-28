@@ -286,6 +286,30 @@ out=$(PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" bash "$SUT" 2>&1)
 grep -q "$KITNAME@acme-tools" "$r/updated.log" 2>/dev/null \
   && ok "and a green one is still installed from there" || bad "a green kit was not installed"
 
+# --- TWO SCOPE RECORDS, one already at the target ------------------------------
+# `.[0]` read the first record only, so a kit current at one scope and behind at
+# another read as current: the suites never ran and the CLI was handed the kit
+# anyway. The gate must fire when ANY record differs from the catalog.
+r=$(kit_fixture fail)
+python3 - "$r" <<'PY2'
+import json,sys,subprocess
+root=sys.argv[1]
+target=subprocess.run(["git","-C",root+"/work","rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()
+p=root+"/plugins/installed_plugins.json"; d=json.load(open(p))
+k=[x for x in d["plugins"]][0]
+base=d["plugins"][k][0]["gitCommitSha"]
+# the FIRST record is already at the target; the second is behind.
+d["plugins"][k]=[{"scope":"project","installPath":"/x","gitCommitSha":target},
+                 {"scope":"user","installPath":"/y","gitCommitSha":base}]
+json.dump(d,open(p,"w"))
+PY2
+out=$(PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" bash "$SUT" 2>&1)
+printf '%s' "$out" | grep -q 'testing the kit at' \
+  && ok "a second record behind the catalog still runs the gate" \
+  || bad "the gate was skipped because the FIRST record was current"
+grep -q "@" "$r/updated.log" 2>/dev/null \
+  && bad "the red kit was installed anyway" || ok "and the red kit was still held"
+
 # --- the second pin is gone ---------------------------------------------------
 # It used to rewrite kit.ref in the consuming repo's harness.json. Nothing may
 # write that key any more: a second pin beside the marketplace's is the exact

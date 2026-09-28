@@ -234,11 +234,24 @@ if [ -d "$KIT_SRC/.git" ]; then
   git -C "$KIT_SRC" fetch -q origin 2>/dev/null
   KIT_BR=$(git -C "$KIT_SRC" rev-parse --abbrev-ref HEAD 2>/dev/null)
   KIT_TARGET=$(git -C "$KIT_SRC" rev-parse "origin/$KIT_BR" 2>/dev/null || true)
-  KIT_HAVE=$(jq -r --arg k "$KIT_KEY" \
-      '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' \
+  # EVERY RECORD, not .[0] — the same bug the STALE INSTALLS block above fixed
+  # for itself. One plugin can be installed at more than one scope, and reading
+  # the first one meant a kit that was current at user scope and behind at
+  # project scope read as "current": the suites never ran and `claude plugin
+  # update` was handed the kit anyway. The gate must fire when ANY record's sha
+  # differs from the catalog.
+  KIT_SHAS=$(jq -r --arg k "$KIT_KEY" \
+      '(.plugins // .)[$k] | (if type=="array" then .[] else . end) | .gitCommitSha // ""' \
       "$INSTALLED" 2>/dev/null)
+  KIT_HAVE=$(printf '%s\n' "$KIT_SHAS" | head -1)
+  KIT_BEHIND=0
+  while read -r _sha; do
+    [ -n "$_sha" ] || continue
+    [ "$_sha" = "$KIT_TARGET" ] || KIT_BEHIND=1
+  done <<< "$KIT_SHAS"
+  [ -n "$KIT_SHAS" ] || KIT_BEHIND=1
   printf '  installed %s   catalog %s\n' "${KIT_HAVE:0:12}" "${KIT_TARGET:0:12}"
-  if [ -n "$KIT_TARGET" ] && [ "$KIT_HAVE" != "$KIT_TARGET" ]; then
+  if [ -n "$KIT_TARGET" ] && [ "$KIT_BEHIND" -eq 1 ]; then
     git -C "$KIT_SRC" log --oneline --no-decorate "${KIT_HAVE:-$KIT_TARGET}..$KIT_TARGET" 2>/dev/null \
       | sed 's/^/    /' | head -20
     BEHIND=1
@@ -275,7 +288,7 @@ hr
 # check the CLI does not make: `claude plugin update` will happily move you onto
 # a broken commit.
 KIT_RED=0
-if [ -n "$KIT_TARGET" ] && [ "${KIT_HAVE:-}" != "$KIT_TARGET" ]; then
+if [ -n "$KIT_TARGET" ] && [ "${KIT_BEHIND:-0}" -eq 1 ]; then
   echo "testing the kit at ${KIT_TARGET:0:12} before installing it"
   STAGE=$(mktemp -d) || exit 1
   if git -C "$KIT_SRC" worktree add -q --detach "$STAGE" "$KIT_TARGET" 2>/dev/null; then

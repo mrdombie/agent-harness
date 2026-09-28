@@ -47,6 +47,24 @@ o=$(drun "$WT/src/b.ts")
 [ -z "$o" ] && echo "ok   allow an edit in the WORKTREE, which is the point" \
   || { echo "FAIL allow editing your own worktree was denied"; fail=1; }
 
+# 2c. THE BLAST-RADIUS CASES. The derivation returns the repo's own .git when
+# you stand in a plain checkout, so the first version denied every source edit
+# in any checkout that was not itself a worktree — and a relative $_main left
+# the pattern as a bare `/*`, denying every absolute path on the machine. Both
+# were invisible because every case above runs from inside a worktree with an
+# absolute clone.
+git init -q "$TMP/plain" 2>/dev/null; mkdir -p "$TMP/plain/src"
+o=$(printf '{"tool_input":{"file_path":%s,"content":"x"}}' "$(jq -Rn --arg v "$TMP/plain/src/a.ts" '$v')" \
+    | ( cd "$TMP/plain" && env -u HARNESS_MAIN_REPO CLAUDE_PROJECT_DIR="$TMP/plain" bash "$H" ))
+[ -z "$o" ] && echo "ok   allow an edit in the ordinary clone you are standing in" \
+  || { echo "FAIL allow a plain checkout was treated as somebody else's clone"; fail=1; }
+for bad_main in "some/relative/path" "." ".." ""; do
+  o=$(printf '{"tool_input":{"file_path":"/Users/somebody/unrelated.ts","content":"y"}}' \
+      | HARNESS_MAIN_REPO="$bad_main" bash "$H")
+  [ -z "$o" ] && echo "ok   allow an unrelated path, with _main='$bad_main'" \
+    || { echo "FAIL allow _main='$bad_main' widened the pattern to everything"; fail=1; }
+done
+
 # 4. new tooling outside the kit
 deny  "$HOME/.claude/commands/brand-new-$$.md"      "a new personal command"
 deny  "$HOME/.claude/skills/brand-new-$$/SKILL.md"  "a new personal skill"

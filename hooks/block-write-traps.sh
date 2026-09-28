@@ -57,26 +57,44 @@ esac
 #    points at — and fall back to the resolver's last-seen value only for a
 #    session started outside any checkout.
 _main="${HARNESS_MAIN_REPO:-}"
+_here="${CLAUDE_PROJECT_DIR:-$PWD}"
+_top=$(git -C "$_here" rev-parse --show-toplevel 2>/dev/null || true)
 if [ -z "$_main" ]; then
-  _here="${CLAUDE_PROJECT_DIR:-$PWD}"
   _common=$(git -C "$_here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
   case "$_common" in */.git) _main="${_common%/.git}" ;; esac
 fi
 [ -n "$_main" ] || _main=$(cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.harness-last-main-repo" 2>/dev/null || true)
+
+#    ONLY WHEN YOU ARE SOMEWHERE ELSE. `--git-common-dir` returns the repo's own
+#    .git when you are standing in a PLAIN checkout, so the derivation names the
+#    repo you are working in — and the first version of this denied every source
+#    edit in any checkout that was not itself a worktree, telling the author to
+#    go and use a worktree that may not exist. The test only ever ran from
+#    inside a worktree, which is why it was green.
+#
+#    The trap is about editing SOMEONE ELSE'S tree: your own toplevel being the
+#    clone means you are simply working in it, and that is not what this is for.
+[ -n "$_top" ] && [ "$_top" = "$_main" ] && _main=""
+
+#    ABSOLUTE ONLY. A relative or empty $_main left the pattern below as a bare
+#    `/*`, which matches every absolute path — so one relative value in the env
+#    or in the cache file denied every Write and Edit on the machine.
+case "$_main" in /*) ;; *) _main="" ;; esac
+
 # macOS resolves /var to /private/var, so a derived clone path and the path the
 # tool was handed can name the SAME directory and not match as strings. Compare
-# against both spellings; without this the trap was silently one-sided.
+# against both spellings; without this the trap was silently one-sided. Only
+# ever computed from an absolute $_main, so it can never widen to `/`.
 _alt=""
 case "$_main" in
   /private/*) _alt="${_main#/private}" ;;
-  /*)         _alt="/private$_main" ;;
+  /?*)        _alt="/private$_main" ;;
 esac
+[ -n "$_alt" ] || _alt="$_main"
 if [ -n "$_main" ]; then
   case "$f" in
     "$_main"/.claude/*|"$_alt"/.claude/*) ;;
     "$_main"/*|"$_alt"/*)
-      # A worktree is NOT the main clone even though its files share a prefix
-      # nowhere — worktrees live elsewhere — so a plain prefix match is safe.
       deny "This is the shared main clone (nobody's branch, checkout runs behind), not your worktree. An edit here lands on no branch and can land on a peer's. Edit the same path inside your claim worktree." ;;
   esac
 fi

@@ -53,12 +53,12 @@ HOOKS=(); while read -r n; do [ -n "$n" ] && HOOKS+=("$n"); done < <(
 # files but no plugin hook registered — and the operator got a bash internal
 # error instead of a diagnosis.
 MOVE=(); KEEP=()
-for n in "${SKILLS[@]}"; do
+for n in ${SKILLS[@]+"${SKILLS[@]}"}; do
   [ -f "$C/commands/$n.md" ] && MOVE+=("commands/$n.md")
   [ -f "$C/skills/$n/SKILL.md" ] && MOVE+=("skills/$n")
 done
-for n in "${AGENTS[@]}"; do [ -f "$C/agents/$n" ] && MOVE+=("agents/$n"); done
-for n in "${HOOKS[@]}"; do
+for n in ${AGENTS[@]+"${AGENTS[@]}"}; do [ -f "$C/agents/$n" ] && MOVE+=("agents/$n"); done
+for n in ${HOOKS[@]+"${HOOKS[@]}"}; do
   [ -e "$C/hooks/$n" ] && MOVE+=("hooks/$n")
   # Everything that belongs to that hook goes with it: its self-test, the python
   # judge a shell wrapper execs, its case table, and any .bak left by an edit.
@@ -98,7 +98,7 @@ if [ -d "$C/commands" ]; then
   for f in "$C"/commands/*.md; do
     [ -f "$f" ] || continue
     b=$(basename "$f" .md); mine=0
-    for n in "${SKILLS[@]}"; do [ "$n" = "$b" ] && mine=1; done
+    for n in ${SKILLS[@]+"${SKILLS[@]}"}; do [ "$n" = "$b" ] && mine=1; done
     [ "$mine" -eq 0 ] && KEEP+=("commands/$b.md")
   done
 fi
@@ -106,9 +106,14 @@ fi
 # Which registrations in settings.json name a hook the plugin registers.
 REG=()
 if [ -f "$C/settings.json" ]; then
-  while read -r n; do [ -n "$n" ] && REG+=("$n"); done < <(
-    jq -r --argjson names "$(printf '%s\n' "${HOOKS[@]}" | jq -Rsc 'split("\n")|map(select(length>0))')" \
-       -f "$KIT/hooks/registered-hooks.jq" "$C/settings.json" 2>/dev/null)
+  # A jq FAILURE here must not read as "nothing is registered" — that is the
+  # silently-inert answer, and it is what an undefined --arg produced.
+  _hn=$(printf '%s\n' ${HOOKS[@]+"${HOOKS[@]}"} | jq -Rsc 'split("\n")|map(select(length>0))')
+  if ! _reg=$(jq -r --argjson names "$_hn" -f "$KIT/hooks/registered-hooks.jq" "$C/settings.json"); then
+    echo "retire-duplicates: could not read $C/settings.json — refusing to report it clean" >&2
+    exit 2
+  fi
+  while read -r n; do [ -n "$n" ] && REG+=("$n"); done <<< "$_reg"
 fi
 
 echo "TO RETIRE  (moved to $ARCHIVE)"
@@ -173,26 +178,28 @@ for rel in ${MOVE[@]+"${MOVE[@]}"}; do
 done
 
 if [ "${#REG[@]}" -gt 0 ]; then
-  cp "$C/settings.json" "$C/settings.json.before-$STAMP" || exit 1
   names=$(printf '%s\n' ${REG[@]+"${REG[@]}"} | jq -Rsc 'split("\n") | map(select(length>0))')
   tmp=$(mktemp) || exit 1
-  # Drop the matching hook entries, then any group left with no hooks, then any
-  # event left with no groups. A group with an empty `hooks` array is not
-  # harmless: Claude Code reads it as a malformed matcher.
-  if jq --argjson names "$names" '
-      # The SAME path-component rule the detection uses — see
-      # hooks/registered-hooks.jq. Two implementations of "does this command
-      # name that hook" is how a report and a rewrite come to disagree.
-      def parts($c): $c | split("/") | map(split(" ")[0] | split("\"")[0] | split("\u0027")[0]);
-      def owns($c): parts($c) | any(. as $p | $names | index($p) != null);
-      .hooks |= (
-        with_entries(
-          .value |= ( map(.hooks |= map(select(owns(.command) | not)))
-                    | map(select((.hooks | length) > 0)) )
-        ) | with_entries(select((.value | length) > 0))
-      )' "$C/settings.json" > "$tmp" && [ -s "$tmp" ] && jq -e . "$tmp" >/dev/null; then
+  # THE SAME RULE FILE the report used — not a second copy inlined here. The
+  # rewrite carried its own `def parts(...)`, and when the two drifted the
+  # command reported "un-registered 1" while the entry was still there and a
+  # backup had been written as if it had gone. One file, one answer.
+  before=$(jq -r '[.hooks // {} | .[][].hooks[].command] | length' "$C/settings.json" 2>/dev/null || echo 0)
+  if jq --argjson names "$names" --arg mode strip \
+       -f "$KIT/hooks/registered-hooks.jq" "$C/settings.json" > "$tmp" \
+     && [ -s "$tmp" ] && jq -e . "$tmp" >/dev/null; then
+    after=$(jq -r '[.hooks // {} | .[][].hooks[].command] | length' "$tmp")
+    if [ "$after" -ge "$before" ]; then
+      rm -f "$tmp"
+      echo "  FAILED — the rewrite removed nothing ($before registrations before and after)."
+      echo "  Reporting a removal that did not happen is worse than not removing it."
+      echo "  settings.json is UNCHANGED."
+      exit 1
+    fi
+    cp "$C/settings.json" "$C/settings.json.before-$STAMP" || exit 1
     mv "$tmp" "$C/settings.json"
-    printf '  un-registered %d hook(s); previous settings kept at settings.json.before-%s\n' "${#REG[@]}" "$STAMP"
+    printf '  un-registered %d hook(s); previous settings kept at settings.json.before-%s\n' \
+      "$(( before - after ))" "$STAMP"
   else
     rm -f "$tmp"; echo "  FAILED to rewrite settings.json — it is UNCHANGED"; exit 1
   fi

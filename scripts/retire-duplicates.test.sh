@@ -118,6 +118,27 @@ rm -rf "$C/fakeinstall" "$C/plugins/installed_plugins.json"
 out=$(bash "$D/retire-duplicates.sh" 2>&1); rc=$?
 [ "$rc" -ne 0 ] && ok "no readable install at all also refuses" || bad "it applied with no install to compare against"
 
+echo "--- a kit that ships no hooks, and one that ships nothing ---"
+# Both scripts are written as reusable project-agnostic tools, and hooks are
+# optional in a plugin. Ten array expansions were still bare, so an empty
+# HOOKS/SKILLS died with the same `unbound variable` the first fix was about.
+EK=$(mktemp -d); mkdir -p "$EK/skills" "$EK/hooks" "$EK/.claude-plugin"
+echo '{"hooks":{}}' > "$EK/hooks/hooks.json"
+cp "$KIT/hooks/registered-hooks.jq" "$EK/hooks/"
+echo '{"name":"empty","version":"0"}' > "$EK/.claude-plugin/plugin.json"
+EC=$(mktemp -d); mkdir -p "$EC/commands"; : > "$EC/commands/x.md"; echo '{}' > "$EC/settings.json"
+CLAUDE_CONFIG_DIR="$EC" CLAUDE_PLUGIN_ROOT="$EK" bash "$D/retire-duplicates.sh" --check >/dev/null 2>&1
+[ $? -le 1 ] && ok "the migration runs against a kit with no hooks" || bad "it died on an empty HOOKS array"
+CLAUDE_CONFIG_DIR="$EC" CLAUDE_PLUGIN_ROOT="$EK" bash "$D/check-single-source.sh" /nonexistent >/dev/null 2>&1
+[ $? -le 1 ] && ok "and so does the gate" || bad "the gate died on an empty HOOKS array"
+# A kit with no rule file at all must REFUSE, not report clean: an unreadable
+# read answering "nothing is registered" is the silently-inert answer.
+NK=$(mktemp -d); mkdir -p "$NK/.claude-plugin"; echo '{"name":"n","version":"0"}' > "$NK/.claude-plugin/plugin.json"
+CLAUDE_CONFIG_DIR="$EC" CLAUDE_PLUGIN_ROOT="$NK" bash "$D/check-single-source.sh" /nonexistent >/dev/null 2>&1
+[ $? -eq 2 ] && ok "a kit whose rule file is unreadable refuses to report clean" \
+  || bad "an unreadable rule file was reported as 'nothing registered'"
+rm -rf "$EK" "$EC" "$NK"
+
 echo "--- and the gate can fail ---"
 mkdir -p "$REPO/.claude/skills/finish"; : > "$REPO/.claude/skills/finish/SKILL.md"
 HOME="$C" bash "$D/check-single-source.sh" "$REPO" >/dev/null 2>&1 \
