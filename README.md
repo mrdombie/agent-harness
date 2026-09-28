@@ -87,6 +87,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
 - `review.attest` — one entry per reviewer the project attests: the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. Absent, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
+- `owns.skills` / `owns.agents` — kit names this project deliberately shadows. Everything else under its `.claude/` that the kit also ships is a duplicate and fails the gate.
 - `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
 - `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
@@ -206,6 +207,25 @@ Two things keep it that way:
 scripts/check-single-source.sh [<repo>]   # fails when a second copy appears
 scripts/retire-duplicates.sh  [--check]   # clears a machine that still carries one
 ```
+
+`retire-duplicates.sh` **refuses to run before the plugin can take over.** It
+compares against the INSTALLED plugin, not the checkout, and stops when that
+install does not yet register a hook it is about to remove — otherwise the
+machine has no guard at all until the next update. Measured by doing exactly
+that on 2026-09-28: ten registrations became one while the running install
+registered six of the nine.
+
+**A declared override is not a duplicate.** A project may legitimately shadow a
+kit skill — most often because the kit has not extracted that layer yet and the
+project's copy carries wiring the kit's does not. It says so in `harness.json`:
+
+```json
+"owns": { "skills": ["finish", "claim"], "agents": ["design-critic.md"] }
+```
+
+Both this gate and the project's own read that one key, because two gates with
+two hardcoded lists is the same defect one level up — they drift, and the one
+that drifts low stops failing.
 
 `check-single-source.sh` belongs in a consuming repo's CI. It fails on a repo
 copy; it reports a machine copy and only fails on it under `--strict`, because a

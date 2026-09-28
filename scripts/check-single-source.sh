@@ -57,13 +57,36 @@ echo
 
 if [ -n "$REPO" ] && [ -d "$REPO/.claude" ]; then
   echo "IN THE REPO  $REPO"
+  # A DECLARED OVERRIDE IS NOT A DUPLICATE. A project may legitimately shadow a
+  # kit skill or agent — most often because the kit has not extracted that layer
+  # yet, and its copy carries wiring the kit's does not. It says so in
+  # harness.json under `owns`, and precedence.sh prints the shadow at session
+  # start, so the exception is visible rather than silent.
+  #
+  # ONE list, read by this gate AND by the project's own. Two gates with two
+  # hardcoded lists is the defect this whole ticket is about, one level up.
+  OWN_SKILLS=""; OWN_AGENTS=""
+  if [ -f "$REPO/.claude/harness.json" ] && command -v jq >/dev/null; then
+    OWN_SKILLS=$(jq -r '(.owns.skills // [])[]' "$REPO/.claude/harness.json" 2>/dev/null)
+    OWN_AGENTS=$(jq -r '(.owns.agents // [])[]' "$REPO/.claude/harness.json" 2>/dev/null)
+  fi
+  owned(){ printf '%s\n' "$2" | grep -qx "$1"; }
+  declared=0
   for n in "${SKILLS[@]}"; do
-    [ -f "$REPO/.claude/skills/$n/SKILL.md" ] && \
-      report DUPLICATE ".claude/skills/$n/SKILL.md" "the plugin ships /$n — delete this copy"
+    [ -f "$REPO/.claude/skills/$n/SKILL.md" ] || continue
+    if owned "$n" "$OWN_SKILLS"; then
+      printf '  %-8s %-46s %s\n' "declared" ".claude/skills/$n" "an override this project declares in harness.json"
+      declared=$((declared+1)); continue
+    fi
+    report DUPLICATE ".claude/skills/$n/SKILL.md" "the plugin ships /$n — delete this copy"
   done
   for n in "${AGENTS[@]}"; do
-    [ -f "$REPO/.claude/agents/$n" ] && \
-      report DUPLICATE ".claude/agents/$n" "the plugin ships this agent — delete this copy"
+    [ -f "$REPO/.claude/agents/$n" ] || continue
+    if owned "$n" "$OWN_AGENTS"; then
+      printf '  %-8s %-46s %s\n' "declared" ".claude/agents/$n" "an override this project declares in harness.json"
+      declared=$((declared+1)); continue
+    fi
+    report DUPLICATE ".claude/agents/$n" "the plugin ships this agent — delete this copy"
   done
   for n in "${HOOKS[@]}"; do
     [ -f "$REPO/.claude/hooks/$n" ] && \

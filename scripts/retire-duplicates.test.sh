@@ -21,6 +21,16 @@ cat > "$C/settings.json" <<'S'
      {"type":"command","command":"bash ~/.claude/hooks/something-of-my-own.sh"}]}]}}
 S
 
+# The installed plugin must already register the hooks we are about to remove,
+# or the apply path refuses. Every case below wants the apply path, so plant an
+# install that DOES register them; the refusal itself is a case at the end.
+mkdir -p "$C/plugins" "$C/fakeinstall"
+cp -R "$KIT/hooks" "$C/fakeinstall/hooks"
+cat > "$C/plugins/installed_plugins.json" <<INST
+{ "plugins": { "agent-harness@agent-harness": [
+    { "scope": "user", "installPath": "$C/fakeinstall" } ] } }
+INST
+
 echo "--- --check reports and changes nothing ---"
 out=$(bash "$D/retire-duplicates.sh" --check 2>&1); rc=$?
 [ "$rc" -ne 0 ] && ok "--check exits non-zero while duplicates exist" || bad "--check exited 0"
@@ -51,6 +61,34 @@ echo "--- it is idempotent, and the gate agrees ---"
 bash "$D/retire-duplicates.sh" --check >/dev/null 2>&1 && ok "a second --check is LEVEL" || bad "not idempotent"
 HOME="$C" bash "$D/check-single-source.sh" "$REPO" --strict >/dev/null 2>&1 \
   && ok "check-single-source --strict passes afterwards" || bad "the gate still finds duplicates"
+
+echo "--- it refuses to disarm the machine ---"
+# The one ordering that loses every guard: remove the hooks and un-register them
+# while the INSTALLED plugin does not yet register them. Done for real on
+# 2026-09-28 — ten registrations became one and the install registered six of
+# the nine.
+: > "$C/hooks/keep-working.sh"
+cat > "$C/settings.json" <<'S2'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"~/.claude/hooks/keep-working.sh"}]}]}}
+S2
+python3 - "$C/fakeinstall/hooks/hooks.json" <<'PY2'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+for ev in d["hooks"]:
+    for grp in d["hooks"][ev]:
+        grp["hooks"]=[h for h in grp["hooks"] if "keep-working" not in h["command"]]
+    d["hooks"][ev]=[g for g in d["hooks"][ev] if g["hooks"]]
+json.dump(d,open(p,"w"))
+PY2
+out=$(bash "$D/retire-duplicates.sh" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && ok "it refuses when the install would not take over" || bad "it applied anyway (rc $rc)"
+printf '%s' "$out" | grep -q 'keep-working.sh' && ok "and names the hook that would be left unguarded" \
+  || bad "it did not name the unguarded hook"
+[ -f "$C/hooks/keep-working.sh" ] && ok "and moved nothing" || bad "it moved a file while refusing"
+grep -q 'keep-working' "$C/settings.json" && ok "and left the registration alone" || bad "it un-registered while refusing"
+rm -rf "$C/fakeinstall" "$C/plugins/installed_plugins.json"
+out=$(bash "$D/retire-duplicates.sh" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && ok "no readable install at all also refuses" || bad "it applied with no install to compare against"
 
 echo "--- and the gate can fail ---"
 mkdir -p "$REPO/.claude/skills/finish"; : > "$REPO/.claude/skills/finish/SKILL.md"

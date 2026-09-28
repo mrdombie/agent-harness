@@ -102,6 +102,43 @@ N=$(( ${#MOVE[@]} + ${#REG[@]} ))
 if [ "$N" -eq 0 ]; then echo "LEVEL — this machine carries no duplicate of anything the plugin provides."; exit 0; fi
 if [ "$MODE" = check ]; then echo "BEHIND — $N item(s). Run without --check to apply."; exit 1; fi
 
+# ORDER MATTERS, AND GETTING IT WRONG DISARMS THE MACHINE. This removes hooks a
+# machine is currently running and un-registers them; the plugin only takes over
+# once the INSTALLED copy registers them. Run it against an install that predates
+# them and every guard is gone until the next `claude plugin update` — measured
+# on 2026-09-28 by doing exactly that: ten registrations became one, and the
+# installed plugin at that moment registered six of the nine.
+#
+# So compare against the INSTALLED plugin, not this checkout. A checkout is what
+# you are about to ship; the install is what is running.
+INSTALLED_ROOT=$(jq -r --arg k "$(jq -r '.name // ""' "$KIT/.claude-plugin/plugin.json" 2>/dev/null)" '
+    (.plugins // .) | to_entries
+    | map(select(.key | startswith($k + "@")))
+    | map(.value | if type=="array" then .[] else . end)
+    | map(select(.scope == "user")) | .[0].installPath // ""
+  ' "$C/plugins/installed_plugins.json" 2>/dev/null)
+if [ -n "$INSTALLED_ROOT" ] && [ -f "$INSTALLED_ROOT/hooks/hooks.json" ]; then
+  live=$(jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
+           "$INSTALLED_ROOT/hooks/hooks.json" 2>/dev/null | sort -u)
+  missing=""
+  for n in "${REG[@]}"; do
+    printf '%s\n' "$live" | grep -qx "$n" || missing="$missing $n"
+  done
+  if [ -n "$missing" ]; then
+    echo "STOP — the INSTALLED plugin does not register:$missing"
+    echo "  installed: $INSTALLED_ROOT"
+    echo "  Removing them now would leave this machine with no guard at all until"
+    echo "  the next update. Ship the kit, run 'claude plugin update', then this."
+    echo "Nothing was changed."
+    exit 1
+  fi
+else
+  echo "STOP — cannot read the installed plugin's hooks.json, so there is no way to"
+  echo "  tell whether it would take over the hooks this is about to remove."
+  echo "  Install the plugin first. Nothing was changed."
+  exit 1
+fi
+
 echo "Applying."
 mkdir -p "$ARCHIVE" || exit 1
 for rel in "${MOVE[@]}"; do
