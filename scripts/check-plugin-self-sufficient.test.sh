@@ -43,8 +43,13 @@ while read -r n; do
   else bad "registered but missing or not executable: $n"; fi
 done < <(jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
            "$KIT/hooks/hooks.json" | sort -u)
-grep -q 'CLAUDE_PLUGIN_ROOT' "$KIT/hooks/hooks.json" && ok "every command is addressed from the plugin root" \
-  || bad "a hook command is not addressed from the plugin root"
+# EVERY command, not "the string appears somewhere". One surviving occurrence
+# satisfied a grep, so rewriting a single command to an absolute machine path —
+# the exact duplication this release removes — passed.
+notrooted=$(jq -r '[.hooks[][].hooks[].command] | .[] | select(contains("${CLAUDE_PLUGIN_ROOT}") | not)' \
+              "$KIT/hooks/hooks.json")
+[ -z "$notrooted" ] && ok "every command is addressed from the plugin root" \
+  || bad "a hook command is not addressed from the plugin root: $notrooted"
 
 # AND THE OTHER DIRECTION, which is the one that hides. A hook file that ships
 # but is registered nowhere never runs, and a hook that never runs is

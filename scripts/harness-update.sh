@@ -216,13 +216,25 @@ hr; echo "THE KIT"
 _kitdir="$(cd "$(dirname "$0")/.." && pwd)"
 KIT_PLUGIN=$(jq -r '.name // ""' "$_kitdir/.claude-plugin/plugin.json" 2>/dev/null)
 [ -n "$KIT_PLUGIN" ] || KIT_PLUGIN="$(basename "$_kitdir")"
-KIT_SRC="$MARKET_DIR/$KIT_PLUGIN"
+# WHICH INSTALL RECORD, AND WHICH CLONE. Never by assuming the marketplace is
+# named after the plugin: installed_plugins.json keys are `<plugin>@<marketplace>`
+# and every other plugin on a normal machine is `name@claude-plugins-official`.
+# Assuming they match meant the whole test gate was skipped on any other
+# naming — measured 2026-09-28 with a marketplace directory called `acme-tools`:
+# "(no local clone of the kit's marketplace to compare against)", then the red
+# kit installed with no suite ever run. It was not firing only by coincidence.
+KIT_KEY=$(jq -r --arg n "$KIT_PLUGIN" '
+    (.plugins // .) | keys[] | select(startswith($n + "@"))' \
+  "$INSTALLED" 2>/dev/null | head -1)
+[ -n "$KIT_KEY" ] || KIT_KEY="$KIT_PLUGIN@$KIT_PLUGIN"
+KIT_MKT="${KIT_KEY##*@}"
+KIT_SRC="$MARKET_DIR/$KIT_MKT"
 KIT_TARGET=""
 if [ -d "$KIT_SRC/.git" ]; then
   git -C "$KIT_SRC" fetch -q origin 2>/dev/null
   KIT_BR=$(git -C "$KIT_SRC" rev-parse --abbrev-ref HEAD 2>/dev/null)
   KIT_TARGET=$(git -C "$KIT_SRC" rev-parse "origin/$KIT_BR" 2>/dev/null || true)
-  KIT_HAVE=$(jq -r --arg k "$KIT_PLUGIN@$KIT_PLUGIN" \
+  KIT_HAVE=$(jq -r --arg k "$KIT_KEY" \
       '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' \
       "$INSTALLED" 2>/dev/null)
   printf '  installed %s   catalog %s\n' "${KIT_HAVE:0:12}" "${KIT_TARGET:0:12}"
@@ -295,7 +307,7 @@ if command -v claude >/dev/null; then
   claude plugin marketplace update >/dev/null 2>&1 || { echo "  marketplace refresh failed"; APPLY_FAILED=1; }
   if [ -f "$INSTALLED" ]; then
     for p in $(jq -r '(.plugins // .) | keys[]' "$INSTALLED" 2>/dev/null); do
-      if [ "$KIT_RED" -eq 1 ] && [ "$p" = "$KIT_PLUGIN@$KIT_PLUGIN" ]; then
+      if [ "$KIT_RED" -eq 1 ] && [ "${p%%@*}" = "$KIT_PLUGIN" ]; then
         printf '  HELD     %s  (suites red at the target ref)\n' "$p"; continue
       fi
       before=$(jq -r --arg k "$p" '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' "$INSTALLED" 2>/dev/null)

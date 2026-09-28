@@ -123,9 +123,16 @@ printf '%s' "$$" > "$LBL.owner"; MINE=$DEAD
 touch -t 202609241038 "$LBL.owner"
 got=$(scope_owned_by_peer "$LBL.owner" 2>/dev/null); rc=$?
 MINE=$ALIVE
-[ "$rc" -eq 0 ] && [ "$got" = "$$" ] \
-  && ok "a live peer that did claim it is still named" \
-  || ok "a live peer that did claim it is still named (rc $rc got '$got')"
+# BOTH ARMS USED TO CALL ok(), so this case could not fail — and it is the only
+# one covering "label exists, owner newer than label, live peer", the branch the
+# whole file exists to protect. A one-line plant (`return 1` inside the
+# label-vs-owner block) made the peer guard go quiet for every real
+# label-bearing scope and this row still printed ok.
+if [ "$rc" -eq 0 ] && [ "$got" = "$$" ]; then
+  ok "a live peer that did claim it is still named"
+else
+  bad "a live peer that did claim it is still named (rc $rc got '$got')"
+fi
 
 
 # ---------------------------------------------------------------------------

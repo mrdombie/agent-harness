@@ -136,6 +136,36 @@ t nag   'owner PID is dead — stale, treated as unowned'           false s17
 rm -rf "$MDIR"; loop_on; ready s18 7; rm -f "$OWNER"
 t nag   'no owner recorded — unchanged from before the guard'     false s18
 
+
+# --- and all of it again under a GNU-behaviour stat --------------------------
+# `stat -f %m` is BSD. On GNU it prints nothing and exits 1, the `|| echo 0`
+# fires, every age reads as ~56 years and the staleness guard exits 0 on every
+# Stop — so the hook is 100% inert on Linux and no case on a Mac can see it.
+# Measured 2026-09-28 before the fix: 10 of these rows flipped.
+#
+# Re-running the whole table under the shim is deliberate. A single unit case
+# for the helper would pass while a caller still used the bare form.
+if [ "${KW_UNDER_SHIM:-}" != 1 ]; then
+  echo
+  echo "--- the same table, under a GNU-behaviour stat ---"
+  SHIM=$(mktemp -d)
+  cat > "$SHIM/stat" <<'ST'
+#!/usr/bin/env bash
+if [ "$1" = "-c" ]; then f=$2; shift 2
+  case "$f" in %Y) /usr/bin/stat -f %m "$1" ;; *) exit 1 ;; esac; exit
+fi
+[ "$1" = "-f" ] && { echo "stat: invalid option -- 'f'" >&2; exit 1; }
+exec /usr/bin/stat "$@"
+ST
+  chmod +x "$SHIM/stat"
+  if KW_UNDER_SHIM=1 PATH="$SHIM:$PATH" bash "$0" >/dev/null 2>&1; then
+    echo "OK        the whole table holds with only GNU stat available"
+  else
+    echo "MISMATCH  the hook depends on BSD stat — it is inert on Linux"; fail=1
+  fi
+  rm -rf "$SHIM"
+fi
+
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES — see MISMATCH rows above"
 exit "$fail"

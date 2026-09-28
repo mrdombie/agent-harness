@@ -15,8 +15,9 @@
 #    silently disagreeing. Editing an EXISTING file stays allowed (the backlog
 #    still has to be moved); creating one does not.
 #
-# The one project fact — where the shared clone lives — comes from the
-# environment or .claude/harness.json. Absent it, trap 2 stands down and the
+# Where the shared clone lives is DERIVED from the checkout, never written
+# down: it is a per-machine fact and differs between two computers on the same
+# project. Absent it, trap 2 stands down and the
 # other three keep firing; a guard that goes inert where it cannot read a config
 # is not a guard.
 #
@@ -43,13 +44,37 @@ esac
 # 2. main-clone edit. MAIN_REPO is whatever the kit resolved, else the config's
 #    own checkout. Only the source trees: .claude/ holds the tooling and is the
 #    one thing legitimately edited there.
-_cfg="${HARNESS_CFG_PATH:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}/.claude/harness.json}"
+#    DERIVED, NOT CONFIGURED. The header used to claim this came from
+#    harness.json while `_cfg` was assigned and never used — one line, its own
+#    assignment — so in practice the trap depended entirely on the cache file,
+#    which toolkit-env.sh writes only after some skill has run. Dead on exactly
+#    the fresh machine this exists for.
+#
+#    A clone's location is a per-machine fact and must not be written down: it
+#    differs between two computers working the same project, and the repo's own
+#    check:no-machine-paths refuses it in a config for that reason. So derive it
+#    the same way the resolver does — the clone that owns the .git a worktree
+#    points at — and fall back to the resolver's last-seen value only for a
+#    session started outside any checkout.
 _main="${HARNESS_MAIN_REPO:-}"
-[ -n "$_main" ] || _main=$(cat "$HOME/.claude/.harness-last-main-repo" 2>/dev/null || true)
+if [ -z "$_main" ]; then
+  _here="${CLAUDE_PROJECT_DIR:-$PWD}"
+  _common=$(git -C "$_here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  case "$_common" in */.git) _main="${_common%/.git}" ;; esac
+fi
+[ -n "$_main" ] || _main=$(cat "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.harness-last-main-repo" 2>/dev/null || true)
+# macOS resolves /var to /private/var, so a derived clone path and the path the
+# tool was handed can name the SAME directory and not match as strings. Compare
+# against both spellings; without this the trap was silently one-sided.
+_alt=""
+case "$_main" in
+  /private/*) _alt="${_main#/private}" ;;
+  /*)         _alt="/private$_main" ;;
+esac
 if [ -n "$_main" ]; then
   case "$f" in
-    "$_main"/.claude/*) ;;
-    "$_main"/*)
+    "$_main"/.claude/*|"$_alt"/.claude/*) ;;
+    "$_main"/*|"$_alt"/*)
       # A worktree is NOT the main clone even though its files share a prefix
       # nowhere — worktrees live elsewhere — so a plain prefix match is safe.
       deny "This is the shared main clone (nobody's branch, checkout runs behind), not your worktree. An edit here lands on no branch and can land on a peer's. Edit the same path inside your claim worktree." ;;

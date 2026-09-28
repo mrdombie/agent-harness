@@ -13,6 +13,7 @@ mkdir -p "$C/commands" "$C/agents" "$C/hooks/lib"
 : > "$C/hooks/keep-working.sh"; : > "$C/hooks/keep-working.test.sh"
 : > "$C/hooks/no-broad-kill.sh"; : > "$C/hooks/no-broad-kill.py"; : > "$C/hooks/no-broad-kill.cases.tsv"
 : > "$C/hooks/lib/claude-session.sh"
+: > "$C/hooks/lib/my-own-lib.sh"          # the plugin ships no copy of this
 cat > "$C/settings.json" <<'S'
 {"model":"opus","hooks":{
   "Stop":[{"hooks":[{"type":"command","command":"$HOME/.claude/hooks/keep-working.sh"}]}],
@@ -47,6 +48,11 @@ A="$C/retired-$(date +%Y-%m-%d)"
 [ -f "$C/commands/my-own-thing.md" ] && ok "the unshipped command was left alone" || bad "an unshipped command was moved"
 [ -f "$A/hooks/no-broad-kill.cases.tsv" ] && ok "the case table went with it" || bad "cases.tsv left behind"
 [ -f "$A/hooks/lib/claude-session.sh" ] && ok "the shared lib went with it" || bad "hooks/lib left behind"
+# FILE BY FILE. Moving the directory took a machine's own library with it and
+# broke every surviving hook that sourced it, silently — the LEFT ALONE report
+# only scans commands/.
+[ -f "$C/hooks/lib/my-own-lib.sh" ] && ok "a library the plugin does not ship stayed put" \
+  || bad "a machine-local library was moved with the directory"
 
 echo "--- settings.json ---"
 left=$(jq -r '[.hooks // {} | .[][].hooks[].command] | join(" ")' "$C/settings.json")
@@ -61,6 +67,28 @@ echo "--- it is idempotent, and the gate agrees ---"
 bash "$D/retire-duplicates.sh" --check >/dev/null 2>&1 && ok "a second --check is LEVEL" || bad "not idempotent"
 HOME="$C" bash "$D/check-single-source.sh" "$REPO" --strict >/dev/null 2>&1 \
   && ok "check-single-source --strict passes afterwards" || bad "the gate still finds duplicates"
+
+echo "--- a name is a path COMPONENT, not a substring ---"
+# A machine's own hook whose name merely contains one of ours was silently
+# un-registered and reported under the plugin's name, leaving its file behind
+# as an orphan nobody is looking for.
+C2=$(mktemp -d); mkdir -p "$C2/hooks"
+: > "$C2/hooks/my-keep-working.sh"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/my-keep-working.sh"}]}]}}' > "$C2/settings.json"
+o=$(CLAUDE_CONFIG_DIR="$C2" bash "$D/retire-duplicates.sh" --check 2>&1)
+printf '%s' "$o" | grep -q 'keep-working' && bad "a machine's own my-keep-working.sh was claimed as ours" \
+  || ok "a hook whose name merely contains ours is left alone"
+o=$(CLAUDE_CONFIG_DIR="$C2" HOME="$C2" CLAUDE_PLUGIN_ROOT="$KIT" bash "$D/check-single-source.sh" /nonexistent 2>&1)
+printf '%s' "$o" | grep -q 'REGISTERED' && bad "the gate reported a false duplicate on it" \
+  || ok "and the gate does not report it either"
+# the control: the plugin's OWN name must still be caught, or the case above
+# passes because nothing matches anything.
+: > "$C2/hooks/keep-working.sh"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/keep-working.sh"}]}]}}' > "$C2/settings.json"
+o=$(CLAUDE_CONFIG_DIR="$C2" HOME="$C2" CLAUDE_PLUGIN_ROOT="$KIT" bash "$D/check-single-source.sh" /nonexistent 2>&1)
+printf '%s' "$o" | grep -q 'REGISTERED' && ok "and the plugin's own name IS still caught" \
+  || bad "the control failed — nothing matches anything"
+rm -rf "$C2"
 
 echo "--- it refuses to disarm the machine ---"
 # The one ordering that loses every guard: remove the hooks and un-register them

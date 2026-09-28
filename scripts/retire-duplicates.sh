@@ -33,6 +33,11 @@ MODE=apply; [ "${1:-}" = "--check" ] && MODE=check
 [ "${1:-}" = "" ] || [ "$MODE" = check ] || { echo "usage: $(basename "$0") [--check]" >&2; exit 2; }
 command -v jq >/dev/null || { echo "retire-duplicates: jq is required" >&2; exit 2; }
 
+# A HOOK NAME IS A PATH COMPONENT, NOT A SUBSTRING. Matching it anywhere in the
+# command string un-registers a machine's OWN hook whose name merely contains
+# one of ours: `~/.claude/hooks/my-keep-working.sh` was silently disarmed and
+# reported as `keep-working.sh`, which reads as the plugin's copy. Its file is
+# deliberately left behind, so the result is an orphan nobody is looking for.
 STAMP=$(date +%Y-%m-%d)
 ARCHIVE="$C/retired-$STAMP"
 
@@ -42,6 +47,11 @@ HOOKS=(); while read -r n; do [ -n "$n" ] && HOOKS+=("$n"); done < <(
   jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
     "$KIT/hooks/hooks.json" 2>/dev/null | sort -u)
 
+# Bash 3.2 (macOS /bin/bash) treats an EMPTY array as unbound under set -u, so
+# every expansion below uses ${A[@]+"${A[@]}"}. Without it the apply path died
+# with `REG[@]: unbound variable` on the commonest shape there is — duplicate
+# files but no plugin hook registered — and the operator got a bash internal
+# error instead of a diagnosis.
 MOVE=(); KEEP=()
 for n in "${SKILLS[@]}"; do
   [ -f "$C/commands/$n.md" ] && MOVE+=("commands/$n.md")
@@ -65,7 +75,23 @@ for n in "${HOOKS[@]}"; do
 done
 # The shared library the hooks source. Not registered, so the loop above cannot
 # see it; leaving it behind is a file nothing reads.
-[ -f "$KIT/hooks/lib/claude-session.sh" ] && [ -d "$C/hooks/lib" ] && MOVE+=("hooks/lib")
+#
+# FILE BY FILE, never the directory. Moving `hooks/lib` wholesale took a
+# machine's own `hooks/lib/my-own-lib.sh` with it and broke every surviving
+# hook that sourced it — and the LEFT ALONE report only scans commands/, so it
+# never said so.
+if [ -d "$KIT/hooks/lib" ] && [ -d "$C/hooks/lib" ]; then
+  for f in "$KIT"/hooks/lib/*; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    [ -f "$C/hooks/lib/$b" ] && MOVE+=("hooks/lib/$b")
+  done
+  for f in "$C"/hooks/lib/*; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    [ -f "$KIT/hooks/lib/$b" ] || KEEP+=("hooks/lib/$b")
+  done
+fi
 
 # Everything in commands/ the plugin does NOT ship. Reported, never moved.
 if [ -d "$C/commands" ]; then
@@ -80,21 +106,20 @@ fi
 # Which registrations in settings.json name a hook the plugin registers.
 REG=()
 if [ -f "$C/settings.json" ]; then
-  for n in "${HOOKS[@]}"; do
-    jq -r '[.hooks // {} | .[][].hooks[].command] | join("\n")' "$C/settings.json" 2>/dev/null \
-      | grep -qF "$n" && REG+=("$n")
-  done
+  while read -r n; do [ -n "$n" ] && REG+=("$n"); done < <(
+    jq -r --argjson names "$(printf '%s\n' "${HOOKS[@]}" | jq -Rsc 'split("\n")|map(select(length>0))')" \
+       -f "$KIT/hooks/registered-hooks.jq" "$C/settings.json" 2>/dev/null)
 fi
 
 echo "TO RETIRE  (moved to $ARCHIVE)"
-if [ "${#MOVE[@]}" -eq 0 ]; then echo "  none"; else printf '  %s\n' "${MOVE[@]}"; fi
+if [ "${#MOVE[@]}" -eq 0 ]; then echo "  none"; else printf '  %s\n' ${MOVE[@]+"${MOVE[@]}"}; fi
 echo
 echo "TO UN-REGISTER  (from $C/settings.json)"
-if [ "${#REG[@]}" -eq 0 ]; then echo "  none"; else printf '  %s\n' "${REG[@]}"; fi
+if [ "${#REG[@]}" -eq 0 ]; then echo "  none"; else printf '  %s\n' ${REG[@]+"${REG[@]}"}; fi
 echo
 if [ "${#KEEP[@]}" -gt 0 ]; then
   echo "LEFT ALONE  (the plugin ships no copy — move these into the kit, do not delete them)"
-  printf '  %s\n' "${KEEP[@]}"
+  printf '  %s\n' ${KEEP[@]+"${KEEP[@]}"}
   echo
 fi
 
@@ -121,7 +146,7 @@ if [ -n "$INSTALLED_ROOT" ] && [ -f "$INSTALLED_ROOT/hooks/hooks.json" ]; then
   live=$(jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
            "$INSTALLED_ROOT/hooks/hooks.json" 2>/dev/null | sort -u)
   missing=""
-  for n in "${REG[@]}"; do
+  for n in ${REG[@]+"${REG[@]}"}; do
     printf '%s\n' "$live" | grep -qx "$n" || missing="$missing $n"
   done
   if [ -n "$missing" ]; then
@@ -141,7 +166,7 @@ fi
 
 echo "Applying."
 mkdir -p "$ARCHIVE" || exit 1
-for rel in "${MOVE[@]}"; do
+for rel in ${MOVE[@]+"${MOVE[@]}"}; do
   mkdir -p "$ARCHIVE/$(dirname "$rel")"
   if mv "$C/$rel" "$ARCHIVE/$rel" 2>/dev/null; then printf '  moved      %s\n' "$rel"
   else printf '  FAILED     %s\n' "$rel"; fi
@@ -149,16 +174,20 @@ done
 
 if [ "${#REG[@]}" -gt 0 ]; then
   cp "$C/settings.json" "$C/settings.json.before-$STAMP" || exit 1
-  names=$(printf '%s\n' "${REG[@]}" | jq -Rsc 'split("\n") | map(select(length>0))')
+  names=$(printf '%s\n' ${REG[@]+"${REG[@]}"} | jq -Rsc 'split("\n") | map(select(length>0))')
   tmp=$(mktemp) || exit 1
   # Drop the matching hook entries, then any group left with no hooks, then any
   # event left with no groups. A group with an empty `hooks` array is not
   # harmless: Claude Code reads it as a malformed matcher.
   if jq --argjson names "$names" '
+      # The SAME path-component rule the detection uses — see
+      # hooks/registered-hooks.jq. Two implementations of "does this command
+      # name that hook" is how a report and a rewrite come to disagree.
+      def parts($c): $c | split("/") | map(split(" ")[0] | split("\"")[0] | split("\u0027")[0]);
+      def owns($c): parts($c) | any(. as $p | $names | index($p) != null);
       .hooks |= (
         with_entries(
-          .value |= ( map(.hooks |= map(select(
-                          .command as $c | ($names | any(. as $n | $c | contains($n))) | not )))
+          .value |= ( map(.hooks |= map(select(owns(.command) | not)))
                     | map(select((.hooks | length) > 0)) )
         ) | with_entries(select((.value | length) > 0))
       )' "$C/settings.json" > "$tmp" && [ -s "$tmp" ] && jq -e . "$tmp" >/dev/null; then

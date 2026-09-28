@@ -20,6 +20,14 @@ IN=$(cat)
 LOG=/tmp/claude-keep-working.log
 say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
 
+# GNU and BSD stat disagree on the flag, and `stat -f %m` on GNU is not an
+# error you notice — it prints nothing, the `|| echo 0` fires, every age comes
+# back as ~56 years, and the staleness guard exits 0 on every Stop. This hook
+# was therefore 100% inert on Linux; every other hook here already used the
+# portable pair. Measured 2026-09-28 with a GNU-behaviour stat on PATH: all
+# eight nag cases in the shipped suite flipped to quiet.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 # The two project facts — the state dir and the repo slug — come from
 # .claude/harness.json. This hook fires on every Stop, including in sessions
 # started outside a checkout, so both fall back to the resolver's last-seen
@@ -52,7 +60,7 @@ SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
 MDIR="${TMPDIR:-/tmp}/claude-keep-working"; mkdir -p "$MDIR"
 MARK="$MDIR/$SID"; COUNT="$MDIR/$SID.count"
 if [ -f "$MARK" ]; then
-  AGE=$(( $(date +%s) - $(stat -f %m "$MARK" 2>/dev/null || echo 0) ))
+  AGE=$(( $(date +%s) - $(mtime "$MARK") ))
   [ "$AGE" -lt 600 ] && { say "exit0 cooldown ${AGE}s $SID"; exit 0; }
 fi
 N=$(cat "$COUNT" 2>/dev/null || echo 0)
@@ -63,15 +71,15 @@ N=$(cat "$COUNT" 2>/dev/null || echo 0)
 #    and nagging those would be noise. /work and /auto write .loop-active when
 #    their loop starts; nothing else does.
 [ -f "$LOOP_FILE" ] || { say "exit0 no-loop-file"; exit 0; }
-LAGE=$(( $(date +%s) - $(stat -f %m "$LOOP_FILE" 2>/dev/null || echo 0) ))
+LAGE=$(( $(date +%s) - $(mtime "$LOOP_FILE") ))
 [ "$LAGE" -gt 21600 ] && { say "exit0 loop-stale ${LAGE}s"; exit 0; }
 
 # 4. Did the flow declare a stop condition? .stop-reason NEWER than .loop-active
 #    means this loop ended deliberately — dry label, gate it cannot green, a
 #    decision only the PM can make, a permission denial. All legitimate.
 if [ -f "$STOP_FILE" ]; then
-  SM=$(stat -f %m "$STOP_FILE" 2>/dev/null || echo 0)
-  LM=$(stat -f %m "$LOOP_FILE" 2>/dev/null || echo 0)
+  SM=$(mtime "$STOP_FILE")
+  LM=$(mtime "$LOOP_FILE")
   [ "$SM" -ge "$LM" ] && { say "exit0 stop-declared $(head -1 "$STOP_FILE" 2>/dev/null)"; exit 0; }
 fi
 
@@ -119,7 +127,7 @@ esac
 CACHE="$MDIR/$SID.ready"
 READY=""
 if [ -f "$CACHE" ]; then
-  CAGE=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  CAGE=$(( $(date +%s) - $(mtime "$CACHE") ))
   [ "$CAGE" -lt 15 ] && READY=$(cat "$CACHE" 2>/dev/null)
 fi
 if [ -z "$READY" ]; then

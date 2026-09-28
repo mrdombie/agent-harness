@@ -197,13 +197,13 @@ printf '%s' "$out" | grep -q 'version did not move' \
 #
 # A stub `claude` keeps the run away from the real plugin estate: without it the
 # apply path would call the actual CLI and update this machine.
-kit_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
+kit_fixture() { # $1 = "pass" | "fail" [$2 = marketplace name] -> echoes the config dir
   # Two statements, not one: in `local a=$1 b="$SB/x-$a"`, bash expands the
   # right-hand sides before the names become local, so $a is unbound under set -u
   # and the fixture silently builds nothing — which then compares empty to empty
   # and reports PASS. Cost two false passes before it was noticed.
   local kind=$1
-  local root="$SB/kit-$kind"
+  local root="$SB/kit-$kind-${2:-own}"
   mkdir -p "$root/plugins/marketplaces" "$root/bin"
   printf '{ "enabledPlugins": {} }\n' > "$root/settings.json"
 
@@ -229,9 +229,10 @@ kit_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
 
   # The marketplace clone the command reads, named after the PLUGIN, which the
   # command takes from its own manifest.
-  git clone -q "$origin" "$root/plugins/marketplaces/$KITNAME" 2>/dev/null
+  local mkt="${2:-$KITNAME}"
+  git clone -q "$origin" "$root/plugins/marketplaces/$mkt" 2>/dev/null
   printf '{ "plugins": { "%s@%s": [{"scope":"user","version":"0.0.1","gitCommitSha":"%s"}] } }\n' \
-    "$KITNAME" "$KITNAME" "$base" > "$root/plugins/installed_plugins.json"
+    "$KITNAME" "$mkt" "$base" > "$root/plugins/installed_plugins.json"
 
   # A `claude` that records what it was asked to update, so the assertions read
   # the ACTION and not just the prose. A real CLI here would touch this machine.
@@ -265,6 +266,25 @@ grep -q "$KITNAME@$KITNAME" "$r/updated.log" 2>/dev/null \
   && ok "a passing kit suite IS handed to the CLI" || bad "a passing kit suite IS handed to the CLI"
 printf '%s' "$out" | grep -q 'testing the kit at' \
   && ok "and the test gate ran before it" || bad "and the test gate ran before it"
+
+# --- the marketplace is NOT assumed to be named after the plugin ------------
+# installed_plugins.json keys are <plugin>@<marketplace>, and on a normal machine
+# every other plugin is name@claude-plugins-official. Assuming they match skipped
+# the whole test gate: measured 2026-09-28, a marketplace called `acme-tools`
+# printed "no local clone of the kit's marketplace to compare against" and then
+# installed the red kit with no suite run. This is that case.
+r=$(kit_fixture fail acme-tools)
+out=$(PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" bash "$SUT" 2>&1)
+grep -q "$KITNAME@acme-tools" "$r/updated.log" 2>/dev/null \
+  && bad "a red kit in a differently-named marketplace was installed anyway" \
+  || ok "a red kit is held whatever the marketplace is called"
+printf '%s' "$out" | grep -q 'testing the kit at' \
+  && ok "and the test gate found the clone to test" || bad "the gate could not find the clone"
+
+r=$(kit_fixture pass acme-tools)
+out=$(PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" bash "$SUT" 2>&1)
+grep -q "$KITNAME@acme-tools" "$r/updated.log" 2>/dev/null \
+  && ok "and a green one is still installed from there" || bad "a green kit was not installed"
 
 # --- the second pin is gone ---------------------------------------------------
 # It used to rewrite kit.ref in the consuming repo's harness.json. Nothing may

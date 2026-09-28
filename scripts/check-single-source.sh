@@ -18,7 +18,7 @@
 #   2. <repo>/.claude/agents/<name>  for an agent the plugin ships
 #   3. <repo>/.claude/hooks/<name>   for a hook the plugin registers
 #   4. <repo>/.claude/settings.json  registering a hook the plugin registers
-#   5. $HOME/.claude/{commands,agents,hooks} carrying any of the above
+#   5. $C/{commands,agents,hooks} carrying any of the above
 #
 #   5 is reported but does NOT fail by default: a repo's CI cannot fix a
 #   developer's home directory, and failing on it would make the gate unrunnable
@@ -39,6 +39,12 @@ for a in "$@"; do
 done
 [ -n "$REPO" ] || REPO=$(git rev-parse --show-toplevel 2>/dev/null || true)
 
+# ONE reading of "this machine's config", shared with retire-duplicates.sh.
+# The gate hardcoded $C while the migration honoured
+# CLAUDE_CONFIG_DIR, so on a machine that sets it they looked at different
+# directories and disagreed.
+C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
 findings=0
 report(){ findings=$((findings+1)); printf '  %-8s %-46s %s\n' "$1" "$2" "$3"; }
 
@@ -51,6 +57,8 @@ if [ -f "$KIT/hooks/hooks.json" ] && command -v jq >/dev/null; then
     jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
       "$KIT/hooks/hooks.json" 2>/dev/null | sort -u)
 fi
+
+HOOKS_JSON=$(printf '%s\n' ${HOOKS[@]+"${HOOKS[@]}"} | jq -Rsc 'split("\n")|map(select(length>0))')
 
 echo "the plugin ships ${#SKILLS[@]} skills, ${#AGENTS[@]} agents, ${#HOOKS[@]} registered hooks"
 echo
@@ -93,34 +101,34 @@ if [ -n "$REPO" ] && [ -d "$REPO/.claude" ]; then
       report DUPLICATE ".claude/hooks/$n" "the plugin registers this hook — delete this copy"
   done
   if [ -f "$REPO/.claude/settings.json" ] && command -v jq >/dev/null; then
-    for n in "${HOOKS[@]}"; do
-      jq -r '[.hooks // {} | .[][].hooks[].command] | join("\n")' "$REPO/.claude/settings.json" 2>/dev/null \
-        | grep -qF "$n" && report REGISTERED ".claude/settings.json -> $n" "fires twice; the plugin already registers it"
-    done
+    while read -r n; do
+      [ -n "$n" ] && report REGISTERED ".claude/settings.json -> $n" "fires twice; the plugin already registers it"
+    done < <(jq -r --argjson names "$HOOKS_JSON" -f "$KIT/hooks/registered-hooks.jq" \
+               "$REPO/.claude/settings.json" 2>/dev/null)
   fi
   [ "$findings" -eq 0 ] && echo "  none"
   echo
 fi
 
 repo_findings=$findings
-echo "ON THIS MACHINE  $HOME/.claude"
+echo "ON THIS MACHINE  $C"
 home_findings=0
 hreport(){ home_findings=$((home_findings+1)); printf '  %-8s %-46s %s\n' "$1" "$2" "$3"; }
 for n in "${SKILLS[@]}"; do
-  [ -f "$HOME/.claude/commands/$n.md" ] && hreport DUPLICATE "commands/$n.md" "the plugin ships /$n"
-  [ -f "$HOME/.claude/skills/$n/SKILL.md" ] && hreport DUPLICATE "skills/$n/SKILL.md" "the plugin ships /$n"
+  [ -f "$C/commands/$n.md" ] && hreport DUPLICATE "commands/$n.md" "the plugin ships /$n"
+  [ -f "$C/skills/$n/SKILL.md" ] && hreport DUPLICATE "skills/$n/SKILL.md" "the plugin ships /$n"
 done
 for n in "${AGENTS[@]}"; do
-  [ -f "$HOME/.claude/agents/$n" ] && hreport DUPLICATE "agents/$n" "the plugin ships this agent"
+  [ -f "$C/agents/$n" ] && hreport DUPLICATE "agents/$n" "the plugin ships this agent"
 done
 for n in "${HOOKS[@]}"; do
-  [ -f "$HOME/.claude/hooks/$n" ] && hreport DUPLICATE "hooks/$n" "the plugin registers this hook"
+  [ -f "$C/hooks/$n" ] && hreport DUPLICATE "hooks/$n" "the plugin registers this hook"
 done
-if [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null; then
-  for n in "${HOOKS[@]}"; do
-    jq -r '[.hooks // {} | .[][].hooks[].command] | join("\n")' "$HOME/.claude/settings.json" 2>/dev/null \
-      | grep -qF "$n" && hreport REGISTERED "settings.json -> $n" "fires twice; the plugin already registers it"
-  done
+if [ -f "$C/settings.json" ] && command -v jq >/dev/null; then
+  while read -r n; do
+    [ -n "$n" ] && hreport REGISTERED "settings.json -> $n" "fires twice; the plugin already registers it"
+  done < <(jq -r --argjson names "$HOOKS_JSON" -f "$KIT/hooks/registered-hooks.jq" \
+             "$C/settings.json" 2>/dev/null)
 fi
 [ "$home_findings" -eq 0 ] && echo "  none"
 echo

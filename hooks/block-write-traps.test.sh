@@ -24,6 +24,29 @@ allow "$MAIN/.claude/skills/x/SKILL.md"             "the tooling tree in the sha
 MAIN=""
 allow "$TMP/clone/src/a.ts"                         "no clone configured — trap 2 stands down"
 
+# 2b. the SAME trap, DERIVED from the checkout rather than from any config.
+# HARNESS_MAIN_REPO is only ever exported inside a skill's own subshell, so it
+# does not reach a hook process; a clone path cannot be written into a config
+# because it differs per machine. The path that actually runs is this one, and
+# it was never exercised — `_cfg` was assigned and unused.
+CLONE="$TMP/derived"; git init -q "$CLONE" 2>/dev/null
+mkdir -p "$CLONE/src" "$CLONE/.claude"
+WT="$TMP/derived-wt"
+( cd "$CLONE" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m x \
+  && git worktree add -q "$WT" -b wt HEAD ) 2>/dev/null
+drun(){ printf '{"tool_input":{"file_path":%s,"content":"x"}}' "$(jq -Rn --arg v "$1" '$v')" \
+  | ( cd "${2:-$WT}" && env -u HARNESS_MAIN_REPO CLAUDE_PROJECT_DIR="${2:-$WT}" bash "$H" ); }
+o=$(drun "$CLONE/src/b.ts")
+printf '%s' "$o" | grep -q '"deny"' && echo "ok   deny  a source edit in the clone a worktree points at" \
+  || { echo "FAIL deny  the clone was not derived from the checkout"; fail=1; }
+o=$(drun "$CLONE/.claude/x.md")
+[ -z "$o" ] && echo "ok   allow the tooling tree, same derivation" \
+  || { echo "FAIL allow the tooling tree was denied"; fail=1; }
+mkdir -p "$WT/src"
+o=$(drun "$WT/src/b.ts")
+[ -z "$o" ] && echo "ok   allow an edit in the WORKTREE, which is the point" \
+  || { echo "FAIL allow editing your own worktree was denied"; fail=1; }
+
 # 4. new tooling outside the kit
 deny  "$HOME/.claude/commands/brand-new-$$.md"      "a new personal command"
 deny  "$HOME/.claude/skills/brand-new-$$/SKILL.md"  "a new personal skill"
