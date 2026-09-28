@@ -162,17 +162,40 @@ driver_fact_programme() { # <ticket>
   # ticket whichever state file sorted first — 29 of them on the trial — so the one
   # fact this brief exists to carry was another programme's.
   name="${p#${SWARM_PROGRAMME_PREFIX:-project:}}"
-  # `state-<programme>.md` AND NOTHING LOOSER. A fallback of `*<name>*.md` accepts
-  # any note in the directory whose filename happens to contain the programme's
-  # name, which is the wrong-document defect this hunk is fixing, one size down.
-  brief=$(ls "$dir"/state-*"$name"*.md 2>/dev/null | head -1)
-  if [ -n "$brief" ]; then
-    printf 'Programme: %s\nIts state file: %s\nRead the brief at the top of it — the locked decisions, the open questions and what shipped recently — never the whole ledger.\n' \
-      "$p" "$brief"
-  else
-    printf 'Programme: %s\n%s holds %s state file(s) and none of them is named for this programme, so read the ticket alone rather than another programme\x27s ledger.\n' \
+  # BY WHAT THE FILE SAYS, NOT BY WHAT IT IS CALLED. A filename glob is a proxy and
+  # a bad one: measured on the project this was written for, all 29 state files are
+  # named for the EPIC (`state-10011.md`) and the programme label lives in the body
+  # as `**Label:** \`project:one-desk\``. `state-*one-desk*.md` matches none of
+  # them, so the fix would have shipped asserting "none of them is named for this
+  # programme" on every ticket — green in a suite that invented the filename it was
+  # looking for. The label is the thing; grep for it.
+  brief=$(grep -l -- "$p" "$dir"/state-*.md 2>/dev/null | head -1)
+  if [ -z "$brief" ]; then
+    printf 'Programme: %s\n%s holds %s state file(s) and none of them names this programme, so read the ticket alone rather than another programme\x27s ledger.\n' \
       "$p" "$dir" "$(ls "$dir"/state-*.md 2>/dev/null | wc -l | tr -d ' ')"
+    return 0
   fi
+  # THE BRIEF, NOT THE LEDGER — when the project has something that prints one.
+  # These files are append-only and grow for as long as the programme is open; a
+  # step handed the whole thing designs from the programme's history rather than
+  # from its own ticket. `programmes.brief` is a project command with {{FILE}} and
+  # {{EPIC}} substituted. Absent is normal: the file is named instead.
+  local cmd out epic
+  cmd=$(driver_opt programmes.brief "")
+  if [ -n "$cmd" ]; then
+    epic=$(basename "$brief" .md); epic="${epic#state-}"
+    cmd=$(printf '%s' "$cmd" | sed -e "s|{{FILE}}|$brief|g" -e "s|{{EPIC}}|$epic|g")
+    out=$( ( cd "$(dirname "$dir")/.." 2>/dev/null || cd "${MAIN_REPO:-.}"; driver_bounded 120 "$cmd" ) 2>/dev/null )
+    if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+      printf 'Programme: %s (from %s)\n%s\n' "$p" "$brief" "$out"
+      return 0
+    fi
+    printf 'Programme: %s\nIts state file: %s\nThis project names a programmes.brief command and it printed nothing here, so read the brief at the top of that file yourself — the locked decisions, the open questions and what shipped recently — never the whole ledger.\n' \
+      "$p" "$brief"
+    return 0
+  fi
+  printf 'Programme: %s\nIts state file: %s\nRead the brief at the top of it — the locked decisions, the open questions and what shipped recently — never the whole ledger.\n' \
+    "$p" "$brief"
 }
 
 # The premise GATHER, which decides nothing. Same shape the claim flow prints: a

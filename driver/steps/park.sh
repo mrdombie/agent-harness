@@ -102,8 +102,17 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
 
 **Built:** ${done_list:-nothing yet; it stopped before the first step finished}
 **Stopped at:** $reason
-**Needs:** ${question:-a person to say how to proceed}
-**Resume:** $([ "$cause" = "person" ] && printf 'answer the question above and clear `%s`' "$HOLD_LABEL" || printf 'nothing here is yours to answer — this is the driver, a gate or this project\x27s own configuration'), then run the driver again — it picks up from the last finished step.
+$(if [ "$cause" = "person" ]; then
+    printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
+      "${question:-a person to say how to proceed}" "$HOLD_LABEL"
+  else
+    # NOT UNDER "Needs:". A driver-caused park has nothing for a person to decide,
+    # and printing its diagnostic there — "is the brief naming the wrong Skill, or
+    # is it not installed?" — reads as a question somebody must answer, one line
+    # above a Resume line saying nobody has to. The two said opposite things.
+    printf '**Needs:** nothing from you. This is the driver, a gate or this project\x27s own configuration, so no hold label is on it.\n**What stopped it:** %s\n**Resume:** fix the cause above, then run the driver again — it picks up from the last finished step. Re-running it unchanged will stop here again.' \
+      "${question:-see the step output on the run log}"
+  fi)
 
 ${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt.")}
 ${staged:+Staged into the parked commit: $staged}

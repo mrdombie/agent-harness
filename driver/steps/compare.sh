@@ -100,74 +100,89 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
   # ONE RENDER PER LINE: name<TAB>path<TAB>theme<TAB>route. The command is the
   # project's; the shape is the kit's, because the compare contract needs those
   # four things and a free-form blob would be a second parser per project.
-  out=$( ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
-  if [ "$rc" -eq 124 ]; then
-    driver_say "✋ compare: the render command did not return within ${DRIVER_CMD_TIMEOUT}s — $cmd"
-    driver_state_set "$t" park_note "this project's design.render command did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
-    return "$DRIVER_E_TIMEOUT"
-  fi
-  # AWK, NOT `grep -E '\t'`. POSIX ERE has no `\t` escape — BSD grep reads it as a
-  # literal `t`, so the pattern matched nothing, every render line was discarded and
-  # a renderer that worked perfectly was reported as producing none.
-  lines=$(printf '%s\n' "$out" | awk -F'\t' 'NF >= 3 && $1 != "" && $2 != "" && ($3 == "light" || $3 == "dark")')
-  n=$(printf '%s\n' "$lines" | grep -c . || true)
-  if [ "$rc" -ne 0 ] || [ "${n:-0}" -eq 0 ]; then
-    driver_say "✋ compare: this project's design.render command exited $rc and produced $n render(s) — $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
-    driver_state_set "$t" park_note "this project's design.render command ('$cmd') exited $rc and produced $n render line(s), so the screen was never observed. A measurement that could not be made is not a screen that is fine."
-    return "$DRIVER_E_REFUSED"
-  fi
-  driver_state_set "$t" renders "$lines"
-  driver_say "   compare: $n render(s) taken"
+  local pass=1
+  while : ; do
+    out=$( ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
+    if [ "$rc" -eq 124 ]; then
+      driver_say "✋ compare: the render command did not return within ${DRIVER_CMD_TIMEOUT}s — $cmd"
+      driver_state_set "$t" park_note "this project's design.render command did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
+      return "$DRIVER_E_TIMEOUT"
+    fi
+    # AWK, NOT `grep -E '\t'`. POSIX ERE has no `\t` escape — BSD grep reads it as a
+    # literal `t`, so the pattern matched nothing, every render line was discarded and
+    # a renderer that worked perfectly was reported as producing none.
+    lines=$(printf '%s\n' "$out" | awk -F'\t' 'NF >= 3 && $1 != "" && $2 != "" && ($3 == "light" || $3 == "dark")')
+    n=$(printf '%s\n' "$lines" | grep -c . || true)
+    if [ "$rc" -ne 0 ] || [ "${n:-0}" -eq 0 ]; then
+      driver_say "✋ compare: this project's design.render command exited $rc and produced $n render(s) — $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
+      driver_state_set "$t" park_note "this project's design.render command ('$cmd') exited $rc and produced $n render line(s), so the screen was never observed. A measurement that could not be made is not a screen that is fine."
+      return "$DRIVER_E_REFUSED"
+    fi
+    driver_state_set "$t" renders "$lines"
+    driver_say "   compare: $n render(s) taken${pass:+ (pass $pass)}"
 
-  # What was approved. The plan answered it — `approved-picture` plus its reference
-  # is the pair this whole step exists to hold the renders against — and the design
-  # fact is the project's own record of where approvals live.
-  approved=$(driver_state_get "$t" design_ref)
-  if [ -n "$approved" ]; then
-    approved="Approved picture: $approved
-Recorded by the plan step as designSource=$(driver_state_get "$t" design_source)."
-  else
-    approved="The plan answered designSource=$(driver_state_get "$t" design_source) and named no approved picture, so there is no picture to compare against — judge the renders against the ticket and this project's design law instead, and say in a difference that no picture was approved.
+    # What was approved. The plan answered it — `approved-picture` plus its reference
+    # is the pair this whole step exists to hold the renders against — and the design
+    # fact is the project's own record of where approvals live.
+    approved=$(driver_state_get "$t" design_ref)
+    if [ -n "$approved" ]; then
+      approved="Approved picture: $approved
+  Recorded by the plan step as designSource=$(driver_state_get "$t" design_source)."
+    else
+      approved="The plan answered designSource=$(driver_state_get "$t" design_source) and named no approved picture, so there is no picture to compare against — judge the renders against the ticket and this project's design law instead, and say in a difference that no picture was approved.
 
-$(driver_fact_design "$t")"
-  fi
-  route=$(printf '%s\n' "$lines" | awk -F'\t' '{print $4}' | grep -v '^$' | sort -u | tr '\n' ' ')
-  [ -n "$(printf '%s' "$route" | tr -d ' ')" ] \
-    || route="(the render command named no route on any line — its fourth field is the route each render came from)"
+  $(driver_fact_design "$t")"
+    fi
+    route=$(printf '%s\n' "$lines" | awk -F'\t' '{print $4}' | grep -v '^$' | sort -u | tr '\n' ' ')
+    [ -n "$(printf '%s' "$route" | tr -d ' ')" ] \
+      || route="(the render command named no route on any line — its fourth field is the route each render came from)"
 
-  driver_fact_put "$t" compare APPROVED "$approved"
-  driver_fact_put "$t" compare RENDERS  "$lines"
-  driver_fact_put "$t" compare ROUTE    "$route"
+    driver_fact_put "$t" compare APPROVED "$approved"
+    driver_fact_put "$t" compare RENDERS  "$lines"
+    driver_fact_put "$t" compare ROUTE    "$route"
 
-  rcs=0; driver_ai_step "$t" compare || rcs=$?
-  [ "$rcs" -eq 0 ] || return "$rcs"
+    rcs=0; driver_ai_step "$t" compare || rcs=$?
+    [ "$rcs" -eq 0 ] || return "$rcs"
 
-  # A DIFFERENCE THAT STANDS IS NOT THIS STEP'S TO SANCTION. The contract already
-  # requires a reason on one; the driver refuses to walk past it, because only a
-  # person sanctions a deviation from an approved design.
-  local unfixed nfixed
-  unfixed=$(jq -r '[.differences[]? | select(.fixed == false) | "\(.what) — \(.reason)"] | join("; ")' \
-    "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null)
-  if [ -n "$unfixed" ]; then
-    driver_say "✋ compare: the renders differ from what was approved and the differences stand — $unfixed"
-    driver_state_set "$t" park_note "the renders differ from the approved design and the differences were not fixed: $unfixed. Only a person sanctions a deviation, so this is not the driver's to walk past."
-    # A PERSON, NOT THE DRIVER. A driver-caused park leaves the ticket resumable
-    # and unattended, and this one is the single refusal in the walk that must not
-    # be: resuming re-runs this step, and an answer of `fixed: true` next time is
-    # an agent sanctioning its own deviation from a design somebody approved.
-    driver_state_set "$t" park_cause person
-    return "$DRIVER_E_REFUSED"
-  fi
-  # A DIFFERENCE THE STEP FIXED IS A CHANGE NOTHING HAS CHECKED. The gates ran
-  # before this step and the renders were taken before the agent edited anything,
-  # so `fixed: true` describes code no gate has read and pixels nobody has seen.
-  # It goes round again: the gates read the edit and this step re-renders.
-  nfixed=$(jq -r '[.differences[]? | select(.fixed == true)] | length' \
-    "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null)
-  if [ "${nfixed:-0}" -gt 0 ]; then
-    driver_say "✋ compare: $nfixed difference(s) were fixed in this step, so the gates have not read that change and the renders above are of the code before it. Going round."
-    return "$DRIVER_E_REWORK"
-  fi
+    # A DIFFERENCE THAT STANDS IS NOT THIS STEP'S TO SANCTION. The contract already
+    # requires a reason on one; the driver refuses to walk past it, because only a
+    # person sanctions a deviation from an approved design.
+    local unfixed nfixed
+    unfixed=$(jq -r '[.differences[]? | select(.fixed == false) | "\(.what) — \(.reason)"] | join("; ")' \
+      "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null)
+    if [ -n "$unfixed" ]; then
+      driver_say "✋ compare: the renders differ from what was approved and the differences stand — $unfixed"
+      driver_state_set "$t" park_note "the renders differ from the approved design and the differences were not fixed: $unfixed. Only a person sanctions a deviation, so this is not the driver's to walk past."
+      # A PERSON, NOT THE DRIVER. A driver-caused park leaves the ticket resumable
+      # and unattended, and this one is the single refusal in the walk that must not
+      # be: resuming re-runs this step, and an answer of `fixed: true` next time is
+      # an agent sanctioning its own deviation from a design somebody approved.
+      driver_state_set "$t" park_cause person
+      return "$DRIVER_E_REFUSED"
+    fi
+
+    # A DIFFERENCE THE STEP FIXED IS A CHANGE THE RENDERS ABOVE DO NOT SHOW. The
+    # renders were taken before the agent edited anything, so `fixed: true` leaves
+    # this step's own evidence describing the code before its fix — and those renders
+    # are what the review step and the pull request body carry.
+    #
+    # The edit itself IS checked: this step runs before the gates and before the
+    # review, which is why it moved there. So the answer is not a rework — it is one
+    # more pass of THIS step: render again, compare again, and require the second
+    # pass to report nothing further to fix. A step still editing on its second pass
+    # is a step that will edit on its third, so that parks.
+    nfixed=$(jq -r '[.differences[]? | select(.fixed == true)] | length' \
+      "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null)
+    if [ "${nfixed:-0}" -eq 0 ]; then break; fi
+    if [ "$pass" -ge 2 ]; then
+      driver_say "✋ compare: $nfixed difference(s) were fixed again on pass $pass, so every render this run has taken is of code the step then changed. Nothing here has been observed."
+      driver_state_set "$t" park_note "the compare step fixed differences on two passes running, so no render this run took describes the code as it stands"
+      return "$DRIVER_E_REFUSED"
+    fi
+    driver_say "   compare: $nfixed difference(s) were fixed in this step, so those renders are of the code before it — rendering again."
+    pass=2
+  done
+
   driver_say "   compare: parity against $(jq -r '.approved.ref // "the approved design"' "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null), from $n render(s)"
   return "$DRIVER_OK"
 }

@@ -184,7 +184,13 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
 
   # The step's own tooling writes a working plan into the tree; it is not the change.
   # Swept before anything reads the tree, so no later step has to know about it.
-  driver_sweep_scratch "$t" "$wt"
+  #
+  # ONLY A TICKET WORKTREE. `wt` falls back to the SHARED checkout above when this
+  # run has none on the record, and the shared checkout is where peer windows work —
+  # sweeping there moves another agent's untracked files out from under them.
+  if [ -n "$(driver_state_get "$t" worktree)" ]; then
+    driver_sweep_scratch "$t" "$wt"
+  fi
 
   if [ ! -s "$log" ]; then
     driver_say "✋ $step: the agent produced no transcript — $(head -3 "$log.err" 2>/dev/null | tr '\n' ' ')"

@@ -103,9 +103,15 @@ echo "--- T2-9 · the programme brief resolves without a working tree ---"
 # PROGRAMMES_DIR is ${REPO_ROOT:+…} and REPO_ROOT is EMPTY for a bare clone, so
 # every step on the trial was told "this project keeps no programme state
 # directory" while the run's own worktree held 29 of them.
+# NAMED BY EPIC NUMBER, WITH THE LABEL IN THE BODY — which is how the project this
+# was measured on writes them: all 29 of its files are `state-<epic>.md` and the
+# programme is a `**Label:**` line inside. A fixture that invents
+# `state-one-desk.md` is a suite green about a feature that resolves nothing.
 mkdir -p "$REPO/docs/programmes"
-printf 'one desk\n' > "$REPO/docs/programmes/state-one-desk.md"
-printf 'echo\n'     > "$REPO/docs/programmes/state-echo.md"
+printf '# Programme #10011\n\n**Label:** `project:one-desk`\n\nlocked: one room\n' \
+  > "$REPO/docs/programmes/state-10011.md"
+printf '# Programme #9000\n\n**Label:** `project:echo`\n\nlocked: no video\n' \
+  > "$REPO/docs/programmes/state-9000.md"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm "programme state files"
 fix_issue 402 OPEN "status:ready,project:one-desk"
 driver_state_init 402
@@ -114,11 +120,10 @@ out=$(driver_fact_programme 402 2>&1)
 PROGRAMMES_DIR="$SAVED_PD"
 want_not_in "a bare clone is not told the directory does not exist" \
   'keeps no programme state directory' "$out"
-want_in "it names the file for THIS programme"  'state-one-desk.md' "$out"
-want_not_in "and not another programme's"       'state-echo.md' "$out"
-# AND NOT ANY MARKDOWN THAT HAPPENS TO CARRY THE NAME. A looser fallback is the
-# wrong-document defect this hunk fixes, one size down.
-printf 'somebody notes\n' > "$REPO/docs/programmes/one-desk-notes.md"
+want_in "it names the file for THIS programme"  'state-10011.md' "$out"
+want_not_in "and not another programme's"       'state-9000.md' "$out"
+# AND NOT ANY MARKDOWN THAT HAPPENS TO CARRY THE NAME.
+printf 'notes about one-desk\n' > "$REPO/docs/programmes/one-desk-notes.md"
 fix_issue 412 OPEN "status:ready,project:nothing-here"
 driver_state_init 412
 SAVED_PD="${PROGRAMMES_DIR:-}"; PROGRAMMES_DIR=""
@@ -126,6 +131,20 @@ out2=$(driver_fact_programme 412 2>&1)
 PROGRAMMES_DIR="$SAVED_PD"
 want_not_in "a programme with no state file gets no other programme's" '\.md' "$out2"
 want_in "and is told how many are there" 'state file' "$out2"
+
+echo "--- and the brief is the BRIEF when this project has something that prints one ---"
+# These files are append-only and grow for as long as the programme is open; a step
+# handed the whole thing designs from the programme's history rather than from its
+# own ticket.
+printf '#!/usr/bin/env sh\necho "TLDR: one room, and the gap map is closed"\n' > "$FIX/brief.sh"
+chmod +x "$FIX/brief.sh"
+jq --arg c "$FIX/brief.sh {{EPIC}}" '.programmes = {"brief": $c}' \
+  "$REPO/.claude/harness.json" > "$FIX/hp.json" && mv "$FIX/hp.json" "$REPO/.claude/harness.json"
+SAVED_PD="${PROGRAMMES_DIR:-}"; PROGRAMMES_DIR=""
+out3=$(driver_fact_programme 402 2>&1)
+PROGRAMMES_DIR="$SAVED_PD"
+want_in "the brief command ran for this programme's epic" 'one room, and the gap map' "$out3"
+jq 'del(.programmes)' "$REPO/.claude/harness.json" > "$FIX/hq.json" && mv "$FIX/hq.json" "$REPO/.claude/harness.json"
 
 echo "--- T2-10 · the step's working plan is kept out of the change ---"
 # park.sh's `git add -A -- .` swept a 1,361-line superpowers plan into the parked
@@ -162,6 +181,19 @@ git -C "$WT" -c user.email=t@e.invalid -c user.name=T commit -qm "docs: a real f
 driver_sweep_scratch 403 "$WT" >/dev/null
 want "a tracked path is left alone" "this project really keeps one" \
   "$(cat "$WT/docs/superpowers/kept.md" 2>/dev/null)"
+# AND NEVER THE SHARED CHECKOUT. The tree a step runs in falls back to the shared
+# clone when this run has none on the record, and that clone is where peer windows
+# work — sweeping there moves another agent's untracked files out from under them.
+mkdir -p "$REPO/docs/superpowers/plans"
+printf "a peer window's plan\n" > "$REPO/docs/superpowers/plans/peer.md"
+rm -rf "$STATE/driver/411"; fix_issue 411 OPEN "status:ready"
+driver_state_init 411
+export DRIVER_TICKET=411
+fix_ai plan "$PLAN_OK" "$PLAN_SKILLS"
+driver_ai_step 411 plan >/dev/null 2>&1
+want "a step with no worktree of its own does not sweep the shared checkout" \
+  "a peer window's plan" "$(cat "$REPO/docs/superpowers/plans/peer.md" 2>/dev/null)"
+rm -rf "$REPO/docs/superpowers"
 
 echo "--- T2-6 · a park leaves a status label ---"
 # #10867's timeline at 2026-09-28T10:29:58Z: status:claimed off, the hold on,
@@ -189,8 +221,13 @@ driver_state_init 405 --worktree "$FIX/wt405" --branch "tkt-405/work"
 out=$(driver_park 405 "the answer did not meet its contract" "is the brief in step?" driver 2>&1)
 want_in "it is still marked parked"       'add-label status:parked' "$(cat "$GH_LOG")"
 want_not_in "and the hold is NOT applied" 'needs:human-approval' "$(cat "$GH_LOG")"
-want_in "the brief says nobody has to answer it" 'nothing here is yours to answer' \
-  "$(grep -o 'nothing here is yours to answer' "$GH_LOG" || swarm_gh issue comment 2>/dev/null; true)"
+want_in "the brief says nobody has to answer it" 'Needs:\*\* nothing from you' "$(cat "$GH_LOG")"
+# AND IT DOES NOT ALSO ASK. The diagnostic is real and useful; printed under
+# "Needs:" it read as a question somebody must answer, one line above a Resume
+# line saying nobody has to.
+want_in "the diagnostic is kept, under its own heading" 'What stopped it' "$(cat "$GH_LOG")"
+want_not_in "and is not what the ticket is said to need" \
+  'Needs:\*\* is the brief in step' "$(cat "$GH_LOG")"
 # And the driver can pick it up again itself.
 fix_issue 405 OPEN "status:parked"
 rc=0; out=$(driver_step_start 405 2>&1) || rc=$?
@@ -430,8 +467,10 @@ driver_state_set 409 park_cause ""
 fix_ai compare '{"step":"compare","skills":["superpowers:verification-before-completion"],"status":"compared","approved":{"ref":"https://claude.ai/artifact/desk-v3"},"renders":[{"name":"desk light","path":"shots/a.png","theme":"light"}],"differences":[{"what":"the masthead lost its hairline","fixed":true}]}' \
   superpowers:verification-before-completion
 rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
-want "it sends the work round again" "30" "$rc"
-want_in "saying the gates have not read that change" 'gates have not read' "$out"
+want "it refuses rather than passing" "24" "$rc"
+want_in "having rendered a second time" 'pass 2' "$out"
+want_in "and saying no render describes the code as it stands" 'has been observed' "$out"
+driver_state_set 409 park_cause ""
 
 echo "--- T2-2 · the project's pre-push reviews are run and recorded ---"
 # The unit half. The end-to-end half — a screen change pushed through
@@ -484,6 +523,26 @@ rc=0; out=$(driver_step_ship 410 2>&1) || rc=$?
 want_in "ship notices the branch moved and re-records" "the 'ui-gate' reviewer ran" "$out"
 want "and the record follows the new head" "$(git -C "$FIX/wt410" rev-parse HEAD)" \
   "$(driver_state_get 410 push_requires_at)"
+
+echo "--- T2-2 · a recorder that refuses files no follow-up ticket ---"
+# Filing the Minors opens an issue and has no idempotency guard, so a recorder that
+# refused AFTER it parked with `review` unfinished — and every resume re-ran the
+# whole review and filed the same follow-up again.
+. "$HERE/../steps/review.sh" || exit 1
+fix_issue 413 OPEN "status:claimed"
+git -C "$REPO" worktree add -q "$FIX/wt413" -b "tkt-413/work" develop
+git -C "$FIX/wt413" config user.email t@e.invalid
+git -C "$FIX/wt413" config user.name T
+driver_state_init 413 --worktree "$FIX/wt413" --branch "tkt-413/work"
+fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"minor","summary":"spacing","reason":"polish","fix":"nudge"}]}' superpowers:requesting-code-review
+printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
+jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
+   '.push = {"requires":[{"name":"ui-gate","review":$r,"record":($w + " --sha {{SHA}}")}]}' \
+   "$REPO/.claude/harness.json" > "$FIX/hr.json" && mv "$FIX/hr.json" "$REPO/.claude/harness.json"
+: > "$GH_LOG"
+rc=0; out=$(driver_step_review 413 2>&1) || rc=$?
+want "the review refuses on the recorder" "24" "$rc"
+want_not_in "and no follow-up ticket was filed" 'issue create' "$(cat "$GH_LOG")"
 
 echo "--- T2-2 · a reviewer that says SPIT-BACK is not recorded, and it stops there ---"
 cat > "$FIX/reviewer" <<'SH'
