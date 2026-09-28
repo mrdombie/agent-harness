@@ -109,7 +109,12 @@ printf '%-9s want=%-6s got=%-6s %s\n' "$mark" quiet "$([ $rc -eq 2 ] && echo nag
 # for a live peer. This case is the guard's death-plant: delete the guard and it
 # is the one that flips back to nag.
 rm -rf "$MDIR"; loop_on; ready s15 7; echo 1 > "$OWNER"
+# Name our own session outright ($$, alive and not 1): CI is never inside a Claude
+# session, so without this the helper cannot tell 'mine' from 'a peer' and the case
+# passed only on a developer's Mac (#33, Linux runner).
+export CLAUDE_SESSION_PID_OVERRIDE=$$
 t quiet 'a live PEER owns the scope — not our loop to hold open'  false s15
+unset CLAUDE_SESSION_PID_OVERRIDE
 
 # Our own session must STILL be nagged. Without this the guard could be written
 # to suppress everything and the case above would never notice.

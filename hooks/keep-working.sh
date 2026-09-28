@@ -14,6 +14,11 @@
 # A blocking Stop hook is how /goal looped ~20x on 2026-08-30. SEVEN guards below,
 # each of which alone ends the turn, plus a hard per-session nag budget. The
 # common path is guard 3 — one stat call, no network.
+# File modification time in epoch seconds, on GNU (Linux CI) or BSD (macOS) stat.
+# GNU first: on Linux `stat -f` means "file system" and does not fail, so trying BSD first
+# returned the wrong number and every age read as huge (the CI failure on #33).
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 set -uo pipefail
 
 IN=$(cat)
@@ -52,7 +57,7 @@ SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
 MDIR="${TMPDIR:-/tmp}/claude-keep-working"; mkdir -p "$MDIR"
 MARK="$MDIR/$SID"; COUNT="$MDIR/$SID.count"
 if [ -f "$MARK" ]; then
-  AGE=$(( $(date +%s) - $(stat -f %m "$MARK" 2>/dev/null || echo 0) ))
+  AGE=$(( $(date +%s) - $(mtime "$MARK") ))
   [ "$AGE" -lt 600 ] && { say "exit0 cooldown ${AGE}s $SID"; exit 0; }
 fi
 N=$(cat "$COUNT" 2>/dev/null || echo 0)
@@ -63,15 +68,15 @@ N=$(cat "$COUNT" 2>/dev/null || echo 0)
 #    and nagging those would be noise. /work and /auto write .loop-active when
 #    their loop starts; nothing else does.
 [ -f "$LOOP_FILE" ] || { say "exit0 no-loop-file"; exit 0; }
-LAGE=$(( $(date +%s) - $(stat -f %m "$LOOP_FILE" 2>/dev/null || echo 0) ))
+LAGE=$(( $(date +%s) - $(mtime "$LOOP_FILE") ))
 [ "$LAGE" -gt 21600 ] && { say "exit0 loop-stale ${LAGE}s"; exit 0; }
 
 # 4. Did the flow declare a stop condition? .stop-reason NEWER than .loop-active
 #    means this loop ended deliberately — dry label, gate it cannot green, a
 #    decision only the PM can make, a permission denial. All legitimate.
 if [ -f "$STOP_FILE" ]; then
-  SM=$(stat -f %m "$STOP_FILE" 2>/dev/null || echo 0)
-  LM=$(stat -f %m "$LOOP_FILE" 2>/dev/null || echo 0)
+  SM=$(mtime "$STOP_FILE")
+  LM=$(mtime "$LOOP_FILE")
   [ "$SM" -ge "$LM" ] && { say "exit0 stop-declared $(head -1 "$STOP_FILE" 2>/dev/null)"; exit 0; }
 fi
 
@@ -119,7 +124,7 @@ esac
 CACHE="$MDIR/$SID.ready"
 READY=""
 if [ -f "$CACHE" ]; then
-  CAGE=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+  CAGE=$(( $(date +%s) - $(mtime "$CACHE") ))
   [ "$CAGE" -lt 15 ] && READY=$(cat "$CACHE" 2>/dev/null)
 fi
 if [ -z "$READY" ]; then
