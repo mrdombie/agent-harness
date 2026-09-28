@@ -88,6 +88,9 @@ Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
 Claimed at: ${sha:-unknown}
 Head: $head
+
+Renders this run compared against the approved design:
+$(driver_state_get "$t" renders | sed 's/^/  /')
 PRBODY
 )
   # `|| true` on the create alone is right: a park may already have opened the draft,

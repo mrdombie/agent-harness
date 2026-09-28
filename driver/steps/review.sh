@@ -38,6 +38,7 @@
 # skill; the driver never starts several agents on one ticket.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 
 driver_step_review() { # <ticket>
   local t="${1:?driver_step_review: need a ticket}"
@@ -153,6 +154,15 @@ Read the rest in the worktree — do NOT review the part above as if it were the
     # with the finding as the question.
     return "$DRIVER_E_REFUSED"
   fi
+
+  # THE REVIEWS THIS PROJECT'S PRE-PUSH INSISTS ON, recorded HERE and not in the
+  # ship step. The recorder binds a verdict to the commit that was reviewed, so it
+  # has to run when the branch's head is the head that will be pushed — and the
+  # ship step's first act is the push. A rework re-runs this round and re-records
+  # against the new head, which is the point: a verdict that survived a change it
+  # did not see is the thing the attestation exists to refuse.
+  rc=0; driver_push_requires "$t" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
 
   nnit=$(_driver_count "$ans_file" nit)
   # SAY THE DROP. A nit dropped in silence is indistinguishable from a reviewer that

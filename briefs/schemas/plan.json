@@ -31,10 +31,12 @@
       ]
     },
     "designSource": {
+      "description": "Where the thing being built was settled. `approved-picture` is a design a person approved before the build, and it names where: the driver's compare step holds the renders against it, and a plan that claims one without saying where is refused.",
       "enum": [
         "ticket-body",
         "brainstormed",
-        "debugged"
+        "debugged",
+        "approved-picture"
       ]
     },
     "premise": {
@@ -153,6 +155,11 @@
     },
     "notes": {
       "type": "string"
+    },
+    "designRef": {
+      "description": "The approved picture and where that approval is recorded: a URL, or a path on this branch. Required whenever designSource is approved-picture.",
+      "type": "string",
+      "minLength": 1
     }
   },
   "if": {
@@ -194,6 +201,24 @@
       "then": {
         "required": [
           "dataModelSpec"
+        ]
+      }
+    },
+    {
+      "$comment": "An approved picture names itself. The one fact this project's process turns on had no value in the contract, so a picture approved the day before had to be answered as `ticket-body`.",
+      "if": {
+        "required": [
+          "designSource"
+        ],
+        "properties": {
+          "designSource": {
+            "const": "approved-picture"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "designRef"
         ]
       }
     }

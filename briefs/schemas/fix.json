@@ -43,6 +43,8 @@
           "change",
           "test",
           "command",
+          "testCommit",
+          "implCommit",
           "failedBefore",
           "passedAfter"
         ],
@@ -109,6 +111,16 @@
           },
           "passedAfter": {
             "const": true
+          },
+          "testCommit": {
+            "description": "The commit that added the test, seven characters or more. The driver re-runs that test at the change's parent and at the change, so this and implCommit are what make failedBefore checkable rather than claimed.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,40}$"
+          },
+          "implCommit": {
+            "description": "The commit that made it pass. It must not be testCommit: one squashed commit cannot show which came first.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,40}$"
           }
         }
       }

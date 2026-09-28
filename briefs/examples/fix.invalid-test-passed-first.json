@@ -22,7 +22,9 @@
       },
       "command": "npm test -- src/queue/panel.test.tsx",
       "failedBefore": false,
-      "passedAfter": true
+      "passedAfter": true,
+      "testCommit": "a1b2c3d4",
+      "implCommit": "e5f6a7b8"
     }
   ]
 }
