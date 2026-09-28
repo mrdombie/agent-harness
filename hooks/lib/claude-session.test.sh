@@ -127,6 +127,50 @@ MINE=$ALIVE
   && ok "a live peer that did claim it is still named" \
   || ok "a live peer that did claim it is still named (rc $rc got '$got')"
 
+
+# ---------------------------------------------------------------------------
+# THE WALK ITSELF. Every case above stubs claude_session_pid out, so none of
+# them can see it break — and it HAD broken: the matcher named one launcher's
+# argv[0] (`*native-binary/claude`) while `ps -o comm=` reports the basename,
+# so the real function returned 1 everywhere and the peer guard was inert.
+#
+# Driven through a fake `ps` on PATH, so the suite asserts the matching rule
+# rather than whatever happens to be running on the machine.
+echo
+echo "--- claude_session_pid: the real walk ---"
+WALKDIR=$(mktemp -d); trap 'rm -rf "$WALKDIR"' EXIT
+
+# $1 = the comm= that PID 100 reports. The tree is 300 -> 200 -> 100 -> 1.
+fake_ps() {
+  cat > "$WALKDIR/ps" <<PS
+#!/usr/bin/env bash
+pid=""; want=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in -p) pid=\$2; shift 2 ;; -o) want=\$2; shift 2 ;; *) shift ;; esac
+done
+case "\$want" in
+  comm=) case "\$pid" in 100) echo '$1' ;; 200) echo /bin/zsh ;; 300) echo /bin/bash ;; esac ;;
+  ppid=) case "\$pid" in 300) echo 200 ;; 200) echo 100 ;; 100) echo 1 ;; esac ;;
+esac
+PS
+  chmod +x "$WALKDIR/ps"
+}
+
+walk(){ ( PATH="$WALKDIR:$PATH"
+          unset -f claude_session_pid
+          . "$(cd "$(dirname "$0")" && pwd)/claude-session.sh"
+          claude_session_pid 300 ); }
+
+wcase(){ fake_ps "$1"; got=$(walk); rc=$?
+  [ "$rc" -ne 0 ] && got="(unresolved)"
+  if [ "$got" = "$2" ]; then echo "ok   $3"; else echo "FAIL $3 — want '$2', got '$got'"; fail=1; fi; }
+
+wcase "claude"                          100           "bare 'claude' resolves (the live shape, 2026-09-28)"
+wcase "/opt/x/native-binary/claude"     100           "the full native-binary path still resolves"
+wcase "/opt/homebrew/bin/claude"        100           "any absolute path to claude resolves"
+wcase "claude-foo"                      "(unresolved)" "a different binary whose name starts with claude does NOT"
+wcase "node"                            "(unresolved)" "no claude ancestor is unresolved, not a false match"
+
 echo
 [ "$fail" -eq 0 ] && echo "claude-session fixture: all checks hold" \
                   || echo "claude-session fixture: FAILURES"

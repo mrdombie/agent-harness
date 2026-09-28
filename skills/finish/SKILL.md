@@ -33,7 +33,7 @@ Before stepping into Step 3 (run gates locally) on a ticket that touches >5 file
 Use Agent tool with subagent_type=agent-harness:gate-runner, prompt="Run lint + typecheck + tests for the current branch <BRANCH>; report new vs pre-existing failures only."
 ```
 
-The agent runs `npm run lint && npm run typecheck && npm test` in isolation, filters out failures in files NOT touched by this branch (pre-existing), and returns a structured verdict. Stops your main context from being polluted with thousands of lines of test output.
+The agent runs the repo's `gates.changed` commands in isolation, filters out failures in files NOT touched by this branch (pre-existing), and returns a structured verdict. Stops your main context from being polluted with thousands of lines of test output.
 
 Use the in-session `npm run` only on small tickets (<5 files) where the noise won't matter.
 
@@ -234,8 +234,22 @@ own command and stop on a non-zero exit BEFORE any commit/push/merge
 command executes:
 
 ```bash
-npm run lint && npm run typecheck && npm test || { echo "🛑 GATES FAILED — fix before any commit/push/merge"; exit 1; }
+# The commands come from gates.changed in .claude/harness.json — the CHANGED-ONLY
+# checks, never the whole app. Read the rule below before reaching for the
+# whole-app form.
+CHANGED=$(jq -r '(.gates.changed // []) | join(" && ")' .claude/harness.json)
+[ -n "$CHANGED" ] || { echo "🛑 harness.json names no gates.changed"; exit 1; }
+eval "$CHANGED" || { echo "🛑 GATES FAILED — fix before any commit/push/merge"; exit 1; }
 ```
+
+**CHANGED-ONLY, not the whole app.** CI runs the whole suite before anything
+merges, and a red CI brings an agent back — so a local whole-app run is the same
+work done twice, on a machine every other agent is sharing. Measured 2026-09-28:
+load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and
+a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh`
+refuses the whole-app form from an unattended run, so this is enforced and not
+merely asked for. Run the whole app only when a person asks for it by name, or
+when CI has gone red and you are reproducing it.
 
 Never put `git commit`/`git push`/PR-create/merge in the same command
 batch as a gate run — eyeballing batch output misses failures; the
@@ -249,9 +263,7 @@ exit code is the gate.
 # `npm test` has no such hook — generate explicitly. Idempotent.
 sh scripts/prisma-generate-if-needed.sh >/dev/null  # #3570 — fingerprint-skips when unchanged
 
-npm run lint
-npm run typecheck
-npm test
+eval "$CHANGED"        # gates.changed from harness.json — see the rule above
 
 # #9966 (2026-09-01): the trio above does NOT include check:deploy-trigger.
 # That gate reads COMMITS (merge-base..HEAD), so it must run after Step 2's
@@ -269,6 +281,60 @@ fi
 If any fail, **stop**. Fix or surface. No `--no-verify`. No skipping. **Before declaring a failure "pre-existing on develop", re-verify it in a worktree that has run `npx prisma generate`** — a stash-baseline comparison in an ungenerated worktree shows the same phantom errors on both sides and proves nothing.
 
 If gates passed at commit time and nothing has changed since, you can fast-track — say so explicitly ("gates passed at commit time, skipping re-run").
+
+### Step 3.5 — Review: every reviewer, together, on the first working version
+
+**The reviewers run TOGETHER here, on the first version that renders** — not in
+sequence at the end. They judge different things (is it designed · is it honest)
+and neither subsumes the other, so running them apart means the agent builds on
+top of work the other is about to reject. Their combined findings are one
+batched fix list.
+
+Written down after a design pass spent three and a half hours in its final code
+review raising one point per round, having cleared the design reviewer hours
+earlier: *"apply all those rules, not just the two."*
+
+**Two rounds, then the PR ships.** Run the set, fix the batch, run the set
+again. After the second round anything still raised that is **not a blocker** is
+filed as its own ticket, linked on the PR, and the PR merges. A blocker is a
+Critical or Major finding — wrong data, a security hole, lost work, an
+unapproved publish, a dead control, a broken flow, a user misled or stuck.
+Everything else — a spacing call, a copy preference, a nice-to-have — is a
+follow-up. `rules/standing-rules.md` has the grade table.
+
+The cap is **recorded, not promised**: the PR body carries `Review rounds: N of
+2`, so a reader can see the rule was applied rather than take the agent's word
+for it. A follow-up ticket carries the reviewer's finding **verbatim**, the
+evidence it was raised against, and the parent's `project:` label.
+
+**Which reviewers, and what proves one ran.** Both come from the config, because
+which reviewers a project runs and how it attests them are project facts:
+
+```bash
+# The commands that decide whether a reviewer is OWED on this diff, and print
+# the fingerprint its trailer must carry. Empty -> this project attests nothing
+# and the reviewers are advisory.
+jq -r '(.review.attest // {}) | to_entries[] | "\(.key)\t\(.value)"' .claude/harness.json
+```
+
+For each row, run the named command. `no UI surface in this diff` or an exempt
+label → that reviewer is not owed on this diff. Anything else prints the
+fingerprint the trailer must carry.
+
+**A reviewer's verdict is a trailer on a commit in the branch**, fingerprinted
+over the UI diff — so a rebase that changes the UI diff stales every trailer
+together, and one review round re-earns them all. Run this **as the last thing
+before the commit you push**, never before the last edit: a verdict taken before
+a later change is about pixels nobody is shipping.
+
+This step used to be one sentence, and a sentence does not stop a push — so
+print-mode agents never ran it and zero of 46 pixel-changing tickets carried a
+verdict. Whatever the project's attestation is, it has to be the thing that
+fails, not the thing that asks.
+
+**A verdict you wrote yourself is not a verdict.** The attestation checks that
+the fingerprint matches the diff, not that anybody read it. Writing a trailer to
+unblock a push is the failure this step exists to catch.
 
 ### Step 4 — Push the branch
 
