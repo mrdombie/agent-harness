@@ -32,6 +32,7 @@ fix_real_briefs
 . "$HERE/../steps/plan.sh" || exit 1
 . "$HERE/../steps/fix.sh" || exit 1
 . "$HERE/../steps/compare.sh" || exit 1
+. "$HERE/../steps/ship.sh" || exit 1
 
 REAL_BRIEFS="$KIT/briefs"
 PLAN_OK=$(jq -c . "$REAL_BRIEFS/examples/plan.valid.json")
@@ -115,6 +116,16 @@ want_not_in "a bare clone is not told the directory does not exist" \
   'keeps no programme state directory' "$out"
 want_in "it names the file for THIS programme"  'state-one-desk.md' "$out"
 want_not_in "and not another programme's"       'state-echo.md' "$out"
+# AND NOT ANY MARKDOWN THAT HAPPENS TO CARRY THE NAME. A looser fallback is the
+# wrong-document defect this hunk fixes, one size down.
+printf 'somebody notes\n' > "$REPO/docs/programmes/one-desk-notes.md"
+fix_issue 412 OPEN "status:ready,project:nothing-here"
+driver_state_init 412
+SAVED_PD="${PROGRAMMES_DIR:-}"; PROGRAMMES_DIR=""
+out2=$(driver_fact_programme 412 2>&1)
+PROGRAMMES_DIR="$SAVED_PD"
+want_not_in "a programme with no state file gets no other programme's" '\.md' "$out2"
+want_in "and is told how many are there" 'state file' "$out2"
 
 echo "--- T2-10 · the step's working plan is kept out of the change ---"
 # park.sh's `git add -A -- .` swept a 1,361-line superpowers plan into the parked
@@ -129,9 +140,18 @@ driver_state_init 403 --worktree "$WT" --branch "tkt-403/work"
 driver_sweep_scratch 403 "$WT" >/dev/null
 want "the plan is gone from the worktree" "" \
   "$(ls "$WT/docs/superpowers" 2>/dev/null)"
-want "and kept where a person can read it" "the working plan" \
-  "$(cat "$(driver_state_dir 403)/scratch/docs/superpowers/plans/2026-09-28-a.md" 2>/dev/null)"
+want "and kept where a person can read it" "1" \
+  "$(grep -rl 'the working plan' "$(driver_state_dir 403)/scratch" 2>/dev/null | grep -c .)"
 want "the change itself is untouched" "the real change" "$(cat "$WT/feature.txt")"
+# EVERY SWEEP KEEPS ITS OWN. A fixed destination made the second sweep delete the
+# first step's plan, which is "moved, not deleted" doing the deleting.
+mkdir -p "$WT/docs/superpowers/plans"
+printf 'the second working plan\n' > "$WT/docs/superpowers/plans/2026-09-28-b.md"
+driver_sweep_scratch 403 "$WT" >/dev/null
+want "the first sweep's plan survives the second" "1" \
+  "$(grep -rl 'the working plan' "$(driver_state_dir 403)/scratch" 2>/dev/null | grep -c .)"
+want "and the second is kept too" "1" \
+  "$(grep -rl 'the second working plan' "$(driver_state_dir 403)/scratch" 2>/dev/null | grep -c .)"
 # A TRACKED PATH IS THE CHANGE. If the project genuinely keeps files there, sweeping
 # them would be deleting the work.
 git -C "$WT" -c user.email=t@e.invalid -c user.name=T rm -q --cached -r . >/dev/null 2>&1 || true
@@ -297,6 +317,28 @@ rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
 want "an unanswered blocker refuses" "24" "$rc"
 want_in "naming it"                  'F9' "$out"
 
+echo "--- T2-3 · a deferred blocker is a person's call, not the driver's ---"
+# The contract has a `deferred` shape and the brief tells the fixer to use it, so
+# a fixer that disagrees with a grade is answering legitimately. It is not the
+# driver's to settle: parked as the driver's own the ticket resumes unattended and
+# the next round is free to defer it again.
+driver_state_set 408 park_cause ""
+fix_ai fix "$(jq -nc --arg ts "$TS8" --arg is "$IS8" \
+  '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    cleared:[{blockerId:"F9",
+              change:[{path:"apps/web/save.tsx", action:"modify"}],
+              test:{file:"t/save.sh", behaviour:"the save button calls the mutation",
+                    redWhen:"the onClick handler is removed"},
+              command:"bash t/save.sh", testCommit:$ts, implCommit:$is,
+              failedBefore:true, passedAfter:true}],
+    deferred:[{blockerId:"F9", reason:"the control is dead on develop too",
+               followUp:"filed as its own ticket"}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want "a deferred blocker refuses"  "24" "$rc"
+want_in "saying a blocker is not deferrable" 'not deferrable' "$out"
+want "and it is a park only a person can answer" "person" "$(driver_state_get 408 park_cause)"
+
 echo "--- T2-4 · compare says what it did, and sets the renders the reviewer reads ---"
 # `driver_state_get renders` was read in review.sh:95 and set nowhere, so RENDERS
 # was "(none)" on every screen ticket there has ever been.
@@ -320,14 +362,27 @@ rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
 want "a change touching no screen finishes"   "0" "$rc"
 want_in "and says which it was"               'touches no screen' "$out"
 
-mkdir -p "$FIX/wt409/apps/web"
-printf 'a screen\n' > "$FIX/wt409/apps/web/page.tsx"
+mkdir -p "$FIX/wt409/apps/web/src/app"
+printf 'a screen\n' > "$FIX/wt409/apps/web/src/app/page.tsx"
 git -C "$FIX/wt409" add -A
 git -C "$FIX/wt409" -c user.email=t@e.invalid -c user.name=T commit -qm "feat: a screen"
-rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+# FROM A DIRECTORY THAT ITSELF HAS AN apps/web. The pathspec has to reach git
+# UNEXPANDED: unquoted it is glob-expanded against the DRIVER'S cwd, and measured
+# in a real checkout `packages/ui/**` became six top-level entries — so a file two
+# levels down matched nothing and a screen change was reported as touching no
+# screen. Run from the fixture repo, which has no apps/web, the bug is invisible.
+# The decoy's apps/web holds a DIFFERENT subdirectory from the worktree's. Expanded
+# there, `apps/web/**` becomes `apps/web/legacy` — a path the change does not touch —
+# so the screen change matches nothing and is reported as touching no screen. A decoy
+# whose layout happens to agree with the worktree's hides this completely.
+mkdir -p "$FIX/decoy/apps/web/legacy"
+: > "$FIX/decoy/apps/web/legacy/old.tsx"
+rc=0; out=$(cd "$FIX/decoy" && driver_step_compare 409 2>&1) || rc=$?
 want "a screen change with no renderer still finishes" "0" "$rc"
 want_in "but says NOBODY OBSERVED IT"  'NOBODY OBSERVED THIS SCREEN' "$(driver_state_get 409 renders)"
-want_in "naming the screen file"       'apps/web/page.tsx' "$(driver_state_get 409 renders)"
+want_in "naming the screen file"       'apps/web/src/app/page.tsx' "$(driver_state_get 409 renders)"
+want_not_in "and not a file from the directory the driver happened to be in" \
+  'legacy' "$(driver_state_get 409 renders)"
 
 echo "--- T2-4 · a declared renderer that produces nothing is a refusal ---"
 # A measurement that could not be made is not a screen that is fine.
@@ -362,6 +417,21 @@ rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
 want "it refuses"  "24" "$rc"
 want_in "naming the difference" 'breadcrumb' "$out"
 want_in "and saying only a person sanctions one" 'person sanctions' "$(driver_state_get 409 park_note)"
+# AND IT IS A PERSON'S PARK. A driver-caused park leaves the ticket resumable and
+# the step re-runs unattended, so the next answer of `fixed: true` would be an
+# agent sanctioning its own deviation from a design somebody approved.
+want "the park is marked as one only a person can answer" "person" "$(driver_state_get 409 park_cause)"
+
+echo "--- a difference the compare step FIXED goes round, it does not ship ---"
+# The gates ran before this step and the renders were taken before the agent
+# edited anything, so `fixed: true` describes code no gate has read and pixels
+# nobody has seen.
+driver_state_set 409 park_cause ""
+fix_ai compare '{"step":"compare","skills":["superpowers:verification-before-completion"],"status":"compared","approved":{"ref":"https://claude.ai/artifact/desk-v3"},"renders":[{"name":"desk light","path":"shots/a.png","theme":"light"}],"differences":[{"what":"the masthead lost its hairline","fixed":true}]}' \
+  superpowers:verification-before-completion
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "it sends the work round again" "30" "$rc"
+want_in "saying the gates have not read that change" 'gates have not read' "$out"
 
 echo "--- T2-2 · the project's pre-push reviews are run and recorded ---"
 # The unit half. The end-to-end half — a screen change pushed through
@@ -399,6 +469,22 @@ want_in "the reviewer ran"          "the 'ui-gate' reviewer ran" "$out"
 want_in "and its verdict was recorded" 'Gate: SHIP' "$(git -C "$FIX/wt410" log -1 --format=%B)"
 want "on a new commit"  "1" "$(git -C "$FIX/wt410" rev-list --count "$BEFORE..HEAD")"
 
+echo "--- T2-2 · a verdict recorded before a later commit is recorded again ---"
+# A recorder binds a verdict to the commit it reviewed. review is finished by the
+# time anything else commits — a park's own work-in-progress commit is the real
+# case — so a resumed run walks straight to `ship` and the push is refused for
+# ever with nothing able to re-record.
+want "the head the verdicts describe is on the record" "$(git -C "$FIX/wt410" rev-parse HEAD)" \
+  "$(driver_state_get 410 push_requires_at)"
+printf 'a later change\n' > "$FIX/wt410/later.txt"
+git -C "$FIX/wt410" add later.txt
+git -C "$FIX/wt410" commit -qm "chore: parked"
+: > "$GH_LOG"
+rc=0; out=$(driver_step_ship 410 2>&1) || rc=$?
+want_in "ship notices the branch moved and re-records" "the 'ui-gate' reviewer ran" "$out"
+want "and the record follows the new head" "$(git -C "$FIX/wt410" rev-parse HEAD)" \
+  "$(driver_state_get 410 push_requires_at)"
+
 echo "--- T2-2 · a reviewer that says SPIT-BACK is not recorded, and it stops there ---"
 cat > "$FIX/reviewer" <<'SH'
 #!/usr/bin/env sh
@@ -416,6 +502,16 @@ printf '#!/usr/bin/env sh\nexit 0\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
 want "it refuses"  "24" "$rc"
 want_in "saying there is no verdict to record" 'no output' "$out"
+
+echo "--- T2-2 · a recorder that hangs is a timeout, not a refusal ---"
+printf '#!/usr/bin/env sh\necho "VERDICT: SHIP"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
+printf '#!/usr/bin/env sh\nsleep 30\n' > "$FIX/recorder"; chmod +x "$FIX/recorder"
+rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_push_requires 410 2>&1) || rc=$?
+want "it is a timeout"  "25" "$rc"
+want_in "and says the recorder did not return" 'recorder did not return' "$out"
+printf '#!/usr/bin/env sh\nsleep 30\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
+rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_push_requires 410 2>&1) || rc=$?
+want "so is a reviewer that hangs" "25" "$rc"
 
 echo "--- T2-2 · a project that declares none is not refused ---"
 jq 'del(.push)' "$REPO/.claude/harness.json" > "$FIX/h8.json" && mv "$FIX/h8.json" "$REPO/.claude/harness.json"

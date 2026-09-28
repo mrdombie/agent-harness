@@ -159,6 +159,14 @@ while [ "$i" -lt "$N" ]; do
   # not be filed — writes it here. Read once and cleared, so a note from an earlier
   # refusal cannot become the question a later one asks.
   note=""; asked=""; park_reason=""; park_question=""; park_cause="driver"
+  # A STEP MAY SAY ITS REFUSAL NEEDS A PERSON. The exit code cannot: a gate saying
+  # no and "only a person sanctions a deviation from an approved design" are both
+  # DRIVER_E_REFUSED, and the second one must not leave a ticket the driver picks
+  # straight back up — resuming re-runs that step, and the next answer sanctioning
+  # the deviation is an agent clearing its own refusal. Read once and cleared, like
+  # the note beside it.
+  step_cause=$(driver_state_get "$TICKET" park_cause)
+  [ -z "$step_cause" ] || driver_state_set "$TICKET" park_cause ""
   note=$(driver_state_get "$TICKET" park_note)
   [ -z "$note" ] || driver_state_set "$TICKET" park_note ""
   # The step's own question, read HERE and not inside the case below.
@@ -264,6 +272,7 @@ while [ "$i" -lt "$N" ]; do
   # finding rather than a description of the code that stopped.
   if [ -n "$park_reason" ]; then
     [ -z "$note" ] || park_question="$note"
+    [ -z "$step_cause" ] || park_cause="$step_cause"
     driver_park "$TICKET" "$park_reason" "$park_question" "$park_cause"
     exit "$DRIVER_E_QUESTION"
   fi

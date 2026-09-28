@@ -162,8 +162,10 @@ driver_fact_programme() { # <ticket>
   # ticket whichever state file sorted first — 29 of them on the trial — so the one
   # fact this brief exists to carry was another programme's.
   name="${p#${SWARM_PROGRAMME_PREFIX:-project:}}"
+  # `state-<programme>.md` AND NOTHING LOOSER. A fallback of `*<name>*.md` accepts
+  # any note in the directory whose filename happens to contain the programme's
+  # name, which is the wrong-document defect this hunk is fixing, one size down.
   brief=$(ls "$dir"/state-*"$name"*.md 2>/dev/null | head -1)
-  [ -n "$brief" ] || brief=$(ls "$dir"/*"$name"*.md 2>/dev/null | head -1)
   if [ -n "$brief" ]; then
     printf 'Programme: %s\nIts state file: %s\nRead the brief at the top of it — the locked decisions, the open questions and what shipped recently — never the whole ledger.\n' \
       "$p" "$brief"

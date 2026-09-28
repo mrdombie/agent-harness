@@ -218,7 +218,7 @@ echo "--- the walk ---"
 out=$(bash "$HERE/../build-ticket" "$TICKET" 2>&1); rc=$?
 printf '%s\n' "$out" | sed 's/^/    /'
 want "the run finishes"  "0" "$rc"
-want "every step is recorded" "start,plan,build,fix,self-check,compare,review,record,ship" \
+want "every step is recorded" "start,plan,build,fix,compare,self-check,review,record,ship" \
   "$(driver_state_get "$TICKET" 'done|join(",")')"
 
 echo "--- T2-2 · the verdicts are the reviewers' own, and the push is accepted ---"

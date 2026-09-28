@@ -52,9 +52,14 @@ mkdir -p "$DRIVER_DIR" 2>/dev/null || true
 # and the orchestrator walks exactly this.
 # `fix` sits after `build` because a rework rewinds to it, and a step that is
 # conditionally skipped reports exactly like a step that passed — so it is in the
-# order on every pass and is a no-op with nothing said back to it. `compare` sits
-# after the gates, so a red gate costs no render run.
-DRIVER_STEPS="${DRIVER_STEPS:-start plan build fix self-check compare review record ship}"
+# order on every pass and is a no-op with nothing said back to it.
+#
+# `compare` sits BEFORE the gates, not after. Its contract lets the step answer
+# `fixed: true`, which means it edited the tree; placed after `self-check` that
+# edit is never linted, typechecked or tested, and the change ships behind gates
+# that ran on the code before it. A render run on a branch whose gates then go red
+# is the cheaper mistake.
+DRIVER_STEPS="${DRIVER_STEPS:-start plan build fix compare self-check review record ship}"
 
 # Five tries, then park — the number in the approved design's flowchart.
 DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
@@ -279,9 +284,11 @@ driver_sweep_scratch() { # <ticket> <tree>
       driver_say "   the worktree's '$p' is tracked here, so it is the change and was left alone."
       continue
     fi
-    dest="$(driver_state_dir "$t")/scratch/$p"
+    # ITS OWN DESTINATION EVERY TIME. A fixed one made the SECOND sweep delete the
+    # FIRST step's plan, which is "moved, not deleted" doing exactly the deleting
+    # this function says it does not.
+    dest="$(driver_state_dir "$t")/scratch/$(date +%Y%m%d-%H%M%S)-$$/$p"
     mkdir -p "$(dirname "$dest")" 2>/dev/null
-    rm -rf "$dest" 2>/dev/null
     mv "$tree/$p" "$dest" 2>/dev/null && moved="$moved $p"
   done <<EOS
 $(driver_scratch_paths)

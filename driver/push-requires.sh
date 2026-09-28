@@ -114,6 +114,14 @@ driver_push_requires() { # <ticket>
     local cmd; cmd=$(printf '%s' "$record" | sed -e "s|{{SHA}}|$sha|g" -e "s|{{BASE}}|$trunk|g")
     rc=0
     ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" < "$out" ) > "$out.recorded" 2>&1 || rc=$?
+    if [ "$rc" -eq 124 ]; then
+      # A HANG IS NOT A REFUSAL, on this side of the call as much as on the other.
+      # Read as one, the park says the recorder refused a verdict it never saw, and
+      # the operator goes looking for a finding that does not exist.
+      driver_say "✋ push-requires: the '$name' recorder did not return within ${DRIVER_CMD_TIMEOUT}s."
+      driver_state_set "$t" park_note "this project's '$name' recorder did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
+      return "$DRIVER_E_TIMEOUT"
+    fi
     if [ "$rc" -ne 0 ]; then
       driver_say "✋ push-requires: '$name' could not be recorded — $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
       driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict and the recorder refused it: $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
@@ -126,5 +134,12 @@ driver_push_requires() { # <ticket>
       driver_say "   push-requires: '$name' recorded at $(printf '%s' "$after" | cut -c1-8) — $(tr '\n' ' ' < "$out.recorded" | cut -c1-200)"
     fi
   done
+  # THE HEAD THESE VERDICTS DESCRIBE. A recorder binds a verdict to the commit it
+  # reviewed, so a later commit — a park's own work-in-progress commit is the one
+  # that actually happens — makes every trailer on the branch describe a diff that
+  # is not the diff being pushed. The ship step compares this against HEAD and
+  # runs the requirements again when they differ; without it a resumed run walks
+  # straight to `ship`, the push is refused for ever, and nothing re-records.
+  driver_state_set "$t" push_requires_at "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   return "$DRIVER_OK"
 }

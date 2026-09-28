@@ -106,6 +106,11 @@ EOB
   if [ "$(jq -r '[.deferred[]?] | length' "$ans" 2>/dev/null)" != "0" ]; then
     driver_say "✋ fix: $(jq -r '[.deferred[]?] | length' "$ans") of the findings were deferred, and a critical or major finding is not deferrable — $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
     driver_state_set "$t" park_note "the fix round deferred a blocking finding: $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
+    # A PERSON DECIDES WHETHER A BLOCKER IS REALLY ONE. The fixer disagreeing with
+    # a grade is a legitimate answer and it is not the driver's to settle; parking
+    # it as the driver's own would leave the ticket resumable and the next round
+    # free to defer it again.
+    driver_state_set "$t" park_cause person
     return "$DRIVER_E_REFUSED"
   fi
 

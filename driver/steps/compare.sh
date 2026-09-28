@@ -36,12 +36,23 @@ driver_surface_paths() {
 }
 
 # driver_touched_surfaces <tree> <trunk> — the changed files matching those globs.
+# `set -f` FIRST, and it is the whole point of the function. A pathspec has to
+# reach git UNEXPANDED: unquoted, the shell glob-expands it against the DRIVER'S
+# OWN cwd, which is a checkout of this project. Measured there, `packages/ui/**`
+# became six top-level entries — so `packages/ui/src/Button.tsx` matched nothing,
+# compare said "this change touches no screen", and the reviewer was told there
+# was no screen to judge. That is the exact failure this step exists to end, put
+# back by a missing pair of characters. Word splitting is still wanted, so it is
+# `set -f`, not quoting.
 driver_touched_surfaces() { # <tree> <trunk>
-  local wt="$1" trunk="$2" globs
+  local wt="$1" trunk="$2" globs out
   globs=$(driver_surface_paths | tr '\n' ' ')
   [ -n "$(printf '%s' "$globs" | tr -d ' ')" ] || return 0
+  set -f
   # shellcheck disable=SC2086
-  git -C "$wt" diff --name-only "$trunk...HEAD" -- $globs 2>/dev/null
+  out=$(git -C "$wt" diff --name-only "$trunk...HEAD" -- $globs 2>/dev/null)
+  set +f
+  printf '%s' "$out"
 }
 
 driver_step_compare() { # <ticket>
@@ -134,13 +145,28 @@ $(driver_fact_design "$t")"
   # A DIFFERENCE THAT STANDS IS NOT THIS STEP'S TO SANCTION. The contract already
   # requires a reason on one; the driver refuses to walk past it, because only a
   # person sanctions a deviation from an approved design.
-  local unfixed
+  local unfixed nfixed
   unfixed=$(jq -r '[.differences[]? | select(.fixed == false) | "\(.what) — \(.reason)"] | join("; ")' \
     "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null)
   if [ -n "$unfixed" ]; then
     driver_say "✋ compare: the renders differ from what was approved and the differences stand — $unfixed"
-    driver_state_set "$t" park_note "the renders differ from the approved design and the differences were not fixed: $unfixed. Only a person sanctions a deviation."
+    driver_state_set "$t" park_note "the renders differ from the approved design and the differences were not fixed: $unfixed. Only a person sanctions a deviation, so this is not the driver's to walk past."
+    # A PERSON, NOT THE DRIVER. A driver-caused park leaves the ticket resumable
+    # and unattended, and this one is the single refusal in the walk that must not
+    # be: resuming re-runs this step, and an answer of `fixed: true` next time is
+    # an agent sanctioning its own deviation from a design somebody approved.
+    driver_state_set "$t" park_cause person
     return "$DRIVER_E_REFUSED"
+  fi
+  # A DIFFERENCE THE STEP FIXED IS A CHANGE NOTHING HAS CHECKED. The gates ran
+  # before this step and the renders were taken before the agent edited anything,
+  # so `fixed: true` describes code no gate has read and pixels nobody has seen.
+  # It goes round again: the gates read the edit and this step re-renders.
+  nfixed=$(jq -r '[.differences[]? | select(.fixed == true)] | length' \
+    "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null)
+  if [ "${nfixed:-0}" -gt 0 ]; then
+    driver_say "✋ compare: $nfixed difference(s) were fixed in this step, so the gates have not read that change and the renders above are of the code before it. Going round."
+    return "$DRIVER_E_REWORK"
   fi
   driver_say "   compare: parity against $(jq -r '.approved.ref // "the approved design"' "$(driver_state_dir "$t")/steps/compare.json" 2>/dev/null), from $n render(s)"
   return "$DRIVER_OK"
