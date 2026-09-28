@@ -41,7 +41,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 ## The config
 
-`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat` and `law` is required; a missing one refuses by name.
+`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat`, `law` and `contextCeiling` is required; a missing one refuses by name.
 
 ```json
 {
@@ -95,6 +95,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "render": "npm run -s renders"
   },
   "programmes": { "brief": "scripts/programme-state-brief.sh {{EPIC}}" },
+  "contextCeiling": 250000
 }
 ```
 
@@ -121,6 +122,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
+- `contextCeiling` is optional (default 250000; `CLAIM_CONTEXT_CEILING` in the environment wins): the input-context size, in tokens, past which a SPAWNED run is told to park. `context-ceiling.sh` reads the last assistant turn's usage from the transcript (input + cache read + cache creation) after every tool call of a run `spawn-claim.sh` started, and once it passes this number tells the agent — once per run — to finish the step in hand and park per `/agent-harness:claim` (push, draft PR, resume brief, release; no human-hold label), so a fresh spawn resumes from the brief with a clean context. Measured before it existed: spawned runs reached ~380k tokens per turn, stopping only on the budget. An interactive session is never told.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
 
 Read a value with `toolkit_cfg <dotted.key>` after sourcing `scripts/toolkit-env.sh`. Arrays join on spaces, so `for l in $(toolkit_cfg labels.decision)` reads naturally.
@@ -163,6 +165,7 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | PreToolUse (Bash) | `no-repo-wide-format.sh` | refuses a formatter over a whole folder, and a whole-app check from an unattended run |
 | PreToolUse (Bash) | `no-broad-kill.sh` | refuses a `pkill`/`killall` pattern that would hit a peer agent |
 | PreToolUse (Write\|Edit) | `block-write-traps.sh` | a phantom worktree path, an edit in the shared clone, a credential in a memory file, a new command or skill born outside the kit |
+| PostToolUse | `context-ceiling.sh` | in a spawned run only: once the context passes `contextCeiling`, tells the agent — once — to finish the step and park with a resume brief so a fresh run takes over |
 | SessionEnd | `session-end-cleanup.sh` | drops the session's own scratch state |
 | Stop | `signoff-backstop.sh` | refuses a hand-back without the sign-off banner while work is live |
 | Stop | `ask-dont-narrate.sh` | refuses a hand-back that narrates a decision instead of asking it |
