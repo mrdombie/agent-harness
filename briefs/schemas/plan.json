@@ -4,45 +4,107 @@
   "description": "What the plan step returns to the driver: a decomposition, or a question that parks the ticket.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["step", "skills", "status", "premise", "designSource"],
+  "required": [
+    "step",
+    "skills",
+    "status",
+    "premise",
+    "designSource"
+  ],
   "properties": {
-    "step": { "const": "plan" },
+    "step": {
+      "const": "plan"
+    },
     "skills": {
       "description": "Every Superpowers skill invoked in this step. The driver cross-checks this against the Skill calls in the run log, so a claim here that the log does not show is a failed step.",
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "pattern": "^superpowers:[a-z][a-z-]*$" }
+      "items": {
+        "type": "string",
+        "pattern": "^superpowers:[a-z][a-z-]*$"
+      }
     },
-    "status": { "enum": ["planned", "park"] },
-    "designSource": { "enum": ["ticket-body", "brainstormed", "debugged"] },
+    "status": {
+      "enum": [
+        "planned",
+        "park"
+      ]
+    },
+    "designSource": {
+      "enum": [
+        "ticket-body",
+        "brainstormed",
+        "debugged"
+      ]
+    },
     "premise": {
       "description": "The premise verdict. It has no automatic form: a mechanical path-exists check measured 0 true positives in 25, so the verdict is a reading and the evidence names where it was read.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["verdict", "evidence"],
+      "required": [
+        "verdict",
+        "evidence"
+      ],
       "properties": {
-        "verdict": { "enum": ["still-true", "already-fixed", "changed-shape"] },
-        "evidence": { "type": "string", "minLength": 1 }
+        "verdict": {
+          "enum": [
+            "still-true",
+            "already-fixed",
+            "changed-shape"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        }
       }
+    },
+    "schemaChange": {
+      "description": "True when a task in this plan changes the database schema. The driver refuses a plan that says true and names no reviewed data model: a database change invented inside a ticket is the one mistake a later ticket cannot undo cheaply.",
+      "type": "boolean"
+    },
+    "dataModelSpec": {
+      "description": "The reviewed and approved data model this plan changes the schema to, and where that approval is recorded. Required whenever schemaChange is true.",
+      "type": "string",
+      "minLength": 1
     },
     "tasks": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "files", "tests"],
+        "required": [
+          "title",
+          "files",
+          "tests"
+        ],
         "properties": {
-          "title": { "type": "string", "minLength": 1 },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
           "files": {
             "type": "array",
             "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["path", "action"],
+              "required": [
+                "path",
+                "action"
+              ],
               "properties": {
-                "path": { "type": "string", "minLength": 1 },
-                "action": { "enum": ["create", "modify", "delete"] }
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "action": {
+                  "enum": [
+                    "create",
+                    "modify",
+                    "delete"
+                  ]
+                }
               }
             }
           },
@@ -53,10 +115,19 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["file", "behaviour"],
+              "required": [
+                "file",
+                "behaviour"
+              ],
               "properties": {
-                "file": { "type": "string", "minLength": 1 },
-                "behaviour": { "type": "string", "minLength": 1 },
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "behaviour": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "redWhen": {
                   "description": "The production change that makes this test fail. A test whose author cannot name one is measuring the shape of the code.",
                   "type": "string",
@@ -65,7 +136,13 @@
               }
             }
           },
-          "risks": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
@@ -74,9 +151,51 @@
       "type": "string",
       "minLength": 1
     },
-    "notes": { "type": "string" }
+    "notes": {
+      "type": "string"
+    }
   },
-  "if": { "properties": { "status": { "const": "planned" } } },
-  "then": { "required": ["tasks"], "properties": { "tasks": { "type": "array", "minItems": 1 } } },
-  "else": { "required": ["question"] }
+  "if": {
+    "properties": {
+      "status": {
+        "const": "planned"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "tasks"
+    ],
+    "properties": {
+      "tasks": {
+        "type": "array",
+        "minItems": 1
+      }
+    }
+  },
+  "else": {
+    "required": [
+      "question"
+    ]
+  },
+  "allOf": [
+    {
+      "$comment": "A schema change names its approved model. The driver reads the same two keys; the contract is what makes the two agree.",
+      "if": {
+        "required": [
+          "schemaChange"
+        ],
+        "properties": {
+          "schemaChange": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "dataModelSpec"
+        ]
+      }
+    }
+  ]
 }

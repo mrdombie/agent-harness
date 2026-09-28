@@ -118,5 +118,18 @@ t nag   'both written together is a solo session, still demanded'     'All done.
 export PATH=$OLDPATH; rm -rf "$STUB"; rm -f "$LABEL.owner"
 unset FAKE_ME FAKE_LIVE
 
+# A DRIVER STEP IS NOT A PERSON'S TURN. The banner is an instruction to an
+# operator's terminal, and inside a driver step there is no operator — the exit 2
+# made the model replace its whole final answer with the banner, so the driver read
+# no JSON at all and both tickets of the 2026-09-27 trial parked at step 1 of 7.
+# The control above it is the same input WITHOUT the marker: nag, then quiet.
+rm -rf "$MDIR"
+printf 'content-lab\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$LABEL"
+rm -f "$LABEL.owner"
+t nag   'the control: this input does nag'                 'All done, merged it.'  false d0
+rm -rf "$MDIR"
+HARNESS_DRIVER_RUN=10867:plan \
+  t quiet 'and stands down for a driver step'              'All done, merged it.'  false d1
+
 rm -rf "$MDIR"
 exit $fail

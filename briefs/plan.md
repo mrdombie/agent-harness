@@ -85,5 +85,9 @@ production change that would make it fail — the fix deleted, not a typo
 introduced. A task with no test has no shape in that contract, because it cannot
 be built test-first.
 
+`schemaChange` is true when a task changes the database schema, and then
+`dataModelSpec` names the reviewed model it changes it to. The contract requires
+the second whenever the first is true, and the driver reads the same two keys.
+
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

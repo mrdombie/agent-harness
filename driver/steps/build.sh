@@ -30,6 +30,7 @@
 #   2  it still failed WITH the change — the change does not do the job
 #   3  the commits could not be read
 #   4  a half ran out of time — a hang says nothing about the change
+#   5  a proof tree could not be prepared — the measurement was never made
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -51,9 +52,22 @@
 # change does not do the job", the rework burns every try, and the ticket parks.
 # On a project with a gitignored install that is every ticket, so this is not a
 # nicety: without it the step's whole guarantee is unreachable there.
+# 0 prepared · 1 this project's setup could not be run here.
+#
+# THE EXIT CODE IS READ. Wrapped in `>/dev/null 2>&1 || true` it re-opened the exact
+# bug the prepare list exists to close: a failed generate leaves the test command
+# resolving through a missing artifact, so it exits 127 in BOTH halves, the second
+# 127 reads as "the change does not do the job", the rework loop burns every try, and
+# the ticket parks blaming a change that works. The measurement was never made, and a
+# measurement that could not be made is not a red.
 _driver_proof_install() { # <repo> <tree>
   [ -d "$1/node_modules" ] && ln -sfn "$1/node_modules" "$2/node_modules"
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
+  # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
+  # Left on stdout, driver_prepare_worktree's own narration was captured into $why and
+  # printed as part of the proof's verdict — and on the refusal path the park note was
+  # the same sentence twice, naming a temp tree that had already been deleted.
+  driver_prepare_worktree "$2" >&2 || return 1
   return 0
 }
 
@@ -86,7 +100,11 @@ driver_prove_red_green() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-proof-XXXXXX")
   git -C "$repo" worktree add -q --detach "$tmp/before" "$base" 2>/dev/null || {
     rm -rf "$tmp"; printf 'could not check out %s\n' "$base"; return 3; }
-  _driver_proof_install "$repo" "$tmp/before"
+  if ! _driver_proof_install "$repo" "$tmp/before"; then
+    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
+    printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    return 5
+  fi
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
   ( cd "$tmp/before" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
@@ -95,7 +113,12 @@ driver_prove_red_green() {
   git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
     git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
     printf 'could not check out %s\n' "$isha"; return 3; }
-  _driver_proof_install "$repo" "$tmp/after"
+  if ! _driver_proof_install "$repo" "$tmp/after"; then
+    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
+    git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1; rm -rf "$tmp"
+    printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    return 5
+  fi
   # The SAME version of the test in both trees. A test sharpened while the change
   # was built is ordinary, and then the change's own tree holds an EARLIER version:
   # running that one measures a different test in each half, and the two answers get
@@ -135,7 +158,8 @@ driver_prove_red_green() {
 
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
-  local repo tries rc n bad item id tfile tcmd tsha isha why prc
+  local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha why prc
+  local want_task got_task pair seen_pairs=""
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
@@ -144,61 +168,119 @@ driver_step_build() { # <ticket>
   driver_state_bump "$t" build
   tries=$(driver_state_count "$t" build)
 
-  # The build brief invokes superpowers:subagent-driven-development: inside a
-  # ticket, splitting the work belongs to Superpowers. The driver never starts
-  # several agents on one ticket itself — it runs one brief, and that brief's
-  # skill does the fan-out, with test-driven-development inside each task.
-  rc=0; driver_ai_step "$t" build "$(driver_state_dir "$t")/steps/plan.json" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    # A question, a skipped Skill or a broken answer is not a rework loop: those
-    # park, and they park with their OWN reason. Running them through the ceiling
-    # would rewrite the model's question as "build refused (exit 24)" on the last
-    # try, and the operator would be handed a code in place of the question they
-    # have to answer. Only an UNPROVED build is worth another try.
-    return "$rc"
-  fi
-
-  n=$(jq -r '(.items // []) | length' "$(driver_state_dir "$t")/steps/build.json")
-  if [ "${n:-0}" -eq 0 ]; then
-    driver_say "✋ build: the answer carries no items. A build that changed nothing is not a build that passed."
+  # ONE CALL PER PLAN TASK, because that is what the brief and the contract say:
+  # build.md opens "You are building **one** task from the plan", and
+  # briefs/schemas/build.json carries ONE `task` string and ONE `testFirst` object.
+  # This step used to read `.items[]` with `test_file` / `test_commit` / `impl_commit`
+  # — four names the contract does not have and `additionalProperties: false`
+  # forbids — so an answer meeting the contract was refused here and an answer this
+  # could read was refused by the validator. The same defect as the plan step's, in
+  # the step the trial never reached.
+  #
+  # Sequential, never parallel: inside a ticket the fan-out belongs to
+  # superpowers:subagent-driven-development, which the brief invokes, with a fresh
+  # helper per task. The driver never starts several agents on one ticket.
+  ntasks=$(jq -r '[.tasks[]?] | length' "$(driver_state_dir "$t")/steps/plan.json" 2>/dev/null)
+  if [ "${ntasks:-0}" -eq 0 ]; then
+    driver_say "✋ build: the plan carries no task to build. A build that changed nothing is not a build that passed."
     return "$DRIVER_E_REFUSED"
   fi
 
   bad=0
+  : > "$(driver_state_dir "$t")/steps/build.all.json"
   local i=0
-  while [ "$i" -lt "$n" ]; do
-    item=$(jq -c --argjson i "$i" '.items[$i]' "$(driver_state_dir "$t")/steps/build.json")
-    id=$(printf '%s' "$item" | jq -r '.id // "?"')
-    tfile=$(printf '%s' "$item" | jq -r '.test_file // ""')
-    tcmd=$(printf '%s'  "$item" | jq -r '.test_command // ""')
-    tsha=$(printf '%s'  "$item" | jq -r '.test_commit // ""')
-    isha=$(printf '%s'  "$item" | jq -r '.impl_commit // ""')
+  while [ "$i" -lt "$ntasks" ]; do
+    task=$(jq -c --argjson i "$i" '.tasks[$i]' "$(driver_state_dir "$t")/steps/plan.json")
     i=$((i+1))
+    slot="build-task-$i"
+    ans="$(driver_state_dir "$t")/steps/$slot.json"
 
+    # The one task this call builds, as the brief's own placeholder.
+    driver_fact_put "$t" "$slot" PLAN_TASK "$(printf '%s' "$task" | jq .)"
+    rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      # A question, a skipped Skill or a broken answer is not a rework loop: those
+      # park, and they park with their OWN reason. Running them through the ceiling
+      # would rewrite the model's question as "build refused (exit 24)" on the last
+      # try, and the operator would be handed a code in place of the question they
+      # have to answer. Only an UNPROVED build is worth another try.
+      return "$rc"
+    fi
+    jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
+
+    # THE ANSWER MUST NOT BE ABOUT A DIFFERENT TASK. The proof re-runs whatever two
+    # shas it is handed and cannot tell which task they belong to — so an answer that
+    # returns ANOTHER task's title and commits proves red-then-green perfectly, `bad`
+    # stays 0, and the step reports every task built while one was never touched. The
+    # suite's own two-task case did exactly that and passed.
+    #
+    # IT IS NOT BYTE EQUALITY WITH THE TITLE ASKED FOR. Nothing in build.md told the
+    # model the string had to be verbatim, so a restored full stop or a normalised dash
+    # would have sent a perfectly built task round the rework loop five times and then
+    # parked it saying "the tests still do not prove the change" — a sentence that is
+    # false, about tests that are fine. Adding a checker without adding the prompt is
+    # this repo's own named defect, so the brief now states the rule AND the check only
+    # fires on the thing that is unambiguously wrong: a title belonging to a different
+    # task in this same plan. A title matching none of them is said and allowed.
+    want_task=$(printf '%s' "$task" | jq -r '.title // ""')
+    got_task=$(jq -r '.task // ""' "$ans")
+    if [ -n "$got_task" ] && [ "$got_task" != "$want_task" ]; then
+      if jq -e --arg g "$got_task" --arg w "$want_task" \
+           '[.tasks[]?.title] | index($g) != null and $g != $w' \
+           "$(driver_state_dir "$t")/steps/plan.json" >/dev/null 2>&1; then
+        driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task', which is another task in this plan. A task nobody built is a task that ships unbuilt."
+        bad=1; continue
+      fi
+      driver_say "   build: the answer calls this task '$got_task'; the plan calls it '$want_task'"
+    fi
+    tfile=$(jq -r '.testFirst.test.file // ""' "$ans")
+    tcmd=$(jq -r  '.testFirst.command // ""'   "$ans")
+    tsha=$(jq -r  '.testFirst.testCommit // ""' "$ans")
+    isha=$(jq -r  '.testFirst.implCommit // ""' "$ans")
     if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; then
-      driver_say "✋ build item $id names no test to prove it (needs test_file, test_command, test_commit, impl_commit)."
+      driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)."
       bad=1; continue
     fi
+    # AND ITS OWN COMMITS. A pair already proved for an earlier task proves that task
+    # again, not this one — same hole as the title, reached by the other door.
+    #
+    # KEYED ON THE RESOLVED COMMIT, not on the string the model typed. The contract asks
+    # for seven characters or more, so `a1b2c3d` and its full sha are two keys for one
+    # commit — and that is a third door to the same hole.
+    pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")"
+    case " $seen_pairs " in
+      *" $pair "*)
+        driver_say "✋ build '$got_task' is proved by the same two commits as an earlier task ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)). One change cannot be two tasks built test-first."
+        bad=1; continue ;;
+    esac
+    seen_pairs="$seen_pairs $pair"
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     if [ "$prc" -eq 0 ]; then
-      driver_say "   build item $id — $why"
+      driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+    elif [ "$prc" -eq 5 ]; then
+      # Not a rework and not a red: the proof was never taken. Retrying it five times
+      # would spend the whole ceiling on a tree this machine cannot build, and then
+      # park accusing the change.
+      driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+      driver_state_set "$t" park_note "$why"
+      return "$DRIVER_E_REFUSED"
     elif [ "$prc" -eq 4 ]; then
       # A HANG IS NOT A FAILING TEST, so it does not go in the retry bucket. Folded in
       # with the rest it was tried five times — at the default ceiling that is five
       # attempts times two proof halves of waiting — and the ticket then parked blaming
       # the change, which is what this step's own header forbids. It returns its own
       # code so the orchestrator parks with the real reason immediately.
-      driver_say "✋ build item $id — $why"
+      driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
       return "$DRIVER_E_TIMEOUT"
     else
-      driver_say "✋ build item $id — $why"
+      driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
       bad=1
     fi
   done
 
   if [ "$bad" -eq 0 ]; then
-    driver_say "   build: every item proved red before green"
+    driver_say "   build: all $ntasks task(s) proved red before green"
     return "$DRIVER_OK"
   fi
   _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"

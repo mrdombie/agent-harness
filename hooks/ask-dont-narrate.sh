@@ -27,6 +27,15 @@ IN=$(cat)
 LOG=/tmp/claude-ask-dont-narrate.log
 say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
 
+# 0. A DRIVER STEP IS NOT A PERSON'S TURN. The driver exports HARNESS_DRIVER_RUN
+#    for the step it is running, and both Stop hooks stand down on it. Measured on
+#    the 2026-09-27 trial: this hook's exit 2 made the model replace its whole final
+#    answer with the four-line banner, so the driver read no JSON at all on either
+#    ticket and both runs parked at step 1 of 7. A banner is an instruction to an
+#    operator's terminal; there is no operator here, and nothing to keep track of
+#    that the run record does not already hold.
+[ -n "${HARNESS_DRIVER_RUN:-}" ] && { say "exit0 driver-run ${HARNESS_DRIVER_RUN}"; exit 0; }
+
 # 1. The documented escape hatch — we already blocked once this turn.
 [ "$(printf '%s' "$IN" | jq -r '.stop_hook_active // false')" = "true" ] && {
   say "exit0 stop_hook_active"; exit 0; }

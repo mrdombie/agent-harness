@@ -31,8 +31,9 @@ driver_fixture() {
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"
+  CLAUDE_ENV_LOG="$FIX/claude-env.log"
   mkdir -p "$REPO/.claude" "$STATE/driver" "$STATE/runs" "$STATE/logs" "$BIN" "$FIX/gh" "$FIX/ai"
-  : > "$GH_LOG"; : > "$CLAUDE_LOG"
+  : > "$GH_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ENV_LOG"
 
   git -C "$REPO" init -q -b develop
   git -C "$REPO" config user.email t@example.invalid
@@ -114,9 +115,28 @@ SH
   # passed by the driver as --name, which is also how the stub finds its script.
   cat > "$BIN/claude" <<'SH'
 #!/usr/bin/env bash
-step=""; prev=""
-for a in "$@"; do case "$prev" in --name) step="$a" ;; esac; prev="$a"; done
+step=""; prev=""; schema=""
+for a in "$@"; do
+  case "$prev" in --name) step="$a" ;; --json-schema) schema="$a" ;; esac
+  prev="$a"
+done
 printf '%s\n' "$step" >> "$CLAUDE_LOG"
+# What the driver gave this invocation, so a suite can read it back. Three things
+# were unreadable from outside and each one shipped a defect: which directory the
+# agent ran in (F8), whether the Stop hook was told to stand down (F1), and the
+# prompt it was actually sent (F4).
+printf '%s\t%s\t%s\n' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
+printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
+# The prompt arrives on STDIN, not in argv — argv has a ceiling and a substituted
+# brief carrying a diff goes past it. Kept so a suite can read what was sent.
+# BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's
+# `< "$prompt"` is the plant that proves the redirect is load-bearing — and with a
+# plain `cat` here that plant HUNG instead of going red, which reports the guard as
+# sound. perl is the same tool driver_bounded uses and is on every machine this kit
+# runs on; the real CLI bounds its own stdin wait the same way (measured: "no stdin
+# data received in 3s, proceeding without it").
+perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
+  > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
 f="$FIX/ai/$step.jsonl"
 [ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
 cat "$f"
@@ -124,7 +144,7 @@ SH
 
   chmod +x "$BIN/gh" "$BIN/claude"
 
-  export FIX REPO STATE BIN GH_LOG CLAUDE_LOG
+  export FIX REPO STATE BIN GH_LOG CLAUDE_LOG CLAUDE_ENV_LOG
   export PATH="$BIN:$PATH"
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
@@ -163,11 +183,46 @@ fix_ai() {
   local step="$1" result="$2" skill="${3:-}"
   local f="$FIX/ai/$step.jsonl"
   : > "$f"
-  if [ -n "$skill" ]; then
-    jq -nc --arg s "$skill" \
+  local s
+  for s in $skill; do
+    jq -nc --arg s "$s" \
       '{type:"assistant", message:{content:[{type:"tool_use", name:"Skill", input:{skill:$s}}]}}' >> "$f"
-  fi
-  jq -nc --arg r "$result" '{type:"result", subtype:"success", is_error:false, result:$r}' >> "$f"
+  done
+  # BOTH FIELDS, because the real runner emits both. `claude -p --json-schema`
+  # puts the validated answer in `structured_output` and the final message text in
+  # `result`, and a transcript carrying only the second cannot tell the two readers
+  # apart. fix_ai_banner below is the case where they DISAGREE.
+  jq -nc --arg r "$result" \
+    '{type:"result", subtype:"success", is_error:false, result:$r,
+      structured_output:($r | try fromjson catch null)}' >> "$f"
+}
+
+# fix_ai_banner <step> <json-answer> <last-message> [skills…] — the shape a Stop
+# hook produces: `structured_output` is the answer, `result` is whatever the hook
+# made the model say last. Measured on the 2026-09-27 trial: the kit's own
+# signoff-backstop replaced the whole of `.result` with a four-line banner.
+fix_ai_banner() {
+  local step="$1" answer="$2" last="$3" skill="${4:-}"
+  local f="$FIX/ai/$step.jsonl"
+  : > "$f"
+  local s
+  for s in $skill; do
+    jq -nc --arg s "$s" \
+      '{type:"assistant", message:{content:[{type:"tool_use", name:"Skill", input:{skill:$s}}]}}' >> "$f"
+  done
+  jq -nc --arg r "$last" --argjson so "$answer" \
+    '{type:"result", subtype:"success", is_error:false, result:$r, structured_output:$so}' >> "$f"
+}
+
+# fix_real_briefs — point the driver at the briefs THAT SHIP, not at ones the
+# fixture wrote. Every check between the driver and the briefs was invisible
+# because this fixture wrote its own copies of both sides (the 2026-09-27 trial's
+# "a lab full of replicas"): front matter no shipped brief has, a `gates` shape no
+# project uses, and schemas nothing but the fixture ever produced.
+fix_real_briefs() {
+  export DRIVER_BRIEFS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../briefs" && pwd)"
+  export DRIVER_SCHEMAS="$DRIVER_BRIEFS/schemas"
+  export DRIVER_VALIDATE="$DRIVER_BRIEFS/validate.sh"
 }
 
 # fix_brief <step> <skill-or-empty> [body] — a brief file the driver will read.

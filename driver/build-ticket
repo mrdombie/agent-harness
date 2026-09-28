@@ -253,5 +253,13 @@ if [ "$ran" -eq 0 ]; then
 fi
 [ "$skipped" -eq 0 ] \
   || driver_say "   resumed: $skipped step(s) were already finished and did not run again."
-driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')"
+# "shipped" IS THE SHIP STEP, not the end of the loop. `--steps start` printed
+# "✓ #10907 shipped: start" on the 2026-09-27 trial, about a run that had claimed a
+# ticket and done nothing else — and a completion line that says the same thing
+# however far a run got is a line nobody can read a verdict off.
+if driver_state_is_done "$TICKET" ship; then
+  driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')"
+else
+  driver_say "✓ #$TICKET ran $(driver_state_get "$TICKET" 'done|join(" · ")') — not shipped: the order given did not reach the ship step."
+fi
 exit "$DRIVER_OK"

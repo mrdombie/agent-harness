@@ -33,7 +33,7 @@ The repo is its own marketplace. In the consuming repo's `.claude/settings.json`
 
 Or per machine: `claude plugin marketplace add mrdombie/agent-harness && claude plugin install agent-harness@agent-harness`.
 
-**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging`, `subagent-driven-development`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list. Install it alongside. The driver goes further and **checks** — each AI step's brief names one skill, and the driver parks the ticket when the run's transcript does not show that Skill call.
+**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging`, `subagent-driven-development`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list — and it is the list the driver READS, not prose. The driver parks the ticket when a step's transcript shows none of the skills that file declares for it, and again when the answer claims a skill the transcript never shows.
 
 `brainstorming` is deliberately NOT in that list. It waits on a person, so an unattended step cannot invoke it — the approved spec stands in for it, and `briefs/facts.json` records that under `notInvoked`.
 
@@ -68,16 +68,24 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "decision": ["status:pm-track", "status:pm-decision", "needs:human-approval"]
   },
   "law": "docs/design/design-philosophy.md",
+  "standards": "docs/CODING_STANDARDS.md",
   "gates": {
     "local": ["npm run gates"],
     "requiredChecks": ["Typecheck + Unit tests", "Code gates"]
   },
+  "worktree": { "prepare": ["npx prisma generate"] },
+  "commit": { "parkType": "chore" },
   "design": { "kit": "@you/ui", "tokens": "packages/ui/src/tokens.ts" }
 }
 ```
 
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
+- `gates.local` is the list of LOCAL gate commands, and it is the only part of `gates` anything runs. `group` names a gate group inside your own runner and `requiredChecks` names the CI checks a pull request waits on — neither is a shell line, and the driver never treats them as one. A flat `{ "<name>": "<command>" }` map is read too; a key whose value is not a string counts as an empty command, so it is named in the "nothing ran" refusal rather than dropped in silence.
+- `standards` is optional: the coding-standards document a change is held to. The driver hands it to the build step as its own fact, and falls back to `law` when it is absent — so a project with both should name both, or the build agent is told the design philosophy IS the coding standard.
+- `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
+- `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
+- `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
 
@@ -97,7 +105,9 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
-           the thinking — see driver/README.md
+           the thinking · facts.sh fills the briefs' placeholders and refuses when
+           one has no value · prompt-schema.jq derives the shape the model is
+           bound to from the contract — see driver/README.md
 swarm/     agents that run with no session open: scheduler · queue · repair-watch
            live-view · report · install — see swarm/README.md
 shared/    operator.md · agent-signoff.md

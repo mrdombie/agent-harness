@@ -93,6 +93,29 @@ project facts, the Superpowers skill to invoke, and the JSON it must hand back.
 The driver validates that answer against `briefs/schemas/<step>.json` **when that
 file exists**; absent is normal and not an error.
 
+**The placeholders are filled, and an unfilled one stops the step.** `facts.sh`
+gathers each `{{FACT}}` a brief declares in `briefs/facts.json`, writes it to
+`<state>/steps/<slot>.facts/<NAME>`, and substitutes. Every gatherer returns either
+a value or a sentence saying there is none and why, so nothing resolves to empty by
+accident — and a placeholder with no value at all is a refusal. Until 2026-09-28
+nothing substituted: the plan prompt was byte-identical for two different tickets
+and six placeholders reached the model as the characters `{{TICKET}}`.
+
+**The model is bound to the answer's shape, not asked for it.** `--json-schema` gets
+a copy of the contract derived by `prompt-schema.jq`, because the API's tool-input
+path refuses keywords a draft-07 validator accepts — `allOf` at the top level 400s.
+The answer is then read from `structured_output` rather than the last message, which
+is the only field a `Stop` hook cannot rewrite, and the driver exports
+`HARNESS_DRIVER_RUN` so the kit's own two Stop hooks stand down. Both halves: on the
+2026-09-27 trial the sign-off backstop replaced the entire final message with its
+banner and every AI answer was unreadable.
+
+**The skills come from `briefs/facts.json`.** A step must show at least one of the
+skills that file declares for it, and every skill its ANSWER claims must appear in
+the transcript. A brief may also pin one in `skill:` front matter; none of the
+shipped briefs does, which is why the front-matter-only read left all three AI steps
+ungated while the fixture wrote that line into briefs of its own.
+
 The check is one call to `briefs/validate.sh`, which reads the whole schema through
 ajv. It is not re-derived here, and the strictness is the reason: it lives in
 `additionalProperties: false`, in nested `required`, in `failedBefore` pinned to
@@ -121,7 +144,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 |---|---|
 | 0 | the step finished |
 | 20 | the step asked a question — the ticket parks with it |
-| 21 | the brief named a Skill and the transcript does not show it |
+| 21 | a declared or claimed Skill is not in the transcript |
 | 22 | the answer did not meet its contract, or the contract could not be read |
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
@@ -146,6 +169,7 @@ layer's are: eight scripts that shelled out inline could not be tested at all.
 | `DRIVER_MAX_BUILD_TRIES` · `DRIVER_MAX_REVIEW_ROUNDS` | the two ceilings |
 | `DRIVER_CMD_TIMEOUT` | how long a gate or test command may run |
 | `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check) |
+| `HARNESS_DRIVER_RUN` | exported per step; the kit's Stop hooks stand down on it |
 | `SWARM_GH` · `SWARM_NOW` | inherited: the GitHub CLI and the clock |
 
 This layer sits **on** `swarm/swarm-env.sh` rather than beside it. The swarm
@@ -164,6 +188,13 @@ a control-flow question gets a clean answer, and against the real seven for one
 whole pass — a real repository, a real origin, real commits whose test goes red
 then green, with a transcript standing in only for the model. A suite full of
 replicas proves the kit and never the product.
+
+`real-briefs.test.sh` is the third reading and the one the others cannot give: the
+briefs, the contracts and the answers are the files that SHIP, and only the model is
+stubbed. Every other suite here points `DRIVER_BRIEFS` at a directory the fixture
+wrote — which is how five Criticals lived in the seam between the driver and the
+briefs while `ai-step.test.sh` exited 0. If you change a contract, a brief, or what
+a step reads out of one, that is the suite that will notice.
 
 ## One note for anyone editing the step files
 

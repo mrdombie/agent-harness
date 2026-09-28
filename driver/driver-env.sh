@@ -155,6 +155,75 @@ driver_bounded() { # <seconds> <command>
   return "$rc"
 }
 
+# driver_prepare_worktree <tree> — this project's per-checkout setup, in a freshly
+# created tree. Sets DRIVER_PREPARE_WHY and returns 1 when a command fails.
+#
+# A linked node_modules and a copy of the hook shims are not the whole of what a
+# worktree needs. Measured on the 2026-09-27 trial, every push from a driver
+# worktree was refused:
+#
+#   ✗ pre-push blocked: the prompt-template hash does not describe the prompt sources.
+#       Error: Cannot find module '@/generated/prisma/client'
+#
+# The generated database client is gitignored and per-checkout, so a fresh worktree
+# has none and every hook importing it dies. The kit cannot know what a project
+# generates, so the project says: `worktree.prepare` in harness.json, a list of
+# commands. Absent is normal and skipped.
+#
+# It runs in the START step's tree AND in the build step's two proof trees. A test
+# command resolving through a generated artifact exits 127 in both halves of the
+# red/green proof, and 127 in the second half reads as "the change does not do the
+# job" — so the ticket parks blaming a change that works.
+DRIVER_PREPARE_WHY=""
+driver_prepare_worktree() { # <tree>
+  local tree="${1:?driver_prepare_worktree: need a tree}" ptype n i cmd out rc
+  DRIVER_PREPARE_WHY=""
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
+  # THE SHAPE FIRST, because `length` answers for a string and an object too. Written
+  # as a bare string — `"prepare": "npx prisma generate"` — `// []` does not fire (a
+  # string is truthy), length is the CHARACTER COUNT, every per-element read errors
+  # into /dev/null, and this returned 0 having prepared nothing. Measured: 19 for a
+  # 19-character string. That is the defect self-check.sh refuses one file over, and
+  # its consequence here is worse: an unprepared tree that reports as prepared fails
+  # at the push, or 127s in both halves of the build step's proof.
+  ptype=$(jq -r '(.worktree.prepare // null) | type' "$HARNESS_CFG" 2>/dev/null)
+  case "$ptype" in
+    null)  return 0 ;;
+    array) : ;;
+    # An EMPTY type is jq failing, not a shape: an unparseable harness.json, or a
+    # `worktree` that is itself a string. Given the shape arm's wording it printed
+    # "is a  and this reads a list", which tells the operator nothing about which.
+    '')    DRIVER_PREPARE_WHY="harness.json could not be read for worktree.prepare ($HARNESS_CFG), so NOTHING was prepared in $tree"
+           driver_say "✋ $DRIVER_PREPARE_WHY. Nothing having run is not everything having passed."
+           return 1 ;;
+    *)     DRIVER_PREPARE_WHY="harness.json's worktree.prepare is a $ptype and this reads a list of commands, so NOTHING was prepared in $tree"
+           driver_say "✋ $DRIVER_PREPARE_WHY. Nothing having run is not everything having passed."
+           return 1 ;;
+  esac
+  n=$(jq -r '.worktree.prepare | length' "$HARNESS_CFG" 2>/dev/null)
+  case "${n:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    cmd=$(jq -r --argjson i "$i" '.worktree.prepare[$i] | if type == "string" then . else "" end' "$HARNESS_CFG" 2>/dev/null)
+    i=$((i+1))
+    # An element that is not a command is NAMED, never skipped in silence — a list
+    # entry nobody ran and nobody mentioned is the same failure one shape up.
+    if [ -z "$cmd" ] || [ "$cmd" = "null" ]; then
+      DRIVER_PREPARE_WHY="harness.json's worktree.prepare entry $i of $n (counting from 1) is not a command, so it did not run in $tree"
+      driver_say "✋ $DRIVER_PREPARE_WHY"
+      return 1
+    fi
+    out=$( ( cd "$tree" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      DRIVER_PREPARE_WHY="harness.json's worktree.prepare command '$cmd' exited $rc in $tree: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
+      driver_say "✋ the worktree could not be prepared — $DRIVER_PREPARE_WHY. An unprepared tree cannot pass this project's pre-push, and finding that out at the push is finding it out after the build."
+      return 1
+    fi
+    driver_say "   prepared $tree with '$cmd'"
+  done
+  return 0
+}
+
 # driver_opt <dotted.key> <default> — an OPTIONAL project fact. toolkit_cfg
 # refuses a missing key by name, which is right for a fact the kit cannot invent;
 # these are tuning the kit can default without naming anyone's project.
@@ -179,5 +248,6 @@ DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
 export DRIVER_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
+export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
 export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK

@@ -36,11 +36,17 @@ For each step, read `facts.json`:
 - `brief` — the file to send.
 - `facts` — every `{{PLACEHOLDER}}` in that file, with what belongs in it.
   Substitute all of them before sending; only `UPPER_SNAKE` is substituted, and a
-  placeholder left unfilled reaches the model literally.
+  placeholder left unfilled reaches the model literally. The driver's `facts.sh`
+  does this and **refuses the step** when one resolves to nothing, because a prompt
+  that merely looks odd cannot be seen from outside a run. An empty value counts as
+  nothing: a gatherer that returns "" must return a sentence instead, saying there
+  is none and why.
 - `skills` — what the brief tells the AI to invoke. Cross-check this against the
   `Skill` calls in the run's log, not only against the answer's own `skills`
   array. A step that returns the right JSON without invoking the skill has not
-  run the step.
+  run the step. The driver reads this file for that set, and checks both
+  directions: one of the declared skills must be in the transcript, and every skill
+  the answer claims must be there too.
 
 Project facts come from the consuming repo's `.claude/harness.json`. Nothing in
 this directory names a project.
@@ -64,6 +70,17 @@ everything.
 `BRIEFS_AJV` overrides the validator, so a machine with the tool installed pays
 no download. `BRIEFS_SCHEMAS` overrides where the contracts are read from, which is
 how the driver calls this with its own `DRIVER_SCHEMAS` instead of re-deriving it.
+
+**A contract here is read by two things, and one of them relaxes it.** The driver
+binds the model to the answer's shape with `claude -p --json-schema`, and that path
+goes to the API as a tool input schema, which refuses keywords draft-07 allows —
+`allOf` at the top level returns a 400. So `driver/prompt-schema.jq` derives the
+relaxed copy from this file; nothing is written twice, and everything it drops is
+still enforced here after the answer comes back. Keep a rule you actually want
+enforced expressible in the contract, not only in a step's own jq: the plan step read
+four keys `schemas/plan.json` does not have, and with `additionalProperties: false`
+that meant a contract-valid answer was refused by the step and a step-readable
+answer was refused by the validator.
 
 `$AJV` is a **launcher** by default, and npm exits 1 for an unfetchable package, an
 unreachable registry and a cold `only-if-cached` alike — indistinguishable from

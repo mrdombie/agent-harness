@@ -13,6 +13,8 @@
       "redWhen": "the catch block is deleted so the throw propagates as []"
     },
     "command": "npm test -- src/queue/reader.test.ts",
+    "testCommit": "4f1c0b9a2d3e5f60718293a4b5c6d7e8f9012345",
+    "implCommit": "9a8b7c6d5e4f30291827364554637281909a8b7c",
     "failedBefore": false,
     "redOutput": "FAIL  expected 'failed', received undefined",
     "passedAfter": true,

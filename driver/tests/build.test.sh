@@ -140,13 +140,84 @@ echo "--- the proof leaves nothing behind ---"
 want "no stray worktrees" "0" \
   "$(git -C "$REPO" worktree list | grep -c 'driver-proof' || true)"
 
+
+# --- the build answer, in the contract's shape -------------------------------
+# It was `{items:[{test_file, test_command, test_commit, impl_commit}]}` — four names
+# briefs/schemas/build.json does not have, under a key it does not have either, and
+# the contract is additionalProperties:false. So this suite passed while the shipped
+# build step could not read a single contract-valid answer. The contract carries ONE
+# `task` and ONE `testFirst`, and the driver now calls the step once per plan task.
+#
+# A PLAN IS WHAT THE STEP READS ITS TASKS FROM, so each case writes one.
+fix_plan() { # <ticket> <task-count>
+  local t="$1" n="${2:-1}" i=1 tasks=""
+  while [ "$i" -le "$n" ]; do
+    tasks="${tasks:+$tasks,}$(jq -nc --arg ti "task $i" \
+      '{title:$ti, files:[{path:"a.sh",action:"modify"}],
+        tests:[{file:"a.test.sh", behaviour:"it does the thing", redWhen:"the fix is deleted"}]}')"
+    i=$((i+1))
+  done
+  printf '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"ticket-body","premise":{"verdict":"still-true","evidence":"a.sh:1"},"tasks":[%s]}\n' \
+    "$tasks" | jq . > "$(driver_state_dir "$t")/steps/plan.json"
+}
+
+# fix_build <test-file> <command> <test-sha> <impl-sha> [task]
+fix_build() {
+  jq -nc --arg f "$1" --arg c "$2" --arg t "$3" --arg i "$4" --arg k "${5:-task 1}" \
+    '{step:"build", skills:["superpowers:subagent-driven-development"], status:"built",
+      task:$k,
+      testFirst:{test:{file:$f, behaviour:"it does the thing", redWhen:"the fix is deleted"},
+                 command:$c, testCommit:$t, implCommit:$i,
+                 failedBefore:true, redOutput:"FAIL", passedAfter:true, greenOutput:"PASS"},
+      changed:[{path:"a.sh", action:"modify"}],
+      changelog:{skipped:"a test-only change"}}'
+}
+
+# A per-call stub: the nth call answers with $FIX/ai/<step>.<n>.jsonl, so two calls
+# in one step can return two different answers. With one answer for both, the
+# two-task case below proved task 1 twice and task 2 never, and passed.
+nth_claude() {
+cat > "$BIN/claude" <<'SH'
+#!/usr/bin/env bash
+# Everything the fixture stub records, kept — a replacement that quietly drops
+# them makes the next assertion added below measure a different stub than the
+# ones above it. The one thing it adds is a per-step call counter.
+step=""; prev=""; schema=""
+for a in "$@"; do
+  case "$prev" in --name) step="$a" ;; --json-schema) schema="$a" ;; esac
+  prev="$a"
+done
+printf '%s
+' "$step" >> "$CLAUDE_LOG"
+printf '%s	%s	%s
+' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
+printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
+# BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's
+# `< "$prompt"` is the plant that proves the redirect is load-bearing — and with a
+# plain `cat` here that plant HUNG instead of going red, which reports the guard as
+# sound. perl is the same tool driver_bounded uses and is on every machine this kit
+# runs on; the real CLI bounds its own stdin wait the same way (measured: "no stdin
+# data received in 3s, proceeding without it").
+perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
+  > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
+n=$(( $(cat "$FIX/nth.$step" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/nth.$step"
+if [ -f "$FIX/ai/$step.$n.jsonl" ]; then cat "$FIX/ai/$step.$n.jsonl"; exit 0; fi
+# The fixture stub's own refusal, kept: a missing transcript must not read as
+# "the agent produced no transcript".
+f="$FIX/ai/$step.jsonl"
+[ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
+cat "$f"
+SH
+chmod +x "$BIN/claude"; rm -f "$FIX"/nth.*
+}
+
 echo "--- the build step: an item that proves itself is accepted ---"
 export DRIVER_TICKET=101
 driver_state_init 101 --worktree "$REPO" --repo "$REPO"
 fix_brief build superpowers:subagent-driven-development
-fix_ai build "$(jq -nc --arg t "$TEST_SHA" --arg i "$IMPL_SHA" \
-  '{items:[{id:"1", test_file:"feature.test.sh", test_command:"bash feature.test.sh",
-            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+fix_plan 101 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
 out=$(driver_step_build 101 2>&1); rc=$?
 want "the step finishes"        "0" "$rc"
 want_in "and names what it proved" 'feature.test.sh' "$out"
@@ -156,9 +227,9 @@ echo "--- the build step: an unproved item is sent back, and counted ---"
 # after its successful attempt would make "the first failure" read as the second.
 # A real run never re-enters a step that finished; the test must not either.
 driver_state_init 102 --worktree "$REPO" --repo "$REPO"
-fix_ai build "$(jq -nc --arg t "$V_TEST" --arg i "$V_IMPL" \
-  '{items:[{id:"1", test_file:"vacuous.test.sh", test_command:"bash vacuous.test.sh",
-            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+fix_plan 102 1
+fix_ai build "$(fix_build vacuous.test.sh "bash vacuous.test.sh" "$V_TEST" "$V_IMPL")" \
+  superpowers:subagent-driven-development
 rc=0; driver_step_build 102 >/dev/null 2>&1 || rc=$?
 want "it asks for rework"  "30" "$rc"
 want "the try is counted"  "1"  "$(driver_state_count 102 build)"
@@ -176,9 +247,9 @@ echo "--- a hang in the proof is not retried five times and blamed on the tests 
 # five attempts times two proof halves of waiting — and parked saying the tests do not
 # prove the change. It has its own outcome, and the orchestrator parks on it at once.
 driver_state_init 505 --worktree "$REPO" --repo "$REPO"
-fix_ai build "$(jq -nc --arg t "$TEST_SHA" --arg i "$IMPL_SHA" \
-  '{items:[{id:"1", test_file:"feature.test.sh", test_command:"sleep 60",
-            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+fix_plan 505 1
+fix_ai build "$(fix_build feature.test.sh "sleep 60" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
 rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_step_build 505 2>&1) || rc=$?
 want "a hang is its own outcome, not a rework" "25" "$rc"
 want_in "and it says it ran out of time"       'time' "$out"
@@ -186,10 +257,13 @@ want "and only one try was spent"              "1" "$(driver_state_count 505 bui
 
 echo "--- a build that claims an item with no test at all ---"
 driver_state_init 202 --worktree "$REPO" --repo "$REPO"
-fix_ai build '{"items":[{"id":"1","impl_commit":"HEAD"}]}' superpowers:subagent-driven-development
+fix_plan 202 1
+# Every field of testFirst is required by the contract, so the shape with no test is
+# the one where testFirst is absent altogether — status `built` with nothing to prove.
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"built","task":"task 1","changed":[{"path":"a.sh","action":"modify"}],"changelog":{"skipped":"none"}}' superpowers:subagent-driven-development
 out=$(driver_step_build 202 2>&1); rc=$?
-want "an item with no test is rework" "30" "$rc"
-want_in "and it says which item"      'item 1' "$out"
+want "a task with no test is rework" "30" "$rc"
+want_in "and it says which task"     'task 1' "$out"
 
 echo "--- the last try does not turn a question into a refusal ---"
 # The ceiling exists for an UNPROVED build. A question, a skipped Skill or a broken
@@ -197,16 +271,140 @@ echo "--- the last try does not turn a question into a refusal ---"
 # the operator is handed "build refused" in place of the model's actual question.
 driver_state_init 404 --worktree "$REPO" --repo "$REPO"
 i=1; while [ $i -le "$DRIVER_MAX_BUILD_TRIES" ]; do driver_state_bump 404 build; i=$((i+1)); done
-fix_ai build '{"question":"which of the two schemas is the approved one?"}' superpowers:subagent-driven-development
+fix_plan 404 1
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"park","task":"task 1","question":"which of the two schemas is the approved one?"}' superpowers:subagent-driven-development
 rc=0; out=$(driver_step_build 404 2>&1) || rc=$?
 want "a question on the last try is still a question" "20" "$rc"
 want_in "and the question survives"  'which of the two schemas' "$out"
 
-echo "--- a build that changed nothing at all ---"
+echo "--- a plan with nothing in it is not a build that passed ---"
 driver_state_init 303 --worktree "$REPO" --repo "$REPO"
-fix_ai build '{"items":[]}' superpowers:subagent-driven-development
+fix_plan 303 0
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"built","task":"none"}' superpowers:subagent-driven-development
 out=$(driver_step_build 303 2>&1); rc=$?
-want "no items is a refusal, not a pass" "24" "$rc"
-want_in "and says why" 'no items' "$out"
+want "no task is a refusal, not a pass" "24" "$rc"
+want_in "and says why" 'no task' "$out"
+
+echo "--- two plan tasks are two calls, in order, never in parallel ---"
+# One call per task is what build.md and the contract say. Inside a ticket the
+# fan-out belongs to superpowers:subagent-driven-development, which the brief invokes;
+# the driver never starts several agents on one ticket. So the count is the measure.
+# EACH CALL ANSWERS ABOUT ITS OWN TASK, with its own two commits — which is what the
+# two refusals at the end of this file insist on, and what this case used to break.
+driver_state_init 606 --worktree "$REPO" --repo "$REPO"
+fix_plan 606 2
+nth_claude
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.1.jsonl"
+fix_ai build "$(fix_build refine.test.sh "bash refine.test.sh" "$R_TEST" "$R_IMPL" "task 2")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_build 606 2>&1) || rc=$?
+want "both tasks are proved"           "0" "$rc"
+want_in "and each by its own test"     'feature.test.sh' "$out"
+want_in "including the second"         'refine.test.sh'  "$out"
+want "one call per task and no more"   "2" "$(grep -c . "$CLAUDE_LOG")"
+want "each task's own answer is kept"  "2" \
+  "$(ls "$(driver_state_dir 606)/steps"/build-task-*.json | grep -c . || true)"
+want "and the step's own answer file is the last of them" "build" \
+  "$(jq -r '.step' "$(driver_state_dir 606)/steps/build.json")"
+rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+
+echo "--- the answer must build the task this call was given ---"
+# The proof re-runs whatever two shas it is handed and cannot tell which task they
+# belong to. So an answer returning the PREVIOUS task's title and commits proved red
+# then green, `bad` stayed 0, and the step reported every task built while one was
+# never touched. The two-task case above did exactly that and passed.
+# THE TWO GUARDS ARE MEASURED SEPARATELY. Written with one answer for both calls this
+# case passed with the title check inert — the SECOND call was caught by the commit-pair
+# check instead, so the rc was right for the wrong reason and only the message assertion
+# went red on the plant. Here call 2 carries the wrong TITLE and its own commits, so the
+# pair check cannot fire and nothing but the title check can catch it.
+driver_state_init 707 --worktree "$REPO" --repo "$REPO"
+fix_plan 707 2
+nth_claude
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.1.jsonl"
+fix_ai build "$(fix_build refine.test.sh "bash refine.test.sh" "$R_TEST" "$R_IMPL" "task 1")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
+out=$(driver_step_build 707 2>&1); rc=$?
+want "an answer about another task is sent back" "30" "$rc"
+want_in "and names both"  "given 'task 2'" "$out"
+want_not_in "and not by the commit-pair check" 'same two commits' "$out"
+rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+
+echo "--- a title the plan does not carry at all is said, not refused ---"
+# The near-miss: a restored full stop, a normalised dash. Nothing in build.md told the
+# model the string had to be verbatim, so refusing here sent a correctly-built task
+# round the rework loop five times and parked it saying "the tests still do not prove
+# the change" — false, about tests that are fine.
+driver_state_init 710 --worktree "$REPO" --repo "$REPO"
+fix_plan 710 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1.")" \
+  superpowers:subagent-driven-development
+out=$(driver_step_build 710 2>&1); rc=$?
+want "a near miss is not a refusal" "0" "$rc"
+want_in "and the difference is said"  "calls this task 'task 1.'" "$out"
+
+echo "--- and it must be proved by its own two commits ---"
+# The other door to the same hole: the right title, a pair already spent on task 1.
+driver_state_init 708 --worktree "$REPO" --repo "$REPO"
+fix_plan 708 2
+nth_claude
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.1.jsonl"
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 2")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
+out=$(driver_step_build 708 2>&1); rc=$?
+want "one change cannot be two tasks built test-first" "30" "$rc"
+want_in "and it says so"  'same two commits' "$out"
+rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+
+echo "--- a proof tree that could not be prepared is not a red ---"
+# The measurement was never taken, so blaming the change is the one thing this must
+# not do — and it used to, five times over, because the prepare ran into /dev/null
+# with `|| true`. Every try would have been spent and the ticket parked accusing a
+# change that works.
+jq '.worktree.prepare = ["sh -c \"exit 4\""]' "$REPO/.claude/harness.json" > "$FIX/hb.json"
+mv "$FIX/hb.json" "$REPO/.claude/harness.json"
+out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1); rc=$?
+want "the proof says it could not be taken"  "5" "$rc"
+want_in "and names the prepare, not the test" 'could not be prepared' "$out"
+want_not_in "it never blames the change"      'does not test it|still fails with the change' "$out"
+driver_state_init 709 --worktree "$REPO" --repo "$REPO"
+fix_plan 709 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
+out=$(driver_step_build 709 2>&1); rc=$?
+want "the step refuses rather than retrying it five times" "24" "$rc"
+want "and spends one try, not five"  "1" "$(driver_state_count 709 build)"
+
+echo "--- a prepare list that is not a list prepared nothing, and says so ---"
+# `"prepare": "npx generate"` — `// []` does not fire on a string, `length` is the
+# CHARACTER count, every element read errors into /dev/null, and this returned 0
+# having run nothing. Measured: 19 for a 19-character string.
+jq '.worktree.prepare = "sh -c \"echo generated > .prepared\""' "$REPO/.claude/harness.json" > "$FIX/hc.json"
+mv "$FIX/hc.json" "$REPO/.claude/harness.json"
+out=$(driver_prepare_worktree "$FIX" 2>&1); rc=$?
+want "a string is refused"      "1" "$rc"
+want_in "and named as a string" 'is a string' "$out"
+want "nothing was prepared"     "no" "$([ -f "$FIX/.prepared" ] && echo yes || echo no)"
+jq '.worktree.prepare = ["sh -c \"echo ok\"", 3]' "$REPO/.claude/harness.json" > "$FIX/hd.json"
+mv "$FIX/hd.json" "$REPO/.claude/harness.json"
+out=$(driver_prepare_worktree "$FIX" 2>&1); rc=$?
+want "an entry that is not a command is refused" "1" "$rc"
+want_in "and named by its position"              'entry 2' "$out"
+jq 'del(.worktree)' "$REPO/.claude/harness.json" > "$FIX/he.json"
+mv "$FIX/he.json" "$REPO/.claude/harness.json"
+want "and no prepare at all is still normal" "0" "$(driver_prepare_worktree "$FIX" >/dev/null 2>&1; echo $?)"
+# The config is left as the fixture wrote it. Four cases above mutate it, and a suite
+# whose end state is not its start state is an ordering dependency nothing states.
+git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true
 
 exit $FAILED

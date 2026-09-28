@@ -40,6 +40,8 @@
       "required": [
         "test",
         "command",
+        "testCommit",
+        "implCommit",
         "failedBefore",
         "redOutput",
         "passedAfter",
@@ -64,7 +66,7 @@
               "minLength": 1
             },
             "redWhen": {
-              "description": "The production change that makes this test fail \u2014 the fix deleted, not a typo introduced. A test whose author cannot name one is measuring the shape of the code.",
+              "description": "The production change that makes this test fail — the fix deleted, not a typo introduced. A test whose author cannot name one is measuring the shape of the code.",
               "type": "string",
               "minLength": 1
             }
@@ -73,6 +75,16 @@
         "command": {
           "type": "string",
           "minLength": 1
+        },
+        "testCommit": {
+          "description": "The commit that adds the test, and nothing else. The driver re-runs the test itself at the change's parent and requires it to fail, so it needs a commit to read the test out of — failedBefore is the claim, this is what makes it checkable.",
+          "type": "string",
+          "minLength": 7
+        },
+        "implCommit": {
+          "description": "The commit that makes the test pass. It must differ from testCommit: one squashed commit cannot show which came first, which is the thing being prevented.",
+          "type": "string",
+          "minLength": 7
         },
         "failedBefore": {
           "const": true
