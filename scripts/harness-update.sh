@@ -15,10 +15,16 @@
 #   drift worse, it does not fix it.
 #
 # WHAT IT WILL NOT DO
-#   - replace the pinned fetch with "latest": a build must stay reproducible, so
-#     the pin moves deliberately and never floats
-#   - move the pin when the kit's own suites fail at the target ref
+#   - install a kit whose own suites fail at the ref it is about to install
 #   - change anything before it has printed what it is about to change
+#
+# WHAT IT NO LONGER DOES (2026-09-28)
+#   It used to keep a SECOND pin — kit.repo / kit.ref in every consuming repo's
+#   harness.json — and rewrite it here. The marketplace catalog already pins the
+#   plugin and `claude plugin update` already applies that pin, so the second one
+#   was a hand-maintained copy of a fact the CLI owns. Nothing else read it, and
+#   the project it was written for carried no kit block at all. The test gate it
+#   guarded is kept, moved onto the install it actually protects.
 #
 # USAGE
 #   harness-update.sh --check     report drift, change nothing, exit non-zero if behind
@@ -191,33 +197,44 @@ else
   echo "  none"
 fi
 
-# ----------------------------------------------------------------- the kit pin
-hr; echo "THE KIT PIN"
-CFG="${HARNESS_CFG_PATH:-}"
-[ -n "$CFG" ] || CFG="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json"
-if [ -f "$CFG" ]; then
-  read -r KIT_REPO KIT_REF < <(jq -r '"\(.kit.repo // "") \(.kit.ref // "")"' "$CFG")
-  if [ -n "$KIT_REPO" ] && [ -n "$KIT_REF" ]; then
-    printf '  pinned at %s  (%s)\n' "${KIT_REF:0:12}" "$KIT_REPO"
-    KIT_SRC="$MARKET_DIR/$(basename "$KIT_REPO")"
-    if [ -d "$KIT_SRC/.git" ]; then
-      ahead=$(git -C "$KIT_SRC" rev-list --count "$KIT_REF..origin/HEAD" 2>/dev/null \
-           || git -C "$KIT_SRC" rev-list --count "$KIT_REF..origin/main" 2>/dev/null || echo "?")
-      if [ "$ahead" = "0" ]; then
-        echo "  the pin is current"
-      else
-        echo "  $ahead commit(s) would be applied:"
-        git -C "$KIT_SRC" log --oneline --no-decorate "$KIT_REF..origin/main" 2>/dev/null | sed 's/^/    /' | head -20
-        BEHIND=1
-      fi
-    else
-      echo "  (no local clone of the kit to compare against)"
-    fi
+# ------------------------------------------------------------------- the kit
+# WHICH KIT, AND WHERE ITS VERSION COMES FROM.
+#
+# This used to read kit.repo / kit.ref out of every consuming repo's
+# harness.json and rewrite the ref there. That was a second pin beside the one
+# the marketplace already keeps, hand-maintained, per project — and nothing but
+# this script ever read it. Measured 2026-09-28: one reader, and the project it
+# was written for carried no kit block at all, so the whole branch was dead.
+#
+# The marketplace IS the pin. `claude plugin marketplace update` moves the
+# catalog, `claude plugin update` moves the install to what the catalog says,
+# and installed_plugins.json records the sha that landed. What this script keeps
+# is the part the CLI has no opinion about: REFUSING TO MOVE ONTO A RED KIT.
+hr; echo "THE KIT"
+# The plugin's NAME, from its own manifest — not the directory it happens to sit
+# in. A worktree or a renamed clone must not change which install this is about.
+_kitdir="$(cd "$(dirname "$0")/.." && pwd)"
+KIT_PLUGIN=$(jq -r '.name // ""' "$_kitdir/.claude-plugin/plugin.json" 2>/dev/null)
+[ -n "$KIT_PLUGIN" ] || KIT_PLUGIN="$(basename "$_kitdir")"
+KIT_SRC="$MARKET_DIR/$KIT_PLUGIN"
+KIT_TARGET=""
+if [ -d "$KIT_SRC/.git" ]; then
+  git -C "$KIT_SRC" fetch -q origin 2>/dev/null
+  KIT_BR=$(git -C "$KIT_SRC" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  KIT_TARGET=$(git -C "$KIT_SRC" rev-parse "origin/$KIT_BR" 2>/dev/null || true)
+  KIT_HAVE=$(jq -r --arg k "$KIT_PLUGIN@$KIT_PLUGIN" \
+      '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' \
+      "$INSTALLED" 2>/dev/null)
+  printf '  installed %s   catalog %s\n' "${KIT_HAVE:0:12}" "${KIT_TARGET:0:12}"
+  if [ -n "$KIT_TARGET" ] && [ "$KIT_HAVE" != "$KIT_TARGET" ]; then
+    git -C "$KIT_SRC" log --oneline --no-decorate "${KIT_HAVE:-$KIT_TARGET}..$KIT_TARGET" 2>/dev/null \
+      | sed 's/^/    /' | head -20
+    BEHIND=1
   else
-    echo "  harness.json names no kit.repo / kit.ref"
+    echo "  the kit is current"
   fi
 else
-  echo "  no harness.json found — run this inside a configured checkout"
+  echo "  (no local clone of the kit's marketplace to compare against)"
 fi
 
 # ------------------------------------------------------------------- the verdict
@@ -240,15 +257,47 @@ fi
 echo "Everything above is what will change. Applying."
 hr
 
-# 1. Marketplaces, then plugins. Each is independent: one plugin failing to
-#    update is reported and the rest still move. A failure here never touches
-#    the pin, which is the only change that can break a build.
+# THE TEST GATE, KEPT — and moved onto the thing it actually protects. The kit's
+# own suites run AT THE TARGET REF before the kit is updated; a red kit is not
+# installed, and nothing else in the estate is held up by it. This is the one
+# check the CLI does not make: `claude plugin update` will happily move you onto
+# a broken commit.
+KIT_RED=0
+if [ -n "$KIT_TARGET" ] && [ "${KIT_HAVE:-}" != "$KIT_TARGET" ]; then
+  echo "testing the kit at ${KIT_TARGET:0:12} before installing it"
+  STAGE=$(mktemp -d) || exit 1
+  if git -C "$KIT_SRC" worktree add -q --detach "$STAGE" "$KIT_TARGET" 2>/dev/null; then
+    for t in "$STAGE"/scripts/*.test.sh "$STAGE"/hooks/*.test.sh "$STAGE"/hooks/lib/*.test.sh; do
+      [ -f "$t" ] || continue
+      if bash "$t" >/dev/null 2>&1; then printf '  pass  %s\n' "$(basename "$t")"
+      else printf '  FAIL  %s\n' "$(basename "$t")"; KIT_RED=1; fi
+    done
+    git -C "$KIT_SRC" worktree remove --force "$STAGE" 2>/dev/null || rm -rf "$STAGE"
+  else
+    echo "  could not materialise the kit at that ref — NOT installing it"
+    KIT_RED=1; rm -rf "$STAGE"
+  fi
+  [ "$KIT_RED" -eq 1 ] && {
+    hr
+    echo "The kit's own suites fail at ${KIT_TARGET:0:12}. It is NOT being updated."
+    echo "Moving onto a red kit is the defect this step exists to prevent."
+  }
+fi
+hr
+
+# Marketplaces, then plugins. Each is independent: one plugin failing to update
+# is reported and the rest still move. The kit is skipped when its suites went
+# red above.
 APPLY_FAILED=0
+[ "$KIT_RED" -eq 1 ] && APPLY_FAILED=1
 if command -v claude >/dev/null; then
   echo "refreshing marketplaces"
   claude plugin marketplace update >/dev/null 2>&1 || { echo "  marketplace refresh failed"; APPLY_FAILED=1; }
   if [ -f "$INSTALLED" ]; then
     for p in $(jq -r '(.plugins // .) | keys[]' "$INSTALLED" 2>/dev/null); do
+      if [ "$KIT_RED" -eq 1 ] && [ "$p" = "$KIT_PLUGIN@$KIT_PLUGIN" ]; then
+        printf '  HELD     %s  (suites red at the target ref)\n' "$p"; continue
+      fi
       before=$(jq -r --arg k "$p" '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' "$INSTALLED" 2>/dev/null)
       if claude plugin update "$p" >/dev/null 2>&1; then
         after=$(jq -r --arg k "$p" '(.plugins // .)[$k] | (if type=="array" then .[0] else . end) | .gitCommitSha // ""' "$INSTALLED" 2>/dev/null)
@@ -269,59 +318,6 @@ if command -v claude >/dev/null; then
 else
   echo "the claude CLI is not on PATH — marketplaces and plugins not refreshed"
   APPLY_FAILED=1
-fi
-
-# 2. The pin. This is the one change that decides what a BUILD runs, so it moves
-#    only after the kit's own suites pass AT THE TARGET REF — not at the ref
-#    currently installed, and not on the strength of them having passed here.
-hr
-if [ -z "${KIT_REPO:-}" ] || [ -z "${KIT_REF:-}" ] || [ ! -f "$CFG" ]; then
-  echo "no kit pin to move"
-  exit "$APPLY_FAILED"
-fi
-
-KIT_SRC="$MARKET_DIR/$(basename "$KIT_REPO")"
-TARGET=$(git -C "$KIT_SRC" rev-parse origin/main 2>/dev/null || true)
-if [ -z "$TARGET" ] || [ "$TARGET" = "$KIT_REF" ]; then
-  echo "the pin is already current"
-  exit "$APPLY_FAILED"
-fi
-
-echo "testing the kit at ${TARGET:0:12} before moving the pin"
-STAGE=$(mktemp -d) || exit 1
-if ! git -C "$KIT_SRC" worktree add -q --detach "$STAGE" "$TARGET" 2>/dev/null; then
-  echo "  could not materialise the kit at that ref — pin UNCHANGED"
-  rm -rf "$STAGE"; exit 1
-fi
-
-SUITES_FAILED=0
-for t in "$STAGE"/scripts/*.test.sh "$STAGE"/hooks/*.test.sh; do
-  [ -f "$t" ] || continue
-  if bash "$t" >/dev/null 2>&1; then
-    printf '  pass  %s\n' "$(basename "$t")"
-  else
-    printf '  FAIL  %s\n' "$(basename "$t")"; SUITES_FAILED=1
-  fi
-done
-git -C "$KIT_SRC" worktree remove --force "$STAGE" 2>/dev/null || rm -rf "$STAGE"
-
-if [ "$SUITES_FAILED" -ne 0 ]; then
-  hr
-  echo "STOP — the kit's own suites fail at ${TARGET:0:12}. The pin is UNCHANGED."
-  echo "A pin that moves past a red kit is the defect this step exists to prevent."
-  exit 1
-fi
-
-# Rewrite in place, atomically: a half-written harness.json is a repo nobody can
-# resolve the kit from.
-tmpcfg=$(mktemp) || exit 1
-if jq --arg r "$TARGET" '.kit.ref = $r' "$CFG" > "$tmpcfg" && [ -s "$tmpcfg" ]; then
-  mv "$tmpcfg" "$CFG"
-  echo "pin moved: ${KIT_REF:0:12} -> ${TARGET:0:12}"
-  echo "commit .claude/harness.json to apply it to the project."
-else
-  rm -f "$tmpcfg"
-  echo "could not rewrite $CFG — pin UNCHANGED"; exit 1
 fi
 
 exit "$APPLY_FAILED"

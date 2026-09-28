@@ -1,0 +1,19 @@
+block	pkill -f 'next dev'
+block	pkill -f "next dev"
+block	pkill -f 'next dev apps/'
+block	pkill -f next
+block	pkill -f node
+allow	pkill -f 'next dev --webpack -p 3346'
+allow	pkill -f 'next start -p 3901'
+allow	pkill -f 'sh-10918.*next'
+allow	pkill -f '/Users/me/wt/sh-1/next'
+allow	pkill -P 12345
+allow	pgrep -f 'next dev'
+allow	kill 12345
+block	pkill -f ':30'
+block	pkill -f 'node -p 80'
+allow	pkill -f 'next dev -p 3010'
+allow	pkill -f 'localhost:4777'
+allow	cat > /tmp/x.md <<EOF
+pkill -f 'next dev' here is the doc text
+EOF

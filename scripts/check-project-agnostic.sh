@@ -18,13 +18,19 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
+# The files the kit SHIPS. README.md tells the origin story and is allowed the
+# names; reference/ holds the copies this plugin replaced, kept verbatim for
+# history and loaded by nothing — de-projecting an archive would make it a worse
+# record and a better-looking gate, which is the wrong trade.
+shipped() { git ls-files | grep -vE '^README\.md$|^reference/'; }
+
 RC=0
 
 # --- probe 1: the origin project's names -------------------------------------
 NAMES="${HARNESS_ORIGIN_NAMES:-$(sed -n 's/^origin-names: *//p' README.md | head -1)}"
 [ -n "$NAMES" ] || { echo "no origin-names: line in README.md and HARNESS_ORIGIN_NAMES unset — nothing to probe for"; exit 2; }
-control=$(git ls-files | grep -vE '^README\.md$' | xargs grep -lE 'harness' 2>/dev/null | wc -l | tr -d ' ')
-hits=$(git ls-files | grep -vE '^README\.md$' | xargs grep -niE "$NAMES" 2>/dev/null)
+control=$(shipped | xargs grep -lE 'harness' 2>/dev/null | wc -l | tr -d ' ')
+hits=$(shipped | xargs grep -niE "$NAMES" 2>/dev/null)
 n=$(printf '%s' "$hits" | grep -c . )
 printf 'control, probe can see files : %s match "harness"\n' "$control"
 printf 'names the origin project     : %s (want 0)\n' "$n"
@@ -39,7 +45,15 @@ printf 'names the origin project     : %s (want 0)\n' "$n"
 GENERIC='lint|typecheck|test|build|dev'
 BASELINE=scripts/project-agnostic-baseline.txt
 
-current=$(git ls-files | grep -vE '^README\.md$' \
+# A SELF-TEST'S CASE DATA IS NOT AN INSTRUCTION. Probe 2 measures `npm run <id>`
+# occurrences as a stand-in for "the kit invokes a script only one project has",
+# and the two are not the same thing inside a *.test.sh: the strings there are
+# INPUTS a judge is fed, never commands a consuming project runs. Excluding them
+# makes the measurement match the claim. Probe 1 above still reads every test
+# file, because a test may not name the origin project either — and the
+# fixture's own "a new project-specific script fails the guard" case plants its
+# leak in a NON-test file, so this narrowing cannot hide a real one.
+current=$(shipped | grep -vE '\.test\.sh$' \
   | xargs grep -oE 'npm run (-s )?[-a-z:0-9]+' 2>/dev/null \
   | GENERIC="$GENERIC" perl -ne '
       # split on the FIRST colon only: the identifiers themselves contain colons
