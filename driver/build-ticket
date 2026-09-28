@@ -90,12 +90,24 @@ set -- $DRIVER_STEPS
 STEPS=("$@")
 N=${#STEPS[@]}
 
-# Where a rework goes back to. The build step, when the order has one — a review
-# that graded something critical or major is asking for a different change, not a different review.
-BUILD_AT=-1
+# Where a rework goes back to. Two answers, because they are two different
+# questions.
+#
+# A REVIEW that graded something critical or major is asking for the findings to be
+# cleared, so it goes back to the FIX step — which is the only step that reads
+# review.json. It used to go back to `build`, which re-ran the original plan task
+# blind to what the reviewer had just found, so the two-round ceiling bounded a loop
+# that could not act on anything.
+#
+# THE BUILD STEP sending itself back is the other one: its test did not prove the
+# change, and the answer is another attempt at the same task. Sending that to `fix`
+# would skip `build` entirely — `build` is earlier in the order and not finished —
+# so the task would never be built at all.
+BUILD_AT=-1; FIX_AT=-1
 i=0
 while [ "$i" -lt "$N" ]; do
-  [ "${STEPS[$i]}" = "build" ] && { BUILD_AT=$i; break; }
+  [ "${STEPS[$i]}" = "build" ] && [ "$BUILD_AT" -lt 0 ] && BUILD_AT=$i
+  [ "${STEPS[$i]}" = "fix" ]   && [ "$FIX_AT"   -lt 0 ] && FIX_AT=$i
   i=$((i+1))
 done
 
@@ -146,7 +158,15 @@ while [ "$i" -lt "$N" ]; do
   # WHAT, and a step that knows — what a review graded critical or major, a leftover that could
   # not be filed — writes it here. Read once and cleared, so a note from an earlier
   # refusal cannot become the question a later one asks.
-  note=""; asked=""; park_reason=""; park_question=""
+  note=""; asked=""; park_reason=""; park_question=""; park_cause="driver"
+  # A STEP MAY SAY ITS REFUSAL NEEDS A PERSON. The exit code cannot: a gate saying
+  # no and "only a person sanctions a deviation from an approved design" are both
+  # DRIVER_E_REFUSED, and the second one must not leave a ticket the driver picks
+  # straight back up — resuming re-runs that step, and the next answer sanctioning
+  # the deviation is an agent clearing its own refusal. Read once and cleared, like
+  # the note beside it.
+  step_cause=$(driver_state_get "$TICKET" park_cause)
+  [ -z "$step_cause" ] || driver_state_set "$TICKET" park_cause ""
   note=$(driver_state_get "$TICKET" park_note)
   [ -z "$note" ] || driver_state_set "$TICKET" park_note ""
   # The step's own question, read HERE and not inside the case below.
@@ -185,7 +205,11 @@ while [ "$i" -lt "$N" ]; do
       ;;
 
     "$DRIVER_E_REWORK")
-      if [ "$BUILD_AT" -lt 0 ]; then
+      # The build step's own rework is another try at the same task; anybody else's
+      # is the findings to clear, which only the fix step can read.
+      rework_at="$BUILD_AT"
+      if [ "$step" != "build" ] && [ "$FIX_AT" -ge 0 ]; then rework_at="$FIX_AT"; fi
+      if [ "$rework_at" -lt 0 ]; then
         park_reason="$step asked for a rework and this run has no build step to go back to"
         park_question="Should the order include a build step, or should $step stop asking for one?"
       else
@@ -194,19 +218,25 @@ while [ "$i" -lt "$N" ]; do
           park_reason="the rework loop did not settle: $REWORKS rounds and $step is still sending the work back"
           park_question="The build step parks itself at $DRIVER_MAX_BUILD_TRIES tries and the reviewer stops after $DRIVER_MAX_REVIEW_ROUNDS rounds, so a loop past their sum is a step returning rework without counting. Which is it?"
         else
-          # Everything from the build step onwards has to happen again, so it has to
-          # leave the finished list — otherwise the resumed walk skips the very steps
-          # the rework exists to repeat.
-          driver_state_reopen "$TICKET" "${STEPS[@]:$BUILD_AT}"
-          driver_say "↩ rework round $REWORKS: back to ${STEPS[$BUILD_AT]} (${step} sent it back)"
-          i="$BUILD_AT"
+          # Everything from there onwards has to happen again, so it has to leave the
+          # finished list — otherwise the resumed walk skips the very steps the
+          # rework exists to repeat.
+          driver_state_reopen "$TICKET" "${STEPS[@]:$rework_at}"
+          driver_say "↩ rework round $REWORKS: back to ${STEPS[$rework_at]} (${step} sent it back)"
+          i="$rework_at"
         fi
       fi
       ;;
 
     "$DRIVER_E_QUESTION")
+      # THE ONE PARK A PERSON OWNS. Every other exit here is this kit, a gate or
+      # this project's own configuration stopping, and putting the hold label on
+      # those hid #10907 behind a human-only label for a defect of the driver's —
+      # which the next trial then refused to start on, because an agent clearing an
+      # approval label to unblock itself is the thing that must never be automated.
       park_reason="$step asked a question rather than guessing"
       park_question="$asked"
+      park_cause="person"
       ;;
 
     "$DRIVER_E_NO_SKILL")
@@ -242,7 +272,8 @@ while [ "$i" -lt "$N" ]; do
   # finding rather than a description of the code that stopped.
   if [ -n "$park_reason" ]; then
     [ -z "$note" ] || park_question="$note"
-    driver_park "$TICKET" "$park_reason" "$park_question"
+    [ -z "$step_cause" ] || park_cause="$step_cause"
+    driver_park "$TICKET" "$park_reason" "$park_question" "$park_cause"
     exit "$DRIVER_E_QUESTION"
   fi
 done

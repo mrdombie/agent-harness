@@ -60,6 +60,26 @@ driver_declared_skills() { # <step>
   jq -r --arg s "$1" '(.steps[$s].skills // [])[]' "$f" 2>/dev/null
 }
 
+# THE SKILLS THAT ARE NEVER A TOOL CALL, and therefore can never appear in a
+# transcript however faithfully they were followed. `superpowers:using-superpowers`
+# is Superpowers' own introduction: it arrives in the system prompt, so an answer
+# naming it among its skills is describing something true that the log structurally
+# cannot show.
+#
+# Measured on the 2026-09-28 trial: build task 3 of 6 answered
+# ["superpowers:using-superpowers","superpowers:subagent-driven-development",
+#  "superpowers:test-driven-development"], the line above it recorded both of the
+# declared skills running, and the claim check parked the ticket anyway — 73 minutes
+# and 9 unpushed commits lost to which phrasing the model happened to pick. Tasks 1
+# and 2 did not name it and passed, which is the definition of a coin flip.
+#
+# briefs/facts.json already carried this list under `notInvoked` and nothing read it.
+driver_never_invoked_skills() {
+  local f="$DRIVER_BRIEFS/facts.json"
+  [ -f "$f" ] || return 0
+  jq -r '(.notInvoked // {}) | keys[]' "$f" 2>/dev/null
+}
+
 # Every Skill the transcript shows being invoked, one per line. `claude -p
 # --output-format stream-json` emits one JSON object per line; a Skill call is a
 # tool_use block named Skill whose input carries the skill's name.
@@ -162,6 +182,16 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     fi
   ) || true
 
+  # The step's own tooling writes a working plan into the tree; it is not the change.
+  # Swept before anything reads the tree, so no later step has to know about it.
+  #
+  # ONLY A TICKET WORKTREE. `wt` falls back to the SHARED checkout above when this
+  # run has none on the record, and the shared checkout is where peer windows work —
+  # sweeping there moves another agent's untracked files out from under them.
+  if [ -n "$(driver_state_get "$t" worktree)" ]; then
+    driver_sweep_scratch "$t" "$wt"
+  fi
+
   if [ ! -s "$log" ]; then
     driver_say "✋ $step: the agent produced no transcript — $(head -3 "$log.err" 2>/dev/null | tr '\n' ' ')"
     return "$DRIVER_E_SCHEMA"
@@ -183,6 +213,7 @@ $want
 EOW
     if [ "$hit" -eq 0 ]; then
       driver_say "✋ $step: the brief's skills are $(printf '%s' "$want" | tr '\n' ' ')and the run log does not contain any of those Skill calls (saw: ${skill_saw:-none}). Inside a ticket Superpowers does the work; a step that skipped it has not run."
+      driver_state_set "$t" park_note "the $step step ran none of the skills briefs/facts.json declares for it ($(printf '%s' "$want" | tr '\n' ' ')); the transcript shows: ${skill_saw:-none}"
       return "$DRIVER_E_NO_SKILL"
     fi
     driver_say "   $step: $(printf '%s' "$skill_saw" | sort -u | tr '\n' ' ')ran"
@@ -205,15 +236,25 @@ EOW
   # 1b. A SKILL CLAIMED IN THE ANSWER AND ABSENT FROM THE LOG IS A FAILED STEP.
   # Every brief says so in its own Return section and nothing checked it.
   claimed=$(jq -r '(.skills // [])[]' "$ans" 2>/dev/null)
+  local never; never=$(driver_never_invoked_skills)
   local miss="" k2
   while IFS= read -r k2; do
     [ -n "$k2" ] || continue
+    # A skill that is never a tool call is skipped, not counted as missing: the
+    # transcript cannot show it whether or not it was followed, so demanding it
+    # there measures the model's phrasing and nothing else.
+    printf '%s\n' "$never" | grep -qxF "$k2" && continue
     printf '%s\n' "$skill_saw" | grep -qxF "$k2" || miss="$miss $k2"
   done <<EOC
 $claimed
 EOC
   if [ -n "$miss" ]; then
     driver_say "✋ $step: the answer claims${miss} and the run log shows no such Skill call (saw: ${skill_saw:-none}). A claim the transcript does not show is the one thing the JSON cannot tell you."
+    # THE PARK'S QUESTION IS ABOUT THE CLAIM, not about the brief. The orchestrator's
+    # wording for exit 21 is "the step did not run the Skill its brief names", which on
+    # the trial was printed one line under a record of both named skills running — a
+    # question nobody can answer because it describes something that did not happen.
+    driver_state_set "$t" park_note "the $step answer claims${miss}, and the transcript shows no such Skill call (it shows: ${skill_saw:-none}). Either the answer named a skill it did not run, or that skill is never a tool call and belongs in briefs/facts.json's notInvoked."
     return "$DRIVER_E_NO_SKILL"
   fi
 

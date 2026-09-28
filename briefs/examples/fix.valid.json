@@ -22,7 +22,9 @@
       },
       "command": "npm test -- src/queue/panel.test.tsx",
       "failedBefore": true,
-      "passedAfter": true
+      "passedAfter": true,
+      "testCommit": "a1b2c3d4",
+      "implCommit": "e5f6a7b8"
     },
     {
       "blockerId": "b2",
@@ -39,7 +41,9 @@
       },
       "command": "npm test -- src/queue/reader.test.ts",
       "failedBefore": true,
-      "passedAfter": true
+      "passedAfter": true,
+      "testCommit": "0c1d2e3f",
+      "implCommit": "9a8b7c6d"
     }
   ]
 }

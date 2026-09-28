@@ -50,7 +50,16 @@ mkdir -p "$DRIVER_DIR" 2>/dev/null || true
 
 # The order. It is a list, not a set: "runs the steps in order" is the guarantee,
 # and the orchestrator walks exactly this.
-DRIVER_STEPS="${DRIVER_STEPS:-start plan build self-check review record ship}"
+# `fix` sits after `build` because a rework rewinds to it, and a step that is
+# conditionally skipped reports exactly like a step that passed — so it is in the
+# order on every pass and is a no-op with nothing said back to it.
+#
+# `compare` sits BEFORE the gates, not after. Its contract lets the step answer
+# `fixed: true`, which means it edited the tree; placed after `self-check` that
+# edit is never linted, typechecked or tested, and the change ships behind gates
+# that ran on the code before it. A render run on a branch whose gates then go red
+# is the cheaper mistake.
+DRIVER_STEPS="${DRIVER_STEPS:-start plan build fix compare self-check review record ship}"
 
 # Five tries, then park — the number in the approved design's flowchart.
 DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
@@ -221,6 +230,70 @@ driver_prepare_worktree() { # <tree>
     fi
     driver_say "   prepared $tree with '$cmd'"
   done
+  return 0
+}
+
+# driver_worktree_root — where this project keeps its ticket worktrees.
+#
+# NOT $TMPDIR. On macOS that is a per-user folder under /var/folders that the
+# system prunes, and a driver run's tree is the only copy of the work between the
+# build and the push — the 2026-09-28 trial ended with 9 commits in one. The
+# project says where with `worktreeRoot`; the temp dir is the fallback for a
+# project that names none.
+driver_worktree_root() {
+  local r; r=$(driver_opt worktreeRoot "")
+  case "$r" in
+    '~')   r="$HOME" ;;
+    '~/'*) r="$HOME/${r#\~/}" ;;
+  esac
+  [ -n "$r" ] || r="${TMPDIR:-/tmp}"
+  printf '%s' "${r%/}"
+}
+
+# driver_scratch_paths — the paths a step's own tooling writes into the ticket
+# worktree that are NOT the change. `superpowers:writing-plans` writes its working
+# plan to docs/superpowers/plans/, and on the 2026-09-28 trial the park swept a
+# 1,361-line plan file into the parked commit and created docs/superpowers on a
+# branch of a repo that has no such directory. A project may name more under
+# `worktree.scratch`.
+driver_scratch_paths() {
+  printf '%s\n' docs/superpowers
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
+  jq -r '(.worktree.scratch // []) | .[] | select(type == "string")' "$HARNESS_CFG" 2>/dev/null
+}
+
+# driver_sweep_scratch <ticket> <tree> — move that tooling's leavings OUT of the
+# worktree and into the run record, so neither `git add -A` nor the ship step's
+# clean-tree check ever sees them.
+#
+# MOVED, NOT DELETED. The plan is the step's own reasoning and a person reading a
+# park wants it; it just does not belong in the product's history. It lands under
+# the ticket's state directory beside the transcripts.
+#
+# A TRACKED PATH IS NEVER TOUCHED. If the project genuinely keeps files there, the
+# sweep would be deleting the change — so anything git knows about is left alone
+# and said.
+driver_sweep_scratch() { # <ticket> <tree>
+  local t="${1:-}" tree="${2:-}" p dest moved=""
+  [ -n "$tree" ] && [ -d "$tree" ] || return 0
+  command -v driver_state_dir >/dev/null 2>&1 || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -e "$tree/$p" ] || continue
+    if [ -n "$(git -C "$tree" ls-files -- "$p" 2>/dev/null | head -1)" ]; then
+      driver_say "   the worktree's '$p' is tracked here, so it is the change and was left alone."
+      continue
+    fi
+    # ITS OWN DESTINATION EVERY TIME. A fixed one made the SECOND sweep delete the
+    # FIRST step's plan, which is "moved, not deleted" doing exactly the deleting
+    # this function says it does not.
+    dest="$(driver_state_dir "$t")/scratch/$(date +%Y%m%d-%H%M%S)-$$/$p"
+    mkdir -p "$(dirname "$dest")" 2>/dev/null
+    mv "$tree/$p" "$dest" 2>/dev/null && moved="$moved $p"
+  done <<EOS
+$(driver_scratch_paths)
+EOS
+  [ -z "$moved" ] || driver_say "   kept out of the change:${moved} — moved to $(driver_state_dir "$t")/scratch"
   return 0
 }
 

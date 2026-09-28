@@ -52,7 +52,7 @@ reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
   : > "$RAN"; : > "$FIX/park.log"; rm -f "$FIX"/n.*
   fake_park
   local s
-  for s in start plan build self-check review record ship; do fake_step "$s" 0; done
+  for s in start plan build fix compare self-check review record ship; do fake_step "$s" 0; done
   local pair
   for pair in "$@"; do fake_step "${pair%%:*}" "${pair#*:}"; done
 }
@@ -62,13 +62,13 @@ echo "--- every step runs, in the declared order ---"
 reset_fakes
 out=$(bt 101); rc=$?
 want "it finishes"        "0" "$rc"
-want "all seven ran once" "start plan build self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "all nine ran once" "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "and it says so"  'shipped|finished|done' "$out"
 
 echo "--- and each one is recorded as finished ---"
 export HARNESS_STATE_DIR="$STATE"
 . "$HERE/../state.sh" || exit 1
-want "the record lists them in order" "start,plan,build,self-check,review,record,ship" \
+want "the record lists them in order" "start,plan,build,fix,compare,self-check,review,record,ship" \
   "$(driver_state_get 101 'done|join(",")')"
 
 echo "--- nothing is lost on a stop: a resumed run picks up where it stopped ---"
@@ -92,7 +92,7 @@ want "start is recorded finished" "start" "$(driver_state_get 102 'done|join(","
 out=$(bt 102); rc=$?
 want "the second run finishes"    "0" "$rc"
 want_in "start ran again — it is the re-entry check" '^start$' "$(cat "$RAN")"
-want "and nothing else was repeated" "start plan build self-check review record ship" \
+want "and nothing else was repeated" "start plan build fix compare self-check review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and plan ran in the resumed run" "1" "$(grep -c '^plan$' "$RAN")"
 # NOTHING was skipped in that run and it correctly says nothing: start re-ran as the
@@ -114,13 +114,13 @@ echo "--- --restart runs the lot again ---"
 : > "$RAN"
 out=$(bt 102 --restart); rc=$?
 want "it finishes"            "0" "$rc"
-want "every step ran again"   "start plan build self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "every step ran again"   "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 echo "--- a refusal parks, with the reason, and does not fall through ---"
 reset_fakes "self-check:24"
 out=$(bt 103); rc=$?
 want "the run stops"                 "20" "$rc"
-want "it stopped AT the refusal"     "start plan build self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "it stopped AT the refusal"     "start plan build fix compare self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_not_in "review never ran"       'review' "$(cat "$RAN")"
 want_in "it parked"                  'PARK' "$(cat "$FIX/park.log")"
 want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
@@ -178,7 +178,7 @@ echo "--- a refusal parks, with the reason, and does not fall through ---"
 reset_fakes "self-check:24"
 out=$(bt 103); rc=$?
 want "the run stops"                 "20" "$rc"
-want "it stopped AT the refusal"     "start plan build self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "it stopped AT the refusal"     "start plan build fix compare self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_not_in "review never ran"       'review' "$(cat "$RAN")"
 want_in "it parked"                  'PARK' "$(cat "$FIX/park.log")"
 want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
@@ -216,17 +216,34 @@ out=$(bt 105); rc=$?
 want "the run stops"    "20" "$rc"
 want_in "the park names the skill problem" 'Skill' "$(cat "$FIX/park.log")"
 
-echo "--- a review that grades something critical or major sends the work back ---"
-# BLOCKED on round 1, clean on round 2: build, self-check and review all run
-# twice, and `record` and `ship` still run once at the end.
+echo "--- a review that grades something critical or major sends the work back to FIX ---"
+# BLOCKED on round 1, clean on round 2. It goes back to `fix` — the only step that
+# reads review.json — not to `build`, which would re-run the original plan task
+# blind to what the reviewer just found. That was T2-3: the two-round ceiling
+# bounded a loop that could not act on anything.
 reset_fakes "review:30 0"
 out=$(bt 106); rc=$?
 want "it finishes"  "0" "$rc"
-want "the rework repeats build, self-check and review" \
-  "start plan build self-check review build self-check review record ship" \
+want "the rework repeats fix, compare, the gates and review" \
+  "start plan build fix compare self-check review fix compare self-check review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "and plan was not repeated" "1" "$(grep -c '^plan$' "$RAN")"
+want "and plan was not repeated"  "1" "$(grep -c '^plan$' "$RAN")"
+want "nor was build — the plan task is already built" "1" "$(grep -c '^build$' "$RAN")"
+want "the fix step ran on both passes"  "2" "$(grep -c '^fix$' "$RAN")"
+want_in "it says which step it went back to" 'back to fix' "$out"
 want_in "it says it is a rework round" 'rework|again|round' "$out"
+
+echo "--- the BUILD step sending itself back goes back to BUILD, not to fix ---"
+# The other half of the same rule, and the one that breaks if the target is a
+# single answer: `fix` is AFTER `build` in the order, so sending a failed build
+# there skips `build` entirely — it is not finished, so the walk would never
+# return to it and the task would ship unbuilt.
+reset_fakes "build:30 0"
+out=$(bt 122); rc=$?
+want "it finishes"                     "0" "$rc"
+want "build ran twice, its own retry"  "2" "$(grep -c '^build$' "$RAN")"
+want "and fix ran once, after the build finally passed" "1" "$(grep -c '^fix$' "$RAN")"
+want_in "it says it went back to build" 'back to build' "$out"
 
 echo "--- a run that uses both budgets in full still finishes ---"
 # The build step's ceiling is its own (5 tries) and the reviewer's is its own (2
@@ -238,10 +255,12 @@ reset_fakes "build:30 30 30 30 0" "review:30 30 0"
 out=$(bt 121); rc=$?
 want "it finishes rather than accusing a step" "0" "$rc"
 want_not_in "and never says the loop did not settle" 'did not settle' "$(cat "$FIX/park.log")"
-# Five build calls for its own four failures plus the pass, and two more because
-# each review round rewinds to the build step: 7. The reviewer runs three times.
-want "build ran for its own tries and both rewinds" "7" "$(grep -c '^build$' "$RAN")"
-want "and the reviewer all three of its passes"     "3" "$(grep -c '^review$' "$RAN")"
+# Five build calls for its own four failures plus the pass. A review rework now
+# rewinds to `fix`, not to `build`, so the build step is not re-run for them — the
+# task is built and what is wrong with it is the reviewer's list.
+want "build ran for its own tries and no more"  "5" "$(grep -c '^build$' "$RAN")"
+want "the fix step ran once per pass"           "3" "$(grep -c '^fix$' "$RAN")"
+want "and the reviewer all three of its passes" "3" "$(grep -c '^review$' "$RAN")"
 
 echo "--- a rework that never settles parks rather than spinning ---"
 # The real build step parks itself at five tries. A step that returns 30 for ever
@@ -415,7 +434,7 @@ want "the real seven finish"        "0" "$rc"
 want "start kept the branch it was given" "tkt-$TICKET/work" "$(driver_state_get "$TICKET" branch)"
 want "and recorded the ticket's subject for the PR title" "Ticket $TICKET" "$(driver_state_get "$TICKET" title)"
 want_in "which is what the pull request is titled with" "Ticket $TICKET" "$(cat "$GH_LOG")"
-want "every one is recorded"        "start,plan,build,self-check,review,record,ship" \
+want "every one is recorded"        "start,plan,build,fix,compare,self-check,review,record,ship" \
   "$(driver_state_get "$TICKET" 'done|join(",")')"
 want_in "the plan named its Skill and the log showed it" 'superpowers:writing-plans ran' "$out"
 want_in "the build proved red before green" 'red .*then green' "$out"
@@ -452,7 +471,7 @@ rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"
 : > "$GH_LOG"
 fix_issue 203 OPEN "status:ready,needs:human-approval"
 driver_state_init 203 --worktree "$WT" --branch "tkt-$TICKET/work"
-for st in start plan build self-check review record; do driver_state_done 203 "$st"; done
+for st in start plan build fix compare self-check review record; do driver_state_done 203 "$st"; done
 out=$(HARNESS_STATE_DIR="$STATE" bash "$BT" 203 2>&1); rc=$?
 want "it stops"                         "20" "$rc"
 want_in "because a person owns it"      'needs:human-approval' "$out"

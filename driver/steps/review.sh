@@ -38,6 +38,7 @@
 # skill; the driver never starts several agents on one ticket.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 
 driver_step_review() { # <ticket>
   local t="${1:?driver_step_review: need a ticket}"
@@ -141,6 +142,13 @@ Read the rest in the worktree — do NOT review the part above as if it were the
     driver_say "✋ review: SHIP beside $nsend open critical/major finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)"). The verdict is read off the grades; it is not typed beside them."
     return "$DRIVER_E_REFUSED"
   fi
+
+  # THE VERDICTS FIRST, BEFORE ANYTHING THAT CANNOT BE DONE TWICE. Filing the
+  # Minors opens a GitHub issue and has no idempotency guard, so a recorder that
+  # refuses AFTER it parks with `review` unfinished — and every resume re-runs the
+  # whole review and files the follow-up again.
+  rc=0; driver_push_requires "$t" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
 
   # Past the last rework round. A Critical or a Major stays with this ticket and the
   # ship step refuses, naming it. Only the Minors leave.

@@ -72,8 +72,13 @@ driver_step_start() { # <ticket>
       driver_say "✋ start: #$t is $LBL_GATED. The PM flips that label, not the driver."
       return "$DRIVER_E_REFUSED" ;;
   esac
+  # AND PARKED IS RESUMABLE. A park is this driver's own state — it means a run
+  # stopped and left a resume brief — so refusing it here would mean the only way
+  # back into a parked ticket is a person editing a label. The hold label is
+  # checked above and is the thing that actually stops a resume, which is the
+  # separation T2-7 is about: a park nobody has to answer carries only the status.
   case ",$labels," in
-    *",$LBL_READY,"*|*",$LBL_CLAIMED,"*) : ;;
+    *",$LBL_READY,"*|*",$LBL_CLAIMED,"*|*",$LBL_PARKED,"*) : ;;
     *)
       driver_say "✋ start: #$t is not $LBL_READY (labels: ${labels:-none}). A status that is not ready is a status somebody chose."
       return "$DRIVER_E_REFUSED" ;;
@@ -155,7 +160,12 @@ driver_step_start() { # <ticket>
       driver_say "✋ start: no $INTEGRATION_BRANCH in $repo to cut from."
       return "$DRIVER_E_REFUSED"
     fi
-    wt="${TMPDIR:-/tmp}"; wt="${wt%/}/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
+    # UNDER THE PROJECT'S OWN WORKTREE ROOT, not $TMPDIR. On macOS $TMPDIR is a
+    # /var/folders directory the system prunes, and between the build and the push
+    # the tree is the only copy of the work — the 2026-09-28 trial ended with 9
+    # commits in one of them.
+    wt="$(driver_worktree_root)/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
+    mkdir -p "$(dirname "$wt")" 2>/dev/null || true
     if ! git -C "$repo" worktree add -q "$wt" -b "$branch" "$sha" 2>/dev/null; then
       driver_say "✋ start: could not create a worktree at $wt on $branch."
       return "$DRIVER_E_REFUSED"
@@ -177,7 +187,10 @@ driver_step_start() { # <ticket>
   fi
 
   bash "$CL" update "$t" worktree="$wt" branch="$branch" >/dev/null 2>&1 || true
+  # status:parked comes off as well as status:ready: a resumed park that kept it
+  # would read as stopped on a board while an agent is building it.
   swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-    --remove-label "$LBL_READY" --add-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    --remove-label "$LBL_READY" --remove-label "$LBL_PARKED" \
+    --add-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
   return "$DRIVER_OK"
 }

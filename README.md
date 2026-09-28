@@ -76,24 +76,47 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "requiredChecks": ["Typecheck + Unit tests", "Code gates"]
   },
   "review": {
-    "attest": { "ui-gate": "npm run check:ui-gate-attested --silent -- --base origin/develop --head HEAD" },
-    "rounds": 2
+    "rounds": 2,
+    "attest": {
+      "ui-gate": {
+        "owed":   "npm run check:ui-gate-attested --silent -- --base origin/develop --head HEAD",
+        "review": "<a command that runs your reviewer and prints its verdict>",
+        "record": "scripts/record-verdict.sh ui-gate --sha {{SHA}} --base {{BASE}}"
+      }
+    }
   },
-  "worktree": { "prepare": ["npx prisma generate"] },
+  "worktreeRoot": "~/your-worktrees",
+  "worktree": { "prepare": ["npx prisma generate"], "scratch": ["docs/notes"] },
   "commit": { "parkType": "chore" },
-  "design": { "kit": "@you/ui", "tokens": "packages/ui/src/tokens.ts" }
+  "design": {
+    "kit": "@you/ui",
+    "tokens": "packages/ui/src/tokens.ts",
+    "surfacePaths": ["apps/web/**", "packages/ui/**"],
+    "render": "npm run -s renders"
+  },
+  "programmes": { "brief": "scripts/programme-state-brief.sh {{EPIC}}" },
 }
 ```
 
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
-- `review.attest` — one entry per reviewer the project attests: the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. Absent, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
+- `review.attest` — one entry per reviewer the project attests, and **one entry is all there is**: an interactive `/agent-harness:finish` and the unattended driver ask different questions of the same reviewer, so they read the same row rather than two keys that can disagree about which reviewers exist.
+  - `owed` — the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. A bare string in place of the object is read as this, which is the shape that shipped first.
+  - `review` — a command that runs the reviewer and prints its verdict. The driver runs it in the ticket worktree and keeps the output verbatim.
+  - `record` — a command that reads that output **on stdin** and writes the trailer, with `{{SHA}}` (the commit reviewed) and `{{BASE}}` (the trunk) substituted. **The driver never writes a verdict**: your recorder reads the reviewer's own words and decides whether there is one to write, which is the whole point of an attestation. A recorder that refuses parks the ticket carrying its message.
+
+  A row with `owed` alone is advisory to the driver and enforced by `/agent-harness:finish`. A row with `review` and `record` is what lets the driver push at all on a project whose pre-push demands a trailer — measured on 2026-09-28, a ticket built test-first with two proved tasks lost 9 commits to exactly that. Absent entirely, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
 - `owns.skills` / `owns.agents` — kit names this project deliberately shadows. Everything else under its `.claude/` that the kit also ships is a duplicate and fails the gate.
 - `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
 - `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
 - `gates.local` is the list of LOCAL gate commands, and it is the only part of `gates` anything runs. `group` names a gate group inside your own runner and `requiredChecks` names the CI checks a pull request waits on — neither is a shell line, and the driver never treats them as one. A flat `{ "<name>": "<command>" }` map is read too; a key whose value is not a string counts as an empty command, so it is named in the "nothing ran" refusal rather than dropped in silence.
-- `standards` is optional: the coding-standards document a change is held to. The driver hands it to the build step as its own fact, and falls back to `law` when it is absent — so a project with both should name both, or the build agent is told the design philosophy IS the coding standard.
+- `standards` is the coding-standards document a change is held to, handed to the build step as its own fact. It has **no fallback**: without it the build agent is told there is none, and is told so in a sentence. It used to fall back to `law`, which meant a project with a design philosophy and no `standards` key had its build step told the design philosophy IS the coding standard — a wrong document, which cannot be seen from inside a prompt, where an absence can.
+- `worktreeRoot` is optional (default `$TMPDIR`): where the driver cuts its ticket worktrees. `~` is expanded. Name one — on macOS `$TMPDIR` is a `/var/folders` directory the system prunes, and between the build and the push the worktree is the only copy of the work.
+- `worktree.scratch` is optional: extra paths a step's own tooling writes into the worktree that are NOT the change. The driver moves them out into the run record after every model step, so neither the park's `git add -A` nor the ship step's clean-tree check ever sees them. `docs/superpowers` is always swept; a path git TRACKS is never touched, because there it is the change.
+- `design.surfacePaths` is optional: the globs this project calls a screen. The compare step matches the branch diff against them to decide whether there is a screen to render at all; without it that step says so and compares nothing.
+- `design.render` is optional: a command run in the ticket worktree that prints one render per line as `name<TAB>path<TAB>light|dark<TAB>route`. Its output becomes the renders the compare step holds beside the approved design, and the renders the review step is given. Absent is an absence the reviewer and the pull request are TOLD about in those words; declared and producing nothing is a refusal, because a measurement that could not be made is not a screen that is fine.
+- `programmes.brief` is optional: a command that prints the BRIEF of a programme's state file, with `{{EPIC}}` and `{{FILE}}` substituted. These files are append-only and grow for as long as the programme is open, and a step handed the whole thing designs from the programme's history rather than from its own ticket. The driver finds the file by **what it says** — the state file whose content names the ticket's programme label — never by its filename: on the project this was measured on all 29 files are named for the epic and the label lives in the body, so a filename glob matched none of them.
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.

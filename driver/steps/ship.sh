@@ -19,6 +19,7 @@
 # the agent that wrote them.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
@@ -65,8 +66,22 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
+  # THE VERDICTS HAVE TO DESCRIBE THIS HEAD. The review step records them, and any
+  # commit after it — a park's work-in-progress commit is the real case — moves the
+  # diff they were bound to. review is finished by then, so a resumed run comes
+  # straight here and the push is refused for ever with nothing able to re-record.
+  local recorded_at; recorded_at=$(driver_state_get "$t" push_requires_at)
+  if [ "$recorded_at" != "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" ]; then
+    local prc=0
+    driver_push_requires "$t" || prc=$?
+    if [ "$prc" -ne 0 ]; then
+      driver_say "✋ ship: the branch moved after the reviews were recorded, and re-recording them did not succeed. Nothing is pushed."
+      return "$prc"
+    fi
+  fi
+
   git -C "$wt" push -q -u origin "$branch" >/dev/null 2>&1 || {
-    driver_say "✋ ship: could not push $branch."
+    driver_say "✋ ship: could not push $branch — this project's pre-push refused it. Read its own output; the local gate IS the gate."
     return "$DRIVER_E_REFUSED"; }
 
   verdict=$(jq -r '.verdict // ""' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null | tr '[:lower:]' '[:upper:]')
@@ -88,6 +103,9 @@ Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
 Claimed at: ${sha:-unknown}
 Head: $head
+
+Renders this run compared against the approved design:
+$(driver_state_get "$t" renders | sed 's/^/  /')
 PRBODY
 )
   # `|| true` on the create alone is right: a park may already have opened the draft,

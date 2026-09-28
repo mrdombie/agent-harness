@@ -314,7 +314,14 @@ which reviewers a project runs and how it attests them are project facts:
 # The commands that decide whether a reviewer is OWED on this diff, and print
 # the fingerprint its trailer must carry. Empty -> this project attests nothing
 # and the reviewers are advisory.
-jq -r '(.review.attest // {}) | to_entries[] | "\(.key)\t\(.value)"' .claude/harness.json
+# A row may be a bare command — the `owed` question alone, which is the shape that
+# shipped first — or an object whose `owed` is that command and whose `review` and
+# `record` are what the unattended driver runs. One row per reviewer either way:
+# two keys naming the same set of reviewers is two places for them to disagree
+# about which ones exist.
+jq -r '(.review.attest // {}) | to_entries[]
+       | "\(.key)\t\(if (.value | type) == "string" then .value else (.value.owed // "") end)"' \
+  .claude/harness.json
 ```
 
 For each row, run the named command. `no UI surface in this diff` or an exempt

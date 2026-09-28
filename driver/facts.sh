@@ -128,22 +128,74 @@ $(printf '%s\n' "$found" | sed 's/^/  /')"
 
 # The programme, by its label. The state file is a consuming-repo convention and
 # the brief asks for the BRIEF of it, never the whole append-only file.
+# WHERE THE PROGRAMME STATE FILES ARE, for a caller that has no working tree of
+# its own. `PROGRAMMES_DIR` is `${REPO_ROOT:+$REPO_ROOT/docs/programmes}` and
+# REPO_ROOT is EMPTY for a bare clone or a headless spawn — so on the 2026-09-28
+# trial every step was told "this project keeps no programme state directory",
+# while the run's own worktree held 29 of them.
+#
+# The ticket's worktree first, because that is the tree this run is building in and
+# the one whose state files are at the branch's version; then the shared checkout.
+_driver_programmes_dir() { # [ticket]
+  local d
+  for d in "${PROGRAMMES_DIR:-}" \
+           "$(driver_state_get "${1:-}" worktree 2>/dev/null)/docs/programmes" \
+           "${MAIN_REPO:-}/docs/programmes"; do
+    case "$d" in ''|/docs/programmes) continue ;; esac
+    [ -d "$d" ] && { printf '%s' "$d"; return 0; }
+  done
+  return 1
+}
+
 driver_fact_programme() { # <ticket>
-  local labels p brief=""
+  local labels p dir name brief=""
   labels=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '[.labels[].name] | join(" ")' 2>/dev/null) || labels=""
   p=""
   for l in $labels; do
     case "$l" in "${SWARM_PROGRAMME_PREFIX:-project:}"*) p="$l"; break ;; esac
   done
   [ -n "$p" ] || { _driver_fact_none "#$1 carries no programme label"; return 0; }
-  if [ -n "${PROGRAMMES_DIR:-}" ]; then
-    brief=$(ls "$PROGRAMMES_DIR"/state-*.md 2>/dev/null | head -1)
+  dir=$(_driver_programmes_dir "$1") || {
+    printf 'Programme: %s\n%s\n' "$p" "$(_driver_fact_none "no docs/programmes directory resolves from this run's worktree or from ${MAIN_REPO:-the shared checkout}")"
+    return 0; }
+  # THE FILE FOR THIS PROGRAMME, not the first one on disk. `head -1` handed every
+  # ticket whichever state file sorted first — 29 of them on the trial — so the one
+  # fact this brief exists to carry was another programme's.
+  name="${p#${SWARM_PROGRAMME_PREFIX:-project:}}"
+  # BY WHAT THE FILE SAYS, NOT BY WHAT IT IS CALLED. A filename glob is a proxy and
+  # a bad one: measured on the project this was written for, all 29 state files are
+  # named for the EPIC (`state-10011.md`) and the programme label lives in the body
+  # as `**Label:** \`project:one-desk\``. `state-*one-desk*.md` matches none of
+  # them, so the fix would have shipped asserting "none of them is named for this
+  # programme" on every ticket — green in a suite that invented the filename it was
+  # looking for. The label is the thing; grep for it.
+  brief=$(grep -l -- "$p" "$dir"/state-*.md 2>/dev/null | head -1)
+  if [ -z "$brief" ]; then
+    printf 'Programme: %s\n%s holds %s state file(s) and none of them names this programme, so read the ticket alone rather than another programme\x27s ledger.\n' \
+      "$p" "$dir" "$(ls "$dir"/state-*.md 2>/dev/null | wc -l | tr -d ' ')"
+    return 0
   fi
-  if [ -n "$brief" ]; then
-    printf 'Programme: %s\nState files live in %s; read the brief, never the whole ledger.\n' "$p" "$PROGRAMMES_DIR"
-  else
-    printf 'Programme: %s\n%s\n' "$p" "$(_driver_fact_none "this project keeps no programme state directory the driver can read")"
+  # THE BRIEF, NOT THE LEDGER — when the project has something that prints one.
+  # These files are append-only and grow for as long as the programme is open; a
+  # step handed the whole thing designs from the programme's history rather than
+  # from its own ticket. `programmes.brief` is a project command with {{FILE}} and
+  # {{EPIC}} substituted. Absent is normal: the file is named instead.
+  local cmd out epic
+  cmd=$(driver_opt programmes.brief "")
+  if [ -n "$cmd" ]; then
+    epic=$(basename "$brief" .md); epic="${epic#state-}"
+    cmd=$(printf '%s' "$cmd" | sed -e "s|{{FILE}}|$brief|g" -e "s|{{EPIC}}|$epic|g")
+    out=$( ( cd "$(dirname "$dir")/.." 2>/dev/null || cd "${MAIN_REPO:-.}"; driver_bounded 120 "$cmd" ) 2>/dev/null )
+    if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+      printf 'Programme: %s (from %s)\n%s\n' "$p" "$brief" "$out"
+      return 0
+    fi
+    printf 'Programme: %s\nIts state file: %s\nThis project names a programmes.brief command and it printed nothing here, so read the brief at the top of that file yourself — the locked decisions, the open questions and what shipped recently — never the whole ledger.\n' \
+      "$p" "$brief"
+    return 0
   fi
+  printf 'Programme: %s\nIts state file: %s\nRead the brief at the top of it — the locked decisions, the open questions and what shipped recently — never the whole ledger.\n' \
+    "$p" "$brief"
 }
 
 # The premise GATHER, which decides nothing. Same shape the claim flow prints: a
@@ -209,9 +261,15 @@ $claims"
 # The standard a change is held to, and the screen rules. Both are project facts
 # and both are optional: a backend-only project has no screen rules, and saying so
 # is different from leaving the placeholder in the prompt.
+# THE CODING STANDARD, AND NOTHING STANDS IN FOR IT. This used to fall back to
+# `law` — the DESIGN law — so on the 2026-09-28 trial the build step was told this
+# project's coding standard is docs/design/design-philosophy.md. The real one is
+# docs/CODING_STANDARDS.md. A wrong document cannot be seen from inside a prompt;
+# an absence can, which is the whole argument of this file.
 driver_fact_standards() {
-  local v; v=$(driver_opt standards ""); [ -n "$v" ] || v=$(driver_opt law "")
-  [ -n "$v" ] && printf '%s' "$v" || _driver_fact_none "harness.json names no standards document"
+  local v; v=$(driver_opt standards "")
+  [ -n "$v" ] && printf '%s' "$v" \
+    || _driver_fact_none "harness.json names no standards document — set 'standards' to this project's coding standard. The design law is not one, and is given separately as the screen rules"
 }
 
 driver_fact_surface_rules() {

@@ -37,7 +37,8 @@ driver_step_record() { # <ticket> [anything else — ignored]
     "review_verdict=$verdict" \
     "review_rounds=$rounds" \
     "claimed_at_sha=$sha" \
-    "design_source=$(driver_state_get "$t" design_source)" >/dev/null 2>&1 || true
+    "design_source=$(driver_state_get "$t" design_source)" \
+    "design_ref=$(driver_state_get "$t" design_ref)" >/dev/null 2>&1 || true
 
   driver_say "   record: $verdict after $rounds round(s), claimed at ${sha:-unknown}"
   return "$DRIVER_OK"

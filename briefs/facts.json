@@ -10,7 +10,8 @@
     "superpowers:receiving-code-review": "acting on findings with rigour rather than agreement"
   },
   "notInvoked": {
-    "superpowers:brainstorming": "it waits on a person, so an unattended step cannot invoke it. The approved spec stands in for it."
+    "superpowers:brainstorming": "it waits on a person, so an unattended step cannot invoke it. The approved spec stands in for it.",
+    "superpowers:using-superpowers": "Superpowers' own introduction to using skills. It arrives in the system prompt and is never a Skill tool call, so an answer that names it can never be shown in the transcript — and a check that demanded it there ended a 73-minute run at build task 3 of 6 on a coin-flip of the model's phrasing."
   },
   "steps": {
     "plan": {

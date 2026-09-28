@@ -22,16 +22,7 @@
       },
       "command": "npm test -- src/queue/panel.test.tsx",
       "failedBefore": true,
-      "passedAfter": true,
-      "testCommit": "a1b2c3d4",
-      "implCommit": "e5f6a7b8"
-    }
-  ],
-  "deferred": [
-    {
-      "blockerId": "b2",
-      "reason": "not a blocker: the assertion is weak but the behaviour is covered elsewhere",
-      "followUp": "#10999"
+      "passedAfter": true
     }
   ]
 }

@@ -65,6 +65,11 @@ driver_step_plan() { # <ticket>
   # the driver cannot work out for itself — a bug ticket whose plan followed a
   # reproduction is `debugged`, and /finish cross-checks that against the spec gate.
   driver_state_set "$t" design_source "$(jq -r '.designSource // "ticket-body"' "$ans")"
+  # AND WHAT IT POINTS AT. `approved-picture` is the value this project's process
+  # turns on — a design a person approved before the build — and the compare step
+  # holds the renders against exactly this reference. The contract requires the two
+  # together, so reading one without the other is how they come apart.
+  driver_state_set "$t" design_ref "$(jq -r '.designRef // ""' "$ans")"
   driver_say "   plan: $(jq -r '[.tasks[]?] | length' "$ans") task(s), $(jq -r '[.tasks[]?.files[]?] | length' "$ans") file(s), $ntests test(s); posted on #$t"
   return "$DRIVER_OK"
 }

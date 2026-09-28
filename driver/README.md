@@ -1,7 +1,7 @@
 # driver/ — the script drives, the model thinks
 
 `build-ticket <ticket>` runs one ticket from the claim to the hand-off. It walks
-seven fixed steps in order and calls a model only for the steps that need
+nine fixed steps in order and calls a model only for the steps that need
 thinking, one step at a time, each with its own short brief.
 
 ```
@@ -10,7 +10,8 @@ driver/
 ├── driver-env.sh   where things are, the seams, and the exit codes
 ├── state.sh        the run record — what has to survive the process that wrote it
 ├── ai-step.sh      the one place control is handed to a model, and checked after
-├── steps/          start · plan · build · self-check · review · record · ship · park
+├── push-requires.sh  the reviews this project's own pre-push insists on
+├── steps/          start · plan · build · fix · self-check · compare · review · record · ship · park
 └── tests/          every step and every refusal
 ```
 
@@ -30,17 +31,30 @@ model's job, and a model under pressure decides to get on with it. So the
 decision moved into a list in code, and what the model is asked shrank to the
 thinking inside one step.
 
-## The seven steps
+## The nine steps
 
 | # | Step | Who | What it produces |
 |---|---|---|---|
 | 1 | `start` | driver | the claim, the worktree, the refusal gates |
 | 2 | `plan` | model | a plan the driver can enforce, or a question |
 | 3 | `build` | model | commits whose test the driver proves red then green |
-| 4 | `self-check` | driver | every gate run as its own command, read by exit code |
-| 5 | `review` | model | `SHIP`, or findings with a file, a line and a grade |
-| 6 | `record` | driver | the verdict, off the reviewer's own file |
-| 7 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
+| 4 | `fix` | model | the review's Criticals and Majors cleared, each proved the same way |
+| 5 | `self-check` | driver | every gate run as its own command, read by exit code |
+| 6 | `compare` | model | this run's renders held beside the approved design |
+| 7 | `review` | model | `SHIP`, or findings with a file, a line and a grade |
+| 8 | `record` | driver | the verdict, off the reviewer's own file |
+| 9 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
+
+`fix` and `compare` are in the order on every pass and are no-ops with nothing to
+do — `fix` when no review has found anything, `compare` when the change touches no
+screen. Neither is conditionally skipped, because a step that is skipped reports
+exactly like a step that passed.
+
+**A rework goes back to `fix`, not to `build`.** Only `fix` reads the review's
+answer; rewinding to `build` re-ran the original plan task blind to what the
+reviewer had just found, so the two-round ceiling bounded a loop that could not
+act. The build step sending ITSELF back is the other case and goes back to
+`build`, because `fix` is later in the order and the task is not built yet.
 
 `park` is not in the order. It is the exit from every other step: push, draft
 pull request, resume brief, hold label, release the claim — in that order,

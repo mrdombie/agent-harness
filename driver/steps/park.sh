@@ -47,9 +47,14 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
-driver_park() { # <ticket> <reason> [question]
+driver_park() { # <ticket> <reason> [question] [cause: person|driver]
   local t="${1:?driver_park: need a ticket}" reason="${2:-a refusal}" question="${3:-}"
-  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note=""
+  # WHOSE PARK IT IS. `person` means a question only somebody can answer; `driver`
+  # means this kit, a gate or the project's own config stopped — and a person has
+  # nothing to decide. The default is `person` so a caller that says nothing gets
+  # the cautious label rather than the quiet one.
+  local cause="${4:-person}"
+  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
   branch=$(driver_state_get "$t" branch)
@@ -75,6 +80,13 @@ driver_park() { # <ticket> <reason> [question]
       pushed=1
     else
       driver_say "   park: the branch could not be pushed — say so rather than reporting a handover that does not exist"
+      # AND THEN MAKE IT DURABLE ANYWAY. A push is what a park normally hands over
+      # with, and a project's own pre-push can refuse one — on 2026-09-28 the UI
+      # attestation gate did, and 9 commits stayed inside a worktree under
+      # /var/folders that the system prunes. A bundle is a single file holding those
+      # commits, restorable with `git fetch <file> <branch>`, and it costs a second.
+      bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
+      [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
     fi
   fi
 
@@ -90,24 +102,78 @@ driver_park() { # <ticket> <reason> [question]
 
 **Built:** ${done_list:-nothing yet; it stopped before the first step finished}
 **Stopped at:** $reason
-**Needs:** ${question:-a person to say how to proceed}
-**Resume:** clear \`$HOLD_LABEL\`, then run the driver again — it picks up from the last finished step.
+$(if [ "$cause" = "person" ]; then
+    printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
+      "${question:-a person to say how to proceed}" "$HOLD_LABEL"
+  else
+    # NOT UNDER "Needs:". A driver-caused park has nothing for a person to decide,
+    # and printing its diagnostic there — "is the brief naming the wrong Skill, or
+    # is it not installed?" — reads as a question somebody must answer, one line
+    # above a Resume line saying nobody has to. The two said opposite things.
+    printf '**Needs:** nothing from you. This is the driver, a gate or this project\x27s own configuration, so no hold label is on it.\n**What stopped it:** %s\n**Resume:** fix the cause above, then run the driver again — it picks up from the last finished step. Re-running it unchanged will stop here again.' \
+      "${question:-see the step output on the run log}"
+  fi)
 
 ${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt.")}
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
+${bundle_note:+💾 $bundle_note}
 BRIEF
 )" >/dev/null 2>&1 || true
 
-  # The hold label goes on AND status:claimed comes off. Left on, a parked ticket
-  # reads as in flight on the board while holding no claim at all — which is the
-  # one state the reconciler's evidence rules cannot describe.
-  swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-    --add-label "$HOLD_LABEL" --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  # EVERY PARK GETS A STATUS, AND ONLY A QUESTION GETS THE HOLD.
+  #
+  # Measured on #10867's timeline at 2026-09-28T10:29:58Z: status:claimed came off,
+  # the hold went on, and status:parked was never applied — so the ticket carried no
+  # status label at all and dropped out of every status-keyed board.
+  #
+  # The hold is a person's label. #10907's park was caused by the kit's own defect
+  # and put the hold on anyway; the next trial then refused at `start` in 40 seconds
+  # because an agent clearing an approval label to unblock itself is the one thing
+  # AGENTS forbids. So a park with nothing for a person to answer leaves the ticket
+  # parked and nothing else, and the driver can pick it up again itself.
+  if [ "$cause" = "person" ]; then
+    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
+      --add-label "$LBL_PARKED" --add-label "$HOLD_LABEL" \
+      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  else
+    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
+      --add-label "$LBL_PARKED" \
+      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  fi
 
   # Last. Everything above has to be true before the ticket is anyone else's.
   bash "$CL" release "$t" >/dev/null 2>&1 || true
 
-  driver_say "⏸ #$t parked: $reason${question:+ — $question}"
+  driver_say "⏸ #$t parked ($cause): $reason${question:+ — $question}"
   return "$DRIVER_E_QUESTION"
+}
+
+# _driver_park_bundle <ticket> <tree> <branch> — one file holding the commits the
+# push could not hand over, under <worktreeRoot>/backups. Prints a sentence for the
+# resume brief, or nothing when there was nothing to bundle.
+#
+# `$trunk..$branch` rather than the whole branch: the bundle then carries this
+# ticket's commits with the trunk as a prerequisite, which is kilobytes instead of
+# the repository. Restoring is `git fetch <file> <branch>` from a clone that has the
+# trunk — which every clone does.
+_driver_park_bundle() { # <ticket> <tree> <branch>
+  local t="$1" wt="$2" branch="$3" dir f trunk r n
+  trunk=""
+  for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
+    git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
+  done
+  [ -n "$trunk" ] || return 0
+  n=$(git -C "$wt" rev-list --count "$trunk..HEAD" 2>/dev/null)
+  case "${n:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
+  dir="$(driver_worktree_root)/backups"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  f="$dir/$(printf '%s' "${BRANCH_PREFIX}$t" | tr '/' '-')-$(date +%Y%m%d-%H%M%S).bundle"
+  if git -C "$wt" bundle create "$f" "$trunk..$branch" >/dev/null 2>&1; then
+    printf 'the %s commit(s) the push could not hand over are bundled at %s — restore with `git fetch %s %s`' \
+      "$n" "$f" "$f" "$branch"
+  else
+    rm -f "$f" 2>/dev/null
+    printf 'the %s commit(s) could NOT be bundled either, so they exist only in %s' "$n" "$wt"
+  fi
 }

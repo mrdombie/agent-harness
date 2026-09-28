@@ -89,5 +89,15 @@ be built test-first.
 `dataModelSpec` names the reviewed model it changes it to. The contract requires
 the second whenever the first is true, and the driver reads the same two keys.
 
+`designSource` says where what you are building was settled. Use
+**approved-picture** whenever a person approved a design before this build — a
+mock-up, a rendered concept, a screenshot signed off on the ticket — and put the
+URL or the path on this branch in `designRef`. That pair is what the compare step
+holds this run's renders against, so answering `ticket-body` for a ticket whose
+picture was approved throws the comparison away. The other three are:
+**ticket-body** when the ticket itself is the whole design, **brainstormed** when
+the spec was settled in the ticket thread, and **debugged** when the plan follows
+a reproduction.
+
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

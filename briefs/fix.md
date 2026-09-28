@@ -46,6 +46,11 @@ One `cleared` entry per finding, each carrying the change, the test that goes re
 when that finding returns, and the red and green runs. A finding cleared without
 a test is one that can come back unnoticed, so the contract has no shape for it.
 
+It also carries `testCommit` and `implCommit`, and they must be two commits. The
+driver re-runs your test at the change's parent and at the change, exactly as it
+does in the build step, so those two shas are what make `failedBefore` checkable
+rather than claimed.
+
 A finding you are not clearing goes in `deferred` with its reason and where it
 went. A deferral with no follow-up is a finding dropped — and a Critical or a
 Major is not deferrable: the ship step refuses while one is open.
