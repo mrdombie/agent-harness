@@ -57,6 +57,15 @@ t nag   'cooldown is per session, not global'   'Your call.' false s10 "$NOASK"
 rm -rf "$MDIR"; t quiet 'transcript unreadable'  'Your call.' false s11 "/nope/missing.jsonl"
 rm -rf "$MDIR"; t quiet 'empty closing message'  ''           false s12 "$NOASK"
 
+# --- a driver step has no person to ask, and its answer must not be rewritten
+# Both Stop hooks stand down on HARNESS_DRIVER_RUN. This one's exit 2 rewrites the
+# final message just as surely as the banner does, and the driver reads the answer
+# from there. The control is the same input without the marker.
+rm -rf "$MDIR"; t nag   'the control: this input does nag'   'Your call.' false d0 "$NOASK"
+rm -rf "$MDIR"
+HARNESS_DRIVER_RUN=10867:review \
+  t quiet 'and stands down for a driver step' 'Your call.' false d1 "$NOASK"
+
 rm -rf "$MDIR"
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$fail"

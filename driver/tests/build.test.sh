@@ -140,13 +140,46 @@ echo "--- the proof leaves nothing behind ---"
 want "no stray worktrees" "0" \
   "$(git -C "$REPO" worktree list | grep -c 'driver-proof' || true)"
 
+
+# --- the build answer, in the contract's shape -------------------------------
+# It was `{items:[{test_file, test_command, test_commit, impl_commit}]}` — four names
+# briefs/schemas/build.json does not have, under a key it does not have either, and
+# the contract is additionalProperties:false. So this suite passed while the shipped
+# build step could not read a single contract-valid answer. The contract carries ONE
+# `task` and ONE `testFirst`, and the driver now calls the step once per plan task.
+#
+# A PLAN IS WHAT THE STEP READS ITS TASKS FROM, so each case writes one.
+fix_plan() { # <ticket> <task-count>
+  local t="$1" n="${2:-1}" i=1 tasks=""
+  while [ "$i" -le "$n" ]; do
+    tasks="${tasks:+$tasks,}$(jq -nc --arg ti "task $i" \
+      '{title:$ti, files:[{path:"a.sh",action:"modify"}],
+        tests:[{file:"a.test.sh", behaviour:"it does the thing", redWhen:"the fix is deleted"}]}')"
+    i=$((i+1))
+  done
+  printf '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"ticket-body","premise":{"verdict":"still-true","evidence":"a.sh:1"},"tasks":[%s]}\n' \
+    "$tasks" | jq . > "$(driver_state_dir "$t")/steps/plan.json"
+}
+
+# fix_build <test-file> <command> <test-sha> <impl-sha> [task]
+fix_build() {
+  jq -nc --arg f "$1" --arg c "$2" --arg t "$3" --arg i "$4" --arg k "${5:-task 1}" \
+    '{step:"build", skills:["superpowers:subagent-driven-development"], status:"built",
+      task:$k,
+      testFirst:{test:{file:$f, behaviour:"it does the thing", redWhen:"the fix is deleted"},
+                 command:$c, testCommit:$t, implCommit:$i,
+                 failedBefore:true, redOutput:"FAIL", passedAfter:true, greenOutput:"PASS"},
+      changed:[{path:"a.sh", action:"modify"}],
+      changelog:{skipped:"a test-only change"}}'
+}
+
 echo "--- the build step: an item that proves itself is accepted ---"
 export DRIVER_TICKET=101
 driver_state_init 101 --worktree "$REPO" --repo "$REPO"
 fix_brief build superpowers:subagent-driven-development
-fix_ai build "$(jq -nc --arg t "$TEST_SHA" --arg i "$IMPL_SHA" \
-  '{items:[{id:"1", test_file:"feature.test.sh", test_command:"bash feature.test.sh",
-            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+fix_plan 101 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
 out=$(driver_step_build 101 2>&1); rc=$?
 want "the step finishes"        "0" "$rc"
 want_in "and names what it proved" 'feature.test.sh' "$out"
@@ -156,9 +189,9 @@ echo "--- the build step: an unproved item is sent back, and counted ---"
 # after its successful attempt would make "the first failure" read as the second.
 # A real run never re-enters a step that finished; the test must not either.
 driver_state_init 102 --worktree "$REPO" --repo "$REPO"
-fix_ai build "$(jq -nc --arg t "$V_TEST" --arg i "$V_IMPL" \
-  '{items:[{id:"1", test_file:"vacuous.test.sh", test_command:"bash vacuous.test.sh",
-            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+fix_plan 102 1
+fix_ai build "$(fix_build vacuous.test.sh "bash vacuous.test.sh" "$V_TEST" "$V_IMPL")" \
+  superpowers:subagent-driven-development
 rc=0; driver_step_build 102 >/dev/null 2>&1 || rc=$?
 want "it asks for rework"  "30" "$rc"
 want "the try is counted"  "1"  "$(driver_state_count 102 build)"
@@ -176,9 +209,9 @@ echo "--- a hang in the proof is not retried five times and blamed on the tests 
 # five attempts times two proof halves of waiting — and parked saying the tests do not
 # prove the change. It has its own outcome, and the orchestrator parks on it at once.
 driver_state_init 505 --worktree "$REPO" --repo "$REPO"
-fix_ai build "$(jq -nc --arg t "$TEST_SHA" --arg i "$IMPL_SHA" \
-  '{items:[{id:"1", test_file:"feature.test.sh", test_command:"sleep 60",
-            test_commit:$t, impl_commit:$i}]}')" superpowers:subagent-driven-development
+fix_plan 505 1
+fix_ai build "$(fix_build feature.test.sh "sleep 60" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
 rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_step_build 505 2>&1) || rc=$?
 want "a hang is its own outcome, not a rework" "25" "$rc"
 want_in "and it says it ran out of time"       'time' "$out"
@@ -186,10 +219,13 @@ want "and only one try was spent"              "1" "$(driver_state_count 505 bui
 
 echo "--- a build that claims an item with no test at all ---"
 driver_state_init 202 --worktree "$REPO" --repo "$REPO"
-fix_ai build '{"items":[{"id":"1","impl_commit":"HEAD"}]}' superpowers:subagent-driven-development
+fix_plan 202 1
+# Every field of testFirst is required by the contract, so the shape with no test is
+# the one where testFirst is absent altogether — status `built` with nothing to prove.
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"built","task":"task 1","changed":[{"path":"a.sh","action":"modify"}],"changelog":{"skipped":"none"}}' superpowers:subagent-driven-development
 out=$(driver_step_build 202 2>&1); rc=$?
-want "an item with no test is rework" "30" "$rc"
-want_in "and it says which item"      'item 1' "$out"
+want "a task with no test is rework" "30" "$rc"
+want_in "and it says which task"     'task 1' "$out"
 
 echo "--- the last try does not turn a question into a refusal ---"
 # The ceiling exists for an UNPROVED build. A question, a skipped Skill or a broken
@@ -197,16 +233,35 @@ echo "--- the last try does not turn a question into a refusal ---"
 # the operator is handed "build refused" in place of the model's actual question.
 driver_state_init 404 --worktree "$REPO" --repo "$REPO"
 i=1; while [ $i -le "$DRIVER_MAX_BUILD_TRIES" ]; do driver_state_bump 404 build; i=$((i+1)); done
-fix_ai build '{"question":"which of the two schemas is the approved one?"}' superpowers:subagent-driven-development
+fix_plan 404 1
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"park","task":"task 1","question":"which of the two schemas is the approved one?"}' superpowers:subagent-driven-development
 rc=0; out=$(driver_step_build 404 2>&1) || rc=$?
 want "a question on the last try is still a question" "20" "$rc"
 want_in "and the question survives"  'which of the two schemas' "$out"
 
-echo "--- a build that changed nothing at all ---"
+echo "--- a plan with nothing in it is not a build that passed ---"
 driver_state_init 303 --worktree "$REPO" --repo "$REPO"
-fix_ai build '{"items":[]}' superpowers:subagent-driven-development
+fix_plan 303 0
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"built","task":"none"}' superpowers:subagent-driven-development
 out=$(driver_step_build 303 2>&1); rc=$?
-want "no items is a refusal, not a pass" "24" "$rc"
-want_in "and says why" 'no items' "$out"
+want "no task is a refusal, not a pass" "24" "$rc"
+want_in "and says why" 'no task' "$out"
+
+echo "--- two plan tasks are two calls, in order, never in parallel ---"
+# One call per task is what build.md and the contract say. Inside a ticket the
+# fan-out belongs to superpowers:subagent-driven-development, which the brief invokes;
+# the driver never starts several agents on one ticket. So the count is the measure.
+driver_state_init 606 --worktree "$REPO" --repo "$REPO"
+fix_plan 606 2
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_build 606 2>&1) || rc=$?
+want "both tasks are proved"           "0" "$rc"
+want "one call per task and no more"   "2" "$(grep -c . "$CLAUDE_LOG")"
+want "each task's own answer is kept"  "2" \
+  "$(ls "$(driver_state_dir 606)/steps"/build-task-*.json | grep -c . || true)"
+want "and the step's own answer file is the last of them" "build" \
+  "$(jq -r '.step' "$(driver_state_dir 606)/steps/build.json")"
 
 exit $FAILED

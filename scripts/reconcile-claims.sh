@@ -21,6 +21,8 @@
 # it. So the evidence decides:
 #
 #   claim ref, holder alive here   → live. Left alone.
+#   claim ref, holder gone, the     → live. The holder is a step-runner between two
+#     driver run record is fresh      steps, not an agent that died. Left alone.
 #   claim ref, holder on ANOTHER   → reported. Cannot be checked from here, and
 #     host                           a claim you cannot check is not a claim you
 #                                    may break.
@@ -72,6 +74,9 @@ for arg in "$@"; do
 done
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
+# The second liveness answer, for a holder that is a RUN rather than a session.
+# shellcheck source=claim-liveness.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-liveness.sh" || exit 1
 TICKETS_DIR="$STATE_DIR"
 CLAIMS_DIR="$TICKETS_DIR/claims"
 RECOVERED_DIR="$CLAIMS_DIR/.recovered"
@@ -295,6 +300,16 @@ for n in $tickets; do
     if [ "$alive" -eq 2 ]; then
       say "  ELSEWHERE  #$n — held on ${host:-unknown}, not this host; cannot check, leaving it"
       elsewhere=$((elsewhere + 1)); continue
+    fi
+    # A DEAD PID IS NOT A DEAD RUN. The step-runner's processes come and go — one per
+    # step — so between two invocations of it there is no process to test, and the pid
+    # on the claim names one that exited at the end of the last step. On 2026-09-27
+    # this released #10867 out from under a trial that was still working it, reporting
+    # "agent gone, no branch, no PR". The driver's own run record is the artifact that
+    # says otherwise, and artifact freshness is already how this file judges staleness.
+    if claim_run_fresh "$n" "$STATE_DIR" "$STALE_HOURS"; then
+      say "  LIVE       #$n — pid $pid is gone, and the driver's run record was written inside the last ${STALE_HOURS}h"
+      live=$((live + 1)); continue
     fi
   fi
 

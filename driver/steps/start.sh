@@ -22,6 +22,20 @@
 # THE WORKTREE is cut from a freshly fetched trunk, at a path of its own, and the
 # trunk SHA it was cut at is frozen onto the record — so a required check that
 # lands mid-build is known not to apply to a ticket claimed before it existed.
+#
+# AND IT IS PREPARED, because a linked node_modules and a copy of the hook shims are
+# not the whole of what a worktree needs. Measured on the 2026-09-27 trial: every
+# push from a driver worktree was refused —
+#
+#   ✗ pre-push blocked: the prompt-template hash does not describe the prompt sources.
+#       Error: Cannot find module '@/generated/prisma/client'
+#
+# — because the generated database client is gitignored and per-checkout, so a fresh
+# worktree has none and every hook that imports it dies. The kit cannot know what a
+# project generates, so the project says: `worktree.prepare` in harness.json, a list
+# of commands run in the new tree. Absent is normal and skipped. PRESENT AND FAILING
+# IS A REFUSAL — an unprepared tree cannot push, and discovering that at the push is
+# discovering it after the whole build.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
@@ -152,6 +166,11 @@ driver_step_start() { # <ticket>
     # Hook shims are generated at install time and gitignored, so a fresh
     # worktree runs ZERO hooks — silently. Copy them where they exist.
     [ -d "$repo/.husky/_" ] && { mkdir -p "$wt/.husky"; cp -R "$repo/.husky/_" "$wt/.husky/_"; }
+    if ! driver_prepare_worktree "$wt"; then
+      driver_state_set "$t" worktree "$wt"
+      driver_state_set "$t" park_note "$DRIVER_PREPARE_WHY"
+      return "$DRIVER_E_REFUSED"
+    fi
     driver_state_set "$t" worktree "$wt"
     driver_state_set "$t" claimed_at_sha "$sha"
     driver_say "   start: #$t claimed, worktree at $wt on $branch (cut at $(printf '%s' "$sha" | cut -c1-8))"

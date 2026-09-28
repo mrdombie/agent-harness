@@ -45,7 +45,35 @@ driver_step_review() { # <ticket>
   export DRIVER_TICKET="$t"
 
   round=$(driver_state_count "$t" review)
-  rc=0; driver_ai_step "$t" review "$(driver_state_dir "$t")/steps/build.json" || rc=$?
+
+  # The three facts only this step can gather. The brief asks for the DIFF against
+  # the trunk it will merge into, the renders of every screen the change touches, and
+  # which round this is — and a placeholder with no value now refuses the step, so
+  # each one is written here rather than reaching the model as `{{DIFF}}`.
+  local wt trunk r diff
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  trunk=""
+  for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
+    git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
+  done
+  if [ -n "$trunk" ]; then
+    diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  else
+    diff=""
+  fi
+  driver_fact_put "$t" review DIFF \
+    "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
+  # RENDERS is a fact about a screen, and the driver takes none. Saying so is the
+  # point: the reviewer is told there are no renders rather than shown the word
+  # {{RENDERS}} and left to guess whether that meant a clean screen.
+  driver_fact_put "$t" review RENDERS \
+    "$(driver_state_get "$t" renders | sed -e 's/^$/(none — this run took no renders, so judge no screen from them)/')"
+  driver_fact_put "$t" review ROUND "$((round + 1))"
+
+  # The build answers: one per plan task, so the whole file rather than the last one.
+  local built="$(driver_state_dir "$t")/steps/build.all.json"
+  [ -s "$built" ] || built="$(driver_state_dir "$t")/steps/build.json"
+  rc=0; driver_ai_step "$t" review "$built" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   driver_state_bump "$t" review
   round=$((round + 1))

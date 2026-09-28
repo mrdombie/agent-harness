@@ -379,14 +379,30 @@ git -C "$WT" add feature.txt
 git -C "$WT" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: the feature"
 ISHA=$(git -C "$WT" rev-parse HEAD)
 
-fix_ai plan '{"step":"plan","skills":["superpowers:writing-plans"],"status":"ok","files":["feature.txt"],"tests":[{"file":"t/check.sh"}]}' \
+# THE ANSWERS ARE THE CONTRACT'S SHAPE, because the steps read the contract now.
+# They were `status:"ok"` with top-level `files`/`tests` and a build `items` array —
+# names briefs/schemas/*.json do not have — and this section is the only place the
+# real seven ever ran, so the shapes the real steps read had nothing pinning them.
+fix_ai plan "$(jq -nc \
+  '{step:"plan", skills:["superpowers:writing-plans"], status:"planned",
+    designSource:"ticket-body",
+    premise:{verdict:"still-true", evidence:"feature.txt does not exist yet"},
+    tasks:[{title:"the feature is present",
+            files:[{path:"feature.txt", action:"create"}],
+            tests:[{file:"t/check.sh", behaviour:"feature.txt carries the-feature",
+                    redWhen:"feature.txt is deleted"}]}]}')" \
   superpowers:writing-plans
 fix_ai build "$(jq -nc --arg ts "$TSHA" --arg is "$ISHA" \
-  '{step:"build", skills:["superpowers:subagent-driven-development"], status:"ok",
-    items:[{id:"1", test_file:"t/check.sh", test_command:"bash t/check.sh",
-            test_commit:$ts, impl_commit:$is}]}')" \
+  '{step:"build", skills:["superpowers:subagent-driven-development"], status:"built",
+    task:"the feature is present",
+    testFirst:{test:{file:"t/check.sh", behaviour:"feature.txt carries the-feature",
+                     redWhen:"feature.txt is deleted"},
+               command:"bash t/check.sh", testCommit:$ts, implCommit:$is,
+               failedBefore:true, redOutput:"FAIL", passedAfter:true, greenOutput:"PASS"},
+    changed:[{path:"feature.txt", action:"create"}],
+    changelog:{skipped:"a fixture change"}}')" \
   superpowers:subagent-driven-development
-fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"ok","verdict":"SHIP","findings":[]}' \
+fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[]}' \
   superpowers:requesting-code-review
 
 # The claim the start step re-enters through, and the worktree it works in.
@@ -447,12 +463,19 @@ echo "--- the real steps park a real refusal: a skipped Skill is not a pass ---"
 # The same transcript with the Skill call removed. Nothing else changes, so what
 # this measures is the check and not the shape of the answer.
 rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"
-fix_ai plan '{"step":"plan","skills":[],"status":"ok","files":["feature.txt"],"tests":[{"file":"t/check.sh"}]}'
+fix_ai plan "$(jq -nc \
+  '{step:"plan", skills:["superpowers:writing-plans"], status:"planned",
+    designSource:"ticket-body",
+    premise:{verdict:"still-true", evidence:"feature.txt does not exist yet"},
+    tasks:[{title:"the feature is present",
+            files:[{path:"feature.txt", action:"create"}],
+            tests:[{file:"t/check.sh", behaviour:"feature.txt carries the-feature",
+                    redWhen:"feature.txt is deleted"}]}]}')"
 driver_state_init 202 --worktree "$WT" --branch "tkt-$TICKET/work"
 fix_issue 202 OPEN "status:ready"
 out=$(HARNESS_STATE_DIR="$STATE" bash "$BT" 202 2>&1); rc=$?
 want "it stops"                    "20" "$rc"
-want_in "because the Skill never ran" 'does not contain that Skill call' "$out"
+want_in "because the Skill never ran" 'does not contain any of those Skill calls' "$out"
 want_in "and the ticket is parked"    'parked' "$out"
 
 exit $FAILED

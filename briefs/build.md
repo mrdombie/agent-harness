@@ -53,6 +53,11 @@ JSON only, valid against `schemas/build.json`.
 shape in it for a change whose test did not fail first, so a task that cannot
 produce a red run is a question, not a build.
 
+It also carries `testCommit` and `implCommit`, and they must be two commits. The
+driver re-runs your test at the change's parent and at the change, so those two
+shas are what make `failedBefore` checkable rather than claimed; one squashed
+commit cannot show which came first.
+
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both
 keys, or neither, is refused.

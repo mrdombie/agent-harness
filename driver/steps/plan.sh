@@ -30,14 +30,23 @@ driver_step_plan() { # <ticket>
   [ "$rc" -eq 0 ] || return "$rc"
   ans="$(driver_state_dir "$t")/steps/plan.json"
 
-  schema=$(jq -r '.schema_change // false' "$ans")
-  spec=$(jq -r '.data_model_spec // ""' "$ans")
+  # THE KEYS ARE THE CONTRACT'S KEYS. This read four names briefs/schemas/plan.json
+  # does not have — `.schema_change`, `.data_model_spec`, `.tests` and `.files` — and
+  # the contract is `additionalProperties: false`, so an answer carrying them was
+  # refused by the validator and an answer meeting the contract was refused here.
+  # Measured on the 2026-09-27 trial: the kit's own valid example and both real
+  # plans all validated, all read `.tests` as length 0, and all three parked on
+  # "it names no test". Tests and files live under each task; the schema flag and
+  # its model are declared properties, and the contract now carries the rule as
+  # well, so the two cannot drift apart again.
+  schema=$(jq -r '.schemaChange // false' "$ans")
+  spec=$(jq -r '.dataModelSpec // ""' "$ans")
   if [ "$schema" = "true" ] && [ -z "$spec" ]; then
     driver_say "✋ plan: it changes the schema and names no approved data model. A database change comes from a reviewed model, never from inside a ticket."
     return "$DRIVER_E_REFUSED"
   fi
 
-  ntests=$(jq -r '(.tests // []) | length' "$ans")
+  ntests=$(jq -r '[.tasks[]?.tests[]?] | length' "$ans")
   if [ "${ntests:-0}" -eq 0 ]; then
     driver_say "✋ plan: it names no test. Every guarantee after this one is the build step proving a test red then green; a plan with no test has nothing to prove."
     return "$DRIVER_E_REFUSED"
@@ -51,7 +60,11 @@ driver_step_plan() { # <ticket>
 
   # The ticket stood in for brainstorming — an unattended agent never calls it,
   # because it waits on a person. Say which, rather than leaving it to be guessed.
-  driver_state_set "$t" design_source "ticket-body"
-  driver_say "   plan: $(jq -r '(.files // []) | length' "$ans") file(s), $ntests test(s); posted on #$t"
+  # THE PLAN SAYS WHICH. `designSource` is a required property of the contract with
+  # three values, and writing a constant here threw away the only one of the three
+  # the driver cannot work out for itself — a bug ticket whose plan followed a
+  # reproduction is `debugged`, and /finish cross-checks that against the spec gate.
+  driver_state_set "$t" design_source "$(jq -r '.designSource // "ticket-body"' "$ans")"
+  driver_say "   plan: $(jq -r '[.tasks[]?] | length' "$ans") task(s), $(jq -r '[.tasks[]?.files[]?] | length' "$ans") file(s), $ntests test(s); posted on #$t"
   return "$DRIVER_OK"
 }

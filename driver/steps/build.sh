@@ -54,6 +54,10 @@
 _driver_proof_install() { # <repo> <tree>
   [ -d "$1/node_modules" ] && ln -sfn "$1/node_modules" "$2/node_modules"
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
+  # And whatever this project generates per checkout. Without it a test command that
+  # resolves through a generated artifact exits 127 in BOTH halves, and the 127 in the
+  # second half reads as "the change does not do the job".
+  driver_prepare_worktree "$2" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -135,7 +139,7 @@ driver_prove_red_green() {
 
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
-  local repo tries rc n bad item id tfile tcmd tsha isha why prc
+  local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha why prc
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
@@ -144,61 +148,74 @@ driver_step_build() { # <ticket>
   driver_state_bump "$t" build
   tries=$(driver_state_count "$t" build)
 
-  # The build brief invokes superpowers:subagent-driven-development: inside a
-  # ticket, splitting the work belongs to Superpowers. The driver never starts
-  # several agents on one ticket itself — it runs one brief, and that brief's
-  # skill does the fan-out, with test-driven-development inside each task.
-  rc=0; driver_ai_step "$t" build "$(driver_state_dir "$t")/steps/plan.json" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    # A question, a skipped Skill or a broken answer is not a rework loop: those
-    # park, and they park with their OWN reason. Running them through the ceiling
-    # would rewrite the model's question as "build refused (exit 24)" on the last
-    # try, and the operator would be handed a code in place of the question they
-    # have to answer. Only an UNPROVED build is worth another try.
-    return "$rc"
-  fi
-
-  n=$(jq -r '(.items // []) | length' "$(driver_state_dir "$t")/steps/build.json")
-  if [ "${n:-0}" -eq 0 ]; then
-    driver_say "✋ build: the answer carries no items. A build that changed nothing is not a build that passed."
+  # ONE CALL PER PLAN TASK, because that is what the brief and the contract say:
+  # build.md opens "You are building **one** task from the plan", and
+  # briefs/schemas/build.json carries ONE `task` string and ONE `testFirst` object.
+  # This step used to read `.items[]` with `test_file` / `test_commit` / `impl_commit`
+  # — four names the contract does not have and `additionalProperties: false`
+  # forbids — so an answer meeting the contract was refused here and an answer this
+  # could read was refused by the validator. The same defect as the plan step's, in
+  # the step the trial never reached.
+  #
+  # Sequential, never parallel: inside a ticket the fan-out belongs to
+  # superpowers:subagent-driven-development, which the brief invokes, with a fresh
+  # helper per task. The driver never starts several agents on one ticket.
+  ntasks=$(jq -r '[.tasks[]?] | length' "$(driver_state_dir "$t")/steps/plan.json" 2>/dev/null)
+  if [ "${ntasks:-0}" -eq 0 ]; then
+    driver_say "✋ build: the plan carries no task to build. A build that changed nothing is not a build that passed."
     return "$DRIVER_E_REFUSED"
   fi
 
   bad=0
+  : > "$(driver_state_dir "$t")/steps/build.all.json"
   local i=0
-  while [ "$i" -lt "$n" ]; do
-    item=$(jq -c --argjson i "$i" '.items[$i]' "$(driver_state_dir "$t")/steps/build.json")
-    id=$(printf '%s' "$item" | jq -r '.id // "?"')
-    tfile=$(printf '%s' "$item" | jq -r '.test_file // ""')
-    tcmd=$(printf '%s'  "$item" | jq -r '.test_command // ""')
-    tsha=$(printf '%s'  "$item" | jq -r '.test_commit // ""')
-    isha=$(printf '%s'  "$item" | jq -r '.impl_commit // ""')
+  while [ "$i" -lt "$ntasks" ]; do
+    task=$(jq -c --argjson i "$i" '.tasks[$i]' "$(driver_state_dir "$t")/steps/plan.json")
     i=$((i+1))
+    slot="build-task-$i"
+    ans="$(driver_state_dir "$t")/steps/$slot.json"
 
+    # The one task this call builds, as the brief's own placeholder.
+    driver_fact_put "$t" "$slot" PLAN_TASK "$(printf '%s' "$task" | jq .)"
+    rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      # A question, a skipped Skill or a broken answer is not a rework loop: those
+      # park, and they park with their OWN reason. Running them through the ceiling
+      # would rewrite the model's question as "build refused (exit 24)" on the last
+      # try, and the operator would be handed a code in place of the question they
+      # have to answer. Only an UNPROVED build is worth another try.
+      return "$rc"
+    fi
+    jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
+
+    tfile=$(jq -r '.testFirst.test.file // ""' "$ans")
+    tcmd=$(jq -r  '.testFirst.command // ""'   "$ans")
+    tsha=$(jq -r  '.testFirst.testCommit // ""' "$ans")
+    isha=$(jq -r  '.testFirst.implCommit // ""' "$ans")
     if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; then
-      driver_say "✋ build item $id names no test to prove it (needs test_file, test_command, test_commit, impl_commit)."
+      driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)."
       bad=1; continue
     fi
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     if [ "$prc" -eq 0 ]; then
-      driver_say "   build item $id — $why"
+      driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
     elif [ "$prc" -eq 4 ]; then
       # A HANG IS NOT A FAILING TEST, so it does not go in the retry bucket. Folded in
       # with the rest it was tried five times — at the default ceiling that is five
       # attempts times two proof halves of waiting — and the ticket then parked blaming
       # the change, which is what this step's own header forbids. It returns its own
       # code so the orchestrator parks with the real reason immediately.
-      driver_say "✋ build item $id — $why"
+      driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
       return "$DRIVER_E_TIMEOUT"
     else
-      driver_say "✋ build item $id — $why"
+      driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
       bad=1
     fi
   done
 
   if [ "$bad" -eq 0 ]; then
-    driver_say "   build: every item proved red before green"
+    driver_say "   build: all $ntasks task(s) proved red before green"
     return "$DRIVER_OK"
   fi
   _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
