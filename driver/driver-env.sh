@@ -188,11 +188,17 @@ driver_prepare_worktree() { # <tree>
   # at the push, or 127s in both halves of the build step's proof.
   ptype=$(jq -r '(.worktree.prepare // null) | type' "$HARNESS_CFG" 2>/dev/null)
   case "$ptype" in
-    null) return 0 ;;
+    null)  return 0 ;;
     array) : ;;
-    *) DRIVER_PREPARE_WHY="harness.json's worktree.prepare is a $ptype and this reads a list of commands, so NOTHING was prepared in $tree"
-       driver_say "✋ $DRIVER_PREPARE_WHY. Nothing having run is not everything having passed."
-       return 1 ;;
+    # An EMPTY type is jq failing, not a shape: an unparseable harness.json, or a
+    # `worktree` that is itself a string. Given the shape arm's wording it printed
+    # "is a  and this reads a list", which tells the operator nothing about which.
+    '')    DRIVER_PREPARE_WHY="harness.json could not be read for worktree.prepare ($HARNESS_CFG), so NOTHING was prepared in $tree"
+           driver_say "✋ $DRIVER_PREPARE_WHY. Nothing having run is not everything having passed."
+           return 1 ;;
+    *)     DRIVER_PREPARE_WHY="harness.json's worktree.prepare is a $ptype and this reads a list of commands, so NOTHING was prepared in $tree"
+           driver_say "✋ $DRIVER_PREPARE_WHY. Nothing having run is not everything having passed."
+           return 1 ;;
   esac
   n=$(jq -r '.worktree.prepare | length' "$HARNESS_CFG" 2>/dev/null)
   case "${n:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
@@ -203,7 +209,7 @@ driver_prepare_worktree() { # <tree>
     # An element that is not a command is NAMED, never skipped in silence — a list
     # entry nobody ran and nobody mentioned is the same failure one shape up.
     if [ -z "$cmd" ] || [ "$cmd" = "null" ]; then
-      DRIVER_PREPARE_WHY="harness.json's worktree.prepare entry $i is not a command, so it did not run in $tree"
+      DRIVER_PREPARE_WHY="harness.json's worktree.prepare entry $i of $n (counting from 1) is not a command, so it did not run in $tree"
       driver_say "✋ $DRIVER_PREPARE_WHY"
       return 1
     fi

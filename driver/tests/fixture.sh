@@ -129,7 +129,14 @@ printf '%s\t%s\t%s\n' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-e
 printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
 # The prompt arrives on STDIN, not in argv — argv has a ceiling and a substituted
 # brief carrying a diff goes past it. Kept so a suite can read what was sent.
-cat > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
+# BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's
+# `< "$prompt"` is the plant that proves the redirect is load-bearing — and with a
+# plain `cat` here that plant HUNG instead of going red, which reports the guard as
+# sound. perl is the same tool driver_bounded uses and is on every machine this kit
+# runs on; the real CLI bounds its own stdin wait the same way (measured: "no stdin
+# data received in 3s, proceeding without it").
+perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
+  > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
 f="$FIX/ai/$step.jsonl"
 [ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
 cat "$f"

@@ -179,14 +179,36 @@ fix_build() {
 nth_claude() {
 cat > "$BIN/claude" <<'SH'
 #!/usr/bin/env bash
-step=""; prev=""
-for a in "$@"; do case "$prev" in --name) step="$a" ;; esac; prev="$a"; done
+# Everything the fixture stub records, kept — a replacement that quietly drops
+# them makes the next assertion added below measure a different stub than the
+# ones above it. The one thing it adds is a per-step call counter.
+step=""; prev=""; schema=""
+for a in "$@"; do
+  case "$prev" in --name) step="$a" ;; --json-schema) schema="$a" ;; esac
+  prev="$a"
+done
 printf '%s
 ' "$step" >> "$CLAUDE_LOG"
-n=$(( $(cat "$FIX/nth" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/nth"
-cat "$FIX/ai/$step.$n.jsonl" 2>/dev/null || cat "$FIX/ai/$step.jsonl"
+printf '%s	%s	%s
+' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
+printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
+# BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's
+# `< "$prompt"` is the plant that proves the redirect is load-bearing — and with a
+# plain `cat` here that plant HUNG instead of going red, which reports the guard as
+# sound. perl is the same tool driver_bounded uses and is on every machine this kit
+# runs on; the real CLI bounds its own stdin wait the same way (measured: "no stdin
+# data received in 3s, proceeding without it").
+perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
+  > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
+n=$(( $(cat "$FIX/nth.$step" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/nth.$step"
+if [ -f "$FIX/ai/$step.$n.jsonl" ]; then cat "$FIX/ai/$step.$n.jsonl"; exit 0; fi
+# The fixture stub's own refusal, kept: a missing transcript must not read as
+# "the agent produced no transcript".
+f="$FIX/ai/$step.jsonl"
+[ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
+cat "$f"
 SH
-chmod +x "$BIN/claude"; rm -f "$FIX/nth"
+chmod +x "$BIN/claude"; rm -f "$FIX"/nth.*
 }
 
 echo "--- the build step: an item that proves itself is accepted ---"
@@ -288,20 +310,45 @@ want "each task's own answer is kept"  "2" \
   "$(ls "$(driver_state_dir 606)/steps"/build-task-*.json | grep -c . || true)"
 want "and the step's own answer file is the last of them" "build" \
   "$(jq -r '.step' "$(driver_state_dir 606)/steps/build.json")"
-rm -f "$FIX/nth" "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
 
 echo "--- the answer must build the task this call was given ---"
 # The proof re-runs whatever two shas it is handed and cannot tell which task they
 # belong to. So an answer returning the PREVIOUS task's title and commits proved red
 # then green, `bad` stayed 0, and the step reported every task built while one was
 # never touched. The two-task case above did exactly that and passed.
+# THE TWO GUARDS ARE MEASURED SEPARATELY. Written with one answer for both calls this
+# case passed with the title check inert — the SECOND call was caught by the commit-pair
+# check instead, so the rc was right for the wrong reason and only the message assertion
+# went red on the plant. Here call 2 carries the wrong TITLE and its own commits, so the
+# pair check cannot fire and nothing but the title check can catch it.
 driver_state_init 707 --worktree "$REPO" --repo "$REPO"
 fix_plan 707 2
+nth_claude
 fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
   superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.1.jsonl"
+fix_ai build "$(fix_build refine.test.sh "bash refine.test.sh" "$R_TEST" "$R_IMPL" "task 1")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
 out=$(driver_step_build 707 2>&1); rc=$?
 want "an answer about another task is sent back" "30" "$rc"
 want_in "and names both"  "given 'task 2'" "$out"
+want_not_in "and not by the commit-pair check" 'same two commits' "$out"
+rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+
+echo "--- a title the plan does not carry at all is said, not refused ---"
+# The near-miss: a restored full stop, a normalised dash. Nothing in build.md told the
+# model the string had to be verbatim, so refusing here sent a correctly-built task
+# round the rework loop five times and parked it saying "the tests still do not prove
+# the change" — false, about tests that are fine.
+driver_state_init 710 --worktree "$REPO" --repo "$REPO"
+fix_plan 710 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1.")" \
+  superpowers:subagent-driven-development
+out=$(driver_step_build 710 2>&1); rc=$?
+want "a near miss is not a refusal" "0" "$rc"
+want_in "and the difference is said"  "calls this task 'task 1.'" "$out"
 
 echo "--- and it must be proved by its own two commits ---"
 # The other door to the same hole: the right title, a pair already spent on task 1.
@@ -317,7 +364,7 @@ cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
 out=$(driver_step_build 708 2>&1); rc=$?
 want "one change cannot be two tasks built test-first" "30" "$rc"
 want_in "and it says so"  'same two commits' "$out"
-rm -f "$FIX/nth" "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
 
 echo "--- a proof tree that could not be prepared is not a red ---"
 # The measurement was never taken, so blaming the change is the one thing this must
@@ -356,5 +403,8 @@ want_in "and named by its position"              'entry 2' "$out"
 jq 'del(.worktree)' "$REPO/.claude/harness.json" > "$FIX/he.json"
 mv "$FIX/he.json" "$REPO/.claude/harness.json"
 want "and no prepare at all is still normal" "0" "$(driver_prepare_worktree "$FIX" >/dev/null 2>&1; echo $?)"
+# The config is left as the fixture wrote it. Four cases above mutate it, and a suite
+# whose end state is not its start state is an ordering dependency nothing states.
+git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true
 
 exit $FAILED

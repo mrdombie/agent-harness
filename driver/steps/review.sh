@@ -65,12 +65,24 @@ driver_step_review() { # <ticket>
   # into the megabytes, and a reviewer handed a silently-cut diff reviews a change it
   # cannot see the rest of — which is worse than being told. The cap is a project fact
   # so a repo with large legitimate diffs can raise it.
-  local cap; cap=$(driver_opt review.diffBytes 400000)
-  case "$cap" in ''|*[!0-9]*) cap=400000 ;; esac
-  if [ "${#diff}" -gt "$cap" ]; then
-    diff="$(printf '%s' "$diff" | head -c "$cap")
+  local cap bytes; cap=$(driver_opt review.diffBytes 400000)
+  # A CONFIGURED NUMBER THAT IS NOT A NUMBER IS SAID. Silently replaced, an operator who
+  # writes "400kb" gets the default and no line telling them their setting is inert —
+  # and every other configured number in this kit (cmdTimeout, STALE_HOURS, the prepare
+  # shape one file over) says so.
+  case "$cap" in
+    ''|*[!0-9]*|0)
+      driver_say "⚠ review: harness.json's review.diffBytes is '${cap}', which is not a number of bytes, so the default 400000 is used."
+      cap=400000 ;;
+  esac
+  # MEASURED THE WAY IT IS CUT. `${#diff}` counts CHARACTERS and `head -c` cuts BYTES,
+  # so on a diff with any non-ASCII in it the branch fired late and the banner reported
+  # a character count labelled bytes. LC_ALL=C makes both halves bytes.
+  bytes=$(LC_ALL=C printf '%s' "$diff" | wc -c | tr -d ' ')
+  if [ "${bytes:-0}" -gt "$cap" ]; then
+    diff="$(LC_ALL=C printf '%s' "$diff" | LC_ALL=C head -c "$cap")
 
-[TRUNCATED at $cap bytes of ${#diff}. The files it touches, in full:
+[TRUNCATED at $cap bytes of $bytes. The files it touches, in full:
 $(git -C "$wt" diff --stat "$trunk"...HEAD 2>/dev/null)
 Read the rest in the worktree — do NOT review the part above as if it were the whole change.]"
   fi

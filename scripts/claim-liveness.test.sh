@@ -20,6 +20,10 @@ want_in() {
   if printf '%s' "$3" | grep -qE -- "$2"; then ok "$1"
   else bad "$1 — no /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; fi
 }
+want_not_in() {
+  if printf '%s' "$3" | grep -qE -- "$2"; then bad "$1 — found /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"
+  else ok "$1"; fi
+}
 
 record() { # <ticket> <iso-stamp>
   mkdir -p "$FIX/driver/$1"
@@ -168,5 +172,10 @@ jq -n --arg at "$(stamp 90000)" '{ticket:"702", done:["start"], updated_at:$at}'
 plant_claim 702
 out=$(reconcile)
 want "and a stale record is still released" "no" "$(ref_present 702)"
+# AND FOR THE RIGHT REASON. macOS reissues pids from a wrapping counter and the two
+# reconcile runs spawn hundreds of processes, so a recycled DEADPID would make
+# holder_alive answer 0 — the ref survives, this case goes red, and nothing about it
+# would be a fact about the code. This says which branch actually ran.
+want_not_in "and not because the dead pid looked alive" 'held by pid' "$out"
 
 exit $FAILED

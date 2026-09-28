@@ -52,6 +52,13 @@ want "the real plan brief is accepted" "0" "$rc"
 P1="$(driver_state_dir 301)/steps/plan.prompt"
 want "no placeholder survives into the prompt" "0" "$(grep -c '{{' "$P1" || true)"
 want_in "and the ticket itself is in it" "Ticket 301" "$(cat "$P1")"
+# AND THE PROMPT REACHES THE MODEL. It travels on stdin, not in argv, because argv has
+# a ceiling a substituted brief carrying a diff goes past — and nothing read the file
+# the stub writes, so dropping the redirect sent the agent an EMPTY prompt with all
+# twelve driver suites still green. Measured: exactly that, exit 0, 0 mismatches.
+want_in "the prompt is what the agent was actually sent" \
+  'Plannable is not planned' "$(cat "$FIX/claude-stdin-plan.txt" 2>/dev/null)"
+want_in "with the ticket in it there too" "Ticket 301" "$(cat "$FIX/claude-stdin-plan.txt" 2>/dev/null)"
 export DRIVER_TICKET=302
 rc=0; driver_ai_step 302 plan >/dev/null 2>&1 || rc=$?
 P2="$(driver_state_dir 302)/steps/plan.prompt"

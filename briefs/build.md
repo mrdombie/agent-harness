@@ -62,6 +62,10 @@ commit cannot show which came first.
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both
 keys, or neither, is refused.
 
+`task` is the title of the plan task you were given, copied as it is written there.
+The driver refuses an answer whose title belongs to a DIFFERENT task in the plan,
+because a task nobody built is a task that ships unbuilt.
+
 `surfaces` lists every other place that shows the state you changed, and what you
 changed there.
 

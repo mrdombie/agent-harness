@@ -63,7 +63,11 @@
 _driver_proof_install() { # <repo> <tree>
   [ -d "$1/node_modules" ] && ln -sfn "$1/node_modules" "$2/node_modules"
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
-  driver_prepare_worktree "$2" || return 1
+  # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
+  # Left on stdout, driver_prepare_worktree's own narration was captured into $why and
+  # printed as part of the proof's verdict — and on the refusal path the park note was
+  # the same sentence twice, naming a temp tree that had already been deleted.
+  driver_prepare_worktree "$2" >&2 || return 1
   return 0
 }
 
@@ -155,7 +159,7 @@ driver_prove_red_green() {
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha why prc
-  local want_task got_task seen_pairs=""
+  local want_task got_task pair seen_pairs=""
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
@@ -204,16 +208,30 @@ driver_step_build() { # <ticket>
     fi
     jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
 
-    # THE ANSWER MUST BE ABOUT THE TASK IT WAS GIVEN. The proof re-runs whatever two
+    # THE ANSWER MUST NOT BE ABOUT A DIFFERENT TASK. The proof re-runs whatever two
     # shas it is handed and cannot tell which task they belong to — so an answer that
-    # returns the PREVIOUS task's title and commits proves red-then-green perfectly,
-    # `bad` stays 0, and the step reports every task built while one was never touched.
-    # The suite's own two-task case did exactly that and passed.
+    # returns ANOTHER task's title and commits proves red-then-green perfectly, `bad`
+    # stays 0, and the step reports every task built while one was never touched. The
+    # suite's own two-task case did exactly that and passed.
+    #
+    # IT IS NOT BYTE EQUALITY WITH THE TITLE ASKED FOR. Nothing in build.md told the
+    # model the string had to be verbatim, so a restored full stop or a normalised dash
+    # would have sent a perfectly built task round the rework loop five times and then
+    # parked it saying "the tests still do not prove the change" — a sentence that is
+    # false, about tests that are fine. Adding a checker without adding the prompt is
+    # this repo's own named defect, so the brief now states the rule AND the check only
+    # fires on the thing that is unambiguously wrong: a title belonging to a different
+    # task in this same plan. A title matching none of them is said and allowed.
     want_task=$(printf '%s' "$task" | jq -r '.title // ""')
     got_task=$(jq -r '.task // ""' "$ans")
-    if [ -n "$want_task" ] && [ "$got_task" != "$want_task" ]; then
-      driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task'. A task nobody built is a task that ships unbuilt."
-      bad=1; continue
+    if [ -n "$got_task" ] && [ "$got_task" != "$want_task" ]; then
+      if jq -e --arg g "$got_task" --arg w "$want_task" \
+           '[.tasks[]?.title] | index($g) != null and $g != $w' \
+           "$(driver_state_dir "$t")/steps/plan.json" >/dev/null 2>&1; then
+        driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task', which is another task in this plan. A task nobody built is a task that ships unbuilt."
+        bad=1; continue
+      fi
+      driver_say "   build: the answer calls this task '$got_task'; the plan calls it '$want_task'"
     fi
     tfile=$(jq -r '.testFirst.test.file // ""' "$ans")
     tcmd=$(jq -r  '.testFirst.command // ""'   "$ans")
@@ -225,12 +243,17 @@ driver_step_build() { # <ticket>
     fi
     # AND ITS OWN COMMITS. A pair already proved for an earlier task proves that task
     # again, not this one — same hole as the title, reached by the other door.
+    #
+    # KEYED ON THE RESOLVED COMMIT, not on the string the model typed. The contract asks
+    # for seven characters or more, so `a1b2c3d` and its full sha are two keys for one
+    # commit — and that is a third door to the same hole.
+    pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")"
     case " $seen_pairs " in
-      *" $tsha:$isha "*)
+      *" $pair "*)
         driver_say "✋ build '$got_task' is proved by the same two commits as an earlier task ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)). One change cannot be two tasks built test-first."
         bad=1; continue ;;
     esac
-    seen_pairs="$seen_pairs $tsha:$isha"
+    seen_pairs="$seen_pairs $pair"
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     if [ "$prc" -eq 0 ]; then
