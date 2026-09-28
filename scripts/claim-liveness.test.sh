@@ -16,6 +16,10 @@ FAILED=0
 ok()   { printf 'OK       %s\n' "$1"; }
 bad()  { printf 'MISMATCH %s\n' "$1"; FAILED=1; }
 want() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 — wanted '$2', got '$3'"; fi; }
+want_in() {
+  if printf '%s' "$3" | grep -qE -- "$2"; then ok "$1"
+  else bad "$1 — no /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; fi
+}
 
 record() { # <ticket> <iso-stamp>
   mkdir -p "$FIX/driver/$1"
@@ -53,16 +57,116 @@ record 10872 "$(stamp 60)"
 want "a window that is not a number"       "gone" "$(verdict 10872 "4h")"
 want "and no state dir at all"             "gone" "$(claim_run_fresh 10872 "" 4 && echo live || echo gone)"
 
-echo "--- the reconciler reads it where a dead pid used to end the matter ---"
-# Not a replica of the check: the line in the reconciler itself.
+echo "--- a stamp with a fractional second is still a stamp ---"
+# BSD's `date -j -f` matches the format LITERALLY, so `…:00.176Z` fails it. The copy
+# of swarm_epoch that used to live in claim-liveness.sh had no strip and fell through
+# to "gone" — which here means release the claim. swarm_epoch handles it, which is
+# why this calls swarm_epoch rather than carrying a second copy.
+record 10873 "$(stamp 60 | sed 's/Z$/.176Z/')"
+want "a fractional second reads as fresh" "live" "$(verdict 10873)"
+
+echo "--- THE RECONCILER ITSELF: a dead pid and a fresh run is not a release ---"
+# THIS IS THE ASSERTION THAT HAD TO BE ABLE TO FAIL. The first version of this suite
+# grepped reconcile-claims.sh for the call — and a call commented out still satisfies
+# a grep for its own text, so the whole thing stayed green about a reconciler that
+# releases a live claim on every dead pid. Proved by planting exactly that. So this
+# drives the real script, against a real bare remote and a stub gh, and reads the
+# claim ref afterwards.
 R="$(cd "$(dirname "$0")" && pwd)/reconcile-claims.sh"
-grep -q 'claim_run_fresh "$n" "$STATE_DIR" "$STALE_HOURS"' "$R" \
-  && ok "reconcile-claims.sh asks it before releasing" \
-  || bad "reconcile-claims.sh does not call claim_run_fresh — the release path is unchanged"
-# And it is asked AFTER the pid is found dead, not instead of it: a live pid must
-# still be the cheap answer.
-awk '/holder_alive "\$host" "\$pid"/ {p=NR} /claim_run_fresh/ {c=NR} END {exit !(p && c && c > p)}' "$R" \
-  && ok "and only once the pid is gone" \
-  || bad "the run check does not sit after the pid check"
+SB="$FIX/sb"; mkdir -p "$SB/state" "$SB/bin"
+# A git hook exports GIT_DIR / GIT_WORK_TREE to everything it runs; inherited, they
+# would make every git call below act on the REAL checkout.
+for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@test.local
+export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@test.local
+git init -q --bare -b main "$SB/origin.git"
+git clone -q "$SB/origin.git" "$SB/work" 2>/dev/null
+mkdir -p "$SB/work/.claude"
+cat > "$SB/work/.claude/harness.json" <<JSON
+{
+  "repo": "acme/widgets",
+  "integrationBranch": "main",
+  "branchPrefix": "tkt-",
+  "stateDir": "$SB/state",
+  "sisterRepos": [],
+  "labels": {
+    "drafting": "st:drafting", "ready": "st:ready", "claimed": "st:claimed",
+    "inReview": "st:review", "gated": "st:gated", "partial": "st:partial",
+    "blocked": "st:blocked", "parked": "st:parked",
+    "externalBlocked": "st:ext-blocked", "needsHuman": "st:needs-human",
+    "pmDecision": "st:pm-decision", "pmTrack": "st:pm-track",
+    "hold": "hold:human",
+    "decision": ["st:pm-track", "st:pm-decision", "hold:human"]
+  }
+}
+JSON
+git -C "$SB/work" add -f .claude/harness.json
+git -C "$SB/work" commit -qm init >/dev/null
+git -C "$SB/work" push -q origin main
+
+# gh, answering enough for the evidence probes: the repo is reachable, the ticket is
+# open and ordinary, and there is no pull request anywhere. That is the "nothing at
+# all" case — the one that releases to ready, and the one #10867 was wrongly given.
+cat > "$SB/bin/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/acme/widgets") echo acme/widgets ;;
+  "issue view") echo "st:claimed" ;;
+  "pr list")    printf '[]\n' ;;
+  *) : ;;
+esac
+exit 0
+SH
+chmod +x "$SB/bin/gh"
+
+# A pid on THIS host that is certainly dead: one that existed and has exited.
+DEADPID=$( (exec sh -c 'echo $$') )
+while kill -0 "$DEADPID" 2>/dev/null; do DEADPID=$((DEADPID + 1)); done
+
+# The claim, in the shape claim-lock.sh writes: a parentless commit whose message is
+# the record. Planted straight into the sandbox's own bare remote — nothing here can
+# reach a live claim, and the reconciler is what gets to decide its fate.
+plant_claim() { # <ticket>
+  local rec sha empty
+  rec=$(jq -nc --arg i "$1" --argjson p "$DEADPID" --arg h "$(hostname -s)" \
+    '{issue:$i, agent:"tester@fixture", pid:$p, branch:("tkt-" + $i + "/work"),
+      worktree:"", host:$h, claimed_at:"2026-09-27T21:00:00Z"}')
+  empty=$(git -C "$SB/work" hash-object -t tree /dev/null)
+  sha=$(printf '%s\n' "$rec" | git -C "$SB/work" commit-tree "$empty")
+  git -C "$SB/work" update-ref "refs/claims/$1" "$sha"
+  git -C "$SB/work" push -q origin "refs/claims/$1"
+}
+ref_present() {
+  git -C "$SB/work" ls-remote origin "refs/claims/$1" 2>/dev/null | grep -q . \
+    && echo yes || echo no
+}
+
+reconcile() {
+  ( cd "$SB/work" && PATH="$SB/bin:$PATH" \
+      HARNESS_CFG_PATH="$SB/work/.claude/harness.json" \
+      HARNESS_MAIN_REPO="$SB/work" HARNESS_REPO_ROOT="$SB/work" \
+      HARNESS_STATE_DIR="$SB/state" HARNESS_LOGIN=tester \
+      CLAIM_REPO="$SB/work" CLAIM_REMOTE=origin NOTIFY=0 \
+      bash "$R" 2>&1 )
+}
+
+# 1. dead pid, FRESH driver record -> left alone.
+mkdir -p "$SB/state/driver/701"
+jq -n --arg at "$(stamp 120)" '{ticket:"701", done:["start","plan"], updated_at:$at}' \
+  > "$SB/state/driver/701/state.json"
+plant_claim 701
+out=$(reconcile)
+want "the claim survives a dead pid when the run record is fresh" "yes" "$(ref_present 701)"
+want_in "and it says why" 'run record' "$out"
+
+# 2. dead pid, STALE driver record -> the ordinary evidence path, released.
+# The control for case 1: same claim, same dead pid, same absent pull request — only
+# the record's age differs, so it is the record that decides and nothing else.
+mkdir -p "$SB/state/driver/702"
+jq -n --arg at "$(stamp 90000)" '{ticket:"702", done:["start"], updated_at:$at}' \
+  > "$SB/state/driver/702/state.json"
+plant_claim 702
+out=$(reconcile)
+want "and a stale record is still released" "no" "$(ref_present 702)"
 
 exit $FAILED

@@ -176,16 +176,37 @@ driver_bounded() { # <seconds> <command>
 # job" — so the ticket parks blaming a change that works.
 DRIVER_PREPARE_WHY=""
 driver_prepare_worktree() { # <tree>
-  local tree="${1:?driver_prepare_worktree: need a tree}" n i cmd out rc
+  local tree="${1:?driver_prepare_worktree: need a tree}" ptype n i cmd out rc
   DRIVER_PREPARE_WHY=""
   [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
-  n=$(jq -r '(.worktree.prepare // []) | length' "$HARNESS_CFG" 2>/dev/null)
+  # THE SHAPE FIRST, because `length` answers for a string and an object too. Written
+  # as a bare string — `"prepare": "npx prisma generate"` — `// []` does not fire (a
+  # string is truthy), length is the CHARACTER COUNT, every per-element read errors
+  # into /dev/null, and this returned 0 having prepared nothing. Measured: 19 for a
+  # 19-character string. That is the defect self-check.sh refuses one file over, and
+  # its consequence here is worse: an unprepared tree that reports as prepared fails
+  # at the push, or 127s in both halves of the build step's proof.
+  ptype=$(jq -r '(.worktree.prepare // null) | type' "$HARNESS_CFG" 2>/dev/null)
+  case "$ptype" in
+    null) return 0 ;;
+    array) : ;;
+    *) DRIVER_PREPARE_WHY="harness.json's worktree.prepare is a $ptype and this reads a list of commands, so NOTHING was prepared in $tree"
+       driver_say "✋ $DRIVER_PREPARE_WHY. Nothing having run is not everything having passed."
+       return 1 ;;
+  esac
+  n=$(jq -r '.worktree.prepare | length' "$HARNESS_CFG" 2>/dev/null)
   case "${n:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
   i=0
   while [ "$i" -lt "$n" ]; do
-    cmd=$(jq -r --argjson i "$i" '.worktree.prepare[$i]' "$HARNESS_CFG" 2>/dev/null)
+    cmd=$(jq -r --argjson i "$i" '.worktree.prepare[$i] | if type == "string" then . else "" end' "$HARNESS_CFG" 2>/dev/null)
     i=$((i+1))
-    [ -n "$cmd" ] && [ "$cmd" != "null" ] || continue
+    # An element that is not a command is NAMED, never skipped in silence — a list
+    # entry nobody ran and nobody mentioned is the same failure one shape up.
+    if [ -z "$cmd" ] || [ "$cmd" = "null" ]; then
+      DRIVER_PREPARE_WHY="harness.json's worktree.prepare entry $i is not a command, so it did not run in $tree"
+      driver_say "✋ $DRIVER_PREPARE_WHY"
+      return 1
+    fi
     out=$( ( cd "$tree" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
     if [ "$rc" -ne 0 ]; then
       DRIVER_PREPARE_WHY="harness.json's worktree.prepare command '$cmd' exited $rc in $tree: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"

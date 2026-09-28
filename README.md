@@ -68,6 +68,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "decision": ["status:pm-track", "status:pm-decision", "needs:human-approval"]
   },
   "law": "docs/design/design-philosophy.md",
+  "standards": "docs/CODING_STANDARDS.md",
   "gates": {
     "local": ["npm run gates"],
     "requiredChecks": ["Typecheck + Unit tests", "Code gates"]
@@ -81,6 +82,8 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
 - `gates.local` is the list of LOCAL gate commands, and it is the only part of `gates` anything runs. `group` names a gate group inside your own runner and `requiredChecks` names the CI checks a pull request waits on — neither is a shell line, and the driver never treats them as one. A flat `{ "<name>": "<command>" }` map is read too; a key whose value is not a string counts as an empty command, so it is named in the "nothing ran" refusal rather than dropped in silence.
+- `standards` is optional: the coding-standards document a change is held to. The driver hands it to the build step as its own fact, and falls back to `law` when it is absent — so a project with both should name both, or the build agent is told the design philosophy IS the coding standard.
+- `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped; **present and failing is a refusal**, because a tree that cannot pass your pre-push is better discovered before the build than after it.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.

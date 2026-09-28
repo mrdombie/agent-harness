@@ -109,11 +109,31 @@ want "and the answer really is the JSON" "plan" \
 
 echo "--- F1 · the Stop hooks are told to stand down ---"
 want_in "the runner is given the driver's own marker" "301:plan" "$(cat "$CLAUDE_ENV_LOG")"
-for h in signoff-backstop ask-dont-narrate; do
-  printf '{"session_id":"probe-%s","last_assistant_message":"your call whether to do X","stop_hook_active":false}' "$h" \
-    | HARNESS_DRIVER_RUN=301:plan bash "$KIT/hooks/$h.sh" >/dev/null 2>&1
-  want "$h stands down on a driver run" "0" "$?"
-done
+# EACH ONE WITH ITS CONTROL. Without the control this passed with the stand-down line
+# deleted: on most inputs these hooks exit 0 anyway, so "exit 0 with the marker" is
+# true of a hook that never fires. The control is the same input WITHOUT the marker,
+# and it has to come back 2 — that is what makes the pair a measurement.
+HOOKSTATE="$FIX/hookstate"; mkdir -p "$HOOKSTATE"
+# ask-dont-narrate proves a decision was NOT asked by reading the run's transcript,
+# and stays quiet when it cannot read one — so the control needs a transcript with no
+# AskUserQuestion in it, or the control is quiet for the wrong reason.
+printf '%s\n' '{"role":"user","content":"do the thing"}' > "$FIX/noask.jsonl"
+printf '%s\n' '{"role":"assistant","content":"done"}'   >> "$FIX/noask.jsonl"
+hook_rc() { # <hook> <message> <session> [marker]
+  rm -rf "${TMPDIR:-/tmp}/claude-$1"
+  printf 'a live scope\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$HOOKSTATE/.session-label"
+  rm -f "$HOOKSTATE/.session-label.owner"
+  jq -nc --arg s "$3" --arg m "$2" --arg p "$FIX/noask.jsonl" \
+    '{session_id:$s, hook_event_name:"Stop", stop_hook_active:false,
+      last_assistant_message:$m, transcript_path:$p}' \
+    | env HARNESS_STATE_DIR="$HOOKSTATE" ${4:+HARNESS_DRIVER_RUN="$4"} \
+      bash "$KIT/hooks/$1.sh" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+want "signoff-backstop fires without the marker"   "2" "$(hook_rc signoff-backstop  'All done, merged it.' c1)"
+want "  and stands down with it"                   "0" "$(hook_rc signoff-backstop  'All done, merged it.' c2 301:plan)"
+want "ask-dont-narrate fires without the marker"   "2" "$(hook_rc ask-dont-narrate  'Two options. Your call.' c3)"
+want "  and stands down with it"                   "0" "$(hook_rc ask-dont-narrate  'Two options. Your call.' c4 301:plan)"
 
 echo "--- F8 · the step runs in the ticket's worktree ---"
 WT="$FIX/wt301"

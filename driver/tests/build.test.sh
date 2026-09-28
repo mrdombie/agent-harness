@@ -173,6 +173,22 @@ fix_build() {
       changelog:{skipped:"a test-only change"}}'
 }
 
+# A per-call stub: the nth call answers with $FIX/ai/<step>.<n>.jsonl, so two calls
+# in one step can return two different answers. With one answer for both, the
+# two-task case below proved task 1 twice and task 2 never, and passed.
+nth_claude() {
+cat > "$BIN/claude" <<'SH'
+#!/usr/bin/env bash
+step=""; prev=""
+for a in "$@"; do case "$prev" in --name) step="$a" ;; esac; prev="$a"; done
+printf '%s
+' "$step" >> "$CLAUDE_LOG"
+n=$(( $(cat "$FIX/nth" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/nth"
+cat "$FIX/ai/$step.$n.jsonl" 2>/dev/null || cat "$FIX/ai/$step.jsonl"
+SH
+chmod +x "$BIN/claude"; rm -f "$FIX/nth"
+}
+
 echo "--- the build step: an item that proves itself is accepted ---"
 export DRIVER_TICKET=101
 driver_state_init 101 --worktree "$REPO" --repo "$REPO"
@@ -251,17 +267,94 @@ echo "--- two plan tasks are two calls, in order, never in parallel ---"
 # One call per task is what build.md and the contract say. Inside a ticket the
 # fan-out belongs to superpowers:subagent-driven-development, which the brief invokes;
 # the driver never starts several agents on one ticket. So the count is the measure.
+# EACH CALL ANSWERS ABOUT ITS OWN TASK, with its own two commits — which is what the
+# two refusals at the end of this file insist on, and what this case used to break.
 driver_state_init 606 --worktree "$REPO" --repo "$REPO"
 fix_plan 606 2
-fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+nth_claude
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
   superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.1.jsonl"
+fix_ai build "$(fix_build refine.test.sh "bash refine.test.sh" "$R_TEST" "$R_IMPL" "task 2")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
 : > "$CLAUDE_LOG"
 rc=0; out=$(driver_step_build 606 2>&1) || rc=$?
 want "both tasks are proved"           "0" "$rc"
+want_in "and each by its own test"     'feature.test.sh' "$out"
+want_in "including the second"         'refine.test.sh'  "$out"
 want "one call per task and no more"   "2" "$(grep -c . "$CLAUDE_LOG")"
 want "each task's own answer is kept"  "2" \
   "$(ls "$(driver_state_dir 606)/steps"/build-task-*.json | grep -c . || true)"
 want "and the step's own answer file is the last of them" "build" \
   "$(jq -r '.step' "$(driver_state_dir 606)/steps/build.json")"
+rm -f "$FIX/nth" "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+
+echo "--- the answer must build the task this call was given ---"
+# The proof re-runs whatever two shas it is handed and cannot tell which task they
+# belong to. So an answer returning the PREVIOUS task's title and commits proved red
+# then green, `bad` stayed 0, and the step reported every task built while one was
+# never touched. The two-task case above did exactly that and passed.
+driver_state_init 707 --worktree "$REPO" --repo "$REPO"
+fix_plan 707 2
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
+  superpowers:subagent-driven-development
+out=$(driver_step_build 707 2>&1); rc=$?
+want "an answer about another task is sent back" "30" "$rc"
+want_in "and names both"  "given 'task 2'" "$out"
+
+echo "--- and it must be proved by its own two commits ---"
+# The other door to the same hole: the right title, a pair already spent on task 1.
+driver_state_init 708 --worktree "$REPO" --repo "$REPO"
+fix_plan 708 2
+nth_claude
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 1")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.1.jsonl"
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA" "task 2")" \
+  superpowers:subagent-driven-development
+cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
+out=$(driver_step_build 708 2>&1); rc=$?
+want "one change cannot be two tasks built test-first" "30" "$rc"
+want_in "and it says so"  'same two commits' "$out"
+rm -f "$FIX/nth" "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
+
+echo "--- a proof tree that could not be prepared is not a red ---"
+# The measurement was never taken, so blaming the change is the one thing this must
+# not do — and it used to, five times over, because the prepare ran into /dev/null
+# with `|| true`. Every try would have been spent and the ticket parked accusing a
+# change that works.
+jq '.worktree.prepare = ["sh -c \"exit 4\""]' "$REPO/.claude/harness.json" > "$FIX/hb.json"
+mv "$FIX/hb.json" "$REPO/.claude/harness.json"
+out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1); rc=$?
+want "the proof says it could not be taken"  "5" "$rc"
+want_in "and names the prepare, not the test" 'could not be prepared' "$out"
+want_not_in "it never blames the change"      'does not test it|still fails with the change' "$out"
+driver_state_init 709 --worktree "$REPO" --repo "$REPO"
+fix_plan 709 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
+out=$(driver_step_build 709 2>&1); rc=$?
+want "the step refuses rather than retrying it five times" "24" "$rc"
+want "and spends one try, not five"  "1" "$(driver_state_count 709 build)"
+
+echo "--- a prepare list that is not a list prepared nothing, and says so ---"
+# `"prepare": "npx generate"` — `// []` does not fire on a string, `length` is the
+# CHARACTER count, every element read errors into /dev/null, and this returned 0
+# having run nothing. Measured: 19 for a 19-character string.
+jq '.worktree.prepare = "sh -c \"echo generated > .prepared\""' "$REPO/.claude/harness.json" > "$FIX/hc.json"
+mv "$FIX/hc.json" "$REPO/.claude/harness.json"
+out=$(driver_prepare_worktree "$FIX" 2>&1); rc=$?
+want "a string is refused"      "1" "$rc"
+want_in "and named as a string" 'is a string' "$out"
+want "nothing was prepared"     "no" "$([ -f "$FIX/.prepared" ] && echo yes || echo no)"
+jq '.worktree.prepare = ["sh -c \"echo ok\"", 3]' "$REPO/.claude/harness.json" > "$FIX/hd.json"
+mv "$FIX/hd.json" "$REPO/.claude/harness.json"
+out=$(driver_prepare_worktree "$FIX" 2>&1); rc=$?
+want "an entry that is not a command is refused" "1" "$rc"
+want_in "and named by its position"              'entry 2' "$out"
+jq 'del(.worktree)' "$REPO/.claude/harness.json" > "$FIX/he.json"
+mv "$FIX/he.json" "$REPO/.claude/harness.json"
+want "and no prepare at all is still normal" "0" "$(driver_prepare_worktree "$FIX" >/dev/null 2>&1; echo $?)"
 
 exit $FAILED

@@ -21,9 +21,15 @@
 # of the window — and that is the direction to be wrong in: the cost of waiting is
 # one window, and the cost of releasing a live claim is two agents on one branch.
 #
+# The timestamp is read by swarm/time.sh's swarm_epoch, which is standalone and
+# already handles both date dialects, a fractional second and an offset.
+#
 # It is the same rule the claim flow already states for staleness — "a ticket claimed
 # three days ago whose branch was pushed an hour ago is being worked on" — applied to
 # the one artifact a driver run writes on every step.
+
+_CLAIM_LIVENESS_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_CLAIM_LIVENESS_HOME/../swarm/time.sh" || return 1 2>/dev/null || exit 1
 
 # claim_run_fresh <ticket> [state-dir] [stale-hours]
 claim_run_fresh() {
@@ -38,11 +44,14 @@ claim_run_fresh() {
   # A whole number of hours, or the window is not a window. `[` fails OPEN on a
   # non-integer, and failing open here means calling a dead run fresh for ever.
   case "$hours" in ''|*[!0-9]*) return 1 ;; esac
-  # Both date dialects: BSD wants -j -f, GNU wants -d. A stamp neither can read is
-  # not a fresh run — it is an unreadable record, and that is a "no".
-  epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$at" +%s 2>/dev/null) \
-    || epoch=$(date -u -d "$at" +%s 2>/dev/null) || return 1
-  [ -n "$epoch" ] || return 1
+  # swarm_epoch, not a second copy of it. The copy that used to sit here read the two
+  # date dialects and nothing else — and swarm/time.sh's own header records why that
+  # is not enough: BSD's `-f` matches the format LITERALLY and fails on a fractional
+  # second, which made a healthy snapshot read as 56 years old. Here the failure
+  # direction is worse than a wrong age: unreadable means "gone", which means release
+  # the claim, which is the one outcome this file exists to prevent.
+  epoch=$(swarm_epoch "$at" 2>/dev/null) || return 1
+  case "${epoch:-0}" in ''|*[!0-9]*|0) return 1 ;; esac
   now=$(date +%s)
   [ $(( now - epoch )) -lt $(( hours * 3600 )) ]
 }

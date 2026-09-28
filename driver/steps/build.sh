@@ -30,6 +30,7 @@
 #   2  it still failed WITH the change — the change does not do the job
 #   3  the commits could not be read
 #   4  a half ran out of time — a hang says nothing about the change
+#   5  a proof tree could not be prepared — the measurement was never made
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -51,13 +52,18 @@
 # change does not do the job", the rework burns every try, and the ticket parks.
 # On a project with a gitignored install that is every ticket, so this is not a
 # nicety: without it the step's whole guarantee is unreachable there.
+# 0 prepared · 1 this project's setup could not be run here.
+#
+# THE EXIT CODE IS READ. Wrapped in `>/dev/null 2>&1 || true` it re-opened the exact
+# bug the prepare list exists to close: a failed generate leaves the test command
+# resolving through a missing artifact, so it exits 127 in BOTH halves, the second
+# 127 reads as "the change does not do the job", the rework loop burns every try, and
+# the ticket parks blaming a change that works. The measurement was never made, and a
+# measurement that could not be made is not a red.
 _driver_proof_install() { # <repo> <tree>
   [ -d "$1/node_modules" ] && ln -sfn "$1/node_modules" "$2/node_modules"
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
-  # And whatever this project generates per checkout. Without it a test command that
-  # resolves through a generated artifact exits 127 in BOTH halves, and the 127 in the
-  # second half reads as "the change does not do the job".
-  driver_prepare_worktree "$2" >/dev/null 2>&1 || true
+  driver_prepare_worktree "$2" || return 1
   return 0
 }
 
@@ -90,7 +96,11 @@ driver_prove_red_green() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-proof-XXXXXX")
   git -C "$repo" worktree add -q --detach "$tmp/before" "$base" 2>/dev/null || {
     rm -rf "$tmp"; printf 'could not check out %s\n' "$base"; return 3; }
-  _driver_proof_install "$repo" "$tmp/before"
+  if ! _driver_proof_install "$repo" "$tmp/before"; then
+    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
+    printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    return 5
+  fi
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
   ( cd "$tmp/before" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
@@ -99,7 +109,12 @@ driver_prove_red_green() {
   git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
     git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
     printf 'could not check out %s\n' "$isha"; return 3; }
-  _driver_proof_install "$repo" "$tmp/after"
+  if ! _driver_proof_install "$repo" "$tmp/after"; then
+    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
+    git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1; rm -rf "$tmp"
+    printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    return 5
+  fi
   # The SAME version of the test in both trees. A test sharpened while the change
   # was built is ordinary, and then the change's own tree holds an EARLIER version:
   # running that one measures a different test in each half, and the two answers get
@@ -140,6 +155,7 @@ driver_prove_red_green() {
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha why prc
+  local want_task got_task seen_pairs=""
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
@@ -188,6 +204,17 @@ driver_step_build() { # <ticket>
     fi
     jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
 
+    # THE ANSWER MUST BE ABOUT THE TASK IT WAS GIVEN. The proof re-runs whatever two
+    # shas it is handed and cannot tell which task they belong to — so an answer that
+    # returns the PREVIOUS task's title and commits proves red-then-green perfectly,
+    # `bad` stays 0, and the step reports every task built while one was never touched.
+    # The suite's own two-task case did exactly that and passed.
+    want_task=$(printf '%s' "$task" | jq -r '.title // ""')
+    got_task=$(jq -r '.task // ""' "$ans")
+    if [ -n "$want_task" ] && [ "$got_task" != "$want_task" ]; then
+      driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task'. A task nobody built is a task that ships unbuilt."
+      bad=1; continue
+    fi
     tfile=$(jq -r '.testFirst.test.file // ""' "$ans")
     tcmd=$(jq -r  '.testFirst.command // ""'   "$ans")
     tsha=$(jq -r  '.testFirst.testCommit // ""' "$ans")
@@ -196,10 +223,25 @@ driver_step_build() { # <ticket>
       driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)."
       bad=1; continue
     fi
+    # AND ITS OWN COMMITS. A pair already proved for an earlier task proves that task
+    # again, not this one — same hole as the title, reached by the other door.
+    case " $seen_pairs " in
+      *" $tsha:$isha "*)
+        driver_say "✋ build '$got_task' is proved by the same two commits as an earlier task ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)). One change cannot be two tasks built test-first."
+        bad=1; continue ;;
+    esac
+    seen_pairs="$seen_pairs $tsha:$isha"
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     if [ "$prc" -eq 0 ]; then
       driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+    elif [ "$prc" -eq 5 ]; then
+      # Not a rework and not a red: the proof was never taken. Retrying it five times
+      # would spend the whole ceiling on a tree this machine cannot build, and then
+      # park accusing the change.
+      driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+      driver_state_set "$t" park_note "$why"
+      return "$DRIVER_E_REFUSED"
     elif [ "$prc" -eq 4 ]; then
       # A HANG IS NOT A FAILING TEST, so it does not go in the retry bucket. Folded in
       # with the rest it was tried five times — at the default ceiling that is five

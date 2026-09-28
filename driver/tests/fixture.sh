@@ -127,6 +127,9 @@ printf '%s\n' "$step" >> "$CLAUDE_LOG"
 # prompt it was actually sent (F4).
 printf '%s\t%s\t%s\n' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
 printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
+# The prompt arrives on STDIN, not in argv — argv has a ceiling and a substituted
+# brief carrying a diff goes past it. Kept so a suite can read what was sent.
+cat > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
 f="$FIX/ai/$step.jsonl"
 [ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
 cat "$f"

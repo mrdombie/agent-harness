@@ -137,19 +137,28 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   wt=$(driver_state_get "$t" worktree)
   [ -n "$wt" ] && [ -d "$wt" ] || { wt="$MAIN_REPO"; driver_say "   $step: no worktree on the record, running in $MAIN_REPO"; }
 
+  # THE PROMPT GOES ON STDIN, NOT IN ARGV. `-p "$(cat …)"` puts the whole prompt in
+  # the argument list, and that list has a ceiling: measured on this machine ARG_MAX
+  # is 1,048,576 bytes and a 1.5 MB prompt comes back as `Argument list too long`
+  # with no transcript — which the driver then reports as "the agent produced no
+  # answer" under exit 22, "the answer did not meet its contract". Both name the
+  # wrong thing, and every retry hits it again. Before the briefs were substituted
+  # the prompt was a few KB and this could not happen; now it carries the ticket,
+  # this project's facts and the review step's whole diff, so it can.
   (
     cd "$wt" || exit 1
     # The Stop hook stands down for a driver step: the sign-off banner is an
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
     if [ -n "$schema_for_model" ]; then
-      "$DRIVER_CLAUDE" -p "$(cat "$prompt")" \
+      "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
-        --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" > "$log" 2>"$log.err"
+        --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
+        < "$prompt" > "$log" 2>"$log.err"
     else
-      "$DRIVER_CLAUDE" -p "$(cat "$prompt")" \
+      "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
-        --add-dir "$wt" > "$log" 2>"$log.err"
+        --add-dir "$wt" < "$prompt" > "$log" 2>"$log.err"
     fi
   ) || true
 

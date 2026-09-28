@@ -61,6 +61,19 @@ driver_step_review() { # <ticket>
   else
     diff=""
   fi
+  # BOUNDED, AND THE TRUNCATION IS SAID. A lockfile or a generated file takes a diff
+  # into the megabytes, and a reviewer handed a silently-cut diff reviews a change it
+  # cannot see the rest of — which is worse than being told. The cap is a project fact
+  # so a repo with large legitimate diffs can raise it.
+  local cap; cap=$(driver_opt review.diffBytes 400000)
+  case "$cap" in ''|*[!0-9]*) cap=400000 ;; esac
+  if [ "${#diff}" -gt "$cap" ]; then
+    diff="$(printf '%s' "$diff" | head -c "$cap")
+
+[TRUNCATED at $cap bytes of ${#diff}. The files it touches, in full:
+$(git -C "$wt" diff --stat "$trunk"...HEAD 2>/dev/null)
+Read the rest in the worktree — do NOT review the part above as if it were the whole change.]"
+  fi
   driver_fact_put "$t" review DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   # RENDERS is a fact about a screen, and the driver takes none. Saying so is the
