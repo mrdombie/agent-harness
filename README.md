@@ -71,7 +71,19 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
   "standards": "docs/CODING_STANDARDS.md",
   "gates": {
     "local": ["npm run gates"],
+    "changed": ["npm run lint:changed", "npm run typecheck:changed", "npm run test:changed"],
+    "formatChanged": "npm run format:changed",
     "requiredChecks": ["Typecheck + Unit tests", "Code gates"]
+  },
+  "review": {
+    "rounds": 2,
+    "attest": {
+      "ui-gate": {
+        "owed":   "npm run check:ui-gate-attested --silent -- --base origin/develop --head HEAD",
+        "review": "<a command that runs your reviewer and prints its verdict>",
+        "record": "scripts/record-verdict.sh ui-gate --sha {{SHA}} --base {{BASE}}"
+      }
+    }
   },
   "worktreeRoot": "~/your-worktrees",
   "worktree": { "prepare": ["npx prisma generate"], "scratch": ["docs/notes"] },
@@ -83,16 +95,19 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "render": "npm run -s renders"
   },
   "programmes": { "brief": "scripts/programme-state-brief.sh {{EPIC}}" },
-  "push": {
-    "requires": [
-      { "name": "ui-gate",
-        "review": "<a command that runs your reviewer and prints its verdict>",
-        "record": "scripts/record-verdict.sh ui-gate --sha {{SHA}} --base {{BASE}}" }
-    ]
-  }
 }
 ```
 
+- `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
+- `review.attest` — one entry per reviewer the project attests, and **one entry is all there is**: an interactive `/agent-harness:finish` and the unattended driver ask different questions of the same reviewer, so they read the same row rather than two keys that can disagree about which reviewers exist.
+  - `owed` — the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. A bare string in place of the object is read as this, which is the shape that shipped first.
+  - `review` — a command that runs the reviewer and prints its verdict. The driver runs it in the ticket worktree and keeps the output verbatim.
+  - `record` — a command that reads that output **on stdin** and writes the trailer, with `{{SHA}}` (the commit reviewed) and `{{BASE}}` (the trunk) substituted. **The driver never writes a verdict**: your recorder reads the reviewer's own words and decides whether there is one to write, which is the whole point of an attestation. A recorder that refuses parks the ticket carrying its message.
+
+  A row with `owed` alone is advisory to the driver and enforced by `/agent-harness:finish`. A row with `review` and `record` is what lets the driver push at all on a project whose pre-push demands a trailer — measured on 2026-09-28, a ticket built test-first with two proved tasks lost 9 commits to exactly that. Absent entirely, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
+- `owns.skills` / `owns.agents` — kit names this project deliberately shadows. Everything else under its `.claude/` that the kit also ships is a duplicate and fails the gate.
+- `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
+- `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
 - `gates.local` is the list of LOCAL gate commands, and it is the only part of `gates` anything runs. `group` names a gate group inside your own runner and `requiredChecks` names the CI checks a pull request waits on — neither is a shell line, and the driver never treats them as one. A flat `{ "<name>": "<command>" }` map is read too; a key whose value is not a string counts as an empty command, so it is named in the "nothing ran" refusal rather than dropped in silence.
@@ -102,7 +117,6 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `design.surfacePaths` is optional: the globs this project calls a screen. The compare step matches the branch diff against them to decide whether there is a screen to render at all; without it that step says so and compares nothing.
 - `design.render` is optional: a command run in the ticket worktree that prints one render per line as `name<TAB>path<TAB>light|dark<TAB>route`. Its output becomes the renders the compare step holds beside the approved design, and the renders the review step is given. Absent is an absence the reviewer and the pull request are TOLD about in those words; declared and producing nothing is a refusal, because a measurement that could not be made is not a screen that is fine.
 - `programmes.brief` is optional: a command that prints the BRIEF of a programme's state file, with `{{EPIC}}` and `{{FILE}}` substituted. These files are append-only and grow for as long as the programme is open, and a step handed the whole thing designs from the programme's history rather than from its own ticket. The driver finds the file by **what it says** — the state file whose content names the ticket's programme label — never by its filename: on the project this was measured on all 29 files are named for the epic and the label lives in the body, so a filename glob matched none of them.
-- `push.requires` is optional: the reviews your own pre-push insists on, as a list of `{ name, review, record }`. After the review step's verdict the driver runs each `review` command in the worktree, keeps its output verbatim, and pipes it into `record` on stdin with `{{SHA}}` (the commit reviewed) and `{{BASE}}` (the trunk) substituted. **The driver never writes a verdict** — your recorder reads the reviewer's own words and decides whether there is one to write, which is the whole point of an attestation. A recorder that refuses parks the ticket carrying its message. Without this, a project whose pre-push demands a review trailer cannot be pushed to by the driver at all: measured on 2026-09-28, a ticket built test-first with two proved tasks lost 9 commits to exactly that.
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
@@ -130,7 +144,10 @@ driver/    build-ticket: one ticket, seven fixed steps, the model called only fo
            bound to from the contract — see driver/README.md
 swarm/     agents that run with no session open: scheduler · queue · repair-watch
            live-view · report · install — see swarm/README.md
+rules/     standing-rules.md — put in front of every session by a hook, so a
+           second machine behaves like the first
 shared/    operator.md · agent-signoff.md
+reference/ the copies this plugin replaced, kept for history. Loaded by nothing.
 ```
 
 Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Claude Code. Agents are `agent-harness:<name>` in the Agent tool.
@@ -139,12 +156,17 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 
 | Event | Hook | Does |
 |---|---|---|
+| SessionStart | `standing-rules.sh` | puts `rules/standing-rules.md` in front of the session |
 | SessionStart | `precedence.sh` | one line per kit skill this repo overrides |
 | PreToolUse (Bash) | `block-push-no-verify.sh` | refuses `git push --no-verify` |
-| PreToolUse (Bash) | `block-hookify-rules.sh` | the seven git-safety rules: hand-released claims, `commit -a`, `reset --hard`, `git add -A`, `npm install` in a worktree, hand-rolled PRs, hand-rolled ticket branches |
+| PreToolUse (Bash) | `block-hookify-rules.sh` | the git-safety rules: hand-released claims, `commit -a`, `commit --no-verify`, `reset --hard`, `git add -A`, `npm install` in a worktree, hand-rolled PRs, hand-rolled ticket branches |
+| PreToolUse (Bash) | `no-repo-wide-format.sh` | refuses a formatter over a whole folder, and a whole-app check from an unattended run |
+| PreToolUse (Bash) | `no-broad-kill.sh` | refuses a `pkill`/`killall` pattern that would hit a peer agent |
+| PreToolUse (Write\|Edit) | `block-write-traps.sh` | a phantom worktree path, an edit in the shared clone, a credential in a memory file, a new command or skill born outside the kit |
 | SessionEnd | `session-end-cleanup.sh` | drops the session's own scratch state |
 | Stop | `signoff-backstop.sh` | refuses a hand-back without the sign-off banner while work is live |
 | Stop | `ask-dont-narrate.sh` | refuses a hand-back that narrates a decision instead of asking it |
+| Stop | `keep-working.sh` | refuses a hand-back mid-loop while the scope still has runnable tickets |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
 
@@ -188,11 +210,57 @@ Reads records only, never an API. A window writes no run record, so the total is
 floor and the footer says so. `/standup` prints today's line; `/project` shows it per
 programme.
 
-## Precedence
+## One copy, and it is this one
 
-Plugin skills are namespaced, so a repo's own `.claude/skills/<name>` never collides with the kit's copy: **the repo's is invoked bare (`/claim`), the kit's is always `/agent-harness:claim`.** The repo's copy is that project's override. Because the shadow is silent, `precedence.sh` prints one line at session start for every kit skill the repo shadows.
+**The plugin is the only source.** A consuming repo carries no copy of a skill,
+agent or hook the plugin ships, and neither does a machine's own `~/.claude`.
 
-The same holds for a per-user `~/.claude/commands/<name>.md`: bare `/<name>` resolves to it, `/agent-harness:<name>` to the kit.
+This is not tidiness. Claude Code loads from all three places and **does not
+deduplicate across them**, so a second copy is a second live version. Measured
+2026-09-27 on the estate this kit came from: `/claim` existed three times at
+1,268 / 1,118 / 1,052 lines with 474 lines differing between the first two,
+`/finish` differed by up to 654 lines across its copies, the review agents had
+three and four copies each, and five hooks were registered three times over as
+three different versions — firing in order, each one's verdict overwritten by
+the next. No agent could say which version it had just run.
+
+Two things keep it that way:
+
+```bash
+scripts/check-single-source.sh [<repo>]   # fails when a second copy appears
+scripts/retire-duplicates.sh  [--check]   # clears a machine that still carries one
+```
+
+`retire-duplicates.sh` **refuses to run before the plugin can take over.** It
+compares against the INSTALLED plugin, not the checkout, and stops when that
+install does not yet register a hook it is about to remove — otherwise the
+machine has no guard at all until the next update. Measured by doing exactly
+that on 2026-09-28: ten registrations became one while the running install
+registered six of the nine.
+
+**A declared override is not a duplicate.** A project may legitimately shadow a
+kit skill — most often because the kit has not extracted that layer yet and the
+project's copy carries wiring the kit's does not. It says so in `harness.json`:
+
+```json
+"owns": { "skills": ["finish", "claim"], "agents": ["design-critic.md"] }
+```
+
+Both this gate and the project's own read that one key, because two gates with
+two hardcoded lists is the same defect one level up — they drift, and the one
+that drifts low stops failing.
+
+`check-single-source.sh` belongs in a consuming repo's CI. It fails on a repo
+copy; it reports a machine copy and only fails on it under `--strict`, because a
+repo's CI cannot fix somebody's home directory.
+
+**Precedence, when a copy does exist.** Plugin skills are namespaced, so a repo's
+own `.claude/skills/<name>` never collides with the kit's: the repo's is invoked
+bare (`/claim`), the kit's is always `/agent-harness:claim`. A per-user
+`~/.claude/commands/<name>.md` shadows the same way. That shadow is silent, so
+`precedence.sh` prints one line at session start for every kit skill the repo
+overrides — a deliberate project override is legitimate; an accidental stale
+copy is what the gate above is for.
 
 ## Running the tests
 
@@ -206,8 +274,8 @@ reached — a suite nothing runs reports green by never reporting at all. `check
 
 ## Not here yet
 
-- The design layer (`/design`, `/critic`, `/flows`, the on-theme reminder hook) still reads its origin repo's kit and law by path. Child 3 of the extraction puts it behind `design.*` in the config.
-- The gates contract: `/finish` still expects the consuming repo's `npm run gates` shape. Child 4.
+- The design layer (`/design`, `/critic`, `/flows`, the on-theme reminder hook) still reads its origin repo's kit and law by path. Child 3 of the extraction puts it behind `design.*` in the config. Those five commands are the ones `retire-duplicates.sh` leaves alone and reports rather than moving — the kit ships no copy of them yet, so removing them would lose them.
+- The gates contract: `/finish` reads `gates.changed` for the local run, but the rest of the gate shape is still the consuming repo's. Child 4.
 
 ## Licence
 

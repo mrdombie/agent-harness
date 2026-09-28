@@ -1,9 +1,14 @@
 {
-  "description": "agent-harness \u2014 the guard rails and the sign-off backstop. Same set the origin project ran from .claude/settings.json; a consuming repo removes its own entries so nothing double-fires.",
+  "description": "agent-harness — the standing rules, the guard rails and the sign-off backstop. This plugin is the ONLY place they live: a consuming repo and a machine's own ~/.claude must carry no copy, or Claude Code registers the same hook two and three times as different versions (it does not dedupe across sources). scripts/check-single-source.sh fails when one reappears.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/standing-rules.sh",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/precedence.sh",
@@ -25,6 +30,26 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-hookify-rules.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/no-repo-wide-format.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/no-broad-kill.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-write-traps.sh",
             "timeout": 10
           }
         ]
@@ -52,6 +77,11 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/ask-dont-narrate.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/keep-working.sh",
             "timeout": 15
           }
         ]

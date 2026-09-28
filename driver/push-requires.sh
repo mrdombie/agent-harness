@@ -16,16 +16,22 @@
 # worktree.
 #
 # A PROJECT'S PRE-PUSH REQUIREMENTS ARE A PROJECT FACT, exactly like its gates and
-# its `worktree.prepare`. harness.json declares them:
+# its `worktree.prepare`. They live in the SAME row of harness.json that
+# `/agent-harness:finish` reads, because an interactive finish and this unattended
+# walk ask different questions of the SAME reviewer, and two keys naming the same
+# set of reviewers is two places for them to disagree about which exist:
 #
-#   "push": { "requires": [
-#     { "name":   "ui-gate",
+#   "review": { "attest": {
+#     "ui-gate": {
+#       "owed":   "<the command finish runs: is this reviewer owed, and at what fingerprint>",
 #       "review": "<a command that runs this project's reviewer and prints its verdict>",
-#       "record": "<a command that reads that output on stdin and writes the trailer>" }
-#   ]}
+#       "record": "<a command that reads that output on stdin and writes the trailer>"
+#   } } }
 #
 # `{{SHA}}` and `{{BASE}}` are substituted in `record` — the commit the reviewer
-# looked at, and the trunk the diff is taken against.
+# looked at, and the trunk the diff is taken against. A bare string in place of the
+# object is the `owed` command alone, which is the shape that shipped first; such a
+# row is advisory here and enforced by finish.
 #
 # THE DRIVER NEVER WRITES A VERDICT. It runs the project's reviewer, keeps that
 # output verbatim, and hands it to the project's own recorder on stdin. The
@@ -44,50 +50,59 @@
 
 driver_push_requires() { # <ticket>
   local t="${1:?driver_push_requires: need a ticket}"
-  local wt trunk r ptype n i name review record d out rc sha before after
+  local wt trunk r ptype names half name review record d out rc sha before after
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   d="$(driver_state_dir "$t")/steps"; mkdir -p "$d"
 
   [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
-  # THE SHAPE FIRST. Written as a bare string or an object, `length` still answers
-  # and every per-element read errors into /dev/null — a requirement list nothing
-  # ran, reporting exactly like a project that has none.
-  # `.push.requires` alone is not enough to ask: a `push` written as a STRING makes
-  # jq error out, the read comes back empty, and the empty arm below then blames an
-  # unreadable harness.json for a file that parses perfectly. Each shape is named as
-  # what it is.
+  # THE SHAPE FIRST. Written as a list or a bare string, `to_entries` errors, the
+  # read comes back empty, and an empty read used to mean "this project attests
+  # nothing" — a requirement list nothing ran, reporting exactly like a project that
+  # has none.
+  # `.review.attest` alone is not enough to ask: a `review` written as a STRING
+  # makes jq error out, the read comes back empty, and the empty arm below then
+  # blames an unreadable harness.json for a file that parses perfectly.
   ptype=$(jq -r '
-    (.push // null) as $p
-    | if $p == null then "absent"
-      elif ($p | type) != "object" then "push is a \($p | type)"
-      else (($p.requires // null) | type) end' "$HARNESS_CFG" 2>/dev/null)
+    (.review // null) as $r
+    | if $r == null then "absent"
+      elif ($r | type) != "object" then "review is a \($r | type)"
+      else (($r.attest // null) | type) end' "$HARNESS_CFG" 2>/dev/null)
   case "$ptype" in
     absent|null) return 0 ;;
-    array) : ;;
+    object) : ;;
     '')   driver_say "✋ push-requires: harness.json could not be read ($HARNESS_CFG), so NOTHING this project's pre-push insists on was run."
-          driver_state_set "$t" park_note "harness.json could not be read for push.requires ($HARNESS_CFG)"
+          driver_state_set "$t" park_note "harness.json could not be read for review.attest ($HARNESS_CFG)"
           return "$DRIVER_E_REFUSED" ;;
-    *)    driver_say "✋ push-requires: harness.json says $ptype, and the driver reads a list at push.requires — a list of {name, review, record}. Nothing ran."
-          driver_state_set "$t" park_note "harness.json says $ptype and the driver reads a list at push.requires, of {name, review, record}"
+    *)    driver_say "✋ push-requires: harness.json says $ptype, and the driver reads an object at review.attest of reviewer name to { owed, review, record }. Nothing ran."
+          driver_state_set "$t" park_note "harness.json says $ptype and the driver reads an object at review.attest of reviewer name to { owed, review, record }"
           return "$DRIVER_E_REFUSED" ;;
   esac
-  n=$(jq -r '.push.requires | length' "$HARNESS_CFG" 2>/dev/null)
-  case "${n:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
+  # Only the rows that name BOTH halves. A row carrying `owed` alone is the shape
+  # that shipped first: finish enforces it, and this walk has nothing to run for it.
+  names=$(jq -r '(.review.attest // {}) | to_entries[]
+                 | select((.value | type) == "object")
+                 | select(((.value.review // "") != "") and ((.value.record // "") != ""))
+                 | .key' "$HARNESS_CFG" 2>/dev/null)
+  # A row that names ONE half is a requirement nobody can satisfy and nobody would
+  # see: named, never dropped in silence.
+  half=$(jq -r '(.review.attest // {}) | to_entries[]
+                | select((.value | type) == "object")
+                | select((((.value.review // "") == "") != (((.value.record // "") == ""))))
+                | .key' "$HARNESS_CFG" 2>/dev/null)
+  if [ -n "$half" ]; then
+    driver_say "✋ push-requires: review.attest row(s) $(printf '%s' "$half" | tr '\n' ' ')name one of review/record and not the other, so that reviewer can be run and not recorded, or recorded and never run."
+    driver_state_set "$t" park_note "harness.json's review.attest names one of review/record and not the other for: $(printf '%s' "$half" | tr '\n' ' ')"
+    return "$DRIVER_E_REFUSED"
+  fi
+  [ -n "$names" ] || return 0
 
   trunk="origin/$INTEGRATION_BRANCH"
   git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
 
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    name=$(jq -r --argjson i "$i"   '.push.requires[$i].name   // ""' "$HARNESS_CFG" 2>/dev/null)
-    review=$(jq -r --argjson i "$i" '.push.requires[$i].review // ""' "$HARNESS_CFG" 2>/dev/null)
-    record=$(jq -r --argjson i "$i" '.push.requires[$i].record // ""' "$HARNESS_CFG" 2>/dev/null)
-    i=$((i+1))
-    if [ -z "$name" ] || [ -z "$review" ] || [ -z "$record" ]; then
-      driver_say "✋ push-requires: entry $i of $n names no {name, review, record}, so it did not run."
-      driver_state_set "$t" park_note "harness.json's push.requires entry $i of $n is missing name, review or record, so that requirement was never satisfied"
-      return "$DRIVER_E_REFUSED"
-    fi
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    review=$(jq -r --arg k "$name" '.review.attest[$k].review // ""' "$HARNESS_CFG" 2>/dev/null)
+    record=$(jq -r --arg k "$name" '.review.attest[$k].record // ""' "$HARNESS_CFG" 2>/dev/null)
 
     # The reviewer, in the ticket's worktree, with its output kept whole.
     out="$d/verdict-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
@@ -133,7 +148,9 @@ driver_push_requires() { # <ticket>
     else
       driver_say "   push-requires: '$name' recorded at $(printf '%s' "$after" | cut -c1-8) — $(tr '\n' ' ' < "$out.recorded" | cut -c1-200)"
     fi
-  done
+  done <<EON
+$names
+EON
   # THE HEAD THESE VERDICTS DESCRIBE. A recorder binds a verdict to the commit it
   # reviewed, so a later commit — a park's own work-in-progress commit is the one
   # that actually happens — makes every trailer on the branch describe a diff that

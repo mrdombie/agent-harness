@@ -14,13 +14,26 @@
 # never wired up: the hook payload carries a session UUID, while /work records a
 # PID. Walking the process tree is the bridge.
 
-# Echo the PID of the native-binary/claude ancestor of $1 (default: this shell).
+# Echo the PID of the Claude ancestor of $1 (default: this shell).
 # Echoes nothing and returns 1 when it cannot resolve.
+#
+# MATCH THE BASENAME, NOT ONE INSTALL LAYOUT. This matched `*native-binary/claude`
+# alone, which is the argv[0] of ONE way of launching the CLI. Measured
+# 2026-09-28 on a live session, `ps -o comm=` reported plain `claude` — so the
+# walk returned 1, every caller took its "identity unresolvable" branch, and the
+# peer-ownership guard had never once fired. Nothing caught it because the only
+# test of the callers STUBS this function out, and the stub always resolved.
+#
+# The trailing-component match covers every launcher (`claude`,
+# `…/native-binary/claude`, a Homebrew shim) while still refusing a different
+# binary whose name merely starts with it (`claude-foo`).
 claude_session_pid() {
+  # Tests (and CI, which is never inside a Claude session) name the session outright.
+  [ -n "${CLAUDE_SESSION_PID_OVERRIDE:-}" ] && { printf '%s' "$CLAUDE_SESSION_PID_OVERRIDE"; return 0; }
   local P=${1:-$$}
   while [ "$P" -gt 1 ] 2>/dev/null; do
     case "$(ps -p "$P" -o comm= 2>/dev/null)" in
-      *native-binary/claude) printf '%s' "$P"; return 0 ;;
+      claude|*/claude) printf '%s' "$P"; return 0 ;;
     esac
     P=$(ps -p "$P" -o ppid= 2>/dev/null | tr -d ' ')
     [ -n "$P" ] || return 1

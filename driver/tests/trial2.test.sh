@@ -497,7 +497,7 @@ echo "recorded"
 SH
 chmod +x "$FIX/reviewer" "$FIX/recorder"
 jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
-   '.push = {"requires":[{"name":"ui-gate","review":$r,"record":($w + " --sha {{SHA}}")}]}' \
+   '.review = {"attest":{"ui-gate":{"owed":"true","review":$r,"record":($w + " --sha {{SHA}}")}}}' \
    "$REPO/.claude/harness.json" > "$FIX/h7.json" && mv "$FIX/h7.json" "$REPO/.claude/harness.json"
 git -C "$FIX/wt410" config user.email t@e.invalid
 git -C "$FIX/wt410" config user.name T
@@ -537,7 +537,7 @@ driver_state_init 413 --worktree "$FIX/wt413" --branch "tkt-413/work"
 fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"minor","summary":"spacing","reason":"polish","fix":"nudge"}]}' superpowers:requesting-code-review
 printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
 jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
-   '.push = {"requires":[{"name":"ui-gate","review":$r,"record":($w + " --sha {{SHA}}")}]}' \
+   '.review = {"attest":{"ui-gate":{"owed":"true","review":$r,"record":($w + " --sha {{SHA}}")}}}' \
    "$REPO/.claude/harness.json" > "$FIX/hr.json" && mv "$FIX/hr.json" "$REPO/.claude/harness.json"
 : > "$GH_LOG"
 rc=0; out=$(driver_step_review 413 2>&1) || rc=$?
@@ -572,13 +572,28 @@ printf '#!/usr/bin/env sh\nsleep 30\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewe
 rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_push_requires 410 2>&1) || rc=$?
 want "so is a reviewer that hangs" "25" "$rc"
 
-echo "--- T2-2 · a project that declares none is not refused ---"
-jq 'del(.push)' "$REPO/.claude/harness.json" > "$FIX/h8.json" && mv "$FIX/h8.json" "$REPO/.claude/harness.json"
+echo "--- T2-2 · one row per reviewer, shared with the interactive finish ---"
+# `/agent-harness:finish` reads the same rows for a different question, so a second
+# key naming the same reviewers would be two places for them to disagree about
+# which ones exist. A row that answers only finish's question is advisory here.
+jq '.review = {"attest":{"ui-gate":"echo owed"}}' \
+  "$REPO/.claude/harness.json" > "$FIX/h8.json" && mv "$FIX/h8.json" "$REPO/.claude/harness.json"
+: > "$CLAUDE_LOG"
 rc=0; driver_push_requires 410 >/dev/null 2>&1 || rc=$?
-want "no push.requires is normal" "0" "$rc"
-jq '.push = "scripts/record-verdict.sh"' "$REPO/.claude/harness.json" > "$FIX/h9.json" && mv "$FIX/h9.json" "$REPO/.claude/harness.json"
+want "a bare owed command is not the driver's to run" "0" "$rc"
+want_in "and finish still reads it" 'ui-gate' \
+  "$(jq -r '(.review.attest // {}) | to_entries[] | "\(.key)\t\(if (.value | type) == "string" then .value else (.value.owed // "") end)"' "$REPO/.claude/harness.json")"
+jq '.review.attest["ui-gate"] = {"owed":"echo owed","review":"echo VERDICT: SHIP"}' \
+  "$REPO/.claude/harness.json" > "$FIX/h9.json" && mv "$FIX/h9.json" "$REPO/.claude/harness.json"
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
-want "but a push written as a string refuses rather than running nothing" "24" "$rc"
-want_in "and says what shape it reads" 'reads a list' "$out"
+want "a row with a reviewer and no recorder refuses" "24" "$rc"
+want_in "naming it" 'ui-gate' "$out"
+jq 'del(.review)' "$REPO/.claude/harness.json" > "$FIX/ha.json" && mv "$FIX/ha.json" "$REPO/.claude/harness.json"
+rc=0; driver_push_requires 410 >/dev/null 2>&1 || rc=$?
+want "and a project that attests nothing is normal" "0" "$rc"
+jq '.review = "scripts/record-verdict.sh"' "$REPO/.claude/harness.json" > "$FIX/hb.json" && mv "$FIX/hb.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "a review written as a string refuses rather than running nothing" "24" "$rc"
+want_in "and says what shape it reads" 'owed, review, record' "$out"
 
 exit $FAILED

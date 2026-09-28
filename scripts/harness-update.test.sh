@@ -197,17 +197,15 @@ printf '%s' "$out" | grep -q 'version did not move' \
 #
 # A stub `claude` keeps the run away from the real plugin estate: without it the
 # apply path would call the actual CLI and update this machine.
-pin_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
+kit_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
   # Two statements, not one: in `local a=$1 b="$SB/x-$a"`, bash expands the
   # right-hand sides before the names become local, so $a is unbound under set -u
   # and the fixture silently builds nothing — which then compares empty to empty
   # and reports PASS. Cost two false passes before it was noticed.
   local kind=$1
-  local root="$SB/pin-$kind"
-  mkdir -p "$root/plugins/marketplaces" "$root/bin" "$root/proj/.claude"
+  local root="$SB/kit-$kind"
+  mkdir -p "$root/plugins/marketplaces" "$root/bin"
   printf '{ "enabledPlugins": {} }\n' > "$root/settings.json"
-  printf '{ "plugins": {} }\n' > "$root/plugins/installed_plugins.json"
-  printf '#!/bin/sh\nexit 0\n' > "$root/bin/claude"; chmod +x "$root/bin/claude"
 
   local origin="$root/origin.git" work="$root/work"
   git init -q --bare -b main "$origin"
@@ -219,7 +217,7 @@ pin_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
   git -C "$work" push -q origin main
   local base; base=$(git -C "$work" rev-parse HEAD)
 
-  # The second commit is what the pin would move TO.
+  # The second commit is what the install would move TO.
   if [ "$kind" = fail ]; then
     printf '#!/usr/bin/env bash\nexit 1\n' > "$work/scripts/a.test.sh"
   else
@@ -229,35 +227,51 @@ pin_fixture() { # $1 = "pass" | "fail" -> echoes the config dir
   git -C "$work" -c user.email=t@f.local -c user.name=f commit -qm second
   git -C "$work" push -q origin main
 
-  # The marketplace clone the command reads, named after the repo's basename.
-  git clone -q "$origin" "$root/plugins/marketplaces/fakekit" 2>/dev/null
-  printf '{ "kit": { "repo": "acme/fakekit", "ref": "%s" } }\n' "$base" > "$root/proj/.claude/harness.json"
+  # The marketplace clone the command reads, named after the PLUGIN, which the
+  # command takes from its own manifest.
+  git clone -q "$origin" "$root/plugins/marketplaces/$KITNAME" 2>/dev/null
+  printf '{ "plugins": { "%s@%s": [{"scope":"user","version":"0.0.1","gitCommitSha":"%s"}] } }\n' \
+    "$KITNAME" "$KITNAME" "$base" > "$root/plugins/installed_plugins.json"
+
+  # A `claude` that records what it was asked to update, so the assertions read
+  # the ACTION and not just the prose. A real CLI here would touch this machine.
+  cat > "$root/bin/claude" <<CLAUDE
+#!/bin/sh
+[ "\$1" = plugin ] && [ "\$2" = update ] && echo "\$3" >> "$root/updated.log"
+exit 0
+CLAUDE
+  chmod +x "$root/bin/claude"
   printf '%s' "$root"
 }
 
-pinned_ref() { jq -r '.kit.ref' "$1/proj/.claude/harness.json"; }
+KITNAME=$(jq -r '.name' "$(cd "$(dirname "$SUT")/.." && pwd)/.claude-plugin/plugin.json")
 
-r=$(pin_fixture fail)
-before=$(pinned_ref "$r")
-out=$(cd "$r/proj" && PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" \
-        HARNESS_CFG_PATH="$r/proj/.claude/harness.json" bash "$SUT" 2>&1); rc=$?
-after=$(pinned_ref "$r")
-[ "$before" = "$after" ] && ok "a failing kit suite leaves the pin UNCHANGED" \
-                         || bad "a failing kit suite leaves the pin UNCHANGED (moved to ${after:0:12})"
+# --- the kit's suites are RED at the target ref -------------------------------
+r=$(kit_fixture fail)
+out=$(PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" bash "$SUT" 2>&1); rc=$?
+printf '%s' "$out" | grep -q 'suites fail' \
+  && ok "a failing kit suite is reported" || bad "a failing kit suite is reported"
+printf '%s' "$out" | grep -q 'NOT being updated' \
+  && ok "and it says the kit is NOT being updated" || bad "and it says so plainly"
+grep -q "$KITNAME@$KITNAME" "$r/updated.log" 2>/dev/null \
+  && bad "the red kit was installed anyway" || ok "the red kit was never handed to the CLI"
 [ "$rc" -ne 0 ] && ok "and the run exits non-zero" || bad "and the run exits non-zero (rc $rc)"
-printf '%s' "$out" | grep -q 'pin is UNCHANGED' \
-  && ok "and it says so plainly" || bad "and it says so plainly"
 
-r=$(pin_fixture pass)
-before=$(pinned_ref "$r")
-out=$(cd "$r/proj" && PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" \
-        HARNESS_CFG_PATH="$r/proj/.claude/harness.json" bash "$SUT" 2>&1)
-after=$(pinned_ref "$r")
-# The control. Without it every case above is satisfied by a pin that never moves.
-[ "$before" != "$after" ] && ok "a passing kit suite DOES move the pin" \
-                          || bad "a passing kit suite DOES move the pin (still ${after:0:12})"
-printf '%s' "$out" | grep -q 'pin moved' \
-  && ok "and it reports the move" || bad "and it reports the move"
+# --- the control: GREEN at the target ref, so it must actually update ---------
+# Without this every case above is satisfied by a command that updates nothing.
+r=$(kit_fixture pass)
+out=$(PATH="$r/bin:$PATH" CLAUDE_CONFIG_DIR="$r" bash "$SUT" 2>&1)
+grep -q "$KITNAME@$KITNAME" "$r/updated.log" 2>/dev/null \
+  && ok "a passing kit suite IS handed to the CLI" || bad "a passing kit suite IS handed to the CLI"
+printf '%s' "$out" | grep -q 'testing the kit at' \
+  && ok "and the test gate ran before it" || bad "and the test gate ran before it"
+
+# --- the second pin is gone ---------------------------------------------------
+# It used to rewrite kit.ref in the consuming repo's harness.json. Nothing may
+# write that key any more: a second pin beside the marketplace's is the exact
+# duplication this release is removing.
+grep -q "kit.ref = " "$SUT" && bad "the script still writes kit.ref into harness.json" \
+                            || ok "no second pin is written into any repo's harness.json"
 
 echo
 [ "$fail" -eq 0 ] && echo "harness-update fixture: all checks hold" \

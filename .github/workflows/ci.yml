@@ -37,7 +37,13 @@ jobs:
           # The backstop for the next directory somebody adds: a tracked suite
           # that no glob above reached fails the build by name rather than
           # passing in silence.
-          missed=$(comm -23 <(git ls-files '*.test.sh' | sort) <(sort "$ran"))
+          # reference/ is excluded and must stay excluded: it holds the copies
+          # this plugin replaced, kept verbatim so a reader can see what the
+          # live version was reconciled FROM. Nothing loads them and they are
+          # not maintained, so running them would fail on the project they were
+          # written for. The exclusion is one path prefix, so a NEW suite
+          # anywhere else still fails this check by name.
+          missed=$(comm -23 <(git ls-files '*.test.sh' | grep -v '^reference/' | sort) <(sort "$ran"))
           if [ -n "$missed" ]; then
             echo "these suites exist and nothing ran them — add their directory to the loop above:"
             printf '%s\n' "$missed" | sed 's/^/  /'

@@ -1019,6 +1019,24 @@ If any AC box can't tick, the epic is NOT done — keep working or escalate per 
 
 You're now responsible for the ticket until you `/agent-harness:finish` it. **Stay in the worktree (`$WORKTREE`) for every subsequent edit, run, commit.** If you find yourself in any other directory, `cd "$WORKTREE"` first.
 
+## An approval covers the render that was signed off — nothing later
+
+A pixel approval names the exact evidence it was given against — the render SHA
+and the file set on the PR body. **Any** later change to what renders — a review
+round, a fix, a rebase that moves pixels — voids it. Re-capture, put
+before/after on the PR, and ask again. Never clear the hold label
+(`$HOLD_LABEL`) by citing an approval of an earlier render.
+
+A resume brief may carry an approval forward only for commits that change no
+pixels, and must say so.
+
+Written down because it was broken: a design pass removed a control in a review
+round AFTER the renders that still showed it were approved, the hold was cleared
+by citing that earlier approval, and the owner found out on the test
+environment. Where a project's approval gate enforces this it re-applies the
+hold as soon as the PR pushes anything that changes what a user sees, skipping
+merge commits so a routine catch-up does not void an approval.
+
 ## Chain straight into the work — and through to /agent-harness:finish — without stopping
 
 **`/agent-harness:claim` is not "claim and wait for instructions."** Claiming a ticket = committing to ship it end-to-end in the same session. Once the spec is summarised:

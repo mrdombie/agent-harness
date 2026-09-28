@@ -186,6 +186,15 @@ _last="$HOME/.claude/.harness-last-state-dir"
 [ "$(cat "$_last" 2>/dev/null)" = "$STATE_DIR" ] || { mkdir -p "$HOME/.claude" && printf '%s\n' "$STATE_DIR" > "$_last" 2>/dev/null; }
 unset _last
 
+# Same for the object store. block-write-traps.sh has to know which clone is the
+# shared one to refuse an edit in it, and it runs on every Write in every
+# session — including the ones started outside a checkout.
+if [ -n "${MAIN_REPO:-}" ]; then
+  _lastm="$HOME/.claude/.harness-last-main-repo"
+  [ "$(cat "$_lastm" 2>/dev/null)" = "$MAIN_REPO" ] || { mkdir -p "$HOME/.claude" && printf '%s\n' "$MAIN_REPO" > "$_lastm" 2>/dev/null; }
+  unset _lastm
+fi
+
 # DESIGN_KIT is empty when the config carries no design section — the design layer
 # is OPTIONAL (a backend-only project has none); the design skills refuse on empty.
 
