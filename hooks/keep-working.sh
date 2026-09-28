@@ -14,6 +14,11 @@
 # A blocking Stop hook is how /goal looped ~20x on 2026-08-30. SEVEN guards below,
 # each of which alone ends the turn, plus a hard per-session nag budget. The
 # common path is guard 3 — one stat call, no network.
+# File modification time in epoch seconds, on GNU (Linux CI) or BSD (macOS) stat.
+# GNU first: on Linux `stat -f` means "file system" and does not fail, so trying BSD first
+# returned the wrong number and every age read as huge (the CI failure on #33).
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 set -uo pipefail
 
 IN=$(cat)

@@ -28,6 +28,8 @@
 # `…/native-binary/claude`, a Homebrew shim) while still refusing a different
 # binary whose name merely starts with it (`claude-foo`).
 claude_session_pid() {
+  # Tests (and CI, which is never inside a Claude session) name the session outright.
+  [ -n "${CLAUDE_SESSION_PID_OVERRIDE:-}" ] && { printf '%s' "$CLAUDE_SESSION_PID_OVERRIDE"; return 0; }
   local P=${1:-$$}
   while [ "$P" -gt 1 ] 2>/dev/null; do
     case "$(ps -p "$P" -o comm= 2>/dev/null)" in
