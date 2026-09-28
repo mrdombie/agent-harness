@@ -282,6 +282,60 @@ If any fail, **stop**. Fix or surface. No `--no-verify`. No skipping. **Before d
 
 If gates passed at commit time and nothing has changed since, you can fast-track — say so explicitly ("gates passed at commit time, skipping re-run").
 
+### Step 3.5 — Review: every reviewer, together, on the first working version
+
+**The reviewers run TOGETHER here, on the first version that renders** — not in
+sequence at the end. They judge different things (is it designed · is it honest)
+and neither subsumes the other, so running them apart means the agent builds on
+top of work the other is about to reject. Their combined findings are one
+batched fix list.
+
+Written down after a design pass spent three and a half hours in its final code
+review raising one point per round, having cleared the design reviewer hours
+earlier: *"apply all those rules, not just the two."*
+
+**Two rounds, then the PR ships.** Run the set, fix the batch, run the set
+again. After the second round anything still raised that is **not a blocker** is
+filed as its own ticket, linked on the PR, and the PR merges. A blocker is a
+Critical or Major finding — wrong data, a security hole, lost work, an
+unapproved publish, a dead control, a broken flow, a user misled or stuck.
+Everything else — a spacing call, a copy preference, a nice-to-have — is a
+follow-up. `rules/standing-rules.md` has the grade table.
+
+The cap is **recorded, not promised**: the PR body carries `Review rounds: N of
+2`, so a reader can see the rule was applied rather than take the agent's word
+for it. A follow-up ticket carries the reviewer's finding **verbatim**, the
+evidence it was raised against, and the parent's `project:` label.
+
+**Which reviewers, and what proves one ran.** Both come from the config, because
+which reviewers a project runs and how it attests them are project facts:
+
+```bash
+# The commands that decide whether a reviewer is OWED on this diff, and print
+# the fingerprint its trailer must carry. Empty -> this project attests nothing
+# and the reviewers are advisory.
+jq -r '(.review.attest // {}) | to_entries[] | "\(.key)\t\(.value)"' .claude/harness.json
+```
+
+For each row, run the named command. `no UI surface in this diff` or an exempt
+label → that reviewer is not owed on this diff. Anything else prints the
+fingerprint the trailer must carry.
+
+**A reviewer's verdict is a trailer on a commit in the branch**, fingerprinted
+over the UI diff — so a rebase that changes the UI diff stales every trailer
+together, and one review round re-earns them all. Run this **as the last thing
+before the commit you push**, never before the last edit: a verdict taken before
+a later change is about pixels nobody is shipping.
+
+This step used to be one sentence, and a sentence does not stop a push — so
+print-mode agents never ran it and zero of 46 pixel-changing tickets carried a
+verdict. Whatever the project's attestation is, it has to be the thing that
+fails, not the thing that asks.
+
+**A verdict you wrote yourself is not a verdict.** The attestation checks that
+the fingerprint matches the diff, not that anybody read it. Writing a trailer to
+unblock a push is the failure this step exists to catch.
+
 ### Step 4 — Push the branch
 
 ```bash

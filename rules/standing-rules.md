@@ -19,6 +19,16 @@ to hold the work against.
 Show the rendered thing for a design call, never a bullet list describing it.
 Anything graphic gets a rendered artifact, not ASCII.
 
+**An approval covers the render it was given against — nothing later.** A
+sign-off names the exact evidence it saw. Any later change to what renders — a
+review round, a fix, a rebase that moves pixels — voids it: re-capture, put
+before/after on the PR, and ask again. Never clear a hold by citing an approval
+of an earlier render. A resume brief may carry an approval forward only for
+commits that change no pixels, and must say so. This is written down because it
+was broken: a design pass removed a control in a review round AFTER the renders
+that still showed it were approved, the hold was cleared by citing that earlier
+approval, and the owner found out on the test environment.
+
 **The approved design is the acceptance criterion.** Wiring real data into an
 approved surface is a data change, not a design change: the rendered output
 afterwards must look identical. If real data genuinely will not fit, say so —
@@ -36,9 +46,20 @@ costs:
 | Minor | polish | one follow-up, worked when nothing bigger waits |
 | Nit | taste | dropped |
 
-An ungraded finding is a finding nobody can prioritise. Two rounds of review is
-the ceiling — a third round is a sign the work wants re-planning, not
-re-reviewing.
+An ungraded finding is a finding nobody can prioritise.
+
+**Two rounds, then it ships.** Run every reviewer the work needs TOGETHER, on
+the first version that works — not in sequence at the end, or the agent builds
+on top of work another reviewer is about to reject. Fix the combined findings as
+one batch, run the pair again, and after that second round anything still raised
+that is not Critical or Major is filed as its own ticket, linked on the PR, and
+the PR merges. A follow-up ticket carries the finding verbatim and the evidence
+it was raised against.
+
+**Record the count, do not promise it.** The PR body carries `Review rounds: N
+of 2`, so a reader can see the rule was applied rather than take the agent's
+word for it. Written down after a design pass spent three and a half hours in a
+final review raising one point per round.
 
 ## Finish before you start
 

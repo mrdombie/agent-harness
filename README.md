@@ -75,6 +75,10 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "formatChanged": "npm run format:changed",
     "requiredChecks": ["Typecheck + Unit tests", "Code gates"]
   },
+  "review": {
+    "attest": { "ui-gate": "npm run check:ui-gate-attested --silent -- --base origin/develop --head HEAD" },
+    "rounds": 2
+  },
   "worktree": { "prepare": ["npx prisma generate"] },
   "commit": { "parkType": "chore" },
   "design": { "kit": "@you/ui", "tokens": "packages/ui/src/tokens.ts" }
@@ -82,6 +86,8 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 ```
 
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
+- `review.attest` — one entry per reviewer the project attests: the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. Absent, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
+- `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
 - `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
