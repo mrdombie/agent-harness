@@ -81,8 +81,12 @@ report_json() {
   snap=$(swarm_snapshot); [ -n "$snap" ] || snap='{"live":[],"done":[]}'
   queued=$(awk -F'\t' 'NF>=3{print $3"\t"$2}' "$SWARM_DIR/queue.tsv" 2>/dev/null \
              | jq -R 'split("\t") | {ticket: .[0], project: .[1]}' | jq -s '.')
+  # --argjson, not --slurpfile on a process substitution: a native jq.exe (Git
+  # Bash) cannot open the /proc/<pid>/fd path bash hands it.
+  local stuck
+  stuck=$(stuck_lines | jq -R 'split("\t") | {kind: .[0], detail: .[1]}' | jq -s '.')
   printf '%s' "$snap" | jq --argjson queued "${queued:-[]}" \
-    --arg at "$(swarm_stamp)" --slurpfile stuck <(stuck_lines | jq -R 'split("\t") | {kind: .[0], detail: .[1]}') "
+    --arg at "$(swarm_stamp)" --argjson stuck "${stuck:-[]}" "
     $REDACT
     {
       at: \$at,

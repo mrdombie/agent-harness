@@ -132,7 +132,7 @@ while kill -0 "$DEADPID" 2>/dev/null; do DEADPID=$((DEADPID + 1)); done
 # reach a live claim, and the reconciler is what gets to decide its fate.
 plant_claim() { # <ticket>
   local rec sha empty
-  rec=$(jq -nc --arg i "$1" --argjson p "$DEADPID" --arg h "$(hostname -s)" \
+  rec=$(jq -nc --arg i "$1" --argjson p "$DEADPID" --arg h "$(hostname -s 2>/dev/null || hostname | cut -d. -f1)" \
     '{issue:$i, agent:"tester@fixture", pid:$p, branch:("tkt-" + $i + "/work"),
       worktree:"", host:$h, claimed_at:"2026-09-27T21:00:00Z"}')
   empty=$(git -C "$SB/work" hash-object -t tree /dev/null)

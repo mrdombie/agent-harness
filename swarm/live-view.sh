@@ -25,8 +25,15 @@ export DRIVER_DIR="${DRIVER_DIR:-$STATE_DIR/driver}"
 SERVER="$(dirname "${BASH_SOURCE[0]}")/live-view/server.mjs"
 
 if [ "${1:-}" = "--print" ]; then
+  # The path travels in the environment and becomes a file: URL inside node. A
+  # path spliced into the script text is not converted for a native node on Git
+  # Bash, and '/c/Users/…' resolves to 'C:\c\Users\…'.
+  SWARM_SERVER_MJS="$(cd "$(dirname "$SERVER")" && pwd)/server.mjs"
+  command -v cygpath >/dev/null 2>&1 && SWARM_SERVER_MJS=$(cygpath -m "$SWARM_SERVER_MJS")
+  export SWARM_SERVER_MJS
   exec node --input-type=module -e "
-    import { snapshot } from '$(cd "$(dirname "$SERVER")" && pwd)/server.mjs'
+    import { pathToFileURL } from 'node:url'
+    const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
     console.log(JSON.stringify(snapshot(), null, 2))"
 fi
 echo "live-view on http://127.0.0.1:$SWARM_PORT"

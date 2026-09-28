@@ -108,7 +108,7 @@ RECORD="$RUNS_DIR/$RUN_ID.json"
 # anyone else's.
 export CLAIM_RUN_ID="$RUN_ID"
 export CLAIM_RUN_LOG="$LOG"
-export CLAIM_AGENT="$(toolkit_login)@$(hostname -s)"   # resolved once per run, inherited by every claim-lock call
+export CLAIM_AGENT="$(toolkit_login)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"   # resolved once per run, inherited by every claim-lock call
 
 SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
 cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, reviewers and CLAUDE.md load from its .claude/
@@ -118,6 +118,14 @@ cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, revie
   # only this subshell's pid, and if the subshell was killed while claude
   # survived as an orphan, the watchdog read the run as dead and released the
   # lock out from under a working agent.
+  #
+  # This subshell waits on the agent, so it lives exactly as long as the agent
+  # does: claim-lock.sh records it as the claim's session instead of walking the
+  # process tree, which cannot reach the agent from a native parent on Windows.
+  # macOS ships bash 3.2, which has no $BASHPID; the exec'd sh's parent is this
+  # subshell on every bash.
+  CLAIM_SESSION_PID="${BASHPID:-$(exec sh -c 'echo $PPID')}"
+  export CLAIM_SESSION_PID
   claude -p "$PROMPT" \
     --permission-mode "$PERM_MODE" \
     --max-budget-usd "$BUDGET" \
@@ -127,6 +135,9 @@ cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, revie
     >> "$LOG" 2>&1 &
   CLAUDE_PID=$!
   printf '%s\n' "$CLAUDE_PID" > "$RUNS_DIR/$RUN_ID.child"
+  # Windows: the MSYS pid above is invisible to anything that is not MSYS (the
+  # live view's node server among them). Record the native pid beside it.
+  [ -r "/proc/$CLAUDE_PID/winpid" ] && cat "/proc/$CLAUDE_PID/winpid" > "$RUNS_DIR/$RUN_ID.child.winpid"
   ps -o lstart= -p "$CLAUDE_PID" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//' \
     > "$RUNS_DIR/$RUN_ID.child.started" || true
   wait "$CLAUDE_PID"
@@ -167,17 +178,22 @@ done
 [ -s "$RUNS_DIR/$RUN_ID.child" ] && CLAUDE_PID=$(cat "$RUNS_DIR/$RUN_ID.child")
 [ -s "$RUNS_DIR/$RUN_ID.child.started" ] && CLAUDE_STARTED=$(cat "$RUNS_DIR/$RUN_ID.child.started")
 SUBSHELL_STARTED=$(ps -o lstart= -p "$SUBSHELL_PID" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//')
+SUBSHELL_WINPID=""; CLAUDE_WINPID=""
+[ -r "/proc/$SUBSHELL_PID/winpid" ] && SUBSHELL_WINPID=$(cat "/proc/$SUBSHELL_PID/winpid")
+[ -s "$RUNS_DIR/$RUN_ID.child.winpid" ] && CLAUDE_WINPID=$(cat "$RUNS_DIR/$RUN_ID.child.winpid")
 
 cat > "$RECORD" <<EOF
 {
   "run_id": "$RUN_ID",
   "pid": $SUBSHELL_PID,
   "pid_started": "$SUBSHELL_STARTED",
+  "winpid": ${SUBSHELL_WINPID:-null},
   "child_pid": ${CLAUDE_PID:-null},
   "child_pid_started": "$CLAUDE_STARTED",
+  "child_winpid": ${CLAUDE_WINPID:-null},
   "log": "$LOG",
   "ticket": "${TICKET:-}",
-  "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s)",
+  "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

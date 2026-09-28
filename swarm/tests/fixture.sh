@@ -69,7 +69,7 @@ for a in "$@"; do
 done
 key=${key//\//_}
 emit() { # <file> — apply the -q expression if there was one
-  if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi
+  if [ -n "$q" ]; then jq -r "$q" < "$1"; else cat "$1"; fi
 }
 case "$1 $2" in
   "issue view")

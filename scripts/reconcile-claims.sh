@@ -74,6 +74,7 @@ for arg in "$@"; do
 done
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-proc.sh" || exit 1
 # The second liveness answer, for a holder that is a RUN rather than a session.
 # shellcheck source=claim-liveness.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-liveness.sh" || exit 1
@@ -106,7 +107,7 @@ REPO="$MAIN_REPO"
 # without touching the real origin.
 CLAIM_REMOTE="${CLAIM_REMOTE:-origin}"
 
-THIS_HOST="$(hostname -s)"
+THIS_HOST="$(claim_host)"
 NOW_EPOCH=$(date +%s)
 
 # Evidence probes must be ANSWERED before anything is released. An unreachable
@@ -160,7 +161,7 @@ holder_alive() {
   # $1 host, $2 pid. Only answerable for a claim taken on THIS host.
   [ "$1" = "$THIS_HOST" ] || return 2
   [ -n "$2" ] && [ "$2" != "null" ] || return 1
-  kill -0 "$2" 2>/dev/null
+  claim_pid_alive "$2"
 }
 
 release_ref() {

@@ -92,6 +92,15 @@ function plainTitle(t) {
 
 const alive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }
 
+// On Windows the spawner runs under Git Bash, whose pids and '/c/…' paths mean
+// nothing to a native node: process.kill() answers ESRCH for a running agent,
+// which reads the machine as empty and lets the scheduler fill it. The spawner
+// records the native pid beside the MSYS one; read that, and turn a drive path
+// back into one node can open.
+const WIN = process.platform === 'win32'
+const runPid = (run) => (WIN && (run.child_winpid || run.winpid)) || run.child_pid || run.pid
+const nativePath = (p) => (WIN && typeof p === 'string' ? p.replace(/^\/([a-zA-Z])\//, '$1:/') : p)
+
 function tail(file) {
   try {
     const fd = fs.openSync(file, 'r')
@@ -163,10 +172,10 @@ export function snapshot(now = Date.now()) {
     try { run = JSON.parse(fs.readFileSync(path.join(RUNS, f), 'utf8')) } catch { continue }
     let ended = null
     try { ended = JSON.parse(fs.readFileSync(path.join(RUNS, f.replace(/\.json$/, '.ended')), 'utf8')) } catch {}
-    const isLive = !ended && alive(run.child_pid || run.pid)
+    const isLive = !ended && alive(runPid(run))
     if (!isLive && (!ended || now - Date.parse(ended.ended_at) > KEEP_HOURS * 3600_000)) continue
     fetchTitle(run.ticket)
-    const log = parseLog(run.log || '')
+    const log = parseLog(nativePath(run.log || ''))
     const t = titles[run.ticket] || {}
     // NOT `f`: that is the loop's filename, and a second `const f` in this block
     // shadows it into its own temporal dead zone — every read then throws into
