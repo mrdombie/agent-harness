@@ -14,9 +14,13 @@
 # A blocking Stop hook is how /goal looped ~20x on 2026-08-30. SEVEN guards below,
 # each of which alone ends the turn, plus a hard per-session nag budget. The
 # common path is guard 3 — one stat call, no network.
-# File modification time in epoch seconds, on GNU (Linux CI) or BSD (macOS) stat.
-# GNU first: on Linux `stat -f` means "file system" and does not fail, so trying BSD first
-# returned the wrong number and every age read as huge (the CI failure on #33).
+# File modification time in epoch seconds, on GNU (Linux) or BSD (macOS) stat.
+# GNU FIRST, and the order is load-bearing: on Linux `stat -f` means "file
+# system" and does NOT fail, so asking BSD first returns the wrong number
+# rather than nothing. Either way the `|| echo 0` fires, every age reads as
+# ~56 years, and the staleness guard exits 0 on every Stop — the hook was 100%
+# inert on Linux while every other hook here already used the portable pair.
+# Caught by CI on #33 (7 rows) and by a GNU-stat shim locally (10 rows).
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 set -uo pipefail
@@ -24,14 +28,6 @@ set -uo pipefail
 IN=$(cat)
 LOG=/tmp/claude-keep-working.log
 say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
-
-# GNU and BSD stat disagree on the flag, and `stat -f %m` on GNU is not an
-# error you notice — it prints nothing, the `|| echo 0` fires, every age comes
-# back as ~56 years, and the staleness guard exits 0 on every Stop. This hook
-# was therefore 100% inert on Linux; every other hook here already used the
-# portable pair. Measured 2026-09-28 with a GNU-behaviour stat on PATH: all
-# eight nag cases in the shipped suite flipped to quiet.
-mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 # The two project facts — the state dir and the repo slug — come from
 # .claude/harness.json. This hook fires on every Stop, including in sessions
