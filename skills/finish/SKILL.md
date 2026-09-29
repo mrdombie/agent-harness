@@ -722,9 +722,28 @@ If you hit any gate: that's the system catching an orphan-feature shape. Don't b
 
 The user has authorised dev agents to merge directly after gates pass.
 
+**develop has a merge queue (#10469).** `--auto` is not optional: it ENQUEUES. GitHub
+updates the branch against the current develop, re-runs the four required checks on
+that result, and lands it only if they pass. A direct merge is refused by the ruleset.
+
 ```bash
-gh pr merge "$PR_NUMBER" --squash --delete-branch
+gh pr merge "$PR_NUMBER" --squash --delete-branch --auto
 ```
+
+Then wait for it — the queue is serial (one entry builds at a time), so a landing
+takes one CI run plus whatever is ahead of it:
+
+```bash
+until [ "$(gh pr view "$PR_NUMBER" --json state -q .state)" = MERGED ]; do
+  S=$(gh pr view "$PR_NUMBER" --json mergeStateStatus,autoMergeRequest -q '"\(.mergeStateStatus) auto=\(.autoMergeRequest != null)"')
+  case "$S" in DIRTY*|CONFLICTING*) echo "🛑 conflict — the queue cannot resolve one; merge develop in deliberately"; break;; esac
+  sleep 60
+done
+```
+
+A queue **bounce** (the checks went red on the combined result) drops the PR out of
+the queue with a failed check on its head; `autoMergeRequest` goes null. That is the
+queue catching a semantic conflict — fix forward on the branch, re-gate, push, re-arm.
 
 If the merge fails:
 - **Conflicts** → stop, tell the user.
@@ -794,9 +813,13 @@ acting on a `DIRTY` flag, confirm the conflict is **real** — GitHub's mergeabi
 precompute is merge-driver-blind, so `DIRTY` is often stale rather than a genuine
 conflict (`git merge-tree $(git merge-base origin/develop HEAD) origin/develop HEAD | grep -c '^<<<<<<<'`).
 
-**HARD RULE — develop-drift retries must abort on a conflicted merge (PR #3775 incident).**
-When the merge is refused because develop moved (mergeable:false / 405), the retry
-cycle is: `git merge origin/develop` → re-gate → push → retry merge. If that
+**Develop drift is the queue's job now (#10469).** A branch merely BEHIND develop is
+updated by the merge queue before its checks re-run; nobody merges develop in by hand
+for that. The retry below is only for a genuine CONFLICT, which a queue cannot resolve.
+
+**HARD RULE — a conflict retry must abort on a conflicted merge (PR #3775 incident).**
+When the PR is CONFLICTING, the cycle is: `git merge origin/develop` → re-gate → push →
+re-arm `--auto`. If that
 `git merge` reports ANY conflict, you MUST `git merge --abort` and resolve the
 conflicts deliberately (read both sides, pick/blend, re-run the gates) — NEVER
 follow a conflicted merge with `git add -A && git commit`. `git add -A` on a
