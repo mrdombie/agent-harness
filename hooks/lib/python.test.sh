@@ -6,7 +6,11 @@
 # first on PATH, so it runs the same on a machine that has no stub at all.
 D="$(cd "$(dirname "$0")/.." && pwd)"; fail=0
 . "$D/lib/python.sh"
-REAL=$(harness_python) || { echo "FAIL no working Python on this machine to test with"; exit 1; }
+harness_python || { echo "FAIL no working Python on this machine to test with"; exit 1; }
+# An ABSOLUTE path to it, plus its arguments ("py -3"): the cases below put stubs
+# first on PATH, and a wrapper that ran a bare name would find the stub (#43 review).
+REAL=$(command -v "${HARNESS_PY[0]}") || { echo "FAIL cannot locate ${HARNESS_PY[0]}"; exit 1; }
+REAL_ARGS="${HARNESS_PY[*]:1}"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 stub(){ printf '#!/usr/bin/env bash\necho "Python was not found; run without arguments to install from the Microsoft Store" >&2\nexit 49\n' > "$1/$2"; chmod +x "$1/$2"; }
@@ -29,9 +33,10 @@ done
 
 echo "--- a stub in front of a real Python: the guard still judges ---"
 BEHIND="$TMP/stub-in-front"; mkdir -p "$BEHIND"
-stub "$BEHIND" python3
-# shellcheck disable=SC2086  # "py -3" must split
-printf '#!/usr/bin/env bash\nexec %s "$@"\n' "$REAL" > "$BEHIND/python"; chmod +x "$BEHIND/python"
+# python3 and py are stubs, so the ONLY interpreter that runs is the `python`
+# wrapper around the real one — no fallback can make a case pass on any OS.
+stub "$BEHIND" python3; stub "$BEHIND" py
+printf '#!/usr/bin/env bash\nexec %q %s "$@"\n' "$REAL" "$REAL_ARGS" > "$BEHIND/python"; chmod +x "$BEHIND/python"
 r=$(hook "$BEHIND" no-repo-wide-format 'npx prettier --write .')
 if [ "${r%%|*}" = 2 ] && printf '%s' "$r" | grep -q 'reflows files'; then ok "repo-wide format still blocked past the stub"
 else no "repo-wide format past the stub gave '${r%%|*}' — ${r#*|}"; fi
@@ -39,7 +44,8 @@ r=$(hook "$BEHIND" no-repo-wide-format 'npx prettier --write src/one.ts')
 if [ "${r%%|*}" = 0 ]; then ok "one named file still allowed past the stub"
 else no "one named file past the stub gave '${r%%|*}' — ${r#*|}"; fi
 r=$(hook "$BEHIND" no-broad-kill "pkill -f node")
-if [ "${r%%|*}" = 2 ]; then ok "broad kill still blocked past the stub"
+# The judge's own words, not just exit 2: the refusal exits 2 as well.
+if [ "${r%%|*}" = 2 ] && printf '%s' "$r" | grep -q 'matches processes of every agent'; then ok "broad kill still blocked past the stub"
 else no "broad kill past the stub gave '${r%%|*}' — ${r#*|}"; fi
 
 [ "$fail" -eq 0 ] && echo "lib/python: all cases pass"

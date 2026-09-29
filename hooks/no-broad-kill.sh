@@ -17,6 +17,5 @@ fi
 export HARNESS_BRANCH_PREFIX="${HARNESS_BRANCH_PREFIX:-${_bp:-}}"
 export HARNESS_WORKTREE_ROOT="${HARNESS_WORKTREE_ROOT:-${_wt:-}}"
 . "$(dirname "$0")/lib/python.sh"
-py=$(harness_python) || harness_python_refuse no-broad-kill
-# shellcheck disable=SC2086  # "py -3" must split
-exec $py "$(dirname "$0")/no-broad-kill.py" "$cmd"
+harness_python || harness_python_refuse no-broad-kill
+exec "${HARNESS_PY[@]}" "$(dirname "$0")/no-broad-kill.py" "$cmd"

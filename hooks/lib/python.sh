@@ -16,17 +16,24 @@
 # root. The judges compare these values as text; keep them as written.
 export MSYS2_ENV_CONV_EXCL="HARNESS_${MSYS2_ENV_CONV_EXCL:+;$MSYS2_ENV_CONV_EXCL}"
 
-# Prints the first interpreter that actually executes, as words to splice
-# unquoted ("py -3" is two). HARNESS_PYTHON overrides the search.
+_harness_python_runs() {
+  "$@" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1
+}
+
+# Fills HARNESS_PY with the first interpreter that actually executes — an array,
+# because `py -3` is two words and an override path may hold a space. Call it
+# directly, not in $(...), or the array is lost with the subshell.
+# HARNESS_PYTHON overrides the search.
 harness_python() {
+  HARNESS_PY=()
+  if [ -n "${HARNESS_PYTHON:-}" ] && _harness_python_runs "$HARNESS_PYTHON"; then
+    HARNESS_PY=("$HARNESS_PYTHON"); return 0
+  fi
   local c
-  for c in ${HARNESS_PYTHON:+"$HARNESS_PYTHON"} python3 python "py -3"; do
-    # shellcheck disable=SC2086  # "py -3" must split
-    if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
-      printf '%s' "$c"
-      return 0
-    fi
+  for c in python3 python; do
+    if _harness_python_runs "$c"; then HARNESS_PY=("$c"); return 0; fi
   done
+  if _harness_python_runs py -3; then HARNESS_PY=(py -3); return 0; fi
   return 1
 }
 

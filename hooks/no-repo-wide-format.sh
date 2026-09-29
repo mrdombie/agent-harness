@@ -18,6 +18,5 @@ if [ -f "$_cfg" ]; then
   [ -n "$_fc" ] && export HARNESS_FORMAT_CHANGED="$_fc"
 fi
 . "$(dirname "$0")/lib/python.sh"
-py=$(harness_python) || harness_python_refuse no-repo-wide-format
-# shellcheck disable=SC2086  # "py -3" must split
-exec $py "$(dirname "$0")/no-repo-wide-format.py" "$cmd"
+harness_python || harness_python_refuse no-repo-wide-format
+exec "${HARNESS_PY[@]}" "$(dirname "$0")/no-repo-wide-format.py" "$cmd"
