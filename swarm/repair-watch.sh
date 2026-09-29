@@ -334,8 +334,16 @@ $reasons"
   fi
 }
 
-runs repair  && section_repair
+# Held (#42): the two sections that spawn stand down BEFORE they record an
+# attempt. Recording one and then being refused by swarm_spawn would spend the
+# ticket's repair budget on nothing and mark a red PR "tried" at its SHA for good.
+# Unblock and alarm spawn nothing, so they still run.
+if held=$(swarm_held); then
+  say "held — not repairing or restarting: $held"
+else
+  runs repair && section_repair
+fi
 runs unblock && section_unblock
-runs infra   && section_infra
+if ! swarm_held >/dev/null; then runs infra && section_infra; fi
 runs alarm   && section_alarm
 exit 0

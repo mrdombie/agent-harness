@@ -45,8 +45,24 @@ if [ -e "$STATE/swarm/HOLD" ]; then bad "the hold file is gone"; else ok "the ho
 q drain --programme widgets >/dev/null
 want_in "the queued ticket spawned"   '^101' "$(head -1 "$SPAWNS")"
 
+echo "--- held: repair-watch spends no attempt, and repairs after release ---"
+# Recording an attempt and THEN being refused marked a red PR "tried" at its SHA
+# for good, so it was never repaired once released (#44 review).
+W="$HERE/../repair-watch.sh"; TRIED="$STATE/swarm/repair-attempts.tsv"
+fix_issue 102 OPEN "status:in-review,project:widgets"
+fix_prs "12 102 cccccccccc1 CLEAN 0 typecheck"
+: > "$SPAWNS"
+bash "$I" hold "repair test" >/dev/null 2>&1
+out=$(bash "$W" 2>&1)
+want "held: no repair spawned"        "0" "$(grep -c . "$SPAWNS")"
+want "held: no attempt recorded"      "0" "$(cat "$TRIED" 2>/dev/null | grep -c .)"
+want_in "held: it says why"           'held — not repairing' "$out"
+bash "$I" release >/dev/null 2>&1
+bash "$W" --only repair >/dev/null 2>&1
+want_in "released: the red PR is repaired" '^102' "$(cat "$SPAWNS")"
+
 echo "--- every change is in the audit log, in order ---"
-want "hold, two refusals, release"    "hold refused-held refused-held release" \
+want "hold, two refusals, release ×2" "hold refused-held refused-held release hold release" \
      "$(cut -f2 "$AUDIT" | tr '\n' ' ' | sed 's/ $//')"
 want_in "who and which kit are recorded" 'session=.*parent=.*kit=' "$(head -1 "$AUDIT")"
 want_in "audit prints the log"        'release' "$(bash "$I" audit 1)"
