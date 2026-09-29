@@ -172,7 +172,7 @@ driver_step_start() { # <ticket>
     fi
     # The shared install, never one per worktree. A missing one is not fatal:
     # plenty of repos have nothing to link.
-    [ -d "$repo/node_modules" ] && ln -sfn "$repo/node_modules" "$wt/node_modules"
+    [ -d "$repo/node_modules" ] && driver_link_dir "$repo/node_modules" "$wt/node_modules"
     # Hook shims are generated at install time and gitignored, so a fresh
     # worktree runs ZERO hooks — silently. Copy them where they exist.
     [ -d "$repo/.husky/_" ] && { mkdir -p "$wt/.husky"; cp -R "$repo/.husky/_" "$wt/.husky/_"; }

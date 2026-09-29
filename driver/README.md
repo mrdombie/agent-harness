@@ -163,6 +163,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
+| 26 | the run has spent its budget — parked before the next step starts |
 | 30 | the reviewer found a Critical or a Major — back to the build step |
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
@@ -182,6 +183,8 @@ layer's are: eight scripts that shelled out inline could not be tested at all.
 | `DRIVER_VALIDATE` | the contract checker (default `briefs/validate.sh`) |
 | `DRIVER_MAX_BUILD_TRIES` · `DRIVER_MAX_REVIEW_ROUNDS` | the two ceilings |
 | `DRIVER_CMD_TIMEOUT` | how long a gate or test command may run |
+| `DRIVER_PERMISSION_MODE` | the `--permission-mode` every step runs with (default `auto`; `driver.permissionMode`) |
+| `DRIVER_STEP_BUDGET_USD` · `DRIVER_RUN_BUDGET_USD` | spend caps: each step via `--max-budget-usd` (default 25), the whole run by the driver (default 150; `driver.stepBudgetUsd` / `driver.runBudgetUsd`). Every step's cost, turns, context size and brief length are recorded under `.usage` in `state.json`, and `.spend` is their sum |
 | `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check) |
 | `HARNESS_DRIVER_RUN` | exported per step; the kit's Stop hooks stand down on it |
 | `SWARM_GH` · `SWARM_NOW` | inherited: the GitHub CLI and the clock |

@@ -51,6 +51,28 @@
 # but it is no longer the only source, and it was never present on a shipped brief.
 driver_brief_skill() { sed -n '1,20{/^skill:[[:space:]]*/s///p;}' "$1" | head -1 | tr -d '[:space:]'; }
 
+# driver_record_usage <ticket> <slot> <log> <prompt> — what a step cost, how big its
+# context got, and how many words it was given, appended under .usage[<slot>] and
+# added to .spend. These are the shadow run's measurements (words per step, spend),
+# and the run budget is enforced from .spend. The log may carry non-JSON lines, so it
+# is read line by line; a step that left no result line records a cost of 0.
+driver_record_usage() {
+  local u words
+  [ -s "$3" ] || return 0
+  u=$(jq -Rsc '
+    [ split("\n")[] | fromjson? // empty ] as $ev
+    | [ $ev[] | select(.type == "assistant") | .message.usage // empty
+        | ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)) ] as $ctx
+    | ([ $ev[] | select(.type == "result") ] | last) as $r
+    | { cost: ($r.total_cost_usd // 0), turns: ($r.num_turns // 0),
+        ctxFirst: ($ctx | first // 0), ctxMax: ($ctx | max // 0), ctxLast: ($ctx | last // 0) }' "$3" 2>/dev/null)
+  [ -n "$u" ] || return 0
+  words=$(wc -w < "$4" 2>/dev/null | tr -d ' ')
+  _driver_state_edit "$1" --arg s "$2" --argjson u "$u" --argjson w "${words:-0}" \
+    '.usage[$s] = ((.usage[$s] // []) + [$u + {words: $w}]) | .spend = ((.spend // 0) + $u.cost)'
+  driver_say "   $2: \$$(jq -r '.cost' <<<"$u") · context $(jq -r '"\(.ctxFirst)→\(.ctxMax)"' <<<"$u") tokens · ${words:-?} words given"
+}
+
 # The skills briefs/facts.json declares for a step: the machine-readable list the
 # briefs own and the driver never read. Empty when there is no facts.json, which is
 # normal for a fixture pointing DRIVER_BRIEFS at a directory of its own.
@@ -83,11 +105,16 @@ driver_never_invoked_skills() {
 # Every Skill the transcript shows being invoked, one per line. `claude -p
 # --output-format stream-json` emits one JSON object per line; a Skill call is a
 # tool_use block named Skill whose input carries the skill's name.
+# The log is read a line at a time and a line that is not JSON is dropped: one
+# stray warning on stdout otherwise stops the reader there, and every Skill call —
+# or the whole answer — after it reads as never having happened.
+driver_log_events() { jq -c -R 'fromjson? // empty' "$1" 2>/dev/null; }
+
 driver_log_skills() {
-  jq -r 'select(.type=="assistant")
+  driver_log_events "$1" | jq -r 'select(.type=="assistant")
          | .message.content[]?
          | select(.type=="tool_use" and .name=="Skill")
-         | (.input.skill // .input.name // empty)' "$1" 2>/dev/null
+         | (.input.skill // .input.name // empty)' 2>/dev/null
 }
 
 # The model's final answer.
@@ -103,9 +130,9 @@ driver_log_skills() {
 # of JSON, and `| tail -1` on the text would have handed back its closing brace.
 driver_log_result() {
   local so
-  so=$(jq -r -s '[.[] | select(.type=="result") | .structured_output? // empty] | last // empty' "$1" 2>/dev/null)
+  so=$(driver_log_events "$1" | jq -r -s '[.[] | select(.type=="result") | .structured_output? // empty] | last // empty' 2>/dev/null)
   if [ -n "$so" ] && [ "$so" != "null" ]; then printf '%s' "$so"; return 0; fi
-  jq -r -s '[.[] | select(.type=="result")] | last | (.result // "")' "$1" 2>/dev/null \
+  driver_log_events "$1" | jq -r -s '[.[] | select(.type=="result")] | last | (.result // "")' 2>/dev/null \
     | sed -e '/^[[:space:]]*```[a-zA-Z]*[[:space:]]*$/d'
 }
 
@@ -165,6 +192,15 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   # wrong thing, and every retry hits it again. Before the briefs were substituted
   # the prompt was a few KB and this could not happen; now it carries the ticket,
   # this project's facts and the review step's whole diff, so it can.
+  # The run's budget is checked BEFORE a step starts, from the costs every earlier
+  # step reported: a step already running is bounded by its own --max-budget-usd.
+  local spent; spent=$(driver_state_get "$t" '.spend // 0')
+  if awk -v s="${spent:-0}" -v b="$DRIVER_RUN_BUDGET_USD" 'BEGIN { exit !(s + 0 >= b + 0) }'; then
+    driver_say "✋ $step: this run has spent \$${spent} of its \$${DRIVER_RUN_BUDGET_USD} budget — parking before another step starts."
+    driver_state_set "$t" park_note "the run spent \$${spent} of its \$${DRIVER_RUN_BUDGET_USD} budget before $step; per-step spend is under .usage in state.json"
+    return "$DRIVER_E_BUDGET"
+  fi
+
   (
     cd "$wt" || exit 1
     # The Stop hook stands down for a driver step: the sign-off banner is an
@@ -173,14 +209,17 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     if [ -n "$schema_for_model" ]; then
       "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
+        --permission-mode "$DRIVER_PERMISSION_MODE" --max-budget-usd "$DRIVER_STEP_BUDGET_USD" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
         < "$prompt" > "$log" 2>"$log.err"
     else
       "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
+        --permission-mode "$DRIVER_PERMISSION_MODE" --max-budget-usd "$DRIVER_STEP_BUDGET_USD" \
         --add-dir "$wt" < "$prompt" > "$log" 2>"$log.err"
     fi
   ) || true
+  driver_record_usage "$t" "$slot" "$log" "$prompt"
 
   # The step's own tooling writes a working plan into the tree; it is not the change.
   # Swept before anything reads the tree, so no later step has to know about it.
