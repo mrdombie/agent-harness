@@ -8,6 +8,9 @@
 #   install.sh restart <job>   stop and start one
 #   install.sh uninstall [job] remove them all, or one
 #   install.sh --print <job>   print the job definition, write nothing
+#   install.sh hold "<why>"    stop anything spawning until released (#42)
+#   install.sh release         lift the hold, on purpose
+#   install.sh audit [n]       the last n installs, restarts, holds and releases
 #
 # THE JOBS
 #   live-view     the snapshot every other part reads — kept alive, restarted
@@ -207,10 +210,57 @@ win_uninstall() {
   win_ps "Unregister-ScheduledTask -TaskName '$WIN_TASK' -Confirm:\$false -ErrorAction SilentlyContinue; 'removed $WIN_TASK'"
 }
 
+# ---- who started it, and the hold (#42) -------------------------------------
+# A stopped swarm came back on 2026-09-29 and nothing could say who ran this.
+# Every action that changes what runs is written down BEFORE it happens: the
+# time, the caller's session and parent process, and the kit's branch and SHA.
+AUDIT="$SWARM_LOGS/install-audit.log"
+audit() { # <action> [detail]
+  local parent; parent=$(ps -o args= -p "$PPID" 2>/dev/null | tr -s ' ' | cut -c1-120)
+  printf '%s\t%s\t%s@%s\tsession=%s\tparent=%s\tkit=%s@%s\tprogrammes=%s cap=%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$(whoami 2>/dev/null)" "$(hostname 2>/dev/null)" \
+    "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-none}}" "${parent:-?}" \
+    "$(git -C "$SWARM_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+    "$(git -C "$SWARM_ROOT" rev-parse --short HEAD 2>/dev/null)" \
+    "${SWARM_PROGRAMMES:-all}" "$SWARM_CAP" "${2:-}" >> "$AUDIT"
+}
+hold_status() {
+  local h; if h=$(swarm_held); then printf '%-14s %s\n' "HOLD" "$h"; fi
+  if [ -s "$AUDIT" ]; then echo "last changes:"; tail -n 3 "$AUDIT" | cut -f1,2,3,4 | sed 's/^/  /'; fi
+  return 0
+}
+
+case "${1:-}" in
+  hold)
+    reason="${2:?hold needs a reason: install.sh hold \"<why>\"}"
+    printf '%s (held %s by %s)\n' "$reason" "$(date -u +%Y-%m-%dT%H:%MZ)" "$(whoami 2>/dev/null)" > "$SWARM_HOLD_FILE"
+    audit hold "$reason"
+    echo "held: nothing spawns until 'install.sh release'. Agents already running are not stopped."
+    exit 0 ;;
+  release)
+    if ! was=$(swarm_held); then echo "not held"; exit 0; fi
+    audit release "was: $was"; rm -f "$SWARM_HOLD_FILE"
+    echo "released — the next scheduler pass may spawn."
+    exit 0 ;;
+  audit) tail -n "${2:-20}" "$AUDIT" 2>/dev/null; exit 0 ;;
+  status|uninstall|--print|--jobs|-h|--help) ;;
+  *)
+    # Installing or restarting while held brings back what the owner stopped.
+    if held=$(swarm_held); then
+      audit refused-held "${1:-install}"
+      echo "install: the swarm is held — $held. Run 'install.sh release' first, on purpose." >&2
+      exit 3
+    fi ;;
+esac
+case "${1:-}" in
+  status|--print|--jobs|-h|--help|audit) ;;
+  *) audit "${1:-install}" "${2:-}" ;;
+esac
+
 if is_windows; then
   case "${1:-}" in
     --print|--jobs|-h|--help) ;;   # platform-neutral; fall through below
-    status)    win_status; exit 0 ;;
+    status)    win_status; hold_status; exit 0 ;;
     uninstall) [ -n "${2:-}" ] && echo "on Windows every job runs in one supervisor; removing it"
                win_uninstall; exit 0 ;;
     restart)   win_install; exit $? ;;
@@ -230,7 +280,7 @@ case "${1:-}" in
     for j in $(jobs_for_project); do
       line=$(launchctl list 2>/dev/null | awk -v l="$(label "$j")" '$3==l{print "pid "$1", last exit "$2}')
       printf '%-14s %s\n' "$j" "${line:-not loaded}"
-    done; exit 0 ;;
+    done; hold_status; exit 0 ;;
   restart)  need_launchd || exit 1; do_install "${2:?restart needs a job}"; exit $? ;;
   uninstall)
     need_launchd || exit 1
