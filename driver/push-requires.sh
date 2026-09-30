@@ -106,7 +106,11 @@ driver_push_requires() { # <ticket>
 
     # The reviewer, in the ticket's worktree, with its output kept whole.
     out="$d/verdict-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
-    ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$review" ) > "$out" 2>&1; rc=$?
+    # A STEP OF THE WALK, NOT A PERSON'S TURN. The reviewer is its own `claude -p`,
+    # so without this the kit's sign-off Stop hook fires on it and its whole answer
+    # comes back as the banner: no VERDICT line, and a test-only ticket parked here
+    # after passing every other step (trial 3, 2026-09-30).
+    ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:attest-$name" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$review" ) > "$out" 2>&1; rc=$?
     if [ "$rc" -eq 124 ]; then
       driver_say "✋ push-requires: the '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s."
       driver_state_set "$t" park_note "this project's '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s: $review"
