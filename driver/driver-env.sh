@@ -86,7 +86,6 @@ DRIVER_E_SCHEMA=22
 DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
 DRIVER_E_TIMEOUT=25
-DRIVER_E_BUDGET=26
 DRIVER_E_REWORK=30
 
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
@@ -103,11 +102,11 @@ driver_opt_early() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf 
 # A step runs `claude -p` with no one to answer a permission prompt, so it needs a
 # mode that lets the build step edit and commit — the claim spawner runs `auto`.
 DRIVER_PERMISSION_MODE="${DRIVER_PERMISSION_MODE:-$(driver_opt_early driver.permissionMode auto)}"
-# Spend is capped twice: each step by the CLI's own --max-budget-usd, and the whole
-# run by the driver, which adds up every step's reported cost and parks before the
-# step that would start past the run's budget.
-DRIVER_STEP_BUDGET_USD="${DRIVER_STEP_BUDGET_USD:-$(driver_opt_early driver.stepBudgetUsd 25)}"
-DRIVER_RUN_BUDGET_USD="${DRIVER_RUN_BUDGET_USD:-$(driver_opt_early driver.runBudgetUsd 150)}"
+# Tools no step calls, left out of every step's context: a headless step has no one
+# to ask, plan with or notify, and schedules nothing. Space-separated; empty keeps
+# every tool. Skill, the subagent tools, Bash and the file tools are never listed —
+# the briefs depend on them.
+DRIVER_DISALLOWED_TOOLS="${DRIVER_DISALLOWED_TOOLS-$(driver_opt_early driver.disallowedTools 'Workflow WebSearch NotebookEdit CronCreate CronDelete CronList Monitor ScheduleWakeup RemoteTrigger PushNotification EnterWorktree ExitWorktree EnterPlanMode ExitPlanMode AskUserQuestion')}"
 
 # driver_bounded <seconds> <command> — run a command with a ceiling on its life.
 #

@@ -55,7 +55,15 @@ driver_step_self_check() { # <ticket>
   fi
   # ONE TAB-SEPARATED `name<TAB>command` PER LINE, from whichever shape this project
   # wrote. A command carries spaces and a name does not, so the split is on the tab.
-  if [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+  #
+  # CHANGED-ONLY WHEN THE PROJECT SAYS HOW. The kit's standing rule: local checks run
+  # what the change touches, and CI runs the whole suite before anything merges. A
+  # project's `gates.changed` is that list; `gates.local` is the whole-app form. On
+  # the 2026-09-30 trial the whole-app form ran repo-wide lint and typecheck plus 37
+  # repo checks for a one-file fix, and failed on a check the change never touched.
+  if [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+    names=$(jq -r '.gates.changed | to_entries[] | "changed \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
+  elif [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
     names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
   else
     # A value that is not a string is NOT skipped: it falls through as an empty
