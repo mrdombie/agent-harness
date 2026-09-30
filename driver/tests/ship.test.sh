@@ -229,4 +229,28 @@ out=$(driver_step_ship 111 2>&1); rc=$?
 want "an empty branch refuses" "24" "$rc"
 want_in "and says so"          'no commits' "$out"
 
+echo "--- a branch that deletes a test stays a draft until the body accounts for it ---"
+# The body ship writes has no "## Deleted tests" section, so a deleted test must stop
+# the hand-off: pushed and visible as a draft, never marked ready, never auto-merged,
+# and the file named on the park note for whoever picks it up.
+: > "$GH_LOG"
+git -C "$REPO" checkout -q develop
+printf "it('a writer can post for a teammate', () => {});\n" > "$REPO/pinned.test.ts"
+git -C "$REPO" add pinned.test.ts
+git -C "$REPO" -c user.email=t@example.invalid -c user.name=T commit -qm "test: pin it"
+git -C "$REPO" push -q origin develop
+git -C "$REPO" worktree add -q "$FIX/wt112" -b tkt-112/work develop
+git -C "$FIX/wt112" rm -q pinned.test.ts
+git -C "$FIX/wt112" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: rebuild"
+driver_state_init 112 --worktree "$FIX/wt112" --branch tkt-112/work
+driver_state_put 112 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 112 OPEN "status:claimed"
+out=$(driver_step_ship 112 2>&1); rc=$?
+want "a reviewed branch that deletes a test refuses" "24" "$rc"
+want_in "naming the file"                  'pinned.test.ts' "$out"
+want_in "the work is pushed as a draft"    'pr create.*--draft' "$(cat "$GH_LOG")"
+want_not_in "but never marked ready"       'pr ready' "$(cat "$GH_LOG")"
+want_not_in "and auto is never armed"      'pr merge' "$(cat "$GH_LOG")"
+want_in "the file is on the park note"     'pinned.test.ts' "$(driver_state_get 112 park_note)"
+
 exit $FAILED

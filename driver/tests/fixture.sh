@@ -28,6 +28,11 @@
 set -uo pipefail
 
 driver_fixture() {
+  # A git hook exports GIT_DIR / GIT_WORK_TREE to everything it runs; inherited,
+  # they aim every `git` in a suite at the real repo instead of the scratch one.
+  # Drop every GIT_* before the fixture makes a single repo.
+  local _gv
+  for _gv in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$_gv"; done
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"

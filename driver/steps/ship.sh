@@ -120,6 +120,22 @@ PRBODY
     return "$DRIVER_E_REFUSED"
   fi
 
+  # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
+  # has no "## Deleted tests" section, so a branch that deletes a test file or drops
+  # it(/test( cases stops here as a draft — pushed and visible, never auto-merged —
+  # with the files named for whoever picks the park up. On the origin project eleven
+  # test files went in one merge, one of them pinned a behaviour the rebuild dropped,
+  # and nothing went red because the test that would have was among the deleted.
+  local dt dtrc=0
+  dt=$(printf '%s\n' "$body" | bash "${DRIVER_DELETED_TESTS:-$KIT_ROOT/scripts/check-deleted-tests.sh}" \
+         --repo "$wt" --base "$trunk" --head HEAD --body-file - 2>&1) || dtrc=$?
+  if [ "$dtrc" -ne 0 ]; then
+    driver_say "✋ ship: this branch deletes tests the pull request does not account for, so it stays a draft."
+    printf '%s\n' "$dt" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
+    driver_state_set "$t" park_note "deleted tests to account for under '## Deleted tests' in the PR body: $(printf '%s\n' "$dt" | awk '/ — /{sub(/^ +/, ""); print}' | tr '\n' ';')"
+    return "$DRIVER_E_REFUSED"
+  fi
+
   # Ready, and only then auto. A draft is the only state an automerge workflow
   # will not land, so the draft is what holds the pull request while the review
   # is unfinished — and an unreviewed ticket stops HERE, with the work visible.

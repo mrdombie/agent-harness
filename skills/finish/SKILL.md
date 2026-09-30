@@ -718,6 +718,46 @@ fi
 
 If you hit any gate: that's the system catching an orphan-feature shape. Don't bypass — fix the PR (add the API, the screenshot, or the Wiring check table) and re-run `/agent-harness:finish`.
 
+### Step 5.6 — Every deleted test is accounted for
+
+A pull request that deletes a test file, or deletes `it(` / `test(` cases from
+one, names in its body what took each one's place. On the origin project a
+rebuild deleted eleven old test files in one merge; one pinned "a writer can post
+for a teammate", the new screen dropped the behaviour, every check stayed green,
+and a real user was blocked for a week. A deleted test is the one regression no
+other test can catch.
+
+The body carries one line per file the gate names:
+
+```markdown
+## Deleted tests
+- `path/to/old.test.ts` → covered by `path/to/new.test.ts`
+- `path/to/other.test.ts` → removed on purpose: <the reason, in words>
+```
+
+"covered by" must name a test file that exists at head with a live case. A file
+git sees as renamed is not a deletion; a case that becomes `it.skip` is. Test-file
+patterns come from `tests.patterns` in `.claude/harness.json`.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+git fetch -q origin "$INTEGRATION_BRANCH"
+# Two dots, from commits: the pushed head against the trunk. Anything the trunk
+# added after the branch was cut is excluded by the check itself.
+if ! bash "$KIT_ROOT/scripts/check-deleted-tests.sh" \
+       --base "origin/$INTEGRATION_BRANCH" --head HEAD --pr "$PR_NUMBER"; then
+  echo "❌ /agent-harness:finish REFUSED: a deleted test is not accounted for in the PR body." >&2
+  echo "   Action: add the '## Deleted tests' lines printed above (gh pr edit $PR_NUMBER --body-file ...), then re-run." >&2
+  exit 1
+fi
+```
+
+This is not the only seat of the rule. The same script runs as the
+`Deleted tests are accounted for` CI check (`.github/workflows/deleted-tests.yml`,
+called from the consuming repo), so a merge that skips this skill meets it anyway.
+Do not satisfy it with a line that is not true: "covered by" a test that does not
+pin the same behaviour is the failure this step exists to catch.
+
 ### Step 6 — Merge the PR to develop
 
 The user has authorised dev agents to merge directly after gates pass.
