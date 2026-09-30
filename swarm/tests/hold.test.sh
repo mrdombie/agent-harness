@@ -77,9 +77,15 @@ bash "$I" release >/dev/null 2>&1
 echo "--- a typo is not written down as an action (#45) ---"
 bash "$I" stauts >/dev/null 2>&1
 if grep -q 'stauts' "$AUDIT"; then bad "a mistyped command was audited as an action"; else ok "a mistyped command is not audited"; fi
+# Held, a typo is still a typo — not a refused restart (#54 review).
+bash "$I" hold "typo test" >/dev/null 2>&1
+err=$(bash "$I" stauts 2>&1 >/dev/null)
+if grep -q 'stauts' "$AUDIT"; then bad "held: a typo was audited as refused-held"; else ok "held: a typo is not audited"; fi
+if printf '%s' "$err" | grep -q 'is held'; then bad "held: a typo got the hold message"; else ok "held: a typo is rejected as a typo"; fi
+bash "$I" release >/dev/null 2>&1
 
 echo "--- every change is in the audit log, in order ---"
-want "hold, two refusals, release ×3" "hold refused-held refused-held release hold release release" \
+want "hold, two refusals, release ×4" "hold refused-held refused-held release hold release release hold release" \
      "$(cut -f2 "$AUDIT" | tr '\n' ' ' | sed 's/ $//')"
 want_in "who and which kit are recorded" 'session=.*parent=.*kit=' "$(head -1 "$AUDIT")"
 want_in "audit prints the log"        'release' "$(bash "$I" audit 1)"

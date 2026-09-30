@@ -246,7 +246,10 @@ case "${1:-}" in
   status|uninstall|--print|--jobs|-h|--help) ;;
   *)
     # Installing or restarting while held brings back what the owner stopped.
-    if held=$(swarm_held); then
+    # A name that is no action at all is left for the dispatch below to reject.
+    is_action=1
+    case "${1:-}" in ""|restart) ;; *) script_for "$1" >/dev/null 2>&1 || is_action=0 ;; esac
+    if [ "$is_action" = 1 ] && held=$(swarm_held); then
       audit refused-held "${1:-install}"
       echo "install: the swarm is held — $held. Run 'install.sh release' first, on purpose." >&2
       exit 3
