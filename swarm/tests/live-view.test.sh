@@ -19,20 +19,26 @@ swarm_fixture
 sleep 30 & DEAD=$!; kill "$DEAD" 2>/dev/null; wait "$DEAD" 2>/dev/null
 trap 'rm -rf "$FIX"' EXIT
 SERVER="$HERE/../live-view/server.mjs"
+SERVER_URLPATH="$SERVER"; command -v cygpath >/dev/null 2>&1 && SERVER_URLPATH=$(cygpath -m "$SERVER")
 command -v node >/dev/null 2>&1 || { echo "SKIP live-view: node is not on PATH"; exit 0; }
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 run() { # <ticket> <pid> [ended-exit-code]
-  local t=$1 pid=$2
-  printf '{"run_id":"claim-%s-a","ticket":"%s","child_pid":%s,"started_at":"%s","budget_usd":150,"log":"%s"}\n' \
-    "$t" "$t" "$pid" "$NOW_ISO" "$STATE/logs/claim-$t.log" > "$STATE/runs/claim-$t-a.json"
+  local t=$1 pid=$2 winpid=null log
+  log="$STATE/logs/claim-$t.log"
+  # As the spawner records it on Git Bash: the native pid beside the MSYS one.
+  [ -r "/proc/$pid/winpid" ] && winpid=$(cat "/proc/$pid/winpid")
+  command -v cygpath >/dev/null 2>&1 && log=$(cygpath -m "$log")
+  printf '{"run_id":"claim-%s-a","ticket":"%s","child_pid":%s,"child_winpid":%s,"started_at":"%s","budget_usd":150,"log":"%s"}\n' \
+    "$t" "$t" "$pid" "$winpid" "$NOW_ISO" "$log" > "$STATE/runs/claim-$t-a.json"
   [ -n "${3:-}" ] && printf '{"exit_code":%s,"ended_at":"%s"}\n' "$3" "$NOW_ISO" > "$STATE/runs/claim-$t-a.ended"
   : > "$STATE/logs/claim-$t.log"
 }
 snap() {
   SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="$BIN/gh" \
-  node --input-type=module -e "
-    import { snapshot } from '$SERVER'
+  SWARM_SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e "
+    import { pathToFileURL } from 'node:url'
+    const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
     console.log(JSON.stringify(snapshot()))"
 }
 

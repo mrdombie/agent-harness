@@ -57,6 +57,7 @@ fi
 # suppress errexit inside a sourced file even in a `||` list, and the resolver
 # has non-fatal probes that would otherwise end this script at the first one.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-proc.sh" || exit 1
 
 set -euo pipefail
 
@@ -100,7 +101,7 @@ resolve_repo() {
 # Who holds a claim: the GitHub login of the human whose token this agent runs
 # on, at the machine it runs on — so two developers' agents are told apart.
 # A record may carry the bare hostname (older claims): owns_claim accepts it.
-THIS_HOST=$(hostname -s)
+THIS_HOST=$(claim_host)
 AGENT_ID="${CLAIM_AGENT:-$(toolkit_login)@$THIS_HOST}"
 agent_id() { echo "$AGENT_ID"; }
 # Ours if the agent matches, or — for a claim taken before ids carried the login,
@@ -150,7 +151,7 @@ make_claim_commit() {
     --argjson pid "$pid" \
     --arg branch "$branch" \
     --arg worktree "$worktree" \
-    --arg host "$(hostname -s)" \
+    --arg host "$THIS_HOST" \
     --arg at "$at" \
     '{issue:$issue,agent:$agent,pid:$pid,branch:$branch,worktree:$worktree,host:$host,claimed_at:$at}')
   git commit-tree "$empty_tree" -m "$meta"
@@ -162,31 +163,8 @@ sync_cache() {
   git fetch -q --prune "$REMOTE" "+$NS/*:$CACHE/*" 2>/dev/null || true
 }
 
-# The pid recorded in a claim is what `reconcile-claims.sh` tests with `kill -0`
-# to decide whether the holder is still alive. It therefore has to name a
-# process that lives as long as the AGENT, not as long as the command.
-#
-# `$$` does not. Every tool call gets a fresh shell that exits the moment the
-# call returns, so a claim stamped with `$$` reads as abandoned within seconds
-# of being taken. Measured: a claim recorded pid 75901; one call later that pid
-# was already dead. An agent that had claimed a ticket but not yet pushed a
-# branch fell straight through the reconciler's evidence checks to RELEASED, and
-# a peer picked up work already in progress — twice in one session.
-#
-# Walk up to the nearest `claude` ancestor, which is the session itself.
-session_pid() {
-  local p=$$ cmd
-  while [ "$p" -gt 1 ]; do
-    cmd=$(ps -o comm= -p "$p" 2>/dev/null) || break
-    case "$cmd" in *claude*) printf '%s' "$p"; return 0 ;; esac
-    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
-    [ -n "$p" ] || break
-  done
-  # No claude ancestor (a cron or a bare shell). $PPID at least outlives the
-  # innermost subshell, and a wrong-but-live pid is safer here than a dead one:
-  # the reconciler treats "alive" as leave-it-alone.
-  printf '%s' "$PPID"
-}
+# The pid recorded in a claim — see claim_session_pid in claim-proc.sh.
+session_pid() { claim_session_pid; }
 
 cmd_acquire() {
   local issue="" branch="" worktree="" pid="" at=""

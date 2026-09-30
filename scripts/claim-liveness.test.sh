@@ -130,9 +130,9 @@ while kill -0 "$DEADPID" 2>/dev/null; do DEADPID=$((DEADPID + 1)); done
 # The claim, in the shape claim-lock.sh writes: a parentless commit whose message is
 # the record. Planted straight into the sandbox's own bare remote — nothing here can
 # reach a live claim, and the reconciler is what gets to decide its fate.
-plant_claim() { # <ticket>
+plant_claim() { # <ticket> [pid, default a dead one]
   local rec sha empty
-  rec=$(jq -nc --arg i "$1" --argjson p "$DEADPID" --arg h "$(hostname -s)" \
+  rec=$(jq -nc --arg i "$1" --argjson p "${2:-$DEADPID}" --arg h "$(hostname -s 2>/dev/null || hostname | cut -d. -f1)" \
     '{issue:$i, agent:"tester@fixture", pid:$p, branch:("tkt-" + $i + "/work"),
       worktree:"", host:$h, claimed_at:"2026-09-27T21:00:00Z"}')
   empty=$(git -C "$SB/work" hash-object -t tree /dev/null)
@@ -177,5 +177,19 @@ want "and a stale record is still released" "no" "$(ref_present 702)"
 # holder_alive answer 0 — the ref survives, this case goes red, and nothing about it
 # would be a fact about the code. This says which branch actually ran.
 want_not_in "and not because the dead pid looked alive" 'held by pid' "$out"
+
+
+# 3. The post-exit reconcile (#35 review). spawn-claim records its wrapper subshell
+# as the claim's session, and the reconcile it runs after the agent exits runs INSIDE
+# that subshell — so the holder pid is alive at exactly the moment it is being judged
+# dead. The wrapper passes CLAIM_EXITED_PID, and that pid counts as gone.
+sleep 300 & LIVEPID=$!
+plant_claim 703 "$LIVEPID"
+out=$(reconcile)
+want "a live holder pid keeps its claim (the control)" "yes" "$(ref_present 703)"
+want_in "because it is live" 'held by pid' "$out"
+out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
+want "the same pid, named as the exited session, is released" "no" "$(ref_present 703)"
+kill "$LIVEPID" 2>/dev/null
 
 exit $FAILED

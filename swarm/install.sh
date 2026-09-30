@@ -121,6 +121,106 @@ do_uninstall() { # <job>
   launchctl unload "$f" >/dev/null 2>&1; rm -f "$f"; echo "removed $(label "$1")"
 }
 
+# ---- Windows: one Task Scheduler task running supervisor.sh ------------------
+# See supervisor.sh for why Windows gets one long-running task rather than a
+# timer per job: a task and every process it starts share one job object, so a
+# per-job task would stay Running while any agent it spawned lives.
+is_windows() { case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac; return 1; }
+WIN_TASK="$NS.$KEY"
+WIN_WRAPPER="$SWARM_DIR/supervisor-task.sh"
+win_ps() { powershell.exe -NoProfile -NonInteractive -Command "$1" 2>&1 | tr -d '\r'; }
+
+# The environment a scheduled task does NOT inherit is written down, the way the
+# plist writes it: the kit's paths, and this shell's PATH — which is where the
+# claude CLI, gh, node and a -b jq shim were found.
+win_write_wrapper() {
+  mkdir -p "$SWARM_DIR" "$SWARM_LOGS"
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# Written by swarm/install.sh. Re-run it after a kit update: this names one copy.'
+    printf 'export HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q\n' \
+      "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT"
+    printf 'export PATH=%q\n' "$PATH"
+    local v; for v in SWARM_PROGRAMMES SWARM_REPAIR_ONLY SWARM_CAP SWARM_BUDGET_USD; do
+      [ -n "${!v:-}" ] && printf 'export %s=%q\n' "$v" "${!v}"
+    done
+    printf 'exec bash %q >> %q 2>&1\n' "$SWARM_ROOT/supervisor.sh" "$SWARM_LOGS/supervisor.out.log"
+  } > "$WIN_WRAPPER"
+}
+
+win_supervisor_pid() {
+  local p; p=$(cat "$SWARM_DIR/supervisor.pid" 2>/dev/null)
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && printf '%s' "$p"
+}
+
+# Stops the supervisor and its live view — never the task, whose end would take
+# every agent in its job object with it.
+win_stop_supervisor() {
+  local p i
+  p=$(win_supervisor_pid) || return 0
+  kill "$p" 2>/dev/null
+  for i in $(seq 1 30); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+  kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+  echo "stopped supervisor $p (agents keep running)"
+}
+
+win_install() {
+  command -v powershell.exe >/dev/null 2>&1 || { echo "install: no powershell.exe on PATH" >&2; return 1; }
+  command -v claude >/dev/null 2>&1 || echo "install: warning — no claude CLI on PATH; the spawner will refuse" >&2
+  win_write_wrapper
+  local bashw wrapw
+  bashw="$(cygpath -w /)\\bin\\bash.exe"
+  [ -f "$(cygpath -u "$bashw")" ] || bashw=$(cygpath -w "$(command -v bash)")
+  wrapw=$(cygpath -w "$WIN_WRAPPER")
+  win_stop_supervisor
+  win_ps "
+\$a = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument '--headless \"$bashw\" -l \"$wrapw\"'
+\$t = New-ScheduledTaskTrigger -AtLogOn -User \$env:USERNAME
+\$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances Parallel -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName '$WIN_TASK' -Action \$a -Trigger \$t -Settings \$s -Description 'agent-harness swarm supervisor ($STATE_DIR)' -Force | Out-Null
+Start-ScheduledTask -TaskName '$WIN_TASK'
+'installed $WIN_TASK'"
+  local i; for i in $(seq 1 20); do win_supervisor_pid >/dev/null && break; sleep 1; done
+  win_supervisor_pid >/dev/null && echo "supervisor running (pid $(win_supervisor_pid))" \
+    || { echo "install: the task started but no supervisor answered — see $SWARM_LOGS/supervisor.out.log" >&2; return 1; }
+}
+
+win_status() {
+  local st p j last
+  st=$(win_ps "(Get-ScheduledTask -TaskName '$WIN_TASK' -ErrorAction SilentlyContinue).State")
+  p=$(win_supervisor_pid)
+  printf '%-14s %s\n' "task" "${st:-not installed}"
+  if [ -n "$p" ]; then printf '%-14s pid %s\n' "supervisor" "$p"; else printf '%-14s not running\n' "supervisor"; fi
+  for j in $(jobs_for_project); do
+    if [ "$j" = live-view ]; then
+      if swarm_curl -s -m 3 "$SWARM_LIVE_URL" >/dev/null 2>&1; then last=answering; else last="not answering"; fi
+    else
+      last=$(cat "$SWARM_DIR/supervisor.$j.last" 2>/dev/null)
+      case "$last" in ''|*[!0-9]*) last="never ran" ;; *) last="last ran $(( $(swarm_now) - last ))s ago" ;; esac
+    fi
+    printf '%-14s %s\n' "$j" "$last"
+  done
+}
+
+win_uninstall() {
+  win_stop_supervisor
+  win_ps "Unregister-ScheduledTask -TaskName '$WIN_TASK' -Confirm:\$false -ErrorAction SilentlyContinue; 'removed $WIN_TASK'"
+}
+
+if is_windows; then
+  case "${1:-}" in
+    --print|--jobs|-h|--help) ;;   # platform-neutral; fall through below
+    status)    win_status; exit 0 ;;
+    uninstall) [ -n "${2:-}" ] && echo "on Windows every job runs in one supervisor; removing it"
+               win_uninstall; exit 0 ;;
+    restart)   win_install; exit $? ;;
+    "")        win_install; exit $? ;;
+    *)         script_for "$1" >/dev/null || { echo "install: no job called '$1'" >&2; exit 2; }
+               echo "on Windows every job runs in one supervisor; installing it"
+               win_install; exit $? ;;
+  esac
+fi
+
 case "${1:-}" in
   --print)  shift; script_for "${1:?--print needs a job}" >/dev/null || { echo "no job called '${1:-}'" >&2; exit 2; }
             print_plist "$1"; exit 0 ;;

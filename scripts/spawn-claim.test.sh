@@ -89,7 +89,15 @@ G -C "$STORE" fetch -q origin develop
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
 cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT/"
-printf '#!/usr/bin/env bash\necho "reconcile stub"\n' > "$SUT/reconcile-claims.sh"
+cat > "$SUT/reconcile-claims.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "reconcile stub"
+# What the post-exit reconcile is handed: the wrapper is the claim's recorded
+# session and still alive while it runs, so it must be named as exited.
+[ -n "${SPAWN_TEST_RECONCILE:-}" ] &&
+  printf 'exited=%s session=%s\n' "${CLAIM_EXITED_PID:-}" "${CLAIM_SESSION_PID:-}" > "$SPAWN_TEST_RECONCILE"
+exit 0
+STUB
 chmod +x "$SUT"/*.sh
 
 # The stub agent: it records where it was started and what that directory holds.
@@ -109,7 +117,7 @@ chmod +x "$SB/bin/claude"
 
 run() { # [args...] — invoke the spawner from the STALE tree, as the operator does
   RC=0
-  SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" \
+  SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" SPAWN_TEST_RECONCILE="$OUT/reconcile" \
   PATH="$SB/bin:$PATH" \
   HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
   HARNESS_CFG_PATH="$STORE/.claude/harness.json" \
@@ -209,6 +217,17 @@ if [ -f "$OUT/seen" ]; then
 else
   bad "the detached spawn never started the agent"
 fi
+
+# --- 7. The post-exit reconcile is told its own session has exited ------------
+# spawn-claim records its wrapper subshell as the claim's session, and runs the
+# reconcile inside it — so without CLAIM_EXITED_PID the holder reads alive and a
+# crashed agent's claim is never released.
+for _ in $(seq 1 60); do [ -s "$OUT/reconcile" ] && break; sleep 0.5; done
+rec=$(cat "$OUT/reconcile" 2>/dev/null)
+ex=$(printf '%s' "$rec" | sed -n 's/^exited=\([0-9][0-9]*\) .*/\1/p')
+se=$(printf '%s' "$rec" | sed -n 's/.* session=\([0-9][0-9]*\)$/\1/p')
+if [ -n "$ex" ] && [ "$ex" = "$se" ]; then ok "the post-exit reconcile names the wrapper session as exited"
+else bad "the post-exit reconcile was not told its session exited: '${rec:-nothing recorded}'"; fi
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"
