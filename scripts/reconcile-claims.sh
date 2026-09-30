@@ -161,6 +161,9 @@ holder_alive() {
   # $1 host, $2 pid. Only answerable for a claim taken on THIS host.
   [ "$1" = "$THIS_HOST" ] || return 2
   [ -n "$2" ] && [ "$2" != "null" ] || return 1
+  # The post-exit reconcile runs inside the wrapper that IS the recorded session,
+  # so that pid is alive while being judged; spawn-claim names it as exited.
+  [ -n "${CLAIM_EXITED_PID:-}" ] && [ "$2" = "$CLAIM_EXITED_PID" ] && return 1
   claim_pid_alive "$2"
 }
 

@@ -156,7 +156,9 @@ cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, revie
   # had been escalated or why. Caught on the first real spawn — a 15s
   # budget-capped run whose log had no trace of the reconcile at all.
   printf '\n--- post-exit reconcile (%s) ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
-  "$SCRIPT_DIR/reconcile-claims.sh" >> "$LOG" 2>&1
+  # This subshell IS the claim's recorded session and is still alive here, so
+  # name it as exited or the reconcile reads the holder as live and keeps the claim.
+  CLAIM_EXITED_PID="$CLAIM_SESSION_PID" "$SCRIPT_DIR/reconcile-claims.sh" >> "$LOG" 2>&1
 ) &
 
 SUBSHELL_PID=$!
