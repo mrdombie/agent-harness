@@ -386,10 +386,21 @@ KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 # ONE definition of claimable, shared with the queue health report:
 #   status:ready, plus orphaned status:in-review (an agent died with a PR open —
 #   offered as [RESUME PR] unless needs:human-approval says a human holds it), an
-#   epic only with epic:run-ready ([EPIC MODE]), minus every live claim.
+#   epic only with epic:run-ready ([EPIC MODE]), plus the ticket behind any open
+#   non-draft PR GitHub calls CONFLICTING ([FINISH PR], listed FIRST), minus every
+#   live claim.
 # Columns: number  priority  area  repo  mode  title
 "$KIT_ROOT/scripts/claimable-issues.sh"
 ```
+
+**A `[FINISH PR]` row comes first, and it is not a fresh build either.** The
+ticket's PR is open, out of draft, and GitHub says it cannot merge. The list puts
+these above everything else on purpose — finish before start: a clashing PR is
+work already paid for, and every hour it waits it falls further behind. The move
+is the resume move below: merge the integration branch in, resolve, re-gate, and
+finish. If the PR carries the hold label, the merge does not clear it; a merge
+that moves pixels voids any approval, so re-capture and leave the hold for a
+person.
 
 **A `[RESUME PR]` row is not a fresh build.** There is already work on a branch
 and an open PR. Pass B below will print it. Read the PR's commits and the
