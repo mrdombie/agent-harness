@@ -51,6 +51,11 @@ mkdir -p "$T/tk-104-busy/apps"; (cd "$T/tk-104-busy/apps" && exec bash -c 'sleep
 occ=$!; PIDS+=("$occ")                                           # somebody's shell sits in tk-104
 read -r lnch lsrv <<<"$(launch "npm exec next start" "$T/tk-105-launched/apps/web")"; PIDS+=("$lnch" "$lsrv")
 read -r agent asrv <<<"$(launch "claude --name claim-next" "$T/tk-106-agent/apps/web")"; PIDS+=("$agent" "$asrv")
+# A real Next server runs workers in its own folder: they are the server's, not somebody.
+worker_srv=$( (mkdir -p "$T/tk-108-workers/apps/web"; cd "$T/tk-108-workers/apps/web" && exec -a next-server bash -c '(exec -a turbopack-worker sleep 600) & exec -a next-server sleep 600') >/dev/null 2>&1 & echo $!)
+PIDS+=("$worker_srv")
+# /claim names the folder without the prefix when the ticket was given as digits.
+bare=$(serve "$T/109-bare-digits/apps/web"); PIDS+=("$bare")
 sleep 1
 CLAIMED=$(printf '102\n999\n')
 
@@ -75,6 +80,8 @@ alive "$lsrv"  && fail "the launched server is still running"            || ok "
 alive "$lnch"  && fail "its npm-exec launcher is still running"          || ok "its Next launcher in the same worktree is stopped too"
 # An agent session sitting in its worktree is somebody working there.
 alive "$asrv"  && ok "a worktree an agent session sits in is kept" || fail "a server was stopped under a live agent session"
+alive "$worker_srv" && fail "a server with its own worker in its folder was kept as if somebody were there" || ok "a server's own workers do not count as somebody working there"
+alive "$bare" && fail "a ticket folder named without the prefix was not swept" || ok "a ticket folder named with bare digits (109-…) is swept"
 
 echo "stop-dev-servers: --worktree"
 a=$(serve "$T/wt/apps/web");   PIDS+=("$a")

@@ -133,17 +133,28 @@ if [ -n "${STOP_DEV_CLAIMED+x}" ]; then
   [ "$STOP_DEV_CLAIMED" = FAIL ] && { echo "stop-dev-servers: the claims could not be read — stopping nothing"; exit 0; }
   CLAIMED="$STOP_DEV_CLAIMED"
 else
-  CLAIMED=$(git -C "$MAIN_REPO" ls-remote origin 'refs/claims/*' 2>/dev/null) \
+  # Time-limited: this runs inside /claim, and a stalled network must not hang it.
+  CLAIMED=$(perl -e 'alarm shift; exec @ARGV' 20 git -C "$MAIN_REPO" ls-remote origin 'refs/claims/*' 2>/dev/null) \
     || { echo "stop-dev-servers: the claims could not be read from origin — stopping nothing"; exit 0; }
   CLAIMED=$(printf '%s\n' "$CLAIMED" | sed -n 's#.*refs/claims/\([0-9][0-9]*\)$#\1#p')
 fi
 
-# Every working directory on the machine that is NOT a server or its launcher:
-# a shell, an editor, an agent — somebody there.
-OCCUPIED=$(ps -axo pid=,command= 2>/dev/null | while read -r pid cmd; do
-  is_server "$cmd" && continue; is_launcher "$cmd" && continue
-  c=$(cwd_of "$pid"); [ -n "$c" ] && [ "$c" != / ] && real "$c"; echo
-done | sort -u)
+# Every working directory on the machine that is NOT a server, its launcher, or
+# anything they started: a shell, an editor, an agent — somebody there. A real
+# Next server runs turbopack/webpack workers in its own folder; counted as
+# occupants they made every server's worktree read as busy, and the sweep
+# stopped nothing (review round 2 on #11167).
+PS=$(ps -axo pid=,ppid=,command= 2>/dev/null)
+ROOTS=$(printf '%s\n' "$PS" | while read -r pid ppid cmd; do
+  { is_server "$cmd" || is_launcher "$cmd"; } && echo "$pid"
+done)
+OURS=$(printf '%s\n' "$PS" | awk -v roots="$(printf '%s ' $ROOTS)" '
+  BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }
+  { parent[$1] = $2 }
+  END { for (p in parent) { q = p; for (d = 0; d < 64 && q > 1; d++) { if (q in root) { print p; break } q = parent[q] } } }')
+# lsof already reports resolved paths, so one join does it — not one lookup per process.
+OCCUPIED=$({ printf '%s\n' "$OURS" | sed 's/^/O\t/'; printf '%s\n' "$CWDS" | sed 's/^/C\t/'; } \
+  | awk -F'\t' '$1 == "O" { ours[$2] = 1; next } $1 == "C" && !($2 in ours) && $3 != "/" { print $3 }' | sort -u)
 
 occupied() { local o; while read -r o; do [ -n "$o" ] && inside "$o" "$1" && return 0; done <<<"$OCCUPIED"; return 1; }
 
@@ -152,7 +163,9 @@ servers | while read -r pid ppid age cwd; do
   tree="" n="" p="$cwd"
   while [ "$p" != / ] && [ -n "$p" ]; do
     base=$(basename "$p")
-    case "$base" in "$PREFIX"[0-9]*-*)
+    # /claim names the folder ${TICKET,,}-…, which carries the prefix only when
+    # the ticket was given with it: both sh-10576-… and 10576-… are ticket folders.
+    case "$base" in "$PREFIX"[0-9]*-*|[0-9]*-*)
       n=$(printf '%s' "${base#"$PREFIX"}" | sed -n 's/^\([0-9][0-9]*\)-.*/\1/p')
       [ -n "$n" ] && { tree="$p"; break; } ;;
     esac
