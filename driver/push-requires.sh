@@ -82,10 +82,17 @@ _driver_owed() {
 # recorder. Its spend is recorded under usage["attest-<name>"] and counted in .spend.
 # Returns claude's exit code, or 124 on a hang.
 _driver_attest_agent() {
-  local t="$1" name="$2" agent="$3" wt="$4" trunk="$5" out="$6" d slot prompt log cmd rc=0 diff renders
+  local t="$1" name="$2" agent="$3" wt="$4" trunk="$5" out="$6" d slot prompt log rc=0 diff renders
   d="$(driver_state_dir "$t")/steps"; slot="attest-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-')"
   prompt="$d/$slot.prompt"; log="$d/$slot.log"
-  diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null | head -c "$(driver_opt review.diffBytes 400000)")
+  local cap full
+  cap=$(driver_opt review.diffBytes 400000)
+  case "$cap" in ''|*[!0-9]*|0) driver_say "⚠ push-requires: harness.json's review.diffBytes is '${cap}', which is not a number of bytes, so the default 400000 is used."; cap=400000 ;; esac
+  full=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  diff=$(printf '%s' "$full" | head -c "$cap")
+  # A CUT DIFF IS SAID. A reviewer handed part of a change reviews what it can see.
+  [ "$(printf '%s' "$full" | wc -c)" -gt "$cap" ] && diff="$diff
+(diff cut at $cap bytes — run \`git diff $trunk...HEAD\` in this tree for the rest)"
   renders=$(driver_state_get "$t" renders)
   {
     printf 'You are the %s reviewer for ticket #%s. Review this change in the worktree you are in (the diff is against %s).\n\n' "$name" "$t" "$trunk"
@@ -94,9 +101,10 @@ _driver_attest_agent() {
     printf '## The diff\n\n```diff\n%s\n```\n' "$diff"
   } > "$prompt"
   driver_lean_args "$wt" "attest"
-  cmd=$(printf '%q ' "$DRIVER_CLAUDE" -p --output-format stream-json --verbose --name "$slot" \
-          --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt")
-  ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:$slot" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd < $(printf '%q' "$prompt")" ) > "$log" 2>"$log.err" || rc=$?
+  ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:$slot" && \
+    driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$prompt" "$DRIVER_CLAUDE" -p --output-format stream-json --verbose \
+      --name "$slot" --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt" \
+  ) > "$log" 2>"$log.err" || rc=$?
   driver_record_usage "$t" "$slot" "$log" "$prompt"
   jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$log" > "$out" 2>/dev/null
   return "$rc"
@@ -145,9 +153,17 @@ driver_push_requires() { # <ticket>
                 | select((.value | type) == "object")
                 | select(((((.value.review // "") + (.value.agent // "")) == "") != (((.value.record // "") == ""))))
                 | .key' "$HARNESS_CFG" 2>/dev/null)
+  # BOTH A COMMAND AND AN AGENT is two reviewers for one verdict, and only one could run.
+  local both; both=$(jq -r '(.review.attest // {}) | to_entries[] | select((.value | type) == "object")
+                 | select(((.value.review // "") != "") and ((.value.agent // "") != "")) | .key' "$HARNESS_CFG" 2>/dev/null)
+  if [ -n "$both" ]; then
+    driver_say "✋ push-requires: review.attest row(s) $(printf '%s\n' "$both" | tr '\n' ' ')name both a review command and an agent. Name one: the driver will not pick for you."
+    driver_state_set "$t" park_note "harness.json's review.attest names both review and agent for: $(printf '%s\n' "$both" | tr '\n' ' ')"
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ -n "$half" ]; then
-    driver_say "✋ push-requires: review.attest row(s) $(printf '%s' "$half" | tr '\n' ' ')name one of review/record and not the other, so that reviewer can be run and not recorded, or recorded and never run."
-    driver_state_set "$t" park_note "harness.json's review.attest names one of review/record and not the other for: $(printf '%s' "$half" | tr '\n' ' ')"
+    driver_say "✋ push-requires: review.attest row(s) $(printf '%s\n' "$half" | tr '\n' ' ')name one of review/agent and record and not the other, so that reviewer can be run and not recorded, or recorded and never run."
+    driver_state_set "$t" park_note "harness.json's review.attest names one of review/agent and record and not the other for: $(printf '%s\n' "$half" | tr '\n' ' ')"
     return "$DRIVER_E_REFUSED"
   fi
 
