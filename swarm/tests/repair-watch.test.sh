@@ -64,6 +64,33 @@ want_in "and the hold names it"        'hold #11 \(101\).*machine busy \(agents 
 want "no attempt was recorded"         "0" "$(grep -c . "$TRIED")"
 fix_live widgets 0; fix_at "$T0"
 
+echo "--- a red trunk holds CI repairs, and spends no attempt ---"
+: > "$SPAWNS"; : > "$TRIED"
+fix_trunk red
+fix_prs "11 101 fffffffff1 CLEAN 0 typecheck"
+out=$(w --only repair)
+want "no agent while develop is red"   "0" "$(grep -c . "$SPAWNS")"
+want "no attempt was recorded"         "0" "$(grep -c . "$TRIED")"
+want_in "and it says why"              'develop is red \(build\)' "$out"
+
+echo "--- a clash is still repaired while the trunk is red ---"
+fix_prs "11 101 fffffffff1 DIRTY 0 -"
+w --only repair >/dev/null
+want "the clash gets its agent"        "1" "$(grep -c . "$SPAWNS")"
+
+echo "--- an unreadable trunk holds, like a red one ---"
+: > "$SPAWNS"; : > "$TRIED"
+fix_trunk unreadable
+fix_prs "11 101 fffffffff1 CLEAN 0 typecheck"
+w --only repair >/dev/null
+want "no agent when it cannot tell"    "0" "$(grep -c . "$SPAWNS")"
+
+echo "--- once develop is green the same head commit IS repaired ---"
+fix_trunk green
+w --only repair >/dev/null
+want "the held repair now runs"        "1" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+
 echo "--- three repairs in a day: the stop is a LABEL, not a count ---"
 : > "$SPAWNS"
 for s in s1 s2 s3; do printf '101\t%s\tci\t%s\n' "$s" "$T0" >> "$TRIED"; done

@@ -127,8 +127,26 @@ stop.
 BRIEF
 }
 
+# What is failing on the integration branch's newest commit, ";"-joined; empty
+# when nothing is. "unknown" when it cannot be read, which holds like red.
+#
+# While the trunk itself is red every PR's CI is red for a reason no PR repair
+# can fix. A repair spent then is recorded as tried at that head commit and never
+# retried, so the PR sits unrepaired after the trunk is fixed — eight did, for
+# nine hours, on the estate this came from. So CI repairs wait for a green trunk
+# without recording an attempt. A clash is still repaired: it is the PR's own.
+integration_red() {
+  local out
+  out=$(swarm_gh api "repos/$REPO_SLUG/commits/$INTEGRATION_BRANCH/check-runs?per_page=100" \
+    -q '[.check_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .name] | join(";")' \
+    2>/dev/null) || { printf 'unknown'; return; }
+  printf '%s' "$out"
+}
+
 section_repair() {
-  local launched=0 row PR T SHA MSTATE PEND FAILS labs reason kind prog why
+  local launched=0 row PR T SHA MSTATE PEND FAILS labs reason kind prog why trunk_red
+  trunk_red=$(integration_red)
+  [ -z "$trunk_red" ] || say "$INTEGRATION_BRANCH is red ($trunk_red) — CI repairs wait until it is green"
   while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
     [ -n "${PR:-}" ] || continue
     [ "$launched" -lt "$MAX_PER_PASS" ] || break
@@ -137,6 +155,10 @@ section_repair() {
     if [ "$MSTATE" = "DIRTY" ]; then reason="it clashes with $INTEGRATION_BRANCH"; kind=conflict
     elif [ "${PEND:-0}" = "0" ] && [ -n "$FAILS" ]; then reason="CI went red on: $FAILS"; kind=ci
     else continue; fi
+    if [ "$kind" = ci ] && [ -n "$trunk_red" ]; then
+      [ "$DRY" = 1 ] && echo "HOLD #$PR ($T): $INTEGRATION_BRANCH is red, not this PR"
+      continue
+    fi
 
     labs=$(labels_of "$T")
     [ -n "$labs" ] || continue
