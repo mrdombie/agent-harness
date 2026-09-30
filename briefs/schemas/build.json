@@ -159,6 +159,69 @@
     },
     "notes": {
       "type": "string"
+    },
+    "testOnly": {
+      "description": "A task whose deliverable IS the test: the code it covers already exists, so nothing can be red before it. The driver plants `break` in the production code at testCommit and requires the test to FAIL, then removes it and requires the test to PASS. Use this instead of testFirst only when the task changes no production code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "test",
+        "command",
+        "testCommit",
+        "break"
+      ],
+      "properties": {
+        "test": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "behaviour"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "behaviour": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "testCommit": {
+          "description": "The commit that adds the test. The driver runs the test in a copy of this commit.",
+          "type": "string",
+          "minLength": 7
+        },
+        "break": {
+          "description": "A literal find/replace in the production file the test covers that DELETES the behaviour under test (the death, not a typo). Never the test file itself. `find` must appear in `file` at testCommit.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "find",
+            "replace"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "find": {
+              "type": "string",
+              "minLength": 1
+            },
+            "replace": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   },
   "if": {
@@ -170,9 +233,20 @@
   },
   "then": {
     "required": [
-      "testFirst",
       "changed",
       "changelog"
+    ],
+    "oneOf": [
+      {
+        "required": [
+          "testFirst"
+        ]
+      },
+      {
+        "required": [
+          "testOnly"
+        ]
+      }
     ]
   },
   "else": {

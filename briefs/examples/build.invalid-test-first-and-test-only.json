@@ -1,0 +1,56 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:subagent-driven-development",
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "A failed read is its own outcome, not an empty one",
+  "testFirst": {
+    "test": {
+      "file": "src/queue/reader.test.ts",
+      "behaviour": "a fetch that throws resolves to { state: 'failed' }, never to an empty list",
+      "redWhen": "the catch block is deleted so the throw propagates as []"
+    },
+    "command": "npm test -- src/queue/reader.test.ts",
+    "testCommit": "4f1c0b9a2d3e5f60718293a4b5c6d7e8f9012345",
+    "implCommit": "9a8b7c6d5e4f30291827364554637281909a8b7c",
+    "failedBefore": true,
+    "redOutput": "FAIL  expected 'failed', received undefined",
+    "passedAfter": true,
+    "greenOutput": "PASS  1 passed"
+  },
+  "changed": [
+    {
+      "path": "src/queue/reader.ts",
+      "action": "modify"
+    },
+    {
+      "path": "src/queue/reader.test.ts",
+      "action": "create"
+    },
+    {
+      "path": "src/queue/panel.tsx",
+      "action": "modify"
+    }
+  ],
+  "surfaces": [
+    "src/queue/panel.tsx renders the failed state; it read the same [] and said 'nothing here'"
+  ],
+  "changelog": {
+    "file": "changes/10886-failed-read.md"
+  },
+  "testOnly": {
+    "test": {
+      "file": "src/lib/format.test.ts",
+      "behaviour": "formatPrice renders pence as pounds"
+    },
+    "command": "npx vitest run src/lib/format.test.ts",
+    "testCommit": "a1b2c3d4",
+    "break": {
+      "file": "src/lib/format.ts",
+      "find": "pence / 100",
+      "replace": "pence"
+    }
+  }
+}

@@ -58,6 +58,15 @@ driver re-runs your test at the change's parent and at the change, so those two
 shas are what make `failedBefore` checkable rather than claimed; one squashed
 commit cannot show which came first.
 
+**When the task IS the test** — the code it covers already exists and you change
+no production code — return `testOnly` instead of `testFirst`. There is no tree
+without the change for such a test to be red at, so the driver proves it by
+breaking the code: `break` is a literal `find`/`replace` in the production file
+the test covers that deletes the behaviour under test (never the test file, never
+a typo). The driver applies it to a copy of `testCommit`, requires the test to
+fail, removes it, and requires the test to pass. One of `testFirst` or `testOnly`,
+never both.
+
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both
 keys, or neither, is refused.
