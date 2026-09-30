@@ -496,9 +496,17 @@ v=$(grep -oE 'VERDICT:[[:space:]]*(SHIP|SPIT-BACK)' | head -1 | awk '{print $2}'
 git commit --allow-empty --no-verify -q -m "chore: gate" -m "Gate: SHIP (agent)"
 echo "recorded"
 SH
-chmod +x "$FIX/reviewer" "$FIX/recorder"
-jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
-   '.review = {"attest":{"ui-gate":{"owed":"true","review":$r,"record":($w + " --sha {{SHA}}")}}}' \
+cat > "$FIX/owed" <<'SH'
+#!/usr/bin/env sh
+# Stands in for check:ui-gate-attested: owed until the HEAD commit carries the
+# trailer, exit 0 once it does — the contract finish and the pre-push both read.
+git log -1 --format=%B | grep -q 'Gate: SHIP' && { echo "✓ attested"; exit 0; }
+echo "✗ check:ui-gate-attested — this diff touches UI with no matching verdict."
+exit 1
+SH
+chmod +x "$FIX/reviewer" "$FIX/recorder" "$FIX/owed"
+jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
+   '.review = {"attest":{"ui-gate":{"owed":$o,"review":$r,"record":($w + " --sha {{SHA}}")}}}' \
    "$REPO/.claude/harness.json" > "$FIX/h7.json" && mv "$FIX/h7.json" "$REPO/.claude/harness.json"
 git -C "$FIX/wt410" config user.email t@e.invalid
 git -C "$FIX/wt410" config user.name T
@@ -539,8 +547,8 @@ git -C "$FIX/wt413" config user.name T
 driver_state_init 413 --worktree "$FIX/wt413" --branch "tkt-413/work"
 fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"minor","summary":"spacing","reason":"polish","fix":"nudge"}]}' superpowers:requesting-code-review
 printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
-jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
-   '.review = {"attest":{"ui-gate":{"owed":"true","review":$r,"record":($w + " --sha {{SHA}}")}}}' \
+jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
+   '.review = {"attest":{"ui-gate":{"owed":$o,"review":$r,"record":($w + " --sha {{SHA}}")}}}' \
    "$REPO/.claude/harness.json" > "$FIX/hr.json" && mv "$FIX/hr.json" "$REPO/.claude/harness.json"
 : > "$GH_LOG"
 rc=0; out=$(driver_step_review 413 2>&1) || rc=$?
@@ -548,6 +556,7 @@ want "the review refuses on the recorder" "24" "$rc"
 want_not_in "and no follow-up ticket was filed" 'issue create' "$(cat "$GH_LOG")"
 
 echo "--- T2-2 · a reviewer that says SPIT-BACK is not recorded, and it stops there ---"
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: a change nobody has reviewed"
 cat > "$FIX/reviewer" <<'SH'
 #!/usr/bin/env sh
 echo "VERDICT: SPIT-BACK"
@@ -574,6 +583,87 @@ want_in "and says the recorder did not return" 'recorder did not return' "$out"
 printf '#!/usr/bin/env sh\nsleep 30\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
 rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_push_requires 410 2>&1) || rc=$?
 want "so is a reviewer that hangs" "25" "$rc"
+
+echo "--- T2-2 · a reviewer that is not owed on this diff is not run (#11161) ---"
+# Trial 3: a test-only diff was sent to ui-gate, which rightly found no UI and gave
+# no verdict, and the ticket parked here though the pre-push would have passed it.
+printf '#!/usr/bin/env sh\necho "VERDICT: SHIP"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
+cat > "$FIX/recorder" <<'SH'
+#!/usr/bin/env sh
+git commit --allow-empty --no-verify -q -m "chore: gate" -m "Gate: SHIP (agent)"; echo recorded
+SH
+chmod +x "$FIX/recorder"
+jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
+   '.review = {"attest":{"ui-gate":{"owed":"echo \"✓ check:ui-gate-attested — no UI surface in this diff\"","review":$r,"record":$w}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+rm -f "$(driver_state_dir 410)/steps/verdict-ui-gate.txt"
+BEFORE=$(git -C "$FIX/wt410" rev-parse HEAD)
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "nothing owed is satisfied" "0" "$rc"
+want_in "and says so, in the project's words" "'ui-gate' is not owed on this diff — ✓ check:ui-gate-attested — no UI surface" "$out"
+want_not_in "the reviewer never ran" "reviewer ran" "$out"
+want "and nothing was recorded" "$BEFORE" "$(git -C "$FIX/wt410" rev-parse HEAD)"
+
+echo "--- T2-2 · owed is asked with {{BASE}} and {{SHA}} filled ---"
+jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" \
+   '.review = {"attest":{"ui-gate":{"owed":"echo base={{BASE}} sha={{SHA}}","review":$r,"record":$w}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want_in "the base is the trunk" "base=(origin/)?develop" "$(cat "$(driver_state_dir 410)/steps/owed-ui-gate.txt")"
+want_in "and the sha is HEAD" "sha=$(git -C "$FIX/wt410" rev-parse HEAD)" "$(cat "$(driver_state_dir 410)/steps/owed-ui-gate.txt")"
+
+echo "--- T2-2 · recorded is not attested: the project's check is asked again ---"
+cat > "$FIX/recorder" <<'SH'
+#!/usr/bin/env sh
+git commit --allow-empty --no-verify -q -m "chore: gate" -m "Wrong-Trailer: SHIP"; echo recorded
+SH
+chmod +x "$FIX/recorder"
+jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
+   '.review = {"attest":{"ui-gate":{"owed":$o,"review":$r,"record":$w}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "a recorder that wrote the wrong thing refuses" "24" "$rc"
+want_in "saying the check still says owed" "still says it is owed" "$out"
+want_in "and the park note carries the check's own line" "check:ui-gate-attested" "$(driver_state_get 410 park_note)"
+
+echo "--- T2-2 · a check for whether a reviewer is owed that hangs is a timeout ---"
+jq '.review = {"attest":{"ui-gate":{"owed":"sleep 30","review":"true","record":"true"}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+rc=0; out=$(DRIVER_CMD_TIMEOUT=2 driver_push_requires 410 2>&1) || rc=$?
+want "it is a timeout" "25" "$rc"
+
+echo "--- T2-2 · an owed row the driver cannot run refuses, and says so (#11162) ---"
+# Trial 3: design-critic was an owed-only row, skipped in silence; #10955 reached
+# SHIP and learned at the push that it needed a verdict no step gives.
+jq --arg o "$FIX/owed" '.review = {"attest":{"design-critic":{"owed":$o}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: unreviewed"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "an owed row with nothing to run refuses" "24" "$rc"
+want_in "naming the row" "'design-critic' is owed on this diff" "$out"
+want_in "and the park note says only a person can earn it" "only a person can earn it" "$(driver_state_get 410 park_note)"
+rc=0; out=$(driver_push_requires_unpayable 410 2>&1) || rc=$?
+want "the cheap pre-check refuses the same" "24" "$rc"
+want_in "before the review is paid for" "before the review is paid for" "$out"
+jq '.review = {"attest":{"design-critic":{"owed":"true"}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+rc=0; driver_push_requires 410 >/dev/null 2>&1 || rc=$?
+want "an owed-only row that is not owed passes" "0" "$rc"
+rc=0; driver_push_requires_unpayable 410 >/dev/null 2>&1 || rc=$?
+want "and so does the pre-check" "0" "$rc"
+jq '.review = {"attest":{"design-critic":"false"}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hn.json" && mv "$FIX/hn.json" "$REPO/.claude/harness.json"
+rc=0; driver_push_requires_unpayable 410 >/dev/null 2>&1 || rc=$?
+want "a bare-string row that is owed refuses too" "24" "$rc"
+
+echo "--- T2-2 · the review step asks before the model runs ---"
+fix_issue 414 OPEN "status:claimed"
+git -C "$REPO" worktree add -q "$FIX/wt414" -b "tkt-414/work" develop
+driver_state_init 414 --worktree "$FIX/wt414" --branch "tkt-414/work"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_review 414 2>&1) || rc=$?
+want "the review step refuses" "24" "$rc"
+want "and no model was started" "" "$(cat "$CLAUDE_LOG")"
 
 echo "--- T2-2 · one row per reviewer, shared with the interactive finish ---"
 # `/agent-harness:finish` reads the same rows for a different question, so a second

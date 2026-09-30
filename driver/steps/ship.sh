@@ -80,8 +80,9 @@ driver_step_ship() { # <ticket>
     fi
   fi
 
-  git -C "$wt" push -q -u origin "$branch" >/dev/null 2>&1 || {
-    driver_say "✋ ship: could not push $branch — this project's pre-push refused it. Read its own output; the local gate IS the gate."
+  driver_push "$t" "$wt" "$branch" ship || {
+    driver_say "✋ ship: could not push $branch — this project's pre-push refused it: $DRIVER_PUSH_WHY (all of it: $DRIVER_PUSH_OUT)"
+    driver_state_set "$t" park_note "the push was refused: $DRIVER_PUSH_WHY"
     return "$DRIVER_E_REFUSED"; }
 
   verdict=$(jq -r '.verdict // ""' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null | tr '[:lower:]' '[:upper:]')

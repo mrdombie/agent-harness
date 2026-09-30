@@ -107,7 +107,8 @@ SH
 chmod +x "$FIX/ui-gate-reviewer" "$FIX/design-critic-reviewer"
 
 mkdir -p "$REPO/.claude"
-jq -n --arg wr "$FIX/trees" --arg ui "$FIX/ui-gate-reviewer" --arg dc "$FIX/design-critic-reviewer" '{
+jq -n --arg wr "$FIX/trees" --arg ui "$FIX/ui-gate-reviewer" --arg dc "$FIX/design-critic-reviewer" \
+      --arg ug "$UIGATE" --arg dg "$DCGATE" '{
   repo: "acme/widgets", integrationBranch: "develop", branchPrefix: "tkt-",
   stateDir: "/nonexistent-must-be-overridden", sisterRepos: [],
   worktreeRoot: $wr,
@@ -117,8 +118,8 @@ jq -n --arg wr "$FIX/trees" --arg ui "$FIX/ui-gate-reviewer" --arg dc "$FIX/desi
             philosophy: "docs/design/design-philosophy.md",
             render: "printf \"desk light\\tshots/a.png\\tlight\\t/dashboard/desk\\ndesk dark\\tshots/b.png\\tdark\\t/dashboard/desk\\n\"" },
   review: { rounds: 2, attest: {
-    "ui-gate":       { owed: "true", review: $ui, record: "bash scripts/record-verdict.sh ui-gate --sha {{SHA}} --base {{BASE}}" },
-    "design-critic": { owed: "true", review: $dc, record: "bash scripts/record-verdict.sh design-critic --sha {{SHA}} --base {{BASE}}" } } },
+    "ui-gate":       { owed: ($ug + " --base {{BASE}} --head HEAD"), review: $ui, record: "bash scripts/record-verdict.sh ui-gate --sha {{SHA}} --base {{BASE}}" },
+    "design-critic": { owed: ($dg + " --base {{BASE}} --head HEAD"), review: $dc, record: "bash scripts/record-verdict.sh design-critic --sha {{SHA}} --base {{BASE}}" } } },
   labels: { drafting:"status:drafting", ready:"status:ready", claimed:"status:claimed",
             inReview:"status:in-review", gated:"status:gated", partial:"status:partial",
             blocked:"status:blocked", externalBlocked:"status:external-blocked",

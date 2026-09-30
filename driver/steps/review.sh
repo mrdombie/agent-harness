@@ -47,6 +47,12 @@ driver_step_review() { # <ticket>
 
   round=$(driver_state_count "$t" review)
 
+  # A VERDICT NOBODY CAN GIVE IS ASKED ABOUT BEFORE THE REVIEW IS PAID FOR. The
+  # full requirement run is after the model; a row the driver cannot run would only
+  # refuse there, or at the push.
+  rc=0; driver_push_requires_unpayable "$t" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+
   # The three facts only this step can gather. The brief asks for the DIFF against
   # the trunk it will merge into, the renders of every screen the change touches, and
   # which round this is — and a placeholder with no value now refuses the step, so
