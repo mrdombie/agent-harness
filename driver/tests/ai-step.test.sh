@@ -20,6 +20,32 @@ want "it finishes"              "0"          "$rc"
 want "the answer is stored"     "a.sh"       "$(jq -r '.files[0]' "$(driver_state_dir 101)/steps/plan.json")"
 want_in "and it says the skill ran" 'superpowers:writing-plans' "$out"
 
+echo "--- every AI step runs bounded: a turn cap and a 150K context (#46) ---"
+turns_given() { grep -A1 -x -- '--max-turns' "$FIX/claude-args-plan.txt" | tail -1; }
+want "a turn cap reaches claude"          "40"     "$(turns_given)"
+want "and a 150K compact window"          "150000" "$(cat "$FIX/claude-window-plan.txt")"
+jq '.driver.limits.plan.turns = 7' "$HARNESS_CFG_PATH" > "$FIX/h.json" && cp "$FIX/h.json" "$HARNESS_CFG_PATH"
+driver_ai_step 101 plan >/dev/null 2>&1
+want "harness.json overrides a step's cap" "7"     "$(turns_given)"
+
+echo "--- a step stopped at its own limit parks, named (#46) ---"
+for sub in error_max_turns error_max_budget_usd; do
+  printf '{"type":"result","subtype":"%s","is_error":true,"result":""}\n' "$sub" > "$FIX/ai/plan.jsonl"
+  out=$(driver_ai_step 101 plan 2>&1); rc=$?
+  want "$sub exits with the limit code"   "$DRIVER_E_LIMIT" "$rc"
+  want_in "and says which ($sub)"         "$sub" "$out"
+  want_in "and leaves a park note ($sub)" 'hit its limit' "$(driver_state_get 101 park_note)"
+  driver_state_set 101 park_note ""
+done
+
+echo "--- a schema-retry stop is NOT a limit ---"
+printf '%s\n' '{"type":"result","subtype":"error_max_structured_output_retries","is_error":true,"result":""}' > "$FIX/ai/plan.jsonl"
+out=$(driver_ai_step 101 plan 2>&1); rc=$?
+if [ "$rc" != "$DRIVER_E_LIMIT" ]; then ok "it is not reported as a limit stop (exit $rc)"; else bad "a schema-retry stop was reported as a limit"; fi
+want_not_in "and does not say to raise the limit" 'hit its limit' "$(driver_state_get 101 park_note)"
+driver_state_set 101 park_note ""
+fix_ai    plan '{"files":["a.sh"],"tests":["a.test.sh"]}' superpowers:writing-plans
+
 echo "--- the brief named a Skill and the log does not contain it ---"
 fix_ai plan '{"files":["a.sh"],"tests":["a.test.sh"]}'    # no skill block
 out=$(driver_ai_step 101 plan 2>&1); rc=$?

@@ -133,6 +133,8 @@ printf '%s\n' "$step" >> "$CLAUDE_LOG"
 printf '%s\t%s\t%s\n' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
 printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
 printf '%s\n' "$@" > "$FIX/claude-args-$step.txt"
+# The context window it ran under (#46), set by the driver in the environment.
+printf '%s\n' "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" > "$FIX/claude-window-$step.txt"
 # The prompt arrives on STDIN, not in argv — argv has a ceiling and a substituted
 # brief carrying a diff goes past it. Kept so a suite can read what was sent.
 # BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's

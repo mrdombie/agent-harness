@@ -254,6 +254,11 @@ while [ "$i" -lt "$N" ]; do
       park_question="The briefs are a separate deliverable — has briefs/$step.md landed yet?"
       ;;
 
+    "$DRIVER_E_LIMIT")
+      park_reason="$step stopped at its own turn or budget limit"
+      park_question="Is the ticket too big for one run (split it), or should driver.limits.$step.turns or driver.stepBudgetUsd be raised?"
+      ;;
+
     "$DRIVER_E_BUDGET")
       park_reason="the run has spent its budget before $step (\$${DRIVER_RUN_BUDGET_USD})"
       park_question="The spend per step is on the record — raise driver.runBudgetUsd, or is this ticket too big for one run?"

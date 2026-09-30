@@ -201,21 +201,26 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     return "$DRIVER_E_BUDGET"
   fi
 
+  # Read HERE, not after the cd below: the config path resolves from the caller.
+  local max_turns; max_turns=$(driver_step_turns "$step")
   (
     cd "$wt" || exit 1
     # The Stop hook stands down for a driver step: the sign-off banner is an
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$DRIVER_COMPACT_WINDOW"
     if [ -n "$schema_for_model" ]; then
       "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" --max-budget-usd "$DRIVER_STEP_BUDGET_USD" \
+        --max-turns "$max_turns" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
         < "$prompt" > "$log" 2>"$log.err"
     else
       "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" --max-budget-usd "$DRIVER_STEP_BUDGET_USD" \
+        --max-turns "$max_turns" \
         --add-dir "$wt" < "$prompt" > "$log" 2>"$log.err"
     fi
   ) || true
@@ -235,6 +240,18 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     driver_say "✋ $step: the agent produced no transcript — $(head -3 "$log.err" 2>/dev/null | tr '\n' ' ')"
     return "$DRIVER_E_SCHEMA"
   fi
+
+  # Stopped at this step's own limit (#46): the turn cap or the per-step budget ends
+  # the run on an error_max_* result. Not an answer to validate — it parks, named.
+  # Only these two: error_max_structured_output_retries is a contract failure.
+  local stopped
+  stopped=$(driver_log_events "$log" | jq -r -s '[.[] | select(.type=="result")] | last | .subtype // empty' 2>/dev/null)
+  case "$stopped" in
+    error_max_turns|error_max_budget_usd)
+      driver_say "✋ $step: stopped at its limit ($stopped — $max_turns turns, \$$DRIVER_STEP_BUDGET_USD, context $DRIVER_COMPACT_WINDOW)."
+      driver_state_set "$t" park_note "the $step step hit its limit ($stopped) — raise driver.limits.$step.turns or driver.stepBudgetUsd in harness.json, or split the ticket"
+      return "$DRIVER_E_LIMIT" ;;
+  esac
 
   # 1. the skills. The declared set first — at least one of a step's own skills has
   # to appear, or the step did not run. Then the answer's claims, below, once there

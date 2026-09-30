@@ -87,6 +87,7 @@ DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
 DRIVER_E_TIMEOUT=25
 DRIVER_E_BUDGET=26
+DRIVER_E_LIMIT=27
 DRIVER_E_REWORK=30
 
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
@@ -108,6 +109,16 @@ DRIVER_PERMISSION_MODE="${DRIVER_PERMISSION_MODE:-$(driver_opt_early driver.perm
 # step that would start past the run's budget.
 DRIVER_STEP_BUDGET_USD="${DRIVER_STEP_BUDGET_USD:-$(driver_opt_early driver.stepBudgetUsd 25)}"
 DRIVER_RUN_BUDGET_USD="${DRIVER_RUN_BUDGET_USD:-$(driver_opt_early driver.runBudgetUsd 150)}"
+# Turns and context (#46). The budgets above bound spend; an unbounded conversation
+# is the other half of what drained a plan on 2026-09-28/29 — 20 runs, none
+# compacted once, contexts to 657K. The env var the step exports overrides every
+# settings scope, so the window holds in a project that sets none.
+DRIVER_COMPACT_WINDOW="${DRIVER_COMPACT_WINDOW:-$(driver_opt_early driver.compactWindow 150000)}"
+driver_step_turns() { # <step> → its --max-turns; driver.limits.<step>.turns overrides
+  local d
+  case "$1" in plan) d=40 ;; build) d=150 ;; review) d=40 ;; *) d=60 ;; esac
+  driver_opt_early "driver.limits.$1.turns" "$d"
+}
 
 # driver_bounded <seconds> <command> — run a command with a ceiling on its life.
 #
@@ -345,4 +356,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_
 export DRIVER_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK DRIVER_E_LIMIT
