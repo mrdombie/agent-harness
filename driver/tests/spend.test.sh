@@ -35,10 +35,14 @@ want_in "it passes a permission mode"       '--permission-mode'   "$args"
 want_in "auto, unless told otherwise"       '^auto$'              "$args"
 want_in "no connectors"                     '--strict-mcp-config' "$args"
 want_in "an empty connector list"           'mcpServers'          "$args"
-want_in "and the tools no step uses left out" '--disallowed-tools' "$args"
-want_in "the ask-a-person tool among them"  'AskUserQuestion'     "$args"
+# #11172 — the tools a step loads are an ALLOWLIST: the eight any step of trial 3
+# ever called. Everything else was ~14k tokens re-sent on every call.
+want_in "only the tools a step uses are loaded" '--tools'          "$args"
+want_in "Skill among them"                  '^Skill$'             "$args"
+want_in "and Agent, which the skills dispatch with" '^Agent$'     "$args"
+want_not_in "the ask-a-person tool is not"  'AskUserQuestion'     "$args"
 want_not_in "no spend cap"                  'max-budget-usd'      "$args"
-want_not_in "and Skill is never left out"   '(^| )Skill( |$)'      "$(grep -A1 -- '--disallowed-tools' "$FIX/claude-args-plan.txt" | tail -1)"
+want_not_in "every setting source still loads — the project's skills and agents with it" '^--setting-sources$' "$args"
 
 echo "--- the step's cost and context are on the record ---"
 S="$(driver_state_dir 301)/state.json"
@@ -59,9 +63,37 @@ want "and the step still ran"               "0"    "$rc"
 echo "--- the permission mode and the tool list are settings ---"
 driver_state_init 302
 fix_ai_costed plan '{"files":["b.sh"],"tests":["b.test.sh"]}' 0.25 superpowers:writing-plans
-DRIVER_PERMISSION_MODE=acceptEdits DRIVER_DISALLOWED_TOOLS="" DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+DRIVER_PERMISSION_MODE=acceptEdits DRIVER_TOOLS=default DRIVER_DISALLOWED_TOOLS="" DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
 args="$(cat "$FIX/claude-args-plan.txt")"
 want_in "the mode is read from the setting" '^acceptEdits$'       "$args"
-want_not_in "an empty tool list leaves every tool in" '--disallowed-tools' "$args"
+want_not_in "tools=default loads Claude Code's whole set" '--tools' "$args"
+want_not_in "and an empty block list leaves every tool in" '--disallowed-tools' "$args"
+DRIVER_TOOLS=default DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+args="$(cat "$FIX/claude-args-plan.txt")"
+want_in "tools=default falls back to the block list" '--disallowed-tools' "$args"
+want_in "the ask-a-person tool among it"    'AskUserQuestion'     "$args"
+
+echo "--- a step may narrow its own tools in facts.json (#11172) ---"
+mkdir -p "$FIX/briefs"; printf '{"steps":{"plan":{"tools":["Read","Grep"]}}}' > "$FIX/briefs/facts.json"
+DRIVER_BRIEFS="$FIX/briefs" DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+args="$(cat "$FIX/claude-args-plan.txt")"
+want_in "the step's own list"               '^Grep$'              "$args"
+want_not_in "and nothing else"              '^Bash$'              "$args"
+rm -f "$FIX/briefs/facts.json"
+
+echo "--- the project's instruction files are named, not preloaded (#11172) ---"
+wt=$(driver_state_get 302 worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+printf '# rules\n' > "$wt/CLAUDE.md"; printf '# agents\n' > "$wt/AGENTS.md"
+mkdir -p "$wt/.claude"; printf '{"hooks":{}}' > "$wt/.claude/settings.json"
+DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+args="$(cat "$FIX/claude-args-plan.txt")"
+want_in "the tree's CLAUDE.md is excluded by its path" "claudeMdExcludes.*\"$wt/CLAUDE.md\"" "$args"
+want_in "and its AGENTS.md"                 "\"$wt/AGENTS.md\""   "$args"
+want_in "and the instruction files are named" 'CLAUDE.md, AGENTS.md' "$args"
+want_not_in "no setting source is dropped, so project skills and agents stay" '^--setting-sources$' "$args"
+DRIVER_PROJECT_INSTRUCTIONS=preload DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+args="$(cat "$FIX/claude-args-plan.txt")"
+want_not_in "preload restores the old behaviour" 'claudeMdExcludes' "$args"
+rm -f "$wt/CLAUDE.md" "$wt/AGENTS.md"
 
 exit "$FAILED"

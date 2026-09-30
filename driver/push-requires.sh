@@ -28,6 +28,12 @@
 #       "record": "<a command that reads that output on stdin and writes the trailer>"
 #   } } }
 #
+# In place of `review`, a row may name an `agent` ("agent-harness:frontend-gate"):
+# the driver then runs that reviewer itself — one `claude -p --agent`, the lean flags
+# every step carries, the diff and renders on stdin, its spend under
+# usage["attest-<name>"] — and hands its answer to `record` exactly as a `review`
+# command's output would be (#11172).
+#
 # `{{SHA}}` and `{{BASE}}` are substituted in `owed` and `record` — the commit the
 # reviewer looked at, and the trunk the diff is taken against. A bare string in
 # place of the object is the `owed` command alone, which is the shape that shipped
@@ -50,6 +56,8 @@
 # a branch that cannot be pushed and call it a hand-off.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
+# driver_record_usage: an agent-form reviewer is a model call, and its spend is recorded like one.
+type driver_record_usage >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ai-step.sh" || exit 1
 
 # _driver_owed <ticket> <name> <owed-cmd> <tree> <trunk> — the project's own "is
 # this reviewer owed" check, bounded, its output kept in the run record and in
@@ -65,6 +73,40 @@ _driver_owed() {
     driver_say "✋ push-requires: this project's check for whether '$name' is owed did not return within ${DRIVER_CMD_TIMEOUT}s."
     driver_state_set "$t" park_note "this project's '$name' owed check did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
   fi
+  return "$rc"
+}
+
+# _driver_attest_agent <ticket> <name> <agent> <tree> <trunk> <out> — run a named
+# reviewer agent directly on this change, with the lean flags every step carries, and
+# leave its final answer — verbatim, nothing added — in <out> for the project's
+# recorder. Its spend is recorded under usage["attest-<name>"] and counted in .spend.
+# Returns claude's exit code, or 124 on a hang.
+_driver_attest_agent() {
+  local t="$1" name="$2" agent="$3" wt="$4" trunk="$5" out="$6" d slot prompt log rc=0 diff renders
+  d="$(driver_state_dir "$t")/steps"; slot="attest-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-')"
+  prompt="$d/$slot.prompt"; log="$d/$slot.log"
+  local cap full
+  cap=$(driver_opt review.diffBytes 400000)
+  case "$cap" in ''|*[!0-9]*|0) driver_say "⚠ push-requires: harness.json's review.diffBytes is '${cap}', which is not a number of bytes, so the default 400000 is used."; cap=400000 ;; esac
+  full=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  diff=$(printf '%s' "$full" | head -c "$cap")
+  # A CUT DIFF IS SAID. A reviewer handed part of a change reviews what it can see.
+  [ "$(printf '%s' "$full" | wc -c)" -gt "$cap" ] && diff="$diff
+(diff cut at $cap bytes — run \`git diff $trunk...HEAD\` in this tree for the rest)"
+  renders=$(driver_state_get "$t" renders)
+  {
+    printf 'You are the %s reviewer for ticket #%s. Review this change in the worktree you are in (the diff is against %s).\n\n' "$name" "$t" "$trunk"
+    printf 'Your whole answer is handed, verbatim, to this project'"'"'s recorder. Lead with exactly one line, `VERDICT: SHIP` or `VERDICT: SPIT-BACK`, then your findings, each graded Critical, Major, Minor or Nit with a file and line.\n\n'
+    printf '## Renders of the screens it touches\n\n%s\n\n' "${renders:-(none were taken)}"
+    printf '## The diff\n\n```diff\n%s\n```\n' "$diff"
+  } > "$prompt"
+  driver_lean_args "$wt" "attest"
+  ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:$slot" && \
+    driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$prompt" "$DRIVER_CLAUDE" -p --output-format stream-json --verbose \
+      --name "$slot" --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt" \
+  ) > "$log" 2>"$log.err" || rc=$?
+  driver_record_usage "$t" "$slot" "$log" "$prompt"
+  jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$log" > "$out" 2>/dev/null
   return "$rc"
 }
 
@@ -109,11 +151,19 @@ driver_push_requires() { # <ticket>
   # see: named, never dropped in silence.
   half=$(jq -r '(.review.attest // {}) | to_entries[]
                 | select((.value | type) == "object")
-                | select((((.value.review // "") == "") != (((.value.record // "") == ""))))
+                | select(((((.value.review // "") + (.value.agent // "")) == "") != (((.value.record // "") == ""))))
                 | .key' "$HARNESS_CFG" 2>/dev/null)
+  # BOTH A COMMAND AND AN AGENT is two reviewers for one verdict, and only one could run.
+  local both; both=$(jq -r '(.review.attest // {}) | to_entries[] | select((.value | type) == "object")
+                 | select(((.value.review // "") != "") and ((.value.agent // "") != "")) | .key' "$HARNESS_CFG" 2>/dev/null)
+  if [ -n "$both" ]; then
+    driver_say "✋ push-requires: review.attest row(s) $(printf '%s\n' "$both" | tr '\n' ' ')name both a review command and an agent. Name one: the driver will not pick for you."
+    driver_state_set "$t" park_note "harness.json's review.attest names both review and agent for: $(printf '%s\n' "$both" | tr '\n' ' ')"
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ -n "$half" ]; then
-    driver_say "✋ push-requires: review.attest row(s) $(printf '%s' "$half" | tr '\n' ' ')name one of review/record and not the other, so that reviewer can be run and not recorded, or recorded and never run."
-    driver_state_set "$t" park_note "harness.json's review.attest names one of review/record and not the other for: $(printf '%s' "$half" | tr '\n' ' ')"
+    driver_say "✋ push-requires: review.attest row(s) $(printf '%s\n' "$half" | tr '\n' ' ')name one of review/agent and record and not the other, so that reviewer can be run and not recorded, or recorded and never run."
+    driver_state_set "$t" park_note "harness.json's review.attest names one of review/agent and record and not the other for: $(printf '%s\n' "$half" | tr '\n' ' ')"
     return "$DRIVER_E_REFUSED"
   fi
 
@@ -130,12 +180,21 @@ driver_push_requires() { # <ticket>
   local rows owed orc
   rows=$(jq -r '(.review.attest // {}) | to_entries[]
                 | (if (.value | type) == "string" then {owed: .value} else .value end) as $v
-                | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // "")] | @tsv' "$HARNESS_CFG" 2>/dev/null)
+                | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // ""), ($v.agent // "")] | join("\u001f")' "$HARNESS_CFG" 2>/dev/null)
   [ -n "$rows" ] || return 0
 
-  while IFS=$'\t' read -r name owed review record; do
+  # A UNIT SEPARATOR, NOT A TAB. Tab is whitespace to `read`, so an empty field
+  # between two tabs collapses and every later field shifts left: a row with no
+  # `review` read its recorder as the reviewer and ran it (#11172).
+  while IFS=$'\x1f' read -r name owed review record agent; do
     [ -n "$name" ] || continue
-    [ -n "$owed$review" ] || continue
+    [ -n "$owed$review$agent" ] || continue
+    # AN AGENT IS A REVIEWER THE DRIVER RUNS ITSELF. `review` is a command the project
+    # wrote; `agent` names the reviewer, and the driver runs it directly — one session,
+    # the same lean flags as every step, its spend on the record (#11172). The command
+    # form ran `claude -p /agent-harness:ui-gate`, a whole session whose job was to
+    # start the frontend-gate agent: two fixed loads for one review, the first unseen.
+    [ -n "$agent" ] && review="agent:$agent"
 
     if [ -n "$owed" ]; then
       orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
@@ -161,7 +220,11 @@ driver_push_requires() { # <ticket>
     # so without this the kit's sign-off Stop hook fires on it and its whole answer
     # comes back as the banner: no VERDICT line, and a test-only ticket parked here
     # after passing every other step (trial 3, 2026-09-30).
-    ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:attest-$name" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$review" ) > "$out" 2>&1; rc=$?
+    if [ -n "$agent" ]; then
+      rc=0; _driver_attest_agent "$t" "$name" "$agent" "$wt" "$trunk" "$out" || rc=$?
+    else
+      ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:attest-$name" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$review" ) > "$out" 2>&1; rc=$?
+    fi
     if [ "$rc" -eq 124 ]; then
       driver_say "✋ push-requires: the '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s."
       driver_state_set "$t" park_note "this project's '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s: $review"
@@ -246,7 +309,7 @@ driver_push_requires_unpayable() { # <ticket>
   rows=$(jq -r '(.review // {}) | if type == "object" then (.attest // {}) else {} end
                 | if type == "object" then to_entries[] else empty end
                 | (if (.value | type) == "string" then {owed: .value} elif (.value | type) == "object" then .value else {} end) as $v
-                | select(($v.owed // "") != "" and ($v.review // "") == "" and ($v.record // "") == "")
+                | select(($v.owed // "") != "" and ($v.review // "") == "" and ($v.agent // "") == "" and ($v.record // "") == "")
                 | [.key, $v.owed] | @tsv' "$HARNESS_CFG" 2>/dev/null)
   while IFS=$'\t' read -r name owed; do
     [ -n "$name" ] || continue

@@ -665,6 +665,54 @@ rc=0; out=$(driver_step_review 414 2>&1) || rc=$?
 want "the review step refuses" "24" "$rc"
 want "and no model was started" "" "$(cat "$CLAUDE_LOG")"
 
+echo "--- T2-2 · a reviewer named as an agent is run directly, lean, and paid for (#11172) ---"
+# The command form ran `claude -p /agent-harness:ui-gate`: a whole session whose job
+# was to start the frontend-gate agent — two fixed loads for one review, and the
+# first one's spend nowhere on the record.
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: a change the agent has not reviewed"
+cat > "$FIX/recorder" <<'SH'
+#!/usr/bin/env sh
+grep -q '^VERDICT: SHIP' || { echo "no VERDICT line" >&2; exit 1; }
+git commit --allow-empty --no-verify -q -m "chore: gate" -m "Gate: SHIP (agent)"; echo recorded
+SH
+chmod +x "$FIX/recorder"
+jq -nc '{type:"assistant", message:{content:[{type:"text", text:"reviewing"}],
+          usage:{input_tokens:100, cache_read_input_tokens:20000, cache_creation_input_tokens:0}}}' > "$FIX/ai/attest-ui-gate.jsonl"
+jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP\nno dead controls", total_cost_usd:0.4, num_turns:3}' >> "$FIX/ai/attest-ui-gate.jsonl"
+jq --arg w "$FIX/recorder" --arg o "$FIX/owed" \
+   '.review = {"attest":{"ui-gate":{"owed":$o,"agent":"agent-harness:frontend-gate","record":$w}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hg.json" && mv "$FIX/hg.json" "$REPO/.claude/harness.json"
+SPENT=$(jq -r '.spend // 0' "$(driver_state_dir 410)/state.json")
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "the agent's verdict is recorded" "0" "$rc"
+args="$(cat "$FIX/claude-args-attest-ui-gate.txt")"
+want_in "the agent is run directly"           '^--agent$'                     "$args"
+want_in "by name"                             '^agent-harness:frontend-gate$' "$args"
+want_in "with the lean tool list"             '^--tools$'                     "$args"
+want_not_in "read-only: a reviewer does not edit" '^Edit$'                       "$args"
+want_not_in "not through a wrapper skill"     'ui-gate$'                      "$(grep -x '/agent-harness:ui-gate' "$FIX/claude-args-attest-ui-gate.txt")"
+want_in "it was given the diff"               '```diff'                       "$(cat "$FIX/claude-stdin-attest-ui-gate.txt")"
+want_in "and asked to lead with a verdict"    'VERDICT: SHIP'                 "$(cat "$FIX/claude-stdin-attest-ui-gate.txt")"
+want "the recorder read the agent's answer, verbatim" "VERDICT: SHIP
+no dead controls" "$(cat "$(driver_state_dir 410)/steps/verdict-ui-gate.txt")"
+want "its spend is on the record"            "0.4"  "$(jq -r '.usage["attest-ui-gate"][0].cost' "$(driver_state_dir 410)/state.json")"
+want "and counted in the run's spend"        "yes"  "$(jq -r --argjson b "$SPENT" 'if (.spend - $b) > 0.39 then "yes" else "no" end' "$(driver_state_dir 410)/state.json")"
+want_in "as a driver step, so the Stop hooks stand down" "410:attest-ui-gate" "$(grep '^attest-ui-gate' "$FIX/claude-env.log" | tail -1)"
+rc=0; driver_push_requires_unpayable 410 >/dev/null 2>&1 || rc=$?
+want "an agent row is not an owed-only row" "0" "$rc"
+jq '.review.attest["ui-gate"] = {"agent":"agent-harness:frontend-gate"}' \
+   "$REPO/.claude/harness.json" > "$FIX/hg.json" && mv "$FIX/hg.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "an agent with no recorder is half a row and refuses" "24" "$rc"
+want_in "naming it as half a row" "ui-gate name one of review/agent and record" "$out"
+jq --arg w "$FIX/recorder" '.review.attest["ui-gate"] = {"review":"true","agent":"agent-harness:frontend-gate","record":$w}' \
+   "$REPO/.claude/harness.json" > "$FIX/hg.json" && mv "$FIX/hg.json" "$REPO/.claude/harness.json"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "a row naming both a command and an agent refuses" "24" "$rc"
+want_in "saying so" "both a review command and an agent" "$out"
+want "and runs neither" "" "$(cat "$CLAUDE_LOG")"
+
 echo "--- T2-2 · one row per reviewer, shared with the interactive finish ---"
 # `/agent-harness:finish` reads the same rows for a different question, so a second
 # key naming the same reviewers would be two places for them to disagree about
