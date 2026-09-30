@@ -403,6 +403,66 @@ want_in "and named by its position"              'entry 2' "$out"
 jq 'del(.worktree)' "$REPO/.claude/harness.json" > "$FIX/he.json"
 mv "$FIX/he.json" "$REPO/.claude/harness.json"
 want "and no prepare at all is still normal" "0" "$(driver_prepare_worktree "$FIX" >/dev/null 2>&1; echo $?)"
+echo "--- a test-only task is proved by breaking the code it covers ---"
+# The code already exists, so the red/green proof can only say "passes without the
+# change". The break is the proof: red with the code broken, green with it restored.
+git -C "$REPO" checkout -q -- . 2>/dev/null
+printf 'price=100\n' > "$REPO/price.txt"
+printf '#!/usr/bin/env bash\ngrep -q price=100 price.txt\n' > "$REPO/price.test.sh"
+printf '#!/usr/bin/env bash\ntest -f price.txt\n' > "$REPO/loose.test.sh"
+git -C "$REPO" add price.txt price.test.sh loose.test.sh; git -C "$REPO" commit -qm "test: price"
+P_SHA=$(git -C "$REPO" rev-parse HEAD)
+out=$(driver_prove_by_break "$REPO" price.test.sh "$P_SHA" price.txt "price=100" "price=0" "bash price.test.sh" 2>&1); rc=$?
+want "red when broken, green when restored" "0" "$rc"
+want_in "and it says so"                    'red .*broken, then green' "$out"
+want "the ticket's own tree is untouched"   "price=100" "$(cat "$REPO/price.txt")"
+
+echo "--- a test that stays green with the code broken does not cover it ---"
+out=$(driver_prove_by_break "$REPO" loose.test.sh "$P_SHA" price.txt "price=100" "price=0" "bash loose.test.sh" 2>&1); rc=$?
+want "it is refused"         "1" "$rc"
+want_in "and the reason"     'still passes with price.txt broken' "$out"
+
+echo "--- a break planted in the test itself proves nothing ---"
+out=$(driver_prove_by_break "$REPO" price.test.sh "$P_SHA" price.test.sh "grep" "false" "bash price.test.sh" 2>&1); rc=$?
+want "it cannot be checked"  "3" "$rc"
+want_in "and says why"       'test file' "$out"
+
+echo "--- a break whose text is not in the file broke nothing ---"
+out=$(driver_prove_by_break "$REPO" price.test.sh "$P_SHA" price.txt "price=999" "price=0" "bash price.test.sh" 2>&1); rc=$?
+want "it cannot be checked"  "3" "$rc"
+want_in "and says so"        'not in price.txt' "$out"
+
+echo "--- a test that fails with the code intact is not done ---"
+printf '#!/usr/bin/env bash\ngrep -q price=5 price.txt\n' > "$REPO/wrong.test.sh"
+git -C "$REPO" add wrong.test.sh; git -C "$REPO" commit -qm "test: wrong"
+W_SHA=$(git -C "$REPO" rev-parse HEAD)
+out=$(driver_prove_by_break "$REPO" wrong.test.sh "$W_SHA" price.txt "price=100" "price=0" "bash wrong.test.sh" 2>&1); rc=$?
+want "it is refused"         "2" "$rc"
+want_in "and the reason"     'fails with the code intact' "$out"
+
+echo "--- the build step accepts a test-only answer proved by its break ---"
+driver_state_init 131 --worktree "$REPO" --repo "$REPO"
+fix_plan 131 1
+fix_ai build "$(jq -nc --arg t "$P_SHA" '{step:"build", skills:["superpowers:subagent-driven-development"], status:"built", task:"task 1",
+  testOnly:{test:{file:"price.test.sh", behaviour:"the price is 100"}, command:"bash price.test.sh", testCommit:$t,
+            break:{file:"price.txt", find:"price=100", replace:"price=0"}},
+  changed:[{path:"price.test.sh", action:"create"}], changelog:{skipped:"a test-only change"}}')" \
+  superpowers:subagent-driven-development
+out=$(DRIVER_TICKET=131 driver_step_build 131 2>&1); rc=$?
+want "the step finishes"            "0" "$rc"
+want_in "naming the planted break"  'price.txt broken' "$out"
+
+echo "--- and sends back a test-only answer whose break is not covered ---"
+driver_state_init 132 --worktree "$REPO" --repo "$REPO"
+fix_plan 132 1
+fix_ai build "$(jq -nc --arg t "$P_SHA" '{step:"build", skills:["superpowers:subagent-driven-development"], status:"built", task:"task 1",
+  testOnly:{test:{file:"loose.test.sh", behaviour:"the file exists"}, command:"bash loose.test.sh", testCommit:$t,
+            break:{file:"price.txt", find:"price=100", replace:"price=0"}},
+  changed:[{path:"loose.test.sh", action:"create"}], changelog:{skipped:"a test-only change"}}')" \
+  superpowers:subagent-driven-development
+rc=0; DRIVER_TICKET=132 driver_step_build 132 >/dev/null 2>&1 || rc=$?
+want "it asks for rework"  "30" "$rc"
+
 # The config is left as the fixture wrote it. Four cases above mutate it, and a suite
 # whose end state is not its start state is an ordering dependency nothing states.
 git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true

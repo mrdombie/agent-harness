@@ -1,0 +1,31 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:subagent-driven-development",
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "A failed read is its own outcome, not an empty one",
+  "testOnly": {
+    "test": {
+      "file": "src/lib/format.test.ts",
+      "behaviour": "formatPrice renders pence as pounds"
+    },
+    "command": "npx vitest run src/lib/format.test.ts",
+    "testCommit": "a1b2c3d4",
+    "break": {
+      "file": "src/lib/format.ts",
+      "find": "pence / 100",
+      "replace": "pence"
+    }
+  },
+  "changed": [
+    {
+      "path": "src/lib/format.test.ts",
+      "action": "create"
+    }
+  ],
+  "changelog": {
+    "skipped": "a test-only change"
+  }
+}

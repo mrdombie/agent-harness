@@ -156,9 +156,91 @@ driver_prove_red_green() {
   return 0
 }
 
+
+# driver_prove_by_break <repo> <test-file> <test-commit> <break-file> <find> <replace> <command>
+#
+# THE PROOF FOR A TASK WHOSE DELIVERABLE IS THE TEST. The code it covers already
+# exists, so there is no tree without the change to be red at — the red/green proof
+# above can only ever say "passes without the change" about it, and the 2026-09-30
+# trial parked a test-only ticket for exactly that. Here the break is planted
+# instead: the production code the test covers is broken in a throwaway tree, the
+# test must FAIL, the break is removed, and the test must PASS. That is "plant the
+# death, not the typo" run by the driver rather than asked of the model.
+#
+# The break is a literal find/replace, not a patch: a model's hand-written diff
+# hunks are the usual reason `git apply` says no, and a refusal the model cannot
+# fix is a rework loop about formatting.
+#
+# 0 red with the break, green without · 1 green with the break — the test does not
+# cover that code · 2 red without the break · 3 the answer cannot be checked ·
+# 4 out of time · 5 the tree could not be prepared
+driver_prove_by_break() {
+  local repo="$1" tfile="$2" tsha="$3" bfile="$4" find="$5" repl="$6" cmd="$7"
+  local tmp n rc_red rc_green red_out green_out
+
+  git -C "$repo" cat-file -e "$tsha:$tfile" 2>/dev/null || {
+    printf 'no %s in %s — the commit named as adding the test does not contain it\n' "$tfile" "$tsha"; return 3; }
+  # THE BREAK IS IN THE CODE, NEVER IN THE TEST. Breaking the test itself proves the
+  # test can be made to fail, which any test can.
+  if [ "$bfile" = "$tfile" ]; then
+    printf 'the break is planted in the test file %s itself — it has to break the code the test covers\n' "$tfile"; return 3
+  fi
+  git -C "$repo" cat-file -e "$tsha:$bfile" 2>/dev/null || {
+    printf 'no %s in %s — the break names a file that is not there\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"; return 3; }
+  if [ -z "$find" ] || [ "$find" = "$repl" ]; then
+    printf 'the break changes nothing in %s — find is empty or equal to replace\n' "$bfile"; return 3
+  fi
+
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-break-XXXXXX")
+  git -C "$repo" worktree add -q --detach "$tmp/tree" "$tsha" 2>/dev/null || {
+    rm -rf "$tmp"; printf 'could not check out %s\n' "$tsha"; return 3; }
+  _driver_break_done() { git -C "$repo" worktree remove --force "$tmp/tree" >/dev/null 2>&1; rm -rf "$tmp"; }
+  if ! _driver_proof_install "$repo" "$tmp/tree"; then
+    _driver_break_done
+    printf 'the tree for the planted break could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    return 5
+  fi
+  cp "$tmp/tree/$bfile" "$tmp/original"
+  # Literal on both sides: no regex, no interpolation. The count is the assertion that
+  # the substitution landed — a replace that matched nothing still "succeeds".
+  n=$(BREAK_FIND="$find" BREAK_REPL="$repl" perl -0777 -i -pe \
+        'BEGIN{$f=$ENV{BREAK_FIND};$r=$ENV{BREAK_REPL};$c=0} $c += s/\Q$f\E/$r/g; END{print STDERR $c}' \
+        "$tmp/tree/$bfile" 2>&1 >/dev/null)
+  if [ "${n:-0}" -eq 0 ] 2>/dev/null || ! [ "${n:-0}" -ge 0 ] 2>/dev/null; then
+    _driver_break_done
+    printf 'the break text is not in %s at %s — nothing was broken, so nothing would be measured\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
+    return 3
+  fi
+  ( cd "$tmp/tree" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
+  rc_red=$?
+  cp "$tmp/original" "$tmp/tree/$bfile"
+  ( cd "$tmp/tree" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
+  rc_green=$?
+  red_out=$(head -5 "$tmp/red.out" 2>/dev/null | tr '\n' ' ')
+  green_out=$(head -5 "$tmp/green.out" 2>/dev/null | tr '\n' ' ')
+  _driver_break_done
+
+  if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
+    printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
+      "$tfile" "$DRIVER_CMD_TIMEOUT"
+    return 4
+  fi
+  if [ "$rc_red" -eq 0 ]; then
+    printf '%s still passes with %s broken — it does not test that code. (%s)\n' "$tfile" "$bfile" "$red_out"
+    return 1
+  fi
+  if [ "$rc_green" -ne 0 ]; then
+    printf '%s fails with the code intact (exit %s): %s\n' "$tfile" "$rc_green" "$green_out"
+    return 2
+  fi
+  printf '%s: red (exit %s) with %s broken, then green with it restored, at %s\n' \
+    "$tfile" "$rc_red" "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
+  return 0
+}
+
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
-  local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha why prc
+  local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
   local want_task got_task pair seen_pairs=""
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
@@ -233,6 +315,28 @@ driver_step_build() { # <ticket>
       fi
       driver_say "   build: the answer calls this task '$got_task'; the plan calls it '$want_task'"
     fi
+    # A TASK WHOSE DELIVERABLE IS THE TEST is proved by a planted break, because the
+    # code it covers is already there and nothing can be red before it. Dom's rule,
+    # 2026-09-30: break the production code, show red, restore, show green.
+    if jq -e '.testOnly | type == "object"' "$ans" >/dev/null 2>&1; then
+      tfile=$(jq -r '.testOnly.test.file // ""' "$ans")
+      tcmd=$(jq -r  '.testOnly.command // ""'   "$ans")
+      tsha=$(jq -r  '.testOnly.testCommit // ""' "$ans")
+      bfile=$(jq -r '.testOnly.break.file // ""' "$ans")
+      if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$bfile" ]; then
+        driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' is test-only and names no break to prove it (testOnly needs test.file, command, testCommit and break)."
+        bad=1; continue
+      fi
+      pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile"
+      case " $seen_pairs " in
+        *" $pair "*)
+          driver_say "✋ build '$got_task' is proved by the same test commit and break as an earlier task. One proof cannot be two tasks."
+          bad=1; continue ;;
+      esac
+      seen_pairs="$seen_pairs $pair"
+      why=""; prc=0
+      why=$(driver_prove_by_break "$repo" "$tfile" "$tsha" "$bfile" "$(jq -r '.testOnly.break.find' "$ans")" "$(jq -r '.testOnly.break.replace' "$ans")" "$tcmd") || prc=$?
+    else
     tfile=$(jq -r '.testFirst.test.file // ""' "$ans")
     tcmd=$(jq -r  '.testFirst.command // ""'   "$ans")
     tsha=$(jq -r  '.testFirst.testCommit // ""' "$ans")
@@ -256,6 +360,7 @@ driver_step_build() { # <ticket>
     seen_pairs="$seen_pairs $pair"
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
+    fi
     if [ "$prc" -eq 0 ]; then
       driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
     elif [ "$prc" -eq 5 ]; then
