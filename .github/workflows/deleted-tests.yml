@@ -1,0 +1,90 @@
+# Deleted tests — a pull request that deletes a test, or deletes it(/test( cases
+# from one, says in its body what took their place. The check itself is
+# scripts/check-deleted-tests.sh; this is the CI seat for it, so it holds on
+# every pull request whether or not anybody ran a skill.
+#
+# A consuming repo calls it from a workflow of its own:
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, edited]   # edited: a body fix re-runs it
+#   jobs:
+#     deleted-tests:
+#       uses: <owner>/agent-harness/.github/workflows/deleted-tests.yml@main
+#       with:
+#         harness-repo: <owner>/agent-harness
+#       secrets:
+#         harness-token: ${{ secrets.HARNESS_TOKEN }}   # only while the kit repo is private
+#
+# and names the check "Deleted tests are accounted for" under gates.requiredChecks
+# and in branch protection. Test-file patterns come from the consuming repo's
+# .claude/harness.json (tests.patterns); `patterns` below overrides them.
+name: Deleted tests
+on:
+  workflow_call:
+    inputs:
+      harness-repo:
+        description: owner/name of the agent-harness repo to take the check from
+        type: string
+        required: true
+      harness-ref:
+        description: the ref of it to take the check from
+        type: string
+        default: main
+      patterns:
+        description: space-separated test-file globs; overrides tests.patterns in harness.json
+        type: string
+        default: ''
+      runs-on:
+        description: JSON for runs-on — a label string or a list of labels
+        type: string
+        default: '"ubuntu-latest"'
+    secrets:
+      harness-token:
+        description: a token that can read harness-repo, when it is private and not this repo
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  deleted-tests:
+    name: Deleted tests are accounted for
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      - name: Only a pull request has a body to account in
+        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        run: echo "not a pull request (${{ github.event_name }}) — nothing to account for"
+      # The pull request's MERGE commit, two parents deep: HEAD^1 is the base as it
+      # will be merged into, so HEAD^1..HEAD (two dots) is exactly what merging adds
+      # and removes — no trunk-only file can read as deleted.
+      - name: Check out the pull request's merge commit
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          path: repo
+      - name: Check out the check
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.harness-repo }}
+          ref: ${{ inputs.harness-ref }}
+          token: ${{ secrets.harness-token || github.token }}
+          path: kit
+          sparse-checkout: scripts
+      - name: Every deleted test is accounted for
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HARNESS_TEST_PATTERNS: ${{ inputs.patterns }}
+        run: |
+          # The body is read fresh, not from the event: a re-run of an old job
+          # carries the body as it was when the job was first triggered.
+          gh api "repos/$REPO/pulls/$PR" --jq .body > "$RUNNER_TEMP/body.md"
+          [ -n "$HARNESS_TEST_PATTERNS" ] || unset HARNESS_TEST_PATTERNS
+          bash kit/scripts/check-deleted-tests.sh --repo repo \
+            --base HEAD^1 --head HEAD --body-file "$RUNNER_TEMP/body.md"

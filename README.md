@@ -120,6 +120,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
+- `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
 
@@ -138,6 +139,7 @@ hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
+           check-deleted-tests.sh (a deleted test is accounted for — see below)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
            the thinking · facts.sh fills the briefs' placeholders and refuses when
            one has no value · prompt-schema.jq derives the shape the model is
@@ -177,6 +179,40 @@ The kit's own scripts live here and are addressed from the plugin root. A few re
 ## Adding a skill
 
 Every new skill, command, agent or hook starts **here**, not in a personal `~/.claude` folder: `skills/<name>/SKILL.md`, project facts read from `.claude/harness.json` (refusing by key name when one is missing), a test beside any script, a version bump, a PR. Then update the plugin on each machine. Something only one project needs goes in that project's `.claude/skills/` instead. A skill that exists only in one person's `~/.claude` is one machine away from being lost.
+
+## A deleted test says what replaced it
+
+A pull request that deletes a test file, or deletes `it(` / `test(` cases from
+one, fails until its body accounts for each file:
+
+```markdown
+## Deleted tests
+- `src/desk.test.ts` → covered by `src/desk/one-desk.test.ts`
+- `src/export.test.ts` → removed on purpose: CSV export was retired
+```
+
+"covered by" must name a test file that exists at head with a live case;
+"removed on purpose" must give a reason. A file git sees as **renamed** is not a
+deletion, but its cases are compared across the rename, and a case turned into
+`it.skip` counts as lost. The diff is two dots, base..head, read from the two
+commits — never the working tree — and anything the trunk added after the branch
+was cut is excluded. Written after a rebuild on the origin project deleted eleven
+test files in one merge: one pinned a behaviour the new screen dropped, nothing
+went red, and a real user was blocked for a week.
+
+It runs in three places, so skipping a skill does not skip it:
+
+- **CI** — `.github/workflows/deleted-tests.yml` is a reusable workflow. The
+  consuming repo calls it on `pull_request` (with `edited` in the types, so fixing
+  the body re-runs it) and makes `Deleted tests are accounted for` a required
+  check. It reads the pull request's merge commit, so `HEAD^1..HEAD` is exactly
+  what merging changes. While this repo is private the caller passes a token that
+  can read it as `harness-token`, and the repo's Actions access setting must allow
+  the caller's workflows. The kit runs it on itself through
+  `kit-deleted-tests.yml`, with `*.test.sh` as its pattern.
+- **`/agent-harness:finish`** — Step 5.6, before the merge.
+- **The driver's ship step** — its body carries no such section, so a branch that
+  deletes a test stays a draft and parks with the files named.
 
 ## Building one ticket
 

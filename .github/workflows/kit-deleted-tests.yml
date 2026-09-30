@@ -1,0 +1,13 @@
+# The kit holds itself to its own deleted-tests check. Its suites are *.test.sh,
+# so it names that pattern here rather than in a harness.json it does not have.
+name: Kit deleted tests
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+jobs:
+  deleted-tests:
+    uses: ./.github/workflows/deleted-tests.yml
+    with:
+      harness-repo: ${{ github.repository }}
+      harness-ref: ${{ github.event.pull_request.head.sha }}
+      patterns: '*.test.sh'
