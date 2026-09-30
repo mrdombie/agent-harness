@@ -76,10 +76,10 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
         driver_say "   park: committed as $ctype(#$t), staging $staged"
       fi
     fi
-    if git -C "$wt" push -q -u origin "$branch" >/dev/null 2>&1; then
+    if driver_push "$t" "$wt" "$branch" park; then
       pushed=1
     else
-      driver_say "   park: the branch could not be pushed — say so rather than reporting a handover that does not exist"
+      driver_say "   park: the branch could not be pushed — say so rather than reporting a handover that does not exist: $DRIVER_PUSH_WHY"
       # AND THEN MAKE IT DURABLE ANYWAY. A push is what a park normally hands over
       # with, and a project's own pre-push can refuse one — on 2026-09-28 the UI
       # attestation gate did, and 9 commits stayed inside a worktree under
@@ -114,7 +114,7 @@ $(if [ "$cause" = "person" ]; then
       "${question:-see the step output on the run log}"
   fi)
 
-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt.")}
+${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
 ${bundle_note:+💾 $bundle_note}

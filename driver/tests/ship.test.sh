@@ -253,4 +253,28 @@ want_not_in "but never marked ready"       'pr ready' "$(cat "$GH_LOG")"
 want_not_in "and auto is never armed"      'pr merge' "$(cat "$GH_LOG")"
 want_in "the file is on the park note"     'pinned.test.ts' "$(driver_state_get 112 park_note)"
 
+echo "--- a refused push keeps what the pre-push said (#11163) ---"
+# Trial 3: ship said "read its own output" and that output was nowhere; the failing
+# check had to be found by re-running the push by hand.
+setup_wt 113
+driver_state_put 113 review '{"verdict":"SHIP","findings":[]}'
+for st in start plan build self-check review record; do driver_state_done 113 "$st"; done
+mkdir -p "$FIX/hooks113"
+cat > "$FIX/hooks113/pre-push" <<'SH'
+#!/usr/bin/env sh
+echo "→ Pre-push: checking UI changes carry a design-critic verdict…"
+echo "✗ check:design-critic-attested — this diff touches UI with no matching design verdict."
+exit 1
+SH
+chmod +x "$FIX/hooks113/pre-push"
+git -C "$FIX/wt113" config core.hooksPath "$FIX/hooks113"
+: > "$GH_LOG"
+out=$(driver_step_ship 113 2>&1); rc=$?
+want "the push is refused" "24" "$rc"
+want_in "the log names the check that said no" 'check:design-critic-attested' "$out"
+want_in "the whole output is kept" 'Pre-push: checking UI changes' \
+  "$(cat "$(driver_state_dir 113)/steps/ship-push.out" 2>/dev/null)"
+want_in "and the park note carries it" 'check:design-critic-attested' "$(driver_state_get 113 park_note)"
+want_not_in "and nothing was opened" 'pr create' "$(cat "$GH_LOG")"
+
 exit $FAILED

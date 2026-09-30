@@ -28,10 +28,13 @@
 #       "record": "<a command that reads that output on stdin and writes the trailer>"
 #   } } }
 #
-# `{{SHA}}` and `{{BASE}}` are substituted in `record` — the commit the reviewer
-# looked at, and the trunk the diff is taken against. A bare string in place of the
-# object is the `owed` command alone, which is the shape that shipped first; such a
-# row is advisory here and enforced by finish.
+# `{{SHA}}` and `{{BASE}}` are substituted in `owed` and `record` — the commit the
+# reviewer looked at, and the trunk the diff is taken against. A bare string in
+# place of the object is the `owed` command alone, which is the shape that shipped
+# first. `owed` is asked FIRST, per row: exit 0 means not owed on this diff (or
+# already attested) and the reviewer is not run; anything else means owed. An owed
+# row with no `review`/`record` is a refusal — the push would be — and
+# `driver_push_requires_unpayable` asks that before the review step spends anything.
 #
 # THE DRIVER NEVER WRITES A VERDICT. It runs the project's reviewer, keeps that
 # output verbatim, and hands it to the project's own recorder on stdin. The
@@ -48,9 +51,34 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
 
+# _driver_owed <ticket> <name> <owed-cmd> <tree> <trunk> — the project's own "is
+# this reviewer owed" check, bounded, its output kept in the run record and in
+# DRIVER_OWED_OUT. Returns its exit code: 0 not owed (or attested), 124 a hang,
+# anything else owed. `{{SHA}}` and `{{BASE}}` are filled as in `record`.
+_driver_owed() {
+  local t="$1" name="$2" owed="$3" wt="$4" trunk="$5" cmd f rc=0
+  f="$(driver_state_dir "$t")/steps/owed-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
+  cmd=$(printf '%s' "$owed" | sed -e "s|{{SHA}}|$(git -C "$wt" rev-parse HEAD 2>/dev/null)|g" -e "s|{{BASE}}|$trunk|g")
+  ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$f" 2>&1 || rc=$?
+  DRIVER_OWED_OUT="$f"
+  if [ "$rc" -eq 124 ]; then
+    driver_say "✋ push-requires: this project's check for whether '$name' is owed did not return within ${DRIVER_CMD_TIMEOUT}s."
+    driver_state_set "$t" park_note "this project's '$name' owed check did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
+  fi
+  return "$rc"
+}
+
+# _driver_first_line <file> — the first line that says something: a ✗/✓ line when
+# there is one, else the first non-blank line, cut to fit a park note.
+_driver_first_line() {
+  local l; l=$(grep -m1 -E '✗|✓' "$1" 2>/dev/null)
+  [ -n "$l" ] || l=$(grep -m1 -v '^[[:space:]]*$' "$1" 2>/dev/null)
+  printf '%s' "${l:-(it printed nothing)}" | sed 's/^[[:space:]]*//' | cut -c1-300
+}
+
 driver_push_requires() { # <ticket>
   local t="${1:?driver_push_requires: need a ticket}"
-  local wt trunk r ptype names half name review record d out rc sha before after
+  local wt trunk r ptype half name review record d out rc sha before after
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   d="$(driver_state_dir "$t")/steps"; mkdir -p "$d"
 
@@ -77,12 +105,6 @@ driver_push_requires() { # <ticket>
           driver_state_set "$t" park_note "harness.json says $ptype and the driver reads an object at review.attest of reviewer name to { owed, review, record }"
           return "$DRIVER_E_REFUSED" ;;
   esac
-  # Only the rows that name BOTH halves. A row carrying `owed` alone is the shape
-  # that shipped first: finish enforces it, and this walk has nothing to run for it.
-  names=$(jq -r '(.review.attest // {}) | to_entries[]
-                 | select((.value | type) == "object")
-                 | select(((.value.review // "") != "") and ((.value.record // "") != ""))
-                 | .key' "$HARNESS_CFG" 2>/dev/null)
   # A row that names ONE half is a requirement nobody can satisfy and nobody would
   # see: named, never dropped in silence.
   half=$(jq -r '(.review.attest // {}) | to_entries[]
@@ -94,15 +116,44 @@ driver_push_requires() { # <ticket>
     driver_state_set "$t" park_note "harness.json's review.attest names one of review/record and not the other for: $(printf '%s' "$half" | tr '\n' ' ')"
     return "$DRIVER_E_REFUSED"
   fi
-  [ -n "$names" ] || return 0
 
   trunk="origin/$INTEGRATION_BRANCH"
   git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
 
-  while IFS= read -r name; do
+  # EVERY ROW, AND THE PROJECT SAYS WHICH ARE OWED. The `owed` command is the
+  # project's own answer to "does this diff need this reviewer" — the same one
+  # finish asks and the pre-push enforces. Exit 0 is "not owed, or already
+  # attested"; anything else is owed. Running every reviewer regardless sent a
+  # test-only diff to ui-gate on trial 3 (2026-09-30), the reviewer rightly said
+  # there was no UI and gave no verdict, and a ticket the pre-push would have let
+  # through parked here. A row with no `owed` is run on every ticket, as before.
+  local rows owed orc
+  rows=$(jq -r '(.review.attest // {}) | to_entries[]
+                | (if (.value | type) == "string" then {owed: .value} else .value end) as $v
+                | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // "")] | @tsv' "$HARNESS_CFG" 2>/dev/null)
+  [ -n "$rows" ] || return 0
+
+  while IFS=$'\t' read -r name owed review record; do
     [ -n "$name" ] || continue
-    review=$(jq -r --arg k "$name" '.review.attest[$k].review // ""' "$HARNESS_CFG" 2>/dev/null)
-    record=$(jq -r --arg k "$name" '.review.attest[$k].record // ""' "$HARNESS_CFG" 2>/dev/null)
+    [ -n "$owed$review" ] || continue
+
+    if [ -n "$owed" ]; then
+      orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
+      case "$orc" in
+        0)  driver_say "   push-requires: '$name' is not owed on this diff — $(_driver_first_line "$DRIVER_OWED_OUT")"
+            continue ;;
+        124) return "$DRIVER_E_TIMEOUT" ;;
+      esac
+      # OWED, AND NOTHING HERE CAN PAY IT. A row carrying `owed` alone is the shape
+      # that shipped first: finish runs it with a person. Unattended, it was skipped
+      # in silence, and a screen ticket learned at the push — after review, after
+      # the spend — that it needed a verdict no step produces (#10955, trial 3).
+      if [ -z "$review" ]; then
+        driver_say "✋ push-requires: '$name' is owed on this diff and harness.json gives the driver no review/record to run for it — $(_driver_first_line "$DRIVER_OWED_OUT")"
+        driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict on this diff, and harness.json's review.attest.$name names no review/record the driver can run, so only a person can earn it: $(_driver_first_line "$DRIVER_OWED_OUT")"
+        return "$DRIVER_E_REFUSED"
+      fi
+    fi
 
     # The reviewer, in the ticket's worktree, with its output kept whole.
     out="$d/verdict-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
@@ -152,8 +203,23 @@ driver_push_requires() { # <ticket>
     else
       driver_say "   push-requires: '$name' recorded at $(printf '%s' "$after" | cut -c1-8) — $(tr '\n' ' ' < "$out.recorded" | cut -c1-200)"
     fi
+
+    # RECORDED IS NOT ATTESTED. The recorder exiting 0 says it wrote something; the
+    # project's own check is what the push will ask, so it is asked here too. A
+    # trailer at the wrong fingerprint, or on a commit the check does not read,
+    # records cleanly and is refused at the push after everything else is spent.
+    if [ -n "$owed" ]; then
+      orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
+      case "$orc" in
+        0)  : ;;
+        124) return "$DRIVER_E_TIMEOUT" ;;
+        *)  driver_say "✋ push-requires: '$name' was recorded and this project's own check still says it is owed — $(_driver_first_line "$DRIVER_OWED_OUT")"
+            driver_state_set "$t" park_note "the '$name' verdict was recorded, and this project's check ('$owed') still says it is owed: $(_driver_first_line "$DRIVER_OWED_OUT")"
+            return "$DRIVER_E_REFUSED" ;;
+      esac
+    fi
   done <<EON
-$names
+$rows
 EON
   # THE HEAD THESE VERDICTS DESCRIBE. A recorder binds a verdict to the commit it
   # reviewed, so a later commit — a park's own work-in-progress commit is the one
@@ -162,5 +228,38 @@ EON
   # runs the requirements again when they differ; without it a resumed run walks
   # straight to `ship`, the push is refused for ever, and nothing re-records.
   driver_state_set "$t" push_requires_at "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+  return "$DRIVER_OK"
+}
+
+# driver_push_requires_unpayable <ticket> — 0 unless a row the driver cannot run
+# (`owed` and no `review`/`record`) is owed on this diff. Cheap: it runs only those
+# rows' `owed` commands. The review step asks it before the model, because the full
+# requirement run comes after the review is paid for, and #10955 learned it needed
+# a design-critic verdict nobody could give only when its push was refused.
+driver_push_requires_unpayable() { # <ticket>
+  local t="${1:?driver_push_requires_unpayable: need a ticket}" wt trunk rows name owed orc
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  mkdir -p "$(driver_state_dir "$t")/steps"
+  trunk="origin/$INTEGRATION_BRANCH"
+  git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
+  rows=$(jq -r '(.review // {}) | if type == "object" then (.attest // {}) else {} end
+                | if type == "object" then to_entries[] else empty end
+                | (if (.value | type) == "string" then {owed: .value} elif (.value | type) == "object" then .value else {} end) as $v
+                | select(($v.owed // "") != "" and ($v.review // "") == "" and ($v.record // "") == "")
+                | [.key, $v.owed] | @tsv' "$HARNESS_CFG" 2>/dev/null)
+  while IFS=$'\t' read -r name owed; do
+    [ -n "$name" ] || continue
+    orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
+    case "$orc" in
+      0)   : ;;
+      124) return "$DRIVER_E_TIMEOUT" ;;
+      *)   driver_say "✋ push-requires: '$name' is owed on this diff and harness.json gives the driver no review/record to run for it — $(_driver_first_line "$DRIVER_OWED_OUT"). Stopping before the review is paid for."
+           driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict on this diff, and harness.json's review.attest.$name names no review/record the driver can run, so only a person can earn it: $(_driver_first_line "$DRIVER_OWED_OUT")"
+           return "$DRIVER_E_REFUSED" ;;
+    esac
+  done <<EON
+$rows
+EON
   return "$DRIVER_OK"
 }

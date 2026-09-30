@@ -205,6 +205,27 @@ driver_bounded() { # <seconds> <command>
 # red/green proof, and 127 in the second half reads as "the change does not do the
 # job" — so the ticket parks blaming a change that works.
 DRIVER_PREPARE_WHY=""
+# driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
+# project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
+# said "read its own output" and that output existed nowhere, so the one line that
+# named the failing check had to be got by re-running the push by hand (#10955,
+# trial 3). The whole output goes to steps/<slot>-push.out; DRIVER_PUSH_WHY is the
+# lines that say no (✗, error:, fatal:), joined, for the log and the park note.
+driver_push() {
+  local t="$1" wt="$2" branch="$3" slot="$4" f rc=0
+  f="$(driver_state_dir "$t")/steps/$slot-push.out"
+  mkdir -p "$(dirname "$f")"
+  git -C "$wt" push -u origin "$branch" > "$f" 2>&1 || rc=$?
+  DRIVER_PUSH_OUT="$f"
+  DRIVER_PUSH_WHY=""
+  if [ "$rc" -ne 0 ]; then
+    DRIVER_PUSH_WHY=$(grep -E '✗|^error:|^fatal:|^remote: error' "$f" 2>/dev/null | sed 's/^[[:space:]]*//' | head -5 | tr '\n' ' ' | cut -c1-400)
+    [ -n "$DRIVER_PUSH_WHY" ] || DRIVER_PUSH_WHY=$(grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -3 | tr '\n' ' ' | cut -c1-400)
+    [ -n "$DRIVER_PUSH_WHY" ] || DRIVER_PUSH_WHY="the push exited $rc and printed nothing"
+  fi
+  return "$rc"
+}
+
 driver_prepare_worktree() { # <tree>
   local tree="${1:?driver_prepare_worktree: need a tree}" ptype n i cmd out rc
   DRIVER_PREPARE_WHY=""
