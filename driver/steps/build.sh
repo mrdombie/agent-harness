@@ -61,7 +61,7 @@
 # the ticket parks blaming a change that works. The measurement was never made, and a
 # measurement that could not be made is not a red.
 _driver_proof_install() { # <repo> <tree>
-  [ -d "$1/node_modules" ] && ln -sfn "$1/node_modules" "$2/node_modules"
+  [ -d "$1/node_modules" ] && driver_link_dir "$1/node_modules" "$2/node_modules"
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
   # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
   # Left on stdout, driver_prepare_worktree's own narration was captured into $why and

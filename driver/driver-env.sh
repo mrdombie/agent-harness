@@ -67,6 +67,18 @@ DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-2}"
 
 DRIVER_CLAUDE="${DRIVER_CLAUDE:-claude}"
 
+# driver_link_dir <src> <dst> — the shared install, linked, never copied. Git Bash's
+# `ln -s` COPIES a directory (a full node_modules per worktree, stale from the
+# moment it lands), so Windows gets a junction.
+driver_link_dir() {
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      [ -e "$2" ] && return 0
+      cmd //c mklink //J "$(cygpath -w "$2")" "$(cygpath -w "$1")" >/dev/null 2>&1 ;;
+    *) ln -sfn "$1" "$2" ;;
+  esac
+}
+
 DRIVER_OK=0
 DRIVER_E_QUESTION=20
 DRIVER_E_NO_SKILL=21
@@ -74,6 +86,7 @@ DRIVER_E_SCHEMA=22
 DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
 DRIVER_E_TIMEOUT=25
+DRIVER_E_BUDGET=26
 DRIVER_E_REWORK=30
 
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
@@ -86,6 +99,15 @@ driver_say() {
 }
 
 driver_opt_early() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
+
+# A step runs `claude -p` with no one to answer a permission prompt, so it needs a
+# mode that lets the build step edit and commit — the claim spawner runs `auto`.
+DRIVER_PERMISSION_MODE="${DRIVER_PERMISSION_MODE:-$(driver_opt_early driver.permissionMode auto)}"
+# Spend is capped twice: each step by the CLI's own --max-budget-usd, and the whole
+# run by the driver, which adds up every step's reported cost and parks before the
+# step that would start past the run's budget.
+DRIVER_STEP_BUDGET_USD="${DRIVER_STEP_BUDGET_USD:-$(driver_opt_early driver.stepBudgetUsd 25)}"
+DRIVER_RUN_BUDGET_USD="${DRIVER_RUN_BUDGET_USD:-$(driver_opt_early driver.runBudgetUsd 150)}"
 
 # driver_bounded <seconds> <command> — run a command with a ceiling on its life.
 #
