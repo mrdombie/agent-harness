@@ -196,8 +196,11 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   # connector is re-read on every turn of every step, so each one a step never calls
   # is paid for once per turn; measured 2026-09-30, a bare step started at 70k tokens
   # of which ~6.5k were connectors and tools no step uses.
-  local lean=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
-  [ -n "$DRIVER_DISALLOWED_TOOLS" ] && lean+=(--disallowed-tools "$DRIVER_DISALLOWED_TOOLS")
+  # And the rest of the fixed load: only the tools this step uses, and the project's
+  # instruction files named rather than preloaded (#11172). One builder for every
+  # model call the driver makes, reviewers included.
+  driver_lean_args "$wt" "$step"
+  local lean=("${DRIVER_LEAN_ARGS[@]}")
 
   (
     cd "$wt" || exit 1

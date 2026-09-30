@@ -107,6 +107,17 @@ DRIVER_PERMISSION_MODE="${DRIVER_PERMISSION_MODE:-$(driver_opt_early driver.perm
 # every tool. Skill, the subagent tools, Bash and the file tools are never listed —
 # the briefs depend on them.
 DRIVER_DISALLOWED_TOOLS="${DRIVER_DISALLOWED_TOOLS-$(driver_opt_early driver.disallowedTools 'Workflow WebSearch NotebookEdit CronCreate CronDelete CronList Monitor ScheduleWakeup RemoteTrigger PushNotification EnterWorktree ExitWorktree EnterPlanMode ExitPlanMode AskUserQuestion')}"
+# THE TOOLS A STEP LOADS, BY ALLOWLIST. Every tool schema is re-sent on every call of
+# every step, and across the 27 transcripts of trial 3 (2026-09-30) the steps only
+# ever called these eight — plus StructuredOutput, which --json-schema adds itself.
+# Loading the rest cost ~14k tokens a call (60,028 → 46,227 measured, same prompt).
+# A step may narrow it in briefs/facts.json (`steps.<step>.tools`); `driver.tools`
+# sets the default; "default" loads Claude Code's whole set, as before (#11172).
+DRIVER_TOOLS="${DRIVER_TOOLS-$(driver_opt_early driver.tools 'Bash Read Edit Write Grep Glob Skill Agent')}"
+# THE PROJECT'S INSTRUCTION FILES ARE READ ON DEMAND, NOT PRELOADED. Auto-loaded,
+# maktura's CLAUDE.md + AGENTS.md were ~17k tokens on every call of every step; the
+# brief already carries the project's facts. "preload" restores the old behaviour.
+DRIVER_PROJECT_INSTRUCTIONS="${DRIVER_PROJECT_INSTRUCTIONS-$(driver_opt_early driver.projectInstructions on-demand)}"
 
 # driver_bounded <seconds> <command> — run a command with a ceiling on its life.
 #
@@ -224,6 +235,43 @@ driver_push() {
     [ -n "$DRIVER_PUSH_WHY" ] || DRIVER_PUSH_WHY="the push exited $rc and printed nothing"
   fi
   return "$rc"
+}
+
+# driver_step_tools <step> — the allowlist for one step: briefs/facts.json's
+# `steps.<step>.tools` when it names one, else DRIVER_TOOLS.
+driver_step_tools() {
+  local f="${DRIVER_BRIEFS:-}/facts.json" v=""
+  [ -n "${1:-}" ] && [ -f "$f" ] && v=$(jq -r --arg s "$1" '.steps[$s].tools // empty | if type == "array" then join(" ") else . end' "$f" 2>/dev/null)
+  printf '%s' "${v:-$DRIVER_TOOLS}"
+}
+
+# driver_lean_args <tree> [step] — fills the array DRIVER_LEAN_ARGS with what every
+# model call the driver makes carries: no connectors, only the tools the step uses,
+# and — unless the project asks for "preload" — the user's settings plus this
+# project's own settings file, without the project's instruction files preloaded.
+# `--setting-sources user` is what leaves CLAUDE.md out; `--settings` puts the
+# project's hooks and settings back, so nothing but the preload is lost.
+driver_lean_args() {
+  local wt="${1:-}" step="${2:-}" tools f files=""
+  local -a list
+  DRIVER_LEAN_ARGS=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
+  tools=$(driver_step_tools "$step")
+  if [ -n "$tools" ] && [ "$tools" != "default" ]; then
+    read -r -a list <<<"$tools"
+    DRIVER_LEAN_ARGS+=(--tools "${list[@]}")
+  elif [ -n "$DRIVER_DISALLOWED_TOOLS" ]; then
+    read -r -a list <<<"$DRIVER_DISALLOWED_TOOLS"
+    DRIVER_LEAN_ARGS+=(--disallowed-tools "${list[@]}")
+  fi
+  [ "$DRIVER_PROJECT_INSTRUCTIONS" = "preload" ] && return 0
+  DRIVER_LEAN_ARGS+=(--setting-sources user)
+  [ -n "$wt" ] && [ -f "$wt/.claude/settings.json" ] && DRIVER_LEAN_ARGS+=(--settings "$wt/.claude/settings.json")
+  for f in CLAUDE.md AGENTS.md .claude/CLAUDE.md; do
+    [ -n "$wt" ] && [ -f "$wt/$f" ] && files="$files${files:+, }$f"
+  done
+  # ONE LINE. The reviewer path runs this through /bin/sh -c, and a newline in a
+  # quoted argument is where that quoting stops being portable.
+  [ -z "$files" ] || DRIVER_LEAN_ARGS+=(--append-system-prompt "This project's instruction files are not preloaded, to keep every call small: $files, at the root of the tree you are working in. Before you change code, read the parts of them that bear on the change. You do not need them to answer from what you were given.")
 }
 
 driver_prepare_worktree() { # <tree>

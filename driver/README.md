@@ -184,6 +184,8 @@ layer's are: eight scripts that shelled out inline could not be tested at all.
 | `DRIVER_CMD_TIMEOUT` | how long a gate or test command may run |
 | `DRIVER_PERMISSION_MODE` | the `--permission-mode` every step runs with (default `auto`; `driver.permissionMode`) |
 | `DRIVER_DISALLOWED_TOOLS` | tools left out of every step (`driver.disallowedTools`; default: the ask/plan/schedule/notify tools a headless step never calls). Every step also runs with no connectors (`--strict-mcp-config`). Each step's cost, turns, context size and brief length are recorded under `.usage` in `state.json`, and `.spend` is their sum — measured, not capped |
+| `DRIVER_TOOLS` | the tools a step loads, as an allowlist (`driver.tools`; default: `Bash Read Edit Write Grep Glob Skill Agent`, the eight any step of trial 3 called; a step may narrow it with `steps.<step>.tools` in `briefs/facts.json`; `default` loads Claude Code's whole set and falls back to the block list above). Every schema loaded is re-sent on every call — ~14k tokens a call measured (#11172) |
+| `DRIVER_PROJECT_INSTRUCTIONS` | `on-demand` (default): steps load the user's settings plus the project's `.claude/settings.json`, and the project's CLAUDE.md / AGENTS.md are named in the system prompt rather than preloaded — ~17k tokens a call on the origin project. `preload` restores auto-loading (`driver.projectInstructions`) |
 | `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check) |
 | `HARNESS_DRIVER_RUN` | exported per step; the kit's Stop hooks stand down on it |
 | `SWARM_GH` · `SWARM_NOW` | inherited: the GitHub CLI and the clock |
