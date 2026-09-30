@@ -107,4 +107,16 @@ driver_state_init 202 --worktree "$FIX/wt2"
 rc=0; driver_step_self_check 202 >/dev/null 2>&1 || rc=$?
 want "it ran where the work is" "0" "$rc"
 
+echo "--- a project's changed-only gates run instead of its whole-app ones ---"
+jq '.gates = {"changed":["echo ran-changed"], "local":["echo ran-whole-app; exit 1"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+out=$(driver_step_self_check 101 2>&1); rc=$?
+want "the changed-only list passes"         "0" "$rc"
+want_in "and it is the one that ran"        'changed 1' "$out"
+want_not_in "the whole-app list did not run" 'local 1'  "$out"
+
+echo "--- with no changed-only list, the whole-app one still runs ---"
+jq '.gates = {"local":["exit 1"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+rc=0; driver_step_self_check 101 >/dev/null 2>&1 || rc=$?
+want "it falls back and reads the red" "24" "$rc"
+
 exit $FAILED

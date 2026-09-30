@@ -53,8 +53,8 @@ driver_brief_skill() { sed -n '1,20{/^skill:[[:space:]]*/s///p;}' "$1" | head -1
 
 # driver_record_usage <ticket> <slot> <log> <prompt> — what a step cost, how big its
 # context got, and how many words it was given, appended under .usage[<slot>] and
-# added to .spend. These are the shadow run's measurements (words per step, spend),
-# and the run budget is enforced from .spend. The log may carry non-JSON lines, so it
+# added to .spend. These are the shadow run's measurements (words per step, spend).
+# The log may carry non-JSON lines, so it
 # is read line by line; a step that left no result line records a cost of 0.
 driver_record_usage() {
   local u words
@@ -192,14 +192,12 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   # wrong thing, and every retry hits it again. Before the briefs were substituted
   # the prompt was a few KB and this could not happen; now it carries the ticket,
   # this project's facts and the review step's whole diff, so it can.
-  # The run's budget is checked BEFORE a step starts, from the costs every earlier
-  # step reported: a step already running is bounded by its own --max-budget-usd.
-  local spent; spent=$(driver_state_get "$t" '.spend // 0')
-  if awk -v s="${spent:-0}" -v b="$DRIVER_RUN_BUDGET_USD" 'BEGIN { exit !(s + 0 >= b + 0) }'; then
-    driver_say "✋ $step: this run has spent \$${spent} of its \$${DRIVER_RUN_BUDGET_USD} budget — parking before another step starts."
-    driver_state_set "$t" park_note "the run spent \$${spent} of its \$${DRIVER_RUN_BUDGET_USD} budget before $step; per-step spend is under .usage in state.json"
-    return "$DRIVER_E_BUDGET"
-  fi
+  # A step carries only what the work inside it uses. Every tool schema and every
+  # connector is re-read on every turn of every step, so each one a step never calls
+  # is paid for once per turn; measured 2026-09-30, a bare step started at 70k tokens
+  # of which ~6.5k were connectors and tools no step uses.
+  local lean=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
+  [ -n "$DRIVER_DISALLOWED_TOOLS" ] && lean+=(--disallowed-tools "$DRIVER_DISALLOWED_TOOLS")
 
   (
     cd "$wt" || exit 1
@@ -209,13 +207,13 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     if [ -n "$schema_for_model" ]; then
       "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
-        --permission-mode "$DRIVER_PERMISSION_MODE" --max-budget-usd "$DRIVER_STEP_BUDGET_USD" \
+        --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
         < "$prompt" > "$log" 2>"$log.err"
     else
       "$DRIVER_CLAUDE" -p \
         --output-format stream-json --verbose --name "$step" \
-        --permission-mode "$DRIVER_PERMISSION_MODE" --max-budget-usd "$DRIVER_STEP_BUDGET_USD" \
+        --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" < "$prompt" > "$log" 2>"$log.err"
     fi
   ) || true
