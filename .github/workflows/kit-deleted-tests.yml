@@ -6,6 +6,9 @@ on:
     types: [opened, synchronize, reopened, edited]
 jobs:
   deleted-tests:
+    permissions:
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/deleted-tests.yml
     with:
       harness-repo: ${{ github.repository }}

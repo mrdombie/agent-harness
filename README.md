@@ -207,7 +207,7 @@ It runs in three places, so skipping a skill does not skip it:
   the body re-runs it) and makes `Deleted tests are accounted for` a required
   check. It reads the pull request's merge commit, so `HEAD^1..HEAD` is exactly
   what merging changes. While this repo is private the caller passes a token that
-  can read it as `harness-token`, and the repo's Actions access setting must allow
+  can read it as `harness_token`, and the repo's Actions access setting must allow
   the caller's workflows. The kit runs it on itself through
   `kit-deleted-tests.yml`, with `*.test.sh` as its pattern.
 - **`/agent-harness:finish`** — Step 5.6, before the merge.

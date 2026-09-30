@@ -14,7 +14,7 @@
 #       with:
 #         harness-repo: <owner>/agent-harness
 #       secrets:
-#         harness-token: ${{ secrets.HARNESS_TOKEN }}   # only while the kit repo is private
+#         harness_token: ${{ secrets.HARNESS_TOKEN }}   # only while the kit repo is private
 #
 # and names the check "Deleted tests are accounted for" under gates.requiredChecks
 # and in branch protection. Test-file patterns come from the consuming repo's
@@ -40,7 +40,7 @@ on:
         type: string
         default: '"ubuntu-latest"'
     secrets:
-      harness-token:
+      harness_token:
         description: a token that can read harness-repo, when it is private and not this repo
         required: false
 
@@ -71,7 +71,7 @@ jobs:
         with:
           repository: ${{ inputs.harness-repo }}
           ref: ${{ inputs.harness-ref }}
-          token: ${{ secrets.harness-token || github.token }}
+          token: ${{ secrets.harness_token || github.token }}
           path: kit
           sparse-checkout: scripts
       - name: Every deleted test is accounted for
