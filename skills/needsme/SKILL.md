@@ -146,6 +146,22 @@ gh pr view "$P" --repo "$REPO_SLUG" --json statusCheckRollup \
 | *(no PR exists)* | on the **issue** | 🔴 YOURS | A design call — show the CONCEPT link, see 1c-bis |
 | no `✗` found in any red run | — | ⚪ STUCK | Gate never reached its check — verify, do not assume |
 
+### The already-shipped trap
+
+Measured 2026-09-30 on **#10685**: an open, held, clashing PR with evidence —
+a textbook 🔴 row. The operator approved it. Its ticket **#10598 had closed as
+completed three days earlier**; the work had shipped in another PR, and the one
+shown was a leftover. The scan read open *issues*, so a closed ticket never
+reached it.
+
+Before placing any PR row, read the state of the ticket it closes:
+
+```bash
+gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state,stateReason -q '"\(.state) \(.stateReason)"'
+```
+
+`CLOSED COMPLETED` → ⚪ STUCK, "ticket already shipped — close this PR?". Never 🔴.
+
 ### The already-approved trap
 
 Measured 2026-08-30 on **#9845**: red `approval-gate`, plus an `ACTION_REQUIRED`
