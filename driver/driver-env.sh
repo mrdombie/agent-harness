@@ -115,7 +115,7 @@ DRIVER_DISALLOWED_TOOLS="${DRIVER_DISALLOWED_TOOLS-$(driver_opt_early driver.dis
 # sets the default; "default" loads Claude Code's whole set, as before (#11172).
 DRIVER_TOOLS="${DRIVER_TOOLS-$(driver_opt_early driver.tools 'Bash Read Edit Write Grep Glob Skill Agent')}"
 # THE PROJECT'S INSTRUCTION FILES ARE READ ON DEMAND, NOT PRELOADED. Auto-loaded,
-# maktura's CLAUDE.md + AGENTS.md were ~17k tokens on every call of every step; the
+# the origin project's CLAUDE.md + AGENTS.md were ~17k tokens on every call of every step; the
 # brief already carries the project's facts. "preload" restores the old behaviour.
 DRIVER_PROJECT_INSTRUCTIONS="${DRIVER_PROJECT_INSTRUCTIONS-$(driver_opt_early driver.projectInstructions on-demand)}"
 
