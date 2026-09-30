@@ -402,6 +402,12 @@ done
 
 say "[reconcile-claims]$([ "$DRY_RUN" -eq 1 ] && echo ' (dry run)') checked $checked · live $live · elsewhere $elsewhere · shipped $shipped · in-review $inreview · partial $partial · released $released · kept $kept"
 
+# #11167 — the dev servers a crashed or abandoned window left behind, in a
+# worktree no claim holds any more. Every /claim runs this, so the sweep runs
+# many times a day on every machine. Never allowed to fail the reconcile.
+bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stop-dev-servers.sh" --sweep \
+  $([ "$DRY_RUN" -eq 1 ] && echo --dry-run) 2>&1 | sed 's/^/[stop-dev-servers] /' || true
+
 # Always 0. A stale claim being reconciled is a normal outcome, not a broken
 # script, and this runs at /claim step 0 where a non-zero exit would block a
 # fresh claim.
