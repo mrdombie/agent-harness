@@ -252,9 +252,11 @@ case "${1:-}" in
       exit 3
     fi ;;
 esac
+# Only an action that changes what runs is written down: install, restart,
+# uninstall, or a real job name. A typo is refused further down, not audited.
 case "${1:-}" in
-  status|--print|--jobs|-h|--help|audit) ;;
-  *) audit "${1:-install}" "${2:-}" ;;
+  ""|restart|uninstall) audit "${1:-install}" "${2:-}" ;;
+  *) if script_for "$1" >/dev/null 2>&1; then audit "$1" "${2:-}"; fi ;;
 esac
 
 if is_windows; then

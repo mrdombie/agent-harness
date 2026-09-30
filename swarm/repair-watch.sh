@@ -159,6 +159,8 @@ section_repair() {
     fi
     if [ "$DRY" = 1 ]; then echo "WOULD repair #$PR ($T) at ${SHA:0:9}: $reason"; launched=$((launched+1)); continue; fi
 
+    # A hold placed mid-pass: checked again right before the attempt is spent.
+    if swarm_held >/dev/null; then say "held mid-pass — not repairing #$PR ($T)"; break; fi
     printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
     local brief; brief="$SWARM_DIR/briefs/repair-$T.md"
     mkdir -p "$(dirname "$brief")"; repair_brief "$PR" "$SHA" "$reason" > "$brief"
@@ -229,6 +231,7 @@ section_infra() {
     case "$labs" in CLOSED,*) continue ;; esac
     paused "$labs" && continue
     if [ "$DRY" = 1 ]; then echo "WOULD restart #$T (ended $AGO min ago on an infrastructure error)"; continue; fi
+    if swarm_held >/dev/null; then say "held mid-pass — not restarting #$T"; break; fi
     printf '%s\t%s\t%s\t%s\n' "$T" "infra-$(swarm_now)" "infra" "$(swarm_now)" >> "$TRIED"
     brief="$SWARM_DIR/briefs/infra-$T.md"; mkdir -p "$(dirname "$brief")"
     cat > "$brief" <<BRIEF

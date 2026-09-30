@@ -53,7 +53,7 @@ fix_issue 102 OPEN "status:in-review,project:widgets"
 fix_prs "12 102 cccccccccc1 CLEAN 0 typecheck"
 : > "$SPAWNS"
 bash "$I" hold "repair test" >/dev/null 2>&1
-out=$(bash "$W" 2>&1)
+out=$(bash "$W" --only repair 2>&1)
 want "held: no repair spawned"        "0" "$(grep -c . "$SPAWNS")"
 want "held: no attempt recorded"      "0" "$(cat "$TRIED" 2>/dev/null | grep -c .)"
 want_in "held: it says why"           'held — not repairing' "$out"
@@ -61,8 +61,25 @@ bash "$I" release >/dev/null 2>&1
 bash "$W" --only repair >/dev/null 2>&1
 want_in "released: the red PR is repaired" '^102' "$(cat "$SPAWNS")"
 
+echo "--- a hold placed MID-PASS still stops the attempt (#45) ---"
+# The top-of-pass check has already passed when this hold lands: the gh stand-in
+# places it the moment repair-watch lists the pull requests.
+fix_prs "13 103 dddddddddd1 CLEAN 0 typecheck"; fix_issue 103 OPEN "status:in-review,project:widgets"
+: > "$SPAWNS"; : > "$TRIED"
+printf '#!/usr/bin/env bash\n[ "$1 $2" = "pr list" ] && printf "mid-pass (held by the test)\\n" > "%s"\nexec "%s" "$@"\n' \
+  "$STATE/swarm/HOLD" "$BIN/gh" > "$FIX/gh-holds"; chmod +x "$FIX/gh-holds"
+out=$(SWARM_GH="$FIX/gh-holds" bash "$W" --only repair 2>&1)
+want "mid-pass: no repair spawned"    "0" "$(grep -c . "$SPAWNS")"
+want "mid-pass: no attempt recorded"  "0" "$(cat "$TRIED" 2>/dev/null | grep -c .)"
+want_in "mid-pass: it says so"        'held mid-pass' "$out"
+bash "$I" release >/dev/null 2>&1
+
+echo "--- a typo is not written down as an action (#45) ---"
+bash "$I" stauts >/dev/null 2>&1
+if grep -q 'stauts' "$AUDIT"; then bad "a mistyped command was audited as an action"; else ok "a mistyped command is not audited"; fi
+
 echo "--- every change is in the audit log, in order ---"
-want "hold, two refusals, release ×2" "hold refused-held refused-held release hold release" \
+want "hold, two refusals, release ×3" "hold refused-held refused-held release hold release release" \
      "$(cut -f2 "$AUDIT" | tr '\n' ' ' | sed 's/ $//')"
 want_in "who and which kit are recorded" 'session=.*parent=.*kit=' "$(head -1 "$AUDIT")"
 want_in "audit prints the log"        'release' "$(bash "$I" audit 1)"
