@@ -483,6 +483,7 @@ cat > "$FIX/reviewer" <<'SH'
 #!/usr/bin/env sh
 echo "VERDICT: SHIP"
 echo "no dead controls, brand tokens only"
+echo "run=${HARNESS_DRIVER_RUN:-unset}"
 SH
 cat > "$FIX/recorder" <<'SH'
 #!/usr/bin/env sh
@@ -507,6 +508,8 @@ want "the requirement is satisfied" "0" "$rc"
 want_in "the reviewer ran"          "the 'ui-gate' reviewer ran" "$out"
 want_in "and its verdict was recorded" 'Gate: SHIP' "$(git -C "$FIX/wt410" log -1 --format=%B)"
 want "on a new commit"  "1" "$(git -C "$FIX/wt410" rev-list --count "$BEFORE..HEAD")"
+want_in "and the reviewer ran as a driver step, so the Stop hooks stand down" \
+  "run=410:attest-ui-gate" "$(cat "$(driver_state_dir 410)/steps/verdict-ui-gate.txt")"
 
 echo "--- T2-2 · a verdict recorded before a later commit is recorded again ---"
 # A recorder binds a verdict to the commit it reviewed. review is finished by the
