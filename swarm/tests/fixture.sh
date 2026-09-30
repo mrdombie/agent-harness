@@ -26,6 +26,9 @@ swarm_fixture() {
   GH_LOG="$FIX/gh.log"; SPAWNS="$FIX/spawns.log"
   mkdir -p "$REPO/.claude" "$STATE/runs" "$STATE/logs" "$STATE/swarm" "$BIN" "$FIX/gh"
   : > "$GH_LOG"; : > "$SPAWNS"
+  # The integration branch is green unless a test says otherwise (fix_trunk).
+  printf '{"check_runs":[{"name":"build","conclusion":"success"}]}\n' \
+    > "$FIX/gh/api-repos_acme_widgets_commits_develop_check-runs_per_page_100.json"
 
   git -C "$REPO" init -q
   cat > "$REPO/.claude/harness.json" <<'JSON'
@@ -89,7 +92,7 @@ case "$1 $2" in
   "api "*|"api")
     # Keyed by the endpoint with every / and ? flattened, so "the commits on the
     # trunk" and "the branch compared with the trunk" can answer differently.
-    f="$FIX/gh/api-$(printf '%s' "$3" | tr '/?&=' '____').json"
+    f="$FIX/gh/api-$(printf '%s' "$2" | tr '/?&=' '____').json"
     [ -f "$f" ] || exit 1
     emit "$f" ;;
   *) : ;;
@@ -186,6 +189,16 @@ fix_ready() {
   fix_issue_list "project:$p" "$arr"
   fix_issue_list "status:in-review" "[]"
   local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready,project:$p"; done
+}
+
+# fix_trunk <green|red|unreadable> — what the integration branch's newest commit reports.
+fix_trunk() {
+  local f="$FIX/gh/api-repos_acme_widgets_commits_develop_check-runs_per_page_100.json"
+  case "$1" in
+    green) printf '{"check_runs":[{"name":"build","conclusion":"success"}]}\n' > "$f" ;;
+    red)   printf '{"check_runs":[{"name":"build","conclusion":"failure"},{"name":"lint","conclusion":"success"}]}\n' > "$f" ;;
+    unreadable) rm -f "$f" ;;
+  esac
 }
 
 # ---- pull requests, comments and finished runs -------------------------------
