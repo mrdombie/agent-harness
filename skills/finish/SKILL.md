@@ -980,6 +980,10 @@ The ticket is **shipped** once Steps 6–7d are done: merged to develop, issue c
 
 ```bash
 : "${REPO_PATH:?REPO_PATH unset — run Step 1 resolution block first}"
+# #11167 — stop the dev servers this ticket started, BEFORE the worktree goes.
+# Nothing else ever did: on 2026-09-30 one Mac carried 16 of them, up to six
+# days old, and swap sat at 44 GB of 45. Only servers inside THIS worktree.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/stop-dev-servers.sh" --worktree "$WORKTREE" || true
 cd "$REPO_PATH"
 git worktree remove --force "$WORKTREE"
 
