@@ -220,8 +220,21 @@ swarm_programme_of() { # <ticket>
 # Output goes to a FILE, never a command substitution: the spawned agent inherits
 # stdout, so capturing it with $(...) blocks until the agent exits. The scheduler
 # logged nothing for forty minutes at a time while quietly spawning.
+# The hold. `install.sh hold "<reason>"` writes it; while it exists nothing
+# spawns, whichever job asks and however the supervisor came back. Stopping the
+# task was not enough: on 2026-09-29 a stopped swarm was re-installed by someone
+# nobody could name, waited out the plan's usage limit, and spent ~110M tokens in
+# two hours re-running tickets that had failed the night before (#42).
+SWARM_HOLD_FILE="${SWARM_HOLD_FILE:-$SWARM_DIR/HOLD}"
+swarm_held() { [ -f "$SWARM_HOLD_FILE" ] || return 1; head -1 "$SWARM_HOLD_FILE"; }
+
 swarm_spawn() { # <ticket> [brief-file] [budget]
   local t="$1" brief="${2:-}" budget="${3:-$SWARM_BUDGET_USD}" out
+  local held
+  if held=$(swarm_held); then
+    echo "held — not spawning #$t: $held" >&2
+    return 1
+  fi
   out=$(mktemp)
   (
     [ -n "$brief" ] && [ -f "$brief" ] && CLAIM_EXTRA="$(cat "$brief")" && export CLAIM_EXTRA
@@ -240,6 +253,6 @@ swarm_ping_page() {
   swarm_gh api "repos/$SWARM_STATUS_REPO/dispatches" -f event_type=claim-changed >/dev/null 2>&1
 }
 
-export SWARM_DIR SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
+export SWARM_DIR SWARM_HOLD_FILE SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
 export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_GH SWARM_CURL SWARM_SPAWN
 export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC
