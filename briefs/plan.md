@@ -22,6 +22,7 @@ person anything; when you need to, return a question and the driver parks it.
 - The premise gather: {{PREMISE_REPORT}}
 - Already in flight: {{IN_FLIGHT}}
 - This project: {{PROJECT_FACTS}}
+- Screen steps the renderer performs: {{SCREEN_STEPS}}
 
 ## The premise verdict is yours
 
@@ -75,6 +76,13 @@ and a missed one ships a screen with nothing behind it.
 
 Refusing a fine ticket costs a clarification. Accepting an unplannable one costs
 the slice mistakes this gate exists to stop. Return a question instead.
+
+## A visible change names the screen that shows it
+
+Set `screenChange`: `visible` if a user will see the change, else `none`. A
+`visible` change names each state that shows it in `screenStates` (`route`,
+`setup` steps in the vocabulary above, what a reviewer should see in `shows`).
+Unsure? Ask.
 
 ## Return
 

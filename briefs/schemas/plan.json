@@ -160,6 +160,40 @@
       "description": "The approved picture and where that approval is recorded: a URL, or a path on this branch. Required whenever designSource is approved-picture.",
       "type": "string",
       "minLength": 1
+    },
+    "screenStates": {
+      "description": "For a change a user will see: each screen state that shows it, so the driver renders exactly that rather than a page's standard states. `route` is the page; `setup` is the ordered steps that bring the change into view, written ONLY in the vocabulary SCREEN_STEPS gives; `shows` is one sentence on what a reviewer should see. Empty when the change shows on no screen, or when SCREEN_STEPS says the renderer takes no steps.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "route",
+          "setup",
+          "shows"
+        ],
+        "properties": {
+          "route": {
+            "type": "string"
+          },
+          "setup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "shows": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "screenChange": {
+      "description": "Whether a user will see this change: `visible` (name the states in screenStates) or `none`. compare refuses only a `visible` change with no state named.",
+      "enum": [
+        "visible",
+        "none"
+      ]
     }
   },
   "if": {

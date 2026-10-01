@@ -24,7 +24,8 @@
         "PROGRAMME_BRIEF": "the programme's locked decisions, open questions and what shipped recently — the brief, never the whole state file",
         "PREMISE_REPORT": "what the driver's premise gather printed: each path the ticket cites, marked present, moved or absent",
         "IN_FLIGHT": "open pull requests, remote branches and live claims that touch the files this ticket names",
-        "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: trunk branch, gate commands, coding-standards path, the component kit, the design law"
+        "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: trunk branch, gate commands, coding-standards path, the component kit, the design law",
+        "SCREEN_STEPS": "the setup-step vocabulary this project's renderer can perform for a screen state (design.renderSteps), or a sentence saying it takes none"
       }
     },
     "build": {

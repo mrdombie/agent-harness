@@ -278,7 +278,22 @@ driver_fact_surface_rules() {
   else _driver_fact_none "harness.json declares no design section, so this project has no screen rules"; fi
 }
 
-# driver_facts_common <ticket> <slot> — the six every step may ask for. Cheap ones
+# driver_fact_screen_steps — the vocabulary this project's renderer understands for
+# the setup steps of a screen state: design.renderSteps, inline or a file in the
+# tree. The kit names no project, so the steps a renderer can perform are the
+# project's to say.
+driver_fact_screen_steps() { # <ticket>
+  local v wt; v=$(driver_opt design.renderSteps "")
+  if [ -z "$v" ]; then
+    _driver_fact_none "harness.json names no design.renderSteps, so this project's renderer takes no setup steps — leave screenStates empty"
+    return
+  fi
+  wt=$(driver_state_get "${1:-}" worktree 2>/dev/null); [ -n "$wt" ] || wt="$MAIN_REPO"
+  case "$v" in /*|*..*) printf '%s' "$v"; return ;; esac
+  if [ -f "$wt/$v" ]; then head -c 16000 "$wt/$v"; else printf '%s' "$v"; fi
+}
+
+# driver_facts_common <ticket> <slot> — the nine every step may ask for. Cheap ones
 # are always written; the expensive reads are the two gh calls, and they are the
 # same two the step would make anyway.
 driver_facts_common() { # <ticket> <slot>
@@ -291,4 +306,5 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" IN_FLIGHT       "$(driver_fact_in_flight "$t")"
   driver_fact_put "$t" "$s" STANDARDS       "$(driver_fact_standards)"
   driver_fact_put "$t" "$s" SURFACE_RULES   "$(driver_fact_surface_rules)"
+  driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
 }

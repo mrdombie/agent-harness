@@ -118,9 +118,24 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
   # ONE RENDER PER LINE: name<TAB>path<TAB>theme<TAB>route. The command is the
   # project's; the shape is the kit's, because the compare contract needs those
   # four things and a free-form blob would be a second parser per project.
+  # THE STATES THE PLAN NAMED, handed to the renderer as JSON in DRIVER_RENDER_STATES
+  # so it captures the state the change shows in, not only a page's standard ones.
+  # Only the contradiction is refused: a plan that called the change `visible` and
+  # named no state. `none`, or no answer at all (a plan from before screenStates),
+  # renders as it always did — surfacePaths is wider than "a user sees it", and the
+  # plan is the step that can tell the difference.
+  local states; states=$(driver_state_get "$t" screen_states); [ -n "$states" ] || states="[]"
+  if [ -n "$(driver_opt design.renderSteps "")" ] && [ "$(driver_state_get "$t" screen_change)" = "visible" ] \
+     && [ "$(printf '%s' "$states" | jq 'length' 2>/dev/null)" = "0" ]; then
+    driver_say "✋ compare: the plan called this change visible and named no screen state that shows it, so a render would photograph the page and not the change."
+    driver_state_set "$t" park_note "the plan called the change visible and named no screenStates — re-plan it, then carry on: build-ticket $t --restart --steps plan && build-ticket $t"
+    driver_state_set "$t" park_cause person
+    return "$DRIVER_E_REFUSED"
+  fi
+
   local pass=1
   while : ; do
-    out=$( ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
+    out=$( ( cd "$wt" && export DRIVER_RENDER_STATES="$states" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
     if [ "$rc" -eq 124 ]; then
       driver_say "✋ compare: the render command did not return within ${DRIVER_CMD_TIMEOUT}s — $cmd"
       driver_state_set "$t" park_note "this project's design.render command did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
