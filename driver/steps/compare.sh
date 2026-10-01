@@ -108,6 +108,17 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
       driver_state_set "$t" park_note "this project's design.render command did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
       return "$DRIVER_E_TIMEOUT"
     fi
+    # EXIT 3 IS "THIS RENDERER KNOWS NO SCREEN HERE", not a failure: the change
+    # touches the project's surface paths but none of the screens its renderer can
+    # capture. Recorded loudly, exactly as a project with no renderer is — and a
+    # reviewer that cannot judge without pictures (`needsRenders`) then refuses
+    # by name rather than judging nothing.
+    if [ "$rc" -eq 3 ]; then
+      driver_state_set "$t" renders \
+        "(none — this project's design.render command says this change touches no screen it can capture, so NOBODY OBSERVED THIS SCREEN: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300))"
+      driver_say "⚠ compare: the render command knows no screen this change touches (exit 3), so no render was taken — said in those words to the reviewer and the pull request."
+      return "$DRIVER_OK"
+    fi
     # AWK, NOT `grep -E '\t'`. POSIX ERE has no `\t` escape — BSD grep reads it as a
     # literal `t`, so the pattern matched nothing, every render line was discarded and
     # a renderer that worked perfectly was reported as producing none.

@@ -431,6 +431,20 @@ want_in "naming the exit code" 'exited 7' "$out"
 want_in "and the park note says the screen was never observed" \
   'never observed' "$(driver_state_get 409 park_note)"
 
+echo "--- T2-4 · exit 3 is a renderer that knows no screen here, not a failure ---"
+# The project's renderer registers some screens, not every file its surface paths
+# cover. A change outside them is not a broken renderer — it is an absence, said
+# loudly, exactly as a project with no renderer at all.
+jq '.design.render = "sh -c \"echo no registered surface covers these files >&2; exit 3\""' \
+  "$REPO/.claude/harness.json" > "$FIX/h5b.json" && mv "$FIX/h5b.json" "$REPO/.claude/harness.json"
+driver_state_set 409 park_note ""
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "it finishes"                     "0" "$rc"
+want_in "saying no render was taken"   'knows no screen' "$out"
+want_in "and the reviewer is told NOBODY OBSERVED IT, in the renderer's words" \
+  'NOBODY OBSERVED THIS SCREEN.*no registered surface' "$(driver_state_get 409 renders)"
+want "and nothing was parked"          "" "$(driver_state_get 409 park_note)"
+
 echo "--- T2-4 · with renders it compares against what was approved ---"
 jq '.design.render = "printf \"desk light\\tshots/a.png\\tlight\\t/dashboard/desk\\ndesk dark\\tshots/b.png\\tdark\\t/dashboard/desk\\n\""' \
   "$REPO/.claude/harness.json" > "$FIX/h6.json" && mv "$FIX/h6.json" "$REPO/.claude/harness.json"
@@ -712,6 +726,30 @@ rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
 want "a row naming both a command and an agent refuses" "24" "$rc"
 want_in "saying so" "both a review command and an agent" "$out"
 want "and runs neither" "" "$(cat "$CLAUDE_LOG")"
+
+echo "--- T2-2 · a reviewer that judges pictures refuses when none were taken ---"
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: unreviewed again"
+cat > "$FIX/recorder" <<'SH'
+#!/usr/bin/env sh
+grep -q '^VERDICT: SHIP' || { echo "no VERDICT line" >&2; exit 1; }
+git commit --allow-empty --no-verify -q -m "chore: gate" -m "Gate: SHIP (agent)"; echo recorded
+SH
+chmod +x "$FIX/recorder"
+jq --arg w "$FIX/recorder" --arg o "$FIX/owed" \
+   '.review = {"attest":{"design-critic":{"owed":$o,"agent":"agent-harness:design-critic","record":$w,"needsRenders":true}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hr2.json" && mv "$FIX/hr2.json" "$REPO/.claude/harness.json"
+driver_state_set 410 renders "(none — this project's design.render command says this change touches no screen it can capture)"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "saying only a person can earn it" "judges rendered screens and none were taken" "$out"
+want "and the reviewer was never run"      "" "$(cat "$CLAUDE_LOG")"
+want_in "the park note carries why"        "no render was taken" "$(driver_state_get 410 park_note)"
+jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP\non-theme", total_cost_usd:0.2, num_turns:2}' > "$FIX/ai/attest-design-critic.jsonl"
+driver_state_set 410 renders "$(printf 'desk light\tshots/a.png\tlight\t/dashboard/desk')"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "with a render on the record it runs, and records" "0" "$rc"
+want_in "the renders reach the reviewer"   'shots/a.png' "$(cat "$FIX/claude-stdin-attest-design-critic.txt")"
 
 echo "--- T2-2 · one row per reviewer, shared with the interactive finish ---"
 # `/agent-harness:finish` reads the same rows for a different question, so a second
