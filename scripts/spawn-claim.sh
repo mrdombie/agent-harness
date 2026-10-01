@@ -135,6 +135,13 @@ cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, revie
     >> "$LOG" 2>&1 &
   CLAUDE_PID=$!
   printf '%s\n' "$CLAUDE_PID" > "$RUNS_DIR/$RUN_ID.child"
+  # macOS sleeps an idle machine mid-run, and the agent comes back to "Your computer
+  # went to sleep mid-response" — on 2026-10-01 one repair lost four of its five hours
+  # to it, its reviewer "stalling" three times. caffeinate holds the machine awake for
+  # exactly this agent's life (-w), and lets go by itself when the agent exits.
+  if command -v caffeinate >/dev/null 2>&1; then
+    caffeinate -is -w "$CLAUDE_PID" >/dev/null 2>&1 &
+  fi
   # Windows: the MSYS pid above is invisible to anything that is not MSYS (the
   # live view's node server among them). Record the native pid beside it.
   [ -r "/proc/$CLAUDE_PID/winpid" ] && cat "/proc/$CLAUDE_PID/winpid" > "$RUNS_DIR/$RUN_ID.child.winpid"
