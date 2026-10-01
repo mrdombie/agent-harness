@@ -222,6 +222,28 @@
           }
         }
       }
+    },
+    "replacedTests": {
+      "description": "Every test file in which this step removed or reworded an it()/test() case: `coveredBy` names the test file at head that now pins the same behaviour (often the same file, for a reworded case), or `removedBecause` says why the behaviour is gone. The ship step writes these into the pull request's `## Deleted tests` section, and the deleted-tests gate checks each line. Empty when no case was removed or reworded.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "coveredBy": {
+            "type": "string"
+          },
+          "removedBecause": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "if": {

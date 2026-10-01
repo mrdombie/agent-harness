@@ -291,4 +291,37 @@ out=$(driver_step_ship 114 2>&1)
 want_in "it says no parity check was made" 'no approved picture, so no parity check was made' "$(cat "$GH_LOG")"
 want_not_in "and not that renders were compared" 'compared against the approved design' "$(cat "$GH_LOG")"
 
+echo "--- a test the build reported removing is accounted for in the body, and ships (#11222) ---"
+git -C "$REPO" worktree add -q "$FIX/wt116" -b tkt-116/work develop
+git -C "$FIX/wt116" rm -q pinned.test.ts
+git -C "$FIX/wt116" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: rebuild without it"
+driver_state_init 116 --worktree "$FIX/wt116" --branch tkt-116/work
+driver_state_put 116 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 116 OPEN "status:claimed"
+printf '%s\n' '{"step":"build","replacedTests":[{"file":"pinned.test.ts","removedBecause":"posting for a teammate moved to the access rules, pinned by their own test"}]}' \
+  > "$(driver_state_dir 116)/steps/build.all.json"
+: > "$GH_LOG"
+out=$(driver_step_ship 116 2>&1); rc=$?
+want "it ships"                                   "0" "$rc"
+want_in "the body carries the section the build reported" 'Deleted tests' "$(cat "$GH_LOG")"
+want_in "with the reason, in the build's words"  'removed on purpose: posting for a teammate' "$(cat "$GH_LOG")"
+want_in "and it is marked ready"                  'pr ready' "$(cat "$GH_LOG")"
+
+echo "--- a fix round's report counts too, and a removal nobody reported still parks ---"
+git -C "$REPO" worktree add -q "$FIX/wt117" -b tkt-117/work develop
+git -C "$FIX/wt117" rm -q pinned.test.ts
+git -C "$FIX/wt117" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: rebuild without it"
+driver_state_init 117 --worktree "$FIX/wt117" --branch tkt-117/work
+driver_state_put 117 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 117 OPEN "status:claimed"
+printf '%s\n' '{"step":"build","replacedTests":[]}' > "$(driver_state_dir 117)/steps/build.all.json"
+out=$(driver_step_ship 117 2>&1); rc=$?
+want "unreported, it stays a draft"              "24" "$rc"
+printf '%s\n' '{"step":"fix","replacedTests":[{"file":"pinned.test.ts","removedBecause":"retired with the old screen"}]}' \
+  > "$(driver_state_dir 117)/steps/fix.all.json"
+: > "$GH_LOG"
+out=$(driver_step_ship 117 2>&1); rc=$?
+want "reported by the fix round, it ships"       "0" "$rc"
+want_in "and the existing PR's title and body are rewritten, not left as the park's" 'pr edit tkt-117/work' "$(cat "$GH_LOG")"
+
 exit $FAILED

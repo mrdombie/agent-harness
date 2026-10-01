@@ -96,6 +96,17 @@ driver_step_ship() { # <ticket>
   sha=$(driver_state_get "$t" claimed_at_sha)
   head=$(git -C "$wt" rev-parse HEAD)
 
+  # THE TESTS THIS RUN REWORDED OR REMOVED, as the build and fix steps reported them.
+  # The deleted-tests gate below is still the judge of each line; this only stops a
+  # ticket that strengthened its tests from parking because nobody wrote them down.
+  local d replaced=""
+  d="$(driver_state_dir "$t")/steps"
+  replaced=$(cat "$d/build.all.json" "$d/fix.all.json" 2>/dev/null \
+    | jq -rs '[.[] | .replacedTests? // [] | .[]] | group_by(.file) | map(last) | .[]
+              | if (.coveredBy // "") != "" then "- `\(.file)` → covered by `\(.coveredBy)`"
+                elif (.removedBecause // "") != "" then "- `\(.file)` → removed on purpose: \(.removedBecause)"
+                else empty end' 2>/dev/null)
+
   body=$(cat <<PRBODY
 Closes #$t
 
@@ -111,11 +122,20 @@ $(if [ -n "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ]; then
     echo "Renders this run took (designSource=$(driver_state_get "$t" design_source): no approved picture, so no parity check was made):"
   fi)
 $(driver_state_get "$t" renders | sed 's/^/  /')
+${replaced:+
+## Deleted tests
+$replaced}
 PRBODY
 )
   # `|| true` on the create alone is right: a park may already have opened the draft,
   # and a resume finds it there. What is NOT right is taking the create's silence as a
   # pull request existing — so the next line asks.
+  # A PULL REQUEST A PARK ALREADY OPENED carries the park's title and body. Shipping
+  # rewrites both, or the shipped PR says "parked" and carries none of this evidence.
+  if swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number >/dev/null 2>&1; then
+    swarm_gh pr edit "$branch" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1 \
+      || driver_say "⚠ ship: the pull request for $branch exists and its title and body could not be rewritten."
+  fi
   swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
