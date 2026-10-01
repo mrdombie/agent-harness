@@ -316,10 +316,13 @@ fix_ai fix "$(jq -nc --arg ts "$TS8" --arg is "$IS8" \
               test:{file:"t/save.sh", behaviour:"the save button calls the mutation",
                     redWhen:"the onClick handler is removed"},
               command:"bash t/save.sh", testCommit:$ts, implCommit:$is,
-              failedBefore:true, passedAfter:true}]}')" \
+              failedBefore:true, passedAfter:true}],
+    replacedTests:[{file:"t/old-save.sh", removedBecause:"the save path it pinned was removed"}]}')" \
   superpowers:receiving-code-review
 rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
 want "the fix round finishes"  "0" "$rc"
+want_in "and its reworded or removed tests reach the run's ledger (#11222)" 't/old-save.sh' \
+  "$(cat "$(driver_state_dir 408)/steps/replaced.jsonl" 2>/dev/null)"
 PROMPT="$(driver_state_dir 408)/steps/fix.prompt"
 want "no placeholder survives into the fix prompt" "0" "$(grep -c '{{' "$PROMPT" || true)"
 want_in "the finding reaches the fixer verbatim" 'the save button calls nothing' "$(cat "$PROMPT")"

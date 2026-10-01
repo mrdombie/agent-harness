@@ -40,9 +40,9 @@ change. If it survives the reason, it was a real finding.
 
 ## A test you reword or remove is accounted for
 
-If you remove or reword an `it(`/`test(` case, list its file in `replacedTests`:
-`coveredBy` the test file that now pins the behaviour, or `removedBecause` why it
-is gone. The pull request carries these, and a gate checks them.
+If you remove, reword or skip an `it(`/`test(` case, list its file in
+`replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
+a bare path to the test that now pins it, or `removedBecause`. A gate checks them.
 
 ## Return
 

@@ -101,11 +101,13 @@ driver_step_ship() { # <ticket>
   # ticket that strengthened its tests from parking because nobody wrote them down.
   local d replaced=""
   d="$(driver_state_dir "$t")/steps"
-  replaced=$(cat "$d/build.all.json" "$d/fix.all.json" 2>/dev/null \
-    | jq -rs '[.[] | .replacedTests? // [] | .[]] | group_by(.file) | map(last) | .[]
-              | if (.coveredBy // "") != "" then "- `\(.file)` → covered by `\(.coveredBy)`"
-                elif (.removedBecause // "") != "" then "- `\(.file)` → removed on purpose: \(.removedBecause)"
-                else empty end' 2>/dev/null)
+  replaced=$(jq -rs '
+    def flat: gsub("[\\r\\n\\t]+"; " ") | gsub("^\\s+|\\s+$"; "");
+    [.[] | select(type == "object") | {file: ((.file // "") | flat), coveredBy: ((.coveredBy // "") | flat), removedBecause: ((.removedBecause // "") | flat)}
+     | select(.file != "" and (.coveredBy != "" or .removedBecause != ""))]
+    | group_by(.file) | map(last) | .[]
+    | if .coveredBy != "" then "- `\(.file)` → covered by `\(.coveredBy)`"
+      else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$d/replaced.jsonl" 2>/dev/null)
 
   body=$(cat <<PRBODY
 Closes #$t
@@ -132,9 +134,14 @@ PRBODY
   # pull request existing — so the next line asks.
   # A PULL REQUEST A PARK ALREADY OPENED carries the park's title and body. Shipping
   # rewrites both, or the shipped PR says "parked" and carries none of this evidence.
-  if swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number >/dev/null 2>&1; then
-    swarm_gh pr edit "$branch" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1 \
-      || driver_say "⚠ ship: the pull request for $branch exists and its title and body could not be rewritten."
+  local open_pr
+  open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null)
+  if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
+    # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
+    # body ships "parked" as its squash subject, without the section the gate judged.
+    driver_say "✋ ship: pull request #$open_pr for $branch exists and its title and body could not be rewritten, so it would ship carrying the park's words."
+    driver_state_set "$t" park_note "the existing pull request #$open_pr could not be rewritten at ship"
+    return "$DRIVER_E_REFUSED"
   fi
   swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
@@ -146,7 +153,7 @@ PRBODY
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
-  # has no "## Deleted tests" section, so a branch that deletes a test file or drops
+  # carries a "## Deleted tests" section only for what build and fix reported, so a branch that deletes a test file or drops
   # it(/test( cases stops here as a draft — pushed and visible, never auto-merged —
   # with the files named for whoever picks the park up. On the origin project eleven
   # test files went in one merge, one of them pinned a behaviour the rebuild dropped,

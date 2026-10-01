@@ -83,8 +83,8 @@ driver_step_fix() { # <ticket>
   [ "$rc" -eq 0 ] || return "$rc"
   driver_state_bump "$t" fix
   ans="$d/steps/fix.json"
-  # Every round's answer, as build keeps every task's: ship reads `replacedTests` from all of them.
-  jq -c . "$ans" >> "$d/steps/fix.all.json" 2>/dev/null || true
+  # The tests this round reworded or removed, on the same ledger build appends to.
+  jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
 
   # EVERY BLOCKER IS ACCOUNTED FOR. A Critical or a Major is not deferrable, so a
   # finding that is in neither `cleared` nor `deferred` is one nobody answered —

@@ -170,7 +170,7 @@ fix_build() {
                  command:$c, testCommit:$t, implCommit:$i,
                  failedBefore:true, redOutput:"FAIL", passedAfter:true, greenOutput:"PASS"},
       changed:[{path:"a.sh", action:"modify"}],
-      changelog:{skipped:"a test-only change"}}'
+      changelog:{skipped:"a test-only change"}} + (if $ENV.FIX_REPLACED then {replacedTests:[{file:$ENV.FIX_REPLACED, coveredBy:$ENV.FIX_REPLACED}]} else {} end)'
 }
 
 # A per-call stub: the nth call answers with $FIX/ai/<step>.<n>.jsonl, so two calls
@@ -221,6 +221,8 @@ fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$I
 out=$(driver_step_build 101 2>&1); rc=$?
 want "the step finishes"        "0" "$rc"
 want_in "and names what it proved" 'feature.test.sh' "$out"
+want "a build that reworded no test leaves the ledger empty" "" \
+  "$(cat "$(driver_state_dir 101)/steps/replaced.jsonl" 2>/dev/null)"
 
 echo "--- the build step: an unproved item is sent back, and counted ---"
 # A FRESH ticket: the counter counts attempts at the step, so re-entering 101
@@ -467,4 +469,15 @@ want "it asks for rework"  "30" "$rc"
 # whose end state is not its start state is an ordering dependency nothing states.
 git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true
 
+echo "--- a build's reworded tests reach the run's ledger, across tries (#11222) ---"
+export DRIVER_TICKET=131
+driver_state_init 131 --worktree "$REPO" --repo "$REPO"
+fix_plan 131 1
+printf '%s\n' '{"file":"earlier.test.sh","removedBecause":"an earlier try removed it"}' > "$(driver_state_dir 131)/steps/replaced.jsonl"
+fix_ai build "$(FIX_REPLACED=feature.test.sh fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
+  superpowers:subagent-driven-development
+out=$(driver_step_build 131 2>&1); rc=$?
+want "the step finishes"                          "0" "$rc"
+want_in "its report is on the ledger"             'feature.test.sh' "$(cat "$(driver_state_dir 131)/steps/replaced.jsonl")"
+want_in "and an earlier try's report is still there" 'earlier.test.sh' "$(cat "$(driver_state_dir 131)/steps/replaced.jsonl")"
 exit $FAILED

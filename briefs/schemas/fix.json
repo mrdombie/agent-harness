@@ -161,7 +161,7 @@
       "type": "string"
     },
     "replacedTests": {
-      "description": "Every test file in which this step removed or reworded an it()/test() case: `coveredBy` names the test file at head that now pins the same behaviour (often the same file, for a reworded case), or `removedBecause` says why the behaviour is gone. The ship step writes these into the pull request's `## Deleted tests` section, and the deleted-tests gate checks each line. Empty when no case was removed or reworded.",
+      "description": "Every test file in which this step removed, reworded or skipped an it()/test() case. `file` is the repo-relative path exactly as git shows it. Give exactly one of `coveredBy` — a bare repo-relative path, nothing else, to the test file at head that now pins the same behaviour (the same file, for a reworded case) — or `removedBecause`, one line on why the behaviour is gone. The ship step writes these into the pull request's `## Deleted tests` section, and the deleted-tests gate checks each line. Empty when no case was removed, reworded or skipped.",
       "type": "array",
       "items": {
         "type": "object",
