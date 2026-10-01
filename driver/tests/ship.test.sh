@@ -276,5 +276,19 @@ want_in "the whole output is kept" 'Pre-push: checking UI changes' \
   "$(cat "$(driver_state_dir 113)/steps/ship-push.out" 2>/dev/null)"
 want_in "and the park note carries it" 'check:design-critic-attested' "$(driver_state_get 113 park_note)"
 want_not_in "and nothing was opened" 'pr create' "$(cat "$GH_LOG")"
+# Worktrees share the repository's config, so the refusing hook would follow every
+# later case in this file.
+git -C "$FIX/wt113" config --unset core.hooksPath
+
+echo "--- the PR body never claims a parity check that was not made (#11205) ---"
+setup_wt 114
+driver_state_put 114 review '{"verdict":"SHIP","findings":[]}'
+for st in start plan build self-check review record; do driver_state_done 114 "$st"; done
+driver_state_set 114 design_source debugged
+driver_state_set 114 renders "$(printf 'desk light\tshots/a.png\tlight\t/dashboard/desk')"
+: > "$GH_LOG"
+out=$(driver_step_ship 114 2>&1)
+want_in "it says no parity check was made" 'no approved picture, so no parity check was made' "$(cat "$GH_LOG")"
+want_not_in "and not that renders were compared" 'compared against the approved design' "$(cat "$GH_LOG")"
 
 exit $FAILED

@@ -421,6 +421,31 @@ want_in "naming the screen file"       'apps/web/src/app/page.tsx' "$(driver_sta
 want_not_in "and not a file from the directory the driver happened to be in" \
   'legacy' "$(driver_state_get 409 renders)"
 
+echo "--- T2-4 · surfacePaths are git pathspecs: an exclude drops test files (#11206) ---"
+git -C "$REPO" worktree add -q "$FIX/wt415" -b "tkt-415/work" develop
+driver_state_init 415 --worktree "$FIX/wt415" --branch "tkt-415/work"
+fix_issue 415 OPEN "status:claimed"
+mkdir -p "$FIX/wt415/apps/web/src"
+printf 'a test\n' > "$FIX/wt415/apps/web/src/thing.test.ts"
+git -C "$FIX/wt415" add -A
+git -C "$FIX/wt415" -c user.email=t@e.invalid -c user.name=T commit -qm "test: only a test"
+jq '.design = {"surfacePaths": ["apps/web/**", ":(exclude)**/*.test.ts"]}' \
+  "$REPO/.claude/harness.json" > "$FIX/h5e.json" && mv "$FIX/h5e.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_step_compare 415 2>&1) || rc=$?
+want "a test-only change finishes"      "0" "$rc"
+want_in "as touching no screen"          'touches no screen' "$out"
+jq '.design = {"surfacePaths": [":(exclude)**/*.test.ts"]}' \
+  "$REPO/.claude/harness.json" > "$FIX/h5e.json" && mv "$FIX/h5e.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_step_compare 415 2>&1) || rc=$?
+want "a list of only excludes refuses"   "24" "$rc"
+want_in "saying git would read it as everything" 'only exclude pathspecs' "$out"
+jq '.design = {"surfacePaths": [":(exclude,glob)**/*.test.ts", ""]}' \
+  "$REPO/.claude/harness.json" > "$FIX/h5e.json" && mv "$FIX/h5e.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_step_compare 415 2>&1) || rc=$?
+want "so does a long-form exclude beside a blank entry" "24" "$rc"
+jq '.design = {"surfacePaths": ["apps/web/**"]}' \
+  "$REPO/.claude/harness.json" > "$FIX/h5e.json" && mv "$FIX/h5e.json" "$REPO/.claude/harness.json"
+
 echo "--- T2-4 · a declared renderer that produces nothing is a refusal ---"
 # A measurement that could not be made is not a screen that is fine.
 jq '.design.render = "sh -c \"echo the dev server is not up >&2; exit 7\""' \
@@ -444,6 +469,30 @@ want_in "saying no render was taken"   'knows no screen' "$out"
 want_in "and the reviewer is told NOBODY OBSERVED IT, in the renderer's words" \
   'NOBODY OBSERVED THIS SCREEN.*no registered surface' "$(driver_state_get 409 renders)"
 want "and nothing was parked"          "" "$(driver_state_get 409 park_note)"
+
+echo "--- T2-4 · no approved picture: renders kept, no parity check, no park (#11205) ---"
+# A debugged change has no picture. Asked to compare anyway, the step listed "no
+# approved picture exists" as a difference that stands and parked every bug fix for
+# a person, whatever its renders showed.
+jq '.design.render = "printf \"desk light\\tshots/a.png\\tlight\\t/dashboard/desk\\n\""' \
+  "$REPO/.claude/harness.json" > "$FIX/h5c.json" && mv "$FIX/h5c.json" "$REPO/.claude/harness.json"
+driver_state_set 409 design_ref ""
+driver_state_set 409 design_source debugged
+driver_state_set 409 park_note ""
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "it finishes"                       "0" "$rc"
+want_in "saying there is nothing to compare against" 'no approved picture' "$out"
+want_not_in "and not claiming a parity check"        'parity against' "$out"
+want "no model was asked"                "" "$(grep -x compare "$CLAUDE_LOG")"
+want_in "the renders are kept for review" 'shots/a.png' "$(driver_state_get 409 renders)"
+want "and nothing was parked"            "" "$(driver_state_get 409 park_note)"
+driver_state_set 409 design_source approved-picture
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "a plan claiming a picture it never named refuses" "24" "$rc"
+want_in "saying skipping would hide it"  'names none' "$out"
+driver_state_set 409 design_source debugged
+driver_state_set 409 park_note ""
 
 echo "--- T2-4 · with renders it compares against what was approved ---"
 jq '.design.render = "printf \"desk light\\tshots/a.png\\tlight\\t/dashboard/desk\\ndesk dark\\tshots/b.png\\tdark\\t/dashboard/desk\\n\""' \
