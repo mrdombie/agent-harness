@@ -119,36 +119,41 @@ jq '.gates = {"local":["exit 1"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv
 rc=0; driver_step_self_check 101 >/dev/null 2>&1 || rc=$?
 want "it falls back and reads the red" "24" "$rc"
 
-echo "--- the build's own 'no changelog' claim is written onto its untagged commits (#11168) ---"
-# The trial run: the build answered changelog skipped, tagged 2 of 10 commits, and the
-# project's pre-push refused the push after review was paid for.
+echo "--- the build's own 'no changelog' claim is said once for the branch, nothing rewritten (#11168) ---"
+# The trial run: every build answer said changelog skipped, the commits did not carry
+# the project's line, and the push was refused after review was paid for.
 git -C "$REPO" worktree add -q "$FIX/wt140" -b tkt-140/work develop
 cm() { git -C "$FIX/wt140" -c user.email=t@e.invalid -c user.name=T commit -q --allow-empty "$@"; }
 cm -m "fix(gates): the first fix"
-cm -m "test(gates): a test"
-cm -m "fix(gates): already tagged" -m "no-changelog: said so itself"
+git -C "$REPO" -c user.email=t@e.invalid -c user.name=T commit -q --allow-empty -m "develop moves"
+printf 'merged\n' > "$FIX/wt140/merged.txt"
+git -C "$FIX/wt140" -c user.email=t@e.invalid -c user.name=T merge -q --no-edit develop
+git -C "$FIX/wt140" add merged.txt && cm -m "fix(gates): after the merge"
+BEFORE=$(git -C "$FIX/wt140" rev-parse HEAD); TREE=$(git -C "$FIX/wt140" rev-parse 'HEAD^{tree}')
 driver_state_init 140 --worktree "$FIX/wt140"
 mkdir -p "$(driver_state_dir 140)/steps"
-printf '%s\n' '{"step":"build","changelog":{"skipped":"Internal gate tooling,\nnothing a user sees."}}' > "$(driver_state_dir 140)/steps/build.all.json"
-jq '.gates = {"ok":"exit 0"} | .changelog = {"skipTrailer":"no-changelog"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+printf '%s\n' '{"step":"build","changelog":{"skipped":"Internal gate tooling,\nnothing a user sees."}}' '{"step":"build","changelog":{"skipped":"Same tooling."}}' > "$(driver_state_dir 140)/steps/build.all.json"
+jq '.gates = {"ok":"exit 0"} | .changelog = {"branchTrailer":"no-changelog-branch"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 rc=0; out=$(driver_step_self_check 140 2>&1) || rc=$?
-want "it finishes"                               "0" "$rc"
-want_in "saying it wrote the claimed line"       '1 commit\(s\) carried no' "$out"
-want_in "the untagged fix now carries it, on one line" 'no-changelog: Internal gate tooling, nothing a user sees.' "$(git -C "$FIX/wt140" log --format=%B -1 HEAD~2)"
-want_not_in "a test: commit is left alone"       'no-changelog' "$(git -C "$FIX/wt140" log --format=%B -1 HEAD~1)"
-want "the already-tagged commit is not tagged twice" "1" "$(git -C "$FIX/wt140" log --format=%B -1 HEAD | grep -c '^no-changelog:')"
-want "and no file changed — messages only"       "" "$(git -C "$FIX/wt140" status --porcelain)"
+want "it finishes"                                 "0" "$rc"
+want_in "saying it said so once for the branch"    'said once for the branch' "$out"
+want_in "one new commit carries the line, on one line" 'no-changelog-branch: Internal gate tooling, nothing a user sees.' "$(git -C "$FIX/wt140" log -1 --format=%B)"
+want "it sits on top of the branch, nothing rewritten" "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD~1)"
+want "and the tree is byte-identical, merge and all" "$TREE" "$(git -C "$FIX/wt140" rev-parse 'HEAD^{tree}')"
+driver_step_self_check 140 >/dev/null 2>&1
+want "a second self-check does not say it twice"   "1" "$(git -C "$FIX/wt140" log --format=%B "$BEFORE"..HEAD | grep -c '^no-changelog-branch:')"
 
-echo "--- without the project's trailer, or when the build wrote an entry, nothing is rewritten ---"
-cm -m "fix(gates): another"
-before=$(git -C "$FIX/wt140" rev-parse HEAD)
+echo "--- not every build answer skipped, or no project trailer: nothing is added ---"
+git -C "$FIX/wt140" reset -q --hard "$BEFORE"
+printf '%s\n' '{"step":"build","changelog":{"skipped":"tooling"}}' '{"step":"build"}' > "$(driver_state_dir 140)/steps/build.all.json"
+driver_step_self_check 140 >/dev/null 2>&1
+want "an answer that did not say skipped: untouched" "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD)"
+printf '%s\n' '{"step":"build","changelog":{"skipped":"tooling"}}' '{"step":"build","changelog":{"file":"changelog/140.md"}}' > "$(driver_state_dir 140)/steps/build.all.json"
+driver_step_self_check 140 >/dev/null 2>&1
+want "an entry written: untouched"                 "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD)"
+printf '%s\n' '{"step":"build","changelog":{"skipped":"tooling"}}' > "$(driver_state_dir 140)/steps/build.all.json"
 jq 'del(.changelog)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 driver_step_self_check 140 >/dev/null 2>&1
-want "no skipTrailer: untouched"                 "$before" "$(git -C "$FIX/wt140" rev-parse HEAD)"
-jq '.changelog = {"skipTrailer":"no-changelog"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-printf '%s\n' '{"step":"build","changelog":{"file":"changelog/140.md"}}' >> "$(driver_state_dir 140)/steps/build.all.json"
-driver_step_self_check 140 >/dev/null 2>&1
-want "an entry written: untouched"               "$before" "$(git -C "$FIX/wt140" rev-parse HEAD)"
-jq 'del(.changelog)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+want "no branchTrailer: untouched"                 "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD)"
 
 exit $FAILED

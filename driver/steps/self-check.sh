@@ -36,55 +36,37 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
-# _driver_tag_changelog_skips <ticket> <tree> — the build steps answered `changelog:
-# {skipped: <reason>}`, and only some of their commits carried the project's skip
-# trailer: the push was refused after review was paid for (trial run of #11168,
-# 2026-10-01 — 8 of 10 commits untagged). The answer is the build's own claim, so
-# the driver writes it where the project's gate reads it: `<trailer>: <reason>` on
-# every feat/fix commit of the run that lacks it. Messages only; no tree changes.
-# Acts only when the project names its trailer (changelog.skipTrailer), no build
-# answer wrote an entry, and some answer gave a skip reason.
-_driver_tag_changelog_skips() {
-  local t="$1" wt="$2" trailer types all base reason n
-  trailer=$(driver_opt changelog.skipTrailer "")
+# _driver_note_changelog_skip <ticket> <tree> — the build steps answered `changelog:
+# {skipped: <reason>}`, and their commits did not carry the project's skip line: the
+# push was refused after review was paid for (trial run of #11168, 2026-10-01). When
+# the project's gate accepts ONE branch-wide line (changelog.branchTrailer), the
+# driver adds one empty commit carrying `<trailer>: <reason>` — no history is
+# rewritten. Only when EVERY build answer reported skipped, and no commit on the
+# branch already carries the line.
+_driver_note_changelog_skip() {
+  local t="$1" wt="$2" trailer all reason base c out
+  trailer=$(driver_opt changelog.branchTrailer "")
   [ -n "$trailer" ] || return 0
-  types=$(driver_opt changelog.skipTypes "feat fix")
   all="$(driver_state_dir "$t")/steps/build.all.json"
   [ -s "$all" ] || return 0
-  jq -e -s 'any(.[]; (.changelog.file // "") != "")' "$all" >/dev/null 2>&1 && return 0
-  reason=$(jq -r -s '[.[] | .changelog.skipped // empty | select(. != "")] | first // empty' "$all" 2>/dev/null \
-    | tr '\r\n\t' '   ' | sed -e "s/^[[:space:]]*$trailer:[[:space:]]*//" -e 's/[[:space:]]*$//')
+  jq -e -s 'length > 0 and all(.[]; ((.changelog.skipped // "") | gsub("\\s"; "")) != "")' "$all" >/dev/null 2>&1 || return 0
+  reason=$(jq -r -s '[.[] | .changelog.skipped] | first' "$all" 2>/dev/null | tr '\r\n\t' '   ' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c1-200)
   [ -n "$reason" ] || return 0
   base=$(git -C "$wt" merge-base "origin/$INTEGRATION_BRANCH" HEAD 2>/dev/null \
          || git -C "$wt" merge-base "$INTEGRATION_BRANCH" HEAD 2>/dev/null)
   [ -n "$base" ] || return 0
-  local re; re="^($(printf '%s' "$types" | tr ' ' '|'))(\(|!|:)"
-  n=0
-  local c
-  for c in $(git -C "$wt" rev-list --no-merges "$base"..HEAD 2>/dev/null); do
-    git -C "$wt" log -1 --format=%s "$c" | grep -qE "$re" || continue
-    git -C "$wt" log -1 --format=%B "$c" | grep -q "^$trailer:" && continue
-    n=$((n+1))
+  for c in $(git -C "$wt" rev-list "$base"..HEAD 2>/dev/null); do
+    git -C "$wt" log -1 --format=%B "$c" | grep -qF "$trailer:" && return 0
   done
-  [ "$n" -gt 0 ] || return 0
-  # Each commit is re-written in place by an --exec after it is picked; merges are
-  # kept. Hooks run as for any commit — nothing here skips a check.
-  local script; script="$(driver_state_dir "$t")/steps/changelog-tag.sh"
-  cat > "$script" <<'TAG'
-s=$(git log -1 --format=%s); b=$(git log -1 --format=%B)
-if printf '%s' "$s" | grep -qE "$RE" && ! printf '%s\n' "$b" | grep -q "^$TRAILER:"; then
-  git commit -q --amend --allow-empty -m "$b" -m "$TRAILER: $REASON"
-fi
-TAG
-  if ! ( cd "$wt" && TRAILER="$trailer" REASON="$reason" RE="$re" \
-         git rebase -q --rebase-merges --exec "sh $(printf '%q' "$script")" "$base" ) \
-       > "$(driver_state_dir "$t")/steps/changelog-tag.out" 2>&1; then
-    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
-    driver_say "✋ self-check: $n commit(s) lack the '$trailer:' line the build's answer claimed, and adding it failed — $(tail -2 "$(driver_state_dir "$t")/steps/changelog-tag.out" | tr '\n' ' ')"
-    driver_state_set "$t" park_note "the build answered changelog skipped ($reason) and $n commit(s) lack '$trailer:'; writing it failed"
+  # A normal commit: the project's hooks run on it, nothing is skipped.
+  out="$(driver_state_dir "$t")/steps/changelog-note.out"
+  if ! git -C "$wt" commit -q --allow-empty -m "chore: no changelog for #$t" -m "$trailer: $reason" > "$out" 2>&1; then
+    driver_say "✋ self-check: the build answered 'no changelog' and the commit saying so for the branch could not be made — $(tail -2 "$out" | tr '\n' ' ')"
+    driver_state_set "$t" park_note "could not commit '$trailer: $reason' for the branch: $(tail -2 "$out" | tr '\n' ' ' | cut -c1-200)"
     return "$DRIVER_E_REFUSED"
   fi
-  driver_say "   self-check: $n commit(s) carried no '$trailer:' line the build's answer claimed — written: $trailer: $reason"
+  driver_say "   self-check: every build step answered 'no changelog' — said once for the branch: $trailer: $reason"
   return 0
 }
 
@@ -98,7 +80,7 @@ driver_step_self_check() { # <ticket>
   driver_check_timeout || true
 
   # The build's own changelog claim, written where the project's gate reads it.
-  local trc=0; _driver_tag_changelog_skips "$t" "$wt" || trc=$?
+  local trc=0; _driver_note_changelog_skip "$t" "$wt" || trc=$?
   [ "$trc" -eq 0 ] || return "$trc"
 
   # The SHAPE first. `gates` written as a list reads as no names at all, and the
