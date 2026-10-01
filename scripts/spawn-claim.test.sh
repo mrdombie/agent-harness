@@ -114,10 +114,16 @@ cat > "$SB/bin/claude" <<'STUB'
 } > "$SPAWN_TEST_SEEN"
 STUB
 chmod +x "$SB/bin/claude"
+# A stub caffeinate: records what it was asked to hold awake.
+cat > "$SB/bin/caffeinate" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$SPAWN_TEST_CAFF"
+STUB
+chmod +x "$SB/bin/caffeinate"
 
 run() { # [args...] — invoke the spawner from the STALE tree, as the operator does
   RC=0
-  SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" SPAWN_TEST_RECONCILE="$OUT/reconcile" \
+  SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" SPAWN_TEST_RECONCILE="$OUT/reconcile" SPAWN_TEST_CAFF="$OUT/caff" \
   PATH="$SB/bin:$PATH" \
   HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
   HARNESS_CFG_PATH="$STORE/.claude/harness.json" \
@@ -217,6 +223,13 @@ if [ -f "$OUT/seen" ]; then
 else
   bad "the detached spawn never started the agent"
 fi
+
+# --- 6b. The detached agent keeps the machine awake for its own life ---------
+# An idle Mac slept under a running agent and cost one repair four hours.
+for _ in $(seq 1 60); do [ -s "$OUT/caff" ] && break; sleep 0.5; done
+caff=$(cat "$OUT/caff" 2>/dev/null)
+if printf '%s' "$caff" | grep -Eq -- '-is -w [0-9]+$'; then ok "the agent is held awake, and only for its own life"
+else bad "nothing kept the machine awake for the agent: '${caff:-caffeinate never ran}'"; fi
 
 # --- 7. The post-exit reconcile is told its own session has exited ------------
 # spawn-claim records its wrapper subshell as the claim's session, and runs the
