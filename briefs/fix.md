@@ -38,6 +38,12 @@ failure path.
 A finding you think is wrong is answered with a reason, not with agreement and a
 change. If it survives the reason, it was a real finding.
 
+## A test you reword or remove is accounted for
+
+If you remove, reword or skip an `it(`/`test(` case, list its file in
+`replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
+a bare path to the test that now pins it, or `removedBecause`. A gate checks them.
+
 ## Return
 
 JSON only, valid against `schemas/fix.json`.

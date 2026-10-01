@@ -96,6 +96,19 @@ driver_step_ship() { # <ticket>
   sha=$(driver_state_get "$t" claimed_at_sha)
   head=$(git -C "$wt" rev-parse HEAD)
 
+  # THE TESTS THIS RUN REWORDED OR REMOVED, as the build and fix steps reported them.
+  # The deleted-tests gate below is still the judge of each line; this only stops a
+  # ticket that strengthened its tests from parking because nobody wrote them down.
+  local d replaced=""
+  d="$(driver_state_dir "$t")/steps"
+  replaced=$(jq -rs '
+    def flat: gsub("[\\r\\n\\t]+"; " ") | gsub("^\\s+|\\s+$"; "");
+    [.[] | select(type == "object") | {file: ((.file // "") | flat), coveredBy: ((.coveredBy // "") | flat), removedBecause: ((.removedBecause // "") | flat)}
+     | select(.file != "" and (.coveredBy != "" or .removedBecause != ""))]
+    | group_by(.file) | map(last) | .[]
+    | if .coveredBy != "" then "- `\(.file)` → covered by `\(.coveredBy)`"
+      else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$d/replaced.jsonl" 2>/dev/null)
+
   body=$(cat <<PRBODY
 Closes #$t
 
@@ -111,11 +124,30 @@ $(if [ -n "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ]; then
     echo "Renders this run took (designSource=$(driver_state_get "$t" design_source): no approved picture, so no parity check was made):"
   fi)
 $(driver_state_get "$t" renders | sed 's/^/  /')
+${replaced:+
+## Deleted tests
+$replaced}
 PRBODY
 )
   # `|| true` on the create alone is right: a park may already have opened the draft,
   # and a resume finds it there. What is NOT right is taking the create's silence as a
   # pull request existing — so the next line asks.
+  # A PULL REQUEST A PARK ALREADY OPENED carries the park's title and body. Shipping
+  # rewrites both, or the shipped PR says "parked" and carries none of this evidence.
+  local open_pr
+  # A FAILED LOOKUP IS NOT "NO PULL REQUEST": read as one, the edit is skipped and a
+  # parked PR ships with the park's words. Asked and refused, it parks.
+  open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
+    driver_say "✋ ship: could not ask GitHub whether $branch already has a pull request, so its title and body cannot be made right."
+    driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
+    return "$DRIVER_E_REFUSED"; }
+  if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
+    # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
+    # body ships "parked" as its squash subject, without the section the gate judged.
+    driver_say "✋ ship: pull request #$open_pr for $branch exists and its title and body could not be rewritten, so it would ship carrying the park's words."
+    driver_state_set "$t" park_note "the existing pull request #$open_pr could not be rewritten at ship"
+    return "$DRIVER_E_REFUSED"
+  fi
   swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
@@ -126,7 +158,8 @@ PRBODY
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
-  # has no "## Deleted tests" section, so a branch that deletes a test file or drops
+  # carries a "## Deleted tests" section only for what build and fix
+  # reported, so a branch that deletes a test file or drops
   # it(/test( cases stops here as a draft — pushed and visible, never auto-merged —
   # with the files named for whoever picks the park up. On the origin project eleven
   # test files went in one merge, one of them pinned a behaviour the rebuild dropped,

@@ -96,7 +96,7 @@
                 "minLength": 1
               },
               "redWhen": {
-                "description": "The production change that makes this test fail \u2014 the fix deleted, not a typo introduced. A test whose author cannot name one is measuring the shape of the code.",
+                "description": "The production change that makes this test fail — the fix deleted, not a typo introduced. A test whose author cannot name one is measuring the shape of the code.",
                 "type": "string",
                 "minLength": 1
               }
@@ -159,6 +159,28 @@
     },
     "notes": {
       "type": "string"
+    },
+    "replacedTests": {
+      "description": "Every test file in which this step removed, reworded or skipped an it()/test() case. `file` is the repo-relative path exactly as git shows it. Give exactly one of `coveredBy` — a bare repo-relative path, nothing else, to the test file at head that now pins the same behaviour (the same file, for a reworded case) — or `removedBecause`, one line on why the behaviour is gone. The ship step writes these into the pull request's `## Deleted tests` section, and the deleted-tests gate checks each line. Empty when no case was removed, reworded or skipped.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "coveredBy": {
+            "type": "string"
+          },
+          "removedBecause": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "if": {

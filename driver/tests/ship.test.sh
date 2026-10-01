@@ -291,4 +291,84 @@ out=$(driver_step_ship 114 2>&1)
 want_in "it says no parity check was made" 'no approved picture, so no parity check was made' "$(cat "$GH_LOG")"
 want_not_in "and not that renders were compared" 'compared against the approved design' "$(cat "$GH_LOG")"
 
+echo "--- a test the build reported removing is accounted for in the body, and ships (#11222) ---"
+git -C "$REPO" worktree add -q "$FIX/wt116" -b tkt-116/work develop
+git -C "$FIX/wt116" rm -q pinned.test.ts
+git -C "$FIX/wt116" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: rebuild without it"
+driver_state_init 116 --worktree "$FIX/wt116" --branch tkt-116/work
+driver_state_put 116 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 116 OPEN "status:claimed"
+printf '%s\n' '{"file":"pinned.test.ts","removedBecause":"posting for a teammate moved to the access rules,\npinned by their own test"}' \
+  > "$(driver_state_dir 116)/steps/replaced.jsonl"
+: > "$GH_LOG"
+out=$(driver_step_ship 116 2>&1); rc=$?
+want "it ships"                                   "0" "$rc"
+want_in "the body carries the section the build reported" 'Deleted tests' "$(cat "$GH_LOG")"
+want_in "with the reason, in the build's words, on one line"  'removed on purpose: posting for a teammate moved to the access rules, pinned by their own test' "$(cat "$GH_LOG")"
+want_in "and it is marked ready"                  'pr ready' "$(cat "$GH_LOG")"
+
+echo "--- a fix round's report counts too, and a removal nobody reported still parks ---"
+git -C "$REPO" worktree add -q "$FIX/wt117" -b tkt-117/work develop
+git -C "$FIX/wt117" rm -q pinned.test.ts
+git -C "$FIX/wt117" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: rebuild without it"
+driver_state_init 117 --worktree "$FIX/wt117" --branch tkt-117/work
+driver_state_put 117 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 117 OPEN "status:claimed"
+printf '%s\n' '{"file":"pinned.test.ts"}' > "$(driver_state_dir 117)/steps/replaced.jsonl"
+out=$(driver_step_ship 117 2>&1); rc=$?
+want "unreported (an entry with neither field), it stays a draft" "24" "$rc"
+printf '%s\n' '{"file":"pinned.test.ts","removedBecause":"retired with the old screen"}' '{"file":"pinned.test.ts"}' \
+  >> "$(driver_state_dir 117)/steps/replaced.jsonl"
+printf '[{"number":77}]\n' > "$FIX/gh/prs.json"
+: > "$GH_LOG"
+out=$(driver_step_ship 117 2>&1); rc=$?
+want "reported later, it ships — an empty later entry does not hide it" "0" "$rc"
+want_in "the open PR is rewritten by number"        'pr edit 77' "$(cat "$GH_LOG")"
+want_in "with the ticket's own title"               'pr edit 77 .*--title #117: ' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "and the body carrying the section"         'pr edit 77 .*## Deleted tests' "$(tr '\n' ' ' < "$GH_LOG")"
+
+echo "--- a reworded case in a surviving file, covered by that same file ---"
+git -C "$REPO" worktree add -q "$FIX/wt118" -b tkt-118/work develop
+printf "it('a writer can post for a teammate, and the post is theirs', () => {});\n" > "$FIX/wt118/pinned.test.ts"
+git -C "$FIX/wt118" add pinned.test.ts
+git -C "$FIX/wt118" -c user.email=t@example.invalid -c user.name=T commit -qm "test: reword it"
+driver_state_init 118 --worktree "$FIX/wt118" --branch tkt-118/work
+driver_state_put 118 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 118 OPEN "status:claimed"
+printf '%s\n' '{"file":"pinned.test.ts","coveredBy":"pinned.test.ts"}' > "$(driver_state_dir 118)/steps/replaced.jsonl"
+printf '[]\n' > "$FIX/gh/prs.json"
+out=$(driver_step_ship 118 2>&1); rc=$?
+want "it ships"                                     "0" "$rc"
+want_in "covered by the same file"                  'pinned.test.ts. → covered by .pinned.test.ts.' "$(cat "$GH_LOG")"
+
+echo "--- an existing PR that cannot be rewritten refuses ---"
+git -C "$REPO" worktree add -q "$FIX/wt119" -b tkt-119/work develop
+printf 'x\n' > "$FIX/wt119/f119.txt"; git -C "$FIX/wt119" add f119.txt
+git -C "$FIX/wt119" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: thing"
+driver_state_init 119 --worktree "$FIX/wt119" --branch tkt-119/work
+driver_state_put 119 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 119 OPEN "status:claimed"
+printf '[{"number":79}]\n' > "$FIX/gh/prs.json"
+printf 'pr edit\n' > "$FIX/gh-fail"
+: > "$GH_LOG"
+out=$(driver_step_ship 119 2>&1); rc=$?
+want "it refuses"                                   "24" "$rc"
+want_in "saying it would ship the park's words"     "park's words" "$out"
+want_not_in "and it is never marked ready"          'pr ready' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh-fail"; printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- a pull request lookup that fails refuses, rather than reading as none ---"
+git -C "$REPO" worktree add -q "$FIX/wt121" -b tkt-121/work develop
+printf 'x\n' > "$FIX/wt121/f121.txt"; git -C "$FIX/wt121" add f121.txt
+git -C "$FIX/wt121" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: thing"
+driver_state_init 121 --worktree "$FIX/wt121" --branch tkt-121/work
+driver_state_put 121 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 121 OPEN "status:claimed"
+printf 'pr list\n' > "$FIX/gh-fail"
+: > "$GH_LOG"
+out=$(driver_step_ship 121 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "saying it could not ask"          'could not ask GitHub' "$out"
+want_not_in "and nothing is marked ready"  'pr ready' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh-fail"
 exit $FAILED

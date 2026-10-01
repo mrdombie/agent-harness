@@ -289,6 +289,9 @@ driver_step_build() { # <ticket>
       return "$rc"
     fi
     jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
+    # The tests this task reworded or removed, on the run's one ledger: the commits
+    # stay on the branch across build tries and restarts, so their reports must too.
+    jq -c '(.replacedTests // [])[]' "$ans" >> "$(driver_state_dir "$t")/steps/replaced.jsonl" 2>/dev/null || true
 
     # THE ANSWER MUST NOT BE ABOUT A DIFFERENT TASK. The proof re-runs whatever two
     # shas it is handed and cannot tell which task they belong to — so an answer that

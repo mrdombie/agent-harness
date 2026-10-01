@@ -44,6 +44,12 @@ Read {{STANDARDS}} once for the ticket, not once per file.
   visible outcomes: loading, failed — which says so and offers a retry — and
   loaded. "Nothing here" is only ever loaded-and-empty.
 
+## A test you reword or remove is accounted for
+
+If you remove, reword or skip an `it(`/`test(` case, list its file in
+`replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
+a bare path to the test that now pins it, or `removedBecause`. A gate checks them.
+
 ## Return
 
 JSON only, valid against `schemas/build.json`.
