@@ -36,6 +36,58 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
+# _driver_tag_changelog_skips <ticket> <tree> — the build steps answered `changelog:
+# {skipped: <reason>}`, and only some of their commits carried the project's skip
+# trailer: the push was refused after review was paid for (trial run of #11168,
+# 2026-10-01 — 8 of 10 commits untagged). The answer is the build's own claim, so
+# the driver writes it where the project's gate reads it: `<trailer>: <reason>` on
+# every feat/fix commit of the run that lacks it. Messages only; no tree changes.
+# Acts only when the project names its trailer (changelog.skipTrailer), no build
+# answer wrote an entry, and some answer gave a skip reason.
+_driver_tag_changelog_skips() {
+  local t="$1" wt="$2" trailer types all base reason n
+  trailer=$(driver_opt changelog.skipTrailer "")
+  [ -n "$trailer" ] || return 0
+  types=$(driver_opt changelog.skipTypes "feat fix")
+  all="$(driver_state_dir "$t")/steps/build.all.json"
+  [ -s "$all" ] || return 0
+  jq -e -s 'any(.[]; (.changelog.file // "") != "")' "$all" >/dev/null 2>&1 && return 0
+  reason=$(jq -r -s '[.[] | .changelog.skipped // empty | select(. != "")] | first // empty' "$all" 2>/dev/null \
+    | tr '\r\n\t' '   ' | sed -e "s/^[[:space:]]*$trailer:[[:space:]]*//" -e 's/[[:space:]]*$//')
+  [ -n "$reason" ] || return 0
+  base=$(git -C "$wt" merge-base "origin/$INTEGRATION_BRANCH" HEAD 2>/dev/null \
+         || git -C "$wt" merge-base "$INTEGRATION_BRANCH" HEAD 2>/dev/null)
+  [ -n "$base" ] || return 0
+  local re; re="^($(printf '%s' "$types" | tr ' ' '|'))(\(|!|:)"
+  n=0
+  local c
+  for c in $(git -C "$wt" rev-list --no-merges "$base"..HEAD 2>/dev/null); do
+    git -C "$wt" log -1 --format=%s "$c" | grep -qE "$re" || continue
+    git -C "$wt" log -1 --format=%B "$c" | grep -q "^$trailer:" && continue
+    n=$((n+1))
+  done
+  [ "$n" -gt 0 ] || return 0
+  # Each commit is re-written in place by an --exec after it is picked; merges are
+  # kept. Hooks run as for any commit — nothing here skips a check.
+  local script; script="$(driver_state_dir "$t")/steps/changelog-tag.sh"
+  cat > "$script" <<'TAG'
+s=$(git log -1 --format=%s); b=$(git log -1 --format=%B)
+if printf '%s' "$s" | grep -qE "$RE" && ! printf '%s\n' "$b" | grep -q "^$TRAILER:"; then
+  git commit -q --amend --allow-empty -m "$b" -m "$TRAILER: $REASON"
+fi
+TAG
+  if ! ( cd "$wt" && TRAILER="$trailer" REASON="$reason" RE="$re" \
+         git rebase -q --rebase-merges --exec "sh $(printf '%q' "$script")" "$base" ) \
+       > "$(driver_state_dir "$t")/steps/changelog-tag.out" 2>&1; then
+    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+    driver_say "✋ self-check: $n commit(s) lack the '$trailer:' line the build's answer claimed, and adding it failed — $(tail -2 "$(driver_state_dir "$t")/steps/changelog-tag.out" | tr '\n' ' ')"
+    driver_state_set "$t" park_note "the build answered changelog skipped ($reason) and $n commit(s) lack '$trailer:'; writing it failed"
+    return "$DRIVER_E_REFUSED"
+  fi
+  driver_say "   self-check: $n commit(s) carried no '$trailer:' line the build's answer claimed — written: $trailer: $reason"
+  return 0
+}
+
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
   local wt names row name safe cmd rc gtype failed=0 ran=0 empty=""
@@ -44,6 +96,10 @@ driver_step_self_check() { # <ticket>
   # Said before the gates run, and through the ticket's log: each gate's own output goes
   # to a file, so a warning printed inside one is a warning nobody sees.
   driver_check_timeout || true
+
+  # The build's own changelog claim, written where the project's gate reads it.
+  local trc=0; _driver_tag_changelog_skips "$t" "$wt" || trc=$?
+  [ "$trc" -eq 0 ] || return "$trc"
 
   # The SHAPE first. `gates` written as a list reads as no names at all, and the
   # "nothing configured" guard below does not fire because the key is there — so one
