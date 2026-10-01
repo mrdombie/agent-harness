@@ -439,6 +439,10 @@ jq '.design = {"surfacePaths": [":(exclude)**/*.test.ts"]}' \
 rc=0; out=$(driver_step_compare 415 2>&1) || rc=$?
 want "a list of only excludes refuses"   "24" "$rc"
 want_in "saying git would read it as everything" 'only exclude pathspecs' "$out"
+jq '.design = {"surfacePaths": [":(exclude,glob)**/*.test.ts", ""]}' \
+  "$REPO/.claude/harness.json" > "$FIX/h5e.json" && mv "$FIX/h5e.json" "$REPO/.claude/harness.json"
+rc=0; out=$(driver_step_compare 415 2>&1) || rc=$?
+want "so does a long-form exclude beside a blank entry" "24" "$rc"
 jq '.design = {"surfacePaths": ["apps/web/**"]}' \
   "$REPO/.claude/harness.json" > "$FIX/h5e.json" && mv "$FIX/h5e.json" "$REPO/.claude/harness.json"
 
@@ -483,6 +487,12 @@ want_not_in "and not claiming a parity check"        'parity against' "$out"
 want "no model was asked"                "" "$(grep -x compare "$CLAUDE_LOG")"
 want_in "the renders are kept for review" 'shots/a.png' "$(driver_state_get 409 renders)"
 want "and nothing was parked"            "" "$(driver_state_get 409 park_note)"
+driver_state_set 409 design_source approved-picture
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "a plan claiming a picture it never named refuses" "24" "$rc"
+want_in "saying skipping would hide it"  'names none' "$out"
+driver_state_set 409 design_source debugged
+driver_state_set 409 park_note ""
 
 echo "--- T2-4 · with renders it compares against what was approved ---"
 jq '.design.render = "printf \"desk light\\tshots/a.png\\tlight\\t/dashboard/desk\\ndesk dark\\tshots/b.png\\tdark\\t/dashboard/desk\\n\""' \

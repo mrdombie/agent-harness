@@ -32,7 +32,7 @@
 # touch a screen" with a guess.
 driver_surface_paths() {
   [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
-  jq -r '(.design.surfacePaths // []) | .[] | select(type == "string")' "$HARNESS_CFG" 2>/dev/null
+  jq -r '(.design.surfacePaths // []) | .[] | select(type == "string" and (test("^\\s*$") | not))' "$HARNESS_CFG" 2>/dev/null
 }
 
 # driver_touched_surfaces <tree> <trunk> — the changed files matching those globs.
@@ -51,7 +51,7 @@ driver_touched_surfaces() { # <tree> <trunk>
   # Entries are git pathspecs, magic included (`:(exclude)**/*.test.ts`). A list of
   # ONLY excludes means "every other file" to git — every change a screen change —
   # so it is refused rather than read.
-  if ! driver_surface_paths | grep -qvE '^:(\(exclude\)|!|\^)'; then
+  if ! driver_surface_paths | grep -qvE '^:(\(([^)]*,)?exclude[,)]|[/!^]*[!^])'; then
     driver_say "✋ compare: design.surfacePaths holds only exclude pathspecs, which git reads as every other file — name what a screen IS, then exclude from it." >&2
     return 2
   fi
@@ -147,7 +147,13 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
     # such ticket for a person, whatever the renders show (trial 3 rerun, 2026-10-01).
     # The renders are kept: the review step and any reviewer that judges pictures
     # (`needsRenders`) read them against the ticket and the design law.
-    if [ -z "$(driver_state_get "$t" design_ref)" ]; then
+    local ref; ref=$(driver_state_get "$t" design_ref | tr -d '[:space:]')
+    if [ -z "$ref" ] && [ "$(driver_state_get "$t" design_source)" = "approved-picture" ]; then
+      driver_say "✋ compare: the plan says this change has an approved picture and names none, so there is nothing to compare against and skipping would hide it."
+      driver_state_set "$t" park_note "the plan claimed designSource=approved-picture and named no picture"
+      return "$DRIVER_E_REFUSED"
+    fi
+    if [ -z "$ref" ]; then
       driver_say "   compare: no approved picture for this change (designSource=$(driver_state_get "$t" design_source)), so there is nothing to compare the renders against — they go to review as taken."
       return "$DRIVER_OK"
     fi
@@ -155,15 +161,8 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
     # What was approved. The plan answered it — `approved-picture` plus its reference
     # is the pair this whole step exists to hold the renders against — and the design
     # fact is the project's own record of where approvals live.
-    approved=$(driver_state_get "$t" design_ref)
-    if [ -n "$approved" ]; then
-      approved="Approved picture: $approved
+    approved="Approved picture: $(driver_state_get "$t" design_ref)
   Recorded by the plan step as designSource=$(driver_state_get "$t" design_source)."
-    else
-      approved="The plan answered designSource=$(driver_state_get "$t" design_source) and named no approved picture, so there is no picture to compare against — judge the renders against the ticket and this project's design law instead, and say in a difference that no picture was approved.
-
-  $(driver_fact_design "$t")"
-    fi
     route=$(printf '%s\n' "$lines" | awk -F'\t' '{print $4}' | grep -v '^$' | sort -u | tr '\n' ' ')
     [ -n "$(printf '%s' "$route" | tr -d ' ')" ] \
       || route="(the render command named no route on any line — its fourth field is the route each render came from)"

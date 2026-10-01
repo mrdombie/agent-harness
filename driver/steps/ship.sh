@@ -105,7 +105,11 @@ Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
 Claimed at: ${sha:-unknown}
 Head: $head
 
-Renders this run compared against the approved design:
+$(if [ -n "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ]; then
+    echo "Renders this run compared against the approved design:"
+  else
+    echo "Renders this run took (designSource=$(driver_state_get "$t" design_source): no approved picture, so no parity check was made):"
+  fi)
 $(driver_state_get "$t" renders | sed 's/^/  /')
 PRBODY
 )
