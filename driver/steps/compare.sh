@@ -48,6 +48,13 @@ driver_touched_surfaces() { # <tree> <trunk>
   local wt="$1" trunk="$2" globs out
   globs=$(driver_surface_paths | tr '\n' ' ')
   [ -n "$(printf '%s' "$globs" | tr -d ' ')" ] || return 0
+  # Entries are git pathspecs, magic included (`:(exclude)**/*.test.ts`). A list of
+  # ONLY excludes means "every other file" to git — every change a screen change —
+  # so it is refused rather than read.
+  if ! driver_surface_paths | grep -qvE '^:(\(exclude\)|!|\^)'; then
+    driver_say "✋ compare: design.surfacePaths holds only exclude pathspecs, which git reads as every other file — name what a screen IS, then exclude from it." >&2
+    return 2
+  fi
   set -f
   # shellcheck disable=SC2086
   out=$(git -C "$wt" diff --name-only "$trunk...HEAD" -- $globs 2>/dev/null)
@@ -76,7 +83,9 @@ driver_step_compare() { # <ticket>
     return "$DRIVER_OK"
   fi
 
-  touched=$(driver_touched_surfaces "$wt" "$trunk")
+  touched=$(driver_touched_surfaces "$wt" "$trunk") || {
+    driver_state_set "$t" park_note "design.surfacePaths holds only exclude pathspecs, which git reads as every other file"
+    return "$DRIVER_E_REFUSED"; }
   if [ -z "$touched" ]; then
     driver_state_set "$t" renders \
       "(none — this change touches no file under this project's design.surfacePaths, so there is no screen to render)"
@@ -131,6 +140,17 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
     fi
     driver_state_set "$t" renders "$lines"
     driver_say "   compare: $n render(s) taken${pass:+ (pass $pass)}"
+
+    # NO APPROVED PICTURE, NO PARITY CHECK. A debugged or ticket-body change has no
+    # picture to hold the renders beside, and asked to compare anyway the step listed
+    # "no approved picture exists" as a difference that stands — which parks every
+    # such ticket for a person, whatever the renders show (trial 3 rerun, 2026-10-01).
+    # The renders are kept: the review step and any reviewer that judges pictures
+    # (`needsRenders`) read them against the ticket and the design law.
+    if [ -z "$(driver_state_get "$t" design_ref)" ]; then
+      driver_say "   compare: no approved picture for this change (designSource=$(driver_state_get "$t" design_source)), so there is nothing to compare the renders against — they go to review as taken."
+      return "$DRIVER_OK"
+    fi
 
     # What was approved. The plan answered it — `approved-picture` plus its reference
     # is the pair this whole step exists to hold the renders against — and the design
