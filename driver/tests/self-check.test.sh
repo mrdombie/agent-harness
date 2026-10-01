@@ -143,6 +143,17 @@ want "and the tree is byte-identical, merge and all" "$TREE" "$(git -C "$FIX/wt1
 driver_step_self_check 140 >/dev/null 2>&1
 want "a second self-check does not say it twice"   "1" "$(git -C "$FIX/wt140" log --format=%B "$BEFORE"..HEAD | grep -c '^no-changelog-branch:')"
 
+echo "--- staged work is never swept into the note; a mention mid-sentence is not the line ---"
+git -C "$FIX/wt140" reset -q --hard "$BEFORE"
+git -C "$FIX/wt140" -c user.email=t@e.invalid -c user.name=T commit -q --allow-empty -m "docs: note" -m "We could add no-changelog-branch: later."
+MID=$(git -C "$FIX/wt140" rev-parse HEAD)
+printf 'staged\n' > "$FIX/wt140/staged.txt"; git -C "$FIX/wt140" add staged.txt
+driver_step_self_check 140 >/dev/null 2>&1
+want "a mid-sentence mention does not count: the note is added" "$MID" "$(git -C "$FIX/wt140" rev-parse HEAD~1)"
+want "and the note commit is empty — the staged file is not in it" "" "$(git -C "$FIX/wt140" show --name-only --format= HEAD)"
+want_in "the staged file is still staged"      'staged.txt' "$(git -C "$FIX/wt140" diff --cached --name-only)"
+git -C "$FIX/wt140" reset -q --hard "$BEFORE"
+
 echo "--- not every build answer skipped, or no project trailer: nothing is added ---"
 git -C "$FIX/wt140" reset -q --hard "$BEFORE"
 printf '%s\n' '{"step":"build","changelog":{"skipped":"tooling"}}' '{"step":"build"}' > "$(driver_state_dir 140)/steps/build.all.json"

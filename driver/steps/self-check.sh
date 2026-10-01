@@ -57,11 +57,12 @@ _driver_note_changelog_skip() {
          || git -C "$wt" merge-base "$INTEGRATION_BRANCH" HEAD 2>/dev/null)
   [ -n "$base" ] || return 0
   for c in $(git -C "$wt" rev-list "$base"..HEAD 2>/dev/null); do
-    git -C "$wt" log -1 --format=%B "$c" | grep -qF "$trailer:" && return 0
+    git -C "$wt" log -1 --format=%B "$c" \
+      | awk -v t="$trailer:" 'index($0, t) == 1 && substr($0, length(t) + 1) ~ /[^[:space:]]/ { f = 1 } END { exit !f }' && return 0
   done
   # A normal commit: the project's hooks run on it, nothing is skipped.
   out="$(driver_state_dir "$t")/steps/changelog-note.out"
-  if ! git -C "$wt" commit -q --allow-empty -m "chore: no changelog for #$t" -m "$trailer: $reason" > "$out" 2>&1; then
+  if ! git -C "$wt" commit -q --only --allow-empty -m "$(driver_opt commit.parkType chore): no changelog for #$t" -m "$trailer: $reason" > "$out" 2>&1; then
     driver_say "✋ self-check: the build answered 'no changelog' and the commit saying so for the branch could not be made — $(tail -2 "$out" | tr '\n' ' ')"
     driver_state_set "$t" park_note "could not commit '$trailer: $reason' for the branch: $(tail -2 "$out" | tr '\n' ' ' | cut -c1-200)"
     return "$DRIVER_E_REFUSED"
