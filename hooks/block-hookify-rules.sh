@@ -114,7 +114,11 @@ if has "${START}${GIT}commit[^;&|]*$S(--no-verify|-[a-zA-Z]*n[a-zA-Z]*)$EOW" \
 fi
 has "${START}${GIT}(reset$S+--hard|stash$S+pop|clean$S+-[a-zA-Z]*[fd])" && deny "reset --hard / stash pop / clean -f destroys a peer agent's uncommitted work in a shared worktree. Branch a backup first (git branch backup/<n>) and ask."
 has "${START}${GIT}add$S+(-A|--all|\.)$EOW" && deny "git add -A / . stages the node_modules symlink in a worktree. Add files by path."
-if has "${START}(sudo$S+)?npm$S+(install|i|ci)($S|$)" && ! hasF "--dry-run" && ! hasF "# in the main clone" && ! hasF "# main-clone install"; then deny "Worktrees share node_modules by symlink; npm install here breaks every other agent mid-build. Use --dry-run, or install at the MAIN CLONE with peers stopped and append '# main-clone install' (the same escape the hookify rule reads)."; fi
+# --package-lock-only rewrites package-lock.json and never reads or writes
+# node_modules, so it cannot break a peer's linked install. It is the one way to
+# repair a dependency bot's PR whose lockfile it failed to refresh (2026-10-01:
+# two security updates sat red behind this rule with no other way through).
+if has "${START}(sudo$S+)?npm$S+(install|i|ci)($S|$)" && ! hasF "--dry-run" && ! hasF "--package-lock-only" && ! hasF "# in the main clone" && ! hasF "# main-clone install"; then deny "Worktrees share node_modules by symlink; npm install here breaks every other agent mid-build. Use --dry-run, or install at the MAIN CLONE with peers stopped and append '# main-clone install' (the same escape the hookify rule reads)."; fi
 # The finish flow owns PRs against THE CONFIGURED PROJECT, because that is where
 # its gates, trailer, changelog and claim release apply. A PR against a DIFFERENT
 # repo — this kit itself, a sister repo — has none of those, and blocking it
