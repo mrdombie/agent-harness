@@ -106,6 +106,15 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
     return "$DRIVER_OK"
   fi
 
+  # A PLAN THAT CLAIMS A PICTURE AND NAMES NONE is checked before anything is
+  # rendered: only a person (or a re-plan) can answer it, so resuming would refuse again.
+  if [ -z "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ] && [ "$(driver_state_get "$t" design_source)" = "approved-picture" ]; then
+    driver_say "✋ compare: the plan says this change has an approved picture and names none, so there is nothing to compare against and skipping would hide it."
+    driver_state_set "$t" park_note "the plan claimed designSource=approved-picture and named no picture — re-run the plan step or name the picture"
+    driver_state_set "$t" park_cause person
+    return "$DRIVER_E_REFUSED"
+  fi
+
   # ONE RENDER PER LINE: name<TAB>path<TAB>theme<TAB>route. The command is the
   # project's; the shape is the kit's, because the compare contract needs those
   # four things and a free-form blob would be a second parser per project.
@@ -148,11 +157,6 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
     # The renders are kept: the review step and any reviewer that judges pictures
     # (`needsRenders`) read them against the ticket and the design law.
     local ref; ref=$(driver_state_get "$t" design_ref | tr -d '[:space:]')
-    if [ -z "$ref" ] && [ "$(driver_state_get "$t" design_source)" = "approved-picture" ]; then
-      driver_say "✋ compare: the plan says this change has an approved picture and names none, so there is nothing to compare against and skipping would hide it."
-      driver_state_set "$t" park_note "the plan claimed designSource=approved-picture and named no picture"
-      return "$DRIVER_E_REFUSED"
-    fi
     if [ -z "$ref" ]; then
       driver_say "   compare: no approved picture for this change (designSource=$(driver_state_get "$t" design_source)), so there is nothing to compare the renders against — they go to review as taken."
       return "$DRIVER_OK"
