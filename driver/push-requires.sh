@@ -32,7 +32,8 @@
 # the driver then runs that reviewer itself — one `claude -p --agent`, the lean flags
 # every step carries, the diff and renders on stdin, its spend under
 # usage["attest-<name>"] — and hands its answer to `record` exactly as a `review`
-# command's output would be (#11172).
+# command's output would be (#11172). `"needsRenders": true` marks a reviewer that
+# judges pictures: with no render on the record it refuses instead of running.
 #
 # `{{SHA}}` and `{{BASE}}` are substituted in `owed` and `record` — the commit the
 # reviewer looked at, and the trunk the diff is taken against. A bare string in
@@ -180,13 +181,13 @@ driver_push_requires() { # <ticket>
   local rows owed orc
   rows=$(jq -r '(.review.attest // {}) | to_entries[]
                 | (if (.value | type) == "string" then {owed: .value} else .value end) as $v
-                | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // ""), ($v.agent // "")] | join("\u001f")' "$HARNESS_CFG" 2>/dev/null)
+                | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // ""), ($v.agent // ""), (if $v.needsRenders == true then "yes" else "" end)] | join("\u001f")' "$HARNESS_CFG" 2>/dev/null)
   [ -n "$rows" ] || return 0
 
   # A UNIT SEPARATOR, NOT A TAB. Tab is whitespace to `read`, so an empty field
   # between two tabs collapses and every later field shifts left: a row with no
   # `review` read its recorder as the reviewer and ran it (#11172).
-  while IFS=$'\x1f' read -r name owed review record agent; do
+  while IFS=$'\x1f' read -r name owed review record agent needs_renders; do
     [ -n "$name" ] || continue
     [ -n "$owed$review$agent" ] || continue
     # AN AGENT IS A REVIEWER THE DRIVER RUNS ITSELF. `review` is a command the project
@@ -212,6 +213,15 @@ driver_push_requires() { # <ticket>
         driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict on this diff, and harness.json's review.attest.$name names no review/record the driver can run, so only a person can earn it: $(_driver_first_line "$DRIVER_OWED_OUT")"
         return "$DRIVER_E_REFUSED"
       fi
+    fi
+
+    # A REVIEWER THAT JUDGES PICTURES IS NOT RUN WITHOUT ANY. Handed "(none were
+    # taken)", it is being asked to guess, and a guess recorded as SHIP is the
+    # attestation nobody earned. `needsRenders` makes that a refusal, by name.
+    if [ "$needs_renders" = "yes" ] && ! driver_state_get "$t" renders | grep -q "$(printf '\t')"; then
+      driver_say "✋ push-requires: '$name' judges rendered screens and none were taken for this change, so only a person can earn it."
+      driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict, '$name' judges rendered screens, and no render was taken for this change: $(driver_state_get "$t" renders | head -1 | cut -c1-300)"
+      return "$DRIVER_E_REFUSED"
     fi
 
     # The reviewer, in the ticket's worktree, with its output kept whole.
