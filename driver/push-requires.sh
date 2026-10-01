@@ -218,7 +218,7 @@ driver_push_requires() { # <ticket>
     # A REVIEWER THAT JUDGES PICTURES IS NOT RUN WITHOUT ANY. Handed "(none were
     # taken)", it is being asked to guess, and a guess recorded as SHIP is the
     # attestation nobody earned. `needsRenders` makes that a refusal, by name.
-    if [ "$needs_renders" = "yes" ] && ! driver_state_get "$t" renders | grep -q "$(printf '\t')"; then
+    if [ "$needs_renders" = "yes" ] && ! driver_state_get "$t" renders | awk -F'\t' '$3 == "light" || $3 == "dark" { found = 1 } END { exit !found }'; then
       driver_say "✋ push-requires: '$name' judges rendered screens and none were taken for this change, so only a person can earn it."
       driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict, '$name' judges rendered screens, and no render was taken for this change: $(driver_state_get "$t" renders | head -1 | cut -c1-300)"
       return "$DRIVER_E_REFUSED"
