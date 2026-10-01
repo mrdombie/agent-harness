@@ -36,6 +36,41 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
+# _driver_note_changelog_skip <ticket> <tree> — the build steps answered `changelog:
+# {skipped: <reason>}`, and their commits did not carry the project's skip line: the
+# push was refused after review was paid for (trial run of #11168, 2026-10-01). When
+# the project's gate accepts ONE branch-wide line (changelog.branchTrailer), the
+# driver adds one empty commit carrying `<trailer>: <reason>` — no history is
+# rewritten. Only when EVERY build answer reported skipped, and no commit on the
+# branch already carries the line.
+_driver_note_changelog_skip() {
+  local t="$1" wt="$2" trailer all reason base c out
+  trailer=$(driver_opt changelog.branchTrailer "")
+  [ -n "$trailer" ] || return 0
+  all="$(driver_state_dir "$t")/steps/build.all.json"
+  [ -s "$all" ] || return 0
+  jq -e -s 'length > 0 and all(.[]; ((.changelog.skipped // "") | gsub("\\s"; "")) != "")' "$all" >/dev/null 2>&1 || return 0
+  reason=$(jq -r -s '[.[] | .changelog.skipped] | first' "$all" 2>/dev/null | tr '\r\n\t' '   ' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c1-200)
+  [ -n "$reason" ] || return 0
+  base=$(git -C "$wt" merge-base "origin/$INTEGRATION_BRANCH" HEAD 2>/dev/null \
+         || git -C "$wt" merge-base "$INTEGRATION_BRANCH" HEAD 2>/dev/null)
+  [ -n "$base" ] || return 0
+  for c in $(git -C "$wt" rev-list "$base"..HEAD 2>/dev/null); do
+    git -C "$wt" log -1 --format=%B "$c" \
+      | awk -v t="$trailer:" 'index($0, t) == 1 && substr($0, length(t) + 1) ~ /[^[:space:]]/ { f = 1 } END { exit !f }' && return 0
+  done
+  # A normal commit: the project's hooks run on it, nothing is skipped.
+  out="$(driver_state_dir "$t")/steps/changelog-note.out"
+  if ! git -C "$wt" commit -q --only --allow-empty -m "$(driver_opt commit.parkType chore): no changelog for #$t" -m "$trailer: $reason" > "$out" 2>&1; then
+    driver_say "✋ self-check: the build answered 'no changelog' and the commit saying so for the branch could not be made — $(tail -2 "$out" | tr '\n' ' ')"
+    driver_state_set "$t" park_note "could not commit '$trailer: $reason' for the branch: $(tail -2 "$out" | tr '\n' ' ' | cut -c1-200)"
+    return "$DRIVER_E_REFUSED"
+  fi
+  driver_say "   self-check: every build step answered 'no changelog' — said once for the branch: $trailer: $reason"
+  return 0
+}
+
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
   local wt names row name safe cmd rc gtype failed=0 ran=0 empty=""
@@ -44,6 +79,10 @@ driver_step_self_check() { # <ticket>
   # Said before the gates run, and through the ticket's log: each gate's own output goes
   # to a file, so a warning printed inside one is a warning nobody sees.
   driver_check_timeout || true
+
+  # The build's own changelog claim, written where the project's gate reads it.
+  local trc=0; _driver_note_changelog_skip "$t" "$wt" || trc=$?
+  [ "$trc" -eq 0 ] || return "$trc"
 
   # The SHAPE first. `gates` written as a list reads as no names at all, and the
   # "nothing configured" guard below does not fire because the key is there — so one
