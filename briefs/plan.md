@@ -82,6 +82,7 @@ the slice mistakes this gate exists to stop. Return a question instead.
 Set `screenChange`: `visible` if a user will see the change, else `none`. A
 `visible` change names each state that shows it in `screenStates` (`route`,
 `setup` steps in the vocabulary above, what a reviewer should see in `shows`).
+Unsure? Ask.
 
 ## Return
 

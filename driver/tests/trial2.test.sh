@@ -518,7 +518,7 @@ rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
 want "visible with no state refuses"     "24" "$rc"
 want_in "saying the plan named no state"  'named no screen state' "$out"
 want "for a person, so a resume does not loop" "person" "$(driver_state_get 409 park_cause)"
-want_in "and the note gives the command"  'build-ticket 409 --steps' "$(driver_state_get 409 park_note)"
+want_in "and the note gives a command that re-runs plan" 'build-ticket 409 --restart --steps plan && build-ticket 409' "$(driver_state_get 409 park_note)"
 driver_state_set 409 park_cause ""
 driver_state_set 409 park_note ""
 driver_state_set 409 screen_change none
@@ -531,6 +531,13 @@ driver_state_set 409 screen_change visible
 driver_state_set 409 screen_states '[{"route":"/dashboard/desk","setup":["click the \"Save\" button"],"shows":"saved"}]'
 rc=0; driver_step_compare 409 >/dev/null 2>&1 || rc=$?
 want "visible with a state named runs"   "0" "$rc"
+jq 'del(.design.renderSteps)' \
+  "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
+driver_state_set 409 screen_states '[]'
+rc=0; driver_step_compare 409 >/dev/null 2>&1 || rc=$?
+want "a project whose renderer takes no steps is never refused for it" "0" "$rc"
+jq '.design.renderSteps = "click the \"<name>\" <role>"' \
+  "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
 
 echo "--- T2-4 · SCREEN_STEPS is the project's vocabulary, inline or from a file ---"
 want_in "inline"  'click the "<name>" <role>' "$(driver_fact_screen_steps 409)"

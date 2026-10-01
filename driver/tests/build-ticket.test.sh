@@ -497,4 +497,18 @@ want "it stops"                    "20" "$rc"
 want_in "because the Skill never ran" 'does not contain any of those Skill calls' "$out"
 want_in "and the ticket is parked"    'parked' "$out"
 
+echo "--- the re-plan command compare's park note gives re-runs plan, then carries on (#11208) ---"
+# A plan that called a change visible and named no screen state parks at compare,
+# and the note says: build-ticket N --restart --steps plan && build-ticket N.
+# Without --restart, a done plan is skipped and compare refuses again for ever.
+reset_fakes "compare:24 0"
+out=$(bt 130); rc=$?
+want "the first walk stops at compare" "start plan build fix compare" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+: > "$RAN"
+out=$(bt 130 --restart --steps plan); rc=$?
+want "the first half of the command runs plan again" "plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+: > "$RAN"
+out=$(bt 130); rc=$?
+want "and the second carries on from compare" "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
 exit $FAILED

@@ -125,9 +125,10 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
   # renders as it always did — surfacePaths is wider than "a user sees it", and the
   # plan is the step that can tell the difference.
   local states; states=$(driver_state_get "$t" screen_states); [ -n "$states" ] || states="[]"
-  if [ "$(driver_state_get "$t" screen_change)" = "visible" ] && [ "$(printf '%s' "$states" | jq 'length' 2>/dev/null)" = "0" ]; then
+  if [ -n "$(driver_opt design.renderSteps "")" ] && [ "$(driver_state_get "$t" screen_change)" = "visible" ] \
+     && [ "$(printf '%s' "$states" | jq 'length' 2>/dev/null)" = "0" ]; then
     driver_say "✋ compare: the plan called this change visible and named no screen state that shows it, so a render would photograph the page and not the change."
-    driver_state_set "$t" park_note "the plan called the change visible and named no screenStates — re-plan it: build-ticket $t --steps \"plan compare self-check review record ship\""
+    driver_state_set "$t" park_note "the plan called the change visible and named no screenStates — re-plan it, then carry on: build-ticket $t --restart --steps plan && build-ticket $t"
     driver_state_set "$t" park_cause person
     return "$DRIVER_E_REFUSED"
   fi
