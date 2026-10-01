@@ -507,18 +507,30 @@ rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
 want "it finishes"                       "0" "$rc"
 want_in "the renderer was handed the states" 'the footer names 280 once' "$(driver_state_get 409 renders)"
 
-echo "--- T2-4 · a renderer that takes steps, and a plan that named no state, refuses ---"
+echo "--- T2-4 · only a plan that called the change visible and named no state refuses ---"
+# surfacePaths is wider than "a user sees it", so the plan says which. A plan that
+# says `none`, or a run planned before screenStates, renders as it always did.
 jq '.design.renderSteps = "click the \"<name>\" <role>"' \
   "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
 driver_state_set 409 screen_states '[]'
-: > "$CLAUDE_LOG"
+driver_state_set 409 screen_change visible
 rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
-want "it refuses"                        "24" "$rc"
+want "visible with no state refuses"     "24" "$rc"
 want_in "saying the plan named no state"  'named no screen state' "$out"
-want_in "and the park says re-run the plan" 're-run the plan step' "$(driver_state_get 409 park_note)"
+want "for a person, so a resume does not loop" "person" "$(driver_state_get 409 park_cause)"
+want_in "and the note gives the command"  'build-ticket 409 --steps' "$(driver_state_get 409 park_note)"
+driver_state_set 409 park_cause ""
+driver_state_set 409 park_note ""
+driver_state_set 409 screen_change none
+rc=0; driver_step_compare 409 >/dev/null 2>&1 || rc=$?
+want "none renders as before"            "0" "$rc"
+driver_state_set 409 screen_change ""
+rc=0; driver_step_compare 409 >/dev/null 2>&1 || rc=$?
+want "and so does a plan from before screenStates" "0" "$rc"
+driver_state_set 409 screen_change visible
 driver_state_set 409 screen_states '[{"route":"/dashboard/desk","setup":["click the \"Save\" button"],"shows":"saved"}]'
 rc=0; driver_step_compare 409 >/dev/null 2>&1 || rc=$?
-want "with a state named it runs"        "0" "$rc"
+want "visible with a state named runs"   "0" "$rc"
 
 echo "--- T2-4 · SCREEN_STEPS is the project's vocabulary, inline or from a file ---"
 want_in "inline"  'click the "<name>" <role>' "$(driver_fact_screen_steps 409)"

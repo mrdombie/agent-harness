@@ -120,13 +120,15 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
   # four things and a free-form blob would be a second parser per project.
   # THE STATES THE PLAN NAMED, handed to the renderer as JSON in DRIVER_RENDER_STATES
   # so it captures the state the change shows in, not only a page's standard ones.
-  # A project whose renderer takes setup steps (design.renderSteps) and a plan that
-  # named none for a screen change is refused: pictures that miss the change prove
-  # nothing, and the plan step is the one that can say which state shows it.
+  # Only the contradiction is refused: a plan that called the change `visible` and
+  # named no state. `none`, or no answer at all (a plan from before screenStates),
+  # renders as it always did — surfacePaths is wider than "a user sees it", and the
+  # plan is the step that can tell the difference.
   local states; states=$(driver_state_get "$t" screen_states); [ -n "$states" ] || states="[]"
-  if [ -n "$(driver_opt design.renderSteps "")" ] && [ "$(printf '%s' "$states" | jq 'length' 2>/dev/null)" = "0" ]; then
-    driver_say "✋ compare: this change touches a screen and the plan named no screen state that shows it, so a render would photograph the page and not the change."
-    driver_state_set "$t" park_note "the plan named no screenStates for a change that touches a screen ($(printf '%s\n' "$touched" | head -3 | tr '\n' ' ')) — re-run the plan step so it names the state that shows the change"
+  if [ "$(driver_state_get "$t" screen_change)" = "visible" ] && [ "$(printf '%s' "$states" | jq 'length' 2>/dev/null)" = "0" ]; then
+    driver_say "✋ compare: the plan called this change visible and named no screen state that shows it, so a render would photograph the page and not the change."
+    driver_state_set "$t" park_note "the plan called the change visible and named no screenStates — re-plan it: build-ticket $t --steps \"plan compare self-check review record ship\""
+    driver_state_set "$t" park_cause person
     return "$DRIVER_E_REFUSED"
   fi
 

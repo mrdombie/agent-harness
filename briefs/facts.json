@@ -17,10 +17,7 @@
     "plan": {
       "brief": "plan.md",
       "schema": "schemas/plan.json",
-      "skills": [
-        "superpowers:systematic-debugging",
-        "superpowers:writing-plans"
-      ],
+      "skills": ["superpowers:systematic-debugging", "superpowers:writing-plans"],
       "facts": {
         "TICKET": "the ticket body, verbatim, including its acceptance criteria and its type labels",
         "DESIGN": "the approved design or spec this ticket builds to, and where that approval is recorded",
@@ -34,10 +31,7 @@
     "build": {
       "brief": "build.md",
       "schema": "schemas/build.json",
-      "skills": [
-        "superpowers:subagent-driven-development",
-        "superpowers:test-driven-development"
-      ],
+      "skills": ["superpowers:subagent-driven-development", "superpowers:test-driven-development"],
       "facts": {
         "PLAN_TASK": "one task from the plan step's answer: its title, files, tests and risks",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: gate commands, changelog convention, the component kit",
@@ -48,9 +42,7 @@
     "compare": {
       "brief": "compare.md",
       "schema": "schemas/compare.json",
-      "skills": [
-        "superpowers:verification-before-completion"
-      ],
+      "skills": ["superpowers:verification-before-completion"],
       "facts": {
         "APPROVED": "what was approved, and where that approval is recorded",
         "RENDERS": "the renders taken from the real route in this run: name, file, theme",
@@ -60,9 +52,7 @@
     "review": {
       "brief": "review.md",
       "schema": "schemas/review.json",
-      "skills": [
-        "superpowers:requesting-code-review"
-      ],
+      "skills": ["superpowers:requesting-code-review"],
       "facts": {
         "DIFF": "the change under review, against the trunk it will merge into",
         "RENDERS": "the renders of every screen the change touches, both themes — empty when it touches none",
@@ -73,10 +63,7 @@
     "fix": {
       "brief": "fix.md",
       "schema": "schemas/fix.json",
-      "skills": [
-        "superpowers:receiving-code-review",
-        "superpowers:test-driven-development"
-      ],
+      "skills": ["superpowers:receiving-code-review", "superpowers:test-driven-development"],
       "facts": {
         "BLOCKERS": "the review step's findings graded critical or major — the only two grades that come back here — each with its id, file, line, grade, summary, reason and proposed fix",
         "DIFF": "the change as it stands, against the trunk it will merge into",

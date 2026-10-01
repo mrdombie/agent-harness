@@ -187,6 +187,13 @@
           }
         }
       }
+    },
+    "screenChange": {
+      "description": "Whether a user will see this change: `visible` (name the states in screenStates) or `none`. compare refuses only a `visible` change with no state named.",
+      "enum": [
+        "visible",
+        "none"
+      ]
     }
   },
   "if": {

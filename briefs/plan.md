@@ -22,7 +22,7 @@ person anything; when you need to, return a question and the driver parks it.
 - The premise gather: {{PREMISE_REPORT}}
 - Already in flight: {{IN_FLIGHT}}
 - This project: {{PROJECT_FACTS}}
-- The screen steps this project's renderer can perform: {{SCREEN_STEPS}}
+- Screen steps the renderer performs: {{SCREEN_STEPS}}
 
 ## The premise verdict is yours
 
@@ -77,15 +77,11 @@ and a missed one ships a screen with nothing behind it.
 Refusing a fine ticket costs a clarification. Accepting an unplannable one costs
 the slice mistakes this gate exists to stop. Return a question instead.
 
-## A change a person will see names the screen that shows it
+## A visible change names the screen that shows it
 
-A page's standard screenshots rarely show the state a change touches, and a review
-of pictures that miss the change proves nothing. So for every change a user will
-see, `screenStates` names each state that shows it: the `route`, the `setup` steps
-that bring the change into view, and what a reviewer should see (`shows`). Write
-the steps only in the vocabulary given above. If you cannot name a state that
-shows the change, ask rather than guess. Leave `screenStates` empty when nothing a
-user sees changes, or when the renderer takes no steps.
+Set `screenChange`: `visible` if a user will see the change, else `none`. A
+`visible` change names each state that shows it in `screenStates` (`route`,
+`setup` steps in the vocabulary above, what a reviewer should see in `shows`).
 
 ## Return
 

@@ -68,8 +68,9 @@ want_in "and says test-first is the point" 'test' "$out"
 echo "--- the plan's screen states are recorded for the renderer (#11208) ---"
 driver_state_init 120
 fix_issue 120 OPEN "status:claimed"
-fix_ai plan '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"debugged","premise":{"verdict":"still-true","evidence":"a.sh:1"},"tasks":[{"title":"t","files":[{"path":"a.sh","action":"modify"}],"tests":[{"file":"a.test.sh","behaviour":"b","redWhen":"r"}]}],"screenStates":[{"route":"/x","setup":["open the X tab"],"shows":"280 once"}]}' superpowers:writing-plans
+fix_ai plan '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"debugged","premise":{"verdict":"still-true","evidence":"a.sh:1"},"tasks":[{"title":"t","files":[{"path":"a.sh","action":"modify"}],"tests":[{"file":"a.test.sh","behaviour":"b","redWhen":"r"}]}],"screenChange":"visible","screenStates":[{"route":"/x","setup":["open the X tab"],"shows":"280 once"}]}' superpowers:writing-plans
 driver_step_plan 120 >/dev/null 2>&1
 want "they are on the record" "/x" "$(driver_state_get 120 screen_states | jq -r '.[0].route')"
+want "and so is whether the change is visible" "visible" "$(driver_state_get 120 screen_change)"
 
 exit $FAILED
