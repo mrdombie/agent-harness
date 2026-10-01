@@ -135,7 +135,12 @@ PRBODY
   # A PULL REQUEST A PARK ALREADY OPENED carries the park's title and body. Shipping
   # rewrites both, or the shipped PR says "parked" and carries none of this evidence.
   local open_pr
-  open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null)
+  # A FAILED LOOKUP IS NOT "NO PULL REQUEST": read as one, the edit is skipped and a
+  # parked PR ships with the park's words. Asked and refused, it parks.
+  open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
+    driver_say "✋ ship: could not ask GitHub whether $branch already has a pull request, so its title and body cannot be made right."
+    driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
+    return "$DRIVER_E_REFUSED"; }
   if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
     # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
     # body ships "parked" as its squash subject, without the section the gate judged.
@@ -153,7 +158,8 @@ PRBODY
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
-  # carries a "## Deleted tests" section only for what build and fix reported, so a branch that deletes a test file or drops
+  # carries a "## Deleted tests" section only for what build and fix
+  # reported, so a branch that deletes a test file or drops
   # it(/test( cases stops here as a draft — pushed and visible, never auto-merged —
   # with the files named for whoever picks the park up. On the origin project eleven
   # test files went in one merge, one of them pinned a behaviour the rebuild dropped,

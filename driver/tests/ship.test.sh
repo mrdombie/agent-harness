@@ -357,4 +357,18 @@ want_in "saying it would ship the park's words"     "park's words" "$out"
 want_not_in "and it is never marked ready"          'pr ready' "$(cat "$GH_LOG")"
 rm -f "$FIX/gh-fail"; printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a pull request lookup that fails refuses, rather than reading as none ---"
+git -C "$REPO" worktree add -q "$FIX/wt121" -b tkt-121/work develop
+printf 'x\n' > "$FIX/wt121/f121.txt"; git -C "$FIX/wt121" add f121.txt
+git -C "$FIX/wt121" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: thing"
+driver_state_init 121 --worktree "$FIX/wt121" --branch tkt-121/work
+driver_state_put 121 review '{"verdict":"SHIP","findings":[]}'
+fix_issue 121 OPEN "status:claimed"
+printf 'pr list\n' > "$FIX/gh-fail"
+: > "$GH_LOG"
+out=$(driver_step_ship 121 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "saying it could not ask"          'could not ask GitHub' "$out"
+want_not_in "and nothing is marked ready"  'pr ready' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh-fail"
 exit $FAILED
