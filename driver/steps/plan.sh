@@ -70,6 +70,8 @@ driver_step_plan() { # <ticket>
   # holds the renders against exactly this reference. The contract requires the two
   # together, so reading one without the other is how they come apart.
   driver_state_set "$t" design_ref "$(jq -r '.designRef // ""' "$ans")"
+  # The screen states the change shows in, for the renderer to capture exactly.
+  driver_state_set "$t" screen_states "$(jq -c '.screenStates // []' "$ans")"
   driver_say "   plan: $(jq -r '[.tasks[]?] | length' "$ans") task(s), $(jq -r '[.tasks[]?.files[]?] | length' "$ans") file(s), $ntests test(s); posted on #$t"
   return "$DRIVER_OK"
 }

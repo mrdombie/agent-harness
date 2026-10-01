@@ -118,9 +118,21 @@ $(printf '%s\n' "$touched" | sed 's/^/  /'))"
   # ONE RENDER PER LINE: name<TAB>path<TAB>theme<TAB>route. The command is the
   # project's; the shape is the kit's, because the compare contract needs those
   # four things and a free-form blob would be a second parser per project.
+  # THE STATES THE PLAN NAMED, handed to the renderer as JSON in DRIVER_RENDER_STATES
+  # so it captures the state the change shows in, not only a page's standard ones.
+  # A project whose renderer takes setup steps (design.renderSteps) and a plan that
+  # named none for a screen change is refused: pictures that miss the change prove
+  # nothing, and the plan step is the one that can say which state shows it.
+  local states; states=$(driver_state_get "$t" screen_states); [ -n "$states" ] || states="[]"
+  if [ -n "$(driver_opt design.renderSteps "")" ] && [ "$(printf '%s' "$states" | jq 'length' 2>/dev/null)" = "0" ]; then
+    driver_say "✋ compare: this change touches a screen and the plan named no screen state that shows it, so a render would photograph the page and not the change."
+    driver_state_set "$t" park_note "the plan named no screenStates for a change that touches a screen ($(printf '%s\n' "$touched" | head -3 | tr '\n' ' ')) — re-run the plan step so it names the state that shows the change"
+    return "$DRIVER_E_REFUSED"
+  fi
+
   local pass=1
   while : ; do
-    out=$( ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
+    out=$( ( cd "$wt" && export DRIVER_RENDER_STATES="$states" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) 2>&1 ); rc=$?
     if [ "$rc" -eq 124 ]; then
       driver_say "✋ compare: the render command did not return within ${DRIVER_CMD_TIMEOUT}s — $cmd"
       driver_state_set "$t" park_note "this project's design.render command did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"

@@ -494,6 +494,44 @@ want_in "saying skipping would hide it"  'names none' "$out"
 driver_state_set 409 design_source debugged
 driver_state_set 409 park_note ""
 
+echo "--- T2-4 · the plan's screen states reach the renderer (#11208) ---"
+# A page's standard shots rarely show the state a change touches. The plan names
+# the state; the renderer gets it, as JSON, to capture exactly that.
+jq '.design.render = "sh -c '"'"'printf \"ticket light\\tshots/t.png\\tlight\\t%s\\n\" \"$DRIVER_RENDER_STATES\"'"'"'"' \
+  "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
+driver_state_set 409 design_ref ""
+driver_state_set 409 design_source debugged
+driver_state_set 409 park_note ""
+driver_state_set 409 screen_states '[{"route":"/dashboard/desk","setup":["open the X tab"],"shows":"the footer names 280 once"}]'
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "it finishes"                       "0" "$rc"
+want_in "the renderer was handed the states" 'the footer names 280 once' "$(driver_state_get 409 renders)"
+
+echo "--- T2-4 · a renderer that takes steps, and a plan that named no state, refuses ---"
+jq '.design.renderSteps = "click the \"<name>\" <role>"' \
+  "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
+driver_state_set 409 screen_states '[]'
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "it refuses"                        "24" "$rc"
+want_in "saying the plan named no state"  'named no screen state' "$out"
+want_in "and the park says re-run the plan" 're-run the plan step' "$(driver_state_get 409 park_note)"
+driver_state_set 409 screen_states '[{"route":"/dashboard/desk","setup":["click the \"Save\" button"],"shows":"saved"}]'
+rc=0; driver_step_compare 409 >/dev/null 2>&1 || rc=$?
+want "with a state named it runs"        "0" "$rc"
+
+echo "--- T2-4 · SCREEN_STEPS is the project's vocabulary, inline or from a file ---"
+want_in "inline"  'click the "<name>" <role>' "$(driver_fact_screen_steps 409)"
+printf '# steps\n- click the "<name>" <role>\n' > "$FIX/wt409/render-steps.md"
+jq '.design.renderSteps = "render-steps.md"' \
+  "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
+want_in "or the file it names, read from the ticket's tree" '# steps' "$(driver_fact_screen_steps 409)"
+jq 'del(.design.renderSteps)' \
+  "$REPO/.claude/harness.json" > "$FIX/h5s.json" && mv "$FIX/h5s.json" "$REPO/.claude/harness.json"
+want_in "absent, it says the renderer takes none" 'takes no setup steps' "$(driver_fact_screen_steps 409)"
+rm -f "$FIX/wt409/render-steps.md"
+driver_state_set 409 park_note ""
+
 echo "--- T2-4 · with renders it compares against what was approved ---"
 jq '.design.render = "printf \"desk light\\tshots/a.png\\tlight\\t/dashboard/desk\\ndesk dark\\tshots/b.png\\tdark\\t/dashboard/desk\\n\""' \
   "$REPO/.claude/harness.json" > "$FIX/h6.json" && mv "$FIX/h6.json" "$REPO/.claude/harness.json"
