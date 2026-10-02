@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
-# spec-names-api.sh < ticket-body — exit 0 when the body names an API route the
-# work still NEEDS, 1 when it names none.
+# spec-names-api.sh < ticket-body — exit 0 when the ticket's API contract names
+# API work still to do, 1 when it names none.
 #
-# Not the "## Backend contract" heading: /agent-harness:claim requires that heading on
-# every screen ticket, including the ones whose contract is "None". Not any route
-# either: a contract that lists routes marked EXISTS consumes only what is
-# already there, and a UI-only PR is exactly right for it. A line counts when it
-# names a route (/api/..., a Next.js app/api/ path, an apps/api/ source path) and
-# is not marked EXISTS, unless the same line also says NET-NEW.
-ROUTE='(^|[^A-Za-z0-9_])(/api/|apps/api/)|app/api/'
+# Reads ONLY the "## Backend contract" / "## API contract" section. The rest of a
+# ticket names source paths in repro steps, checklists and test commands, and
+# none of that says an API is missing. Inside the section a line counts when:
+#   - it says NET-NEW (and not "NET-NEW: none"), whether or not it names a route —
+#     a new read with no URL yet is still work a UI-only PR would orphan;
+#   - or it names a route (/api/..., an app/api/ route file) that is not marked
+#     EXISTS — and "EXISTS — extended/changed" is a change, so it counts.
+# Not the heading itself: /agent-harness:claim requires it on every screen ticket,
+# including the ones whose contract is "None". Measured against 400 tickets on the
+# origin project (review of this script, 2026-10-02): 130 counted, and every
+# sampled one dropped had a contract saying no endpoint or only existing ones.
+ROUTE='(^|[^A-Za-z0-9_])/api/|app/api/'
+in=0
 while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    '## Backend contract'*|'## API contract'*) in=1; continue ;;
+    '## '*) in=0 ;;
+  esac
+  [ "$in" = 1 ] || continue
+  if printf '%s\n' "$line" | grep -qiE 'net-new' \
+     && ! printf '%s\n' "$line" | grep -qiE 'net-new[^|]*(\*\*)?[:|]?[ *|]*(none|unknown)|no net-new|not net-new|nothing net-new'; then
+    exit 0
+  fi
   printf '%s\n' "$line" | grep -qE "$ROUTE" || continue
-  if printf '%s\n' "$line" | grep -qiE 'net-new'; then exit 0; fi
-  printf '%s\n' "$line" | grep -qiE '(^|[^A-Za-z])exists([^A-Za-z]|$)' && continue
+  if printf '%s\n' "$line" | grep -qiE '(^|[^A-Za-z])exists([^A-Za-z]|$)' \
+     && ! printf '%s\n' "$line" | grep -qiE 'extend|chang|modif|new field|new param'; then
+    continue
+  fi
   exit 0
 done
 exit 1
