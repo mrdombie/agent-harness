@@ -733,8 +733,9 @@ If you hit Gate 1 or Gate 2 as a dev-AI: that's the system catching a spec gap. 
 ```bash
 SLUG="<2-4-word-slug-from-title>"
 HASH=$(openssl rand -hex 3)
-TMP_BASE="${TMPDIR:-/tmp}"; TMP_BASE="${TMP_BASE%/}"
-WORKTREE="$TMP_BASE/${TICKET,,}-${SLUG}-${HASH}"
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+WT_ROOT=$(toolkit_worktree_root) || exit 1
+WORKTREE="$WT_ROOT/${TICKET,,}-${SLUG}-${HASH}"
 BRANCH="${TICKET,,}/${SLUG}"
 # Repo routing — the ticket's repo: label, default to the main repo.
 REPO_NAME=$(grep -m1 '^repo:' <<<"$ISSUE_LABELS" | cut -d: -f2)   # ISSUE_LABELS from Step 4.5
@@ -746,7 +747,9 @@ REPO_PATH=$(toolkit_repo_path "$REPO_NAME") || exit 1
 REPO_FULL="${REPO_SLUG%/*}/$REPO_NAME"
 ```
 
-(`,,` is bash lower-case expansion — `SH-181` → `sh-181`. `$TMP_BASE` derives from `$TMPDIR` so worktrees land in the OS temp dir on any machine — don't hardcode `/private/tmp`.)
+(`,,` is bash lower-case expansion — `SH-181` → `sh-181`.)
+
+**Never the OS temp dir.** macOS deletes files under `$TMPDIR` (`/var/folders/…/T`) that are three days untouched, file by file, so a worktree there rots while keeping its name — 54 of 103 claim worktrees on the origin project had lost `.git` by 2026-09-27. `toolkit_worktree_root` is the one resolver: `$HARNESS_WORKTREE_ROOT`, then `worktreeRoot` in `.claude/harness.json`, then `~/.harness-worktrees/<repo>`, and it refuses a temp path outright.
 
 ### Step 6 — Create the worktree off freshly-fetched develop in the right repo
 
@@ -754,6 +757,12 @@ REPO_FULL="${REPO_SLUG%/*}/$REPO_NAME"
 : "${REPO_PATH:?REPO_PATH unset — run Step 5 resolution block first}"
 git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
 ln -sfn "$REPO_PATH/node_modules" "$WORKTREE/node_modules"
+# The borrowed node_modules links each workspace package RELATIVELY, which
+# resolves into the shared clone's stale tree — so a package's tests imported
+# an old copy of its own sibling (origin project, 2026-10-02: every test of one
+# package failed locally while CI was green). Point each workspace at the
+# worktree's own siblings instead.
+"$KIT_ROOT/scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"
 # Husky's shims live in .husky/_ — generated at `npm install`, gitignored.
 # A symlinked worktree never gets them, so git runs ZERO hooks, silently
 # (sh-9538, 2026-08-28: every commit skipped gitleaks, lint-staged and the

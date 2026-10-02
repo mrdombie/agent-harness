@@ -1,11 +1,11 @@
 ---
 name: sweep-worktrees
-description: report orphan worktrees at ${TMPDIR:-/tmp}/{sh-NNN,issueNNN}-*. Dry run by default; --apply deletes. Keeps anything claimed, dirty, unpushed, or unreadable.
+description: report orphan worktrees under the worktree root (and, for older ones, the temp dir). Dry run by default; --apply deletes. Keeps anything claimed, dirty, unpushed, or unreadable.
 ---
 
 You are running the orphan-worktree sweeper.
 
-The queue lives **outside the repo** at `$STATE_DIR/`. Each `/agent-harness:claim` creates a worktree at `${TMPDIR:-/tmp}/<ticket>-<slug>-<hash>` and a lockfile at `claims/<ticket>.lock/`. When `/agent-harness:finish` succeeds, both are cleaned up. When `/agent-harness:finish` fails partway (agent crash, network blip, OS reboot, etc.) the worktree can survive past the lockfile, gradually filling the temp dir. This skill clears them.
+The queue lives **outside the repo** at `$STATE_DIR/`. Each `/agent-harness:claim` creates a worktree at `$(toolkit_worktree_root)/<ticket>-<slug>-<hash>` (`~/.harness-worktrees/<repo>` by default) and a lockfile at `claims/<ticket>.lock/`. When `/agent-harness:finish` succeeds, both are cleaned up. When `/agent-harness:finish` fails partway (agent crash, network blip, OS reboot, etc.) the worktree can survive past the lockfile, gradually filling the disk. This skill clears them.
 
 ## Argument
 
@@ -35,7 +35,7 @@ SWEEP_WORKTREE_HOURS="$HOURS" "$TOOLS/scripts/sweep-orphan-worktrees.sh"
 
 A worktree is removable ONLY when all three hold: no live claim, a clean tree, and zero commits that exist on no remote. The third was missing until #8623 — a clean tree says nothing about whether HEAD was pushed, so a worktree with five unpushed commits read as empty and was deleted. Anything whose git state cannot be read is KEPT and reported `unreadable`; a check that errored has not passed.
 
-For every `sh-*-*` and `issue*-*` directory under the sweep base (`${TMPDIR:-/tmp}` AND `/private/tmp`, since worktrees predating #8623 may sit in either):
+For every `sh-*-*` and `issue*-*` directory under the worktree root, and under `${TMPDIR:-/tmp}` AND `/private/tmp` for worktrees created before claims moved out of the temp dir:
 
 1. **Derive ticket id** from the path. Two patterns supported:
    - `sh-NNN-<slug>-<hash>` → `SH-NNN`
