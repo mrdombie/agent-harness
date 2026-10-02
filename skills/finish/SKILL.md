@@ -98,7 +98,7 @@ Walk the ticket's AC list (from the spec):
 
 ## Multi-agent contract + atomic claim
 
-This skill assumes you are inside a per-claim worktree (created by `/agent-harness:claim`), at a path like `${TMPDIR:-/tmp}/${BRANCH_PREFIX}NNN-<slug>-<hash>`. **Never push from the main repo clone (`$MAIN_REPO`).** Those repos stay on `develop`.
+This skill assumes you are inside a per-claim worktree (created by `/agent-harness:claim`), at a path like `$(toolkit_worktree_root)/${BRANCH_PREFIX}NNN-<slug>-<hash>`. **Never push from the main repo clone (`$MAIN_REPO`).** Those repos stay on `develop`.
 
 Your claim is the git ref `refs/claims/<issue>` on origin; `claim-lock.sh show` prints its record, which carries the `repo` field telling us which sister repo this ticket targets. **`/agent-harness:finish` reads `repo` to know where to push** and releases the ref on merge so the ticket can be re-claimed (or the PM can re-open).
 
@@ -395,6 +395,7 @@ Failure releases nothing — the PR stays open — but exits with a named-failur
 **Gate 2 is no longer the enforcer of the screenshot rule (#9174).** That requirement now lives in the `approval-gate` CI job, which is a required status check and therefore cannot be skipped by an agent that simply doesn't run this skill. Gate 2 exists to **satisfy** that check — it refuses unviewable evidence, and when the body carries none it publishes the shots this run rendered, SHA-pinned — not to replace it. If you find yourself editing Gate 2 to relax the screenshot rule, you are editing the wrong file: the rule is in `.github/workflows/human-approval-gate.yml`.
 
 ```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"   # Gate 1 reads scripts/spec-names-api.sh from the kit
 PR_FILES=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json files -q '.files[].path')
 PR_BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json body -q .body)
 ISSUE_NUM="$TICKET_KEY"   # ticket ids ARE issue numbers
@@ -432,7 +433,10 @@ fi
 # NOT API, refuse — unless the PR body explicitly declares a
 # phase-split with a feature flag wrapping the new UI.
 SPEC_HAS_API="no"
-if echo "$ISSUE_BODY" | grep -qiE 'api/|endpoint|## Backend contract|## API contract'; then
+# A ROUTE, never the "## Backend contract" heading: /agent-harness:claim requires that heading
+# on every screen ticket, so keying on it refused every UI ticket whose contract
+# is "None" (#11199, 2026-10-02).
+if printf '%s\n' "$ISSUE_BODY" | bash "$KIT_ROOT/scripts/spec-names-api.sh"; then
   SPEC_HAS_API="yes"
 fi
 if [ "$SPEC_HAS_API" = "yes" ] && [ "$PR_TOUCHES_UI" = "yes" ] && [ "$PR_TOUCHES_API" = "no" ]; then

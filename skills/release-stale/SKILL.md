@@ -78,7 +78,7 @@ The old recovery flipped straight back to `$LBL_READY` (ready), so the next agen
 ## What it does NOT do
 
 - **Doesn't touch a claim whose process is alive** — pid liveness beats every other signal
-- **Doesn't delete worktrees** — they stay in `${TMPDIR:-/tmp}/...` so a recovering agent can still `/agent-harness:finish`
+- **Doesn't delete worktrees** — they stay under the worktree root so a recovering agent can still `/agent-harness:finish`
 - **Doesn't escalate an already-merged ticket** — that's `ORPHAN`, released without noise
 - **Doesn't fail the run when it escalates** — it always exits 0, so a stale claim never blocks a fresh one
 
