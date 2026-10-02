@@ -164,7 +164,14 @@ driver_step_start() { # <ticket>
     # /var/folders directory the system prunes, and between the build and the push
     # the tree is the only copy of the work — the 2026-09-28 trial ended with 9
     # commits in one of them.
-    wt="$(driver_worktree_root)/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
+    # A refusing resolver returns 1 inside $( ), which an assignment would swallow
+    # and leave a path of "/<ticket>"; check it, and let its own reason stand.
+    local wt_root
+    wt_root=$(driver_worktree_root) || {
+      driver_say "✋ start: no worktree root — the reason is printed above."
+      return "$DRIVER_E_REFUSED"
+    }
+    wt="$wt_root/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
     mkdir -p "$(dirname "$wt")" 2>/dev/null || true
     # A fresh branch has reworded and removed no tests: the ledger starts empty.
     mkdir -p "$(driver_state_dir "$t")/steps" && : > "$(driver_state_dir "$t")/steps/replaced.jsonl"

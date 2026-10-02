@@ -733,8 +733,9 @@ If you hit Gate 1 or Gate 2 as a dev-AI: that's the system catching a spec gap. 
 ```bash
 SLUG="<2-4-word-slug-from-title>"
 HASH=$(openssl rand -hex 3)
-TMP_BASE="${TMPDIR:-/tmp}"; TMP_BASE="${TMP_BASE%/}"
-WORKTREE="$TMP_BASE/${TICKET,,}-${SLUG}-${HASH}"
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+WT_ROOT=$(toolkit_worktree_root) || exit 1
+WORKTREE="$WT_ROOT/${TICKET,,}-${SLUG}-${HASH}"
 BRANCH="${TICKET,,}/${SLUG}"
 # Repo routing — the ticket's repo: label, default to the main repo.
 REPO_NAME=$(grep -m1 '^repo:' <<<"$ISSUE_LABELS" | cut -d: -f2)   # ISSUE_LABELS from Step 4.5
@@ -746,7 +747,9 @@ REPO_PATH=$(toolkit_repo_path "$REPO_NAME") || exit 1
 REPO_FULL="${REPO_SLUG%/*}/$REPO_NAME"
 ```
 
-(`,,` is bash lower-case expansion — `SH-181` → `sh-181`. `$TMP_BASE` derives from `$TMPDIR` so worktrees land in the OS temp dir on any machine — don't hardcode `/private/tmp`.)
+(`,,` is bash lower-case expansion — `SH-181` → `sh-181`.)
+
+**Never the OS temp dir.** macOS deletes files under `$TMPDIR` (`/var/folders/…/T`) that are three days untouched, file by file, so a worktree there rots while keeping its name — 54 of 103 claim worktrees on the origin project had lost `.git` by 2026-09-27. `toolkit_worktree_root` is the one resolver: `$HARNESS_WORKTREE_ROOT`, then `worktreeRoot` in `.claude/harness.json`, then `~/.harness-worktrees/<repo>`, and it refuses a temp path outright.
 
 ### Step 6 — Create the worktree off freshly-fetched develop in the right repo
 
@@ -756,10 +759,15 @@ git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
 # The shared install, linked entry by entry into the worktree's OWN node_modules,
 # with each workspace package pointed at THIS worktree's copy. One symlink to the
 # whole shared node_modules carried the shared checkout's workspace links too, so
-# the dev server ran the shared clone's stale packages (a subpath the branch added
-# could not be resolved; the login page 500'd) and a dependency the install left
-# inside one workspace's node_modules never resolved here. Symlinks only.
-"${CLAUDE_PLUGIN_ROOT}/scripts/link-node-modules.sh" "$REPO_PATH" "$WORKTREE" || { echo "🛑 the worktree's node_modules could not be linked" >&2; exit 1; }
+# code at the root and the dev server ran the shared clone's stale packages (a
+# subpath the branch added could not be resolved; the login page 500'd) and a
+# dependency the install left inside one workspace's node_modules never resolved
+# here. Symlinks only.
+"$KIT_ROOT/scripts/link-node-modules.sh" "$REPO_PATH" "$WORKTREE" || { echo "🛑 the worktree's node_modules could not be linked" >&2; exit 1; }
+# Per-workspace links to the worktree's own siblings. With the root node_modules
+# above already pointing every workspace home this is belt and braces; it is
+# harmless with that layout and stays until it is retired deliberately.
+"$KIT_ROOT/scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"
 # Husky's shims live in .husky/_ — generated at `npm install`, gitignored.
 # A linked worktree never gets them, so git runs ZERO hooks, silently
 # (sh-9538, 2026-08-28: every commit skipped gitleaks, lint-staged and the

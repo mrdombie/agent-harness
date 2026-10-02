@@ -166,7 +166,8 @@ _driver_park_bundle() { # <ticket> <tree> <branch>
   [ -n "$trunk" ] || return 0
   n=$(git -C "$wt" rev-list --count "$trunk..HEAD" 2>/dev/null)
   case "${n:-0}" in ''|*[!0-9]*|0) return 0 ;; esac
-  dir="$(driver_worktree_root)/backups"
+  dir="$(driver_worktree_root)" || return 0   # no root: no backup, never a bundle at /backups
+  dir="$dir/backups"
   mkdir -p "$dir" 2>/dev/null || return 0
   f="$dir/$(printf '%s' "${BRANCH_PREFIX}$t" | tr '/' '-')-$(date +%Y%m%d-%H%M%S).bundle"
   if git -C "$wt" bundle create "$f" "$trunk..$branch" >/dev/null 2>&1; then

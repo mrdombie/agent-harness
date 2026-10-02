@@ -359,15 +359,16 @@ driver_prepare_worktree() { # <tree>
 # NOT $TMPDIR. On macOS that is a per-user folder under /var/folders that the
 # system prunes, and a driver run's tree is the only copy of the work between the
 # build and the push — the 2026-09-28 trial ended with 9 commits in one. The
-# project says where with `worktreeRoot`; the temp dir is the fallback for a
-# project that names none.
+# project says where with `worktreeRoot`; a project that names none gets the same
+# default /agent-harness:claim uses (toolkit_worktree_root: ~/.harness-worktrees/<repo>),
+# never the temp dir. A configured root is honoured as given.
 driver_worktree_root() {
   local r; r=$(driver_opt worktreeRoot "")
   case "$r" in
     '~')   r="$HOME" ;;
     '~/'*) r="$HOME/${r#\~/}" ;;
   esac
-  [ -n "$r" ] || r="${TMPDIR:-/tmp}"
+  [ -n "$r" ] || r=$(toolkit_worktree_root) || return 1
   printf '%s' "${r%/}"
 }
 

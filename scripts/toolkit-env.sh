@@ -256,6 +256,39 @@ toolkit_claimed_issues() {
   bash "$CL" list --json 2>/dev/null | jq -r '.[].issue' 2>/dev/null
 }
 
+# toolkit_worktree_root — the directory every claim's worktree is created under.
+#
+# Never the OS temp dir. macOS's dirhelper deletes files under $TMPDIR that are
+# three days untouched, FILE BY FILE, so a worktree there rots while keeping its
+# name: on the origin project 54 of 103 claim worktrees had lost .git by
+# 2026-09-27. Order: $HARNESS_WORKTREE_ROOT, then `worktreeRoot` in harness.json,
+# then ~/.harness-worktrees/<repo>. Any of them in a temp location is REFUSED
+# rather than used, because a silent temp fallback is the defect.
+toolkit_worktree_root() {
+  local root tmpd
+  root="${HARNESS_WORKTREE_ROOT:-}"
+  [ -n "$root" ] || root=$(toolkit_cfg worktreeRoot 2>/dev/null) \
+    || root="$HOME/.harness-worktrees/${REPO_SLUG#*/}"
+  # shellcheck disable=SC2088 # a literal ~ from the config is expanded here, on purpose
+  root="${root/#\~/$HOME}"; root="${root%/}"
+  case "$root" in
+    /*) ;;
+    *) echo "toolkit-env: worktree root '$root' is not an absolute path — it would land wherever the shell happens to be. Use a path under \$HOME." >&2
+       return 1 ;;
+  esac
+  # $TMPDIR is checked only when it names a real temp dir: TMPDIR=/ or =$HOME
+  # would otherwise refuse every root, the default included.
+  tmpd="${TMPDIR:-/tmp}"; tmpd="${tmpd%/}"
+  case "$tmpd" in ''|"$HOME"|"${HOME%/}") tmpd=/tmp ;; esac
+  case "$root/" in
+    /var/folders/*|/private/var/folders/*|/tmp/*|/private/tmp/*|"$tmpd"/*)
+      echo "toolkit-env: worktree root '$root' sits in the temp dir the OS cleans (macOS deletes files there after 3 days, which rots a worktree in place) — set worktreeRoot in harness.json, or HARNESS_WORKTREE_ROOT, to a path under \$HOME." >&2
+      return 1 ;;
+  esac
+  mkdir -p "$root" 2>/dev/null || { echo "toolkit-env: cannot create worktree root '$root'." >&2; return 1; }
+  printf '%s\n' "$root"
+}
+
 toolkit_tools() {
   local sha base dir
   sha=$(git -C "$MAIN_REPO" rev-parse --short "origin/$INTEGRATION_BRANCH" 2>/dev/null) \

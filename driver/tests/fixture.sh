@@ -69,6 +69,11 @@ driver_fixture() {
   }
 }
 JSON
+  # The fixture's worktrees live in the fixture. Without a worktreeRoot the driver
+  # falls back to ~/.harness-worktrees/<repo>, and every run left a dead tree there.
+  # A test that sets its own root (trial2) overwrites this one.
+  jq --arg r "$FIX/trees" '.worktreeRoot = $r' "$REPO/.claude/harness.json" > "$REPO/.claude/harness.json.tmp" \
+    && mv "$REPO/.claude/harness.json.tmp" "$REPO/.claude/harness.json"
   git -C "$REPO" add -A
   git -C "$REPO" commit -qm "root"
 
