@@ -756,15 +756,20 @@ REPO_FULL="${REPO_SLUG%/*}/$REPO_NAME"
 ```bash
 : "${REPO_PATH:?REPO_PATH unset — run Step 5 resolution block first}"
 git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
-ln -sfn "$REPO_PATH/node_modules" "$WORKTREE/node_modules"
-# The borrowed node_modules links each workspace package RELATIVELY, which
-# resolves into the shared clone's stale tree — so a package's tests imported
-# an old copy of its own sibling (origin project, 2026-10-02: every test of one
-# package failed locally while CI was green). Point each workspace at the
-# worktree's own siblings instead.
+# The shared install, linked entry by entry into the worktree's OWN node_modules,
+# with each workspace package pointed at THIS worktree's copy. One symlink to the
+# whole shared node_modules carried the shared checkout's workspace links too, so
+# code at the root and the dev server ran the shared clone's stale packages (a
+# subpath the branch added could not be resolved; the login page 500'd) and a
+# dependency the install left inside one workspace's node_modules never resolved
+# here. Symlinks only.
+"$KIT_ROOT/scripts/link-node-modules.sh" "$REPO_PATH" "$WORKTREE" || { echo "🛑 the worktree's node_modules could not be linked" >&2; exit 1; }
+# Per-workspace links to the worktree's own siblings. With the root node_modules
+# above already pointing every workspace home this is belt and braces; it is
+# harmless with that layout and stays until it is retired deliberately.
 "$KIT_ROOT/scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"
 # Husky's shims live in .husky/_ — generated at `npm install`, gitignored.
-# A symlinked worktree never gets them, so git runs ZERO hooks, silently
+# A linked worktree never gets them, so git runs ZERO hooks, silently
 # (sh-9538, 2026-08-28: every commit skipped gitleaks, lint-staged and the
 # .deploy-trigger stamp; the push skipped all 29 pre-push legs, with
 # --no-verify never typed). Copy the main repo's shims; refuse to continue

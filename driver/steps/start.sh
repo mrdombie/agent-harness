@@ -180,8 +180,13 @@ driver_step_start() { # <ticket>
       return "$DRIVER_E_REFUSED"
     fi
     # The shared install, never one per worktree. A missing one is not fatal:
-    # plenty of repos have nothing to link.
-    [ -d "$repo/node_modules" ] && driver_link_dir "$repo/node_modules" "$wt/node_modules"
+    # plenty of repos have nothing to link, and the linker says so and exits 0.
+    if ! driver_link_install "$repo" "$wt"; then
+      driver_say "✋ start: could not link the shared install into $wt."
+      driver_state_set "$t" worktree "$wt"
+      driver_state_set "$t" park_note "the shared install could not be linked into $wt"
+      return "$DRIVER_E_REFUSED"
+    fi
     # Hook shims are generated at install time and gitignored, so a fresh
     # worktree runs ZERO hooks — silently. Copy them where they exist.
     [ -d "$repo/.husky/_" ] && { mkdir -p "$wt/.husky"; cp -R "$repo/.husky/_" "$wt/.husky/_"; }
