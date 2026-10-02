@@ -26,8 +26,12 @@ while IFS= read -r line || [ -n "$line" ]; do
     exit 0
   fi
   printf '%s\n' "$line" | grep -qE "$ROUTE" || continue
+  # EXISTS is skipped unless the same line says the route changes. Negations
+  # ("unchanged", "no signature change", "do not modify") are not changes: a
+  # plain substring match counted 24 of them on the origin project's tickets.
   if printf '%s\n' "$line" | grep -qiE '(^|[^A-Za-z])exists([^A-Za-z]|$)' \
-     && ! printf '%s\n' "$line" | grep -qiE 'extend|chang|modif|new field|new param'; then
+     && ! { printf '%s\n' "$line" | grep -iE 'extend|chang|modif|new field|new param' \
+            | grep -viqE 'unchang|no [a-z ]*chang|not? (be )?(chang|modif)|do not modif|without chang|shape unchang'; }; then
     continue
   fi
   exit 0
