@@ -67,16 +67,14 @@ DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-2}"
 
 DRIVER_CLAUDE="${DRIVER_CLAUDE:-claude}"
 
-# driver_link_dir <src> <dst> — the shared install, linked, never copied. Git Bash's
-# `ln -s` COPIES a directory (a full node_modules per worktree, stale from the
-# moment it lands), so Windows gets a junction.
-driver_link_dir() {
-  case "$(uname -s 2>/dev/null)" in
-    MINGW*|MSYS*|CYGWIN*)
-      [ -e "$2" ] && return 0
-      cmd //c mklink //J "$(cygpath -w "$2")" "$(cygpath -w "$1")" >/dev/null 2>&1 ;;
-    *) ln -sfn "$1" "$2" ;;
-  esac
+# driver_link_install <repo> <tree> — the shared install, linked, never copied or
+# installed. The tree gets its own node_modules of links to the shared entries, with
+# the workspace packages pointed at the tree's own source; one link to the whole
+# shared node_modules ran the shared checkout's stale packages instead
+# (scripts/link-node-modules.sh says how). Its narration goes to stderr: callers
+# sit inside command substitutions. 0 linked, or nothing to link · 1 it failed.
+driver_link_install() {
+  bash "$KIT_ROOT/scripts/link-node-modules.sh" "$1" "$2" >&2
 }
 
 DRIVER_OK=0
