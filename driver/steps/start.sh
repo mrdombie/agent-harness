@@ -177,6 +177,7 @@ driver_step_start() { # <ticket>
     if ! driver_link_install "$repo" "$wt"; then
       driver_say "✋ start: could not link the shared install into $wt."
       driver_state_set "$t" worktree "$wt"
+      driver_state_set "$t" park_note "the shared install could not be linked into $wt"
       return "$DRIVER_E_REFUSED"
     fi
     # Hook shims are generated at install time and gitignored, so a fresh

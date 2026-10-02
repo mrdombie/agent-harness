@@ -77,6 +77,17 @@ want "exits 0" 0 "$rc"
 want "@acme/contracts still home" "$WT/packages/contracts" "$(real "$WT/node_modules/@acme/contracts")"
 want "left-pad still through" "$SH/node_modules/left-pad" "$(real "$WT/node_modules/left-pad")"
 
+echo "--- a scope that stops being a workspace scope links through again ---"
+WT5="$FIX/wt5"; cp -R "$WT" "$WT5"; rm -rf "$WT5/node_modules" "$WT5/packages/ui/node_modules"
+bash "$SCRIPT" "$SH" "$WT5" >/dev/null 2>&1
+# the branch renames every workspace out of @acme
+for f in "$WT5"/apps/*/package.json "$WT5"/packages/*/package.json; do sed -i.bak 's/"@acme\//"@other\//' "$f" && rm -f "$f.bak"; done
+bash "$SCRIPT" "$SH" "$WT5" >/dev/null 2>&1; rc=$?
+want "exits 0" 0 "$rc"
+want "@acme is the shared scope again" "$SH/node_modules/@acme" "$(real "$WT5/node_modules/@acme")"
+want "…and holds nothing nested inside it" "absent" "$([ -e "$SH/node_modules/@acme/@acme" ] && echo present || echo absent)"
+want "@other/contracts → the worktree" "$WT5/packages/contracts" "$(real "$WT5/node_modules/@other/contracts")"
+
 echo "--- the old single symlink is converted ---"
 WT2="$FIX/wt2"; cp -R "$WT" "$WT2"; rm -rf "$WT2/node_modules" "$WT2/packages/ui/node_modules"
 ln -s "$SH/node_modules" "$WT2/node_modules"

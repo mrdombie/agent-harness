@@ -72,6 +72,9 @@ fresh_dir() { # <dir> → 0 ready · 1 a real install, leave it
       done
     fi
     find "$d" -mindepth 1 -maxdepth 2 -type l -exec rm -f {} +
+    # A scope directory left empty (a scope that is no longer a workspace scope)
+    # would otherwise survive and swallow the link to the shared one INSIDE it.
+    find "$d" -mindepth 1 -maxdepth 1 -type d -empty -exec rmdir {} +
   fi
   mkdir -p "$d"
   printf '%s\n' "$SHARED_REPO" > "$d/$MARK"
@@ -88,7 +91,7 @@ WORKSPACES=$(node -e '
   try { pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) } catch {}
   let pats = pkg.workspaces || []
   if (!Array.isArray(pats)) pats = pats.packages || []
-  const rx = s => new RegExp("^" + s.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*+/g, "[^/]*") + "$")
+  const rx = s => new RegExp("^" + s.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*+/g, "[^/]*") + "$")
   const expand = pat => {
     let dirs = [""]
     for (const seg of pat.replace(/\/+$/, "").split("/")) {
