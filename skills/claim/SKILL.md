@@ -759,9 +759,9 @@ git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
 ln -sfn "$REPO_PATH/node_modules" "$WORKTREE/node_modules"
 # The borrowed node_modules links each workspace package RELATIVELY, which
 # resolves into the shared clone's stale tree — so a package's tests imported
-# an old copy of its own sibling (2026-10-02: "parseThreadBlock is not a
-# function" on every kit-card test, while CI was green). Point each workspace
-# at the worktree's own siblings instead.
+# an old copy of its own sibling (origin project, 2026-10-02: every test of one
+# package failed locally while CI was green). Point each workspace at the
+# worktree's own siblings instead.
 "$KIT_ROOT/scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"
 # Husky's shims live in .husky/_ — generated at `npm install`, gitignored.
 # A symlinked worktree never gets them, so git runs ZERO hooks, silently

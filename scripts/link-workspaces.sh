@@ -15,6 +15,10 @@
 # still come from the shared install; nothing is written into the shared clone.
 # Idempotent. Every path it writes is gitignored by any repo that ignores
 # node_modules.
+#
+# Code at the repo ROOT (root scripts, root config) still resolves through the
+# borrowed node_modules and so still sees the shared clone's copy: the root has
+# no node_modules of its own to put a link in without shadowing the whole install.
 set -uo pipefail
 SHARED="${1:?usage: link-workspaces.sh <shared-clone> <worktree>}"
 WT="${2:?usage: link-workspaces.sh <shared-clone> <worktree>}"
@@ -42,7 +46,9 @@ pairs=$(
     r=$(readlink "$l")
     if [ "${r#/}" != "$r" ]; then t=$(norm "$r"); else t=$(norm "$(cd "$(dirname "$l")" && pwd -P)/$r"); fi
     # if, not case: bash 3.2 misparses a case's `)` inside $( ).
-    [ "${t#"$SHARED"/}" != "$t" ] || continue                 # outside the clone
+    # Outside the clone. Belt and braces: such a path can never exist under the
+    # worktree either, so the -d check below would skip it too.
+    [ "${t#"$SHARED"/}" != "$t" ] || continue
     [ "${t#"$SHARED"/node_modules}" = "$t" ] || continue      # a real dependency
     printf '%s\t%s\n' "${l#"$NM"/}" "${t#"$SHARED"/}"
   done

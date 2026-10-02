@@ -53,6 +53,14 @@ for bad in "${TMPDIR:-/tmp}/wt" /tmp/wt /private/tmp/wt /var/folders/ab/cd/T/wt 
   CFG_ROOT=""
 done
 
+echo "--- a relative root is refused; an odd TMPDIR does not refuse the default ---"
+out=$(HARNESS_WORKTREE_ROOT=wt toolkit_worktree_root 2>/dev/null); rc=$?
+[ "$rc" -ne 0 ] && ok "a relative root is refused" || fail "a relative root was accepted: $out"
+for odd in / "$HOME"; do
+  out=$(TMPDIR="$odd" toolkit_worktree_root 2>/dev/null); rc=$?
+  [ "$rc" -eq 0 ] && [ "$out" = "$DEFAULT" ] && ok "TMPDIR=$odd still allows the default" || fail "TMPDIR=$odd refused the default (rc=$rc)"
+done
+
 echo "--- the refusal says what to do ---"
 msg=$(HARNESS_WORKTREE_ROOT=/tmp/wt toolkit_worktree_root 2>&1 >/dev/null)
 printf '%s' "$msg" | grep -q 'worktreeRoot' && ok "names the setting to change" || fail "refusal does not name worktreeRoot: $msg"

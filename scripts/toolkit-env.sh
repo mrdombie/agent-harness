@@ -271,7 +271,15 @@ toolkit_worktree_root() {
     || root="$HOME/.harness-worktrees/${REPO_SLUG#*/}"
   # shellcheck disable=SC2088 # a literal ~ from the config is expanded here, on purpose
   root="${root/#\~/$HOME}"; root="${root%/}"
+  case "$root" in
+    /*) ;;
+    *) echo "toolkit-env: worktree root '$root' is not an absolute path — it would land wherever the shell happens to be. Use a path under \$HOME." >&2
+       return 1 ;;
+  esac
+  # $TMPDIR is checked only when it names a real temp dir: TMPDIR=/ or =$HOME
+  # would otherwise refuse every root, the default included.
   tmpd="${TMPDIR:-/tmp}"; tmpd="${tmpd%/}"
+  case "$tmpd" in ''|"$HOME"|"${HOME%/}") tmpd=/tmp ;; esac
   case "$root/" in
     /var/folders/*|/private/var/folders/*|/tmp/*|/private/tmp/*|"$tmpd"/*)
       echo "toolkit-env: worktree root '$root' sits in the temp dir the OS cleans (macOS deletes files there after 3 days, which rots a worktree in place) — set worktreeRoot in harness.json, or HARNESS_WORKTREE_ROOT, to a path under \$HOME." >&2

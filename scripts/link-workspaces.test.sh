@@ -28,6 +28,10 @@ ln -s ../../apps/web      "$SHARED/node_modules/@acme/web"
 ln -s ../packages/solo     "$SHARED/node_modules/solo"
 ln -s ../../packages/ui    "$SHARED/node_modules/@acme/ui"
 ln -s "$SHARED/packages/solo2" "$SHARED/node_modules/solo2"   # an absolute link
+mkdir -p "$SHARED/node_modules/.pnpm/left@1/node_modules/left"; printf 'module.exports = "left"\n' > "$SHARED/node_modules/.pnpm/left@1/node_modules/left/index.js"
+ln -s .pnpm/left@1/node_modules/left "$SHARED/node_modules/left"   # pnpm-style: a link INTO node_modules
+mkdir -p "$T/elsewhere/outside"; ln -s ../../elsewhere/outside "$SHARED/node_modules/outside"   # a link out of the clone
+mkdir -p "$WT/elsewhere/outside"
 mkdir -p "$WT/packages/solo2"
 ln -s ../../packages/ghost "$SHARED/node_modules/@acme/ghost"
 printf 'module.exports = "leftpad"\n' > "$SHARED/node_modules/leftpad/index.js"
@@ -61,6 +65,9 @@ got=$(resolve_from "$WT/apps/web" @acme/core)
 echo "--- it leaves real dependencies and the shared clone alone ---"
 [ "$(resolve_from "$WT/packages/ui/src" leftpad)" = "leftpad" ] && ok "a real dependency still resolves" || fail "a real dependency broke"
 [ ! -e "$WT/packages/ui/node_modules/leftpad" ] && ok "real dependencies are not copied in" || fail "a real dependency was linked into the workspace"
+[ ! -e "$WT/packages/ui/node_modules/left" ] && ok "a link into node_modules (pnpm) is a dependency, not a workspace" || fail "a pnpm dependency link was treated as a workspace"
+[ ! -e "$WT/packages/ui/node_modules/outside" ] && ok "a link out of the clone is not a workspace" || fail "a link out of the clone was treated as a workspace"
+[ ! -e "$WT/packages/core/node_modules/@acme/core" ] && ok "a package gets no link to itself" || fail "a package was linked to itself"
 [ "$(readlink "$SHARED/node_modules/@acme/core")" = "../../packages/core" ] && ok "the shared clone is untouched" || fail "the shared clone's link changed"
 [ ! -e "$SHARED/packages/ui" ] && ok "nothing written into the shared clone" || fail "wrote into the shared clone"
 

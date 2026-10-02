@@ -6,9 +6,9 @@
 # HEADING "## Backend contract" — the heading /claim's Gate 2 REQUIRES on every
 # screen ticket. So a polish ticket that wrote "## Backend contract — None, no
 # endpoint" to get past /claim was then refused by /finish for shipping UI
-# without its (non-existent) API (#11199, 2026-10-02). The two gates came from
-# one intervention on 2026-05-24 (#2485/#2486) and contradicted each other
-# whenever the contract was empty.
+# without its (non-existent) API (origin project, 2026-10-02). The two gates came
+# from one intervention on 2026-05-24 and contradicted each other whenever the
+# contract was empty — or listed only routes that already EXISTED.
 set -uo pipefail
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/spec-names-api.sh"
 PASS=0; FAIL=0
@@ -20,10 +20,15 @@ no  "the API-contract heading alone" $'## API contract\nNothing new.'
 no  "the word endpoint in prose"    'The card shows which endpoint failed, as text.'
 no  "api inside another word"       'Rapid/slow toggle; therapist/ coach labels'
 no  "an empty body"                 ''
-yes "a route in the contract"       $'## Backend contract\n| GET /api/posts | EXISTS |'
+yes "a route in the contract"       $'## Backend contract\n| GET /api/posts | to build |'
 yes "a NET-NEW route"               $'## Backend contract\n- POST /api/leads/forget — NET-NEW'
 yes "an api source path"            'Touches apps/api/src/app/api/posts/route.ts'
 yes "a route mid-sentence"          'The UI reads /api/voice/beliefs on load.'
+no  "a route marked EXISTS"         'None — GET /api/content/[postId]/variations (EXISTS)'
+no  "a contract row marked EXISTS"  $'## Backend contract\n| GET /api/posts | EXISTS |\n| GET /api/voices | exists |'
+yes "EXISTS beside a NET-NEW row"   $'| GET /api/posts | EXISTS |\n| POST /api/posts/pin | NET-NEW |'
+yes "NET-NEW and EXISTS on one line" 'POST /api/x — NET-NEW (GET /api/x EXISTS)'
+yes "a Next.js route file"          'Add src/app/api/leads/route.ts'
 
 echo "--- /finish asks this script, not a heading grep ---"
 FIN="$(dirname "$SUT")/../skills/finish/SKILL.md"

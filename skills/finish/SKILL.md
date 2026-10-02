@@ -433,9 +433,10 @@ fi
 # NOT API, refuse — unless the PR body explicitly declares a
 # phase-split with a feature flag wrapping the new UI.
 SPEC_HAS_API="no"
-# A ROUTE, never the "## Backend contract" heading: /agent-harness:claim requires that heading
-# on every screen ticket, so keying on it refused every UI ticket whose contract
-# is "None" (#11199, 2026-10-02).
+# A route the work still NEEDS, never the "## Backend contract" heading:
+# /agent-harness:claim requires that heading on every screen ticket, so keying on it
+# refused every UI ticket whose contract is "None" or lists only EXISTS routes
+# (origin project, 2026-10-02).
 if printf '%s\n' "$ISSUE_BODY" | bash "$KIT_ROOT/scripts/spec-names-api.sh"; then
   SPEC_HAS_API="yes"
 fi
