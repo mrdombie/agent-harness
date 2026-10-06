@@ -22,6 +22,14 @@ want "behind + mergeable, bot mode"   "bot"   "$(bash "$S" BEHIND MERGEABLE bot)
 want "a conflict is still the agent's" "merge" "$(bash "$S" DIRTY CONFLICTING bot)"
 want "conflicting while behind"        "merge" "$(bash "$S" BEHIND CONFLICTING bot)"
 
+echo "--- a DIRTY flag GitHub has not caught up on is not a conflict ---"
+# DIRTY is often stale (the precompute is merge-driver-blind); mergeable says
+# MERGEABLE. Treating it as a conflict sends the agent to merge develop in by
+# hand on a PR that is merely behind — the restart this exists to stop.
+want "stale DIRTY, mergeable, bot mode" "bot"   "$(bash "$S" DIRTY MERGEABLE bot)"
+want "DIRTY, mergeable unknown"         "merge" "$(bash "$S" DIRTY UNKNOWN bot)"
+want "behind, mergeable unknown"        "bot"   "$(bash "$S" BEHIND UNKNOWN bot)"
+
 echo "--- no update bot (the default): the agent catches up, as before ---"
 want "behind, agent mode"              "merge" "$(bash "$S" BEHIND MERGEABLE agent)"
 want "no mode given means agent"       "merge" "$(bash "$S" BEHIND MERGEABLE)"

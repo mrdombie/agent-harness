@@ -774,21 +774,29 @@ gh pr merge "$PR_NUMBER" --squash --delete-branch
 If the merge fails:
 - **Conflicts** → stop, tell the user.
 - **CI required** → re-run with `--auto`. Auto-merge fires when CI completes.
-- **Behind the integration branch** → ask who catches it up before touching it (#79):
+- **Behind the integration branch, on a repo with an update bot** (#79). Only when
+  `merge.updateBehind` is `bot`; every other repo takes the drift-retry cycle below,
+  unchanged. Ask who catches it up before touching it:
 
   ```bash
-  ACTION=$("$KIT_ROOT/scripts/behind-pr-action.sh" \
-    "$(gh pr view "$PR_NUMBER" --json mergeStateStatus -q .mergeStateStatus)" \
-    "$(gh pr view "$PR_NUMBER" --json mergeable -q .mergeable)" \
-    "$(toolkit_cfg merge.updateBehind 2>/dev/null || echo agent)")
+  KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+  MODE=$(toolkit_cfg merge.updateBehind 2>/dev/null) || MODE=agent
+  if [ "$MODE" = bot ]; then
+    ACTION=$("$KIT_ROOT/scripts/behind-pr-action.sh" \
+      "$(gh pr view "$PR_NUMBER" --json mergeStateStatus -q .mergeStateStatus)" \
+      "$(gh pr view "$PR_NUMBER" --json mergeable -q .mergeable)" "$MODE")
+    echo "behind-pr-action: $ACTION"
+  fi
   ```
 
-  `bot` → the repo runs an update bot. Arm `--auto` (or leave it armed), say "behind —
-  the update bot brings it up to date in turn", and stop. **Do not merge the integration
-  branch in yourself**: that queues a full extra CI run and lands your PR ahead of the one
-  the bot is landing, which then re-checks from zero. One PR was restarted three times
-  that way in an afternoon. `merge` → the drift-retry cycle below. `none` → nothing to
-  catch up.
+  `bot` → arm `--auto` (or leave it armed), say "behind — the update bot brings it up to
+  date in turn", and stop. **Do not merge the integration branch in yourself**: that
+  queues a full extra CI run and lands your PR ahead of the one the bot is landing, which
+  then re-checks from zero. One PR was restarted three times that way in an afternoon.
+  When the bot's update merges, the claim reconciler sees the merged PR and closes the
+  ticket and releases the claim; `/agent-harness:release-stale` does it on demand.
+  `merge` → a real conflict: the drift-retry cycle below. `none` → not behind, or GitHub
+  has not decided yet (UNKNOWN): read the PR again in a minute before doing anything.
 - **Anything else** → stop, paste gh output.
 
 **`--auto` MERGES NOW on a repo where auto-merge is switched off.** It is a repository

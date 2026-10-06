@@ -27,9 +27,12 @@ case "$MODE" in
   *) echo "behind-pr-action: harness.json merge.updateBehind is '$MODE' — expected 'agent' or 'bot'." >&2; exit 1 ;;
 esac
 
-if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ]; then
+# A real conflict is the agent's. DIRTY alone is not proof of one: GitHub's
+# precompute is merge-driver-blind and often stale, so DIRTY beside MERGEABLE is
+# read as merely behind.
+if [ "$MERGEABLE" = "CONFLICTING" ] || { [ "$STATE" = "DIRTY" ] && [ "$MERGEABLE" != "MERGEABLE" ]; }; then
   echo merge
-elif [ "$STATE" = "BEHIND" ]; then
+elif [ "$STATE" = "BEHIND" ] || [ "$STATE" = "DIRTY" ]; then
   if [ "$MODE" = "bot" ]; then echo bot; else echo merge; fi
 else
   echo none
