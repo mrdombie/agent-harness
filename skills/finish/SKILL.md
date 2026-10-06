@@ -774,6 +774,21 @@ gh pr merge "$PR_NUMBER" --squash --delete-branch
 If the merge fails:
 - **Conflicts** → stop, tell the user.
 - **CI required** → re-run with `--auto`. Auto-merge fires when CI completes.
+- **Behind the integration branch** → ask who catches it up before touching it (#79):
+
+  ```bash
+  ACTION=$("$KIT_ROOT/scripts/behind-pr-action.sh" \
+    "$(gh pr view "$PR_NUMBER" --json mergeStateStatus -q .mergeStateStatus)" \
+    "$(gh pr view "$PR_NUMBER" --json mergeable -q .mergeable)" \
+    "$(toolkit_cfg merge.updateBehind 2>/dev/null || echo agent)")
+  ```
+
+  `bot` → the repo runs an update bot. Arm `--auto` (or leave it armed), say "behind —
+  the update bot brings it up to date in turn", and stop. **Do not merge the integration
+  branch in yourself**: that queues a full extra CI run and lands your PR ahead of the one
+  the bot is landing, which then re-checks from zero. One PR was restarted three times
+  that way in an afternoon. `merge` → the drift-retry cycle below. `none` → nothing to
+  catch up.
 - **Anything else** → stop, paste gh output.
 
 **`--auto` MERGES NOW on a repo where auto-merge is switched off.** It is a repository

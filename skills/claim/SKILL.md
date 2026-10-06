@@ -405,8 +405,10 @@ person.
 **A `[RESUME PR]` row is not a fresh build.** There is already work on a branch
 and an open PR. Pass B below will print it. Read the PR's commits and the
 ticket's handover comment against the AC *before* writing anything: the correct
-move is usually to merge develop in, re-gate and finish it. Rebuilding from
-scratch is the failure this label exists to prevent. If the premise no longer
+move is usually to merge develop in, re-gate and finish it — unless the PR is
+merely behind and `scripts/behind-pr-action.sh` says `bot`: then the repo's update
+bot catches it up, and merging develop in by hand restarts the PR it is landing
+(#79). Rebuilding from scratch is the failure this label exists to prevent. If the premise no longer
 holds against develop — after 80–170 commits some of these describe code that
 no longer exists — say so on the ticket and stop, rather than forcing a resume.
 
