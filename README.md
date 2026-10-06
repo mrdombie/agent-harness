@@ -41,7 +41,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 ## The config
 
-`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat` and `law` is required; a missing one refuses by name.
+`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat`, `law` and `merge` is required; a missing one refuses by name.
 
 ```json
 {
@@ -99,6 +99,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 ```
 
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
+- `merge.updateBehind` — optional, `agent` (default) or `bot`. Set `bot` when the repo requires PRs to be up to date and runs a bot that brings behind PRs up to date one at a time. Agents then leave a PR that is merely behind to the bot instead of merging the integration branch in themselves, which queued a full extra CI run and landed their PR ahead of the one the bot was landing, restarting it (#79). A conflict is still the agent's. `scripts/behind-pr-action.sh` makes the call.
 - `review.attest` — one entry per reviewer the project attests, and **one entry is all there is**: an interactive `/agent-harness:finish` and the unattended driver ask different questions of the same reviewer, so they read the same row rather than two keys that can disagree about which reviewers exist. A row may name an `agent` in place of a `review` command (the driver then runs that reviewer itself), and `"needsRenders": true` marks a reviewer that judges pictures: with no render on the record it refuses by name instead of running.
   - `owed` — the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. A bare string in place of the object is read as this, which is the shape that shipped first.
   - `review` — a command that runs the reviewer and prints its verdict. The driver runs it in the ticket worktree and keeps the output verbatim.

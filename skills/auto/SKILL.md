@@ -277,6 +277,12 @@ Then **take the top row and do the work.** Do not ask. Do not present options.
 2. **Open PR, red checks, no live claim.** First ask whether the checks *ran*
    (step count). Then: merge `develop` in, re-gate, `/agent-harness:finish`. Rebuilding it from
    scratch is the exact failure the resume path exists to prevent.
+   - **A green PR that is merely behind is not stranded on a repo with an update bot**
+     (`merge.updateBehind: bot`). Read that PR's own state — `gh pr view <n> --json
+     mergeStateStatus,mergeable`; the list scan above reports UNKNOWN — and pass it to
+     `scripts/behind-pr-action.sh` as `/agent-harness:finish` Step 6 does. `bot` → leave
+     it, the bot brings it up to date; merging develop in by hand restarts the PR the bot
+     is landing (#79). `merge` → a real conflict, work it. `none` → not behind.
    - Merging develop drags **prettier churn** in — commit the merge with
      `--no-verify`.
    - `.deploy-trigger` is the **root** file and it is **appended** (`>>`), never
