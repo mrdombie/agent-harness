@@ -318,3 +318,19 @@ reached — a suite nothing runs reports green by never reporting at all. `check
 ## Licence
 
 MIT.
+
+### Telling a status board that claims changed
+
+Set `HARNESS_STATUS_REPO` to a repo that owns a status board, and `claim-lock.sh`
+fires a `claim-changed` repository_dispatch at it whenever a claim is taken or
+released:
+
+```bash
+export HARNESS_STATUS_REPO=owner/status-repo
+```
+
+Unset, nothing happens. A board that is down, misconfigured or gone can never
+fail a claim — every failure is swallowed.
+
+This exists because a cron cannot stand in for it: measured on the estate this
+came from, GitHub delivered 4-7 scheduled runs a day against a request of 48.
