@@ -1,6 +1,6 @@
 {
   "name": "agent-harness",
-  "version": "0.7.23",
+  "version": "0.7.24",
   "description": "A project-agnostic agentic development harness: claim a ticket, build it, gate it, ship it, review it. Reads every project-specific fact from one config file, so the same commands, agents and hooks run on any repo.",
   "author": {
     "name": "Dominic Watts"

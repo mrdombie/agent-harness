@@ -889,6 +889,45 @@ MERGE_SHA=$(git -C "$REPO_PATH" fetch origin develop \
 echo "Merged to develop at $MERGE_SHA"
 ```
 
+### Step 6.2 — Hand off at "armed" when the repo closes out for you
+
+Waiting for the merge holds this session idle for the whole CI queue — 20 to 90
+minutes on a busy day — while it still holds the slot and the ticket. A repo whose
+merge robot does the post-merge bookkeeping itself (close the issue, mark it done,
+release the claim ref) sets `merge.handoff: armed` in `harness.json`, and the
+agent stops here instead:
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+HANDOFF=$(toolkit_cfg merge.handoff 2>/dev/null) || HANDOFF=merged
+echo "handoff: $HANDOFF"
+```
+
+`armed` — only once **all** of these hold, read back rather than assumed:
+
+1. The review for this ticket is complete (Step 3.5) — arming is the point of no return.
+2. `gh pr view "$PR_NUMBER" --json state,autoMergeRequest` reads `OPEN auto=true`
+   (or `MERGED`). Not armed means not handed off — fix it or stay.
+3. No required check has already failed. A red check now is yours to fix before you go.
+
+Then:
+
+```bash
+gh issue comment "$TICKET_KEY" --repo "$REPO_SLUG" \
+  --body "PR #$PR_NUMBER is armed; the merge robot closes this on merge. If CI goes red, this is a [RESUME PR] for the next agent."
+gh issue edit "$TICKET_KEY" --repo "$REPO_SLUG" --remove-label "$LBL_CLAIMED" --add-label "$LBL_IN_REVIEW" || true
+"$CL" release "$TICKET_KEY"
+```
+
+Release the claim. Held by a session that has ended, it would strand the PR if CI goes
+red: `reconcile-claims.sh` never releases a claim whose PR is open, and no other agent
+may take a held one. Released and `in-review`, a red PR is offered as `[RESUME PR]` —
+resume, never rebuild — and a green one is closed by the robot. Skip Steps 6.5 and 7
+(the robot does them), run Step 8 (the branch is on origin), and say in Step 9 that the
+PR is **armed, not merged**.
+
+`merged` (the default) — carry on to Step 6.5 and wait for the merge as below.
+
 ### Step 6.5 — HARD GATE: verify the merge actually happened before ANY bookkeeping
 
 **Burned 2026-06-10 (#3583):** a REST merge returned 405 (conflicts — develop

@@ -17,6 +17,8 @@
 #                       rows sort FIRST, then [RESUME PR], then fresh builds.
 #                       (2026-09-30: an approved PR whose ticket had lost its status
 #                       label clashed for days — nothing on this list could reach it.)
+#   in flight         — an in-review ticket whose PR is armed with nothing red is
+#                       merging, not stranded: not offered (pr-in-flight.sh).
 #   held              — anything with a live claim (refs on origin + legacy
 #                       lockfiles, via claim-lock.sh) is not offered.
 #
@@ -27,6 +29,11 @@ set -uo pipefail
 GH_REPO="${GH_REPO:-$REPO_SLUG}"
 
 HELD=$(toolkit_claimed_issues || true)
+# Armed with nothing red: merging, not stranded — never offered as [RESUME PR]
+# (an agent that handed off at merge.handoff: armed released its claim on purpose).
+IN_FLIGHT=$(gh pr list --repo "$GH_REPO" --state open --limit 200 \
+  --json number,headRefName,isDraft,title,autoMergeRequest,closingIssuesReferences,statusCheckRollup 2>/dev/null \
+  | BRANCH_PREFIX="$BRANCH_PREFIX" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-in-flight.sh" 2>/dev/null || true)
 # Tickets closed by an open, non-draft PR that GitHub says cannot merge — read from
 # the PR's closing reference, else from a title that opens with the ticket number
 # ("10902: …", "SH-10625: …"), because a body that says "Closes ticket SH-10704"
@@ -93,6 +100,7 @@ rows() {
         # resume (rank 1 beats rank 2); a clashing PR's ticket once, as [FINISH PR].
         [ "$mode" = "-" ] && mode=""
         [ "$repo" = "-" ] && repo=""
+        [ "$mode" = "[RESUME PR]" ] && grep -qx "$id" <<<"$IN_FLIGHT" && continue
         grep -qx "$id" <<<"$HELD" || printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$id" "$pri" "$area" "$repo" "$mode" "$title"
       done
