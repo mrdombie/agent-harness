@@ -166,6 +166,19 @@ sync_cache() {
 # The pid recorded in a claim — see claim_session_pid in claim-proc.sh.
 session_pid() { claim_session_pid; }
 
+# Tell a status board that the claim set changed. This is the ONLY event that
+# changes which agents a board shows, and a cron cannot stand in for it: on the
+# estate this came from, GitHub delivered 4-7 scheduled runs a day against a
+# request of 48. Freshness comes from here.
+#
+# It must never be able to fail a claim: every failure is swallowed and the
+# `|| true` is load-bearing. Silent by design when no board is configured.
+poke_board() {
+  local repo="${HARNESS_STATUS_REPO:-}"
+  [ -n "$repo" ] || return 0
+  gh api "repos/$repo/dispatches" -f event_type=claim-changed >/dev/null 2>&1 || true
+}
+
 cmd_acquire() {
   local issue="" branch="" worktree="" pid="" at=""
   pid="$(session_pid)"
@@ -198,6 +211,7 @@ cmd_acquire() {
   # The CAS. An empty expect-value means "must not already exist".
   if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
     printf 'acquired #%s\n' "$issue"
+    poke_board
     return 0
   fi
 
@@ -241,6 +255,7 @@ cmd_release() {
   git push --no-verify "$REMOTE" --delete "$NS/$issue" >/dev/null 2>&1 \
     || die "failed to delete $NS/$issue"
   printf 'released #%s\n' "$issue"
+  poke_board
 
   # 2026-08-25 — PUT THE TICKET BACK ON THE BOARD.
   #
