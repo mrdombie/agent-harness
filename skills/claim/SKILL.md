@@ -770,19 +770,8 @@ git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
 # above already pointing every workspace home this is belt and braces; it is
 # harmless with that layout and stays until it is retired deliberately.
 "$KIT_ROOT/scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"
-# Husky's shims live in .husky/_ — generated at `npm install`, gitignored.
-# A linked worktree never gets them, so git runs ZERO hooks, silently
-# (sh-9538, 2026-08-28: every commit skipped gitleaks, lint-staged and the
-# .deploy-trigger stamp; the push skipped all 29 pre-push legs, with
-# --no-verify never typed). Copy the main repo's shims; refuse to continue
-# without them. `core.hooksPath=.husky/_` is relative, so it resolves
-# inside the worktree once the directory exists.
-if [ -d "$REPO_PATH/.husky/_" ]; then
-  mkdir -p "$WORKTREE/.husky" && cp -R "$REPO_PATH/.husky/_" "$WORKTREE/.husky/_"
-else
-  (cd "$WORKTREE" && npx --no-install husky >/dev/null)
-fi
-[ -x "$WORKTREE/.husky/_/pre-push" ] || { echo "🛑 husky shims missing — git hooks would not run in this worktree" >&2; exit 1; }
+# Without this git finds no hook in a fresh worktree and pushes unchecked. A 🛑 here is a stop: do not continue past it.
+"$KIT_ROOT/scripts/ensure-hooks.sh" "$REPO_PATH" "$WORKTREE" || exit 1
 cd "$WORKTREE"
 # Generate the Prisma client BEFORE any gate runs. The generated client
 # is not in git, so a fresh worktree reports ~24 phantom typecheck
@@ -811,6 +800,8 @@ If `git worktree add` fails with "branch already exists" — stale branch. Only 
 git -C "$REPO_PATH" branch -D "$BRANCH" 2>/dev/null
 git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
 ```
+
+Then run the rest of the Step 6 block from `link-node-modules.sh` down. `ensure-hooks.sh` is not optional on this path either.
 
 ### Step 7 — Record the attestations on the claim
 

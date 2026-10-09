@@ -176,7 +176,7 @@ want "and the sibling's claim is untouched" "" "$(awk -F'\t' '$1==110{print $4}'
 echo "--- and our own claim, recorded, is still ours on a resume ---"
 fix_issue 109 OPEN "status:ready"
 driver_state_init 109 --worktree "$FIX/ours-wt" --branch tkt-109/ours
-mkdir -p "$FIX/ours-wt"
+git -C "$REPO" worktree add -q "$FIX/ours-wt" -b tkt-109/ours develop
 claim_row 109 "${CLAIM_AGENT:-tester@fixture}" tkt-109/ours "$FIX/ours-wt"
 out=$(driver_step_start 109 2>&1); rc=$?
 want "it resumes"                  "0" "$rc"
@@ -190,5 +190,32 @@ want_in "and says it could not read it" 'could not be read' "$out"
 echo "--- the claim is released when a gate says no, never squatted ---"
 want "nothing claimed for the refused tickets" "101 107 108 110 109" \
   "$(awk '$1!=106{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//')"
+
+echo "--- when the hooks cannot be made to run, start refuses ---"
+printf '#!/usr/bin/env bash\necho "🛑 ensure-hooks: planted refusal" >&2\nexit 1\n' > "$BIN/ensure-hooks-refuses"
+fix_issue 111 OPEN "status:ready"
+out=$(DRIVER_ENSURE_HOOKS="$BIN/ensure-hooks-refuses" driver_step_start 111 2>&1); rc=$?
+want "it refuses"                       "24" "$rc"
+want_in "and says hooks could not be set up" 'hooks could not be set up' "$out"
+want_in "with the script's own reason"  'planted refusal' "$out"
+
+echo "--- with a pre-push on develop, the worktree runs ITS OWN, with no shims copied ---"
+# husky's relative shared hooksPath and no .husky/_ anywhere: git used to run no hook.
+git -C "$REPO" config core.hooksPath .husky/_
+mkdir -p "$REPO/.husky"
+printf '#!/usr/bin/env sh\necho "pre-push ran in $PWD" > "%s/hook-ran"\nexit 1\n' "$FIX" > "$REPO/.husky/pre-push"
+chmod +x "$REPO/.husky/pre-push"
+git -C "$REPO" add .husky/pre-push && git -C "$REPO" commit -qm "a pre-push gate" --no-verify
+git -C "$REPO" rev-parse -q --verify origin/develop >/dev/null 2>&1 \
+  && git -C "$REPO" update-ref refs/remotes/origin/develop develop
+fix_issue 112 OPEN "status:ready"
+out=$(driver_step_start 112 2>&1); rc=$?
+want "it finishes"                      "0" "$rc"
+WT112=$(driver_state_get 112 worktree)
+want "no shims were copied in"          "0" "$([ -d "$WT112/.husky/_" ] && echo 1 || echo 0)"
+rm -f "$FIX/hook-ran"
+git -C "$WT112" hook run pre-push -- origin x </dev/null >/dev/null 2>&1; rc=$?
+want "pre-push runs and its exit 1 stands" "1" "$rc"
+want "it ran in the worktree"           "pre-push ran in $(cd "$WT112" && pwd -P)" "$(cat "$FIX/hook-ran" 2>/dev/null)"
 
 exit $FAILED

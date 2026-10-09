@@ -305,6 +305,16 @@ driver_lean_args() {
   DRIVER_LEAN_ARGS+=(--append-system-prompt "This project's instruction files are not preloaded, to keep every call small: $files, at the root of the tree you are working in. Before you change code, read the parts of them that bear on the change. You do not need them to answer from what you were given.")
 }
 
+# driver_ensure_hooks <repo> <tree> — the tree runs its own .husky hooks, or this
+# fails. Without it git finds no hook and pushes unchecked. A tree with no .husky/
+# keeps whatever hooks setup it has (the script says so and exits 0).
+driver_ensure_hooks() {
+  bash "${DRIVER_ENSURE_HOOKS:-$KIT_ROOT/scripts/ensure-hooks.sh}" "$1" "$2" >&2 || {
+    driver_say "✋ git hooks could not be set up in $2 — the reason is printed above."
+    return 1
+  }
+}
+
 driver_prepare_worktree() { # <tree>
   local tree="${1:?driver_prepare_worktree: need a tree}" ptype n i cmd out rc
   DRIVER_PREPARE_WHY=""

@@ -151,6 +151,10 @@ driver_step_start() { # <ticket>
   wt=$(driver_state_get "$t" worktree)
   if [ -n "$wt" ] && [ -d "$wt" ]; then
     driver_say "   start: resuming in the worktree it already has ($wt)"
+    if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
+      return "$DRIVER_E_REFUSED"
+    fi
   else
     repo="$MAIN_REPO"
     git -C "$repo" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
@@ -187,9 +191,11 @@ driver_step_start() { # <ticket>
       driver_state_set "$t" park_note "the shared install could not be linked into $wt"
       return "$DRIVER_E_REFUSED"
     fi
-    # Hook shims are generated at install time and gitignored, so a fresh
-    # worktree runs ZERO hooks — silently. Copy them where they exist.
-    [ -d "$repo/.husky/_" ] && { mkdir -p "$wt/.husky"; cp -R "$repo/.husky/_" "$wt/.husky/_"; }
+    if ! driver_ensure_hooks "$repo" "$wt"; then
+      driver_state_set "$t" worktree "$wt"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
+      return "$DRIVER_E_REFUSED"
+    fi
     if ! driver_prepare_worktree "$wt"; then
       driver_state_set "$t" worktree "$wt"
       driver_state_set "$t" park_note "$DRIVER_PREPARE_WHY"
