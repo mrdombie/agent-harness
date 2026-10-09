@@ -108,18 +108,37 @@ bash "$SCRIPT" "$R2" "$WT2" >/dev/null 2>&1; rc=$?
 want "second run exits 0" "0" "$rc"
 want "same hooksPath" "$before" "$(git -C "$WT2" config --worktree --get core.hooksPath)"
 
-echo "--- the main repo may be named by its git common dir (the form /finish uses) ---"
+echo "--- named the way /finish names them, from a subdirectory ---"
 WT8="$FIX/b-wt8"; make_wt "$R2" "$WT8" t-8
-out=$(cd "$WT8" && bash "$SCRIPT" "$(git rev-parse --path-format=absolute --git-common-dir)" "$(pwd -P)" 2>&1); rc=$?
+out=$(cd "$WT8/sub" && bash "$SCRIPT" "$(git rev-parse --path-format=absolute --git-common-dir)" "$(git rev-parse --show-toplevel)" 2>&1); rc=$?
 want "exits 0" "0" "$rc"
 want "the worktree resolves to its dispatcher" "$(git -C "$WT8" rev-parse --absolute-git-dir)/harness-hooks" "$(git -C "$WT8" rev-parse --path-format=absolute --git-path hooks)"
 
-echo "--- a worktree with no pre-push is refused ---"
+echo "--- a husky worktree with no pre-push: its other hooks are what is required ---"
 R3="$FIX/c"; make_repo "$R3" pass; WT3="$FIX/c-wt"; make_wt "$R3" "$WT3" t-3
-git -C "$WT3" rm -q .husky/pre-push && git -C "$WT3" commit -qm "drop gate" --no-verify
+printf '#!/usr/bin/env sh\necho "pre-commit ran" >> "%s/ran"\nexit 1\n' "$FIX" > "$WT3/.husky/pre-commit"
+git -C "$WT3" rm -q .husky/pre-push && git -C "$WT3" add .husky/pre-commit && git -C "$WT3" commit -qm "pre-commit only" --no-verify
 out=$(bash "$SCRIPT" "$R3" "$WT3" 2>&1); rc=$?
-want "exits non-zero" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
-want_in "says why" "🛑" "$out"
+want "exits 0" "0" "$rc"
+want_in "names the hook it carries" "pre-commit" "$out"
+: > "$FIX/ran"; echo x >> "$WT3/file.txt"; git -C "$WT3" add file.txt
+git -C "$WT3" commit -qm blocked >/dev/null 2>&1; rc=$?
+want "its pre-commit runs and refuses the commit" "1:pre-commit ran" "$rc:$(cat "$FIX/ran")"
+out=$(git -C "$WT3" push origin t-3 2>&1)
+want_in "a push with no pre-push says so out loud" "pushing with no pre-push gate" "$out"
+
+echo "--- a repo husky does not manage is left exactly as it was ---"
+NP="$FIX/np"; git init -q "$NP"; : > "$NP/x"; git -C "$NP" add x; git -C "$NP" commit -qm x
+NPW="$FIX/np-wt"; git -C "$NP" worktree add -q "$NPW" -b np develop
+printf '#!/usr/bin/env sh\necho legacy >> "%s/ran"\nexit 0\n' "$FIX" > "$NP/.git/hooks/pre-commit"; chmod +x "$NP/.git/hooks/pre-commit"
+cfg_before=$(cat "$NP/.git/config")
+out=$(bash "$SCRIPT" "$NP" "$NPW" 2>&1); rc=$?
+want "exits 0" "0" "$rc"
+want_in "says it left it alone" "not husky-managed" "$out"
+want "the shared config is byte-identical" "$cfg_before" "$(cat "$NP/.git/config")"
+want "no worktree hooksPath was set" "" "$(git -C "$NPW" config --get core.hooksPath)"
+: > "$FIX/ran"; echo y > "$NPW/y"; git -C "$NPW" add y; git -C "$NPW" commit -qm y >/dev/null 2>&1
+want "its own pre-commit still runs" "legacy" "$(cat "$FIX/ran")"
 
 echo "--- a dispatcher that is not executable fails --check ---"
 WT4="$FIX/b-wt4"; make_wt "$R2" "$WT4" t-4
@@ -152,6 +171,18 @@ want "an older worktree still answers git status" "0" "$(git -C "$OLD" status --
 want "the main clone is still bare" "true" "$(git -C "$R6" rev-parse --is-bare-repository 2>&1)"
 git -C "$NEW" push origin t-6 >/dev/null 2>&1
 want "and the new worktree's push is refused by its hook" "0" "$(pushed "$R6" t-6)"
+
+echo "--- many first runs at once on a bare main clone all succeed ---"
+R9="$FIX/g"; make_repo "$R9" fail; git -C "$R9" config core.bare true
+pids=""; for i in 1 2 3 4 5 6; do make_wt "$R9" "$FIX/g-wt$i" "t-9$i"; done
+for i in 1 2 3 4 5 6; do bash "$SCRIPT" "$R9" "$FIX/g-wt$i" >"$FIX/g-out$i" 2>&1 & pids="$pids $!"; done
+fails=0; for p in $pids; do wait "$p" || fails=$((fails+1)); done
+want "every run exits 0" "0" "$fails"
+want "no config.lock is left behind" "0" "$([ -e "$R9/.git/config.lock" ] && echo 1 || echo 0)"
+want "the main clone is still bare" "true" "$(git -C "$R9" rev-parse --is-bare-repository)"
+nb=0; for i in 1 2 3 4 5 6; do [ "$(git -C "$FIX/g-wt$i" rev-parse --is-bare-repository)" = false ] && nb=$((nb+1)); done
+want "every worktree is a work tree" "6" "$nb"
+want "core.bare moved, not duplicated" ":true" "$(git config --file "$R9/.git/config" --get core.bare):$(git config --file "$R9/.git/config.worktree" --get core.bare)"
 
 echo "--- a pre-push killed partway does not let the push through (POSIX) ---"
 R7="$FIX/e"; make_repo "$R7" slow; WT7="$FIX/e-wt"; make_wt "$R7" "$WT7" t-7

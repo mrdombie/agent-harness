@@ -347,7 +347,7 @@ unblock a push is the failure this step exists to catch.
 
 ```bash
 # A worktree made before ensure-hooks existed resolves no hook and pushes unchecked; this re-points it. A 🛑 is a stop.
-"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-hooks.sh" "$(git rev-parse --path-format=absolute --git-common-dir)" "$(pwd -P)" || exit 1
+"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-hooks.sh" "$(git rev-parse --path-format=absolute --git-common-dir)" "$(git rev-parse --show-toplevel)" || exit 1
 git push -u origin "$BRANCH"
 ```
 

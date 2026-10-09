@@ -191,16 +191,17 @@ echo "--- the claim is released when a gate says no, never squatted ---"
 want "nothing claimed for the refused tickets" "101 107 108 110 109" \
   "$(awk '$1!=106{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//')"
 
-echo "--- a husky-managed repo whose develop has no pre-push: start refuses ---"
-# The shared hooksPath is husky's relative one and no .husky/_ exists anywhere —
-# the layout in which git used to push with no hook at all.
-git -C "$REPO" config core.hooksPath .husky/_
+echo "--- when the hooks cannot be made to run, start refuses ---"
+printf '#!/usr/bin/env bash\necho "🛑 ensure-hooks: planted refusal" >&2\nexit 1\n' > "$BIN/ensure-hooks-refuses"
 fix_issue 111 OPEN "status:ready"
-out=$(driver_step_start 111 2>&1); rc=$?
+out=$(DRIVER_ENSURE_HOOKS="$BIN/ensure-hooks-refuses" driver_step_start 111 2>&1); rc=$?
 want "it refuses"                       "24" "$rc"
 want_in "and says no hook would run"    'no pre-push hook' "$out"
+want_in "with the script's own reason"  'planted refusal' "$out"
 
 echo "--- with a pre-push on develop, the worktree runs ITS OWN, with no shims copied ---"
+# husky's relative shared hooksPath and no .husky/_ anywhere: git used to run no hook.
+git -C "$REPO" config core.hooksPath .husky/_
 mkdir -p "$REPO/.husky"
 printf '#!/usr/bin/env sh\necho "pre-push ran in $PWD" > "%s/hook-ran"\nexit 1\n' "$FIX" > "$REPO/.husky/pre-push"
 chmod +x "$REPO/.husky/pre-push"
