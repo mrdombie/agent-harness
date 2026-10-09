@@ -191,4 +191,30 @@ echo "--- the claim is released when a gate says no, never squatted ---"
 want "nothing claimed for the refused tickets" "101 107 108 110 109" \
   "$(awk '$1!=106{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//')"
 
+echo "--- a husky-managed repo whose develop has no pre-push: start refuses ---"
+# The shared hooksPath is husky's relative one and no .husky/_ exists anywhere —
+# the layout in which git used to push with no hook at all.
+git -C "$REPO" config core.hooksPath .husky/_
+fix_issue 111 OPEN "status:ready"
+out=$(driver_step_start 111 2>&1); rc=$?
+want "it refuses"                       "24" "$rc"
+want_in "and says no hook would run"    'no pre-push hook' "$out"
+
+echo "--- with a pre-push on develop, the worktree runs ITS OWN, with no shims copied ---"
+mkdir -p "$REPO/.husky"
+printf '#!/usr/bin/env sh\necho "pre-push ran in $PWD" > "%s/hook-ran"\nexit 1\n' "$FIX" > "$REPO/.husky/pre-push"
+chmod +x "$REPO/.husky/pre-push"
+git -C "$REPO" add .husky/pre-push && git -C "$REPO" commit -qm "a pre-push gate" --no-verify
+git -C "$REPO" rev-parse -q --verify origin/develop >/dev/null 2>&1 \
+  && git -C "$REPO" update-ref refs/remotes/origin/develop develop
+fix_issue 112 OPEN "status:ready"
+out=$(driver_step_start 112 2>&1); rc=$?
+want "it finishes"                      "0" "$rc"
+WT112=$(driver_state_get 112 worktree)
+want "no shims were copied in"          "0" "$([ -d "$WT112/.husky/_" ] && echo 1 || echo 0)"
+rm -f "$FIX/hook-ran"
+git -C "$WT112" hook run pre-push -- origin x </dev/null >/dev/null 2>&1; rc=$?
+want "pre-push runs and its exit 1 stands" "1" "$rc"
+want "it ran in the worktree"           "pre-push ran in $(cd "$WT112" && pwd -P)" "$(cat "$FIX/hook-ran" 2>/dev/null)"
+
 exit $FAILED
