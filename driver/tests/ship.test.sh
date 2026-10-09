@@ -371,4 +371,17 @@ want "it refuses"                          "24" "$rc"
 want_in "saying it could not ask"          'could not ask GitHub' "$out"
 want_not_in "and nothing is marked ready"  'pr ready' "$(cat "$GH_LOG")"
 rm -f "$FIX/gh-fail"
+echo "--- when the hooks cannot be made to run, nothing is pushed ---"
+setup_wt 130
+driver_state_put 130 review '{"verdict":"SHIP","findings":[]}'
+driver_state_bump 130 review
+for st in start plan build self-check review record; do driver_state_done 130 "$st"; done
+printf '#!/usr/bin/env bash\necho "🛑 ensure-hooks: planted refusal" >&2\nexit 1\n' > "$BIN/ensure-hooks-refuses"
+chmod +x "$BIN/ensure-hooks-refuses"
+out=$(DRIVER_ENSURE_HOOKS="$BIN/ensure-hooks-refuses" driver_step_ship 130 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "with the script's own reason"     'planted refusal' "$out"
+want "the branch never reached origin"     "0" \
+  "$(git -C "$FIX/origin" rev-parse --verify tkt-130/work >/dev/null 2>&1 && echo 1 || echo 0)"
+
 exit $FAILED

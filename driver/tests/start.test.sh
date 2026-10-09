@@ -176,7 +176,7 @@ want "and the sibling's claim is untouched" "" "$(awk -F'\t' '$1==110{print $4}'
 echo "--- and our own claim, recorded, is still ours on a resume ---"
 fix_issue 109 OPEN "status:ready"
 driver_state_init 109 --worktree "$FIX/ours-wt" --branch tkt-109/ours
-mkdir -p "$FIX/ours-wt"
+git -C "$REPO" worktree add -q "$FIX/ours-wt" -b tkt-109/ours develop
 claim_row 109 "${CLAIM_AGENT:-tester@fixture}" tkt-109/ours "$FIX/ours-wt"
 out=$(driver_step_start 109 2>&1); rc=$?
 want "it resumes"                  "0" "$rc"
@@ -196,7 +196,7 @@ printf '#!/usr/bin/env bash\necho "🛑 ensure-hooks: planted refusal" >&2\nexit
 fix_issue 111 OPEN "status:ready"
 out=$(DRIVER_ENSURE_HOOKS="$BIN/ensure-hooks-refuses" driver_step_start 111 2>&1); rc=$?
 want "it refuses"                       "24" "$rc"
-want_in "and says no hook would run"    'no pre-push hook' "$out"
+want_in "and says hooks could not be set up" 'hooks could not be set up' "$out"
 want_in "with the script's own reason"  'planted refusal' "$out"
 
 echo "--- with a pre-push on develop, the worktree runs ITS OWN, with no shims copied ---"

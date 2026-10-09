@@ -31,7 +31,9 @@
 # config.lock: core.bare=true and core.worktree move to the main worktree's
 # config.worktree as the extension goes on, so no reader sees a half-moved state.
 # Tools that ignore config.worktree (older libgit2, JGit) then read the main clone
-# as non-bare. Needs git >= 2.31 (--path-format).
+# as non-bare. While the lock is held (once per repo, milliseconds) a concurrent
+# `git config` writer fails rather than waits, as with any git config write.
+# Needs git >= 2.31 (--path-format).
 #
 # Windows (UNTESTED here — no Windows machine in CI): the dispatcher is a POSIX sh
 # script run by Git for Windows' sh, like husky's. A pre-push killed partway was
@@ -48,9 +50,18 @@ MAIN="${1:-}"; WT="${2:-}"
 die() { echo "🛑 ensure-hooks: $*" >&2; exit 1; }
 [ -n "$MAIN" ] && [ -n "$WT" ] || die "usage: ensure-hooks.sh [--check] <main-repo> <worktree>"
 
-# <worktree> is the tree's root; nothing of husky's to run there means nothing to do.
-if [ ! -d "$WT/.husky" ]; then
-  echo "ensure-hooks: $WT has no .husky/ — not husky-managed, its hooks are left alone."
+TOP=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) && [ -n "$TOP" ] || die "$WT is not a git working tree"
+if [ ! -d "$TOP/.husky" ]; then
+  # A tree that once had the dispatcher and now has no .husky/ (an old commit) would
+  # have every hook refused by it; hand it back to the shared setting.
+  wtp=$(git -C "$TOP" config --worktree --get core.hooksPath 2>/dev/null || true)
+  if [ -n "$wtp" ] && [ "${wtp%/harness-hooks}" != "$wtp" ]; then
+    [ "$CHECK_ONLY" = 1 ] && die "$TOP has no .husky/ but still points at the kit's dispatcher, which will refuse every hook. Run: ensure-hooks.sh \"$MAIN\" \"$TOP\""
+    git -C "$TOP" config --worktree --unset core.hooksPath || die "could not unset the dispatcher for $TOP"
+    echo "ensure-hooks: $TOP has no .husky/ — the kit's dispatcher was removed, the shared hooks setting applies again."
+    exit 0
+  fi
+  echo "ensure-hooks: $TOP has no .husky/ — not husky-managed, its hooks are left alone."
   exit 0
 fi
 
@@ -66,7 +77,6 @@ common_of() {
 MAIN_COMMON=$(common_of "$MAIN") || die "$MAIN is not a git repository"
 WT_COMMON=$(common_of "$WT") || die "$WT is not a git worktree"
 [ "$MAIN_COMMON" = "$WT_COMMON" ] || die "$WT is not a worktree of $MAIN ($WT_COMMON ≠ $MAIN_COMMON)"
-TOP=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) && [ -n "$TOP" ] || die "$WT has no working tree"
 WT_GITDIR=$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null) && [ -n "$WT_GITDIR" ] || die "cannot read the git dir of $WT"
 SHIMS="$WT_GITDIR/harness-hooks"
 HOOKS="applypatch-msg commit-msg post-applypatch post-checkout post-commit post-merge
@@ -112,9 +122,14 @@ if ! ext_on; then
       git config --file "$LOCK" --unset core.worktree || die "could not take core.worktree out of the shared config"
     fi
     git config --file "$LOCK" extensions.worktreeConfig true || die "could not enable extensions.worktreeConfig"
-    mv -f "$LOCK" "$MAIN_COMMON/config" || die "could not replace $MAIN_COMMON/config"
+    # The rename hands config.lock back; past it the lock may be a peer's, never removed.
+    n=0; until mv -f "$LOCK" "$MAIN_COMMON/config" 2>/dev/null; do
+      n=$((n+1)); [ "$n" -ge 10 ] && die "could not replace $MAIN_COMMON/config"; sleep 0.2
+    done
+    trap - EXIT
+  else
+    rm -f "$LOCK"; trap - EXIT
   fi
-  rm -f "$LOCK"; trap - EXIT
 fi
 
 mkdir -p "$SHIMS" || die "could not create $SHIMS"

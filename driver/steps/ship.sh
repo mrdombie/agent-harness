@@ -81,7 +81,7 @@ driver_step_ship() { # <ticket>
   fi
 
   if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
-    driver_state_set "$t" park_note "git would run no pre-push hook in $wt, so nothing was pushed"
+    driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
   fi
   driver_push "$t" "$wt" "$branch" ship || {

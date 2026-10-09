@@ -152,7 +152,7 @@ driver_step_start() { # <ticket>
   if [ -n "$wt" ] && [ -d "$wt" ]; then
     driver_say "   start: resuming in the worktree it already has ($wt)"
     if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
-      driver_state_set "$t" park_note "git would run no pre-push hook in $wt"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
       return "$DRIVER_E_REFUSED"
     fi
   else
@@ -193,7 +193,7 @@ driver_step_start() { # <ticket>
     fi
     if ! driver_ensure_hooks "$repo" "$wt"; then
       driver_state_set "$t" worktree "$wt"
-      driver_state_set "$t" park_note "git would run no pre-push hook in $wt"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
       return "$DRIVER_E_REFUSED"
     fi
     if ! driver_prepare_worktree "$wt"; then

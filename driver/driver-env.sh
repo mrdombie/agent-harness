@@ -310,7 +310,7 @@ driver_lean_args() {
 # keeps whatever hooks setup it has (the script says so and exits 0).
 driver_ensure_hooks() {
   bash "${DRIVER_ENSURE_HOOKS:-$KIT_ROOT/scripts/ensure-hooks.sh}" "$1" "$2" >&2 || {
-    driver_say "✋ git would run no pre-push hook in $2 — the reason is printed above."
+    driver_say "✋ git hooks could not be set up in $2 — the reason is printed above."
     return 1
   }
 }

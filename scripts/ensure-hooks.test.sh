@@ -154,6 +154,23 @@ out=$(bash "$SCRIPT" --check "$R2" "$WT5" 2>&1); rc=$?
 want "--check exits non-zero for an unprepared worktree" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
 want_in "names the hooks dir it found" ".husky/_" "$out"
 
+echo "--- a path that is not a working tree is refused, never passed ---"
+out=$(bash "$SCRIPT" "$R2" "$FIX/does-not-exist" 2>&1); rc=$?
+want "a missing path exits non-zero" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+out=$(bash "$SCRIPT" --check "$R2" "$WT5/sub" 2>&1); rc=$?
+want "--check on an unprepared worktree named by a subdirectory exits non-zero" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+
+echo "--- a tree that loses .husky/ gets the dispatcher taken off, not every hook refused ---"
+WT10="$FIX/b-wt10"; make_wt "$R2" "$WT10" t-10
+bash "$SCRIPT" "$R2" "$WT10" >/dev/null 2>&1
+git -C "$WT10" rm -rq .husky && git -C "$WT10" commit -qm "no husky" --no-verify
+out=$(bash "$SCRIPT" --check "$R2" "$WT10" 2>&1); rc=$?
+want "--check says the dispatcher is stale" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
+out=$(bash "$SCRIPT" "$R2" "$WT10" 2>&1); rc=$?
+want "a re-run exits 0" "0" "$rc"
+want_in "and says what it did" "dispatcher was removed" "$out"
+want "the worktree hooksPath is gone" "" "$(git -C "$WT10" config --worktree --get core.hooksPath)"
+
 echo "--- a worktree of a different repo is refused ---"
 out=$(bash "$SCRIPT" "$R" "$WT2" 2>&1); rc=$?
 want "exits non-zero" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
