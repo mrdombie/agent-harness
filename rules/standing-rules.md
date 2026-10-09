@@ -71,6 +71,20 @@ Bring each sign-off the moment its PR is green, one at a time. Never hold them
 for a batch: held PRs clash with the integration branch while they wait, and
 each clash costs another agent run.
 
+## Ask, and show the loop is alive
+
+**A decision is asked, never listed.** Anything that needs the owner goes in the
+question tool (AskUserQuestion), with the options in plain words. A linked page
+of options is the evidence for the question, not the question. The
+`ask-dont-narrate` Stop hook sends a reply back when it hands a decision over as
+prose or under a 🔴 heading without asking.
+
+**Every wake in a loop ends with a status block**, even when nothing changed:
+what is running, what it waits for, when it next checks. A bare "no change"
+line reads as stuck. The `heartbeat` Stop hook sends a reply back when a loop is
+live and the block is missing. When the loop stops, say so: "Stopped: nothing
+running", and why.
+
 ## Run only what the change touches
 
 Local checks are **changed-only**. CI runs the whole suite before anything

@@ -36,6 +36,15 @@ rm -rf "$MDIR"; t nag 'a NEXT block with a You row'    '▶️ NEXT
 |---|---|---|
 | **You** | Approve the connections work | github.com/x |'                            false s4 "$NOASK"
 
+rm -rf "$MDIR"; t nag 'a 🔴 block, no tell words (2026-10-09)' '## 🔴 Feed and Comments
+
+| Thing | What it needs |
+|---|---|
+| **Feed card PR** | Your approval |'                                                 false s13 "$NOASK"
+rm -rf "$MDIR"; t nag 'calls left on a linked page (2026-10-09)' 'Three Pulse calls for your morning are on one page: https://claude.ai/artifact/x' false s14 "$NOASK"
+rm -rf "$MDIR"; t quiet 'a 🔴 block after the question was asked' '## 🔴 Needs you
+| PR | Remove the label |'                                                        false s15 "$ASKED"
+
 # --- stays quiet when the question WAS asked
 rm -rf "$MDIR"; t quiet 'AskUserQuestion ran this turn' 'Two options here. Your call.' false s5 "$ASKED"
 

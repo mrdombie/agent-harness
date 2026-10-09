@@ -57,8 +57,12 @@ LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 #    choice to them in prose. NOT included on purpose: `Reply "approve <n>"`,
 #    which /agent-harness:bug prescribes as its hand-back — a hook must not fight a documented
 #    flow.
-TELLS='your call|worth your eye|needs a decision|which would you prefer|let me know which|let me know if you.d|do you want me to|would you like me to|shall I |should I |want me to |or shall we|up to you|either way, tell me'
+TELLS='your call|worth your eye|needs a decision|which would you prefer|let me know which|let me know if you.d|do you want me to|would you like me to|shall I |should I |want me to |or shall we|up to you|either way, tell me|needs you|calls? (for you|for your|only you)|on one page'
 printf '%s' "$LAST" | grep -qiE "$TELLS" && HIT=tell || HIT=""
+# The house output style opens every "needs him" block with 🔴, so a 🔴 heading
+# is a decision handed back whatever words follow it (2026-10-09: two of them
+# went out as prose, with the choices on a linked page).
+printf '%s' "$LAST" | grep -qE '^#+[[:space:]]*🔴' && HIT=red
 
 # A NEXT block with a row addressed to the operator is /agent-harness:standup's own shape, and that
 # command's Step 5 makes the question mandatory.
