@@ -309,7 +309,8 @@ and the anti-orphan gates. Run `/agent-harness:claim` and let it pick, then buil
 
 # Step 3 — Loop
 
-After each `/agent-harness:finish`:
+After each `/agent-harness:finish` — which hands off once the PR is armed, so this runs
+while its checks are still going, never after waiting for the merge:
 
 1. `echo "<ticket>" >> "$STATE_DIR/.session-tickets"` (keeps
    `/agent-harness:standup` instant).

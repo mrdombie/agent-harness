@@ -102,7 +102,7 @@ This skill assumes you are inside a per-claim worktree (created by `/agent-harne
 
 Your claim is the git ref `refs/claims/<issue>` on origin; `claim-lock.sh show` prints its record, which carries the `repo` field telling us which sister repo this ticket targets. **`/agent-harness:finish` reads `repo` to know where to push** and releases the ref on merge so the ticket can be re-claimed (or the PM can re-open).
 
-Release is the LAST step, after the merge is verified — a ref released before the merge lands is a ticket another agent can claim out from under a PR that is still open.
+Release is the LAST step, after the merge is verified — a ref released before the merge lands is a ticket another agent can claim out from under a PR that is still open. Holding the claim does not mean waiting beside it: see "hand the PR off" below.
 
 ## Cross-repo routing
 
@@ -845,6 +845,15 @@ merge. The blocker landed on develop and needed a second PR (#9138) to undo.
   lands while I review" — that is precisely the sequence that shipped the blocker.
 - CI green means the change did not break what is already tested. It does not mean the
   change is correct. Those are different claims, and only review makes the second one.
+
+**HARD RULE — once armed, hand the PR off and take the next ticket. Never idle on CI.**
+CI runs for 10–15 minutes and a sign-off waits on a person; neither needs you watching.
+After the PR is reviewed, pushed and armed: start a watcher that emits on green, any
+failing check, `DIRTY`, and merged/closed, then return to the loop and claim the next
+ticket. When the watcher fires, that PR takes the next move ahead of the new ticket
+(finish before start): bring the sign-off, fix the red, resolve the clash. The claim
+stays held until the merge (below); the session does not. On 2026-10-10 an agent sat
+idle through four CI runs in a row, because nothing here said to move on.
 
 **HARD RULE — armed + green is NOT terminal; re-check landability after CI settles.**
 `--auto` waits for CI. It does **not** wait for, or resolve, a conflict. If develop moves
