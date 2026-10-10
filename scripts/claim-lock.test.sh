@@ -137,6 +137,46 @@ grep -q '#555' "$SB/out" && ok "with no CLAIM_REPO, cwd still resolves" \
 
 run "$SB/work" release 555 --force
 
+# --- 6. A ticket an open PR already closes is not claimed again ---------------
+# 2026-10-10: two PRs built and closed as duplicates of a peer's open PR, because
+# acquire asked only "is there a claim ref" and the peer held none. A stub gh
+# answers the two questions the guard asks: which PRs close the issue, and is
+# that PR open and on which branch.
+mkdir -p "$SB/bin"
+cat > "$SB/bin/gh" <<'GH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue view") [ -n "${FAKE_PR_NUM:-}" ] && echo "$FAKE_PR_NUM"; exit 0 ;;
+  "pr view")    [ -n "${FAKE_PR_HEAD:-}" ] && echo "$FAKE_PR_HEAD"; exit 0 ;;
+  *) exit 0 ;;
+esac
+GH
+chmod +x "$SB/bin/gh"
+gh_run() { # <env…> -- <args…>
+  local envs=()
+  while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
+  RC=0
+  ( cd "$SB/work" && env PATH="$SB/bin:$PATH" ${envs[@]+"${envs[@]}"} CLAIM_REPO="$SB/work" \
+      HARNESS_CFG_PATH="$SB/work/.claude/harness.json" bash "$SUT" "$@" ) > "$SB/out" 2>&1 || RC=$?
+}
+
+gh_run FAKE_PR_NUM=812 FAKE_PR_HEAD=tkt-777/someone-else -- \
+  acquire 777 --branch tkt-777/mine --worktree "$SB/wt7" --pid $$
+[ "$RC" -eq 10 ] && grep -q 'covered by open PR #812' "$SB/out" \
+  && ok "a peer's open PR closing the ticket refuses the claim, naming the PR" \
+  || bad "a peer's open PR closing the ticket refuses the claim (rc $RC: $(tail -1 "$SB/out"))"
+
+gh_run FAKE_PR_NUM=812 FAKE_PR_HEAD=tkt-777/mine -- \
+  acquire 777 --branch tkt-777/mine --worktree "$SB/wt7" --pid $$
+[ "$RC" -eq 0 ] && ok "my own parked PR on this branch does not block resuming it" \
+                || bad "my own parked PR does not block resuming it (rc $RC: $(tail -1 "$SB/out"))"
+gh_run -- release 777 --force
+
+gh_run -- acquire 778 --branch tkt-778/x --worktree "$SB/wt8" --pid $$
+[ "$RC" -eq 0 ] && ok "no PR closing the ticket: claimed as before" \
+                || bad "no PR closing the ticket: claimed as before (rc $RC: $(tail -1 "$SB/out"))"
+gh_run -- release 778 --force
+
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"

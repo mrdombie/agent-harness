@@ -179,8 +179,23 @@ poke_board() {
   gh api "repos/$repo/dispatches" -f event_type=claim-changed >/dev/null 2>&1 || true
 }
 
+# The open PR that already closes this issue, or nothing. A PR on `skip_branch` is
+# the claimer's own (resuming a parked ticket), so it does not count. Silent when gh
+# cannot answer: a guard that cannot see is no reason to block a claim.
+open_pr_closing() {
+  local issue="$1" skip_branch="${2:-}" n head
+  command -v gh >/dev/null 2>&1 || return 0
+  for n in $(gh issue view "$issue" --repo "$REPO_SLUG" --json closedByPullRequestsReferences \
+               --jq '.closedByPullRequestsReferences[].number' 2>/dev/null); do
+    head=$(gh pr view "$n" --repo "$REPO_SLUG" --json state,headRefName \
+             --jq 'select(.state=="OPEN") | .headRefName' 2>/dev/null) || continue
+    [ -n "$head" ] && [ "$head" != "$skip_branch" ] && { printf '%s\n' "$n"; return 0; }
+  done
+  return 0
+}
+
 cmd_acquire() {
-  local issue="" branch="" worktree="" pid="" at=""
+  local issue="" branch="" worktree="" pid="" at="" at_given=""
   pid="$(session_pid)"
   issue="$1"; shift
   while [ $# -gt 0 ]; do
@@ -188,13 +203,26 @@ cmd_acquire() {
       --branch)     branch="$2"; shift 2 ;;
       --worktree)   worktree="$2"; shift 2 ;;
       --pid)        pid="$2"; shift 2 ;;
-      --claimed-at) at="$2"; shift 2 ;;   # adoption only: preserve original time
+      --claimed-at) at="$2"; at_given=1; shift 2 ;;   # adoption only: preserve original time
       *) die "unknown flag: $1" ;;
     esac
   done
   [ -n "$issue" ] || die "acquire needs an issue number"
   [ -n "$branch" ] || die "acquire needs --branch"
   [ -n "$at" ] || at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # Already being shipped by someone else's open PR: a second build is a duplicate
+  # (2026-10-10, two PRs closed for it). Adoption (--claimed-at) is exempt. Same exit
+  # code as losing the race, so every caller already handles it.
+  if [ -z "${at_given:-}" ]; then
+    local pr
+    pr=$(open_pr_closing "$issue" "$branch")
+    if [ -n "$pr" ]; then
+      printf 'lost the race for #%s\n' "$issue" >&2
+      printf 'covered by open PR #%s — it already closes this ticket\n' "$pr" >&2
+      return 10
+    fi
+  fi
 
   # #8677 — refuse before the CAS if a legacy lockfile holds this ticket. Same
   # exit code as losing the ref race, so every caller already handles it.
@@ -306,10 +334,14 @@ cmd_release() {
           fi
           ;;
         *)
-          # No status label at all — the shape this guard exists to prevent.
+          # No status label at all — the shape this guard exists to prevent. Ready,
+          # unless an open PR already closes it: then it is in review, not free.
+          local _pr _to="$LBL_READY"
+          _pr=$(open_pr_closing "$issue")
+          [ -n "$_pr" ] && _to="$LBL_IN_REVIEW"
           gh issue edit "$issue" --repo "$REPO_SLUG" \
-            --add-label "$LBL_READY" >/dev/null 2>&1 \
-            && printf '  #%s had no status — set %s\n' "$issue" "$LBL_READY"
+            --add-label "$_to" >/dev/null 2>&1 \
+            && printf '  #%s had no status — set %s\n' "$issue" "$_to"
           ;;
       esac
     fi
