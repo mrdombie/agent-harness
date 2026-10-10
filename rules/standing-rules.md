@@ -71,6 +71,12 @@ Bring each sign-off the moment its PR is green, one at a time. Never hold them
 for a batch: held PRs clash with the integration branch while they wait, and
 each clash costs another agent run.
 
+**Never idle while checks run.** Once a PR is reviewed, pushed and armed, hand it
+to a watcher (green, red, clash, merged) and take the next ticket. The watcher's
+event outranks the new work the moment it fires. Holding a claim until the merge
+is not holding the session: on 2026-10-10 an agent sat through four CI runs in a
+row doing nothing, because finish never said to move on.
+
 ## Ask, and show the loop is alive
 
 **A decision is asked, never listed.** Anything that needs the owner goes in the
