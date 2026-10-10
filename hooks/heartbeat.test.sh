@@ -46,6 +46,48 @@ t quiet 'no loop in this session'                       'Merged to develop.'    
 t quiet 'already sent back once this turn'              'No change.'                                    true  "$LIVE"
 t quiet 'transcript unreadable'                         'No change.'                                    false "/nope/missing.jsonl"
 t quiet 'empty closing message'                         ''                                              false "$LIVE"
+t nag   'Running is only the checks on a PR (2026-10-10)' 'Done.
+
+## 💓 Status
+
+| | |
+|---|---|
+| **Running** | checks on the chip follow-ups PR |' false "$LIVE"
+t nag   'Running is only two reviewers' 'Done.
+
+## 💓 Status
+
+| | |
+|---|---|
+| **Running** | code reviewer and design reviewer, round 2 |' false "$LIVE"
+t nag   'Running is only the approval gate re-check' 'Done.
+
+## 💓 Status
+
+| | |
+|---|---|
+| **Running** | the approval gate re-check on the chip PR |' false "$LIVE"
+t quiet 'Running names work beside the wait' 'Done.
+
+## 💓 Status
+
+| | |
+|---|---|
+| **Running** | building the frame check; checks on the chip PR |' false "$LIVE"
+t quiet 'Running says nothing else is ready' 'Done.
+
+## 💓 Status
+
+| | |
+|---|---|
+| **Running** | checks on the chip PR; nothing else ready |' false "$LIVE"
+t quiet 'Running names a capture, no wait' 'Done.
+
+## 💓 Status
+
+| | |
+|---|---|
+| **Running** | capturing the card in light and dark |' false "$LIVE"
 HARNESS_DRIVER_RUN=1 t quiet 'a driver step'             'No change.'                                    false "$LIVE"
 
 exit $fail
