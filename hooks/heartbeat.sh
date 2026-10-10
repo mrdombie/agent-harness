@@ -36,8 +36,29 @@ say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
 LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 [ -n "$LAST" ] || { say "exit0 empty-message"; exit 0; }
 
-# 2. The block is there.
-case "$LAST" in *💓*) say "exit0 has-heartbeat"; exit 0 ;; esac
+# 2. The block is there. Its Running row must name work, not only a wait.
+#
+# THE PROXY, NAMED: "the Running row names only waits (checks, CI, a watcher,
+# reviewers, approval, a merge) and no work word" stands in for "the agent is
+# idle while a PR's checks run". On 2026-10-10 an agent sat through four CI runs
+# in a row: finish said to hold the claim until the merge and never said to move
+# on. A row that says nothing is ready is the honest exit.
+case "$LAST" in
+  *💓*)
+    ROW=$(printf '%s\n' "$LAST" | grep -iE '^\|[[:space:]]*\**Running\**[[:space:]]*\|' | tail -1 | tr '[:upper:]' '[:lower:]')
+    if printf '%s' "$ROW" | grep -qE '\b(checks?|ci|watcher|merg(e|es|ing)|sign-?off|approval|reviewers?|reviews?)\b' &&
+      ! printf '%s' "$ROW" | grep -qE '\b(build(ing)?|writ(e|ing)|plant(ing)?|test(s|ing)?|captur(e|ing)|fix(ing)?|draw(ing)?|render(ing)?|claim(ed|ing)?)\b|(no|nothing|none)( other| else)? (ready|takeable|left)|queue (is )?empty'; then
+      say "exit2 idle-while-waiting"
+      cat >&2 <<'EOF'
+Your Running row is only a wait: checks, a watcher, reviewers, approval or a merge.
+None of those needs you watching. Take the next ticket in your scope now and put
+it in Running; the watcher's event outranks it the moment it fires. If nothing in
+scope is ready, say so in the Running row ("nothing else ready").
+EOF
+      exit 2
+    fi
+    say "exit0 has-heartbeat"; exit 0 ;;
+esac
 
 # 3. Is a loop running? Unreadable transcript means we cannot tell: stay quiet.
 TP=$(printf '%s' "$IN" | jq -r '.transcript_path // ""')
