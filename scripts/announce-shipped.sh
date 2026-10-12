@@ -26,6 +26,11 @@ echo " ════════════════════════�
 # osascript string literals take no escapes we control, so strip the quote characters.
 if command -v osascript >/dev/null 2>&1; then
   SAFE=$(printf '%s' "$TITLE" | tr -d '"\\')
-  osascript -e "display notification \"$SAFE\" with title \"✅ Ticket #$TICKET completed\" sound name \"Glass\"" >/dev/null 2>&1 || true
+  osascript -e "display notification \"$SAFE\" with title \"✅ Ticket #$TICKET completed\"" >/dev/null 2>&1 || true
+fi
+# Played directly: a notification's own sound is muted by per-app notification settings.
+SOUND=/System/Library/Sounds/Glass.aiff
+if command -v afplay >/dev/null 2>&1 && [ -f "$SOUND" ]; then
+  afplay "$SOUND" >/dev/null 2>&1 &
 fi
 exit 0
