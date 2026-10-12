@@ -29,7 +29,7 @@ if command -v osascript >/dev/null 2>&1; then
   osascript -e "display notification \"$SAFE\" with title \"✅ Ticket #$TICKET completed\"" >/dev/null 2>&1 || true
 fi
 # Played directly: a notification's own sound is muted by per-app notification settings.
-SOUND=/System/Library/Sounds/Glass.aiff
+SOUND="${ANNOUNCE_SOUND:-/System/Library/Sounds/Glass.aiff}"
 if command -v afplay >/dev/null 2>&1 && [ -f "$SOUND" ]; then
   afplay "$SOUND" >/dev/null 2>&1 &
 fi

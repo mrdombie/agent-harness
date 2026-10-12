@@ -20,7 +20,8 @@ chmod +x "$T/bin/osascript"
 printf '#!/usr/bin/env bash\necho "$1" >> "$AF_LOG"\n' > "$T/bin/afplay"; chmod +x "$T/bin/afplay"
 BASE="/usr/bin:/bin"
 
-out=$(AF_LOG="$T/af.log" OSA_LOG="$T/osa.log" PATH="$T/bin:$BASE" bash "$SUT" '#123' 'Fix the "login" page' https://x/pr/9); rc=$?
+: > "$T/Glass.aiff"
+out=$(ANNOUNCE_SOUND="$T/Glass.aiff" AF_LOG="$T/af.log" OSA_LOG="$T/osa.log" PATH="$T/bin:$BASE" bash "$SUT" '#123' 'Fix the "login" page' https://x/pr/9); rc=$?
 [ $rc -eq 0 ] && ok "exits 0" || fail "exit $rc"
 grep -q '██████╗' <<<"$out" && ok "big banner printed" || fail "no banner"
 grep -q 'TICKET #123 COMPLETED' <<<"$out" && ok "names the ticket, one #" || fail "ticket line wrong: $(grep TICKET <<<"$out")"
