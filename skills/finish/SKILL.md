@@ -850,7 +850,7 @@ merge. The blocker landed on develop and needed a second PR (#9138) to undo.
 CI runs for 10–15 minutes and a sign-off waits on a person; neither needs you watching.
 After the PR is reviewed, pushed and armed: start a watcher that emits on green, any
 failing check, `DIRTY`, and merged/closed, then return to the loop and claim the next
-ticket. When the watcher fires, that PR takes the next move ahead of the new ticket
+ticket. A merged event runs Step 6.6 first. When the watcher fires, that PR takes the next move ahead of the new ticket
 (finish before start): bring the sign-off, fix the red, resolve the clash. The claim
 stays held until the merge (below); the session does not. On 2026-10-10 an agent sat
 idle through four CI runs in a row, because nothing here said to move on.
@@ -921,6 +921,19 @@ case "$STATE" in
   *) echo "🛑 NOT merged ($STATE) — do NOT release the claim, close the issue, or delete the branch. Resolve (conflicts → merge develop in, push, retry) and re-run this gate." >&2; exit 1 ;;
 esac
 ```
+
+### Step 6.6 — Announce it so the operator cannot miss it
+
+Once Step 6.5 prints MERGED, and whenever a watcher reports a PR of yours merged:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/announce-shipped.sh" "$TICKET_KEY" "<ticket title>" "<PR url>"
+```
+
+It sends a desktop notification with a sound. Paste the banner it prints, in a code
+block, at the TOP of your next reply. Bash output is not reliably shown to the
+operator, so the banner only reaches them if it is in your reply. A sub-agent hands it
+to its caller, and the caller pastes it.
 
 ### Step 7 — Release the claim + close the issue
 
