@@ -19,6 +19,10 @@
 #   scheduler     every 5 minutes: top up each programme's queue and drain it.
 #   repair-watch  every 10 minutes: repair, unblock, restart, alarm.
 #   report        every minute, ONLY when the project sets swarm.reportUrl.
+#   coordinator   every 5 minutes: scripts/coordinator-tick.sh. Opt-in — only
+#                 `install.sh coordinator` installs it — and in shadow unless
+#                 COORDINATOR_SHADOW=0 is set at install. Off macOS it is a
+#                 crontab line.
 #
 # Six of these were installed by hand on the machine they came from, which is
 # why three of them were running a version nobody could name. They are written
@@ -47,6 +51,7 @@ script_for() { # <job> — the command line, one argument per line
     scheduler)    printf '%s/scheduler.sh\n' "$SWARM_ROOT" ;;
     repair-watch) printf '%s/repair-watch.sh\n' "$SWARM_ROOT" ;;
     report)       printf '%s/report.sh\n--push\n' "$SWARM_ROOT" ;;
+    coordinator)  printf '%s/scripts/coordinator-tick.sh\n' "$KIT_ROOT" ;;
     *) return 1 ;;
   esac
 }
@@ -58,6 +63,7 @@ interval_for() {
     scheduler) printf '%s' "${SWARM_EVERY_SCHEDULER:-300}" ;;
     repair-watch) printf '%s' "${SWARM_EVERY_REPAIR:-600}" ;;
     report) printf '%s' "${SWARM_EVERY_REPORT:-60}" ;;
+    coordinator) printf '%s' "${SWARM_EVERY_COORDINATOR:-300}" ;;
   esac
 }
 
@@ -65,6 +71,12 @@ interval_for() {
 # PATH worth the name, and — the one that cost a day — no keychain, so gh hangs
 # waiting for an access prompt with nowhere to show it. swarm-env.sh reads the
 # token file instead; every path it needs is named here.
+# Shadow unless the installer says otherwise, so a first install acts on nothing.
+coordinator_shadow() { [ "${COORDINATOR_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
+coordinator_env() { # <job>
+  [ "$1" = coordinator ] || return 0
+  printf '    <key>COORDINATOR_SHADOW</key><string>%s</string>' "$(coordinator_shadow)"
+}
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 print_plist() { # <job>
   local job="$1" arg iv
@@ -87,7 +99,9 @@ $(script_for "$job" | xml_escape | sed 's|.*|    <string>&</string>|')
     <key>HARNESS_STATE_DIR</key><string>$(printf '%s' "$STATE_DIR" | xml_escape)</string>
     <key>HARNESS_CFG_PATH</key><string>$(printf '%s' "$HARNESS_CFG" | xml_escape)</string>
     <key>KIT_ROOT</key><string>$(printf '%s' "$KIT_ROOT" | xml_escape)</string>
+$(coordinator_env "$job")
   </dict>
+$([ "$job" = coordinator ] && printf '  <key>AbandonProcessGroup</key><true/>')
 $(if [ -n "$iv" ]; then printf '  <key>StartInterval</key><integer>%s</integer>' "$iv"
   else printf '  <key>KeepAlive</key><true/>\n  <key>RunAtLoad</key><true/>'; fi)
   <key>StandardOutPath</key><string>$(printf '%s/%s.out.log' "$SWARM_LOGS" "$job" | xml_escape)</string>
@@ -109,6 +123,30 @@ Run these on whatever timer the machine does have:
 MSG
   return 1
 }
+
+# ---- elsewhere: the coordinator as one crontab line, marked so it is replaced, never doubled
+SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
+cron_mark() { printf '# %s' "$(label coordinator)"; }
+cron_line() {
+  local m=$(( $(interval_for coordinator) / 60 )); [ "$m" -ge 1 ] || m=1
+  # cron's own PATH finds neither claude nor gh: carry the installer's.
+  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q COORDINATOR_SHADOW=%s /bin/bash %q >> %q 2>&1 %s\n' \
+    "$m" "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$(coordinator_shadow)" \
+    "$KIT_ROOT/scripts/coordinator-tick.sh" "$SWARM_LOGS/coordinator.out.log" "$(cron_mark)"
+}
+cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark)"; }
+cron_install() {
+  command -v "$SWARM_CRONTAB" >/dev/null 2>&1 || { echo "install: no launchd and no crontab — run this every 5 minutes yourself:" >&2; cron_line >&2; return 1; }
+  mkdir -p "$SWARM_LOGS"
+  local rest; rest=$(cron_rest)   # read in full before the write replaces it
+  { [ -z "$rest" ] || printf '%s\n' "$rest"; cron_line; } | "$SWARM_CRONTAB" - && echo "installed $(label coordinator) in crontab (shadow=$(coordinator_shadow))"
+}
+cron_uninstall() {
+  "$SWARM_CRONTAB" -l 2>/dev/null | grep -qF -- "$(cron_mark)" || { echo "coordinator was not installed"; return 0; }
+  local rest; rest=$(cron_rest)
+  { [ -z "$rest" ] || printf '%s\n' "$rest"; } | "$SWARM_CRONTAB" - && echo "removed $(label coordinator) from crontab"
+}
+on_launchd() { [ "${SWARM_UNAME:-$(uname -s)}" = Darwin ] && command -v launchctl >/dev/null 2>&1; }
 
 do_install() { # <job>
   local job="$1" f; f=$(plist "$job")
@@ -249,6 +287,8 @@ case "${1:-}" in
     # A name that is no action at all is left for the dispatch below to reject.
     is_action=1
     case "${1:-}" in ""|restart) ;; *) script_for "$1" >/dev/null 2>&1 || is_action=0 ;; esac
+    # A shadow coordinator spawns nothing, so a hold does not stop installing one.
+    [ "${1:-}" = coordinator ] && [ "$(coordinator_shadow)" = 1 ] && is_action=0
     if [ "$is_action" = 1 ] && held=$(swarm_held); then
       audit refused-held "${1:-install}"
       echo "install: the swarm is held — $held. Run 'install.sh release' first, on purpose." >&2
@@ -261,6 +301,9 @@ case "${1:-}" in
   ""|restart|uninstall) audit "${1:-install}" "${2:-}" ;;
   *) if script_for "$1" >/dev/null 2>&1; then audit "$1" "${2:-}"; fi ;;
 esac
+
+if [ "${1:-}" = coordinator ] && ! on_launchd; then cron_install; exit $?; fi
+if [ "${1:-}" = uninstall ] && [ "${2:-}" = coordinator ] && ! on_launchd; then cron_uninstall; exit $?; fi
 
 if is_windows; then
   case "${1:-}" in
@@ -282,14 +325,14 @@ case "${1:-}" in
   --jobs)   jobs_for_project; exit 0 ;;
   status)
     need_launchd || exit 1
-    for j in $(jobs_for_project); do
+    for j in $(jobs_for_project) $([ -f "$(plist coordinator)" ] && echo coordinator); do
       line=$(launchctl list 2>/dev/null | awk -v l="$(label "$j")" '$3==l{print "pid "$1", last exit "$2}')
       printf '%-14s %s\n' "$j" "${line:-not loaded}"
     done; hold_status; exit 0 ;;
   restart)  need_launchd || exit 1; do_install "${2:?restart needs a job}"; exit $? ;;
   uninstall)
     need_launchd || exit 1
-    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report; do do_uninstall "$j"; done; fi
+    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator; do do_uninstall "$j"; done; fi
     exit 0 ;;
   -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;
