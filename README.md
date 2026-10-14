@@ -142,6 +142,8 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
+           coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
+           coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
            the thinking · facts.sh fills the briefs' placeholders and refuses when
            one has no value · prompt-schema.jq derives the shape the model is
@@ -238,6 +240,39 @@ that brings one agent back to a broken pull request and stops after three, and
 a reporter. `swarm/queue.sh add <ticket> --brief <file>` is how a ticket joins
 the queue — it replaces writing a launcher by hand. Full description, the rules
 it holds to and every setting: [`swarm/README.md`](swarm/README.md).
+
+### The coordinator — a fresh process per check
+
+An overnight `/loop /agent-harness:work <scope>` re-sends its whole conversation
+on every wake. `scripts/coordinator-tick.sh` does the same job as one short
+process with no model call: it reads the runs that ended, spawns the next queued
+ticket through `spawn-claim.sh` up to a cap, runs `reconcile-claims.sh` and the
+dev-server sweep, checks the disk, and writes every event that needs judgement
+to a file. Each judgement event gets one fresh `claude -p` with a short brief
+(`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
+window — never the session history. State lives in `$STATE_DIR/coordinator/`.
+
+```sh
+scripts/coordinator-queue.sh seed <scope>   # a ticket, a label, or a programme subject
+swarm/install.sh coordinator                # every 5 minutes; SHADOW unless COORDINATOR_SHADOW=0
+scripts/coordinator-compare.sh --since <ISO>  # the shadow's calls beside the loop's runs
+swarm/install.sh uninstall coordinator
+```
+
+**Shadow is the default.** Every act is written to `actions.log` as "would …";
+nothing is spawned, killed, posted or notified, and housekeeping runs dry. Run
+one shadow night beside the loop and read the compare report before installing
+with `COORDINATOR_SHADOW=0`. A green pixel PR or a call for the owner sends a
+desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
+`/agent-harness:needsme` reads.
+
+| Key (under `coordinator`) | Default | What it is |
+|---|---|---|
+| `cap` | 4 | Live ticket runs at once |
+| `minFreeGb` | 20 | Disk alarm floor |
+| `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
+| `judges` | 1 | Judgement processes at once |
+| `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
 
 ## What it costs
 

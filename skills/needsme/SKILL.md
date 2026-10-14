@@ -52,7 +52,7 @@ does not report "I checked four" — it reports a confident, short number. That 
 failure mode, and it happened: **2026-09-01 this said "1 item yours" with three
 waiting.**
 
-Before printing any count, confirm all five ran:
+Before printing any count, confirm all six ran:
 
 | # | Channel | Where it hides | Section |
 |---|---|---|---|
@@ -61,6 +61,7 @@ Before printing any count, confirm all five ran:
 | 3 | Dead claims | the claim ref, not the label | 1d |
 | 4 | Falsely-parked `$LBL_GATED` (gated) | the `**Blockers:**` field | 1e |
 | 5 | `$LBL_IN_REVIEW` (in-review) with no PR | unreachable tickets | 1f |
+| 6 | **The coordinator's needs-you file** | lines the unattended coordinator wrote while nobody was watching | **1g** |
 
 **If a channel's probe fails, say the channel failed.** An empty table needs the scan
 to have provably run — a probe returning 0 may be broken, not clean.
@@ -355,6 +356,22 @@ survivor is really an issue.
 
 `$LBL_IN_REVIEW` (in-review) with no linked PR is an unreachable ticket → ⚪ STUCK.
 `gh issue view` silently resolves PR numbers too — confirm it is an issue.
+
+### 1g · The coordinator's needs-you file
+
+The coordinator tick never asks a question. When a pixel PR goes green or a
+judgement needs the owner, it pings the desktop and appends one line here:
+
+```bash
+cat "$STATE_DIR/coordinator/needs-you.md" 2>/dev/null | grep '^- \[ \]'
+```
+
+Each unticked line is a candidate 🔴 row — but tier it like any other: re-read
+the PR or ticket it names first, because the line was true when written and
+may have been cleared since (a sign-off on GitHub clears the hold, not the
+line). When the item is resolved, tick its line (`- [x]`) so the next run does
+not offer it again. An absent file means the coordinator is not installed or
+has raised nothing — say which only if `$STATE_DIR/coordinator/` exists.
 
 ---
 
