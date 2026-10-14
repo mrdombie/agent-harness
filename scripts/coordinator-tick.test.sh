@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# coordinator-tick.test.sh — the guards the tick exists to hold: one tick at a
+# time, the cap, never a claimed / gated / held ticket, shadow does nothing,
+# a frozen run is noticed. Plus the events, the owner channel and the judge.
+# Run: bash "$0"
+set -uo pipefail
+for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/../swarm/tests/fixture.sh"
+swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+T="$HERE/coordinator-tick.sh"
+Q="$HERE/coordinator-queue.sh"
+C="$STATE/coordinator"
+
+# Stand-ins for the housekeeping scripts and the judge's claude: each records its call.
+cat > "$BIN/reconcile" <<'SH'
+#!/usr/bin/env bash
+echo "reconcile $*" >> "$FIX/house.log"
+SH
+cat > "$BIN/sweep" <<'SH'
+#!/usr/bin/env bash
+echo "sweep $*" >> "$FIX/house.log"
+SH
+cat > "$BIN/claude" <<'SH'
+#!/usr/bin/env bash
+{ printf 'ARGV'; printf ' [%s]' "$@"; printf '\n'
+  echo "COMPACT=${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-unset}"; } >> "$FIX/claude.log"
+SH
+cat > "$BIN/notify" <<'SH'
+#!/usr/bin/env bash
+echo "$1" >> "$FIX/notify.log"
+SH
+chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
+export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
+export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
+unset COORDINATOR_SHADOW
+
+fresh() {
+  rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
+  : > "$SPAWNS"; : > "$FIX/house.log"; : > "$FIX/claude.log"; : > "$FIX/notify.log"; : > "$FIX/claims.txt"
+  printf '[]\n' > "$FIX/gh/prs-all.json"
+  unset SWARM_NOW
+}
+queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
+tick() { bash "$T" 2>&1; }
+live_run() { # <ticket> [log-age-from-now-in-min]
+  local log="$STATE/logs/claim-$1-live.log"
+  echo '{"type":"assistant"}' > "$log"
+  printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s,"log":"%s"}\n' "$1" "$1" "$$" "$log" \
+    > "$STATE/runs/claim-$1-live.json"
+}
+spawned() { cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
+
+echo "--- shadow is the default, and it does nothing ---"
+fresh; queue 501 502
+out=$(tick)
+want "nothing spawned"                     "" "$(spawned)"
+want_in "it says what it would do"         'would spawn #501' "$out"
+want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3=="spawn"{print $2, $3, $4}' "$C/actions.log" | head -1)"
+want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
+want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
+
+echo "--- live spawns, up to the cap and no further ---"
+fresh; queue 501 502 503 504 505 506; live_run 900
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
+want "three slots, three spawns, in queue order" "501 502 503" "$(spawned)"
+want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
+fresh; queue 501 502; live_run 900; live_run 901
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 tick)
+want "at the cap, nothing spawns"          "" "$(spawned)"
+want_in "and it says why"                  '2 live, cap 2 — no slot' "$out"
+
+echo "--- never a claimed, gated or held ticket ---"
+fresh; queue 501 502 503 504
+echo 501 > "$FIX/claims.txt"
+fix_issue 502 OPEN "status:gated"
+fix_issue 503 OPEN "status:ready,needs:human-approval"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "only the free one spawns"            "504" "$(spawned)"
+want_in "claimed is named"                 'skip #501 \(new\): claimed' "$out"
+want_in "gated is named"                   'skip #502 \(new\): status:gated' "$out"
+want_in "the hold label is named"          'skip #503 \(new\): needs:human-approval' "$out"
+fresh; queue 501
+printf 'owner said stop\n' > "$STATE/swarm/HOLD"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "the swarm hold stops every spawn"    "" "$(spawned)"
+want_in "and names the hold"               'held — owner said stop' "$out"
+
+echo "--- one tick at a time ---"
+fresh; queue 501
+mkdir -p "$C/tick.lock"; echo "$$" > "$C/tick.lock/pid"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a running tick blocks a second one"  "" "$(spawned)"
+want_in "and it says so"                   'another tick \(pid [0-9]+\) is running' "$out"
+want "the holder's lock is left in place"  "$$" "$(cat "$C/tick.lock/pid")"
+sh -c 'exit 0' & dead=$!; wait "$dead"
+echo "$dead" > "$C/tick.lock/pid"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a dead holder's lock is taken over"  "501" "$(spawned)"
+want "and released at the end"             "no" "$([ -d "$C/tick.lock" ] && echo yes || echo no)"
+
+echo "--- a frozen run is noticed; a busy one is not ---"
+fresh; live_run 700
+tick >/dev/null
+want "a run writing its log is not frozen" "0" "$(grep -c '"kind":"frozen"' "$C/events.jsonl")"
+export SWARM_NOW=$(( $(date +%s) + 25 * 60 ))
+out=$(tick)
+want "no growth for 25 min is frozen"      "1" "$(grep -c '"kind":"frozen"' "$C/events.jsonl")"
+want_in "and it is a judgement event"      '"judge":true' "$(grep '"kind":"frozen"' "$C/events.jsonl")"
+tick >/dev/null
+want "written once, not every tick"        "1" "$(grep -c '"kind":"frozen"' "$C/events.jsonl")"
+unset SWARM_NOW
+
+echo "--- ended runs: recorded once, the failures raised ---"
+fresh
+printf '{"run_id":"claim-801-x","ticket":"801","log":"%s"}\n' "$STATE/logs/claim-801-x.log" > "$STATE/runs/claim-801-x.json"
+printf '{"type":"result","result":"Handed off at abc123"}\n' > "$STATE/logs/claim-801-x.log"
+printf '{"run_id":"claim-801-x","exit_code":0}\n' > "$STATE/runs/claim-801-x.ended"
+printf '{"run_id":"claim-802-x","ticket":"802","log":"%s"}\n' "$STATE/logs/claim-802-x.log" > "$STATE/runs/claim-802-x.json"
+printf '{"type":"result","result":"Parked: the spec contradicts itself"}\n' > "$STATE/logs/claim-802-x.log"
+printf '{"run_id":"claim-802-x","exit_code":0}\n' > "$STATE/runs/claim-802-x.ended"
+printf '{"run_id":"claim-803-x","ticket":"803","log":"%s"}\n' "$STATE/logs/claim-803-x.log" > "$STATE/runs/claim-803-x.json"
+printf 'You have hit your session limit · resets 7pm\n' > "$STATE/logs/claim-803-x.log"
+printf '{"run_id":"claim-803-x","exit_code":1}\n' > "$STATE/runs/claim-803-x.ended"
+out=$(tick)
+want_in "the final result line is recorded" 'claim-801-x.*exit=0 Handed off at abc123' "$(cat "$C/runs.log")"
+want "a clean hand-off raises nothing"     "0" "$(grep -c 'claim-801-x' "$C/events.jsonl")"
+want_in "a park is a stand-down"           '"kind":"stood-down".*"ticket":"802"' "$(cat "$C/events.jsonl")"
+want_in "a limit stop is a usage-limit"    '"kind":"usage-limit".*"ticket":"803"' "$(cat "$C/events.jsonl")"
+tick >/dev/null
+want "each ended run is read once"         "3" "$(grep -c 'ended' "$C/runs.log")"
+rm -f "$STATE/logs/claim-803-x.log"
+
+echo "--- pull requests: red is judged, green pixels go to the owner ---"
+pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState]
+  jq -n --argjson n "$1" --arg b "tkt-$2-x" --arg l "$3" --arg c "$4" --arg m "${5:-CLEAN}" \
+    '{number:$n, headRefName:$b, headRefOid:("sha" + ($n|tostring)), isDraft:false, mergeStateStatus:$m,
+      labels:(if $l == "-" then [] else [{name:$l}] end),
+      statusCheckRollup:[{name:"ci", status:"COMPLETED", conclusion:$c}]}'
+}
+fresh
+jq -s . <(pr 41 601 - FAILURE) <(pr 42 602 needs:human-approval SUCCESS) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
+tick >/dev/null
+want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41"' "$C/events.jsonl")"
+want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.jsonl")"
+want "a healthy PR raises nothing"         "0" "$(grep -c ':44:' "$C/events.jsonl")"
+want_in "a green pixel PR is a sign-off"   '"kind":"signoff".*"judge":false' "$(grep ':42:' "$C/events.jsonl")"
+want "shadow tells the owner nothing"      "" "$(cat "$FIX/notify.log"; cat "$C/needs-you.md" 2>/dev/null)"
+want_in "shadow logs that it would"        'would	notify	signoff:42' "$(cat "$C/actions.log")"
+rm -f "$C/events.jsonl"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want_in "live: the owner is pinged"        'PR #42 .*needs your sign-off' "$(cat "$FIX/notify.log")"
+want_in "live: needs-you carries the line" 'PR #42' "$(cat "$C/needs-you.md")"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "pinged once, not every tick"         "1" "$(grep -c . "$FIX/notify.log")"
+
+echo "--- disk ---"
+fresh
+COORDINATOR_SHADOW=0 COORDINATOR_FREE_GB=5 tick >/dev/null
+want_in "below the floor is an alarm"      'Disk is low: 5 GB' "$(cat "$FIX/notify.log")"
+
+echo "--- the judge: a fresh claude per event, capped, with no history ---"
+fresh
+jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
+tick >/dev/null
+want "shadow starts no judge"              "" "$(cat "$FIX/claude.log")"
+want_in "shadow logs the judgement it would start" 'would	judge	red-pr:41:sha41' "$(cat "$C/actions.log")"
+rm -f "$C/events.jsonl"
+COORDINATOR_SHADOW=0 tick >/dev/null
+for _ in $(seq 1 50); do ls "$C"/judges/*.ended >/dev/null 2>&1 && break; sleep 0.1; done
+argv=$(cat "$FIX/claude.log")
+want "one judge for one event"             "1" "$(grep -c ^ARGV "$FIX/claude.log")"
+want_in "it has a turn cap"                '\[--max-turns\] \[40\]' "$argv"
+want_in "it has a budget"                  '\[--max-budget-usd\] \[5\]' "$argv"
+want "its compact window is bounded"       "COMPACT=150000" "$(grep ^COMPACT "$FIX/claude.log")"
+want_in "the brief carries the one event"  'red-pr:41:sha41' "$argv"
+want_not_in "it never resumes a session"   '\[--(resume|continue)\]|\[-c\]|\[-r\]' "$argv"
+COORDINATOR_SHADOW=0 tick >/dev/null
+sleep 0.3
+want "an event is judged once"             "1" "$(grep -c ^ARGV "$FIX/claude.log")"
+
+exit $FAILED

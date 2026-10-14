@@ -171,11 +171,12 @@ want() { # <label> <expected> <actual>
 # `--` before the pattern: a pattern that starts with a dash is a pattern, not
 # a grep flag, and without it `want_in "…" '--push'` reports a usage error as a
 # failed assertion — a test that cannot see its subject looks like a bug in it.
+# A here-string, not a pipe: under pipefail grep -q's early exit SIGPIPEs printf.
 want_in() { # <label> <regex> <text>
-  if printf '%s' "$3" | grep -qE -- "$2"; then ok "$1"; else bad "$1 — no /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; fi
+  if grep -qE -- "$2" <<<"$3"; then ok "$1"; else bad "$1 — no /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; fi
 }
 want_not_in() { # <label> <regex> <text>
-  if printf '%s' "$3" | grep -qE -- "$2"; then bad "$1 — found /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; else ok "$1"; fi
+  if grep -qE -- "$2" <<<"$3"; then bad "$1 — found /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; else ok "$1"; fi
 }
 
 # fix_issue_list <label,label…> <json array> — what `gh issue list --label …`
