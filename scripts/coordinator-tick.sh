@@ -169,7 +169,15 @@ if [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
 fi
 
 SLOTS=$(( COORD_CAP - LIVE ))
-PLAN=""
+PLAN=""; NEXT=""
+# The first ticket this tick would take, slot or not: what the compare report matches.
+first_free() {
+  local t cls note
+  while IFS=$'\t' read -r t cls note; do
+    [ -n "${t:-}" ] || continue
+    spawn_block "$t" "$cls" >/dev/null || { printf '%s' "$t"; return 0; }
+  done <<< "$(coord_queue_ordered)"
+}
 if held=$(swarm_held); then
   say "spawn: held — $held"
 elif until=$(swarm_usage_hold); then
@@ -177,14 +185,15 @@ elif until=$(swarm_usage_hold); then
   event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true
 elif [ "$SLOTS" -le 0 ]; then
   say "spawn: $LIVE live, cap $COORD_CAP — no slot"
+  NEXT=$(first_free)
 else
   started=0
   while IFS=$'\t' read -r t cls note; do
     [ -n "${t:-}" ] || continue
-    [ "$started" -lt "$SLOTS" ] || break
     if why=$(spawn_block "$t" "$cls"); then
       say "skip #$t ($cls): $why"; continue
     fi
+    [ "$started" -lt "$SLOTS" ] || { NEXT="$t"; break; }
     PLAN="$PLAN$t,"
     started=$((started+1))
     coord_act_log spawn "$t" "$cls${note:+ — $note}"
@@ -201,7 +210,7 @@ else
   [ "$started" -gt 0 ] || say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
 fi
 # The compare report reads what this tick saw and chose.
-printf '%s\tplan\t-\t%s\tlive=%s slots=%s\n' "$(swarm_stamp)" "${PLAN%,}" "${LIVE_TICKETS% }" "$SLOTS" >> "$COORD_ACTIONS"
+printf '%s\tplan\t-\t%s\tlive=%s slots=%s next=%s\n' "$(swarm_stamp)" "${PLAN%,}" "${LIVE_TICKETS% }" "$SLOTS" "$NEXT" >> "$COORD_ACTIONS"
 
 # ---- 6. housekeeping ---------------------------------------------------------
 if coord_shadow; then
