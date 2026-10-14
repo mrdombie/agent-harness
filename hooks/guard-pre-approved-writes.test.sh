@@ -31,7 +31,9 @@ g checkout -qb wide; printf '%s\n' "$WIDE" > "$C"; g commit -qam wide
 g checkout -q -; g checkout -qb same; printf '%s\n' "$SAME" > "$C"; g commit -qam same
 g checkout -q -
 g diff HEAD wide > "$TDIR/wide.patch"; g diff HEAD same > "$TDIR/same.patch"
-g update-ref refs/remotes/origin/develop HEAD   # the shared integration branch, at base
+# A real bare origin: the push judge asks the remote, never a local ref.
+git init -q --bare "$TDIR/origin.git"; git -C "$TDIR/origin.git" symbolic-ref HEAD refs/heads/develop
+g remote add origin "$TDIR/origin.git"; g push -q origin HEAD:refs/heads/develop; g fetch -q origin
 ln "$C" "$TDIR/hardlink"                         # the same file under another name
 mkdir -p "$TDIR/stage"; printf '%s\n' "$WIDE" > "$TDIR/stage/harness.json"
 printf '%s\n' "$WIDE" > "$TDIR/wide.json"; printf '%s\n' "$SAME" > "$TDIR/same.json"
@@ -77,6 +79,17 @@ add -      allow "$(bashp "find . -name harness.json")"
 add -      allow "$(bashp "sed -n 1,5p .claude/harness.json")"
 add -      allow "$(bashp "git status && git diff -- .claude/harness.json && git log -1")"
 add -      allow "$(bashp "git am --abort")"
+add fetchfake block "$(bashp "git fetch . +wide:refs/remotes/origin/develop")"
+add gitprotsh block "$(bashp "git rev-parse wide > .git/refs/remotes/origin/develop")"
+add updidx block "$(bashp "git update-index --cacheinfo 100644,\$(git rev-parse wide:.claude/harness.json),.claude/harness.json")"
+add updref block "$(bashp "git update-ref --stdin <<'EOF'
+update refs/remotes/origin/develop wide
+EOF")"
+add gitcfg block "$(bashp "git config set remote.origin.url $TDIR/evil.git")"
+add gitcfg block "$(bashp "git config --file .git/config remote.origin.url $TDIR/evil.git")"
+add gitcfgedit block "$(bashp "git config --edit")"
+add -      allow "$(bashp "git fetch origin && git fetch --all")"
+add -      allow "$(bashp "git config user.email t@example.com && git config --get remote.origin.url")"
 add parsefail block "$(bashp "git push origin wide; echo \"unterminated")"
 add -      block "$(bashp "git push origin wide; echo \$'it\\'s'")"
 add -      block "$(bashp "git push -f origin wide:develop")"
@@ -218,6 +231,17 @@ pd=$(plant_dir shared "    if shared is not None and value_of(shared) == a and a
   bad "plant: shared allowance off, yet the merge passes: the case proves nothing"
 g reset -q -- .claude; printf '%s\n' "$BASE" > "$C"; g update-ref refs/remotes/origin/develop "$(g rev-parse HEAD)"
 
+# 2e. A forged local origin ref does not move what the push is judged against.
+g update-ref refs/remotes/origin/develop wide
+[ "$(judge "$D" "$(bashp 'git push origin wide:refs/heads/develop')")" -eq 2 ] &&
+  ok "block  push onto develop with origin/develop forged locally to match" || bad "a forged local origin ref lets the widening push"
+pd=$(plant_dir localref "    sha, default = remote_head(top, 'HEAD')" "    sha, default = (git(top, 'rev-parse', 'origin/develop') or '').strip(), 'develop'")
+[ -n "$pd" ] || bad "plant localref did not land"
+[ "$(judge "$pd" "$(bashp 'git push origin wide:refs/heads/develop')")" -eq 0 ] &&
+  ok "plant: local ref trusted, the forged push passes, so asking the remote is the guard" ||
+  bad "plant: local ref trusted, yet still refused: the case proves nothing"
+g update-ref refs/remotes/origin/develop "$(g rev-parse HEAD)"
+
 # 2d. A configured push refspec is what a bare `git push` sends.
 g config remote.origin.push '+refs/heads/wide:refs/heads/develop'
 [ "$(judge "$D" "$(bashp 'git push origin')")" -eq 2 ] && ok "block  bare git push with a configured refspec sending the widening" ||
@@ -284,7 +308,13 @@ plant am       "                refuse('this applies a patch the guard cannot re
 plant push     "        judge_push(top, rest, cfg, rel)" "        pass"
 plant gitenv   "        if any(a in ('commit', 'push'," "        if False and any(a in ('commit', 'push',"
 plant parsefail "        if re.search(r'harness\\.json|\\.claude|\\.git/|\\bgit\\b|" "        if False and re.search(r'harness\\.json|\\.claude|\\.git/|\\bgit\\b|"
-plant gitcfg   "        if writes and pos and GIT_KEYS.match(pos[0]):" "        if False:"
+plant gitcfg   "            if hit:
+                refuse('this sets git config" "            if False:
+                refuse('this sets git config"
+plant fetchfake "    elif sub == 'fetch' and pos and" "    elif False and"
+plant updidx   "    elif sub == 'update-index' and (" "    elif False and ("
+plant updref   "            or (sub == 'update-ref' and '--stdin' in rest" "            or False and (sub == 'update-ref' and '--stdin' in rest"
+plant gitcfgedit "        if any(a in ('-e', '--edit') for a in rest) or (pos and pos[0] == 'edit'):" "        if False:"
 plant gitcfgc  "            elif GIT_KEYS.match(v.split('=', 1)[0]):" "            elif False:"
 plant remote   "    elif sub == 'remote' and pos and" "    elif False and"
 plant plumbing "    elif sub == 'replace' or (sub in" "    elif False and (sub in"

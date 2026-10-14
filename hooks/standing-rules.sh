@@ -65,12 +65,13 @@ _grant(){
 }
 # git with no GIT_* from the caller and replace objects off: both can make a ref read as another commit.
 _git(){ env $(env | sed -n '/^GIT_SSH_COMMAND=/d; s/^\(GIT_[A-Za-z_]*\)=.*/-u \1/p') GIT_TERMINAL_PROMPT=0 git --no-replace-objects -C "$@"; }
-# _remote <dir> <HEAD|refs/heads/x>: "<sha> <branch>" as the remote reports it, within 5 s, or nothing.
+# _remote <dir> <HEAD|refs/heads/x>: "<sha> <branch>" as the remote reports it, within 4 s, or nothing.
+# At most two calls, so 8 s, inside the hook's 10 s timeout.
 _remote(){
   local f p n=0; f=$(mktemp) || return 0
-  ( GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+  ( GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=4}" \
       _git "$1" ls-remote --symref origin "$2" > "$f" 2>/dev/null ) & p=$!
-  while kill -0 "$p" 2>/dev/null && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n+1)); done
+  while kill -0 "$p" 2>/dev/null && [ "$n" -lt 40 ]; do sleep 0.1; n=$((n+1)); done
   kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
   awk -v want="$2" '
     $1 == "ref:" { sub("^refs/heads/", "", $2); br = $2 }

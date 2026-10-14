@@ -128,7 +128,7 @@ def is_gitprot(path):
         return True
     if '.git' in parts:
         k = parts.index('.git')
-        return parts[-1] == 'config' or 'hooks' in parts[k:] or parts[-1] in ('packed-refs',)
+        return parts[-1] in ('config', 'packed-refs') or 'hooks' in parts[k:] or 'refs' in parts[k:]
     return False
 
 
@@ -561,14 +561,27 @@ def judge_git(args, cwd, here, assigns):
     shared = shared_value(top) if sub in ('commit', 'checkout', 'restore', 'apply', 'am') else None
 
     if sub == 'config':
-        writes = len(pos) >= 2 or any(a in ('--add', '--unset', '--unset-all', '--replace-all', '--rename-section',
-                                            '--remove-section') for a in rest)
-        if writes and pos and GIT_KEYS.match(pos[0]):
-            refuse('this sets git config `%s`, which moves where pushes go or what runs on commit.' % pos[0])
+        reads = (pos and pos[0] in ('get', 'list')) or any(
+            a.split('=', 1)[0] in ('--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color',
+                                   '--get-colorbool', '-l', '--list') for a in rest)
+        if any(a in ('-e', '--edit') for a in rest) or (pos and pos[0] == 'edit'):
+            refuse('this opens git config in an editor, where the guard cannot see what changes.')
+        if not reads:
+            # Every positional: `config set <key>`, `config --file <f> <key>` and the bare form all name the key somewhere.
+            hit = [a for a in rest if GIT_KEYS.match(a.split('=', 1)[0])]
+            if hit:
+                refuse('this sets git config `%s`, which moves where pushes go or what runs on commit.' % hit[0])
     elif sub == 'remote' and pos and pos[0] in ('add', 'set-url', 'rename', 'set-head', 'set-branches', 'remove', 'rm'):
         refuse('this changes the git remote (`git remote %s`), which the shared value is read from.' % pos[0])
-    elif sub == 'replace' or (sub in ('update-ref', 'symbolic-ref') and any(a.startswith('refs/remotes/') for a in pos)):
+    elif sub == 'replace' or (sub in ('update-ref', 'symbolic-ref') and any(a.startswith('refs/remotes/') for a in pos)) \
+            or (sub == 'update-ref' and '--stdin' in rest and (here is None or 'refs/remotes/' in here)):
         refuse('this rewrites what a remote ref or object reads as (`git %s`).' % sub)
+    elif sub == 'fetch' and pos and not git(top, 'config', '--get', 'remote.%s.url' % pos[0]) and \
+            any(':' in a and 'refs/remotes/' in a.split(':', 1)[1] for a in pos[1:]):
+        refuse('this fetches into a remote-tracking ref from somewhere other than that remote.')
+    elif sub == 'update-index' and (any(a in ('--cacheinfo', '--index-info', '--stdin') for a in rest) and
+                                    (names_cfg(rest, repo) or here is None or 'harness.json' in (here or ''))):
+        refuse('this writes harness.json into the index directly (`git update-index`), where the guard cannot see the value.')
     elif sub == 'commit':
         vh = at('HEAD')
         judge(vh, at(''), cfg + ' (staged for commit)', shared)
@@ -629,11 +642,46 @@ def judge_git(args, cwd, here, assigns):
             judge(base, simulate_patch(base, text, rest), cfg + ' (git %s)' % sub, shared)
 
 
+def remote_head(top, what):
+    """(sha, branch) the REMOTE reports for HEAD or refs/heads/<b>, within 4 s; local refs can be forged."""
+    try:
+        r = subprocess.run(['git', '--no-replace-objects', '-C', top, 'ls-remote', '--symref', 'origin', what],
+                           capture_output=True, timeout=4,
+                           env=dict(clean_env(), GIT_TERMINAL_PROMPT='0',
+                                    GIT_SSH_COMMAND=os.environ.get('GIT_SSH_COMMAND') or 'ssh -o BatchMode=yes -o ConnectTimeout=4'))
+    except Exception:
+        return None, None
+    sha, br = None, None
+    for line in r.stdout.decode('utf-8', 'replace').splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[0] == 'ref:':
+            br = f[1][len('refs/heads/'):] if f[1].startswith('refs/heads/') else f[1]
+        elif len(f) >= 2 and f[1] == what:
+            sha = f[0]
+    if sha and not br:
+        br = what[len('refs/heads/'):] if what.startswith('refs/heads/') else what
+    return sha, br
+
+
 def judge_push(top, rest, cfg, rel):
-    ref = anchor(top)
-    if not ref:
-        return  # no integration branch to compare with; the injector grants nothing either
-    target = ref.split('/', 1)[1]
+    sha, default = remote_head(top, 'HEAD')
+    if not sha:
+        return  # no remote to read; the injector grants nothing either
+    at = lambda r: git(top, 'show', r + ':' + rel)
+    if git(top, 'cat-file', '-e', sha + '^{commit}') is None:
+        refuse('the remote\'s default branch is at a commit this clone has not fetched, so the guard cannot read the '
+               'shared value to judge this push. Run `git fetch origin` first.')
+    ref, target = sha, default
+    try:
+        ib = json.loads(at(sha) or '{}').get('integrationBranch')
+    except Exception:
+        ib = None
+    if isinstance(ib, str) and ib and ib != default:
+        isha, _ = remote_head(top, 'refs/heads/' + ib)
+        if isha:
+            if git(top, 'cat-file', '-e', isha + '^{commit}') is None:
+                refuse('the remote\'s %s is at a commit this clone has not fetched. Run `git fetch origin` first.' % ib)
+            ref, target = isha, ib
     at = lambda r: git(top, 'show', r + ':' + rel)
     heads = lambda: [(h, h[len('refs/heads/'):]) for h in
                      (git(top, 'for-each-ref', '--format=%(refname)', 'refs/heads') or '').split()]
