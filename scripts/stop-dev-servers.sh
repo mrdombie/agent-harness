@@ -20,7 +20,8 @@
 #      up for six hours);
 #   2. that ticket has no claim ref on origin, read with ls-remote — a read that
 #      fails stops nothing, and a local cache that happens to be empty cannot
-#      pass for "nothing is claimed";
+#      pass for "nothing is claimed". Or it is claimed and its holder is proved
+#      gone: the run has an .ended record, or its pid on this host is dead;
 #   3. no shell, editor or agent session has its working directory in that
 #      worktree — somebody sitting there is somebody using it;
 #   4. the server is over the minimum age (default 2 hours).
@@ -32,7 +33,9 @@
 # shell, never an agent session (`claude … --name claim-next` contains "next").
 #
 # Test overrides: STOP_DEV_CLAIMED (newline list of claimed ticket numbers, or
-# the word FAIL), STOP_DEV_BRANCH_PREFIX, STOP_DEV_MIN_AGE (seconds).
+# the word FAIL), STOP_DEV_CLAIM_RECORDS (JSON array of claim records, as
+# `claim-lock.sh list --json` prints them), STOP_DEV_STATE_DIR,
+# STOP_DEV_BRANCH_PREFIX, STOP_DEV_MIN_AGE (seconds).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -129,9 +132,15 @@ if [ -z "${STOP_DEV_BRANCH_PREFIX+x}" ] || [ -z "${STOP_DEV_CLAIMED+x}" ]; then
 fi
 PREFIX="${STOP_DEV_BRANCH_PREFIX:-${BRANCH_PREFIX:-}}"
 [ -n "$PREFIX" ] || { echo "stop-dev-servers: no branch prefix — cannot tell a ticket worktree, stopping nothing"; exit 0; }
+. "$HERE/claim-proc.sh" || exit 0
+. "$HERE/claim-liveness.sh" || exit 0
+THIS_HOST=$(claim_host)
+STATE="${STOP_DEV_STATE_DIR:-${STATE_DIR:-}}"
 if [ -n "${STOP_DEV_CLAIMED+x}" ]; then
   [ "$STOP_DEV_CLAIMED" = FAIL ] && { echo "stop-dev-servers: the claims could not be read — stopping nothing"; exit 0; }
   CLAIMED="$STOP_DEV_CLAIMED"
+  # A fixture's claim list must never be judged against the machine's real claims.
+  RECORDS="${STOP_DEV_CLAIM_RECORDS:-[]}"
 else
   # Time-limited: this runs inside /claim, and a stalled network must not hang it.
   CLAIMED=$(perl -e 'alarm shift; exec @ARGV' 20 git -C "$MAIN_REPO" ls-remote origin 'refs/claims/*' 2>/dev/null) \
@@ -148,15 +157,52 @@ PS=$(ps -axo pid=,ppid=,command= 2>/dev/null)
 ROOTS=$(printf '%s\n' "$PS" | while read -r pid ppid cmd; do
   { is_server "$cmd" || is_launcher "$cmd"; } && echo "$pid"
 done)
-OURS=$(printf '%s\n' "$PS" | awk -v roots="$(printf '%s ' $ROOTS)" '
-  BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1 }
-  { parent[$1] = $2 }
-  END { for (p in parent) { q = p; for (d = 0; d < 64 && q > 1; d++) { if (q in root) { print p; break } q = parent[q] } } }')
+SERVERS=$(printf '%s\n' "$PS" | while read -r pid ppid cmd; do is_server "$cmd" && echo "$pid"; done)
+OURS=$(printf '%s\n' "$PS" | awk -v roots="$(printf '%s ' $ROOTS)" -v srv="$(printf '%s ' $SERVERS)" '
+  BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) root[r[i]] = 1
+          m = split(srv, s, " "); for (i = 1; i <= m; i++) server[s[i]] = 1 }
+  { parent[$1] = $2; c = $0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/, "", c); cmd[$1] = c }
+  END {
+    for (p in parent) { q = p; for (d = 0; d < 64 && q > 1; d++) { if (q in root) { print p; break } q = parent[q] } }
+    # The npm / node / `sh -c next` chain that launched a server is the server, not somebody there.
+    for (p in server) { q = parent[p]
+      for (d = 0; d < 16 && q > 1 && (q in cmd); d++) {
+        c = cmd[q]
+        if (c ~ /claude/) break
+        if (c !~ /^([^ ]*\/)?(npm|npx|pnpm|yarn|node)( |$)/ && c !~ /^npm-cli/ && c !~ /^([^ ]*\/)?(ba|z|da)?sh -c .*next/) break
+        print q; q = parent[q] } } }')
 # lsof already reports resolved paths, so one join does it — not one lookup per process.
 OCCUPIED=$({ printf '%s\n' "$OURS" | sed 's/^/O\t/'; printf '%s\n' "$CWDS" | sed 's/^/C\t/'; } \
   | awk -F'\t' '$1 == "O" { ours[$2] = 1; next } $1 == "C" && !($2 in ours) && $3 != "/" { print $3 }' | sort -u)
 
 occupied() { local o; while read -r o; do [ -n "$o" ] && inside "$o" "$1" && return 0; done <<<"$OCCUPIED"; return 1; }
+
+# Read once, and only when a claimed ticket has a server: list --json fetches.
+RECORDS="${RECORDS-}" RECORDS_READ=0
+records() {
+  [ "$RECORDS_READ" = 1 ] && return 0
+  RECORDS_READ=1
+  [ -n "$RECORDS" ] && return 0
+  # Judged by its output: list --json prints every claim and can still exit 1.
+  RECORDS=$(perl -e 'alarm shift; exec @ARGV' 20 bash "$HERE/claim-lock.sh" list --json 2>/dev/null)
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$RECORDS" || RECORDS="[]"
+}
+
+# 0 only on proof the holder is gone; a claim from another host or with no record keeps the server.
+holder_gone() { # <ticket>
+  local rec run host pid
+  records
+  rec=$(jq -c --arg n "$1" '[.[] | select((.issue | tostring) == $n)][0] // empty' <<<"$RECORDS" 2>/dev/null)
+  [ -n "$rec" ] || return 1
+  run=$(jq -r '.run_id // empty' <<<"$rec")
+  [ -n "$run" ] && [ -n "$STATE" ] && [ -f "$STATE/runs/$run.ended" ] && return 0
+  host=$(jq -r '.host // empty' <<<"$rec"); pid=$(jq -r '.pid // empty' <<<"$rec")
+  [ "$host" = "$THIS_HOST" ] || return 1
+  case "$pid" in ''|null|*[!0-9]*) return 1 ;; esac
+  if [ "$pid" != "${CLAIM_EXITED_PID:-}" ]; then claim_pid_alive "$pid" && return 1; fi
+  claim_run_fresh "$1" "$STATE" && return 1
+  return 0
+}
 
 servers | while read -r pid ppid age cwd; do
   # 1. which ticket worktree, if any: the nearest folder named <prefix><digits>-…
@@ -175,11 +221,13 @@ servers | while read -r pid ppid age cwd; do
   # 2. its ticket is not claimed. (Not `printf | grep -q`: under pipefail a grep
   # that stops at its first match breaks the pipe behind it, and the pipeline
   # then reads as "no match" — which in step 3 stopped a server under somebody.)
-  grep -qx "$n" <<<"$CLAIMED" && continue
+  claimed=0; grep -qx "$n" <<<"$CLAIMED" && claimed=1
   # 3. nobody sitting in it
   occupied "$tree" && continue
   # 4. old enough
   [ "$age" -ge "$MIN_AGE" ] || continue
+  # 2, claimed: its holder is gone. Last, because reading the records fetches.
+  [ "$claimed" = 0 ] || holder_gone "$n" || continue
   echo "$pid $ppid $tree"
-done | stop_all "no claim holds its ticket, nobody is working there"
+done | stop_all "no live claim holds its ticket, nobody is working there"
 exit 0

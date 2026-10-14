@@ -159,6 +159,14 @@ make_claim_commit() {
 
 read_claim() { git show -s --format=%B "$1" 2>/dev/null | sed '/^$/d' | tail -1; }
 
+# Kept locally because a finished or parked run has deleted the ref the spawner would read.
+note_run_worktree() { # <worktree>
+  [ -n "${CLAIM_RUN_ID:-}" ] && [ -n "${1:-}" ] && [ -n "${STATE_DIR:-}" ] || return 0
+  local f="$STATE_DIR/runs/$CLAIM_RUN_ID.worktrees"
+  mkdir -p "$STATE_DIR/runs" 2>/dev/null || return 0
+  grep -qxF -- "$1" "$f" 2>/dev/null || printf '%s\n' "$1" >> "$f" 2>/dev/null || true
+}
+
 sync_cache() {
   git fetch -q --prune "$REMOTE" "+$NS/*:$CACHE/*" 2>/dev/null || true
 }
@@ -239,6 +247,7 @@ cmd_acquire() {
   # The CAS. An empty expect-value means "must not already exist".
   if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
     printf 'acquired #%s\n' "$issue"
+    note_run_worktree "$worktree"
     poke_board
     return 0
   fi
@@ -432,6 +441,7 @@ cmd_update() {
     owns_claim "$meta" || {
       printf 'refusing: #%s is held by %s (use --force)\n' "$issue" "$owner" >&2; return 12; }
   fi
+  owns_claim "$meta" && note_run_worktree "$(jq -r '.worktree // empty' <<<"$meta" 2>/dev/null || true)"
 
   local k v
   for kv in "$@"; do

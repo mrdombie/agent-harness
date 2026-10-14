@@ -19,7 +19,12 @@ fail() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 
 T=$(cd "$(mktemp -d)" && pwd -P)
 PIDS=()
-cleanup() { for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$T"; }
+# Plus anything still sitting in $T: a stand-in's orphaned worker is ours too.
+cleanup() {
+  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
+  for p in $(lsof -a -d cwd -Fpn 2>/dev/null | awk -v t="$T/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2) "/", t) == 1) print p}'); do kill "$p" 2>/dev/null; done
+  rm -rf "$T"
+}
 trap cleanup EXIT
 
 # Output goes nowhere: a stand-in holding the $(...) pipe would make the capture
@@ -82,6 +87,52 @@ alive "$lnch"  && fail "its npm-exec launcher is still running"          || ok "
 alive "$asrv"  && ok "a worktree an agent session sits in is kept" || fail "a server was stopped under a live agent session"
 alive "$worker_srv" && fail "a server with its own worker in its folder was kept as if somebody were there" || ok "a server's own workers do not count as somebody working there"
 alive "$bare" && fail "a ticket folder named without the prefix was not swept" || ok "a ticket folder named with bare digits (109-…) is swept"
+
+echo "stop-dev-servers: sweep — a claimed ticket whose holder is gone"
+# The holder states a claim can be in. Only proof the holder is gone stops anything.
+HOST=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
+STATE_T="$T/state"; mkdir -p "$STATE_T/runs"
+sleep 0 & DEAD=$!; wait "$DEAD" 2>/dev/null                       # a pid that has exited
+printf '{"run_id":"run-201","exit_code":0}\n' > "$STATE_T/runs/run-201.ended"
+ended=$(serve "$T/tk-201-ended/apps/web");   PIDS+=("$ended")     # its run has an .ended record
+dead=$(serve "$T/tk-202-dead/apps/web");     PIDS+=("$dead")      # held here by a pid that has exited
+live=$(serve "$T/tk-203-live/apps/web");     PIDS+=("$live")      # held here by a live pid
+away=$(serve "$T/tk-204-away/apps/web");     PIDS+=("$away")      # held on another machine
+sat=$(serve "$T/tk-205-sat/apps/web");       PIDS+=("$sat")       # holder gone, somebody sits there
+(cd "$T/tk-205-sat/apps" && exec bash -c 'sleep 600') >/dev/null 2>&1 & PIDS+=("$!")
+# The shape a real `npm run dev` leaves: npm → sh -c next dev → the server, all in the worktree.
+mkdir -p "$T/tk-206-npm/apps/web"
+(cd "$T/tk-206-npm/apps/web" && exec -a "npm run dev" bash -c '(exec -a "sh -c next dev" bash -c "(exec -a next-server sleep 600) & exec -a \"sh -c next dev\" sleep 600") & exec -a "npm run dev" sleep 600') >/dev/null 2>&1 &
+npm=$!; PIDS+=("$npm")
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  npmsh=$(pgrep -P "$npm" 2>/dev/null | head -1); [ -n "$npmsh" ] && npmsrv=$(pgrep -P "$npmsh" 2>/dev/null | head -1)
+  [ -n "${npmsrv:-}" ] && break; sleep 0.2; done
+PIDS+=("${npmsh:-}" "${npmsrv:-}")
+sleep 1
+CLAIMED2=$(printf '102\n201\n202\n203\n204\n205\n')   # 102: claimed, no record
+RECS=$(jq -cn --arg h "$HOST" --argjson dead "$DEAD" --argjson live "$$" '[
+  {issue:201, host:$h, pid:$live, run_id:"run-201"},
+  {issue:202, host:$h, pid:$dead},
+  {issue:203, host:$h, pid:$live},
+  {issue:204, host:"some-other-machine", pid:$dead},
+  {issue:205, host:$h, pid:$dead} ]')
+sweep2() { STOP_DEV_CLAIM_RECORDS="$RECS" STOP_DEV_STATE_DIR="$STATE_T" sweep "$CLAIMED2" "$@"; }
+
+sweep2 3600 >/dev/null
+sleep 1
+alive "$dead" && ok "a claimed ticket's server younger than the minimum age is kept" || fail "a young server was stopped because its holder was gone"
+
+sweep2 0 >/dev/null
+sleep 1
+alive "$ended" && fail "a server whose claim's run has ended is still running"   || ok "a claimed ticket whose run has an .ended record has its server stopped"
+alive "$dead"  && fail "a server whose holder's pid is dead is still running"     || ok "a claimed ticket held by a dead pid on this host has its server stopped"
+alive "$live"  && ok "a claimed ticket whose holder is alive here keeps its server" || fail "a live holder's server was stopped"
+alive "$away"  && ok "a claim held on another machine keeps its server"            || fail "a server was stopped on a claim this host cannot check"
+alive "$held"  && ok "a claimed ticket with no readable claim record keeps its server" || fail "a server was stopped on a claim with no record"
+alive "$sat"   && ok "a gone holder's worktree somebody sits in keeps its server"  || fail "a server was stopped under somebody working there"
+if [ -n "${npmsrv:-}" ]; then
+  alive "$npmsrv" && fail "an npm-launched server was kept: its own npm and sh -c read as somebody there"                   || ok "a server's npm / sh -c launch chain does not count as somebody working there"
+else fail "fixture: the npm-launched stand-in never started"; fi
 
 echo "stop-dev-servers: --worktree"
 a=$(serve "$T/wt/apps/web");   PIDS+=("$a")
