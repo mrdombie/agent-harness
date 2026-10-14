@@ -23,17 +23,26 @@
 #   and an agent can only honour it if it reaches the session. Absent: nothing
 #   appended. Malformed: a line saying nothing is pre-approved (fails closed).
 #
+#   Only the SHARED value counts: the working tree must grant exactly what the
+#   project's integration branch on origin grants. A local commit is not enough,
+#   because an agent commits, reverts and resets freely; reaching the shared
+#   branch takes a push (judged by hooks/guard-pre-approved-writes.sh) and a
+#   merge. The key is read from the project's own .claude/harness.json only: an
+#   override path elsewhere could point it at a file an agent wrote.
+#
 # Self-test: hooks/standing-rules.test.sh
 set -u
 KIT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 F="$KIT/rules/standing-rules.md"
 [ -f "$F" ] || exit 0
 command -v jq >/dev/null || exit 0
-_cfg="${HARNESS_CFG_PATH:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}/.claude/harness.json}"
+_cfg="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}/.claude/harness.json"
 _pre=""
-if [ -f "$_cfg" ]; then
+# The grant one copy of the file makes: "<envs>\t<decided>", ABSENT or MALFORMED. Reads stdin.
+_grant(){
+  local t; t=$(cat)
   # Names and the decision are pasted into the rules, so only plain tokens pass: free text could forge an exclusion away.
-  _pre=$(jq -rs '
+  t=$(printf '%s' "$t" | jq -rs '
     if length != 1 or (.[0] | type) != "object" then error("not one object")
     elif (.[0] | has("preApprovedWrites") | not) then "ABSENT"
     else .[0].preApprovedWrites
@@ -46,15 +55,42 @@ if [ -f "$_cfg" ]; then
         then "\(.environments | join(", "))\t\(.decided)"
         else error("shape") end
     end
-  ' "$_cfg" 2>/dev/null) || _pre=MALFORMED
+  ' 2>/dev/null) || t=MALFORMED
+  case "$t" in ''|*$'\n'*) t=MALFORMED ;; esac
+  printf '%s' "$t"
+}
+if [ -f "$_cfg" ]; then
+  _pre=$(_grant < "$_cfg")
   # jq keeps the last of two same-named keys; a reader of the file sees the first.
   [ "$(grep -cE '"preApprovedWrites"[[:space:]]*:' "$_cfg")" -gt 1 ] && _pre=MALFORMED
-  case "$_pre" in ABSENT) _pre="" ;; ''|*$'\n'*) _pre=MALFORMED ;; esac
+  if [ "$_pre" != ABSENT ] && [ "$_pre" != MALFORMED ]; then
+    # The anchor: origin/<integrationBranch>, else origin/develop, else origin/main.
+    _ib=$(jq -r '.integrationBranch // empty | strings' "$_cfg" 2>/dev/null)
+    case "$_ib" in
+      '') _anchors="origin/develop origin/main" ;;
+      *[!A-Za-z0-9._/-]*|*..*) _anchors="" ;;
+      *) _anchors="origin/$_ib" ;;
+    esac
+    _shared="" _anchor=""
+    for _anchor in $_anchors; do
+      _shared=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+        git -C "$(dirname "$_cfg")" show "$_anchor:./$(basename "$_cfg")" 2>/dev/null) && break
+      _shared=""
+    done
+    if [ -z "$_shared" ] ||
+       [ "$(grep -cE '"preApprovedWrites"[[:space:]]*:' <<<"$_shared")" -gt 1 ] ||
+       [ "$(printf '%s' "$_shared" | _grant)" != "$_pre" ]; then _pre=UNSHARED
+    fi
+  fi
+  [ "$_pre" = ABSENT ] && _pre=""
 fi
 _head="## Writes this project's operator pre-approved"
 {
   cat "$F"
-  if [ "$_pre" = MALFORMED ]; then
+  if [ "$_pre" = UNSHARED ]; then
+    printf '\n%s\n\n' "$_head"
+    printf '%s\n' "\`preApprovedWrites\` in \`.claude/harness.json\` differs from the one on the shared integration branch (${_anchor:-origin}), or that branch cannot be read, so nothing is pre-approved. Only the value merged there counts, and only the operator changes it. If the operator changed it recently, fetch and update this checkout. Every write still needs the operator's own yes."
+  elif [ "$_pre" = MALFORMED ]; then
     printf '\n%s\n\n' "$_head"
     printf '%s\n' "\`.claude/harness.json\` could not be read as one object whose \`preApprovedWrites\` is \`{\"environments\": [\"<name>\", ...], \"decided\": \"<who>, <when>\"}\` (names: letters, digits, \`. _ -\`, no spaces, not a word for every environment; decided: \`<name>, YYYY-MM-DD\`), so nothing is pre-approved. Every write still needs the operator's own yes."
   elif [ -n "$_pre" ]; then
