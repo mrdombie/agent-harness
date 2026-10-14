@@ -159,6 +159,14 @@ make_claim_commit() {
 
 read_claim() { git show -s --format=%B "$1" 2>/dev/null | sed '/^$/d' | tail -1; }
 
+# Kept locally because a finished or parked run has deleted the ref the spawner would read.
+note_run_worktree() { # <worktree>
+  [ -n "${CLAIM_RUN_ID:-}" ] && [ -n "${1:-}" ] && [ -n "${STATE_DIR:-}" ] || return 0
+  local f="$STATE_DIR/runs/$CLAIM_RUN_ID.worktrees"
+  mkdir -p "$STATE_DIR/runs" 2>/dev/null || return 0
+  grep -qxF -- "$1" "$f" 2>/dev/null || printf '%s\n' "$1" >> "$f" 2>/dev/null || true
+}
+
 sync_cache() {
   git fetch -q --prune "$REMOTE" "+$NS/*:$CACHE/*" 2>/dev/null || true
 }
@@ -239,6 +247,7 @@ cmd_acquire() {
   # The CAS. An empty expect-value means "must not already exist".
   if out=$(git push --no-verify "$REMOTE" "$sha:$ref" --force-with-lease="$ref:" 2>&1); then
     printf 'acquired #%s\n' "$issue"
+    note_run_worktree "$worktree"
     poke_board
     return 0
   fi
@@ -449,6 +458,9 @@ cmd_update() {
   git push --no-verify "$REMOTE" "$new_sha:$NS/$issue" \
     --force-with-lease="$NS/$issue:$cur_sha" >/dev/null 2>&1 \
     || { printf 'update lost a race on #%s — re-read and retry\n' "$issue" >&2; return 10; }
+  # Only a claim this update tags as this run's: every agent on a host passes owns_claim.
+  [ "$(jq -r '.run_id // empty' <<<"$meta" 2>/dev/null || true)" = "${CLAIM_RUN_ID:-}" ] \
+    && note_run_worktree "$(jq -r '.worktree // empty' <<<"$meta" 2>/dev/null || true)"
   printf 'updated #%s\n' "$issue"
 }
 

@@ -28,6 +28,8 @@ bad() { echo "  FAIL — $1"; fail=1; }
 # A git hook exports GIT_DIR / GIT_WORK_TREE to everything it runs; inherited,
 # they would make every git call below act on the REAL checkout.
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# A spawned agent running this suite carries its own run id and state dir.
+unset CLAIM_RUN_ID HARNESS_STATE_DIR
 # …then put back the one thing git cannot invent. claim-lock parks each claim in
 # a commit (`git commit-tree`), and a runner with no global user.name/user.email
 # dies with "fatal: empty ident name (for <runner@…>) not allowed" — green on a
@@ -176,6 +178,28 @@ gh_run -- acquire 778 --branch tkt-778/x --worktree "$SB/wt8" --pid $$
 [ "$RC" -eq 0 ] && ok "no PR closing the ticket: claimed as before" \
                 || bad "no PR closing the ticket: claimed as before (rc $RC: $(tail -1 "$SB/out"))"
 gh_run -- release 778 --force
+
+# --- 7. A spawned run's worktree is noted locally --------------------------
+# The spawner stops a run's dev servers after it exits, and by then a finished
+# or parked run has deleted the claim ref that named the worktree.
+gh_run CLAIM_RUN_ID=run-779 -- acquire 779 --branch tkt-779/x --worktree "$SB/wt9" --pid $$
+[ "$RC" -eq 0 ] && [ "$(cat "$SB/state/runs/run-779.worktrees" 2>/dev/null)" = "$SB/wt9" ] \
+  && ok "acquire under a spawned run notes its worktree in runs/<run>.worktrees" \
+  || bad "acquire did not note the run's worktree (rc $RC: '$(cat "$SB/state/runs/run-779.worktrees" 2>/dev/null)')"
+gh_run CLAIM_RUN_ID=run-780 -- update 779 run_id=run-780
+[ "$(cat "$SB/state/runs/run-780.worktrees" 2>/dev/null)" = "$SB/wt9" ] \
+  && ok "update under a resuming run notes the claim's worktree for that run" \
+  || bad "update did not note the worktree for the resuming run (rc $RC)"
+gh_run CLAIM_RUN_ID=run-782 -- update 779 note=x
+[ -e "$SB/state/runs/run-782.worktrees" ] \
+  && bad "a run updating a claim it does not tag as its own noted that claim's worktree" \
+  || ok "a run updating another run's claim notes nothing (every local agent passes owns_claim)"
+gh_run -- release 779 --force
+gh_run -- acquire 781 --branch tkt-781/x --worktree "$SB/wt10" --pid $$
+ls "$SB/state/runs" 2>/dev/null | grep -q 781 \
+  && bad "a claim taken outside a spawned run wrote a run note" \
+  || ok "a claim taken outside a spawned run writes no run note"
+gh_run -- release 781 --force
 
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \

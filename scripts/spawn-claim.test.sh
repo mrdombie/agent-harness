@@ -19,6 +19,9 @@
 set -uo pipefail
 
 SUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A git hook exports GIT_DIR / GIT_WORK_TREE; inherited, every git call below
+# would act on the real checkout.
+for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 [ -f "$SUT_DIR/spawn-claim.sh" ] || { echo "missing $SUT_DIR/spawn-claim.sh"; exit 2; }
 
 SB="${TMPDIR:-/tmp}"; SB="${SB%/}/spawn-claim-fixture-$$"
@@ -27,7 +30,13 @@ mkdir -p "$SB"
 # because every run below sets TMPDIR="$SB" — a glob for harness-spawn-* in the
 # real temp dir would delete the cwd of a live agent on the same machine, which
 # this suite did once.
-trap 'rm -rf "$SB"' EXIT
+SB_REAL=$(cd "$SB" && pwd -P)
+# Stand-in servers a failing case left running sit in $SB: stop those, nothing else.
+cleanup() {
+  for p in $(lsof -a -d cwd -Fpn 2>/dev/null | awk -v t="$SB_REAL/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2) "/", t) == 1) print p}'); do kill "$p" 2>/dev/null; done
+  rm -rf "$SB"
+}
+trap cleanup EXIT
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -88,7 +97,16 @@ G -C "$STORE" fetch -q origin develop
 
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
-cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT/"
+cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT/"
+# A claim-lock stub: the claim list the post-exit stop falls back to.
+cat > "$SUT/claim-lock.sh" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = list ] || exit 1
+if [ -n "${SPAWN_TEST_CLAIM_WT:-}" ]; then
+  printf '[{"issue":1,"run_id":"%s","worktree":"%s"}]\n' "$(cat "$SPAWN_TEST_RUNID")" "$SPAWN_TEST_CLAIM_WT"
+else echo '[]'; fi
+exit 1   # the real list --json exits 1 with every claim printed
+STUB
 cat > "$SUT/reconcile-claims.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "reconcile stub"
@@ -112,6 +130,15 @@ cat > "$SB/bin/claude" <<'STUB'
   printf 'rule-c=%s\n' "$([ -f .claude/hookify.rule-c.local.md ] && echo yes || echo no)"
   printf 'args=%s\n' "$*"
 } > "$SPAWN_TEST_SEEN"
+[ -n "${SPAWN_TEST_RUNID:-}" ] && printf '%s' "$CLAIM_RUN_ID" > "$SPAWN_TEST_RUNID"
+# Leave a stand-in dev server behind in each named worktree, as an agent does.
+for wt in ${SPAWN_TEST_SERVE:-}; do
+  mkdir -p "$wt/apps/web"
+  (cd "$wt/apps/web" && exec -a next-server sleep 600) >/dev/null 2>&1 &
+  printf '%s\n' "$!" >> "$SPAWN_TEST_SRVPIDS"
+done
+# What claim-lock acquire notes for a spawned run.
+[ -n "${SPAWN_TEST_NOTE:-}" ] && printf '%s\n' "$SPAWN_TEST_NOTE" >> "$HARNESS_STATE_DIR/runs/$CLAIM_RUN_ID.worktrees"
 STUB
 chmod +x "$SB/bin/claude"
 # A stub caffeinate: records what it was asked to hold awake.
@@ -241,6 +268,56 @@ ex=$(printf '%s' "$rec" | sed -n 's/^exited=\([0-9][0-9]*\) .*/\1/p')
 se=$(printf '%s' "$rec" | sed -n 's/.* session=\([0-9][0-9]*\)$/\1/p')
 if [ -n "$ex" ] && [ "$ex" = "$se" ]; then ok "the post-exit reconcile names the wrapper session as exited"
 else bad "the post-exit reconcile was not told its session exited: '${rec:-nothing recorded}'"; fi
+
+# --- 8. The agent's dev servers are stopped when it exits, however it exits ---
+# A detached agent that ended any way but /finish left its servers up: 63 on one
+# machine, swap 49.7 of 50 GB. The wrapper stops the run's worktree's servers.
+G init -q "$SB/wt-801"; G init -q "$SB/wt-802"
+alive() { kill -0 "$1" 2>/dev/null && ! ps -o stat= -p "$1" 2>/dev/null | grep -q Z; }
+spawn_and_wait() { # a detached spawn under the caller's env; waits for its post-exit stop
+  rm -f "$OUT/srvpids" "$OUT/runid" "$OUT/reconcile"
+  run "$TKT" >/dev/null
+  for _ in $(seq 1 60); do [ -s "$OUT/reconcile" ] && break; sleep 0.5; done
+  sleep 1
+}
+srv() { sed -n "${1}p" "$OUT/srvpids" 2>/dev/null; }
+export SPAWN_TEST_SRVPIDS="$OUT/srvpids" SPAWN_TEST_RUNID="$OUT/runid"
+
+# 8a. the run's noted worktree: its server stops, a sibling worktree's does not.
+TKT=4801 SPAWN_TEST_SERVE="$SB/wt-801 $SB/wt-802" SPAWN_TEST_NOTE="$SB/wt-801" spawn_and_wait
+s1=$(srv 1); s2=$(srv 2); RID=$(cat "$OUT/runid" 2>/dev/null)
+if [ -n "$s1" ] && [ -n "$s2" ]; then
+  alive "$s1" && bad "the run's own worktree server survived the agent's exit" \
+              || ok "the agent's exit stops the dev server in its own worktree"
+  alive "$s2" && ok "a worktree the run never claimed keeps its server" \
+              || bad "the post-exit stop reached a worktree the run never claimed"
+else bad "fixture: the stand-in servers never started"; fi
+grep -q 'post-exit dev-server stop' "$STATE/logs/$RID.log" 2>/dev/null \
+  && ok "the stop is logged in the run's log" || bad "the run's log does not show the stop"
+kill "$s2" 2>/dev/null
+
+# 8b. nothing recorded: nothing stopped, and the log says why.
+TKT=4802 SPAWN_TEST_SERVE="$SB/wt-801" spawn_and_wait
+s1=$(srv 1); RID=$(cat "$OUT/runid" 2>/dev/null)
+alive "$s1" && ok "with no worktree recorded for the run, no server is stopped" \
+            || bad "a server was stopped though the run recorded no worktree"
+grep -q "no worktree recorded for $RID" "$STATE/logs/$RID.log" 2>/dev/null \
+  && ok "and the log says why nothing was stopped" || bad "the log does not say why nothing was stopped"
+kill "$s1" 2>/dev/null
+
+# 8c. no local note, but a claim still held names the run: that claim's worktree.
+TKT=4803 SPAWN_TEST_SERVE="$SB/wt-801" SPAWN_TEST_CLAIM_WT="$SB/wt-801" spawn_and_wait
+s1=$(srv 1)
+alive "$s1" && bad "a claim naming the run did not lead to its worktree's server" \
+            || ok "with no local note, a held claim naming the run gives the worktree"
+
+# 8d. a noted path that is not a checkout's top level stops nothing beneath it.
+mkdir -p "$SB/notacheckout"; G init -q "$SB/notacheckout/wt-803"
+TKT=4804 SPAWN_TEST_SERVE="$SB/notacheckout/wt-803" SPAWN_TEST_NOTE="$SB/notacheckout" spawn_and_wait
+s1=$(srv 1)
+alive "$s1" && ok "a noted parent folder, not a checkout, stops no server beneath it" \
+            || bad "a noted parent folder stopped a server in a worktree beneath it"
+kill "$s1" 2>/dev/null
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"

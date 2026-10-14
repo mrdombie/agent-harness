@@ -113,6 +113,38 @@ export CLAIM_AGENT="$(toolkit_login)@$(hostname -s 2>/dev/null || hostname | cut
 SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
 cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, reviewers and CLAUDE.md load from its .claude/
 
+# This run's worktrees: claim-lock's local note, else a still-held claim naming the run.
+run_worktrees() {
+  local claims
+  if [ -s "$RUNS_DIR/$RUN_ID.worktrees" ]; then cat "$RUNS_DIR/$RUN_ID.worktrees"; return 0; fi
+  claims=$(perl -e 'alarm shift; exec @ARGV' 20 bash "$SCRIPT_DIR/claim-lock.sh" list --json 2>/dev/null)   # can exit 1 with every claim printed
+  jq -r --arg r "$RUN_ID" '.[] | select(.run_id == $r) | .worktree // empty' <<<"$claims" 2>/dev/null
+}
+
+# Only a checkout's own top level: a parent path would stop every worktree's servers beneath it.
+stop_run_servers() {
+  local wts wt real_wt top root v found=0
+  wts=$(run_worktrees | sed '/^$/d' | sort -u)
+  if [ -z "$wts" ]; then
+    echo "no worktree recorded for $RUN_ID (no runs/$RUN_ID.worktrees, no claim naming it) — stopping no servers"
+    return 0
+  fi
+  root=$(cd "$SPAWN_ROOT" 2>/dev/null && pwd -P)
+  while IFS= read -r wt; do
+    case "$wt" in /*) ;; *) echo "skipping '$wt' — not an absolute path"; continue ;; esac
+    [ -d "$wt" ] || { echo "skipping $wt — no such directory"; continue; }
+    real_wt=$(cd "$wt" && pwd -P)
+    top=$(cd "$wt" && for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+          git rev-parse --show-toplevel 2>/dev/null)
+    top=$( [ -n "$top" ] && cd "$top" 2>/dev/null && pwd -P)
+    [ -n "$top" ] && [ "$top" = "$real_wt" ] || { echo "skipping $wt — not the top level of a checkout"; continue; }
+    case "$root/" in "$real_wt"/*) echo "skipping $wt — it holds the spawn checkout"; continue ;; esac
+    found=1
+    bash "$SCRIPT_DIR/stop-dev-servers.sh" --worktree "$wt"
+  done <<<"$wts"
+  [ "$found" = 1 ] || echo "no usable worktree for $RUN_ID — stopping no servers"
+}
+
 (
   # Backgrounded so the agent's OWN pid is knowable. The record used to carry
   # only this subshell's pid, and if the subshell was killed while claude
@@ -155,6 +187,10 @@ cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, revie
   # working and the failure would be missed.
   printf '{"run_id":"%s","exit_code":%d,"ended_at":"%s"}\n' \
     "$RUN_ID" "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUNS_DIR/$RUN_ID.ended"
+
+  # Every exit, not only /finish: a hand-off, park or crash otherwise leaves its servers running.
+  printf '\n--- post-exit dev-server stop (%s) ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  stop_run_servers >> "$LOG" 2>&1
 
   # NOT --quiet. This is the immediate signal that the agent died, and the log
   # is where you look to find out what happened to it. --quiet routes every
