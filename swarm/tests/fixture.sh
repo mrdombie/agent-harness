@@ -88,6 +88,9 @@ case "$1 $2" in
     [ -f "$f" ] || f="$FIX/gh/issue-list.json"
     [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
     emit "$f" ;;
+  "label list")
+    f="$FIX/gh/labels.json"; [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
+    emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
   "api "*|"api")
     # Keyed by the endpoint with every / and ? flattened, so "the commits on the
