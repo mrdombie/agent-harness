@@ -16,6 +16,7 @@
 #   4. pull requests red, or a pixel PR gone green that needs sign-off
 #   5. spawn         the queue in class order, up to coordinator.cap live runs,
 #                    never a ticket that is claimed, gated or on hold
+#   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, then stop-dev-servers.sh --sweep
 #   7. disk          free space below coordinator.minFreeGb is an alarm
 #   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh)
@@ -35,29 +36,10 @@ SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
 say() { printf '%s\n' "$*"; swarm_log "$COORD_LOG" "$*"; }
-# GNU stat -f reads %m as a file name and prints to stdout, so ask GNU first.
-mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 # ---- 1. lock ----------------------------------------------------------------
-# A reused pid is not the holder: the lock carries the holder's start time too.
 LOCK="$COORD_DIR/tick.lock"
-# Locale and zone pinned: cron's C and a shell's en_GB print the same start differently.
-started_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
-if ! mkdir "$LOCK" 2>/dev/null; then
-  holder=$(cat "$LOCK/pid" 2>/dev/null)
-  if [ -z "$holder" ] && [ $(( $(date +%s) - $(mtime "$LOCK") )) -lt 60 ]; then
-    say "tick: another tick is taking the lock — exiting"; exit 0
-  fi
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
-     && [ "$(started_of "$holder")" = "$(cat "$LOCK/started" 2>/dev/null)" ]; then
-    say "tick: another tick (pid $holder) is running — exiting"
-    exit 0
-  fi
-  rm -rf "$LOCK"
-  mkdir "$LOCK" 2>/dev/null || { say "tick: lost the lock race — exiting"; exit 0; }
-fi
-started_of "$$" > "$LOCK/started"
-echo "$$" > "$LOCK/pid"
+coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 
 say "tick: $(coord_mode) mode, cap $COORD_CAP"
@@ -115,9 +97,9 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   LIVE_TICKETS="$LIVE_TICKETS${ticket:-?} "
   log=$(jq -r '.log // empty' "$rec" 2>/dev/null)
   [ -f "$log" ] || continue
-  quiet=$(( (NOW - $(mtime "$log")) / 60 ))
+  quiet=$(( (NOW - $(coord_mtime "$log")) / 60 ))
   if [ "$quiet" -ge "$COORD_FROZEN_MIN" ]; then
-    event "frozen:$rid:$(mtime "$log")" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
+    event "frozen:$rid:$(coord_mtime "$log")" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
   fi
 done
 say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
@@ -238,6 +220,15 @@ else
 fi
 # The compare report reads what this tick saw and chose.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s next=%s\n' "$(swarm_stamp)" "${PLAN%,}" "${LIVE_TICKETS% }" "$SLOTS" "$NEXT" >> "$COORD_ACTIONS"
+
+# ---- 5b. the merge lane -------------------------------------------------------
+# Only where the project names a merge method. Its own lock, its own shadow.
+LANE="${COORDINATOR_LANE:-$SELF_DIR/merge-lane.sh}"
+if toolkit_cfg merge.method >/dev/null 2>&1; then
+  bash "$LANE" >> "$COORD_LOG" 2>&1 || say "merge lane exited $?"
+else
+  say "merge lane: off — harness.json has no merge.method"
+fi
 
 # ---- 6. housekeeping ---------------------------------------------------------
 if coord_shadow; then
