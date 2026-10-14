@@ -5,7 +5,7 @@
 D="$(cd "$(dirname "$0")" && pwd)"; G="$D/guard-pre-approved-writes.sh"
 KIT="$(cd "$D/.." && pwd)"
 fail=0
-TDIR=$(mktemp -d); trap 'rm -rf "$TDIR"' EXIT
+TDIR=$(mktemp -d); trap '[ -n "${KEEP:-}" ] || rm -rf "$TDIR"' EXIT
 ok(){ printf 'ok    %s\n' "$1"; }
 bad(){ printf 'FAIL  %s\n' "$1"; fail=1; }
 
@@ -89,6 +89,12 @@ add gitcfg block "$(bashp "git config set remote.origin.url $TDIR/evil.git")"
 add gitcfg block "$(bashp "git config --file .git/config remote.origin.url $TDIR/evil.git")"
 add gitcfgedit block "$(bashp "git config --edit")"
 add -      allow "$(bashp "git fetch origin && git fetch --all")"
+add pushsrc block "$(bashp "c=\$(git rev-parse wide); git push origin \"\$c\":refs/heads/develop")"
+add pushsrc block "$(bashp "git push origin \"\$(git rev-parse wide)\":develop")"
+add -      block "$(bashp "git push origin 'refs/heads/*:refs/heads/*'")"
+add gitdir block "$(bashp "git -C .git config remote.origin.url $TDIR/evil.git")"
+add scriptgit block "$(bashp "python3 -c \"open('.git/config','a').write('[remote]')\"")"
+add -      allow "$(bashp "cat .git/HEAD && ls .git/refs/heads")"
 add -      allow "$(bashp "git config user.email t@example.com && git config --get remote.origin.url")"
 add parsefail block "$(bashp "git push origin wide; echo \"unterminated")"
 add -      block "$(bashp "git push origin wide; echo \$'it\\'s'")"
@@ -242,6 +248,12 @@ pd=$(plant_dir localref "    sha, default = remote_head(top, 'HEAD')" "    sha, 
   bad "plant: local ref trusted, yet still refused: the case proves nothing"
 g update-ref refs/remotes/origin/develop "$(g rev-parse HEAD)"
 
+# 2f. A peer moves develop on the remote after this clone last fetched: a feature push still passes.
+P2="$TDIR/peer"; git clone -q "$TDIR/origin.git" "$P2"
+git -C "$P2" -c user.name=t -c user.email=t@t commit -q --allow-empty -m peer && git -C "$P2" push -q origin HEAD:develop
+[ "$(judge "$D" "$(bashp 'git push -u origin same')")" -eq 0 ] && ok "allow  feature push while develop moved on the remote" ||
+  bad "a feature push is refused because develop moved on the remote: $(cat "$TDIR/err")"
+
 # 2d. A configured push refspec is what a bare `git push` sends.
 g config remote.origin.push '+refs/heads/wide:refs/heads/develop'
 [ "$(judge "$D" "$(bashp 'git push origin')")" -eq 2 ] && ok "block  bare git push with a configured refspec sending the widening" ||
@@ -297,7 +309,7 @@ plant exec     "            judge_bash(src, cwd, depth + 1)
 plant fold     "os.path.basename(p).lower() == 'harness.json' and os.path.basename(os.path.dirname(p)).lower() == '.claude'" "os.path.basename(p) == 'harness.json' and os.path.basename(os.path.dirname(p)) == '.claude'"
 plant link     "        return (st.st_dev, st.st_ino) in KNOWN" "        return False"
 plant ib       "    return tuple(json.dumps(obj[k], sort_keys=True, separators=(',', ':')) if k in obj else 'ABSENT' for k in KEYS)" "    return tuple(json.dumps(obj[k], sort_keys=True, separators=(',', ':')) if k in obj else 'ABSENT' for k in KEYS[:1]) + ('',)"
-plant unknown  "        if name not in READERS and" "        if False and"
+plant unknown  "        if name not in READERS and (names_cfg(" "        if False and (names_cfg("
 plant findexec "                refuse('this runs find over" "                continue
                 refuse('this runs find over"
 plant scan     "        if c in '\\'\"':
@@ -311,6 +323,12 @@ plant parsefail "        if re.search(r'harness\\.json|\\.claude|\\.git/|\\bgit\
 plant gitcfg   "            if hit:
                 refuse('this sets git config" "            if False:
                 refuse('this sets git config"
+plant pushsrc  "        if any(c in src for c in '\$\`*') or not git(top, 'rev-parse', '--verify', '-q', src + '^{commit}'):
+            refuse(" "        if False:
+            refuse("
+plant gitdir   "        top = repo  # inside .git" "        return
+        top = repo  # inside .git"
+plant scriptgit "        if ('harness.json' in t.lower() or GITPROT_TXT.search(t)) and WRITE_MARK.search(t):" "        if 'harness.json' in t.lower() and WRITE_MARK.search(t):"
 plant fetchfake "    elif sub == 'fetch' and pos and" "    elif False and"
 plant updidx   "    elif sub == 'update-index' and (" "    elif False and ("
 plant updref   "            or (sub == 'update-ref' and '--stdin' in rest" "            or False and (sub == 'update-ref' and '--stdin' in rest"

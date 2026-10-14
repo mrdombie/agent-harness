@@ -40,6 +40,7 @@ READERS = {'cat', 'jq', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'head', 'tail', 'l
 WRITE_MARK = re.compile(r'''(?<!stdout)(?<!stderr)\.write(_text|_bytes)?\(|writeFile|appendFile|createWriteStream|'''
                         r'''open\([^)]*,\s*(mode\s*=\s*)?['"][wax]\+?b?['"]|['"]r\+b?['"]|os\.rename|os\.replace|renameSync|'''
                         r'''unlink|os\.remove|truncate|shutil|copyFile|\bmv\b|\bcp\b|\bsed\b|>\s*['"]?[^\s'"]*harness\.json''')
+GITPROT_TXT = re.compile(r'\.git/(config|refs|hooks|packed-refs)|\.gitconfig|\.config/git/config', re.I)
 SHELL_WORDS = {'if', 'then', 'elif', 'else', 'do', 'while', 'until', '!', '{', '}', 'fi', 'done', 'esac'}
 # Git settings that move what a push sends, where the remote is, or what runs on commit.
 GIT_KEYS = re.compile(r'^(remote\..+\.(url|pushurl|push|fetch)|url\..+\.(insteadof|pushinsteadof)|alias\..+|core\.hookspath|'
@@ -446,6 +447,8 @@ def judge_bash(cmd, cwd, depth=0):
             if any('harness.json' in a.lower() and not is_cfg(expand(a, cwd)[0]) for a in args[1:]):
                 refuse('this %s script names harness.json, and the guard cannot see what it writes there.' % name)
             continue
+        if name not in READERS and any(is_gitprot(p) for a in args[1:] if not a.startswith('-') for p in expand(a, cwd)):
+            refuse('`%s` names git\'s own config, refs or hooks, and the guard cannot see what it does to them.' % name)
         if name not in READERS and (names_cfg(args[1:], cwd) or (here and 'harness.json' in here)):
             refuse('`%s` names harness.json, and the guard cannot see what it does to it.' % name)
 
@@ -474,8 +477,9 @@ def judge_script(name, args, cwd, here, depth):
             return
         texts.append(src)
     for t in texts:
-        if 'harness.json' in t.lower() and WRITE_MARK.search(t):
-            refuse('this runs a script that names harness.json and writes files, and the guard cannot see what it writes.')
+        if ('harness.json' in t.lower() or GITPROT_TXT.search(t)) and WRITE_MARK.search(t):
+            refuse('this runs a script that names harness.json or git\'s own config, refs or hooks, and writes files; '
+                   'the guard cannot see what it writes.')
 
 
 def covers(path_tok, cwd, top):
@@ -545,7 +549,9 @@ def judge_git(args, cwd, here, assigns):
     sub, rest = args[i], args[i + 1:]
     top = toplevel(repo)
     if not top:
-        return
+        if git(repo, 'rev-parse', '--git-dir') is None:
+            return
+        top = repo  # inside .git: no work tree, but config, remotes and refs are all here
     learn(top)
     alias = aliases.get(sub) or (git(top, 'config', '--get', 'alias.' + sub) or '').strip()
     if alias:
@@ -663,12 +669,24 @@ def remote_head(top, what):
     return sha, br
 
 
+def have(top, sha):
+    """True when sha is local, fetching it (into FETCH_HEAD only, no ref) when it is not."""
+    if git(top, 'cat-file', '-e', sha + '^{commit}') is not None:
+        return True
+    try:
+        subprocess.run(['git', '-C', top, 'fetch', '-q', '--no-write-fetch-head', 'origin', sha], capture_output=True,
+                       timeout=8, env=dict(clean_env(), GIT_TERMINAL_PROMPT='0'))
+    except Exception:
+        pass
+    return git(top, 'cat-file', '-e', sha + '^{commit}') is not None
+
+
 def judge_push(top, rest, cfg, rel):
     sha, default = remote_head(top, 'HEAD')
     if not sha:
         return  # no remote to read; the injector grants nothing either
     at = lambda r: git(top, 'show', r + ':' + rel)
-    if git(top, 'cat-file', '-e', sha + '^{commit}') is None:
+    if not have(top, sha):
         refuse('the remote\'s default branch is at a commit this clone has not fetched, so the guard cannot read the '
                'shared value to judge this push. Run `git fetch origin` first.')
     ref, target = sha, default
@@ -679,7 +697,7 @@ def judge_push(top, rest, cfg, rel):
     if isinstance(ib, str) and ib and ib != default:
         isha, _ = remote_head(top, 'refs/heads/' + ib)
         if isha:
-            if git(top, 'cat-file', '-e', isha + '^{commit}') is None:
+            if not have(top, isha):
                 refuse('the remote\'s %s is at a commit this clone has not fetched. Run `git fetch origin` first.' % ib)
             ref, target = isha, ib
     at = lambda r: git(top, 'show', r + ':' + rel)
@@ -707,8 +725,9 @@ def judge_push(top, rest, cfg, rel):
                     pairs.append((src, dst or src))
     shared = at(ref)
     for src, dst in pairs:
-        if not git(top, 'rev-parse', '--verify', '-q', src + '^{commit}'):
-            continue
+        if any(c in src for c in '$`*') or not git(top, 'rev-parse', '--verify', '-q', src + '^{commit}'):
+            refuse('this pushes `%s`, which the guard cannot resolve to a commit before the shell runs, so it cannot '
+                   'judge what lands on the remote. Push a named branch.' % src)
         mine = value_of(at(src))
         dst = dst[len('refs/heads/'):] if dst.startswith('refs/heads/') else dst
         if allowed(value_of(shared), mine):
