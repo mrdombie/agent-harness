@@ -53,6 +53,18 @@ bash "$Q" refresh >/dev/null
 want "approved-merge sorts after repair, before new" "502:repair 501:approved-merge 777:approved-merge 503:new" "$(order)"
 want "the note is kept"                    "owner approved the render" "$(jq -r '.tickets[] | select(.n==501) | .note' "$QF")"
 
+echo "--- a judge's re-queue survives the next tick's refresh ---"
+bash "$Q" add 888 --class repair --note "red checks, outside the scope" >/dev/null
+bash "$Q" refresh >/dev/null
+want "a pinned repair outside the claimable list is kept" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
+
+echo "--- a seed whose reads fail changes nothing ---"
+before=$(cat "$QF")
+out=$(COORDINATOR_CLAIMABLE=false bash "$Q" refresh 2>&1); rc=$?
+want "refused"                             "2" "$rc"
+want_in "and says why"                     'queue left as it was' "$out"
+want "the queue and its notes are intact"  "$before" "$(cat "$QF")"
+
 echo "--- add and remove ---"
 out=$(bash "$Q" add 12 --class urgent 2>&1); rc=$?
 want "an unknown class is refused"         "2" "$rc"

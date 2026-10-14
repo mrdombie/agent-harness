@@ -92,6 +92,7 @@ cr coordinator >/dev/null; cr coordinator >/dev/null
 want "installed twice is one line"        "1" "$(grep -c 'coordinator-tick.sh' "$FIX/crontab")"
 want_in "every five minutes, in shadow"   '^\*/5 .*COORDINATOR_SHADOW=1 ' "$(grep coordinator-tick "$FIX/crontab")"
 want "the owner's own lines are kept"     "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
+want_in "it carries a PATH that finds claude" ' PATH=[^ ]*'"$BIN" "$(grep coordinator-tick "$FIX/crontab")"
 SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" COORDINATOR_SHADOW=0 bash "$I" coordinator >/dev/null 2>&1
 want "going live replaces the line"       "1" "$(grep -c 'COORDINATOR_SHADOW=0' "$FIX/crontab")"
 want "and does not double it"             "1" "$(grep -c 'coordinator-tick.sh' "$FIX/crontab")"

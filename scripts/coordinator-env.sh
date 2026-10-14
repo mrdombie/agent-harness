@@ -9,7 +9,7 @@
 # Sets:
 #   COORD_DIR        $STATE_DIR/coordinator — the queue, events, logs
 #   COORD_QUEUE      queue.json: scope, ordered tickets, class, note
-#   COORD_EVENTS     events.jsonl: one line per event, written once
+#   COORD_EVENTS     events.<would|did>.jsonl: one line per event, written once
 #   COORD_ACTIONS    actions.log: every act, "would" in shadow, "did" live
 #   COORD_NEEDS_YOU  needs-you.md: what /agent-harness:needsme reads first
 #   COORD_SHADOW     1 unless COORDINATOR_SHADOW=0 — shadow is the default
@@ -30,12 +30,10 @@ unset _coord_self
 COORD_DIR="${COORDINATOR_DIR:-$STATE_DIR/coordinator}"
 mkdir -p "$COORD_DIR/judges" 2>/dev/null || true
 COORD_QUEUE="$COORD_DIR/queue.json"
-COORD_EVENTS="$COORD_DIR/events.jsonl"
+COORD_SHADOW="${COORDINATOR_SHADOW:-1}"
 COORD_ACTIONS="$COORD_DIR/actions.log"
 COORD_NEEDS_YOU="$COORD_DIR/needs-you.md"
 COORD_LOG="$COORD_DIR/tick.log"
-
-COORD_SHADOW="${COORDINATOR_SHADOW:-1}"
 COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap 4)}"
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_FROZEN_MIN="${COORDINATOR_FROZEN_MIN:-$(swarm_opt coordinator.frozenMin 20)}"
@@ -46,6 +44,8 @@ COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.
 
 coord_shadow() { [ "$COORD_SHADOW" != 0 ]; }
 coord_mode()   { if coord_shadow; then printf would; else printf did; fi; }
+# Per mode: going live must not replay a shadow night's events, nor skip a live one.
+COORD_EVENTS="$COORD_DIR/events.$(coord_mode).jsonl"
 
 # One line per act: <iso> \t would|did \t <verb> \t <subject> \t <detail>
 coord_act_log() { # <verb> <subject> [detail]

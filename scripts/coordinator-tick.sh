@@ -35,19 +35,27 @@ SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
 say() { printf '%s\n' "$*"; swarm_log "$COORD_LOG" "$*"; }
+# GNU stat -f reads %m as a file name and prints to stdout, so ask GNU first.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 # ---- 1. lock ----------------------------------------------------------------
-# mkdir is atomic. A lock whose pid is dead is a crashed tick and is taken over.
+# A reused pid is not the holder: the lock carries the holder's start time too.
 LOCK="$COORD_DIR/tick.lock"
+started_of() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
 if ! mkdir "$LOCK" 2>/dev/null; then
   holder=$(cat "$LOCK/pid" 2>/dev/null)
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+  if [ -z "$holder" ] && [ $(( $(date +%s) - $(mtime "$LOCK") )) -lt 60 ]; then
+    say "tick: another tick is taking the lock — exiting"; exit 0
+  fi
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
+     && [ "$(started_of "$holder")" = "$(cat "$LOCK/started" 2>/dev/null)" ]; then
     say "tick: another tick (pid $holder) is running — exiting"
     exit 0
   fi
   rm -rf "$LOCK"
   mkdir "$LOCK" 2>/dev/null || { say "tick: lost the lock race — exiting"; exit 0; }
 fi
+started_of "$$" > "$LOCK/started"
 echo "$$" > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
 
@@ -63,7 +71,6 @@ event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
   return 0
 }
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
 
 # ---- 2. ended runs -----------------------------------------------------------
 final_line() { # <log> — the run's own last word
@@ -109,7 +116,7 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   [ -f "$log" ] || continue
   quiet=$(( (NOW - $(mtime "$log")) / 60 ))
   if [ "$quiet" -ge "$COORD_FROZEN_MIN" ]; then
-    event "frozen:$rid" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
+    event "frozen:$rid:$(mtime "$log")" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
   fi
 done
 say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
@@ -121,7 +128,7 @@ if [ -n "$PRS" ]; then
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" '
     .[] | select(.isDraft | not) | select(.headRefName | startswith($pre))
     | (.statusCheckRollup // []) as $c
-    | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $pending
+    | ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")))) | length) as $pending
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $failed
     | ([.labels[]?.name] | index($hold)) as $held
     | (.headRefName | ltrimstr($pre) | capture("^(?<n>[0-9]+)").n // "") as $t
@@ -144,7 +151,14 @@ fi
 # ---- 5. spawn ----------------------------------------------------------------
 # Labels that keep a ticket from any agent: the swarm's own list, plus gated.
 stop_labels() { { swarm_blocking_labels; printf '%s\n' "$LBL_GATED" "$LBL_EXTERNAL_BLOCKED"; } | awk 'NF && !seen[$0]++'; }
-CLAIMED=$( { if [ -n "${COORDINATOR_CLAIMS_CMD:-}" ]; then $COORDINATOR_CLAIMS_CMD; else toolkit_claimed_issues; fi; } 2>/dev/null)
+# Fails closed: a claim list nobody could read is not "nothing claimed".
+claims() {
+  if [ -n "${COORDINATOR_CLAIMS_CMD:-}" ]; then $COORDINATOR_CLAIMS_CMD; return; fi
+  local j; j=$(bash "$CL" list --json 2>/dev/null)
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$j" || return 1
+  jq -r '.[].issue' <<<"$j"
+}
+CLAIMS_OK=1; CLAIMED=$(claims 2>/dev/null) || CLAIMS_OK=0
 
 spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   local t="$1" cls="$2" meta st lab l
@@ -155,6 +169,11 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   [ -n "$meta" ] || { echo "could not be read"; return 0; }
   st=${meta%% *}; lab=${meta#* }
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
+  if [ "$cls" = new ]; then
+    printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
+      'any(.[]; .headRefName | test("^" + $pre + $t + "([^0-9]|$)"))' >/dev/null 2>&1 \
+      && { echo "has an open PR"; return 0; }
+  fi
   while read -r l; do
     [ -n "$l" ] || continue
     # A repair or an approved merge is in review by definition; only fresh work waits on it.
@@ -180,6 +199,10 @@ first_free() {
 }
 if held=$(swarm_held); then
   say "spawn: held — $held"
+elif [ "$CLAIMS_OK" = 0 ]; then
+  say "spawn: the claim list could not be read — spawning nothing"
+elif [ -z "$PRS" ]; then
+  say "spawn: the open pull requests could not be read — spawning nothing"
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until"
   event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true
@@ -202,7 +225,8 @@ else
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
-      if swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then say "spawned #$t ($cls)"
+      if swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then
+        say "spawned #$t ($cls)"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
       else say "spawn of #$t failed"; fi
       [ -z "$brief" ] || rm -f "$brief"
     fi

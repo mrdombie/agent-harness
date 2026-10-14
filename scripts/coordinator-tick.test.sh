@@ -90,6 +90,7 @@ want_in "and names the hold"               'held — owner said stop' "$out"
 echo "--- one tick at a time ---"
 fresh; queue 501
 mkdir -p "$C/tick.lock"; echo "$$" > "$C/tick.lock/pid"
+ps -o lstart= -p "$$" | tr -s ' ' | sed 's/^ *//;s/ *$//' > "$C/tick.lock/started"
 out=$(COORDINATOR_SHADOW=0 tick)
 want "a running tick blocks a second one"  "" "$(spawned)"
 want_in "and it says so"                   'another tick \(pid [0-9]+\) is running' "$out"
@@ -100,16 +101,50 @@ out=$(COORDINATOR_SHADOW=0 tick)
 want "a dead holder's lock is taken over"  "501" "$(spawned)"
 want "and released at the end"             "no" "$([ -d "$C/tick.lock" ] && echo yes || echo no)"
 
+echo "--- a reused pid is not the holder; a lock being taken is ---"
+fresh; queue 501
+mkdir -p "$C/tick.lock"; echo "$$" > "$C/tick.lock/pid"; echo "Thu Jan  1 00:00:00 1970" > "$C/tick.lock/started"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "a live pid that started elsewhere is not the holder" "501" "$(spawned)"
+fresh; queue 501
+mkdir -p "$C/tick.lock"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a lock with no pid yet is being taken" "" "$(spawned)"
+want_in "and it waits its turn"            'another tick is taking the lock' "$out"
+
+echo "--- it fails closed: unreadable claims or pull requests spawn nothing ---"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CLAIMS_CMD=false tick)
+want "an unreadable claim list spawns nothing" "" "$(spawned)"
+want_in "and says so"                      'claim list could not be read' "$out"
+fresh; queue 501; rm -f "$FIX/gh/prs-all.json" "$FIX/gh/empty.json"
+printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr list") exit 1 ;; esac\nexec "%s" "$@"\n' "$BIN/gh" > "$FIX/gh-nopr"; chmod +x "$FIX/gh-nopr"
+out=$(COORDINATOR_SHADOW=0 SWARM_GH="$FIX/gh-nopr" tick)
+want "unreadable pull requests spawn nothing" "" "$(spawned)"
+want_in "and says so"                      'pull requests could not be read' "$out"
+
+echo "--- fresh work never goes to a ticket whose PR is open; a spawned entry leaves the queue ---"
+fresh; queue 501 502
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "the open PR's ticket is skipped"     "502" "$(spawned)"
+want_in "and named"                        'skip #501 \(new\): has an open PR' "$out"
+want "the spawned ticket left the queue"   "501" "$(jq -r '.tickets[].n' "$C/queue.json" | tr '\n' ' ' | sed 's/ $//')"
+
 echo "--- a frozen run is noticed; a busy one is not ---"
 fresh; live_run 700
 tick >/dev/null
-want "a run writing its log is not frozen" "0" "$(grep -c '"kind":"frozen"' "$C/events.jsonl")"
+want "a run writing its log is not frozen" "0" "$(grep -c '"kind":"frozen"' "$C/events.would.jsonl")"
 export SWARM_NOW=$(( $(date +%s) + 25 * 60 ))
 out=$(tick)
-want "no growth for 25 min is frozen"      "1" "$(grep -c '"kind":"frozen"' "$C/events.jsonl")"
-want_in "and it is a judgement event"      '"judge":true' "$(grep '"kind":"frozen"' "$C/events.jsonl")"
+want "no growth for 25 min is frozen"      "1" "$(grep -c '"kind":"frozen"' "$C/events.would.jsonl")"
+want_in "and it is a judgement event"      '"judge":true' "$(grep '"kind":"frozen"' "$C/events.would.jsonl")"
 tick >/dev/null
-want "written once, not every tick"        "1" "$(grep -c '"kind":"frozen"' "$C/events.jsonl")"
+want "written once, not every tick"        "1" "$(grep -c '"kind":"frozen"' "$C/events.would.jsonl")"
+echo '{"type":"assistant"}' >> "$STATE/logs/claim-700-live.log"; touch "$STATE/logs/claim-700-live.log"
+export SWARM_NOW=$(( $(date +%s) + 50 * 60 ))
+tick >/dev/null
+want "a run that recovers and freezes again is raised again" "2" "$(grep -c '"kind":"frozen"' "$C/events.would.jsonl")"
 unset SWARM_NOW
 
 echo "--- ended runs: recorded once, the failures raised ---"
@@ -125,9 +160,9 @@ printf 'You have hit your session limit · resets 7pm\n' > "$STATE/logs/claim-80
 printf '{"run_id":"claim-803-x","exit_code":1}\n' > "$STATE/runs/claim-803-x.ended"
 out=$(tick)
 want_in "the final result line is recorded" 'claim-801-x.*exit=0 Handed off at abc123' "$(cat "$C/runs.log")"
-want "a clean hand-off raises nothing"     "0" "$(grep -c 'claim-801-x' "$C/events.jsonl")"
-want_in "a park is a stand-down"           '"kind":"stood-down".*"ticket":"802"' "$(cat "$C/events.jsonl")"
-want_in "a limit stop is a usage-limit"    '"kind":"usage-limit".*"ticket":"803"' "$(cat "$C/events.jsonl")"
+want "a clean hand-off raises nothing"     "0" "$(grep -c 'claim-801-x' "$C/events.would.jsonl")"
+want_in "a park is a stand-down"           '"kind":"stood-down".*"ticket":"802"' "$(cat "$C/events.would.jsonl")"
+want_in "a limit stop is a usage-limit"    '"kind":"usage-limit".*"ticket":"803"' "$(cat "$C/events.would.jsonl")"
 tick >/dev/null
 want "each ended run is read once"         "3" "$(grep -c 'ended' "$C/runs.log")"
 rm -f "$STATE/logs/claim-803-x.log"
@@ -142,13 +177,21 @@ pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState]
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 42 602 needs:human-approval SUCCESS) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
 tick >/dev/null
-want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41"' "$C/events.jsonl")"
-want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.jsonl")"
-want "a healthy PR raises nothing"         "0" "$(grep -c ':44:' "$C/events.jsonl")"
-want_in "a green pixel PR is a sign-off"   '"kind":"signoff".*"judge":false' "$(grep ':42:' "$C/events.jsonl")"
+want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41"' "$C/events.would.jsonl")"
+want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.would.jsonl")"
+want "a healthy PR raises nothing"         "0" "$(grep -c ':44:' "$C/events.would.jsonl")"
+want_in "a green pixel PR is a sign-off"   '"kind":"signoff".*"judge":false' "$(grep ':42:' "$C/events.would.jsonl")"
+fresh
+jq -n '[{number:45, headRefName:"tkt-605-x", headRefOid:"s45", isDraft:false, mergeStateStatus:"CLEAN",
+         labels:[{name:"needs:human-approval"}],
+         statusCheckRollup:[{name:"ci", status:"COMPLETED", conclusion:"SUCCESS"}, {context:"deploy", state:"PENDING"}]}]' > "$FIX/gh/prs-all.json"
+tick >/dev/null
+want "a pending status context is not green" "0" "$(grep -c ':45:' "$C/events.would.jsonl")"
+fresh
+jq -s . <(pr 41 601 - FAILURE) <(pr 42 602 needs:human-approval SUCCESS) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
+tick >/dev/null
 want "shadow tells the owner nothing"      "" "$(cat "$FIX/notify.log"; cat "$C/needs-you.md" 2>/dev/null)"
 want_in "shadow logs that it would"        'would	notify	signoff:42' "$(cat "$C/actions.log")"
-rm -f "$C/events.jsonl"
 COORDINATOR_SHADOW=0 tick >/dev/null
 want_in "live: the owner is pinged"        'PR #42 .*needs your sign-off' "$(cat "$FIX/notify.log")"
 want_in "live: needs-you carries the line" 'PR #42' "$(cat "$C/needs-you.md")"
@@ -162,11 +205,17 @@ want_in "below the floor is an alarm"      'Disk is low: 5 GB' "$(cat "$FIX/noti
 
 echo "--- the judge: a fresh claude per event, capped, with no history ---"
 fresh
+printf '{"run_id":"claim-802-y","ticket":"802","log":"%s"}\n' "$STATE/logs/claim-802-y.log" > "$STATE/runs/claim-802-y.json"
+printf '{"type":"result","result":"Parked: blocked on a decision"}\n' > "$STATE/logs/claim-802-y.log"
+printf '{"run_id":"claim-802-y","exit_code":0}\n' > "$STATE/runs/claim-802-y.ended"
+tick >/dev/null
+COORDINATOR_SHADOW=0 tick >/dev/null; sleep 0.5
+want "going live does not replay the shadow night's events" "" "$(cat "$FIX/claude.log")"
+fresh
 jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
 tick >/dev/null
 want "shadow starts no judge"              "" "$(cat "$FIX/claude.log")"
 want_in "shadow logs the judgement it would start" 'would	judge	red-pr:41:sha41' "$(cat "$C/actions.log")"
-rm -f "$C/events.jsonl"
 COORDINATOR_SHADOW=0 tick >/dev/null
 for _ in $(seq 1 50); do ls "$C"/judges/*.ended >/dev/null 2>&1 && break; sleep 0.1; done
 argv=$(cat "$FIX/claude.log")

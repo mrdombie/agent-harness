@@ -14,8 +14,10 @@
 #
 # The candidates and their order come from claimable-issues.sh, the one
 # definition of what may be picked up. A [FINISH PR] row is class repair;
-# everything else is new. An approved-merge entry and every note are kept
-# across a re-seed, because nothing on the forge can rebuild them.
+# everything else is new. An entry put there with `add` is pinned: it and every
+# note survive a re-seed, because nothing on the forge can rebuild them. The
+# tick removes an entry once it has spawned it. A seed whose reads fail changes
+# nothing.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/coordinator-env.sh" || exit 1
 
@@ -47,9 +49,10 @@ seed() { # <scope>
   case "$label" in
     "ticket "*) members="${label#ticket }" ;;
     *) members=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$label" --limit 1000 \
-                   --json number -q '.[].number' 2>/dev/null | sort -u) ;;
+                   --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was"
+       members=$(printf '%s\n' "$members" | sort -u) ;;
   esac
-  claimable=$(bash "$CLAIMABLE" 2>/dev/null)
+  claimable=$(bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
   rows=$(printf '%s\n' "$claimable" | awk -F'\t' 'NF>=1 && $1!=""{print $1 "\t" ($5=="[FINISH PR]" ? "repair" : "new")}' \
          | while IFS=$'\t' read -r n cls; do
              grep -qx "$n" <<<"$members" && printf '%s\t%s\n' "$n" "$cls"
@@ -58,9 +61,10 @@ seed() { # <scope>
     (.tickets // []) as $old
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
     | ($rows | split("\n") | map(select(length > 0) | split("\t") | {n: (.[0]|tonumber), class: .[1]})) as $fresh
-    | ($fresh | map(. + {note: ($byn[(.n|tostring)].note // "")}
-                     | if $byn[(.n|tostring)].class == "approved-merge" then .class = "approved-merge" else . end)) as $merged
-    | ($old | map(select(.class == "approved-merge") | select((.n) as $n | ($fresh | map(.n) | index($n)) == null))) as $kept
+    | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
+                     | . + {note: ($o.note // "")}
+                     | if $o.pinned then .class = $o.class | .pinned = true else . end)) as $merged
+    | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null))) as $kept
     | {scope: $scope, label: $label, seeded_at: $at, tickets: ($merged + $kept)}' | write
   echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $label"
 }
@@ -84,7 +88,7 @@ add() {
   case "$n" in ''|*[!0-9]*) die "add needs a ticket number" ;; esac
   case "$cls" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
   current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" '
-    .tickets = ((.tickets // []) | map(select(.n != $n))) + [{n: $n, class: $c, note: $note}]' | write
+    .tickets = ((.tickets // []) | map(select(.n != $n))) + [{n: $n, class: $c, note: $note, pinned: true}]' | write
   echo "queued #$n as $cls"
 }
 

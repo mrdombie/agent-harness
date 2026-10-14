@@ -128,8 +128,10 @@ MSG
 SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
 cron_mark() { printf '# %s' "$(label coordinator)"; }
 cron_line() {
-  printf '*/%s * * * * HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q COORDINATOR_SHADOW=%s /bin/bash %q >> %q 2>&1 %s\n' \
-    "$(( $(interval_for coordinator) / 60 ))" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$(coordinator_shadow)" \
+  local m=$(( $(interval_for coordinator) / 60 )); [ "$m" -ge 1 ] || m=1
+  # cron's own PATH finds neither claude nor gh: carry the installer's.
+  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q COORDINATOR_SHADOW=%s /bin/bash %q >> %q 2>&1 %s\n' \
+    "$m" "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$(coordinator_shadow)" \
     "$KIT_ROOT/scripts/coordinator-tick.sh" "$SWARM_LOGS/coordinator.out.log" "$(cron_mark)"
 }
 cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark)"; }
