@@ -23,6 +23,10 @@
 #                 `install.sh coordinator` installs it — and in shadow unless
 #                 COORDINATOR_SHADOW=0 is set at install. Off macOS it is a
 #                 crontab line.
+#   merge-lane    every 3 minutes: scripts/merge-lane.sh, the serial merge lane.
+#                 Opt-in the same way, and in shadow unless MERGE_LANE_SHADOW=0
+#                 is set at install. The coordinator tick also runs it; the
+#                 lane's own lock keeps the two from overlapping.
 #
 # Six of these were installed by hand on the machine they came from, which is
 # why three of them were running a version nobody could name. They are written
@@ -52,6 +56,7 @@ script_for() { # <job> — the command line, one argument per line
     repair-watch) printf '%s/repair-watch.sh\n' "$SWARM_ROOT" ;;
     report)       printf '%s/report.sh\n--push\n' "$SWARM_ROOT" ;;
     coordinator)  printf '%s/scripts/coordinator-tick.sh\n' "$KIT_ROOT" ;;
+    merge-lane)   printf '%s/scripts/merge-lane.sh\n' "$KIT_ROOT" ;;
     *) return 1 ;;
   esac
 }
@@ -64,6 +69,7 @@ interval_for() {
     repair-watch) printf '%s' "${SWARM_EVERY_REPAIR:-600}" ;;
     report) printf '%s' "${SWARM_EVERY_REPORT:-60}" ;;
     coordinator) printf '%s' "${SWARM_EVERY_COORDINATOR:-300}" ;;
+    merge-lane) printf '%s' "${SWARM_EVERY_MERGE_LANE:-180}" ;;
   esac
 }
 
@@ -73,9 +79,19 @@ interval_for() {
 # token file instead; every path it needs is named here.
 # Shadow unless the installer says otherwise, so a first install acts on nothing.
 coordinator_shadow() { [ "${COORDINATOR_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
+lane_shadow() { [ "${MERGE_LANE_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
+# The mode variables a job carries, one NAME=value per line.
+shadow_vars() { # <job>
+  case "$1" in
+    coordinator) printf 'COORDINATOR_SHADOW=%s\nMERGE_LANE_SHADOW=%s\n' "$(coordinator_shadow)" "$(lane_shadow)" ;;
+    merge-lane)  printf 'MERGE_LANE_SHADOW=%s\n' "$(lane_shadow)" ;;
+  esac
+}
 coordinator_env() { # <job>
-  [ "$1" = coordinator ] || return 0
-  printf '    <key>COORDINATOR_SHADOW</key><string>%s</string>' "$(coordinator_shadow)"
+  local kv
+  for kv in $(shadow_vars "$1"); do
+    printf '    <key>%s</key><string>%s</string>\n' "${kv%%=*}" "${kv#*=}"
+  done
 }
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 print_plist() { # <job>
@@ -124,27 +140,30 @@ MSG
   return 1
 }
 
-# ---- elsewhere: the coordinator as one crontab line, marked so it is replaced, never doubled
+# ---- elsewhere: the coordinator and the merge lane as one crontab line each,
+# marked so a line is replaced, never doubled
 SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
-cron_mark() { printf '# %s' "$(label coordinator)"; }
-cron_line() {
-  local m=$(( $(interval_for coordinator) / 60 )); [ "$m" -ge 1 ] || m=1
+cron_jobs() { printf 'coordinator\nmerge-lane\n'; }
+cron_mark() { printf '# %s' "$(label "$1")"; }
+cron_line() { # <job>
+  local m=$(( $(interval_for "$1") / 60 )) vars=""; [ "$m" -ge 1 ] || m=1
+  vars=$(shadow_vars "$1" | tr '\n' ' ')
   # cron's own PATH finds neither claude nor gh: carry the installer's.
-  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q COORDINATOR_SHADOW=%s /bin/bash %q >> %q 2>&1 %s\n' \
-    "$m" "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$(coordinator_shadow)" \
-    "$KIT_ROOT/scripts/coordinator-tick.sh" "$SWARM_LOGS/coordinator.out.log" "$(cron_mark)"
+  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q %s/bin/bash %q >> %q 2>&1 %s\n' \
+    "$m" "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$vars" \
+    "$(script_for "$1" | head -1)" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
 }
-cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark)"; }
-cron_install() {
-  command -v "$SWARM_CRONTAB" >/dev/null 2>&1 || { echo "install: no launchd and no crontab — run this every 5 minutes yourself:" >&2; cron_line >&2; return 1; }
+cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark "$1")"; }
+cron_install() { # <job>
+  command -v "$SWARM_CRONTAB" >/dev/null 2>&1 || { echo "install: no launchd and no crontab — run this every $(( $(interval_for "$1") / 60 )) minutes yourself:" >&2; cron_line "$1" >&2; return 1; }
   mkdir -p "$SWARM_LOGS"
-  local rest; rest=$(cron_rest)   # read in full before the write replaces it
-  { [ -z "$rest" ] || printf '%s\n' "$rest"; cron_line; } | "$SWARM_CRONTAB" - && echo "installed $(label coordinator) in crontab (shadow=$(coordinator_shadow))"
+  local rest; rest=$(cron_rest "$1")   # read in full before the write replaces it
+  { [ -z "$rest" ] || printf '%s\n' "$rest"; cron_line "$1"; } | "$SWARM_CRONTAB" - && echo "installed $(label "$1") in crontab ($(shadow_vars "$1" | tr '\n' ' ' | sed 's/ $//'))"
 }
-cron_uninstall() {
-  "$SWARM_CRONTAB" -l 2>/dev/null | grep -qF -- "$(cron_mark)" || { echo "coordinator was not installed"; return 0; }
-  local rest; rest=$(cron_rest)
-  { [ -z "$rest" ] || printf '%s\n' "$rest"; } | "$SWARM_CRONTAB" - && echo "removed $(label coordinator) from crontab"
+cron_uninstall() { # <job>
+  "$SWARM_CRONTAB" -l 2>/dev/null | grep -qF -- "$(cron_mark "$1")" || { echo "$1 was not installed"; return 0; }
+  local rest; rest=$(cron_rest "$1")
+  { [ -z "$rest" ] || printf '%s\n' "$rest"; } | "$SWARM_CRONTAB" - && echo "removed $(label "$1") from crontab"
 }
 on_launchd() { [ "${SWARM_UNAME:-$(uname -s)}" = Darwin ] && command -v launchctl >/dev/null 2>&1; }
 
@@ -287,8 +306,9 @@ case "${1:-}" in
     # A name that is no action at all is left for the dispatch below to reject.
     is_action=1
     case "${1:-}" in ""|restart) ;; *) script_for "$1" >/dev/null 2>&1 || is_action=0 ;; esac
-    # A shadow coordinator spawns nothing, so a hold does not stop installing one.
+    # A shadow coordinator or lane acts on nothing, so a hold does not stop installing one.
     [ "${1:-}" = coordinator ] && [ "$(coordinator_shadow)" = 1 ] && is_action=0
+    [ "${1:-}" = merge-lane ] && [ "$(lane_shadow)" = 1 ] && is_action=0
     if [ "$is_action" = 1 ] && held=$(swarm_held); then
       audit refused-held "${1:-install}"
       echo "install: the swarm is held — $held. Run 'install.sh release' first, on purpose." >&2
@@ -302,8 +322,8 @@ case "${1:-}" in
   *) if script_for "$1" >/dev/null 2>&1; then audit "$1" "${2:-}"; fi ;;
 esac
 
-if [ "${1:-}" = coordinator ] && ! on_launchd; then cron_install; exit $?; fi
-if [ "${1:-}" = uninstall ] && [ "${2:-}" = coordinator ] && ! on_launchd; then cron_uninstall; exit $?; fi
+if cron_jobs | grep -qx -- "${1:-}" && ! on_launchd; then cron_install "$1"; exit $?; fi
+if [ "${1:-}" = uninstall ] && cron_jobs | grep -qx -- "${2:-}" && ! on_launchd; then cron_uninstall "$2"; exit $?; fi
 
 if is_windows; then
   case "${1:-}" in
@@ -325,16 +345,16 @@ case "${1:-}" in
   --jobs)   jobs_for_project; exit 0 ;;
   status)
     need_launchd || exit 1
-    for j in $(jobs_for_project) $([ -f "$(plist coordinator)" ] && echo coordinator); do
+    for j in $(jobs_for_project) $(for o in coordinator merge-lane; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
       line=$(launchctl list 2>/dev/null | awk -v l="$(label "$j")" '$3==l{print "pid "$1", last exit "$2}')
       printf '%-14s %s\n' "$j" "${line:-not loaded}"
     done; hold_status; exit 0 ;;
   restart)  need_launchd || exit 1; do_install "${2:?restart needs a job}"; exit $? ;;
   uninstall)
     need_launchd || exit 1
-    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator; do do_uninstall "$j"; done; fi
+    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane; do do_uninstall "$j"; done; fi
     exit 0 ;;
-  -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;
   *)        need_launchd || exit 1; do_install "$1"; exit $? ;;
 esac

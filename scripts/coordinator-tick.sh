@@ -16,6 +16,7 @@
 #   4. pull requests red, or a pixel PR gone green that needs sign-off
 #   5. spawn         the queue in class order, up to coordinator.cap live runs,
 #                    never a ticket that is claimed, gated or on hold
+#   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, then stop-dev-servers.sh --sweep
 #   7. disk          free space below coordinator.minFreeGb is an alarm
 #   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh)
@@ -219,6 +220,15 @@ else
 fi
 # The compare report reads what this tick saw and chose.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s next=%s\n' "$(swarm_stamp)" "${PLAN%,}" "${LIVE_TICKETS% }" "$SLOTS" "$NEXT" >> "$COORD_ACTIONS"
+
+# ---- 5b. the merge lane -------------------------------------------------------
+# Only where the project names a merge method. Its own lock, its own shadow.
+LANE="${COORDINATOR_LANE:-$SELF_DIR/merge-lane.sh}"
+if toolkit_cfg merge.method >/dev/null 2>&1; then
+  bash "$LANE" >> "$COORD_LOG" 2>&1 || say "merge lane exited $?"
+else
+  say "merge lane: off — harness.json has no merge.method"
+fi
 
 # ---- 6. housekeeping ---------------------------------------------------------
 if coord_shadow; then
