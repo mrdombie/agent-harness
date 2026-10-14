@@ -65,6 +65,12 @@ Closes ticket #100.
 EOF
 )\""
 check deny  "a second ticket closed beside the right one" "gh pr create --head t-200/work --body 'Closes #200, closes #201'"
+check deny  "an append to a per-ticket file already holding A's body" "cat >> $R/stale-200.md <<'EOF'
+more words
+EOF
+gh pr create --head t-200/work --body-file $R/stale-200.md"
+check deny  "a nested \$(cat \"\$(git rev-parse ...)/pr-body-200.md\") holding A's body" "cd $R && gh pr create --head t-200/work --body \"\$(cat \"\$(git rev-parse --absolute-git-dir)/pr-body-200.md\")\""
+check deny  "2>&1 among the arguments does not hide the body" "gh pr create --head t-200/work 2>&1 --body 'Closes #100'"
 check deny  "a PR whose branch cannot be read"          "gh pr edit 999 --body-file $R/body-200.md"
 # The same commands with the right body pass.
 check allow "B's body to B's PR (edit)"                 "gh pr edit 202 --body-file $R/body-200.md"
@@ -92,6 +98,15 @@ check allow "the evidence gate's re-read of the PR's own body" "gh pr edit \"\$P
 check allow "a commit message closing another ticket, before the send" "cd $R && git commit -m 'refactor; fixes #100 follow-up' && gh pr create --head t-200/work --body 'Closes #200'"
 check allow "-R before the PR number, right body"       "gh pr edit -R o/r 202 --body 'Closes #200'"
 check allow "a branch whose first segment is not a ticket" "gh pr create --head v2/thing --body 'Closes #100'"
+check allow "a later line's git commit -F is not this PR's body" "gh pr edit 202 --add-label ready
+git commit -F /tmp/msg.txt"
+check allow "a later line's gh api -F is not this PR's body" "cd $R && gh pr create --fill --draft
+gh api repos/o/r/issues/1/labels -F labels[]=x"
+check allow "a later gh pr edit's body is judged against its own PR" "gh pr edit 202 --add-label x
+gh pr edit 101 --body 'Closes #100'"
+check allow "a later gh pr comment mentioning another ticket" "gh pr edit 202 --add-label needs:review
+gh pr comment 202 --body 'fixes #100 first'"
+check allow "a release branch is not a ticket"          "gh pr create --head release-2026-10-14 --body 'Closes #100'"
 check allow "no body set"                               "gh pr edit 202 --add-label needs:review"
 check allow "a branch that names no ticket"             "gh pr create --head hooks/tidy --body 'Closes #100'"
 check allow "another repo's ticket"                     "gh pr create --head t-200/work --body 'Closes other/repo#100 and closes #200'"

@@ -23,7 +23,7 @@ CLOSE_REF = re.compile(
 )
 HEREDOC = re.compile(r"""<<-?[ \t]*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))""")
 ASSIGN = re.compile(r"(?:^|[\s;&(])([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"`]*\"|'[^']*'|[^\s;&|`'\"]+)(?=[\s;&|)]|$)")
-CAT_FILE = re.compile(r"\$\(\s*(?:cat\s+|<\s*)(?!<)(\"[^\"]+\"|'[^']+'|[^\s)]+)\s*\)")
+CAT_FILE = re.compile(r"\$\(\s*(?:cat\s+|<\s*)(?!<)(\"(?:\$\([^)]*\)|[^\"])+\"|'[^']+'|(?:\$\([^)]*\)|[^\s)])+)\s*\)")
 # gh pr create/edit flags that take a value. Everything else is a switch or the target.
 VALUED = {
     "-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--title", "-H", "--head",
@@ -32,7 +32,7 @@ VALUED = {
     "--add-assignee", "--remove-assignee", "--add-label", "--remove-label",
     "--add-project", "--remove-project", "--add-reviewer", "--remove-reviewer",
 }
-OPERATORS = {";", "&&", "||", "|", "&", ";;", "|&"}
+OPERATORS = {";", "&&", "||", "|", "&", ";;", "|&", "\n"}
 
 
 def deny(reason):
@@ -99,7 +99,7 @@ def expand(value, env, cwd):
 def issue_of(branch):
     """The ticket a branch names: `<letters>-<n>` or `<n>` leading its first segment."""
     branch = re.sub(r"^[^:/]+:", "", branch or "")   # owner:branch
-    m = re.match(r"(?:[A-Za-z]+-)?(\d+)(?:[-_]|$)", branch.split("/")[0])
+    m = re.match(r"(?:[A-Za-z]+-)?(\d+)(?:[-_][A-Za-z]|$)", branch.split("/")[0])
     return m.group(1) if m else None
 
 
@@ -122,8 +122,12 @@ def refs(text, repo):
 
 
 def tokens_of(segment):
+    """The gh command's own words: up to the first operator or unquoted newline."""
+    segment = re.sub(r"\\\n", " ", segment)            # a continued line is one line
+    segment = re.sub(r"\d*>&\d+", " ", segment)          # 2>&1 is not a background &
     try:
-        lex = shlex.shlex(segment, posix=True, punctuation_chars=";&|")
+        lex = shlex.shlex(segment, posix=True, punctuation_chars=";&|\n")
+        lex.whitespace = " \t\r"
         lex.whitespace_split = True
         lex.commenters = ""   # a `# via /finish` inside backticks is not the end of the line
         toks = list(lex)
@@ -147,7 +151,7 @@ def parse(toks):
         elif t in VALUED:
             opts.setdefault(t, toks[i + 1] if i + 1 < len(toks) else "")
             i += 1
-        elif not t.startswith("-"):
+        elif not t.startswith(("-", "#", "`")):
             positional.append(t)
         i += 1
     return opts, positional
@@ -231,7 +235,8 @@ def main():
         files = []
         if inline is not None:
             texts.append(("the --body text", inline + ("\n" + own_bodies if "<<" in inline else "")))
-            files += [unquote(p) for p in CAT_FILE.findall(inline)]
+            own_text = rest[: len("\n".join(rest.split("\n")[: last - first + 1]))]
+            files += [unquote(p) for p in CAT_FILE.findall(own_text)]   # raw: shlex splits a nested $( )
         if body_file is not None and body_file != "-":
             files.append(body_file)
         elif body_file == "-":
@@ -242,12 +247,16 @@ def main():
             if not os.path.isabs(path) and "$" not in path:
                 path = os.path.join(cwd, path)
             name_check(raw, path, issue, branch)
-            writer = re.compile(r"(?:>|\btee\s+(?:-a\s+)?)\s*[\"']?" + re.escape(raw) + r"[\"']?")
-            written = [i for i, line in enumerate(code.split("\n")) if writer.search(line)]
+            target = r"\s*[\"']?" + re.escape(raw) + r"[\"']?"
+            fresh = re.compile(r"(?:(?<!>)>(?!>)|\btee\s+(?!-a))" + target)
+            append = re.compile(r"(?:>>|\btee\s+-a\s+)" + target)
+            lines = code.split("\n")
+            written = [i for i, line in enumerate(lines) if fresh.search(line) or append.search(line)]
             if written:
                 texts.append(("the body this command writes",
                               "\n".join(b for i in written for b in bodies.get(i, [])) or cmd))
-            elif "$" not in path:
+            appended = any(append.search(line) for line in lines)
+            if (appended or not written) and "$" not in path:
                 try:
                     with open(path, encoding="utf-8", errors="replace") as fh:
                         texts.append((raw, fh.read()))
