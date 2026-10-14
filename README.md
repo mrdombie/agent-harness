@@ -41,7 +41,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 ## The config
 
-`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat`, `law` and `merge` is required; a missing one refuses by name.
+`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat`, `law`, `merge` and `preApprovedWrites` is required; a missing one refuses by name.
 
 ```json
 {
@@ -95,6 +95,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
     "render": "npm run -s renders"
   },
   "programmes": { "brief": "scripts/programme-state-brief.sh {{EPIC}}" },
+  "preApprovedWrites": { "environments": ["Staging"], "decided": "<who>, <date>" },
 }
 ```
 
@@ -123,6 +124,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
+- `preApprovedWrites` is optional: environments whose writes (a back-fill, a one-off script, a data fix) the operator has approved in advance. `decided` is required and names who made the call and when. The standing rules say a general policy is not a yes; this is the one exception, and `hooks/standing-rules.sh` appends it to every session as its own section. It never covers an outward-facing action in any environment (publishing to a real account, sending email or messages), any environment not listed, or a command refused at a prompt, and the section says so. Only the operator adds or widens it. Both values are pasted into the rules, so they are held to plain tokens: a name is letters, digits and `. _ -` with no spaces, up to 32 characters, and never a word for every environment (`all`, `any`, `every…`, `*`); `decided` is exactly `<name>, YYYY-MM-DD`. Anything else, a `harness.json` that is not one JSON object, or one that names the key twice, grants nothing, and the session is told so.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
 
