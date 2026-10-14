@@ -24,11 +24,15 @@
 #   appended. Malformed: a line saying nothing is pre-approved (fails closed).
 #
 #   Only the SHARED value counts: the working tree must grant exactly what the
-#   project's integration branch on origin grants. A local commit is not enough,
-#   because an agent commits, reverts and resets freely; reaching the shared
-#   branch takes a push (judged by hooks/guard-pre-approved-writes.sh) and a
-#   merge. The key is read from the project's own .claude/harness.json only: an
-#   override path elsewhere could point it at a file an agent wrote.
+#   integration branch grants ON THE REMOTE. Local refs are not trusted: an agent
+#   can commit, update-ref, fetch into refs/remotes or `git replace` freely. So
+#   the remote is asked (`git ls-remote`) for its default branch and sha; that
+#   commit names the integration branch, whose sha is asked for too, and the key
+#   is read at that sha with replace objects off. Offline, or a sha not fetched
+#   yet, grants nothing. Reaching the remote takes a push (judged by
+#   hooks/guard-pre-approved-writes.sh) and a merge. The key is read from the
+#   project's own .claude/harness.json only: an override path could name a file
+#   an agent wrote.
 #
 # Self-test: hooks/standing-rules.test.sh
 set -u
@@ -59,24 +63,38 @@ _grant(){
   case "$t" in ''|*$'\n'*) t=MALFORMED ;; esac
   printf '%s' "$t"
 }
+# git with no GIT_* from the caller and replace objects off: both can make a ref read as another commit.
+_git(){ env $(env | sed -n '/^GIT_SSH_COMMAND=/d; s/^\(GIT_[A-Za-z_]*\)=.*/-u \1/p') GIT_TERMINAL_PROMPT=0 git --no-replace-objects -C "$@"; }
+# _remote <dir> <HEAD|refs/heads/x>: "<sha> <branch>" as the remote reports it, within 5 s, or nothing.
+_remote(){
+  local f p n=0; f=$(mktemp) || return 0
+  ( GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+      _git "$1" ls-remote --symref origin "$2" > "$f" 2>/dev/null ) & p=$!
+  while kill -0 "$p" 2>/dev/null && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n+1)); done
+  kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+  awk -v want="$2" '
+    $1 == "ref:" { sub("^refs/heads/", "", $2); br = $2 }
+    $1 ~ /^[0-9a-f]{40,64}$/ && $2 == want { sha = $1 }
+    END { if (sha != "") { if (br == "") { br = want; sub("^refs/heads/", "", br) } print sha " " br } }' "$f"
+  rm -f "$f"
+}
 if [ -f "$_cfg" ]; then
   _pre=$(_grant < "$_cfg")
   # jq keeps the last of two same-named keys; a reader of the file sees the first.
   [ "$(grep -cE '"preApprovedWrites"[[:space:]]*:' "$_cfg")" -gt 1 ] && _pre=MALFORMED
   if [ "$_pre" != ABSENT ] && [ "$_pre" != MALFORMED ]; then
-    # The anchor: origin/<integrationBranch>, else origin/develop, else origin/main.
-    _ib=$(jq -r '.integrationBranch // empty | strings' "$_cfg" 2>/dev/null)
-    case "$_ib" in
-      '') _anchors="origin/develop origin/main" ;;
-      *[!A-Za-z0-9._/-]*|*..*) _anchors="" ;;
-      *) _anchors="origin/$_ib" ;;
-    esac
     _shared="" _anchor=""
-    for _anchor in $_anchors; do
-      _shared=$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-        git -C "$(dirname "$_cfg")" show "$_anchor:./$(basename "$_cfg")" 2>/dev/null) && break
-      _shared=""
-    done
+    _at=$(_remote "$(dirname "$_cfg")" HEAD)            # "<sha> <branch>"
+    if [ -n "$_at" ]; then
+      _anchor="origin/${_at#* }"
+      _shared=$(_git "$(dirname "$_cfg")" show "${_at%% *}:./$(basename "$_cfg")" 2>/dev/null)
+      _ib=$(printf '%s' "$_shared" | jq -r '.integrationBranch // empty | strings' 2>/dev/null)
+      if [ -n "$_ib" ] && [ "$_ib" != "${_at#* }" ]; then
+        _anchor="origin/$_ib" _shared=""
+        case "$_ib" in *[!A-Za-z0-9._/-]*|*..*) _at="" ;; *) _at=$(_remote "$(dirname "$_cfg")" "refs/heads/$_ib") ;; esac
+        [ -n "$_at" ] && _shared=$(_git "$(dirname "$_cfg")" show "${_at%% *}:./$(basename "$_cfg")" 2>/dev/null)
+      fi
+    fi
     if [ -z "$_shared" ] ||
        [ "$(grep -cE '"preApprovedWrites"[[:space:]]*:' <<<"$_shared")" -gt 1 ] ||
        [ "$(printf '%s' "$_shared" | _grant)" != "$_pre" ]; then _pre=UNSHARED

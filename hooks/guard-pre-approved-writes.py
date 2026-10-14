@@ -37,8 +37,13 @@ READERS = {'cat', 'jq', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'head', 'tail', 'l
            'node', 'python', 'python3', 'cd', 'pushd', 'popd', 'source', '.', 'bash', 'sh', 'zsh'}
 # What a script does to a file once it has named it. Text, by necessity: the
 # result cannot be computed without running the script.
-WRITE_MARK = re.compile(r'''\.write|write_text|writeFile|write\(|['"][wax]\+?b?['"]|['"]r\+b?['"]|os\.rename|os\.replace|'''
-                        r'''renameSync|unlink|os\.remove|truncate|shutil|copyFile|\bmv\b|\bcp\b|\bsed\b|>\s*['"]?[^\s'"]*harness\.json''')
+WRITE_MARK = re.compile(r'''(?<!stdout)(?<!stderr)\.write(_text|_bytes)?\(|writeFile|appendFile|createWriteStream|'''
+                        r'''open\([^)]*,\s*(mode\s*=\s*)?['"][wax]\+?b?['"]|['"]r\+b?['"]|os\.rename|os\.replace|renameSync|'''
+                        r'''unlink|os\.remove|truncate|shutil|copyFile|\bmv\b|\bcp\b|\bsed\b|>\s*['"]?[^\s'"]*harness\.json''')
+SHELL_WORDS = {'if', 'then', 'elif', 'else', 'do', 'while', 'until', '!', '{', '}', 'fi', 'done', 'esac'}
+# Git settings that move what a push sends, where the remote is, or what runs on commit.
+GIT_KEYS = re.compile(r'^(remote\..+\.(url|pushurl|push|fetch)|url\..+\.(insteadof|pushinsteadof)|alias\..+|core\.hookspath|'
+                      r'include\.path|includeif\..+)$', re.I)
 
 ASK = ("Only the operator adds, widens or edits `preApprovedWrites` (or the `integrationBranch` it is "
        "anchored on): an agent that changes it has approved itself, the same as an agent applying a "
@@ -81,9 +86,12 @@ def allowed(b, a):
     return a == b or (a[0] == 'ABSENT' and a[1] == b[1])
 
 
-def judge(before_text, after_text, where):
+def judge(before_text, after_text, where, shared=None):
     b, a = value_of(before_text), value_of(after_text)
     if allowed(b, a):
+        return
+    # Taking the operator's own value from the integration branch is not self-approval.
+    if shared is not None and value_of(shared) == a and a[0] != 'ABSENT':
         return
     k = 0 if a[0] != b[0] else 1
     refuse('this changes `%s` in %s (%s -> %s).' % (KEYS[k], where, show(b[k]), show(a[k])))
@@ -112,13 +120,30 @@ def is_cfg(path):
         return False
 
 
+def is_gitprot(path):
+    """git's own config and hooks: rewriting them moves the remote, the push or what runs on commit."""
+    p = os.path.realpath(os.path.expanduser(path)).replace('\\', '/')
+    parts = p.lower().split('/')
+    if parts[-1] == '.gitconfig' or p.lower().endswith('/.config/git/config'):
+        return True
+    if '.git' in parts:
+        k = parts.index('.git')
+        return parts[-1] == 'config' or 'hooks' in parts[k:] or parts[-1] in ('packed-refs',)
+    return False
+
+
+def gitprot_refuse(path):
+    refuse('this writes %s, git\'s own config or hooks, which decide where pushes go and what runs on commit.' % path)
+
+
 def clean_env():
     return {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
 
 
 def git(repo, *args):
     try:
-        r = subprocess.run(['git', '-C', repo] + list(args), capture_output=True, env=clean_env(), timeout=10)
+        r = subprocess.run(['git', '--no-replace-objects', '-C', repo] + list(args), capture_output=True,
+                           env=clean_env(), timeout=10)
     except Exception:
         return None
     return r.stdout.decode('utf-8', 'surrogateescape') if r.returncode == 0 else None
@@ -145,6 +170,8 @@ def judge_file_tool(tool, ti):
     if not path:
         return
     learn(os.path.dirname(path) or '.')
+    if is_gitprot(path):
+        gitprot_refuse(path)
     if not is_cfg(path):
         return
     before = read(path)
@@ -158,7 +185,8 @@ def judge_file_tool(tool, ti):
             if after is None or not old or old not in after:
                 return  # the tool itself will fail: nothing is written
             after = after.replace(old, new) if e.get('replace_all') else after.replace(old, new, 1)
-    judge(before, after, path)
+    top = toplevel(os.path.dirname(os.path.realpath(path)))
+    judge(before, after, path, shared_value(top) if top else None)
 
 
 # ---- Bash -------------------------------------------------------------------------
@@ -187,6 +215,19 @@ def scan(text):
             if c == '"':
                 q = None
             i += 1
+            continue
+        if text.startswith("$'", i):
+            # ANSI-C quoting, which shlex cannot read: emitted as a plain single-quoted word.
+            j, buf = i + 2, []
+            while j < n and text[j] != "'":
+                if text[j] == '\\' and j + 1 < n:
+                    buf.append({'n': '\n', 't': '\t'}.get(text[j + 1], text[j + 1]))
+                    j += 2
+                else:
+                    buf.append(text[j])
+                    j += 1
+            out.append("'" + ''.join(buf).replace("'", "'\\''") + "'")
+            i = j + 1
             continue
         if c in '\'"':
             q = c
@@ -285,6 +326,8 @@ def args_of(seg):
             continue
         args.append(t)
         i += 1
+    while args and args[0] in SHELL_WORDS:
+        args = args[1:]
     assigns = {}
     while args and (re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', args[0]) or
                     args[0] in ('sudo', 'command', 'exec', 'time', 'nohup', 'env', 'builtin', 'xargs', 'nice')):
@@ -303,8 +346,9 @@ def judge_bash(cmd, cwd, depth=0):
     try:
         toks = tokens(code)
     except ValueError:
-        if 'harness.json' in cmd.lower():
-            refuse('the guard could not parse a command that names harness.json, so it cannot see what it writes.')
+        if re.search(r'harness\.json|\.claude|\.git/|\bgit\b|\btee\b|\bcp\b|\bmv\b|\bsed\b|>', cmd, re.I):
+            refuse('the guard could not parse this command, and it runs git or writes files, so it cannot see '
+                   'what it does. Rewrite it in plainer shell (no unbalanced quotes).')
         return
     body_i = 0
     for seg in segments(toks):
@@ -324,6 +368,8 @@ def judge_bash(cmd, cwd, depth=0):
         name = os.path.basename(args[0])
         # Redirect onto the file. Only a plain `cat` of a heredoc has a known result.
         for op, target in redirs:
+            if op in WRITE_FLAGS and any(is_gitprot(p) for p in expand(target, cwd)):
+                gitprot_refuse(target)
             if op in WRITE_FLAGS and any(is_cfg(p) for p in expand(target, cwd)):
                 path = expand(target, cwd)[0]
                 if name == 'cat' and len(args) == 1 and here is not None:
@@ -331,6 +377,15 @@ def judge_bash(cmd, cwd, depth=0):
                     judge(before, (before or '') + here if op == '>>' else here, path)
                 else:
                     refuse('this redirects output onto %s, and the guard cannot see what that output is.' % target)
+        if name in ('for', 'case', 'select', 'function', 'rm', 'unlink', 'trash'):
+            continue  # a loop header names no command; removing the file grants nothing
+        files = [a for a in args[1:] if not a.startswith('-')]
+        dests = files[-1:] if name in ('cp', 'mv', 'ln', 'install', 'rsync', 'ditto') else \
+            files if name in ('tee', 'touch', 'truncate') or (name in INPLACE and any(
+                re.fullmatch(r'-[lnpawsE0-9]*i\S*|--in-place\S*', a) for a in args[1:])) else []
+        for a in dests:
+            if any(is_gitprot(p) for p in expand(a, cwd)):
+                gitprot_refuse(a)
         if name in ('cd', 'pushd'):
             if len(args) > 1 and not args[1].startswith('-'):
                 cwd = expand(args[1], cwd)[0]
@@ -436,16 +491,26 @@ def covers(path_tok, cwd, top):
     return False
 
 
-def anchor(top, wt_text):
-    ib = None
-    try:
-        ib = json.loads(wt_text or '{}').get('integrationBranch')
-    except Exception:
-        pass
-    for ref in (['origin/' + ib] if isinstance(ib, str) and ib else ['origin/develop', 'origin/main']):
-        if git(top, 'rev-parse', '--verify', '-q', ref + '^{commit}'):
-            return ref
+def anchor(top):
+    """The integration branch as origin's default branch names it. Local refs: this is the
+    drift check. The injector asks the remote itself, so a forged local ref grants nothing."""
+    for cand in ('origin/HEAD', 'origin/develop', 'origin/main'):
+        text = git(top, 'show', cand + ':.claude/harness.json')
+        if text is None:
+            continue
+        try:
+            ib = json.loads(text).get('integrationBranch')
+        except Exception:
+            ib = None
+        if isinstance(ib, str) and ib and git(top, 'rev-parse', '--verify', '-q', 'origin/' + ib + '^{commit}'):
+            return 'origin/' + ib
+        return cand
     return None
+
+
+def shared_value(top):
+    ref = anchor(top)
+    return git(top, 'show', ref + ':.claude/harness.json') if ref else None
 
 
 def judge_git(args, cwd, here, assigns):
@@ -466,6 +531,8 @@ def judge_git(args, cwd, here, assigns):
                 repo = os.path.dirname(expand(v, repo)[0].rstrip('/'))
             elif v.startswith('alias.') and '=' in v:
                 aliases[v[6:].split('=', 1)[0]] = v.split('=', 1)[1]
+            elif GIT_KEYS.match(v.split('=', 1)[0]):
+                refuse('this runs git with `-c %s`, which moves where it pushes or what it runs.' % v.split('=', 1)[0])
             i += 2
         else:
             if a.startswith('--work-tree='):
@@ -491,12 +558,22 @@ def judge_git(args, cwd, here, assigns):
     cfg = os.path.join(top, rel)
     at = lambda ref: git(top, 'show', ref + ':' + rel)
     pos = [a for a in rest if not a.startswith('-')]
+    shared = shared_value(top) if sub in ('commit', 'checkout', 'restore', 'apply', 'am') else None
 
-    if sub == 'commit':
+    if sub == 'config':
+        writes = len(pos) >= 2 or any(a in ('--add', '--unset', '--unset-all', '--replace-all', '--rename-section',
+                                            '--remove-section') for a in rest)
+        if writes and pos and GIT_KEYS.match(pos[0]):
+            refuse('this sets git config `%s`, which moves where pushes go or what runs on commit.' % pos[0])
+    elif sub == 'remote' and pos and pos[0] in ('add', 'set-url', 'rename', 'set-head', 'set-branches', 'remove', 'rm'):
+        refuse('this changes the git remote (`git remote %s`), which the shared value is read from.' % pos[0])
+    elif sub == 'replace' or (sub in ('update-ref', 'symbolic-ref') and any(a.startswith('refs/remotes/') for a in pos)):
+        refuse('this rewrites what a remote ref or object reads as (`git %s`).' % sub)
+    elif sub == 'commit':
         vh = at('HEAD')
-        judge(vh, at(''), cfg + ' (staged for commit)')
+        judge(vh, at(''), cfg + ' (staged for commit)', shared)
         # The working tree too, always: `git add -A && git commit` stages it after this check runs.
-        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)')
+        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)', shared)
     elif sub == 'push':
         judge_push(top, rest, cfg, rel)
     elif sub in ('checkout', 'restore'):
@@ -515,7 +592,7 @@ def judge_git(args, cwd, here, assigns):
             if not any(covers(p, repo, top) for p in paths):
                 return
             after = at(ref) if ref else at('')
-            judge(read(cfg), after, cfg + ' (git checkout %s)' % (ref or 'from the index'))
+            judge(read(cfg), after, cfg + ' (git checkout %s)' % (ref or 'from the index'), shared)
         else:
             ref, staged, worktree = None, False, False
             for j, a in enumerate(rest):
@@ -534,10 +611,10 @@ def judge_git(args, cwd, here, assigns):
             if not any(covers(p, repo, top) for p in paths):
                 return
             if staged:
-                judge(at(''), at(ref or 'HEAD'), cfg + ' (git restore --staged)')
+                judge(at(''), at(ref or 'HEAD'), cfg + ' (git restore --staged)', shared)
             if worktree or not staged:
                 src = ref or ('HEAD' if staged else None)
-                judge(read(cfg), at(src) if src else at(''), cfg + ' (git restore)')
+                judge(read(cfg), at(src) if src else at(''), cfg + ' (git restore)', shared)
     elif sub in ('apply', 'am'):
         if any(a in ('--continue', '--abort', '--skip', '--quit', '--show-current-patch', '--retry') for a in rest):
             return
@@ -549,30 +626,51 @@ def judge_git(args, cwd, here, assigns):
             if 'harness.json' not in text.lower():
                 continue
             base = at('') if cached else read(cfg)
-            judge(base, simulate_patch(base, text, rest), cfg + ' (git %s)' % sub)
+            judge(base, simulate_patch(base, text, rest), cfg + ' (git %s)' % sub, shared)
 
 
 def judge_push(top, rest, cfg, rel):
-    ref = anchor(top, read(cfg))
+    ref = anchor(top)
     if not ref:
         return  # no integration branch to compare with; the injector grants nothing either
+    target = ref.split('/', 1)[1]
     at = lambda r: git(top, 'show', r + ':' + rel)
+    heads = lambda: [(h, h[len('refs/heads/'):]) for h in
+                     (git(top, 'for-each-ref', '--format=%(refname)', 'refs/heads') or '').split()]
+    pos = [a for a in rest if not a.startswith('-')]
     if any(a in ('--all', '--mirror', '--branches') for a in rest):
-        srcs = (git(top, 'for-each-ref', '--format=%(refname)', 'refs/heads') or '').split()
+        pairs = heads()
     else:
-        pos = [a for a in rest if not a.startswith('-')]
-        specs = pos[1:] if len(pos) > 1 else ['HEAD']
-        srcs = [s.lstrip('+').split(':', 1)[0] or None for s in specs]
-        srcs = [s for s in srcs if s]  # `:dst` deletes; it pushes no content
+        specs = pos[1:]
+        if not specs:
+            # No refspec on the line: git uses the remote's configured push refspecs, then push.default.
+            specs = (git(top, 'config', '--get-all', 'remote.%s.push' % (pos[0] if pos else 'origin')) or '').split()
+            if not specs and (git(top, 'config', '--get', 'push.default') or '').strip() == 'matching':
+                pairs = heads()
+                specs = None
+            elif not specs:
+                cur = (git(top, 'symbolic-ref', '-q', '--short', 'HEAD') or 'HEAD').strip()
+                specs = ['HEAD:' + cur]
+        if specs is not None:
+            pairs = []
+            for sp in specs:
+                src, _, dst = sp.lstrip('+').partition(':')
+                if src:  # `:dst` deletes; it pushes no content
+                    pairs.append((src, dst or src))
     shared = at(ref)
-    for s in srcs:
-        if not git(top, 'rev-parse', '--verify', '-q', s + '^{commit}'):
+    for src, dst in pairs:
+        if not git(top, 'rev-parse', '--verify', '-q', src + '^{commit}'):
             continue
-        mb = (git(top, 'merge-base', s, ref) or '').strip()
-        mine = value_of(at(s))
-        if allowed(value_of(shared), mine) or (mb and allowed(value_of(at(mb)), mine)):
+        mine = value_of(at(src))
+        dst = dst[len('refs/heads/'):] if dst.startswith('refs/heads/') else dst
+        if allowed(value_of(shared), mine):
             continue
-        judge(at(mb) if mb else shared, at(s), cfg + ' (pushed in %s, against %s)' % (s, ref))
+        if dst != target:
+            # A branch that did not touch the key (it matches where it forked) is not changing it.
+            mb = (git(top, 'merge-base', src, ref) or '').strip()
+            if mb and allowed(value_of(at(mb)), mine):
+                continue
+        judge(shared, at(src), cfg + ' (pushed from %s to %s, against %s)' % (src, dst, ref))
 
 
 def simulate_patch(base, text, opts):

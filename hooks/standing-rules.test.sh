@@ -9,16 +9,18 @@ ok(){ printf 'OK        %s\n' "$1"; }
 bad(){ printf 'MISMATCH  %s\n' "$1"; fail=1; }
 
 # The injector reads the project's own .claude/harness.json and honours only the
-# value on origin's integration branch, so fixtures live in a scratch project whose
-# origin ref is set by hand. GIT_* dropped: under a git hook they would aim these
+# value the REMOTE's integration branch carries, so fixtures live in a scratch
+# project with a bare origin. GIT_* dropped: under a git hook they would aim these
 # commands at the real repo.
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 unset HARNESS_CFG_PATH
 P="$TDIR/proj"; mkdir -p "$P/.claude"; git -C "$P" init -q
+git init -q --bare "$TDIR/origin.git"; git -C "$TDIR/origin.git" symbolic-ref HEAD refs/heads/develop
+git -C "$P" remote add origin "$TDIR/origin.git"
 pg(){ git -C "$P" -c user.name=t -c user.email=t@t "$@"; }
 place(){ if [ -n "${1:-}" ]; then cp "$1" "$P/.claude/harness.json"; else rm -f "$P/.claude/harness.json"; fi; }
 commit(){ place "$1"; pg add -f .claude/harness.json && pg commit -qm fixture --allow-empty; }
-publish(){ commit "$1"; pg update-ref "refs/remotes/origin/${2:-develop}" HEAD; }
+publish(){ commit "$1"; pg push -qf origin "HEAD:refs/heads/${2:-develop}"; pg fetch -q origin; }
 
 # The context a session gets from the kit rooted at $1 (hook $2), with fixture $3
 # as the project's harness.json (none when omitted). The working tree only: no commit.
@@ -139,17 +141,30 @@ grants "$(context "$KIT" "$H" "$TDIR/wide.json")" "Staging, Production" &&
   ok "the same value, once on origin/develop, is granted" || bad "a value on origin/develop is not granted"
 [ "$(context "$KIT" "$H" "$TDIR/absent.json")" = "$ctx" ] && ok "key removed in the working tree: nothing granted, nothing appended" ||
   bad "key removed in the working tree, yet something was appended"
-# integrationBranch names the anchor: honoured when published there, nothing when not.
+# A local ref is not the remote: forging origin/develop locally grants nothing.
+publish "$TDIR/ok.json"; commit "$TDIR/wide.json"; pg update-ref refs/remotes/origin/develop HEAD
+grep -qF "$UNSH" <<<"$(context "$KIT" "$H" "$TDIR/wide.json")" &&
+  ok "origin/develop forged locally (update-ref) grants nothing" || bad "a locally forged origin ref granted"
+publish "$TDIR/ok.json"
+# integrationBranch, read from the remote's default branch, names the anchor.
 printf '{"integrationBranch":"trunk","preApprovedWrites":{"environments":["Staging"],"decided":"op, 2026-10-14"}}' > "$TDIR/trunk.json"
+publish "$TDIR/trunk.json"
 grep -qF "$UNSH" <<<"$(context "$KIT" "$H" "$TDIR/trunk.json")" &&
-  ok "an integration branch with no origin ref grants nothing" || bad "an unpublished integration branch granted"
+  ok "an integration branch missing on the remote grants nothing" || bad "an integration branch missing on the remote granted"
 publish "$TDIR/trunk.json" trunk
-grants "$(context "$KIT" "$H" "$TDIR/trunk.json")" Staging && ok "origin/<integrationBranch> is the anchor" ||
-  bad "origin/<integrationBranch> is not honoured"
+grants "$(context "$KIT" "$H" "$TDIR/trunk.json")" Staging && ok "the remote's integrationBranch is the anchor" ||
+  bad "the remote's integrationBranch is not honoured"
+# The working tree naming another branch does not move the anchor.
+printf '{"integrationBranch":"mine","preApprovedWrites":{"environments":["Staging","Production"],"decided":"op, 2026-10-14"}}' > "$TDIR/mine.json"
+publish "$TDIR/mine.json" mine; place "$TDIR/trunk.json"; pg commit -qam back
+grep -qF "$UNSH" <<<"$(context "$KIT" "$H" "$TDIR/mine.json")" &&
+  ok "integrationBranch edited in the working tree does not move the anchor" || bad "the working tree moved the anchor"
 publish "$TDIR/ok.json"
 # An override path is not where the key is read: it could name a file an agent wrote.
 Q="$TDIR/other"; mkdir -p "$Q/.claude"; git -C "$Q" init -q; cp "$TDIR/wide.json" "$Q/.claude/harness.json"
-git -C "$Q" add -f .claude && git -C "$Q" -c user.name=t -c user.email=t@t commit -qm w && git -C "$Q" update-ref refs/remotes/origin/develop HEAD
+git init -q --bare "$TDIR/qorigin.git"; git -C "$TDIR/qorigin.git" symbolic-ref HEAD refs/heads/develop
+git -C "$Q" remote add origin "$TDIR/qorigin.git"
+git -C "$Q" add -f .claude && git -C "$Q" -c user.name=t -c user.email=t@t commit -qm w && git -C "$Q" push -q origin HEAD:refs/heads/develop
 octx=$(place "$TDIR/ok.json"; HARNESS_CFG_PATH="$Q/.claude/harness.json" CLAUDE_PROJECT_DIR="$P" CLAUDE_PLUGIN_ROOT="$KIT" bash "$H" </dev/null |
   jq -r '.hookSpecificOutput.additionalContext')
 grants "$octx" Staging && ok "HARNESS_CFG_PATH elsewhere is ignored: the project's own value is granted" ||
@@ -195,5 +210,14 @@ fctx=$(place "$TDIR/ok.json"; HARNESS_CFG_PATH="$Q/.claude/harness.json" CLAUDE_
   jq -r '.hookSpecificOutput.additionalContext')
 grants "$fctx" "Staging, Production" && ok "override honoured again: the forged grant appears, so the check above is the guard" ||
   bad "override honoured again, yet no forged grant: the check proves nothing"
+
+# g) the remote check deleted (local origin ref trusted): the local forgery must then grant.
+commit "$TDIR/wide.json"; pg update-ref refs/remotes/origin/develop HEAD
+sed 's|^    _at=$(_remote "$(dirname "$_cfg")" HEAD) .*$|    _at="$(_git "$(dirname "$_cfg")" rev-parse origin/develop) develop"|' "$H" > "$TDIR/h/local.sh"
+grep -q '^    _at="$(_git "$(dirname "$_cfg")" rev-parse origin/develop) develop"$' "$TDIR/h/local.sh" && bash -n "$TDIR/h/local.sh" || bad "plant g did not land"
+grants "$(context "$KIT" "$TDIR/h/local.sh" "$TDIR/wide.json")" "Staging, Production" &&
+  ok "remote check deleted: the local forgery is granted, so the check above is the guard" ||
+  bad "remote check deleted, yet the forgery is still refused: the check proves nothing"
+publish "$TDIR/ok.json"
 
 exit $fail

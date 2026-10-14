@@ -77,6 +77,24 @@ add -      allow "$(bashp "find . -name harness.json")"
 add -      allow "$(bashp "sed -n 1,5p .claude/harness.json")"
 add -      allow "$(bashp "git status && git diff -- .claude/harness.json && git log -1")"
 add -      allow "$(bashp "git am --abort")"
+add parsefail block "$(bashp "git push origin wide; echo \"unterminated")"
+add -      block "$(bashp "git push origin wide; echo \$'it\\'s'")"
+add -      block "$(bashp "git push -f origin wide:develop")"
+add gitcfg block "$(bashp "git config remote.origin.push +refs/heads/wide:refs/heads/develop")"
+add gitcfg block "$(bashp "git config --global url./tmp/fake.insteadOf https://github.com/")"
+add gitcfgc block "$(bashp "git -c remote.origin.url=/tmp/fake push origin HEAD")"
+add remote block "$(bashp "git remote set-url origin /tmp/fake.git")"
+add plumbing block "$(bashp "git update-ref refs/remotes/origin/develop wide")"
+add plumbing block "$(bashp "git replace HEAD wide")"
+add gitprot block "$(writep "[remote \"origin\"]" "$R/.git/config")"
+add gitprotsh block "$(bashp "printf 'git add -A' >> .git/hooks/pre-commit")"
+add gitprotsh block "$(bashp "cp $TDIR/wide.json .git/hooks/pre-commit")"
+add -      allow "$(bashp "cat .git/config && git config --get remote.origin.url")"
+add -      allow "$(bashp "rm .claude/harness.json")"
+add -      allow "$(bashp "if jq -e .repo .claude/harness.json >/dev/null; then echo yes; fi")"
+add -      allow "$(bashp "for f in .claude/*.json; do jq . \"\$f\"; done")"
+add -      allow "$(bashp "python3 -c \"import json; d = json.load(open('.claude/harness.json')); print(d.get('a'))\"")"
+add -      allow "$(bashp "node -e 'process.stdout.write(JSON.stringify(require(\"./.claude/harness.json\")))'")"
 add edit   block "$(editp '["Staging"]' '["Staging", "Production"]')"
 add edit   block "$(editp '"decided": "op, 2026-10-14"' '"decided": "op, 2026-10-15"')"
 add edit   block "$(editp '"repo": "x/y",' '"repo": "x/y", "preApprovedWrites": {"environments":["Production"],"decided":"op, 2026-10-14"},')"
@@ -159,7 +177,7 @@ printf '%s\n' "$WIDE" > "$C"; g add .claude; printf '%s\n' "$BASE" > "$C"
 mkdir -p "$TDIR/pc/lib"; cp "$D/guard-pre-approved-writes.sh" "$TDIR/pc/"; cp "$D/lib/python.sh" "$TDIR/pc/lib/"
 python3 - "$D/guard-pre-approved-writes.py" "$TDIR/pc/guard-pre-approved-writes.py" <<'PY'
 import sys
-s=open(sys.argv[1]).read(); old="        judge(vh, at(''), cfg + ' (staged for commit)')"
+s=open(sys.argv[1]).read(); old="        judge(vh, at(''), cfg + ' (staged for commit)', shared)"
 assert s.count(old)==1; open(sys.argv[2],'w').write(s.replace(old,"        pass"))
 PY
 grep -q "(staged for commit)" "$TDIR/pc/guard-pre-approved-writes.py" && bad "commit plant did not land"
@@ -175,11 +193,40 @@ addw commitwt block "$(bashp 'git add -A && git commit -m wip')"
 addw commitwt block "$(bashp 'git -c alias.ci=commit ci -am wip')"
 addw commitwt block "$(bashp "cd / && git --git-dir=$R/.git --work-tree=$R commit -am wip")"
 addw commitwt block "$(bashp 'git commit -m wip -- "*.json"')"
+addw commitwt block "$(bashp "git commit -am w; echo \$'it\\'s'")"
 printf '%s\n' "$WIDE" > "$C"
 while IFS=$'\t' read -r id want got what; do
   [ "$want" = "$got" ] && ok "$want  (widened working tree) $what" || bad "$want wanted, got $got: (widened working tree) $what"
 done < <(run_cases "$D" "" "$WT")
 printf '%s\n' "$BASE" > "$C"
+
+# A copy of the hook with one line of the judge replaced; prints its dir, or nothing.
+plant_dir(){ local dir="$TDIR/p-$1"; mkdir -p "$dir/lib"; cp "$D/guard-pre-approved-writes.sh" "$dir/"; cp "$D/lib/python.sh" "$dir/lib/"
+  python3 -c 'import sys
+s=open(sys.argv[1]).read(); old,new=sys.argv[3],sys.argv[4]
+if s.count(old)!=1: sys.exit(1)
+open(sys.argv[2],"w").write(s.replace(old,new))' "$D/guard-pre-approved-writes.py" "$dir/guard-pre-approved-writes.py" "$2" "$3" && echo "$dir"; }
+
+# 2c. The operator widened the key on develop; an agent merging develop in takes it. Allowed:
+# taking the shared value is not self-approval. Plant: the shared allowance off refuses it.
+g update-ref refs/remotes/origin/develop wide; printf '%s\n' "$WIDE" > "$C"; g add .claude
+[ "$(judge "$D" "$(bashp 'git commit --no-edit')")" -eq 0 ] && ok "allow  concluding a merge that brings the operator's value from develop" ||
+  bad "concluding a merge of the operator's value is refused"
+pd=$(plant_dir shared "    if shared is not None and value_of(shared) == a and a[0] != 'ABSENT':" "    if False:")
+[ -n "$pd" ] && grep -q '^    if False:$' "$pd/guard-pre-approved-writes.py" || bad "plant shared did not land"
+[ "$(judge "$pd" "$(bashp 'git commit --no-edit')")" -eq 2 ] && ok "plant: shared allowance off, the merge is refused, so the allowance is what lets it through" ||
+  bad "plant: shared allowance off, yet the merge passes: the case proves nothing"
+g reset -q -- .claude; printf '%s\n' "$BASE" > "$C"; g update-ref refs/remotes/origin/develop "$(g rev-parse HEAD)"
+
+# 2d. A configured push refspec is what a bare `git push` sends.
+g config remote.origin.push '+refs/heads/wide:refs/heads/develop'
+[ "$(judge "$D" "$(bashp 'git push origin')")" -eq 2 ] && ok "block  bare git push with a configured refspec sending the widening" ||
+  bad "a configured push refspec sends the widening unjudged"
+pd=$(plant_dir pushcfg "            specs = (git(top, 'config', '--get-all', 'remote.%s.push' % (pos[0] if pos else 'origin')) or '').split()" "            specs = []")
+[ -n "$pd" ] || bad "plant pushcfg did not land"
+[ "$(judge "$pd" "$(bashp 'git push origin')")" -eq 0 ] && ok "plant: configured refspec ignored, the push passes" ||
+  bad "plant: configured refspec ignored, yet still refused: the case proves nothing"
+g config --unset remote.origin.push
 [ "$(cat "$C")" = "$BASE" ] && [ -z "$(g status --porcelain .claude)" ] || bad "commit cases left harness.json changed"
 
 # 3. Death plants: each route's guard switched off in a copy lets its blocked cases through.
@@ -216,9 +263,9 @@ plant script   "def judge_script(name, args, cwd, here, depth):" "def judge_scri
 plant shell    "            if inner:
                 judge_bash(inner, cwd, depth + 1)" "            if False:
                 judge_bash(inner, cwd, depth + 1)"
-plant checkout "            judge(read(cfg), after, cfg + ' (git checkout %s)' % (ref or 'from the index'))" "            pass"
-plant restore  "                judge(read(cfg), at(src) if src else at(''), cfg + ' (git restore)')" "                pass"
-plant apply    "            judge(base, simulate_patch(base, text, rest), cfg + ' (git %s)' % sub)" "            pass"
+plant checkout "            judge(read(cfg), after, cfg + ' (git checkout %s)' % (ref or 'from the index'), shared)" "            pass"
+plant restore  "                judge(read(cfg), at(src) if src else at(''), cfg + ' (git restore)', shared)" "                pass"
+plant apply    "            judge(base, simulate_patch(base, text, rest), cfg + ' (git %s)' % sub, shared)" "            pass"
 plant gh       "            if names_cfg(args[1:], cwd) and any(" "            if False and any("
 plant exec     "            judge_bash(src, cwd, depth + 1)
             return" "            return"
@@ -236,8 +283,17 @@ plant am       "                refuse('this applies a patch the guard cannot re
                 refuse('this applies a patch the guard cannot read"
 plant push     "        judge_push(top, rest, cfg, rel)" "        pass"
 plant gitenv   "        if any(a in ('commit', 'push'," "        if False and any(a in ('commit', 'push',"
+plant parsefail "        if re.search(r'harness\\.json|\\.claude|\\.git/|\\bgit\\b|" "        if False and re.search(r'harness\\.json|\\.claude|\\.git/|\\bgit\\b|"
+plant gitcfg   "        if writes and pos and GIT_KEYS.match(pos[0]):" "        if False:"
+plant gitcfgc  "            elif GIT_KEYS.match(v.split('=', 1)[0]):" "            elif False:"
+plant remote   "    elif sub == 'remote' and pos and" "    elif False and"
+plant plumbing "    elif sub == 'replace' or (sub in" "    elif False and (sub in"
+plant gitprot  "    if is_gitprot(path):
+        gitprot_refuse(path)" "    pass"
+plant gitprotsh "def gitprot_refuse(path):" "def gitprot_refuse(path):
+    return"
 printf '%s\n' "$WIDE" > "$C"
-plant commitwt "        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)')" "        pass" "$WT"
+plant commitwt "        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)', shared)" "        pass" "$WT"
 printf '%s\n' "$BASE" > "$C"
 
 # 4. Registered on both matchers: an unregistered guard is a dead guard.
