@@ -30,7 +30,7 @@ ctx=$(HOME="$H" CLAUDE_PLUGIN_ROOT="$KIT" bash "$KIT/hooks/standing-rules.sh" \
 # One phrase per rule the ticket names. Drop a rule from the file and this fails.
 for phrase in "Picture first" "Every finding carries a grade" "Finish before you start" \
               "Run only what the change touches" "nothing later" "Two rounds, then it ships" \
-              "Name the proxy" "Where tooling lives"; do
+              "Name the proxy" "Where tooling lives" "is not proof a command did not run"; do
   printf '%s' "$ctx" | grep -q "$phrase" && ok "carries: $phrase" || bad "the rules do not carry: $phrase"
 done
 [ "${#ctx}" -gt 2000 ] && ok "the rules are non-empty (${#ctx} chars)" \

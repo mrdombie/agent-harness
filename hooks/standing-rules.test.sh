@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Plant tests for standing-rules.sh. Exit 1 on any mismatch.
-#
-# Asserts what a session receives, the hook's emitted context, not what the
-# rules file says. The death plant deletes the rule from a copy of the kit and
-# checks the same assertion then fails.
+# Plant tests for standing-rules.sh: asserts the emitted context, then deletes the rule and expects failure.
 H="$(cd "$(dirname "$0")" && pwd)/standing-rules.sh"
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
