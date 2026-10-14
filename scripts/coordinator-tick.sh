@@ -41,7 +41,8 @@ mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; 
 # ---- 1. lock ----------------------------------------------------------------
 # A reused pid is not the holder: the lock carries the holder's start time too.
 LOCK="$COORD_DIR/tick.lock"
-started_of() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
+# Locale and zone pinned: cron's C and a shell's en_GB print the same start differently.
+started_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
 if ! mkdir "$LOCK" 2>/dev/null; then
   holder=$(cat "$LOCK/pid" 2>/dev/null)
   if [ -z "$holder" ] && [ $(( $(date +%s) - $(mtime "$LOCK") )) -lt 60 ]; then
@@ -199,10 +200,12 @@ first_free() {
 }
 if held=$(swarm_held); then
   say "spawn: held — $held"
-elif [ "$CLAIMS_OK" = 0 ]; then
-  say "spawn: the claim list could not be read — spawning nothing"
-elif [ -z "$PRS" ]; then
-  say "spawn: the open pull requests could not be read — spawning nothing"
+elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
+  blind=$([ "$CLAIMS_OK" = 0 ] && echo "the claim list" || echo "the open pull requests")
+  say "spawn: $blind could not be read — spawning nothing"
+  if event "blind:$(swarm_day)" blind false "" "" "$blind could not be read, so nothing is spawning"; then
+    bash "$NOTIFY" "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
+  fi
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until"
   event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true

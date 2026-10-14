@@ -90,7 +90,7 @@ want_in "and names the hold"               'held — owner said stop' "$out"
 echo "--- one tick at a time ---"
 fresh; queue 501
 mkdir -p "$C/tick.lock"; echo "$$" > "$C/tick.lock/pid"
-ps -o lstart= -p "$$" | tr -s ' ' | sed 's/^ *//;s/ *$//' > "$C/tick.lock/started"
+LC_ALL=C TZ=UTC ps -o lstart= -p "$$" | tr -s ' ' | sed 's/^ *//;s/ *$//' > "$C/tick.lock/started"
 out=$(COORDINATOR_SHADOW=0 tick)
 want "a running tick blocks a second one"  "" "$(spawned)"
 want_in "and it says so"                   'another tick \(pid [0-9]+\) is running' "$out"
@@ -117,6 +117,7 @@ fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CLAIMS_CMD=false tick)
 want "an unreadable claim list spawns nothing" "" "$(spawned)"
 want_in "and says so"                      'claim list could not be read' "$out"
+want_in "and tells the owner"              'cannot read the claim list' "$(cat "$FIX/notify.log")"
 fresh; queue 501; rm -f "$FIX/gh/prs-all.json" "$FIX/gh/empty.json"
 printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr list") exit 1 ;; esac\nexec "%s" "$@"\n' "$BIN/gh" > "$FIX/gh-nopr"; chmod +x "$FIX/gh-nopr"
 out=$(COORDINATOR_SHADOW=0 SWARM_GH="$FIX/gh-nopr" tick)
