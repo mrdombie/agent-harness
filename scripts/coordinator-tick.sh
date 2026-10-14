@@ -35,29 +35,10 @@ SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
 say() { printf '%s\n' "$*"; swarm_log "$COORD_LOG" "$*"; }
-# GNU stat -f reads %m as a file name and prints to stdout, so ask GNU first.
-mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 # ---- 1. lock ----------------------------------------------------------------
-# A reused pid is not the holder: the lock carries the holder's start time too.
 LOCK="$COORD_DIR/tick.lock"
-# Locale and zone pinned: cron's C and a shell's en_GB print the same start differently.
-started_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
-if ! mkdir "$LOCK" 2>/dev/null; then
-  holder=$(cat "$LOCK/pid" 2>/dev/null)
-  if [ -z "$holder" ] && [ $(( $(date +%s) - $(mtime "$LOCK") )) -lt 60 ]; then
-    say "tick: another tick is taking the lock — exiting"; exit 0
-  fi
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
-     && [ "$(started_of "$holder")" = "$(cat "$LOCK/started" 2>/dev/null)" ]; then
-    say "tick: another tick (pid $holder) is running — exiting"
-    exit 0
-  fi
-  rm -rf "$LOCK"
-  mkdir "$LOCK" 2>/dev/null || { say "tick: lost the lock race — exiting"; exit 0; }
-fi
-started_of "$$" > "$LOCK/started"
-echo "$$" > "$LOCK/pid"
+coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 
 say "tick: $(coord_mode) mode, cap $COORD_CAP"
@@ -115,9 +96,9 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   LIVE_TICKETS="$LIVE_TICKETS${ticket:-?} "
   log=$(jq -r '.log // empty' "$rec" 2>/dev/null)
   [ -f "$log" ] || continue
-  quiet=$(( (NOW - $(mtime "$log")) / 60 ))
+  quiet=$(( (NOW - $(coord_mtime "$log")) / 60 ))
   if [ "$quiet" -ge "$COORD_FROZEN_MIN" ]; then
-    event "frozen:$rid:$(mtime "$log")" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
+    event "frozen:$rid:$(coord_mtime "$log")" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
   fi
 done
 say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"

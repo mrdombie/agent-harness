@@ -52,6 +52,32 @@ coord_act_log() { # <verb> <subject> [detail]
   printf '%s\t%s\t%s\t%s\t%s\n' "$(swarm_stamp)" "$(coord_mode)" "$1" "$2" "${3:-}" >> "$COORD_ACTIONS"
 }
 
+# coord_lock <dir> <noun> — one holder at a time. Fails, with COORD_LOCK_WHY set, when
+# another live process holds it. A reused pid is not the holder: the lock
+# carries the holder's start time too.
+# GNU stat -f reads %m as a file name and prints to stdout, so ask GNU first.
+coord_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+# Locale and zone pinned: cron's C and a shell's en_GB print the same start differently.
+coord_started_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
+coord_lock() { # <dir> <noun>
+  local lock="$1" who="${2:-run}" holder
+  COORD_LOCK_WHY=""
+  if ! mkdir "$lock" 2>/dev/null; then
+    holder=$(cat "$lock/pid" 2>/dev/null)
+    if [ -z "$holder" ] && [ $(( $(date +%s) - $(coord_mtime "$lock") )) -lt 60 ]; then
+      COORD_LOCK_WHY="another $who is taking the lock"; return 1
+    fi
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
+       && [ "$(coord_started_of "$holder")" = "$(cat "$lock/started" 2>/dev/null)" ]; then
+      COORD_LOCK_WHY="another $who (pid $holder) is running"; return 1
+    fi
+    rm -rf "$lock"
+    mkdir "$lock" 2>/dev/null || { COORD_LOCK_WHY="lost the lock race"; return 1; }
+  fi
+  coord_started_of "$$" > "$lock/started"
+  echo "$$" > "$lock/pid"
+}
+
 # The queue in run order: <ticket> \t <class> \t <note>. Class decides first
 # (repair > approved-merge > new); an unknown class sorts last rather than vanish.
 coord_queue_ordered() {
