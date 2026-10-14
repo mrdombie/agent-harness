@@ -96,6 +96,78 @@ swarm_log() { # <logfile> <message…>
   printf '%s %s\n' "$(swarm_stamp)" "$*" >> "$f"
 }
 
+# The plan's usage limit. On 2026-09-21 every spawn between 16:44 and 18:18 UTC
+# ended in seconds with "You've hit your session limit · resets 7:20pm", and the
+# scheduler relaunched the same two tickets 36 times. A spawn during the hold
+# only burns another slot, so read the newest run's log and wait out the reset.
+#
+# TWO readings, in that order, because the sentence is not reliable and the
+# structured event is. Measured across 245 logs carrying a limit line on
+# 2026-09-27:
+#
+#   432  "resets 7:20pm (Europe/London)"      — the session wall
+#    28  "resets 8pm (Europe/London)"         — a weekly wall, no minutes
+#     4  "resets Sep 29 at 9pm (Europe/London)" — a weekly wall NAMING A DATE
+#     8  "hit your session limit"             — no reset time at all
+#   245  carried rate_limit_event.rate_limit_info.resetsAt  (all of them)
+#
+# The old regex required a digit straight after "resets ", so the dated weekly
+# wording matched nothing and set no hold — and the daemon spawned into the wall
+# on 2026-09-27. The epoch field is exact, names its window, and is present on
+# every one, so it leads; the sentence stays as the fallback for a log that
+# carries it without an event.
+#
+# `status` is on EVERY event and is "allowed" or "allowed_warning" 6,352 times
+# against 238 "rejected". Only the rejection is a wall — holding on the field's
+# mere presence would stop the swarm permanently.
+swarm_usage_event_hold() {
+  local newest line epoch kind now
+  newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+  [ -n "$newest" ] || return 1
+  # The LAST rejection in the newest log. Earlier ones in the same run are history.
+  line=$(grep -oE '"status":"rejected","resetsAt":[0-9]+,"rateLimitType":"[a-z_]+"' "$newest" 2>/dev/null | tail -1)
+  [ -n "$line" ] || return 1
+  epoch=$(printf '%s' "$line" | sed -E 's/.*"resetsAt":([0-9]+).*/\1/')
+  kind=$(printf '%s' "$line" | sed -E 's/.*"rateLimitType":"([a-z_]+)".*/\1/')
+  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(swarm_now)
+  [ "$epoch" -gt "$now" ] || return 1
+  printf '%s (%s window)' "$(swarm_iso "$epoch")" "$kind"
+}
+
+swarm_usage_text_hold() {
+  local newest reset h m ap now_m reset_m dated
+  newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+  [ -n "$newest" ] || return 1
+  grep -qE "hit your (session|weekly) limit" "$newest" || return 1
+  # Both wordings. The optional "<Mon> <D> at " is the weekly wall's.
+  reset=$(grep -oE "resets ([A-Z][a-z]{2} [0-9]{1,2} at )?[0-9]{1,2}(:[0-9]{2})?(am|pm)" "$newest" \
+          | tail -1 | sed 's/resets //')
+  [ -n "$reset" ] || return 1
+  case "$reset" in *" at "*) dated=1; reset="${reset##* at }" ;; *) dated=0 ;; esac
+  h=$(printf '%s' "$reset" | cut -d: -f1 | tr -dc 0-9)
+  case "$reset" in *:*) m=$(printf '%s' "$reset" | cut -d: -f2 | tr -dc 0-9) ;; *) m=0 ;; esac
+  ap=$(printf '%s' "$reset" | tr -dc a-z)
+  [ "$ap" = "pm" ] && [ "$h" -lt 12 ] && h=$((h+12))
+  [ "$ap" = "am" ] && [ "$h" -eq 12 ] && h=0
+  # A wall that NAMES A DATE resets today at the earliest, so it always holds:
+  # the time-of-day alone cannot say whether it is today or three days out, and
+  # the event reading above is the one that answers that exactly.
+  [ "$dated" = 1 ] && { printf '%s' "$reset"; return 0; }
+  # awk, not $(( )): "08" is eight to awk and an invalid octal literal to the
+  # shell, and 08:00 and 09:00 are the two hours a usage wall most often names.
+  now_m=$(swarm_clock "$(swarm_now)" | awk '{print $1 * 60 + $2}')
+  reset_m=$(( h * 60 + 10#$m ))
+  # The second test is the midnight wrap: a reset time that already passed by a
+  # long way is yesterday's, not a hold that should last 23 hours.
+  if [ "$now_m" -lt "$reset_m" ] || [ $(( reset_m - now_m )) -lt -1380 ]; then
+    printf '%s' "$reset"; return 0
+  fi
+  return 1
+}
+
+swarm_usage_hold() { swarm_usage_event_hold || swarm_usage_text_hold; }
+
 # ---- the live view -----------------------------------------------------------
 # One snapshot, cached for this process, so a pass that asks three questions
 # makes one request.
