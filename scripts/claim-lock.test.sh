@@ -190,6 +190,10 @@ gh_run CLAIM_RUN_ID=run-780 -- update 779 run_id=run-780
 [ "$(cat "$SB/state/runs/run-780.worktrees" 2>/dev/null)" = "$SB/wt9" ] \
   && ok "update under a resuming run notes the claim's worktree for that run" \
   || bad "update did not note the worktree for the resuming run (rc $RC)"
+gh_run CLAIM_RUN_ID=run-782 -- update 779 note=x
+[ -e "$SB/state/runs/run-782.worktrees" ] \
+  && bad "a run updating a claim it does not tag as its own noted that claim's worktree" \
+  || ok "a run updating another run's claim notes nothing (every local agent passes owns_claim)"
 gh_run -- release 779 --force
 gh_run -- acquire 781 --branch tkt-781/x --worktree "$SB/wt10" --pid $$
 ls "$SB/state/runs" 2>/dev/null | grep -q 781 \

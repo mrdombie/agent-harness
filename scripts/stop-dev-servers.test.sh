@@ -108,6 +108,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   npmsh=$(pgrep -P "$npm" 2>/dev/null | head -1); [ -n "$npmsh" ] && npmsrv=$(pgrep -P "$npmsh" 2>/dev/null | head -1)
   [ -n "${npmsrv:-}" ] && break; sleep 0.2; done
 PIDS+=("${npmsh:-}" "${npmsrv:-}")
+# An agent's tool shell whose line merely mentions next is somebody there, not the launch chain.
+read -r tsh tsrv <<<"$(launch "zsh -c source snap.sh && eval 'npx next dev'" "$T/tk-207-tool/apps/web")"; PIDS+=("$tsh" "$tsrv")
 sleep 1
 CLAIMED2=$(printf '102\n201\n202\n203\n204\n205\n')   # 102: claimed, no record
 RECS=$(jq -cn --arg h "$HOST" --argjson dead "$DEAD" --argjson live "$$" '[
@@ -130,6 +132,8 @@ alive "$live"  && ok "a claimed ticket whose holder is alive here keeps its serv
 alive "$away"  && ok "a claim held on another machine keeps its server"            || fail "a server was stopped on a claim this host cannot check"
 alive "$held"  && ok "a claimed ticket with no readable claim record keeps its server" || fail "a server was stopped on a claim with no record"
 alive "$sat"   && ok "a gone holder's worktree somebody sits in keeps its server"  || fail "a server was stopped under somebody working there"
+alive "$tsrv" && ok "an agent tool shell that mentions next still counts as somebody there" \
+               || fail "a server was stopped under an agent's tool shell"
 if [ -n "${npmsrv:-}" ]; then
   alive "$npmsrv" && fail "an npm-launched server was kept: its own npm and sh -c read as somebody there"                   || ok "a server's npm / sh -c launch chain does not count as somebody working there"
 else fail "fixture: the npm-launched stand-in never started"; fi

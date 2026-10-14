@@ -169,7 +169,7 @@ OURS=$(printf '%s\n' "$PS" | awk -v roots="$(printf '%s ' $ROOTS)" -v srv="$(pri
       for (d = 0; d < 16 && q > 1 && (q in cmd); d++) {
         c = cmd[q]
         if (c ~ /claude/) break
-        if (c !~ /^([^ ]*\/)?(npm|npx|pnpm|yarn|node)( |$)/ && c !~ /^npm-cli/ && c !~ /^([^ ]*\/)?(ba|z|da)?sh -c .*next/) break
+        if (c !~ /^([^ ]*\/)?(npm|npx|pnpm|yarn|node)( |$)/ && c !~ /^npm-cli/ && c !~ /^([^ ]*\/)?(ba|z|da)?sh -c (exec )?next( |$)/) break
         print q; q = parent[q] } } }')
 # lsof already reports resolved paths, so one join does it — not one lookup per process.
 OCCUPIED=$({ printf '%s\n' "$OURS" | sed 's/^/O\t/'; printf '%s\n' "$CWDS" | sed 's/^/C\t/'; } \

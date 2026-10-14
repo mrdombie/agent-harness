@@ -441,7 +441,6 @@ cmd_update() {
     owns_claim "$meta" || {
       printf 'refusing: #%s is held by %s (use --force)\n' "$issue" "$owner" >&2; return 12; }
   fi
-  owns_claim "$meta" && note_run_worktree "$(jq -r '.worktree // empty' <<<"$meta" 2>/dev/null || true)"
 
   local k v
   for kv in "$@"; do
@@ -459,6 +458,9 @@ cmd_update() {
   git push --no-verify "$REMOTE" "$new_sha:$NS/$issue" \
     --force-with-lease="$NS/$issue:$cur_sha" >/dev/null 2>&1 \
     || { printf 'update lost a race on #%s — re-read and retry\n' "$issue" >&2; return 10; }
+  # Only a claim this update tags as this run's: every agent on a host passes owns_claim.
+  [ "$(jq -r '.run_id // empty' <<<"$meta" 2>/dev/null || true)" = "${CLAIM_RUN_ID:-}" ] \
+    && note_run_worktree "$(jq -r '.worktree // empty' <<<"$meta" 2>/dev/null || true)"
   printf 'updated #%s\n' "$issue"
 }
 
