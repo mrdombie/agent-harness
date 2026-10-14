@@ -357,6 +357,15 @@ git push -u origin "$BRANCH"
 
 `gh pr create` infers the repo from the current git remote (which the worktree inherited from `$REPO_PATH`), so we don't need `--repo` here. But if you want belt-and-braces, add `--repo "$REPO_FULL"`.
 
+**A PR body never goes through a shared file.** Keep it inline as below. If it must
+be a file (a long body, an edit later), it lives in this worktree's own git dir and is
+named for the ticket: `BODY_FILE="$(git rev-parse --absolute-git-dir)/pr-body-$TICKET_KEY.md"`.
+Write it and send it in the SAME command, or rewrite it before every re-send: when a
+hook refuses a write-and-send command, the write never happened, and re-running only
+the send publishes whatever the file held before. The `pr-body-matches-branch` hook
+refuses a `--body-file` not named for the branch's ticket, and any body whose
+`Closes #N` is not that ticket.
+
 ```bash
 gh pr create --base develop --title "$TICKET: <title>" `# via /finish` --body "$(cat <<'EOF'
 ## Summary
