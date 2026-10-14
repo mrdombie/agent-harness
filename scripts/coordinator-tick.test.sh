@@ -204,6 +204,25 @@ fresh
 COORDINATOR_SHADOW=0 COORDINATOR_FREE_GB=5 tick >/dev/null
 want_in "below the floor is an alarm"      'Disk is low: 5 GB' "$(cat "$FIX/notify.log")"
 
+echo "--- the merge lane runs each tick, in its own mode, only where the project names a merge method ---"
+cat > "$BIN/lane" <<'LN'
+#!/usr/bin/env bash
+echo "lane shadow=${MERGE_LANE_SHADOW:-unset}" >> "$FIX/lane.log"
+LN
+chmod +x "$BIN/lane"
+fresh; : > "$FIX/lane.log"
+out=$(COORDINATOR_LANE="$BIN/lane" tick)
+want "no merge method: the lane does not run" "" "$(cat "$FIX/lane.log")"
+want_in "and the tick says why"            'merge lane: off — harness.json has no merge.method' "$out"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"
+jq '.merge = {method: "squash"}' "$FIX/cfg.bak" > "$HARNESS_CFG_PATH"
+COORDINATOR_LANE="$BIN/lane" tick >/dev/null
+want "with one, the lane runs once"        "lane shadow=unset" "$(cat "$FIX/lane.log")"
+: > "$FIX/lane.log"
+COORDINATOR_SHADOW=0 MERGE_LANE_SHADOW=0 COORDINATOR_LANE="$BIN/lane" tick >/dev/null
+want "and in its own mode"                 "lane shadow=0" "$(cat "$FIX/lane.log")"
+cp "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
+
 echo "--- the judge: a fresh claude per event, capped, with no history ---"
 fresh
 printf '{"run_id":"claim-802-y","ticket":"802","log":"%s"}\n' "$STATE/logs/claim-802-y.log" > "$STATE/runs/claim-802-y.json"

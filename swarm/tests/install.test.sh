@@ -77,6 +77,21 @@ if command -v plutil >/dev/null 2>&1; then
   if plutil -lint "$FIX/coordinator.plist" >/dev/null 2>&1; then ok "coordinator: the system parses it"; else bad "coordinator: plutil refused it"; fi
 fi
 
+echo "--- the merge lane: opt-in, its own interval, shadow unless told otherwise ---"
+want_not_in "not one of the default jobs" 'merge-lane' "$(i --jobs)"
+ml=$(i --print merge-lane)
+want_in "it runs the lane"                'scripts/merge-lane.sh' "$ml"
+want_in "every three minutes"             '<key>StartInterval</key><integer>180</integer>' "$ml"
+want_in "shadow by default"               '<key>MERGE_LANE_SHADOW</key><string>1</string>' "$ml"
+want_in "live only when the installer says so" '<key>MERGE_LANE_SHADOW</key><string>0</string>' \
+  "$(MERGE_LANE_SHADOW=0 bash "$I" --print merge-lane 2>&1)"
+want_in "the coordinator carries the lane's mode too" '<key>MERGE_LANE_SHADOW</key><string>1</string>' "$(i --print coordinator)"
+want_not_in "no other job carries it"     'MERGE_LANE_SHADOW' "$(i --print scheduler)"
+if command -v plutil >/dev/null 2>&1; then
+  printf '%s' "$ml" > "$FIX/merge-lane.plist"
+  if plutil -lint "$FIX/merge-lane.plist" >/dev/null 2>&1; then ok "merge-lane: the system parses it"; else bad "merge-lane: plutil refused it"; fi
+fi
+
 echo "--- off macOS it is one crontab line, installed and removed idempotently ---"
 cat > "$BIN/crontab" <<'SH'
 #!/usr/bin/env bash
@@ -101,12 +116,26 @@ want "uninstalled"                        "0" "$(grep -c 'coordinator-tick.sh' "
 want_in "and uninstalling twice is fine"  'was not installed' "$out"
 want "the owner's own lines survive"      "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
 
+cr merge-lane >/dev/null; cr merge-lane >/dev/null
+want "the lane is its own line, once"     "1" "$(grep -c 'merge-lane.sh' "$FIX/crontab")"
+want_in "every three minutes, in shadow"  '^\*/3 .*MERGE_LANE_SHADOW=1 ' "$(grep merge-lane.sh "$FIX/crontab")"
+cr coordinator >/dev/null
+want "beside the coordinator, not over it" "1" "$(grep -c 'coordinator-tick.sh' "$FIX/crontab")"
+want "and the lane is still there"        "1" "$(grep -c 'merge-lane.sh' "$FIX/crontab")"
+cr uninstall merge-lane >/dev/null
+want "the lane uninstalls alone"          "0 1" "$(grep -c 'merge-lane.sh' "$FIX/crontab") $(grep -c 'coordinator-tick.sh' "$FIX/crontab")"
+cr uninstall coordinator >/dev/null
+
 echo "--- a hold refuses a live coordinator, not a shadow one ---"
 printf 'stopped\n' > "$STATE/swarm/HOLD"
 out=$(SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" COORDINATOR_SHADOW=0 bash "$I" coordinator 2>&1); rc=$?
 want "live is refused while held"         "3" "$rc"
 cr coordinator >/dev/null
 want "shadow installs while held"         "1" "$(grep -c 'COORDINATOR_SHADOW=1' "$FIX/crontab")"
+out=$(SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" MERGE_LANE_SHADOW=0 bash "$I" merge-lane 2>&1); rc=$?
+want "a live lane is refused while held"  "3" "$rc"
+cr merge-lane >/dev/null
+want "a shadow lane installs while held"  "1" "$(grep 'merge-lane.sh' "$FIX/crontab" | grep -c 'MERGE_LANE_SHADOW=1')"
 rm -f "$STATE/swarm/HOLD"
 
 exit $FAILED
