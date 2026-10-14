@@ -41,7 +41,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 ## The config
 
-`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat`, `law`, `merge` and `preApprovedWrites` is required; a missing one refuses by name.
+`.claude/harness.json` in the consuming repo. Every key below except `legacyEnvPrefix`, `sisterRepos`, `design`, `uat`, `law`, `merge`, `mergeLane` and `preApprovedWrites` is required; a missing one refuses by name.
 
 ```json
 {
@@ -101,6 +101,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
 - `merge.updateBehind` — optional, `agent` (default) or `bot`. Set `bot` when the repo requires PRs to be up to date and runs a bot that brings behind PRs up to date one at a time. Agents then leave a PR that is merely behind to the bot instead of merging the integration branch in themselves, which queued a full extra CI run and landed their PR ahead of the one the bot was landing, restarting it (#79). A conflict is still the agent's. `scripts/behind-pr-action.sh` makes the call.
+- `merge.method` — optional, `squash`, `merge` or `rebase`: how the merge lane merges. The lane refuses by name without it, and the coordinator tick only runs the lane where it is set.
 - `review.attest` — one entry per reviewer the project attests, and **one entry is all there is**: an interactive `/agent-harness:finish` and the unattended driver ask different questions of the same reviewer, so they read the same row rather than two keys that can disagree about which reviewers exist. A row may name an `agent` in place of a `review` command (the driver then runs that reviewer itself), and `"needsRenders": true` marks a reviewer that judges pictures: with no render on the record it refuses by name instead of running.
   - `owed` — the command that says whether that reviewer is owed on this diff and prints the fingerprint its trailer must carry. `/agent-harness:finish` Step 3.5 runs them all together. A bare string in place of the object is read as this, which is the shape that shipped first.
   - `review` — a command that runs the reviewer and prints its verdict. The driver runs it in the ticket worktree and keeps the output verbatim.
@@ -146,6 +147,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            check-deleted-tests.sh (a deleted test is accounted for — see below)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
+           merge-lane.sh (the serial merge lane — see below)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
            the thinking · facts.sh fills the briefs' placeholders and refuses when
            one has no value · prompt-schema.jq derives the shape the model is
@@ -275,6 +277,45 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+
+### The merge lane — one PR into the trunk at a time
+
+A repo without GitHub's merge queue lets every approved PR's auto-merge fire on
+its own, so each merge moves the trunk under the next: approved PRs clash or go
+red in turn, and two that passed apart can break the trunk together.
+`scripts/merge-lane.sh` merges one at a time, and only a head that is up to date
+with the trunk and green on every `gates.requiredChecks` check — so the trunk is
+always exactly what was tested.
+
+| Step | What the lane does |
+|---|---|
+| Joins | open, not draft, no hold label, auto-merge armed or the lane label. Live, the label goes on and auto-merge comes off |
+| Order | the PR in flight stays head; then the first label (`P0`), then the oldest approval, then the PR number |
+| Behind | `update-branch` against the head it read; a conflict takes it out of the lane with a fixer |
+| Checks | waits on pending or missing; a flake (timed out, cancelled, a lost runner) is re-run once; anything else takes it out with the check named and a fixer |
+| Green | merged with `merge.method` and `--match-head-commit`; one merge per pass |
+| Hold back on | re-cleared through `clear-hold.sh --reason` only when every commit since approval is a merge and the update touched none of its `design.surfacePaths` files; otherwise the owner is told |
+
+A fixer is a `spawn-claim.sh` run when a place is free under `coordinator.cap`,
+else a `repair` entry in the coordinator's queue. The status line is
+`$STATE_DIR/coordinator/lane.status`; owner calls land in `needs-you.md`.
+
+```sh
+swarm/install.sh merge-lane                     # every 3 minutes; SHADOW unless MERGE_LANE_SHADOW=0
+MERGE_LANE_SHADOW=0 swarm/install.sh merge-lane # live
+swarm/install.sh uninstall merge-lane
+```
+
+The coordinator tick also runs it each pass wherever `merge.method` is set; the
+lane's own lock keeps the two from overlapping, and `MERGE_LANE_SHADOW` decides
+its mode in both. **Shadow is the default**: it writes "would …" lines to
+`actions.log` beside the real merges and touches nothing. A swarm hold stops it.
+
+| Key (under `mergeLane`) | Default | What it is |
+|---|---|---|
+| `label` | `queue:merge` | Membership that survives auto-merge being turned off |
+| `firstLabel` | `P0` | Owner-flagged PRs that go to the front |
+| `flakePattern` | runner-loss wording | Annotation text that makes a failure a flake |
 
 ## What it costs
 

@@ -279,9 +279,13 @@ hold_setup
 live >/dev/null
 want_not_in "an unreadable comparison: the hold stays" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
 fresh
-pr 63 s63 needs:human-approval,queue:merge 0 build:SUCCESS lint:SUCCESS; compare develop s63 0
+pr 63 s63 queue:merge 0 build:PENDING; compare develop s63 0
 live >/dev/null
-want_not_in "a hold the lane did not cause is never touched" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
+set_pr 63 '.headRefOid = "s63b" | .labels = [{name:"queue:merge"}, {name:"needs:human-approval"}]'
+compare develop s63b 0 "apps/web/page.tsx"; compare s63 s63b 0 "lib/server.ts" "2"
+: > "$GH_LOG"; live >/dev/null
+want_not_in "a hold on an update the lane did not make is never touched" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
+want "and it waits out of line for sign-off" "none" "$(jq -r '.head.pr // "none"' "$C/lane.did.json")"
 hold_setup; compare s60 s60b 0 "lib/server.ts" "2"
 out=$(lane)
 want_not_in "shadow clears no hold"        '^pr (edit|comment) 60' "$(cat "$GH_LOG")"
