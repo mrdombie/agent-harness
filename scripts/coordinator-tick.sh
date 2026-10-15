@@ -42,7 +42,7 @@ LOCK="$COORD_DIR/tick.lock"
 coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 
-say "tick: $(coord_mode) mode, cap $COORD_CAP"
+say "tick: $(coord_mode) mode, cap $COORD_CAP, config from ${HARNESS_CFG_FROM:-?}"
 
 # Writes an event once; the id is what makes it once.
 event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
