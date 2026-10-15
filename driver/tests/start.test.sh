@@ -218,4 +218,20 @@ git -C "$WT112" hook run pre-push -- origin x </dev/null >/dev/null 2>&1; rc=$?
 want "pre-push runs and its exit 1 stands" "1" "$rc"
 want "it ran in the worktree"           "pre-push ran in $(cd "$WT112" && pwd -P)" "$(cat "$FIX/hook-ran" 2>/dev/null)"
 
+echo "--- worktree.sparseExclude: the worktree leaves the folder out, the trunk keeps it ---"
+mkdir -p "$REPO/docs/evidence/9"; printf 'png\n' > "$REPO/docs/evidence/9/a.png"
+git -C "$REPO" add docs/evidence && git -C "$REPO" commit -qm "evidence" --no-verify
+git -C "$REPO" rev-parse -q --verify origin/develop >/dev/null 2>&1 \
+  && git -C "$REPO" update-ref refs/remotes/origin/develop develop
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.before-sparse"
+jq '.worktree.sparseExclude = ["docs/evidence"]' "$FIX/cfg.before-sparse" > "$HARNESS_CFG_PATH"
+fix_issue 113 OPEN "status:ready"
+out=$(driver_step_start 113 2>&1); rc=$?
+want "it finishes"                      "0" "$rc"
+WT113=$(driver_state_get 113 worktree)
+want "the excluded folder is not checked out" "0" "$([ -e "$WT113/docs/evidence" ] && echo 1 || echo 0)"
+want "the rest of the tree is"          "1" "$([ -f "$WT113/.husky/pre-push" ] && echo 1 || echo 0)"
+want "the trunk's checkout keeps it"    "1" "$([ -f "$REPO/docs/evidence/9/a.png" ] && echo 1 || echo 0)"
+cp "$FIX/cfg.before-sparse" "$HARNESS_CFG_PATH"
+
 exit $FAILED
