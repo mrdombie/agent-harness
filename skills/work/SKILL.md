@@ -1,6 +1,6 @@
 ---
 name: work
-description: "/agent-harness:auto, scoped to one label. Ships that label's tickets until the context runs out, instead of taking whatever is top of the whole board. With --nonstop it never stops until the area is finished: survives compaction and the plan's usage limit, and several windows can share one area. Usage: /agent-harness:work (lists the workable labels) | /agent-harness:work <label-or-subject> | /loop 30m /agent-harness:work <area> --nonstop | /agent-harness:work 9822 (one ticket)"
+description: "/agent-harness:auto, scoped to one label. Ships that label's tickets until the context runs out, instead of taking whatever is top of the whole board. Usage: /agent-harness:work (lists the workable labels) | /agent-harness:work <label-or-subject> | /agent-harness:work welcome-flow | /agent-harness:work 9822 (one ticket)"
 ---
 
 **`/agent-harness:work` is `/agent-harness:auto` with one thing changed: the candidate set.**
@@ -10,13 +10,6 @@ stop conditions, the "never does" list, `/agent-harness:claim` for taking a tick
 All of it applies unchanged, including the superpowers discipline `/agent-harness:claim` already carries.
 
 Everything below is the delta. There is nothing else.
-
-**`--nonstop` in `$ARGUMENTS`** — the operator typed `/loop 30m /agent-harness:work <area> --nonstop`.
-Strip the flag, then read `${CLAUDE_PLUGIN_ROOT}/shared/nonstop.md` and follow it instead of the
-loop below: the window dispatches agents and never builds a ticket itself, every wake is one
-`scripts/nonstop.sh wake` call and the move it names, and the run ends only with
-`Stopped: area finished`. Read that file once; after compaction the session-start hook puts the
-board back.
 
 ## The delta
 
@@ -115,15 +108,17 @@ NOTHING WORKABLE — open tickets, 0 ready
 Labels with zero open issues are dead — leave them off the board; one line
 saying `N labels carry no open tickets` covers them.
 
-**2. Record the scope for `/agent-harness:standup`.** The moment the label resolves — before the first
-`/agent-harness:claim` — write it beside the session ledger, so `/agent-harness:standup` can put it at the top of the board:
+**2. Record the scope and start the loop.** The moment the label resolves — before the first
+`/agent-harness:claim` — run:
 
 ```bash
-printf '%s\t%s\n' "$SCOPE" "$(date +%Y-%m-%dT%H:%M:%S%z)" \
-  > "$STATE_DIR/.session-label"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/loop-start.sh" "$SCOPE"
 ```
 
-Truncate-write, never append — one line, and it is the current scope or nothing.
+It truncate-writes `.session-label` (the scope `/agent-harness:standup` puts at the top of the
+board), records this session as its owner, and touches `.loop-active` — the marker the
+keep-working Stop hook needs before it will hold the loop open while the scope has ready tickets.
+Single-ticket mode passes `"ticket <n>"`, which the hook reads as meant to stop after one.
 
 **Local time with the offset, not UTC.** The file is per-machine and its only reader prints a
 wall-clock time back to the operator. Stamping `...Z` made `/agent-harness:standup` show 16:11 for work done at 17:11,
@@ -190,7 +185,7 @@ more tickets and found a live P0.
 | it not giving up mid-window | `/goal complete as many <label> tickets as you can` — the only hard enforcement |
 | surviving the window filling | re-run `/agent-harness:work <label>` |
 | unattended across windows | `/loop /agent-harness:work <label>` |
-| until the area is finished, through compaction and the usage limit, several windows at once | `/loop 30m /agent-harness:work <label> --nonstop` — `shared/nonstop.md` |
+| non-stop, with no window open | the coordinator: `scripts/coordinator-queue.sh seed <label>`, then `swarm/install.sh coordinator` — a fresh process per check, never a growing conversation |
 
 **Do not start a ticket you cannot finish before the window ends.** An unclaimed ticket costs
 nothing; a claimed one with a half-built branch and no PR is a zombie that reads as progress to

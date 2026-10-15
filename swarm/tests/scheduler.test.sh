@@ -106,6 +106,20 @@ want_not_in "a reset that has passed does not hold" 'usage limit' "$out"
 
 rm -f "$STATE/logs/claim-301-x.log"
 
+# A wall an interactive window hit: no swarm log carries it, only the StopFailure
+# hook saw it. The limit is the account's, so the timers hold on it too.
+reset_state; fix_live widgets 0
+jq -nc --arg d "You have hit your session limit · \"resetsAt\":$SOON" '{error:"rate_limit",error_details:$d}' \
+  | bash "$HERE/../../hooks/usage-limit.sh"
+want "the hook recorded the window's wall"   "$SOON" "$(cut -f1 "$STATE/usage-hold" 2>/dev/null)"
+out=$(sched --programme widgets)
+want "nothing spawned on a window's wall"    "0" "$(grep -c . "$SPAWNS")"
+want_in "and the hold says where it came from" 'recorded by a window' "$out"
+printf '%s\told wall\n' "$PAST" > "$STATE/usage-hold"
+reset_state; out=$(sched --programme widgets)
+want_not_in "a window's wall that has passed does not hold" 'usage limit' "$out"
+rm -f "$STATE/usage-hold"
+
 echo "--- waves: only the current wave runs, and it advances when spent ---"
 reset_state; fix_live widgets 0
 mkdir -p "$STATE/swarm/widgets"

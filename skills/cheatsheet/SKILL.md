@@ -58,9 +58,9 @@ it deliberately.
 Always print this table after the groups. A mode is a way of running a command,
 not a command, so the tree cannot show it:
 
-| Mode | Type this in a window |
+| Mode | Run this |
 |---|---|
-| Work one area non-stop until it is finished — survives compaction and the usage limit, several windows may share the area | `/loop 30m /agent-harness:work <area> --nonstop` |
+| Work non-stop with no window open — a fresh process per check, never a growing conversation | `scripts/coordinator-queue.sh seed <area>`, then `swarm/install.sh coordinator` (shadow until `COORDINATOR_SHADOW=0`) |
 
 ## Skills
 

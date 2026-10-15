@@ -13,7 +13,8 @@
 #   1. lock          a tick still running means this one exits, untouched
 #   2. ended runs    each runs/*.ended not yet seen: its exit code and final result
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
-#   4. pull requests red, or a pixel PR gone green that needs sign-off
+#   4. pull requests red (unless fix-lock.sh says a session is on it), or a
+#                    pixel PR gone green that needs sign-off
 #   5. spawn         the queue in class order, up to coordinator.cap live runs,
 #                    never a ticket that is claimed, gated or on hold
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
@@ -105,6 +106,11 @@ done
 say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
 
 # ---- 4. pull requests --------------------------------------------------------
+# A red PR a session already holds through fix-lock.sh is being fixed: judging it
+# would queue a second fixer onto the same branch. An expired lock fixes nothing.
+FIXLOCK="${COORDINATOR_FIX_LOCK:-$SELF_DIR/fix-lock.sh}"
+FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list --json 2>/dev/null \
+  | jq -r '.[]? | select(.expired | not) | "\(.pr)\t\(.window)"' 2>/dev/null)
 PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
         --json number,headRefName,headRefOid,isDraft,labels,mergeStateStatus,statusCheckRollup 2>/dev/null)
 if [ -n "$PRS" ]; then
@@ -122,7 +128,10 @@ if [ -n "$PRS" ]; then
     | @tsv' 2>/dev/null \
   | while IFS=$'\t' read -r kind pr sha t why; do
       case "$kind" in
-        red) event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true ;;
+        red)
+          fixer=$(awk -F'\t' -v p="$pr" '$1 == p { print $2; exit }' <<<"$FIXING")
+          if [ -n "$fixer" ]; then say "PR #$pr: $why — being fixed by $fixer, not judged"
+          else event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true; fi ;;
         signoff)
           if event "signoff:$pr:$sha" signoff false "$t" "$pr" "$why"; then
             bash "$NOTIFY" "signoff:$pr:$sha" "PR #$pr (ticket #$t) is green and needs your sign-off"

@@ -30,7 +30,13 @@ cat > "$BIN/notify" <<'SH'
 #!/usr/bin/env bash
 echo "$1" >> "$FIX/notify.log"
 SH
-chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify"
+# fix-lock.sh list --json, read from a planted file.
+cat > "$BIN/fixlock" <<'SH'
+#!/usr/bin/env bash
+cat "$FIX/fixing.json"
+SH
+chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify" "$BIN/fixlock"
+export COORDINATOR_FIX_LOCK="$BIN/fixlock"
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
@@ -39,7 +45,7 @@ unset COORDINATOR_SHADOW
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
   : > "$SPAWNS"; : > "$FIX/house.log"; : > "$FIX/claude.log"; : > "$FIX/notify.log"; : > "$FIX/claims.txt"
-  printf '[]\n' > "$FIX/gh/prs-all.json"
+  printf '[]\n' > "$FIX/gh/prs-all.json"; printf '[]\n' > "$FIX/fixing.json"
   unset SWARM_NOW
 }
 queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
@@ -183,6 +189,13 @@ want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41
 want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.would.jsonl")"
 want "a healthy PR raises nothing"         "0" "$(grep -c ':44:' "$C/events.would.jsonl")"
 want_in "a green pixel PR is a sign-off"   '"kind":"signoff".*"judge":false' "$(grep ':42:' "$C/events.would.jsonl")"
+fresh
+jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
+printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
+out=$(tick)
+want "a red PR a session is fixing is not judged" "0" "$(grep -c ':41:' "$C/events.would.jsonl")"
+want_in "and the tick says who has it"     'PR #41: .*being fixed by mac:4242' "$out"
+want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.would.jsonl")"
 fresh
 jq -n '[{number:45, headRefName:"tkt-605-x", headRefOid:"s45", isDraft:false, mergeStateStatus:"CLEAN",
          labels:[{name:"needs:human-approval"}],
