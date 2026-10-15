@@ -99,22 +99,39 @@ PROGRAMMES_DIR="${REPO_ROOT:+$REPO_ROOT/docs/programmes}"
 # The project's own facts, in one file, read through one function — so the kit
 # can be installed on another repo without editing it (#10167). Env vars still
 # win: fixtures pin them (#10067).
-HARNESS_CFG="$(_hv CFG_PATH HARNESS_CFG)"; [ -n "$HARNESS_CFG" ] || HARNESS_CFG="${REPO_ROOT:+$REPO_ROOT/.claude/harness.json}"
-# No checkout (a scheduled job on the object store alone): read the config out
-# of the clone's HEAD instead of refusing — the file is tracked, so the ref has it.
-# The object-store clone's HEAD can be far behind the remote (52 commits on
-# 2026-09-20, review of PR #10362), so origin's refs are probed first — the
-# integration branch before origin/HEAD, which usually names the production
-# branch and is behind by design. HARNESS_CFG_REF pins one ref outright.
-if [ -z "$HARNESS_CFG" ] || [ ! -f "$HARNESS_CFG" ]; then
-  for _ref in ${HARNESS_CFG_REF:-} ${HARNESS_INTEGRATION_BRANCH:+origin/$HARNESS_INTEGRATION_BRANCH} origin/develop origin/HEAD origin/main HEAD; do
-    if git -C "$MAIN_REPO" cat-file -e "$_ref:.claude/harness.json" 2>/dev/null; then
-      HARNESS_CFG="${TMPDIR:-/tmp}/harness.json.$(git -C "$MAIN_REPO" rev-parse --short "$_ref")"
-      [ -s "$HARNESS_CFG" ] || git -C "$MAIN_REPO" show "$_ref:.claude/harness.json" > "$HARNESS_CFG" 2>/dev/null || HARNESS_CFG=""
-      break
-    fi
+# A working tree or a clone's HEAD can be any age; a stale one silently turns features off.
+_toolkit_cfg_at() { # <ref>
+  local blob
+  blob=$(git -C "$MAIN_REPO" rev-parse --verify --quiet "$1:.claude/harness.json" 2>/dev/null) || return 1
+  HARNESS_CFG="${TMPDIR:-/tmp}"; HARNESS_CFG="${HARNESS_CFG%/}/harness.json.$(printf '%.12s' "$blob")"
+  [ -s "$HARNESS_CFG" ] || { git -C "$MAIN_REPO" cat-file blob "$blob" > "$HARNESS_CFG.$$" 2>/dev/null \
+    && mv -f "$HARNESS_CFG.$$" "$HARNESS_CFG"; } || { rm -f "$HARNESS_CFG.$$"; HARNESS_CFG=""; return 1; }
+  HARNESS_CFG_FROM="$1@$(git -C "$MAIN_REPO" rev-parse --short "$1" 2>/dev/null)"
+}
+_toolkit_cfg_remote() {
+  local wt br ref
+  wt="${REPO_ROOT:+$REPO_ROOT/.claude/harness.json}"
+  br="$(_hv INTEGRATION_BRANCH)"
+  [ -n "$br" ] || [ -z "$wt" ] || [ ! -f "$wt" ] || br=$(jq -r '.integrationBranch // empty' "$wt" 2>/dev/null)
+  # An explicit refspec: a bare clone has no fetch refspec, so a plain fetch would not move origin/<br>.
+  if [ -n "$br" ] && [ "${_toolkit_cfg_fetched:-}" != "$MAIN_REPO" ] && git -C "$MAIN_REPO" remote get-url origin >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+      git -C "$MAIN_REPO" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br" >/dev/null 2>&1 || true
+    _toolkit_cfg_fetched="$MAIN_REPO"
+  fi
+  for ref in ${HARNESS_CFG_REF:-} ${br:+origin/$br} origin/develop origin/HEAD origin/main; do
+    _toolkit_cfg_at "$ref" && return 0
   done
-  unset _ref
+  return 1
+}
+HARNESS_CFG="$(_hv CFG_PATH HARNESS_CFG)"; HARNESS_CFG_FROM=""
+if [ -n "$HARNESS_CFG" ] && [ -f "$HARNESS_CFG" ]; then
+  HARNESS_CFG_FROM="$HARNESS_CFG"
+elif ! _toolkit_cfg_remote; then
+  HARNESS_CFG="${REPO_ROOT:+$REPO_ROOT/.claude/harness.json}"
+  if [ -n "$HARNESS_CFG" ] && [ -f "$HARNESS_CFG" ]; then HARNESS_CFG_FROM="working tree"
+  else HARNESS_CFG=""; _toolkit_cfg_at HEAD || true
+  fi
 fi
 
 # toolkit_cfg <dotted.key> — echo a value from harness.json. An array joins on
@@ -365,6 +382,6 @@ toolkit_spawn_root() {
   printf '%s\n' "$dir"
 }
 
-export KIT_ROOT STATE_DIR REPO_ROOT MAIN_REPO SUPPORT_REPO PROGRAMMES_DIR CL HARNESS_CFG
+export KIT_ROOT STATE_DIR REPO_ROOT MAIN_REPO SUPPORT_REPO PROGRAMMES_DIR CL HARNESS_CFG HARNESS_CFG_FROM
 export REPO_SLUG INTEGRATION_BRANCH BRANCH_PREFIX DESIGN_KIT STATUS_PREFIX
 export LBL_DRAFTING LBL_READY LBL_CLAIMED LBL_IN_REVIEW LBL_GATED LBL_PARTIAL LBL_NEEDS_HUMAN LBL_PM_DECISION LBL_PM_TRACK LBL_BLOCKED LBL_EXTERNAL_BLOCKED LBL_PARKED HOLD_LABEL DECISION_LABELS

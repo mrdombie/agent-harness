@@ -57,6 +57,7 @@ fresh; queue 501 502
 out=$(tick)
 want "nothing spawned"                     "" "$(spawned)"
 want_in "it says what it would do"         'would spawn #501' "$out"
+want_in "it names where the config came from" "config from $HARNESS_CFG_PATH" "$out"
 want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3=="spawn"{print $2, $3, $4}' "$C/actions.log" | head -1)"
 want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"

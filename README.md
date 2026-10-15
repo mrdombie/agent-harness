@@ -135,6 +135,8 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
 Read a value with `toolkit_cfg <dotted.key>` after sourcing `scripts/toolkit-env.sh`. Arrays join on spaces, so `for l in $(toolkit_cfg labels.decision)` reads naturally.
 
+The file is read from `origin/<integrationBranch>` after a one-branch fetch (once per process), so a stale checkout cannot hide a key that has merged. The working tree is read only when no remote ref carries the file, and the clone's `HEAD` after that. `HARNESS_CFG_PATH` pins a file and `HARNESS_CFG_REF` a ref; `HARNESS_CFG_FROM` names where the config came from, and the coordinator logs it on every tick.
+
 Env overrides always win over the config: `HARNESS_STATE_DIR`, `HARNESS_REPO_ROOT`, `HARNESS_MAIN_REPO`, `HARNESS_SISTER_REPO`, `HARNESS_CFG_PATH`, `HARNESS_LOGIN`, `HARNESS_KIT_ROOT`.
 
 ## What is here
