@@ -248,10 +248,11 @@ rc=$?
 ```
 
 **The machine decides when, never whether.** `machine-gate.sh` holds the gates
-while the 1-minute load is over the ceiling (`SWARM_MAX_LOAD`, `swarm.maxLoad`,
-default 32) and while every gate slot is taken (`swarm.gateSlots`, default 2,
-machine-wide across every session and project). It prints
-`machine busy (load N, limit M), waiting` and re-checks. Exit 75 is a wait that
+while sampled CPU idle is under the floor (`swarm.minCpuIdle`, default 15%; the
+load average is only a backstop at `swarm.maxLoad`, default 8 x cores) and while
+every gate slot is taken (`swarm.gateSlots`, default 2, machine-wide across every
+session and project). It prints
+`machine busy (cpu idle N%, floor F%), waiting` and re-checks. Exit 75 is a wait that
 ran out inside one tool call: **nothing ran and nothing failed** — run the block
 again. Never run the gate commands bare to get past it. On 2026-10-15 the machine
 sat at load 77 on 10 cores, with 3 vitest, 9 dev servers and 5 tsc runs going.

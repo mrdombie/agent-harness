@@ -16,7 +16,8 @@
 #   4. pull requests red (unless fix-lock.sh says a session is on it), and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
 #   5. spawn         the queue in class order, up to coordinator.cap live runs,
-#                    never a ticket that is claimed, gated or on hold
+#                    never a ticket that is claimed, gated or on hold, and
+#                    nothing while the machine is busy (swarm_machine_busy)
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, then stop-dev-servers.sh --sweep
 #   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
@@ -207,6 +208,9 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until"
   event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true
+elif busy=$(swarm_machine_busy); then
+  say "spawn: machine busy ($busy) — holding"
+  NEXT=$(first_free)
 elif [ "$SLOTS" -le 0 ]; then
   say "spawn: $LIVE live, cap $COORD_CAP — no slot"
   NEXT=$(first_free)

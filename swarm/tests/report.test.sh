@@ -55,7 +55,7 @@ fix_live widgets 0
 
 echo "--- the screen ---"
 out=$(r)
-want_in "it counts"              'load [0-9]+ · 0 running · 1 queued' "$out"
+want_in "it counts"              'cpu idle [0-9]+% · load [0-9]+ · 0 running · 1 queued' "$out"
 want_in "and names what waits"   '#702' "$out"
 
 echo "--- push refuses rather than sending unauthenticated ---"

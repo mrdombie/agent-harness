@@ -26,7 +26,8 @@ wait `/agent-harness:auto`'s Guards run, once per ticket, before the claim:
 "${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
 ```
 
-It prints `machine busy (load N, limit M), waiting` and re-checks; 75 means run
+While CPU idle is under `swarm.minCpuIdle` (default 15%) it prints
+`machine busy (cpu idle N%, floor F%), waiting` and re-checks; 75 means run
 the same line again. It never fails a ticket and it is never skipped.
 
 **1. Scope.** `/agent-harness:auto` takes the top row of the whole board. `/agent-harness:work` takes only tickets under

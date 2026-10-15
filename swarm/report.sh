@@ -42,7 +42,8 @@ stuck_lines() {
   last=$(tail -1 "$SWARM_LOGS/scheduler.log" 2>/dev/null)
   case "$last" in
     *"usage limit — holding until"*) printf 'holding\tthe plan'"'"'s usage limit, until %s\n' "${last##*until }" ;;
-    *"above"*"— holding")            printf 'holding\tthe machine'"'"'s load is above the ceiling\n' ;;
+    *"machine busy"*"— holding"|*"above"*"— holding")
+                                     printf 'holding\tthe machine is busy (CPU idle under the floor or load over the backstop)\n' ;;
     *"— holding")                    printf 'holding\tevery slot is full\n' ;;
   esac
   stops=$(grep "^$(swarm_day)" "$SWARM_LOGS/repair-watch.log" 2>/dev/null \
@@ -118,7 +119,7 @@ esac
 
 # ---- the screen --------------------------------------------------------------
 J=$(report_json)
-printf 'load %s · %s running · %s queued\n' "$(swarm_load)" \
+printf 'cpu idle %s%% · load %s · %s running · %s queued\n' "$(swarm_cpu_idle)" "$(swarm_load)" \
   "$(printf '%s' "$J" | jq '.live | length')" "$(printf '%s' "$J" | jq '.queued | length')"
 
 printf '%s' "$J" | jq -r '

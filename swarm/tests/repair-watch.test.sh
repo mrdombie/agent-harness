@@ -63,6 +63,13 @@ want "nothing spawned at the cap"      "0" "$(grep -c . "$SPAWNS")"
 want_in "and the hold names it"        'hold #11 \(101\).*machine busy \(agents 3, cap 3\)' "$out"
 want "no attempt was recorded"         "0" "$(grep -c . "$TRIED")"
 fix_live widgets 0; fix_at "$T0"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "11 101 ddddddddd1 DIRTY 0 -"
+out=$(SWARM_IDLE=7 w --only repair)
+want "nothing spawned under the idle floor" "0" "$(grep -c . "$SPAWNS")"
+want_in "and the hold names the idle"  'hold #11 \(101\).*machine busy \(cpu idle 7%, floor 15%\)' "$out"
+want "no attempt was recorded"         "0" "$(grep -c . "$TRIED")"
+fix_at "$T0"
 
 echo "--- a red trunk holds CI repairs, and spends no attempt ---"
 : > "$SPAWNS"; : > "$TRIED"

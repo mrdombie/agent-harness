@@ -359,8 +359,9 @@ is held while the machine is busy:
 "${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
 ```
 
-Over the ceiling (`SWARM_MAX_LOAD`, `swarm.maxLoad`, default 32) it prints
-`machine busy (load N, limit M), waiting` and re-checks. Exit 75 means the wait
+While sampled CPU idle is under the floor (`swarm.minCpuIdle`, default 15%; the
+load average is only a backstop at `swarm.maxLoad`, default 8 x cores) it prints
+`machine busy (cpu idle N%, floor F%), waiting` and re-checks. Exit 75 means the wait
 outlasted one tool call: run the same line again. It never fails the ticket, and
 it is never skipped — on 2026-10-15 sessions starting agents by hand, past a
 scheduler that was not running, put the load at 77 on 10 cores.

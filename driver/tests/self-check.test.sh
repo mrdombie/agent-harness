@@ -167,18 +167,18 @@ jq 'del(.changelog)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$RE
 driver_step_self_check 140 >/dev/null 2>&1
 want "no branchTrailer: untouched"                 "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD)"
 
-echo "--- the gates wait for the machine: the load ceiling, then a gate slot ---"
+echo "--- the gates wait for the machine: cpu idle over the floor, then a gate slot ---"
 # Heavy local work waits; it never parks the ticket. Run in the background, held,
 # then let go — the gate must not have run while held, and must run after.
 jq --arg m "$FIX/gate-ran" '.gates = {"g": ("touch " + $m)}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-echo 99 > "$FIX/load"; rm -f "$FIX/gate-ran" "$FIX/sc.rc"
-( SWARM_LOAD_FILE="$FIX/load" driver_step_self_check 101 > "$FIX/sc.out" 2>&1; echo $? > "$FIX/sc.rc" ) &
+echo 4 > "$FIX/idle"; rm -f "$FIX/gate-ran" "$FIX/sc.rc"
+( SWARM_IDLE_FILE="$FIX/idle" SWARM_LOAD=1 driver_step_self_check 101 > "$FIX/sc.out" 2>&1; echo $? > "$FIX/sc.rc" ) &
 sleep 2
-if [ ! -e "$FIX/gate-ran" ]; then ok "over the load ceiling the gate did not run"; else bad "the gate ran at load 99"; fi
-want_in "and it said why" 'machine busy .load 99, limit 32' "$(cat "$FIX/sc.out")"
-echo 1 > "$FIX/load"
+if [ ! -e "$FIX/gate-ran" ]; then ok "under the idle floor the gate did not run"; else bad "the gate ran at 4% idle"; fi
+want_in "and it said why" 'machine busy .cpu idle 4%, floor 15%' "$(cat "$FIX/sc.out")"
+echo 60 > "$FIX/idle"
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$FIX/sc.rc" ] && break; sleep 1; done
-if [ -e "$FIX/gate-ran" ]; then ok "once the load fell, it ran"; else bad "never ran: $(cat "$FIX/sc.out")"; fi
+if [ -e "$FIX/gate-ran" ]; then ok "once idle rose, it ran"; else bad "never ran: $(cat "$FIX/sc.out")"; fi
 want "and the step passed, not parked" "0" "$(cat "$FIX/sc.rc" 2>/dev/null)"
 
 sleep 30 & holder=$!

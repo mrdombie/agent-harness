@@ -9,7 +9,8 @@
 #   SWARM_LOGS       $STATE_DIR/logs — the same logs the spawner writes
 #   RUNS_DIR         $STATE_DIR/runs — one record per spawned agent
 #   SWARM_CAP        agents at once PER PROGRAMME (default 3)
-#   SWARM_MAX_LOAD   hold above this 1-minute load average (default 32)
+#   SWARM_MIN_CPU_IDLE  busy below this sampled CPU idle percent (default 15)
+#   SWARM_MAX_LOAD   backstop: busy above this 1-minute load average (default 8 x cores)
 #   SWARM_LIVE_URL   the live view's snapshot endpoint
 #   SWARM_STATUS_REPO  optional: a repo to dispatch a rebuild at (empty = skip)
 #   SWARM_REPORT_URL   optional: where the reporter POSTs (empty = skip)
@@ -24,6 +25,7 @@
 #   SWARM_CURL   the HTTP client         (default: curl)
 #   SWARM_SPAWN  the agent spawner       (default: the kit's spawn-claim.sh)
 #   SWARM_LOAD   the load average        (default: read from the kernel)
+#   SWARM_IDLE   the CPU idle percent    (default: sampled with top or /proc/stat)
 #   SWARM_NOW    the clock, epoch secs   (default: date +%s)
 #
 # A test points them at recorders and asserts on what was recorded. Nothing in
@@ -57,7 +59,8 @@ mkdir -p "$SWARM_DIR" "$SWARM_LOGS" "$RUNS_DIR" 2>/dev/null || true
 swarm_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
 SWARM_CAP="${SWARM_CAP:-$(swarm_opt swarm.cap 3)}"
-SWARM_MAX_LOAD="${SWARM_MAX_LOAD:-$(swarm_opt swarm.maxLoad 32)}"
+SWARM_MIN_CPU_IDLE="${SWARM_MIN_CPU_IDLE:-$(swarm_opt swarm.minCpuIdle 15)}"
+SWARM_MAX_LOAD="${SWARM_MAX_LOAD:-$(swarm_opt swarm.maxLoad "")}"
 SWARM_PORT="${SWARM_PORT:-$(swarm_opt swarm.port 4777)}"
 SWARM_LIVE_URL="${SWARM_LIVE_URL:-$(swarm_opt swarm.liveUrl "http://127.0.0.1:$SWARM_PORT/api/agents")}"
 SWARM_STATUS_REPO="${SWARM_STATUS_REPO:-$(swarm_opt swarm.statusRepo "")}"
@@ -79,9 +82,13 @@ swarm_now() { if [ -n "${SWARM_NOW:-}" ]; then printf '%s' "$SWARM_NOW"; else da
 swarm_stamp() { swarm_iso "$(swarm_now)"; }
 swarm_day()   { swarm_iso "$(swarm_now)" | cut -dT -f1; }
 
-# The 1-minute load average, as a whole number: swarm/load.sh, shared with
-# scripts/machine-gate.sh so the swarm and the session paths read one number.
+# Is the machine busy: swarm/load.sh, shared with scripts/machine-gate.sh so the
+# swarm and the session paths apply one test.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/load.sh" || return 1 2>/dev/null || exit 1
+[ -n "$SWARM_MAX_LOAD" ] || SWARM_MAX_LOAD=$(swarm_default_max_load)
+
+# Prints the reading; 0 when busy (cpu idle under the floor, or load over the backstop).
+swarm_machine_busy() { swarm_busy "$SWARM_MIN_CPU_IDLE" "$SWARM_MAX_LOAD"; }
 
 swarm_log() { # <logfile> <message…>
   local f="$1"; shift
@@ -330,6 +337,6 @@ swarm_ping_page() {
   swarm_gh api "repos/$SWARM_STATUS_REPO/dispatches" -f event_type=claim-changed >/dev/null 2>&1
 }
 
-export SWARM_DIR SWARM_HOLD_FILE SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
+export SWARM_DIR SWARM_HOLD_FILE SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MIN_CPU_IDLE SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
 export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_GH SWARM_CURL SWARM_SPAWN
 export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC

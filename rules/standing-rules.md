@@ -108,9 +108,12 @@ ran again.
 **Heavy local work waits for the machine.** Before claiming, building or
 reproducing — `/agent-harness:claim`, `:work`, `:auto`, `:bug` — run
 `scripts/machine-gate.sh wait`; run the local gate commands through
-`scripts/machine-gate.sh run -- <cmd>`. Over the load ceiling
-(`swarm.maxLoad`, default 32) it prints `machine busy (load N, limit M),
-waiting` and re-checks; the gates also take one of the machine's gate slots
+`scripts/machine-gate.sh run -- <cmd>`. Busy means sampled CPU idle under
+the floor (`swarm.minCpuIdle`, default 15%), with the load average only a
+backstop (`swarm.maxLoad`, default 8 x cores): macOS counts blocked threads into
+the load, which read 42-103 on 10 cores on 2026-10-15 while 41% of the CPU sat
+idle. When busy it prints `machine busy (cpu idle N%, floor F%), waiting` and
+re-checks; the gates also take one of the machine's gate slots
 (`swarm.gateSlots`, default 2, shared by every session). Exit 75 means it is
 still waiting and nothing ran: run it again. Waiting never fails a ticket, and
 nothing starts heavy work around it — the scheduler's own load check covers only

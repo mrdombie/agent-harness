@@ -94,6 +94,19 @@ out=$(COORDINATOR_SHADOW=0 tick)
 want "the swarm hold stops every spawn"    "" "$(spawned)"
 want_in "and names the hold"               'held — owner said stop' "$out"
 
+echo "--- a busy machine spawns nothing: the same test as the gate ---"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=9 tick)
+want "cpu idle under the floor: no spawn"  "" "$(spawned)"
+want_in "and names the reading"            'machine busy \(cpu idle 9%, floor 15%\) — holding' "$out"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 SWARM_LOAD=99 SWARM_MAX_LOAD=80 tick)
+want "load over the backstop: no spawn"    "" "$(spawned)"
+want_in "and names the load"               'machine busy \(load 99, limit 80\) — holding' "$out"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=41 SWARM_LOAD=60 SWARM_CORES=10 tick)
+want "41% idle at load 60 on 10 cores spawns" "501" "$(spawned)"
+
 echo "--- one tick at a time ---"
 fresh; queue 501
 mkdir -p "$C/tick.lock"; echo "$$" > "$C/tick.lock/pid"

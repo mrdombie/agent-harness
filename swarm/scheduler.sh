@@ -19,7 +19,7 @@
 #
 # There are four reasons to hold, and each one is logged so a silent pass can be
 # told from a pass that decided not to act:
-#   the machine's load is above the ceiling
+#   the machine is busy: CPU idle under the floor, or load over the backstop
 #   the plan's usage limit was hit and its reset time has not passed
 #   the live view cannot be reached — which counts as busy, never as room
 #   the programme already has its cap running
@@ -40,9 +40,8 @@ done
 say() { echo "$*"; [ "$EXPLAIN" = 1 ] || swarm_log "$LOG" "$*"; }
 
 # ---- the machine ------------------------------------------------------------
-LOAD=$(swarm_load)
-if [ "$LOAD" -gt "$SWARM_MAX_LOAD" ]; then
-  say "load $LOAD above $SWARM_MAX_LOAD — holding"; exit 0
+if BUSY=$(swarm_machine_busy); then
+  say "machine busy ($BUSY) — holding"; exit 0
 fi
 
 # The plan's usage limit: swarm_usage_hold in swarm-env.sh reads it.

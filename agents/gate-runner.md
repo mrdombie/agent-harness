@@ -26,7 +26,7 @@ You are a quality-gate runner. You don't write code, you don't fix bugs, you don
    "$MG" run --max "${MACHINE_GATE_MAX_WAIT:-100}" -- bash -c "$G" || exit $?
    ```
 
-   It waits while the machine is over its load ceiling or every gate slot is
+   It waits while the machine is busy (CPU idle under the floor) or every gate slot is
    taken, printing `machine busy (…), waiting`. Exit 75 means nothing ran yet —
    run the same line again. Never run a gate bare to get past it.
 

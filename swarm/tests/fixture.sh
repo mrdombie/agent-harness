@@ -131,7 +131,7 @@ SH
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
   export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
   export SWARM_SPAWN="$BIN/spawn" SWARM_GH="$BIN/gh" SWARM_CURL="$BIN/curl"
-  export SWARM_LOAD=1
+  export SWARM_LOAD=1 SWARM_IDLE=90
   unset GH_TOKEN
 }
 

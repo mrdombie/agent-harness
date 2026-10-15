@@ -103,10 +103,10 @@ attempts_today() { # <ticket> [kind]
 
 # Is the machine able to take another agent for this programme right now?
 room_for() { # <programme> — echoes why not, returns 1
-  local live load
-  live=$(swarm_live_count "$1"); load=$(swarm_load)
+  local live busy
+  live=$(swarm_live_count "$1")
   if [ "$live" -ge "$SWARM_CAP" ]; then printf 'agents %s, cap %s' "$live" "$SWARM_CAP"; return 1; fi
-  if [ "$load" -ge "$SWARM_MAX_LOAD" ]; then printf 'load %s' "$load"; return 1; fi
+  if busy=$(swarm_machine_busy); then printf '%s' "$busy"; return 1; fi
   return 0
 }
 
