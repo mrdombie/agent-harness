@@ -18,6 +18,17 @@ shipping code — the superpowers steps, the spec and anti-orphan gates, the wor
 `/agent-harness:work` never builds anything itself; it decides WHICH ticket and calls `/agent-harness:claim <n>`. One
 implementation, so no second path to drift out of step.
 
+**0.5. Wait for the machine before every `/agent-harness:claim` it makes.** The same
+wait `/agent-harness:auto`'s Guards run, once per ticket, before the claim:
+
+```bash
+# Heavy work waits for the machine. 75 = still busy, nothing started — run it again.
+"${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
+```
+
+It prints `machine busy (load N, limit M), waiting` and re-checks; 75 means run
+the same line again. It never fails a ticket and it is never skipped.
+
 **1. Scope.** `/agent-harness:auto` takes the top row of the whole board. `/agent-harness:work` takes only tickets under
 `$ARGUMENTS`:
 

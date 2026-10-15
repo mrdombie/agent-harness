@@ -348,6 +348,23 @@ git -C "$MAIN_REPO" fetch origin develop
 
 Don't `git checkout develop` in either main repo — another agent may be using it. The sister-repo fetch is best-effort; absence is OK if the row turns out to target the main repo.
 
+### Step 1.5 — Wait for the machine
+
+A claim starts a worktree, an install, a dev server and gate runs, on a machine
+every other session shares. Wait for it **before** taking the claim, so nothing
+is held while the machine is busy:
+
+```bash
+# Heavy work waits for the machine. 75 = still busy, nothing started — run it again.
+"${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
+```
+
+Over the ceiling (`SWARM_MAX_LOAD`, `swarm.maxLoad`, default 32) it prints
+`machine busy (load N, limit M), waiting` and re-checks. Exit 75 means the wait
+outlasted one tool call: run the same line again. It never fails the ticket, and
+it is never skipped — on 2026-10-15 sessions starting agents by hand, past a
+scheduler that was not running, put the load at 77 on 10 cores.
+
 ### Step 2 — Pick a candidate from GitHub
 
 **If `$ARGUMENTS` names a ticket, that IS the candidate — skip the picking, keep the gates.**

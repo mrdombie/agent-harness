@@ -115,6 +115,12 @@ driver_step_self_check() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
+  # Heavy local work waits for the machine: under the load ceiling, then one gate
+  # slot held across every gate. It waits as long as it takes; it never parks.
+  . "$KIT_ROOT/scripts/machine-gate.sh" || return "$DRIVER_E_REFUSED"
+  machine_gate_wait_load 0
+  machine_gate_acquire 0 "self-check #$t"
+
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     name=${row%%	*}; cmd=${row#*	}
@@ -135,6 +141,7 @@ driver_step_self_check() { # <ticket>
       # "which check failed".
       driver_say "✋ self-check: $name ran out of time (over ${DRIVER_CMD_TIMEOUT}s). A gate that does not return is not a gate that passed."
       driver_state_set "$t" park_note "the '$name' gate did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
+      machine_gate_release
       return "$DRIVER_E_TIMEOUT"
     elif [ "$rc" -eq 0 ]; then
       driver_say "   self-check: $name ok"
@@ -145,6 +152,7 @@ driver_step_self_check() { # <ticket>
   done <<EOS
 $names
 EOS
+  machine_gate_release
 
   # NOTHING RAN IS A REFUSAL. Every command empty is the same failure as no gates at
   # all, wearing a configured shape — and it printed "0 gate(s) green" and returned

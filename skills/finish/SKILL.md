@@ -30,7 +30,7 @@ Everything else — gates, push, PR, squash-merge, worktree cleanup — is ident
 Before stepping into Step 3 (run gates locally) on a ticket that touches >5 files OR runs >2k lines of diff, **delegate gate runs to the `gate-runner` sub-agent** to keep the main session's context clean:
 
 ```
-Use Agent tool with subagent_type=agent-harness:gate-runner, prompt="Run lint + typecheck + tests for the current branch <BRANCH>; report new vs pre-existing failures only."
+Use Agent tool with subagent_type=agent-harness:gate-runner, prompt="Run lint + typecheck + tests for the current branch <BRANCH>; report new vs pre-existing failures only. The machine gate is ${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh."
 ```
 
 The agent runs the repo's `gates.changed` commands in isolation, filters out failures in files NOT touched by this branch (pre-existing), and returns a structured verdict. Stops your main context from being polluted with thousands of lines of test output.
@@ -239,8 +239,22 @@ command executes:
 # whole-app form.
 CHANGED=$(jq -r '(.gates.changed // []) | join(" && ")' .claude/harness.json)
 [ -n "$CHANGED" ] || { echo "🛑 harness.json names no gates.changed"; exit 1; }
-eval "$CHANGED" || { echo "🛑 GATES FAILED — fix before any commit/push/merge"; exit 1; }
+# Heavy local work waits for the machine: under the load ceiling, and holding one
+# of its gate slots. 75 = still busy and NOTHING RAN — run this block again.
+"${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" run --max "${MACHINE_GATE_MAX_WAIT:-100}" -- bash -c "$CHANGED"
+rc=$?
+[ "$rc" -ne 75 ] || { echo "⏳ machine busy — nothing ran; run this block again"; exit 75; }
+[ "$rc" -eq 0 ] || { echo "🛑 GATES FAILED — fix before any commit/push/merge"; exit 1; }
 ```
+
+**The machine decides when, never whether.** `machine-gate.sh` holds the gates
+while the 1-minute load is over the ceiling (`SWARM_MAX_LOAD`, `swarm.maxLoad`,
+default 32) and while every gate slot is taken (`swarm.gateSlots`, default 2,
+machine-wide across every session and project). It prints
+`machine busy (load N, limit M), waiting` and re-checks. Exit 75 is a wait that
+ran out inside one tool call: **nothing ran and nothing failed** — run the block
+again. Never run the gate commands bare to get past it. On 2026-10-15 the machine
+sat at load 77 on 10 cores, with 3 vitest, 9 dev servers and 5 tsc runs going.
 
 **CHANGED-ONLY, not the whole app.** CI runs the whole suite before anything
 merges, and a red CI brings an agent back — so a local whole-app run is the same
@@ -263,7 +277,7 @@ exit code is the gate.
 # `npm test` has no such hook — generate explicitly. Idempotent.
 sh scripts/prisma-generate-if-needed.sh >/dev/null  # #3570 — fingerprint-skips when unchanged
 
-eval "$CHANGED"        # gates.changed from harness.json — see the rule above
+# gates.changed runs through the machine-gate block above, never as a bare eval.
 
 # #9966 (2026-09-01): the trio above does NOT include check:deploy-trigger.
 # That gate reads COMMITS (merge-base..HEAD), so it must run after Step 2's
