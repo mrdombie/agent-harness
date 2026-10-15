@@ -417,4 +417,6 @@ whether to start another agent or come and look themselves.
 | `--tier N` | Restrict to one tier. `--tier 1` = heal only; `--tier 2` = drain the stranded pile. |
 | `--once` | Take exactly one item, ship it, stop. |
 
-To run it hands-off across context limits, wrap it: `/loop /agent-harness:auto`.
+To run it hands-off across context limits, wrap it: `/loop /agent-harness:auto`. To work one area
+until it is finished — through compaction and the plan's usage limit, with several windows on the
+same area — use `/loop 30m /agent-harness:work <area> --nonstop` (`shared/nonstop.md`).

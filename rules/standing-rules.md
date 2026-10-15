@@ -91,6 +91,18 @@ line reads as stuck. The `heartbeat` Stop hook sends a reply back when a loop is
 live and the block is missing. When the loop stops, say so: "Stopped: nothing
 running", and why.
 
+**A non-stop window works its area until the area is finished.** Started with
+`/loop 30m /agent-harness:work <area> --nonstop`, it dispatches agents and builds
+nothing itself; every wake is one `scripts/nonstop.sh wake` and the move it names.
+It takes the next ticket the moment an agent place frees, does the product work
+(spec, picture, gated to ready) when nothing is ready, and ends only with
+"Stopped: area finished". Several windows may share an area: claims stop two
+taking one ticket and `fix-lock.sh` stops two fixing one red PR. On the plan's
+usage limit it records the reset, sleeps to it, and resumes every cut-off agent
+from its worktree — never one whose work already merged. Waits are shell
+(`pr-watch.sh` in the background), wakes are events with a 30-minute fallback,
+and agent reports are five lines.
+
 ## Run only what the change touches
 
 Local checks are **changed-only**. CI runs the whole suite before anything

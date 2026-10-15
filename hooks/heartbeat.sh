@@ -63,10 +63,19 @@ esac
 # 3. Is a loop running? Unreadable transcript means we cannot tell: stay quiet.
 TP=$(printf '%s' "$IN" | jq -r '.transcript_path // ""')
 [ -n "$TP" ] && [ -r "$TP" ] || { say "exit0 no-transcript"; exit 0; }
+# A non-stop window paced by a fixed-interval /loop (a cron, no ScheduleWakeup)
+# is a loop too: its armed state file says so.
+NSW=$(bash "$(dirname "$0")/../scripts/nonstop.sh" window 2>/dev/null)
+NSF="${HARNESS_STATE_DIR:-$(cat "$HOME/.claude/.harness-last-state-dir" 2>/dev/null)}/nonstop/w-$NSW.json"
+NSF="${NSF/#\~/$HOME}"
+if [ -n "$NSW" ] && [ -f "$NSF" ] && [ "$(jq -r '.stopped // ""' "$NSF" 2>/dev/null)" = "" ]; then
+  say "nonstop-armed $NSW"
+else
 WAKE=$(grep -F '"name":"ScheduleWakeup"' "$TP" 2>/dev/null | tail -1)
 [ -n "$WAKE" ] || { say "exit0 no-loop"; exit 0; }
 printf '%s' "$WAKE" | grep -qE '"stop"[[:space:]]*:[[:space:]]*true' && {
   say "exit0 loop-stopped"; exit 0; }
+fi
 
 say "exit2 missing-heartbeat"
 cat >&2 <<'EOF'

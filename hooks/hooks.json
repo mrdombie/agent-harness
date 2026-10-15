@@ -15,6 +15,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "compact|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/nonstop-resume.sh",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -102,6 +112,18 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/heartbeat.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/usage-limit.sh",
             "timeout": 15
           }
         ]

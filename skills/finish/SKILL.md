@@ -873,8 +873,9 @@ merge. The blocker landed on develop and needed a second PR (#9138) to undo.
 **HARD RULE — once armed, hand the PR off and take the next ticket. Never idle on CI.**
 CI runs for 10–15 minutes and a sign-off waits on a person; neither needs you watching.
 After the PR is reviewed, pushed and armed: start a watcher that emits on green, any
-failing check, `DIRTY`, and merged/closed, then return to the loop and claim the next
-ticket. A merged event runs Step 6.6 first. When the watcher fires, that PR takes the next move ahead of the new ticket
+failing check, `DIRTY`, and merged/closed — `"${CLAUDE_PLUGIN_ROOT}/scripts/pr-watch.sh" <pr>`
+with the Bash tool's `run_in_background`, which waits in the shell and costs no tokens until it
+fires — then return to the loop and claim the next ticket. A merged event runs Step 6.6 first. When the watcher fires, that PR takes the next move ahead of the new ticket
 (finish before start): bring the sign-off, fix the red, resolve the clash. The claim
 stays held until the merge (below); the session does not. On 2026-10-10 an agent sat
 idle through four CI runs in a row, because nothing here said to move on.
