@@ -141,6 +141,7 @@ stop_run_servers() {
     case "$root/" in "$real_wt"/*) echo "skipping $wt — it holds the spawn checkout"; continue ;; esac
     found=1
     bash "$SCRIPT_DIR/stop-dev-servers.sh" --worktree "$wt"
+    bash "$SCRIPT_DIR/worktree-cache.sh" clean "$wt"
   done <<<"$wts"
   [ "$found" = 1 ] || echo "no usable worktree for $RUN_ID — stopping no servers"
 }
@@ -188,8 +189,8 @@ stop_run_servers() {
   printf '{"run_id":"%s","exit_code":%d,"ended_at":"%s"}\n' \
     "$RUN_ID" "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUNS_DIR/$RUN_ID.ended"
 
-  # Every exit, not only /finish: a hand-off, park or crash otherwise leaves its servers running.
-  printf '\n--- post-exit dev-server stop (%s) ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
+  # Every exit, not only /finish: a hand-off, park or crash otherwise leaves its servers and build caches behind.
+  printf '\n--- post-exit dev-server stop and cache pass (%s) ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG"
   stop_run_servers >> "$LOG" 2>&1
 
   # NOT --quiet. This is the immediate signal that the agent died, and the log

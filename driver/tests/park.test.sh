@@ -45,6 +45,7 @@ hash -r 2>/dev/null || true
 
 git -C "$REPO" worktree add -q "$FIX/wt101" -b tkt-101/work develop
 printf 'half\n' > "$FIX/wt101/half.txt"
+mkdir -p "$FIX/wt101/apps/web/.next"; printf 'build\n' > "$FIX/wt101/apps/web/.next/out"
 driver_state_init 101 --worktree "$FIX/wt101" --branch tkt-101/work
 fix_issue 101 OPEN "status:claimed"
 
@@ -55,6 +56,9 @@ want "the branch reached origin" "1" \
   "$(git -C "$FIX/origin" rev-parse --verify tkt-101/work >/dev/null 2>&1 && echo 1)"
 want "even the uncommitted work" "1" \
   "$(git -C "$FIX/origin" show tkt-101/work:half.txt >/dev/null 2>&1 && echo 1)"
+want "the worktree's build cache is removed" "gone" "$([ -e "$FIX/wt101/apps/web/.next" ] && echo kept || echo gone)"
+want "and never committed into the park" "" \
+  "$(git -C "$FIX/origin" ls-tree -r --name-only tkt-101/work | grep '\.next/' || true)"
 want_in "a DRAFT pr, so the reconciler reads it as in-review" 'pr create.*--draft' "$(cat "$GH_LOG")"
 want_in "the resume brief is a comment"  'issue comment 101' "$(cat "$GH_LOG")"
 want_in "it names what was built"        'Built' "$(cat "$GH_LOG")"

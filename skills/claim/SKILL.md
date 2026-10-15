@@ -59,7 +59,14 @@ opens from any machine, not only the one this worktree lives on.
 <anything the next agent would otherwise have to rediscover>"
 
 "$CL" release "$TICKET_KEY"
+# The worktree stays until the sweeper takes it; its build output does not.
+bash "$KIT_ROOT/scripts/stop-dev-servers.sh" --worktree "$WORKTREE" || true
+bash "$KIT_ROOT/scripts/worktree-cache.sh" clean "$WORKTREE" || true
 ```
+
+In a sparse worktree (`worktree.sparseExclude`), stage new files under an
+excluded folder with `git add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$WORKTREE") <paths>` —
+plain `git add` refuses them.
 
 The worktree may be swept once the branch is pushed — that is fine and
 expected. The `git worktree add` line in the brief recreates it in one command
@@ -757,7 +764,8 @@ REPO_FULL="${REPO_SLUG%/*}/$REPO_NAME"
 
 ```bash
 : "${REPO_PATH:?REPO_PATH unset — run Step 5 resolution block first}"
-git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
+# Sparse when the project sets worktree.sparseExclude (e.g. committed screenshots); a plain worktree add otherwise.
+bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$REPO_PATH" "$WORKTREE" -b "$BRANCH" origin/develop
 # The shared install, linked entry by entry into the worktree's OWN node_modules,
 # with each workspace package pointed at THIS worktree's copy. One symlink to the
 # whole shared node_modules carried the shared checkout's workspace links too, so
@@ -798,7 +806,7 @@ If `git worktree add` fails with "branch already exists" — stale branch. Only 
 ```bash
 : "${REPO_PATH:?REPO_PATH unset — run Step 5 resolution block first}"
 git -C "$REPO_PATH" branch -D "$BRANCH" 2>/dev/null
-git -C "$REPO_PATH" worktree add "$WORKTREE" -b "$BRANCH" origin/develop
+bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$REPO_PATH" "$WORKTREE" -b "$BRANCH" origin/develop
 ```
 
 Then run the rest of the Step 6 block from `link-node-modules.sh` down. `ensure-hooks.sh` is not optional on this path either.

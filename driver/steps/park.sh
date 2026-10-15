@@ -61,9 +61,10 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
   done_list=$(driver_state_get "$t" 'done|join(" · ")')
 
   if [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$branch" ]; then
+    driver_say "   park: $(bash "$KIT_ROOT/scripts/worktree-cache.sh" clean "$wt" 2>&1 | tail -1)"
     if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
       staged=$(git -C "$wt" status --porcelain 2>/dev/null | sed 's/^...//' | tr '\n' ' ')
-      git -C "$wt" add -A -- . >/dev/null 2>&1
+      git -C "$wt" add -A $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt") -- . >/dev/null 2>&1
       ctype=$(driver_opt commit.parkType chore)
       cout=$(git -C "$wt" commit -m "$ctype(#$t): parked — $reason" 2>&1); crc=$?
       if [ "$crc" -ne 0 ]; then

@@ -200,8 +200,40 @@ COORDINATOR_SHADOW=0 tick >/dev/null
 want "pinged once, not every tick"         "1" "$(grep -c . "$FIX/notify.log")"
 
 echo "--- disk ---"
+# The cache pass stand-in frees what $FIX/frees says, so the re-measure sees it.
+cat > "$BIN/cachepass" <<'SH'
+#!/usr/bin/env bash
+echo "cachepass $*" >> "$FIX/house.log"
+[ -s "$FIX/frees" ] && cat "$FIX/frees" > "$FIX/free"
+exit 0
+SH
+cat > "$BIN/df" <<'SH'
+#!/usr/bin/env bash
+cat "$FIX/free"
+SH
+chmod +x "$BIN/cachepass" "$BIN/df"
+disk() { # <free-before> <free-after-pass> [env...]
+  printf '%s\n' "$1" > "$FIX/free"; printf '%s' "$2" > "$FIX/frees"
+  shift 2
+  env COORDINATOR_DF="$BIN/df" COORDINATOR_CACHE="$BIN/cachepass" "$@" bash "$T" 2>&1
+}
 fresh
-COORDINATOR_SHADOW=0 COORDINATOR_FREE_GB=5 tick >/dev/null
+out=$(disk 300 "" COORDINATOR_SHADOW=0)
+want "with room to spare, no cache pass"   "" "$(grep cachepass "$FIX/house.log")"
+fresh
+out=$(disk 5 50 COORDINATOR_SHADOW=0)
+want_in "below the floor, the cache pass runs first, for real" '^cachepass --caches-only --apply$' "$(cat "$FIX/house.log")"
+want "and freeing enough means no alarm"   "" "$(cat "$FIX/notify.log")"
+want_in "the tick says what it freed"      '5 GB free.* 50 GB after the cache pass' "$out"
+fresh
+out=$(disk 5 8 COORDINATOR_SHADOW=0)
+want_in "still below the floor after the pass is an alarm" 'Disk is low: 8 GB' "$(cat "$FIX/notify.log")"
+want_in "once the pass has run"            'cachepass --caches-only --apply' "$(cat "$FIX/house.log")"
+fresh
+out=$(disk 5 "")
+want_in "shadow: the cache pass runs dry"  '^cachepass --caches-only$' "$(cat "$FIX/house.log")"
+fresh
+COORDINATOR_SHADOW=0 COORDINATOR_FREE_GB=5 COORDINATOR_CACHE="$BIN/cachepass" tick >/dev/null
 want_in "below the floor is an alarm"      'Disk is low: 5 GB' "$(cat "$FIX/notify.log")"
 
 echo "--- the merge lane runs each tick, in its own mode, only where the project names a merge method ---"

@@ -179,7 +179,7 @@ driver_step_start() { # <ticket>
     mkdir -p "$(dirname "$wt")" 2>/dev/null || true
     # A fresh branch has reworded and removed no tests: the ledger starts empty.
     mkdir -p "$(driver_state_dir "$t")/steps" && : > "$(driver_state_dir "$t")/steps/replaced.jsonl"
-    if ! git -C "$repo" worktree add -q "$wt" -b "$branch" "$sha" 2>/dev/null; then
+    if ! bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$repo" "$wt" -q -b "$branch" "$sha" 2>/dev/null; then
       driver_say "✋ start: could not create a worktree at $wt on $branch."
       return "$DRIVER_E_REFUSED"
     fi

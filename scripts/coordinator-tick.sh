@@ -18,7 +18,7 @@
 #                    never a ticket that is claimed, gated or on hold
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, then stop-dev-servers.sh --sweep
-#   7. disk          free space below coordinator.minFreeGb is an alarm
+#   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
 #   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh)
 #
 # Shadow (the default): every act is written to actions.log as "would …";
@@ -240,7 +240,21 @@ else
 fi
 
 # ---- 7. disk -----------------------------------------------------------------
-FREE_GB="${COORDINATOR_FREE_GB:-$(df -Pk "$STATE_DIR" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')}"
+CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"
+free_gb() {
+  if [ -n "${COORDINATOR_DF:-}" ]; then "$COORDINATOR_DF"
+  elif [ -n "${COORDINATOR_FREE_GB:-}" ]; then printf '%s\n' "$COORDINATOR_FREE_GB"
+  else df -Pk "$STATE_DIR" 2>/dev/null | awk 'NR==2{print int($4/1048576)}'; fi
+}
+FREE_GB=$(free_gb)
+case "$FREE_GB" in ''|*[!0-9]*) say "disk: free space could not be read"; FREE_GB="" ;; esac
+if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
+  before="$FREE_GB"
+  if coord_shadow; then bash "$CACHE" --caches-only >> "$COORD_LOG" 2>&1 || say "cache pass (dry) exited $?"
+  else bash "$CACHE" --caches-only --apply >> "$COORD_LOG" 2>&1 || say "cache pass exited $?"; fi
+  FREE_GB=$(free_gb); case "$FREE_GB" in ''|*[!0-9]*) FREE_GB="$before" ;; esac
+  say "disk: $before GB free, below $COORD_MIN_FREE_GB GB — $FREE_GB GB after the cache pass"
+fi
 if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
   if event "disk-low:$(swarm_day)" disk-low false "" "" "${FREE_GB} GB free, below ${COORD_MIN_FREE_GB} GB"; then
     bash "$NOTIFY" "disk-low:$(swarm_day)" "Disk is low: ${FREE_GB} GB free (floor ${COORD_MIN_FREE_GB} GB)"
