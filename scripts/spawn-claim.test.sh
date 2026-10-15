@@ -97,7 +97,8 @@ G -C "$STORE" fetch -q origin develop
 
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
-cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT/"
+cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" \
+   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -139,6 +140,7 @@ for wt in ${SPAWN_TEST_SERVE:-}; do
 done
 # What claim-lock acquire notes for a spawned run.
 [ -n "${SPAWN_TEST_NOTE:-}" ] && printf '%s\n' "$SPAWN_TEST_NOTE" >> "$HARNESS_STATE_DIR/runs/$CLAIM_RUN_ID.worktrees"
+exit "${SPAWN_TEST_EXIT:-0}"
 STUB
 chmod +x "$SB/bin/claude"
 # A stub caffeinate: records what it was asked to hold awake.
@@ -273,6 +275,8 @@ else bad "the post-exit reconcile was not told its session exited: '${rec:-nothi
 # A detached agent that ended any way but /finish left its servers up: 63 on one
 # machine, swap 49.7 of 50 GB. The wrapper stops the run's worktree's servers.
 G init -q "$SB/wt-801"; G init -q "$SB/wt-802"
+mkdir -p "$SB/wt-801/apps/web/.next" "$SB/wt-802/apps/web/.next"
+printf 'x\n' > "$SB/wt-801/apps/web/.next/out"; printf 'x\n' > "$SB/wt-802/apps/web/.next/out"
 alive() { kill -0 "$1" 2>/dev/null && ! ps -o stat= -p "$1" 2>/dev/null | grep -q Z; }
 spawn_and_wait() { # a detached spawn under the caller's env; waits for its post-exit stop
   rm -f "$OUT/srvpids" "$OUT/runid" "$OUT/reconcile"
@@ -294,7 +298,19 @@ if [ -n "$s1" ] && [ -n "$s2" ]; then
 else bad "fixture: the stand-in servers never started"; fi
 grep -q 'post-exit dev-server stop' "$STATE/logs/$RID.log" 2>/dev/null \
   && ok "the stop is logged in the run's log" || bad "the run's log does not show the stop"
+[ ! -e "$SB/wt-801/apps/web/.next" ] && ok "the agent's exit removes its worktree's build cache" \
+  || bad "the run's own worktree kept its build cache after the agent exited"
+[ -f "$SB/wt-802/apps/web/.next/out" ] && ok "a worktree the run never claimed keeps its cache" \
+  || bad "the post-exit cache pass reached a worktree the run never claimed"
+grep -q 'cleaned apps/web/.next' "$STATE/logs/$RID.log" 2>/dev/null \
+  && ok "the cache removal is logged in the run's log" || bad "the run's log does not show the cache removal"
 kill "$s2" 2>/dev/null
+
+# 8a'. however it exits: a crashed agent's worktree is cleaned the same way.
+mkdir -p "$SB/wt-801/apps/web/.next"; printf 'x\n' > "$SB/wt-801/apps/web/.next/out"
+TKT=4805 SPAWN_TEST_EXIT=3 SPAWN_TEST_NOTE="$SB/wt-801" spawn_and_wait
+[ ! -e "$SB/wt-801/apps/web/.next" ] && ok "an agent that crashed still has its build cache removed" \
+  || bad "a crashed agent's worktree kept its build cache"
 
 # 8b. nothing recorded: nothing stopped, and the log says why.
 TKT=4802 SPAWN_TEST_SERVE="$SB/wt-801" spawn_and_wait
