@@ -160,7 +160,7 @@ SH
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
   export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
-  export SWARM_GH="$BIN/gh" SWARM_CURL=/usr/bin/false SWARM_LOAD=1
+  export SWARM_GH="$BIN/gh" SWARM_CURL=/usr/bin/false SWARM_LOAD=1 SWARM_IDLE=90
   # The machine's gate slots are shared by every session on it; a suite takes its own.
   export HARNESS_GATE_SLOT_DIR="$FIX/gate-slots" MACHINE_GATE_POLL=1
   export DRIVER_CLAUDE="$BIN/claude"

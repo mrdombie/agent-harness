@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # machine-gate.sh — heavy local work waits for the machine.
 #
-#   machine-gate.sh wait   [--max SEC]           wait until the load is at or under the ceiling
-#   machine-gate.sh run    [--max SEC] -- CMD…   wait for the load, take a gate slot, run CMD, give the slot back
-#   machine-gate.sh status                       load, ceiling, and who holds each slot
+#   machine-gate.sh wait   [--max SEC]           wait until the machine is not busy
+#   machine-gate.sh run    [--max SEC] -- CMD…   wait for the machine, take a gate slot, run CMD, give the slot back
+#   machine-gate.sh status                       cpu idle, load, thresholds, and who holds each slot
 #
 # Or sourced, for a caller that holds one slot across several commands:
 #   . machine-gate.sh; machine_gate_wait_load; machine_gate_acquire; …; machine_gate_release
@@ -11,17 +11,23 @@
 # Every path that starts heavy work calls it: /agent-harness:claim, :work, :auto
 # and :bug before they begin, and the local gate step of /agent-harness:finish,
 # the gate-runner agent and the driver's self-check around the gate commands.
-# The scheduler and repair-watch already read the same ceiling; sessions starting
-# agents by hand did not, and on 2026-10-15 the machine sat at load 77 on 10 cores
-# with 3 vitest, 9 dev servers and 5 tsc runs across 6 worktrees.
+# The scheduler, the coordinator tick and repair-watch use the same busy test
+# (swarm_busy in swarm/load.sh).
 #
-# IT NEVER FAILS THE TICKET. Above the ceiling it prints
+# BUSY MEANS SAMPLED CPU IDLE BELOW THE FLOOR, not a high load average: macOS
+# counts runnable and blocked threads, and on 2026-10-15 it read load 42-103 on
+# 10 cores while top showed 41% idle. The load average stays only as a backstop
+# at a far higher ceiling.
+#
+# IT NEVER FAILS THE TICKET. When busy it prints
+#   machine busy (cpu idle N%, floor F%), waiting     or
 #   machine busy (load N, limit M), waiting
 # and re-checks every MACHINE_GATE_POLL seconds. --max bounds one call's wait so
 # it fits inside a tool call's timeout: when it runs out the exit is 75 and
 # NOTHING RAN — call it again, never proceed and never give up.
 #
-#   SWARM_MAX_LOAD       the ceiling (else harness.json swarm.maxLoad, else 32)
+#   SWARM_MIN_CPU_IDLE   the idle floor in percent (else harness.json swarm.minCpuIdle, else 15)
+#   SWARM_MAX_LOAD       the load backstop (else harness.json swarm.maxLoad, else 8 x cores)
 #   HARNESS_GATE_SLOTS   gate runs at once, machine-wide (else swarm.gateSlots, else 2)
 #   HARNESS_GATE_SLOT_DIR  where the slots live (default ~/.cache/agent-harness/gate-slots:
 #                        one per MACHINE, not per project — the cores are shared)
@@ -45,7 +51,8 @@ _mg_cfg() { # <jq path> — an optional fact from harness.json, or nothing
 }
 
 machine_gate_init() {
-  MG_MAX_LOAD="${SWARM_MAX_LOAD:-$(_mg_cfg .swarm.maxLoad)}"; MG_MAX_LOAD="${MG_MAX_LOAD:-32}"
+  MG_MIN_IDLE="${SWARM_MIN_CPU_IDLE:-$(_mg_cfg .swarm.minCpuIdle)}"; MG_MIN_IDLE="${MG_MIN_IDLE:-15}"
+  MG_MAX_LOAD="${SWARM_MAX_LOAD:-$(_mg_cfg .swarm.maxLoad)}"; MG_MAX_LOAD="${MG_MAX_LOAD:-$(swarm_default_max_load)}"
   MG_SLOTS="${HARNESS_GATE_SLOTS:-$(_mg_cfg .swarm.gateSlots)}"; MG_SLOTS="${MG_SLOTS:-2}"
   case "$MG_SLOTS" in ''|*[!0-9]*|0) MG_SLOTS=2 ;; esac
   MG_DIR="${HARNESS_GATE_SLOT_DIR:-$HOME/.cache/agent-harness/gate-slots}"
@@ -63,21 +70,20 @@ _mg_alive() { [ -n "${1:-}" ] && [ "$1" -gt 0 ] 2>/dev/null && kill -0 "$1" 2>/d
 # _mg_waited <start-epoch> <max> — 0 while there is still time to wait.
 _mg_time_left() { [ "${2:-0}" -le 0 ] && return 0; [ $(( $(date +%s) - $1 )) -lt "$2" ]; }
 
-# Wait until the load is at or under the ceiling. 0 when clear, 75 when --max ran out.
+# Wait until the machine is not busy. 0 when clear, 75 when --max ran out.
 machine_gate_wait_load() { # [max-seconds]
   machine_gate_init
-  local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start load said=""
+  local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start why said=""
   start=$(date +%s)
   while :; do
-    load=$(swarm_load)
-    if [ "${load:-0}" -le "$MG_MAX_LOAD" ]; then
-      [ -n "$said" ] && echo "machine clear (load $load, limit $MG_MAX_LOAD), going ahead" >&2
+    if ! why=$(swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD"); then
+      [ -n "$said" ] && echo "machine clear ($why), going ahead" >&2
       return 0
     fi
-    echo "machine busy (load $load, limit $MG_MAX_LOAD), waiting" >&2
+    echo "machine busy ($why), waiting" >&2
     said=1
     _mg_time_left "$start" "$max" || {
-      echo "machine still busy after ${max}s (load $load, limit $MG_MAX_LOAD) — nothing ran; run the same command again" >&2
+      echo "machine still busy after ${max}s ($why) — nothing ran; run the same command again" >&2
       return "$MG_BUSY"; }
     sleep "$MG_POLL"
   done
@@ -182,7 +188,11 @@ _mg_main() {
       return "$rc" ;;
     status)
       machine_gate_init
-      echo "load $(swarm_load), limit $MG_MAX_LOAD · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
+      local idle load verdict=clear
+      idle=$(swarm_cpu_idle); load=$(swarm_load)
+      SWARM_IDLE="$idle" SWARM_LOAD="$load" SWARM_IDLE_FILE="" SWARM_LOAD_FILE="" \
+        swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD" >/dev/null && verdict=busy
+      echo "$verdict · cpu idle $idle% (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
     *)
       sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 2 ;;
   esac

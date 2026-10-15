@@ -25,9 +25,55 @@ cleanup() { for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; do
 trap cleanup EXIT
 
 # Never the machine's own slots, load, config or plugin env.
+# SWARM_IDLE=90 by default so the load tests below test the load alone.
 export HARNESS_GATE_SLOT_DIR="$T/slots" MACHINE_GATE_POLL=0 SWARM_MAX_LOAD=32 HARNESS_GATE_SLOTS=2
-export HARNESS_CFG_PATH="$T/none.json"
-unset SWARM_LOAD SWARM_LOAD_FILE MACHINE_GATE_MAX_WAIT HARNESS_CFG CLAUDE_PLUGIN_ROOT 2>/dev/null
+export HARNESS_CFG_PATH="$T/none.json" SWARM_IDLE=90 SWARM_IDLE_CACHE="$T/idle-cache"
+unset SWARM_LOAD SWARM_LOAD_FILE SWARM_IDLE_FILE SWARM_MIN_CPU_IDLE SWARM_CORES MACHINE_GATE_MAX_WAIT HARNESS_CFG CLAUDE_PLUGIN_ROOT 2>/dev/null
+LOADSH="$KIT/swarm/load.sh"
+TOPFIX="$KIT/swarm/tests/fixtures/top-macos.txt"
+
+echo "--- busy is cpu idle under the floor ---"
+out=$(SWARM_IDLE=9 SWARM_LOAD=5 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && ok "idle 9% under a 15% floor is busy (75)" || fail "idle 9%: rc $rc"
+printf '%s' "$out" | grep -q 'machine busy (cpu idle 9%, floor 15%), waiting' && ok "the busy line names idle and floor" || fail "busy line: $out"
+out=$(SWARM_IDLE=15 SWARM_LOAD=5 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "idle at the floor goes ahead" || fail "idle 15%: rc $rc $out"
+out=$(SWARM_IDLE=41 SWARM_LOAD=60 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 0 ] && ok "the measured case: 41% idle at load 60 on 10 cores goes ahead" || fail "41% idle, load 60: rc $rc $out"
+rm -f "$T/ran"
+SWARM_IDLE=3 SWARM_LOAD=1 bash "$SUT" run --max 1 -- touch "$T/ran" >/dev/null 2>&1; rc=$?
+[ "$rc" = 75 ] && [ ! -e "$T/ran" ] && ok "run under the idle floor starts nothing" || fail "rc $rc ran=$([ -e "$T/ran" ] && echo yes || echo no)"
+out=$(SWARM_IDLE=20 SWARM_MIN_CPU_IDLE=30 SWARM_LOAD=1 bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'floor 30%' && ok "SWARM_MIN_CPU_IDLE moves the floor" || fail "rc $rc $out"
+
+echo "--- the idle falls back while it waits: it goes ahead on its own ---"
+echo 2 > "$T/idle"; rm -f "$T/ran" "$T/idle.rc"
+( SWARM_IDLE_FILE="$T/idle" SWARM_LOAD=1 MACHINE_GATE_POLL=1 bash "$SUT" run -- touch "$T/ran" > "$T/idle.out" 2>&1; echo $? > "$T/idle.rc" ) &
+PIDS+=($!)
+sleep 2
+[ ! -e "$T/ran" ] && ok "held while idle is 2%" || fail "ran while busy"
+echo 60 > "$T/idle"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$T/idle.rc" ] && break; sleep 1; done
+[ -e "$T/ran" ] && ok "ran once idle rose" || fail "never ran: $(cat "$T/idle.out")"
+grep -q 'machine clear (cpu idle 60%, load 1), going ahead' "$T/idle.out" && ok "and said what it read" || fail "no clear line: $(cat "$T/idle.out")"
+
+echo "--- the load average is only a backstop, at 8 x cores ---"
+out=$(SWARM_IDLE=90 SWARM_LOAD=81 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'machine busy (load 81, limit 80), waiting' && ok "load 81 over 8 x 10 cores is busy even at 90% idle" || fail "rc $rc $out"
+out=$(SWARM_IDLE=90 SWARM_LOAD=80 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 0 ] && ok "load 80 at the backstop goes ahead" || fail "rc $rc $out"
+
+echo "--- real top output from macOS: the SECOND sample is the reading ---"
+# Captured 2026-10-15 23:07 on the operator's machine: sample 1 says 0.0% idle,
+# sample 2 says 0.57%. The first is not a measurement over the interval.
+got=$(bash -c '. "$1"; swarm_parse_top_idle < "$2"' _ "$LOADSH" "$TOPFIX")
+[ "$got" = 1 ] && ok "parsed 0.57% idle from the second sample as 1" || fail "parsed '$got' from $TOPFIX"
+got=$(printf 'CPU usage: 50.10%% user, 8.90%% sys, 41.0%% idle \n' | bash -c '. "$1"; swarm_parse_top_idle' _ "$LOADSH")
+[ "$got" = 41 ] && ok "41.0% idle reads 41" || fail "read '$got'"
+got=$(printf 'nothing here\n' | bash -c '. "$1"; swarm_parse_top_idle' _ "$LOADSH"); rc=$?
+[ "$rc" != 0 ] && [ -z "$got" ] && ok "no CPU usage line is no reading, not 0" || fail "rc $rc got '$got'"
+got=$(bash -c '. "$1"; swarm_parse_stat_idle "cpu  100 0 100 700 100 0 0 0 0 0" "cpu  200 0 200 1300 200 0 0 0 0 0"' _ "$LOADSH")
+[ "$got" = 78 ] && ok "/proc/stat: idle + iowait over the interval (78%)" || fail "stat parsed '$got'"
 
 echo "--- under the ceiling: no wait, nothing printed ---"
 out=$(SWARM_LOAD=5 bash "$SUT" wait --max 1 2>&1); rc=$?
@@ -101,12 +147,12 @@ SWARM_LOAD=1 HARNESS_GATE_SLOTS=1 bash "$SUT" run --max 1 -- touch "$T/ran" >/de
 [ "$rc" = 0 ] && ok "an old pid-less slot is reaped" || fail "rc $rc"
 rm -rf "$T/slots"; mkdir -p "$T/slots"
 
-echo "--- the ceiling and slot count come from harness.json when not in the env ---"
-printf '{"swarm":{"maxLoad":4,"gateSlots":1}}' > "$T/cfg.json"
-out=$(env -u SWARM_MAX_LOAD -u HARNESS_GATE_SLOTS HARNESS_CFG_PATH="$T/cfg.json" SWARM_LOAD=5 bash "$SUT" status 2>&1)
-printf '%s' "$out" | grep -q 'limit 4 · gate slots 1' && ok "swarm.maxLoad and swarm.gateSlots read" || fail "$out"
-out=$(env -u SWARM_MAX_LOAD -u HARNESS_GATE_SLOTS SWARM_LOAD=5 bash "$SUT" status 2>&1)
-printf '%s' "$out" | grep -q 'limit 32 · gate slots 2' && ok "defaults 32 and 2 with no config" || fail "$out"
+echo "--- the thresholds and slot count come from harness.json when not in the env ---"
+printf '{"swarm":{"maxLoad":4,"gateSlots":1,"minCpuIdle":25}}' > "$T/cfg.json"
+out=$(env -u SWARM_MAX_LOAD -u HARNESS_GATE_SLOTS HARNESS_CFG_PATH="$T/cfg.json" SWARM_LOAD=5 SWARM_IDLE=30 bash "$SUT" status 2>&1)
+printf '%s' "$out" | grep -q '^busy · cpu idle 30% (floor 25%) · load 5 (limit 4) · gate slots 1' && ok "swarm.minCpuIdle, swarm.maxLoad and swarm.gateSlots read" || fail "$out"
+out=$(env -u SWARM_MAX_LOAD -u HARNESS_GATE_SLOTS SWARM_CORES=10 SWARM_LOAD=5 SWARM_IDLE=30 bash "$SUT" status 2>&1)
+printf '%s' "$out" | grep -q '^clear · cpu idle 30% (floor 15%) · load 5 (limit 80) · gate slots 2' && ok "defaults 15%, 8 x cores and 2 with no config" || fail "$out"
 
 # ---- the call sites ----------------------------------------------------------
 # Each skill's fenced bash block that calls machine-gate.sh, run as written.

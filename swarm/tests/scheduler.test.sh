@@ -39,13 +39,20 @@ out=$(sched --programme widgets)
 want "nothing spawned when it cannot see" "0" "$(grep -c . "$SPAWNS")"
 want_in "and it holds rather than guessing" '99 agent\(s\) running' "$out"
 
-echo "--- the machine's load ---"
+echo "--- the machine: busy is cpu idle under the floor, load is only a backstop ---"
 reset_state; fix_live widgets 0
-out=$(SWARM_LOAD=40 sched --programme widgets)
-want "nothing spawned above the ceiling"  "0" "$(grep -c . "$SPAWNS")"
-want_in "the hold names the load"         'load 40 above 32 — holding' "$out"
-out=$(SWARM_LOAD=32 sched --programme widgets)
-want_not_in "at the ceiling it still runs" 'above 32' "$out"
+out=$(SWARM_IDLE=9 sched --programme widgets)
+want "nothing spawned under the idle floor" "0" "$(grep -c . "$SPAWNS")"
+want_in "the hold names the idle"         'machine busy \(cpu idle 9%, floor 15%\) — holding' "$out"
+out=$(SWARM_IDLE=15 sched --programme widgets)
+want_not_in "at the floor it still runs"  'machine busy' "$out"
+reset_state; fix_live widgets 0
+out=$(SWARM_LOAD=60 SWARM_IDLE=41 SWARM_CORES=10 sched --programme widgets)
+want_not_in "load 60 at 41% idle on 10 cores is not busy" 'machine busy' "$out"
+reset_state; fix_live widgets 0
+out=$(SWARM_LOAD=81 SWARM_IDLE=90 SWARM_CORES=10 sched --programme widgets)
+want "nothing spawned over the load backstop" "0" "$(grep -c . "$SPAWNS")"
+want_in "the backstop is 8 x cores"       'machine busy \(load 81, limit 80\) — holding' "$out"
 
 echo "--- the plan's usage limit ---"
 reset_state; fix_live widgets 0
