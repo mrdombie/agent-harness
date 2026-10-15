@@ -55,9 +55,33 @@ add_wt() { # <name> [branch] — a registered worktree under the root, at the pu
 cache() { mkdir -p "$1/apps/web/.next"; printf 'x\n' > "$1/apps/web/.next/out"; }
 age_all() { find "$ROOT" "$SB/elsewhere" -exec touch -t 202001010000 {} + 2>/dev/null; }
 
+# The forge: PRs per branch ($SB/prs.tsv: branch state number headOid) and ticket states
+# ($SB/issues.tsv: number state), answered from the aliases the sweeper's one GraphQL query asks for.
+mkdir -p "$SB/bin"; : > "$SB/prs.tsv"; : > "$SB/issues.tsv"
+cat > "$SB/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ -f "$FORGE_DOWN" ] && exit 1
+q=""; for a in "$@"; do case "$a" in query=*) q=${a#query=} ;; esac; done
+printf '%s\n' "$q" > "$FORGE_LOG"
+{
+  printf '%s' "$q" | grep -oE 'b[0-9]+: pullRequests\(headRefName: "[^"]*"' | sed -E 's/^(b[0-9]+): pullRequests\(headRefName: "(.*)"$/\1\t\2/' |
+  while IFS=$'\t' read -r k br; do
+    awk -F'\t' -v b="$br" '$1==b {print $2"\t"$3"\t"$4}' "$FORGE_PRS" |
+      jq -R 'split("\t") | {state: .[0], number: (.[1]|tonumber), headRefOid: .[2]}' | jq -s --arg k "$k" '{($k): {nodes: .}}'
+  done
+  printf '%s' "$q" | grep -oE 't[0-9]+: issueOrPullRequest\(number: [0-9]+' | sed -E 's/^t([0-9]+).*/\1/' |
+  while read -r n; do
+    st=$(awk -F'\t' -v n="$n" '$1==n {print $2}' "$FORGE_ISSUES")
+    if [ -n "$st" ]; then jq -n --arg k "t$n" --arg s "$st" '{($k): {state: $s}}'; else jq -n --arg k "t$n" '{($k): null}'; fi
+  done
+} | jq -s '{data: {repository: (add // {})}}'
+GH
+chmod +x "$SB/bin/gh"
+
 sweep() {
   HOME="$SB/home" HARNESS_MAIN_REPO="$MAIN" HARNESS_REPO_ROOT="$MAIN" HARNESS_CFG_PATH="$SB/cfg.json" \
   HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester SWEEP_WORKTREE_ROOTS="$ROOT" \
+  SWEEP_GH="$SB/bin/gh" FORGE_PRS="$SB/prs.tsv" FORGE_ISSUES="$SB/issues.tsv" FORGE_LOG="$SB/forge.log" FORGE_DOWN="$SB/forge-down" \
   bash "$SUT" "$@" 2>&1
 }
 there() { [ -d "$ROOT/$1" ]; }
@@ -140,6 +164,91 @@ out=$(HOME="$SB/home" HARNESS_MAIN_REPO="$MAIN" HARNESS_REPO_ROOT="$MAIN" HARNES
       HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester SWEEP_WORKTREE_ROOTS="$SB" bash "$SUT" 2>&1)
 printf '%s' "$out" | grep -qE '(would remove|keep) +main ' && bad "the main checkout was considered: $out" \
   || ok "the main checkout is never considered, even when a root holds it"
+
+# --- 7. finished work goes at once; every never-delete guard still holds ----------
+MAIN2="$SB/main2"; G clone -q "$ORIGIN" "$MAIN2" 2>/dev/null
+FOREIGN_ORIGIN="$SB/foreign.git"; FOREIGN="$SB/foreign"
+G init -q --bare "$FOREIGN_ORIGIN"; G clone -q "$FOREIGN_ORIGIN" "$FOREIGN" 2>/dev/null
+G -C "$FOREIGN" commit -q --allow-empty -m f; G -C "$FOREIGN" push -q origin HEAD:develop 2>/dev/null
+merged() { printf '%s\tMERGED\t%s\t%s\n' "$1" "$2" "$3" >> "$SB/prs.tsv"; }
+commit_in() { printf '%s\n' "$2" > "$ROOT/$1/$2.txt"; G -C "$ROOT/$1" add -A; G -C "$ROOT/$1" commit -qm "$2"; }
+# Pushed to its PR branch, then the branch deleted on merge: the commit is on no remote any more.
+pushed_then_deleted() { # <folder> <branch>
+  G -C "$ROOT/$1" push -q origin "$2" 2>/dev/null; G -C "$ROOT/$1" push -q origin --delete "$2" 2>/dev/null
+}
+build_finished() {
+  for p in $PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; PIDS=""
+  rm -rf "$ROOT"/* "$SB/forge-down"; rm -rf "$STATE/claims"/*; : > "$SB/prs.tsv"; : > "$SB/issues.tsv"
+  for m in "$MAIN" "$MAIN2" "$FOREIGN"; do
+    G -C "$m" worktree prune
+    for b in $(G -C "$m" for-each-ref --format='%(refname:short)' refs/heads | grep -vxE 'develop|master|main'); do G -C "$m" branch -qD "$b"; done
+  done
+  add_wt 801-merged tkt-801/a;   commit_in 801-merged one; pushed_then_deleted 801-merged tkt-801/a
+  merged tkt-801/a 1801 "$(G -C "$ROOT/801-merged" rev-parse HEAD)"
+  add_wt 802-extra tkt-802/a;    commit_in 802-extra one; pushed_then_deleted 802-extra tkt-802/a
+  merged tkt-802/a 1802 "$(G -C "$ROOT/802-extra" rev-parse HEAD)"; commit_in 802-extra two
+  add_wt 803-dirty tkt-803/a;    merged tkt-803/a 1803 "$(G -C "$MAIN" rev-parse develop)"
+  printf 'wip\n' > "$ROOT/803-dirty/apps/web/page.ts"
+  add_wt 804-busy tkt-804/a;     merged tkt-804/a 1804 "$(G -C "$MAIN" rev-parse develop)"
+  add_wt 805-claimed tkt-805/a;  merged tkt-805/a 1805 "$(G -C "$MAIN" rev-parse develop)"; mkdir -p "$STATE/claims/805.lock"
+  add_wt 806-closed;             printf '806\tCLOSED\n' >> "$SB/issues.tsv"
+  add_wt 807-open-pr tkt-807/a;  printf '807\tCLOSED\n' >> "$SB/issues.tsv"
+  printf 'tkt-807/a\tOPEN\t1807\t%s\n' "$(G -C "$MAIN" rev-parse develop)" >> "$SB/prs.tsv"
+  add_wt 808-open tkt-808/a;     printf '808\tOPEN\n' >> "$SB/issues.tsv"
+  add_wt 811-untracked tkt-811/a; merged tkt-811/a 1811 "$(G -C "$MAIN" rev-parse develop)"; printf 'n\n' > "$ROOT/811-untracked/notes.txt"
+  # A second clone of the same project registered this one; the sweeper never listed it.
+  G -C "$MAIN2" worktree add -q "$ROOT/809-other-clone" -b tkt-809/a origin/develop
+  merged tkt-809/a 1809 "$(G -C "$MAIN" rev-parse develop)"
+  G -C "$FOREIGN" worktree add -q "$ROOT/810-foreign" -b tkt-810/a develop
+  merged tkt-810/a 1810 "$(G -C "$FOREIGN" rev-parse develop)"
+  sit_in "$ROOT/804-busy"
+}
+build_finished
+out=$(sweep)
+there 801-merged && ok "a dry run removes no finished worktree" || bad "a dry run removed a finished worktree"
+printf '%s' "$out" | grep -q 'would remove .*801-merged — PR #1801 merged' && ok "the dry run names the merged PR" || bad "no merged-PR reason: $out"
+out=$(sweep --apply)
+there 801-merged && bad "a merged worktree under a day old survived: $out" || ok "a worktree whose PR merged goes at once, though under a day old and its branch deleted"
+there 806-closed && bad "a closed ticket's worktree survived: $out" || ok "a worktree whose ticket is closed goes at once"
+printf '%s' "$out" | grep -q 'remove  806-closed — ticket #806 closed' && ok "and it says the ticket closed" || bad "no closed-ticket reason: $out"
+there 809-other-clone && bad "a second clone's merged worktree survived: $out" || ok "a merged worktree another clone registered is removed too"
+G -C "$MAIN2" worktree list | grep -q 809-other-clone && bad "the other clone still lists the removed worktree" || ok "and that clone no longer lists it"
+there 802-extra && ok "a commit made after the PR's head keeps a merged worktree" || bad "a merged worktree with an unpushed commit was removed"
+printf '%s' "$out" | grep -q 'keep    802-extra — 1 commit(s) on no remote' && ok "and it says the commit is on no remote" || bad "802 reason: $out"
+there 803-dirty && ok "uncommitted changes keep a merged worktree" || bad "a merged worktree with uncommitted changes was removed"
+[ "$(cat "$ROOT/803-dirty/apps/web/page.ts" 2>/dev/null)" = wip ] && ok "and its change survives" || bad "the dirty merged worktree lost its change"
+there 811-untracked && ok "an untracked file keeps a merged worktree" || bad "a merged worktree with an untracked file was removed"
+there 804-busy && ok "a process inside keeps a merged worktree" || bad "a merged worktree in use was removed"
+there 805-claimed && ok "a live claim keeps a merged worktree" || bad "a claimed merged worktree was removed"
+there 807-open-pr && ok "an open PR keeps a closed ticket's young worktree" || bad "a worktree with an open PR was removed"
+there 808-open && ok "an open ticket with no merged PR keeps the age rule" || bad "an open ticket's young worktree was removed"
+there 810-foreign && ok "another repo's worktree under the root is never removed" || bad "a foreign repo's worktree was removed"
+grep -q 'b[0-9]*: pullRequests(headRefName: "tkt-801/a"' "$SB/forge.log" && ok "the query asks for the branch's PRs" || bad "query: $(cat "$SB/forge.log")"
+
+build_finished; touch "$SB/forge-down"
+out=$(sweep --apply)
+there 801-merged && ok "with the forge unreadable, a young merged worktree is kept" || bad "it removed a young worktree without reading its PR"
+printf '%s' "$out" | grep -q 'PR and ticket states unreadable' && ok "and the summary says so" || bad "no forge note: $(printf '%s' "$out" | grep Sweep)"
+
+# --- 8. harness-tools-* snapshots ----------------------------------------------
+build_world
+CUR=$(G -C "$MAIN" rev-parse origin/develop)
+tools() { mkdir -p "$ROOT/harness-tools-$1/scripts"; printf 'echo\n' > "$ROOT/harness-tools-$1/scripts/x.sh"; }
+tools "$(printf '%.10s' "$CUR")"; tools aaaa111111; tools bbbb222222; tools cccc333333; tools dddd444444
+find "$ROOT"/harness-tools-* -exec touch -t 202001010000 {} +
+touch "$ROOT/harness-tools-bbbb222222"
+sit_in "$ROOT/harness-tools-cccc333333"
+(exec 3<"$ROOT/harness-tools-dddd444444/scripts/x.sh"; cd /; exec sleep 300) & PIDS="$PIDS $!"
+holder=$!; for _ in $(seq 1 100); do lsof -p "$holder" -Fn 2>/dev/null | grep -q dddd444444 && break; sleep 0.1; done
+out=$(sweep)
+[ -d "$ROOT/harness-tools-aaaa111111" ] && ok "a dry run removes no snapshot" || bad "a dry run removed a snapshot"
+printf '%s' "$out" | grep -q 'tools snapshots (dry run): would-remove=1 kept=4' && ok "the dry run counts them" || bad "tools dry: $(printf '%s' "$out" | grep tools)"
+out=$(sweep --apply)
+[ -d "$ROOT/harness-tools-aaaa111111" ] && bad "an old unused snapshot survived" || ok "an old snapshot nothing uses is removed"
+[ -d "$ROOT/harness-tools-$(printf '%.10s' "$CUR")" ] && ok "the current branch head's snapshot is kept" || bad "the current snapshot was removed"
+[ -d "$ROOT/harness-tools-bbbb222222" ] && ok "a snapshot under a day old is kept" || bad "a young snapshot was removed"
+[ -d "$ROOT/harness-tools-cccc333333" ] && ok "a snapshot a process sits in is kept" || bad "a snapshot in use (cwd) was removed"
+[ -f "$ROOT/harness-tools-dddd444444/scripts/x.sh" ] && ok "a snapshot with a file open is kept" || bad "a snapshot with an open file was removed"
 
 echo
 [ "$fail" -eq 0 ] && echo "sweep-orphan-worktrees: all cases pass" || echo "sweep-orphan-worktrees: FAILURES above"

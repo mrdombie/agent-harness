@@ -17,6 +17,7 @@
 # Settings, all optional under `coordinator` in harness.json (or the env var):
 #   coordinator.cap          COORDINATOR_CAP            4    live ticket runs
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
+#   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
 #   coordinator.frozenMin    COORDINATOR_FROZEN_MIN    20    no log growth = frozen
 #   coordinator.judges       COORDINATOR_JUDGES         1    judges at once
 #   coordinator.judge.turns  COORDINATOR_JUDGE_TURNS   40
@@ -36,6 +37,7 @@ COORD_NEEDS_YOU="$COORD_DIR/needs-you.md"
 COORD_LOG="$COORD_DIR/tick.log"
 COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap 4)}"
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
+COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
 COORD_FROZEN_MIN="${COORDINATOR_FROZEN_MIN:-$(swarm_opt coordinator.frozenMin 20)}"
 COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 1)}"
 COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turns 40)}"
