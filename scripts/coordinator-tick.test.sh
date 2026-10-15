@@ -224,7 +224,7 @@ fresh
 out=$(disk 5 50 COORDINATOR_SHADOW=0)
 want_in "below the floor, the cache pass runs first, for real" '^cachepass --caches-only --apply$' "$(cat "$FIX/house.log")"
 want "and freeing enough means no alarm"   "" "$(cat "$FIX/notify.log")"
-want_in "the tick says what it freed"      '5 GB free .* 50 GB after the cache pass' "$out"
+want_in "the tick says what it freed"      '5 GB free.* 50 GB after the cache pass' "$out"
 fresh
 out=$(disk 5 8 COORDINATOR_SHADOW=0)
 want_in "still below the floor after the pass is an alarm" 'Disk is low: 8 GB' "$(cat "$FIX/notify.log")"
