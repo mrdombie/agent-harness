@@ -175,43 +175,68 @@ tick >/dev/null
 want "each ended run is read once"         "3" "$(grep -c 'ended' "$C/runs.log")"
 rm -f "$STATE/logs/claim-803-x.log"
 
-echo "--- pull requests: red is judged, green pixels go to the owner ---"
-pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState]
+echo "--- pull requests: red is judged, green pixels go to the owner in batches ---"
+pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState] — the hold's own gate is red while held
   jq -n --argjson n "$1" --arg b "tkt-$2-x" --arg l "$3" --arg c "$4" --arg m "${5:-CLEAN}" \
-    '{number:$n, headRefName:$b, headRefOid:("sha" + ($n|tostring)), isDraft:false, mergeStateStatus:$m,
+    '{number:$n, headRefName:$b, headRefOid:("sha" + ($n|tostring) + "abcdef"), isDraft:false, mergeStateStatus:$m,
       labels:(if $l == "-" then [] else [{name:$l}] end),
-      statusCheckRollup:[{name:"ci", status:"COMPLETED", conclusion:$c}]}'
+      statusCheckRollup:([{name:"ci", status:"COMPLETED", conclusion:$c}]
+        + (if $l == "-" then [] else [{name:"approval-gate", status:"COMPLETED", conclusion:"FAILURE"},
+              {name:"approval-gate — waiting for sign-off", status:"COMPLETED", conclusion:"ACTION_REQUIRED"}] end))}'
 }
+held() { local n; for n in "$@"; do pr "$n" "$((n+560))" needs:human-approval SUCCESS; done; }
 fresh
-jq -s . <(pr 41 601 - FAILURE) <(pr 42 602 needs:human-approval SUCCESS) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
+jq -s . <(pr 41 601 - FAILURE) <(held 42) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
 tick >/dev/null
-want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41"' "$C/events.would.jsonl")"
-want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.would.jsonl")"
-want "a healthy PR raises nothing"         "0" "$(grep -c ':44:' "$C/events.would.jsonl")"
-want_in "a green pixel PR is a sign-off"   '"kind":"signoff".*"judge":false' "$(grep ':42:' "$C/events.would.jsonl")"
+want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41a' "$C/events.would.jsonl")"
+want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
+want "a healthy PR raises nothing"         "0" "$(grep -c ':44' "$C/events.would.jsonl")"
+want "one green held PR is not a batch"    "0" "$(grep -c '"kind":"signoff"' "$C/events.would.jsonl")"
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
 out=$(tick)
 want "a red PR a session is fixing is not judged" "0" "$(grep -c ':41:' "$C/events.would.jsonl")"
 want_in "and the tick says who has it"     'PR #41: .*being fixed by mac:4242' "$out"
-want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43"' "$C/events.would.jsonl")"
+want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
+
+echo "--- sign-off batches: five green held PRs, the moment the fifth goes green ---"
+fresh
+jq -s . <(held 51 52 53 54) <(pr 55 615 needs:human-approval SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "four green and one clashing is no batch" "" "$(cat "$FIX/notify.log"; cat "$C/needs-you.md" 2>/dev/null)"
+jq -s . <(held 51 52 53 54 55 56) > "$FIX/gh/prs-all.json"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "the fifth green makes one batch"     "1" "$(grep -c . "$FIX/notify.log")"
+want_in "the owner is told the five"       '^5 screens are ready for your sign-off: PR #51, #52, #53, #54, #55$' "$(cat "$FIX/notify.log")"
+want_in "needs-you carries the batch, keyed on its set" \
+  'PR #51, .*#55 <!-- key:signoff-batch:51@sha51ab,52@sha52ab,53@sha53ab,54@sha54ab,55@sha55ab -->' "$(cat "$C/needs-you.md")"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "a batch is sent once, not every tick" "1" "$(grep -c . "$FIX/notify.log")"
+jq -s . <(held 51 52 53 54 55 56 57 58 59) > "$FIX/gh/prs-all.json"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "the sixth to ninth wait for a fifth" "1" "$(grep -c . "$FIX/notify.log")"
+jq -s . <(held 51 52 53 54 55 56 57 58 59 60) > "$FIX/gh/prs-all.json"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want_in "the tenth sends the second batch" 'PR #56, #57, #58, #59, #60' "$(sed -n 2p "$FIX/notify.log")"
 fresh
 jq -n '[{number:45, headRefName:"tkt-605-x", headRefOid:"s45", isDraft:false, mergeStateStatus:"CLEAN",
          labels:[{name:"needs:human-approval"}],
          statusCheckRollup:[{name:"ci", status:"COMPLETED", conclusion:"SUCCESS"}, {context:"deploy", state:"PENDING"}]}]' > "$FIX/gh/prs-all.json"
-tick >/dev/null
-want "a pending status context is not green" "0" "$(grep -c ':45:' "$C/events.would.jsonl")"
+want "a pending status context is not green" "" "$(bash "$HERE/signoff-batch.sh" green < "$FIX/gh/prs-all.json")"
 fresh
-jq -s . <(pr 41 601 - FAILURE) <(pr 42 602 needs:human-approval SUCCESS) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
+jq -s . <(held 51 52 53 54 55) > "$FIX/gh/prs-all.json"
 tick >/dev/null
 want "shadow tells the owner nothing"      "" "$(cat "$FIX/notify.log"; cat "$C/needs-you.md" 2>/dev/null)"
-want_in "shadow logs that it would"        'would	notify	signoff:42' "$(cat "$C/actions.log")"
+want_in "shadow logs that it would"        'would	notify	signoff-batch:51@' "$(cat "$C/actions.log")"
 COORDINATOR_SHADOW=0 tick >/dev/null
-want_in "live: the owner is pinged"        'PR #42 .*needs your sign-off' "$(cat "$FIX/notify.log")"
-want_in "live: needs-you carries the line" 'PR #42' "$(cat "$C/needs-you.md")"
-COORDINATOR_SHADOW=0 tick >/dev/null
-want "pinged once, not every tick"         "1" "$(grep -c . "$FIX/notify.log")"
+want "going live still sends a batch shadow saw" "1" "$(grep -c . "$FIX/notify.log")"
+
+echo "--- the owner channel carries decisions only ---"
+fresh
+jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
+COORDINATOR_SHADOW=0 COORDINATOR_JUDGE=true tick >/dev/null
+want "a red PR never reaches needs-you"    "" "$(cat "$FIX/notify.log"; cat "$C/needs-you.md" 2>/dev/null)"
 
 echo "--- disk ---"
 # The cache pass stand-in frees what $FIX/frees says, so the re-measure sees it.
@@ -259,7 +284,7 @@ chmod +x "$BIN/lane"
 fresh; : > "$FIX/lane.log"
 out=$(COORDINATOR_LANE="$BIN/lane" tick)
 want "no merge method: the lane does not run" "" "$(cat "$FIX/lane.log")"
-want_in "and the tick says why"            'merge lane: off — harness.json has no merge.method' "$out"
+want_in "and the tick says why"            'merge lane: off — [a-z]+\.json has no merge\.method' "$out"
 cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"
 jq '.merge = {method: "squash"}' "$FIX/cfg.bak" > "$HARNESS_CFG_PATH"
 COORDINATOR_LANE="$BIN/lane" tick >/dev/null

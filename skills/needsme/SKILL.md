@@ -1,6 +1,6 @@
 ---
 name: needsme
-description: Everything genuinely blocked on a human, sorted from everything that only LOOKS blocked on them — and WHO can clear each. Prints the board, then walks them through their items one at a time and runs the full motion on each answer. Usage: /agent-harness:needsme | /agent-harness:needsme --board (no walk) | /agent-harness:needsme --tier1 (skip the rest)
+description: Everything genuinely blocked on a human, sorted from everything that only LOOKS blocked on them — and WHO can clear each. Prints the board, then walks them through their items one at a time and runs the full motion on each answer. Usage: /agent-harness:needsme | /agent-harness:needsme --watch (ask as items arrive, idle between) | /agent-harness:needsme --board (no walk) | /agent-harness:needsme --tier1 (skip the rest)
 ---
 
 You are clearing the operator's blocking queue. Read `${CLAUDE_PLUGIN_ROOT}/shared/operator.md` first: the operator is whoever runs this; how a hold is cleared is the 1a rule below.
@@ -359,8 +359,11 @@ survivor is really an issue.
 
 ### 1g · The coordinator's needs-you file
 
-The coordinator tick never asks a question. When a pixel PR goes green or a
-judgement needs the owner, it pings the desktop and appends one line here:
+The coordinator tick never asks a question. When a full batch of held pixel PRs
+is green apart from the hold, or a judgement names a choice only the owner can
+make, it pings the desktop and appends one keyed line here (`<!-- key:… -->`).
+Repairs, a red integration branch and stuck agents never land here — they go to
+`agent-work.log` beside it:
 
 ```bash
 cat "$STATE_DIR/coordinator/needs-you.md" 2>/dev/null | grep '^- \[ \]'
@@ -535,6 +538,57 @@ Cleared 2 · 1 still yours (the workspace chrome, #9023) · 4 agents running.
 | `--board` | Board only. Still dispatches Tier 2. No walk. |
 | `--tier1` | Only their items. Skips the ⚪ table. |
 | `--dry` | Scan and print. Dispatches nothing, changes nothing. |
+| `--watch` | No scan. Ask what is new as clickable choices, then idle on a shell watcher — see below. |
+
+---
+
+## `--watch` — the owner's window
+
+The operator opens one window, types `/agent-harness:needsme --watch`, and leaves
+it. Decisions arrive as `AskUserQuestion` choices; between them nothing runs but a
+shell loop, so the window costs no model calls while idle. **Skip Steps 1–6.**
+The board is one script call; never re-run the six-channel scan here.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; W="$KIT_ROOT/scripts/needsme-watch.sh"
+bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet asked
+```
+
+### W1 — ask each row
+
+- **`signoff-batch`** — a batch of held pixel PRs, green apart from the hold. One
+  PR at a time, in the order the text lists them:
+  1. `bash "$W" card <pr>`. `held no` → already signed off: skip it, no question.
+  2. `bash "$W" open <pr>` — opens the live preview and the before/after shots in
+     Chrome. Say so in one line, with the PR URL from the card.
+  3. `AskUserQuestion`, header `Sign off`, the question naming what the change
+     does (from the card's title) and the PR number last. Options: **Approve**
+     (clear the hold and let it merge) · **Change** (tell me what's wrong).
+  4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr>`, then re-read the labels
+     as Step 5 does. **Change**, or any typed answer → comment the words verbatim on
+     the PR; the hold stays. **Never clear the hold without "Approve" for that PR in
+     that prompt** — not from a batch answer, not from praise, not from an earlier
+     window.
+  5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer.
+  When every PR is answered: `bash "$W" done <batch key>`.
+- **Any other kind** (`decision`, `blind`, `disk-low`, a keyless `line`) — one
+  `AskUserQuestion` with the row's text as the question and the real choices it
+  names, then act on the answer as Step 5 does. `bash "$W" done <key>`.
+
+Mark a row done after it is answered or skipped, never before: a window closed
+mid-question asks it again next time, and an answered one never comes back.
+
+### W2 — arm the watcher, then stop
+
+```bash
+bash "$W" wait          # Bash, run_in_background: true
+```
+
+It exits when a new key lands in `needs-you.md`, or when the forge (read every
+five minutes) shows a full batch of green held PRs. End the turn with one line:
+`Watching — I'll ask when something needs you.` When it exits, its output is
+the new rows: do W1 on exactly those, then W2 again. Exit 3 means another window is
+already watching: say which pid, and stop. Never use `/loop` or a timer here.
 
 ---
 
