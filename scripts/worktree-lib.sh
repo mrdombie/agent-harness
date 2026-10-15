@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # worktree-lib.sh — sourced by the worktree sweeper and the cache pass.
-#   wt_real <path> · wt_cwds_load · wt_occupant <real-wt> · wt_can_see_processes · wt_cfg <cfg> <jq-path>
-# The caller's own shell chain is not an occupant: an agent cleaning up from inside its worktree is done with it.
+#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_can_see_processes · wt_cfg <cfg> <jq-path>
 
 wt_real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
 
@@ -9,8 +8,10 @@ wt_can_see_processes() { command -v lsof >/dev/null 2>&1; }
 
 WT_CWDS=""
 WT_SELF=""
-wt_cwds_load() {
-  WT_CWDS=$(lsof -a -d cwd -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2)} /^n/{print p "\t" substr($0,2)}')
+wt_cwds_load() { # [--exclude-self] — removal must never exclude the caller: a session sitting in a worktree is using it
+  WT_CWDS=$(cd / && lsof -a -d cwd -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2)} /^n/{print p "\t" substr($0,2)}')
+  WT_SELF=""
+  [ "${1:-}" = --exclude-self ] || return 0
   local p=$$ n=0
   WT_SELF=" $$ "
   while [ "$p" -gt 1 ] 2>/dev/null && [ "$n" -lt 64 ]; do
@@ -18,8 +19,6 @@ wt_cwds_load() {
     [ -n "$p" ] || break
     WT_SELF="$WT_SELF$p "; n=$((n+1))
   done
-  # The pipeline's own children carry this pid as parent and are gone before anyone looks.
-  WT_SELF="$WT_SELF${BASHPID:-} "
 }
 
 wt_occupant() { # <real-wt>

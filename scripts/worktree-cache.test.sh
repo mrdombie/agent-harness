@@ -31,6 +31,15 @@ mk_tree() { # <dir>
   printf 'x\n' > "$d/apps/api/.next/server.js"
   printf 'x\n' > "$d/.turbo/log"
 }
+# Waits until lsof sees the process in the folder: a fixed sleep raced it under load.
+sit_in() { # <dir> — a process sitting in <dir>, until the suite ends
+  (cd "$1" && exec sleep 300) & PIDS="$PIDS $!"
+  local p=$! real; real=$(cd "$1" && pwd -P)
+  for _ in $(seq 1 100); do
+    lsof -a -p "$p" -d cwd -Fn 2>/dev/null | grep -qxF "n$real" && return 0
+    sleep 0.1
+  done
+}
 old() { find "$1" -exec touch -t 202001010000 {} + ; }   # nothing in it changed for years
 run() { HARNESS_CFG_PATH="${CFG:-$SB/none.json}" bash "$SUT" "$@" 2>&1; }
 
@@ -58,8 +67,7 @@ out=$(run clean "$WT")
 
 # --- 3. a live process in the worktree keeps every cache ---------------------
 WT="$SB/wt3"; mk_tree "$WT"; old "$WT"
-(cd "$WT/apps/web" && exec sleep 300) & PIDS="$PIDS $!"
-sleep 0.3
+sit_in "$WT/apps/web"
 out=$(run clean "$WT")
 [ -d "$WT/apps/web/.next" ] && [ -d "$WT/.turbo" ] && ok "a worktree a process is sitting in keeps its caches" \
   || bad "caches were removed under a live process: $out"
@@ -92,11 +100,16 @@ run clean "$WT" >/dev/null
 # The in-use check is scoped to the path given, so a subfolder would miss
 # somebody sitting elsewhere in the same worktree.
 WT="$SB/wt7"; mk_tree "$WT"; old "$WT"
-(cd "$WT/apps/api" && exec sleep 300) & PIDS="$PIDS $!"
-sleep 0.3
+sit_in "$WT/apps/api"
 out=$(run clean "$WT/apps/web")
 [ -d "$WT/apps/web/.next" ] && ok "a subfolder of a checkout is not cleaned on its own" \
   || bad "a subfolder was cleaned while its worktree was in use: $out"
+
+# --- 7b. run from inside the worktree, as /finish and a park do ---------------
+WT="$SB/wt7b"; mk_tree "$WT"; old "$WT"
+out=$(cd "$WT/apps/web" && HARNESS_CFG_PATH="$SB/none.json" bash "$SUT" clean "$WT" 2>&1)
+[ ! -e "$WT/apps/web/.next" ] && ok "the caller sitting in its own worktree does not count as using it" \
+  || bad "a cleanup run from inside the worktree refused itself: $out"
 
 # --- 8. dry run removes nothing ------------------------------------------------
 WT="$SB/wt8"; mk_tree "$WT"; old "$WT"

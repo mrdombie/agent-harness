@@ -27,7 +27,7 @@ if ! wt_can_see_processes; then
   echo "worktree-cache: no lsof here — cannot tell who is using a worktree, cleaning nothing"
   exit 0
 fi
-wt_cwds_load
+wt_cwds_load --exclude-self
 
 patterns() { # <worktree>
   local cfg="${HARNESS_CFG_PATH:-$1/.claude/harness.json}" got d
