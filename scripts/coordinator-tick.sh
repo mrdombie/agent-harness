@@ -13,8 +13,8 @@
 #   1. lock          a tick still running means this one exits, untouched
 #   2. ended runs    each runs/*.ended not yet seen: its exit code and final result
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
-#   4. pull requests red (unless fix-lock.sh says a session is on it), or a
-#                    pixel PR gone green that needs sign-off
+#   4. pull requests red (unless fix-lock.sh says a session is on it), and the
+#                    held pixel PRs gone green, sent to the owner a full batch at a time
 #   5. spawn         the queue in class order, up to coordinator.cap live runs,
 #                    never a ticket that is claimed, gated or on hold
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
@@ -33,6 +33,7 @@ SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
 JUDGE="${COORDINATOR_JUDGE:-$SELF_DIR/coordinator-judge.sh}"
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
 QUEUE="$SELF_DIR/coordinator-queue.sh"
+SIGNOFF="$SELF_DIR/signoff-batch.sh"
 SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
@@ -123,7 +124,6 @@ if [ -n "$PRS" ]; then
     | (.headRefName | ltrimstr($pre) | capture("^(?<n>[0-9]+)").n // "") as $t
     | if .mergeStateStatus == "DIRTY" then [ "red", .number, .headRefOid, $t, "clashes with the integration branch" ]
       elif $pending == 0 and $failed > 0 then [ "red", .number, .headRefOid, $t, "checks settled red" ]
-      elif $held != null and $pending == 0 and $failed == 0 and ($c | length) > 0 then [ "signoff", .number, .headRefOid, $t, "green and waiting on sign-off" ]
       else empty end
     | @tsv' 2>/dev/null \
   | while IFS=$'\t' read -r kind pr sha t why; do
@@ -132,11 +132,18 @@ if [ -n "$PRS" ]; then
           fixer=$(awk -F'\t' -v p="$pr" '$1 == p { print $2; exit }' <<<"$FIXING")
           if [ -n "$fixer" ]; then say "PR #$pr: $why — being fixed by $fixer, not judged"
           else event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true; fi ;;
-        signoff)
-          if event "signoff:$pr:$sha" signoff false "$t" "$pr" "$why"; then
-            bash "$NOTIFY" "signoff:$pr:$sha" "PR #$pr (ticket #$t) is green and needs your sign-off"
-          fi ;;
       esac
+    done
+  # Sign-offs reach the owner in batches, the moment a batch fills: one entry per
+  # full set of green held PRs not already sent, keyed on that set.
+  BATCHED="$COORD_DIR/signoff-batched.$(coord_mode)"
+  printf '%s' "$PRS" | bash "$SIGNOFF" batches "$BATCHED" 2>/dev/null \
+  | while IFS=$'\t' read -r key prs; do
+      [ -n "${key:-}" ] || continue
+      if event "$key" signoff false "" "${prs// /,}" "a batch of screens is green and waiting on sign-off"; then
+        bash "$NOTIFY" --class owner "$key" "$(printf '%s' "$prs" | wc -w | tr -d ' ') screens are ready for your sign-off: PR #${prs// /, #}"
+      fi
+      printf '%s\n' "${key#signoff-batch:}" | tr ',' '\n' | awk -F@ '{print "pr:" $1 ":" $2}' >> "$BATCHED"
     done
 fi
 
@@ -195,7 +202,7 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
   blind=$([ "$CLAIMS_OK" = 0 ] && echo "the claim list" || echo "the open pull requests")
   say "spawn: $blind could not be read — spawning nothing"
   if event "blind:$(swarm_day)" blind false "" "" "$blind could not be read, so nothing is spawning"; then
-    bash "$NOTIFY" "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
+    bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
   fi
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until"
@@ -266,7 +273,7 @@ if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
 fi
 if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
   if event "disk-low:$(swarm_day)" disk-low false "" "" "${FREE_GB} GB free, below ${COORD_MIN_FREE_GB} GB"; then
-    bash "$NOTIFY" "disk-low:$(swarm_day)" "Disk is low: ${FREE_GB} GB free (floor ${COORD_MIN_FREE_GB} GB)"
+    bash "$NOTIFY" --class owner "disk-low:$(swarm_day)" "Disk is low: ${FREE_GB} GB free (floor ${COORD_MIN_FREE_GB} GB)"
   fi
 fi
 

@@ -95,8 +95,10 @@ act() { # <verb> <pr> <sha> [detail]
   printf '%s\t%s\t%s\t%s\t%s\n' "$(swarm_stamp)" "$(lane_mode)" "$1" "$2" "${4:-}" >> "$COORD_ACTIONS"
 }
 
+# Agent work, by class: a PR the lane put back on hold reaches the owner in the
+# tick's sign-off batch once it is green again; it is not a decision on its own.
 owner() { # <key> <line> — notify follows the lane's mode, not the coordinator's
-  COORDINATOR_SHADOW=$(lane_shadow && echo 1 || echo 0) bash "$NOTIFY" "$1" "$2" >/dev/null 2>&1 || true
+  COORDINATOR_SHADOW=$(lane_shadow && echo 1 || echo 0) bash "$NOTIFY" --class agent "$1" "$2" >/dev/null 2>&1 || true
 }
 
 # ---- the open pull requests --------------------------------------------------

@@ -265,13 +265,15 @@ want "it stays in the lane"                "60" "$(jq -r '.head.pr' "$C/lane.did
 hold_setup; compare s60 s60b 0 "lib/server.ts" "2,1"
 live >/dev/null
 want_not_in "a commit of its own: the hold stays" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
-want_in "and the owner is told"            'PR #60' "$(cat "$FIX/notify.log")"
+want_in "and it is logged for the sign-off batch" 'lane-hold:60:.*PR #60' "$(cat "$C/agent-work.log")"
+want "not pinged on its own"               "" "$(cat "$FIX/notify.log")"
 want "and it leaves the lane"              "none" "$(jq -r '.head.pr // "none"' "$C/lane.did.json")"
 want_not_in "keeping its label, so a sign-off brings it straight back" '^pr edit 60 .*--remove-label queue:merge' "$(cat "$GH_LOG")"
 hold_setup; compare s60 s60b 0 "apps/web/page.tsx" "2"
 live >/dev/null
 want_not_in "the update touched its screen: the hold stays" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
-want_in "and the owner is told"            'PR #60' "$(cat "$FIX/notify.log")"
+want_in "and it is logged for the sign-off batch" 'lane-hold:60:.*PR #60' "$(cat "$C/agent-work.log")"
+want "not pinged on its own"               "" "$(cat "$FIX/notify.log")"
 hold_setup; compare s60 s60b 0 "lib/api.ts" "2"
 live >/dev/null
 want_in "a shared file that is no screen does not hold it" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"

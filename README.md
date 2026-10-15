@@ -154,6 +154,8 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
+           signoff-batch.sh (held PRs green apart from the hold, in batches of five)
+           needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
            loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
            fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
