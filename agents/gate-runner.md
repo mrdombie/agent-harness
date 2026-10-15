@@ -15,8 +15,20 @@ You are a quality-gate runner. You don't write code, you don't fix bugs, you don
    jq -r '(.gates.changed // [])[]' .claude/harness.json
    ```
 
-   These are the **changed-only** checks. Run each one as its own command and
-   capture its full output.
+   These are the **changed-only** checks. Run each one as its own command,
+   **through the machine gate**, and capture its full output:
+
+   ```bash
+   # The caller names the gate's path; else the newest installed kit's.
+   MG="${CLAUDE_PLUGIN_ROOT:-}/scripts/machine-gate.sh"
+   [ -x "$MG" ] || MG=$(ls -d ~/.claude/plugins/cache/*/agent-harness/*/scripts/machine-gate.sh 2>/dev/null | sort -V | tail -1)
+   G=$(jq -r '.gates.changed[0]' .claude/harness.json)   # then [1], [2] … one per call
+   "$MG" run --max "${MACHINE_GATE_MAX_WAIT:-100}" -- bash -c "$G" || exit $?
+   ```
+
+   It waits while the machine is over its load ceiling or every gate slot is
+   taken, printing `machine busy (…), waiting`. Exit 75 means nothing ran yet —
+   run the same line again. Never run a gate bare to get past it.
 
    **Never run the whole-app form.** CI runs the whole suite before anything
    merges and a red CI brings an agent back, so running it here is the same work

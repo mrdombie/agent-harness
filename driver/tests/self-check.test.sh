@@ -167,4 +167,29 @@ jq 'del(.changelog)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$RE
 driver_step_self_check 140 >/dev/null 2>&1
 want "no branchTrailer: untouched"                 "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD)"
 
+echo "--- the gates wait for the machine: the load ceiling, then a gate slot ---"
+# Heavy local work waits; it never parks the ticket. Run in the background, held,
+# then let go — the gate must not have run while held, and must run after.
+jq --arg m "$FIX/gate-ran" '.gates = {"g": ("touch " + $m)}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+echo 99 > "$FIX/load"; rm -f "$FIX/gate-ran" "$FIX/sc.rc"
+( SWARM_LOAD_FILE="$FIX/load" driver_step_self_check 101 > "$FIX/sc.out" 2>&1; echo $? > "$FIX/sc.rc" ) &
+sleep 2
+if [ ! -e "$FIX/gate-ran" ]; then ok "over the load ceiling the gate did not run"; else bad "the gate ran at load 99"; fi
+want_in "and it said why" 'machine busy .load 99, limit 32' "$(cat "$FIX/sc.out")"
+echo 1 > "$FIX/load"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$FIX/sc.rc" ] && break; sleep 1; done
+if [ -e "$FIX/gate-ran" ]; then ok "once the load fell, it ran"; else bad "never ran: $(cat "$FIX/sc.out")"; fi
+want "and the step passed, not parked" "0" "$(cat "$FIX/sc.rc" 2>/dev/null)"
+
+sleep 30 & holder=$!
+mkdir -p "$HARNESS_GATE_SLOT_DIR/slot-1"; echo "$holder" > "$HARNESS_GATE_SLOT_DIR/slot-1/pid"
+rm -f "$FIX/gate-ran" "$FIX/sc.rc"
+( HARNESS_GATE_SLOTS=1 driver_step_self_check 101 > "$FIX/sc.out" 2>&1; echo $? > "$FIX/sc.rc" ) &
+sleep 2
+if [ ! -e "$FIX/gate-ran" ]; then ok "every gate slot taken: the gate did not run"; else bad "the gate ran with no slot free"; fi
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$FIX/sc.rc" ] && break; sleep 1; done
+if [ -e "$FIX/gate-ran" ]; then ok "the holder gone, it ran"; else bad "never ran: $(cat "$FIX/sc.out")"; fi
+want "and the slot was given back" "" "$(ls "$HARNESS_GATE_SLOT_DIR" 2>/dev/null)"
+
 exit $FAILED

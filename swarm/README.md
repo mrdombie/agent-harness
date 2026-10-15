@@ -150,7 +150,8 @@ environment variable of the same name in capitals. The defaults name no project.
 | Key | Default | What it is |
 |---|---|---|
 | `swarm.cap` | 3 | Agents at once, per programme |
-| `swarm.maxLoad` | 32 | Hold above this one-minute load average |
+| `swarm.maxLoad` | 32 | Hold above this one-minute load average — the scheduler, repair-watch, and every session path through `scripts/machine-gate.sh` |
+| `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.port` | 4777 | The live view's port |
 | `swarm.staleSec` | 120 | A snapshot older than this is no answer |
 | `swarm.progressSec` | 60 | How often the step and plan facts are re-read |

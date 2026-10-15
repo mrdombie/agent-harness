@@ -79,16 +79,9 @@ swarm_now() { if [ -n "${SWARM_NOW:-}" ]; then printf '%s' "$SWARM_NOW"; else da
 swarm_stamp() { swarm_iso "$(swarm_now)"; }
 swarm_day()   { swarm_iso "$(swarm_now)" | cut -dT -f1; }
 
-# The 1-minute load average, as a whole number. sysctl on macOS, /proc on Linux
-# — the CI runner is Linux and the operator's machine is not, so a script that
-# knows only one of them is a script that is only ever tested on the other.
-swarm_load() {
-  if [ -n "${SWARM_LOAD:-}" ]; then printf '%s' "${SWARM_LOAD%%.*}"; return; fi
-  local l=""
-  l=$(/usr/sbin/sysctl -n vm.loadavg 2>/dev/null | awk '{print int($2)}')
-  [ -n "$l" ] || l=$(awk '{print int($1)}' /proc/loadavg 2>/dev/null)
-  printf '%s' "${l:-0}"
-}
+# The 1-minute load average, as a whole number: swarm/load.sh, shared with
+# scripts/machine-gate.sh so the swarm and the session paths read one number.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/load.sh" || return 1 2>/dev/null || exit 1
 
 swarm_log() { # <logfile> <message…>
   local f="$1"; shift

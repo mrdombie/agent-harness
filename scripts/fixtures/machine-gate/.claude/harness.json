@@ -1,0 +1,5 @@
+{
+  "gates": {
+    "changed": ["touch \"$MG_TEST_MARK\""]
+  }
+}

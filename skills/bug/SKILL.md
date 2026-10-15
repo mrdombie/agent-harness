@@ -22,6 +22,16 @@ is open. The whole point is that the operator points at one thing and it goes aw
 
 ## Step 1 — Reproduce before you write anything
 
+Reproducing runs tests and dev servers, so wait for the machine first:
+
+```bash
+# Heavy work waits for the machine. 75 = still busy, nothing started — run it again.
+"${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
+```
+
+It prints `machine busy (load N, limit M), waiting` and re-checks; 75 means run
+the same line again. It never fails the bug and it is never skipped.
+
 Run **`superpowers:systematic-debugging`**. No ticket, no branch, no fix until the
 fault is proven in the code or on a live surface.
 

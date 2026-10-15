@@ -29,6 +29,19 @@ test -x "$CL" || { echo "claim-lock.sh missing — the queue is not bootstrapped
 SKIP="$STATE_DIR/.auto-skip"; touch "$SKIP"
 ```
 
+**Wait for the machine before taking any row, and again before every row the
+loop takes** (Step 3):
+
+```bash
+# Heavy work waits for the machine. 75 = still busy, nothing started — run it again.
+"${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
+```
+
+Over the ceiling (`SWARM_MAX_LOAD`, `swarm.maxLoad`, default 32) it prints
+`machine busy (load N, limit M), waiting` and re-checks. Exit 75 means the wait
+outlasted one tool call: run the same line again. It never fails a row and it is
+never skipped. Triage reads only — it may run while you wait; building may not.
+
 `.auto-skip` is the loop's memory of what it already tried and could not take.
 **Append to it every time you decline an item**, with a reason:
 `echo "9160	needs-dom	mockup posted, parked" >> "$SKIP"`. Without it the loop
@@ -317,7 +330,7 @@ while its checks are still going, never after waiting for the merge:
 2. **Re-triage from Step 1.** Do not carry the old board forward — your own
    merge may have turned trunk red, and a peer may have broken UAT while you
    worked. A stale board is how the loop ships onto a broken pipeline.
-3. Take the new top row. **No check-in.** No "shall I continue?", no summary of
+3. Run the machine wait from the Guards, then take the new top row. **No check-in.** No "shall I continue?", no summary of
    what you just did beyond one line. The sign-off banner is not a summary and is
    not covered by this — it prints on every handback, mid-loop pauses included.
 
