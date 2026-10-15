@@ -21,6 +21,12 @@ cat > "$BIN/sweep" <<'SH'
 #!/usr/bin/env bash
 echo "sweep $*" >> "$FIX/house.log"
 SH
+cat > "$BIN/wtsweep" <<'SH'
+#!/usr/bin/env bash
+echo "wtsweep $*" >> "$FIX/house.log"
+SH
+chmod +x "$BIN/wtsweep"
+export COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep"
 cat > "$BIN/claude" <<'SH'
 #!/usr/bin/env bash
 { printf 'ARGV'; printf ' [%s]' "$@"; printf '\n'
@@ -250,6 +256,20 @@ fresh
 jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
 COORDINATOR_SHADOW=0 COORDINATOR_JUDGE=true tick >/dev/null
 want "a red PR never reaches needs-you"    "" "$(cat "$FIX/notify.log"; cat "$C/needs-you.md" 2>/dev/null)"
+
+echo "--- the worktree sweep: every coordinator.sweepEveryMin, live only out of shadow ---"
+fresh
+COORDINATOR_SHADOW=0 COORDINATOR_JUDGE=true tick >/dev/null
+want "live: the worktree sweep removes"     "wtsweep --apply" "$(grep wtsweep "$FIX/house.log")"
+: > "$FIX/house.log"
+COORDINATOR_SHADOW=0 COORDINATOR_JUDGE=true tick >/dev/null
+want "inside the interval it does not run again" "" "$(grep wtsweep "$FIX/house.log")"
+touch -t 202001010000 "$C/worktree-sweep.stamp"
+COORDINATOR_SHADOW=0 COORDINATOR_JUDGE=true tick >/dev/null
+want "once the interval has passed it runs again" "wtsweep --apply" "$(grep wtsweep "$FIX/house.log")"
+fresh
+COORDINATOR_JUDGE=true tick >/dev/null
+want "shadow: the worktree sweep runs dry"  "wtsweep " "$(grep wtsweep "$FIX/house.log")"
 
 echo "--- disk ---"
 # The cache pass stand-in frees what $FIX/frees says, so the re-measure sees it.

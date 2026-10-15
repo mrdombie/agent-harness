@@ -19,7 +19,8 @@
 #                    never a ticket that is claimed, gated or on hold, and
 #                    nothing while the machine is busy (swarm_machine_busy)
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
-#   6. housekeeping  reconcile-claims.sh, then stop-dev-servers.sh --sweep
+#   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
+#                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
 #   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
 #   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh)
 #
@@ -257,6 +258,14 @@ if coord_shadow; then
 else
   bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"
   bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"
+fi
+# An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.
+WT_SWEEP="${COORDINATOR_WORKTREE_SWEEP:-$SELF_DIR/sweep-orphan-worktrees.sh}"
+WT_STAMP="$COORD_DIR/worktree-sweep.stamp"
+if [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; then
+  touch "$WT_STAMP"
+  if coord_shadow; then bash "$WT_SWEEP" >> "$COORD_LOG" 2>&1 || say "worktree sweep (dry) exited $?"
+  else bash "$WT_SWEEP" --apply >> "$COORD_LOG" 2>&1 || say "worktree sweep exited $?"; fi
 fi
 
 # ---- 7. disk -----------------------------------------------------------------

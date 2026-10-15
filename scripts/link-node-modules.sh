@@ -24,7 +24,10 @@
 #   - each workspace's own node_modules in the shared clone is mirrored the same
 #     way into the worktree's copy of that workspace.
 #
-# Symlinks only: no install, nothing written to the shared clone. Idempotent —
+# A worktree whose package-lock.json differs from the shared clone's gets its own
+# install instead (`npm ci --prefer-offline`; LINK_NODE_MODULES_INSTALL overrides).
+#
+# Otherwise symlinks only: no install, nothing written to the shared clone. Idempotent —
 # re-running relinks, so it also converts a worktree that still has the old single
 # symlink. A real install (a node_modules directory this script did not build) is
 # left alone.
@@ -42,6 +45,26 @@ SHARED_NM="$SHARED_REPO/node_modules"
 MARK=".linked-from-shared-install"
 
 [ -d "$SHARED_NM" ] || { echo "link-node-modules: $SHARED_REPO has no node_modules — nothing to link."; exit 0; }
+
+# A worktree whose lockfile is not the shared one's needs packages the shared install lacks:
+# it gets its own install (from the npm cache where it can), never the shared links.
+if [ -f "$WT/package-lock.json" ] && [ -f "$SHARED_REPO/package-lock.json" ] \
+   && ! cmp -s "$WT/package-lock.json" "$SHARED_REPO/package-lock.json"; then
+  if [ -d "$WT/node_modules" ] && [ ! -L "$WT/node_modules" ] && [ ! -f "$WT/node_modules/$MARK" ]; then
+    echo "link-node-modules: $WT/package-lock.json differs from the shared one and $WT/node_modules is already its own install — left alone."
+    exit 0
+  fi
+  # Only links this script made go: a symlink, or a directory carrying the mark (symlinks are not followed).
+  [ -L "$WT/node_modules" ] && rm -f "$WT/node_modules"
+  for d in "$WT/node_modules" "$WT"/*/*/node_modules "$WT"/*/node_modules; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/$MARK" ] && rm -rf "$d"
+  done
+  echo "link-node-modules: $WT/package-lock.json differs from $SHARED_REPO/package-lock.json — installing the worktree's own dependencies." >&2
+  (cd "$WT" && ${LINK_NODE_MODULES_INSTALL:-npm ci --prefer-offline --no-audit --no-fund}) >&2 \
+    || { echo "link-node-modules: the worktree's own install failed." >&2; exit 1; }
+  echo "link-node-modules: own install in $WT/node_modules (its lockfile differs from the shared one)."
+  exit 0
+fi
 
 # Git Bash's `ln -s` writes a deep COPY of a directory unless MSYS=winsymlinks is
 # set, so Windows gets a junction for a directory and a copy for a file.

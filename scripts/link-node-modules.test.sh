@@ -139,4 +139,25 @@ echo "--- plant: workspace node_modules not mirrored → the nested dep is gone 
 plant "no mirror" '    link_entries "$SHARED_REPO/$dir/node_modules" "$WT/$dir/node_modules"' '    :' >/dev/null
 want "the nested dep no longer resolves (so the mirror assertion above is live)" "unresolved" "$(real "$FIX/plant-wt/packages/ui/node_modules/@formkit/auto-animate")"
 
+echo "--- a lockfile that differs from the shared one gets the worktree's own install ---"
+LW="$FIX/lock-wt"; LS="$FIX/lock-sh"; mkdir -p "$LW" "$LS"; build_shared "$LS"
+printf '{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"1.0.0"}}}\n' > "$LS/package-lock.json"
+cp "$LS/package.json" "$LW/package.json"; pkg "$LW/packages/ui" "@acme/ui"
+cp "$LS/package-lock.json" "$LW/package-lock.json"
+bash "$SCRIPT" "$LS" "$LW" >/dev/null 2>&1
+want "same lockfile: linked from the shared install" "yes" "$([ -f "$LW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+printf '{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"2.0.0"}}}\n' > "$LW/package-lock.json"
+shared_before=$(cd "$LS" && find . | sort | shasum)
+out=$(LINK_NODE_MODULES_INSTALL='mkdir -p node_modules/left-pad' bash "$SCRIPT" "$LS" "$LW" 2>&1); rc=$?
+want "differing lockfile: exits 0" 0 "$rc"
+want "…the links are gone" "no" "$([ -f "$LW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+want "…its own install ran in the worktree" "dir" "$([ -d "$LW/node_modules/left-pad" ] && [ ! -L "$LW/node_modules/left-pad" ] && echo dir || echo other)"
+want "…and says why" "yes" "$(printf "%s" "$out" | grep -q "differs from" && echo yes || echo no)"
+want "…the shared clone is untouched" "$shared_before" "$(cd "$LS" && find . | sort | shasum)"
+out=$(LINK_NODE_MODULES_INSTALL='touch ran-again' bash "$SCRIPT" "$LS" "$LW" 2>&1)
+want "an own install already there is left alone" "no" "$([ -e "$LW/ran-again" ] && echo yes || echo no)"
+rm -rf "$LW/node_modules"
+out=$(LINK_NODE_MODULES_INSTALL='false' bash "$SCRIPT" "$LS" "$LW" 2>&1); rc=$?
+want "a failed own install exits 1" 1 "$rc"
+
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAIL"; exit 1; }

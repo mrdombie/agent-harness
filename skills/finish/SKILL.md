@@ -1068,9 +1068,10 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-cache.sh" clean "$WORKTREE" || true
 git worktree remove --force "$WORKTREE"
 
 # #789 — sweep any orphan worktrees left behind by previous /agent-harness:finish
-# runs that errored mid-cleanup. Idempotent (skips active claims +
-# young worktrees + dirty trees + trees a process sits in), and cleans the idle
-# build caches of every worktree it keeps.
+# runs that errored mid-cleanup, and every worktree whose PR merged or ticket
+# closed. Never removes a claimed, dirty, unpushed or in-use tree; cleans the idle
+# build caches of every worktree it keeps. The coordinator tick runs it too, for
+# the agents that die before reaching this step.
 # toolkit-env was sourced in Step 1 and MAIN_REPO is still exported.
 HARNESS_MAIN_REPO="$MAIN_REPO" bash "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-worktrees.sh" --apply || true
 ```
