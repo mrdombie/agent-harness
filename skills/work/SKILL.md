@@ -1,6 +1,6 @@
 ---
 name: work
-description: "/agent-harness:auto, scoped to one label. Ships that label's tickets until the context runs out, instead of taking whatever is top of the whole board. Usage: /agent-harness:work (lists the workable labels) | /agent-harness:work <label-or-subject> | /agent-harness:work welcome-flow | /agent-harness:work 9822 (one ticket)"
+description: "/agent-harness:auto, scoped to one label. Ships that label's tickets until the context runs out, instead of taking whatever is top of the whole board. With --nonstop it never stops until the area is finished: survives compaction and the plan's usage limit, and several windows can share one area. Usage: /agent-harness:work (lists the workable labels) | /agent-harness:work <label-or-subject> | /loop 30m /agent-harness:work <area> --nonstop | /agent-harness:work 9822 (one ticket)"
 ---
 
 **`/agent-harness:work` is `/agent-harness:auto` with one thing changed: the candidate set.**
@@ -10,6 +10,13 @@ stop conditions, the "never does" list, `/agent-harness:claim` for taking a tick
 All of it applies unchanged, including the superpowers discipline `/agent-harness:claim` already carries.
 
 Everything below is the delta. There is nothing else.
+
+**`--nonstop` in `$ARGUMENTS`** — the operator typed `/loop 30m /agent-harness:work <area> --nonstop`.
+Strip the flag, then read `${CLAUDE_PLUGIN_ROOT}/shared/nonstop.md` and follow it instead of the
+loop below: the window dispatches agents and never builds a ticket itself, every wake is one
+`scripts/nonstop.sh wake` call and the move it names, and the run ends only with
+`Stopped: area finished`. Read that file once; after compaction the session-start hook puts the
+board back.
 
 ## The delta
 
@@ -183,6 +190,7 @@ more tickets and found a live P0.
 | it not giving up mid-window | `/goal complete as many <label> tickets as you can` — the only hard enforcement |
 | surviving the window filling | re-run `/agent-harness:work <label>` |
 | unattended across windows | `/loop /agent-harness:work <label>` |
+| until the area is finished, through compaction and the usage limit, several windows at once | `/loop 30m /agent-harness:work <label> --nonstop` — `shared/nonstop.md` |
 
 **Do not start a ticket you cannot finish before the window ends.** An unclaimed ticket costs
 nothing; a claimed one with a half-built branch and no PR is a zombie that reads as progress to

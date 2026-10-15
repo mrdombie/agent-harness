@@ -53,6 +53,15 @@ the part that stops this file rotting. Do not drop an ungrouped command, and do
 not guess which group it belongs in — print it under `Other` so someone can file
 it deliberately.
 
+## Modes
+
+Always print this table after the groups. A mode is a way of running a command,
+not a command, so the tree cannot show it:
+
+| Mode | Type this in a window |
+|---|---|
+| Work one area non-stop until it is finished — survives compaction and the usage limit, several windows may share the area | `/loop 30m /agent-harness:work <area> --nonstop` |
+
 ## Skills
 
 Three directories in the tree are skills a command wraps, not commands in their
@@ -77,7 +86,7 @@ guessable from either name. Always print this map:
 `$ARGUMENTS` decides which of three things you print.
 
 **Empty** → the full board: the three grouped tables (plus `Other` if it has
-rows), then the skills table, then the wrapper map.
+rows), then the modes table, then the skills table, then the wrapper map.
 
 **An exact command or skill name** → just that one:
 
