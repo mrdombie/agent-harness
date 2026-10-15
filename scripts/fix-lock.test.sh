@@ -12,7 +12,7 @@ SB=$(mktemp -d "${TMPDIR:-/tmp}/fix-lock-XXXXXX")
 PIDS=""
 trap 'for p in $PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$SB"' EXIT
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
-unset CLAIM_RUN_ID HARNESS_STATE_DIR NONSTOP_WINDOW FIX_LOCK_WINDOW FIX_LOCK_PID
+unset CLAIM_RUN_ID HARNESS_STATE_DIR FIX_LOCK_WINDOW FIX_LOCK_PID
 export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@test.local
 export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@test.local
 fail=0
@@ -115,7 +115,7 @@ plant "a live window's lock reads as stale" \
   '  [ "$exp" -le "$(now)" ] && { printf '"'"'expired'"'"'; return 0; }' \
   '  printf '"'"'expired'"'"'; return 0'
 plant "the window is the machine, as the claim identity is" \
-  'WINDOW="${FIX_LOCK_WINDOW:-${NONSTOP_WINDOW:-$HOST:$WIN_PID}}"' 'WINDOW="$HOST"'
+  'WINDOW="${FIX_LOCK_WINDOW:-$HOST:$WIN_PID}"' 'WINDOW="$HOST"'
 plant "a dead window's lock is never taken over" \
   'if [ "$host" = "$HOST" ] && ! claim_pid_alive "$pid"; then' 'if false; then'
 

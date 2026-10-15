@@ -154,7 +154,8 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
-           nonstop.sh · fix-lock.sh · pr-watch.sh (non-stop windows — see below)
+           loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
+           fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
            the thinking · facts.sh fills the briefs' placeholders and refuses when
            one has no value · prompt-schema.jq derives the shape the model is
@@ -163,7 +164,7 @@ swarm/     agents that run with no session open: scheduler · queue · repair-wa
            live-view · report · install — see swarm/README.md
 rules/     standing-rules.md — put in front of every session by a hook, so a
            second machine behaves like the first
-shared/    operator.md · agent-signoff.md · nonstop.md
+shared/    operator.md · agent-signoff.md
 reference/ the copies this plugin replaced, kept for history. Loaded by nothing.
 ```
 
@@ -175,7 +176,6 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 |---|---|---|
 | SessionStart | `standing-rules.sh` | puts `rules/standing-rules.md` in front of the session |
 | SessionStart | `precedence.sh` | one line per kit skill this repo overrides |
-| SessionStart (compact, resume) | `nonstop-resume.sh` | puts a non-stop window's board back after compaction |
 | PreToolUse (Bash) | `block-push-no-verify.sh` | refuses `git push --no-verify` |
 | PreToolUse (Bash) | `block-hookify-rules.sh` | the git-safety rules: hand-released claims, `commit -a`, `commit --no-verify`, `reset --hard`, `git add -A`, `npm install` in a worktree, hand-rolled PRs, hand-rolled ticket branches |
 | PreToolUse (Bash) | `no-repo-wide-format.sh` | refuses a formatter over a whole folder, and a whole-app check from an unattended run |
@@ -185,9 +185,9 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | SessionEnd | `session-end-cleanup.sh` | drops the session's own scratch state |
 | Stop | `signoff-backstop.sh` | refuses a hand-back without the sign-off banner while work is live |
 | Stop | `ask-dont-narrate.sh` | refuses a hand-back that narrates a decision instead of asking it |
-| Stop | `keep-working.sh` | refuses a hand-back mid-loop while the scope still has runnable tickets; a non-stop window, only while an agent place is free |
+| Stop | `keep-working.sh` | refuses a hand-back mid-loop while the scope still has runnable tickets (the loop is marked by `scripts/loop-start.sh`) |
 | Stop | `heartbeat.sh` | refuses a loop wake with no status block, or one idle on a wait while work is ready |
-| StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets, so the loop resumes after it |
+| StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets in `$STATE_DIR/usage-hold`, so the coordinator and the scheduler spawn nothing until then |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
 
@@ -247,23 +247,6 @@ It is the replacement for the two hand-copied build commands, not an addition to
 them: `docs/design/claim-finish-inventory.md` maps all 178 of their rules to a
 driver step, a brief, a hook, a required check, or a named retirement.
 
-## Working an area non-stop
-
-```
-/loop 30m /agent-harness:work <area> --nonstop
-```
-
-One window, or several on the same area, works it until nothing is ready,
-drafting or fixable and nothing it owns is in flight, then says `Stopped: area
-finished`. The window dispatches agents and builds nothing itself; every wake is
-`scripts/nonstop.sh wake` and the one move it names. It carries on through
-compaction (a session-start hook puts the board back) and through the plan's
-usage limit (a Stop-failure hook records the reset; the fixed-interval cron keeps
-ticking through it; the first tick after resumes every cut-off agent from its
-worktree, skipping any whose work already merged). `fix-lock.sh` stops two
-windows fixing one red PR, as `claim-lock.sh` stops two taking one ticket. The
-procedure: [`shared/nonstop.md`](shared/nonstop.md).
-
 ## Running without a session open
 
 `swarm/install.sh` puts four timers on the machine: the live view everything
@@ -275,6 +258,8 @@ it holds to and every setting: [`swarm/README.md`](swarm/README.md).
 
 ### The coordinator — a fresh process per check
 
+This is the non-stop path: it keeps working while no window is open.
+
 An overnight `/loop /agent-harness:work <scope>` re-sends its whole conversation
 on every wake. `scripts/coordinator-tick.sh` does the same job as one short
 process with no model call: it reads the runs that ended, spawns the next queued
@@ -283,6 +268,9 @@ dev-server sweep, checks the disk, and writes every event that needs judgement
 to a file. Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
+It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
+it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
+hook when any window hits the plan's limit) says the limit holds.
 
 ```sh
 scripts/coordinator-queue.sh seed <scope>   # a ticket, a label, or a programme subject

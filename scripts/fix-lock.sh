@@ -48,7 +48,7 @@ HOST=$(claim_host)
 # The window: an explicit id (tests, a caller that knows it), else the Claude
 # process this shell runs under — one per window, the same for its sub-agents.
 WIN_PID="${FIX_LOCK_PID:-$(claim_session_pid)}"
-WINDOW="${FIX_LOCK_WINDOW:-${NONSTOP_WINDOW:-$HOST:$WIN_PID}}"
+WINDOW="${FIX_LOCK_WINDOW:-$HOST:$WIN_PID}"
 
 resolve_repo() {
   if [ -n "${FIX_LOCK_REPO:-}" ] && git -C "$FIX_LOCK_REPO" rev-parse --git-dir >/dev/null 2>&1; then

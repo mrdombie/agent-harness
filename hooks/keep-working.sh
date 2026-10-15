@@ -61,30 +61,6 @@ if [ -f "$MARK" ]; then
   [ "$AGE" -lt 600 ] && { say "exit0 cooldown ${AGE}s $SID"; exit 0; }
 fi
 
-# 2b. A NON-STOP window (/work --nonstop) answers from its own state, per window:
-#     the global .loop-active slot below is shared by every window on the machine.
-#     It nags only when an agent place is free AND the area has runnable work (or
-#     agents the usage limit cut off), so a window ending its turn to wait on its
-#     agents is left alone. The budget is per hour, not per session: the window
-#     runs all day.
-NS="$(dirname "$0")/../scripts/nonstop.sh"
-NSF=""
-# No non-stop window on this machine at all: skip the two script calls.
-if ls "$TDIR"/nonstop/w-*.json >/dev/null 2>&1; then
-  NSF="$TDIR/nonstop/w-$(HARNESS_STATE_DIR="$TDIR" bash "$NS" window 2>/dev/null).json"
-fi
-if [ -n "$NSF" ] && [ -f "$NSF" ]; then
-  NSWHY=$(HARNESS_STATE_DIR="$TDIR" bash "$NS" should-continue 2>/dev/null); NSRC=$?
-  COUNT="$MDIR/$SID.$(date +%Y%m%d%H).count"
-  N=$(cat "$COUNT" 2>/dev/null || echo 0)
-  [ "$N" -ge "$MAX_NAGS" ] && { say "exit0 nonstop-budget-spent $N $SID"; exit 0; }
-  [ "$NSRC" -eq 2 ] || { say "exit0 nonstop-nothing-to-take $SID"; exit 0; }
-  touch "$MARK"; echo $(( N + 1 )) > "$COUNT"
-  say "exit2 nonstop $NSWHY"
-  printf '%s\nTake it now. If a stop condition fired instead, run: nonstop.sh stop "<the condition>"\n' "$NSWHY" >&2
-  exit 2
-fi
-
 N=$(cat "$COUNT" 2>/dev/null || echo 0)
 [ "$N" -ge "$MAX_NAGS" ] && { say "exit0 budget-spent $N $SID"; exit 0; }
 

@@ -159,7 +159,19 @@ swarm_usage_text_hold() {
   return 1
 }
 
-swarm_usage_hold() { swarm_usage_event_hold || swarm_usage_text_hold; }
+# A window that hit the wall: hooks/usage-limit.sh (StopFailure) writes
+# $STATE_DIR/usage-hold as `<epoch>\t<text>`. The limit is the account's, so a
+# wall an interactive window hit holds the timers too. A reset already passed
+# holds nothing.
+swarm_usage_file_hold() {
+  local e
+  e=$(cut -f1 "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" 2>/dev/null | head -1)
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$e" -gt "$(swarm_now)" ] || return 1
+  printf '%s (recorded by a window)' "$(swarm_iso "$e")"
+}
+
+swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_text_hold; }
 
 # ---- the live view -----------------------------------------------------------
 # One snapshot, cached for this process, so a pass that asks three questions

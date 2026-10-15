@@ -60,11 +60,11 @@ session would make `/agent-harness:standup` — and the sign-off banner — anno
 does not have. `/agent-harness:auto` takes the whole board, so it says so:
 
 ```bash
-printf '%s\t%s\n' "auto" "$(date +%Y-%m-%dT%H:%M:%S%z)" \
-  > "$STATE_DIR/.session-label"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/loop-start.sh" auto
 ```
 
-Overwrite, never delete. An empty file reads as "no work in play" and silences the
+It writes `.session-label`, records this session as the loop's owner, and touches the
+`.loop-active` marker the keep-working Stop hook needs. Overwrite, never delete. An empty file reads as "no work in play" and silences the
 sign-off backstop — which is exactly wrong for a loop that is about to ship all day.
 
 ## 1A · Is UAT serving what `uat` points at?
@@ -288,7 +288,10 @@ Then **take the top row and do the work.** Do not ask. Do not present options.
    worktree and no PR. Finish that before anything else; it is the cheapest
    thing on the board and the likeliest to rot.
 2. **Open PR, red checks, no live claim.** First ask whether the checks *ran*
-   (step count). Then: merge `develop` in, re-gate, `/agent-harness:finish`. Rebuilding it from
+   (step count). Then take the fix lock — `"${CLAUDE_PLUGIN_ROOT}/scripts/fix-lock.sh" acquire <pr>`.
+   Exit 10 means another session is already fixing it: skip the row. Then: merge `develop` in,
+   re-gate, `/agent-harness:finish`, and `fix-lock.sh release <pr>` once the fix is pushed. The
+   coordinator tick does not judge a red PR while a live lock is held on it. Rebuilding it from
    scratch is the exact failure the resume path exists to prevent.
    - **A green PR that is merely behind is not stranded on a repo with an update bot**
      (`merge.updateBehind: bot`). Read that PR's own state — `gh pr view <n> --json
@@ -417,6 +420,6 @@ whether to start another agent or come and look themselves.
 | `--tier N` | Restrict to one tier. `--tier 1` = heal only; `--tier 2` = drain the stranded pile. |
 | `--once` | Take exactly one item, ship it, stop. |
 
-To run it hands-off across context limits, wrap it: `/loop /agent-harness:auto`. To work one area
-until it is finished — through compaction and the plan's usage limit, with several windows on the
-same area — use `/loop 30m /agent-harness:work <area> --nonstop` (`shared/nonstop.md`).
+To run it hands-off across context limits, wrap it: `/loop /agent-harness:auto`. To run non-stop
+with no window open, use the coordinator (`swarm/install.sh coordinator`, README "The coordinator"):
+a fresh process per check instead of a conversation that grows on every wake.
