@@ -91,7 +91,8 @@ _mg_reap() { # <slot-dir>
   pid=$(cat "$s/pid" 2>/dev/null)
   if [ -z "$pid" ]; then
     # mkdir and the pid write are two steps; a slot seconds old is mid-take.
-    age=$(( $(date +%s) - $(stat -f %m "$s" 2>/dev/null || stat -c %Y "$s" 2>/dev/null || date +%s) ))
+    # GNU stat first: on Linux `stat -f` is the FILESYSTEM and exits 0 with no mtime.
+    age=$(( $(date +%s) - $(stat -c %Y "$s" 2>/dev/null || stat -f %m "$s" 2>/dev/null || date +%s) ))
     [ "$age" -gt 10 ] || return 1
   elif _mg_alive "$pid"; then
     return 1

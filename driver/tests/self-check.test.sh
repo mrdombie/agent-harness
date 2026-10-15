@@ -175,7 +175,7 @@ echo 99 > "$FIX/load"; rm -f "$FIX/gate-ran" "$FIX/sc.rc"
 ( SWARM_LOAD_FILE="$FIX/load" driver_step_self_check 101 > "$FIX/sc.out" 2>&1; echo $? > "$FIX/sc.rc" ) &
 sleep 2
 if [ ! -e "$FIX/gate-ran" ]; then ok "over the load ceiling the gate did not run"; else bad "the gate ran at load 99"; fi
-want_in "and it said why" 'machine busy (load 99' "$(cat "$FIX/sc.out")"
+want_in "and it said why" 'machine busy .load 99, limit 32' "$(cat "$FIX/sc.out")"
 echo 1 > "$FIX/load"
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$FIX/sc.rc" ] && break; sleep 1; done
 if [ -e "$FIX/gate-ran" ]; then ok "once the load fell, it ran"; else bad "never ran: $(cat "$FIX/sc.out")"; fi
