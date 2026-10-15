@@ -569,7 +569,8 @@ elif [ "$PR_TOUCHES_UI" = "yes" ]; then
     fi
     mkdir -p "$EVIDENCE_DIR"
     cp "$SHOTS_DIR"/*.png "$EVIDENCE_DIR"/
-    git add "$EVIDENCE_DIR"
+    # A sparse worktree leaves the evidence folder out; plain `git add` refuses new shots there.
+    git add $(bash "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-sparse.sh" add-flag .) "$EVIDENCE_DIR"
     git commit -m "evidence(#$ISSUE_NUM): live-render screenshots for approval" --no-verify
     git push
     # Pin to the NEW head sha — the commit above moved it, and a link pinned to
@@ -1046,15 +1047,16 @@ The ticket is **shipped** once Steps 6–7d are done: merged to develop, issue c
 # days old, and swap sat at 44 GB of 45. Only servers inside THIS worktree.
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/stop-dev-servers.sh" --worktree "$WORKTREE" || true
 cd "$REPO_PATH"
+# Build caches go first: if the remove below refuses, the worktree is kept and its ~4 GB of build output must not be.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-cache.sh" clean "$WORKTREE" || true
 git worktree remove --force "$WORKTREE"
 
 # #789 — sweep any orphan worktrees left behind by previous /agent-harness:finish
 # runs that errored mid-cleanup. Idempotent (skips active claims +
-# young worktrees + dirty trees). Typical no-op when nothing's
-# orphaned. The sweeper is read from origin/develop (toolkit_tools).
-# toolkit-env was sourced in Step 1 and MAIN_REPO is still exported; do NOT
-# re-source it here — the worktree is gone and a bare MAIN_REPO has no toplevel.
-TOOLS=$(toolkit_tools) && "$TOOLS/scripts/sweep-orphan-worktrees.sh" || true
+# young worktrees + dirty trees + trees a process sits in), and cleans the idle
+# build caches of every worktree it keeps.
+# toolkit-env was sourced in Step 1 and MAIN_REPO is still exported.
+HARNESS_MAIN_REPO="$MAIN_REPO" bash "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-worktrees.sh" --apply || true
 ```
 
 `--delete-branch` in step 6 already deleted the remote branch. The local worktree-tracked branch goes with `worktree remove --force`.
