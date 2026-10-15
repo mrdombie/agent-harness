@@ -181,6 +181,7 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | PreToolUse (Bash) | `no-repo-wide-format.sh` | refuses a formatter over a whole folder, and a whole-app check from an unattended run |
 | PreToolUse (Bash) | `no-broad-kill.sh` | refuses a `pkill`/`killall` pattern that would hit a peer agent |
 | PreToolUse (Write\|Edit) | `block-write-traps.sh` | a phantom worktree path, an edit in the shared clone, a credential in a memory file, a new command or skill born outside the kit |
+| PostToolUse (Bash) | `one-preview-per-agent.sh` | when an agent starts a dev server, stops the ones it left in its other ticket worktrees |
 | SessionEnd | `session-end-cleanup.sh` | drops the session's own scratch state |
 | Stop | `signoff-backstop.sh` | refuses a hand-back without the sign-off banner while work is live |
 | Stop | `ask-dont-narrate.sh` | refuses a hand-back that narrates a decision instead of asking it |

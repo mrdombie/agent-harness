@@ -161,5 +161,49 @@ sleep 1
 alive "$ssrv" && fail "--worktree left the shell-started server running" || ok "--worktree stops a server a shell started"
 alive "$shl"  && ok "a shell running dotenv … next is never stopped as a launcher" || fail "a shell was stopped as a launcher"
 
+echo "stop-dev-servers: --session — one preview per agent"
+# A stand-in agent session: a process named claude whose tool shells start servers.
+# <session> <dir>: a tool shell under the session, sitting in <dir>, whose child is a server.
+under() {
+  mkdir -p "$2"
+  (cd "$2" && exec bash -c '(exec -a next-server sleep 600) & exec -a "zsh -c source snap.sh && eval npm run dev" sleep 600') >/dev/null 2>&1 &
+  echo $!
+}
+SESS_LOG="$T/sessions"; : > "$SESS_LOG"
+mkdir -p "$T/301-old/apps/web" "$T/sh-302-new/apps/web" "$T/sh-302-new/apps/api"
+# The session forks its tool shells itself so they are its children, as Claude Code's are.
+(exec -a claude bash -c '
+  (cd "$1/301-old/apps/web" && exec bash -c "(exec -a next-server sleep 600) & exec -a \"zsh -c source snap.sh && eval npm run dev\" sleep 600") >/dev/null 2>&1 &
+  echo "old $!" >> "$2"; sleep 2
+  (cd "$1/sh-302-new/apps/web" && exec bash -c "(exec -a next-server sleep 600) & exec -a \"zsh -c source snap.sh && eval npm run dev\" sleep 600") >/dev/null 2>&1 &
+  echo "new $!" >> "$2"
+  (cd "$1/sh-302-new/apps/api" && exec bash -c "(exec -a next-server sleep 600) & exec -a \"zsh -c source snap.sh && eval npm run dev\" sleep 600") >/dev/null 2>&1 &
+  echo "api $!" >> "$2"
+  exec -a claude sleep 600' claude "$T" "$SESS_LOG") >/dev/null 2>&1 &
+SESS=$!; PIDS+=("$SESS")
+other_sh=$(under x "$T/sh-303-other/apps/web"); PIDS+=("$other_sh")   # another agent's preview
+for _ in $(seq 1 30); do [ "$(wc -l < "$SESS_LOG")" -ge 3 ] && break; sleep 0.2; done
+sleep 1
+child() { pgrep -P "$1" 2>/dev/null | head -1; }
+old_sh=$(awk '$1=="old"{print $2}' "$SESS_LOG"); new_sh=$(awk '$1=="new"{print $2}' "$SESS_LOG"); api_sh=$(awk '$1=="api"{print $2}' "$SESS_LOG")
+old_srv=$(child "$old_sh"); new_srv=$(child "$new_sh"); api_srv=$(child "$api_sh"); other_srv=$(child "$other_sh")
+PIDS+=("$old_sh" "$new_sh" "$api_sh" "$old_srv" "$new_srv" "$api_srv" "$other_srv")
+if [ -z "$old_srv" ] || [ -z "$new_srv" ] || [ -z "$api_srv" ] || [ -z "$other_srv" ]; then
+  fail "fixture: a session stand-in server never started"
+else
+  out=$(bash "$SUT" --session "$SESS" --dry-run)
+  { alive "$old_srv" && printf '%s' "$out" | grep -q "would stop $old_srv"; } \
+    && ok "--session --dry-run names the agent's earlier preview and stops nothing" || fail "--session --dry-run: '$out'"
+  bash "$SUT" --session "$SESS" >/dev/null
+  sleep 1
+  alive "$old_srv"   && fail "the agent's earlier preview is still running"        || ok "an agent's preview for an earlier ticket is stopped"
+  alive "$new_srv"   && ok "the agent's newest preview is kept"                    || fail "the agent's current preview was stopped"
+  alive "$api_srv"   && ok "every server in the agent's current worktree is kept"  || fail "a second server in the current worktree was stopped"
+  alive "$other_srv" && ok "another agent's preview is never touched"              || fail "another agent's preview was stopped"
+  alive "$SESS"      && ok "the agent session itself is never stopped"             || fail "the agent session was stopped"
+fi
+out=$(bash "$SUT" --session 1 --dry-run)
+printf '%s' "$out" | grep -q "would stop" && fail "--session 1 claimed every server on the machine" || ok "--session refuses launchd as a session"
+
 echo "stop-dev-servers: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

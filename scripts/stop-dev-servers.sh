@@ -3,6 +3,9 @@
 #
 #   stop-dev-servers.sh --worktree <path>        stop every server running inside <path>
 #   stop-dev-servers.sh --sweep [--dry-run]      stop servers in ticket worktrees nobody holds
+#   stop-dev-servers.sh --session <pid> [--dry-run]  one preview per agent: stop the
+#                                                servers <pid> started in every worktree
+#                                                but the one it started a server in last
 #
 # Each agent starts a web and an api server to render its screen, and nothing
 # stopped them when the ticket shipped. Measured on 2026-09-30: 16 servers up to
@@ -45,11 +48,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --worktree) MODE=worktree; TARGET="${2:-}"; shift 2 ;;
     --sweep) MODE=sweep; shift ;;
+    --session) MODE=session; TARGET="${2:-}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     *) echo "stop-dev-servers: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODE" ] || { echo "usage: stop-dev-servers.sh --worktree <path> | --sweep [--dry-run]" >&2; exit 2; }
+[ -n "$MODE" ] || { echo "usage: stop-dev-servers.sh --worktree <path> | --sweep [--dry-run] | --session <pid> [--dry-run]" >&2; exit 2; }
 command -v lsof >/dev/null || { echo "stop-dev-servers: no lsof here — cannot see working directories, stopping nothing"; exit 0; }
 
 # ps elapsed time, [[dd-]hh:]mm:ss, in seconds.
@@ -123,6 +127,38 @@ if [ "$MODE" = worktree ]; then
   servers | while read -r pid ppid age cwd; do
     inside "$cwd" "$root" && echo "$pid $ppid $root"
   done | stop_all "its worktree is finishing"
+  exit 0
+fi
+
+# ---- session: one preview per agent --------------------------------------------
+# The sweep spares a server while the agent that started it is still open, and a
+# loop stays open for hours, moving from ticket to ticket and leaving a preview up
+# in each: on 2026-10-15 that was 54 servers in 11 worktrees, 29 of 32 GB in use.
+# So an agent keeps the previews in the worktree it started a server in LAST and
+# loses the rest. Only servers descended from <pid> are candidates.
+if [ "$MODE" = session ]; then
+  case "$TARGET" in ''|0|1|*[!0-9]*) echo "stop-dev-servers: --session needs an agent's pid, not '$TARGET'" >&2; exit 0 ;; esac
+  MINE=$(ps -axo pid=,ppid= 2>/dev/null | awk -v s="$TARGET" '
+    { parent[$1] = $2 }
+    END { for (p in parent) { q = p; for (d = 0; d < 64 && q > 1; d++) { q = parent[q]; if (q == s) { print p; break } } } }')
+  # The nearest folder named for a ticket: <prefix-><digits>-… or <digits>-…
+  ticket_tree() {
+    local p="$1"
+    while [ "$p" != / ] && [ -n "$p" ]; do
+      basename "$p" | grep -qE '^([A-Za-z]+-)?[0-9]+-' && { printf '%s' "$p"; return 0; }
+      p=$(dirname "$p")
+    done
+    return 1
+  }
+  OWN=$(servers | while read -r pid ppid age cwd; do
+    grep -qx "$pid" <<<"$MINE" || continue
+    tree=$(ticket_tree "$cwd") || continue
+    echo "$pid $ppid $age $tree"
+  done)
+  [ -n "$OWN" ] || exit 0
+  KEEP=$(sort -k3,3n <<<"$OWN" | awk 'NF { print $4; exit }')
+  awk -v k="$KEEP" 'NF && $4 != k { print $1, $2, $4 }' <<<"$OWN" \
+    | stop_all "its agent has moved on to $(basename "$KEEP")"
   exit 0
 fi
 

@@ -1,5 +1,5 @@
 {
-  "description": "agent-harness — the standing rules, the guard rails and the sign-off backstop. This plugin is the ONLY place they live: a consuming repo and a machine's own ~/.claude must carry no copy, or Claude Code registers the same hook two and three times as different versions (it does not dedupe across sources). scripts/check-single-source.sh fails when one reappears.",
+  "description": "agent-harness \u2014 the standing rules, the guard rails and the sign-off backstop. This plugin is the ONLY place they live: a consuming repo and a machine's own ~/.claude must carry no copy, or Claude Code registers the same hook two and three times as different versions (it does not dedupe across sources). scripts/check-single-source.sh fails when one reappears.",
   "hooks": {
     "SessionStart": [
       {
@@ -125,6 +125,18 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/usage-limit.sh",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/one-preview-per-agent.sh",
+            "timeout": 10
           }
         ]
       }
