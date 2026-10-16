@@ -19,6 +19,15 @@ to hold the work against.
 Show the rendered thing for a design call, never a bullet list describing it.
 Anything graphic gets a rendered artifact, not ASCII.
 
+**A picture is drawn with real data, not a tidy still.** Approval shots show the
+screen as people will meet it: a long history, real counts, the longest names,
+the empty state, and the page scrolled to the bottom on a laptop and a phone.
+Evidence captured at the end of the ticket does the same. Measured when this rule
+landed: of 23 defects the owner found by hand in one test session, 6 had passed
+review on pictures with a short thread, single-digit counts or an unscrolled
+page: the page scrolling away from its input, a count of 246, cards cut off by
+a sticky band.
+
 **An approval covers the render it was given against — nothing later.** A
 sign-off names the exact evidence it saw. Any later change to what renders — a
 review round, a fix, a rebase that moves pixels — voids it: re-capture, put
@@ -70,6 +79,13 @@ reported to the owner unprompted.
 Bring each sign-off the moment its PR is green, one at a time. Never hold them
 for a batch: held PRs clash with the integration branch while they wait, and
 each clash costs another agent run.
+
+**A note left for the owner travels with the next sign-off.** When a review
+grades a finding as an owner's call (a name, a placement, a design choice on an
+approved screen), it is put to them with the next sign-off they are brought, not
+filed as low-priority polish to wait. Measured when this rule landed: 141 open
+low-priority polish tickets, and a name clash and a hard-to-read picker the
+owner later found by hand had sat in them for weeks.
 
 **Never idle while checks run.** Once a PR is reviewed, pushed and armed, hand it
 to a watcher (green, red, clash, merged) and take the next ticket. The watcher's
