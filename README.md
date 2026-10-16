@@ -347,9 +347,45 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
-| `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
+| `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+
+**Which runner builds a ticket.** `swarm.runner` in harness.json (overridden by
+`SPAWN_RUNNER`) decides what `spawn-claim.sh` starts. `claim`, the default, is one
+long `claude -p "/agent-harness:claim <ticket>"` session per ticket — unchanged for
+every project that sets nothing. `driver` runs `driver/build-ticket <ticket>`
+instead: the same fixed steps as [Building one ticket](#building-one-ticket), one
+short model call per thinking step. **Driver mode is the path for unattended
+runs**: a single /claim session is free to grow its context for as long as the
+ticket takes, and on one night 20 such runs grew contexts as large as 657K
+tokens and shipped one ticket between them.
+
+The coordinator sees a driver run the way it sees any other: a run record, the
+driver's pid as `.child`, `.ended` with its exit code (0 walked to the hand-off,
+20 parked, 2 a configuration refusal), the post-exit dev-server stop and
+reconcile. The driver's own last line — its park or hand-off line — is written to
+the log as the run's `result` line before anything else is appended, so that line
+is the verdict the tick records. The record names the driver's per-ticket state
+directory (`$STATE_DIR/driver/<ticket>/`) in `progress_paths`, because the driver
+prints only between steps while a build step writes there, and a long build step
+is not a frozen run.
+
+Two spawns refuse in driver mode, by name, exit non-zero, and start nothing: one
+that carries a brief (`CLAIM_EXTRA` — a healing re-spawn's resume brief, which
+the driver has no way to take), and one with no ticket number (the driver cannot
+pick the next ready ticket; the coordinator always passes one). Neither falls
+back to /claim, because a fallback would report exactly like the run that was
+asked for. The tick raises a `spawn-failed` event naming the reason, once per
+ticket per day. A repair re-spawn therefore does not run in driver mode yet.
+
+**Driver mode has no `--max-budget-usd` cap.** That flag belongs to one
+`claude -p` session, and the driver is many short ones. Its own ceilings bound a
+run instead — `DRIVER_MAX_BUILD_TRIES` build attempts, `DRIVER_MAX_REVIEW_ROUNDS`
+review rounds, and `DRIVER_CMD_TIMEOUT` (900 s) on every command
+([`driver/README.md`](driver/README.md)). What a run spent is in its
+`$STATE_DIR/driver/<ticket>/state.json` as `.spend`, not in the run's `result`
+line, so `usage-report.sh` shows a driver run at no cost.
 
 **The ceiling follows the machine.** Each tick the ceiling is what is running,
 plus as many builders as the spare CPU fits: the median of the recent CPU idle
