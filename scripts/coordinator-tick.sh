@@ -13,6 +13,7 @@
 #   1. lock          a tick still running means this one exits, untouched
 #   2. ended runs    each runs/*.ended not yet seen: its exit code and final result
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
+#                    (nor its record's progress_paths: a driver run's step logs)
 #   4. pull requests red (unless fix-lock.sh says a session is on it), and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
 #   5. spawn         as many starts as the spare CPU fits, while the machine has room
@@ -92,6 +93,25 @@ for ended in "$RUNS_DIR"/*.ended; do
 done
 
 # ---- 3. live and frozen runs -------------------------------------------------
+# A run's last sign of progress: its log, and any progress_paths its record names
+# (a directory counts by the newest file under it). A driver run prints only at
+# step boundaries while its build step streams into its state dir, so the log
+# alone would read a long build step as frozen.
+progress_mtime() { # <record> <log>
+  local best m p f
+  best=$(coord_mtime "$2")
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -e "$p" ] || continue
+    if [ -d "$p" ]; then
+      while IFS= read -r f; do
+        m=$(coord_mtime "$f"); [ "$m" -gt "$best" ] && best=$m
+      done < <(find "$p" -type f 2>/dev/null)
+    else
+      m=$(coord_mtime "$p"); [ "$m" -gt "$best" ] && best=$m
+    fi
+  done < <(jq -r '.progress_paths[]? // empty' "$1" 2>/dev/null)
+  printf '%s' "$best"
+}
 NOW=$(swarm_now)
 LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""
 for rec in "$RUNS_DIR"/claim-*.json; do
@@ -103,9 +123,10 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   LIVE_TICKETS="$LIVE_TICKETS${ticket:-?} "
   log=$(jq -r '.log // empty' "$rec" 2>/dev/null)
   [ -f "$log" ] || continue
-  quiet=$(( (NOW - $(coord_mtime "$log")) / 60 ))
+  seen_at=$(progress_mtime "$rec" "$log")
+  quiet=$(( (NOW - seen_at) / 60 ))
   if [ "$quiet" -ge "$COORD_FROZEN_MIN" ]; then
-    event "frozen:$rid:$(coord_mtime "$log")" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
+    event "frozen:$rid:$seen_at" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
   fi
 done
 say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
@@ -319,10 +340,18 @@ else
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
-      if CLAIM_CLASS="$cls" swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then
+      spawn_out=$(CLAIM_CLASS="$cls" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
+      printf '%s\n' "$spawn_out" >> "$COORD_LOG"
+      if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live
         say "spawned #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
-      else say "spawn of #$t failed"; fi
+      else
+        say "spawn of #$t failed"
+        # A refusal names its reason (driver mode cannot carry a brief, say);
+        # raised so it is seen, not only buried in the coordinator's log.
+        why=$(printf '%s\n' "$spawn_out" | sed '/^[[:space:]]*$/d' | tail -1 | cut -c1-240)
+        event "spawn-failed:$t:$(swarm_day)" spawn-failed false "$t" "" "spawn of #$t ($cls) failed: ${why:-the spawner exited $spawn_rc}" || true
+      fi
       [ -z "$brief" ] || rm -f "$brief"
     fi
   done
