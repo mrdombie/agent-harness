@@ -30,11 +30,11 @@ want "repair first, then the rest in claimable order" "502:repair 501:new 503:ne
 want "a ticket outside the scope is not queued" "" "$(jq -r '.tickets[] | select(.n==900) | .n' "$QF")"
 
 echo "--- a label that exists is that label ---"
-bash "$Q" seed flow-gap >/dev/null
+bash "$Q" seed --replace flow-gap >/dev/null
 want "only the label's tickets"            "503:new" "$(order)"
 
 echo "--- a bare number is that one ticket ---"
-bash "$Q" seed 501 >/dev/null
+bash "$Q" seed --replace 501 >/dev/null
 want "one ticket"                          "501:new" "$(order)"
 want "and the scope says so"               "ticket 501" "$(jq -r .label "$QF")"
 
@@ -46,7 +46,7 @@ want_in "and names what it tried"          'project:nonsense' "$out"
 want "the queue is untouched"              "$before" "$(cat "$QF")"
 
 echo "--- approved-merge and notes survive a refresh ---"
-bash "$Q" seed widgets >/dev/null
+bash "$Q" seed --replace widgets >/dev/null
 bash "$Q" add 501 --class approved-merge --note "owner approved the render" >/dev/null
 bash "$Q" add 777 --class approved-merge >/dev/null
 bash "$Q" refresh >/dev/null
@@ -113,5 +113,43 @@ out=$(bash "$Q" add 12 --class urgent 2>&1); rc=$?
 want "an unknown class is refused"         "2" "$rc"
 bash "$Q" remove 777 >/dev/null
 want "removed"                             "" "$(jq -r '.tickets[] | select(.n==777) | .n' "$QF")"
+
+echo "--- seeding a second scope ADDS it: the first scope's entries, pins and notes stay ---"
+# The shape of the live queue before scopes were lists: one scope, a hand-pinned note.
+printf '%s\n' "501	P1	OPS		-	one" "502	P1	OPS		[FINISH PR]	two" "503	P2	OPS		-	three" "504	P2	OPS		-	four" "900	P0	OPS		-	elsewhere" \
+  | sed 's/	-	/		/' > "$FIX/claimable.tsv"
+cat > "$QF" <<'JSON'
+{"scope":"widgets","label":"project:widgets","seeded_at":"2026-10-16T09:00:00Z","tickets":[
+ {"n":502,"class":"repair","note":""},
+ {"n":501,"class":"new","note":"resume worktree w-501, do not start fresh","pinned":true},
+ {"n":12792,"class":"repair","note":"pinned by hand, under no scope","pinned":true}]}
+JSON
+fix_issue_list "area:GADGETS" '[{"number":504},{"number":900}]'
+out=$(bash "$Q" seed area:GADGETS 2>&1)
+want_in "it names both scopes"             'project:widgets, area:GADGETS' "$out"
+want "both scopes are recorded"            'widgets,area:GADGETS' "$(jq -r .scope "$QF")"
+want "the first scope's tickets stay"      "501 502 503" "$(jq -r '[.tickets[] | select(.n==501 or .n==502 or .n==503) | .n] | map(tostring) | join(" ")' "$QF")"
+want "the second scope's tickets arrive"   "504 900" "$(jq -r '[.tickets[] | select(.n==504 or .n==900) | .n] | map(tostring) | join(" ")' "$QF")"
+want "the pinned note survives"            "resume worktree w-501, do not start fresh" "$(jq -r '.tickets[] | select(.n==501) | .note' "$QF")"
+want "a hand-pinned entry under no scope survives" "pinned by hand, under no scope" "$(jq -r '.tickets[] | select(.n==12792) | .note' "$QF")"
+want "each entry carries its scope"        "project:widgets area:GADGETS" "$(jq -r '[(.tickets[] | select(.n==503) | .scope), (.tickets[] | select(.n==900) | .scope)] | join(" ")' "$QF")"
+l=$(bash "$Q" list)
+want_in "list shows the scope per entry"   '#900 +new +area:GADGETS' "$l"
+want_in "and a hand pin as pinned"         '#12792 +repair +pinned' "$l"
+bash "$Q" seed area:GADGETS >/dev/null
+want "seeding a recorded scope again does not repeat it" 'widgets,area:GADGETS' "$(jq -r .scope "$QF")"
+bash "$Q" refresh >/dev/null
+want "refresh keeps both"                  'widgets,area:GADGETS' "$(jq -r .scope "$QF")"
+want "and the pin"                         "resume worktree w-501, do not start fresh" "$(jq -r '.tickets[] | select(.n==501) | .note' "$QF")"
+
+echo "--- drop takes one scope out; the rest and every pin stay ---"
+bash "$Q" drop project:widgets >/dev/null
+want "only the second scope is recorded"   'area:GADGETS' "$(jq -r .scope "$QF")"
+want "its unpinned tickets went"           "" "$(jq -r '.tickets[] | select(.n==503) | .n' "$QF")"
+want "its pinned ticket stayed"            "501" "$(jq -r '.tickets[] | select(.n==501) | .n' "$QF")"
+out=$(bash "$Q" drop nonsense-scope 2>&1); rc=$?
+want "dropping a scope not recorded is refused" "2" "$rc"
+bash "$Q" drop area:GADGETS >/dev/null
+want "the last scope gone, pins stay"      "501 12792" "$(jq -r '[.tickets[].n] | map(tostring) | join(" ")' "$QF")"
 
 exit $FAILED

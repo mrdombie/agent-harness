@@ -106,6 +106,14 @@ want "the pinned note travels"  "resume the worktree" "$(printf '%s' "$s" | jq -
 want "an entry without a scope takes the queue's" "project:widgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].scope')"
 want "an entry's own scope wins" "project:gadgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[3].scope')"
 want "it carries a title"       "Ticket 701" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].title')"
+cat > "$STATE/coordinator/queue.json" <<'JSON'
+{"scope":"widgets,area:GADGETS","label":"project:widgets, area:GADGETS","labels":["project:widgets","area:GADGETS"],"tickets":[
+ {"n":711,"class":"new","note":""},{"n":712,"class":"new","note":"","scope":"area:GADGETS"}]}
+JSON
+s=$(snap)
+want "several scopes are listed one by one" "project:widgets|area:GADGETS" "$(printf '%s' "$s" | jq -r '.queue.scopes | join("|")')"
+want "an old entry under several scopes shows none, not all of them" "" "$(printf '%s' "$s" | jq -r '.queue.tickets[0].scope')"
+want "an entry's own scope still shows" "area:GADGETS" "$(printf '%s' "$s" | jq -r '.queue.tickets[1].scope')"
 rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"

@@ -39,15 +39,15 @@ SWARM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 # Two projects can share one machine, so the label carries a key derived from
 # the state directory — the one thing that is already per-project.
-KEY=$(printf '%s' "$STATE_DIR" | cksum | awk '{printf "%08x", $1}')
-NS="agent-harness.swarm"
+KEY=$(swarm_job_key)
+NS="$SWARM_JOB_NS"
 
 jobs_for_project() {
   printf 'live-view\nscheduler\nrepair-watch\n'
   [ -n "$SWARM_REPORT_URL" ] && printf 'report\n'
   return 0
 }
-label()  { printf '%s.%s.%s' "$NS" "$1" "$KEY"; }
+label()  { swarm_job_label "$1"; }
 plist()  { printf '%s/%s.plist' "$AGENTS_DIR" "$(label "$1")"; }
 
 script_for() { # <job> — the command line, one argument per line

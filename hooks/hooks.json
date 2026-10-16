@@ -1,5 +1,5 @@
 {
-  "description": "agent-harness \u2014 the standing rules, the guard rails and the sign-off backstop. This plugin is the ONLY place they live: a consuming repo and a machine's own ~/.claude must carry no copy, or Claude Code registers the same hook two and three times as different versions (it does not dedupe across sources). scripts/check-single-source.sh fails when one reappears.",
+  "description": "agent-harness — the standing rules, the guard rails and the sign-off backstop. This plugin is the ONLY place they live: a consuming repo and a machine's own ~/.claude must carry no copy, or Claude Code registers the same hook two and three times as different versions (it does not dedupe across sources). scripts/check-single-source.sh fails when one reappears.",
   "hooks": {
     "SessionStart": [
       {
@@ -12,6 +12,11 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/precedence.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/stale-build.sh",
             "timeout": 10
           }
         ]
@@ -65,6 +70,16 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/guard-pre-approved-writes.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/queue-not-build.sh",
             "timeout": 15
           }
         ]

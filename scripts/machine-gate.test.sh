@@ -221,7 +221,8 @@ echo "--- every path that starts heavy work waits for the machine ---"
 # only: the suite never writes into it.
 FIXREPO="$KIT/scripts/fixtures/machine-gate"
 export MG_TEST_MARK="$T/gated"
-for s in claim work auto bug finish; do site "$s" "$KIT/skills/$s/SKILL.md" "$FIXREPO"; done
+# Not work: it only queues for the coordinator, whose spawns run claim and finish.
+for s in claim auto bug finish; do site "$s" "$KIT/skills/$s/SKILL.md" "$FIXREPO"; done
 site "gate-runner" "$KIT/agents/gate-runner.md" "$FIXREPO"
 
 echo "--- finish: the gate commands themselves are what is held ---"

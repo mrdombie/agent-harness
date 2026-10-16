@@ -45,6 +45,7 @@
 #   10  lost the race — another agent holds it (back off, take another ticket)
 #   11  not claimed / not found
 #   12  held by a different agent (release without --force)
+#   13  the coordinator builds on this machine — queue the ticket instead
 #   1   error
 
 # CLAIM_REPO is this script's own repo override (the fixtures use it); let the
@@ -218,6 +219,19 @@ cmd_acquire() {
   [ -n "$issue" ] || die "acquire needs an issue number"
   [ -n "$branch" ] || die "acquire needs --branch"
   [ -n "$at" ] || at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # While this project's coordinator is live, every builder is its spawn: under
+  # its cap and its usage hold, and on the live view. A chat that claims builds
+  # around all three (2026-10-16: four in-chat builders retried into a usage
+  # wall the coordinator was holding for). A spawned run carries CLAIM_RUN_ID;
+  # adoption (--claimed-at) records a claim that already exists.
+  if [ -z "${at_given:-}" ] && [ -z "${CLAIM_RUN_ID:-}" ] \
+     && bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/coordinator-service.sh" >/dev/null 2>&1; then
+    printf 'not claimed: the coordinator builds tickets on this machine, so a chat does not\n' >&2
+    printf 'queue it instead:  %s add %s --note "<what the builder needs to know>"\n' \
+      "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/coordinator-queue.sh" "$issue" >&2
+    return 13
+  fi
 
   # Already being shipped by someone else's open PR: a second build is a duplicate
   # (2026-10-10, two PRs closed for it). Adoption (--claimed-at) is exempt. Same exit

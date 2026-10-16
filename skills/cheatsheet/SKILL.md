@@ -60,7 +60,7 @@ not a command, so the tree cannot show it:
 
 | Mode | Run this |
 |---|---|
-| Work non-stop with no window open — a fresh process per check, never a growing conversation | `scripts/coordinator-queue.sh seed <area>[,<area>…]`, then `swarm/install.sh coordinator` (shadow until `COORDINATOR_SHADOW=0`) |
+| Work non-stop with no window open — a fresh process per check, never a growing conversation | `/agent-harness:work <area>` (or `scripts/coordinator-queue.sh seed <area>`, which adds to the areas already queued), then `swarm/install.sh coordinator` (shadow until `COORDINATOR_SHADOW=0`) |
 | Get every decision as a clickable choice, sign-offs five at a time — idle and free between them | Open one window, type `/agent-harness:needsme --watch`, and leave it |
 
 ## Skills

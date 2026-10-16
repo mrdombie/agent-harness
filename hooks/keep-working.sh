@@ -129,9 +129,13 @@ if [ -f "$CACHE" ]; then
   [ "$CAGE" -lt 15 ] && READY=$(cat "$CACHE" 2>/dev/null)
 fi
 if [ -z "$READY" ]; then
+  # A ticket already in the coordinator's queue is handed off, not waiting on
+  # this chat: the coordinator builds it, so it does not hold the loop open.
+  QUEUED=$(jq -c '[.tickets[]?.n]' "$TDIR/coordinator/queue.json" 2>/dev/null) || QUEUED=""
+  [ -n "$QUEUED" ] || QUEUED='[]'
   READY=$(gh issue list --repo "$REPO" --state open \
             "${LABEL_ARGS[@]}" --label status:ready --limit 100 \
-            --json number -q 'length' 2>/dev/null) || READY=""
+            --json number 2>/dev/null | jq --argjson q "$QUEUED" '[.[].number] - $q | length' 2>/dev/null) || READY=""
   [ -n "$READY" ] && printf '%s' "$READY" > "$CACHE"
 fi
 
@@ -147,10 +151,12 @@ touch "$MARK"; echo $(( N + 1 )) > "$COUNT"
 say "exit2 nagging scope=$SCOPE ready=$READY nag=$((N+1))/$MAX_NAGS session=$SID"
 cat >&2 <<EOF
 You are in a /work or /auto loop and you stopped with $READY runnable tickets
-still in scope "$SCOPE". No stop condition was recorded.
+still in scope "$SCOPE" that are not in the coordinator's queue. No stop
+condition was recorded.
 
-Take the next one. Re-triage from /auto Step 1 (your own merge may have turned
-trunk red), then \`/claim <n>\` and ship it. No check-in, no "shall I continue".
+Queue them: \`coordinator-queue.sh seed $SCOPE\` (the coordinator builds them —
+never a builder agent in this chat), then carry on with the PM work in scope:
+specs, pictures, the owner's calls. No check-in, no "shall I continue".
 
 If a stop condition DID fire — the runnable list is empty, a gate will not go
 green after real effort, a migration will not apply, a spec ambiguity only the PM

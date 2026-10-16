@@ -516,11 +516,17 @@ KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 case $? in
   0)  : ;;                                    # won it — carry on
   10) echo "Lost the race on #$TICKET_KEY — next candidate."; exit 0 ;;
+  13) echo "The coordinator builds on this machine — queued #$TICKET_KEY for it instead."
+      "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET_KEY" --note "${CLAIM_NOTE:-queued from a chat claim}"; exit 0 ;;
   *)  echo "Claim failed for #$TICKET_KEY — do NOT proceed." >&2; exit 1 ;;
 esac
 ```
 
-Exit 10 is the only non-fatal failure and it means exactly one thing: a peer
+Exit 13 means this project's coordinator is live and this is not one of its
+spawns: the ticket goes to its queue and this chat builds nothing. Put what the
+builder needs to know (worktree, PR, the owner's calls) in the note.
+
+Exit 10 is the other non-fatal failure and it means exactly one thing: a peer
 holds it. Go back to Step 2 and take the next candidate. **Never** retry the
 same ticket, and never `--force`; adopting a live peer's claim is how two
 agents end up on one branch.
