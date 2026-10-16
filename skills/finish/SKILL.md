@@ -408,6 +408,12 @@ $STATE_DIR/<spec-file>
 ## Evidence routes
 - /<each route this change shows, one per line — only on a diff that changes what a user sees>
 
+## Lesson
+- Principle: <one sentence naming the class of mistake — only on a fix; delete otherwise>
+- Guard: `<the test, lint or gate file this PR adds or changes>`
+- Before/after: <how the guard failed on the pre-fix code and passes now>
+- Reach: <the sibling it also catches, or the search that found none>
+
 Closes ticket $TICKET.
 EOF
 )"
@@ -920,6 +926,28 @@ This is not the only seat of the rule. The same script runs as the
 called from the consuming repo), so a merge that skips this skill meets it anyway.
 Do not satisfy it with a line that is not true: "covered by" a test that does not
 pin the same behaviour is the failure this step exists to catch.
+
+### Step 5.7 — A fix ships its lesson
+
+A fix (a bug label, a repair or approved-merge spawn, a `fix:` title or `fix/`
+branch, or a PR that closes or references a bug) carries the `## Lesson` section
+from Step 5's body: the **principle** (the class of mistake, not the instance), the
+**guard** (an executable test, lint or gate file this PR changes in substance), **before/after** (the guard failed on the pre-fix code — plant the
+death, per the standing rules) and **reach** (the sibling it also catches). Or one
+line: `Not automatable because <reason>`, with the principle added to the
+project's rules file.
+
+The enforcement is the `Every fix ships a lesson` CI check
+(`.github/workflows/lesson.yml`), not this step; running the same script here
+only tells you sooner:
+
+```bash
+bash "$KIT_ROOT/scripts/check-lesson.sh" --base "origin/$INTEGRATION_BRANCH" --head HEAD \
+  --pr "$PR_NUMBER" --slug "$REPO_SLUG" || echo "fix the Lesson section (gh pr edit $PR_NUMBER --body-file ...)"
+```
+
+A guard that fits only the one instance, or reads as an odd rule, is a Major
+review finding: aim it at the principle.
 
 ### Step 6 — Merge the PR to develop
 
