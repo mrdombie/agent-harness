@@ -202,7 +202,7 @@ _mg_main() {
       idle=$(swarm_cpu_idle); load=$(swarm_load)
       SWARM_IDLE="$idle" SWARM_LOAD="$load" SWARM_IDLE_FILE="" SWARM_LOAD_FILE="" \
         swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD" >/dev/null && verdict=busy
-      echo "$verdict · cpu idle $idle% (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
+      echo "$verdict · cpu idle $([ -n "$idle" ] && echo "$idle%" || echo unread) (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
     *)
       sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 2 ;;
   esac

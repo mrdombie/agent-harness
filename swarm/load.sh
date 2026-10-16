@@ -13,11 +13,15 @@
 #   swarm_cpu_idle                    idle percent, sampled over ~1-2s
 #   swarm_load                        the 1-minute load average, a whole number
 #   swarm_cores                       logical cores
+#   Every reading prints NOTHING when it could not be taken. swarm_busy (the
+#   gate) reads that as idle 100 / load 0 / 4 cores; the coordinator as no room.
+#   swarm_free_mem_gb                 available memory less swap in use, whole GB; empty when unread
 #
 # Seams, each read on EVERY call so a test can move them while a waiter polls:
 #   SWARM_LOAD / SWARM_LOAD_FILE   a fixed load / a file holding it
 #   SWARM_IDLE / SWARM_IDLE_FILE   a fixed idle percent / a file holding it
-#   SWARM_CORES                    a fixed core count
+#   SWARM_CORES / SWARM_CORES_FILE a fixed core count / a file holding it
+#   SWARM_FREE_MEM_GB / _FILE      a fixed free-memory reading / a file holding it
 #   SWARM_IDLE_CACHE               where one real sample is shared for 5s
 #                                  (default ~/.cache/agent-harness/cpu-idle)
 #
@@ -32,16 +36,20 @@ swarm_load() {
   local l=""
   l=$(/usr/sbin/sysctl -n vm.loadavg 2>/dev/null | awk '{print int($2)}')
   [ -n "$l" ] || l=$(awk '{print int($1)}' /proc/loadavg 2>/dev/null)
-  printf '%s' "${l:-0}"
+  case "$l" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$l"
 }
 
 swarm_cores() {
+  if [ -n "${SWARM_CORES_FILE:-}" ] && [ -f "$SWARM_CORES_FILE" ]; then
+    local f; f=$(head -1 "$SWARM_CORES_FILE" 2>/dev/null); printf '%s' "${f%%.*}"; return
+  fi
   if [ -n "${SWARM_CORES:-}" ]; then printf '%s' "$SWARM_CORES"; return; fi
   local c=""
   c=$(/usr/sbin/sysctl -n hw.ncpu 2>/dev/null)
   [ -n "$c" ] || c=$(nproc 2>/dev/null)
   [ -n "$c" ] || c=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)
-  case "$c" in ''|*[!0-9]*|0) c=4 ;; esac
+  case "$c" in ''|*[!0-9]*|0) return 0 ;; esac
   printf '%s' "$c"
 }
 
@@ -76,7 +84,8 @@ _swarm_sample_idle() {
   printf '%s' "$v"
 }
 
-# Idle percent. A reading nobody could take is 100: the load backstop still holds.
+# Idle percent, or nothing when no sample could be taken. swarm_busy reads nothing
+# as 100 (the load backstop still holds); the coordinator reads it as no room.
 swarm_cpu_idle() {
   if [ -n "${SWARM_IDLE_FILE:-}" ] && [ -f "$SWARM_IDLE_FILE" ]; then
     local f; f=$(head -1 "$SWARM_IDLE_FILE" 2>/dev/null); printf '%s' "${f%%.*}"; return
@@ -88,14 +97,51 @@ swarm_cpu_idle() {
     printf '%s' "$v"; return
   fi
   v=$(_swarm_sample_idle)
-  case "$v" in ''|*[!0-9]*) printf '100'; return ;; esac
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
   mkdir -p "$(dirname "$cache")" 2>/dev/null \
     && printf '%s %s\n' "$now" "$v" > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null
   printf '%s' "$v"
 }
 
+# Free memory in whole GB: what the kernel says is available, less swap in use.
+# Inactive pages are not free on a swapping machine: on 2026-10-16 vm_stat's
+# free + inactive read 6 GB with 15.5 of 16 GB swap used and load 96.
+#   swarm_free_mem_calc <available-bytes> <swap-used-bytes>
+swarm_free_mem_calc() {
+  awk -v a="$1" -v u="$2" 'BEGIN{ if (a == "" || a !~ /^[0-9.]+$/ || u !~ /^[0-9.]+$/) exit 1
+    g = (a - u) / 1073741824; if (g < 0) g = 0; printf "%d", g }'
+}
+# The used figure in bytes from `sysctl -n vm.swapusage` on stdin ("used = 14747.50M").
+swarm_parse_swapusage_used() {
+  awk '{ for (i = 1; i <= NF; i++) if ($i == "used") { v = $(i+2); m = 1
+           if (v ~ /G$/) m = 1073741824; else if (v ~ /M$/) m = 1048576; else if (v ~ /K$/) m = 1024
+           sub(/[KMG]$/, "", v); printf "%d", v * m; found = 1; exit } }
+       END { if (!found) exit 1 }'
+}
+
+# Free memory in whole GB, or nothing when it could not be read.
+#   SWARM_FREE_MEM_GB / SWARM_FREE_MEM_FILE   a fixed reading / a file holding it
+swarm_free_mem_gb() {
+  if [ -n "${SWARM_FREE_MEM_FILE:-}" ] && [ -f "$SWARM_FREE_MEM_FILE" ]; then
+    local f; f=$(head -1 "$SWARM_FREE_MEM_FILE" 2>/dev/null); printf '%s' "${f%%.*}"; return
+  fi
+  if [ -n "${SWARM_FREE_MEM_GB:-}" ]; then printf '%s' "${SWARM_FREE_MEM_GB%%.*}"; return; fi
+  local v="" lvl mem used
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    lvl=$(/usr/sbin/sysctl -n kern.memorystatus_level 2>/dev/null)
+    mem=$(/usr/sbin/sysctl -n hw.memsize 2>/dev/null)
+    used=$(/usr/sbin/sysctl -n vm.swapusage 2>/dev/null | swarm_parse_swapusage_used)
+    case "$lvl$mem" in ''|*[!0-9]*) ;; *) v=$(swarm_free_mem_calc "$(( mem / 100 * lvl ))" "${used:-}") ;; esac
+  elif [ -r /proc/meminfo ]; then
+    v=$(awk '/^MemAvailable:/{a=$2} /^SwapTotal:/{t=$2} /^SwapFree:/{f=$2}
+             END{ if (a == "") exit 1; g = (a - (t - f)) / 1048576; if (g < 0) g = 0; printf "%d", g }' /proc/meminfo 2>/dev/null)
+  fi
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
 # The default runaway guard: 20 load per core. Not a busy test — the idle floor is.
-swarm_default_max_load() { printf '%s' $(( 20 * $(swarm_cores) )); }
+swarm_default_max_load() { local c; c=$(swarm_cores); case "$c" in ''|*[!0-9]*|0) c=4 ;; esac; printf '%s' $(( 20 * c )); }
 
 # swarm_busy <min-idle> <max-load> — prints what it read; 0 when busy, 1 when clear.
 #   busy:  "cpu idle 9%, floor 15%"  or  "load 201, limit 200"
@@ -106,6 +152,6 @@ swarm_busy() {
   idle=$(swarm_cpu_idle); load=$(swarm_load)
   if [ "${idle:-100}" -lt "$min" ]; then printf 'cpu idle %s%%, floor %s%%' "$idle" "$min"; return 0; fi
   if [ "${load:-0}" -gt "$max" ]; then printf 'load %s, limit %s' "$load" "$max"; return 0; fi
-  printf 'cpu idle %s%%, load %s' "$idle" "$load"
+  printf 'cpu idle %s, load %s' "$([ -n "$idle" ] && echo "$idle%" || echo unread)" "${load:-unread}"
   return 1
 }

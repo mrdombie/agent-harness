@@ -40,6 +40,8 @@ const PLAIN = process.env.SWARM_PLAIN_TITLES || path.join(RUNS, '..', 'plain-tit
 // state file read as it stands; the hold is asked of hold-status.sh, which runs
 // the same functions the coordinator decides with.
 const COORD_QUEUE = process.env.SWARM_COORD_QUEUE || path.join(RUNS, '..', 'coordinator', 'queue.json')
+// The last tick's ceiling, the reading behind it and the healing / new split.
+const COORD_CAPACITY = path.join(path.dirname(COORD_QUEUE), 'capacity.json')
 const HOLD_SCRIPT = process.env.SWARM_HOLD_SCRIPT
   || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hold-status.sh')
 const HOLD_MS = Number(process.env.SWARM_HOLD_MS || 30_000)
@@ -94,6 +96,10 @@ export function queueOf(file = COORD_QUEUE) {
   const scopes = Array.isArray(q.scopes) ? q.scopes.map((s) => String(s.label || s.scope || s))
     : [...new Set(rows.map((r) => r.scope).filter(Boolean))]
   return { scopes, seededAt: q.seeded_at || null, tickets: rows }
+}
+
+export function capacityOf(file = COORD_CAPACITY) {
+  try { const c = JSON.parse(fs.readFileSync(file, 'utf8')); return c && typeof c === 'object' ? c : null } catch { return null }
 }
 
 let titles = {}
@@ -264,7 +270,7 @@ export function snapshot(now = Date.now()) {
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, done: done.slice(0, 20),
-           hold, queue }
+           hold, queue, capacity: capacityOf() }
 }
 
 export function serve(port = PORT) {
