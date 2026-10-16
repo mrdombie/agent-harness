@@ -20,6 +20,31 @@ The ordering is fixed and it is not a preference:
 Never skip a tier because a lower one looks more interesting. If Tier 1 has a
 row, Tier 1 is the work.
 
+## The coordinator builds; this chat queues (overrides every "claim" and "build" below)
+
+Dom, 2026-10-16: **route everything through the coordinator.** Wherever this file says to take a
+row and build it — `/agent-harness:claim`, build, `/agent-harness:finish`, fix a red PR — the chat
+**queues** that row instead, and the coordinator's spawn does the building:
+
+| Row | Queued as |
+|---|---|
+| a ticket to build (Tier 1 P0, Tier 3) | `coordinator-queue.sh add <n> --note "<why it is next>"` |
+| a red or clashing PR (Tier 2) | `coordinator-queue.sh add <ticket> --class repair --note "PR <n> red: <which checks>; resume worktree <w>"` |
+| a whole label | `coordinator-queue.sh seed <label>` — adds the scope, never replaces another |
+
+(`coordinator-queue.sh` is `${CLAUDE_PLUGIN_ROOT}/scripts/coordinator-queue.sh`.) The note is the
+builder's only briefing: name the worktree to resume, the PR, what is red, and what the owner
+already decided. **Never start a builder agent and never claim in the chat.** While the coordinator
+is live (`scripts/coordinator-service.sh` says `live`), `claim-lock.sh acquire` refuses a chat claim
+with exit 13 and the `queue-not-build` hook refuses a builder Agent call. When it says `shadow` or
+`off`, queue anyway and tell the operator in one line that nothing builds until
+`swarm/install.sh coordinator` runs with `COORDINATOR_SHADOW=0`.
+
+**What stays in the chat:** triage (Step 1, read-only), the board, and PM work — specs for drafting
+and gated tickets, pictures for screen tickets, the owner's decisions, Tier 1 rows that are an
+operator action (credits, a Railway login, a prune). The loop is: triage → queue the rows →
+PM work → re-triage.
+
 ## Guards (run first, once)
 
 ```bash
@@ -421,6 +446,6 @@ whether to start another agent or come and look themselves.
 | `--tier N` | Restrict to one tier. `--tier 1` = heal only; `--tier 2` = drain the stranded pile. |
 | `--once` | Take exactly one item, ship it, stop. |
 
-To run it hands-off across context limits, wrap it: `/loop /agent-harness:auto`. To run non-stop
-with no window open, use the coordinator (`swarm/install.sh coordinator`, README "The coordinator"):
-a fresh process per check instead of a conversation that grows on every wake.
+The building always runs in the coordinator (`swarm/install.sh coordinator`, README "The
+coordinator"): a fresh process per check instead of a conversation that grows on every wake. This
+skill feeds its queue and does the PM work.

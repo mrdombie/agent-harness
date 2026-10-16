@@ -178,6 +178,8 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 |---|---|---|
 | SessionStart | `standing-rules.sh` | puts `rules/standing-rules.md` in front of the session |
 | SessionStart | `precedence.sh` | one line per kit skill this repo overrides |
+| SessionStart | `stale-build.sh` | warns when this session loaded an older kit than the newest installed — restart to pick it up |
+| PreToolUse (Agent) | `queue-not-build.sh` | while the coordinator is live, refuses an Agent call that would build a ticket in the chat; queue it instead |
 | PreToolUse (Bash) | `block-push-no-verify.sh` | refuses `git push --no-verify` |
 | PreToolUse (Bash) | `block-hookify-rules.sh` | the git-safety rules: hand-released claims, `commit -a`, `commit --no-verify`, `reset --hard`, `git add -A`, `npm install` in a worktree, hand-rolled PRs, hand-rolled ticket branches |
 | PreToolUse (Bash) | `no-repo-wide-format.sh` | refuses a formatter over a whole folder, and a whole-app check from an unattended run |
@@ -270,12 +272,22 @@ dev-server sweep, checks the disk, and writes every event that needs judgement
 to a file. Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
+**Every builder is a coordinator spawn.** `/agent-harness:work` and `/agent-harness:auto`
+queue their candidates here and do the PM work in the chat. While the coordinator is live,
+`claim-lock.sh acquire` refuses a claim from outside a spawn (exit 13) and the
+`queue-not-build` hook refuses an Agent call that would build a ticket, so the cap, the usage
+hold and the live view cover every builder. The queue holds several scopes at once: each `seed`
+adds its scope, and hand-pinned entries and notes survive every seed and refresh.
+
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
 it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
 hook when any window hits the plan's limit) says the limit holds.
 
 ```sh
-scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # tickets, labels or programme subjects; a list is their union
+scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # ADDS these scopes to the queue's; a list is their union
+scripts/coordinator-queue.sh seed --replace <scope>    # the queue's scopes become exactly these
+scripts/coordinator-queue.sh drop <scope>              # stop queueing one scope; pinned entries stay
+scripts/coordinator-service.sh                         # live | shadow | off for this project
 swarm/install.sh coordinator                # every 5 minutes; SHADOW unless COORDINATOR_SHADOW=0
 scripts/coordinator-compare.sh --since <ISO>  # the shadow's calls beside the loop's runs
 swarm/install.sh uninstall coordinator

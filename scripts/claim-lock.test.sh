@@ -201,6 +201,21 @@ ls "$SB/state/runs" 2>/dev/null | grep -q 781 \
   || ok "a claim taken outside a spawned run writes no run note"
 gh_run -- release 781 --force
 
+# --- 8. While the coordinator is live, a chat is told to queue, not claim -------
+gh_run COORDINATOR_SERVICE=live -- acquire 790 --branch tkt-790/x --worktree "$SB/wt11" --pid $$
+[ "$RC" -eq 13 ] && ok "a chat claim while the coordinator is live is refused (rc 13)" \
+                 || bad "a chat claim while the coordinator is live is refused (rc $RC)"
+grep -q 'coordinator-queue.sh add 790' "$SB/out" && ok "and it is told how to queue it" \
+                                                   || bad "and it is told how to queue it: $(cat "$SB/out")"
+git -C "$SB/work" ls-remote origin 2>/dev/null | grep -q '/790$' \
+  && bad "no claim ref was written" || ok "no claim ref was written"
+gh_run COORDINATOR_SERVICE=live CLAIM_RUN_ID=run-790 -- acquire 790 --branch tkt-790/x --worktree "$SB/wt11" --pid $$
+[ "$RC" -eq 0 ] && ok "the coordinator's own spawn claims (rc 0)" || bad "the coordinator's own spawn claims (rc $RC)"
+gh_run -- release 790 --force
+gh_run COORDINATOR_SERVICE=shadow -- acquire 791 --branch tkt-791/x --worktree "$SB/wt12" --pid $$
+[ "$RC" -eq 0 ] && ok "a shadow coordinator does not stop a chat claim" || bad "a shadow coordinator does not stop a chat claim (rc $RC)"
+gh_run -- release 791 --force
+
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"

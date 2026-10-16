@@ -13,22 +13,37 @@ Everything below is the delta. There is nothing else.
 
 ## The delta
 
-**0. It is a loop of `/agent-harness:claim <ticket>`.** That is the whole shape. `/agent-harness:claim` is the one path to
-shipping code — the superpowers steps, the spec and anti-orphan gates, the worktree, `/agent-harness:finish`.
-`/agent-harness:work` never builds anything itself; it decides WHICH ticket and calls `/agent-harness:claim <n>`. One
-implementation, so no second path to drift out of step.
-
-**0.5. Wait for the machine before every `/agent-harness:claim` it makes.** The same
-wait `/agent-harness:auto`'s Guards run, once per ticket, before the claim:
+**0. It queues; the coordinator builds.** `/agent-harness:work` never builds in the chat — no
+`/agent-harness:claim`, no builder agents (Dom, 2026-10-16: "route everything through the
+coordinator"). It resolves the scope, hands that scope's tickets to the coordinator's queue, and
+does the PM work the coordinator cannot. Every builder is then a coordinator spawn: under its cap
+and its usage hold, and on the live view.
 
 ```bash
-# Heavy work waits for the machine. 75 = still busy, nothing started — run it again.
-"${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" wait --max "${MACHINE_GATE_MAX_WAIT:-100}" || exit $?
+Q="${CLAUDE_PLUGIN_ROOT}/scripts/coordinator-queue.sh"
+mode=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/coordinator-service.sh")   # live | shadow | off
+bash "$Q" seed "$SCOPE_TYPED"     # ADDS this scope to the ones already queued; never --replace
+bash "$Q" list                    # the short board: ticket, kind, scope, note
 ```
 
-While CPU idle is under `swarm.minCpuIdle` (default 15%) it prints
-`machine busy (cpu idle N%, floor F%), waiting` and re-checks; 75 means run
-the same line again. It never fails a ticket and it is never skipped.
+| Argument | What it queues |
+|---|---|
+| a label or subject | `seed <it>` — every claimable ticket under it, now and on every tick's refresh |
+| a bare number | `add <n> --note "<what the builder needs to know>"` — pinned, survives refreshes |
+
+Then print the short board (the `list` rows for this scope, and the live view's address,
+`http://127.0.0.1:<swarm.port, default 4777>`) and **go to the PM work** below. When `mode` is not
+`live`, say so in one line: "Queued, but the coordinator is not running live, so nothing builds
+these until `swarm/install.sh coordinator` runs with `COORDINATOR_SHADOW=0`." Still build nothing.
+
+**What stays in the chat** is everything a builder cannot do: tickets in scope that are drafting or
+gated get specced; screen tickets get their picture drawn and put to the owner; owner decisions get
+asked. A ticket the PM work turns ready is picked up by the coordinator's next refresh — no second
+`seed` needed.
+
+Two guards hold this when the instructions drift: `claim-lock.sh acquire` refuses a chat claim with
+exit 13 while the coordinator is live, and the `queue-not-build` hook refuses an Agent call that
+would build a ticket. Either refusal means: queue it (`$Q add <n> --note …`) and carry on.
 
 **1. Scope.** `/agent-harness:auto` takes the top row of the whole board. `/agent-harness:work` takes only tickets under
 `$ARGUMENTS`:
@@ -141,8 +156,8 @@ exist on any ticket.
 label. **Tier 1 still covers the whole estate** — a red trunk or a dead CI blocks your tickets
 as surely as anyone's, and healing it is not out of scope.
 
-**4. One extra stop condition.** This label's runnable list is empty — everything left is
-gated, blocked, or parked on a human. Report and stop. **Never widen to another label**; that is
+**4. One extra stop condition.** Every ready ticket in this label is in the coordinator's queue
+and the PM work in scope is done — everything left is gated, blocked, or parked on a human. Report and stop. **Never widen to another label**; that is
 `/agent-harness:auto`'s job and the operator chose the scope deliberately.
 
 **5. Blockers move under you.** Re-resolve them every pass. Your own merge is usually what
@@ -185,8 +200,8 @@ more tickets and found a live P0.
 |---|---|
 | it not giving up mid-window | `/goal complete as many <label> tickets as you can` — the only hard enforcement |
 | surviving the window filling | re-run `/agent-harness:work <label>` |
-| unattended across windows | `/loop /agent-harness:work <label>` |
-| non-stop, with no window open | the coordinator: `scripts/coordinator-queue.sh seed <label>`, then `swarm/install.sh coordinator` — a fresh process per check, never a growing conversation |
+| the building itself | the coordinator, always: `/agent-harness:work <label>` queues, `swarm/install.sh coordinator` builds — a fresh process per check, never a growing conversation |
+| the PM work across windows | re-run `/agent-harness:work <label>`; it re-queues nothing it already queued |
 
 **Do not start a ticket you cannot finish before the window ends.** An unclaimed ticket costs
 nothing; a claimed one with a half-built branch and no PR is a zombie that reads as progress to

@@ -141,6 +141,20 @@ t nag   'owner PID is dead — stale, treated as unowned'           false s17
 rm -rf "$MDIR"; loop_on; ready s18 7; rm -f "$OWNER"
 t nag   'no owner recorded — unchanged from before the guard'     false s18
 
+# --- ready tickets already in the coordinator's queue are handed off ----------
+# The count comes from the board through a stub gh here, not the cache.
+mkdir -p "$T/bin" "$T/coordinator"
+printf '#!/usr/bin/env bash\necho %s\n' "'[{\"number\":101},{\"number\":102}]'" > "$T/bin/gh"; chmod +x "$T/bin/gh"
+kw(){ PATH="$T/bin:$PATH" t "$@"; }
+rm -rf "$MDIR"; loop_on; rm -f "$OWNER"
+printf '{"tickets":[{"n":101,"class":"new"},{"n":102,"class":"new"}]}\n' > "$T/coordinator/queue.json"
+kw quiet 'every ready ticket is queued — the coordinator builds them' false s19
+rm -rf "$MDIR"; loop_on; rm -f "$OWNER"
+printf '{"tickets":[{"n":101,"class":"new"}]}\n' > "$T/coordinator/queue.json"
+kw nag   'one ready ticket is not queued yet'                        false s20
+rm -rf "$MDIR"; loop_on; rm -f "$OWNER"; rm -f "$T/coordinator/queue.json"
+kw nag   'no queue at all — both count'                              false s21
+
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES — see MISMATCH rows above"
 exit "$fail"

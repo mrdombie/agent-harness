@@ -310,6 +310,12 @@ swarm_programme_of() { # <ticket>
 # nobody could name, waited out the plan's usage limit, and spent ~110M tokens in
 # two hours re-running tickets that had failed the night before (#42).
 SWARM_HOLD_FILE="${SWARM_HOLD_FILE:-$SWARM_DIR/HOLD}"
+# The name a job is installed under. Two projects can share one machine, so it
+# carries a key derived from the state directory — the one thing already per-project.
+SWARM_JOB_NS="agent-harness.swarm"
+swarm_job_key()   { printf '%s' "$STATE_DIR" | cksum | awk '{printf "%08x", $1}'; }
+swarm_job_label() { printf '%s.%s.%s' "$SWARM_JOB_NS" "$1" "$(swarm_job_key)"; }
+
 swarm_held() { [ -f "$SWARM_HOLD_FILE" ] || return 1; head -1 "$SWARM_HOLD_FILE"; }
 
 swarm_spawn() { # <ticket> [brief-file] [budget]
