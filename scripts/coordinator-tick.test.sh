@@ -326,6 +326,11 @@ want "only the free one spawns"            "504" "$(spawned)"
 want_in "claimed is named"                 'skip #501 \(new\): claimed' "$out"
 want_in "gated is named"                   'skip #502 \(new\): status:gated' "$out"
 want_in "the hold label is named"          'skip #503 \(new\): needs:human-approval' "$out"
+# A child of a batch ticket is built by the batch's one PR, never on its own.
+fresh; queue 505 506; fix_issue 505 OPEN "status:ready,status:batched"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a batched child is never started alone" "506" "$(spawned)"
+want_in "and the skip names the batch label" 'skip #505 \(new\): status:batched' "$out"
 fresh; queue 501
 printf 'owner said stop\n' > "$STATE/swarm/HOLD"
 out=$(COORDINATOR_SHADOW=0 tick)
