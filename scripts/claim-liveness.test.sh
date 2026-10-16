@@ -192,4 +192,18 @@ out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
 want "the same pid, named as the exited session, is released" "no" "$(ref_present 703)"
 kill "$LIVEPID" 2>/dev/null
 
+# 4. A DRIVER run that crashed: its record is fresh BECAUSE it was writing until it
+# died, and the wrapper names its session as exited. The freshness rescue exists for
+# a step-runner between steps, where no process is the run; here the process that
+# WAS the run is named as gone, so the record's age must not overrule it.
+sleep 300 & LIVEPID=$!
+mkdir -p "$SB/state/driver/704"
+jq -n --arg at "$(stamp 60)" '{ticket:"704", done:["start","plan"], updated_at:$at}' \
+  > "$SB/state/driver/704/state.json"
+plant_claim 704 "$LIVEPID"
+out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
+want "a crashed driver run's claim is released by its own post-exit reconcile" "no" "$(ref_present 704)"
+want_not_in "the fresh record did not rescue it" '#704 .*run record was written' "$out"
+kill "$LIVEPID" 2>/dev/null
+
 exit $FAILED
