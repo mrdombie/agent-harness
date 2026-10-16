@@ -35,6 +35,12 @@ co=$(i --print coordinator)
 want_in "it starts the launcher outside the plugin cache" "<string>$STATE/swarm/run-current.sh</string>" "$co"
 want_in "and hands it the job's path under the kit"      '<string>scripts/coordinator-tick.sh</string>' "$co"
 want_not_in "never an absolute script path inside the cache" "<string>$(cd "$HERE/../.." && pwd)/scripts/coordinator-tick.sh</string>" "$co"
+for j in coordinator merge-lane scheduler; do
+  p=$(KIT_ROOT=/some/other/kit/0.0.1 bash "$I" --print "$j" 2>&1 | sed -n '/<key>ProgramArguments/,/<\/array>/p')
+  want_not_in "$j: a shell KIT_ROOT elsewhere never makes its path absolute" '<string>/some/other' "$p"
+  want_in "$j: and the arguments are the launcher and a kit path" "<string>$STATE/swarm/run-current.sh</string>" "$p"
+done
+want_in "report keeps its --push" '<string>--push</string>' "$(SWARM_REPORT_URL=https://example.invalid/api bash "$I" --print report 2>&1)"
 R="$HERE/../run-current.sh"
 CACHE="$FIX/cache/acme-market/agent-harness"
 for v in 1.0.0 2.0.0; do mkdir -p "$CACHE/$v/scripts"; printf '#!/usr/bin/env bash\necho "ran %s with KIT_ROOT=$KIT_ROOT args=$*"\n' "$v" > "$CACHE/$v/scripts/job.sh"; done
@@ -50,6 +56,9 @@ want "a registry naming a missing path: the baked version" "ran 1.0.0 with KIT_R
 printf 'not json' > "$REG"
 want "an unreadable registry: the baked version" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
   "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh)"
+out=$(KIT_ROOT="$FIX/nowhere/1.0.0" SWARM_PLUGIN_REGISTRY="$FIX/none.json" bash "$R" scripts/job.sh 2>&1); rc=$?
+want "a job found nowhere fails loudly, not as a missing-file shell error" "127" "$rc"
+want_in "and says what it looked for"      'run-current: no scripts/job.sh under' "$out"
 
 echo "--- the environment a launchd job does not inherit ---"
 p=$(i --print scheduler)

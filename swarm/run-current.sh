@@ -19,5 +19,6 @@ if [ -n "$baked" ] && [ -r "$reg" ] && command -v jq >/dev/null 2>&1; then
   cur=$(jq -r --arg id "$id" '((.plugins // .)[$id] // []) | map(select(.scope == "user")) | .[0].installPath // empty' "$reg" 2>/dev/null)
 fi
 if [ -n "$cur" ] && [ -f "$cur/$rel" ]; then KIT_ROOT="$cur"; else KIT_ROOT="$baked"; fi
+[ -f "$KIT_ROOT/$rel" ] || { echo "run-current: no $rel under '$KIT_ROOT' (registry: ${cur:-unread})" >&2; exit 127; }
 export KIT_ROOT
 exec /bin/bash "$KIT_ROOT/$rel" "$@"

@@ -53,14 +53,15 @@ jobs_for_project() {
 label()  { printf '%s.%s.%s' "$NS" "$1" "$KEY"; }
 plist()  { printf '%s/%s.plist' "$AGENTS_DIR" "$(label "$1")"; }
 
-script_for() { # <job> — the command line, one argument per line
+script_for() { # <job> — the command line under the kit, one argument per line
+  # Kit-relative, never absolute: the launcher adds the installed version's root.
   case "$1" in
-    live-view)    printf '%s/live-view.sh\n' "$SWARM_ROOT" ;;
-    scheduler)    printf '%s/scheduler.sh\n' "$SWARM_ROOT" ;;
-    repair-watch) printf '%s/repair-watch.sh\n' "$SWARM_ROOT" ;;
-    report)       printf '%s/report.sh\n--push\n' "$SWARM_ROOT" ;;
-    coordinator)  printf '%s/scripts/coordinator-tick.sh\n' "$KIT_ROOT" ;;
-    merge-lane)   printf '%s/scripts/merge-lane.sh\n' "$KIT_ROOT" ;;
+    live-view)    printf 'swarm/live-view.sh\n' ;;
+    scheduler)    printf 'swarm/scheduler.sh\n' ;;
+    repair-watch) printf 'swarm/repair-watch.sh\n' ;;
+    report)       printf 'swarm/report.sh\n--push\n' ;;
+    coordinator)  printf 'scripts/coordinator-tick.sh\n' ;;
+    merge-lane)   printf 'scripts/merge-lane.sh\n' ;;
     *) return 1 ;;
   esac
 }
@@ -100,14 +101,11 @@ coordinator_env() { # <job>
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 # The launcher lives outside the plugin cache, so a job follows plugin updates.
 RUNNER="$SWARM_DIR/run-current.sh"
-KIT_DIR="$(cd "$SWARM_ROOT/.." && pwd)"
-# The job's command line for the launcher: its path under the kit, then its args.
-runner_args() { # <job>
-  local first=1 a
-  while IFS= read -r a; do
-    if [ "$first" = 1 ]; then printf '%s\n%s\n' "$RUNNER" "${a#"$KIT_DIR"/}"; first=0
-    else printf '%s\n' "$a"; fi
-  done < <(script_for "$1")
+runner_args() { printf '%s\n' "$RUNNER"; script_for "$1"; } # <job>
+# Copied whole then renamed: launchd may be running the old one this instant.
+install_runner() {
+  mkdir -p "$(dirname "$RUNNER")" || return 1
+  cp "$SWARM_ROOT/run-current.sh" "$RUNNER.tmp.$$" && chmod +x "$RUNNER.tmp.$$" && mv -f "$RUNNER.tmp.$$" "$RUNNER"
 }
 print_plist() { # <job>
   local job="$1" arg iv
@@ -164,14 +162,15 @@ cron_line() { # <job>
   local m=$(( $(interval_for "$1") / 60 )) vars=""; [ "$m" -ge 1 ] || m=1
   vars=$(shadow_vars "$1" | tr '\n' ' ')
   # cron's own PATH finds neither claude nor gh: carry the installer's.
-  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q %s/bin/bash %q >> %q 2>&1 %s\n' \
+  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q %s/bin/bash %q %q >> %q 2>&1 %s\n' \
     "$m" "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$vars" \
-    "$(script_for "$1" | head -1)" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
+    "$RUNNER" "$(script_for "$1" | head -1)" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
 }
 cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark "$1")"; }
 cron_install() { # <job>
   command -v "$SWARM_CRONTAB" >/dev/null 2>&1 || { echo "install: no launchd and no crontab — run this every $(( $(interval_for "$1") / 60 )) minutes yourself:" >&2; cron_line "$1" >&2; return 1; }
   mkdir -p "$SWARM_LOGS"
+  install_runner || { echo "install: could not write $RUNNER" >&2; return 1; }
   local rest; rest=$(cron_rest "$1")   # read in full before the write replaces it
   { [ -z "$rest" ] || printf '%s\n' "$rest"; cron_line "$1"; } | "$SWARM_CRONTAB" - && echo "installed $(label "$1") in crontab ($(shadow_vars "$1" | tr '\n' ' ' | sed 's/ $//'))"
 }
@@ -213,8 +212,8 @@ free_port() {
 do_install() { # <job>
   local job="$1" f; f=$(plist "$job")
   script_for "$job" >/dev/null || { echo "install: no job called '$job'" >&2; return 2; }
-  mkdir -p "$AGENTS_DIR" "$SWARM_LOGS" "$(dirname "$RUNNER")"
-  cp "$SWARM_ROOT/run-current.sh" "$RUNNER" && chmod +x "$RUNNER" || return 1
+  mkdir -p "$AGENTS_DIR" "$SWARM_LOGS"
+  install_runner || { echo "install: could not write $RUNNER" >&2; return 1; }
   if [ "$job" = live-view ]; then free_port || return $?; fi
   print_plist "$job" > "$f"
   launchctl unload "$f" >/dev/null 2>&1
