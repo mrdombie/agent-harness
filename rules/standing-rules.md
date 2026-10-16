@@ -28,15 +28,29 @@ review on pictures with a short thread, single-digit counts or an unscrolled
 page: the page scrolling away from its input, a count of 246, cards cut off by
 a sticky band.
 
+**Evidence comes from CI.** An agent building a screen change does not take
+screenshots on its own machine: it pushes, opens the pull request held with an
+`## Evidence routes` list, and the project's CI photographs those routes and
+pins the shots to the pull request. The design critic and the parity check judge
+CI's pinned shots, and a verdict taken on them covers the head CI's own evidence
+commit sits on. Until the shots exist the agent waits in the shell
+(`scripts/ci-evidence.sh wait`), never in a capture loop. Local capture is a
+fallback for a CI outage, switched on only by a person
+(`HARNESS_LOCAL_EVIDENCE=1`). The owner's call, 2026-10-16, after one agent
+spent 58 minutes and 72 tool calls on local capture for one ticket, another
+needed five re-capture rounds, and two were stuck on the local workspace.
+
 **An approval covers the render it was given against — nothing later.** A
 sign-off names the exact evidence it saw. Any later change to what renders — a
-review round, a fix, a rebase that moves pixels — voids it: re-capture, put
-before/after on the PR, and ask again. Never clear a hold by citing an approval
+review round, a fix, a rebase that moves pixels — voids it: push, let CI
+re-capture and pin the new shots on the PR, and ask again. Never clear a hold by citing an approval
 of an earlier render. A resume brief may carry an approval forward only for
 commits that change no pixels, and must say so. This is written down because it
 was broken: a design pass removed a control in a review round AFTER the renders
 that still showed it were approved, the hold was cleared by citing that earlier
 approval, and the owner found out on the test environment.
+
+**A part of a screen is shown as a part.** A sign-off for one region of a screen other tickets are also rebuilding opens with "card N of M of the new <screen>; the rest of the page is the old version", names the region and the live and pending siblings, shows the region before the full page, and opens the approved picture at that region (2026-10-16: a new card inside a mostly-old page was rejected as off-design, then approved once explained).
 
 **The approved design is the acceptance criterion.** Wiring real data into an
 approved surface is a data change, not a design change: the rendered output

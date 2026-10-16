@@ -77,6 +77,26 @@ got=$(printf 'nothing here\n' | bash -c '. "$1"; swarm_parse_top_idle' _ "$LOADS
 got=$(bash -c '. "$1"; swarm_parse_stat_idle "cpu  100 0 100 700 100 0 0 0 0 0" "cpu  200 0 200 1300 200 0 0 0 0 0"' _ "$LOADSH")
 [ "$got" = 78 ] && ok "/proc/stat: idle + iowait over the interval (78%)" || fail "stat parsed '$got'"
 
+echo "--- free memory: what the kernel says is available, less swap in use ---"
+# Measured 2026-10-16 on the operator's machine (32 GB): memorystatus 38%, 15.5 of
+# 16 GB swap used. vm_stat's free + inactive called that 6 GB free.
+got=$(bash -c '. "$1"; swarm_free_mem_calc $(( 34359738368 / 100 * 38 )) 16642998272' _ "$LOADSH")
+[ "$got" = 0 ] && ok "38% available with 15.5 GB swapped reads 0 GB, not 6" || fail "read '$got'"
+got=$(bash -c '. "$1"; swarm_free_mem_calc 17179869184 0' _ "$LOADSH")
+[ "$got" = 16 ] && ok "16 GB available and no swap reads 16" || fail "read '$got'"
+got=$(printf 'total = 16384.00M  used = 14747.50M  free = 1636.50M  (encrypted)\n' | bash -c '. "$1"; swarm_parse_swapusage_used' _ "$LOADSH")
+[ "$got" = 15463874560 ] && ok "vm.swapusage: the used figure in bytes" || fail "parsed '$got'"
+got=$(printf 'nothing here\n' | bash -c '. "$1"; swarm_parse_swapusage_used' _ "$LOADSH"); rc=$?
+[ "$rc" != 0 ] && [ -z "$got" ] && ok "no swap line is no reading, not 0" || fail "rc $rc got '$got'"
+got=$(bash -c '. "$1"; swarm_free_mem_calc "" 0' _ "$LOADSH"); rc=$?
+[ "$rc" != 0 ] && [ -z "$got" ] && ok "no available figure is no reading" || fail "rc $rc got '$got'"
+got=$(SWARM_FREE_MEM_GB=12 bash -c '. "$1"; swarm_free_mem_gb' _ "$LOADSH")
+[ "$got" = 12 ] && ok "SWARM_FREE_MEM_GB stands in for the reading" || fail "seam read '$got'"
+got=$(env -u SWARM_IDLE -u SWARM_IDLE_FILE bash -c '. "$1"; _swarm_sample_idle() { :; }; SWARM_IDLE_CACHE="$2/none/x" swarm_cpu_idle' _ "$LOADSH" "$T")
+[ -z "$got" ] && ok "a CPU sample nobody could take is no reading, not 100" || fail "unread idle read '$got'"
+out=$(SWARM_IDLE_FILE="$T/empty-idle" SWARM_LOAD=1 bash -c ': > "$SWARM_IDLE_FILE"; . "$1"; swarm_busy 15 50' _ "$LOADSH"); rc=$?
+[ "$rc" = 1 ] && [ "$out" = "cpu idle unread, load 1" ] && ok "the gate still goes on an unread idle, and says unread" || fail "rc $rc '$out'"
+
 echo "--- under the ceiling: no wait, nothing printed ---"
 out=$(SWARM_LOAD=5 bash "$SUT" wait --max 1 2>&1); rc=$?
 [ "$rc" = 0 ] && ok "wait returns 0" || fail "wait returned $rc"

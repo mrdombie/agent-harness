@@ -15,7 +15,13 @@
 #   COORD_SHADOW     1 unless COORDINATOR_SHADOW=0 — shadow is the default
 #
 # Settings, all optional under `coordinator` in harness.json (or the env var):
-#   coordinator.cap          COORDINATOR_CAP            4    live ticket runs
+#   coordinator.cap          COORDINATOR_CAP          unset  optional hard ceiling on live runs;
+#                                                           unset, the machine decides (coord_room)
+#   coordinator.startCpuIdle COORDINATOR_START_CPU_IDLE 30  idle % needed to start one more; sits
+#                                                           above swarm.minCpuIdle, the hold floor
+#   coordinator.minFreeMemGb COORDINATOR_MIN_FREE_MEM_GB 4  free memory needed to start one more
+#   coordinator.healingShare COORDINATOR_HEALING_SHARE 0.25 share of the ceiling kept for healing
+#                                                           (repair + approved-merge), rounded up
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
 #   coordinator.frozenMin    COORDINATOR_FROZEN_MIN    20    no log growth = frozen
@@ -25,6 +31,8 @@
 #   coordinator.judge.compactWindow  COORDINATOR_JUDGE_COMPACT  150000
 
 _coord_self="${BASH_SOURCE[0]}"
+# swarm-env.sh fills in a default load limit; the room test must know whether one was set.
+COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
 
@@ -35,7 +43,19 @@ COORD_SHADOW="${COORDINATOR_SHADOW:-1}"
 COORD_ACTIONS="$COORD_DIR/actions.log"
 COORD_NEEDS_YOU="$COORD_DIR/needs-you.md"
 COORD_LOG="$COORD_DIR/tick.log"
-COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap 4)}"
+COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap "")}"
+# 0 means spawn nothing; anything not a whole number holds every spawn, named.
+COORD_CAP_BAD=""
+case "$COORD_CAP" in ''|*[!0-9]*) [ -z "$COORD_CAP" ] || { COORD_CAP_BAD="$COORD_CAP"; COORD_CAP=""; } ;; esac
+COORD_START_IDLE="${COORDINATOR_START_CPU_IDLE:-$(swarm_opt coordinator.startCpuIdle 30)}"
+case "$COORD_START_IDLE" in ""|*[!0-9]*) COORD_START_IDLE=30 ;; esac
+# A start floor at or under the hold floor is no hysteresis: the count would flap.
+[ "$COORD_START_IDLE" -gt "${SWARM_MIN_CPU_IDLE:-15}" ] 2>/dev/null || COORD_START_IDLE=$(( ${SWARM_MIN_CPU_IDLE:-15} + 15 ))
+COORD_MIN_FREE_MEM_GB="${COORDINATOR_MIN_FREE_MEM_GB:-$(swarm_opt coordinator.minFreeMemGb 4)}"
+case "$COORD_MIN_FREE_MEM_GB" in ""|*[!0-9]*) COORD_MIN_FREE_MEM_GB=4 ;; esac
+COORD_HEAL_SHARE="${COORDINATOR_HEALING_SHARE:-$(swarm_opt coordinator.healingShare 0.25)}"
+awk -v s="$COORD_HEAL_SHARE" 'BEGIN{exit !(s ~ /^(0|1|0?\.[0-9]+|1\.0*)$/)}' || COORD_HEAL_SHARE=0.25
+[ -n "$COORD_MAX_LOAD_SET" ] || COORD_MAX_LOAD_SET=$(swarm_opt swarm.maxLoad "")
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
 COORD_FROZEN_MIN="${COORDINATOR_FROZEN_MIN:-$(swarm_opt coordinator.frozenMin 20)}"
@@ -43,6 +63,70 @@ COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 1)}"
 COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turns 40)}"
 COORD_JUDGE_BUDGET="${COORDINATOR_JUDGE_BUDGET_USD:-$(swarm_opt coordinator.judge.budgetUsd 5)}"
 COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.compactWindow 150000)}"
+
+# coord_room — room for one more builder? Prints the reading; 0 when there is.
+# Never a reason to stop a running one: it only gates the next start.
+coord_room() {
+  local idle mem load cores max
+  idle=$(swarm_cpu_idle); mem=$(swarm_free_mem_gb); load=$(swarm_load); cores=$(swarm_cores)
+  # A reading nobody could take is no room: unread, an uncapped ceiling ramps forever.
+  [ -n "$idle" ]  || { printf 'cpu idle unread'; return 1; }
+  [ -n "$mem" ]   || { printf 'free memory unread'; return 1; }
+  [ -n "$load" ]  || { printf 'load unread'; return 1; }
+  max="$COORD_MAX_LOAD_SET"
+  if [ -z "$max" ]; then
+    [ -n "$cores" ] || { printf 'cpu cores unread, so no load limit'; return 1; }
+    max=$(( 20 * cores ))
+  fi
+  if [ "$load" -gt "$max" ]; then
+    printf 'load %s, limit %s' "$load" "$max"; return 1
+  fi
+  if [ "$idle" -lt "$COORD_START_IDLE" ]; then
+    printf 'cpu idle %s%%, start floor %s%%' "$idle" "$COORD_START_IDLE"; return 1
+  fi
+  if [ "$mem" -lt "$COORD_MIN_FREE_MEM_GB" ]; then
+    printf '%s GB free, floor %s GB' "$mem" "$COORD_MIN_FREE_MEM_GB"; return 1
+  fi
+  printf 'cpu idle %s%%, %s GB free' "$idle" "$mem"
+}
+
+# The class each spawn was for, kept here: the spawner hands over to the project's
+# own copy, which need not write a class into the run record.
+#   run-classes.tsv   <run-id or -> \t <ticket> \t <class> \t <epoch>
+COORD_RUN_CLASSES="$COORD_DIR/run-classes.tsv"
+coord_record_class() { # <ticket> <class> — after a spawn returns
+  local rec rid="-"
+  rec=$(ls -t "$RUNS_DIR"/claim-"$1"-*.json 2>/dev/null | head -1)
+  [ -n "$rec" ] && rid=$(basename "$rec" .json)
+  printf '%s\t%s\t%s\t%s\n' "$rid" "$1" "$2" "$(date +%s)" >> "$COORD_RUN_CLASSES"
+  tail -500 "$COORD_RUN_CLASSES" > "$COORD_RUN_CLASSES.$$" 2>/dev/null && mv -f "$COORD_RUN_CLASSES.$$" "$COORD_RUN_CLASSES"
+}
+coord_run_class() { # <runs/claim-*.json> — the class on record, or nothing
+  local rid t m c
+  c=$(jq -r '.class // empty' "$1" 2>/dev/null)
+  [ -n "$c" ] && { printf '%s' "$c"; return; }
+  [ -f "$COORD_RUN_CLASSES" ] || return 0
+  rid=$(basename "$1" .json)
+  c=$(awk -F'\t' -v r="$rid" '$1 == r { c = $3 } END { print c }' "$COORD_RUN_CLASSES")
+  [ -n "$c" ] && { printf '%s' "$c"; return; }
+  # Recorded before its run record existed: the ticket's entry from around its start.
+  t=$(jq -r '.ticket // empty' "$1" 2>/dev/null); m=$(coord_mtime "$1")
+  awk -F'\t' -v t="$t" -v m="$m" '$1 == "-" && $2 == t && $4 >= m - 600 && $4 <= m + 600 { c = $3 } END { print c }' "$COORD_RUN_CLASSES"
+}
+
+# 0 when a live (not shadow) tick wrote capacity.json in the last 15 minutes.
+coord_live_recently() {
+  local f="$COORD_DIR/capacity.json" e m
+  [ -f "$f" ] || return 1
+  m=$(jq -r '.mode // empty' "$f" 2>/dev/null); e=$(jq -r '.epoch // 0' "$f" 2>/dev/null)
+  [ "$m" = did ] && [ $(( $(date +%s) - ${e:-0} )) -lt 900 ] 2>/dev/null
+}
+
+# coord_healing_slots <ceiling> — ceil(ceiling x healingShare).
+coord_healing_slots() {
+  awk -v c="$1" -v s="$COORD_HEAL_SHARE" 'BEGIN{ h = c * s; n = int(h); if (n < h) n++; print n }'
+}
+coord_healing_class() { case "$1" in repair|approved-merge) return 0 ;; *) return 1 ;; esac; }
 
 coord_shadow() { [ "$COORD_SHADOW" != 0 ]; }
 coord_mode()   { if coord_shadow; then printf would; else printf did; fi; }

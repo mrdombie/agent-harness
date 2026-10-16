@@ -58,14 +58,16 @@ want "nothing spawned over the runaway guard" "0" "$(grep -c . "$SPAWNS")"
 want_in "the runaway guard is 20 x cores" 'machine busy \(load 201, limit 200\) — holding' "$out"
 
 echo "--- the plan's usage limit ---"
+# The CLI's own failure: the final result event of a run the wall stopped.
+cli_error() { jq -nc --arg r "$1" '{type:"result",is_error:true,result:$r}'; }
 reset_state; fix_live widgets 0
-printf 'You have hit your session limit · resets 11:30pm\n' > "$STATE/logs/claim-301-x.log"
+cli_error 'You have hit your session limit · resets 11:30pm' > "$STATE/logs/claim-301-x.log"
 NINE=$(date '+%H %M %S' | awk -v n="$(date +%s)" '{print n - ($1*3600 + $2*60 + $3) + 9*3600}')
 out=$(SWARM_NOW=$NINE sched --programme widgets)
 want "nothing spawned while the limit holds" "0" "$(grep -c . "$SPAWNS")"
 want_in "the hold names the reset time"      'usage limit — holding until 11:30pm' "$out"
 # Past the reset time the hold lifts. "resets 8am" read at 09:00 is yesterday's.
-printf 'You have hit your weekly limit · resets 8am\n' > "$STATE/logs/claim-301-x.log"
+cli_error 'You have hit your weekly limit · resets 8am' > "$STATE/logs/claim-301-x.log"
 out=$(SWARM_NOW=$NINE sched --programme widgets)
 want_not_in "a reset time already past does not hold" 'usage limit' "$out"
 
@@ -81,7 +83,7 @@ reset_state; fix_live widgets 0
 AHEAD=$(date -r $(( $(date +%s) + 7200 )) '+%b %-d at %-I%p' 2>/dev/null \
         || date -d "@$(( $(date +%s) + 7200 ))" '+%b %-d at %-I%p')
 AHEAD=$(printf '%s' "$AHEAD" | tr 'APM' 'apm')
-printf 'You have hit your weekly limit · resets %s (Europe/London)\n' "$AHEAD" > "$STATE/logs/claim-301-x.log"
+cli_error "You have hit your weekly limit · resets $AHEAD (Europe/London)" > "$STATE/logs/claim-301-x.log"
 out=$(sched --programme widgets)
 want "nothing spawned on the weekly wall's wording" "0" "$(grep -c . "$SPAWNS")"
 want_in "and the hold says so"                       'usage limit' "$out"

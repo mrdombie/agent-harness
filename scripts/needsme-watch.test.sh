@@ -139,4 +139,29 @@ want_in "a cleared hold shows on the card" $'^held\tno$' "$(bash "$W" card 12)"
 bash "$W" card 99 >/dev/null 2>&1
 want "an unreadable PR is an error, not an empty card" "1" "$?"
 
+echo "--- a part of a screen: card N of M, the region first, the picture at its anchor ---"
+fresh
+jq -n '{number:30, title:"Team bars", url:"https://github.com/acme/widgets/pull/30", headRefOid:"abcdef0123",
+        labels:[{name:"needs:human-approval"}],
+        body:"## Part of a screen\n<!-- part:begin -->\nScreen: Home\nPart: 3 of 8\nRegion: Team card\nAnchor: team\nPicture: https://claude.ai/artifact/home-v3\nSiblings: #101 #102\nRegion shot: https://github.com/acme/widgets/blob/abcdef0/docs/evidence/30/home-team.png\n<!-- part:end -->\n\n## Evidence\n<!-- preview:begin -->\nhttps://web-pr-30.up.example.app/home\n<!-- preview:end -->\nFull page: https://github.com/acme/widgets/blob/abcdef0/docs/evidence/30/home.png"}' > "$FIX/gh/pr-30.json"
+printf '{"state":"CLOSED","title":"Pipeline card"}\n' > "$FIX/gh/issue-101.json"
+printf '{"state":"OPEN","title":"Diary card"}\n'     > "$FIX/gh/issue-102.json"
+out=$(bash "$W" card 30)
+want_in "the card says which card of how many, and that the rest is old" \
+  $'^banner\tcard 3 of 8 of the new Home; the rest of the page is the old version. Compare only the Team card$' "$out"
+want_in "a shipped sibling is live"        $'^sibling\t#101\tlive\tPipeline card$' "$out"
+want_in "an open sibling is pending"       $'^sibling\t#102\tpending\tDiary card$' "$out"
+want_in "the approved picture opens at the region" $'^picture\thttps://claude.ai/artifact/home-v3#team$' "$out"
+want_in "the region's own shot comes first" 'home-team\.png$' "$(grep '^evidence' <<<"$out" | head -1)"
+want_in "the full page comes last"         'home\.png$' "$(grep '^evidence' <<<"$out" | tail -1)"
+want "the region shot is not listed twice" "1" "$(grep -c 'home-team' <<<"$out")"
+bash "$W" open 30 >/dev/null
+want_in "open: the region shot first"      'home-team\.png$' "$(sed -n 1p "$FIX/opened.log")"
+want_in "then the preview at the region"   '^https://web-pr-30.up.example.app/home#team$' "$(sed -n 2p "$FIX/opened.log")"
+want_in "then the picture at the region"   'home-v3#team$' "$(sed -n 3p "$FIX/opened.log")"
+want_in "and the full page last"           'home\.png$' "$(tail -1 "$FIX/opened.log")"
+out=$(bash "$W" card 12)
+want_in "a whole-screen PR still has its card" $'^pr\t12$' "$out"
+want "and carries no banner"               "0" "$(grep -c '^banner' <<<"$out")"
+
 exit $FAILED

@@ -15,7 +15,7 @@
 # reconcile-claims.sh immediately. That covers every exit the agent can observe
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
-# Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto)
+# Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto), CLAIM_CLASS (recorded)
 
 set -uo pipefail
 
@@ -26,6 +26,8 @@ RUNS_DIR="$TICKETS_DIR/runs"
 LOGS_DIR="$TICKETS_DIR/logs"
 BUDGET="${CLAIM_BUDGET_USD:-150}"
 PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
+# The queue class the coordinator spawned it for, so a later tick can count runs by class.
+CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 
 # The spawner refreshes ITSELF, not only the agent's tree. It is reached through a
 # shell function pointing at one copy on the operator's machine, and that copy is
@@ -90,7 +92,7 @@ fi
 # nothing pushed and no PR, stranded in their worktrees. The pattern is
 # load-induced, so it recurs exactly when the swarm is biggest. CLAIM_EXTRA
 # carries a resume brief when re-spawning a stranded run.
-PRINT_MODE_RULE="You are running in print mode: the moment you end your turn, this process exits and nothing you left running survives. NEVER start something in the background and end your turn intending to pick it up — no Monitor you wait on, no 'I'll check when it completes', no backgrounded screenshot or capture. Wait for every check in the foreground, then continue. If a real-route capture is too slow under load, retry it in the foreground with a longer timeout; do not defer it. The turn ends when the PR is PUSHED and HANDED OFF — local gates green (lint:changed, typecheck, test:changed), both review trailers on the pushed head, PR ready with auto-merge armed, the hold label on if pixels changed, and a one-line 'Handed off at <sha>' comment on the PR. Do NOT wait for CI: a watcher brings an agent back if CI goes red or the PR conflicts. Or the turn ends when you have PARKED the ticket per /agent-harness:claim's park procedure: commit, push, draft PR, resume brief on the issue, label — all BEFORE the banner. An exit with unpushed work is a failed run. Kill only processes you started (record their PIDs); never pkill a pattern that could match another agent's."
+PRINT_MODE_RULE="You are running in print mode: the moment you end your turn, this process exits and nothing you left running survives. NEVER start something in the background and end your turn intending to pick it up — no Monitor you wait on, no 'I'll check when it completes', no backgrounded screenshot or capture. Wait for every check in the foreground, then continue. Do not take screenshots locally — no dev server, no capture script: CI photographs the routes under '## Evidence routes' and pins them to the PR. Wait for those in the foreground with scripts/ci-evidence.sh wait <pr> (exit 3 means run it again), then have the design critic judge the shots it fetches (/agent-harness:finish Step 5.4). The turn ends when the PR is PUSHED and HANDED OFF — local gates green (lint:changed, typecheck, test:changed), both review trailers on the pushed head, PR ready with auto-merge armed, the hold label on if pixels changed, and a one-line 'Handed off at <sha>' comment on the PR. Do NOT wait for CI: a watcher brings an agent back if CI goes red or the PR conflicts. Or the turn ends when you have PARKED the ticket per /agent-harness:claim's park procedure: commit, push, draft PR, resume brief on the issue, label — all BEFORE the banner. An exit with unpushed work is a failed run. Kill only processes you started (record their PIDs); never pkill a pattern that could match another agent's."
 PROMPT="$PRINT_MODE_RULE
 
 $PROMPT"
@@ -239,6 +241,7 @@ cat > "$RECORD" <<EOF
   "child_winpid": ${CLAUDE_WINPID:-null},
   "log": "$LOG",
   "ticket": "${TICKET:-}",
+  "class": "$CLASS",
   "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",

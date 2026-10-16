@@ -136,7 +136,7 @@ want_not_in "the held one stays held"  'unblocked #302' "$out"
 
 echo "--- a run that died on an infrastructure error is restarted, twice at most ---"
 : > "$SPAWNS"; : > "$TRIED"
-fix_live widgets 0; fix_done 105 12 "API Error: Connection refused"; fix_at "$T0"
+fix_live widgets 0; fix_done 105 12 "API Error: Connection refused" true; fix_at "$T0"
 fix_issue 105 OPEN "status:in-review,project:widgets"
 out=$(w --only infra)
 want "it is restarted"                 "1" "$(grep -c . "$SPAWNS")"
@@ -153,6 +153,12 @@ fix_live widgets 0; fix_done 106 5 "Tests failed: 3 assertions"; fix_at "$T0"
 fix_issue 106 OPEN "status:in-review,project:widgets"
 w --only infra >/dev/null
 want "left alone"                      "0" "$(grep -c . "$SPAWNS")"
+# A report that QUOTES a service error is the run's own words, not a death.
+: > "$SPAWNS"; : > "$TRIED"
+fix_live widgets 0; fix_done 107 5 "Done. CI's critic said: API Error 529 overloaded" false; fix_at "$T0"
+fix_issue 107 OPEN "status:in-review,project:widgets"
+w --only infra >/dev/null
+want "a quoted service error is left alone" "0" "$(grep -c . "$SPAWNS")"
 
 echo "--- the stall alarm: work waiting, nothing running ---"
 : > "$GH_LOG"; : > "$LOG"

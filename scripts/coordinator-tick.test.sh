@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # coordinator-tick.test.sh — the guards the tick exists to hold: one tick at a
-# time, the cap, never a claimed / gated / held ticket, shadow does nothing,
+# time, the machine-derived ceiling and its healing share, an optional hard cap,
+# never a claimed / gated / held ticket, shadow does nothing,
 # a frozen run is noticed. Plus the events, the owner channel and the judge.
 # Run: bash "$0"
 set -uo pipefail
@@ -46,7 +47,17 @@ export COORDINATOR_FIX_LOCK="$BIN/fixlock"
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
-unset COORDINATOR_SHADOW
+unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
+export SWARM_FREE_MEM_GB=16 TEST_PID=$$
+# A spawner that leaves a live run behind and, like the project copy production
+# hands over to, writes no class: the coordinator's own record must carry it.
+cat > "$BIN/spawn-live" <<'SH'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "$1" "${CLAIM_CLASS:-}" >> "$SPAWNS"
+printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$1" "$1" "$TEST_PID" \
+  > "$STATE/runs/claim-$1-live.json"
+SH
+chmod +x "$BIN/spawn-live"
 
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
@@ -55,6 +66,7 @@ fresh() {
   unset SWARM_NOW
 }
 queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
+queue_as() { local c="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$c" >/dev/null; done; }
 tick() { bash "$T" 2>&1; }
 live_run() { # <ticket> [log-age-from-now-in-min]
   local log="$STATE/logs/claim-$1-live.log"
@@ -63,6 +75,13 @@ live_run() { # <ticket> [log-age-from-now-in-min]
     > "$STATE/runs/claim-$1-live.json"
 }
 spawned() { cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
+classes() { cut -f2 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
+live_as() { # <ticket> <class|-> — a live run whose record carries that class, or none
+  local c=""; [ "$2" = - ] || c="$2"
+  printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s%s}\n' "$1" "$1" "$$" "${c:+,\"class\":\"$c\"}" \
+    > "$STATE/runs/claim-$1-live.json"
+}
+ticks() { local i out=""; for i in $(seq 1 "$1"); do out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick); done; printf '%s' "$out"; }
 
 echo "--- shadow is the default, and it does nothing ---"
 fresh; queue 501 502
@@ -74,15 +93,154 @@ want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3==
 want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
 
-echo "--- live spawns, up to the cap and no further ---"
+echo "--- live spawns: one per tick, and a set cap is a hard ceiling ---"
 fresh; queue 501 502 503 504 505 506; live_run 900
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
-want "three slots, three spawns, in queue order" "501 502 503" "$(spawned)"
+want "room under the cap: one start, the first in queue order" "501" "$(spawned)"
 want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
 fresh; queue 501 502; live_run 900; live_run 901
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 tick)
 want "at the cap, nothing spawns"          "" "$(spawned)"
 want_in "and it says why"                  '2 live, cap 2 — no slot' "$out"
+
+echo "--- the ceiling follows the machine: room is one more than is running ---"
+fresh; queue 501 502 503; live_run 900; live_run 901; live_run 902
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_FREE_MEM_GB=16 tick)
+want "idle 40%, memory over the floor: one more than the 3 running" "501" "$(spawned)"
+want_in "the log names the ceiling and the reading" 'ceiling: 3 running · room for 1 more: cpu idle 40%, 16 GB free' "$out"
+want "the live view's file holds the ceiling"  "4 true" "$(jq -r '"\(.ceiling) \(.room)"' "$C/capacity.json")"
+want_in "and the reading behind it"        'cpu idle 40%, 16 GB free' "$(jq -r .reading "$C/capacity.json")"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=10 tick)
+want "idle 10%: no start"                  "" "$(spawned)"
+want_in "it is the hold floor"             'machine busy \(cpu idle 10%, floor 15%\) — holding' "$out"
+fresh; queue 501; live_run 900
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=22 tick)
+want "between the hold and start floors: no start, nothing stopped" "" "$(spawned)"
+want_in "and it names the start floor"     '1 live, no room for more \(cpu idle 22%, start floor 30%\) — holding' "$out"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 SWARM_FREE_MEM_GB=2 tick)
+want "memory under the floor: no start, even at 90% idle" "" "$(spawned)"
+want_in "and it names the memory"          'no room for more \(2 GB free, floor 4 GB\)' "$out"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 COORDINATOR_MIN_FREE_MEM_GB=20 tick)
+want "the memory floor is configurable"    "" "$(spawned)"
+
+echo "--- exactly one start per tick, however much room ---"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 tick)
+want "an idle machine, six queued, nothing live: one start" "501" "$(spawned)"
+
+echo "--- no fixed cap: with coordinator.cap unset, the machine alone decides ---"
+fresh; queue 501; for t in 900 901 902 903; do live_run $t; done
+out=$(COORDINATOR_SHADOW=0 tick)
+want "4 running and room: a 5th starts"    "501" "$(spawned)"
+want_in "the tick says there is no cap"    'cap none' "$out"
+fresh; queue 501; for t in 900 901 902 903 904 905 906; do live_run $t; done
+out=$(COORDINATOR_SHADOW=0 tick)
+want "7 running and room: an 8th starts"   "501" "$(spawned)"
+want "the live view's file has no cap"     "null 8" "$(jq -r '"\(.cap) \(.ceiling)"' "$C/capacity.json")"
+
+echo "--- of the ceiling, a quarter heals and the rest builds new ---"
+fresh; queue_as repair 601 602 603 604 605; queue 701 702 703 704 705
+out=$(COORDINATOR_CAP=4 ticks 1)
+want "the first tick takes the one healing place" "601" "$(spawned)"
+out=$(COORDINATOR_CAP=4 ticks 4)
+want "5 repairs + 5 new, ceiling 4: 1 repair and 3 new" "601 701 702 703" "$(spawned)"
+want "by class"                            "repair new new new" "$(classes)"
+want_in "the tick log shows the split"     'split: 3 new · 1 healing · 4 reds waiting' "$out"
+want "the live view's file shows it too"   "1/1 3/3 4" "$(jq -r '"\(.healing.live)/\(.healing.slots) \(.new.live)/\(.new.slots) \(.redsWaiting)"' "$C/capacity.json")"
+fresh; queue 701 702 703 704 705
+COORDINATOR_CAP=4 ticks 4 >/dev/null
+want "no repairs queued: all 4 places take new work" "701 702 703 704" "$(spawned)"
+fresh; queue_as repair 604; queue 701; live_as 601 repair; live_as 602 repair; live_as 603 repair
+COORDINATOR_CAP=4 ticks 1 >/dev/null
+want "3 repairs live, 1 place free: it takes new work" "701" "$(spawned)"
+fresh; queue_as repair 604; queue 701; live_as 601 -; live_as 602 -; live_as 603 -
+printf '[{"number":61,"headRefName":"tkt-601-a","isDraft":false,"labels":[]},{"number":62,"headRefName":"tkt-602-a","isDraft":false,"labels":[]},{"number":63,"headRefName":"tkt-603-a","isDraft":false,"labels":[]}]\n' > "$FIX/gh/prs-all.json"
+COORDINATOR_CAP=4 ticks 1 >/dev/null
+want "runs from before classes, with open PRs, count as healing" "701" "$(spawned)"
+fresh; queue_as repair 602 603; queue 701; live_as 601 repair
+out=$(COORDINATOR_CAP=4 ticks 1)
+want "with new work queued, a new place never takes healing" "701" "$(spawned)"
+want_in "and the reds wait their turn"     'healing has its 1 place\(s\) — 2 red\(s\) wait their turn' "$out"
+fresh; queue_as repair 601 602 603 604 605 606
+ticks 4 >/dev/null
+want "6 repairs, no new work, an idle Mac: healing ramps past 1" "601 602 603 604" "$(spawned)"
+fresh; queue_as repair 601 602 603 604 605 606
+out=$(ticks 2)
+want_in "it says the place was lent"       'spawned #602 \(repair\) in a new place, nothing else spawnable' "$out"
+fresh; queue_as repair 601 602 603; queue 701; echo 602 > "$FIX/claims.txt"
+out=$(COORDINATOR_CAP=4 ticks 1)
+want "only spawnable reds count as waiting" "1" "$(jq -r .redsWaiting "$C/capacity.json")"
+want "next names the next spawnable entry, of either class" "603" "$(awk -F'\t' '$2=="plan"{n=$5; sub(/.*next=/,"",n); print n}' "$C/actions.log" | tail -1)"
+fresh; queue_as repair 601 602 603; queue 701 702 703
+COORDINATOR_CAP=4 COORDINATOR_HEALING_SHARE=0.5 ticks 4 >/dev/null
+want "healingShare 0.5 of 4: 2 heal, 2 new" "2 2" "$(classes | tr ' ' '\n' | awk '/repair/{h++} /new/{n++} END{print h+0, n+0}')"
+fresh; queue_as repair 601 602 603; queue 701 702 703 704 705 706
+for t in 801 802 803 804; do live_as $t new; done
+out=$(ticks 1)
+want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
+want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
+
+echo "--- coordinator.cap: 0 spawns nothing; not a number holds, named ---"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=0 tick)
+want "cap 0: no start"                     "" "$(spawned)"
+want_in "and says so"                      '0 live, cap 0 — no slot' "$out"
+fresh; queue 501
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=four tick)
+want "cap 'four': no start"                "" "$(spawned)"
+want_in "and names the bad value"          "coordinator.cap is 'four', not a whole number — holding" "$out"
+
+echo "--- a missing reading never counts as room: every reading the spawn decision takes ---"
+# Every machine reading in load.sh has a *_FILE seam; an empty file is a reading
+# nobody could take. A new reading without a seam fails the first row.
+LOADSH="$HERE/../swarm/load.sh"
+for fn in swarm_cpu_idle swarm_load swarm_cores swarm_free_mem_gb; do
+  body=$(sed -n "/^$fn() {/,/^}/p" "$LOADSH")
+  want_in "$fn has a file seam"            'SWARM_[A-Z_]*_FILE' "$body"
+done
+seams=$(grep -o 'SWARM_[A-Z_]*_FILE' "$LOADSH" | sort -u)
+want "the seams found"                     "SWARM_CORES_FILE SWARM_FREE_MEM_FILE SWARM_IDLE_FILE SWARM_LOAD_FILE" "$(echo $seams)"
+: > "$FIX/unread"
+for seam in $seams; do
+  fresh; queue 501
+  out=$(env -u SWARM_MAX_LOAD "$seam=$FIX/unread" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
+  want "$seam unread: no start"            "" "$(spawned)"
+  want_in "$seam unread: the tick says unread" 'unread' "$out"
+done
+fresh; queue 501
+out=$(env -u SWARM_MAX_LOAD COORDINATOR_SHADOW=0 bash "$T" 2>&1)
+want "every reading taken: it starts (the guard flags nothing correct)" "501" "$(spawned)"
+
+echo "--- the class survives the hand-over to the project's own spawner ---"
+# Production: the plugin's spawn-claim.sh execs the integration branch's copy, and
+# that copy writes no class. The tick runs through the real hand-over here.
+mkdir -p "$REPO/scripts"
+cat > "$REPO/scripts/spawn-claim.sh" <<'SH'
+#!/usr/bin/env bash
+# The project's older copy: a run record with no class and no operator field.
+. "$(dirname "$0")/toolkit-env.sh" 2>/dev/null
+printf '%s\thanded-over\n' "$1" >> "$SPAWNS"
+printf '{"run_id":"claim-%s-proj","ticket":"%s","child_pid":%s,"log":"/dev/null"}\n' "$1" "$1" "$TEST_PID" \
+  > "$HARNESS_STATE_DIR/runs/claim-$1-proj.json"
+SH
+cp "$HERE/toolkit-env.sh" "$REPO/scripts/toolkit-env.sh"
+git -C "$REPO" -c user.name=t -c user.email=t@t checkout -q -b develop 2>/dev/null
+git -C "$REPO" add scripts .claude && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm project
+git init -q --bare "$FIX/origin.git"; git -C "$REPO" remote add origin "$FIX/origin.git" 2>/dev/null
+git -C "$REPO" push -q origin develop && git -C "$REPO" fetch -q origin
+handover() { TMPDIR="$FIX" SWARM_SPAWN="$HERE/spawn-claim.sh" COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
+fresh; queue_as repair 601 602; queue 701 702
+handover >/dev/null
+want "the real spawner handed over"        "601	handed-over" "$(head -1 "$SPAWNS")"
+want "its record carries no class"         "" "$(jq -r '.class // empty' "$STATE/runs/claim-601-proj.json")"
+want "the coordinator recorded it"         "repair" "$(awk -F'\t' '$1=="claim-601-proj"{print $3}' "$C/run-classes.tsv")"
+handover >/dev/null
+want "so the next tick counts it as healing and builds new" "601 701" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
+want "the live view agrees"                "1 1" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
+git -C "$REPO" remote remove origin; rm -rf "$FIX/origin.git" "$REPO/scripts"
 
 echo "--- never a claimed, gated or held ticket ---"
 fresh; queue 501 502 503 504
@@ -109,6 +267,7 @@ fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 SWARM_LOAD=99 SWARM_MAX_LOAD=80 tick)
 want "load over the backstop: no spawn"    "" "$(spawned)"
 want_in "and names the load"               'machine busy \(load 99, limit 80\) — holding' "$out"
+want_in "the ceiling reads no room over the backstop" 'ceiling: 0 running · no room for more: load 99, limit 80' "$out"
 fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=41 SWARM_LOAD=60 SWARM_CORES=10 tick)
 want "41% idle at load 60 on 10 cores spawns" "501" "$(spawned)"
@@ -183,16 +342,22 @@ printf '{"run_id":"claim-802-x","ticket":"802","log":"%s"}\n' "$STATE/logs/claim
 printf '{"type":"result","result":"Parked: the spec contradicts itself"}\n' > "$STATE/logs/claim-802-x.log"
 printf '{"run_id":"claim-802-x","exit_code":0}\n' > "$STATE/runs/claim-802-x.ended"
 printf '{"run_id":"claim-803-x","ticket":"803","log":"%s"}\n' "$STATE/logs/claim-803-x.log" > "$STATE/runs/claim-803-x.json"
-printf 'You have hit your session limit · resets 7pm\n' > "$STATE/logs/claim-803-x.log"
+printf '{"type":"result","is_error":true,"result":"You have hit your session limit · resets 7pm"}\n' > "$STATE/logs/claim-803-x.log"
 printf '{"run_id":"claim-803-x","exit_code":1}\n' > "$STATE/runs/claim-803-x.ended"
+# A clean run that READ a CI log quoting someone else's limit, as claim-12554 did.
+printf '{"run_id":"claim-804-x","ticket":"804","log":"%s"}\n' "$STATE/logs/claim-804-x.log" > "$STATE/runs/claim-804-x.json"
+jq -nc '{type:"user",message:{content:[{type:"tool_result",content:"critic: You have hit your weekly limit · resets Oct 20 at 9pm"}]}}' > "$STATE/logs/claim-804-x.log"
+printf '{"type":"result","is_error":false,"result":"Handed off at def456"}\n' >> "$STATE/logs/claim-804-x.log"
+printf '{"run_id":"claim-804-x","exit_code":0}\n' > "$STATE/runs/claim-804-x.ended"
 out=$(tick)
 want_in "the final result line is recorded" 'claim-801-x.*exit=0 Handed off at abc123' "$(cat "$C/runs.log")"
 want "a clean hand-off raises nothing"     "0" "$(grep -c 'claim-801-x' "$C/events.would.jsonl")"
 want_in "a park is a stand-down"           '"kind":"stood-down".*"ticket":"802"' "$(cat "$C/events.would.jsonl")"
 want_in "a limit stop is a usage-limit"    '"kind":"usage-limit".*"ticket":"803"' "$(cat "$C/events.would.jsonl")"
+want "a quoted limit in a clean run raises nothing" "0" "$(grep -c 'claim-804-x' "$C/events.would.jsonl")"
 tick >/dev/null
-want "each ended run is read once"         "3" "$(grep -c 'ended' "$C/runs.log")"
-rm -f "$STATE/logs/claim-803-x.log"
+want "each ended run is read once"         "4" "$(grep -c 'ended' "$C/runs.log")"
+rm -f "$STATE/logs/claim-803-x.log" "$STATE/logs/claim-804-x.log"
 
 echo "--- pull requests: red is judged, green pixels go to the owner in batches ---"
 pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState] — the hold's own gate is red while held
@@ -209,13 +374,13 @@ jq -s . <(pr 41 601 - FAILURE) <(held 42) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 6
 tick >/dev/null
 want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41a' "$C/events.would.jsonl")"
 want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
-want "a healthy PR raises nothing"         "0" "$(grep -c ':44' "$C/events.would.jsonl")"
+want "a healthy PR raises nothing"         "0" "$(grep -c '"id":"[a-z-]*:44:' "$C/events.would.jsonl")"
 want "one green held PR is not a batch"    "0" "$(grep -c '"kind":"signoff"' "$C/events.would.jsonl")"
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
 out=$(tick)
-want "a red PR a session is fixing is not judged" "0" "$(grep -c ':41:' "$C/events.would.jsonl")"
+want "a red PR a session is fixing is not judged" "0" "$(grep -c '"id":"[a-z-]*:41:' "$C/events.would.jsonl")"
 want_in "and the tick says who has it"     'PR #41: .*being fixed by mac:4242' "$out"
 want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
 

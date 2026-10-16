@@ -1,0 +1,108 @@
+# Lesson — a fix pull request names, in its body, the guard that stops the same
+# class of mistake coming back, and that guard is an executable test, lint or gate
+# file the diff changes in substance. The check itself is scripts/check-lesson.sh;
+# this is the CI seat for it, so it holds whether or not anybody ran a skill.
+#
+# A consuming repo calls it from a workflow of its own:
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, edited, labeled, unlabeled, ready_for_review]
+#     merge_group:
+#   jobs:
+#     lesson:
+#       name: Lesson
+#       uses: <owner>/agent-harness/.github/workflows/lesson.yml@<sha>
+#       with:
+#         harness-repo: <owner>/agent-harness
+#         harness-ref: <the same sha>
+#
+# and names the check "Lesson / Every fix ships a lesson" in branch protection.
+#
+# Everything it judges by comes from a trusted ref, never the pull request:
+#   - the config is read at the base commit;
+#   - the script is the kit at harness-ref, a pinned SHA in the consumer. When the kit
+#     judges its own pull request, the script is taken from the BASE commit instead,
+#     so a pull request cannot loosen the check that judges it (bootstrap: when the
+#     base has no script yet, the head's runs, and says so);
+#   - guard-patterns can only narrow the guard set, never widen it.
+# Relabelling a linked issue does not re-run this; a push, a body edit or a label does.
+name: Lesson
+on:
+  workflow_call:
+    inputs:
+      harness-repo:
+        description: owner/name of the agent-harness repo to take the check from
+        type: string
+        required: true
+      harness-ref:
+        description: the ref of it to take the check from (pin a SHA)
+        type: string
+        default: main
+      guard-patterns:
+        description: space-separated globs a guard must ALSO match — narrows lesson.guardPatterns, never widens it
+        type: string
+        default: ''
+      runs-on:
+        description: JSON for runs-on — a label string or a list of labels
+        type: string
+        default: '"ubuntu-latest"'
+    secrets:
+      harness_token:
+        description: a token that can read harness-repo, when it is private and not this repo
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  lesson:
+    name: Every fix ships a lesson
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      - name: Refuse pull_request_target
+        if: github.event_name == 'pull_request_target'
+        run: |
+          echo "lesson: refused to run on pull_request_target, not a missing lesson"
+          echo "  it runs with the base's write token against a fork's code; call this workflow from pull_request."
+          exit 2
+      # A queued group was already checked, body and labels, on its own pull_request run.
+      - name: Only a pull request has a body to read a lesson from
+        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+        run: echo "not a pull request (${{ github.event_name }}) — nothing to check"
+      # The merge commit, two parents deep: HEAD^1..HEAD is exactly what merging adds.
+      - name: Check out the pull request's merge commit
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          path: repo
+      - name: Check out the check
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.harness-repo }}
+          ref: ${{ inputs.harness-repo == github.repository && github.event.pull_request.base.sha || inputs.harness-ref }}
+          token: ${{ secrets.harness_token || github.token }}
+          path: kit
+          sparse-checkout: scripts
+      - name: A fix names its guard, and the guard is in the diff
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SAME_REPO: ${{ inputs.harness-repo == github.repository }}
+          HARNESS_GUARD_PATTERNS: ${{ inputs.guard-patterns }}
+        run: |
+          [ -n "$HARNESS_GUARD_PATTERNS" ] || unset HARNESS_GUARD_PATTERNS
+          judge=kit/scripts/check-lesson.sh
+          if [ ! -f "$judge" ] && [ "$SAME_REPO" = true ]; then
+            echo "lesson: the base has no check-lesson.sh yet — bootstrapping with this pull request's copy"
+            judge=repo/scripts/check-lesson.sh
+          fi
+          # Body, labels, title and linked issues are read fresh from GitHub, not from
+          # the event: a re-run carries the event as it was when the job first fired.
+          bash "$judge" --repo repo --base HEAD^1 --head HEAD --pr "$PR" --slug "$REPO"

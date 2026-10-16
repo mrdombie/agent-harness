@@ -123,12 +123,14 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `build.cacheIdleMin` is optional (default 30): the sweeper and the coordinator leave a cache folder alone if anything in it changed this recently, and both leave a worktree alone while any process has its working directory there.
 - `changelog.branchTrailer` is optional: the commit-message line this project's changelog gate accepts ONCE for a whole branch as a reasoned skip (e.g. `no-changelog-branch`). When every build answer reported `changelog: {skipped}` and no commit on the branch carries the line, self-check adds one empty commit with `<trailer>: <reason>` — no history is rewritten.
 - `design.surfacePaths` is optional: the globs this project calls a screen. The compare step matches the branch diff against them to decide whether there is a screen to render at all; without it that step says so and compares nothing. Entries are git pathspecs, so `":(exclude)**/*.test.ts"` takes test files out; a list of only excludes is refused, because git reads it as every other file. With a renderer but no approved picture for the change, compare takes the renders for review and makes no parity check.
-- `design.render` is optional: a command run in the ticket worktree that prints one render per line as `name<TAB>path<TAB>light|dark<TAB>route`. Its output becomes the renders the compare step holds beside the approved design, and the renders the review step is given. Absent is an absence the reviewer and the pull request are TOLD about in those words; declared and producing nothing is a refusal, because a measurement that could not be made is not a screen that is fine. Exit 3 is the one exception: it means the renderer knows no screen this change touches, and is recorded as an absence in the renderer's own words, exactly as a project with no renderer.
+- `evidence` is optional: the shape the project's CI leaves when it photographs a pull request, read by `scripts/ci-evidence.sh`. **Evidence comes from CI, not from the agent's machine** (2026-10-16): an agent pushes, opens the pull request held with an `## Evidence routes` list, waits on `ci-evidence.sh wait <pr>` (a shell that costs nothing while CI works), fetches CI's pinned shots with `ci-evidence.sh fetch` and has the design critic judge them (`/agent-harness:finish` Step 5.4). Keys and defaults: `dir` (`docs/evidence` — a commit after a verdict that touches only this folder, or nothing, carries the verdict forward), `begin` / `end` (`<!-- ci-evidence:begin -->` / `<!-- ci-evidence:end -->`, the body block CI writes; links outside it are not CI's evidence), `headMarker` (`ci-evidence-head:`, the commit CI photographed), `captureCheck` (`Capture and pin the evidence`), `decideCheck` (`Does this diff need pixels?`), `routesHeading` (`Evidence routes`). Local capture is a fallback a person switches on with `HARNESS_LOCAL_EVIDENCE=1` when CI evidence is down; the kit never sets it.
+- `design.render` is optional, and it is the LOCAL capture: the driver runs it only with `HARNESS_LOCAL_EVIDENCE=1`, and otherwise records that CI owes the pictures after the push. It is a command run in the ticket worktree that prints one render per line as `name<TAB>path<TAB>light|dark<TAB>route`. Its output becomes the renders the compare step holds beside the approved design, and the renders the review step is given. Absent is an absence the reviewer and the pull request are TOLD about in those words; declared and producing nothing is a refusal, because a measurement that could not be made is not a screen that is fine. Exit 3 is the one exception: it means the renderer knows no screen this change touches, and is recorded as an absence in the renderer's own words, exactly as a project with no renderer.
 - `programmes.brief` is optional: a command that prints the BRIEF of a programme's state file, with `{{EPIC}}` and `{{FILE}}` substituted. These files are append-only and grow for as long as the programme is open, and a step handed the whole thing designs from the programme's history rather than from its own ticket. The driver finds the file by **what it says** — the state file whose content names the ticket's programme label — never by its filename: on the project this was measured on all 29 files are named for the epic and the label lives in the body, so a filename glob matched none of them.
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
+- `lesson` is optional, and only `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes or references, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`), `guardPatterns` (default: test, lint and gate globs such as `**/*.test.*`, `**/eslint-rules/**`, `**/*.semgrep.yml`, `**/check-*.*`, `**/gates/**`, plus `tests.patterns`; set, it replaces both) and `guardExclude` (default `*.md`, `*.mdx`, `*.txt`, `*.rst`, `docs/**` and the like). A pattern with no `/` matches the file name anywhere; one with a `/` is anchored at the repo root; `*` stays inside a directory and `**` crosses. It is read at the base commit. `HARNESS_GUARD_PATTERNS` (space-separated) can only narrow the guard set. A value that is not a list is a refusal.
 - `preApprovedWrites` is optional: environments whose writes (a back-fill, a one-off script, a data fix) the operator has approved in advance. `decided` is required and names who made the call and when. The standing rules say a general policy is not a yes; this is the one exception, and `hooks/standing-rules.sh` appends it to every session as its own section. It never covers an outward-facing action in any environment (publishing to a real account, sending email or messages), any environment not listed, or a command refused at a prompt, and the section says so. Only the operator adds or widens it. Two things hold that line. Only the committed value counts: a working-tree value that differs from `HEAD`'s grants nothing until it is committed. And `hooks/guard-pre-approved-writes.sh` refuses an agent's change to the parsed value (Write, Edit, and the Bash routes that name the file, plus `git commit`, `checkout`, `restore` and `apply`) and tells it to ask the operator. Removing the key stays allowed, since that grants nothing. Both values are pasted into the rules, so they are held to plain tokens: a name is letters, digits and `. _ -` with no spaces, up to 32 characters, and never a word for every environment (`all`, `any`, `every…`, `*`); `decided` is exactly `<name>, YYYY-MM-DD`. Anything else, a `harness.json` that is not one JSON object, or one that names the key twice, grants nothing, and the session is told so.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
@@ -235,6 +237,54 @@ It runs in three places, so skipping a skill does not skip it:
 - **The driver's ship step** — its body carries no such section, so a branch that
   deletes a test stays a draft and parks with the files named.
 
+## Every fix ships a lesson
+
+Healing a build is pointless if the same class of mistake comes back. A fix is
+known by what it is, not by one tag: a fix label, a `class:repair` or
+`class:approved-merge` label, a `fix:` / `fix(scope):` title, a `fix/` or `fix-`
+branch, or a bug-typed or bug-labelled issue it closes **or** references
+(`Refs #N`, `Part of #N`). A fix pull request fails until its body carries:
+
+```markdown
+## Lesson
+- Principle: A missing reading never counts as safe to go.
+- Guard: `scripts/machine-gate.test.sh`
+- Before/after: the new case fails on the old sampler and passes on the fix.
+- Reach: it covers the memory and load readers too.
+```
+
+The Guard must be an executable test, lint or gate file that the diff (two dots,
+base..head) **changes in substance**: naming an old test the fix never touched is
+refused, and so are a whitespace-only edit, a pure rename, docs and prose (`*.md`,
+`docs/**`) and workflow files. Or, instead of a Guard, one line of at least eight
+words, `Not automatable because <reason>`, which passes and prints
+`lesson: not-automatable` so a weekly report can count it. HTML comments, fenced
+and indented code never count (an unclosed one runs to the end of the body), so the
+template's placeholder is not an answer. The block to paste into a PR template is
+`templates/pull-request-lesson.md`.
+
+**Everything it judges by comes from the base.** The config is read at the base
+commit, the `guard-patterns` input can only narrow the guard set, and when the kit
+judges its own pull request the script is taken from the base commit. One gap
+GitHub leaves open: on `pull_request`, the calling workflow file is the pull
+request's own copy, so protect `.github/workflows/` with CODEOWNERS or a ruleset.
+Relabelling a linked issue does not re-run the check; a push, a body edit or a
+label change does.
+
+**Rolling it out.** Measured on one consuming repo, 58 of its last 100 merged pull
+requests would have failed, 56 of them only for the missing section. Add the
+workflow as a check that is not required first, so builders see it and start
+writing the section, and make it required once fix pull requests carry it.
+
+The enforcement is CI, not an agent's instructions: `.github/workflows/lesson.yml`
+is a reusable workflow the consuming repo calls on `pull_request` (with `edited`,
+`labeled` and `unlabeled`, so fixing the body or a label re-runs it) and makes
+`Every fix ships a lesson` a required check. Config is read from the base commit,
+so a pull request cannot loosen the check that judges it. `/agent-harness:claim`,
+`/agent-harness:bug` and `/agent-harness:finish` tell builders to write the lesson
+as they go; that is guidance only. The kit runs it on itself through
+`kit-lesson.yml`.
+
 ## Building one ticket
 
 `driver/build-ticket <ticket>` walks a ticket through seven fixed steps —
@@ -265,7 +315,7 @@ This is the non-stop path: it keeps working while no window is open.
 An overnight `/loop /agent-harness:work <scope>` re-sends its whole conversation
 on every wake. `scripts/coordinator-tick.sh` does the same job as one short
 process with no model call: it reads the runs that ended, spawns the next queued
-ticket through `spawn-claim.sh` up to a cap, runs `reconcile-claims.sh` and the
+ticket through `spawn-claim.sh` while the machine has room, runs `reconcile-claims.sh` and the
 dev-server sweep, checks the disk, and writes every event that needs judgement
 to a file. Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
@@ -290,11 +340,31 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 
 | Key (under `coordinator`) | Default | What it is |
 |---|---|---|
-| `cap` | 4 | Live ticket runs at once |
+| `cap` | unset | An optional hard ceiling on live ticket runs. Unset, the machine decides; `0` spawns nothing; anything not a whole number holds every spawn and says so |
+| `startCpuIdle` | 30 | Sampled CPU idle % needed to start one more builder. Sits above `swarm.minCpuIdle` (the hold floor), so the count does not flap |
+| `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
+| `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+
+**The ceiling follows the machine.** Each tick the ceiling is what is running,
+plus one when sampled CPU idle is at or over `startCpuIdle`, free memory is at or
+over `minFreeMemGb` and the load is under the backstop — so at most one builder
+starts per tick, and CPU is read again before the next. A running builder is
+never stopped for load. Of that ceiling, healing gets `ceil(ceiling × healingShare)`
+places and new work the rest. While both classes have spawnable work each keeps
+its share, so a run of red PRs waits its turn instead of stopping new work; a
+class with nothing spawnable lends its places to the other, in both directions.
+A reading nobody could take (CPU idle, free memory, load, cores) is no room.
+The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
+because `spawn-claim.sh` hands over to the project's own copy, which need not
+write one; a run with no class anywhere counts as healing when its ticket has an
+open PR. The tick log shows
+`ceiling: 7 running · room for 1 more: cpu idle 31%, 9 GB free` and
+`split: 3 new · 1 healing · 2 reds waiting`, and `capacity.json` beside the queue
+holds the same for the live view.
 
 ### The merge lane — one PR into the trunk at a time
 
@@ -314,8 +384,10 @@ always exactly what was tested.
 | Green | merged with `merge.method` and `--match-head-commit`; one merge per pass |
 | Hold back on | re-cleared through `clear-hold.sh --reason` only when every commit since approval is a merge and the update touched none of its `design.surfacePaths` files; otherwise the owner is told |
 
-A fixer is a `spawn-claim.sh` run when a place is free under `coordinator.cap`,
-else a `repair` entry in the coordinator's queue. The status line is
+A fixer is a `repair` entry in the coordinator's queue, which the tick starts in
+a healing place. When no live coordinator has ticked in 15 minutes (it is in
+shadow, or not installed) the lane starts the fixer itself if the machine has
+room, so a queued fixer is never stranded. The status line is
 `$STATE_DIR/coordinator/lane.status`; owner calls land in `needs-you.md`.
 
 ```sh

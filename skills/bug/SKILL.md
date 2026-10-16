@@ -115,6 +115,10 @@ backend fix.
   needs that the kit lacks gets built **into** `packages/ui`.
 - Write the failing test first wherever the bug is testable — a bug you can reproduce
   in code is a bug you can pin with a test, and that test is what stops the regression.
+- **Name the principle before the code**: one sentence for the class of mistake, not
+  the instance. The guard you write enforces that sentence and catches a sibling; it
+  goes in the PR body's `## Lesson` section (Principle, Guard, Before/after, Reach),
+  which the `Every fix ships a lesson` CI check requires on every fix.
 - Fix the whole matrix Step 1 identified, not the one cell the operator happened to see.
 - Do not leave a confident comment explaining a fix you are unsure of. Code gets
   re-derived on review; prose gets believed.
@@ -125,8 +129,11 @@ Run both, they are not substitutes:
 
 ```
 /agent-harness:ui-gate          # functional honesty — dead controls, fake-live data, parity
-/critic <route>   # rendered anti-slop, if the fix touches a surface
+design-critic on CI's shots   # rendered anti-slop, if the fix touches a surface — /agent-harness:finish Step 5.4
 ```
+
+The critic judges the shots CI pins on the PR after the push, never a local
+render: evidence comes from CI (the owner's call, 2026-10-16).
 
 `/agent-harness:ui-gate` is already wired into `/agent-harness:finish` as Gate 4/5, and `/agent-harness:finish` refuses the
 merge on a UI-touching PR without a **SHIP** verdict tied to the exact SHA. Export it:
@@ -162,10 +169,10 @@ A human removes the label, or a peer approves the PR. `type:feature` is an addit
 
 Two consequences to plan for rather than discover:
 
-- **Commit the rendered shots to `docs/evidence/<issue>/`** and link them SHA-pinned in
-  the PR body. Not `docs/mockups/`, which the gate does not read, and never a
-  `raw.githubusercontent.com` URL — the repo is private, so those render broken for
-  every reader while satisfying a naive grep.
+- **CI takes the shots.** List the routes under `## Evidence routes` in the PR body;
+  CI photographs them, commits the PNGs and pins them SHA-pinned into the body.
+  Do not capture locally and do not commit shots by hand (`/agent-harness:finish`
+  Step 5.4; local capture only under a person's `HARNESS_LOCAL_EVIDENCE=1`).
 - **Never remove the label to unblock yourself.** The removal IS the sign-off and is
   recorded in the PR timeline. Hand the PR back and stop.
 

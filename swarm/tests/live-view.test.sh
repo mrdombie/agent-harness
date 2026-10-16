@@ -110,6 +110,15 @@ rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
 
+echo "--- the coordinator's ceiling and its healing / new split are served ---"
+want "no capacity file: null, not an error" "null" "$(printf '%s' "$s" | jq '.capacity')"
+printf '{"live":7,"ceiling":8,"room":true,"reading":"cpu idle 31%%, 9 GB free","cap":null,"healing":{"slots":2,"live":1},"new":{"slots":6,"live":6},"redsWaiting":2}\n' \
+  > "$STATE/coordinator/capacity.json"
+s=$(snap)
+want "the ceiling and the reading" "8 cpu idle 31%, 9 GB free" "$(printf '%s' "$s" | jq -r '"\(.capacity.ceiling) \(.capacity.reading)"')"
+want "the split"                   "6 1 2" "$(printf '%s' "$s" | jq -r '"\(.capacity.new.live) \(.capacity.healing.live) \(.capacity.redsWaiting)"')"
+rm -f "$STATE/coordinator/capacity.json"
+
 echo "--- a hold on spawns is shown, with why and until when ---"
 s=$(snap)
 want "nothing held"             "false" "$(printf '%s' "$s" | jq '.hold.held')"
@@ -132,6 +141,15 @@ printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","reset
 s=$(snap)
 want_in "a limit read from the newest log names its window" "weekly usage limit" "$(printf '%s' "$s" | jq -r '.hold.reason')"
 rm -f "$STATE/logs/claim-zzz.log"
+
+echo "--- a service death is the CLI's error result, never a report quoting one ---"
+run 801 "$DEAD" 1
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"result":"API Error: Connection refused"}' > "$STATE/logs/claim-801.log"
+run 802 "$DEAD" 0
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Done. CI said: API Error 529 overloaded"}' > "$STATE/logs/claim-802.log"
+s=$(snap)
+want "the CLI's own error result is a service death" "true" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="801") | .infra')"
+want "a report quoting one is not"                   "false" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="802") | .infra')"
 
 echo "--- a slow progress refresh never freezes the page ---"
 # Measured 2026-10-16: the refresh ran ~45 s of synchronous git and forge calls on

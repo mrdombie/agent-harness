@@ -13,6 +13,8 @@ A claimed ticket **can** route into `/design` — that is normal, not an excepti
 
 Working interactively you just pause and show the PM the URL. But if you cannot stay alive to serve that page — you were spawned, or the session is ending — hand back something runnable instead. Do not self-approve; the design gate is never self-attested. Do not push on and hope. Do not settle for screenshots: the standing preference is a URL you can click, not an image you have to trust.
 
+**Evidence comes from CI, not from this machine** (the owner's call, 2026-10-16). Once a pixel ticket is built, do not start a dev server or run a capture script to photograph it. Push, open the PR held with its `## Evidence routes` listed, and CI photographs those routes and pins the shots to the PR; the design critic then judges CI's shots. `/agent-harness:finish` Step 5.4 is the whole motion, and `scripts/ci-evidence.sh wait <pr>` is the wait — a shell that costs nothing while CI works, never a capture loop. Measured the day it was decided: one agent spent ~58 minutes and 72 tool calls capturing locally for one ticket, another needed 5+ re-capture rounds, two more were stuck on the local workspace's content rules. Local capture comes back only when a person sets `HARNESS_LOCAL_EVIDENCE=1` because CI evidence is down.
+
 ```bash
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 ```
@@ -424,8 +426,8 @@ these above everything else on purpose — finish before start: a clashing PR is
 work already paid for, and every hour it waits it falls further behind. The move
 is the resume move below: merge the integration branch in, resolve, re-gate, and
 finish. If the PR carries the hold label, the merge does not clear it; a merge
-that moves pixels voids any approval, so re-capture and leave the hold for a
-person.
+that moves pixels voids any approval, so push and let CI re-capture
+(`/agent-harness:finish` Step 5.4), then leave the hold for a person.
 
 **A `[RESUME PR]` row is not a fresh build.** There is already work on a branch
 and an open PR. Pass B below will print it. Read the PR's commits and the
@@ -874,6 +876,11 @@ The label flip + claim comment happened in Step 3, immediately after the local l
 
 5-10 bullets to the user: problem, build, key files, AC, expected effort.
 
+**On a fix** (a bug, a repair, a review finding), one of the bullets is the
+**principle**: one sentence naming the class of mistake, and the guard that will
+enforce it. Write it into the PR body's `## Lesson` section as you build; the
+`Every fix ships a lesson` CI check refuses a fix PR without it.
+
 Mention worktree path: *"Working in `$WORKTREE` on branch `$BRANCH`."*
 
 **Record the scope**, so `/agent-harness:standup` and the sign-off banner can name the area. Resolve the
@@ -1040,7 +1047,7 @@ If you DO stop mid-epic: keep the lockfile (the epic is still yours), record the
 
 ### E6 — Close-out: final AC walk + the SECOND comment
 
-After the last slice merges, walk the FULL Autonomy-contract AC list against develop — every box, with evidence (commands run, screenshots for UI). Only when every box ticks:
+After the last slice merges, walk the FULL Autonomy-contract AC list against develop — every box, with evidence (commands run; for UI, the shots CI pinned on each slice's PR). Only when every box ticks:
 
 1. Post the completion digest on the epic (comment 2 of 2): slices shipped (PR links), decisions made (from the state file), the AC walk with evidence, screenshots.
 2. Close the epic (`gh issue close` — and since `/agent-harness:finish` never closed it, the SH-2571 auto-reopen guard won't fight you; the epic label reopen logic only triggers on GitHub's PR-link auto-close).
@@ -1067,8 +1074,8 @@ You're now responsible for the ticket until you `/agent-harness:finish` it. **St
 
 A pixel approval names the exact evidence it was given against — the render SHA
 and the file set on the PR body. **Any** later change to what renders — a review
-round, a fix, a rebase that moves pixels — voids it. Re-capture, put
-before/after on the PR, and ask again. Never clear the hold label
+round, a fix, a rebase that moves pixels — voids it. Push, let CI re-capture
+and pin the new shots on the PR, and ask again. Never clear the hold label
 (`$HOLD_LABEL`) by citing an approval of an earlier render.
 
 A resume brief may carry an approval forward only for commits that change no

@@ -12,6 +12,15 @@
 #   needsme-watch.sh card <pr>              what the sign-off prompt shows for one PR
 #   needsme-watch.sh open <pr>              open that PR's evidence in the browser
 #
+# A PR that rebuilds ONE part of a screen others are also rebuilding carries a
+# `<!-- part:begin -->`…`<!-- part:end -->` block in its body (finish writes it):
+#   Screen: Home · Part: 3 of 8 · Region: Team card · Anchor: team
+#   Picture: <approved picture URL> · Siblings: #101 #102 …  · region shots (blob links)
+# The card then leads with `banner` (card N of M of the new <screen>; the rest of
+# the page is the old version), lists each sibling live or pending (closed issue =
+# live), and puts the region shots, the preview and the picture at the anchor
+# ahead of the full page.
+#
 # Two sources: unticked needs-you.md lines, and full batches of held pixel PRs
 # green apart from the hold (signoff-batch.sh), read from the forge every
 # --forge-every seconds (default 300) so a batch reaches the owner even when no
@@ -121,18 +130,61 @@ pr_json() { # <pr>
   swarm_gh pr view "$1" --repo "$REPO_SLUG" --json number,title,url,headRefOid,labels,body 2>/dev/null
 }
 
-# Evidence, in the order the owner should see it: the live preview when it answers,
-# then every SHA-pinned image the body links (before and after both).
-evidence() { # <pr-json>
-  local body preview
-  body=$(jq -r '.body // ""' <<<"$1" | tr -d '\r')
-  preview=$(printf '%s\n' "$body" \
-    | awk 'index($0,"<!-- preview:begin -->"){f=1;next} index($0,"<!-- preview:end -->"){f=0} f' \
-    | grep -oE 'https://[^ )>"]+' | head -1)
+body_of() { jq -r '.body // ""' <<<"$1" | tr -d '\r'; }
+block() { # <body> <name> — the lines between <!-- name:begin --> and <!-- name:end -->
+  printf '%s\n' "$1" | awk -v b="<!-- $2:begin -->" -v e="<!-- $2:end -->" 'index($0,b){f=1;next} index($0,e){f=0} f'
+}
+shots() { grep -oE 'https://github\.com/[^ )>"]+/blob/[0-9a-f]{7,40}/[^ )>"]+\.(png|jpg|jpeg|webp|gif)'; }
+field() { # <part-block> <Name> — the value after "Name:" on its line
+  printf '%s\n' "$1" | sed -n "s/^[-* ]*$2:[[:space:]]*//p" | head -1 | sed 's/[[:space:]]*$//'
+}
+anchored() { # <url> <anchor> — the url opened at the anchor, unless it has one
+  case "$1" in *'#'*|'') printf '%s' "$1" ;; *) printf '%s%s' "$1" "${2:+#$2}" ;; esac
+}
+
+# Evidence, in the order the owner should see it. A part of a screen: the region's
+# own shots, the preview and the approved picture at the region's anchor, then the
+# full page. Otherwise: the live preview when it answers, then every SHA-pinned
+# image the body links (before and after both).
+evidence() { evidence_raw "$1" 2>/dev/null | awk 'NF && !seen[$0]++'; }
+evidence_raw() { # <pr-json>
+  local body preview part anchor picture
+  body=$(body_of "$1")
+  part=$(block "$body" part)
+  anchor=$(field "$part" Anchor)
+  [ -n "$part" ] && printf '%s\n' "$part" | shots
+  preview=$(block "$body" preview | grep -oE 'https://[^ )>"]+' | head -1)
   if [ -n "$preview" ] && "${NEEDSME_CURL:-curl}" -sfL -m 8 -o /dev/null "$preview" 2>/dev/null; then
-    printf '%s\n' "$preview"
+    anchored "$preview" "$anchor"; echo
   fi
-  printf '%s\n' "$body" | grep -oE 'https://github\.com/[^ )>"]+/blob/[0-9a-f]{7,40}/[^ )>"]+\.(png|jpg|jpeg|webp|gif)' | awk '!seen[$0]++'
+  picture=$(field "$part" Picture | grep -oE 'https://[^ )>"]+' | head -1)
+  [ -n "$picture" ] && { anchored "$picture" "$anchor"; echo; }
+  printf '%s\n' "$body" | shots
+}
+
+# A part of a screen: the banner, the region, the picture and every sibling's state.
+part_lines() { # <pr-json>
+  local part screen region nm n m s st title
+  part=$(block "$(body_of "$1")" part)
+  [ -n "$part" ] || return 0
+  screen=$(field "$part" Screen); region=$(field "$part" Region); nm=$(field "$part" Part)
+  n=$(printf '%s' "$nm" | sed -n 's/^\([0-9][0-9]*\) *of *[0-9][0-9]*.*/\1/p')
+  m=$(printf '%s' "$nm" | sed -n 's/^[0-9][0-9]* *of *\([0-9][0-9]*\).*/\1/p')
+  if [ -z "$n" ] || [ -z "$m" ] || [ -z "$screen" ]; then
+    echo "needsme-watch: the part block needs Screen and 'Part: N of M'" >&2; return 0
+  fi
+  printf 'part\t%s of %s\nscreen\t%s\n' "$n" "$m" "$screen"
+  [ -n "$region" ] && printf 'region\t%s\n' "$region"
+  printf 'banner\tcard %s of %s of the new %s; the rest of the page is the old version%s\n' \
+    "$n" "$m" "$screen" "${region:+. Compare only the $region}"
+  s=$(field "$part" Picture | grep -oE 'https://[^ )>"]+' | head -1)
+  [ -n "$s" ] && printf 'picture\t%s\n' "$(anchored "$s" "$(field "$part" Anchor)")"
+  for s in $(field "$part" Siblings | grep -oE '#[0-9]+' | tr -d '#'); do
+    st=$(swarm_gh issue view "$s" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null)
+    title=$(swarm_gh issue view "$s" --repo "$REPO_SLUG" --json title -q .title 2>/dev/null)
+    case "$st" in CLOSED) st=live ;; OPEN) st=pending ;; *) st=unknown ;; esac
+    printf 'sibling\t#%s\t%s\t%s\n' "$s" "$st" "$title"
+  done
 }
 
 card() { # <pr>
@@ -142,6 +194,7 @@ card() { # <pr>
   held=$(jq -r --arg h "$HOLD_LABEL" 'if any(.labels[]?; .name == $h) then "yes" else "no" end' <<<"$j")
   printf 'pr\t%s\ntitle\t%s\nurl\t%s\nsha\t%s\nheld\t%s\n' \
     "$1" "$(jq -r .title <<<"$j")" "$(jq -r .url <<<"$j")" "$(jq -r '.headRefOid // "" | .[0:7]' <<<"$j")" "$held"
+  part_lines "$j"
   evidence "$j" | sed 's/^/evidence\t/'
 }
 

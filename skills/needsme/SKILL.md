@@ -141,7 +141,7 @@ gh pr view "$P" --repo "$REPO_SLUG" --json statusCheckRollup \
 
 | Runtime reason | Label still on PR **or** issue? | Tier | Why |
 |---|---|---|---|
-| `carries no screenshot` | — | 🟡 AGENT'S | An agent must capture evidence first |
+| `carries no screenshot` | — | 🟡 AGENT'S | CI has not pinned shots: the PR needs `## Evidence routes` and to be ready — the agent waits on CI, never captures locally |
 | `carries $HOLD_LABEL` | **yes** | 🔴 YOURS | Nobody has looked yet — the **Who** column (rule under 1a) says how you clear it |
 | `carries $HOLD_LABEL` | **no** | ⚪ STUCK | **Already approved** — see below |
 | *(no PR exists)* | on the **issue** | 🔴 YOURS | A design call — show the CONCEPT link, see 1c-bis |
@@ -447,8 +447,12 @@ not re-ask permission to continue.**
 
 🔴 1 of N  ·  <what the change does, in their language>  (#NNNN)
 
+   Part of        card N of M of the new <screen>; the rest of the page is the old
+                  version. Compare only <region>. Live: <siblings>. Pending: <siblings>.
+                  (only when the PR body has a part block — see below)
    What changed   One or two lines on what a user will now see differently.
-   Look at it     <SHA-pinned docs/evidence blob URL — required>
+   Look at it     <region shot, or the preview at the region's anchor — then the full page>
+   Approved       <the approved picture, opened at the region's anchor>
    Held by        $HOLD_LABEL, live on the PR and issue #NNNN
    Who clears it  <from the 1a rule: remove the label / approve it / a peer's review>
    PR             https://github.com/$REPO_SLUG/pull/NNNN
@@ -460,6 +464,14 @@ not re-ask permission to continue.**
 
 Rules for the card:
 
+- **A part of a screen says so first.** When the PR rebuilds one region of a screen
+  other tickets are also rebuilding, `bash "$KIT_ROOT/scripts/needsme-watch.sh" card <pr>`
+  prints `banner`, `region`, `picture` and one `sibling` row each (closed issue =
+  live). The `Part of` line is that banner, word for word, ahead of everything else,
+  and the evidence leads with the region, the full page after it. Without it the
+  owner judges the whole page — old cards included — against the new design: on
+  2026-10-16 a new card shown on a page still mostly old was rejected as "doesn't
+  look like the original design", and approved once explained.
 - **Show the picture.** The operator approves by looking. A 🔴 pixel row with no evidence
   link is a bug in the scan — it belonged in 🟡.
 - **Show the `Held by` line.** It is the proof the row is really the operator's: the label
@@ -559,10 +571,14 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
 - **`signoff-batch`** — a batch of held pixel PRs, green apart from the hold. One
   PR at a time, in the order the text lists them:
   1. `bash "$W" card <pr>`. `held no` → already signed off: skip it, no question.
-  2. `bash "$W" open <pr>` — opens the live preview and the before/after shots in
-     Chrome. Say so in one line, with the PR URL from the card.
+  2. `bash "$W" open <pr>` — opens the evidence in Chrome: for a part of a screen
+     the region shot, the preview and the approved picture at the region's anchor,
+     then the full page; otherwise the live preview and the before/after shots. Say
+     so in one line, with the PR URL from the card.
   3. `AskUserQuestion`, header `Sign off`, the question naming what the change
-     does (from the card's title) and the PR number last. Options: **Approve**
+     does (from the card's title) and the PR number last. When the card has a
+     `banner`, the question opens with it verbatim and names the live and pending
+     siblings from its `sibling` rows. Options: **Approve**
      (clear the hold and let it merge) · **Change** (tell me what's wrong).
   4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr>`, then re-read the labels
      as Step 5 does. **Change**, or any typed answer → comment the words verbatim on

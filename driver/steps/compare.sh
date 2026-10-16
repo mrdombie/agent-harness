@@ -95,6 +95,17 @@ driver_step_compare() { # <ticket>
   driver_say "   compare: $(printf '%s\n' "$touched" | grep -c .) screen file(s) in this change"
 
   cmd=$(driver_opt design.render "")
+  # CI TAKES THE PICTURES (the owner's call, 2026-10-16). design.render is a capture
+  # on this machine, so it runs only when a person has switched local evidence on
+  # for a CI outage (HARNESS_LOCAL_EVIDENCE=1). Otherwise the pictures are owed by
+  # CI after the push, and the record says so in words no reviewer reads as a pass.
+  if [ -n "$cmd" ] && ! bash "$KIT_ROOT/scripts/ci-evidence.sh" local; then
+    driver_state_set "$t" renders \
+      "(none yet — this change touches $(printf '%s\n' "$touched" | grep -c .) screen file(s) and its pictures come from CI after the push, not from this machine. Judge no screen until CI has pinned them (scripts/ci-evidence.sh wait, then fetch):
+$(printf '%s\n' "$touched" | sed 's/^/  /'))"
+    driver_say "   compare: local capture is off — CI takes this change's pictures after the push, so none were taken here"
+    return "$DRIVER_OK"
+  fi
   if [ -z "$cmd" ]; then
     # LOUD, AND ON THE RECORD. The review step reads this exact string as its
     # RENDERS fact and the pull request body carries it, so "nobody looked at the

@@ -96,6 +96,10 @@ swarm_log() { # <logfile> <message…>
   printf '%s %s\n' "$(swarm_stamp)" "$*" >> "$f"
 }
 
+# ---- cli-signal reader: begin ----------------------------------------------
+# The ONE place a builder log is read for a limit or error. scripts/check-signal-source.sh
+# fails on such a read anywhere else.
+#
 # The plan's usage limit. On 2026-09-21 every spawn between 16:44 and 18:18 UTC
 # ended in seconds with "You've hit your session limit · resets 7:20pm", and the
 # scheduler relaunched the same two tickets 36 times. A spawn during the hold
@@ -121,35 +125,67 @@ swarm_log() { # <logfile> <message…>
 # against 238 "rejected". Only the rejection is a wall — holding on the field's
 # mere presence would stop the swarm permanently.
 swarm_usage_event_hold() {
-  local newest line epoch kind now
+  local newest row n epoch kind now
   newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
   [ -n "$newest" ] || return 1
   # The LAST rejection in the newest log. Earlier ones in the same run are history.
-  line=$(grep -oE '"status":"rejected","resetsAt":[0-9]+,"rateLimitType":"[a-z_]+"' "$newest" 2>/dev/null | tail -1)
-  [ -n "$line" ] || return 1
-  epoch=$(printf '%s' "$line" | sed -E 's/.*"resetsAt":([0-9]+).*/\1/')
-  kind=$(printf '%s' "$line" | sed -E 's/.*"rateLimitType":"([a-z_]+)".*/\1/')
+  row=$(swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="rejected"' | tail -1)
+  [ -n "$row" ] || return 1
+  n=$(printf '%s' "$row" | cut -f1)
+  epoch=$(printf '%s' "$row" | cut -f3)
+  kind=$(printf '%s' "$row" | cut -f4)
   case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
   now=$(swarm_now)
   [ "$epoch" -gt "$now" ] || return 1
+  if [ "${SWARM_USAGE_WHY:-0}" = 1 ]; then
+    printf 'rate-limit event, %s line %s' "$(basename "$newest")" "$n"; return 0
+  fi
   printf '%s (%s window)' "$(swarm_iso "$epoch")" "$kind"
 }
 
+# The CLI's own limit signals, one row each: `<line>\trejected\t<epoch>\t<window>` or
+# `<line>\terror\t<text>`. The same sentence inside a tool result is a quote, never a wall.
+swarm_usage_cli_events() { # <log>
+  grep -nE '"type":"(rate_limit_event|result)"|"model":"<synthetic>"' "$1" 2>/dev/null \
+  | jq -rR 'capture("^(?<n>[0-9]+):(?<j>.*)$") as $c | ($c.j | fromjson?) as $e
+      | select($e | type == "object")
+      | if $e.type == "rate_limit_event" and $e.rate_limit_info.status == "rejected" then
+          [$c.n, "rejected", ($e.rate_limit_info.resetsAt | tostring), ($e.rate_limit_info.rateLimitType // "")]
+        elif $e.type == "result" and $e.is_error == true and ($e.result | type) == "string" then
+          [$c.n, "error", $e.result]
+        elif $e.type == "assistant" and $e.message.model == "<synthetic>" and ($e.error // "") != "" then
+          [$c.n, "error", ([$e.message.content[]? | select(.type == "text") | .text] | join(" "))]
+        else empty end
+      | map(gsub("[\t\n]"; " ")) | join("\t")' 2>/dev/null
+}
+
 swarm_usage_text_hold() {
-  local newest reset h m ap now_m reset_m dated
+  local newest row n text reset h m ap now_m reset_m dated
   newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
   [ -n "$newest" ] || return 1
-  grep -qE "hit your (session|weekly) limit" "$newest" || return 1
+  # A log carrying the CLI's own rejection has said when it resets: the event
+  # reading above answers, and once that reset passes the wording must not
+  # re-hold — a dated wall's text holds for ever, and no newer log ever lands.
+  swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="rejected"{f=1} END{exit !f}' && return 1
+  # Only the CLI's own error text: a sentence anywhere else in the log is a quote.
+  row=$(swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="error"' \
+        | grep -E "hit your (session|weekly) limit" | tail -1)
+  [ -n "$row" ] || return 1
+  n=$(printf '%s' "$row" | cut -f1)
+  text=$(printf '%s' "$row" | cut -f3-)
   # Both wordings. The optional "<Mon> <D> at " is the weekly wall's.
-  reset=$(grep -oE "resets ([A-Z][a-z]{2} [0-9]{1,2} at )?[0-9]{1,2}(:[0-9]{2})?(am|pm)" "$newest" \
+  reset=$(printf '%s' "$text" | grep -oE "resets ([A-Z][a-z]{2} [0-9]{1,2} at )?[0-9]{1,2}(:[0-9]{2})?(am|pm)" \
           | tail -1 | sed 's/resets //')
   [ -n "$reset" ] || return 1
+  local src
+  src="CLI error text, $(basename "$newest") line $n"
   case "$reset" in *" at "*) dated=1; reset="${reset##* at }" ;; *) dated=0 ;; esac
   h=$(printf '%s' "$reset" | cut -d: -f1 | tr -dc 0-9)
   case "$reset" in *:*) m=$(printf '%s' "$reset" | cut -d: -f2 | tr -dc 0-9) ;; *) m=0 ;; esac
   ap=$(printf '%s' "$reset" | tr -dc a-z)
   [ "$ap" = "pm" ] && [ "$h" -lt 12 ] && h=$((h+12))
   [ "$ap" = "am" ] && [ "$h" -eq 12 ] && h=0
+  [ "${SWARM_USAGE_WHY:-0}" = 1 ] && reset="$src"
   # A wall that NAMES A DATE resets today at the earliest, so it always holds:
   # the time-of-day alone cannot say whether it is today or three days out, and
   # the event reading above is the one that answers that exactly.
@@ -166,6 +202,13 @@ swarm_usage_text_hold() {
   return 1
 }
 
+# Did this run stop on the plan's limit, by the CLI's own signals in its log.
+swarm_usage_log_limited() { # <log>
+  swarm_usage_cli_events "$1" \
+    | awk -F'\t' '$2=="rejected" || ($2=="error" && $3 ~ /hit your (session|weekly) limit/){f=1} END{exit !f}'
+}
+# ---- cli-signal reader: end ------------------------------------------------
+
 # A window that hit the wall: hooks/usage-limit.sh (StopFailure) writes
 # $STATE_DIR/usage-hold as `<epoch>\t<text>`. The limit is the account's, so a
 # wall an interactive window hit holds the timers too. A reset already passed
@@ -175,10 +218,17 @@ swarm_usage_file_hold() {
   e=$(cut -f1 "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" 2>/dev/null | head -1)
   case "$e" in ''|*[!0-9]*) return 1 ;; esac
   [ "$e" -gt "$(swarm_now)" ] || return 1
+  if [ "${SWARM_USAGE_WHY:-0}" = 1 ]; then
+    printf 'file %s: %s' "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" \
+      "$(cut -f2- "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" 2>/dev/null | head -1 | cut -c1-120)"
+    return 0
+  fi
   printf '%s (recorded by a window)' "$(swarm_iso "$e")"
 }
 
 swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_text_hold; }
+# Where the hold swarm_usage_hold answers came from: the file, or the log and line.
+swarm_usage_hold_source() { SWARM_USAGE_WHY=1 swarm_usage_hold; }
 
 # ---- the live view -----------------------------------------------------------
 # One snapshot, cached for this process, so a pass that asks three questions
