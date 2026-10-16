@@ -50,6 +50,40 @@ printf '%s\tYou have hit your session limit\n' "$SOON" > "$STATE/usage-hold"
 want_in "a window's record names the file and its words" "^file $STATE/usage-hold: You have hit your session limit" "$(source_of)"
 rm -f "$STATE/usage-hold"
 
+echo "--- a window at the ceiling holds before the wall ---"
+# claim-12899's shape (2026-10-16 01:19Z): allowed, but the week at 99% and four
+# days from its reset. Two of the three runs started beside it died within 16 min.
+near_log() { # <5h util> <7d util> [<7d util of a later event>]
+  { printf '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":%s,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":%s,"resetsAt":%s},"seven_day":{"utilization":%s,"resetsAt":%s}}}}\n' "$SOON" "$1" "$SOON" "$2" "$((SOON + 86400))"
+    jq -nc '{type:"assistant",message:{model:"claude-opus",content:[{type:"text",text:"working"}]}}'
+    [ -z "${3:-}" ] || printf '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":%s,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.1,"resetsAt":%s},"seven_day":{"utilization":%s,"resetsAt":%s}}}}\n' "$SOON" "$SOON" "$3" "$((SOON + 86400))"
+  } > "$LOG"
+}
+near_log 0.4 0.99
+u=$(hold) && ok "the week at 99% holds ($u)" || bad "the week at 99% held nothing"
+want_in "until the week's reset, naming the reading" "seven_day window at 99%" "$u"
+want_in "the source is the reading and its line" "^usage at 99% of the seven_day window, $(basename "$LOG") line 1" "$(source_of)"
+want "the live view's banner shows it" "true" "$(bash "$KIT/swarm/hold-status.sh" | jq -r .held)"
+want_in "in plain words" "weekly usage is at 99%" "$(bash "$KIT/swarm/hold-status.sh" | jq -r .reason)"
+near_log 0.4 0.80
+if u=$(hold); then bad "80% held: $u"; else ok "under the ceiling nothing holds"; fi
+near_log 0.4 0.99 0.20
+if u=$(hold); then bad "an older 99% held after a newer 20%: $u"; else ok "the newest reading decides"; fi
+near_log 0.4 0.99
+if u=$(SWARM_NOW=$((SOON + 2 * 86400)) hold); then bad "a window past its reset held: $u"; else ok "a window past its reset holds nothing"; fi
+if u=$(SWARM_USAGE_CEILING=1.5 hold); then bad "a ceiling over 1 still held: $u"; else ok "the ceiling is the config's"; fi
+want "the ceiling defaults to 0.95" "0.95" "$(bash -c '. "$1/swarm/swarm-env.sh" >/dev/null; printf %s "$SWARM_USAGE_CEILING"' _ "$KIT")"
+
+echo "--- a lost login is read from the CLI's own error, not a quote ---"
+lost() { bash -c '. "$1/swarm/swarm-env.sh" >/dev/null || exit 9; swarm_login_log_lost "$2"' _ "$KIT" "$LOG"; }
+{ jq -nc '{type:"user",message:{content:[{type:"tool_result",content:"docs say: Not logged in · Please run /login"}]}}'
+  jq -nc '{type:"result",is_error:false,result:"Handed off"}'; } > "$LOG"
+if lost; then bad "a quoted login error read as a lost login"; else ok "a quoted login error is not a lost login"; fi
+{ jq -nc '{type:"assistant",error:"authentication_failed",message:{model:"<synthetic>",content:[{type:"text",text:"Not logged in · Please run /login"}]}}'
+  jq -nc '{type:"result",is_error:true,result:"Not logged in · Please run /login"}'; } > "$LOG"
+lost && ok "the CLI's authentication_failed is a lost login" || bad "the CLI's own login error read as nothing"
+rm -f "$LOG"
+
 echo "--- a hold ends when its source says it ends ---"
 # claim-12789's shape (2026-10-16): the CLI's rejection resetting 20 Oct 19:00Z,
 # then its own error text naming the same wall by date. Dated wording always

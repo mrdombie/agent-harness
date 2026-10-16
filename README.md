@@ -322,7 +322,12 @@ to a file. Each judgement event gets one fresh `claude -p` with a short brief
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
 it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
-hook when any window hits the plan's limit) says the limit holds.
+hook when any window hits the plan's limit) says the limit holds, nor while the
+newest run's usage reading puts a window at `swarm.usageCeiling` or over.
+`spawn-claim.sh` itself refuses (exit 75) under the same hold, so no other
+spawner can start a run into the wall either, and no judge starts during it. A
+run the limit or a lost login cut off goes back to the front of the queue with
+its worktree and session named, to resume rather than start over.
 
 ```sh
 scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # tickets, labels or programme subjects; a list is their union

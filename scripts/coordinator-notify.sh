@@ -34,7 +34,7 @@ LINE=$(printf '%s' "$LINE" | tr '\n\t' '  ')
 # The owner's decisions: a batch of screens to sign off, the forge unreadable (only
 # the owner can log in), the disk still low after the cache pass, and a judgement
 # that names a choice only the owner can make.
-OWNER_KINDS="signoff-batch blind disk-low decision"
+OWNER_KINDS="signoff-batch blind disk-low login-lost decision"
 KIND="${KEY%%:*}"
 case " $OWNER_KINDS " in *" $KIND "*) ;; *) CLASS=agent ;; esac
 AGENT_WORK="$COORD_DIR/agent-work.log"

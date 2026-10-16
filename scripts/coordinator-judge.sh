@@ -61,6 +61,10 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
       --output-format stream-json --verbose \
       > "$JDIR/$safe.log" 2>&1 < /dev/null
   code=$?
+  # A judge the wall stopped decided nothing: its event waits for the next tick after the reset.
+  if swarm_usage_log_limited "$JDIR/$safe.log" || swarm_login_log_lost "$JDIR/$safe.log"; then
+    grep -vxF -- "$id" "$JUDGED" > "$JUDGED.$$" 2>/dev/null; mv -f "$JUDGED.$$" "$JUDGED"
+  fi
   printf '{"id":"%s","exit_code":%d,"ended_at":"%s"}\n' "$id" "$code" "$(swarm_stamp)" > "$JDIR/$safe.ended"
   rm -f "$JDIR/$safe.pid"
   exit 0
@@ -80,6 +84,7 @@ while IFS= read -r ev; do
     continue
   fi
   [ "$slots" -gt 0 ] || { echo "judge: no slot for $id — next tick"; break; }
+  if until=$(swarm_usage_hold); then echo "judge: the plan's usage limit holds until $until — $id waits"; break; fi
   printf '%s\n' "$id" >> "$JUDGED"
   coord_act_log judge "$id" "$(printf '%s' "$ev" | jq -r '.kind + ": " + .detail')"
   launch "$id" "$ev"

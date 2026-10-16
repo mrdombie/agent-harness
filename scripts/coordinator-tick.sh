@@ -11,7 +11,9 @@
 #
 # One tick, in order:
 #   1. lock          a tick still running means this one exits, untouched
-#   2. ended runs    each runs/*.ended not yet seen: its exit code and final result
+#   2. ended runs    each runs/*.ended not yet seen: its exit code and final result;
+#                    one the usage limit or a lost login cut off goes back to the
+#                    front of the queue (4b) with its worktree named, judged by no model
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
 #   4. pull requests red (unless fix-lock.sh says a session is on it), and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
@@ -71,6 +73,9 @@ final_line() { # <log> — the run's own last word
   printf '%s' "$r" | tr '\t\n' '  ' | cut -c1-240
 }
 limit_hit() { swarm_usage_log_limited "$1"; }
+# Runs the wall cut off mid-work, waiting to go back on the queue: <ticket> \t <run-id> \t <log> \t <why>
+CUT_PENDING="$COORD_DIR/cut.$(coord_mode)"
+cut_off() { [ -n "$1" ] && printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$CUT_PENDING"; }
 for ended in "$RUNS_DIR"/*.ended; do
   [ -f "$ended" ] || continue
   rid=$(basename "$ended" .ended)
@@ -85,7 +90,14 @@ for ended in "$RUNS_DIR"/*.ended; do
   printf '%s\tended\t%s\t%s\texit=%s %s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
   if limit_hit "$log"; then
-    event "usage-limit:$rid" usage-limit true "$ticket" "" "run $rid stopped on the plan's usage limit"
+    event "usage-limit:$rid" usage-limit false "$ticket" "" "run $rid stopped on the plan's usage limit"
+    cut_off "$ticket" "$rid" "$log" "the plan's usage limit"
+  elif swarm_login_log_lost "$log"; then
+    event "login-lost:$rid" login-lost false "$ticket" "" "run $rid stopped: the CLI is not logged in"
+    cut_off "$ticket" "$rid" "$log" "a lost login"
+    if event "login-lost:$(swarm_day)" login-lost false "" "" "the agents' CLI is not logged in"; then
+      bash "$NOTIFY" --class owner "login-lost:$(swarm_day)" "The agents' Claude login has gone: every run stops at once until someone runs /login on this machine"
+    fi
   elif [ "$code" != 0 ] || printf '%s' "$last" | grep -qiE 'park|stood down|stand down|blocked|cannot continue'; then
     event "stood-down:$rid" stood-down true "$ticket" "" "run $rid ended exit $code: ${last:-no result line}"
   fi
@@ -149,6 +161,41 @@ if [ -n "$PRS" ]; then
       fi
       printf '%s\n' "${key#signoff-batch:}" | tr ',' '\n' | awk -F@ '{print "pr:" $1 ":" $2}' >> "$BATCHED"
     done
+fi
+
+# ---- 4b. runs the wall cut off -------------------------------------------------
+# Back to the front of the queue with their worktree named, or the restart begins from nothing.
+has_open_pr() { # <ticket>
+  printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$1" \
+    'any(.[]; .headRefName | test("^" + $pre + $t + "([^0-9]|$)"))' >/dev/null 2>&1
+}
+requeue_cut() { # <ticket> <run-id> <log> <why> — 0 once settled, 1 to try again next tick
+  local t="$1" rid="$2" log="$3" why="$4" st cls wt sid note old
+  st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null)
+  [ -n "$st" ] || { say "cut: #$t could not be read — trying again next tick"; return 1; }
+  [ "$st" = OPEN ] || { say "cut: #$t is $st — not re-queued"; return 0; }
+  cls=$(coord_run_class "$RUNS_DIR/$rid.json"); [ -n "$cls" ] || cls=new
+  [ "$cls" = new ] && [ -n "${PRS:-}" ] && has_open_pr "$t" && cls=repair
+  wt=$(sed -n 1p "$RUNS_DIR/$rid.worktrees" 2>/dev/null)
+  sid=$(grep -o '"session_id":"[^"]*"' "$log" 2>/dev/null | head -1 | cut -d'"' -f4)
+  note="Resume: run $rid was cut off by $why before it handed off.${wt:+ Its worktree: $wt.} Carry on from its branch and commits; do not start over.${sid:+ Its session: $sid.}"
+  old=$(jq -r --argjson n "$t" '.tickets[]? | select(.n == $n) | .note // empty' "$COORD_QUEUE" 2>/dev/null)
+  case "$old" in Resume:*"Earlier note: "*) old="${old#*Earlier note: }" ;; Resume:*) old="" ;; esac
+  [ -z "$old" ] || note="$note Earlier note: $old"
+  coord_act_log requeue "$t" "$cls — cut off by $why"
+  if coord_shadow; then say "would re-queue #$t ($cls) at the front — cut off by $why"; return 0; fi
+  if bash "$QUEUE" add "$t" --class "$cls" --note "$note" --front >/dev/null 2>&1; then
+    say "re-queued #$t ($cls) at the front — cut off by $why"; return 0
+  fi
+  say "cut: could not re-queue #$t — trying again next tick"; return 1
+}
+if [ -s "$CUT_PENDING" ]; then
+  : > "$CUT_PENDING.next"
+  while IFS=$'\t' read -r t rid log why; do
+    [ -n "${t:-}" ] || continue
+    requeue_cut "$t" "$rid" "$log" "$why" || printf '%s\t%s\t%s\t%s\n' "$t" "$rid" "$log" "$why" >> "$CUT_PENDING.next"
+  done < "$CUT_PENDING"
+  mv -f "$CUT_PENDING.next" "$CUT_PENDING"
 fi
 
 # ---- 5. spawn ----------------------------------------------------------------
@@ -274,7 +321,7 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
   fi
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
-  event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true
+  event "usage-hold:$until" usage-limit false "" "" "the plan's usage limit holds until $until" || true
 elif busy=$(swarm_machine_busy); then
   say "spawn: machine busy ($busy) — holding"
   held_view
