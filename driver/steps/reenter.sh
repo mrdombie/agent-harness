@@ -139,8 +139,30 @@ driver_step_reenter() { # <ticket>
   # Origin's head, taken: the merge robot or a person may have pushed since. Commits
   # of our own that origin lacks are a resumed repair's, and kept. Both at once is a
   # divergence, and a refusal.
+  # A MERGE OF THE TRUNK LEFT IN PROGRESS by an interrupted pass is resumed, not
+  # fast-forwarded over: the repair step hands it back to the model and checks it.
+  # A merge of anything else is not this driver's, and origin moving under an
+  # unfinished merge cannot be taken without ending it.
+  local mh resuming_merge=0
   here=$(git -C "$wt" rev-parse HEAD)
-  if git -C "$wt" merge-base --is-ancestor "$here" "origin/$branch" 2>/dev/null; then
+  if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
+    mh=$(git -C "$wt" rev-parse -q --verify MERGE_HEAD 2>/dev/null)
+    if [ -z "$mh" ] || ! git -C "$wt" merge-base --is-ancestor "$mh" "origin/$INTEGRATION_BRANCH" 2>/dev/null; then
+      driver_say "✋ reenter: $wt has a merge in progress of ${mh:-something unreadable}, which is not the integration branch. It is not the driver's to finish."
+      driver_state_set "$t" park_note "$wt has a merge in progress that is not of $INTEGRATION_BRANCH"
+      return "$DRIVER_E_REFUSED"
+    fi
+    if ! git -C "$wt" merge-base --is-ancestor "origin/$branch" "$here" 2>/dev/null; then
+      driver_say "✋ reenter: origin/$branch moved while a merge of $INTEGRATION_BRANCH was in progress in $wt — taking it would mean ending that merge."
+      driver_state_set "$t" park_note "origin/$branch moved under an unfinished merge in $wt"
+      return "$DRIVER_E_REFUSED"
+    fi
+    resuming_merge=1
+    driver_say "   reenter: a merge of $INTEGRATION_BRANCH is in progress in $wt — resuming it"
+  fi
+  if [ "$resuming_merge" -eq 1 ]; then
+    :
+  elif git -C "$wt" merge-base --is-ancestor "$here" "origin/$branch" 2>/dev/null; then
     git -C "$wt" merge -q --ff-only "origin/$branch" >/dev/null 2>&1 || {
       driver_say "✋ reenter: could not fast-forward $wt to origin/$branch."
       return "$DRIVER_E_REFUSED"; }

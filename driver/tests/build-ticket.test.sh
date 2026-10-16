@@ -646,4 +646,51 @@ want "moved: a new round, the whole order"   "$REPAIR_ORDER" "$(tr '\n' ' ' < "$
 want "and the parked round's answers are archived" "no" "$([ -f "$(driver_state_dir 411)/steps/repair.json" ] && echo yes || echo no)"
 printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- end to end: a repair interrupted mid-conflict never ships its markers ---"
+# The chain review round 2 traced: the model call dies with the merge in progress,
+# the park commits it markers and all, the next pass sees no merge and the trunk
+# already in, calls nothing and ships the markers. Each link is closed; this walks
+# the whole chain with the real steps.
+rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"; : > "$GH_LOG"; : > "$CLAUDE_LOG"
+SRC="$FIX/src212"; git clone -q -b develop "$FIX/origin" "$SRC"
+git -C "$SRC" checkout -q -b tkt-212/work
+printf 'ours\n' > "$SRC/clash212.txt"; git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 212"
+git -C "$SRC" push -q origin tkt-212/work; PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
+git -C "$SRC" checkout -q develop; printf 'theirs\n' > "$SRC/clash212.txt"; git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "trunk 212"
+git -C "$SRC" push -q origin develop
+fix_issue 212 OPEN "status:in-review"
+jq -n --arg h "$PR_HEAD" '[{number:63, headRefName:"tkt-212/work", headRefOid:$h, isDraft:false, mergeStateStatus:"DIRTY", statusCheckRollup:[]}]' > "$FIX/gh/prs.json"
+: > "$FIX/pr-created-63"; printf '{"number":63,"isDraft":false,"body":"As written."}\n' > "$FIX/gh/pr-view.json"
+cat > "$BIN/claude-hands" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" --name repair "*)
+  if [ -f "$FIX/hands-resolve" ]; then
+    printf 'theirs\nours\n' > clash212.txt; git add clash212.txt
+    git -c user.email=t@example.invalid -c user.name=T commit -q --no-edit >/dev/null 2>&1
+  fi ;;
+esac
+exec "$BIN/claude" "$@"
+SH
+chmod +x "$BIN/claude-hands"
+rm -f "$FIX/ai/repair.jsonl" "$FIX/hands-resolve"   # pass 1: the model call dies with no answer
+printf 'REPAIR on PR #63: it clashes with develop\n' > "$FIX/brief-212.md"
+out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
+WT212=$(driver_state_get 212 worktree)
+want "pass 1 parks"                          "20" "$rc"
+want "the park committed nothing"            "$PR_HEAD" "$(git -C "$WT212" rev-parse HEAD)"
+want "the merge is left in progress"         "yes" "$([ -f "$(git -C "$WT212" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"
+want "origin still has the PR's head"        "$PR_HEAD" "$(git -C "$FIX/origin" rev-parse tkt-212/work)"
+: > "$FIX/hands-resolve"
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"develop and the PR both wrote clash212.txt","conflicts":[{"file":"clash212.txt","resolution":"both lines kept"}],"fixes":[{"what":"resolved the merge","proof":"gate","change":[{"path":"clash212.txt","action":"modify"}],"command":"true","noTestBecause":"a merge resolution that only needed both lines"}]}' \
+  superpowers:systematic-debugging
+: > "$CLAUDE_LOG"
+out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
+printf '%s\n' "$out" | sed 's/^/    /'
+want "pass 2 resumes the merge and ships"    "0" "$rc"
+want "the model was handed the merge again"  "repair review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "what reached origin is resolved"       "theirs ours" "$(git -C "$FIX/origin" show tkt-212/work:clash212.txt 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+want_not_in "and carries no marker"          '<<<<<<<|>>>>>>>' "$(git -C "$FIX/origin" show tkt-212/work:clash212.txt 2>/dev/null)"
+want "the trunk is in the PR's branch"       "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor develop tkt-212/work && echo yes)"
+rm -f "$FIX/gh/pr-view.json" "$FIX/hands-resolve"; printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

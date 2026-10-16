@@ -201,4 +201,42 @@ fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"s
 out=$(driver_step_repair 314 2>&1); rc=$?
 want "it asks"                         "20" "$rc"
 
+echo "--- markers committed by an earlier pass are caught with no model call and nothing red ---"
+setup 315
+printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+trunk_moves shared.txt "trunk line 315"
+git -C "$WT" fetch -q origin; git -C "$WT" merge -q origin/develop >/dev/null 2>&1; git -C "$WT" add -A; git -C "$WT" commit -q --no-edit
+driver_state_set 315 repair_base "$(git -C "$WT" rev-parse HEAD)"; driver_state_set 315 repair_conflicted "shared.txt"
+prs 315 CLEAN
+out=$(driver_step_repair 315 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want "without a model call"                "" "$(cat "$CLAUDE_LOG")"
+want_in "naming the markers"               'conflict marker' "$out"
+setup 316
+printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+trunk_moves shared.txt "trunk line 316"
+git -C "$WT" fetch -q origin; git -C "$WT" merge -q origin/develop >/dev/null 2>&1; git -C "$WT" add -A; git -C "$WT" commit -q --no-edit
+driver_state_set 316 repair_base "$(git -C "$WT" rev-parse HEAD)"
+prs 316 CLEAN
+out=$(driver_step_repair 316 2>&1); rc=$?
+want "with nothing on the record, the branch's own diff still catches them" "24" "$rc"
+want_in "and names the file"               'shared.txt' "$out"
+
+echo "--- a merge left in progress by an earlier pass is resumed and handed over again ---"
+setup 317
+printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+driver_state_set 317 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves shared.txt "trunk line 317"
+git -C "$WT" fetch -q origin; git -C "$WT" merge -q origin/develop >/dev/null 2>&1
+git -C "$WT" add shared.txt   # staged, unresolved: no U path left, MERGE_HEAD still there
+prs 317 CLEAN
+cat > "$FIX/ai/repair.sh" <<'SH'
+printf 'trunk line 317\nbranch line\n' > shared.txt; git add shared.txt && git commit -q --no-edit
+SH
+answer "$(repaired "$(gate_fix 'bash lint.sh')" '[{"file":"shared.txt","resolution":"both kept"}]')"
+out=$(driver_step_repair 317 2>&1); rc=$?
+want "it finishes"                         "0" "$rc"
+want "the model was called"                "repair" "$(cat "$CLAUDE_LOG")"
+want "both sides survive"                  "trunk line 317 branch line" "$(tr '\n' ' ' < "$WT/shared.txt" | sed 's/ $//')"
+
 exit $FAILED

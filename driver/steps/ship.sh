@@ -116,6 +116,14 @@ driver_step_ship() { # <ticket>
       driver_state_set "$t" park_note "the repair's review verdict is ${rverdict:-none}; it was not pushed, because PR #$open_pr would merge it"
       return "$DRIVER_E_REFUSED"
     fi
+    # NO CONFLICT MARKER IS EVER PUSHED, whichever pass left it: the last look before
+    # the push that lands it.
+    local marked; marked=$(driver_conflict_markers "$wt" "$trunk")
+    if [ -n "$marked" ]; then
+      driver_say "✋ ship: conflict markers are committed in $(printf '%s' "$marked" | tr '\n' ' ')— nothing is pushed."
+      driver_state_set "$t" park_note "conflict markers are committed on $branch in: $(printf '%s' "$marked" | tr '\n' ' ')"
+      return "$DRIVER_E_REFUSED"
+    fi
     # THE DELETED-TESTS GATE BEFORE THE PUSH TOO, for the same reason. It judges the
     # body the PR carries, plus a "## Deleted tests" line for each test this ticket's
     # steps reported replacing, and those lines go into the PR body BEFORE the push, so

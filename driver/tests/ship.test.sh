@@ -468,4 +468,14 @@ want_not_in "and the title is left alone"   'pr edit 93 .*--title' "$(tr '\n' ' 
 want "before the push, so CI's first run of the new head reads it" "pr edit" "$(grep -m1 -oE '^pr (edit|ready)' "$GH_LOG")"
 rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a repair carrying conflict markers is never pushed ---"
+repair_wt 145 95; ORIG=$(git -C "$FIX/wt145" rev-parse HEAD)
+printf '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/develop\n' > "$FIX/wt145/m.txt"
+git -C "$FIX/wt145" add m.txt; git -C "$FIX/wt145" -c user.email=t@example.invalid -c user.name=T commit -qm "merge"
+out=$(driver_step_ship 145 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want "nothing reached origin"              "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-145/work)"
+want_in "naming the file"                  'm.txt' "$out"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

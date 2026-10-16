@@ -434,6 +434,17 @@ EOS
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
+# driver_conflict_markers <tree> <trunk> — the files this branch ADDS a conflict
+# marker line to, against the trunk, one per line. Read from the branch's own diff,
+# so it holds on every pass whatever the record says: a marker committed by an
+# interrupted pass is still a marker. `<<<<<<<` and `>>>>>>>` only — a bare `=======`
+# is also a Markdown underline.
+driver_conflict_markers() {
+  git -C "$1" diff -U0 "$2"...HEAD 2>/dev/null | awk '
+    /^\+\+\+ b\// { f = substr($0, 7); next }
+    /^\+(<<<<<<<|>>>>>>>)( |$)/ { if (f != "" && !(f in seen)) { seen[f] = 1; print f } }'
+}
+
 # driver_open_prs_for <ticket> — the open pull requests on this ticket's own
 # branches (<prefix><ticket> then a non-digit), one per line:
 #   number \t headRefName \t headRefOid \t mergeStateStatus \t isDraft

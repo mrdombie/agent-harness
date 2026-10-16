@@ -110,4 +110,23 @@ want "the work is committed locally"       "" "$(git -C "$FIX/wt150" status --po
 want_in "the brief says where the repair is, and why it was not pushed" 'auto-merge' "$(cat "$GH_LOG")"
 want_in "and the claim is still released"  'release 150' "$(cat "$ORDER")"
 
+echo "--- a park never commits a merge in progress: that would commit its conflict markers ---"
+git -C "$REPO" worktree add -q "$FIX/wt151" -b tkt-151/work develop
+printf 'branch\n' > "$FIX/wt151/clash.txt"; git -C "$FIX/wt151" add clash.txt; git -C "$FIX/wt151" commit -qm "feat: ours"
+git -C "$FIX/wt151" push -q origin tkt-151/work
+git -C "$FIX/wt151" checkout -q -b side151 develop; printf 'trunk\n' > "$FIX/wt151/clash.txt"; git -C "$FIX/wt151" add clash.txt; git -C "$FIX/wt151" commit -qm "trunk side"
+SIDE=$(git -C "$FIX/wt151" rev-parse HEAD); git -C "$FIX/wt151" checkout -q tkt-151/work
+git -C "$FIX/wt151" merge -q "$SIDE" >/dev/null 2>&1
+BEFORE=$(git -C "$FIX/wt151" rev-parse HEAD)
+driver_state_init 151 --worktree "$FIX/wt151" --branch tkt-151/work
+driver_state_set 151 mode repair; driver_state_set 151 pr 94
+fix_issue 151 OPEN "status:in-review"
+out=$(driver_park 151 "the repair step produced no answer" "" driver 2>&1); rc=$?
+want "park reports parked"                 "20" "$rc"
+want "no commit was made"                  "$BEFORE" "$(git -C "$FIX/wt151" rev-parse HEAD)"
+want "the merge is still in progress"      "yes" "$([ -f "$(git -C "$FIX/wt151" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"
+want_not_in "no conflict marker is in any commit" '<<<<<<<' "$(git -C "$FIX/wt151" show HEAD 2>/dev/null)"
+want_in "the brief says the merge was left unfinished" 'left unfinished' "$(cat "$GH_LOG")"
+git -C "$FIX/wt151" merge --abort 2>/dev/null
+
 exit $FAILED

@@ -63,9 +63,15 @@ driver_step_repair() { # <ticket>
   fi
 
   # ---- the clash ---------------------------------------------------------------
+  local resumed_merge=0 marked
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
-    # A resumed pass finds the merge it left for the model.
-    conflicted=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
+    # A resumed pass finds the merge it left for the model. What it conflicted in is
+    # the record's list as well as git's: a file staged unresolved is no longer a U
+    # path, and the merge is still not finished.
+    resumed_merge=1
+    conflicted=$(printf '%s\n%s\n' "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" "$(driver_state_get "$t" repair_conflicted)" | sed '/^$/d' | sort -u)
+    [ -n "$conflicted" ] || conflicted=$(git -C "$wt" diff --cached --name-only 2>/dev/null)
+    driver_say "   repair: resuming the merge of $trunk an earlier pass left in progress"
   elif ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null && [ "$mstate" = DIRTY ]; then
     if git -C "$wt" merge --no-edit "$trunk" >"$d/steps/repair-merge.out" 2>&1; then
       merged=1
@@ -89,6 +95,17 @@ driver_step_repair() { # <ticket>
     conflicts_fact="not needed: the branch does not clash with $trunk"
   fi
 
+  # A MARKER ALREADY COMMITTED is caught on every pass, before anything decides
+  # there is nothing to do: an interrupted pass may have left one, and with CI green
+  # nothing else would ever look.
+  if [ "$resumed_merge" -eq 0 ]; then
+    marked=$(driver_conflict_markers "$wt" "$trunk")
+    if [ -n "$marked" ]; then
+      driver_say "✋ repair: a conflict marker is committed on $branch in $(printf '%s' "$marked" | tr '\n' ' ')— an earlier pass concluded a merge that was never resolved."
+      driver_state_set "$t" park_note "conflict markers are committed on $branch in: $(printf '%s' "$marked" | tr '\n' ' ')"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
   [ -n "$conflicted" ] && need=1
   [ -n "$failing" ] && need=1
   [ "$unreadable" -eq 1 ] && need=1
@@ -135,6 +152,12 @@ driver_step_repair() { # <ticket>
       driver_state_set "$t" park_note "the repair committed conflict markers"
       return "$DRIVER_E_REFUSED"
     fi
+  fi
+  marked=$(driver_conflict_markers "$wt" "$trunk")
+  if [ -n "$marked" ]; then
+    driver_say "✋ repair: a conflict marker is committed on $branch in $(printf '%s' "$marked" | tr '\n' ' ')."
+    driver_state_set "$t" park_note "the repair committed conflict markers in: $(printf '%s' "$marked" | tr '\n' ' ')"
+    return "$DRIVER_E_REFUSED"
   fi
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then

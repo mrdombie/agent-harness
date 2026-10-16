@@ -56,7 +56,7 @@ git -C "$REPO" remote add origin "$FIX/origin"
 git -C "$REPO" push -q origin develop
 pr_branch() { # <ticket> — a pushed PR branch, a worktree-free copy in $FIX/src-<t>
   local t=$1 src="$FIX/src-$1"
-  git clone -q "$FIX/origin" "$src"
+  git clone -q -b develop "$FIX/origin" "$src"
   git -C "$src" config user.email t@example.invalid; git -C "$src" config user.name T
   git -C "$src" checkout -q -b "tkt-$t/work"
   printf 'pr %s\n' "$t" > "$src/pr$t.txt"; git -C "$src" add . ; git -C "$src" commit -qm "feat: $t"
@@ -138,5 +138,24 @@ out=$(driver_step_reenter 207 2>&1); rc=$?
 want "an unreadable PR list refuses"  "24" "$rc"
 want_in "and says so"                 'could not ask' "$out"
 rm -f "$FIX/gh-fail"
+
+echo "--- a recorded tree with OUR merge of the trunk in progress is resumed, not refused ---"
+pr_branch 208; fix_issue 208 OPEN "status:in-review"; prs "[$(pr_json 38 tkt-208/work DIRTY)]"
+rc=0; driver_step_reenter 208 >/dev/null 2>&1 || rc=$?
+WT8=$(driver_state_get 208 worktree)
+printf 'pr 208 changed\n' > "$WT8/pr208.txt"; git -C "$WT8" commit -qam "feat: ours" ; git -C "$WT8" push -q origin tkt-208/work
+git -C "$REPO" checkout -q develop 2>/dev/null; printf 'trunk 208\n' > "$REPO/pr208.txt"; git -C "$REPO" add pr208.txt; git -C "$REPO" commit -qm "trunk 208"; git -C "$REPO" push -q origin develop
+git -C "$WT8" fetch -q origin; git -C "$WT8" merge -q origin/develop >/dev/null 2>&1
+out=$(driver_step_reenter 208 2>&1); rc=$?
+want "it resumes"                          "0" "$rc"
+want "the merge is left in progress for the repair step" "yes" "$([ -f "$(git -C "$WT8" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"
+want_in "and it says so"                   'merge .*in progress' "$out"
+git -C "$WT8" merge --abort
+git -C "$WT8" checkout -q -b foreign208 HEAD~1 2>/dev/null; printf 'x\n' > "$WT8/pr208.txt"; git -C "$WT8" commit -qam foreign; F=$(git -C "$WT8" rev-parse HEAD)
+git -C "$WT8" checkout -q tkt-208/work; git -C "$WT8" merge -q "$F" >/dev/null 2>&1
+out=$(driver_step_reenter 208 2>&1); rc=$?
+want "a merge of something that is not the trunk refuses" "24" "$rc"
+want_in "naming it"                        'not the integration branch' "$out"
+git -C "$WT8" merge --abort
 
 exit $FAILED
