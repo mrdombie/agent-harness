@@ -320,10 +320,10 @@ TOOLS=$(toolkit_tools) || exit 1
 
 # 0c.1 — the project's own machine checks (harness.json claim.preflight), such as
 # whether the jobs it describes are the ones installed. They report and never
-# block: they are the machine's state, not this ticket's. Run from the project's
-# scripts as they are on the integration branch.
+# block: they are the machine's state, not this ticket's. Each runs here, in the
+# project's checkout, with $TOOLS naming its scripts as on the integration branch.
 jq -r '(.claim.preflight // [])[]' "$HARNESS_CFG" 2>/dev/null | while IFS= read -r c; do
-  (cd "$TOOLS" && bash -c "$c") || true
+  TOOLS="$TOOLS" bash -c "$c" || true
 done
 
 # 0d — keep the SHARED clone's loose manifests in step with develop (#10047).
