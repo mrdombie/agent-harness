@@ -295,6 +295,12 @@ with its own hands, and parks the ticket with the question whenever a step asks
 one. Full description, the guarantees and every seam:
 [`driver/README.md`](driver/README.md).
 
+`driver/build-ticket <ticket> --repair <brief>` is the same walk for a pull
+request that went red or clashes after it was handed off. It re-enters the
+PR's own branch (never a fresh one), merges the trunk in for a clash, and proves
+each fix: a test red then green, or a gate command green at the head. Then it
+runs the same gates, review and ship onto that same PR.
+
 It is the replacement for the two hand-copied build commands, not an addition to
 them: `docs/design/claim-finish-inventory.md` maps all 178 of their rules to a
 driver step, a brief, a hook, a required check, or a named retirement.
@@ -371,21 +377,44 @@ directory (`$STATE_DIR/driver/<ticket>/`) in `progress_paths`, because the drive
 prints only between steps while a build step writes there, and a long build step
 is not a frozen run.
 
-Two spawns refuse in driver mode, by name, exit non-zero, and start nothing: one
-that carries a brief (`CLAIM_EXTRA` — a healing re-spawn's resume brief, which
-the driver has no way to take), and one with no ticket number (the driver cannot
-pick the next ready ticket; the coordinator always passes one). Neither falls
-back to /claim, because a fallback would report exactly like the run that was
-asked for. The tick raises a `spawn-failed` event naming the reason, once per
-ticket per day. A repair re-spawn therefore does not run in driver mode yet.
+**A repair runs through the driver too.** A healing spawn is a red or clashing
+pull request sent back. It can carry a brief (`CLAIM_EXTRA`, from the repair
+watcher, the merge lane or a coordinator note), or its class can be `repair` or
+`approved-merge` with no note. In driver mode either one runs
+`driver/build-ticket <ticket> --repair <brief>`:
+- The brief is the spawn's own, verbatim, in `runs/<run>.brief`. With no note it
+  is a line naming the class.
+- The driver re-enters the ticket's open PR on its own branch, merges the trunk
+  in for a clash, and fixes what is red, with a proof per fix.
+- It gates, reviews and pushes to that same PR, and leaves the PR's title and
+  body alone ([`driver/README.md`](driver/README.md#a-repair-build-ticket-ticket---repair-brief)).
+- A ticket with no open PR refuses by name. The driver never cuts a fresh
+  branch for a ticket whose PR exists.
 
-**Driver mode has no `--max-budget-usd` cap.** That flag belongs to one
-`claude -p` session, and the driver is many short ones. Its own ceilings bound a
-run instead — `DRIVER_MAX_BUILD_TRIES` build attempts, `DRIVER_MAX_REVIEW_ROUNDS`
-review rounds, and `DRIVER_CMD_TIMEOUT` (900 s) on every command
-([`driver/README.md`](driver/README.md)). What a run spent is in its
-`$STATE_DIR/driver/<ticket>/state.json` as `.spend`, not in the run's `result`
-line, so `usage-report.sh` shows a driver run at no cost.
+**Two things do not spawn in driver mode, and both say why.**
+- *A spawn with no ticket number* refuses with exit 3, because the driver cannot
+  pick the next ready ticket. The coordinator always passes one.
+- *A `new` queue entry carrying a note* is passed over when the tick chooses
+  its candidates. The plan step has no input for a note, so it is named in a
+  `skip` line, and the next entry takes the place.
+
+A spawn that fails or is refused never uses up a place, so one refused entry
+cannot hold its class shut. The tick raises a `spawn-failed` event naming the
+reason, once per ticket per day. This event fires in `claim` mode too: before
+this change, a failed spawn was only a log line.
+
+**Driver mode has no time or cost cap on its model calls.** `--max-budget-usd`
+belongs to one `claude -p` session, and the driver is many short ones, none of
+them capped:
+- No step call (`driver/ai-step.sh`) is bounded in time or cost.
+- What bounds a run is its rounds: at most `DRIVER_MAX_BUILD_TRIES` (default 5)
+  build attempts and `DRIVER_MAX_REVIEW_ROUNDS` (default 2) review rounds.
+- `DRIVER_CMD_TIMEOUT` (900 s) applies to the commands the driver runs itself:
+  gates, the red-before-green test runs, renders and the push-requires reviews.
+  It does not apply to a model call.
+- What a run spent is in `$STATE_DIR/driver/<ticket>/state.json` as `.spend`.
+  It is not in the run's `result` line, so `usage-report.sh` shows a driver run
+  at no cost. Read `.spend` to watch it.
 
 **The ceiling follows the machine.** Each tick the ceiling is what is running,
 plus as many builders as the spare CPU fits: the median of the recent CPU idle
