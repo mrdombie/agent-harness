@@ -343,11 +343,14 @@ swarm_running_total() {
 }
 
 # ---- tickets -----------------------------------------------------------------
+# A ticket rolled into a batch ticket: the batch's one PR builds it, so no agent starts it alone.
+LBL_BATCHED="${LBL_BATCHED:-$(swarm_opt labels.batched status:batched)}"
+export LBL_BATCHED
 # The statuses that mean "a person or another PR owns this; never send an agent".
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 

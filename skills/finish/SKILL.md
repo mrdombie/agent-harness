@@ -1161,6 +1161,8 @@ else
 fi
 [ "$ISSUE_NUM" != "null" ] && gh issue comment "$ISSUE_NUM" --repo "$REPO_SLUG" --body "$MERGE_NOTE"
 [ "$ISSUE_NUM" != "null" ] && gh issue close "$ISSUE_NUM" --repo "$REPO_SLUG" --reason completed
+# A batch ticket's PR closes the batch only: close every child its body lists, naming the PR.
+[ "$ISSUE_NUM" != "null" ] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/close-batch-children.sh" "$ISSUE_NUM" "$PR_NUMBER"
 node "$(git rev-parse --show-toplevel)/scripts/sync-project-board.js" >/dev/null 2>&1 || true   # the board mirrors the labels
 
 # SH-2571 (2026-05-25) — EPIC parent auto-reopen.
