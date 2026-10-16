@@ -22,8 +22,11 @@
 #
 # Usage: claimable-issues.sh            # the list
 #        claimable-issues.sh --count    # how many
+#        CLAIMABLE_WITH_LABELS=1 …      # a 7th column: every label, comma-joined
+#        CLAIMABLE_PRS_FILE=<f> …       # the open PRs already read, in place of a pr list
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
+. "$KIT_ROOT/scripts/gh-batch.sh" || exit 1
 GH_REPO="${GH_REPO:-$REPO_SLUG}"
 
 HELD=$(toolkit_claimed_issues || true)
@@ -40,33 +43,40 @@ finish_rows() {
   STOP=$(printf '"%s",' "$LBL_GATED" "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" "$LBL_PARKED" \
            "$LBL_PM_DECISION" "$LBL_PM_TRACK" "$LBL_DRAFTING")
   STOP="[${STOP%,}]"
-  gh pr list --repo "$GH_REPO" --state open --limit 200 \
-    --json isDraft,mergeable,closingIssuesReferences,title \
-    -q '.[] | select((.isDraft | not) and .mergeable == "CONFLICTING")
+  # The open PRs a caller already read (the coordinator's tick) stand in for asking again.
+  local prs nums
+  if [ -n "${CLAIMABLE_PRS_FILE:-}" ] && [ -s "$CLAIMABLE_PRS_FILE" ] \
+     && jq -e 'type == "array" and (length == 0 or (.[0] | has("mergeable") and has("closingIssuesReferences")))' "$CLAIMABLE_PRS_FILE" >/dev/null 2>&1; then
+    prs=$(cat "$CLAIMABLE_PRS_FILE")
+  else
+    prs=$(gh_call pr list --repo "$GH_REPO" --state open --limit 200 \
+      --json isDraft,mergeable,closingIssuesReferences,title 2>/dev/null)
+  fi
+  nums=$(printf '%s' "$prs" | jq -r '.[] | select((.isDraft | not) and .mergeable == "CONFLICTING")
          | if (.closingIssuesReferences | length) > 0 then .closingIssuesReferences[].number
            else (.title | [match("^[^0-9]{0,4}([0-9]{3,6}):").captures[0].string] | first // empty)
-           end' 2>/dev/null \
-  | sort -un \
-  | while read -r n; do
-      [ -n "$n" ] || continue
-      gh issue view "$n" --repo "$GH_REPO" --json number,title,labels,state \
-        -q 'select(.state == "OPEN") | . as $i
-            | select([$i.labels[].name] - ('"$STOP"') == [$i.labels[].name])
-            | [ "0",
-                ($i.number|tostring),
-                ([$i.labels[].name | select(startswith("P"))] | first // "P?"),
-                ([$i.labels[].name | select(startswith("area:"))] | first // "area:UNFILED" | ltrimstr("area:")),
-                ([$i.labels[].name | select(startswith("repo:"))] | first // "repo:-" | ltrimstr("repo:")),
-                "[FINISH PR]",
-                $i.title
-              ] | @tsv' 2>/dev/null
-    done
+           end' 2>/dev/null | sort -un | tr '\n' ' ')
+  [ -n "${nums// /}" ] || return 0
+  # One batched read for every clashing PR's ticket, not one `gh issue view` each.
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  gh_issues_batch $nums 2>/dev/null | jq -r --argjson stop "$STOP" '
+      .[] | select(.state == "OPEN") | . as $i
+      | select(($i.labels - $stop) == $i.labels)
+      | [ "0",
+          ($i.number|tostring),
+          ([$i.labels[] | select(startswith("P"))] | first // "P?"),
+          ([$i.labels[] | select(startswith("area:"))] | first // "area:UNFILED" | ltrimstr("area:")),
+          ([$i.labels[] | select(startswith("repo:"))] | first // "repo:-" | ltrimstr("repo:")),
+          "[FINISH PR]",
+          ($i.labels | join(",") | if . == "" then "-" else . end),
+          $i.title
+        ] | @tsv' 2>/dev/null
 }
 rows() {
   { finish_rows
   for STATE in status:ready status:in-review; do
     ORPHAN=$([ "$STATE" = "status:in-review" ] && echo true || echo false)
-    gh issue list --repo "$GH_REPO" --state open --limit 1000 \
+    gh_call issue list --repo "$GH_REPO" --state open --limit 1000 \
       --label "$STATE" --json number,title,labels \
       -q '.[] | . as $i
           | ([$i.labels[].name] | index("epic")) as $is_epic
@@ -81,20 +91,22 @@ rows() {
               ([$i.labels[].name | select(startswith("area:"))] | first // "area:UNFILED" | ltrimstr("area:")),
               ([$i.labels[].name | select(startswith("repo:"))] | first // "repo:-" | ltrimstr("repo:")),
               (if $run_ready != null then "[EPIC MODE]" elif $orphan then "[RESUME PR]" else "-" end),
+              ([$i.labels[].name] | join(",") | if . == "" then "-" else . end),
               $i.title
             ] | @tsv' 2>/dev/null
   done; } \
     | sort -t $'\t' -k1,1n -k3,3 -k2,2n \
     | awk -F'\t' '!seen[$2]++' \
-    | while IFS=$'\t' read -r _rank id pri area repo mode title; do
+    | while IFS=$'\t' read -r _rank id pri area repo mode labels title; do
         # Empty TSV fields collapse under a tab IFS, so jq never emits one: repo
         # defaults to "-" (the main repo) and mode to "-", mapped back here. A ticket
         # wearing both status:ready and status:in-review is listed once, as the
         # resume (rank 1 beats rank 2); a clashing PR's ticket once, as [FINISH PR].
         [ "$mode" = "-" ] && mode=""
         [ "$repo" = "-" ] && repo=""
-        grep -qx "$id" <<<"$HELD" || printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "$id" "$pri" "$area" "$repo" "$mode" "$title"
+        grep -qx "$id" <<<"$HELD" || printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' \
+          "$id" "$pri" "$area" "$repo" "$mode" "$title" \
+          "$([ "${CLAIMABLE_WITH_LABELS:-0}" = 1 ] && printf '\t%s' "$labels")"
       done
 }
 case "${1:-}" in

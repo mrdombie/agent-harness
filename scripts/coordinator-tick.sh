@@ -142,9 +142,20 @@ say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
 FIXLOCK="${COORDINATOR_FIX_LOCK:-$SELF_DIR/fix-lock.sh}"
 FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list --json 2>/dev/null \
   | jq -r '.[]? | select(.expired | not) | "\(.pr)\t\(.window)"' 2>/dev/null)
+# One read of the open PRs serves the whole tick and the queue refresh. A refused
+# read (GitHub rate-limiting the token every builder shares) falls back to the
+# last good one while it is fresh enough: the starts go on, and nothing judged or
+# sent to the owner is decided on it.
+PRS_STALE=0
 PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
-        --json number,headRefName,headRefOid,isDraft,labels,mergeStateStatus,statusCheckRollup 2>/dev/null)
-if [ -n "$PRS" ]; then
+        --json number,headRefName,headRefOid,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt 2>/dev/null)
+if [ -n "$PRS" ] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
+  coord_snap_save prs "$PRS"
+elif PRS=$(coord_snap_load prs); then
+  PRS_STALE=1
+  say "open PRs: could not be read$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — working from the snapshot taken $(coord_snap_age prs) min ago"
+else PRS=""; fi
+if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" '
     .[] | select(.isDraft | not) | select(.headRefName | startswith($pre))
     | (.statusCheckRollup // []) as $c
@@ -213,7 +224,7 @@ if [ -s "$CUT_PENDING" ]; then
 fi
 
 # The waits recorded this tick, snapshotted while the open PRs are fresh.
-[ -n "${PRS:-}" ] && coord_wait_snap_pending
+[ -n "${PRS:-}" ] && [ "$PRS_STALE" = 0 ] && coord_wait_snap_pending
 
 # ---- 5. spawn ----------------------------------------------------------------
 # Labels that keep a ticket from any agent: the swarm's own list, plus gated.
@@ -231,8 +242,7 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   local t="$1" cls="$2" meta st lab l
   grep -qx "$t" <<<"$CLAIMED" && { echo "claimed"; return 0; }
   swarm_ticket_live "$t" && { echo "already running"; return 0; }
-  meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels \
-           -q '.state+" "+([.labels[].name]|join(","))' 2>/dev/null)
+  meta=$(coord_issue_meta "$t")
   [ -n "$meta" ] || { echo "could not be read"; return 0; }
   st=${meta%% *}; lab=${meta#* }
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
@@ -252,8 +262,36 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   return 1
 }
 
+# The re-seed reads every scope's members and the claimable list, so it runs every
+# coordinator.refreshEveryMin, not every tick, and reads the open PRs from this
+# tick's copy rather than asking again.
+REFRESH_STAMP="$COORD_DIR/refresh.stamp"
+COORD_REFRESH_EVERY_MIN="${COORDINATOR_REFRESH_EVERY_MIN:-$(swarm_opt coordinator.refreshEveryMin 5)}"
+case "$COORD_REFRESH_EVERY_MIN" in ""|*[!0-9]*) COORD_REFRESH_EVERY_MIN=5 ;; esac
 if [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
-  bash "$QUEUE" refresh >/dev/null 2>&1 || say "queue: refresh failed — working the queue as it stands"
+  if until=$(gh_backoff_active); then
+    say "queue: GitHub is rate-limiting this token until $(swarm_iso "$until") — working the queue as it stands"
+  elif [ $(( $(swarm_now) - $(coord_mtime "$REFRESH_STAMP") )) -ge $(( COORD_REFRESH_EVERY_MIN * 60 )) ]; then
+    pf=""; if [ "$PRS_STALE" = 0 ] && [ -s "$(coord_snap_file prs)" ]; then pf=$(coord_snap_file prs); fi
+    if CLAIMABLE_PRS_FILE="$pf" bash "$QUEUE" refresh >/dev/null 2>&1; then touch "$REFRESH_STAMP"
+    else say "queue: refresh failed — working the queue as it stands"; fi
+  fi
+fi
+
+# Every queued ticket's state and labels in one batched read (50 to a request),
+# in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
+# What a refused read misses comes from the last good snapshot while it is fresh.
+ISSUES=""
+ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
+if [ -n "${ISSUE_NUMS// /}" ]; then
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  if ISSUES=$(gh_issues_batch $ISSUE_NUMS); then coord_snap_save issues "$ISSUES"
+  else
+    snap=$(coord_snap_load issues) || snap="{}"
+    [ -n "$ISSUES" ] || ISSUES="{}"
+    ISSUES=$(jq -cn --argjson old "$snap" --argjson new "$ISSUES" '$old + $new' 2>/dev/null) || ISSUES=""
+    say "tickets: the batched read was refused$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — $( [ "$snap" = "{}" ] && echo 'no fresh snapshot to fall back on' || echo "the rest from the snapshot taken $(coord_snap_age issues) min ago")"
+  fi
 fi
 
 # Each live run's class, as the coordinator recorded it at spawn. A run with none
