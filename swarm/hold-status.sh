@@ -35,6 +35,12 @@ elif u=$(swarm_usage_event_hold); then
   # "2026-10-20T19:00:00Z (seven_day window)"
   w=$(printf '%s' "$u" | sed -nE 's/.*\(([a-z_]+) window\).*/\1/p')
   usage "${u%% *}" "$(window_name "$w")"
+elif u=$(swarm_usage_near_hold); then
+  # "2026-10-20T19:00:00Z (seven_day window at 99%)"
+  w=$(printf '%s' "$u" | sed -nE 's/.*\(([a-z_]+) window at.*/\1/p')
+  jq -cn --arg u "${u%% *}" --arg w "$(window_name "$w")" --arg pct "$(printf '%s' "$u" | sed -nE 's/.* at ([0-9]+)%.*/\1/p')" \
+    '{held: true, kind: "usage", until: $u,
+      reason: ("the plan'"'"'s " + (if $w == "" then "" else $w + " " end) + "usage is at " + $pct + "%, too near the limit to start a run")}'
 elif u=$(swarm_usage_text_hold); then
   usage "$u"
 else
