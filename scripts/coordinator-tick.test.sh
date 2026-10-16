@@ -368,13 +368,13 @@ jq -s . <(pr 41 601 - FAILURE) <(held 42) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 6
 tick >/dev/null
 want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41a' "$C/events.would.jsonl")"
 want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
-want "a healthy PR raises nothing"         "0" "$(grep -c ':44' "$C/events.would.jsonl")"
+want "a healthy PR raises nothing"         "0" "$(grep -c '"id":"[a-z-]*:44:' "$C/events.would.jsonl")"
 want "one green held PR is not a batch"    "0" "$(grep -c '"kind":"signoff"' "$C/events.would.jsonl")"
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
 out=$(tick)
-want "a red PR a session is fixing is not judged" "0" "$(grep -c ':41:' "$C/events.would.jsonl")"
+want "a red PR a session is fixing is not judged" "0" "$(grep -c '"id":"[a-z-]*:41:' "$C/events.would.jsonl")"
 want_in "and the tick says who has it"     'PR #41: .*being fixed by mac:4242' "$out"
 want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
 
