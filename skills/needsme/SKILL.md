@@ -373,7 +373,17 @@ Each unticked line is a candidate 🔴 row — but tier it like any other: re-re
 the PR or ticket it names first, because the line was true when written and
 may have been cleared since (a sign-off on GitHub clears the hold, not the
 line). When the item is resolved, tick its line (`- [x]`) so the next run does
-not offer it again. An absent file means the coordinator is not installed or
+not offer it again — except a `decision:<ticket>:<slug>` line: its ticket waits
+on the owner-decision label, and only the answer helper frees it. Never tick one
+by hand:
+
+```bash
+bash "$KIT_ROOT/scripts/needsme-watch.sh" answer "<key>" "<the answer, in the owner's words>"
+```
+
+It takes the label off, comments the answer, requeues the ticket and ticks the
+line; a step that fails leaves the line open and is retried. A line whose ticket
+no longer wears the label was answered on the ticket, and the next sync ticks it. An absent file means the coordinator is not installed or
 has raised nothing — say which only if `$STATE_DIR/coordinator/` exists.
 
 ---

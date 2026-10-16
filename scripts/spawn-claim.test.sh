@@ -74,6 +74,8 @@ mkdir -p "$UP/scripts"
 cat > "$UP/scripts/spawn-claim.sh" <<'MARK'
 #!/usr/bin/env bash
 printf 'branch copy ran\n' > "$SPAWN_TEST_MARKER"
+# An older project copy: none of the kit's rules, but it appends CLAIM_EXTRA as every copy does.
+[ -n "${SPAWN_TEST_EXTRA:-}" ] && printf '%s' "${CLAIM_EXTRA:-}" > "$SPAWN_TEST_EXTRA"
 MARK
 chmod +x "$UP/scripts/spawn-claim.sh"
 G -C "$UP" init -q . 2>/dev/null || G -C "$UP" init -q
@@ -98,7 +100,7 @@ G -C "$STORE" fetch -q origin develop
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
 cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" \
-   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT/"
+   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -236,6 +238,25 @@ CANON="" run --fg 4246
   && ok "the spawner re-execs the integration branch's copy of itself" \
   || bad "the invoked copy ran its own logic instead of the branch's"
 
+# --- 5b. The kit's owner rule reaches a builder through the project's own copy ---
+# The hand-over execs the integration branch's copy, which has none of the kit's
+# rules; only what rides in CLAIM_EXTRA reaches its prompt.
+rm -f "$OUT/marker" "$OUT/extra"
+CANON="" SPAWN_TEST_EXTRA="$OUT/extra" CLAIM_EXTRA="Resume brief: carry on." run 4249 >/dev/null
+[ -f "$OUT/marker" ] && ok "fixture: the detached spawn handed over to the project's copy" \
+  || bad "fixture: the detached spawn did not hand over"
+extra=$(cat "$OUT/extra" 2>/dev/null)
+oq=$(printf '%s' "$extra" | sed -n 's/.*bash "\([^"]*owner-question\.sh\)" ask <ticket> <slug>.*/\1/p')
+[ -n "$oq" ] && [ -f "$oq" ] && case "$oq" in /*) true ;; *) false ;; esac \
+  && ok "the project copy is handed the rule, with an absolute path that resolves ($oq)" \
+  || bad "the project copy's CLAIM_EXTRA carries no resolvable owner-question.sh path: '${extra:-empty}'"
+printf '%s' "$extra" | grep -q 'never add needs:human-approval' \
+  && ok "the rule says a question never carries the sign-off hold" \
+  || bad "the rule does not forbid the hold label on a question"
+printf '%s' "$extra" | grep -q 'Resume brief: carry on.' \
+  && ok "the caller's own CLAIM_EXTRA is kept ahead of it" \
+  || bad "the caller's CLAIM_EXTRA was lost"
+
 # --- 6. The detached path — the default — lands in the same place -------------
 # The two paths cd separately; testing only --fg would leave the one the swarm
 # actually uses uncovered.
@@ -250,12 +271,11 @@ if [ -f "$OUT/seen" ]; then
     && ok "the detached path sees the current guard rules" \
     || bad "the detached path missed the current guard rules"
   # A builder in print mode has no question tool: the owner's channel is the only way a question reaches anyone.
-  grep -q "scripts/owner-question.sh ask <ticket> <slug>" "$OUT/seen" \
-    && ok "the detached prompt sends an owner question to owner-question.sh" \
-    || bad "the detached prompt does not route an owner question to owner-question.sh"
-  grep -q "Never end with 'no question tool'" "$OUT/seen" \
-    && ok "and forbids ending on 'no question tool'" \
-    || bad "the detached prompt does not forbid ending on 'no question tool'"
+  grep -qF "bash \"$SUT/owner-question.sh\" ask <ticket> <slug>" "$OUT/seen" \
+    && ok "the detached prompt sends an owner question to the kit's owner-question.sh, by absolute path" \
+    || bad "the detached prompt does not route an owner question to $SUT/owner-question.sh"
+  [ "$(grep -c 'Owner questions:' "$OUT/seen")" = 1 ] && ok "the rule is in the prompt once" \
+    || bad "the owner rule is in the prompt $(grep -c 'Owner questions:' "$OUT/seen") times, want 1"
 else
   bad "the detached spawn never started the agent"
 fi

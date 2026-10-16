@@ -353,6 +353,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
 | `rampFreeMemGb` | 8 | Free memory (GB) needed to start more than one builder in a tick, read again before each start after the first; under it, one start a tick |
 | `rampMax` | unset | The most starts in one tick. Unset, the room decides |
+| `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
@@ -379,19 +380,26 @@ open PR. The tick log shows
 holds the same for the live view.
 
 **Starts ramp to the headroom.** After the first start of a tick the room is read
-again (CPU idle, free memory, load) before each next one, with the builders started
-this tick counted against it: a start that eats the headroom stops the rest. Near
-the floor — free memory under `rampFreeMemGb` — a tick starts one.
+again before each next one: a new CPU sample, never the shared 5-second one, and
+the lower of it and the median; the builders started this tick counted against
+the fit; and each of them charged `agentMemGb` against free memory, because a
+builder started seconds ago has used none of its memory yet. A start that eats the
+headroom stops the rest; under `rampFreeMemGb` after the charge, a tick starts one.
 
-**A ticket waiting on the owner is never respawned.** A spawned builder has no
-question tool; when only the owner can decide, it runs
-`scripts/owner-question.sh ask <ticket> <slug> "<question>"`, which writes
-`decision:<ticket>:<slug>` to `needs-you.md` and adds `labels.ownerDecision`
-(default `needs:owner-decision`) to the ticket. The spawn step skips a ticket with
-that label or an unticked `decision:<ticket>:*` line, the judge's included. The
-watcher's `needsme-watch.sh answer <key> "<answer>"` takes the label off, comments
-the answer, and puts the ticket back at the front of the queue with the answer in
-its note.
+**A ticket waiting on the owner is never respawned.** The owner-decision label
+(`labels.ownerDecision`, default `needs:owner-decision`) is the one truth for it:
+every spawner skips a ticket wearing it. A spawned builder has no question tool;
+when only the owner can decide, it runs `scripts/owner-question.sh ask <ticket>
+<slug> "<question>"` — the kit hands the rule, with that script's absolute path,
+to the builder in `CLAIM_EXTRA`, which a project's own spawn-claim copy appends
+too. It labels the ticket, then writes `decision:<ticket>:<slug>` to
+`needs-you.md`. A question parks without the sign-off hold. The answer —
+`needsme-watch.sh answer <key> "<answer>"`, from the watcher or the board walk —
+takes the label off, comments it, and puts the ticket back at the front of the
+queue with the answer in its note. A step that fails leaves the answer in
+`answers.pending` and the line open, and `owner-question.sh sync` (each live tick,
+and each watcher board pass) replays it. An open line whose ticket no longer wears
+the label was answered on the ticket: sync ticks it and requeues the ticket.
 
 ### The merge lane — one PR into the trunk at a time
 

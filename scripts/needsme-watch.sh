@@ -11,7 +11,8 @@
 #                                           and tick its line in needs-you.md
 #   needsme-watch.sh answer <key> "<answer>" a decision:<ticket>:* row answered: the
 #                                           label off, the answer on the ticket, the
-#                                           ticket requeued with it, the line ticked
+#                                           ticket requeued with it, the line ticked;
+#                                           a failed step is retried by the next sync
 #   needsme-watch.sh card <pr>              what the sign-off prompt shows for one PR
 #   needsme-watch.sh open <pr>              open that PR's evidence in the browser
 #
@@ -39,7 +40,7 @@ SIGNOFF="$SELF_DIR/signoff-batch.sh"
 ASKED="$COORD_DIR/asked.keys"
 touch "$ASKED"
 
-usage() { sed -n '4,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 asked() { grep -qxF -- "$1" "$ASKED"; }
 
@@ -82,6 +83,8 @@ row() { # <key> <text>
 pending() { # [--no-forge]
   local forge=1 rows key text prs exclude
   [ "${1:-}" = --no-forge ] && forge=0
+  # Pending answers retried, and decisions answered on the ticket itself ticked, before the rows are read.
+  [ "$forge" = 1 ] && { bash "$SELF_DIR/owner-question.sh" sync >/dev/null 2>&1 || true; }
   rows=$(needs_you_rows)
   while IFS=$'\t' read -r key text; do
     [ -n "${key:-}" ] && row "$key" "$text"
@@ -248,8 +251,8 @@ case "$cmd" in
   answer)  [ $# -eq 2 ] || usage
            case "$1" in decision:*:*) ;; *) echo "needsme-watch: answer takes a decision:<ticket>:<slug> key; use done for '$1'" >&2; exit 2 ;; esac
            bash "$SELF_DIR/owner-question.sh" answer "$1" "$2"; rc=$?
-           # Ticked whatever failed: the answer is kept in answers.tsv, and asking twice costs the owner.
-           asked "$1" || done_keys "$1"
+           # Not asked again either way; a step that failed stays pending and the line open until sync lands it.
+           asked "$1" || printf '%s\n' "$1" >> "$ASKED"
            exit "$rc" ;;
   card)    card "${1:?usage: needsme-watch.sh card <pr>}" ;;
   open)    open_pr "${1:?usage: needsme-watch.sh open <pr>}" ;;

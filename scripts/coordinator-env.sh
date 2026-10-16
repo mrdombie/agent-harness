@@ -27,6 +27,8 @@
 #   coordinator.rampFreeMemGb COORDINATOR_RAMP_FREE_MEM_GB 8 free memory needed to start more than
 #                                                           one in a tick; under it, one per tick
 #   coordinator.rampMax      COORDINATOR_RAMP_MAX     unset  most starts in one tick; unset, the room decides
+#   coordinator.agentMemGb   COORDINATOR_AGENT_MEM_GB 1.5   memory one new builder is charged before it
+#                                                           has used any (trees measure 0.6-1.3 GB)
 #   coordinator.healingShare COORDINATOR_HEALING_SHARE 0.25 share of the ceiling kept for healing
 #                                                           (repair + approved-merge), rounded up
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
@@ -71,6 +73,8 @@ case "$COORD_MIN_FREE_MEM_GB" in ""|*[!0-9]*) COORD_MIN_FREE_MEM_GB=4 ;; esac
 # Several starts in one tick only with memory to spare: a start allocates after the reading.
 COORD_RAMP_FREE_MEM_GB="${COORDINATOR_RAMP_FREE_MEM_GB:-$(swarm_opt coordinator.rampFreeMemGb 8)}"
 case "$COORD_RAMP_FREE_MEM_GB" in ""|*[!0-9]*) COORD_RAMP_FREE_MEM_GB=8 ;; esac
+COORD_AGENT_MEM_GB="${COORDINATOR_AGENT_MEM_GB:-$(swarm_opt coordinator.agentMemGb 1.5)}"
+awk -v a="$COORD_AGENT_MEM_GB" 'BEGIN{exit !(a ~ /^[0-9]*\.?[0-9]+$/)}' || COORD_AGENT_MEM_GB=1.5
 COORD_RAMP_MAX="${COORDINATOR_RAMP_MAX:-$(swarm_opt coordinator.rampMax "")}"
 case "$COORD_RAMP_MAX" in ""|0|*[!0-9]*) COORD_RAMP_MAX="" ;; esac
 COORD_HEAL_SHARE="${COORDINATOR_HEALING_SHARE:-$(swarm_opt coordinator.healingShare 0.25)}"
@@ -84,12 +88,15 @@ COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turn
 COORD_JUDGE_BUDGET="${COORDINATOR_JUDGE_BUDGET_USD:-$(swarm_opt coordinator.judge.budgetUsd 5)}"
 COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.compactWindow 150000)}"
 
-# coord_room — room for one more builder? Prints the reading; 0 when there is.
+# coord_room [fresh] — room for one more builder? Prints the reading; 0 when there is.
 # Never a reason to stop a running one: it only gates the next start.
-coord_room() {
-  local idle="" n=0 sm mem load cores max
+coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the median
+  local idle="" n=0 sm mem load cores max raw=""
+  # After a start the shared 5s sample and the median both predate it.
+  [ "${1:-}" = fresh ] && raw=$(SWARM_IDLE_FRESH=1 swarm_cpu_idle)
   sm=$(swarm_cpu_idle_smoothed); mem=$(swarm_free_mem_gb); load=$(swarm_load); cores=$(swarm_cores)
   [ -n "$sm" ] && read -r idle n <<< "$sm"
+  case "$raw" in ''|*[!0-9]*) ;; *) [ -n "$idle" ] && [ "$raw" -lt "$idle" ] && { idle=$raw; n=0; } ;; esac
   # A reading nobody could take is no room: unread, an uncapped ceiling ramps forever.
   [ -n "$idle" ]  || { printf 'cpu idle unread'; return 1; }
   [ -n "$mem" ]   || { printf 'free memory unread'; return 1; }
@@ -114,14 +121,6 @@ coord_room() {
     printf '%s GB free, floor %s GB' "$mem" "$COORD_MIN_FREE_MEM_GB"; return 1
   fi
   printf '%s\t%s, %s GB free' "$starts" "$(swarm_idle_label "$idle" "$n")" "$mem"
-}
-
-# coord_owner_waiting <ticket> — 0, printing the key, while an owner decision on it
-# is unanswered in needs-you.md; the builder's and the judge's questions both land there.
-coord_owner_waiting() {
-  [ -f "$COORD_NEEDS_YOU" ] || return 1
-  grep '^- \[ \] ' "$COORD_NEEDS_YOU" 2>/dev/null \
-    | sed -n "s/.*<!-- key:\(decision:$1:[^ ]*\) -->[[:space:]]*\$/\1/p" | head -1 | grep .
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's

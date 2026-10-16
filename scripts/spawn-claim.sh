@@ -29,6 +29,21 @@ PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
 # The queue class the coordinator spawned it for, so a later tick can count runs by class.
 CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 
+# The owner-question rule rides in CLAIM_EXTRA, which every copy appends: the project's
+# own copy, handed over to below, carries none of the kit's rules.
+case " $* " in *" --fg "*) ;; *)
+  if [ -z "${HARNESS_OWNER_RULE:-}" ] && [ -f "$SCRIPT_DIR/owner-question.sh" ]; then
+    _oq_label=$(toolkit_cfg labels.ownerDecision 2>/dev/null) || _oq_label=needs:owner-decision
+    HARNESS_OWNER_RULE="Owner questions: you have no question tool and nobody reads your last message. When only the owner can decide something the spec does not, run: bash \"$SCRIPT_DIR/owner-question.sh\" ask <ticket> <slug> \"<the question, its options in plain words>\" — it labels the ticket $_oq_label, puts the question in the owner's channel, and nothing respawns the ticket until the answer comes back on the queue. A non-zero exit means nothing was asked: run it again. Then, if anything is built, commit, push and open a draft PR with a resume brief on the issue, and never add $HOLD_LABEL: that is the owner's pixel sign-off, and the answer does not remove it. If nothing is built, release the claim. Never end with 'no question tool' or with the question only in your final message."
+    export HARNESS_OWNER_RULE
+    CLAIM_EXTRA="${CLAIM_EXTRA:+$CLAIM_EXTRA
+
+}$HARNESS_OWNER_RULE"
+    export CLAIM_EXTRA
+    unset _oq_label
+  fi ;;
+esac
+
 # Every spawner passes here before the hand-over below, so the plan's limit is checked once for all of them.
 case " $* " in *" --fg "*) ;; *)
   if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/../swarm/swarm-env.sh" ] \
@@ -101,7 +116,7 @@ fi
 # nothing pushed and no PR, stranded in their worktrees. The pattern is
 # load-induced, so it recurs exactly when the swarm is biggest. CLAIM_EXTRA
 # carries a resume brief when re-spawning a stranded run.
-PRINT_MODE_RULE="You are running in print mode: the moment you end your turn, this process exits and nothing you left running survives. NEVER start something in the background and end your turn intending to pick it up — no Monitor you wait on, no 'I'll check when it completes', no backgrounded screenshot or capture. Wait for every check in the foreground, then continue. Do not take screenshots locally — no dev server, no capture script: CI photographs the routes under '## Evidence routes' and pins them to the PR. Wait for those in the foreground with scripts/ci-evidence.sh wait <pr> (exit 3 means run it again), then have the design critic judge the shots it fetches (/agent-harness:finish Step 5.4). The turn ends when the PR is PUSHED and HANDED OFF — local gates green (lint:changed, typecheck, test:changed), both review trailers on the pushed head, PR ready with auto-merge armed, the hold label on if pixels changed, and a one-line 'Handed off at <sha>' comment on the PR. Do NOT wait for CI: a watcher brings an agent back if CI goes red or the PR conflicts. Or the turn ends when you have PARKED the ticket per /agent-harness:claim's park procedure: commit, push, draft PR, resume brief on the issue, label — all BEFORE the banner. An exit with unpushed work is a failed run. You have no question tool and nobody reads your last message: when only the owner can decide something, run /agent-harness:claim's 'Ask the owner' step (scripts/owner-question.sh ask <ticket> <slug> \"<the question, its options in plain words>\") — it puts the question in the owner's channel and labels the ticket so nothing respawns it — then park or release as that step says. Never end with 'no question tool' or the question only in your final message. Kill only processes you started (record their PIDs); never pkill a pattern that could match another agent's."
+PRINT_MODE_RULE="You are running in print mode: the moment you end your turn, this process exits and nothing you left running survives. NEVER start something in the background and end your turn intending to pick it up — no Monitor you wait on, no 'I'll check when it completes', no backgrounded screenshot or capture. Wait for every check in the foreground, then continue. Do not take screenshots locally — no dev server, no capture script: CI photographs the routes under '## Evidence routes' and pins them to the PR. Wait for those in the foreground with scripts/ci-evidence.sh wait <pr> (exit 3 means run it again), then have the design critic judge the shots it fetches (/agent-harness:finish Step 5.4). The turn ends when the PR is PUSHED and HANDED OFF — local gates green (lint:changed, typecheck, test:changed), both review trailers on the pushed head, PR ready with auto-merge armed, the hold label on if pixels changed, and a one-line 'Handed off at <sha>' comment on the PR. Do NOT wait for CI: a watcher brings an agent back if CI goes red or the PR conflicts. Or the turn ends when you have PARKED the ticket per /agent-harness:claim's park procedure: commit, push, draft PR, resume brief on the issue, label — all BEFORE the banner. An exit with unpushed work is a failed run. Kill only processes you started (record their PIDs); never pkill a pattern that could match another agent's."
 PROMPT="$PRINT_MODE_RULE
 
 $PROMPT"

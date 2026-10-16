@@ -88,14 +88,25 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/owner-question.sh" ask "$TICKET_KEY" <slug> 
   "<the question, with its options in plain words: Fix A (…) or Fix B (…)?>"
 ```
 
-It writes the `decision:<ticket>:<slug>` key to `needs-you.md` (through
-`coordinator-notify.sh --class owner`), adds the owner-decision label
-(`labels.ownerDecision`, default `needs:owner-decision`) and comments the question
-on the ticket. No spawner takes the ticket until the owner answers; the owner's
-watcher then takes the label off, comments the answer, and puts the ticket back on
-the queue with the answer in its note, so the next builder starts from it. Then
-park as above if anything is built (push, draft PR, brief), or release the claim
-if nothing is, and end with the banner's `Paused on: the owner — <the question>`.
+It adds the owner-decision label (`labels.ownerDecision`, default
+`needs:owner-decision`), writes the `decision:<ticket>:<slug>` key to
+`needs-you.md` (through `coordinator-notify.sh --class owner`) and comments the
+question on the ticket. A non-zero exit means nothing was asked: run it again. The
+label is the whole waiting state — no spawner takes a ticket wearing it, and it
+comes off when the owner answers (in the owner's window, or on the ticket), which
+puts the ticket back on the queue with the answer in its note.
+
+Then hand off **without the sign-off hold**:
+
+1. Anything built: commit, push, and open a draft PR with a resume brief on the
+   issue, as the park above does — but **never add `$HOLD_LABEL`**. That label is
+   the owner's sign-off on pixels; only the owner removes it, and the answer
+   removes only the owner-decision label, so a question that carries it waits
+   forever. The hold comes only from evidence of changed pixels, at
+   `/agent-harness:finish`, as on any other PR.
+2. Nothing built: release the claim.
+3. End with the banner's `Paused on: the owner — <the question>`.
+
 Never end the run with "the question tool doesn't exist in this run" or with the
 question only in the last message: nothing reads either, and the ticket is
 respawned to ask it again. In an interactive session, ask with `AskUserQuestion`
