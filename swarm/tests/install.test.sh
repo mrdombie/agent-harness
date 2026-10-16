@@ -194,4 +194,153 @@ want_in "ours was loaded"                'load .*agent-harness\.swarm\.live-view
 out=$(HOME="$H" SWARM_UNAME=Darwin SWARM_PORT_HOLDER= bash "$I" live-view 2>&1); rc=$?
 want "a free port installs at once"      "0" "$rc"
 
+echo "--- on Linux with a user systemd: units, not a crontab line (#165) ---"
+# A recorder stands in for systemctl and loginctl: nothing here reaches the
+# machine's own user manager, and the unit directory is under $FIX.
+UD="$FIX/systemd-user"; SDLOG="$FIX/systemctl.log"; : > "$SDLOG"; LGLOG="$FIX/loginctl.log"; : > "$LGLOG"
+mkdir -p "$FIX/sd-active"
+cat > "$BIN/systemctl" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$SDLOG"
+[ "\$1" = --user ] || exit 1
+case "\$2" in
+  show-environment) echo HOME=/x ;;
+  is-active) if [ -e "$FIX/sd-active/\$3" ]; then echo active; else echo inactive; exit 3; fi ;;
+  show) printf 'n/a\n' ;;
+esac
+exit 0
+SH
+cat > "$BIN/loginctl" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$LGLOG"
+echo "Linger=\${FAKE_LINGER:-no}"
+SH
+chmod +x "$BIN/systemctl" "$BIN/loginctl"
+printf '0 3 * * * /usr/bin/backup\n' > "$FIX/crontab"
+sd() { SWARM_UNAME=Linux SWARM_SYSTEMCTL="$BIN/systemctl" SWARM_LOGINCTL="$BIN/loginctl" \
+       SWARM_SYSTEMD_DIR="$UD" SWARM_CRONTAB="$BIN/crontab" bash "$I" "$@" 2>&1; }
+unit() { ls "$UD"/agent-harness.swarm."$1".*."$2" 2>/dev/null | head -1; } # <job> <service|timer>
+
+out=$(sd coordinator); rc=$?
+want "the coordinator installs"            "0" "$rc"
+svc=$(unit coordinator service); tmr=$(unit coordinator timer)
+if [ -n "$svc" ]; then ok "it writes a service unit"; else bad "it writes a service unit — none in $UD: $(ls "$UD" 2>&1)"; fi
+if [ -n "$tmr" ]; then ok "and a timer beside it"; else bad "and a timer beside it"; fi
+s=$(cat "$svc" 2>/dev/null); t=$(cat "$tmr" 2>/dev/null)
+want_in "the timer ticks every five minutes" '^OnUnitActiveSec=300$' "$t"
+want_in "and starts after boot"             '^OnBootSec=' "$t"
+want_in "the timer is wanted by timers.target" '^WantedBy=timers\.target$' "$t"
+want_in "it starts the launcher outside the plugin cache" "^ExecStart=/bin/bash \"$STATE/swarm/run-current.sh\" \"scripts/coordinator-tick.sh\"$" "$s"
+want_in "a real PATH, the installer's"      "^Environment=\"PATH=[^\"]*$BIN" "$s"
+want_in "where the repo is"                 "^Environment=\"HARNESS_MAIN_REPO=$REPO\"$" "$s"
+want_in "where the state is"                "^Environment=\"HARNESS_STATE_DIR=$STATE\"$" "$s"
+want_in "which config to read"              '^Environment="HARNESS_CFG_PATH=' "$s"
+want_in "which kit"                         '^Environment="KIT_ROOT=' "$s"
+want_in "shadow by default"                 '^Environment="COORDINATOR_SHADOW=1"$' "$s"
+want_in "the lane's mode too"               '^Environment="MERGE_LANE_SHADOW=1"$' "$s"
+want_in "a judge outlives the tick"         '^KillMode=process$' "$s"
+want_in "it logs where the plist logs"      "^StandardOutput=append:$STATE/logs/coordinator\.out\.log$" "$s"
+want_not_in "an interval job is not kept alive" '^Restart=' "$s"
+want_in "systemd was told to re-read"       '^--user daemon-reload$' "$(cat "$SDLOG")"
+want_in "the timer was enabled"             '^--user enable .*agent-harness\.swarm\.coordinator\..*\.timer' "$(cat "$SDLOG")"
+want_in "and (re)started"                   '^--user restart .*agent-harness\.swarm\.coordinator\..*\.timer' "$(cat "$SDLOG")"
+want "no crontab line instead"              "0" "$(grep -c 'coordinator-tick' "$FIX/crontab")"
+want "the owner's crontab untouched"        "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
+want_in "the runner was copied out"         '.' "$(ls "$STATE/swarm/run-current.sh" 2>/dev/null)"
+
+echo "--- linger off: one clear warning, and no sudo run ---"
+want_in "it says timers need a session"     'linger' "$out"
+want_in "and names the fix"                 'sudo loginctl enable-linger' "$out"
+want "it is one line"                       "1" "$(grep -c 'enable-linger' <<<"$out")"
+want_not_in "it never ran enable-linger itself" 'enable-linger' "$(cat "$LGLOG" "$SDLOG")"
+out=$(FAKE_LINGER=yes sd coordinator)
+want_not_in "linger on: no warning"         'enable-linger' "$out"
+
+echo "--- live mode, and a timer that does not double ---"
+SWARM_UNAME=Linux SWARM_SYSTEMCTL="$BIN/systemctl" SWARM_LOGINCTL="$BIN/loginctl" SWARM_SYSTEMD_DIR="$UD" \
+  COORDINATOR_SHADOW=0 bash "$I" coordinator >/dev/null 2>&1
+want_in "going live rewrites the unit"      '^Environment="COORDINATOR_SHADOW=0"$' "$(cat "$(unit coordinator service)")"
+want "one service, one timer"               "2" "$(ls "$UD" | grep -c 'swarm\.coordinator\.')"
+sd coordinator >/dev/null
+
+echo "--- the merge lane: its own interval ---"
+sd merge-lane >/dev/null
+want_in "every three minutes"               '^OnUnitActiveSec=180$' "$(cat "$(unit merge-lane timer)" 2>/dev/null)"
+want_in "it runs the lane"                  'scripts/merge-lane\.sh' "$(cat "$(unit merge-lane service)" 2>/dev/null)"
+want_not_in "the lane carries no coordinator mode" 'COORDINATOR_SHADOW' "$(cat "$(unit merge-lane service)" 2>/dev/null)"
+
+echo "--- the live view is kept alive, with no timer ---"
+out=$(SWARM_PORT_HOLDER= sd live-view); rc=$?
+want "it installs"                          "0" "$rc"
+lv=$(cat "$(unit live-view service)" 2>/dev/null)
+want_in "it restarts whenever it dies"      '^Restart=always$' "$lv"
+want_in "and starts with the user manager"  '^WantedBy=default\.target$' "$lv"
+want_in "it runs the view"                  '"swarm/live-view\.sh"' "$lv"
+want "and has no timer"                     "" "$(unit live-view timer)"
+want_in "the service itself was enabled"    '^--user enable .*agent-harness\.swarm\.live-view\..*\.service' "$(cat "$SDLOG")"
+want_in "the scheduler's own interval"      '^OnUnitActiveSec=300$' "$(sd scheduler >/dev/null; cat "$(unit scheduler timer)" 2>/dev/null)"
+want_in "the scheduler's agents outlive its pass" '^KillMode=process$' "$(cat "$(unit scheduler service)" 2>/dev/null)"
+
+echo "--- systemd quoting: a % or a quote in a path survives ---"
+p=$(KIT_ROOT='/k it/100%/"q"' sd --print scheduler)
+want_in "% is escaped, quotes are escaped"  '^Environment="KIT_ROOT=/k it/100%%/\\"q\\""$' "$p"
+want_in "--print shows the units here"      '^OnUnitActiveSec=300$' "$p"
+
+echo "--- another service on the live view's port is named and refused ---"
+out=$(SWARM_PORT_HOLDER=4242 SWARM_PROC="$FIX/proc" sd live-view); rc=$?
+want "refused while the port is taken"      "4" "$rc"
+want_in "it names the pid"                  'pid 4242' "$out"
+mkdir -p "$FIX/proc/4243"; printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/%s\n' \
+  "$(basename "$(unit live-view service)")" > "$FIX/proc/4243/cgroup"
+out=$(SWARM_PORT_HOLDER=4243 SWARM_PROC="$FIX/proc" sd live-view); rc=$?
+want "our own view on the port is a reinstall, not a clash" "0" "$rc"
+
+echo "--- status reads the units back ---"
+touch "$FIX/sd-active/$(basename "$(unit coordinator timer)")"
+st=$(sd status)
+want_in "the coordinator's timer is active" '^coordinator +timer active' "$st"
+want_in "an installed job not running says so" '^scheduler +timer inactive' "$st"
+want_in "the merge lane is listed once installed" '^merge-lane ' "$st"
+want_in "status repeats the linger warning" 'enable-linger' "$st"
+want_not_in "status installs nothing"       'enable|restart' "$(: > "$SDLOG"; sd status >/dev/null; cat "$SDLOG")"
+
+echo "--- held: a live install is refused and touches nothing ---"
+: > "$SDLOG"; rm -f "$(unit repair-watch service)" "$(unit repair-watch timer)"
+printf 'stopped\n' > "$STATE/swarm/HOLD"
+out=$(sd repair-watch); rc=$?
+want "refused while held"                   "3" "$rc"
+want "no unit written"                      "" "$(unit repair-watch service)"
+want_not_in "nothing enabled"               'enable|restart' "$(cat "$SDLOG")"
+out=$(sd coordinator); rc=$?
+want "a shadow coordinator still installs"  "0" "$rc"
+rm -f "$STATE/swarm/HOLD"
+
+echo "--- uninstall disables and removes, and is idempotent ---"
+: > "$SDLOG"
+out=$(sd uninstall coordinator)
+want "the coordinator's units are gone"     "" "$(unit coordinator service)$(unit coordinator timer)"
+want_in "its timer was disabled and stopped" '^--user disable --now .*coordinator\..*\.timer' "$(cat "$SDLOG")"
+want_in "and it says so"                    'removed agent-harness\.swarm\.coordinator\.' "$out"
+want_in "uninstalling twice is fine"        'was not installed' "$(sd uninstall coordinator)"
+want "the owner's crontab survives"         "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
+sd uninstall >/dev/null
+want "uninstall with no job removes them all" "0" "$(ls "$UD" | grep -c 'agent-harness\.swarm\.')"
+want_in "and the live view was stopped"     '^--user disable --now .*live-view\..*\.service' "$(cat "$SDLOG")"
+
+echo "--- systemd present but not answering: the crontab, as before ---"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 1\n' "$SDLOG" > "$BIN/systemctl-dead"; chmod +x "$BIN/systemctl-dead"
+SWARM_UNAME=Linux SWARM_SYSTEMCTL="$BIN/systemctl-dead" SWARM_SYSTEMD_DIR="$UD" SWARM_CRONTAB="$BIN/crontab" \
+  bash "$I" coordinator >/dev/null 2>&1
+want "it falls back to one crontab line"    "1" "$(grep -c 'coordinator-tick' "$FIX/crontab")"
+want "and writes no unit"                   "0" "$(ls "$UD" | grep -c 'agent-harness\.swarm\.')"
+SWARM_UNAME=Linux SWARM_SYSTEMCTL="$BIN/systemctl-dead" SWARM_CRONTAB="$BIN/crontab" bash "$I" uninstall coordinator >/dev/null 2>&1
+
+echo "--- macOS keeps launchd even where systemctl would answer ---"
+: > "$SDLOG"; : > "$SYS2"
+HOME="$H" SWARM_UNAME=Darwin SWARM_PORT_HOLDER= SWARM_SYSTEMCTL="$BIN/systemctl" SWARM_SYSTEMD_DIR="$UD" \
+  bash "$I" scheduler >/dev/null 2>&1
+if ls "$H/Library/LaunchAgents/"agent-harness.swarm.scheduler.*.plist >/dev/null 2>&1; then ok "a plist was written"; else bad "a plist was written"; fi
+want_in "and loaded with launchctl"         '^load .*agent-harness\.swarm\.scheduler\.' "$(cat "$SYS2")"
+want "systemctl was never asked"            "0" "$(grep -c . "$SDLOG")"
+
 exit $FAILED
