@@ -64,7 +64,7 @@ if [ "${1:-}" = "--reset-epoch" ]; then reset_epoch "${2:-}"; exit $?; fi
 
 IN=$(cat)
 ERR=$(printf '%s' "$IN" | jq -r '.error // ""' 2>/dev/null)
-case "$ERR" in rate_limit|"") ;; *) say "skip error=$ERR"; exit 0 ;; esac
+[ "$ERR" = rate_limit ] || { say "skip error=${ERR:-none}"; exit 0; }
 
 # The state dir the way keep-working.sh finds it: hooks run outside any checkout.
 _cfg="${HARNESS_CFG_PATH:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}/.claude/harness.json}"
@@ -75,8 +75,14 @@ SD="${SD/#\~/$HOME}"
 [ -n "$SD" ] || { say "skip no-state-dir"; exit 0; }
 mkdir -p "$SD" 2>/dev/null || { say "skip state-dir-unwritable $SD"; exit 0; }
 
-TEXT=$(printf '%s' "$IN" | jq -r '[.error_details // "", .last_assistant_message // ""] | map(tostring) | join(" ")' 2>/dev/null)
-[ -n "$TEXT" ] || TEXT="hit your usage limit"
+# The failure's own words only: the last message counts when it IS the CLI's
+# one-line notice, never when a reply quotes one (a CI log read back, say).
+TEXT=$(printf '%s' "$IN" | jq -r '.error_details // "" | tostring' 2>/dev/null)
+LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // "" | tostring' 2>/dev/null)
+NOTICE="^[[:space:]]*You('ve| have) hit your [a-z ]*limit( · resets [^·]{1,60})?[[:space:]]*\$"
+case "$LAST" in *$'\n'*) LAST="" ;; esac
+[[ "$LAST" =~ $NOTICE ]] && TEXT="$TEXT $LAST"
+[ -n "${TEXT// /}" ] || TEXT="hit your usage limit"
 E=$(reset_epoch "$TEXT") || { say "error=$ERR no reset in text"; exit 0; }
 HOLD_F="$SD/usage-hold"
 # Keep the LATER of two walls: a weekly wall outlasts the session wall that hit first.

@@ -207,7 +207,7 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
     bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
   fi
 elif until=$(swarm_usage_hold); then
-  say "spawn: usage limit — holding until $until"
+  say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
   event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true
 elif busy=$(swarm_machine_busy); then
   say "spawn: machine busy ($busy) — holding"

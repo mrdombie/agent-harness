@@ -46,7 +46,7 @@ fi
 
 # The plan's usage limit: swarm_usage_hold in swarm-env.sh reads it.
 if HOLD_UNTIL=$(swarm_usage_hold); then
-  say "usage limit — holding until $HOLD_UNTIL"; exit 0
+  say "usage limit — holding until $HOLD_UNTIL — from $(swarm_usage_hold_source)"; exit 0
 fi
 
 # ---- which programmes -------------------------------------------------------
