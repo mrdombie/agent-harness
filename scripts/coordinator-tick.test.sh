@@ -93,31 +93,32 @@ want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3==
 want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
 
-echo "--- live spawns: one per tick, and a set cap is a hard ceiling ---"
+echo "--- live spawns, and a set cap is a hard ceiling ---"
 fresh; queue 501 502 503 504 505 506; live_run 900
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
-want "room under the cap: one start, the first in queue order" "501" "$(spawned)"
+want "room under the cap: it fills to the cap, in queue order" "501 502 503" "$(spawned)"
 want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
 fresh; queue 501 502; live_run 900; live_run 901
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 tick)
 want "at the cap, nothing spawns"          "" "$(spawned)"
 want_in "and it says why"                  '2 live, cap 2 — no slot' "$out"
 
-echo "--- the ceiling follows the machine: room is one more than is running ---"
-fresh; queue 501 502 503; live_run 900; live_run 901; live_run 902
-out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_FREE_MEM_GB=16 tick)
-want "idle 40%, memory over the floor: one more than the 3 running" "501" "$(spawned)"
-want_in "the log names the ceiling and the reading" 'ceiling: 3 running · room for 1 more: cpu idle 40%, 16 GB free' "$out"
-want "the live view's file holds the ceiling"  "4 true" "$(jq -r '"\(.ceiling) \(.room)"' "$C/capacity.json")"
+echo "--- the ceiling follows the machine: room is what the spare CPU fits ---"
+# 10 cores, 0.8 of a core an agent = 8% each; 40% idle keeping 15% fits 3.
+fresh; queue 501 502 503 504; live_run 900; live_run 901; live_run 902
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 SWARM_FREE_MEM_GB=16 tick)
+want "idle 40%, memory over the floor: three more than the 3 running" "501 502 503" "$(spawned)"
+want_in "the log names the ceiling and the reading" 'ceiling: 3 running · room for 3 more: cpu idle 40%, 16 GB free' "$out"
+want "the live view's file holds the ceiling"  "6 true" "$(jq -r '"\(.ceiling) \(.room)"' "$C/capacity.json")"
 want_in "and the reading behind it"        'cpu idle 40%, 16 GB free' "$(jq -r .reading "$C/capacity.json")"
 fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=10 tick)
 want "idle 10%: no start"                  "" "$(spawned)"
 want_in "it is the hold floor"             'machine busy \(cpu idle 10%, floor 15%\) — holding' "$out"
 fresh; queue 501; live_run 900
-out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=22 tick)
-want "between the hold and start floors: no start, nothing stopped" "" "$(spawned)"
-want_in "and it names the start floor"     '1 live, no room for more \(cpu idle 22%, start floor 30%\) — holding' "$out"
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=22 SWARM_CORES=10 tick)
+want "spare idle under one agent's share: no start, nothing stopped" "" "$(spawned)"
+want_in "and it names what is kept and what an agent needs" '1 live, no room for more \(cpu idle 22%, keeping 15% and an agent needs 0.8 of 10 cores\) — holding' "$out"
 fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 SWARM_FREE_MEM_GB=2 tick)
 want "memory under the floor: no start, even at 90% idle" "" "$(spawned)"
@@ -126,10 +127,22 @@ fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 COORDINATOR_MIN_FREE_MEM_GB=20 tick)
 want "the memory floor is configurable"    "" "$(spawned)"
 
-echo "--- exactly one start per tick, however much room ---"
+echo "--- it fills the spare room in one tick (Dom, 2026-10-16) ---"
 fresh; queue 501 502 503 504 505 506
-out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 tick)
-want "an idle machine, six queued, nothing live: one start" "501" "$(spawned)"
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 tick)
+want "an idle machine, six queued, nothing live: all six start" "501 502 503 504 505 506" "$(spawned)"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=31 SWARM_CORES=10 tick)
+want "31% idle keeping 15%: room for two" "501 502" "$(spawned)"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_AGENT_CPU_CORES=4 tick)
+want "an agent's share is configurable: 4 cores each fits two" "501 502" "$(spawned)"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_KEEP_CPU_IDLE=75 tick)
+want "the kept idle is configurable: keeping 75% fits three" "501 502 503" "$(spawned)"
+fresh; queue 501 502 503
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_KEEP_CPU_IDLE=5 tick)
+want "kept idle under the hold floor is raised to it, never lower" "501 502 503" "$(spawned)"
 
 echo "--- no fixed cap: with coordinator.cap unset, the machine alone decides ---"
 fresh; queue 501; for t in 900 901 902 903; do live_run $t; done
@@ -139,9 +152,11 @@ want_in "the tick says there is no cap"    'cap none' "$out"
 fresh; queue 501; for t in 900 901 902 903 904 905 906; do live_run $t; done
 out=$(COORDINATOR_SHADOW=0 tick)
 want "7 running and room: an 8th starts"   "501" "$(spawned)"
-want "the live view's file has no cap"     "null 8" "$(jq -r '"\(.cap) \(.ceiling)"' "$C/capacity.json")"
+want "the live view's file has no cap"     "null" "$(jq -r '.cap' "$C/capacity.json")"
 
 echo "--- of the ceiling, a quarter heals and the rest builds new ---"
+# One agent's room per tick (23% idle keeping 15%, 8% each), so a ramp is visible.
+export SWARM_IDLE=23 SWARM_CORES=10
 fresh; queue_as repair 601 602 603 604 605; queue 701 702 703 704 705
 out=$(COORDINATOR_CAP=4 ticks 1)
 want "the first tick takes the one healing place" "601" "$(spawned)"
@@ -182,6 +197,8 @@ for t in 801 802 803 804; do live_as $t new; done
 out=$(ticks 1)
 want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
 want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
+
+unset SWARM_IDLE SWARM_CORES
 
 echo "--- coordinator.cap: 0 spawns nothing; not a number holds, named ---"
 fresh; queue 501
@@ -231,7 +248,8 @@ git -C "$REPO" -c user.name=t -c user.email=t@t checkout -q -b develop 2>/dev/nu
 git -C "$REPO" add scripts .claude && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm project
 git init -q --bare "$FIX/origin.git"; git -C "$REPO" remote add origin "$FIX/origin.git" 2>/dev/null
 git -C "$REPO" push -q origin develop && git -C "$REPO" fetch -q origin
-handover() { TMPDIR="$FIX" SWARM_SPAWN="$HERE/spawn-claim.sh" COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
+# One agent of room a tick, so the second tick reads the class the first recorded.
+handover() { TMPDIR="$FIX" SWARM_SPAWN="$HERE/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
 fresh; queue_as repair 601 602; queue 701 702
 handover >/dev/null
 want "the real spawner handed over"        "601	handed-over" "$(head -1 "$SPAWNS")"
