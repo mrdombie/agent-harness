@@ -29,6 +29,9 @@
 #                 is set at install. The coordinator tick also runs it; the
 #                 lane's own lock keeps the two from overlapping.
 #
+# Installing the coordinator also opens swarm/coordinator-feed.sh once in a
+# terminal window: a line per check, build, red PR and sign-off batch.
+#
 # Six of these were installed by hand on the machine they came from, which is
 # why three of them were running a version nobody could name. They are written
 # from this file now, and `status` reads back what is actually loaded.
@@ -203,7 +206,10 @@ do_install() { # <job>
   if [ "$job" = live-view ]; then free_port || return $?; fi
   print_plist "$job" > "$f"
   launchctl unload "$f" >/dev/null 2>&1
-  launchctl load "$f" && echo "installed $(label "$job")"
+  launchctl load "$f" && echo "installed $(label "$job")" || return 1
+  # The coordinator ticks out of sight; its feed opens in a window the first time.
+  [ "$job" = coordinator ] && bash "$SWARM_ROOT/coordinator-feed.sh" --open-once
+  return 0
 }
 do_uninstall() { # <job>
   local f; f=$(plist "$1")
@@ -384,7 +390,7 @@ case "${1:-}" in
     need_launchd || exit 1
     if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane; do do_uninstall "$j"; done; fi
     exit 0 ;;
-  -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;
   *)        need_launchd || exit 1; do_install "$1"; exit $? ;;
 esac

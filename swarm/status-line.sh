@@ -13,7 +13,10 @@
 # all — and in every one of those a count would be a lie in the most expensive
 # direction, because an operator who reads "no agents working" off an
 # idle-looking line starts more work on a machine that is already full. Each of
-# them prints "swarm view not answering" instead.
+# them prints "swarm view not answering" instead — or, when the coordinator is
+# ticking, its last check ("last check 10:52 · 3 building · next 10:57"), which is
+# its own record and not a guess; past the coordinator's own measured cadence,
+# with no tick running, it reads as silence.
 #
 # WHY IT IS CACHED. Claude Code runs this on every render. Measured: 170 ms to
 # source swarm-env.sh, 95 ms for the live view, 581 ms for the forge — 846 ms of
@@ -145,10 +148,10 @@ hold_count() { # <ask-the-forge: 1|0>
 
 # Anything that is not a plain count is UNKNOWN. The catch-all used to print the
 # value it could not classify, so an empty count rendered as "·  need you".
-compose() { # <agents> <holds>
+compose() { # <agents> <holds> [what to say when the agents are unknown]
   local line
   case "${1:-}" in
-    ''|*[!0-9]*) line="$WARNING" ;;
+    ''|*[!0-9]*) line="${3:-$WARNING}" ;;
     0)           line='no agents working' ;;
     1)           line='1 agent working' ;;
     *)           line="$1 agents working" ;;
@@ -160,6 +163,49 @@ compose() { # <agents> <holds>
     *)           line="$line · $2 need you" ;;
   esac
   printf '%s\n' "$line"
+}
+
+# The live view did not answer: the coordinator's own last check is the next sign
+# of life. Alive is a held tick lock, or a stamped line newer than the limit, and
+# the limit is read off the coordinator's own cadence: 1.25 x the 99th percentile
+# of its recent check-to-check gaps (measured 2026-10-16: p99 1,519 s, 81 of 266
+# gaps over the 600 s once assumed here). Too little history: six intervals.
+hm() { swarm_clock "$1" | tr ' ' ':'; }
+coordinator_line() {
+  local d="${COORDINATOR_DIR:-$STATE_DIR/coordinator}" row s last limit n at last_at iv pid alive=0
+  [ -s "$d/tick.log" ] || return 1
+  row=$(tail -n 5000 "$d/tick.log" | awk '
+    function ep(t,  y, m, dd, era, yoe, doy, doe) {
+      y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0; dd = substr(t, 9, 2) + 0
+      if (m <= 2) y--
+      era = int(y / 400); yoe = y - era * 400
+      doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + dd - 1
+      doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+      return (era * 146097 + doe - 719468) * 86400 + substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+    }
+    $1 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/ { next }
+    { last = $1 }
+    $2 == "tick:" && $4 == "mode," { e = ep($1); if (pe != "") gap[++k] = e - pe; pe = e; s = $1; n = "-" }
+    $2 == "live:" && s != "" { n = $3 }
+    END {
+      if (s == "") exit
+      c = 0; for (i = (k > 200 ? k - 199 : 1); i <= k; i++) g[++c] = gap[i]
+      for (i = 2; i <= c; i++) { v = g[i]; for (j = i - 1; j >= 1 && g[j] > v; j--) g[j + 1] = g[j]; g[j + 1] = v }
+      lim = "-"; if (c >= 10) { x = int(c * 0.99); if (x < 1) x = 1; lim = int(g[x] * 1.25) }
+      print s, last, lim, n
+    }')
+  [ -n "$row" ] || return 1
+  read -r s last limit n <<<"$row"
+  at=$(swarm_epoch "$s"); last_at=$(swarm_epoch "$last")
+  [ "$at" -gt 0 ] 2>/dev/null && [ "$last_at" -gt 0 ] 2>/dev/null || return 1
+  iv=$(num "${SWARM_EVERY_COORDINATOR:-}" 300)
+  limit=$(num "$limit" $(( iv * 6 )))
+  pid=$(cat "$d/tick.lock/pid" 2>/dev/null)
+  case "$pid" in ''|*[!0-9]*) ;; *) kill -0 "$pid" 2>/dev/null && alive=1 ;; esac
+  [ $(( $(now) - last_at )) -le "$limit" ] && alive=1
+  if [ "$alive" = 0 ]; then printf 'coordinator silent since %s' "$(hm "$last_at")"; return 0; fi
+  case "$n" in ''|*[!0-9]*) printf 'last check %s · next %s' "$(hm "$at")" "$(hm $(( at + iv )))" ;;
+    *) printf 'last check %s · %s building · next %s' "$(hm "$at")" "$n" "$(hm $(( at + iv )))" ;; esac
 }
 
 compute() { # [--no-forge] [cache-path]
@@ -176,7 +222,9 @@ compute() { # [--no-forge] [cache-path]
   # sibling swarm_live_count already fails safe this way.
   agents=$(printf '%s' "$snap" \
     | jq -e 'if (.live|type) == "array" then (.live|length) else error("not a snapshot") end' 2>/dev/null) || agents=UNKNOWN
-  line=$(compose "$agents" "$(hold_count "$ask")")
+  local fallback=""
+  [ "$agents" = UNKNOWN ] && fallback=$(coordinator_line)
+  line=$(compose "$agents" "$(hold_count "$ask")" "$fallback")
   # The path the RENDER path resolved, when it gave one. Resolving it twice —
   # once from the recorded state dir and once from the checkout's config — put a
   # window on a machine with two projects reading a cache nothing was refreshing.
