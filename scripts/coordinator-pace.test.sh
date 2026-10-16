@@ -44,10 +44,10 @@ ended() { # <ticket> <run> <final result text> — a run of <ticket> that ended 
   jq -nc --arg r "$2" --arg at "$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '-10 min' +%Y-%m-%dT%H:%M:%SZ)" \
     '{run_id:$r, exit_code:0, ended_at:$at}' > "$STATE/runs/$2.ended"
 }
-pr() { # <ticket> <sha> [labels,…] — its open PR, checks green
-  jq -n --arg t "$1" --arg s "$2" --arg l "${3:-}" \
-    '[{number:($t|tonumber + 1000), headRefName:("tkt-" + $t + "-x"), headRefOid:$s, isDraft:false,
-       labels:($l|split(",")|map(select(length>0)|{name:.})), mergeStateStatus:"CLEAN",
+pr() { # <ticket> <sha> [labels,…] [branch] [merge state] — its open PR, checks green
+  jq -n --arg t "$1" --arg s "$2" --arg l "${3:-}" --arg b "${4:-tkt-$1-x}" --arg m "${5:-CLEAN}" \
+    '[{number:($t|tonumber + 1000), headRefName:$b, headRefOid:$s, isDraft:false,
+       labels:($l|split(",")|map(select(length>0)|{name:.})), mergeStateStatus:$m,
        statusCheckRollup:[{status:"COMPLETED", conclusion:"SUCCESS"}]}]' > "$FIX/gh/prs-all.json"
 }
 queue() { local t; for t in "$@"; do bash "$Q" add "$t" >/dev/null; done; }
@@ -125,6 +125,13 @@ live >/dev/null; queue_repair 611; live >/dev/null
 want "same head, same labels: held"        "" "$(spawned)"
 pr 611 sha-b; live >/dev/null
 want "a new commit on the PR: picked"      "611" "$(spawned)"
+# A branch named for the ticket alone, without the prefix, is still its PR.
+fresh; issue 614 "status:in-review"; pr 614 sha-a "" "614/ask-files"
+ended 614 claim-614-a "$(STATUS 'Your sign-off on the PR')"
+live >/dev/null; queue_repair 614; live >/dev/null
+want "held while its unprefixed PR has not moved" "" "$(spawned)"
+pr 614 sha-a "" "614/ask-files" DIRTY; live >/dev/null
+want "that PR clashing frees it for the repair" "614" "$(spawned)"
 
 echo "--- housekeeping is off the start path ---"
 cat > "$BIN/slowhouse" <<'SH'
