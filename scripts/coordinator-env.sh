@@ -17,8 +17,12 @@
 # Settings, all optional under `coordinator` in harness.json (or the env var):
 #   coordinator.cap          COORDINATOR_CAP          unset  optional hard ceiling on live runs;
 #                                                           unset, the machine decides (coord_room)
-#   coordinator.startCpuIdle COORDINATOR_START_CPU_IDLE 30  median idle % needed to start one more;
-#                                                           sits above swarm.minCpuIdle, the hold floor
+#   coordinator.keepCpuIdle  COORDINATOR_KEEP_CPU_IDLE 15   median idle % kept back when filling; never
+#                                                           under swarm.minCpuIdle, the hold floor
+#   coordinator.agentCpuCores COORDINATOR_AGENT_CPU_CORES 0.8 cores one builder uses; the idle above
+#                                                           keepCpuIdle starts as many as it fits
+#   coordinator.rampMin      COORDINATOR_RAMP_MIN     10    a builder started this recently still
+#                                                           counts against the room
 #   coordinator.minFreeMemGb COORDINATOR_MIN_FREE_MEM_GB 4  free memory needed to start one more
 #   coordinator.healingShare COORDINATOR_HEALING_SHARE 0.25 share of the ceiling kept for healing
 #                                                           (repair + approved-merge), rounded up
@@ -47,10 +51,18 @@ COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap "")}"
 # 0 means spawn nothing; anything not a whole number holds every spawn, named.
 COORD_CAP_BAD=""
 case "$COORD_CAP" in ''|*[!0-9]*) [ -z "$COORD_CAP" ] || { COORD_CAP_BAD="$COORD_CAP"; COORD_CAP=""; } ;; esac
-COORD_START_IDLE="${COORDINATOR_START_CPU_IDLE:-$(swarm_opt coordinator.startCpuIdle 30)}"
-case "$COORD_START_IDLE" in ""|*[!0-9]*) COORD_START_IDLE=30 ;; esac
-# A start floor at or under the hold floor is no hysteresis: the count would flap.
-[ "$COORD_START_IDLE" -gt "${SWARM_MIN_CPU_IDLE:-15}" ] 2>/dev/null || COORD_START_IDLE=$(( ${SWARM_MIN_CPU_IDLE:-15} + 15 ))
+# Starts fill the spare CPU: as many agents as fit above the idle kept back, at
+# agentCpuCores each. Dom, 2026-10-16: "fill all spare room", keeping 15% idle.
+COORD_KEEP_IDLE="${COORDINATOR_KEEP_CPU_IDLE:-$(swarm_opt coordinator.keepCpuIdle 15)}"
+case "$COORD_KEEP_IDLE" in ""|*[!0-9]*) COORD_KEEP_IDLE=15 ;; esac
+# Kept idle under the hold floor would start agents the next tick calls busy.
+[ "$COORD_KEEP_IDLE" -ge "${SWARM_MIN_CPU_IDLE:-15}" ] 2>/dev/null || COORD_KEEP_IDLE=${SWARM_MIN_CPU_IDLE:-15}
+COORD_AGENT_CPU="${COORDINATOR_AGENT_CPU_CORES:-$(swarm_opt coordinator.agentCpuCores 0.8)}"
+awk -v a="$COORD_AGENT_CPU" 'BEGIN{exit !(a ~ /^[0-9]*\.?[0-9]+$/ && a+0 > 0)}' || COORD_AGENT_CPU=0.8
+# A builder takes minutes to load the CPU, so one started this recently still
+# owns its share and the idle reading has not seen it yet.
+COORD_RAMP_MIN="${COORDINATOR_RAMP_MIN:-$(swarm_opt coordinator.rampMin 10)}"
+case "$COORD_RAMP_MIN" in ""|*[!0-9]*) COORD_RAMP_MIN=10 ;; esac
 COORD_MIN_FREE_MEM_GB="${COORDINATOR_MIN_FREE_MEM_GB:-$(swarm_opt coordinator.minFreeMemGb 4)}"
 case "$COORD_MIN_FREE_MEM_GB" in ""|*[!0-9]*) COORD_MIN_FREE_MEM_GB=4 ;; esac
 COORD_HEAL_SHARE="${COORDINATOR_HEALING_SHARE:-$(swarm_opt coordinator.healingShare 0.25)}"
@@ -82,13 +94,18 @@ coord_room() {
   if [ "$load" -gt "$max" ]; then
     printf 'load %s, limit %s' "$load" "$max"; return 1
   fi
-  if [ "$idle" -lt "$COORD_START_IDLE" ]; then
-    printf '%s, start floor %s%%' "$(swarm_idle_label "$idle" "$n")" "$COORD_START_IDLE"; return 1
+  [ -n "$cores" ] || { printf 'cpu cores unread'; return 1; }
+  # Prints "<starts>\t<reading>": how many agents the idle above the kept share fits.
+  local starts
+  starts=$(awk -v i="$idle" -v k="$COORD_KEEP_IDLE" -v a="$COORD_AGENT_CPU" -v c="$cores" \
+    'BEGIN{ per = a * 100 / c; n = int((i - k) / per); print (n > 0 ? n : 0) }')
+  if [ "$starts" -lt 1 ]; then
+    printf '%s, keeping %s%% and an agent needs %s of %s cores' "$(swarm_idle_label "$idle" "$n")" "$COORD_KEEP_IDLE" "$COORD_AGENT_CPU" "$cores"; return 1
   fi
   if [ "$mem" -lt "$COORD_MIN_FREE_MEM_GB" ]; then
     printf '%s GB free, floor %s GB' "$mem" "$COORD_MIN_FREE_MEM_GB"; return 1
   fi
-  printf '%s, %s GB free' "$(swarm_idle_label "$idle" "$n")" "$mem"
+  printf '%s\t%s, %s GB free' "$starts" "$(swarm_idle_label "$idle" "$n")" "$mem"
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's

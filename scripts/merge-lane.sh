@@ -193,7 +193,7 @@ fixer() { # <pr> <why>
   if lane_shadow; then say "would send a fixer to #$t"; return 0; fi
   if swarm_ticket_live "$t"; then say "lane: #$t already has an agent running — no second fixer"; return 0; fi
   # A live coordinator that ticked lately owns every start; without one a queued fixer never starts.
-  if ! coord_live_recently && room=$(coord_room) \
+  if ! coord_live_recently && room=$(coord_room) && room=${room#*$'\t'} \
      && { [ -z "$COORD_CAP$COORD_CAP_BAD" ] || { [ -n "$COORD_CAP" ] && [ "$(swarm_running_total)" -lt "$COORD_CAP" ]; }; }; then
     brief=$(mktemp); printf '%s\n' "$note" > "$brief"
     if CLAIM_CLASS=repair swarm_spawn "$t" "$brief" >> "$LANE_LOG" 2>&1; then
