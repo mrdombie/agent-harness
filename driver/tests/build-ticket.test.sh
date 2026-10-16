@@ -52,7 +52,7 @@ reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
   : > "$RAN"; : > "$FIX/park.log"; rm -f "$FIX"/n.*
   fake_park
   local s
-  for s in start plan build fix compare self-check review record ship; do fake_step "$s" 0; done
+  for s in start plan build fix compare self-check review record ship reenter repair; do fake_step "$s" 0; done
   local pair
   for pair in "$@"; do fake_step "${pair%%:*}" "${pair#*:}"; done
 }
@@ -510,5 +510,62 @@ want "the first half of the command runs plan again" "plan" "$(tr '\n' ' ' < "$R
 : > "$RAN"
 out=$(bt 130); rc=$?
 want "and the second carries on from compare" "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- --repair: the repair order, on the PR, with the brief on the record ---"
+REPAIR_ORDER="reenter repair fix self-check review record ship"
+reset_fakes
+printf 'REPAIR on PR #9: CI went red on: unit\n' > "$FIX/brief-a.md"
+out=$(bt 401 --repair "$FIX/brief-a.md"); rc=$?
+want "it finishes"                         "0" "$rc"
+want "the repair order ran, and nothing of the build's" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the record is in repair mode"        "repair" "$(driver_state_get 401 mode)"
+want "the brief is kept on the record, verbatim" "REPAIR on PR #9: CI went red on: unit" "$(cat "$(driver_state_get 401 repair_brief)" 2>/dev/null)"
+rm -f "$FIX/brief-a.md"
+want "and outlives the spawner's file"     "REPAIR on PR #9: CI went red on: unit" "$(cat "$(driver_state_get 401 repair_brief)" 2>/dev/null)"
+
+echo "--- --repair refuses a brief it cannot read ---"
+reset_fakes
+out=$(bt 402 --repair "$FIX/no-such-brief.md"); rc=$?
+want "a missing brief is a config refusal" "2" "$rc"
+want_in "naming the file"                  'no-such-brief.md' "$out"
+want "and nothing ran"                     "" "$(cat "$RAN")"
+: > "$FIX/empty-brief.md"
+out=$(bt 402 --repair "$FIX/empty-brief.md"); rc=$?
+want "an empty one too"                    "2" "$rc"
+
+echo "--- the same brief resumes; a new brief is a new repair round ---"
+reset_fakes "repair:24 0"
+printf 'REPAIR on PR #9: it clashes with develop\n' > "$FIX/brief-b.md"
+bt 403 --repair "$FIX/brief-b.md" >/dev/null; rc=$?
+want "the first pass parks at repair"      "20" "$rc"
+: > "$RAN"
+bt 403 --repair "$FIX/brief-b.md" >/dev/null; rc=$?
+want "the same brief resumes and finishes" "0" "$rc"
+want "reenter re-checks, then it carries on from repair" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+# A finished repair leaves a review answer and counters behind. The next repair must
+# get its own review rounds and must not read the last one's findings.
+mkdir -p "$(driver_state_dir 403)/steps"; printf '{"verdict":"SHIP","findings":[]}\n' > "$(driver_state_dir 403)/steps/review.json"
+driver_state_bump 403 review; driver_state_bump 403 review; driver_state_set 403 repair_base deadbeef
+: > "$RAN"
+printf 'REPAIR on PR #9: CI went red on: e2e\n' > "$FIX/brief-c.md"
+bt 403 --repair "$FIX/brief-c.md" >/dev/null; rc=$?
+want "a new brief runs the whole repair order again" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the last repair's review answer is archived, not read" "no" "$([ -f "$(driver_state_dir 403)/steps/review.json" ] && echo yes || echo no)"
+want "it is kept under steps/archive"      "1" "$(ls "$(driver_state_dir 403)"/steps/archive/*/review.json 2>/dev/null | grep -c .)"
+want "the review rounds start again"       "0" "$(driver_state_count 403 review)"
+want "the repair's starting head is cleared for reenter" "" "$(driver_state_get 403 repair_base)"
+want "the record carries the new brief"    "REPAIR on PR #9: CI went red on: e2e" "$(cat "$(driver_state_get 403 repair_brief)")"
+
+echo "--- a plain run is not in repair mode ---"
+reset_fakes
+bt 404 >/dev/null
+want "the record says build"               "build" "$(driver_state_get 404 mode)"
+
+echo "--- a rework in the repair order goes back to fix, not to a build step it lacks ---"
+reset_fakes "review:30 0"
+printf 'REPAIR on PR #9: red\n' > "$FIX/brief-d.md"
+out=$(bt 405 --repair "$FIX/brief-d.md"); rc=$?
+want "it finishes after the rework"        "0" "$rc"
+want "fix, self-check and review ran again" "reenter repair fix self-check review fix self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 exit $FAILED
