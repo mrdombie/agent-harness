@@ -57,11 +57,13 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$T/idle.rc" ] && break; sleep 1; done
 [ -e "$T/ran" ] && ok "ran once idle rose" || fail "never ran: $(cat "$T/idle.out")"
 grep -q 'machine clear (cpu idle 60%, load 1), going ahead' "$T/idle.out" && ok "and said what it read" || fail "no clear line: $(cat "$T/idle.out")"
 
-echo "--- the load average is only a backstop, at 8 x cores ---"
-out=$(SWARM_IDLE=90 SWARM_LOAD=81 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
-[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'machine busy (load 81, limit 80), waiting' && ok "load 81 over 8 x 10 cores is busy even at 90% idle" || fail "rc $rc $out"
-out=$(SWARM_IDLE=90 SWARM_LOAD=80 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
-[ "$rc" = 0 ] && ok "load 80 at the backstop goes ahead" || fail "rc $rc $out"
+echo "--- the load average is only a runaway guard, at 20 x cores ---"
+out=$(SWARM_IDLE=41 SWARM_LOAD=140 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 0 ] && ok "measured 2026-10-16: load 140 at 41% idle on 10 cores goes ahead" || fail "load 140: rc $rc $out"
+out=$(SWARM_IDLE=90 SWARM_LOAD=201 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 75 ] && printf '%s' "$out" | grep -q 'machine busy (load 201, limit 200), waiting' && ok "load 201 over 20 x 10 cores is busy even at 90% idle" || fail "rc $rc $out"
+out=$(SWARM_IDLE=90 SWARM_LOAD=200 SWARM_CORES=10 env -u SWARM_MAX_LOAD bash "$SUT" wait --max 1 2>&1); rc=$?
+[ "$rc" = 0 ] && ok "load 200 at the guard goes ahead" || fail "rc $rc $out"
 
 echo "--- real top output from macOS: the SECOND sample is the reading ---"
 # Captured 2026-10-15 23:07 on the operator's machine: sample 1 says 0.0% idle,
@@ -147,12 +149,43 @@ SWARM_LOAD=1 HARNESS_GATE_SLOTS=1 bash "$SUT" run --max 1 -- touch "$T/ran" >/de
 [ "$rc" = 0 ] && ok "an old pid-less slot is reaped" || fail "rc $rc"
 rm -rf "$T/slots"; mkdir -p "$T/slots"
 
+echo "--- a reap never takes a slot that changed hands after its first look ---"
+# The 2-slot run above peaked at 3: a reaper read the old holder's pid, the
+# holder let go and exited, a live taker made the slot again, and the reaper then
+# cleared or moved the new one. _mg_alive is where it looked, so each case makes
+# the hand-over happen exactly there.
+race() { # <midtake|stamped> <taker-pid> — prints "<slot-1 pid>|<reap dirs nested in it>"
+  bash -c '
+    . "$1"; how="$2"; taker="$3"; machine_gate_init; s="$MG_DIR/slot-1"; n=0
+    rm -rf "$MG_DIR"; mkdir -p "$s"; echo 999999 > "$s/pid"
+    _mg_alive() {
+      n=$((n+1))
+      if [ "$n" = 1 ]; then   # the old holder lets go and exits; the taker makes it again
+        rm -rf "$s"; mkdir "$s"
+        [ "$how" = midtake ] || echo "$taker" > "$s/pid"
+        return 1
+      fi
+      mkdir "$s" 2>/dev/null && echo 424242 > "$s/pid"   # a third waiter tries the slot
+      kill -0 "$1" 2>/dev/null
+    }
+    _mg_reap "$s" 2>/dev/null
+    if [ -d "$s" ]; then p=$(cat "$s/pid" 2>/dev/null); else p=gone; fi
+    printf "%s|%s" "${p:-unstamped}" "$(ls -A "$s" 2>/dev/null | grep -c reap)"
+  ' _ "$SUT" "$1" "$2"
+}
+sleep 30 & taker=$!; PIDS+=($taker)
+got=$(race midtake "$taker")
+[ "${got%%|*}" != gone ] && ok "a slot re-made and not yet stamped is left to its taker" || fail "the taker's fresh slot was reaped: $got"
+got=$(race stamped "$taker")
+[ "$got" = "$taker|0" ] && ok "a slot re-taken by a live pid keeps that pid, nothing nested in it" || fail "slot-1 now holds $got (want $taker|0)"
+rm -rf "$T/slots"; mkdir -p "$T/slots"
+
 echo "--- the thresholds and slot count come from harness.json when not in the env ---"
 printf '{"swarm":{"maxLoad":4,"gateSlots":1,"minCpuIdle":25}}' > "$T/cfg.json"
 out=$(env -u SWARM_MAX_LOAD -u HARNESS_GATE_SLOTS HARNESS_CFG_PATH="$T/cfg.json" SWARM_LOAD=5 SWARM_IDLE=30 bash "$SUT" status 2>&1)
 printf '%s' "$out" | grep -q '^busy · cpu idle 30% (floor 25%) · load 5 (limit 4) · gate slots 1' && ok "swarm.minCpuIdle, swarm.maxLoad and swarm.gateSlots read" || fail "$out"
 out=$(env -u SWARM_MAX_LOAD -u HARNESS_GATE_SLOTS SWARM_CORES=10 SWARM_LOAD=5 SWARM_IDLE=30 bash "$SUT" status 2>&1)
-printf '%s' "$out" | grep -q '^clear · cpu idle 30% (floor 15%) · load 5 (limit 80) · gate slots 2' && ok "defaults 15%, 8 x cores and 2 with no config" || fail "$out"
+printf '%s' "$out" | grep -q '^clear · cpu idle 30% (floor 15%) · load 5 (limit 200) · gate slots 2' && ok "defaults 15%, 20 x cores and 2 with no config" || fail "$out"
 
 # ---- the call sites ----------------------------------------------------------
 # Each skill's fenced bash block that calls machine-gate.sh, run as written.

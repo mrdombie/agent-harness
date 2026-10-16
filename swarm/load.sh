@@ -3,10 +3,11 @@
 # scripts/machine-gate.sh, which must read it without a project config.
 #
 # BUSY MEANS THE CPU HAS NO ROOM: sampled idle below a floor (swarm.minCpuIdle,
-# default 15%). The 1-minute load average is only a backstop, at a far higher
-# ceiling (swarm.maxLoad, default 8 x cores). On 2026-10-15 macOS counted 4,898
-# threads into a load of 40-103 on 10 cores while top showed 41% idle, and the
-# old load-only gate turned agents away six times in a row.
+# default 15%). The 1-minute load average is a RUNAWAY GUARD only, at a ceiling
+# ordinary work never reaches (swarm.maxLoad, default 20 x cores). On 2026-10-15
+# macOS counted 4,898 threads into a load of 40-103 on 10 cores while top showed
+# 41% idle, and the old load-only gate turned agents away six times in a row; on
+# 2026-10-16 it read 119-140, once 140 at 41% idle, so 8 x cores still blocked.
 #
 #   swarm_busy <min-idle> <max-load>  prints the reading; 0 when busy, 1 when clear
 #   swarm_cpu_idle                    idle percent, sampled over ~1-2s
@@ -93,11 +94,11 @@ swarm_cpu_idle() {
   printf '%s' "$v"
 }
 
-# The default load backstop: 8 load per core.
-swarm_default_max_load() { printf '%s' $(( 8 * $(swarm_cores) )); }
+# The default runaway guard: 20 load per core. Not a busy test — the idle floor is.
+swarm_default_max_load() { printf '%s' $(( 20 * $(swarm_cores) )); }
 
 # swarm_busy <min-idle> <max-load> — prints what it read; 0 when busy, 1 when clear.
-#   busy:  "cpu idle 9%, floor 15%"  or  "load 120, limit 80"
+#   busy:  "cpu idle 9%, floor 15%"  or  "load 201, limit 200"
 #   clear: "cpu idle 41%, load 52"
 swarm_busy() {
   local min="${1:-15}" max="${2:-}" idle load

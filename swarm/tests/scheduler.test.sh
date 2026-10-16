@@ -50,9 +50,12 @@ reset_state; fix_live widgets 0
 out=$(SWARM_LOAD=60 SWARM_IDLE=41 SWARM_CORES=10 sched --programme widgets)
 want_not_in "load 60 at 41% idle on 10 cores is not busy" 'machine busy' "$out"
 reset_state; fix_live widgets 0
-out=$(SWARM_LOAD=81 SWARM_IDLE=90 SWARM_CORES=10 sched --programme widgets)
-want "nothing spawned over the load backstop" "0" "$(grep -c . "$SPAWNS")"
-want_in "the backstop is 8 x cores"       'machine busy \(load 81, limit 80\) — holding' "$out"
+out=$(SWARM_LOAD=140 SWARM_IDLE=41 SWARM_CORES=10 sched --programme widgets)
+want_not_in "load 140 at 41% idle on 10 cores is not busy" 'machine busy' "$out"
+reset_state; fix_live widgets 0
+out=$(SWARM_LOAD=201 SWARM_IDLE=90 SWARM_CORES=10 sched --programme widgets)
+want "nothing spawned over the runaway guard" "0" "$(grep -c . "$SPAWNS")"
+want_in "the runaway guard is 20 x cores" 'machine busy \(load 201, limit 200\) — holding' "$out"
 
 echo "--- the plan's usage limit ---"
 reset_state; fix_live widgets 0

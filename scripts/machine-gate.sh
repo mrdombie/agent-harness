@@ -16,8 +16,8 @@
 #
 # BUSY MEANS SAMPLED CPU IDLE BELOW THE FLOOR, not a high load average: macOS
 # counts runnable and blocked threads, and on 2026-10-15 it read load 42-103 on
-# 10 cores while top showed 41% idle. The load average stays only as a backstop
-# at a far higher ceiling.
+# 10 cores while top showed 41% idle, and 119-140 on 2026-10-16. The load average
+# stays only as a runaway guard, at 20 x cores.
 #
 # IT NEVER FAILS THE TICKET. When busy it prints
 #   machine busy (cpu idle N%, floor F%), waiting     or
@@ -27,7 +27,7 @@
 # NOTHING RAN — call it again, never proceed and never give up.
 #
 #   SWARM_MIN_CPU_IDLE   the idle floor in percent (else harness.json swarm.minCpuIdle, else 15)
-#   SWARM_MAX_LOAD       the load backstop (else harness.json swarm.maxLoad, else 8 x cores)
+#   SWARM_MAX_LOAD       the runaway guard (else harness.json swarm.maxLoad, else 20 x cores)
 #   HARNESS_GATE_SLOTS   gate runs at once, machine-wide (else swarm.gateSlots, else 2)
 #   HARNESS_GATE_SLOT_DIR  where the slots live (default ~/.cache/agent-harness/gate-slots:
 #                        one per MACHINE, not per project — the cores are shared)
@@ -89,29 +89,37 @@ machine_gate_wait_load() { # [max-seconds]
   done
 }
 
-# Clear a slot whose holder is gone. Moved aside first, so two waiters judging the
-# same dead slot cannot each delete what the other has just made in its place;
-# a holder found ALIVE in the moved copy goes straight back.
+# Clear a slot whose holder is gone. The pid read first can be stale: its holder
+# may have let go and exited, and a live taker made the slot again. So the
+# verdict is taken again under a per-slot reap lock, and the slot is removed in
+# place, never moved: a slot can only change hands through a remove, and every
+# remover of a slot that is not its own holds this lock.
 _mg_reap() { # <slot-dir>
-  local s="$1" pid aside age
-  pid=$(cat "$s/pid" 2>/dev/null)
-  if [ -z "$pid" ]; then
-    # mkdir and the pid write are two steps; a slot seconds old is mid-take.
-    # GNU stat first: on Linux `stat -f` is the FILESYSTEM and exits 0 with no mtime.
-    age=$(( $(date +%s) - $(stat -c %Y "$s" 2>/dev/null || stat -f %m "$s" 2>/dev/null || date +%s) ))
-    [ "$age" -gt 10 ] || return 1
-  elif _mg_alive "$pid"; then
+  local s="$1" lock="$1.reaping" pid
+  _mg_slot_dead "$s" || return 1
+  if ! mkdir "$lock" 2>/dev/null; then
+    # A reaper that died mid-reap leaves its lock; a reap takes milliseconds.
+    [ "$(_mg_age "$lock")" -gt 30 ] && rm -rf "$lock"
     return 1
   fi
-  aside="$s.reap.$$.$RANDOM"
-  mv "$s" "$aside" 2>/dev/null || return 1
-  pid=$(cat "$aside/pid" 2>/dev/null)
-  if [ -n "$pid" ] && _mg_alive "$pid"; then
-    mv "$aside" "$s" 2>/dev/null || true
-    return 1
+  if [ -d "$s" ] && _mg_slot_dead "$s"; then
+    pid=$(cat "$s/pid" 2>/dev/null)
+    rm -rf "$s"
+    echo "gate slot $(basename "$s") was held by pid ${pid:-?}, which is gone — freed" >&2
   fi
-  echo "gate slot $(basename "$s") was held by pid ${pid:-?}, which is gone — freed" >&2
-  rm -rf "$aside"
+  rmdir "$lock" 2>/dev/null
+  return 0
+}
+
+# Seconds since a path last changed; 0 when it is gone.
+# GNU stat first: on Linux `stat -f` is the FILESYSTEM and exits 0 with no mtime.
+_mg_age() { echo $(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || date +%s) )); }
+
+# 0 when a slot's holder is gone: a dead pid, or no pid long after the mkdir
+# (mkdir and the pid write are two steps; a slot seconds old is mid-take).
+_mg_slot_dead() { # <slot-dir>
+  local pid; pid=$(cat "$1/pid" 2>/dev/null)
+  if [ -z "$pid" ]; then [ "$(_mg_age "$1")" -gt 10 ]; else ! _mg_alive "$pid"; fi
 }
 
 # Take one of the machine's gate slots. Sets MG_SLOT. 0 when held, 75 when --max ran out.
@@ -125,7 +133,9 @@ machine_gate_acquire() { # [max-seconds] [label]
       s="$MG_DIR/slot-$i"
       [ -d "$s" ] && _mg_reap "$s"
       if mkdir "$s" 2>/dev/null; then
-        printf '%s\n' "$(_mg_owner)" > "$s/pid"
+        printf '%s\n' "$(_mg_owner)" > "$s/pid" 2>/dev/null
+        # Reaped between the mkdir and the write: not ours, try again.
+        [ "$(cat "$s/pid" 2>/dev/null)" = "$(_mg_owner)" ] || { i=$((i+1)); continue; }
         printf '%s\t%s\t%s\n' "$(date +%s)" "$PWD" "$label" > "$s/what"
         MG_SLOT="$s"
         [ -n "$said" ] && echo "gate slot free, going ahead" >&2
@@ -153,7 +163,7 @@ machine_gate_holders() {
   local s out="" pid
   for s in "$MG_DIR"/slot-*; do
     [ -d "$s" ] || continue
-    case "$s" in *.reap.*) continue ;; esac
+    case "$s" in *.reap*) continue ;; esac
     pid=$(cat "$s/pid" 2>/dev/null)
     out="$out${out:+, }pid ${pid:-?} in $(cut -f2 "$s/what" 2>/dev/null | xargs basename 2>/dev/null)"
   done

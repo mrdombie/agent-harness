@@ -151,7 +151,7 @@ environment variable of the same name in capitals. The defaults name no project.
 |---|---|---|
 | `swarm.cap` | 3 | Agents at once, per programme |
 | `swarm.minCpuIdle` | 15 | Busy below this sampled CPU idle percent (`top` on macOS, `/proc/stat` on Linux, ~2s) — the scheduler, the coordinator tick, repair-watch, and every session path through `scripts/machine-gate.sh` |
-| `swarm.maxLoad` | 8 x cores | Backstop only: also busy above this one-minute load average. macOS counts blocked threads into the load, which read 42-103 on 10 cores on 2026-10-15 while 41% of the CPU was idle |
+| `swarm.maxLoad` | 20 x cores | Runaway guard only, never the busy test: also busy above this one-minute load average. macOS counts blocked threads into the load, which read 42-103 on 10 cores on 2026-10-15 and 119-140 on 2026-10-16, once 140 at 41% CPU idle |
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.port` | 4777 | The live view's port |
 | `swarm.staleSec` | 120 | A snapshot older than this is no answer |

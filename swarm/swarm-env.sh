@@ -10,7 +10,7 @@
 #   RUNS_DIR         $STATE_DIR/runs — one record per spawned agent
 #   SWARM_CAP        agents at once PER PROGRAMME (default 3)
 #   SWARM_MIN_CPU_IDLE  busy below this sampled CPU idle percent (default 15)
-#   SWARM_MAX_LOAD   backstop: busy above this 1-minute load average (default 8 x cores)
+#   SWARM_MAX_LOAD   runaway guard only: busy above this 1-minute load average (default 20 x cores)
 #   SWARM_LIVE_URL   the live view's snapshot endpoint
 #   SWARM_STATUS_REPO  optional: a repo to dispatch a rebuild at (empty = skip)
 #   SWARM_REPORT_URL   optional: where the reporter POSTs (empty = skip)
