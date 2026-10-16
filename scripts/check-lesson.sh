@@ -95,16 +95,17 @@ if [ -n "$EVENT" ]; then
 fi
 
 # ---- the config ------------------------------------------------------------------
+CFG_REL=".claude/harness.json"
 CFG_JSON='{}'
 if [ -n "${HARNESS_CFG_PATH:-}" ]; then
   [ -f "$HARNESS_CFG_PATH" ] || die "HARNESS_CFG_PATH '$HARNESS_CFG_PATH' does not exist"
   CFG_JSON=$(cat "$HARNESS_CFG_PATH")
 elif [ -n "$BASE" ] && [ -n "$REPO" ]; then
-  CFG_JSON=$(git -C "$REPO" show "$BASE:.claude/harness.json" 2>/dev/null || echo '{}')
-elif [ -n "$REPO" ] && [ -f "$REPO/.claude/harness.json" ]; then
-  CFG_JSON=$(cat "$REPO/.claude/harness.json")
+  CFG_JSON=$(git -C "$REPO" show "$BASE:$CFG_REL" 2>/dev/null || echo '{}')
+elif [ -n "$REPO" ] && [ -f "$REPO/$CFG_REL" ]; then
+  CFG_JSON=$(cat "$REPO/$CFG_REL")
 fi
-printf '%s' "$CFG_JSON" | jq -e 'type == "object"' >/dev/null 2>&1 || die "harness.json is not one JSON object"
+printf '%s' "$CFG_JSON" | jq -e 'type == "object"' >/dev/null 2>&1 || die "$CFG_REL is not one JSON object"
 # cfg_list <key> <default words> — a list key as newline-separated strings; not a list is a refusal.
 cfg_list() {
   local t
@@ -112,7 +113,7 @@ cfg_list() {
   case "$t" in
     null)  set -f; printf '%s\n' $2; set +f ;;
     array) printf '%s' "$CFG_JSON" | jq -r ".$1 | map(select(type == \"string\")) | .[]" ;;
-    *)     die "$1 in harness.json is a $t; it must be a list" ;;
+    *)     die "$1 in $CFG_REL is a $t; it must be a list" ;;
   esac
 }
 FIX_LABELS=$(cfg_list lesson.fixLabels "bug type:bug") || exit 2
