@@ -94,6 +94,11 @@ got=$(SWARM_FREE_MEM_GB=12 bash -c '. "$1"; swarm_free_mem_gb' _ "$LOADSH")
 [ "$got" = 12 ] && ok "SWARM_FREE_MEM_GB stands in for the reading" || fail "seam read '$got'"
 got=$(env -u SWARM_IDLE -u SWARM_IDLE_FILE bash -c '. "$1"; _swarm_sample_idle() { :; }; SWARM_IDLE_CACHE="$2/none/x" swarm_cpu_idle' _ "$LOADSH" "$T")
 [ -z "$got" ] && ok "a CPU sample nobody could take is no reading, not 100" || fail "unread idle read '$got'"
+now=$(date +%s); mkdir -p "$T/hc"; printf '%s 40\n%s 42\n%s 38\n' $((now-900)) $((now-600)) $((now-300)) > "$T/hc/idle.history"
+got=$(env -u SWARM_IDLE -u SWARM_IDLE_FILE -u SWARM_IDLE_HISTORY bash -c '. "$1"; _swarm_sample_idle() { printf 5; }; SWARM_IDLE_CACHE="$2/hc/idle" swarm_cpu_idle_smoothed' _ "$LOADSH" "$T")
+[ "$got" = "39 4" ] && ok "a real sample is kept beside the cache and the gate reads the median" || fail "smoothed read '$got'"
+out=$(env -u SWARM_IDLE -u SWARM_IDLE_FILE -u SWARM_IDLE_HISTORY SWARM_LOAD=1 bash -c '. "$1"; _swarm_sample_idle() { printf 5; }; SWARM_IDLE_CACHE="$2/hc/idle" swarm_busy 15 50' _ "$LOADSH" "$T"); rc=$?
+[ "$rc" = 1 ] && [ "$out" = "cpu idle 39% (median of 4), load 1" ] && ok "the hold floor reads the median too, not the 5% just taken" || fail "rc $rc '$out'"
 out=$(SWARM_IDLE_FILE="$T/empty-idle" SWARM_LOAD=1 bash -c ': > "$SWARM_IDLE_FILE"; . "$1"; swarm_busy 15 50' _ "$LOADSH"); rc=$?
 [ "$rc" = 1 ] && [ "$out" = "cpu idle unread, load 1" ] && ok "the gate still goes on an unread idle, and says unread" || fail "rc $rc '$out'"
 

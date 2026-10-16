@@ -61,6 +61,9 @@ swarm_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "$
 SWARM_CAP="${SWARM_CAP:-$(swarm_opt swarm.cap 3)}"
 SWARM_MIN_CPU_IDLE="${SWARM_MIN_CPU_IDLE:-$(swarm_opt swarm.minCpuIdle 15)}"
 SWARM_MAX_LOAD="${SWARM_MAX_LOAD:-$(swarm_opt swarm.maxLoad "")}"
+SWARM_IDLE_SAMPLES="${SWARM_IDLE_SAMPLES:-$(swarm_opt swarm.idleSamples 5)}"
+SWARM_IDLE_MAX_AGE="${SWARM_IDLE_MAX_AGE:-$(swarm_opt swarm.idleMaxAgeSec 1800)}"
+export SWARM_IDLE_SAMPLES SWARM_IDLE_MAX_AGE
 SWARM_PORT="${SWARM_PORT:-$(swarm_opt swarm.port 4777)}"
 SWARM_LIVE_URL="${SWARM_LIVE_URL:-$(swarm_opt swarm.liveUrl "http://127.0.0.1:$SWARM_PORT/api/agents")}"
 SWARM_STATUS_REPO="${SWARM_STATUS_REPO:-$(swarm_opt swarm.statusRepo "")}"

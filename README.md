@@ -341,7 +341,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | Key (under `coordinator`) | Default | What it is |
 |---|---|---|
 | `cap` | unset | An optional hard ceiling on live ticket runs. Unset, the machine decides; `0` spawns nothing; anything not a whole number holds every spawn and says so |
-| `startCpuIdle` | 30 | Sampled CPU idle % needed to start one more builder. Sits above `swarm.minCpuIdle` (the hold floor), so the count does not flap |
+| `startCpuIdle` | 30 | CPU idle % needed to start one more builder, read as the median of the recent samples (`swarm.idleSamples`). Sits above `swarm.minCpuIdle` (the hold floor), so the count does not flap |
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
@@ -350,7 +350,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
 
 **The ceiling follows the machine.** Each tick the ceiling is what is running,
-plus one when sampled CPU idle is at or over `startCpuIdle`, free memory is at or
+plus one when the median of the recent CPU idle samples is at or over `startCpuIdle`, free memory is at or
 over `minFreeMemGb` and the load is under the backstop — so at most one builder
 starts per tick, and CPU is read again before the next. A running builder is
 never stopped for load. Of that ceiling, healing gets `ceil(ceiling × healingShare)`

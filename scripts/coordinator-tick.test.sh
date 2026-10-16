@@ -126,6 +126,35 @@ fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 COORDINATOR_MIN_FREE_MEM_GB=20 tick)
 want "the memory floor is configurable"    "" "$(spawned)"
 
+echo "--- room is decided on the recent CPU samples, never on the one just taken ---"
+# One sample read 5%, 55%, 19%, 4%, 44% within minutes on a busy 10-core Mac.
+H="$FIX/idle-history"
+seed() { # <age-sec> <idle> … — samples already on record, oldest first
+  local now; now=$(date +%s); : > "$H"
+  while [ $# -gt 1 ]; do printf '%s %s\n' $(( now - $1 )) "$2" >> "$H"; shift 2; done
+}
+htick() { SWARM_IDLE_HISTORY="$H" COORDINATOR_SHADOW=0 tick; }
+fresh; queue 501; seed 1200 40 900 42 600 38 300 41
+out=$(SWARM_IDLE=5 htick)
+want "a steady 40% with one 5% dip: it starts" "501" "$(spawned)"
+want_in "the log gives the median and its sample count" 'room for 1 more: cpu idle 40% \(median of 5\), 16 GB free' "$out"
+want "one tick reads twice and records once" "5" "$(wc -l < "$H" | tr -d ' ')"
+fresh; queue 501; live_run 900; seed 1200 5 900 8 600 4 300 6
+out=$(SWARM_IDLE=55 htick)
+want "a busy machine with one 55% spike: the hold floor holds" "" "$(spawned)"
+want_in "and names the median"             'machine busy \(cpu idle 6% \(median of 5\), floor 15%\) — holding' "$out"
+fresh; queue 501; live_run 900; seed 1200 20 900 22 600 25 300 21
+out=$(SWARM_IDLE=90 htick)
+want "a 90% spike over a 22% median: under the start floor" "" "$(spawned)"
+want_in "and names the start floor"        'no room for more \(cpu idle 22% \(median of 5\), start floor 30%\)' "$out"
+fresh; queue 501; seed 4000 5 3900 5 3800 5 3700 5
+out=$(SWARM_IDLE=40 htick)
+want "samples past swarm.idleMaxAgeSec do not count" "501" "$(spawned)"
+want_in "so the median is of one"          'cpu idle 40% \(median of 1\)' "$out"
+fresh; queue 501; seed 1200 5 900 5 600 5 300 40
+out=$(SWARM_IDLE=40 SWARM_IDLE_SAMPLES=3 htick)
+want "swarm.idleSamples sets how many count" "501" "$(spawned)"
+
 echo "--- exactly one start per tick, however much room ---"
 fresh; queue 501 502 503 504 505 506
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 tick)
