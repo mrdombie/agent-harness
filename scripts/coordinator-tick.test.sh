@@ -660,6 +660,8 @@ want "one judge for one event"             "1" "$(grep -c ^ARGV "$FIX/claude.log
 want_in "it has a turn cap"                '\[--max-turns\] \[40\]' "$argv"
 want_in "it has a budget"                  '\[--max-budget-usd\] \[5\]' "$argv"
 want "its compact window is bounded"       "COMPACT=150000" "$(grep ^COMPACT "$FIX/claude.log")"
+want_in "it loads only the builder's MCP servers" '\[--strict-mcp-config\] \[--mcp-config\] \[[^]]*builder-mcp\.json\]' "$argv"
+want "and the builder list is empty unless set" "" "$(jq -r '.mcpServers | keys | join(",")' "$STATE/swarm/builder-mcp.json" 2>&1)"
 want_in "the brief carries the one event"  'red-pr:41:sha41' "$argv"
 want_not_in "it never resumes a session"   '\[--(resume|continue)\]|\[-c\]|\[-r\]' "$argv"
 COORDINATOR_SHADOW=0 tick >/dev/null
