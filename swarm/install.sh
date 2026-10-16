@@ -228,7 +228,7 @@ print_service() { # <job>
   fi
 }
 print_timer() { # <job>
-  printf '[Unit]\nDescription=agent-harness swarm %s, every %ss\n\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=%s\nUnit=%s.service\n\n[Install]\nWantedBy=timers.target\n' \
+  printf '[Unit]\nDescription=agent-harness swarm %s, every %ss\n\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=%s\nAccuracySec=1s\nUnit=%s.service\n\n[Install]\nWantedBy=timers.target\n' \
     "$1" "$(interval_for "$1")" "$(interval_for "$1")" "$(label "$1")"
 }
 sd_print() { # <job>
@@ -243,6 +243,22 @@ sd_linger_warn() {
   "$SWARM_LOGINCTL" show-user "$u" -p Linger 2>/dev/null | grep -qx 'Linger=no' || return 0
   echo "install: linger is off for $u, so these timers run only while $u has a session open — to run them with none: sudo loginctl enable-linger $u" >&2
 }
+# WSL stops the whole instance once its last Windows-launched process exits,
+# linger or not, and the user manager goes with it.
+sd_wsl_warn() {
+  grep -qi microsoft "${SWARM_PROC_VERSION:-/proc/version}" 2>/dev/null || return 0
+  echo "install: on WSL the instance itself must stay up for these timers to run — keep a session open, or set vmIdleTimeout in %UserProfile%\\.wslconfig" >&2
+}
+# The unit freezes this shell's PATH: a tool it cannot find there, no job finds.
+sd_path_warn() {
+  local t miss=""; for t in claude gh jq node; do command -v "$t" >/dev/null 2>&1 || miss="$miss $t"; done
+  [ -z "$miss" ] || echo "install: warning —${miss} not on the PATH this unit carries; the jobs will not find them. Re-run from a shell that has them." >&2
+}
+# A crontab line from before systemd answered would run beside the timer, or
+# survive an uninstall unseen. Ours (by its mark) goes; the owner's stay.
+sd_has_cron() { cron_jobs | grep -qx -- "$1" && command -v "$SWARM_CRONTAB" >/dev/null 2>&1 \
+  && "$SWARM_CRONTAB" -l 2>/dev/null | grep -qF -- "$(cron_mark "$1")"; }
+sd_drop_cron() { sd_has_cron "$1" || return 1; cron_uninstall "$1"; }
 sd_unit_of_pid() { sed -n 's|.*/\([^/]*\.service\)$|\1|p' "${SWARM_PROC:-/proc}/$1/cgroup" 2>/dev/null | head -1; }
 sd_free_port() {
   local pid; pid=$(port_holder); [ -n "$pid" ] || return 0
@@ -262,15 +278,20 @@ sd_install() { # <job>
   else
     rm -f "$(sd_unit "$job" timer)"; u="$(label "$job").service"
   fi
-  sc daemon-reload && sc enable "$u" >/dev/null 2>&1 && sc restart "$u" \
+  local err
+  sc daemon-reload || { echo "install: systemctl --user daemon-reload failed" >&2; return 1; }
+  err=$(sc enable "$u" 2>&1 >/dev/null) || { echo "install: systemctl --user enable $u failed: $err" >&2; return 1; }
+  sd_drop_cron "$job"
+  sc restart "$u" \
     && echo "installed $(label "$job") as a systemd user $( [ "${u##*.}" = timer ] && echo "timer, every $(interval_for "$job")s" || echo "service, kept alive" )" || return 1
-  sd_linger_warn
+  sd_linger_warn; sd_wsl_warn; sd_path_warn
   [ "$job" = coordinator ] && bash "$SWARM_ROOT/coordinator-feed.sh" --open-once
   return 0
 }
 sd_uninstall() { # <job>
-  local s t; s=$(sd_unit "$1" service); t=$(sd_unit "$1" timer)
-  [ -f "$s" ] || [ -f "$t" ] || { echo "$1 was not installed"; return 0; }
+  local s t c=1; s=$(sd_unit "$1" service); t=$(sd_unit "$1" timer)
+  sd_drop_cron "$1" && c=0
+  [ -f "$s" ] || [ -f "$t" ] || { [ "$c" = 0 ] || echo "$1 was not installed"; return 0; }
   [ -f "$t" ] && sc disable --now "$(label "$1").timer" >/dev/null 2>&1
   sc disable --now "$(label "$1").service" >/dev/null 2>&1
   rm -f "$s" "$t"; sc daemon-reload >/dev/null 2>&1
@@ -278,7 +299,7 @@ sd_uninstall() { # <job>
 }
 sd_status() {
   local j u st line
-  for j in $(jobs_for_project) $(for o in coordinator merge-lane; do [ -f "$(sd_unit "$o" service)" ] && echo "$o"; done); do
+  for j in $(jobs_for_project) $(for o in coordinator merge-lane; do { [ -f "$(sd_unit "$o" service)" ] || sd_has_cron "$o"; } && echo "$o"; done); do
     if [ ! -f "$(sd_unit "$j" service)" ]; then line="not loaded"
     elif [ -n "$(interval_for "$j")" ]; then
       u="$(label "$j")"; st=$(sc is-active "$u.timer" 2>/dev/null)
@@ -287,9 +308,10 @@ sd_status() {
       u="$(label "$j").service"; st=$(sc is-active "$u" 2>/dev/null)
       line="${st:-unknown}, pid $(sc show "$u" -p MainPID --value 2>/dev/null)"
     fi
+    sd_has_cron "$j" && line="$line; ALSO a crontab line ($("$SWARM_CRONTAB" -l 2>/dev/null | grep -F -- "$(cron_mark "$j")" | grep -oE '[A-Z_]+_SHADOW=[^ ]+' | tr '\n' ' ' | sed 's/ $//') — 'install.sh uninstall $j' removes it"
     printf '%-14s %s\n' "$j" "$line"
   done
-  sd_linger_warn 2>&1
+  { sd_linger_warn; sd_wsl_warn; } 2>&1
 }
 
 # Another service already on the live view's port: a hand-written job left over
