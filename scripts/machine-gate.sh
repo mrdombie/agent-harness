@@ -53,6 +53,8 @@ _mg_cfg() { # <jq path> — an optional fact from harness.json, or nothing
 machine_gate_init() {
   MG_MIN_IDLE="${SWARM_MIN_CPU_IDLE:-$(_mg_cfg .swarm.minCpuIdle)}"; MG_MIN_IDLE="${MG_MIN_IDLE:-15}"
   MG_MAX_LOAD="${SWARM_MAX_LOAD:-$(_mg_cfg .swarm.maxLoad)}"; MG_MAX_LOAD="${MG_MAX_LOAD:-$(swarm_default_max_load)}"
+  SWARM_IDLE_SAMPLES="${SWARM_IDLE_SAMPLES:-$(_mg_cfg .swarm.idleSamples)}"
+  SWARM_IDLE_MAX_AGE="${SWARM_IDLE_MAX_AGE:-$(_mg_cfg .swarm.idleMaxAgeSec)}"
   MG_SLOTS="${HARNESS_GATE_SLOTS:-$(_mg_cfg .swarm.gateSlots)}"; MG_SLOTS="${MG_SLOTS:-2}"
   case "$MG_SLOTS" in ''|*[!0-9]*|0) MG_SLOTS=2 ;; esac
   MG_DIR="${HARNESS_GATE_SLOT_DIR:-$HOME/.cache/agent-harness/gate-slots}"
@@ -198,11 +200,12 @@ _mg_main() {
       return "$rc" ;;
     status)
       machine_gate_init
-      local idle load verdict=clear
-      idle=$(swarm_cpu_idle); load=$(swarm_load)
-      SWARM_IDLE="$idle" SWARM_LOAD="$load" SWARM_IDLE_FILE="" SWARM_LOAD_FILE="" \
+      local idle="" n=0 sm load verdict=clear
+      sm=$(swarm_cpu_idle_smoothed); load=$(swarm_load)
+      [ -n "$sm" ] && read -r idle n <<< "$sm"
+      SWARM_IDLE="$idle" SWARM_LOAD="$load" SWARM_IDLE_FILE="" SWARM_LOAD_FILE="" SWARM_IDLE_HISTORY="" \
         swarm_busy "$MG_MIN_IDLE" "$MG_MAX_LOAD" >/dev/null && verdict=busy
-      echo "$verdict · cpu idle $([ -n "$idle" ] && echo "$idle%" || echo unread) (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
+      echo "$verdict · $([ -n "$idle" ] && swarm_idle_label "$idle" "$n" || echo 'cpu idle unread') (floor $MG_MIN_IDLE%) · load $load (limit $MG_MAX_LOAD) · gate slots $MG_SLOTS · held: $(machine_gate_holders)" ;;
     *)
       sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 2 ;;
   esac

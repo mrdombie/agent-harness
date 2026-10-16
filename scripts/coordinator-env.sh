@@ -17,7 +17,7 @@
 # Settings, all optional under `coordinator` in harness.json (or the env var):
 #   coordinator.cap          COORDINATOR_CAP          unset  optional hard ceiling on live runs;
 #                                                           unset, the machine decides (coord_room)
-#   coordinator.keepCpuIdle  COORDINATOR_KEEP_CPU_IDLE 15   idle % kept back when filling; never
+#   coordinator.keepCpuIdle  COORDINATOR_KEEP_CPU_IDLE 15   median idle % kept back when filling; never
 #                                                           under swarm.minCpuIdle, the hold floor
 #   coordinator.agentCpuCores COORDINATOR_AGENT_CPU_CORES 0.8 cores one builder uses; the idle above
 #                                                           keepCpuIdle starts as many as it fits
@@ -79,8 +79,9 @@ COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.
 # coord_room — room for one more builder? Prints the reading; 0 when there is.
 # Never a reason to stop a running one: it only gates the next start.
 coord_room() {
-  local idle mem load cores max
-  idle=$(swarm_cpu_idle); mem=$(swarm_free_mem_gb); load=$(swarm_load); cores=$(swarm_cores)
+  local idle="" n=0 sm mem load cores max
+  sm=$(swarm_cpu_idle_smoothed); mem=$(swarm_free_mem_gb); load=$(swarm_load); cores=$(swarm_cores)
+  [ -n "$sm" ] && read -r idle n <<< "$sm"
   # A reading nobody could take is no room: unread, an uncapped ceiling ramps forever.
   [ -n "$idle" ]  || { printf 'cpu idle unread'; return 1; }
   [ -n "$mem" ]   || { printf 'free memory unread'; return 1; }
@@ -99,12 +100,12 @@ coord_room() {
   starts=$(awk -v i="$idle" -v k="$COORD_KEEP_IDLE" -v a="$COORD_AGENT_CPU" -v c="$cores" \
     'BEGIN{ per = a * 100 / c; n = int((i - k) / per); print (n > 0 ? n : 0) }')
   if [ "$starts" -lt 1 ]; then
-    printf 'cpu idle %s%%, keeping %s%% and an agent needs %s of %s cores' "$idle" "$COORD_KEEP_IDLE" "$COORD_AGENT_CPU" "$cores"; return 1
+    printf '%s, keeping %s%% and an agent needs %s of %s cores' "$(swarm_idle_label "$idle" "$n")" "$COORD_KEEP_IDLE" "$COORD_AGENT_CPU" "$cores"; return 1
   fi
   if [ "$mem" -lt "$COORD_MIN_FREE_MEM_GB" ]; then
     printf '%s GB free, floor %s GB' "$mem" "$COORD_MIN_FREE_MEM_GB"; return 1
   fi
-  printf '%s\tcpu idle %s%%, %s GB free' "$starts" "$idle" "$mem"
+  printf '%s\t%s, %s GB free' "$starts" "$(swarm_idle_label "$idle" "$n")" "$mem"
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's

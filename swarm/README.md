@@ -152,7 +152,9 @@ environment variable of the same name in capitals. The defaults name no project.
 | Key | Default | What it is |
 |---|---|---|
 | `swarm.cap` | 3 | Agents at once, per programme |
-| `swarm.minCpuIdle` | 15 | Busy below this sampled CPU idle percent (`top` on macOS, `/proc/stat` on Linux, ~2s) — the scheduler, the coordinator tick, repair-watch, and every session path through `scripts/machine-gate.sh` |
+| `swarm.minCpuIdle` | 15 | Busy below this CPU idle percent, the median of the recent samples (`top` on macOS, `/proc/stat` on Linux, ~2s) — the scheduler, the coordinator tick, repair-watch, and every session path through `scripts/machine-gate.sh` |
+| `swarm.idleSamples` | 5 | How many recent CPU idle samples the median is taken over (`SWARM_IDLE_SAMPLES`). One sample read 5%, 55%, 19%, 4% and 44% within minutes on 2026-10-16; each tick and each gate read adds one to `~/.cache/agent-harness/cpu-idle.history` |
+| `swarm.idleMaxAgeSec` | 1800 | The oldest sample that still counts (`SWARM_IDLE_MAX_AGE`): six coordinator ticks at the default 300s |
 | `swarm.maxLoad` | 20 x cores | Runaway guard only, never the busy test: also busy above this one-minute load average. macOS counts blocked threads into the load, which read 42-103 on 10 cores on 2026-10-15 and 119-140 on 2026-10-16, once 140 at 41% CPU idle |
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.port` | 4777 | The live view's port |

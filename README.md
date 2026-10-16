@@ -341,7 +341,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | Key (under `coordinator`) | Default | What it is |
 |---|---|---|
 | `cap` | unset | An optional hard ceiling on live ticket runs. Unset, the machine decides; `0` spawns nothing; anything not a whole number holds every spawn and says so |
-| `keepCpuIdle` | 15 | Sampled CPU idle % kept back when filling the machine. Never under `swarm.minCpuIdle` (the hold floor) |
+| `keepCpuIdle` | 15 | CPU idle % kept back, read as the median of the recent samples (`swarm.idleSamples`), when filling the machine. Never under `swarm.minCpuIdle` (the hold floor) |
 | `agentCpuCores` | 0.8 | Cores one builder uses (measured 2026-10-16: two builders at 167–182%). The idle above `keepCpuIdle` starts as many builders as it fits |
 | `rampMin` | 10 | A builder started this many minutes ago or less still counts against the room, because the idle reading has not seen its load yet |
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
@@ -352,7 +352,8 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
 
 **The ceiling follows the machine.** Each tick the ceiling is what is running,
-plus as many builders as the spare CPU fits: sampled idle less `keepCpuIdle`,
+plus as many builders as the spare CPU fits: the median of the recent CPU idle
+samples less `keepCpuIdle`,
 divided by `agentCpuCores` as a share of the cores — so an idle machine fills in
 one tick (Dom, 2026-10-16: "fill all spare room"). Free memory must be at or over
 `minFreeMemGb` and the load under the backstop, or nothing starts. A running builder is
