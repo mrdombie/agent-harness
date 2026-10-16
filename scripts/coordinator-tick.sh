@@ -211,8 +211,18 @@ done <<< "$LIVE_RECS"
 # The ceiling is what is running plus as many as the spare CPU fits (coord_room),
 # so an idle machine fills in one tick rather than one agent per tick.
 CEILING=$LIVE; ROOM=""; READING=""; STARTS=0
+# Live builders started inside the ramp window: the idle reading has not seen them.
+RAMPING=0
+while IFS= read -r rec; do
+  [ -n "$rec" ] || continue
+  at=$(jq -r '.started_at // empty' "$rec" 2>/dev/null); [ -n "$at" ] || continue
+  [ $(( NOW - $(swarm_epoch "$at") )) -lt $(( COORD_RAMP_MIN * 60 )) ] && RAMPING=$((RAMPING+1))
+done <<< "$LIVE_RECS"
 if READING=$(coord_room); then
-  ROOM=1; STARTS=${READING%%$'\t'*}; READING=${READING#*$'\t'}; CEILING=$((LIVE+STARTS))
+  ROOM=1; STARTS=${READING%%$'\t'*}; READING=${READING#*$'\t'}
+  STARTS=$(( STARTS - RAMPING )); [ "$STARTS" -ge 0 ] || STARTS=0
+  [ "$RAMPING" -eq 0 ] || READING="$READING, $RAMPING started in the last ${COORD_RAMP_MIN} min"
+  CEILING=$((LIVE+STARTS))
 fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
@@ -279,7 +289,7 @@ elif [ "$SLOTS" -le 0 ]; then
   held_view
 else
   candidates
-  started=0; PICKED=" "
+  started=0
   while [ "$started" -lt "$SLOTS" ]; do
     heal=$(first_of healing); new=$(first_of new)
     # Each class fills its own share first; a class with nothing spawnable lends
@@ -292,23 +302,25 @@ else
     fi
     [ -n "$pick" ] || break
     IFS=$'\t' read -r t cls note <<< "$pick"
-    started=$((started+1)); PICKED="$PICKED$t "
+    started=$((started+1))
     # Taken out of the candidates so the next pass picks the next one.
     CANDS=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$t" 'NF && $1 != p'); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
     PLAN="${PLAN:+$PLAN,}$t"; TOOK="$cls"
     if coord_healing_class "$cls"; then
-      LIVE_HEAL=$((LIVE_HEAL+1)); if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); else NEW_FREE=$((NEW_FREE-1)); fi
+      if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); else NEW_FREE=$((NEW_FREE-1)); fi
     else
-      LIVE_NEW=$((LIVE_NEW+1)); if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); else HEAL_FREE=$((HEAL_FREE-1)); fi
+      if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); else HEAL_FREE=$((HEAL_FREE-1)); fi
     fi
+    # Counted live only once it is (or, in shadow, would be) running.
+    count_live() { if coord_healing_class "$cls"; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi; }
     coord_act_log spawn "$t" "$cls${note:+ — $note}"
     if coord_shadow; then
-      say "would spawn #$t ($cls)${lent:+ in $lent, nothing else spawnable}"
+      say "would spawn #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; count_live
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
       if CLAIM_CLASS="$cls" swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then
-        coord_record_class "$t" "$cls"
+        coord_record_class "$t" "$cls"; count_live
         say "spawned #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
       else say "spawn of #$t failed"; fi
       [ -z "$brief" ] || rm -f "$brief"

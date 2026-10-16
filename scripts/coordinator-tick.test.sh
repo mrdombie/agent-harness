@@ -144,6 +144,29 @@ fresh; queue 501 502 503
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_KEEP_CPU_IDLE=5 tick)
 want "kept idle under the hold floor is raised to it, never lower" "501 502 503" "$(spawned)"
 
+echo "--- a builder started inside the ramp window still owns its share ---"
+ramp_run() { # <ticket> <seconds ago>
+  printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s,"started_at":"%s"}\n' "$1" "$1" "$$" \
+    "$(date -u -r $(( $(date +%s) - $2 )) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$(( $(date +%s) - $2 ))" +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$STATE/runs/claim-$1-live.json"
+}
+fresh; queue 501 502 503 504; ramp_run 900 60
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 tick)
+want "40% fits 3, one started a minute ago: two start" "501 502" "$(spawned)"
+want_in "and the reading says why"         '1 started in the last 10 min' "$out"
+fresh; queue 501 502 503 504; ramp_run 900 1200
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 tick)
+want "one started 20 minutes ago no longer counts" "501 502 503" "$(spawned)"
+fresh; queue 501 502; ramp_run 900 60; ramp_run 901 60; ramp_run 902 60
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 tick)
+want "three ramping fill the three places: none start" "" "$(spawned)"
+
+echo "--- a start that fails is not counted as running ---"
+fresh; queue 501 502
+out=$(COORDINATOR_SHADOW=0 SWARM_SPAWN=/usr/bin/false SWARM_IDLE=40 SWARM_CORES=10 tick)
+want_in "it says the start failed"         'spawn of #501 failed' "$out"
+want "the live view counts nothing running" "0 0" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
+
 echo "--- no fixed cap: with coordinator.cap unset, the machine alone decides ---"
 fresh; queue 501; for t in 900 901 902 903; do live_run $t; done
 out=$(COORDINATOR_SHADOW=0 tick)

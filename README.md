@@ -343,6 +343,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `cap` | unset | An optional hard ceiling on live ticket runs. Unset, the machine decides; `0` spawns nothing; anything not a whole number holds every spawn and says so |
 | `keepCpuIdle` | 15 | Sampled CPU idle % kept back when filling the machine. Never under `swarm.minCpuIdle` (the hold floor) |
 | `agentCpuCores` | 0.8 | Cores one builder uses (measured 2026-10-16: two builders at 167–182%). The idle above `keepCpuIdle` starts as many builders as it fits |
+| `rampMin` | 10 | A builder started this many minutes ago or less still counts against the room, because the idle reading has not seen its load yet |
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
