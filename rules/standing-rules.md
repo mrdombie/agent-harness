@@ -50,6 +50,8 @@ was broken: a design pass removed a control in a review round AFTER the renders
 that still showed it were approved, the hold was cleared by citing that earlier
 approval, and the owner found out on the test environment.
 
+**A part of a screen is shown as a part.** A sign-off for one region of a screen other tickets are also rebuilding opens with "card N of M of the new <screen>; the rest of the page is the old version", names the region and the live and pending siblings, shows the region before the full page, and opens the approved picture at that region (2026-10-16: a new card inside a mostly-old page was rejected as off-design, then approved once explained).
+
 **The approved design is the acceptance criterion.** Wiring real data into an
 approved surface is a data change, not a design change: the rendered output
 afterwards must look identical. If real data genuinely will not fit, say so —
