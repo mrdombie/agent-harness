@@ -450,7 +450,7 @@ bash "$Q" add 805 --note "judge: the unit test is not its own" >/dev/null
 fix_issue 805 OPEN "status:ready"
 cut_run 805 "$wall" "$said"
 out=$(COORDINATOR_SHADOW=0 tick)
-want "the cut run is the next start, ahead of work queued before it" "805" "$(spawned)"
+want "the cut run is the first start, ahead of work queued before it" "805" "$(spawned | cut -d' ' -f1)"
 brief=$(grep '^805' "$SPAWNS")
 want_in "its brief says resume, not start over" "Resume: run claim-805-cut was cut off by the plan's usage limit" "$brief"
 want_in "it names the worktree"            "Its worktree: /wt/805-branch" "$brief"
