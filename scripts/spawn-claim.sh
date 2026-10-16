@@ -16,6 +16,7 @@
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
 # Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto), CLAIM_CLASS (recorded)
+# Runner: SPAWN_RUNNER, else harness.json swarm.runner — claim (default) or driver (driver/build-ticket)
 
 set -uo pipefail
 
@@ -54,6 +55,30 @@ for arg in "$@"; do
   esac
 done
 
+# The runner: `claim` (one long /agent-harness:claim session, the default) or
+# `driver` (driver/build-ticket walks the ticket's steps, one short model call
+# each). harness.json swarm.runner sets it; SPAWN_RUNNER overrides. In driver
+# mode there is no --max-budget-usd: the driver's own ceilings bound a run.
+RUNNER="${SPAWN_RUNNER:-$(toolkit_cfg swarm.runner 2>/dev/null)}"; RUNNER="${RUNNER:-claim}"
+DRIVER="${SPAWN_DRIVER:-$KIT_ROOT/driver/build-ticket}"
+case "$RUNNER" in
+  claim) ;;
+  driver)
+    # Refused, never degraded. The driver has no brief input, and a healing spawn
+    # that silently lost its brief, or quietly ran /claim instead, would report
+    # exactly like the run that was asked for.
+    if [ -n "${CLAIM_EXTRA:-}" ]; then
+      echo "spawn-claim: refusing — driver mode cannot carry a brief (CLAIM_EXTRA is set for #${TICKET:-next}); build-ticket has no brief input, and dropping the brief or falling back to /agent-harness:claim would both hide that" >&2
+      exit 3
+    fi
+    if [ -z "$TICKET" ]; then
+      echo "spawn-claim: refusing — driver mode needs a ticket number; build-ticket cannot pick the next ready ticket" >&2
+      exit 3
+    fi
+    [ -x "$DRIVER" ] || { echo "spawn-claim: refusing — driver mode, and no executable driver at $DRIVER" >&2; exit 3; } ;;
+  *) echo "spawn-claim: refusing — unknown runner '$RUNNER' (swarm.runner / SPAWN_RUNNER take claim or driver)" >&2; exit 3 ;;
+esac
+
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1; }
 
 mkdir -p "$RUNS_DIR" "$LOGS_DIR"
@@ -65,6 +90,12 @@ PROMPT="/agent-harness:claim"
 # No run record and no budget cap here — --max-budget-usd is silently ignored
 # outside --print, and an interactive session you're watching doesn't need a
 # watchdog to notice it died. Its lock falls back to artifact-freshness.
+if [ "$FG" -eq 1 ] && [ "$RUNNER" = driver ]; then
+  echo "→ the step driver in the foreground: $DRIVER $TICKET"
+  SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
+  cd "$SPAWN_ROOT" || exit 1
+  exec "$DRIVER" "$TICKET"
+fi
 if [ "$FG" -eq 1 ]; then
   echo "→ interactive session, fresh context, running $PROMPT"
   echo "  no budget cap (--max-budget-usd only applies to --print runs)"
@@ -161,13 +192,17 @@ stop_run_servers() {
   # subshell on every bash.
   CLAIM_SESSION_PID="${BASHPID:-$(exec sh -c 'echo $PPID')}"
   export CLAIM_SESSION_PID
-  claude -p "$PROMPT" \
-    --permission-mode "$PERM_MODE" \
-    --max-budget-usd "$BUDGET" \
-    --name "$RUN_ID" \
-    --add-dir "$TICKETS_DIR" \
-    --output-format stream-json --verbose \
-    >> "$LOG" 2>&1 &
+  if [ "$RUNNER" = driver ]; then
+    "$DRIVER" "$TICKET" >> "$LOG" 2>&1 &
+  else
+    claude -p "$PROMPT" \
+      --permission-mode "$PERM_MODE" \
+      --max-budget-usd "$BUDGET" \
+      --name "$RUN_ID" \
+      --add-dir "$TICKETS_DIR" \
+      --output-format stream-json --verbose \
+      >> "$LOG" 2>&1 &
+  fi
   CLAUDE_PID=$!
   printf '%s\n' "$CLAUDE_PID" > "$RUNS_DIR/$RUN_ID.child"
   # macOS sleeps an idle machine mid-run, and the agent comes back to "Your computer
@@ -184,6 +219,16 @@ stop_run_servers() {
     > "$RUNS_DIR/$RUN_ID.child.started" || true
   wait "$CLAUDE_PID"
   code=$?
+
+  # The coordinator reads a run's verdict from its log's last "type":"result"
+  # line. claude -p writes one; the driver does not, and everything appended
+  # below would otherwise be read as the run's last word — reconcile output in
+  # place of the driver's park or hand-off line. So write the driver's own last
+  # line as that result, before .ended exists and before the post-exit sections.
+  if [ "$RUNNER" = driver ]; then
+    _last=$(sed '/^[[:space:]]*$/d' "$LOG" 2>/dev/null | tail -1)
+    jq -cn --arg r "${_last:-build-ticket exited $code with no output}" '{type:"result",result:$r}' >> "$LOG"
+  fi
 
   # Mark the run ended BEFORE reconciling. This subshell is still alive while
   # reconcile runs, so a bare `kill -0` on its pid would report the agent as
@@ -230,6 +275,14 @@ SUBSHELL_WINPID=""; CLAUDE_WINPID=""
 [ -r "/proc/$SUBSHELL_PID/winpid" ] && SUBSHELL_WINPID=$(cat "/proc/$SUBSHELL_PID/winpid")
 [ -s "$RUNS_DIR/$RUN_ID.child.winpid" ] && CLAUDE_WINPID=$(cat "$RUNS_DIR/$RUN_ID.child.winpid")
 
+# A driver run prints only at step boundaries; its steps stream into its
+# per-ticket state dir. The coordinator's frozen check reads these beside the log.
+DRIVER_FIELDS=""
+if [ "$RUNNER" = driver ]; then
+  DRIVER_FIELDS=",
+  \"runner\": \"driver\",
+  \"progress_paths\": $(jq -cn --arg p "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET" '[$p]')"
+fi
 cat > "$RECORD" <<EOF
 {
   "run_id": "$RUN_ID",
@@ -245,10 +298,15 @@ cat > "$RECORD" <<EOF
   "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
-  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"$DRIVER_FIELDS
 }
 EOF
 
+if [ "$RUNNER" = driver ]; then
+  echo "→ spawned $RUN_ID (pid $SUBSHELL_PID), the step driver — no budget cap; its own ceilings bound the run"
+  echo "  log: $LOG"
+  exit 0
+fi
 echo "→ spawned $RUN_ID (pid $SUBSHELL_PID), budget \$$BUDGET, permissions $PERM_MODE"
 echo "  log: $LOG"
 echo "  tail -f \"$LOG\" | jq -r 'select(.type==\"assistant\") | .message.content[]? | select(.type==\"text\") | .text'"

@@ -155,7 +155,7 @@ run() { # [args...] — invoke the spawner from the STALE tree, as the operator 
   SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" SPAWN_TEST_RECONCILE="$OUT/reconcile" SPAWN_TEST_CAFF="$OUT/caff" \
   PATH="$SB/bin:$PATH" \
   HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
-  HARNESS_CFG_PATH="$STORE/.claude/harness.json" \
+  HARNESS_CFG_PATH="${CFG_PATH:-$STORE/.claude/harness.json}" \
   HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
   SPAWN_CLAIM_CANONICAL="${CANON-1}" TMPDIR="$SB" \
   bash "$SUT/spawn-claim.sh" "$@" 2>&1 || RC=$?
@@ -339,6 +339,116 @@ s1=$(srv 1)
 alive "$s1" && ok "a noted parent folder, not a checkout, stops no server beneath it" \
             || bad "a noted parent folder stopped a server in a worktree beneath it"
 kill "$s1" 2>/dev/null
+
+# --- 9. swarm.runner = driver: the step driver, not one long /claim session ---
+# The coordinator reads four things off a spawn: the run record, the .child pid,
+# the .ended exit code, and the log's last result line. A driver run that skips
+# any of them reads as something it is not, so each is asserted here.
+cat > "$SB/bin/build-ticket-stub" <<'STUB'
+#!/usr/bin/env bash
+printf 'cwd=%s\nargs=%s\nclaude.md=%s\nrun=%s\n' "$PWD" "$*" "$(cat CLAUDE.md 2>/dev/null)" "${CLAIM_RUN_ID:-}" > "$SPAWN_TEST_DRIVER_SEEN"
+echo "build-ticket: walking #$1"
+echo "  step build: green"
+echo "⏸ #$1 parked: the spec needs a decision"
+echo
+exit "${SPAWN_TEST_DRIVER_EXIT:-20}"
+STUB
+chmod +x "$SB/bin/build-ticket-stub"
+export SPAWN_TEST_DRIVER_SEEN="$OUT/driver-seen"
+runout() { run "$@" > "$OUT/run.out"; out=$(cat "$OUT/run.out"); }   # keeps RC, which $(run …) would lose
+dseen() { sed -n "s/^$1=//p" "$OUT/driver-seen" 2>/dev/null; }
+rec_of() { ls "$STATE"/runs/claim-"$1"-*.json 2>/dev/null | head -1; }
+# The coordinator's own reader of a run's last word, lifted from the tick itself
+# so this asserts what the coordinator will actually read.
+eval "$(sed -n '/^final_line() {/,/^}/p' "$SUT_DIR/coordinator-tick.sh")"
+driver_wait() { # <ticket> — wait for that run's post-exit reconcile
+  local r=""
+  for _ in $(seq 1 60); do r=$(rec_of "$1"); [ -n "$r" ] && [ -f "${r%.json}.ended" ] && [ -s "$OUT/reconcile" ] && break; sleep 0.5; done
+  sleep 1
+}
+
+# 9a. SPAWN_RUNNER=driver: build-ticket runs detached, from the spawn root.
+rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
+out=$(SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" run 4901)
+driver_wait 4901
+REC=$(rec_of 4901); RID=$(basename "${REC:-none}" .json)
+[ -f "$OUT/driver-seen" ] && ok "driver mode runs build-ticket" || bad "driver mode never ran build-ticket: $out"
+[ "$(dseen args)" = 4901 ] && ok "build-ticket is given the ticket number" || bad "build-ticket args were '$(dseen args)', want 4901"
+[ "$(dseen claude.md)" = "CURRENT BRANCH" ] && ok "build-ticket runs from the branch's spawn root" \
+  || bad "build-ticket ran from '$(dseen cwd)' (CLAUDE.md '$(dseen claude.md)')"
+[ ! -f "$OUT/seen" ] && ok "driver mode does not start a claude -p /claim session" || bad "driver mode ALSO ran claude: $(seen args)"
+[ "$(jq -r '.exit_code' "$STATE/runs/$RID.ended" 2>/dev/null)" = 20 ] \
+  && ok "the run's .ended carries the driver's exit code (20 parked)" \
+  || bad "the .ended exit code was '$(jq -r '.exit_code' "$STATE/runs/$RID.ended" 2>/dev/null)', want 20"
+[ -s "$OUT/reconcile" ] && ok "the post-exit reconcile runs after a driver run" || bad "no reconcile after the driver run"
+[ "$(cat "$STATE/runs/$RID.child" 2>/dev/null)" = "$(jq -r '.child_pid' "$REC" 2>/dev/null)" ] && [ -n "$(cat "$STATE/runs/$RID.child" 2>/dev/null)" ] \
+  && ok "the driver's pid is the run's .child and the record's child_pid" || bad "the driver's pid was not recorded as the child"
+[ "$(dseen run)" = "$RID" ] && ok "the driver inherits the run id" || bad "the driver saw run id '$(dseen run)', want $RID"
+[ "$(jq -r '.runner // empty' "$REC" 2>/dev/null)" = driver ] && ok "the record names the runner" || bad "the record's runner was '$(jq -r '.runner // empty' "$REC" 2>/dev/null)'"
+[ "$(jq -c '.progress_paths' "$REC" 2>/dev/null)" = "[\"$STATE/driver/4901\"]" ] \
+  && ok "the record names the driver's per-ticket state dir as progress" \
+  || bad "progress_paths was '$(jq -c '.progress_paths' "$REC" 2>/dev/null)', want [\"$STATE/driver/4901\"]"
+LOGF="$STATE/logs/$RID.log"
+[ "$(final_line "$LOGF")" = "⏸ #4901 parked: the spec needs a decision" ] \
+  && ok "the coordinator reads the driver's last line as the run's verdict" \
+  || bad "the coordinator would read '$(final_line "$LOGF")' as the verdict"
+rl=$(grep -n '"type":"result"' "$LOGF" 2>/dev/null | head -1 | cut -d: -f1)
+pl=$(grep -n 'post-exit' "$LOGF" 2>/dev/null | head -1 | cut -d: -f1)
+[ -n "$rl" ] && [ -n "$pl" ] && [ "$rl" -lt "$pl" ] \
+  && ok "the verdict line is written before the post-exit sections" \
+  || bad "result line at ${rl:-none}, post-exit at ${pl:-none}"
+
+# 9b. harness.json swarm.runner selects it; SPAWN_RUNNER overrides it.
+jq '.swarm = {runner: "driver"}' "$STORE/.claude/harness.json" > "$SB/harness-driver.json"
+rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
+CFG_PATH="$SB/harness-driver.json" SPAWN_DRIVER="$SB/bin/build-ticket-stub" SPAWN_TEST_DRIVER_EXIT=0 run 4902 >/dev/null
+driver_wait 4902
+[ "$(dseen args)" = 4902 ] && [ ! -f "$OUT/seen" ] && ok "swarm.runner = driver in harness.json selects the driver" \
+  || bad "harness.json's swarm.runner did not select the driver"
+REC2=$(rec_of 4902)
+[ -n "$REC2" ] && [ "$(jq -r '.exit_code' "${REC2%.json}.ended" 2>/dev/null)" = 0 ] \
+  && ok "a walked driver run ends exit 0" || bad "a walked driver run did not record exit 0"
+rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
+CFG_PATH="$SB/harness-driver.json" SPAWN_RUNNER=claim SPAWN_DRIVER="$SB/bin/build-ticket-stub" run 4903 >/dev/null
+for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
+[ -f "$OUT/seen" ] && [ ! -f "$OUT/driver-seen" ] && ok "SPAWN_RUNNER=claim overrides harness.json" \
+  || bad "SPAWN_RUNNER=claim did not override swarm.runner = driver"
+driver_wait 4903
+[ "$(jq -r 'has("runner") or has("progress_paths")' "$(rec_of 4903)" 2>/dev/null)" = false ] \
+  && ok "a claim run's record is the claim record, with no driver fields" || bad "a claim run's record carries driver fields"
+
+# 9c. a briefed spawn refuses by name: the driver has no brief input.
+rm -f "$OUT/seen" "$OUT/driver-seen"
+CLAIM_EXTRA="Resume brief: push the branch" SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4904
+[ "$RC" -ne 0 ] && ok "a briefed spawn in driver mode exits non-zero" || bad "a briefed spawn in driver mode exited 0"
+printf '%s' "$out" | grep -q 'brief' && ok "and names the brief as the reason" || bad "the refusal does not name the brief: $out"
+sleep 1
+[ ! -f "$OUT/driver-seen" ] && [ ! -f "$OUT/seen" ] && [ -z "$(rec_of 4904)" ] \
+  && ok "and spawns nothing — no driver, no /claim fallback, no run record" || bad "a refused briefed spawn still started something"
+
+# 9d. no ticket refuses by name: build-ticket needs a number.
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout
+[ "$RC" -ne 0 ] && ok "a no-ticket spawn in driver mode exits non-zero" || bad "a no-ticket spawn in driver mode exited 0"
+printf '%s' "$out" | grep -q 'ticket' && ok "and names the missing ticket as the reason" || bad "the refusal does not name the ticket: $out"
+sleep 1
+[ ! -f "$OUT/driver-seen" ] && [ ! -f "$OUT/seen" ] && [ -z "$(rec_of next)" ] \
+  && ok "and spawns nothing" || bad "a refused no-ticket spawn still started something"
+
+# 9e. a runner nobody knows refuses by name, rather than guessing one.
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_RUNNER=drvier SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4905
+[ "$RC" -ne 0 ] && printf '%s' "$out" | grep -q 'drvier' && ok "an unknown runner refuses, naming the value" \
+  || bad "an unknown runner was not refused by name (rc $RC): $out"
+sleep 1
+[ ! -f "$OUT/driver-seen" ] && [ ! -f "$OUT/seen" ] && ok "and spawns nothing" || bad "an unknown runner still started something"
+
+# 9f. --fg in driver mode walks the driver in the foreground, not an interactive /claim.
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout --fg 4906
+[ "$(dseen args)" = 4906 ] && [ ! -f "$OUT/seen" ] && ok "--fg in driver mode runs build-ticket in the foreground" \
+  || bad "--fg in driver mode did not run the driver: $out"
+printf '%s' "$out" | grep -q 'parked' && ok "and its output is the terminal's" || bad "--fg driver output did not reach the terminal: $out"
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"
