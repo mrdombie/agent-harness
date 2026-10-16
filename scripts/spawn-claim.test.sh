@@ -74,6 +74,9 @@ mkdir -p "$UP/scripts"
 cat > "$UP/scripts/spawn-claim.sh" <<'MARK'
 #!/usr/bin/env bash
 printf 'branch copy ran\n' > "$SPAWN_TEST_MARKER"
+# As the project's own spawner does: a print-mode claude, whatever flags it knows.
+[ -n "${SPAWN_TEST_HANDOVER:-}" ] && claude -p "handed over" --permission-mode auto
+exit 0
 MARK
 chmod +x "$UP/scripts/spawn-claim.sh"
 G -C "$UP" init -q . 2>/dev/null || G -C "$UP" init -q
@@ -97,7 +100,7 @@ G -C "$STORE" fetch -q origin develop
 
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
-cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" \
+cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-mcp.sh" \
    "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
@@ -155,7 +158,7 @@ run() { # [args...] — invoke the spawner from the STALE tree, as the operator 
   SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" SPAWN_TEST_RECONCILE="$OUT/reconcile" SPAWN_TEST_CAFF="$OUT/caff" \
   PATH="$SB/bin:$PATH" \
   HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
-  HARNESS_CFG_PATH="${CFG_PATH:-$STORE/.claude/harness.json}" \
+  HARNESS_CFG_PATH="${CFG:-$STORE/.claude/harness.json}" \
   HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
   SPAWN_CLAIM_CANONICAL="${CANON-1}" TMPDIR="$SB" \
   bash "$SUT/spawn-claim.sh" "$@" 2>&1 || RC=$?
@@ -402,7 +405,7 @@ pl=$(grep -n 'post-exit' "$LOGF" 2>/dev/null | head -1 | cut -d: -f1)
 # 9b. harness.json swarm.runner selects it; SPAWN_RUNNER overrides it.
 jq '.swarm = {runner: "driver"}' "$STORE/.claude/harness.json" > "$SB/harness-driver.json"
 rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
-CFG_PATH="$SB/harness-driver.json" SPAWN_DRIVER="$SB/bin/build-ticket-stub" SPAWN_TEST_DRIVER_EXIT=0 run 4902 >/dev/null
+CFG="$SB/harness-driver.json" SPAWN_DRIVER="$SB/bin/build-ticket-stub" SPAWN_TEST_DRIVER_EXIT=0 run 4902 >/dev/null
 driver_wait 4902
 [ "$(dseen args)" = 4902 ] && [ ! -f "$OUT/seen" ] && ok "swarm.runner = driver in harness.json selects the driver" \
   || bad "harness.json's swarm.runner did not select the driver"
@@ -410,7 +413,7 @@ REC2=$(rec_of 4902)
 [ -n "$REC2" ] && [ "$(jq -r '.exit_code' "${REC2%.json}.ended" 2>/dev/null)" = 0 ] \
   && ok "a walked driver run ends exit 0" || bad "a walked driver run did not record exit 0"
 rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
-CFG_PATH="$SB/harness-driver.json" SPAWN_RUNNER=claim SPAWN_DRIVER="$SB/bin/build-ticket-stub" run 4903 >/dev/null
+CFG="$SB/harness-driver.json" SPAWN_RUNNER=claim SPAWN_DRIVER="$SB/bin/build-ticket-stub" run 4903 >/dev/null
 for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
 [ -f "$OUT/seen" ] && [ ! -f "$OUT/driver-seen" ] && ok "SPAWN_RUNNER=claim overrides harness.json" \
   || bad "SPAWN_RUNNER=claim did not override swarm.runner = driver"
@@ -468,6 +471,38 @@ SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout --fg 4906
 [ "$(dseen args)" = 4906 ] && [ ! -f "$OUT/seen" ] && ok "--fg in driver mode runs build-ticket in the foreground" \
   || bad "--fg in driver mode did not run the driver: $out"
 printf '%s' "$out" | grep -q 'parked' && ok "and its output is the terminal's" || bad "--fg driver output did not reach the terminal: $out"
+
+# --- 10. A builder loads only the MCP servers on the builder list --------------
+# Each builder started its own ms365, Railway and Playwright servers, 434-538 MB a
+# builder, and used none of them. The list is swarm.builderMcpServers, {} unless set.
+mcp_of() { # <args line> — what the run can load: ALL when not strict, else the config's server names
+  local a="$1" f
+  case " $a " in *" --strict-mcp-config "*) ;; *) echo ALL; return ;; esac
+  f=$(printf '%s' "$a" | sed -n 's/.*--mcp-config \([^ ]*\).*/\1/p')
+  [ -f "$f" ] || { echo "no config at '$f'"; return; }
+  jq -r '.mcpServers | keys | join(",")' "$f"
+}
+# The whole argv: a detached prompt runs over several lines, and the flags follow it.
+seen_args() { sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' '; }
+wait_seen() { for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done; }
+rm -f "$OUT/seen"; run 4911; wait_seen
+got=$(mcp_of "$(seen_args)")
+[ -z "$got" ] && ok "a detached builder loads no MCP server when the list is empty" \
+              || bad "a detached builder can load '$got', want none: $(seen args)"
+rm -f "$OUT/seen" "$OUT/marker"; SPAWN_TEST_HANDOVER=1 CANON="" run 4912; wait_seen
+[ -f "$OUT/marker" ] || bad "the hand-over case never reached the branch copy"
+got=$(mcp_of "$(seen_args)")
+[ -z "$got" ] && ok "handed over to the project's own spawner, the builder still loads none" \
+              || bad "after the hand-over the builder can load '$got', want none: $(seen args)"
+jq '.swarm = {builderMcpServers: {railway: {command: "railway", args: ["mcp"]}}}' "$STORE/.claude/harness.json" > "$SB/cfg-mcp.json"
+rm -f "$OUT/seen"; CFG="$SB/cfg-mcp.json" run 4913; wait_seen
+got=$(mcp_of "$(seen_args)")
+[ "$got" = railway ] && ok "a server on the list is loaded, and only that one" \
+                     || bad "with railway listed the builder can load '$got': $(seen args)"
+rm -f "$OUT/seen"; run --fg 4914
+got=$(mcp_of "$(seen_args)")
+[ "$got" = ALL ] && ok "an interactive session keeps every server" \
+                 || bad "the --fg session was limited to '$got'"
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"

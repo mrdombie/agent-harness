@@ -328,11 +328,25 @@ to a file. Each judgement event gets one fresh `claude -p` with a short brief
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
 it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
-hook when any window hits the plan's limit) says the limit holds.
+hook when any window hits the plan's limit) says the limit holds, nor while the
+newest run's usage reading puts a window at `swarm.usageCeiling` or over.
+`spawn-claim.sh` itself refuses (exit 75) under the same hold, so no other
+spawner can start a run into the wall either, and no judge starts during it. A
+run the limit or a lost login cut off goes back to the front of the queue with
+its worktree and session named, to resume rather than start over.
+
+A tick is the starts. The merge lane, reconcile, the sweeps, the disk pass and
+the judge run in `coordinator-housekeeping.sh`, in the background once the
+starts are made, under a lock of their own and at most every
+`coordinator.housekeepingEveryMin` (default 5). A run whose last word is a wait
+on a human (its status table's "Waiting for" row names you, a sign-off or an
+approval, or it says it has no question tool) is not picked again until the
+wait moves: a label on the ticket or its PR, a new commit, a comment, or a red
+check. The tick log says `skip #N: waiting on a human since run …` until then.
 
 ```sh
 scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # tickets, labels or programme subjects; a list is their union
-swarm/install.sh coordinator                # every 5 minutes; SHADOW unless COORDINATOR_SHADOW=0
+swarm/install.sh coordinator                # every 2 minutes; SHADOW unless COORDINATOR_SHADOW=0
 scripts/coordinator-compare.sh --since <ISO>  # the shadow's calls beside the loop's runs
 swarm/install.sh uninstall coordinator
 ```

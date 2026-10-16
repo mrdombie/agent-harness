@@ -17,6 +17,8 @@ case "$*" in
   *"pr view 101"*) echo t-100/first ;;
   *"pr view 202"*) echo t-200/work ;;
   *"pr view https://github.com/o/r/pull/202"*) echo t-200/work ;;
+  *"issue view 300"*) printf 'Batch: one screen\n**Children (2):** #301, #302\n\nList the children as `Rolled in: #301, #302`.\n' ;;
+  *"issue view 200"*) printf 'One fix.\n' ;;
   *) exit 1 ;;
 esac
 GH
@@ -110,6 +112,10 @@ check allow "a release branch is not a ticket"          "gh pr create --head rel
 check allow "no body set"                               "gh pr edit 202 --add-label needs:review"
 check allow "a branch that names no ticket"             "gh pr create --head hooks/tidy --body 'Closes #100'"
 check allow "another repo's ticket"                     "gh pr create --head t-200/work --body 'Closes other/repo#100 and closes #200'"
+# A batch ticket's PR closes the children its ticket lists, and nothing else.
+check allow "a batch PR closes the children its ticket lists" "gh pr create --head t-300/batch --body 'Closes #300, closes #301, closes #302'"
+check deny  "a batch PR closing a ticket its list does not name" "gh pr create --head t-300/batch --body 'Closes #300, closes #301, closes #303'"
+check deny  "a ticket with no child list closes no other"   "gh pr create --head t-200/work --body 'Closes #200, closes #301'"
 check allow "gh pr create quoted inside a heredoc"      "cat <<'EOF'
 gh pr create --head t-200/work --body 'Closes #100'
 EOF"

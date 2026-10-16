@@ -27,7 +27,6 @@ the forge and the state directory are the state.
 - **Prefer the existing tools.** A ticket needs an agent: add it to the queue
   (`bash "$KIT_ROOT/scripts/coordinator-queue.sh" add <n> --class repair|approved-merge|new --note "<why>"`)
   and let the next tick spawn it under the cap. Do not spawn agents yourself.
-- **Usage limit.** Spawn nothing; note when the limit resets; exit.
 - **Frozen run.** Read the end of its log. A run waiting on nothing is stuck:
   re-queue it with a note, or log it as agent work. Kill nothing you did not start.
 - **Stood-down run.** Read its last result line and the ticket's newest

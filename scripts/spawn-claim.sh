@@ -30,6 +30,21 @@ PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
 # The queue class the coordinator spawned it for, so a later tick can count runs by class.
 CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 
+# Every spawner passes here before the hand-over below, so the plan's limit is checked once for all of them.
+case " $* " in *" --fg "*) ;; *)
+  if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/../swarm/swarm-env.sh" ] \
+     && _hold=$(bash -c '. "$1" >/dev/null 2>&1 || exit 1; swarm_usage_hold && printf " — from %s" "$(swarm_usage_hold_source)"' _ "$SCRIPT_DIR/../swarm/swarm-env.sh"); then
+    echo "spawn-claim: the plan's usage limit holds until ${_hold} — not spawning" >&2
+    exit 75
+  fi ;;
+esac
+
+# A builder loads only the MCP servers it uses, also when the project's own copy below takes over.
+case " $* " in *" --fg "*) ;; *)
+  { . "$SCRIPT_DIR/builder-mcp.sh" && builder_mcp_shim; } 2>/dev/null \
+    || echo "spawn-claim: could not limit the builder's MCP servers — it loads every one" >&2 ;;
+esac
+
 # The spawner refreshes ITSELF, not only the agent's tree. It is reached through a
 # shell function pointing at one copy on the operator's machine, and that copy is
 # what went stale first — three days old on 2026-09-27, cd'ing every agent into a

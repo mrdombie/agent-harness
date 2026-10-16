@@ -69,6 +69,7 @@ SWARM_LIVE_URL="${SWARM_LIVE_URL:-$(swarm_opt swarm.liveUrl "http://127.0.0.1:$S
 SWARM_STATUS_REPO="${SWARM_STATUS_REPO:-$(swarm_opt swarm.statusRepo "")}"
 SWARM_REPORT_URL="${SWARM_REPORT_URL:-$(swarm_opt swarm.reportUrl "")}"
 SWARM_BUDGET_USD="${SWARM_BUDGET_USD:-$(swarm_opt swarm.budgetUsd 150)}"
+SWARM_USAGE_CEILING="${SWARM_USAGE_CEILING:-$(swarm_opt swarm.usageCeiling 0.95)}"
 SWARM_GH="${SWARM_GH:-gh}"
 SWARM_CURL="${SWARM_CURL:-curl}"
 SWARM_SPAWN="${SWARM_SPAWN:-$KIT_ROOT/scripts/spawn-claim.sh}"
@@ -146,8 +147,9 @@ swarm_usage_event_hold() {
   printf '%s (%s window)' "$(swarm_iso "$epoch")" "$kind"
 }
 
-# The CLI's own limit signals, one row each: `<line>\trejected\t<epoch>\t<window>` or
-# `<line>\terror\t<text>`. The same sentence inside a tool result is a quote, never a wall.
+# The CLI's own limit signals, one row each: `<line>\trejected\t<epoch>\t<window>`,
+# `<line>\twindow\t<epoch>\t<window>\t<utilization>`, `<line>\terror\t<text>` or
+# `<line>\tauth\t<text>`. The same sentence inside a tool result is a quote, never a wall.
 swarm_usage_cli_events() { # <log>
   grep -nE '"type":"(rate_limit_event|result)"|"model":"<synthetic>"' "$1" 2>/dev/null \
   | jq -rR 'capture("^(?<n>[0-9]+):(?<j>.*)$") as $c | ($c.j | fromjson?) as $e
@@ -156,8 +158,13 @@ swarm_usage_cli_events() { # <log>
           [$c.n, "rejected", ($e.rate_limit_info.resetsAt | tostring), ($e.rate_limit_info.rateLimitType // "")]
         elif $e.type == "result" and $e.is_error == true and ($e.result | type) == "string" then
           [$c.n, "error", $e.result]
+        elif $e.type == "rate_limit_event" then
+          ($e.rate_limit_info.unifiedWindows // {} | to_entries[]
+           | select((.value.resetsAt | type) == "number" and (.value.utilization | type) == "number")
+           | [$c.n, "window", (.value.resetsAt | tostring), .key, (.value.utilization | tostring)])
         elif $e.type == "assistant" and $e.message.model == "<synthetic>" and ($e.error // "") != "" then
-          [$c.n, "error", ([$e.message.content[]? | select(.type == "text") | .text] | join(" "))]
+          ([$c.n, "error", ([$e.message.content[]? | select(.type == "text") | .text] | join(" "))],
+           (if $e.error == "authentication_failed" then [$c.n, "auth", ($e.message.content[0].text // "")] else empty end))
         else empty end
       | map(gsub("[\t\n]"; " ")) | join("\t")' 2>/dev/null
 }
@@ -210,6 +217,31 @@ swarm_usage_log_limited() { # <log>
   swarm_usage_cli_events "$1" \
     | awk -F'\t' '$2=="rejected" || ($2=="error" && $3 ~ /hit your (session|weekly) limit/){f=1} END{exit !f}'
 }
+# Did this run stop because the CLI lost its login.
+swarm_login_log_lost() { # <log>
+  swarm_usage_cli_events "$1" | awk -F'\t' '$2=="auth"{f=1} END{exit !f}'
+}
+
+# A window already at swarm.usageCeiling: a run started now dies at the wall mid-work.
+swarm_usage_near_hold() {
+  local newest rows last pick now
+  newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
+  [ -n "$newest" ] || return 1
+  rows=$(swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="window"')
+  [ -n "$rows" ] || return 1
+  last=$(printf '%s\n' "$rows" | tail -1 | cut -f1)
+  now=$(swarm_now)
+  pick=$(printf '%s\n' "$rows" | awk -F'\t' -v l="$last" -v c="$SWARM_USAGE_CEILING" -v now="$now" '
+    $1 == l && $5 + 0 >= c + 0 && $3 + 0 > now + 0 && $3 + 0 > best + 0 { best = $3; w = $4; u = $5 }
+    END { if (best) printf "%s\t%s\t%d", best, w, u * 100 + 0.5 }')
+  [ -n "$pick" ] || return 1
+  if [ "${SWARM_USAGE_WHY:-0}" = 1 ]; then
+    printf 'usage at %s%% of the %s window, %s line %s' "$(printf '%s' "$pick" | cut -f3)" \
+      "$(printf '%s' "$pick" | cut -f2)" "$(basename "$newest")" "$last"; return 0
+  fi
+  printf '%s (%s window at %s%%)' "$(swarm_iso "$(printf '%s' "$pick" | cut -f1)")" \
+    "$(printf '%s' "$pick" | cut -f2)" "$(printf '%s' "$pick" | cut -f3)"
+}
 # ---- cli-signal reader: end ------------------------------------------------
 
 # A window that hit the wall: hooks/usage-limit.sh (StopFailure) writes
@@ -229,7 +261,7 @@ swarm_usage_file_hold() {
   printf '%s (recorded by a window)' "$(swarm_iso "$e")"
 }
 
-swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_text_hold; }
+swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_near_hold || swarm_usage_text_hold; }
 # Where the hold swarm_usage_hold answers came from: the file, or the log and line.
 swarm_usage_hold_source() { SWARM_USAGE_WHY=1 swarm_usage_hold; }
 
@@ -311,11 +343,14 @@ swarm_running_total() {
 }
 
 # ---- tickets -----------------------------------------------------------------
+# A ticket rolled into a batch ticket: the batch's one PR builds it, so no agent starts it alone.
+LBL_BATCHED="${LBL_BATCHED:-$(swarm_opt labels.batched status:batched)}"
+export LBL_BATCHED
 # The statuses that mean "a person or another PR owns this; never send an agent".
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 
@@ -391,5 +426,5 @@ swarm_ping_page() {
 }
 
 export SWARM_DIR SWARM_HOLD_FILE SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MIN_CPU_IDLE SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
-export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_GH SWARM_CURL SWARM_SPAWN
+export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_USAGE_CEILING SWARM_GH SWARM_CURL SWARM_SPAWN
 export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC

@@ -46,6 +46,8 @@ chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify" "$BIN/fixlock
 export COORDINATOR_FIX_LOCK="$BIN/fixlock"
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
+# Housekeeping in line and every tick, so each case reads what it did when the tick returns.
+export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
 unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
@@ -324,6 +326,11 @@ want "only the free one spawns"            "504" "$(spawned)"
 want_in "claimed is named"                 'skip #501 \(new\): claimed' "$out"
 want_in "gated is named"                   'skip #502 \(new\): status:gated' "$out"
 want_in "the hold label is named"          'skip #503 \(new\): needs:human-approval' "$out"
+# A child of a batch ticket is built by the batch's one PR, never on its own.
+fresh; queue 505 506; fix_issue 505 OPEN "status:ready,status:batched"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a batched child is never started alone" "506" "$(spawned)"
+want_in "and the skip names the batch label" 'skip #505 \(new\): status:batched' "$out"
 fresh; queue 501
 printf 'owner said stop\n' > "$STATE/swarm/HOLD"
 out=$(COORDINATOR_SHADOW=0 tick)
@@ -511,6 +518,75 @@ tick >/dev/null
 want "each ended run is read once"         "4" "$(grep -c 'ended' "$C/runs.log")"
 rm -f "$STATE/logs/claim-803-x.log" "$STATE/logs/claim-804-x.log"
 
+echo "--- a run the wall cut off goes back to the front of the queue, judged by no model ---"
+# claim-12987's shape (2026-10-15): cut at the session limit 11 minutes in, its
+# ticket released to ready and never queued again, its worktree left behind.
+cut_run() { # <ticket> <log line…> — a run that ended with these events
+  local t="$1"; shift
+  printf '{"run_id":"claim-%s-cut","ticket":"%s","log":"%s"}\n' "$t" "$t" "$STATE/logs/claim-$t-cut.log" > "$STATE/runs/claim-$t-cut.json"
+  { printf '{"type":"system","subtype":"init","session_id":"sess-%s"}\n' "$t"; printf '%s\n' "$@"; } > "$STATE/logs/claim-$t-cut.log"
+  printf '/wt/%s-branch\n' "$t" > "$STATE/runs/claim-$t-cut.worktrees"
+  printf '{"run_id":"claim-%s-cut","exit_code":1}\n' "$t" > "$STATE/runs/claim-$t-cut.ended"
+}
+PAST=$(( $(date +%s) - 60 ))
+wall="{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":$PAST,\"rateLimitType\":\"five_hour\"}}"
+said='{"type":"result","is_error":true,"result":"You have hit your session limit · resets 7pm"}'
+fresh
+queue 900
+bash "$Q" add 805 --note "judge: the unit test is not its own" >/dev/null
+fix_issue 805 OPEN "status:ready"
+cut_run 805 "$wall" "$said"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "the cut run is the first start, ahead of work queued before it" "805" "$(spawned | cut -d' ' -f1)"
+brief=$(grep '^805' "$SPAWNS")
+want_in "its brief says resume, not start over" "Resume: run claim-805-cut was cut off by the plan's usage limit" "$brief"
+want_in "it names the worktree"            "Its worktree: /wt/805-branch" "$brief"
+want_in "and the session"                  "Its session: sess-805" "$brief"
+want_in "an earlier note survives"         "Earlier note: judge: the unit test is not its own" "$brief"
+want_in "the limit stop is still an event" '"kind":"usage-limit".*"judge":false.*"ticket":"805"' "$(cat "$C/events.did.jsonl")"
+COORDINATOR_SHADOW=0 bash "$HERE/coordinator-judge.sh" >/dev/null 2>&1; sleep 0.3
+want "and no model is started to judge it" "" "$(cat "$FIX/claude.log")"
+
+fresh
+fix_issue 806 OPEN "status:in-review"
+jq -n '[{number:61, headRefName:"tkt-806-x", headRefOid:"sha61", isDraft:true, labels:[], mergeStateStatus:"CLEAN", statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+cut_run 806 "$wall" "$said"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want_in "a cut run with an open PR comes back as a repair" "Coordinator note \(repair\): Resume: run claim-806-cut" "$(grep '^806' "$SPAWNS")"
+
+fresh
+fix_issue 807 CLOSED "status:done"
+cut_run 807 "$wall" "$said"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a closed ticket is not re-queued"    "" "$(jq -r '.tickets[]? | select(.n==807) | .n' "$C/queue.json" 2>/dev/null)"
+want_in "and the tick says so"             'cut: #807 is CLOSED' "$out"
+
+fresh
+cut_run 808 "$wall" "$said"
+out=$(COORDINATOR_SHADOW=0 tick)
+want_in "an unreadable ticket is tried again" 'cut: #808 could not be read' "$out"
+fix_issue 808 OPEN "status:ready"
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "next tick it is queued, or already started" "808" "$( { jq -r '.tickets[]? | select(.n==808) | .n' "$C/queue.json"; spawned; } | grep -m1 808)"
+
+fresh
+fix_issue 809 OPEN "status:ready"
+cut_run 809 '{"type":"assistant","error":"authentication_failed","message":{"model":"<synthetic>","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}' \
+  '{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}'
+out=$(COORDINATOR_SHADOW=0 tick)
+want_in "a lost login is its own event"    '"kind":"login-lost".*"ticket":"809"' "$(cat "$C/events.did.jsonl")"
+want_in "it goes back on the queue to resume" "cut off by a lost login" "$(grep '^809' "$SPAWNS"; jq -r '.tickets[]? | select(.n==809) | .note' "$C/queue.json")"
+want_in "the owner hears that only a /login fixes it" "/login" "$(cat "$FIX/notify.log")"
+want "a login stop is not a stand-down"    "0" "$(grep -c '"kind":"stood-down".*"809"' "$C/events.did.jsonl")"
+
+fresh
+fix_issue 810 OPEN "status:ready"
+cut_run 810 "$wall" "$said"
+out=$(tick)
+want_in "shadow says what it would re-queue" 'would re-queue #810 \(new\) at the front' "$out"
+want "and queues nothing"                  "" "$(jq -r '.tickets[]? | select(.n==810) | .n' "$C/queue.json" 2>/dev/null)"
+rm -f "$STATE"/logs/claim-80?-cut.log "$STATE"/logs/claim-810-cut.log
+
 echo "--- pull requests: red is judged, green pixels go to the owner in batches ---"
 pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState] — the hold's own gate is red while held
   jq -n --argjson n "$1" --arg b "tkt-$2-x" --arg l "$3" --arg c "$4" --arg m "${5:-CLEAN}" \
@@ -664,6 +740,8 @@ want "one judge for one event"             "1" "$(grep -c ^ARGV "$FIX/claude.log
 want_in "it has a turn cap"                '\[--max-turns\] \[40\]' "$argv"
 want_in "it has a budget"                  '\[--max-budget-usd\] \[5\]' "$argv"
 want "its compact window is bounded"       "COMPACT=150000" "$(grep ^COMPACT "$FIX/claude.log")"
+want_in "it loads only the builder's MCP servers" '\[--strict-mcp-config\] \[--mcp-config\] \[[^]]*builder-mcp\.json\]' "$argv"
+want "and the builder list is empty unless set" "" "$(jq -r '.mcpServers | keys | join(",")' "$STATE/swarm/builder-mcp.json" 2>&1)"
 want_in "the brief carries the one event"  'red-pr:41:sha41' "$argv"
 want_not_in "it never resumes a session"   '\[--(resume|continue)\]|\[-c\]|\[-r\]' "$argv"
 COORDINATOR_SHADOW=0 tick >/dev/null
