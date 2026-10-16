@@ -417,6 +417,29 @@ EOF
 each starting `/`, ended by a blank line. Delete the section on a diff that changes
 nothing a user sees.
 
+**A part of a screen gets a part block.** When the PR rebuilds ONE region of a
+screen that other tickets are also rebuilding — the ticket names a region of an
+approved picture, or sibling tickets share the screen or the epic — add this to
+the body. The sign-off reads it (`needsme-watch.sh card`) to tell the owner which
+card of how many this is, that the rest of the page is the old version, and which
+siblings are live; without it they judge old cards against the new design.
+
+```
+## Part of a screen
+<!-- part:begin -->
+Screen: <screen name, as the owner calls it>
+Part: <N> of <M>
+Region: <the region, as the picture labels it>
+Anchor: <the element id of the region on the page and in the picture, if it has one>
+Picture: <the approved picture URL>
+Siblings: #<ticket> #<ticket> …   (every other ticket rebuilding this screen)
+Region shot: <SHA-pinned blob link of the region alone, once CI has pinned it>
+<!-- part:end -->
+```
+
+Put the region's route with its anchor first in `## Evidence routes`
+(`/home#team`), so the first shot is the region; the full page is secondary.
+
 If you find yourself wanting to add a "deferred to follow-up" line under AC, **stop**. That's a partial, which the rule forbids — keep working OR open new properly-sized tickets for the deferred work.
 
 **Epic-mode PR shape (#3572):** title is `#NNNN slice k/M: <slice title>`; the AC list in the body is the SLICE's AC (from the state file), not the epic's; and the closing line is `Part of #NNNN` — never `Closes`. GitHub's auto-close linking must not see this PR as closing the epic.
