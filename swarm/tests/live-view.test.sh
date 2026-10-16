@@ -151,4 +151,16 @@ s=$(snap)
 want "the CLI's own error result is a service death" "true" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="801") | .infra')"
 want "a report quoting one is not"                   "false" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="802") | .infra')"
 
+echo "--- a ticket with no project label still renders, and the page survives it ---"
+# A ticket with a colon in its title and no project: label handed an empty name
+# to plainName, which read ''[0] and threw. The throw escaped the request
+# handler and killed the server, so one unlabelled ticket took the live view
+# down for every viewer.
+run 901 "$$"
+printf '{"901":{"title":"Pre-push: drop the typecheck legs","project":""}}' > "$FIX/titles.json"
+s=$(snap 2>&1)
+want "the snapshot is still JSON"   "1" "$(printf '%s' "$s" | jq '[.live[] | select(.ticket=="901")] | length' 2>/dev/null || echo threw)"
+want "its card is named by the clause before the colon" "Pre-push" "$(printf '%s' "$s" | jq -r '.live[] | select(.ticket=="901") | .short' 2>/dev/null)"
+rm -f "$FIX/titles.json"
+
 exit $FAILED
