@@ -343,4 +343,56 @@ if ls "$H/Library/LaunchAgents/"agent-harness.swarm.scheduler.*.plist >/dev/null
 want_in "and loaded with launchctl"         '^load .*agent-harness\.swarm\.scheduler\.' "$(cat "$SYS2")"
 want "systemctl was never asked"            "0" "$(grep -c . "$SDLOG")"
 
+echo "--- a crontab line left from before systemd answered is not hidden (#168 review) ---"
+dead() { SWARM_UNAME=Linux SWARM_SYSTEMCTL="$BIN/systemctl-dead" SWARM_CRONTAB="$BIN/crontab" bash "$I" "$@" >/dev/null 2>&1; }
+COORDINATOR_SHADOW=0 dead coordinator
+want "setup: a live coordinator in crontab" "1" "$(grep -c 'COORDINATOR_SHADOW=0.*coordinator-tick' "$FIX/crontab")"
+st=$(sd status)
+want_in "status names the stray crontab line" '^coordinator +.*crontab' "$st"
+out=$(sd uninstall coordinator)
+want "uninstall under systemd removes the crontab line" "0" "$(grep -c 'coordinator-tick' "$FIX/crontab")"
+want_in "and says so"                       'removed .*coordinator.* from crontab' "$out"
+want_not_in "it does not claim nothing was there" 'was not installed' "$out"
+want "the owner's line survives"            "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
+COORDINATOR_SHADOW=0 dead coordinator; dead merge-lane
+sd coordinator >/dev/null; sd merge-lane >/dev/null
+want "a systemd install replaces the crontab line" "0" "$(grep -c 'coordinator-tick' "$FIX/crontab")"
+want "so exactly one scheduler: the timer"  "1" "$(ls "$UD" | grep -c 'swarm\.coordinator\..*\.timer$')"
+want "the lane too"                         "0 1" "$(grep -c 'merge-lane.sh' "$FIX/crontab") $(ls "$UD" | grep -c 'swarm\.merge-lane\..*\.timer$')"
+sd uninstall >/dev/null
+
+echo "--- the timers keep their interval to the second ---"
+want_in "AccuracySec is 1s"                 '^AccuracySec=1s$' "$(sd --print merge-lane)"
+
+echo "--- on WSL, linger is not enough: the instance must stay up ---"
+printf 'Linux version 6.6.0-microsoft-standard-WSL2 (gcc)\n' > "$FIX/version-wsl"
+printf 'Linux version 6.6.0-generic (gcc)\n' > "$FIX/version-plain"
+out=$(SWARM_PROC_VERSION="$FIX/version-wsl" sd coordinator)
+want_in "WSL: it says the instance must stay up" 'WSL.*vmIdleTimeout' "$out"
+want "in one line"                          "1" "$(grep -c 'vmIdleTimeout' <<<"$out")"
+want_not_in "not WSL: no such line"         'vmIdleTimeout' "$(SWARM_PROC_VERSION="$FIX/version-plain" sd coordinator)"
+sd uninstall coordinator >/dev/null
+
+echo "--- a failed enable says which unit and why ---"
+cat > "$BIN/systemctl-noenable" <<SH
+#!/usr/bin/env bash
+[ "\$2" = enable ] && { echo "Failed to enable unit: boom" >&2; exit 1; }
+exec "$BIN/systemctl" "\$@"
+SH
+chmod +x "$BIN/systemctl-noenable"
+out=$(SWARM_UNAME=Linux SWARM_SYSTEMCTL="$BIN/systemctl-noenable" SWARM_LOGINCTL="$BIN/loginctl" SWARM_SYSTEMD_DIR="$UD" \
+      bash "$I" scheduler 2>&1); rc=$?
+want "it fails"                             "1" "$rc"
+want_in "it names the unit"                 'install: systemctl --user enable agent-harness\.swarm\.scheduler\..*\.timer failed' "$out"
+want_in "with systemctl's own reason"       'boom' "$out"
+sd uninstall scheduler >/dev/null
+
+echo "--- the PATH frozen into the unit must find the tools ---"
+mkdir -p "$FIX/tools"; for b in claude node; do printf '#!/bin/sh\n' > "$FIX/tools/$b"; chmod +x "$FIX/tools/$b"; done
+out=$(PATH="$FIX/tools:$BIN:/usr/bin:/bin" sd scheduler)
+want_not_in "all found: no warning"         'not on the PATH' "$out"
+out=$(PATH="$BIN:/usr/bin:/bin" sd scheduler)
+want_in "a missing tool is named"           'install: .*claude.* not on the PATH' "$out"
+sd uninstall scheduler >/dev/null
+
 exit $FAILED
