@@ -50,6 +50,38 @@ printf '%s\tYou have hit your session limit\n' "$SOON" > "$STATE/usage-hold"
 want_in "a window's record names the file and its words" "^file $STATE/usage-hold: You have hit your session limit" "$(source_of)"
 rm -f "$STATE/usage-hold"
 
+echo "--- a hold ends when its source says it ends ---"
+# claim-12789's shape (2026-10-16): the CLI's rejection resetting 20 Oct 19:00Z,
+# then its own error text naming the same wall by date. Dated wording always
+# holds, and every spawn checks the hold first, so no newer log would replace it.
+real_wall() { # <resetsAt>
+  local said="You've hit your weekly limit · resets Oct 20 at 8pm (Europe/London)"
+  { printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s,"rateLimitType":"seven_day"}}\n' "$1"
+    jq -nc --arg t "$said" '{type:"assistant",error:"rate_limit",message:{model:"<synthetic>",content:[{type:"text",text:$t}]}}'
+    jq -nc --arg t "$said" '{type:"result",is_error:true,result:$t}'; } > "$LOG"
+}
+RESET=1792522800
+AFTER=$(( RESET + 16 * 86400 )); BEFORE=$(( RESET - 3600 ))
+real_wall "$RESET"
+u=$(SWARM_NOW=$BEFORE hold) && ok "before its reset the wall holds ($u)" || bad "before its reset the wall held nothing"
+if u=$(SWARM_NOW=$AFTER hold); then bad "on 5 Nov the 20 Oct wall still holds: $u"; else ok "after its reset the wall holds nothing"; fi
+hs() { bash "${1:-$KIT}/swarm/hold-status.sh"; }
+want "the live view's banner agrees it ended" "false" "$(SWARM_NOW=$AFTER hs | jq -r .held)"
+want "and agrees it held before"              "true"  "$(SWARM_NOW=$BEFORE hs | jq -r .held)"
+# Plant: the event's word ignored, so the dated text holds after the reset.
+P2="$FIX/kit2"; mkdir -p "$P2"; cp -R "$KIT/swarm" "$KIT/scripts" "$P2/"
+python3 - "$P2/swarm/swarm-env.sh" <<'PY' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+lines = s.split("\n")
+keep = [l for l in lines if not ('"rejected"{f=1}' in l and "return 1" in l)]
+if len(keep) != len(lines) - 1: sys.exit(1)
+open(p, "w").write("\n".join(keep))
+PY
+grep '"rejected"{f=1}' "$P2/swarm/swarm-env.sh" | grep -q 'return 1' && bad "plant: the check is still in the copy"
+if u=$(SWARM_NOW=$AFTER hold "$P2"); then ok "planted: the event ignored → still holds on 5 Nov ($u) → red"
+else bad "planted: the event ignored and the wall still ends → the test cannot see it"; fi
+
 echo "--- plant: delete the exclusion and the quote holds ---"
 P="$FIX/kit"; mkdir -p "$P"; cp -R "$KIT/swarm" "$KIT/scripts" "$P/"
 python3 - "$P/swarm/swarm-env.sh" <<'PY' || bad "plant did not land"

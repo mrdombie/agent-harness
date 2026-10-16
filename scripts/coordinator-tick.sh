@@ -66,9 +66,7 @@ final_line() { # <log> — the run's own last word
   [ -n "$r" ] || r=$(sed '/^[[:space:]]*$/d' "$1" 2>/dev/null | tail -1)
   printf '%s' "$r" | tr '\t\n' '  ' | cut -c1-240
 }
-limit_hit() { # <log>
-  grep -qE '"status":"rejected","resetsAt"|hit your (session|weekly) limit' "$1" 2>/dev/null
-}
+limit_hit() { swarm_usage_log_limited "$1"; }
 for ended in "$RUNS_DIR"/*.ended; do
   [ -f "$ended" ] || continue
   rid=$(basename "$ended" .ended)

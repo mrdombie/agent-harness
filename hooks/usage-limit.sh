@@ -20,6 +20,8 @@ LOG=/tmp/claude-usage-limit.log
 say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
 now() { printf '%s' "${USAGE_LIMIT_NOW:-$(date +%s)}"; }
 
+# ---- cli-signal reader: begin ----------------------------------------------
+# The StopFailure payload is the CLI's own signal; this is its one reader.
 # The wording, measured on this machine's transcripts (2026-10-15):
 #   You've hit your session limit · resets 2:40am (Europe/London)
 # and, in swarm logs, "resets Sep 29 at 9pm (Europe/London)" and a structured
@@ -83,6 +85,7 @@ NOTICE="^[[:space:]]*You('ve| have) hit your [a-z ]*limit( · resets [^·]{1,60}
 case "$LAST" in *$'\n'*) LAST="" ;; esac
 [[ "$LAST" =~ $NOTICE ]] && TEXT="$TEXT $LAST"
 [ -n "${TEXT// /}" ] || TEXT="hit your usage limit"
+# ---- cli-signal reader: end ------------------------------------------------
 E=$(reset_epoch "$TEXT") || { say "error=$ERR no reset in text"; exit 0; }
 HOLD_F="$SD/usage-hold"
 # Keep the LATER of two walls: a weekly wall outlasts the session wall that hit first.

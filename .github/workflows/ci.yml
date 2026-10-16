@@ -50,6 +50,9 @@ jobs:
             fail=1
           fi
           exit $fail
+      - name: Signals are read from their source
+        # A phrase matched in a whole log matches every quote of it too.
+        run: bash scripts/check-signal-source.sh
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
       - name: Our own skills are addressed with the kit

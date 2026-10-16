@@ -174,6 +174,13 @@ function stepFrom(block) {
   return { kind: 'do', text: String(map[block.name] ?? block.name).slice(0, 140) }
 }
 
+// ---- cli-signal reader: begin ----------------------------------------------
+// A run that died on the service, by the CLI's own error result. The same words
+// in a run's ordinary final report (a CI log it quoted) are not a death.
+const INFRA_RE = /API Error|Connection refused|ECONNRESET|ETIMEDOUT|overloaded|Overloaded|529|503 Service|socket hang up/
+const infraDeath = (j) => j.is_error === true && INFRA_RE.test(String(j.result ?? ''))
+// ---- cli-signal reader: end ------------------------------------------------
+
 function parseLog(file) {
   const steps = []
   let result = null
@@ -187,7 +194,7 @@ function parseLog(file) {
         if (s) steps.push(s)
       }
     } else if (j.type === 'result') {
-      result = { subtype: j.subtype, cost: j.total_cost_usd, summary: String(j.result ?? '').slice(0, 400) }
+      result = { subtype: j.subtype, cost: j.total_cost_usd, summary: String(j.result ?? '').slice(0, 400), infra: infraDeath(j) }
     }
   }
   let mtime = 0
@@ -239,6 +246,7 @@ export function snapshot(now = Date.now()) {
       outcome: log.result?.subtype || (ended?.exit_code === 0 ? 'success' : 'stopped'),
       cost: log.result?.cost,
       summary: log.result?.summary || '',
+      infra: !!log.result?.infra,
     })
   }
   live.sort((a, b) => a.startedAgoMin - b.startedAgoMin)

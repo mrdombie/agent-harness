@@ -96,6 +96,10 @@ swarm_log() { # <logfile> <message…>
   printf '%s %s\n' "$(swarm_stamp)" "$*" >> "$f"
 }
 
+# ---- cli-signal reader: begin ----------------------------------------------
+# The ONE place a builder log is read for a limit or error. scripts/check-signal-source.sh
+# fails on such a read anywhere else.
+#
 # The plan's usage limit. On 2026-09-21 every spawn between 16:44 and 18:18 UTC
 # ended in seconds with "You've hit your session limit · resets 7:20pm", and the
 # scheduler relaunched the same two tickets 36 times. A spawn during the hold
@@ -159,6 +163,10 @@ swarm_usage_text_hold() {
   local newest row n text reset h m ap now_m reset_m dated
   newest=$(ls -t "$SWARM_LOGS"/claim-*.log 2>/dev/null | head -1)
   [ -n "$newest" ] || return 1
+  # A log carrying the CLI's own rejection has said when it resets: the event
+  # reading above answers, and once that reset passes the wording must not
+  # re-hold — a dated wall's text holds for ever, and no newer log ever lands.
+  swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="rejected"{f=1} END{exit !f}' && return 1
   # Only the CLI's own error text: a sentence anywhere else in the log is a quote.
   row=$(swarm_usage_cli_events "$newest" | awk -F'\t' '$2=="error"' \
         | grep -E "hit your (session|weekly) limit" | tail -1)
@@ -193,6 +201,13 @@ swarm_usage_text_hold() {
   fi
   return 1
 }
+
+# Did this run stop on the plan's limit, by the CLI's own signals in its log.
+swarm_usage_log_limited() { # <log>
+  swarm_usage_cli_events "$1" \
+    | awk -F'\t' '$2=="rejected" || ($2=="error" && $3 ~ /hit your (session|weekly) limit/){f=1} END{exit !f}'
+}
+# ---- cli-signal reader: end ------------------------------------------------
 
 # A window that hit the wall: hooks/usage-limit.sh (StopFailure) writes
 # $STATE_DIR/usage-hold as `<epoch>\t<text>`. The limit is the account's, so a
