@@ -135,7 +135,8 @@ function fetchTitle(ticket) {
     })
 }
 
-const plainName = (id) => String(id).split(/[-_ ]+/)
+// filter(Boolean): an empty or dash-edged id splits to '' and ''[0] throws.
+const plainName = (id) => String(id ?? '').split(/[-_ ]+/).filter(Boolean)
   .map((w) => (/^(ai|api|ci|ui|uat|ux)$/i.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)))
   .join(' ')
 
@@ -286,8 +287,15 @@ export function serve(port = PORT) {
   const page = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8')
   return http.createServer((req, res) => {
     if (req.url === '/api/agents') {
+      // A throw here escapes to the process and kills the page for every viewer.
+      let body
+      try { body = JSON.stringify(snapshot()) } catch (e) {
+        res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ error: String(e && e.message || e) }))
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-      res.end(JSON.stringify(snapshot()))
+      res.end(body)
       return
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
