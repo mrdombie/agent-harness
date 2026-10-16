@@ -431,4 +431,41 @@ want "origin still has the PR's old head"    "$ORIG" "$(git -C "$FIX/origin" rev
 want_in "and it says why"                    'nothing is pushed' "$out"
 printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a repair that deletes a test is accounted for BEFORE the push: on an armed PR the push is the merge ---"
+repair_wt() { # <ticket> <pr> — a repair-mode record on a pushed PR branch, reviewed SHIP
+  local t=$1 pr=$2
+  git -C "$REPO" worktree add -q "$FIX/wt$t" -b "tkt-$t/work" develop
+  printf 'x\n' > "$FIX/wt$t/f$t.txt"; git -C "$FIX/wt$t" add "f$t.txt"
+  git -C "$FIX/wt$t" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: $t"
+  git -C "$FIX/wt$t" push -q origin "tkt-$t/work"
+  driver_state_init "$t" --worktree "$FIX/wt$t" --branch "tkt-$t/work"
+  driver_state_set "$t" mode repair; driver_state_set "$t" pr "$pr"
+  driver_state_put "$t" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$t" review
+  fix_issue "$t" OPEN "status:in-review"
+  printf '[{"number":%s}]\n' "$pr" > "$FIX/gh/prs.json"
+  : > "$FIX/pr-created-$pr"; : > "$FIX/pr-created-tkt-${t}_work"
+  printf '{"number":%s,"isDraft":false,"body":"Its author wrote this."}\n' "$pr" > "$FIX/gh/pr-view.json"
+}
+repair_wt 143 92; ORIG=$(git -C "$FIX/wt143" rev-parse HEAD)
+git -C "$FIX/wt143" rm -q pinned.test.ts
+git -C "$FIX/wt143" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: drop it"
+: > "$GH_LOG"
+out=$(driver_step_ship 143 2>&1); rc=$?
+want "an unaccounted deletion refuses"       "24" "$rc"
+want "and nothing reached origin"            "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-143/work)"
+want_in "naming the file"                    'pinned.test.ts' "$out"
+
+repair_wt 144 93
+git -C "$FIX/wt144" rm -q pinned.test.ts
+git -C "$FIX/wt144" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: retire it"
+printf '%s\n' '{"file":"pinned.test.ts","removedBecause":"the screen it pinned is retired"}' > "$(driver_state_dir 144)/steps/replaced.jsonl"
+: > "$GH_LOG"
+out=$(driver_step_ship 144 2>&1); rc=$?
+want "an accounted deletion ships"           "0" "$rc"
+want "the repair reached origin"             "$(git -C "$FIX/wt144" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-144/work 2>/dev/null)"
+want_in "the section is added to the PR body, where CI reads it" 'pr edit 93 .*--body Its author wrote this\..*## Deleted tests.*pinned.test.ts. → removed on purpose: the screen it pinned is retired' "$(tr '\n' ' ' < "$GH_LOG")"
+want_not_in "and the title is left alone"   'pr edit 93 .*--title' "$(tr '\n' ' ' < "$GH_LOG")"
+want "before the push, so CI's first run of the new head reads it" "pr edit" "$(grep -m1 -oE '^pr (edit|ready)' "$GH_LOG")"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED
