@@ -40,6 +40,24 @@ printf '%s\n' "$WIDE" > "$TDIR/wide.json"; printf '%s\n' "$SAME" > "$TDIR/same.j
 printf 'import re\np=".claude/harness.json"\ns=open(p).read().replace("[\\"Staging\\"]","[\\"Staging\\",\\"Production\\"]")\nopen(p,"w").write(s)\n' > "$R/widen.py"
 printf '#!/usr/bin/env bash\nsed -i "" "s/\\"Staging\\"]/\\"Staging\\", \\"Production\\"]/" .claude/harness.json\n' > "$R/widen.sh"
 chmod +x "$R/widen.sh"
+# #169: the shapes of the kit's own fixtures, which write a stand-in harness.json
+# under a sandbox variable, and the same shape aimed back at the repo.
+cat > "$R/fixture.sh" <<FX
+#!/usr/bin/env bash
+SB="\${TMPDIR:-/tmp}"; SB="\${SB%/}/fx-fixture-\$\$"
+UP="\$SB/upstream"; mkdir -p "\$UP/.claude"
+cat > "\$UP/.claude/harness.json" <<'JSON'
+$WIDE
+JSON
+FX
+cat > "$R/fixture-dot.sh" <<FX
+#!/usr/bin/env bash
+SB=.
+cat > "\$SB/.claude/harness.json" <<'JSON'
+$WIDE
+JSON
+FX
+ln -s "$R" "$TDIR/repolink"                      # a symlink into the repo, under the temp dir
 [ "$(cat "$C")" = "$BASE" ] && [ -z "$(g status --porcelain .claude)" ] || bad "fixture: harness.json not at base"
 
 # rc of the guard at $1 (a dir holding the hook) on a payload.
@@ -169,6 +187,67 @@ add -      allow "$(bashp "cat .claude/harness.json")"
 add -      allow "$(bashp "jq .preApprovedWrites .claude/harness.json > /tmp/out.json")"
 add -      allow "$(bashp "git commit -m 'edit harness.json docs'")"
 add -      allow "$(bashp "python3 -c 'import json; print(json.load(open(\".claude/harness.json\")))'")"
+
+# #169: a path rooted in a variable is judged as the project's config only when the
+# variable can be the repo. sandboxok = provably a sandbox; sandbox = routed through
+# that proof and must still block. Commands are judged, never run.
+kitp(){ jq -nc --arg c "$1" --arg d "$KIT" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}'; }
+add sandboxok allow "$(kitp "bash scripts/spawn-claim.test.sh")"
+add -      allow "$(kitp "bash scripts/coordinator-tick.test.sh")"
+add sandboxok allow "$(bashp "bash fixture.sh")"
+add sandboxok allow "$(bashp "SB=\"\${TMPDIR:-/tmp}\"; SB=\"\${SB%/}/fx-\$\$\"; UP=\"\$SB/up\"
+cat > \"\$UP/.claude/harness.json\" <<'EOF'
+$WIDE
+EOF")"
+add sandboxok allow "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandboxok allow "$(bashp "T=\"\$(mktemp -d)\"; sed -i 's/Staging/Production/' \"\$T/.claude/harness.json\"")"
+add sandboxok allow "$(bashp "T=\$(mktemp -d); echo '$WIDE' > \"\$T/.claude/harness.json\"; eval \"\$CMD\"")"
+add sandbox block "$(bashp "echo '$WIDE' > \"\$PWD/.claude/harness.json\"")"
+add sandbox block "$(bashp "cat > \"\$(pwd)/.claude/harness.json\" <<'EOF'
+$WIDE
+EOF")"
+add sandbox block "$(bashp "cp $TDIR/wide.json \"\${REPO:-.}/.claude/harness.json\"")"
+add sandbox block "$(bashp "cp $TDIR/wide.json \"\$HOME/repo/.claude/harness.json\"")"
+add sandbox block "$(bashp "HOME=$TDIR; cp $TDIR/wide.json \"\$HOME/repo/.claude/harness.json\"")"
+add sandbox block "$(bashp "cp $TDIR/wide.json \"\$GIT_DIR/../.claude/harness.json\"")"
+add sandbox block "$(bashp "R=.; echo '$WIDE' > \"\$R/.claude/harness.json\"")"
+add sandbox block "$(bashp "R=$R; cp $TDIR/wide.json \"\$R/.claude/harness.json\"")"
+add sandbox block "$(bashp "SB=\"\${TMPDIR:-/tmp}\"; cp $TDIR/wide.json \"\$SB/.claude/harness.json\"")"
+add sandbox block "$(bashp "SB=\"\${TMPDIR:-/tmp}/repo\"; cp $TDIR/wide.json \"\$SB/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=$TDIR/repolink; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \$T/.claude/harness.json")"
+add sandbox block "$(bashp "T=\$(mktemp -d); T=.; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\"\$(mktemp -d)/..\"; cp $TDIR/wide.json \"\$T/repo/.claude/harness.json\"")"
+add sandbox block "$(bashp "f(){ cp $TDIR/wide.json \"\$T/.claude/harness.json\"; }; f; T=\$(mktemp -d)")"
+add sandbox block "$(bashp "[ -d /nonexistent ] && T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); eval \"\$CMD\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); read -r T < /dev/null; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); ln -s \"\$PWD\" \"\$T/r\"; cp $TDIR/wide.json \"\$T/r/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); for i in 1 2; do cp $TDIR/wide.json \"\$T/.claude/harness.json\"; T=.; done")"
+add sandbox block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; cp -r \"\$T/.claude\" \"\$PWD/\"")"
+add sandbox block "$(bashp "T=/tmp/fx; cp $TDIR/wide.json \"\$T/.claude/harness.json\"; cp -r /tmp/fx/.claude .")"
+add sandbox block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; tar -C \"\$T\" -cf - .claude | tar -xf -")"
+add sandbox block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; python3 -c \"import shutil; shutil.copytree('\$T/.claude', '.claude', dirs_exist_ok=True)\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); builtin . $TDIR/aim; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "mktemp(){ pwd; }; T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "PATH=$TDIR/bin:\$PATH; T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandboxok allow "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; cp $TDIR/same.json \"\$T/\"")"
+add sandbox block "$(bashp "f()
+{ read -r \"\$1\" < $TDIR/aim; }
+T=\$(mktemp -d); f \"\$N\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "function f { read -r \"\$1\" < $TDIR/aim; }
+T=\$(mktemp -d); f \"\$N\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add -      block "$(bashp "cd \"\$X\" && sed -i 's/Staging/Production/' .claude/harness.json")"
+add -      block "$(bashp "T=\$(mktemp -d); cd \"\$T\" && cd - && cp $TDIR/wide.json .claude/harness.json")"
+add -      block "$(bashp "bash fixture-dot.sh")"
+# A line continuation is joined as the shell joins it: an env prefix on the next line is
+# an assignment, not the command, and a write split over two lines is still the write.
+add -      allow "$(bashp "T=\$(mktemp -d); A=1 \\
+CFG=\"\$T/.claude/harness.json\" jq . /dev/null")"
+add -      block "$(bashp "cp $TDIR/wide.json \\
+  .claude/harness.json")"
+add -      block "$(bashp "echo '$WIDE' \\
+  > .claude/harness.json")"
 
 run_cases(){ # $1 hook dir, $2 id filter ("" = all), $3 case file; prints "<id> <want> <got>" per case
   while IFS=$'\t' read -r id want p; do
@@ -340,6 +419,16 @@ plant gitprot  "    if is_gitprot(path):
         gitprot_refuse(path)" "    pass"
 plant gitprotsh "def gitprot_refuse(path):" "def gitprot_refuse(path):
     return"
+# #169: the sandbox proof made to pass everything lets every case routed through it in;
+# the allowance taken out puts every sandbox fixture back to blocked.
+plant sandbox  "    def exempt(self, tok):" "    def exempt(self, tok):
+        return True"
+pd=$(plant_dir sandboxoff "    return bool(RES) and RES[-1].exempt(tok)" "    return False")
+[ -n "$pd" ] || bad "plant sandboxoff did not land"
+n=0; held=0
+while IFS=$'\t' read -r id want got what; do n=$((n+1)); [ "$got" = block ] && held=$((held+1)); done < <(run_cases "$pd" sandboxok)
+[ "$n" -gt 0 ] && [ "$held" -eq "$n" ] && ok "plant sandboxoff: allowance out, all $n sandbox fixtures are blocked again" ||
+  bad "plant sandboxoff: allowance out, only $held of $n sandbox fixtures blocked, so those cases test something else"
 printf '%s\n' "$WIDE" > "$C"
 plant commitwt "        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)', shared)" "        pass" "$WT"
 printf '%s\n' "$BASE" > "$C"
