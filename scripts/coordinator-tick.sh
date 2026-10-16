@@ -184,8 +184,14 @@ claims() {
 }
 CLAIMS_OK=1; CLAIMED=$(claims 2>/dev/null) || CLAIMS_OK=0
 
-spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
-  local t="$1" cls="$2" meta st lab l
+spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blocked
+  local t="$1" cls="$2" note="${3:-}" meta st lab l
+  # Driver mode builds new work through its plan step, which takes no note: refused
+  # at spawn time instead, the entry would take the place, fail, and come back first
+  # on every tick. A healing note is a repair brief, which the driver does take.
+  if [ "$COORD_RUNNER" = driver ] && [ "$cls" = new ] && [ -n "$note" ]; then
+    echo "driver mode carries no note into new work — the plan step has no input for one (note: $note)"; return 0
+  fi
   grep -qx "$t" <<<"$CLAIMED" && { echo "claimed"; return 0; }
   swarm_ticket_live "$t" && { echo "already running"; return 0; }
   meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels \
@@ -262,7 +268,7 @@ candidates() {
   while IFS=$'\t' read -r t cls note; do
     [ -n "${t:-}" ] || continue
     coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
-    if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
+    if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): $why"; continue; fi
     coord_healing_class "$cls" || nn=$((nn+1))
     CANDS="$CANDS$t"$'\t'"$cls"$'\t'"$note"$'\n'
   done <<< "$(coord_queue_ordered)"
@@ -327,6 +333,7 @@ else
     # Taken out of the candidates so the next pass picks the next one.
     CANDS=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$t" 'NF && $1 != p'); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
     PLAN="${PLAN:+$PLAN,}$t"; TOOK="$cls"
+    heal_free_was=$HEAL_FREE; new_free_was=$NEW_FREE
     if coord_healing_class "$cls"; then
       if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); else NEW_FREE=$((NEW_FREE-1)); fi
     else
@@ -347,6 +354,9 @@ else
         say "spawned #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
       else
         say "spawn of #$t failed"
+        # Its place goes to the next entry this tick. Counted as taken, one refused
+        # entry at the head of the queue would hold its class shut on every tick.
+        started=$((started-1)); HEAL_FREE=$heal_free_was; NEW_FREE=$new_free_was
         # A refusal names its reason (driver mode cannot carry a brief, say);
         # raised so it is seen, not only buried in the coordinator's log.
         why=$(printf '%s\n' "$spawn_out" | sed '/^[[:space:]]*$/d' | tail -1 | cut -c1-240)

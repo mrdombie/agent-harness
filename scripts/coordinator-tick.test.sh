@@ -456,6 +456,35 @@ want_in "the refusal is an event, with its reason" '"kind":"spawn-failed".*"tick
 COORDINATOR_SHADOW=0 SWARM_SPAWN="$BIN/spawn-refuse" SWARM_IDLE=40 SWARM_CORES=10 tick >/dev/null
 want "raised once a day, not every tick"   "1" "$(grep -c '"kind":"spawn-failed"' "$C/events.did.jsonl" 2>/dev/null)"
 
+echo "--- a refused start does not use up the place: the next entry starts on the same tick ---"
+cat > "$BIN/spawn-some" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "${REFUSE_T:-}" ]; then echo "spawn-claim: refusing — planted for #$1" >&2; exit 3; fi
+printf '%s\t%s\n' "$1" "${CLAIM_CLASS:-}" >> "$SPAWNS"
+printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$1" "$1" "$TEST_PID" > "$STATE/runs/claim-$1-live.json"
+SH
+chmod +x "$BIN/spawn-some"
+fresh; queue 740 741
+out=$(REFUSE_T=740 COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "one place, the first entry refused: the second starts this tick" "741" "$(spawned)"
+want_in "and the refusal is still said"    'spawn of #740 failed' "$out"
+
+echo "--- driver mode: a note on NEW work is refused when the candidates are chosen ---"
+# The driver's plan step has no input for a note; refused at spawn time it would
+# take the place, fail, and come back first on every tick.
+fresh; fix_issue 742 OPEN "status:ready"; bash "$Q" add 742 --note "start with the API" >/dev/null; queue 743
+out=$(SPAWN_RUNNER=driver COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "the noted new entry is passed over, the next one starts" "743" "$(spawned)"
+want_in "and the skip names why"           'skip #742 \(new\): driver mode' "$out"
+fresh; fix_issue 742 OPEN "status:ready"; bash "$Q" add 742 --note "start with the API" >/dev/null
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "claim mode: the same entry spawns with its note (the control)" "742" "$(spawned)"
+fresh; queue_as repair 744
+jq -n '[{number:9, headRefName:"tkt-744-x", headRefOid:"s", isDraft:false, mergeStateStatus:"DIRTY", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+bash "$Q" add 744 --class repair --note "clashes" >/dev/null
+out=$(SPAWN_RUNNER=driver COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "driver mode: a noted REPAIR still spawns — the driver repairs it" "744" "$(spawned)"
+
 echo "--- ended runs: recorded once, the failures raised ---"
 fresh
 printf '{"run_id":"claim-801-x","ticket":"801","log":"%s"}\n' "$STATE/logs/claim-801-x.log" > "$STATE/runs/claim-801-x.json"

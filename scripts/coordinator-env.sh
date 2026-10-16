@@ -48,6 +48,9 @@ COORD_ACTIONS="$COORD_DIR/actions.log"
 COORD_NEEDS_YOU="$COORD_DIR/needs-you.md"
 COORD_LOG="$COORD_DIR/tick.log"
 COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap "")}"
+# What spawn-claim.sh will start: the same reading it makes (SPAWN_RUNNER, then
+# swarm.runner), so the tick can pass over an entry that runner cannot take.
+COORD_RUNNER="${SPAWN_RUNNER:-$(swarm_opt swarm.runner claim)}"
 # 0 means spawn nothing; anything not a whole number holds every spawn, named.
 COORD_CAP_BAD=""
 case "$COORD_CAP" in ''|*[!0-9]*) [ -z "$COORD_CAP" ] || { COORD_CAP_BAD="$COORD_CAP"; COORD_CAP=""; } ;; esac
