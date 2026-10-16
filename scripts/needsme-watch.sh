@@ -9,6 +9,9 @@
 #                                           rows, exit 0. Run it in the background.
 #   needsme-watch.sh done <key>…            asked and answered: never offer it again,
 #                                           and tick its line in needs-you.md
+#   needsme-watch.sh answer <key> "<answer>" a decision:<ticket>:* row answered: the
+#                                           label off, the answer on the ticket, the
+#                                           ticket requeued with it, the line ticked
 #   needsme-watch.sh card <pr>              what the sign-off prompt shows for one PR
 #   needsme-watch.sh open <pr>              open that PR's evidence in the browser
 #
@@ -36,7 +39,7 @@ SIGNOFF="$SELF_DIR/signoff-batch.sh"
 ASKED="$COORD_DIR/asked.keys"
 touch "$ASKED"
 
-usage() { sed -n '4,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 asked() { grep -qxF -- "$1" "$ASKED"; }
 
@@ -242,6 +245,12 @@ case "$cmd" in
   pending) pending "$@" ;;
   wait)    wait_new "$@" ;;
   done)    [ $# -gt 0 ] || usage; done_keys "$@" ;;
+  answer)  [ $# -eq 2 ] || usage
+           case "$1" in decision:*:*) ;; *) echo "needsme-watch: answer takes a decision:<ticket>:<slug> key; use done for '$1'" >&2; exit 2 ;; esac
+           bash "$SELF_DIR/owner-question.sh" answer "$1" "$2"; rc=$?
+           # Ticked whatever failed: the answer is kept in answers.tsv, and asking twice costs the owner.
+           asked "$1" || done_keys "$1"
+           exit "$rc" ;;
   card)    card "${1:?usage: needsme-watch.sh card <pr>}" ;;
   open)    open_pr "${1:?usage: needsme-watch.sh open <pr>}" ;;
   *) usage ;;

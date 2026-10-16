@@ -21,9 +21,11 @@
 #                    (coord_room) and under coordinator.cap when one is set;
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest; a class
-#                    with nothing spawnable lends its places to the other. Never
-#                    a ticket that is claimed, gated or on hold, and nothing
-#                    while the machine is busy (swarm_machine_busy)
+#                    with nothing spawnable lends its places to the other. The
+#                    room is re-read before each start after the first; under
+#                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
+#                    that is claimed, gated, on hold or waiting on the owner
+#                    (owner-question.sh), and nothing while the machine is busy
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
@@ -213,6 +215,8 @@ CLAIMS_OK=1; CLAIMED=$(claims 2>/dev/null) || CLAIMS_OK=0
 spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   local t="$1" cls="$2" meta st lab l
   grep -qx "$t" <<<"$CLAIMED" && { echo "claimed"; return 0; }
+  # Respawned, it asks the same question again and loses the work it did.
+  l=$(coord_owner_waiting "$t") && { echo "waiting on the owner ($l)"; return 0; }
   swarm_ticket_live "$t" && { echo "already running"; return 0; }
   meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels \
            -q '.state+" "+([.labels[].name]|join(","))' 2>/dev/null)
@@ -337,7 +341,10 @@ elif [ "$SLOTS" -le 0 ]; then
 else
   candidates
   started=0
-  while [ "$started" -lt "$SLOTS" ]; do
+  # The room is re-read before each start after the first; near the floor that stops at one.
+  RAMP=$SLOTS; RAMP_WHY=""
+  if [ -n "$COORD_RAMP_MAX" ] && [ "$RAMP" -gt "$COORD_RAMP_MAX" ]; then RAMP=$COORD_RAMP_MAX; RAMP_WHY="coordinator.rampMax is $COORD_RAMP_MAX"; fi
+  while [ "$started" -lt "$RAMP" ]; do
     heal=$(first_of healing); new=$(first_of new)
     # Each class fills its own share first; a class with nothing spawnable lends
     # its places to the other, in both directions.
@@ -348,6 +355,15 @@ else
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$heal" ]; then pick="$heal"; lent="a new place"
     fi
     [ -n "$pick" ] || break
+    if [ "$started" -gt 0 ]; then
+      if ! again=$(coord_room); then say "spawn: $started started, then no room: $again"; RAMP_WHY=""; break; fi
+      fit=$(( ${again%%$'\t'*} - RAMPING - started ))
+      MEM_NOW=$(swarm_free_mem_gb)
+      if [ "$fit" -lt 1 ]; then say "spawn: $started started, and the re-read fits no more: ${again#*$'\t'}"; RAMP_WHY=""; break; fi
+      if [ "${MEM_NOW:-0}" -lt "$COORD_RAMP_FREE_MEM_GB" ] 2>/dev/null; then
+        say "spawn: $started started, then ${MEM_NOW:-?} GB free, under the ${COORD_RAMP_FREE_MEM_GB} GB a second start in one tick needs"; RAMP_WHY=""; break
+      fi
+    fi
     IFS=$'\t' read -r t cls note <<< "$pick"
     started=$((started+1))
     # Taken out of the candidates so the next pass picks the next one.
@@ -373,6 +389,9 @@ else
       [ -z "$brief" ] || rm -f "$brief"
     fi
   done
+  if [ -n "$RAMP_WHY" ] && [ "$started" -eq "$RAMP" ] && [ "$RAMP" -lt "$SLOTS" ] && [ -n "$CANDS" ]; then
+    say "spawn: $started this tick of $SLOTS place(s) — $RAMP_WHY"
+  fi
   if [ "$started" -eq 0 ] && [ -z "$CANDS" ]; then
     say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
   fi

@@ -249,6 +249,13 @@ if [ -f "$OUT/seen" ]; then
   [ "$(seen rule-c)" = yes ] \
     && ok "the detached path sees the current guard rules" \
     || bad "the detached path missed the current guard rules"
+  # A builder in print mode has no question tool: the owner's channel is the only way a question reaches anyone.
+  grep -q "scripts/owner-question.sh ask <ticket> <slug>" "$OUT/seen" \
+    && ok "the detached prompt sends an owner question to owner-question.sh" \
+    || bad "the detached prompt does not route an owner question to owner-question.sh"
+  grep -q "Never end with 'no question tool'" "$OUT/seen" \
+    && ok "and forbids ending on 'no question tool'" \
+    || bad "the detached prompt does not forbid ending on 'no question tool'"
 else
   bad "the detached spawn never started the agent"
 fi

@@ -59,6 +59,8 @@ mkdir -p "$SWARM_DIR" "$SWARM_LOGS" "$RUNS_DIR" 2>/dev/null || true
 swarm_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
 SWARM_CAP="${SWARM_CAP:-$(swarm_opt swarm.cap 3)}"
+# A ticket whose builder asked the owner something: no agent takes it until the answer.
+LBL_OWNER_DECISION="${LBL_OWNER_DECISION:-$(swarm_opt labels.ownerDecision needs:owner-decision)}"
 SWARM_MIN_CPU_IDLE="${SWARM_MIN_CPU_IDLE:-$(swarm_opt swarm.minCpuIdle 15)}"
 SWARM_MAX_LOAD="${SWARM_MAX_LOAD:-$(swarm_opt swarm.maxLoad "")}"
 SWARM_IDLE_SAMPLES="${SWARM_IDLE_SAMPLES:-$(swarm_opt swarm.idleSamples 5)}"
@@ -347,7 +349,7 @@ swarm_running_total() {
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 
@@ -424,4 +426,4 @@ swarm_ping_page() {
 
 export SWARM_DIR SWARM_HOLD_FILE SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MIN_CPU_IDLE SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
 export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_USAGE_CEILING SWARM_GH SWARM_CURL SWARM_SPAWN
-export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC
+export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC LBL_OWNER_DECISION

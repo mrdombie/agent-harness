@@ -78,6 +78,29 @@ the only thing a park can actually lose.**
 The user sees this on the board and via the hold label (`$HOLD_LABEL`). Whoever
 resumes clears the label and re-claims normally, reading the brief for context.
 
+**Ask the owner — from a spawned run.** A spawned builder (`claude -p`,
+`CLAIM_RUN_ID` set) has no question tool, and nobody reads its final message. A
+choice only the owner can make — one the spec's decision defaults do not cover —
+goes to the owner's channel, and the ticket waits for the answer:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/owner-question.sh" ask "$TICKET_KEY" <slug> \
+  "<the question, with its options in plain words: Fix A (…) or Fix B (…)?>"
+```
+
+It writes the `decision:<ticket>:<slug>` key to `needs-you.md` (through
+`coordinator-notify.sh --class owner`), adds the owner-decision label
+(`labels.ownerDecision`, default `needs:owner-decision`) and comments the question
+on the ticket. No spawner takes the ticket until the owner answers; the owner's
+watcher then takes the label off, comments the answer, and puts the ticket back on
+the queue with the answer in its note, so the next builder starts from it. Then
+park as above if anything is built (push, draft PR, brief), or release the claim
+if nothing is, and end with the banner's `Paused on: the owner — <the question>`.
+Never end the run with "the question tool doesn't exist in this run" or with the
+question only in the last message: nothing reads either, and the ticket is
+respawned to ask it again. In an interactive session, ask with `AskUserQuestion`
+as usual.
+
 What a spawned agent still handles alone: the `/agent-harness:ui-gate` frontend review at `/agent-harness:finish` — that is an agent, not a person — and attaching the branch and route to the PR so evidence waits for the PM rather than blocking on them.
 
 **Never spawn `/design` itself.** Invoked directly, it is an interactive two-phase flow and needs a human present from the start.

@@ -16,7 +16,9 @@ the forge and the state directory are the state.
   Only a choice no agent may make — scope, product, money, access — goes to the
   owner, under a `decision:` key, phrased as the choice:
   `bash "$KIT_ROOT/scripts/coordinator-notify.sh" --class owner "decision:<ticket>:<word>" "<the choice, in one line>"`
-  Any other key is filed as agent work whatever class you pass.
+  Any other key is filed as agent work whatever class you pass. A `decision:<ticket>:…`
+  key holds that ticket: no tick spawns it until the owner answers, and the answer
+  re-queues it, so do not re-queue it yourself.
 - **Stay in scope.** Act only on tickets in the queue's scope, plus a red PR
   anywhere (finish before start). The scope may be several labels: a ticket
   under any one of them is in scope. Check with

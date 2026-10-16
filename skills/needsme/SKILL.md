@@ -587,7 +587,14 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
      window.
   5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer.
   When every PR is answered: `bash "$W" done <batch key>`.
-- **Any other kind** (`decision`, `blind`, `disk-low`, a keyless `line`) — one
+- **`decision`** whose key is `decision:<ticket>:<slug>` — a builder or the judge
+  asked about that ticket, and nothing spawns it until it is answered. One
+  `AskUserQuestion` with the row's text as the question and the options it names.
+  Then `bash "$W" answer <key> "<the answer, in the owner's words>"`: it takes the
+  owner-decision label off, comments the answer on the ticket, puts the ticket back
+  at the front of the queue with the answer in its note, and ticks the row. Use it
+  in place of `done`; a skipped decision gets no `answer` and stays waiting.
+- **Any other kind** (`blind`, `disk-low`, a keyless `line`) — one
   `AskUserQuestion` with the row's text as the question and the real choices it
   names, then act on the answer as Step 5 does. `bash "$W" done <key>`.
 
