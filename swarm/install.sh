@@ -20,7 +20,7 @@
 #   scheduler     every 5 minutes: top up each programme's queue and drain it.
 #   repair-watch  every 10 minutes: repair, unblock, restart, alarm.
 #   report        every minute, ONLY when the project sets swarm.reportUrl.
-#   coordinator   every 5 minutes: scripts/coordinator-tick.sh. Opt-in — only
+#   coordinator   every 2 minutes: scripts/coordinator-tick.sh. Opt-in — only
 #                 `install.sh coordinator` installs it — and in shadow unless
 #                 COORDINATOR_SHADOW=0 is set at install. Off macOS it is a
 #                 crontab line.
@@ -73,7 +73,7 @@ interval_for() {
     scheduler) printf '%s' "${SWARM_EVERY_SCHEDULER:-300}" ;;
     repair-watch) printf '%s' "${SWARM_EVERY_REPAIR:-600}" ;;
     report) printf '%s' "${SWARM_EVERY_REPORT:-60}" ;;
-    coordinator) printf '%s' "${SWARM_EVERY_COORDINATOR:-300}" ;;
+    coordinator) printf '%s' "${SWARM_EVERY_COORDINATOR:-120}" ;;
     merge-lane) printf '%s' "${SWARM_EVERY_MERGE_LANE:-180}" ;;
   esac
 }
