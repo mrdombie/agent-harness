@@ -390,9 +390,73 @@ ticked $(( NOW - 120 )) 3
 out=$(slow_print)
 want "the last check, its count and the next" \
   "last check $(hm_at $(( NOW - 120 ))) · 3 building · next $(hm_at $(( NOW + 180 )))" "$out"
-rm -f "$TICKS"; ticked $(( NOW - 660 )) 3
-out=$(slow_print)
-want "a check over ten minutes old is silence" "coordinator silent since $(hm_at $(( NOW - 660 )))" "$out"
+
+echo "--- silence is judged against the coordinator's own cadence ---"
+# The real check-to-check gaps (fixtures/coordinator-check-gaps.txt): median 514 s,
+# p99 1,519 s, max 2,596 s; ticks ran up to 1,295 s. A 600 s guess called 81 of
+# those 266 gaps silence while the coordinator was working.
+GAPS="$HERE/fixtures/coordinator-check-gaps.txt"
+history() { # <seconds since the last check started> — the real cadence behind it
+  local t=$(( NOW - $1 )) g
+  rm -f "$TICKS"; mkdir -p "$(dirname "$TICKS")"
+  for g in $(grep -v '^#' "$GAPS" | tail -r 2>/dev/null || grep -v '^#' "$GAPS" | tac); do
+    t=$(( t - g )); printf '%s tick: did mode, cap 4, config from x\n%s tick: done\n' "$(swarm_iso "$t")" "$(swarm_iso "$t")"
+  done > "$TICKS.old"
+  sort "$TICKS.old" > "$TICKS"; rm -f "$TICKS.old"
+  ticked $(( NOW - $1 )) 2
+}
+down_print() { rm -f "$FIX/live.json"; bash "${1:-$SL}" --print 2>&1; }
+LOCK="$STATE/coordinator/tick.lock"
+history 1500; rm -rf "$LOCK"
+out=$(down_print)
+want_in "25 min since the last line, inside the measured cadence: alive" "^last check $(hm_at $(( NOW - 1500 )))" "$out"
+history 2500; rm -rf "$LOCK"
+out=$(down_print)
+want_in "42 min, past it, no tick running: silent since the last line" "^coordinator silent since $(hm_at $(( NOW - 2500 )))" "$out"
+history 2500; mkdir -p "$LOCK"; printf '%s\n' "$$" > "$LOCK/pid"
+out=$(down_print)
+want_in "past it, but a tick holds the lock: alive" "^last check $(hm_at $(( NOW - 2500 )))" "$out"
+# A pid that has certainly exited. Not `sleep &` + kill: in bash 3.2 a background
+# job inherits the EXIT trap and deletes the fixture when it dies.
+dead=$(bash -c 'echo $$')
+printf '%s\n' "$dead" > "$LOCK/pid"
+out=$(down_print)
+want_in "a lock left by a dead tick is not life" "^coordinator silent since" "$out"
+rm -rf "$LOCK"
+rm -f "$TICKS"; ticked $(( NOW - 1500 )) 2
+out=$(down_print)
+want_in "too little history: six intervals (30 min) is the limit" "^last check" "$out"
+rm -f "$TICKS"; ticked $(( NOW - 1900 )) 2
+out=$(down_print)
+want_in "and past six intervals, silent" "^coordinator silent since" "$out"
+# Plant: the guessed constant back. Inside the measured cadence it now says silent.
+K3="$FIX/kit3"; mkdir -p "$K3"; cp -R "$HERE/../../swarm" "$HERE/../../scripts" "$K3/"
+python3 - "$K3/swarm/status-line.sh" <<'PY3' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = '  limit=$(num "$limit" $(( iv * 6 )))\n'
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, "  limit=600\n"))
+PY3
+grep -q 'limit=600' "$K3/swarm/status-line.sh" || bad "plant: the constant is not in the copy"
+history 1500; rm -rf "$LOCK"
+out=$(down_print "$K3/swarm/status-line.sh")
+want_in "planted: a 600 s guess → a working coordinator reads silent → red" "^coordinator silent since" "$out"
+# Plant: the lock not read. A tick running past the limit then reads silent.
+K4="$FIX/kit4"; mkdir -p "$K4"; cp -R "$HERE/../../swarm" "$HERE/../../scripts" "$K4/"
+python3 - "$K4/swarm/status-line.sh" <<'PY4' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+lines = s.split("\n")
+keep = [l for l in lines if 'kill -0 "$pid"' not in l]
+if len(keep) != len(lines) - 1: sys.exit(1)
+open(p, "w").write("\n".join(keep))
+PY4
+grep -q 'kill -0 "$pid"' "$K4/swarm/status-line.sh" && bad "plant: the lock read is still in the copy"
+history 2500; mkdir -p "$LOCK"; printf '%s\n' "$$" > "$LOCK/pid"
+out=$(down_print "$K4/swarm/status-line.sh")
+want_in "planted: the lock ignored → a running tick reads silent → red" "^coordinator silent since" "$out"
+rm -rf "$LOCK"
 rm -f "$TICKS"
 out=$(slow_print)
 want "no coordinator at all: the warning" "swarm view not answering" "$out"
