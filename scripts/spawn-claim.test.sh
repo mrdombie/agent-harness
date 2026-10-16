@@ -353,23 +353,25 @@ mcp_of() { # <args line> — what the run can load: ALL when not strict, else th
   [ -f "$f" ] || { echo "no config at '$f'"; return; }
   jq -r '.mcpServers | keys | join(",")' "$f"
 }
+# The whole argv: a detached prompt runs over several lines, and the flags follow it.
+seen_args() { sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' '; }
 wait_seen() { for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done; }
 rm -f "$OUT/seen"; run 4901; wait_seen
-got=$(mcp_of "$(seen args)")
+got=$(mcp_of "$(seen_args)")
 [ -z "$got" ] && ok "a detached builder loads no MCP server when the list is empty" \
               || bad "a detached builder can load '$got', want none: $(seen args)"
 rm -f "$OUT/seen" "$OUT/marker"; SPAWN_TEST_HANDOVER=1 CANON="" run 4902; wait_seen
 [ -f "$OUT/marker" ] || bad "the hand-over case never reached the branch copy"
-got=$(mcp_of "$(seen args)")
+got=$(mcp_of "$(seen_args)")
 [ -z "$got" ] && ok "handed over to the project's own spawner, the builder still loads none" \
               || bad "after the hand-over the builder can load '$got', want none: $(seen args)"
 jq '.swarm = {builderMcpServers: {railway: {command: "railway", args: ["mcp"]}}}' "$STORE/.claude/harness.json" > "$SB/cfg-mcp.json"
 rm -f "$OUT/seen"; CFG="$SB/cfg-mcp.json" run 4903; wait_seen
-got=$(mcp_of "$(seen args)")
+got=$(mcp_of "$(seen_args)")
 [ "$got" = railway ] && ok "a server on the list is loaded, and only that one" \
                      || bad "with railway listed the builder can load '$got': $(seen args)"
 rm -f "$OUT/seen"; run --fg 4904
-got=$(mcp_of "$(seen args)")
+got=$(mcp_of "$(seen_args)")
 [ "$got" = ALL ] && ok "an interactive session keeps every server" \
                  || bad "the --fg session was limited to '$got'"
 

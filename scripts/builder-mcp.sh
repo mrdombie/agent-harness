@@ -43,7 +43,7 @@ builder_mcp_shim() {
 # Written by agent-harness builder-mcp.sh: a print-mode run loads only the builder's MCP servers.
 case " \$* " in
   *" --strict-mcp-config "*) ;;
-  *" -p "*|*" --print "*) exec "$real" --strict-mcp-config --mcp-config "$cfg" "\$@" ;;
+  *" -p "*|*" --print "*) exec "$real" "\$@" --strict-mcp-config --mcp-config "$cfg" ;;
 esac
 exec "$real" "\$@"
 SH
