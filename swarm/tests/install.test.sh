@@ -138,4 +138,30 @@ cr merge-lane >/dev/null
 want "a shadow lane installs while held"  "1" "$(grep 'merge-lane.sh' "$FIX/crontab" | grep -c 'MERGE_LANE_SHADOW=1')"
 rm -f "$STATE/swarm/HOLD"
 
+echo "--- another job on the live view's port is named, and replaced only on request ---"
+H="$FIX/home"; mkdir -p "$H/Library/LaunchAgents"
+SYS2="$FIX/launchctl.log"; : > "$SYS2"
+cat > "$BIN/launchctl" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$SYS2"
+[ "\$1" = list ] && printf 'PID\tStatus\tLabel\n4242\t0\tcom.example.old-view\n'
+exit 0
+SH
+chmod +x "$BIN/launchctl"
+printf '<plist/>\n' > "$H/Library/LaunchAgents/com.example.old-view.plist"
+lv() { HOME="$H" SWARM_UNAME=Darwin SWARM_PORT_HOLDER=4242 bash "$I" live-view 2>&1; }
+out=$(lv); rc=$?
+want "refused while the port is taken"   "4" "$rc"
+want_in "it names who holds the port"    'com\.example\.old-view' "$out"
+want_in "and how to replace it"          'SWARM_REPLACE_PORT=1' "$out"
+want "the other job was left alone"      "0" "$(grep -c '^unload' "$SYS2")"
+if [ -f "$H/Library/LaunchAgents/com.example.old-view.plist" ]; then ok "its definition is still there"; else bad "its definition is still there"; fi
+out=$(SWARM_REPLACE_PORT=1 lv); rc=$?
+want "replaced on request"               "0" "$rc"
+want_in "the old job was unloaded"       'unload .*com\.example\.old-view\.plist' "$(cat "$SYS2")"
+if [ -f "$STATE/swarm/replaced/com.example.old-view.plist" ]; then ok "its definition was set aside, not deleted"; else bad "its definition was set aside, not deleted"; fi
+want_in "ours was loaded"                'load .*agent-harness\.swarm\.live-view\.' "$(grep '^load' "$SYS2")"
+out=$(HOME="$H" SWARM_UNAME=Darwin SWARM_PORT_HOLDER= bash "$I" live-view 2>&1); rc=$?
+want "a free port installs at once"      "0" "$rc"
+
 exit $FAILED

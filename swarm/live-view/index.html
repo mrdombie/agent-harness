@@ -49,12 +49,22 @@ tr:first-child td{border-top:0}
 .num{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink2)}
 .tablewrap{overflow-x:auto}
 .empty{color:var(--ink3)}
+.banner{display:flex;gap:10px;align-items:flex-start;background:color-mix(in srgb,var(--warn) 14%,var(--card));border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);border-radius:10px;padding:12px 14px;margin-bottom:6px}
+.banner[hidden]{display:none}
+.banner .dot{background:var(--warn)}
+.banner b{display:block;font-size:15px}
+.banner span{color:var(--ink2);font-size:13px}
+.note{color:var(--ink2);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
+.scope{color:var(--ink3);font-size:12px;white-space:nowrap}
 </style>
 </head>
 <body>
 <div class="page">
   <header><h1>Swarm, live</h1><span class="meta" id="meta">loading…</span></header>
+  <div class="banner" id="hold" role="status" hidden></div>
   <div id="groups"></div>
+  <h2 id="queuehead">Queued</h2>
+  <div class="tablewrap"><table id="queue"></table></div>
   <h2 id="donehead">Recently finished</h2>
   <div class="tablewrap"><table id="done"></table></div>
 </div>
@@ -64,6 +74,37 @@ const ago = (sec) => sec == null ? '—' : sec < 60 ? `${sec}s ago` : sec < 3600
 const dur = (min) => min < 60 ? `${min} min` : `${Math.floor(min/60)} h ${min%60} min`
 const nice = (p) => p ? p.replace(/-/g,' ').replace(/^./, c => c.toUpperCase()) : 'Other'
 let repo = ''
+const KIND = { repair: ['Fix', 'bad'], 'approved-merge': ['Merge', 'ok'], new: ['Build', 'warn'] }
+const kind = (c) => { const [t, cls] = KIND[c] || [c, 'warn']; return `<span class="pill ${cls}">${esc(t)}</span>` }
+const area = (s) => nice(String(s || '').replace(/^[a-z]+:/, ''))
+// An instant the reader can act on: "Tue 20 Oct, 20:00". A bare reset wording
+// ("7:20pm") is shown as it was written.
+const when = (u) => {
+  const d = /^\d{4}-\d{2}-\d{2}T/.test(u || '') ? new Date(u) : null
+  if (!d || isNaN(d)) return u || ''
+  return d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+function holdBanner(h){
+  const el = document.getElementById('hold')
+  if (!h || !h.held) { el.hidden = true; el.innerHTML = ''; return }
+  const head = h.kind === 'usage'
+    ? `Not starting new work: ${esc(h.reason || 'the usage limit was reached')}`
+    : `Not starting new work: paused by the owner`
+  const sub = h.kind === 'usage'
+    ? (h.until ? `Starts again ${esc(when(h.until))}. Work already running carries on.` : 'Work already running carries on.')
+    : `${esc(h.reason || '')}${h.reason ? '. ' : ''}Work already running carries on.`
+  el.innerHTML = `<span class="dot"></span><div><b>${head}</b><span>${sub}</span></div>`
+  el.hidden = false
+}
+function queueRows(q){
+  const link = (n) => repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a>` : `#${esc(n)}`
+  if (!q || !q.tickets.length) return '<tr><td class="empty">Nothing waiting.</td></tr>'
+  return q.tickets.map((t, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${kind(t.class)}</td>
+    <td><b>${esc(t.title)}</b> <span class="sub">${link(t.ticket)}</span>${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}</td>
+    <td class="scope">${esc(area(t.scope))}</td></tr>`).join('')
+}
 
 function card(a){
   const q = a.quietSec ?? 99999
@@ -93,8 +134,12 @@ async function tick(){
   try{
     const r = await fetch('/api/agents', {cache:'no-store'}); const s = await r.json()
     repo = s.repo || ''
+    const queued = s.queue?.tickets?.length || 0
     document.getElementById('meta').textContent =
-      `${s.live.length} running · machine load ${s.load.toFixed(0)} · updated ${new Date(s.at).toLocaleTimeString()}`
+      `${s.live.length} running · ${queued} queued · machine load ${s.load.toFixed(0)} · updated ${new Date(s.at).toLocaleTimeString()}`
+    holdBanner(s.hold)
+    document.getElementById('queuehead').textContent = queued ? `Queued · ${queued}` : 'Queued'
+    document.getElementById('queue').innerHTML = queueRows(s.queue)
     const groups = {}
     for (const a of s.live) (groups[a.project] ||= []).push(a)
     // Biggest programme first. No programme is named here — the kit ships to

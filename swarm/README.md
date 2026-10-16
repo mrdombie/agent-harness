@@ -15,7 +15,8 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `queue.sh` | One queue. `add` · `list` · `next` · `remove` · `clear` · `drain`. |
 | `scheduler.sh` | One pass: top each programme's queue up, drain it to the cap. |
 | `repair-watch.sh` | Repair a red or clashing pull request · unblock · restart after an outage · raise the alarm. |
-| `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. |
+| `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. It also shows the coordinator's queue (`$STATE_DIR/coordinator/queue.json`, in run order, with notes) and a banner while spawns are held. |
+| `hold-status.sh` | Whether the owner's pause or the plan's usage limit holds spawns, why and until when, as JSON — the same functions the coordinator decides with. |
 | `report.sh` | One screen, one JSON, one push. |
 | `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. |
 | `install.sh` | Writes and loads the timers. `status` reads back what is loaded. |
