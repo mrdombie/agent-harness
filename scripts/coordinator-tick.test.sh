@@ -198,7 +198,8 @@ out=$(ticks 1)
 want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
 want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
 
-unset SWARM_IDLE SWARM_CORES
+# Back to the fixture's reading: later sections must never read the real machine.
+export SWARM_IDLE=90; unset SWARM_CORES
 
 echo "--- coordinator.cap: 0 spawns nothing; not a number holds, named ---"
 fresh; queue 501
