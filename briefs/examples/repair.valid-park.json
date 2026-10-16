@@ -1,0 +1,8 @@
+{
+  "step": "repair",
+  "skills": [
+    "superpowers:systematic-debugging"
+  ],
+  "status": "park",
+  "question": "The e2e job fails on develop as well at the same check \u2014 is develop's red being fixed elsewhere?"
+}
