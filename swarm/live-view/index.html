@@ -133,6 +133,7 @@ function outcome(d){
 async function tick(){
   try{
     const r = await fetch('/api/agents', {cache:'no-store'}); const s = await r.json()
+    if (!r.ok) { document.getElementById('meta').textContent = `The live view is running but could not read the agents: ${s.error || r.status}`; return }
     repo = s.repo || ''
     const queued = s.queue?.tickets?.length || 0
     document.getElementById('meta').textContent =
