@@ -38,6 +38,12 @@ case " $* " in *" --fg "*) ;; *)
   fi ;;
 esac
 
+# A builder loads only the MCP servers it uses, also when the project's own copy below takes over.
+case " $* " in *" --fg "*) ;; *)
+  { . "$SCRIPT_DIR/builder-mcp.sh" && builder_mcp_shim; } 2>/dev/null \
+    || echo "spawn-claim: could not limit the builder's MCP servers — it loads every one" >&2 ;;
+esac
+
 # The spawner refreshes ITSELF, not only the agent's tree. It is reached through a
 # shell function pointing at one copy on the operator's machine, and that copy is
 # what went stale first — three days old on 2026-09-27, cd'ing every agent into a
