@@ -110,6 +110,15 @@ rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
 
+echo "--- the coordinator's ceiling and its healing / new split are served ---"
+want "no capacity file: null, not an error" "null" "$(printf '%s' "$s" | jq '.capacity')"
+printf '{"live":7,"ceiling":8,"room":true,"reading":"cpu idle 31%%, 9 GB free","cap":null,"healing":{"slots":2,"live":1},"new":{"slots":6,"live":6},"redsWaiting":2}\n' \
+  > "$STATE/coordinator/capacity.json"
+s=$(snap)
+want "the ceiling and the reading" "8 cpu idle 31%, 9 GB free" "$(printf '%s' "$s" | jq -r '"\(.capacity.ceiling) \(.capacity.reading)"')"
+want "the split"                   "6 1 2" "$(printf '%s' "$s" | jq -r '"\(.capacity.new.live) \(.capacity.healing.live) \(.capacity.redsWaiting)"')"
+rm -f "$STATE/coordinator/capacity.json"
+
 echo "--- a hold on spawns is shown, with why and until when ---"
 s=$(snap)
 want "nothing held"             "false" "$(printf '%s' "$s" | jq '.hold.held')"

@@ -315,7 +315,7 @@ This is the non-stop path: it keeps working while no window is open.
 An overnight `/loop /agent-harness:work <scope>` re-sends its whole conversation
 on every wake. `scripts/coordinator-tick.sh` does the same job as one short
 process with no model call: it reads the runs that ended, spawns the next queued
-ticket through `spawn-claim.sh` up to a cap, runs `reconcile-claims.sh` and the
+ticket through `spawn-claim.sh` while the machine has room, runs `reconcile-claims.sh` and the
 dev-server sweep, checks the disk, and writes every event that needs judgement
 to a file. Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
@@ -340,11 +340,31 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 
 | Key (under `coordinator`) | Default | What it is |
 |---|---|---|
-| `cap` | 4 | Live ticket runs at once |
+| `cap` | unset | An optional hard ceiling on live ticket runs. Unset, the machine decides; `0` spawns nothing; anything not a whole number holds every spawn and says so |
+| `startCpuIdle` | 30 | Sampled CPU idle % needed to start one more builder. Sits above `swarm.minCpuIdle` (the hold floor), so the count does not flap |
+| `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
+| `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+
+**The ceiling follows the machine.** Each tick the ceiling is what is running,
+plus one when sampled CPU idle is at or over `startCpuIdle`, free memory is at or
+over `minFreeMemGb` and the load is under the backstop — so at most one builder
+starts per tick, and CPU is read again before the next. A running builder is
+never stopped for load. Of that ceiling, healing gets `ceil(ceiling × healingShare)`
+places and new work the rest. While both classes have spawnable work each keeps
+its share, so a run of red PRs waits its turn instead of stopping new work; a
+class with nothing spawnable lends its places to the other, in both directions.
+A reading nobody could take (CPU idle, free memory, load, cores) is no room.
+The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
+because `spawn-claim.sh` hands over to the project's own copy, which need not
+write one; a run with no class anywhere counts as healing when its ticket has an
+open PR. The tick log shows
+`ceiling: 7 running · room for 1 more: cpu idle 31%, 9 GB free` and
+`split: 3 new · 1 healing · 2 reds waiting`, and `capacity.json` beside the queue
+holds the same for the live view.
 
 ### The merge lane — one PR into the trunk at a time
 
@@ -364,8 +384,10 @@ always exactly what was tested.
 | Green | merged with `merge.method` and `--match-head-commit`; one merge per pass |
 | Hold back on | re-cleared through `clear-hold.sh --reason` only when every commit since approval is a merge and the update touched none of its `design.surfacePaths` files; otherwise the owner is told |
 
-A fixer is a `spawn-claim.sh` run when a place is free under `coordinator.cap`,
-else a `repair` entry in the coordinator's queue. The status line is
+A fixer is a `repair` entry in the coordinator's queue, which the tick starts in
+a healing place. When no live coordinator has ticked in 15 minutes (it is in
+shadow, or not installed) the lane starts the fixer itself if the machine has
+room, so a queued fixer is never stranded. The status line is
 `$STATE_DIR/coordinator/lane.status`; owner calls land in `needs-you.md`.
 
 ```sh

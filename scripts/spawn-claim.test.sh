@@ -240,7 +240,7 @@ CANON="" run --fg 4246
 # The two paths cd separately; testing only --fg would leave the one the swarm
 # actually uses uncovered.
 rm -f "$OUT/seen"
-run 4247
+CLAIM_CLASS=repair run 4247
 for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
 if [ -f "$OUT/seen" ]; then
   [ "$(seen claude.md)" = "CURRENT BRANCH" ] \
@@ -252,6 +252,11 @@ if [ -f "$OUT/seen" ]; then
 else
   bad "the detached spawn never started the agent"
 fi
+
+# The coordinator counts live runs by class, so the record carries the one it was spawned for.
+cls=$(jq -r '.class // empty' "$STATE"/runs/claim-4247-*.json 2>/dev/null | head -1)
+[ "$cls" = repair ] && ok "the run record carries the class it was spawned for" \
+                    || bad "the run record's class was '${cls:-absent}', want repair"
 
 # --- 6b. The detached agent keeps the machine awake for its own life ---------
 # An idle Mac slept under a running agent and cost one repair four hours.
