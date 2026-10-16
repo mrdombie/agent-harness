@@ -396,13 +396,27 @@ class Resolver:
             return
         if len(mt) != len(toks) or LINKS.search(code) or NAMEREF.search(code):
             return
-        self.mt, self.at, n = mt, {}, len(mt)
+        self.mt, self.toks, self.at = mt, toks, {}
         for i, t in enumerate(toks):
             self.at.setdefault(t, []).append(i)
-        # Nesting: a loop, function, group, subshell, if or case around each token.
-        self.nest, stack, cmdpos, func_next, prev = [], [], True, False, ''
-        for i, t in enumerate(mt):
-            self.nest.append(tuple(stack))
+        self.nest = self.nesting()
+        if self.nest is None:
+            return
+        self.assigns, self.first_ok, self.taint, self.refs, self.setters = {}, set(), set(), {}, []
+        self.dyn, self.copiers, self.archive, self._copies = len(mt), [], False, None
+        # mktemp is a new dir only if it is the real mktemp: not a function, alias or PATH lookup the text changes.
+        self.fresh_ok = not MKTEMP_SHADOW.search(code)
+        for seg in self.segments():
+            self.read_segment(*seg)
+        self.read_words()
+        self.settle()
+        self.ok = True
+
+    def nesting(self):
+        """The loop, function, group, subshell, if or case frames around each token; None if unbalanced."""
+        nest, stack, cmdpos, func_next, prev = [], [], True, False, ''
+        for t in self.mt:
+            nest.append(tuple(stack))
             if is_sep(t):
                 for c in t:
                     if c == '(':
@@ -410,7 +424,7 @@ class Resolver:
                     elif c == ')' and stack and stack[-1] in ('sub', 'func'):
                         stack.pop()
                     elif c == ')' and not (stack and stack[-1] == 'case'):
-                        return
+                        return None
                 cmdpos = True
                 prev = t.replace(' ', '').replace('\n', '')
                 continue
@@ -425,17 +439,18 @@ class Resolver:
                 elif t in ('fi', 'esac', 'done', '}'):
                     want = {'fi': ('if',), 'esac': ('case',), 'done': ('loop',), '}': ('func', 'group')}[t]
                     if not stack or stack[-1] not in want:
-                        return
+                        return None
                     stack.pop()
                 elif t == 'function':
                     func_next = True
                 cmdpos = t in SHELL_WORDS or t in ('then', 'do', 'else', 'elif', 'in') or bool(ASSIGN.fullmatch(t))
             prev = t
-        if stack:
-            return
-        # Segments, with the separators either side.
+        return None if stack else nest
+
+    def segments(self):
+        """(start, end, separator before, separator after) for each simple command."""
         segs, cur, before = [], None, ''
-        for i, t in enumerate(mt):
+        for i, t in enumerate(self.mt):
             if is_sep(t):
                 if cur is not None:
                     segs.append((cur, i, before, t))
@@ -444,59 +459,62 @@ class Resolver:
             elif cur is None:
                 cur = i
         if cur is not None:
-            segs.append((cur, n, before, ''))
-        self.assigns, self.first_ok, self.taint, self.dyn, self.refs, self.setters = {}, set(), set(), n, {}, []
-        self.used, self.toks, self.copiers, self.archive, self._copies = set(), toks, [], False, None
-        # mktemp is a new dir only if it is the real mktemp: not a function, alias or PATH lookup the text changes.
-        self.fresh_ok = not MKTEMP_SHADOW.search(code)
+            segs.append((cur, len(self.mt), before, ''))
+        return segs
+
+    def read_segment(self, start, end, sep_b, sep_a):
+        """One command: its assignments, copies, archives, and what can set variables at run time."""
+        mt = self.mt
         plain = lambda s: not any(c in '&|' for c in s)  # not one side of && || | or & (nesting is checked apart)
-        for start, end, sep_b, sep_a in segs:
-            words = list(range(start, end))
-            while words and mt[words[0]] in SHELL_WORDS | {'then', 'do', 'else', 'elif', 'function'}:
-                if mt[words[0]] == 'function':
-                    words = words[1:]  # and its name
-                words = words[1:]
-            only_assigns, cmd = True, None
-            for i in words:
-                m = ASSIGN.fullmatch(mt[i])
-                if m and (cmd is None or cmd in ('export', 'readonly', 'local', 'declare', 'typeset')):
-                    continue
-                if cmd is None:
-                    cmd = mt[i]
-                    only_assigns = cmd in ('export', 'readonly')
-                elif mt[i].startswith('-'):
-                    only_assigns = False
-            run = [i for i in words if not ASSIGN.fullmatch(mt[i])]
-            while run and mt[run[0]] in PREFIXES:
-                run = run[1:]
-            if run and os.path.basename(mt[run[0]]) in COPIERS:
-                self.copiers.append((os.path.basename(mt[run[0]]), run[1:]))
-            if any(os.path.basename(mt[i]) in ARCHIVERS or INTERPRETERS.match(os.path.basename(mt[i])) for i in run[:1]) \
-                    or (run and mt[run[0]] == 'git' and any(mt[i] in ('clone', 'worktree', 'archive', 'bundle') for i in run)):
-                self.archive = True  # unpacks or copies a tree, links and all, the copy judge cannot see
-            if run and mt[run[0]] == '.':
-                self.dyn = min(self.dyn, run[0])  # `builtin .`, `command .`: a sourced file sets anything
-            if cmd in DYN_CMDS and not (cmd == 'trap' and not any(DQ in mt[i] or UQ in mt[i] for i in words)):
-                # A literal trap action is text the scans below already read; one built at run time is not.
-                self.dyn = min(self.dyn, start)
-            elif (cmd in VAR_CMDS and any((DQ in mt[i] or UQ in mt[i]) and not ASSIGN.fullmatch(mt[i]) for i in words)) or \
-                    (cmd == 'printf' and any(mt[i] == '-v' for i in words)):
-                # Sets or clears a variable it names at run time. Before every assignment a
-                # path relies on, and outside a function, it cannot reach that path's value.
-                self.setters.append(words[0])  # the command itself: a leading `{` sits outside the frame it opens
-            for i in words:
-                m = ASSIGN.fullmatch(mt[i])
-                if not m:
-                    continue
-                name, val, after = m.group(1), m.group(2), sep_a
-                if val.endswith(UQ) and i + 1 < n and mt[i + 1].startswith('('):
-                    val, after = self.substitution(i, val)
-                self.assigns.setdefault(name, []).append((i, val))
-                if name not in self.first_ok and len(self.assigns[name]) == 1 and only_assigns and \
-                        not self.nest[i] and plain(sep_b) and after is not None and plain(after):
-                    self.first_ok.add(name)
+        words = list(range(start, end))
+        while words and mt[words[0]] in SHELL_WORDS | {'then', 'do', 'else', 'elif', 'function'}:
+            if mt[words[0]] == 'function':
+                words = words[1:]  # and its name
+            words = words[1:]
+        only_assigns, cmd = True, None
+        for i in words:
+            m = ASSIGN.fullmatch(mt[i])
+            if m and (cmd is None or cmd in ('export', 'readonly', 'local', 'declare', 'typeset')):
+                continue
+            if cmd is None:
+                cmd = mt[i]
+                only_assigns = cmd in ('export', 'readonly')
+            elif mt[i].startswith('-'):
+                only_assigns = False
+        run = [i for i in words if not ASSIGN.fullmatch(mt[i])]
+        while run and mt[run[0]] in PREFIXES:
+            run = run[1:]
+        if run and os.path.basename(mt[run[0]]) in COPIERS:
+            self.copiers.append((os.path.basename(mt[run[0]]), run[1:]))
+        if any(os.path.basename(mt[i]) in ARCHIVERS or INTERPRETERS.match(os.path.basename(mt[i])) for i in run[:1]) \
+                or (run and mt[run[0]] == 'git' and any(mt[i] in ('clone', 'worktree', 'archive', 'bundle') for i in run)):
+            self.archive = True  # unpacks or copies a tree, links and all, the copy judge cannot see
+        if run and mt[run[0]] == '.':
+            self.dyn = min(self.dyn, run[0])  # `builtin .`, `command .`: a sourced file sets anything
+        if cmd in DYN_CMDS and not (cmd == 'trap' and not any(DQ in mt[i] or UQ in mt[i] for i in words)):
+            # A literal trap action is text the scans below already read; one built at run time is not.
+            self.dyn = min(self.dyn, start)
+        elif (cmd in VAR_CMDS and any((DQ in mt[i] or UQ in mt[i]) and not ASSIGN.fullmatch(mt[i]) for i in words)) or \
+                (cmd == 'printf' and any(mt[i] == '-v' for i in words)):
+            # Sets or clears a variable it names at run time. Before every assignment a
+            # path relies on, and outside a function, it cannot reach that path's value.
+            self.setters.append(words[0])  # the command itself: a leading `{` sits outside the frame it opens
+        for i in words:
+            m = ASSIGN.fullmatch(mt[i])
+            if not m:
+                continue
+            name, val, after = m.group(1), m.group(2), sep_a
+            if val.endswith(UQ) and i + 1 < len(mt) and mt[i + 1].startswith('('):
+                val, after = self.substitution(i, val)
+            self.assigns.setdefault(name, []).append((i, val))
+            if name not in self.first_ok and len(self.assigns[name]) == 1 and only_assigns and \
+                    not self.nest[i] and plain(sep_b) and after is not None and plain(after):
+                self.first_ok.add(name)
+
+    def read_words(self):
+        """Every word, wherever it stands: references, bare names, and the dynamic commands a walk missed."""
+        mt = self.mt
         for i, t in enumerate(mt):
-            # The same, wherever the word stands: a command position the walk above missed is still one.
             if t in ('eval', 'source'):
                 self.dyn = min(self.dyn, i)
             elif t in VAR_CMDS or t in ('printf', 'trap'):
@@ -515,11 +533,12 @@ class Resolver:
             self.taint.update(SETREF.findall(t))
             m = ASSIGN.fullmatch(t)
             self.taint.update(BARE.findall(t[len(m.group(1)) + 1:] if m else t))
+
+    def settle(self):
         for name, a in self.assigns.items():
             if any(r <= a[0][0] for r in self.refs.get(name, [])):
                 self.first_ok.discard(name)  # read before it is first assigned: the environment's value
         self.fresh_ok = self.fresh_ok and 'PATH' not in self.assigns
-        self.ok = True
 
     def copies_safe(self):
         """A fixture config can be written and then copied out of its sandbox, where the copy
@@ -579,14 +598,14 @@ class Resolver:
         return None, None
 
     def values(self, name, pos, seen):
+        """(every value `name` can hold read at token pos, the assigned variables it rests on) or None."""
         if name == 'TMPDIR':
-            return [ANY]
+            return [ANY], set()
         if name in SPECIAL:
-            return [WILD]
+            return [WILD], set()
         if name in self.taint or name in seen or name not in self.first_ok:
             return None
-        a = self.assigns[name]
-        self.used.add(name)
+        a, used = self.assigns[name], {name}
         if pos <= a[0][0]:
             return None
         top = not self.nest[pos]
@@ -597,7 +616,8 @@ class Resolver:
             r = self.parse(v, i, seen | {name}, name)
             if r is None:
                 return None
-            alts, selfref, strip = r
+            alts, selfref, strip, u = r
+            used |= u
             if selfref:
                 if any(not s.startswith('/') for s in alts):
                     return None
@@ -607,13 +627,13 @@ class Resolver:
         out = list(base)
         for alts, strip in tails:
             out.extend((b[:-1] if strip and b.endswith('/') else b) + WILD + s for b in base for s in alts)
-        return out if base and len(out) <= MAX_ALTS else None
+        return (out, used) if base and len(out) <= MAX_ALTS else None
 
     def parse(self, s, idx, seen, selfname=None):
-        """(alternatives, starts with the variable itself, its `%/` strip) or None."""
+        """(alternatives, starts with the variable itself, its `%/` strip, variables used) or None."""
         if s is None or any(c in s for c in '`\\$') or s.startswith('~'):
             return None
-        parts, i, selfref, strip = [], 0, False, False
+        parts, i, selfref, strip, used = [], 0, False, False, set()
         while i < len(s):
             js = [k for k in (s.find(UQ, i), s.find(DQ, i)) if k >= 0]
             if not js:
@@ -640,9 +660,11 @@ class Resolver:
                     return None
                 selfref, strip = True, bool(op)
                 continue
-            vals = self.values(name, idx, seen)
-            if vals is None:
+            r = self.values(name, idx, seen)
+            if r is None:
                 return None
+            vals, u = r
+            used |= u
             if op in ('%/', '%%/'):
                 vals = [v.rstrip('/') if op == '%%/' else (v[:-1] if v.endswith('/') else v) for v in vals]
             elif op:
@@ -653,7 +675,7 @@ class Resolver:
             alts = [a + b for a in alts for b in p]
             if len(alts) > MAX_ALTS:
                 return None
-        return alts, selfref, strip
+        return alts, selfref, strip, used
 
     def sandbox(self, p):
         if '..' in p.split('/'):
@@ -691,11 +713,10 @@ class Resolver:
             return False  # no variable, or an unquoted one the shell splits and globs
         if self.dyn < len(self.mt) and (self.dyn < i or self.nest[i]):
             return False  # eval or source can run before this and set anything
-        self.used = set()
         r = self.parse(m, i, frozenset())
         if r is None or not all(self.sandbox(p) for p in r[0]):
             return False
-        first = min([self.assigns[v][0][0] for v in self.used] or [len(self.mt)])
+        first = min([self.assigns[v][0][0] for v in r[3]] or [len(self.mt)])
         # Harmless only in top-level flow that runs once, in place: anything else may be a function called later.
         return not any(s >= first or not set(self.nest[s]) <= {'loop', 'if'} for s in self.setters)
 
