@@ -17,7 +17,7 @@
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
 #   4. pull requests red (unless fix-lock.sh says a session is on it), and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
-#   5. spawn         at most one start per tick, while the machine has room
+#   5. spawn         as many starts as the spare CPU fits, while the machine has room
 #                    (coord_room) and under coordinator.cap when one is set;
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest; a class
@@ -255,27 +255,39 @@ while IFS= read -r rec; do
   if [ "$(live_class "$rec")" = healing ]; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi
 done <<< "$LIVE_RECS"
 
-# The ceiling is what is running plus one when the machine has room: one start
-# per tick, so CPU and memory are read again before the next.
-CEILING=$LIVE; ROOM=""; READING=""
-if READING=$(coord_room); then ROOM=1; CEILING=$((LIVE+1)); fi
+# The ceiling is what is running plus as many as the spare CPU fits (coord_room),
+# so an idle machine fills in one tick rather than one agent per tick.
+CEILING=$LIVE; ROOM=""; READING=""; STARTS=0
+# Live builders started inside the ramp window: the idle reading has not seen them.
+RAMPING=0
+while IFS= read -r rec; do
+  [ -n "$rec" ] || continue
+  at=$(jq -r '.started_at // empty' "$rec" 2>/dev/null); [ -n "$at" ] || continue
+  [ $(( NOW - $(swarm_epoch "$at") )) -lt $(( COORD_RAMP_MIN * 60 )) ] && RAMPING=$((RAMPING+1))
+done <<< "$LIVE_RECS"
+if READING=$(coord_room); then
+  ROOM=1; STARTS=${READING%%$'\t'*}; READING=${READING#*$'\t'}
+  STARTS=$(( STARTS - RAMPING )); [ "$STARTS" -ge 0 ] || STARTS=0
+  [ "$RAMPING" -eq 0 ] || READING="$READING, $RAMPING started in the last ${COORD_RAMP_MIN} min"
+  CEILING=$((LIVE+STARTS))
+fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
 HEAL_SLOTS=$(coord_healing_slots "$CEILING"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
 HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
 NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
-say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for 1 more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
+say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""; REDS_WAITING=0
 # The spawnable entries, in queue order: every healing one (so the reds waiting
-# are counted), and new work up to the second one.
+# are counted), and new work up to one past the free places (the next pick).
 CANDS=""
 candidates() {
   local t cls note why nn=0
   while IFS=$'\t' read -r t cls note; do
     [ -n "${t:-}" ] || continue
-    coord_healing_class "$cls" || { [ "$nn" -lt 2 ] || continue; }
+    coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
     if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
     coord_healing_class "$cls" || nn=$((nn+1))
     CANDS="$CANDS$t"$'\t'"$cls"$'\t'"$note"$'\n'
@@ -324,37 +336,49 @@ elif [ "$SLOTS" -le 0 ]; then
   held_view
 else
   candidates
-  heal=$(first_of healing); new=$(first_of new)
-  # Each class fills its own share first; a class with nothing spawnable lends
-  # its places to the other, in both directions.
-  pick=""; lent=""
-  if   [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
-  elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
-  elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$new" ];  then pick="$new"; lent="a healing place"
-  elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$heal" ]; then pick="$heal"; lent="a new place"
-  fi
-  if [ -n "$pick" ]; then
+  started=0
+  while [ "$started" -lt "$SLOTS" ]; do
+    heal=$(first_of healing); new=$(first_of new)
+    # Each class fills its own share first; a class with nothing spawnable lends
+    # its places to the other, in both directions.
+    pick=""; lent=""
+    if   [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
+    elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
+    elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$new" ];  then pick="$new"; lent="a healing place"
+    elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$heal" ]; then pick="$heal"; lent="a new place"
+    fi
+    [ -n "$pick" ] || break
     IFS=$'\t' read -r t cls note <<< "$pick"
-    PLAN="$t"; TOOK="$cls"
-    if coord_healing_class "$cls"; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi
+    started=$((started+1))
+    # Taken out of the candidates so the next pass picks the next one.
+    CANDS=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$t" 'NF && $1 != p'); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
+    PLAN="${PLAN:+$PLAN,}$t"; TOOK="$cls"
+    if coord_healing_class "$cls"; then
+      if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); else NEW_FREE=$((NEW_FREE-1)); fi
+    else
+      if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); else HEAL_FREE=$((HEAL_FREE-1)); fi
+    fi
+    # Counted live only once it is (or, in shadow, would be) running.
+    count_live() { if coord_healing_class "$cls"; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi; }
     coord_act_log spawn "$t" "$cls${note:+ — $note}"
     if coord_shadow; then
-      say "would spawn #$t ($cls)${lent:+ in $lent, nothing else spawnable}"
+      say "would spawn #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; count_live
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
       if CLAIM_CLASS="$cls" swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then
-        coord_record_class "$t" "$cls"
+        coord_record_class "$t" "$cls"; count_live
         say "spawned #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
       else say "spawn of #$t failed"; fi
       [ -z "$brief" ] || rm -f "$brief"
     fi
-  elif [ -z "$CANDS" ]; then
+  done
+  if [ "$started" -eq 0 ] && [ -z "$CANDS" ]; then
     say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
   fi
-  # The next pick is the first spawnable entry after this one, whatever its class.
-  NEXT=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$PLAN" 'NF && $1 != p { print $1; exit }')
-  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$PLAN" '($2 == "repair" || $2 == "approved-merge") && $1 != p' | grep -c .)
+  # The next pick is the first spawnable entry left, whatever its class.
+  NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
+  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
   if [ "$REDS_WAITING" -gt 0 ] && ! coord_healing_class "${TOOK:-new}"; then
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi

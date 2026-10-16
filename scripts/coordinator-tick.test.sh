@@ -93,31 +93,32 @@ want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3==
 want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
 
-echo "--- live spawns: one per tick, and a set cap is a hard ceiling ---"
+echo "--- live spawns, and a set cap is a hard ceiling ---"
 fresh; queue 501 502 503 504 505 506; live_run 900
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
-want "room under the cap: one start, the first in queue order" "501" "$(spawned)"
+want "room under the cap: it fills to the cap, in queue order" "501 502 503" "$(spawned)"
 want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
 fresh; queue 501 502; live_run 900; live_run 901
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 tick)
 want "at the cap, nothing spawns"          "" "$(spawned)"
 want_in "and it says why"                  '2 live, cap 2 — no slot' "$out"
 
-echo "--- the ceiling follows the machine: room is one more than is running ---"
-fresh; queue 501 502 503; live_run 900; live_run 901; live_run 902
-out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_FREE_MEM_GB=16 tick)
-want "idle 40%, memory over the floor: one more than the 3 running" "501" "$(spawned)"
-want_in "the log names the ceiling and the reading" 'ceiling: 3 running · room for 1 more: cpu idle 40%, 16 GB free' "$out"
-want "the live view's file holds the ceiling"  "4 true" "$(jq -r '"\(.ceiling) \(.room)"' "$C/capacity.json")"
+echo "--- the ceiling follows the machine: room is what the spare CPU fits ---"
+# 10 cores, 0.8 of a core an agent = 8% each; 40% idle keeping 15% fits 3.
+fresh; queue 501 502 503 504; live_run 900; live_run 901; live_run 902
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 SWARM_FREE_MEM_GB=16 tick)
+want "idle 40%, memory over the floor: three more than the 3 running" "501 502 503" "$(spawned)"
+want_in "the log names the ceiling and the reading" 'ceiling: 3 running · room for 3 more: cpu idle 40%, 16 GB free' "$out"
+want "the live view's file holds the ceiling"  "6 true" "$(jq -r '"\(.ceiling) \(.room)"' "$C/capacity.json")"
 want_in "and the reading behind it"        'cpu idle 40%, 16 GB free' "$(jq -r .reading "$C/capacity.json")"
 fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=10 tick)
 want "idle 10%: no start"                  "" "$(spawned)"
 want_in "it is the hold floor"             'machine busy \(cpu idle 10%, floor 15%\) — holding' "$out"
 fresh; queue 501; live_run 900
-out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=22 tick)
-want "between the hold and start floors: no start, nothing stopped" "" "$(spawned)"
-want_in "and it names the start floor"     '1 live, no room for more \(cpu idle 22%, start floor 30%\) — holding' "$out"
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=22 SWARM_CORES=10 tick)
+want "spare idle under one agent's share: no start, nothing stopped" "" "$(spawned)"
+want_in "and it names what is kept and what an agent needs" '1 live, no room for more \(cpu idle 22%, keeping 15% and an agent needs 0.8 of 10 cores\) — holding' "$out"
 fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=90 SWARM_FREE_MEM_GB=2 tick)
 want "memory under the floor: no start, even at 90% idle" "" "$(spawned)"
@@ -133,11 +134,11 @@ seed() { # <age-sec> <idle> … — samples already on record, oldest first
   local now; now=$(date +%s); : > "$H"
   while [ $# -gt 1 ]; do printf '%s %s\n' $(( now - $1 )) "$2" >> "$H"; shift 2; done
 }
-htick() { SWARM_IDLE_HISTORY="$H" COORDINATOR_SHADOW=0 tick; }
+htick() { SWARM_IDLE_HISTORY="$H" SWARM_CORES=10 COORDINATOR_SHADOW=0 tick; }
 fresh; queue 501; seed 1200 40 900 42 600 38 300 41
 out=$(SWARM_IDLE=5 htick)
 want "a steady 40% with one 5% dip: it starts" "501" "$(spawned)"
-want_in "the log gives the median and its sample count" 'room for 1 more: cpu idle 40% \(median of 5\), 16 GB free' "$out"
+want_in "the log gives the median and its sample count" 'room for 3 more: cpu idle 40% \(median of 5\), 16 GB free' "$out"
 want "one tick reads twice and records once" "5" "$(wc -l < "$H" | tr -d ' ')"
 fresh; queue 501; live_run 900; seed 1200 5 900 8 600 4 300 6
 out=$(SWARM_IDLE=55 htick)
@@ -145,8 +146,8 @@ want "a busy machine with one 55% spike: the hold floor holds" "" "$(spawned)"
 want_in "and names the median"             'machine busy \(cpu idle 6% \(median of 5\), floor 15%\) — holding' "$out"
 fresh; queue 501; live_run 900; seed 1200 20 900 22 600 25 300 21
 out=$(SWARM_IDLE=90 htick)
-want "a 90% spike over a 22% median: under the start floor" "" "$(spawned)"
-want_in "and names the start floor"        'no room for more \(cpu idle 22% \(median of 5\), start floor 30%\)' "$out"
+want "a 90% spike over a 22% median: no agent's share spare" "" "$(spawned)"
+want_in "and names what is kept"           'no room for more \(cpu idle 22% \(median of 5\), keeping 15% and an agent needs 0.8 of 10 cores\)' "$out"
 fresh; queue 501; seed 4000 5 3900 5 3800 5 3700 5
 out=$(SWARM_IDLE=40 htick)
 want "samples past swarm.idleMaxAgeSec do not count" "501" "$(spawned)"
@@ -155,10 +156,46 @@ fresh; queue 501; seed 1200 5 900 5 600 5 300 40
 out=$(SWARM_IDLE=40 SWARM_IDLE_SAMPLES=3 htick)
 want "swarm.idleSamples sets how many count" "501" "$(spawned)"
 
-echo "--- exactly one start per tick, however much room ---"
+
+echo "--- it fills the spare room in one tick (Dom, 2026-10-16) ---"
 fresh; queue 501 502 503 504 505 506
-out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 tick)
-want "an idle machine, six queued, nothing live: one start" "501" "$(spawned)"
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 tick)
+want "an idle machine, six queued, nothing live: all six start" "501 502 503 504 505 506" "$(spawned)"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=31 SWARM_CORES=10 tick)
+want "31% idle keeping 15%: room for two" "501 502" "$(spawned)"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_AGENT_CPU_CORES=4 tick)
+want "an agent's share is configurable: 4 cores each fits two" "501 502" "$(spawned)"
+fresh; queue 501 502 503 504 505 506
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_KEEP_CPU_IDLE=75 tick)
+want "the kept idle is configurable: keeping 75% fits three" "501 502 503" "$(spawned)"
+fresh; queue 501 502 503
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=99 SWARM_CORES=10 COORDINATOR_KEEP_CPU_IDLE=5 tick)
+want "kept idle under the hold floor is raised to it, never lower" "501 502 503" "$(spawned)"
+
+echo "--- a builder started inside the ramp window still owns its share ---"
+ramp_run() { # <ticket> <seconds ago>
+  printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s,"started_at":"%s"}\n' "$1" "$1" "$$" \
+    "$(date -u -r $(( $(date +%s) - $2 )) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$(( $(date +%s) - $2 ))" +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$STATE/runs/claim-$1-live.json"
+}
+fresh; queue 501 502 503 504; ramp_run 900 60
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 tick)
+want "40% fits 3, one started a minute ago: two start" "501 502" "$(spawned)"
+want_in "and the reading says why"         '1 started in the last 10 min' "$out"
+fresh; queue 501 502 503 504; ramp_run 900 1200
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 tick)
+want "one started 20 minutes ago no longer counts" "501 502 503" "$(spawned)"
+fresh; queue 501 502; ramp_run 900 60; ramp_run 901 60; ramp_run 902 60
+out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=40 SWARM_CORES=10 tick)
+want "three ramping fill the three places: none start" "" "$(spawned)"
+
+echo "--- a start that fails is not counted as running ---"
+fresh; queue 501 502
+out=$(COORDINATOR_SHADOW=0 SWARM_SPAWN=/usr/bin/false SWARM_IDLE=40 SWARM_CORES=10 tick)
+want_in "it says the start failed"         'spawn of #501 failed' "$out"
+want "the live view counts nothing running" "0 0" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
 
 echo "--- no fixed cap: with coordinator.cap unset, the machine alone decides ---"
 fresh; queue 501; for t in 900 901 902 903; do live_run $t; done
@@ -168,9 +205,11 @@ want_in "the tick says there is no cap"    'cap none' "$out"
 fresh; queue 501; for t in 900 901 902 903 904 905 906; do live_run $t; done
 out=$(COORDINATOR_SHADOW=0 tick)
 want "7 running and room: an 8th starts"   "501" "$(spawned)"
-want "the live view's file has no cap"     "null 8" "$(jq -r '"\(.cap) \(.ceiling)"' "$C/capacity.json")"
+want "the live view's file has no cap"     "null" "$(jq -r '.cap' "$C/capacity.json")"
 
 echo "--- of the ceiling, a quarter heals and the rest builds new ---"
+# One agent's room per tick (23% idle keeping 15%, 8% each), so a ramp is visible.
+export SWARM_IDLE=23 SWARM_CORES=10
 fresh; queue_as repair 601 602 603 604 605; queue 701 702 703 704 705
 out=$(COORDINATOR_CAP=4 ticks 1)
 want "the first tick takes the one healing place" "601" "$(spawned)"
@@ -211,6 +250,9 @@ for t in 801 802 803 804; do live_as $t new; done
 out=$(ticks 1)
 want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
 want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
+
+# Back to the fixture's reading: later sections must never read the real machine.
+export SWARM_IDLE=90; unset SWARM_CORES
 
 echo "--- coordinator.cap: 0 spawns nothing; not a number holds, named ---"
 fresh; queue 501
@@ -260,7 +302,8 @@ git -C "$REPO" -c user.name=t -c user.email=t@t checkout -q -b develop 2>/dev/nu
 git -C "$REPO" add scripts .claude && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm project
 git init -q --bare "$FIX/origin.git"; git -C "$REPO" remote add origin "$FIX/origin.git" 2>/dev/null
 git -C "$REPO" push -q origin develop && git -C "$REPO" fetch -q origin
-handover() { TMPDIR="$FIX" SWARM_SPAWN="$HERE/spawn-claim.sh" COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
+# One agent of room a tick, so the second tick reads the class the first recorded.
+handover() { TMPDIR="$FIX" SWARM_SPAWN="$HERE/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
 fresh; queue_as repair 601 602; queue 701 702
 handover >/dev/null
 want "the real spawner handed over"        "601	handed-over" "$(head -1 "$SPAWNS")"
