@@ -30,11 +30,18 @@
 #   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
 #   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh)
 #
+# 5b-8 run in coordinator-housekeeping.sh, under a lock of their own, in the
+# background after the starts and at most every coordinator.housekeepingEveryMin
+# (default 5): a tick is the starts, so it can run every 2 minutes.
+# A run whose last word is a wait on a human is not re-picked until the wait moves
+# (coordinator-waits.sh): a label, a commit, a comment or a red check on its PR.
+#
 # Shadow (the default): every act is written to actions.log as "would …";
 # nothing is spawned, killed, posted or notified, and housekeeping runs dry.
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
+. "$SELF_DIR/coordinator-waits.sh" || exit 1
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
 SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
@@ -89,6 +96,13 @@ for ended in "$RUNS_DIR"/*.ended; do
   printf '%s\n' "$rid" >> "$SEEN_ENDED"
   printf '%s\tended\t%s\t%s\texit=%s %s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
+  # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
+  if [ -n "$ticket" ]; then
+    if [ "$code" = 0 ] && why=$(coord_wait_reason "$log"); then
+      coord_wait_note "$ticket" "$rid" "$(jq -r '.ended_at // empty' "$ended" 2>/dev/null)" "$why"
+      say "wait: #$ticket ended waiting on a human ($why) — not re-picked until that changes"
+    else coord_wait_clear "$ticket"; fi
+  fi
   if limit_hit "$log"; then
     event "usage-limit:$rid" usage-limit false "$ticket" "" "run $rid stopped on the plan's usage limit"
     cut_off "$ticket" "$rid" "$log" "the plan's usage limit"
@@ -198,6 +212,9 @@ if [ -s "$CUT_PENDING" ]; then
   mv -f "$CUT_PENDING.next" "$CUT_PENDING"
 fi
 
+# The waits recorded this tick, snapshotted while the open PRs are fresh.
+[ -n "${PRS:-}" ] && coord_wait_snap_pending
+
 # ---- 5. spawn ----------------------------------------------------------------
 # Labels that keep a ticket from any agent: the swarm's own list, plus gated.
 stop_labels() { { swarm_blocking_labels; printf '%s\n' "$LBL_GATED" "$LBL_EXTERNAL_BLOCKED"; } | awk 'NF && !seen[$0]++'; }
@@ -230,6 +247,8 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
     [ "$l" = "$LBL_IN_REVIEW" ] && [ "$cls" != new ] && continue
     case ",$lab," in *",$l,"*) echo "$l"; return 0 ;; esac
   done <<< "$(stop_labels)"
+  # Respawned before the human moves, it ends on the same wait again.
+  coord_wait_holds "$t" "$lab" && return 0
   return 1
 }
 
@@ -398,54 +417,22 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \
   "$CEILING" "$LIVE_HEAL" "$HEAL_SLOTS" "$LIVE_NEW" "$NEW_SLOTS" "$NEXT" >> "$COORD_ACTIONS"
 
-# ---- 5b. the merge lane -------------------------------------------------------
-# Only where the project names a merge method. Its own lock, its own shadow.
-LANE="${COORDINATOR_LANE:-$SELF_DIR/merge-lane.sh}"
-if toolkit_cfg merge.method >/dev/null 2>&1; then
-  bash "$LANE" >> "$COORD_LOG" 2>&1 || say "merge lane exited $?"
+# ---- 5b-8. housekeeping, off the start path ------------------------------------
+# The merge lane, reconcile, the sweeps, the disk pass and the judge took 2.9 of a
+# 4.4-minute median tick, and launchd starts no tick while one runs: starts waited
+# on them. They run in coordinator-housekeeping.sh under a lock of their own, at most
+# every coordinator.housekeepingEveryMin, in the background once the starts are made.
+HOUSE="${COORDINATOR_HOUSEKEEPING_CMD:-$SELF_DIR/coordinator-housekeeping.sh}"
+HOUSE_STAMP="$COORD_DIR/housekeeping.stamp"
+COORD_HOUSE_EVERY_MIN="${COORDINATOR_HOUSEKEEPING_EVERY_MIN:-$(swarm_opt coordinator.housekeepingEveryMin 5)}"
+case "$COORD_HOUSE_EVERY_MIN" in ""|*[!0-9]*) COORD_HOUSE_EVERY_MIN=5 ;; esac
+if [ $(( $(date +%s) - $(coord_mtime "$HOUSE_STAMP") )) -lt $(( COORD_HOUSE_EVERY_MIN * 60 )) ]; then
+  say "housekeeping: ran under ${COORD_HOUSE_EVERY_MIN} min ago — not this tick"
+elif [ "${COORDINATOR_HOUSEKEEPING:-background}" = inline ]; then
+  touch "$HOUSE_STAMP"; bash "$HOUSE"
 else
-  say "merge lane: off — harness.json has no merge.method"
+  touch "$HOUSE_STAMP"
+  bash "$SELF_DIR/../swarm/detach.sh" bash "$HOUSE" > "$COORD_DIR/housekeeping.out" 2>&1 < /dev/null &
+  say "housekeeping: started in the background (pid $!)"
 fi
-
-# ---- 6. housekeeping ---------------------------------------------------------
-if coord_shadow; then
-  bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
-  bash "$SWEEP" --sweep --dry-run >> "$COORD_LOG" 2>&1 || say "server sweep (dry) exited $?"
-else
-  bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"
-  bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"
-fi
-# An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.
-WT_SWEEP="${COORDINATOR_WORKTREE_SWEEP:-$SELF_DIR/sweep-orphan-worktrees.sh}"
-WT_STAMP="$COORD_DIR/worktree-sweep.stamp"
-if [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; then
-  touch "$WT_STAMP"
-  if coord_shadow; then bash "$WT_SWEEP" >> "$COORD_LOG" 2>&1 || say "worktree sweep (dry) exited $?"
-  else bash "$WT_SWEEP" --apply >> "$COORD_LOG" 2>&1 || say "worktree sweep exited $?"; fi
-fi
-
-# ---- 7. disk -----------------------------------------------------------------
-CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"
-free_gb() {
-  if [ -n "${COORDINATOR_DF:-}" ]; then "$COORDINATOR_DF"
-  elif [ -n "${COORDINATOR_FREE_GB:-}" ]; then printf '%s\n' "$COORDINATOR_FREE_GB"
-  else df -Pk "$STATE_DIR" 2>/dev/null | awk 'NR==2{print int($4/1048576)}'; fi
-}
-FREE_GB=$(free_gb)
-case "$FREE_GB" in ''|*[!0-9]*) say "disk: free space could not be read"; FREE_GB="" ;; esac
-if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
-  before="$FREE_GB"
-  if coord_shadow; then bash "$CACHE" --caches-only >> "$COORD_LOG" 2>&1 || say "cache pass (dry) exited $?"
-  else bash "$CACHE" --caches-only --apply >> "$COORD_LOG" 2>&1 || say "cache pass exited $?"; fi
-  FREE_GB=$(free_gb); case "$FREE_GB" in ''|*[!0-9]*) FREE_GB="$before" ;; esac
-  say "disk: $before GB free, below $COORD_MIN_FREE_GB GB — $FREE_GB GB after the cache pass"
-fi
-if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
-  if event "disk-low:$(swarm_day)" disk-low false "" "" "${FREE_GB} GB free, below ${COORD_MIN_FREE_GB} GB"; then
-    bash "$NOTIFY" --class owner "disk-low:$(swarm_day)" "Disk is low: ${FREE_GB} GB free (floor ${COORD_MIN_FREE_GB} GB)"
-  fi
-fi
-
-# ---- 8. judgement ------------------------------------------------------------
-bash "$JUDGE" >> "$COORD_LOG" 2>&1 || say "judge exited $?"
 say "tick: done"
