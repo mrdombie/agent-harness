@@ -13,11 +13,13 @@
 #   swarm_cpu_idle                    idle percent, sampled over ~1-2s
 #   swarm_load                        the 1-minute load average, a whole number
 #   swarm_cores                       logical cores
+#   swarm_free_mem_gb                 free memory in whole GB, empty when unread
 #
 # Seams, each read on EVERY call so a test can move them while a waiter polls:
 #   SWARM_LOAD / SWARM_LOAD_FILE   a fixed load / a file holding it
 #   SWARM_IDLE / SWARM_IDLE_FILE   a fixed idle percent / a file holding it
 #   SWARM_CORES                    a fixed core count
+#   SWARM_FREE_MEM_GB / _FILE      a fixed free-memory reading / a file holding it
 #   SWARM_IDLE_CACHE               where one real sample is shared for 5s
 #                                  (default ~/.cache/agent-harness/cpu-idle)
 #
@@ -91,6 +93,31 @@ swarm_cpu_idle() {
   case "$v" in ''|*[!0-9]*) printf '100'; return ;; esac
   mkdir -p "$(dirname "$cache")" 2>/dev/null \
     && printf '%s %s\n' "$now" "$v" > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null
+  printf '%s' "$v"
+}
+
+# Free memory in whole GB from `vm_stat` on stdin: free + inactive + speculative
+# pages, which macOS hands back on demand. "Pages free" alone reads near zero.
+swarm_parse_vm_stat_free_gb() {
+  awk '/page size of/{for(i=1;i<=NF;i++) if($i=="of"){ps=$(i+1)}}
+       /^Pages (free|inactive|speculative):/{v=$NF; sub(/\./,"",v); p+=v; seen=1}
+       END{ if (!seen || ps <= 0) exit 1; printf "%d", p * ps / 1073741824 }'
+}
+
+# Free memory in whole GB, or nothing when it could not be read.
+#   SWARM_FREE_MEM_GB / SWARM_FREE_MEM_FILE   a fixed reading / a file holding it
+swarm_free_mem_gb() {
+  if [ -n "${SWARM_FREE_MEM_FILE:-}" ] && [ -f "$SWARM_FREE_MEM_FILE" ]; then
+    local f; f=$(head -1 "$SWARM_FREE_MEM_FILE" 2>/dev/null); printf '%s' "${f%%.*}"; return
+  fi
+  if [ -n "${SWARM_FREE_MEM_GB:-}" ]; then printf '%s' "${SWARM_FREE_MEM_GB%%.*}"; return; fi
+  local v=""
+  if [ -x /usr/bin/vm_stat ]; then
+    v=$(/usr/bin/vm_stat 2>/dev/null | swarm_parse_vm_stat_free_gb)
+  elif [ -r /proc/meminfo ]; then
+    v=$(awk '/^MemAvailable:/{printf "%d", $2 / 1048576; exit}' /proc/meminfo 2>/dev/null)
+  fi
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$v"
 }
 

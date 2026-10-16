@@ -77,6 +77,19 @@ got=$(printf 'nothing here\n' | bash -c '. "$1"; swarm_parse_top_idle' _ "$LOADS
 got=$(bash -c '. "$1"; swarm_parse_stat_idle "cpu  100 0 100 700 100 0 0 0 0 0" "cpu  200 0 200 1300 200 0 0 0 0 0"' _ "$LOADSH")
 [ "$got" = 78 ] && ok "/proc/stat: idle + iowait over the interval (78%)" || fail "stat parsed '$got'"
 
+echo "--- free memory from vm_stat: free + inactive + speculative pages ---"
+# Captured 2026-10-16 on the operator's machine (32 GB): "Pages free" alone is 0.1 GB.
+VMFIX="$T/vm_stat"
+printf '%s\n' 'Mach Virtual Memory Statistics: (page size of 16384 bytes)' 'Pages free:                                9621.' \
+  'Pages active:                            501058.' 'Pages inactive:                          489901.' \
+  'Pages speculative:                        10302.' 'Pages wired down:                        231341.' > "$VMFIX"
+got=$(bash -c '. "$1"; swarm_parse_vm_stat_free_gb < "$2"' _ "$LOADSH" "$VMFIX")
+[ "$got" = 7 ] && ok "reads 7 GB free, not the 0 that 'Pages free' says" || fail "parsed '$got' from vm_stat"
+got=$(printf 'nothing here\n' | bash -c '. "$1"; swarm_parse_vm_stat_free_gb' _ "$LOADSH"); rc=$?
+[ "$rc" != 0 ] && [ -z "$got" ] && ok "no vm_stat lines is no reading, not 0" || fail "rc $rc got '$got'"
+got=$(SWARM_FREE_MEM_GB=12 bash -c '. "$1"; swarm_free_mem_gb' _ "$LOADSH")
+[ "$got" = 12 ] && ok "SWARM_FREE_MEM_GB stands in for the reading" || fail "seam read '$got'"
+
 echo "--- under the ceiling: no wait, nothing printed ---"
 out=$(SWARM_LOAD=5 bash "$SUT" wait --max 1 2>&1); rc=$?
 [ "$rc" = 0 ] && ok "wait returns 0" || fail "wait returned $rc"

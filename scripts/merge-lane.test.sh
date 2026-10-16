@@ -96,6 +96,9 @@ merges() { grep -E '^pr merge [0-9]+ ' "$GH_LOG" | grep -v -- '--disable-auto' |
 updates() { grep -E '^api .*update-branch' "$GH_LOG" | sed -E 's#.*/pulls/([0-9]+)/update-branch.*#\1#' | tr '\n' ' ' | sed 's/ $//'; }
 writes() { grep -E '^pr (merge|edit|comment)|^api .*-X|^run rerun|^issue edit' "$GH_LOG"; }
 spawned() { cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
+# The lane starts nothing itself: a fixer is a repair entry the coordinator tick starts.
+fixers() { jq -r '[.tickets[]? | select(.class == "repair") | .n] | join(" ")' "$C/queue.json" 2>/dev/null; }
+fixer_notes() { jq -r '.tickets[]?.note' "$C/queue.json" 2>/dev/null; }
 
 echo "--- shadow is the default, and it writes nothing ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
@@ -106,6 +109,7 @@ want_in "the act is logged as would"        'would	merge	21' "$(cat "$C/actions.
 fresh; pr 22 s22 - 1 build:FAILURE lint:SUCCESS; compare develop s22 0
 lane >/dev/null
 want "shadow spawns no fixer"               "" "$(spawned)"
+want "and queues none"                       "" "$(fixers)"
 want "shadow tells the owner nothing"       "" "$(cat "$FIX/notify.log")"
 
 echo "--- project facts come from harness.json, refused by key name ---"
@@ -194,21 +198,22 @@ out=$(live)
 want "nothing merged"                      "" "$(merges)"
 want_in "it leaves the lane"               '^pr edit 70 .*--remove-label queue:merge' "$(cat "$GH_LOG")"
 want_in "the PR is told why"               '^pr comment 70 .*conflict' "$(cat "$GH_LOG")"
-want "a fixer is spawned for its ticket"   "701" "$(spawned)"
-want_in "and briefed on the conflict"      'conflict' "$(cat "$SPAWNS")"
-: > "$SPAWNS"; live >/dev/null
-want "the same head is not re-admitted or re-fixed" "" "$(spawned)"
+want "a fixer is queued for its ticket"    "701" "$(fixers)"
+want "the lane spawns nothing itself"      "" "$(spawned)"
+want_in "and briefed on the conflict"      'conflict' "$(fixer_notes)"
+rm -f "$C/queue.json"; live >/dev/null
+want "the same head is not re-admitted or re-fixed" "" "$(fixers)"
 fresh; fix_issue 711 OPEN "status:in-review"
 pr 71 s71 - 1 build:SUCCESS lint:SUCCESS; compare develop s71 0; set_pr 71 '.mergeable = "CONFLICTING"'
 live >/dev/null
-want "a PR GitHub calls conflicting is out too" "711" "$(spawned)"
+want "a PR GitHub calls conflicting is out too" "711" "$(fixers)"
 want "and not merged"                      "" "$(merges)"
 fresh; fix_issue 701 OPEN "status:in-review"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
 printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
 printf '{"run_id":"claim-9-x","ticket":"9","child_pid":%s}\n' "$$" > "$STATE/runs/claim-9-x.json"
-COORDINATOR_CAP=1 live >/dev/null
-want "with no free agent place, no spawn"  "" "$(spawned)"
+live >/dev/null
+want "with a run already live, still no direct spawn" "" "$(spawned)"
 want "the fixer is queued as a repair"     "701 repair" "$(jq -r '.tickets[] | "\(.n) \(.class)"' "$C/queue.json")"
 
 echo "--- a red required check leaves the lane, named; an unrequired red does not ---"
@@ -217,8 +222,8 @@ pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0
 out=$(live)
 want "nothing merged"                      "" "$(merges)"
 want_in "the PR is told which check"       "^pr comment 80 .*build" "$(cat "$GH_LOG")"
-want "a fixer is spawned"                  "801" "$(spawned)"
-want_in "and told which check"             'build' "$(cat "$SPAWNS")"
+want "a fixer is queued"                   "801" "$(fixers)"
+want_in "and told which check"             'build' "$(fixer_notes)"
 want_not_in "a real failure is not re-run" '^run rerun' "$(cat "$GH_LOG")"
 fresh
 pr 81 s81 - 1 build:SUCCESS lint:SUCCESS deploy-preview:FAILURE; compare develop s81 0
@@ -235,13 +240,13 @@ fresh; fix_issue 901 OPEN "status:in-review"
 pr 90 s90 - 1 build:TIMED_OUT:1 lint:SUCCESS; compare develop s90 0
 live >/dev/null
 want_in "a timed-out check is re-run"      '^run rerun 71 .*--failed' "$(cat "$GH_LOG")"
-want "and not taken out"                   "" "$(spawned)"
+want "and not taken out"                   "" "$(fixers)"
 : > "$GH_LOG"; live >/dev/null
 want_not_in "the stale result is not a second failure" '^run rerun|^pr edit 90 .*--remove-label' "$(cat "$GH_LOG")"
 set_pr 90 '.statusCheckRollup[0].detailsUrl = "https://github.com/acme/widgets/actions/runs/71/job/82"'
 : > "$GH_LOG"; live >/dev/null
 want_not_in "never a second re-run"        '^run rerun' "$(cat "$GH_LOG")"
-want "a second flake leaves the lane"      "901" "$(spawned)"
+want "a second flake leaves the lane"      "901" "$(fixers)"
 fresh
 pr 91 s91 - 1 build:FAILURE:3 lint:SUCCESS; compare develop s91 0
 printf '[{"message":"The runner has received a shutdown signal."}]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_83_annotations.json"

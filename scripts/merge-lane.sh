@@ -183,7 +183,7 @@ head_status() { status "$WAITING in line${QUEUE_LINE:+ ($QUEUE_LINE)} · head #$
 ticket_of() { pr_field "$1" .headRefName | awk -v p="$BRANCH_PREFIX" 'index($0, p) == 1 { s = substr($0, length(p) + 1); if (match(s, /^[0-9]+/)) print substr(s, 1, RLENGTH) }'; }
 
 fixer() { # <pr> <why>
-  local pr="$1" why="$2" t brief note
+  local pr="$1" why="$2" t note
   t=$(ticket_of "$pr")
   if [ -z "$t" ]; then
     owner "lane-noticket:$pr:$SHA" "PR #$pr left the merge lane ($why) and its branch names no ticket to send a fixer to"
@@ -192,16 +192,10 @@ fixer() { # <pr> <why>
   note="Merge lane: PR #$pr left the lane — $why. Fix it on the PR's own branch and push; then re-arm auto-merge so it rejoins. Never merge it yourself: the lane merges."
   if lane_shadow; then say "would send a fixer to #$t"; return 0; fi
   if swarm_ticket_live "$t"; then say "lane: #$t already has an agent running — no second fixer"; return 0; fi
-  if [ "$(swarm_running_total)" -lt "$COORD_CAP" ]; then
-    brief=$(mktemp); printf '%s\n' "$note" > "$brief"
-    if swarm_spawn "$t" "$brief" >> "$LANE_LOG" 2>&1; then say "lane: spawned a fixer for #$t"
-    else say "lane: the fixer for #$t did not spawn"; fi
-    rm -f "$brief"
-  else
-    bash "$QUEUE" add "$t" --class repair --note "$note" >/dev/null 2>&1 \
-      && say "lane: no free agent place — #$t queued as a repair" \
-      || say "lane: could not queue #$t as a repair"
-  fi
+  # The coordinator tick owns every start: it reads the machine and the healing share.
+  bash "$QUEUE" add "$t" --class repair --note "$note" >/dev/null 2>&1 \
+    && say "lane: #$t queued as a repair — the coordinator starts its fixer" \
+    || say "lane: could not queue #$t as a repair"
 }
 
 take_out() { # <why> — the head leaves the lane on this SHA and gets a fixer

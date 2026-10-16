@@ -15,7 +15,7 @@
 # reconcile-claims.sh immediately. That covers every exit the agent can observe
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
-# Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto)
+# Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto), CLAIM_CLASS (recorded)
 
 set -uo pipefail
 
@@ -26,6 +26,8 @@ RUNS_DIR="$TICKETS_DIR/runs"
 LOGS_DIR="$TICKETS_DIR/logs"
 BUDGET="${CLAIM_BUDGET_USD:-150}"
 PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
+# The queue class the coordinator spawned it for, so a later tick can count runs by class.
+CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 
 # The spawner refreshes ITSELF, not only the agent's tree. It is reached through a
 # shell function pointing at one copy on the operator's machine, and that copy is
@@ -239,6 +241,7 @@ cat > "$RECORD" <<EOF
   "child_winpid": ${CLAUDE_WINPID:-null},
   "log": "$LOG",
   "ticket": "${TICKET:-}",
+  "class": "$CLASS",
   "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",

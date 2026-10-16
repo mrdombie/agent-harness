@@ -15,9 +15,12 @@
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
 #   4. pull requests red (unless fix-lock.sh says a session is on it), and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
-#   5. spawn         the queue in class order, up to coordinator.cap live runs,
-#                    never a ticket that is claimed, gated or on hold, and
-#                    nothing while the machine is busy (swarm_machine_busy)
+#   5. spawn         at most one start per tick, while the machine has room
+#                    (coord_room) and under coordinator.cap when one is set;
+#                    healing (repair, approved-merge) fills ceil(ceiling x
+#                    healingShare) of the places and new work the rest. Never
+#                    a ticket that is claimed, gated or on hold, and nothing
+#                    while the machine is busy (swarm_machine_busy)
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
@@ -46,7 +49,7 @@ LOCK="$COORD_DIR/tick.lock"
 coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 
-say "tick: $(coord_mode) mode, cap $COORD_CAP, config from ${HARNESS_CFG_FROM:-?}"
+say "tick: $(coord_mode) mode, cap ${COORD_CAP:-none}, config from ${HARNESS_CFG_FROM:-?}"
 
 # Writes an event once; the id is what makes it once.
 event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
@@ -91,11 +94,11 @@ done
 
 # ---- 3. live and frozen runs -------------------------------------------------
 NOW=$(swarm_now)
-LIVE=0; LIVE_TICKETS=""
+LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""
 for rec in "$RUNS_DIR"/claim-*.json; do
   [ -f "$rec" ] || continue
   swarm_record_alive "$rec" || continue
-  LIVE=$((LIVE+1))
+  LIVE=$((LIVE+1)); LIVE_RECS="$LIVE_RECS$rec"$'\n'
   rid=$(basename "$rec" .json)
   ticket=$(jq -r '.ticket // empty' "$rec" 2>/dev/null)
   LIVE_TICKETS="$LIVE_TICKETS${ticket:-?} "
@@ -188,8 +191,38 @@ if [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
   bash "$QUEUE" refresh >/dev/null 2>&1 || say "queue: refresh failed — working the queue as it stands"
 fi
 
-SLOTS=$(( COORD_CAP - LIVE ))
-PLAN=""; NEXT=""
+# Each live run's class, as its spawn recorded it. A run with none on record
+# (started before classes were) heals when its ticket already has an open PR.
+live_class() { # <record>
+  local c t
+  c=$(jq -r '.class // empty' "$1" 2>/dev/null)
+  if [ -z "$c" ]; then
+    t=$(jq -r '.ticket // empty' "$1" 2>/dev/null)
+    printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
+      '$t != "" and any(.[]; .headRefName | test("^" + $pre + $t + "([^0-9]|$)"))' >/dev/null 2>&1 && c=repair
+  fi
+  coord_healing_class "${c:-new}" && echo healing || echo new
+}
+LIVE_HEAL=0; LIVE_NEW=0
+while IFS= read -r rec; do
+  [ -n "$rec" ] || continue
+  if [ "$(live_class "$rec")" = healing ]; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi
+done <<< "$LIVE_RECS"
+QUEUED_HEAL=$(coord_queue_ordered | awk -F'\t' '$2=="repair" || $2=="approved-merge"' | grep -c .)
+
+# The ceiling is what is running plus one when the machine has room: one start
+# per tick, so CPU and memory are read again before the next.
+CEILING=$LIVE; ROOM=""; READING=""
+if READING=$(coord_room); then ROOM=1; CEILING=$((LIVE+1)); fi
+[ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
+[ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
+SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
+HEAL_SLOTS=$(coord_healing_slots "$CEILING"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
+HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
+NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
+say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for 1 more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
+
+PLAN=""; NEXT=""; TOOK=""
 # The first ticket this tick would take, slot or not: what the compare report matches.
 first_free() {
   local t cls note
@@ -197,6 +230,12 @@ first_free() {
     [ -n "${t:-}" ] || continue
     spawn_block "$t" "$cls" >/dev/null || { printf '%s' "$t"; return 0; }
   done <<< "$(coord_queue_ordered)"
+}
+# Healing takes a healing place; new work takes a new place, or a healing place
+# that no healing ticket could take. A new place never goes to healing.
+place_for() { # <class>
+  if coord_healing_class "$1"; then [ "$HEAL_FREE" -gt 0 ]
+  else [ "$NEW_FREE" -gt 0 ] || [ "$HEAL_FREE" -gt 0 ]; fi
 }
 if held=$(swarm_held); then
   say "spawn: held — $held"
@@ -212,35 +251,59 @@ elif until=$(swarm_usage_hold); then
 elif busy=$(swarm_machine_busy); then
   say "spawn: machine busy ($busy) — holding"
   NEXT=$(first_free)
-elif [ "$SLOTS" -le 0 ]; then
+elif [ -n "$COORD_CAP" ] && [ "$LIVE" -ge "$COORD_CAP" ]; then
   say "spawn: $LIVE live, cap $COORD_CAP — no slot"
+  NEXT=$(first_free)
+elif [ -z "$ROOM" ]; then
+  say "spawn: $LIVE live, no room for more ($READING) — holding"
+  NEXT=$(first_free)
+elif [ "$SLOTS" -le 0 ]; then
+  say "spawn: $LIVE live, ceiling $CEILING — no slot"
   NEXT=$(first_free)
 else
   started=0
   while IFS=$'\t' read -r t cls note; do
     [ -n "${t:-}" ] || continue
+    place_for "$cls" || continue
     if why=$(spawn_block "$t" "$cls"); then
       say "skip #$t ($cls): $why"; continue
     fi
-    [ "$started" -lt "$SLOTS" ] || { NEXT="$t"; break; }
-    PLAN="$PLAN$t,"
+    [ "$started" -lt 1 ] && [ "$started" -lt "$SLOTS" ] || { NEXT="$t"; break; }
+    PLAN="$PLAN$t,"; TOOK="$cls"
     started=$((started+1))
+    if coord_healing_class "$cls"; then LIVE_HEAL=$((LIVE_HEAL+1)); QUEUED_HEAL=$((QUEUED_HEAL-1)); HEAL_FREE=$((HEAL_FREE-1))
+    elif [ "$NEW_FREE" -gt 0 ]; then LIVE_NEW=$((LIVE_NEW+1)); NEW_FREE=$((NEW_FREE-1))
+    else LIVE_NEW=$((LIVE_NEW+1)); HEAL_FREE=$((HEAL_FREE-1)); fi
     coord_act_log spawn "$t" "$cls${note:+ — $note}"
     if coord_shadow; then
       say "would spawn #$t ($cls)"
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
-      if swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then
+      if CLAIM_CLASS="$cls" swarm_spawn "$t" "$brief" >> "$COORD_LOG" 2>&1; then
         say "spawned #$t ($cls)"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
       else say "spawn of #$t failed"; fi
       [ -z "$brief" ] || rm -f "$brief"
     fi
   done <<< "$(coord_queue_ordered)"
-  [ "$started" -gt 0 ] || say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
+  if [ "$started" = 0 ]; then
+    if [ "$QUEUED_HEAL" -gt 0 ] && [ "$HEAL_FREE" -le 0 ]; then
+      say "spawn: healing has its $HEAL_SLOTS place(s) — $QUEUED_HEAL red(s) wait their turn, nothing new spawnable"
+    else say "spawn: $SLOTS slot(s), nothing spawnable in the queue"; fi
+  fi
 fi
-# The compare report reads what this tick saw and chose.
-printf '%s\tplan\t-\t%s\tlive=%s slots=%s next=%s\n' "$(swarm_stamp)" "${PLAN%,}" "${LIVE_TICKETS% }" "$SLOTS" "$NEXT" >> "$COORD_ACTIONS"
+say "split: $LIVE_NEW new · $LIVE_HEAL healing · $QUEUED_HEAL reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)"
+# What the live view shows: the ceiling, the reading behind it, and the split.
+jq -cn --arg at "$(swarm_stamp)" --argjson live "$LIVE" --argjson ceiling "$CEILING" \
+   --argjson room "$([ -n "$ROOM" ] && echo true || echo false)" --arg reading "$READING" --arg cap "$COORD_CAP" \
+   --argjson hs "$HEAL_SLOTS" --argjson hl "$LIVE_HEAL" --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" \
+   --argjson waiting "$QUEUED_HEAL" --arg took "$TOOK" \
+   '{at:$at, live:$live, ceiling:$ceiling, room:$room, reading:$reading, cap:(if $cap == "" then null else ($cap|tonumber) end),
+     healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting, started:(if $took == "" then null else $took end)}' \
+   > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
+# The compare report reads what this tick saw and chose; next= stays last.
+printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "${PLAN%,}" "${LIVE_TICKETS% }" "$SLOTS" \
+  "$CEILING" "$LIVE_HEAL" "$HEAL_SLOTS" "$LIVE_NEW" "$NEW_SLOTS" "$NEXT" >> "$COORD_ACTIONS"
 
 # ---- 5b. the merge lane -------------------------------------------------------
 # Only where the project names a merge method. Its own lock, its own shadow.
