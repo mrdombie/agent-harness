@@ -1,4 +1,4 @@
-import fnmatch, glob, hashlib, json, os, re, shlex, subprocess, sys, tempfile
+import fnmatch, glob, hashlib, itertools, json, os, re, shlex, subprocess, sys, tempfile
 
 # Refuses an agent's change to `preApprovedWrites` in a .claude/harness.json, and
 # to `integrationBranch`, which names the branch the injector anchors it on.
@@ -115,8 +115,10 @@ RES = []  # one Resolver per shell text being judged, innermost last
 
 
 def is_cfg(path):
-    if RES and path in RES[-1].paths:
-        return False  # a sandbox path the Resolver proved cannot be the project's config
+    if RES and RES[-1] is not None and path in RES[-1].paths:
+        # A sandbox path the Resolver proved cannot be the project's config. Skipping the inode
+        # check below is safe: expand() only records paths that do not exist, so none is a hard link.
+        return False
     # Case-folded: the default macOS volume is case-insensitive, so .CLAUDE/Harness.JSON is the file.
     for p in {os.path.abspath(path), os.path.realpath(path)}:
         if os.path.basename(p).lower() == 'harness.json' and os.path.basename(os.path.dirname(p)).lower() == '.claude':
@@ -335,6 +337,7 @@ PREFIXES = {'sudo', 'command', 'exec', 'time', 'nohup', 'env', 'builtin', 'xargs
 ARCHIVERS = {'tar', 'gtar', 'bsdtar', 'cpio', 'pax', 'unzip', '7z', 'ar'}
 MKTEMP_SHADOW = re.compile(r'\bmktemp\s*\(|\bfunction\s+mktemp\b|\balias\b|\bhash\b|\benable\b|\bPATH\+?=')
 MAX_ALTS = 64
+MAX_WILD = 4  # unknown parts in one sandbox path: the fixtures use three
 _PROTECTED = {}
 
 
@@ -367,7 +370,11 @@ def mark_vars(code):
 def protected():
     """The project's config in every work tree this call can reach, as written and resolved."""
     tops = set(TOPS)
-    for d in filter(None, (os.environ.get('CLAUDE_PROJECT_DIR'), toplevel(os.getcwd()))):
+    try:
+        here = os.getcwd()
+    except OSError:  # the cwd was deleted: the tops this call learned still count
+        here = None
+    for d in filter(None, (os.environ.get('CLAUDE_PROJECT_DIR'), here and toplevel(here))):
         tops.add(d)
     key = frozenset(tops)
     if key not in _PROTECTED:
@@ -390,6 +397,8 @@ class Resolver:
 
     def __init__(self, code, toks):
         self.paths, self.ok = set(), False
+        if any(c in code for c in (DQ, UQ, ANY, FRESH, WILD)):
+            return  # the input carries the marker bytes themselves: they would be misread
         try:
             mt = tokens(mark_vars(code))
         except ValueError:
@@ -682,6 +691,8 @@ class Resolver:
             return False
         if FRESH in p:
             return all(p[k + 1:k + 2] in ('', '/') for k in range(len(p)) if p[k] == FRESH)
+        if p.count(ANY) + p.count(WILD) > MAX_WILD:
+            return False  # more unknowns than the link check below can walk
         if not (p.startswith(ANY) or any(p.startswith(r) or p.startswith(r[:-1] + WILD) for r in SANDBOX_ROOTS)):
             return False
         pat = ''.join('*' if c in (ANY, WILD) else glob.escape(c) for c in p).lower()
@@ -692,7 +703,7 @@ class Resolver:
         # An existing path that links into the repo: judged by where it resolves.
         for d in filter(None, {os.environ.get('TMPDIR'), '/tmp', tempfile.gettempdir()}):
             g = ''.join(glob.escape(d.rstrip('/')) if c == ANY else '*' if c == WILD else glob.escape(c) for c in p)
-            for hit in glob.glob(g)[:256]:
+            for hit in itertools.islice(glob.iglob(g), 256):
                 try:
                     st = os.stat(hit)
                 except OSError:
@@ -722,8 +733,12 @@ class Resolver:
 
 
 def sandboxed(tok):
-    """True when this shell word is a path the Resolver proved cannot be the project's config."""
-    return bool(RES) and RES[-1].exempt(tok)
+    """True when this shell word is a path the Resolver proved cannot be the project's config.
+    Any failure inside the proof is False: the path is judged as it was before the proof existed."""
+    try:
+        return bool(RES) and RES[-1] is not None and RES[-1].exempt(tok)
+    except Exception:
+        return False
 
 
 def expand(tok, cwd):
@@ -789,9 +804,15 @@ def judge_bash(cmd, cwd, depth=0):
         return
     if depth == 0:
         TOPS.add(cwd)
-    RES.append(Resolver(code, toks))
-    judge_segments(toks, bodies, cwd, depth)
-    RES.pop()
+    try:
+        res = Resolver(code, toks)
+    except Exception:
+        res = None  # a proof that crashed proves nothing: the judgement without it stands
+    RES.append(res)
+    try:
+        judge_segments(toks, bodies, cwd, depth)
+    finally:
+        RES.pop()
 
 
 def judge_segments(toks, bodies, cwd, depth):
