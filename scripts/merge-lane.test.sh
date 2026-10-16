@@ -66,7 +66,10 @@ fresh() {
   : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"
   printf '[]\n' > "$FIX/gh/prs-all.json"
   export SWARM_NOW=1000
+  coordinator_ticked did
 }
+# A coordinator tick that just ran, in the given mode: it owns the fixer's start.
+coordinator_ticked() { mkdir -p "$C"; printf '{"mode":"%s","epoch":%s}\n' "$1" "$(date +%s)" > "$C/capacity.json"; }
 # pr <n> <sha> <labels-csv|-> <auto 1|0> <check:CONCLUSION…>  — appended to the open list
 pr() {
   local n=$1 sha=$2 lab=$3 auto=$4; shift 4
@@ -215,6 +218,26 @@ printf '{"run_id":"claim-9-x","ticket":"9","child_pid":%s}\n' "$$" > "$STATE/run
 live >/dev/null
 want "with a run already live, still no direct spawn" "" "$(spawned)"
 want "the fixer is queued as a repair"     "701 repair" "$(jq -r '.tickets[] | "\(.n) \(.class)"' "$C/queue.json")"
+
+echo "--- with no live coordinator, the lane starts its own fixer when the machine has room ---"
+fresh; fix_issue 701 OPEN "status:in-review"; rm -f "$C/capacity.json"
+pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
+printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+out=$(SWARM_FREE_MEM_GB=16 live)
+want "no coordinator tick on record: it spawns the fixer" "701" "$(spawned)"
+want "and queues nothing"                  "" "$(fixers)"
+want "the coordinator's record has its class" "repair" "$(cut -f3 "$C/run-classes.tsv" 2>/dev/null | tail -1)"
+fresh; fix_issue 701 OPEN "status:in-review"; coordinator_ticked would
+pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
+printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+SWARM_FREE_MEM_GB=16 live >/dev/null
+want "a coordinator in shadow does not own it either" "701" "$(spawned)"
+fresh; fix_issue 701 OPEN "status:in-review"; rm -f "$C/capacity.json"
+pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
+printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+out=$(SWARM_FREE_MEM_GB=2 live)
+want "no room: it queues instead"          "701" "$(fixers)"
+want "and spawns nothing"                  "" "$(spawned)"
 
 echo "--- a red required check leaves the lane, named; an unrequired red does not ---"
 fresh; fix_issue 801 OPEN "status:in-review"
