@@ -304,7 +304,8 @@ driver step, a brief, a hook, a required check, or a named retirement.
 `swarm/install.sh` puts four timers on the machine: the live view everything
 else reads, a scheduler topping each programme up to three agents, a watcher
 that brings one agent back to a broken pull request and stops after three, and
-a reporter. `swarm/queue.sh add <ticket> --brief <file>` is how a ticket joins
+a reporter — launchd plists on macOS, systemd user units on Linux and WSL.
+`swarm/queue.sh add <ticket> --brief <file>` is how a ticket joins
 the queue — it replaces writing a launcher by hand. Full description, the rules
 it holds to and every setting: [`swarm/README.md`](swarm/README.md).
 
