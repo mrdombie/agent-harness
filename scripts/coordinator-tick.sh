@@ -66,9 +66,7 @@ final_line() { # <log> — the run's own last word
   [ -n "$r" ] || r=$(sed '/^[[:space:]]*$/d' "$1" 2>/dev/null | tail -1)
   printf '%s' "$r" | tr '\t\n' '  ' | cut -c1-240
 }
-limit_hit() { # <log>
-  grep -qE '"status":"rejected","resetsAt"|hit your (session|weekly) limit' "$1" 2>/dev/null
-}
+limit_hit() { swarm_usage_log_limited "$1"; }
 for ended in "$RUNS_DIR"/*.ended; do
   [ -f "$ended" ] || continue
   rid=$(basename "$ended" .ended)
@@ -207,7 +205,7 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
     bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
   fi
 elif until=$(swarm_usage_hold); then
-  say "spawn: usage limit — holding until $until"
+  say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
   event "usage-hold:$until" usage-limit true "" "" "the plan's usage limit holds until $until" || true
 elif busy=$(swarm_machine_busy); then
   say "spawn: machine busy ($busy) — holding"

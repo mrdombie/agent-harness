@@ -240,12 +240,12 @@ fix_comments() {
   jq --argjson c "$c" '.comments = $c' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
-# fix_done <ticket> <endedAgoMin> <summary> — a finished run in the live view's
-# `done` list, which is where an infrastructure death is visible.
+# fix_done <ticket> <endedAgoMin> <summary> [infra] — a finished run in the live
+# view's `done` list, which is where an infrastructure death is visible.
 fix_done() {
   [ -f "$FIX/live.json" ] || fix_live "" 0
-  jq --arg t "$1" --argjson a "$2" --arg s "$3" \
-    '.done += [{ticket:$t, endedAgoMin:$a, summary:$s, exit:1}]' \
+  jq --arg t "$1" --argjson a "$2" --arg s "$3" --argjson i "${4:-false}" \
+    '.done += [{ticket:$t, endedAgoMin:$a, summary:$s, exit:1, infra:$i}]' \
     "$FIX/live.json" > "$FIX/live.json.tmp" && mv "$FIX/live.json.tmp" "$FIX/live.json"
 }
 

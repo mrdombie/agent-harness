@@ -241,7 +241,7 @@ section_unblock() {
 }
 
 # ---- 3. restart after an infrastructure error --------------------------------
-INFRA_RE='API Error|Connection refused|ECONNRESET|ETIMEDOUT|overloaded|Overloaded|529|503 Service|socket hang up'
+# The live view marks a run that died on the service (its CLI-signal reader).
 section_infra() {
   local T AGO labs n brief
   while IFS=$'\t' read -r T AGO; do
@@ -265,10 +265,10 @@ the pull request, hand off.
 BRIEF
     swarm_spawn "$T" "$brief" >/dev/null 2>&1
     say "restarted #$T after an infrastructure error ($AGO min ago)"
-  done <<< "$(swarm_snapshot | jq -r --arg re "$INFRA_RE" '
+  done <<< "$(swarm_snapshot | jq -r '
       .live as $live
       | .done[]? | select((.endedAgoMin // 999) <= 90)
-      | select(((.summary // "") | test($re)))
+      | select(.infra == true)
       | . as $d | select([$live[].ticket] | index($d.ticket) | not)
       | "\($d.ticket)\t\($d.endedAgoMin)"' 2>/dev/null | sort -u -k1,1)"
 }

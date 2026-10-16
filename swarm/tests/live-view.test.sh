@@ -133,4 +133,13 @@ s=$(snap)
 want_in "a limit read from the newest log names its window" "weekly usage limit" "$(printf '%s' "$s" | jq -r '.hold.reason')"
 rm -f "$STATE/logs/claim-zzz.log"
 
+echo "--- a service death is the CLI's error result, never a report quoting one ---"
+run 801 "$DEAD" 1
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"result":"API Error: Connection refused"}' > "$STATE/logs/claim-801.log"
+run 802 "$DEAD" 0
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Done. CI said: API Error 529 overloaded"}' > "$STATE/logs/claim-802.log"
+s=$(snap)
+want "the CLI's own error result is a service death" "true" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="801") | .infra')"
+want "a report quoting one is not"                   "false" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="802") | .infra')"
+
 exit $FAILED

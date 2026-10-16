@@ -183,16 +183,22 @@ printf '{"run_id":"claim-802-x","ticket":"802","log":"%s"}\n' "$STATE/logs/claim
 printf '{"type":"result","result":"Parked: the spec contradicts itself"}\n' > "$STATE/logs/claim-802-x.log"
 printf '{"run_id":"claim-802-x","exit_code":0}\n' > "$STATE/runs/claim-802-x.ended"
 printf '{"run_id":"claim-803-x","ticket":"803","log":"%s"}\n' "$STATE/logs/claim-803-x.log" > "$STATE/runs/claim-803-x.json"
-printf 'You have hit your session limit · resets 7pm\n' > "$STATE/logs/claim-803-x.log"
+printf '{"type":"result","is_error":true,"result":"You have hit your session limit · resets 7pm"}\n' > "$STATE/logs/claim-803-x.log"
 printf '{"run_id":"claim-803-x","exit_code":1}\n' > "$STATE/runs/claim-803-x.ended"
+# A clean run that READ a CI log quoting someone else's limit, as claim-12554 did.
+printf '{"run_id":"claim-804-x","ticket":"804","log":"%s"}\n' "$STATE/logs/claim-804-x.log" > "$STATE/runs/claim-804-x.json"
+jq -nc '{type:"user",message:{content:[{type:"tool_result",content:"critic: You have hit your weekly limit · resets Oct 20 at 9pm"}]}}' > "$STATE/logs/claim-804-x.log"
+printf '{"type":"result","is_error":false,"result":"Handed off at def456"}\n' >> "$STATE/logs/claim-804-x.log"
+printf '{"run_id":"claim-804-x","exit_code":0}\n' > "$STATE/runs/claim-804-x.ended"
 out=$(tick)
 want_in "the final result line is recorded" 'claim-801-x.*exit=0 Handed off at abc123' "$(cat "$C/runs.log")"
 want "a clean hand-off raises nothing"     "0" "$(grep -c 'claim-801-x' "$C/events.would.jsonl")"
 want_in "a park is a stand-down"           '"kind":"stood-down".*"ticket":"802"' "$(cat "$C/events.would.jsonl")"
 want_in "a limit stop is a usage-limit"    '"kind":"usage-limit".*"ticket":"803"' "$(cat "$C/events.would.jsonl")"
+want "a quoted limit in a clean run raises nothing" "0" "$(grep -c 'claim-804-x' "$C/events.would.jsonl")"
 tick >/dev/null
-want "each ended run is read once"         "3" "$(grep -c 'ended' "$C/runs.log")"
-rm -f "$STATE/logs/claim-803-x.log"
+want "each ended run is read once"         "4" "$(grep -c 'ended' "$C/runs.log")"
+rm -f "$STATE/logs/claim-803-x.log" "$STATE/logs/claim-804-x.log"
 
 echo "--- pull requests: red is judged, green pixels go to the owner in batches ---"
 pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState] — the hold's own gate is red while held
