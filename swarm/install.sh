@@ -15,7 +15,8 @@
 # THE JOBS
 #   live-view     the snapshot every other part reads — kept alive, restarted
 #                 if it dies. Without it the swarm holds, because no answer
-#                 counts as busy.
+#                 counts as busy. Another job already on its port is named and
+#                 refused; SWARM_REPLACE_PORT=1 unloads it and sets it aside.
 #   scheduler     every 5 minutes: top up each programme's queue and drain it.
 #   repair-watch  every 10 minutes: repair, unblock, restart, alarm.
 #   report        every minute, ONLY when the project sets swarm.reportUrl.
@@ -128,7 +129,7 @@ XML
 }
 
 need_launchd() {
-  [ "$(uname -s)" = "Darwin" ] && command -v launchctl >/dev/null 2>&1 && return 0
+  on_launchd && return 0
   cat >&2 <<MSG
 install: this machine has no launchd, so nothing was installed.
 
@@ -167,10 +168,39 @@ cron_uninstall() { # <job>
 }
 on_launchd() { [ "${SWARM_UNAME:-$(uname -s)}" = Darwin ] && command -v launchctl >/dev/null 2>&1; }
 
+# Another service already on the live view's port: a hand-written job left over
+# from before this file wrote them. Ours would crash-loop on the taken port, so
+# it is named and refused, or with SWARM_REPLACE_PORT=1 unloaded and its
+# definition moved aside to $SWARM_DIR/replaced/ (never deleted).
+port_holder() { # pid listening on SWARM_PORT, or nothing
+  if [ -n "${SWARM_PORT_HOLDER+x}" ]; then printf '%s' "$SWARM_PORT_HOLDER"; return 0; fi
+  lsof -nP -iTCP:"$SWARM_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1
+}
+label_of_pid() { launchctl list 2>/dev/null | awk -v p="$1" '$1==p{print $3; exit}'; }
+free_port() {
+  local pid other
+  pid=$(port_holder); [ -n "$pid" ] || return 0
+  other=$(label_of_pid "$pid")
+  [ "$other" = "$(label live-view)" ] && return 0
+  if [ "${SWARM_REPLACE_PORT:-0}" = 1 ] && [ -n "$other" ] && [ -f "$AGENTS_DIR/$other.plist" ]; then
+    mkdir -p "$SWARM_DIR/replaced"
+    audit replaced-port "$other"
+    launchctl unload "$AGENTS_DIR/$other.plist" >/dev/null 2>&1
+    mv "$AGENTS_DIR/$other.plist" "$SWARM_DIR/replaced/$other.plist" \
+      && echo "replaced $other on port $SWARM_PORT (its definition is in $SWARM_DIR/replaced/)"
+    return 0
+  fi
+  echo "install: port $SWARM_PORT is already served by ${other:-pid $pid}, not this kit's live view." >&2
+  [ -n "$other" ] && [ -f "$AGENTS_DIR/$other.plist" ] \
+    && echo "  Re-run with SWARM_REPLACE_PORT=1 to unload it and set its definition aside." >&2
+  return 4
+}
+
 do_install() { # <job>
   local job="$1" f; f=$(plist "$job")
   script_for "$job" >/dev/null || { echo "install: no job called '$job'" >&2; return 2; }
   mkdir -p "$AGENTS_DIR" "$SWARM_LOGS"
+  if [ "$job" = live-view ]; then free_port || return $?; fi
   print_plist "$job" > "$f"
   launchctl unload "$f" >/dev/null 2>&1
   launchctl load "$f" && echo "installed $(label "$job")"
@@ -354,7 +384,7 @@ case "${1:-}" in
     need_launchd || exit 1
     if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane; do do_uninstall "$j"; done; fi
     exit 0 ;;
-  -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;
   *)        need_launchd || exit 1; do_install "$1"; exit $? ;;
 esac

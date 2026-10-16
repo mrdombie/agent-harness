@@ -36,7 +36,7 @@ run() { # <ticket> <pid> [ended-exit-code]
 }
 snap() {
   SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="$BIN/gh" \
-  SWARM_SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e "
+  SWARM_PROGRESS_SYNC=1 SWARM_SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e "
     import { pathToFileURL } from 'node:url'
     const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
     console.log(JSON.stringify(snapshot()))"
@@ -89,5 +89,48 @@ echo "--- an unreadable record is skipped, not fatal ---"
 printf 'not json\n' > "$STATE/runs/claim-599-a.json"
 s=$(snap)
 want "the rest still answer" "1" "$(printf '%s' "$s" | jq '.live | length')"
+
+echo "--- the coordinator's queue is shown in the order it runs, notes and all ---"
+mkdir -p "$STATE/coordinator"
+cat > "$STATE/coordinator/queue.json" <<'JSON'
+{"scope":"widgets","label":"project:widgets","seeded_at":"2026-10-16T09:00:00Z","tickets":[
+ {"n":701,"class":"new","note":""},
+ {"n":702,"class":"repair","note":"resume the worktree","pinned":true},
+ {"n":703,"class":"approved-merge","note":""},
+ {"n":704,"class":"new","note":"","scope":"project:gadgets"}]}
+JSON
+s=$(snap)
+want "four queued"              "4" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
+want "repair first, then merge, then new in place" "702 703 701 704" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "the pinned note travels"  "resume the worktree" "$(printf '%s' "$s" | jq -r '.queue.tickets[0].note')"
+want "an entry without a scope takes the queue's" "project:widgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].scope')"
+want "an entry's own scope wins" "project:gadgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[3].scope')"
+want "it carries a title"       "Ticket 701" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].title')"
+rm -f "$STATE/coordinator/queue.json"
+s=$(snap)
+want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
+
+echo "--- a hold on spawns is shown, with why and until when ---"
+s=$(snap)
+want "nothing held"             "false" "$(printf '%s' "$s" | jq '.hold.held')"
+printf 'testing the banner (held 2026-10-16T09:00Z by tester)\n' > "$STATE/swarm/HOLD"
+s=$(snap)
+want "the owner's pause"        "paused" "$(printf '%s' "$s" | jq -r '.hold.kind')"
+want_in "with its reason"       'testing the banner' "$(printf '%s' "$s" | jq -r '.hold.reason')"
+rm -f "$STATE/swarm/HOLD"
+printf '%s\thit your usage limit\n' "$(( $(date +%s) + 3600 ))" > "$STATE/usage-hold"
+s=$(snap)
+want "the usage limit"          "usage" "$(printf '%s' "$s" | jq -r '.hold.kind')"
+want_in "until an instant"      '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T' "$(printf '%s' "$s" | jq -r '.hold.until')"
+printf '%s\thit your usage limit\n' "$(( $(date +%s) - 60 ))" > "$STATE/usage-hold"
+s=$(snap)
+want "a reset already passed holds nothing" "false" "$(printf '%s' "$s" | jq '.hold.held')"
+rm -f "$STATE/usage-hold"
+: > "$STATE/logs/claim-zzz.log"
+printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":%s,"rateLimitType":"seven_day"}}\n' \
+  "$(( $(date +%s) + 7200 ))" > "$STATE/logs/claim-zzz.log"
+s=$(snap)
+want_in "a limit read from the newest log names its window" "weekly usage limit" "$(printf '%s' "$s" | jq -r '.hold.reason')"
+rm -f "$STATE/logs/claim-zzz.log"
 
 exit $FAILED

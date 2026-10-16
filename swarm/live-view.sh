@@ -22,6 +22,10 @@ export SWARM_PROGRESS_CACHE="${SWARM_PROGRESS_CACHE:-$SWARM_DIR/progress.json}"
 export SWARM_PLAIN_TITLES="${SWARM_PLAIN_TITLES:-$STATE_DIR/plain-titles.json}"
 export SWARM_CLAIM_LOCK="${SWARM_CLAIM_LOCK:-$CL}" SWARM_QUEUE_REPO="${SWARM_QUEUE_REPO:-$MAIN_REPO}"
 export DRIVER_DIR="${DRIVER_DIR:-$STATE_DIR/driver}"
+# The coordinator's queue, and what hold-status.sh needs to answer without
+# resolving the project config again on every ask.
+export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"
+export HARNESS_CFG_PATH="${HARNESS_CFG_PATH:-$HARNESS_CFG}" HARNESS_STATE_DIR="$STATE_DIR" HARNESS_MAIN_REPO="$MAIN_REPO" KIT_ROOT
 # The bash this runs under, by full path: node's own PATH lookup finds System32's
 # WSL launcher first when started by Task Scheduler.
 command -v cygpath >/dev/null 2>&1 && export SWARM_BASH="${SWARM_BASH:-$(cygpath -w "$BASH")}"
