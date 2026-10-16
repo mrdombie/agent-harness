@@ -13,7 +13,9 @@
 # all — and in every one of those a count would be a lie in the most expensive
 # direction, because an operator who reads "no agents working" off an
 # idle-looking line starts more work on a machine that is already full. Each of
-# them prints "swarm view not answering" instead.
+# them prints "swarm view not answering" instead — or, when the coordinator is
+# ticking, its last check ("last check 10:52 · 3 building · next 10:57"), which is
+# its own record and not a guess; a check older than ten minutes reads as silence.
 #
 # WHY IT IS CACHED. Claude Code runs this on every render. Measured: 170 ms to
 # source swarm-env.sh, 95 ms for the live view, 581 ms for the forge — 846 ms of
@@ -145,10 +147,10 @@ hold_count() { # <ask-the-forge: 1|0>
 
 # Anything that is not a plain count is UNKNOWN. The catch-all used to print the
 # value it could not classify, so an empty count rendered as "·  need you".
-compose() { # <agents> <holds>
+compose() { # <agents> <holds> [what to say when the agents are unknown]
   local line
   case "${1:-}" in
-    ''|*[!0-9]*) line="$WARNING" ;;
+    ''|*[!0-9]*) line="${3:-$WARNING}" ;;
     0)           line='no agents working' ;;
     1)           line='1 agent working' ;;
     *)           line="$1 agents working" ;;
@@ -160,6 +162,28 @@ compose() { # <agents> <holds>
     *)           line="$line · $2 need you" ;;
   esac
   printf '%s\n' "$line"
+}
+
+# The live view did not answer: the coordinator's own last check is the next sign
+# of life. Its tick log is stamped; a check older than the silence limit is said
+# as silence, never as a count.
+hm() { swarm_clock "$1" | tr ' ' ':'; }
+coordinator_line() {
+  local f="${COORDINATOR_DIR:-$STATE_DIR/coordinator}/tick.log" row at n age iv silent hm
+  [ -s "$f" ] || return 1
+  row=$(tail -n 2000 "$f" | awk '
+    $1 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$/ && $2 == "tick:" && $4 == "mode," { s = $1; n = "" }
+    $1 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$/ && $2 == "live:" && s != "" { n = $3 }
+    END { if (s != "") print s, n }')
+  [ -n "$row" ] || return 1
+  at=$(swarm_epoch "${row%% *}"); n="${row#* }"; [ "$n" = "$row" ] && n=""
+  [ "$at" -gt 0 ] 2>/dev/null || return 1
+  iv=$(num "${SWARM_EVERY_COORDINATOR:-}" 300)
+  silent=$(num "${SWARM_STATUS_SILENT:-}" 600)
+  age=$(( $(now) - at ))
+  if [ "$age" -gt "$silent" ]; then printf 'coordinator silent since %s' "$(hm "$at")"; return 0; fi
+  case "$n" in ''|*[!0-9]*) printf 'last check %s · next %s' "$(hm "$at")" "$(hm $(( at + iv )))" ;;
+    *) printf 'last check %s · %s building · next %s' "$(hm "$at")" "$n" "$(hm $(( at + iv )))" ;; esac
 }
 
 compute() { # [--no-forge] [cache-path]
@@ -176,7 +200,9 @@ compute() { # [--no-forge] [cache-path]
   # sibling swarm_live_count already fails safe this way.
   agents=$(printf '%s' "$snap" \
     | jq -e 'if (.live|type) == "array" then (.live|length) else error("not a snapshot") end' 2>/dev/null) || agents=UNKNOWN
-  line=$(compose "$agents" "$(hold_count "$ask")")
+  local fallback=""
+  [ "$agents" = UNKNOWN ] && fallback=$(coordinator_line)
+  line=$(compose "$agents" "$(hold_count "$ask")" "$fallback")
   # The path the RENDER path resolved, when it gave one. Resolving it twice —
   # once from the recorded state dir and once from the checkout's config — put a
   # window on a machine with two projects reading a cache nothing was refreshing.

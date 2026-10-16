@@ -133,4 +133,57 @@ s=$(snap)
 want_in "a limit read from the newest log names its window" "weekly usage limit" "$(printf '%s' "$s" | jq -r '.hold.reason')"
 rm -f "$STATE/logs/claim-zzz.log"
 
+echo "--- a slow progress refresh never freezes the page ---"
+# Measured 2026-10-16: the refresh ran ~45 s of synchronous git and forge calls on
+# the server's own loop every minute, and requests waited 7-30 s or timed out.
+cat > "$BIN/slow-claim-lock" <<'SH'
+#!/usr/bin/env bash
+sleep 3; printf '{"branch":"tkt-501/x"}\n'
+SH
+chmod +x "$BIN/slow-claim-lock"
+LV="$HERE/../live-view"
+# The fixture's curl answers from a file; this case needs the real one.
+REAL_CURL=$(PATH=$(getconf PATH) command -v curl)
+served() { # <live-view dir> — ms for two answers, the first of which starts a refresh
+  local pf="$FIX/port-$RANDOM" pid i port t0 t1
+  SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="$BIN/gh" \
+  SWARM_CLAIM_LOCK="$BIN/slow-claim-lock" SWARM_PROGRESS_CACHE="$FIX/progress-$RANDOM.json" \
+  SWARM_SERVER_MJS="$1/server.mjs" PORT_FILE="$pf" node --input-type=module -e "
+    import { pathToFileURL } from 'node:url'
+    import fs from 'node:fs'
+    const { serve } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
+    const srv = serve(0)
+    srv.on('listening', () => fs.writeFileSync(process.env.PORT_FILE, String(srv.address().port)))
+    setTimeout(() => process.exit(0), 15000)" 2>/dev/null &
+  pid=$!
+  for i in $(seq 1 50); do [ -s "$pf" ] && break; sleep 0.1; done
+  port=$(cat "$pf" 2>/dev/null)
+  t0=$(node -e 'console.log(Date.now())')
+  "$REAL_CURL" -s -m 8 -o /dev/null "http://127.0.0.1:$port/api/agents"
+  "$REAL_CURL" -s -m 8 -o /dev/null "http://127.0.0.1:$port/api/agents"
+  t1=$(node -e 'console.log(Date.now())')
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  echo $(( t1 - t0 ))
+}
+ms=$(served "$LV")
+case "$ms" in ''|*[!0-9]*) bad "the page did not answer during a refresh ($ms)" ;;
+  *) [ "$ms" -lt 1500 ] && ok "two answers in ${ms} ms while a 3 s refresh ran" || bad "two answers took ${ms} ms while a 3 s refresh ran" ;; esac
+g=$(SWARM_CLAIM_LOCK="$BIN/slow-claim-lock" SWARM_GH="$BIN/gh" SWARM_GIT=false \
+    node "$LV/progress.mjs" --gather '{"tickets":["501"],"ids":[],"repo":"acme/widgets"}' 2>/dev/null)
+want "the refresh process prints what it read" "tkt-501/x" "$(printf '%s' "$g" | jq -r '.tickets["501"].branch' 2>/dev/null)"
+# Plant: the refresh back on the server's own loop. The page must then wait for it.
+P="$FIX/lv-plant"; mkdir -p "$P"; cp "$LV"/*.mjs "$LV"/index.html "$P/"
+python3 - "$P/server.mjs" <<'PY' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = "  gathering = true\n  execFile(process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],"
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, "  setTimeout(() => { try { keep(gatherProgress(args)) } catch {} }, 0); if (0) execFile(process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],"))
+PY
+grep -q "if (0) execFile" "$P/server.mjs" || bad "plant: the child process is still in the copy"
+ms=$(served "$P")
+case "$ms" in *[!0-9]*|'') ms=99999 ;; esac
+[ "$ms" -ge 1500 ] && ok "planted: refresh in-process → two answers took ${ms} ms → red" \
+  || bad "planted: refresh in-process and two answers still took ${ms} ms → the test cannot see it"
+
 exit $FAILED

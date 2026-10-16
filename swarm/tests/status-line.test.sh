@@ -367,4 +367,49 @@ printf '{oops\n' > "$SETTINGS"
 CLAUDE_SETTINGS="$SETTINGS" bash "$SL" --install >/dev/null 2>&1 && bad "it should have refused" || ok "it refused"
 want "and left the file alone" "{oops" "$(cat "$SETTINGS")"
 
+echo "--- the live view is slow: the coordinator's own last check stands in ---"
+# Measured 2026-10-16: the live view took 3.4 s and more to answer while three
+# builders ran, and every window's bottom line read as dead.
+cat > "$BIN/slow-curl" <<'SH'
+#!/usr/bin/env bash
+sleep 5; exit 28
+SH
+chmod +x "$BIN/slow-curl"
+TICKS="$STATE/coordinator/tick.log"
+hm_at() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M; }
+ticked() { # <epoch of the check> [live count]
+  mkdir -p "$(dirname "$TICKS")"
+  { printf '%s tick: did mode, cap 4, config from x\n' "$(swarm_iso "$1")"
+    [ -n "${2:-}" ] && printf '%s live: %s run(s) [1 2 3]\n' "$(swarm_iso "$1")" "$2"
+    printf '%s tick: done\n' "$(swarm_iso "$1")"; } >> "$TICKS"
+}
+slow_print() { SWARM_CURL="$BIN/slow-curl" bash "${1:-$SL}" --print 2>&1; }
+fresh; rm -f "$TICKS"; printf '[]\n' > "$FIX/gh/prs-all.json"
+ticked $(( NOW - 900 )) 1
+ticked $(( NOW - 120 )) 3
+out=$(slow_print)
+want "the last check, its count and the next" \
+  "last check $(hm_at $(( NOW - 120 ))) · 3 building · next $(hm_at $(( NOW + 180 )))" "$out"
+rm -f "$TICKS"; ticked $(( NOW - 660 )) 3
+out=$(slow_print)
+want "a check over ten minutes old is silence" "coordinator silent since $(hm_at $(( NOW - 660 )))" "$out"
+rm -f "$TICKS"
+out=$(slow_print)
+want "no coordinator at all: the warning" "swarm view not answering" "$out"
+
+echo "--- plant: the fallback deleted, a slow view reads as dead again ---"
+K="$FIX/kit"; mkdir -p "$K"; cp -R "$HERE/../../swarm" "$HERE/../../scripts" "$K/"
+python3 - "$K/swarm/status-line.sh" <<'PY2' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = '  [ "$agents" = UNKNOWN ] && fallback=$(coordinator_line)\n'
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, ""))
+PY2
+grep -q 'fallback=$(coordinator_line)' "$K/swarm/status-line.sh" && bad "plant: the fallback is still in the copy"
+fresh; ticked $(( NOW - 120 )) 3
+out=$(slow_print "$K/swarm/status-line.sh")
+want_in "planted: no fallback → the warning → red" "not answering" "$out"
+rm -f "$TICKS"
+
 exit "$FAILED"

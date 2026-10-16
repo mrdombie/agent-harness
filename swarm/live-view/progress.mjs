@@ -28,6 +28,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 
 export const STEPS = ['Set up', 'Plan', 'Build', 'Check', 'Review', 'PR', 'Merged']
 // The step-runner's own step names, in the same order.
@@ -362,4 +363,16 @@ export function plans(ids, { repo = '', prefix = 'project:' } = {}) {
     try { out[id] = weigh(JSON.parse(raw)) } catch {}
   }
   return out
+}
+
+// `node progress.mjs --gather '<json>'` — one refresh in a process of its own,
+// printed as JSON. The reads are synchronous git and forge calls, ~45 s a pass.
+export function gather({ tickets = [], ids = [], repo = '', queueRepo = '', driverDir = '', prefix = 'project:' } = {}) {
+  return { tickets: facts(tickets, { repo, queueRepo, driverDir }), plans: plans(ids, { repo, prefix }) }
+}
+if (process.argv[2] === '--gather' && process.argv[1]
+    && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  let args = {}
+  try { args = JSON.parse(process.argv[3] || '{}') } catch {}
+  process.stdout.write(JSON.stringify(gather(args)))
 }

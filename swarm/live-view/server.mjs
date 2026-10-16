@@ -16,7 +16,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { facts, plans, plansOf, progressOf, shortTitle } from './progress.mjs'
+import { gather as gatherProgress, plansOf, progressOf, shortTitle } from './progress.mjs'
 
 const RUNS = process.env.SWARM_RUNS_DIR || path.join(os.homedir(), '.swarm/runs')
 const PORT = Number(process.env.SWARM_PORT || 4777)
@@ -50,20 +50,30 @@ try { progress = JSON.parse(fs.readFileSync(PROGRESS_CACHE, 'utf8')) } catch {}
 
 // SWARM_PROGRESS_SYNC makes the refresh happen in-line, which is what a test
 // wants: a background refresh is a race a test cannot win.
+// Never in this process otherwise: the reads are synchronous, and in-process they
+// froze every request for ~45 s of each minute.
+const PROGRESS_JS = fileURLToPath(new URL('./progress.mjs', import.meta.url))
+let gathering = false
 function refreshProgress(tickets, ids, now) {
-  if (now - progressAt < PROGRESS_MS) return
+  if (gathering || now - progressAt < PROGRESS_MS) return
   progressAt = now
-  const gather = () => {
-    const next = { tickets: facts(tickets, { repo: REPO, queueRepo: QUEUE_REPO, driverDir: DRIVER_DIR }),
-                   plans: plans(ids, { repo: REPO, prefix: PREFIX }) }
+  const args = { tickets, ids, repo: REPO, queueRepo: QUEUE_REPO, driverDir: DRIVER_DIR, prefix: PREFIX }
+  const keep = (next) => {
+    if (!next || typeof next !== 'object' || !next.tickets || !next.plans) return
     progress = next
     try {
       fs.mkdirSync(path.dirname(PROGRESS_CACHE), { recursive: true })
       fs.writeFileSync(PROGRESS_CACHE, JSON.stringify(next))
     } catch {}
   }
-  if (process.env.SWARM_PROGRESS_SYNC) { try { gather() } catch {} ; return }
-  setTimeout(() => { try { gather() } catch {} }, 0).unref?.()
+  if (process.env.SWARM_PROGRESS_SYNC) { try { keep(gatherProgress(args)) } catch {} ; return }
+  gathering = true
+  execFile(process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],
+    { timeout: 300_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
+      gathering = false
+      if (err) return
+      try { keep(JSON.parse(out)) } catch {}
+    })
 }
 
 let holdAt = 0, hold = { held: false }

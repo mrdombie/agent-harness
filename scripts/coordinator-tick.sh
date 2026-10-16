@@ -39,7 +39,7 @@ SIGNOFF="$SELF_DIR/signoff-batch.sh"
 SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
-say() { printf '%s\n' "$*"; swarm_log "$COORD_LOG" "$*"; }
+say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; }
 
 # ---- 1. lock ----------------------------------------------------------------
 LOCK="$COORD_DIR/tick.lock"

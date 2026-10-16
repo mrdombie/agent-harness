@@ -18,7 +18,8 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. It also shows the coordinator's queue (`$STATE_DIR/coordinator/queue.json`, in run order, with notes) and a banner while spawns are held. |
 | `hold-status.sh` | Whether the owner's pause or the plan's usage limit holds spawns, why and until when, as JSON — the same functions the coordinator decides with. |
 | `report.sh` | One screen, one JSON, one push. |
-| `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. |
+| `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. When the live view does not answer it shows the coordinator's last check (`last check 10:52 · 3 building · next 10:57`), or `coordinator silent since 10:40` past ten minutes. |
+| `coordinator-feed.sh` | Signs of life: the coordinator's log followed live, one row per check, build started or finished, red PR and sign-off batch. No model calls. `install.sh coordinator` opens it once in a terminal window; `--open` opens it again. |
 | `install.sh` | Writes and loads the timers. `status` reads back what is loaded. |
 | `detach.sh` | Runs a command in a session of its own. |
 
