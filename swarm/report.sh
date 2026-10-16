@@ -119,7 +119,8 @@ esac
 
 # ---- the screen --------------------------------------------------------------
 J=$(report_json)
-printf 'cpu idle %s%% · load %s · %s running · %s queued\n' "$(swarm_cpu_idle)" "$(swarm_load)" \
+_idle=$(swarm_cpu_idle_smoothed)
+printf '%s · load %s · %s running · %s queued\n' "$([ -n "$_idle" ] && swarm_idle_label $_idle || echo 'cpu idle unread')" "$(swarm_load)" \
   "$(printf '%s' "$J" | jq '.live | length')" "$(printf '%s' "$J" | jq '.queued | length')"
 
 printf '%s' "$J" | jq -r '
