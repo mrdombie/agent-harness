@@ -275,7 +275,7 @@ it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
 hook when any window hits the plan's limit) says the limit holds.
 
 ```sh
-scripts/coordinator-queue.sh seed <scope>   # a ticket, a label, or a programme subject
+scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # tickets, labels or programme subjects; a list is their union
 swarm/install.sh coordinator                # every 5 minutes; SHADOW unless COORDINATOR_SHADOW=0
 scripts/coordinator-compare.sh --since <ISO>  # the shadow's calls beside the loop's runs
 swarm/install.sh uninstall coordinator
