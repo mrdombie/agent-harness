@@ -64,13 +64,6 @@ DRIVER="${SPAWN_DRIVER:-$KIT_ROOT/driver/build-ticket}"
 case "$RUNNER" in
   claim) ;;
   driver)
-    # Refused, never degraded. The driver has no brief input, and a healing spawn
-    # that silently lost its brief, or quietly ran /claim instead, would report
-    # exactly like the run that was asked for.
-    if [ -n "${CLAIM_EXTRA:-}" ]; then
-      echo "spawn-claim: refusing — driver mode cannot carry a brief (CLAIM_EXTRA is set for #${TICKET:-next}); build-ticket has no brief input, and dropping the brief or falling back to /agent-harness:claim would both hide that" >&2
-      exit 3
-    fi
     if [ -z "$TICKET" ]; then
       echo "spawn-claim: refusing — driver mode needs a ticket number; build-ticket cannot pick the next ready ticket" >&2
       exit 3
@@ -78,6 +71,18 @@ case "$RUNNER" in
     [ -x "$DRIVER" ] || { echo "spawn-claim: refusing — driver mode, and no executable driver at $DRIVER" >&2; exit 3; } ;;
   *) echo "spawn-claim: refusing — unknown runner '$RUNNER' (swarm.runner / SPAWN_RUNNER take claim or driver)" >&2; exit 3 ;;
 esac
+# A REPAIR, in driver mode: a brief (a healing re-spawn's resume brief) or a healing
+# class. Both mean the ticket has a pull request that went red or clashes, so the
+# driver re-enters that PR (build-ticket --repair) rather than building afresh, and
+# the brief goes with it, verbatim. Dropped, the driver would rebuild a ticket whose
+# PR exists; a healing row with no note still names its class, so it is never a
+# fresh build either.
+REPAIR=0
+if [ "$RUNNER" = driver ]; then
+  case "${CLAIM_EXTRA:+brief}:${CLASS}" in
+    brief:*|*:repair|*:approved-merge) REPAIR=1 ;;
+  esac
+fi
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1; }
 
@@ -90,10 +95,21 @@ PROMPT="/agent-harness:claim"
 # No run record and no budget cap here — --max-budget-usd is silently ignored
 # outside --print, and an interactive session you're watching doesn't need a
 # watchdog to notice it died. Its lock falls back to artifact-freshness.
+# repair_brief_file <path> — the brief the driver is handed: CLAIM_EXTRA verbatim, or,
+# for a healing spawn that came with no note, a line naming its class.
+repair_brief_file() {
+  if [ -n "${CLAIM_EXTRA:-}" ]; then printf '%s\n' "$CLAIM_EXTRA" > "$1"
+  else printf 'No brief came with this spawn: #%s was queued as %s with no note. Read the pull request'"'"'s own state.\n' "$TICKET" "${CLASS:-a repair}" > "$1"; fi
+}
 if [ "$FG" -eq 1 ] && [ "$RUNNER" = driver ]; then
-  echo "→ the step driver in the foreground: $DRIVER $TICKET"
   SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
   cd "$SPAWN_ROOT" || exit 1
+  if [ "$REPAIR" -eq 1 ]; then
+    mkdir -p "$RUNS_DIR"; _fgb="$RUNS_DIR/fg-$TICKET-$$.brief"; repair_brief_file "$_fgb"
+    echo "→ the step driver in the foreground: $DRIVER $TICKET --repair $_fgb"
+    exec "$DRIVER" "$TICKET" --repair "$_fgb"
+  fi
+  echo "→ the step driver in the foreground: $DRIVER $TICKET"
   exec "$DRIVER" "$TICKET"
 fi
 if [ "$FG" -eq 1 ]; then
@@ -192,7 +208,10 @@ stop_run_servers() {
   # subshell on every bash.
   CLAIM_SESSION_PID="${BASHPID:-$(exec sh -c 'echo $PPID')}"
   export CLAIM_SESSION_PID
-  if [ "$RUNNER" = driver ]; then
+  if [ "$RUNNER" = driver ] && [ "$REPAIR" -eq 1 ]; then
+    repair_brief_file "$RUNS_DIR/$RUN_ID.brief"
+    "$DRIVER" "$TICKET" --repair "$RUNS_DIR/$RUN_ID.brief" >> "$LOG" 2>&1 &
+  elif [ "$RUNNER" = driver ]; then
     "$DRIVER" "$TICKET" >> "$LOG" 2>&1 &
   else
     claude -p "$PROMPT" \
@@ -281,7 +300,8 @@ DRIVER_FIELDS=""
 if [ "$RUNNER" = driver ]; then
   DRIVER_FIELDS=",
   \"runner\": \"driver\",
-  \"progress_paths\": $(jq -cn --arg p "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET" '[$p]')"
+  \"progress_paths\": $(jq -cn --arg p "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET" '[$p]'),
+  \"repair\": $([ "$REPAIR" -eq 1 ] && echo true || echo false)"
 fi
 cat > "$RECORD" <<EOF
 {

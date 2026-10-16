@@ -346,7 +346,8 @@ kill "$s1" 2>/dev/null
 # any of them reads as something it is not, so each is asserted here.
 cat > "$SB/bin/build-ticket-stub" <<'STUB'
 #!/usr/bin/env bash
-printf 'cwd=%s\nargs=%s\nclaude.md=%s\nrun=%s\n' "$PWD" "$*" "$(cat CLAUDE.md 2>/dev/null)" "${CLAIM_RUN_ID:-}" > "$SPAWN_TEST_DRIVER_SEEN"
+printf 'cwd=%s\nargs=%s\nclaude.md=%s\nrun=%s\nbrief=%s\n' "$PWD" "$*" "$(cat CLAUDE.md 2>/dev/null)" "${CLAIM_RUN_ID:-}" \
+  "$([ "${2:-}" = --repair ] && tr '\n' ' ' < "$3" | sed 's/ $//')" > "$SPAWN_TEST_DRIVER_SEEN"
 echo "build-ticket: walking #$1"
 echo "  step build: green"
 echo "⏸ #$1 parked: the spec needs a decision"
@@ -417,14 +418,32 @@ driver_wait 4903
 [ "$(jq -r 'has("runner") or has("progress_paths")' "$(rec_of 4903)" 2>/dev/null)" = false ] \
   && ok "a claim run's record is the claim record, with no driver fields" || bad "a claim run's record carries driver fields"
 
-# 9c. a briefed spawn refuses by name: the driver has no brief input.
-rm -f "$OUT/seen" "$OUT/driver-seen"
-CLAIM_EXTRA="Resume brief: push the branch" SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4904
-[ "$RC" -ne 0 ] && ok "a briefed spawn in driver mode exits non-zero" || bad "a briefed spawn in driver mode exited 0"
-printf '%s' "$out" | grep -q 'brief' && ok "and names the brief as the reason" || bad "the refusal does not name the brief: $out"
-sleep 1
-[ ! -f "$OUT/driver-seen" ] && [ ! -f "$OUT/seen" ] && [ -z "$(rec_of 4904)" ] \
-  && ok "and spawns nothing — no driver, no /claim fallback, no run record" || bad "a refused briefed spawn still started something"
+# 9c. a briefed spawn is a REPAIR: build-ticket --repair <brief>, the brief verbatim.
+# Dropped, the driver would rebuild a ticket whose PR is red; refused, every
+# healing spawn in driver mode would stop at the door.
+rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
+CLAIM_EXTRA="REPAIR on PR #7 at abc: CI went red on: unit" SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4904
+driver_wait 4904
+[ "$RC" -eq 0 ] && ok "a briefed spawn in driver mode spawns" || bad "a briefed spawn in driver mode exited $RC: $out"
+case "$(dseen args)" in "4904 --repair "*) ok "build-ticket is run with --repair" ;; *) bad "build-ticket args were '$(dseen args)', want '4904 --repair <file>'" ;; esac
+[ "$(dseen brief)" = "REPAIR on PR #7 at abc: CI went red on: unit" ] && ok "and the brief it is handed is CLAIM_EXTRA, verbatim" \
+  || bad "the brief build-ticket read was '$(dseen brief)'"
+[ ! -f "$OUT/seen" ] && ok "no /claim fallback" || bad "a briefed driver spawn also ran claude"
+
+# 9c'. a HEALING spawn with no note is a repair too — never a fresh build of a ticket with a PR.
+rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
+CLAIM_CLASS=repair SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4907
+driver_wait 4907
+case "$(dseen args)" in "4907 --repair "*) ok "a repair-class spawn with no brief still runs --repair" ;; *) bad "a repair-class spawn ran build-ticket '$(dseen args)'" ;; esac
+printf '%s' "$(dseen brief)" | grep -q 'repair' && ok "with a brief that names its class" || bad "the empty-note brief was '$(dseen brief)'"
+rm -f "$OUT/driver-seen" "$OUT/reconcile"
+CLAIM_CLASS=approved-merge SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4908
+driver_wait 4908
+case "$(dseen args)" in "4908 --repair "*) ok "an approved-merge spawn runs --repair" ;; *) bad "an approved-merge spawn ran build-ticket '$(dseen args)'" ;; esac
+rm -f "$OUT/driver-seen" "$OUT/reconcile"
+CLAIM_CLASS=new SPAWN_RUNNER=driver SPAWN_DRIVER="$SB/bin/build-ticket-stub" runout 4909
+driver_wait 4909
+[ "$(dseen args)" = 4909 ] && ok "a new-class spawn is a plain build" || bad "a new-class spawn ran build-ticket '$(dseen args)'"
 
 # 9d. no ticket refuses by name: build-ticket needs a number.
 rm -f "$OUT/seen" "$OUT/driver-seen"

@@ -267,4 +267,18 @@ want "an unreadable PR list refuses, rather than reading as none" "24" "$rc"
 want_in "and says so"                      'could not ask' "$out"
 rm -f "$FIX/gh-fail"
 
+echo "--- end to end: the REAL claim lock notes the run's worktree for the spawner ---"
+# The recorder above proves start SENDS run_id; this proves what that does. The real
+# claim-lock.sh, against a bare origin in the fixture, writes runs/<run>.worktrees —
+# the file spawn-claim.sh's post-exit dev-server stop and cache pass read.
+git init -q --bare "$FIX/claims-origin"
+git -C "$REPO" remote add origin "$FIX/claims-origin" 2>/dev/null || git -C "$REPO" remote set-url origin "$FIX/claims-origin"
+git -C "$REPO" push -q origin develop
+fix_issue 117 OPEN "status:ready"
+rc=0; GIT_AUTHOR_NAME=f GIT_AUTHOR_EMAIL=f@x GIT_COMMITTER_NAME=f GIT_COMMITTER_EMAIL=f@x \
+  CL="$HERE/../../scripts/claim-lock.sh" CLAIM_RUN_ID=claim-117-e2e CLAIM_RUN_LOG="$FIX/e2e.log" \
+  driver_step_start 117 >"$FIX/e2e.out" 2>&1 || rc=$?
+want "it finishes"                         "0" "$rc"
+want "runs/<run>.worktrees names the driver's tree" "$(driver_state_get 117 worktree)" "$(cat "$STATE/runs/claim-117-e2e.worktrees" 2>/dev/null)"
+
 exit $FAILED
