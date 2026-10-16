@@ -80,6 +80,32 @@ driver_step_ship() { # <ticket>
     fi
   fi
 
+  # A REPAIR SHIPS ONTO THE PULL REQUEST IT REPAIRED, and only that one. Asked before
+  # the push: with that PR gone, the repair has nowhere to land, and opening a new one
+  # would be a second PR for one ticket.
+  local mode open_pr=""; mode=$(driver_state_get "$t" mode)
+  if [ "$mode" = repair ]; then
+    open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
+      driver_say "✋ ship: could not ask GitHub whether the pull request for $branch is still open."
+      driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
+      return "$DRIVER_E_REFUSED"; }
+    if [ -z "$open_pr" ]; then
+      driver_say "✋ ship: the pull request this repair was for is no longer open on $branch. A repair never opens a new one."
+      driver_state_set "$t" park_note "the pull request for $branch closed while it was being repaired"
+      return "$DRIVER_E_REFUSED"
+    fi
+    # AND THE VERDICT IS READ BEFORE THE PUSH, not after. A repaired PR is usually
+    # ready with auto-merge already armed, so for it the push IS the landing: CI goes
+    # green and it merges, whatever the review said. Holding it as a draft, as a fresh
+    # build does, is not available here, so an unreviewed repair is not pushed at all.
+    local rverdict; rverdict=$(jq -r '.verdict // ""' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null | tr '[:lower:]' '[:upper:]')
+    if [ "$rverdict" != "SHIP" ]; then
+      driver_say "✋ ship: the review verdict on this repair is '${rverdict:-none}', and PR #$open_pr may already have auto-merge armed — so nothing is pushed. The repair stays in $wt."
+      driver_state_set "$t" park_note "the repair's review verdict is ${rverdict:-none}; it was not pushed, because PR #$open_pr would merge it"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
+
   if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
@@ -138,7 +164,15 @@ PRBODY
   # pull request existing — so the next line asks.
   # A PULL REQUEST A PARK ALREADY OPENED carries the park's title and body. Shipping
   # rewrites both, or the shipped PR says "parked" and carries none of this evidence.
-  local open_pr
+  if [ "$mode" = repair ]; then
+    # ITS WORDS ARE NOT THE DRIVER'S TO REWRITE. The PR may be a person's or /claim's,
+    # with a Lesson section a reviewer already read; the repair says what it did in a
+    # comment below. The deleted-tests gate judges the body the PR actually carries.
+    body=$(swarm_gh pr view "$open_pr" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) || {
+      driver_say "✋ ship: could not read the body of pull request #$open_pr, so the deleted-tests check has nothing to read."
+      driver_state_set "$t" park_note "could not read the body of #$open_pr at ship"
+      return "$DRIVER_E_REFUSED"; }
+  else
   # A FAILED LOOKUP IS NOT "NO PULL REQUEST": read as one, the edit is skipped and a
   # parked PR ships with the park's words. Asked and refused, it parks.
   open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
@@ -159,6 +193,7 @@ PRBODY
   if ! swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number >/dev/null 2>&1; then
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
+  fi
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
@@ -213,6 +248,9 @@ PRBODY
   if ! swarm_gh pr merge "$branch" --repo "$REPO_SLUG" --auto --squash >/dev/null 2>&1; then
     driver_say "✋ ship: auto-merge would not arm on the pull request for $branch. It is ready and reviewed, and nothing will land it — so this says so rather than handing off."
     return "$DRIVER_E_REFUSED"
+  fi
+  if [ "$mode" = repair ]; then
+    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "Repaired by the driver at $head: $(jq -r '.cause // "see the run log"' "$(driver_state_dir "$t")/steps/repair.json" 2>/dev/null || echo "see the run log"). Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")')." >/dev/null 2>&1 || true
   fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true

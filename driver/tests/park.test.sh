@@ -94,4 +94,20 @@ want_not_in "no PR for a branchless park" 'pr create' "$(cat "$GH_LOG")"
 echo "--- the reason reaches the brief ---"
 want_in "the reason is in the comment" 'start refused' "$(cat "$GH_LOG")"
 
+echo "--- a repair parks WITHOUT pushing: its PR may have auto-merge armed ---"
+git -C "$REPO" worktree add -q "$FIX/wt150" -b tkt-150/work develop
+git -C "$FIX/wt150" push -q origin tkt-150/work; ORIG=$(git -C "$FIX/wt150" rev-parse HEAD)
+printf 'half a repair\n' > "$FIX/wt150/r.txt"
+driver_state_init 150 --worktree "$FIX/wt150" --branch tkt-150/work
+driver_state_set 150 mode repair; driver_state_set 150 pr 91
+fix_issue 150 OPEN "status:in-review"; : > "$ORDER"
+out=$(driver_park 150 "the review blocked the repair" "is the reviewer right?" 2>&1); rc=$?
+want "park reports parked"                 "20" "$rc"
+want "origin keeps the PR's head"          "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-150/work)"
+want_not_in "nothing was pushed"           'git push' "$(cat "$ORDER")"
+want_not_in "no draft PR is opened"        'pr create' "$(cat "$ORDER")"
+want "the work is committed locally"       "" "$(git -C "$FIX/wt150" status --porcelain)"
+want_in "the brief says where the repair is, and why it was not pushed" 'auto-merge' "$(cat "$GH_LOG")"
+want_in "and the claim is still released"  'release 150' "$(cat "$ORDER")"
+
 exit $FAILED

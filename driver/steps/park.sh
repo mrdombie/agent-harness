@@ -54,7 +54,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
   # nothing to decide. The default is `person` so a caller that says nothing gets
   # the cautious label rather than the quiet one.
   local cause="${4:-person}"
-  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note=""
+  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
   branch=$(driver_state_get "$t" branch)
@@ -77,7 +77,15 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
         driver_say "   park: committed as $ctype(#$t), staging $staged"
       fi
     fi
-    if driver_push "$t" "$wt" "$branch" park; then
+    if [ "$(driver_state_get "$t" mode)" = repair ]; then
+      # A REPAIR'S PARK IS NOT PUSHED. Its pull request is usually ready with
+      # auto-merge armed, so a push there is a merge — of the work the park exists
+      # to stop. It stays committed in the tree, and bundled beside it.
+      repair_note="This repair was NOT pushed: pull request #$(driver_state_get "$t" pr) may have auto-merge armed, so a push would merge it. The work is committed in $wt."
+      driver_say "   park: a repair is not pushed — its pull request may have auto-merge armed"
+      bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
+      [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
+    elif driver_push "$t" "$wt" "$branch" park; then
       pushed=1
     else
       driver_say "   park: the branch could not be pushed — say so rather than reporting a handover that does not exist: $DRIVER_PUSH_WHY"
@@ -115,7 +123,7 @@ $(if [ "$cause" = "person" ]; then
       "${question:-see the step output on the run log}"
   fi)
 
-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}
+${repair_note:-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}}
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
 ${bundle_note:+💾 $bundle_note}

@@ -384,4 +384,51 @@ want_in "with the script's own reason"     'planted refusal' "$out"
 want "the branch never reached origin"     "0" \
   "$(git -C "$FIX/origin" rev-parse --verify tkt-130/work >/dev/null 2>&1 && echo 1 || echo 0)"
 
+echo "--- a repair ships onto the PR it repaired, and leaves that PR's words alone ---"
+# The PR may be a person's, or /claim's, with a Lesson section and a body a reviewer
+# already read. A repair says what it did in a comment and rewrites none of it.
+setup_wt 140
+driver_state_set 140 mode repair; driver_state_set 140 pr 88
+driver_state_put 140 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 140 review
+driver_state_put 140 repair '{"step":"repair","cause":"the reader dropped its error branch"}'
+for st in reenter repair fix self-check review record; do driver_state_done 140 "$st"; done
+printf '[{"number":88}]\n' > "$FIX/gh/prs.json"
+: > "$FIX/pr-created-88"; : > "$FIX/pr-created-tkt-140_work"
+printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\n## Lesson\\n- Principle: kept."}\n' > "$FIX/gh/pr-view.json"
+: > "$GH_LOG"
+out=$(driver_step_ship 140 2>&1); rc=$?
+want "it ships"                              "0" "$rc"
+want "the branch is pushed to the same name" "$(git -C "$FIX/wt140" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-140/work 2>/dev/null)"
+want_not_in "the PR's title and body are not rewritten" 'pr edit' "$(cat "$GH_LOG")"
+want_not_in "no second PR is opened"         'pr create' "$(cat "$GH_LOG")"
+want_in "the deleted-tests check reads the PR's own body" 'pr view 88 .*--json body' "$(cat "$GH_LOG")"
+want_in "it is ready"                        'pr ready' "$(cat "$GH_LOG")"
+want_in "auto-merge is armed"                'pr merge.*--auto' "$(cat "$GH_LOG")"
+want_in "and the repair is said on the PR"   'pr comment 88 .*Repaired by the driver' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "with its cause"                     'the reader dropped its error branch' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh/pr-view.json"
+
+echo "--- a repair whose PR has gone refuses rather than opening a new one ---"
+setup_wt 141
+driver_state_set 141 mode repair; driver_state_set 141 pr 89
+driver_state_put 141 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 141 review
+printf '[]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
+out=$(driver_step_ship 141 2>&1); rc=$?
+want "it refuses"                            "24" "$rc"
+want_in "saying the PR is no longer open"    'no longer open' "$out"
+want_not_in "and opens none"                 'pr create' "$(cat "$GH_LOG")"
+
+echo "--- a repair the review did not pass is not pushed: on an armed PR the push is the merge ---"
+setup_wt 142
+driver_state_set 142 mode repair; driver_state_set 142 pr 90
+git -C "$FIX/wt142" push -q origin tkt-142/work; ORIG=$(git -C "$FIX/wt142" rev-parse HEAD)
+printf 'repair\n' > "$FIX/wt142/r142.txt"; git -C "$FIX/wt142" add r142.txt; git -C "$FIX/wt142" commit -qm "fix: repair"
+driver_state_put 142 review '{"verdict":"BLOCKED","findings":[{"grade":"major","summary":"x"}]}'; driver_state_bump 142 review
+printf '[{"number":90}]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
+out=$(driver_step_ship 142 2>&1); rc=$?
+want "it refuses"                            "24" "$rc"
+want "origin still has the PR's old head"    "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
+want_in "and it says why"                    'nothing is pushed' "$out"
+printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED
