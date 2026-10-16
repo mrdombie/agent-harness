@@ -612,4 +612,38 @@ want_in "and it is handed off"             'pr merge tkt-210/work .*--auto' "$(c
 want "the trunk point it forked from is on the record" "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 210 claimed_at_sha)"
 rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a repeated brief after a shipped repair is a NEW round, not a silent no-op ---"
+# The empty-note brief and the merge lane's notes repeat word for word. Keyed on the
+# brief alone, the next clash on a repaired PR ran reenter, said "nothing left to
+# do", exited 0, left the queue, and the PR stayed red.
+reset_fakes
+pr_head() { jq -n --arg h "$1" '[{number:61, headRefName:"tkt-410/work", headRefOid:$h, isDraft:false, mergeStateStatus:"DIRTY"}]' > "$FIX/gh/prs.json"; }
+pr_head h1
+printf 'Merge lane: PR #61 left the lane — it clashes. Fix it on the PR branch.\n' > "$FIX/brief-e.md"
+bt 410 --repair "$FIX/brief-e.md" >/dev/null; rc=$?
+want "the first repair ships"                "0" "$rc"
+: > "$RAN"; pr_head h2
+out=$(bt 410 --repair "$FIX/brief-e.md"); rc=$?
+want "the same words after a ship run the whole order again" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_not_in "and never claim there is nothing to do" 'nothing left to do' "$out"
+: > "$RAN"
+bt 410 --repair "$FIX/brief-e.md" >/dev/null
+want "even with the head unchanged, a shipped round is never resumed as done" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- a parked repair whose PR head moved is a new round; an unmoved one resumes ---"
+reset_fakes "repair:24 0"
+jq -n '[{number:62, headRefName:"tkt-411/work", headRefOid:"p1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+printf 'REPAIR on PR #62: red\n' > "$FIX/brief-f.md"
+bt 411 --repair "$FIX/brief-f.md" >/dev/null
+: > "$RAN"; rm -f "$FIX"/n.*; fake_step repair 24 0
+bt 411 --repair "$FIX/brief-f.md" >/dev/null
+want "unmoved: it resumes at repair"         "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+: > "$RAN"
+printf '{"step":"repair","status":"park","question":"stale"}\n' > "$(driver_state_dir 411)/steps/repair.json"
+jq -n '[{number:62, headRefName:"tkt-411/work", headRefOid:"p2", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+bt 411 --repair "$FIX/brief-f.md" >/dev/null
+want "moved: a new round, the whole order"   "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and the parked round's answers are archived" "no" "$([ -f "$(driver_state_dir 411)/steps/repair.json" ] && echo yes || echo no)"
+printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

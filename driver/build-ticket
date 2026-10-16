@@ -103,7 +103,18 @@ if [ -n "$REPAIR_BRIEF" ]; then
   # last review's findings, and the new round gets its own two review rounds.
   _rb_sha=$(git hash-object "$REPAIR_BRIEF" 2>/dev/null)
   _rd=$(driver_state_dir "$TICKET")
-  if [ "$_rb_sha" != "$(driver_state_get "$TICKET" repair_brief_sha)" ]; then
+  # AND A ROUND IS MORE THAN ITS WORDS. The empty-note brief and the merge lane's
+  # notes repeat word for word, so keyed on the brief alone the next clash on a
+  # repaired PR ran reenter, said "nothing left to do" and exited 0 with the PR red.
+  # A round already shipped is never resumed, and a PR whose head moved since the
+  # round began is a new failure.
+  _rb_head=$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f3)
+  _rb_new=0
+  [ "$_rb_sha" != "$(driver_state_get "$TICKET" repair_brief_sha)" ] && _rb_new=1
+  driver_state_is_done "$TICKET" ship && _rb_new=1
+  [ -n "$_rb_head" ] && [ -n "$(driver_state_get "$TICKET" repair_pr_head)" ] \
+    && [ "$_rb_head" != "$(driver_state_get "$TICKET" repair_pr_head)" ] && _rb_new=1
+  if [ "$_rb_new" -eq 1 ]; then
     _arch="$_rd/steps/archive/$(date -u +%Y%m%dT%H%M%SZ)-$$"
     mkdir -p "$_arch"
     for _f in "$_rd"/steps/*; do
@@ -112,14 +123,14 @@ if [ -n "$REPAIR_BRIEF" ]; then
     done
     rmdir "$_arch" 2>/dev/null || true
     driver_state_reopen "$TICKET" $DRIVER_STEPS
-    _driver_state_edit "$TICKET" --arg sha "$_rb_sha" \
-      '.counters.review = 0 | .counters.fix = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha'
+    _driver_state_edit "$TICKET" --arg sha "$_rb_sha" --arg h "$_rb_head" \
+      '.counters.review = 0 | .counters.fix = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha | .repair_pr_head = $h'
     cp "$REPAIR_BRIEF" "$_rd/repair-brief.md"
     driver_state_set "$TICKET" repair_brief "$_rd/repair-brief.md"
     driver_say "🔧 #$TICKET repair: $(head -1 "$_rd/repair-brief.md" | cut -c1-160)"
   fi
   driver_state_set "$TICKET" mode repair
-  unset _rb_sha _rd _arch _f
+  unset _rb_sha _rb_head _rb_new _rd _arch _f
 else
   driver_state_set "$TICKET" mode build
 fi
