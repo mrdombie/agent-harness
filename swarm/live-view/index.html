@@ -103,7 +103,7 @@ function queueRows(q){
     <td class="num">${i + 1}</td>
     <td>${kind(t.class)}</td>
     <td><b>${esc(t.title)}</b> <span class="sub">${link(t.ticket)}</span>${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}</td>
-    <td class="scope">${esc(area(t.scope))}</td></tr>`).join('')
+    <td class="scope">${esc(t.scope ? area(t.scope) : t.pinned ? "Pinned" : "")}</td></tr>`).join('')
 }
 
 function card(a){

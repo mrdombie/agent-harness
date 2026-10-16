@@ -84,15 +84,18 @@ const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
 export function queueOf(file = COORD_QUEUE) {
   let q
   try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [] } }
-  const fallback = q.label || q.scope || ''
+  // .labels is the list of scopes; .label one scope, or the list joined for readers.
+  const labels = Array.isArray(q.labels) ? q.labels.map(String) : (q.label ? [String(q.label)] : [])
+  // An entry from before entries carried a scope belongs to the queue's only
+  // scope; with several it cannot be told, so it shows none rather than all.
+  const fallback = labels.length === 1 ? labels[0] : ''
   const rows = (Array.isArray(q.tickets) ? q.tickets : [])
     .map((t, pos) => ({ t, pos, rank: RANK[t?.class] ?? 3 }))
     .filter(({ t }) => t && t.n != null)
     .sort((a, b) => a.rank - b.rank || a.pos - b.pos)
     .map(({ t }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
                        scope: String(t.scope || fallback), pinned: !!t.pinned }))
-  const scopes = Array.isArray(q.scopes) ? q.scopes.map((s) => String(s.label || s.scope || s))
-    : [...new Set(rows.map((r) => r.scope).filter(Boolean))]
+  const scopes = labels.length ? labels : [...new Set(rows.map((r) => r.scope).filter(Boolean))]
   return { scopes, seededAt: q.seeded_at || null, tickets: rows }
 }
 
