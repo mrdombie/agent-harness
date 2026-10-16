@@ -568,4 +568,48 @@ out=$(bt 405 --repair "$FIX/brief-d.md"); rc=$?
 want "it finishes after the rework"        "0" "$rc"
 want "fix, self-check and review ran again" "reenter repair fix self-check review fix self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
+echo "--- the real repair order, one whole pass: a red PR fixed onto its own branch ---"
+# The recorders above prove the order; this proves the wiring. The steps that ship,
+# a real origin, the real claim lock, a PR branch that is red, and transcripts
+# standing in only for the model. The agent's hands commit the fix in the tree
+# reenter cut, so nothing in this case knows that tree's path in advance.
+rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"; : > "$GH_LOG"; : > "$CLAUDE_LOG"
+SRC="$FIX/src210"; git clone -q -b develop "$FIX/origin" "$SRC"
+git -C "$SRC" checkout -q -b tkt-210/work
+printf '#!/usr/bin/env bash\ngrep -qx fixed "$(dirname "$0")/state.txt"\n' > "$SRC/check.sh"; printf 'broken\n' > "$SRC/state.txt"
+git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 210"
+git -C "$SRC" push -q origin tkt-210/work
+PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
+fix_issue 210 OPEN "status:in-review"
+jq -n '[{number:61, headRefName:"tkt-210/work", headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
+         statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
+: > "$FIX/pr-created-61"; printf '{"number":61,"isDraft":false,"body":"The PR as its author wrote it."}\n' > "$FIX/gh/pr-view.json"
+fix_brief repair superpowers:systematic-debugging
+cat > "$BIN/claude-hands" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" --name repair "*)
+  printf 'fixed\n' > state.txt; git add state.txt
+  git -c user.email=t@example.invalid -c user.name=T commit -qm "fix: the state" >/dev/null 2>&1 ;;
+esac
+exec "$BIN/claude" "$@"
+SH
+chmod +x "$BIN/claude-hands"
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"state.txt was never set","fixes":[{"what":"set it","proof":"gate","change":[{"path":"state.txt","action":"modify"}],"command":"bash check.sh","noTestBecause":"the fixture check is the test"}]}' \
+  superpowers:systematic-debugging
+printf 'REPAIR on PR #61 at %s: CI went red on: unit\n' "$PR_HEAD" > "$FIX/brief-210.md"
+out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 210 --repair "$FIX/brief-210.md" 2>&1); rc=$?
+printf '%s\n' "$out" | sed 's/^/    /'
+want "the real repair order finishes"      "0" "$rc"
+want "every repair step is recorded"       "reenter,repair,fix,self-check,review,record,ship" "$(driver_state_get 210 'done|join(",")')"
+want "the model ran for repair and review only" "repair review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "the fix reached the PR's own branch on origin" "fixed" "$(git -C "$FIX/origin" show tkt-210/work:state.txt 2>/dev/null)"
+want "as a fast-forward of the PR's head"  "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor "$PR_HEAD" tkt-210/work && echo yes)"
+want_not_in "no new branch was cut"        'tkt-210/ticket-210' "$(git -C "$FIX/origin" branch --list 'tkt-210*')"
+want_not_in "no new pull request"          'pr create' "$(cat "$GH_LOG")"
+want_not_in "the PR's own words are kept"  'pr edit' "$(cat "$GH_LOG")"
+want_in "the repair is said on the PR"     'pr comment 61 .*state.txt was never set' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "and it is handed off"             'pr merge tkt-210/work .*--auto' "$(cat "$GH_LOG")"
+want "the trunk point it forked from is on the record" "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 210 claimed_at_sha)"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED
