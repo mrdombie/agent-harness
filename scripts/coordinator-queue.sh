@@ -2,15 +2,17 @@
 # coordinator-queue.sh — the coordinator's queue: one JSON file in the state dir,
 # in place of a hand-written markdown list.
 #
-#   coordinator-queue.sh seed <scope>      resolve the scope and fill the queue
-#   coordinator-queue.sh refresh           re-seed from the scope already recorded
+#   coordinator-queue.sh seed <scope>[,<scope>…]  resolve each scope and fill the queue
+#   coordinator-queue.sh refresh           re-seed from the scopes already recorded
 #   coordinator-queue.sh list              the queue in the order it runs
+#   coordinator-queue.sh in-scope <n>      exit 0 when ticket n is under any recorded scope
 #   coordinator-queue.sh add <n> [--class repair|approved-merge|new] [--note TEXT]
 #   coordinator-queue.sh remove <n>
 #
 # A scope resolves the way /agent-harness:work resolves one: a bare number is
 # that ticket; a label that exists is that label; otherwise `project:<scope>`.
-# A scope that resolves to no label is refused, never widened.
+# A comma list is the union of its scopes. If any one resolves to no label the
+# whole seed is refused, naming it, never widened.
 #
 # The candidates and their order come from claimable-issues.sh, the one
 # definition of what may be picked up. A [FINISH PR] row is class repair;
@@ -43,36 +45,65 @@ resolve() { # <scope> — echoes the label, or "ticket <n>"
   return 1
 }
 
-seed() { # <scope>
-  local scope="${1:?seed needs a scope}" label members claimable rows
-  label=$(resolve "$scope") || die "'$scope' is neither a ticket number, a label, nor ${SWARM_PROGRAMME_PREFIX}$scope — nothing seeded"
-  case "$label" in
-    "ticket "*) members="${label#ticket }" ;;
-    *) members=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$label" --limit 1000 \
-                   --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was"
-       members=$(printf '%s\n' "$members" | sort -u) ;;
-  esac
+scope_list() { # <comma list> — one trimmed scope per line, empties dropped, de-duplicated
+  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF && !seen[$0]++'
+}
+
+seed() { # <scope>[,<scope>…]
+  local scope="${1:?seed needs a scope}" s label labels="" members="" m claimable rows
+  [ -n "$(scope_list "$scope")" ] || die "'$scope' names no scope — nothing seeded"
+  while IFS= read -r s; do
+    label=$(resolve "$s") || die "'$s' is neither a ticket number, a label, nor ${SWARM_PROGRAMME_PREFIX}$s — nothing seeded"
+    labels="$labels$label"$'\n'
+  done <<< "$(scope_list "$scope")"
+  labels=$(printf '%s' "$labels" | awk 'NF && !seen[$0]++')
+  while IFS= read -r label; do
+    case "$label" in
+      "ticket "*) m="${label#ticket }" ;;
+      *) m=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$label" --limit 1000 \
+               --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was" ;;
+    esac
+    members="$members$m"$'\n'
+  done <<< "$labels"
+  members=$(printf '%s' "$members" | awk 'NF' | sort -u)
   claimable=$(bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
   rows=$(printf '%s\n' "$claimable" | awk -F'\t' 'NF>=1 && $1!=""{print $1 "\t" ($5=="[FINISH PR]" ? "repair" : "new")}' \
          | while IFS=$'\t' read -r n cls; do
              grep -qx "$n" <<<"$members" && printf '%s\t%s\n' "$n" "$cls"
            done)
-  current | jq --arg scope "$scope" --arg label "$label" --arg at "$(swarm_stamp)" --arg rows "$rows" '
+  current | jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" '
     (.tickets // []) as $old
+    | ($labels | split("\n") | map(select(length > 0))) as $ls
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
     | ($rows | split("\n") | map(select(length > 0) | split("\t") | {n: (.[0]|tonumber), class: .[1]})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end)) as $merged
     | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null))) as $kept
-    | {scope: $scope, label: $label, seeded_at: $at, tickets: ($merged + $kept)}' | write
-  echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $label"
+    | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: ($merged + $kept)}' | write
+  echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
 }
 
 refresh() {
   local scope; scope=$(current | jq -r '.scope // empty')
   [ -n "$scope" ] || die "no scope recorded — run 'seed <scope>' first"
   seed "$scope"
+}
+
+# A queue seeded before scopes were lists holds one label in .label and no .labels.
+scope_labels() { current | jq -r 'if (.labels | type) == "array" then .labels[] else (.label // empty) end'; }
+
+in_scope() { # <n> — 0 under any scope, 1 outside every one, 2 unreadable
+  case "${1:-}" in ''|*[!0-9]*) die "in-scope needs a ticket number" ;; esac
+  local ls have l
+  ls=$(scope_labels); [ -n "$ls" ] || die "no scope recorded — run 'seed <scope>' first"
+  grep -qxF "ticket $1" <<<"$ls" && return 0
+  have=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) \
+    || { echo "coordinator-queue: #$1 could not be read" >&2; return 2; }
+  while IFS= read -r l; do
+    [ -n "$l" ] && grep -qxF -- "$l" <<<"$have" && return 0
+  done <<< "$ls"
+  return 1
 }
 
 add() {
@@ -111,9 +142,10 @@ list() {
 case "${1:-}" in
   seed)    shift; seed "$@" ;;
   refresh) refresh ;;
+  in-scope) shift; in_scope "$@" ;;
   add)     shift; add "$@" ;;
   remove)  shift; remove "$@" ;;
   list)    list ;;
-  -h|--help|"") sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)       die "unknown command '$1'" ;;
 esac

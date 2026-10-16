@@ -32,7 +32,8 @@ brief() { # <event json>
   printf '\n## The event\n\n```json\n%s\n```\n' "$1"
   printf '\n## The queue (run order: ticket, class, note)\n\n```\n'
   coord_queue_ordered
-  printf '```\n\nScope: %s\n' "$(jq -r '.label // "none"' "$COORD_QUEUE" 2>/dev/null || echo none)"
+  printf '```\n\nScope (a ticket under any one of these is in scope): %s\n' \
+    "$(jq -r 'if (.labels | type) == "array" and (.labels | length) > 0 then .labels | join(", ") else (.label // "none") end' "$COORD_QUEUE" 2>/dev/null || echo none)"
   printf '\nState directory: %s\nKIT_ROOT: %s\nRepo: %s\n' "$COORD_DIR" "$KIT_ROOT" "$REPO_SLUG"
 }
 

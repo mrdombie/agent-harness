@@ -353,4 +353,27 @@ COORDINATOR_SHADOW=0 tick >/dev/null
 sleep 0.3
 want "an event is judged once"             "1" "$(grep -c ^ARGV "$FIX/claude.log")"
 
+
+echo "--- a list of scopes: the tick works a ticket under any one of them ---"
+fresh
+cat > "$BIN/claimable" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "701	P1	A			one" "702	P2	B			two" "799	P0	C			elsewhere"
+STUB
+chmod +x "$BIN/claimable"
+printf '[{"name":"project:alpha"},{"name":"area:BETA"}]\n' > "$FIX/gh/labels.json"
+fix_issue_list "project:alpha" '[{"number":701}]'
+fix_issue_list "area:BETA" '[{"number":702}]'
+fix_issue 701 OPEN "project:alpha,status:ready"; fix_issue 702 OPEN "area:BETA,status:ready"
+COORDINATOR_CLAIMABLE="$BIN/claimable" bash "$Q" seed "alpha,area:BETA" >/dev/null
+echo 701 > "$FIX/claims.txt"
+out=$(COORDINATOR_CLAIMABLE="$BIN/claimable" COORDINATOR_REFRESH=1 COORDINATOR_SHADOW=0 tick)
+want "the refresh keeps both scopes, and the second scope's ticket spawns" "702" "$(spawned)"
+want "a ticket under neither scope is not queued" "" "$(jq -r '.tickets[] | select(.n==799) | .n' "$C/queue.json")"
+jq -s . <(pr 44 702 - FAILURE) > "$FIX/gh/prs-all.json"
+tick >/dev/null
+COORDINATOR_SHADOW=0 tick >/dev/null
+for _ in $(seq 1 50); do ls "$C"/judges/*.brief >/dev/null 2>&1 && break; sleep 0.1; done
+want_in "the judge's brief names every scope" 'Scope \(a ticket under any one of these is in scope\): project:alpha, area:BETA' "$(cat "$C"/judges/*.brief)"
+
 exit $FAILED

@@ -65,7 +65,50 @@ want "refused"                             "2" "$rc"
 want_in "and says why"                     'queue left as it was' "$out"
 want "the queue and its notes are intact"  "$before" "$(cat "$QF")"
 
+echo "--- a comma list seeds the union of its scopes ---"
+printf '%s\n' "501	P1	OPS		-	one" "502	P1	OPS		[FINISH PR]	two" "503	P2	OPS		-	three" "504	P2	OPS		-	four" "900	P0	OPS		-	elsewhere" \
+  | sed 's/	-	/		/' > "$FIX/claimable.tsv"
+printf '[{"name":"project:widgets"},{"name":"flow-gap"},{"name":"area:GADGETS"}]\n' > "$FIX/gh/labels.json"
+fix_issue_list "area:GADGETS" '[{"number":503},{"number":504}]'
+rm -f "$QF"; bash "$Q" add 888 --class repair --note "pinned before the list" >/dev/null
+out=$(bash "$Q" seed "widgets, area:GADGETS,flow-gap,widgets" 2>&1)
+want_in "it names every label it seeded"   'for project:widgets, area:GADGETS, flow-gap$' "$out"
+want "the union, de-duplicated, repair first, then claimable order" "502:repair 888:repair 501:new 503:new 504:new" "$(order)"
+want "a ticket under two scopes is queued once" "1" "$(jq '[.tickets[] | select(.n==503)] | length' "$QF")"
+want "the labels are recorded"             'project:widgets|area:GADGETS|flow-gap' "$(jq -r '.labels | join("|")' "$QF")"
+want "the pinned repair survives the seed" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
+
+echo "--- refresh re-seeds every scope in the list ---"
+fix_issue_list "area:GADGETS" '[{"number":503},{"number":504},{"number":900}]'
+bash "$Q" refresh >/dev/null
+want "a ticket new to the second scope arrives" "900" "$(jq -r '.tickets[] | select(.n==900) | .n' "$QF")"
+want "the first scope's tickets stay"      "501" "$(jq -r '.tickets[] | select(.n==501) | .n' "$QF")"
+fix_issue_list "area:GADGETS" '[{"number":503},{"number":504}]'
+
+echo "--- one scope that resolves to nothing refuses the whole list ---"
+before=$(cat "$QF")
+out=$(bash "$Q" seed "widgets,nonsense,area:GADGETS" 2>&1); rc=$?
+want "refused"                             "2" "$rc"
+want_in "and names the one that failed"    "'nonsense' is neither" "$out"
+want "the queue is untouched"              "$before" "$(cat "$QF")"
+out=$(bash "$Q" seed " , ," 2>&1); rc=$?
+want "a list of nothing is refused"        "2" "$rc"
+
+echo "--- in-scope: a ticket under any one scope is in ---"
+fix_issue 504 OPEN "area:GADGETS,status:ready"
+fix_issue 501 OPEN "project:widgets"
+fix_issue 905 OPEN "area:ELSEWHERE"
+bash "$Q" in-scope 504; want "under the second scope: in" "0" "$?"
+bash "$Q" in-scope 501; want "under the first scope: in"  "0" "$?"
+bash "$Q" in-scope 905; want "under none: out"            "1" "$?"
+bash "$Q" in-scope 906 2>/dev/null; want "unreadable: not in" "2" "$?"
+bash "$Q" seed 501 >/dev/null
+bash "$Q" in-scope 501; want "a ticket scope matches its own number" "0" "$?"
+jq '.labels = null | .label = "area:GADGETS"' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
+bash "$Q" in-scope 504; want "a queue from before lists still reads its one label" "0" "$?"
+
 echo "--- add and remove ---"
+bash "$Q" add 777 --class approved-merge >/dev/null
 out=$(bash "$Q" add 12 --class urgent 2>&1); rc=$?
 want "an unknown class is refused"         "2" "$rc"
 bash "$Q" remove 777 >/dev/null

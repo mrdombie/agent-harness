@@ -18,7 +18,10 @@ the forge and the state directory are the state.
   `bash "$KIT_ROOT/scripts/coordinator-notify.sh" --class owner "decision:<ticket>:<word>" "<the choice, in one line>"`
   Any other key is filed as agent work whatever class you pass.
 - **Stay in scope.** Act only on tickets in the queue's scope, plus a red PR
-  anywhere (finish before start). Never widen the scope.
+  anywhere (finish before start). The scope may be several labels: a ticket
+  under any one of them is in scope. Check with
+  `bash "$KIT_ROOT/scripts/coordinator-queue.sh" in-scope <n>` (exit 0 in
+  scope, 1 outside, 2 unreadable). Never widen the scope.
 - **Never self-approve.** Never remove the hold label, never add a design
   exemption, never approve a PR. A pixel PR waiting on sign-off is the owner's.
 - **Prefer the existing tools.** A ticket needs an agent: add it to the queue
