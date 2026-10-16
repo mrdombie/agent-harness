@@ -111,6 +111,10 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
   A row with `owed` alone is advisory to the driver and enforced by `/agent-harness:finish`. A row with `review` and `record` is what lets the driver push at all on a project whose pre-push demands a trailer — measured on 2026-09-28, a ticket built test-first with two proved tasks lost 9 commits to exactly that. Absent entirely, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
 - `owns.skills` / `owns.agents` — kit names this project deliberately shadows. Everything else under its `.claude/` that the kit also ships is a duplicate and fails the gate.
 - `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
+- `claim.preflight` is optional: commands `/agent-harness:claim` runs at Step 0 from the project's `scripts/` as they are on the integration branch, such as a check that the machine's installed jobs match the ones the repo describes. They report and never block.
+- `claim.planRules` is optional: the project's own planning rules, one sentence each, that `/agent-harness:claim` prints before the plan names a file (e.g. "extend a service's one home before adding a second client for it").
+- `approval.previewOnly` is optional: a command that reads paths on stdin and exits 0 when every one leaves a pixel approval standing (preview pages, fixtures, tests). `/agent-harness:claim` uses it to tell an agent whether a commit voids an approval.
+- A project that lists `finish` under `owns.skills` has `/agent-harness:claim` hand over to its own `/finish`; the spawner always runs `/agent-harness:claim` and never a project's own spawn script.
 - `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
@@ -377,7 +381,7 @@ its share, so a run of red PRs waits its turn instead of stopping new work; a
 class with nothing spawnable lends its places to the other, in both directions.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
 The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
-because `spawn-claim.sh` hands over to the project's own copy, which need not
+because a spawner (an older install of the kit, or a stand-in) need not
 write one; a run with no class anywhere counts as healing when its ticket has an
 open PR. The tick log shows
 `ceiling: 7 running · room for 1 more: cpu idle 31%, 9 GB free` and
