@@ -14,7 +14,8 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { facts, plans, plansOf, progressOf, shortTitle } from './progress.mjs'
 
 const RUNS = process.env.SWARM_RUNS_DIR || path.join(os.homedir(), '.swarm/runs')
@@ -35,6 +36,14 @@ const PROGRESS_MS = Number(process.env.SWARM_PROGRESS_MS || 60_000)
 const DRIVER_DIR = process.env.DRIVER_DIR || path.join(RUNS, '..', 'driver')
 const QUEUE_REPO = process.env.SWARM_QUEUE_REPO || ''
 const PLAIN = process.env.SWARM_PLAIN_TITLES || path.join(RUNS, '..', 'plain-titles.json')
+// The coordinator's queue and whether anything holds its spawns. The queue is a
+// state file read as it stands; the hold is asked of hold-status.sh, which runs
+// the same functions the coordinator decides with.
+const COORD_QUEUE = process.env.SWARM_COORD_QUEUE || path.join(RUNS, '..', 'coordinator', 'queue.json')
+const HOLD_SCRIPT = process.env.SWARM_HOLD_SCRIPT
+  || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hold-status.sh')
+const HOLD_MS = Number(process.env.SWARM_HOLD_MS || 30_000)
+const BASH = process.env.SWARM_BASH || 'bash'
 
 let progressAt = 0, progress = { tickets: {}, plans: {} }
 try { progress = JSON.parse(fs.readFileSync(PROGRESS_CACHE, 'utf8')) } catch {}
@@ -57,6 +66,36 @@ function refreshProgress(tickets, ids, now) {
   setTimeout(() => { try { gather() } catch {} }, 0).unref?.()
 }
 
+let holdAt = 0, hold = { held: false }
+function refreshHold(now) {
+  if (now - holdAt < HOLD_MS) return
+  holdAt = now
+  const take = (out) => { try { const j = JSON.parse(out); if (j && typeof j === 'object') hold = j } catch {} }
+  if (process.env.SWARM_PROGRESS_SYNC) {
+    try { take(execFileSync(BASH, [HOLD_SCRIPT], { timeout: 20_000, encoding: 'utf8' })) } catch {}
+    return
+  }
+  execFile(BASH, [HOLD_SCRIPT], { timeout: 20_000 }, (err, out) => { if (!err) take(out) })
+}
+
+const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
+// The queue in the order the coordinator runs it: class first, then position —
+// the same order as coord_queue_ordered. An unknown class sorts last.
+export function queueOf(file = COORD_QUEUE) {
+  let q
+  try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [] } }
+  const fallback = q.label || q.scope || ''
+  const rows = (Array.isArray(q.tickets) ? q.tickets : [])
+    .map((t, pos) => ({ t, pos, rank: RANK[t?.class] ?? 3 }))
+    .filter(({ t }) => t && t.n != null)
+    .sort((a, b) => a.rank - b.rank || a.pos - b.pos)
+    .map(({ t }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
+                       scope: String(t.scope || fallback), pinned: !!t.pinned }))
+  const scopes = Array.isArray(q.scopes) ? q.scopes.map((s) => String(s.label || s.scope || s))
+    : [...new Set(rows.map((r) => r.scope).filter(Boolean))]
+  return { scopes, seededAt: q.seeded_at || null, tickets: rows }
+}
+
 let titles = {}
 try { titles = JSON.parse(fs.readFileSync(TITLES, 'utf8')) } catch {}
 const pending = new Set()
@@ -65,7 +104,7 @@ const pending = new Set()
 // restart does not re-ask for every ticket at once. A failure is not retried in
 // the same process: the card falls back to "Ticket 1234", which is honest.
 function fetchTitle(ticket) {
-  if (!REPO || titles[ticket] || pending.has(ticket)) return
+  if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4) return
   pending.add(ticket)
   execFile(GH, ['issue', 'view', String(ticket), '--repo', REPO, '--json', 'title,labels'],
     { timeout: 20_000 }, (err, out) => {
@@ -205,10 +244,18 @@ export function snapshot(now = Date.now()) {
   live.sort((a, b) => a.startedAgoMin - b.startedAgoMin)
   done.sort((a, b) => a.endedAgoMin - b.endedAgoMin)
   refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
+  refreshHold(now)
+  const queue = queueOf()
+  for (const r of queue.tickets) {
+    fetchTitle(r.ticket)
+    const t = titles[r.ticket] || {}
+    r.title = t.title || `Ticket ${r.ticket}`
+  }
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
-           plans: plansOf(live, progress.plans, plainName), live, done: done.slice(0, 20) }
+           plans: plansOf(live, progress.plans, plainName), live, done: done.slice(0, 20),
+           hold, queue }
 }
 
 export function serve(port = PORT) {
