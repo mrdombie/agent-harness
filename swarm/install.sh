@@ -98,6 +98,17 @@ coordinator_env() { # <job>
   done
 }
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+# The launcher lives outside the plugin cache, so a job follows plugin updates.
+RUNNER="$SWARM_DIR/run-current.sh"
+KIT_DIR="$(cd "$SWARM_ROOT/.." && pwd)"
+# The job's command line for the launcher: its path under the kit, then its args.
+runner_args() { # <job>
+  local first=1 a
+  while IFS= read -r a; do
+    if [ "$first" = 1 ]; then printf '%s\n%s\n' "$RUNNER" "${a#"$KIT_DIR"/}"; first=0
+    else printf '%s\n' "$a"; fi
+  done < <(script_for "$1")
+}
 print_plist() { # <job>
   local job="$1" arg iv
   iv=$(interval_for "$job")
@@ -110,7 +121,7 @@ print_plist() { # <job>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-$(script_for "$job" | xml_escape | sed 's|.*|    <string>&</string>|')
+$(runner_args "$job" | xml_escape | sed 's|.*|    <string>&</string>|')
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -202,7 +213,8 @@ free_port() {
 do_install() { # <job>
   local job="$1" f; f=$(plist "$job")
   script_for "$job" >/dev/null || { echo "install: no job called '$job'" >&2; return 2; }
-  mkdir -p "$AGENTS_DIR" "$SWARM_LOGS"
+  mkdir -p "$AGENTS_DIR" "$SWARM_LOGS" "$(dirname "$RUNNER")"
+  cp "$SWARM_ROOT/run-current.sh" "$RUNNER" && chmod +x "$RUNNER" || return 1
   if [ "$job" = live-view ]; then free_port || return $?; fi
   print_plist "$job" > "$f"
   launchctl unload "$f" >/dev/null 2>&1

@@ -30,6 +30,27 @@ for j in live-view scheduler repair-watch; do
   fi
 done
 
+echo "--- a job runs the plugin version installed now, not the one it was installed from ---"
+co=$(i --print coordinator)
+want_in "it starts the launcher outside the plugin cache" "<string>$STATE/swarm/run-current.sh</string>" "$co"
+want_in "and hands it the job's path under the kit"      '<string>scripts/coordinator-tick.sh</string>' "$co"
+want_not_in "never an absolute script path inside the cache" "<string>$(cd "$HERE/../.." && pwd)/scripts/coordinator-tick.sh</string>" "$co"
+R="$HERE/../run-current.sh"
+CACHE="$FIX/cache/acme-market/agent-harness"
+for v in 1.0.0 2.0.0; do mkdir -p "$CACHE/$v/scripts"; printf '#!/usr/bin/env bash\necho "ran %s with KIT_ROOT=$KIT_ROOT args=$*"\n' "$v" > "$CACHE/$v/scripts/job.sh"; done
+REG="$FIX/installed_plugins.json"
+jq -n --arg p "$CACHE/2.0.0" '{version:2, plugins:{"agent-harness@acme-market":[{scope:"project",installPath:"/nowhere"},{scope:"user",installPath:$p}]}}' > "$REG"
+want "installed from 1.0.0, now 2.0.0: it runs 2.0.0" "ran 2.0.0 with KIT_ROOT=$CACHE/2.0.0 args=a b" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh a b)"
+want "no registry: the baked version"       "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$FIX/none.json" bash "$R" scripts/job.sh)"
+jq -n '{plugins:{"agent-harness@acme-market":[{scope:"user",installPath:"/gone/9.9.9"}]}}' > "$REG"
+want "a registry naming a missing path: the baked version" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh)"
+printf 'not json' > "$REG"
+want "an unreadable registry: the baked version" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh)"
+
 echo "--- the environment a launchd job does not inherit ---"
 p=$(i --print scheduler)
 want_in "a real PATH"              '<key>PATH</key>' "$p"
