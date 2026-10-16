@@ -33,6 +33,9 @@ driver_fixture() {
   # Drop every GIT_* before the fixture makes a single repo.
   local _gv
   for _gv in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$_gv"; done
+  # The suites exercise the project renderer, which is the local-capture fallback:
+  # switched on here, and the one case that proves it is off by default unsets it.
+  export HARNESS_LOCAL_EVIDENCE=1
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"
