@@ -115,6 +115,10 @@ backend fix.
   needs that the kit lacks gets built **into** `packages/ui`.
 - Write the failing test first wherever the bug is testable — a bug you can reproduce
   in code is a bug you can pin with a test, and that test is what stops the regression.
+- **Name the principle before the code**: one sentence for the class of mistake, not
+  the instance. The guard you write enforces that sentence and catches a sibling; it
+  goes in the PR body's `## Lesson` section (Principle, Guard, Before/after, Reach),
+  which the `Every fix ships a lesson` CI check requires on every fix.
 - Fix the whole matrix Step 1 identified, not the one cell the operator happened to see.
 - Do not leave a confident comment explaining a fix you are unsure of. Code gets
   re-derived on review; prose gets believed.

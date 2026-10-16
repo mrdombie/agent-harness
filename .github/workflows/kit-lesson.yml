@@ -1,0 +1,17 @@
+# The kit holds itself to its own lesson check. It has no harness.json, so it names
+# its guard files here: its suites, its check scripts and its workflows.
+name: Kit lesson
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+jobs:
+  lesson:
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    uses: ./.github/workflows/lesson.yml
+    with:
+      harness-repo: ${{ github.repository }}
+      harness-ref: ${{ github.event.pull_request.head.sha }}
+      guard-patterns: '*.test.sh scripts/check-*.sh hooks/*.sh .github/workflows/*'

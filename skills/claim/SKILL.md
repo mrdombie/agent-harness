@@ -876,6 +876,11 @@ The label flip + claim comment happened in Step 3, immediately after the local l
 
 5-10 bullets to the user: problem, build, key files, AC, expected effort.
 
+**On a fix** (a bug, a repair, a review finding), one of the bullets is the
+**principle**: one sentence naming the class of mistake, and the guard that will
+enforce it. Write it into the PR body's `## Lesson` section as you build; the
+`Every fix ships a lesson` CI check refuses a fix PR without it.
+
 Mention worktree path: *"Working in `$WORKTREE` on branch `$BRANCH`."*
 
 **Record the scope**, so `/agent-harness:standup` and the sign-off banner can name the area. Resolve the
