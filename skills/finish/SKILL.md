@@ -358,6 +358,12 @@ fails, not the thing that asks.
 the fingerprint matches the diff, not that anybody read it. Writing a trailer to
 unblock a push is the failure this step exists to catch.
 
+**On a diff that changes what a user sees, the picture reviewers wait for CI.**
+The code reviewer (`/agent-harness:ui-gate`) runs here, as above. The design
+critic and the parity check judge rendered screens, and those pictures come from
+CI after the push — Step 5.4 — never from a dev server or a capture script on
+this machine. Do not start one to get a picture for this step.
+
 ### Step 4 — Push the branch
 
 ```bash
@@ -399,10 +405,17 @@ $STATE_DIR/<spec-file>
 ## How to verify (post-merge)
 <copy from spec>
 
+## Evidence routes
+- /<each route this change shows, one per line — only on a diff that changes what a user sees>
+
 Closes ticket $TICKET.
 EOF
 )"
 ```
+
+`## Evidence routes` is what CI photographs: a contiguous list, one route per line,
+each starting `/`, ended by a blank line. Delete the section on a diff that changes
+nothing a user sees.
 
 If you find yourself wanting to add a "deferred to follow-up" line under AC, **stop**. That's a partial, which the rule forbids — keep working OR open new properly-sized tickets for the deferred work.
 
@@ -412,13 +425,93 @@ If you find yourself wanting to add a "deferred to follow-up" line under AC, **s
 PR_NUMBER=$(gh pr view --json number -q .number)
 ```
 
+### Step 5.4 — A pixel PR: CI takes the pictures, the critic judges them
+
+**Evidence comes from CI, not from this machine** (the owner's call, 2026-10-16).
+Measured that day: one agent spent ~58 minutes and 72 tool calls on local
+capture for a single ticket — its cold local API took 83s to answer, so the page
+under test treated a feature as off and redirected home; another ticket needed
+5+ local re-capture rounds; two more were stuck because the shared local test
+workspace's own content rules blocked the capture. The project's CI already boots
+the stack, photographs the routes the PR body names, commits the PNGs and pins
+them into the body. So: **push, then let CI capture. Never run a capture script or
+a dev server for evidence.**
+
+Skip this step on a diff that changes nothing a user sees (the project's own
+predicate decides that, as in Gate 2) and on a deletion-only UI PR.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+EV="$KIT_ROOT/scripts/ci-evidence.sh"
+# 1. The routes CI photographs. CI cannot guess them, and refuses a pixel PR without them.
+gh pr view "$PR_NUMBER" --json body -q .body | bash "$EV" routes || exit 1
+# 2. Held, then ready, then armed. The hold is owed on every screen change and is
+#    what keeps this PR from merging; CI photographs only a PR that is ready (and,
+#    where the project says so, armed). Read the auto-merge setting first (Step 6).
+gh pr edit "$PR_NUMBER" --add-label "$HOLD_LABEL"
+gh pr ready "$PR_NUMBER" 2>/dev/null || true
+[ "$(gh api "repos/$REPO_SLUG" -q .allow_auto_merge)" = true ] \
+  && gh pr merge "$PR_NUMBER" --auto "--$(toolkit_cfg merge.method 2>/dev/null || echo squash)"
+# 3. Wait in the shell. One call, no tokens while CI works, nothing captured here.
+bash "$EV" wait "$PR_NUMBER"; echo "wait exit: $?"
+```
+
+What `wait` returns, and the move for each:
+
+| Exit | State | Move |
+|---|---|---|
+| 0 | `pinned` — CI's shots are on the PR and nothing after them changes what renders | judge them, below |
+| 3 | still capturing after ~9 min | run the same `wait` again (in print mode in the foreground; in a session, with `run_in_background`, and take the next ticket meanwhile) |
+| 1 | `failed` — the capture or its decide check failed | read that check's log. A broken screen or a missing routes list is yours: fix, push, wait again |
+| 4 | `none` — CI found nothing on this head that needs a picture | no picture is owed; say so on the PR |
+| 5 | `off` — the PR is still a draft | mark it ready (step 2) |
+
+**Judge CI's pictures.** Fetch them, then run the design critic — slop mode, and
+parity mode against the approved picture when there is one — on those files:
+
+```bash
+SHOTS=$(mktemp -d "${TMPDIR:-/tmp}/ci-shots-$TICKET_KEY-XXXXXX")
+bash "$EV" fetch "$PR_NUMBER" "$SHOTS"      # one line per shot: name<TAB>path<TAB>theme<TAB>route
+EVSHA=$(bash "$EV" status "$PR_NUMBER" | sed -n 's/^sha=//p')   # the commit CI photographed
+```
+
+Spawn the `agent-harness:design-critic` agent with those paths and, for parity,
+the approved picture. Its verdict is about CI's pictures of `$EVSHA`.
+
+**Record it against the evidence head, then push it.** Bring CI's evidence commit
+down first, so the trailer sits on top of it:
+
+```bash
+git pull --ff-only origin "$BRANCH"
+# The project's own recorder (review.attest.<name>.record), with the reviewed sha = $EVSHA.
+git push
+```
+
+The trailer commit is empty, so CI's re-capture of it changes nothing, and
+`ci-evidence.sh at-head` counts both CI's evidence commit and an empty trailer as
+carrying a verdict forward (Gate 5). A Critical or Major from the critic: fix,
+push, `wait` again — CI photographs the new head. Two rounds, as Step 3.5 says.
+
+**When the project's push gate wants the picture verdict BEFORE the push.** Some
+projects refuse the first push of a screen change until a picture reviewer's
+trailer exists. That order cannot be met when the pictures come after the push.
+Do not capture locally to get past it, and never write a verdict nobody gave:
+park the ticket with the refusal quoted. The project's push gate has to let the
+push through and enforce the verdict in CI, at the merge.
+
+**The local fallback is off.** Only when CI evidence itself is down, and only when
+a person sets `HARNESS_LOCAL_EVIDENCE=1` in the environment, may this machine
+render: then the project's render command, the critic on those renders, and
+Gate 2 publishes them. The kit never sets the flag and an agent never sets it for
+itself. `bash "$EV" local` answers whether it is on.
+
 ### Step 5.5 — Anti-orphan gates (#2486)
 
 PM-mandated 2026-05-24, sibling to `/agent-harness:claim`'s Step 4.5 (#2485). The PR is open but not yet merged. Three gates run here to refuse merges that would land UI without backing API, or UI without a live-render proof.
 
 Failure releases nothing — the PR stays open — but exits with a named-failure error message so the dev-AI knows exactly what to add to the PR body / files before re-running `/agent-harness:finish`.
 
-**Gate 2 is no longer the enforcer of the screenshot rule (#9174).** That requirement now lives in the `approval-gate` CI job, which is a required status check and therefore cannot be skipped by an agent that simply doesn't run this skill. Gate 2 exists to **satisfy** that check — it refuses unviewable evidence, and when the body carries none it publishes the shots this run rendered, SHA-pinned — not to replace it. If you find yourself editing Gate 2 to relax the screenshot rule, you are editing the wrong file: the rule is in `.github/workflows/human-approval-gate.yml`.
+**Gate 2 is no longer the enforcer of the screenshot rule (#9174).** That requirement now lives in the `approval-gate` CI job, which is a required status check and therefore cannot be skipped by an agent that simply doesn't run this skill. Gate 2 exists to **satisfy** that check — it refuses unviewable evidence, and when the body carries none it sends you to CI's capture (Step 5.4) rather than taking any here; only the local fallback (`HARNESS_LOCAL_EVIDENCE=1`, a person's switch) publishes shots from this machine — not to replace it. If you find yourself editing Gate 2 to relax the screenshot rule, you are editing the wrong file: the rule is in `.github/workflows/human-approval-gate.yml`.
 
 ```bash
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"   # Gate 1 reads scripts/spec-names-api.sh from the kit
@@ -557,13 +650,20 @@ elif [ "$PR_TOUCHES_UI" = "yes" ]; then
   # The leading `!` is optional now — a link is the viewable form here.
   if echo "$PR_BODY" | grep -qE 'https://github\.com/[^ )]+/blob/[0-9a-f]{7,40}/[^ )]+\.(png|jpg|jpeg|webp|gif)|!?\[[^]]*\]\(https?://[^)]+\.(png|jpg|jpeg|webp|gif)\)|<img[^>]+src='; then
     echo "✓ Gate 2: body already carries viewable evidence."
+  elif ! bash "$KIT_ROOT/scripts/ci-evidence.sh" local; then
+    # No evidence in the body yet. CI takes it (the owner's call, 2026-10-16):
+    # Step 5.4 names the routes, readies the held PR and waits. Nothing is
+    # captured here — say what CI is doing and stop.
+    EV_OUT=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" status "$PR_NUMBER")
+    echo "❌ /agent-harness:finish REFUSED: PR touches UI and CI has not pinned its pictures yet." >&2
+    printf '%s\n' "$EV_OUT" | sed -n 's/^\(state\|reason\)=/   \1: /p' >&2
+    echo "   Action: Step 5.4 — '## Evidence routes' in the body, hold label, ready, then" >&2
+    echo "     bash \"\$KIT_ROOT/scripts/ci-evidence.sh\" wait $PR_NUMBER" >&2
+    echo "   Do not capture locally. Re-run this step when wait exits 0." >&2
+    exit 1
   else
-    # No evidence in the body — PRODUCE it (#9174). Refusing here used to be the
-    # wrong end of the pipe: `approval-gate` had already blocked the PR and the
-    # agent had already handed it back, so the refusal fired after the decision
-    # it existed to inform. 5 UI PRs sat in review with zero images while 460
-    # orphaned PNGs sat on the PM's disk. So: take the shots this run already
-    # rendered, commit them, and SHA-pin them into the PR body.
+    # LOCAL FALLBACK — only with HARNESS_LOCAL_EVIDENCE=1, set by a person when CI
+    # evidence is down. Publish the shots this run rendered, SHA-pinned (#9174).
     #
     # Evidence must be a blob link in THIS repo. A private repo means
     # raw.githubusercontent.com renders broken for every reader (#8067/#8073),
@@ -651,10 +751,18 @@ if [ "$PR_TOUCHES_UI_OR_KIT" = "yes" ]; then
     echo "   Action: re-run /agent-harness:ui-gate so the verdict is pinned to a commit." >&2
     exit 1
   fi
+  # A verdict still covers the head when everything after it is CI's evidence
+  # commit or an empty review trailer — the shape Step 5.4 leaves. Anything else
+  # (a fix, a merge) is code nobody reviewed.
+  git fetch -q origin "$BRANCH" 2>/dev/null || true
   if [ "$UI_GATE_SHA" != "$HEAD_SHA" ]; then
-    echo "❌ /agent-harness:finish REFUSED: head moved since review (reviewed ${UI_GATE_SHA:0:9}, now ${HEAD_SHA:0:9})." >&2
-    echo "   Action: re-run /agent-harness:ui-gate against the current head." >&2
-    exit 1
+    if ! AT_HEAD=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" at-head "$UI_GATE_SHA" "$HEAD_SHA"); then
+      echo "❌ /agent-harness:finish REFUSED: head moved since review (reviewed ${UI_GATE_SHA:0:9}, now ${HEAD_SHA:0:9})." >&2
+      echo "   $AT_HEAD" >&2
+      echo "   Action: re-run /agent-harness:ui-gate against the current head." >&2
+      exit 1
+    fi
+    echo "✓ $AT_HEAD"
   fi
 else
   echo "ℹ️  Gates 4+5 skipped — no UI or kit files in this diff."
@@ -868,6 +976,10 @@ merge. The blocker landed on develop and needed a second PR (#9138) to undo.
   hold label (`$HOLD_LABEL`) also excludes it, but that is the human's gate, not yours to
   borrow.) If a review is still in flight, the PR stays draft. Never mark ready "so it
   lands while I review" — that is precisely the sequence that shipped the blocker.
+- **A screen change is the exception, and only with the hold on.** CI photographs a
+  PR only once it is ready, and the picture review needs those photographs, so Step
+  5.4 marks it ready AFTER putting the hold label on. The hold is owed on every screen
+  change anyway, so nothing is borrowed: it is what keeps the PR from merging.
 - CI green means the change did not break what is already tested. It does not mean the
   change is correct. Those are different claims, and only review makes the second one.
 

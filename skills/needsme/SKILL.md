@@ -141,7 +141,7 @@ gh pr view "$P" --repo "$REPO_SLUG" --json statusCheckRollup \
 
 | Runtime reason | Label still on PR **or** issue? | Tier | Why |
 |---|---|---|---|
-| `carries no screenshot` | — | 🟡 AGENT'S | An agent must capture evidence first |
+| `carries no screenshot` | — | 🟡 AGENT'S | CI has not pinned shots: the PR needs `## Evidence routes` and to be ready — the agent waits on CI, never captures locally |
 | `carries $HOLD_LABEL` | **yes** | 🔴 YOURS | Nobody has looked yet — the **Who** column (rule under 1a) says how you clear it |
 | `carries $HOLD_LABEL` | **no** | ⚪ STUCK | **Already approved** — see below |
 | *(no PR exists)* | on the **issue** | 🔴 YOURS | A design call — show the CONCEPT link, see 1c-bis |

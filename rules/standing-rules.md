@@ -28,10 +28,22 @@ review on pictures with a short thread, single-digit counts or an unscrolled
 page: the page scrolling away from its input, a count of 246, cards cut off by
 a sticky band.
 
+**Evidence comes from CI.** An agent building a screen change does not take
+screenshots on its own machine: it pushes, opens the pull request held with an
+`## Evidence routes` list, and the project's CI photographs those routes and
+pins the shots to the pull request. The design critic and the parity check judge
+CI's pinned shots, and a verdict taken on them covers the head CI's own evidence
+commit sits on. Until the shots exist the agent waits in the shell
+(`scripts/ci-evidence.sh wait`), never in a capture loop. Local capture is a
+fallback for a CI outage, switched on only by a person
+(`HARNESS_LOCAL_EVIDENCE=1`). The owner's call, 2026-10-16, after one agent
+spent 58 minutes and 72 tool calls on local capture for one ticket, another
+needed five re-capture rounds, and two were stuck on the local workspace.
+
 **An approval covers the render it was given against — nothing later.** A
 sign-off names the exact evidence it saw. Any later change to what renders — a
-review round, a fix, a rebase that moves pixels — voids it: re-capture, put
-before/after on the PR, and ask again. Never clear a hold by citing an approval
+review round, a fix, a rebase that moves pixels — voids it: push, let CI
+re-capture and pin the new shots on the PR, and ask again. Never clear a hold by citing an approval
 of an earlier render. A resume brief may carry an approval forward only for
 commits that change no pixels, and must say so. This is written down because it
 was broken: a design pass removed a control in a review round AFTER the renders

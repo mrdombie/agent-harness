@@ -473,6 +473,21 @@ want_in "and the reviewer is told NOBODY OBSERVED IT, in the renderer's words" \
   'NOBODY OBSERVED THIS SCREEN.*no registered surface' "$(driver_state_get 409 renders)"
 want "and nothing was parked"          "" "$(driver_state_get 409 park_note)"
 
+echo "--- CI takes the pictures: with local capture off, the renderer never runs ---"
+# The owner's call, 2026-10-16. This renderer writes a marker when it runs, so
+# "not run" is measured, not inferred.
+jq --arg m "$FIX/rendered" '.design.render = "sh -c \"touch \($m); printf \\\"desk light\\\\tshots/a.png\\\\tlight\\\\t/dashboard/desk\\\\n\\\"\""' \
+  "$REPO/.claude/harness.json" > "$FIX/h5ci.json" && mv "$FIX/h5ci.json" "$REPO/.claude/harness.json"
+driver_state_set 409 park_note ""
+rm -f "$FIX/rendered"
+rc=0; out=$(unset HARNESS_LOCAL_EVIDENCE; driver_step_compare 409 2>&1) || rc=$?
+want "it finishes"                          "0" "$rc"
+want "the local renderer never ran"         "no" "$([ -f "$FIX/rendered" ] && echo yes || echo no)"
+want_in "the reviewer is told CI owes the pictures" 'pictures come from CI after the push' "$(driver_state_get 409 renders)"
+rc=0; out=$(driver_step_compare 409 2>&1) || rc=$?
+want "with the fallback switched on, it renders" "yes" "$([ -f "$FIX/rendered" ] && echo yes || echo no)"
+driver_state_set 409 park_note ""
+
 echo "--- T2-4 · no approved picture: renders kept, no parity check, no park (#11205) ---"
 # A debugged change has no picture. Asked to compare anyway, the step listed "no
 # approved picture exists" as a difference that stands and parked every bug fix for

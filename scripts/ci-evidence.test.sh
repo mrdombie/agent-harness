@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# ci-evidence.sh — a pixel PR's pictures come from CI. Each state status reads off
+# the PR and its checks, wait's exit for each, only CI's own block counts as
+# evidence, a verdict covers a head only across carry commits, the routes list is
+# read the way CI reads it, and local capture is off unless a person turns it on.
+# Then the plants: each guard made to match nothing, and the case it guards goes red.
+set -uo pipefail
+for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-evidence-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+mkdir -p "$SB/bin" "$SB/fx"
+cat > "$SB/bin/gh" <<'SH'
+#!/usr/bin/env bash
+# pr view <n> --json … [-q <jq>]   → fx/pr-<n>.json
+# api <path> …                     → fx/<path with / ? = & as _>, or fail
+if [ "$1 $2" = "pr view" ]; then
+  f="$CIE_FX/pr-$3.json"; [ -f "$f" ] || exit 1
+  q=""; while [ $# -gt 0 ]; do [ "$1" = "-q" ] && q="$2"; shift; done
+  if [ -n "$q" ]; then jq -r "$q" "$f"; else cat "$f"; fi
+  exit 0
+fi
+if [ "$1" = api ]; then
+  k=$(printf '%s' "$2" | tr '/?=&' '____'); f="$CIE_FX/$k"
+  [ -f "$f" ] && cat "$f" && exit 0
+  exit 1
+fi
+exit 1
+SH
+chmod +x "$SB/bin/gh"
+export PATH="$SB/bin:$PATH" CIE_FX="$SB/fx" CI_EVIDENCE_REPO="o/r" CI_EVIDENCE_EVERY=0
+unset HARNESS_CFG HARNESS_LOCAL_EVIDENCE REPO_SLUG
+fail=0
+ok()  { echo "  ok   — $1"; }
+bad() { echo "  FAIL — $1"; fail=1; }
+
+A=$(printf 'a%.0s' {1..40}); B=$(printf 'b%.0s' {1..40}); C=$(printf 'c%.0s' {1..40})
+h() { printf '%s%038d' e "$1"; }   # a distinct head per case
+blockfor() { # <evsha> <name>…
+  local s="$1"; shift
+  printf '<!-- ci-evidence:begin -->\\n## Evidence (CI-captured)\\n<!-- ci-evidence-head:%s -->\\n' "$s"
+  for n in "$@"; do printf -- '- [x](https://github.com/o/r/blob/%s/docs/evidence/7/%s.png)\\n' "$s" "$n"; done
+  printf '<!-- ci-evidence:end -->'
+}
+pr() { # <n> <head> <draft> <body>
+  jq -n --arg h "$2" --argjson d "$3" --arg b "$4" '{headRefOid:$h, isDraft:$d, body:$b}' > "$SB/fx/pr-$1.json"
+}
+runs() { # <head> <capture status/conclusion|-> <decide status/conclusion|->
+  local cap="$2" dec="$3"
+  jq -n --arg c "$cap" --arg d "$dec" '{check_runs: (
+      [ if $c == "-" then empty else {name:"Capture and pin the evidence", started_at:"2026-10-16T10:00:00Z",
+          status:($c|split("/")[0]), conclusion:(($c|split("/")[1]) | if . == "" then null else . end)} end,
+        if $d == "-" then empty else {name:"Does this diff need pixels?", started_at:"2026-10-16T09:59:00Z",
+          status:($d|split("/")[0]), conclusion:(($d|split("/")[1]) | if . == "" then null else . end)} end ])}' \
+    > "$SB/fx/repos_o_r_commits_$1_check-runs_per_page_100"
+}
+compare() { # <base> <head> <status> <parents> <file>…
+  local b="$1" h="$2" st="$3" p="$4"; shift 4
+  jq -n --arg st "$st" --argjson p "$p" --args '{status:$st,
+      commits:[{parents:[range($p)|{sha:"x"}], commit:{message:"chore(evidence): shots"}}],
+      files:[$ARGS.positional[] | {filename:.}]}' "$@" > "$SB/fx/repos_o_r_compare_$b...$h"
+}
+body_routes=$'## Summary\nx\n\n## Evidence routes\n- /dashboard\n- /settings/team\n\n'
+
+# 1 pinned at the head
+pr 1 "$A" false "$body_routes$(printf "$(blockfor "$A" dashboard)")"
+# 2 pinned below the head, only evidence after it
+pr 2 "$B" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$B" ahead 1 docs/evidence/7/dashboard.png
+# 3 pinned below the head, code after it, capture running
+pr 3 "$(h 3)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 3)" ahead 1 apps/web/page.tsx; runs "$(h 3)" in_progress/ -
+# 4 nothing pinned, a draft
+pr 4 "$A" true "$body_routes"
+# 5 the decide check failed (no routes)
+pr 5 "$(h 5)" false "no routes here"; runs "$(h 5)" - completed/failure
+# 6 the capture failed
+pr 6 "$(h 6)" false "$body_routes"; runs "$(h 6)" completed/failure completed/success
+# 7 capture skipped, nothing pinned → none
+pr 7 "$(h 7)" false "$body_routes"; runs "$(h 7)" completed/skipped completed/success
+# 8 nothing yet
+pr 8 "$(h 8)" false "$body_routes"
+# 9 a hand-pinned link outside CI's block is not CI's evidence
+pr 9 "$(h 9)" false "$body_routes- [hand](https://github.com/o/r/blob/$A/docs/evidence/7/hand.png)"
+# 10 capture skipped on a develop merge, earlier pins stand
+pr 10 "$(h 10)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 10)" ahead 2 apps/web/x.tsx
+
+S="$HERE/ci-evidence.sh"
+st() { bash "$1" status "$2" 2>/dev/null | sed -n 's/^state=//p'; }
+w()  { perl -e 'alarm shift; exec @ARGV' 8 bash "$1" wait "$2" 1 >/dev/null 2>&1; echo $?; }
+
+core() { # <script> → failed cases, one per line
+  local s=$1 o
+  o=$(st "$s" 1); [ "$o" = pinned ] || echo "shots pinned at the head read $o"
+  o=$(st "$s" 2); [ "$o" = pinned ] || echo "shots with only evidence after them read $o"
+  o=$(st "$s" 3); [ "$o" = pending ] || echo "shots with code after them and a capture running read $o"
+  o=$(st "$s" 4); [ "$o" = off ] || echo "a draft read $o"
+  o=$(st "$s" 5); [ "$o" = failed ] || echo "a failed decide check read $o"
+  o=$(st "$s" 6); [ "$o" = failed ] || echo "a failed capture read $o"
+  o=$(st "$s" 7); [ "$o" = none ] || echo "a skipped capture with nothing pinned read $o"
+  o=$(st "$s" 8); [ "$o" = pending ] || echo "no capture yet read $o"
+  o=$(st "$s" 9); [ "$o" = pending ] || echo "a hand-pinned link outside the block read $o"
+  runs "$(h 10)" completed/skipped completed/success
+  o=$(st "$s" 10); [ "$o" = pinned ] || echo "a skipped capture over earlier pins read $o"
+  rm -f "$SB/fx/repos_o_r_commits_$(h 10)_check-runs_per_page_100"
+  o=$(st "$s" 10); [ "$o" = pending ] || echo "a merge after the pins with no verdict from CI read $o"
+  o=$(w "$s" 1); [ "$o" = 0 ] || echo "wait on pinned exited $o"
+  o=$(w "$s" 6); [ "$o" = 1 ] || echo "wait on failed exited $o"
+  o=$(w "$s" 7); [ "$o" = 4 ] || echo "wait on none exited $o"
+  o=$(w "$s" 4); [ "$o" = 5 ] || echo "wait on a draft exited $o"
+  o=$(w "$s" 8); [ "$o" = 3 ] || echo "wait on nothing-yet exited $o (want 3, still waiting)"
+  o=$(bash "$s" shots 9 2>/dev/null | grep -c .); [ "$o" = 0 ] || echo "shots listed a link outside CI's block"
+  o=$(bash "$s" shots 1 2>/dev/null | grep -c .); [ "$o" = 1 ] || echo "shots did not list CI's link ($o)"
+  (unset HARNESS_LOCAL_EVIDENCE; bash "$s" local) && echo "local capture is on with no flag set"
+  HARNESS_LOCAL_EVIDENCE=1 bash "$s" local || echo "local capture stays off with the flag set"
+  printf '%s' "$body_routes" | bash "$s" routes >/dev/null 2>&1 || echo "a good routes list was refused"
+  printf '## Summary\nx\n' | bash "$s" routes >/dev/null 2>&1 && echo "a body with no routes list passed"
+  printf '## Evidence routes\n- dashboard\n' | bash "$s" routes >/dev/null 2>&1 && echo "a route without a leading / passed"
+  return 0
+}
+
+# fetch: the shot lands on disk and carries the route it came from
+printf 'PNGDATA' > "$SB/fx/repos_o_r_contents_docs_evidence_7_dashboard.png_ref_$A"
+printf 'PNGDATA' > "$SB/fx/repos_o_r_contents_docs_evidence_7_hand.png_ref_$A"
+fetch_case() { # <script>
+  local d="$SB/got-$RANDOM" line
+  line=$(bash "$1" fetch 1 "$d" 2>/dev/null | head -1)
+  [ "$(cat "$d/dashboard.png" 2>/dev/null)" = PNGDATA ] || echo "fetch did not write the shot"
+  [ "$(cut -f4 <<<"$line")" = /dashboard ] || echo "fetch did not name the route ($line)"
+  [ "$(cut -f3 <<<"$line")" = light ] || echo "fetch did not name the theme ($line)"
+  bash "$1" fetch 9 "$d-hand" >/dev/null 2>&1 && echo "fetch took a hand-pinned shot from outside CI's block"
+  return 0
+}
+
+# at-head, in a scratch repo
+R="$SB/repo"; git init -q "$R"; cd "$R" || exit 1
+git config user.email t@t; git config user.name t
+echo a > page.tsx; git add .; git commit -qm code; V=$(git rev-parse HEAD)
+mkdir -p docs/evidence/7; echo p > docs/evidence/7/x.png; git add .; git commit -qm "chore(evidence): screenshots"; E=$(git rev-parse HEAD)
+git commit -q --allow-empty -m "chore: verdict" -m "Design-Critic: SHIP (agent) 0123456789ab"; T=$(git rev-parse HEAD)
+git checkout -qb code; echo b > page.tsx; git commit -qam "fix: more"; X=$(git rev-parse HEAD)
+git checkout -q -b side "$V"; echo s > side.txt; git add .; git commit -qm side
+git checkout -q -b merged "$T"; git merge -q --no-ff --no-edit side; M=$(git rev-parse HEAD)
+git checkout -q "$T"
+athead() { # <script> → failed cases
+  local s=$1
+  bash "$s" at-head "$T" "$T" >/dev/null || echo "a verdict at the head was refused"
+  bash "$s" at-head "$V" "$E" >/dev/null || echo "a verdict under CI's evidence commit was refused"
+  bash "$s" at-head "$V" "$T" >/dev/null || echo "a verdict under evidence plus an empty trailer was refused"
+  bash "$s" at-head "$V" "$X" >/dev/null && echo "a verdict with a code commit after it passed"
+  bash "$s" at-head "$V" "$M" >/dev/null && echo "a verdict with a merge after it passed"
+  bash "$s" at-head "$X" "$T" >/dev/null && echo "a verdict on other code passed"
+  # the evidence dir is the project's, read from its config
+  printf '{"evidence":{"dir":"shots"}}' > "$SB/h.json"
+  HARNESS_CFG="$SB/h.json" bash "$s" at-head "$V" "$E" >/dev/null && echo "the evidence dir from project config was ignored"
+  return 0
+}
+cd "$HERE" || exit 1
+
+all() { core "$1"; fetch_case "$1"; (cd "$R" && athead "$1"); }
+
+echo "ci-evidence"
+r=$(all "$S"); [ -z "$r" ] && ok "every state, wait exit, fetch, verdict and routes case reads right" || { bad "cases failed:"; printf '         %s\n' "$r"; }
+
+plant() { # <desc> <old> <new> <the case that must go red>
+  cp "$S" "$SB/p.sh"
+  python3 - "$SB/p.sh" "$2" "$3" <<'PY' || { bad "plant did not land: $1"; return; }
+import sys
+p, a, b = sys.argv[1:]
+s = open(p).read()
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, b))
+PY
+  local r; r=$(all "$SB/p.sh")
+  grep -qF -- "$4" <<<"$r" && ok "planted: $1 → red" || bad "planted: $1 → not red on its case ($4)"
+}
+echo "plants"
+plant "a merge counts as a carry"            '[ "$parents" = 2 ] || return 1'            ':'                               'a verdict with a merge after it passed'
+plant "a code file counts as a carry"        '| grep -qvF "$EV_DIR/"'                    '| grep -q NOTHING-MATCHES-THIS'  'a verdict with a code commit after it passed'
+plant "the forge's carry ignores code files" 'select(startswith($d) | not)] | length == 0)' 'select(false)] | length == 0)' 'shots with code after them and a capture running read'
+plant "evidence read from the whole body"    'urls=$(printf '"'"'%s\n'"'"' "$body" | block | links)' 'urls=$(printf '"'"'%s\n'"'"' "$body" | links)' 'fetch took a hand-pinned shot'
+plant "shots read from the whole body"       'tr -d '"'"'\r'"'"' | block | links ;;' 'tr -d '"'"'\r'"'"' | links ;;' 'shots listed a link outside'
+plant "a draft is not told apart"            '[ "$draft" = true ] && {'                  '[ "$draft" = never ] && {'       'a draft read'
+plant "a failed decide check is ignored"     '*/failure|*/timed_out|*/startup_failure|*/action_required)
+      echo "state=failed"; echo "reason='"'"'$EV_DECIDE'"'"'' '*/NEVER)
+      echo "state=failed"; echo "reason='"'"'$EV_DECIDE'"'"'' 'a failed decide check read'
+plant "local capture on by default"          '"${HARNESS_LOCAL_EVIDENCE:-0}" = 1'        '"${HARNESS_LOCAL_EVIDENCE:-1}" = 1' 'local capture is on with no flag set'
+plant "wait never gives up"                  '-ge "$max" ]'                              '-ge 999999 ]'                    'wait on nothing-yet exited'
+plant "routes list not required"             '[ -n "$list" ] || {'                       'true || {'                       'a body with no routes list passed'
+plant "the evidence dir is hardcoded"        'EV_DIR=$(cfg evidence.dir "docs/evidence")' 'EV_DIR=docs/evidence'           'the evidence dir from project config was ignored'
+exit $fail
