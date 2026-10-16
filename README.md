@@ -130,7 +130,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
-- `lesson` is optional, and only `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`) and `guardPatterns` (default: `tests.patterns` plus common lint and gate globs — `*eslint*`, `*.semgrep.yml`, `check-*`, `*/gates/*`, `.github/workflows/*`). `HARNESS_GUARD_PATTERNS` (space-separated) overrides `guardPatterns`. A value that is not a list is a refusal.
+- `lesson` is optional, and only `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes or references, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`), `guardPatterns` (default: test, lint and gate globs such as `**/*.test.*`, `**/eslint-rules/**`, `**/*.semgrep.yml`, `**/check-*.*`, `**/gates/**`, plus `tests.patterns`; set, it replaces both) and `guardExclude` (default `*.md`, `*.mdx`, `*.txt`, `*.rst`, `docs/**` and the like). A pattern with no `/` matches the file name anywhere; one with a `/` is anchored at the repo root; `*` stays inside a directory and `**` crosses. It is read at the base commit. `HARNESS_GUARD_PATTERNS` (space-separated) can only narrow the guard set. A value that is not a list is a refusal.
 - `preApprovedWrites` is optional: environments whose writes (a back-fill, a one-off script, a data fix) the operator has approved in advance. `decided` is required and names who made the call and when. The standing rules say a general policy is not a yes; this is the one exception, and `hooks/standing-rules.sh` appends it to every session as its own section. It never covers an outward-facing action in any environment (publishing to a real account, sending email or messages), any environment not listed, or a command refused at a prompt, and the section says so. Only the operator adds or widens it. Two things hold that line. Only the committed value counts: a working-tree value that differs from `HEAD`'s grants nothing until it is committed. And `hooks/guard-pre-approved-writes.sh` refuses an agent's change to the parsed value (Write, Edit, and the Bash routes that name the file, plus `git commit`, `checkout`, `restore` and `apply`) and tells it to ask the operator. Removing the key stays allowed, since that grants nothing. Both values are pasted into the rules, so they are held to plain tokens: a name is letters, digits and `. _ -` with no spaces, up to 32 characters, and never a word for every environment (`all`, `any`, `every…`, `*`); `decided` is exactly `<name>, YYYY-MM-DD`. Anything else, a `harness.json` that is not one JSON object, or one that names the key twice, grants nothing, and the session is told so.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
@@ -239,9 +239,11 @@ It runs in three places, so skipping a skill does not skip it:
 
 ## Every fix ships a lesson
 
-Healing a build is pointless if the same class of mistake comes back. A fix pull
-request — one with a fix label, from a repair or approved-merge spawn, or closing a
-bug-typed or bug-labelled issue — fails until its body carries:
+Healing a build is pointless if the same class of mistake comes back. A fix is
+known by what it is, not by one tag: a fix label, a `class:repair` or
+`class:approved-merge` label, a `fix:` / `fix(scope):` title, a `fix/` or `fix-`
+branch, or a bug-typed or bug-labelled issue it closes **or** references
+(`Refs #N`, `Part of #N`). A fix pull request fails until its body carries:
 
 ```markdown
 ## Lesson
@@ -251,12 +253,28 @@ bug-typed or bug-labelled issue — fails until its body carries:
 - Reach: it covers the memory and load readers too.
 ```
 
-The Guard must be a test, lint or gate file that the diff (two dots, base..head)
-**adds or changes**: naming an old test the fix never touched is refused. Or the
-section carries one line, `Not automatable because <reason>`, which passes and
-prints `lesson: not-automatable` so a weekly report can count it. Comments and
-code fences in the body never count, so the template's placeholder is not an
-answer. The block to paste into a PR template is `templates/pull-request-lesson.md`.
+The Guard must be an executable test, lint or gate file that the diff (two dots,
+base..head) **changes in substance**: naming an old test the fix never touched is
+refused, and so are a whitespace-only edit, a pure rename, docs and prose (`*.md`,
+`docs/**`) and workflow files. Or, instead of a Guard, one line of at least eight
+words, `Not automatable because <reason>`, which passes and prints
+`lesson: not-automatable` so a weekly report can count it. HTML comments, fenced
+and indented code never count (an unclosed one runs to the end of the body), so the
+template's placeholder is not an answer. The block to paste into a PR template is
+`templates/pull-request-lesson.md`.
+
+**Everything it judges by comes from the base.** The config is read at the base
+commit, the `guard-patterns` input can only narrow the guard set, and when the kit
+judges its own pull request the script is taken from the base commit. One gap
+GitHub leaves open: on `pull_request`, the calling workflow file is the pull
+request's own copy, so protect `.github/workflows/` with CODEOWNERS or a ruleset.
+Relabelling a linked issue does not re-run the check; a push, a body edit or a
+label change does.
+
+**Rolling it out.** Measured on one consuming repo, 58 of its last 100 merged pull
+requests would have failed, 56 of them only for the missing section. Add the
+workflow as a check that is not required first, so builders see it and start
+writing the section, and make it required once fix pull requests carry it.
 
 The enforcement is CI, not an agent's instructions: `.github/workflows/lesson.yml`
 is a reusable workflow the consuming repo calls on `pull_request` (with `edited`,

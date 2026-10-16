@@ -906,10 +906,10 @@ pin the same behaviour is the failure this step exists to catch.
 
 ### Step 5.7 — A fix ships its lesson
 
-A fix (a bug label, a repair or approved-merge spawn, or a PR that closes a bug)
-carries the `## Lesson` section from Step 5's body: the **principle** (the class of
-mistake, not the instance), the **guard** (a test, lint or gate file this PR adds
-or changes), **before/after** (the guard failed on the pre-fix code — plant the
+A fix (a bug label, a repair or approved-merge spawn, a `fix:` title or `fix/`
+branch, or a PR that closes or references a bug) carries the `## Lesson` section
+from Step 5's body: the **principle** (the class of mistake, not the instance), the
+**guard** (an executable test, lint or gate file this PR changes in substance), **before/after** (the guard failed on the pre-fix code — plant the
 death, per the standing rules) and **reach** (the sibling it also catches). Or one
 line: `Not automatable because <reason>`, with the principle added to the
 project's rules file.

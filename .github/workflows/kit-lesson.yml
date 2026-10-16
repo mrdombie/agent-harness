@@ -1,5 +1,7 @@
-# The kit holds itself to its own lesson check. It has no harness.json, so it names
-# its guard files here: its suites, its check scripts and its workflows.
+# The kit holds itself to its own lesson check. lesson.yml takes the script from the
+# pull request's BASE commit when the kit judges itself, so harness-ref is not used
+# here and a pull request cannot loosen its own judge. The default guard patterns
+# already cover the kit's *.test.sh suites and check-* scripts.
 name: Kit lesson
 on:
   pull_request:
@@ -13,5 +15,3 @@ jobs:
     uses: ./.github/workflows/lesson.yml
     with:
       harness-repo: ${{ github.repository }}
-      harness-ref: ${{ github.event.pull_request.head.sha }}
-      guard-patterns: '*.test.sh scripts/check-*.sh hooks/*.sh .github/workflows/*'
