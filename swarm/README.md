@@ -31,8 +31,8 @@ swarm/install.sh status   # what is actually loaded
 swarm/report.sh           # what is happening now
 ```
 
-On macOS the jobs are launchd plists in `~/Library/LaunchAgents`. On Linux and
-WSL, where `systemctl --user` answers, they are systemd user units in
+On macOS the jobs are launchd plists in `~/Library/LaunchAgents`. On Linux,
+where `systemctl --user` answers (WSL needs `systemd=true` in `/etc/wsl.conf`), they are systemd user units in
 `~/.config/systemd/user/`: a `.service` per job, plus a `.timer` for each job
 that runs on an interval (the live view is a service kept alive with
 `Restart=always`). They carry the same environment and the same
@@ -40,7 +40,11 @@ that runs on an interval (the live view is a service kept alive with
 `restart`, `uninstall`, `hold` and `release` work the same on both. A user
 manager stops with your last session unless linger is on; install warns when it
 is off, and the fix is `sudo loginctl enable-linger $USER` (install never runs
-sudo). With neither launchd nor a user systemd, the coordinator and the merge
+sudo). On WSL linger is not enough: the instance stops once its last
+Windows-launched process exits, taking the user manager with it, so keep a
+session open or set `vmIdleTimeout` in `%UserProfile%\.wslconfig`; install
+says so. A crontab line from before systemd answered is replaced by the timer
+on install, removed by `uninstall`, and named by `status`. With neither launchd nor a user systemd, the coordinator and the merge
 lane fall back to a crontab line.
 
 `gh` keeps its token in the macOS keychain and a launchd job cannot read it —
