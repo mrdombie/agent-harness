@@ -53,13 +53,14 @@ coord_wait_record() { # <ticket> — its line, or nothing
 }
 
 # The ticket's state a human would move: labels less the claim lifecycle, and its PR.
+# Its PR is on <prefix><ticket>… or on <ticket>/… alone: a run names its branch either way.
 coord_wait_snapshot() { # <ticket> <labels, comma-joined> — uses $PRS
   local t="$1" labs pr
   labs=$(printf '%s' "$2" | tr ',' '\n' \
     | awk -v a="${LBL_CLAIMED:-}" -v b="${LBL_READY:-}" -v c="${LBL_IN_REVIEW:-}" -v d="${LBL_PARTIAL:-}" \
         'NF && $0 != a && $0 != b && $0 != c && $0 != d' | sort -u | paste -sd, -)
   pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
-    [ .[] | select(.headRefName | test("^" + $pre + $t + "([^0-9]|$)")) ] | first // empty
+    [ .[] | select(.headRefName | test("^(" + $pre + ")?" + $t + "([^0-9]|$)")) ] | first // empty
     | (.statusCheckRollup // []) as $c
     | ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")))) | length) as $p
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $f
@@ -92,7 +93,7 @@ coord_wait_new_comments() { # <ticket> <ISO>
       | jq --arg at "$at" --arg mach "$COORD_WAIT_MACHINE" \
           '[.comments[]? | select(.createdAt > $at) | select((.body // "") | test($mach) | not)] | length' 2>/dev/null)
   pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" \
-        '[.[] | select(.headRefName | test("^" + $pre + $t + "([^0-9]|$)")) | .number] | first // empty' 2>/dev/null)
+        '[.[] | select(.headRefName | test("^(" + $pre + ")?" + $t + "([^0-9]|$)")) | .number] | first // empty' 2>/dev/null)
   m=0
   if [ -n "$pr" ]; then
     m=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json comments 2>/dev/null \
