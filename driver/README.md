@@ -40,7 +40,7 @@ thinking inside one step.
 | 2 | `plan` | model | a plan the driver can enforce, or a question |
 | 3 | `build` | model | commits whose test the driver proves red then green |
 | 4 | `fix` | model | the review's Criticals and Majors cleared, each proved the same way |
-| 5 | `self-check` | driver | every gate run as its own command, read by exit code — the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` |
+| 5 | `self-check` | driver | every gate run as its own command, read by exit code — the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` — then the push's own checks: `gates.prePush`, or the tree's pre-push hook run as `git push` runs it |
 | 6 | `compare` | model | this run's renders held beside the approved design |
 | 7 | `review` | model | `SHIP`, or findings with a file, a line and a grade |
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
@@ -180,6 +180,15 @@ What a repair does not do:
   is the proof. A second red, a gate that could not run at all (126/127), or no fix
   round left parks — with the red gates' names, exit codes and lines in the park
   comment. Nothing is pushed past a red gate.
+- **The push is a formality.** Self-check's last gate is the push verification
+  (`gates.prePush`; absent, the pre-push hook; `false`, off), so a check only the
+  push runs is a finding for `fix`, not a park after review. While a reviewer the
+  push demands (`review.attest`) is still owed it waits for the push, and a push its
+  pre-push refuses goes to `fix` once with the output as the finding, inside the
+  same ceiling. A refusal by the remote or the network still parks, and so does a
+  sign-off refusal: that is the owner's call, never a finding. The trial skips while
+  a configured gate is red, runs `gates.prePushOwed` while a verdict is owed, and
+  carries `SIGNOFF_GUARD_DRYRUN=1`.
 - **At most two review rounds.** Then the reviewer stops sending the work back.
   What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
   and the parent's programme label. A **Critical or Major** — a dead control, a broken flow or

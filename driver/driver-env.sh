@@ -233,6 +233,14 @@ DRIVER_PREPARE_WHY=""
 # named the failing check had to be got by re-running the push by hand (#10955,
 # trial 3). The whole output goes to steps/<slot>-push.out; DRIVER_PUSH_WHY is the
 # lines that say no (✗, error:, fatal:), joined, for the log and the park note.
+# driver_signoff_refusal <ticket> <output> — 0, with the owner's park note set, when
+# the sign-off guard refused: the owner signed these screens and the change moves them.
+driver_signoff_refusal() {
+  grep -q 'sign-off comes last' "$2" 2>/dev/null || return 1
+  driver_state_set "$1" park_note "Needs the owner: this PR's screens were signed off and this build changes them after that ($(driver_signoff_line "$2")). Either the change becomes a follow-up ticket, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
+}
+driver_signoff_line() { grep -m1 'sign-off comes last' "$1" 2>/dev/null | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300; }
+
 driver_push() {
   local t="$1" wt="$2" branch="$3" slot="$4" f rc=0
   f="$(driver_state_dir "$t")/steps/$slot-push.out"
