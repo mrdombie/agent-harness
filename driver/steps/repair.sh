@@ -121,7 +121,9 @@ driver_step_repair() { # <ticket>
 
   # ---- the one model call ------------------------------------------------------
   briefs_text=$(cat "$(driver_state_get "$t" repair_brief)" 2>/dev/null)
-  driver_fact_put "$t" repair BRIEF "${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
+  driver_fact_put "$t" repair BRIEF "$DRIVER_BRIEF_PREFACE
+
+${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
   driver_fact_put "$t" repair PR "#$pr on $branch, repaired from $(printf '%s' "$base" | cut -c1-12), merge state ${mstate:-unknown}"
   if [ "$unreadable" -eq 1 ]; then
     driver_fact_put "$t" repair FAILING "the pull request's checks could not be read from GitHub — read them yourself (gh pr checks $pr) before deciding anything is green"
@@ -152,8 +154,23 @@ driver_step_repair() { # <ticket>
       driver_state_set "$t" park_note "the repair answered unchanged and changed the tree"
       return "$DRIVER_E_REFUSED"
     fi
-    driver_say "   repair: unchanged — $(jq -r '.reason // ""' "$ans")"
-    return "$DRIVER_OK"
+    # A CALLER'S BRIEF ANSWERED "UNCHANGED" IS A QUESTION, not a ship. The model saying
+    # the owner's answer is already met is its judgement; shipped on it, a draft PR
+    # would be readied and armed without the change anyone asked for.
+    # AND ASKED ONCE PER HEAD. The answer comes back as a new brief on the same PR; a
+    # second "unchanged" at the head the person was asked about is that answer acted
+    # on, not a new question — or the two would ask each other for ever.
+    local cur bsha; cur=$(git -C "$wt" rev-parse HEAD); bsha=$(driver_state_get "$t" repair_brief_sha)
+    if [ "$(driver_state_get "$t" unchanged_asked_head)" = "$cur" ] \
+       && [ -n "$(driver_state_get "$t" unchanged_asked_brief)" ] && [ "$(driver_state_get "$t" unchanged_asked_brief)" != "$bsha" ]; then
+      driver_say "   repair: unchanged — $(jq -r '.reason // ""' "$ans") — a person was asked about this exact head and answered; carrying on"
+      return "$DRIVER_OK"
+    fi
+    driver_state_set "$t" unchanged_asked_head "$cur"; driver_state_set "$t" unchanged_asked_brief "$bsha"
+    driver_say "   repair: unchanged — $(jq -r '.reason // ""' "$ans") — asking rather than shipping"
+    driver_state_set "$t" park_note "The repair step says this brief needs no change to the PR: $(jq -r '.reason // ""' "$ans"). Is that right — should the PR ship as it is?"
+    driver_state_set "$t" park_cause person
+    return "$DRIVER_E_QUESTION"
   fi
 
   # ---- what the tree says ------------------------------------------------------

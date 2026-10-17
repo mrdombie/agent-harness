@@ -54,6 +54,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
   # nothing to decide. The default is `person` so a caller that says nothing gets
   # the cautious label rather than the quiet one.
   local cause="${4:-person}"
+  local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
   local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
@@ -119,7 +120,10 @@ driver_park() { # <ticket> <reason> [question] [cause: person|driver]
 
 **Built:** ${done_list:-nothing yet; it stopped before the first step finished}
 **Stopped at:** $reason
-$(if [ "$cause" = "person" ]; then
+$(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
+    printf '**Needs:** %s\n**Resume:** the question goes to the owner'"'"'s channel (`%s`); the answer puts the ticket back on the queue with it, and the driver picks up from the last finished step with the answer in front of every step.' \
+      "${question:-a person to say how to proceed}" "$LBL_OWNER_DECISION"
+  elif [ "$cause" = "person" ]; then
     printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
       "${question:-a person to say how to proceed}" "$HOLD_LABEL"
   else
@@ -150,7 +154,24 @@ BRIEF
   # because an agent clearing an approval label to unblock itself is the one thing
   # AGENTS forbids. So a park with nothing for a person to answer leaves the ticket
   # parked and nothing else, and the driver can pick it up again itself.
-  if [ "$cause" = "person" ]; then
+  #
+  # A PERSON'S QUESTION GOES THROUGH THE OWNER'S LOOP (#177) where the kit has it:
+  # owner-question.sh labels the ticket, puts the question in the owner's channel,
+  # and the answer comes back on the queue as a brief the driver carries. The hold
+  # label is the owner's pixel sign-off, which the answer does not remove, so it is
+  # only the fallback when the question could not be asked.
+  local asked=0
+  if [ "$cause" = "person" ] && [ -f "$oq" ] \
+     && bash "$oq" ask "$t" "driver-park" "${question:-the driver parked: $reason} (parked: $reason)" >/dev/null 2>&1; then
+    asked=1
+  fi
+  if [ "$cause" = "person" ] && [ "$asked" -eq 1 ]; then
+    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
+      --add-label "$LBL_PARKED" \
+      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  elif [ "$cause" = "person" ]; then
+    [ ! -f "$oq" ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
+      --body "The question could not be put in the owner's channel, so \`$HOLD_LABEL\` is on instead: answer it, clear the label, and run the driver again." >/dev/null 2>&1 || true
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
       --add-label "$LBL_PARKED" --add-label "$HOLD_LABEL" \
       --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true

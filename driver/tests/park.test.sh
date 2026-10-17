@@ -65,7 +65,10 @@ want_in "it names what was built"        'Built' "$(cat "$GH_LOG")"
 want_in "where it stopped"               'Stopped at' "$(cat "$GH_LOG")"
 want_in "and the question, answerable in a line" 'which table owns the org id' "$(cat "$GH_LOG")"
 want_in "how to resume"                  'Resume' "$(cat "$GH_LOG")"
-want_in "the hold label goes on"         'needs:human-approval' "$(cat "$GH_LOG")"
+# A person's question goes through the owner's loop (#177): the owner's label and
+# channel, and the answer back on the queue. The hold is pixel sign-off, not this.
+want_in "the question reaches the owner's loop" 'issue edit 101 .*--add-label needs:owner-decision' "$(cat "$GH_LOG")"
+want_not_in "and the hold label stays off"   'needs:human-approval' "$(cat "$GH_LOG")"
 want_in "and the claim is released"      'release 101' "$(cat "$RELEASES")"
 
 echo "--- the ORDER, which is the whole design: push · draft · brief · label · release ---"
@@ -73,12 +76,14 @@ echo "--- the ORDER, which is the whole design: push · draft · brief · label 
 # The rule is not "a release happens"; it is that everything else is already true when
 # it does, because a ref dropped early is a ticket a peer takes mid-park.
 seq=$(sed -e 's/^git push.*/PUSH/' \
+          -e 's/^gh issue edit .*needs:owner-decision.*/ASK/' \
+          -e 's/^gh issue comment .*Waiting on the owner.*/ASK/' \
           -e 's/^gh pr create.*/DRAFT/' \
           -e 's/^gh issue comment.*/BRIEF/' \
           -e 's/^gh issue edit.*/LABEL/' \
           -e 's/^claim-lock release.*/RELEASE/' "$ORDER" \
-      | grep -E '^(PUSH|DRAFT|BRIEF|LABEL|RELEASE)$' | tr '\n' ' ' | sed 's/ $//')
-want "the order is exactly the design's" "PUSH DRAFT BRIEF LABEL RELEASE" "$seq"
+      | grep -E '^(PUSH|DRAFT|BRIEF|ASK|LABEL|RELEASE)$' | tr '\n' ' ' | sed 's/ $//')
+want "the order is exactly the design's" "PUSH DRAFT BRIEF ASK ASK LABEL RELEASE" "$seq"
 want "and the release is last of all"    "RELEASE" "$(printf '%s' "$seq" | awk '{print $NF}')"
 
 echo "--- a park with nothing to push still parks ---"
@@ -128,5 +133,15 @@ want "the merge is still in progress"      "yes" "$([ -f "$(git -C "$FIX/wt151" 
 want_not_in "no conflict marker is in any commit" '<<<<<<<' "$(git -C "$FIX/wt151" show HEAD 2>/dev/null)"
 want_in "the brief says the merge was left unfinished" 'left unfinished' "$(cat "$GH_LOG")"
 git -C "$FIX/wt151" merge --abort 2>/dev/null
+
+echo "--- a question the owner's channel could not take falls back to the hold label ---"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/oq-refuses"; chmod +x "$BIN/oq-refuses"
+driver_state_init 152; fix_issue 152 OPEN "status:claimed"; : > "$GH_LOG"
+DRIVER_OWNER_QUESTION="$BIN/oq-refuses" driver_park 152 "a question" "which one?" person >/dev/null 2>&1
+want_in "the hold goes on instead"           'issue edit 152 .*--add-label needs:human-approval' "$(cat "$GH_LOG")"
+want_in "and the ticket says why"            'could not be put in the owner' "$(cat "$GH_LOG")"
+: > "$GH_LOG"
+DRIVER_OWNER_QUESTION="$BIN/oq-refuses" driver_park 153 "the driver" "x" driver >/dev/null 2>&1
+want_not_in "a driver-caused park asks nobody and holds nothing" 'needs:human-approval|needs:owner-decision' "$(cat "$GH_LOG")"
 
 exit $FAILED

@@ -728,4 +728,12 @@ reset_fakes
 bt 425 --repair "$FIX/brief-g.md" >/dev/null
 want "a --repair brief is the caller's"      "caller" "$(driver_state_get 425 repair_brief_source)"
 
+echo "--- a run's brief expires: a new repair round does not inherit a build's ---"
+reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
+printf 'The owner answered q6: no.\n' > "$FIX/brief-h.md"
+bt 426 --brief "$FIX/brief-h.md" >/dev/null
+printf 'REPAIR on PR #65: red\n' > "$FIX/brief-i.md"
+bt 426 --repair "$FIX/brief-i.md" >/dev/null
+want "the new repair round cleared it"      "" "$(driver_state_get 426 run_brief)"
+
 exit $FAILED

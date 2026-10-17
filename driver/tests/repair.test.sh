@@ -243,13 +243,23 @@ echo "--- a caller's brief on a green, clean PR still reaches the model; it may 
 # An owner's answer on a PR'd ticket comes as a repair with a note. Read only when
 # something is red, it would be dropped.
 setup 318; prs 318 CLEAN; driver_state_set 318 repair_brief_source caller
+driver_state_set 318 repair_brief_sha "first-brief-sha"
 printf 'The owner answered q4: keep the old label.\n' > "$(driver_state_dir 318)/repair-brief.md"
 fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"unchanged","reason":"the PR already keeps the old label; nothing to change"}' superpowers:systematic-debugging
 out=$(driver_step_repair 318 2>&1); rc=$?
-want "it finishes"                         "0" "$rc"
 want "the model was called"                "repair" "$(cat "$CLAUDE_LOG")"
 want_in "with the brief"                   'The owner answered q4' "$(cat "$FIX/claude-stdin-repair.txt")"
-want_in "and the reason is said"           'already keeps the old label' "$out"
+want_in "under the driver's preface: a brief's push or hand-off is void" 'void' "$(cat "$FIX/claude-stdin-repair.txt")"
+want "unchanged on a caller's brief asks rather than ships" "20" "$rc"
+want_in "the question carries the reason"  'already keeps the old label' "$(driver_state_get 318 park_note)"
+want "and a person answers it"             "person" "$(driver_state_get 318 park_cause)"
+driver_state_set 318 park_note ""; driver_state_set 318 repair_brief_sha "answer-brief-sha"
+out=$(driver_step_repair 318 2>&1); rc=$?
+want "the answer, back as a new brief at the same head, is acted on — not asked again" "0" "$rc"
+driver_state_set 318 repair_brief_sha "answer-brief-sha"
+git -C "$WT" commit -q --allow-empty -m "moved"
+out=$(driver_step_repair 318 2>&1); rc=$?
+want "at a new head it asks again"         "20" "$rc"
 setup 319; prs 319 CLEAN unit; driver_state_set 319 repair_brief_source caller
 fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"unchanged","reason":"flaky"}' superpowers:systematic-debugging
 out=$(driver_step_repair 319 2>&1); rc=$?
@@ -262,5 +272,33 @@ SH
 fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"unchanged","reason":"nothing to do"}' superpowers:systematic-debugging
 out=$(driver_step_repair 320 2>&1); rc=$?
 want "unchanged with a new commit is refused" "24" "$rc"
+
+echo "--- a step never pushes, readies or arms: only the driver does, after the review ---"
+# Briefs written for the prose flow say "push, keep auto-merge armed, hand off", and a
+# step has Bash. A push from inside a step lands through auto-merge before self-check,
+# review and ship have run.
+REAL_GIT=$(command -v git)
+setup 321; prs 321 CLEAN unit; ORIG=$(git -C "$WT" rev-parse HEAD)
+cat > "$FIX/ai/repair.sh" <<'SH'
+git commit -q --allow-empty -m "fix: x"
+git push -q origin HEAD:tkt-321/work 2>"$FIX/shim-git.err"
+gh pr ready 321 2>"$FIX/shim-gh.err"; gh pr merge 321 --auto --squash 2>>"$FIX/shim-gh.err"
+SH
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"; : > "$GH_LOG"
+out=$(driver_step_repair 321 2>&1); rc=$?
+want "a step's git push is stopped"        "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-321/work)"
+want_in "and told why"                     'driver alone pushes' "$(cat "$FIX/shim-git.err")"
+want_not_in "its gh pr ready and merge never reach GitHub" 'pr ready|pr merge' "$(cat "$GH_LOG")"
+want_in "and are told why"                 'driver alone' "$(cat "$FIX/shim-gh.err")"
+setup 322; prs 322 CLEAN unit
+cat > "$FIX/ai/repair.sh" <<SH
+git commit -q --allow-empty -m "fix: y"
+"$REAL_GIT" push -q origin HEAD:tkt-322/work
+SH
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+out=$(driver_step_repair 322 2>&1); rc=$?
+want "a push that got past the shim refuses the step" "24" "$rc"
+want_in "naming what moved"                'origin/tkt-322/work moved' "$out"
+want_in "and the park says so"             'moved during the repair step' "$(driver_state_get 322 park_note)"
 
 exit $FAILED

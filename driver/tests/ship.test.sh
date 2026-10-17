@@ -497,4 +497,13 @@ want "origin's develop did not move"       "$TRUNK_BEFORE" "$(git -C "$FIX/origi
 want "the branch is on origin at its head" "$(git -C "$FIX/wt131" rev-parse HEAD)" \
   "$(git -C "$FIX/origin" rev-parse tkt-131/work 2>/dev/null)"
 
+echo "--- a run's brief expires when the ticket ships ---"
+setup_wt 146
+driver_state_put 146 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 146 review
+printf 'note\n' > "$FIX/rb146"; driver_state_set 146 run_brief "$FIX/rb146"
+for st in start plan build self-check review record; do driver_state_done 146 "$st"; done
+rc=0; driver_step_ship 146 >/dev/null 2>&1 || rc=$?
+want "it ships"                              "0" "$rc"
+want "and the brief is cleared"              "" "$(driver_state_get 146 run_brief)"
+
 exit $FAILED

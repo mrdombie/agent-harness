@@ -303,6 +303,7 @@ PRBODY
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true
 
+  driver_state_set "$t" run_brief ""   # shipped: the run's brief has been acted on
   driver_say "   ship: $branch pushed, pull request ready, auto-merge armed at $(printf '%s' "$head" | cut -c1-8). Handing off."
   return "$DRIVER_OK"
 }
