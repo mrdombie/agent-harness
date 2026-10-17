@@ -39,6 +39,13 @@ case "$1 $2" in
     [ -f "$FIX/gh/merge-$3.fail" ] && { cat "$FIX/gh/merge-$3.fail" >&2; exit 1; }; exit 0 ;;
   "pr view") case "$*" in *author*) echo tester ;; *headRefName*) jq -r --argjson n "$3" '.[] | select(.number == $n) | .headRefName' "$FIX/gh/prs-all.json" ;; esac ;;
   "variable get") exit 1 ;;
+  "label list") f="$FIX/gh/labels.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
+  "label create") [ -f "$FIX/gh/label-create.fail" ] && exit 1
+    jq --arg l "$3" '. + [{name:$l}]' "$FIX/gh/labels.json" > "$FIX/gh/l.json" && mv "$FIX/gh/l.json" "$FIX/gh/labels.json"; exit 0 ;;
+  "pr edit") # like GitHub: a label the repo lacks cannot be added
+    prev=""; for a in "$@"; do
+      [ "$prev" = --add-label ] && { jq -e --arg l "$a" 'any(.[]; .name == $l)' "$FIX/gh/labels.json" >/dev/null 2>&1 || exit 1; }
+      prev="$a"; done; exit 0 ;;
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   api*)
     case "$ep" in
@@ -65,6 +72,7 @@ fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD" "$FIX"/gh/update-*.fail "$FIX"/gh/merge-*.fail "$FIX"/gh/api-repos_*compare*.json "$FIX"/gh/api-repos_*annotations*.json
   : > "$GH_LOG"; : > "$SPAWNS"; : > "$FIX/notify.log"
   printf '[]\n' > "$FIX/gh/prs-all.json"
+  printf '[{"name":"queue:merge"}]\n' > "$FIX/gh/labels.json"; rm -f "$FIX/gh/label-create.fail"
   export SWARM_NOW=1000
   coordinator_ticked did
 }
@@ -319,6 +327,36 @@ want "and it waits out of line for sign-off" "none" "$(jq -r '.head.pr // "none"
 hold_setup; compare s60 s60b 0 "lib/server.ts" "2"
 out=$(lane)
 want_not_in "shadow clears no hold"        '^pr (edit|comment) 60' "$(cat "$GH_LOG")"
+
+echo "--- the lane label: checked every pass, created live when missing ---"
+fresh; pr 31 s31 - 1 build:PENDING; compare develop s31 0
+printf '[{"name":"queue:merged-elsewhere"}]\n' > "$FIX/gh/labels.json"
+out=$(live)
+want_in "a missing label is created"       '^label create queue:merge .*--color' "$(cat "$GH_LOG")"
+want_in "and the creation is logged"       'created the lane label queue:merge' "$out"
+made=$(grep -nE '^label create' "$GH_LOG" | cut -d: -f1); added=$(grep -nE '^pr edit 31 .*--add-label queue:merge' "$GH_LOG" | cut -d: -f1)
+want "created before any PR is labelled"   "yes" "$([ "${made:-99}" -lt "${added:-0}" ] && echo yes || echo no)"
+want_not_in "so the PR is labelled, not left out" 'could not label' "$out"
+fresh; pr 31 s31 - 1 build:PENDING; compare develop s31 0
+printf '[]\n' > "$FIX/gh/labels.json"
+out=$(lane)
+want_in "shadow says it would create it"   'would create the lane label queue:merge' "$out"
+want_in "and logs the act as would"        'would	label-create	-' "$(cat "$C/actions.log")"
+want_not_in "and creates nothing"          '^label create' "$(cat "$GH_LOG")"
+fresh; pr 31 s31 - 1 build:PENDING; compare develop s31 0
+out=$(live)
+want_not_in "a label that exists is not created again" '^label create' "$(cat "$GH_LOG")"
+want_not_in "and nothing is said about it" 'lane label' "$out"
+fresh; pr 31 s31 - 1 build:PENDING; compare develop s31 0
+printf '[]\n' > "$FIX/gh/labels.json"; : > "$FIX/gh/label-create.fail"
+out=$(live)
+want_in "a label that cannot be created is said" 'could not be created' "$out"
+want_not_in "and auto-merge stays armed"   '^pr merge 31 .*--disable-auto' "$(cat "$GH_LOG")"
+fresh; pr 31 s31 - 1 build:PENDING; compare develop s31 0
+rm -f "$FIX/gh/labels.json"
+out=$(live)
+want_in "an unreadable label list is said, not guessed" 'could not read whether the label queue:merge exists' "$out"
+want_not_in "and nothing is created on a guess" '^label create' "$(cat "$GH_LOG")"
 
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0

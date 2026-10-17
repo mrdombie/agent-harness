@@ -470,7 +470,7 @@ its mode in both. **Shadow is the default**: it writes "would …" lines to
 
 | Key (under `mergeLane`) | Default | What it is |
 |---|---|---|
-| `label` | `queue:merge` | Membership that survives auto-merge being turned off |
+| `label` | `queue:merge` | Membership that survives auto-merge being turned off. Every pass checks the repo has it; live creates it when missing, shadow logs "would create the lane label" |
 | `firstLabel` | `P0` | Owner-flagged PRs that go to the front |
 | `flakePattern` | runner-loss wording | Annotation text that makes a failure a flake |
 
