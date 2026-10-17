@@ -26,7 +26,7 @@
 #        CLAIMABLE_PRS_FILE=<f> …       # the open PRs already read, in place of a pr list
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
-. "$KIT_ROOT/scripts/gh-batch.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || exit 1
 GH_REPO="${GH_REPO:-$REPO_SLUG}"
 
 HELD=$(toolkit_claimed_issues || true)
