@@ -296,6 +296,16 @@ want "green"                                     "0" "$rc"
 want_in "and counted"                            'pre-push ok' "$out"
 want_in "beside the configured gate"             '2 gate.s. green' "$out"
 
+echo "--- a husky tree whose hooks were never wired still runs its pre-push ---"
+# git resolves no hook in a worktree husky never ran in, which would read as "no
+# pre-push to verify" while the push itself (after ensure-hooks) runs one.
+git -C "$REPO" worktree add -q "$FIX/hk" -b tkt-408 develop
+mkdir -p "$FIX/hk/.husky"; printf '#!/bin/sh\necho "✗ check:knip — unused deps"\nexit 1\n' > "$FIX/hk/.husky/pre-push"
+driver_state_init 408 --worktree "$FIX/hk"
+out=$(driver_step_self_check 408 2>&1); rc=$?
+want "it runs the tree's own pre-push"          "30" "$rc"
+want_in "and names what said no"                'check:knip' "$(jq -r '.[0].output' "$(driver_state_dir 408)/steps/self-check.findings.json" 2>/dev/null)"
+
 echo "--- gates.prePush names the command, in place of the hook ---"
 jq '.gates = {"changed": ["true"], "prePush": "echo ✗ check:knip; exit 4"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 driver_state_init 403 --worktree "$PP"

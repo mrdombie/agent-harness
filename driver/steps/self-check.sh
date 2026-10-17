@@ -115,6 +115,8 @@ _driver_prepush() {
     *) printf 'harness.json gates.prePush is a %s; it takes a command or false\n' "${ptype:-unreadable value}" > "$out"; return 127 ;;
   esac
   top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || top="$wt"
+  # Unset hooks resolve to no pre-push at all, which would read as "nothing to verify".
+  if [ -d "$top/.husky" ] && ! driver_ensure_hooks "$MAIN_REPO" "$wt" >"$out" 2>&1; then return 127; fi
   hook="$(git -C "$wt" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)/pre-push"
   if [ ! -x "$hook" ]; then DRIVER_PREPUSH_DID=none; return 0; fi
   branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)
