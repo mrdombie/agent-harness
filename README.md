@@ -387,6 +387,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `rampMax` | unset | The most starts in one tick. Unset, the room decides |
 | `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
+| `healAllAt` | unset | Reds waiting at which every place heals; once fewer wait, `healingShare` returns. Unset, or not a whole number over 0, is off |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
 | `judges` | 1 | Judgement processes at once |
@@ -402,6 +403,9 @@ never stopped for load. Of that ceiling, healing gets `ceil(ceiling × healingSh
 places and new work the rest. While both classes have spawnable work each keeps
 its share, so a run of red PRs waits its turn instead of stopping new work; a
 class with nothing spawnable lends its places to the other, in both directions.
+With `healAllAt` set, a tick that counts that many spawnable reds or more gives
+the whole ceiling to healing, and the split line and `capacity.json` (`healAll`)
+say so; under it the share returns on the next tick.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
 The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
 because a spawner (an older install of the kit, or a stand-in) need not

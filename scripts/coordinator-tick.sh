@@ -20,7 +20,8 @@
 #   5. spawn         as many starts as the spare CPU fits, while the machine has room
 #                    (coord_room) and under coordinator.cap when one is set;
 #                    healing (repair, approved-merge) fills ceil(ceiling x
-#                    healingShare) of the places and new work the rest; a class
+#                    healingShare) of the places and new work the rest, and every
+#                    place while coordinator.healAllAt or more reds wait; a class
 #                    with nothing spawnable lends its places to the other. The
 #                    room is re-read before each start after the first; under
 #                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
@@ -344,12 +345,17 @@ fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
-HEAL_SLOTS=$(coord_healing_slots "$CEILING"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
-HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
-NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
+# The split needs the reds waiting, so candidates() redoes it once they are counted.
+split_places() {
+  HEAL_ALL=""; coord_heal_all "$REDS_WAITING" && HEAL_ALL=1
+  HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_WAITING"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
+  HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
+  NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
+}
+REDS_WAITING=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
-PLAN=""; NEXT=""; TOOK=""; REDS_WAITING=0
+PLAN=""; NEXT=""; TOOK=""
 # The spawnable entries, in queue order: every healing one (so the reds waiting
 # are counted), and new work up to one past the free places (the next pick).
 CANDS=""
@@ -362,7 +368,9 @@ candidates() {
     coord_healing_class "$cls" || nn=$((nn+1))
     CANDS="$CANDS$t"$'\t'"$cls"$'\t'"$note"$'\n'
   done <<< "$(coord_queue_ordered)"
+  reds_waiting; split_places
 }
+reds_waiting() { REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .); }
 first_of() { # <healing|new> — the first candidate of that kind: <ticket> \t <class> \t <note>
   local t cls note
   while IFS=$'\t' read -r t cls note; do
@@ -376,7 +384,6 @@ first_of() { # <healing|new> — the first candidate of that kind: <ticket> \t <
 held_view() {
   candidates
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
-  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
 }
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
@@ -465,21 +472,23 @@ else
   fi
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
-  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
+  reds_waiting
   if [ "$REDS_WAITING" -gt 0 ] && ! coord_healing_class "${TOOK:-new}"; then
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi
 fi
-say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)"
+say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $COORD_HEAL_ALL_AT+ reds waited, every place heals}"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \
    --argjson room "$([ -n "$ROOM" ] && echo true || echo false)" --arg reading "$READING" --arg cap "$COORD_CAP" \
    --argjson hs "$HEAL_SLOTS" --argjson hl "$LIVE_HEAL" --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" \
    --argjson waiting "$REDS_WAITING" --arg took "$TOOK" \
+   --arg healAllAt "$COORD_HEAL_ALL_AT" --argjson healAll "$([ -n "$HEAL_ALL" ] && echo true || echo false)" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
-     healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting, started:(if $took == "" then null else $took end)}' \
+     healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
+     healAll:{at:(if $healAllAt == "" then null else ($healAllAt|tonumber) end), inForce:$healAll}, started:(if $took == "" then null else $took end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
 # The compare report reads what this tick saw and chose; next= stays last.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \
