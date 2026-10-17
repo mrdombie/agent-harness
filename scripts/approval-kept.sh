@@ -14,8 +14,9 @@
 #       1 never signed, 2 unreadable, 3 signed but the head then cannot be placed.
 #   approval-kept.sh marker <sha>
 #       the marker line clear-hold.sh ends a sign-off with.
-#   approval-kept.sh screens [--screens "<cmd>"]
-#       paths on stdin, the screen ones on stdout, by the rule below.
+#   approval-kept.sh screens
+#       paths on stdin, the screens a sign-off covers on stdout — the one screen set
+#       the push guard, the briefs and the batch share (below).
 #
 # An approval is attached to what was approved, and only a change to that thing
 # voids it. A develop merge brings other tickets' screens, which passed their own
@@ -33,6 +34,15 @@
 # design.surfacePathsComplete is true, when only design.surfacePaths (or the
 # --screens command: paths on stdin, the screen ones out) decide. A partial screen
 # list keeps approvals it should void; a full one only holds more.
+#
+# THE SCREEN SET (`screens`) is narrower, because a push guard refuses on it: the
+# files design.surfacePaths names, plus design.extraScreens (files outside those
+# globs that still draw: a stylesheet, public/ images, copy served by an API), not
+# tests, not design.neverScreens. Release notes — Markdown, docs/, .changeset/,
+# CHANGELOG files — are never in it: their wording may change after sign-off
+# (owner, 2026-10-18). With no surfacePaths at all it falls back to the wide rule.
+# `check` keeps the wide rule: the merge lane clears a hold on it, and there a
+# file wrongly counted costs one re-sign, while one wrongly missed ships unsigned.
 # Globs read as git pathspecs written as globs: ** crosses directories, * and ?
 # stay in one, a plain path matches itself and everything under it.
 #
@@ -50,7 +60,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${GH_REPO:-$REPO_SLUG}"
 WINDOW="${APPROVAL_WINDOW_SEC:-300}"
 
-usage() { sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 marker() { printf '<!-- approval-head:%s -->\n' "$1"; }
 
@@ -107,6 +117,28 @@ screens_of() { # <screens-cmd|""> — paths on stdin, the screen ones on stdout
     fi
     matches_any "$f" "$tests" || printf '%s\n' "$f"
   done <<<"$paths"
+}
+
+screen_set() { # paths on stdin, the screen set on stdout
+  local surface extra never tests f
+  surface=$(jq -c '.design.surfacePaths // [] | if type == "array" then . else [] end' "$HARNESS_CFG" 2>/dev/null) || surface='[]'
+  extra=$(jq -c '.design.extraScreens // [] | if type == "array" then . else [] end' "$HARNESS_CFG" 2>/dev/null) || extra='[]'
+  never=$(jq -c '.design.neverScreens // [] | if type == "array" then . else [] end' "$HARNESS_CFG" 2>/dev/null) || never='[]'
+  tests=$(jq -c '["**/*.test.*", "**/*.spec.*", "**/__tests__/**", "**/__mocks__/**"] + (.tests.patterns // [] | if type == "array" then map("**/" + .) else [] end)' "$HARNESS_CFG" 2>/dev/null) \
+    || tests='["**/*.test.*","**/*.spec.*","**/__tests__/**","**/__mocks__/**"]'
+  local notes='["**/*.md", "**/*.markdown", "**/*.mdx", "**/docs/**", "**/.changeset/**", "**/CHANGELOG*"]'
+  if [ "$surface" = '[]' ]; then
+    screens_of "" | while IFS= read -r f; do if ! matches_any "$f" "$notes"; then printf '%s\n' "$f"; fi; done
+    return 0
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    matches_any "$f" "$notes" && continue
+    matches_any "$f" "$never" && continue
+    matches_any "$f" "$tests" && continue
+    if is_screen_glob "$f" "$surface" || matches_any "$f" "$extra"; then printf '%s\n' "$f"; fi
+  done
+  return 0
 }
 
 blob_at() { # <sha> <path> — the file's blob, "absent" when the commit has none, 1 unreadable
@@ -235,6 +267,6 @@ case "${1:-}" in
   approved-head) shift; approved_head "$@" ;;
   signed-head)   shift; signed_head "$@" ;;
   marker)        [ -n "${2:-}" ] || usage; marker "$2" ;;
-  screens)       case "${2:-}" in '') screens_of "" ;; --screens) [ -n "${3:-}" ] || usage; screens_of "$3" ;; *) usage ;; esac ;;
+  screens)       [ -z "${2:-}" ] || usage; screen_set ;;
   *)             usage ;;
 esac
