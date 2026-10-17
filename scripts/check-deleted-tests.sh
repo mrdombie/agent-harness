@@ -21,10 +21,10 @@
 #
 #   It counts cases, not titles. A title that leaves is matched to one the diff
 #   adds — the same words in any test file, else any new case in the same file
-#   (a rewrite in place), else one sharing half its words in another file. Only a
-#   case left with no match owes a line, so a renamed, reworded or moved case
-#   passes, while a drop in the count, or a named case with nothing like it at
-#   head, still fails. Measured on the origin project before this: 74 of 85 files
+#   (a rewrite in place), else one sharing more than half its words, filler left
+#   out, in another file. Only a case left with no match owes a line, so a renamed,
+#   reworded or moved case passes, while a drop in a file's count, or a case gone
+#   from a file with nothing like it in the file it went to, still fails. Measured on the origin project before this: 74 of 85 files
 #   it flagged kept or grew their case count.
 #
 #   Something only on BASE is not this pull request's deletion. A test the trunk
@@ -149,7 +149,10 @@ diff_cases() { # <owner> <base-path|""> <head-path|"">  appends owner<TAB>title 
       my ($x, $y, $z) = map { $_ // 0 } @{$c{$t}}[0..2];
       my $gone = ($x < $z ? $x : $z) - $y;
       print $lo "$owner\t$t\n" for 1..$gone;
-      print $ga "$owner\t$t\n" for 1..($y - $x);
+      # Gained since the merge-base, not since base: a case the trunk retired after the
+      # cut, which the branch still carries, is not a new case the branch wrote.
+      my $was = $x > $z ? $x : $z;
+      print $ga "$owner\t$t\n" for 1..($y - $was);
     }' "$1" "$a" "$b" "$m" "$LOSTF" "$GAINF" \
     || { echo "check-deleted-tests: could not compare the cases in $1 — refusing to report clean" >&2; exit 2; }
   rm -f "$a" "$b" "$m"
@@ -189,12 +192,16 @@ done < <(g -c diff.renameLimit=100000 diff -z --name-status -M --diff-filter=ADM
 
 # The matching. Out: "lost" owner<TAB>title for a case with nothing like it at head, and
 # "kept" owner<TAB>title<TAB>where it went<TAB>its title now<TAB>how, for one matched.
-# "Like it" across files: half or more of the words shared (Dice over word sets).
+# "Like it" across files: more than half the words shared, filler words left out (Dice
+# over word sets). Inside one file there is no floor: the file kept the case count, and
+# measured in-place rewrites share as little as no word at all with their old title.
 MATCH=$(perl -e '
   my ($lf, $gf) = @ARGV; my (@L, @G);
   open my $lh, "<", $lf or die; while (<$lh>) { chomp; push @L, [split /\t/, $_, 2] }
   open my $gh, "<", $gf or die; while (<$gh>) { chomp; push @G, [split /\t/, $_, 2] }
-  sub words { my %w = map { $_ => 1 } grep { length } split /[^a-z0-9%]+/, lc shift; \%w }
+  # Filler words carry no meaning, so they never count towards "like it".
+  my %stop = map { $_ => 1 } qw(a an the and or of to in on for is are it its by with as at be not no from this that when);
+  sub words { my %w = map { $_ => 1 } grep { length && !$stop{$_} } split /[^a-z0-9%]+/, lc shift; \%w }
   sub dice { my ($p, $q) = @_; my $n = keys(%$p) + keys(%$q); return 0 unless $n;
              my $s = grep { $q->{$_} } keys %$p; 2 * $s / $n }
   my (%lu, %gu, @kept);
@@ -211,7 +218,7 @@ MATCH=$(perl -e '
         my $same = $L[$i][0] eq $G[$j][0];
         next if $pass == 2 ? !$same : $same;
         my $d = dice($wi, words($G[$j][1]));
-        next if $pass == 3 && $d < 0.5;
+        next if $pass == 3 && $d <= 0.5;
         push @c, [$d, $i, $j] } }
     for my $c (sort { $b->[0] <=> $a->[0] || $a->[1] <=> $b->[1] || $a->[2] <=> $b->[2] } @c) {
       my (undef, $i, $j) = @$c; next if $lu{$i} || $gu{$j};

@@ -321,6 +321,31 @@ expect_rc 1 "two cases folded into one is a lost case"
 expect_out 'src/desk.test.ts.*lost 1 case' "naming one loss"
 expect_out 'cases in them, base -> head          : 3 -> 2' "and the drop"
 
+# --- 26. Filler words alone do not make a case "like" another -----------------------
+repo filler
+perl -pi -e "s/  it\('opens the desk', \(\) => \{\}\);\n//" "$R/src/desk.test.ts"
+grep -q 'opens the desk' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+printf "it('closes the desk', () => {});\n" >> "$R/src/inbox.test.tsx"
+commit
+check
+expect_rc 1 "a case moved to another file sharing only 'the desk' is not a match"
+expect_out 'src/desk.test.ts: opens the desk' "naming the case"
+
+# --- 27. A case the trunk retired, still on a stale branch, is not a new case --------
+repo stale
+git -C "$R" checkout -q main
+perl -pi -e 's/  test\("shows the queue", \(\) => \{\}\);\n//' "$R/src/desk.test.ts"
+grep -q 'shows the queue' "$R/src/desk.test.ts" && bad "fixture: the trunk plant did not land"
+commit "trunk retires the queue case"
+git -C "$R" checkout -q work
+perl -0pi -e "s/  it\('a writer can post for a teammate'.*?\n  \}\);\n//s" "$R/src/desk.test.ts"
+grep -q 'teammate' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+grep -q 'shows the queue' "$R/src/desk.test.ts" || bad "fixture: the branch should still carry the retired case"
+commit
+check
+expect_rc 1 "a case the trunk retired does not absorb a case the branch dropped"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming the dropped case"
+
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"
 exit $fail
