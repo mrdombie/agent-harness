@@ -520,6 +520,14 @@ want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43
 want "a healthy PR raises nothing"         "0" "$(grep -c '"id":"[a-z-]*:44:' "$C/events.would.jsonl")"
 want "one green held PR is not a batch"    "0" "$(grep -c '"kind":"signoff"' "$C/events.would.jsonl")"
 fresh
+# A pending commit status (the design critic's verdict, waiting) never holds a real red back, and alone is not red.
+withstatus() { jq --arg s "$1" '.statusCheckRollup += [{__typename:"StatusContext", context:"Design critic", state:$s}]'; }
+jq -s . <(pr 46 606 - FAILURE | withstatus PENDING) <(pr 47 607 - SUCCESS | withstatus PENDING) <(pr 48 608 - SUCCESS | withstatus FAILURE) > "$FIX/gh/prs-all.json"
+tick >/dev/null
+want "a red PR waiting on a status is still judged" "1" "$(grep -c '"id":"red-pr:46:sha46a' "$C/events.would.jsonl")"
+want "a pending status alone is not red"   "0" "$(grep -c '"id":"red-pr:47:' "$C/events.would.jsonl")"
+want "a failed status is red"              "1" "$(grep -c '"id":"red-pr:48:sha48a' "$C/events.would.jsonl")"
+fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
 out=$(tick)

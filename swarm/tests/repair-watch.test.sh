@@ -110,7 +110,12 @@ want_in "and names the status"             'CI went red on: Design critic' "$(ca
 : > "$SPAWNS"; : > "$TRIED"
 fix_prs "14 102 c14c14c14c1 CLEAN 0 typecheck"; fix_pr_status 14 "Design critic" PENDING
 w --only repair >/dev/null
-want "a pending status waits"              "0" "$(grep -c . "$SPAWNS")"
+want "a pending status does not hold a real red back" "1" "$(grep -c . "$SPAWNS")"
+want_in "and only the real failure is named"  'CI went red on: typecheck[^;]' "$(cat "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "14 102 d14d14d14d1 CLEAN 0 -"; fix_pr_status 14 "Design critic" PENDING
+w --only repair >/dev/null
+want "a pending status alone is not red"   "0" "$(grep -c . "$SPAWNS")"
 : > "$SPAWNS"; : > "$TRIED"
 
 echo "--- three repairs in a day: the stop is a LABEL, not a count ---"
