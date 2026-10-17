@@ -13,8 +13,8 @@
 #   builder_mcp_config       writes the config file, prints its path
 #   builder_mcp_args         the flags, one per line
 #   builder_mcp_shim         puts a `claude` first on PATH that adds the flags to any
-#                            print-mode call, so a spawner this kit hands over to (the
-#                            project's own spawn-claim.sh) cannot start a builder
+#                            print-mode call, so a spawner it re-execs into (another
+#                            installed copy of the kit) cannot start a builder
 #                            with every server either. Interactive sessions untouched.
 
 builder_mcp_config() {

@@ -5,6 +5,13 @@ description: "claim a ticket and build it end to end. With no argument it picks 
 
 You are a dev agent picking up a ticket. **Claim it and build it in this session**, end to end, through to `/agent-harness:finish`.
 
+**Which finish.** Every `/agent-harness:finish` below is the kit's finish step, unless the project declares its own: when `owns.skills` in `.claude/harness.json` lists `finish`, run the project's `/finish` in its place (harness:bare-ok: the project's declared override of the finish step). That copy reads the same claim record this skill writes.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+case " $(toolkit_cfg owns.skills 2>/dev/null) " in *" finish "*) echo "finish step: the project's own" ;; *) echo "finish step: the kit's" ;; esac
+```
+
 A spawner exists — `scripts/spawn-claim.sh`, and the `claim` shell function — that runs a ticket in a separate process with its own fresh context and budget. It is **not** the default and this skill does not invoke it. Use it deliberately from a terminal when you want a ticket worked without inheriting a session's context; `/agent-harness:claim-status` reports on anything spawned that way.
 
 ### UI work, and tickets that call `/design`
@@ -56,6 +63,7 @@ opens from any machine, not only the one this worktree lives on.
 **Built:** <what is done and working>
 **Stopped at:** <the exact pause point>
 **Needs:** <the specific decision, phrased so a yes/no or a pick answers it>
+**Approval carried forward:** <none — or: given at <sha>, and every commit since changes no pixels>
 **Resume:** clear this label, then \`/agent-harness:claim $TICKET_KEY\`.
 
 <anything the next agent would otherwise have to rediscover>"
@@ -310,6 +318,14 @@ git -C "$MAIN_REPO" fetch -q origin develop
 TOOLS=$(toolkit_tools) || exit 1
 "$KIT_ROOT/scripts/reconcile-claims.sh"
 
+# 0c.1 — the project's own machine checks (harness.json claim.preflight), such as
+# whether the jobs it describes are the ones installed. They report and never
+# block: they are the machine's state, not this ticket's. Each runs here, in the
+# project's checkout, with $TOOLS naming its scripts as on the integration branch.
+jq -r '(.claim.preflight // [])[]' "$HARNESS_CFG" 2>/dev/null | while IFS= read -r c; do
+  TOOLS="$TOOLS" bash -c "$c" || true
+done
+
 # 0d — keep the SHARED clone's loose manifests in step with develop (#10047).
 # That clone is bare, so its package.json / package-lock.json are untracked
 # files nothing updates. `npm install` there reads them, so a stale pair means
@@ -540,6 +556,22 @@ No claim comment. The old flow posted one because comments were how the
 cross-machine race was arbitrated; the ref does that now, so the comment is
 pure noise. The issue's comment budget is spent on things a human needs: the
 design (Step 11), a resume brief if you park, and the close-out.
+
+**Record the integration-branch SHA this ticket was claimed at — the rules freeze here.**
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+"$CL" update "$TICKET_KEY" claimed_at_sha="$(git -C "$MAIN_REPO" rev-parse "origin/$INTEGRATION_BRANCH")"
+```
+
+A required check or skill rule that lands on the integration branch *after* that
+SHA does not apply to this ticket: it finishes under the rules it started with,
+and a finish step that reads `claimed_at_sha` copies it into the PR body so the
+claim is checkable rather than asserted. On the origin project three required
+checks landed midway through one ticket and each cost it a round. This freezes
+the **rules**, never the quality bar: a check that predates the SHA applies
+normally, and a genuine defect is still a defect. Write it here, at claim time.
+Recorded afterwards it is a number chosen to fit the outcome.
 
 **You own the ticket.**
 
@@ -921,6 +953,31 @@ signal the step applies.
 `superpowers:subagent-driven-development` replaces step 3 when the ticket is a
 sweep across many independent sites rather than one coherent change.
 
+**The project's own planning rules bind step 2.** A project lists them under
+`claim.planRules` in `.claude/harness.json`. Read them before the plan names a
+file; a plan that breaks one is wrong before a line is written:
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+jq -r '(.claim.planRules // [])[] | "- " + .' "$HARNESS_CFG" 2>/dev/null
+```
+
+**Review is one step, and it runs early.** The design critic and the frontend
+gate run **together on the first version that renders**, not one after the
+other once everything is built: they judge different things and neither
+subsumes the other, so running them apart means building on work the other is
+about to reject. Their findings are one batched fix list. The cap is
+`review.rounds` from `.claude/harness.json` (2 when unset): after the last
+round, anything still raised that is not a blocker is filed as its own ticket,
+linked on the PR, and the PR ships. A blocker is a dead control, a broken flow,
+or a data-honesty failure; those still block.
+
+**Ship in PRs of about six fixes.** A ticket may be as big as it needs to be;
+its work goes out in PRs of roughly six fixes each, each through the full flow,
+so one late problem holds up six fixes rather than seventeen. A design pass
+with 15 findings is three PRs. This is a shape for the work, not a licence to
+ship a partial ticket: the ship-whole rule above still governs what "done" means.
+
 **`superpowers:systematic-debugging` replaces steps 1–2 on a bug.** A bug ticket
 inverts the order: you cannot design a fix for a failure you have not
 reproduced, and a plan written before the root cause is fiction. Reproduce,
@@ -1081,6 +1138,19 @@ and pin the new shots on the PR, and ask again. Never clear the hold label
 A resume brief may carry an approval forward only for commits that change no
 pixels, and must say so.
 
+A project can name the files whose commits leave an approval standing, such as
+internal preview pages, fixtures and tests: `approval.previewOnly` in
+`.claude/harness.json` is a command that reads paths on stdin and exits 0 when
+every one is of that kind. A commit that passes it keeps the approval; put a
+shipped file in the same commit and it voids. Keep such edits in their own commit.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+PO=$(toolkit_cfg approval.previewOnly 2>/dev/null) \
+  && git diff-tree --no-commit-id --name-only -r HEAD | sh -c "$PO" >/dev/null \
+  && echo "this commit keeps the approval"
+```
+
 Written down because it was broken: a design pass removed a control in a review
 round AFTER the renders that still showed it were approved, the hold was cleared
 by citing that earlier approval, and the owner found out on the test
@@ -1093,7 +1163,11 @@ merge commits so a routine catch-up does not void an approval.
 **`/agent-harness:claim` is not "claim and wait for instructions."** Claiming a ticket = committing to ship it end-to-end in the same session. Once the spec is summarised:
 
 1. Read every AC checkbox + the "How to verify" section.
-2. Implement until every AC is met. Run lint/typecheck/tests as you go.
+2. Implement until every AC is met. Run the checks as you go, **scoped, not
+   whole-repo**: inside the loop run the project's `gates.changed` commands
+   (`jq -r '.gates.changed[]' .claude/harness.json`); the full `gates.local`
+   run happens once, at finish. A whole-repo typecheck answers a question about
+   files you did not touch, several times per ticket.
 3. **When you believe the AC is fully met, immediately invoke `/agent-harness:finish`.** Do NOT stop and ask the user "should I finish?" — that's the question the AC list already answered.
 4. `/agent-harness:finish` will gate-check (re-walks every AC + runs gates + AC catches mistakes), so if you're wrong about being done, `/agent-harness:finish` refuses and surfaces back. That's the safety net.
 5. Only stop for the user when:

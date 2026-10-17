@@ -30,7 +30,7 @@ PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
 # The queue class the coordinator spawned it for, so a later tick can count runs by class.
 CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 
-# Every spawner passes here before the hand-over below, so the plan's limit is checked once for all of them.
+# Every spawner passes here before the re-exec below, so the plan's limit is checked once for all of them.
 case " $* " in *" --fg "*) ;; *)
   if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/../swarm/swarm-env.sh" ] \
      && _hold=$(bash -c '. "$1" >/dev/null 2>&1 || exit 1; swarm_usage_hold && printf " — from %s" "$(swarm_usage_hold_source)"' _ "$SCRIPT_DIR/../swarm/swarm-env.sh"); then
@@ -39,20 +39,26 @@ case " $* " in *" --fg "*) ;; *)
   fi ;;
 esac
 
-# A builder loads only the MCP servers it uses, also when the project's own copy below takes over.
+# A builder loads only the MCP servers it uses, also after the re-exec below.
 case " $* " in *" --fg "*) ;; *)
   { . "$SCRIPT_DIR/builder-mcp.sh" && builder_mcp_shim; } 2>/dev/null \
     || echo "spawn-claim: could not limit the builder's MCP servers — it loads every one" >&2 ;;
 esac
 
-# The spawner refreshes ITSELF, not only the agent's tree. It is reached through a
-# shell function pointing at one copy on the operator's machine, and that copy is
-# what went stale first — three days old on 2026-09-27, cd'ing every agent into a
-# tree 210 commits behind. Re-exec the integration branch's own copy once, so the
-# spawn logic can never be older than the rules it installs.
+# The spawner refreshes ITSELF: a caller holding an older install of the kit re-execs
+# the copy Claude Code has installed now. Never the project's own scripts/spawn-claim.sh:
+# a project's fork names its own bare /claim, and on 2026-10-17 every coordinator
+# builder was handed to one and ran the project's claim instead of the kit's.
+_kit_installed() { # the kit's installPath in Claude Code's plugin registry, else nothing
+  [ -n "${SPAWN_CLAIM_INSTALLED:-}" ] && { printf '%s\n' "$SPAWN_CLAIM_INSTALLED"; return 0; }
+  local reg="${SWARM_PLUGIN_REGISTRY:-$HOME/.claude/plugins/installed_plugins.json}" vdir id
+  [ -r "$reg" ] && command -v jq >/dev/null 2>&1 || return 1
+  vdir=$(dirname "$KIT_ROOT"); id="$(basename "$vdir")@$(basename "$(dirname "$vdir")")"
+  jq -r --arg id "$id" '((.plugins // .)[$id] // []) | map(select(.scope == "user")) | .[0].installPath // empty' "$reg" 2>/dev/null
+}
 if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ]; then
   export SPAWN_CLAIM_CANONICAL=1
-  _spawn_canon="$(toolkit_tools 2>/dev/null)/scripts/spawn-claim.sh"
+  _spawn_canon="$(_kit_installed)/scripts/spawn-claim.sh"
   if [ -f "$_spawn_canon" ] && ! cmp -s "$_spawn_canon" "${BASH_SOURCE[0]}"; then
     exec bash "$_spawn_canon" "$@"
   fi
