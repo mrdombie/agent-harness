@@ -43,7 +43,40 @@ const TRAILER = /^(UI-Gate|Design-Critic):/m
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 const json = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return d } }
 
+// Each gh call that leaves this module is counted against the live view (gh-calls.log).
+export function noteGh(args) {
+  const f = env.SWARM_GH_CALLS
+  if (!f) return
+  try { fs.appendFileSync(f, `${Math.floor(Date.now() / 1000)}\tlive-view\t${args[0] || ''} ${args[1] || ''}\n`) } catch {}
+}
+
+// Below the floor the gather and the title reads wait for the reset; the tick keeps its read.
+export function allowanceLow(now = Date.now() / 1000) {
+  const pct = Number(env.GH_ALLOWANCE_LOW_PCT || 10)
+  let rows = []
+  try { rows = fs.readFileSync(env.SWARM_GH_ALLOWANCE || '', 'utf8').trim().split('\n') } catch { return null }
+  for (const r of rows) {
+    const [res, left, limit, reset] = r.split('\t')
+    if (Number(reset) > now && Number(limit) > 0 && Number(left) * 100 < Number(limit) * pct) {
+      return { resource: res, left: Number(left), limit: Number(limit), reset: Number(reset) }
+    }
+  }
+  return null
+}
+
+// The open PRs the tick last read, while they are young enough to stand in for a call.
+function sharedPrs(maxAge = Number(env.SWARM_PRS_MAX_AGE || 300)) {
+  const f = env.SWARM_PRS_FILE
+  if (!f) return null
+  try {
+    if ((Date.now() - fs.statSync(f).mtimeMs) / 1000 > maxAge) return null
+    const rows = JSON.parse(fs.readFileSync(f, 'utf8'))
+    return Array.isArray(rows) ? rows : null
+  } catch { return null }
+}
+
 function sh(cmd, args, opts = {}) {
+  if (cmd === GH()) noteGh(args)
   try {
     return execFileSync(cmd, args, { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'], ...opts })
   } catch { return null }
@@ -260,7 +293,22 @@ function pushedOf(slug, branch) {
   } catch (e) { return e && e.status === 2 ? false : null }
 }
 
-function prOf(slug, branch) {
+function rollupOf(p) {
+  const roll = p.statusCheckRollup || []
+  const bad = /FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED/
+  const busy = /IN_PROGRESS|QUEUED|PENDING|WAITING/
+  return {
+    number: String(p.number), state: p.state || 'OPEN', total: roll.length,
+    fail: roll.filter((c) => bad.test(c.conclusion || '')).length,
+    pending: roll.filter((c) => busy.test(c.status || '') || !(c.conclusion || '')).length,
+  }
+}
+
+function prOf(slug, branch, shared = null, sharedSlug = '') {
+  // An open PR in the shared copy is answered from it; only a branch it lacks asks GitHub.
+  const hit = shared && slug === sharedSlug
+    ? shared.filter((p) => p.headRefName === branch).sort((a, b) => a.number - b.number).pop() : null
+  if (hit) return { prRead: true, pr: rollupOf(hit) }
   const out = sh(GH(), ['pr', 'list', '--repo', slug, '--head', branch, '--state', 'all',
     '--limit', '5', '--json', 'number,state,statusCheckRollup'])
   if (out == null) return { prRead: false, pr: null }
@@ -268,17 +316,7 @@ function prOf(slug, branch) {
   try { rows = JSON.parse(out) } catch { return { prRead: false, pr: null } }
   if (!rows.length) return { prRead: true, pr: null }
   const p = rows.sort((a, b) => a.number - b.number).pop()
-  const roll = p.statusCheckRollup || []
-  const bad = /FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED/
-  const busy = /IN_PROGRESS|QUEUED|PENDING|WAITING/
-  return {
-    prRead: true,
-    pr: {
-      number: String(p.number), state: p.state, total: roll.length,
-      fail: roll.filter((c) => bad.test(c.conclusion || '')).length,
-      pending: roll.filter((c) => busy.test(c.status || '') || !(c.conclusion || '')).length,
-    },
-  }
+  return { prRead: true, pr: rollupOf(p) }
 }
 
 // The branch, from the local worktree when it is still there and from the forge
@@ -323,6 +361,7 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
   const owner = String(repo).split('/')[0]
   const seen = new Map()
   const out = {}
+  const shared = sharedPrs()
   for (const t of tickets) {
     if (!/^[0-9]+$/.test(String(t))) continue
     let rec = null
@@ -345,7 +384,7 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
       // step-runner writes one before it commits anything.
       planFile: !!(dir && fs.existsSync(path.join(dir, 'steps', 'plan.json'))),
       trailers: trailers || [], stampsReviews: stampsReviews(slug, seen),
-      ...prOf(slug, rec.branch),
+      ...prOf(slug, rec.branch, shared, repo),
       driver: dir ? json(path.join(dir, 'state.json'), null) : null,
     }
   }

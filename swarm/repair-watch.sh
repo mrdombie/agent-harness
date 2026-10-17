@@ -196,9 +196,7 @@ section_repair() {
 # Every open, non-draft PR on a ticket branch, as
 # pr \t ticket \t sha \t mergeState \t pendingChecks \t failedCheckNames
 open_prs() {
-  swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 100 \
-    --json number,headRefName,headRefOid,isDraft,mergeStateStatus,statusCheckRollup \
-    --jq "[.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
+  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r "[.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
            | [.number,
               (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
               .headRefOid, .mergeStateStatus,

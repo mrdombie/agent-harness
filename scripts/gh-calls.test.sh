@@ -47,7 +47,8 @@ fresh() {
   printf '[]\n' > "$FIX/gh/prs-all.json"
   unset SWARM_NOW
 }
-calls() { grep -c . "$GH_LOG" | tr -d ' '; }
+# Calls that spend the allowance: reading what is left of it is free.
+calls() { grep -vE '^api rate_limit|rateLimit\{' "$GH_LOG" | grep -c . | tr -d ' '; }
 queue_n() { # <class> <count> — that many tickets queued, from 501 up
   local t; for t in $(seq 501 $((500 + $2))); do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$1" >/dev/null; done
 }
@@ -176,7 +177,75 @@ bash "$T" >/dev/null 2>&1
 touch "$FIX/gh/ratelimit"
 touch -t 202601010000 "$C/snapshot/prs.json"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
-want_in "a stale snapshot is refused"              'the open pull requests could not be read — spawning nothing' "$out"
+want_in "a stale snapshot is refused"              'the open pull requests could not be read.* — spawning nothing' "$out"
 want "and nothing starts"                          "" "$(cat "$SPAWNS")"
+
+echo "--- one read of the open PRs serves the tick, the watcher, the status line, repair-watch and the live view ---"
+# Every caller on its own read the open PRs: on 2026-10-17 GitHub's hourly
+# allowance ran out and the tick, blind, started nothing.
+fresh; unset NEEDSME_PRS_MAX_AGE SWARM_PRS_MAX_AGE SWARM_STATUS_PRS_MAX_AGE
+rm -f "$STATE/swarm/prs.json" "$STATE/swarm/gh-calls.log" "$STATE/swarm/hold-prs.count" "$FIX/gh/allowance"
+fix_prs "11 501 sha11 CLEAN 0 -" "12 502 sha12 CLEAN 0 -" "13 503 sha13 DIRTY 0 -"
+cat > "$BIN/claim-show" <<'SH'
+#!/usr/bin/env bash
+printf '{"branch":"tkt-%s/work"}\n' "$2"
+SH
+chmod +x "$BIN/claim-show"
+fix_live "" 0
+budget_pass() { # every reader once, after one tick: the open-PR reads they made between them
+  : > "$GH_LOG"
+  bash "$T" >/dev/null 2>&1
+  bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
+  bash "$HERE/../swarm/status-line.sh" --print >/dev/null 2>&1
+  bash "$HERE/../swarm/repair-watch.sh" --explain --only repair >/dev/null 2>&1
+  SWARM_CLAIM_LOCK="$BIN/claim-show" SWARM_GIT=false SWARM_PRS_FILE="$STATE/swarm/prs.json" SWARM_GH_CALLS="$STATE/swarm/gh-calls.log" \
+    node "$HERE/../swarm/live-view/progress.mjs" --gather '{"tickets":["501","502"],"ids":[],"repo":"acme/widgets"}' > "$FIX/gather.out" 2>/dev/null
+  grep -cE '^pr list' "$GH_LOG" | tr -d ' '
+}
+want "five readers, one read of the open PRs"      "1" "$(budget_pass)"
+want_in "the live view read its agents' branches"   'tkt-501/work' "$(cat "$FIX/gather.out")"
+want "and took their open PRs from the copy"       "11 12" "$(jq -r '[.tickets[].pr.number] | join(" ")' "$FIX/gather.out" 2>/dev/null)"
+want_not_in "without asking GitHub for them"       '^pr list .*--head tkt-50[12]/' "$(cat "$GH_LOG")"
+want_in "and the copy is what the status line counted" '^0$' "$(cat "$STATE/swarm/hold-prs.count" 2>/dev/null)"
+out=$(bash "$T" 2>&1)
+want_in "the tick says what it spent and who spent the hour" 'gh: [0-9]+ call\(s\) this tick · last hour: .*coordinator-tick [0-9]+' "$out"
+want_in "the live view's calls are counted too"    'live-view' "$(cut -f2 "$STATE/swarm/gh-calls.log" | sort -u | tr '\n' ' ')"
+
+echo "--- below 10% left, the live view's gather and titles wait; the tick keeps its read ---"
+printf '%s 5000 %s\n' 300 $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"
+: > "$GH_LOG"; out=$(bash "$T" 2>&1)
+want_in "the tick still reads the open PRs"       '^pr list' "$(cat "$GH_LOG")"
+want_in "and reports what is left"                 'left: GraphQL 300/5000' "$out"
+low=$(cd "$HERE/../swarm/live-view" && SWARM_GH_ALLOWANCE="$STATE/swarm/gh-allowance" node --input-type=module -e "
+  import { allowanceLow } from './progress.mjs'; const l = allowanceLow(); console.log(l ? l.resource + ' ' + l.left : 'none')")
+want "the live view sees the floor"                "graphql 300" "$low"
+view_calls() { # one live-view snapshot with an agent running, its progress gathered in line
+  rm -f "$STATE/swarm/progress.json" "$STATE/swarm/live-view-titles.json"; : > "$GH_LOG"
+  SWARM_PROGRESS_SYNC=1 SWARM_CLAIM_LOCK="$BIN/claim-show" SWARM_GIT=false bash "$HERE/../swarm/live-view.sh" --print >/dev/null 2>&1
+  calls
+}
+fix_running 501
+want "below it, a live-view pass asks GitHub nothing" "0" "$(view_calls)"
+printf 'graphql\t%s\t5000\t%s\n' 4000 $(( $(date +%s) + 1800 )) > "$STATE/swarm/gh-allowance"
+want_in "above it, the same pass asks"             '^[1-9]' "$(view_calls)"
+rm -f "$STATE/runs/claim-501-t.json"
+printf 'graphql\t%s\t5000\t%s\n' 300 $(( $(date +%s) + 1800 )) > "$STATE/swarm/gh-allowance"
+touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"
+bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
+want "an old copy still serves the watcher below the floor" "0" "$(grep -cE '^pr list' "$GH_LOG" | tr -d ' ')"
+printf '%s 5000 %s\n' 4000 $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"; bash "$T" >/dev/null 2>&1
+touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"
+bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
+want "above it, an old copy is read again"         "1" "$(grep -cE '^pr list' "$GH_LOG" | tr -d ' ')"
+
+echo "--- blind on a spent allowance: the alarm names the rate limit and its reset ---"
+fresh; queue_n repair 1
+printf '0 5000 %s\n' $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"; touch "$FIX/gh/ratelimit"
+rm -f "$C/snapshot/prs.json"; : > "$FIX/house.log"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
+want_in "the tick names the limit and when it resets" "could not be read — GitHub's hourly API allowance is spent: GraphQL 0 of 5000 left until [0-9]{2}:[0-9]{2}Z — spawning nothing" "$out"
+want_in "and so does the owner's alarm"            "allowance is spent: GraphQL 0 of 5000 left until [0-9]{2}:[0-9]{2}Z" "$(cat "$FIX/house.log")"
+want_not_in "not the old guess"                    'gh auth or network' "$(cat "$FIX/house.log")"
+rm -f "$FIX/gh/ratelimit" "$FIX/gh/allowance"
 
 exit $FAILED

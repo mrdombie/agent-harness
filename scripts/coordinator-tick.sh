@@ -60,6 +60,9 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; 
 LOCK="$COORD_DIR/tick.lock"
 coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
+# Every gh call this tick and what it runs is counted against the tick.
+export GH_CALLER=coordinator-tick
+TICK_T0=$(swarm_now)
 
 say "tick: $(coord_mode) mode, cap ${COORD_CAP:-none}, config from ${HARNESS_CFG_FROM:-?}"
 
@@ -148,9 +151,11 @@ FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list -
 # read (GitHub rate-limiting the token every builder shares) falls back to the
 # last good one while it is fresh enough: the starts go on, and nothing judged or
 # sent to the owner is decided on it.
+# The read also refreshes the shared copy (gh_open_prs) the watcher, the status
+# line, repair-watch and the live view take instead of asking GitHub themselves.
 PRS_STALE=0
-PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
-        --json number,headRefName,headRefOid,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt 2>/dev/null)
+ALLOWANCE=$(gh_allowance_read) || ALLOWANCE=""
+PRS=$(gh_open_prs 0)
 if [ -n "$PRS" ] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   coord_snap_save prs "$PRS"
 elif PRS=$(coord_snap_load prs); then
@@ -378,9 +383,10 @@ elif held=$(swarm_held); then
   say "spawn: held — $held"
 elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
   blind=$([ "$CLAIMS_OK" = 0 ] && echo "the claim list" || echo "the open pull requests")
-  say "spawn: $blind could not be read — spawning nothing"
-  if event "blind:$(swarm_day)" blind false "" "" "$blind could not be read, so nothing is spawning"; then
-    bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
+  limit=""; [ "$CLAIMS_OK" = 0 ] || limit=$(gh_limit_why) || limit=""
+  say "spawn: $blind could not be read${limit:+ — $limit} — spawning nothing"
+  if event "blind:$(swarm_day)" blind false "" "" "$blind could not be read${limit:+ ($limit)}, so nothing is spawning"; then
+    bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (${limit:-gh auth or network?}) — nothing is spawning"
   fi
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
@@ -476,6 +482,10 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
 # The compare report reads what this tick saw and chose; next= stays last.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \
   "$CEILING" "$LIVE_HEAL" "$HEAL_SLOTS" "$LIVE_NEW" "$NEW_SLOTS" "$NEXT" >> "$COORD_ACTIONS"
+
+# Who spent the allowance: this tick, the last hour by caller, and what is left.
+gh_calls_trim
+say "gh: $(gh_calls_tally "$TICK_T0" coordinator-tick) call(s) this tick · last hour: $(gh_calls_tally $(( $(swarm_now) - 3600 )) | sed 's/^$/none counted/') · left: $(printf '%s' "$ALLOWANCE" | awk -F'\t' 'NF == 4 { printf "%s%s %s/%s", (n++ ? ", " : ""), ($1 == "graphql" ? "GraphQL" : "REST"), $2, $3 } END { if (!n) printf "unread" }')"
 
 # ---- 5b-8. housekeeping, off the start path ------------------------------------
 # The merge lane, reconcile, the sweeps, the disk pass and the judge took 2.9 of a
