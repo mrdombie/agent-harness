@@ -403,4 +403,40 @@ want "origin's develop did not move"       "$TRUNK_BEFORE" "$(git -C "$FIX/origi
 want "the branch is on origin at its head" "$(git -C "$FIX/wt131" rev-parse HEAD)" \
   "$(git -C "$FIX/origin" rev-parse tkt-131/work 2>/dev/null)"
 
+echo "--- develop moved during the run: ship brings it in before the push (#214) ---"
+# A run cuts its tree at start. A gate fixed on develop while it builds is still the
+# OLD gate in its tree, so its pre-push refused a push develop would accept (maktura
+# #13054, #12797). Ship merges the trunk it will land on before pushing.
+setup_wt 141
+driver_state_put 141 review '{"verdict":"SHIP","findings":[]}'
+driver_state_bump 141 review
+for st in start plan build self-check review record; do driver_state_done 141 "$st"; done
+git -C "$REPO" worktree add -q "$FIX/dev141" --detach origin/develop 2>/dev/null || git -C "$REPO" worktree add -q "$FIX/dev141" --detach develop
+printf 'gate fixed on develop\n' > "$FIX/dev141/gate141.txt"
+git -C "$FIX/dev141" add gate141.txt; git -C "$FIX/dev141" commit -qm "fix: the gate, on develop"
+git -C "$FIX/dev141" push -q origin HEAD:develop
+MOVED=$(git -C "$FIX/dev141" rev-parse HEAD)
+out=$(driver_step_ship 141 2>&1); rc=$?
+want "it ships"                                  "0" "$rc"
+want "the pushed branch contains develop's fix"  "yes" \
+  "$(git -C "$FIX/origin" merge-base --is-ancestor "$MOVED" tkt-141/work 2>/dev/null && echo yes)"
+want_in "and says it brought develop in"         "brought origin/develop in" "$out"
+
+echo "--- a real conflict with develop parks, naming the file (#214) ---"
+setup_wt 142
+driver_state_put 142 review '{"verdict":"SHIP","findings":[]}'
+driver_state_bump 142 review
+for st in start plan build self-check review record; do driver_state_done 142 "$st"; done
+git -C "$FIX/dev141" fetch -q origin develop && git -C "$FIX/dev141" checkout -q --detach FETCH_HEAD
+printf 'develop says otherwise\n' > "$FIX/dev141/f142.txt"
+git -C "$FIX/dev141" add f142.txt; git -C "$FIX/dev141" commit -qm "feat: a clash"
+git -C "$FIX/dev141" push -q origin HEAD:develop
+HEAD142=$(git -C "$FIX/wt142" rev-parse HEAD)
+out=$(driver_step_ship 142 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "naming the conflicting file"      "f142.txt" "$(driver_state_get 142 park_note)"
+want "the branch is left as it was"        "$HEAD142" "$(git -C "$FIX/wt142" rev-parse HEAD)"
+want "with no merge left half-done"        "" "$(git -C "$FIX/wt142" status --porcelain)"
+want "and nothing was pushed"              "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-142/work)"
+
 exit $FAILED
