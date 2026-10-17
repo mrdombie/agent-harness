@@ -384,4 +384,23 @@ want_in "with the script's own reason"     'planted refusal' "$out"
 want "the branch never reached origin"     "0" \
   "$(git -C "$FIX/origin" rev-parse --verify tkt-130/work >/dev/null 2>&1 && echo 1 || echo 0)"
 
+echo "--- a branch that tracks the trunk still pushes to itself ---"
+# A worktree cut from origin/develop tracks develop, and under push.default=upstream
+# a push naming only the branch lands on develop.
+: > "$GH_LOG"
+setup_wt 131
+git -C "$REPO" fetch -q origin
+git -C "$FIX/wt131" branch -q --set-upstream-to=origin/develop
+driver_state_put 131 review '{"verdict":"SHIP","findings":[]}'
+driver_state_bump 131 review
+for st in start plan build self-check review record; do driver_state_done 131 "$st"; done
+TRUNK_BEFORE=$(git -C "$FIX/origin" rev-parse develop)
+git -C "$REPO" config push.default upstream
+out=$(driver_step_ship 131 2>&1); rc=$?
+git -C "$REPO" config --unset push.default
+want "it ships"                            "0" "$rc"
+want "origin's develop did not move"       "$TRUNK_BEFORE" "$(git -C "$FIX/origin" rev-parse develop)"
+want "the branch is on origin at its head" "$(git -C "$FIX/wt131" rev-parse HEAD)" \
+  "$(git -C "$FIX/origin" rev-parse tkt-131/work 2>/dev/null)"
+
 exit $FAILED
