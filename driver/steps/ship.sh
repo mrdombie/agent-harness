@@ -69,7 +69,7 @@ driver_step_ship() { # <ticket>
   # THE TRUNK AS IT IS NOW, NOT AS IT WAS AT START (#214). A run cuts its tree at
   # start and builds for an hour; a gate fixed on the trunk meanwhile is still the
   # OLD gate in this tree, and its pre-push refused a push the trunk would accept
-  # (maktura #13054, #12797). Bring the trunk in first. A real conflict is the
+  # (seen twice in one afternoon). Bring the trunk in first. A real conflict is the
   # agent's to resolve, so it parks naming the files, with the branch untouched.
   if [ "$trunk" = "origin/$INTEGRATION_BRANCH" ]; then
     git -C "$wt" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true

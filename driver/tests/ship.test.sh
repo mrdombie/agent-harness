@@ -405,8 +405,8 @@ want "the branch is on origin at its head" "$(git -C "$FIX/wt131" rev-parse HEAD
 
 echo "--- develop moved during the run: ship brings it in before the push (#214) ---"
 # A run cuts its tree at start. A gate fixed on develop while it builds is still the
-# OLD gate in its tree, so its pre-push refused a push develop would accept (maktura
-# #13054, #12797). Ship merges the trunk it will land on before pushing.
+# OLD gate in its tree, so its pre-push refused a push develop would accept (seen
+# twice in one afternoon). Ship merges the trunk it will land on before pushing.
 setup_wt 141
 driver_state_put 141 review '{"verdict":"SHIP","findings":[]}'
 driver_state_bump 141 review
