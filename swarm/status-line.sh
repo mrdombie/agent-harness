@@ -134,8 +134,7 @@ hold_count() { # <ask-the-forge: 1|0>
     if [ -s "$f" ]; then cat "$f"; else printf 'UNKNOWN'; fi
     return
   fi
-  n=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --label "$HOLD_LABEL" \
-        --limit 100 --json number -q 'length' 2>/dev/null)
+  n=$(gh_open_prs "${SWARM_STATUS_PRS_MAX_AGE:-$GH_TTL}" | jq --arg h "$HOLD_LABEL" '[.[] | select(any(.labels[]?; .name == $h))] | length' 2>/dev/null)
   case "$n" in
     ''|*[!0-9]*)
       if [ -s "$f" ]; then cat "$f"; else printf 'UNKNOWN'; fi ;;

@@ -128,12 +128,17 @@ jq -n '{number:12, title:"Calmer inbox", url:"https://github.com/acme/widgets/pu
 out=$(bash "$W" card 12)
 want_in "the card says the hold is live"   $'^held\tyes$' "$out"
 want "before, after and the live preview, once each, no branch-pinned link" "3" "$(grep -c '^evidence' <<<"$out")"
-bash "$W" open 12 >/dev/null
-want_in "the preview opens first"          '^https://web-pr-12' "$(head -1 "$FIX/opened.log")"
-want_in "then before and after"            'before\.png' "$(sed -n 2p "$FIX/opened.log")"
-: > "$FIX/opened.log"
-NEEDSME_CURL=false bash "$W" open 12 >/dev/null
-want "a preview that does not answer is not opened" "2" "$(grep -c . "$FIX/opened.log")"
+shot() { printf 'PNG-%s\n' "$2" > "$FIX/gh/api-$(printf 'repos/acme/widgets/contents/%s?ref=%s' "$2" "$1" | tr '/?&=' '____').json"; }
+shot abcdef0 docs/evidence/12/before.png; shot abcdef0 docs/evidence/12/after.png
+page() { sed -n 's#^opened 1 page for .*: file://##p' <<<"$1"; }
+out=$(bash "$W" open 12); P=$(page "$out")
+want "one PR, one tab"                     "1" "$(grep -c . "$FIX/opened.log")"
+want_in "and it is the review page"        '^file:///.*/index\.html$' "$(cat "$FIX/opened.log")"
+want_in "the preview is a link on the page, first" 'href="https://web-pr-12.up.example.app"' "$(sed -n '/pr-12/,$p' "$P" | head -3)"
+want "before and after, fetched to the page" "2" "$(grep -c '<img ' "$P")"
+want_in "before first"                     'before\.png' "$(grep -m1 '<figcaption>' "$P")"
+NEEDSME_CURL=false bash "$W" open 12 > "$FIX/o.out"
+want_not_in "a preview that does not answer is not on the page" 'web-pr-12' "$(cat "$(page "$(cat "$FIX/o.out")")")"
 jq '.labels = []' "$FIX/gh/pr-12.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/pr-12.json"
 want_in "a cleared hold shows on the card" $'^held\tno$' "$(bash "$W" card 12)"
 bash "$W" card 99 >/dev/null 2>&1
@@ -155,13 +160,103 @@ want_in "the approved picture opens at the region" $'^picture\thttps://claude.ai
 want_in "the region's own shot comes first" 'home-team\.png$' "$(grep '^evidence' <<<"$out" | head -1)"
 want_in "the full page comes last"         'home\.png$' "$(grep '^evidence' <<<"$out" | tail -1)"
 want "the region shot is not listed twice" "1" "$(grep -c 'home-team' <<<"$out")"
-bash "$W" open 30 >/dev/null
-want_in "open: the region shot first"      'home-team\.png$' "$(sed -n 1p "$FIX/opened.log")"
-want_in "then the preview at the region"   '^https://web-pr-30.up.example.app/home#team$' "$(sed -n 2p "$FIX/opened.log")"
-want_in "then the picture at the region"   'home-v3#team$' "$(sed -n 3p "$FIX/opened.log")"
-want_in "and the full page last"           'home\.png$' "$(tail -1 "$FIX/opened.log")"
+shot abcdef0 docs/evidence/30/home-team.png; shot abcdef0 docs/evidence/30/home.png
+P=$(page "$(bash "$W" open 30)")
+want_in "open: the region shot first"      'home-team\.png' "$(grep -m1 '<figcaption>' "$P")"
+want_in "and the full page last"           'home\.png<' "$(grep '<figcaption>' "$P" | tail -1)"
+want_in "the preview at the region is on the page" 'href="https://web-pr-30.up.example.app/home#team"' "$(cat "$P")"
+want_in "and the picture at the region"    'href="https://claude.ai/artifact/home-v3#team"' "$(cat "$P")"
 out=$(bash "$W" card 12)
 want_in "a whole-screen PR still has its card" $'^pr\t12$' "$out"
 want "and carries no banner"               "0" "$(grep -c '^banner' <<<"$out")"
+
+echo "--- a batch: one page, one tab, numbered; every shot the body pins at its newest pinned commit ---"
+# Each evidence link of every commit opened as its own tab: 24, 35, 108 and 60 tabs
+# for one PR each on 2026-10-17, older commits' shots among them.
+fresh
+mkpr() { # <n> <head> <commits csv> <body>
+  jq -n --argjson n "$1" --arg h "$2" --arg c "$3" --arg b "$4" \
+    '{number:$n, title:"PR \($n)", url:"https://github.com/acme/widgets/pull/\($n)", headRefOid:$h, labels:[], body:$b,
+      commits:[$c | split(",")[] | {oid:.}]}' > "$FIX/gh/pr-$1.json"
+}
+L() { printf 'https://github.com/acme/widgets/blob/%s/%s' "$1" "$2"; }
+# 12: an older commit's shots are linked too; only the newest pinned commit's show.
+mkpr 12 abcdef0123 "1111111aaa,abcdef0123" "Old: $(L 1111111 docs/evidence/12/old.png)
+Before: $(L abcdef0 docs/evidence/12/before.png)
+After: $(L abcdef0 docs/evidence/12/after.png)"
+shot 1111111 docs/evidence/12/old.png
+# 50: evidence, then an empty review-stamp commit on top as the head.
+mkpr 50 fff5000000 "aaa5000000,fff5000000" "$(L aaa5000 docs/evidence/50/inbox.png)
+$(L aaa5000 docs/evidence/50/inbox-dark.png)"
+shot aaa5000 docs/evidence/50/inbox.png; shot aaa5000 docs/evidence/50/inbox-dark.png
+# 60 and 61: the head is a merge from the trunk, which carries another ticket's evidence.
+mkpr 60 m600000000 "c600000000,m600000000" "$(L c600000 docs/evidence/60/feed.png)"
+shot c600000 docs/evidence/60/feed.png
+mkpr 61 m610000000 "c610000000,m610000000" "No pictures yet."
+for h in m600000000 m610000000; do
+  jq -n '{files: [range(5) | {filename: "docs/evidence/12736/other-\(.).png", status: "added"}]}' > "$FIX/gh/api-repos_acme_widgets_commits_$h.json"
+  for k in 0 1 2 3 4; do shot "$h" "docs/evidence/12736/other-$k.png"; done
+done
+# 70: 49 shots across viewports and themes, none dropped.
+body=""; for k in $(seq 1 49); do
+  case $((k % 4)) in 0) v=phone-dark ;; 1) v=laptop-light ;; 2) v=phone ;; 3) v=laptop-dark ;; esac
+  body="$body$(L e700000 "docs/evidence/70/s$k-$v.png")"$'\n'; shot e700000 "docs/evidence/70/s$k-$v.png"
+done
+mkpr 70 e700000000 "e700000000" "$body"
+# 80: linked, but GitHub will not hand them over.
+mkpr 80 d800000000 "d800000000" "$(L d800000 docs/evidence/80/a.png)
+$(L d800000 docs/evidence/80/b.png)"
+# 41: nothing linked at all.
+mkpr 41 beef410000 "beef410000" "Quiet footer, no links."
+: > "$FIX/opened.log"; : > "$GH_LOG"
+out=$(bash "$W" open 12 50 60 61 70 80 41); P=$(page "$out")
+row() { grep -E "^[0-9]+	$1	" <<<"$out" | cut -f1,3,4 | tr '\t' ' '; }
+sec() { sed -n "/id=\"pr-$1\"/,/<\/section>/p" "$P"; }
+want "seven PRs, one tab"                  "1" "$(grep -c . "$FIX/opened.log")"
+want "numbered in the order asked"         "1 2 3 4 5 6 7" "$(grep -o '<span class="n">[0-9]*' "$P" | sed 's/.*>//' | tr '\n' ' ' | sed 's/ $//')"
+want_not_in "an older pinned commit's shot is not on the page" 'old\.png' "$(sec 12)"
+want "the newest pinned commit's shots are" "1 2 0" "$(row 12)"
+want "an empty commit on top hides nothing" "2 2 0" "$(row 50)"
+want_not_in "and it is not sent back"      'Send it back' "$(sec 50)"
+want "a merge head shows only what the body links" "3 1 0" "$(row 60)"
+want_not_in "never the trunk's evidence on the page" '12736' "$(cat "$P")"
+want_not_in "nor asked for"                '12736|commits/m6' "$(cat "$GH_LOG")"
+want "a merge head with no links shows none" "4 0 0" "$(row 61)"
+want "every one of 49 shots is shown"      "5 49 0" "$(row 70)"
+want "grouped by viewport and theme"       "laptop · dark|laptop · light|phone · dark|phone · light" "$(sec 70 | sed -n 's#.*<h3>\(.*\)</h3>.*#\1#p' | tr '\n' '|' | sed 's/|$//')"
+want "a fetch that fails is counted, not lost" "6 0 2" "$(row 80)"
+want_in "and said so"                      "Couldn't load 2 shot" "$(sec 80)"
+want_not_in "never as no screenshots"      'No screenshots|Send it back' "$(sec 80)"
+want "nothing linked: none shown"          "7 0 0" "$(row 41)"
+opts() { grep -E "^[0-9]+	$1	" <<<"$out" | cut -f5; }
+want "shots shown: approve or change"      "Approve,Change" "$(opts 12)"
+want "none linked: send back or skip, never approve" "Send back for shots,Skip" "$(opts 41)"
+want "none loaded: skip only"              "Skip" "$(opts 80)"
+want_in "and flagged for sending back"     'No screenshots linked' "$(sec 41)"
+
+mkpr 51 fff5100000 "aaa5100000,fff5100000" "$(L aaa5100 docs/evidence/51/a.png)
+$(L aaa5100 docs/evidence/51/b.png)"
+shot aaa5100 docs/evidence/51/a.png
+out=$(bash "$W" open 51)
+want "part loaded: change or skip, never approve" "1 1 1 Change,Skip" "$(grep -E "^1	51	" <<<"$out" | cut -f1,3,4,5 | tr '\t' ' ')"
+
+echo "--- under the backoff, a PR that cannot be read is never sent back ---"
+printf '%s\t0\t%s\n' $(( $(date +%s) + 600 )) "$(date +%s)" > "$STATE/swarm/gh-backoff"
+out=$(bash "$W" open 50); P=$(page "$out")
+want "it is a row with nothing loaded"     "1 0 -" "$(grep -E "^1	50	" <<<"$out" | cut -f1,3,4 | tr '\t' ' ')"
+want "and only skip is offered"            "Skip" "$(grep -E "^1	50	" <<<"$out" | cut -f5)"
+want_not_in "and not a missing shot"       'No screenshots|Send it back' "$(cat "$P")"
+rm -f "$STATE/swarm/gh-backoff"
+
+echo "--- paths: a link already encoded is not encoded twice; the page URL is encoded; old pages go ---"
+mkpr 90 a900000000 "a900000000" "$(L a900000 'docs/evidence/90/home%20page.png')"
+printf 'PNG\n' > "$FIX/gh/api-$(printf 'repos/acme/widgets/contents/docs/evidence/90/home%%20page.png?ref=a900000' | tr '/?&=' '____').json"
+: > "$GH_LOG"; mkdir -p "$FIX/re view/old-one" "$FIX/re view/new-one"; touch -t 202601010000 "$FIX/re view/old-one"
+out=$(NEEDSME_PAGE_DIR="$FIX/re view" bash "$W" open 90)
+want_in "fetched as %20, once"             'contents/docs/evidence/90/home%20page\.png' "$(cat "$GH_LOG")"
+want "and shown"                           "1 1 0" "$(grep -E "^1	90	" <<<"$out" | cut -f1,3,4 | tr '\t' ' ')"
+want_in "the page URL is encoded"          '^file:///.*/re%20view/.*/index\.html$' "$(tail -1 "$FIX/opened.log")"
+want "a page over 7 days old is pruned"    "no" "$([ -d "$FIX/re view/old-one" ] && echo yes || echo no)"
+want "a recent one is kept"                "yes" "$([ -d "$FIX/re view/new-one" ] && echo yes || echo no)"
 
 exit $FAILED

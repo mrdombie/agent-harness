@@ -33,6 +33,8 @@ VALUED = {
     "--add-project", "--remove-project", "--add-reviewer", "--remove-reviewer",
 }
 OPERATORS = {";", "&&", "||", "|", "&", ";;", "|&", "\n"}
+# A batch ticket's own child list: "**Children (6):** #11182, #11183" or "Rolled in: #11182".
+CHILD_LINE = re.compile(r"^[\s>*_-]*(?:children(?:\s*\(\d+\))?|rolled in)\s*:?\s*\**\s*:?(.*)$", re.I | re.M)
 
 
 def deny(reason):
@@ -119,6 +121,15 @@ def refs(text, repo):
             continue   # another repo's ticket, or one we cannot place
         nums.add(num)
     return nums
+
+
+def children_of(issue, repo, cwd):
+    """The tickets a batch ticket rolls in, read from its own body; empty when it lists none."""
+    argv = ["gh", "issue", "view", issue, "--json", "body", "-q", ".body"]
+    if repo:
+        argv[4:4] = ["--repo", repo]
+    body = run(argv, cwd) or ""
+    return {n for line in CHILD_LINE.findall(body) for n in re.findall(r"#(\d+)", line)}
 
 
 def tokens_of(segment):
@@ -264,14 +275,20 @@ def main():
                     pass   # gh reports a missing file itself
 
         repo_id = own_repo(repo, cwd)
+        kids = None
         for where, text in texts:
             wrong = sorted(refs(text, repo_id) - {issue}, key=int)
+            if wrong:
+                # A batch ticket's PR closes the children its own ticket lists, and only those.
+                if kids is None:
+                    kids = children_of(issue, repo, cwd)
+                wrong = [n for n in wrong if n not in kids]
             if wrong:
                 deny(f"Refused: {where} closes {', '.join('#' + n for n in wrong)} but the branch {branch} "
                      f"is ticket #{issue}. One PR closes its own ticket only; this looks like another "
                      f"ticket's PR body. Rebuild the body for #{issue} from its own commits and evidence; "
                      "never re-send a body file you did not just write. Name a rolled-in ticket without "
-                     "a closing keyword.")
+                     "a closing keyword, or list it on the batch ticket's own `Children:` line.")
 
 
 if __name__ == "__main__":

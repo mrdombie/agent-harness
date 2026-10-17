@@ -64,6 +64,18 @@ JSON
 # exit 0 so a script under test is never blocked by a question this stub has not
 # been taught — the assertion is on the recorded line, not on the stub's wit.
 printf '%s\n' "$*" >> "$GH_LOG"
+# What is left of the allowance, as GitHub's headers say it, even while it refuses:
+# $FIX/gh/allowance holds "<remaining> <limit> <reset-epoch>"; absent, the reading fails.
+case "$1 $2 $*" in "api graphql "*rateLimit*)
+  [ -s "$FIX/gh/allowance" ] || exit 1
+  read -r left lim reset < "$FIX/gh/allowance"
+  printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: %s\r\nX-Ratelimit-Remaining: %s\r\nX-Ratelimit-Reset: %s\r\nX-Ratelimit-Resource: graphql\r\n\r\n{"data":{}}\n' "$lim" "$left" "$reset"
+  [ -f "$FIX/gh/ratelimit" ] && exit 1; exit 0 ;;
+esac
+# $FIX/gh/ratelimit present: GitHub refusing the token, as it does for a secondary limit.
+if [ -f "$FIX/gh/ratelimit" ]; then
+  echo "GraphQL: API rate limit already exceeded for user ID 1." >&2; exit 1
+fi
 q=""; key=""; labels=""; prev=""
 for a in "$@"; do
   case "$prev" in -q|--jq) q="$a" ;; --label) labels="$labels${labels:+,}$a" ;; esac
@@ -92,6 +104,30 @@ case "$1 $2" in
     f="$FIX/gh/labels.json"; [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
     emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  "api graphql")
+    # A batched issue read (scripts/gh-batch.sh): each iN alias answered from
+    # issue-N.json, an unknown number null, the way GitHub answers one.
+    query=""; for a in "$@"; do case "$a" in query=*) query="${a#query=}" ;; esac; done
+    nums=$(printf '%s' "$query" | grep -oE 'i[0-9]+:issueOrPullRequest' | sed 's/^i//; s/:.*//')
+    heads=$(printf '%s' "$query" | grep -oE 'b[0-9]+:pullRequests\(headRefName:"[^"]*"' | sed 's/:pullRequests(headRefName:"/ /; s/"$//')
+    [ -n "$nums$heads" ] || exit 1
+    out='{}'
+    # A batched PR read: each bN alias answered from the file `pr list --head` would read.
+    while read -r alias head; do
+      [ -n "$alias" ] || continue
+      f="$FIX/gh/prs-${head//\//_}.json"; [ -f "$f" ] || f="$FIX/gh/prs-all.json"
+      if [ -f "$f" ]; then
+        out=$(jq -c --arg k "$alias" --slurpfile p "$f" '. + {($k): {nodes: [$p[0][] | {number, state}]}}' <<<"$out")
+      else out=$(jq -c --arg k "$alias" '. + {($k): {nodes: []}}' <<<"$out"); fi
+    done <<<"$heads"
+    for n in $nums; do
+      f="$FIX/gh/issue-$n.json"
+      if [ -f "$f" ]; then
+        out=$(jq -c --arg k "i$n" --argjson n "$n" --slurpfile i "$f" \
+          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}})}' <<<"$out")
+      else out=$(jq -c --arg k "i$n" '. + {($k): null}' <<<"$out"); fi
+    done
+    jq -c '{data: {repository: .}}' <<<"$out" ;;
   "api "*|"api")
     # Keyed by the endpoint with every / and ? flattened, so "the commits on the
     # trunk" and "the branch compared with the trunk" can answer differently.
@@ -123,7 +159,25 @@ printf '%s\tbudget=%s\tbrief=%s\n' "$1" "${CLAIM_BUDGET_USD:-}" \
 echo "→ spawned claim-$1"
 SH
 
-  chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn"
+  # ---- stub: gh whose issue edits stick ---------------------------------------
+  # The stub above, except an --add-label / --remove-label changes what the next
+  # `issue view` of that ticket reads. For suites where a label IS the state.
+  cat > "$BIN/gh-labels" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "issue edit" ] && [ -f "$FIX/gh/issue-$3.json" ]; then
+  f="$FIX/gh/issue-$3.json"; prev=""
+  for a in "$@"; do
+    case "$prev" in
+      --add-label)    jq --arg l "$a" '.labels = (((.labels // []) + [{name:$l}]) | unique_by(.name))' "$f" > "$f.t" && mv "$f.t" "$f" ;;
+      --remove-label) jq --arg l "$a" '.labels = ((.labels // []) | map(select(.name != $l)))' "$f" > "$f.t" && mv "$f.t" "$f" ;;
+    esac
+    prev="$a"
+  done
+fi
+exec "$BIN/gh" "$@"
+SH
+
+  chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn" "$BIN/gh-labels"
 
   export FIX REPO STATE BIN GH_LOG SPAWNS
   export PATH="$BIN:$PATH"
@@ -138,14 +192,16 @@ SH
   printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/no-systemd"; chmod +x "$BIN/no-systemd"
   export SWARM_SYSTEMCTL="$BIN/no-systemd" SWARM_LOGINCTL="$BIN/no-systemd"
   export SWARM_SYSTEMD_DIR="$FIX/systemd-user"
+  # Each case writes its own PRs: the shared copy is read fresh unless a case says otherwise.
+  export NEEDSME_PRS_MAX_AGE=0 SWARM_PRS_MAX_AGE=0 SWARM_STATUS_PRS_MAX_AGE=0
   unset GH_TOKEN
 }
 
 # An issue the stub can answer for: fix_issue <n> <state> <label,label…>
 fix_issue() {
   local n=$1 st=$2 labels=${3:-}
-  jq -n --arg s "$st" --arg l "$labels" --arg t "Ticket $n" \
-    '{state:$s, title:$t, labels:($l|split(",")|map(select(length>0)|{name:.}))}' \
+  jq -n --argjson n "$n" --arg s "$st" --arg l "$labels" --arg t "Ticket $n" \
+    '{number:$n, state:$s, title:$t, labels:($l|split(",")|map(select(length>0)|{name:.}))}' \
     > "$FIX/gh/issue-$n.json"
 }
 
@@ -235,6 +291,15 @@ fix_prs() {
       }]')
   done
   printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
+}
+
+# fix_pr_status <pr> <context> <state> — add a commit status (StatusContext) to a PR
+# fix_prs wrote: it carries a state and no status or conclusion, as GitHub returns it.
+fix_pr_status() {
+  local f="$FIX/gh/prs-all.json"
+  jq --argjson n "$1" --arg c "$2" --arg s "$3" \
+    'map(if .number == $n then .statusCheckRollup += [{__typename:"StatusContext", context:$c, state:$s}] else . end)' \
+    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
 # fix_comments <ticket> <body…> — the comments `gh issue view --json comments` returns

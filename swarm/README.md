@@ -168,9 +168,12 @@ environment variable of the same name in capitals. The defaults name no project.
 | Key | Default | What it is |
 |---|---|---|
 | `swarm.cap` | 3 | Agents at once, per programme |
+| `swarm.builderMcpServers` | `{}` | The only MCP servers a spawned builder or judge loads (an `mcpServers` object). Every `claude -p` the spawner starts, including one started by another installed copy of the kit it re-execs into, gets `--strict-mcp-config` with this list, so user, project and plugin servers stay out. Interactive (`--fg`) sessions keep theirs |
+| `labels.batched` | `status:batched` | A child of a batch ticket. The batch's one PR builds it, so every spawner treats the label as a stop (`swarm_blocking_labels`); `/agent-harness:finish` closes the children the batch ticket lists once its PR merges (`scripts/close-batch-children.sh`) |
 | `swarm.minCpuIdle` | 15 | Busy below this CPU idle percent, the median of the recent samples (`top` on macOS, `/proc/stat` on Linux, ~2s) — the scheduler, the coordinator tick, repair-watch, and every session path through `scripts/machine-gate.sh` |
+| `swarm.usageCeiling` | 0.95 | Spawn nothing while the newest run's latest usage reading puts any plan window at or over this share, until that window resets — a run started there dies at the wall mid-work |
 | `swarm.idleSamples` | 5 | How many recent CPU idle samples the median is taken over (`SWARM_IDLE_SAMPLES`). One sample read 5%, 55%, 19%, 4% and 44% within minutes on 2026-10-16; each tick and each gate read adds one to `~/.cache/agent-harness/cpu-idle.history` |
-| `swarm.idleMaxAgeSec` | 1800 | The oldest sample that still counts (`SWARM_IDLE_MAX_AGE`): six coordinator ticks at the default 300s |
+| `swarm.idleMaxAgeSec` | 1800 | The oldest sample that still counts (`SWARM_IDLE_MAX_AGE`): fifteen coordinator ticks at the default 120s |
 | `swarm.maxLoad` | 20 x cores | Runaway guard only, never the busy test: also busy above this one-minute load average. macOS counts blocked threads into the load, which read 42-103 on 10 cores on 2026-10-15 and 119-140 on 2026-10-16, once 140 at 41% CPU idle |
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.port` | 4777 | The live view's port |

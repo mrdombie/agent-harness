@@ -369,7 +369,8 @@ this machine. Do not start one to get a picture for this step.
 ```bash
 # A worktree made before ensure-hooks existed resolves no hook and pushes unchecked; this re-points it. A 🛑 is a stop.
 "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-hooks.sh" "$(git rev-parse --path-format=absolute --git-common-dir)" "$(git rev-parse --show-toplevel)" || exit 1
-git push -u origin "$BRANCH"
+# Name the destination: a bare push follows the upstream, and a worktree cut from a trunk tracks it.
+git push -u origin "HEAD:refs/heads/$BRANCH"
 ```
 
 **Never push directly to `develop` or `main`.**
@@ -513,7 +514,7 @@ down first, so the trailer sits on top of it:
 ```bash
 git pull --ff-only origin "$BRANCH"
 # The project's own recorder (review.attest.<name>.record), with the reviewed sha = $EVSHA.
-git push
+git push origin "HEAD:refs/heads/$(git branch --show-current)"
 ```
 
 The trailer commit is empty, so CI's re-capture of it changes nothing, and
@@ -716,7 +717,7 @@ elif [ "$PR_TOUCHES_UI" = "yes" ]; then
     # A sparse worktree leaves the evidence folder out; plain `git add` refuses new shots there.
     git add $(bash "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-sparse.sh" add-flag .) "$EVIDENCE_DIR"
     git commit -m "evidence(#$ISSUE_NUM): live-render screenshots for approval" --no-verify
-    git push
+    git push origin "HEAD:refs/heads/$(git branch --show-current)"
     # Pin to the NEW head sha — the commit above moved it, and a link pinned to
     # the old one 404s.
     HEAD_SHA=$(git rev-parse HEAD)
@@ -905,7 +906,9 @@ The body carries one line per file the gate names:
 ```
 
 "covered by" must name a test file that exists at head with a live case. A file
-git sees as renamed is not a deletion; a case that becomes `it.skip` is. Test-file
+git sees as renamed is not a deletion; a case that becomes `it.skip` is. A case
+renamed or reworded in place, or moved to another test file in the diff, is matched
+to its new form and owes no line. Test-file
 patterns come from `tests.patterns` in `.claude/harness.json`.
 
 ```bash
@@ -1161,6 +1164,8 @@ else
 fi
 [ "$ISSUE_NUM" != "null" ] && gh issue comment "$ISSUE_NUM" --repo "$REPO_SLUG" --body "$MERGE_NOTE"
 [ "$ISSUE_NUM" != "null" ] && gh issue close "$ISSUE_NUM" --repo "$REPO_SLUG" --reason completed
+# A batch ticket's PR closes the batch only: close every child its body lists, naming the PR.
+[ "$ISSUE_NUM" != "null" ] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/close-batch-children.sh" "$ISSUE_NUM" "$PR_NUMBER"
 node "$(git rev-parse --show-toplevel)/scripts/sync-project-board.js" >/dev/null 2>&1 || true   # the board mirrors the labels
 
 # SH-2571 (2026-05-25) — EPIC parent auto-reopen.
@@ -1309,6 +1314,6 @@ Develop is the integration trunk. A bad merge doesn't reach UAT until the review
 1. `git -C "$REPO_PATH" log --oneline -5` — find the bad commit (`$REPO_PATH` is `$MAIN_REPO` or `$SUPPORT_REPO` from `scripts/toolkit-env.sh`, whichever repo the merge landed in).
 2. Options:
    - **Revert via PR** (preferred) — `gh pr create --repo "$REPO_FULL" `# via /finish`` for a revert commit.
-   - **Direct revert + push** (faster) — `git revert <sha> && git push origin develop`.
+   - There is no direct push to the integration branch: the revert goes through a PR like any other change.
    - **Hot-fix forward** if small + <5 min.
 3. Don't force-push develop.

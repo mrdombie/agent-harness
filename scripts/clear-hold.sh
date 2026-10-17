@@ -11,6 +11,7 @@
 # One motion for /needsme, /bug and the merge lane, so the next fix lands in all three.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-ticket.sh" || exit 1
 PR="${1:?usage: clear-hold.sh <pr-number> [--reason \"<why>\"]}"; shift
 REASON=""
 while [ $# -gt 0 ]; do
@@ -42,7 +43,7 @@ fi
 gh pr comment "$PR" --repo "$REPO" \
   --body "$COMMENT" >/dev/null || exit 1
 ISSUE=$(gh pr view "$PR" --repo "$REPO" --json headRefName --jq .headRefName \
-  | awk -v p="$BRANCH_PREFIX" 'index($0, p) == 1 { s = substr($0, length(p) + 1); if (match(s, /^[0-9]+/)) print substr(s, 1, RLENGTH) }')
+  | branch_tickets | cut -f1)
 [ -n "$ISSUE" ] && gh issue edit "$ISSUE" --repo "$REPO" --remove-label "$HOLD_LABEL" >/dev/null 2>&1
 gh pr edit "$PR" --repo "$REPO" --remove-label "$HOLD_LABEL" || exit 1
 echo "cleared #$PR${ISSUE:+ and issue #$ISSUE} as @$OPERATOR — the gate re-runs on the unlabeled event"

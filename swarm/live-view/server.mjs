@@ -16,7 +16,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { gather as gatherProgress, plansOf, progressOf, shortTitle } from './progress.mjs'
+import { gather as gatherProgress, plansOf, progressOf, shortTitle, allowanceLow, noteGh } from './progress.mjs'
 
 const RUNS = process.env.SWARM_RUNS_DIR || path.join(os.homedir(), '.swarm/runs')
 const PORT = Number(process.env.SWARM_PORT || 4777)
@@ -59,6 +59,7 @@ let gathering = false
 function refreshProgress(tickets, ids, now) {
   if (gathering || now - progressAt < PROGRESS_MS) return
   progressAt = now
+  if (allowanceLow()) return
   const args = { tickets, ids, repo: REPO, queueRepo: QUEUE_REPO, driverDir: DRIVER_DIR, prefix: PREFIX }
   const keep = (next) => {
     if (!next || typeof next !== 'object' || !next.tickets || !next.plans) return
@@ -120,8 +121,9 @@ const pending = new Set()
 // restart does not re-ask for every ticket at once. A failure is not retried in
 // the same process: the card falls back to "Ticket 1234", which is honest.
 function fetchTitle(ticket) {
-  if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4) return
+  if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4 || allowanceLow()) return
   pending.add(ticket)
+  noteGh(['issue', 'view'])
   execFile(GH, ['issue', 'view', String(ticket), '--repo', REPO, '--json', 'title,labels'],
     { timeout: 20_000 }, (err, out) => {
       pending.delete(ticket)

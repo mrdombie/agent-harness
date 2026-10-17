@@ -69,13 +69,30 @@ printf 'STALE TREE\n' > "$UP/CLAUDE.md"
 printf 'rule A\n' > "$UP/.claude/hookify.rule-a.local.md"
 printf 'finish v1\n' > "$UP/.claude/skills/finish/SKILL.md"
 mkdir -p "$UP/scripts"
-# The branch's OWN copy of the spawner. Deliberately a marker, not a spawner: a
-# run that re-execs it leaves a trace that no other code path can leave.
+# The PROJECT's own fork of the spawner, as the origin project carried one: it
+# builds its prompt from a bare /claim. A marker too, so a run handed to it leaves
+# a trace no other code path can leave. The kit must never hand a builder to it.
 cat > "$UP/scripts/spawn-claim.sh" <<'MARK'
 #!/usr/bin/env bash
-printf 'branch copy ran\n' > "$SPAWN_TEST_MARKER"
+printf 'project copy ran\n' > "$SPAWN_TEST_MARKER"
+t=""; for a in "$@"; do case "$a" in -*) ;; *) t="$a" ;; esac; done
+claude -p "/claim${t:+ $t}" --permission-mode auto
+exit 0
 MARK
 chmod +x "$UP/scripts/spawn-claim.sh"
+
+# The copy of the kit Claude Code has installed NOW, newer than the one invoked.
+# The spawner re-execs this one, and a marker shows it did.
+mkdir -p "$SB/installed/scripts"
+cat > "$SB/installed/scripts/spawn-claim.sh" <<'MARK'
+#!/usr/bin/env bash
+printf 'installed kit ran\n' > "$SPAWN_TEST_INSTALLED_MARKER"
+# An older install: none of this PR's rules, but it appends CLAIM_EXTRA as every copy does.
+[ -n "${SPAWN_TEST_EXTRA:-}" ] && printf '%s' "${CLAIM_EXTRA:-}" > "$SPAWN_TEST_EXTRA"
+[ -n "${SPAWN_TEST_HANDOVER:-}" ] && claude -p "/agent-harness:claim re-exec" --permission-mode auto
+exit 0
+MARK
+chmod +x "$SB/installed/scripts/spawn-claim.sh"
 G -C "$UP" init -q . 2>/dev/null || G -C "$UP" init -q
 G -C "$UP" add -A && G -C "$UP" commit -qm c1
 G -C "$UP" branch -M develop 2>/dev/null
@@ -97,8 +114,8 @@ G -C "$STORE" fetch -q origin develop
 
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
-cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" \
-   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT/"
+cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-mcp.sh" \
+   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -129,6 +146,7 @@ cat > "$SB/bin/claude" <<'STUB'
   printf 'rules=%s\n' "$(ls .claude 2>/dev/null | grep -c 'hookify\..*\.local\.md')"
   printf 'rule-b=%s\n' "$([ -f .claude/hookify.rule-b.local.md ] && echo yes || echo no)"
   printf 'rule-c=%s\n' "$([ -f .claude/hookify.rule-c.local.md ] && echo yes || echo no)"
+  printf 'step_budget=%s\n' "${DRIVER_STEP_BUDGET_USD:-}"
   printf 'args=%s\n' "$*"
 } > "$SPAWN_TEST_SEEN"
 [ -n "${SPAWN_TEST_RUNID:-}" ] && printf '%s' "$CLAIM_RUN_ID" > "$SPAWN_TEST_RUNID"
@@ -143,6 +161,13 @@ done
 exit "${SPAWN_TEST_EXIT:-0}"
 STUB
 chmod +x "$SB/bin/claude"
+# The stub step driver: the agent stub's behaviour, with its own name first in the args.
+mkdir -p "$SB/driver"
+cat > "$SB/driver/build-ticket" <<'STUB'
+#!/usr/bin/env bash
+exec "$(dirname "$0")/../bin/claude" build-ticket "$@"
+STUB
+chmod +x "$SB/driver/build-ticket"
 # A stub caffeinate: records what it was asked to hold awake.
 cat > "$SB/bin/caffeinate" <<'STUB'
 #!/usr/bin/env bash
@@ -153,9 +178,10 @@ chmod +x "$SB/bin/caffeinate"
 run() { # [args...] — invoke the spawner from the STALE tree, as the operator does
   RC=0
   SPAWN_TEST_SEEN="$OUT/seen" SPAWN_TEST_MARKER="$OUT/marker" SPAWN_TEST_RECONCILE="$OUT/reconcile" SPAWN_TEST_CAFF="$OUT/caff" \
+  SPAWN_TEST_INSTALLED_MARKER="$OUT/installed" SWARM_PLUGIN_REGISTRY="${REGISTRY:-$SB/no-registry.json}" \
   PATH="$SB/bin:$PATH" \
   HARNESS_MAIN_REPO="$STORE" HARNESS_REPO_ROOT="$STORE" \
-  HARNESS_CFG_PATH="$STORE/.claude/harness.json" \
+  HARNESS_CFG_PATH="${CFG:-$STORE/.claude/harness.json}" \
   HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester \
   SPAWN_CLAIM_CANONICAL="${CANON-1}" TMPDIR="$SB" \
   bash "$SUT/spawn-claim.sh" "$@" 2>&1 || RC=$?
@@ -227,14 +253,61 @@ grep -q 'develop' "$OUT/refuse.log" \
   && ok "the refusal names the branch it could not resolve" \
   || bad "the refusal does not name the branch: $(cat "$OUT/refuse.log")"
 
-# --- 5. The spawner refreshes ITSELF, not only the agent's tree ---------------
-# The operator's shell function points at one copy on disk, and that copy is what
-# went stale first. Re-exec the branch's own copy once.
-rm -f "$OUT/marker" "$OUT/seen"
-CANON="" run --fg 4246
-[ -f "$OUT/marker" ] \
-  && ok "the spawner re-execs the integration branch's copy of itself" \
-  || bad "the invoked copy ran its own logic instead of the branch's"
+# --- 5. The spawner refreshes ITSELF from the installed kit -------------------
+# A caller can hold an older install of the kit. Re-exec the copy installed now,
+# found the way run-current.sh finds it: the registry's user-scope installPath.
+VDIR=$(dirname "$SB"); KIT_ID="$(basename "$VDIR")@$(basename "$(dirname "$VDIR")")"
+jq -n --arg id "$KIT_ID" --arg p "$SB/installed" '{plugins: {($id): [{scope: "user", installPath: $p}]}}' > "$SB/registry.json"
+rm -f "$OUT/marker" "$OUT/installed" "$OUT/seen"
+CANON="" REGISTRY="$SB/registry.json" run --fg 4246
+[ -f "$OUT/installed" ] \
+  && ok "the spawner re-execs the kit copy the plugin registry names" \
+  || bad "the invoked copy did not re-exec the installed kit: $(cat "$OUT/seen" 2>/dev/null | head -1)"
+[ ! -f "$OUT/marker" ] \
+  && ok "and never the project's own spawner" \
+  || bad "the spawner handed the run to the project's own copy"
+
+# --- 5b. A spawned builder runs the kit's claim, never a bare /claim -----------
+# THE GUARD. Until 2026-10-17 the spawner handed every run to the project's own
+# scripts/spawn-claim.sh, which built "/claim N" — the project's fork of the skill,
+# not the kit's. The project copy above does exactly that, so a hand-over shows here.
+bare_claim() { printf '%s' "$1" | perl -ne 'print "$1\n" while /(?<![A-Za-z0-9_.:\-])(\/claim)\b(?![\/\-.])/g' | head -1; }
+# A named ticket detached goes to the step driver by default; the prose path is what this guards.
+jq '.swarm = {builder: "prose"}' "$STORE/.claude/harness.json" > "$SB/cfg-prose.json"
+for mode in detached fg; do
+  rm -f "$OUT/marker" "$OUT/installed" "$OUT/seen"
+  if [ "$mode" = fg ]; then CANON="" run --fg 4950 >/dev/null; else CFG="$SB/cfg-prose.json" CANON="" run 4950 >/dev/null; fi
+  for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
+  a=$(sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' ')
+  [ -n "$a" ] || { bad "$mode: the builder never started"; continue; }
+  printf '%s' "$a" | grep -q '/agent-harness:claim 4950' \
+    && ok "$mode: the builder's command is /agent-harness:claim 4950" \
+    || bad "$mode: the builder's command does not run /agent-harness:claim 4950: $a"
+  [ -z "$(bare_claim "$a")" ] \
+    && ok "$mode: and nothing in it names a bare /claim" \
+    || bad "$mode: the builder was told to run a bare /claim: $a"
+  [ ! -f "$OUT/marker" ] && ok "$mode: the project's own spawner never ran" \
+                         || bad "$mode: the run was handed to the project's own spawner"
+done
+
+# --- 5c. The owner rule reaches a builder through whatever copy is re-exec'd ---
+# The re-exec runs the installed kit, which can be an older install without this
+# rule; only what rides in CLAIM_EXTRA reaches its prompt.
+rm -f "$OUT/marker" "$OUT/installed" "$OUT/extra"
+CANON="" REGISTRY="$SB/registry.json" SPAWN_TEST_EXTRA="$OUT/extra" CLAIM_EXTRA="Resume brief: carry on." run 4249 >/dev/null
+[ -f "$OUT/installed" ] && ok "fixture: the detached spawn re-exec'd the installed kit" \
+  || bad "fixture: the detached spawn did not re-exec the installed kit"
+extra=$(cat "$OUT/extra" 2>/dev/null)
+oq=$(printf '%s' "$extra" | sed -n 's/.*bash "\([^"]*owner-question\.sh\)" ask <ticket> <slug>.*/\1/p')
+[ -n "$oq" ] && [ -f "$oq" ] && case "$oq" in /*) true ;; *) false ;; esac \
+  && ok "the re-exec'd copy is handed the rule, with an absolute path that resolves ($oq)" \
+  || bad "the re-exec'd copy's CLAIM_EXTRA carries no resolvable owner-question.sh path: '${extra:-empty}'"
+printf '%s' "$extra" | grep -q 'never add needs:human-approval' \
+  && ok "the rule says a question never carries the sign-off hold" \
+  || bad "the rule does not forbid the hold label on a question"
+printf '%s' "$extra" | grep -q 'Resume brief: carry on.' \
+  && ok "the caller's own CLAIM_EXTRA is kept ahead of it" \
+  || bad "the caller's CLAIM_EXTRA was lost"
 
 # --- 6. The detached path — the default — lands in the same place -------------
 # The two paths cd separately; testing only --fg would leave the one the swarm
@@ -249,6 +322,12 @@ if [ -f "$OUT/seen" ]; then
   [ "$(seen rule-c)" = yes ] \
     && ok "the detached path sees the current guard rules" \
     || bad "the detached path missed the current guard rules"
+  # A builder in print mode has no question tool: the owner's channel is the only way a question reaches anyone.
+  grep -qF "bash \"$SUT/owner-question.sh\" ask <ticket> <slug>" "$OUT/seen" \
+    && ok "the detached prompt sends an owner question to the kit's owner-question.sh, by absolute path" \
+    || bad "the detached prompt does not route an owner question to $SUT/owner-question.sh"
+  [ "$(grep -c 'Owner questions:' "$OUT/seen")" = 1 ] && ok "the rule is in the prompt once" \
+    || bad "the owner rule is in the prompt $(grep -c 'Owner questions:' "$OUT/seen") times, want 1"
 else
   bad "the detached spawn never started the agent"
 fi
@@ -339,6 +418,108 @@ s1=$(srv 1)
 alive "$s1" && ok "a noted parent folder, not a checkout, stops no server beneath it" \
             || bad "a noted parent folder stopped a server in a worktree beneath it"
 kill "$s1" 2>/dev/null
+
+# --- 9. A builder loads only the MCP servers on the builder list ---------------
+# Each builder started its own ms365, Railway and Playwright servers, 434-538 MB a
+# builder, and used none of them. The list is swarm.builderMcpServers, {} unless set.
+mcp_of() { # <args line> — what the run can load: ALL when not strict, else the config's server names
+  local a="$1" f
+  case " $a " in *" --strict-mcp-config "*) ;; *) echo ALL; return ;; esac
+  f=$(printf '%s' "$a" | sed -n 's/.*--mcp-config \([^ ]*\).*/\1/p')
+  [ -f "$f" ] || { echo "no config at '$f'"; return; }
+  jq -r '.mcpServers | keys | join(",")' "$f"
+}
+# The whole argv: a detached prompt runs over several lines, and the flags follow it.
+seen_args() { sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' '; }
+wait_seen() { for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done; }
+rm -f "$OUT/seen"; CFG="$SB/cfg-prose.json" run 4901; wait_seen
+got=$(mcp_of "$(seen_args)")
+[ -z "$got" ] && ok "a detached builder loads no MCP server when the list is empty" \
+              || bad "a detached builder can load '$got', want none: $(seen args)"
+rm -f "$OUT/seen" "$OUT/installed"; SPAWN_TEST_HANDOVER=1 CANON="" REGISTRY="$SB/registry.json" run 4902; wait_seen
+[ -f "$OUT/installed" ] || bad "the re-exec case never reached the installed kit"
+got=$(mcp_of "$(seen_args)")
+[ -z "$got" ] && ok "re-exec'd into the installed kit, the builder still loads none" \
+              || bad "after the re-exec the builder can load '$got', want none: $(seen args)"
+jq '.swarm = {builder: "prose", builderMcpServers: {railway: {command: "railway", args: ["mcp"]}}}' "$STORE/.claude/harness.json" > "$SB/cfg-mcp.json"
+rm -f "$OUT/seen"; CFG="$SB/cfg-mcp.json" run 4903; wait_seen
+got=$(mcp_of "$(seen_args)")
+[ "$got" = railway ] && ok "a server on the list is loaded, and only that one" \
+                     || bad "with railway listed the builder can load '$got': $(seen args)"
+rm -f "$OUT/seen"; run --fg 4904
+got=$(mcp_of "$(seen_args)")
+[ "$got" = ALL ] && ok "an interactive session keeps every server" \
+                 || bad "the --fg session was limited to '$got'"
+
+# --- 10. Who builds: the step driver for a new ticket, prose for the rest ------
+# Dom, 2026-10-17: every new ticket build runs on driver/build-ticket. Each case
+# reads the argv the agent stub was started with, so a branch that stops choosing
+# its builder shows as the wrong program running, not as a missing line.
+record_of() { jq -r ".$2 // empty" "$STATE"/runs/claim-"$1"-*.json 2>/dev/null | head -1; }
+builder_case() { # <ticket> [run args...] — spawn detached, wait for the agent, return its argv
+  local t="$1"; shift
+  rm -f "$OUT/seen"; run "$@" >/dev/null; wait_seen
+  BARGS=$(seen_args)
+}
+
+builder_case 4960 4960
+case "$BARGS" in
+  "build-ticket 4960 "*|"build-ticket 4960") ok "default: a named ticket runs driver/build-ticket 4960" ;;
+  *) bad "default: the builder was not build-ticket 4960: '${BARGS:-never started}'" ;;
+esac
+printf '%s' "$BARGS" | grep -q '/agent-harness:claim' \
+  && bad "default: the prose claim ran as well as or instead of the driver" \
+  || ok "default: no prose claim prompt reaches it"
+[ "$(seen step_budget)" = 150 ] && ok "default: the run's budget caps each driver step" \
+  || bad "default: the driver was handed step budget '$(seen step_budget)', want 150"
+[ "$(record_of 4960 builder)" = driver ] && ok "default: the run record says builder driver" \
+  || bad "default: the run record's builder was '$(record_of 4960 builder)'"
+
+CFG="$SB/cfg-prose.json" builder_case 4961 4961
+case "$BARGS" in
+  build-ticket*) bad "swarm.builder=prose: the driver ran: '$BARGS'" ;;
+  *) printf '%s' "$BARGS" | grep -q -- '/agent-harness:claim 4961' \
+       && printf '%s' "$BARGS" | grep -q -- '-p ' \
+       && ok "swarm.builder=prose: claude -p runs /agent-harness:claim 4961" \
+       || bad "swarm.builder=prose: the prose claim did not run: '${BARGS:-never started}'" ;;
+esac
+
+builder_case next
+case "$BARGS" in
+  build-ticket*) bad "pick-next: the driver ran with no ticket: '$BARGS'" ;;
+  *) printf '%s' "$BARGS" | grep -Eq -- '/agent-harness:claim( |$)' \
+       && ! printf '%s' "$BARGS" | grep -Eq -- '/agent-harness:claim [0-9]' \
+       && ok "pick-next: no ticket stays on the prose claim, with no number" \
+       || bad "pick-next: the prose pick-next claim did not run: '${BARGS:-never started}'" ;;
+esac
+
+CLAIM_EXTRA="Merge lane: PR #9 left the lane — fix it on its branch." builder_case 4962 4962
+case "$BARGS" in
+  build-ticket*) bad "a caller's brief went to the driver, which cannot read it: '$BARGS'" ;;
+  *) printf '%s' "$BARGS" | grep -q 'Merge lane: PR #9' \
+       && ok "a run with a caller's brief stays on prose, brief in the prompt" \
+       || bad "a briefed run lost its brief: '${BARGS:-never started}'" ;;
+esac
+
+CLAIM_CLASS=approved-merge builder_case 4963 4963
+case "$BARGS" in
+  build-ticket*) bad "an approved-merge run went to the driver: '$BARGS'" ;;
+  *) ok "an approved-merge run works its open PR on prose" ;;
+esac
+
+rm -f "$OUT/seen"
+jq '.swarm = {builder: "steps"}' "$STORE/.claude/harness.json" > "$SB/cfg-bad.json"
+CFG="$SB/cfg-bad.json" run 4964 >"$OUT/bad.log"
+[ "$RC" = 2 ] && grep -q "swarm.builder is 'steps'" "$OUT/bad.log" \
+  && ok "an unknown swarm.builder refuses by name" \
+  || bad "an unknown swarm.builder did not refuse (rc $RC): $(cat "$OUT/bad.log")"
+
+mv "$SB/driver/build-ticket" "$SB/driver/build-ticket.away"
+rm -f "$OUT/seen"; run 4965 >"$OUT/nodriver.log"
+mv "$SB/driver/build-ticket.away" "$SB/driver/build-ticket"
+[ "$RC" = 1 ] && grep -q 'swarm.builder' "$OUT/nodriver.log" && [ ! -f "$OUT/seen" ] \
+  && ok "a missing driver refuses and names the prose switch, starting nothing" \
+  || bad "a missing driver did not refuse cleanly (rc $RC): $(cat "$OUT/nodriver.log")"
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"

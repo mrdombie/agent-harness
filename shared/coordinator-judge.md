@@ -16,7 +16,11 @@ the forge and the state directory are the state.
   Only a choice no agent may make — scope, product, money, access — goes to the
   owner, under a `decision:` key, phrased as the choice:
   `bash "$KIT_ROOT/scripts/coordinator-notify.sh" --class owner "decision:<ticket>:<word>" "<the choice, in one line>"`
-  Any other key is filed as agent work whatever class you pass.
+  Any other key is filed as agent work whatever class you pass. A choice about one
+  ticket goes through `bash "$KIT_ROOT/scripts/owner-question.sh" ask <ticket> <word> "<the choice>"`
+  instead: it labels the ticket so no tick spawns it, and the owner's answer
+  re-queues it, so do not re-queue it yourself. A `decision:` line whose ticket
+  wears no label reads as already answered.
 - **Stay in scope.** Act only on tickets in the queue's scope, plus a red PR
   anywhere (finish before start). The scope may be several labels: a ticket
   under any one of them is in scope. Check with
@@ -27,7 +31,6 @@ the forge and the state directory are the state.
 - **Prefer the existing tools.** A ticket needs an agent: add it to the queue
   (`bash "$KIT_ROOT/scripts/coordinator-queue.sh" add <n> --class repair|approved-merge|new --note "<why>"`)
   and let the next tick spawn it under the cap. Do not spawn agents yourself.
-- **Usage limit.** Spawn nothing; note when the limit resets; exit.
 - **Frozen run.** Read the end of its log. A run waiting on nothing is stuck:
   re-queue it with a note, or log it as agent work. Kill nothing you did not start.
 - **Stood-down run.** Read its last result line and the ticket's newest

@@ -44,6 +44,13 @@ want_not_in "the ask-a-person tool is not"  'AskUserQuestion'     "$args"
 want_not_in "no spend cap"                  'max-budget-usd'      "$args"
 want_not_in "every setting source still loads — the project's skills and agents with it" '^--setting-sources$' "$args"
 
+echo "--- a spawner's budget caps each step, and only when it sets one ---"
+driver_state_init 309
+DRIVER_STEP_BUDGET_USD=40 DRIVER_TICKET=309 driver_ai_step 309 plan >/dev/null 2>&1
+capped="$(cat "$FIX/claude-args-plan.txt")"
+want_in "the cap reaches the step"          '--max-budget-usd'    "$capped"
+want_in "at the spawner's figure"           '^40$'                "$capped"
+
 echo "--- the step's cost and context are on the record ---"
 S="$(driver_state_dir 301)/state.json"
 want "its cost"                             "1.5"  "$(jq -r '.usage.plan[0].cost' "$S")"

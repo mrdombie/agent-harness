@@ -224,7 +224,7 @@ driver_push() {
   local t="$1" wt="$2" branch="$3" slot="$4" f rc=0
   f="$(driver_state_dir "$t")/steps/$slot-push.out"
   mkdir -p "$(dirname "$f")"
-  git -C "$wt" push -u origin "$branch" > "$f" 2>&1 || rc=$?
+  git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
   if [ "$rc" -ne 0 ]; then
@@ -285,6 +285,8 @@ driver_lean_args() {
   local wt="${1:-}" step="${2:-}" tools f files="" excl=""
   local -a list
   DRIVER_LEAN_ARGS=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
+  # Off unless a spawner sets it: a runaway stop per step, never a measurement.
+  [ -z "${DRIVER_STEP_BUDGET_USD:-}" ] || DRIVER_LEAN_ARGS+=(--max-budget-usd "$DRIVER_STEP_BUDGET_USD")
   tools=$(driver_step_tools "$step")
   if [ -n "$tools" ] && [ "$tools" != "default" ]; then
     read -r -a list <<<"$tools"

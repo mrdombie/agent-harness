@@ -26,6 +26,8 @@
 #   SWARM_FREE_MEM_GB / _FILE      a fixed free-memory reading / a file holding it
 #   SWARM_IDLE_CACHE               where one real sample is shared for 5s
 #                                  (default ~/.cache/agent-harness/cpu-idle)
+#   SWARM_IDLE_FRESH=1             take a new sample, never the shared one
+#   SWARM_IDLE_SAMPLER             a command printing one idle sample (tests)
 #   SWARM_IDLE_HISTORY             where recent samples are kept (default the
 #                                  cache path + .history); unset beside a fixed
 #                                  SWARM_IDLE / _FILE, the fixed value alone counts
@@ -82,6 +84,7 @@ swarm_parse_stat_idle() { # <line-before> <line-after>
 
 _swarm_sample_idle() {
   local v="" a b
+  if [ -n "${SWARM_IDLE_SAMPLER:-}" ]; then "$SWARM_IDLE_SAMPLER" 2>/dev/null; return; fi
   if [ -x /usr/bin/top ] && [ "$(uname -s 2>/dev/null)" = Darwin ]; then
     v=$(/usr/bin/top -l 2 -n 0 -s 1 2>/dev/null | swarm_parse_top_idle)
   elif [ -r /proc/stat ]; then
@@ -100,7 +103,7 @@ swarm_cpu_idle() {
   if [ -n "${SWARM_IDLE:-}" ]; then printf '%s' "${SWARM_IDLE%%.*}"; return; fi
   local cache="${SWARM_IDLE_CACHE:-$HOME/.cache/agent-harness/cpu-idle}" now at v
   now=$(date +%s)
-  if [ -f "$cache" ] && read -r at v < "$cache" && [ -n "${v:-}" ] && [ $(( now - ${at:-0} )) -lt 5 ] 2>/dev/null; then
+  if [ -z "${SWARM_IDLE_FRESH:-}" ] && [ -f "$cache" ] && read -r at v < "$cache" && [ -n "${v:-}" ] && [ $(( now - ${at:-0} )) -lt 5 ] 2>/dev/null; then
     printf '%s' "$v"; return
   fi
   v=$(_swarm_sample_idle)

@@ -90,11 +90,11 @@ want_not_in "absent by default" 'report' "$(i --jobs)"
 want_in "present when configured" '--push' \
   "$(SWARM_REPORT_URL=https://example.invalid/api bash "$I" --print report 2>&1)"
 
-echo "--- the coordinator: opt-in, every five minutes, shadow unless told otherwise ---"
+echo "--- the coordinator: opt-in, every two minutes, shadow unless told otherwise ---"
 want_not_in "not one of the default jobs" 'coordinator' "$(i --jobs)"
 co=$(i --print coordinator)
 want_in "it runs the tick"                'scripts/coordinator-tick.sh' "$co"
-want_in "every five minutes"              '<key>StartInterval</key><integer>300</integer>' "$co"
+want_in "every two minutes"               '<key>StartInterval</key><integer>120</integer>' "$co"
 want_in "shadow by default"               '<key>COORDINATOR_SHADOW</key><string>1</string>' "$co"
 want_in "a judge outlives the tick"       '<key>AbandonProcessGroup</key><true/>' "$co"
 want_in "live only when the installer says so" '<key>COORDINATOR_SHADOW</key><string>0</string>' \
@@ -135,7 +135,7 @@ printf '0 3 * * * /usr/bin/backup\n' > "$FIX/crontab"
 cr() { SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" bash "$I" "$@" 2>&1; }
 cr coordinator >/dev/null; cr coordinator >/dev/null
 want "installed twice is one line"        "1" "$(grep -c 'coordinator-tick.sh' "$FIX/crontab")"
-want_in "every five minutes, in shadow"   '^\*/5 .*COORDINATOR_SHADOW=1 ' "$(grep coordinator-tick "$FIX/crontab")"
+want_in "every two minutes, in shadow"    '^\*/2 .*COORDINATOR_SHADOW=1 ' "$(grep coordinator-tick "$FIX/crontab")"
 want "the owner's own lines are kept"     "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
 want_in "it carries a PATH that finds claude" ' PATH=[^ ]*'"$BIN" "$(grep coordinator-tick "$FIX/crontab")"
 SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" COORDINATOR_SHADOW=0 bash "$I" coordinator >/dev/null 2>&1
@@ -227,7 +227,7 @@ svc=$(unit coordinator service); tmr=$(unit coordinator timer)
 if [ -n "$svc" ]; then ok "it writes a service unit"; else bad "it writes a service unit — none in $UD: $(ls "$UD" 2>&1)"; fi
 if [ -n "$tmr" ]; then ok "and a timer beside it"; else bad "and a timer beside it"; fi
 s=$(cat "$svc" 2>/dev/null); t=$(cat "$tmr" 2>/dev/null)
-want_in "the timer ticks every five minutes" '^OnUnitActiveSec=300$' "$t"
+want_in "the timer ticks every two minutes, the coordinator's own interval" '^OnUnitActiveSec=120$' "$t"
 want_in "and starts after boot"             '^OnBootSec=' "$t"
 want_in "the timer is wanted by timers.target" '^WantedBy=timers\.target$' "$t"
 want_in "it starts the launcher outside the plugin cache" "^ExecStart=/bin/bash \"$STATE/swarm/run-current.sh\" \"scripts/coordinator-tick.sh\"$" "$s"

@@ -22,6 +22,9 @@ export SWARM_PROGRESS_CACHE="${SWARM_PROGRESS_CACHE:-$SWARM_DIR/progress.json}"
 export SWARM_PLAIN_TITLES="${SWARM_PLAIN_TITLES:-$STATE_DIR/plain-titles.json}"
 export SWARM_CLAIM_LOCK="${SWARM_CLAIM_LOCK:-$CL}" SWARM_QUEUE_REPO="${SWARM_QUEUE_REPO:-$MAIN_REPO}"
 export DRIVER_DIR="${DRIVER_DIR:-$STATE_DIR/driver}"
+# The open PRs the tick shares, what is left of the allowance, and the call log.
+export SWARM_PRS_FILE="${SWARM_PRS_FILE:-$(gh_prs_file)}" SWARM_GH_ALLOWANCE="${SWARM_GH_ALLOWANCE:-$(gh_allowance_file)}"
+export SWARM_GH_CALLS="${SWARM_GH_CALLS:-$(gh_calls_file)}" GH_ALLOWANCE_LOW_PCT
 # The coordinator's queue, and what hold-status.sh needs to answer without
 # resolving the project config again on every ask.
 export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"

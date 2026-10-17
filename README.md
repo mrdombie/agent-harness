@@ -47,6 +47,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 {
   "repo": "you/your-repo",
   "integrationBranch": "develop",
+  "trunks": ["develop", "uat", "main"],
   "branchPrefix": "tkt-",
   "stateDir": "~/.claude/your-tickets",
   "sisterRepos": [],
@@ -100,6 +101,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 }
 ```
 
+- `trunks` is optional (default: `integrationBranch` alone): every branch an agent must never push to, such as the integration, release and deploy branches. `scripts/check-push-destination.sh --worktrees <repo>` reads it and lists each worktree branch whose upstream is one of them, since a push that names no destination goes to the upstream. The same script with a root (or none) scans the commands written in a tree: a `git push` that names no `src:dst`, or a `worktree add -b` from a remote branch without `--no-track`, is a finding. CI runs it on the kit.
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
 - `merge.updateBehind` — optional, `agent` (default) or `bot`. Set `bot` when the repo requires PRs to be up to date and runs a bot that brings behind PRs up to date one at a time. Agents then leave a PR that is merely behind to the bot instead of merging the integration branch in themselves, which queued a full extra CI run and landed their PR ahead of the one the bot was landing, restarting it (#79). A conflict is still the agent's. `scripts/behind-pr-action.sh` makes the call.
 - `merge.method` — optional, `squash`, `merge` or `rebase`: how the merge lane merges. The lane refuses by name without it, and the coordinator tick only runs the lane where it is set.
@@ -111,6 +113,10 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
   A row with `owed` alone is advisory to the driver and enforced by `/agent-harness:finish`. A row with `review` and `record` is what lets the driver push at all on a project whose pre-push demands a trailer — measured on 2026-09-28, a ticket built test-first with two proved tasks lost 9 commits to exactly that. Absent entirely, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
 - `owns.skills` / `owns.agents` — kit names this project deliberately shadows. Everything else under its `.claude/` that the kit also ships is a duplicate and fails the gate.
 - `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
+- `claim.preflight` is optional: commands `/agent-harness:claim` runs at Step 0 in the project's checkout, with `$TOOLS` naming a copy of its `scripts/` as on the integration branch (`bash "$TOOLS/scripts/<check>.sh"`), such as a check that the machine's installed jobs match the ones the repo describes. They report and never block.
+- `claim.planRules` is optional: the project's own planning rules, one sentence each, that `/agent-harness:claim` prints before the plan names a file (e.g. "extend a service's one home before adding a second client for it").
+- `approval.previewOnly` is optional: a command that reads paths on stdin and exits 0 when every one leaves a pixel approval standing (preview pages, fixtures, tests). `/agent-harness:claim` uses it to tell an agent whether a commit voids an approval.
+- A project that lists `finish` under `owns.skills` has `/agent-harness:claim` hand over to its own `/finish`; the spawner always runs `/agent-harness:claim` and never a project's own spawn script.
 - `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
@@ -128,6 +134,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `programmes.brief` is optional: a command that prints the BRIEF of a programme's state file, with `{{EPIC}}` and `{{FILE}}` substituted. These files are append-only and grow for as long as the programme is open, and a step handed the whole thing designs from the programme's history rather than from its own ticket. The driver finds the file by **what it says** — the state file whose content names the ticket's programme label — never by its filename: on the project this was measured on all 29 files are named for the epic and the label lives in the body, so a filename glob matched none of them.
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
+- `labels.ownerDecision` is optional (default `needs:owner-decision`): the label a ticket wears while a question only the owner can answer is open on it (`scripts/owner-question.sh`). No spawner takes a ticket wearing it.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
 - `lesson` is optional, and only `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes or references, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`), `guardPatterns` (default: test, lint and gate globs such as `**/*.test.*`, `**/eslint-rules/**`, `**/*.semgrep.yml`, `**/check-*.*`, `**/gates/**`, plus `tests.patterns`; set, it replaces both) and `guardExclude` (default `*.md`, `*.mdx`, `*.txt`, `*.rst`, `docs/**` and the like). A pattern with no `/` matches the file name anywhere; one with a `/` is anchored at the repo root; `*` stays inside a directory and `**` crosses. It is read at the base commit. `HARNESS_GUARD_PATTERNS` (space-separated) can only narrow the guard set. A value that is not a list is a refusal.
@@ -153,6 +160,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
+           check-push-destination.sh (every push names its destination; CI)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
@@ -217,7 +225,10 @@ one, fails until its body accounts for each file:
 "covered by" must name a test file that exists at head with a live case;
 "removed on purpose" must give a reason. A file git sees as **renamed** is not a
 deletion, but its cases are compared across the rename, and a case turned into
-`it.skip` counts as lost. The diff is two dots, base..head, read from the two
+`it.skip` counts as lost. It counts cases, not titles: a case renamed or reworded
+where it stands, or moved to another test file in the same diff, is matched to its
+new form and owes nothing. Only a drop in the count, or a named case with nothing
+like it at head, needs a line. The diff is two dots, base..head, read from the two
 commits — never the working tree — and anything the trunk added after the branch
 was cut is excluded. Written after a rebuild on the origin project deleted eleven
 test files in one merge: one pinned a behaviour the new screen dropped, nothing
@@ -319,16 +330,43 @@ on every wake. `scripts/coordinator-tick.sh` does the same job as one short
 process with no model call: it reads the runs that ended, spawns the next queued
 ticket through `spawn-claim.sh` while the machine has room, runs `reconcile-claims.sh` and the
 dev-server sweep, checks the disk, and writes every event that needs judgement
-to a file. Each judgement event gets one fresh `claude -p` with a short brief
+to a file. A new ticket's builder is the step driver, `driver/build-ticket <n>`
+(Dom, 2026-10-17), with the run's budget capping each step. The prose claim
+(`claude -p "/agent-harness:claim <n>"`) still builds pick-next runs, repair-class
+runs and any run handed a brief (a merge-lane fixer, a repair, a resume), because the
+driver has no channel for a brief; `swarm.builder: "prose"` in `harness.json` puts
+every run back on it. Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
 it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
-hook when any window hits the plan's limit) says the limit holds.
+hook when any window hits the plan's limit) says the limit holds, nor while the
+newest run's usage reading puts a window at `swarm.usageCeiling` or over.
+`spawn-claim.sh` itself refuses (exit 75) under the same hold, so no other
+spawner can start a run into the wall either, and no judge starts during it. A
+run the limit or a lost login cut off goes back to the front of the queue with
+its worktree and session named, to resume rather than start over.
+
+A tick is the starts. The merge lane, reconcile, the sweeps, the disk pass and
+the judge run in `coordinator-housekeeping.sh`, in the background once the
+starts are made, under a lock of their own and at most every
+`coordinator.housekeepingEveryMin` (default 5). A run whose last word is a wait
+on a human (its status table's "Waiting for" row names you, a sign-off or an
+approval, or it says it has no question tool) is not picked again until the
+wait moves: a label on the ticket or its PR, a new commit, a comment, or a red
+check. The tick log says `skip #N: waiting on a human since run …` until then.
+
+The coordinator shares one GitHub token with every builder, so it reads the
+forge once a pass, never once a ticket: one open-PR read, the queue's tickets in
+batched GraphQL requests of 50 (`scripts/gh-batch.sh`), the queue re-seeded every
+`coordinator.refreshEveryMin` (default 5). When GitHub refuses the token for a
+rate limit, every swarm read backs off (4 minutes, doubling to 32) and the tick
+works from the last good read while it is under `coordinator.snapshotMaxAgeMin`
+(default 15) old; housekeeping's GitHub passes wait for the next run.
 
 ```sh
 scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # tickets, labels or programme subjects; a list is their union
-swarm/install.sh coordinator                # every 5 minutes; SHADOW unless COORDINATOR_SHADOW=0
+swarm/install.sh coordinator                # every 2 minutes; SHADOW unless COORDINATOR_SHADOW=0
 scripts/coordinator-compare.sh --since <ISO>  # the shadow's calls beside the loop's runs
 swarm/install.sh uninstall coordinator
 ```
@@ -347,6 +385,9 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `agentCpuCores` | 0.8 | Cores one builder uses (measured 2026-10-16: two builders at 167–182%). The idle above `keepCpuIdle` starts as many builders as it fits |
 | `rampMin` | 10 | A builder started this many minutes ago or less still counts against the room, because the idle reading has not seen its load yet |
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
+| `rampFreeMemGb` | 8 | Free memory (GB) needed to start more than one builder in a tick, read again before each start after the first; under it, one start a tick |
+| `rampMax` | unset | The most starts in one tick. Unset, the room decides |
+| `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
@@ -365,12 +406,34 @@ its share, so a run of red PRs waits its turn instead of stopping new work; a
 class with nothing spawnable lends its places to the other, in both directions.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
 The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
-because `spawn-claim.sh` hands over to the project's own copy, which need not
+because a spawner (an older install of the kit, or a stand-in) need not
 write one; a run with no class anywhere counts as healing when its ticket has an
 open PR. The tick log shows
 `ceiling: 7 running · room for 1 more: cpu idle 31%, 9 GB free` and
 `split: 3 new · 1 healing · 2 reds waiting`, and `capacity.json` beside the queue
 holds the same for the live view.
+
+**Starts ramp to the headroom.** After the first start of a tick the room is read
+again before each next one: a new CPU sample, never the shared 5-second one, and
+the lower of it and the median; the builders started this tick counted against
+the fit; and each of them charged `agentMemGb` against free memory, because a
+builder started seconds ago has used none of its memory yet. A start that eats the
+headroom stops the rest; under `rampFreeMemGb` after the charge, a tick starts one.
+
+**A ticket waiting on the owner is never respawned.** The owner-decision label
+(`labels.ownerDecision`, default `needs:owner-decision`) is the one truth for it:
+every spawner skips a ticket wearing it. A spawned builder has no question tool;
+when only the owner can decide, it runs `scripts/owner-question.sh ask <ticket>
+<slug> "<question>"` — the kit hands the rule, with that script's absolute path,
+to the builder in `CLAIM_EXTRA`, which a project's own spawn-claim copy appends
+too. It labels the ticket, then writes `decision:<ticket>:<slug>` to
+`needs-you.md`. A question parks without the sign-off hold. The answer —
+`needsme-watch.sh answer <key> "<answer>"`, from the watcher or the board walk —
+takes the label off, comments it, and puts the ticket back at the front of the
+queue with the answer in its note. A step that fails leaves the answer in
+`answers.pending` and the line open, and `owner-question.sh sync` (each live tick,
+and each watcher board pass) replays it. An open line whose ticket no longer wears
+the label was answered on the ticket: sync ticks it and requeues the ticket.
 
 ### The merge lane — one PR into the trunk at a time
 
@@ -479,6 +542,7 @@ copy is what the gate above is for.
 ```bash
 for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh driver/tests/*.test.sh; do bash "$t"; done
 bash scripts/check-project-agnostic.sh
+bash scripts/check-push-destination.sh
 ```
 
 CI runs all of them on every push, and fails by name on a tracked suite no glob

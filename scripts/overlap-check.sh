@@ -21,6 +21,7 @@ set -uo pipefail
 
 ISSUE="${1:?usage: overlap-check.sh <issue> [--repo owner/name]}"; shift || true
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-ticket.sh" || exit 1
 REPO="$REPO_SLUG"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -83,11 +84,8 @@ while read -r PR HEAD TITLE; do
   [ -n "${PR:-}" ] || continue
   # Skip the candidate's OWN PR. Re-running this on a ticket already in flight
   # otherwise reports it as contending with itself, and a check that flags the
-  # thing you are holding teaches you to ignore it. Anchored so #857 does not
-  # match sh-8571/.
-  case "$HEAD" in
-    "$ISSUE"[-/]*|*"/$ISSUE"[-/]*|*"/sh-$ISSUE"[-/]*|"sh-$ISSUE"[-/]*) continue ;;
-  esac
+  # thing you are holding teaches you to ignore it.
+  [ "$(branch_ticket "$HEAD")" = "$ISSUE" ] && continue
   FILES=$(gh pr diff "$PR" --repo "$REPO" --name-only 2>/dev/null) || continue
   [ -n "$FILES" ] || continue
   COMMON=$(match_files "$FILES")

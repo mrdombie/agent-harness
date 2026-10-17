@@ -250,6 +250,77 @@ expect_rc 2 "a base that does not resolve is a refusal"
 OUT=$(bash "$SUT" --repo "$SB/not-a-repo" --base main 2>&1); RC=$?
 expect_rc 2 "a directory that is not a repo is a refusal"
 
+# --- 19. A case renamed where it stands is not a lost test --------------------------
+# Measured on the origin project: 74 of 85 files this check flagged kept or grew their
+# case count. The commonest shape was one title reworded in place.
+repo rename-in-place
+perl -pi -e "s/it\('opens the desk'/it('opens the desk on the queue tab'/" "$R/src/desk.test.ts"
+grep -q "opens the desk on the queue tab" "$R/src/desk.test.ts" || bad "fixture: the rename plant did not land"
+commit
+check
+expect_rc 0 "a case renamed in place passes with no body"
+expect_out 'cases renamed, rewritten or moved    : 1' "and is counted as renamed"
+
+# --- 20. A case rewritten in place, new words, same count --------------------------
+repo rewrite-in-place
+perl -pi -e 's/test\("shows the queue"/test("lists every waiting post, oldest first"/' "$R/src/desk.test.ts"
+grep -q "oldest first" "$R/src/desk.test.ts" || bad "fixture: the rewrite plant did not land"
+commit
+check
+expect_rc 0 "a case rewritten in place, the file keeping its count, passes"
+
+# --- 21. A case moved to a new file ------------------------------------------------
+repo move-new-file
+perl -pi -e 's/  test\("shows the queue", \(\) => \{\}\);\n//' "$R/src/desk.test.ts"
+grep -q 'shows the queue' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+printf "test('shows the queue', () => {});\n" > "$R/src/queue.test.ts"
+commit
+check
+expect_rc 0 "a case moved word for word into a new test file passes"
+
+# --- 22. A case moved to another file with a reword --------------------------------
+repo move-reword
+perl -0pi -e "s/  it\('a writer can post for a teammate'.*?\n  \}\);\n//s" "$R/src/desk.test.ts"
+grep -q 'teammate' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+printf "it('a writer can post for a teammate from the inbox', () => {});\n" >> "$R/src/inbox.test.tsx"
+commit
+check
+expect_rc 0 "a case moved to another file with most of its words passes"
+
+# --- 23. Same count, but a named test is gone with nothing like it -------------------
+repo swapped
+perl -0pi -e "s/  it\('a writer can post for a teammate'.*?\n  \}\);\n//s" "$R/src/desk.test.ts"
+grep -q 'teammate' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+printf "it('sorts messages by sender', () => {});\n" >> "$R/src/inbox.test.tsx"
+commit
+check
+expect_rc 1 "a case gone with nothing like it stops the gate, even when the total holds"
+expect_out 'src/desk.test.ts.*lost 1 case' "naming the file"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "and the case"
+expect_out 'cases in them, base -> head          : 4 -> 4' "while the total says nothing dropped"
+
+# --- 24. A file deleted whose cases all moved ---------------------------------------
+repo split
+git -C "$R" rm -q src/desk.test.ts
+cat > "$R/src/desk-open.test.ts" <<'TS'
+it('opens the desk', () => {});
+it('a writer can post for a teammate', () => {});
+TS
+printf "test('shows the queue', () => {});\n" > "$R/src/desk-queue.test.ts"
+commit
+check
+expect_rc 0 "a test file split into two, every case kept, passes with no body"
+
+# --- 25. Two cases become one: the count drops ---------------------------------------
+repo merge-two
+perl -pi -e "s/it\('opens the desk'/it('opens the desk and shows the queue'/; s/  test\(\"shows the queue\", \(\) => \{\}\);\n//" "$R/src/desk.test.ts"
+grep -q 'test("shows the queue"' "$R/src/desk.test.ts" && bad "fixture: the plant did not remove the case"
+commit
+check
+expect_rc 1 "two cases folded into one is a lost case"
+expect_out 'src/desk.test.ts.*lost 1 case' "naming one loss"
+expect_out 'cases in them, base -> head          : 3 -> 2' "and the drop"
+
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"
 exit $fail
