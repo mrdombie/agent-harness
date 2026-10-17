@@ -322,7 +322,12 @@ on every wake. `scripts/coordinator-tick.sh` does the same job as one short
 process with no model call: it reads the runs that ended, spawns the next queued
 ticket through `spawn-claim.sh` while the machine has room, runs `reconcile-claims.sh` and the
 dev-server sweep, checks the disk, and writes every event that needs judgement
-to a file. Each judgement event gets one fresh `claude -p` with a short brief
+to a file. A new ticket's builder is the step driver, `driver/build-ticket <n>`
+(Dom, 2026-10-17), with the run's budget capping each step. The prose claim
+(`claude -p "/agent-harness:claim <n>"`) still builds pick-next runs, repair-class
+runs and any run handed a brief (a merge-lane fixer, a repair, a resume), because the
+driver has no channel for a brief; `swarm.builder: "prose"` in `harness.json` puts
+every run back on it. Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and

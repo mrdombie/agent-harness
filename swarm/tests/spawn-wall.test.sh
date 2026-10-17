@@ -25,6 +25,13 @@ printf 'claude %s\n' "$*" | cut -c1-80 >> "$FIX/claude.log"
 SH
 chmod +x "$BIN/claude"
 : > "$FIX/claude.log"
+# A named ticket's builder is the step driver: a stand-in that records being started the same way.
+cat > "$BIN/build-ticket" <<'SH'
+#!/usr/bin/env bash
+printf 'driver %s\n' "$*" | cut -c1-80 >> "$FIX/claude.log"
+SH
+chmod +x "$BIN/build-ticket"
+export SPAWN_CLAIM_DRIVER="$BIN/build-ticket"
 
 # An integration branch to start in, so with no hold the spawner really does reach claude.
 G() { git -c user.email=t@example.com -c user.name=tester -c commit.gpgsign=false "$@"; }
@@ -60,7 +67,7 @@ echo "--- no hold: the door is open ---"
 out=$(spawn 4245); rc=$?
 want_not_in "no hold, no refusal" "usage limit holds" "$out"
 want "it spawns" "0" "$rc"
-want_in "and claude starts" "^claude -p" "$(started)"
+want_in "and its builder starts" "^driver 4245" "$(started)"
 for _ in $(seq 1 50); do [ -f "$STATE/runs/"claim-4245-*.ended ] 2>/dev/null && break; sleep 0.1; done
 : > "$FIX/claude.log"; rm -f "$STATE"/runs/claim-4245-* "$STATE"/logs/claim-4245-*
 printf '%s\tYou have hit your session limit\n' "$SOON" > "$STATE/usage-hold"

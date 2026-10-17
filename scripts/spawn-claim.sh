@@ -15,7 +15,13 @@
 # reconcile-claims.sh immediately. That covers every exit the agent can observe
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
-# Env: CLAIM_BUDGET_USD (default 150), CLAIM_PERMISSION_MODE (default auto), CLAIM_CLASS (recorded)
+# Who builds: a new ticket runs on the step driver (driver/build-ticket). The
+# prose flow (claude -p "/agent-harness:claim N") builds pick-next runs, --fg,
+# repair-class runs, and any run a caller hands a brief, because the driver has
+# no channel for one. `swarm.builder: "prose"` in harness.json puts every run on prose.
+#
+# Env: CLAIM_BUDGET_USD (default 150; per step on the driver), CLAIM_PERMISSION_MODE
+# (default auto; on the driver only when set), CLAIM_CLASS (recorded)
 
 set -uo pipefail
 
@@ -28,6 +34,10 @@ BUDGET="${CLAIM_BUDGET_USD:-150}"
 PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
 # The queue class the coordinator spawned it for, so a later tick can count runs by class.
 CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
+
+# Read before the owner rule is appended below: a re-exec'd copy sees the rule already in it.
+CALLER_BRIEF=0
+[ -n "${CLAIM_EXTRA:-}" ] && [ "$CLAIM_EXTRA" != "${HARNESS_OWNER_RULE:-}" ] && CALLER_BRIEF=1
 
 # The owner-question rule rides in CLAIM_EXTRA, which every copy appends: an older
 # install of the kit, re-exec'd below, carries none of it.
@@ -94,10 +104,33 @@ command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1
 
 mkdir -p "$RUNS_DIR" "$LOGS_DIR"
 
+# The builder. Pick-next mode (no ticket) stays prose: the driver builds one named ticket.
+BUILDER=prose; BUILDER_WHY="no ticket named: pick-next runs the prose claim"
+if [ -n "$TICKET" ]; then
+  BUILDER=$(toolkit_cfg swarm.builder 2>/dev/null) || BUILDER=driver
+  case "$BUILDER" in
+    driver) BUILDER_WHY="a new ticket build" ;;
+    prose)  BUILDER_WHY="swarm.builder is prose" ;;
+    *) echo "spawn-claim: swarm.builder is '$BUILDER' — want driver or prose" >&2; exit 2 ;;
+  esac
+  if [ "$BUILDER" = driver ] && [ "$CALLER_BRIEF" = 1 ]; then
+    BUILDER=prose; BUILDER_WHY="the caller sent a brief, which only the prose claim reads"
+  fi
+  if [ "$BUILDER" = driver ]; then
+    case "$CLASS" in repair|approved-merge) BUILDER=prose; BUILDER_WHY="a $CLASS run works an open PR, not a new build" ;; esac
+  fi
+fi
+DRIVER_BIN="${SPAWN_CLAIM_DRIVER:-$KIT_ROOT/driver/build-ticket}"
+if [ "$FG" -eq 0 ] && [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
+  echo "spawn-claim: no step driver at $DRIVER_BIN — set swarm.builder to \"prose\" in harness.json to build without it" >&2
+  exit 1
+fi
+
 PROMPT="/agent-harness:claim"
 [ -n "$TICKET" ] && PROMPT="/agent-harness:claim $TICKET"
 
 # --- foreground: a fresh window you can talk to --------------------------------
+# Always the prose claim: a person is watching it and can talk to it.
 # No run record and no budget cap here — --max-budget-usd is silently ignored
 # outside --print, and an interactive session you're watching doesn't need a
 # watchdog to notice it died. Its lock falls back to artifact-freshness.
@@ -197,13 +230,22 @@ stop_run_servers() {
   # subshell on every bash.
   CLAIM_SESSION_PID="${BASHPID:-$(exec sh -c 'echo $PPID')}"
   export CLAIM_SESSION_PID
-  claude -p "$PROMPT" \
-    --permission-mode "$PERM_MODE" \
-    --max-budget-usd "$BUDGET" \
-    --name "$RUN_ID" \
-    --add-dir "$TICKETS_DIR" \
-    --output-format stream-json --verbose \
-    >> "$LOG" 2>&1 &
+  printf -- '--- builder: %s (%s) ---\n' "$BUILDER" "$BUILDER_WHY" >> "$LOG"
+  if [ "$BUILDER" = driver ]; then
+    # One claude per step: the budget caps each, and the project's
+    # driver.permissionMode stands unless the spawner was given a mode.
+    DRIVER_STEP_BUDGET_USD="$BUDGET" \
+    DRIVER_PERMISSION_MODE="${CLAIM_PERMISSION_MODE:-${DRIVER_PERMISSION_MODE:-}}" \
+      bash "$DRIVER_BIN" "$TICKET" >> "$LOG" 2>&1 &
+  else
+    claude -p "$PROMPT" \
+      --permission-mode "$PERM_MODE" \
+      --max-budget-usd "$BUDGET" \
+      --name "$RUN_ID" \
+      --add-dir "$TICKETS_DIR" \
+      --output-format stream-json --verbose \
+      >> "$LOG" 2>&1 &
+  fi
   CLAUDE_PID=$!
   printf '%s\n' "$CLAUDE_PID" > "$RUNS_DIR/$RUN_ID.child"
   # macOS sleeps an idle machine mid-run, and the agent comes back to "Your computer
@@ -278,6 +320,7 @@ cat > "$RECORD" <<EOF
   "log": "$LOG",
   "ticket": "${TICKET:-}",
   "class": "$CLASS",
+  "builder": "$BUILDER",
   "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
@@ -285,6 +328,6 @@ cat > "$RECORD" <<EOF
 }
 EOF
 
-echo "→ spawned $RUN_ID (pid $SUBSHELL_PID), budget \$$BUDGET, permissions $PERM_MODE"
+echo "→ spawned $RUN_ID (pid $SUBSHELL_PID), builder $BUILDER, budget \$$BUDGET, permissions $PERM_MODE"
 echo "  log: $LOG"
 echo "  tail -f \"$LOG\" | jq -r 'select(.type==\"assistant\") | .message.content[]? | select(.type==\"text\") | .text'"
