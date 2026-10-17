@@ -69,6 +69,9 @@ want_in "how to resume"                  'Resume' "$(cat "$GH_LOG")"
 # channel, and the answer back on the queue. The hold is pixel sign-off, not this.
 want_in "the question reaches the owner's loop" 'issue edit 101 .*--add-label needs:owner-decision' "$(cat "$GH_LOG")"
 want_not_in "and the hold label stays off"   'needs:human-approval' "$(cat "$GH_LOG")"
+# The answer removes the owner's label; a status:parked beside it would block every spawn.
+want_not_in "an asked park adds no status:parked" 'issue edit 101 .*--add-label status:parked' "$(cat "$GH_LOG")"
+want_in "and still lets the claim label go" 'issue edit 101 .*--remove-label status:claimed' "$(cat "$GH_LOG")"
 want_in "and the claim is released"      'release 101' "$(cat "$RELEASES")"
 
 echo "--- the ORDER, which is the whole design: push · draft · brief · label · release ---"

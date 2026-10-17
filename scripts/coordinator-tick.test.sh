@@ -841,6 +841,29 @@ bash "$OQ" ask 503 scope "#503 is out of scope as written: narrow it, or widen t
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a judge's decision on a ticket also holds it" "" "$(spawned)"
 
+echo "--- a driver park's question, answered, reaches a run (status:parked does not outlive it) ---"
+# status:parked blocks every spawn; a park that asked left it beside the owner's label,
+# and the answer removed only the owner's label, so the ticket never ran again.
+fresh; : > "$GH_LOG"; fix_issue 601 OPEN "status:parked"
+bash "$OQ" ask 601 driver-park "Keep A or B?" >/dev/null
+bash "$W" answer decision:601:driver-park "B" >/dev/null
+want_not_in "the answer lifts status:parked" 'status:parked' "$(labels_of 601)"
+: > "$SPAWNS"
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 tick >/dev/null
+want "the answered park spawns"            "601" "$(spawned)"
+rm -f "$STATE/runs/claim-601-live.json"
+# Answered on GitHub (the owner's label taken off by hand): the sync lifts it too.
+fresh; : > "$GH_LOG"; fix_issue 602 OPEN "status:parked"
+bash "$OQ" ask 602 driver-park "Keep A or B?" >/dev/null
+fix_issue 602 OPEN "status:parked"
+bash "$OQ" sync >/dev/null
+want_not_in "answered on the ticket, the sync lifts it" 'status:parked' "$(labels_of 602)"
+# Any other question's answer leaves a park alone.
+fresh; fix_issue 603 OPEN "status:parked"
+bash "$OQ" ask 603 scope "Narrow it?" >/dev/null
+bash "$W" answer decision:603:scope "yes" >/dev/null
+want_in "a question that is not the park's leaves status:parked" 'status:parked' "$(labels_of 603)"
+
 echo "--- the owner's answer frees the ticket, wherever it is given ---"
 fresh; : > "$GH_LOG"; queue 501
 SWARM_SPAWN="$BIN/spawn-asks" COORDINATOR_SHADOW=0 tick >/dev/null
