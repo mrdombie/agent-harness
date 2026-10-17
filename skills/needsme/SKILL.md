@@ -373,7 +373,17 @@ Each unticked line is a candidate 🔴 row — but tier it like any other: re-re
 the PR or ticket it names first, because the line was true when written and
 may have been cleared since (a sign-off on GitHub clears the hold, not the
 line). When the item is resolved, tick its line (`- [x]`) so the next run does
-not offer it again. An absent file means the coordinator is not installed or
+not offer it again — except a `decision:<ticket>:<slug>` line: its ticket waits
+on the owner-decision label, and only the answer helper frees it. Never tick one
+by hand:
+
+```bash
+bash "$KIT_ROOT/scripts/needsme-watch.sh" answer "<key>" "<the answer, in the owner's words>"
+```
+
+It takes the label off, comments the answer, requeues the ticket and ticks the
+line; a step that fails leaves the line open and is retried. A line whose ticket
+no longer wears the label was answered on the ticket, and the next sync ticks it. An absent file means the coordinator is not installed or
 has raised nothing — say which only if `$STATE_DIR/coordinator/` exists.
 
 ---
@@ -587,7 +597,14 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
      window.
   5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer.
   When every PR is answered: `bash "$W" done <batch key>`.
-- **Any other kind** (`decision`, `blind`, `disk-low`, a keyless `line`) — one
+- **`decision`** whose key is `decision:<ticket>:<slug>` — a builder or the judge
+  asked about that ticket, and nothing spawns it until it is answered. One
+  `AskUserQuestion` with the row's text as the question and the options it names.
+  Then `bash "$W" answer <key> "<the answer, in the owner's words>"`: it takes the
+  owner-decision label off, comments the answer on the ticket, puts the ticket back
+  at the front of the queue with the answer in its note, and ticks the row. Use it
+  in place of `done`; a skipped decision gets no `answer` and stays waiting.
+- **Any other kind** (`blind`, `disk-low`, a keyless `line`) — one
   `AskUserQuestion` with the row's text as the question and the real choices it
   names, then act on the answer as Step 5 does. `bash "$W" done <key>`.
 

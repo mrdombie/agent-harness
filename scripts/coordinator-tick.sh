@@ -21,9 +21,11 @@
 #                    (coord_room) and under coordinator.cap when one is set;
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest; a class
-#                    with nothing spawnable lends its places to the other. Never
-#                    a ticket that is claimed, gated or on hold, and nothing
-#                    while the machine is busy (swarm_machine_busy)
+#                    with nothing spawnable lends its places to the other. The
+#                    room is re-read before each start after the first; under
+#                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
+#                    that is claimed, gated, on hold or wearing the owner-decision
+#                    label (owner-question.sh), and nothing while the machine is busy
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
@@ -262,6 +264,10 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   return 1
 }
 
+# Answers given anywhere free their tickets before anything is picked.
+OWNERQ="$SELF_DIR/owner-question.sh"
+if ! coord_shadow; then bash "$OWNERQ" sync 2>&1 | while IFS= read -r l; do say "owner: $l"; done; fi
+
 # The re-seed reads every scope's members and the claimable list, so it runs every
 # coordinator.refreshEveryMin, not every tick, and reads the open PRs from this
 # tick's copy rather than asking again.
@@ -394,7 +400,10 @@ elif [ "$SLOTS" -le 0 ]; then
 else
   candidates
   started=0
-  while [ "$started" -lt "$SLOTS" ]; do
+  # The room is re-read before each start after the first; near the floor that stops at one.
+  RAMP=$SLOTS; RAMP_WHY=""
+  if [ -n "$COORD_RAMP_MAX" ] && [ "$RAMP" -gt "$COORD_RAMP_MAX" ]; then RAMP=$COORD_RAMP_MAX; RAMP_WHY="coordinator.rampMax is $COORD_RAMP_MAX"; fi
+  while [ "$started" -lt "$RAMP" ]; do
     heal=$(first_of healing); new=$(first_of new)
     # Each class fills its own share first; a class with nothing spawnable lends
     # its places to the other, in both directions.
@@ -405,6 +414,16 @@ else
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$heal" ]; then pick="$heal"; lent="a new place"
     fi
     [ -n "$pick" ] || break
+    if [ "$started" -gt 0 ]; then
+      if ! again=$(coord_room fresh); then say "spawn: $started started, then no room: $again"; RAMP_WHY=""; break; fi
+      fit=$(( ${again%%$'\t'*} - RAMPING - started ))
+      if [ "$fit" -lt 1 ]; then say "spawn: $started started, and the re-read fits no more: ${again#*$'\t'}"; RAMP_WHY=""; break; fi
+      # A builder started seconds ago has used none of its memory yet: charge it.
+      MEM_LEFT=$(awk -v m="$(swarm_free_mem_gb)" -v n="$started" -v a="$COORD_AGENT_MEM_GB" 'BEGIN{ if (m !~ /^[0-9]+$/) exit 1; printf "%.1f", m - n * a }') || MEM_LEFT=""
+      if [ -z "$MEM_LEFT" ] || awk -v l="$MEM_LEFT" -v f="$COORD_RAMP_FREE_MEM_GB" 'BEGIN{exit !(l < f)}'; then
+        say "spawn: $started started, then ${MEM_LEFT:-unread} GB free after ${COORD_AGENT_MEM_GB} GB a start, under the ${COORD_RAMP_FREE_MEM_GB} GB a second start in one tick needs"; RAMP_WHY=""; break
+      fi
+    fi
     IFS=$'\t' read -r t cls note <<< "$pick"
     started=$((started+1))
     # Taken out of the candidates so the next pass picks the next one.
@@ -430,6 +449,9 @@ else
       [ -z "$brief" ] || rm -f "$brief"
     fi
   done
+  if [ -n "$RAMP_WHY" ] && [ "$started" -eq "$RAMP" ] && [ "$RAMP" -lt "$SLOTS" ] && [ -n "$CANDS" ]; then
+    say "spawn: $started this tick of $SLOTS place(s) — $RAMP_WHY"
+  fi
   if [ "$started" -eq 0 ] && [ -z "$CANDS" ]; then
     say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
   fi

@@ -86,6 +86,40 @@ the only thing a park can actually lose.**
 The user sees this on the board and via the hold label (`$HOLD_LABEL`). Whoever
 resumes clears the label and re-claims normally, reading the brief for context.
 
+**Ask the owner — from a spawned run.** A spawned builder (`claude -p`,
+`CLAIM_RUN_ID` set) has no question tool, and nobody reads its final message. A
+choice only the owner can make — one the spec's decision defaults do not cover —
+goes to the owner's channel, and the ticket waits for the answer:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/owner-question.sh" ask "$TICKET_KEY" <slug> \
+  "<the question, with its options in plain words: Fix A (…) or Fix B (…)?>"
+```
+
+It adds the owner-decision label (`labels.ownerDecision`, default
+`needs:owner-decision`), writes the `decision:<ticket>:<slug>` key to
+`needs-you.md` (through `coordinator-notify.sh --class owner`) and comments the
+question on the ticket. A non-zero exit means nothing was asked: run it again. The
+label is the whole waiting state — no spawner takes a ticket wearing it, and it
+comes off when the owner answers (in the owner's window, or on the ticket), which
+puts the ticket back on the queue with the answer in its note.
+
+Then hand off **without the sign-off hold**:
+
+1. Anything built: commit, push, and open a draft PR with a resume brief on the
+   issue, as the park above does — but **never add `$HOLD_LABEL`**. That label is
+   the owner's sign-off on pixels; only the owner removes it, and the answer
+   removes only the owner-decision label, so a question that carries it waits
+   forever. The hold comes only from evidence of changed pixels, at
+   `/agent-harness:finish`, as on any other PR.
+2. Nothing built: release the claim.
+3. End with the banner's `Paused on: the owner — <the question>`.
+
+Never end the run with "the question tool doesn't exist in this run" or with the
+question only in the last message: nothing reads either, and the ticket is
+respawned to ask it again. In an interactive session, ask with `AskUserQuestion`
+as usual.
+
 What a spawned agent still handles alone: the `/agent-harness:ui-gate` frontend review at `/agent-harness:finish` — that is an agent, not a person — and attaching the branch and route to the PR so evidence waits for the PM rather than blocking on them.
 
 **Never spawn `/design` itself.** Invoked directly, it is an interactive two-phase flow and needs a human present from the start.

@@ -151,7 +151,25 @@ printf '%s\tbudget=%s\tbrief=%s\n' "$1" "${CLAIM_BUDGET_USD:-}" \
 echo "→ spawned claim-$1"
 SH
 
-  chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn"
+  # ---- stub: gh whose issue edits stick ---------------------------------------
+  # The stub above, except an --add-label / --remove-label changes what the next
+  # `issue view` of that ticket reads. For suites where a label IS the state.
+  cat > "$BIN/gh-labels" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "issue edit" ] && [ -f "$FIX/gh/issue-$3.json" ]; then
+  f="$FIX/gh/issue-$3.json"; prev=""
+  for a in "$@"; do
+    case "$prev" in
+      --add-label)    jq --arg l "$a" '.labels = (((.labels // []) + [{name:$l}]) | unique_by(.name))' "$f" > "$f.t" && mv "$f.t" "$f" ;;
+      --remove-label) jq --arg l "$a" '.labels = ((.labels // []) | map(select(.name != $l)))' "$f" > "$f.t" && mv "$f.t" "$f" ;;
+    esac
+    prev="$a"
+  done
+fi
+exec "$BIN/gh" "$@"
+SH
+
+  chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn" "$BIN/gh-labels"
 
   export FIX REPO STATE BIN GH_LOG SPAWNS
   export PATH="$BIN:$PATH"

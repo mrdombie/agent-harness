@@ -686,4 +686,155 @@ COORDINATOR_SHADOW=0 tick >/dev/null
 for _ in $(seq 1 50); do ls "$C"/judges/*.brief >/dev/null 2>&1 && break; sleep 0.1; done
 want_in "the judge's brief names every scope" 'Scope \(a ticket under any one of these is in scope\): project:alpha, area:BETA' "$(cat "$C"/judges/*.brief)"
 
+echo "--- a builder's owner question reaches the owner, and the ticket waits for the answer ---"
+OQ="$HERE/owner-question.sh"; W="$HERE/needsme-watch.sh"
+# The label is the waiting state, so these cases run on a gh whose label edits stick.
+export SWARM_GH="$BIN/gh-labels"
+labels_of() { jq -r '[.labels[].name] | join(",")' "$FIX/gh/issue-$1.json"; }
+# A spawned builder that needs the owner's pick: it asks through the kit and ends with no branch.
+cat > "$BIN/spawn-asks" <<'SH'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "$1" "${CLAIM_CLASS:-}" >> "$SPAWNS"
+bash "$OQ" ask "$1" "fix-a-or-b" "Fix A (retry the call) or Fix B (drop the cache)?" >/dev/null
+printf '{"run_id":"claim-%s-asks","ticket":"%s","child_pid":1,"log":"/dev/null"}\n' "$1" "$1" > "$STATE/runs/claim-$1-asks.json"
+printf '{"exit_code":0}\n' > "$STATE/runs/claim-$1-asks.ended"
+SH
+chmod +x "$BIN/spawn-asks"; export OQ
+fresh; : > "$GH_LOG"; queue 501
+SWARM_SPAWN="$BIN/spawn-asks" COORDINATOR_SHADOW=0 tick >/dev/null
+want "the builder ran"                     "501" "$(spawned)"
+want_in "its question is in needs-you.md under a decision key" '^- \[ \] .*#501: Fix A \(retry the call\) or Fix B \(drop the cache\)\? <!-- key:decision:501:fix-a-or-b -->' "$(cat "$C/needs-you.md")"
+want_in "the ticket wears the owner-decision label" 'needs:owner-decision' "$(labels_of 501)"
+want_in "and the question is on the ticket" 'issue comment 501 .*Waiting on the owner' "$(cat "$GH_LOG")"
+want_in "the watcher offers it as a decision" $'^decision:501:fix-a-or-b\tdecision\t#501: Fix A' "$(bash "$W" pending --no-forge)"
+# Released back to ready, the way the reconciler leaves it, and queued again.
+bash "$Q" add 501 >/dev/null; : > "$SPAWNS"
+out=$(SWARM_SPAWN="$BIN/spawn-asks" COORDINATOR_SHADOW=0 tick)
+want "the next tick does not respawn a ticket waiting on the owner" "" "$(spawned)"
+want_in "and says why"                     'skip #501 \(new\): needs:owner-decision' "$out"
+want_in "the line is still open"           '^- \[ \] .*key:decision:501:fix-a-or-b' "$(cat "$C/needs-you.md")"
+
+fresh; queue 502; fix_issue 502 OPEN "status:ready,needs:owner-decision"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "the label alone keeps it from every spawner" "" "$(spawned)"
+want_in "named"                            'skip #502 \(new\): needs:owner-decision' "$out"
+
+# The judge's decision path: owner-question.sh ask, the same label.
+fresh; queue 503
+bash "$OQ" ask 503 scope "#503 is out of scope as written: narrow it, or widen the scope?" >/dev/null
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a judge's decision on a ticket also holds it" "" "$(spawned)"
+
+echo "--- the owner's answer frees the ticket, wherever it is given ---"
+fresh; : > "$GH_LOG"; queue 501
+SWARM_SPAWN="$BIN/spawn-asks" COORDINATOR_SHADOW=0 tick >/dev/null
+bash "$Q" add 777 >/dev/null; fix_issue 777 OPEN "status:ready"
+out=$(bash "$W" answer decision:501:fix-a-or-b "Fix B, and keep the cache warm on start")
+want_in "it says what it did"              'answered: decision:501:fix-a-or-b — #501 back on the queue \(new\)' "$out"
+want "the label comes off"                 "status:ready" "$(labels_of 501)"
+want_in "the answer is on the ticket"      'issue comment 501 .*The owner answered.*Fix B, and keep the cache warm' "$(cat "$GH_LOG")"
+want "it goes back at the front of the queue" "501" "$(jq -r '.tickets[0].n' "$C/queue.json")"
+want_in "with the answer in its note"      'Fix B, and keep the cache warm on start' "$(jq -r '.tickets[0].note' "$C/queue.json")"
+want_in "its needs-you line is ticked"     '^- \[x\] .*key:decision:501:fix-a-or-b' "$(cat "$C/needs-you.md")"
+want "and never offered again"             "" "$(bash "$W" pending --no-forge | cut -f1 | grep -x 'decision:501:fix-a-or-b')"
+: > "$SPAWNS"
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 tick >/dev/null
+want "the next tick spawns it first"       "501" "$(spawned)"
+want_in "the builder is handed the answer" 'spawn	501	new — The owner answered decision:501:fix-a-or-b: Fix B' "$(awk -F'\t' '$3=="spawn"' "$C/actions.log" | cut -f3-)"
+rm -f "$STATE/runs/claim-501-live.json"
+bash "$OQ" ask 501 fix-a-or-b "Now: keep the old cache file, or delete it?" >/dev/null
+want_in "a second question on it takes a fresh key" 'key:decision:501:fix-a-or-b-2 -->' "$(grep '^- \[ \]' "$C/needs-you.md")"
+want "a watcher answer needs a decision key" "2" "$(bash "$W" answer blind:x "y" >/dev/null 2>&1; echo $?)"
+
+# Answered on GitHub: a reply and the label taken off by hand. The next tick frees it.
+fresh; queue 501
+SWARM_SPAWN="$BIN/spawn-asks" COORDINATOR_SHADOW=0 tick >/dev/null
+fix_issue 501 OPEN "status:ready"; : > "$SPAWNS"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "the label taken off on the ticket: the next tick spawns it" "501" "$(spawned)"
+want_in "and says it was answered there"   'owner: answered elsewhere: decision:501:fix-a-or-b' "$out"
+want_in "the open line is ticked"          '^- \[x\] .*key:decision:501:fix-a-or-b' "$(cat "$C/needs-you.md")"
+want_in "the builder is told where the answer is" 'answered decision:501:fix-a-or-b on the ticket itself' "$(awk -F'\t' '$3=="spawn"' "$C/actions.log" | cut -f5)"
+
+# The forge refusing the label change: the line stays open, the answer pending, and a later sync lands it.
+fresh; queue 501
+SWARM_SPAWN="$BIN/spawn-asks" COORDINATOR_SHADOW=0 tick >/dev/null
+cat > "$BIN/gh-down" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in "issue edit") exit 1 ;; esac
+exec "$BIN/gh-labels" "$@"
+SH
+chmod +x "$BIN/gh-down"
+SWARM_GH="$BIN/gh-down" bash "$W" answer decision:501:fix-a-or-b "Fix A" >/dev/null 2>&1
+want "a failed answer exits non-zero"      "1" "$(SWARM_GH="$BIN/gh-down" bash "$OQ" answer decision:501:fix-a-or-b "Fix A" >/dev/null 2>&1; echo $?)"
+want_in "the line stays open"              '^- \[ \] .*key:decision:501:fix-a-or-b' "$(cat "$C/needs-you.md")"
+want "the ticket still waits"              "needs:owner-decision" "$(bash "$OQ" waiting 501)"
+want "the owner is not asked again"        "" "$(bash "$W" pending --no-forge | cut -f1 | grep -x 'decision:501:fix-a-or-b')"
+: > "$SPAWNS"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "the next tick replays it: the ticket is freed and spawned" "501" "$(spawned)"
+want_in "with the answer it was given"     'The owner answered decision:501:fix-a-or-b: Fix A' "$(awk -F'\t' '$3=="spawn"' "$C/actions.log" | cut -f5)"
+want_in "the line is ticked once it lands" '^- \[x\] .*key:decision:501:fix-a-or-b' "$(cat "$C/needs-you.md")"
+export SWARM_GH="$BIN/gh"
+
+echo "--- starts ramp to the headroom: the room re-read between starts, one a tick near the floor ---"
+export SWARM_CORES=10
+# A spawner that moves the machine's reading the moment it starts one, as a real start does.
+cat > "$BIN/spawn-fills" <<'SH'
+#!/usr/bin/env bash
+"$BIN/spawn-live" "$1"
+[ -n "${FILL_FILE:-}" ] && printf '%s\n' "$FILL_TO" > "$FILL_FILE"
+exit 0
+SH
+chmod +x "$BIN/spawn-fills"
+ramp_tick() { SWARM_SPAWN="$BIN/spawn-fills" COORDINATOR_SHADOW=0 tick; }
+fresh; queue 501 502 503; printf '99\n' > "$FIX/idle"
+out=$(SWARM_IDLE_FILE="$FIX/idle" FILL_FILE="$FIX/idle" FILL_TO=20 ramp_tick)
+want "the CPU fills after the first start: the re-read stops the second" "501" "$(spawned)"
+want_in "and says so"                      'spawn: 1 started, then no room: cpu idle 20%' "$out"
+fresh; queue 501 502 503; printf '99\n' > "$FIX/idle"
+out=$(SWARM_IDLE_FILE="$FIX/idle" FILL_FILE="$FIX/idle" FILL_TO=99 ramp_tick)
+want "the reading holds: all three start (the guard flags nothing correct)" "501 502 503" "$(spawned)"
+fresh; queue 501 502 503; printf '16\n' > "$FIX/mem"
+out=$(SWARM_FREE_MEM_FILE="$FIX/mem" FILL_FILE="$FIX/mem" FILL_TO=5 ramp_tick)
+want "memory drops under the ramp floor after one start: no second" "501" "$(spawned)"
+want_in "and says so"                      'spawn: 1 started, then 3.5 GB free after 1.5 GB a start, under the 8 GB a second start in one tick needs' "$out"
+fresh; queue 501 502 503
+out=$(SWARM_FREE_MEM_GB=6 ramp_tick)
+want "near the memory floor: one start a tick, though the CPU fits more" "501" "$(spawned)"
+want_in "and says so"                      'spawn: 1 started, then 4.5 GB free after 1.5 GB a start, under the 8 GB a second start in one tick needs' "$out"
+fresh; queue 501 502 503
+SWARM_FREE_MEM_GB=6 COORDINATOR_RAMP_FREE_MEM_GB=3 ramp_tick >/dev/null
+want "the ramp floor is configurable"     "501 502 503" "$(spawned)"
+fresh; queue 501 502 503 504
+out=$(COORDINATOR_RAMP_MAX=2 ramp_tick)
+want "coordinator.rampMax caps the starts in one tick" "501 502" "$(spawned)"
+want_in "and says so"                      'coordinator.rampMax is 2' "$out"
+fresh; queue 501 502 503 504
+out=$(SWARM_FREE_MEM_GB=10 ramp_tick)
+want "each start this tick is charged 1.5 GB: 10 GB free starts two" "501 502" "$(spawned)"
+want_in "and says so"                      'spawn: 2 started, then 7.0 GB free after 1.5 GB a start' "$out"
+fresh; queue 501 502 503 504
+SWARM_FREE_MEM_GB=10 COORDINATOR_AGENT_MEM_GB=0.5 ramp_tick >/dev/null
+want "the charge is configurable"          "501 502 503 504" "$(spawned)"
+# Through the real sample path: the 5s shared sample and the median, no fixed reading.
+cat > "$BIN/sampler" <<'SH'
+#!/usr/bin/env bash
+cat "$FIX/sample"
+SH
+chmod +x "$BIN/sampler"
+cache_tick() { # <cached idle> <what a new sample reads>
+  printf '%s %s\n' "$(date +%s)" "$1" > "$FIX/cpu-cache"; : > "$FIX/cpu-hist"; printf '%s\n' "$2" > "$FIX/sample"
+  env -u SWARM_IDLE -u SWARM_IDLE_FILE SWARM_IDLE_CACHE="$FIX/cpu-cache" SWARM_IDLE_HISTORY="$FIX/cpu-hist" \
+    SWARM_IDLE_SAMPLER="$BIN/sampler" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1
+}
+fresh; queue 501 502 503
+out=$(cache_tick 99 20)
+want "the shared sample says 99%, a new one 20%: the re-read sees the 20" "501" "$(spawned)"
+want_in "and says so"                      'spawn: 1 started, then no room: cpu idle 20%' "$out"
+fresh; queue 501 502 503
+cache_tick 99 99 >/dev/null
+want "a new sample that agrees: all three (the guard flags nothing correct)" "501 502 503" "$(spawned)"
+export SWARM_IDLE=90; unset SWARM_CORES
+
 exit $FAILED

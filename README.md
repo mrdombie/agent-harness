@@ -132,6 +132,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `programmes.brief` is optional: a command that prints the BRIEF of a programme's state file, with `{{EPIC}}` and `{{FILE}}` substituted. These files are append-only and grow for as long as the programme is open, and a step handed the whole thing designs from the programme's history rather than from its own ticket. The driver finds the file by **what it says** — the state file whose content names the ticket's programme label — never by its filename: on the project this was measured on all 29 files are named for the epic and the label lives in the body, so a filename glob matched none of them.
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
+- `labels.ownerDecision` is optional (default `needs:owner-decision`): the label a ticket wears while a question only the owner can answer is open on it (`scripts/owner-question.sh`). No spawner takes a ticket wearing it.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
 - `lesson` is optional, and only `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes or references, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`), `guardPatterns` (default: test, lint and gate globs such as `**/*.test.*`, `**/eslint-rules/**`, `**/*.semgrep.yml`, `**/check-*.*`, `**/gates/**`, plus `tests.patterns`; set, it replaces both) and `guardExclude` (default `*.md`, `*.mdx`, `*.txt`, `*.rst`, `docs/**` and the like). A pattern with no `/` matches the file name anywhere; one with a `/` is anchored at the repo root; `*` stays inside a directory and `**` crosses. It is read at the base commit. `HARNESS_GUARD_PATTERNS` (space-separated) can only narrow the guard set. A value that is not a list is a refusal.
@@ -371,6 +372,9 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `agentCpuCores` | 0.8 | Cores one builder uses (measured 2026-10-16: two builders at 167–182%). The idle above `keepCpuIdle` starts as many builders as it fits |
 | `rampMin` | 10 | A builder started this many minutes ago or less still counts against the room, because the idle reading has not seen its load yet |
 | `minFreeMemGb` | 4 | Free memory (GB) needed to start one more builder: what the kernel reports available (`kern.memorystatus_level`, or `MemAvailable`) less swap in use |
+| `rampFreeMemGb` | 8 | Free memory (GB) needed to start more than one builder in a tick, read again before each start after the first; under it, one start a tick |
+| `rampMax` | unset | The most starts in one tick. Unset, the room decides |
+| `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
@@ -395,6 +399,28 @@ open PR. The tick log shows
 `ceiling: 7 running · room for 1 more: cpu idle 31%, 9 GB free` and
 `split: 3 new · 1 healing · 2 reds waiting`, and `capacity.json` beside the queue
 holds the same for the live view.
+
+**Starts ramp to the headroom.** After the first start of a tick the room is read
+again before each next one: a new CPU sample, never the shared 5-second one, and
+the lower of it and the median; the builders started this tick counted against
+the fit; and each of them charged `agentMemGb` against free memory, because a
+builder started seconds ago has used none of its memory yet. A start that eats the
+headroom stops the rest; under `rampFreeMemGb` after the charge, a tick starts one.
+
+**A ticket waiting on the owner is never respawned.** The owner-decision label
+(`labels.ownerDecision`, default `needs:owner-decision`) is the one truth for it:
+every spawner skips a ticket wearing it. A spawned builder has no question tool;
+when only the owner can decide, it runs `scripts/owner-question.sh ask <ticket>
+<slug> "<question>"` — the kit hands the rule, with that script's absolute path,
+to the builder in `CLAIM_EXTRA`, which a project's own spawn-claim copy appends
+too. It labels the ticket, then writes `decision:<ticket>:<slug>` to
+`needs-you.md`. A question parks without the sign-off hold. The answer —
+`needsme-watch.sh answer <key> "<answer>"`, from the watcher or the board walk —
+takes the label off, comments it, and puts the ticket back at the front of the
+queue with the answer in its note. A step that fails leaves the answer in
+`answers.pending` and the line open, and `owner-question.sh sync` (each live tick,
+and each watcher board pass) replays it. An open line whose ticket no longer wears
+the label was answered on the ticket: sync ticks it and requeues the ticket.
 
 ### The merge lane — one PR into the trunk at a time
 

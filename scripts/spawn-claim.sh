@@ -29,6 +29,21 @@ PERM_MODE="${CLAIM_PERMISSION_MODE:-auto}"
 # The queue class the coordinator spawned it for, so a later tick can count runs by class.
 CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 
+# The owner-question rule rides in CLAIM_EXTRA, which every copy appends: an older
+# install of the kit, re-exec'd below, carries none of it.
+case " $* " in *" --fg "*) ;; *)
+  if [ -z "${HARNESS_OWNER_RULE:-}" ] && [ -f "$SCRIPT_DIR/owner-question.sh" ]; then
+    _oq_label=$(toolkit_cfg labels.ownerDecision 2>/dev/null) || _oq_label=needs:owner-decision
+    HARNESS_OWNER_RULE="Owner questions: you have no question tool and nobody reads your last message. When only the owner can decide something the spec does not, run: bash \"$SCRIPT_DIR/owner-question.sh\" ask <ticket> <slug> \"<the question, its options in plain words>\" — it labels the ticket $_oq_label, puts the question in the owner's channel, and nothing respawns the ticket until the answer comes back on the queue. A non-zero exit means nothing was asked: run it again. Then, if anything is built, commit, push and open a draft PR with a resume brief on the issue, and never add $HOLD_LABEL: that is the owner's pixel sign-off, and the answer does not remove it. If nothing is built, release the claim. Never end with 'no question tool' or with the question only in your final message."
+    export HARNESS_OWNER_RULE
+    CLAIM_EXTRA="${CLAIM_EXTRA:+$CLAIM_EXTRA
+
+}$HARNESS_OWNER_RULE"
+    export CLAIM_EXTRA
+    unset _oq_label
+  fi ;;
+esac
+
 # Every spawner passes here before the re-exec below, so the plan's limit is checked once for all of them.
 case " $* " in *" --fg "*) ;; *)
   if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/../swarm/swarm-env.sh" ] \
