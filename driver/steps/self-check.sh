@@ -71,11 +71,23 @@ _driver_note_changelog_skip() {
   return 0
 }
 
+# The compiler's or runner's own error lines when it printed any, else the tail.
+_driver_gate_lines() { # <file>
+  local l
+  l=$(grep -E 'error TS[0-9]+|(^|[[:space:]])(error|Error|FAIL)[:[:space:]]' "$1" 2>/dev/null | head -3)
+  [ -n "$l" ] || l=$(tail -3 "$1" 2>/dev/null)
+  printf '%s' "$l" | tr '\n' ' ' | tr -s ' ' | cut -c1-400
+}
+
+_driver_order_has() { case " ${DRIVER_STEPS:-} " in *" $1 "*) return 0 ;; esac; return 1; }
+
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
-  local wt names row name safe cmd rc gtype failed=0 ran=0 empty=""
+  local wt names row name safe cmd rc gtype failed=0 ran=0 empty="" redlines="" infra="" findings
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  findings="$(driver_state_dir "$t")/steps/self-check.findings.json"
+  rm -f "$findings" "$findings.rows"
   # Said before the gates run, and through the ticket's log: each gate's own output goes
   # to a file, so a warning printed inside one is a warning nobody sees.
   driver_check_timeout || true
@@ -90,6 +102,7 @@ driver_step_self_check() { # <ticket>
   gtype=$(jq -r '(.gates // {}) | type' "$HARNESS_CFG" 2>/dev/null)
   if [ "$gtype" != "object" ]; then
     driver_say "✋ self-check: harness.json's 'gates' is a ${gtype:-unreadable value}, and this reads an object of name to command."
+    driver_state_set "$t" park_note "the gates in harness.json are a ${gtype:-unreadable value}; self-check reads an object of name to command"
     return "$DRIVER_E_REFUSED"
   fi
   # ONE TAB-SEPARATED `name<TAB>command` PER LINE, from whichever shape this project
@@ -112,12 +125,15 @@ driver_step_self_check() { # <ticket>
   fi
   if [ -z "$names" ]; then
     driver_say "✋ self-check: harness.json configures no local 'gates' command. A check that never ran reports exactly like one that found nothing, so this refuses rather than passing."
+    driver_state_set "$t" park_note "harness.json configures no gate command for self-check to run"
     return "$DRIVER_E_REFUSED"
   fi
 
   # Heavy local work waits for the machine: under the load ceiling, then one gate
   # slot held across every gate. It waits as long as it takes; it never parks.
-  . "$KIT_ROOT/scripts/machine-gate.sh" || return "$DRIVER_E_REFUSED"
+  . "$KIT_ROOT/scripts/machine-gate.sh" || {
+    driver_state_set "$t" park_note "self-check could not load $KIT_ROOT/scripts/machine-gate.sh, so no gate ran"
+    return "$DRIVER_E_REFUSED"; }
   machine_gate_wait_load 0
   machine_gate_acquire 0 "self-check #$t"
 
@@ -133,7 +149,7 @@ driver_step_self_check() { # <ticket>
     ran=$((ran+1))
     safe=$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-')
     # Its own command, its own exit code, nothing batched with it.
-    ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+    ( cd "$wt" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
     rc=$?
     if [ "$rc" -eq 124 ]; then
       # Its own outcome, not a red gate. A gate that does not return says nothing about
@@ -148,6 +164,12 @@ driver_step_self_check() { # <ticket>
     else
       failed=$((failed+1))
       driver_say "✋ self-check: $name failed (exit $rc) — $(tail -3 "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>/dev/null | tr '\n' ' ')"
+      redlines="$redlines${redlines:+ | }$name (\`$cmd\`, exit $rc): $(_driver_gate_lines "$(driver_state_dir "$t")/steps/gate-$safe.out")"
+      # 126/127: the command itself could not run — configuration, not the change.
+      case "$rc" in 126|127) infra="$infra $name" ;; esac
+      jq -cn --arg id "gate-$safe" --arg name "$name" --arg cmd "$cmd" --argjson rc "$rc" \
+        --arg out "$(tail -60 "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>/dev/null | cut -c1-400)" \
+        '{id: $id, gate: $name, command: $cmd, exit: $rc, output: $out}' >> "$findings.rows"
     fi
   done <<EOS
 $names
@@ -159,12 +181,37 @@ EOS
   # OK, so ship pushed and armed auto-merge on code nothing had checked.
   if [ "$ran" -eq 0 ]; then
     driver_say "✋ self-check: every configured gate has an empty command (${empty# }), so nothing ran. Nothing having run is not everything having passed."
+    driver_state_set "$t" park_note "every configured gate has an empty command (${empty# }), so nothing ran"
     return "$DRIVER_E_REFUSED"
   fi
   if [ "$failed" -gt 0 ]; then
     driver_say "✋ self-check: $failed of $ran gate(s) red. The local gate IS the gate — nothing is pushed past it."
+    # The failing gates travel with the refusal: a park pointing at a log on the host
+    # that ran it is a reason nobody else can read.
+    driver_state_set "$t" park_note "$failed of $ran gate(s) red — $redlines"
+    # ONE REPAIR ROUND, then a park. A gate the model can repair goes to fix with its
+    # output as the finding, inside the fix-round ceiling; a second red parks.
+    local reds fixes
+    reds=$(driver_state_count "$t" selfcheck_red); fixes=$(driver_state_count "$t" fix)
+    driver_state_bump "$t" selfcheck_red
+    if [ -n "$infra" ]; then
+      driver_say "   self-check: not sent to fix —${infra} could not run at all (exit 126/127), which is configuration, not the change."
+    elif [ "${reds:-0}" -ge 1 ]; then
+      driver_say "   self-check: not sent to fix — this is the second red self-check on this run."
+    elif [ "${fixes:-0}" -ge "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
+      driver_say "   self-check: not sent to fix — the $DRIVER_MAX_REVIEW_ROUNDS fix round(s) are used."
+    elif ! _driver_order_has fix; then
+      driver_say "   self-check: not sent to fix — this run has no fix step."
+    else
+      jq -s . "$findings.rows" > "$findings" && rm -f "$findings.rows"
+      driver_state_set "$t" park_note ""
+      driver_say "↩ self-check: $failed red gate(s) go to fix with their output as the findings."
+      return "$DRIVER_E_REWORK"
+    fi
+    rm -f "$findings.rows"
     return "$DRIVER_E_REFUSED"
   fi
+  rm -f "$findings.rows"
   driver_say "   self-check: $ran gate(s) green"
   return "$DRIVER_OK"
 }

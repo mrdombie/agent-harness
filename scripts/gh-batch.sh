@@ -13,6 +13,12 @@
 #                                   came back with no data at all
 #   gh_prs_by_head_batch <branch…>  {"<branch>": [{number,state}…]}, newest
 #                                   first, same shape and exit as above
+#   gh_open_prs [max-age-sec]       the open PRs, from one shared copy (prs.json)
+#                                   every reader takes while it is young enough
+#   gh_allowance_read / _low        what is left of the hourly allowance (free reads);
+#                                   _low holds below GH_ALLOWANCE_LOW_PCT (10)
+#   gh_limit_why                    the rate limit and its reset, as a sentence
+#   gh_calls_tally <since> [caller] who spent it, from gh-calls.log
 #
 # Why: on 2026-10-16 a coordinator tick made 101 gh calls (59 of them one
 # `gh issue view` per queued ticket) and its housekeeping 89 more, all on the
@@ -21,7 +27,8 @@
 # everyone, and the tick, unable to read the open PRs, started nothing.
 #
 # Seams: SWARM_GH (the gh binary, default gh), SWARM_NOW (the clock),
-# GH_BACKOFF_FILE (default $STATE_DIR/swarm/gh-backoff).
+# GH_BACKOFF_FILE (default $STATE_DIR/swarm/gh-backoff); GH_PRS_FILE, GH_CALLS_FILE
+# and GH_ALLOWANCE_FILE sit beside it.
 
 gh_batch_bin()  { printf '%s' "${SWARM_GH:-gh}"; }
 gh_batch_now()  { if [ -n "${SWARM_NOW:-}" ]; then printf '%s' "$SWARM_NOW"; else date +%s; fi; }
@@ -60,6 +67,109 @@ gh_backoff_note() {
   return 0
 }
 
+# ---- who spends the allowance ------------------------------------------------
+# One line per call that reached GitHub: <epoch> \t <caller> \t <verb>. The caller
+# is GH_CALLER when a parent set it (the tick sets it for everything it runs),
+# else the script's own name.
+gh_calls_file() { printf '%s' "${GH_CALLS_FILE:-$(dirname "$(gh_backoff_file)")/gh-calls.log}"; }
+gh_calls_note() { # <args…>
+  local f; f=$(gh_calls_file)
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  printf '%s\t%s\t%s %s\n' "$(gh_batch_now)" "${GH_CALLER:-$(basename "${0:-?}" .sh)}" "${1:-}" "${2:-}" >> "$f" 2>/dev/null || true
+}
+# gh_calls_tally <since-epoch> [caller] — "caller N, caller N" (most first), or the count for one caller.
+gh_calls_tally() {
+  local f; f=$(gh_calls_file); [ -s "$f" ] || { [ -n "${2:-}" ] && printf '0'; return 0; }
+  if [ -n "${2:-}" ]; then
+    awk -F'\t' -v s="$1" -v c="$2" '$1 >= s && $2 == c { n++ } END { printf "%d", n }' "$f"
+  else
+    awk -F'\t' -v s="$1" '$1 >= s { n[$2]++ } END { for (k in n) printf "%d\t%s\n", n[k], k }' "$f" \
+      | sort -rn | awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $2, $1 }'
+  fi
+}
+# Keeps the last two hours, so the tally stays a cheap read.
+gh_calls_trim() {
+  local f; f=$(gh_calls_file); [ -s "$f" ] || return 0
+  awk -F'\t' -v s="$(( $(gh_batch_now) - 7200 ))" '$1 >= s' "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+}
+
+# ---- how much of the allowance is left ---------------------------------------
+# Both readings cost nothing against the allowance and answer while it is spent.
+# GraphQL's own rateLimit, never `gh api rate_limit`'s graphql entry: measured
+# 2026-10-17 they disagreed (285 used vs 1190) and only the first moved with gh calls.
+gh_allowance_file() { printf '%s' "${GH_ALLOWANCE_FILE:-$(dirname "$(gh_backoff_file)")/gh-allowance}"; }
+GH_ALLOWANCE_LOW_PCT="${GH_ALLOWANCE_LOW_PCT:-10}"
+
+# gh_allowance_read — writes and prints <resource> \t <remaining> \t <limit> \t <reset-epoch>, one row each.
+gh_allowance_read() {
+  local g c rows="" f
+  g=$("$(gh_batch_bin)" api graphql -i -f query='query{rateLimit{remaining}}' 2>/dev/null \
+      | tr -d '\r' | awk -F': *' 'tolower($1) == "x-ratelimit-remaining" { r = $2 } tolower($1) == "x-ratelimit-limit" { l = $2 }
+                                 tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "" && l != "" && t != "") printf "graphql\t%s\t%s\t%s", r, l, t }')
+  c=$("$(gh_batch_bin)" api rate_limit --jq '.resources.core | "core\t\(.remaining)\t\(.limit)\t\(.reset)"' 2>/dev/null)
+  for r in "$g" "$c"; do
+    printf '%s' "$r" | grep -qE '^[a-z]+	[0-9]+	[0-9]+	[0-9]+$' && rows="$rows$r"$'\n'
+  done
+  [ -n "$rows" ] || return 1
+  f=$(gh_allowance_file); mkdir -p "$(dirname "$f")" 2>/dev/null
+  printf '%s' "$rows" > "$f.$$" && mv -f "$f.$$" "$f"
+  printf '%s' "$rows"
+}
+
+# gh_allowance_low — 0 while a resource is under GH_ALLOWANCE_LOW_PCT of its limit
+# and its reset is still ahead; prints <resource> \t <remaining> \t <limit> \t <reset-epoch>.
+gh_allowance_low() {
+  local f; f=$(gh_allowance_file); [ -s "$f" ] || return 1
+  awk -F'\t' -v now="$(gh_batch_now)" -v p="$GH_ALLOWANCE_LOW_PCT" '
+    $4 + 0 > now + 0 && $3 + 0 > 0 && $2 * 100 < $3 * p { if (!found || $2 / $3 < best) { best = $2 / $3; row = $0; found = 1 } }
+    END { if (found) { print row; exit 0 } exit 1 }' "$f"
+}
+
+# gh_limit_why — one sentence naming the rate limit and its reset, when that is why GitHub is refusing.
+gh_limit_why() {
+  local row until
+  if row=$(gh_allowance_low); then
+    printf "GitHub's hourly API allowance is spent: %s %s of %s left until %s" "$(cut -f1 <<<"$row" | sed 's/graphql/GraphQL/; s/core/REST/')" \
+      "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$(gh_batch_clock "$(cut -f4 <<<"$row")")"
+    return 0
+  fi
+  if until=$(gh_backoff_active); then
+    printf 'GitHub is rate-limiting this token until %s' "$(gh_batch_clock "$until")"; return 0
+  fi
+  return 1
+}
+gh_batch_clock() { date -u -r "$1" +%H:%MZ 2>/dev/null || date -u -d "@$1" +%H:%MZ 2>/dev/null; }
+
+# ---- the open pull requests, read once and shared ----------------------------
+# Every reader takes this file while it is younger than the age it can bear; past
+# that, the first one to ask reads GitHub for all of them. Its mtime is its time.
+GH_PRS_FIELDS="${GH_PRS_FIELDS:-number,headRefName,headRefOid,baseRefName,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt}"
+gh_prs_file() { printf '%s' "${GH_PRS_FILE:-$(dirname "$(gh_backoff_file)")/prs.json}"; }
+gh_prs_age() { # seconds since it was written; 1 when there is none
+  local f m; f=$(gh_prs_file); [ -s "$f" ] || return 1
+  # GNU first: GNU `stat -f %m` prints filesystem blurb to stdout and still succeeds in part.
+  m=$(stat -c %Y "$f" 2>/dev/null); case "$m" in ''|*[!0-9]*) m=$(stat -f %m "$f" 2>/dev/null) ;; esac
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' $(( $(gh_batch_now) - m ))
+}
+
+# gh_open_prs [max-age-sec] — the open PRs as a JSON array. 0 asks GitHub now (the
+# tick); otherwise the shared copy while it is that young. Below the allowance
+# floor only a 0 asks, and every other reader takes the copy whatever its age.
+gh_open_prs() {
+  local max="${1:-${GH_PRS_MAX_AGE:-300}}" age f slug prs
+  f=$(gh_prs_file)
+  if age=$(gh_prs_age); then
+    if [ "$max" -gt 0 ] && { [ "$age" -le "$max" ] || gh_allowance_low >/dev/null; }; then cat "$f"; return 0; fi
+  fi
+  slug="${GH_REPO:-${REPO_SLUG:-}}"; [ -n "$slug" ] || return 1
+  prs=$(gh_call pr list --repo "$slug" --state open --limit 200 --json "$GH_PRS_FIELDS" 2>/dev/null)
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs" || return 1
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  printf '%s\n' "$prs" > "$f.$$" && mv -f "$f.$$" "$f"
+  printf '%s\n' "$prs"
+}
+
 # gh_call <args…> — gh through the backoff. Stdout and stderr pass through.
 gh_call() {
   local until e rc
@@ -67,6 +177,7 @@ gh_call() {
     echo "gh: GitHub is rate-limiting this token — backing off until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null)" >&2
     return 75
   fi
+  gh_calls_note "$@"
   e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { "$(gh_batch_bin)" "$@"; return; }
   "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
   if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" || true; fi

@@ -21,7 +21,9 @@
 #   5. spawn         as many starts as the spare CPU fits, while the machine has room
 #                    (coord_room) and under coordinator.cap when one is set;
 #                    healing (repair, approved-merge) fills ceil(ceiling x
-#                    healingShare) of the places and new work the rest; a class
+#                    healingShare) of the places and new work the rest, and every
+#                    place while coordinator.healAllAt or more reds are left
+#                    (waiting plus being healed); a class
 #                    with nothing spawnable lends its places to the other. The
 #                    room is re-read before each start after the first; under
 #                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
@@ -61,6 +63,9 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; 
 LOCK="$COORD_DIR/tick.lock"
 coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
+# Every gh call this tick and what it runs is counted against the tick.
+export GH_CALLER=coordinator-tick
+TICK_T0=$(swarm_now)
 
 say "tick: $(coord_mode) mode, cap ${COORD_CAP:-none}, config from ${HARNESS_CFG_FROM:-?}"
 
@@ -169,9 +174,11 @@ FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list -
 # read (GitHub rate-limiting the token every builder shares) falls back to the
 # last good one while it is fresh enough: the starts go on, and nothing judged or
 # sent to the owner is decided on it.
+# The read also refreshes the shared copy (gh_open_prs) the watcher, the status
+# line, repair-watch and the live view take instead of asking GitHub themselves.
 PRS_STALE=0
-PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
-        --json number,headRefName,headRefOid,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt 2>/dev/null)
+ALLOWANCE=$(gh_allowance_read) || ALLOWANCE=""
+PRS=$(gh_open_prs 0)
 if [ -n "$PRS" ] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   coord_snap_save prs "$PRS"
 elif PRS=$(coord_snap_load prs); then
@@ -182,7 +189,9 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" "$BRANCH_TICKET_JQ"'
     .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
     | (.statusCheckRollup // []) as $c
-    | ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")))) | length) as $pending
+    # Settled = no CHECK RUN still running. A pending commit status is a wait on something
+    # outside CI (such as a design-critic verdict), so it never holds a real red back.
+    | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $pending
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $failed
     | ([.labels[]?.name] | index($hold)) as $held
     | (.headRefName | branch_ticket($pre)) as $t
@@ -358,12 +367,19 @@ fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
-HEAL_SLOTS=$(coord_healing_slots "$CEILING"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
-HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
-NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
+# The split needs the reds left — waiting plus being healed — so candidates()
+# redoes it once the waiting ones are counted.
+split_places() {
+  REDS_LEFT=$(( REDS_WAITING + LIVE_HEAL ))
+  HEAL_ALL=""; coord_heal_all "$REDS_LEFT" && HEAL_ALL=1
+  HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_LEFT"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
+  HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
+  NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
+}
+REDS_WAITING=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
-PLAN=""; NEXT=""; TOOK=""; REDS_WAITING=0
+PLAN=""; NEXT=""; TOOK=""
 # The spawnable entries, in queue order: every healing one (so the reds waiting
 # are counted), and new work up to one past the free places (the next pick).
 CANDS=""
@@ -376,7 +392,9 @@ candidates() {
     coord_healing_class "$cls" || nn=$((nn+1))
     CANDS="$CANDS$t"$'\t'"$cls"$'\t'"$note"$'\n'
   done <<< "$(coord_queue_ordered)"
+  reds_waiting; split_places
 }
+reds_waiting() { REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .); }
 first_of() { # <healing|new> — the first candidate of that kind: <ticket> \t <class> \t <note>
   local t cls note
   while IFS=$'\t' read -r t cls note; do
@@ -390,7 +408,6 @@ first_of() { # <healing|new> — the first candidate of that kind: <ticket> \t <
 held_view() {
   candidates
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
-  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
 }
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
@@ -399,9 +416,10 @@ elif held=$(swarm_held); then
   say "spawn: held — $held"
 elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
   blind=$([ "$CLAIMS_OK" = 0 ] && echo "the claim list" || echo "the open pull requests")
-  say "spawn: $blind could not be read — spawning nothing"
-  if event "blind:$(swarm_day)" blind false "" "" "$blind could not be read, so nothing is spawning"; then
-    bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (gh auth or network?) — nothing is spawning"
+  limit=""; [ "$CLAIMS_OK" = 0 ] || limit=$(gh_limit_why) || limit=""
+  say "spawn: $blind could not be read${limit:+ — $limit} — spawning nothing"
+  if event "blind:$(swarm_day)" blind false "" "" "$blind could not be read${limit:+ ($limit)}, so nothing is spawning"; then
+    bash "$NOTIFY" --class owner "blind:$(swarm_day)" "The coordinator cannot read $blind (${limit:-gh auth or network?}) — nothing is spawning"
   fi
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
@@ -490,25 +508,31 @@ else
   fi
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
-  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
+  reds_waiting
   if [ "$REDS_WAITING" -gt 0 ] && ! coord_healing_class "${TOOK:-new}"; then
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi
 fi
-say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)"
+say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \
    --argjson room "$([ -n "$ROOM" ] && echo true || echo false)" --arg reading "$READING" --arg cap "$COORD_CAP" \
    --argjson hs "$HEAL_SLOTS" --argjson hl "$LIVE_HEAL" --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" \
    --argjson waiting "$REDS_WAITING" --arg took "$TOOK" \
+   --arg healAllAt "$COORD_HEAL_ALL_AT" --argjson healAll "$([ -n "$HEAL_ALL" ] && echo true || echo false)" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
-     healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting, started:(if $took == "" then null else $took end)}' \
+     healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
+     healAll:{at:(if $healAllAt == "" then null else ($healAllAt|tonumber) end), inForce:$healAll}, started:(if $took == "" then null else $took end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
 # The compare report reads what this tick saw and chose; next= stays last.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \
   "$CEILING" "$LIVE_HEAL" "$HEAL_SLOTS" "$LIVE_NEW" "$NEW_SLOTS" "$NEXT" >> "$COORD_ACTIONS"
+
+# Who spent the allowance: this tick, the last hour by caller, and what is left.
+gh_calls_trim
+say "gh: $(gh_calls_tally "$TICK_T0" coordinator-tick) call(s) this tick · last hour: $(gh_calls_tally $(( $(swarm_now) - 3600 )) | sed 's/^$/none counted/') · left: $(printf '%s' "$ALLOWANCE" | awk -F'\t' 'NF == 4 { printf "%s%s %s/%s", (n++ ? ", " : ""), ($1 == "graphql" ? "GraphQL" : "REST"), $2, $3 } END { if (!n) printf "unread" }')"
 
 # ---- 5b-8. housekeeping, off the start path ------------------------------------
 # The merge lane, reconcile, the sweeps, the disk pass and the judge took 2.9 of a

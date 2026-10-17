@@ -54,14 +54,17 @@ age_cache() { touch_at "$1" "$(cache)"; }
 echo "--- the ordinary answer ---"
 fresh
 fix_live "" 3
-printf '[{"number":1},{"number":2}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]},{"number":2,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 out=$(print)
 want "three agents"      "3 agents working · 2 need you" "$out"
+fresh
+jq '. + [{"number":3,"labels":[]}]' "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"
+want "an open PR without the hold is not counted" "3 agents working · 2 need you" "$(print)"
 
 echo "--- one is singular, in both halves ---"
 fresh
 fix_live "" 1
-printf '[{"number":1}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 want "one of each"       "1 agent working · 1 needs you" "$(print)"
 
 echo "--- an idle machine says so, and says nothing about approvals ---"
@@ -85,7 +88,7 @@ fresh
 fix_live "" 4
 fix_at "$NOW"
 jq --arg at "$(swarm_iso $((NOW - 1200)))" '.at = $at' "$FIX/live.json" > "$FIX/live.json.t" && mv "$FIX/live.json.t" "$FIX/live.json"
-printf '[{"number":9}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":9,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 out=$(print)
 want_in     "the warning"              "swarm view not answering" "$out"
 want_not_in "never the stale count"    "4 agents"                 "$out"
@@ -108,7 +111,7 @@ echo "--- the render path reads the cache and calls nothing ---"
 fresh
 fix_live "" 3
 fix_at "$NOW"
-printf '[{"number":1},{"number":2}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]},{"number":2,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 print >/dev/null
 # Recorders for BOTH calls a compute must make. The earlier version of this case
 # compared a gh log against itself after truncating it — 0 == 0 — and passed with
@@ -130,7 +133,7 @@ want "GitHub was not asked"       "0" "$(grep -c 'pr list' "$GH_LOG" | tr -d ' '
 echo "--- the hold count is cached too, so a recompute does not re-ask ---"
 fresh
 fix_live "" 1
-printf '[{"number":1},{"number":2},{"number":3}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]},{"number":2,"labels":[{"name":"needs:human-approval"}]},{"number":3,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 print >/dev/null
 : > "$GH_LOG"
 want "second compute agrees"  "1 agent working · 3 need you" "$(print)"
@@ -198,7 +201,7 @@ else
 fi
 fresh
 fix_live "" 3
-printf '[{"number":1}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 print >/dev/null
 out=$(PATH="$FIX/gnu:$PATH" SWARM_STATUS_NO_REFRESH=1 bash "$SL" --render 2>&1)
 want     "the cached line, under the other stat" "3 agents working · 1 needs you" "$out"
@@ -311,7 +314,7 @@ echo "--- a cold render never calls the forge ---"
 # a keychain prompt. A render that hangs is a window with no status line at all.
 fresh
 fix_live "" 2
-printf '[{"number":1},{"number":2},{"number":3}]\n' > "$FIX/gh/prs-all.json"
+printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]},{"number":2,"labels":[{"name":"needs:human-approval"}]},{"number":3,"labels":[{"name":"needs:human-approval"}]}]\n' > "$FIX/gh/prs-all.json"
 : > "$GH_LOG"
 out=$(render)
 want    "the agents half lands"  "2 agents working · approvals unknown" "$out"

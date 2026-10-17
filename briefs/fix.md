@@ -38,6 +38,16 @@ failure path.
 A finding you think is wrong is answered with a reason, not with agreement and a
 change. If it survives the reason, it was a real finding.
 
+## When the findings are red gates
+
+A finding whose id starts `gate-` is not a review finding: one of this project's
+self-check gates went red, and its output is the finding. Repair what the output
+names, run that gate's command yourself until it exits 0, commit, and answer each
+in `gateFixes` with the commit. There is no red/green test for a compile or lint
+error; the driver re-runs every gate straight after this step, and nothing is
+pushed past a red one. A red gate you believe this change did not cause goes in
+`deferred` with the proof — that parks the ticket for a person.
+
 ## A test you reword or remove is accounted for
 
 If you remove, reword or skip an `it(`/`test(` case, list its file in
@@ -48,7 +58,7 @@ a bare path to the test that now pins it, or `removedBecause`. A gate checks the
 
 JSON only, valid against `schemas/fix.json`.
 
-One `cleared` entry per finding, each carrying the change, the test that goes red
+One `cleared` entry per review finding, each carrying the change, the test that goes red
 when that finding returns, and the red and green runs. A finding cleared without
 a test is one that can come back unnoticed, so the contract has no shape for it.
 

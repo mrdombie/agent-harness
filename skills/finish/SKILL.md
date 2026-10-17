@@ -508,6 +508,15 @@ EVSHA=$(bash "$EV" status "$PR_NUMBER" | sed -n 's/^sha=//p')   # the commit CI 
 Spawn the `agent-harness:design-critic` agent with those paths and, for parity,
 the approved picture. Its verdict is about CI's pictures of `$EVSHA`.
 
+**Hold its answer to the first look.** Save the critic's whole answer and run the
+check on it. A refusal means the critic skipped the first-look test, or passed a
+screen it could not read: run the critic again, never record that verdict.
+
+```bash
+printf '%s\n' "$CRITIC_ANSWER" > "$SHOTS/critic.md"
+bash "$KIT_ROOT/scripts/check-first-look.sh" "$SHOTS/critic.md" || exit 1
+```
+
 **Record it against the evidence head, then push it.** Bring CI's evidence commit
 down first, so the trailer sits on top of it:
 
@@ -906,7 +915,9 @@ The body carries one line per file the gate names:
 ```
 
 "covered by" must name a test file that exists at head with a live case. A file
-git sees as renamed is not a deletion; a case that becomes `it.skip` is. Test-file
+git sees as renamed is not a deletion; a case that becomes `it.skip` is. A case
+renamed or reworded in place, or moved to another test file in the diff, is matched
+to its new form and owes no line. Test-file
 patterns come from `tests.patterns` in `.claude/harness.json`.
 
 ```bash

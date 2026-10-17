@@ -49,7 +49,7 @@ export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 # Housekeeping in line and every tick, so each case reads what it did when the tick returns.
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
-unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
+unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_HEAL_ALL_AT COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
 # A spawner that leaves a live run behind and, like an older spawner,
 # writes no class: the coordinator's own record must carry it.
@@ -252,6 +252,41 @@ for t in 801 802 803 804; do live_as $t new; done
 out=$(ticks 1)
 want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
 want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
+
+echo "--- coordinator.healAllAt: that many reds left and every place heals ---"
+# Room for 6 in one tick, so the split alone decides who starts.
+heal_all_tick() { # <reds> [healAllAt] — reds 601.., six new 701..706, ceiling 6, share 0.25
+  fresh; queue_as repair $(seq 601 $((600 + $1))); queue 701 702 703 704 705 706
+  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT="${2:-}" ticks 1
+}
+heal_new() { classes | tr ' ' '\n' | awk '/repair/{h++} /new/{n++} END{print h+0, n+0}'; }
+slots_view() { jq -r '"\(.healing.slots) \(.new.slots) \(.healAll.at) \(.healAll.inForce)"' "$C/capacity.json"; }
+out=$(heal_all_tick 12 10)
+want "12 reds, healAllAt 10, ceiling 6: 6 healing places"  "6 0 10 true" "$(slots_view)"
+want "and all six starts heal"             "6 0" "$(heal_new)"
+want_in "the split line says heal-all is in force" 'of 6: 0 new, 6 healing\) · heal-all: 12 reds left \(waiting \+ healing\), at least 10, so every place heals' "$out"
+out=$(heal_all_tick 10 10)
+want "exactly healAllAt reds is heal-all"  "6 0" "$(heal_new)"
+out=$(heal_all_tick 9 10)
+want "9 reds, under healAllAt: the share returns, 2 healing" "2 4 10 false" "$(slots_view)"
+want "2 heal and 4 build new"              "2 4" "$(heal_new)"
+want_not_in "and the split line does not claim heal-all" 'heal-all' "$out"
+out=$(heal_all_tick 12)
+want "healAllAt absent: 12 reds keep today's 2 healing places" "2 4 null false" "$(slots_view)"
+want "2 heal and 4 build new"              "2 4" "$(heal_new)"
+out=$(heal_all_tick 12 ten)
+want "healAllAt not a number is off, not heal-all" "2 4 null false" "$(slots_view)"
+# A red being healed is still left: live healing runs count toward healAllAt.
+live_heal_tick() { # <waiting> — reds 601.. waiting, six repairs live 801..806, ceiling 6
+  fresh; queue_as repair $(seq 601 $((600 + $1))); queue 701
+  for t in 801 802 803 804 805 806; do live_as $t repair; done
+  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1
+}
+out=$(live_heal_tick 6)
+want "6 waiting + 6 healing, healAllAt 10: still 6 healing places" "6 0 10 true" "$(slots_view)"
+want_in "the split line counts the live ones as left" 'heal-all: 12 reds left' "$out"
+out=$(live_heal_tick 3)
+want "3 waiting + 6 healing, under healAllAt: 2 healing places" "2 4 10 false" "$(slots_view)"
 
 # Back to the fixture's reading: later sections must never read the real machine.
 export SWARM_IDLE=90; unset SWARM_CORES
@@ -592,6 +627,14 @@ want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41
 want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
 want "a healthy PR raises nothing"         "0" "$(grep -c '"id":"[a-z-]*:44:' "$C/events.would.jsonl")"
 want "one green held PR is not a batch"    "0" "$(grep -c '"kind":"signoff"' "$C/events.would.jsonl")"
+fresh
+# A pending commit status (the design critic's verdict, waiting) never holds a real red back, and alone is not red.
+withstatus() { jq --arg s "$1" '.statusCheckRollup += [{__typename:"StatusContext", context:"Design critic", state:$s}]'; }
+jq -s . <(pr 46 606 - FAILURE | withstatus PENDING) <(pr 47 607 - SUCCESS | withstatus PENDING) <(pr 48 608 - SUCCESS | withstatus FAILURE) > "$FIX/gh/prs-all.json"
+tick >/dev/null
+want "a red PR waiting on a status is still judged" "1" "$(grep -c '"id":"red-pr:46:sha46a' "$C/events.would.jsonl")"
+want "a pending status alone is not red"   "0" "$(grep -c '"id":"red-pr:47:' "$C/events.would.jsonl")"
+want "a failed status is red"              "1" "$(grep -c '"id":"red-pr:48:sha48a' "$C/events.would.jsonl")"
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"

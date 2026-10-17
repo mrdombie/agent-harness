@@ -36,7 +36,8 @@
         "PLAN_TASK": "one task from the plan step's answer: its title, files, tests and risks",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: gate commands, changelog convention, the component kit",
         "STANDARDS": "the coding-standards document this project holds a change to",
-        "SURFACE_RULES": "the project's rules for a screen — empty when this task touches none"
+        "SURFACE_RULES": "the project's rules for a screen — empty when this task touches none",
+        "LAST_TRY": "what the driver's proof said about the previous try at this task — why it was sent back — or a sentence saying this is the first try"
       }
     },
     "compare": {
@@ -65,7 +66,7 @@
       "schema": "schemas/fix.json",
       "skills": ["superpowers:receiving-code-review", "superpowers:test-driven-development"],
       "facts": {
-        "BLOCKERS": "the review step's findings graded critical or major — the only two grades that come back here — each with its id, file, line, grade, summary, reason and proposed fix",
+        "BLOCKERS": "the review step's findings graded critical or major — the only two grades that come back here — each with its id, file, line, grade, summary, reason and proposed fix; or, after a red self-check, each red gate with its id (gate-…), command, exit code and the last lines of its output",
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "ROUND": "which fix round this is: 1 or 2"
       }

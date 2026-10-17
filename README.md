@@ -116,6 +116,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `claim.preflight` is optional: commands `/agent-harness:claim` runs at Step 0 in the project's checkout, with `$TOOLS` naming a copy of its `scripts/` as on the integration branch (`bash "$TOOLS/scripts/<check>.sh"`), such as a check that the machine's installed jobs match the ones the repo describes. They report and never block.
 - `claim.planRules` is optional: the project's own planning rules, one sentence each, that `/agent-harness:claim` prints before the plan names a file (e.g. "extend a service's one home before adding a second client for it").
 - `approval.previewOnly` is optional: a command that reads paths on stdin and exits 0 when every one leaves a pixel approval standing (preview pages, fixtures, tests). `/agent-harness:claim` uses it to tell an agent whether a commit voids an approval.
+- A sign-off is attached to a commit. `scripts/clear-hold.sh <pr> --sha <shown>` takes the head the operator was shown, refuses (clearing nothing) when the PR has moved since, and ends its comment or review with `<!-- approval-head:<sha> -->`; without `--sha` it clears and records no head. `scripts/approval-kept.sh approved-head <pr>` reads back the newest sign-off: an approving review's own `commit_id`, or a clear-hold comment in its own words, ending in the marker, that a person's removal of the hold followed within 300 seconds. A comment alone counts for nothing, because everything on the operator's token can post one. `approval-kept.sh check <approved> <head> [--screens "<cmd>"]` exits 0 when every commit of the PR's own since then is a merge and none of its screen files changed. The PR's files are read at both heads, `<trunk>...<approved>` and `<trunk>...<head>`, so a resolution that takes the trunk's version, drops an added screen or undoes a rename still voids. It exits 1 when one did, and 2 when GitHub's comparison cannot be read or the own diff was cut short. A screen is every file that is not a test (`tests.patterns`, `*.test.*`, `*.spec.*`, `__tests__/`, `__mocks__/`) and not under `design.neverScreens` (files that never draw, such as a deploy stamp), unless `design.surfacePathsComplete` is `true`. Then `design.surfacePaths`, or `--screens` (a command reading paths on stdin and printing the screen ones), decides alone. A partial list keeps approvals it should void, so it is never trusted until it is marked complete. The merge lane uses this; a project gate that re-applies a hold after a push should too.
 - A project that lists `finish` under `owns.skills` has `/agent-harness:claim` hand over to its own `/finish`; the spawner always runs `/agent-harness:claim` and never a project's own spawn script.
 - `gates.formatChanged` — the diff-only formatter, quoted back when a whole-folder format is refused.
 - `stateDir` — per-machine state (the claims cache, the session label, the auto-skip list). One per project; two projects on one machine must not share it.
@@ -158,6 +159,7 @@ agents/    gate-runner frontend-gate design-critic
 hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
+           approval-kept.sh (does a sign-off survive an update; the head it was given at)
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
            check-push-destination.sh (every push names its destination; CI)
@@ -225,7 +227,10 @@ one, fails until its body accounts for each file:
 "covered by" must name a test file that exists at head with a live case;
 "removed on purpose" must give a reason. A file git sees as **renamed** is not a
 deletion, but its cases are compared across the rename, and a case turned into
-`it.skip` counts as lost. The diff is two dots, base..head, read from the two
+`it.skip` counts as lost. It counts cases, not titles: a case renamed or reworded
+where it stands, or moved to another test file in the same diff, is matched to its
+new form and owes nothing. Only a drop in the count, or a named case with nothing
+like it at head, needs a line. The diff is two dots, base..head, read from the two
 commits — never the working tree — and anything the trunk added after the branch
 was cut is excluded. Written after a rebuild on the origin project deleted eleven
 test files in one merge: one pinned a behaviour the new screen dropped, nothing
@@ -421,6 +426,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `rampMax` | unset | The most starts in one tick. Unset, the room decides |
 | `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
+| `healAllAt` | unset | Reds left at which every place heals, counting those waiting and those being healed; once fewer are left, `healingShare` returns. Unset, or not a whole number over 0, is off |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
@@ -465,6 +471,10 @@ never stopped for load. Of that ceiling, healing gets `ceil(ceiling × healingSh
 places and new work the rest. While both classes have spawnable work each keeps
 its share, so a run of red PRs waits its turn instead of stopping new work; a
 class with nothing spawnable lends its places to the other, in both directions.
+With `healAllAt` set, a tick that counts that many reds left or more (spawnable
+reds waiting plus live healing runs, since a red being healed is still left) gives
+the whole ceiling to healing, and the split line and `capacity.json` (`healAll`)
+say so; once fewer are left the share returns.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
 The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
 because a spawner (an older install of the kit, or a stand-in) need not
@@ -512,7 +522,7 @@ always exactly what was tested.
 | Behind | `update-branch` against the head it read; a conflict takes it out of the lane with a fixer |
 | Checks | waits on pending or missing; a flake (timed out, cancelled, a lost runner) is re-run once; anything else takes it out with the check named and a fixer |
 | Green | merged with `merge.method` and `--match-head-commit`; one merge per pass |
-| Hold back on | re-cleared through `clear-hold.sh --reason` only when every commit since approval is a merge and the update touched none of its `design.surfacePaths` files; otherwise the owner is told |
+| Hold back on | re-cleared through `clear-hold.sh --reason --sha` only when `approval-kept.sh check` keeps it: every commit of the PR's own since approval is a merge (the trunk commits a merge brings do not count) and no screen file in its own diff changed; otherwise the owner is told |
 
 A fixer is a `repair` entry in the coordinator's queue, which the tick starts in
 a healing place. When no live coordinator has ticked in 15 minutes (it is in
@@ -533,7 +543,7 @@ its mode in both. **Shadow is the default**: it writes "would …" lines to
 
 | Key (under `mergeLane`) | Default | What it is |
 |---|---|---|
-| `label` | `queue:merge` | Membership that survives auto-merge being turned off |
+| `label` | `queue:merge` | Membership that survives auto-merge being turned off. Every pass checks the repo has it; live creates it when missing, shadow logs "would create the lane label" |
 | `firstLabel` | `P0` | Owner-flagged PRs that go to the front |
 | `flakePattern` | runner-loss wording | Annotation text that makes a failure a flake |
 

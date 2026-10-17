@@ -498,11 +498,13 @@ Rules for the card:
 ### `approve` on a pixel PR — the full motion, in this order
 
 Approval must **name the PR**. Never infer it from general praise of the work.
+`$SHOWN_SHA` is the head the operator was shown: the `sha` line of `needsme-watch.sh card <pr>`.
 
 ```bash
 # One motion, shared with /agent-harness:bug: a review on a peer's PR when the operator is an
 # approver (the gate clears the label on seeing it), else comment → issue → PR.
-"$KIT_ROOT/scripts/clear-hold.sh" "$P"
+# --sha: the head whose shots the operator was shown; a PR that moved since is refused, not cleared.
+"$KIT_ROOT/scripts/clear-hold.sh" "$P" --sha "$SHOWN_SHA"
 # The gate re-runs itself on the review or the unlabeled event; re-read the labels
 # to confirm, because a still-labelled ISSUE makes it re-apply the hold at open.
 gh pr view "$P" --repo "$REPO_SLUG" --json labels -q '.labels|map(.name)|join(",")'
@@ -578,24 +580,38 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
 
 ### W1 — ask each row
 
-- **`signoff-batch`** — a batch of held pixel PRs, green apart from the hold. One
-  PR at a time, in the order the text lists them:
-  1. `bash "$W" card <pr>`. `held no` → already signed off: skip it, no question.
-  2. `bash "$W" open <pr>` — opens the evidence in Chrome: for a part of a screen
-     the region shot, the preview and the approved picture at the region's anchor,
-     then the full page; otherwise the live preview and the before/after shots. Say
-     so in one line, with the PR URL from the card.
-  3. `AskUserQuestion`, header `Sign off`, the question naming what the change
-     does (from the card's title) and the PR number last. When the card has a
-     `banner`, the question opens with it verbatim and names the live and pending
-     siblings from its `sibling` rows. Options: **Approve**
-     (clear the hold and let it merge) · **Change** (tell me what's wrong).
-  4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr>`, then re-read the labels
+- **`signoff-batch`** — a batch of held pixel PRs, green apart from the hold. The
+  whole batch is looked at on **one page** and asked **four at a time**:
+  1. `bash "$W" card <pr>` for each PR the text lists. `held no` → already signed
+     off: drop it, no question.
+  2. `bash "$W" open <pr> <pr> …` — every PR left, in that order, in ONE call. It
+     builds one local review page and opens it as one Chrome tab: a numbered
+     section per PR with its title, the PR link, the preview and approved-picture
+     links, and every shot its description links at the newest commit those links
+     pin, grouped by viewport and theme. It prints one row per PR:
+     `<n> \t <pr> \t <shown> \t <unloaded> \t <options> \t <title>`. Say in one
+     line that the page is open, with its `file://` URL. Never open evidence links
+     one by one.
+  3. `AskUserQuestion` with **up to 4 questions per call**, one per PR, in page
+     order. Header `Sign off <n>`; the question opens with the PR's number on the
+     page (`<n> ·`), names what the change does (from the card's title) and ends
+     with the PR number. When the card has a `banner`, the question opens with it
+     verbatim after the `<n> ·` and names the live and pending siblings from its
+     `sibling` rows. More than 4 PRs: the next call takes the next 4. **The options
+     are the row's `<options>`, exactly, and no others**: `Approve,Change` when
+     shots are shown; `Send back for shots,Skip` when the description links none
+     (nothing to approve); `Skip` alone when shots exist but none would load,
+     and `Change,Skip` when only some loaded (say so; never approve a page missing
+     part of what is approved, never send back on a failed fetch).
+  4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr> --sha <sha>` (sha from the card: the head the
+     operator was shown). If it refuses because the PR moved, show the new card and ask again. Then re-read the labels
      as Step 5 does. **Change**, or any typed answer → comment the words verbatim on
-     the PR; the hold stays. **Never clear the hold without "Approve" for that PR in
-     that prompt** — not from a batch answer, not from praise, not from an earlier
-     window.
-  5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer.
+     the PR; the hold stays. **Send back for shots** → comment on the PR that its
+     description links no screenshots and the sign-off waits for them; the hold
+     stays. **Skip** → nothing; do not mark it done, so it is asked again. **Never
+     clear the hold without "Approve" for that PR in that prompt** — not from a
+     batch answer, not from praise, not from an earlier window.
+  5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer except Skip.
   When every PR is answered: `bash "$W" done <batch key>`.
 - **`decision`** whose key is `decision:<ticket>:<slug>` — a builder or the judge
   asked about that ticket, and nothing spawns it until it is answered. One

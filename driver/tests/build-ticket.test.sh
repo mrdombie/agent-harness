@@ -245,6 +245,24 @@ want "build ran twice, its own retry"  "2" "$(grep -c '^build$' "$RAN")"
 want "and fix ran once, after the build finally passed" "1" "$(grep -c '^fix$' "$RAN")"
 want_in "it says it went back to build" 'back to build' "$out"
 
+echo "--- a red self-check goes back to fix, and the gates run again ---"
+reset_fakes "self-check:30 0"
+out=$(bt 123); rc=$?
+want "it finishes"  "0" "$rc"
+want "fix, then the gates again" \
+  "start plan build fix compare self-check fix compare self-check review record ship" \
+  "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_in "it says it went back to fix" 'back to fix' "$out"
+
+echo "--- a refusal with no reason on the record says where the reason is (#199) ---"
+# "Read the step's own line above" pointed at a line the park comment does not carry.
+reset_fakes "self-check:24"
+out=$(bt 124); rc=$?
+want "it parks"                                  "20" "$rc"
+want_not_in "never pointing at a line it lacks"  'line above' "$(cat "$FIX/park.log")"
+want_in "it names the host"                      "$(hostname -s)" "$(cat "$FIX/park.log")"
+want_in "and the run log"                        '124/log' "$(cat "$FIX/park.log")"
+
 echo "--- a run that uses both budgets in full still finishes ---"
 # The build step's ceiling is its own (5 tries) and the reviewer's is its own (2
 # rounds). A single counter set to the build's number trips on the SUM: four build
@@ -272,7 +290,7 @@ out=$(bounded env DRIVER_STEPS_DIR="$FAKE" bash "$BT" 107 2>&1); rc=$?
 want "it parks rather than spinning"  "20" "$rc"
 want_in "and says the loop did not settle" 'settle|rework' "$(cat "$FIX/park.log")"
 rounds=$(grep -c '^review$' "$RAN")
-if [ "$rounds" -le 8 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
+if [ "$rounds" -le 9 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
 
 echo "--- a step named in the order with no file refuses BY NAME ---"
 # Silence is the failure being prevented: a walk that skips a step it cannot find

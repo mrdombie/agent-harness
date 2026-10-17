@@ -20,9 +20,12 @@ want_in "test ran"     'test' "$out"
 echo "--- a red gate stops the step, and is named ---"
 jq '.gates.test = "exit 3"' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 out=$(driver_step_self_check 101 2>&1); rc=$?
-want "a red gate refuses" "24" "$rc"
+# The first red on a run goes to fix (30); see the repair cases below.
+want "a red gate never passes" "30" "$rc"
 want_in "naming the gate" 'test' "$out"
 want_in "and its exit code" 'exit 3' "$out"
+out=$(driver_step_self_check 101 2>&1); rc=$?
+want "a second red refuses" "24" "$rc"
 
 echo "--- a gate that prints a failure and exits 0 still passes: the code is the verdict ---"
 jq '.gates.test = "echo ERROR: something; exit 0"' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
@@ -166,6 +169,71 @@ printf '%s\n' '{"step":"build","changelog":{"skipped":"tooling"}}' > "$(driver_s
 jq 'del(.changelog)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 driver_step_self_check 140 >/dev/null 2>&1
 want "no branchTrailer: untouched"                 "$BEFORE" "$(git -C "$FIX/wt140" rev-parse HEAD)"
+
+echo "--- a red gate the model can repair goes to fix ONCE, carrying its output ---"
+# Measured 2026-10-17: two runs proved every test red then green, then parked at
+# self-check on a type error in that same test file — a one-line repair nobody tried.
+jq '.gates = {"lint":"exit 0","typecheck":"echo \"x.test.ts(82,5): error TS2769: No overload matches this call.\"; exit 2"}' \
+  "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 301 --worktree "$REPO"
+F301="$(driver_state_dir 301)/steps/self-check.findings.json"
+out=$(driver_step_self_check 301 2>&1); rc=$?
+want "it goes back for a fix, not a park"     "30" "$rc"
+want "one finding, for the red gate only"     "gate-typecheck" "$(jq -r '[.[].id] | join(",")' "$F301" 2>/dev/null)"
+want_in "with the gate's own output"          'error TS2769' "$(jq -r '.[0].output' "$F301" 2>/dev/null)"
+want "and its exit code"                      "2" "$(jq -r '.[0].exit' "$F301" 2>/dev/null)"
+want "nothing is left to park on"             "" "$(driver_state_get 301 park_note)"
+echo "--- the second red parks, and the reason travels with it (#199) ---"
+out=$(driver_step_self_check 301 2>&1); rc=$?
+want "a second red self-check refuses"        "24" "$rc"
+want "and leaves no finding for fix"          "absent" "$([ -e "$F301" ] && echo present || echo absent)"
+want_in "the park note names the gate"        'typecheck' "$(driver_state_get 301 park_note)"
+want_in "its exit code"                       'exit 2' "$(driver_state_get 301 park_note)"
+want_in "and the line that said no"           'error TS2769' "$(driver_state_get 301 park_note)"
+# And it reaches the comment the park posts, the way build-ticket hands it over.
+. "$HERE/../steps/park.sh" || exit 1
+: > "$GH_LOG"
+driver_park 301 "self-check refused (exit 24)" "$(driver_state_get 301 park_note)" driver >/dev/null 2>&1
+want_in "the posted park comment names the red gate and its line" 'typecheck.*error TS2769' "$(tr '\n' ' ' < "$GH_LOG")"
+
+echo "--- a gate that could not run at all is configuration: it parks, not fixes ---"
+jq '.gates = {"lint":"no-such-command-xyz"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 302 --worktree "$REPO"
+out=$(driver_step_self_check 302 2>&1); rc=$?
+want "a 127 refuses"                          "24" "$rc"
+want_in "and the note names it"               'lint' "$(driver_state_get 302 park_note)"
+
+echo "--- with the fix rounds already used, a red parks ---"
+jq '.gates = {"lint":"exit 1"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 303 --worktree "$REPO"
+driver_state_bump 303 fix; driver_state_bump 303 fix
+out=$(driver_step_self_check 303 2>&1); rc=$?
+want "no fix round left: it refuses"          "24" "$rc"
+
+echo "--- every refusal leaves its reason on the record (#199) ---"
+# A park whose only reason is in a log on the host that ran it cannot be read anywhere
+# else. One case per refusal path that returns 24.
+note_after() { driver_state_init "$1" --worktree "$REPO"; driver_state_set "$1" park_note ""
+  driver_step_self_check "$1" >/dev/null 2>&1; driver_state_get "$1" park_note; }
+jq '.gates = ["npm test"]' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+want_in "gates in the wrong shape"   'object' "$(note_after 311)"
+jq 'del(.gates)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+want_in "no gates at all"            'no gate' "$(note_after 312)"
+jq '.gates = {"lint":""}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+want_in "every gate empty"           'lint' "$(note_after 313)"
+SAVED_KIT="$KIT_ROOT"; KIT_ROOT="$FIX/no-kit"
+jq '.gates = {"lint":"exit 0"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+want_in "the machine gate missing"   'machine-gate' "$(note_after 314 2>/dev/null)"
+KIT_ROOT="$SAVED_KIT"
+
+echo "--- a gate runs as CI runs it: without the kit's HARNESS_* pins ---"
+# The launcher exports HARNESS_CFG_PATH so the kit reads the right config. A project
+# test that builds its own fixture config reads that variable first, and on #13262
+# eight toolkit-env tests failed on a change that was fine.
+jq '.gates = {"env":"test -z \"${HARNESS_CFG_PATH:-}\""}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 320 --worktree "$REPO"
+rc=0; ( export HARNESS_CFG_PATH="$FIX/pinned.json"; driver_step_self_check 320 >/dev/null 2>&1 ) || rc=$?
+want "the pin does not reach the gate"        "0" "$rc"
 
 echo "--- the gates wait for the machine: cpu idle over the floor, then a gate slot ---"
 # Heavy local work waits; it never parks the ticket. Run in the background, held,

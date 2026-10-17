@@ -27,6 +27,15 @@ want "and all seven are named" \
   "$(ask "return P.progressOf(null, null).unreadable.join(',')")"
 want "the walk is still at step 1" "1" "$(ask "return String(P.progressOf(null,null).step)")"
 
+echo "--- a commit status is read by its state, not as a check run ---"
+roll() { ask "const r = P.rollupOf({number: 9, statusCheckRollup: JSON.parse(process.env.ROLL)}); return r.fail + ' ' + r.pending"; }
+CR_OK='{"__typename":"CheckRun","name":"Code gates","status":"COMPLETED","conclusion":"SUCCESS"}'
+sc() { printf '[%s,{"__typename":"StatusContext","context":"Design critic","state":"%s"}]' "$CR_OK" "$1"; }
+want "a pending status is waiting, not red"  "0 1" "$(ROLL=$(sc PENDING) roll)"
+want "a green status is neither"             "0 0" "$(ROLL=$(sc SUCCESS) roll)"
+want "a failed status is red"                "1 0" "$(ROLL=$(sc FAILURE) roll)"
+want "a running check run is still pending"  "0 1" "$(ROLL='[{"__typename":"CheckRun","name":"x","status":"IN_PROGRESS","conclusion":null}]' roll)"
+
 echo "--- each step comes from its own fact ---"
 JUST_CLAIMED='{claim:true,commits:0,pushed:false,trailers:[],stampsReviews:true,prRead:true,pr:null}'
 want "claimed, nothing else done" "done now todo todo todo todo todo" "$(states "$JUST_CLAIMED")"

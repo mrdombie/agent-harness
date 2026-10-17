@@ -13,6 +13,7 @@
 #
 # A pass, in order:
 #   1. lock        a pass still running means this one exits, untouched
+#      label       the lane label exists, or is created (shadow: "would create")
 #   2. members     open, not draft, on the trunk, no hold label, and auto-merge
 #                  armed or the lane label. Live: the label goes on and auto-merge
 #                  comes off, so the lane is the only thing that merges them.
@@ -50,13 +51,13 @@ esac
 # Names may hold spaces, so they stay JSON rather than a space-joined toolkit_cfg list.
 REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and length > 0)' "$HARNESS_CFG" 2>/dev/null)
 [ -n "$REQUIRED" ] || { echo "merge-lane: harness.json has no 'gates.requiredChecks' — without them green cannot be told from unchecked." >&2; exit 1; }
-SURFACE=$(jq -c '.design.surfacePaths // [] | if type == "array" then . else [] end' "$HARNESS_CFG" 2>/dev/null)
 LANE_LABEL=$(swarm_opt mergeLane.label "queue:merge")
 FIRST_LABEL=$(swarm_opt mergeLane.firstLabel "P0")
 FLAKE_RE=$(swarm_opt mergeLane.flakePattern 'shutdown signal|lost communication with the server|runner .*(lost|did not respond|offline)|exit code 137|exit code 143|The operation was canceled|exceeded the maximum execution time')
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
 QUEUE="$SELF_DIR/coordinator-queue.sh"
 CLEAR_HOLD="$SELF_DIR/clear-hold.sh"
+KEPT="$SELF_DIR/approval-kept.sh"
 
 STATE_FILE="$COORD_DIR/lane.$(lane_mode).json"
 STATUS_FILE="$COORD_DIR/lane.status"
@@ -100,6 +101,23 @@ act() { # <verb> <pr> <sha> [detail]
 owner() { # <key> <line> — notify follows the lane's mode, not the coordinator's
   COORDINATOR_SHADOW=$(lane_shadow && echo 1 || echo 0) bash "$NOTIFY" --class agent "$1" "$2" >/dev/null 2>&1 || true
 }
+
+# ---- 1b. the lane label --------------------------------------------------------
+# A label the repo lacks cannot be added, so every PR would stay on its own auto-merge.
+LABELS=$(swarm_gh label list --repo "$REPO_SLUG" --search "$LANE_LABEL" --json name --limit 100 2>/dev/null)
+if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$LABELS"; then
+  say "lane: could not read whether the label $LANE_LABEL exists — carrying on"
+elif ! jq -e --arg l "$LANE_LABEL" 'any(.[]; .name == $l)' >/dev/null <<<"$LABELS"; then
+  act label-create - - "$LANE_LABEL is missing from $REPO_SLUG"
+  if lane_shadow; then
+    say "would create the lane label $LANE_LABEL — it is missing from $REPO_SLUG"
+  elif swarm_gh label create "$LANE_LABEL" --repo "$REPO_SLUG" --color 0e8a16 \
+         --description "In the merge lane: merged one at a time by the coordinator, auto-merge off" >/dev/null 2>&1; then
+    say "lane: created the lane label $LANE_LABEL — it was missing from $REPO_SLUG"
+  else
+    say "lane: the lane label $LANE_LABEL is missing and could not be created — no PR can join this pass"
+  fi
+fi
 
 # ---- the open pull requests --------------------------------------------------
 PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --base "$INTEGRATION_BRANCH" --limit 200 \
@@ -225,41 +243,9 @@ take_out() { # <why> — the head leaves the lane on this SHA and gets a fixer
 }
 
 # ---- 4a. a hold put back on the head -------------------------------------------
-# A file is a screen when it matches an include of design.surfacePaths and no
-# :(exclude). No surfacePaths: every file counts, which holds more, never less.
-is_screen() { # <path>
-  local f="$1" pat inc=0 hit=0
-  while IFS= read -r pat; do
-    [ -n "$pat" ] || continue
-    case "$pat" in
-      ':(exclude)'*|':!'*)
-        pat="${pat#:(exclude)}"; pat="${pat#:!}"; pat="${pat//\*\*\//}"; pat="${pat//\*\*/*}"
-        [[ "$f" == $pat ]] && return 1 ;;
-      *) inc=1; pat="${pat//\*\*\//}"; pat="${pat//\*\*/*}"; [[ "$f" == $pat ]] && hit=1 ;;
-    esac
-  done <<< "$(jq -r '.[]' <<<"$SURFACE")"
-  [ "$inc" = 0 ] || [ "$hit" = 1 ]
-}
-
-# 0: only the trunk came in and none of the PR's screen files moved. 1: changed
-# (CHANGE_WHY says how). 2: could not be read.
-develop_only() { # <approved-sha> <head-sha>
-  local since own f
-  since=$(swarm_gh api "repos/$REPO_SLUG/compare/$1...$2" 2>/dev/null) || return 2
-  own=$(swarm_gh api "repos/$REPO_SLUG/compare/$INTEGRATION_BRANCH...$2" 2>/dev/null) || return 2
-  jq -e '.commits | type == "array"' >/dev/null 2>&1 <<<"$since" || return 2
-  jq -e '.files | type == "array"' >/dev/null 2>&1 <<<"$own" || return 2
-  if jq -e '.commits | length == 0 or any(.[]; (.parents | length) < 2)' >/dev/null <<<"$since"; then
-    CHANGE_WHY="it carries a commit of its own since the approved ${1:0:7}"; return 1
-  fi
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    is_screen "$f" || continue
-    if jq -e --arg f "$f" 'any(.files[]?; .filename == $f)' >/dev/null <<<"$since"; then
-      CHANGE_WHY="the update changed its screen file $f"; return 1
-    fi
-  done <<< "$(jq -r '.files[].filename' <<<"$own")"
-  return 0
+# The rule is shared with the approval gate: scripts/approval-kept.sh.
+develop_only() { # <approved-sha> <head-sha> — 0 kept, 1 changed (CHANGE_WHY), 2 unreadable
+  CHANGE_WHY=$(HARNESS_CFG_PATH="$HARNESS_CFG" bash "$KEPT" check "$1" "$2" 2>/dev/null)
 }
 
 if has_label "$HEAD_PR" "$HOLD_LABEL"; then
@@ -276,7 +262,7 @@ if has_label "$HEAD_PR" "$HOLD_LABEL"; then
       reason="the merge lane made a $INTEGRATION_BRANCH-only update and none of its screen files changed since the approved ${approved:0:7}"
       act clear-hold "$HEAD_PR" "$SHA" "$reason"
       if lane_shadow; then say "would clear the hold on #$HEAD_PR: $reason"
-      elif bash "$CLEAR_HOLD" "$HEAD_PR" --reason "$reason" >> "$LANE_LOG" 2>&1; then say "lane: hold re-cleared on #$HEAD_PR — $reason"
+      elif bash "$CLEAR_HOLD" "$HEAD_PR" --reason "$reason" --sha "$SHA" >> "$LANE_LOG" 2>&1; then say "lane: hold re-cleared on #$HEAD_PR — $reason"
       else say "lane: clear-hold on #$HEAD_PR failed — trying again next pass"; fi
       head_status "approval carried through a develop-only update" ;;
     1)

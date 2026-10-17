@@ -480,4 +480,57 @@ out=$(driver_step_build 131 2>&1); rc=$?
 want "the step finishes"                          "0" "$rc"
 want_in "its report is on the ledger"             'feature.test.sh' "$(cat "$(driver_state_dir 131)/steps/replaced.jsonl")"
 want_in "and an earlier try's report is still there" 'earlier.test.sh' "$(cat "$(driver_state_dir 131)/steps/replaced.jsonl")"
+
+echo "--- green under a runner that strips types is not green: the proof type-checks ---"
+# 2026-10-17, two runs: vitest proved each test red then green, then self-check's
+# typecheck failed on that same new test file (TS2769 on a spawnSync call).
+cfg() { jq "$1" "$REPO/.claude/harness.json" > "$FIX/hc" && mv "$FIX/hc" "$REPO/.claude/harness.json"; }
+TC='if grep -q BADTYPE *.test.sh; then echo "tc.test.sh(3,5): error TS2769: No overload matches this call."; exit 2; fi'
+printf 'no\n' > "$REPO/tc.txt"
+git -C "$REPO" add tc.txt; git -C "$REPO" commit -qm "base: tc"
+printf '#!/usr/bin/env bash\n# BADTYPE\ngrep -q yes tc.txt\n' > "$REPO/tc.test.sh"
+git -C "$REPO" add tc.test.sh; git -C "$REPO" commit -qm "test: tc, does not compile"
+TC_TEST=$(git -C "$REPO" rev-parse HEAD)
+printf 'yes\n' > "$REPO/tc.txt"
+git -C "$REPO" add tc.txt; git -C "$REPO" commit -qm "feat: tc"
+TC_IMPL=$(git -C "$REPO" rev-parse HEAD)
+cfg "del(.driver.proofTypecheck) | .gates = {\"changed\": [\"echo lint\", $(jq -Rn --arg c ": typecheck; $TC" '$c')]}"
+out=$(driver_prove_red_green "$REPO" tc.test.sh "$TC_TEST" "$TC_IMPL" "bash tc.test.sh" 2>&1); rc=$?
+want "a test that does not type-check is not proved"   "6" "$rc"
+want_in "saying so"                                    'does not type-check' "$out"
+want_in "with the compiler's own line"                 'error TS2769' "$out"
+want "the command is this project's typecheck gate"     ": typecheck; $TC" "$(driver_proof_typecheck_cmd)"
+cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$TC" '$c')"
+rc=0; driver_prove_red_green "$REPO" tc.test.sh "$TC_TEST" "$TC_IMPL" "bash tc.test.sh" >/dev/null 2>&1 || rc=$?
+want "driver.proofTypecheck names it outright"          "6" "$rc"
+rc=0; driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" >/dev/null 2>&1 || rc=$?
+want "a test that compiles still proves"                "0" "$rc"
+cfg '.driver.proofTypecheck = "none"'
+rc=0; driver_prove_red_green "$REPO" tc.test.sh "$TC_TEST" "$TC_IMPL" "bash tc.test.sh" >/dev/null 2>&1 || rc=$?
+want "\"none\" switches it off"                         "0" "$rc"
+
+echo "--- the planted-break proof type-checks too ---"
+cfg ".driver.proofTypecheck = $(jq -Rn --arg c "$TC" '$c')"
+out=$(driver_prove_by_break "$REPO" tc.test.sh "$TC_IMPL" tc.txt "yes" "no" "bash tc.test.sh" 2>&1); rc=$?
+want "a break-proved test that does not compile"        "6" "$rc"
+want_in "is refused, saying so"                         'does not type-check' "$out"
+
+echo "--- the build step sends it back, and the next try is told why ---"
+export DRIVER_TICKET=141
+driver_state_init 141 --worktree "$REPO" --repo "$REPO"
+fix_plan 141 1
+fix_ai build "$(fix_build tc.test.sh "bash tc.test.sh" "$TC_TEST" "$TC_IMPL")" superpowers:subagent-driven-development
+rc=0; driver_step_build 141 >/dev/null 2>&1 || rc=$?
+want "back to build, not on to self-check"              "30" "$rc"
+rc=0; driver_step_build 141 >/dev/null 2>&1 || rc=$?
+want_in "the retry is handed the reason, as LAST_TRY"   'does not type-check' "$(cat "$(driver_state_dir 141)/steps/build-task-1.facts/LAST_TRY")"
+want_in "and build.md has the place it goes"            '{{LAST_TRY}}' "$(cat "$HERE/../../briefs/build.md")"
+
+echo "--- a proof runs as CI runs it: without the kit's HARNESS_* pins ---"
+cfg 'del(.driver.proofTypecheck)'
+rc=0; ( export HARNESS_CFG_PATH="$FIX/pinned.json"
+        driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" \
+          'test -z "${HARNESS_CFG_PATH:-}" && bash feature.test.sh' >/dev/null 2>&1 ) || rc=$?
+want "the pin does not reach the test"                  "0" "$rc"
+git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true
 exit $FAILED
