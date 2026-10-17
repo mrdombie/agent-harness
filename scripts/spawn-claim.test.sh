@@ -276,7 +276,7 @@ bare_claim() { printf '%s' "$1" | perl -ne 'print "$1\n" while /(?<![A-Za-z0-9_.
 jq '.swarm = {builder: "prose"}' "$STORE/.claude/harness.json" > "$SB/cfg-prose.json"
 for mode in detached fg; do
   rm -f "$OUT/marker" "$OUT/installed" "$OUT/seen"
-  if [ "$mode" = fg ]; then CANON="" run --fg 4950 >/dev/null; else CFG="$SB/cfg-prose.json" CANON="" run 4950 >/dev/null; fi
+  if [ "$mode" = fg ]; then CFG="$SB/cfg-prose.json" CANON="" run --fg 4950 >/dev/null; else CFG="$SB/cfg-prose.json" CANON="" run 4950 >/dev/null; fi
   for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
   a=$(sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' ')
   [ -n "$a" ] || { bad "$mode: the builder never started"; continue; }
@@ -599,6 +599,22 @@ CLAIM_CLASS=repair dcase 4973 4973
   || bad "a note-less repair ran build-ticket '$(dseen args)'"
 CLAIM_CLASS=new dcase 4975 4975
 [ "$(dseen args)" = 4975 ] && ok "a new-class run with no brief is a plain build" || bad "a new-class run ran build-ticket '$(dseen args)'"
+
+# 11e. --fg with a ticket runs the step driver in this terminal (the operator, 2026-10-17);
+# pick-next stays the interactive prose claim. The same brief channel as a detached run.
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4990 >"$OUT/fg.out"
+[ "$(dseen args)" = 4990 ] && [ ! -f "$OUT/seen" ] && ok "--fg 4990 runs build-ticket 4990 in the foreground, not prose" \
+  || bad "--fg 4990 did not run the driver: $(cat "$OUT/fg.out" | head -3)"
+grep -q 'parked' "$OUT/fg.out" && ok "and its output is the terminal's" || bad "the foreground driver's output did not reach the terminal"
+rm -f "$OUT/driver-seen"
+CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #3: red" SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4991 >/dev/null
+case "$(dseen args)" in "4991 --repair "*) ok "--fg carries a repair's brief the same way" ;; *) bad "--fg repair ran build-ticket '$(dseen args)'" ;; esac
+[ "$(dseen brief)" = "REPAIR on PR #3: red" ] && ok "verbatim" || bad "--fg repair brief was '$(dseen brief)'"
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg >/dev/null
+[ ! -f "$OUT/driver-seen" ] && [ -f "$OUT/seen" ] && ok "--fg with no ticket stays the interactive prose claim" \
+  || bad "--fg pick-next did not run the prose claim"
 
 # 11d. swarm.builder = prose is the escape hatch: everything, brief and repair alike, on prose.
 CFG="$SB/cfg-prose.json" CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #8: red" dcase 4976 4976

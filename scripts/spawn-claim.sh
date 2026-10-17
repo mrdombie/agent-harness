@@ -139,16 +139,44 @@ if [ -n "$TICKET" ]; then
   fi
 fi
 DRIVER_BIN="${SPAWN_CLAIM_DRIVER:-$KIT_ROOT/driver/build-ticket}"
-if [ "$FG" -eq 0 ] && [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
+if [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
   echo "spawn-claim: no step driver at $DRIVER_BIN — set swarm.builder to \"prose\" in harness.json to build without it" >&2
   exit 1
 fi
 
+# driver_args <brief-path> — DRIVER_ARGS for this run's mode, the brief written to
+# <brief-path> verbatim when there is one: a file of the run's own that outlives it.
+driver_args() {
+  DRIVER_ARGS=("$TICKET")
+  case "$DRIVER_MODE" in
+    repair)
+      if [ -n "$CALLER_TEXT" ]; then
+        printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--repair "$1")
+      else
+        DRIVER_ARGS+=(--repair-class "$CLASS")
+      fi ;;
+    brief)
+      printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--brief "$1") ;;
+  esac
+}
+
 PROMPT="/agent-harness:claim"
 [ -n "$TICKET" ] && PROMPT="/agent-harness:claim $TICKET"
 
-# --- foreground: a fresh window you can talk to --------------------------------
-# Always the prose claim: a person is watching it and can talk to it.
+# --- foreground ------------------------------------------------------------------
+# A named ticket runs the step driver here too (the operator, 2026-10-17), in this
+# terminal, with the same brief channel as a detached run. Pick-next has no ticket
+# for the driver, so it stays the interactive prose claim, as does swarm.builder prose.
+if [ "$FG" -eq 1 ] && [ "$BUILDER" = driver ]; then
+  SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
+  cd "$SPAWN_ROOT" || exit 1
+  driver_args "$RUNS_DIR/fg-$TICKET-$$.brief"
+  echo "→ the step driver in the foreground: build-ticket ${DRIVER_ARGS[*]}"
+  DRIVER_STEP_BUDGET_USD="$BUDGET" \
+  DRIVER_PERMISSION_MODE="${CLAIM_PERMISSION_MODE:-${DRIVER_PERMISSION_MODE:-}}" \
+    exec bash "$DRIVER_BIN" "${DRIVER_ARGS[@]}"
+fi
+# The prose claim: a person is watching it and can talk to it.
 # No run record and no budget cap here — --max-budget-usd is silently ignored
 # outside --print, and an interactive session you're watching doesn't need a
 # watchdog to notice it died. Its lock falls back to artifact-freshness.
@@ -252,18 +280,7 @@ stop_run_servers() {
   if [ "$BUILDER" = driver ]; then
     # One claude per step: the budget caps each, and the project's
     # driver.permissionMode stands unless the spawner was given a mode.
-    # The brief, verbatim, in a file of the run's own that outlives this process.
-    DRIVER_ARGS=("$TICKET")
-    case "$DRIVER_MODE" in
-      repair)
-        if [ -n "$CALLER_TEXT" ]; then
-          printf '%s\n' "$CALLER_TEXT" > "$RUNS_DIR/$RUN_ID.brief"; DRIVER_ARGS+=(--repair "$RUNS_DIR/$RUN_ID.brief")
-        else
-          DRIVER_ARGS+=(--repair-class "$CLASS")
-        fi ;;
-      brief)
-        printf '%s\n' "$CALLER_TEXT" > "$RUNS_DIR/$RUN_ID.brief"; DRIVER_ARGS+=(--brief "$RUNS_DIR/$RUN_ID.brief") ;;
-    esac
+    driver_args "$RUNS_DIR/$RUN_ID.brief"
     DRIVER_STEP_BUDGET_USD="$BUDGET" \
     DRIVER_PERMISSION_MODE="${CLAIM_PERMISSION_MODE:-${DRIVER_PERMISSION_MODE:-}}" \
       bash "$DRIVER_BIN" "${DRIVER_ARGS[@]}" >> "$LOG" 2>&1 &
