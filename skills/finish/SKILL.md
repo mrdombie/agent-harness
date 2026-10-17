@@ -510,6 +510,15 @@ EVSHA=$(bash "$EV" status "$PR_NUMBER" | sed -n 's/^sha=//p')   # the commit CI 
 Spawn the `agent-harness:design-critic` agent with those paths and, for parity,
 the approved picture. Its verdict is about CI's pictures of `$EVSHA`.
 
+**Hold its answer to the first look.** Save the critic's whole answer and run the
+check on it. A refusal means the critic skipped the first-look test, or passed a
+screen it could not read: run the critic again, never record that verdict.
+
+```bash
+printf '%s\n' "$CRITIC_ANSWER" > "$SHOTS/critic.md"
+bash "$KIT_ROOT/scripts/check-first-look.sh" "$SHOTS/critic.md" || exit 1
+```
+
 **Record it against the evidence head, then push it.** Bring CI's evidence commit
 down first, so the trailer sits on top of it:
 

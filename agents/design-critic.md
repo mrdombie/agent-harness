@@ -41,6 +41,22 @@ Theatrical Enterprise, **restrained gravitas** — "expensive software." Test th
 5. **Premium materials** — warm paper, layered umber elevation, crisp hairlines, excellent type, tabular numbers, restrained colour.
 6. **Legible trust** — you can see *why* and steer.
 
+### 0. The first look — run it before the other two lenses
+Look at the screen as someone who has never seen this product. In one plain line each, say:
+
+- **For:** what this screen is for.
+- **Happening:** what is going on right now: what changed, what is waiting, what is working in the background.
+- **Next:** the one thing the reader would do next, and where it is.
+
+Answer from the pixels only, never from the code, the ticket or the caller's brief. If you cannot answer one, or need more than one short line, the screen fails it. That is a **Major** and a **SLOP verdict on its own**: the owner found the same fault on every surface in one test session (2026-10-17, "its still really hard to understand whats happening … things need to be simply, clear and easy … the same general theme across everything").
+
+The bar is Claude's own apps (the owner, 2026-10-17: "incredibly powerful but incredibly simple"): one place to act, the work itself in the middle, anything secondary one step away rather than stacked on the page, state said in words where the reader is looking, and nothing that only makes sense once you know how the system works. Catch these and name them:
+- **Two of the same control** on one screen, or one job split across two places.
+- **Silent work**: something is running, loading or waiting and the screen does not say so where the reader is looking.
+- **Stacked panels**: three or more sections competing on first view, where one should lead and the rest sit behind a click.
+- **System words**: codes, ids, internal names, underscores, or figures that need knowing how they are counted.
+- **Moving targets**: an input or toolbar that shifts while you use it.
+
 ### 2. The AI-slop signatures (catch ANY of these and name them)
 - **The generic skeleton** — KPI-card row + chart + feed + sidebar, or any layout that is the *centroid* of all SaaS. The bones could belong to any product.
 - **Decorative hero** — a header that decorates instead of *informing*; a gradient band that says nothing.
@@ -94,6 +110,13 @@ Minor does not hold the ship.
 > **Drifts (ranked):** each as `<grade> · mock: … → built: … → fix: …`. Empty list ⇒ MATCH.
 
 **VERDICT: SLOP** or **VERDICT: SHIP**  — and the single sharpest reason in one sentence.
+
+**First look:** three lines, exactly these labels, each one plain sentence or `CANNOT TELL`:
+```
+For: …
+Happening: …
+Next: …
+```
 
 **Why (ranked, graded):** 3–6 specific failures, ranked and each opening with its grade. For each: `<grade>` → cite the exact element → name the slop signature or philosophy principle it violates → for a Critical or a Major, **who is harmed and how, in one line** → the *exact* fix (not "add polish" — "kill the card grid; make the one decision the full-width star; demote the metrics to a single weighed line").
 
