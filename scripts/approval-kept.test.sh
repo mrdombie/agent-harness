@@ -320,4 +320,11 @@ reset; w apps/web/src/__tests__/a.tsx $'x\n\n\n\ny'; G add -A; G commit -qm b4; 
 G checkout -q develop; w apps/web/src/__tests__/a.tsx $'x\n\n\n\nY'; G commit -qam dev; mergedev
 want "a nested test both sides changed: kept" "0" "$(real)"
 
+echo "--- screens: the same rule, for a caller with paths ---"
+design "$PRECISE"
+want "the screen ones, by surfacePaths" "apps/web/a.tsx" \
+  "$(printf 'apps/web/a.tsx\napps/web/a.test.ts\ndocs/x.md\n' | bash "$K" screens)"
+want "a --screens command decides too" "docs/x.md" \
+  "$(printf 'docs/x.md\nlib/y.ts\n' | bash "$K" screens --screens 'grep ^docs/')"
+
 exit $FAILED
