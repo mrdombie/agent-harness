@@ -17,6 +17,9 @@ case "${1:-}" in
 esac
 REPO="${2:?worktree-sparse: need a repo}"; WT="${3:?worktree-sparse: need a worktree path}"; shift 3
 
+# A new branch cut from origin/<trunk> would track the trunk, and a bare push would land there.
+case " $* " in *" --track "*|*" --no-track "*) ;; *" -b "*|*" -B "*) set -- --no-track "$@" ;; esac
+
 CFG="${HARNESS_CFG_PATH:-${HARNESS_CFG:-$REPO/.claude/harness.json}}"
 PATTERNS=('/*')
 while IFS= read -r p; do
