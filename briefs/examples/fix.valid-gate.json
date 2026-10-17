@@ -1,0 +1,21 @@
+{
+  "step": "fix",
+  "skills": [
+    "superpowers:receiving-code-review",
+    "superpowers:test-driven-development"
+  ],
+  "status": "fixed",
+  "round": 1,
+  "gateFixes": [
+    {
+      "blockerId": "gate-changed-2",
+      "change": [
+        {
+          "path": "scripts/evidence/workflow-decide.test.ts",
+          "action": "modify"
+        }
+      ],
+      "commit": "3f2a1b0c"
+    }
+  ]
+}

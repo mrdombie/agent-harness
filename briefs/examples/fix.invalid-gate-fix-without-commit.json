@@ -1,0 +1,19 @@
+{
+  "step": "fix",
+  "skills": [
+    "superpowers:receiving-code-review"
+  ],
+  "status": "fixed",
+  "round": 1,
+  "gateFixes": [
+    {
+      "blockerId": "gate-changed-2",
+      "change": [
+        {
+          "path": "scripts/evidence/workflow-decide.test.ts",
+          "action": "modify"
+        }
+      ]
+    }
+  ]
+}

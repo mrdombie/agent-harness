@@ -194,6 +194,19 @@ driver_bounded() { # <seconds> <command>
   return "$rc"
 }
 
+# driver_run_project <seconds> <command> — one of the PROJECT's own commands (a gate,
+# a test, a typecheck), bounded, and run as CI runs it: without the kit's HARNESS_*
+# pins. A launcher exports HARNESS_CFG_PATH so the kit reads the right config; a
+# project test that builds its own fixture config reads that same variable first and
+# fails on a change that is fine.
+driver_run_project() { # <seconds> <command>
+  (
+    for _v in $(env | sed -n 's/^\(HARNESS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_v"; done
+    unset _v
+    driver_bounded "$@"
+  )
+}
+
 # driver_prepare_worktree <tree> — this project's per-checkout setup, in a freshly
 # created tree. Sets DRIVER_PREPARE_WHY and returns 1 when a command fails.
 #

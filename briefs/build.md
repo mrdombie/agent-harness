@@ -10,8 +10,12 @@ is split and how the cycle runs. This brief owns only this project's facts and
 what the driver needs back.
 
 The driver runs your new test itself, before your change and after it, and
-refuses to continue unless it failed first. That is the enforcement; the rules
-below are the ones a passing test can still get wrong.
+refuses to continue unless it failed first. It then runs this project's
+typecheck on the tree with your change — `driver.proofTypecheck`, else the
+typecheck among the `gates` in the project facts below — because a runner that
+strips types passes a test the compiler rejects. Run that typecheck yourself
+before you answer. That is the enforcement; the rules below are the ones a
+passing test can still get wrong.
 
 ## What you are given
 
@@ -19,6 +23,7 @@ below are the ones a passing test can still get wrong.
 - This project: {{PROJECT_FACTS}}
 - The standard a change is held to: {{STANDARDS}}
 - The screen rules, when this task touches a screen: {{SURFACE_RULES}}
+- Why the last try at this task was sent back: {{LAST_TRY}}
 
 Read {{STANDARDS}} once for the ticket, not once per file.
 

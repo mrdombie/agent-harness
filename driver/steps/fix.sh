@@ -32,6 +32,70 @@
 # second copy cannot start disagreeing with it about what red means.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
 
+# _driver_fix_gates <ticket> — the fix round for gates self-check found red. Every gate
+# finding is answered in `gateFixes` with a commit on the branch; a gate is not
+# deferrable, because self-check refuses while it is red anyway.
+_driver_fix_gates() { # <ticket>
+  local t="$1" d f wt n round rc ans ids bid unanswered="" c bad=0
+  d=$(driver_state_dir "$t"); f="$d/steps/self-check.findings.json"
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  n=$(jq -r 'length' "$f" 2>/dev/null)
+  round=$(driver_state_count "$t" fix)
+  driver_fact_put "$t" fix BLOCKERS "$(jq -r '
+    [.[] | "- id \(.id) · gate · `\(.command)` exited \(.exit)\n  This is a self-check gate, not a review finding: answer it in gateFixes.\n  output (last lines):\n\(.output | split("\n") | map("    " + .) | join("\n"))"]
+    | join("\n")' "$f")"
+  driver_fact_put "$t" fix DIFF "$(_driver_fix_diff "$wt")"
+  driver_fact_put "$t" fix ROUND "$((round + 1))"
+
+  driver_say "   fix round $((round + 1)): $n red gate(s) from self-check to repair"
+  rc=0; driver_ai_step "$t" fix || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  driver_state_bump "$t" fix
+  ans="$d/steps/fix.json"
+  jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
+
+  ids=$(jq -r '.[].id' "$f")
+  for bid in $ids; do
+    jq -e --arg b "$bid" '([.gateFixes[]?.blockerId] + [.cleared[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
+      "$ans" >/dev/null 2>&1 || unanswered="$unanswered $bid"
+  done
+  if [ -n "$unanswered" ]; then
+    driver_say "✋ fix: red gate(s)${unanswered} appear in no answer. A gate nobody repaired is still red."
+    driver_state_set "$t" park_note "the fix round left the red gate(s)${unanswered} unanswered: $(jq -r '[.[] | "\(.id) `\(.command)` exit \(.exit)"] | join("; ")' "$f")"
+    return "$DRIVER_E_REFUSED"
+  fi
+  if [ "$(jq -r '[.deferred[]?] | length' "$ans" 2>/dev/null)" != "0" ]; then
+    driver_say "✋ fix: a red gate was deferred — $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
+    driver_state_set "$t" park_note "the fix round says a red gate is not this change's to repair: $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
+    driver_state_set "$t" park_cause person
+    return "$DRIVER_E_REFUSED"
+  fi
+  # The commit named is a commit on this branch, or the repair is somewhere else.
+  for c in $(jq -r '.gateFixes[]?.commit' "$ans"); do
+    if ! git -C "$wt" merge-base --is-ancestor "$c" HEAD 2>/dev/null; then
+      driver_say "✋ fix: the gate repair names commit $c, which is not on this branch."
+      bad=1
+    fi
+  done
+  if [ "$bad" -ne 0 ]; then
+    driver_state_set "$t" park_note "the gate fix round named a commit that is not on the branch: $(jq -r '[.gateFixes[]?.commit] | join(" ")' "$ans")"
+    return "$DRIVER_E_REFUSED"
+  fi
+  # Answered once. Self-check re-runs every gate next and is the proof.
+  mv "$f" "$d/steps/self-check.findings.answered.json"
+  driver_say "   fix: $n red gate(s) repaired — self-check re-runs every gate next"
+  return "$DRIVER_OK"
+}
+
+_driver_fix_diff() { # <tree>
+  local wt="$1" r trunk="" diff=""
+  for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
+    git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
+  done
+  [ -z "$trunk" ] || diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  printf '%s' "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
+}
+
 driver_step_fix() { # <ticket>
   local t="${1:?driver_step_fix: need a ticket}"
   local d review round wt trunk r diff blockers n rc ans i ncleared
@@ -39,6 +103,15 @@ driver_step_fix() { # <ticket>
   export DRIVER_TICKET="$t"
   d=$(driver_state_dir "$t")
   review="$d/steps/review.json"
+
+  # A RED SELF-CHECK COMES HERE TOO. A gate failure the model can repair — a test
+  # that does not compile, a lint error — ended the run with nothing tried. The gate
+  # output is the finding; the proof of the fix is self-check re-running every gate
+  # straight after this step, so nothing is pushed past a red one.
+  if [ -s "$d/steps/self-check.findings.json" ]; then
+    _driver_fix_gates "$t"
+    return $?
+  fi
 
   if [ ! -f "$review" ]; then
     driver_say "   fix: no review has run yet, so there is nothing to fix."
