@@ -1,0 +1,29 @@
+{
+  "step": "repair",
+  "skills": [
+    "superpowers:systematic-debugging",
+    "superpowers:test-driven-development"
+  ],
+  "status": "repaired",
+  "cause": "x",
+  "fixes": [
+    {
+      "what": "the queue reader swallowed a fetch error, so the unit test job went red",
+      "proof": "test",
+      "change": [
+        {
+          "path": "src/queue/reader.ts",
+          "action": "modify"
+        }
+      ],
+      "test": {
+        "file": "src/queue/reader.test.ts",
+        "behaviour": "read() against a throwing fetch returns state 'failed'",
+        "redWhen": "the catch block is deleted"
+      },
+      "command": "npm test -- src/queue/reader.test.ts",
+      "failedBefore": true,
+      "passedAfter": true
+    }
+  ]
+}

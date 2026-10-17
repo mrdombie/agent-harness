@@ -52,7 +52,7 @@ reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
   : > "$RAN"; : > "$FIX/park.log"; rm -f "$FIX"/n.*
   fake_park
   local s
-  for s in start plan build fix compare self-check review record ship; do fake_step "$s" 0; done
+  for s in start plan build fix compare self-check review record ship reenter repair; do fake_step "$s" 0; done
   local pair
   for pair in "$@"; do fake_step "${pair%%:*}" "${pair#*:}"; done
 }
@@ -510,5 +510,187 @@ want "the first half of the command runs plan again" "plan" "$(tr '\n' ' ' < "$R
 : > "$RAN"
 out=$(bt 130); rc=$?
 want "and the second carries on from compare" "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- --repair: the repair order, on the PR, with the brief on the record ---"
+REPAIR_ORDER="reenter repair fix self-check review record ship"
+reset_fakes
+printf 'REPAIR on PR #9: CI went red on: unit\n' > "$FIX/brief-a.md"
+out=$(bt 401 --repair "$FIX/brief-a.md"); rc=$?
+want "it finishes"                         "0" "$rc"
+want "the repair order ran, and nothing of the build's" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the record is in repair mode"        "repair" "$(driver_state_get 401 mode)"
+want "the brief is kept on the record, verbatim" "REPAIR on PR #9: CI went red on: unit" "$(cat "$(driver_state_get 401 repair_brief)" 2>/dev/null)"
+rm -f "$FIX/brief-a.md"
+want "and outlives the spawner's file"     "REPAIR on PR #9: CI went red on: unit" "$(cat "$(driver_state_get 401 repair_brief)" 2>/dev/null)"
+
+echo "--- --repair refuses a brief it cannot read ---"
+reset_fakes
+out=$(bt 402 --repair "$FIX/no-such-brief.md"); rc=$?
+want "a missing brief is a config refusal" "2" "$rc"
+want_in "naming the file"                  'no-such-brief.md' "$out"
+want "and nothing ran"                     "" "$(cat "$RAN")"
+: > "$FIX/empty-brief.md"
+out=$(bt 402 --repair "$FIX/empty-brief.md"); rc=$?
+want "an empty one too"                    "2" "$rc"
+
+echo "--- the same brief resumes; a new brief is a new repair round ---"
+reset_fakes "repair:24 0"
+printf 'REPAIR on PR #9: it clashes with develop\n' > "$FIX/brief-b.md"
+bt 403 --repair "$FIX/brief-b.md" >/dev/null; rc=$?
+want "the first pass parks at repair"      "20" "$rc"
+: > "$RAN"
+bt 403 --repair "$FIX/brief-b.md" >/dev/null; rc=$?
+want "the same brief resumes and finishes" "0" "$rc"
+want "reenter re-checks, then it carries on from repair" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+# A finished repair leaves a review answer and counters behind. The next repair must
+# get its own review rounds and must not read the last one's findings.
+mkdir -p "$(driver_state_dir 403)/steps"; printf '{"verdict":"SHIP","findings":[]}\n' > "$(driver_state_dir 403)/steps/review.json"
+driver_state_bump 403 review; driver_state_bump 403 review; driver_state_set 403 repair_base deadbeef
+: > "$RAN"
+printf 'REPAIR on PR #9: CI went red on: e2e\n' > "$FIX/brief-c.md"
+bt 403 --repair "$FIX/brief-c.md" >/dev/null; rc=$?
+want "a new brief runs the whole repair order again" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the last repair's review answer is archived, not read" "no" "$([ -f "$(driver_state_dir 403)/steps/review.json" ] && echo yes || echo no)"
+want "it is kept under steps/archive"      "1" "$(ls "$(driver_state_dir 403)"/steps/archive/*/review.json 2>/dev/null | grep -c .)"
+want "the review rounds start again"       "0" "$(driver_state_count 403 review)"
+want "the repair's starting head is cleared for reenter" "" "$(driver_state_get 403 repair_base)"
+want "the record carries the new brief"    "REPAIR on PR #9: CI went red on: e2e" "$(cat "$(driver_state_get 403 repair_brief)")"
+
+echo "--- a plain run is not in repair mode ---"
+reset_fakes
+bt 404 >/dev/null
+want "the record says build"               "build" "$(driver_state_get 404 mode)"
+
+echo "--- a rework in the repair order goes back to fix, not to a build step it lacks ---"
+reset_fakes "review:30 0"
+printf 'REPAIR on PR #9: red\n' > "$FIX/brief-d.md"
+out=$(bt 405 --repair "$FIX/brief-d.md"); rc=$?
+want "it finishes after the rework"        "0" "$rc"
+want "fix, self-check and review ran again" "reenter repair fix self-check review fix self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- the real repair order, one whole pass: a red PR fixed onto its own branch ---"
+# The recorders above prove the order; this proves the wiring. The steps that ship,
+# a real origin, the real claim lock, a PR branch that is red, and transcripts
+# standing in only for the model. The agent's hands commit the fix in the tree
+# reenter cut, so nothing in this case knows that tree's path in advance.
+rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"; : > "$GH_LOG"; : > "$CLAUDE_LOG"
+SRC="$FIX/src210"; git clone -q -b develop "$FIX/origin" "$SRC"
+git -C "$SRC" checkout -q -b tkt-210/work
+printf '#!/usr/bin/env bash\ngrep -qx fixed "$(dirname "$0")/state.txt"\n' > "$SRC/check.sh"; printf 'broken\n' > "$SRC/state.txt"
+git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 210"
+git -C "$SRC" push -q origin tkt-210/work
+PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
+fix_issue 210 OPEN "status:in-review"
+jq -n '[{number:61, headRefName:"tkt-210/work", headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
+         statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
+: > "$FIX/pr-created-61"; printf '{"number":61,"isDraft":false,"body":"The PR as its author wrote it."}\n' > "$FIX/gh/pr-view.json"
+fix_brief repair superpowers:systematic-debugging
+cat > "$BIN/claude-hands" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" --name repair "*)
+  printf 'fixed\n' > state.txt; git add state.txt
+  git -c user.email=t@example.invalid -c user.name=T commit -qm "fix: the state" >/dev/null 2>&1 ;;
+esac
+exec "$BIN/claude" "$@"
+SH
+chmod +x "$BIN/claude-hands"
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"state.txt was never set","fixes":[{"what":"set it","proof":"gate","change":[{"path":"state.txt","action":"modify"}],"command":"bash check.sh","noTestBecause":"the fixture check is the test"}]}' \
+  superpowers:systematic-debugging
+printf 'REPAIR on PR #61 at %s: CI went red on: unit\n' "$PR_HEAD" > "$FIX/brief-210.md"
+out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 210 --repair "$FIX/brief-210.md" 2>&1); rc=$?
+printf '%s\n' "$out" | sed 's/^/    /'
+want "the real repair order finishes"      "0" "$rc"
+want "every repair step is recorded"       "reenter,repair,fix,self-check,review,record,ship" "$(driver_state_get 210 'done|join(",")')"
+want "the model ran for repair and review only" "repair review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "the fix reached the PR's own branch on origin" "fixed" "$(git -C "$FIX/origin" show tkt-210/work:state.txt 2>/dev/null)"
+want "as a fast-forward of the PR's head"  "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor "$PR_HEAD" tkt-210/work && echo yes)"
+want_not_in "no new branch was cut"        'tkt-210/ticket-210' "$(git -C "$FIX/origin" branch --list 'tkt-210*')"
+want_not_in "no new pull request"          'pr create' "$(cat "$GH_LOG")"
+want_not_in "the PR's own words are kept"  'pr edit' "$(cat "$GH_LOG")"
+want_in "the repair is said on the PR"     'pr comment 61 .*state.txt was never set' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "and it is handed off"             'pr merge tkt-210/work .*--auto' "$(cat "$GH_LOG")"
+want "the trunk point it forked from is on the record" "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 210 claimed_at_sha)"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- a repeated brief after a shipped repair is a NEW round, not a silent no-op ---"
+# The empty-note brief and the merge lane's notes repeat word for word. Keyed on the
+# brief alone, the next clash on a repaired PR ran reenter, said "nothing left to
+# do", exited 0, left the queue, and the PR stayed red.
+reset_fakes
+pr_head() { jq -n --arg h "$1" '[{number:61, headRefName:"tkt-410/work", headRefOid:$h, isDraft:false, mergeStateStatus:"DIRTY"}]' > "$FIX/gh/prs.json"; }
+pr_head h1
+printf 'Merge lane: PR #61 left the lane — it clashes. Fix it on the PR branch.\n' > "$FIX/brief-e.md"
+bt 410 --repair "$FIX/brief-e.md" >/dev/null; rc=$?
+want "the first repair ships"                "0" "$rc"
+: > "$RAN"; pr_head h2
+out=$(bt 410 --repair "$FIX/brief-e.md"); rc=$?
+want "the same words after a ship run the whole order again" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_not_in "and never claim there is nothing to do" 'nothing left to do' "$out"
+: > "$RAN"
+bt 410 --repair "$FIX/brief-e.md" >/dev/null
+want "even with the head unchanged, a shipped round is never resumed as done" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- a parked repair whose PR head moved is a new round; an unmoved one resumes ---"
+reset_fakes "repair:24 0"
+jq -n '[{number:62, headRefName:"tkt-411/work", headRefOid:"p1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+printf 'REPAIR on PR #62: red\n' > "$FIX/brief-f.md"
+bt 411 --repair "$FIX/brief-f.md" >/dev/null
+: > "$RAN"; rm -f "$FIX"/n.*; fake_step repair 24 0
+bt 411 --repair "$FIX/brief-f.md" >/dev/null
+want "unmoved: it resumes at repair"         "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+: > "$RAN"
+printf '{"step":"repair","status":"park","question":"stale"}\n' > "$(driver_state_dir 411)/steps/repair.json"
+jq -n '[{number:62, headRefName:"tkt-411/work", headRefOid:"p2", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+bt 411 --repair "$FIX/brief-f.md" >/dev/null
+want "moved: a new round, the whole order"   "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and the parked round's answers are archived" "no" "$([ -f "$(driver_state_dir 411)/steps/repair.json" ] && echo yes || echo no)"
+printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- end to end: a repair interrupted mid-conflict never ships its markers ---"
+# The chain review round 2 traced: the model call dies with the merge in progress,
+# the park commits it markers and all, the next pass sees no merge and the trunk
+# already in, calls nothing and ships the markers. Each link is closed; this walks
+# the whole chain with the real steps.
+rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"; : > "$GH_LOG"; : > "$CLAUDE_LOG"
+SRC="$FIX/src212"; git clone -q -b develop "$FIX/origin" "$SRC"
+git -C "$SRC" checkout -q -b tkt-212/work
+printf 'ours\n' > "$SRC/clash212.txt"; git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 212"
+git -C "$SRC" push -q origin tkt-212/work; PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
+git -C "$SRC" checkout -q develop; printf 'theirs\n' > "$SRC/clash212.txt"; git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "trunk 212"
+git -C "$SRC" push -q origin develop
+fix_issue 212 OPEN "status:in-review"
+jq -n --arg h "$PR_HEAD" '[{number:63, headRefName:"tkt-212/work", headRefOid:$h, isDraft:false, mergeStateStatus:"DIRTY", statusCheckRollup:[]}]' > "$FIX/gh/prs.json"
+: > "$FIX/pr-created-63"; printf '{"number":63,"isDraft":false,"body":"As written."}\n' > "$FIX/gh/pr-view.json"
+cat > "$BIN/claude-hands" <<'SH'
+#!/usr/bin/env bash
+case " $* " in *" --name repair "*)
+  if [ -f "$FIX/hands-resolve" ]; then
+    printf 'theirs\nours\n' > clash212.txt; git add clash212.txt
+    git -c user.email=t@example.invalid -c user.name=T commit -q --no-edit >/dev/null 2>&1
+  fi ;;
+esac
+exec "$BIN/claude" "$@"
+SH
+chmod +x "$BIN/claude-hands"
+rm -f "$FIX/ai/repair.jsonl" "$FIX/hands-resolve"   # pass 1: the model call dies with no answer
+printf 'REPAIR on PR #63: it clashes with develop\n' > "$FIX/brief-212.md"
+out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
+WT212=$(driver_state_get 212 worktree)
+want "pass 1 parks"                          "20" "$rc"
+want "the park committed nothing"            "$PR_HEAD" "$(git -C "$WT212" rev-parse HEAD)"
+want "the merge is left in progress"         "yes" "$([ -f "$(git -C "$WT212" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"
+want "origin still has the PR's head"        "$PR_HEAD" "$(git -C "$FIX/origin" rev-parse tkt-212/work)"
+: > "$FIX/hands-resolve"
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"develop and the PR both wrote clash212.txt","conflicts":[{"file":"clash212.txt","resolution":"both lines kept"}],"fixes":[{"what":"resolved the merge","proof":"gate","change":[{"path":"clash212.txt","action":"modify"}],"command":"true","noTestBecause":"a merge resolution that only needed both lines"}]}' \
+  superpowers:systematic-debugging
+: > "$CLAUDE_LOG"
+out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
+printf '%s\n' "$out" | sed 's/^/    /'
+want "pass 2 resumes the merge and ships"    "0" "$rc"
+want "the model was handed the merge again"  "repair review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want "what reached origin is resolved"       "theirs ours" "$(git -C "$FIX/origin" show tkt-212/work:clash212.txt 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+want_not_in "and carries no marker"          '<<<<<<<|>>>>>>>' "$(git -C "$FIX/origin" show tkt-212/work:clash212.txt 2>/dev/null)"
+want "the trunk is in the PR's branch"       "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor develop tkt-212/work && echo yes)"
+rm -f "$FIX/gh/pr-view.json" "$FIX/hands-resolve"; printf '[]\n' > "$FIX/gh/prs.json"
 
 exit $FAILED

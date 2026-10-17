@@ -3,6 +3,7 @@
 # deciding what happens next.
 #
 #   build-ticket <ticket> [--restart] [--steps "start plan …"]
+#   build-ticket <ticket> --repair <brief-file>   a red or clashing PR, on its own branch
 #
 # THIS FILE IS THE CHANGE THE EPIC IS ABOUT. Until now the order of the work was
 # a list an agent read in 49,657 words of instructions and then chose from: the
@@ -45,10 +46,11 @@ DRIVER_STEPS_DIR="${DRIVER_STEPS_DIR:-$DRIVER_HOME_SELF/steps}"
 
 die() { echo "build-ticket: $*" >&2; exit 2; }
 
-TICKET=""; RESTART=0
+TICKET=""; RESTART=0; REPAIR_BRIEF=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --restart) RESTART=1; shift ;;
+    --repair)  REPAIR_BRIEF="${2:?--repair needs a brief file}"; shift 2 ;;
     --steps)   DRIVER_STEPS="${2:?--steps needs a list}"; shift 2 ;;
     -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)        die "unknown flag $1" ;;
@@ -58,6 +60,20 @@ done
 [ -n "$TICKET" ] || die "need a ticket number"
 case "$TICKET" in *[!0-9]*) die "'$TICKET' is not a ticket number" ;; esac
 export DRIVER_TICKET="$TICKET"
+
+# ---- a repair: the PR that exists, not a fresh build --------------------------
+# `--repair <brief>` is how a red or clashing pull request comes back to the driver.
+# A different order, entered through `reenter` (the PR's own branch, at origin's
+# head) in place of `start` (a fresh branch from the trunk): reenter, repair, then
+# the same fix, self-check, review, record and ship every ticket gets. The brief
+# is the reason it was sent and is never dropped: it is copied onto the record, and
+# a brief that cannot be read is a refusal, because a repair with its reason
+# missing would be a guess at what is wrong.
+if [ -n "$REPAIR_BRIEF" ]; then
+  [ -s "$REPAIR_BRIEF" ] || die "--repair names '$REPAIR_BRIEF', which is missing or empty — a repair without its brief would be a guess at what is wrong"
+  DRIVER_STEPS="${DRIVER_REPAIR_STEPS:-reenter repair fix self-check review record ship}"
+  DRIVER_ALWAYS_STEPS="${DRIVER_ALWAYS_STEPS:-reenter}"
+fi
 
 # ---- load the steps, refusing by name --------------------------------------
 # Park first: it is the exit from every other step, so a run that cannot park is
@@ -80,6 +96,44 @@ done
 
 # ---- the record ------------------------------------------------------------
 driver_state_init "$TICKET"
+if [ -n "$REPAIR_BRIEF" ]; then
+  # THE SAME BRIEF RESUMES, A NEW ONE IS A NEW ROUND. A repair spawned again on the
+  # same brief (a killed run) picks up where it stopped. A different brief is a new
+  # failure, so the last round's answers move aside — the fix step must not read the
+  # last review's findings, and the new round gets its own two review rounds.
+  _rb_sha=$(git hash-object "$REPAIR_BRIEF" 2>/dev/null)
+  _rd=$(driver_state_dir "$TICKET")
+  # AND A ROUND IS MORE THAN ITS WORDS. The empty-note brief and the merge lane's
+  # notes repeat word for word, so keyed on the brief alone the next clash on a
+  # repaired PR ran reenter, said "nothing left to do" and exited 0 with the PR red.
+  # A round already shipped is never resumed, and a PR whose head moved since the
+  # round began is a new failure.
+  _rb_head=$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f3)
+  _rb_new=0
+  [ "$_rb_sha" != "$(driver_state_get "$TICKET" repair_brief_sha)" ] && _rb_new=1
+  driver_state_is_done "$TICKET" ship && _rb_new=1
+  [ -n "$_rb_head" ] && [ -n "$(driver_state_get "$TICKET" repair_pr_head)" ] \
+    && [ "$_rb_head" != "$(driver_state_get "$TICKET" repair_pr_head)" ] && _rb_new=1
+  if [ "$_rb_new" -eq 1 ]; then
+    _arch="$_rd/steps/archive/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    mkdir -p "$_arch"
+    for _f in "$_rd"/steps/*; do
+      case "$(basename "$_f")" in archive|replaced.jsonl) continue ;; esac
+      [ -e "$_f" ] && mv "$_f" "$_arch/"
+    done
+    rmdir "$_arch" 2>/dev/null || true
+    driver_state_reopen "$TICKET" $DRIVER_STEPS
+    _driver_state_edit "$TICKET" --arg sha "$_rb_sha" --arg h "$_rb_head" \
+      '.counters.review = 0 | .counters.fix = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha | .repair_pr_head = $h'
+    cp "$REPAIR_BRIEF" "$_rd/repair-brief.md"
+    driver_state_set "$TICKET" repair_brief "$_rd/repair-brief.md"
+    driver_say "🔧 #$TICKET repair: $(head -1 "$_rd/repair-brief.md" | cut -c1-160)"
+  fi
+  driver_state_set "$TICKET" mode repair
+  unset _rb_sha _rb_head _rb_new _rd _arch _f
+else
+  driver_state_set "$TICKET" mode build
+fi
 if [ "$RESTART" -eq 1 ]; then
   driver_state_reopen "$TICKET" $DRIVER_STEPS
   driver_say "↻ #$TICKET restarting: every step will run again."

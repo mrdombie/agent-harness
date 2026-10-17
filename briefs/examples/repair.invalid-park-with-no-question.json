@@ -1,0 +1,8 @@
+{
+  "step": "repair",
+  "skills": [
+    "superpowers:systematic-debugging",
+    "superpowers:test-driven-development"
+  ],
+  "status": "park"
+}

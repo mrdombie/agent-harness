@@ -332,7 +332,11 @@ for n in $tickets; do
     # this released #10867 out from under a trial that was still working it, reporting
     # "agent gone, no branch, no PR". The driver's own run record is the artifact that
     # says otherwise, and artifact freshness is already how this file judges staleness.
-    if claim_run_fresh "$n" "$STATE_DIR" "$STALE_HOURS"; then
+    # NOT FOR THE SESSION THE CALLER NAMES AS EXITED. That is spawn-claim's own
+    # post-exit reconcile, and the run it names is gone: its record is fresh only
+    # because it was writing until it stopped.
+    if { [ -z "${CLAIM_EXITED_PID:-}" ] || [ "$pid" != "$CLAIM_EXITED_PID" ]; } \
+       && claim_run_fresh "$n" "$STATE_DIR" "$STALE_HOURS"; then
       say "  LIVE       #$n — pid $pid is gone, and the driver's run record was written inside the last ${STALE_HOURS}h"
       live=$((live + 1)); continue
     fi
