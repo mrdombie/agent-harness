@@ -329,7 +329,7 @@ claim 7897       # that ticket
 claim --fg       # interactive, in the foreground
 ```
 
-`claim` runs `scripts/spawn-claim.sh`, which starts a **fresh `claude` process** — new context, its own budget cap, its own worktree — and that process runs this skill. A context window cannot clear itself (no hook event can do it), so a new process is the only way to get a genuinely clean context per ticket. Worth reaching for when a session has drifted a long way from the ticket in hand; not something to do reflexively.
+`claim` runs `scripts/spawn-claim.sh`, which starts a **fresh process** — new context, its own budget cap, its own worktree. For a named ticket that process is the step driver, `driver/build-ticket <n>` (Dom, 2026-10-17), not this skill. This skill runs for pick-next (no number), `--fg`, repair-class runs, any run a caller hands a brief, and every run when the project sets `swarm.builder: "prose"`. A context window cannot clear itself (no hook event can do it), so a new process is the only way to get a genuinely clean context per ticket. Worth reaching for when a session has drifted a long way from the ticket in hand; not something to do reflexively.
 
 A spawned claim records `run_id` in its lockfile, which lets the watchdog tell "the agent died" from "the agent is thinking". A `/agent-harness:claim` typed into a session leaves no run record and falls back to artifact freshness — still covered, just less precisely.
 
@@ -426,7 +426,7 @@ scheduler that was not running, put the load at 77 on 10 cores.
 claim, the spec gate, the anti-orphan gates, the worktree, the attestations. One
 path to shipping code, whether the ticket was chosen by you or handed to you.
 
-`scripts/spawn-claim.sh` has always built `PROMPT="/agent-harness:claim $TICKET"`, so it has been
+`scripts/spawn-claim.sh` built `PROMPT="/agent-harness:claim $TICKET"` (today only on the prose path), so it had been
 passing a number this command ignored — it picked its own ticket instead, and a
 caller that asked for a specific one silently got a different one.
 

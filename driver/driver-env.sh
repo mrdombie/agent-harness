@@ -285,6 +285,8 @@ driver_lean_args() {
   local wt="${1:-}" step="${2:-}" tools f files="" excl=""
   local -a list
   DRIVER_LEAN_ARGS=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
+  # Off unless a spawner sets it: a runaway stop per step, never a measurement.
+  [ -z "${DRIVER_STEP_BUDGET_USD:-}" ] || DRIVER_LEAN_ARGS+=(--max-budget-usd "$DRIVER_STEP_BUDGET_USD")
   tools=$(driver_step_tools "$step")
   if [ -n "$tools" ] && [ "$tools" != "default" ]; then
     read -r -a list <<<"$tools"

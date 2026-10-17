@@ -146,6 +146,7 @@ cat > "$SB/bin/claude" <<'STUB'
   printf 'rules=%s\n' "$(ls .claude 2>/dev/null | grep -c 'hookify\..*\.local\.md')"
   printf 'rule-b=%s\n' "$([ -f .claude/hookify.rule-b.local.md ] && echo yes || echo no)"
   printf 'rule-c=%s\n' "$([ -f .claude/hookify.rule-c.local.md ] && echo yes || echo no)"
+  printf 'step_budget=%s\n' "${DRIVER_STEP_BUDGET_USD:-}"
   printf 'args=%s\n' "$*"
 } > "$SPAWN_TEST_SEEN"
 [ -n "${SPAWN_TEST_RUNID:-}" ] && printf '%s' "$CLAIM_RUN_ID" > "$SPAWN_TEST_RUNID"
@@ -160,6 +161,13 @@ done
 exit "${SPAWN_TEST_EXIT:-0}"
 STUB
 chmod +x "$SB/bin/claude"
+# The stub step driver: the agent stub's behaviour, with its own name first in the args.
+mkdir -p "$SB/driver"
+cat > "$SB/driver/build-ticket" <<'STUB'
+#!/usr/bin/env bash
+exec "$(dirname "$0")/../bin/claude" build-ticket "$@"
+STUB
+chmod +x "$SB/driver/build-ticket"
 # A stub caffeinate: records what it was asked to hold awake.
 cat > "$SB/bin/caffeinate" <<'STUB'
 #!/usr/bin/env bash
@@ -264,9 +272,11 @@ CANON="" REGISTRY="$SB/registry.json" run --fg 4246
 # scripts/spawn-claim.sh, which built "/claim N" — the project's fork of the skill,
 # not the kit's. The project copy above does exactly that, so a hand-over shows here.
 bare_claim() { printf '%s' "$1" | perl -ne 'print "$1\n" while /(?<![A-Za-z0-9_.:\-])(\/claim)\b(?![\/\-.])/g' | head -1; }
+# A named ticket detached goes to the step driver by default; the prose path is what this guards.
+jq '.swarm = {builder: "prose"}' "$STORE/.claude/harness.json" > "$SB/cfg-prose.json"
 for mode in detached fg; do
   rm -f "$OUT/marker" "$OUT/installed" "$OUT/seen"
-  if [ "$mode" = fg ]; then CANON="" run --fg 4950 >/dev/null; else CANON="" run 4950 >/dev/null; fi
+  if [ "$mode" = fg ]; then CANON="" run --fg 4950 >/dev/null; else CFG="$SB/cfg-prose.json" CANON="" run 4950 >/dev/null; fi
   for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
   a=$(sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' ')
   [ -n "$a" ] || { bad "$mode: the builder never started"; continue; }
@@ -422,7 +432,7 @@ mcp_of() { # <args line> — what the run can load: ALL when not strict, else th
 # The whole argv: a detached prompt runs over several lines, and the flags follow it.
 seen_args() { sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' '; }
 wait_seen() { for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done; }
-rm -f "$OUT/seen"; run 4901; wait_seen
+rm -f "$OUT/seen"; CFG="$SB/cfg-prose.json" run 4901; wait_seen
 got=$(mcp_of "$(seen_args)")
 [ -z "$got" ] && ok "a detached builder loads no MCP server when the list is empty" \
               || bad "a detached builder can load '$got', want none: $(seen args)"
@@ -431,7 +441,7 @@ rm -f "$OUT/seen" "$OUT/installed"; SPAWN_TEST_HANDOVER=1 CANON="" REGISTRY="$SB
 got=$(mcp_of "$(seen_args)")
 [ -z "$got" ] && ok "re-exec'd into the installed kit, the builder still loads none" \
               || bad "after the re-exec the builder can load '$got', want none: $(seen args)"
-jq '.swarm = {builderMcpServers: {railway: {command: "railway", args: ["mcp"]}}}' "$STORE/.claude/harness.json" > "$SB/cfg-mcp.json"
+jq '.swarm = {builder: "prose", builderMcpServers: {railway: {command: "railway", args: ["mcp"]}}}' "$STORE/.claude/harness.json" > "$SB/cfg-mcp.json"
 rm -f "$OUT/seen"; CFG="$SB/cfg-mcp.json" run 4903; wait_seen
 got=$(mcp_of "$(seen_args)")
 [ "$got" = railway ] && ok "a server on the list is loaded, and only that one" \
@@ -440,6 +450,76 @@ rm -f "$OUT/seen"; run --fg 4904
 got=$(mcp_of "$(seen_args)")
 [ "$got" = ALL ] && ok "an interactive session keeps every server" \
                  || bad "the --fg session was limited to '$got'"
+
+# --- 10. Who builds: the step driver for a new ticket, prose for the rest ------
+# Dom, 2026-10-17: every new ticket build runs on driver/build-ticket. Each case
+# reads the argv the agent stub was started with, so a branch that stops choosing
+# its builder shows as the wrong program running, not as a missing line.
+record_of() { jq -r ".$2 // empty" "$STATE"/runs/claim-"$1"-*.json 2>/dev/null | head -1; }
+builder_case() { # <ticket> [run args...] — spawn detached, wait for the agent, return its argv
+  local t="$1"; shift
+  rm -f "$OUT/seen"; run "$@" >/dev/null; wait_seen
+  BARGS=$(seen_args)
+}
+
+builder_case 4960 4960
+case "$BARGS" in
+  "build-ticket 4960 "*|"build-ticket 4960") ok "default: a named ticket runs driver/build-ticket 4960" ;;
+  *) bad "default: the builder was not build-ticket 4960: '${BARGS:-never started}'" ;;
+esac
+printf '%s' "$BARGS" | grep -q '/agent-harness:claim' \
+  && bad "default: the prose claim ran as well as or instead of the driver" \
+  || ok "default: no prose claim prompt reaches it"
+[ "$(seen step_budget)" = 150 ] && ok "default: the run's budget caps each driver step" \
+  || bad "default: the driver was handed step budget '$(seen step_budget)', want 150"
+[ "$(record_of 4960 builder)" = driver ] && ok "default: the run record says builder driver" \
+  || bad "default: the run record's builder was '$(record_of 4960 builder)'"
+
+CFG="$SB/cfg-prose.json" builder_case 4961 4961
+case "$BARGS" in
+  build-ticket*) bad "swarm.builder=prose: the driver ran: '$BARGS'" ;;
+  *) printf '%s' "$BARGS" | grep -q -- '/agent-harness:claim 4961' \
+       && printf '%s' "$BARGS" | grep -q -- '-p ' \
+       && ok "swarm.builder=prose: claude -p runs /agent-harness:claim 4961" \
+       || bad "swarm.builder=prose: the prose claim did not run: '${BARGS:-never started}'" ;;
+esac
+
+builder_case next
+case "$BARGS" in
+  build-ticket*) bad "pick-next: the driver ran with no ticket: '$BARGS'" ;;
+  *) printf '%s' "$BARGS" | grep -Eq -- '/agent-harness:claim( |$)' \
+       && ! printf '%s' "$BARGS" | grep -Eq -- '/agent-harness:claim [0-9]' \
+       && ok "pick-next: no ticket stays on the prose claim, with no number" \
+       || bad "pick-next: the prose pick-next claim did not run: '${BARGS:-never started}'" ;;
+esac
+
+CLAIM_EXTRA="Merge lane: PR #9 left the lane — fix it on its branch." builder_case 4962 4962
+case "$BARGS" in
+  build-ticket*) bad "a caller's brief went to the driver, which cannot read it: '$BARGS'" ;;
+  *) printf '%s' "$BARGS" | grep -q 'Merge lane: PR #9' \
+       && ok "a run with a caller's brief stays on prose, brief in the prompt" \
+       || bad "a briefed run lost its brief: '${BARGS:-never started}'" ;;
+esac
+
+CLAIM_CLASS=approved-merge builder_case 4963 4963
+case "$BARGS" in
+  build-ticket*) bad "an approved-merge run went to the driver: '$BARGS'" ;;
+  *) ok "an approved-merge run works its open PR on prose" ;;
+esac
+
+rm -f "$OUT/seen"
+jq '.swarm = {builder: "steps"}' "$STORE/.claude/harness.json" > "$SB/cfg-bad.json"
+CFG="$SB/cfg-bad.json" run 4964 >"$OUT/bad.log"
+[ "$RC" = 2 ] && grep -q "swarm.builder is 'steps'" "$OUT/bad.log" \
+  && ok "an unknown swarm.builder refuses by name" \
+  || bad "an unknown swarm.builder did not refuse (rc $RC): $(cat "$OUT/bad.log")"
+
+mv "$SB/driver/build-ticket" "$SB/driver/build-ticket.away"
+rm -f "$OUT/seen"; run 4965 >"$OUT/nodriver.log"
+mv "$SB/driver/build-ticket.away" "$SB/driver/build-ticket"
+[ "$RC" = 1 ] && grep -q 'swarm.builder' "$OUT/nodriver.log" && [ ! -f "$OUT/seen" ] \
+  && ok "a missing driver refuses and names the prose switch, starting nothing" \
+  || bad "a missing driver did not refuse cleanly (rc $RC): $(cat "$OUT/nodriver.log")"
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"
