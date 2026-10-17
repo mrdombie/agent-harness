@@ -70,7 +70,7 @@ held_green() { # <pr> \t <sha7> \t <sha>
 # there, "ask <merge> <first-parent>" when the walk reaches a merge not yet judged,
 # else why the PR is not counted.
 WALK_JQ='
-  def carry($clean): (.parents == 1 and (.files == 0 or (.message | startswith($pre))))
+  def carry($clean): (.parents == 1 and (.files == 0 or (.message | startswith($evpre))))
                      or (.parents > 1 and (.oid as $o | $clean | index($o)));
   def verdicts: if .parents == 1 and .files == 0 then
       [ .message | split("\n")[] | capture("^(?<k>[A-Za-z0-9][A-Za-z0-9-]*):[ \t]*SHIP \\([^)]+\\) [0-9a-f]{6,}[ \t]*$")? | .k | ascii_downcase ]
@@ -100,12 +100,16 @@ on_head() { # rows of held_green on stdin; those whose verdicts are on the head
   printf '%s\n' "$rows" | while IFS=$'\t' read -r n s7 sha; do
     clean='[]'; dirty='[]'
     while :; do
-      why=$(jq -r --arg n "$n" --arg sha "$sha" --argjson keys "$VERDICTS" --arg pre "$EV_PREFIX" \
+      why=$(jq -r --arg n "$n" --arg sha "$sha" --argjson keys "$VERDICTS" --arg evpre "$EV_PREFIX" \
               --argjson clean "$clean" --argjson dirty "$dirty" ".[\$n] | $WALK_JQ" <<<"$data" 2>/dev/null) \
         || { why="its commits could not be judged"; break; }
       case "$why" in
         "ask "*)
           set -- $why
+          # A merge asked about twice means the walk is not moving: stop, uncounted.
+          if jq -en --arg o "$2" --argjson c "$clean" --argjson d "$dirty" '($c + $d) | index($o)' >/dev/null 2>&1; then
+            why="its commits could not be judged"; break
+          fi
           if [ -n "${3:-}" ] && bash "$KEPT" check "$3" "$2" >/dev/null 2>&1; then
             clean=$(jq -c --arg o "$2" '. + [$o]' <<<"$clean")
           else dirty=$(jq -c --arg o "$2" '. + [$o]' <<<"$dirty"); fi ;;
