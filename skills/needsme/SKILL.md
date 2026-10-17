@@ -578,23 +578,31 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
 
 ### W1 — ask each row
 
-- **`signoff-batch`** — a batch of held pixel PRs, green apart from the hold. One
-  PR at a time, in the order the text lists them:
-  1. `bash "$W" card <pr>`. `held no` → already signed off: skip it, no question.
-  2. `bash "$W" open <pr>` — opens the evidence in Chrome: for a part of a screen
-     the region shot, the preview and the approved picture at the region's anchor,
-     then the full page; otherwise the live preview and the before/after shots. Say
-     so in one line, with the PR URL from the card.
-  3. `AskUserQuestion`, header `Sign off`, the question naming what the change
-     does (from the card's title) and the PR number last. When the card has a
-     `banner`, the question opens with it verbatim and names the live and pending
-     siblings from its `sibling` rows. Options: **Approve**
-     (clear the hold and let it merge) · **Change** (tell me what's wrong).
+- **`signoff-batch`** — a batch of held pixel PRs, green apart from the hold. The
+  whole batch is looked at on **one page** and asked **four at a time**:
+  1. `bash "$W" card <pr>` for each PR the text lists. `held no` → already signed
+     off: drop it, no question.
+  2. `bash "$W" open <pr> <pr> …` — every PR left, in that order, in ONE call. It
+     builds one local review page and opens it as one Chrome tab: a numbered
+     section per PR with its title, the PR link, the preview and approved-picture
+     links, and only its newest commit's shots (png or jpg, at most 10). It prints
+     one row per PR: `<n> \t <pr> \t <shots> \t <title>`. Say in one line that the
+     page is open, with its `file://` path. Never open evidence links one by one.
+  3. `AskUserQuestion` with **up to 4 questions per call**, one per PR, in page
+     order. Header `Sign off <n>`; the question opens with the PR's number on the
+     page (`<n> ·`), names what the change does (from the card's title) and ends
+     with the PR number. When the card has a `banner`, the question opens with it
+     verbatim after the `<n> ·` and names the live and pending siblings from its
+     `sibling` rows. Options: **Approve** (clear the hold and let it merge) ·
+     **Change** (tell me what's wrong). A row with `0` shots is flagged on the page
+     and adds **Send back for shots** (no picture to judge). More than 4 PRs: the
+     next call takes the next 4.
   4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr>`, then re-read the labels
      as Step 5 does. **Change**, or any typed answer → comment the words verbatim on
-     the PR; the hold stays. **Never clear the hold without "Approve" for that PR in
-     that prompt** — not from a batch answer, not from praise, not from an earlier
-     window.
+     the PR; the hold stays. **Send back for shots** → comment on the PR that its
+     newest commit carries no screenshots and the sign-off waits for them; the hold
+     stays. **Never clear the hold without "Approve" for that PR in that prompt** —
+     not from a batch answer, not from praise, not from an earlier window.
   5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer.
   When every PR is answered: `bash "$W" done <batch key>`.
 - **`decision`** whose key is `decision:<ticket>:<slug>` — a builder or the judge

@@ -128,12 +128,17 @@ jq -n '{number:12, title:"Calmer inbox", url:"https://github.com/acme/widgets/pu
 out=$(bash "$W" card 12)
 want_in "the card says the hold is live"   $'^held\tyes$' "$out"
 want "before, after and the live preview, once each, no branch-pinned link" "3" "$(grep -c '^evidence' <<<"$out")"
-bash "$W" open 12 >/dev/null
-want_in "the preview opens first"          '^https://web-pr-12' "$(head -1 "$FIX/opened.log")"
-want_in "then before and after"            'before\.png' "$(sed -n 2p "$FIX/opened.log")"
-: > "$FIX/opened.log"
-NEEDSME_CURL=false bash "$W" open 12 >/dev/null
-want "a preview that does not answer is not opened" "2" "$(grep -c . "$FIX/opened.log")"
+shot() { printf 'PNG-%s\n' "$2" > "$FIX/gh/api-$(printf 'repos/acme/widgets/contents/%s?ref=%s' "$2" "$1" | tr '/?&=' '____').json"; }
+shot abcdef0123 docs/evidence/12/before.png; shot abcdef0123 docs/evidence/12/after.png
+page() { sed -n 's#^opened 1 page for .*: file://##p' <<<"$1"; }
+out=$(bash "$W" open 12); P=$(page "$out")
+want "one PR, one tab"                     "1" "$(grep -c . "$FIX/opened.log")"
+want_in "and it is the review page"        '^file:///.*/index\.html$' "$(cat "$FIX/opened.log")"
+want_in "the preview is a link on the page, first" 'href="https://web-pr-12.up.example.app"' "$(sed -n '/pr-12/,$p' "$P" | head -3)"
+want "before and after, fetched to the page" "2" "$(grep -c '<img ' "$P")"
+want_in "before first"                     'before\.png' "$(grep -m1 '<figcaption>' "$P")"
+NEEDSME_CURL=false bash "$W" open 12 > "$FIX/o.out"
+want_not_in "a preview that does not answer is not on the page" 'web-pr-12' "$(cat "$(page "$(cat "$FIX/o.out")")")"
 jq '.labels = []' "$FIX/gh/pr-12.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/pr-12.json"
 want_in "a cleared hold shows on the card" $'^held\tno$' "$(bash "$W" card 12)"
 bash "$W" card 99 >/dev/null 2>&1
@@ -155,13 +160,40 @@ want_in "the approved picture opens at the region" $'^picture\thttps://claude.ai
 want_in "the region's own shot comes first" 'home-team\.png$' "$(grep '^evidence' <<<"$out" | head -1)"
 want_in "the full page comes last"         'home\.png$' "$(grep '^evidence' <<<"$out" | tail -1)"
 want "the region shot is not listed twice" "1" "$(grep -c 'home-team' <<<"$out")"
-bash "$W" open 30 >/dev/null
-want_in "open: the region shot first"      'home-team\.png$' "$(sed -n 1p "$FIX/opened.log")"
-want_in "then the preview at the region"   '^https://web-pr-30.up.example.app/home#team$' "$(sed -n 2p "$FIX/opened.log")"
-want_in "then the picture at the region"   'home-v3#team$' "$(sed -n 3p "$FIX/opened.log")"
-want_in "and the full page last"           'home\.png$' "$(tail -1 "$FIX/opened.log")"
+shot abcdef0123 docs/evidence/30/home-team.png; shot abcdef0123 docs/evidence/30/home.png
+P=$(page "$(bash "$W" open 30)")
+want_in "open: the region shot first"      'home-team\.png' "$(grep -m1 '<figcaption>' "$P")"
+want_in "and the full page last"           'home\.png<' "$(grep '<figcaption>' "$P" | tail -1)"
+want_in "the preview at the region is on the page" 'href="https://web-pr-30.up.example.app/home#team"' "$(cat "$P")"
+want_in "and the picture at the region"    'href="https://claude.ai/artifact/home-v3#team"' "$(cat "$P")"
 out=$(bash "$W" card 12)
 want_in "a whole-screen PR still has its card" $'^pr\t12$' "$out"
 want "and carries no banner"               "0" "$(grep -c '^banner' <<<"$out")"
+
+echo "--- a batch: one page, one tab, numbered, only the head commit's shots, at most 10 ---"
+# Each evidence link of every commit opened as its own tab: 24, 35, 108 and 60 tabs
+# for one PR each on 2026-10-17, older commits' shots among them.
+fresh
+jq -n '{number:12, title:"Calmer inbox", url:"https://github.com/acme/widgets/pull/12", headRefOid:"abcdef0123", labels:[],
+        body:"Before: https://github.com/acme/widgets/blob/abcdef0/docs/evidence/12/before.png\nAfter: https://github.com/acme/widgets/blob/abcdef0/docs/evidence/12/after.png\nOld: https://github.com/acme/widgets/blob/1111111/docs/evidence/12/old.png"}' > "$FIX/gh/pr-12.json"
+shot 1111111 docs/evidence/12/old.png; shot abcdef0123 docs/evidence/12/old.png  # still in the tree at the head
+jq -n '{number:40, title:"Wide table", url:"https://github.com/acme/widgets/pull/40", headRefOid:"cafe400000", labels:[], body:"no links"}' > "$FIX/gh/pr-40.json"
+jq -n '{files: ([{filename: "docs/evidence/40/gone.png", status: "removed"}, {filename: "src/a.ts", status: "modified"}] + [range(12) | {filename: "docs/evidence/40/s\(.).jpg", status: "added"}])}' \
+  > "$FIX/gh/api-repos_acme_widgets_commits_cafe400000.json"
+for k in $(seq 0 11); do shot cafe400000 "docs/evidence/40/s$k.jpg"; done
+jq -n '{number:41, title:"Quiet footer", url:"https://github.com/acme/widgets/pull/41", headRefOid:"beef410000", labels:[], body:"Old: https://github.com/acme/widgets/blob/2222222/docs/evidence/41/old.png"}' > "$FIX/gh/pr-41.json"
+printf '{"files":[{"filename":"src/footer.tsx","status":"modified"}]}\n' > "$FIX/gh/api-repos_acme_widgets_commits_beef410000.json"
+: > "$FIX/opened.log"
+: > "$GH_LOG"; out=$(bash "$W" open 12 30 40 41); P=$(page "$out")
+want "four PRs, one tab"                   "1" "$(grep -c . "$FIX/opened.log")"
+want "numbered in the order asked"         "1 2 3 4" "$(grep -o '<span class="n">[0-9]*' "$P" | sed 's/.*>//' | tr '\n' ' ' | sed 's/ $//')"
+want "a row per PR: number, PR, shots"     "1 12 2|2 30 2|3 40 10|4 41 0" "$(grep -E $'^[0-9]+\t' <<<"$out" | cut -f1-3 | tr '\t' ' ' | tr '\n' '|' | sed 's/|$//')"
+want_not_in "an older commit's shot is not on the page" 'old\.png' "$(cat "$P")"
+want "the head commit's own images, at most 10" "10" "$(sed -n '/id="pr-40"/,/<\/section>/p' "$P" | grep -c '<img ')"
+want_not_in "and never a removed one"      'gone\.png' "$(cat "$P")"
+want_not_in "nor asked for"                 'gone\.png' "$(cat "$GH_LOG")"
+want_in "a PR with no shots is flagged for sending back" 'No screenshots on its newest commit' "$(sed -n '/id="pr-41"/,/<\/section>/p' "$P")"
+want_in "each section links its PR"        'href="https://github.com/acme/widgets/pull/40"' "$(cat "$P")"
+want "the images are on disk beside the page" "14" "$(ls "$(dirname "$P")" | grep -cE '\.(png|jpg)$')"
 
 exit $FAILED

@@ -14,7 +14,9 @@
 #                                           ticket requeued with it, the line ticked;
 #                                           a failed step is retried by the next sync
 #   needsme-watch.sh card <pr>              what the sign-off prompt shows for one PR
-#   needsme-watch.sh open <pr>              open that PR's evidence in the browser
+#   needsme-watch.sh open <pr>…             one review page for the batch, opened as one tab:
+#                                           a numbered section per PR with its head
+#                                           commit's shots; prints <n> \t <pr> \t <shots> \t <title>
 #
 # A PR that rebuilds ONE part of a screen others are also rebuilding carries a
 # `<!-- part:begin -->`…`<!-- part:end -->` block in its body (finish writes it):
@@ -40,7 +42,7 @@ SIGNOFF="$SELF_DIR/signoff-batch.sh"
 ASKED="$COORD_DIR/asked.keys"
 touch "$ASKED"
 
-usage() { sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 asked() { grep -qxF -- "$1" "$ASKED"; }
 
@@ -204,20 +206,69 @@ card() { # <pr>
   evidence "$j" | sed 's/^/evidence\t/'
 }
 
-open_pr() { # <pr>
-  local j urls u n=0
-  j=$(pr_json "$1")
-  jq -e '.number' >/dev/null 2>&1 <<<"$j" || { echo "needsme-watch: PR #$1 could not be read" >&2; return 1; }
-  urls=$(evidence "$j")
-  [ -n "$urls" ] || urls=$(jq -r .url <<<"$j")
-  while IFS= read -r u; do
-    [ -n "$u" ] || continue
-    if [ -n "${NEEDSME_OPEN_CMD:-}" ]; then $NEEDSME_OPEN_CMD "$u"
-    elif [ "$(uname)" = Darwin ]; then open -a "Google Chrome" "$u"
-    else xdg-open "$u" >/dev/null 2>&1; fi
-    n=$((n+1))
-  done <<<"$urls"
-  echo "opened $n link(s) for PR #$1"
+# The head commit's shots, in evidence order: body links pinned at the head, else
+# the images the head commit itself adds. Older commits' shots never show.
+NEEDSME_SHOTS_MAX="${NEEDSME_SHOTS_MAX:-10}"
+head_shots() { # <pr-json> — repo-relative paths, at most NEEDSME_SHOTS_MAX
+  local sha out
+  sha=$(jq -r '.headRefOid // ""' <<<"$1"); [ -n "$sha" ] || return 0
+  out=$(evidence "$1" | grep -E '\.(png|jpe?g)$' | sed -nE 's#^https://github\.com/[^/]+/[^/]+/blob/([0-9a-f]{7,40})/(.*)$#\1 \2#p' \
+        | awk -v h="$sha" 'index(h, $1) == 1 { sub(/^[^ ]+ /, ""); print }')
+  [ -n "$out" ] || out=$(swarm_gh api "repos/$REPO_SLUG/commits/$sha" \
+        --jq '.files[]? | select(.status != "removed") | .filename | select(test("\\.(png|jpe?g)$"; "i"))' 2>/dev/null)
+  printf '%s\n' "$out" | awk 'NF && !seen[$0]++' | head -n "$NEEDSME_SHOTS_MAX"
+}
+html() { jq -Rr '@html' <<<"$1"; }
+
+open_pr() { # <pr>…
+  local dir page i=0 pr j sha title url shots f k ext n links rows=""
+  dir="${NEEDSME_PAGE_DIR:-$COORD_DIR/review}/$(date +%Y%m%dT%H%M%S)-$$"
+  mkdir -p "$dir" || { echo "needsme-watch: cannot write $dir" >&2; return 1; }
+  page="$dir/index.html"
+  {
+    printf '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-off</title>\n'
+    printf '<style>body{font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0 auto;max-width:1200px;padding:16px;background:#fafafa;color:#111}'
+    printf 'section{border-top:1px solid #ddd;padding:16px 0}h2{margin:0 0 6px;font-size:20px}.n{display:inline-block;min-width:1.6em;margin-right:6px;color:#666}'
+    printf '.flag{background:#fff3cd;border:1px solid #e0b000;padding:8px 10px;border-radius:6px}.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:10px}'
+    printf 'figure{margin:0}img{width:100%%;border:1px solid #ccc;border-radius:4px;background:#fff}figcaption{font-size:12px;color:#555;word-break:break-all}</style>\n'
+    printf '<h1>Sign-off: %s pull request(s)</h1>\n' "$#"
+  } > "$page"
+  for pr in "$@"; do
+    i=$((i+1)); j=$(pr_json "$pr")
+    if ! jq -e '.number' >/dev/null 2>&1 <<<"$j"; then
+      printf '<section id="pr-%s"><h2><span class="n">%s</span>PR #%s</h2><p class="flag">Could not be read from GitHub.</p></section>\n' "$pr" "$i" "$pr" >> "$page"
+      rows="$rows$i"$'\t'"$pr"$'\t'"-"$'\t'"(could not be read)"$'\n'; continue
+    fi
+    sha=$(jq -r '.headRefOid // ""' <<<"$j"); title=$(jq -r '.title // ""' <<<"$j"); url=$(jq -r '.url // ""' <<<"$j")
+    shots=$(head_shots "$j"); n=0
+    {
+      printf '<section id="pr-%s"><h2><span class="n">%s</span>%s</h2>\n' "$pr" "$i" "$(html "$title")"
+      printf '<p><a href="%s">PR #%s</a> · head %s</p>\n' "$(html "$url")" "$pr" "${sha:0:7}"
+      links=$(evidence "$j" | grep -vE '\.(png|jpe?g|webp|gif)$')
+      [ -z "$links" ] || printf '%s\n' "$links" | while IFS= read -r u; do printf '<p><a href="%s">%s</a></p>\n' "$(html "$u")" "$(html "$u")"; done
+    } >> "$page"
+    k=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      k=$((k+1)); ext="${f##*.}"
+      if swarm_gh api "repos/$REPO_SLUG/contents/$(jq -rn --arg p "$f" '$p | split("/") | map(@uri) | join("/")')?ref=$sha" \
+           -H 'Accept: application/vnd.github.raw' > "$dir/$i-$k.$ext" 2>/dev/null && [ -s "$dir/$i-$k.$ext" ]; then
+        [ "$n" -gt 0 ] || printf '<div class="shots">\n' >> "$page"
+        n=$((n+1))
+        printf '<figure><a href="%s"><img src="%s" alt="%s" loading="lazy"></a><figcaption>%s</figcaption></figure>\n' \
+          "$i-$k.$ext" "$i-$k.$ext" "$(html "$f")" "$(html "$f")" >> "$page"
+      else rm -f "$dir/$i-$k.$ext"; fi
+    done <<<"$shots"
+    [ "$n" -eq 0 ] || printf '</div>\n' >> "$page"
+    [ "$n" -gt 0 ] || printf '<p class="flag">No screenshots on its newest commit. Send it back for shots.</p>\n' >> "$page"
+    printf '</section>\n' >> "$page"
+    rows="$rows$i"$'\t'"$pr"$'\t'"$n"$'\t'"$title"$'\n'
+  done
+  if [ -n "${NEEDSME_OPEN_CMD:-}" ]; then $NEEDSME_OPEN_CMD "file://$page"
+  elif [ "$(uname)" = Darwin ]; then open -a "Google Chrome" "file://$page"
+  else xdg-open "file://$page" >/dev/null 2>&1; fi
+  echo "opened 1 page for $# PR(s): file://$page"
+  printf '%s' "$rows"
 }
 
 wait_new() {
@@ -255,6 +306,6 @@ case "$cmd" in
            asked "$1" || printf '%s\n' "$1" >> "$ASKED"
            exit "$rc" ;;
   card)    card "${1:?usage: needsme-watch.sh card <pr>}" ;;
-  open)    open_pr "${1:?usage: needsme-watch.sh open <pr>}" ;;
+  open)    [ $# -gt 0 ] || { echo "usage: needsme-watch.sh open <pr>…" >&2; exit 2; }; open_pr "$@" ;;
   *) usage ;;
 esac
