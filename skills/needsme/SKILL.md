@@ -498,11 +498,13 @@ Rules for the card:
 ### `approve` on a pixel PR — the full motion, in this order
 
 Approval must **name the PR**. Never infer it from general praise of the work.
+`$SHOWN_SHA` is the head the operator was shown: the `sha` line of `needsme-watch.sh card <pr>`.
 
 ```bash
 # One motion, shared with /agent-harness:bug: a review on a peer's PR when the operator is an
 # approver (the gate clears the label on seeing it), else comment → issue → PR.
-"$KIT_ROOT/scripts/clear-hold.sh" "$P"
+# --sha: the head whose shots the operator was shown; a PR that moved since is refused, not cleared.
+"$KIT_ROOT/scripts/clear-hold.sh" "$P" --sha "$SHOWN_SHA"
 # The gate re-runs itself on the review or the unlabeled event; re-read the labels
 # to confirm, because a still-labelled ISSUE makes it re-apply the hold at open.
 gh pr view "$P" --repo "$REPO_SLUG" --json labels -q '.labels|map(.name)|join(",")'
@@ -601,7 +603,8 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
      (nothing to approve); `Skip` alone when shots exist but none would load,
      and `Change,Skip` when only some loaded (say so; never approve a page missing
      part of what is approved, never send back on a failed fetch).
-  4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr>`, then re-read the labels
+  4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr> --sha <sha>` (sha from the card: the head the
+     operator was shown). If it refuses because the PR moved, show the new card and ask again. Then re-read the labels
      as Step 5 does. **Change**, or any typed answer → comment the words verbatim on
      the PR; the hold stays. **Send back for shots** → comment on the PR that its
      description links no screenshots and the sign-off waits for them; the hold
