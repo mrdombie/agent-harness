@@ -160,13 +160,15 @@ hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            approval-kept.sh (does a sign-off survive an update; the head it was given at)
+           signoff-push-guard.sh (a pre-push: no screen change after the owner signs)
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
            check-push-destination.sh (every push names its destination; CI)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
-           signoff-batch.sh (held PRs green apart from the hold, in batches of five)
+           signoff-batch.sh (held PRs green apart from the hold, every reviewer's
+           verdict on the head, in batches of five)
            needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
            loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
            fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
@@ -204,6 +206,23 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets in `$STATE_DIR/usage-hold`, so the coordinator and the scheduler spawn nothing until then |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
+
+### Sign-off comes last
+
+The owner signs a screen after everything else, and nothing they signed changes
+afterwards. Three places hold it: `signoff-batch.sh` sends a held PR to the owner
+only once every `review.attest` reviewer's `SHIP` trailer is on its head; the
+claim and finish skills and every spawned builder's prompt lead with
+`shared/signoff-last.md`; and `scripts/signoff-push-guard.sh` refuses a push that
+changes a screen (`design.surfacePaths`) on a PR with an approval-head record,
+unless each such commit carries `pixel-change-after-signoff: <why>` — then it puts
+the hold back on, comments the before and after on the PR, and logs a `lane-hold`
+line for the owner's next batch. The kit ships no git hook, so the consuming
+repo's own pre-push calls it, first, with git's arguments and stdin:
+
+```sh
+bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
+```
 
 ### Scripts the skills expect in the consuming repo
 
