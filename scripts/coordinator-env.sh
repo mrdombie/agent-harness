@@ -31,6 +31,10 @@
 #                                                           has used any (trees measure 0.6-1.3 GB)
 #   coordinator.healingShare COORDINATOR_HEALING_SHARE 0.25 share of the ceiling kept for healing
 #                                                           (repair + approved-merge), rounded up
+#   coordinator.healAllAt    COORDINATOR_HEAL_ALL_AT   unset reds left (waiting + live healing runs)
+#                                                           at which every place heals;
+#                                                           under it the healingShare split returns.
+#                                                           Unset, empty or not a whole number >0: off
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
 #   coordinator.frozenMin    COORDINATOR_FROZEN_MIN    20    no log growth = frozen
@@ -83,6 +87,8 @@ COORD_RAMP_MAX="${COORDINATOR_RAMP_MAX:-$(swarm_opt coordinator.rampMax "")}"
 case "$COORD_RAMP_MAX" in ""|0|*[!0-9]*) COORD_RAMP_MAX="" ;; esac
 COORD_HEAL_SHARE="${COORDINATOR_HEALING_SHARE:-$(swarm_opt coordinator.healingShare 0.25)}"
 awk -v s="$COORD_HEAL_SHARE" 'BEGIN{exit !(s ~ /^(0|1|0?\.[0-9]+|1\.0*)$/)}' || COORD_HEAL_SHARE=0.25
+COORD_HEAL_ALL_AT="${COORDINATOR_HEAL_ALL_AT:-$(swarm_opt coordinator.healAllAt "")}"
+case "$COORD_HEAL_ALL_AT" in ""|*[!0-9]*) COORD_HEAL_ALL_AT="" ;; *) [ "$COORD_HEAL_ALL_AT" -gt 0 ] || COORD_HEAL_ALL_AT="" ;; esac
 [ -n "$COORD_MAX_LOAD_SET" ] || COORD_MAX_LOAD_SET=$(swarm_opt swarm.maxLoad "")
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
@@ -159,8 +165,12 @@ coord_live_recently() {
   [ "$m" = did ] && [ $(( $(date +%s) - ${e:-0} )) -lt 900 ] 2>/dev/null
 }
 
-# coord_healing_slots <ceiling> — ceil(ceiling x healingShare).
+# coord_heal_all <reds-left> — 0 when that many reds left (waiting + healing) put every place on healing.
+coord_heal_all() { [ -n "$COORD_HEAL_ALL_AT" ] && [ "${1:-0}" -ge "$COORD_HEAL_ALL_AT" ]; }
+# coord_healing_slots <ceiling> [reds-left] — the whole ceiling under heal-all,
+# else ceil(ceiling x healingShare).
 coord_healing_slots() {
+  if coord_heal_all "${2:-0}"; then printf '%s\n' "$1"; return 0; fi
   awk -v c="$1" -v s="$COORD_HEAL_SHARE" 'BEGIN{ h = c * s; n = int(h); if (n < h) n++; print n }'
 }
 coord_healing_class() { case "$1" in repair|approved-merge) return 0 ;; *) return 1 ;; esac; }
