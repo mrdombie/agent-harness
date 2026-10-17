@@ -195,13 +195,14 @@ section_repair() {
 
 # Every open, non-draft PR on a ticket branch, as
 # pr \t ticket \t sha \t mergeState \t pendingChecks \t failedCheckNames
+# A commit status has a state and no status/conclusion: read it by its state.
 open_prs() {
   gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r "[.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
            | [.number,
               (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
               .headRefOid, .mergeStateStatus,
-              ([.statusCheckRollup[]? | select(.status != \"COMPLETED\")] | length),
-              ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\") | .name] | join(\";\"))]]
+              ([.statusCheckRollup[]? | select(((.status // \"COMPLETED\") != \"COMPLETED\") or ((.state // \"\") | test(\"PENDING|EXPECTED\")))] | length),
+              ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\"))) | (.name // .context)] | join(\";\"))]]
            | .[] | @tsv" 2>/dev/null
 }
 

@@ -287,6 +287,15 @@ fix_prs() {
   printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
 }
 
+# fix_pr_status <pr> <context> <state> — add a commit status (StatusContext) to a PR
+# fix_prs wrote: it carries a state and no status or conclusion, as GitHub returns it.
+fix_pr_status() {
+  local f="$FIX/gh/prs-all.json"
+  jq --argjson n "$1" --arg c "$2" --arg s "$3" \
+    'map(if .number == $n then .statusCheckRollup += [{__typename:"StatusContext", context:$c, state:$s}] else . end)' \
+    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
 # fix_comments <ticket> <body…> — the comments `gh issue view --json comments` returns
 fix_comments() {
   local n=$1; shift

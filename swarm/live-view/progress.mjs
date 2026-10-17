@@ -293,14 +293,17 @@ function pushedOf(slug, branch) {
   } catch (e) { return e && e.status === 2 ? false : null }
 }
 
-function rollupOf(p) {
+export function rollupOf(p) {
   const roll = p.statusCheckRollup || []
   const bad = /FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED/
   const busy = /IN_PROGRESS|QUEUED|PENDING|WAITING/
   return {
     number: String(p.number), state: p.state || 'OPEN', total: roll.length,
-    fail: roll.filter((c) => bad.test(c.conclusion || '')).length,
-    pending: roll.filter((c) => busy.test(c.status || '') || !(c.conclusion || '')).length,
+    // A commit status carries only a state: PENDING is waiting, FAILURE/ERROR is red.
+    fail: roll.filter((c) => bad.test(c.conclusion || '') || /FAILURE|ERROR/.test(c.state || '')).length,
+    pending: roll.filter((c) => (c.state
+      ? /PENDING|EXPECTED/.test(c.state)
+      : busy.test(c.status || '') || !(c.conclusion || ''))).length,
   }
 }
 

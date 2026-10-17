@@ -98,6 +98,21 @@ w --only repair >/dev/null
 want "the held repair now runs"        "1" "$(grep -c . "$SPAWNS")"
 : > "$SPAWNS"; : > "$TRIED"
 
+echo "--- a commit status is read by its state, not as a check run ---"
+fix_prs "14 102 a14a14a14a1 CLEAN 0 typecheck"; fix_pr_status 14 "Design critic" SUCCESS
+w --only repair >/dev/null
+want "a green status does not hold a red PR" "1" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "14 102 b14b14b14b1 CLEAN 0 -"; fix_pr_status 14 "Design critic" FAILURE
+w --only repair >/dev/null
+want "a failed status is red"              "1" "$(grep -c . "$SPAWNS")"
+want_in "and names the status"             'CI went red on: Design critic' "$(cat "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "14 102 c14c14c14c1 CLEAN 0 typecheck"; fix_pr_status 14 "Design critic" PENDING
+w --only repair >/dev/null
+want "a pending status waits"              "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+
 echo "--- three repairs in a day: the stop is a LABEL, not a count ---"
 : > "$SPAWNS"
 for s in s1 s2 s3; do printf '101\t%s\tci\t%s\n' "$s" "$T0" >> "$TRIED"; done
