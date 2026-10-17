@@ -20,6 +20,7 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; 
 LOCK="$COORD_DIR/housekeeping.lock"
 coord_lock "$LOCK" housekeeping || { say "housekeeping: $COORD_LOCK_WHY — not started again"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
+export GH_CALLER=coordinator-housekeeping
 
 # Writes an event once; the id is what makes it once.
 event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>

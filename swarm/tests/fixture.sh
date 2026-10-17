@@ -64,6 +64,14 @@ JSON
 # exit 0 so a script under test is never blocked by a question this stub has not
 # been taught — the assertion is on the recorded line, not on the stub's wit.
 printf '%s\n' "$*" >> "$GH_LOG"
+# What is left of the allowance, as GitHub's headers say it, even while it refuses:
+# $FIX/gh/allowance holds "<remaining> <limit> <reset-epoch>"; absent, the reading fails.
+case "$1 $2 $*" in "api graphql "*rateLimit*)
+  [ -s "$FIX/gh/allowance" ] || exit 1
+  read -r left lim reset < "$FIX/gh/allowance"
+  printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: %s\r\nX-Ratelimit-Remaining: %s\r\nX-Ratelimit-Reset: %s\r\nX-Ratelimit-Resource: graphql\r\n\r\n{"data":{}}\n' "$lim" "$left" "$reset"
+  [ -f "$FIX/gh/ratelimit" ] && exit 1; exit 0 ;;
+esac
 # $FIX/gh/ratelimit present: GitHub refusing the token, as it does for a secondary limit.
 if [ -f "$FIX/gh/ratelimit" ]; then
   echo "GraphQL: API rate limit already exceeded for user ID 1." >&2; exit 1
@@ -178,6 +186,8 @@ SH
   export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
   export SWARM_SPAWN="$BIN/spawn" SWARM_GH="$BIN/gh" SWARM_CURL="$BIN/curl"
   export SWARM_LOAD=1 SWARM_IDLE=90
+  # Each case writes its own PRs: the shared copy is read fresh unless a case says otherwise.
+  export NEEDSME_PRS_MAX_AGE=0 SWARM_PRS_MAX_AGE=0 SWARM_STATUS_PRS_MAX_AGE=0
   unset GH_TOKEN
 }
 

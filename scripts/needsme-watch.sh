@@ -95,8 +95,8 @@ pending() { # [--no-forge]
   cat "$ASKED" > "$exclude"
   printf '%s\n' "$rows" | cut -f1 | grep '^signoff-batch:' | sed 's/^signoff-batch://' | tr ',' '\n' \
     | awk -F@ 'NF==2 {print "pr:" $1 ":" $2}' >> "$exclude"
-  prs=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
-          --json number,headRefOid,isDraft,labels,mergeStateStatus,statusCheckRollup 2>/dev/null)
+  # The shared copy the tick refreshes; GitHub is asked only when it is older than this.
+  prs=$(gh_open_prs "${NEEDSME_PRS_MAX_AGE:-300}")
   if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs"; then
     printf '%s' "$prs" | bash "$SIGNOFF" batches "$exclude" | while IFS=$'\t' read -r key _; do
       [ -n "${key:-}" ] && row "$key" ""
