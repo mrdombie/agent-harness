@@ -147,7 +147,8 @@ GH_PRS_FIELDS="${GH_PRS_FIELDS:-number,headRefName,headRefOid,baseRefName,isDraf
 gh_prs_file() { printf '%s' "${GH_PRS_FILE:-$(dirname "$(gh_backoff_file)")/prs.json}"; }
 gh_prs_age() { # seconds since it was written; 1 when there is none
   local f m; f=$(gh_prs_file); [ -s "$f" ] || return 1
-  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)
+  # GNU first: GNU `stat -f %m` prints filesystem blurb to stdout and still succeeds in part.
+  m=$(stat -c %Y "$f" 2>/dev/null); case "$m" in ''|*[!0-9]*) m=$(stat -f %m "$f" 2>/dev/null) ;; esac
   case "$m" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s' $(( $(gh_batch_now) - m ))
 }
