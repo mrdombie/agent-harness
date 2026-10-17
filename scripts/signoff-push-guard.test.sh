@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# signoff-push-guard.test.sh — sign-off comes last. On a branch whose PR carries an
-# approval-head record, a push that changes a screen after that head is refused
-# without a `pixel-change-after-signoff: <why>` trailer; with one, the hold goes
-# back on, the PR gets a before/after comment and the owner's batch a lane-hold
-# line. What was signed, a trunk merge that resolves nothing, a test file, a PR
-# never signed and a push with no PR all go. Unreadable sign-offs fail shut, for
-# screens only. The last case pushes through a real pre-push hook.
+# signoff-push-guard.test.sh — sign-off comes last. On a branch whose PR the owner
+# signed (a review, a marked clear-hold, or the hold removed by hand on GitHub), a
+# push whose head differs from the signed head in one of the PR's own screens is
+# refused without a `pixel-change-after-signoff: <why>` trailer since the sign-off;
+# with one, the hold goes back on, the PR gets a before/after comment and the
+# owner's batch a lane-hold line. The trees are compared, not the commits: a merge
+# taking the trunk's side, a resolution dropping a screen, a force-push back and a
+# side-branch fast-forward are all caught. A trunk merge that resolves nothing,
+# docs and changelog files, a PR never signed or still held, and a push with no PR
+# all go. Unreadable sign-offs fail shut, for screens only. The last case pushes
+# through a real pre-push hook.
 # Run: bash "$0"
 set -uo pipefail
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
@@ -55,15 +59,16 @@ signed() { # <sha|-> — an APPROVED review at that head, or none
   printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_issues_7_comments_per_page_100.json"
   printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_issues_7_events_per_page_100.json"
 }
-haspr() { printf '[{"number":7}]\n' > "$FIX/gh/prlist.json"; }
+haspr() { jq -n --arg l "${1:-}" '[{number:7, labels:(if $l == "" then [] else [{name:$l}] end)}]' > "$FIX/gh/prlist.json"; }
 nopr()  { printf '[]\n' > "$FIX/gh/prlist.json"; }
-reset() { g reset -q --hard "$SIGNED"; : > "$GH_LOG"; rm -f "$FIX/gh/fail-"*; rm -f "$WORK"; haspr; signed "$SIGNED"; }
+reset() { g checkout -q tkt-5-x; g reset -q --hard "$SIGNED"; : > "$GH_LOG"; rm -f "$FIX/gh/fail-"*; rm -f "$WORK"; haspr; signed "$SIGNED"; BASE_REMOTE=$SIGNED; }
 guard() { # [remote-sha] — push HEAD to tkt-5-x; prints stderr, exit code on the last line
   local l r out rc
   l=$(g rev-parse HEAD); r="${1:-$BASE_REMOTE}"
   out=$(cd "$R" && printf 'refs/heads/tkt-5-x %s refs/heads/tkt-5-x %s\n' "$l" "$r" | bash "$G" origin "$FIX/origin.git" 2>&1); rc=$?
   printf '%s\nrc=%s' "$out" "$rc"
 }
+TRAIL="pixel-change-after-signoff: the typecheck fix widens the column"
 
 echo "--- a screen change after sign-off, without the trailer, is refused ---"
 reset
@@ -71,37 +76,67 @@ echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: tighten the page"
 out=$(guard)
 want_in "refused"                          'rc=1$' "$out"
 want_in "it says sign-off comes last"      'sign-off comes last' "$out"
-want_in "it names the commit and the file" "$(g rev-parse --short=7 HEAD) fix: tighten the page — apps/web/page.tsx" "$out"
+want_in "it names the signed head and the file" "signed PR #7 at ${SIGNED:0:7}, and this push changes its screens: apps/web/page.tsx" "$out"
 want_in "and the trailer that lets it go"  'pixel-change-after-signoff: <why>' "$out"
 want_not_in "the hold is not touched"      'pr edit' "$(cat "$GH_LOG")"
 
 echo "--- with the trailer: allowed, and the hold goes back on ---"
 reset
 echo c >> "$R/apps/web/page.tsx"
-g commit -qam "fix: the red check needs a wider column" -m "pixel-change-after-signoff: the typecheck fix widens the column"
+g commit -qam "fix: the red check needs a wider column" -m "$TRAIL"
 AFTER=$(g rev-parse HEAD)
-out=$(COORDINATOR_SHADOW=1 guard)
+out=$(guard)
 want_in "allowed"                          'rc=0$' "$out"
 want_in "the hold is re-added to the PR"   '^pr edit 7 --repo acme/widgets --add-label needs:human-approval$' "$(cat "$GH_LOG")"
 want_in "and to its ticket"                '^issue edit 5 --repo acme/widgets --add-label needs:human-approval$' "$(cat "$GH_LOG")"
 want_in "the PR gets a before/after"       "pr comment 7 .*Before:\*\* the signed head \`${SIGNED:0:7}\`" "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "saying the push is still pending" 'pending its push' "$(cat "$GH_LOG")"
 want_in "naming the new head and compare"  "After:\*\* \`${AFTER:0:7}\` — https://github.com/acme/widgets/compare/$SIGNED...$AFTER" "$(cat "$GH_LOG")"
 want_in "and why"                          'Why:\*\* the typecheck fix widens the column' "$(cat "$GH_LOG")"
 want_in "the owner's batch gets the line"  "lane-hold:7:${AFTER:0:7}	PR #7 needs your sign-off again: changed after sign-off — before ${SIGNED:0:7}, after ${AFTER:0:7} \(apps/web/page.tsx\)" "$(cat "$WORK" 2>/dev/null)"
 
-echo "--- a trailer on one commit does not cover another ---"
-reset
-echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: one" -m "pixel-change-after-signoff: needed"
-echo d >> "$R/apps/web/page.tsx"; g commit -qam "fix: two"
+echo "--- once the hold is back on, later screen commits need no new trailer or comment ---"
+g push -q --no-verify -f origin HEAD:tkt-5-x; BASE_REMOTE=$AFTER; haspr needs:human-approval; : > "$GH_LOG"
+echo d >> "$R/apps/web/page.tsx"; g commit -qam "fix: follow-up while held"
 out=$(guard)
-want_in "refused"                          'rc=1$' "$out"
-want_in "naming the bare commit"           'fix: two' "$out"
-want_not_in "not the one that said why"    'fix: one' "$out"
+want_in "allowed"                          'rc=0$' "$out"
+want_not_in "no second comment or edit"    'pr comment|pr edit' "$(cat "$GH_LOG")"
+g push -q --no-verify -f origin "$SIGNED:refs/heads/tkt-5-x"
 
 echo "--- the hold cannot be put back: refused ---"
 reset; touch "$FIX/gh/fail-edit"
-echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x" -m "pixel-change-after-signoff: needed"
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x" -m "$TRAIL"
 want_in "refused"                          'rc=1$' "$(guard)"
+
+echo "--- the trees decide, not the commits pushed ---"
+g checkout -q develop; echo z > "$R/apps/web/other.tsx"; echo a2 > "$R/apps/web/page.tsx"; echo q > "$R/docs/y.md"; g add -A; g commit -qm "trunk: another ticket"
+g push -q origin develop; TRUNK=$(g rev-parse HEAD)
+reset
+g merge -q --no-edit -X ours "$TRUNK" >/dev/null 2>&1
+want_in "a trunk merge that keeps the signed screen goes" 'rc=0$' "$(guard)"
+reset
+g merge -q --no-edit -X theirs "$TRUNK" >/dev/null 2>&1
+out=$(guard)
+want_in "a merge taking the trunk's side of the signed screen is refused" 'rc=1$' "$out"
+want_in "naming that screen, not the trunk's own" 'its screens: apps/web/page.tsx$' "$(printf '%s\n' "$out" | grep 'its screens')"
+reset
+g merge -q --no-edit "$TRUNK" >/dev/null 2>&1
+printf 'a\nb\nresolved\n' > "$R/apps/web/page.tsx"; g add -A; g commit -qm "merge develop" --no-edit
+want_in "a resolution that edits the signed screen is refused" 'rc=1$' "$(guard)"
+reset
+echo n > "$R/apps/web/new.tsx"; g add -A; g commit -qm "feat: a new screen"; S2=$(g rev-parse HEAD)
+g push -q --no-verify -f origin HEAD:tkt-5-x; signed "$S2"; BASE_REMOTE=$S2
+g merge -q --no-edit --no-commit -X ours "$TRUNK" >/dev/null 2>&1; g rm -q apps/web/new.tsx; g commit -q --no-edit
+want_in "a resolution that drops a signed screen is refused" 'rc=1$' "$(guard)"
+g push -q --no-verify -f origin "$SIGNED:refs/heads/tkt-5-x"
+reset
+g reset -q --hard "$SIGNED~1"
+want_in "a force-push back to before the sign-off is refused" 'rc=1$' "$(guard)"
+reset
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: by the side door"
+g push -q --no-verify origin HEAD:refs/heads/wip
+want_in "a screen commit that reached the remote on a side branch is refused" 'rc=1$' "$(guard)"
+g push -q --no-verify origin --delete wip; g fetch -q --prune origin
 
 echo "--- what goes ---"
 reset
@@ -109,12 +144,27 @@ echo t > "$R/apps/web/page.test.ts"; echo e >> "$R/docs/x.md"; g add -A; g commi
 out=$(guard)
 want_in "a test and a doc after sign-off"  'rc=0$' "$out"
 want "and GitHub is not asked"             "" "$(cat "$GH_LOG")"
+# The config is tracked in this fixture, so a reset restores it: set it after.
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.complete"
+partial() { jq '.design = {"surfacePaths": ["apps/web/**/*.tsx"]}' "$FIX/cfg.complete" > "$HARNESS_CFG_PATH"; }
+reset; partial
+mkdir -p "$R/apps/web/content/changelog" "$R/.changeset"
+echo e > "$R/apps/web/content/changelog/5.md"; echo e > "$R/CHANGELOG.md"; echo e > "$R/.changeset/x.json"; echo e >> "$R/docs/x.md"
+g add apps .changeset CHANGELOG.md docs; g commit -qm "docs(changelog): entry"
+want_in "a partial screen list: docs and changelog files go" 'rc=0$' "$(guard)"
+reset; partial
+echo e > "$R/apps/web/util.ts"; g add apps; g commit -qm "feat: a helper"
+want_in "but code outside the list is still a screen" 'rc=1$' "$(guard)"
+cp "$FIX/cfg.complete" "$HARNESS_CFG_PATH"
 reset; nopr
 echo c >> "$R/apps/web/page.tsx"; g commit -qam "feat: more"
 want_in "a screen change with no PR"       'rc=0$' "$(guard)"
 reset; signed -
 echo c >> "$R/apps/web/page.tsx"; g commit -qam "feat: more"
 want_in "a screen change on a PR never signed" 'rc=0$' "$(guard)"
+reset; haspr needs:human-approval
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "feat: more"
+want_in "a screen change on a PR still held" 'rc=0$' "$(guard)"
 reset; g update-ref -d refs/remotes/origin/tkt-5-x
 want_in "the signed head, pushed where the remote has no copy of it" 'rc=0$' "$(guard 0000000000000000000000000000000000000000)"
 g fetch -q origin
@@ -123,17 +173,20 @@ echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x"
 out=$(cd "$R" && printf 'refs/heads/tkt-5-x 0000000000000000000000000000000000000000 refs/heads/tkt-5-x %s\n' "$SIGNED" | bash "$G" origin x 2>&1; echo "rc=$?")
 want_in "a branch deletion"                'rc=0$' "$out"
 
-echo "--- a trunk merge: only what its resolution changed counts ---"
-g checkout -q develop; echo z > "$R/apps/web/other.tsx"; echo a2 > "$R/apps/web/page.tsx"; g add -A; g commit -qm "trunk: another ticket"
-g push -q origin develop; TRUNK=$(g rev-parse HEAD); g checkout -q tkt-5-x
+echo "--- signed by removing the hold on GitHub: no marker, still signed ---"
 reset
-g merge -q --no-edit -X ours "$TRUNK" 2>/dev/null
-want_in "a merge that keeps the signed screen" 'rc=0$' "$(guard)"
-reset
-g merge -q --no-edit "$TRUNK" >/dev/null 2>&1
-printf 'a\nb\nresolved\n' > "$R/apps/web/page.tsx"; g add -A; g commit -qm "merge develop" --no-edit
-want_in "a resolution that edits the signed screen" 'rc=1$' "$(guard)"
-g checkout -q tkt-5-x
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_pulls_7_reviews_per_page_100.json"
+printf '[{"event":"unlabeled","label":{"name":"needs:human-approval"},"actor":{"login":"owner","type":"User"},"created_at":"2026-10-17T10:00:00Z"}]\n' \
+  > "$FIX/gh/api-repos_acme_widgets_issues_7_events_per_page_100.json"
+jq -n --arg s "$SIGNED" '[{sha:$s, commit:{committer:{date:"2026-10-17T09:00:00Z"}}}]' > "$FIX/gh/api-repos_acme_widgets_pulls_7_commits_per_page_100.json"
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: after a label-only sign-off"
+out=$(guard)
+want_in "refused"                          'rc=1$' "$out"
+want_in "against the head then"           "signed PR #7 at ${SIGNED:0:7}" "$out"
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_pulls_7_commits_per_page_100.json"
+out=$(guard)
+want_in "a removal no commit places: still refused" 'rc=1$' "$out"
+want_in "against the remote's head"        "label removal no commit could place" "$out"
 
 echo "--- unreadable: shut for screens, open for the rest ---"
 reset; touch "$FIX/gh/fail-api"

@@ -168,7 +168,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
            signoff-batch.sh (held PRs green apart from the hold, every reviewer's
-           verdict on the head, in batches of five)
+           recorded verdict on the head, in batches of five)
            needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
            loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
            fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
@@ -210,18 +210,32 @@ The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rul
 ### Sign-off comes last
 
 The owner signs a screen after everything else, and nothing they signed changes
-afterwards. Three places hold it: `signoff-batch.sh` sends a held PR to the owner
-only once every `review.attest` reviewer's `SHIP` trailer is on its head; the
-claim and finish skills and every spawned builder's prompt lead with
-`shared/signoff-last.md`; and `scripts/signoff-push-guard.sh` refuses a push that
-changes a screen (`design.surfacePaths`) on a PR with an approval-head record,
-unless each such commit carries `pixel-change-after-signoff: <why>` — then it puts
-the hold back on, comments the before and after on the PR, and logs a `lane-hold`
-line for the owner's next batch. The kit ships no git hook, so the consuming
-repo's own pre-push calls it, first, with git's arguments and stdin:
+afterwards. Four places hold it:
+
+- `signoff-batch.sh` sends a held PR to the owner only once every `review.attest`
+  reviewer's recorded verdict (`<Key>: SHIP (<who>) <fingerprint>` in an empty
+  commit) is on its head, walking past empty commits, CI evidence commits
+  (`evidence.commitPrefix`) and merges that only bring the trunk in.
+- The claim and finish skills, every driver step brief and every spawned builder's
+  prompt lead with `shared/signoff-last.md`; the review brief says a pixel finding
+  on a signed PR is a follow-up. A driver push the guard refuses parks for the owner.
+- `scripts/signoff-push-guard.sh` refuses a push whose head differs from the signed
+  head in one of the PR's own screens, unless a commit since the sign-off carries
+  `pixel-change-after-signoff: <why>` — then it puts the hold back on, comments the
+  before and after on the PR, and logs a `lane-hold` line for the owner's next
+  batch. Signed means any sign-off, a person removing the hold on GitHub included
+  (`approval-kept.sh signed-head`). The trees are compared, not the commits, so a
+  merge taking the trunk's side or a force-push back is caught. With
+  `design.surfacePathsComplete` unset it also lets Markdown, `docs/`, `.changeset/`
+  and CHANGELOG files through, which `approval-kept.sh check` still counts.
+
+The kit ships no git hook, so the consuming repo's own pre-push calls it: save
+stdin once, feed it to every check that reads it, and run the guard before any CI
+early return:
 
 ```sh
-bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
+REFS=$(cat)
+printf '%s\n' "$REFS" | bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
 ```
 
 ### Scripts the skills expect in the consuming repo

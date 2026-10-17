@@ -256,6 +256,32 @@ bash "$K" approved-head 60 >/dev/null 2>&1; want "a review that is not an approv
 rm -f "$FIX/gh/api-repos_acme_widgets_issues_60_events_per_page_100.json"
 bash "$K" approved-head 60 >/dev/null 2>&1; want "an unreadable timeline: could not tell" "2" "$?"
 
+echo "--- the signed head: any sign-off, a bare removal of the hold on GitHub included ---"
+cmts() { # <sha:committer-date>… — the PR's commits, oldest first
+  local a=() c; for c in "$@"; do a+=("$(jq -n --arg s "${c%%:*}" --arg d "${c#*:}" '{sha:$s, commit:{committer:{date:$d}}}')"); done
+  printf '%s\n' "${a[@]}" | jq -s . > "$FIX/gh/api-repos_acme_widgets_pulls_60_commits_per_page_100.json"
+}
+signoffs '[]' '[]' "$OFF"
+cmts "$A:2026-10-17T08:00:00Z" "$H:2026-10-17T08:30:00Z" "$C:2026-10-17T09:30:00Z"
+want "no marker, the hold removed by a person: signed at the head then" "$H" "$(bash "$K" signed-head 60 2>/dev/null)"
+bash "$K" approved-head 60 >/dev/null 2>&1; want "while approved-head, which clears holds, still wants a marker" "1" "$?"
+signoffs '[]' '[]' '[{"event":"unlabeled","label":{"name":"needs:human-approval"},"actor":{"login":"ci[bot]","type":"Bot"},"created_at":"2026-10-17T09:00:05Z"}]'
+bash "$K" signed-head 60 >/dev/null 2>&1; want "a bot's removal is no sign-off" "1" "$?"
+signoffs "[$(cm 2026-10-17T09:00:00Z "Approved by @tester in the agent window on 2026-10-17.
+
+$MA")]" '[]' "$OFF"
+want "a marked sign-off and the removal it caused: the marked head" "$A" "$(bash "$K" signed-head 60 2>/dev/null)"
+signoffs "[$(cm 2026-10-17T07:00:00Z "Approved by @tester in the agent window on 2026-10-17.
+
+$MA")]" '[]' '[{"event":"unlabeled","label":{"name":"needs:human-approval"},"actor":{"login":"tester","type":"User"},"created_at":"2026-10-17T07:00:05Z"},{"event":"unlabeled","label":{"name":"needs:human-approval"},"actor":{"login":"tester","type":"User"},"created_at":"2026-10-17T10:00:00Z"}]'
+want "a later bare removal outranks an older marked one" "$C" "$(bash "$K" signed-head 60 2>/dev/null)"
+signoffs '[]' '[]' "$OFF"; cmts "$C:2026-10-17T09:30:00Z"
+bash "$K" signed-head 60 >/dev/null 2>&1; want "a removal no commit can place: signed, head unknown" "3" "$?"
+rm -f "$FIX/gh/api-repos_acme_widgets_pulls_60_commits_per_page_100.json"
+bash "$K" signed-head 60 >/dev/null 2>&1; want "commits unreadable: could not tell" "2" "$?"
+signoffs '[]' '[]' '[]'
+bash "$K" signed-head 60 >/dev/null 2>&1; want "never signed" "1" "$?"
+
 echo "--- on real git history ---"
 # The forge answers compare and contents from a real repository.
 cat > "$BIN/gh" <<'GH'

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # signoff-push-guard.sh — sign-off comes last: once the owner has signed a PR's
-# screens, a push that changes one of them is refused, unless every commit doing it
-# says why in a `pixel-change-after-signoff: <why>` trailer. Then the hold goes back
-# on, the PR gets a before/after comment, and the owner's next batch carries it
+# screens, a push whose head differs from the signed head in one of them is
+# refused, unless a commit since the signed head says why in a
+# `pixel-change-after-signoff: <why>` trailer. Then the hold goes back on, the PR
+# gets a before/after comment, and the owner's next batch carries it
 # (coordinator-notify, kind lane-hold).
 #
 #   signoff-push-guard.sh <remote> [<url>]   git's pre-push contract: on stdin, one
@@ -13,18 +14,32 @@
 # Owner's rule, 2026-10-17. Measured that day: of three screens he re-signed, two
 # came back because a builder pushed a real screen change after his sign-off.
 #
-# Wired from the consuming repo's own pre-push (the kit ships no git hook):
-#   bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
-# before anything else in it reads stdin, or with the ref lines saved and replayed.
+# Wired from the consuming repo's own pre-push (the kit ships no git hook), before
+# its CI early return and with the ref lines it saved:
+#   printf '%s\n' "$REFS" | bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
 #
-# Signed = approval-kept.sh approved-head names a head (a review's commit, or
-# clear-hold's comment that the hold's removal followed). Screen = approval-kept.sh
-# screens (design.surfacePaths / surfacePathsComplete / neverScreens). A merge counts
-# only for the files its resolution changed against every parent; a commit already
-# on the remote (the trunk a merge brings) is not this push's. Commits under the
-# approved head are what was signed. A screen change on a branch whose
-# sign-off cannot be read is refused: the guard fails shut, and only for screens —
-# a push that changes no screen asks GitHub nothing.
+# THE TREES, NOT THE COMMITS. The signed head and the pushed head are compared
+# directly, so a merge taking the trunk's side, a resolution dropping a screen, a
+# force-push to an earlier commit and a commit that reached the remote through
+# another branch all show. A file counts only when it is the PR's own at either
+# head (it differs from where that head meets <remote>/<integrationBranch>); one
+# only the trunk changed is a trunk merge, as approval-kept.sh check reads it.
+#
+# SIGNED = approval-kept.sh signed-head: a review, a marked clear-hold, or a person
+# removing the hold on GitHub (its head is the PR's head then). A sign-off whose head
+# cannot be placed uses the remote's current head. A PR still carrying the hold is
+# not signed — the owner signs what lands — so it passes, with no new comment.
+#
+# SCREENS = approval-kept.sh screens, the rule its `check` voids approvals by. With
+# design.surfacePathsComplete unset that rule calls every non-test file a screen;
+# this guard refuses pushes, so it also lets through what clearly does not draw:
+# Markdown, docs/, .changeset/ and CHANGELOG files. approval-kept.sh keeps the wider
+# rule: there a false screen costs a re-sign, here it blocks a changelog fix.
+#
+# The hold goes back on BEFORE the push is accepted (git has no post-push hook), and
+# the comment says so. A screen change whose sign-off cannot be read is refused:
+# the guard fails shut, and only for screens — a push that changes no screen
+# relative to the remote's head asks GitHub nothing.
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || { echo "✗ pre-push blocked: signoff-push-guard could not load harness.json" >&2; exit 1; }
@@ -35,12 +50,44 @@ NOTIFY="$SELF_DIR/coordinator-notify.sh"
 REPO="${GH_REPO:-$REPO_SLUG}"
 REMOTE="${1:-origin}"
 TRAILER="pixel-change-after-signoff"
+TRUNK="refs/remotes/$REMOTE/$INTEGRATION_BRANCH"
+COMPLETE=$(jq -r '.design.surfacePathsComplete == true' "$HARNESS_CFG" 2>/dev/null)
 
 say() { printf '%s\n' "$*" >&2; }
 nonzero() { case "$1" in *[!0]*) return 0 ;; *) return 1 ;; esac; }
-why_of() { # <commit> — the trailer's text, empty when absent
-  git log -1 --format=%B "$1" | git interpret-trailers --parse 2>/dev/null \
-    | grep -i "^$TRAILER:" | sed 's/^[^:]*:[[:space:]]*//' | sed '/^[[:space:]]*$/d' | head -1
+has() { git cat-file -e "$1^{commit}" 2>/dev/null; }
+
+screens() { # paths on stdin, the ones this guard holds
+  local s; s=$(bash "$KEPT" screens) || return 1
+  if [ "$COMPLETE" = true ]; then printf '%s\n' "$s" | sed '/^$/d'; return 0; fi
+  printf '%s\n' "$s" | sed '/^$/d' | grep -vE '\.(md|markdown|mdx)$|(^|/)docs/|(^|/)\.changeset/|(^|/)CHANGELOG[^/]*$' || true
+}
+
+own() { # <sha> — the files that head changes against where it meets the trunk
+  local mb; mb=$(git merge-base "$TRUNK" "$1" 2>/dev/null) || return 1
+  git diff --name-only --no-renames "$mb" "$1"
+}
+
+moved() { # <from> <to> — the PR's own screens that differ between two heads
+  local d o
+  d=$(git diff --name-only --no-renames "$1" "$2") || return 1
+  [ -n "$d" ] || return 0
+  if git rev-parse -q --verify "$TRUNK" >/dev/null; then
+    o=$( { own "$1"; own "$2"; } 2>/dev/null | sort -u)
+    d=$(comm -12 <(printf '%s\n' "$d" | sort -u) <(printf '%s\n' "$o"))
+  fi
+  [ -n "$d" ] || return 0
+  printf '%s\n' "$d" | screens
+}
+
+whys() { # <signed> <head> — the trailers on commits since the signed head
+  local c w out=""
+  for c in $(git rev-list "$2" --not "$1" 2>/dev/null); do
+    w=$(git log -1 --format=%B "$c" | git interpret-trailers --parse 2>/dev/null \
+        | grep -i "^$TRAILER:" | sed 's/^[^:]*:[[:space:]]*//' | sed '/^[[:space:]]*$/d' | head -1)
+    [ -z "$w" ] || out="$out${out:+; }$w"
+  done
+  printf '%s' "$out"
 }
 
 refused=0
@@ -50,55 +97,40 @@ while read -r _lref lsha rref rsha; do
   [ -n "${lsha:-}" ] && nonzero "$lsha" || continue
   case "$rref" in refs/heads/*) ;; *) continue ;; esac
   branch=${rref#refs/heads/}
-  if [ -n "${rsha:-}" ] && nonzero "$rsha" && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
-    new=$(git rev-list "$lsha" --not "$rsha" --remotes="$REMOTE" 2>/dev/null)
-  else
-    new=$(git rev-list "$lsha" --not --remotes="$REMOTE" 2>/dev/null)
+  if [ -n "${rsha:-}" ] && nonzero "$rsha" && has "$rsha"; then base="$rsha"
+  else base=$(git merge-base "$TRUNK" "$lsha" 2>/dev/null) || base=""; fi
+  if [ -n "$base" ]; then
+    first=$(moved "$base" "$lsha") || { say "✗ pre-push blocked: could not tell which files of $branch are screens"; refused=1; continue; }
+    [ -n "$first" ] || continue
   fi
-  [ -n "$new" ] || continue
 
-  touched=""   # <sha> \t <screen files, space-joined>
-  for c in $new; do
-    if [ "$(git rev-list --parents -n1 "$c" | wc -w)" -gt 2 ]; then
-      files=$(git diff-tree -c --no-commit-id --name-only -r "$c")
-    else
-      files=$(git diff-tree --no-commit-id --name-only -r --root "$c")
-    fi
-    [ -n "$files" ] || continue
-    scr=$(printf '%s\n' "$files" | bash "$KEPT" screens) \
-      || { say "✗ pre-push blocked: could not tell which files of ${c:0:7} are screens"; refused=1; continue 2; }
-    [ -z "$scr" ] || touched="$touched$c"$'\t'"$(printf '%s' "$scr" | tr '\n' ' ' | sed 's/ $//')"$'\n'
-  done
-  [ -n "$touched" ] || continue
-
-  prs=$(gh_call pr list --repo "$REPO" --head "$branch" --state open --json number 2>/dev/null)
+  prs=$(gh_call pr list --repo "$REPO" --head "$branch" --state open --json number,labels 2>/dev/null)
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs" \
     || { say "✗ pre-push blocked: $branch changes screens and its pull request could not be read, so whether the owner signed it is unknown. Try again."; refused=1; continue; }
   pr=$(jq -r '.[0].number // empty' <<<"$prs")
   [ -n "$pr" ] || continue
-  approved=$(bash "$KEPT" approved-head "$pr" 2>/dev/null); arc=$?
-  [ "$arc" -eq 1 ] && continue
-  [ "$arc" -eq 0 ] && [ -n "$approved" ] \
+  jq -e --arg h "$HOLD_LABEL" 'any(.[0].labels[]?; .name == $h)' >/dev/null <<<"$prs" && continue
+
+  signed=$(bash "$KEPT" signed-head "$pr" 2>/dev/null); src=$?
+  case "$src" in
+    1) continue ;;
+    0) [ -n "$signed" ] || src=2 ;;
+    3) signed="$base"; [ -n "$signed" ] || src=2 ;;
+  esac
+  [ "$src" -eq 0 ] || [ "$src" -eq 3 ] \
     || { say "✗ pre-push blocked: PR #$pr's sign-offs could not be read, and this push changes its screens. Try again."; refused=1; continue; }
-  git cat-file -e "$approved^{commit}" 2>/dev/null || git fetch -q "$REMOTE" "$approved" 2>/dev/null || true
+  has "$signed" || git fetch -q "$REMOTE" "$signed" 2>/dev/null || true
+  has "$signed" || { say "✗ pre-push blocked: PR #$pr was signed at ${signed:0:7}, which this clone cannot read. Fetch it and push again."; refused=1; continue; }
+  files=$(moved "$signed" "$lsha") || { say "✗ pre-push blocked: could not compare $branch with the signed ${signed:0:7}"; refused=1; continue; }
+  [ -n "$files" ] || continue
+  list=$(printf '%s\n' "$files" | tr '\n' ' ' | sed 's/ $//')
+  why=$(whys "$signed" "$lsha")
 
-  after=""; missing=""; whys=""; files_all=""
-  while IFS=$'\t' read -r c scr; do
-    [ -n "$c" ] || continue
-    git merge-base --is-ancestor "$c" "$approved" 2>/dev/null && continue
-    after="$after$c "; files_all="$files_all $scr"
-    w=$(why_of "$c")
-    if [ -z "$w" ]; then missing="$missing  ${c:0:7} $(git log -1 --format=%s "$c" | cut -c1-70) — $scr"$'\n'
-    else whys="$whys${whys:+; }$w"; fi
-  done <<<"$touched"
-  [ -n "$after" ] || continue
-  files_all=$(printf '%s\n' $files_all | sort -u | tr '\n' ' ' | sed 's/ $//')
-
-  if [ -n "$missing" ]; then
-    say "✗ pre-push blocked: sign-off comes last. The owner signed PR #$pr at ${approved:0:7}, and this push changes its screens after that:"
-    printf '%s' "$missing" >&2
+  if [ -z "$why" ]; then
+    say "✗ pre-push blocked: sign-off comes last. The owner signed PR #$pr at ${signed:0:7}, and this push changes its screens: $list"
+    [ "$src" -eq 3 ] && say "  (the sign-off was a label removal no commit could place, so the remote's head stands in for it)"
     say "  A review note that would change pixels becomes a follow-up ticket, not a commit here."
-    say "  A required fix that must change pixels says why in its commit message, as a trailer:"
+    say "  A required fix that must change pixels says why in a commit message since the sign-off, as a trailer:"
     say "    $TRAILER: <why>"
     say "  and the hold goes back on for the owner to sign again."
     refused=1; continue
@@ -111,18 +143,18 @@ while read -r _lref lsha rref rsha; do
   fi
   issue=$(printf '%s\n' "$branch" | branch_tickets | cut -f1)
   [ -z "$issue" ] || gh_call issue edit "$issue" --repo "$REPO" --add-label "$HOLD_LABEL" >/dev/null 2>&1 || true
-  cmp="https://github.com/$REPO/compare/$approved...$lsha"
-  gh_call pr comment "$pr" --repo "$REPO" --body "\`$HOLD_LABEL\` is back on: a pixel change after sign-off.
+  cmp="https://github.com/$REPO/compare/$signed...$lsha"
+  gh_call pr comment "$pr" --repo "$REPO" --body "\`$HOLD_LABEL\` is back on: a pixel change after sign-off, pending its push (if the push does not land, the hold stays on until it is signed again).
 
-- **Before:** the signed head \`${approved:0:7}\`
+- **Before:** the signed head \`${signed:0:7}\`
 - **After:** \`${lsha:0:7}\` — $cmp
-- **Screens:** $files_all
-- **Why:** $whys
+- **Screens:** $list
+- **Why:** $why
 
-CI photographs the new head; compare its shots with the ones signed at \`${approved:0:7}\`." >/dev/null 2>&1 \
+CI photographs the new head; compare its shots with the ones signed at \`${signed:0:7}\`." >/dev/null 2>&1 \
     || say "signoff-push-guard: the hold is back on PR #$pr; its before/after comment could not be posted"
   COORDINATOR_SHADOW=0 bash "$NOTIFY" --class agent "lane-hold:$pr:${lsha:0:7}" \
-    "PR #$pr needs your sign-off again: changed after sign-off — before ${approved:0:7}, after ${lsha:0:7} ($files_all): $whys" >/dev/null 2>&1 || true
-  say "signoff-push-guard: PR #$pr changes screens signed at ${approved:0:7} ($whys) — the hold is back on and the owner signs again"
+    "PR #$pr needs your sign-off again: changed after sign-off — before ${signed:0:7}, after ${lsha:0:7} ($list): $why" >/dev/null 2>&1 || true
+  say "signoff-push-guard: PR #$pr changes screens signed at ${signed:0:7} ($why) — the hold is back on and the owner signs again"
 done <<<"$REFS"
 exit "$refused"

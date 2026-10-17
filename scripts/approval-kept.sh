@@ -9,6 +9,9 @@
 #       2  could not be read: the hold stays, and the caller says it could not tell.
 #   approval-kept.sh approved-head <pr>
 #       the head SHA the last sign-off was given at; exit 1 when there is none.
+#   approval-kept.sh signed-head <pr>
+#       the head the last sign-off of any kind covered, a bare label removal included;
+#       1 never signed, 2 unreadable, 3 signed but the head then cannot be placed.
 #   approval-kept.sh marker <sha>
 #       the marker line clear-hold.sh ends a sign-off with.
 #   approval-kept.sh screens [--screens "<cmd>"]
@@ -47,7 +50,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${GH_REPO:-$REPO_SLUG}"
 WINDOW="${APPROVAL_WINDOW_SEC:-300}"
 
-usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 marker() { printf '<!-- approval-head:%s -->\n' "$1"; }
 
@@ -169,34 +172,68 @@ check() { # <approved> <head> [--screens cmd]
   return 0
 }
 
-approved_head() { # <pr>
-  local pr="${1:-}" comments reviews events sha
-  case "$pr" in ''|*[!0-9]*) usage ;; esac
+# signoffs <pr> [place] — every sign-off of the PR as {at, sha, how}, oldest first: a review
+# or a marked clear-hold comment (how=marked, sha its head), and a person's removal
+# of the hold with no marked record beside it (how=label, sha the head then, or ""
+# when the commits cannot place it; they are read only with `place`). Exit 2 when
+# the PR cannot be read.
+signoffs() {
+  local pr="$1" place="${2:-}" comments reviews events commits
   comments=$(gh_call api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || comments=""
   reviews=$(gh_call api "repos/$REPO/pulls/$pr/reviews?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || reviews=""
   events=$(gh_call api "repos/$REPO/issues/$pr/events?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || events=""
   [ -n "$comments" ] && [ -n "$reviews" ] && [ -n "$events" ] || { echo "could not read PR #$pr's sign-offs" >&2; return 2; }
-  sha=$(jq -rn --argjson c "$comments" --argjson r "$reviews" --argjson e "$events" \
-          --arg hold "$HOLD_LABEL" --argjson win "$WINDOW" '
+  commits='[]'
+  if [ "$place" = place ] && jq -e --arg hold "$HOLD_LABEL" 'any(.[]; .event == "unlabeled" and .label.name == $hold)' >/dev/null 2>&1 <<<"$events"; then
+    commits=$(gh_call api "repos/$REPO/pulls/$pr/commits?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') \
+      || { echo "could not read PR #$pr's commits" >&2; return 2; }
+  fi
+  jq -cn --argjson c "$comments" --argjson r "$reviews" --argjson e "$events" --argjson k "$commits" \
+         --arg hold "$HOLD_LABEL" --argjson win "$WINDOW" '
     def t: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
     def human: (.type // "User") != "Bot" and ((.login // "") | endswith("[bot]") | not);
     ([ $e[] | select(.event == "unlabeled" and .label.name == $hold and (.actor | human)) | .created_at | t ]) as $offs
     | [ ( $r[] | select(.state == "APPROVED" and (.user | human) and (.commit_id // "" | test("^[0-9a-f]{40}$")))
-          | {at: (.submitted_at | t), sha: .commit_id} ),
+          | {at: (.submitted_at | t), sha: .commit_id, how: "marked"} ),
         ( $c[] | select(.user | human) | (.body // "") as $b
           | select(($b | startswith("Approved by @")) or ($b | startswith("`" + $hold + "` cleared on @")))
           | ($b | capture("\n<!-- approval-head:(?<s>[0-9a-f]{40}) -->\\s*$")?) as $m
           | select($m != null) | (.created_at | t) as $at
           | select(any($offs[]; . >= $at and . <= $at + $win))
-          | {at: $at, sha: $m.s} ) ]
-    | sort_by(.at) | last | .sha // empty')
+          | {at: $at, sha: $m.s, how: "marked"} ) ] as $marked
+    | [ $offs[] as $o | select(all($marked[]; ($o < .at or $o > .at + $win)))
+        | {at: $o, how: "label",
+           sha: ([ $k[] | select((.commit.committer.date // "") != "" and (.commit.committer.date | t) <= $o) | .sha ] | last // "")} ] as $bare
+    | $marked + $bare | sort_by(.at)'
+}
+
+approved_head() { # <pr>
+  local pr="${1:-}" all sha
+  case "$pr" in ''|*[!0-9]*) usage ;; esac
+  all=$(signoffs "$pr") || return 2
+  sha=$(jq -r '[.[] | select(.how == "marked")] | last | .sha // empty' <<<"$all")
   [ -n "$sha" ] || { echo "PR #$pr carries no sign-off that names its head" >&2; return 1; }
   printf '%s\n' "$sha"
+}
+
+# signed_head <pr> — the head the last sign-off of ANY kind covered. A hold a person
+# removed on GitHub writes no marker, and is still a sign-off: its head is the PR's
+# head at that moment. 0 prints it · 1 never signed · 2 unreadable · 3 signed, head
+# unknown (the commits could not place the removal).
+signed_head() {
+  local pr="${1:-}" all last
+  case "$pr" in ''|*[!0-9]*) usage ;; esac
+  all=$(signoffs "$pr" place) || return 2
+  last=$(jq -c 'last // empty' <<<"$all")
+  [ -n "$last" ] || { echo "PR #$pr was never signed off" >&2; return 1; }
+  jq -r '.sha' <<<"$last" | grep -qE '^[0-9a-f]{40}$' || { echo "PR #$pr was signed off at $(jq -r '.at | todate' <<<"$last"), and its head then cannot be placed" >&2; return 3; }
+  jq -r '.sha' <<<"$last"
 }
 
 case "${1:-}" in
   check)         shift; check "$@" ;;
   approved-head) shift; approved_head "$@" ;;
+  signed-head)   shift; signed_head "$@" ;;
   marker)        [ -n "${2:-}" ] || usage; marker "$2" ;;
   screens)       case "${2:-}" in '') screens_of "" ;; --screens) [ -n "${3:-}" ] || usage; screens_of "$3" ;; *) usage ;; esac ;;
   *)             usage ;;
