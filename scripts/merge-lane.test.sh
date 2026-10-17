@@ -13,7 +13,7 @@ swarm_fixture; trap 'rm -rf "$FIX"' EXIT
 L="$HERE/merge-lane.sh"
 C="$STATE/coordinator"
 cfg() { jq "$1" "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"; }
-cfg '.merge = {method: "squash"} | .gates = {requiredChecks: ["build", "lint"]} | .design = {surfacePaths: ["apps/web/**", ":(exclude)**/*.test.ts"]}'
+cfg '.merge = {method: "squash"} | .gates = {requiredChecks: ["build", "lint"]} | .design = {surfacePaths: ["apps/web/**", ":(exclude)**/*.test.ts"], surfacePathsComplete: true}'
 
 # The forge: answers from $FIX/gh/, records every call, and can be told to refuse.
 cat > "$BIN/gh" <<'GH'
@@ -293,32 +293,32 @@ live >/dev/null
 want_in "a lost runner is a flake, re-run" '^run rerun 73 ' "$(cat "$GH_LOG")"
 
 echo "--- a hold comes off only after a develop-only update that left the screens alone ---"
-hold_setup() { # the lane updated s60 -> s60b; the gate put the hold back on s60b
+hold_setup() { # the lane updated aaaa600 -> bbbb600; the gate put the hold back on bbbb600
   fresh; fix_issue 601 OPEN "status:in-review"
-  pr 60 s60 - 1 build:SUCCESS lint:SUCCESS; compare develop s60 1
+  pr 60 aaaa600 - 1 build:SUCCESS lint:SUCCESS; compare develop aaaa600 1
   live >/dev/null
-  set_pr 60 '.headRefOid = "s60b" | .labels = [{name:"queue:merge"}, {name:"needs:human-approval"}] | .autoMergeRequest = null'
-  compare develop s60b 0 "apps/web/page.tsx,lib/api.ts"
+  set_pr 60 '.headRefOid = "bbbb600" | .labels = [{name:"queue:merge"}, {name:"needs:human-approval"}] | .autoMergeRequest = null'
+  compare develop bbbb600 0 "apps/web/page.tsx,lib/api.ts"
   : > "$GH_LOG"
 }
-hold_setup; compare s60 s60b 0 "lib/server.ts" "t,t,2"
+hold_setup; compare aaaa600 bbbb600 0 "lib/server.ts" "t,t,2"
 out=$(live)
 want_in "the hold is cleared"              '^pr edit 60 .*--remove-label needs:human-approval' "$(cat "$GH_LOG")"
 want_in "and the reason is recorded"       '^pr comment 60 .*develop-only update' "$(cat "$GH_LOG")"
 want "it stays in the lane"                "60" "$(jq -r '.head.pr' "$C/lane.did.json")"
-hold_setup; compare s60 s60b 0 "lib/server.ts" "2,1"
+hold_setup; compare aaaa600 bbbb600 0 "lib/server.ts" "2,1"
 live >/dev/null
 want_not_in "a commit of its own: the hold stays" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
 want_in "and it is logged for the sign-off batch" 'lane-hold:60:.*PR #60' "$(cat "$C/agent-work.log")"
 want "not pinged on its own"               "" "$(cat "$FIX/notify.log")"
 want "and it leaves the lane"              "none" "$(jq -r '.head.pr // "none"' "$C/lane.did.json")"
 want_not_in "keeping its label, so a sign-off brings it straight back" '^pr edit 60 .*--remove-label queue:merge' "$(cat "$GH_LOG")"
-hold_setup; compare s60 s60b 0 "apps/web/page.tsx" "2"
+hold_setup; compare aaaa600 bbbb600 0 "apps/web/page.tsx" "2"
 live >/dev/null
 want_not_in "the update touched its screen: the hold stays" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
 want_in "and it is logged for the sign-off batch" 'lane-hold:60:.*PR #60' "$(cat "$C/agent-work.log")"
 want "not pinged on its own"               "" "$(cat "$FIX/notify.log")"
-hold_setup; compare s60 s60b 0 "lib/api.ts" "2"
+hold_setup; compare aaaa600 bbbb600 0 "lib/api.ts" "2"
 live >/dev/null
 want_in "a shared file that is no screen does not hold it" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
 hold_setup
@@ -332,7 +332,7 @@ compare develop s63b 0 "apps/web/page.tsx"; compare s63 s63b 0 "lib/server.ts" "
 : > "$GH_LOG"; live >/dev/null
 want_not_in "a hold on an update the lane did not make is never touched" 'remove-label needs:human-approval' "$(cat "$GH_LOG")"
 want "and it waits out of line for sign-off" "none" "$(jq -r '.head.pr // "none"' "$C/lane.did.json")"
-hold_setup; compare s60 s60b 0 "lib/server.ts" "2"
+hold_setup; compare aaaa600 bbbb600 0 "lib/server.ts" "2"
 out=$(lane)
 want_not_in "shadow clears no hold"        '^pr (edit|comment) 60' "$(cat "$GH_LOG")"
 

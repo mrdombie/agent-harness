@@ -41,23 +41,29 @@ echo "--- a peer's PR and an approver: an approving review carries the reason --
 PR_AUTHOR=peer HUMAN_APPROVERS=tester bash "$HERE/clear-hold.sh" 88 --reason "develop-only update" >/dev/null 2>&1
 want_in "an approving review"               '^pr review 88 .*--approve.*develop-only update' "$(cat "$GH_LOG")"
 
-echo "--- the approved head is recorded, machine-readable ---"
+echo "--- the head the operator was shown is the head recorded, and only while it is still the head ---"
 K="$HERE/approval-kept.sh"
 : > "$GH_LOG"
-bash "$HERE/clear-hold.sh" 88 >/dev/null 2>&1
-want_in "the comment carries the head it approved" "^$(bash "$K" marker aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\$" "$(cat "$GH_LOG")"
+bash "$HERE/clear-hold.sh" 88 --sha aaaaaaa >/dev/null 2>&1
+want_in "the shown head, in full, ends the comment" "^$(bash "$K" marker aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\$" "$(cat "$GH_LOG")"
+want_in "and the hold comes off"              '^pr edit 88 .*--remove-label hold:pixels' "$(cat "$GH_LOG")"
 : > "$GH_LOG"
-bash "$HERE/clear-hold.sh" 88 --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1
-want_in "--sha names the head that was looked at" '^<!-- approval-head:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$(cat "$GH_LOG")"
-want_not_in "and not the head now"           'approval-head:aaaa' "$(cat "$GH_LOG")"
+out=$(bash "$HERE/clear-hold.sh" 88 --sha bbbbbbb 2>&1); rc=$?
+want "a PR that moved since it was shown: refused" "1" "$rc"
+want_in "and it says which heads"             'moved from the bbbbbbb that was approved to aaaaaaa' "$out"
+want_not_in "and nothing is written"          '^pr (comment|edit|review)|^issue edit' "$(cat "$GH_LOG")"
 : > "$GH_LOG"
-PR_AUTHOR=peer HUMAN_APPROVERS=tester bash "$HERE/clear-hold.sh" 88 >/dev/null 2>&1
+out=$(bash "$HERE/clear-hold.sh" 88 2>&1); rc=$?
+want "no --sha: the sign-off still clears"    "0" "$rc"
+want_in "and says no head is recorded"        'without an approval-head marker' "$out"
+want_not_in "the head at clear time is never recorded as approved" 'approval-head:' "$(cat "$GH_LOG")"
+: > "$GH_LOG"
+PR_AUTHOR=peer HUMAN_APPROVERS=tester bash "$HERE/clear-hold.sh" 88 --sha aaaaaaa >/dev/null 2>&1
 want_not_in "a review, not a comment"         '^pr comment 88' "$(cat "$GH_LOG")"
-want_in "a review carries it too"            '^<!-- approval-head:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$(cat "$GH_LOG")"
+want_in "a review carries it too"             '^<!-- approval-head:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$(cat "$GH_LOG")"
 : > "$GH_LOG"
-out=$(PR_HEAD="" bash "$HERE/clear-hold.sh" 88 2>&1); rc=$?
-want "no head: the sign-off still clears"    "0" "$rc"
-want_in "and says it has no marker"          'without an approval-head marker' "$out"
-want_not_in "and writes none"                'approval-head:' "$(cat "$GH_LOG")"
+PR_HEAD="" bash "$HERE/clear-hold.sh" 88 --sha aaaaaaa >/dev/null 2>&1; rc=$?
+want "an unreadable head with --sha: refused" "1" "$rc"
+want_not_in "and nothing is written"          '^pr (comment|edit|review)' "$(cat "$GH_LOG")"
 
 exit $FAILED

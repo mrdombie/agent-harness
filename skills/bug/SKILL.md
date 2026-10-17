@@ -185,15 +185,18 @@ plainly rather than reporting it as merged.
 that the operator has to go hunting for is a held PR that sits for days. Close the report with:
 
 ```
-Held on your approval: https://github.com/$REPO_SLUG/pull/<n>
+Held on your approval: https://github.com/$REPO_SLUG/pull/<n> (shots at <head>)
 Reply "approve <n>" and I'll clear it.
 ```
+
+`<head>` is the PR's `headRefOid` when the report is written, the one whose shots it shows.
+The approve below passes it, and clear-hold refuses if the PR has moved since.
 
 **When the operator says "approve <n>"** (or "yup", "go", "ship it" against a named PR), that is
 the deliberate act the gate exists to capture. Clear it and record who decided:
 
 ```bash
-"$KIT_ROOT/scripts/clear-hold.sh" <n>   # one motion, shared with /agent-harness:needsme
+"$KIT_ROOT/scripts/clear-hold.sh" <n> --sha <head>   # one motion, shared with /agent-harness:needsme
 ```
 
 Comment **before** removing the label, so the record exists even if the removal races

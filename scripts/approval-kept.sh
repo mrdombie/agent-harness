@@ -2,70 +2,106 @@
 # approval-kept.sh — does a sign-off still cover a pull request after an update?
 #
 #   approval-kept.sh check <approved-sha> <head-sha> [--screens "<cmd>"]
-#       0  kept: every commit since the approved head is a merge, and no screen
-#          file in the PR's own diff changed since it. Prints the sentence to
+#       0  kept: every commit of the PR's own since the approved head is a merge,
+#          and none of its screen files changed since it. Prints the sentence to
 #          comment, naming both SHAs.
 #       1  voided: prints why (a commit of its own, or the screen files that moved).
 #       2  could not be read: the hold stays, and the caller says it could not tell.
 #   approval-kept.sh approved-head <pr>
-#       the head SHA the last sign-off was given at, read from the marker
-#       clear-hold.sh writes; exit 1 when the PR carries none.
+#       the head SHA the last sign-off was given at; exit 1 when there is none.
 #   approval-kept.sh marker <sha>
-#       the marker line itself, for whoever records a sign-off.
+#       the marker line clear-hold.sh ends a sign-off with.
 #
 # An approval is attached to what was approved, and only a change to that thing
-# voids it ("keep your approval through updates"). A
-# develop merge brings other tickets' screens, which passed their own sign-off;
-# what voids is a change to THIS PR's screens — its own commits, or a merge whose
-# conflict resolution edited one of them.
+# voids it. A develop merge brings other tickets' screens, which passed their own
+# sign-off; what voids is a change to THIS PR's screens — its own commits, or a
+# merge whose resolution edited, dropped or un-renamed one of them.
 #
-#   since = approved..head (the update)        own = trunk...head (the PR's diff)
-#   voided when a commit in both is not a merge, or a screen file is in both.
-#   The trunk's commits a merge brings are in `since` only, so they never count.
+#   since = approved..head            own = trunk...approved  ∪  trunk...head
+#   voided when a commit in both since and the PR's own diff is not a merge, or a
+#   screen file of `own` changed in `since`. The PR's screens are read at BOTH
+#   heads: a resolution that takes develop's version, or drops a screen the PR
+#   added, leaves no trace in the new head's diff alone.
 #
-# A file the develop merge brought that the PR also changes counts as changed:
-# that is where a conflict resolution lands, so it holds more, never less.
+# A screen is any file that is not a test (tests.patterns, *.test.*, *.spec.*,
+# __tests__/, __mocks__/) and not under design.neverScreens — unless
+# design.surfacePathsComplete is true, when only design.surfacePaths (or the
+# --screens command: paths on stdin, the screen ones out) decide. A partial screen
+# list keeps approvals it should void; a full one only holds more.
+# Globs read as git pathspecs written as globs: ** crosses directories, * and ?
+# stay in one, a plain path matches itself and everything under it.
 #
-# Screens: --screens names a command that reads paths on stdin and prints the
-# ones that are screens (a project's own predicate). Without it, a path is a
-# screen when it matches an include of design.surfacePaths and no :(exclude);
-# with no surfacePaths every file counts. GitHub cuts a comparison at 300 files
-# and 250 commits: a cut update is read file by file, a cut own diff or commit
-# list is unreadable, never kept.
+# GitHub cuts a comparison at 300 files and 250 commits: a cut update is read file
+# by file; a cut own diff or commit list is unreadable, never kept.
+#
+# The approved head comes from a GitHub review (its commit_id) or from a
+# clear-hold.sh comment in its own words, ending in the marker, that the hold's
+# removal by a person followed within APPROVAL_WINDOW_SEC (300). A comment alone
+# proves nothing: anything on the operator's token can post one.
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || exit 2
 . "$SELF_DIR/gh-batch.sh" || exit 2
 REPO="${GH_REPO:-$REPO_SLUG}"
-MARK_RE='<!-- approval-head:([0-9a-f]{40}) -->'
+WINDOW="${APPROVAL_WINDOW_SEC:-300}"
 
-usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 marker() { printf '<!-- approval-head:%s -->\n' "$1"; }
 
-# Globs from design.surfacePaths; ** crosses directories, as git reads it.
-is_screen_glob() { # <path> <surface-json>
-  local f="$1" pat inc=0 hit=0
+glob_re() { # <glob> — an anchored ERE
+  local p="$1" out="" i c
+  for ((i = 0; i < ${#p}; i++)); do
+    c="${p:i:1}"
+    case "$c" in
+      '*') if [ "${p:i+1:1}" = '*' ]; then
+             if [ "${p:i+2:1}" = / ]; then out+='(.*/)?'; i=$((i + 2)); else out+='.*'; i=$((i + 1)); fi
+           else out+='[^/]*'; fi ;;
+      '?') out+='[^/]' ;;
+      .|+|\(|\)|\||^|\$|\{|\}|\\) out+="\\$c" ;;
+      *) out+="$c" ;;
+    esac
+  done
+  printf '^%s(/.*)?$' "${out%/}"
+}
+
+matches_any() { # <path> <json-array-of-globs>
+  local f="$1" pat re
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
-    case "$pat" in
-      ':(exclude)'*|':!'*)
-        pat="${pat#:(exclude)}"; pat="${pat#:!}"; pat="${pat//\*\*\//}"; pat="${pat//\*\*/*}"
-        [[ "$f" == $pat ]] && return 1 ;;
-      *) inc=1; pat="${pat//\*\*\//}"; pat="${pat//\*\*/*}"; [[ "$f" == $pat ]] && hit=1 ;;
-    esac
+    re=$(glob_re "$pat"); [[ "$f" =~ $re ]] && return 0
   done <<< "$(jq -r '.[]' <<<"$2")"
-  [ "$inc" = 0 ] || [ "$hit" = 1 ]
+  return 1
+}
+
+is_screen_glob() { # <path> <surface-json> — includes of surfacePaths, minus its excludes
+  local inc exc
+  exc=$(jq -c '[.[] | select(startswith(":(exclude)") or startswith(":!")) | sub("^:\\(exclude\\)"; "") | sub("^:!"; "")]' <<<"$2")
+  inc=$(jq -c '[.[] | select((startswith(":(exclude)") or startswith(":!")) | not)]' <<<"$2")
+  matches_any "$1" "$exc" && return 1
+  matches_any "$1" "$inc"
 }
 
 screens_of() { # <screens-cmd|""> — paths on stdin, the screen ones on stdout
-  local cmd="$1" surface f
-  if [ -n "$cmd" ]; then sh -c "$cmd"; return 0; fi
+  local cmd="$1" surface never tests complete f listed
   surface=$(jq -c '.design.surfacePaths // [] | if type == "array" then . else [] end' "$HARNESS_CFG" 2>/dev/null) || surface='[]'
+  never=$(jq -c '.design.neverScreens // [] | if type == "array" then . else [] end' "$HARNESS_CFG" 2>/dev/null) || never='[]'
+  tests=$(jq -c '["**/*.test.*", "**/*.spec.*", "**/__tests__/**", "**/__mocks__/**"] + (.tests.patterns // [] | if type == "array" then map("**/" + .) else [] end)' "$HARNESS_CFG" 2>/dev/null) \
+    || tests='["**/*.test.*","**/*.spec.*","**/__tests__/**","**/__mocks__/**"]'
+  complete=$(jq -r '.design.surfacePathsComplete == true' "$HARNESS_CFG" 2>/dev/null)
+  local paths; paths=$(cat)
+  listed=""
+  [ -z "$cmd" ] || listed=$(printf '%s\n' "$paths" | sh -c "$cmd" 2>/dev/null)
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    is_screen_glob "$f" "$surface" && printf '%s\n' "$f"
-  done
+    if [ -n "$cmd" ] && printf '%s\n' "$listed" | grep -qxF -- "$f"; then printf '%s\n' "$f"; continue; fi
+    matches_any "$f" "$never" && continue
+    if [ "$complete" = true ]; then
+      [ -n "$cmd" ] || { is_screen_glob "$f" "$surface" && printf '%s\n' "$f"; }
+      continue
+    fi
+    matches_any "$f" "$tests" || printf '%s\n' "$f"
+  done <<<"$paths"
 }
 
 blob_at() { # <sha> <path> — the file's blob, "absent" when the commit has none, 1 unreadable
@@ -78,8 +114,11 @@ blob_at() { # <sha> <path> — the file's blob, "absent" when the commit has non
   return 1
 }
 
+cut() { jq -e '(.files | length) >= 300 or ((.total_commits // (.commits | length)) > (.commits | length))' >/dev/null <<<"$1"; }
+shaped() { jq -e '(.commits | type == "array") and (.files | type == "array")' >/dev/null 2>&1 <<<"$1"; }
+
 check() { # <approved> <head> [--screens cmd]
-  local approved="${1:-}" head="${2:-}" cmd="" since own moved screens f a b
+  local approved="${1:-}" head="${2:-}" cmd="" since own owna moved screens f a b
   [ -n "$approved" ] && [ -n "$head" ] || usage
   shift 2
   while [ $# -gt 0 ]; do
@@ -90,12 +129,11 @@ check() { # <approved> <head> [--screens cmd]
   fi
   since=$(gh_call api "repos/$REPO/compare/$approved...$head" 2>/dev/null) || { echo "could not compare ${approved:0:7} with ${head:0:7}"; return 2; }
   own=$(gh_call api "repos/$REPO/compare/$INTEGRATION_BRANCH...$head" 2>/dev/null) || { echo "could not read the PR's own diff at ${head:0:7}"; return 2; }
-  jq -e '(.commits | type == "array") and (.files | type == "array")' >/dev/null 2>&1 <<<"$since" \
-    || { echo "the comparison of ${approved:0:7} with ${head:0:7} carries no commits or files"; return 2; }
-  jq -e '(.commits | type == "array") and (.files | type == "array")' >/dev/null 2>&1 <<<"$own" \
-    || { echo "the PR's own diff at ${head:0:7} carries no commits or files"; return 2; }
-  if jq -e '(.total_commits // (.commits | length)) > (.commits | length)' >/dev/null <<<"$since" \
-     || jq -e '(.files | length) >= 300 or ((.total_commits // (.commits | length)) > (.commits | length))' >/dev/null <<<"$own"; then
+  owna=$(gh_call api "repos/$REPO/compare/$INTEGRATION_BRANCH...$approved" 2>/dev/null) || { echo "could not read the PR's own diff at the approved ${approved:0:7}"; return 2; }
+  shaped "$since" || { echo "the comparison of ${approved:0:7} with ${head:0:7} carries no commits or files"; return 2; }
+  shaped "$own" || { echo "the PR's own diff at ${head:0:7} carries no commits or files"; return 2; }
+  shaped "$owna" || { echo "the PR's own diff at the approved ${approved:0:7} carries no commits or files"; return 2; }
+  if jq -e '(.total_commits // (.commits | length)) > (.commits | length)' >/dev/null <<<"$since" || cut "$own" || cut "$owna"; then
     echo "GitHub cut the comparison short (300 files or 250 commits), so the screens it changes cannot be read"; return 2
   fi
   if jq -e '(.status // "") == "behind" or (.status // "") == "diverged"' >/dev/null <<<"$since"; then
@@ -106,8 +144,8 @@ check() { # <approved> <head> [--screens cmd]
        '[.commits[] | select(.sha as $s | $own | index($s))] | length == 0 or any(.[]; (.parents | length) < 2)' >/dev/null <<<"$since"; then
     echo "it carries a commit of its own since the approved ${approved:0:7}"; return 1
   fi
-  # A rename's old path counts: moving a screen away changes it.
-  screens=$(jq -r '.files[] | .filename, (.previous_filename // empty)' <<<"$own" | screens_of "$cmd" | sort -u)
+  # Both heads, and a rename's old path: a screen the resolution dropped or moved still counts.
+  screens=$(jq -r '.files[] | .filename, (.previous_filename // empty)' <<<"$own"$'\n'"$owna" | sort -u | screens_of "$cmd" | sort -u)
   if jq -e '(.files | length) < 300' >/dev/null <<<"$since"; then
     moved=$(comm -12 <(printf '%s\n' "$screens") \
       <(jq -r '.files[] | .filename, (.previous_filename // empty)' <<<"$since" | sort -u) | sed '/^$/d')
@@ -130,16 +168,27 @@ check() { # <approved> <head> [--screens cmd]
 }
 
 approved_head() { # <pr>
-  local pr="${1:-}" bodies sha
+  local pr="${1:-}" comments reviews events sha
   case "$pr" in ''|*[!0-9]*) usage ;; esac
-  # Comments and reviews, oldest first; the newest marker is the last sign-off.
-  bodies=$( { gh_call api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate \
-                --jq '.[] | select(.user.type != "Bot") | [.created_at, (.body // "" | gsub("\n"; " "))] | @tsv' 2>/dev/null
-              gh_call api "repos/$REPO/pulls/$pr/reviews?per_page=100" --paginate \
-                --jq '.[] | select(.user.type != "Bot") | [.submitted_at // "", (.body // "" | gsub("\n"; " "))] | @tsv' 2>/dev/null
-            } | sort -t$'\t' -k1,1)
-  sha=$(printf '%s\n' "$bodies" | grep -oE "$MARK_RE" | tail -1 | sed -E "s/$MARK_RE/\\1/")
-  [ -n "$sha" ] || { echo "PR #$pr carries no approval-head marker" >&2; return 1; }
+  comments=$(gh_call api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || comments=""
+  reviews=$(gh_call api "repos/$REPO/pulls/$pr/reviews?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || reviews=""
+  events=$(gh_call api "repos/$REPO/issues/$pr/events?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || events=""
+  [ -n "$comments" ] && [ -n "$reviews" ] && [ -n "$events" ] || { echo "could not read PR #$pr's sign-offs" >&2; return 2; }
+  sha=$(jq -rn --argjson c "$comments" --argjson r "$reviews" --argjson e "$events" \
+          --arg hold "$HOLD_LABEL" --argjson win "$WINDOW" '
+    def t: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    def human: (.type // "User") != "Bot" and ((.login // "") | endswith("[bot]") | not);
+    ([ $e[] | select(.event == "unlabeled" and .label.name == $hold and (.actor | human)) | .created_at | t ]) as $offs
+    | [ ( $r[] | select(.state == "APPROVED" and (.user | human) and (.commit_id // "" | test("^[0-9a-f]{40}$")))
+          | {at: (.submitted_at | t), sha: .commit_id} ),
+        ( $c[] | select(.user | human) | (.body // "") as $b
+          | select(($b | startswith("Approved by @")) or ($b | startswith("`" + $hold + "` cleared on @")))
+          | ($b | capture("\n<!-- approval-head:(?<s>[0-9a-f]{40}) -->\\s*$")?) as $m
+          | select($m != null) | (.created_at | t) as $at
+          | select(any($offs[]; . >= $at and . <= $at + $win))
+          | {at: $at, sha: $m.s} ) ]
+    | sort_by(.at) | last | .sha // empty')
+  [ -n "$sha" ] || { echo "PR #$pr carries no sign-off that names its head" >&2; return 1; }
   printf '%s\n' "$sha"
 }
 
