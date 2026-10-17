@@ -78,6 +78,27 @@ driver_keep_brief() {
   driver_say "   brief: $n bytes, cut to $max for the steps; the whole of it is at ${dst%.md}.full.md"
 }
 
+# ---- the record first ------------------------------------------------------------
+# AN UNSHIPPED BUILD ON THE RECORD IS RESUMED AS A BUILD, whatever the caller called
+# the run. A build that parks on a question opens a draft PR to keep its work, so the
+# answer comes back looking like a repair (a brief on a ticket with a PR, or a repair
+# class from a requeue that saw the PR). Routed on the PR, the walk would skip the
+# steps the build had left — the design compare a person sanctions, the build's own
+# red-then-green proof — and ship it. The record says which walk this is; the PR does not.
+UNSHIPPED_BUILD=0
+if jq -e '(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' \
+     "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1; then
+  UNSHIPPED_BUILD=1
+  if [ -n "$REPAIR_CLASS" ]; then
+    echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build, not a $REPAIR_CLASS repair" >&2
+    REPAIR_CLASS=""
+  fi
+  if [ -n "$REPAIR_BRIEF" ]; then
+    echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build with this brief, not a repair" >&2
+    RUN_BRIEF="$REPAIR_BRIEF"; REPAIR_BRIEF=""
+  fi
+fi
+
 # ---- what a run was handed ----------------------------------------------------
 # `--repair-class <class>` is a healing run that came with no note: still a repair of
 # the open PR, never a fresh build, with a brief that says so. `--brief <file>` is a
@@ -92,7 +113,9 @@ if [ -n "$REPAIR_CLASS" ]; then
     "$TICKET" "$REPAIR_CLASS" > "$REPAIR_BRIEF"
   REPAIR_SOURCE=class
 fi
-if [ -n "$RUN_BRIEF" ]; then
+if [ -n "$RUN_BRIEF" ] && [ "$UNSHIPPED_BUILD" -eq 1 ]; then
+  [ -s "$RUN_BRIEF" ] || die "--brief names '$RUN_BRIEF', which is missing or empty — a run whose brief is lost would build as if it had none"
+elif [ -n "$RUN_BRIEF" ]; then
   [ -s "$RUN_BRIEF" ] || die "--brief names '$RUN_BRIEF', which is missing or empty — a run whose brief is lost would build as if it had none"
   # ASKED A FEW TIMES, AND NEVER LOST. The coordinator took the queue entry off when it
   # spawned this run, so an exit here with the brief dropped would lose an owner's

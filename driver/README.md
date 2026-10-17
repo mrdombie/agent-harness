@@ -93,9 +93,16 @@ again, so a repair has its own order (`DRIVER_REPAIR_STEPS`):
 - **The brief is never dropped.** It is copied onto the record. A missing or
   empty brief is a refusal (exit 2). A healing run with no note is
   `--repair-class <class>`, which writes a brief naming the class.
-  `--brief <file>` leaves the choice to the PR: a repair when the ticket has an
-  open one, and otherwise a build with the brief handed to every AI step
-  (`run_brief` on the record).
+  `--brief <file>` is a repair when the ticket has an open PR, and otherwise a
+  build with the brief handed to every AI step (`run_brief` on the record).
+- **The record outranks the PR.** If the ticket's record is an unshipped build,
+  then `--brief`, `--repair` and `--repair-class` all resume that build from the
+  step that parked, with the brief as `run_brief`. A build that parks on a
+  question opens a draft PR, so its answer comes back looking like a repair.
+  Treated as one, it would skip the design compare and the build's own proof,
+  then ship. `owner-question.sh` requeues such a ticket as `new` for the same
+  reason. Only a shipped ticket, or one with no driver record, is repaired on its
+  PR.
 - **A round is the brief, the PR head and whether it shipped.** The same brief on
   an unmoved PR resumes. A new round starts when any of these holds:
   - the brief changed

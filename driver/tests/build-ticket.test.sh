@@ -768,4 +768,46 @@ want "what the steps read is capped"         "yes" "$([ "$(wc -c < "$RB")" -lt 4
 want_in "with a notice a reader sees"        'brief was 6000 bytes' "$(cat "$RB")"
 want "and the whole brief is kept"           "6000" "$(wc -c < "${RB%.md}.full.md" 2>/dev/null | tr -d ' ')"
 
+echo "--- an answered BUILD park resumes the build, PR or no PR — never a repair ---"
+# A person-cause park during a build opens a draft PR. The answer comes back with a
+# brief (or as a repair class, when the requeue saw the PR). Routed on the PR it ran
+# reenter·repair·…·ship and skipped compare (only a person sanctions a deviation) and
+# the build's own proof, then readied and armed the PR. The record decides.
+BUILD_TAIL="start compare self-check review record ship"
+park_at_compare() { # <ticket> — a build parked at compare, with the draft PR its park opened
+  reset_fakes "compare:20 0"
+  bt "$1" >/dev/null
+  jq -n --arg b "tkt-$1/work" '[{number:70, headRefName:$b, headRefOid:"d1", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+  : > "$RAN"
+}
+printf 'The owner answered q8: the deviation is approved.\n' > "$FIX/brief-k.md"
+park_at_compare 501
+want "fixture: the build parked at compare"  "start,plan,build,fix" "$(driver_state_get 501 'done|join(",")')"
+out=$(bt 501 --brief "$FIX/brief-k.md"); rc=$?
+want "--brief: it finishes"                  "0" "$rc"
+want "--brief: the build resumes at compare, ship only after it" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_not_in "--brief: no reenter, no repair" 'reenter|repair' "$(cat "$RAN")"
+want "--brief: the record stays a build"     "build" "$(driver_state_get 501 mode)"
+want "--brief: with the answer for every step" "The owner answered q8: the deviation is approved." "$(cat "$(driver_state_get 501 run_brief)" 2>/dev/null)"
+park_at_compare 502
+bt 502 --repair-class repair >/dev/null
+want "--repair-class: the build resumes at compare" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+park_at_compare 503
+bt 503 --repair "$FIX/brief-k.md" >/dev/null
+want "--repair: the build resumes at compare" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "--repair: the brief becomes the build's" "The owner answered q8: the deviation is approved." "$(cat "$(driver_state_get 503 run_brief)" 2>/dev/null)"
+reset_fakes "compare:20"
+bt 504 >/dev/null
+jq -n '[{number:71, headRefName:"tkt-504/work", headRefOid:"d2", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"; : > "$RAN"
+bt 504 --brief "$FIX/brief-k.md" >/dev/null; rc=$?
+want "compare still refusing: it parks again" "20" "$rc"
+want_not_in "and ship never runs"            'ship' "$(cat "$RAN")"
+
+echo "--- a SHIPPED build's PR still goes to repair ---"
+reset_fakes; bt 505 >/dev/null
+jq -n '[{number:72, headRefName:"tkt-505/work", headRefOid:"s1", isDraft:false, mergeStateStatus:"DIRTY"}]' > "$FIX/gh/prs.json"; : > "$RAN"
+bt 505 --brief "$FIX/brief-k.md" >/dev/null
+want "a shipped build with a PR: the repair order" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

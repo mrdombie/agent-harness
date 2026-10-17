@@ -62,9 +62,16 @@ The question is in the owner's channel. No agent takes this ticket while it wear
 }
 
 requeue() { # <ticket> <note> — echoes the class
-  local t="$1" cls=new n
+  local t="$1" cls=new n rec
   n=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --search "head:$BRANCH_PREFIX$t" --json number -q length 2>/dev/null)
   [ "${n:-0}" -gt 0 ] 2>/dev/null && cls=repair
+  # THE DRIVER'S RECORD OUTRANKS THE PR. A build that parked on a question opened a
+  # draft PR to keep its work; answered as a repair, the rest of the build (the
+  # design compare, the red-then-green proof) would be skipped and the PR shipped.
+  rec="${DRIVER_DIR:-$STATE_DIR/driver}/$t/state.json"
+  if [ "$cls" = repair ] && [ -f "$rec" ] && jq -e '(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' "$rec" >/dev/null 2>&1; then
+    cls=new
+  fi
   bash "$QUEUE" add "$t" --class "$cls" --note "$2" --front >/dev/null 2>&1 || return 1
   printf '%s' "$cls"
 }
