@@ -225,7 +225,10 @@ one, fails until its body accounts for each file:
 "covered by" must name a test file that exists at head with a live case;
 "removed on purpose" must give a reason. A file git sees as **renamed** is not a
 deletion, but its cases are compared across the rename, and a case turned into
-`it.skip` counts as lost. The diff is two dots, base..head, read from the two
+`it.skip` counts as lost. It counts cases, not titles: a case renamed or reworded
+where it stands, or moved to another test file in the same diff, is matched to its
+new form and owes nothing. Only a drop in the count, or a named case with nothing
+like it at head, needs a line. The diff is two dots, base..head, read from the two
 commits — never the working tree — and anything the trunk added after the branch
 was cut is excluded. Written after a rebuild on the origin project deleted eleven
 test files in one merge: one pinned a behaviour the new screen dropped, nothing

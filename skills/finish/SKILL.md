@@ -906,7 +906,9 @@ The body carries one line per file the gate names:
 ```
 
 "covered by" must name a test file that exists at head with a live case. A file
-git sees as renamed is not a deletion; a case that becomes `it.skip` is. Test-file
+git sees as renamed is not a deletion; a case that becomes `it.skip` is. A case
+renamed or reworded in place, or moved to another test file in the diff, is matched
+to its new form and owes no line. Test-file
 patterns come from `tests.patterns` in `.claude/harness.json`.
 
 ```bash
