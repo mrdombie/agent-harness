@@ -16,6 +16,7 @@
 #   $FIX/gh/issue-<n>.json   what `gh issue view <n>` returns
 #   $FIX/gh/prs-<key>.json   what a `gh pr list` matching <key> returns
 #   $FIX/gh/api-<endpoint>.json  what `gh api <endpoint>` returns; / ? & = -> _
+#   $FIX/gh/pr-commits-<n>.json  PR <n>'s node in a batched commits read (gh_pr_commits_batch)
 #   $FIX/live.json           what the live view answers; ABSENT = no answer
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/time.sh" || exit 1
@@ -110,8 +111,15 @@ case "$1 $2" in
     query=""; for a in "$@"; do case "$a" in query=*) query="${a#query=}" ;; esac; done
     nums=$(printf '%s' "$query" | grep -oE 'i[0-9]+:issueOrPullRequest' | sed 's/^i//; s/:.*//')
     heads=$(printf '%s' "$query" | grep -oE 'b[0-9]+:pullRequests\(headRefName:"[^"]*"' | sed 's/:pullRequests(headRefName:"/ /; s/"$//')
-    [ -n "$nums$heads" ] || exit 1
+    # A batched PR-commits read: each pN alias answered from pr-commits-N.json, absent null.
+    pcs=$(printf '%s' "$query" | grep -oE 'p[0-9]+:pullRequest\(number:' | sed 's/^p//; s/:.*//')
+    [ -n "$nums$heads$pcs" ] || exit 1
     out='{}'
+    for n in $pcs; do
+      f="$FIX/gh/pr-commits-$n.json"
+      if [ -f "$f" ]; then out=$(jq -c --arg k "p$n" --slurpfile p "$f" '. + {($k): $p[0]}' <<<"$out")
+      else out=$(jq -c --arg k "p$n" '. + {($k): null}' <<<"$out"); fi
+    done
     # A batched PR read: each bN alias answered from the file `pr list --head` would read.
     while read -r alias head; do
       [ -n "$alias" ] || continue

@@ -222,7 +222,12 @@ fi
 # load-induced, so it recurs exactly when the swarm is biggest. CLAIM_EXTRA
 # carries a resume brief when re-spawning a stranded run.
 PRINT_MODE_RULE="You are running in print mode: the moment you end your turn, this process exits and nothing you left running survives. NEVER start something in the background and end your turn intending to pick it up — no Monitor you wait on, no 'I'll check when it completes', no backgrounded screenshot or capture. Wait for every check in the foreground, then continue. Do not take screenshots locally — no dev server, no capture script: CI photographs the routes under '## Evidence routes' and pins them to the PR. Wait for those in the foreground with scripts/ci-evidence.sh wait <pr> (exit 3 means run it again), then have the design critic judge the shots it fetches (/agent-harness:finish Step 5.4). The turn ends when the PR is PUSHED and HANDED OFF — local gates green (lint:changed, typecheck, test:changed), both review trailers on the pushed head, PR ready with auto-merge armed, the hold label on if pixels changed, and a one-line 'Handed off at <sha>' comment on the PR. Do NOT wait for CI: a watcher brings an agent back if CI goes red or the PR conflicts. Or the turn ends when you have PARKED the ticket per /agent-harness:claim's park procedure: commit, push, draft PR, resume brief on the issue, label — all BEFORE the banner. An exit with unpushed work is a failed run. Kill only processes you started (record their PIDs); never pkill a pattern that could match another agent's."
-PROMPT="$PRINT_MODE_RULE
+# Sign-off comes last (owner's rule, 2026-10-17): the first line every builder reads.
+SIGNOFF_LAST_RULE=$(head -1 "$KIT_ROOT/shared/signoff-last.md" 2>/dev/null)
+[ -n "$SIGNOFF_LAST_RULE" ] || { echo "spawn-claim: $KIT_ROOT/shared/signoff-last.md is missing — no builder starts without the sign-off rule" >&2; exit 1; }
+PROMPT="$SIGNOFF_LAST_RULE
+
+$PRINT_MODE_RULE
 
 $PROMPT"
 [ -n "${CLAIM_EXTRA:-}" ] && PROMPT="$PROMPT

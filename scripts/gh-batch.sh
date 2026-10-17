@@ -13,6 +13,10 @@
 #                                   came back with no data at all
 #   gh_prs_by_head_batch <branch…>  {"<branch>": [{number,state}…]}, newest
 #                                   first, same shape and exit as above
+#   gh_pr_commits_batch <n…>        {"<n>": {headRefOid, commits:[{oid,message,files,
+#                                   parents,parentOids}…]}}, the newest 50 commits, oldest
+#                                   first, five PRs a request; files is null when
+#                                   GitHub could not count
 #   gh_open_prs [max-age-sec]       the open PRs, from one shared copy (prs.json)
 #                                   every reader takes while it is young enough
 #   gh_allowance_read / _low        what is left of the hourly allowance (free reads);
@@ -228,6 +232,31 @@ gh_issues_batch() {
     nums="$nums $n"
     q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state title updatedAt labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt labels(first:50){nodes{name}}}}"
     k=$((k+1)); [ "$k" -lt 50 ] || _ghb_flush
+  done
+  _ghb_flush
+  printf '%s\n' "$out"
+  return "$fail"
+}
+
+gh_pr_commits_batch() {
+  local _o _r n q="" k=0 out="{}" part fail=0
+  _gh_batch_repo || return 1
+  _ghb_flush() {
+    [ -n "$q" ] || return 0
+    if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
+      part=$(jq -c --argjson acc "$out" '$acc + ([.data.repository | to_entries[] | select(.key | test("^p[0-9]+$")) | select(.value | type == "object")
+              | {key: (.key | ltrimstr("p")), value: {headRefOid: (.value.headRefOid // ""),
+                 commits: [.value.commits.nodes[]?.commit | {oid, message: (.message // ""), files: .changedFilesIfAvailable,
+                   parents: (.parents.totalCount // 0), parentOids: [.parents.nodes[]?.oid]}]}}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
+      [ -n "$part" ] && out="$part" || fail=1
+    else fail=1; fi
+    q=""; k=0
+  }
+  for n in "$@"; do
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    # Five a request: fifty commits with their messages each is a heavy node count.
+    q="$q p$n:pullRequest(number:$n){headRefOid commits(last:50){nodes{commit{oid message changedFilesIfAvailable parents(first:2){totalCount nodes{oid}}}}}}"
+    k=$((k+1)); [ "$k" -lt 5 ] || _ghb_flush
   done
   _ghb_flush
   printf '%s\n' "$out"

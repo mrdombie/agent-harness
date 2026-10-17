@@ -1,3 +1,5 @@
+**Sign-off comes last:** on a PR the owner has already signed, a finding that would change pixels becomes a follow-up ticket, not a fix here. Only a fix the PR cannot merge without (a red check, a Critical) changes them, with `pixel-change-after-signoff: <why>` in its commit, and the owner signs again.
+
 # Step 5 · Review
 
 You are reviewing a finished change and returning a verdict with every finding
