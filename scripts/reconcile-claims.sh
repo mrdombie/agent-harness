@@ -79,6 +79,7 @@ done
 # shellcheck source=claim-liveness.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-liveness.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-ticket.sh" || exit 1
 TICKETS_DIR="$STATE_DIR"
 CLAIMS_DIR="$TICKETS_DIR/claims"
 RECOVERED_DIR="$CLAIMS_DIR/.recovered"
@@ -131,12 +132,8 @@ HEADS=""
 branch_for() {
   local n="$1"
   [ -n "$HEADS" ] || HEADS=$(git -C "$REPO" ls-remote --heads "$CLAIM_REMOTE" 2>/dev/null)
-  printf '%s\n' "$HEADS" \
-    | awk -v n="$n" '
-        { ref = $2; sub("refs/heads/", "", ref) }
-        ref ~ ("^sh-" n "/")            { print ref; exit }
-        ref ~ ("^[a-z]+/" n "-")        { print ref; exit }
-      '
+  printf '%s\n' "$HEADS" | awk '{ sub("^refs/heads/", "", $2); print $2 }' \
+    | branch_tickets | awk -F'\t' -v n="$n" '$1 == n { print $2; exit }'
 }
 
 pr_state_for() {

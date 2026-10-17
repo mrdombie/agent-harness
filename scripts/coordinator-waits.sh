@@ -59,8 +59,8 @@ coord_wait_snapshot() { # <ticket> <labels, comma-joined> — uses $PRS
   labs=$(printf '%s' "$2" | tr ',' '\n' \
     | awk -v a="${LBL_CLAIMED:-}" -v b="${LBL_READY:-}" -v c="${LBL_IN_REVIEW:-}" -v d="${LBL_PARTIAL:-}" \
         'NF && $0 != a && $0 != b && $0 != c && $0 != d' | sort -u | paste -sd, -)
-  pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
-    [ .[] | select(.headRefName | test("^(" + $pre + ")?" + $t + "([^0-9]|$)")) ] | first // empty
+  pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" "$BRANCH_TICKET_JQ"'
+    [ .[] | select(.headRefName | branch_is_ticket($pre; $t)) ] | first // empty
     | (.statusCheckRollup // []) as $c
     | ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")))) | length) as $p
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $f
@@ -112,7 +112,7 @@ coord_wait_new_comments() { # <ticket> <ISO>
             '[.comments[]? | select(.createdAt > $at) | select((.body // "") | test($mach) | not)] | length' 2>/dev/null)
   fi
   pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --arg at "$at" \
-        '[.[] | select(.headRefName | test("^(" + $pre + ")?" + $t + "([^0-9]|$)"))
+        "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t))
           | select((.updatedAt // "") == "" or $at == "" or .updatedAt > $at) | .number] | first // empty' 2>/dev/null)
   m=0
   if [ -n "$pr" ]; then

@@ -41,6 +41,7 @@ _coord_self="${BASH_SOURCE[0]}"
 # swarm-env.sh fills in a default load limit; the room test must know whether one was set.
 COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
+. "$(cd "$(dirname "$_coord_self")" && pwd)/branch-ticket.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
 
 COORD_DIR="${COORDINATOR_DIR:-$STATE_DIR/coordinator}"
