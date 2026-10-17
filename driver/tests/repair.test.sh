@@ -139,6 +139,47 @@ want_in "the conflicted file reached the brief" 'shared.txt' "$(cat "$FIX/claude
 want "the trunk is now in the branch"  "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
 want "both sides survive"              "trunk line branch line" "$(tr '\n' ' ' < "$WT/shared.txt" | sed 's/ $//')"
 
+echo "--- a clash is GitHub's mergeable or a trial merge, not DIRTY alone ---"
+# mergeStateStatus is DIRTY only when GitHub has computed it; BLOCKED and UNKNOWN hide a
+# conflict, and the repair then said "nothing clashing" on a PR that could not merge.
+prs_m() { # <ticket> <mergeState> <mergeable>
+  jq -n --argjson n "$1" --arg b "tkt-$1/work" --arg m "$2" --arg g "$3" \
+    '[{number:$n, headRefName:$b, headRefOid:"x", isDraft:false, mergeStateStatus:$m, mergeable:$g,
+       statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"SUCCESS"}]}]' > "$FIX/gh/prs.json"
+}
+resolve_both='printf "trunk line\nbranch line\n" > shared.txt; git add shared.txt && git commit -q --no-edit'
+for c in "331 BLOCKED CONFLICTING" "332 UNKNOWN UNKNOWN"; do
+  set -- $c
+  setup "$1"
+  printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+  driver_state_set "$1" repair_base "$(git -C "$WT" rev-parse HEAD)"
+  trunk_moves shared.txt "trunk line $1"; prs_m "$1" "$2" "$3"
+  printf '%s\n' "$resolve_both" > "$FIX/ai/repair.sh"
+  answer "$(repaired "$(gate_fix 'bash lint.sh')" '[{"file":"shared.txt","resolution":"both lines kept"}]')"
+  out=$(driver_step_repair "$1" 2>&1); rc=$?
+  want "$2/$3 with a real conflict: merged and handed over" "0" "$rc"
+  want_in "$2/$3: the conflict reached the model" 'shared.txt' "$(cat "$FIX/claude-stdin-repair.txt")"
+  want "$2/$3: the trunk is in the branch" "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+done
+setup 333; trunk_moves trunk333.txt "unrelated"; prs_m 333 CLEAN MERGEABLE
+out=$(driver_step_repair 333 2>&1); rc=$?
+want "no clash anywhere: nothing merged"     "no" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes || echo no)"
+want "and the trial merge left nothing behind" "" "$(git -C "$WT" status --porcelain; [ -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && echo MERGE_HEAD)"
+
+echo "--- a resolution that drops the PR's own change is refused ---"
+setup 334
+printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+driver_state_set 334 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves shared.txt "trunk line 334"; prs 334 DIRTY
+cat > "$FIX/ai/repair.sh" <<'SH'
+git checkout -q origin/develop -- shared.txt; git rm -q value334.txt; git commit -q --no-edit
+SH
+answer "$(repaired "$(gate_fix 'bash lint.sh')" '[{"file":"shared.txt","resolution":"took the trunk"}]')"
+out=$(driver_step_repair 334 2>&1); rc=$?
+want "it refuses"                            "24" "$rc"
+want_in "naming the dropped change"          'dropped the PR' "$out"
+want_in "and the park note carries it"       'without its own change' "$(driver_state_get 334 park_note)"
+
 echo "--- a resolution that leaves conflict markers committed is refused ---"
 setup 308
 printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"

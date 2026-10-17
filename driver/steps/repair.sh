@@ -31,6 +31,20 @@
 # driver_prove_red_green lives with the build step: one proof, read by every step.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
 
+# _driver_repair_clashes <tree> <trunk> <mergeStateStatus> <mergeable> — 0 when the
+# branch clashes with the trunk: GitHub says DIRTY or CONFLICTING, or a trial merge in
+# the tree conflicts. GitHub computes mergeability lazily, so UNKNOWN is not clean.
+_driver_repair_clashes() {
+  local wt="$1" trunk="$2" u
+  [ "$3" = DIRTY ] && return 0
+  [ "$4" = CONFLICTING ] && return 0
+  [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || return 1
+  git -C "$wt" merge --no-commit --no-ff -q "$trunk" >/dev/null 2>&1
+  u=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
+  git -C "$wt" merge --abort >/dev/null 2>&1 || git -C "$wt" reset -q --merge >/dev/null 2>&1
+  [ -n "$u" ]
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -47,16 +61,16 @@ driver_step_repair() { # <ticket>
   git -C "$wt" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/$trunk" 2>/dev/null || true
   git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
 
-  # The PR as GitHub sees it now, not as the brief that sent this saw it.
-  row=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
-          --json number,mergeStateStatus,statusCheckRollup 2>/dev/null) || unreadable=1
-  if [ "$unreadable" -eq 0 ] && printf '%s' "$row" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  # The PR as GitHub sees it now (the shared copy), not as the brief that sent this saw it.
+  local mergeable=""
+  if row=$(driver_open_prs); then
     row=$(printf '%s' "$row" | jq -c --argjson n "${pr:-0}" '[.[] | select(.number == $n)] | first // empty')
   else
     unreadable=1; row=""
   fi
   if [ -n "$row" ]; then
     mstate=$(printf '%s' "$row" | jq -r '.mergeStateStatus // ""')
+    mergeable=$(printf '%s' "$row" | jq -r '.mergeable // ""')
     failing=$(printf '%s' "$row" | jq -r '[.statusCheckRollup[]? | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED")) | (.name // .context // "?")] | join(", ")')
   else
     mstate=$(driver_state_get "$t" merge_state); unreadable=1
@@ -72,7 +86,8 @@ driver_step_repair() { # <ticket>
     conflicted=$(printf '%s\n%s\n' "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" "$(driver_state_get "$t" repair_conflicted)" | sed '/^$/d' | sort -u)
     [ -n "$conflicted" ] || conflicted=$(git -C "$wt" diff --cached --name-only 2>/dev/null)
     driver_say "   repair: resuming the merge of $trunk an earlier pass left in progress"
-  elif ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null && [ "$mstate" = DIRTY ]; then
+  elif ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null \
+       && _driver_repair_clashes "$wt" "$trunk" "$mstate" "$mergeable"; then
     if git -C "$wt" merge --no-edit "$trunk" >"$d/steps/repair-merge.out" 2>&1; then
       merged=1
       driver_say "   repair: merged $trunk into $branch cleanly at $(git -C "$wt" rev-parse --short HEAD)"
@@ -184,6 +199,15 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   if [ -n "$conflicted" ]; then
     if ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null; then
       driver_say "✋ repair: the clash was resolved without merging $trunk in — it is not an ancestor of the head."
+      return "$DRIVER_E_REFUSED"
+    fi
+    # A resolution that takes the trunk's side everywhere leaves a PR with none of its change.
+    local own_before own_after
+    own_before=$(git -C "$wt" diff --name-only "$trunk"..."$base" 2>/dev/null)
+    own_after=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null)
+    if [ -z "$own_after" ] || [ -z "$(printf '%s\n' "$own_after" | grep -xF -f <(printf '%s\n' "$own_before") 2>/dev/null)" ]; then
+      driver_say "✋ repair: after the conflict resolution the PR's diff against $trunk ${own_after:+touches none of its own files ($(printf '%s' "$own_before" | tr '\n' ' '))}${own_after:-is empty} — the resolution dropped the PR's own change."
+      driver_state_set "$t" park_note "the conflict resolution left PR #$pr without its own change: its diff against $trunk no longer touches $(printf '%s' "$own_before" | tr '\n' ' ')"
       return "$DRIVER_E_REFUSED"
     fi
     # shellcheck disable=SC2086
