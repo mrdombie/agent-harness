@@ -175,4 +175,61 @@ out=$(driver_step_review 104 2>&1); rc=$?
 want "an unknown grade refuses" "24" "$rc"
 want_in "and quotes it"         'severe' "$out"
 
+echo "--- a repair is reviewed on its own change, not the whole PR again ---"
+# Re-reviewing the whole PR on every repair sent fixes, screens among them, after the
+# owner had signed it off. The PR was reviewed before; the repair is what is new.
+git -C "$REPO" worktree add -q "$FIX/wtr" -b tkt-120/work develop
+mkdir -p "$FIX/wtr/screens"; printf 'the PR change\n' > "$FIX/wtr/screens/Home.tsx"
+git -C "$FIX/wtr" add . && git -C "$FIX/wtr" commit -qm "feat: the PR"
+RB=$(git -C "$FIX/wtr" rev-parse HEAD)
+printf 'the repair\n' > "$FIX/wtr/repair-fix.txt"; git -C "$FIX/wtr" add . && git -C "$FIX/wtr" commit -qm "fix: the repair"
+repair_rec() { # <ticket>
+  driver_state_init "$1" --worktree "$FIX/wtr" --branch tkt-120/work
+  driver_state_set "$1" mode repair; driver_state_set "$1" pr 88; driver_state_set "$1" repair_base "$RB"
+  fix_issue "$1" OPEN "status:in-review"
+}
+repair_rec 120
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+out=$(driver_step_review 120 2>&1); rc=$?
+want "it finishes"                         "0" "$rc"
+want_in "the repair's own file is reviewed" 'repair-fix.txt' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
+want_not_in "the PR's earlier change is not" 'screens/Home.tsx' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
+
+echo "--- on a signed-off PR, a screen finding is a follow-up, never a fix ---"
+cat > "$BIN/approval-kept" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$FIX/ak.log"
+case "$1" in
+  approved-head) [ -f "$FIX/signed" ] || exit 1; echo 1111111111111111111111111111111111111111 ;;
+  screens) grep '^screens/' || true ;;
+esac
+SH
+chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
+: > "$FIX/signed"; : > "$GH_LOG"; repair_rec 121
+fix_ai review '{"verdict":"BLOCKED","findings":[
+  {"file":"screens/Home.tsx","line":4,"grade":"major","summary":"the card spacing is off the scale","reason":"it reads cramped"},
+  {"file":"lib/a.ts","line":9,"grade":"major","summary":"the error branch is dropped","reason":"a failure shows as success"}]}' superpowers:requesting-code-review
+out=$(driver_step_review 121 2>&1); rc=$?
+want "the code finding still goes back to fix" "30" "$rc"
+want_in "the screen finding is filed as its own follow-up" 'issue create .*held for sign-off from #121.*--label P1' "$(tr '\n' ' ' < "$GH_LOG")"
+want "and is off the findings fix is handed" "lib/a.ts" "$(jq -r '[.findings[].file] | join(",")' "$(driver_state_dir 121)/steps/review.json")"
+want "the reviewer's whole answer is kept"  "2" "$(jq -r '.findings | length' "$(driver_state_dir 121)/steps/review.raw.json" 2>/dev/null)"
+: > "$GH_LOG"; repair_rec 122
+fix_ai review '{"verdict":"BLOCKED","findings":[{"file":"screens/Home.tsx","line":4,"grade":"critical","summary":"the total shows the wrong workspace","reason":"wrong data"}]}' superpowers:requesting-code-review
+out=$(driver_step_review 122 2>&1); rc=$?
+want "only screen findings: no rework, the repair ships" "0" "$rc"
+want "the verdict left is SHIP"             "SHIP" "$(jq -r '.verdict' "$(driver_state_dir 122)/steps/review.json")"
+want_in "a held Critical keeps its priority" 'issue create .*held for sign-off from #122.*--label P0' "$(tr '\n' ' ' < "$GH_LOG")"
+rm -f "$FIX/signed"; repair_rec 123
+fix_ai review '{"verdict":"BLOCKED","findings":[{"file":"screens/Home.tsx","line":4,"grade":"major","summary":"x","reason":"y"}]}' superpowers:requesting-code-review
+out=$(driver_step_review 123 2>&1); rc=$?
+want "no sign-off: a screen finding is fixed as any other" "30" "$rc"
+: > "$FIX/ak.log"; : > "$FIX/signed"
+driver_state_init 124 --worktree "$REPO"; fix_issue 124 OPEN "status:claimed"
+fix_ai review '{"verdict":"BLOCKED","findings":[{"file":"screens/Home.tsx","line":4,"grade":"major","summary":"x","reason":"y"}]}' superpowers:requesting-code-review
+out=$(driver_step_review 124 2>&1); rc=$?
+want "a build (not a repair) is not held" "30" "$rc"
+want "and asks for no sign-off record"    "" "$(cat "$FIX/ak.log")"
+unset DRIVER_APPROVAL_KEPT
+
 exit $FAILED

@@ -11,6 +11,8 @@
 #       the head SHA the last sign-off was given at; exit 1 when there is none.
 #   approval-kept.sh marker <sha>
 #       the marker line clear-hold.sh ends a sign-off with.
+#   approval-kept.sh screens [--screens "<cmd>"]
+#       paths on stdin, the screen ones on stdout, by the rule below.
 #
 # An approval is attached to what was approved, and only a change to that thing
 # voids it. A develop merge brings other tickets' screens, which passed their own
@@ -45,7 +47,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${GH_REPO:-$REPO_SLUG}"
 WINDOW="${APPROVAL_WINDOW_SEC:-300}"
 
-usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 marker() { printf '<!-- approval-head:%s -->\n' "$1"; }
 
@@ -196,5 +198,6 @@ case "${1:-}" in
   check)         shift; check "$@" ;;
   approved-head) shift; approved_head "$@" ;;
   marker)        [ -n "${2:-}" ] || usage; marker "$2" ;;
+  screens)       case "${2:-}" in '') screens_of "" ;; --screens) [ -n "${3:-}" ] || usage; screens_of "$3" ;; *) usage ;; esac ;;
   *)             usage ;;
 esac

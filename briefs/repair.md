@@ -44,6 +44,10 @@ above.
 4. **The same failure on the integration branch itself is not this PR's to
    fix.** Park and say so.
 5. **Fix only what failed.** Do not refactor, rename or improve anything nearby.
+6. **The owner's sign-off comes last.** If the PR was signed off, change no
+   screen file unless the failure cannot be fixed any other way. A change to a
+   screen voids the sign-off and sends the PR back to the owner. If the only
+   fix changes what a screen shows, park and ask.
 
 ## Every fix carries its proof
 
