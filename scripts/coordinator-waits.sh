@@ -68,7 +68,20 @@ coord_wait_snapshot() { # <ticket> <labels, comma-joined> — uses $PRS
   printf 'labels=%s %s' "$labs" "${pr:-pr=none}"
 }
 
+# The tick's batched read ($ISSUES, scripts/gh-batch.sh's shape) answers first; a
+# ticket it does not hold is asked about on its own.
+coord_issue_cached() { # <ticket> — 0 when $ISSUES holds it
+  [ -n "${ISSUES:-}" ] && jq -e --arg n "$1" 'has($n)' >/dev/null 2>&1 <<<"$ISSUES"
+}
+coord_issue_meta() { # <ticket> — "<STATE> <label,label…>", or nothing when unreadable
+  if coord_issue_cached "$1"; then
+    jq -r --arg n "$1" '.[$n] | .state + " " + (.labels | join(","))' <<<"$ISSUES"; return
+  fi
+  swarm_gh issue view "$1" --repo "$REPO_SLUG" --json state,labels \
+    -q '.state+" "+([.labels[].name]|join(","))' 2>/dev/null
+}
 coord_issue_labels() { # <ticket> — comma-joined, or fails when it could not be read
+  if coord_issue_cached "$1"; then jq -r --arg n "$1" '.[$n].labels | join(",")' <<<"$ISSUES"; return; fi
   local j; j=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json state,labels 2>/dev/null) || return 1
   [ -n "$j" ] || return 1
   printf '%s' "$j" | jq -r '[.labels[]?.name] | join(",")'
@@ -87,13 +100,20 @@ coord_wait_snap_pending() {
 }
 
 # Comments on the ticket and its PR newer than <ISO>, less the kit's own.
+# A ticket or PR the tick's batched reads show untouched since <ISO> has no new
+# comment to read, so it is not asked for its comments: once per wait per tick
+# otherwise, on the token every builder shares.
 coord_wait_new_comments() { # <ticket> <ISO>
-  local t="$1" at="$2" n m pr
-  n=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json comments 2>/dev/null \
-      | jq --arg at "$at" --arg mach "$COORD_WAIT_MACHINE" \
-          '[.comments[]? | select(.createdAt > $at) | select((.body // "") | test($mach) | not)] | length' 2>/dev/null)
-  pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" \
-        '[.[] | select(.headRefName | test("^(" + $pre + ")?" + $t + "([^0-9]|$)")) | .number] | first // empty' 2>/dev/null)
+  local t="$1" at="$2" n=0 m pr up
+  up=""; coord_issue_cached "$t" && up=$(jq -r --arg n "$t" '.[$n].updatedAt // empty' <<<"$ISSUES")
+  if [ -z "$up" ] || [ -z "$at" ] || [[ "$up" > "$at" ]]; then
+    n=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json comments 2>/dev/null \
+        | jq --arg at "$at" --arg mach "$COORD_WAIT_MACHINE" \
+            '[.comments[]? | select(.createdAt > $at) | select((.body // "") | test($mach) | not)] | length' 2>/dev/null)
+  fi
+  pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --arg at "$at" \
+        '[.[] | select(.headRefName | test("^(" + $pre + ")?" + $t + "([^0-9]|$)"))
+          | select((.updatedAt // "") == "" or $at == "" or .updatedAt > $at) | .number] | first // empty' 2>/dev/null)
   m=0
   if [ -n "$pr" ]; then
     m=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json comments 2>/dev/null \

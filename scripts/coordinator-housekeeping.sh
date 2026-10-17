@@ -31,27 +31,33 @@ event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
   return 0
 }
 
+# While GitHub is refusing the token (scripts/gh-batch.sh's backoff), the passes
+# that are mostly GitHub reads wait for the next run: pressing on keeps the limit,
+# and keeps it shut for every builder on the same token too.
+GH_WAIT=""; if until=$(gh_backoff_active); then GH_WAIT="GitHub is rate-limiting this token until $(swarm_iso "$until")"; fi
+
 # ---- 5b. the merge lane -------------------------------------------------------
 # Only where the project names a merge method. Its own lock, its own shadow.
 LANE="${COORDINATOR_LANE:-$SELF_DIR/merge-lane.sh}"
-if toolkit_cfg merge.method >/dev/null 2>&1; then
+if [ -n "$GH_WAIT" ]; then
+  say "merge lane: $GH_WAIT — next pass"
+elif toolkit_cfg merge.method >/dev/null 2>&1; then
   bash "$LANE" >> "$COORD_LOG" 2>&1 || say "merge lane exited $?"
 else
   say "merge lane: off — harness.json has no merge.method"
 fi
 
 # ---- 6. housekeeping ---------------------------------------------------------
-if coord_shadow; then
-  bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
-  bash "$SWEEP" --sweep --dry-run >> "$COORD_LOG" 2>&1 || say "server sweep (dry) exited $?"
-else
-  bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"
-  bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"
-fi
+if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
+else bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"; fi
+if coord_shadow; then bash "$SWEEP" --sweep --dry-run >> "$COORD_LOG" 2>&1 || say "server sweep (dry) exited $?"
+else bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"; fi
 # An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.
 WT_SWEEP="${COORDINATOR_WORKTREE_SWEEP:-$SELF_DIR/sweep-orphan-worktrees.sh}"
 WT_STAMP="$COORD_DIR/worktree-sweep.stamp"
-if [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; then
+if [ -n "$GH_WAIT" ]; then :
+elif [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; then
   touch "$WT_STAMP"
   if coord_shadow; then bash "$WT_SWEEP" >> "$COORD_LOG" 2>&1 || say "worktree sweep (dry) exited $?"
   else bash "$WT_SWEEP" --apply >> "$COORD_LOG" 2>&1 || say "worktree sweep exited $?"; fi
@@ -80,5 +86,6 @@ if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
 fi
 
 # ---- 8. judgement ------------------------------------------------------------
-bash "$JUDGE" >> "$COORD_LOG" 2>&1 || say "judge exited $?"
+if [ -n "$GH_WAIT" ]; then say "judge: $GH_WAIT — next pass"
+else bash "$JUDGE" >> "$COORD_LOG" 2>&1 || say "judge exited $?"; fi
 say "housekeeping: done"

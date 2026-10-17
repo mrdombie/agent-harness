@@ -50,27 +50,46 @@ scope_list() { # <comma list> — one trimmed scope per line, empties dropped, d
 }
 
 seed() { # <scope>[,<scope>…]
-  local scope="${1:?seed needs a scope}" s label labels="" members="" m claimable rows
+  local scope="${1:?seed needs a scope}" s label labels=""
   [ -n "$(scope_list "$scope")" ] || die "'$scope' names no scope — nothing seeded"
   while IFS= read -r s; do
     label=$(resolve "$s") || die "'$s' is neither a ticket number, a label, nor ${SWARM_PROGRAMME_PREFIX}$s — nothing seeded"
     labels="$labels$label"$'\n'
   done <<< "$(scope_list "$scope")"
   labels=$(printf '%s' "$labels" | awk 'NF && !seen[$0]++')
-  while IFS= read -r label; do
-    case "$label" in
-      "ticket "*) m="${label#ticket }" ;;
-      *) m=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$label" --limit 1000 \
-               --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was" ;;
-    esac
-    members="$members$m"$'\n'
-  done <<< "$labels"
-  members=$(printf '%s' "$members" | awk 'NF' | sort -u)
-  claimable=$(bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
-  rows=$(printf '%s\n' "$claimable" | awk -F'\t' 'NF>=1 && $1!=""{print $1 "\t" ($5=="[FINISH PR]" ? "repair" : "new")}' \
-         | while IFS=$'\t' read -r n cls; do
-             grep -qx "$n" <<<"$members" && printf '%s\t%s\n' "$n" "$cls"
-           done)
+  fill "$scope" "$labels"
+}
+
+# A ticket is in scope when it is a named ticket or carries a scope label. The
+# claimable list already holds every candidate's labels (its 7th column), so
+# membership is read from there: listing each scope label's members was one
+# `gh issue list` per scope per refresh, for candidates the list already had.
+# A claimable list without that column (an older or stand-in one) falls back to
+# listing each scope label's members.
+fill() { # <scope> <resolved labels, one a line> — the members, the claimable rows, the write
+  local scope="$1" labels="$2" claimable rows label members="" m
+  claimable=$(CLAIMABLE_WITH_LABELS=1 bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
+  if printf '%s\n' "$claimable" | awk -F'\t' 'NF && $1 != "" && NF < 7 { bad = 1 } END { exit !bad }'; then
+    while IFS= read -r label; do
+      case "$label" in
+        "ticket "*) m="${label#ticket }" ;;
+        *) m=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$label" --limit 1000 \
+                 --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was" ;;
+      esac
+      members="$members$m"$'\n'
+    done <<< "$labels"
+    members=$(printf '%s' "$members" | awk 'NF' | sort -u | paste -sd, -)
+  fi
+  # Through the environment: BSD awk refuses a -v value with a newline in it.
+  rows=$(printf '%s\n' "$claimable" | Q_SCOPES="$labels" Q_MEMBERS="$members" awk -F'\t' '
+           BEGIN { n = split(ENVIRON["Q_SCOPES"], s, "\n"); for (i = 1; i <= n; i++) if (s[i] != "") {
+                     if (s[i] ~ /^ticket /) tk[substr(s[i], 8)] = 1; else lb[s[i]] = 1 }
+                   n = split(ENVIRON["Q_MEMBERS"], mm, ","); for (i = 1; i <= n; i++) tk[mm[i]] = 1 }
+           NF >= 1 && $1 != "" {
+             inside = ($1 in tk)
+             if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
+             if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new")
+           }')
   current | jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" '
     (.tickets // []) as $old
     | ($labels | split("\n") | map(select(length > 0))) as $ls
@@ -84,10 +103,13 @@ seed() { # <scope>[,<scope>…]
   echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
 }
 
+# The scopes were resolved to labels when seeded; re-resolving them asked GitHub
+# one `label list` per scope on every tick, for an answer that does not move.
 refresh() {
-  local scope; scope=$(current | jq -r '.scope // empty')
+  local scope labels; scope=$(current | jq -r '.scope // empty')
   [ -n "$scope" ] || die "no scope recorded — run 'seed <scope>' first"
-  seed "$scope"
+  labels=$(current | jq -r 'if (.labels | type) == "array" then .labels[] else empty end')
+  if [ -n "$labels" ]; then fill "$scope" "$labels"; else seed "$scope"; fi
 }
 
 # A queue seeded before scopes were lists holds one label in .label and no .labels.
