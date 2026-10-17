@@ -869,6 +869,19 @@ want "it refuses"                          "24" "$rc"
 want_in "saying only a person can earn it" "judges rendered screens and none were taken" "$out"
 want "and the reviewer was never run"      "" "$(cat "$CLAUDE_LOG")"
 want_in "the park note carries why"        "no render was taken" "$(driver_state_get 410 park_note)"
+echo "--- T2-2 · a reviewer of pictures CI takes after the push is owed after it, not before (#215) ---"
+# CI takes the pictures (compare.sh, owner's call 2026-10-16): the shots of the pushed
+# head do not exist yet, so refusing here deadlocked every screen ticket — no push, no
+# CI shots, no verdict, no push. The project's required CI check holds the merge
+# until that verdict lands, so standing aside here earns nothing it did not earn.
+driver_state_set 410 renders "(none yet — this change touches 3 screen file(s) and its pictures come from CI after the push, not from this machine. Judge no screen until CI has pinned them (scripts/ci-evidence.sh wait, then fetch):
+  apps/web/src/desk.tsx)"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "it does not refuse the push"         "0" "$rc"
+want_in "saying CI owes the verdict"      "owed after the push" "$out"
+want "and the reviewer was never run"      "" "$(cat "$CLAUDE_LOG")"
+want "and no verdict was recorded"         "chore: unreviewed again" "$(git -C "$FIX/wt410" log -1 --format=%s)"
 jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP\non-theme", total_cost_usd:0.2, num_turns:2}' > "$FIX/ai/attest-design-critic.jsonl"
 driver_state_set 410 renders "$(printf 'desk light\tshots/a.png\tlight\t/dashboard/desk')"
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?

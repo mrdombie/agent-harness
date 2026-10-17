@@ -215,6 +215,16 @@ driver_push_requires() { # <ticket>
       fi
     fi
 
+    # PICTURES CI TAKES AFTER THE PUSH ARE JUDGED AFTER IT (#215). When CI takes the
+    # pictures (compare.sh: local capture off), the shots of this head cannot exist
+    # until it is pushed, so refusing here deadlocked every screen ticket: no push,
+    # no CI shots, no verdict, no push. The project's required CI check holds the
+    # merge until that reviewer's verdict lands, so standing aside earns nothing.
+    if [ "$needs_renders" = "yes" ] && driver_state_get "$t" renders | grep -q 'pictures come from CI after the push'; then
+      driver_say "   push-requires: '$name' judges the pictures CI takes of the pushed head — owed after the push, by CI, not before it"
+      continue
+    fi
+
     # A REVIEWER THAT JUDGES PICTURES IS NOT RUN WITHOUT ANY. Handed "(none were
     # taken)", it is being asked to guess, and a guess recorded as SHIP is the
     # attestation nobody earned. `needsRenders` makes that a refusal, by name.
