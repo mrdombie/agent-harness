@@ -156,13 +156,13 @@ elif PRS=$(coord_snap_load prs); then
   say "open PRs: could not be read$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — working from the snapshot taken $(coord_snap_age prs) min ago"
 else PRS=""; fi
 if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
-  printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" '
-    .[] | select(.isDraft | not) | select(.headRefName | startswith($pre))
+  printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" "$BRANCH_TICKET_JQ"'
+    .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
     | (.statusCheckRollup // []) as $c
     | ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")))) | length) as $pending
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $failed
     | ([.labels[]?.name] | index($hold)) as $held
-    | (.headRefName | ltrimstr($pre) | capture("^(?<n>[0-9]+)").n // "") as $t
+    | (.headRefName | branch_ticket($pre)) as $t
     | if .mergeStateStatus == "DIRTY" then [ "red", .number, .headRefOid, $t, "clashes with the integration branch" ]
       elif $pending == 0 and $failed > 0 then [ "red", .number, .headRefOid, $t, "checks settled red" ]
       else empty end
@@ -192,7 +192,7 @@ fi
 # Back to the front of the queue with their worktree named, or the restart begins from nothing.
 has_open_pr() { # <ticket>
   printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$1" \
-    'any(.[]; .headRefName | test("^" + $pre + $t + "([^0-9]|$)"))' >/dev/null 2>&1
+    "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1
 }
 requeue_cut() { # <ticket> <run-id> <log> <why> — 0 once settled, 1 to try again next tick
   local t="$1" rid="$2" log="$3" why="$4" st cls wt sid note old
@@ -248,7 +248,7 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
   if [ "$cls" = new ]; then
     printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
-      'any(.[]; .headRefName | test("^" + $pre + $t + "([^0-9]|$)"))' >/dev/null 2>&1 \
+      "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1 \
       && { echo "has an open PR"; return 0; }
   fi
   while read -r l; do
@@ -302,7 +302,7 @@ live_class() { # <record>
   if [ -z "$c" ]; then
     t=$(jq -r '.ticket // empty' "$1" 2>/dev/null)
     printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
-      '$t != "" and any(.[]; .headRefName | test("^" + $pre + $t + "([^0-9]|$)"))' >/dev/null 2>&1 && c=repair
+      "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1 && c=repair
   fi
   coord_healing_class "${c:-new}" && echo healing || echo new
 }

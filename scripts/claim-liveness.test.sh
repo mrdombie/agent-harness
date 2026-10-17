@@ -116,7 +116,7 @@ cat > "$SB/bin/gh" <<'SH'
 case "$1 $2" in
   "api repos/acme/widgets") echo acme/widgets ;;
   "issue view") echo "st:claimed" ;;
-  "pr list")    printf '[]\n' ;;
+  "pr list")    case "$*" in *"--head 704/work"*) echo '[{"number":9704,"state":"OPEN"}]' ;; *) printf '[]\n' ;; esac ;;
   *) : ;;
 esac
 exit 0
@@ -191,5 +191,13 @@ want_in "because it is live" 'held by pid' "$out"
 out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
 want "the same pid, named as the exited session, is released" "no" "$(ref_present 703)"
 kill "$LIVEPID" 2>/dev/null
+
+# 4. A run that named its branch by the bare number. Its work is on <n>/…, not on the
+# configured prefix, and its pull request is open: that is in-review, never released.
+git -C "$SB/work" push -q origin "main:refs/heads/704/work"
+plant_claim 704
+out=$(reconcile)
+want_in "a bare-number branch with an open PR reads as in review" 'IN-REVIEW +#704' "$out"
+want_not_in "and is not called abandoned" 'left no branch and no PR' "$out"
 
 exit $FAILED
