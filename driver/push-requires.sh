@@ -251,8 +251,8 @@ driver_push_requires() { # <ticket>
     driver_say "   push-requires: the '$name' reviewer ran (exit $rc), $(wc -l < "$out" | tr -d ' ') line(s) of output"
     # A design verdict that skipped the first look is not recorded.
     if [ "$agent" = "agent-harness:design-critic" ] && ! bash "${DRIVER_FIRST_LOOK:-$KIT_ROOT/scripts/check-first-look.sh}" "$out" > "$out.first-look" 2>&1; then
-      driver_say "✋ push-requires: $(_driver_first_line "$(cat "$out.first-look")")"
-      driver_state_set "$t" park_note "the design critic's answer failed the first-look check: $(_driver_first_line "$(cat "$out.first-look")")"
+      driver_say "✋ push-requires: $(_driver_first_line "$out.first-look")"
+      driver_state_set "$t" park_note "the design critic's answer failed the first-look check: $(_driver_first_line "$out.first-look")"
       return "$DRIVER_E_REFUSED"
     fi
 

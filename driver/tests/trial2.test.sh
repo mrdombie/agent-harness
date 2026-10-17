@@ -920,7 +920,7 @@ jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
 want "a SHIP without the first look is not recorded" "$DRIVER_E_REFUSED" "$rc"
 want_in "saying the first look is missing"  "missing: For Happening Next" "$out"
-want_in "and the park note carries it"      "first-look check" "$(driver_state_get 410 park_note)"
+want_in "and the park note carries it"      "first-look check: check-first-look: the critic did not run the first look" "$(driver_state_get 410 park_note)"
 jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP\non-theme\n\nFor: Writing a post.\nHappening: A draft is arriving.\nNext: Send it from the bar.", total_cost_usd:0.2, num_turns:2}' > "$FIX/ai/attest-design-critic.jsonl"
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
 want "with a render on the record it runs, and records" "0" "$rc"
