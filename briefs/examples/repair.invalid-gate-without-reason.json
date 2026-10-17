@@ -1,0 +1,22 @@
+{
+  "step": "repair",
+  "skills": [
+    "superpowers:systematic-debugging",
+    "superpowers:test-driven-development"
+  ],
+  "status": "repaired",
+  "cause": "x",
+  "fixes": [
+    {
+      "what": "an unused import the merged trunk left behind failed lint",
+      "proof": "gate",
+      "change": [
+        {
+          "path": "src/queue/panel.tsx",
+          "action": "modify"
+        }
+      ],
+      "command": "npm run lint"
+    }
+  ]
+}

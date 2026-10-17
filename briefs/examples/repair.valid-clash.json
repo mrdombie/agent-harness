@@ -1,0 +1,28 @@
+{
+  "step": "repair",
+  "skills": [
+    "superpowers:systematic-debugging"
+  ],
+  "status": "repaired",
+  "cause": "develop renamed the panel's prop while this PR added a use of the old name",
+  "conflicts": [
+    {
+      "file": "src/queue/panel.tsx",
+      "resolution": "kept develop's rename and this PR's new row, under the new prop name"
+    }
+  ],
+  "fixes": [
+    {
+      "what": "an unused import the merged trunk left behind failed lint",
+      "proof": "gate",
+      "change": [
+        {
+          "path": "src/queue/panel.tsx",
+          "action": "modify"
+        }
+      ],
+      "command": "npm run lint",
+      "noTestBecause": "a lint rule is the check; no behaviour changed, so no test can pin it"
+    }
+  ]
+}
