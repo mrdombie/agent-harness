@@ -47,6 +47,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 {
   "repo": "you/your-repo",
   "integrationBranch": "develop",
+  "trunks": ["develop", "uat", "main"],
   "branchPrefix": "tkt-",
   "stateDir": "~/.claude/your-tickets",
   "sisterRepos": [],
@@ -100,6 +101,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 }
 ```
 
+- `trunks` is optional (default: `integrationBranch` alone): every branch an agent must never push to, such as the integration, release and deploy branches. `scripts/check-push-destination.sh --worktrees <repo>` reads it and lists each worktree branch whose upstream is one of them, since a push that names no destination goes to the upstream. The same script with a root (or none) scans the commands written in a tree: a `git push` that names no `src:dst`, or a `worktree add -b` from a remote branch without `--no-track`, is a finding. CI runs it on the kit.
 - `gates.changed` — the CHANGED-ONLY checks an agent runs locally, in order. This is what `/agent-harness:finish` and the `gate-runner` agent run; the whole-app form is CI's job. Measured 2026-09-28 before this existed: load sat at 32-40 on 10 cores because every agent ran a whole-app typecheck and a full suite that the push hook and CI then ran again. `no-repo-wide-format.sh` refuses the whole-app form from an unattended run, so this is enforced rather than asked for.
 - `merge.updateBehind` — optional, `agent` (default) or `bot`. Set `bot` when the repo requires PRs to be up to date and runs a bot that brings behind PRs up to date one at a time. Agents then leave a PR that is merely behind to the bot instead of merging the integration branch in themselves, which queued a full extra CI run and landed their PR ahead of the one the bot was landing, restarting it (#79). A conflict is still the agent's. `scripts/behind-pr-action.sh` makes the call.
 - `merge.method` — optional, `squash`, `merge` or `rebase`: how the merge lane merges. The lane refuses by name without it, and the coordinator tick only runs the lane where it is set.
@@ -158,6 +160,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
+           check-push-destination.sh (every push names its destination; CI)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
@@ -580,6 +583,7 @@ copy is what the gate above is for.
 ```bash
 for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh driver/tests/*.test.sh; do bash "$t"; done
 bash scripts/check-project-agnostic.sh
+bash scripts/check-push-destination.sh
 ```
 
 CI runs all of them on every push, and fails by name on a tracked suite no glob

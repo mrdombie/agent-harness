@@ -55,6 +55,9 @@ jobs:
         run: bash scripts/check-signal-source.sh
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
+      - name: Every push names its destination
+        # A push naming no src:dst follows the upstream, and a worktree cut from a trunk tracks it.
+        run: bash scripts/check-push-destination.sh
       - name: Our own skills are addressed with the kit
         # A bare /claim in the kit's own instructions resolves to whichever copy
         # the machine carries. Three were reachable on the origin machine and they
