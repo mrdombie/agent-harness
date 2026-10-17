@@ -379,6 +379,52 @@ want "a deferred blocker refuses"  "24" "$rc"
 want_in "saying a blocker is not deferrable" 'not deferrable' "$out"
 want "and it is a park only a person can answer" "person" "$(driver_state_get 408 park_cause)"
 
+echo "--- a red self-check is a fix round: the gate output is the finding, the gates are the proof ---"
+# 2026-10-17: #13143 and #13262 parked on a type error in a test file — a repair the
+# model can make, and nobody was asked to.
+driver_state_set 408 park_cause ""
+GF="$(driver_state_dir 408)/steps/self-check.findings.json"
+gate_findings() { jq -n '[{id:"gate-changed-2", gate:"changed 2", command:"npm run typecheck:changed", exit:2,
+  output:"scripts/x.test.ts(78,57): error TS2769: No overload matches this call."}]' > "$GF"; }
+gate_findings
+printf 'typed\n' > "$WT8/x.txt"; git -C "$WT8" add x.txt
+git -C "$WT8" -c user.email=t@e.invalid -c user.name=T commit -qm "fix: type the spawnSync env"
+GC8=$(git -C "$WT8" rev-parse HEAD)
+fix_ai fix "$(jq -nc --arg c "$GC8" '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    gateFixes:[{blockerId:"gate-changed-2", change:[{path:"scripts/x.test.ts", action:"modify"}], commit:$c}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want "the gate round finishes"                 "0" "$rc"
+want_in "the fixer is sent the gate's own line" 'error TS2769' "$(cat "$PROMPT")"
+want_in "and its command"                      'npm run typecheck:changed' "$(cat "$PROMPT")"
+want_not_in "and not the stale review's finding" 'the save button calls nothing' "$(cat "$PROMPT")"
+want "no placeholder survives"                 "0" "$(grep -c '{{' "$PROMPT" || true)"
+want "the findings are answered, once"          "absent" "$([ -e "$GF" ] && echo present || echo absent)"
+
+echo "--- a red gate nobody answered, or answered off the branch, is not a clean round ---"
+gate_findings
+fix_ai fix "$(jq -nc --arg c "$GC8" '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    gateFixes:[{blockerId:"gate-other", change:[{path:"y.ts", action:"modify"}], commit:$c}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want "an unanswered gate refuses"              "24" "$rc"
+want_in "naming it"                            'gate-changed-2' "$(driver_state_get 408 park_note)"
+gate_findings
+fix_ai fix "$(jq -nc '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    gateFixes:[{blockerId:"gate-changed-2", change:[{path:"y.ts", action:"modify"}], commit:"0123456789abcdef"}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want "a repair commit not on the branch refuses" "24" "$rc"
+gate_findings
+fix_ai fix "$(jq -nc '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    gateFixes:[{blockerId:"gate-changed-2", change:[{path:"y.ts", action:"modify"}], commit:"0123456"}],
+    deferred:[{blockerId:"gate-changed-2", reason:"red on develop too", followUp:"its own ticket"}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want "a deferred red gate refuses"             "24" "$rc"
+want "and it is a person's call"               "person" "$(driver_state_get 408 park_cause)"
+rm -f "$GF"; driver_state_set 408 park_cause ""
+
 echo "--- T2-4 · compare says what it did, and sets the renders the reviewer reads ---"
 # `driver_state_get renders` was read in review.sh:95 and set nowhere, so RENDERS
 # was "(none)" on every screen ticket there has ever been.

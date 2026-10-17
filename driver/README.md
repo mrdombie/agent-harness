@@ -69,13 +69,24 @@ released early is a ticket a peer can take against a branch that is not there.
   **fail**; then runs it at the change and requires it to **pass**. A test whose
   selector matches nothing, whose assertion is true of any tree, or which reads a
   file instead of running the code is green at the parent, and all three fail here.
+  Green under the runner is not enough: the tree with the change also runs the
+  project's typecheck (`driver.proofTypecheck`, else the typecheck among its
+  `gates`), because a runner that strips types passes a test the compiler rejects.
+  A test that does not compile goes back to `build`, and the retry is told why.
 - **The named Skill actually ran.** Each brief's front matter names one Skill.
   The driver reads the run's transcript and parks the ticket when that Skill call
   is absent. Inside a ticket Superpowers does the work; the driver never starts
   several agents on one ticket itself.
 - **Every gate runs, and its exit code is the verdict.** One gate, one command,
   never batched — a gate batched with anything else reports on the shell reaching
-  that line. Nothing configured is a refusal, not a pass.
+  that line. Nothing configured is a refusal, not a pass. Gates and proofs run as
+  CI runs them, with the kit's `HARNESS_*` pins stripped from their environment.
+- **A red gate gets one repair round.** The first red self-check on a run goes back
+  to `fix` with each red gate's output as the finding, inside the two-round fix
+  ceiling; the fixer answers it in `gateFixes`, and self-check re-running every gate
+  is the proof. A second red, a gate that could not run at all (126/127), or no fix
+  round left parks — with the red gates' names, exit codes and lines in the park
+  comment. Nothing is pushed past a red gate.
 - **At most two review rounds.** Then the reviewer stops sending the work back.
   What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
   and the parent's programme label. A **Critical or Major** — a dead control, a broken flow or
@@ -163,7 +174,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
-| 30 | the reviewer found a Critical or a Major — back to the build step |
+| 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first repair round, goes back to `fix` |
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
 when the call or the configuration was wrong.

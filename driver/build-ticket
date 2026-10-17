@@ -120,7 +120,8 @@ done
 # review pass. Past the sum, no honest combination remains, so it IS a step
 # returning rework without counting — which is the only thing this exists to catch.
 REWORKS=0
-REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS ))
+# Plus the one repair round a red self-check may send to fix.
+REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS + 1 ))
 
 # The steps that run on EVERY pass, finished or not. `start` is the re-entry check:
 # the hold label, the ticket's state and the claim are all read there, and a park
@@ -198,6 +199,8 @@ while [ "$i" -lt "$N" ]; do
   # the syntax check. The arms therefore set two plain variables and the park happens
   # once, after the esac, where no default-expansion appears at all.
   park_reason=""; park_question=""
+  PARK_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
+  PARK_LOG="$(driver_state_dir "$TICKET")/log"
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
@@ -264,7 +267,7 @@ while [ "$i" -lt "$N" ]; do
       # gate IS the gate: nothing goes past it and the claim is not held while
       # somebody works out why.
       park_reason="$step refused (exit $rc)"
-      park_question="Read the step's own line above — it says which check said no."
+      park_question="$step left no reason on the record. Its own lines are in the run log on $PARK_HOST at $PARK_LOG"
       ;;
   esac
 

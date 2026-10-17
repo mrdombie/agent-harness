@@ -181,6 +181,55 @@
           }
         }
       }
+    },
+    "gateFixes": {
+      "description": "One entry per GATE finding (an id starting gate-): a self-check gate this project runs went red, and this is the commit that repairs it. There is no red/green test for a compile or lint error — the proof is the driver re-running every gate straight after this step, and nothing is pushed past a red one.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "blockerId",
+          "change",
+          "commit"
+        ],
+        "properties": {
+          "blockerId": {
+            "type": "string",
+            "pattern": "^gate-"
+          },
+          "change": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "action"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "action": {
+                  "enum": [
+                    "create",
+                    "modify",
+                    "delete"
+                  ]
+                }
+              }
+            }
+          },
+          "commit": {
+            "description": "The commit that repairs the gate, seven characters or more. It must be on the branch.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,40}$"
+          }
+        }
+      }
     }
   },
   "if": {
@@ -191,15 +240,30 @@
     }
   },
   "then": {
-    "required": [
-      "cleared"
-    ],
-    "properties": {
-      "cleared": {
-        "type": "array",
-        "minItems": 1
+    "anyOf": [
+      {
+        "required": [
+          "cleared"
+        ],
+        "properties": {
+          "cleared": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      },
+      {
+        "required": [
+          "gateFixes"
+        ],
+        "properties": {
+          "gateFixes": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
       }
-    }
+    ]
   },
   "else": {
     "required": [

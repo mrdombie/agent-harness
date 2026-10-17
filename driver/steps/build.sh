@@ -31,6 +31,7 @@
 #   3  the commits could not be read
 #   4  a half ran out of time — a hang says nothing about the change
 #   5  a proof tree could not be prepared — the measurement was never made
+#   6  red then green, and the tree with the change does not type-check
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -71,6 +72,36 @@ _driver_proof_install() { # <repo> <tree>
   return 0
 }
 
+# driver_proof_typecheck_cmd — the compile check a proof runs beside the test, or
+# nothing. `driver.proofTypecheck` names it outright ("" or "none" switches it off);
+# otherwise it is this project's own typecheck gate, the first `gates.changed` (then
+# `gates.local`) entry, or flat-map gate, whose command names typecheck or tsc. A
+# project with no such gate compiles nothing, so there is nothing to run.
+driver_proof_typecheck_cmd() {
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 0
+  jq -r '
+    def tc: type == "string" and test("typecheck|(^|[^a-z])tsc([^a-z]|$)");
+    if (.driver.proofTypecheck | type) == "string" then
+      (.driver.proofTypecheck | if . == "none" then "" else . end)
+    else
+      ([ ((.gates.changed // []) | if type == "array" then .[] | select(tc) else empty end),
+         ((.gates.local   // []) | if type == "array" then .[] | select(tc) else empty end),
+         ((.gates // {}) | if type == "object" then to_entries[]
+            | select(.key | IN("changed","local","group","requiredChecks","formatChanged") | not)
+            | select((.value | type) == "string")
+            | select((.key | test("typecheck|tsc")) or (.value | tc)) | .value else empty end)
+       ] | first // "")
+    end' "$HARNESS_CFG" 2>/dev/null
+}
+
+# The compiler's own error lines when it printed any, else the tail.
+_driver_typecheck_lines() { # <file>
+  local l
+  l=$(grep -E 'error TS[0-9]+|: error' "$1" 2>/dev/null | head -3)
+  [ -n "$l" ] || l=$(tail -3 "$1" 2>/dev/null)
+  printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
+}
+
 driver_prove_red_green() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
@@ -107,7 +138,7 @@ driver_prove_red_green() {
   fi
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
-  ( cd "$tmp/before" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
+  ( cd "$tmp/before" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
   git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
@@ -125,8 +156,19 @@ driver_prove_red_green() {
   # attributed to the change. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
   git -C "$repo" show "$tsha:$tfile" > "$tmp/after/$tfile"
-  ( cd "$tmp/after" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
+  ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
+  # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
+  # test whose calls do not type-check passed this proof and then failed self-check's
+  # typecheck on the same file. Only once the test is green — a red half is allowed to
+  # be a compile error.
+  local tc_rc=0 tc_out="" tc
+  tc=$(driver_proof_typecheck_cmd)
+  if [ "$rc_red" -ne 0 ] && [ "$rc_red" -ne 124 ] && [ "$rc_green" -eq 0 ] && [ -n "$tc" ]; then
+    ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$tc" ) >"$tmp/typecheck.out" 2>&1
+    tc_rc=$?
+    tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
+  fi
 
   git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
   git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1
@@ -134,6 +176,15 @@ driver_prove_red_green() {
   red_out=$(head -5 "$tmp/before.out" 2>/dev/null | tr '\n' ' ')
   after_out=$(head -5 "$tmp/after.out" 2>/dev/null | tr '\n' ' ')
   rm -rf "$tmp"
+  if [ "$tc_rc" -eq 124 ]; then
+    printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
+    return 4
+  fi
+  if [ "$tc_rc" -ne 0 ]; then
+    printf '%s passes with the change but the change does not type-check (%s, exit %s): %s\n' \
+      "$tfile" "$tc" "$tc_rc" "$tc_out"
+    return 6
+  fi
 
   # A HANG IS NOT A RED. Out of time says nothing about the change, and it is
   # reported before the red/green reading so a watch-mode runner cannot be read as a
@@ -173,7 +224,7 @@ driver_prove_red_green() {
 #
 # 0 red with the break, green without · 1 green with the break — the test does not
 # cover that code · 2 red without the break · 3 the answer cannot be checked ·
-# 4 out of time · 5 the tree could not be prepared
+# 4 out of time · 5 the tree could not be prepared · 6 it does not type-check
 driver_prove_by_break() {
   local repo="$1" tfile="$2" tsha="$3" bfile="$4" find="$5" repl="$6" cmd="$7"
   local tmp n rc_red rc_green red_out green_out
@@ -211,14 +262,30 @@ driver_prove_by_break() {
     printf 'the break text is not in %s at %s — nothing was broken, so nothing would be measured\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
     return 3
   fi
-  ( cd "$tmp/tree" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
+  ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
   rc_red=$?
   cp "$tmp/original" "$tmp/tree/$bfile"
-  ( cd "$tmp/tree" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
+  ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
   rc_green=$?
+  # The same compile check as the red/green proof, on the restored tree.
+  local tc_rc=0 tc_out="" tc
+  tc=$(driver_proof_typecheck_cmd)
+  if [ "$rc_red" -ne 0 ] && [ "$rc_red" -ne 124 ] && [ "$rc_green" -eq 0 ] && [ -n "$tc" ]; then
+    ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$tc" ) >"$tmp/typecheck.out" 2>&1
+    tc_rc=$?
+    tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
+  fi
   red_out=$(head -5 "$tmp/red.out" 2>/dev/null | tr '\n' ' ')
   green_out=$(head -5 "$tmp/green.out" 2>/dev/null | tr '\n' ' ')
   _driver_break_done
+  if [ "$tc_rc" -eq 124 ]; then
+    printf 'the typecheck (%s) ran out of time (over %ss) on the tree with the code restored\n' "$tc" "$DRIVER_CMD_TIMEOUT"
+    return 4
+  fi
+  if [ "$tc_rc" -ne 0 ]; then
+    printf '%s passes but does not type-check (%s, exit %s): %s\n' "$tfile" "$tc" "$tc_rc" "$tc_out"
+    return 6
+  fi
 
   if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
     printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
@@ -279,6 +346,12 @@ driver_step_build() { # <ticket>
 
     # The one task this call builds, as the brief's own placeholder.
     driver_fact_put "$t" "$slot" PLAN_TASK "$(printf '%s' "$task" | jq .)"
+    # What the driver said about the last try at this task, so a retry is not blind.
+    if [ -s "$(driver_state_dir "$t")/steps/$slot.refused" ]; then
+      driver_fact_put "$t" "$slot" LAST_TRY "$(cat "$(driver_state_dir "$t")/steps/$slot.refused")"
+    else
+      driver_fact_put "$t" "$slot" LAST_TRY "$(_driver_fact_none "this is the first try at this task, or the last one was proved")"
+    fi
     rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # A question, a skipped Skill or a broken answer is not a rework loop: those
@@ -363,6 +436,11 @@ driver_step_build() { # <ticket>
     seen_pairs="$seen_pairs $pair"
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
+    fi
+    if [ "$prc" -eq 0 ]; then
+      rm -f "$(driver_state_dir "$t")/steps/$slot.refused"
+    else
+      printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
     fi
     if [ "$prc" -eq 0 ]; then
       driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
