@@ -19,6 +19,8 @@ to hold the work against.
 Show the rendered thing for a design call, never a bullet list describing it.
 Anything graphic gets a rendered artifact, not ASCII.
 
+**Simple and clear before anything else.** Every screen passes a first look: someone who has never seen the product can say what it is for, what is happening now, and what to do next, from the screen alone. The design critic runs that test on every screen and `scripts/check-first-look.sh` refuses a verdict without it. A new screen's picture also goes to `/agent-harness:panel <area> --screens --use-it` before it goes to the owner, and comes back to him only above the panel's bar. The reference is Claude's own apps: powerful and simple, one place to act, the work in the middle, the rest one step away. The owner, 2026-10-17, on Echo, One Desk and Watch in one session: "its still really hard to understand whats happening … things need to be simply, clear and easy … the same general theme across everything".
+
 **A picture is drawn with real data, not a tidy still.** Approval shots show the
 screen as people will meet it: a long history, real counts, the longest names,
 the empty state, and the page scrolled to the bottom on a laptop and a phone.
