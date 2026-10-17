@@ -93,26 +93,32 @@ _driver_order_has() { case " ${DRIVER_STEPS:-} " in *" $1 "*) return 0 ;; esac; 
 #                   absent      the tree's own pre-push hook, run the way `git push`
 #                               runs it: remote and url as arguments, the ref line
 #                               on stdin
+#   gates.prePushOwed  a command  run in its place while a reviewer the push demands
+#                                 is still owed: the push's checks minus that verdict
 #
-# _driver_prepush <ticket> <tree> <out> — its exit code; 0 with DRIVER_PREPUSH_DID
+# A TRIAL, NOT A PUSH. SIGNOFF_GUARD_DRYRUN=1 tells the sign-off guard to refuse
+# without its side effects (the hold back on, a comment, a notice) for a head that
+# was never pushed.
+#
+# _driver_prepush <ticket> <tree> <out> [key] — its exit code; 0 with DRIVER_PREPUSH_DID
 # "none" or "off" when there was nothing to run. DRIVER_PREPUSH_CMD names what ran.
 _driver_prepush() {
-  local t="$1" wt="$2" out="$3" ptype top hook branch head rsha url rc=0
+  local t="$1" wt="$2" out="$3" key="${4:-prePush}" ptype top hook branch head rsha url rc=0
   DRIVER_PREPUSH_DID=ran; DRIVER_PREPUSH_CMD=""
-  ptype=$(jq -r '.gates.prePush | type' "$HARNESS_CFG" 2>/dev/null)
+  ptype=$(jq -r --arg k "$key" '.gates[$k] | type' "$HARNESS_CFG" 2>/dev/null)
   case "$ptype" in
     string)
-      DRIVER_PREPUSH_CMD=$(jq -r '.gates.prePush' "$HARNESS_CFG")
+      DRIVER_PREPUSH_CMD=$(jq -r --arg k "$key" '.gates[$k]' "$HARNESS_CFG")
       if [ -z "$(printf '%s' "$DRIVER_PREPUSH_CMD" | tr -d '[:space:]')" ]; then
-        printf 'harness.json gates.prePush is an empty command\n' > "$out"; return 127
+        printf 'harness.json gates.%s is an empty command\n' "$key" > "$out"; return 127
       fi
-      ( cd "$wt" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$DRIVER_PREPUSH_CMD" ) > "$out" 2>&1 || rc=$?
+      ( cd "$wt" && export SIGNOFF_GUARD_DRYRUN=1 && driver_run_project "$DRIVER_CMD_TIMEOUT" "$DRIVER_PREPUSH_CMD" ) > "$out" 2>&1 || rc=$?
       return "$rc" ;;
     boolean)
-      if [ "$(jq -r '.gates.prePush' "$HARNESS_CFG")" = false ]; then DRIVER_PREPUSH_DID=off; return 0; fi
-      printf 'harness.json gates.prePush is true, which names no command (a command, or false)\n' > "$out"; return 127 ;;
+      if [ "$(jq -r --arg k "$key" '.gates[$k]' "$HARNESS_CFG")" = false ]; then DRIVER_PREPUSH_DID=off; return 0; fi
+      printf 'harness.json gates.%s is true, which names no command (a command, or false)\n' "$key" > "$out"; return 127 ;;
     null) ;;
-    *) printf 'harness.json gates.prePush is a %s; it takes a command or false\n' "${ptype:-unreadable value}" > "$out"; return 127 ;;
+    *) printf 'harness.json gates.%s is a %s; it takes a command or false\n' "$key" "${ptype:-unreadable value}" > "$out"; return 127 ;;
   esac
   top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || top="$wt"
   # Unset hooks resolve to no pre-push at all, which would read as "nothing to verify".
@@ -125,7 +131,7 @@ _driver_prepush() {
   url=$(git -C "$wt" remote get-url origin 2>/dev/null) || url=origin
   DRIVER_PREPUSH_CMD="the pre-push hook ($hook)"
   printf 'refs/heads/%s %s refs/heads/%s %s\n' "$branch" "$head" "$branch" "$rsha" > "$out.stdin"
-  ( cd "$top" && driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$out.stdin" "$hook" origin "$url" ) > "$out" 2>&1 || rc=$?
+  ( cd "$top" && export SIGNOFF_GUARD_DRYRUN=1 && driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$out.stdin" "$hook" origin "$url" ) > "$out" 2>&1 || rc=$?
   rm -f "$out.stdin"
   return "$rc"
 }
@@ -151,17 +157,26 @@ EOS
 # Adds to the caller's ran/failed/redlines/infra and the findings rows; returns
 # DRIVER_E_TIMEOUT on a hang, else 0.
 _driver_prepush_gate() {
-  local t="$1" wt="$2" pout owed prc=0
+  local t="$1" wt="$2" pout owed prc=0 key=prePush
   pout="$(driver_state_dir "$t")/steps/gate-pre-push.out"
-  owed=$(_driver_prepush_owed "$t" "$wt")
-  if [ -n "$owed" ]; then
-    driver_say "   self-check: pre-push waits for the push — $owed is owed on this diff, and the review records it after this step"
+  # A red gate above is fixed first; the push's checks run on a change that passes them.
+  if [ "$failed" -gt 0 ]; then
+    driver_say "   self-check: pre-push waits — the gates above are red, and their fix comes first"
     return 0
   fi
-  _driver_prepush "$t" "$wt" "$pout" || prc=$?
+  owed=$(_driver_prepush_owed "$t" "$wt")
+  if [ -n "$owed" ]; then
+    if [ "$(jq -r '.gates.prePushOwed | type' "$HARNESS_CFG" 2>/dev/null)" != string ]; then
+      driver_say "   self-check: pre-push waits for the push — $owed is owed on this diff, the review records it after this step, and harness.json names no gates.prePushOwed to run without it"
+      return 0
+    fi
+    key=prePushOwed
+    driver_say "   self-check: $owed is owed on this diff — running gates.prePushOwed, the push's checks without that verdict"
+  fi
+  _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
   case "$DRIVER_PREPUSH_DID" in
     none) driver_say "   self-check: pre-push — this tree has no pre-push hook and harness.json names no gates.prePush"; return 0 ;;
-    off)  driver_say "   self-check: pre-push off (gates.prePush is false)"; return 0 ;;
+    off)  driver_say "   self-check: pre-push off (gates.$key is false)"; return 0 ;;
   esac
   pushran=1
   if [ "$prc" -eq 124 ]; then
@@ -171,6 +186,12 @@ _driver_prepush_gate() {
   elif [ "$prc" -eq 0 ]; then
     driver_say "   self-check: pre-push ok"
     return 0
+  fi
+  # THE OWNER'S CALL, NEVER A FINDING: handed to fix, the model could write the
+  # pixel-change-after-signoff trailer itself and wave its own change through.
+  if driver_signoff_refusal "$t" "$pout"; then
+    driver_say "✋ self-check: the owner has signed this PR's screens and this change moves them — nothing goes to fix. $(driver_signoff_line "$pout")"
+    return "$DRIVER_E_REFUSED"
   fi
   failed=$((failed+1))
   driver_say "✋ self-check: pre-push failed (exit $prc) — $(_driver_gate_lines "$pout")"

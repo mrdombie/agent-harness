@@ -24,13 +24,17 @@
 # _driver_ship_push_to_fix <ticket> — a push the project's own pre-push refused goes
 # to fix once, its output as the finding, inside the fix-round ceiling (#236).
 # Self-check runs the same checks, except while a reviewer is owed, so this is the
-# check it could not run yet. A refusal by the remote or the network is not a
-# finding: git marks those `! [rejected]` or `fatal:`, a hook's refusal neither.
+# check it could not run yet. Only a hook's refusal is a finding: git runs pre-push
+# after it reached the remote, so a refusal ends "failed to push some refs" with no
+# `! [` ref line; an unreachable remote never gets that far. A hook's own "fatal:"
+# line says nothing about which it was. A sign-off refusal is the owner's call.
 _driver_ship_push_to_fix() {
   local t="$1" f reds fixes
-  case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 1 ;; esac
   [ -f "${DRIVER_PUSH_OUT:-}" ] || return 1
-  grep -qE '^[[:space:]]*! \[|^fatal:' "$DRIVER_PUSH_OUT" && return 1
+  driver_signoff_refusal "$t" "$DRIVER_PUSH_OUT" && return 1
+  case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 1 ;; esac
+  grep -q 'failed to push some refs' "$DRIVER_PUSH_OUT" || return 1
+  grep -qE '^[[:space:]]*! \[' "$DRIVER_PUSH_OUT" && return 1
   reds=$(driver_state_count "$t" push_red); fixes=$(driver_state_count "$t" fix)
   driver_state_bump "$t" push_red
   if [ "${reds:-0}" -ge 1 ]; then

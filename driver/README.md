@@ -92,7 +92,10 @@ released early is a ticket a peer can take against a branch that is not there.
   push runs is a finding for `fix`, not a park after review. While a reviewer the
   push demands (`review.attest`) is still owed it waits for the push, and a push its
   pre-push refuses goes to `fix` once with the output as the finding, inside the
-  same ceiling. A refusal by the remote or the network still parks.
+  same ceiling. A refusal by the remote or the network still parks, and so does a
+  sign-off refusal: that is the owner's call, never a finding. The trial skips while
+  a configured gate is red, runs `gates.prePushOwed` while a verdict is owed, and
+  carries `SIGNOFF_GUARD_DRYRUN=1`.
 - **At most two review rounds.** Then the reviewer stops sending the work back.
   What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
   and the parent's programme label. A **Critical or Major** — a dead control, a broken flow or

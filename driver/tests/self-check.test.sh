@@ -340,6 +340,48 @@ jq '.review.attest["ui-gate"].owed = "exit 0"' "$REPO/.claude/harness.json" > "$
 driver_state_init 407 --worktree "$PP"
 out=$(driver_step_self_check 407 2>&1); rc=$?
 want "attested: the pre-push runs, and is red"   "30" "$rc"
-jq 'del(.review)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+
+echo "--- an owed reviewer runs gates.prePushOwed: the push's checks minus that verdict ---"
+jq '.review.attest["ui-gate"].owed = "exit 1" | .gates.prePushOwed = "echo ✗ check:complexity; exit 5"' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 409 --worktree "$PP"
+out=$(driver_step_self_check 409 2>&1); rc=$?
+want "its red is a red self-check"               "30" "$rc"
+want_in "it says what it ran in place"           'gates.prePushOwed' "$out"
+want_in "and the check reaches fix"              'check:complexity' "$(jq -r '.[0].output' "$(driver_state_dir 409)/steps/self-check.findings.json" 2>/dev/null)"
+jq 'del(.review) | del(.gates.prePushOwed)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+
+echo "--- a red gate first: the pre-push waits, and is not run ---"
+printf '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/pre-push.ran"\nexit 1\n' > "$PP/.git/hooks/pre-push"
+rm -f "$PP/.git/pre-push.ran"
+jq '.gates = {"changed": ["exit 1"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 410 --worktree "$PP"
+out=$(driver_step_self_check 410 2>&1); rc=$?
+want "the red gate goes to fix"                  "30" "$rc"
+want "the hook did not run"                      "no" "$([ -e "$PP/.git/pre-push.ran" ] && echo yes || echo no)"
+want_in "and the log says why"                   'pre-push waits — the gates above are red' "$out"
+want "only the gate is a finding"                "gate-changed-1" "$(jq -r '[.[].id] | join(",")' "$(driver_state_dir 410)/steps/self-check.findings.json" 2>/dev/null)"
+
+echo "--- a sign-off refusal is the owner's call: it parks, never goes to fix, and the trial has no side effects ---"
+# Handed to fix, the model could write pixel-change-after-signoff itself. Run as a
+# trial, the guard must not re-add the hold or notify for a head never pushed.
+cat > "$PP/.git/hooks/pre-push" <<'SH'
+#!/bin/sh
+printf '%s\n' "${SIGNOFF_GUARD_DRYRUN:-unset}" > "$(git rev-parse --git-dir)/pre-push.dryrun"
+echo "✗ pre-push blocked: sign-off comes last. The owner signed PR #7 at abc1234, and this push changes its screens: apps/web/page.tsx" >&2
+exit 1
+SH
+jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 411 --worktree "$PP"
+out=$(driver_step_self_check 411 2>&1); rc=$?
+want "it parks"                                  "24" "$rc"
+want "nothing goes to fix"                       "absent" "$([ -e "$(driver_state_dir 411)/steps/self-check.findings.json" ] && echo present || echo absent)"
+want_in "the note is for the owner"              '^Needs the owner: .*signed PR #7 at abc1234.*pixel-change-after-signoff' "$(driver_state_get 411 park_note)"
+want "the guard was told it is a trial"          "1" "$(cat "$PP/.git/pre-push.dryrun" 2>/dev/null)"
+jq '.gates = {"changed": ["true"], "prePush": "echo $SIGNOFF_GUARD_DRYRUN > dryrun.cmd; exit 0"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 412 --worktree "$PP"
+driver_step_self_check 412 >/dev/null 2>&1
+want "a named command is told too"               "1" "$(cat "$PP/dryrun.cmd" 2>/dev/null)"
+rm -f "$PP/dryrun.cmd"
+jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 
 exit $FAILED

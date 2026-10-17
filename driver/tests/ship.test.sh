@@ -282,6 +282,30 @@ out=$(driver_step_ship 113 2>&1); rc=$?
 want "a second refused push parks" "24" "$rc"
 want_in "and the park note carries it" 'check:design-critic-attested' "$(driver_state_get 113 park_note)"
 
+echo "--- a hook that prints 'fatal:' is still a hook's refusal: it goes to fix ---"
+setup_wt 118
+driver_state_put 118 review '{"verdict":"SHIP","findings":[]}'
+for st in start plan build self-check review record; do driver_state_done 118 "$st"; done
+mkdir -p "$FIX/hooks118"
+printf '#!/usr/bin/env sh\necho "fatal: knip found unused exports"\nexit 1\n' > "$FIX/hooks118/pre-push"; chmod +x "$FIX/hooks118/pre-push"
+git -C "$FIX/wt118" config core.hooksPath "$FIX/hooks118"
+out=$(driver_step_ship 118 2>&1); rc=$?
+want "a hook's fatal: line goes to fix"      "30" "$rc"
+git -C "$FIX/wt118" config --unset core.hooksPath
+
+echo "--- a sign-off refusal at the push is the owner's call: it parks, never goes to fix ---"
+setup_wt 119
+driver_state_put 119 review '{"verdict":"SHIP","findings":[]}'
+for st in start plan build self-check review record; do driver_state_done 119 "$st"; done
+mkdir -p "$FIX/hooks119"
+printf '#!/usr/bin/env sh\necho "✗ pre-push blocked: sign-off comes last. The owner signed PR #7 at abc1234, and this push changes its screens: a.tsx" >&2\nexit 1\n' > "$FIX/hooks119/pre-push"; chmod +x "$FIX/hooks119/pre-push"
+git -C "$FIX/wt119" config core.hooksPath "$FIX/hooks119"
+out=$(driver_step_ship 119 2>&1); rc=$?
+want "it parks"                              "24" "$rc"
+want "nothing goes to fix"                   "absent" "$([ -e "$(driver_state_dir 119)/steps/self-check.findings.json" ] && echo present || echo absent)"
+want_in "the note is for the owner"          '^Needs the owner: .*abc1234' "$(driver_state_get 119 park_note)"
+git -C "$FIX/wt119" config --unset core.hooksPath
+
 echo "--- a push the remote refused is not a finding: it parks ---"
 setup_wt 117
 driver_state_put 117 review '{"verdict":"SHIP","findings":[]}'
