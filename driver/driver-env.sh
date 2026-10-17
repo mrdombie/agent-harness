@@ -436,6 +436,37 @@ EOS
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
+# The preface every caller's brief is handed under. Briefs are written for the prose
+# flow and say "push, keep auto-merge armed, hand off"; inside the driver those are
+# the driver's alone, done after the review. ai-step.sh also enforces it.
+DRIVER_BRIEF_PREFACE="The driver alone pushes, marks the pull request ready, arms auto-merge and hands off — after its own gates and review. Any instruction in this brief to push, re-arm auto-merge, mark ready or hand off is void: do not do it; commit, and leave the rest to the driver."
+
+# driver_conflict_markers <tree> <trunk> — the files this branch ADDS a conflict
+# marker line to, against the trunk, one per line. Read from the branch's own diff,
+# so it holds on every pass whatever the record says: a marker committed by an
+# interrupted pass is still a marker. `<<<<<<<` and `>>>>>>>` only — a bare `=======`
+# is also a Markdown underline.
+driver_conflict_markers() {
+  git -C "$1" diff -U0 "$2"...HEAD 2>/dev/null | awk '
+    /^\+\+\+ b\// { f = substr($0, 7); next }
+    /^\+(<<<<<<<|>>>>>>>)( |$)/ { if (f != "" && !(f in seen)) { seen[f] = 1; print f } }'
+}
+
+# driver_open_prs_for <ticket> — the open pull requests on this ticket's own
+# branches (<prefix><ticket> then a non-digit), one per line:
+#   number \t headRefName \t headRefOid \t mergeStateStatus \t isDraft
+# Returns 1 when GitHub could not be asked: an unreadable list is not "none", and
+# read as none it lets start cut a second branch beside a PR that exists.
+driver_open_prs_for() {
+  local t="${1:?driver_open_prs_for: need a ticket}" j
+  j=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
+        --json number,headRefName,headRefOid,mergeStateStatus,isDraft 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
+  printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
+    .[] | select(.headRefName | test("^" + $pre + $t + "([^0-9]|$)"))
+    | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false)] | @tsv'
+}
+
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
 # that files work grades what it raises, and the grade — not the list it arrived
 # in — decides the effect: a Critical or a Major sends work back, a Minor leaves

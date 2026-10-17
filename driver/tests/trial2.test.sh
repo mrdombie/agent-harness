@@ -206,7 +206,8 @@ driver_state_init 404 --worktree "$FIX/wt404" --branch "tkt-404/work"
 : > "$GH_LOG"
 driver_park 404 "a refusal a person must answer" "which is it?" person >/dev/null 2>&1
 want_in "the ticket is marked parked" 'add-label status:parked' "$(cat "$GH_LOG")"
-want_in "and a question adds the hold a person clears" 'add-label needs:human-approval' "$(cat "$GH_LOG")"
+want_in "and a question goes to the owner's loop" 'add-label needs:owner-decision' "$(cat "$GH_LOG")"
+want_not_in "not the pixel sign-off hold"     'add-label needs:human-approval' "$(cat "$GH_LOG")"
 
 echo "--- T2-7 · a park the driver caused does not hide behind a human-only label ---"
 # #10907's needs:human-approval was applied by trial 1's park, whose cause was the

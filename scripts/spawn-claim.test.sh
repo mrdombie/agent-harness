@@ -276,7 +276,7 @@ bare_claim() { printf '%s' "$1" | perl -ne 'print "$1\n" while /(?<![A-Za-z0-9_.
 jq '.swarm = {builder: "prose"}' "$STORE/.claude/harness.json" > "$SB/cfg-prose.json"
 for mode in detached fg; do
   rm -f "$OUT/marker" "$OUT/installed" "$OUT/seen"
-  if [ "$mode" = fg ]; then CANON="" run --fg 4950 >/dev/null; else CFG="$SB/cfg-prose.json" CANON="" run 4950 >/dev/null; fi
+  if [ "$mode" = fg ]; then CFG="$SB/cfg-prose.json" CANON="" run --fg 4950 >/dev/null; else CFG="$SB/cfg-prose.json" CANON="" run 4950 >/dev/null; fi
   for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
   a=$(sed -n '/^args=/,$p' "$OUT/seen" 2>/dev/null | sed '1s/^args=//' | tr '\n' ' ')
   [ -n "$a" ] || { bad "$mode: the builder never started"; continue; }
@@ -313,7 +313,8 @@ printf '%s' "$extra" | grep -q 'Resume brief: carry on.' \
 # The two paths cd separately; testing only --fg would leave the one the swarm
 # actually uses uncovered.
 rm -f "$OUT/seen"
-CLAIM_CLASS=repair run 4247
+# The prose prompt is what this case reads; a repair runs on the driver unless the project says prose.
+CFG="$SB/cfg-prose.json" CLAIM_CLASS=repair run 4247
 for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
 if [ -f "$OUT/seen" ]; then
   [ "$(seen claude.md)" = "CURRENT BRANCH" ] \
@@ -493,18 +494,18 @@ case "$BARGS" in
        || bad "pick-next: the prose pick-next claim did not run: '${BARGS:-never started}'" ;;
 esac
 
+# No unattended run falls back to prose (the operator, 2026-10-17): a briefed run and
+# a healing run stay on the driver, and take their brief with them.
 CLAIM_EXTRA="Merge lane: PR #9 left the lane — fix it on its branch." builder_case 4962 4962
 case "$BARGS" in
-  build-ticket*) bad "a caller's brief went to the driver, which cannot read it: '$BARGS'" ;;
-  *) printf '%s' "$BARGS" | grep -q 'Merge lane: PR #9' \
-       && ok "a run with a caller's brief stays on prose, brief in the prompt" \
-       || bad "a briefed run lost its brief: '${BARGS:-never started}'" ;;
+  "build-ticket 4962 --brief "*) ok "a run with a caller's brief runs build-ticket --brief, not prose" ;;
+  *) bad "a briefed run did not go to build-ticket --brief: '${BARGS:-never started}'" ;;
 esac
 
 CLAIM_CLASS=approved-merge builder_case 4963 4963
 case "$BARGS" in
-  build-ticket*) bad "an approved-merge run went to the driver: '$BARGS'" ;;
-  *) ok "an approved-merge run works its open PR on prose" ;;
+  "build-ticket 4963 --repair-class approved-merge"*) ok "an approved-merge run works its open PR on the driver (--repair-class)" ;;
+  *) bad "an approved-merge run did not go to build-ticket --repair-class: '${BARGS:-never started}'" ;;
 esac
 
 rm -f "$OUT/seen"
@@ -520,6 +521,107 @@ mv "$SB/driver/build-ticket.away" "$SB/driver/build-ticket"
 [ "$RC" = 1 ] && grep -q 'swarm.builder' "$OUT/nodriver.log" && [ ! -f "$OUT/seen" ] \
   && ok "a missing driver refuses and names the prose switch, starting nothing" \
   || bad "a missing driver did not refuse cleanly (rc $RC): $(cat "$OUT/nodriver.log")"
+
+# --- 11. The driver run, as the coordinator reads it, and its brief channel ---
+# The coordinator reads four things off a spawn: the run record, the .child pid,
+# the .ended exit code, and the log's last result line. A driver run that skips any
+# of them reads as something it is not. And every brief reaches the driver verbatim:
+# dropped, a red PR's repair would rebuild the ticket; refused, it would never run.
+cat > "$SB/bin/build-ticket-stub" <<'STUB'
+#!/usr/bin/env bash
+b=""; case "${2:-}" in --repair|--brief) b=$(tr '\n' '|' < "$3" | sed 's/|$//') ;; esac
+printf 'cwd=%s\nargs=%s\nclaude.md=%s\nrun=%s\nbrief=%s\n' "$PWD" "$*" "$(cat CLAUDE.md 2>/dev/null)" "${CLAIM_RUN_ID:-}" "$b" > "$SPAWN_TEST_DRIVER_SEEN"
+echo "build-ticket: walking #$1"
+echo "  step build: green"
+echo "⏸ #$1 parked: the spec needs a decision"
+echo
+exit "${SPAWN_TEST_DRIVER_EXIT:-20}"
+STUB
+chmod +x "$SB/bin/build-ticket-stub"
+export SPAWN_TEST_DRIVER_SEEN="$OUT/driver-seen"
+dseen() { sed -n "s/^$1=//p" "$OUT/driver-seen" 2>/dev/null; }
+rec_of() { ls "$STATE"/runs/claim-"$1"-*.json 2>/dev/null | head -1; }
+# The coordinator's own reader of a run's last word, lifted from the tick itself.
+eval "$(sed -n '/^final_line() {/,/^}/p' "$SUT_DIR/coordinator-tick.sh")"
+dcase() { # <ticket> [run args…] — a detached spawn on the stub driver, waited out
+  rm -f "$OUT/seen" "$OUT/driver-seen" "$OUT/reconcile"
+  SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run "$@" >"$OUT/run.out"
+  local r=""
+  for _ in $(seq 1 60); do r=$(rec_of "$1"); [ -n "$r" ] && [ -f "${r%.json}.ended" ] && [ -s "$OUT/reconcile" ] && break; sleep 0.5; done
+  sleep 1
+}
+
+# 11a. a new build: the record, the pid, the exit code, the verdict line.
+dcase 4970 4970
+REC=$(rec_of 4970); RID=$(basename "${REC:-none}" .json)
+[ "$(dseen args)" = 4970 ] && ok "a new build runs build-ticket with the ticket alone" || bad "build-ticket args were '$(dseen args)', want 4970"
+[ "$(dseen claude.md)" = "CURRENT BRANCH" ] && ok "from the branch's spawn root" || bad "build-ticket ran from '$(dseen cwd)'"
+[ "$(jq -r '.exit_code' "$STATE/runs/$RID.ended" 2>/dev/null)" = 20 ] && ok "the .ended carries the driver's exit code (20 parked)" \
+  || bad "the .ended exit code was '$(jq -r '.exit_code' "$STATE/runs/$RID.ended" 2>/dev/null)', want 20"
+[ -s "$OUT/reconcile" ] && ok "the post-exit reconcile runs after a driver run" || bad "no reconcile after the driver run"
+[ -n "$(cat "$STATE/runs/$RID.child" 2>/dev/null)" ] && [ "$(cat "$STATE/runs/$RID.child")" = "$(jq -r '.child_pid' "$REC")" ] \
+  && ok "the driver's pid is the run's .child and the record's child_pid" || bad "the driver's pid was not recorded as the child"
+[ "$(dseen run)" = "$RID" ] && ok "the driver inherits the run id" || bad "the driver saw run id '$(dseen run)'"
+[ "$(jq -r '.driver_mode // empty' "$REC")" = build ] && ok "the record names the driver mode" || bad "driver_mode was '$(jq -r '.driver_mode // empty' "$REC")'"
+[ "$(jq -c '.progress_paths' "$REC" 2>/dev/null)" = "[\"$STATE/driver/4970\"]" ] \
+  && ok "the record names the driver's per-ticket state dir as progress" \
+  || bad "progress_paths was '$(jq -c '.progress_paths' "$REC" 2>/dev/null)'"
+LOGF="$STATE/logs/$RID.log"
+[ "$(final_line "$LOGF")" = "⏸ #4970 parked: the spec needs a decision" ] \
+  && ok "the coordinator reads the driver's last line as the run's verdict" \
+  || bad "the coordinator would read '$(final_line "$LOGF")' as the verdict"
+rl=$(grep -n '"type":"result"' "$LOGF" 2>/dev/null | head -1 | cut -d: -f1)
+pl=$(grep -n 'post-exit' "$LOGF" 2>/dev/null | head -1 | cut -d: -f1)
+[ -n "$rl" ] && [ -n "$pl" ] && [ "$rl" -lt "$pl" ] && ok "the verdict line is written before the post-exit sections" \
+  || bad "result line at ${rl:-none}, post-exit at ${pl:-none}"
+CFG="$SB/cfg-prose.json" dcase 4979 4979
+[ "$(jq -r 'has("progress_paths") or has("driver_mode")' "$(rec_of 4979)" 2>/dev/null)" = false ] \
+  && ok "a prose run's record carries no driver fields" || bad "a prose run's record carries driver fields"
+
+# 11b. a caller's brief, no healing class: --brief, verbatim, without the prose-only owner rule.
+CLAIM_EXTRA="The owner answered q1: ship the narrow version." dcase 4971 4971
+case "$(dseen args)" in "4971 --brief "*) ok "a briefed run is build-ticket --brief" ;; *) bad "a briefed run ran build-ticket '$(dseen args)'" ;; esac
+[ "$(dseen brief)" = "The owner answered q1: ship the narrow version." ] && ok "the brief is the caller's words, verbatim" \
+  || bad "the brief build-ticket read was '$(dseen brief)'"
+printf '%s' "$(dseen brief)" | grep -q 'Owner questions:' && bad "the prose claim's owner rule leaked into the driver's brief" \
+  || ok "the prose claim's owner rule is not part of it"
+[ ! -f "$OUT/seen" ] && ok "no prose claim ran" || bad "a briefed driver spawn also ran claude"
+HARNESS_OWNER_RULE="RULE-Z" CLAIM_EXTRA="$(printf 'Fix the clash.\n\nRULE-Z')" dcase 4978 4978
+[ "$(dseen brief)" = "Fix the clash." ] && ok "re-exec'd with the rule already appended, the brief is still the caller's alone" \
+  || bad "a re-exec'd copy handed the driver '$(dseen brief)'"
+
+# 11c. healing classes: --repair with the note, or --repair-class with none.
+CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #7 at abc: CI went red on: unit" dcase 4972 4972
+case "$(dseen args)" in "4972 --repair "*) ok "a noted repair is build-ticket --repair" ;; *) bad "a noted repair ran build-ticket '$(dseen args)'" ;; esac
+[ "$(dseen brief)" = "REPAIR on PR #7 at abc: CI went red on: unit" ] && ok "with its note verbatim" || bad "the repair brief was '$(dseen brief)'"
+CLAIM_CLASS=repair dcase 4973 4973
+[ "$(dseen args)" = "4973 --repair-class repair" ] && ok "a repair with no note is --repair-class repair — never a fresh build" \
+  || bad "a note-less repair ran build-ticket '$(dseen args)'"
+CLAIM_CLASS=new dcase 4975 4975
+[ "$(dseen args)" = 4975 ] && ok "a new-class run with no brief is a plain build" || bad "a new-class run ran build-ticket '$(dseen args)'"
+
+# 11e. --fg with a ticket runs the step driver in this terminal (the operator, 2026-10-17);
+# pick-next stays the interactive prose claim. The same brief channel as a detached run.
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4990 >"$OUT/fg.out"
+[ "$(dseen args)" = 4990 ] && [ ! -f "$OUT/seen" ] && ok "--fg 4990 runs build-ticket 4990 in the foreground, not prose" \
+  || bad "--fg 4990 did not run the driver: $(cat "$OUT/fg.out" | head -3)"
+grep -q 'parked' "$OUT/fg.out" && ok "and its output is the terminal's" || bad "the foreground driver's output did not reach the terminal"
+rm -f "$OUT/driver-seen"
+CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #3: red" SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4991 >/dev/null
+case "$(dseen args)" in "4991 --repair "*) ok "--fg carries a repair's brief the same way" ;; *) bad "--fg repair ran build-ticket '$(dseen args)'" ;; esac
+[ "$(dseen brief)" = "REPAIR on PR #3: red" ] && ok "verbatim" || bad "--fg repair brief was '$(dseen brief)'"
+rm -f "$OUT/seen" "$OUT/driver-seen"
+SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg >/dev/null
+[ ! -f "$OUT/driver-seen" ] && [ -f "$OUT/seen" ] && ok "--fg with no ticket stays the interactive prose claim" \
+  || bad "--fg pick-next did not run the prose claim"
+
+# 11d. swarm.builder = prose is the escape hatch: everything, brief and repair alike, on prose.
+CFG="$SB/cfg-prose.json" CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #8: red" dcase 4976 4976
+for _ in $(seq 1 20); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
+[ ! -f "$OUT/driver-seen" ] && grep -q '/agent-harness:claim 4976' "$OUT/seen" 2>/dev/null && grep -q 'REPAIR on PR #8: red' "$OUT/seen" 2>/dev/null \
+  && ok "swarm.builder=prose: a noted repair runs the prose claim, brief in its prompt" \
+  || bad "swarm.builder=prose did not send the repair to prose: $(cat "$OUT/seen" 2>/dev/null | head -3)"
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"

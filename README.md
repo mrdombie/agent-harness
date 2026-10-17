@@ -306,6 +306,14 @@ with its own hands, and parks the ticket with the question whenever a step asks
 one. Full description, the guarantees and every seam:
 [`driver/README.md`](driver/README.md).
 
+`driver/build-ticket <ticket> --repair <brief>` is the same walk for a pull
+request that went red, clashes, or came back with a brief after it was handed off.
+It re-enters the PR's own branch, never a fresh one, and merges the trunk in for a
+clash. It proves each fix, either as a test red then green or as a gate command
+green at the head, then runs the same gates, review and ship onto that same PR.
+`--brief <brief>` is a repair when the ticket has an open PR, and otherwise a build
+with the brief put in front of every step.
+
 It is the replacement for the two hand-copied build commands, not an addition to
 them: `docs/design/claim-finish-inventory.md` maps all 178 of their rules to a
 driver step, a brief, a hook, a required check, or a named retirement.
@@ -328,12 +336,41 @@ on every wake. `scripts/coordinator-tick.sh` does the same job as one short
 process with no model call: it reads the runs that ended, spawns the next queued
 ticket through `spawn-claim.sh` while the machine has room, runs `reconcile-claims.sh` and the
 dev-server sweep, checks the disk, and writes every event that needs judgement
-to a file. A new ticket's builder is the step driver, `driver/build-ticket <n>`
-(Dom, 2026-10-17), with the run's budget capping each step. The prose claim
-(`claude -p "/agent-harness:claim <n>"`) still builds pick-next runs, repair-class
-runs and any run handed a brief (a merge-lane fixer, a repair, a resume), because the
-driver has no channel for a brief; `swarm.builder: "prose"` in `harness.json` puts
-every run back on it. Each judgement event gets one fresh `claude -p` with a short brief
+to a file. Every named ticket's builder is the step driver (Dom, 2026-10-17), with
+the run's budget capping each step:
+- a new build is `driver/build-ticket <n>`
+- a repair or approved-merge run is `build-ticket <n> --repair <brief>`, or
+  `--repair-class <class>` when the queue row had no note. It is a repair of the
+  ticket's open PR on its own branch, never a fresh build.
+- any other run a caller hands a brief (a repair watcher's brief, an owner's answer,
+  a resume after a cut) is `build-ticket <n> --brief <brief>`. That is a repair
+  when the ticket has an open PR, and otherwise a build with the brief in front of
+  every step.
+
+No run with a ticket falls back to the prose claim. `--fg <n>` runs the same
+driver in the terminal, with the same brief channel. The prose claim
+(`claude -p "/agent-harness:claim"`) builds only pick-next runs, where no ticket
+is named. `swarm.builder: "prose"` in `harness.json` puts every run back on it.
+
+How the driver treats a brief:
+- **It never acts on a brief's instructions to push, re-arm auto-merge, mark the
+  PR ready or hand off.** Briefs written for the prose flow say all of those. The
+  driver alone does them, after its own gates and review. Each brief is handed
+  over under a preface saying so. Inside a step, `git push`, `gh pr ready`,
+  `gh pr merge` and `gh pr create` are refused. Origin's head for the branch is
+  checked before and after every step, and a step it moved under is refused
+  and parked.
+- **Size:** a brief is capped at 4 KB for the steps, with a notice; the whole of
+  it is kept beside.
+- **A failed lookup loses nothing:** a `--brief` whose PR lookup still fails after
+  three tries goes back on the queue with its brief as the note.
+- **Expiry:** a build's brief ends when the ticket ships, or when a repair round
+  starts.
+- **Person-caused parks** are asked through `owner-question.sh` (the owner's label
+  and channel). The answer comes back on the queue as a brief. The hold label is
+  only the fallback when the question cannot be asked.
+
+Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
@@ -388,9 +425,38 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `minFreeGb` | 20 | Disk alarm floor |
-| `frozenMin` | 20 | A live run whose log has not grown this long is frozen |
+| `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+
+**How the coordinator reads a driver run.** It reads one the way it reads any
+other run: a run record, the driver's pid as `.child`, `.ended` with its exit code
+(0 walked to the hand-off, 20 parked, 2 a configuration refusal), then the
+post-exit dev-server stop and the reconcile.
+- The driver's own last line (its park or hand-off line) is written to the log as
+  the run's `result` line before anything else is appended. That line is the
+  verdict the tick records.
+- The record names the driver's per-ticket state directory in `progress_paths`.
+  The driver prints only between steps while a build step writes there, so a long
+  build step is not a frozen run.
+- The claim carries the run's `run_id`, so the post-exit stop finds the driver's
+  worktree.
+- A run's own post-exit reconcile releases its claim even when its driver record
+  is fresh.
+
+A spawn that fails or is refused never uses up a place, so one refused entry cannot
+hold its class shut. The tick raises a `spawn-failed` event naming the reason, once
+per ticket per day.
+
+**What bounds a driver run.**
+- **Cost:** `DRIVER_STEP_BUDGET_USD` (set to the run's `CLAIM_BUDGET_USD`) caps
+  each model call. The whole run has no single cap; it is bounded by its rounds:
+  `DRIVER_MAX_BUILD_TRIES` (5) build attempts and `DRIVER_MAX_REVIEW_ROUNDS` (2)
+  review rounds. What a run spent is in
+  `$STATE_DIR/driver/<ticket>/state.json` as `.spend`.
+- **Time:** model calls have no time limit. `DRIVER_CMD_TIMEOUT` (900 s) bounds
+  only the commands the driver runs itself: gates, the red-before-green test runs,
+  renders and the push-requires reviews.
 
 **The ceiling follows the machine.** Each tick the ceiling is what is running,
 plus as many builders as the spare CPU fits: the median of the recent CPU idle
