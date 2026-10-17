@@ -344,10 +344,30 @@ the run's budget capping each step:
   when the ticket has an open PR, and otherwise a build with the brief in front of
   every step.
 
-No unattended run falls back to the prose claim. The prose claim
-(`claude -p "/agent-harness:claim <n>"`) builds only pick-next runs (no ticket
-named) and `--fg`, where a person is watching. `swarm.builder: "prose"` in
-`harness.json` puts every run back on it. Each judgement event gets one fresh `claude -p` with a short brief
+No run with a ticket falls back to the prose claim. `--fg <n>` runs the same
+driver in the terminal, with the same brief channel. The prose claim
+(`claude -p "/agent-harness:claim"`) builds only pick-next runs, where no ticket
+is named. `swarm.builder: "prose"` in `harness.json` puts every run back on it.
+
+How the driver treats a brief:
+- **It never acts on a brief's instructions to push, re-arm auto-merge, mark the
+  PR ready or hand off.** Briefs written for the prose flow say all of those. The
+  driver alone does them, after its own gates and review. Each brief is handed
+  over under a preface saying so. Inside a step, `git push`, `gh pr ready`,
+  `gh pr merge` and `gh pr create` are refused. Origin's head for the branch is
+  checked before and after every step, and a step it moved under is refused
+  and parked.
+- **Size:** a brief is capped at 4 KB for the steps, with a notice; the whole of
+  it is kept beside.
+- **A failed lookup loses nothing:** a `--brief` whose PR lookup still fails after
+  three tries goes back on the queue with its brief as the note.
+- **Expiry:** a build's brief ends when the ticket ships, or when a repair round
+  starts.
+- **Person-caused parks** are asked through `owner-question.sh` (the owner's label
+  and channel). The answer comes back on the queue as a brief. The hold label is
+  only the fallback when the question cannot be asked.
+
+Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
 window — never the session history. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and

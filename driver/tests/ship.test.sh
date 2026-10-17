@@ -506,4 +506,18 @@ rc=0; driver_step_ship 146 >/dev/null 2>&1 || rc=$?
 want "it ships"                              "0" "$rc"
 want "and the brief is cleared"              "" "$(driver_state_get 146 run_brief)"
 
+echo "--- a repair that changed nothing says so on the PR, not 'Repaired' ---"
+repair_wt 147 96
+: > "$GH_LOG"
+rc=0; driver_step_ship 147 >/dev/null 2>&1 || rc=$?
+want "it ships"                              "0" "$rc"
+want_in "the comment says it re-checked, and changed nothing" 'pr comment 96 .*Re-checked by the driver.*nothing was red or clashing' "$(tr '\n' ' ' < "$GH_LOG")"
+want_not_in "and does not claim a repair"    'pr comment 96 .*Repaired by the driver' "$(tr '\n' ' ' < "$GH_LOG")"
+repair_wt 148 97
+driver_state_put 148 repair '{"step":"repair","status":"unchanged","reason":"the PR already keeps the old label"}'
+: > "$GH_LOG"
+rc=0; driver_step_ship 148 >/dev/null 2>&1 || rc=$?
+want_in "an unchanged answer is named as one" 'pr comment 97 .*Re-checked by the driver.*unchanged: the PR already keeps the old label' "$(tr '\n' ' ' < "$GH_LOG")"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

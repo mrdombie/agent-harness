@@ -298,7 +298,18 @@ PRBODY
     return "$DRIVER_E_REFUSED"
   fi
   if [ "$mode" = repair ]; then
-    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "Repaired by the driver at $head: $(jq -r '.cause // .reason // "see the run log"' "$(driver_state_dir "$t")/steps/repair.json" 2>/dev/null || echo "see the run log"). Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")')." >/dev/null 2>&1 || true
+    # SAID AS WHAT IT WAS. A repair step that made no model call (nothing red, nothing
+    # clashing, no caller brief) and one answered "unchanged" changed nothing, and a
+    # comment calling them repaired would be the PR claiming a fix nobody made.
+    local rj said; rj="$(driver_state_dir "$t")/steps/repair.json"
+    if [ ! -f "$rj" ]; then
+      said="Re-checked by the driver at $head: nothing was red or clashing, so nothing was changed; the gates and the review ran again."
+    elif [ "$(jq -r '.status // ""' "$rj" 2>/dev/null)" = unchanged ]; then
+      said="Re-checked by the driver at $head: unchanged: $(jq -r '.reason // "no reason given"' "$rj"). The gates and the review ran again."
+    else
+      said="Repaired by the driver at $head: $(jq -r '.cause // "see the run log"' "$rj" 2>/dev/null || echo "see the run log")."
+    fi
+    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")')." >/dev/null 2>&1 || true
   fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true

@@ -58,9 +58,13 @@ act. The build step sending ITSELF back is the other case and goes back to
 `build`, because `fix` is later in the order and the task is not built yet.
 
 `park` is not in the order. It is the exit from every other step: push, draft
-pull request, resume brief, hold label, release the claim — in that order,
-because an unpushed branch is the only thing a park can lose and a claim
+pull request, resume brief, the question, labels, release the claim — in that
+order, because an unpushed branch is the only thing a park can lose and a claim
 released early is a ticket a peer can take against a branch that is not there.
+A question only a person can answer goes through `scripts/owner-question.sh`
+(`DRIVER_OWNER_QUESTION`): the owner's label and channel, and the answer back on
+the queue as a brief the driver carries. The hold label goes on only when the
+question could not be asked. A driver-caused park asks nobody.
 
 ## A repair: `build-ticket <ticket> --repair <brief>`
 
@@ -112,9 +116,21 @@ again, so a repair has its own order (`DRIVER_REPAIR_STEPS`):
 - **The model is called for a conflict, a red check, an unreadable rollup, or
   a caller's brief.** For example, an owner's answer on a ticket that has a PR is
   read even when the PR is green. It may answer `unchanged`, with a reason, but
-  only when nothing is red, nothing clashes, and it committed nothing. A note-less
-  healing run on a green, clean PR makes no model call. The gates and the review
-  still run, so an approved merge sent here is judged like any other.
+  only when nothing is red, nothing clashes, and it committed nothing.
+  `unchanged` parks with a question for a person, never a ship, and it asks once
+  per PR head: the answer, coming back as a new brief at the same head, is acted
+  on. A note-less healing run on a green, clean PR makes no model call. The gates
+  and the review still run, so an approved merge sent here is judged like any
+  other.
+- **A caller's brief reaches every step.** In repair mode the brief goes to fix,
+  self-check and review as well as repair, so the reviewer can judge whether it
+  was met. In a build it goes to every AI step as `run_brief`, and it ends when
+  the ticket ships or a repair round starts.
+- **A step never pushes.** Origin's head for the branch is read before and after
+  every AI step, and a step it moved under refuses and parks. That is the
+  guarantee. Inside steps, `git push` and `gh pr ready`/`merge`/`create` are also
+  refused (a PATH shim), and every brief carries a preface saying a brief's
+  push, ready, arm or hand-off instruction is void.
 - **No conflict marker survives an interruption.** A park never commits a merge
   in progress. `reenter` resumes a recorded tree whose merge of the trunk is
   unfinished. `repair` and `ship` refuse markers read from the branch's own diff,
