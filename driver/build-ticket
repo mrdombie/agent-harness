@@ -65,6 +65,19 @@ done
 case "$TICKET" in *[!0-9]*) die "'$TICKET' is not a ticket number" ;; esac
 export DRIVER_TICKET="$TICKET"
 
+# driver_keep_brief <src> <dst> — the brief onto the record, capped. Every AI step is
+# handed it, so a brief of any size is paid for on every call; past the cap the steps
+# read its first DRIVER_BRIEF_MAX_BYTES with a notice saying so, and the whole of it
+# is kept beside, at <dst minus .md>.full.md.
+driver_keep_brief() {
+  local src="$1" dst="$2" max="${DRIVER_BRIEF_MAX_BYTES:-4096}" n
+  n=$(wc -c < "$src" | tr -d ' ')
+  if [ "${n:-0}" -le "$max" ]; then cp "$src" "$dst"; return; fi
+  cp "$src" "${dst%.md}.full.md"
+  { head -c "$max" "$src"; printf '\n\n[… this brief was %s bytes; only its first %s are here. The whole of it: %s]\n' "$n" "$max" "${dst%.md}.full.md"; } > "$dst"
+  driver_say "   brief: $n bytes, cut to $max for the steps; the whole of it is at ${dst%.md}.full.md"
+}
+
 # ---- what a run was handed ----------------------------------------------------
 # `--repair-class <class>` is a healing run that came with no note: still a repair of
 # the open PR, never a fresh build, with a brief that says so. `--brief <file>` is a
@@ -81,7 +94,23 @@ if [ -n "$REPAIR_CLASS" ]; then
 fi
 if [ -n "$RUN_BRIEF" ]; then
   [ -s "$RUN_BRIEF" ] || die "--brief names '$RUN_BRIEF', which is missing or empty — a run whose brief is lost would build as if it had none"
-  _prs=$(driver_open_prs_for "$TICKET") || die "--brief: could not ask GitHub whether #$TICKET has an open pull request, so whether this is a repair or a build is unknown"
+  # ASKED A FEW TIMES, AND NEVER LOST. The coordinator took the queue entry off when it
+  # spawned this run, so an exit here with the brief dropped would lose an owner's
+  # answer. A lookup that keeps failing puts the ticket back on the queue, with its
+  # brief as the note, and says so.
+  _tries=0
+  until _prs=$(driver_open_prs_for "$TICKET"); do
+    _tries=$((_tries+1))
+    if [ "$_tries" -ge "${DRIVER_LOOKUP_TRIES:-3}" ]; then
+      if bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(cat "$RUN_BRIEF")" --front >/dev/null 2>&1; then
+        die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries) — #$TICKET is back on the queue at the front with its brief as the note"
+      fi
+      mkdir -p "$DRIVER_DIR/$TICKET"; cp "$RUN_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null
+      die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries), and could not put it back on the queue — the brief is kept at $DRIVER_DIR/$TICKET/brief-unrouted.md"
+    fi
+    sleep "${DRIVER_LOOKUP_RETRY_SEC:-5}"
+  done
+  unset _tries
   if [ -n "$_prs" ]; then REPAIR_BRIEF="$RUN_BRIEF"; RUN_BRIEF=""; fi
   unset _prs
 fi
@@ -151,7 +180,7 @@ if [ -n "$REPAIR_BRIEF" ]; then
     _driver_state_edit "$TICKET" --arg sha "$_rb_sha" --arg h "$_rb_head" --arg src "$REPAIR_SOURCE" \
       '.counters.review = 0 | .counters.fix = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha | .repair_pr_head = $h | .repair_brief_source = $src'
     driver_state_set "$TICKET" run_brief ""   # a build's brief does not outlive into a repair
-    cp "$REPAIR_BRIEF" "$_rd/repair-brief.md"
+    driver_keep_brief "$REPAIR_BRIEF" "$_rd/repair-brief.md"
     driver_state_set "$TICKET" repair_brief "$_rd/repair-brief.md"
     driver_say "🔧 #$TICKET repair: $(head -1 "$_rd/repair-brief.md" | cut -c1-160)"
   fi
@@ -162,7 +191,7 @@ else
   # The run's brief, kept on the record: every AI step is handed it (ai-step.sh), and a
   # resumed build still has it. A later brief replaces it; a run with none keeps it.
   if [ -n "$RUN_BRIEF" ]; then
-    cp "$RUN_BRIEF" "$(driver_state_dir "$TICKET")/run-brief.md"
+    driver_keep_brief "$RUN_BRIEF" "$(driver_state_dir "$TICKET")/run-brief.md"
     driver_state_set "$TICKET" run_brief "$(driver_state_dir "$TICKET")/run-brief.md"
     driver_say "📝 #$TICKET brief: $(head -1 "$RUN_BRIEF" | cut -c1-160)"
   fi

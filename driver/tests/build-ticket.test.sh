@@ -736,4 +736,36 @@ printf 'REPAIR on PR #65: red\n' > "$FIX/brief-i.md"
 bt 426 --repair "$FIX/brief-i.md" >/dev/null
 want "the new repair round cleared it"      "" "$(driver_state_get 426 run_brief)"
 
+echo "--- a --brief whose lookup keeps failing is retried, then put back on the queue with its note ---"
+# The coordinator took the queue entry off when it spawned; an exit 2 here with the
+# brief gone would lose an owner's answer.
+reset_fakes; echo "pr list" > "$FIX/gh-fail"; : > "$GH_LOG"
+printf 'The owner answered q7: two columns.\n' > "$FIX/brief-j.md"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 bt 427 --brief "$FIX/brief-j.md"); rc=$?
+rm -f "$FIX/gh-fail"
+want "it still refuses"                      "2" "$rc"
+want "after asking three times"              "3" "$(grep -c '^pr list' "$GH_LOG")"
+want "the ticket is back on the queue"       "427" "$(jq -r '.tickets[]? | select(.n == 427) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "with its note"                         "The owner answered q7: two columns." "$(jq -r '.tickets[]? | select(.n == 427) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want_in "and it says so"                     'back on the queue' "$out"
+reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
+echo "pr list" > "$FIX/gh-once"
+cat > "$BIN/gh-flaky" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "pr list" ] && [ -f "$FIX/gh-once" ]; then rm -f "$FIX/gh-once"; echo "flake" >&2; exit 1; fi
+exec "$BIN/gh" "$@"
+SH
+chmod +x "$BIN/gh-flaky"
+SWARM_GH="$BIN/gh-flaky" DRIVER_LOOKUP_RETRY_SEC=0 bt 428 --brief "$FIX/brief-j.md" >/dev/null; rc=$?
+want "one failed lookup, then an answer: it runs" "0" "$rc"
+
+echo "--- a brief over 4 KB is cut, says so, and keeps the whole of it beside ---"
+reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
+head -c 6000 /dev/zero | tr '\0' 'x' > "$FIX/brief-big.md"
+bt 429 --brief "$FIX/brief-big.md" >/dev/null
+RB=$(driver_state_get 429 run_brief)
+want "what the steps read is capped"         "yes" "$([ "$(wc -c < "$RB")" -lt 4400 ] && echo yes || echo "no ($(wc -c < "$RB"))")"
+want_in "with a notice a reader sees"        'brief was 6000 bytes' "$(cat "$RB")"
+want "and the whole brief is kept"           "6000" "$(wc -c < "${RB%.md}.full.md" 2>/dev/null | tr -d ' ')"
+
 exit $FAILED
