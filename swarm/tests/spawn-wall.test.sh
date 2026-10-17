@@ -2,7 +2,7 @@
 # spawn-wall.test.sh — nothing starts a model run into the plan's usage limit.
 # spawn-claim.sh is the one door every spawner goes through (the tick, the merge
 # lane, repair-watch, queue drain, a person's shell), so it refuses under the
-# hold before it hands over to the project's copy. The judge waits out the hold
+# hold before anything else runs. The judge waits out the hold
 # too, and a judge the wall stopped mid-run leaves its event to be judged again.
 #
 # Measured 2026-10-15/16: eleven claim runs started into a hold that was already

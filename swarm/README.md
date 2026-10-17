@@ -152,7 +152,7 @@ environment variable of the same name in capitals. The defaults name no project.
 | Key | Default | What it is |
 |---|---|---|
 | `swarm.cap` | 3 | Agents at once, per programme |
-| `swarm.builderMcpServers` | `{}` | The only MCP servers a spawned builder or judge loads (an `mcpServers` object). Every `claude -p` the spawner starts, including one started by a project's own spawn-claim.sh it hands over to, gets `--strict-mcp-config` with this list, so user, project and plugin servers stay out. Interactive (`--fg`) sessions keep theirs |
+| `swarm.builderMcpServers` | `{}` | The only MCP servers a spawned builder or judge loads (an `mcpServers` object). Every `claude -p` the spawner starts, including one started by another installed copy of the kit it re-execs into, gets `--strict-mcp-config` with this list, so user, project and plugin servers stay out. Interactive (`--fg`) sessions keep theirs |
 | `labels.batched` | `status:batched` | A child of a batch ticket. The batch's one PR builds it, so every spawner treats the label as a stop (`swarm_blocking_labels`); `/agent-harness:finish` closes the children the batch ticket lists once its PR merges (`scripts/close-batch-children.sh`) |
 | `swarm.minCpuIdle` | 15 | Busy below this CPU idle percent, the median of the recent samples (`top` on macOS, `/proc/stat` on Linux, ~2s) — the scheduler, the coordinator tick, repair-watch, and every session path through `scripts/machine-gate.sh` |
 | `swarm.usageCeiling` | 0.95 | Spawn nothing while the newest run's latest usage reading puts any plan window at or over this share, until that window resets — a run started there dies at the wall mid-work |
