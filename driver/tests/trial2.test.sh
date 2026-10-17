@@ -205,8 +205,13 @@ printf 'work\n' > "$FIX/wt404/w.txt"
 driver_state_init 404 --worktree "$FIX/wt404" --branch "tkt-404/work"
 : > "$GH_LOG"
 driver_park 404 "a refusal a person must answer" "which is it?" person >/dev/null 2>&1
-want_in "the ticket is marked parked" 'add-label status:parked' "$(cat "$GH_LOG")"
-want_in "and a question goes to the owner's loop" 'add-label needs:owner-decision' "$(cat "$GH_LOG")"
+# A park that asks wears the owner's label as its stop, not status:parked beside it:
+# the answer removes the owner's label, and status:parked would block every spawn.
+want_in "a question goes to the owner's loop, and that label is its stop" 'add-label needs:owner-decision' "$(cat "$GH_LOG")"
+want_not_in "not status:parked beside it"   'add-label status:parked' "$(cat "$GH_LOG")"
+: > "$GH_LOG"
+driver_park 404 "a gate said no" "lint is red" driver >/dev/null 2>&1
+want_in "a park nobody is asked about is marked parked" 'add-label status:parked' "$(cat "$GH_LOG")"
 want_not_in "not the pixel sign-off hold"     'add-label needs:human-approval' "$(cat "$GH_LOG")"
 
 echo "--- T2-7 · a park the driver caused does not hide behind a human-only label ---"

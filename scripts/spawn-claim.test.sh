@@ -115,7 +115,7 @@ G -C "$STORE" fetch -q origin develop
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
 cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-mcp.sh" \
-   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT_DIR/gh-batch.sh" "$SUT/"
+   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT_DIR/gh-batch.sh" "$SUT_DIR/branch-ticket.sh" "$SUT/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
 #!/usr/bin/env bash

@@ -143,10 +143,10 @@ fi
 # the driver's own build left (a park) stays on the driver, which resumes that build.
 if [ "$BUILDER" = driver ] && [ "$DRIVER_MODE" != build ] \
    && ! jq -e '(.done // []) | index("start") != null' "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET/state.json" >/dev/null 2>&1 \
-   && [ -f "$SCRIPT_DIR/gh-batch.sh" ] \
+   && [ -f "$SCRIPT_DIR/gh-batch.sh" ] && . "$SCRIPT_DIR/branch-ticket.sh" \
    && _draft=$(bash -c '. "$1" || exit 1; gh_open_prs "$2"' _ "$SCRIPT_DIR/gh-batch.sh" "${SWARM_PRS_MAX_AGE:-300}" 2>/dev/null \
         | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$TICKET" \
-            '[.[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)")) and .isDraft == true) | .number] | first // empty' 2>/dev/null) \
+            "$BRANCH_TICKET_JQ"'[.[] | select((.headRefName | branch_is_ticket($pre; $t)) and .isDraft == true) | .number] | first // empty' 2>/dev/null) \
    && [ -n "$_draft" ]; then
   BUILDER=prose; DRIVER_MODE=build
   BUILDER_WHY="its open PR #$_draft is a draft the driver did not build: the prose claim resumes it, never a repair"
