@@ -186,6 +186,12 @@ SH
   export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
   export SWARM_SPAWN="$BIN/spawn" SWARM_GH="$BIN/gh" SWARM_CURL="$BIN/curl"
   export SWARM_LOAD=1 SWARM_IDLE=90
+  # The machine's own user systemd is never asked: a suite on a Linux box with a
+  # user manager would otherwise write and enable real units. A suite that wants
+  # the systemd backend points these at its own stubs.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/no-systemd"; chmod +x "$BIN/no-systemd"
+  export SWARM_SYSTEMCTL="$BIN/no-systemd" SWARM_LOGINCTL="$BIN/no-systemd"
+  export SWARM_SYSTEMD_DIR="$FIX/systemd-user"
   # Each case writes its own PRs: the shared copy is read fresh unless a case says otherwise.
   export NEEDSME_PRS_MAX_AGE=0 SWARM_PRS_MAX_AGE=0 SWARM_STATUS_PRS_MAX_AGE=0
   unset GH_TOKEN
