@@ -115,7 +115,7 @@ G -C "$STORE" fetch -q origin develop
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
 cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-mcp.sh" \
-   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT/"
+   "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT_DIR/gh-batch.sh" "$SUT/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -599,6 +599,28 @@ CLAIM_CLASS=repair dcase 4973 4973
   || bad "a note-less repair ran build-ticket '$(dseen args)'"
 CLAIM_CLASS=new dcase 4975 4975
 [ "$(dseen args)" = 4975 ] && ok "a new-class run with no brief is a plain build" || bad "a new-class run ran build-ticket '$(dseen args)'"
+
+# 11f. a draft PR the driver never built is not a repair: the prose claim resumes it.
+# Readied by a repair, auto-merge would land work its author left unfinished.
+cat > "$SB/bin/gh-prs" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in "pr list") cat "$SPAWN_TEST_PRS" 2>/dev/null || echo '[]' ;; *) exit 1 ;; esac
+STUB
+chmod +x "$SB/bin/gh-prs"
+export SWARM_GH="$SB/bin/gh-prs" SWARM_PRS_MAX_AGE=0 SPAWN_TEST_PRS="$OUT/prs.json"
+echo '[{"number":81,"headRefName":"tk-4981-x","isDraft":true},{"number":82,"headRefName":"tk-4982-x","isDraft":false},{"number":83,"headRefName":"tk-4983-x","isDraft":true}]' > "$OUT/prs.json"
+CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #81: red" dcase 4981 4981
+[ ! -f "$OUT/driver-seen" ] && [ -f "$OUT/seen" ] && ok "a repair of a draft the driver never built runs the prose claim" \
+  || bad "a repair of an unbuilt draft ran build-ticket '$(dseen args)'"
+grep -q 'draft the driver did not build' "$STATE"/logs/claim-4981-*.log && ok "and the run log says why" || bad "the run log does not say why it is prose"
+CLAIM_EXTRA="The owner answered: B" dcase 4983 4983
+[ ! -f "$OUT/driver-seen" ] && ok "a briefed run on an unbuilt draft is prose too" || bad "a briefed run on an unbuilt draft ran build-ticket '$(dseen args)'"
+CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #82: red" dcase 4982 4982
+case "$(dseen args)" in "4982 --repair "*) ok "a ready PR is still the driver's repair" ;; *) bad "a ready PR's repair ran '$(dseen args)'" ;; esac
+mkdir -p "$STATE/driver/4983"; echo '{"mode":"build","done":["start","plan"]}' > "$STATE/driver/4983/state.json"
+CLAIM_EXTRA="The owner answered: B" dcase 4983 4983
+case "$(dseen args)" in "4983 --brief "*) ok "a draft the driver's own build left stays on the driver" ;; *) bad "the driver's own draft ran '$(dseen args)'" ;; esac
+unset SWARM_GH SWARM_PRS_MAX_AGE SPAWN_TEST_PRS
 
 # 11e. --fg with a ticket runs the step driver in this terminal (the operator, 2026-10-17);
 # pick-next stays the interactive prose claim. The same brief channel as a detached run.

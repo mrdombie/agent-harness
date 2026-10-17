@@ -85,9 +85,24 @@ driver_keep_brief() {
 # class from a requeue that saw the PR). Routed on the PR, the walk would skip the
 # steps the build had left — the design compare a person sanctions, the build's own
 # red-then-green proof — and ship it. The record says which walk this is; the PR does not.
+# AND THE RECORD IS CHECKED AGAINST THE LIVE PR FIRST. A record a person or /claim has
+# moved on from (another branch, a PR made ready, a head with commits the record never
+# saw) is stale: it moves aside, and the run is a fresh repair round from origin.
 UNSHIPPED_BUILD=0
-if jq -e '(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' \
-     "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1; then
+_unshipped='(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)'
+if { [ -n "$REPAIR_CLASS" ] || [ -n "$REPAIR_BRIEF" ] || [ -n "$RUN_BRIEF" ]; } \
+   && jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1 \
+   && _live=$(driver_open_prs_for "$TICKET") && [ -n "$_live" ]; then
+  _stale=$(driver_record_diverged "$TICKET" "$(printf '%s\n' "$_live" | head -1)")
+  if [ -n "$_stale" ]; then
+    _aside="$DRIVER_DIR/$TICKET.stale-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    mv "$DRIVER_DIR/$TICKET" "$_aside"
+    echo "build-ticket: #$TICKET's record is stale — $_stale. It is kept at $_aside; this run is a fresh repair round from origin." >&2
+  fi
+  unset _stale _aside
+fi
+unset _live
+if jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1; then
   UNSHIPPED_BUILD=1
   if [ -n "$REPAIR_CLASS" ]; then
     echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build, not a $REPAIR_CLASS repair" >&2
@@ -125,7 +140,7 @@ elif [ -n "$RUN_BRIEF" ]; then
   until _prs=$(driver_open_prs_for "$TICKET"); do
     _tries=$((_tries+1))
     if [ "$_tries" -ge "${DRIVER_LOOKUP_TRIES:-3}" ]; then
-      if bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(cat "$RUN_BRIEF")" --front >/dev/null 2>&1; then
+      if bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$RUN_BRIEF")" --front >/dev/null 2>&1; then
         die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries) — #$TICKET is back on the queue at the front with its brief as the note"
       fi
       mkdir -p "$DRIVER_DIR/$TICKET"; cp "$RUN_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null
@@ -148,6 +163,17 @@ fi
 # missing would be a guess at what is wrong.
 if [ -n "$REPAIR_BRIEF" ]; then
   [ -s "$REPAIR_BRIEF" ] || die "--repair names '$REPAIR_BRIEF', which is missing or empty — a repair without its brief would be a guess at what is wrong"
+  # A DRAFT THE DRIVER NEVER BUILT IS NOT A REPAIR: readied and armed, it would land
+  # work its author left unfinished. The prose claim resumes it; a brief goes back on
+  # the queue so it is not lost, and the next spawn routes it there.
+  if ! driver_built "$TICKET" \
+     && [ "$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f5)" = true ]; then
+    if [ "$REPAIR_SOURCE" = caller ]; then
+      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$REPAIR_BRIEF")" --front >/dev/null 2>&1 \
+        || { mkdir -p "$DRIVER_DIR/$TICKET"; cp "$REPAIR_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null; }
+    fi
+    die "#$TICKET has an open pull request that is a draft the driver did not build, and a repair never readies one. The prose claim resumes it; a brief the caller sent is back on the queue, or kept at $DRIVER_DIR/$TICKET/brief-unrouted.md."
+  fi
   DRIVER_STEPS="${DRIVER_REPAIR_STEPS:-reenter repair fix self-check review record ship}"
   DRIVER_ALWAYS_STEPS="${DRIVER_ALWAYS_STEPS:-reenter}"
 fi

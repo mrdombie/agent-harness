@@ -828,4 +828,60 @@ bt 505 --brief "$FIX/brief-k.md" >/dev/null
 want "a shipped build with a PR: the repair order" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a stale record does not outrank the live PR: a fresh repair round from origin ---"
+# The record outranks the PR only while it is that PR's: the same branch, still the
+# draft its park opened, its head inside the record's work. A person or /claim moved
+# on, and resuming the old build would rebuild over their work.
+park_at_compare 511
+jq -n '[{number:73, headRefName:"tkt-511/work", headRefOid:"d1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 511 --repair-class repair); rc=$?
+want "a PR made ready since: the repair order" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_in "and it says the record is stale"      'record is stale.*ready' "$out"
+want "the old record is kept aside"            "1" "$(ls -d "$STATE/driver/511.stale-"* 2>/dev/null | wc -l | tr -d ' ')"
+park_at_compare 512
+driver_state_set 512 branch tkt-512/work
+jq -n '[{number:74, headRefName:"tkt-512-other", headRefOid:"d1", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 512 --repair-class repair); rc=$?
+want_in "a PR on another branch: stale"        'record is stale.*tkt-512/work.*tkt-512-other' "$out"
+park_at_compare 513
+git -C "$REPO" commit -q --allow-empty -m "somebody else's commit"
+moved=$(git -C "$REPO" rev-parse HEAD); git -C "$REPO" reset -q --hard HEAD~1
+driver_state_set 513 worktree "$REPO"
+jq -n --arg h "$moved" '[{number:75, headRefName:"tkt-513/work", headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 513 --repair-class repair); rc=$?
+want_in "a PR head the record never saw: stale" 'record is stale.*moved since' "$out"
+park_at_compare 514
+driver_state_set 514 worktree "$REPO"
+jq -n --arg h "$(git -C "$REPO" rev-parse HEAD)" '[{number:76, headRefName:"tkt-514/work", headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 514 --repair-class repair); rc=$?
+want "the record's own draft at its own head: the build resumes" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_not_in "and is not called stale"          'stale' "$out"
+
+echo "--- a draft PR the driver never built is never repaired: the brief goes back on the queue ---"
+reset_fakes; rm -rf "$STATE/coordinator"
+jq -n '[{number:77, headRefName:"tkt-515-x", headRefOid:"p1", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+printf 'Coordinator note (repair): REPAIR on PR #77: red\n' > "$FIX/brief-m.md"
+out=$(bt 515 --repair "$FIX/brief-m.md"); rc=$?
+want "it refuses before any step"              "2" "$rc"
+want "and nothing ran"                         "" "$(cat "$RAN")"
+want_in "naming the draft"                     'draft the driver did not build' "$out"
+want "the brief is back on the queue, unwrapped" "REPAIR on PR #77: red" "$(jq -r '.tickets[]? | select(.n == 515) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+reset_fakes
+out=$(bt 515 --repair-class repair); rc=$?
+want "a class run on it refuses too"           "2" "$rc"
+printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- a brief put back on the queue is not wrapped twice ---"
+reset_fakes; rm -rf "$STATE/coordinator"; echo "pr list" > "$FIX/gh-fail"
+printf 'Coordinator note (new): The owner answered q9: yes.\n' > "$FIX/brief-n.md"
+DRIVER_LOOKUP_RETRY_SEC=0 bt 516 --brief "$FIX/brief-n.md" >/dev/null
+rm -f "$FIX/gh-fail"
+want "the note is the caller's words alone"    "The owner answered q9: yes." "$(jq -r '.tickets[]? | select(.n == 516) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+
+echo "--- the open PRs come from the shared copy while it is young ---"
+reset_fakes; jq -n '[{number:78, headRefName:"tkt-517-x", isDraft:false}]' > "$FIX/gh/prs.json"; : > "$GH_LOG"; rm -f "$STATE/swarm/prs.json"
+( . "$HERE/../driver-env.sh"; DRIVER_PRS_MAX_AGE=300; driver_open_prs_for 517 >/dev/null; driver_open_prs_for 517 >/dev/null )
+want "two reads, one call to GitHub"           "1" "$(grep -c '^pr list' "$GH_LOG")"
+printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

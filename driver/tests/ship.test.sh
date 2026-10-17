@@ -520,4 +520,21 @@ rc=0; driver_step_ship 148 >/dev/null 2>&1 || rc=$?
 want_in "an unchanged answer is named as one" 'pr comment 97 .*Re-checked by the driver.*unchanged: the PR already keeps the old label' "$(tr '\n' ' ' < "$GH_LOG")"
 rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a repair never readies a draft the driver did not build ---"
+# 27 open drafts had no driver record; a repair readied and armed them, landing work
+# their authors had left unfinished.
+repair_wt 149 98; ORIG=$(git -C "$FIX/wt149" rev-parse HEAD)
+printf 'fix\n' > "$FIX/wt149/r149.txt"; git -C "$FIX/wt149" add r149.txt
+git -C "$FIX/wt149" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: repair"
+printf '[{"number":98,"isDraft":true}]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
+out=$(driver_step_ship 149 2>&1); rc=$?
+want "a draft with no build on the record refuses" "24" "$rc"
+want "nothing reached origin"                "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-149/work)"
+want_not_in "never readied, never armed"     'pr ready|pr merge' "$(cat "$GH_LOG")"
+want_in "the park note says why"             'draft the driver did not build' "$(driver_state_get 149 park_note)"
+driver_state_done 149 start
+rc=0; driver_step_ship 149 >/dev/null 2>&1 || rc=$?
+want "the driver's own draft (a build ran start) ships" "0" "$rc"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
 exit $FAILED

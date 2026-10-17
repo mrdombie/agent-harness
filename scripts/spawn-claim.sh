@@ -138,6 +138,20 @@ if [ -n "$TICKET" ]; then
     esac
   fi
 fi
+# A DRAFT PR THE DRIVER NEVER BUILT IS NOT A REPAIR. The driver would ready it and arm
+# auto-merge on work its author left unfinished, so the prose claim resumes it. A draft
+# the driver's own build left (a park) stays on the driver, which resumes that build.
+if [ "$BUILDER" = driver ] && [ "$DRIVER_MODE" != build ] \
+   && ! jq -e '(.done // []) | index("start") != null' "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET/state.json" >/dev/null 2>&1 \
+   && [ -f "$SCRIPT_DIR/gh-batch.sh" ] \
+   && _draft=$(bash -c '. "$1" || exit 1; gh_open_prs "$2"' _ "$SCRIPT_DIR/gh-batch.sh" "${SWARM_PRS_MAX_AGE:-300}" 2>/dev/null \
+        | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$TICKET" \
+            '[.[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)")) and .isDraft == true) | .number] | first // empty' 2>/dev/null) \
+   && [ -n "$_draft" ]; then
+  BUILDER=prose; DRIVER_MODE=build
+  BUILDER_WHY="its open PR #$_draft is a draft the driver did not build: the prose claim resumes it, never a repair"
+fi
+unset _draft
 DRIVER_BIN="${SPAWN_CLAIM_DRIVER:-$KIT_ROOT/driver/build-ticket}"
 if [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
   echo "spawn-claim: no step driver at $DRIVER_BIN — set swarm.builder to \"prose\" in harness.json to build without it" >&2

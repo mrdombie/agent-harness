@@ -105,6 +105,19 @@ out=$(driver_step_reenter 201 2>&1); rc=$?
 want "it refuses"                     "24" "$rc"
 want_in "and says the two diverged"   'diverged' "$out"
 
+echo "--- a draft PR the driver never built is not re-entered as a repair ---"
+pr_branch 230
+fix_issue 230 OPEN "status:in-review"
+prs "[$(pr_json 60 tkt-230/work | jq -c '.isDraft = true')]"
+out=$(driver_step_reenter 230 2>&1); rc=$?
+want "it refuses"                     "24" "$rc"
+want_in "naming the draft"            'draft' "$out"
+want "and takes no claim"             "" "$(awk '$1==230{print $1}' "$CLAIMS")"
+want_in "the park note sends it to the prose claim" 'prose claim' "$(driver_state_get 230 park_note)"
+driver_state_done 230 start
+rc=0; driver_step_reenter 230 >/dev/null 2>&1 || rc=$?
+want "a draft the driver's own build left is re-entered" "0" "$rc"
+
 echo "--- no open pull request: nothing to repair, and nothing is built fresh ---"
 fix_issue 202 OPEN "status:in-review"; prs "[$(pr_json 32 tkt-2020/other)]"
 out=$(driver_step_reenter 202 2>&1); rc=$?

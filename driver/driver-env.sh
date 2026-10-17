@@ -240,6 +240,7 @@ driver_push() {
   git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
+  [ "$rc" -ne 0 ] || driver_state_set "$t" pushed_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   if [ "$rc" -ne 0 ]; then
     DRIVER_PUSH_WHY=$(grep -E '✗|^error:|^fatal:|^remote: error' "$f" 2>/dev/null | sed 's/^[[:space:]]*//' | head -5 | tr '\n' ' ' | cut -c1-400)
     [ -n "$DRIVER_PUSH_WHY" ] || DRIVER_PUSH_WHY=$(grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -3 | tr '\n' ' ' | cut -c1-400)
@@ -467,17 +468,54 @@ driver_conflict_markers() {
 
 # driver_open_prs_for <ticket> — the open pull requests on this ticket's own
 # branches (<prefix><ticket> then a non-digit), one per line:
-#   number \t headRefName \t headRefOid \t mergeStateStatus \t isDraft
+#   number \t headRefName \t headRefOid \t mergeStateStatus \t isDraft \t mergeable
 # Returns 1 when GitHub could not be asked: an unreadable list is not "none", and
 # read as none it lets start cut a second branch beside a PR that exists.
+# Read from the shared copy (gh_open_prs) while it is DRIVER_PRS_MAX_AGE seconds old.
 driver_open_prs_for() {
   local t="${1:?driver_open_prs_for: need a ticket}" j
-  j=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --limit 200 \
-        --json number,headRefName,headRefOid,mergeStateStatus,isDraft 2>/dev/null) || return 1
-  printf '%s' "$j" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
+  j=$(driver_open_prs) || return 1
   printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
     .[] | select(.headRefName | test("^" + $pre + $t + "([^0-9]|$)"))
-    | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false)] | @tsv'
+    | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false), (.mergeable // "")] | @tsv'
+}
+
+# driver_open_prs — every open pull request as a JSON array, from the shared copy.
+driver_open_prs() {
+  local j
+  j=$(gh_open_prs "${DRIVER_PRS_MAX_AGE:-60}" 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
+  printf '%s\n' "$j"
+}
+
+# driver_brief_note <brief-file> — the brief as a queue note, without the coordinator's
+# own "Coordinator note (<class>): " wrapper, which the next spawn adds again.
+driver_brief_note() { sed '1s/^Coordinator note ([a-z-]*): //' "$1"; }
+
+# driver_record_diverged <ticket> <open-pr row> — why the record is not this PR's,
+# or nothing when it is: the same branch, still a draft, and the PR's head inside the
+# record's work (its tree's head, else the head it last pushed, when it has either).
+driver_record_diverged() {
+  local t="$1" pb ph pd rb wt rh where
+  IFS=$'\t' read -r _ pb ph _ pd _ <<<"$2"
+  rb=$(driver_state_get "$t" branch); wt=$(driver_state_get "$t" worktree)
+  if [ -n "$rb" ] && [ "$rb" != "$pb" ]; then printf 'the record is on %s and the PR on %s' "$rb" "$pb"; return; fi
+  if [ "$pd" != true ]; then printf 'the PR is ready, and a build the driver left unshipped leaves a draft'; return; fi
+  where="$MAIN_REPO"; rh=""
+  if [ -n "$wt" ] && [ -d "$wt" ]; then where="$wt"; rh=$(git -C "$wt" rev-parse HEAD 2>/dev/null); fi
+  [ -n "$rh" ] || rh=$(driver_state_get "$t" pushed_head)
+  # No tree and no pushed head on the record: the head cannot be held against it.
+  [ -z "$rh" ] || [ -z "$ph" ] || [ "$ph" = "$rh" ] && return 0
+  git -C "$where" cat-file -e "$ph^{commit}" 2>/dev/null \
+    || git -C "$where" fetch -q origin "+refs/heads/$pb:refs/remotes/origin/$pb" 2>/dev/null || true
+  git -C "$where" merge-base --is-ancestor "$ph" "$rh" 2>/dev/null \
+    || printf 'the PR head %s is not in the record'"'"'s work (%s): it moved since' "$(printf '%s' "$ph" | cut -c1-8)" "$(printf '%s' "$rh" | cut -c1-8)"
+}
+
+# driver_built <ticket> — 0 when this ticket's record holds a build the driver ran.
+# Only a build runs `start`; a repair round reopens its own steps and never that one.
+driver_built() {
+  jq -e '(.done // []) | index("start") != null' "$DRIVER_DIR/$1/state.json" >/dev/null 2>&1
 }
 
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent

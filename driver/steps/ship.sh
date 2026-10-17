@@ -97,13 +97,21 @@ driver_step_ship() { # <ticket>
   # would be a second PR for one ticket.
   local mode open_pr="" REPAIR_BODY=""; mode=$(driver_state_get "$t" mode)
   if [ "$mode" = repair ]; then
-    open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
+    local open_row
+    open_row=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number,isDraft -q '.[0] // empty | "\(.number) \(.isDraft // false)"' 2>/dev/null) || {
       driver_say "✋ ship: could not ask GitHub whether the pull request for $branch is still open."
       driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
       return "$DRIVER_E_REFUSED"; }
+    open_pr=${open_row%% *}
     if [ -z "$open_pr" ]; then
       driver_say "✋ ship: the pull request this repair was for is no longer open on $branch. A repair never opens a new one."
       driver_state_set "$t" park_note "the pull request for $branch closed while it was being repaired"
+      return "$DRIVER_E_REFUSED"
+    fi
+    # A DRAFT THE DRIVER NEVER BUILT IS NOT ITS TO READY: whoever left it a draft did so on purpose.
+    if [ "${open_row#* }" = true ] && ! driver_built "$t"; then
+      driver_say "✋ ship: PR #$open_pr is a draft and this ticket's record holds no build of the driver's — a repair does not ready or arm it, so nothing is pushed."
+      driver_state_set "$t" park_note "PR #$open_pr is a draft the driver did not build; a repair never readies it. Resume it with the prose claim."
       return "$DRIVER_E_REFUSED"
     fi
     # AND THE VERDICT IS READ BEFORE THE PUSH, not after. A repaired PR is usually
