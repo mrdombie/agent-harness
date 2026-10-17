@@ -227,4 +227,18 @@ want "and parsed"               "b.sh"  "$(jq -r '.files[0]' "$(driver_state_dir
 echo "--- the transcript is kept, because a verdict nobody can re-read is a claim ---"
 want "the run log is on disk" "1" "$([ -s "$(driver_state_dir 101)/steps/plan.log" ] && echo 1)"
 
+echo "--- a run's brief is put in front of every step, verbatim ---"
+# An owner's answer or a resume note reaches a build that has no PR this way; a
+# step that never saw it would build as if the owner had not answered.
+driver_state_init 271
+printf 'The owner answered q3: no export button.\n' > "$FIX/run-brief-271.md"
+driver_state_set 271 run_brief "$FIX/run-brief-271.md"
+fix_brief plan superpowers:writing-plans
+fix_ai plan '{"files":["a.sh"],"tests":["a.test.sh"]}' superpowers:writing-plans
+DRIVER_TICKET=271 driver_ai_step 271 plan >/dev/null 2>&1
+want_in "the step's prompt carries the brief" 'The owner answered q3: no export button.' "$(cat "$FIX/claude-stdin-plan.txt")"
+driver_state_init 272
+DRIVER_TICKET=272 driver_ai_step 272 plan >/dev/null 2>&1
+want_not_in "a run with no brief carries none"  'owner answered q3' "$(cat "$FIX/claude-stdin-plan.txt")"
+
 exit $FAILED

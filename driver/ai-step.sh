@@ -166,6 +166,13 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     return "$DRIVER_E_REFUSED"
   }
   local c; for c in "$@"; do [ -f "$c" ] && { printf '\n---\n'; cat "$c"; } >> "$prompt"; done
+  # THE RUN'S BRIEF, when a caller handed one (an owner's answer, a resume after a
+  # cut). Every step is given it verbatim, because a step that never saw it builds as
+  # if it had never been sent.
+  local rb; rb=$(driver_state_get "$t" run_brief)
+  if [ -n "$rb" ] && [ -s "$rb" ]; then
+    { printf '\n---\nA brief came with this run, from whoever started it. Read it before anything else, and act on it where it bears on this step:\n\n'; cat "$rb"; } >> "$prompt"
+  fi
 
   # The contract, relaxed, so the model is BOUND to the answer's shape rather than
   # asked for it in prose. Derived from the contract by prompt-schema.jq — never a
