@@ -101,8 +101,17 @@ case "$1 $2" in
     # issue-N.json, an unknown number null, the way GitHub answers one.
     query=""; for a in "$@"; do case "$a" in query=*) query="${a#query=}" ;; esac; done
     nums=$(printf '%s' "$query" | grep -oE 'i[0-9]+:issueOrPullRequest' | sed 's/^i//; s/:.*//')
-    [ -n "$nums" ] || exit 1
+    heads=$(printf '%s' "$query" | grep -oE 'b[0-9]+:pullRequests\(headRefName:"[^"]*"' | sed 's/:pullRequests(headRefName:"/ /; s/"$//')
+    [ -n "$nums$heads" ] || exit 1
     out='{}'
+    # A batched PR read: each bN alias answered from the file `pr list --head` would read.
+    while read -r alias head; do
+      [ -n "$alias" ] || continue
+      f="$FIX/gh/prs-${head//\//_}.json"; [ -f "$f" ] || f="$FIX/gh/prs-all.json"
+      if [ -f "$f" ]; then
+        out=$(jq -c --arg k "$alias" --slurpfile p "$f" '. + {($k): {nodes: [$p[0][] | {number, state}]}}' <<<"$out")
+      else out=$(jq -c --arg k "$alias" '. + {($k): {nodes: []}}' <<<"$out"); fi
+    done <<<"$heads"
     for n in $nums; do
       f="$FIX/gh/issue-$n.json"
       if [ -f "$f" ]; then

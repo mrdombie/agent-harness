@@ -135,6 +135,8 @@ recon_calls() { # <count> — that many tickets in review, each with a branch on
 }
 small=$(recon_calls 3); big=$(recon_calls 30)
 want "30 claimed tickets cost what 3 do"           "$small" "$big"
+want_in "and the branches' PRs were asked for, in one batch" 'pullRequests\(headRefName:"tkt-830/work"' "$(cat "$GH_LOG")"
+want_not_in "no PR is read one branch at a time"     '^pr list .*--head' "$(cat "$GH_LOG")"
 
 echo "--- a refused token: back off, and work from the last good read ---"
 fresh; queue_n repair 2
