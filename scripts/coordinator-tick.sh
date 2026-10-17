@@ -21,7 +21,8 @@
 #                    (coord_room) and under coordinator.cap when one is set;
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest, and every
-#                    place while coordinator.healAllAt or more reds wait; a class
+#                    place while coordinator.healAllAt or more reds are left
+#                    (waiting plus being healed); a class
 #                    with nothing spawnable lends its places to the other. The
 #                    room is re-read before each start after the first; under
 #                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
@@ -345,10 +346,12 @@ fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
-# The split needs the reds waiting, so candidates() redoes it once they are counted.
+# The split needs the reds left — waiting plus being healed — so candidates()
+# redoes it once the waiting ones are counted.
 split_places() {
-  HEAL_ALL=""; coord_heal_all "$REDS_WAITING" && HEAL_ALL=1
-  HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_WAITING"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
+  REDS_LEFT=$(( REDS_WAITING + LIVE_HEAL ))
+  HEAL_ALL=""; coord_heal_all "$REDS_LEFT" && HEAL_ALL=1
+  HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_LEFT"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
   HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
   NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
 }
@@ -477,7 +480,7 @@ else
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi
 fi
-say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $COORD_HEAL_ALL_AT+ reds waited, every place heals}"
+say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \

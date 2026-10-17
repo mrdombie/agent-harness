@@ -253,7 +253,7 @@ out=$(ticks 1)
 want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
 want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
 
-echo "--- coordinator.healAllAt: that many reds waiting and every place heals ---"
+echo "--- coordinator.healAllAt: that many reds left and every place heals ---"
 # Room for 6 in one tick, so the split alone decides who starts.
 heal_all_tick() { # <reds> [healAllAt] — reds 601.., six new 701..706, ceiling 6, share 0.25
   fresh; queue_as repair $(seq 601 $((600 + $1))); queue 701 702 703 704 705 706
@@ -264,7 +264,7 @@ slots_view() { jq -r '"\(.healing.slots) \(.new.slots) \(.healAll.at) \(.healAll
 out=$(heal_all_tick 12 10)
 want "12 reds, healAllAt 10, ceiling 6: 6 healing places"  "6 0 10 true" "$(slots_view)"
 want "and all six starts heal"             "6 0" "$(heal_new)"
-want_in "the split line says heal-all is in force" 'of 6: 0 new, 6 healing\) · heal-all: 10\+ reds waited, every place heals' "$out"
+want_in "the split line says heal-all is in force" 'of 6: 0 new, 6 healing\) · heal-all: 12 reds left \(waiting \+ healing\), at least 10, so every place heals' "$out"
 out=$(heal_all_tick 10 10)
 want "exactly healAllAt reds is heal-all"  "6 0" "$(heal_new)"
 out=$(heal_all_tick 9 10)
@@ -276,6 +276,17 @@ want "healAllAt absent: 12 reds keep today's 2 healing places" "2 4 null false" 
 want "2 heal and 4 build new"              "2 4" "$(heal_new)"
 out=$(heal_all_tick 12 ten)
 want "healAllAt not a number is off, not heal-all" "2 4 null false" "$(slots_view)"
+# A red being healed is still left: live healing runs count toward healAllAt.
+live_heal_tick() { # <waiting> — reds 601.. waiting, six repairs live 801..806, ceiling 6
+  fresh; queue_as repair $(seq 601 $((600 + $1))); queue 701
+  for t in 801 802 803 804 805 806; do live_as $t repair; done
+  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1
+}
+out=$(live_heal_tick 6)
+want "6 waiting + 6 healing, healAllAt 10: still 6 healing places" "6 0 10 true" "$(slots_view)"
+want_in "the split line counts the live ones as left" 'heal-all: 12 reds left' "$out"
+out=$(live_heal_tick 3)
+want "3 waiting + 6 healing, under healAllAt: 2 healing places" "2 4 10 false" "$(slots_view)"
 
 # Back to the fixture's reading: later sections must never read the real machine.
 export SWARM_IDLE=90; unset SWARM_CORES

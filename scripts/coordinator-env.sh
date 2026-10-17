@@ -31,7 +31,8 @@
 #                                                           has used any (trees measure 0.6-1.3 GB)
 #   coordinator.healingShare COORDINATOR_HEALING_SHARE 0.25 share of the ceiling kept for healing
 #                                                           (repair + approved-merge), rounded up
-#   coordinator.healAllAt    COORDINATOR_HEAL_ALL_AT   unset reds waiting at which every place heals;
+#   coordinator.healAllAt    COORDINATOR_HEAL_ALL_AT   unset reds left (waiting + live healing runs)
+#                                                           at which every place heals;
 #                                                           under it the healingShare split returns.
 #                                                           Unset, empty or not a whole number >0: off
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
@@ -164,9 +165,9 @@ coord_live_recently() {
   [ "$m" = did ] && [ $(( $(date +%s) - ${e:-0} )) -lt 900 ] 2>/dev/null
 }
 
-# coord_heal_all <reds-waiting> — 0 when that many reds put every place on healing.
+# coord_heal_all <reds-left> — 0 when that many reds left (waiting + healing) put every place on healing.
 coord_heal_all() { [ -n "$COORD_HEAL_ALL_AT" ] && [ "${1:-0}" -ge "$COORD_HEAL_ALL_AT" ]; }
-# coord_healing_slots <ceiling> [reds-waiting] — the whole ceiling under heal-all,
+# coord_healing_slots <ceiling> [reds-left] — the whole ceiling under heal-all,
 # else ceil(ceiling x healingShare).
 coord_healing_slots() {
   if coord_heal_all "${2:-0}"; then printf '%s\n' "$1"; return 0; fi
