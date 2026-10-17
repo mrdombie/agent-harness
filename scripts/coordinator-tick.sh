@@ -166,7 +166,9 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" "$BRANCH_TICKET_JQ"'
     .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
     | (.statusCheckRollup // []) as $c
-    | ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")))) | length) as $pending
+    # Settled = no CHECK RUN still running. A pending commit status is a wait on something
+    # outside CI (such as a design-critic verdict), so it never holds a real red back.
+    | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $pending
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $failed
     | ([.labels[]?.name] | index($hold)) as $held
     | (.headRefName | branch_ticket($pre)) as $t
