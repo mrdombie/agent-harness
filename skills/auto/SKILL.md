@@ -349,7 +349,11 @@ Print one line per completed item as you go:
 **A human approves pixels.** Any item with a visible UI change cannot merge on your
 say-so. Do not block the loop on it:
 
-1. Build the mockup / surface, post the Claude artifact URL on the ticket.
+1. Build the mockup / surface. Before the artifact URL goes anywhere, run the
+   `design-critic` agent in **picture mode** on it (the project's `design.reference`
+   beside it, and the current screen when the brief is a change). On `KIT: DRIFT`
+   redraw and run it again; only on `KIT: MATCH` post the URL on the ticket, with the
+   line `KIT: MATCH` in the same comment.
 2. Label `$HOLD_LABEL`, append to `.auto-skip` with reason `needs-human`.
 3. **Move to the next row immediately.**
 
