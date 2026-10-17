@@ -115,8 +115,9 @@ want_in "a screen change with no PR"       'rc=0$' "$(guard)"
 reset; signed -
 echo c >> "$R/apps/web/page.tsx"; g commit -qam "feat: more"
 want_in "a screen change on a PR never signed" 'rc=0$' "$(guard)"
-reset
-want_in "the signed head itself, pushed new" 'rc=0$' "$(guard 0000000000000000000000000000000000000000)"
+reset; g update-ref -d refs/remotes/origin/tkt-5-x
+want_in "the signed head, pushed where the remote has no copy of it" 'rc=0$' "$(guard 0000000000000000000000000000000000000000)"
+g fetch -q origin
 reset
 echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x"
 out=$(cd "$R" && printf 'refs/heads/tkt-5-x 0000000000000000000000000000000000000000 refs/heads/tkt-5-x %s\n' "$SIGNED" | bash "$G" origin x 2>&1; echo "rc=$?")
