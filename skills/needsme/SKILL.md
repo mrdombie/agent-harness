@@ -585,25 +585,30 @@ bash "$W" pending        # <key> \t <kind> \t <text>, one row per item not yet a
   2. `bash "$W" open <pr> <pr> …` — every PR left, in that order, in ONE call. It
      builds one local review page and opens it as one Chrome tab: a numbered
      section per PR with its title, the PR link, the preview and approved-picture
-     links, and only its newest commit's shots (png or jpg, at most 10). It prints
-     one row per PR: `<n> \t <pr> \t <shots> \t <title>`. Say in one line that the
-     page is open, with its `file://` path. Never open evidence links one by one.
+     links, and every shot its description links at the newest commit those links
+     pin, grouped by viewport and theme. It prints one row per PR:
+     `<n> \t <pr> \t <shown> \t <unloaded> \t <options> \t <title>`. Say in one
+     line that the page is open, with its `file://` URL. Never open evidence links
+     one by one.
   3. `AskUserQuestion` with **up to 4 questions per call**, one per PR, in page
      order. Header `Sign off <n>`; the question opens with the PR's number on the
      page (`<n> ·`), names what the change does (from the card's title) and ends
      with the PR number. When the card has a `banner`, the question opens with it
      verbatim after the `<n> ·` and names the live and pending siblings from its
-     `sibling` rows. Options: **Approve** (clear the hold and let it merge) ·
-     **Change** (tell me what's wrong). A row with `0` shots is flagged on the page
-     and adds **Send back for shots** (no picture to judge). More than 4 PRs: the
-     next call takes the next 4.
+     `sibling` rows. More than 4 PRs: the next call takes the next 4. **The options
+     are the row's `<options>`, exactly, and no others**: `Approve,Change` when
+     shots are shown; `Send back for shots,Skip` when the description links none
+     (nothing to approve); `Skip` alone when shots exist but none would load,
+     and `Change,Skip` when only some loaded (say so; never approve a page missing
+     part of what is approved, never send back on a failed fetch).
   4. **Approve** → `"$KIT_ROOT/scripts/clear-hold.sh" <pr>`, then re-read the labels
      as Step 5 does. **Change**, or any typed answer → comment the words verbatim on
      the PR; the hold stays. **Send back for shots** → comment on the PR that its
-     newest commit carries no screenshots and the sign-off waits for them; the hold
-     stays. **Never clear the hold without "Approve" for that PR in that prompt** —
-     not from a batch answer, not from praise, not from an earlier window.
-  5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer.
+     description links no screenshots and the sign-off waits for them; the hold
+     stays. **Skip** → nothing; do not mark it done, so it is asked again. **Never
+     clear the hold without "Approve" for that PR in that prompt** — not from a
+     batch answer, not from praise, not from an earlier window.
+  5. `bash "$W" done pr:<pr>:<sha>` (sha from the card) after each answer except Skip.
   When every PR is answered: `bash "$W" done <batch key>`.
 - **`decision`** whose key is `decision:<ticket>:<slug>` — a builder or the judge
   asked about that ticket, and nothing spawns it until it is answered. One

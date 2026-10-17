@@ -15,8 +15,9 @@
 #                                           a failed step is retried by the next sync
 #   needsme-watch.sh card <pr>              what the sign-off prompt shows for one PR
 #   needsme-watch.sh open <pr>…             one review page for the batch, opened as one tab:
-#                                           a numbered section per PR with its head
-#                                           commit's shots; prints <n> \t <pr> \t <shots> \t <title>
+#                                           a numbered section per PR with every shot its
+#                                           body pins at its newest pinned commit; prints
+#                                           <n> \t <pr> \t <shown> \t <unloaded> \t <options> \t <title>
 #
 # A PR that rebuilds ONE part of a screen others are also rebuilding carries a
 # `<!-- part:begin -->`…`<!-- part:end -->` block in its body (finish writes it):
@@ -42,7 +43,7 @@ SIGNOFF="$SELF_DIR/signoff-batch.sh"
 ASKED="$COORD_DIR/asked.keys"
 touch "$ASKED"
 
-usage() { sed -n '4,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 asked() { grep -qxF -- "$1" "$ASKED"; }
 
@@ -135,7 +136,7 @@ done_keys() {
 }
 
 pr_json() { # <pr>
-  swarm_gh pr view "$1" --repo "$REPO_SLUG" --json number,title,url,headRefOid,labels,body 2>/dev/null
+  swarm_gh pr view "$1" --repo "$REPO_SLUG" --json number,title,url,headRefOid,labels,body,commits 2>/dev/null
 }
 
 body_of() { jq -r '.body // ""' <<<"$1" | tr -d '\r'; }
@@ -206,30 +207,53 @@ card() { # <pr>
   evidence "$j" | sed 's/^/evidence\t/'
 }
 
-# The head commit's shots, in evidence order: body links pinned at the head, else
-# the images the head commit itself adds. Older commits' shots never show.
-NEEDSME_SHOTS_MAX="${NEEDSME_SHOTS_MAX:-10}"
-head_shots() { # <pr-json> — repo-relative paths, at most NEEDSME_SHOTS_MAX
-  local sha out
-  sha=$(jq -r '.headRefOid // ""' <<<"$1"); [ -n "$sha" ] || return 0
-  out=$(evidence "$1" | grep -E '\.(png|jpe?g)$' | sed -nE 's#^https://github\.com/[^/]+/[^/]+/blob/([0-9a-f]{7,40})/(.*)$#\1 \2#p' \
-        | awk -v h="$sha" 'index(h, $1) == 1 { sub(/^[^ ]+ /, ""); print }')
-  [ -n "$out" ] || out=$(swarm_gh api "repos/$REPO_SLUG/commits/$sha" \
-        --jq '.files[]? | select(.status != "removed") | .filename | select(test("\\.(png|jpe?g)$"; "i"))' 2>/dev/null)
-  printf '%s\n' "$out" | awk 'NF && !seen[$0]++' | head -n "$NEEDSME_SHOTS_MAX"
+# A PR's shots are the images its own body links, pinned at the newest of the SHAs
+# those links name (by place in the PR's commits). Never a commit's file list: a
+# merge from the trunk carries every other ticket's evidence.
+pinned_shots() { # <pr-json> — <sha> \t <path>, in body order
+  local links newest
+  links=$(evidence "$1" | grep -iE '\.(png|jpe?g)$' \
+          | sed -nE 's#^https://github\.com/[^/]+/[^/]+/blob/([0-9a-f]{7,40})/(.*)$#\1	\2#p')
+  [ -n "$links" ] || return 0
+  newest=$(jq -r --arg l "$links" '
+    [.commits[]?.oid] as $c
+    | [$l | split("\n")[] | select(length > 0) | split("\t")[0]] | unique as $s
+    | [$s[] as $x | {x: $x, i: ([$c | to_entries[] | select(.value | startswith($x)) | .key] | max // -1)}]
+    | if any(.[]; .i >= 0) then (max_by(.i) | .x) else empty end' <<<"$1" 2>/dev/null)
+  # No link names one of the PR's own commits: the last one the body names stands.
+  [ -n "$newest" ] || newest=$(printf '%s\n' "$links" | tail -1 | cut -f1)
+  printf '%s\n' "$links" | awk -F'\t' -v s="$newest" '$1 == s && !seen[$2]++'
 }
 html() { jq -Rr '@html' <<<"$1"; }
+# Percent-decoded once, then each segment encoded: a link that already carries %20 is not encoded twice.
+uri_path() { printf '%b' "$(printf '%s' "$1" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')" | jq -Rr 'split("/") | map(@uri) | join("/")'; }
+shot_group() { # <path> — "<viewport> · <theme>", from the file name
+  local n; n=$(basename "$1" | tr 'A-Z' 'a-z')
+  case "$n" in *mobile*|*phone*|*-375*|*-390*|*-393*|*-414*|*-430*) printf 'phone' ;;
+               *tablet*|*ipad*|*-768*|*-820*|*-1024*) printf 'tablet' ;; *) printf 'laptop' ;; esac
+  case "$n" in *dark*) printf ' · dark' ;; *) printf ' · light' ;; esac
+}
+# What the owner may answer for one section. Nothing shown, or part not loaded, is not
+# approvable; shots that would not load are not missing, so they are never sent back.
+sign_options() { # <shown> <unloaded>
+  if [ "$2" != 0 ]; then [ "$1" -gt 0 ] && printf 'Change,Skip' || printf 'Skip'
+  elif [ "$1" -gt 0 ]; then printf 'Approve,Change'
+  else printf 'Send back for shots,Skip'; fi
+}
+NEEDSME_PAGE_KEEP_DAYS="${NEEDSME_PAGE_KEEP_DAYS:-7}"
 
 open_pr() { # <pr>…
-  local dir page i=0 pr j sha title url shots f k ext n links rows=""
-  dir="${NEEDSME_PAGE_DIR:-$COORD_DIR/review}/$(date +%Y%m%dT%H%M%S)-$$"
-  mkdir -p "$dir" || { echo "needsme-watch: cannot write $dir" >&2; return 1; }
+  local base dir page i=0 pr j title url shots sha f k ext n bad g last links rows=""
+  base="${NEEDSME_PAGE_DIR:-$COORD_DIR/review}"
+  mkdir -p "$base" || { echo "needsme-watch: cannot write $base" >&2; return 1; }
+  find "$base" -mindepth 1 -maxdepth 1 -type d -mtime +"$NEEDSME_PAGE_KEEP_DAYS" -exec rm -rf {} + 2>/dev/null
+  dir="$base/$(date +%Y%m%dT%H%M%S)-$$"; mkdir -p "$dir" || return 1
   page="$dir/index.html"
   {
     printf '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-off</title>\n'
     printf '<style>body{font:15px/1.45 -apple-system,system-ui,sans-serif;margin:0 auto;max-width:1200px;padding:16px;background:#fafafa;color:#111}'
-    printf 'section{border-top:1px solid #ddd;padding:16px 0}h2{margin:0 0 6px;font-size:20px}.n{display:inline-block;min-width:1.6em;margin-right:6px;color:#666}'
-    printf '.flag{background:#fff3cd;border:1px solid #e0b000;padding:8px 10px;border-radius:6px}.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;margin-top:10px}'
+    printf 'section{border-top:1px solid #ddd;padding:16px 0}h2{margin:0 0 6px;font-size:20px}h3{margin:14px 0 4px;font-size:14px;color:#444}.n{display:inline-block;min-width:1.6em;margin-right:6px;color:#666}'
+    printf '.flag{background:#fff3cd;border:1px solid #e0b000;padding:8px 10px;border-radius:6px}.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}'
     printf 'figure{margin:0}img{width:100%%;border:1px solid #ccc;border-radius:4px;background:#fff}figcaption{font-size:12px;color:#555;word-break:break-all}</style>\n'
     printf '<h1>Sign-off: %s pull request(s)</h1>\n' "$#"
   } > "$page"
@@ -237,37 +261,44 @@ open_pr() { # <pr>…
     i=$((i+1)); j=$(pr_json "$pr")
     if ! jq -e '.number' >/dev/null 2>&1 <<<"$j"; then
       printf '<section id="pr-%s"><h2><span class="n">%s</span>PR #%s</h2><p class="flag">Could not be read from GitHub.</p></section>\n' "$pr" "$i" "$pr" >> "$page"
-      rows="$rows$i"$'\t'"$pr"$'\t'"-"$'\t'"(could not be read)"$'\n'; continue
+      rows="$rows$i"$'\t'"$pr"$'\t'"0"$'\t'"-"$'\t'"$(sign_options 0 -)"$'\t'"(could not be read)"$'\n'; continue
     fi
-    sha=$(jq -r '.headRefOid // ""' <<<"$j"); title=$(jq -r '.title // ""' <<<"$j"); url=$(jq -r '.url // ""' <<<"$j")
-    shots=$(head_shots "$j"); n=0
+    title=$(jq -r '.title // ""' <<<"$j"); url=$(jq -r '.url // ""' <<<"$j")
+    shots=$(pinned_shots "$j"); sha=$(printf '%s\n' "$shots" | head -1 | cut -f1)
     {
       printf '<section id="pr-%s"><h2><span class="n">%s</span>%s</h2>\n' "$pr" "$i" "$(html "$title")"
-      printf '<p><a href="%s">PR #%s</a> · head %s</p>\n' "$(html "$url")" "$pr" "${sha:0:7}"
-      links=$(evidence "$j" | grep -vE '\.(png|jpe?g|webp|gif)$')
+      printf '<p><a href="%s">PR #%s</a>%s</p>\n' "$(html "$url")" "$pr" "${sha:+ · shots at ${sha:0:7}}"
+      links=$(evidence "$j" | grep -viE '\.(png|jpe?g|webp|gif)$')
       [ -z "$links" ] || printf '%s\n' "$links" | while IFS= read -r u; do printf '<p><a href="%s">%s</a></p>\n' "$(html "$u")" "$(html "$u")"; done
     } >> "$page"
-    k=0
-    while IFS= read -r f; do
+    k=0; n=0; bad=0; last=""
+    # Grouped by viewport and theme; every shot shown, each loaded only as it scrolls in.
+    while IFS=$'\t' read -r g sha f; do
       [ -n "$f" ] || continue
-      k=$((k+1)); ext="${f##*.}"
-      if swarm_gh api "repos/$REPO_SLUG/contents/$(jq -rn --arg p "$f" '$p | split("/") | map(@uri) | join("/")')?ref=$sha" \
+      k=$((k+1)); ext=$(printf '%s' "${f##*.}" | tr 'A-Z' 'a-z')
+      if swarm_gh api "repos/$REPO_SLUG/contents/$(uri_path "$f")?ref=$sha" \
            -H 'Accept: application/vnd.github.raw' > "$dir/$i-$k.$ext" 2>/dev/null && [ -s "$dir/$i-$k.$ext" ]; then
-        [ "$n" -gt 0 ] || printf '<div class="shots">\n' >> "$page"
+        if [ "$g" != "$last" ]; then
+          [ -z "$last" ] || printf '</div>\n' >> "$page"
+          printf '<h3>%s</h3><div class="shots">\n' "$g" >> "$page"; last="$g"
+        fi
         n=$((n+1))
         printf '<figure><a href="%s"><img src="%s" alt="%s" loading="lazy"></a><figcaption>%s</figcaption></figure>\n' \
           "$i-$k.$ext" "$i-$k.$ext" "$(html "$f")" "$(html "$f")" >> "$page"
-      else rm -f "$dir/$i-$k.$ext"; fi
-    done <<<"$shots"
-    [ "$n" -eq 0 ] || printf '</div>\n' >> "$page"
-    [ "$n" -gt 0 ] || printf '<p class="flag">No screenshots on its newest commit. Send it back for shots.</p>\n' >> "$page"
+      else rm -f "$dir/$i-$k.$ext"; bad=$((bad+1)); fi
+    done < <(printf '%s\n' "$shots" | while IFS=$'\t' read -r s f; do [ -n "$f" ] && printf '%s\t%s\t%s\n' "$(shot_group "$f")" "$s" "$f"; done | sort -s -t$'\t' -k1,1)
+    [ -z "$last" ] || printf '</div>\n' >> "$page"
+    # A shot that would not load is not a missing shot: never "send it back" for a fetch that failed.
+    [ "$bad" -eq 0 ] || printf '<p class="flag">Couldn'"'"'t load %s shot(s) — GitHub did not answer. Open the PR to see them.</p>\n' "$bad" >> "$page"
+    [ "$k" -gt 0 ] || printf '<p class="flag">No screenshots linked in its description. Send it back for shots.</p>\n' >> "$page"
     printf '</section>\n' >> "$page"
-    rows="$rows$i"$'\t'"$pr"$'\t'"$n"$'\t'"$title"$'\n'
+    rows="$rows$i"$'\t'"$pr"$'\t'"$n"$'\t'"$bad"$'\t'"$(sign_options "$n" "$bad")"$'\t'"$title"$'\n'
   done
-  if [ -n "${NEEDSME_OPEN_CMD:-}" ]; then $NEEDSME_OPEN_CMD "file://$page"
-  elif [ "$(uname)" = Darwin ]; then open -a "Google Chrome" "file://$page"
-  else xdg-open "file://$page" >/dev/null 2>&1; fi
-  echo "opened 1 page for $# PR(s): file://$page"
+  page="file://$(uri_path "$page")"
+  if [ -n "${NEEDSME_OPEN_CMD:-}" ]; then $NEEDSME_OPEN_CMD "$page"
+  elif [ "$(uname)" = Darwin ]; then open -a "Google Chrome" "$page"
+  else xdg-open "$page" >/dev/null 2>&1; fi
+  echo "opened 1 page for $# PR(s): $page"
   printf '%s' "$rows"
 }
 
