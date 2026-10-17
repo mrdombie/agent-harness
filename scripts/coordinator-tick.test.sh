@@ -407,6 +407,79 @@ tick >/dev/null
 want "a run that recovers and freezes again is raised again" "2" "$(grep -c '"kind":"frozen"' "$C/events.would.jsonl")"
 unset SWARM_NOW
 
+echo "--- a driver run: its step logs are progress, not only its log ---"
+# build-ticket prints at step boundaries only; a build step streams into the
+# driver's per-ticket state dir for longer than frozenMin with the log quiet.
+driver_run() { # <ticket> — a live driver run: a quiet log, a step log under its state dir
+  local log="$STATE/logs/claim-$1-drv.log" d="$STATE/driver/$1"
+  mkdir -p "$d/steps"; echo 'build-ticket: walking' > "$log"; echo 'step output' > "$d/steps/build.log"
+  jq -cn --arg rid "claim-$1-drv" --arg t "$1" --argjson pid "$$" --arg log "$log" --arg d "$d" \
+    '{run_id:$rid, ticket:$t, child_pid:$pid, log:$log, runner:"driver", progress_paths:[$d]}' > "$STATE/runs/claim-$1-drv.json"
+}
+set_mtime() { perl -e 'utime $ARGV[0], $ARGV[0], $ARGV[1] or die' "$1" "$2"; }   # <epoch> <file>, BSD and GNU alike
+fresh; driver_run 710
+NOW0=$(date +%s)
+set_mtime $(( NOW0 + 24 * 60 )) "$STATE/driver/710/steps/build.log"
+export SWARM_NOW=$(( NOW0 + 25 * 60 ))
+tick >/dev/null
+want "a quiet log with a growing step log is not frozen" "0" "$(grep -c '"kind":"frozen"' "$C/events.would.jsonl")"
+fresh; driver_run 711
+export SWARM_NOW=$(( NOW0 + 25 * 60 ))
+tick >/dev/null
+want "a quiet log and a quiet step log is frozen" "1" "$(grep -c '"kind":"frozen".*"ticket":"711"' "$C/events.would.jsonl")"
+unset SWARM_NOW
+rm -rf "$STATE/driver"
+
+echo "--- a driver run's verdict is its own last line, not the reconcile after it ---"
+fresh
+printf '{"run_id":"claim-720-drv","ticket":"720","log":"%s","runner":"driver"}\n' "$STATE/logs/claim-720-drv.log" > "$STATE/runs/claim-720-drv.json"
+# The shape spawn-claim.sh writes in driver mode: the driver's output, its last
+# line as a result line, then the post-exit sections.
+{ echo 'build-ticket: walking #720'; echo '⏸ #720 parked: the spec needs a decision'
+  jq -cn '{type:"result",result:"⏸ #720 parked: the spec needs a decision"}'
+  printf '\n--- post-exit reconcile (x) ---\n'; echo 'reconcile: released #720, nothing escalated'; } > "$STATE/logs/claim-720-drv.log"
+printf '{"run_id":"claim-720-drv","exit_code":20}\n' > "$STATE/runs/claim-720-drv.ended"
+tick >/dev/null
+want_in "the driver's verdict is recorded"  'claim-720-drv.*exit=20 ⏸ #720 parked: the spec needs a decision' "$(cat "$C/runs.log")"
+want_not_in "not the reconcile output"     'claim-720-drv.*reconcile' "$(cat "$C/runs.log")"
+want_in "a parked driver run is a stand-down" '"kind":"stood-down".*"ticket":"720"' "$(cat "$C/events.would.jsonl")"
+
+echo "--- a spawn the spawner refuses raises an event naming why ---"
+cat > "$BIN/spawn-refuse" <<'SH'
+#!/usr/bin/env bash
+echo "spawn-claim: refusing — a planted refusal for #$1" >&2
+exit 3
+SH
+chmod +x "$BIN/spawn-refuse"
+fresh; queue 730
+out=$(COORDINATOR_SHADOW=0 SWARM_SPAWN="$BIN/spawn-refuse" SWARM_IDLE=40 SWARM_CORES=10 tick)
+want_in "it says the start failed"         'spawn of #730 failed' "$out"
+want_in "the refusal is an event, with its reason" '"kind":"spawn-failed".*"ticket":"730".*a planted refusal' "$(cat "$C/events.did.jsonl" 2>/dev/null)"
+COORDINATOR_SHADOW=0 SWARM_SPAWN="$BIN/spawn-refuse" SWARM_IDLE=40 SWARM_CORES=10 tick >/dev/null
+want "raised once a day, not every tick"   "1" "$(grep -c '"kind":"spawn-failed"' "$C/events.did.jsonl" 2>/dev/null)"
+
+echo "--- a refused start does not use up the place: the next entry starts on the same tick ---"
+cat > "$BIN/spawn-some" <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = "${REFUSE_T:-}" ]; then echo "spawn-claim: refusing — planted for #$1" >&2; exit 3; fi
+printf '%s\t%s\n' "$1" "${CLAIM_CLASS:-}" >> "$SPAWNS"
+printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$1" "$1" "$TEST_PID" > "$STATE/runs/claim-$1-live.json"
+SH
+chmod +x "$BIN/spawn-some"
+fresh; queue 740 741
+out=$(REFUSE_T=740 COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "one place, the first entry refused: the second starts this tick" "741" "$(spawned)"
+want_in "and the refusal is still said"    'spawn of #740 failed' "$out"
+
+echo "--- a note on any class spawns: spawn-claim carries it to the driver ---"
+fresh; fix_issue 742 OPEN "status:ready"; bash "$Q" add 742 --note "The owner answered q1: yes." >/dev/null
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "a noted new entry spawns"            "742" "$(spawned)"
+fresh; queue_as repair 744
+bash "$Q" add 744 --class repair --note "clashes" >/dev/null
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "a noted repair spawns"               "744" "$(spawned)"
+
 echo "--- ended runs: recorded once, the failures raised ---"
 fresh
 printf '{"run_id":"claim-801-x","ticket":"801","log":"%s"}\n' "$STATE/logs/claim-801-x.log" > "$STATE/runs/claim-801-x.json"
