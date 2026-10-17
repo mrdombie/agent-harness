@@ -40,6 +40,24 @@ printf '%s\n' "$WIDE" > "$TDIR/wide.json"; printf '%s\n' "$SAME" > "$TDIR/same.j
 printf 'import re\np=".claude/harness.json"\ns=open(p).read().replace("[\\"Staging\\"]","[\\"Staging\\",\\"Production\\"]")\nopen(p,"w").write(s)\n' > "$R/widen.py"
 printf '#!/usr/bin/env bash\nsed -i "" "s/\\"Staging\\"]/\\"Staging\\", \\"Production\\"]/" .claude/harness.json\n' > "$R/widen.sh"
 chmod +x "$R/widen.sh"
+# #169: the shapes of the kit's own fixtures, which write a stand-in harness.json
+# under a sandbox variable, and the same shape aimed back at the repo.
+cat > "$R/fixture.sh" <<FX
+#!/usr/bin/env bash
+SB="\${TMPDIR:-/tmp}"; SB="\${SB%/}/fx-fixture-\$\$"
+UP="\$SB/upstream"; mkdir -p "\$UP/.claude"
+cat > "\$UP/.claude/harness.json" <<'JSON'
+$WIDE
+JSON
+FX
+cat > "$R/fixture-dot.sh" <<FX
+#!/usr/bin/env bash
+SB=.
+cat > "\$SB/.claude/harness.json" <<'JSON'
+$WIDE
+JSON
+FX
+ln -s "$R" "$TDIR/repolink"                      # a symlink into the repo, under the temp dir
 [ "$(cat "$C")" = "$BASE" ] && [ -z "$(g status --porcelain .claude)" ] || bad "fixture: harness.json not at base"
 
 # rc of the guard at $1 (a dir holding the hook) on a payload.
@@ -170,9 +188,88 @@ add -      allow "$(bashp "jq .preApprovedWrites .claude/harness.json > /tmp/out
 add -      allow "$(bashp "git commit -m 'edit harness.json docs'")"
 add -      allow "$(bashp "python3 -c 'import json; print(json.load(open(\".claude/harness.json\")))'")"
 
+# #169: a path rooted in a variable is judged as the project's config only when the
+# variable can be the repo. sandboxok = provably a sandbox; sandbox = routed through
+# that proof and must still block. Commands are judged, never run.
+kitp(){ jq -nc --arg c "$1" --arg d "$KIT" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}'; }
+add sandboxok allow "$(kitp "bash scripts/spawn-claim.test.sh")"
+add -      allow "$(kitp "bash scripts/coordinator-tick.test.sh")"
+add sandboxok allow "$(bashp "bash fixture.sh")"
+add sandboxok allow "$(bashp "SB=\"\${TMPDIR:-/tmp}\"; SB=\"\${SB%/}/fx-\$\$\"; UP=\"\$SB/up\"
+cat > \"\$UP/.claude/harness.json\" <<'EOF'
+$WIDE
+EOF")"
+add sandboxok allow "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandboxok allow "$(bashp "T=\"\$(mktemp -d)\"; sed -i 's/Staging/Production/' \"\$T/.claude/harness.json\"")"
+add sandboxok allow "$(bashp "T=\$(mktemp -d); echo '$WIDE' > \"\$T/.claude/harness.json\"; eval \"\$CMD\"")"
+add sandbox block "$(bashp "echo '$WIDE' > \"\$PWD/.claude/harness.json\"")"
+add sandbox block "$(bashp "cat > \"\$(pwd)/.claude/harness.json\" <<'EOF'
+$WIDE
+EOF")"
+add sandbox block "$(bashp "cp $TDIR/wide.json \"\${REPO:-.}/.claude/harness.json\"")"
+add sandbox block "$(bashp "cp $TDIR/wide.json \"\$HOME/repo/.claude/harness.json\"")"
+add sandbox block "$(bashp "HOME=$TDIR; cp $TDIR/wide.json \"\$HOME/repo/.claude/harness.json\"")"
+add sandbox block "$(bashp "cp $TDIR/wide.json \"\$GIT_DIR/../.claude/harness.json\"")"
+add sandbox block "$(bashp "R=.; echo '$WIDE' > \"\$R/.claude/harness.json\"")"
+add sandbox block "$(bashp "R=$R; cp $TDIR/wide.json \"\$R/.claude/harness.json\"")"
+add sandbox block "$(bashp "SB=\"\${TMPDIR:-/tmp}\"; cp $TDIR/wide.json \"\$SB/.claude/harness.json\"")"
+add sandbox block "$(bashp "SB=\"\${TMPDIR:-/tmp}/repo\"; cp $TDIR/wide.json \"\$SB/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=$TDIR/repolink; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \$T/.claude/harness.json")"
+add sandbox block "$(bashp "T=\$(mktemp -d); T=.; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\"\$(mktemp -d)/..\"; cp $TDIR/wide.json \"\$T/repo/.claude/harness.json\"")"
+add sandbox block "$(bashp "f(){ cp $TDIR/wide.json \"\$T/.claude/harness.json\"; }; f; T=\$(mktemp -d)")"
+add sandbox block "$(bashp "[ -d /nonexistent ] && T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:dyn block "$(bashp "T=\$(mktemp -d); eval \"\$CMD\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:taint block "$(bashp "T=\$(mktemp -d); read -r T < /dev/null; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:link block "$(bashp "T=\$(mktemp -d); ln -s \"\$PWD\" \"\$T/r\"; cp $TDIR/wide.json \"\$T/r/.claude/harness.json\"")"
+add sandbox block "$(bashp "T=\$(mktemp -d); for i in 1 2; do cp $TDIR/wide.json \"\$T/.claude/harness.json\"; T=.; done")"
+add sandbox:copyout block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; cp -r \"\$T/.claude\" \"\$PWD/\"")"
+add sandbox:copyout block "$(bashp "T=/tmp/fx; cp $TDIR/wide.json \"\$T/.claude/harness.json\"; cp -r /tmp/fx/.claude .")"
+add sandbox:archive block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; tar -C \"\$T\" -cf - .claude | tar -xf -")"
+add sandbox:archive block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; python3 -c \"import shutil; shutil.copytree('\$T/.claude', '.claude', dirs_exist_ok=True)\"")"
+add sandbox:dyn block "$(bashp "T=\$(mktemp -d); builtin . $TDIR/aim; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:shadow block "$(bashp "mktemp(){ pwd; }; T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:shadow block "$(bashp "PATH=$TDIR/bin:\$PATH; T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandboxok allow "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; cp $TDIR/same.json \"\$T/\"")"
+add sandbox:setter block "$(bashp "f()
+{ read -r \"\$1\" < $TDIR/aim; }
+T=\$(mktemp -d); f \"\$N\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:setter block "$(bashp "function f { read -r \"\$1\" < $TDIR/aim; }
+T=\$(mktemp -d); f \"\$N\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+# Review round 1: one case per rule the PR names. The family after `sandbox:` is the
+# check a plant below switches off, and each of its cases must then pass.
+add sandbox:taint block "$(bashp "T=\$(mktemp -d); T+=/../x; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:taint block "$(bashp "T=\$(mktemp -d); : \"\${T:=.}\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:nameref block "$(bashp "T=\$(mktemp -d); declare -n X=PWD; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:first block "$(bashp "{ T=\$(mktemp -d); }; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:dyn block "$(bashp "T=\$(mktemp -d); source $TDIR/aim; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:dyn block "$(bashp "T=\$(mktemp -d); . $TDIR/aim; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:dyn block "$(bashp "T=\$(mktemp -d); trap \"\$X\" DEBUG; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:setter block "$(bashp "T=\$(mktemp -d); unset \"\$v\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:setter block "$(bashp "T=\$(mktemp -d); printf -v \"\$n\" %s \"\$PWD\"; cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:archive block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; git clone \"\$T\" \"\$PWD/x\"")"
+add sandbox:shadow block "$(bashp "alias mktemp=pwd; T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+add sandbox:shadow block "$(bashp "hash -p $TDIR/fake mktemp; T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"")"
+# The Resolver's own marker bytes in the input: it stands down rather than misread them.
+add sandbox block "$(bashp "T=\$(mktemp -d); cp $TDIR/wide.json \"\$T/.claude/harness.json\"; echo '$(printf '\005')'")"
+# More wildcards than the glob check walks: not proved, so judged by name.
+add sandbox block "$(bashp "SB=\"\${TMPDIR:-/tmp}/\$\$-\$\$-\$\$-\$\$-\$\$\"; cp $TDIR/wide.json \"\$SB/.claude/harness.json\"")"
+add -      block "$(bashp "cd \"\$X\" && sed -i 's/Staging/Production/' .claude/harness.json")"
+add -      block "$(bashp "T=\$(mktemp -d); cd \"\$T\" && cd - && cp $TDIR/wide.json .claude/harness.json")"
+add -      block "$(bashp "bash fixture-dot.sh")"
+# A line continuation is joined as the shell joins it: an env prefix on the next line is
+# an assignment, not the command, and a write split over two lines is still the write.
+add -      allow "$(bashp "T=\$(mktemp -d); A=1 \\
+CFG=\"\$T/.claude/harness.json\" jq . /dev/null")"
+add -      block "$(bashp "cp $TDIR/wide.json \\
+  .claude/harness.json")"
+add -      block "$(bashp "echo '$WIDE' \\
+  > .claude/harness.json")"
+
 run_cases(){ # $1 hook dir, $2 id filter ("" = all), $3 case file; prints "<id> <want> <got>" per case
   while IFS=$'\t' read -r id want p; do
-    [ -n "$2" ] && [ "$id" != "$2" ] && continue
+    [ -n "$2" ] && [ "$id" != "$2" ] && [ "${id%%:*}" != "$2" ] && continue
     rc=$(judge "$1" "$p"); got=allow; [ "$rc" -eq 2 ] && got=block
     [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && got="error$rc"
     printf '%s\t%s\t%s\t%s\n' "$id" "$want" "$got" "$(jq -r '.tool_input.command // (.tool_name+" "+.tool_input.file_path)' <<<"$p" | head -1 | cut -c1-90)"
@@ -340,6 +437,41 @@ plant gitprot  "    if is_gitprot(path):
         gitprot_refuse(path)" "    pass"
 plant gitprotsh "def gitprot_refuse(path):" "def gitprot_refuse(path):
     return"
+# #169: the sandbox proof made to pass everything lets every case routed through it in;
+# the allowance taken out puts every sandbox fixture back to blocked.
+plant sandbox  "    def exempt(self, tok):" "    def exempt(self, tok):
+        return True"
+pd=$(plant_dir sandboxoff "        return bool(RES) and RES[-1] is not None and RES[-1].exempt(tok)" "        return False")
+[ -n "$pd" ] || bad "plant sandboxoff did not land"
+n=0; held=0
+while IFS=$'\t' read -r id want got what; do n=$((n+1)); [ "$got" = block ] && held=$((held+1)); done < <(run_cases "$pd" sandboxok)
+[ "$n" -gt 0 ] && [ "$held" -eq "$n" ] && ok "plant sandboxoff: allowance out, all $n sandbox fixtures are blocked again" ||
+  bad "plant sandboxoff: allowance out, only $held of $n sandbox fixtures blocked, so those cases test something else"
+# Per-rule plants: each switches off one check of the proof, and only that family's cases pass.
+plant sandbox:dyn     "        if self.dyn < len(self.mt) and (self.dyn < i or self.nest[i]):" "        if False:"
+plant sandbox:setter  "        return not any(s >= first or not set(self.nest[s]) <= {'loop', 'if'} for s in self.setters)" "        return True"
+plant sandbox:copyout "        mt, dest, pos, k = self.mt, None, [], 0" "        return True"
+plant sandbox:archive "            self.archive = True  # unpacks" "            pass  # unpacks"
+plant sandbox:shadow  "                if not self.fresh_ok or not re.match(" "                if not re.match("
+plant sandbox:taint   "        if name in self.taint or name in seen" "        if name in seen"
+plant sandbox:link    " or LINKS.search(code) or NAMEREF" " or NAMEREF"
+plant sandbox:nameref " or NAMEREF.search(code):" ":"
+plant sandbox:first   "                    not self.nest[i] and plain(sep_b)" "                    plain(sep_b)"
+# Fail closed: a crash inside the proof falls back to the judgement before it, never to allow.
+# The payload names the file only through a hard link, so the crash handler's own name check cannot save it.
+HL="$(bashp "SB=\"\${TMPDIR:-/tmp}/fx-\$\$\"; cp $TDIR/same.json \"\$SB/x\"; cp $TDIR/wide.json $TDIR/hardlink")"
+for seam in "    def __init__(self, code, toks):|    def __init__(self, code, toks):
+        raise RuntimeError('planted')" "    def exempt(self, tok):|    def exempt(self, tok):
+        raise RuntimeError('planted')"; do
+  pd=$(plant_dir "crash${#seam}" "${seam%%|*}" "${seam#*|}")
+  [ -n "$pd" ] || { bad "crash seam did not land: ${seam%%|*}"; continue; }
+  [ "$(judge "$pd" "$HL")" -eq 2 ] && ok "fail closed: ${seam%%(*} raising still blocks the hard-link write" ||
+    bad "fail open: ${seam%%(*} raising lets the hard-link write through"
+done
+mkdir -p "$TDIR/gone"
+rc=$(printf '%s' "$HL" | (cd "$TDIR/gone" && rmdir "$TDIR/gone" && CLAUDE_PROJECT_DIR="$R" bash "$D/guard-pre-approved-writes.sh") 2>"$TDIR/err"; echo $?)
+[ "$rc" -eq 2 ] && ok "fail closed: from a deleted cwd the hard-link write still blocks" ||
+  bad "fail open: from a deleted cwd the hard-link write got rc=$rc: $(head -c 200 "$TDIR/err")"
 printf '%s\n' "$WIDE" > "$C"
 plant commitwt "        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)', shared)" "        pass" "$WT"
 printf '%s\n' "$BASE" > "$C"
