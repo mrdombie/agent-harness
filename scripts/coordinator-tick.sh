@@ -257,6 +257,12 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   [ -n "$meta" ] || { echo "could not be read"; return 0; }
   st=${meta%% *}; lab=${meta#* }
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
+  # SCOPE ONLY (COORDINATOR_SCOPE_ONLY=1): the operator narrowed the work to one
+  # scope, so nothing outside it starts — not a red PR the judge queued, not a run
+  # the wall cut off. Off by default: then healing reaches every red PR, as before.
+  if [ "${COORDINATOR_SCOPE_ONLY:-0}" = 1 ] && ! bash "$QUEUE" in-scope "$t" >/dev/null 2>&1; then
+    echo "outside the queue's scope (COORDINATOR_SCOPE_ONLY)"; return 0
+  fi
   if [ "$cls" = new ]; then
     printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
       "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1 \

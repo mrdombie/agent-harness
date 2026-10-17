@@ -880,4 +880,17 @@ cache_tick 99 99 >/dev/null
 want "a new sample that agrees: all three (the guard flags nothing correct)" "501 502 503" "$(spawned)"
 export SWARM_IDLE=90; unset SWARM_CORES
 
+echo "--- COORDINATOR_SCOPE_ONLY=1: nothing outside the queue's scope starts ---"
+# The operator narrowed the work to a set of tickets; a red PR the judge queued,
+# or a run the wall cut off, is outside it and must wait.
+fresh; queue 501 502 503
+jq '.labels = ["ticket 501", "ticket 503"]' "$C/queue.json" > "$C/q.json" && mv "$C/q.json" "$C/queue.json"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_SCOPE_ONLY=1 tick)
+want "only the in-scope tickets start"     "501 503" "$(spawned)"
+want_in "the other is skipped, by name"    "skip #502 .new.: outside the queue.s scope" "$out"
+fresh; queue 501 502 503
+jq '.labels = ["ticket 501", "ticket 503"]' "$C/queue.json" > "$C/q.json" && mv "$C/q.json" "$C/queue.json"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "off by default: everything queued starts" "501 502 503" "$(spawned)"
+
 exit $FAILED
