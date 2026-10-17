@@ -37,7 +37,7 @@ case "$1 $2" in
   "pr merge")
     case "$*" in *--disable-auto*) exit 0 ;; esac
     [ -f "$FIX/gh/merge-$3.fail" ] && { cat "$FIX/gh/merge-$3.fail" >&2; exit 1; }; exit 0 ;;
-  "pr view") case "$*" in *author*) echo tester ;; *headRefName*) jq -r --argjson n "$3" '.[] | select(.number == $n) | .headRefName' "$FIX/gh/prs-all.json" ;; esac ;;
+  "pr view") jq --argjson n "$3" '.[] | select(.number == $n) | {author:{login:"tester"}, headRefOid, headRefName}' "$FIX/gh/prs-all.json" ;;
   "variable get") exit 1 ;;
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   api*)
@@ -86,12 +86,20 @@ pr() {
 }
 set_pr() { jq --argjson n "$1" "map(if .number == \$n then $2 else . end)" "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"; }
 drop_pr() { jq --argjson n "$1" 'map(select(.number != $n))' "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"; }
-# compare <base> <head> <behind_by> [files-csv] [commit-parent-counts-csv]
+# compare <base> <head> <behind_by> [files-csv] [commits-csv] — commits: 2 a merge of
+# the PR's own, 1 a commit of its own, t a trunk commit a merge brought in; the PR's
+# own are added to its develop...<head> diff, as GitHub lists them.
 compare() {
+  local f="$FIX/gh/api-repos_acme_widgets_compare_$1...$2.json" own="$FIX/gh/api-repos_acme_widgets_compare_develop...$2.json"
   jq -n --argjson b "$3" --arg f "${4:-}" --arg c "${5:-}" \
     '{behind_by:$b, files:($f | split(",") | map(select(length > 0) | {filename:.})),
-      commits:($c | split(",") | map(select(length > 0) | tonumber | {parents:[range(.) | {sha:"p"}]}))}' \
-    > "$FIX/gh/api-repos_acme_widgets_compare_$1...$2.json"
+      commits:($c | split(",") | map(select(length > 0)) | to_entries
+               | map(.key as $i | .value as $v
+                 | if $v == "t" then {sha:"t\($i)", parents:[{sha:"p"}]}
+                   else {sha:"o\($i)", parents:[range($v | tonumber) | {sha:"p"}]} end))}' > "$f"
+  if [ "$1" != develop ] && [ -f "$own" ]; then
+    jq --slurpfile s "$f" '.commits += [$s[0].commits[] | select(.sha | startswith("o"))]' "$own" > "$own.n" && mv "$own.n" "$own"
+  fi
 }
 lane() { bash "$L" 2>&1; }
 live() { MERGE_LANE_SHADOW=0 bash "$L" 2>&1; }
@@ -285,7 +293,7 @@ hold_setup() { # the lane updated s60 -> s60b; the gate put the hold back on s60
   compare develop s60b 0 "apps/web/page.tsx,lib/api.ts"
   : > "$GH_LOG"
 }
-hold_setup; compare s60 s60b 0 "lib/server.ts" "2"
+hold_setup; compare s60 s60b 0 "lib/server.ts" "t,t,2"
 out=$(live)
 want_in "the hold is cleared"              '^pr edit 60 .*--remove-label needs:human-approval' "$(cat "$GH_LOG")"
 want_in "and the reason is recorded"       '^pr comment 60 .*develop-only update' "$(cat "$GH_LOG")"
