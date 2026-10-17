@@ -270,12 +270,27 @@ chmod +x "$FIX/hooks113/pre-push"
 git -C "$FIX/wt113" config core.hooksPath "$FIX/hooks113"
 : > "$GH_LOG"
 out=$(driver_step_ship 113 2>&1); rc=$?
-want "the push is refused" "24" "$rc"
+# The first refusal goes to fix with the hook's output as the finding (#236).
+want "the first refused push goes to fix" "30" "$rc"
 want_in "the log names the check that said no" 'check:design-critic-attested' "$out"
 want_in "the whole output is kept" 'Pre-push: checking UI changes' \
   "$(cat "$(driver_state_dir 113)/steps/ship-push.out" 2>/dev/null)"
-want_in "and the park note carries it" 'check:design-critic-attested' "$(driver_state_get 113 park_note)"
+want_in "fix is handed the check as a finding" 'check:design-critic-attested' \
+  "$(jq -r '.[0].output' "$(driver_state_dir 113)/steps/self-check.findings.json" 2>/dev/null)"
 want_not_in "and nothing was opened" 'pr create' "$(cat "$GH_LOG")"
+out=$(driver_step_ship 113 2>&1); rc=$?
+want "a second refused push parks" "24" "$rc"
+want_in "and the park note carries it" 'check:design-critic-attested' "$(driver_state_get 113 park_note)"
+
+echo "--- a push the remote refused is not a finding: it parks ---"
+setup_wt 117
+driver_state_put 117 review '{"verdict":"SHIP","findings":[]}'
+for st in start plan build self-check review record; do driver_state_done 117 "$st"; done
+git -C "$FIX/wt117" remote set-url origin "$FIX/no-such-origin"
+out=$(driver_step_ship 117 2>&1); rc=$?
+want "an unreachable remote parks" "24" "$rc"
+want "and leaves fix nothing" "absent" "$([ -e "$(driver_state_dir 117)/steps/self-check.findings.json" ] && echo present || echo absent)"
+git -C "$FIX/wt117" remote set-url origin "$FIX/origin"
 # Worktrees share the repository's config, so the refusing hook would follow every
 # later case in this file.
 git -C "$FIX/wt113" config --unset core.hooksPath

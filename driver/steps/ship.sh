@@ -21,6 +21,32 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 
+# _driver_ship_push_to_fix <ticket> — a push the project's own pre-push refused goes
+# to fix once, its output as the finding, inside the fix-round ceiling (#236).
+# Self-check runs the same checks, except while a reviewer is owed, so this is the
+# check it could not run yet. A refusal by the remote or the network is not a
+# finding: git marks those `! [rejected]` or `fatal:`, a hook's refusal neither.
+_driver_ship_push_to_fix() {
+  local t="$1" f reds fixes
+  case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 1 ;; esac
+  [ -f "${DRIVER_PUSH_OUT:-}" ] || return 1
+  grep -qE '^[[:space:]]*! \[|^fatal:' "$DRIVER_PUSH_OUT" && return 1
+  reds=$(driver_state_count "$t" push_red); fixes=$(driver_state_count "$t" fix)
+  driver_state_bump "$t" push_red
+  if [ "${reds:-0}" -ge 1 ]; then
+    driver_say "   ship: not sent to fix — this is the second push the pre-push refused on this run."; return 1
+  fi
+  if [ "${fixes:-0}" -ge "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
+    driver_say "   ship: not sent to fix — the $DRIVER_MAX_REVIEW_ROUNDS fix round(s) are used."; return 1
+  fi
+  f="$(driver_state_dir "$t")/steps/self-check.findings.json"
+  jq -n --arg out "$( { grep -E '✗' "$DRIVER_PUSH_OUT"; tail -40 "$DRIVER_PUSH_OUT"; } 2>/dev/null | awk '!seen[$0]++' | cut -c1-400 | head -60)" \
+    '[{id: "gate-pre-push", gate: "pre-push", command: "git push (the project'"'"'s pre-push)", exit: 1, output: $out}]' > "$f" || return 1
+  driver_state_set "$t" park_note ""
+  driver_say "↩ ship: the pre-push refused the push — its output goes to fix as the finding."
+  return 0
+}
+
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
   local wt branch dirty ahead verdict rounds sha head body trunk r title nblock blist
@@ -87,6 +113,7 @@ driver_step_ship() { # <ticket>
   driver_push "$t" "$wt" "$branch" ship || {
     driver_say "✋ ship: could not push $branch — this project's pre-push refused it: $DRIVER_PUSH_WHY (all of it: $DRIVER_PUSH_OUT)"
     driver_state_set "$t" park_note "the push was refused: $DRIVER_PUSH_WHY"
+    _driver_ship_push_to_fix "$t" && return "$DRIVER_E_REWORK"
     return "$DRIVER_E_REFUSED"; }
 
   verdict=$(jq -r '.verdict // ""' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null | tr '[:lower:]' '[:upper:]')
