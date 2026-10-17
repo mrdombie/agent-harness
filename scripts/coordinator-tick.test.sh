@@ -46,11 +46,13 @@ chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify" "$BIN/fixlock
 export COORDINATOR_FIX_LOCK="$BIN/fixlock"
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
+# Housekeeping in line and every tick, so each case reads what it did when the tick returns.
+export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
 unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
-# A spawner that leaves a live run behind and, like the project copy production
-# hands over to, writes no class: the coordinator's own record must carry it.
+# A spawner that leaves a live run behind and, like an older spawner,
+# writes no class: the coordinator's own record must carry it.
 cat > "$BIN/spawn-live" <<'SH'
 #!/usr/bin/env bash
 printf '%s\t%s\n' "$1" "${CLAIM_CLASS:-}" >> "$SPAWNS"
@@ -285,34 +287,29 @@ fresh; queue 501
 out=$(env -u SWARM_MAX_LOAD COORDINATOR_SHADOW=0 bash "$T" 2>&1)
 want "every reading taken: it starts (the guard flags nothing correct)" "501" "$(spawned)"
 
-echo "--- the class survives the hand-over to the project's own spawner ---"
-# Production: the plugin's spawn-claim.sh execs the integration branch's copy, and
-# that copy writes no class. The tick runs through the real hand-over here.
-mkdir -p "$REPO/scripts"
-cat > "$REPO/scripts/spawn-claim.sh" <<'SH'
+echo "--- the class survives a spawner that records none ---"
+# The coordinator keeps its own record of each run's class, so a spawner whose run
+# record carries no class (an older one) is still counted as what it was started for.
+mkdir -p "$FIX/oldspawn"
+cat > "$FIX/oldspawn/spawn-claim.sh" <<'SH'
 #!/usr/bin/env bash
-# The project's older copy: a run record with no class and no operator field.
-. "$(dirname "$0")/toolkit-env.sh" 2>/dev/null
-printf '%s\thanded-over\n' "$1" >> "$SPAWNS"
-printf '{"run_id":"claim-%s-proj","ticket":"%s","child_pid":%s,"log":"/dev/null"}\n' "$1" "$1" "$TEST_PID" \
-  > "$HARNESS_STATE_DIR/runs/claim-$1-proj.json"
+# An older spawner: a run record with no class and no operator field.
+printf '%s\tno-class\n' "$1" >> "$SPAWNS"
+printf '{"run_id":"claim-%s-old","ticket":"%s","child_pid":%s,"log":"/dev/null"}\n' "$1" "$1" "$TEST_PID" \
+  > "$HARNESS_STATE_DIR/runs/claim-$1-old.json"
 SH
-cp "$HERE/toolkit-env.sh" "$REPO/scripts/toolkit-env.sh"
-git -C "$REPO" -c user.name=t -c user.email=t@t checkout -q -b develop 2>/dev/null
-git -C "$REPO" add scripts .claude && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm project
-git init -q --bare "$FIX/origin.git"; git -C "$REPO" remote add origin "$FIX/origin.git" 2>/dev/null
-git -C "$REPO" push -q origin develop && git -C "$REPO" fetch -q origin
+chmod +x "$FIX/oldspawn/spawn-claim.sh"
 # One agent of room a tick, so the second tick reads the class the first recorded.
-handover() { TMPDIR="$FIX" SWARM_SPAWN="$HERE/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
+oldspawn() { SWARM_SPAWN="$FIX/oldspawn/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
 fresh; queue_as repair 601 602; queue 701 702
-handover >/dev/null
-want "the real spawner handed over"        "601	handed-over" "$(head -1 "$SPAWNS")"
-want "its record carries no class"         "" "$(jq -r '.class // empty' "$STATE/runs/claim-601-proj.json")"
-want "the coordinator recorded it"         "repair" "$(awk -F'\t' '$1=="claim-601-proj"{print $3}' "$C/run-classes.tsv")"
-handover >/dev/null
+oldspawn >/dev/null
+want "the older spawner ran"               "601	no-class" "$(head -1 "$SPAWNS")"
+want "its record carries no class"         "" "$(jq -r '.class // empty' "$STATE/runs/claim-601-old.json")"
+want "the coordinator recorded it"         "repair" "$(awk -F'\t' '$1=="claim-601-old"{print $3}' "$C/run-classes.tsv")"
+oldspawn >/dev/null
 want "so the next tick counts it as healing and builds new" "601 701" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
 want "the live view agrees"                "1 1" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
-git -C "$REPO" remote remove origin; rm -rf "$FIX/origin.git" "$REPO/scripts"
+rm -rf "$FIX/oldspawn"
 
 echo "--- never a claimed, gated or held ticket ---"
 fresh; queue 501 502 503 504
@@ -324,6 +321,11 @@ want "only the free one spawns"            "504" "$(spawned)"
 want_in "claimed is named"                 'skip #501 \(new\): claimed' "$out"
 want_in "gated is named"                   'skip #502 \(new\): status:gated' "$out"
 want_in "the hold label is named"          'skip #503 \(new\): needs:human-approval' "$out"
+# A child of a batch ticket is built by the batch's one PR, never on its own.
+fresh; queue 505 506; fix_issue 505 OPEN "status:ready,status:batched"
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a batched child is never started alone" "506" "$(spawned)"
+want_in "and the skip names the batch label" 'skip #505 \(new\): status:batched' "$out"
 fresh; queue 501
 printf 'owner said stop\n' > "$STATE/swarm/HOLD"
 out=$(COORDINATOR_SHADOW=0 tick)
@@ -653,6 +655,8 @@ want "one judge for one event"             "1" "$(grep -c ^ARGV "$FIX/claude.log
 want_in "it has a turn cap"                '\[--max-turns\] \[40\]' "$argv"
 want_in "it has a budget"                  '\[--max-budget-usd\] \[5\]' "$argv"
 want "its compact window is bounded"       "COMPACT=150000" "$(grep ^COMPACT "$FIX/claude.log")"
+want_in "it loads only the builder's MCP servers" '\[--strict-mcp-config\] \[--mcp-config\] \[[^]]*builder-mcp\.json\]' "$argv"
+want "and the builder list is empty unless set" "" "$(jq -r '.mcpServers | keys | join(",")' "$STATE/swarm/builder-mcp.json" 2>&1)"
 want_in "the brief carries the one event"  'red-pr:41:sha41' "$argv"
 want_not_in "it never resumes a session"   '\[--(resume|continue)\]|\[-c\]|\[-r\]' "$argv"
 COORDINATOR_SHADOW=0 tick >/dev/null

@@ -79,7 +79,11 @@ SWARM_SPAWN="${SWARM_SPAWN:-$KIT_ROOT/scripts/spawn-claim.sh}"
 # same prefix /project, /work and /standup already read — not a project's name.
 SWARM_PROGRAMME_PREFIX="${SWARM_PROGRAMME_PREFIX:-project:}"
 
-swarm_gh()   { "$SWARM_GH" "$@"; }
+# Every swarm read goes through the shared backoff (scripts/gh-batch.sh): once
+# GitHub refuses the token for a rate limit, the swarm stops asking for a while
+# instead of pressing on and keeping the limit, and every builder, shut.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/gh-batch.sh" || return 1 2>/dev/null || exit 1
+swarm_gh()   { gh_call "$@"; }
 swarm_curl() { "$SWARM_CURL" "$@"; }
 
 # Epoch seconds. Overridable so a test can sit at a chosen minute instead of
@@ -345,11 +349,14 @@ swarm_running_total() {
 }
 
 # ---- tickets -----------------------------------------------------------------
+# A ticket rolled into a batch ticket: the batch's one PR builds it, so no agent starts it alone.
+LBL_BATCHED="${LBL_BATCHED:-$(swarm_opt labels.batched status:batched)}"
+export LBL_BATCHED
 # The statuses that mean "a person or another PR owns this; never send an agent".
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.
 swarm_blocking_labels() {
-  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" $DECISION_LABELS \
+  printf '%s\n' "$LBL_IN_REVIEW" "$LBL_BLOCKED" "$LBL_NEEDS_HUMAN" "$LBL_PARKED" "$HOLD_LABEL" "$LBL_OWNER_DECISION" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 

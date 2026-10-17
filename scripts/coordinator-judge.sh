@@ -11,6 +11,7 @@
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
+. "$SELF_DIR/builder-mcp.sh" || exit 1
 
 CLAUDE_BIN="${COORDINATOR_CLAUDE:-claude}"
 RULES="$KIT_ROOT/shared/coordinator-judge.md"
@@ -51,6 +52,9 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
   local id="$1" safe code
   safe=$(safe_id "$id")
   cd "${COORDINATOR_JUDGE_CWD:-$MAIN_REPO}" 2>/dev/null || cd "$COORD_DIR" || exit 1
+  # A judge reads the forge through gh: no MCP server of its own (builder-mcp.sh).
+  local mcp=() a
+  while IFS= read -r a; do [ -n "$a" ] && mcp+=("$a"); done <<< "$(builder_mcp_args 2>/dev/null)"
   CLAUDE_CODE_AUTO_COMPACT_WINDOW="$COORD_JUDGE_COMPACT" KIT_ROOT="$KIT_ROOT" COORD_DIR="$COORD_DIR" \
     "$CLAUDE_BIN" -p "$(cat "$JDIR/$safe.brief")" \
       --max-turns "$COORD_JUDGE_TURNS" \
@@ -58,6 +62,7 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
       --permission-mode "${COORDINATOR_PERMISSION_MODE:-auto}" \
       --add-dir "$STATE_DIR" \
       --name "judge-$safe" \
+      ${mcp[@]+"${mcp[@]}"} \
       --output-format stream-json --verbose \
       > "$JDIR/$safe.log" 2>&1 < /dev/null
   code=$?

@@ -34,6 +34,9 @@
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
 #   coordinator.frozenMin    COORDINATOR_FROZEN_MIN    20    no log growth = frozen
+#   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
+#                                                           tick may start work from
+#   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
 #   coordinator.judges       COORDINATOR_JUDGES         1    judges at once
 #   coordinator.judge.turns  COORDINATOR_JUDGE_TURNS   40
 #   coordinator.judge.budgetUsd   COORDINATOR_JUDGE_BUDGET_USD   5
@@ -43,6 +46,7 @@ _coord_self="${BASH_SOURCE[0]}"
 # swarm-env.sh fills in a default load limit; the room test must know whether one was set.
 COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
+. "$(cd "$(dirname "$_coord_self")" && pwd)/branch-ticket.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
 
 COORD_DIR="${COORDINATOR_DIR:-$STATE_DIR/coordinator}"
@@ -204,6 +208,28 @@ coord_queue_ordered() {
   jq -r '.tickets | to_entries
          | map(.value + {pos: .key, rank: ({"repair":0,"approved-merge":1,"new":2}[.value.class] // 3)})
          | sort_by(.rank, .pos) | .[] | [(.n|tostring), .class, (.note // "")] | @tsv' "$COORD_QUEUE" 2>/dev/null
+}
+
+# The last good read of the forge, kept for the ticks GitHub refuses. A tick
+# that cannot read the open PRs or the queue's tickets works from these while
+# they are under coordinator.snapshotMaxAgeMin old, rather than starting nothing.
+COORD_SNAP_DIR="$COORD_DIR/snapshot"
+COORD_SNAP_MAX_AGE_MIN="${COORDINATOR_SNAPSHOT_MAX_AGE_MIN:-$(swarm_opt coordinator.snapshotMaxAgeMin 15)}"
+case "$COORD_SNAP_MAX_AGE_MIN" in ""|*[!0-9]*) COORD_SNAP_MAX_AGE_MIN=15 ;; esac
+coord_snap_file() { printf '%s/%s.json' "$COORD_SNAP_DIR" "$1"; }
+coord_snap_save() { # <name> <json>
+  mkdir -p "$COORD_SNAP_DIR" 2>/dev/null
+  printf '%s\n' "$2" > "$(coord_snap_file "$1").$$" && mv -f "$(coord_snap_file "$1").$$" "$(coord_snap_file "$1")"
+}
+coord_snap_age() { # <name> — whole minutes since it was taken; 1 when there is none
+  local f; f=$(coord_snap_file "$1"); [ -s "$f" ] || return 1
+  printf '%s' $(( ($(swarm_now) - $(coord_mtime "$f")) / 60 ))
+}
+# coord_snap_load <name> — the snapshot; 1 when there is none or it is over the limit.
+coord_snap_load() {
+  local age; age=$(coord_snap_age "$1") || return 1
+  [ "$age" -le "$COORD_SNAP_MAX_AGE_MIN" ] || return 1
+  cat "$(coord_snap_file "$1")"
 }
 
 export COORD_DIR COORD_QUEUE COORD_EVENTS COORD_ACTIONS COORD_NEEDS_YOU COORD_LOG COORD_SHADOW

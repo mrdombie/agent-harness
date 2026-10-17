@@ -78,6 +78,8 @@ done
 # The second liveness answer, for a holder that is a RUN rather than a session.
 # shellcheck source=claim-liveness.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-liveness.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-ticket.sh" || exit 1
 TICKETS_DIR="$STATE_DIR"
 CLAIMS_DIR="$TICKETS_DIR/claims"
 RECOVERED_DIR="$CLAIMS_DIR/.recovered"
@@ -125,14 +127,13 @@ fi
 # Both conventions are in use and both must match, or stranded work is missed.
 # ANCHORED: an unanchored `8571` also matches `sh-85710/` and `fix/85712-…`, and
 # a wrong match here releases the wrong ticket.
+# The remote's heads are listed once a run (HEADS), not once a ticket.
+HEADS=""
 branch_for() {
   local n="$1"
-  git -C "$REPO" ls-remote --heads "$CLAIM_REMOTE" 2>/dev/null \
-    | awk -v n="$n" '
-        { ref = $2; sub("refs/heads/", "", ref) }
-        ref ~ ("^sh-" n "/")            { print ref; exit }
-        ref ~ ("^[a-z]+/" n "-")        { print ref; exit }
-      '
+  [ -n "$HEADS" ] || HEADS=$(git -C "$REPO" ls-remote --heads "$CLAIM_REMOTE" 2>/dev/null)
+  printf '%s\n' "$HEADS" | awk '{ sub("^refs/heads/", "", $2); print $2 }' \
+    | branch_tickets | awk -F'\t' -v n="$n" '$1 == n { print $2; exit }'
 }
 
 pr_state_for() {
@@ -143,8 +144,11 @@ pr_state_for() {
   # closed one and the live work read as stranded.
   local branch="$1"
   [ -n "$branch" ] || return 0
-  gh pr list --repo "$GH_REPO" --head "$branch" --state all \
-    --json number,state --limit 20 2>/dev/null \
+  { if [ -n "$PR_CACHE" ] && jq -e --arg b "$branch" 'has($b)' >/dev/null 2>&1 <<<"$PR_CACHE"; then
+      jq -c --arg b "$branch" '.[$b]' <<<"$PR_CACHE"
+    else
+      gh_call pr list --repo "$GH_REPO" --head "$branch" --state all --json number,state --limit 20 2>/dev/null
+    fi; } \
     | jq -r '(map(select(.state == "OPEN")) | first)
              // (map(select(.state == "MERGED")) | first)
              // .[0]
@@ -196,8 +200,12 @@ recover_lock() {
   return 0
 }
 
+# Answered from the run's one batched read (LABEL_CACHE) when it holds the ticket.
 labels_of() {
-  gh issue view "$1" --repo "$GH_REPO" --json labels -q '.labels[].name' 2>/dev/null
+  if [ -n "$LABEL_CACHE" ] && jq -e --arg n "$1" 'has($n)' >/dev/null 2>&1 <<<"$LABEL_CACHE"; then
+    jq -r --arg n "$1" '.[$n].labels[]' <<<"$LABEL_CACHE"; return
+  fi
+  gh_call issue view "$1" --repo "$GH_REPO" --json labels -q '.labels[].name' 2>/dev/null
 }
 
 is_epic() {
@@ -267,6 +275,19 @@ if [ -d "$CLAIMS_DIR" ]; then
   legacy=$(ls -1 "$CLAIMS_DIR" 2>/dev/null | sed -n 's/^#\{0,1\}\(SH-\)\{0,1\}\([0-9][0-9]*\)\.lock$/\2/p' | sort -u)
 fi
 tickets=$(printf '%s\n%s\n%s\n' "$claimed_refs" "$labelled" "$legacy" | sed '/^$/d' | sort -u)
+
+# Every ticket's labels and every branch's PRs in two batched reads, where the
+# loop asked once per ticket for each (41 + 38 calls a pass on 2026-10-16). A
+# ticket or branch a refused read did not answer is asked about on its own,
+# never taken as "no PR".
+LABEL_CACHE=""; PR_CACHE=""
+if [ "$gh_ok" -eq 1 ] && [ -n "$tickets" ]; then
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  LABEL_CACHE=$(gh_issues_batch $tickets 2>/dev/null) || true
+  branches=$(for n in $tickets; do branch_for "$n"; done | awk 'NF && !seen[$0]++')
+  # shellcheck disable=SC2086  # branch names carry no whitespace
+  [ -z "$branches" ] || PR_CACHE=$(gh_prs_by_head_batch $branches 2>/dev/null) || true
+fi
 
 checked=0; live=0; elsewhere=0; released=0; inreview=0; partial=0; kept=0; shipped=0
 

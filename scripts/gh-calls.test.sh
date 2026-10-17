@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# gh-calls.test.sh — the forge is read once per pass, not once per ticket, and a
+# token GitHub is refusing is left alone while the last good read stands in.
+#
+# Every builder, session and the coordinator share one token. On 2026-10-16 a
+# tick made 101 gh calls (59 a `gh issue view` per queued ticket) and its
+# housekeeping 89 (one label read and one PR read per claimed ticket); GitHub's
+# secondary limits then refused the token and the tick, blind, started nothing.
+#
+# Each case below grows the thing a loop walks — the queue, the waits, the
+# clashing PRs, the claimed tickets — and asserts the calls do not grow with it.
+# Run: bash "$0"
+set -uo pipefail
+for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/../swarm/tests/fixture.sh"
+swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+T="$HERE/coordinator-tick.sh"
+Q="$HERE/coordinator-queue.sh"
+C="$STATE/coordinator"
+
+cat > "$BIN/noop" <<'SH'
+#!/usr/bin/env bash
+echo "$(basename "$0") $*" >> "$FIX/house.log"
+SH
+chmod +x "$BIN/noop"
+for n in reconcile sweep wtsweep judge lane; do cp "$BIN/noop" "$BIN/$n"; done
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep" COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep"
+export COORDINATOR_JUDGE="$BIN/judge" COORDINATOR_LANE="$BIN/lane" COORDINATOR_NOTIFY_CMD="$BIN/noop"
+export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
+export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
+export COORDINATOR_FIX_LOCK="$BIN/fixlock"
+printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
+unset COORDINATOR_SHADOW COORDINATOR_CAP
+export SWARM_FREE_MEM_GB=16 SWARM_IDLE=90 SWARM_CORES=10 TEST_PID=$$
+cat > "$BIN/spawn-live" <<'SH'
+#!/usr/bin/env bash
+printf '%s\t%s\n' "$1" "${CLAIM_CLASS:-}" >> "$SPAWNS"
+printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$1" "$1" "$TEST_PID" > "$STATE/runs/claim-$1-live.json"
+SH
+chmod +x "$BIN/spawn-live"
+
+fresh() {
+  rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/gh-backoff" "$FIX/gh/ratelimit"
+  rm -f "$FIX/gh"/issue-*.json
+  : > "$SPAWNS"; : > "$FIX/house.log"; : > "$FIX/claims.txt"; : > "$GH_LOG"
+  printf '[]\n' > "$FIX/gh/prs-all.json"
+  unset SWARM_NOW
+}
+calls() { grep -c . "$GH_LOG" | tr -d ' '; }
+queue_n() { # <class> <count> — that many tickets queued, from 501 up
+  local t; for t in $(seq 501 $((500 + $2))); do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$1" >/dev/null; done
+}
+tick_calls() { : > "$GH_LOG"; bash "$T" >/dev/null 2>&1; calls; }
+
+echo "--- a tick's reads do not grow with the queue ---"
+fresh; queue_n repair 5;  small=$(tick_calls)
+fresh; queue_n repair 45; big=$(tick_calls)
+want "45 queued tickets cost what 5 do"            "$small" "$big"
+want_in "and a handful at that"                    '^[1-5]$' "$big"
+fresh; queue_n repair 120
+want "120 cost one request more per 50"            "$((small + 2))" "$(tick_calls)"
+want_not_in "no ticket is read on its own"         '^issue view' "$(cat "$GH_LOG")"
+
+echo "--- the batched read still decides: a gated ticket is skipped, an open one spawns ---"
+fresh; fix_issue 501 OPEN "status:in-review,needs:human-approval"; bash "$Q" add 501 --class repair >/dev/null
+fix_issue 502 OPEN "status:in-review"; bash "$Q" add 502 --class repair >/dev/null
+fix_issue 503 CLOSED "status:in-review"; bash "$Q" add 503 --class repair >/dev/null
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
+want_in "the held ticket is skipped, named"        'skip #501 \(repair\): needs:human-approval' "$out"
+want_in "the closed one too"                       'skip #503 \(repair\): CLOSED' "$out"
+want "and only the open one spawns"                "502" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
+fresh; bash "$Q" add 777 --class repair >/dev/null
+out=$(bash "$T" 2>&1)
+want_in "a ticket the batch does not hold is unreadable, not spawnable" 'skip #777 \(repair\): could not be read' "$out"
+
+echo "--- a waiting ticket nobody has touched is not asked for its comments ---"
+waits_calls() { # <updatedAt> — calls coord_wait_new_comments makes for 20 waits ended at 21:00
+  : > "$GH_LOG"
+  ( . "$HERE/coordinator-env.sh"; . "$HERE/coordinator-waits.sh"
+    ISSUES=$(for t in $(seq 601 620); do printf '{"%s":{"number":%s,"state":"OPEN","updatedAt":"%s","labels":[]}}\n' "$t" "$t" "$1"; done | jq -sc add)
+    PRS='[]'
+    for t in $(seq 601 620); do coord_wait_new_comments "$t" "2026-10-16T21:00:00Z" >/dev/null; done )
+  calls
+}
+want "untouched since the wait began: no comment reads" "0" "$(waits_calls 2026-10-16T20:59:00Z)"
+want "touched since: each one is read"             "20" "$(waits_calls 2026-10-16T21:05:00Z)"
+
+echo "--- the claimable list reads every clashing PR's ticket in one request ---"
+clash_calls() { # <count>
+  local out="[]" t
+  rm -f "$FIX/gh"/issue-*.json
+  for t in $(seq 701 $((700 + $1))); do
+    fix_issue "$t" OPEN "status:ready,P1,area:OPS"
+    out=$(jq -c --argjson t "$t" '. + [{number: ($t + 5000), isDraft: false, mergeable: "CONFLICTING", title: "x", closingIssuesReferences: [{number: $t}]}]' <<<"$out")
+  done
+  printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
+  : > "$GH_LOG"; bash "$HERE/claimable-issues.sh" > "$FIX/claimable.out" 2>/dev/null
+  calls
+}
+small=$(clash_calls 3); big=$(clash_calls 40)
+want "40 clashing PRs cost what 3 do"              "$small" "$big"
+want "and every one is still offered to finish"    "40" "$(grep -c 'FINISH PR' "$FIX/claimable.out" | tr -d ' ')"
+: > "$GH_LOG"; CLAIMABLE_PRS_FILE="$FIX/gh/prs-all.json" bash "$HERE/claimable-issues.sh" >/dev/null 2>&1
+want_not_in "a caller's PR read is reused, not asked again" '^pr list' "$(cat "$GH_LOG")"
+
+echo "--- a queue refresh does not ask per scope: labels resolve once, members come with the candidates ---"
+fresh; rm -f "$FIX/gh"/issue-list*.json
+printf '[{"name":"project:a"},{"name":"project:b"},{"name":"project:c"}]\n' > "$FIX/gh/labels.json"
+fix_issue_list "status:ready" '[{"number":901,"title":"in a","labels":[{"name":"status:ready"},{"name":"project:a"}]},
+  {"number":902,"title":"in c","labels":[{"name":"status:ready"},{"name":"project:c"}]},
+  {"number":903,"title":"in none","labels":[{"name":"status:ready"},{"name":"project:z"}]}]'
+fix_issue_list "status:in-review" '[]'
+bash "$Q" seed a,b,c >/dev/null 2>&1
+: > "$GH_LOG"; bash "$Q" refresh >/dev/null 2>&1
+want_not_in "no label list on a refresh"           '^label list' "$(cat "$GH_LOG")"
+want_not_in "no member list per scope"             '^issue list .*--label project:' "$(cat "$GH_LOG")"
+want "and the scope still decides what is queued"  "901 902" "$(jq -r '[.tickets[].n] | sort | map(tostring) | join(" ")' "$C/queue.json")"
+
+echo "--- the reconciler reads labels and PRs once a pass, not once a claimed ticket ---"
+ORIGIN="$FIX/origin.git"; git init -q --bare "$ORIGIN"
+git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+printf '"acme/widgets"\n' > "$FIX/gh/api-repos_acme_widgets.json"
+recon_calls() { # <count> — that many tickets in review, each with a branch on the remote
+  local nums="[]" t
+  for t in $(seq 801 $((800 + $1))); do
+    fix_issue "$t" OPEN "status:in-review"
+    git -C "$REPO" push -q "$ORIGIN" "HEAD:refs/heads/tkt-$t/work" 2>/dev/null
+    nums=$(jq -c --argjson t "$t" '. + [{number: $t}]' <<<"$nums")
+  done
+  fix_issue_list "status:in-review" "$nums"
+  : > "$GH_LOG"
+  CLAIM_REMOTE="$ORIGIN" NOTIFY=0 bash "$HERE/reconcile-claims.sh" --dry-run >/dev/null 2>&1
+  grep -vc '^api repos/acme/widgets' "$GH_LOG" | tr -d ' '
+}
+small=$(recon_calls 3); big=$(recon_calls 30)
+want "30 claimed tickets cost what 3 do"           "$small" "$big"
+want_in "and the branches' PRs were asked for, in one batch" 'pullRequests\(headRefName:"tkt-830/work"' "$(cat "$GH_LOG")"
+want_not_in "no PR is read one branch at a time"     '^pr list .*--head' "$(cat "$GH_LOG")"
+
+echo "--- a refused token: back off, and work from the last good read ---"
+fresh; queue_n repair 2
+bash "$T" >/dev/null 2>&1   # a good tick, in shadow so the queue stays: the snapshot
+rm -f "$STATE/runs"/*; : > "$SPAWNS"; touch "$FIX/gh/ratelimit"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
+want_not_in "it is not blind"                      'could not be read — spawning nothing' "$out"
+want_in "it says it works from the snapshot"       'working from the snapshot taken' "$out"
+want_in "and still starts work"                    '^501' "$(cat "$SPAWNS")"
+want_in "the refusal starts a backoff"             '^[0-9]+' "$(cat "$STATE/swarm/gh-backoff" 2>/dev/null)"
+n=$(calls); : > "$GH_LOG"
+out=$(bash "$T" 2>&1)
+want "while it holds, nothing asks GitHub"         "0" "$(calls)"
+: > "$FIX/house.log"; COORDINATOR_SHADOW=0 bash "$HERE/coordinator-housekeeping.sh" >/dev/null 2>&1
+want_not_in "housekeeping skips the reconcile"     '^reconcile' "$(cat "$FIX/house.log")"
+want_not_in "and the judge"                        '^judge' "$(cat "$FIX/house.log")"
+want_in "the server sweep still runs (no GitHub)"  '^sweep' "$(cat "$FIX/house.log")"
+export SWARM_NOW=$(( $(date +%s) + 3600 )); : > "$GH_LOG"
+bash "$T" >/dev/null 2>&1
+want_in "once it ends, the tick asks again"        '^pr list' "$(cat "$GH_LOG")"
+unset SWARM_NOW
+
+echo "--- a refusal doubles the backoff, up to a cap ---"
+fresh; ( . "$HERE/../swarm/swarm-env.sh"
+  export SWARM_NOW=1000000
+  gh_backoff_note "GraphQL: API rate limit already exceeded for user ID 1."; a=$(cut -f1 "$STATE/swarm/gh-backoff")
+  gh_backoff_note "You have exceeded a secondary rate limit"; b=$(cut -f1 "$STATE/swarm/gh-backoff")
+  for i in 1 2 3 4 5; do gh_backoff_note "API rate limit exceeded"; done; c=$(cut -f1 "$STATE/swarm/gh-backoff")
+  printf '%s %s %s\n' $(( (a - SWARM_NOW) / 60 )) $(( (b - SWARM_NOW) / 60 )) $(( (c - SWARM_NOW) / 60 ))
+  gh_backoff_note "HTTP 404: Not Found" && echo "404 counted" || echo "404 ignored" ) > "$FIX/backoff.out"
+want "4 min, then 8, capped at 32"                 "4 8 32" "$(sed -n 1p "$FIX/backoff.out")"
+want "an ordinary failure is not a rate limit"     "404 ignored" "$(sed -n 2p "$FIX/backoff.out")"
+
+echo "--- no snapshot fresh enough: still blind, never a guess ---"
+fresh; queue_n repair 2
+bash "$T" >/dev/null 2>&1
+touch "$FIX/gh/ratelimit"
+touch -t 202601010000 "$C/snapshot/prs.json"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
+want_in "a stale snapshot is refused"              'the open pull requests could not be read — spawning nothing' "$out"
+want "and nothing starts"                          "" "$(cat "$SPAWNS")"
+
+exit $FAILED
