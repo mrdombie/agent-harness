@@ -1,3 +1,5 @@
+**Sign-off comes last:** once the owner has signed a PR's screens, push no change to its screen paths (`design.surfacePaths`). A review note that would change pixels becomes a follow-up ticket; a required fix that must change pixels says `pixel-change-after-signoff: <why>` in its commit message, and the pre-push guard (`scripts/signoff-push-guard.sh`) puts the hold back on for the owner to sign again.
+
 # Step 4 · Compare with what was approved
 
 You are holding this run's renders beside the approved design and listing every

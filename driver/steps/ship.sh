@@ -85,6 +85,13 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
   driver_push "$t" "$wt" "$branch" ship || {
+    # Sign-off comes last: a refusal for changing signed screens is the owner's call, said as one.
+    if grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null; then
+      local signed_why; signed_why=$(grep -m1 'sign-off comes last' "$DRIVER_PUSH_OUT" | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300)
+      driver_say "✋ ship: the owner has signed this PR's screens and this build changes them — nothing is pushed. $signed_why"
+      driver_state_set "$t" park_note "Needs the owner: this PR's screens were signed off and this build changes them after that ($signed_why). Either the change becomes a follow-up ticket, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
+      return "$DRIVER_E_REFUSED"
+    fi
     driver_say "✋ ship: could not push $branch — this project's pre-push refused it: $DRIVER_PUSH_WHY (all of it: $DRIVER_PUSH_OUT)"
     driver_state_set "$t" park_note "the push was refused: $DRIVER_PUSH_WHY"
     return "$DRIVER_E_REFUSED"; }
