@@ -13,6 +13,7 @@
 #
 # A pass, in order:
 #   1. lock        a pass still running means this one exits, untouched
+#      label       the lane label exists, or is created (shadow: "would create")
 #   2. members     open, not draft, on the trunk, no hold label, and auto-merge
 #                  armed or the lane label. Live: the label goes on and auto-merge
 #                  comes off, so the lane is the only thing that merges them.
@@ -100,6 +101,23 @@ act() { # <verb> <pr> <sha> [detail]
 owner() { # <key> <line> — notify follows the lane's mode, not the coordinator's
   COORDINATOR_SHADOW=$(lane_shadow && echo 1 || echo 0) bash "$NOTIFY" --class agent "$1" "$2" >/dev/null 2>&1 || true
 }
+
+# ---- 1b. the lane label --------------------------------------------------------
+# A label the repo lacks cannot be added, so every PR would stay on its own auto-merge.
+LABELS=$(swarm_gh label list --repo "$REPO_SLUG" --search "$LANE_LABEL" --json name --limit 100 2>/dev/null)
+if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$LABELS"; then
+  say "lane: could not read whether the label $LANE_LABEL exists — carrying on"
+elif ! jq -e --arg l "$LANE_LABEL" 'any(.[]; .name == $l)' >/dev/null <<<"$LABELS"; then
+  act label-create - - "$LANE_LABEL is missing from $REPO_SLUG"
+  if lane_shadow; then
+    say "would create the lane label $LANE_LABEL — it is missing from $REPO_SLUG"
+  elif swarm_gh label create "$LANE_LABEL" --repo "$REPO_SLUG" --color 0e8a16 \
+         --description "In the merge lane: merged one at a time by the coordinator, auto-merge off" >/dev/null 2>&1; then
+    say "lane: created the lane label $LANE_LABEL — it was missing from $REPO_SLUG"
+  else
+    say "lane: the lane label $LANE_LABEL is missing and could not be created — no PR can join this pass"
+  fi
+fi
 
 # ---- the open pull requests --------------------------------------------------
 PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --base "$INTEGRATION_BRANCH" --limit 200 \
