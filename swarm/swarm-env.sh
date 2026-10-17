@@ -77,7 +77,11 @@ SWARM_SPAWN="${SWARM_SPAWN:-$KIT_ROOT/scripts/spawn-claim.sh}"
 # same prefix /project, /work and /standup already read — not a project's name.
 SWARM_PROGRAMME_PREFIX="${SWARM_PROGRAMME_PREFIX:-project:}"
 
-swarm_gh()   { "$SWARM_GH" "$@"; }
+# Every swarm read goes through the shared backoff (scripts/gh-batch.sh): once
+# GitHub refuses the token for a rate limit, the swarm stops asking for a while
+# instead of pressing on and keeping the limit, and every builder, shut.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/gh-batch.sh" || return 1 2>/dev/null || exit 1
+swarm_gh()   { gh_call "$@"; }
 swarm_curl() { "$SWARM_CURL" "$@"; }
 
 # Epoch seconds. Overridable so a test can sit at a chosen minute instead of

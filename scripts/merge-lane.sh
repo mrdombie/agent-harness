@@ -180,7 +180,7 @@ SHA=$(pr_field "$HEAD_PR" .headRefOid)
 head_status() { status "$WAITING in line${QUEUE_LINE:+ ($QUEUE_LINE)} · head #$HEAD_PR — $*"; }
 
 # ---- fixers and leaving --------------------------------------------------------
-ticket_of() { pr_field "$1" .headRefName | awk -v p="$BRANCH_PREFIX" 'index($0, p) == 1 { s = substr($0, length(p) + 1); if (match(s, /^[0-9]+/)) print substr(s, 1, RLENGTH) }'; }
+ticket_of() { pr_field "$1" .headRefName | branch_tickets | cut -f1; }
 
 fixer() { # <pr> <why>
   local pr="$1" why="$2" t note brief room

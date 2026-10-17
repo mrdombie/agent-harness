@@ -116,7 +116,7 @@ cat > "$SB/bin/gh" <<'SH'
 case "$1 $2" in
   "api repos/acme/widgets") echo acme/widgets ;;
   "issue view") echo "st:claimed" ;;
-  "pr list")    printf '[]\n' ;;
+  "pr list")    case "$*" in *"--head 704/work"*) echo '[{"number":9704,"state":"OPEN"}]' ;; *) printf '[]\n' ;; esac ;;
   *) : ;;
 esac
 exit 0
@@ -192,18 +192,27 @@ out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
 want "the same pid, named as the exited session, is released" "no" "$(ref_present 703)"
 kill "$LIVEPID" 2>/dev/null
 
-# 4. A DRIVER run that crashed: its record is fresh BECAUSE it was writing until it
+# 4. A run that named its branch by the bare number. Its work is on <n>/…, not on the
+# configured prefix, and its pull request is open: that is in-review, never released.
+git -C "$SB/work" push -q origin "main:refs/heads/704/work"
+plant_claim 704
+out=$(reconcile)
+want_in "a bare-number branch with an open PR reads as in review" 'IN-REVIEW +#704' "$out"
+want_not_in "and is not called abandoned" 'left no branch and no PR' "$out"
+
+# 5. A DRIVER run that crashed: its record is fresh BECAUSE it was writing until it
 # died, and the wrapper names its session as exited. The freshness rescue exists for
 # a step-runner between steps, where no process is the run; here the process that
 # WAS the run is named as gone, so the record's age must not overrule it.
+# (705, not 704: case 4 leaves a 704/work branch with an open PR behind it.)
 sleep 300 & LIVEPID=$!
-mkdir -p "$SB/state/driver/704"
-jq -n --arg at "$(stamp 60)" '{ticket:"704", done:["start","plan"], updated_at:$at}' \
-  > "$SB/state/driver/704/state.json"
-plant_claim 704 "$LIVEPID"
+mkdir -p "$SB/state/driver/705"
+jq -n --arg at "$(stamp 60)" '{ticket:"705", done:["start","plan"], updated_at:$at}' \
+  > "$SB/state/driver/705/state.json"
+plant_claim 705 "$LIVEPID"
 out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
-want "a crashed driver run's claim is released by its own post-exit reconcile" "no" "$(ref_present 704)"
-want_not_in "the fresh record did not rescue it" '#704 .*run record was written' "$out"
+want "a crashed driver run's claim is released by its own post-exit reconcile" "no" "$(ref_present 705)"
+want_not_in "the fresh record did not rescue it" '#705 .*run record was written' "$out"
 kill "$LIVEPID" 2>/dev/null
 
 exit $FAILED

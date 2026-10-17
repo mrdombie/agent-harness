@@ -348,6 +348,14 @@ approval, or it says it has no question tool) is not picked again until the
 wait moves: a label on the ticket or its PR, a new commit, a comment, or a red
 check. The tick log says `skip #N: waiting on a human since run …` until then.
 
+The coordinator shares one GitHub token with every builder, so it reads the
+forge once a pass, never once a ticket: one open-PR read, the queue's tickets in
+batched GraphQL requests of 50 (`scripts/gh-batch.sh`), the queue re-seeded every
+`coordinator.refreshEveryMin` (default 5). When GitHub refuses the token for a
+rate limit, every swarm read backs off (4 minutes, doubling to 32) and the tick
+works from the last good read while it is under `coordinator.snapshotMaxAgeMin`
+(default 15) old; housekeeping's GitHub passes wait for the next run.
+
 ```sh
 scripts/coordinator-queue.sh seed <scope>[,<scope>…]   # tickets, labels or programme subjects; a list is their union
 swarm/install.sh coordinator                # every 2 minutes; SHADOW unless COORDINATOR_SHADOW=0

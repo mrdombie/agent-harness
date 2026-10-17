@@ -64,6 +64,10 @@ JSON
 # exit 0 so a script under test is never blocked by a question this stub has not
 # been taught — the assertion is on the recorded line, not on the stub's wit.
 printf '%s\n' "$*" >> "$GH_LOG"
+# $FIX/gh/ratelimit present: GitHub refusing the token, as it does for a secondary limit.
+if [ -f "$FIX/gh/ratelimit" ]; then
+  echo "GraphQL: API rate limit already exceeded for user ID 1." >&2; exit 1
+fi
 q=""; key=""; labels=""; prev=""
 for a in "$@"; do
   case "$prev" in -q|--jq) q="$a" ;; --label) labels="$labels${labels:+,}$a" ;; esac
@@ -92,6 +96,21 @@ case "$1 $2" in
     f="$FIX/gh/labels.json"; [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
     emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  "api graphql")
+    # A batched issue read (scripts/gh-batch.sh): each iN alias answered from
+    # issue-N.json, an unknown number null, the way GitHub answers one.
+    query=""; for a in "$@"; do case "$a" in query=*) query="${a#query=}" ;; esac; done
+    nums=$(printf '%s' "$query" | grep -oE 'i[0-9]+:issueOrPullRequest' | sed 's/^i//; s/:.*//')
+    [ -n "$nums" ] || exit 1
+    out='{}'
+    for n in $nums; do
+      f="$FIX/gh/issue-$n.json"
+      if [ -f "$f" ]; then
+        out=$(jq -c --arg k "i$n" --argjson n "$n" --slurpfile i "$f" \
+          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}})}' <<<"$out")
+      else out=$(jq -c --arg k "i$n" '. + {($k): null}' <<<"$out"); fi
+    done
+    jq -c '{data: {repository: .}}' <<<"$out" ;;
   "api "*|"api")
     # Keyed by the endpoint with every / and ? flattened, so "the commits on the
     # trunk" and "the branch compared with the trunk" can answer differently.
@@ -138,8 +157,8 @@ SH
 # An issue the stub can answer for: fix_issue <n> <state> <label,label…>
 fix_issue() {
   local n=$1 st=$2 labels=${3:-}
-  jq -n --arg s "$st" --arg l "$labels" --arg t "Ticket $n" \
-    '{state:$s, title:$t, labels:($l|split(",")|map(select(length>0)|{name:.}))}' \
+  jq -n --argjson n "$n" --arg s "$st" --arg l "$labels" --arg t "Ticket $n" \
+    '{number:$n, state:$s, title:$t, labels:($l|split(",")|map(select(length>0)|{name:.}))}' \
     > "$FIX/gh/issue-$n.json"
 }
 
