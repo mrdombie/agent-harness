@@ -233,11 +233,29 @@ DRIVER_PREPARE_WHY=""
 # named the failing check had to be got by re-running the push by hand (#10955,
 # trial 3). The whole output goes to steps/<slot>-push.out; DRIVER_PUSH_WHY is the
 # lines that say no (✗, error:, fatal:), joined, for the log and the park note.
+#
+# THE PARK ESCAPE. A park's push of a draft branch carries `<name>=1` (PARK_PUSH by
+# default, `driver.parkPushEnv` to rename it), which a project's pre-push may honour
+# by skipping the quality gates work-in-progress fails by definition. Without it a
+# red check refused every park push and the work stayed in a local bundle — seven
+# times on 2026-10-17. Every other slot, and a park of a trunk, strips it: inherited
+# from the shell, it would wave a ship past the gates it exists to pass.
 driver_push() {
-  local t="$1" wt="$2" branch="$3" slot="$4" f rc=0
+  local t="$1" wt="$2" branch="$3" slot="$4" f rc=0 esc tr
   f="$(driver_state_dir "$t")/steps/$slot-push.out"
   mkdir -p "$(dirname "$f")"
-  git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
+  local penv=(env -u PARK_PUSH)
+  esc=$(driver_opt driver.parkPushEnv PARK_PUSH)
+  if [[ "$esc" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    penv+=(-u "$esc")
+    if [ "$slot" = park ]; then
+      for tr in $(driver_opt trunks "$INTEGRATION_BRANCH"); do [ "$tr" = "$branch" ] && esc=""; done
+      [ -n "$esc" ] && penv+=("$esc=1")
+    fi
+  elif [ "$slot" = park ]; then
+    driver_say "   park: driver.parkPushEnv '$esc' is not an environment variable name, so the push carries no park escape"
+  fi
+  "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
   if [ "$rc" -ne 0 ]; then
