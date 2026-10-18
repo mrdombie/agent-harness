@@ -69,4 +69,13 @@ want "and records nothing" "" "$(driver_state_get 998 'done|join(",")')"
 echo "--- a ticket nobody started ---"
 driver_state_is_done 999 start && bad "an unknown ticket must not report a finished step" || ok "an unknown ticket has finished nothing"
 
+echo "--- a proof command written for bash runs in bash, not in /bin/sh ---"
+# Agents write gate and test commands in bash. On Ubuntu /bin/sh is dash, which
+# rejects arrays, [[ ]] and process substitution with 'Syntax error: "(" unexpected',
+# and the build step read that as "the test still fails with the change".
+out=$(driver_bounded 30 'a=(one two); [[ ${a[1]} == two ]] && echo bash-ok' 2>&1)
+[ "$out" = "bash-ok" ] && ok "a bash command runs" || bad "a bash command failed under the runner: $out"
+out=$(driver_bounded 0 'a=(x); echo ${#a[@]}' 2>/dev/null)
+[ "$out" = "1" ] && ok "and unbounded too" || bad "unbounded run is not bash: $out"
+
 exit $FAILED
