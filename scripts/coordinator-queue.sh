@@ -19,7 +19,8 @@
 # everything else is new. An entry put there with `add` is pinned: it and every
 # note survive a re-seed, because nothing on the forge can rebuild them. The
 # tick removes an entry once it has spawned it. A seed whose reads fail changes
-# nothing.
+# nothing. Every read-modify-write holds the queue lock, so a re-seed that read
+# the queue before an `add` cannot write over it.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/coordinator-env.sh" || exit 1
 
@@ -29,6 +30,22 @@ CLAIMABLE="${COORDINATOR_CLAIMABLE:-$KIT_ROOT/scripts/claimable-issues.sh}"
 empty_queue() { jq -n '{scope: null, label: null, seeded_at: null, tickets: []}'; }
 current()     { if [ -s "$COORD_QUEUE" ]; then cat "$COORD_QUEUE"; else empty_queue; fi; }
 write()       { local tmp; tmp=$(mktemp "$COORD_DIR/.queue.XXXXXX") && cat > "$tmp" && mv "$tmp" "$COORD_QUEUE"; }
+
+# Unlocked, a re-seed that read the queue before an add wrote it back without the add.
+QUEUE_LOCK="$COORD_DIR/.queue.lock"
+QUEUE_LOCK_WAIT="${COORDINATOR_QUEUE_LOCK_WAIT_SEC:-30}"
+locked() { # <command…> — runs it holding the queue lock, waiting up to QUEUE_LOCK_WAIT seconds
+  local tries=$(( QUEUE_LOCK_WAIT * 10 )) rc
+  until coord_lock "$QUEUE_LOCK" "queue write"; do
+    tries=$((tries-1))
+    [ "$tries" -gt 0 ] || die "the queue is locked ($COORD_LOCK_WHY) — nothing changed"
+    sleep 0.1
+  done
+  trap 'rm -rf "$QUEUE_LOCK"' EXIT
+  "$@"; rc=$?
+  rm -rf "$QUEUE_LOCK"; trap - EXIT
+  return $rc
+}
 
 label_exists() { # <name>
   swarm_gh label list --repo "$REPO_SLUG" --search "$1" --limit 100 --json name \
@@ -90,7 +107,13 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
              if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new")
            }')
-  current | jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" '
+  locked merge_rows "$scope" "$labels" "$rows" || die "the queue could not be written — left as it was"
+  echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
+}
+
+merge_rows() { # <scope> <labels> <rows> — a pinned entry's class and note win over its seeded row
+  local scope="$1" labels="$2" rows="$3" merged
+  merged=$(current | jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" '
     (.tickets // []) as $old
     | ($labels | split("\n") | map(select(length > 0))) as $ls
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
@@ -99,8 +122,8 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end)) as $merged
     | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null))) as $kept
-    | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: ($merged + $kept)}' | write
-  echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
+    | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: ($merged + $kept)}') || return 1
+  printf '%s\n' "$merged" | write
 }
 
 # The scopes were resolved to labels when seeded; re-resolving them asked GitHub
@@ -141,17 +164,27 @@ add() {
   done
   case "$n" in ''|*[!0-9]*) die "add needs a ticket number" ;; esac
   case "$cls" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
-  current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" '
+  locked add_entry "$n" "$cls" "$note" "$front" || die "the queue could not be written — #$n not queued"
+  echo "queued #$n as $cls"
+}
+add_entry() { # <n> <class> <note> <front>
+  local out
+  out=$(current | jq --argjson n "$1" --arg c "$2" --arg note "$3" --argjson front "$4" '
     {n: $n, class: $c, note: $note, pinned: true} as $e
     | ((.tickets // []) | map(select(.n != $n))) as $rest
-    | .tickets = (if $front then [$e] + $rest else $rest + [$e] end)' | write
-  echo "queued #$n as $cls"
+    | .tickets = (if $front then [$e] + $rest else $rest + [$e] end)') || return 1
+  printf '%s\n' "$out" | write
 }
 
 remove() {
   case "${1:-}" in ''|*[!0-9]*) die "remove needs a ticket number" ;; esac
-  current | jq --argjson n "$1" '.tickets = ((.tickets // []) | map(select(.n != $n)))' | write
+  locked remove_entry "$1" || die "the queue could not be written — #$1 not removed"
   echo "removed #$1"
+}
+remove_entry() { # <n>
+  local out
+  out=$(current | jq --argjson n "$1" '.tickets = ((.tickets // []) | map(select(.n != $n)))') || return 1
+  printf '%s\n' "$out" | write
 }
 
 list() {
@@ -171,6 +204,6 @@ case "${1:-}" in
   add)     shift; add "$@" ;;
   remove)  shift; remove "$@" ;;
   list)    list ;;
-  -h|--help|"") sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)       die "unknown command '$1'" ;;
 esac
