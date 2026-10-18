@@ -61,6 +61,12 @@ pull request, resume brief, hold label, release the claim — in that order,
 because an unpushed branch is the only thing a park can lose and a claim
 released early is a ticket a peer can take against a branch that is not there.
 
+The park's push carries the project's park escape (`PARK_PUSH=1`, or the name in
+`driver.parkPushEnv`) so a pre-push that honours it lets a draft through checks
+work in progress fails. Never on a trunk, never on any other push: ship strips it
+even when inherited. A push still refused falls back to a bundle under
+`<worktreeRoot>/backups`.
+
 ## What the driver guarantees with its own hands
 
 - **Test-first is proved, not asked.** The build step reports, per item, the
