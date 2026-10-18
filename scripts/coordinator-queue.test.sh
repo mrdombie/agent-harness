@@ -73,7 +73,7 @@ fix_issue_list "area:GADGETS" '[{"number":503},{"number":504}]'
 rm -f "$QF"; bash "$Q" add 888 --class repair --note "pinned before the list" >/dev/null
 out=$(bash "$Q" seed "widgets, area:GADGETS,flow-gap,widgets" 2>&1)
 want_in "it names every label it seeded"   'for project:widgets, area:GADGETS, flow-gap$' "$out"
-want "the union, de-duplicated, repair first, then claimable order" "502:repair 888:repair 501:new 503:new 504:new" "$(order)"
+want "the union, de-duplicated, repair first, then priority, newest first" "502:repair 888:repair 501:new 504:new 503:new" "$(order)"
 want "a ticket under two scopes is queued once" "1" "$(jq '[.tickets[] | select(.n==503)] | length' "$QF")"
 want "the labels are recorded"             'project:widgets|area:GADGETS|flow-gap' "$(jq -r '.labels | join("|")' "$QF")"
 want "the pinned repair survives the seed" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
@@ -106,6 +106,35 @@ bash "$Q" seed 501 >/dev/null
 bash "$Q" in-scope 501; want "a ticket scope matches its own number" "0" "$?"
 jq '.labels = null | .label = "area:GADGETS"' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
 bash "$Q" in-scope 504; want "a queue from before lists still reads its one label" "0" "$?"
+
+echo "--- new work runs half-built, then features, then bugs, then polish; newest first ---"
+# Claimable order is oldest first; the queue must not keep it.
+printf '%s\n' \
+  "601	P1	OPS			polish(inbox): tighten the row gap	type:bug,project:widgets" \
+  "602	P1	OPS			Inbox drops a reply	type:bug,project:widgets" \
+  "603	P1	OPS			Saved views screen	type:feature,project:widgets" \
+  "604	P1	OPS			Analytics screen half done	status:partial,project:widgets" \
+  "605	P1	OPS			Inbox loses the draft	type:bug,project:widgets" \
+  "606	P0	OPS			Calendar screen	type:feature,project:widgets" \
+  "607	P0	OPS			polish: row hover colour	project:widgets" \
+  "608	P3	OPS			Old rough edge	P3,project:widgets" \
+  "609	P1	OPS		[RESUME PR]	Pipeline screen	project:widgets" \
+  "610	P1	OPS		[FINISH PR]	clashing PR	type:bug,project:widgets" \
+  "611	P1	OPS		[FINISH PR]	another clash	type:feature,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+want "repairs keep claimable order; new by kind, priority, newest" \
+  "610:repair 611:repair 609:new 604:new 606:new 603:new 605:new 602:new 607:new 601:new 608:new" "$(order)"
+want "the kind is recorded"                "feature" "$(jq -r '.tickets[] | select(.n==606) | .kind' "$QF")"
+
+echo "--- an entry put at the front keeps the front across a refresh ---"
+bash "$Q" add 608 --front >/dev/null
+bash "$Q" add 700 --front --note "outside the claimable list" >/dev/null
+bash "$Q" refresh >/dev/null
+want "fronts first in their class, the last one put there first, the rest re-sorted" \
+  "610:repair 611:repair 700:new 608:new 609:new 604:new 606:new 603:new 605:new 602:new 607:new 601:new" "$(order)"
+bash "$Q" refresh >/dev/null
+want "and still there after a second refresh" \
+  "610:repair 611:repair 700:new 608:new 609:new 604:new 606:new 603:new 605:new 602:new 607:new 601:new" "$(order)"
 
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null
