@@ -92,6 +92,14 @@ out=$(driver_step_start 103 2>&1); rc=$?
 want "a held ticket refuses" "24" "$rc"
 want_in "naming the label"   'needs:human-approval' "$out"
 
+echo "--- a ticket parked on a question the PM owes ---"
+# A pm-classified question parks with the PM label and no hold. A resume that read
+# only the hold would rebuild the ticket before the PM had answered.
+fix_issue 133 OPEN "status:parked,status:pm-decision"
+out=$(driver_step_start 133 2>&1); rc=$?
+want "a ticket waiting on the PM refuses" "24" "$rc"
+want_in "naming the PM's label"           'status:pm-decision' "$out"
+
 echo "--- a gated ticket: the PM flips that, not the driver ---"
 fix_issue 104 OPEN "status:gated"
 out=$(driver_step_start 104 2>&1); rc=$?

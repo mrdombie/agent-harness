@@ -90,11 +90,13 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
   "worktree": { "prepare": ["npx prisma generate"], "scratch": ["docs/notes"], "sparseExclude": ["docs/evidence"] },
   "build": { "cacheDirs": ["apps/*/.next", ".turbo"], "cacheIdleMin": 30 },
   "commit": { "parkType": "chore" },
+  "driver": { "parkPushEnv": "PARK_PUSH" },
   "design": {
     "kit": "@you/ui",
     "tokens": "packages/ui/src/tokens.ts",
     "surfacePaths": ["apps/web/**", "packages/ui/**"],
-    "render": "npm run -s renders"
+    "render": "npm run -s renders",
+    "reference": ["docs/design/reference/kit.html"]
   },
   "programmes": { "brief": "scripts/programme-state-brief.sh {{EPIC}}" },
   "preApprovedWrites": { "environments": ["Staging"], "decided": "<who>, <date>" },
@@ -132,12 +134,15 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `changelog.branchTrailer` is optional: the commit-message line this project's changelog gate accepts ONCE for a whole branch as a reasoned skip (e.g. `no-changelog-branch`). When every build answer reported `changelog: {skipped}` and no commit on the branch carries the line, self-check adds one empty commit with `<trailer>: <reason>` — no history is rewritten.
 - `design.surfacePaths` is optional: the globs this project calls a screen. The compare step matches the branch diff against them to decide whether there is a screen to render at all; without it that step says so and compares nothing. Entries are git pathspecs, so `":(exclude)**/*.test.ts"` takes test files out; a list of only excludes is refused, because git reads it as every other file. With a renderer but no approved picture for the change, compare takes the renders for review and makes no parity check.
 - `evidence` is optional: the shape the project's CI leaves when it photographs a pull request, read by `scripts/ci-evidence.sh`. **Evidence comes from CI, not from the agent's machine** (2026-10-16): an agent pushes, opens the pull request held with an `## Evidence routes` list, waits on `ci-evidence.sh wait <pr>` (a shell that costs nothing while CI works), fetches CI's pinned shots with `ci-evidence.sh fetch` and has the design critic judge them (`/agent-harness:finish` Step 5.4). Keys and defaults: `dir` (`docs/evidence` — a commit after a verdict that touches only this folder, or nothing, carries the verdict forward), `begin` / `end` (`<!-- ci-evidence:begin -->` / `<!-- ci-evidence:end -->`, the body block CI writes; links outside it are not CI's evidence), `headMarker` (`ci-evidence-head:`, the commit CI photographed), `captureCheck` (`Capture and pin the evidence`), `decideCheck` (`Does this diff need pixels?`), `routesHeading` (`Evidence routes`). Local capture is a fallback a person switches on with `HARNESS_LOCAL_EVIDENCE=1` when CI evidence is down; the kit never sets it.
+- `design.reference` — a path, or a list of paths, to the approved reference picture(s) that define this project's kit look (HTML or PNG). The `design-critic` agent's picture mode holds every proposed picture against it before the operator sees it, and returns `KIT: MATCH | KIT: DRIFT`; with no reference declared it returns `KIT: DRIFT`, so a project that draws pictures needs one. `scripts/check-picture-mode.sh` refuses a skill that hands the operator a picture without naming picture mode.
 - `design.render` is optional, and it is the LOCAL capture: the driver runs it only with `HARNESS_LOCAL_EVIDENCE=1`, and otherwise records that CI owes the pictures after the push. It is a command run in the ticket worktree that prints one render per line as `name<TAB>path<TAB>light|dark<TAB>route`. Its output becomes the renders the compare step holds beside the approved design, and the renders the review step is given. Absent is an absence the reviewer and the pull request are TOLD about in those words; declared and producing nothing is a refusal, because a measurement that could not be made is not a screen that is fine. Exit 3 is the one exception: it means the renderer knows no screen this change touches, and is recorded as an absence in the renderer's own words, exactly as a project with no renderer.
 - `programmes.brief` is optional: a command that prints the BRIEF of a programme's state file, with `{{EPIC}}` and `{{FILE}}` substituted. These files are append-only and grow for as long as the programme is open, and a step handed the whole thing designs from the programme's history rather than from its own ticket. The driver finds the file by **what it says** — the state file whose content names the ticket's programme label — never by its filename: on the project this was measured on all 29 files are named for the epic and the label lives in the body, so a filename glob matched none of them.
 - `review.diffBytes` is optional (default 400000): how much of the branch diff the review step hands the reviewer. Past it the diff is cut and the cut is STATED beside the file list, because a reviewer handed a silently-shortened diff reviews a change it cannot see the rest of.
 - `worktree.prepare` is optional: commands run in every fresh worktree the driver cuts, and in the two trees its red-before-green proof checks out. This is for whatever your repo generates per checkout and gitignores — a generated database client, a build artifact a hook imports. Absent is normal and skipped. Three things are refusals, because a tree that cannot pass your pre-push is better discovered before the build than after it: a command that **fails**, a `prepare` that is **not a list** (a bare string prepares nothing and used to report success), and a **list entry that is not a command**.
 - `labels.ownerDecision` is optional (default `needs:owner-decision`): the label a ticket wears while a question only the owner can answer is open on it (`scripts/owner-question.sh`). No spawner takes a ticket wearing it.
+- `labels.pmDecision` (default `status:pm-decision`) is also the label the driver's park puts on a ticket whose question is about its shape — which repo, how it splits, the order, the wording of its acceptance. The PM answers and clears it; the owner's hold label goes only on a question about pixels, a picture, a product or commercial call, or the data model, and on any question the step did not classify.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
+- `driver.parkPushEnv` is optional (default `PARK_PUSH`): the environment variable the driver's park sets to `1` on its push of a draft branch, so the project's pre-push can let a park through quality checks that work in progress fails by definition. Without it a red check refuses the park's push and the work survives only as a local bundle. Only a park sets it, never on a branch listed in `trunks`; every other push, including the ship, strips it even when the caller's shell has it. A project whose pre-push does not honour it loses nothing: the push is refused and the park bundles the commits as before. A value that is not a variable name sets nothing and the park says so.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
 - `lesson` is optional, and only `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes or references, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`), `guardPatterns` (default: test, lint and gate globs such as `**/*.test.*`, `**/eslint-rules/**`, `**/*.semgrep.yml`, `**/check-*.*`, `**/gates/**`, plus `tests.patterns`; set, it replaces both) and `guardExclude` (default `*.md`, `*.mdx`, `*.txt`, `*.rst`, `docs/**` and the like). A pattern with no `/` matches the file name anywhere; one with a `/` is anchored at the repo root; `*` stays inside a directory and `**` crosses. It is read at the base commit. `HARNESS_GUARD_PATTERNS` (space-separated) can only narrow the guard set. A value that is not a list is a refusal.
 - `preApprovedWrites` is optional: environments whose writes (a back-fill, a one-off script, a data fix) the operator has approved in advance. `decided` is required and names who made the call and when. The standing rules say a general policy is not a yes; this is the one exception, and `hooks/standing-rules.sh` appends it to every session as its own section. It never covers an outward-facing action in any environment (publishing to a real account, sending email or messages), any environment not listed, or a command refused at a prompt, and the section says so. Only the operator adds or widens it. Two things hold that line. Only the committed value counts: a working-tree value that differs from `HEAD`'s grants nothing until it is committed. And `hooks/guard-pre-approved-writes.sh` refuses an agent's change to the parsed value (Write, Edit, and the Bash routes that name the file, plus `git commit`, `checkout`, `restore` and `apply`) and tells it to ask the operator. Removing the key stays allowed, since that grants nothing. Both values are pasted into the rules, so they are held to plain tokens: a name is letters, digits and `. _ -` with no spaces, up to 32 characters, and never a word for every environment (`all`, `any`, `every…`, `*`); `decided` is exactly `<name>, YYYY-MM-DD`. Anything else, a `harness.json` that is not one JSON object, or one that names the key twice, grants nothing, and the session is told so.
@@ -161,13 +166,15 @@ hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            approval-kept.sh (does a sign-off survive an update; the head it was given at)
+           signoff-push-guard.sh (a pre-push: no screen change after the owner signs)
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
            check-push-destination.sh (every push names its destination; CI)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
-           signoff-batch.sh (held PRs green apart from the hold, in batches of five)
+           signoff-batch.sh (held PRs green apart from the hold, every reviewer's
+           recorded verdict on the head, in batches of five)
            needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
            loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
            fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
@@ -205,6 +212,46 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets in `$STATE_DIR/usage-hold`, so the coordinator and the scheduler spawn nothing until then |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
+
+### Sign-off comes last
+
+The owner signs a screen after everything else, and nothing they signed changes
+afterwards. Four places hold it:
+
+- `signoff-batch.sh` sends a held PR to the owner only once every `review.attest`
+  reviewer's recorded verdict (`<Key>: SHIP (<who>) <fingerprint>` in an empty
+  commit) is on its head, walking past empty commits, CI evidence commits
+  (`evidence.commitPrefix`) and merges that only bring the trunk in.
+- The claim and finish skills, every driver step brief and every spawned builder's
+  prompt lead with `shared/signoff-last.md`; the review brief says a pixel finding
+  on a signed PR is a follow-up. A driver push the guard refuses parks for the owner.
+- `scripts/signoff-push-guard.sh` refuses a push whose head differs from the signed
+  head in one of the PR's own screens, unless a commit since the sign-off carries
+  `pixel-change-after-signoff: <why>` — then it puts the hold back on, comments the
+  before and after on the PR, and logs a `lane-hold` line for the owner's next
+  batch. Signed means any sign-off, a person removing the hold on GitHub included
+  (`approval-kept.sh signed-head`). The trees are compared, not the commits, so a
+  merge taking the trunk's side or a force-push back is caught. Only this PR's own
+  commits give a reason; the trunk's squash commits carry other PRs' reasons.
+
+The screens are one set, `approval-kept.sh screens`, which the guard and the briefs
+share: `design.surfacePaths` plus `design.extraScreens` (files outside those globs
+that still draw — a stylesheet, `public/` images, copy an API serves), never tests,
+`design.neverScreens` or release notes (Markdown, `docs/`, `.changeset/`, CHANGELOG:
+their wording may change after sign-off). A server-only fix is not a screen.
+`approval-kept.sh check` keeps a wider rule for the merge lane — with
+`surfacePathsComplete` unset every non-test file counts — because there a file
+wrongly counted costs one re-sign, and one wrongly missed ships unsigned.
+
+The kit ships no git hook, so the consuming repo's own pre-push calls it: save
+stdin once, feed it to every check that reads it, and run the guard last, after
+the project's own push checks, so a push they refuse never puts the hold back on:
+
+```sh
+REFS=$(cat)
+# … the project's own checks, fed "$REFS" where they read stdin …
+printf '%s\n' "$REFS" | bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
+```
 
 ### Scripts the skills expect in the consuming repo
 

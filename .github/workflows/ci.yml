@@ -55,6 +55,8 @@ jobs:
         run: bash scripts/check-signal-source.sh
       - name: The kit names no project
         run: bash scripts/check-project-agnostic.sh
+      - name: Every picture is checked against the kit before the operator sees it
+        run: bash scripts/check-picture-mode.sh
       - name: Every push names its destination
         # A push naming no src:dst follows the upstream, and a worktree cut from a trunk tracks it.
         run: bash scripts/check-push-destination.sh

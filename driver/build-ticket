@@ -134,6 +134,31 @@ REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS + 1 ))
 DRIVER_ALWAYS_STEPS="${DRIVER_ALWAYS_STEPS:-start}"
 always() { case " $DRIVER_ALWAYS_STEPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# A RESUME RE-PLANS WHEN THE TICKET CHANGED. A finished plan used to be reused for
+# ever, so a run resumed after the PM edited the ticket built tasks the PM had
+# removed. The body the plan read is hashed onto the record; a different body now
+# reopens plan and everything after it. An unreadable body, or a record from before
+# the hash, compares as unchanged: there is nothing to compare.
+ticket_body_hash() { # <ticket> — empty when the body cannot be read
+  local b
+  b=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json body -q '.body // ""' 2>/dev/null) || return 0
+  printf '%s' "$b" | git hash-object --stdin 2>/dev/null
+}
+PLAN_AT=-1; i=0
+while [ "$i" -lt "$N" ]; do
+  [ "${STEPS[$i]}" = "plan" ] && { PLAN_AT=$i; break; }
+  i=$((i+1))
+done
+if [ "$PLAN_AT" -ge 0 ] && driver_state_is_done "$TICKET" plan; then
+  planned_hash=$(driver_state_get "$TICKET" plan_body_hash)
+  now_hash=$(ticket_body_hash "$TICKET")
+  if [ -n "$planned_hash" ] && [ -n "$now_hash" ] && [ "$planned_hash" != "$now_hash" ]; then
+    driver_state_reopen "$TICKET" "${STEPS[@]:$PLAN_AT}"
+    driver_say "↻ #$TICKET changed since it was planned: back to plan, and every step after it runs again."
+  fi
+fi
+plan_hash=""
+
 skipped=0
 ran=0        # steps that did real work — start re-checking itself is not work
 i=0
@@ -152,6 +177,8 @@ while [ "$i" -lt "$N" ]; do
   # "N step(s) were already finished and did not run again" name the one step that did,
   # and a finished ticket report "all 7 were already finished" having run start.
   was_done=0; driver_state_is_done "$TICKET" "$step" && was_done=1
+  # The body is read BEFORE the plan runs, so an edit made while it plans is a change.
+  [ "$step" != "plan" ] || plan_hash=$(ticket_body_hash "$TICKET")
   "$(step_fn "$step")" "$TICKET" || rc=$?
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
@@ -181,6 +208,13 @@ while [ "$i" -lt "$N" ]; do
   asked=$(jq -r '(.question // .park // "")' \
             "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)
   [ -n "$asked" ] || asked="see the step output"
+  # WHO ANSWERS IT. Only `pm` goes to the PM — ticket shape: repo, split, order,
+  # acceptance wording. Anything else, absent or unreadable included, is the owner's:
+  # a question of his routed to the PM is one he never sees.
+  asked_for=$(jq -r '.questionFor // ""' \
+            "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)
+  ask_cause="person"
+  [ "$asked_for" != "pm" ] || ask_cause="pm"
 
   # WHY THE ARMS ONLY ASSIGN, measured rather than guessed.
   #
@@ -204,6 +238,7 @@ while [ "$i" -lt "$N" ]; do
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
+      [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
       ;;
 
@@ -239,7 +274,7 @@ while [ "$i" -lt "$N" ]; do
       # approval label to unblock itself is the thing that must never be automated.
       park_reason="$step asked a question rather than guessing"
       park_question="$asked"
-      park_cause="person"
+      park_cause="$ask_cause"
       ;;
 
     "$DRIVER_E_NO_SKILL")

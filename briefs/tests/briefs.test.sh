@@ -42,7 +42,8 @@ for step in $steps; do
   if [ ! -f "$brief" ]; then bad "$step has no brief at $step.md"; continue; fi
   [ -f "$BRIEFS/schemas/$step.json" ] && ok "$step has a schema" || bad "$step has no schemas/$step.json"
 
-  words=$(wc -w < "$brief" | tr -d ' ')
+  # The sign-off rule leading every brief is shared policy, not the brief's own words.
+  words=$(sed '1{/^\*\*Sign-off comes last:\*\*/d;}' "$brief" | wc -w | tr -d ' ')
   if [ "$words" -le "$CEILING" ]; then ok "$step.md is $words words (ceiling $CEILING)"
   else bad "$step.md is $words words — over the $CEILING ceiling, which is what absorbing a skill's content looks like"; fi
 

@@ -1,3 +1,5 @@
+**Sign-off comes last:** on a PR the owner has already signed, a finding that would change pixels becomes a follow-up ticket, not a fix here. Only a fix the PR cannot merge without (a red check, a Critical) changes them, with `pixel-change-after-signoff: <why>` in its commit, and the owner signs again.
+
 # Step 5 · Review
 
 You are reviewing a finished change and returning a verdict with every finding
@@ -71,6 +73,10 @@ file, its line, its grade, the one-line `reason` in a user's words, and the fix.
 
 There is ONE list. The grade already says what each finding costs, so a second list
 is a second place for the two to disagree.
+
+A question names who answers it in `questionFor`: `owner` for pixels, a picture,
+a product or commercial call, or the data model; `pm` for the ticket's shape —
+repo, split, order, acceptance wording. Unsure is `owner`.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

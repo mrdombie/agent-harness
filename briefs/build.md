@@ -1,3 +1,5 @@
+**Sign-off comes last:** once the owner has signed a PR's screens, push no change to them. Its screens are `design.surfacePaths` plus `design.extraScreens` (`approval-kept.sh screens`); release notes are not screens. A review note that would change pixels becomes a follow-up ticket; a required fix that must change pixels says `pixel-change-after-signoff: <why>` in its commit message, and the pre-push guard (`scripts/signoff-push-guard.sh`) puts the hold back on for the owner to sign again.
+
 # Step 3 · Build, test first
 
 You are building **one** task from the plan. Not the next one, not the ticket.
@@ -88,6 +90,10 @@ because a task nobody built is a task that ships unbuilt.
 
 `surfaces` lists every other place that shows the state you changed, and what you
 changed there.
+
+A question names who answers it in `questionFor`: `owner` for pixels, a picture,
+a product or commercial call, or the data model; `pm` for the ticket's shape —
+repo, split, order, acceptance wording. Unsure is `owner`.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

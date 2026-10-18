@@ -1,3 +1,5 @@
+**Sign-off comes last:** once the owner has signed a PR's screens, push no change to them. Its screens are `design.surfacePaths` plus `design.extraScreens` (`approval-kept.sh screens`); release notes are not screens. A review note that would change pixels becomes a follow-up ticket; a required fix that must change pixels says `pixel-change-after-signoff: <why>` in its commit message, and the pre-push guard (`scripts/signoff-push-guard.sh`) puts the hold back on for the owner to sign again.
+
 # Step 4 · Compare with what was approved
 
 You are holding this run's renders beside the approved design and listing every
@@ -41,6 +43,10 @@ JSON only, valid against `schemas/compare.json`.
 Every difference is either `fixed: true`, or carries the `reason` it stands. A
 difference with neither is refused — that gap is the drift this step exists to
 catch.
+
+A question names who answers it in `questionFor`: `owner` for pixels, a picture,
+a product or commercial call, or the data model; `pm` for the ticket's shape —
+repo, split, order, acceptance wording. Unsure is `owner`.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

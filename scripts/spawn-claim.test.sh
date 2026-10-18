@@ -116,6 +116,7 @@ G -C "$STORE" fetch -q origin develop
 # cannot reach the real one.
 cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-mcp.sh" \
    "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT/"
+mkdir -p "$SB/shared"; cp "$SUT_DIR/../shared/signoff-last.md" "$SB/shared/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
 cat > "$SUT/claim-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -328,6 +329,10 @@ if [ -f "$OUT/seen" ]; then
     || bad "the detached prompt does not route an owner question to $SUT/owner-question.sh"
   [ "$(grep -c 'Owner questions:' "$OUT/seen")" = 1 ] && ok "the rule is in the prompt once" \
     || bad "the owner rule is in the prompt $(grep -c 'Owner questions:' "$OUT/seen") times, want 1"
+  # Sign-off comes last: the repair brief's first line, before anything else it reads.
+  [ "$(seen args)" = "-p $(head -1 "$SUT_DIR/../shared/signoff-last.md")" ] \
+    && ok "the detached prompt's first line is the sign-off-comes-last rule" \
+    || bad "the detached prompt starts '$(seen args | cut -c1-80)', not the sign-off rule"
 else
   bad "the detached spawn never started the agent"
 fi

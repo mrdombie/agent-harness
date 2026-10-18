@@ -227,6 +227,12 @@ gh issue view "$N" --repo "$REPO_SLUG" --json comments \
 Take the **last** one — later comments supersede earlier concepts. Say plainly that a
 pasted Artifact link does nothing in VSCode and offer to `open` it.
 
+**Only a concept the critic passed reaches the operator.** The comment carrying the link
+must also say `KIT: MATCH`, the `design-critic` agent's **picture mode** verdict against
+the project's `design.reference`. Without it, run picture mode on the link first. On
+`KIT: DRIFT` the row is not the operator's: the concept goes back to be redrawn, and the
+row moves to the agents' list as "picture drifted from the kit".
+
 ### 1d · Claims vs live processes
 
 The ref is the claim; `$LBL_CLAIMED` (claimed) is a mirror that goes stale both ways.

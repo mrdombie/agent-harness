@@ -112,7 +112,11 @@ room_for() { # <programme> — echoes why not, returns 1
 
 # ---- 1. repair ---------------------------------------------------------------
 repair_brief() { # <pr> <sha> <reason>
+  local rule; rule=$(head -1 "$KIT_ROOT/shared/signoff-last.md" 2>/dev/null)
+  [ -n "$rule" ] || { echo "repair-watch: $KIT_ROOT/shared/signoff-last.md is missing" >&2; return 1; }
   cat <<BRIEF
+$rule
+
 REPAIR on PR #$1 at ${2:0:9}: $3.
 
 Read the LATEST comment on the ticket and on the PR first — it may carry a
@@ -183,9 +187,10 @@ section_repair() {
 
     # A hold placed mid-pass: checked again right before the attempt is spent.
     if swarm_held >/dev/null; then say "held mid-pass — not repairing #$PR ($T)"; break; fi
-    printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
     local brief; brief="$SWARM_DIR/briefs/repair-$T.md"
-    mkdir -p "$(dirname "$brief")"; repair_brief "$PR" "$SHA" "$reason" > "$brief"
+    mkdir -p "$(dirname "$brief")"
+    repair_brief "$PR" "$SHA" "$reason" > "$brief" || { say "no repair for #$PR ($T): its brief could not be written"; continue; }
+    printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
     swarm_spawn "$T" "$brief" >/dev/null 2>&1
     say "spawned repair for #$PR ($T) at ${SHA:0:9}: $reason"
     launched=$((launched+1))
