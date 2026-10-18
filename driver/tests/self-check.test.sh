@@ -260,4 +260,128 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$FIX/sc.rc" ] && break; sleep 1; done
 if [ -e "$FIX/gate-ran" ]; then ok "the holder gone, it ran"; else bad "never ran: $(cat "$FIX/sc.out")"; fi
 want "and the slot was given back" "" "$(ls "$HARNESS_GATE_SLOT_DIR" 2>/dev/null)"
 
+echo "--- LESSON: self-check runs the push's own checks, not only its gates (#236) ---"
+# On 2026-10-17 self-check said "3 gate(s) green" and the project's pre-push refused
+# on a check outside them; the ticket parked after review, the commits in a bundle.
+# A tree whose pre-push refuses on a check no configured gate runs must not pass.
+PP="$FIX/pp"; git clone -q "$REPO" "$PP"; git -C "$PP" checkout -q -b tkt-401
+git -C "$PP" config user.email t@example.invalid; git -C "$PP" config user.name Tester
+cat > "$PP/.git/hooks/pre-push" <<'SH'
+#!/bin/sh
+cat > "$(git rev-parse --git-dir)/pre-push.stdin"
+printf '%s\n' "$@" > "$(git rev-parse --git-dir)/pre-push.args"
+echo "✗ check:near-name-exports — a new export looks like one that already exists"
+exit 1
+SH
+chmod +x "$PP/.git/hooks/pre-push"
+jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 401 --worktree "$PP"
+F401="$(driver_state_dir 401)/steps/self-check.findings.json"
+out=$(driver_step_self_check 401 2>&1); rc=$?
+want "a red pre-push is a red self-check, sent to fix" "30" "$rc"
+want_in "named as the pre-push"                 'pre-push failed' "$out"
+want "the finding is the pre-push"               "gate-pre-push" "$(jq -r '[.[].id] | join(",")' "$F401" 2>/dev/null)"
+want_in "carrying the check that said no"        'near-name-exports' "$(jq -r '.[0].output' "$F401" 2>/dev/null)"
+want_in "the hook got the ref line git sends"    "refs/heads/tkt-401 $(git -C "$PP" rev-parse HEAD) refs/heads/tkt-401 " "$(cat "$PP/.git/pre-push.stdin" 2>/dev/null)"
+want "and the remote as its first argument"      "origin" "$(head -1 "$PP/.git/pre-push.args" 2>/dev/null)"
+out=$(driver_step_self_check 401 2>&1); rc=$?
+want "a second red pre-push parks"               "24" "$rc"
+want_in "with the check in the park note"        'near-name-exports' "$(driver_state_get 401 park_note)"
+
+echo "--- a green pre-push is a green gate ---"
+printf '#!/bin/sh\nexit 0\n' > "$PP/.git/hooks/pre-push"
+driver_state_init 402 --worktree "$PP"
+out=$(driver_step_self_check 402 2>&1); rc=$?
+want "green"                                     "0" "$rc"
+want_in "and counted"                            'pre-push ok' "$out"
+want_in "beside the configured gate"             '2 gate.s. green' "$out"
+
+echo "--- a husky tree whose hooks were never wired still runs its pre-push ---"
+# git resolves no hook in a worktree husky never ran in, which would read as "no
+# pre-push to verify" while the push itself (after ensure-hooks) runs one.
+git -C "$REPO" worktree add -q "$FIX/hk" -b tkt-408 develop
+mkdir -p "$FIX/hk/.husky"; printf '#!/bin/sh\necho "✗ check:knip — unused deps"\nexit 1\n' > "$FIX/hk/.husky/pre-push"
+driver_state_init 408 --worktree "$FIX/hk"
+out=$(driver_step_self_check 408 2>&1); rc=$?
+want "it runs the tree's own pre-push"          "30" "$rc"
+want_in "and names what said no"                'check:knip' "$(jq -r '.[0].output' "$(driver_state_dir 408)/steps/self-check.findings.json" 2>/dev/null)"
+
+echo "--- gates.prePush names the command, in place of the hook ---"
+jq '.gates = {"changed": ["true"], "prePush": "echo ✗ check:knip; exit 4"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 403 --worktree "$PP"
+out=$(driver_step_self_check 403 2>&1); rc=$?
+want "its red is red although the hook is green" "30" "$rc"
+want_in "with its exit code"                     'exit 4' "$out"
+
+echo "--- gates.prePush false is off, and says so ---"
+printf '#!/bin/sh\nexit 1\n' > "$PP/.git/hooks/pre-push"
+jq '.gates = {"changed": ["true"], "prePush": false}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 404 --worktree "$PP"
+out=$(driver_step_self_check 404 2>&1); rc=$?
+want "off: the red hook is not run"              "0" "$rc"
+want_in "and the log says it is off"             'pre-push off' "$out"
+
+echo "--- gates.prePush in a shape that is not a command is configuration: it parks ---"
+jq '.gates = {"changed": ["true"], "prePush": ["npm run verify:push"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 405 --worktree "$PP"
+out=$(driver_step_self_check 405 2>&1); rc=$?
+want "a list parks, not fixes"                   "24" "$rc"
+want_in "naming the key"                         'gates.prePush' "$(driver_state_get 405 park_note)"
+
+echo "--- a reviewer still owed defers the pre-push to the push, and says so ---"
+# The review step records the verdict the push demands after this step runs, so a
+# pre-push here is red on it whatever the change.
+jq '.gates = {"changed": ["true"]} | .review = {"attest": {"ui-gate": {"owed": "exit 1"}}}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 406 --worktree "$PP"
+out=$(driver_step_self_check 406 2>&1); rc=$?
+want "deferred, not red"                         "0" "$rc"
+want_in "naming the owed reviewer"               'ui-gate is owed' "$out"
+jq '.review.attest["ui-gate"].owed = "exit 0"' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 407 --worktree "$PP"
+out=$(driver_step_self_check 407 2>&1); rc=$?
+want "attested: the pre-push runs, and is red"   "30" "$rc"
+
+echo "--- an owed reviewer runs gates.prePushOwed: the push's checks minus that verdict ---"
+jq '.review.attest["ui-gate"].owed = "exit 1" | .gates.prePushOwed = "echo ✗ check:complexity; exit 5"' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 409 --worktree "$PP"
+out=$(driver_step_self_check 409 2>&1); rc=$?
+want "its red is a red self-check"               "30" "$rc"
+want_in "it says what it ran in place"           'gates.prePushOwed' "$out"
+want_in "and the check reaches fix"              'check:complexity' "$(jq -r '.[0].output' "$(driver_state_dir 409)/steps/self-check.findings.json" 2>/dev/null)"
+jq 'del(.review) | del(.gates.prePushOwed)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+
+echo "--- a red gate first: the pre-push waits, and is not run ---"
+printf '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/pre-push.ran"\nexit 1\n' > "$PP/.git/hooks/pre-push"
+rm -f "$PP/.git/pre-push.ran"
+jq '.gates = {"changed": ["exit 1"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 410 --worktree "$PP"
+out=$(driver_step_self_check 410 2>&1); rc=$?
+want "the red gate goes to fix"                  "30" "$rc"
+want "the hook did not run"                      "no" "$([ -e "$PP/.git/pre-push.ran" ] && echo yes || echo no)"
+want_in "and the log says why"                   'pre-push waits — the gates above are red' "$out"
+want "only the gate is a finding"                "gate-changed-1" "$(jq -r '[.[].id] | join(",")' "$(driver_state_dir 410)/steps/self-check.findings.json" 2>/dev/null)"
+
+echo "--- a sign-off refusal is the owner's call: it parks, never goes to fix, and the trial has no side effects ---"
+# Handed to fix, the model could write pixel-change-after-signoff itself. Run as a
+# trial, the guard must not re-add the hold or notify for a head never pushed.
+cat > "$PP/.git/hooks/pre-push" <<'SH'
+#!/bin/sh
+printf '%s\n' "${SIGNOFF_GUARD_DRYRUN:-unset}" > "$(git rev-parse --git-dir)/pre-push.dryrun"
+echo "✗ pre-push blocked: sign-off comes last. The owner signed PR #7 at abc1234, and this push changes its screens: apps/web/page.tsx" >&2
+exit 1
+SH
+jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 411 --worktree "$PP"
+out=$(driver_step_self_check 411 2>&1); rc=$?
+want "it parks"                                  "24" "$rc"
+want "nothing goes to fix"                       "absent" "$([ -e "$(driver_state_dir 411)/steps/self-check.findings.json" ] && echo present || echo absent)"
+want_in "the note is for the owner"              '^Needs the owner: .*signed PR #7 at abc1234.*pixel-change-after-signoff' "$(driver_state_get 411 park_note)"
+want "the guard was told it is a trial"          "1" "$(cat "$PP/.git/pre-push.dryrun" 2>/dev/null)"
+jq '.gates = {"changed": ["true"], "prePush": "echo $SIGNOFF_GUARD_DRYRUN > dryrun.cmd; exit 0"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 412 --worktree "$PP"
+driver_step_self_check 412 >/dev/null 2>&1
+want "a named command is told too"               "1" "$(cat "$PP/dryrun.cmd" 2>/dev/null)"
+rm -f "$PP/dryrun.cmd"
+jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+
 exit $FAILED

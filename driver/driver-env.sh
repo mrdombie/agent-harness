@@ -231,6 +231,14 @@ driver_run_project() { # <seconds> <command>
 # red/green proof, and 127 in the second half reads as "the change does not do the
 # job" — so the ticket parks blaming a change that works.
 DRIVER_PREPARE_WHY=""
+# driver_signoff_refusal <ticket> <output> — 0, with the owner's park note set, when
+# the sign-off guard refused: the owner signed these screens and the change moves them.
+driver_signoff_refusal() {
+  grep -q 'sign-off comes last' "$2" 2>/dev/null || return 1
+  driver_state_set "$1" park_note "Needs the owner: this PR's screens were signed off and this build changes them after that ($(driver_signoff_line "$2")). Either the change becomes a follow-up ticket, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
+}
+driver_signoff_line() { grep -m1 'sign-off comes last' "$1" 2>/dev/null | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300; }
+
 # driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
 # project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
 # said "read its own output" and that output existed nowhere, so the one line that
