@@ -357,7 +357,8 @@ for esc in PARK_PUSH MY_PARK; do
   : > "$GH_LOG"
   out=$(export PARK_PUSH=1 MY_PARK=1; driver_step_ship $n 2>&1); rc=$?
   git -C "$FIX/wt$n" config --unset core.hooksPath
-  want "[$esc] the ship's push is refused"          "24" "$rc"
+  # Refused, and as a hook's refusal the first one goes to fix (#236): 30, never a push.
+  want "[$esc] the ship's push is refused, to fix"  "30" "$rc"
   want_in "[$esc] and ship reports the hook's line" '✗ format:changed' "$out"
   want "[$esc] the branch is not on origin"         "0" \
     "$(git -C "$FIX/origin" rev-parse --verify tkt-$n/work >/dev/null 2>&1 && echo 1 || echo 0)"
