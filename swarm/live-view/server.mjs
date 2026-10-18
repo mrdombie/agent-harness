@@ -200,11 +200,19 @@ const INFRA_RE = /API Error|Connection refused|ECONNRESET|ETIMEDOUT|overloaded|O
 const infraDeath = (j) => j.is_error === true && INFRA_RE.test(String(j.result ?? ''))
 // ---- cli-signal reader: end ------------------------------------------------
 
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g
+
 function parseLog(file) {
   const steps = []
   let result = null
   for (const line of tail(file).split('\n')) {
-    if (!line.startsWith('{')) continue
+    // The step driver logs plain lines, not stream-JSON; each one is a step.
+    if (!line.startsWith('{')) {
+      const t = line.replace(ANSI_RE, '').trim()
+      if (t) steps.push({ kind: 'say', text: t.slice(0, 220) })
+      continue
+    }
     let j
     try { j = JSON.parse(line) } catch { continue }
     if (j.type === 'assistant') {

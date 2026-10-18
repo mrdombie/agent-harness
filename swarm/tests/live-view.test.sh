@@ -85,6 +85,21 @@ want "two steps"           "2" "$(printf '%s' "$s" | jq '[.live[] | select(.tick
 want "the command is named" "Run the gates" "$(printf '%s' "$s" | jq -r '[.live[] | select(.ticket=="501")][0].steps[0].text')"
 want "and what it said"    "say" "$(printf '%s' "$s" | jq -r '[.live[] | select(.ticket=="501")][0].steps[1].kind')"
 
+echo "--- a step-driver log is plain text, and its last line is the current step ---"
+# The step driver writes plain lines, not stream-JSON. Read as JSON only, every
+# driver build showed "Starting up" with no steps while it was mid-build.
+printf '   build: all 5 task(s) proved red before green\n\n\033[32m   self-check: changed 2 ok\033[0m\n' > "$STATE/logs/claim-501.log"
+s=$(snap)
+want "two plain steps"      "2" "$(printf '%s' "$s" | jq '[.live[] | select(.ticket=="501")][0].steps | length')"
+want "the last line is now" "self-check: changed 2 ok" "$(printf '%s' "$s" | jq -r '[.live[] | select(.ticket=="501")][0].steps[-1].text')"
+want "read as said"         "say" "$(printf '%s' "$s" | jq -r '[.live[] | select(.ticket=="501")][0].steps[-1].kind')"
+long=$(printf 'x%.0s' $(seq 1 300))
+{ for i in $(seq 1 12); do echo "line $i"; done; echo "$long"; } > "$STATE/logs/claim-501.log"
+s=$(snap)
+want "the last ten only"    "10" "$(printf '%s' "$s" | jq '[.live[] | select(.ticket=="501")][0].steps | length')"
+want "in order"             "line 4" "$(printf '%s' "$s" | jq -r '[.live[] | select(.ticket=="501")][0].steps[0].text')"
+want "a long line is capped" "220" "$(printf '%s' "$s" | jq '[.live[] | select(.ticket=="501")][0].steps[-1].text | length')"
+
 echo "--- an unreadable record is skipped, not fatal ---"
 printf 'not json\n' > "$STATE/runs/claim-599-a.json"
 s=$(snap)
