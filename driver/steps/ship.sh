@@ -66,26 +66,9 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  # THE TRUNK AS IT IS NOW, NOT AS IT WAS AT START (#214). A run cuts its tree at
-  # start and builds for an hour; a gate fixed on the trunk meanwhile is still the
-  # OLD gate in this tree, and its pre-push refused a push the trunk would accept
-  # (seen twice in one afternoon). Bring the trunk in first. A real conflict is the
-  # agent's to resolve, so it parks naming the files, with the branch untouched.
-  if [ "$trunk" = "origin/$INTEGRATION_BRANCH" ]; then
-    git -C "$wt" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
-  fi
-  if ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null; then
-    if git -C "$wt" merge -q --no-edit --no-verify "$trunk" >/dev/null 2>&1; then
-      driver_say "   ship: brought $trunk in — the branch was cut before it moved"
-    else
-      local clash
-      clash=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
-      git -C "$wt" merge --abort 2>/dev/null || true
-      driver_say "✋ ship: $branch conflicts with $trunk in: ${clash:-(unnamed files)}. Nothing is pushed."
-      driver_state_set "$t" park_note "the branch conflicts with $trunk, which moved during the run, in: ${clash:-(unnamed files)} — merge $trunk in, resolve, re-gate"
-      return "$DRIVER_E_REFUSED"
-    fi
-  fi
+  # THE TRUNK AS IT IS NOW, NOT AS IT WAS AT START (#214) — see driver_bring_trunk_in.
+  local brc=0; driver_bring_trunk_in "$t" "$wt" "$branch" "$trunk" ship || brc=$?
+  [ "$brc" -eq 0 ] || return "$brc"
 
   # THE VERDICTS HAVE TO DESCRIBE THIS HEAD. The review step records them, and any
   # commit after it — a park's work-in-progress commit is the real case — moves the

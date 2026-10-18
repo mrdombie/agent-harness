@@ -214,6 +214,34 @@ driver_bounded() { # <seconds> <command>
 # red/green proof, and 127 in the second half reads as "the change does not do the
 # job" — so the ticket parks blaming a change that works.
 DRIVER_PREPARE_WHY=""
+# driver_bring_trunk_in <ticket> <tree> <branch> [trunk] [step] — the trunk as it is now (#214).
+# A run cuts its tree at start and builds for an hour; a gate fixed on the trunk meanwhile
+# is still the OLD gate in this tree, so self-check and pre-push refuse work the trunk
+# would accept. Fetch and merge the trunk; on a real conflict abort, park naming the
+# files, and leave the branch as it was. 0 when current or merged.
+driver_bring_trunk_in() {
+  local t="$1" wt="$2" branch="$3" trunk="${4:-}" step="${5:-self-check}" clash r
+  if [ -z "$trunk" ]; then
+    for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
+      git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
+    done
+    [ -n "$trunk" ] || return 0
+  fi
+  if [ "$trunk" = "origin/$INTEGRATION_BRANCH" ]; then
+    git -C "$wt" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
+  fi
+  git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null && return 0
+  if git -C "$wt" merge -q --no-edit --no-verify "$trunk" >/dev/null 2>&1; then
+    driver_say "   $step: brought $trunk in — the branch was cut before it moved"
+    return 0
+  fi
+  clash=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
+  git -C "$wt" merge --abort 2>/dev/null || true
+  driver_say "✋ $step: $branch conflicts with $trunk in: ${clash:-(unnamed files)}. Nothing is pushed."
+  driver_state_set "$t" park_note "the branch conflicts with $trunk, which moved during the run, in: ${clash:-(unnamed files)} — merge $trunk in, resolve, re-gate"
+  return "$DRIVER_E_REFUSED"
+}
+
 # driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
 # project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
 # said "read its own output" and that output existed nowhere, so the one line that

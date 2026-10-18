@@ -439,4 +439,20 @@ want "the branch is left as it was"        "$HEAD142" "$(git -C "$FIX/wt142" rev
 want "with no merge left half-done"        "" "$(git -C "$FIX/wt142" status --porcelain)"
 want "and nothing was pushed"              "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-142/work)"
 
+echo "--- self-check's call: the helper finds the trunk itself and brings it in (#214) ---"
+setup_wt 143
+git -C "$FIX/dev141" fetch -q origin develop && git -C "$FIX/dev141" checkout -q --detach FETCH_HEAD
+printf 'another fix on develop\n' > "$FIX/dev141/gate143.txt"
+git -C "$FIX/dev141" add gate143.txt; git -C "$FIX/dev141" commit -qm "fix: another gate, on develop"
+git -C "$FIX/dev141" push -q origin HEAD:develop
+MOVED3=$(git -C "$FIX/dev141" rev-parse HEAD)
+rc=0; out=$(driver_bring_trunk_in 143 "$FIX/wt143" tkt-143/work "" self-check 2>&1) || rc=$?
+want "it succeeds"                          "0" "$rc"
+want "the branch now holds develop's fix"   "yes" \
+  "$(git -C "$FIX/wt143" merge-base --is-ancestor "$MOVED3" HEAD 2>/dev/null && echo yes)"
+want_in "and names the step"                "self-check: brought origin/develop in" "$out"
+rc=0; out=$(driver_bring_trunk_in 143 "$FIX/wt143" tkt-143/work "" self-check 2>&1) || rc=$?
+want "a branch already current is left alone" "0" "$rc"
+want "and says nothing"                     "" "$out"
+
 exit $FAILED

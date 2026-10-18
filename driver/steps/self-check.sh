@@ -76,6 +76,12 @@ driver_step_self_check() { # <ticket>
   local wt names row name safe cmd rc gtype failed=0 ran=0 empty=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  # The gates judge the tree that will land: bring the moved trunk in first (#214), or a
+  # break the trunk already fixed fails this step on a branch cut before the fix.
+  if [ "$wt" != "$MAIN_REPO" ]; then
+    local mrc=0; driver_bring_trunk_in "$t" "$wt" "$(driver_state_get "$t" branch)" "" self-check || mrc=$?
+    [ "$mrc" -eq 0 ] || return "$mrc"
+  fi
   # Said before the gates run, and through the ticket's log: each gate's own output goes
   # to a file, so a warning printed inside one is a warning nobody sees.
   driver_check_timeout || true
