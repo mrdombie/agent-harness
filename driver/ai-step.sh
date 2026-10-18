@@ -414,7 +414,10 @@ EOC
     return "$DRIVER_E_SCHEMA"
   fi
   if [ -f "$DRIVER_SCHEMAS/$step.json" ]; then
-    vout=$(BRIEFS_SCHEMAS="$DRIVER_SCHEMAS" bash "$validator" "$step" "$ans" 2>&1); vrc=$?
+    # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
+    # directories") when the step's working folder was deleted under it, and that crash
+    # read as "the answer was never checked" and parked finished work.
+    vout=$(cd "$DRIVER_HOME" 2>/dev/null || cd /; BRIEFS_SCHEMAS="$DRIVER_SCHEMAS" bash "$validator" "$step" "$ans" 2>&1); vrc=$?
     why=$(printf '%s' "$vout" | tr '\n' ' ' | cut -c1-400)
     if [ "$vrc" -eq 1 ]; then
       driver_say "✋ $step: the answer does not match briefs/schemas/$step.json — $why"
