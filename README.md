@@ -274,8 +274,11 @@ one, fails until its body accounts for each file:
 
 "covered by" must name a test file that exists at head with a live case;
 "removed on purpose" must give a reason. A file git sees as **renamed** is not a
-deletion, but its cases are compared across the rename, and a case turned into
-`it.skip` counts as lost. It counts cases, not titles: a case renamed or reworded
+deletion, but its cases are compared across the rename. A case turned off —
+`.skip`, `.todo`, an `x` prefix, inside a skipped describe, or left out by a
+`.only` elsewhere in the file — counts as lost, and a new case in the same file
+never stands in for it. A diff, file or tree git could not read refuses (exit 2)
+and names the step; it never reports clean. It counts cases, not titles: a case renamed or reworded
 where it stands, or moved to another test file in the same diff, is matched to its
 new form and owes nothing. Only a drop in the count, or a named case with nothing
 like it at head, needs a line. The diff is two dots, base..head, read from the two
