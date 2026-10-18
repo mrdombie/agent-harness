@@ -75,6 +75,46 @@ now pins it) or `removedBecause`.
 
 JSON only, valid against `schemas/repair.json`.
 
+<!-- fields:begin — generated from schemas/repair.json by briefs/return-fields.sh --write repair; edit the schema, never this list -->
+Every field the contract has; `additionalProperties` is false, so no other.
+
+- `step` (required): "repair"
+- `skills` (required): list of string
+- `status` (required): one of "repaired", "unchanged", "park"
+- `cause`: string
+- `conflicts`: list of object
+- `conflicts[].file` (required): string
+- `conflicts[].resolution` (required): string
+- `fixes`: list of object
+- `fixes[].what` (required): string
+- `fixes[].proof` (required): one of "test", "gate"
+- `fixes[].change` (required): list of object
+- `fixes[].change[].path` (required): string
+- `fixes[].change[].action` (required): one of "create", "modify", "delete"
+- `fixes[].command` (required): string
+- `fixes[].test`: object
+- `fixes[].test.file` (required): string
+- `fixes[].test.behaviour` (required): string
+- `fixes[].test.redWhen` (required): string
+- `fixes[].failedBefore`: true
+- `fixes[].passedAfter`: true
+- `fixes[].testCommit`: string
+- `fixes[].implCommit`: string
+- `fixes[].noTestBecause`: string
+- `question`: string
+- `notes`: string
+- `replacedTests`: list of object
+- `replacedTests[].file` (required): string
+- `replacedTests[].coveredBy`: string
+- `replacedTests[].removedBecause`: string
+- `reason`: string
+
+Conditional:
+- when `status` is "repaired": requires `cause`, `fixes`
+- otherwise, when `status` is "unchanged": requires `reason`
+- otherwise: requires `question`
+<!-- fields:end -->
+
 - `status: "repaired"` carries the root `cause` in a line, one `fixes` entry per
   fix with its proof, and one `conflicts` entry per file that conflicted.
 - `status: "unchanged"` carries the `reason` in a line, and only when the brief

@@ -253,6 +253,43 @@ SHIM
     before=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); brc=$?
   fi
 
+  _driver_ai_run "$prompt" "$log"
+  driver_record_usage "$t" "$slot" "$log" "$prompt"
+
+  # ONE RE-ASK, WITH THE REASON, BEFORE A PARK. An answer the driver cannot read
+  # parked the ticket outright, and the run's work with it (#13249, 2026-10-17); the
+  # same session is asked once more, told exactly what was wrong. Bounded at one: a
+  # second unreadable answer parks as before.
+  local jrc=0 reask_why="" first_log="$log.first" note_was
+  note_was=$(driver_state_get "$t" park_note)
+  _driver_ai_judge || jrc=$?
+  if [ "$jrc" -eq "$DRIVER_E_SCHEMA" ] && [ -n "$reask_why" ] && [ "${DRIVER_SCHEMA_REASKS:-1}" -gt 0 ]; then
+    local reask="$d/steps/$slot.reask.prompt" sid
+    sid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+    [ -z "$sid" ] || : > "$reask"
+    [ -n "$sid" ] || cp "$prompt" "$reask"
+    printf '\n---\nYour answer could not be read by the driver: %s\nAnswer again: JSON only, valid against schemas/%s.json. The Return section lists every field it allows and when each one is required. Keep the work you have done; change only the shape of the answer.\n' \
+      "$reask_why" "$step" >> "$reask"
+    driver_say "↩ $step: the answer could not be read — asking once more with the reason: $(printf '%s' "$reask_why" | cut -c1-200)"
+    [ ! -f "$ans" ] || cp "$ans" "$d/steps/$slot.first.json"
+    cp "$log" "$first_log"
+    _driver_ai_run "$reask" "$log.reask" "$sid"
+    driver_record_usage "$t" "$slot" "$log.reask" "$reask"
+    # Both transcripts, in order: the skills ran in the first, the answer is the last result.
+    cat "$log.reask" >> "$log"
+    jrc=0; _driver_ai_judge || jrc=$?
+    # A re-ask that was read leaves no note behind for a later refusal to be mistaken for.
+    [ "$jrc" -ne 0 ] || driver_state_set "$t" park_note "$note_was"
+  fi
+  return "$jrc"
+}
+
+# _driver_ai_run <prompt> <log> [session-id] — one model call in the ticket's
+# worktree, from driver_ai_step's locals. With a session id it resumes that session.
+_driver_ai_run() {
+  local in="$1" out="$2" sid="${3:-}"
+  local resume=()
+  [ -z "$sid" ] || resume=(--resume "$sid")
   (
     cd "$wt" || exit 1
     export PATH="$shim:$PATH"
@@ -260,20 +297,24 @@ SHIM
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
     if [ -n "$schema_for_model" ]; then
-      "$DRIVER_CLAUDE" -p \
+      "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
-        < "$prompt" > "$log" 2>"$log.err"
+        < "$in" > "$out" 2>"$out.err"
     else
-      "$DRIVER_CLAUDE" -p \
+      "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
-        --add-dir "$wt" < "$prompt" > "$log" 2>"$log.err"
+        --add-dir "$wt" < "$in" > "$out" 2>"$out.err"
     fi
   ) || true
-  driver_record_usage "$t" "$slot" "$log" "$prompt"
+}
 
+# _driver_ai_judge — the checks on the transcript in $log, from driver_ai_step's
+# locals. Sets reask_why when the only fault is the answer's shape.
+_driver_ai_judge() {
+  reask_why=""
   if [ "$brc" -eq 0 ]; then
     after=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); arc=$?
     if [ "$arc" -ne 0 ] || [ "$(printf '%s' "$before" | cut -f1)" != "$(printf '%s' "$after" | cut -f1)" ]; then
@@ -323,10 +364,14 @@ EOW
   result=$(driver_log_result "$log")
   if [ -z "$result" ]; then
     driver_say "✋ $step: the agent ended without an answer."
+    reask_why="the run ended with no answer at all"
+    driver_state_set "$t" park_note "the $step step ended without an answer"
     return "$DRIVER_E_SCHEMA"
   fi
   if ! printf '%s' "$result" | jq -e . >/dev/null 2>&1; then
     driver_say "✋ $step: the answer is not JSON — $(printf '%s' "$result" | head -c 120)"
+    reask_why="the answer is not JSON: $(printf '%s' "$result" | head -c 200)"
+    driver_state_set "$t" park_note "the $step answer is not JSON: $(printf '%s' "$result" | head -c 200)"
     return "$DRIVER_E_SCHEMA"
   fi
   printf '%s\n' "$result" | jq . > "$ans"
@@ -419,6 +464,7 @@ EOC
     if [ "$vrc" -eq 1 ]; then
       driver_say "✋ $step: the answer does not match briefs/schemas/$step.json — $why"
       driver_state_set "$t" park_note "$step answered outside briefs/schemas/$step.json: $why"
+      reask_why="the validator refused it against schemas/$step.json: $why"
       return "$DRIVER_E_SCHEMA"
     elif [ "$vrc" -ne 0 ]; then
       driver_say "✋ $step: briefs/schemas/$step.json could not be read, so NOTHING about this answer was checked — $why"

@@ -61,6 +61,55 @@ a bare path to the test that now pins it, or `removedBecause`. A gate checks the
 
 JSON only, valid against `schemas/build.json`.
 
+<!-- fields:begin — generated from schemas/build.json by briefs/return-fields.sh --write build; edit the schema, never this list -->
+Every field the contract has; `additionalProperties` is false, so no other.
+
+- `step` (required): "build"
+- `skills` (required): list of string
+- `status` (required): one of "built", "park"
+- `task` (required): string
+- `testFirst`: object
+- `testFirst.test` (required): object
+- `testFirst.test.file` (required): string
+- `testFirst.test.behaviour` (required): string
+- `testFirst.test.redWhen` (required): string
+- `testFirst.command` (required): string
+- `testFirst.testCommit` (required): string
+- `testFirst.implCommit` (required): string
+- `testFirst.failedBefore` (required): true
+- `testFirst.redOutput` (required): string
+- `testFirst.passedAfter` (required): true
+- `testFirst.greenOutput` (required): string
+- `changed`: list of object
+- `changed[].path` (required): string
+- `changed[].action` (required): one of "create", "modify", "delete"
+- `surfaces`: list of string
+- `changelog`: object
+- `changelog.file`: string
+- `changelog.skipped`: string
+- `question`: string
+- `questionFor`: one of "owner", "pm"
+- `notes`: string
+- `testOnly`: object
+- `testOnly.test` (required): object
+- `testOnly.test.file` (required): string
+- `testOnly.test.behaviour` (required): string
+- `testOnly.command` (required): string
+- `testOnly.testCommit` (required): string
+- `testOnly.break` (required): object
+- `testOnly.break.file` (required): string
+- `testOnly.break.find` (required): string
+- `testOnly.break.replace` (required): string
+- `replacedTests`: list of object
+- `replacedTests[].file` (required): string
+- `replacedTests[].coveredBy`: string
+- `replacedTests[].removedBecause`: string
+
+Conditional:
+- when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`
+- otherwise: requires `question`
+<!-- fields:end -->
+
 `testFirst` carries the command, the red output and the green output. Both
 `failedBefore` and `passedAfter` are fixed at true in that contract: there is no
 shape in it for a change whose test did not fail first, so a task that cannot

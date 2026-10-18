@@ -60,6 +60,50 @@ a bare path to the test that now pins it, or `removedBecause`. A gate checks the
 
 JSON only, valid against `schemas/fix.json`.
 
+<!-- fields:begin — generated from schemas/fix.json by briefs/return-fields.sh --write fix; edit the schema, never this list -->
+Every field the contract has; `additionalProperties` is false, so no other.
+
+- `step` (required): "fix"
+- `skills` (required): list of string
+- `status` (required): one of "fixed", "park"
+- `round` (required): integer
+- `cleared`: list of object
+- `cleared[].blockerId` (required): string
+- `cleared[].change` (required): list of object
+- `cleared[].change[].path` (required): string
+- `cleared[].change[].action` (required): one of "create", "modify", "delete"
+- `cleared[].test` (required): object
+- `cleared[].test.file` (required): string
+- `cleared[].test.behaviour` (required): string
+- `cleared[].test.redWhen` (required): string
+- `cleared[].command` (required): string
+- `cleared[].failedBefore` (required): true
+- `cleared[].passedAfter` (required): true
+- `cleared[].testCommit` (required): string
+- `cleared[].implCommit` (required): string
+- `deferred`: list of object
+- `deferred[].blockerId` (required): string
+- `deferred[].reason` (required): string
+- `deferred[].followUp` (required): string
+- `question`: string
+- `questionFor`: one of "owner", "pm"
+- `notes`: string
+- `replacedTests`: list of object
+- `replacedTests[].file` (required): string
+- `replacedTests[].coveredBy`: string
+- `replacedTests[].removedBecause`: string
+- `gateFixes`: list of object
+- `gateFixes[].blockerId` (required): string
+- `gateFixes[].change` (required): list of object
+- `gateFixes[].change[].path` (required): string
+- `gateFixes[].change[].action` (required): one of "create", "modify", "delete"
+- `gateFixes[].commit` (required): string
+
+Conditional:
+- when `status` is "fixed": at least one of `cleared`, `gateFixes`
+- otherwise: requires `question`
+<!-- fields:end -->
+
 One `cleared` entry per review finding, each carrying the change, the test that goes red
 when that finding returns, and the red and green runs. A finding cleared without
 a test is one that can come back unnoticed, so the contract has no shape for it.
