@@ -106,6 +106,11 @@ URL for the operator's approval, with nothing merged.
 A human approves pixels. Send the operator the **URL, not a screenshot**. Wait for approval before
 Phase 2 wiring.
 
+Before any picture of the target goes to the operator, run the `design-critic` agent in
+**picture mode** on it, with the project's `design.reference` and the current screen. On
+`KIT: DRIFT` it is redrawn and checked again; it is sent only on `KIT: MATCH`, and the
+comment carrying its URL says `KIT: MATCH`.
+
 If nothing visible changes, skip to Step 5. Do not invent a design phase for a
 backend fix.
 
