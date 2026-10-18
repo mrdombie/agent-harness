@@ -346,6 +346,228 @@ check
 expect_rc 1 "a case the trunk retired does not absorb a case the branch dropped"
 expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming the dropped case"
 
+# A case turned off still has a title, so a new case in the same file must not
+# absorb it as a rewrite. Each plant below turns one case off and adds one.
+add_case() { printf "it('sorts the queue by age', () => {});\n" >> "$R/src/desk.test.ts"; }
+TEAMMATE_CASE="  it\('a writer can post for a teammate'.*?\n  \}\);\n"
+
+# --- 28. it.skip plus a new case: turned off, not rewritten --------------------------
+repo skip-plus-new
+perl -pi -e "s/it\('a writer can post for a teammate'/it.skip('a writer can post for a teammate'/" "$R/src/desk.test.ts"
+add_case
+grep -q "it.skip('a writer can post for a teammate'" "$R/src/desk.test.ts" || bad "fixture: the skip plant did not land"
+grep -q "sorts the queue by age" "$R/src/desk.test.ts" || bad "fixture: the new case did not land"
+commit
+check
+expect_rc 1 "a case skipped while another is added is not a rewrite"
+expect_out 'src/desk.test.ts.*turned off 1 case' "it says the case was turned off"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "and names it"
+check '## Deleted tests
+- `src/desk.test.ts` → removed on purpose: retired with the old desk'
+expect_rc 0 "and a reason in the body accounts for it"
+
+# --- 29. test.todo plus a new case ------------------------------------------------------
+repo todo-plus-new
+perl -0pi -e "s/$TEAMMATE_CASE/  test.todo('a writer can post for a teammate');\n/s" "$R/src/desk.test.ts"
+add_case
+grep -q "test.todo('a writer can post for a teammate')" "$R/src/desk.test.ts" || bad "fixture: the todo plant did not land"
+commit
+check
+expect_rc 1 "a case turned into test.todo while another is added is lost"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming it"
+
+# --- 30. xit plus a new case ------------------------------------------------------------
+repo xit-plus-new
+perl -pi -e "s/it\('opens the desk'/xit('opens the desk'/" "$R/src/desk.test.ts"
+add_case
+grep -q "xit('opens the desk'" "$R/src/desk.test.ts" || bad "fixture: the xit plant did not land"
+commit
+check
+expect_rc 1 "a case turned into xit while another is added is lost"
+expect_out 'src/desk.test.ts: opens the desk' "naming it"
+
+# --- 31. A case wrapped in describe.skip plus a new case --------------------------------
+repo describe-skip
+perl -0pi -e "s/($TEAMMATE_CASE)/  describe.skip('legacy', () => {\n\$1  });\n/s" "$R/src/desk.test.ts"
+add_case
+grep -q "describe.skip('legacy'" "$R/src/desk.test.ts" || bad "fixture: the describe.skip plant did not land"
+grep -q "a writer can post for a teammate" "$R/src/desk.test.ts" || bad "fixture: the wrapped case should still be in the file"
+commit
+check
+expect_rc 1 "a case inside a skipped describe is off"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming it"
+
+# --- 32. A case wrapped in xdescribe plus a new case ------------------------------------
+repo xdescribe
+perl -0pi -e "s/($TEAMMATE_CASE)/  xdescribe('legacy', () => {\n\$1  });\n/s" "$R/src/desk.test.ts"
+add_case
+grep -q "xdescribe('legacy'" "$R/src/desk.test.ts" || bad "fixture: the xdescribe plant did not land"
+commit
+check
+expect_rc 1 "a case inside an xdescribe is off"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming it"
+
+# --- 33. it.only turns its siblings off -------------------------------------------------
+repo only-case
+perl -pi -e "s/it\('opens the desk'/it.only('opens the desk'/" "$R/src/desk.test.ts"
+grep -q "it.only('opens the desk'" "$R/src/desk.test.ts" || bad "fixture: the .only plant did not land"
+commit
+check
+expect_rc 1 "an it.only left in a file turns the other cases off"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming one sibling"
+expect_out 'src/desk.test.ts: shows the queue' "and the other"
+expect_out 'cases in them, base -> head          : 3 -> 1' "and only one case still runs"
+
+# --- 34. describe.only over the whole file excludes nothing -----------------------------
+repo only-describe
+perl -pi -e "s/describe\('desk'/describe.only('desk'/" "$R/src/desk.test.ts"
+grep -q "describe.only('desk'" "$R/src/desk.test.ts" || bad "fixture: the describe.only plant did not land"
+commit
+check
+expect_rc 0 "a describe.only around every case in the file excludes nothing"
+
+# --- 35. Skipped and reworded at once is still off --------------------------------------
+repo skip-reword
+perl -pi -e "s/it\('a writer can post for a teammate'/it.skip('writer posts for teammate'/" "$R/src/desk.test.ts"
+printf "it('opens the queue tab', () => {});\n" >> "$R/src/desk.test.ts"
+grep -q "it.skip('writer posts for teammate'" "$R/src/desk.test.ts" || bad "fixture: the skip-reword plant did not land"
+commit
+check
+expect_rc 1 "a case skipped and reworded while another is added is lost"
+expect_out 'src/desk.test.ts: a writer can post for a teammate' "naming it"
+
+# --- 36. Turning a skipped case back on is not a loss -----------------------------------
+repo unskip
+git -C "$R" checkout -q main
+perl -pi -e "s/it\('opens the desk'/it.skip('opens the desk'/" "$R/src/desk.test.ts"
+grep -q "it.skip('opens the desk'" "$R/src/desk.test.ts" || bad "fixture: the trunk skip plant did not land"
+commit "trunk skips a case"
+git -C "$R" checkout -q work; git -C "$R" merge -q --ff-only main
+perl -pi -e "s/it\.skip\('opens the desk'/it('opens the desk'/" "$R/src/desk.test.ts"
+grep -q "it.skip(" "$R/src/desk.test.ts" && bad "fixture: the un-skip plant did not land"
+commit
+check
+expect_rc 0 "a skipped case turned back on is not a loss"
+
+# --- 37. A new placeholder never claims a reworded case -----------------------------------
+repo reword-plus-todo
+perl -pi -e "s/it\('opens the desk'/it('the desk opens on load'/" "$R/src/desk.test.ts"
+printf "%s\n" "it.todo('sorts the queue by age');" >> "$R/src/desk.test.ts"
+grep -q "it('the desk opens on load'" "$R/src/desk.test.ts" || bad "fixture: the reword plant did not land"
+grep -q "it.todo('sorts the queue by age')" "$R/src/desk.test.ts" || bad "fixture: the todo plant did not land"
+commit
+check
+expect_rc 0 "a new placeholder beside a reworded case is not a loss"
+
+# --- 38–43. A read that fails refuses; it never reports clean ----------------------------
+# Each case puts a `git` on PATH for the gate alone that fails one kind of read and
+# hands everything else to the real git. The fixture's own git never sees it.
+REAL_GIT=$(command -v git)
+shim() { # <name> <bash body run before the real git; "$@" is git's argv>
+  mkdir -p "$SB/shim-$1"
+  { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$2"; printf 'exec "%s" "$@"\n' "$REAL_GIT"; } > "$SB/shim-$1/git"
+  chmod +x "$SB/shim-$1/git"
+}
+check_shim() { # <name> [body]
+  printf '%s\n' "${2:-}" > "$SB/body.md"
+  OUT=$(PATH="$SB/shim-$1:$PATH" bash "$SUT" --repo "$R" --base main --head work --body-file "$SB/body.md" 2>&1); RC=$?
+}
+expect_not_out() { # <regex> <label>
+  printf '%s' "$OUT" | grep -qE -- "$1" && { bad "$2 — output matched /$1/"; printf '%s\n' "$OUT" | sed 's/^/        /'; } || ok "$2"
+}
+
+# 38. The diff itself fails.
+shim diff-fails 'for a in "$@"; do [ "$a" = diff ] && { echo "fatal: forced" >&2; exit 128; }; done'
+repo diff-fails
+git -C "$R" rm -q src/inbox.test.tsx; commit
+check_shim diff-fails
+expect_rc 2 "a diff git could not produce refuses"
+expect_out 'could not read the diff' "saying the diff could not be read"
+expect_not_out 'test files deleted or losing cases   : 0' "and never reports nothing found"
+
+# 39. A test file cannot be read at one commit.
+shim show-fails 'for a in "$@"; do case "$a" in *:*.test.ts) for b in "$@"; do [ "$b" = show ] && { echo "fatal: forced" >&2; exit 128; }; done ;; esac; done'
+repo show-fails
+add_case; commit
+check_shim show-fails
+expect_rc 2 "a test file git could not read refuses"
+expect_out "could not read src/desk.test.ts at [0-9a-f]{7,}" "naming the file and the commit"
+
+# 40. The control count cannot list the tree.
+shim ls-tree-fails 'for a in "$@"; do [ "$a" = ls-tree ] && { echo "fatal: forced" >&2; exit 128; }; done'
+repo ls-tree-fails
+add_case; commit
+check_shim ls-tree-fails
+expect_rc 2 "a control count git could not take refuses"
+expect_out 'could not list the files at base' "naming the control step"
+
+# 41. The diff succeeds but a record is cut short: a status with no path.
+shim diff-truncated 'for a in "$@"; do [ "$a" = diff ] && { printf "M\0"; exit 0; }; done'
+repo diff-truncated
+add_case; commit
+check_shim diff-truncated
+expect_rc 2 "a diff record with no path refuses"
+expect_out 'could not parse the diff' "saying the diff could not be parsed"
+
+# 42. The file named as "covered by" cannot be read at head.
+shim show-tsx-fails 'for a in "$@"; do case "$a" in *:*.test.tsx) for b in "$@"; do [ "$b" = show ] && { echo "fatal: forced" >&2; exit 128; }; done ;; esac; done'
+repo covered-unreadable
+git -C "$R" rm -q src/desk.test.ts; commit
+check_shim show-tsx-fails "$(printf '## Deleted tests\n- `src/desk.test.ts` → covered by `src/inbox.test.tsx`')"
+expect_rc 2 "a covering file git could not read refuses"
+expect_out 'could not read src/inbox.test.tsx at' "naming the covering file"
+
+# 43. Whether a deleted file was at the merge-base cannot be read.
+shim mb-tree-fails 'r=0; for a in "$@"; do [ "$a" = -r ] && r=1; done; for a in "$@"; do [ "$a" = ls-tree ] && [ $r -eq 0 ] && { echo "fatal: forced" >&2; exit 128; }; done'
+repo mb-unreadable
+git -C "$R" rm -q src/desk.test.ts; commit
+check_shim mb-tree-fails
+expect_rc 2 "a merge-base tree git could not read refuses"
+expect_out 'could not read the tree at the merge-base' "saying so"
+
+# 44. A deleted file read fine for its cases, then fails when the gate counts its total.
+# The gate reads it at base and at the merge-base first; the third read is the total.
+shim third-show-fails 'for a in "$@"; do case "$a" in *:src/desk.test.ts) for b in "$@"; do [ "$b" = show ] || continue; n=$(( $(cat "$SHOW_COUNT" 2>/dev/null || echo 0) + 1 )); echo $n > "$SHOW_COUNT"; [ $n -ge 3 ] && { echo "fatal: forced" >&2; exit 128; }; done ;; esac; done'
+repo total-unreadable
+git -C "$R" rm -q src/desk.test.ts; commit
+export SHOW_COUNT="$SB/show-count"; rm -f "$SHOW_COUNT"
+check_shim third-show-fails
+unset SHOW_COUNT
+expect_rc 2 "a deleted file git could not read for its total refuses"
+expect_out 'could not read src/desk.test.ts at' "naming the file"
+expect_not_out 'deleted \(0 cases\)' "and never counts it as empty"
+
+# 45. A test file new at head cannot be read there.
+shim new-file-fails 'for a in "$@"; do case "$a" in *:src/new.test.ts) for b in "$@"; do [ "$b" = show ] && { echo "fatal: forced" >&2; exit 128; }; done ;; esac; done'
+repo head-unreadable
+printf "it('opens a new desk', () => {});\n" > "$R/src/new.test.ts"; commit
+check_shim new-file-fails
+expect_rc 2 "a test file new at head git could not read refuses"
+expect_out 'could not read src/new.test.ts at' "naming it"
+
+# 46. A test file reads at base and head but not at the merge-base.
+shim mb-show-fails 'for a in "$@"; do case "$a" in "$FAIL_REV":*) for b in "$@"; do [ "$b" = show ] && { echo "fatal: forced" >&2; exit 128; }; done ;; esac; done'
+repo mb-show-unreadable
+git -C "$R" checkout -q main; printf 'export const other = 1;\n' > "$R/src/other.ts"; commit "trunk moves on"
+git -C "$R" checkout -q work; add_case; commit
+export FAIL_REV=$(git -C "$R" merge-base main work)
+[ "$FAIL_REV" != "$(git -C "$R" rev-parse main)" ] || bad "fixture: the merge-base should not be base"
+check_shim mb-show-fails
+unset FAIL_REV
+expect_rc 2 "a test file git could not read at the merge-base refuses"
+expect_out 'could not read src/desk.test.ts at' "naming it"
+
+# 47. A test file reads at head and the merge-base but not at base.
+repo base-show-unreadable
+git -C "$R" checkout -q main; printf 'export const other = 1;\n' > "$R/src/other.ts"; commit "trunk moves on"
+git -C "$R" checkout -q work; add_case; commit
+export FAIL_REV=$(git -C "$R" rev-parse main)
+[ "$FAIL_REV" != "$(git -C "$R" merge-base main work)" ] || bad "fixture: base should not be the merge-base"
+check_shim mb-show-fails
+unset FAIL_REV
+expect_rc 2 "a test file git could not read at base refuses"
+expect_out 'could not read src/desk.test.ts at' "naming it"
+
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"
 exit $fail
