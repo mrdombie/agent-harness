@@ -313,21 +313,21 @@ PRBODY
   if [ "$verdict" != "SHIP" ]; then
     # NAME WHAT BLOCKS, not the code. review is recorded finished by the time this
     # runs, so every resume walks straight back to here and refuses identically —
-    # and what blocks is every finding graded critical or major, none of which ship.
-    # Minors left as a follow-up and Nits were dropped in the review step, so reading
-    # the whole list here would hand the operator polish to "clear" before a merge.
+    # and what blocks is every finding whose grade blocks, none of which ship. Nits
+    # were dropped in the review step, so reading the whole list here would hand the
+    # operator taste to "clear" before a merge.
     # The operator has to be handed the findings, or the ticket is simply stuck with
     # "exit 24" as its only explanation.
-    nblock=$(jq -r '[.findings[]? | select(.grade == "critical" or .grade == "major")] | length' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
+    nblock=$(jq -r "[.findings[]? | $(driver_blocking_select)] | length" "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
     driver_say "✋ ship: the review verdict is '${verdict:-none}' after ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS round(s), so the pull request stays a draft. The work is pushed and visible; it is not landing."
     if [ "${nblock:-0}" -gt 0 ]; then
-      blist=$(jq -r '[.findings[]? | select(.grade == "critical" or .grade == "major") | "\(.grade) \(.file // "?"):\(.line // "?") \(.summary // "")"] | join("; ")' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
-      driver_say "   ship: ${nblock} critical/major finding(s) to clear — $blist"
+      blist=$(jq -r '[.findings[]? | '"$(driver_blocking_select)"' | "\(.grade) \(.file // "?"):\(.line // "?") \(.summary // "")"] | join("; ")' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
+      driver_say "   ship: ${nblock} blocking finding(s) to clear — $blist"
       # ON THE RECORD, not just on stdout. driver_say writes the terminal and a log
       # file inside the state directory — the one place a handover must not depend on,
       # because a park exists to be read by somebody who is not this process. The
       # orchestrator puts this note in the park brief.
-      driver_state_set "$t" park_note "${nblock} critical/major finding(s) from the review to clear: $blist"
+      driver_state_set "$t" park_note "${nblock} blocking finding(s) from the review to clear: $blist"
     fi
     return "$DRIVER_E_REFUSED"
   fi

@@ -8,11 +8,11 @@
       "id": "f1",
       "file": "src/queue/panel.tsx",
       "line": 88,
-      "grade": "minor",
+      "grade": "nit",
       "summary": "the retry row sits a step off the spacing scale",
       "reason": "the row reads as misaligned against the ones above it",
       "fix": "use the scale step the sibling rows use"
     }
   ],
-  "notes": "one Minor left. It leaves as the follow-up; it never held this round."
+  "notes": "one Nit left. It is dropped; it never held this round."
 }

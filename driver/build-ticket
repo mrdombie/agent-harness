@@ -31,7 +31,7 @@
 #      through park.sh — pushed, draft pull request, resume brief, label, claim
 #      released — so the work is recoverable by somebody who is not this process.
 #
-# A review that grades something critical or major is the one code that is not an ending: it rewinds
+# A review that grades something critical, major or minor is the one code that is not an ending: it rewinds
 # to the build step and the steps between are reopened, which is what a rework
 # round is. That loop is bounded here as well as inside the build step, because
 # a step returning "go back" forever is indistinguishable from a hung agent.
@@ -261,7 +261,7 @@ N=${#STEPS[@]}
 # Where a rework goes back to. Two answers, because they are two different
 # questions.
 #
-# A REVIEW that graded something critical or major is asking for the findings to be
+# A REVIEW that graded something critical, major or minor is asking for the findings to be
 # cleared, so it goes back to the FIX step — which is the only step that reads
 # review.json. It used to go back to `build`, which re-ran the original plan task
 # blind to what the reviewer had just found, so the two-round ceiling bounded a loop
@@ -351,8 +351,8 @@ while [ "$i" -lt "$N" ]; do
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
   # A note a step left behind. An exit code says which check said no; it cannot say
-  # WHAT, and a step that knows — what a review graded critical or major, a leftover that could
-  # not be filed — writes it here. Read once and cleared, so a note from an earlier
+  # WHAT, and a step that knows — what a review graded critical, major or minor —
+  # writes it here. Read once and cleared, so a note from an earlier
   # refusal cannot become the question a later one asks.
   note=""; asked=""; park_reason=""; park_question=""; park_cause="driver"
   # A STEP MAY SAY ITS REFUSAL NEEDS A PERSON. The exit code cannot: a gate saying

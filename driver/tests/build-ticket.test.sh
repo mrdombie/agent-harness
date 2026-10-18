@@ -127,7 +127,7 @@ want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
 echo "--- a note a step left behind becomes the question the park asks ---"
 # A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
-# — what a review graded critical or major, a follow-up that could not be filed — leaves the text
+# — what a review graded critical, major or minor — leaves the text
 # on the record, and the park brief asks about that rather than about the code.
 # The note is written by the step that refuses, which is the only way a real one
 # arrives: a note sitting on the record BEFORE the run belongs to a previous one and
@@ -185,7 +185,7 @@ want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
 echo "--- a note a step left behind becomes the question the park asks ---"
 # A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
-# — what a review graded critical or major, a follow-up that could not be filed — leaves the text
+# — what a review graded critical, major or minor — leaves the text
 # on the record, and the park brief asks about that rather than about the code.
 # The note is written by the step that refuses, which is the only way a real one
 # arrives: a note sitting on the record BEFORE the run belongs to a previous one and
@@ -216,7 +216,7 @@ out=$(bt 105); rc=$?
 want "the run stops"    "20" "$rc"
 want_in "the park names the skill problem" 'Skill' "$(cat "$FIX/park.log")"
 
-echo "--- a review that grades something critical or major sends the work back to FIX ---"
+echo "--- a review that grades something critical, major or minor sends the work back to FIX ---"
 # BLOCKED on round 1, clean on round 2. It goes back to `fix` — the only step that
 # reads review.json — not to `build`, which would re-run the original plan task
 # blind to what the reviewer just found. That was T2-3: the two-round ceiling

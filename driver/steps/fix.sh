@@ -17,9 +17,9 @@
 # what lets it sit in the fixed order rather than being conditionally skipped —
 # and a step that is conditionally skipped reports exactly like a step that passed.
 #
-# CRITICAL AND MAJOR ONLY. A Minor left the review as its own follow-up and a Nit
-# was dropped; pulling either in here would spend a rework round on polish, which
-# is the measurement that put the ceiling there in the first place.
+# EVERY BLOCKING GRADE. Critical, Major and Minor are fixed here, in the change that
+# caused them; a Nit was dropped. A Minor once left as its own follow-up, and every
+# passing review opened new tickets.
 #
 # AND THE FIX IS PROVED THE SAME WAY THE BUILD IS. Each cleared finding names the
 # commit that added its test and the commit that made it pass, and the driver runs
@@ -120,9 +120,9 @@ driver_step_fix() { # <ticket>
 
   # ONE READER FOR "WHAT BLOCKS". The review step's own selector, so the list this
   # step is handed and the list that sent the work back cannot differ.
-  n=$(jq -r '[.findings[]? | select(.grade == "critical" or .grade == "major")] | length' "$review" 2>/dev/null)
+  n=$(jq -r "[.findings[]? | $(driver_blocking_select)] | length" "$review" 2>/dev/null)
   if [ "${n:-0}" -eq 0 ]; then
-    driver_say "   fix: the review graded nothing critical or major, so there is nothing to fix."
+    driver_say "   fix: the review graded nothing that blocks, so there is nothing to fix."
     return "$DRIVER_OK"
   fi
 
@@ -141,7 +141,7 @@ driver_step_fix() { # <ticket>
   # fallback to a second spelling would be this driver reading a shape the contract
   # forbids — the exact defect that made the plan step refuse its own valid example.
   blockers=$(jq -r '
-    [.findings[]? | select(.grade == "critical" or .grade == "major")
+    [.findings[]? | '"$(driver_blocking_select)"'
      | "- id \(.id) · \(.grade) · \(.file):\(.line)\n  \(.summary)\n  why: \(.reason)\n  proposed: \(.fix)"]
     | join("\n")' "$review" 2>/dev/null)
 
@@ -151,7 +151,7 @@ driver_step_fix() { # <ticket>
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   driver_fact_put "$t" fix ROUND "$((round + 1))"
 
-  driver_say "   fix round $((round + 1)): $n critical/major finding(s) to clear"
+  driver_say "   fix round $((round + 1)): $n blocking finding(s) to clear"
   rc=0; driver_ai_step "$t" fix || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   driver_state_bump "$t" fix
@@ -168,18 +168,18 @@ driver_step_fix() { # <ticket>
     jq -e --arg b "$bid" '([.cleared[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
       "$ans" >/dev/null 2>&1 || unanswered="$unanswered $bid"
   done <<EOB
-$(jq -r '[.findings[]? | select(.grade == "critical" or .grade == "major") | (.id // empty)] | .[]' "$review" 2>/dev/null)
+$(jq -r "[.findings[]? | $(driver_blocking_select) | (.id // empty)] | .[]" "$review" 2>/dev/null)
 EOB
   if [ -n "$unanswered" ]; then
     driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships."
-    driver_state_set "$t" park_note "the fix round left${unanswered} unanswered — a critical or major finding is neither cleared nor deferrable"
+    driver_state_set "$t" park_note "the fix round left${unanswered} unanswered — a blocking finding is neither cleared nor deferrable"
     return "$DRIVER_E_REFUSED"
   fi
   # AND A BLOCKER IS NOT DEFERRABLE. The contract has a `deferred` shape because a
   # reviewer can raise something outside this ticket; it is not a way past a grade
   # that blocks, and the ship step refuses while one is open anyway.
   if [ "$(jq -r '[.deferred[]?] | length' "$ans" 2>/dev/null)" != "0" ]; then
-    driver_say "✋ fix: $(jq -r '[.deferred[]?] | length' "$ans") of the findings were deferred, and a critical or major finding is not deferrable — $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
+    driver_say "✋ fix: $(jq -r '[.deferred[]?] | length' "$ans") of the findings were deferred, and a blocking finding is not deferrable — $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
     driver_state_set "$t" park_note "the fix round deferred a blocking finding: $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
     # A PERSON DECIDES WHETHER A BLOCKER IS REALLY ONE. The fixer disagreeing with
     # a grade is a legitimate answer and it is not the driver's to settle; parking
