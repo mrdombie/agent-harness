@@ -28,6 +28,7 @@ out=$(w --only repair)
 want "one spawn"                       "1" "$(grep -c . "$SPAWNS")"
 want_in "for the right ticket"         '^101' "$(cat "$SPAWNS")"
 want_in "the brief names the failure"  'CI went red on: typecheck' "$(cat "$SPAWNS")"
+want "its first line is sign-off comes last" "$(head -1 "$HERE/../../shared/signoff-last.md")" "$(head -1 "$STATE/swarm/briefs/repair-101.md")"
 want_in "and it is logged"             'spawned repair for #11 \(101\)' "$out"
 
 echo "--- the same head commit is never repaired twice ---"

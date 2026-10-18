@@ -165,13 +165,15 @@ hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
            approval-kept.sh (does a sign-off survive an update; the head it was given at)
+           signoff-push-guard.sh (a pre-push: no screen change after the owner signs)
            check-project-agnostic.sh (CI) · panel-report.py (the panel's report)
            check-deleted-tests.sh (a deleted test is accounted for — see below)
            check-push-destination.sh (every push names its destination; CI)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            merge-lane.sh (the serial merge lane — see below)
-           signoff-batch.sh (held PRs green apart from the hold, in batches of five)
+           signoff-batch.sh (held PRs green apart from the hold, every reviewer's
+           recorded verdict on the head, in batches of five)
            needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
            loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
            fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
@@ -209,6 +211,46 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets in `$STATE_DIR/usage-hold`, so the coordinator and the scheduler spawn nothing until then |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
+
+### Sign-off comes last
+
+The owner signs a screen after everything else, and nothing they signed changes
+afterwards. Four places hold it:
+
+- `signoff-batch.sh` sends a held PR to the owner only once every `review.attest`
+  reviewer's recorded verdict (`<Key>: SHIP (<who>) <fingerprint>` in an empty
+  commit) is on its head, walking past empty commits, CI evidence commits
+  (`evidence.commitPrefix`) and merges that only bring the trunk in.
+- The claim and finish skills, every driver step brief and every spawned builder's
+  prompt lead with `shared/signoff-last.md`; the review brief says a pixel finding
+  on a signed PR is a follow-up. A driver push the guard refuses parks for the owner.
+- `scripts/signoff-push-guard.sh` refuses a push whose head differs from the signed
+  head in one of the PR's own screens, unless a commit since the sign-off carries
+  `pixel-change-after-signoff: <why>` — then it puts the hold back on, comments the
+  before and after on the PR, and logs a `lane-hold` line for the owner's next
+  batch. Signed means any sign-off, a person removing the hold on GitHub included
+  (`approval-kept.sh signed-head`). The trees are compared, not the commits, so a
+  merge taking the trunk's side or a force-push back is caught. Only this PR's own
+  commits give a reason; the trunk's squash commits carry other PRs' reasons.
+
+The screens are one set, `approval-kept.sh screens`, which the guard and the briefs
+share: `design.surfacePaths` plus `design.extraScreens` (files outside those globs
+that still draw — a stylesheet, `public/` images, copy an API serves), never tests,
+`design.neverScreens` or release notes (Markdown, `docs/`, `.changeset/`, CHANGELOG:
+their wording may change after sign-off). A server-only fix is not a screen.
+`approval-kept.sh check` keeps a wider rule for the merge lane — with
+`surfacePathsComplete` unset every non-test file counts — because there a file
+wrongly counted costs one re-sign, and one wrongly missed ships unsigned.
+
+The kit ships no git hook, so the consuming repo's own pre-push calls it: save
+stdin once, feed it to every check that reads it, and run the guard last, after
+the project's own push checks, so a push they refuse never puts the hold back on:
+
+```sh
+REFS=$(cat)
+# … the project's own checks, fed "$REFS" where they read stdin …
+printf '%s\n' "$REFS" | bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
+```
 
 ### Scripts the skills expect in the consuming repo
 

@@ -280,6 +280,26 @@ want_not_in "and nothing was opened" 'pr create' "$(cat "$GH_LOG")"
 # later case in this file.
 git -C "$FIX/wt113" config --unset core.hooksPath
 
+echo "--- a push the sign-off guard refuses parks for the owner, saying so ---"
+setup_wt 213
+driver_state_put 213 review '{"verdict":"SHIP","findings":[]}'
+for st in start plan build self-check review record; do driver_state_done 213 "$st"; done
+mkdir -p "$FIX/hooks213"
+cat > "$FIX/hooks213/pre-push" <<'SH'
+#!/usr/bin/env sh
+echo "✗ pre-push blocked: sign-off comes last. The owner signed PR #7 at abc1234, and this push changes its screens: apps/web/page.tsx" >&2
+exit 1
+SH
+chmod +x "$FIX/hooks213/pre-push"
+git -C "$FIX/wt213" config core.hooksPath "$FIX/hooks213"
+: > "$GH_LOG"
+out=$(driver_step_ship 213 2>&1); rc=$?
+want "the push is refused" "24" "$rc"
+want_in "the log says the owner signed" 'the owner has signed this PR' "$out"
+want_in "the park note is for the owner" '^Needs the owner: .*signed PR #7 at abc1234.*apps/web/page.tsx.*follow-up ticket.*pixel-change-after-signoff' "$(driver_state_get 213 park_note)"
+want_not_in "and nothing was opened" 'pr create' "$(cat "$GH_LOG")"
+git -C "$FIX/wt213" config --unset core.hooksPath
+
 echo "--- the park escape in the caller's environment never waves a ship past the gate ---"
 # The park escape (PARK_PUSH=1, or the project's driver.parkPushEnv) lets a park's
 # push of a draft branch skip quality gates. A ship is the push that has to pass

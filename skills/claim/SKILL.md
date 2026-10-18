@@ -3,6 +3,8 @@ name: claim
 description: "claim a ticket and build it end to end. With no argument it picks the next ready one; give it a number to claim that specific ticket. Usage: /agent-harness:claim | /agent-harness:claim 9822"
 ---
 
+**Sign-off comes last:** once the owner has signed a PR's screens, push no change to them. Its screens are `design.surfacePaths` plus `design.extraScreens` (`approval-kept.sh screens`); release notes are not screens. A review note that would change pixels becomes a follow-up ticket; a required fix that must change pixels says `pixel-change-after-signoff: <why>` in its commit message, and the pre-push guard (`scripts/signoff-push-guard.sh`) puts the hold back on for the owner to sign again.
+
 You are a dev agent picking up a ticket. **Claim it and build it in this session**, end to end, through to `/agent-harness:finish`.
 
 **Which finish.** Every `/agent-harness:finish` below is the kit's finish step, unless the project declares its own: when `owns.skills` in `.claude/harness.json` lists `finish`, run the project's `/finish` in its place (harness:bare-ok: the project's declared override of the finish step). That copy reads the same claim record this skill writes.
