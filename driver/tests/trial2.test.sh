@@ -290,10 +290,10 @@ rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
 want "with no review it finishes"        "0" "$rc"
 want_in "saying there is nothing to fix" 'nothing to fix' "$out"
 want "and starts no agent"               "0" "$(grep -c . "$CLAUDE_LOG")"
-printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"F1","file":"a.ts","line":2,"grade":"minor","summary":"spacing","reason":"polish","fix":"nudge"}]}' \
+printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"F1","file":"a.ts","line":2,"grade":"nit","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' \
   > "$(driver_state_dir 408)/steps/review.json"
 rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
-want "a review with only minors is nothing to fix either" "0" "$rc"
+want "a review with only nits is nothing to fix either" "0" "$rc"
 want "and still starts no agent" "0" "$(grep -c . "$CLAUDE_LOG")"
 
 echo "--- T2-3 · a rework round is SENT the findings ---"
@@ -726,7 +726,7 @@ want_in "ship notices the branch moved and re-records" "the 'ui-gate' reviewer r
 want "and the record follows the new head" "$(git -C "$FIX/wt410" rev-parse HEAD)" \
   "$(driver_state_get 410 push_requires_at)"
 
-echo "--- T2-2 · a recorder that refuses files no follow-up ticket ---"
+echo "--- T2-2 · a recorder that refuses files no ticket ---"
 # Filing the Minors opens an issue and has no idempotency guard, so a recorder that
 # refused AFTER it parked with `review` unfinished — and every resume re-ran the
 # whole review and filed the same follow-up again.
@@ -736,7 +736,7 @@ git -C "$REPO" worktree add -q "$FIX/wt413" -b "tkt-413/work" develop
 git -C "$FIX/wt413" config user.email t@e.invalid
 git -C "$FIX/wt413" config user.name T
 driver_state_init 413 --worktree "$FIX/wt413" --branch "tkt-413/work"
-fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"minor","summary":"spacing","reason":"polish","fix":"nudge"}]}' superpowers:requesting-code-review
+fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"nit","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' superpowers:requesting-code-review
 printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
 jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
    '.review = {"attest":{"ui-gate":{"owed":$o,"review":$r,"record":($w + " --sha {{SHA}}")}}}' \
