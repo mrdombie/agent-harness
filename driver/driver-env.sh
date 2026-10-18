@@ -67,6 +67,10 @@ DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-2}"
 
 DRIVER_CLAUDE="${DRIVER_CLAUDE:-claude}"
 
+# Where a question about the ticket's shape parks: the PM's label, never the owner's
+# hold. The project's labels.pmDecision, else status:pm-decision.
+DRIVER_PM_LABEL="${DRIVER_PM_LABEL:-${LBL_PM_DECISION:-status:pm-decision}}"
+
 # driver_link_install <repo> <tree> — the shared install, linked, never copied or
 # installed. The tree gets its own node_modules of links to the shared entries, with
 # the workspace packages pointed at the tree's own source; one link to the whole

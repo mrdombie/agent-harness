@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "compare step answer",
-  "description": "The new renders held beside what was approved. Every difference is either fixed, or carries the reason it stands \u2014 and a difference with neither is the drift this step exists to catch.",
+  "description": "The new renders held beside what was approved. Every difference is either fixed, or carries the reason it stands — and a difference with neither is the drift this step exists to catch.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -117,6 +117,13 @@
       "description": "Why this step cannot finish. Answerable in a line: a yes/no or a pick.",
       "type": "string",
       "minLength": 1
+    },
+    "questionFor": {
+      "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape — which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
+      "enum": [
+        "owner",
+        "pm"
+      ]
     },
     "notes": {
       "type": "string"

@@ -71,5 +71,9 @@ A finding you are not clearing goes in `deferred` with its reason and where it
 went. A deferral with no follow-up is a finding dropped — and a Critical or a
 Major is not deferrable: the ship step refuses while one is open.
 
+A question names who answers it in `questionFor`: `owner` for pixels, a picture,
+a product or commercial call, or the data model; `pm` for the ticket's shape —
+repo, split, order, acceptance wording. Unsure is `owner`.
+
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

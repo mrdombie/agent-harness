@@ -26,9 +26,7 @@ person anything; when you need to, return a question and the driver parks it.
 
 ## The premise verdict is yours
 
-{{PREMISE_REPORT}} gathers; it does not decide. A mechanical "does the cited
-path still exist" check measured zero true positives in twenty-five tickets,
-which is why there is no automatic answer here. Open the code and hold it
+{{PREMISE_REPORT}} gathers; it does not decide. Open the code and hold it
 against what the ticket claims is wrong:
 
 - **still-true** — you can see the defect. Name the file and line.
@@ -42,8 +40,7 @@ path marked *absent* is a prompt to look, never a verdict on its own.
 
 The ticket reached you because a plan **could** be written from it — one goal,
 checkable outcomes, a way to verify, stated constraints, and on a bug a
-reproduction. It is not the check for a set of headings; that check was retired,
-and the headings appeared in none of the last twenty-five tickets.
+reproduction.
 
 Passing that gate says nothing about whether the decomposition exists. A ticket
 can name no files, no boundaries and no interfaces. Writing them is this step's
@@ -106,6 +103,10 @@ picture was approved throws the comparison away. The other three are:
 **ticket-body** when the ticket itself is the whole design, **brainstormed** when
 the spec was settled in the ticket thread, and **debugged** when the plan follows
 a reproduction.
+
+A question names who answers it in `questionFor`: `owner` for pixels, a picture,
+a product or commercial call, or the data model; `pm` for the ticket's shape —
+repo, split, order, acceptance wording. Unsure is `owner`.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.
