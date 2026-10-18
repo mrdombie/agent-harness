@@ -86,15 +86,14 @@ Only the high-signal frontend traps: missing `await` on a mutation before naviga
 
 ## Grade every finding
 
-The grade decides what the finding costs. Two of the four send work back; the other
-two never do, and grading down is not being generous — a Minor leaves as a ticket
-with your words in it.
+The grade decides what the finding costs. Three of the four send work back and are
+fixed in this change; a Nit never does.
 
 | Grade | What it means here | What happens to it |
 |---|---|---|
 | **Critical** | wrong data shown as right, a security hole, lost work, something published unapproved | blocks; fixed in this ticket |
 | **Major** | a person is misled or stuck: a dead control, fake-live data on an authed route, a parity regression, a mockup re-home, an orphan, a failure shown as success | blocks; fixed in this ticket |
-| **Minor** | polish: overflow risk, a missing empty/error state, a raw-token leak, an a11y gap, one or two narrated strings | never blocks; leaves as one follow-up |
+| **Minor** | polish: overflow risk, a missing empty/error state, a raw-token leak, an a11y gap, one or two narrated strings | blocks; fixed in this ticket, never filed as a follow-up |
 | **Nit** | taste | dropped |
 
 **A Critical or a Major must name who is harmed and how, in one line, in a user's
@@ -104,10 +103,9 @@ that line, the finding is a Minor. Grade it Minor and move on — that is the wh
 point of the scale, because a spacing step raised as a blocker costs a round a real
 defect needed.
 
-A **SPIT-BACK** verdict is exactly "there is at least one Critical or Major". Minors
-and Nits never change the verdict, however many there are — with one exception
-already in the rubric above: a surface whose elements *mostly* carry narration is a
-**Major**, because that one gets the screen rebuilt rather than patched.
+A **SPIT-BACK** verdict is exactly "there is at least one Critical, Major or Minor".
+Nits never change the verdict. A surface whose elements *mostly* carry narration is
+a **Major**, because that one gets the screen rebuilt rather than patched.
 
 ## Output (exactly this shape, no preamble)
 

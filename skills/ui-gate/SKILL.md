@@ -56,17 +56,13 @@ Minor (N):
 Nit (N): …
 ```
 
-**Only Critical and Major decide the verdict.** SPIT-BACK is exactly "there is at
-least one Critical or Major"; a page of Minors is a SHIP. That is the point of the
-grade — before it, a spacing step and a dead control arrived with the same weight,
-and the step-runner spent four rounds on findings that were mostly neither.
+**Critical, Major and Minor decide the verdict.** SPIT-BACK is exactly "there is at
+least one Critical, Major or Minor"; only Nits never change it. Minors filed as
+follow-ups made every passing review open new tickets (110 of 339 bugs in one week),
+so a Minor is fixed in the change that caused it.
 
-- **SHIP** → say it's clear to merge to develop. If a PR and `--comment`, post an approving note.
-  **File the Minors as ONE follow-up ticket** at the Minor priority (`P3` unless the
-  project names it otherwise under `labels.priority.minor`), carrying every line
-  verbatim, and put its number in your reply. Drop the Nits — say how many, so a
-  reader can tell "found nothing" from "found taste".
-- **SPIT-BACK** → this is the "bounce it back" path. Present the Criticals and Majors as the rejection; the Minors still leave as the one follow-up. If invoked inside `/agent-harness:finish`, **halt the merge** and hand the list back to the author/main agent to fix before re-running. If `--comment`, post them as a requested-changes PR review.
+- **SHIP** → say it's clear to merge to develop. If a PR and `--comment`, post an approving note. Drop the Nits — say how many, so a reader can tell "found nothing" from "found taste". File nothing.
+- **SPIT-BACK** → this is the "bounce it back" path. Present every Critical, Major and Minor as the rejection. If invoked inside `/agent-harness:finish`, **halt the merge** and hand the list back to the author/main agent to fix before re-running. If `--comment`, post them as a requested-changes PR review.
 
 ## Step 4 — `--fix` (only if passed)
 If `--fix` was given and there are `auto-fixable: yes` findings:
@@ -77,7 +73,7 @@ If `--fix` was given and there are `auto-fixable: yes` findings:
 For any disabled-as-fix, if there's no follow-up ticket, **file one** (`gh issue create`, parent the relevant EPIC) and put its number in the `TODO(#…)`. A dead control may only become an honestly-disabled control if it points at a real ticket — that's the AGENTS.md rule this gate enforces.
 
 ## Notes
-- **Read-only on the tree.** Without `--fix`, this command never edits a file — it reports and bounces. That keeps it safe to run on anyone's branch. It does make exactly **one** write outside the tree: the single follow-up ticket carrying the Minors, because "a Minor never blocks" is only honest if the Minor is written down somewhere a person will find it. Nothing else is filed, and a Nit is never a ticket.
+- **Read-only on the tree.** Without `--fix`, this command never edits a file — it reports and bounces. That keeps it safe to run on anyone's branch. It files no tickets for its findings: every Critical, Major and Minor goes back to the author, and a Nit is never a ticket.
 - **Pairs with, doesn't replace:**
   - `gate-runner` (lint/type/test),
   - `/code-review` (deep logic bugs),

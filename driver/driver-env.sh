@@ -550,23 +550,34 @@ driver_built() {
 
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
 # that files work grades what it raises, and the grade — not the list it arrived
-# in — decides the effect: a Critical or a Major sends work back, a Minor leaves
-# as one follow-up, a Nit is dropped. Two representations of the same judgement is
-# how a check and the thing it checks end up derived from different inputs.
+# in — decides the effect: a Critical, a Major or a Minor sends work back and is
+# fixed in the change that caused it; a Nit is dropped. Two representations of the
+# same judgement is how a check and the thing it checks end up derived from
+# different inputs.
 DRIVER_GRADES="${DRIVER_GRADES:-critical major minor nit}"
+
+# WHAT BLOCKS, named once. A Minor filed as its own follow-up made every merge open
+# new tickets: 110 of 339 bugs filed in one week came out of reviews that passed.
+DRIVER_BLOCKING_GRADES="${DRIVER_BLOCKING_GRADES:-critical major minor}"
+
+# driver_blocking_select — the jq selector for a finding whose grade blocks. Every
+# step reads this; a literal copy is refused by tests/blocking-grades.test.sh.
+driver_blocking_select() {
+  printf 'select((.grade // "") as $g | ("%s" | split(" ")) | index($g) != null)' "$DRIVER_BLOCKING_GRADES"
+}
 
 # The priority a filed follow-up carries, read off the grade, so the queue orders
 # by the same judgement the reviewer made. P0-P3 is the kit's own vocabulary (the
 # same labels /queue, /work and /project already sort on); a project that names
 # them differently says so under labels.priority. A Nit is never filed, so it has
-# no label here.
+# no label here; the Minor label stays for work filed outside a review.
 DRIVER_LABEL_CRITICAL="${DRIVER_LABEL_CRITICAL:-$(driver_opt labels.priority.critical P0)}"
 DRIVER_LABEL_MAJOR="${DRIVER_LABEL_MAJOR:-$(driver_opt labels.priority.major P1)}"
 DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)}"
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
-export DRIVER_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
+export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
 export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK

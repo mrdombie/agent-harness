@@ -70,7 +70,7 @@ costs:
 |---|---|---|
 | Critical | wrong data, a security hole, lost work, an unapproved publish | blocks; fixed in this ticket |
 | Major | a user is misled or stuck | blocks; fixed in this ticket |
-| Minor | polish | one follow-up, worked when nothing bigger waits |
+| Minor | polish | blocks; fixed in this change, never filed as a follow-up |
 | Nit | taste | dropped |
 
 An ungraded finding is a finding nobody can prioritise.

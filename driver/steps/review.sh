@@ -17,7 +17,7 @@
 # WHY A GRADE. A ceiling alone still spends each round on whatever the reviewer
 # raised: the step-runner went four rounds — eleven findings, then seven, then
 # six — and about a quarter of them were spacing and wording. So the grade decides
-# the effect, and only two of the four send work back:
+# the effect, and three of the four send work back:
 #
 #   critical  wrong data, a security hole, lost work, something published unapproved
 #   major     a person is misled or stuck: an untrue screen, a dead control, a
@@ -25,12 +25,11 @@
 #   minor     polish — spacing, wording, a small visual slip
 #   nit       taste
 #
-# Critical and Major go back to the build step and, past the rounds, stay with this
-# ticket: the ship step refuses and names them, so filing one as a follow-up too
-# would put the same finding in two places with nobody owning either. Minors leave
-# as ONE follow-up ticket carrying every line verbatim, at the Minor priority, so
-# they are worked when nothing bigger waits. Nits are dropped — and the count is
-# SAID, because dropped silently reads exactly like never raised.
+# Critical, Major and Minor go back to the build step and, past the rounds, stay
+# with this ticket: the ship step refuses and names them. Nothing leaves a review
+# as a follow-up ticket: filing Minors made every passing review open new work,
+# 110 of the 339 bugs filed in one week. Nits are dropped — and the count is SAID,
+# because dropped silently reads exactly like never raised.
 #
 # ONE CALL, NOT SEVERAL AGENTS. The driver runs one review brief per round. What
 # that brief does inside itself — how many reviewers it asks, in what order — is
@@ -154,7 +153,7 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   # `-le`, not `-lt`: the design's flowchart sends work back on round 1 OR 2, so two
   # rounds means two chances to fix, and the pass after them ships.
   if [ "$verdict" = "BLOCKED" ] && [ "${nsend:-0}" -gt 0 ] && [ "$round" -le "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
-    driver_say "✋ review round $round of $DRIVER_MAX_REVIEW_ROUNDS: $nsend critical/major finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
+    driver_say "✋ review round $round of $DRIVER_MAX_REVIEW_ROUNDS: $nsend blocking ($DRIVER_BLOCKING_GRADES) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
     return "$DRIVER_E_REWORK"
   fi
 
@@ -164,28 +163,15 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   # rework branch above stops firing, so without this a Critical typed under a SHIP
   # verdict walks into the ship step and lands.
   if [ "$verdict" = "SHIP" ] && [ "${nsend:-0}" -gt 0 ]; then
-    driver_say "✋ review: SHIP beside $nsend open critical/major finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)"). The verdict is read off the grades; it is not typed beside them."
+    driver_say "✋ review: SHIP beside $nsend open blocking ($DRIVER_BLOCKING_GRADES) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)"). The verdict is read off the grades; it is not typed beside them."
     return "$DRIVER_E_REFUSED"
   fi
 
-  # THE VERDICTS FIRST, BEFORE ANYTHING THAT CANNOT BE DONE TWICE. Filing the
-  # Minors opens a GitHub issue and has no idempotency guard, so a recorder that
-  # refuses AFTER it parks with `review` unfinished — and every resume re-runs the
-  # whole review and files the follow-up again.
   rc=0; driver_push_requires "$t" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
 
-  # Past the last rework round. A Critical or a Major stays with this ticket and the
-  # ship step refuses, naming it. Only the Minors leave.
-  if ! _driver_file_minors "$t" "$ans_file" "$round"; then
-    # A LEFTOVER NOBODY FILED IS A LEFTOVER LOST, and the ceiling's whole justification
-    # is that nothing is lost by ending the loop. Returning OK here left the finding as
-    # one line of stdout inside the state directory — a file on the machine that ran it,
-    # which is the one place a handover must not depend on — and on a SHIP verdict no
-    # park ever happened, so nobody was ever told. Refusing makes the orchestrator park
-    # with the finding as the question.
-    return "$DRIVER_E_REFUSED"
-  fi
+  # Past the last rework round, every blocking finding stays with this ticket and
+  # the ship step refuses, naming it. Nothing is filed from here.
 
   nnit=$(_driver_count "$ans_file" nit)
   # SAY THE DROP. A nit dropped in silence is indistinguishable from a reviewer that
@@ -220,13 +206,13 @@ _driver_review_hold_signed() {
   return "$DRIVER_E_REFUSED"
 }
 
-# _driver_class <blocking|minor|nit> — the jq selector for that class, in the ONE
+# _driver_class <blocking|nit> — the jq selector for that class, in the ONE
 # place it is written. Two copies of "what counts as blocking" is two places for the
 # count and the list to disagree, which is how a message names three findings and the
 # branch above acts on two.
 _driver_class() { # <class>
   case "$1" in
-    blocking) printf 'select(.grade == "critical" or .grade == "major")' ;;
+    blocking) driver_blocking_select ;;
     *)        printf 'select(.grade == "%s")' "$1" ;;
   esac
 }
@@ -246,39 +232,3 @@ _driver_count() { # <review.json> <class>
 
 # _driver_join <lines> — one line, findings separated by "; ", for a message.
 _driver_join() { printf '%s' "$1" | tr '\n' ';' | sed 's/;$//; s/;/; /g'; }
-
-_driver_file_minors() { # <ticket> <review.json> <round>
-  local t="$1" f="$2" round="$3" lines n programme body title
-  lines=$(_driver_findings "$f" minor)
-  n=$(_driver_count "$f" minor)
-  [ "${n:-0}" -gt 0 ] || return 0
-  programme=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels \
-    -q "[.labels[].name | select(startswith(\"$SWARM_PROGRAMME_PREFIX\"))] | first // \"\"" 2>/dev/null)
-
-  # ONE TICKET, NOT N. A Minor is polish, and N polish tickets is a queue nobody
-  # reads; one ticket per pull request is a thing a person picks up when nothing
-  # bigger waits. It carries the Minor priority so the queue orders it that way.
-  title="review polish from #$t: $n minor finding(s)"
-  body=$(printf 'Left over from the review of #%s (round %s). Every one is graded **Minor**: polish, never blocking, worked when nothing bigger waits.\n\nThe findings, verbatim:\n\n%s\n' \
-           "$t" "$round" "$(printf '%s\n' "$lines" | sed 's/^/- /')")
-
-  # THE CREATE'S EXIT CODE IS READ. The ceiling is justified by "nothing is lost by
-  # ending the loop", and with the call wrapped a rate limit, issues turned off, or a
-  # title still carrying a newline lost the findings while the log asserted the
-  # opposite. What did not land is named, and left on the record for the park brief —
-  # the state directory's own log is on this machine, and a handover must not be.
-  if swarm_gh issue create --repo "$REPO_SLUG" \
-       --title "$(printf '%s' "$title" | tr '\n' ' ')" \
-       --body "$body" \
-       ${DRIVER_LABEL_MINOR:+--label "$DRIVER_LABEL_MINOR"} \
-       ${programme:+--label "$programme"} >/dev/null 2>&1; then
-    driver_say "   review: $n minor finding(s) left as one follow-up at ${DRIVER_LABEL_MINOR:-no priority label}, each line verbatim"
-    return 0
-  fi
-
-  local flat
-  flat=$(_driver_join "$lines")
-  driver_say "✋ review: the follow-up ticket could NOT be opened, so these $n finding(s) are not written down anywhere a person will find them: $flat"
-  driver_state_set "$t" park_note "review polish that could not be filed as a ticket: $flat"
-  return 1
-}

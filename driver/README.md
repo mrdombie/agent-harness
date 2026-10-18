@@ -207,7 +207,7 @@ even when inherited. A push still refused falls back to a bundle under
   before the next one starts, so a killed run resumes at the one after it.
 - **It asks rather than guesses.** Any step may answer with a question instead of
   an answer; that parks the ticket with the question on it. A step that knows what
-  stopped it — what a review graded critical or major, a leftover that could not be filed —
+  stopped it — what a review graded critical, major or minor —
   leaves the text on the record, and that becomes the question the park brief asks
   rather than an exit code.
 - **A question goes to whoever owns its answer.** The step names that in
