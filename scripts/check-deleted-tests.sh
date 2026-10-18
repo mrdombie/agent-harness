@@ -148,7 +148,9 @@ cases_at() { # <commit> <path>
       push @blk, [$o, $close{$o} // $n, ($x || $m =~ $isoff) ? 1 : 0, $on] }
     while ($src =~ /(?<![\w.\$])(x?)(?:it|test)($mods)\s*\(\s*(["\x27`])((?:\\.|(?!\3).)*?)\3/gs) {
       my ($x, $m, $t, $p) = ($1, $2, $4, $-[0]);
-      my $off = ($x || $m =~ $isoff) ? 1 : 0; my $on = $m =~ /\.only\b/ ? 1 : 0; $only ||= $on;
+      # Only a .only in code shuts the other cases off; one quoted in a string does not.
+      my $off = ($x || $m =~ $isoff) ? 1 : 0; my $on = $m =~ /\.only\b/ ? 1 : 0;
+      $only ||= $on if substr($code, $p, 1) eq substr($src, $p, 1);
       for my $b (@blk) { next unless $b->[0] < $p && $p < $b->[1]; $off ||= $b->[2]; $on ||= $b->[3] }
       $t =~ s/\s+/ /g; push @case, [$off, $on, $t] }
     for (@case) { my ($off, $on, $t) = @$_; print +($off || ($only && !$on) ? "off" : "run"), "\t$t\n" }'

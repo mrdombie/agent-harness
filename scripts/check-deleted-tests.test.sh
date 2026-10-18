@@ -568,6 +568,15 @@ unset FAIL_REV
 expect_rc 2 "a test file git could not read at base refuses"
 expect_out 'could not read src/desk.test.ts at' "naming it"
 
+# --- 48. A .only quoted in a string excludes nothing ----------------------------------
+repo only-in-string
+printf "const sample = \"it.only('x', () => {})\";\n" >> "$R/src/desk.test.ts"
+grep -q 'const sample = "it.only' "$R/src/desk.test.ts" || bad "fixture: the quoted .only plant did not land"
+commit
+check
+expect_rc 0 "a .only inside a string does not turn the file's cases off"
+expect_not_out 'turned off' "and nothing is reported as turned off"
+
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"
 exit $fail
