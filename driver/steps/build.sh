@@ -245,6 +245,13 @@ driver_step_build() { # <ticket>
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
+  # Each task's proof type-checks the tree. On a branch cut before a trunk fix, that
+  # fails on code the task never touched and the task is retried to exhaustion (#214):
+  # bring the moved trunk in before the first proof.
+  if [ "$repo" != "$MAIN_REPO" ]; then
+    local mrc=0; driver_bring_trunk_in "$t" "$repo" "$(driver_state_get "$t" branch)" "" build || mrc=$?
+    [ "$mrc" -eq 0 ] || return "$mrc"
+  fi
 
   driver_check_timeout || true
   driver_state_bump "$t" build
