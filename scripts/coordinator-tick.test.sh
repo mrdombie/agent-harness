@@ -844,10 +844,11 @@ want "a judge's decision on a ticket also holds it" "" "$(spawned)"
 echo "--- a driver park's question, answered, reaches a run (status:parked does not outlive it) ---"
 # status:parked blocks every spawn; a park that asked left it beside the owner's label,
 # and the answer removed only the owner's label, so the ticket never ran again.
-fresh; : > "$GH_LOG"; fix_issue 601 OPEN "status:parked"
+fresh; : > "$GH_LOG"; fix_issue 601 OPEN "status:parked,status:needs-human"
 bash "$OQ" ask 601 driver-park "Keep A or B?" >/dev/null
 bash "$W" answer decision:601:driver-park "B" >/dev/null
 want_not_in "the answer lifts status:parked" 'status:parked' "$(labels_of 601)"
+want_not_in "and the park's needs-human" 'status:needs-human' "$(labels_of 601)"
 : > "$SPAWNS"
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 tick >/dev/null
 want "the answered park spawns"            "601" "$(spawned)"

@@ -866,9 +866,22 @@ want "it refuses before any step"              "2" "$rc"
 want "and nothing ran"                         "" "$(cat "$RAN")"
 want_in "naming the draft"                     'draft the driver did not build' "$out"
 want "the brief is back on the queue, unwrapped" "REPAIR on PR #77: red" "$(jq -r '.tickets[]? | select(.n == 515) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
-reset_fakes
+reset_fakes; rm -rf "$STATE/coordinator"
 out=$(bt 515 --repair-class repair); rc=$?
 want "a class run on it refuses too"           "2" "$rc"
+want "and goes back on the queue as its class, for the spawner to route to prose" "repair" "$(jq -r '.tickets[]? | select(.n == 515) | .class' "$STATE/coordinator/queue.json" 2>/dev/null)"
+printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- a new repair round starts its red counters at zero ---"
+reset_fakes
+jq -n '[{number:79, headRefName:"tkt-518/work", headRefOid:"r1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+printf 'REPAIR on PR #79: red\n' > "$FIX/brief-o.md"
+bt 518 --repair "$FIX/brief-o.md" >/dev/null
+driver_state_bump 518 selfcheck_red; driver_state_bump 518 push_red
+printf 'REPAIR on PR #79: red again\n' > "$FIX/brief-p.md"
+bt 518 --repair "$FIX/brief-p.md" >/dev/null
+want "the self-check red count is the round's" "0" "$(driver_state_count 518 selfcheck_red)"
+want "and so is the refused-push count"        "0" "$(driver_state_count 518 push_red)"
 printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a brief put back on the queue is not wrapped twice ---"

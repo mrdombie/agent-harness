@@ -161,6 +161,16 @@ for c in "331 BLOCKED CONFLICTING" "332 UNKNOWN UNKNOWN"; do
   want_in "$2/$3: the conflict reached the model" 'shared.txt' "$(cat "$FIX/claude-stdin-repair.txt")"
   want "$2/$3: the trunk is in the branch" "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
 done
+setup 335
+printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+driver_state_set 335 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves shared.txt "trunk line 335"; prs_m 335 UNKNOWN UNKNOWN
+printf 'scratch\n' > "$WT/untracked-note.txt"
+printf '%s\n' "rm -f untracked-note.txt; $resolve_both" > "$FIX/ai/repair.sh"
+answer "$(repaired "$(gate_fix 'bash lint.sh')" '[{"file":"shared.txt","resolution":"both lines kept"}]')"
+out=$(driver_step_repair 335 2>&1); rc=$?
+want "an untracked file does not hide the clash" "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "and the trial leaves no tree behind"  "" "$(git -C "$WT" worktree list | grep repair-trial)"
 setup 333; trunk_moves trunk333.txt "unrelated"; prs_m 333 CLEAN MERGEABLE
 out=$(driver_step_repair 333 2>&1); rc=$?
 want "no clash anywhere: nothing merged"     "no" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes || echo no)"

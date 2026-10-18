@@ -32,16 +32,21 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
 
 # _driver_repair_clashes <tree> <trunk> <mergeStateStatus> <mergeable> — 0 when the
-# branch clashes with the trunk: GitHub says DIRTY or CONFLICTING, or a trial merge in
-# the tree conflicts. GitHub computes mergeability lazily, so UNKNOWN is not clean.
+# branch clashes with the trunk: GitHub says DIRTY or CONFLICTING, or a trial merge
+# conflicts. GitHub computes mergeability lazily, so UNKNOWN is not clean. The trial
+# runs in a throwaway detached tree, so nothing in the ticket's own tree (an
+# untracked file included) can stop it or be touched by it.
 _driver_repair_clashes() {
-  local wt="$1" trunk="$2" u
+  local wt="$1" trunk="$2" u tmp
   [ "$3" = DIRTY ] && return 0
   [ "$4" = CONFLICTING ] && return 0
-  [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || return 1
-  git -C "$wt" merge --no-commit --no-ff -q "$trunk" >/dev/null 2>&1
-  u=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
-  git -C "$wt" merge --abort >/dev/null 2>&1 || git -C "$wt" reset -q --merge >/dev/null 2>&1
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/repair-trial.XXXXXX") || return 1
+  rmdir "$tmp"
+  git -C "$wt" worktree add -q --detach "$tmp" HEAD >/dev/null 2>&1 || return 1
+  git -C "$tmp" -c user.email=trial@invalid -c user.name=trial merge --no-commit --no-ff -q "$trunk" >/dev/null 2>&1
+  u=$(git -C "$tmp" diff --name-only --diff-filter=U 2>/dev/null)
+  git -C "$wt" worktree remove --force "$tmp" >/dev/null 2>&1 || rm -rf "$tmp"
+  git -C "$wt" worktree prune >/dev/null 2>&1
   [ -n "$u" ]
 }
 

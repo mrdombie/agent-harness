@@ -166,9 +166,10 @@ BRIEF
     asked=1
   fi
   if [ "$cause" = "person" ] && [ "$asked" -eq 1 ]; then
-    # No status:parked: the owner's label is the stop, and its answer removes only that.
+    # Its status is needs-human, which its answer lifts with the owner's label; not
+    # status:parked, which an answer once left behind to block every spawn.
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+      --add-label "$LBL_NEEDS_HUMAN" --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
   elif [ "$cause" = "person" ]; then
     [ ! -f "$oq" ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
       --body "The question could not be put in the owner's channel, so \`$HOLD_LABEL\` is on instead: answer it, clear the label, and run the driver again." >/dev/null 2>&1 || true

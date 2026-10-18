@@ -118,6 +118,18 @@ driver_state_done 230 start
 rc=0; driver_step_reenter 230 >/dev/null 2>&1 || rc=$?
 want "a draft the driver's own build left is re-entered" "0" "$rc"
 
+echo "--- a branch still checked out in another tree (a stale record's) is taken over, not re-cut ---"
+# git refuses a second checkout of one branch: "already used by worktree".
+pr_branch 231
+fix_issue 231 OPEN "status:in-review"
+git -C "$REPO" fetch -q origin tkt-231/work
+git -C "$REPO" worktree add -q "$FIX/old231" -b tkt-231/work origin/tkt-231/work
+prs "[$(pr_json 61 tkt-231/work)]"
+out=$(driver_step_reenter 231 2>&1); rc=$?
+want "it finishes"                    "0" "$rc"
+want "in the tree that holds the branch" "$(cd "$FIX/old231" && pwd -P)" "$(cd "$(driver_state_get 231 worktree)" && pwd -P)"
+want_in "and says so"                 'taking that tree over' "$out"
+
 echo "--- no open pull request: nothing to repair, and nothing is built fresh ---"
 fix_issue 202 OPEN "status:in-review"; prs "[$(pr_json 32 tkt-2020/other)]"
 out=$(driver_step_reenter 202 2>&1); rc=$?

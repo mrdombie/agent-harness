@@ -209,6 +209,7 @@ driver_park 404 "a refusal a person must answer" "which is it?" person >/dev/nul
 # the answer removes the owner's label, and status:parked would block every spawn.
 want_in "a question goes to the owner's loop, and that label is its stop" 'add-label needs:owner-decision' "$(cat "$GH_LOG")"
 want_not_in "not status:parked beside it"   'add-label status:parked' "$(cat "$GH_LOG")"
+want_in "and a status label all the same: needs-human" 'add-label status:needs-human' "$(cat "$GH_LOG")"
 : > "$GH_LOG"
 driver_park 404 "a gate said no" "lint is red" driver >/dev/null 2>&1
 want_in "a park nobody is asked about is marked parked" 'add-label status:parked' "$(cat "$GH_LOG")"

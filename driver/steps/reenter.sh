@@ -107,6 +107,17 @@ driver_step_reenter() { # <ticket>
   # THE TREE. A recorded tree on this branch is kept; anything else gets a tree of its
   # own on the PR's branch. Either way it ends at origin's head or ahead of it.
   wt=$(driver_state_get "$t" worktree)
+  # A worktree that already has the branch checked out (a stale record's, set aside)
+  # is taken over: git refuses a second checkout of one branch.
+  if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    local held
+    held=$(git -C "$repo" worktree list --porcelain 2>/dev/null \
+      | awk -v b="refs/heads/$branch" '/^worktree /{w=substr($0, 10)} $0 == "branch " b {print w; exit}')
+    if [ -n "$held" ] && [ -d "$held" ] && [ "$(cd "$held" && pwd -P)" != "$(cd "$repo" && pwd -P)" ]; then
+      wt="$held"; driver_state_set "$t" worktree "$wt"
+      driver_say "   reenter: $branch is already checked out in $wt — taking that tree over"
+    fi
+  fi
   if [ -n "$wt" ] && [ -d "$wt" ] && [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$branch" ]; then
     driver_say "   reenter: resuming in the worktree it already has ($wt)"
     git -C "$wt" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true

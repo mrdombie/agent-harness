@@ -72,6 +72,7 @@ want_not_in "and the hold label stays off"   'needs:human-approval' "$(cat "$GH_
 # The answer removes the owner's label; a status:parked beside it would block every spawn.
 want_not_in "an asked park adds no status:parked" 'issue edit 101 .*--add-label status:parked' "$(cat "$GH_LOG")"
 want_in "and still lets the claim label go" 'issue edit 101 .*--remove-label status:claimed' "$(cat "$GH_LOG")"
+want_in "it keeps a status label: needs-human, which its answer lifts" 'issue edit 101 .*--add-label status:needs-human' "$(cat "$GH_LOG")"
 want_in "and the claim is released"      'release 101' "$(cat "$RELEASES")"
 
 echo "--- the ORDER, which is the whole design: push · draft · brief · label · release ---"

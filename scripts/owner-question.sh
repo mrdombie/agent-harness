@@ -61,11 +61,12 @@ The question is in the owner's channel. No agent takes this ticket while it wear
   echo "asked: $key — #$t waits on the answer"
 }
 
-# A driver park's question: status:parked blocks every spawn, so its answer lifts that too.
+# A driver park's question: its status (needs-human, or status:parked from an older
+# park) blocks every spawn, so its answer lifts that too.
 park_ask() { case "${1#decision:*:}" in driver-park*) return 0 ;; esac; return 1; }
 unlabel() { # <ticket> <key>
   if park_ask "$2"; then
-    swarm_gh issue edit "$1" --repo "$REPO_SLUG" --remove-label "$LBL_OWNER_DECISION" --remove-label "$LBL_PARKED"
+    swarm_gh issue edit "$1" --repo "$REPO_SLUG" --remove-label "$LBL_OWNER_DECISION" --remove-label "$LBL_PARKED" --remove-label "$LBL_NEEDS_HUMAN"
   else
     swarm_gh issue edit "$1" --repo "$REPO_SLUG" --remove-label "$LBL_OWNER_DECISION"
   fi
@@ -137,9 +138,9 @@ sync() {
     wears "$m" && continue
     # The label came off somewhere else (a reply on the ticket, by hand): answered.
     if [ "${m%% *}" = OPEN ]; then
-      case ",${m#* }," in *",$LBL_PARKED,"*)
+      case ",${m#* }," in *",$LBL_PARKED,"*|*",$LBL_NEEDS_HUMAN,"*)
         if park_ask "$key"; then
-          swarm_gh issue edit "$t" --repo "$REPO_SLUG" --remove-label "$LBL_PARKED" >/dev/null 2>&1 || { rc=1; continue; }
+          swarm_gh issue edit "$t" --repo "$REPO_SLUG" --remove-label "$LBL_PARKED" --remove-label "$LBL_NEEDS_HUMAN" >/dev/null 2>&1 || { rc=1; continue; }
         fi ;;
       esac
       cls=$(requeue "$t" "The owner answered $key on the ticket itself: read its newest comments, build on that answer, and do not ask it again.") || { rc=1; continue; }
