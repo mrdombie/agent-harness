@@ -200,16 +200,17 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 # changes pixels after the sign-off. It parks for the owner, naming them, and the
 # verdict is left as the reviewer gave it. Signed is approval-kept's signed-head (a
 # hold removed on GitHub counts); unreadable counts as signed, the cautious side.
-# Screens are the shared screen set (driver_screen_files), never "every file".
+# Screens are #234's one screen set (approval-kept.sh screens: surfacePaths plus
+# extraScreens), never "every file" while surfacePaths is set.
 _driver_review_hold_signed() {
   local t="$1" f="$2" pr ak arc files screens held
   [ "$(driver_state_get "$t" mode)" = repair ] || return 0
   pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || return 0
   [ "$(_driver_count "$f" blocking)" -gt 0 ] 2>/dev/null || return 0
   files=$(jq -r "[.findings[]? | $(_driver_class blocking) | .file // empty] | unique | .[]" "$f" 2>/dev/null)
-  screens=$(printf '%s\n' "$files" | driver_screen_files "$(driver_state_get "$t" worktree)" | jq -Rsc 'split("\n") | map(select(length > 0))')
-  [ "${screens:-[]}" != "[]" ] || return 0
   ak="${DRIVER_APPROVAL_KEPT:-$KIT_ROOT/scripts/approval-kept.sh}"
+  screens=$(printf '%s\n' "$files" | bash "$ak" screens 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
+  [ "${screens:-[]}" != "[]" ] || return 0
   arc=0; bash "$ak" signed-head "$pr" >/dev/null 2>&1 || arc=$?
   [ "$arc" -eq 1 ] && return 0
   held=$(jq -r --argjson s "$screens" "[.findings[]? | $(_driver_class blocking) | select((.file // \"\") as \$x | \$s | index(\$x)) | \"\\(.grade) \\(.file):\\(.line // \"?\") \\(.summary // \"\")\"] | join(\"; \")" "$f")

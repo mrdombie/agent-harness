@@ -204,11 +204,12 @@ echo "--- on a signed-off PR, a blocking finding on a screen parks for the owner
 # A fix there changes pixels after the sign-off: the owner's call. A Critical anywhere
 # else is still fixed: filed away and shipped as SHIP, it landed a repair's own defect.
 jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-cat > "$BIN/approval-kept" <<'SH'
+# The sign-off record is stubbed; the screen set is the real approval-kept.sh's.
+cat > "$BIN/approval-kept" <<SH
 #!/usr/bin/env bash
-echo "$*" >> "$FIX/ak.log"
-case "$1" in
-  signed-head) [ "${AK_RC:-0}" = 0 ] && echo 1111111111111111111111111111111111111111; exit "${AK_RC:-0}" ;;
+case "\$1" in
+  signed-head) echo "\$*" >> "$FIX/ak.log"; [ "\${AK_RC:-0}" = 0 ] && echo 1111111111111111111111111111111111111111; exit "\${AK_RC:-0}" ;;
+  screens) exec bash "$HERE/../../scripts/approval-kept.sh" screens ;;
   *) exit 9 ;;
 esac
 SH
@@ -242,11 +243,15 @@ fix_ai review "$screen" superpowers:requesting-code-review
 rc=0; driver_step_review 124 >/dev/null 2>&1 || rc=$?
 want "never signed: a screen finding is fixed as any other" "30" "$rc"
 want_in "asked with signed-head"               'signed-head 88' "$(cat "$FIX/ak.log")"
-jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 AK_RC=0; repair_rec 125
-fix_ai review "$screen" superpowers:requesting-code-review
+fix_ai review '{"verdict":"BLOCKED","findings":[{"file":"screens/Home.test.tsx","line":4,"grade":"major","summary":"x","reason":"y"}]}' superpowers:requesting-code-review
 rc=0; driver_step_review 125 >/dev/null 2>&1 || rc=$?
-want "no screen set configured: no file is a screen" "30" "$rc"
+want "a test under the screen globs is not a screen: it is fixed" "30" "$rc"
+jq '.design.extraScreens = ["lib/a.ts"]' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+repair_rec 127
+fix_ai review "$code" superpowers:requesting-code-review
+rc=0; driver_step_review 127 >/dev/null 2>&1 || rc=$?
+want "a file named in extraScreens is a screen: it parks" "24" "$rc"
 jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 : > "$FIX/ak.log"
 driver_state_init 126 --worktree "$REPO"; fix_issue 126 OPEN "status:claimed"
