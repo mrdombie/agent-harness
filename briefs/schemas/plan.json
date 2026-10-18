@@ -153,6 +153,13 @@
       "type": "string",
       "minLength": 1
     },
+    "questionFor": {
+      "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape — which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
+      "enum": [
+        "owner",
+        "pm"
+      ]
+    },
     "notes": {
       "type": "string"
     },

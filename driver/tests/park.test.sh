@@ -178,4 +178,23 @@ want_not_in "no PR for a branchless park" 'pr create' "$(cat "$GH_LOG")"
 echo "--- the reason reaches the brief ---"
 want_in "the reason is in the comment" 'start refused' "$(cat "$GH_LOG")"
 
+echo "--- a question the PM owns gets the PM's label, never the owner's hold ---"
+# Every question used to add the hold, which only the owner may clear, so questions
+# about which repo or how to split a ticket queued for him. A pm park adds the PM
+# label (labels.pmDecision) and the brief names that label as the one to clear.
+git -C "$REPO" worktree add -q "$FIX/wt330" -b tkt-330/work develop
+driver_state_init 330 --worktree "$FIX/wt330" --branch tkt-330/work
+fix_issue 330 OPEN "status:claimed"
+: > "$GH_LOG"
+out=$(driver_park 330 "plan asked a question rather than guessing" "which repo does this belong in?" pm 2>&1); rc=$?
+want "it parks" "20" "$rc"
+edit=$(grep '^issue edit 330' "$GH_LOG")
+want_in     "the PM label goes on"          'status:pm-decision' "$edit"
+want_not_in "the owner's hold does not"     'needs:human-approval' "$edit"
+want_in     "it is still parked"            'status:parked' "$edit"
+brief=$(grep -A40 '^issue comment 330' "$GH_LOG")
+want_in     "the brief asks the question"   'which repo does this belong in' "$brief"
+want_in     "and names the label to clear"  'clear `status:pm-decision`' "$brief"
+want_not_in "and not the owner's"           'needs:human-approval' "$brief"
+
 exit $FAILED

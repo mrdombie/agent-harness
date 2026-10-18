@@ -72,5 +72,9 @@ file, its line, its grade, the one-line `reason` in a user's words, and the fix.
 There is ONE list. The grade already says what each finding costs, so a second list
 is a second place for the two to disagree.
 
+A question names who answers it in `questionFor`: `owner` for pixels, a picture,
+a product or commercial call, or the data model; `pm` for the ticket's shape —
+repo, split, order, acceptance wording. Unsure is `owner`.
+
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.
