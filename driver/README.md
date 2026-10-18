@@ -154,6 +154,12 @@ What a repair does not do:
 - repair a PR that does not exist. `--repair` and `--repair-class` refuse by
   name; a `--brief` on a ticket with no PR builds it instead.
 
+The park's push carries the project's park escape (`PARK_PUSH=1`, or the name in
+`driver.parkPushEnv`) so a pre-push that honours it lets a draft through checks
+work in progress fails. Never on a trunk, never on any other push: ship strips it
+even when inherited. A push still refused falls back to a bundle under
+`<worktreeRoot>/backups`.
+
 ## What the driver guarantees with its own hands
 
 - **Test-first is proved, not asked.** The build step reports, per item, the
@@ -204,6 +210,17 @@ What a repair does not do:
   stopped it — what a review graded critical or major, a leftover that could not be filed —
   leaves the text on the record, and that becomes the question the park brief asks
   rather than an exit code.
+- **A question goes to whoever owns its answer.** The step names that in
+  `questionFor`. `pm` is the ticket's shape — which repo, how it splits, the order,
+  the wording of its acceptance — and parks with the PM's label (`labels.pmDecision`,
+  default `status:pm-decision`), which the PM clears. Everything else — pixels, a
+  picture, a product or commercial call, the data model, or a question left
+  unclassified — is the owner's and gets the hold label. `start` refuses a ticket
+  wearing either.
+- **A resume re-plans when the ticket changed.** The ticket body read when `plan`
+  ran is hashed onto the record. A resume that finds a different body reopens `plan`
+  and every step after it, so tasks the PM removed are not built from a stale plan.
+  `--restart` still re-runs everything.
 - **Nothing runs unbounded.** Every gate and every test command has a ceiling
   (`DRIVER_CMD_TIMEOUT`, 900s). The build step's command comes from the model, so a
   reported watch-mode runner would otherwise hang the run for ever — no park, no

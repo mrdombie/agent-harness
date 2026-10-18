@@ -95,6 +95,22 @@ want_in "naming the new head and compare"  "After:\*\* \`${AFTER:0:7}\` — http
 want_in "and why"                          'Why:\*\* the typecheck fix widens the column' "$(cat "$GH_LOG")"
 want_in "the owner's batch gets the line"  "lane-hold:7:${AFTER:0:7}	PR #7 needs your sign-off again: changed after sign-off — before ${SIGNED:0:7}, after ${AFTER:0:7} \(apps/web/page.tsx\)" "$(cat "$WORK" 2>/dev/null)"
 
+echo "--- SIGNOFF_GUARD_DRYRUN=1: the same decision, no side effects ---"
+reset
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x" -m "$TRAIL"
+out=$(SIGNOFF_GUARD_DRYRUN=1 guard)
+want_in "a reasoned change still goes"          'rc=0$' "$out"
+want_in "saying it is a dry run"                'dry run' "$out"
+want_not_in "no hold, label, comment or edit"   'pr edit|issue edit|pr comment' "$(cat "$GH_LOG")"
+want "and no notify"                             "" "$(cat "$WORK" 2>/dev/null)"
+reset
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: no reason"
+out=$(SIGNOFF_GUARD_DRYRUN=1 guard)
+want_in "an unreasoned change is refused the same way" 'rc=1$' "$out"
+want_in "with the same line"                    'pre-push blocked: sign-off comes last' "$out"
+want_not_in "and nothing touched"               'pr edit|issue edit|pr comment' "$(cat "$GH_LOG")"
+g reset -q --hard "$AFTER"
+
 echo "--- once the hold is back on, later screen commits need no new trailer or comment ---"
 g push -q --no-verify -f origin HEAD:tkt-5-x; BASE_REMOTE=$AFTER; haspr needs:human-approval; : > "$GH_LOG"
 echo d >> "$R/apps/web/page.tsx"; g commit -qam "fix: follow-up while held"

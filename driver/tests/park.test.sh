@@ -90,6 +90,90 @@ seq=$(sed -e 's/^git push.*/PUSH/' \
 want "the order is exactly the design's" "PUSH DRAFT BRIEF ASK ASK LABEL RELEASE" "$seq"
 want "and the release is last of all"    "RELEASE" "$(printf '%s' "$seq" | awk '{print $NF}')"
 
+echo "--- a park's push carries the project's park escape past a quality gate ---"
+# A project's pre-push may let a park's push of a draft branch skip its quality
+# gates, keyed on an env var (PARK_PUSH=1 by default, driver.parkPushEnv to rename
+# it). Only the driver knows a push is a park; without the escape the hook refuses,
+# the work lands in a local bundle, and nothing reaches origin. Seven parks on
+# 2026-10-17 ended exactly that way.
+HOOKLOG="$FIX/park-hook.log"
+park_hook() { # <dir> <honoured var|-> — a pre-push that is red unless <var>=1
+  mkdir -p "$1"
+  {
+    printf '#!/usr/bin/env sh\n'
+    printf 'echo "PARK_PUSH=${PARK_PUSH:-} MY_PARK=${MY_PARK:-}" >> "%s"\n' "$HOOKLOG"
+    [ "$2" = "-" ] || printf '[ "${%s:-}" = "1" ] && exit 0\n' "$2"
+    printf 'echo "✗ format:changed"\nexit 1\n'
+  } > "$1/pre-push"
+  chmod +x "$1/pre-push"
+}
+park_tree() { # <ticket> <branch> <base> — a worktree with one commit of wip on it
+  git -C "$REPO" worktree add -q "$FIX/wt$1" -b "$2" "$3"
+  printf 'wip\n' > "$FIX/wt$1/wip.txt"
+  git -C "$FIX/wt$1" add wip.txt; git -C "$FIX/wt$1" commit -qm "wip: $1"
+  driver_state_init "$1" --worktree "$FIX/wt$1" --branch "$2"
+  fix_issue "$1" OPEN "status:claimed"
+}
+CFG_KEEP="$FIX/harness.json.keep"; cp "$HARNESS_CFG_PATH" "$CFG_KEEP"
+cfg_with() { jq "$1" "$CFG_KEEP" > "$HARNESS_CFG_PATH"; }
+on_origin() { git -C "$FIX/origin" rev-parse --verify -q "refs/heads/$1" 2>/dev/null; }
+bundles() { find "$FIX/trees/backups" -name '*.bundle' 2>/dev/null | wc -l | tr -d ' '; }
+
+: > "$GH_LOG"; : > "$HOOKLOG"; unset PARK_PUSH MY_PARK
+park_tree 303 tkt-303/work develop
+park_hook "$FIX/hooks303" PARK_PUSH; git -C "$FIX/wt303" config core.hooksPath "$FIX/hooks303"
+rm -rf "$FIX/trees/backups"
+out=$(driver_park 303 "the gate stopped it" "" driver 2>&1); rc=$?
+want "park reports parked"                    "20" "$rc"
+want "the hook was told it is a park"         "PARK_PUSH=1 MY_PARK=" "$(tail -1 "$HOOKLOG")"
+want "the branch reached origin"              "$(git -C "$FIX/wt303" rev-parse HEAD)" "$(on_origin tkt-303/work)"
+want_in "a draft pr is opened for it"         'pr create.*--draft.*tkt-303/work' "$(cat "$GH_LOG")"
+want "and no bundle was needed"               "0" "$(bundles)"
+
+echo "--- the escape's name is the project's: driver.parkPushEnv ---"
+: > "$GH_LOG"; : > "$HOOKLOG"
+cfg_with '.driver.parkPushEnv = "MY_PARK"'
+park_tree 304 tkt-304/work develop
+park_hook "$FIX/hooks304" MY_PARK; git -C "$FIX/wt304" config core.hooksPath "$FIX/hooks304"
+out=$(export PARK_PUSH=1; driver_park 304 "the gate stopped it" "" driver 2>&1); rc=$?
+want "the hook sees the project's name, and not the default" "PARK_PUSH= MY_PARK=1" "$(tail -1 "$HOOKLOG")"
+want "the branch reached origin"              "$(git -C "$FIX/wt304" rev-parse HEAD)" "$(on_origin tkt-304/work)"
+
+echo "--- a name that is not an env var name sets nothing, and the park still parks ---"
+: > "$HOOKLOG"
+cfg_with '.driver.parkPushEnv = "1; rm -rf x"'
+park_tree 305 tkt-305/work develop
+park_hook "$FIX/hooks305" PARK_PUSH; git -C "$FIX/wt305" config core.hooksPath "$FIX/hooks305"
+out=$(driver_park 305 "the gate stopped it" "" driver 2>&1); rc=$?
+want "park reports parked"                    "20" "$rc"
+want "nothing was set"                        "PARK_PUSH= MY_PARK=" "$(tail -1 "$HOOKLOG")"
+want_in "and the park says why"               'parkPushEnv' "$out"
+want "the work is bundled instead"            "1" "$([ "$(bundles)" -ge 1 ] && echo 1)"
+cp "$CFG_KEEP" "$HARNESS_CFG_PATH"
+
+echo "--- never on a trunk: a park of a trunk branch pushes without the escape ---"
+: > "$HOOKLOG"; rm -rf "$FIX/trees/backups"
+cfg_with '.trunks = ["develop", "uat"]'
+park_tree 306 uat develop
+park_hook "$FIX/hooks306" PARK_PUSH; git -C "$FIX/wt306" config core.hooksPath "$FIX/hooks306"
+out=$(export PARK_PUSH=1; driver_park 306 "the gate stopped it" "" driver 2>&1); rc=$?
+want "the hook is not told it is a park, even inherited" "PARK_PUSH= MY_PARK=" "$(tail -1 "$HOOKLOG")"
+want "the trunk is not pushed"                "" "$(on_origin uat)"
+want "and the work is bundled"                "1" "$([ "$(bundles)" -ge 1 ] && echo 1)"
+cp "$CFG_KEEP" "$HARNESS_CFG_PATH"
+
+echo "--- an escape the project refuses still leaves a bundle ---"
+: > "$GH_LOG"; : > "$HOOKLOG"; rm -rf "$FIX/trees/backups"
+park_tree 307 tkt-307/work develop
+park_hook "$FIX/hooks307" -; git -C "$FIX/wt307" config core.hooksPath "$FIX/hooks307"
+out=$(driver_park 307 "the gate stopped it" "" driver 2>&1); rc=$?
+want "the escape was offered"                 "PARK_PUSH=1 MY_PARK=" "$(tail -1 "$HOOKLOG")"
+want "the branch is not on origin"            "" "$(on_origin tkt-307/work)"
+want_in "the park says the push failed"       'could not be pushed' "$out"
+want "and the commits are bundled"            "1" "$(bundles)"
+want_not_in "no draft pr for a branch that is not there" 'pr create.*tkt-307/work' "$(cat "$GH_LOG")"
+for n in 303 304 305 306 307; do git -C "$FIX/wt$n" config --unset core.hooksPath; done
+
 echo "--- a park with nothing to push still parks ---"
 : > "$GH_LOG"; : > "$RELEASES"; : > "$ORDER"
 driver_state_init 202
@@ -147,5 +231,23 @@ want_in "and the ticket says why"            'could not be put in the owner' "$(
 : > "$GH_LOG"
 DRIVER_OWNER_QUESTION="$BIN/oq-refuses" driver_park 153 "the driver" "x" driver >/dev/null 2>&1
 want_not_in "a driver-caused park asks nobody and holds nothing" 'needs:human-approval|needs:owner-decision' "$(cat "$GH_LOG")"
+echo "--- a question the PM owns gets the PM's label, never the owner's hold ---"
+# Every question used to add the hold, which only the owner may clear, so questions
+# about which repo or how to split a ticket queued for him. A pm park adds the PM
+# label (labels.pmDecision) and the brief names that label as the one to clear.
+git -C "$REPO" worktree add -q "$FIX/wt330" -b tkt-330/work develop
+driver_state_init 330 --worktree "$FIX/wt330" --branch tkt-330/work
+fix_issue 330 OPEN "status:claimed"
+: > "$GH_LOG"
+out=$(driver_park 330 "plan asked a question rather than guessing" "which repo does this belong in?" pm 2>&1); rc=$?
+want "it parks" "20" "$rc"
+edit=$(grep '^issue edit 330' "$GH_LOG")
+want_in     "the PM label goes on"          'status:pm-decision' "$edit"
+want_not_in "the owner's hold does not"     'needs:human-approval' "$edit"
+want_in     "it is still parked"            'status:parked' "$edit"
+brief=$(grep -A40 '^issue comment 330' "$GH_LOG")
+want_in     "the brief asks the question"   'which repo does this belong in' "$brief"
+want_in     "and names the label to clear"  'clear `status:pm-decision`' "$brief"
+want_not_in "and not the owner's"           'needs:human-approval' "$brief"
 
 exit $FAILED

@@ -339,6 +339,33 @@ want_in "the park note is for the owner" '^Needs the owner: .*signed PR #7 at ab
 want_not_in "and nothing was opened" 'pr create' "$(cat "$GH_LOG")"
 git -C "$FIX/wt213" config --unset core.hooksPath
 
+echo "--- the park escape in the caller's environment never waves a ship past the gate ---"
+# The park escape (PARK_PUSH=1, or the project's driver.parkPushEnv) lets a park's
+# push of a draft branch skip quality gates. A ship is the push that has to pass
+# them: an escape inherited from the shell would let it skip, so ship strips it.
+CFG_KEEP115="$FIX/harness.json.keep115"; cp "$HARNESS_CFG_PATH" "$CFG_KEEP115"
+for esc in PARK_PUSH MY_PARK; do
+  n=131; [ "$esc" = MY_PARK ] && n=132
+  jq --arg e "$esc" '.driver.parkPushEnv = $e' "$CFG_KEEP115" > "$HARNESS_CFG_PATH"
+  setup_wt $n
+  driver_state_put $n review '{"verdict":"SHIP","findings":[]}'
+  for st in start plan build self-check review record; do driver_state_done $n "$st"; done
+  mkdir -p "$FIX/hooks$n"
+  printf '#!/usr/bin/env sh\n[ "${%s:-}" = "1" ] && exit 0\necho "✗ format:changed"\nexit 1\n' "$esc" > "$FIX/hooks$n/pre-push"
+  chmod +x "$FIX/hooks$n/pre-push"
+  git -C "$FIX/wt$n" config core.hooksPath "$FIX/hooks$n"
+  : > "$GH_LOG"
+  out=$(export PARK_PUSH=1 MY_PARK=1; driver_step_ship $n 2>&1); rc=$?
+  git -C "$FIX/wt$n" config --unset core.hooksPath
+  # Refused, and as a hook's refusal the first one goes to fix (#236): 30, never a push.
+  want "[$esc] the ship's push is refused, to fix"  "30" "$rc"
+  want_in "[$esc] and ship reports the hook's line" '✗ format:changed' "$out"
+  want "[$esc] the branch is not on origin"         "0" \
+    "$(git -C "$FIX/origin" rev-parse --verify tkt-$n/work >/dev/null 2>&1 && echo 1 || echo 0)"
+  want_not_in "[$esc] and nothing was opened"       'pr create' "$(cat "$GH_LOG")"
+done
+cp "$CFG_KEEP115" "$HARNESS_CFG_PATH"
+
 echo "--- the PR body never claims a parity check that was not made (#11205) ---"
 setup_wt 114
 driver_state_put 114 review '{"verdict":"SHIP","findings":[]}'

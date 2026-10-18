@@ -44,7 +44,7 @@ fake_step() { # <step> [exit-code-sequence…]
 }
 fake_park() {
   { echo '#!/usr/bin/env bash'
-    echo 'driver_park() { printf "PARK %s | %s\n" "$2" "${3:-}" >> "$FIX/park.log"; return 20; }'
+    echo 'driver_park() { printf "PARK %s | %s | cause=%s\n" "$2" "${3:-}" "${4:-}" >> "$FIX/park.log"; return 20; }'
   } > "$FAKE/park.sh"
 }
 reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
@@ -896,5 +896,48 @@ reset_fakes; jq -n '[{number:78, headRefName:"tkt-517-x", isDraft:false}]' > "$F
 ( . "$HERE/../driver-env.sh"; DRIVER_PRS_MAX_AGE=300; driver_open_prs_for 517 >/dev/null; driver_open_prs_for 517 >/dev/null )
 want "two reads, one call to GitHub"           "1" "$(grep -c '^pr list' "$GH_LOG")"
 printf '[]\n' > "$FIX/gh/prs.json"
+echo "--- a question goes to whoever owns its answer: the PM for ticket shape, the owner otherwise ---"
+# Every question used to park as the owner's: three of them on 2026-10-17/18 asked
+# which repo a change belonged in, and each sat in the owner's sign-off queue. The
+# step says who answers in `questionFor`; anything but `pm` is the owner's, because
+# an unclassified question in the PM's lane is one the owner never sees.
+ask_case() { # <ticket> <questionFor-or-empty>
+  reset_fakes "plan:20"
+  mkdir -p "$STATE/driver/$1/steps"
+  jq -nc --arg f "$2" '{step:"plan", status:"park", question:"which repo does this belong in?"}
+      + (if $f == "" then {} else {questionFor:$f} end)' > "$STATE/driver/$1/steps/plan.json"
+  bt "$1" >/dev/null
+  sed -n 's/.*| cause=//p' "$FIX/park.log" | tail -1
+}
+want "a pm question parks for the PM"            "pm"     "$(ask_case 140 pm)"
+want "an owner question parks for the owner"     "person" "$(ask_case 141 owner)"
+want "an unclassified question is the owner's"   "person" "$(ask_case 142 "")"
+want "and so is a classification it cannot read" "person" "$(ask_case 143 "the PM, probably")"
+
+echo "--- a resume re-plans when the ticket body changed since the plan ---"
+# A resumed run reused its stored plan after the PM edited the ticket and re-ran
+# tasks the PM had removed. The body read when the plan ran is hashed onto the
+# record; a different body on resume sends the walk back to plan.
+body_issue() { # <n> <body>
+  mkdir -p "$FIX/gh"
+  jq -n --arg n "$1" --arg b "$2" '{number:($n|tonumber), title:"t", state:"OPEN",
+      labels:[{name:"status:ready"}], body:$b}' > "$FIX/gh/issue-$1.json"
+}
+reset_fakes "build:24 0"
+body_issue 144 "first version of the ticket"
+bt 144 >/dev/null
+want "the first walk parks after the plan" "start plan build" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+: > "$RAN"
+body_issue 144 "the PM removed a task"
+out=$(bt 144); rc=$?
+want "an edited ticket is planned again" "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_in "and the run says why" 'changed since it was planned' "$out"
+
+reset_fakes "build:24 0"
+body_issue 145 "the same ticket"
+bt 145 >/dev/null
+: > "$RAN"
+out=$(bt 145); rc=$?
+want "an unchanged ticket keeps its plan" "start build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 exit $FAILED

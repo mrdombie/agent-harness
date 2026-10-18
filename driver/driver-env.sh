@@ -67,6 +67,10 @@ DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-2}"
 
 DRIVER_CLAUDE="${DRIVER_CLAUDE:-claude}"
 
+# Where a question about the ticket's shape parks: the PM's label, never the owner's
+# hold. The project's labels.pmDecision, else status:pm-decision.
+DRIVER_PM_LABEL="${DRIVER_PM_LABEL:-${LBL_PM_DECISION:-status:pm-decision}}"
+
 # driver_link_install <repo> <tree> — the shared install, linked, never copied or
 # installed. The tree gets its own node_modules of links to the shared entries, with
 # the workspace packages pointed at the tree's own source; one link to the whole
@@ -227,12 +231,6 @@ driver_run_project() { # <seconds> <command>
 # red/green proof, and 127 in the second half reads as "the change does not do the
 # job" — so the ticket parks blaming a change that works.
 DRIVER_PREPARE_WHY=""
-# driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
-# project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
-# said "read its own output" and that output existed nowhere, so the one line that
-# named the failing check had to be got by re-running the push by hand (#10955,
-# trial 3). The whole output goes to steps/<slot>-push.out; DRIVER_PUSH_WHY is the
-# lines that say no (✗, error:, fatal:), joined, for the log and the park note.
 # driver_signoff_refusal <ticket> <output> — 0, with the owner's park note set, when
 # the sign-off guard refused: the owner signed these screens and the change moves them.
 driver_signoff_refusal() {
@@ -241,11 +239,35 @@ driver_signoff_refusal() {
 }
 driver_signoff_line() { grep -m1 'sign-off comes last' "$1" 2>/dev/null | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300; }
 
+# driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
+# project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
+# said "read its own output" and that output existed nowhere, so the one line that
+# named the failing check had to be got by re-running the push by hand (#10955,
+# trial 3). The whole output goes to steps/<slot>-push.out; DRIVER_PUSH_WHY is the
+# lines that say no (✗, error:, fatal:), joined, for the log and the park note.
+#
+# THE PARK ESCAPE. A park's push of a draft branch carries `<name>=1` (PARK_PUSH by
+# default, `driver.parkPushEnv` to rename it), which a project's pre-push may honour
+# by skipping the quality gates work-in-progress fails by definition. Without it a
+# red check refused every park push and the work stayed in a local bundle — seven
+# times on 2026-10-17. Every other slot, and a park of a trunk, strips it: inherited
+# from the shell, it would wave a ship past the gates it exists to pass.
 driver_push() {
-  local t="$1" wt="$2" branch="$3" slot="$4" f rc=0
+  local t="$1" wt="$2" branch="$3" slot="$4" f rc=0 esc tr
   f="$(driver_state_dir "$t")/steps/$slot-push.out"
   mkdir -p "$(dirname "$f")"
-  git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
+  local penv=(env -u PARK_PUSH)
+  esc=$(driver_opt driver.parkPushEnv PARK_PUSH)
+  if [[ "$esc" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    penv+=(-u "$esc")
+    if [ "$slot" = park ]; then
+      for tr in $(driver_opt trunks "$INTEGRATION_BRANCH"); do [ "$tr" = "$branch" ] && esc=""; done
+      [ -n "$esc" ] && penv+=("$esc=1")
+    fi
+  elif [ "$slot" = park ]; then
+    driver_say "   park: driver.parkPushEnv '$esc' is not an environment variable name, so the push carries no park escape"
+  fi
+  "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
   [ "$rc" -ne 0 ] || driver_state_set "$t" pushed_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"

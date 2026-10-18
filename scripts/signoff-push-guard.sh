@@ -37,6 +37,9 @@
 # change after sign-off, owner 2026-10-18). A server-only fix is not a screen here.
 # approval-kept.sh check keeps its wider rule for the merge lane; its header says why.
 #
+# SIGNOFF_GUARD_DRYRUN=1 (a trial run, never a real push): the same decision, the
+# same refusal line and exit code, and no label, comment or notify.
+#
 # The hold goes back on BEFORE the push is accepted (git has no post-push hook), and
 # the comment says so. A screen change whose sign-off cannot be read is refused:
 # the guard fails shut, and only for screens — a push that changes no screen
@@ -141,6 +144,11 @@ while read -r _lref lsha rref rsha; do
     refused=1; continue
   fi
 
+  # A trial run (a driver self-check) decides the same and touches nothing.
+  if [ "${SIGNOFF_GUARD_DRYRUN:-}" = 1 ]; then
+    say "signoff-push-guard: dry run — PR #$pr changes screens signed at ${signed:0:7} ($why); a real push would put the hold back on"
+    continue
+  fi
   # Every screen change says why: the owner signs again.
   if ! gh_call pr edit "$pr" --repo "$REPO" --add-label "$HOLD_LABEL" >/dev/null 2>&1; then
     say "✗ pre-push blocked: PR #$pr changes signed screens and the hold could not be put back on. Try again."

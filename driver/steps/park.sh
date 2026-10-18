@@ -47,13 +47,16 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
-driver_park() { # <ticket> <reason> [question] [cause: person|driver]
+driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   local t="${1:?driver_park: need a ticket}" reason="${2:-a refusal}" question="${3:-}"
   # WHOSE PARK IT IS. `person` means a question only somebody can answer; `driver`
   # means this kit, a gate or the project's own config stopped — and a person has
   # nothing to decide. The default is `person` so a caller that says nothing gets
-  # the cautious label rather than the quiet one.
+  # the cautious label rather than the quiet one. `pm` is a question about the
+  # ticket's shape — which repo, how it splits, the order, the acceptance wording —
+  # which the PM answers and clears; the owner's hold stays for his own calls.
   local cause="${4:-person}"
+  case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
   local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
   local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note=""
   export DRIVER_TICKET="$t"
@@ -126,6 +129,9 @@ $(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
   elif [ "$cause" = "person" ]; then
     printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
       "${question:-a person to say how to proceed}" "$HOLD_LABEL"
+  elif [ "$cause" = "pm" ]; then
+    printf '**Needs (PM):** %s\n**Resume:** answer that on this ticket, clear `%s`, then run the driver again — it picks up from the last finished step.' \
+      "${question:-the PM to say how the ticket is shaped}" "$DRIVER_PM_LABEL"
   else
     # NOT UNDER "Needs:". A driver-caused park has nothing for a person to decide,
     # and printing its diagnostic there — "is the brief naming the wrong Skill, or
@@ -155,6 +161,9 @@ BRIEF
   # AGENTS forbids. So a park with nothing for a person to answer leaves the ticket
   # parked and nothing else, and the driver can pick it up again itself.
   #
+  # And a question about the ticket's shape is the PM's, not the owner's: three
+  # on 2026-10-17/18 asked which repo a change belonged in and queued for the owner.
+  #
   # A PERSON'S QUESTION GOES THROUGH THE OWNER'S LOOP (#177) where the kit has it:
   # owner-question.sh labels the ticket, puts the question in the owner's channel,
   # and the answer comes back on the queue as a brief the driver carries. The hold
@@ -175,6 +184,10 @@ BRIEF
       --body "The question could not be put in the owner's channel, so \`$HOLD_LABEL\` is on instead: answer it, clear the label, and run the driver again." >/dev/null 2>&1 || true
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
       --add-label "$LBL_PARKED" --add-label "$HOLD_LABEL" \
+      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  elif [ "$cause" = "pm" ]; then
+    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
+      --add-label "$LBL_PARKED" --add-label "$DRIVER_PM_LABEL" \
       --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
   else
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \

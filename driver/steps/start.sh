@@ -67,6 +67,13 @@ driver_step_start() { # <ticket>
       driver_say "✋ start: #$t carries $HOLD_LABEL — a person owns it. An agent holding it is a slot nobody can use."
       return "$DRIVER_E_REFUSED" ;;
   esac
+  # The PM's label is the hold for a question about the ticket's shape. A park on
+  # one carries status:parked, which is resumable below, so it is refused here.
+  case ",$labels," in
+    *",$DRIVER_PM_LABEL,"*)
+      driver_say "✋ start: #$t carries $DRIVER_PM_LABEL — the PM owes an answer on it. Clear the label once it is answered."
+      return "$DRIVER_E_REFUSED" ;;
+  esac
   case ",$labels," in
     *",$LBL_GATED,"*)
       driver_say "✋ start: #$t is $LBL_GATED. The PM flips that label, not the driver."
