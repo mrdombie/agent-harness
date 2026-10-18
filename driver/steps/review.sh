@@ -70,7 +70,8 @@ driver_step_review() { # <ticket>
   local -a dargs=(); local rbase own_paths="" p
   rbase=$(driver_state_get "$t" repair_base)
   if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$rbase" ]; then
-    own_paths=$(git -C "$wt" log --cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
+    # --first-parent: a merge's second side is the trunk's commits, never the repair's.
+    own_paths=$(git -C "$wt" log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
     dargs=("$rbase"..HEAD --)
     while IFS= read -r p; do [ -n "$p" ] && dargs+=("$p"); done <<<"$own_paths"
     if [ -n "$own_paths" ]; then diff=$(git -C "$wt" diff "${dargs[@]}" 2>/dev/null); else diff=""; fi
@@ -148,7 +149,6 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 
   rc=0; _driver_review_hold_signed "$t" "$ans_file" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
-  verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
 
   nsend=$(_driver_count "$ans_file" blocking)
   # `-le`, not `-lt`: the design's flowchart sends work back on round 1 OR 2, so two
@@ -196,41 +196,27 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 }
 
 # _driver_review_hold_signed <ticket> <review.json> — on a repair of a PR the owner
-# signed off, a Critical or Major on a screen file is not this repair's to fix: a fix
-# there changes pixels after the sign-off. Those findings leave as one follow-up at
-# their own priority and come off the answer (kept whole in review.raw.json); a
-# BLOCKED left with nothing blocking is a SHIP. An approval record that cannot be read
-# counts as a sign-off: the cautious side for pixels.
+# signed off, a Critical or Major on a screen file is the owner's call: a fix there
+# changes pixels after the sign-off. It parks for the owner, naming them, and the
+# verdict is left as the reviewer gave it. Signed is approval-kept's signed-head (a
+# hold removed on GitHub counts); unreadable counts as signed, the cautious side.
+# Screens are the shared screen set (driver_screen_files), never "every file".
 _driver_review_hold_signed() {
-  local t="$1" f="$2" pr ak arc files screens held n top label lines
+  local t="$1" f="$2" pr ak arc files screens held
   [ "$(driver_state_get "$t" mode)" = repair ] || return 0
   pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || return 0
   [ "$(_driver_count "$f" blocking)" -gt 0 ] 2>/dev/null || return 0
-  ak="${DRIVER_APPROVAL_KEPT:-$KIT_ROOT/scripts/approval-kept.sh}"
-  arc=0; bash "$ak" approved-head "$pr" >/dev/null 2>&1 || arc=$?
-  [ "$arc" -eq 1 ] && return 0
   files=$(jq -r "[.findings[]? | $(_driver_class blocking) | .file // empty] | unique | .[]" "$f" 2>/dev/null)
-  screens=$(printf '%s\n' "$files" | bash "$ak" screens 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
+  screens=$(printf '%s\n' "$files" | driver_screen_files "$(driver_state_get "$t" worktree)" | jq -Rsc 'split("\n") | map(select(length > 0))')
   [ "${screens:-[]}" != "[]" ] || return 0
-  held=$(jq -c --argjson s "$screens" "[.findings[]? | $(_driver_class blocking) | select((.file // \"\") as \$x | \$s | index(\$x))]" "$f")
-  n=$(jq -r 'length' <<<"$held")
-  top=$(jq -r 'if any(.[]; .grade == "critical") then "critical" else "major" end' <<<"$held")
-  label="$DRIVER_LABEL_MAJOR"; [ "$top" = critical ] && label="$DRIVER_LABEL_CRITICAL"
-  lines=$(jq -r '.[] | "- **\(.grade)** `\(.file // "?"):\(.line // "?")` — \(.summary // "")"' <<<"$held")
-  if ! swarm_gh issue create --repo "$REPO_SLUG" \
-       --title "held for sign-off from #$t: $n screen finding(s) on PR #$pr" \
-       --body "$(printf 'The review of a repair on PR #%s (#%s) graded these on screen files. %s, so the repair does not change those pixels: each needs a fix and a new sign-off of its own.\n\n%s\n' "$pr" "$t" "$([ "$arc" -eq 0 ] && echo 'The owner signed that PR off' || echo 'Whether the owner signed that PR off could not be read')" "$lines")" \
-       ${label:+--label "$label"} >/dev/null 2>&1; then
-    driver_say "✋ review: $n screen finding(s) on a signed-off PR could not be filed as a follow-up: $(jq -r '[.[] | "\(.file):\(.line) \(.summary)"] | join("; ")' <<<"$held")"
-    driver_state_set "$t" park_note "screen findings held for the owner's sign-off on PR #$pr could not be filed: $(jq -r '[.[] | "\(.file):\(.line) \(.summary)"] | join("; ")' <<<"$held")"
-    return "$DRIVER_E_REFUSED"
-  fi
-  cp "$f" "${f%.json}.raw.json"
-  jq --argjson h "$held" '.findings = [.findings[]? | select(. as $x | $h | index($x) | not)]
-    | if .verdict == "BLOCKED" and ([.findings[] | select(.grade == "critical" or .grade == "major")] | length) == 0 then .verdict = "SHIP" else . end' \
-    "${f%.json}.raw.json" > "$f"
-  driver_say "   review: $n screen finding(s) on PR #$pr held for the owner's sign-off, filed as one follow-up at ${label:-no priority label} — not fixed here"
-  return 0
+  ak="${DRIVER_APPROVAL_KEPT:-$KIT_ROOT/scripts/approval-kept.sh}"
+  arc=0; bash "$ak" signed-head "$pr" >/dev/null 2>&1 || arc=$?
+  [ "$arc" -eq 1 ] && return 0
+  held=$(jq -r --argjson s "$screens" "[.findings[]? | $(_driver_class blocking) | select((.file // \"\") as \$x | \$s | index(\$x)) | \"\\(.grade) \\(.file):\\(.line // \"?\") \\(.summary // \"\")\"] | join(\"; \")" "$f")
+  driver_say "✋ review: PR #$pr $([ "$arc" -eq 2 ] && echo 'may be signed off (its sign-offs could not be read)' || echo 'is signed off'), and the review graded its screens: $held — a fix would change pixels after the sign-off, so it parks for the owner."
+  driver_state_set "$t" park_note "Needs the owner: PR #$pr's screens were signed off$([ "$arc" -eq 2 ] && echo ' (or its sign-offs could not be read)'), and the review of this repair found on them: $held. Either each becomes a follow-up ticket, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
+  driver_state_set "$t" park_cause person
+  return "$DRIVER_E_REFUSED"
 }
 
 # _driver_class <blocking|minor|nit> — the jq selector for that class, in the ONE

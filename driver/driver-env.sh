@@ -520,6 +520,26 @@ driver_record_diverged() {
     || printf 'the PR head %s is not in the record'"'"'s work (%s): it moved since' "$(printf '%s' "$ph" | cut -c1-8)" "$(printf '%s' "$rh" | cut -c1-8)"
 }
 
+# driver_screen_files <tree> — paths on stdin, the screen ones on stdout: the shared
+# screen set, design.surfacePaths plus design.extraScreens, read as git pathspecs
+# written as globs (":(exclude)…" kept as written). Neither set: no file is a screen.
+driver_screen_files() {
+  local wt="${1:-$MAIN_REPO}" f
+  local -a specs=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in :*) specs+=("$f") ;; *) specs+=(":(glob)$f") ;; esac
+  done <<EOS
+$(jq -r '[(.design.surfacePaths // []), (.design.extraScreens // [])] | map(if type == "array" then . else [] end) | add | .[]' "$HARNESS_CFG" 2>/dev/null)
+EOS
+  [ "${#specs[@]}" -gt 0 ] || { cat >/dev/null; return 0; }
+  local all; all=$(git -C "$wt" ls-files --cached --others -- "${specs[@]}" 2>/dev/null)
+  while IFS= read -r f; do
+    [ -n "$f" ] && printf '%s\n' "$all" | grep -qxF -- "$f" && printf '%s\n' "$f"
+  done
+  return 0
+}
+
 # driver_built <ticket> — 0 when this ticket's record holds a build the driver ran.
 # Only a build runs `start`; a repair round reopens its own steps and never that one.
 driver_built() {
