@@ -70,6 +70,19 @@
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "ROUND": "which fix round this is: 1 or 2"
       }
+    },
+    "repair": {
+      "brief": "repair.md",
+      "schema": "schemas/repair.json",
+      "skills": ["superpowers:systematic-debugging", "superpowers:test-driven-development"],
+      "facts": {
+        "TICKET": "the ticket body, verbatim, including its acceptance criteria and its type labels",
+        "BRIEF": "why this repair was sent, verbatim: the repair watcher's, the merge lane's or the coordinator's brief, or a line naming the healing class when none came",
+        "PR": "the pull request's number, its branch, the head it was repaired from, and its merge state",
+        "FAILING": "the names of the checks that settled red on the pull request's head, or a sentence saying none did or that they could not be read",
+        "CONFLICTS": "what merging the integration branch did: not needed, merged clean, or the files left conflicted for this step",
+        "DIFF": "the change as it stands, against the trunk it will merge into"
+      }
     }
   }
 }

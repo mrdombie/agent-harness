@@ -3,6 +3,9 @@
 # deciding what happens next.
 #
 #   build-ticket <ticket> [--restart] [--steps "start plan …"]
+#   build-ticket <ticket> --repair <brief-file>   a red or clashing PR, on its own branch
+#   build-ticket <ticket> --repair-class <class>  the same, for a healing run with no note
+#   build-ticket <ticket> --brief <brief-file>    a repair if the ticket has an open PR, else a build with the brief
 #
 # THIS FILE IS THE CHANGE THE EPIC IS ABOUT. Until now the order of the work was
 # a list an agent read in 49,657 words of instructions and then chose from: the
@@ -45,10 +48,13 @@ DRIVER_STEPS_DIR="${DRIVER_STEPS_DIR:-$DRIVER_HOME_SELF/steps}"
 
 die() { echo "build-ticket: $*" >&2; exit 2; }
 
-TICKET=""; RESTART=0
+TICKET=""; RESTART=0; REPAIR_BRIEF=""; REPAIR_CLASS=""; RUN_BRIEF=""; REPAIR_SOURCE=caller
 while [ $# -gt 0 ]; do
   case "$1" in
     --restart) RESTART=1; shift ;;
+    --repair)  REPAIR_BRIEF="${2:?--repair needs a brief file}"; shift 2 ;;
+    --repair-class) REPAIR_CLASS="${2:?--repair-class needs a class}"; shift 2 ;;
+    --brief)   RUN_BRIEF="${2:?--brief needs a brief file}"; shift 2 ;;
     --steps)   DRIVER_STEPS="${2:?--steps needs a list}"; shift 2 ;;
     -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)        die "unknown flag $1" ;;
@@ -58,6 +64,122 @@ done
 [ -n "$TICKET" ] || die "need a ticket number"
 case "$TICKET" in *[!0-9]*) die "'$TICKET' is not a ticket number" ;; esac
 export DRIVER_TICKET="$TICKET"
+
+# driver_keep_brief <src> <dst> — the brief onto the record, capped. Every AI step is
+# handed it, so a brief of any size is paid for on every call; past the cap the steps
+# read its first DRIVER_BRIEF_MAX_BYTES with a notice saying so, and the whole of it
+# is kept beside, at <dst minus .md>.full.md.
+driver_keep_brief() {
+  local src="$1" dst="$2" max="${DRIVER_BRIEF_MAX_BYTES:-4096}" n
+  n=$(wc -c < "$src" | tr -d ' ')
+  if [ "${n:-0}" -le "$max" ]; then cp "$src" "$dst"; return; fi
+  cp "$src" "${dst%.md}.full.md"
+  { head -c "$max" "$src"; printf '\n\n[… this brief was %s bytes; only its first %s are here. The whole of it: %s]\n' "$n" "$max" "${dst%.md}.full.md"; } > "$dst"
+  driver_say "   brief: $n bytes, cut to $max for the steps; the whole of it is at ${dst%.md}.full.md"
+}
+
+# ---- the record first ------------------------------------------------------------
+# AN UNSHIPPED BUILD ON THE RECORD IS RESUMED AS A BUILD, whatever the caller called
+# the run. A build that parks on a question opens a draft PR to keep its work, so the
+# answer comes back looking like a repair (a brief on a ticket with a PR, or a repair
+# class from a requeue that saw the PR). Routed on the PR, the walk would skip the
+# steps the build had left — the design compare a person sanctions, the build's own
+# red-then-green proof — and ship it. The record says which walk this is; the PR does not.
+# AND THE RECORD IS CHECKED AGAINST THE LIVE PR FIRST. A record a person or /claim has
+# moved on from (another branch, a PR made ready, a head with commits the record never
+# saw) is stale: it moves aside, and the run is a fresh repair round from origin.
+UNSHIPPED_BUILD=0
+_unshipped='(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)'
+if { [ -n "$REPAIR_CLASS" ] || [ -n "$REPAIR_BRIEF" ] || [ -n "$RUN_BRIEF" ]; } \
+   && jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1 \
+   && _live=$(driver_open_prs_for "$TICKET") && [ -n "$_live" ]; then
+  _stale=$(driver_record_diverged "$TICKET" "$(printf '%s\n' "$_live" | head -1)")
+  if [ -n "$_stale" ]; then
+    _aside="$DRIVER_DIR/$TICKET.stale-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    mv "$DRIVER_DIR/$TICKET" "$_aside"
+    echo "build-ticket: #$TICKET's record is stale — $_stale. It is kept at $_aside; this run is a fresh repair round from origin." >&2
+  fi
+  unset _stale _aside
+fi
+unset _live
+if jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1; then
+  UNSHIPPED_BUILD=1
+  if [ -n "$REPAIR_CLASS" ]; then
+    echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build, not a $REPAIR_CLASS repair" >&2
+    REPAIR_CLASS=""
+  fi
+  if [ -n "$REPAIR_BRIEF" ]; then
+    echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build with this brief, not a repair" >&2
+    RUN_BRIEF="$REPAIR_BRIEF"; REPAIR_BRIEF=""
+  fi
+fi
+
+# ---- what a run was handed ----------------------------------------------------
+# `--repair-class <class>` is a healing run that came with no note: still a repair of
+# the open PR, never a fresh build, with a brief that says so. `--brief <file>` is a
+# run a caller handed a brief without saying what kind: the ticket's open PR decides —
+# with one it is a repair, without one it is a build with the brief put in front of
+# every step (an owner's answer, a resume after a cut).
+if [ -n "$REPAIR_CLASS" ]; then
+  case "$REPAIR_CLASS" in repair|approved-merge) ;; *) die "--repair-class takes repair or approved-merge, not '$REPAIR_CLASS'" ;; esac
+  mkdir -p "$DRIVER_DIR/$TICKET"
+  REPAIR_BRIEF="$DRIVER_DIR/$TICKET/repair-brief.class"
+  printf 'No brief came with this run: #%s was queued as %s with no note. Read the pull request'"'"'s own state: its checks, its merge state, its review.\n' \
+    "$TICKET" "$REPAIR_CLASS" > "$REPAIR_BRIEF"
+  REPAIR_SOURCE=class
+fi
+if [ -n "$RUN_BRIEF" ] && [ "$UNSHIPPED_BUILD" -eq 1 ]; then
+  [ -s "$RUN_BRIEF" ] || die "--brief names '$RUN_BRIEF', which is missing or empty — a run whose brief is lost would build as if it had none"
+elif [ -n "$RUN_BRIEF" ]; then
+  [ -s "$RUN_BRIEF" ] || die "--brief names '$RUN_BRIEF', which is missing or empty — a run whose brief is lost would build as if it had none"
+  # ASKED A FEW TIMES, AND NEVER LOST. The coordinator took the queue entry off when it
+  # spawned this run, so an exit here with the brief dropped would lose an owner's
+  # answer. A lookup that keeps failing puts the ticket back on the queue, with its
+  # brief as the note, and says so.
+  _tries=0
+  until _prs=$(driver_open_prs_for "$TICKET"); do
+    _tries=$((_tries+1))
+    if [ "$_tries" -ge "${DRIVER_LOOKUP_TRIES:-3}" ]; then
+      if bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$RUN_BRIEF")" --front >/dev/null 2>&1; then
+        die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries) — #$TICKET is back on the queue at the front with its brief as the note"
+      fi
+      mkdir -p "$DRIVER_DIR/$TICKET"; cp "$RUN_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null
+      die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries), and could not put it back on the queue — the brief is kept at $DRIVER_DIR/$TICKET/brief-unrouted.md"
+    fi
+    sleep "${DRIVER_LOOKUP_RETRY_SEC:-5}"
+  done
+  unset _tries
+  if [ -n "$_prs" ]; then REPAIR_BRIEF="$RUN_BRIEF"; RUN_BRIEF=""; fi
+  unset _prs
+fi
+
+# ---- a repair: the PR that exists, not a fresh build --------------------------
+# `--repair <brief>` is how a red or clashing pull request comes back to the driver.
+# A different order, entered through `reenter` (the PR's own branch, at origin's
+# head) in place of `start` (a fresh branch from the trunk): reenter, repair, then
+# the same fix, self-check, review, record and ship every ticket gets. The brief
+# is the reason it was sent and is never dropped: it is copied onto the record, and
+# a brief that cannot be read is a refusal, because a repair with its reason
+# missing would be a guess at what is wrong.
+if [ -n "$REPAIR_BRIEF" ]; then
+  [ -s "$REPAIR_BRIEF" ] || die "--repair names '$REPAIR_BRIEF', which is missing or empty — a repair without its brief would be a guess at what is wrong"
+  # A DRAFT THE DRIVER NEVER BUILT IS NOT A REPAIR: readied and armed, it would land
+  # work its author left unfinished. The prose claim resumes it; a brief goes back on
+  # the queue so it is not lost, and the next spawn routes it there.
+  if ! driver_built "$TICKET" \
+     && [ "$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f5)" = true ]; then
+    if [ "$REPAIR_SOURCE" = caller ]; then
+      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$REPAIR_BRIEF")" --front >/dev/null 2>&1 \
+        || { mkdir -p "$DRIVER_DIR/$TICKET"; cp "$REPAIR_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null; }
+    else
+      # A healing class too: back on the queue as that class, which the spawner routes to prose.
+      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --class "$REPAIR_CLASS" --front >/dev/null 2>&1 || true
+    fi
+    die "#$TICKET has an open pull request that is a draft the driver did not build, and a repair never readies one. The prose claim resumes it; a brief the caller sent is back on the queue, or kept at $DRIVER_DIR/$TICKET/brief-unrouted.md."
+  fi
+  DRIVER_STEPS="${DRIVER_REPAIR_STEPS:-reenter repair fix self-check review record ship}"
+  DRIVER_ALWAYS_STEPS="${DRIVER_ALWAYS_STEPS:-reenter}"
+fi
 
 # ---- load the steps, refusing by name --------------------------------------
 # Park first: it is the exit from every other step, so a run that cannot park is
@@ -80,6 +202,52 @@ done
 
 # ---- the record ------------------------------------------------------------
 driver_state_init "$TICKET"
+if [ -n "$REPAIR_BRIEF" ]; then
+  # THE SAME BRIEF RESUMES, A NEW ONE IS A NEW ROUND. A repair spawned again on the
+  # same brief (a killed run) picks up where it stopped. A different brief is a new
+  # failure, so the last round's answers move aside — the fix step must not read the
+  # last review's findings, and the new round gets its own two review rounds.
+  _rb_sha=$(git hash-object "$REPAIR_BRIEF" 2>/dev/null)
+  _rd=$(driver_state_dir "$TICKET")
+  # AND A ROUND IS MORE THAN ITS WORDS. The empty-note brief and the merge lane's
+  # notes repeat word for word, so keyed on the brief alone the next clash on a
+  # repaired PR ran reenter, said "nothing left to do" and exited 0 with the PR red.
+  # A round already shipped is never resumed, and a PR whose head moved since the
+  # round began is a new failure.
+  _rb_head=$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f3)
+  _rb_new=0
+  [ "$_rb_sha" != "$(driver_state_get "$TICKET" repair_brief_sha)" ] && _rb_new=1
+  driver_state_is_done "$TICKET" ship && _rb_new=1
+  [ -n "$_rb_head" ] && [ -n "$(driver_state_get "$TICKET" repair_pr_head)" ] \
+    && [ "$_rb_head" != "$(driver_state_get "$TICKET" repair_pr_head)" ] && _rb_new=1
+  if [ "$_rb_new" -eq 1 ]; then
+    _arch="$_rd/steps/archive/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    mkdir -p "$_arch"
+    for _f in "$_rd"/steps/*; do
+      case "$(basename "$_f")" in archive|replaced.jsonl) continue ;; esac
+      [ -e "$_f" ] && mv "$_f" "$_arch/"
+    done
+    rmdir "$_arch" 2>/dev/null || true
+    driver_state_reopen "$TICKET" $DRIVER_STEPS
+    _driver_state_edit "$TICKET" --arg sha "$_rb_sha" --arg h "$_rb_head" --arg src "$REPAIR_SOURCE" \
+      '.counters.review = 0 | .counters.fix = 0 | .counters.selfcheck_red = 0 | .counters.push_red = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha | .repair_pr_head = $h | .repair_brief_source = $src'
+    driver_state_set "$TICKET" run_brief ""   # a build's brief does not outlive into a repair
+    driver_keep_brief "$REPAIR_BRIEF" "$_rd/repair-brief.md"
+    driver_state_set "$TICKET" repair_brief "$_rd/repair-brief.md"
+    driver_say "🔧 #$TICKET repair: $(head -1 "$_rd/repair-brief.md" | cut -c1-160)"
+  fi
+  driver_state_set "$TICKET" mode repair
+  unset _rb_sha _rb_head _rb_new _rd _arch _f
+else
+  driver_state_set "$TICKET" mode build
+  # The run's brief, kept on the record: every AI step is handed it (ai-step.sh), and a
+  # resumed build still has it. A later brief replaces it; a run with none keeps it.
+  if [ -n "$RUN_BRIEF" ]; then
+    driver_keep_brief "$RUN_BRIEF" "$(driver_state_dir "$TICKET")/run-brief.md"
+    driver_state_set "$TICKET" run_brief "$(driver_state_dir "$TICKET")/run-brief.md"
+    driver_say "📝 #$TICKET brief: $(head -1 "$RUN_BRIEF" | cut -c1-160)"
+  fi
+fi
 if [ "$RESTART" -eq 1 ]; then
   driver_state_reopen "$TICKET" $DRIVER_STEPS
   driver_say "↻ #$TICKET restarting: every step will run again."

@@ -227,4 +227,34 @@ want "and parsed"               "b.sh"  "$(jq -r '.files[0]' "$(driver_state_dir
 echo "--- the transcript is kept, because a verdict nobody can re-read is a claim ---"
 want "the run log is on disk" "1" "$([ -s "$(driver_state_dir 101)/steps/plan.log" ] && echo 1)"
 
+echo "--- a run's brief is put in front of every step, verbatim ---"
+# An owner's answer or a resume note reaches a build that has no PR this way; a
+# step that never saw it would build as if the owner had not answered.
+driver_state_init 271
+printf 'The owner answered q3: no export button.\n' > "$FIX/run-brief-271.md"
+driver_state_set 271 run_brief "$FIX/run-brief-271.md"
+fix_brief plan superpowers:writing-plans
+fix_ai plan '{"files":["a.sh"],"tests":["a.test.sh"]}' superpowers:writing-plans
+DRIVER_TICKET=271 driver_ai_step 271 plan >/dev/null 2>&1
+want_in "the step's prompt carries the brief" 'The owner answered q3: no export button.' "$(cat "$FIX/claude-stdin-plan.txt")"
+driver_state_init 272
+DRIVER_TICKET=272 driver_ai_step 272 plan >/dev/null 2>&1
+want_not_in "a run with no brief carries none"  'owner answered q3' "$(cat "$FIX/claude-stdin-plan.txt")"
+
+echo "--- in repair mode a caller's brief reaches every step, not only repair ---"
+driver_state_init 273; driver_state_set 273 mode repair; driver_state_set 273 repair_brief_source caller
+printf 'The owner answered q5: rename it Archive.\n' > "$FIX/repair-brief-273.md"; driver_state_set 273 repair_brief "$FIX/repair-brief-273.md"
+fix_brief review superpowers:requesting-code-review
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+DRIVER_TICKET=273 driver_ai_step 273 review >/dev/null 2>&1
+want_in "the reviewer sees the brief it must judge" 'The owner answered q5: rename it Archive.' "$(cat "$FIX/claude-stdin-review.txt")"
+want_in "under the preface"                 'void' "$(cat "$FIX/claude-stdin-review.txt")"
+driver_state_set 273 repair_brief_source class
+DRIVER_TICKET=273 driver_ai_step 273 review >/dev/null 2>&1
+want_not_in "a note-less healing run's class line is not passed around" 'q5' "$(cat "$FIX/claude-stdin-review.txt")"
+driver_state_init 274; driver_state_set 274 mode repair
+printf 'old build brief\n' > "$FIX/run-brief-274.md"; driver_state_set 274 run_brief "$FIX/run-brief-274.md"
+DRIVER_TICKET=274 driver_ai_step 274 review >/dev/null 2>&1
+want_not_in "a build's brief is not read in repair mode" 'old build brief' "$(cat "$FIX/claude-stdin-review.txt")"
+
 exit $FAILED

@@ -200,4 +200,19 @@ out=$(reconcile)
 want_in "a bare-number branch with an open PR reads as in review" 'IN-REVIEW +#704' "$out"
 want_not_in "and is not called abandoned" 'left no branch and no PR' "$out"
 
+# 5. A DRIVER run that crashed: its record is fresh BECAUSE it was writing until it
+# died, and the wrapper names its session as exited. The freshness rescue exists for
+# a step-runner between steps, where no process is the run; here the process that
+# WAS the run is named as gone, so the record's age must not overrule it.
+# (705, not 704: case 4 leaves a 704/work branch with an open PR behind it.)
+sleep 300 & LIVEPID=$!
+mkdir -p "$SB/state/driver/705"
+jq -n --arg at "$(stamp 60)" '{ticket:"705", done:["start","plan"], updated_at:$at}' \
+  > "$SB/state/driver/705/state.json"
+plant_claim 705 "$LIVEPID"
+out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
+want "a crashed driver run's claim is released by its own post-exit reconcile" "no" "$(ref_present 705)"
+want_not_in "the fresh record did not rescue it" '#705 .*run record was written' "$out"
+kill "$LIVEPID" 2>/dev/null
+
 exit $FAILED

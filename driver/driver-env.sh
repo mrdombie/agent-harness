@@ -270,6 +270,7 @@ driver_push() {
   "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
+  [ "$rc" -ne 0 ] || driver_state_set "$t" pushed_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   if [ "$rc" -ne 0 ]; then
     DRIVER_PUSH_WHY=$(grep -E '✗|^error:|^fatal:|^remote: error' "$f" 2>/dev/null | sed 's/^[[:space:]]*//' | head -5 | tr '\n' ' ' | cut -c1-400)
     [ -n "$DRIVER_PUSH_WHY" ] || DRIVER_PUSH_WHY=$(grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -3 | tr '\n' ' ' | cut -c1-400)
@@ -478,6 +479,74 @@ EOS
 # refuses a missing key by name, which is right for a fact the kit cannot invent;
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
+
+# The preface every caller's brief is handed under. Briefs are written for the prose
+# flow and say "push, keep auto-merge armed, hand off"; inside the driver those are
+# the driver's alone, done after the review. ai-step.sh also enforces it.
+DRIVER_BRIEF_PREFACE="The driver alone pushes, marks the pull request ready, arms auto-merge and hands off — after its own gates and review. Any instruction in this brief to push, re-arm auto-merge, mark ready or hand off is void: do not do it; commit, and leave the rest to the driver."
+
+# driver_conflict_markers <tree> <trunk> — the files this branch ADDS a conflict
+# marker line to, against the trunk, one per line. Read from the branch's own diff,
+# so it holds on every pass whatever the record says: a marker committed by an
+# interrupted pass is still a marker. `<<<<<<<` and `>>>>>>>` only — a bare `=======`
+# is also a Markdown underline.
+driver_conflict_markers() {
+  git -C "$1" diff -U0 "$2"...HEAD 2>/dev/null | awk '
+    /^\+\+\+ b\// { f = substr($0, 7); next }
+    /^\+(<<<<<<<|>>>>>>>)( |$)/ { if (f != "" && !(f in seen)) { seen[f] = 1; print f } }'
+}
+
+# driver_open_prs_for <ticket> — the open pull requests on this ticket's own
+# branches (<prefix><ticket> then a non-digit), one per line:
+#   number \t headRefName \t headRefOid \t mergeStateStatus \t isDraft \t mergeable
+# Returns 1 when GitHub could not be asked: an unreadable list is not "none", and
+# read as none it lets start cut a second branch beside a PR that exists.
+# Read from the shared copy (gh_open_prs) while it is DRIVER_PRS_MAX_AGE seconds old.
+driver_open_prs_for() {
+  local t="${1:?driver_open_prs_for: need a ticket}" j
+  j=$(driver_open_prs) || return 1
+  printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
+    .[] | select(.headRefName | test("^" + $pre + $t + "([^0-9]|$)"))
+    | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false), (.mergeable // "")] | @tsv'
+}
+
+# driver_open_prs — every open pull request as a JSON array, from the shared copy.
+driver_open_prs() {
+  local j
+  j=$(gh_open_prs "${DRIVER_PRS_MAX_AGE:-60}" 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e 'type == "array"' >/dev/null 2>&1 || return 1
+  printf '%s\n' "$j"
+}
+
+# driver_brief_note <brief-file> — the brief as a queue note, without the coordinator's
+# own "Coordinator note (<class>): " wrapper, which the next spawn adds again.
+driver_brief_note() { sed '1s/^Coordinator note ([a-z-]*): //' "$1"; }
+
+# driver_record_diverged <ticket> <open-pr row> — why the record is not this PR's,
+# or nothing when it is: the same branch, still a draft, and the PR's head inside the
+# record's work (its tree's head, else the head it last pushed, when it has either).
+driver_record_diverged() {
+  local t="$1" pb ph pd rb wt rh where
+  IFS=$'\t' read -r _ pb ph _ pd _ <<<"$2"
+  rb=$(driver_state_get "$t" branch); wt=$(driver_state_get "$t" worktree)
+  if [ -n "$rb" ] && [ "$rb" != "$pb" ]; then printf 'the record is on %s and the PR on %s' "$rb" "$pb"; return; fi
+  if [ "$pd" != true ]; then printf 'the PR is ready, and a build the driver left unshipped leaves a draft'; return; fi
+  where="$MAIN_REPO"; rh=""
+  if [ -n "$wt" ] && [ -d "$wt" ]; then where="$wt"; rh=$(git -C "$wt" rev-parse HEAD 2>/dev/null); fi
+  [ -n "$rh" ] || rh=$(driver_state_get "$t" pushed_head)
+  # No tree and no pushed head on the record: the head cannot be held against it.
+  [ -z "$rh" ] || [ -z "$ph" ] || [ "$ph" = "$rh" ] && return 0
+  git -C "$where" cat-file -e "$ph^{commit}" 2>/dev/null \
+    || git -C "$where" fetch -q origin "+refs/heads/$pb:refs/remotes/origin/$pb" 2>/dev/null || true
+  git -C "$where" merge-base --is-ancestor "$ph" "$rh" 2>/dev/null \
+    || printf 'the PR head %s is not in the record'"'"'s work (%s): it moved since' "$(printf '%s' "$ph" | cut -c1-8)" "$(printf '%s' "$rh" | cut -c1-8)"
+}
+
+# driver_built <ticket> — 0 when this ticket's record holds a build the driver ran.
+# Only a build runs `start`; a repair round reopens its own steps and never that one.
+driver_built() {
+  jq -e '(.done // []) | index("start") != null' "$DRIVER_DIR/$1/state.json" >/dev/null 2>&1
+}
 
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
 # that files work grades what it raises, and the grade — not the list it arrived

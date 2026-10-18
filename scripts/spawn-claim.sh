@@ -15,10 +15,11 @@
 # reconcile-claims.sh immediately. That covers every exit the agent can observe
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
-# Who builds: a new ticket runs on the step driver (driver/build-ticket). The
-# prose flow (claude -p "/agent-harness:claim N") builds pick-next runs, --fg,
-# repair-class runs, and any run a caller hands a brief, because the driver has
-# no channel for one. `swarm.builder: "prose"` in harness.json puts every run on prose.
+# Who builds: a named ticket runs on the step driver (driver/build-ticket) — a new
+# build, a repair or approved-merge run (build-ticket --repair, on the open PR), and
+# any run a caller hands a brief (build-ticket --brief). The prose flow
+# (claude -p "/agent-harness:claim N") builds pick-next runs and --fg, where a person
+# is watching. `swarm.builder: "prose"` in harness.json puts every run on prose.
 #
 # Env: CLAIM_BUDGET_USD (default 150; per step on the driver), CLAIM_PERMISSION_MODE
 # (default auto; on the driver only when set), CLAIM_CLASS (recorded)
@@ -38,6 +39,13 @@ CLASS=$(printf '%s' "${CLAIM_CLASS:-}" | tr -cd 'a-z-')
 # Read before the owner rule is appended below: a re-exec'd copy sees the rule already in it.
 CALLER_BRIEF=0
 [ -n "${CLAIM_EXTRA:-}" ] && [ "$CLAIM_EXTRA" != "${HARNESS_OWNER_RULE:-}" ] && CALLER_BRIEF=1
+# The caller's own words, without the owner rule a copy before this one appended:
+# what the step driver is handed as the run's brief. The rule is the prose claim's.
+CALLER_TEXT=""
+if [ "$CALLER_BRIEF" = 1 ]; then
+  CALLER_TEXT="$CLAIM_EXTRA"
+  [ -z "${HARNESS_OWNER_RULE:-}" ] || CALLER_TEXT="${CALLER_TEXT%"$(printf '\n\n%s' "$HARNESS_OWNER_RULE")"}"
+fi
 
 # The owner-question rule rides in CLAIM_EXTRA, which every copy appends: an older
 # install of the kit, re-exec'd below, carries none of it.
@@ -105,7 +113,7 @@ command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1
 mkdir -p "$RUNS_DIR" "$LOGS_DIR"
 
 # The builder. Pick-next mode (no ticket) stays prose: the driver builds one named ticket.
-BUILDER=prose; BUILDER_WHY="no ticket named: pick-next runs the prose claim"
+BUILDER=prose; BUILDER_WHY="no ticket named: pick-next runs the prose claim"; DRIVER_MODE=build
 if [ -n "$TICKET" ]; then
   BUILDER=$(toolkit_cfg swarm.builder 2>/dev/null) || BUILDER=driver
   case "$BUILDER" in
@@ -113,24 +121,76 @@ if [ -n "$TICKET" ]; then
     prose)  BUILDER_WHY="swarm.builder is prose" ;;
     *) echo "spawn-claim: swarm.builder is '$BUILDER' — want driver or prose" >&2; exit 2 ;;
   esac
-  if [ "$BUILDER" = driver ] && [ "$CALLER_BRIEF" = 1 ]; then
-    BUILDER=prose; BUILDER_WHY="the caller sent a brief, which only the prose claim reads"
-  fi
+  # A HEALING RUN OR A BRIEFED RUN STAYS ON THE DRIVER, and takes its brief with it.
+  # A repair or approved-merge run works the ticket's open PR: build-ticket --repair
+  # re-enters that PR's own branch, never a fresh build. Any other run a caller hands
+  # a brief (a repair watcher's brief, an owner's answer, a resume after a cut) is
+  # build-ticket --brief: a repair when the ticket has an open PR, otherwise a build
+  # with the brief in front of every step. No unattended run falls back to prose.
   if [ "$BUILDER" = driver ]; then
-    case "$CLASS" in repair|approved-merge) BUILDER=prose; BUILDER_WHY="a $CLASS run works an open PR, not a new build" ;; esac
+    case "$CLASS" in
+      repair|approved-merge)
+        DRIVER_MODE=repair; BUILDER_WHY="a $CLASS run: the driver repairs its open PR" ;;
+      *)
+        if [ "$CALLER_BRIEF" = 1 ]; then
+          DRIVER_MODE=brief; BUILDER_WHY="the caller sent a brief: the driver carries it (a repair when the ticket has an open PR)"
+        fi ;;
+    esac
   fi
 fi
+# A DRAFT PR THE DRIVER NEVER BUILT IS NOT A REPAIR. The driver would ready it and arm
+# auto-merge on work its author left unfinished, so the prose claim resumes it. A draft
+# the driver's own build left (a park) stays on the driver, which resumes that build.
+if [ "$BUILDER" = driver ] && [ "$DRIVER_MODE" != build ] \
+   && ! jq -e '(.done // []) | index("start") != null' "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET/state.json" >/dev/null 2>&1 \
+   && [ -f "$SCRIPT_DIR/gh-batch.sh" ] && . "$SCRIPT_DIR/branch-ticket.sh" \
+   && _draft=$(bash -c '. "$1" || exit 1; gh_open_prs "$2"' _ "$SCRIPT_DIR/gh-batch.sh" "${SWARM_PRS_MAX_AGE:-300}" 2>/dev/null \
+        | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$TICKET" \
+            "$BRANCH_TICKET_JQ"'[.[] | select((.headRefName | branch_is_ticket($pre; $t)) and .isDraft == true) | .number] | first // empty' 2>/dev/null) \
+   && [ -n "$_draft" ]; then
+  BUILDER=prose; DRIVER_MODE=build
+  BUILDER_WHY="its open PR #$_draft is a draft the driver did not build: the prose claim resumes it, never a repair"
+fi
+unset _draft
 DRIVER_BIN="${SPAWN_CLAIM_DRIVER:-$KIT_ROOT/driver/build-ticket}"
-if [ "$FG" -eq 0 ] && [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
+if [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
   echo "spawn-claim: no step driver at $DRIVER_BIN — set swarm.builder to \"prose\" in harness.json to build without it" >&2
   exit 1
 fi
 
+# driver_args <brief-path> — DRIVER_ARGS for this run's mode, the brief written to
+# <brief-path> verbatim when there is one: a file of the run's own that outlives it.
+driver_args() {
+  DRIVER_ARGS=("$TICKET")
+  case "$DRIVER_MODE" in
+    repair)
+      if [ -n "$CALLER_TEXT" ]; then
+        printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--repair "$1")
+      else
+        DRIVER_ARGS+=(--repair-class "$CLASS")
+      fi ;;
+    brief)
+      printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--brief "$1") ;;
+  esac
+}
+
 PROMPT="/agent-harness:claim"
 [ -n "$TICKET" ] && PROMPT="/agent-harness:claim $TICKET"
 
-# --- foreground: a fresh window you can talk to --------------------------------
-# Always the prose claim: a person is watching it and can talk to it.
+# --- foreground ------------------------------------------------------------------
+# A named ticket runs the step driver here too (the operator, 2026-10-17), in this
+# terminal, with the same brief channel as a detached run. Pick-next has no ticket
+# for the driver, so it stays the interactive prose claim, as does swarm.builder prose.
+if [ "$FG" -eq 1 ] && [ "$BUILDER" = driver ]; then
+  SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
+  cd "$SPAWN_ROOT" || exit 1
+  driver_args "$RUNS_DIR/fg-$TICKET-$$.brief"
+  echo "→ the step driver in the foreground: build-ticket ${DRIVER_ARGS[*]}"
+  DRIVER_STEP_BUDGET_USD="$BUDGET" \
+  DRIVER_PERMISSION_MODE="${CLAIM_PERMISSION_MODE:-${DRIVER_PERMISSION_MODE:-}}" \
+    exec bash "$DRIVER_BIN" "${DRIVER_ARGS[@]}"
+fi
+# The prose claim: a person is watching it and can talk to it.
 # No run record and no budget cap here — --max-budget-usd is silently ignored
 # outside --print, and an interactive session you're watching doesn't need a
 # watchdog to notice it died. Its lock falls back to artifact-freshness.
@@ -239,9 +299,10 @@ stop_run_servers() {
   if [ "$BUILDER" = driver ]; then
     # One claude per step: the budget caps each, and the project's
     # driver.permissionMode stands unless the spawner was given a mode.
+    driver_args "$RUNS_DIR/$RUN_ID.brief"
     DRIVER_STEP_BUDGET_USD="$BUDGET" \
     DRIVER_PERMISSION_MODE="${CLAIM_PERMISSION_MODE:-${DRIVER_PERMISSION_MODE:-}}" \
-      bash "$DRIVER_BIN" "$TICKET" >> "$LOG" 2>&1 &
+      bash "$DRIVER_BIN" "${DRIVER_ARGS[@]}" >> "$LOG" 2>&1 &
   else
     claude -p "$PROMPT" \
       --permission-mode "$PERM_MODE" \
@@ -267,6 +328,16 @@ stop_run_servers() {
     > "$RUNS_DIR/$RUN_ID.child.started" || true
   wait "$CLAUDE_PID"
   code=$?
+
+  # The coordinator reads a run's verdict from its log's last "type":"result" line.
+  # claude -p writes one; the driver does not, and everything appended below would
+  # otherwise be read as the run's last word — reconcile output in place of the
+  # driver's park or hand-off line. So the driver's own last line is written as that
+  # result, before .ended exists and before the post-exit sections.
+  if [ "$BUILDER" = driver ]; then
+    _last=$(sed '/^[[:space:]]*$/d' "$LOG" 2>/dev/null | tail -1)
+    jq -cn --arg r "${_last:-build-ticket exited $code with no output}" '{type:"result",result:$r}' >> "$LOG"
+  fi
 
   # Mark the run ended BEFORE reconciling. This subshell is still alive while
   # reconcile runs, so a bare `kill -0` on its pid would report the agent as
@@ -313,6 +384,14 @@ SUBSHELL_WINPID=""; CLAUDE_WINPID=""
 [ -r "/proc/$SUBSHELL_PID/winpid" ] && SUBSHELL_WINPID=$(cat "/proc/$SUBSHELL_PID/winpid")
 [ -s "$RUNS_DIR/$RUN_ID.child.winpid" ] && CLAUDE_WINPID=$(cat "$RUNS_DIR/$RUN_ID.child.winpid")
 
+# A driver run prints only at step boundaries; its steps stream into its per-ticket
+# state dir. The coordinator's frozen check reads that dir beside the log.
+DRIVER_FIELDS=""
+if [ "$BUILDER" = driver ]; then
+  DRIVER_FIELDS=",
+  \"driver_mode\": \"$DRIVER_MODE\",
+  \"progress_paths\": $(jq -cn --arg p "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET" '[$p]')"
+fi
 cat > "$RECORD" <<EOF
 {
   "run_id": "$RUN_ID",
@@ -329,7 +408,7 @@ cat > "$RECORD" <<EOF
   "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
-  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"$DRIVER_FIELDS
 }
 EOF
 

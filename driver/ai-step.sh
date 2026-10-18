@@ -166,6 +166,22 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     return "$DRIVER_E_REFUSED"
   }
   local c; for c in "$@"; do [ -f "$c" ] && { printf '\n---\n'; cat "$c"; } >> "$prompt"; done
+  # THE RUN'S BRIEF, when a caller handed one (an owner's answer, a resume after a
+  # cut). Every step is given it verbatim, because a step that never saw it builds as
+  # if it had never been sent.
+  # In repair mode it is the caller's repair brief, to every step but repair (which
+  # has it as its BRIEF), so fix, self-check and review see what the PR was sent back
+  # for and the reviewer can judge whether it was met. A note-less healing run's
+  # class line is not a brief. A build's brief is never read in repair mode.
+  local rb=""
+  if [ "$(driver_state_get "$t" mode)" = repair ]; then
+    [ "$(driver_state_get "$t" repair_brief_source)" = caller ] && [ "$step" != repair ] && rb=$(driver_state_get "$t" repair_brief)
+  else
+    rb=$(driver_state_get "$t" run_brief)
+  fi
+  if [ -n "$rb" ] && [ -s "$rb" ]; then
+    { printf '\n---\nA brief came with this run, from whoever started it. %s Read it before anything else, and act on it where it bears on this step:\n\n' "$DRIVER_BRIEF_PREFACE"; cat "$rb"; } >> "$prompt"
+  fi
 
   # The contract, relaxed, so the model is BOUND to the answer's shape rather than
   # asked for it in prose. Derived from the contract by prompt-schema.jq — never a
@@ -202,8 +218,44 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   driver_lean_args "$wt" "$step"
   local lean=("${DRIVER_LEAN_ARGS[@]}")
 
+  # THE DRIVER ALONE PUSHES, READIES AND ARMS. A brief written for the prose flow says
+  # "push, keep auto-merge armed, hand off", and a step has Bash: a push from inside a
+  # step lands through auto-merge before self-check, review and ship have run. Two
+  # guards, and only the second is the guarantee:
+  #   - git and gh on the step's PATH refuse push, pr ready, pr merge and pr create;
+  #   - origin's head for the branch is read before and after the step, and a step
+  #     it moved under refuses, whatever path it used to get there.
+  local shim="$d/steps/.driver-shim" real_git real_gh pbranch before="" after="" brc=1 arc=1
+  real_git=$(command -v git); real_gh=$(command -v gh 2>/dev/null || true)
+  mkdir -p "$shim"
+  cat > "$shim/git" <<SHIM
+#!/usr/bin/env bash
+a=("\$@"); i=0; sub=""
+while [ "\$i" -lt "\${#a[@]}" ]; do
+  case "\${a[\$i]}" in -C|-c|--git-dir|--work-tree|--namespace) i=\$((i+2)) ;; -*) i=\$((i+1)) ;; *) sub="\${a[\$i]}"; break ;; esac
+done
+if [ "\$sub" = push ]; then
+  echo "git push refused inside a driver step: the driver alone pushes, after the review (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1
+fi
+exec "$real_git" "\$@"
+SHIM
+  cat > "$shim/gh" <<SHIM
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in "pr ready"|"pr merge"|"pr create")
+  echo "gh \$1 \$2 refused inside a driver step: the driver alone readies, arms and opens pull requests (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1 ;;
+esac
+${real_gh:+exec "$real_gh" "\$@"}
+echo "gh: not installed" >&2; exit 127
+SHIM
+  chmod +x "$shim/git" "$shim/gh"
+  pbranch=$(driver_state_get "$t" branch)
+  if [ -n "$pbranch" ] && git -C "$wt" remote get-url origin >/dev/null 2>&1; then
+    before=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); brc=$?
+  fi
+
   (
     cd "$wt" || exit 1
+    export PATH="$shim:$PATH"
     # The Stop hook stands down for a driver step: the sign-off banner is an
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
@@ -221,6 +273,15 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
     fi
   ) || true
   driver_record_usage "$t" "$slot" "$log" "$prompt"
+
+  if [ "$brc" -eq 0 ]; then
+    after=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); arc=$?
+    if [ "$arc" -ne 0 ] || [ "$(printf '%s' "$before" | cut -f1)" != "$(printf '%s' "$after" | cut -f1)" ]; then
+      driver_say "✋ $step: origin/$pbranch moved while the step ran ($(printf '%s' "$before" | cut -c1-8) → $( [ "$arc" -eq 0 ] && printf '%s' "$after" | cut -c1-8 || echo unreadable)). A step never pushes: the driver alone pushes, after the review — and on a PR with auto-merge armed that push may already have merged."
+      driver_state_set "$t" park_note "origin/$pbranch moved during the $step step — a push from inside a step, which the driver never makes; check whether PR auto-merge already landed it"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
 
   # The step's own tooling writes a working plan into the tree; it is not the change.
   # Swept before anything reads the tree, so no later step has to know about it.

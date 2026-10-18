@@ -164,6 +164,8 @@ SH
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"
   export HARNESS_LOGIN=tester CLAIM_AGENT="tester@fixture"
   export SWARM_GH="$BIN/gh" SWARM_CURL=/usr/bin/false SWARM_LOAD=1 SWARM_IDLE=90
+  # Each case writes its own PRs: the shared copy is read fresh.
+  export DRIVER_PRS_MAX_AGE=0
   # The machine's gate slots are shared by every session on it; a suite takes its own.
   export HARNESS_GATE_SLOT_DIR="$FIX/gate-slots" MACHINE_GATE_POLL=1
   export DRIVER_CLAUDE="$BIN/claude"

@@ -37,6 +37,7 @@ case "$1" in
       '{agent:$a, branch:$b, worktree:$w}' ;;
   release) awk -v t="$t" '$1!=t' "$CLAIMS" > "$CLAIMS.t"; mv "$CLAIMS.t" "$CLAIMS" ;;
   update)
+    printf '%s\n' "$*" >> "$FIX/cl-updates.log"
     # `key=value`, which is the form claim-lock.sh actually takes and the form start.sh
     # actually sends. Parsed as `--branch X` the stub could never rewrite a row — so the
     # two assertions that exist to prove a peer's claim was NOT rewritten were true of
@@ -241,5 +242,51 @@ want "the excluded folder is not checked out" "0" "$([ -e "$WT113/docs/evidence"
 want "the rest of the tree is"          "1" "$([ -f "$WT113/.husky/pre-push" ] && echo 1 || echo 0)"
 want "the trunk's checkout keeps it"    "1" "$([ -f "$REPO/docs/evidence/9/a.png" ] && echo 1 || echo 0)"
 cp "$FIX/cfg.before-sparse" "$HARNESS_CFG_PATH"
+
+echo "--- the claim names the spawned run, so the spawner finds the run's worktree ---"
+# claim-lock notes runs/<run>.worktrees only for a claim tagged with this run's id,
+# and the spawner's post-exit dev-server stop and cache pass read that note. Without
+# run_id on the claim, every driver run logged "no worktree recorded" and stopped nothing.
+fix_issue 114 OPEN "status:ready"; : > "$FIX/cl-updates.log"
+rc=0; CLAIM_RUN_ID=claim-114-run CLAIM_RUN_LOG="$FIX/run-114.log" driver_step_start 114 >/dev/null 2>&1 || rc=$?
+want "it finishes"                         "0" "$rc"
+want_in "the claim is tagged with the run" 'run_id=claim-114-run' "$(cat "$FIX/cl-updates.log")"
+want_in "and the run's log"                "run_log=$FIX/run-114.log" "$(cat "$FIX/cl-updates.log")"
+
+echo "--- a ticket with an open pull request is never cut a second branch ---"
+# A healing row that reached the plain build used to park, come back as parked, and
+# cut a fresh branch from the trunk beside the open PR's own.
+fix_issue 115 OPEN "status:parked"
+printf '[{"number":77,"headRefName":"tkt-115/the-real-one","headRefOid":"abc","isDraft":false,"mergeStateStatus":"DIRTY"}]\n' > "$FIX/gh/prs.json"
+out=$(driver_step_start 115 2>&1); rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "naming the pull request and its branch" '#77.*tkt-115/the-real-one' "$out"
+want_in "and the way in that does fit"     '--repair' "$out"
+want "no worktree was cut"                 "" "$(driver_state_get 115 worktree)"
+want "no claim was taken"                  "" "$(awk '$1==115' "$CLAIMS")"
+printf '[{"number":78,"headRefName":"tkt-1150/other","headRefOid":"abc","isDraft":false,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
+rc=0; driver_step_start 115 >/dev/null 2>&1 || rc=$?
+want "another ticket's PR whose number merely starts the same does not count" "0" "$rc"
+printf '[]\n' > "$FIX/gh/prs.json"
+echo "pr list" > "$FIX/gh-fail"
+fix_issue 116 OPEN "status:ready"
+out=$(driver_step_start 116 2>&1); rc=$?
+want "an unreadable PR list refuses, rather than reading as none" "24" "$rc"
+want_in "and says so"                      'could not ask' "$out"
+rm -f "$FIX/gh-fail"
+
+echo "--- end to end: the REAL claim lock notes the run's worktree for the spawner ---"
+# The recorder above proves start SENDS run_id; this proves what that does. The real
+# claim-lock.sh, against a bare origin in the fixture, writes runs/<run>.worktrees —
+# the file spawn-claim.sh's post-exit dev-server stop and cache pass read.
+git init -q --bare "$FIX/claims-origin"
+git -C "$REPO" remote add origin "$FIX/claims-origin" 2>/dev/null || git -C "$REPO" remote set-url origin "$FIX/claims-origin"
+git -C "$REPO" push -q origin develop
+fix_issue 117 OPEN "status:ready"
+rc=0; GIT_AUTHOR_NAME=f GIT_AUTHOR_EMAIL=f@x GIT_COMMITTER_NAME=f GIT_COMMITTER_EMAIL=f@x \
+  CL="$HERE/../../scripts/claim-lock.sh" CLAIM_RUN_ID=claim-117-e2e CLAIM_RUN_LOG="$FIX/e2e.log" \
+  driver_step_start 117 >"$FIX/e2e.out" 2>&1 || rc=$?
+want "it finishes"                         "0" "$rc"
+want "runs/<run>.worktrees names the driver's tree" "$(driver_state_get 117 worktree)" "$(cat "$STATE/runs/claim-117-e2e.worktrees" 2>/dev/null)"
 
 exit $FAILED

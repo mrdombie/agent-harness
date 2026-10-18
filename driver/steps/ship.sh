@@ -21,6 +21,18 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 
+# _driver_ship_replaced <ticket> — the "## Deleted tests" lines for the tests this
+# ticket's steps reported rewording or removing (steps/replaced.jsonl), last word per file.
+_driver_ship_replaced() {
+  jq -rs '
+    def flat: gsub("[\\r\\n\\t]+"; " ") | gsub("^\\s+|\\s+$"; "");
+    [.[] | select(type == "object") | {file: ((.file // "") | flat), coveredBy: ((.coveredBy // "") | flat), removedBecause: ((.removedBecause // "") | flat)}
+     | select(.file != "" and (.coveredBy != "" or .removedBecause != ""))]
+    | group_by(.file) | map(last) | .[]
+    | if .coveredBy != "" then "- `\(.file)` → covered by `\(.coveredBy)`"
+      else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$(driver_state_dir "$1")/steps/replaced.jsonl" 2>/dev/null
+}
+
 # _driver_ship_push_to_fix <ticket> — a push the project's own pre-push refused goes
 # to fix once, its output as the finding, inside the fix-round ceiling (#236).
 # Self-check runs the same checks, except while a reviewer is owed, so this is the
@@ -110,6 +122,85 @@ driver_step_ship() { # <ticket>
     fi
   fi
 
+  # A REPAIR SHIPS ONTO THE PULL REQUEST IT REPAIRED, and only that one. Asked before
+  # the push: with that PR gone, the repair has nowhere to land, and opening a new one
+  # would be a second PR for one ticket.
+  local mode open_pr="" REPAIR_BODY=""; mode=$(driver_state_get "$t" mode)
+  if [ "$mode" = repair ]; then
+    local open_row
+    open_row=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number,isDraft -q '.[0] // empty | "\(.number) \(.isDraft // false)"' 2>/dev/null) || {
+      driver_say "✋ ship: could not ask GitHub whether the pull request for $branch is still open."
+      driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
+      return "$DRIVER_E_REFUSED"; }
+    open_pr=${open_row%% *}
+    if [ -z "$open_pr" ]; then
+      driver_say "✋ ship: the pull request this repair was for is no longer open on $branch. A repair never opens a new one."
+      driver_state_set "$t" park_note "the pull request for $branch closed while it was being repaired"
+      return "$DRIVER_E_REFUSED"
+    fi
+    # A DRAFT THE DRIVER NEVER BUILT IS NOT ITS TO READY: whoever left it a draft did so on purpose.
+    if [ "${open_row#* }" = true ] && ! driver_built "$t"; then
+      driver_say "✋ ship: PR #$open_pr is a draft and this ticket's record holds no build of the driver's — a repair does not ready or arm it, so nothing is pushed."
+      driver_state_set "$t" park_note "PR #$open_pr is a draft the driver did not build; a repair never readies it. Resume it with the prose claim."
+      return "$DRIVER_E_REFUSED"
+    fi
+    # AND THE VERDICT IS READ BEFORE THE PUSH, not after. A repaired PR is usually
+    # ready with auto-merge already armed, so for it the push IS the landing: CI goes
+    # green and it merges, whatever the review said. Holding it as a draft, as a fresh
+    # build does, is not available here, so an unreviewed repair is not pushed at all.
+    local rverdict; rverdict=$(jq -r '.verdict // ""' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null | tr '[:lower:]' '[:upper:]')
+    if [ "$rverdict" != "SHIP" ]; then
+      driver_say "✋ ship: the review verdict on this repair is '${rverdict:-none}', and PR #$open_pr may already have auto-merge armed — so nothing is pushed. The repair stays in $wt."
+      driver_state_set "$t" park_note "the repair's review verdict is ${rverdict:-none}; it was not pushed, because PR #$open_pr would merge it"
+      return "$DRIVER_E_REFUSED"
+    fi
+    # NO CONFLICT MARKER IS EVER PUSHED, whichever pass left it: the last look before
+    # the push that lands it.
+    local marked; marked=$(driver_conflict_markers "$wt" "$trunk")
+    if [ -n "$marked" ]; then
+      driver_say "✋ ship: conflict markers are committed in $(printf '%s' "$marked" | tr '\n' ' ')— nothing is pushed."
+      driver_state_set "$t" park_note "conflict markers are committed on $branch in: $(printf '%s' "$marked" | tr '\n' ' ')"
+      return "$DRIVER_E_REFUSED"
+    fi
+    # THE DELETED-TESTS GATE BEFORE THE PUSH TOO, for the same reason. It judges the
+    # body the PR carries, plus a "## Deleted tests" line for each test this ticket's
+    # steps reported replacing, and those lines go into the PR body BEFORE the push, so
+    # the CI check reading the body sees them on its first run of the new head.
+    local rbody rlines missing="" newbody l rdt rdtrc=0
+    rbody=$(swarm_gh pr view "$open_pr" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) || {
+      driver_say "✋ ship: could not read the body of pull request #$open_pr, so the deleted-tests check has nothing to read. Nothing is pushed."
+      driver_state_set "$t" park_note "could not read the body of #$open_pr at ship"
+      return "$DRIVER_E_REFUSED"; }
+    rlines=$(_driver_ship_replaced "$t")
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      printf '%s\n' "$rbody" | grep -qxF -- "$l" || missing="$missing$l"$'\n'
+    done <<<"$rlines"
+    missing=${missing%$'\n'}
+    newbody="$rbody"
+    if [ -n "$missing" ]; then
+      if printf '%s\n' "$rbody" | grep -qiE '^[[:space:]]*##[[:space:]]*Deleted tests[[:space:]]*$'; then
+        newbody=$(printf '%s\n' "$rbody" | ADD="$missing" awk '{ print } !d && tolower($0) ~ /^[ \t]*##[ \t]*deleted tests[ \t]*$/ { print ENVIRON["ADD"]; d = 1 }')
+      else
+        newbody=$(printf '%s\n\n## Deleted tests\n%s\n' "$rbody" "$missing")
+      fi
+    fi
+    rdt=$(printf '%s\n' "$newbody" | bash "${DRIVER_DELETED_TESTS:-$KIT_ROOT/scripts/check-deleted-tests.sh}" \
+           --repo "$wt" --base "$trunk" --head HEAD --body-file - 2>&1) || rdtrc=$?
+    if [ "$rdtrc" -ne 0 ]; then
+      driver_say "✋ ship: this repair deletes tests that PR #$open_pr does not account for — nothing is pushed, because on this PR the push is the merge."
+      printf '%s\n' "$rdt" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
+      driver_state_set "$t" park_note "the repair deletes tests the PR body does not account for under '## Deleted tests': $(printf '%s\n' "$rdt" | awk '/ — /{sub(/^ +/, ""); print}' | tr '\n' ';')"
+      return "$DRIVER_E_REFUSED"
+    fi
+    if [ "$newbody" != "$rbody" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --body "$newbody" >/dev/null 2>&1; then
+      driver_say "✋ ship: the '## Deleted tests' lines could not be added to PR #$open_pr's body, so CI would refuse the push. Nothing is pushed."
+      driver_state_set "$t" park_note "could not add the Deleted tests section to #$open_pr"
+      return "$DRIVER_E_REFUSED"
+    fi
+    REPAIR_BODY="$newbody"
+  fi
+
   if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
@@ -143,13 +234,7 @@ driver_step_ship() { # <ticket>
   # ticket that strengthened its tests from parking because nobody wrote them down.
   local d replaced=""
   d="$(driver_state_dir "$t")/steps"
-  replaced=$(jq -rs '
-    def flat: gsub("[\\r\\n\\t]+"; " ") | gsub("^\\s+|\\s+$"; "");
-    [.[] | select(type == "object") | {file: ((.file // "") | flat), coveredBy: ((.coveredBy // "") | flat), removedBecause: ((.removedBecause // "") | flat)}
-     | select(.file != "" and (.coveredBy != "" or .removedBecause != ""))]
-    | group_by(.file) | map(last) | .[]
-    | if .coveredBy != "" then "- `\(.file)` → covered by `\(.coveredBy)`"
-      else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$d/replaced.jsonl" 2>/dev/null)
+  replaced=$(_driver_ship_replaced "$t")
 
   body=$(cat <<PRBODY
 Closes #$t
@@ -176,7 +261,12 @@ PRBODY
   # pull request existing — so the next line asks.
   # A PULL REQUEST A PARK ALREADY OPENED carries the park's title and body. Shipping
   # rewrites both, or the shipped PR says "parked" and carries none of this evidence.
-  local open_pr
+  if [ "$mode" = repair ]; then
+    # ITS WORDS ARE NOT THE DRIVER'S TO REWRITE. The PR may be a person's or /claim's,
+    # with a Lesson section a reviewer already read; the repair says what it did in a
+    # comment below. The deleted-tests gate judges the body the PR actually carries.
+    body="$REPAIR_BODY"
+  else
   # A FAILED LOOKUP IS NOT "NO PULL REQUEST": read as one, the edit is skipped and a
   # parked PR ships with the park's words. Asked and refused, it parks.
   open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
@@ -197,6 +287,7 @@ PRBODY
   if ! swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number >/dev/null 2>&1; then
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
+  fi
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
@@ -252,9 +343,24 @@ PRBODY
     driver_say "✋ ship: auto-merge would not arm on the pull request for $branch. It is ready and reviewed, and nothing will land it — so this says so rather than handing off."
     return "$DRIVER_E_REFUSED"
   fi
+  if [ "$mode" = repair ]; then
+    # SAID AS WHAT IT WAS. A repair step that made no model call (nothing red, nothing
+    # clashing, no caller brief) and one answered "unchanged" changed nothing, and a
+    # comment calling them repaired would be the PR claiming a fix nobody made.
+    local rj said; rj="$(driver_state_dir "$t")/steps/repair.json"
+    if [ ! -f "$rj" ]; then
+      said="Re-checked by the driver at $head: nothing was red or clashing, so nothing was changed; the gates and the review ran again."
+    elif [ "$(jq -r '.status // ""' "$rj" 2>/dev/null)" = unchanged ]; then
+      said="Re-checked by the driver at $head: unchanged: $(jq -r '.reason // "no reason given"' "$rj"). The gates and the review ran again."
+    else
+      said="Repaired by the driver at $head: $(jq -r '.cause // "see the run log"' "$rj" 2>/dev/null || echo "see the run log")."
+    fi
+    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")')." >/dev/null 2>&1 || true
+  fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true
 
+  driver_state_set "$t" run_brief ""   # shipped: the run's brief has been acted on
   driver_say "   ship: $branch pushed, pull request ready, auto-merge armed at $(printf '%s' "$head" | cut -c1-8). Handing off."
   return "$DRIVER_OK"
 }

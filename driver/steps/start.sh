@@ -91,6 +91,23 @@ driver_step_start() { # <ticket>
       return "$DRIVER_E_REFUSED" ;;
   esac
 
+  # A TICKET WITH AN OPEN PULL REQUEST IS REPAIRED, NEVER REBUILT. Without a tree of
+  # its own on the record, everything below would cut a fresh branch from the trunk
+  # beside the PR's own — duplicate work, a push the PR never sees. A healing row that
+  # reached this step parked, came back as parked, and did exactly that.
+  local owt prs
+  owt=$(driver_state_get "$t" worktree)
+  if [ -z "$owt" ] || [ ! -d "$owt" ]; then
+    if ! prs=$(driver_open_prs_for "$t"); then
+      driver_say "✋ start: could not ask GitHub whether #$t already has an open pull request, so a branch cut now might sit beside one."
+      return "$DRIVER_E_REFUSED"
+    fi
+    if [ -n "$prs" ]; then
+      driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
+
   # A branch already on the record is KEPT. Naming a second one is how a resumed run
   # ends up with its commits on a branch nobody ships: the worktree, the commits and
   # the pull request are all on the first name, and everything after this line would
@@ -213,7 +230,11 @@ driver_step_start() { # <ticket>
     driver_say "   start: #$t claimed, worktree at $wt on $branch (cut at $(printf '%s' "$sha" | cut -c1-8))"
   fi
 
-  bash "$CL" update "$t" worktree="$wt" branch="$branch" >/dev/null 2>&1 || true
+  # The run's id and log on the claim: claim-lock notes runs/<run>.worktrees only for a
+  # claim tagged with this run, and that note is how the spawner's post-exit stop finds
+  # this worktree's dev servers and build caches.
+  bash "$CL" update "$t" worktree="$wt" branch="$branch" \
+    ${CLAIM_RUN_ID:+run_id="$CLAIM_RUN_ID"} ${CLAIM_RUN_LOG:+run_log="$CLAIM_RUN_LOG"} >/dev/null 2>&1 || true
   # status:parked comes off as well as status:ready: a resumed park that kept it
   # would read as stopped on a board while an agent is building it.
   swarm_gh issue edit "$t" --repo "$REPO_SLUG" \

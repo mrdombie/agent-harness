@@ -57,7 +57,8 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   # which the PM answers and clears; the owner's hold stays for his own calls.
   local cause="${4:-person}"
   case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
-  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note=""
+  local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
+  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
   branch=$(driver_state_get "$t" branch)
@@ -65,7 +66,15 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
 
   if [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$branch" ]; then
     driver_say "   park: $(bash "$KIT_ROOT/scripts/worktree-cache.sh" clean "$wt" 2>&1 | tail -1)"
-    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+    # A MERGE IN PROGRESS IS NEVER COMMITTED. `add -A` and a commit would conclude it
+    # with its conflict markers in, and the next pass, seeing no merge and the trunk
+    # already an ancestor, would read it as resolved. It is left as it is, unfinished,
+    # for the next pass to resume.
+    if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] \
+       || [ -n "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ]; then
+      merge_note="a merge of the integration branch is in progress in $wt and was left unfinished — not staged, not committed, so no conflict marker reached a commit. The next pass resumes it."
+      driver_say "   park: $merge_note"
+    elif [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
       staged=$(git -C "$wt" status --porcelain 2>/dev/null | sed 's/^...//' | tr '\n' ' ')
       git -C "$wt" add -A $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt") -- . >/dev/null 2>&1
       ctype=$(driver_opt commit.parkType chore)
@@ -80,7 +89,15 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
         driver_say "   park: committed as $ctype(#$t), staging $staged"
       fi
     fi
-    if driver_push "$t" "$wt" "$branch" park; then
+    if [ "$(driver_state_get "$t" mode)" = repair ]; then
+      # A REPAIR'S PARK IS NOT PUSHED. Its pull request is usually ready with
+      # auto-merge armed, so a push there is a merge — of the work the park exists
+      # to stop. It stays committed in the tree, and bundled beside it.
+      repair_note="This repair was NOT pushed: pull request #$(driver_state_get "$t" pr) may have auto-merge armed, so a push would merge it. The work is committed in $wt."
+      driver_say "   park: a repair is not pushed — its pull request may have auto-merge armed"
+      bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
+      [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
+    elif driver_push "$t" "$wt" "$branch" park; then
       pushed=1
     else
       driver_say "   park: the branch could not be pushed — say so rather than reporting a handover that does not exist: $DRIVER_PUSH_WHY"
@@ -106,7 +123,10 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
 
 **Built:** ${done_list:-nothing yet; it stopped before the first step finished}
 **Stopped at:** $reason
-$(if [ "$cause" = "person" ]; then
+$(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
+    printf '**Needs:** %s\n**Resume:** the question goes to the owner'"'"'s channel (`%s`); the answer puts the ticket back on the queue with it, and the driver picks up from the last finished step with the answer in front of every step.' \
+      "${question:-a person to say how to proceed}" "$LBL_OWNER_DECISION"
+  elif [ "$cause" = "person" ]; then
     printf '**Needs:** %s\n**Resume:** answer that, clear `%s`, then run the driver again — it picks up from the last finished step.' \
       "${question:-a person to say how to proceed}" "$HOLD_LABEL"
   elif [ "$cause" = "pm" ]; then
@@ -121,9 +141,10 @@ $(if [ "$cause" = "person" ]; then
       "${question:-see the step output on the run log}"
   fi)
 
-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}
+${repair_note:-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}}
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
+${merge_note:+⚠ The merge: $merge_note}
 ${bundle_note:+💾 $bundle_note}
 BRIEF
 )" >/dev/null 2>&1 || true
@@ -142,7 +163,25 @@ BRIEF
   #
   # And a question about the ticket's shape is the PM's, not the owner's: three
   # on 2026-10-17/18 asked which repo a change belonged in and queued for the owner.
-  if [ "$cause" = "person" ]; then
+  #
+  # A PERSON'S QUESTION GOES THROUGH THE OWNER'S LOOP (#177) where the kit has it:
+  # owner-question.sh labels the ticket, puts the question in the owner's channel,
+  # and the answer comes back on the queue as a brief the driver carries. The hold
+  # label is the owner's pixel sign-off, which the answer does not remove, so it is
+  # only the fallback when the question could not be asked.
+  local asked=0
+  if [ "$cause" = "person" ] && [ -f "$oq" ] \
+     && bash "$oq" ask "$t" "driver-park" "${question:-the driver parked: $reason} (parked: $reason)" >/dev/null 2>&1; then
+    asked=1
+  fi
+  if [ "$cause" = "person" ] && [ "$asked" -eq 1 ]; then
+    # Its status is needs-human, which its answer lifts with the owner's label; not
+    # status:parked, which an answer once left behind to block every spawn.
+    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
+      --add-label "$LBL_NEEDS_HUMAN" --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  elif [ "$cause" = "person" ]; then
+    [ ! -f "$oq" ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
+      --body "The question could not be put in the owner's channel, so \`$HOLD_LABEL\` is on instead: answer it, clear the label, and run the driver again." >/dev/null 2>&1 || true
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
       --add-label "$LBL_PARKED" --add-label "$HOLD_LABEL" \
       --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
