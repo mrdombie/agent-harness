@@ -192,8 +192,10 @@ want "it resumes"                  "0" "$rc"
 want "in the same worktree"        "$FIX/ours-wt" "$(driver_state_get 109 worktree)"
 
 echo "--- a ticket that does not resolve ---"
-out=$(driver_step_start 999 2>&1); rc=$?
-want "an unreadable ticket refuses" "24" "$rc"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_start 999 2>&1); rc=$?
+# 27: gh cannot tell "no such issue" from an outage, so it is retried and requeued;
+# build-ticket parks it after DRIVER_MAX_GH_REQUEUES runs in a row (requeue.test.sh).
+want "an unreadable ticket is a GitHub failure" "27" "$rc"
 want_in "and says it could not read it" 'could not be read' "$out"
 
 echo "--- the claim is released when a gate says no, never squatted ---"
@@ -270,8 +272,9 @@ want "another ticket's PR whose number merely starts the same does not count" "0
 printf '[]\n' > "$FIX/gh/prs.json"
 echo "pr list" > "$FIX/gh-fail"
 fix_issue 116 OPEN "status:ready"
-out=$(driver_step_start 116 2>&1); rc=$?
-want "an unreadable PR list refuses, rather than reading as none" "24" "$rc"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_start 116 2>&1); rc=$?
+# 27: a failed read is retried, then build-ticket requeues it — never read as none.
+want "an unreadable PR list is a GitHub failure, rather than reading as none" "27" "$rc"
 want_in "and says so"                      'could not ask' "$out"
 rm -f "$FIX/gh-fail"
 

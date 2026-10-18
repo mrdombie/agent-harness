@@ -159,8 +159,9 @@ want "a peer's claim refuses"         "24" "$rc"
 want_in "naming a peer"               'peer' "$out"
 want "no worktree was cut"            "" "$(driver_state_get 206 worktree)"
 fix_issue 207 OPEN "status:in-review"; echo "pr list" > "$FIX/gh-fail"
-out=$(driver_step_reenter 207 2>&1); rc=$?
-want "an unreadable PR list refuses"  "24" "$rc"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_reenter 207 2>&1); rc=$?
+# 27, not a refusal: a read GitHub failed is retried, and build-ticket requeues it.
+want "an unreadable PR list is a GitHub failure, not a refusal"  "27" "$rc"
 want_in "and says so"                 'could not ask' "$out"
 rm -f "$FIX/gh-fail"
 

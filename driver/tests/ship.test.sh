@@ -452,8 +452,8 @@ driver_state_put 121 review '{"verdict":"SHIP","findings":[]}'
 fix_issue 121 OPEN "status:claimed"
 printf 'pr list\n' > "$FIX/gh-fail"
 : > "$GH_LOG"
-out=$(driver_step_ship 121 2>&1); rc=$?
-want "it refuses"                          "24" "$rc"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_ship 121 2>&1); rc=$?
+want "it stops as a GitHub failure"        "27" "$rc"
 want_in "saying it could not ask"          'could not ask GitHub' "$out"
 want_not_in "and nothing is marked ready"  'pr ready' "$(cat "$GH_LOG")"
 rm -f "$FIX/gh-fail"
