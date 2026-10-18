@@ -58,6 +58,35 @@ bash "$Q" add 888 --class repair --note "red checks, outside the scope" >/dev/nu
 bash "$Q" refresh >/dev/null
 want "a pinned repair outside the claimable list is kept" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
 
+echo "--- a pinned repair's class and note win over its seeded row ---"
+rm -f "$QF"
+bash "$Q" add 503 --class repair --front --note "re-capture the tooltip at 375" >/dev/null
+bash "$Q" seed widgets >/dev/null
+want "a seed of a scope holding it as new keeps it a repair" "repair" "$(jq -r '.tickets[] | select(.n==503) | .class' "$QF")"
+want "and keeps the owner's note" "re-capture the tooltip at 375" "$(jq -r '.tickets[] | select(.n==503) | .note' "$QF")"
+bash "$Q" refresh >/dev/null
+want "so does a refresh" "repair|re-capture the tooltip at 375" "$(jq -r '.tickets[] | select(.n==503) | "\(.class)|\(.note)"' "$QF")"
+
+echo "--- a re-seed that read the queue before an add does not write over it ---"
+# The merge's jq is held open, so the add lands between the re-seed's read and its write.
+REAL_JQ=$(command -v jq)
+cat > "$BIN/jq" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" --arg rows "*) touch "$FIX/in-merge"; while [ ! -e "$FIX/release" ]; do sleep 0.05; done ;; esac
+exec "$REAL_JQ" "\$@"
+STUB
+chmod +x "$BIN/jq"
+rm -f "$FIX/in-merge" "$FIX/release"
+bash "$Q" refresh >/dev/null 2>&1 & rp=$!
+i=0; while [ ! -e "$FIX/in-merge" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+bash "$Q" add 501 --class repair --note "use the quieter paper colour" >/dev/null 2>&1 & ap=$!
+i=0; while kill -0 "$ap" 2>/dev/null && [ $i -lt 40 ]; do sleep 0.05; i=$((i+1)); done
+touch "$FIX/release"; wait "$rp"; wait "$ap"; want "the add exits 0" "0" "$?"
+rm -f "$BIN/jq"
+want "the add made during the re-seed is still a repair" "repair" "$(jq -r '.tickets[] | select(.n==501) | .class' "$QF")"
+want "with its note" "use the quieter paper colour" "$(jq -r '.tickets[] | select(.n==501) | .note' "$QF")"
+want "and the lock is let go" "" "$(ls -d "$STATE/coordinator/.queue.lock" 2>/dev/null)"
+
 echo "--- a seed whose reads fail changes nothing ---"
 before=$(cat "$QF")
 out=$(COORDINATOR_CLAIMABLE=false bash "$Q" refresh 2>&1); rc=$?
