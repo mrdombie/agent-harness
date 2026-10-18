@@ -97,6 +97,13 @@ commits 3 "c3:3:1:feat: x" "$(H 3):0:1:$UI"
 want "the unreviewed one waits; five that are ready make a batch" \
   "signoff-batch:1@h100000,2@h200000,4@h400000,5@h500000,6@h600000	1 2 4 5 6" "$(bash "$SB" batches /dev/null < "$FIX/prs.json" 2>/dev/null)"
 want "six PRs are read five to a request"       "2" "$(grep -c 'pullRequest(number' "$GH_LOG")"
+prs 1 2 3 4 5 6 7 8 9 10 11; for n in 1 2 3 4 5 6 7 8 9 10 11; do both "$n"; done
+touch "$FIX/gh/graphql-fail-11"
+want "a failed chunk leaves out only its own PRs" \
+  "signoff-batch:1@h100000,2@h200000,3@h300000,4@h400000,5@h500000	1 2 3 4 5
+signoff-batch:6@h600000,7@h700000,8@h800000,9@h900000,10@h100000	6 7 8 9 10" "$(bash "$SB" batches /dev/null < "$FIX/prs.json" 2>"$FIX/err")"
+want_in "and names them"                         '#11 .*could not be read' "$(cat "$FIX/err")"
+rm -f "$FIX/gh/graphql-fail-11"
 prs 1 2 3 4; : > "$GH_LOG"
 want "fewer than a batch: nothing"              "" "$(bash "$SB" batches /dev/null < "$FIX/prs.json" 2>/dev/null)"
 want "and the verdicts are not read for it"     "0" "$(grep -c 'pullRequest(number' "$GH_LOG")"

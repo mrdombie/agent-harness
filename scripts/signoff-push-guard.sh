@@ -14,8 +14,9 @@
 # Owner's rule, 2026-10-17. Measured that day: of three screens he re-signed, two
 # came back because a builder pushed a real screen change after his sign-off.
 #
-# Wired from the consuming repo's own pre-push (the kit ships no git hook), before
-# its CI early return and with the ref lines it saved:
+# Wired from the consuming repo's own pre-push (the kit ships no git hook), last —
+# after its own push checks, so a push they refuse never re-adds the hold — with
+# the ref lines it saved:
 #   printf '%s\n' "$REFS" | bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
 #
 # THE TREES, NOT THE COMMITS. The signed head and the pushed head are compared
@@ -30,11 +31,11 @@
 # cannot be placed uses the remote's current head. A PR still carrying the hold is
 # not signed — the owner signs what lands — so it passes, with no new comment.
 #
-# SCREENS = approval-kept.sh screens, the rule its `check` voids approvals by. With
-# design.surfacePathsComplete unset that rule calls every non-test file a screen;
-# this guard refuses pushes, so it also lets through what clearly does not draw:
-# Markdown, docs/, .changeset/ and CHANGELOG files. approval-kept.sh keeps the wider
-# rule: there a false screen costs a re-sign, here it blocks a changelog fix.
+# SCREENS = approval-kept.sh screens, the one screen set the briefs name too:
+# design.surfacePaths plus design.extraScreens, never a test, design.neverScreens
+# or release notes (Markdown, docs/, .changeset/, CHANGELOG — their wording may
+# change after sign-off, owner 2026-10-18). A server-only fix is not a screen here.
+# approval-kept.sh check keeps its wider rule for the merge lane; its header says why.
 #
 # The hold goes back on BEFORE the push is accepted (git has no post-push hook), and
 # the comment says so. A screen change whose sign-off cannot be read is refused:
@@ -51,16 +52,14 @@ REPO="${GH_REPO:-$REPO_SLUG}"
 REMOTE="${1:-origin}"
 TRAILER="pixel-change-after-signoff"
 TRUNK="refs/remotes/$REMOTE/$INTEGRATION_BRANCH"
-COMPLETE=$(jq -r '.design.surfacePathsComplete == true' "$HARNESS_CFG" 2>/dev/null)
 
 say() { printf '%s\n' "$*" >&2; }
 nonzero() { case "$1" in *[!0]*) return 0 ;; *) return 1 ;; esac; }
 has() { git cat-file -e "$1^{commit}" 2>/dev/null; }
 
-screens() { # paths on stdin, the ones this guard holds
+screens() { # paths on stdin, the screen set
   local s; s=$(bash "$KEPT" screens) || return 1
-  if [ "$COMPLETE" = true ]; then printf '%s\n' "$s" | sed '/^$/d'; return 0; fi
-  printf '%s\n' "$s" | sed '/^$/d' | grep -vE '\.(md|markdown|mdx)$|(^|/)docs/|(^|/)\.changeset/|(^|/)CHANGELOG[^/]*$' || true
+  printf '%s\n' "$s" | sed '/^$/d'
 }
 
 own() { # <sha> — the files that head changes against where it meets the trunk
@@ -68,21 +67,27 @@ own() { # <sha> — the files that head changes against where it meets the trunk
   git diff --name-only --no-renames "$mb" "$1"
 }
 
-moved() { # <from> <to> — the PR's own screens that differ between two heads
-  local d o
+moved() { # <from> <to> — the PR's own screens that differ between two heads; 1 unreadable
+  local d o oa ob
   d=$(git diff --name-only --no-renames "$1" "$2") || return 1
   [ -n "$d" ] || return 0
+  d=$(printf '%s\n' "$d" | screens) || return 1
+  [ -n "$d" ] || return 0
+  # No trunk or no merge-base (a shallow clone): whose a screen is cannot be told, so it counts.
   if git rev-parse -q --verify "$TRUNK" >/dev/null; then
-    o=$( { own "$1"; own "$2"; } 2>/dev/null | sort -u)
+    oa=$(own "$1") && ob=$(own "$2") || return 1
+    o=$(printf '%s\n%s\n' "$oa" "$ob" | sed '/^$/d' | sort -u)
     d=$(comm -12 <(printf '%s\n' "$d" | sort -u) <(printf '%s\n' "$o"))
   fi
-  [ -n "$d" ] || return 0
-  printf '%s\n' "$d" | screens
+  [ -n "$d" ] && printf '%s\n' "$d"
+  return 0
 }
 
-whys() { # <signed> <head> — the trailers on commits since the signed head
-  local c w out=""
-  for c in $(git rev-list "$2" --not "$1" 2>/dev/null); do
+whys() { # <signed> <head> — the trailers on this PR's own commits since the signed head
+  local c w out="" cs
+  # The trunk's squash commits carry other PRs' bodies, reasons included: never theirs.
+  cs=$(git rev-list "$2" --not "$1" "$TRUNK" 2>/dev/null) || return 0
+  for c in $cs; do
     w=$(git log -1 --format=%B "$c" | git interpret-trailers --parse 2>/dev/null \
         | grep -i "^$TRAILER:" | sed 's/^[^:]*:[[:space:]]*//' | sed '/^[[:space:]]*$/d' | head -1)
     [ -z "$w" ] || out="$out${out:+; }$w"

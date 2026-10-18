@@ -146,15 +146,24 @@ want_in "a test and a doc after sign-off"  'rc=0$' "$out"
 want "and GitHub is not asked"             "" "$(cat "$GH_LOG")"
 # The config is tracked in this fixture, so a reset restores it: set it after.
 cp "$HARNESS_CFG_PATH" "$FIX/cfg.complete"
-partial() { jq '.design = {"surfacePaths": ["apps/web/**/*.tsx"]}' "$FIX/cfg.complete" > "$HARNESS_CFG_PATH"; }
+partial() { jq '.design = {"surfacePaths": ["apps/web/**/*.tsx"], "extraScreens": ["apps/web/app/globals.css", "apps/web/public/**"]}' "$FIX/cfg.complete" > "$HARNESS_CFG_PATH"; }
+reset
+mkdir -p "$R/apps/web/content/changelog"
+echo e > "$R/apps/web/content/changelog/6.md"; g add apps; g commit -qm "docs(changelog): reword"
+want_in "release-note wording under a screen path goes (owner, 2026-10-18)" 'rc=0$' "$(guard)"
 reset; partial
 mkdir -p "$R/apps/web/content/changelog" "$R/.changeset"
 echo e > "$R/apps/web/content/changelog/5.md"; echo e > "$R/CHANGELOG.md"; echo e > "$R/.changeset/x.json"; echo e >> "$R/docs/x.md"
 g add apps .changeset CHANGELOG.md docs; g commit -qm "docs(changelog): entry"
 want_in "a partial screen list: docs and changelog files go" 'rc=0$' "$(guard)"
 reset; partial
-echo e > "$R/apps/web/util.ts"; g add apps; g commit -qm "feat: a helper"
-want_in "but code outside the list is still a screen" 'rc=1$' "$(guard)"
+mkdir -p "$R/apps/api/src"; echo e > "$R/apps/api/src/route.ts"; echo e > "$R/apps/web/util.ts"; g add apps; g commit -qm "fix: a server-only change"
+want_in "a server-only fix outside the screen set goes" 'rc=0$' "$(guard)"
+reset; partial
+mkdir -p "$R/apps/web/app"; echo e > "$R/apps/web/app/globals.css"; g add apps; g commit -qm "fix: a colour"
+out=$(guard)
+want_in "a file in design.extraScreens is a screen" 'rc=1$' "$out"
+want_in "named"                                 'its screens: apps/web/app/globals.css$' "$(printf '%s\n' "$out" | grep 'its screens')"
 cp "$FIX/cfg.complete" "$HARNESS_CFG_PATH"
 reset; nopr
 echo c >> "$R/apps/web/page.tsx"; g commit -qam "feat: more"
@@ -172,6 +181,31 @@ reset
 echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x"
 out=$(cd "$R" && printf 'refs/heads/tkt-5-x 0000000000000000000000000000000000000000 refs/heads/tkt-5-x %s\n' "$SIGNED" | bash "$G" origin x 2>&1; echo "rc=$?")
 want_in "a branch deletion"                'rc=0$' "$out"
+
+echo "--- only this PR's own commits give a reason ---"
+reset
+g checkout -q develop; mkdir -p "$R/lib"; echo s > "$R/lib/other.ts"; g add lib
+g commit -qm "feat: another PR's change (#9)" -m "pixel-change-after-signoff: another PR's reason"
+g push -q origin develop; g checkout -q tkt-5-x
+g merge -q --no-edit -X ours develop >/dev/null 2>&1
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: no reason given"
+out=$(guard)
+want_in "a reason on the trunk's squash commit does not excuse this push" 'rc=1$' "$out"
+want_not_in "and is never shown as this PR's"   "another PR's reason" "$(cat "$GH_LOG")"
+
+echo "--- no merge-base with the trunk (a shallow clone): shut for screens ---"
+reset
+TRUNK_WAS=$(g rev-parse refs/remotes/origin/develop)
+ORPHAN=$(printf 'x' | g commit-tree "$(g mktree </dev/null)" -m orphan)
+g update-ref refs/remotes/origin/develop "$ORPHAN"
+echo c >> "$R/apps/web/page.tsx"; g commit -qam "fix: x" -m "pixel-change-after-signoff: y"
+out=$(guard)
+want_in "a screen change is refused"            'rc=1$' "$out"
+want_not_in "and the hold is not touched"       'pr edit' "$(cat "$GH_LOG")"
+reset; g update-ref refs/remotes/origin/develop "$ORPHAN"
+echo e >> "$R/docs/x.md"; g commit -qam "docs: x"
+want_in "a change with no screen still goes"    'rc=0$' "$(guard)"
+g update-ref refs/remotes/origin/develop "$TRUNK_WAS"
 
 echo "--- signed by removing the hold on GitHub: no marker, still signed ---"
 reset

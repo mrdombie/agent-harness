@@ -94,7 +94,8 @@ on_head() { # rows of held_green on stdin; those whose verdicts are on the head
   rows=$(cat); [ -n "$rows" ] || return 0
   if [ "$VERDICTS" = '[]' ]; then printf '%s\n' "$rows"; return 0; fi
   # shellcheck disable=SC2046
-  data=$(gh_pr_commits_batch $(printf '%s\n' "$rows" | cut -f1)) || data=""
+  # A failed chunk leaves only its own PRs out ("could not be read"), not the batch.
+  data=$(gh_pr_commits_batch $(printf '%s\n' "$rows" | cut -f1))
   jq -e 'type == "object" and length > 0' >/dev/null 2>&1 <<<"$data" \
     || { echo "signoff-batch: the held PRs' commits could not be read — none counted" >&2; return 0; }
   printf '%s\n' "$rows" | while IFS=$'\t' read -r n s7 sha; do

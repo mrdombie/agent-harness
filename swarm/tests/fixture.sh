@@ -114,6 +114,8 @@ case "$1 $2" in
     # A batched PR-commits read: each pN alias answered from pr-commits-N.json, absent null.
     pcs=$(printf '%s' "$query" | grep -oE 'p[0-9]+:pullRequest\(number:' | sed 's/^p//; s/:.*//')
     [ -n "$nums$heads$pcs" ] || exit 1
+    # $FIX/gh/graphql-fail-N: a request naming PR N fails whole, as one chunk.
+    for n in $pcs; do [ -f "$FIX/gh/graphql-fail-$n" ] && exit 1; done
     out='{}'
     for n in $pcs; do
       f="$FIX/gh/pr-commits-$n.json"

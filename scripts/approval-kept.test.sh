@@ -350,7 +350,17 @@ echo "--- screens: the same rule, for a caller with paths ---"
 design "$PRECISE"
 want "the screen ones, by surfacePaths" "apps/web/a.tsx" \
   "$(printf 'apps/web/a.tsx\napps/web/a.test.ts\ndocs/x.md\n' | bash "$K" screens)"
-want "a --screens command decides too" "docs/x.md" \
-  "$(printf 'docs/x.md\nlib/y.ts\n' | bash "$K" screens --screens 'grep ^docs/')"
+want "release notes are never in the screen set" "" \
+  "$(printf 'apps/web/content/changelog/1.md\napps/web/CHANGELOG.txt\n' | bash "$K" screens)"
+design '{"surfacePaths": ["apps/web/**/*.tsx"], "extraScreens": ["apps/web/app/globals.css"], "neverScreens": ["**/.deploy-trigger"]}'
+want "a partial list: surfacePaths plus extraScreens, not every file" "apps/web/a.tsx
+apps/web/app/globals.css" \
+  "$(printf 'apps/web/a.tsx\napps/web/app/globals.css\napps/api/route.ts\napps/web/.deploy-trigger\napps/web/x.test.tsx\n' | bash "$K" screens)"
+printf 'apps/web/a.tsx\napps/api/route.ts\n' | bash "$K" screens >/dev/null
+want "it exits 0 when the last path is not a screen" "0" "$?"
+design '{}'
+want "no surfacePaths at all: the wide rule, minus release notes" "lib/y.ts" \
+  "$(printf 'lib/y.ts\ndocs/x.md\nlib/y.test.ts\n' | bash "$K" screens)"
+design "$PRECISE"
 
 exit $FAILED

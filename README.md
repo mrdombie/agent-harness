@@ -226,16 +226,25 @@ afterwards. Four places hold it:
   before and after on the PR, and logs a `lane-hold` line for the owner's next
   batch. Signed means any sign-off, a person removing the hold on GitHub included
   (`approval-kept.sh signed-head`). The trees are compared, not the commits, so a
-  merge taking the trunk's side or a force-push back is caught. With
-  `design.surfacePathsComplete` unset it also lets Markdown, `docs/`, `.changeset/`
-  and CHANGELOG files through, which `approval-kept.sh check` still counts.
+  merge taking the trunk's side or a force-push back is caught. Only this PR's own
+  commits give a reason; the trunk's squash commits carry other PRs' reasons.
+
+The screens are one set, `approval-kept.sh screens`, which the guard and the briefs
+share: `design.surfacePaths` plus `design.extraScreens` (files outside those globs
+that still draw — a stylesheet, `public/` images, copy an API serves), never tests,
+`design.neverScreens` or release notes (Markdown, `docs/`, `.changeset/`, CHANGELOG:
+their wording may change after sign-off). A server-only fix is not a screen.
+`approval-kept.sh check` keeps a wider rule for the merge lane — with
+`surfacePathsComplete` unset every non-test file counts — because there a file
+wrongly counted costs one re-sign, and one wrongly missed ships unsigned.
 
 The kit ships no git hook, so the consuming repo's own pre-push calls it: save
-stdin once, feed it to every check that reads it, and run the guard before any CI
-early return:
+stdin once, feed it to every check that reads it, and run the guard last, after
+the project's own push checks, so a push they refuse never puts the hold back on:
 
 ```sh
 REFS=$(cat)
+# … the project's own checks, fed "$REFS" where they read stdin …
 printf '%s\n' "$REFS" | bash "<kit>/scripts/signoff-push-guard.sh" "$@" || exit 1
 ```
 
