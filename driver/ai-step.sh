@@ -136,6 +136,22 @@ driver_log_result() {
     | sed -e '/^[[:space:]]*```[a-zA-Z]*[[:space:]]*$/d'
 }
 
+# driver_usage_wall <ticket> <step> <log> — 0 when the plan's usage limit stopped
+# this step: the reset goes in the hold file the coordinator spawns by, and the
+# reason on the record. Asked before anything reads the answer, because a wall reads
+# as every other refusal — on 2026-10-18 seven runs parked as "answered in a shape
+# the driver cannot read" or "did not run the Skill", and a park is never retried.
+driver_usage_wall() {
+  local hold epoch why
+  hold=$(swarm_usage_log_reset "$3") || return 1
+  epoch=$(printf '%s' "$hold" | cut -f1); why=$(printf '%s' "$hold" | cut -f2-)
+  swarm_usage_hold_write "$epoch" "$why (#$1 $2)" \
+    || driver_say "   $2: the usage hold could not be written to ${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}"
+  driver_say "✋ $2: stopped by the plan's usage limit — spawning holds until $(swarm_iso "$epoch"): $why"
+  driver_state_set "$1" park_note "the $2 step stopped on the plan's usage limit ($why); held until $(swarm_iso "$epoch")"
+  return 0
+}
+
 driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   local t="${1:?driver_ai_step: need a ticket}" step="${2:?driver_ai_step: need a step}"; shift 2
   local slot="$step"
@@ -273,6 +289,7 @@ SHIM
     fi
   ) || true
   driver_record_usage "$t" "$slot" "$log" "$prompt"
+  driver_usage_wall "$t" "$step" "$log" && return "$DRIVER_E_USAGE"
 
   if [ "$brc" -eq 0 ]; then
     after=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); arc=$?

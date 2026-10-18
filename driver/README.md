@@ -66,6 +66,20 @@ A question only a person can answer goes through `scripts/owner-question.sh`
 the queue as a brief the driver carries. The hold label goes on only when the
 question could not be asked. A driver-caused park asks nobody.
 
+**A requeue is not a park.** Two stops go back on the queue instead (exit 28),
+because nobody has to answer them and the next run clears them:
+
+- **The plan's usage limit.** A step's transcript carries the CLI's rejection. The
+  reset goes into `$STATE_DIR/usage-hold`, and the coordinator spawns nothing until
+  then.
+- **A GitHub read that failed in `start`, `reenter` or `ship`.** It is retried
+  `DRIVER_LOOKUP_TRIES` times first. After `DRIVER_MAX_GH_REQUEUES` requeues in a
+  row, it parks.
+
+A requeue adds no label, opens no pull request and asks no question. The record and
+the worktree are kept, so the next run resumes at the step that stopped. The reason
+goes on the run log and the record.
+
 ## A repair: `build-ticket <ticket> --repair <brief>`
 
 A pull request that was built, pushed and handed off can go red or start to

@@ -31,11 +31,12 @@ driver_step_reenter() { # <ticket>
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
-  meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
            -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
   if [ -z "$meta" ]; then
-    driver_say "✋ reenter: #$t could not be read."
-    return "$DRIVER_E_REFUSED"
+    driver_say "✋ reenter: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries."
+    driver_state_set "$t" park_note "reenter could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return "$DRIVER_E_GH"
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
@@ -50,9 +51,10 @@ driver_step_reenter() { # <ticket>
       return "$DRIVER_E_REFUSED" ;;
   esac
 
-  if ! prs=$(driver_open_prs_for "$t"); then
-    driver_say "✋ reenter: could not ask GitHub for #$t's open pull request. An unreadable list is not an empty one."
-    return "$DRIVER_E_REFUSED"
+  if ! prs=$(driver_gh_read driver_open_prs_for "$t"); then
+    driver_say "✋ reenter: could not ask GitHub for #$t's open pull request (${DRIVER_LOOKUP_TRIES:-3} tries). An unreadable list is not an empty one."
+    driver_state_set "$t" park_note "reenter could not list the open pull requests for #$t (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return "$DRIVER_E_GH"
   fi
   n=$(printf '%s' "$prs" | grep -c .)
   if [ "$n" -eq 0 ]; then

@@ -185,6 +185,13 @@ fi
 # Park first: it is the exit from every other step, so a run that cannot park is
 # a run that must not start. Loading it late would mean discovering that at the
 # exact moment it was needed.
+# driver_last_refusal <step> — the step's own last ✋ line from this run's log, so a
+# refusal that set no park_note still parks or requeues with its reason.
+driver_last_refusal() {
+  tail -n +"${RUN_LOG_FROM:-1}" "$(driver_state_dir "$TICKET")/log" 2>/dev/null \
+    | grep -F "✋ $1:" | tail -1 | sed "s/^[^ ]* ✋ //" | cut -c1-400
+}
+
 step_fn() { printf 'driver_step_%s' "$(printf '%s' "$1" | tr '-' '_')"; }
 
 [ -f "$DRIVER_STEPS_DIR/park.sh" ] \
@@ -347,6 +354,7 @@ while [ "$i" -lt "$N" ]; do
   was_done=0; driver_state_is_done "$TICKET" "$step" && was_done=1
   # The body is read BEFORE the plan runs, so an edit made while it plans is a change.
   [ "$step" != "plan" ] || plan_hash=$(ticket_body_hash "$TICKET")
+  RUN_LOG_FROM=$(( $( { wc -l < "$(driver_state_dir "$TICKET")/log"; } 2>/dev/null || echo 0) + 1 ))
   "$(step_fn "$step")" "$TICKET" || rc=$?
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
@@ -406,6 +414,7 @@ while [ "$i" -lt "$N" ]; do
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
+      [ "$(driver_state_get "$TICKET" '.counters.gh_requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.gh_requeue = 0' 
       [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
       ;;
@@ -460,6 +469,26 @@ while [ "$i" -lt "$N" ]; do
       park_question="The briefs are a separate deliverable — has briefs/$step.md landed yet?"
       ;;
 
+    "$DRIVER_E_USAGE"|"$DRIVER_E_GH")
+      # NOBODY'S TO ANSWER, AND GONE BY THE NEXT RUN: requeued, never parked. A
+      # park is never retried, so 8 of 20 runs on 2026-10-18 starved the queue.
+      requeue_why="$note"
+      [ -n "$requeue_why" ] || requeue_why=$(driver_last_refusal "$step")
+      [ -n "$requeue_why" ] || requeue_why="$step: $([ "$rc" = "$DRIVER_E_USAGE" ] && echo "the plan's usage limit" || echo "GitHub could not be read")"
+      if [ "$rc" = "$DRIVER_E_GH" ]; then
+        driver_state_bump "$TICKET" gh_requeue
+        # A read that fails run after run is not an outage passing: it parks, said.
+        if [ "$(driver_state_get "$TICKET" '.counters.gh_requeue // 0')" -gt "${DRIVER_MAX_GH_REQUEUES:-3}" ]; then
+          park_reason="GitHub could not be read on ${DRIVER_MAX_GH_REQUEUES:-3} requeued runs in a row"
+          park_question="$requeue_why"
+        fi
+      fi
+      if [ -z "$park_reason" ]; then
+        driver_requeue "$TICKET" "$requeue_why"
+        exit "$DRIVER_E_REQUEUE"
+      fi
+      ;;
+
     "$DRIVER_E_TIMEOUT")
       park_reason="$step ran past its time limit"
       park_question="Something it ran does not return — a watch-mode test runner is the usual cause. Which command was it?"
@@ -470,7 +499,8 @@ while [ "$i" -lt "$N" ]; do
       # gate IS the gate: nothing goes past it and the claim is not held while
       # somebody works out why.
       park_reason="$step refused (exit $rc)"
-      park_question="$step left no reason on the record. Its own lines are in the run log on $PARK_HOST at $PARK_LOG"
+      park_question=$(driver_last_refusal "$step")
+      [ -n "$park_question" ] || park_question="$step left no reason on the record. Its own lines are in the run log on $PARK_HOST at $PARK_LOG"
       ;;
   esac
 

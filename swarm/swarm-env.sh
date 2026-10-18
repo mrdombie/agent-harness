@@ -227,6 +227,22 @@ swarm_usage_log_limited() { # <log>
 swarm_login_log_lost() { # <log>
   swarm_usage_cli_events "$1" | awk -F'\t' '$2=="auth"{f=1} END{exit !f}'
 }
+# When the plan's limit stopped this log, `<epoch>\t<text>` for a hold to wait out:
+# the rejection's own epoch, else the reset the error text names, else an hour.
+swarm_usage_log_reset() { # <log>
+  local ev row epoch text
+  swarm_usage_log_limited "$1" || return 1
+  ev=$(swarm_usage_cli_events "$1")
+  row=$(printf '%s\n' "$ev" | awk -F'\t' '$2=="rejected"' | tail -1)
+  text=$(printf '%s\n' "$ev" | awk -F'\t' '$2=="error" && $3 ~ /hit your (session|weekly) limit/' | tail -1 | cut -f3-)
+  [ -n "$text" ] || text="the plan's usage limit (rate-limit event)"
+  epoch=$(printf '%s' "$row" | cut -f3)
+  case "$epoch" in ''|*[!0-9]*)
+    epoch=$(USAGE_LIMIT_NOW="$(swarm_now)" bash "$KIT_ROOT/hooks/usage-limit.sh" --reset-epoch "$text" 2>/dev/null) ;;
+  esac
+  case "$epoch" in ''|*[!0-9]*) epoch=$(( $(swarm_now) + 3600 )) ;; esac
+  printf '%s\t%s\n' "$epoch" "$(printf '%s' "$text" | tr '\n\t' '  ' | cut -c1-200)"
+}
 
 # A window already at swarm.usageCeiling: a run started now dies at the wall mid-work.
 swarm_usage_near_hold() {
@@ -265,6 +281,18 @@ swarm_usage_file_hold() {
     return 0
   fi
   printf '%s (recorded by a window)' "$(swarm_iso "$e")"
+}
+
+# swarm_usage_hold_write <epoch> <text> — record a wall in the hold file the file
+# reader above answers from, keeping the LATER of two walls (a weekly wall outlasts
+# the session wall that hit first). The same format hooks/usage-limit.sh writes.
+swarm_usage_hold_write() {
+  local f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" cur
+  case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+  cur=$(cut -f1 "$f" 2>/dev/null | head -1); case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+  [ "$1" -gt "$cur" ] || return 0
+  printf '%s\t%s\n' "$1" "$(printf '%s' "${2:-}" | tr '\n\t' '  ' | cut -c1-200)" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
 }
 
 swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_near_hold || swarm_usage_text_hold; }

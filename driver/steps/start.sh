@@ -45,11 +45,12 @@ driver_step_start() { # <ticket>
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
-  meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
            -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
   if [ -z "$meta" ]; then
-    driver_say "✋ start: #$t could not be read. Note that a pull request resolves here too — check you were given an issue."
-    return "$DRIVER_E_REFUSED"
+    driver_say "✋ start: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries. Note that a pull request resolves here too — check you were given an issue."
+    driver_state_set "$t" park_note "start could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return "$DRIVER_E_GH"
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
@@ -98,9 +99,10 @@ driver_step_start() { # <ticket>
   local owt prs
   owt=$(driver_state_get "$t" worktree)
   if [ -z "$owt" ] || [ ! -d "$owt" ]; then
-    if ! prs=$(driver_open_prs_for "$t"); then
-      driver_say "✋ start: could not ask GitHub whether #$t already has an open pull request, so a branch cut now might sit beside one."
-      return "$DRIVER_E_REFUSED"
+    if ! prs=$(driver_gh_read driver_open_prs_for "$t"); then
+      driver_say "✋ start: could not ask GitHub whether #$t already has an open pull request (${DRIVER_LOOKUP_TRIES:-3} tries), so a branch cut now might sit beside one."
+      driver_state_set "$t" park_note "start could not list the open pull requests for #$t (${DRIVER_LOOKUP_TRIES:-3} tries)"
+      return "$DRIVER_E_GH"
     fi
     if [ -n "$prs" ]; then
       driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."

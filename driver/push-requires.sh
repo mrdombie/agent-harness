@@ -107,6 +107,7 @@ _driver_attest_agent() {
       --name "$slot" --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt" \
   ) > "$log" 2>"$log.err" || rc=$?
   driver_record_usage "$t" "$slot" "$log" "$prompt"
+  driver_usage_wall "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
   jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$log" > "$out" 2>/dev/null
   return "$rc"
 }
@@ -235,6 +236,7 @@ driver_push_requires() { # <ticket>
     else
       ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:attest-$name" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$review" ) > "$out" 2>&1; rc=$?
     fi
+    [ "$rc" -ne "$DRIVER_E_USAGE" ] || return "$DRIVER_E_USAGE"
     if [ "$rc" -eq 124 ]; then
       driver_say "✋ push-requires: the '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s."
       driver_state_set "$t" park_note "this project's '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s: $review"

@@ -202,6 +202,35 @@ BRIEF
   return "$DRIVER_E_QUESTION"
 }
 
+# driver_requeue <ticket> <reason> — the exit for a stop that is nobody's to answer
+# and that the next run clears by itself: the plan's usage limit, a GitHub read that
+# failed. Not a park: no label, no draft pull request, no question. The record and
+# the worktree stay as they are, so the next spawn resumes at the step that stopped;
+# the ticket goes back on the coordinator's queue at the front, with the brief it
+# carried; the claim is released last. The reason is said, on the run's log and its
+# record, because a requeue that says nothing reads as a run that did nothing.
+driver_requeue() { # <ticket> <reason>
+  local t="${1:?driver_requeue: need a ticket}" reason="${2:-a stop nobody has to answer}"
+  local q="${DRIVER_QUEUE:-$KIT_ROOT/scripts/coordinator-queue.sh}" cls=new note="" rb queued=0
+  export DRIVER_TICKET="$t"
+  if [ "$(driver_state_get "$t" mode)" = repair ]; then
+    cls=repair
+    [ "$(driver_state_get "$t" repair_brief_source)" = caller ] && rb=$(driver_state_get "$t" repair_brief) || rb=""
+  else
+    rb=$(driver_state_get "$t" run_brief)
+  fi
+  [ -n "${rb:-}" ] && [ -s "$rb" ] && note=$(driver_brief_note "$rb")
+  driver_state_set "$t" requeued "$(swarm_stamp) $reason"
+  if bash "$q" add "$t" --class "$cls" ${note:+--note "$note"} --front >/dev/null 2>&1; then
+    queued=1
+  else
+    driver_say "   requeue: #$t could not be put back on the queue ($q) — the next tick's refresh picks it up from the board"
+  fi
+  bash "$CL" release "$t" >/dev/null 2>&1 || true
+  driver_say "↻ #$t requeued$([ "$queued" -eq 1 ] && echo " at the front as $cls"), not parked: $reason"
+  return "$DRIVER_E_REQUEUE"
+}
+
 # _driver_park_bundle <ticket> <tree> <branch> — one file holding the commits the
 # push could not hand over, under <worktreeRoot>/backups. Prints a sentence for the
 # resume brief, or nothing when there was nothing to bundle.
