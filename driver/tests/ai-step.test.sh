@@ -83,6 +83,15 @@ fix_ai compare '{"differences":"none"}' superpowers:requesting-code-review
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "the wrong type refuses too"      "22" "$rc"
 
+echo "--- the contract is checked even when the step's folder was deleted under it ---"
+# npx refuses to start from a deleted working directory ("getcwd: cannot access
+# parent directories"), and that crash read as "the answer was never checked",
+# parking finished work (2026-10-18).
+fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
+GONE=$(mktemp -d)
+rc=0; ( cd "$GONE" && rmdir "$GONE" && driver_ai_step 101 compare >/dev/null 2>&1 ) || rc=$?
+want "from a deleted folder, a valid answer still passes" "0" "$rc"
+
 echo "--- the strictness that is NOT in top-level required or type ---"
 # These four are the reason the check is one call to briefs/validate.sh. The half a
 # validator that used to live in this file read top-level `required` and top-level
