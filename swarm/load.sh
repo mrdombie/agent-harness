@@ -17,13 +17,20 @@
 #   swarm_cores                       logical cores
 #   Every reading prints NOTHING when it could not be taken. swarm_busy (the
 #   gate) reads that as idle 100 / load 0 / 4 cores; the coordinator as no room.
-#   swarm_free_mem_gb                 available memory less swap in use, whole GB; empty when unread
+#   swarm_free_mem_gb                 available memory in whole GB, less swap in use
+#                                     only while memory is tight; empty when unread
 #
 # Seams, each read on EVERY call so a test can move them while a waiter polls:
 #   SWARM_LOAD / SWARM_LOAD_FILE   a fixed load / a file holding it
 #   SWARM_IDLE / SWARM_IDLE_FILE   a fixed idle percent / a file holding it
 #   SWARM_CORES / SWARM_CORES_FILE a fixed core count / a file holding it
 #   SWARM_FREE_MEM_GB / _FILE      a fixed free-memory reading / a file holding it
+#   SWARM_SWAP_COUNTS_BELOW        swap in use is subtracted only while the available
+#                                  share of RAM is under this percent (default 25):
+#                                  swap left parked by idle apps is not pressure
+#   SWARM_MEM_OS                   Darwin or Linux, in place of uname (tests)
+#   SWARM_SYSCTL                   a command standing in for sysctl (tests)
+#   SWARM_MEMINFO                  a file standing in for /proc/meminfo (tests)
 #   SWARM_IDLE_CACHE               where one real sample is shared for 5s
 #                                  (default ~/.cache/agent-harness/cpu-idle)
 #   SWARM_IDLE_FRESH=1             take a new sample, never the shared one
@@ -148,12 +155,18 @@ swarm_idle_label() { # <idle> <samples>
   else printf 'cpu idle %s%%' "$1"; fi
 }
 
-# Free memory in whole GB: what the kernel says is available, less swap in use.
-# Inactive pages are not free on a swapping machine: on 2026-10-16 vm_stat's
-# free + inactive read 6 GB with 15.5 of 16 GB swap used and load 96.
-#   swarm_free_mem_calc <available-bytes> <swap-used-bytes>
+# Free memory in whole GB: what the kernel says is available, less swap in use
+# only while the available share of RAM is under SWARM_SWAP_COUNTS_BELOW. Swap
+# lingers after the pressure that made it: on 2026-10-19 a 32 GB Mac at 71%
+# available carried 11.5 GB of swap from four days up and read 6 GB free.
+# With no total the swap always counts.
+#   swarm_free_mem_calc <available-bytes> <swap-used-bytes> [<total-bytes>]
 swarm_free_mem_calc() {
-  awk -v a="$1" -v u="$2" 'BEGIN{ if (a == "" || a !~ /^[0-9.]+$/ || u !~ /^[0-9.]+$/) exit 1
+  local below="${SWARM_SWAP_COUNTS_BELOW:-25}"
+  case "$below" in ''|*[!0-9]*) below=25 ;; esac
+  awk -v a="$1" -v u="$2" -v t="${3:-}" -v b="$below" 'BEGIN{
+    if (a == "" || a !~ /^[0-9.]+$/ || u !~ /^[0-9.]+$/) exit 1
+    if (t ~ /^[0-9.]+$/ && t > 0 && a * 100 / t >= b) u = 0
     g = (a - u) / 1073741824; if (g < 0) g = 0; printf "%d", g }'
 }
 # The used figure in bytes from `sysctl -n vm.swapusage` on stdin ("used = 14747.50M").
@@ -171,15 +184,21 @@ swarm_free_mem_gb() {
     local f; f=$(head -1 "$SWARM_FREE_MEM_FILE" 2>/dev/null); printf '%s' "${f%%.*}"; return
   fi
   if [ -n "${SWARM_FREE_MEM_GB:-}" ]; then printf '%s' "${SWARM_FREE_MEM_GB%%.*}"; return; fi
-  local v="" lvl mem used
-  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    lvl=$(/usr/sbin/sysctl -n kern.memorystatus_level 2>/dev/null)
-    mem=$(/usr/sbin/sysctl -n hw.memsize 2>/dev/null)
-    used=$(/usr/sbin/sysctl -n vm.swapusage 2>/dev/null | swarm_parse_swapusage_used)
-    case "$lvl$mem" in ''|*[!0-9]*) ;; *) v=$(swarm_free_mem_calc "$(( mem / 100 * lvl ))" "${used:-}") ;; esac
-  elif [ -r /proc/meminfo ]; then
-    v=$(awk '/^MemAvailable:/{a=$2} /^SwapTotal:/{t=$2} /^SwapFree:/{f=$2}
-             END{ if (a == "") exit 1; g = (a - (t - f)) / 1048576; if (g < 0) g = 0; printf "%d", g }' /proc/meminfo 2>/dev/null)
+  local v="" lvl mem used os sc="${SWARM_SYSCTL:-/usr/sbin/sysctl}" mi="${SWARM_MEMINFO:-/proc/meminfo}" kb ka ku kt
+  os="${SWARM_MEM_OS:-$(uname -s 2>/dev/null)}"
+  if [ "$os" = Darwin ]; then
+    lvl=$($sc -n kern.memorystatus_level 2>/dev/null)
+    mem=$($sc -n hw.memsize 2>/dev/null)
+    used=$($sc -n vm.swapusage 2>/dev/null | swarm_parse_swapusage_used)
+    case "$lvl$mem" in ''|*[!0-9]*) ;; *) v=$(swarm_free_mem_calc "$(( mem / 100 * lvl ))" "${used:-}" "$mem") ;; esac
+  elif [ -r "$mi" ]; then
+    # "<available> <swap-used> <total>" in kB.
+    kb=$(awk '/^MemAvailable:/{a=$2} /^MemTotal:/{m=$2} /^SwapTotal:/{t=$2} /^SwapFree:/{f=$2}
+              END{ if (a == "") exit 1; printf "%d %d %d", a, t - f, m }' "$mi" 2>/dev/null)
+    if [ -n "$kb" ]; then
+      read -r ka ku kt <<< "$kb"
+      v=$(swarm_free_mem_calc "$(( ka * 1024 ))" "$(( ku * 1024 ))" "$(( kt * 1024 ))")
+    fi
   fi
   case "$v" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$v"
