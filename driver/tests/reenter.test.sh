@@ -142,7 +142,8 @@ echo "--- two open pull requests: which one is not the driver's guess ---"
 fix_issue 203 OPEN "status:in-review"; prs "[$(pr_json 33 tkt-203/a), $(pr_json 34 tkt-203/b)]"
 out=$(driver_step_reenter 203 2>&1); rc=$?
 want "it refuses"                     "24" "$rc"
-want_in "naming both"                 '#33.*#34' "$out"
+# Either order: the open-PR read gives them newest first, as GitHub does.
+want_in "naming both"                 '#33.*#34|#34.*#33' "$out"
 
 echo "--- a closed ticket, a held ticket, a peer's claim, an unreadable list ---"
 fix_issue 204 CLOSED "status:in-review"; prs "[$(pr_json 35 tkt-204/work)]"
