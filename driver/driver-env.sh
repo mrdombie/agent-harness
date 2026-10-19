@@ -183,6 +183,10 @@ driver_bounded() { # <seconds> <command>
   # under `set -u` before the first default is ever applied.
   secs="${1:-}"
   cmd="${2:-}"
+  # BASH, NOT /bin/sh. Agents write commands in bash; on Linux /bin/sh is dash, which
+  # rejects arrays, [[ ]] and process substitution, and a refused command read as a
+  # failing test sent builds round the rework loop. DRIVER_SHELL overrides.
+  local DRIVER_SHELL="${DRIVER_SHELL:-$(command -v bash || echo /bin/sh)}"
   [ -n "$secs" ] || secs="$DRIVER_CMD_TIMEOUT"
   # A NON-NUMBER IS NOT A CEILING. perl reads `alarm "15m"` as `alarm 0`, which CANCELS
   # the alarm — so an operator writing "15m" or "900s" in the config silently removes
@@ -190,7 +194,7 @@ driver_bounded() { # <seconds> <command>
   case "$secs" in
     ''|*[!0-9]*|0)
       echo "driver: '$secs' is not a number of seconds, so '$cmd' runs UNBOUNDED — set cmdTimeout to a whole number of seconds." >&2
-      /bin/sh -c "$cmd"; return $? ;;
+      "$DRIVER_SHELL" -c "$cmd"; return $? ;;
   esac
   if command -v perl >/dev/null 2>&1; then
     perl -e '
@@ -204,13 +208,13 @@ driver_bounded() { # <seconds> <command>
       my $st = $?;
       alarm 0;
       exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
-    ' "$secs" /bin/sh -c "$cmd"
+    ' "$secs" "$DRIVER_SHELL" -c "$cmd"
     rc=$?
   elif command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" /bin/sh -c "$cmd"; rc=$?
+    timeout "$secs" "$DRIVER_SHELL" -c "$cmd"; rc=$?
   else
     echo "driver: neither perl nor timeout is available, so '$cmd' runs UNBOUNDED" >&2
-    /bin/sh -c "$cmd"; rc=$?
+    "$DRIVER_SHELL" -c "$cmd"; rc=$?
   fi
   return "$rc"
 }
