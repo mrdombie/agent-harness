@@ -124,6 +124,9 @@ for ended in "$RUNS_DIR"/*.ended; do
     if event "login-lost:$(swarm_day)" login-lost false "" "" "the agents' CLI is not logged in"; then
       bash "$NOTIFY" --class owner "login-lost:$(swarm_day)" "The agents' Claude login has gone: every run stops at once until someone runs /login on this machine"
     fi
+  elif [ "$code" = 26 ]; then
+    # The driver's DRIVER_E_UNREAD: GitHub could not be read, nothing parked, the ticket is picked again.
+    say "unread: run $rid left #${ticket:-?} as it was — GitHub could not be read; the next tick tries again"
   elif [ "$code" != 0 ] || printf '%s' "$last" | grep -qiE 'park|stood down|stand down|blocked|cannot continue'; then
     event "stood-down:$rid" stood-down true "$ticket" "" "run $rid ended exit $code: ${last:-no result line}"
   fi

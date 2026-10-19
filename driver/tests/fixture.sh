@@ -88,9 +88,12 @@ printf '%s\n' "$*" >> "$GH_LOG"
 # this kit is wrapped in `|| true`, which means the difference between a completed
 # hand-off and a total outage is invisible unless a test can produce the outage.
 # $FIX/gh-fail holds one "<noun> <verb>" per line, e.g. `pr create`.
-if [ -f "$FIX/gh-fail" ] && grep -qxF "$1 $2" "$FIX/gh-fail"; then
-  echo "gh: refused $1 $2 (induced)" >&2; exit 1
+# The open-PR read (gh_prs_paged) is keyed `open-prs`, not `api graphql`.
+call="$1 $2"; case "$*" in "api graphql "*OpenPullRequests*) call="open-prs" ;; esac
+if [ -f "$FIX/gh-fail" ] && grep -qxF "$call" "$FIX/gh-fail"; then
+  echo "gh: refused $call (induced)" >&2; exit 1
 fi
+if [ "$call" = open-prs ]; then exec bash "$GH_OPEN_PRS_PAGE" "$FIX/gh/prs.json" "$@"; fi
 q=""; head=""; prev=""
 for a in "$@"; do
   case "$prev" in -q|--jq) q="$a" ;; --head) head="$a" ;; esac
@@ -159,6 +162,8 @@ SH
   chmod +x "$BIN/gh" "$BIN/claude"
 
   export FIX REPO STATE BIN GH_LOG CLAUDE_LOG CLAUDE_ENV_LOG
+  GH_OPEN_PRS_PAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/fixtures" && pwd)/gh-open-prs-page.sh"; export GH_OPEN_PRS_PAGE
+  export GH_PRS_RETRY_SEC=0
   export PATH="$BIN:$PATH"
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"

@@ -50,9 +50,9 @@ driver_step_reenter() { # <ticket>
       return "$DRIVER_E_REFUSED" ;;
   esac
 
-  if ! prs=$(driver_open_prs_for "$t"); then
-    driver_say "✋ reenter: could not ask GitHub for #$t's open pull request. An unreadable list is not an empty one."
-    return "$DRIVER_E_REFUSED"
+  if ! prs=$(driver_open_prs_for_patient "$t"); then
+    driver_say "⏳ reenter: could not ask GitHub for #$t's open pull request. An unreadable list is not an empty one; the repair goes back on the queue for the next tick."
+    return "$DRIVER_E_UNREAD"
   fi
   n=$(printf '%s' "$prs" | grep -c .)
   if [ "$n" -eq 0 ]; then

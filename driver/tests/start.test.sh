@@ -273,11 +273,14 @@ printf '[{"number":78,"headRefName":"tkt-1150/other","headRefOid":"abc","isDraft
 rc=0; driver_step_start 115 >/dev/null 2>&1 || rc=$?
 want "another ticket's PR whose number merely starts the same does not count" "0" "$rc"
 printf '[]\n' > "$FIX/gh/prs.json"
-echo "pr list" > "$FIX/gh-fail"
+echo "open-prs" > "$FIX/gh-fail"; : > "$GH_LOG"
 fix_issue 116 OPEN "status:ready"
-out=$(driver_step_start 116 2>&1); rc=$?
-want "an unreadable PR list refuses, rather than reading as none" "24" "$rc"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_start 116 2>&1); rc=$?
+want "an unreadable PR list stops start as unread, rather than reading as none" "26" "$rc"
 want_in "and says so"                      'could not ask' "$out"
+want "after asking three times"            "3" "$(grep -c 'OpenPullRequests' "$GH_LOG")"
+want "no worktree was cut"                 "" "$(driver_state_get 116 worktree)"
+want "no claim was taken"                  "" "$(awk '$1==116' "$CLAIMS")"
 rm -f "$FIX/gh-fail"
 
 echo "--- end to end: the REAL claim lock notes the run's worktree for the spawner ---"

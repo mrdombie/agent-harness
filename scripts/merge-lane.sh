@@ -123,8 +123,9 @@ elif ! jq -e --arg l "$LANE_LABEL" 'any(.[]; .name == $l)' >/dev/null <<<"$LABEL
 fi
 
 # ---- the open pull requests --------------------------------------------------
-PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --base "$INTEGRATION_BRANCH" --limit 200 \
-        --json number,title,headRefName,headRefOid,isDraft,baseRefName,labels,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup 2>/dev/null)
+# Paged: one request for every open PR with its checks times out once the repo has ~80.
+PRS=$(gh_prs_paged number,title,headRefName,headRefOid,isDraft,baseRefName,labels,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup \
+        "$INTEGRATION_BRANCH" 2>/dev/null)
 if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   say "lane: the open pull requests could not be read — doing nothing"
   status "blind — the open pull requests could not be read"; exit 0

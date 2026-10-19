@@ -88,6 +88,8 @@ DRIVER_E_SCHEMA=22
 DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
 DRIVER_E_TIMEOUT=25
+# GitHub could not be read: nothing was decided, so nothing parks and the next tick tries again.
+DRIVER_E_UNREAD=26
 DRIVER_E_REWORK=30
 
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
@@ -510,6 +512,17 @@ driver_open_prs_for() {
     | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false), (.mergeable // "")] | @tsv'
 }
 
+# driver_open_prs_for_patient <ticket> — driver_open_prs_for, asked DRIVER_LOOKUP_TRIES
+# (3) times DRIVER_LOOKUP_RETRY_SEC (5) apart: a GitHub timeout is usually gone by then.
+driver_open_prs_for_patient() {
+  local n=0 out
+  until out=$(driver_open_prs_for "$1"); do
+    n=$((n+1)); [ "$n" -lt "${DRIVER_LOOKUP_TRIES:-3}" ] || return 1
+    sleep "${DRIVER_LOOKUP_RETRY_SEC:-5}"
+  done
+  printf '%s' "$out"; [ -z "$out" ] || printf '\n'
+}
+
 # driver_open_prs — every open pull request as a JSON array, from the shared copy.
 driver_open_prs() {
   local j
@@ -580,4 +593,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_REWORK
