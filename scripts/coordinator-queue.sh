@@ -71,8 +71,11 @@ seed() { # <scope>[,<scope>…]
 # `gh issue list` per scope per refresh, for candidates the list already had.
 # A claimable list without that column (an older or stand-in one) falls back to
 # listing each scope label's members.
+# Polish lists are in every scope (PM call 2026-10-19): a screen's list must reach
+# the queue to ship once it is full, whatever scope the coordinator was seeded with.
 fill() { # <scope> <resolved labels, one a line> — the members, the claimable rows, the write
-  local scope="$1" labels="$2" claimable rows label members="" m
+  local scope="$1" labels="$2" claimable rows label members="" m match
+  match=$(printf '%s\n%s\n' "$labels" "$LBL_POLISH_LIST" | awk 'NF && !seen[$0]++')
   claimable=$(CLAIMABLE_WITH_LABELS=1 bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
   if printf '%s\n' "$claimable" | awk -F'\t' 'NF && $1 != "" && NF < 7 { bad = 1 } END { exit !bad }'; then
     while IFS= read -r label; do
@@ -82,11 +85,11 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
                  --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was" ;;
       esac
       members="$members$m"$'\n'
-    done <<< "$labels"
+    done <<< "$match"
     members=$(printf '%s' "$members" | awk 'NF' | sort -u | paste -sd, -)
   fi
   # Through the environment: BSD awk refuses a -v value with a newline in it.
-  rows=$(printf '%s\n' "$claimable" | Q_SCOPES="$labels" Q_MEMBERS="$members" awk -F'\t' '
+  rows=$(printf '%s\n' "$claimable" | Q_SCOPES="$match" Q_MEMBERS="$members" awk -F'\t' '
            BEGIN { n = split(ENVIRON["Q_SCOPES"], s, "\n"); for (i = 1; i <= n; i++) if (s[i] != "") {
                      if (s[i] ~ /^ticket /) tk[substr(s[i], 8)] = 1; else lb[s[i]] = 1 }
                    n = split(ENVIRON["Q_MEMBERS"], mm, ","); for (i = 1; i <= n; i++) tk[mm[i]] = 1 }
@@ -150,6 +153,7 @@ in_scope() { # <n> — 0 under any scope, 1 outside every one, 2 unreadable
   local ls have l
   ls=$(scope_labels); [ -n "$ls" ] || die "no scope recorded — run 'seed <scope>' first"
   grep -qxF "ticket $1" <<<"$ls" && return 0
+  ls=$(printf '%s\n%s\n' "$ls" "$LBL_POLISH_LIST")
   have=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) \
     || { echo "coordinator-queue: #$1 could not be read" >&2; return 2; }
   while IFS= read -r l; do
@@ -171,8 +175,16 @@ add() {
   done
   case "$n" in ''|*[!0-9]*) die "add needs a ticket number" ;; esac
   case "$cls" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
-  current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" '
-    ({n: $n, class: $c, note: $note, pinned: true} + (if $front then {front: true} else {} end)) as $e
+  # What the seed would know of it, read now: `list` and the live view rank it
+  # the way the tick does. Unread, it ranks as no priority until the tick reads it.
+  local meta
+  meta=$(swarm_gh issue view "$n" --repo "$REPO_SLUG" --json labels,title 2>/dev/null \
+    | coord_jq -c "$COORD_TICKET_JQ"'[.labels[]?.name] as $ls
+        | {prin: coord_prin($ls; null), kind: coord_kind($ls; ""; null; .title), polish: coord_polish($ls; null; .title),
+           plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title)}' 2>/dev/null)
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
+  current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" --argjson meta "$meta" '
+    ({n: $n, class: $c, note: $note, pinned: true} + $meta + (if $front then {front: true} else {} end)) as $e
     | ((.tickets // []) | map(select(.n != $n))) as $rest
     | .tickets = (if $front then [$e] + $rest else $rest + [$e] end)' | write
   echo "queued #$n as $cls"

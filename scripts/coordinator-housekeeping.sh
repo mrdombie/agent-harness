@@ -52,6 +52,12 @@ fi
 if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
 else bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"; fi
+# A polish item is ticked only once the PR that fixed it merges, freed when that PR
+# closes unmerged, and a list closes once nothing is left on it.
+POLISH="${COORDINATOR_POLISH_LIST:-$SELF_DIR/polish-list.sh}"
+if [ -n "$GH_WAIT" ]; then say "polish lists: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$POLISH" sweep --dry-run >> "$COORD_LOG" 2>&1 || say "polish-list sweep (dry) exited $?"
+else bash "$POLISH" sweep >> "$COORD_LOG" 2>&1 || say "polish-list sweep exited $?"; fi
 if coord_shadow; then bash "$SWEEP" --sweep --dry-run >> "$COORD_LOG" 2>&1 || say "server sweep (dry) exited $?"
 else bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"; fi
 # An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.

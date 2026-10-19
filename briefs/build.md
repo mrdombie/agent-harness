@@ -54,8 +54,8 @@ Read {{STANDARDS}} once for the ticket, not once per file.
 
 ## The screen's polish list rides along
 
-Fix the items {{POLISH_LIST}} names in this change and tick each fixed one with
-its command, the item as written. Leave the rest unticked.
+Fix the items {{POLISH_LIST}} names in this change and record each fixed one with
+its command, the item as written. Never tick one: it is ticked when the PR merges.
 
 ## A test you reword or remove is accounted for
 

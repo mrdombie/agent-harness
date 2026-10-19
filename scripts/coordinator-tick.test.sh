@@ -37,6 +37,12 @@ cat > "$BIN/notify" <<'SH'
 #!/usr/bin/env bash
 echo "$1" >> "$FIX/notify.log"
 SH
+cat > "$BIN/polish" <<'SH'
+#!/usr/bin/env bash
+case "$1" in sweep) echo "polish $*" >> "$FIX/house.log" ;; *) exec bash "$REAL_POLISH" "$@" ;; esac
+SH
+chmod +x "$BIN/polish"
+export REAL_POLISH="$HERE/polish-list.sh" COORDINATOR_POLISH_LIST="$BIN/polish"
 # fix-lock.sh list --json, read from a planted file.
 cat > "$BIN/fixlock" <<'SH'
 #!/usr/bin/env bash
@@ -94,12 +100,14 @@ want_in "it names where the config came from" "config from $HARNESS_CFG_PATH" "$
 want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3=="spawn"{print $2, $3, $4}' "$C/actions.log" | head -1)"
 want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
+want_in "the polish-list sweep runs dry"   '^polish sweep --dry-run$' "$(cat "$FIX/house.log")"
 
 echo "--- live spawns, and a set cap is a hard ceiling ---"
 fresh; queue 501 502 503 504 505 506; live_run 900
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
 want "room under the cap: it fills to the cap, in queue order" "501 502 503" "$(spawned)"
 want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
+want_in "the polish-list sweep runs: merged items ticked, lists closed" '^polish sweep$' "$(cat "$FIX/house.log")"
 fresh; queue 501 502; live_run 900; live_run 901
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 tick)
 want "at the cap, nothing spawns"          "" "$(spawned)"
@@ -345,6 +353,22 @@ want_in "named once"                       'polish: 1 polish ticket\(s\) wait wh
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; reds_as P3 601
 SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
 want "a polish red still takes its healing place" "601 701" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+echo "--- the polish hold never parks a resume, an owner's answer or half-built work ---"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null
+fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 --front --note "Resume: run cut off" >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "a P3 entry put back at the front starts beside the P2" "802 701" "$(spawned)"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null
+fix_issue 803 OPEN "P3,status:partial"; bash "$Q" add 803 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "a half-built P3 ticket starts beside the P2" "701 803" "$(spawned)"
+echo "--- a full P3 list ranks ahead of work with no priority ---"
+fresh; fix_issue 702 OPEN "status:ready"; bash "$Q" add 702 >/dev/null; list_issue 801 8
+SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "one place: the full list takes it, not the unprioritised ticket" "801" "$(spawned)"
+fresh; fix_issue 702 OPEN "status:ready"; bash "$Q" add 702 >/dev/null; list_issue 801 3
+SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "a short list still waits behind it"  "702" "$(spawned)"
 
 # Back to the fixture's reading: later sections must never read the real machine.
 export SWARM_IDLE=90; unset SWARM_CORES

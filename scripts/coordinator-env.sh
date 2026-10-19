@@ -229,15 +229,15 @@ coord_lock() { # <dir> <noun>
 # and the tick's order both use these, so the two never disagree on a ticket.
 #   coord_prin   P0..P9 as 0..9; no priority label is 9, after P3
 #   coord_kind   half-built, feature, other, polish (owner call 2026-10-18)
-#   coord_polish P3, a polish kind, or a polish list: never stops new building
+#   coord_polish a P3 label or a polish list, nothing else: never stops new
+#                building. A title or label that merely says "polish" is not one.
 #   coord_tooling our own build tooling (coordinator.toolingLabels / toolingScopes):
 #                after product work of the same priority and class
 COORD_TICKET_JQ='
   def coord_pri($ls; $pri): ([$ls[]? | select(test("^P[0-9]$"))] | first) // $pri // "";
   def coord_prin($ls; $pri): ((coord_pri($ls; $pri) | capture("^P(?<d>[0-9])") | .d | tonumber) // 9);
   def coord_polish($ls; $pri; $title):
-    coord_pri($ls; $pri) == "P3" or ($ls | index($plist)) != null
-    or ($ls | any(test("polish"; "i"))) or (($title // "") | test("polish"; "i"));
+    coord_pri($ls; $pri) == "P3" or ($ls | index($plist)) != null;
   def coord_tooling($ls; $title):
     ($ls | any(. as $l | $tooling | index($l) != null))
     or ([($title // "") | capture("^[a-z]+\\((?<s>[^)]*)\\)!?:"; "i") | .s | ascii_downcase]
@@ -255,7 +255,9 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 }
 
 # The queue in run order: <ticket> \t <class> \t <note>; with --wide,
-# <ticket> \t <class> \t <priority 0-9> \t <polish 0|1> \t <polish list 0|1> \t <note>.
+# <ticket> \t <class> \t <priority 0-9> \t <polish 0|1> \t <polish list 0|1> \t
+# <never held 0|1> \t <note>. Never held: an entry put at the front (a resume, an
+# owner's answer) or half-built work — the polish hold never parks either.
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
 # < none); within one priority repair, approved-merge, then new; within one class
 # product work before our own tooling (coord_tooling); then new by kind; then the
@@ -282,7 +284,8 @@ coord_queue_ordered() {
      | sort_by(if .front then 0 else 1 end, (if .front then .pos else 0 end), .prin, .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos)
      | .[]
-     | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end), (.note // "")]
+     | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
+                           (if .front or .kind == "half-built" then "1" else "0" end), (.note // "")]
        else [(.n|tostring), .class, (.note // "")] end | @tsv' "$COORD_QUEUE" 2>/dev/null
 }
 

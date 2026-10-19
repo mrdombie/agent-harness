@@ -33,26 +33,49 @@ _driver_ship_replaced() {
       else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$(driver_state_dir "$1")/steps/replaced.jsonl" 2>/dev/null
 }
 
-# _driver_ship_polish <ticket> — the "## Polish list" section: the items of the
-# screen's polish list this run's builder ticked, and what it left. The list as the
-# plan saw it is kept in state (driver_fact_polish_list); an item no longer unticked
-# now was fixed here. A list that cannot be read now names nothing as fixed.
+# _driver_ship_reserve <ticket> <pr> — reserves on the polish lists every item this
+# run's builder took (polish-list.sh take), for this PR: other runs skip them, and
+# the coordinator's housekeeping ticks them when the PR merges. An item another PR
+# already holds is not this run's to name. Records what it reserved in state.
+_driver_ship_reserve() {
+  local t="$1" pr="$2" pl="$KIT_ROOT/scripts/polish-list.sh" n item got=""
+  while IFS=$'\t' read -r n item; do
+    [ -n "$item" ] || continue
+    if bash "$pl" reserve "$n" "$pr" "$item" >/dev/null 2>&1; then got="$got$n"$'\t'"$item"$'\n'
+    else driver_say "   ship: polish item not reserved for #$pr (another PR holds it, or it is gone): $item (#$n)"; fi
+  done <<<"$(bash "$pl" taken "$t" 2>/dev/null)"
+  driver_state_set "$t" polish_reserved "$got"
+}
+
+# _driver_ship_polish <ticket> — the "## Polish list" section: the items this run
+# reserved for its PR, and the ones the plan saw that it left. Nothing reserved,
+# nothing said.
 _driver_ship_polish() {
-  local items n item now fixed="" left="" lists="" pl="$KIT_ROOT/scripts/polish-list.sh"
+  local got items left="" n item lists
+  got=$(driver_state_get "$1" polish_reserved)
+  [ -n "$(printf '%s' "$got" | tr -d '[:space:]')" ] || return 0
   items=$(driver_state_get "$1" polish_items)
-  [ -n "$(printf '%s' "$items" | tr -d '[:space:]')" ] || return 0
-  for n in $(printf '%s\n' "$items" | cut -f1 | grep -E '^[0-9]+$' | sort -un); do
-    lists="$lists #$n"
-    now=$(bash "$pl" items "$n" 2>/dev/null) || { left="$left- #$n could not be read, so nothing on it is named fixed"$'\n'; continue; }
-    while IFS=$'\t' read -r _ item; do
-      [ -n "$item" ] || continue
-      if printf '%s\n' "$now" | grep -qxF -- "$item"; then left="$left- $item (#$n)"$'\n'
-      else fixed="$fixed- $item (#$n)"$'\n'; fi
-    done <<<"$(printf '%s\n' "$items" | awk -F'\t' -v n="$n" '$1 == n')"
-  done
-  printf '## Polish list\nRode along from%s.\n' "$lists"
-  [ -z "$fixed" ] || printf '\nFixed here and ticked:\n%s' "$fixed"
-  [ -z "$left" ]  || printf '\nLeft on the list:\n%s' "$left"
+  lists=$(printf '%s\n' "$got" | cut -f1 | grep -E '^[0-9]+$' | sort -un | sed 's/^/#/' | paste -sd' ' -)
+  while IFS=$'\t' read -r n item; do
+    [ -n "$item" ] || continue
+    printf '%s\n' "$got" | grep -qxF -- "$n	$item" || left="$left- $item (#$n)"$'\n'
+  done <<<"$items"
+  printf '## Polish list\nRode along from %s.\n\nFixed here, ticked on the list when this pull request merges:\n' "$lists"
+  printf '%s\n' "$got" | awk -F'\t' 'NF == 2 { print "- " $2 " (#" $1 ")" }'
+  [ -z "$left" ] || printf '\nLeft on the list:\n%s' "$left"
+}
+
+# _driver_ship_closes <ticket> — "Closes" for a ticket, "Refs" for a polish list: a
+# list closes only once nothing is left on it (polish-list.sh sweep), never because
+# one PR that fixed some of it merged. Its labels are read now; a read that fails
+# falls back to what the plan recorded.
+_driver_ship_closes() {
+  local labels
+  if labels=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null); then
+    printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST" && { printf 'Refs'; return; }
+  elif [ "$(driver_state_get "$1" polish_self)" = 1 ]; then printf 'Refs'; return
+  fi
+  printf 'Closes'
 }
 
 # _driver_ship_push_to_fix <ticket> — a push the project's own pre-push refused goes
@@ -257,10 +280,13 @@ driver_step_ship() { # <ticket>
   local d replaced=""
   d="$(driver_state_dir "$t")/steps"
   replaced=$(_driver_ship_replaced "$t")
-  local polish; polish=$(_driver_ship_polish "$t")
+  local polish="" closes pr_n; closes=$(_driver_ship_closes "$t")
+  # A PR already open has its number now: its items are reserved before the body says so.
+  pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
+  if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
   body=$(cat <<PRBODY
-Closes #$t
+$closes #$t
 
 Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 
@@ -309,9 +335,24 @@ PRBODY
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true
-  if ! swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number >/dev/null 2>&1; then
+  if ! pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null); then
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
+  fi
+  # A new PR has its number only now: reserve, then add the section to its body.
+  if [ -z "$polish" ] && [ -n "$(bash "$KIT_ROOT/scripts/polish-list.sh" taken "$t" 2>/dev/null)" ]; then
+    case "$pr_n" in ''|*[!0-9]*) pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null) ;; esac
+    case "$pr_n" in
+      ''|*[!0-9]*) driver_say "   ship: the pull request's number could not be read, so its polish items are not reserved" ;;
+      *) _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t")
+         if [ -n "$polish" ]; then
+           body="$body
+
+$polish"
+           swarm_gh pr edit "$pr_n" --repo "$REPO_SLUG" --body "$body" >/dev/null 2>&1 \
+             || driver_say "   ship: the polish section could not be added to #$pr_n's body"
+         fi ;;
+    esac
   fi
   fi
 

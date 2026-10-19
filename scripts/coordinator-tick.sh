@@ -399,44 +399,50 @@ PLAN=""; NEXT=""; TOOK=""
 # are counted), and new work up to one past the free places (the next pick).
 # CANDS rows: <ticket> \t <class> \t <polish 0|1> \t <note>.
 # Polish new work starts only when nothing else can, or when it is a polish list
-# holding coordinator.polishListFull unticked items (owner call 2026-10-19): 20 of
-# the 35 PRs waiting on the owner's sign-off were polish, one picture each.
+# holding coordinator.polishListFull free items (owner call 2026-10-19): 20 of
+# the 35 PRs waiting on the owner's sign-off were polish, one picture each. The
+# hold never parks an entry put at the front (a resume, an owner's answer) or
+# half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl note why nn=0 i=0 held="" rows="" other=0 lists bodies cnt waits=0
+  local t cls pri pol pl ex note why nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
   CANDS=""
-  while IFS=$'\t' read -r t cls pri pol pl note; do
+  wide=$(coord_queue_ordered --wide)
+  # A full list goes in its place in the order, ahead of lower-priority work, so the
+  # lists' bodies are read first: one batched request, only when a list is queued.
+  lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $4 == 1 && $5 == 1 && $6 != 1 { print $1 }' | tr '\n' ' ')
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
+  while IFS=$'\t' read -r t cls pri pol pl ex note; do
     [ -n "${t:-}" ] || continue
     i=$((i+1))
-    if ! coord_healing_class "$cls" && [ "$pol" = 1 ]; then
-      held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$note"$'\n'; continue
+    # Held: new polish work that is neither put at the front nor half-built, unless
+    # it is a full list.
+    if ! coord_healing_class "$cls" && [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
+      cnt=0
+      if [ "$pl" = 1 ]; then
+        cnt=$(jq -r --arg n "$t" '.[$n].body // ""' <<<"$bodies" 2>/dev/null | bash "$POLISH" count - 2>/dev/null)
+        case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
+      fi
+      if [ "$pl" != 1 ] || [ "$cnt" -lt "$COORD_POLISH_LIST_FULL" ]; then
+        held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
+      fi
     fi
     coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
     if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
     coord_healing_class "$cls" || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"$note"$'\n'
-  done <<< "$(coord_queue_ordered --wide)"
+  done <<< "$wide"
   if [ -n "$held" ]; then
-    # Only the lists' bodies are read, in one batched request, and only when
-    # something else could start instead.
-    bodies="{}"
-    if [ "$other" = 1 ]; then
-      lists=$(printf '%s' "$held" | awk -F'\t' '$4 == 1 { print $2 }' | tr '\n' ' ')
-      # shellcheck disable=SC2086  # a list of numbers, split on purpose
-      [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
-    fi
-    while IFS=$'\t' read -r i t cls pl note; do
+    while IFS=$'\t' read -r i t cls pl cnt note; do
       [ -n "${t:-}" ] || continue
-      [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue
       if [ "$other" = 1 ]; then
-        [ "$pl" = 1 ] || { waits=$((waits+1)); continue; }
-        cnt=$(jq -r --arg n "$t" '.[$n].body // ""' <<<"$bodies" 2>/dev/null | bash "$POLISH" count - 2>/dev/null)
-        case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
-        if [ "$cnt" -lt "$COORD_POLISH_LIST_FULL" ]; then
-          say "skip #$t (polish list): $cnt of $COORD_POLISH_LIST_FULL items — rides along with its screen's next ticket"; continue
-        fi
+        if [ "$pl" = 1 ]; then say "skip #$t (polish list): $cnt of $COORD_POLISH_LIST_FULL items — rides along with its screen's next ticket"
+        else waits=$((waits+1)); fi
+        continue
       fi
+      [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue
       if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
       nn=$((nn+1))
       rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'"$note"$'\n'

@@ -148,13 +148,16 @@ printf '%s\n' \
 rm -f "$QF"; bash "$Q" seed widgets >/dev/null
 want "a P0 new ticket outranks a P3 repair; a P1 repair outranks a P1 new ticket" \
   "621:new 622:repair 624:new 623:new 620:repair" "$(order)"
-bash "$Q" add 625 --class approved-merge >/dev/null
+bash "$Q" add 626 --class approved-merge >/dev/null
+want "an entry whose ticket cannot be read at add ranks as no priority" "626:approved-merge" "$(order | awk '{print $NF}')"
 fix_issue 625 OPEN "P0,status:in-review"
-want "an approved merge added by hand has no priority until the tick reads its labels" "625:approved-merge" "$(order | awk '{print $NF}')"
+bash "$Q" add 625 --class approved-merge >/dev/null
+want "add reads the ticket's labels, so list ranks it as the tick will" "625:approved-merge 621:new" "$(order | cut -d' ' -f1-2)"
+want "and keeps them on the entry"         "0 half-built false" "$(jq -r '.tickets[] | select(.n==625) | "\(.prin) \(.kind) \(.tooling)"' "$QF")"
 . "$HERE/coordinator-env.sh"
 ISSUES='{"625":{"number":625,"state":"OPEN","title":"x","labels":["P0","status:in-review"]}}'
 want "with the tick's read, it ranks by its own ticket's priority" \
-  "625	approved-merge	0	0	0	|621	new	0	0	0	|622	repair	1	0	0	" \
+  "625	approved-merge	0	0	0	1	|621	new	0	0	0	0	|622	repair	1	0	0	0	" \
   "$(COORD_QUEUE="$QF" coord_queue_ordered --wide | head -3 | tr '\n' '|' | sed 's/|$//')"
 unset ISSUES
 
@@ -174,6 +177,22 @@ want "tooling by label or by title scope is recorded" "true true false" \
 rm -f "$QF"; COORDINATOR_TOOLING_LABELS="code-health" bash "$Q" seed widgets >/dev/null
 want "coordinator.toolingLabels decides which labels are tooling" \
   "634:repair 635:repair 630:new 631:new 633:new 632:new" "$(order)"
+
+echo "--- polish is a P3 label or a polish list, nothing else ---"
+printf '%s\n' \
+  "640	P1	OPS			polish(inbox): tighten the row gap	P1,type:bug,polish,project:widgets" \
+  "641	P3	OPS			Old rough edge	P3,project:widgets" \
+  "642	-	OPS			Polish list: Inbox	polish-list,screen:inbox,status:ready" > "$FIX/claimable.tsv"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+want "a P1 titled polish with a polish label is not polish; a P3 and a list are" "false true true" \
+  "$(jq -r '[(.tickets[] | select(.n==640)), (.tickets[] | select(.n==641)), (.tickets[] | select(.n==642))] | map(.polish) | join(" ")' "$QF")"
+want "the kind follows the same rule"      "other" "$(jq -r '.tickets[] | select(.n==640) | .kind' "$QF")"
+
+echo "--- polish lists are in every scope ---"
+want "a polish list outside the seeded labels is queued" "642" "$(jq -r '.tickets[] | select(.n==642) | .n' "$QF")"
+want "the recorded scope is still what was seeded" "project:widgets" "$(jq -r '.label' "$QF")"
+fix_issue 643 OPEN "polish-list,screen:calendar"
+bash "$Q" in-scope 643; want "in-scope says a polish list is in" "0" "$?"
 
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null

@@ -1,22 +1,34 @@
 #!/usr/bin/env bash
 # polish-list.sh — one open list of small fixes per screen, in place of one ticket each.
 #
-#   polish-list.sh add <screen-slug> <text…>   append "- [ ] <text>" under "## Items" on the
-#                                              screen's open list, opening the list when there
-#                                              is none; the same text is never added twice
-#   polish-list.sh tick <issue> <text…>        mark that item done ("- [x]"); 1 when absent
-#   polish-list.sh items <issue|->             the unticked items' text, one a line
-#   polish-list.sh count <issue|->             how many are unticked
-#   polish-list.sh for-screen <screen-slug>    the open list's number, or nothing
+#   polish-list.sh add <screen-slug> <text…>     append "- [ ] <text>" under "## Items" on the
+#                                                screen's open list, opening the list when there
+#                                                is none; the same text is never added twice
+#   polish-list.sh items <issue|->               the items still free to take, one a line:
+#                                                unticked and not reserved by a pull request
+#   polish-list.sh count <issue|->               how many are free to take
+#   polish-list.sh for-screen <screen-slug>      the open list's number, or nothing
+#   polish-list.sh take <issue> <ticket> <text…> a builder fixed that item: recorded for the
+#                                                run of <ticket>, never ticked yet; 1 when the
+#                                                item is not free to take
+#   polish-list.sh taken <ticket>                what that run took: <issue> \t <text>
+#   polish-list.sh reserve <issue> <pr> <text…>  "- [ ] <text> (in PR #<pr>)": other runs skip it
+#   polish-list.sh sweep [--dry-run]             every open list: an item whose PR merged is
+#                                                ticked, one whose PR closed unmerged is free
+#                                                again, and a list with nothing left closes
 #
 # `-` reads the issue body from stdin, so a caller holding bodies from one batched
 # read (the coordinator) counts without asking GitHub again.
 #
+# An item is ticked only when the pull request that fixed it merges. Ticked during
+# the build, an item whose PR never landed was marked done and lost; taken by two
+# runs, it was fixed twice. So a run records what it took (take), ship reserves
+# those items for its PR (reserve), and the coordinator's housekeeping settles them
+# once the PR is merged or closed (sweep). A list closes only when it has no item
+# left, never by a PR: its own PR says "Refs", not "Closes".
+#
 # A list is an issue labelled labels.polishList (default polish-list) and
 # <labels.screenPrefix><slug> (default screen:<slug>), opened as P3, ready, type:bug.
-# A builder on a ticket for that screen fixes its unticked items in the same change
-# (briefs/build.md); the coordinator starts a list on its own only once it holds
-# coordinator.polishListFull items, or when nothing else can start.
 #
 # WHY: of 1,000 tickets filed 8-18 Oct 2026, 380 were follow-ups from finished work,
 # and 200 of the 206 still open were graded Minor. Each one became its own build,
@@ -26,37 +38,74 @@ set -uo pipefail
 
 die() { echo "polish-list: $*" >&2; exit 2; }
 LOCK="$STATE_DIR/swarm/polish-list.lock"
+TAKEN_DIR="$STATE_DIR/swarm/polish-taken"
+LOCK_STALE_SEC=30
+LOCK_WAIT_SEC=45
+TOKEN="$$.$RANDOM.$(date +%s)"
 
-# Two builders on one screen add at once: read, append, write would drop one item.
+# Two writers on one list at once: read, change, write would drop one change. A
+# holder that died leaves the lock: older than LOCK_STALE_SEC is nobody's, and a
+# waiter outlasts that age, so it breaks a dead lock rather than giving up first.
+# Only the lock this process took is removed on exit: a waiter that broke a stale
+# lock must not have it removed by the slow holder that left it.
 lock() {
-  local i=0
+  local start; start=$(date +%s)
   mkdir -p "$(dirname "$LOCK")" 2>/dev/null
   until mkdir "$LOCK" 2>/dev/null; do
-    # A holder that died leaves the lock: older than a minute is nobody's.
-    if [ $(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0) )) -gt 60 ]; then
+    if [ $(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0) )) -gt "$LOCK_STALE_SEC" ]; then
       rm -rf "$LOCK"; continue
     fi
-    i=$((i+1)); [ "$i" -lt 100 ] || die "another add held the lock for 20s — nothing added"
+    [ $(( $(date +%s) - start )) -lt "$LOCK_WAIT_SEC" ] || die "another writer held the lock for ${LOCK_WAIT_SEC}s — nothing changed"
     sleep 0.2
   done
-  trap 'rm -rf "$LOCK"' EXIT
+  printf '%s\n' "$TOKEN" > "$LOCK/owner"
+  trap unlock EXIT
 }
+unlock() { [ "$(cat "$LOCK/owner" 2>/dev/null)" = "$TOKEN" ] && rm -rf "$LOCK"; return 0; }
 
 slug_ok() { case "$1" in ''|*[!a-z0-9-]*) return 1 ;; *) return 0 ;; esac; }
+num_ok()  { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 screen_name() { printf '%s' "$1" | tr '-' ' ' | awk '{ for (i = 1; i <= NF; i++) $i = toupper(substr($i, 1, 1)) substr($i, 2); print }'; }
 one_line() { printf '%s' "$*" | tr '\n\t' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]][[:space:]]*/ /g'; }
 
 body_of() { # <issue|-> — the body, or 1 when it could not be read
   if [ "$1" = - ]; then cat; return 0; fi
-  case "$1" in ''|*[!0-9]*) die "'$1' is not an issue number" ;; esac
+  num_ok "$1" || die "'$1' is not an issue number"
   local j; j=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json body 2>/dev/null) || return 1
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$j" || return 1
   jq -r '.body // ""' <<<"$j"
 }
+write_body() { # <issue> — the new body on stdin
+  swarm_gh issue edit "$1" --repo "$REPO_SLUG" --body-file - >/dev/null 2>&1
+}
 
-# The task lines under "## Items", up to the next heading. CRLF from the web editor too.
-items_section() { tr -d '\r' | awk '/^##[ \t]/ { inside = ($0 ~ /^##[ \t]+Items[ \t]*$/); next } inside'; }
-unticked() { items_section | sed -n 's/^[[:space:]]*[-*] \[ \] //p'; }
+# Every task line under "## Items", up to the next heading, as
+# <state x|space> \t <pr or empty> \t <text>. CRLF from the web editor too.
+ITEMS_AWK='
+  /^##[ \t]/ { inside = ($0 ~ /^##[ \t]+Items[ \t]*$/); next }
+  inside && match($0, /^[ \t]*[-*] \[[ xX]\] /) {
+    st = (substr($0, RSTART + RLENGTH - 3, 1) == " ") ? " " : "x"
+    text = substr($0, RSTART + RLENGTH); pr = ""
+    if (match(text, / \(in PR #[0-9]+\)$/)) { pr = substr(text, RSTART + 9, RLENGTH - 10); text = substr(text, 1, RSTART - 1) }
+    print st "\t" pr "\t" text
+  }'
+all_items() { tr -d '\r' | awk "$ITEMS_AWK"; }
+free_items() { all_items | awk -F'\t' '$1 == " " && $2 == "" { print $3 }'; }
+
+# set_item <text> <state x|space> <pr or empty> — rewrites that item's line; 1 when absent.
+set_item() {
+  tr -d '\r' | ITEM="$1" ST="$2" PR="$3" awk '
+    /^##[ \t]/ { inside = ($0 ~ /^##[ \t]+Items[ \t]*$/) }
+    inside && !done && match($0, /^[ \t]*[-*] \[[ xX]\] /) {
+      lead = substr($0, 1, RSTART - 1); text = substr($0, RSTART + RLENGTH)
+      sub(/ \(in PR #[0-9]+\)$/, "", text)
+      if (text == ENVIRON["ITEM"]) {
+        $0 = lead "- [" ENVIRON["ST"] "] " text (ENVIRON["PR"] != "" ? " (in PR #" ENVIRON["PR"] ")" : ""); done = 1
+      }
+    }
+    { print }
+    END { exit !done }'
+}
 
 for_screen() { # <slug>
   slug_ok "$1" || die "a screen slug is lower-case letters, digits and dashes: '$1'"
@@ -77,7 +126,7 @@ open_list() { # <slug> — opens the screen's list, prints its number
   url=$(swarm_gh issue create --repo "$REPO_SLUG" --title "Polish list: $name" \
           --label "$LBL_POLISH_LIST" --label "$LBL_SCREEN_PREFIX$slug" --label P3 \
           --label "$LBL_READY" --label type:bug \
-          --body "Small fixes for the $name screen, graded Minor. A ticket for this screen fixes the unticked ones in its own change and ticks them; the list ships on its own only once it is full.
+          --body "Small fixes for the $name screen, graded Minor. A ticket for this screen fixes the free ones in its own change; each is ticked when the pull request that fixed it merges, and the list closes when nothing is left on it.
 
 ## Items
 " 2>/dev/null) || die "could not open a polish list for $slug"
@@ -95,8 +144,8 @@ add() { # <slug> <text…>
   n=$(for_screen "$slug") || die "the open polish lists could not be read — nothing added"
   [ -n "$n" ] || n=$(open_list "$slug") || exit 2
   body=$(body_of "$n") || die "#$n could not be read — nothing added"
-  # Idempotent on the item's text: ticked or not, it is already on the list.
-  if printf '%s\n' "$body" | items_section | sed -n 's/^[[:space:]]*[-*] \[[ xX]\] //p' | grep -qxF -- "$text"; then
+  # Idempotent on the item's text: ticked, reserved or free, it is already on the list.
+  if printf '%s\n' "$body" | all_items | cut -f3 | grep -qxF -- "$text"; then
     echo "#$n already lists: $text"; return 0
   fi
   new=$(printf '%s\n' "$body" | tr -d '\r' | ITEM="- [ ] $text" awk '
@@ -109,36 +158,85 @@ add() { # <slug> <text…>
       for (i = at + 1; i <= stop; i++) if (line[i] ~ /[^ \t]/) last = i
       for (i = 1; i <= n; i++) { print line[i]; if (i == last) print ENVIRON["ITEM"] }
     }')
-  printf '%s\n' "$new" | swarm_gh issue edit "$n" --repo "$REPO_SLUG" --body-file - >/dev/null 2>&1 \
-    || die "#$n could not be written — nothing added"
+  printf '%s\n' "$new" | write_body "$n" || die "#$n could not be written — nothing added"
   echo "#$n: added $text"
 }
 
-tick() { # <issue> <text…>
-  local n="${1:-}" text body new
-  shift || true
-  text=$(one_line "$*"); [ -n "$text" ] || die "usage: polish-list.sh tick <issue> <text…>"
+take() { # <issue> <ticket> <text…>
+  local n="${1:-}" t="${2:-}" text body f
+  shift 2 2>/dev/null || true
+  num_ok "$n" && num_ok "$t" || die "usage: polish-list.sh take <issue> <ticket> <text…>"
+  text=$(one_line "$*"); [ -n "$text" ] || die "usage: polish-list.sh take <issue> <ticket> <text…>"
+  body=$(body_of "$n") || die "#$n could not be read"
+  printf '%s\n' "$body" | free_items | grep -qxF -- "$text" \
+    || { echo "#$n has no free item: $text (ticked, reserved by a pull request, or not on the list)" >&2; return 1; }
+  mkdir -p "$TAKEN_DIR"; f="$TAKEN_DIR/$t.tsv"
+  grep -qxF -- "$n	$text" "$f" 2>/dev/null || printf '%s\t%s\n' "$n" "$text" >> "$f"
+  echo "#$n: taken for #$t — ticked when its pull request merges: $text"
+}
+
+reserve() { # <issue> <pr> <text…>
+  local n="${1:-}" pr="${2:-}" text body new cur
+  shift 2 2>/dev/null || true
+  num_ok "$n" && num_ok "$pr" || die "usage: polish-list.sh reserve <issue> <pr> <text…>"
+  text=$(one_line "$*"); [ -n "$text" ] || die "usage: polish-list.sh reserve <issue> <pr> <text…>"
   lock
   body=$(body_of "$n") || die "#$n could not be read"
-  new=$(printf '%s\n' "$body" | tr -d '\r' | ITEM="$text" awk '
-    /^##[ \t]/ { inside = ($0 ~ /^##[ \t]+Items[ \t]*$/) }
-    inside && !done { s = $0; sub(/^[ \t]*[-*] \[ \] /, "", s)
-      if (s != $0 && s == ENVIRON["ITEM"]) { sub(/\[ \]/, "[x]"); done = 1 } }
-    { print }
-    END { exit !done }') || { echo "#$n has no unticked item: $text" >&2; return 1; }
-  printf '%s\n' "$new" | swarm_gh issue edit "$n" --repo "$REPO_SLUG" --body-file - >/dev/null 2>&1 \
-    || die "#$n could not be written"
-  echo "#$n: ticked $text"
+  cur=$(printf '%s\n' "$body" | all_items | awk -F'\t' -v t="$text" '$3 == t { print $1 "\t" $2; exit }')
+  case "$cur" in
+    " 	$pr") echo "#$n: already reserved for PR #$pr: $text"; return 0 ;;
+    " 	")    ;;
+    *) echo "#$n: not free to reserve for PR #$pr: $text (${cur:-not on the list})" >&2; return 1 ;;
+  esac
+  new=$(printf '%s\n' "$body" | set_item "$text" " " "$pr") || return 1
+  printf '%s\n' "$new" | write_body "$n" || die "#$n could not be written"
+  echo "#$n: reserved for PR #$pr: $text"
+}
+
+# sweep — settles every reservation on every open list from its PR's state, in one
+# read of the lists and one batched read of the PRs they name.
+sweep() {
+  local dry=0 w="" lists prs states n body new pr st text left done_n changed
+  [ "${1:-}" = --dry-run ] && { dry=1; w="would be "; }
+  lock
+  lists=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$LBL_POLISH_LIST" --limit 200 \
+            --json number,body 2>/dev/null) || die "the open polish lists could not be read"
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$lists" || die "the open polish lists could not be read"
+  prs=$(jq -r '.[].body // ""' <<<"$lists" | all_items | awk -F'\t' '$1 == " " && $2 != "" { print $2 }' | sort -un | tr '\n' ' ')
+  states="{}"
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  if [ -n "${prs// /}" ]; then states=$(gh_issues_batch $prs 2>/dev/null) || states="{}"; fi
+  for n in $(jq -r '.[].number' <<<"$lists"); do
+    body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$lists"); new="$body"; changed=0
+    while IFS=$'\t' read -r st pr text; do
+      [ "$st" = " " ] && [ -n "$pr" ] || continue
+      case "$(jq -r --arg p "$pr" '.[$p].state // empty' <<<"$states")" in
+        MERGED) new=$(printf '%s\n' "$new" | set_item "$text" x "$pr") && changed=1 && echo "#$n: ${w}ticked — PR #$pr merged: $text" ;;
+        CLOSED) new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — PR #$pr closed unmerged: $text" ;;
+      esac
+    done <<<"$(printf '%s\n' "$body" | all_items)"
+    left=$(printf '%s\n' "$new" | all_items | awk -F'\t' '$1 == " "' | grep -c .)
+    done_n=$(printf '%s\n' "$new" | all_items | awk -F'\t' '$1 == "x"' | grep -c .)
+    [ "$dry" = 1 ] && { [ "$left" -gt 0 ] || [ "$done_n" -eq 0 ] || echo "#$n: would be closed — every item is done"; continue; }
+    if [ "$changed" = 1 ]; then printf '%s\n' "$new" | write_body "$n" || { echo "#$n could not be written" >&2; continue; }; fi
+    if [ "$left" -eq 0 ] && [ "$done_n" -gt 0 ]; then
+      swarm_gh issue close "$n" --repo "$REPO_SLUG" --comment "Every item on this list is fixed and merged." >/dev/null 2>&1 \
+        && echo "#$n: closed — every item is done" || echo "#$n could not be closed" >&2
+    fi
+  done
 }
 
 case "${1:-}" in
   add)        shift; add "$@" ;;
-  tick)       shift; tick "$@" ;;
+  take)       shift; take "$@" ;;
+  taken)      num_ok "${2:-}" || die "usage: polish-list.sh taken <ticket>"; cat "$TAKEN_DIR/$2.tsv" 2>/dev/null || true ;;
+  reserve)    shift; reserve "$@" ;;
+  sweep)      shift; sweep "$@" ;;
   items)      body=$(body_of "${2:?usage: polish-list.sh items <issue|->}") || die "#$2 could not be read"
-              printf '%s\n' "$body" | unticked ;;
+              printf '%s\n' "$body" | free_items ;;
   count)      body=$(body_of "${2:?usage: polish-list.sh count <issue|->}") || die "#$2 could not be read"
-              printf '%s\n' "$body" | unticked | grep -c . || true ;;
+              printf '%s\n' "$body" | free_items | grep -c . || true ;;
   for-screen) shift; for_screen "${1:-}" || die "the open polish lists could not be read" ;;
-  -h|--help|"") sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)          die "unknown command '$1'" ;;
 esac

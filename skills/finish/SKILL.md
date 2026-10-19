@@ -429,6 +429,12 @@ EOF
 )"
 ```
 
+**A polish list's PR says `Refs #N`, never `Closes`** (a ticket labelled
+`polish-list`): the list closes only when nothing is left on it. Reserve each item
+the change fixed for the PR, so no other run takes it; the coordinator ticks it
+when the PR merges:
+`bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" reserve <list> <pr> "<item>"`.
+
 `## Evidence routes` is what CI photographs: a contiguous list, one route per line,
 each starting `/`, ended by a blank line. Delete the section on a diff that changes
 nothing a user sees.
