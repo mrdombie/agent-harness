@@ -236,7 +236,7 @@ gh_prs_paged() {
       size=$(( size / 2 )); [ "$size" -ge 5 ] || size=5
       sleep "${GH_PRS_RETRY_SEC:-2}"
     done
-    out=$(jq -c --argjson acc "$out" "\$acc + [.data.repository.pullRequests.nodes[] | {${proj#,}}]" <<<"$page") || { rm -f "$err"; return 1; }
+    out=$(_gh_jq_acc "$out" "\$acc + [.data.repository.pullRequests.nodes[] | {${proj#,}}]" <<<"$page") || { rm -f "$err"; return 1; }
     jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == true' >/dev/null 2>&1 <<<"$page" || break
     after=$(jq -r '.data.repository.pullRequests.pageInfo.endCursor // ""' <<<"$page")
     [ -n "$after" ] || { rm -f "$err"; return 1; }
@@ -258,6 +258,19 @@ gh_call() {
   if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" || true; fi
   cat "$e" >&2; rm -f "$e"
   return "$rc"
+}
+
+# _gh_jq_acc <acc-json> <filter> [jq args…] — jq -c on stdin with $acc bound to
+# <acc-json>, handed over in a file, never as an argument: Linux caps one argument
+# at 128KB (MAX_ARG_STRLEN), and 25 open PRs with their check rollups pass it, so
+# `--argjson acc` failed the second page of gh_prs_paged every time (2026-10-19;
+# macOS has no per-argument cap, which is why it passed there).
+_gh_jq_acc() {
+  local acc="$1" filter="$2" f rc; shift 2
+  f=$(mktemp "${TMPDIR:-/tmp}/ghacc.XXXXXX") || return 1
+  printf '%s' "$acc" > "$f"
+  jq -c --slurpfile _acc "$f" "$@" "\$_acc[0] as \$acc | $filter"; rc=$?
+  rm -f "$f"; return "$rc"
 }
 
 _gh_batch_repo() { # sets _o and _r from REPO_SLUG / GH_REPO
@@ -285,7 +298,7 @@ gh_issues_batch() {
   _ghb_flush() {
     [ -n "$q" ] || return 0
     if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
-      part=$(jq -c --argjson acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
+      part=$(_gh_jq_acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
               | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
                                                    + (if has("body") then {body: (.body // "")} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
       [ -n "$part" ] && out="$part" || fail=1
@@ -293,9 +306,9 @@ gh_issues_batch() {
       fail=1
       for one in $nums; do
         part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt${b:+,body}" 2>/dev/null) || continue
-        part=$(jq -c --argjson acc "$out" --arg n "$one" 'select(type == "object" and .state != null)
+        part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
                 | $acc + {($n): ({number: ($n|tonumber), state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels[]?.name]}
-                                 + (if has("body") then {body: (.body // "")} else {} end))}' <<<"$part" 2>/dev/null)
+                                 + (if has("body") then {body: (.body // "")} else {} end))}' --arg n "$one" <<<"$part" 2>/dev/null)
         [ -z "$part" ] || out="$part"
       done
     fi
@@ -318,7 +331,7 @@ gh_pr_commits_batch() {
   _ghb_flush() {
     [ -n "$q" ] || return 0
     if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
-      part=$(jq -c --argjson acc "$out" '$acc + ([.data.repository | to_entries[] | select(.key | test("^p[0-9]+$")) | select(.value | type == "object")
+      part=$(_gh_jq_acc "$out" '$acc + ([.data.repository | to_entries[] | select(.key | test("^p[0-9]+$")) | select(.value | type == "object")
               | {key: (.key | ltrimstr("p")), value: {headRefOid: (.value.headRefOid // ""),
                  commits: [.value.commits.nodes[]?.commit | {oid, message: (.message // ""), files: .changedFilesIfAvailable,
                    parents: (.parents.totalCount // 0), parentOids: [.parents.nodes[]?.oid]}]}}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
@@ -343,9 +356,9 @@ gh_prs_by_head_batch() {
   _ghb_flush() {
     [ -n "$q" ] || return 0
     if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
-      part=$(jq -c --argjson acc "$out" --argjson map "$map" '$acc + ([.data.repository | to_entries[]
+      part=$(_gh_jq_acc "$out" '$acc + ([.data.repository | to_entries[]
               | select($map[.key] != null)
-              | {key: $map[.key], value: [.value.nodes[]? | {number, state}]}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
+              | {key: $map[.key], value: [.value.nodes[]? | {number, state}]}] | from_entries)' --argjson map "$map" <<<"$part" 2>/dev/null) || part=""
       [ -n "$part" ] && out="$part" || fail=1
     else fail=1; fi
     q=""; k=0; map="{}"

@@ -62,6 +62,17 @@ want "in the shape gh pr list prints, field for field" "true" \
   "$(bash -c '. "$1/gh-batch.sh"; gh_prs_paged "$2"' _ "$HERE" "$F" | jq --slurpfile want "$FIX/prs.json" '. == $want[0]' 2>/dev/null)"
 want "the shared copy holds it too"              "81" "$(jq 'length' "$FIX/state/prs.json" 2>/dev/null)"
 
+echo "--- rollups as big as real ones: the pages add up past one argument's 128KB ---"
+# Linux refuses a single argument over 128KB; 25 real PRs' rollups pass it, so the
+# second page failed when the list so far was handed to jq as --argjson.
+cp "$FIX/prs.json" "$FIX/small.json"
+jq '[.[] | .statusCheckRollup[0].detailsUrl += ("x" * 4096)]' "$FIX/small.json" > "$FIX/prs.json"
+: > "$FIX/gh.log"
+out=$(open_prs 2>&1); rc=$?
+want "the read succeeds"                         "0" "$rc"
+want "every open PR comes back"                  "81" "$(jq 'length' <<<"$out" 2>/dev/null)"
+cp "$FIX/small.json" "$FIX/prs.json"
+
 echo "--- a page that times out is asked again smaller ---"
 export FAKE_GH_PRS_MAX=20
 : > "$FIX/gh.log"
