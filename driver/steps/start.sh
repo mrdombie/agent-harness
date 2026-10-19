@@ -98,9 +98,11 @@ driver_step_start() { # <ticket>
   local owt prs
   owt=$(driver_state_get "$t" worktree)
   if [ -z "$owt" ] || [ ! -d "$owt" ]; then
-    if ! prs=$(driver_open_prs_for "$t"); then
-      driver_say "✋ start: could not ask GitHub whether #$t already has an open pull request, so a branch cut now might sit beside one."
-      return "$DRIVER_E_REFUSED"
+    # Unreadable is not "none", and not a reason to park either: the ticket is left
+    # ready, unclaimed, for the next tick.
+    if ! prs=$(driver_open_prs_for_patient "$t"); then
+      driver_say "⏳ start: could not ask GitHub whether #$t already has an open pull request, so a branch cut now might sit beside one. Left as it was for the next tick."
+      return "$DRIVER_E_UNREAD"
     fi
     if [ -n "$prs" ]; then
       driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."

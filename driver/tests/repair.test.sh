@@ -238,7 +238,7 @@ want "no model was called"             "" "$(cat "$CLAUDE_LOG")"
 want_in "and says why"                 'nothing red' "$out"
 
 echo "--- an unreadable PR is not a green one: the model is asked, and told ---"
-setup 313; echo "pr list" > "$FIX/gh-fail"
+setup 313; echo "open-prs" > "$FIX/gh-fail"
 git -C "$WT" commit -q --allow-empty -m "fix: x"
 answer "$(repaired "$(gate_fix 'bash lint.sh')")"
 out=$(driver_step_repair 313 2>&1); rc=$?

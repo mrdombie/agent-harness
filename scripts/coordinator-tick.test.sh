@@ -512,7 +512,7 @@ want "an unreadable claim list spawns nothing" "" "$(spawned)"
 want_in "and says so"                      'claim list could not be read' "$out"
 want_in "and tells the owner"              'cannot read the claim list' "$(cat "$FIX/notify.log")"
 fresh; queue 501; rm -f "$FIX/gh/prs-all.json" "$FIX/gh/empty.json"
-printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr list") exit 1 ;; esac\nexec "%s" "$@"\n' "$BIN/gh" > "$FIX/gh-nopr"; chmod +x "$FIX/gh-nopr"
+printf '#!/usr/bin/env bash\ncase "$*" in *OpenPullRequests*) exit 1 ;; esac\nexec "%s" "$@"\n' "$BIN/gh" > "$FIX/gh-nopr"; chmod +x "$FIX/gh-nopr"
 out=$(COORDINATOR_SHADOW=0 SWARM_GH="$FIX/gh-nopr" tick)
 want "unreadable pull requests spawn nothing" "" "$(spawned)"
 want_in "and says so"                      'pull requests could not be read' "$out"

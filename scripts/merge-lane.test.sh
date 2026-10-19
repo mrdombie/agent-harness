@@ -19,6 +19,9 @@ cfg '.merge = {method: "squash"} | .gates = {requiredChecks: ["build", "lint"]} 
 cat > "$BIN/gh" <<'GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in "api graphql "*OpenPullRequests*)
+  [ -f "$FIX/gh/prs-all.json" ] || exit 1; exec bash "$GH_OPEN_PRS_PAGE" "$FIX/gh/prs-all.json" "$@" ;;
+esac
 q=""; prev=""; ep=""
 for a in "$@"; do
   case "$prev" in -q|--jq) q="$a" ;; esac

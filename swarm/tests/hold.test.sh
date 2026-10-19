@@ -66,7 +66,7 @@ echo "--- a hold placed MID-PASS still stops the attempt (#45) ---"
 # places it the moment repair-watch lists the pull requests.
 fix_prs "13 103 dddddddddd1 CLEAN 0 typecheck"; fix_issue 103 OPEN "status:in-review,project:widgets"
 : > "$SPAWNS"; : > "$TRIED"
-printf '#!/usr/bin/env bash\n[ "$1 $2" = "pr list" ] && printf "mid-pass (held by the test)\\n" > "%s"\nexec "%s" "$@"\n' \
+printf '#!/usr/bin/env bash\ncase "$*" in *OpenPullRequests*) printf "mid-pass (held by the test)\\n" > "%s" ;; esac\nexec "%s" "$@"\n' \
   "$STATE/swarm/HOLD" "$BIN/gh" > "$FIX/gh-holds"; chmod +x "$FIX/gh-holds"
 out=$(SWARM_GH="$FIX/gh-holds" bash "$W" --only repair 2>&1)
 want "mid-pass: no repair spawned"    "0" "$(grep -c . "$SPAWNS")"

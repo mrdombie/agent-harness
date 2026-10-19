@@ -107,9 +107,9 @@ out=$(NEEDSME_WATCH_MAX_LOOPS=2 bash "$W" wait --every 0); rc=$?
 want "a new key wakes it"                  "0" "$rc"
 want_in "and it prints the new row"        '^decision:5:name' "$out"
 bash "$W" done decision:5:name
-gh_before=$(grep -c 'pr list' "$FIX/gh.log")
+gh_before=$(grep -c 'OpenPullRequests' "$FIX/gh.log")
 NEEDSME_WATCH_MAX_LOOPS=5 bash "$W" wait --every 0 --forge-every 3600 >/dev/null 2>&1
-want "the forge is read once per forge interval, not every loop" "1" "$(( $(grep -c 'pr list' "$FIX/gh.log") - gh_before ))"
+want "the forge is read once per forge interval, not every loop" "1" "$(( $(grep -c 'OpenPullRequests' "$FIX/gh.log") - gh_before ))"
 prs 1 2 3 4 5
 out=$(NEEDSME_WATCH_MAX_LOOPS=2 bash "$W" wait --every 0)
 want_in "a fifth green held PR wakes it"   '^signoff-batch:1@' "$out"
