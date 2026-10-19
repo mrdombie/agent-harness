@@ -14,7 +14,8 @@
 # The stubs answer from files the test writes, so a suite never touches the
 # network and never starts an agent:
 #   $FIX/gh/issue-<n>.json   what `gh issue view <n>` returns
-#   $FIX/gh/prs-<key>.json   what a `gh pr list` matching <key> returns
+#   $FIX/gh/prs-<key>.json   what a `gh pr list` matching <key> returns; prs-all.json
+#                            also answers the paged open-PR read (gh_open_prs)
 #   $FIX/gh/api-<endpoint>.json  what `gh api <endpoint>` returns; / ? & = -> _
 #   $FIX/gh/pr-commits-<n>.json  PR <n>'s node in a batched commits read (gh_pr_commits_batch)
 #   $FIX/live.json           what the live view answers; ABSENT = no answer
@@ -25,6 +26,7 @@ swarm_fixture() {
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; SPAWNS="$FIX/spawns.log"
+  export GH_OPEN_PRS_FAKE; GH_OPEN_PRS_FAKE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/fixtures/gh-open-prs.sh"
   mkdir -p "$REPO/.claude" "$STATE/runs" "$STATE/logs" "$STATE/swarm" "$BIN" "$FIX/gh"
   : > "$GH_LOG"; : > "$SPAWNS"
   # The integration branch is green unless a test says otherwise (fix_trunk).
@@ -106,6 +108,8 @@ case "$1 $2" in
     emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
   "api graphql")
+    # The open-PR read (gh_open_prs), paged, answered from prs-all.json.
+    case "$*" in *'pullRequests(states:[OPEN]'*) exec bash "$GH_OPEN_PRS_FAKE" "$FIX/gh/prs-all.json" "$@" ;; esac
     # A batched issue read (scripts/gh-batch.sh): each iN alias answered from
     # issue-N.json, an unknown number null, the way GitHub answers one.
     query=""; for a in "$@"; do case "$a" in query=*) query="${a#query=}" ;; esac; done

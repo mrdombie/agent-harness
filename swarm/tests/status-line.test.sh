@@ -128,7 +128,7 @@ chmod +x "$BIN/curl-rec"
 out=$(SWARM_CURL="$BIN/curl-rec" SWARM_STATUS_NO_REFRESH=1 bash "$SL" --render 2>&1)
 want "it prints the cached line"  "3 agents working · 2 need you" "$out"
 want "the live view was not read" "0" "$(grep -c . "$CURL_LOG" | tr -d ' ')"
-want "GitHub was not asked"       "0" "$(grep -c 'pr list' "$GH_LOG" | tr -d ' ')"
+want "GitHub was not asked"       "0" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' ')"
 
 echo "--- the hold count is cached too, so a recompute does not re-ask ---"
 fresh
@@ -137,7 +137,7 @@ printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]},{"number":2,"la
 print >/dev/null
 : > "$GH_LOG"
 want "second compute agrees"  "1 agent working · 3 need you" "$(print)"
-want "and asked GitHub again" "0" "$(grep -c 'pr list' "$GH_LOG" | tr -d ' ')"
+want "and asked GitHub again" "0" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' ')"
 
 echo "--- a cache older than the hard limit is stale, not current ---"
 # Written deliberately, so the assertion below names the text that is actually
@@ -318,7 +318,7 @@ printf '[{"number":1,"labels":[{"name":"needs:human-approval"}]},{"number":2,"la
 : > "$GH_LOG"
 out=$(render)
 want    "the agents half lands"  "2 agents working · approvals unknown" "$out"
-want    "the forge was not read" "0" "$(grep -c 'pr list' "$GH_LOG" | tr -d ' ')"
+want    "the forge was not read" "0" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' ')"
 # …and the detached refresh, which MAY call it, fills the count in.
 want_in "a full compute has it"  "3 need you" "$(print)"
 

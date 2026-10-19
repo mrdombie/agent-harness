@@ -762,7 +762,7 @@ printf 'The owner answered q7: two columns.\n' > "$FIX/brief-j.md"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 bt 427 --brief "$FIX/brief-j.md"); rc=$?
 rm -f "$FIX/gh-fail"
 want "it still refuses"                      "2" "$rc"
-want "after asking three times"              "3" "$(grep -c '^pr list' "$GH_LOG")"
+want "after asking three times"              "3" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG")"
 want "the ticket is back on the queue"       "427" "$(jq -r '.tickets[]? | select(.n == 427) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
 want "with its note"                         "The owner answered q7: two columns." "$(jq -r '.tickets[]? | select(.n == 427) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 want_in "and it says so"                     'back on the queue' "$out"
@@ -770,7 +770,7 @@ reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
 echo "pr list" > "$FIX/gh-once"
 cat > "$BIN/gh-flaky" <<'SH'
 #!/usr/bin/env bash
-if [ "$1 $2" = "pr list" ] && [ -f "$FIX/gh-once" ]; then rm -f "$FIX/gh-once"; echo "flake" >&2; exit 1; fi
+if case "$*" in *'pullRequests(states:[OPEN]'*) true ;; *) false ;; esac && [ -f "$FIX/gh-once" ]; then rm -f "$FIX/gh-once"; echo "flake" >&2; exit 1; fi
 exec "$BIN/gh" "$@"
 SH
 chmod +x "$BIN/gh-flaky"
@@ -894,7 +894,7 @@ want "the note is the caller's words alone"    "The owner answered q9: yes." "$(
 echo "--- the open PRs come from the shared copy while it is young ---"
 reset_fakes; jq -n '[{number:78, headRefName:"tkt-517-x", isDraft:false}]' > "$FIX/gh/prs.json"; : > "$GH_LOG"; rm -f "$STATE/swarm/prs.json"
 ( . "$HERE/../driver-env.sh"; DRIVER_PRS_MAX_AGE=300; driver_open_prs_for 517 >/dev/null; driver_open_prs_for 517 >/dev/null )
-want "two reads, one call to GitHub"           "1" "$(grep -c '^pr list' "$GH_LOG")"
+want "two reads, one call to GitHub"           "1" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG")"
 printf '[]\n' > "$FIX/gh/prs.json"
 echo "--- a question goes to whoever owns its answer: the PM for ticket shape, the owner otherwise ---"
 # Every question used to park as the owner's: three of them on 2026-10-17/18 asked

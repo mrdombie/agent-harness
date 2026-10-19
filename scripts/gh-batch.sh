@@ -148,7 +148,20 @@ gh_batch_clock() { date -u -r "$1" +%H:%MZ 2>/dev/null || date -u -d "@$1" +%H:%
 # ---- the open pull requests, read once and shared ----------------------------
 # Every reader takes this file while it is younger than the age it can bear; past
 # that, the first one to ask reads GitHub for all of them. Its mtime is its time.
-GH_PRS_FIELDS="${GH_PRS_FIELDS:-number,headRefName,headRefOid,baseRefName,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt}"
+# Read in GraphQL pages of GH_PRS_PAGE (40): `gh pr list` asks for 100 at a time,
+# and with the check rollups GitHub answers 504 once ~50 PRs are open (2026-10-19).
+# Each PR comes out in `gh pr list --json` shape for these fields:
+GH_PRS_FIELDS="number,headRefName,headRefOid,baseRefName,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt"
+GH_PRS_PAGE="${GH_PRS_PAGE:-40}"
+GH_PRS_QUERY='query($owner:String!,$name:String!,$first:Int!,$after:String){repository(owner:$owner,name:$name){pullRequests(states:[OPEN],first:$first,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){totalCount pageInfo{hasNextPage endCursor} nodes{number title updatedAt headRefName headRefOid baseRefName isDraft mergeable mergeStateStatus labels(first:100){nodes{id name description color}} closingIssuesReferences(first:50){nodes{id number url repository{id name owner{id login}}}} commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status conclusion startedAt completedAt detailsUrl checkSuite{workflowRun{workflow{name}}}} ... on StatusContext{context state targetUrl createdAt}}}}}}}}}}}'
+# One page's nodes, flattened to the `gh pr list --json` shape.
+GH_PRS_FLAT_JQ='[.data.repository.pullRequests.nodes[] | {number, title, updatedAt, headRefName, headRefOid, baseRefName, isDraft, mergeable, mergeStateStatus,
+  labels: [.labels.nodes[]?],
+  closingIssuesReferences: [.closingIssuesReferences.nodes[]?],
+  statusCheckRollup: [.commits.nodes[-1]?.commit.statusCheckRollup.contexts.nodes[]?
+    | if .__typename == "StatusContext" or (has("context") and (has("name") | not))
+      then {__typename: "StatusContext", context, state, targetUrl, startedAt: .createdAt}
+      else {__typename: "CheckRun", name, workflowName: (.checkSuite.workflowRun.workflow.name // ""), status, conclusion, startedAt, completedAt, detailsUrl} end]}]'
 gh_prs_file() { printf '%s' "${GH_PRS_FILE:-$(dirname "$(gh_backoff_file)")/prs.json}"; }
 gh_prs_age() { # seconds since it was written; 1 when there is none
   local f m; f=$(gh_prs_file); [ -s "$f" ] || return 1
@@ -158,18 +171,46 @@ gh_prs_age() { # seconds since it was written; 1 when there is none
   printf '%s' $(( $(gh_batch_now) - m ))
 }
 
+# _gh_prs_page <first> [after] — one page's response body; 1 on any failure, 2
+# when GitHub timed out (502/504), which is worth one smaller try.
+_gh_prs_page() {
+  local e body rc
+  e=$(mktemp "${TMPDIR:-/tmp}/ghprs.XXXXXX") || return 1
+  body=$(gh_call api graphql -f query="$GH_PRS_QUERY" -f owner="$_o" -f name="$_r" -F first="$1" ${2:+-f after="$2"} 2>"$e"); rc=$?
+  if [ "$rc" -ne 0 ] || ! jq -e '(.errors | length) == 0 and (.data.repository.pullRequests.nodes | type == "array")' >/dev/null 2>&1 <<<"$body"; then
+    grep -qE 'HTTP 50[24]|Gateway Time-?out|Bad Gateway' "$e" 2>/dev/null; rc=$?; rm -f "$e"
+    [ "$rc" -eq 0 ] && return 2; return 1
+  fi
+  rm -f "$e"; printf '%s' "$body"
+}
+
 # gh_open_prs [max-age-sec] — the open PRs as a JSON array. 0 asks GitHub now (the
 # tick); otherwise the shared copy while it is that young. Below the allowance
 # floor only a 0 asks, and every other reader takes the copy whatever its age.
+# All or nothing: a page that fails, or a total that does not match GitHub's own
+# count, returns 1 and leaves the shared copy as it was.
 gh_open_prs() {
-  local max="${1:-${GH_PRS_MAX_AGE:-300}}" age f slug prs
+  local max="${1:-${GH_PRS_MAX_AGE:-300}}" age f _o _r page="$GH_PRS_PAGE" after="" body prs="[]" more rc total retried=0
   f=$(gh_prs_file)
   if age=$(gh_prs_age); then
     if [ "$max" -gt 0 ] && { [ "$age" -le "$max" ] || gh_allowance_low >/dev/null; }; then cat "$f"; return 0; fi
   fi
-  slug="${GH_REPO:-${REPO_SLUG:-}}"; [ -n "$slug" ] || return 1
-  prs=$(gh_call pr list --repo "$slug" --state open --limit 200 --json "$GH_PRS_FIELDS" 2>/dev/null)
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs" || return 1
+  _gh_batch_repo || return 1
+  while :; do
+    body=$(_gh_prs_page "$page" "$after"); rc=$?
+    if [ "$rc" -eq 2 ] && [ "$retried" = 0 ] && [ "$page" -gt 1 ]; then
+      retried=1; page=$(( (page + 1) / 2 )); continue
+    fi
+    [ "$rc" -eq 0 ] || return 1
+    prs=$(jq -c --argjson acc "$prs" '$acc + '"$GH_PRS_FLAT_JQ" <<<"$body" 2>/dev/null) || return 1
+    more=$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' <<<"$body")
+    total=$(jq -r '.data.repository.pullRequests.totalCount' <<<"$body")
+    [ "$more" = true ] || break
+    after=$(jq -r '.data.repository.pullRequests.pageInfo.endCursor // empty' <<<"$body")
+    [ -n "$after" ] || return 1
+  done
+  # Newest first, as `gh pr list` gives them; a PR opened or closed mid-read fails the count.
+  prs=$(jq -c --argjson n "$total" 'unique_by(.number) | if length == $n then sort_by(-.number) else error("count") end' <<<"$prs" 2>/dev/null) || return 1
   mkdir -p "$(dirname "$f")" 2>/dev/null
   printf '%s\n' "$prs" > "$f.$$" && mv -f "$f.$$" "$f"
   printf '%s\n' "$prs"

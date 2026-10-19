@@ -103,7 +103,7 @@ small=$(clash_calls 3); big=$(clash_calls 40)
 want "40 clashing PRs cost what 3 do"              "$small" "$big"
 want "and every one is still offered to finish"    "40" "$(grep -c 'FINISH PR' "$FIX/claimable.out" | tr -d ' ')"
 : > "$GH_LOG"; CLAIMABLE_PRS_FILE="$FIX/gh/prs-all.json" bash "$HERE/claimable-issues.sh" >/dev/null 2>&1
-want_not_in "a caller's PR read is reused, not asked again" '^pr list' "$(cat "$GH_LOG")"
+want_not_in "a caller's PR read is reused, not asked again" 'pullRequests\(states:\[OPEN\]' "$(cat "$GH_LOG")"
 
 echo "--- a queue refresh does not ask per scope: labels resolve once, members come with the candidates ---"
 fresh; rm -f "$FIX/gh"/issue-list*.json
@@ -157,7 +157,7 @@ want_not_in "and the judge"                        '^judge' "$(cat "$FIX/house.l
 want_in "the server sweep still runs (no GitHub)"  '^sweep' "$(cat "$FIX/house.log")"
 export SWARM_NOW=$(( $(date +%s) + 3600 )); : > "$GH_LOG"
 bash "$T" >/dev/null 2>&1
-want_in "once it ends, the tick asks again"        '^pr list' "$(cat "$GH_LOG")"
+want_in "once it ends, the tick asks again"        'pullRequests\(states:\[OPEN\]' "$(cat "$GH_LOG")"
 unset SWARM_NOW
 
 echo "--- a refusal doubles the backoff, up to a cap ---"
@@ -200,7 +200,7 @@ budget_pass() { # every reader once, after one tick: the open-PR reads they made
   bash "$HERE/../swarm/repair-watch.sh" --explain --only repair >/dev/null 2>&1
   SWARM_CLAIM_LOCK="$BIN/claim-show" SWARM_GIT=false SWARM_PRS_FILE="$STATE/swarm/prs.json" SWARM_GH_CALLS="$STATE/swarm/gh-calls.log" \
     node "$HERE/../swarm/live-view/progress.mjs" --gather '{"tickets":["501","502"],"ids":[],"repo":"acme/widgets"}' > "$FIX/gather.out" 2>/dev/null
-  grep -cE '^pr list' "$GH_LOG" | tr -d ' '
+  grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' '
 }
 want "five readers, one read of the open PRs"      "1" "$(budget_pass)"
 want_in "the live view read its agents' branches"   'tkt-501/work' "$(cat "$FIX/gather.out")"
@@ -214,7 +214,7 @@ want_in "the live view's calls are counted too"    'live-view' "$(cut -f2 "$STAT
 echo "--- below 10% left, the live view's gather and titles wait; the tick keeps its read ---"
 printf '%s 5000 %s\n' 300 $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"
 : > "$GH_LOG"; out=$(bash "$T" 2>&1)
-want_in "the tick still reads the open PRs"       '^pr list' "$(cat "$GH_LOG")"
+want_in "the tick still reads the open PRs"       'pullRequests\(states:\[OPEN\]' "$(cat "$GH_LOG")"
 want_in "and reports what is left"                 'left: GraphQL 300/5000' "$out"
 low=$(cd "$HERE/../swarm/live-view" && SWARM_GH_ALLOWANCE="$STATE/swarm/gh-allowance" node --input-type=module -e "
   import { allowanceLow } from './progress.mjs'; const l = allowanceLow(); console.log(l ? l.resource + ' ' + l.left : 'none')")
@@ -232,11 +232,11 @@ rm -f "$STATE/runs/claim-501-t.json"
 printf 'graphql\t%s\t5000\t%s\n' 300 $(( $(date +%s) + 1800 )) > "$STATE/swarm/gh-allowance"
 touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"
 bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
-want "an old copy still serves the watcher below the floor" "0" "$(grep -cE '^pr list' "$GH_LOG" | tr -d ' ')"
+want "an old copy still serves the watcher below the floor" "0" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' ')"
 printf '%s 5000 %s\n' 4000 $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"; bash "$T" >/dev/null 2>&1
 touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"
 bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
-want "above it, an old copy is read again"         "1" "$(grep -cE '^pr list' "$GH_LOG" | tr -d ' ')"
+want "above it, an old copy is read again"         "1" "$(grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' ')"
 
 echo "--- blind on a spent allowance: the alarm names the rate limit and its reset ---"
 fresh; queue_n repair 1
@@ -247,5 +247,70 @@ want_in "the tick names the limit and when it resets" "could not be read — Git
 want_in "and so does the owner's alarm"            "allowance is spent: GraphQL 0 of 5000 left until [0-9]{2}:[0-9]{2}Z" "$(cat "$FIX/house.log")"
 want_not_in "not the old guess"                    'gh auth or network' "$(cat "$FIX/house.log")"
 rm -f "$FIX/gh/ratelimit" "$FIX/gh/allowance"
+
+echo "--- 81 open PRs: read in pages GitHub can answer, all or nothing ---"
+# 2026-10-19: with 81 open, `gh pr list --limit 200` with the check rollups came back
+# HTTP 504 every tick (it asks GitHub for 100 a page; 50 answered in 8s) and the
+# coordinator started nothing for 23 minutes. This GitHub times out above 50 a page.
+cat > "$BIN/gh-504" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$1 $2 $*" in
+  "api graphql "*'pullRequests(states:[OPEN]'*) FAKE_PRS_504_ABOVE=50 exec bash "$GH_OPEN_PRS_FAKE" "$FIX/gh/prs-81.json" "$@" ;;
+  "pr list"*) l=30; p=""; for a in "$@"; do [ "$p" = --limit ] && l="$a"; p="$a"; done
+    [ "$l" -le 50 ] || { echo "HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)" >&2; exit 1; }
+    jq --argjson l "$l" 'sort_by(-.number) | .[:$l]' "$FIX/gh/prs-81.json" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$BIN/gh-504"
+jq -n '[range(1001; 1082) | {number: ., title: "PR \(.)", updatedAt: "2026-10-19T14:00:00Z", headRefName: "tkt-\(.)-x", headRefOid: "sha\(.)",
+  baseRefName: "develop", isDraft: (. % 7 == 0), mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+  labels: [{id: "L1", name: "needs:human-approval", description: "", color: "ff0000"}],
+  closingIssuesReferences: [{id: "I\(.)", number: (. - 500), url: "https://github.com/acme/widgets/issues/\(. - 500)",
+    repository: {id: "R1", name: "widgets", owner: {id: "O1", login: "acme"}}}],
+  statusCheckRollup: [
+    {__typename: "CheckRun", name: "build", workflowName: "CI", status: "COMPLETED", conclusion: "SUCCESS",
+     startedAt: "2026-10-19T13:00:00Z", completedAt: "2026-10-19T13:05:00Z", detailsUrl: "https://ci/\(.)"},
+    {__typename: "StatusContext", context: "design-critic", state: "PENDING", targetUrl: "https://critic/\(.)", startedAt: "2026-10-19T13:01:00Z"}]}]' \
+  > "$FIX/gh/prs-81.json"
+open_prs() { # [env…] — gh_open_prs 0 against the 504-above-50 GitHub; prints the numbers, then rc=N
+  local out rc
+  out=$(env "$@" SWARM_GH="$BIN/gh-504" GH_REPO=acme/widgets GH_PRS_FILE="$FIX/prs-81-copy.json" \
+        GH_BACKOFF_FILE="$FIX/backoff-81" GH_CALLS_FILE="$FIX/calls-81.log" \
+        bash -c '. "$1" || exit 9; gh_open_prs 0' _ "$HERE/gh-batch.sh" 2>/dev/null); rc=$?
+  printf '%s\n' "$out" | jq -r '[.[].number] | sort | map(tostring) | join(",")' 2>/dev/null; echo "rc=$rc"
+}
+pages() { grep -cE 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | tr -d ' '; }
+ALL81=$(jq -r '[.[].number] | sort | map(tostring) | join(",")' "$FIX/gh/prs-81.json")
+rm -f "$FIX/prs-81-copy.json"; : > "$GH_LOG"
+got=$(open_prs)
+want "all 81 come back"                            "$ALL81
+rc=0" "$got"
+want "in three pages of 40"                        "3" "$(pages)"
+want "and the shared copy holds all 81"            "81" "$(jq length "$FIX/prs-81-copy.json" 2>/dev/null)"
+want "newest first, as gh pr list gives them"      "1081" "$(jq '.[0].number' "$FIX/prs-81-copy.json" 2>/dev/null)"
+want "each PR in gh pr list's shape, every field the readers take" \
+  "$(jq -cS 'sort_by(.number)' "$FIX/gh/prs-81.json")" "$(jq -cS 'sort_by(.number)' "$FIX/prs-81-copy.json" 2>/dev/null)"
+
+echo "--- a page that times out is asked once more, smaller ---"
+rm -f "$FIX/prs-81-copy.json"; : > "$GH_LOG"
+got=$(open_prs GH_PRS_PAGE=80)
+want "80 a page 504s; 40 a page answers all 81"    "$ALL81
+rc=0" "$got"
+want_in "the second ask is half the size"          'first=40' "$(grep -E 'pullRequests\(states:\[OPEN\]' "$GH_LOG" | sed -n 2p)"
+: > "$GH_LOG"
+got=$(open_prs GH_PRS_PAGE=160)
+want "a second timeout fails the read"             "rc=1" "$(printf '%s' "$got" | tail -1)"
+want "after one retry, not a third ask"            "2" "$(pages)"
+
+echo "--- a partial read is never written as the open PRs ---"
+printf '[{"number":1}]\n' > "$FIX/prs-81-copy.json"; before=$(cat "$FIX/prs-81-copy.json")
+got=$(open_prs FAKE_PRS_FAIL_AFTER=c40)
+want "a failed second page fails the read"         "rc=1" "$(printf '%s' "$got" | tail -1)"
+want "and leaves the shared copy as it was"        "$before" "$(cat "$FIX/prs-81-copy.json")"
+got=$(open_prs FAKE_PRS_TOTAL=82)
+want "GitHub counting one more than it listed fails it" "rc=1" "$(printf '%s' "$got" | tail -1)"
+want "and leaves the copy too"                     "$before" "$(cat "$FIX/prs-81-copy.json")"
 
 exit $FAILED

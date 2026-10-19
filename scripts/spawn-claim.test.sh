@@ -609,10 +609,11 @@ CLAIM_CLASS=new dcase 4975 4975
 # Readied by a repair, auto-merge would land work its author left unfinished.
 cat > "$SB/bin/gh-prs" <<'STUB'
 #!/usr/bin/env bash
+case "$1 $2 $*" in "api graphql "*'pullRequests(states:[OPEN]'*) exec bash "$GH_OPEN_PRS_FAKE" "$SPAWN_TEST_PRS" "$@" ;; esac
 case "$1 $2" in "pr list") cat "$SPAWN_TEST_PRS" 2>/dev/null || echo '[]' ;; *) exit 1 ;; esac
 STUB
 chmod +x "$SB/bin/gh-prs"
-export SWARM_GH="$SB/bin/gh-prs" SWARM_PRS_MAX_AGE=0 SPAWN_TEST_PRS="$OUT/prs.json"
+export SWARM_GH="$SB/bin/gh-prs" SWARM_PRS_MAX_AGE=0 SPAWN_TEST_PRS="$OUT/prs.json" GH_OPEN_PRS_FAKE="$HERE/fixtures/gh-open-prs.sh"
 echo '[{"number":81,"headRefName":"tk-4981-x","isDraft":true},{"number":82,"headRefName":"tk-4982-x","isDraft":false},{"number":83,"headRefName":"tk-4983-x","isDraft":true}]' > "$OUT/prs.json"
 CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #81: red" dcase 4981 4981
 [ ! -f "$OUT/driver-seen" ] && [ -f "$OUT/seen" ] && ok "a repair of a draft the driver never built runs the prose claim" \

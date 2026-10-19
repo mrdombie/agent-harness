@@ -39,6 +39,7 @@ driver_fixture() {
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"
+  export GH_OPEN_PRS_FAKE; GH_OPEN_PRS_FAKE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/fixtures/gh-open-prs.sh"
   CLAUDE_ENV_LOG="$FIX/claude-env.log"
   mkdir -p "$REPO/.claude" "$STATE/driver" "$STATE/runs" "$STATE/logs" "$BIN" "$FIX/gh" "$FIX/ai"
   : > "$GH_LOG"; : > "$CLAUDE_LOG"; : > "$CLAUDE_ENV_LOG"
@@ -91,6 +92,12 @@ printf '%s\n' "$*" >> "$GH_LOG"
 if [ -f "$FIX/gh-fail" ] && grep -qxF "$1 $2" "$FIX/gh-fail"; then
   echo "gh: refused $1 $2 (induced)" >&2; exit 1
 fi
+# The paged open-PR read (gh_open_prs) is the `pr list` it replaced: answered from
+# prs.json, and refused by a "pr list" line in gh-fail.
+case "$1 $2 $*" in "api graphql "*'pullRequests(states:[OPEN]'*)
+  if [ -f "$FIX/gh-fail" ] && grep -qxF "pr list" "$FIX/gh-fail"; then echo "gh: refused the open-PR read (induced)" >&2; exit 1; fi
+  exec bash "$GH_OPEN_PRS_FAKE" "$FIX/gh/prs.json" "$@" ;;
+esac
 q=""; head=""; prev=""
 for a in "$@"; do
   case "$prev" in -q|--jq) q="$a" ;; --head) head="$a" ;; esac
