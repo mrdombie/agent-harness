@@ -263,7 +263,8 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # product work before our own tooling (coord_tooling); then new by kind; then the
 # queue's own position. A repair of any priority used to outrank every new
 # ticket, so a P3 red held a P0 build back. An entry put at the front stays first
-# overall. The tick's batched read ($ISSUES) is fresher than the seed: when it
+# overall. A queue seeded from the shared sheet (coordinator-sheet.sh) runs in the
+# sheet's order: its owner already ordered it. The tick's batched read ($ISSUES) is fresher than the seed: when it
 # holds a ticket, its labels decide that ticket's priority and kind.
 coord_queue_ordered() {
   local wide=0; [ "${1:-}" = --wide ] && wide=1
@@ -271,6 +272,7 @@ coord_queue_ordered() {
   coord_jq -r --argjson wide "$wide" --slurpfile iss <(printf '%s' "${ISSUES:-}" | jq -c 'objects' 2>/dev/null || true) \
     "$COORD_TICKET_JQ"'
      (($iss[0]) // {}) as $iss
+     | ((.source // "") == "sheet") as $sheet
      | .tickets | to_entries
      | map(.value as $t | ($iss[($t.n|tostring)] // null) as $i
          | (if $i then ($i.labels // []) else null end) as $ls
@@ -281,8 +283,10 @@ coord_queue_ordered() {
                  plist: (if $ls then ($ls | index($plist)) != null else ($t.plist // false) end),
                  tool: (if $ls then coord_tooling($ls; $i.title) else ($t.tooling // false) end),
                  rank: ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3)})
-     | sort_by(if .front then 0 else 1 end, (if .front then .pos else 0 end), .prin, .rank, (if .tool then 1 else 0 end),
-               (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos)
+     # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
+     | if $sheet then sort_by(if .front then 0 else 1 end, .pos)
+       else sort_by(if .front then 0 else 1 end, (if .front then .pos else 0 end), .prin, .rank, (if .tool then 1 else 0 end),
+               (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
                            (if .front or .kind == "half-built" then "1" else "0" end), (.note // "")]
