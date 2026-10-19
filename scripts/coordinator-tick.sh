@@ -124,6 +124,9 @@ for ended in "$RUNS_DIR"/*.ended; do
     if event "login-lost:$(swarm_day)" login-lost false "" "" "the agents' CLI is not logged in"; then
       bash "$NOTIFY" --class owner "login-lost:$(swarm_day)" "The agents' Claude login has gone: every run stops at once until someone runs /login on this machine"
     fi
+  elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
+    # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
+    event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
   elif [ "$code" = 26 ]; then
     # The driver's DRIVER_E_UNREAD: GitHub could not be read, nothing parked, the ticket is picked again.
     say "unread: run $rid left #${ticket:-?} as it was — GitHub could not be read; the next tick tries again"

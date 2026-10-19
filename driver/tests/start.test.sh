@@ -122,7 +122,9 @@ echo "--- a peer already holds the claim ---"
 fix_issue 106 OPEN "status:ready"
 claim_row 106 somebody@else tkt-106/theirs "$FIX/theirs"
 out=$(driver_step_start 106 2>&1); rc=$?
-want "a peer's claim is never adopted" "24" "$rc"
+# 29, busy: never adopted, and never a refusal a person must clear (build-ticket requeues it).
+want "a peer's claim is never adopted, and the run is busy" "29" "$rc"
+want_in "the reason is on the record" 'peer on another machine holds the claim' "$(driver_state_get 106 park_note)"
 want_in "and it says a peer holds it"  'peer' "$out"
 want "no worktree was cut"             ""     "$(driver_state_get 106 worktree)"
 # There are TWO ways a peer's claim shows up, and they get different wording because
@@ -165,7 +167,8 @@ fix_issue 108 OPEN "status:ready"
 claim_row 108 "${CLAIM_AGENT:-tester@fixture}" "tkt-108/a-peer-got-here-first" "$FIX/peer-wt"
 mkdir -p "$FIX/peer-wt"
 out=$(driver_step_start 108 2>&1); rc=$?
-want "a sibling's claim is not adopted" "24" "$rc"
+want "a sibling's claim is not adopted, and the run is busy" "29" "$rc"
+want_in "the reason is on the record" 'another run on this host holds the claim on #108' "$(driver_state_get 108 park_note)"
 want_in "and it says another run holds it" 'another|peer' "$out"
 want "the sibling's branch is untouched"   "tkt-108/a-peer-got-here-first" \
   "$(awk -F'\t' '$1==108{print $3}' "$CLAIMS")"
@@ -182,7 +185,7 @@ echo "--- a sibling in the pre-worktree window names the SAME branch, and is sti
 fix_issue 110 OPEN "status:ready"
 claim_row 110 "${CLAIM_AGENT:-tester@fixture}" "tkt-110/ticket-110" ""
 out=$(driver_step_start 110 2>&1); rc=$?
-want "it is not adopted"                "24" "$rc"
+want "it is not adopted, and the run is busy" "29" "$rc"
 want_in "and says another run holds it" 'another|peer' "$out"
 want "no worktree was cut for us"       "" "$(driver_state_get 110 worktree)"
 want "and the sibling's claim is untouched" "" "$(awk -F'\t' '$1==110{print $4}' "$CLAIMS")"
@@ -197,8 +200,10 @@ want "it resumes"                  "0" "$rc"
 want "in the same worktree"        "$FIX/ours-wt" "$(driver_state_get 109 worktree)"
 
 echo "--- a ticket that does not resolve ---"
-out=$(driver_step_start 999 2>&1); rc=$?
-want "an unreadable ticket refuses" "24" "$rc"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_start 999 2>&1); rc=$?
+# 26: gh cannot tell "no such issue" from an outage, so it is retried and requeued;
+# build-ticket parks it after DRIVER_MAX_REQUEUES runs in a row (requeue.test.sh).
+want "an unreadable ticket is unread, not a refusal" "26" "$rc"
 want_in "and says it could not read it" 'could not be read' "$out"
 
 echo "--- the claim is released when a gate says no, never squatted ---"

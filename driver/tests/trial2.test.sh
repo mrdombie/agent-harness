@@ -904,7 +904,7 @@ want "a row naming both a command and an agent refuses" "24" "$rc"
 want_in "saying so" "both a review command and an agent" "$out"
 want "and runs neither" "" "$(cat "$CLAUDE_LOG")"
 
-echo "--- T2-2 · a reviewer that judges pictures refuses when none were taken ---"
+echo "--- T2-2 · a reviewer that judges pictures is never run blind, and never parks for it ---"
 git -C "$FIX/wt410" commit --allow-empty -qm "chore: unreviewed again"
 cat > "$FIX/recorder" <<'SH'
 #!/usr/bin/env sh
@@ -917,11 +917,26 @@ jq --arg w "$FIX/recorder" --arg o "$FIX/owed" \
    "$REPO/.claude/harness.json" > "$FIX/hr2.json" && mv "$FIX/hr2.json" "$REPO/.claude/harness.json"
 driver_state_set 410 renders "(none — this project's design.render command says this change touches no screen it can capture)"
 : > "$CLAUDE_LOG"
+driver_state_set 410 park_note ""
+# #13354 and #13453 (2026-10-19): repairs, whose walk takes no render, parked here.
+# CI takes the pictures (local capture is off), so the verdict is owed on the PR.
+mkdir -p "$FIX/wt410/src/ui"; printf 'x\n' > "$FIX/wt410/src/ui/card.tsx"
+git -C "$FIX/wt410" add src/ui/card.tsx; git -C "$FIX/wt410" commit -qm "feat: card"
+jq '.design = {"surfacePaths":["src/ui/**"]}' "$REPO/.claude/harness.json" > "$FIX/hr3.json" && mv "$FIX/hr3.json" "$REPO/.claude/harness.json"
+rc=0; out=$(HARNESS_LOCAL_EVIDENCE=0 driver_push_requires 410 2>&1) || rc=$?
+want "with CI taking the pictures it does not park"  "0" "$rc"
+want_in "saying the verdict is owed on the pull request" "owed on the pull request" "$out"
+want "and the reviewer was never run blind"  "" "$(cat "$CLAUDE_LOG")"
+want "the owed verdict is on the record"     "design-critic" "$(driver_state_get 410 attest_after_push)"
+want "and no park note was left"             "" "$(driver_state_get 410 park_note)"
+# A change that touches no screen: said, and the reviewer not run.
+jq '.design = {"surfacePaths":["src/nothing/**"]}' "$REPO/.claude/harness.json" > "$FIX/hr3.json" && mv "$FIX/hr3.json" "$REPO/.claude/harness.json"
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
-want "it refuses"                          "24" "$rc"
-want_in "saying only a person can earn it" "judges rendered screens and none were taken" "$out"
-want "and the reviewer was never run"      "" "$(cat "$CLAUDE_LOG")"
-want_in "the park note carries why"        "no render was taken" "$(driver_state_get 410 park_note)"
+want "a change that touches no screen does not park" "0" "$rc"
+want_in "saying it touches none"             "this change touches none" "$out"
+want_in "and the record says so"             "touches no file under" "$(driver_state_get 410 renders)"
+want "and the reviewer was not run"          "" "$(cat "$CLAUDE_LOG")"
+jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/hr3.json" && mv "$FIX/hr3.json" "$REPO/.claude/harness.json"
 driver_state_set 410 renders "$(printf 'desk light\tshots/a.png\tlight\t/dashboard/desk')"
 jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP\non-theme", total_cost_usd:0.2, num_turns:2}' > "$FIX/ai/attest-design-critic.jsonl"
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
@@ -932,6 +947,16 @@ jq -nc '{type:"result", subtype:"success", is_error:false, result:"VERDICT: SHIP
 rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
 want "with a render on the record it runs, and records" "0" "$rc"
 want_in "the renders reach the reviewer"   'shots/a.png' "$(cat "$FIX/claude-stdin-attest-design-critic.txt")"
+# Local capture switched on by a person: the pictures are taken here, then judged.
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: unreviewed again"
+printf '#!/bin/sh\nprintf "card light\\tshots/card.png\\tlight\\t/cards\\n"\n' > "$FIX/render"; chmod +x "$FIX/render"
+jq --arg r "$FIX/render" '.design = {"surfacePaths":["src/ui/**"],"render":$r}' "$REPO/.claude/harness.json" > "$FIX/hr4.json" && mv "$FIX/hr4.json" "$REPO/.claude/harness.json"
+driver_state_set 410 renders "(none — this run took no renders)"
+rc=0; out=$(HARNESS_LOCAL_EVIDENCE=1 driver_push_requires 410 2>&1) || rc=$?
+want "with local capture on, the pictures are taken and judged" "0" "$rc"
+want_in "saying it took them"               "taking them" "$out"
+want_in "the render reaches the reviewer"   'shots/card.png' "$(cat "$FIX/claude-stdin-attest-design-critic.txt")"
+jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/hr4.json" && mv "$FIX/hr4.json" "$REPO/.claude/harness.json"
 
 echo "--- T2-2 · one row per reviewer, shared with the interactive finish ---"
 # `/agent-harness:finish` reads the same rows for a different question, so a second

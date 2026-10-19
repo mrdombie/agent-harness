@@ -178,10 +178,10 @@ driver_step_ship() { # <ticket>
   local mode open_pr="" REPAIR_BODY=""; mode=$(driver_state_get "$t" mode)
   if [ "$mode" = repair ]; then
     local open_row
-    open_row=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number,isDraft -q '.[0] // empty | "\(.number) \(.isDraft // false)"' 2>/dev/null) || {
-      driver_say "✋ ship: could not ask GitHub whether the pull request for $branch is still open."
-      driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
-      return "$DRIVER_E_REFUSED"; }
+    open_row=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number,isDraft -q '.[0] // empty | "\(.number) \(.isDraft // false)"' 2>/dev/null) || {
+      driver_say "✋ ship: could not ask GitHub whether the pull request for $branch is still open (${DRIVER_LOOKUP_TRIES:-3} tries)."
+      driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
+      return "$DRIVER_E_UNREAD"; }
     open_pr=${open_row%% *}
     if [ -z "$open_pr" ]; then
       driver_say "✋ ship: the pull request this repair was for is no longer open on $branch. A repair never opens a new one."
@@ -217,10 +217,10 @@ driver_step_ship() { # <ticket>
     # steps reported replacing, and those lines go into the PR body BEFORE the push, so
     # the CI check reading the body sees them on its first run of the new head.
     local rbody rlines missing="" newbody l rdt rdtrc=0
-    rbody=$(swarm_gh pr view "$open_pr" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) || {
-      driver_say "✋ ship: could not read the body of pull request #$open_pr, so the deleted-tests check has nothing to read. Nothing is pushed."
-      driver_state_set "$t" park_note "could not read the body of #$open_pr at ship"
-      return "$DRIVER_E_REFUSED"; }
+    rbody=$(driver_gh_read swarm_gh pr view "$open_pr" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) || {
+      driver_say "✋ ship: could not read the body of pull request #$open_pr (${DRIVER_LOOKUP_TRIES:-3} tries), so the deleted-tests check has nothing to read. Nothing is pushed."
+      driver_state_set "$t" park_note "could not read the body of #$open_pr at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
+      return "$DRIVER_E_UNREAD"; }
     rlines=$(_driver_ship_replaced "$t")
     while IFS= read -r l; do
       [ -n "$l" ] || continue
@@ -325,10 +325,10 @@ PRBODY
   else
   # A FAILED LOOKUP IS NOT "NO PULL REQUEST": read as one, the edit is skipped and a
   # parked PR ships with the park's words. Asked and refused, it parks.
-  open_pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
-    driver_say "✋ ship: could not ask GitHub whether $branch already has a pull request, so its title and body cannot be made right."
-    driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship"
-    return "$DRIVER_E_REFUSED"; }
+  open_pr=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
+    driver_say "✋ ship: could not ask GitHub whether $branch already has a pull request (${DRIVER_LOOKUP_TRIES:-3} tries), so its title and body cannot be made right."
+    driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return "$DRIVER_E_UNREAD"; }
   if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
     # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
     # body ships "parked" as its squash subject, without the section the gate judged.

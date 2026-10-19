@@ -185,6 +185,48 @@ fi
 # Park first: it is the exit from every other step, so a run that cannot park is
 # a run that must not start. Loading it late would mean discovering that at the
 # exact moment it was needed.
+# driver_last_refusal — the last ✋ or ⏳ line this step wrote to the log, so a refusal
+# that set no park_note still parks or requeues with its reason. Any prefix, not only
+# the step's own: the review step's refusals are push-requires' lines.
+driver_last_refusal() {
+  tail -n +"${RUN_LOG_FROM:-1}" "$(driver_state_dir "$TICKET")/log" 2>/dev/null \
+    | grep -E "^[^ ]* (✋|⏳) " | tail -1 | sed -E "s/^[^ ]* (✋|⏳) //" | cut -c1-400
+}
+
+# driver_requeue <ticket> <reason> [keep] — the exit for a stop that is nobody's to
+# answer and that a later run clears by itself: the plan's usage limit, a GitHub read
+# that failed, a claim another run holds. Not a park: no label, no draft pull request,
+# no question. The record and the worktree stay, so the next spawn resumes at the step
+# that stopped; the ticket goes back on the coordinator's queue at the front with what
+# this run was handed. The claim is released last, unless `keep`: a step that stopped
+# before taking the claim would be releasing a peer's. The reason is said, on the log
+# and the record, because a requeue that says nothing reads as a run that did nothing.
+driver_requeue() { # <ticket> <reason> [keep]
+  local t="${1:?driver_requeue: need a ticket}" reason="${2:-a stop nobody has to answer}" keep="${3:-}"
+  local q="${DRIVER_QUEUE:-$KIT_ROOT/scripts/coordinator-queue.sh}" cls=new note="" rb="" queued=0
+  export DRIVER_TICKET="$t"
+  if [ "${REPAIR_SOURCE:-}" = class ] && [ -n "${REPAIR_CLASS:-}" ]; then
+    cls="$REPAIR_CLASS"
+  elif [ "$(driver_state_get "$t" mode)" = repair ]; then
+    cls=repair
+    [ "$(driver_state_get "$t" repair_brief_source)" = class ] || rb=$(driver_state_get "$t" repair_brief)
+    [ -n "$rb" ] || rb="${REPAIR_BRIEF:-}"
+  else
+    rb=$(driver_state_get "$t" run_brief); [ -n "$rb" ] || rb="${RUN_BRIEF:-}"
+  fi
+  [ -n "$rb" ] && [ -s "$rb" ] && note=$(driver_brief_note "$rb")
+  driver_state_set "$t" requeued "$(swarm_stamp) $reason"
+  if bash "$q" add "$t" --class "$cls" ${note:+--note "$note"} --front >/dev/null 2>&1; then
+    queued=1
+  else
+    if [ -n "$rb" ] && [ -s "$rb" ]; then mkdir -p "$DRIVER_DIR/$t"; cp "$rb" "$DRIVER_DIR/$t/brief-unrouted.md" 2>/dev/null; fi
+    driver_say "   requeue: #$t could not be put back on the queue ($q) — the next tick's refresh picks it up from the board"
+  fi
+  [ "$keep" = keep ] || bash "$CL" release "$t" >/dev/null 2>&1 || true
+  driver_say "↻ #$t requeued for the next tick$([ "$queued" -eq 1 ] && echo ", at the front of the queue as $cls"), not parked: $reason"
+  return "$DRIVER_E_REQUEUE"
+}
+
 step_fn() { printf 'driver_step_%s' "$(printf '%s' "$1" | tr '-' '_')"; }
 
 [ -f "$DRIVER_STEPS_DIR/park.sh" ] \
@@ -347,6 +389,7 @@ while [ "$i" -lt "$N" ]; do
   was_done=0; driver_state_is_done "$TICKET" "$step" && was_done=1
   # The body is read BEFORE the plan runs, so an edit made while it plans is a change.
   [ "$step" != "plan" ] || plan_hash=$(ticket_body_hash "$TICKET")
+  RUN_LOG_FROM=$(( $( { wc -l < "$(driver_state_dir "$TICKET")/log"; } 2>/dev/null || echo 0) + 1 ))
   "$(step_fn "$step")" "$TICKET" || rc=$?
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
@@ -400,12 +443,13 @@ while [ "$i" -lt "$N" ]; do
   # and it is not about `case` — it is that a pair of apostrophes inside `${:-}` defeats
   # the syntax check. The arms therefore set two plain variables and the park happens
   # once, after the esac, where no default-expansion appears at all.
-  park_reason=""; park_question=""; unread=0
+  park_reason=""; park_question=""; unread=0; requeue=0
   PARK_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
   PARK_LOG="$(driver_state_dir "$TICKET")/log"
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
+      [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.requeue = 0'
       [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
       ;;
@@ -464,6 +508,10 @@ while [ "$i" -lt "$N" ]; do
       unread=1
       ;;
 
+    "$DRIVER_E_USAGE"|"$DRIVER_E_BUSY")
+      requeue=1
+      ;;
+
     "$DRIVER_E_TIMEOUT")
       park_reason="$step ran past its time limit"
       park_question="Something it ran does not return — a watch-mode test runner is the usual cause. Which command was it?"
@@ -474,25 +522,36 @@ while [ "$i" -lt "$N" ]; do
       # gate IS the gate: nothing goes past it and the claim is not held while
       # somebody works out why.
       park_reason="$step refused (exit $rc)"
-      park_question="$step left no reason on the record. Its own lines are in the run log on $PARK_HOST at $PARK_LOG"
+      park_question=$(driver_last_refusal "$step")
+      [ -n "$park_question" ] || park_question="$step left no reason on the record. Its own lines are in the run log on $PARK_HOST at $PARK_LOG"
       ;;
   esac
 
-  # GITHUB COULD NOT BE READ, SO NOTHING WAS DECIDED. A park here took a ready ticket
-  # off the board for a 504 (2026-10-19). Nothing is claimed yet; a build stays ready
-  # for the next tick, and what the coordinator handed this run goes back on its queue.
-  if [ "$unread" -eq 1 ]; then
-    if [ "$REPAIR_SOURCE" = class ] && [ -n "$REPAIR_CLASS" ]; then
-      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --class "$REPAIR_CLASS" --front >/dev/null 2>&1 || true
-    else
-      _ub="$REPAIR_BRIEF"; [ -n "$_ub" ] || _ub="$RUN_BRIEF"
-      if [ -n "$_ub" ] && [ -s "$_ub" ]; then
-        bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$_ub")" --front >/dev/null 2>&1 \
-          || { mkdir -p "$DRIVER_DIR/$TICKET"; cp "$_ub" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null; }
+  # NOBODY'S TO ANSWER, AND GONE BY A LATER RUN: GitHub unreadable (a 504 parked every
+  # ready ticket it reached on 2026-10-19), the plan's usage limit, a claim another run
+  # on this host holds. A park is never retried, so these go back on the queue instead.
+  # One that comes back run after run is not an outage passing: past the cap it parks,
+  # carrying the step's own reason. The usage limit has no cap: it clears at its reset.
+  if [ "$unread" -eq 1 ] || [ "$requeue" -eq 1 ]; then
+    requeue_why="$note"
+    [ -n "$requeue_why" ] || requeue_why=$(driver_last_refusal "$step")
+    [ -n "$requeue_why" ] || requeue_why="$step stopped on something that clears by itself (exit $rc)"
+    if [ "$rc" != "$DRIVER_E_USAGE" ]; then
+      driver_state_bump "$TICKET" requeue
+      # A claim lasts as long as its holder's run, or until the reconciler frees it: a longer wait.
+      _cap="${DRIVER_MAX_REQUEUES:-3}"; [ "$rc" != "$DRIVER_E_BUSY" ] || _cap="${DRIVER_MAX_BUSY_REQUEUES:-10}"
+      if [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" -gt "$_cap" ]; then
+        park_reason="$step could not go on for $_cap requeued runs in a row"
+        park_question="$requeue_why"; unread=0; requeue=0
       fi
     fi
-    driver_say "⏳ #$TICKET left as it was: $step could not read GitHub, and the next tick tries again."
-    exit "$DRIVER_E_UNREAD"
+  fi
+  if [ "$unread" -eq 1 ] || [ "$requeue" -eq 1 ]; then
+    # start and reenter stop before they take the claim, so one held now is a peer's.
+    case "$step" in start|reenter) _keep=keep ;; *) _keep="" ;; esac
+    driver_requeue "$TICKET" "$requeue_why" "$_keep"
+    [ "$unread" -eq 0 ] || exit "$DRIVER_E_UNREAD"
+    exit "$DRIVER_E_REQUEUE"
   fi
 
   # A note the step left on the record outranks the wording above: it is the actual

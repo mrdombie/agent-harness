@@ -45,11 +45,12 @@ driver_step_start() { # <ticket>
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
-  meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
            -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
   if [ -z "$meta" ]; then
-    driver_say "✋ start: #$t could not be read. Note that a pull request resolves here too — check you were given an issue."
-    return "$DRIVER_E_REFUSED"
+    driver_say "✋ start: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries. Note that a pull request resolves here too — check you were given an issue."
+    driver_state_set "$t" park_note "start could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return "$DRIVER_E_UNREAD"
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
@@ -163,15 +164,18 @@ driver_step_start() { # <ticket>
           driver_say "   start: #$t is already ours — resuming"
         else
           driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "another run on this host holds the claim on #$t (branch ${cb:-unnamed}, worktree ${cw:-none})"
+          return "$DRIVER_E_BUSY"
         fi ;;
     12) driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
-        return "$DRIVER_E_REFUSED" ;;
+        driver_state_set "$t" park_note "a peer on another machine holds the claim on #$t"
+        return "$DRIVER_E_BUSY" ;;
     *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that
         # settles it, and losing it means a peer won between the two calls.
         if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
           driver_say "✋ start: a peer took the claim on #$t first. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "a peer took the claim on #$t first"
+          return "$DRIVER_E_BUSY"
         fi ;;
   esac
   driver_state_set "$t" branch "$branch"

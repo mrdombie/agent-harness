@@ -88,9 +88,24 @@ DRIVER_E_SCHEMA=22
 DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
 DRIVER_E_TIMEOUT=25
-# GitHub could not be read: nothing was decided, so nothing parks and the next tick tries again.
-DRIVER_E_UNREAD=26
+# NOT THE TICKET'S FAULT, SO NEVER A PARK: a park is never retried.
+DRIVER_E_UNREAD=26    # GitHub could not be read, after retries: nothing was decided
+DRIVER_E_USAGE=27     # a model step hit the plan's usage limit
+DRIVER_E_REQUEUE=28   # build-ticket's own exit: back on the queue, no label, no park
+DRIVER_E_BUSY=29      # another run on this host holds the ticket's claim
 DRIVER_E_REWORK=30
+
+# driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
+# growing pause. One failed read parked a ticket for good on 2026-10-18.
+driver_gh_read() {
+  local n=0 out
+  while :; do
+    n=$((n+1))
+    if out=$("$@"); then printf '%s' "$out"; return 0; fi
+    [ "$n" -lt "${DRIVER_LOOKUP_TRIES:-3}" ] || return 1
+    sleep $(( ${DRIVER_LOOKUP_RETRY_SEC:-5} * n ))
+  done
+}
 
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
 # a run that scrolled past is still readable afterwards.
@@ -593,4 +608,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_REWORK
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK

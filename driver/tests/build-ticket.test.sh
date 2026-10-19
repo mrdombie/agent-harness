@@ -958,4 +958,22 @@ want "a repair that cannot read its PR stops as unread" "26" "$rc"
 want "without parking"                         "" "$(cat "$FIX/park.log")"
 want "and its brief is back on the queue"      "REPAIR on PR #80: red" "$(jq -r '.tickets[]? | select(.n == 151) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
+echo "--- a claim another run holds is busy: requeued, never parked, and left alone ---"
+# #13139 and #13146 (2026-10-19) parked as "reenter left no reason on the record":
+# another run on this host held the claim. That clears when the holder ends.
+reset_fakes "reenter:29"; rm -rf "$STATE/coordinator"
+CLK="$HERE/../../scripts/claim-lock.sh"
+bash "$CLK" acquire 152 --branch tkt-152/theirs --worktree "$FIX/theirs-152" >/dev/null 2>&1
+printf 'REPAIR on PR #81: red\n' > "$FIX/brief-v.md"
+out=$(bt 152 --repair "$FIX/brief-v.md"); rc=$?
+want "it ends as a requeue"                    "28" "$rc"
+want "without parking"                         "" "$(cat "$FIX/park.log")"
+want_in "saying it is not parked"              'requeued.*not parked' "$out"
+want "and its brief is back on the queue"      "REPAIR on PR #81: red" "$(jq -r '.tickets[]? | select(.n == 152) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "the holder's claim is not released"      "$FIX/theirs-152" "$(bash "$CLK" show 152 2>/dev/null | jq -r '.worktree // ""')"
+DRIVER_MAX_BUSY_REQUEUES=1 bt 152 --repair "$FIX/brief-v.md" >/dev/null; rc=$?
+want "past its cap it parks"                   "20" "$rc"
+want_in "saying how many runs it waited"       'reenter could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
+bash "$CLK" release 152 --force >/dev/null 2>&1
+
 exit $FAILED

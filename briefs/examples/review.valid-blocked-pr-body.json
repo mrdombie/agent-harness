@@ -1,0 +1,20 @@
+{
+  "step": "review",
+  "skills": [
+    "superpowers:requesting-code-review"
+  ],
+  "status": "reviewed",
+  "round": 1,
+  "verdict": "BLOCKED",
+  "findings": [
+    {
+      "id": "R1",
+      "file": "PR #61 body",
+      "line": 0,
+      "grade": "major",
+      "summary": "the pull request body has no Lesson section, so its required check stays red",
+      "reason": "the fix cannot merge, so the person keeps seeing the broken screen",
+      "fix": "add the Lesson section to the body"
+    }
+  ]
+}

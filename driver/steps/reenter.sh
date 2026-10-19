@@ -31,11 +31,12 @@ driver_step_reenter() { # <ticket>
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
-  meta=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
            -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
   if [ -z "$meta" ]; then
-    driver_say "✋ reenter: #$t could not be read."
-    return "$DRIVER_E_REFUSED"
+    driver_say "✋ reenter: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries."
+    driver_state_set "$t" park_note "reenter could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return "$DRIVER_E_UNREAD"
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
@@ -84,14 +85,19 @@ driver_step_reenter() { # <ticket>
         || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   reenter: #$t is already ours — resuming"
         else
+          # BUSY, NOT REFUSED: the holder ends, or the reconciler frees a dead claim, and
+          # the repair goes on then. Read as a refusal it parked #13139 and #13146.
           driver_say "✋ reenter: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none})."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "another run on this host holds the claim on #$t (branch ${cb:-unnamed}, worktree ${cw:-none})"
+          return "$DRIVER_E_BUSY"
         fi ;;
     12) driver_say "✋ reenter: a peer holds the claim on #$t. Never adopt a live claim."
-        return "$DRIVER_E_REFUSED" ;;
+        driver_state_set "$t" park_note "a peer on another machine holds the claim on #$t"
+        return "$DRIVER_E_BUSY" ;;
     *)  if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
           driver_say "✋ reenter: a peer took the claim on #$t first. Never adopt a live claim."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "a peer took the claim on #$t first"
+          return "$DRIVER_E_BUSY"
         fi ;;
   esac
 
