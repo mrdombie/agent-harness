@@ -1076,4 +1076,23 @@ cache_tick 99 99 >/dev/null
 want "a new sample that agrees: all three (the guard flags nothing correct)" "501 502 503" "$(spawned)"
 export SWARM_IDLE=90; unset SWARM_CORES
 
+# The live view's finished list says where each ticket stands now from this read,
+# so a run that ended inside its window is read with the queue, and an old one is not.
+fresh; queue 501
+fix_issue 9001 OPEN "status:parked"; fix_issue 9002 OPEN "status:parked"
+for t in 9001 9002; do
+  printf '{"run_id":"claim-%s-x","ticket":"%s"}\n' "$t" "$t" > "$STATE/runs/claim-$t-x.json"
+  printf '{"run_id":"claim-%s-x","exit_code":20}\n' "$t" > "$STATE/runs/claim-$t-x.ended"
+done
+touch -t 202601010000 "$STATE/runs/claim-9002-x.ended"
+printf '{"number":9003,"state":"CLOSED","stateReason":"COMPLETED","title":"x","labels":[{"name":"status:in-review"}]}\n' > "$FIX/gh/issue-9003.json"
+printf '{"run_id":"claim-9003-x","ticket":"9003"}\n' > "$STATE/runs/claim-9003-x.json"
+printf '{"run_id":"claim-9003-x","exit_code":0}\n' > "$STATE/runs/claim-9003-x.ended"
+tick >/dev/null
+want "a closed ticket keeps why it closed"  "COMPLETED" "$(jq -r '.["9003"].stateReason' "$C/snapshot/issues.json" 2>/dev/null)"
+want "a run that just ended: its ticket is in the issue snapshot" "true" "$(jq 'has("9001")' "$C/snapshot/issues.json" 2>/dev/null)"
+want "with its labels"                     "status:parked" "$(jq -r '.["9001"].labels | join(",")' "$C/snapshot/issues.json" 2>/dev/null)"
+want "a run that ended long ago is not read" "false" "$(jq 'has("9002")' "$C/snapshot/issues.json" 2>/dev/null)"
+want "and the queue is still read"         "true" "$(jq 'has("501")' "$C/snapshot/issues.json" 2>/dev/null)"
+
 exit $FAILED

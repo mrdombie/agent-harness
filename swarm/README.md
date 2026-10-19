@@ -124,6 +124,14 @@ The reads are git and forge calls, so they are cached (`swarm.progressSec`,
 default 60) and refreshed off the request path. A snapshot taken before the
 first refresh lands says `unknown` on every step.
 
+The finished list shows one row per ticket, its newest run, and says where the
+ticket stands **now** rather than how the run ended: Shipped, In review (with the
+PR), Back in the queue, Running again, Waiting on PM, Waiting on the owner,
+Blocked, or Stopped with the park reason. It is read from the coordinator's issue
+snapshot (`coordinator/snapshot/issues.json`, which the tick also fills for runs
+that ended inside the list's window) and the shared open-PR file, never a call per
+row. Only a true stop is red. The header counts the rows by state.
+
 `plain-titles.json` beside the run records maps a ticket to the short title a
 person should read; without one the title is cut back to the clause that names
 the thing.
@@ -161,6 +169,7 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.maxLoad` | 20 x cores | Runaway guard only, never the busy test: also busy above this one-minute load average. macOS counts blocked threads into the load, which read 42-103 on 10 cores on 2026-10-15 and 119-140 on 2026-10-16, once 140 at 41% CPU idle |
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.port` | 4777 | The live view's port |
+| `swarm.ownerName` | — | Who a finished row's "Waiting on …" names; unset reads "the owner" |
 | `swarm.staleSec` | 120 | A snapshot older than this is no answer |
 | `swarm.progressSec` | 60 | How often the step and plan facts are re-read |
 | `swarm.quietSec` | 1200 | An agent silent this long is stuck |

@@ -36,7 +36,7 @@ run() { # <ticket> <pid> [ended-exit-code]
 }
 snap() {
   SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="$BIN/gh" \
-  SWARM_PROGRESS_SYNC=1 SWARM_SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e "
+  SWARM_PROGRESS_SYNC=1 SWARM_SERVER_MJS="${SNAP_MJS:-$SERVER_URLPATH}" node --input-type=module -e "
     import { pathToFileURL } from 'node:url'
     const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
     console.log(JSON.stringify(snapshot()))"
@@ -241,5 +241,135 @@ ms=$(served "$P")
 case "$ms" in *[!0-9]*|'') ms=99999 ;; esac
 [ "$ms" -ge 1500 ] && ok "planted: refresh in-process → two answers took ${ms} ms → red" \
   || bad "planted: refresh in-process and two answers still took ${ms} ms → the test cannot see it"
+
+
+echo "--- a finished row says where its ticket stands NOW, not how the run ended ---"
+# Measured 2026-10-19: of 20 rows reading "stopped", 10 were back in the queue, 1
+# closed, 1 in review and several waiting on a question. The owner read 20 failures.
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
+LV="$HERE/../live-view"
+ended_run() { # <ticket> <exit> [run-suffix] [ended_at] — a finished run with an empty log
+  local t=$1 sfx=${3:-a} at=${4:-$NOW_ISO} log="$STATE/logs/claim-$1-${3:-a}.log"
+  command -v cygpath >/dev/null 2>&1 && log=$(cygpath -m "$log")
+  printf '{"run_id":"claim-%s-%s","ticket":"%s","child_pid":%s,"started_at":"%s","log":"%s"}\n' \
+    "$t" "$sfx" "$t" "$DEAD" "$at" "$log" > "$STATE/runs/claim-$t-$sfx.json"
+  printf '{"exit_code":%s,"ended_at":"%s"}\n' "$2" "$at" > "$STATE/runs/claim-$t-$sfx.ended"
+  : > "$STATE/logs/claim-$t-$sfx.log"
+}
+park_line() { printf '⏸ #%s parked (%s): %s\n' "$1" "$2" "$3" >> "$STATE/logs/claim-$1-a.log"; }
+ended_run 1001 0
+printf '%s\n' '{"type":"result","subtype":"success","result":"Merged: https://github.com/acme/widgets/pull/2001"}' > "$STATE/logs/claim-1001-a.log"
+for t in 1002 1003 1004 1005 1006 1007 1008 1009 1010 1011 1012 1013 1015 1017; do ended_run "$t" 20; done
+ended_run 1016 143
+park_line 1009 pm "build asked a question rather than guessing — which repo does this belong in?"
+park_line 1012 driver "start refused: blocked by #77"
+park_line 1013 driver "build refused (exit 24) — build left no reason on the record"
+park_line 1015 driver "review answered in a shape the driver cannot read"
+printf '{"exit_code":143,"ended_at":"%s","note":"stopped on the owner pause"}\n' "$NOW_ISO" > "$STATE/runs/claim-1016-a.ended"
+# Two runs of one ticket: the older parked, the newer is the one that counts.
+ended_run 1014 20 old "2026-01-01T00:00:00Z"
+printf '{"exit_code":20,"ended_at":"%s"}\n' "$(date -u -v-1H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" > "$STATE/runs/claim-1014-old.ended"
+ended_run 1014 0 new
+# 1008 is running again under a new run.
+printf '{"run_id":"claim-1008-b","ticket":"1008","child_pid":%s,"started_at":"%s","log":"%s"}\n' \
+  "$$" "$NOW_ISO" "$STATE/logs/claim-1008-b.log" > "$STATE/runs/claim-1008-b.json"
+: > "$STATE/logs/claim-1008-b.log"
+mkdir -p "$STATE/coordinator/snapshot" "$STATE/swarm"
+cat > "$STATE/coordinator/snapshot/issues.json" <<'JSON'
+{"1002":{"number":1002,"state":"CLOSED","labels":["status:done","P1"]},
+ "1003":{"number":1003,"state":"CLOSED","stateReason":"NOT_PLANNED","labels":["status:ready"]},
+ "1017":{"number":1017,"state":"CLOSED","stateReason":"COMPLETED","labels":["status:in-review"]},
+ "1004":{"number":1004,"state":"OPEN","labels":["status:in-review"]},
+ "1005":{"number":1005,"state":"OPEN","labels":["status:ready"]},
+ "1007":{"number":1007,"state":"OPEN","labels":["status:ready","P2"]},
+ "1009":{"number":1009,"state":"OPEN","labels":["status:parked"]},
+ "1010":{"number":1010,"state":"OPEN","labels":["status:pm-decision"]},
+ "1011":{"number":1011,"state":"OPEN","labels":["needs:owner-decision"]},
+ "1012":{"number":1012,"state":"OPEN","labels":["status:blocked"]},
+ "1013":{"number":1013,"state":"OPEN","labels":["status:parked"]},
+ "1015":{"number":1015,"state":"OPEN","labels":["status:ready","status:parked"]}}
+JSON
+cat > "$STATE/swarm/prs.json" <<'JSON'
+[{"number":2004,"headRefName":"tkt-1004/the-fix","closingIssuesReferences":[]},
+ {"number":2005,"headRefName":"someone/else","closingIssuesReferences":[{"number":1005}]}]
+JSON
+printf '{"scope":"widgets","tickets":[{"n":1006,"class":"new","note":""}]}\n' > "$STATE/coordinator/queue.json"
+nows() { BRANCH_PREFIX=tkt- snap | jq -r '.done[] | "\(.ticket)=\(.now.text)"' | sort; }
+now_of() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+n=$(nows)
+want "exit 0 with a PR no longer open: shipped"  "Shipped"             "$(now_of "$n" 1001)"
+want "closed done: shipped"                      "Shipped"             "$(now_of "$n" 1002)"
+want "closed not planned: closed"                "Closed"              "$(now_of "$n" 1003)"
+want "closed completed, labels left behind: shipped" "Shipped"         "$(now_of "$n" 1017)"
+want "an open PR by its branch: in review"       "In review — PR #2004" "$(now_of "$n" 1004)"
+want "an open PR by its closing reference"       "In review — PR #2005" "$(now_of "$n" 1005)"
+want "on the coordinator's queue"                "Back in the queue"   "$(now_of "$n" 1006)"
+want "status:ready: back in the queue"           "Back in the queue"   "$(now_of "$n" 1007)"
+want "a live run for the ticket: running again"  "Running again"       "$(now_of "$n" 1008)"
+want "parked on a PM question"                   "Waiting on PM"       "$(now_of "$n" 1009)"
+want "status:pm-decision"                        "Waiting on PM"       "$(now_of "$n" 1010)"
+want "the owner's decision label"                "Waiting on the owner" "$(now_of "$n" 1011)"
+want "blocked, by the ticket its park names"     "Blocked by #77"      "$(now_of "$n" 1012)"
+want "a driver park: stopped, with its one-line reason" "Stopped — build refused (exit 24)" "$(now_of "$n" 1013)"
+want "ready AND parked is not queued"            "Stopped — review answered in a shape the driver cannot read" "$(now_of "$n" 1015)"
+want "a stop with no park line names the marker's note" "Stopped — stopped on the owner pause" "$(now_of "$n" 1016)"
+s=$(BRANCH_PREFIX=tkt- snap)
+want "one row per ticket"                        "1" "$(printf '%s' "$s" | jq '[.done[] | select(.ticket=="1014")] | length')"
+want "and it is the newest run"                  "0" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="1014") | .exit')"
+want "the owner is named when the project names them" "Waiting on Dom" \
+  "$(SWARM_OWNER_NAME=Dom BRANCH_PREFIX=tkt- snap | jq -r '.done[] | select(.ticket=="1011") | .now.text')"
+want "only a true stop is red" "stopped" "$(printf '%s' "$s" | jq -r '[.done[] | select(.now.tone=="bad") | .now.state] | unique | join(" ")')"
+want "the header counts by state" \
+  "Finished: 3 shipped · 1 closed · 2 in review · 2 back in queue · 1 running again · 2 waiting on PM · 1 waiting on the owner · 1 blocked · 1 finished · 3 stopped" \
+  "$(printf '%s' "$s" | jq -r '.doneSummary')"
+
+echo "--- the page shows that state, not the run's exit ---"
+# The page's own row renderer, run in node against a row from the snapshot.
+page_row() { # <live-view dir> <ticket>
+  printf '%s' "$s" | jq -c --arg t "$2" '.done[] | select(.ticket==$t)' > "$FIX/row.json"
+  PAGE="$1/index.html" ROW="$FIX/row.json" node -e '
+    const fs = require("fs"), vm = require("vm")
+    const html = fs.readFileSync(process.env.PAGE, "utf8")
+    const js = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"))
+    const el = () => ({ textContent: "", innerHTML: "", hidden: false })
+    const ctx = { document: { getElementById: el }, fetch: () => new Promise(() => {}), setInterval: () => 0, console }
+    vm.createContext(ctx); vm.runInContext(js + "\n;globalThis.__row = doneRow", ctx)
+    console.log(ctx.__row(JSON.parse(fs.readFileSync(process.env.ROW, "utf8"))))' 2>&1
+}
+r=$(page_row "$LV" 1006)
+want_in "a queued ticket reads as back in the queue" 'pill neutral">Back in the queue' "$r"
+want "and nothing on it says stopped" "0" "$(printf '%s' "$r" | grep -c 'Stopped')"
+r=$(page_row "$LV" 1013)
+want_in "a true stop is red, with its reason" 'pill bad">Stopped</span><div class="note">build refused \(exit 24\)' "$r"
+
+echo "--- planted: each rule removed is seen ---"
+P2="$FIX/lv-plant-now"; mkdir -p "$P2"
+plant() { # <file> <exact text> [what it becomes; default nothing]
+  cp "$LV"/*.mjs "$LV/index.html" "$P2/"
+  python3 - "$P2/$1" "$2" "${3:-}" <<'PY' || bad "plant did not land: $2"
+import sys
+p, a, b = sys.argv[1], sys.argv[2], sys.argv[3]; s = open(p).read()
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, b))
+PY
+}
+P2_URL="$P2/server.mjs"; command -v cygpath >/dev/null 2>&1 && P2_URL=$(cygpath -m "$P2_URL")
+psnap() { SNAP_MJS="$P2_URL" SWARM_HOLD_SCRIPT="$HERE/../hold-status.sh" BRANCH_PREFIX=tkt- snap; }
+plant server.mjs "  if (ctx.queued.has(t) || (has(LBL('LBL_READY', 'status:ready')) && !parked)) return at('queue', 'Back in the queue')"
+got=$(psnap | jq -r '.done[] | select(.ticket=="1006") | .now.text')
+[ -n "$got" ] && [ "$got" != "Back in the queue" ] \
+  && ok "planted: no queue rule → a queued ticket reads '$got' → red" || bad "planted: the queue rule deleted and the test cannot see it ($got)"
+plant server.mjs "  for (const d of done) { const o = newest.get(d.ticket); if (!o || d.endedAt > o.endedAt) newest.set(d.ticket, d) }" \
+  "  for (const d of done) newest.set(d.ticket + ':' + d.endedAt, d)"
+got=$(psnap | jq '[.done[] | select(.ticket=="1014")] | length' 2>/dev/null)
+[ "$got" != "1" ] && ok "planted: no de-duplication → $got rows for 1014 → red" || bad "planted: de-duplication deleted and the test cannot see it"
+plant server.mjs '  if (openPr) return at('"'"'review'"'"', `In review — PR #${openPr}`, { pr: openPr })'
+got=$(psnap | jq -r '.done[] | select(.ticket=="1004") | .now.text')
+[ -n "$got" ] && [ "$got" != "In review — PR #2004" ] \
+  && ok "planted: no review rule → 1004 reads '$got' → red" || bad "planted: the review rule deleted and the test cannot see it ($got)"
+plant index.html '      <td>${nowPill(d)}</td>'
+[ "$(page_row "$P2" 1006 | grep -c 'Back in the queue')" = 0 ] \
+  && ok "planted: the page drops the state → no 'Back in the queue' → red" || bad "planted: the page drops the state and the test cannot see it"
+rm -f "$STATE/coordinator/queue.json" "$STATE/coordinator/snapshot/issues.json" "$STATE/swarm/prs.json"
 
 exit $FAILED

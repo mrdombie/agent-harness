@@ -46,6 +46,14 @@ const HOLD_SCRIPT = process.env.SWARM_HOLD_SCRIPT
   || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hold-status.sh')
 const HOLD_MS = Number(process.env.SWARM_HOLD_MS || 30_000)
 const BASH = process.env.SWARM_BASH || 'bash'
+// Where a finished ticket stands NOW, read from what the coordinator already
+// keeps: its issue snapshot and the open pull requests the tick shares. No call
+// per row. A run's exit says how the run ended, not where the ticket is.
+const COORD_ISSUES = process.env.SWARM_COORD_ISSUES || path.join(path.dirname(COORD_QUEUE), 'snapshot', 'issues.json')
+const PRS_FILE = process.env.SWARM_PRS_FILE || path.join(RUNS, '..', 'swarm', 'prs.json')
+const OWNER = process.env.SWARM_OWNER_NAME || 'the owner'
+const BRANCH_PREFIX = process.env.BRANCH_PREFIX || ''
+const LBL = (k, d) => process.env[k] || d
 
 let progressAt = 0, progress = { tickets: {}, plans: {} }
 try { progress = JSON.parse(fs.readFileSync(PROGRESS_CACHE, 'utf8')) } catch {}
@@ -208,10 +216,22 @@ const infraDeath = (j) => j.is_error === true && INFRA_RE.test(String(j.result ?
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g
 
+// The driver's own park line: `⏸ #12 parked (pm): reason — the question`.
+const PARK_RE = /⏸ #\d+ parked \((person|pm|driver)\): ([^\n"]*)/g
+function parkOf(text) {
+  let m, last = null
+  PARK_RE.lastIndex = 0
+  while ((m = PARK_RE.exec(text))) last = m
+  if (!last) return null
+  const reason = last[2].split(' — ')[0].trim()
+  return { cause: last[1], reason: reason.length > 120 ? reason.slice(0, 119) + '…' : reason, full: last[2] }
+}
+
 function parseLog(file) {
   const steps = []
   let result = null
-  for (const line of tail(file).split('\n')) {
+  const text = tail(file)
+  for (const line of text.split('\n')) {
     // The step driver logs plain lines, not stream-JSON; each one is a step.
     if (!line.startsWith('{')) {
       const t = line.replace(ANSI_RE, '').trim()
@@ -231,7 +251,111 @@ function parseLog(file) {
   }
   let mtime = 0
   try { mtime = fs.statSync(file).mtimeMs } catch {}
-  return { steps: steps.slice(-10), result, mtime }
+  return { steps: steps.slice(-10), result, mtime, park: parkOf(text) }
+}
+
+// A state file read as it stands, re-parsed only when it changes: the PR cache
+// is ~600 KB and the page asks every five seconds.
+const jsonCache = new Map()
+function readJsonCached(file) {
+  let m
+  try { m = fs.statSync(file).mtimeMs } catch { return null }
+  const hit = jsonCache.get(file)
+  if (hit && hit.m === m) return hit.v
+  let v = null
+  try { v = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+  jsonCache.set(file, { m, v })
+  return v
+}
+
+// The ticket a branch belongs to, in the three shapes scripts/branch-ticket.sh knows.
+export function branchTicket(b, pre = BRANCH_PREFIX) {
+  b = String(b || '')
+  let m
+  if (pre && b.startsWith(pre) && (m = /^(\d+)(\D|$)/.exec(b.slice(pre.length)))) return m[1]
+  if ((m = /^(\d+)\//.exec(b))) return m[1]
+  if ((m = /^[a-z]+\/(\d+)-/.exec(b))) return m[1]
+  return ''
+}
+
+// ticket -> its open pull request number, by closing reference or by branch.
+function openPrsByTicket(file = PRS_FILE) {
+  const rows = readJsonCached(file)
+  const by = {}
+  if (!Array.isArray(rows)) return by
+  for (const p of rows) {
+    if (!p || p.number == null) continue
+    const ts = new Set((p.closingIssuesReferences || []).map((r) => String(r && r.number)).filter((n) => n !== 'undefined'))
+    const bt = branchTicket(p.headRefName)
+    if (bt) ts.add(bt)
+    for (const t of ts) if (!(t in by) || p.number > by[t]) by[t] = p.number
+  }
+  return by
+}
+
+function issuesByTicket(file = COORD_ISSUES) {
+  const j = readJsonCached(file)
+  const by = {}
+  const rows = Array.isArray(j) ? j : j && typeof j === 'object' ? Object.values(j) : []
+  for (const i of rows) {
+    if (!i || i.number == null) continue
+    by[String(i.number)] = { state: String(i.state || ''), reason: String(i.stateReason || ''),
+      labels: (i.labels || []).map((l) => (typeof l === 'string' ? l : l && l.name)).filter(Boolean) }
+  }
+  return by
+}
+
+// The words and tone a finished row's state is shown with. Only `stopped` is a failure.
+export const NOW_STATES = {
+  shipped: { tone: 'ok', count: 'shipped' },
+  closed: { tone: 'neutral', count: 'closed' },
+  review: { tone: 'ok', count: 'in review' },
+  queue: { tone: 'neutral', count: 'back in queue' },
+  running: { tone: 'ok', count: 'running again' },
+  pm: { tone: 'warn', count: 'waiting on PM' },
+  owner: { tone: 'warn', count: `waiting on ${OWNER}` },
+  blocked: { tone: 'warn', count: 'blocked' },
+  finished: { tone: 'neutral', count: 'finished' },
+  stopped: { tone: 'bad', count: 'stopped' },
+}
+
+// Where a finished ticket stands now, first match wins.
+export function nowOf(d, ctx) {
+  const t = String(d.ticket)
+  const issue = ctx.issues[t]
+  const has = (l) => !!issue && issue.labels.includes(l)
+  const parked = has(LBL('LBL_PARKED', 'status:parked'))
+  const openPr = ctx.prs[t]
+  const ref = /\/pull\/(\d+)|\bPR #(\d+)/.exec(d.summary || '')
+  const reported = ref ? Number(ref[1] || ref[2]) : null
+  const done = has(LBL('LBL_DONE', 'status:done')) || has('status:merged-needs-rollout')
+  const park = d.park
+  const at = (state, text, extra = {}) => ({ state, text, tone: NOW_STATES[state].tone, ...extra })
+  const completed = !!issue && issue.state === 'CLOSED' && issue.reason === 'COMPLETED'
+  if ((d.exit === 0 && reported && !openPr) || done || completed) return at('shipped', 'Shipped')
+  if (issue && issue.state === 'CLOSED') return at('closed', 'Closed')
+  if (openPr) return at('review', `In review — PR #${openPr}`, { pr: openPr })
+  if (ctx.queued.has(t) || (has(LBL('LBL_READY', 'status:ready')) && !parked)) return at('queue', 'Back in the queue')
+  if (ctx.live.has(t)) return at('running', 'Running again')
+  if (has(LBL('LBL_PM_DECISION', 'status:pm-decision')) || (parked && park && park.cause === 'pm')) return at('pm', 'Waiting on PM')
+  if ([LBL('LBL_OWNER_DECISION', 'needs:owner-decision'), LBL('LBL_NEEDS_HUMAN', 'status:needs-human'),
+       LBL('HOLD_LABEL', 'needs:human-approval')].some(has)) return at('owner', `Waiting on ${OWNER}`)
+  if (has(LBL('LBL_BLOCKED', 'status:blocked'))) {
+    const by = park && /blocked (?:by|on) #(\d+)/i.exec(park.full)
+    return at('blocked', by ? `Blocked by #${by[1]}` : 'Blocked', by ? { by: Number(by[1]) } : {})
+  }
+  if (d.exit === 0 && !park) return at('finished', 'Finished')
+  const why = (park && park.reason) || d.note || (d.exit != null ? `exit ${d.exit}` : 'no reason on record')
+  return at('stopped', `Stopped — ${why}`)
+}
+
+// "Finished: 1 shipped · 10 back in queue · 4 stopped", biggest first after the
+// states that are good news.
+export function doneSummary(rows) {
+  const n = {}
+  for (const r of rows) n[r.now.state] = (n[r.now.state] || 0) + 1
+  const parts = Object.keys(NOW_STATES).filter((k) => n[k]).map((k) => `${n[k]} ${NOW_STATES[k].count}`)
+  return parts.length ? `Finished: ${parts.join(' · ')}` : 'Finished'
 }
 
 // A run is live when it has no .ended marker AND its agent's process still
@@ -279,13 +403,23 @@ export function snapshot(now = Date.now()) {
       cost: log.result?.cost,
       summary: log.result?.summary || '',
       infra: !!log.result?.infra,
+      note: String(ended?.note || ''),
+      park: log.park,
+      endedAt: Date.parse(ended.ended_at) || 0,
     })
   }
   live.sort((a, b) => a.startedAgoMin - b.startedAgoMin)
-  done.sort((a, b) => a.endedAgoMin - b.endedAgoMin)
+  // One row per ticket: its newest run. Twenty runs of five tickets read as twenty failures.
+  const newest = new Map()
+  for (const d of done) { const o = newest.get(d.ticket); if (!o || d.endedAt > o.endedAt) newest.set(d.ticket, d) }
+  const queued = queueOf()
+  const ctx = { issues: issuesByTicket(), prs: openPrsByTicket(), live: new Set(live.map((a) => a.ticket)),
+                queued: new Set(queued.tickets.map((r) => r.ticket)) }
+  const doneRows = [...newest.values()].sort((a, b) => b.endedAt - a.endedAt).slice(0, 20)
+    .map(({ park, endedAt, ...d }) => ({ ...d, now: nowOf({ ...d, park }, ctx) }))
   refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
   refreshHold(now)
-  const queue = queueOf()
+  const queue = queued
   for (const r of queue.tickets) {
     fetchTitle(r.ticket)
     const t = titles[r.ticket] || {}
@@ -294,7 +428,7 @@ export function snapshot(now = Date.now()) {
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
-           plans: plansOf(live, progress.plans, plainName), live, done: done.slice(0, 20),
+           plans: plansOf(live, progress.plans, plainName), live, done: doneRows, doneSummary: doneSummary(doneRows),
            hold, queue, capacity: capacityOf() }
 }
 
