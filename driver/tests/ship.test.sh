@@ -622,4 +622,22 @@ rc=0; driver_step_ship 149 >/dev/null 2>&1 || rc=$?
 want "the driver's own draft (a build ran start) ships" "0" "$rc"
 rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
 
+echo "--- a plan the run wrote into a TRACKED scratch folder is committed, not refused ---"
+# A project that keeps docs/superpowers in git: the sweep leaves the folder alone
+# (it is the change there), so the run's own new plan file sat uncommitted and ship
+# refused "uncommitted changes" on five finished tickets (2026-10-18).
+setup_wt 194
+driver_state_set 194 mode new
+mkdir -p "$FIX/wt194/docs/superpowers/plans"
+printf 'kept\n' > "$FIX/wt194/docs/superpowers/plans/older.md"
+git -C "$FIX/wt194" add docs/superpowers/plans/older.md; git -C "$FIX/wt194" commit -qm "docs: an older plan the project keeps"
+printf '# plan for 194\n' > "$FIX/wt194/docs/superpowers/plans/2026-10-18-194-plan.md"
+driver_state_put 194 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 194 review
+for st in start plan build self-check review record; do driver_state_done 194 "$st"; done
+rc=0; out=$(driver_step_ship 194 2>&1) || rc=$?
+want "it ships"                              "0" "$rc"
+want "the plan is committed on the branch"   "yes" \
+  "$(git -C "$FIX/wt194" ls-files --error-unmatch docs/superpowers/plans/2026-10-18-194-plan.md >/dev/null 2>&1 && echo yes)"
+want "and the tree is clean"                 "" "$(git -C "$FIX/wt194" status --porcelain)"
+
 exit $FAILED

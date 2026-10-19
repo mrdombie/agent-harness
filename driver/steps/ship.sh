@@ -129,6 +129,21 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
+  # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. driver_sweep_scratch moves
+  # tooling leavings out of the worktree, but leaves a scratch path the project keeps
+  # in git alone (there it is the change). The plan this run wrote into it was then
+  # neither moved nor committed, and every such ticket stopped here after its build
+  # (five on 2026-10-18). Commit those new files, as park already does.
+  local sp newp
+  while IFS= read -r sp; do
+    [ -n "$sp" ] && [ -n "$(git -C "$wt" ls-files -- "$sp" 2>/dev/null | head -1)" ] || continue
+    newp=$(git -C "$wt" ls-files --others --exclude-standard -- "$sp" 2>/dev/null)
+    [ -n "$newp" ] || continue
+    printf '%s\n' "$newp" | while IFS= read -r f; do git -C "$wt" add -- "$f"; done
+    git -C "$wt" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" >/dev/null 2>&1 \
+      && driver_say "   ship: committed the run's own plan under $sp"
+  done <<< "$(driver_scratch_paths)"
+
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then
     driver_say "✋ ship: uncommitted changes — $(printf '%s' "$dirty" | awk '{print $NF}' | tr '\n' ' '). A change that is not committed is a change the gates never read."
