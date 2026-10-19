@@ -50,7 +50,7 @@ bash "$Q" seed widgets >/dev/null
 bash "$Q" add 501 --class approved-merge --note "owner approved the render" >/dev/null
 bash "$Q" add 777 --class approved-merge >/dev/null
 bash "$Q" refresh >/dev/null
-want "approved-merge sorts after repair, before new" "502:repair 501:approved-merge 777:approved-merge 503:new" "$(order)"
+want "approved-merge sorts after repair, before new of its priority; no priority runs last" "502:repair 501:approved-merge 503:new 777:approved-merge" "$(order)"
 want "the note is kept"                    "owner approved the render" "$(jq -r '.tickets[] | select(.n==501) | .note' "$QF")"
 
 echo "--- a judge's re-queue survives the next tick's refresh ---"
@@ -73,7 +73,7 @@ fix_issue_list "area:GADGETS" '[{"number":503},{"number":504}]'
 rm -f "$QF"; bash "$Q" add 888 --class repair --note "pinned before the list" >/dev/null
 out=$(bash "$Q" seed "widgets, area:GADGETS,flow-gap,widgets" 2>&1)
 want_in "it names every label it seeded"   'for project:widgets, area:GADGETS, flow-gap$' "$out"
-want "the union, de-duplicated, repair first, then priority, newest first" "502:repair 888:repair 501:new 504:new 503:new" "$(order)"
+want "the union, de-duplicated, by priority, repair first within one, newest first; no priority last" "502:repair 501:new 504:new 503:new 888:repair" "$(order)"
 want "a ticket under two scopes is queued once" "1" "$(jq '[.tickets[] | select(.n==503)] | length' "$QF")"
 want "the labels are recorded"             'project:widgets|area:GADGETS|flow-gap' "$(jq -r '.labels | join("|")' "$QF")"
 want "the pinned repair survives the seed" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
@@ -107,7 +107,7 @@ bash "$Q" in-scope 501; want "a ticket scope matches its own number" "0" "$?"
 jq '.labels = null | .label = "area:GADGETS"' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
 bash "$Q" in-scope 504; want "a queue from before lists still reads its one label" "0" "$?"
 
-echo "--- new work runs half-built, then features, then bugs, then polish; newest first ---"
+echo "--- priority first; within one: repair, half-built, features, bugs, polish; newest first ---"
 # Claimable order is oldest first; the queue must not keep it.
 printf '%s\n' \
   "601	P1	OPS			polish(inbox): tighten the row gap	type:bug,project:widgets" \
@@ -122,19 +122,41 @@ printf '%s\n' \
   "610	P1	OPS		[FINISH PR]	clashing PR	type:bug,project:widgets" \
   "611	P1	OPS		[FINISH PR]	another clash	type:feature,project:widgets" > "$FIX/claimable.tsv"
 rm -f "$QF"; bash "$Q" seed widgets >/dev/null
-want "repairs keep claimable order; new by kind, priority, newest" \
-  "610:repair 611:repair 609:new 604:new 606:new 603:new 605:new 602:new 607:new 601:new 608:new" "$(order)"
+want "P0 before P1 whatever the class; repairs keep claimable order; new by kind, newest" \
+  "606:new 607:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new 608:new" "$(order)"
+want "each entry keeps its priority"       "0 1 3" "$(jq -r '[.tickets[] | select(.n==606 or .n==610 or .n==608) | .prin] | sort | join(" ")' "$QF")"
+want "and whether it is polish"            "true false" "$(jq -r '[(.tickets[] | select(.n==608)), (.tickets[] | select(.n==606))] | map(.polish) | join(" ")' "$QF")"
 want "the kind is recorded"                "feature" "$(jq -r '.tickets[] | select(.n==606) | .kind' "$QF")"
 
 echo "--- an entry put at the front keeps the front across a refresh ---"
 bash "$Q" add 608 --front >/dev/null
 bash "$Q" add 700 --front --note "outside the claimable list" >/dev/null
 bash "$Q" refresh >/dev/null
-want "fronts first in their class, the last one put there first, the rest re-sorted" \
-  "610:repair 611:repair 700:new 608:new 609:new 604:new 606:new 603:new 605:new 602:new 607:new 601:new" "$(order)"
+want "fronts first overall, the last one put there first, the rest re-sorted" \
+  "700:new 608:new 606:new 607:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
 bash "$Q" refresh >/dev/null
 want "and still there after a second refresh" \
-  "610:repair 611:repair 700:new 608:new 609:new 604:new 606:new 603:new 605:new 602:new 607:new 601:new" "$(order)"
+  "700:new 608:new 606:new 607:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
+
+echo "--- priority decides across classes (owner call 2026-10-19) ---"
+printf '%s\n' \
+  "620	P3	OPS		[FINISH PR]	a clash on a rough edge	P3,type:bug,project:widgets" \
+  "621	P0	OPS			Login drops the session	P0,type:bug,project:widgets" \
+  "622	P1	OPS		[FINISH PR]	a clash on the inbox	P1,type:bug,project:widgets" \
+  "623	P1	OPS			Inbox drops a reply	P1,type:bug,project:widgets" \
+  "624	P1	OPS			Saved views screen	P1,type:feature,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+want "a P0 new ticket outranks a P3 repair; a P1 repair outranks a P1 new ticket" \
+  "621:new 622:repair 624:new 623:new 620:repair" "$(order)"
+bash "$Q" add 625 --class approved-merge >/dev/null
+fix_issue 625 OPEN "P0,status:in-review"
+want "an approved merge added by hand has no priority until the tick reads its labels" "625:approved-merge" "$(order | awk '{print $NF}')"
+. "$HERE/coordinator-env.sh"
+ISSUES='{"625":{"number":625,"state":"OPEN","title":"x","labels":["P0","status:in-review"]}}'
+want "with the tick's read, it ranks by its own ticket's priority" \
+  "625	approved-merge	0	0	0	|621	new	0	0	0	|622	repair	1	0	0	" \
+  "$(COORD_QUEUE="$QF" coord_queue_ordered --wide | head -3 | tr '\n' '|' | sed 's/|$//')"
+unset ISSUES
 
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null

@@ -34,7 +34,11 @@
 #   coordinator.healAllAt    COORDINATOR_HEAL_ALL_AT   unset reds left (waiting + live healing runs)
 #                                                           at which every place heals;
 #                                                           under it the healingShare split returns.
+#                                                           Polish reds never count toward it.
 #                                                           Unset, empty or not a whole number >0: off
+#   coordinator.polishListFull COORDINATOR_POLISH_LIST_FULL 8 unticked items at which a polish list
+#                                                           starts while other work waits; under it,
+#                                                           polish starts only when nothing else can
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
 #   coordinator.frozenMin    COORDINATOR_FROZEN_MIN    20    no log growth = frozen
@@ -89,6 +93,8 @@ COORD_HEAL_SHARE="${COORDINATOR_HEALING_SHARE:-$(swarm_opt coordinator.healingSh
 awk -v s="$COORD_HEAL_SHARE" 'BEGIN{exit !(s ~ /^(0|1|0?\.[0-9]+|1\.0*)$/)}' || COORD_HEAL_SHARE=0.25
 COORD_HEAL_ALL_AT="${COORDINATOR_HEAL_ALL_AT:-$(swarm_opt coordinator.healAllAt "")}"
 case "$COORD_HEAL_ALL_AT" in ""|*[!0-9]*) COORD_HEAL_ALL_AT="" ;; *) [ "$COORD_HEAL_ALL_AT" -gt 0 ] || COORD_HEAL_ALL_AT="" ;; esac
+COORD_POLISH_LIST_FULL="${COORDINATOR_POLISH_LIST_FULL:-$(swarm_opt coordinator.polishListFull 8)}"
+case "$COORD_POLISH_LIST_FULL" in ""|0|*[!0-9]*) COORD_POLISH_LIST_FULL=8 ;; esac
 [ -n "$COORD_MAX_LOAD_SET" ] || COORD_MAX_LOAD_SET=$(swarm_opt swarm.maxLoad "")
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
@@ -211,13 +217,55 @@ coord_lock() { # <dir> <noun>
   echo "$$" > "$lock/pid"
 }
 
-# The queue in run order: <ticket> \t <class> \t <note>. Class decides first
-# (repair > approved-merge > new); an unknown class sorts last rather than vanish.
+# What a ticket is, read off its labels, title and claimable mode. The queue's seed
+# and the tick's order both use these, so the two never disagree on a ticket.
+#   coord_prin   P0..P9 as 0..9; no priority label is 9, after P3
+#   coord_kind   half-built, feature, other, polish (owner call 2026-10-18)
+#   coord_polish P3, a polish kind, or a polish list: never stops new building
+COORD_TICKET_JQ='
+  def coord_pri($ls; $pri): ([$ls[]? | select(test("^P[0-9]$"))] | first) // $pri // "";
+  def coord_prin($ls; $pri): ((coord_pri($ls; $pri) | capture("^P(?<d>[0-9])") | .d | tonumber) // 9);
+  def coord_polish($ls; $pri; $title):
+    coord_pri($ls; $pri) == "P3" or ($ls | index($plist)) != null
+    or ($ls | any(test("polish"; "i"))) or (($title // "") | test("polish"; "i"));
+  def coord_kind($ls; $mode; $pri; $title):
+    if ($ls | index($partial)) or ($ls | index($inreview)) or $mode == "[RESUME PR]" then "half-built"
+    elif ($ls | index("type:feature")) then "feature"
+    elif coord_polish($ls; $pri; $title) then "polish"
+    else "other" end;'
+coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it needs
+  jq --arg plist "$LBL_POLISH_LIST" --arg partial "${LBL_PARTIAL:-status:partial}" \
+     --arg inreview "${LBL_IN_REVIEW:-status:in-review}" "$@"
+}
+
+# The queue in run order: <ticket> \t <class> \t <note>; with --wide,
+# <ticket> \t <class> \t <priority 0-9> \t <polish 0|1> \t <polish list 0|1> \t <note>.
+# Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
+# < none); within one priority repair, approved-merge, then new by kind; then the
+# queue's own position. A repair of any priority used to outrank every new
+# ticket, so a P3 red held a P0 build back. An entry put at the front stays first
+# overall. The tick's batched read ($ISSUES) is fresher than the seed: when it
+# holds a ticket, its labels decide that ticket's priority and kind.
 coord_queue_ordered() {
+  local wide=0; [ "${1:-}" = --wide ] && wide=1
   [ -s "$COORD_QUEUE" ] || return 0
-  jq -r '.tickets | to_entries
-         | map(.value + {pos: .key, rank: ({"repair":0,"approved-merge":1,"new":2}[.value.class] // 3)})
-         | sort_by(.rank, .pos) | .[] | [(.n|tostring), .class, (.note // "")] | @tsv' "$COORD_QUEUE" 2>/dev/null
+  coord_jq -r --argjson wide "$wide" --slurpfile iss <(printf '%s' "${ISSUES:-}" | jq -c 'objects' 2>/dev/null || true) \
+    "$COORD_TICKET_JQ"'
+     (($iss[0]) // {}) as $iss
+     | .tickets | to_entries
+     | map(.value as $t | ($iss[($t.n|tostring)] // null) as $i
+         | (if $i then ($i.labels // []) else null end) as $ls
+         | $t + {pos: .key,
+                 prin: (if $ls then coord_prin($ls; null) else ($t.prin // 9) end),
+                 kind: (if $ls then coord_kind($ls; ""; null; $i.title) else ($t.kind // "other") end),
+                 polish: (if $ls then coord_polish($ls; null; $i.title) else ($t.polish // ($t.kind == "polish")) end),
+                 plist: (if $ls then ($ls | index($plist)) != null else ($t.plist // false) end),
+                 rank: ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3)})
+     | sort_by(if .front then 0 else 1 end, (if .front then .pos else 0 end), .prin, .rank,
+               (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos)
+     | .[]
+     | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end), (.note // "")]
+       else [(.n|tostring), .class, (.note // "")] end | @tsv' "$COORD_QUEUE" 2>/dev/null
 }
 
 # The last good read of the forge, kept for the ticks GitHub refuses. A tick

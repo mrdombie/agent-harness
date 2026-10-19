@@ -10,7 +10,8 @@
 #   gh_issues_batch <n…>            {"<n>": {number,state,title,updatedAt,labels:[name…]}}
 #                                   for every number GitHub resolved, in one
 #                                   GraphQL request per 50; exit 1 when a request
-#                                   came back with no data at all
+#                                   came back with no data at all. GH_BATCH_BODY=1
+#                                   adds each body (a polish list's items)
 #   gh_prs_by_head_batch <branch…>  {"<branch>": [{number,state}…]}, newest
 #                                   first, same shape and exit as above
 #   gh_pr_commits_batch <n…>        {"<n>": {headRefOid, commits:[{oid,message,files,
@@ -208,20 +209,23 @@ _gh_graphql() {
 # A request that came back with no data is asked again one number at a time, so a
 # gh that cannot batch still answers; under a backoff each of those fails at once.
 gh_issues_batch() {
-  local _o _r n q="" k=0 out="{}" part fail=0 nums="" one
+  local _o _r n q="" k=0 out="{}" part fail=0 nums="" one b=""
+  [ "${GH_BATCH_BODY:-0}" = 1 ] && b=" body"
   _gh_batch_repo || return 1
   _ghb_flush() {
     [ -n "$q" ] || return 0
     if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
       part=$(jq -c --argjson acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
-              | {key: (.number|tostring), value: {number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
+              | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
+                                                   + (if has("body") then {body: (.body // "")} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
       [ -n "$part" ] && out="$part" || fail=1
     else
       fail=1
       for one in $nums; do
-        part=$(gh_call issue view "$one" --repo "$_o/$_r" --json number,state,title,labels,updatedAt 2>/dev/null) || continue
+        part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt${b:+,body}" 2>/dev/null) || continue
         part=$(jq -c --argjson acc "$out" --arg n "$one" 'select(type == "object" and .state != null)
-                | $acc + {($n): {number: ($n|tonumber), state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels[]?.name]}}' <<<"$part" 2>/dev/null)
+                | $acc + {($n): ({number: ($n|tonumber), state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels[]?.name]}
+                                 + (if has("body") then {body: (.body // "")} else {} end))}' <<<"$part" 2>/dev/null)
         [ -z "$part" ] || out="$part"
       done
     fi
@@ -230,7 +234,7 @@ gh_issues_batch() {
   for n in "$@"; do
     case "$n" in ''|*[!0-9]*) continue ;; esac
     nums="$nums $n"
-    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state title updatedAt labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt labels(first:50){nodes{name}}}}"
+    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state title updatedAt$b labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt$b labels(first:50){nodes{name}}}}"
     k=$((k+1)); [ "$k" -lt 50 ] || _ghb_flush
   done
   _ghb_flush

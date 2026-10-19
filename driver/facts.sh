@@ -293,9 +293,52 @@ driver_fact_screen_steps() { # <ticket>
   if [ -f "$wt/$v" ]; then head -c 16000 "$wt/$v"; else printf '%s' "$v"; fi
 }
 
-# driver_facts_common <ticket> <slot> — the nine every step may ask for. Cheap ones
+# THE SCREEN'S POLISH LIST, WHEN ITS TICKET IS FOR A SCREEN THAT HAS ONE. Minor
+# findings go on one list per screen (scripts/polish-list.sh), never a ticket each,
+# and ride along with the next ticket for that screen: the builder fixes them in the
+# same change and ticks each one it fixed. Read once per run and kept, so every step
+# sees the list as the plan saw it, and ship can tell which items this run ticked.
+#   state: polish_fact (the fact) · polish_items (<list> \t <item>, one a line)
+driver_fact_polish_list() { # <ticket>
+  local t="$1" cached labels slugs slug n items out="" kept="" pl
+  cached=$(driver_state_get "$t" polish_fact)
+  [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
+  labels=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) || {
+    _driver_fact_none "#$t's labels could not be read, so no polish list was looked for"; return 0; }
+  if printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST"; then
+    out=$(_driver_fact_none "#$t is a polish list itself: the unticked items in its body are the work")
+    driver_state_set "$t" polish_fact "$out"; printf '%s' "$out"; return 0
+  fi
+  slugs=$(printf '%s\n' "$labels" | awk -v p="$LBL_SCREEN_PREFIX" 'p != "" && index($0, p) == 1 && length($0) > length(p) { print substr($0, length(p) + 1) }')
+  if [ -z "$slugs" ]; then
+    out=$(_driver_fact_none "#$t carries no ${LBL_SCREEN_PREFIX}<slug> label, so no screen's polish list rides along")
+    driver_state_set "$t" polish_fact "$out"; printf '%s' "$out"; return 0
+  fi
+  pl="$KIT_ROOT/scripts/polish-list.sh"
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    n=$(bash "$pl" for-screen "$slug" 2>/dev/null) || { _driver_fact_none "the polish list for ${LBL_SCREEN_PREFIX}$slug could not be read"; return 0; }
+    [ -n "$n" ] || continue
+    items=$(bash "$pl" items "$n" 2>/dev/null) || { _driver_fact_none "polish list #$n could not be read"; return 0; }
+    [ -n "$items" ] || continue
+    kept="$kept$(printf '%s\n' "$items" | awk -v n="$n" 'NF { print n "\t" $0 }')"$'\n'
+    out="${out:+$out
+
+}Polish list #$n for ${LBL_SCREEN_PREFIX}$slug — fix these in this change, tick each one you fixed with
+\`bash $pl tick $n \"<the item, exactly as written>\"\`, and leave any you cannot fix unticked:
+$(printf '%s\n' "$items" | sed 's/^/- /')"
+  done <<EOS
+$slugs
+EOS
+  [ -n "$out" ] || out=$(_driver_fact_none "no open polish list for $(printf '%s\n' "$slugs" | awk -v p="$LBL_SCREEN_PREFIX" 'NF { printf "%s%s%s", (n++ ? ", " : ""), p, $0 }') holds an unticked item")
+  driver_state_set "$t" polish_items "$kept"
+  driver_state_set "$t" polish_fact "$out"
+  printf '%s' "$out"
+}
+
+# driver_facts_common <ticket> <slot> — the ten every step may ask for. Cheap ones
 # are always written; the expensive reads are the two gh calls, and they are the
-# same two the step would make anyway.
+# same two the step would make anyway. The polish list is read once a run.
 driver_facts_common() { # <ticket> <slot>
   local t="$1" s="$2"
   driver_fact_put "$t" "$s" TICKET          "$(driver_fact_ticket "$t")"
@@ -307,4 +350,5 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" STANDARDS       "$(driver_fact_standards)"
   driver_fact_put "$t" "$s" SURFACE_RULES   "$(driver_fact_surface_rules)"
   driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
+  driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
 }

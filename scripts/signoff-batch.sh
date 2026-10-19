@@ -31,8 +31,15 @@
 #
 # Batch size: coordinator.signoffBatch (COORDINATOR_SIGNOFF_BATCH), default 5.
 # The key names its members, so the same set is the same key in every caller.
+#
+# Order: by priority, P0 first, no priority last, then lowest number (owner call
+# 2026-10-19): on that day 20 of the 35 PRs waiting on the owner were polish, and a
+# batch by PR number put spacing fixes in front of a broken screen. A PR's priority
+# is its own P label, else its ticket's (one batched read, only when a batch can
+# form); a polish list's PR is P3 and, one PR for the whole list, one picture.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../swarm" && pwd)/swarm-env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-ticket.sh" || exit 1
 
 BATCH="${COORDINATOR_SIGNOFF_BATCH:-$(swarm_opt coordinator.signoffBatch 5)}"
 HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"
@@ -47,8 +54,9 @@ EV_PREFIX=$(jq -r '.evidence.commitPrefix // empty' "${HARNESS_CFG:-/dev/null}" 
 KEPT="${SIGNOFF_APPROVAL_KEPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/approval-kept.sh}"
 case "$BATCH" in ''|*[!0-9]*|0) echo "signoff-batch: batch size '$BATCH' is not a positive number" >&2; exit 2 ;; esac
 
-held_green() { # <pr> \t <sha7> \t <sha>
-  jq -r --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson req "$REQUIRED" '
+held_green() { # <pr> \t <sha7> \t <sha> \t <priority 0-9 or -> \t <ticket or ->
+  jq -r --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson req "$REQUIRED" \
+     --arg plist "$LBL_POLISH_LIST" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
     def settled: ((.status // "COMPLETED") == "COMPLETED") and (((.state // "") | test("PENDING|EXPECTED")) | not);
     def ok: (.conclusion // .state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$");
     def named($r): .name == $r or .context == $r or (((.workflowName // "") + " / " + (.name // "")) == $r);
@@ -62,8 +70,13 @@ held_green() { # <pr> \t <sha7> \t <sha>
             ($c | length) > 0 and all($c[]; settled)
             and all($c[]; ok or (((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase)))
           end)
-      | {n: .number, sha: (.headRefOid // "")} ]
-    | sort_by(.n) | .[] | "\(.n)\t\(.sha[0:7])\t\(.sha)"'
+      | [.labels[]?.name] as $ls
+      | {n: .number, sha: (.headRefOid // ""),
+         pri: (([$ls[] | select(test("^P[0-9]$")) | ltrimstr("P")] | first)
+               // (if ($ls | index($plist)) then "3" else "-" end)),
+         t: (((.headRefName // "") | branch_ticket($pre)) as $b
+             | if $b != "" then $b else ((.closingIssuesReferences // [])[0].number // "-" | tostring) end)} ]
+    | sort_by(.n) | .[] | "\(.n)\t\(.sha[0:7])\t\(.sha)\t\(.pri)\t\(.t)"'
 }
 
 # walk <pr-json> <clean-merges-json> — from the head down: "" when every verdict is
@@ -90,7 +103,7 @@ WALK_JQ='
     end'
 
 on_head() { # rows of held_green on stdin; those whose verdicts are on the head
-  local rows data
+  local rows data TAB=$'\t'
   rows=$(cat); [ -n "$rows" ] || return 0
   if [ "$VERDICTS" = '[]' ]; then printf '%s\n' "$rows"; return 0; fi
   # shellcheck disable=SC2046
@@ -98,7 +111,7 @@ on_head() { # rows of held_green on stdin; those whose verdicts are on the head
   data=$(gh_pr_commits_batch $(printf '%s\n' "$rows" | cut -f1))
   jq -e 'type == "object" and length > 0' >/dev/null 2>&1 <<<"$data" \
     || { echo "signoff-batch: the held PRs' commits could not be read — none counted" >&2; return 0; }
-  printf '%s\n' "$rows" | while IFS=$'\t' read -r n s7 sha; do
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r n s7 sha rest; do
     clean='[]'; dirty='[]'
     while :; do
       why=$(jq -r --arg n "$n" --arg sha "$sha" --argjson keys "$VERDICTS" --arg evpre "$EV_PREFIX" \
@@ -117,9 +130,29 @@ on_head() { # rows of held_green on stdin; those whose verdicts are on the head
         *) break ;;
       esac
     done
-    if [ -z "$why" ]; then printf '%s\t%s\t%s\n' "$n" "$s7" "$sha"
+    if [ -z "$why" ]; then printf '%s\t%s\t%s\n' "$n" "$s7" "$sha${rest:+$TAB$rest}"
     else echo "signoff-batch: #$n is green apart from the hold, not counted: $why" >&2; fi
   done
+}
+
+# by_priority — rows on stdin, ordered P0 first, then lowest number. A PR with no
+# P label of its own takes its ticket's, read in one batch; unread, it sorts last.
+by_priority() {
+  local rows need iss
+  rows=$(cat); [ -n "$rows" ] || return 0
+  need=$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "-" && $5 ~ /^[0-9]+$/ { print $5 }' | sort -un | tr '\n' ' ')
+  iss="{}"
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  [ -z "${need// /}" ] || iss=$(gh_issues_batch $need 2>/dev/null) || true
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$iss" || iss="{}"
+  printf '%s\n' "$rows" | jq -R -r --argjson iss "$iss" --arg plist "$LBL_POLISH_LIST" '
+    split("\t") as $r
+    | (if $r[3] != "-" then ($r[3] | tonumber)
+       else (($iss[$r[4]].labels // []) as $ls
+             | ([$ls[] | select(test("^P[0-9]$")) | ltrimstr("P") | tonumber] | first)
+               // (if ($ls | index($plist)) then 3 else 9 end)) end) as $p
+    | "\($p)\t\($r | join("\t"))"' \
+  | sort -t$'\t' -k1,1n -k2,2n | cut -f2-
 }
 
 case "${1:-}" in
@@ -127,12 +160,12 @@ case "${1:-}" in
   batches)
     DONE="${2:?usage: signoff-batch.sh batches <done-file>}"
     [ -f "$DONE" ] || : > "$DONE"
-    left=$(held_green | while IFS=$'\t' read -r n s7 sha; do
-      grep -qxF "pr:$n:$s7" "$DONE" || printf '%s\t%s\t%s\n' "$n" "$s7" "$sha"
+    left=$(held_green | while IFS=$'\t' read -r n s7 sha pri t; do
+      grep -qxF "pr:$n:$s7" "$DONE" || printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$s7" "$sha" "$pri" "$t"
     done)
     # The verdict read is spent only when a full batch could form.
     [ "$(printf '%s' "$left" | grep -c .)" -ge "$BATCH" ] || exit 0
-    printf '%s\n' "$left" | on_head | awk -F'\t' -v size="$BATCH" '
+    printf '%s\n' "$left" | on_head | by_priority | awk -F'\t' -v size="$BATCH" '
       { m[++k] = $1 "@" $2 }
       END {
         for (i = 1; i + size - 1 <= k; i += size) {

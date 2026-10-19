@@ -312,8 +312,8 @@ review raising one point per round, having cleared the design reviewer hours
 earlier: *"apply all those rules, not just the two."*
 
 **Two rounds, then the PR ships.** Run the set, fix the batch, run the set
-again. After the second round anything still raised that is **not a blocker** is
-filed as its own ticket, linked on the PR, and the PR merges. A blocker is a
+again. After the second round anything still raised that is **not a blocker** goes
+on its screen's polish list, linked on the PR, and the PR merges. A blocker is a
 Critical or Major finding — wrong data, a security hole, lost work, an
 unapproved publish, a dead control, a broken flow, a user misled or stuck.
 Everything else — a spacing call, a copy preference, a nice-to-have — is a
@@ -321,8 +321,15 @@ follow-up. `rules/standing-rules.md` has the grade table.
 
 The cap is **recorded, not promised**: the PR body carries `Review rounds: N of
 2`, so a reader can see the rule was applied rather than take the agent's word
-for it. A follow-up ticket carries the reviewer's finding **verbatim**, the
-evidence it was raised against, and the parent's `project:` label.
+for it. A polish-list item carries the reviewer's finding **verbatim** and the
+evidence it was raised against — never a ticket of its own:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" add <screen-slug> "<finding, verbatim> — raised on #<PR>"
+```
+
+The slug is the screen's `screen:<slug>` label (`labels.screenPrefix`); the next
+ticket for that screen fixes the list in its own change.
 
 **Which reviewers, and what proves one ran.** Both come from the config, because
 which reviewers a project runs and how it attests them are project facts:

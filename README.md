@@ -477,7 +477,8 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `rampMax` | unset | The most starts in one tick. Unset, the room decides |
 | `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
-| `healAllAt` | unset | Reds left at which every place heals, counting those waiting and those being healed; once fewer are left, `healingShare` returns. Unset, or not a whole number over 0, is off |
+| `healAllAt` | unset | Reds left at which every place heals, counting those waiting and those being healed; once fewer are left, `healingShare` returns. Polish reds (P3, a polish kind, or a polish list) never count. Unset, or not a whole number over 0, is off |
+| `polishListFull` | 8 | Unticked items at which a polish list starts on its own while other work can start. Under it, polish starts only when nothing else can |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
@@ -525,7 +526,23 @@ class with nothing spawnable lends its places to the other, in both directions.
 With `healAllAt` set, a tick that counts that many reds left or more (spawnable
 reds waiting plus live healing runs, since a red being healed is still left) gives
 the whole ceiling to healing, and the split line and `capacity.json` (`healAll`)
-say so; once fewer are left the share returns.
+say so; once fewer are left the share returns. Polish reds never count toward it:
+they are healed in their turn, at their priority, and never stop new building.
+
+**Priority decides, everywhere** (owner call 2026-10-19). The queue runs P0, P1,
+P2, P3, then tickets with no priority, across classes: a repair or an approved
+merge ranks by its own ticket's priority, read fresh each tick. Within one
+priority: repair, approved merge, then new work half-built, feature, other,
+polish. An entry put at the front stays first. The healing share still holds;
+which red heals first follows priority.
+
+**Polish rides along.** A Minor finding goes on its screen's one polish list
+(`scripts/polish-list.sh add <screen-slug> "<text>"`), never a ticket of its own.
+A ticket labelled `screen:<slug>` carries that list's unticked items into its plan
+and build (`{{POLISH_LIST}}`); the builder fixes them, ticks them, and the PR names
+them. Polish new work (P3, a polish kind, a polish list) starts only when nothing
+else can, or when a polish list holds `polishListFull` items. Sign-off batches are
+ordered by priority too, so polish screens come last.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
 The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
 because a spawner (an older install of the kit, or a stand-in) need not

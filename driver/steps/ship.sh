@@ -33,6 +33,28 @@ _driver_ship_replaced() {
       else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$(driver_state_dir "$1")/steps/replaced.jsonl" 2>/dev/null
 }
 
+# _driver_ship_polish <ticket> — the "## Polish list" section: the items of the
+# screen's polish list this run's builder ticked, and what it left. The list as the
+# plan saw it is kept in state (driver_fact_polish_list); an item no longer unticked
+# now was fixed here. A list that cannot be read now names nothing as fixed.
+_driver_ship_polish() {
+  local items n item now fixed="" left="" lists="" pl="$KIT_ROOT/scripts/polish-list.sh"
+  items=$(driver_state_get "$1" polish_items)
+  [ -n "$(printf '%s' "$items" | tr -d '[:space:]')" ] || return 0
+  for n in $(printf '%s\n' "$items" | cut -f1 | grep -E '^[0-9]+$' | sort -un); do
+    lists="$lists #$n"
+    now=$(bash "$pl" items "$n" 2>/dev/null) || { left="$left- #$n could not be read, so nothing on it is named fixed"$'\n'; continue; }
+    while IFS=$'\t' read -r _ item; do
+      [ -n "$item" ] || continue
+      if printf '%s\n' "$now" | grep -qxF -- "$item"; then left="$left- $item (#$n)"$'\n'
+      else fixed="$fixed- $item (#$n)"$'\n'; fi
+    done <<<"$(printf '%s\n' "$items" | awk -F'\t' -v n="$n" '$1 == n')"
+  done
+  printf '## Polish list\nRode along from%s.\n' "$lists"
+  [ -z "$fixed" ] || printf '\nFixed here and ticked:\n%s' "$fixed"
+  [ -z "$left" ]  || printf '\nLeft on the list:\n%s' "$left"
+}
+
 # _driver_ship_push_to_fix <ticket> — a push the project's own pre-push refused goes
 # to fix once, its output as the finding, inside the fix-round ceiling (#236).
 # Self-check runs the same checks, except while a reviewer is owed, so this is the
@@ -235,6 +257,7 @@ driver_step_ship() { # <ticket>
   local d replaced=""
   d="$(driver_state_dir "$t")/steps"
   replaced=$(_driver_ship_replaced "$t")
+  local polish; polish=$(_driver_ship_polish "$t")
 
   body=$(cat <<PRBODY
 Closes #$t
@@ -251,7 +274,9 @@ $(if [ -n "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ]; then
     echo "Renders this run took (designSource=$(driver_state_get "$t" design_source): no approved picture, so no parity check was made):"
   fi)
 $(driver_state_get "$t" renders | sed 's/^/  /')
-${replaced:+
+${polish:+
+$polish
+}${replaced:+
 ## Deleted tests
 $replaced}
 PRBODY

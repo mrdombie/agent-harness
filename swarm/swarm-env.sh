@@ -352,6 +352,10 @@ swarm_running_total() {
 # A ticket rolled into a batch ticket: the batch's one PR builds it, so no agent starts it alone.
 LBL_BATCHED="${LBL_BATCHED:-$(swarm_opt labels.batched status:batched)}"
 export LBL_BATCHED
+# One open list of small fixes per screen (scripts/polish-list.sh), never one ticket per fix.
+LBL_POLISH_LIST="${LBL_POLISH_LIST:-$(swarm_opt labels.polishList polish-list)}"
+LBL_SCREEN_PREFIX="${LBL_SCREEN_PREFIX:-$(swarm_opt labels.screenPrefix screen:)}"
+export LBL_POLISH_LIST LBL_SCREEN_PREFIX
 # The statuses that mean "a person or another PR owns this; never send an agent".
 # Read from the config so a project's own names are honoured, plus needsHuman and
 # the hold label, which are the two stops the swarm itself sets.

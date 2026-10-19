@@ -79,9 +79,11 @@ An ungraded finding is a finding nobody can prioritise.
 the first version that works — not in sequence at the end, or the agent builds
 on top of work another reviewer is about to reject. Fix the combined findings as
 one batch, run the pair again, and after that second round anything still raised
-that is not Critical or Major is filed as its own ticket, linked on the PR, and
-the PR merges. A follow-up ticket carries the finding verbatim and the evidence
-it was raised against.
+that is not Critical or Major goes on its screen's polish list
+(`scripts/polish-list.sh add <screen-slug> "<finding>"`), linked on the PR, and
+the PR merges. A Minor is never a ticket of its own: the next ticket for that
+screen fixes the list's items in its own change. The item carries the finding
+verbatim and the evidence it was raised against.
 
 **Record the count, do not promise it.** The PR body carries `Review rounds: N
 of 2`, so a reader can see the rule was applied rather than take the agent's

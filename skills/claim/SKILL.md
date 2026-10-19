@@ -1004,8 +1004,9 @@ other once everything is built: they judge different things and neither
 subsumes the other, so running them apart means building on work the other is
 about to reject. Their findings are one batched fix list. The cap is
 `review.rounds` from `.claude/harness.json` (2 when unset): after the last
-round, anything still raised that is not a blocker is filed as its own ticket,
-linked on the PR, and the PR ships. A blocker is a dead control, a broken flow,
+round, anything still raised that is not a blocker goes on its screen's polish
+list (`scripts/polish-list.sh add <screen-slug> "<finding>"`), linked on the PR,
+and the PR ships. A blocker is a dead control, a broken flow,
 or a data-honesty failure; those still block.
 
 **Ship in PRs of about six fixes.** A ticket may be as big as it needs to be;

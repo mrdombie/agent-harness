@@ -288,6 +288,64 @@ want_in "the split line counts the live ones as left" 'heal-all: 12 reds left' "
 out=$(live_heal_tick 3)
 want "3 waiting + 6 healing, under healAllAt: 2 healing places" "2 4 10 false" "$(slots_view)"
 
+echo "--- polish never stops the factory: polish reds never count toward heal-all ---"
+# reds_as <priority> <tickets…> — repairs whose tickets carry that priority
+reds_as() { local p="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$p,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; done; }
+pri_heal_tick() { # <priority> <reds> — reds 601.., six new 701..706, ceiling 6, share 0.25, healAllAt 10
+  fresh; reds_as "$1" $(seq 601 $((600 + $2))); queue 701 702 703 704 705 706
+  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1
+}
+out=$(pri_heal_tick P1 10)
+want "10 P1 reds, healAllAt 10: every place heals" "6 0 10 true" "$(slots_view)"
+out=$(pri_heal_tick P3 10)
+want "10 polish reds, healAllAt 10: the share holds, 2 healing" "2 4 10 false" "$(slots_view)"
+want "2 heal and 4 build new"              "2 4" "$(heal_new)"
+want_in "the split line says why"          '10 polish red\(s\) not counted toward heal-all' "$out"
+fresh; for t in 601 602 603 604 605 606 607 608 609 610; do fix_issue "$t" OPEN "polish-list,screen:inbox,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; done
+queue 701 702 703 704 705 706
+SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
+want "10 polish-list reds with no priority label: no heal-all either" "2 4 10 false" "$(slots_view)"
+# Live healing runs on polish tickets are not reds left either.
+fresh; reds_as P1 601 602 603 604 605 606; queue 701
+for t in 801 802 803 804 805 806; do fix_issue "$t" OPEN "P3,status:in-review"; live_as $t repair; done
+SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
+want "6 P1 waiting + 6 polish being healed: under healAllAt" "2 4 10 false" "$(slots_view)"
+echo "--- which red heals first follows priority ---"
+fresh; reds_as P3 601; reds_as P1 602; reds_as P0 603; queue 701
+COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "the P0 red takes the one healing place" "603" "$(spawned)"
+
+echo "--- a polish list ships alone only when it is full ---"
+# list_issue <n> <items> — an open polish list holding that many unticked items
+list_issue() {
+  local body="## Items" i
+  for i in $(seq 1 "$2"); do body="$body"$'\n'"- [ ] item $i"; done
+  body="$body"$'\n'"- [x] done already"
+  jq -n --argjson n "$1" --arg b "$body" '{number:$n, state:"OPEN", title:"Polish list: Inbox", body:$b,
+    labels:([ "polish-list","screen:inbox","P3","status:ready","type:bug" ] | map({name:.}))}' > "$FIX/gh/issue-$1.json"
+  bash "$Q" add "$1" >/dev/null
+}
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 3
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want "3 items while a P2 ticket can start: only the P2 starts" "701" "$(spawned)"
+want_in "it says the list rides along"     'skip #801 \(polish list\): 3 of 8 items' "$out"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 8
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "8 items: the full list starts too, after the P2" "701 801" "$(spawned)"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 3
+SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_POLISH_LIST_FULL=3 ticks 1 >/dev/null
+want "coordinator.polishListFull sets where full is" "701 801" "$(spawned)"
+fresh; list_issue 801 3; fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "nothing else can start: polish starts, a short list and a P3 ticket" "801 802" "$(spawned)"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 >/dev/null
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want "a P3 ticket waits while a P2 can start" "701" "$(spawned)"
+want_in "named once"                       'polish: 1 polish ticket\(s\) wait while other work can start' "$out"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; reds_as P3 601
+SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
+want "a polish red still takes its healing place" "601 701" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+
 # Back to the fixture's reading: later sections must never read the real machine.
 export SWARM_IDLE=90; unset SWARM_CORES
 

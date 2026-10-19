@@ -15,10 +15,12 @@
 # whole seed is refused, naming it, never widened.
 #
 # The candidates and their order come from claimable-issues.sh, the one
-# definition of what may be picked up. A [FINISH PR] row is class repair, kept in
-# claimable order; everything else is new, ordered half-built, feature, other,
-# polish, then priority, then newest first. An entry put there with `add --front`
-# stays first in its class across re-seeds. An entry put there with `add` is pinned: it and every
+# definition of what may be picked up. A [FINISH PR] row is class repair, the rest
+# new. Priority orders the whole queue (P0 first, no priority last); within one
+# priority repair, approved-merge, then new work half-built, feature, other,
+# polish, newest first; repairs keep claimable order. Each entry keeps its
+# priority (prin), kind and polish flag. An entry put there with `add --front`
+# stays first across re-seeds. An entry put there with `add` is pinned: it and every
 # note survive a re-seed, because nothing on the forge can rebuild them. The
 # tick removes an entry once it has spawned it. A seed whose reads fail changes
 # nothing.
@@ -92,7 +94,7 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
              if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6
            }')
-  current | jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" '
+  current | coord_jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" "$COORD_TICKET_JQ"'
     (.tickets // []) as $old
     | ($labels | split("\n") | map(select(length > 0))) as $ls
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
@@ -101,27 +103,28 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
            ls: ((.[4] // "") | split(",")), title: ((.[5] // "") | ascii_downcase)}
         # The kind of work, owner call 2026-10-18: half-built screens first, then
         # features, then other bugs and chores, then polish. Hard-coded, not config.
-        | .kind = (if (.ls | index("status:partial")) or (.ls | index("status:in-review")) or .mode == "[RESUME PR]" then "half-built"
-                   elif (.ls | index("type:feature")) then "feature"
-                   elif (.ls | index("P3")) or .pri == "P3" or (.ls | any(test("polish"; "i"))) or (.title | test("polish")) then "polish"
-                   else "other" end)
-        | .prin = ((.pri | capture("^P(?<d>[0-9])") | .d | tonumber) // 9)
-        | {n, class, kind, prin})) as $fresh
+        | .kind = coord_kind(.ls; .mode; .pri; .title)
+        | .prin = coord_prin(.ls; .pri)
+        | .polish = coord_polish(.ls; .pri; .title)
+        | .plist = ((.ls | index($plist)) != null)
+        | {n, class, kind, prin, polish, plist})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
                      | if $o.front then .front = true else . end)) as $merged
     | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null))) as $kept
     | ($old | to_entries | map({key: (.value.n|tostring), value: .key}) | from_entries) as $oldpos
-    # Within a class (coord_queue_ordered sorts classes): an entry put at the front
-    # stays there in the order it was put; new work goes by kind, priority, newest
-    # first; repair and approved-merge keep the claimable order.
+    # Priority first, across classes (coord_queue_ordered sorts the same way): an
+    # entry put at the front stays first in the order it was put; then priority;
+    # within one priority repair, approved-merge, then new by kind, newest first;
+    # repair and approved-merge keep the claimable order.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
-        | if $t.front then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0]
-          elif $t.class == "new" then [1, ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9), ($t.prin // 9), -$t.n, $i]
-          else [1, 0, 0, 0, $i] end)
-    | map(.value | del(.prin))
+        | if $t.front then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0]
+          else [1, 0, ($t.prin // 9), ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3),
+                (if $t.class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9) else 0 end),
+                (if $t.class == "new" then -$t.n else $i end)] end)
+    | map(.value)
     | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: .}' | write
   echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
 }
@@ -194,6 +197,6 @@ case "${1:-}" in
   add)     shift; add "$@" ;;
   remove)  shift; remove "$@" ;;
   list)    list ;;
-  -h|--help|"") sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)       die "unknown command '$1'" ;;
 esac
