@@ -82,7 +82,18 @@ EOS
   return 1
 }
 
+# A pass asks about many tickets; one batched read answers them all (gh-batch.sh),
+# and only a ticket that read missed is asked on its own.
+_LABELS='{}'
+labels_prefetch() { # <ticket…>
+  [ $# -gt 0 ] || return 0
+  _LABELS=$(gh_issues_batch "$@" 2>/dev/null)
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$_LABELS" || _LABELS='{}'
+}
 labels_of() { # <ticket> — "OPEN,label,label"
+  local hit
+  hit=$(jq -r --arg t "$1" '.[$t] // empty | .state + "," + (.labels | join(","))' <<<"$_LABELS" 2>/dev/null)
+  if [ -n "$hit" ]; then printf '%s' "$hit"; return 0; fi
   swarm_gh issue view "$1" --repo "$REPO_SLUG" --json state,labels \
     -q '.state + "," + ([.labels[].name] | join(","))' 2>/dev/null
 }
@@ -147,10 +158,27 @@ integration_red() {
   printf '%s' "$out"
 }
 
+# repair_kind <mergeState> <pending> <fails> — "conflict" or "ci"; 1 when nothing to repair.
+repair_kind() {
+  if [ "$1" = "DIRTY" ]; then printf conflict
+  elif [ "${2:-0}" = "0" ] && [ -n "$3" ]; then printf ci
+  else return 1; fi
+}
+
 section_repair() {
-  local launched=0 row PR T SHA MSTATE PEND FAILS labs reason kind prog why trunk_red
+  local launched=0 row PR T SHA MSTATE PEND FAILS labs reason kind prog why trunk_red rows want=""
   trunk_red=$(integration_red)
   [ -z "$trunk_red" ] || say "$INTEGRATION_BRANCH is red ($trunk_red) — CI repairs wait until it is green"
+  rows=$(open_prs)
+  # The tickets this pass may still act on, read in one request before the loop.
+  while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
+    [ -n "${PR:-}" ] || continue
+    kind=$(repair_kind "$MSTATE" "$PEND" "$FAILS") || continue
+    [ "$kind" = ci ] && [ -n "$trunk_red" ] && continue
+    grep -q "^$T	$SHA	$kind" "$TRIED" && continue
+    want="$want $T"
+  done <<< "$rows"
+  labels_prefetch $want
   while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
     [ -n "${PR:-}" ] || continue
     [ "$launched" -lt "$MAX_PER_PASS" ] || break
@@ -164,14 +192,14 @@ section_repair() {
       continue
     fi
 
+    # A clash with the integration branch does not move the PR's head, so the
+    # kind is part of the key: one attempt per head commit PER KIND.
+    grep -q "^$T	$SHA	$kind" "$TRIED" && continue
+
     labs=$(labels_of "$T")
     [ -n "$labs" ] || continue
     case "$labs" in CLOSED,*) continue ;; esac
     paused "$labs" && continue
-
-    # A clash with the integration branch does not move the PR's head, so the
-    # kind is part of the key: one attempt per head commit PER KIND.
-    grep -q "^$T	$SHA	$kind" "$TRIED" && continue
 
     if [ "$(attempts_today "$T")" -ge 3 ]; then
       stop_sticky "$PR" "$T" "$reason"
@@ -194,7 +222,7 @@ section_repair() {
     swarm_spawn "$T" "$brief" >/dev/null 2>&1
     say "spawned repair for #$PR ($T) at ${SHA:0:9}: $reason"
     launched=$((launched+1))
-  done <<< "$(open_prs)"
+  done <<< "$rows"
   [ "$launched" -eq 0 ] || say "repaired $launched pull request(s) this pass"
 }
 
@@ -225,24 +253,29 @@ stop_sticky() { # <pr> <ticket> <reason>
 
 # ---- 2. unblock --------------------------------------------------------------
 # A ticket held behind others names them in a "Blocked until #12, #13" comment.
+# One list read carries every held ticket's comments, and one batched read every parent's state.
 section_unblock() {
-  local B parents p open
-  while read -r B; do
+  local B parents p open held all states
+  held=$(swarm_gh issue list --repo "$REPO_SLUG" --label "$LBL_BLOCKED" --state open --limit 200 --json number,comments \
+    -q '.[] | "\(.number)\t\([.comments[]?.body | select(startswith("Blocked until"))] | last // "" | [scan("#[0-9]+")] | join(" "))"' 2>/dev/null)
+  all=$(printf '%s\n' "$held" | cut -f2 | tr -d '#' | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u)
+  states='{}'
+  [ -z "$all" ] || states=$(gh_issues_batch $all 2>/dev/null)
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$states" || states='{}'
+  while IFS=$'\t' read -r B parents; do
     [ -n "${B:-}" ] || continue
-    parents=$(swarm_gh issue view "$B" --repo "$REPO_SLUG" --json comments \
-      -q '[.comments[].body | select(startswith("Blocked until"))] | last // ""' 2>/dev/null \
-      | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
+    parents=$(printf '%s' "$parents" | tr -d '#')
     [ -n "$parents" ] || continue
     open=0
     for p in $parents; do
-      [ "$(swarm_gh issue view "$p" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null)" = CLOSED ] || open=1
+      [ "$(jq -r --arg p "$p" '.[$p].state // empty' <<<"$states")" = CLOSED ] || open=1
     done
     [ "$open" = 0 ] || continue
     if [ "$DRY" = 1 ]; then echo "WOULD unblock #$B (every parent closed)"; continue; fi
     swarm_gh issue edit "$B" --repo "$REPO_SLUG" --remove-label "$LBL_BLOCKED" --add-label "$LBL_READY" >/dev/null 2>&1 &&
     swarm_gh issue comment "$B" --repo "$REPO_SLUG" --body "Unblocked: every parent has merged. Back in the queue." >/dev/null 2>&1
     say "unblocked #$B"
-  done <<< "$(swarm_gh issue list --repo "$REPO_SLUG" --label "$LBL_BLOCKED" --state open --limit 200 --json number -q '.[].number' 2>/dev/null)"
+  done <<< "$held"
 }
 
 # ---- 3. restart after an infrastructure error --------------------------------

@@ -57,8 +57,9 @@ compare() {
   fi
 }
 # blob <sha> <path> <blob-sha> — what the contents API answers for that file there
-blob() { jq -n --arg b "$3" '{sha:$b}' > "$FIX/gh/api-$(printf '%s' "repos/acme/widgets/contents/$2?ref=$1" | tr '/?&=' '____').json"; }
-fresh() { rm -f "$FIX"/gh/api-repos_* "$FIX/gh/contents-404"; : > "$GH_LOG"; compare develop "$A" ""; }
+# A fixture that re-answers the same (commit, path) differently is not a real forge, so it clears the cache.
+blob() { rm -rf "$STATE/swarm/blobs"; jq -n --arg b "$3" '{sha:$b}' > "$FIX/gh/api-$(printf '%s' "repos/acme/widgets/contents/$2?ref=$1" | tr '/?&=' '____').json"; }
+fresh() { rm -rf "$FIX"/gh/api-repos_* "$FIX/gh/contents-404" "$STATE/swarm/blobs"; : > "$GH_LOG"; compare develop "$A" ""; }
 check() { bash "$K" check "$@" 2>&1; }
 
 echo "--- a develop merge that brings other tickets' screens only: the approval is kept ---"
@@ -139,6 +140,24 @@ compare "$A" "$H" "lib/x.ts" "2" '.total_commits = 260'
 check "$A" "$H" >/dev/null; want "more commits than listed is a cut list" "2" "$?"
 rm -f "$FIX/gh/api-repos_acme_widgets_compare_develop...$H.json"; compare "$A" "$H" "lib/x.ts" "2"
 check "$A" "$H" >/dev/null; want "no own diff: unreadable" "2" "$?"
+
+echo "--- a file at a commit is asked once: the next check of the same heads reads none ---"
+fresh
+A1=1111111111111111111111111111111111111111; H1=2222222222222222222222222222222222222222
+compare develop "$A1" "apps/web/a.tsx,apps/web/b.tsx"; compare develop "$H1" "x"
+compare "$A1" "$H1" "lib/x.ts" "t,2" '.files = [range(300) | {filename:"lib/f\(.).ts"}]'
+blob "$A1" apps/web/a.tsx s1; blob "$H1" apps/web/a.tsx s1; blob "$A1" apps/web/b.tsx s2; blob "$H1" apps/web/b.tsx s2
+: > "$GH_LOG"; check "$A1" "$H1" >/dev/null; want "first check: kept" "0" "$?"
+want "and it read each screen at both heads" "4" "$(grep -c '/contents/' "$GH_LOG")"
+: > "$GH_LOG"; check "$A1" "$H1" >/dev/null; want "second check: still kept" "0" "$?"
+want "and it asked GitHub for no file contents" "0" "$(grep -c '/contents/' "$GH_LOG")"
+printf 'gh: Not Found (HTTP 404)\n' > "$FIX/gh/contents-404"; rm -f "$FIX"/gh/api-repos_acme_widgets_contents_*
+compare develop "$A1" "apps/web/c.tsx"; : > "$GH_LOG"
+check "$A1" "$H1" >/dev/null; check "$A1" "$H1" >/dev/null
+want "a file absent at a commit is remembered too" "2" "$(grep -c '/contents/' "$GH_LOG")"
+rm -f "$FIX/gh/contents-404"; rm -rf "$STATE/swarm/blobs"; : > "$GH_LOG"
+check "$A1" "$H1" >/dev/null; check "$A1" "$H1" >/dev/null
+want "an unreadable file is never remembered: each check asks again" "2" "$(grep -c '/contents/' "$GH_LOG")"
 
 echo "--- a rewritten history voids it ---"
 fresh
