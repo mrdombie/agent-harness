@@ -41,10 +41,15 @@ _driver_ship_reserve() {
   local t="$1" pr="$2" pl="$KIT_ROOT/scripts/polish-list.sh" n item got=""
   while IFS=$'\t' read -r n item; do
     [ -n "$item" ] || continue
-    if bash "$pl" reserve "$n" "$pr" "$item" >/dev/null 2>&1; then got="$got$n"$'\t'"$item"$'\n'
+    if bash "$pl" reserve --ticket "$t" "$n" "$pr" "$item" >/dev/null 2>&1; then
+      got="$got$n"$'\t'"$item"$'\n'
+      # Reserved, it leaves the run's record: a later run never re-reserves it.
+      bash "$pl" forget "$t" "$n" "$item" >/dev/null 2>&1
     else driver_say "   ship: polish item not reserved for #$pr (another PR holds it, or it is gone): $item (#$n)"; fi
   done <<<"$(bash "$pl" taken "$t" 2>/dev/null)"
-  driver_state_set "$t" polish_reserved "$got"
+  # Added to what earlier passes reserved: a resumed ship names them all.
+  driver_state_set "$t" polish_reserved "$(printf '%s%s' "$(driver_state_get "$t" polish_reserved)" "$got" | awk 'NF && !seen[$0]++')"$'\n'
+
 }
 
 # _driver_ship_polish <ticket> — the "## Polish list" section: the items this run
@@ -339,13 +344,16 @@ PRBODY
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
   fi
-  # A new PR has its number only now: reserve, then add the section to its body.
+  fi
+  # A new PR has its number only now, and a repair keeps its own body: reserve, then
+  # add the section to the body it carries.
   if [ -z "$polish" ] && [ -n "$(bash "$KIT_ROOT/scripts/polish-list.sh" taken "$t" 2>/dev/null)" ]; then
     case "$pr_n" in ''|*[!0-9]*) pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null) ;; esac
     case "$pr_n" in
       ''|*[!0-9]*) driver_say "   ship: the pull request's number could not be read, so its polish items are not reserved" ;;
       *) _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t")
-         if [ -n "$polish" ]; then
+         # A repair rewrites none of the PR's words: its items go in the repair comment.
+         if [ -n "$polish" ] && [ "$mode" != repair ]; then
            body="$body
 
 $polish"
@@ -353,7 +361,6 @@ $polish"
              || driver_say "   ship: the polish section could not be added to #$pr_n's body"
          fi ;;
     esac
-  fi
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
@@ -421,7 +428,9 @@ $polish"
     else
       said="Repaired by the driver at $head: $(jq -r '.cause // "see the run log"' "$rj" 2>/dev/null || echo "see the run log")."
     fi
-    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")')." >/dev/null 2>&1 || true
+    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")').${polish:+
+
+$polish}" >/dev/null 2>&1 || true
   fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true

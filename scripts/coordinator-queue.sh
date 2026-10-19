@@ -71,11 +71,17 @@ seed() { # <scope>[,<scope>…]
 # `gh issue list` per scope per refresh, for candidates the list already had.
 # A claimable list without that column (an older or stand-in one) falls back to
 # listing each scope label's members.
-# Polish lists are in every scope (PM call 2026-10-19): a screen's list must reach
-# the queue to ship once it is full, whatever scope the coordinator was seeded with.
+# Polish lists join every scope of labels (PM call 2026-10-19): a screen's list must
+# reach the queue to ship once it is full, whatever area or project was seeded. A
+# scope of named tickets stays exactly those tickets.
+with_lists() { # <scope labels, one a line> — plus the polish-list label when any is a label
+  if printf '%s\n' "$1" | grep -v '^ticket ' | grep -q .; then
+    printf '%s\n%s\n' "$1" "$LBL_POLISH_LIST" | awk 'NF && !seen[$0]++'
+  else printf '%s\n' "$1"; fi
+}
 fill() { # <scope> <resolved labels, one a line> — the members, the claimable rows, the write
   local scope="$1" labels="$2" claimable rows label members="" m match
-  match=$(printf '%s\n%s\n' "$labels" "$LBL_POLISH_LIST" | awk 'NF && !seen[$0]++')
+  match=$(with_lists "$labels")
   claimable=$(CLAIMABLE_WITH_LABELS=1 bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
   if printf '%s\n' "$claimable" | awk -F'\t' 'NF && $1 != "" && NF < 7 { bad = 1 } END { exit !bad }'; then
     while IFS= read -r label; do
@@ -153,7 +159,7 @@ in_scope() { # <n> — 0 under any scope, 1 outside every one, 2 unreadable
   local ls have l
   ls=$(scope_labels); [ -n "$ls" ] || die "no scope recorded — run 'seed <scope>' first"
   grep -qxF "ticket $1" <<<"$ls" && return 0
-  ls=$(printf '%s\n%s\n' "$ls" "$LBL_POLISH_LIST")
+  ls=$(with_lists "$ls")
   have=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) \
     || { echo "coordinator-queue: #$1 could not be read" >&2; return 2; }
   while IFS= read -r l; do

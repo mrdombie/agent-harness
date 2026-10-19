@@ -59,7 +59,10 @@ echo "--- a ready ticket starts ---"
 fix_issue 101 OPEN "status:ready,type:feature"
 mkdir -p "$(driver_state_dir 101)/steps"
 printf '%s\n' '{"file":"stale.test.sh","removedBecause":"a run on another branch"}' > "$(driver_state_dir 101)/steps/replaced.jsonl"
+# An earlier run's polish take, never reserved for a PR (its run died before ship).
+TK="$STATE/swarm/polish-taken"; mkdir -p "$TK"; fix_issue 950 OPEN "polish-list"; printf '950\told item\n' > "$TK/101.tsv"
 out=$(driver_step_start 101 2>&1); rc=$?
+want "a fresh run lets go of an earlier run's polish take" "" "$(ls "$TK/101.tsv" 2>/dev/null)"
 want "a fresh branch starts with an empty reworded-tests ledger (#11222)" "" "$(cat "$(driver_state_dir 101)/steps/replaced.jsonl")"
 want "it finishes"            "0" "$rc"
 want "the claim was taken"    "101" "$(claimed_tickets)"
@@ -76,7 +79,9 @@ want "claimed_at is recorded" "$(git -C "$REPO" rev-parse develop)" "$(driver_st
 echo "--- a second start on the same ticket does not cut a second worktree ---"
 before="$WT"
 printf '%s\n' '{"file":"kept.test.sh","coveredBy":"kept.test.sh"}' > "$(driver_state_dir 101)/steps/replaced.jsonl"
+printf '950\tthis run took it\n' > "$TK/101.tsv"
 rc=0; driver_step_start 101 >/dev/null 2>&1 || rc=$?
+want "a resume keeps its own polish take" "950	this run took it" "$(cat "$TK/101.tsv" 2>/dev/null)"
 want "it still finishes"      "0"        "$rc"
 want "same worktree"          "$before"  "$(driver_state_get 101 worktree)"
 want_in "and a resume keeps the ledger its commits still need" 'kept.test.sh' "$(cat "$(driver_state_dir 101)/steps/replaced.jsonl")"

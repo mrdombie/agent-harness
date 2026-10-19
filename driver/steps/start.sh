@@ -115,6 +115,10 @@ driver_step_start() { # <ticket>
   # was not, and the two have to agree.
   branch=$(driver_state_get "$t" branch)
   if [ -z "$branch" ]; then
+    # A fresh run, not a resume: what an earlier run of this ticket took from a
+    # polish list and never reserved for a PR is let go, so nothing ships it unbuilt.
+    bash "$KIT_ROOT/scripts/polish-list.sh" forget "$t" >/dev/null 2>&1 \
+      || driver_say "   start: the polish items an earlier run of #$t took could not be let go"
     slug=$(printf '%s' "$meta" | cut -d$'\001' -f3 | tr '[:upper:]' '[:lower:]' \
            | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-40)
     [ -n "$slug" ] || slug="ticket-$t"

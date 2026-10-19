@@ -387,6 +387,16 @@ for n in $tickets; do
       say "  KEEP       #$n — PR #$pr_num merged, but the ticket is partial or waiting on a human; not closing"
       kept=$((kept + 1)); continue
     fi
+    # A polish list is not done because one PR that fixed some of it merged: it
+    # closes only when nothing is left on it (polish-list.sh sweep). Back to ready.
+    if printf '%s\n' "$ticket_labels" | grep -qxF -- "$LBL_POLISH_LIST"; then
+      say "  POLISH     #$n — PR #$pr_num merged; a polish list closes only when nothing is left on it, so it goes back to $LBL_READY"
+      [ "$has_ref" -eq 1 ] && release_ref "$n"
+      recover_lock "$n" "polish list"
+      relabel "$n" "$LBL_READY" \
+        "**Back on the queue.** PR #$pr_num merged and fixed part of this polish list. The list closes on its own once every item is ticked; until then its free items wait for the next ticket for this screen."
+      kept=$((kept + 1)); continue
+    fi
     say "  SHIPPED    #$n — PR #$pr_num is merged; closing the ticket"
     [ "$has_ref" -eq 1 ] && release_ref "$n"
     recover_lock "$n" "shipped"

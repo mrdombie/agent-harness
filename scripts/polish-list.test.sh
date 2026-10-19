@@ -35,6 +35,8 @@ case "$1 $2" in
     [ "$bodyfile" = - ] && body=$(cat) || body=$(cat "$bodyfile")
     jq --arg b "$body" '.body = $b' "$f" > "$f.t" && mv "$f.t" "$f" ;;
   "issue list")
+    # $S/stale-list: the list read answers with bodies an edit has since changed.
+    [ -f "$S/stale-list" ] && { cat "$S/stale-list"; exit 0; }
     want=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -sc .)
     for f in "$S"/issue-*.json; do [ -f "$f" ] && cat "$f"; done \
       | jq -s --argjson w "$want" '[.[] | select(.state == "OPEN") | select([.labels[].name] as $l | all($w[]; . as $x | $l | index($x))) | {number, body}]' ;;
@@ -87,21 +89,39 @@ want "count reads a body from stdin: unticked, unreserved, under ## Items" "1" \
   "$(printf '## Items\n- [ ] a\n- [x] b\n- [ ] c (in PR #7)\n\n## Notes\n- [ ] not an item\n' | bash "$P" count -)"
 want "an empty list counts 0"              "0" "$(printf 'no items yet\n' | bash "$P" count -)"
 
-echo "--- a run takes an item: recorded, never ticked during the build ---"
+echo "--- a run takes an item: marked at once, never ticked during the build ---"
 out=$(bash "$P" take 900 501 "Send button label wraps on a phone")
 want_in "it says it is ticked when the PR merges" 'ticked when its pull request merges' "$out"
-want "the list is untouched"               "3" "$(lines 900)"
+want "nothing is ticked"                   "3" "$(lines 900)"
+want "the line says who took it"           "- [ ] Send button label wraps on a phone (taken by #501)" "$(body 900 | grep 'Send button')"
 want "the run's record names it"           "900	Send button label wraps on a phone" "$(bash "$P" taken 501)"
+bash "$P" take 900 502 "Send button label wraps on a phone" 2>/dev/null; want "a second run cannot take it" "1" "$?"
+want_in "taking it again for the same run is fine" 'taken for #501' "$(bash "$P" take 900 501 "Send button label wraps on a phone")"
 bash "$P" take 900 501 "Not on the list" 2>/dev/null; want "taking an item not there fails" "1" "$?"
+bash "$P" reserve 900 41 "Send button label wraps on a phone" 2>/dev/null; want "a PR cannot reserve another run's take" "1" "$?"
+bash "$P" reserve --ticket 502 900 41 "Send button label wraps on a phone" 2>/dev/null; want "nor can another ticket's ship" "1" "$?"
 
 echo "--- ship reserves it for its PR: other runs skip it ---"
-out=$(bash "$P" reserve 900 41 "Send button label wraps on a phone")
+out=$(bash "$P" reserve --ticket 501 900 41 "Send button label wraps on a phone")
 want "the line carries the PR"             "- [ ] Send button label wraps on a phone (in PR #41)" "$(body 900 | grep 'Send button')"
 want "a reserved item is not free"         "The row gap is 12px, the kit says 16px|Empty state icon is off-kit" "$(bash "$P" items 900 | tr '\n' '|' | sed 's/|$//')"
 bash "$P" take 900 502 "Send button label wraps on a phone" 2>/dev/null; want "another run cannot take it" "1" "$?"
 bash "$P" reserve 900 42 "Send button label wraps on a phone" 2>/dev/null; want "nor another PR reserve it" "1" "$?"
 want_in "reserving it again for the same PR is fine" 'already reserved' "$(bash "$P" reserve 900 41 "Send button label wraps on a phone")"
 want "a reserved item is still never added again" "#900 already lists: Send button label wraps on a phone" "$(bash "$P" add inbox-thread "Send button label wraps on a phone")"
+
+echo "--- a fresh run lets go of what an earlier run took and never reserved ---"
+bash "$P" take 900 503 "Empty state icon is off-kit" >/dev/null
+want "taken"                               "- [ ] Empty state icon is off-kit (taken by #503)" "$(body 900 | grep 'Empty state')"
+bash "$P" forget 503 >/dev/null
+want "free again"                          "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
+want "and the record is gone"              "" "$(bash "$P" taken 503)"
+bash "$P" take 900 503 "Empty state icon is off-kit" >/dev/null
+bash "$P" forget 503 900 "Empty state icon is off-kit" >/dev/null
+want "forgetting one item leaves the list's mark (ship, once reserved)" "- [ ] Empty state icon is off-kit (taken by #503)" "$(body 900 | grep 'Empty state')"
+want "and drops it from the record"        "" "$(bash "$P" taken 503)"
+echo CLOSED > "$FIX/store/pr-503"; bash "$P" sweep >/dev/null
+want "the sweep frees what a closed ticket took" "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
 
 echo "--- housekeeping settles it: merged ticks, closed unmerged frees ---"
 bash "$P" reserve 900 43 "Empty state icon is off-kit" >/dev/null
@@ -113,6 +133,17 @@ out=$(bash "$P" sweep)
 want "the merged PR's item is ticked"      "- [x] Send button label wraps on a phone (in PR #41)" "$(body 900 | grep 'Send button')"
 want "the closed PR's item is free again"  "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
 want "an open PR's item stays reserved, nothing else moves" "OPEN" "$(jq -r .state "$FIX/store/issue-900.json")"
+
+echo "--- the sweep writes over the body as it is now, not as the list read found it ---"
+bash "$P" add calendar "Stale read item" >/dev/null
+bash "$P" reserve 901 61 "Stale read item" >/dev/null
+"$BIN/gh" issue list --repo acme/widgets --state open --label polish-list --json number,body > "$FIX/stale.json"
+mv "$FIX/stale.json" "$FIX/store/stale-list"
+# Someone adds an item on the web between the sweep's list read and its write.
+jq '.body += "\n- [ ] Added after the read"' "$FIX/store/issue-901.json" > "$FIX/t" && mv "$FIX/t" "$FIX/store/issue-901.json"
+echo MERGED > "$FIX/store/pr-61"; bash "$P" sweep >/dev/null; rm -f "$FIX/store/stale-list"
+want "the merged item is ticked"           "- [x] Stale read item (in PR #61)" "$(body 901 | grep 'Stale read')"
+want "and an item added since is not lost" "- [ ] Added after the read" "$(body 901 | grep 'Added after')"
 
 echo "--- a list closes only when nothing is left on it ---"
 bash "$P" reserve 900 44 "The row gap is 12px, the kit says 16px" >/dev/null

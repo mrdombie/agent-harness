@@ -1187,7 +1187,8 @@ else
   MERGE_NOTE="$MERGE_NOTE No UAT step for $REPO_NAME — develop merge IS the deploy."
 fi
 [ "$ISSUE_NUM" != "null" ] && gh issue comment "$ISSUE_NUM" --repo "$REPO_SLUG" --body "$MERGE_NOTE"
-[ "$ISSUE_NUM" != "null" ] && gh issue close "$ISSUE_NUM" --repo "$REPO_SLUG" --reason completed
+# Closes the ticket, except a polish list: that closes only once nothing is left on it.
+[ "$ISSUE_NUM" != "null" ] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/close-ticket.sh" "$ISSUE_NUM" "$PR_NUMBER"
 # A batch ticket's PR closes the batch only: close every child its body lists, naming the PR.
 [ "$ISSUE_NUM" != "null" ] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/close-batch-children.sh" "$ISSUE_NUM" "$PR_NUMBER"
 node "$(git rev-parse --show-toplevel)/scripts/sync-project-board.js" >/dev/null 2>&1 || true   # the board mirrors the labels

@@ -193,6 +193,9 @@ want "a polish list outside the seeded labels is queued" "642" "$(jq -r '.ticket
 want "the recorded scope is still what was seeded" "project:widgets" "$(jq -r '.label' "$QF")"
 fix_issue 643 OPEN "polish-list,screen:calendar"
 bash "$Q" in-scope 643; want "in-scope says a polish list is in" "0" "$?"
+rm -f "$QF"; bash "$Q" seed 640 >/dev/null
+want "a scope of one ticket stays exactly that ticket" "640:new" "$(order)"
+bash "$Q" in-scope 643; want "and a polish list is not in it" "1" "$?"
 
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null

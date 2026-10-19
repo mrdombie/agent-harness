@@ -81,7 +81,7 @@ fix_gh_ok
 echo "--- the builder takes, ship reserves for its PR, nothing is ticked ---"
 list_body 900 $'## Items\n- [ ] Row gap is 12px, kit says 16px\n- [x] Already fixed\n- [ ] Send label wraps on a phone\n'
 bash "$KIT/scripts/polish-list.sh" take 900 501 "Row gap is 12px, kit says 16px" >/dev/null
-want "taking ticks nothing"                "0" "$(jq -r .body "$FIX/gh/issue-900.json" | grep -c '^- \[x\] Row gap')"
+want "taking ticks nothing, it marks the item for this run" "- [ ] Row gap is 12px, kit says 16px (taken by #501)" "$(jq -r .body "$FIX/gh/issue-900.json" | grep 'Row gap')"
 want "nothing reserved, nothing said"      "" "$(_driver_ship_polish 501)"
 _driver_ship_reserve 501 42 >/dev/null
 want "ship reserves it for the PR, unticked" "- [ ] Row gap is 12px, kit says 16px (in PR #42)" "$(jq -r .body "$FIX/gh/issue-900.json" | grep 'Row gap')"
@@ -90,12 +90,21 @@ want_in "a section of its own"             '^## Polish list$' "$sec"
 want "the reserved one under fixed"        "- Row gap is 12px, kit says 16px (#900)" "$(printf '%s\n' "$sec" | sed -n '/^Fixed here/,/^$/p' | sed -n 2p)"
 want "the one it did not take under left"  "- Send label wraps on a phone (#900)" "$(printf '%s\n' "$sec" | sed -n '/^Left on/,$p' | sed -n 2p)"
 want_not_in "it never says ticked by this run" 'Fixed here and ticked' "$sec"
+want "once reserved, it leaves the run's record" "" "$(bash "$KIT/scripts/polish-list.sh" taken 501)"
+# PR #42 closes unmerged; the sweep frees the item. A later ship of the same ticket
+# must not reserve a take that belonged to the closed PR.
+list_body 900 "$(jq -r .body "$FIX/gh/issue-900.json" | sed 's/ (in PR #42)$//')"
+_driver_ship_reserve 501 47 >/dev/null 2>&1
+want "a closed PR's take is never reserved by a later run" "- [ ] Row gap is 12px, kit says 16px" "$(jq -r .body "$FIX/gh/issue-900.json" | grep 'Row gap')"
+list_body 900 "$(jq -r .body "$FIX/gh/issue-900.json" | sed 's/^- \[ \] Row gap is 12px, kit says 16px$/- [ ] Row gap is 12px, kit says 16px (in PR #42)/')"
 bash "$KIT/scripts/polish-list.sh" take 900 506 "Send label wraps on a phone" >/dev/null; driver_state_init 506
-bash "$KIT/scripts/polish-list.sh" reserve 900 77 "Send label wraps on a phone" >/dev/null
+bash "$KIT/scripts/polish-list.sh" reserve --ticket 506 900 77 "Send label wraps on a phone" >/dev/null
 _driver_ship_reserve 506 43 >/dev/null 2>&1
 want "an item another PR holds is not this run's to name" "" "$(_driver_ship_polish 506)"
 
 echo "--- and the shipped body carries it ---"
+list_body 900 "$(jq -r .body "$FIX/gh/issue-900.json")"$'\n- [ ] Ship item'
+bash "$KIT/scripts/polish-list.sh" take 900 501 "Ship item" >/dev/null
 git init -q --bare "$FIX/origin"
 git -C "$REPO" remote add origin "$FIX/origin"
 git -C "$REPO" push -q origin develop
@@ -110,5 +119,26 @@ for st in start plan build self-check review record; do driver_state_done 501 "$
 driver_step_ship 501 >/dev/null 2>&1
 want_in "the new PR's body names the reserved item" 'Fixed here, ticked on the list when this pull request merges' "$(grep -A80 '^pr edit 42' "$GH_LOG")"
 want_in "and its first line closes the ticket" '--body Closes #501' "$(grep -A2 '^pr create' "$GH_LOG")"
+
+echo "--- a repair that took items reserves them, and says so in its comment ---"
+wt2="$FIX/wt507"
+git -C "$REPO" worktree add -q "$wt2" -b "tkt-507/work" develop
+printf 'repair\n' > "$wt2/r.txt"; git -C "$wt2" add r.txt; git -C "$wt2" commit -qm "fix: repair"
+git -C "$wt2" push -q origin tkt-507/work
+fix_issue 507 OPEN "status:in-review,screen:inbox"; driver_state_init 507 --worktree "$wt2" --branch "tkt-507/work"
+driver_state_set 507 claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
+driver_state_set 507 mode repair; driver_state_set 507 pr 88
+driver_state_put 507 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 507 review
+driver_state_put 507 repair '{"step":"repair","cause":"a clash"}'
+for st in reenter repair fix self-check review record; do driver_state_done 507 "$st"; done
+list_body 900 $'## Items\n- [ ] Header weight\n'
+bash "$KIT/scripts/polish-list.sh" take 900 507 "Header weight" >/dev/null
+printf '[{"number":88}]\n' > "$FIX/gh/prs.json"; : > "$FIX/pr-created-tkt-507_work"; : > "$FIX/pr-created-88"
+printf '{"number":88,"isDraft":false,"body":"A body a person wrote."}\n' > "$FIX/gh/pr-view.json"
+: > "$GH_LOG"
+driver_step_ship 507 >/dev/null 2>&1
+want "the repair's take is reserved for its PR" "- [ ] Header weight (in PR #88)" "$(jq -r .body "$FIX/gh/issue-900.json" | grep 'Header weight')"
+want_in "named in the repair comment"      'Header weight \(#900\)' "$(grep -A20 '^pr comment 88' "$GH_LOG")"
+want_not_in "and the PR's own words are not rewritten" '^pr edit 88' "$(cat "$GH_LOG")"
 
 exit "$FAILED"
