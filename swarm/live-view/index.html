@@ -46,6 +46,8 @@ tr:first-child td{border-top:0}
 .pill.ok{background:color-mix(in srgb,var(--good) 18%,transparent);color:var(--good)}
 .pill.warn{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
 .pill.bad{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.pill.neutral{background:color-mix(in srgb,var(--ink3) 16%,transparent);color:var(--ink2)}
+.ran{color:var(--ink3);font-size:12px;margin-top:3px}
 .num{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink2)}
 .tablewrap{overflow-x:auto}
 .empty{color:var(--ink3)}
@@ -124,10 +126,28 @@ function card(a){
   </div>`
 }
 
-function outcome(d){
-  if (d.outcome === 'error_max_budget_usd') return '<span class="pill warn">Ran out of budget</span>'
-  if (d.outcome === 'success') return '<span class="pill ok">Finished</span>'
-  return `<span class="pill bad">Stopped (${esc(d.exit)})</span>`
+// Where the ticket stands now, not how its last run ended: a run that parked on a
+// question and went back on the queue is not a failure. Only a true stop is red.
+const TONES = { ok: 'ok', warn: 'warn', bad: 'bad', neutral: 'neutral' }
+function nowPill(d){
+  const n = d.now || { text: d.exit === 0 ? 'Finished' : 'Stopped', tone: d.exit === 0 ? 'neutral' : 'bad' }
+  const [head, ...rest] = String(n.text).split(' — ')
+  const pr = n.pr && repo ? ` — <a href="https://github.com/${esc(repo)}/pull/${esc(n.pr)}" target="_blank" rel="noopener">PR #${esc(n.pr)}</a>` : ''
+  const tail = pr || (rest.length ? `<div class="note">${esc(rest.join(' — '))}</div>` : '')
+  return `<span class="pill ${TONES[n.tone] || 'neutral'}">${esc(head)}</span>${tail}`
+}
+function ranOut(d){
+  if (d.outcome === 'error_max_budget_usd') return 'Last run ran out of budget'
+  if (d.exit === 0) return 'Last run finished'
+  return `Last run ended (exit ${esc(d.exit)})`
+}
+function doneRow(d){
+  const link = repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(d.ticket)}" target="_blank" rel="noopener">#${esc(d.ticket)}</a>` : `#${esc(d.ticket)}`
+  return `<tr>
+      <td>${nowPill(d)}</td>
+      <td><b>${esc(d.title)}</b> <span class="sub">${link}</span><div class="ran">${ranOut(d)}</div><details><summary>What it reported</summary><div class="said" style="margin-top:6px">${esc(d.summary || 'No report.')}</div></details></td>
+      <td class="num">${d.cost != null ? '$'+d.cost.toFixed(0) : '—'}</td>
+      <td class="num">${ago(d.endedAgoMin*60)}</td></tr>`
 }
 
 async function tick(){
@@ -148,11 +168,8 @@ async function tick(){
     document.getElementById('groups').innerHTML = order.length
       ? order.map(p => `<h2>${esc(nice(p))} · ${groups[p].length}</h2><div class="grid">${groups[p].map(card).join('')}</div>`).join('')
       : '<p class="empty">No agents running.</p>'
-    document.getElementById('done').innerHTML = s.done.length ? s.done.map(d => `<tr>
-      <td>${outcome(d)}</td>
-      <td><b>${esc(d.title)}</b><details><summary>What it reported</summary><div class="said" style="margin-top:6px">${esc(d.summary || 'No report.')}</div></details></td>
-      <td class="num">${d.cost != null ? '$'+d.cost.toFixed(0) : '—'}</td>
-      <td class="num">${ago(d.endedAgoMin*60)}</td></tr>`).join('') : '<tr><td class="empty">Nothing yet.</td></tr>'
+    document.getElementById('donehead').textContent = s.done.length ? (s.doneSummary || 'Recently finished') : 'Recently finished'
+    document.getElementById('done').innerHTML = s.done.length ? s.done.map(doneRow).join('') : '<tr><td class="empty">Nothing yet.</td></tr>'
   }catch(e){ document.getElementById('meta').textContent = 'Lost contact with the live view — is it still running?' }
 }
 tick(); setInterval(tick, 5000)

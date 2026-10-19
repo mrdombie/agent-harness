@@ -344,8 +344,12 @@ fi
 # What a refused read misses comes from the last good snapshot while it is fresh.
 ISSUES=""; ISSUES_OK=1
 # The live runs' tickets too: a polish red being healed never counts toward heal-all.
+# And the runs that ended inside the live view's window: its finished list says
+# where each of those tickets stands now from this read, not from a call per row.
+ENDED_TICKETS=$(find "$RUNS_DIR" -maxdepth 1 -name 'claim-*.ended' -mmin -"$(( ${SWARM_DONE_HOURS:-6} * 60 ))" 2>/dev/null \
+  | while IFS= read -r e; do jq -r '.ticket // empty' "${e%.ended}.json" 2>/dev/null; done)
 # The sheet's owner names every host's builds, so it reads their titles in the same request.
-ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; printf '%s\n' $LIVE_TICKETS
+ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; printf '%s\n' $LIVE_TICKETS $ENDED_TICKETS
                 [ "$SHEET_ROLE" != owner ] || printf '%s\n' "$CLAIMED"; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
 if [ -n "${ISSUE_NUMS// /}" ]; then
   # shellcheck disable=SC2086  # a list of numbers, split on purpose

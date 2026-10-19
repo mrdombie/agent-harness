@@ -287,7 +287,8 @@ gh_issues_batch() {
     if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
       part=$(jq -c --argjson acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
               | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
-                                                   + (if has("body") then {body: (.body // "")} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
+                                                   + (if has("body") then {body: (.body // "")} else {} end)
+                                                   + (if .stateReason then {stateReason} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
       [ -n "$part" ] && out="$part" || fail=1
     else
       fail=1
@@ -304,7 +305,7 @@ gh_issues_batch() {
   for n in "$@"; do
     case "$n" in ''|*[!0-9]*) continue ;; esac
     nums="$nums $n"
-    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state title updatedAt$b labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt$b labels(first:50){nodes{name}}}}"
+    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state stateReason title updatedAt$b labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt$b labels(first:50){nodes{name}}}}"
     k=$((k+1)); [ "$k" -lt 50 ] || _ghb_flush
   done
   _ghb_flush

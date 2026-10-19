@@ -28,6 +28,8 @@ export SWARM_GH_CALLS="${SWARM_GH_CALLS:-$(gh_calls_file)}" GH_ALLOWANCE_LOW_PCT
 # The coordinator's queue, and what hold-status.sh needs to answer without
 # resolving the project config again on every ask.
 export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"
+# Who "Waiting on …" names on a finished row; unset reads "the owner".
+export SWARM_OWNER_NAME="${SWARM_OWNER_NAME:-$(swarm_opt swarm.ownerName "")}"
 export HARNESS_CFG_PATH="${HARNESS_CFG_PATH:-$HARNESS_CFG}" HARNESS_STATE_DIR="$STATE_DIR" HARNESS_MAIN_REPO="$MAIN_REPO" KIT_ROOT
 # The bash this runs under, by full path: node's own PATH lookup finds System32's
 # WSL launcher first when started by Task Scheduler.
