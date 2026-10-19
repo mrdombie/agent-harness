@@ -19,7 +19,9 @@
 #                                   first, five PRs a request; files is null when
 #                                   GitHub could not count
 #   gh_open_prs [max-age-sec]       the open PRs, from one shared copy (prs.json)
-#                                   every reader takes while it is young enough
+#                                   every reader takes while it is young enough;
+#                                   a whole read GitHub times out on is redone
+#                                   in creation windows (gh_open_prs_windowed)
 #   gh_allowance_read / _low        what is left of the hourly allowance (free reads);
 #                                   _low holds below GH_ALLOWANCE_LOW_PCT (10)
 #   gh_limit_why                    the rate limit and its reset, as a sentence
@@ -169,10 +171,40 @@ gh_open_prs() {
   fi
   slug="${GH_REPO:-${REPO_SLUG:-}}"; [ -n "$slug" ] || return 1
   prs=$(gh_call pr list --repo "$slug" --state open --limit 200 --json "$GH_PRS_FIELDS" 2>/dev/null)
-  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs" || return 1
+  if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs"; then
+    gh_backoff_active >/dev/null && return 1
+    prs=$(gh_open_prs_windowed "$slug") || return 1
+  fi
   mkdir -p "$(dirname "$f")" 2>/dev/null
   printf '%s\n' "$prs" > "$f.$$" && mv -f "$f.$$" "$f"
   printf '%s\n' "$prs"
+}
+
+# gh_open_prs_windowed <slug> — the same list, read GH_PRS_WINDOW (25) PRs at a
+# time by creation window, for when GitHub times out building it whole: on
+# 2026-10-19, 81 open PRs with their check rollups came back `504 Gateway
+# Timeout` every tick, 30 at a time did not, and the tick started nothing. The
+# ids come first (cheap); a PR no window returned fails the read rather than
+# hand back a list without it. Same order as gh lists them.
+GH_PRS_WINDOW="${GH_PRS_WINDOW:-25}"
+gh_open_prs_windowed() {
+  # Files, not --argjson: 81 PRs' rollups overflow the argument list.
+  local slug="$1" d a b rc=1
+  d=$(mktemp -d "${TMPDIR:-/tmp}/ghprs.XXXXXX") || return 1
+  if gh_call pr list --repo "$slug" --state open --limit 200 --json number,createdAt > "$d/ids" 2>/dev/null \
+     && jq -e 'type == "array"' "$d/ids" >/dev/null 2>&1; then
+    rc=0
+    while IFS=$'\t' read -r a b; do
+      gh_call pr list --repo "$slug" --state open --limit 200 --search "created:${a%Z}+00:00..${b%Z}+00:00" \
+        --json "$GH_PRS_FIELDS" > "$d/part" 2>/dev/null && jq -e 'type == "array"' "$d/part" >/dev/null 2>&1 || { rc=1; break; }
+      cat "$d/part" >> "$d/parts"
+    done < <(jq -r --argjson n "$GH_PRS_WINDOW" \
+      'sort_by(.createdAt) | range(0; length; $n) as $i | .[$i:$i+$n] | "\(.[0].createdAt)\t\(.[-1].createdAt)"' "$d/ids")
+    [ "$rc" = 0 ] && { touch "$d/parts"; jq -cs --slurpfile ids "$d/ids" \
+      '(add // [] | map({key: (.number | tostring), value: .}) | from_entries) as $by
+       | [$ids[0][] | $by[.number | tostring]] | if any(. == null) then error("a PR no window returned") else . end' "$d/parts" 2>/dev/null; } || rc=1
+  fi
+  rm -rf "$d"; return "$rc"
 }
 
 # gh_call <args…> — gh through the backoff. Stdout and stderr pass through.
