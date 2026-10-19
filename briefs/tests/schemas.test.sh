@@ -45,6 +45,20 @@ for f in "$BRIEFS/schemas"/*.json; do
     "http://json-schema.org/draft-07/schema#" "$(jq -r '."$schema" // "(none)"' "$f")"
 done
 
+# EVERY CONTRACT COMPILES IN AJV'S STRICT MODE, with its warnings read as failures.
+# Left at ajv's default, a strict-mode slip is only logged — and the log lands in the
+# step's refusal text: #13381 parked on "strict mode: missing type "array" for keyword
+# "contains"" glued in front of the real error. strictRequired stays off: a
+# `required` inside if/then naming a top-level property is draft-7's own idiom.
+AJV_STRICT=${BRIEFS_AJV:-"npx --yes ajv-cli@5"}
+for f in "$BRIEFS/schemas"/*.json; do
+  s=$(basename "$f" .json)
+  out=$($AJV_STRICT compile --spec=draft7 --strict=true --strict-required=false -s "$f" 2>&1); rc=$?
+  want "schemas/$s.json compiles in strict mode" 0 "$rc"
+  if printf '%s' "$out" | grep -q 'strict mode'; then bad "schemas/$s.json logs a strict-mode warning: $(printf '%s' "$out" | grep 'strict mode' | head -1)"
+  else ok "schemas/$s.json logs no strict-mode warning"; fi
+done
+
 for step in $steps; do
   valid=$(ls "$BRIEFS/examples/$step".valid*.json 2>/dev/null)
   invalid=$(ls "$BRIEFS/examples/$step".invalid-*.json 2>/dev/null)

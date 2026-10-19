@@ -67,8 +67,9 @@
             "minLength": 1
           },
           "line": {
+            "description": "The line the finding is on. 0 when it is on no line of a file: the pull request's body, a file that is missing.",
             "type": "integer",
-            "minimum": 1
+            "minimum": 0
           },
           "grade": {
             "description": "critical: wrong data, a security hole, lost work, something published unapproved. major: a person is misled or stuck \u2014 an untrue screen, a dead control, a failure shown as success. minor: polish \u2014 spacing, wording, a small visual slip. nit: taste.",
@@ -127,6 +128,7 @@
         "properties": {
           "findings": {
             "not": {
+              "type": "array",
               "contains": {
                 "type": "object",
                 "required": [
@@ -161,6 +163,7 @@
       "then": {
         "properties": {
           "findings": {
+            "type": "array",
             "contains": {
               "type": "object",
               "required": [

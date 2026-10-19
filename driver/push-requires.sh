@@ -120,6 +120,44 @@ _driver_first_line() {
   printf '%s' "${l:-(it printed nothing)}" | sed 's/^[[:space:]]*//' | cut -c1-300
 }
 
+# _driver_has_renders <ticket> — 0 when the record holds a render a reviewer can look at.
+_driver_has_renders() {
+  driver_state_get "$1" renders | awk -F'\t' '$3 == "light" || $3 == "dark" { found = 1 } END { exit !found }'
+}
+
+# _driver_renders_for <ticket> <name> <tree> <trunk> — the pictures a reviewer that
+# judges them needs, when the record has none. 0: renders are on the record now, run
+# the reviewer. 3: not run, and said why — the change touches no screen, the project's
+# renderer knows none it touches, or CI takes the pictures after the push and the
+# verdict is owed on the pull request (the owner's call, 2026-10-16). Anything else is
+# the compare step's own refusal, with its own note.
+_driver_renders_for() {
+  local t="$1" name="$2" wt="$3" trunk="$4" touched rc=0
+  type driver_step_compare >/dev/null 2>&1 \
+    || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/steps/compare.sh" || return "$DRIVER_E_REFUSED"
+  if [ -n "$(driver_surface_paths)" ]; then
+    touched=$(driver_touched_surfaces "$wt" "$trunk") || {
+      driver_state_set "$t" park_note "design.surfacePaths holds only exclude pathspecs, which git reads as every other file"
+      return "$DRIVER_E_REFUSED"; }
+    if [ -z "$touched" ]; then
+      driver_state_set "$t" renders "(none — this change touches no file under this project's design.surfacePaths, so there is no screen to render)"
+      driver_say "   push-requires: '$name' judges rendered screens and this change touches none, so it is not run"
+      return 3
+    fi
+  fi
+  if [ -n "$(driver_opt design.render "")" ] && bash "$KIT_ROOT/scripts/ci-evidence.sh" local; then
+    driver_say "   push-requires: '$name' judges rendered screens and none are on the record — taking them"
+    driver_step_compare "$t" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    _driver_has_renders "$t" && return 0
+    driver_say "   push-requires: '$name' is not run — the renderer took no picture of this change: $(driver_state_get "$t" renders | head -1 | cut -c1-200)"
+    return 3
+  fi
+  driver_state_set "$t" attest_after_push "$name"
+  driver_say "⏳ push-requires: '$name' judges the pictures CI takes after the push, so its verdict is owed on the pull request, not before it — $(printf '%s\n' "$touched" | grep -c .) screen file(s)"
+  return 3
+}
+
 driver_push_requires() { # <ticket>
   local t="${1:?driver_push_requires: need a ticket}"
   local wt trunk r ptype half name review record d out rc sha before after
@@ -218,11 +256,16 @@ driver_push_requires() { # <ticket>
 
     # A REVIEWER THAT JUDGES PICTURES IS NOT RUN WITHOUT ANY. Handed "(none were
     # taken)", it is being asked to guess, and a guess recorded as SHIP is the
-    # attestation nobody earned. `needsRenders` makes that a refusal, by name.
-    if [ "$needs_renders" = "yes" ] && ! driver_state_get "$t" renders | awk -F'\t' '$3 == "light" || $3 == "dark" { found = 1 } END { exit !found }'; then
-      driver_say "✋ push-requires: '$name' judges rendered screens and none were taken for this change, so only a person can earn it."
-      driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict, '$name' judges rendered screens, and no render was taken for this change: $(driver_state_get "$t" renders | head -1 | cut -c1-300)"
-      return "$DRIVER_E_REFUSED"
+    # attestation nobody earned. Nor is the ticket parked for one: that parked #13354
+    # and #13453, repairs whose walk has no compare step to take a render. The
+    # pictures are taken, or the verdict is owed where the pictures come from.
+    if [ "$needs_renders" = "yes" ] && ! _driver_has_renders "$t"; then
+      rc=0; _driver_renders_for "$t" "$name" "$wt" "$trunk" || rc=$?
+      case "$rc" in
+        0)  : ;;
+        3)  continue ;;
+        *)  return "$rc" ;;
+      esac
     fi
 
     # The reviewer, in the ticket's worktree, with its output kept whole.

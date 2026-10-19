@@ -70,7 +70,8 @@ JSON only, valid against `schemas/review.json`.
 
 The verdict is read off the grades, never typed beside them: `SHIP` with a Critical
 or a Major, and `BLOCKED` with neither, are both refused. Every finding carries its
-file, its line, its grade, the one-line `reason` in a user's words, and the fix.
+file, its line (0 when it is on no line of a file, such as the pull request's
+body), its grade, the one-line `reason` in a user's words, and the fix.
 
 There is ONE list. The grade already says what each finding costs, so a second list
 is a second place for the two to disagree.

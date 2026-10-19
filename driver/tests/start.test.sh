@@ -185,7 +185,7 @@ echo "--- a sibling in the pre-worktree window names the SAME branch, and is sti
 fix_issue 110 OPEN "status:ready"
 claim_row 110 "${CLAIM_AGENT:-tester@fixture}" "tkt-110/ticket-110" ""
 out=$(driver_step_start 110 2>&1); rc=$?
-want "it is not adopted"                "24" "$rc"
+want "it is not adopted, and the run is busy" "29" "$rc"
 want_in "and says another run holds it" 'another|peer' "$out"
 want "no worktree was cut for us"       "" "$(driver_state_get 110 worktree)"
 want "and the sibling's claim is untouched" "" "$(awk -F'\t' '$1==110{print $4}' "$CLAIMS")"

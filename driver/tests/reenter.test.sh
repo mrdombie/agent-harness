@@ -161,12 +161,12 @@ want_in "naming a peer"               'peer' "$out"
 want "no worktree was cut"            "" "$(driver_state_get 206 worktree)"
 # #13139's shape (2026-10-19): a run on THIS host holds the claim on another worktree,
 # and the repair's record is fresh. It parked as "reenter left no reason on the record".
-pr_branch 208; fix_issue 208 OPEN "status:in-review"; prs "[$(pr_json 38 tkt-208/work)]"
-claim_row 208 "${CLAIM_AGENT:-tester@fixture}" tkt-208/work "$FIX/other-208"
-out=$(driver_step_reenter 208 2>&1); rc=$?
+pr_branch 240; fix_issue 240 OPEN "status:in-review"; prs "[$(pr_json 40 tkt-240/work)]"
+claim_row 240 "${CLAIM_AGENT:-tester@fixture}" tkt-240/work "$FIX/other-240"
+out=$(driver_step_reenter 240 2>&1); rc=$?
 want "a sibling run's claim is busy, not a refusal" "29" "$rc"
-want_in "the reason is on the record"  'another run on this host holds the claim on #208' "$(driver_state_get 208 park_note)"
-want "and the sibling's claim is untouched" "$FIX/other-208" "$(awk -F'\t' '$1==208{print $4}' "$CLAIMS")"
+want_in "the reason is on the record"  'another run on this host holds the claim on #240' "$(driver_state_get 240 park_note)"
+want "and the sibling's claim is untouched" "$FIX/other-240" "$(awk -F'\t' '$1==240{print $4}' "$CLAIMS")"
 fix_issue 207 OPEN "status:in-review"; echo "open-prs" > "$FIX/gh-fail"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_reenter 207 2>&1); rc=$?
 want "an unreadable PR list stops reenter as unread"  "26" "$rc"
