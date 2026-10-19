@@ -17,8 +17,9 @@
 # The candidates and their order come from claimable-issues.sh, the one
 # definition of what may be picked up. A [FINISH PR] row is class repair, the rest
 # new. Priority orders the whole queue (P0 first, no priority last); within one
-# priority repair, approved-merge, then new work half-built, feature, other,
-# polish, newest first; repairs keep claimable order. Each entry keeps its
+# priority repair, approved-merge, then new; within a class product work before
+# our own tooling (coordinator.toolingLabels); then new work half-built, feature,
+# other, polish, newest first; repairs keep claimable order. Each entry keeps its
 # priority (prin), kind and polish flag. An entry put there with `add --front`
 # stays first across re-seeds. An entry put there with `add` is pinned: it and every
 # note survive a re-seed, because nothing on the forge can rebuild them. The
@@ -107,7 +108,8 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
         | .prin = coord_prin(.ls; .pri)
         | .polish = coord_polish(.ls; .pri; .title)
         | .plist = ((.ls | index($plist)) != null)
-        | {n, class, kind, prin, polish, plist})) as $fresh
+        | .tooling = coord_tooling(.ls; .title)
+        | {n, class, kind, prin, polish, plist, tooling})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
@@ -116,12 +118,14 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
     | ($old | to_entries | map({key: (.value.n|tostring), value: .key}) | from_entries) as $oldpos
     # Priority first, across classes (coord_queue_ordered sorts the same way): an
     # entry put at the front stays first in the order it was put; then priority;
-    # within one priority repair, approved-merge, then new by kind, newest first;
+    # within one priority repair, approved-merge, then new; product before tooling;
+    # then new by kind, newest first;
     # repair and approved-merge keep the claimable order.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
-        | if $t.front then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0]
+        | if $t.front then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0]
           else [1, 0, ($t.prin // 9), ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3),
+                (if $t.tooling then 1 else 0 end),
                 (if $t.class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9) else 0 end),
                 (if $t.class == "new" then -$t.n else $i end)] end)
     | map(.value)

@@ -158,6 +158,23 @@ want "with the tick's read, it ranks by its own ticket's priority" \
   "$(COORD_QUEUE="$QF" coord_queue_ordered --wide | head -3 | tr '\n' '|' | sed 's/|$//')"
 unset ISSUES
 
+echo "--- at one priority, product work goes ahead of our own tooling (owner call 2026-10-19) ---"
+printf '%s\n' \
+  "630	P1	OPS			Harness gate feature	P1,type:feature,repo:agent-harness,project:widgets" \
+  "631	P1	OPS			Inbox drops a reply	P1,type:bug,project:widgets" \
+  "632	P2	OPS			Calendar loses an event	P2,type:bug,project:widgets" \
+  "633	P1	OPS			feat(gates): a faster pre-push	P1,type:feature,project:widgets" \
+  "634	P1	OPS		[FINISH PR]	a clash on the ops console	P1,type:bug,area:OPS-CONSOLE,project:widgets" \
+  "635	P1	OPS		[FINISH PR]	a clash on the inbox	P1,type:bug,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+want "a P1 product bug outranks a P1 tooling feature; a P1 tooling ticket outranks a P2 product ticket" \
+  "635:repair 634:repair 631:new 633:new 630:new 632:new" "$(order)"
+want "tooling by label or by title scope is recorded" "true true false" \
+  "$(jq -r '[(.tickets[] | select(.n==630)), (.tickets[] | select(.n==633)), (.tickets[] | select(.n==631))] | map(.tooling) | join(" ")' "$QF")"
+rm -f "$QF"; COORDINATOR_TOOLING_LABELS="code-health" bash "$Q" seed widgets >/dev/null
+want "coordinator.toolingLabels decides which labels are tooling" \
+  "634:repair 635:repair 630:new 631:new 633:new 632:new" "$(order)"
+
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null
 out=$(bash "$Q" add 12 --class urgent 2>&1); rc=$?

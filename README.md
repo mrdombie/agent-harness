@@ -532,8 +532,12 @@ they are healed in their turn, at their priority, and never stop new building.
 **Priority decides, everywhere** (owner call 2026-10-19). The queue runs P0, P1,
 P2, P3, then tickets with no priority, across classes: a repair or an approved
 merge ranks by its own ticket's priority, read fresh each tick. Within one
-priority: repair, approved merge, then new work half-built, feature, other,
-polish. An entry put at the front stays first. The healing share still holds;
+priority: repair, approved merge, then new work; within a class, product work
+before our own build tooling (`coordinator.toolingLabels`, default
+`repo:agent-harness code-health project:ci-throughput project:harness-kit area:OPS
+area:HYGIENE area:OPS-CONSOLE`, or a title scope in `coordinator.toolingScopes`,
+default `gates ci harness ops pre-push dev`); then new work half-built, feature,
+other, polish. An entry put at the front stays first. The healing share still holds;
 which red heals first follows priority.
 
 **Polish rides along.** A Minor finding goes on its screen's one polish list
