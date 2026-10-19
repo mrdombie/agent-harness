@@ -410,20 +410,23 @@ candidates() {
   wide=$(coord_queue_ordered --wide)
   # A full list goes in its place in the order, ahead of lower-priority work, so the
   # lists' bodies are read first: one batched request, only when a list is queued.
-  lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $4 == 1 && $5 == 1 && $6 != 1 { print $1 }' | tr '\n' ' ')
+  lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $5 == 1 { print $1 }' | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
   while IFS=$'\t' read -r t cls pri pol pl ex note; do
     [ -n "${t:-}" ] || continue
     i=$((i+1))
+    # A list with nothing free on it is never work, however idle the factory: every
+    # item is ticked, reserved by a PR, or taken by another run. Its own takes count.
+    if [ "$cls" = new ] && [ "$pl" = 1 ]; then
+      cnt=$(jq -r --arg n "$t" '.[$n].body // ""' <<<"$bodies" 2>/dev/null | bash "$POLISH" count - "$t" 2>/dev/null)
+      case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
+      [ "$cnt" -gt 0 ] || { say "skip #$t (polish list): nothing free on it — every item is ticked, reserved or taken"; continue; }
+    fi
     # Held: new polish work that is neither put at the front nor half-built, unless
     # it is a full list.
     if ! coord_healing_class "$cls" && [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
-      cnt=0
-      if [ "$pl" = 1 ]; then
-        cnt=$(jq -r --arg n "$t" '.[$n].body // ""' <<<"$bodies" 2>/dev/null | bash "$POLISH" count - 2>/dev/null)
-        case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
-      fi
+      [ "$pl" = 1 ] || cnt=0
       if [ "$pl" != 1 ] || [ "$cnt" -lt "$COORD_POLISH_LIST_FULL" ]; then
         held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
       fi

@@ -21,9 +21,23 @@ want "it says so"                          "polish list #900 left open" "$(bash 
 want_not_in "and never closes it"          '^issue close 900' "$(cat "$GH_LOG")"
 want_in "it goes back to ready"            '^issue edit 900 .*--remove-label status:in-review --add-label status:ready' "$(cat "$GH_LOG")"
 
+echo "--- /finish: one refused read is tried again, through the shared backoff ---"
+# A gh that refuses the first label read, then answers.
+cat > "$BIN/gh-flaky" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "issue view" ] && [ ! -f "$FIX/flaked" ]; then : > "$FIX/flaked"; printf '%s\n' "$*" >> "$GH_LOG"; exit 1; fi
+exec "$BIN/gh" "$@"
+SH
+chmod +x "$BIN/gh-flaky"
+: > "$GH_LOG"; rm -f "$FIX/flaked"; fix_issue 502 OPEN "status:in-review"
+want "the second try closes an ordinary ticket" "closed #502" "$(SWARM_GH="$BIN/gh-flaky" CLOSE_TICKET_RETRY_SEC=0 bash "$CT" 502 44 2>/dev/null)"
+want "it read twice"                       "2" "$(grep -c '^issue view 502' "$GH_LOG")"
+want_in "and the read went through gh_call" 'close-ticket	issue view' "$(cat "$STATE/swarm/gh-calls.log" 2>/dev/null)"
+
 echo "--- /finish: labels that cannot be read close nothing ---"
 : > "$GH_LOG"
-bash "$CT" 999 43 2>/dev/null; want "refused"  "1" "$?"
+CLOSE_TICKET_RETRY_SEC=0 bash "$CT" 999 43 2>/dev/null; want "refused"  "1" "$?"
+want "after every try"                     "3" "$(grep -c '^issue view 999' "$GH_LOG")"
 want_not_in "nothing closed"               '^issue close' "$(cat "$GH_LOG")"
 
 echo "--- /finish's Step 7 closes through this script, never gh issue close ---"

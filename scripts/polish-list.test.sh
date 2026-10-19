@@ -47,7 +47,10 @@ case "$1 $2" in
     out='{}'
     for n in $(printf '%s' "$q" | grep -oE 'i[0-9]+:issueOrPullRequest' | sed 's/^i//; s/:.*//'); do
       st=$(cat "$S/pr-$n" 2>/dev/null || echo OPEN)
-      out=$(jq -c --arg k "i$n" --argjson n "$n" --arg s "$st" '. + {($k): {number:$n, state:$s, title:"", labels:{nodes:[]}}}' <<<"$out")
+      # $S/lbl-N: its labels, comma-joined; $S/upd-N: when it last changed (default now).
+      out=$(jq -c --arg k "i$n" --argjson n "$n" --arg s "$st" --arg l "$(cat "$S/lbl-$n" 2>/dev/null)" \
+              --arg u "$(cat "$S/upd-$n" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '. + {($k): {number:$n, state:$s, title:"", updatedAt:$u, labels:{nodes:($l | split(",") | map(select(length > 0) | {name:.}))}}}' <<<"$out")
     done
     jq -c '{data:{repository:.}}' <<<"$out" ;;
   *) exit 0 ;;
@@ -122,6 +125,25 @@ want "forgetting one item leaves the list's mark (ship, once reserved)" "- [ ] E
 want "and drops it from the record"        "" "$(bash "$P" taken 503)"
 echo CLOSED > "$FIX/store/pr-503"; bash "$P" sweep >/dev/null
 want "the sweep frees what a closed ticket took" "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
+
+echo "--- a take is released when its run is parked, waits on the owner, or has stopped ---"
+bash "$P" take 900 510 "Empty state icon is off-kit" >/dev/null
+echo "status:parked" > "$FIX/store/lbl-510"; bash "$P" sweep >/dev/null
+want "a parked run's take is free again"   "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
+bash "$P" take 900 511 "Empty state icon is off-kit" >/dev/null
+echo "needs:owner-decision" > "$FIX/store/lbl-511"; bash "$P" sweep >/dev/null
+want "so is one waiting on the owner"      "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
+bash "$P" take 900 512 "Empty state icon is off-kit" >/dev/null
+echo "2026-01-01T00:00:00Z" > "$FIX/store/upd-512"; out=$(bash "$P" sweep)
+want "and one with no live run, untouched for a day" "- [ ] Empty state icon is off-kit" "$(body 900 | grep 'Empty state')"
+want_in "named"                            'no live run and no change in 24h' "$out"
+bash "$P" take 900 513 "Empty state icon is off-kit" >/dev/null; bash "$P" sweep >/dev/null
+want "a take touched today stays"          "- [ ] Empty state icon is off-kit (taken by #513)" "$(body 900 | grep 'Empty state')"
+bash "$P" forget 513 >/dev/null
+bash "$P" take 900 514 "Empty state icon is off-kit" >/dev/null
+echo "2026-01-01T00:00:00Z" > "$FIX/store/upd-514"; fix_running 514; bash "$P" sweep >/dev/null
+want "an old take whose run is still live stays" "- [ ] Empty state icon is off-kit (taken by #514)" "$(body 900 | grep 'Empty state')"
+rm -f "$STATE/runs/claim-514-t.json"; bash "$P" forget 514 >/dev/null
 
 echo "--- housekeeping settles it: merged ticks, closed unmerged frees ---"
 bash "$P" reserve 900 43 "Empty state icon is off-kit" >/dev/null

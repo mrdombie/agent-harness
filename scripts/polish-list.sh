@@ -6,7 +6,8 @@
 #                                                is none; the same text is never added twice
 #   polish-list.sh items <issue|->               the items still free to take, one a line:
 #                                                unticked and not reserved by a pull request
-#   polish-list.sh count <issue|->               how many are free to take
+#   polish-list.sh count <issue|-> [ticket]      how many are free to take; with a ticket,
+#                                                its own takes count too (its run resumes them)
 #   polish-list.sh for-screen <screen-slug>      the open list's number, or nothing
 #   polish-list.sh take <issue> <ticket> <text…> a builder fixed that item: marked
 #                                                "(taken by #<ticket>)" so other runs skip it,
@@ -21,7 +22,8 @@
 #                                                it; --ticket may take over that run's take
 #   polish-list.sh sweep [--dry-run]             every open list: an item whose PR merged is
 #                                                ticked, one whose PR closed unmerged is free
-#                                                again, one taken by a ticket now closed is
+#                                                again, one taken by a ticket now closed,
+#                                                parked, waiting on the owner or stalled is
 #                                                free again, and a list with nothing left closes
 #
 # `-` reads the issue body from stdin, so a caller holding bodies from one batched
@@ -241,10 +243,28 @@ reserve() { # [--ticket <t>] <issue> <pr> <text…>
   echo "#$n: reserved for PR #$pr: $text"
 }
 
+# take_stalled <ticket> <states json> — why a ticket's takes should go back, or 1.
+# A take must not hide an item while its run is parked, waits on the owner, or has
+# stopped: no live run and the ticket untouched for polishList.takeStaleHours (24).
+TAKE_STALE_H="${POLISH_TAKE_STALE_HOURS:-$(swarm_opt polishList.takeStaleHours 24)}"
+case "$TAKE_STALE_H" in ''|*[!0-9]*) TAKE_STALE_H=24 ;; esac
+take_stalled() {
+  local t="$1" ls l at
+  ls=$(jq -r --arg t "$t" '.[$t].labels[]? // empty' <<<"$2")
+  for l in "$LBL_PARKED" "$LBL_OWNER_DECISION" "$LBL_NEEDS_HUMAN" "$HOLD_LABEL"; do
+    [ -n "$l" ] && printf '%s\n' "$ls" | grep -qxF -- "$l" && { printf 'is waiting (%s)' "$l"; return 0; }
+  done
+  swarm_ticket_live "$t" && return 1
+  at=$(jq -r --arg t "$t" '.[$t].updatedAt // empty' <<<"$2"); [ -n "$at" ] || return 1
+  at=$(swarm_epoch "$at" 2>/dev/null); case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  [ $(( $(swarm_now) - at )) -ge $(( TAKE_STALE_H * 3600 )) ] || return 1
+  printf 'has no live run and no change in %sh' "$TAKE_STALE_H"
+}
+
 # sweep — settles every reservation on every open list from its PR's state, in one
 # read of the lists and one batched read of the PRs they name.
 sweep() {
-  local dry=0 w="" lists nums states n body new mark st text left done_n changed state
+  local dry=0 w="" lists nums states n body new mark st text left done_n changed state why
   [ "${1:-}" = --dry-run ] && { dry=1; w="would be "; }
   lock
   lists=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$LBL_POLISH_LIST" --limit 200 \
@@ -265,6 +285,9 @@ sweep() {
       case "$mark:$state" in
         t*:CLOSED|t*:MERGED)
           new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — #${mark#t} closed without a PR for it: $text" ;;
+        t*:OPEN)
+          why=$(take_stalled "${mark#t}" "$states") || continue
+          new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — #${mark#t} $why: $text" ;;
         *:MERGED) new=$(printf '%s\n' "$new" | set_item "$text" x "$mark") && changed=1 && echo "#$n: ${w}ticked — PR #$mark merged: $text" ;;
         *:CLOSED) new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — PR #$mark closed unmerged: $text" ;;
       esac
@@ -289,9 +312,10 @@ case "${1:-}" in
   sweep)      shift; sweep "$@" ;;
   items)      body=$(body_of "${2:?usage: polish-list.sh items <issue|->}") || die "#$2 could not be read"
               printf '%s\n' "$body" | free_items ;;
-  count)      body=$(body_of "${2:?usage: polish-list.sh count <issue|->}") || die "#$2 could not be read"
-              printf '%s\n' "$body" | free_items | grep -c . || true ;;
+  count)      body=$(body_of "${2:?usage: polish-list.sh count <issue|-> [ticket]}") || die "#$2 could not be read"
+              # With a ticket: what that ticket's own run may still work, its takes included.
+              printf '%s\n' "$body" | all_items | awk -F'\t' -v m="t${3:-x}" '$1 == " " && ($2 == "" || $2 == m)' | grep -c . || true ;;
   for-screen) shift; for_screen "${1:-}" || die "the open polish lists could not be read" ;;
-  -h|--help|"") sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)          die "unknown command '$1'" ;;
 esac

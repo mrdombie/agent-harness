@@ -353,6 +353,23 @@ want_in "named once"                       'polish: 1 polish ticket\(s\) wait wh
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; reds_as P3 601
 SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
 want "a polish red still takes its healing place" "601 701" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+echo "--- a polish list with nothing free on it is never work, even on an idle factory ---"
+# list_body_issue <n> <body> — an open polish list with exactly that body
+list_body_issue() {
+  jq -n --argjson n "$1" --arg b "$2" '{number:$n, state:"OPEN", title:"Polish list: Inbox", body:$b,
+    labels:([ "polish-list","screen:inbox","P3","status:ready","type:bug" ] | map({name:.}))}' > "$FIX/gh/issue-$1.json"
+}
+fresh; list_body_issue 804 $'## Items\n- [x] done\n- [ ] reserved (in PR #9)\n- [ ] taken (taken by #77)\n'; bash "$Q" add 804 >/dev/null
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want "nothing else queued, and still not started" "" "$(spawned)"
+want_in "it says why"                      'skip #804 \(polish list\): nothing free on it' "$out"
+fresh; list_body_issue 804 $'## Items\n- [x] done\n'; bash "$Q" add 804 --front --note "Resume: run cut off" >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "not even put back at the front"      "" "$(spawned)"
+fresh; list_body_issue 805 $'## Items\n- [ ] mine (taken by #805)\n'; bash "$Q" add 805 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "a list whose only items its own run took can resume" "805" "$(spawned)"
+
 echo "--- the polish hold never parks a resume, an owner's answer or half-built work ---"
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null
 fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 --front --note "Resume: run cut off" >/dev/null
