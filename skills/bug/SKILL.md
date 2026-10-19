@@ -55,6 +55,18 @@ Come out of this step with: the reproduction, the root cause, and the file:line.
 
 ## Step 2 — File the ticket
 
+**Grade it first** (the table in `/agent-harness:file`). Critical or Major: file a
+ticket as below. **Minor** (polish — spacing, wording, a small visual slip): do not
+file a ticket. Put it on its screen's polish list and stop the chain there; the next
+ticket for that screen fixes it in its own change:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" add <screen-slug> "<what is wrong, the reproduction in one line>"
+```
+
+The slug is the screen's `screen:<slug>` label. Tell the operator the list's number
+and that it rides along. A Nit is dropped.
+
 Now run **`superpowers:brainstorming`** over the *fix*, not the fault. Step 1 settled
 what is broken; brainstorming settles how far the fix reaches — scope, edge cases,
 what stays broken on purpose. The PM asked for this interrogation explicitly (Dom, 2026-08); do not

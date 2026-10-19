@@ -121,6 +121,17 @@ want "the pinned note travels"  "resume the worktree" "$(printf '%s' "$s" | jq -
 want "an entry without a scope takes the queue's" "project:widgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].scope')"
 want "an entry's own scope wins" "project:gadgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[3].scope')"
 want "it carries a title"       "Ticket 701" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].title')"
+cat > "$STATE/coordinator/queue.json" <<'JSON'
+{"scope":"widgets","label":"project:widgets","tickets":[
+ {"n":711,"class":"repair","prin":3,"note":""},
+ {"n":712,"class":"new","prin":1,"kind":"polish","note":""},
+ {"n":713,"class":"new","prin":1,"kind":"feature","note":""},
+ {"n":714,"class":"repair","prin":1,"note":""},
+ {"n":715,"class":"new","prin":0,"note":""},
+ {"n":716,"class":"new","prin":3,"front":true,"note":""}]}
+JSON
+s=$(snap)
+want "priority first across classes, as the coordinator runs it" "716 715 714 713 712 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
 rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"

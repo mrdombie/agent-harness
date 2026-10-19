@@ -108,6 +108,20 @@ prs 1 2 3 4; : > "$GH_LOG"
 want "fewer than a batch: nothing"              "" "$(bash "$SB" batches /dev/null < "$FIX/prs.json" 2>/dev/null)"
 want "and the verdicts are not read for it"     "0" "$(grep -c 'pullRequest(number' "$GH_LOG")"
 
+echo "--- batches by priority: P0 first, polish last ---"
+# pri_pr <n> <label…> — a held green PR wearing those labels
+pri_pr() { local n="$1"; shift; pr "$n" | jq --args '.labels += ($ARGS.positional | map({name:.}))' "$@"; }
+both_all() { for n in "$@"; do both "$n"; done; }
+{ pri_pr 1 P3; pri_pr 2 polish-list; pri_pr 3 P0; pri_pr 4; pri_pr 5 P1; pri_pr 6 P2; pri_pr 7 P3; } | jq -s . > "$FIX/prs.json"
+both_all 1 2 3 4 5 6 7
+fix_issue 4 OPEN "P0,type:bug"
+want "P0 before P3: the PR's own label, else its ticket's; a polish list is P3; P3 and no priority wait" \
+  "signoff-batch:3@h300000,4@h400000,5@h500000,6@h600000,1@h100000	3 4 5 6 1" "$(bash "$SB" batches /dev/null < "$FIX/prs.json" 2>/dev/null)"
+rm -f "$FIX/gh/issue-4.json"
+want "a ticket that cannot be read sorts last, not first" \
+  "signoff-batch:3@h300000,5@h500000,6@h600000,1@h100000,2@h200000	3 5 6 1 2" "$(bash "$SB" batches /dev/null < "$FIX/prs.json" 2>/dev/null)"
+want "green still lists by number"         "1 2 3 4 5 6 7" "$(bash "$SB" green < "$FIX/prs.json" 2>/dev/null | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+
 echo "--- 25 real PRs' commit shapes ---"
 # Their last twelve commits, messages reduced to subject class and trailers. A
 # merge whose message recorded conflicts stands in for one approval-kept voids.

@@ -25,6 +25,7 @@ person anything; when you need to, return a question and the driver parks it.
 - Already in flight: {{IN_FLIGHT}}
 - This project: {{PROJECT_FACTS}}
 - Screen steps the renderer performs: {{SCREEN_STEPS}}
+- Polish items to plan into this ticket: {{POLISH_LIST}}
 
 ## The premise verdict is yours
 

@@ -134,7 +134,7 @@ case "$1 $2" in
       f="$FIX/gh/issue-$n.json"
       if [ -f "$f" ]; then
         out=$(jq -c --arg k "i$n" --argjson n "$n" --slurpfile i "$f" \
-          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}})}' <<<"$out")
+          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}} + (if has("body") then {body} else {} end))}' <<<"$out")
       else out=$(jq -c --arg k "i$n" '. + {($k): null}' <<<"$out"); fi
     done
     jq -c '{data: {repository: .}}' <<<"$out" ;;
