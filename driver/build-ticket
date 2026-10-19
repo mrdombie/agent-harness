@@ -371,9 +371,13 @@ plan_hash=""
 
 skipped=0
 ran=0        # steps that did real work — start re-checking itself is not work
+# With a shared sheet, the claim carries the step, so every host's coordinator can say
+# what a build is on. Best effort: before start there is no claim, and nothing waits on it.
+SHARE_STEP=""; [ -z "$(driver_opt coordinator.sheet.owner "")" ] || SHARE_STEP=1
 i=0
 while [ "$i" -lt "$N" ]; do
   step="${STEPS[$i]}"
+  [ -z "$SHARE_STEP" ] || bash "$CL" update "$TICKET" "step=$step" >/dev/null 2>&1 || true
 
   if driver_state_is_done "$TICKET" "$step" && ! always "$step"; then
     skipped=$((skipped+1)); i=$((i+1)); continue

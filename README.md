@@ -172,6 +172,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            check-push-destination.sh (every push names its destination; CI)
            coordinator-tick.sh · coordinator-queue.sh · coordinator-judge.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
+           coordinator-sheet.sh (one shared build order across machines — see below)
            merge-lane.sh (the serial merge lane — see below)
            signoff-batch.sh (held PRs green apart from the hold, every reviewer's
            recorded verdict on the head, in batches of five)
@@ -483,6 +484,25 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+| `sheet.owner` | unset | The machine (`hostname -s`, compared without case) that keeps the one build order every coordinator works. Unset, no sheet: each machine seeds its own queue as before |
+| `sheet.staleMin` | 15 | A sheet older than this starts nothing new on any other machine |
+| `sheet.label` · `sheet.title` | `build-sheet` · `Build queue — the shared sheet` | The pinned issue the order is written to |
+| `sheet.stopLabels` | `after-launch` | Labels that keep a ticket off the sheet, on top of every label that keeps a ticket from an agent |
+
+**One build order across machines (`coordinator.sheet`).** Two machines that each
+own a copy of the work order pick against each other; the order lives in one
+shared place. With `sheet.owner` set, the owner's tick writes its startable queue,
+in run order, to one pinned issue: who is building what and on which machine
+(with the driver's step, which the claim then carries), the numbered order, and
+the same order as JSON under `<!-- sheet:v1 … -->`. It writes only when the
+content changed, plus a heartbeat every third of `staleMin`, so a quiet tick
+costs no call. Every other machine reads that issue once a tick (one REST read,
+through the shared backoff, falling back to its last copy while fresh), works
+its order in place of seeding its own queue, and skips whatever any host holds:
+claims are refs on origin that name their host. A sheet older than `staleMin`,
+or none at all, starts nothing new on that machine and the tick says why; it
+never falls back to its own order. `scripts/coordinator-sheet.sh show` prints
+the sheet as a machine reads it.
 
 **How the coordinator reads a driver run.** It reads one the way it reads any
 other run: a run record, the driver's pid as `.child`, `.ended` with its exit code

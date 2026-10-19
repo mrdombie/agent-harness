@@ -50,6 +50,7 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/coordinator-waits.sh" || exit 1
+. "$SELF_DIR/coordinator-sheet.sh" || exit 1
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
 SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
@@ -272,13 +273,16 @@ fi
 # Labels that keep a ticket from any agent: the swarm's own list, plus gated.
 stop_labels() { { swarm_blocking_labels; printf '%s\n' "$LBL_GATED" "$LBL_EXTERNAL_BLOCKED"; } | awk 'NF && !seen[$0]++'; }
 # Fails closed: a claim list nobody could read is not "nothing claimed".
+# Rows: <ticket> \t <host> \t <step>. The claim refs live on origin, so every host
+# reads every other host's claims: what one machine holds, every machine skips.
 claims() {
   if [ -n "${COORDINATOR_CLAIMS_CMD:-}" ]; then $COORDINATOR_CLAIMS_CMD; return; fi
   local j; j=$(bash "$CL" list --json 2>/dev/null)
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$j" || return 1
-  jq -r '.[].issue' <<<"$j"
+  jq -r '.[] | "\(.issue)\t\(.host // "")\t\(.step // "")"' <<<"$j"
 }
-CLAIMS_OK=1; CLAIMED=$(claims 2>/dev/null) || CLAIMS_OK=0
+CLAIMS_OK=1; CLAIM_ROWS=$(claims 2>/dev/null) || CLAIMS_OK=0
+CLAIMED=$(printf '%s\n' "$CLAIM_ROWS" | cut -f1 | grep -E '^[0-9]+$')
 
 spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   local t="$1" cls="$2" meta st lab l
@@ -314,7 +318,18 @@ if ! coord_shadow; then bash "$OWNERQ" sync 2>&1 | while IFS= read -r l; do say 
 REFRESH_STAMP="$COORD_DIR/refresh.stamp"
 COORD_REFRESH_EVERY_MIN="${COORDINATOR_REFRESH_EVERY_MIN:-$(swarm_opt coordinator.refreshEveryMin 5)}"
 case "$COORD_REFRESH_EVERY_MIN" in ""|*[!0-9]*) COORD_REFRESH_EVERY_MIN=5 ;; esac
-if [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
+# With a sheet owner set, every machine but the owner works the owner's order
+# (coordinator-sheet.sh) and never seeds its own: two orders pick against each other.
+SHEET_ROLE=$(coord_sheet_role); SHEET_HOLD=""
+if [ "$SHEET_ROLE" = reader ]; then
+  if coord_sheet_read; then
+    coord_sheet_seed_queue "$SHEET_ORDER"
+    say "sheet: working $COORD_SHEET_OWNER's order, $SHEET_AGE_MIN min old$([ "$SHEET_FROM" = copy ] && echo ' (the last copy read: GitHub could not be asked)') — $(jq 'length' <<<"$SHEET_ORDER") on it"
+  else
+    SHEET_HOLD="$SHEET_WHY"
+    say "sheet: $SHEET_WHY"
+  fi
+elif [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
   if until=$(gh_backoff_active); then
     say "queue: GitHub is rate-limiting this token until $(swarm_iso "$until") — working the queue as it stands"
   elif [ $(( $(swarm_now) - $(coord_mtime "$REFRESH_STAMP") )) -ge $(( COORD_REFRESH_EVERY_MIN * 60 )) ]; then
@@ -327,23 +342,29 @@ fi
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
 # What a refused read misses comes from the last good snapshot while it is fresh.
-ISSUES=""
+ISSUES=""; ISSUES_OK=1
 # The live runs' tickets too: a polish red being healed never counts toward heal-all.
 # And the runs that ended inside the live view's window: its finished list says
 # where each of those tickets stands now from this read, not from a call per row.
 ENDED_TICKETS=$(find "$RUNS_DIR" -maxdepth 1 -name 'claim-*.ended' -mmin -"$(( ${SWARM_DONE_HOURS:-6} * 60 ))" 2>/dev/null \
   | while IFS= read -r e; do jq -r '.ticket // empty' "${e%.ended}.json" 2>/dev/null; done)
-ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; printf '%s\n' $LIVE_TICKETS $ENDED_TICKETS; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
+# The sheet's owner names every host's builds, so it reads their titles in the same request.
+ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; printf '%s\n' $LIVE_TICKETS $ENDED_TICKETS
+                [ "$SHEET_ROLE" != owner ] || printf '%s\n' "$CLAIMED"; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
 if [ -n "${ISSUE_NUMS// /}" ]; then
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   if ISSUES=$(gh_issues_batch $ISSUE_NUMS); then coord_snap_save issues "$ISSUES"
   else
     snap=$(coord_snap_load issues) || snap="{}"
+    [ "$snap" != "{}" ] || ISSUES_OK=0
     [ -n "$ISSUES" ] || ISSUES="{}"
     ISSUES=$(jq -cn --argjson old "$snap" --argjson new "$ISSUES" '$old + $new' 2>/dev/null) || ISSUES=""
     say "tickets: the batched read was refused$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — $( [ "$snap" = "{}" ] && echo 'no fresh snapshot to fall back on' || echo "the rest from the snapshot taken $(coord_snap_age issues) min ago")"
   fi
 fi
+
+# The order the owner publishes: taken before the starts take their tickets off the queue.
+SHEET_WIDE=""; [ "$SHEET_ROLE" != owner ] || SHEET_WIDE=$(coord_queue_ordered --wide)
 
 # Each live run's class, as the coordinator recorded it at spawn. A run with none
 # on record (started outside the coordinator) heals when its ticket has an open PR.
@@ -404,7 +425,7 @@ split_places() {
 REDS_WAITING=0; REDS_WAITING_POLISH=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
-PLAN=""; NEXT=""; TOOK=""
+PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
 # The spawnable entries, in queue order: every healing one (so the reds waiting
 # are counted), and new work up to one past the free places (the next pick).
 # CANDS rows: <ticket> \t <class> \t <polish 0|1> \t <note>.
@@ -488,6 +509,9 @@ if [ -n "$COORD_CAP_BAD" ]; then
   event "cap-bad:$COORD_CAP_BAD" cap-bad false "" "" "coordinator.cap is '$COORD_CAP_BAD', so nothing is spawning" || true
 elif held=$(swarm_held); then
   say "spawn: held — $held"
+elif [ -n "$SHEET_HOLD" ]; then
+  say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
+  coord_act_log sheet-hold - "$SHEET_HOLD"
 elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
   blind=$([ "$CLAIMS_OK" = 0 ] && echo "the claim list" || echo "the open pull requests")
   limit=""; [ "$CLAIMS_OK" = 0 ] || limit=$(gh_limit_why) || limit=""
@@ -565,6 +589,7 @@ else
       if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live
         say "spawned #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
+        SHEET_STARTED="${SHEET_STARTED:+$SHEET_STARTED,}$t"
       else
         say "spawn of #$t failed"
         # Its place goes to the next entry this tick. Counted as taken, one refused
@@ -591,6 +616,24 @@ else
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi
 fi
+# ---- 5c. the shared sheet --------------------------------------------------------
+# The owner writes what is startable, in run order, and who is building what, once
+# the starts are made: its own starts show as building here before their claims land.
+if [ "$SHEET_ROLE" = owner ]; then
+  if [ "$ISSUES_OK" = 0 ]; then
+    say "sheet: the queue's tickets could not be read — not written; readers start nothing once it is ${COORD_SHEET_STALE_MIN} min old"
+  elif [ "$CLAIMS_OK" = 0 ]; then
+    say "sheet: the claim list could not be read — not written"
+  else
+    if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ]; then
+      said=$(coord_sheet_publish "$entries")
+      say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
+    else
+      say "sheet: its content could not be built — not written"
+    fi
+  fi
+fi
+
 say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}$( [ $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) -eq 0 ] || echo " · $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) polish red(s) not counted toward heal-all")"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
