@@ -183,6 +183,26 @@ want "an owner-flagged P0 goes first"      "62" "$(jq -r '.head.pr' "$C/lane.did
 want_in "the status line names the head"   'head #62' "$(cat "$C/lane.status")"
 want_in "and what it is waiting for"       'waiting for checks: build, lint' "$(cat "$C/lane.status")"
 
+echo "--- priority decides the train, as it decides the queue (owner call 2026-10-19) ---"
+fresh
+pr 71 s71 P3 1 build:PENDING; compare develop s71 0
+pr 76 s76 P3 1 build:PENDING; compare develop s76 0
+live >/dev/null
+export SWARM_NOW=2000
+# 72's branch names ticket 721: the PR carries no P label, its ticket is P0.
+pr 72 s72 - 1 build:PENDING; compare develop s72 0; fix_issue 721 OPEN "P0,type:bug"
+pr 73 s73 P1,repo:agent-harness 1 build:PENDING; compare develop s73 0
+pr 74 s74 P1 1 build:PENDING; compare develop s74 0
+pr 75 s75 - 1 build:PENDING; compare develop s75 0
+live >/dev/null
+want "the head stays; a P0 PR goes before the older P3 one, then P1 product, P1 tooling, no priority last" \
+  "71 72 74 73 76 75" "$(jq -r '.order | map(tostring) | join(" ")' "$C/lane.did.json")"
+fresh
+pr 81 s81 P3 1 build:PENDING; pr 82 s82 - 1 build:PENDING; fix_issue 821 OPEN "P0"
+compare develop s81 0; compare develop s82 0
+live >/dev/null
+want "a P0 ticket's PR heads the train over a P3 one that wins on number" "82" "$(jq -r '.head.pr' "$C/lane.did.json")"
+
 echo "--- one at a time: the PR in flight stays head, one merge per pass ---"
 fresh
 pr 11 s11 - 1 build:SUCCESS lint:SUCCESS; compare develop s11 2

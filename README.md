@@ -590,7 +590,7 @@ always exactly what was tested.
 | Step | What the lane does |
 |---|---|
 | Joins | open, not draft, no hold label, auto-merge armed or the lane label. Live, the label goes on and auto-merge comes off |
-| Order | the PR in flight stays head; then the first label (`P0`), then the oldest approval, then the PR number |
+| Order | the PR in flight stays head; then the first label (`P0`), then priority (the PR's own P label, else its ticket's; none last), then product before our own tooling, then the oldest approval, then the PR number |
 | Behind | `update-branch` against the head it read; a conflict takes it out of the lane with a fixer |
 | Checks | waits on pending or missing; a flake (timed out, cancelled, a lost runner) is re-run once; anything else takes it out with the check named and a fixer |
 | Green | merged with `merge.method` and `--match-head-commit`; one merge per pass |
