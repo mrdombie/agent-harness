@@ -58,11 +58,12 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   local cause="${4:-person}"
   case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
   local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
-  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note=""
+  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note="" park_ref="" host
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
   branch=$(driver_state_get "$t" branch)
   done_list=$(driver_state_get "$t" 'done|join(" · ")')
+  host=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
 
   if [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$branch" ]; then
     driver_say "   park: $(bash "$KIT_ROOT/scripts/worktree-cache.sh" clean "$wt" 2>&1 | tail -1)"
@@ -108,6 +109,14 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
       # commits, restorable with `git fetch <file> <branch>`, and it costs a second.
       bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
       [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
+      # A bundle is on this machine's disk only; a park ref is on origin for the next run anywhere.
+      if _driver_park_ref_push "$t" "$wt"; then
+        park_ref="$DRIVER_PARK_REF"
+        driver_state_set "$t" park_ref "$park_ref"
+        driver_say "   park: the work is on origin as $park_ref — the next run on any machine starts from it"
+      else
+        driver_say "   park: ${DRIVER_PARK_REF_WHY:-no park ref} — the work stays on $host in $wt"
+      fi
     fi
   fi
 
@@ -141,7 +150,12 @@ $(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
       "${question:-see the step output on the run log}"
   fi)
 
-${repair_note:-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed — the work is only in $wt. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}}
+${repair_note:-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}}
+$(if [ "$pushed" -ne 1 ] && [ -n "$park_ref" ]; then
+    printf '📌 The work is on origin as `%s` (its pre-push skipped: the park namespace only, never `%s`). The next run starts its branch from it on any machine; by hand: `git fetch origin %s`.' "$park_ref" "$branch" "$park_ref"
+  elif [ "$pushed" -ne 1 ] && [ -n "$branch" ] && [ -z "$repair_note" ]; then
+    printf '📌 The work is only on machine `%s`, in `%s`.' "$host" "$wt"
+  fi)
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
 ${merge_note:+⚠ The merge: $merge_note}
@@ -230,4 +244,24 @@ _driver_park_bundle() { # <ticket> <tree> <branch>
     rm -f "$f" 2>/dev/null
     printf 'the %s commit(s) could NOT be bundled either, so they exist only in %s' "$n" "$wt"
   fi
+}
+
+# _driver_park_ref_push <ticket> <tree> — HEAD to refs/heads/park/<ticket>/<host>-<utc>
+# with the pre-push skipped, only when driver.parkRefNoVerify is true. Sets
+# DRIVER_PARK_REF to the branch name; on a refusal sets DRIVER_PARK_REF_WHY and returns 1.
+_driver_park_ref_push() {
+  local t="$1" wt="$2" ref out h
+  DRIVER_PARK_REF=""; DRIVER_PARK_REF_WHY=""
+  if [ "$(driver_opt driver.parkRefNoVerify false)" != true ]; then
+    DRIVER_PARK_REF_WHY="driver.parkRefNoVerify is not true, so no park ref was pushed"; return 1
+  fi
+  case "$t" in ''|*[!0-9]*) DRIVER_PARK_REF_WHY="ticket '$t' is not a number, so no park ref"; return 1 ;; esac
+  h=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//'); [ -n "$h" ] || h=host
+  ref="refs/heads/park/$t/$h-$(date -u +%Y%m%dT%H%M%SZ)"
+  # Skipping the pre-push reaches nothing outside the park namespace.
+  case "$ref" in refs/heads/park/[0-9]*/?*) ;; *) DRIVER_PARK_REF_WHY="'$ref' is outside refs/heads/park/"; return 1 ;; esac
+  if ! out=$(env -u PARK_PUSH git -C "$wt" push --no-verify origin "HEAD:$ref" 2>&1); then
+    DRIVER_PARK_REF_WHY="the park ref push was refused too: $(printf '%s' "$out" | tail -2 | tr '\n' ' ' | cut -c1-200)"; return 1
+  fi
+  DRIVER_PARK_REF="${ref#refs/heads/}"
 }
