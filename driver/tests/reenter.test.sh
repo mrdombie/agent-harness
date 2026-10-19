@@ -155,13 +155,21 @@ want_in "naming the label"            'needs:human-approval' "$out"
 pr_branch 206; fix_issue 206 OPEN "status:in-review"; prs "[$(pr_json 37 tkt-206/work)]"
 claim_row 206 somebody@else tkt-206/work "$FIX/theirs"
 out=$(driver_step_reenter 206 2>&1); rc=$?
-want "a peer's claim refuses"         "24" "$rc"
+want "a peer's claim is busy, not a refusal" "29" "$rc"
+want_in "the reason is on the record"   'peer on another machine holds the claim' "$(driver_state_get 206 park_note)"
 want_in "naming a peer"               'peer' "$out"
 want "no worktree was cut"            "" "$(driver_state_get 206 worktree)"
-fix_issue 207 OPEN "status:in-review"; echo "pr list" > "$FIX/gh-fail"
+# #13139's shape (2026-10-19): a run on THIS host holds the claim on another worktree,
+# and the repair's record is fresh. It parked as "reenter left no reason on the record".
+pr_branch 208; fix_issue 208 OPEN "status:in-review"; prs "[$(pr_json 38 tkt-208/work)]"
+claim_row 208 "${CLAIM_AGENT:-tester@fixture}" tkt-208/work "$FIX/other-208"
+out=$(driver_step_reenter 208 2>&1); rc=$?
+want "a sibling run's claim is busy, not a refusal" "29" "$rc"
+want_in "the reason is on the record"  'another run on this host holds the claim on #208' "$(driver_state_get 208 park_note)"
+want "and the sibling's claim is untouched" "$FIX/other-208" "$(awk -F'\t' '$1==208{print $4}' "$CLAIMS")"
+fix_issue 207 OPEN "status:in-review"; echo "open-prs" > "$FIX/gh-fail"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_reenter 207 2>&1); rc=$?
-# 27, not a refusal: a read GitHub failed is retried, and build-ticket requeues it.
-want "an unreadable PR list is a GitHub failure, not a refusal"  "27" "$rc"
+want "an unreadable PR list stops reenter as unread"  "26" "$rc"
 want_in "and says so"                 'could not ask' "$out"
 rm -f "$FIX/gh-fail"
 

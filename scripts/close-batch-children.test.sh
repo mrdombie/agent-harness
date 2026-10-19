@@ -41,7 +41,7 @@ F="$HERE/../skills/finish/SKILL.md"
 step=$(awk '/^\*\*7d\. Close the GitHub Issue/{on=1} on && /^```$/{n++; if (n == 2) exit} on' "$F")
 want_in "Step 7d runs close-batch-children.sh with the ticket and the PR" \
   'bash "\$\{CLAUDE_PLUGIN_ROOT\}/scripts/close-batch-children\.sh" "\$ISSUE_NUM" "\$PR_NUMBER"' "$step"
-after=$(printf '%s\n' "$step" | awk '/gh issue close "\$ISSUE_NUM"/{c=NR} /close-batch-children\.sh/{b=NR} END{print (c && b > c) ? "after" : "before"}')
+after=$(printf '%s\n' "$step" | awk '/gh issue close "\$ISSUE_NUM"|close-ticket\.sh" "\$ISSUE_NUM"/{c=NR} /close-batch-children\.sh/{b=NR} END{print (c && b > c) ? "after" : "before"}')
 want "and only once the ticket itself is closed" "after" "$after"
 
 exit $FAILED

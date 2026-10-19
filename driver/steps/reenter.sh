@@ -36,7 +36,7 @@ driver_step_reenter() { # <ticket>
   if [ -z "$meta" ]; then
     driver_say "✋ reenter: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries."
     driver_state_set "$t" park_note "reenter could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
-    return "$DRIVER_E_GH"
+    return "$DRIVER_E_UNREAD"
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
@@ -51,10 +51,9 @@ driver_step_reenter() { # <ticket>
       return "$DRIVER_E_REFUSED" ;;
   esac
 
-  if ! prs=$(driver_gh_read driver_open_prs_for "$t"); then
-    driver_say "✋ reenter: could not ask GitHub for #$t's open pull request (${DRIVER_LOOKUP_TRIES:-3} tries). An unreadable list is not an empty one."
-    driver_state_set "$t" park_note "reenter could not list the open pull requests for #$t (${DRIVER_LOOKUP_TRIES:-3} tries)"
-    return "$DRIVER_E_GH"
+  if ! prs=$(driver_open_prs_for_patient "$t"); then
+    driver_say "⏳ reenter: could not ask GitHub for #$t's open pull request. An unreadable list is not an empty one; the repair goes back on the queue for the next tick."
+    return "$DRIVER_E_UNREAD"
   fi
   n=$(printf '%s' "$prs" | grep -c .)
   if [ "$n" -eq 0 ]; then
@@ -86,14 +85,19 @@ driver_step_reenter() { # <ticket>
         || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   reenter: #$t is already ours — resuming"
         else
+          # BUSY, NOT REFUSED: the holder ends, or the reconciler frees a dead claim, and
+          # the repair goes on then. Read as a refusal it parked #13139 and #13146.
           driver_say "✋ reenter: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none})."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "another run on this host holds the claim on #$t (branch ${cb:-unnamed}, worktree ${cw:-none})"
+          return "$DRIVER_E_BUSY"
         fi ;;
     12) driver_say "✋ reenter: a peer holds the claim on #$t. Never adopt a live claim."
-        return "$DRIVER_E_REFUSED" ;;
+        driver_state_set "$t" park_note "a peer on another machine holds the claim on #$t"
+        return "$DRIVER_E_BUSY" ;;
     *)  if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
           driver_say "✋ reenter: a peer took the claim on #$t first. Never adopt a live claim."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "a peer took the claim on #$t first"
+          return "$DRIVER_E_BUSY"
         fi ;;
   esac
 

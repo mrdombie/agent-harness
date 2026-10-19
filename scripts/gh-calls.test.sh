@@ -97,13 +97,15 @@ clash_calls() { # <count>
   done
   printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
   : > "$GH_LOG"; bash "$HERE/claimable-issues.sh" > "$FIX/claimable.out" 2>/dev/null
-  calls
+  # The open-PR list itself is paged, a request per 25 PRs; what must not grow is the rest.
+  echo "$(( $(calls) - $(grep -c 'OpenPullRequests' "$GH_LOG") ))"
 }
 small=$(clash_calls 3); big=$(clash_calls 40)
 want "40 clashing PRs cost what 3 do"              "$small" "$big"
+want "beside the open PRs, read in two pages"      "2" "$(grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' ')"
 want "and every one is still offered to finish"    "40" "$(grep -c 'FINISH PR' "$FIX/claimable.out" | tr -d ' ')"
 : > "$GH_LOG"; CLAIMABLE_PRS_FILE="$FIX/gh/prs-all.json" bash "$HERE/claimable-issues.sh" >/dev/null 2>&1
-want_not_in "a caller's PR read is reused, not asked again" '^pr list' "$(cat "$GH_LOG")"
+want_not_in "a caller's PR read is reused, not asked again" 'OpenPullRequests' "$(cat "$GH_LOG")"
 
 echo "--- a queue refresh does not ask per scope: labels resolve once, members come with the candidates ---"
 fresh; rm -f "$FIX/gh"/issue-list*.json
@@ -157,7 +159,7 @@ want_not_in "and the judge"                        '^judge' "$(cat "$FIX/house.l
 want_in "the server sweep still runs (no GitHub)"  '^sweep' "$(cat "$FIX/house.log")"
 export SWARM_NOW=$(( $(date +%s) + 3600 )); : > "$GH_LOG"
 bash "$T" >/dev/null 2>&1
-want_in "once it ends, the tick asks again"        '^pr list' "$(cat "$GH_LOG")"
+want_in "once it ends, the tick asks again"        'OpenPullRequests' "$(cat "$GH_LOG")"
 unset SWARM_NOW
 
 echo "--- a refusal doubles the backoff, up to a cap ---"
@@ -200,7 +202,7 @@ budget_pass() { # every reader once, after one tick: the open-PR reads they made
   bash "$HERE/../swarm/repair-watch.sh" --explain --only repair >/dev/null 2>&1
   SWARM_CLAIM_LOCK="$BIN/claim-show" SWARM_GIT=false SWARM_PRS_FILE="$STATE/swarm/prs.json" SWARM_GH_CALLS="$STATE/swarm/gh-calls.log" \
     node "$HERE/../swarm/live-view/progress.mjs" --gather '{"tickets":["501","502"],"ids":[],"repo":"acme/widgets"}' > "$FIX/gather.out" 2>/dev/null
-  grep -cE '^pr list' "$GH_LOG" | tr -d ' '
+  grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' '
 }
 want "five readers, one read of the open PRs"      "1" "$(budget_pass)"
 want_in "the live view read its agents' branches"   'tkt-501/work' "$(cat "$FIX/gather.out")"
@@ -214,7 +216,7 @@ want_in "the live view's calls are counted too"    'live-view' "$(cut -f2 "$STAT
 echo "--- below 10% left, the live view's gather and titles wait; the tick keeps its read ---"
 printf '%s 5000 %s\n' 300 $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"
 : > "$GH_LOG"; out=$(bash "$T" 2>&1)
-want_in "the tick still reads the open PRs"       '^pr list' "$(cat "$GH_LOG")"
+want_in "the tick still reads the open PRs"       'OpenPullRequests' "$(cat "$GH_LOG")"
 want_in "and reports what is left"                 'left: GraphQL 300/5000' "$out"
 low=$(cd "$HERE/../swarm/live-view" && SWARM_GH_ALLOWANCE="$STATE/swarm/gh-allowance" node --input-type=module -e "
   import { allowanceLow } from './progress.mjs'; const l = allowanceLow(); console.log(l ? l.resource + ' ' + l.left : 'none')")
@@ -232,11 +234,11 @@ rm -f "$STATE/runs/claim-501-t.json"
 printf 'graphql\t%s\t5000\t%s\n' 300 $(( $(date +%s) + 1800 )) > "$STATE/swarm/gh-allowance"
 touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"
 bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
-want "an old copy still serves the watcher below the floor" "0" "$(grep -cE '^pr list' "$GH_LOG" | tr -d ' ')"
+want "an old copy still serves the watcher below the floor" "0" "$(grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' ')"
 printf '%s 5000 %s\n' 4000 $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"; bash "$T" >/dev/null 2>&1
 touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"
 bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
-want "above it, an old copy is read again"         "1" "$(grep -cE '^pr list' "$GH_LOG" | tr -d ' ')"
+want "above it, an old copy is read again"         "1" "$(grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' ')"
 
 echo "--- blind on a spent allowance: the alarm names the rate limit and its reset ---"
 fresh; queue_n repair 1

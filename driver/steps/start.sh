@@ -50,7 +50,7 @@ driver_step_start() { # <ticket>
   if [ -z "$meta" ]; then
     driver_say "✋ start: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries. Note that a pull request resolves here too — check you were given an issue."
     driver_state_set "$t" park_note "start could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
-    return "$DRIVER_E_GH"
+    return "$DRIVER_E_UNREAD"
   fi
   st=$(printf '%s' "$meta" | cut -d$'\001' -f1)
   labels=$(printf '%s' "$meta" | cut -d$'\001' -f2)
@@ -99,10 +99,11 @@ driver_step_start() { # <ticket>
   local owt prs
   owt=$(driver_state_get "$t" worktree)
   if [ -z "$owt" ] || [ ! -d "$owt" ]; then
-    if ! prs=$(driver_gh_read driver_open_prs_for "$t"); then
-      driver_say "✋ start: could not ask GitHub whether #$t already has an open pull request (${DRIVER_LOOKUP_TRIES:-3} tries), so a branch cut now might sit beside one."
-      driver_state_set "$t" park_note "start could not list the open pull requests for #$t (${DRIVER_LOOKUP_TRIES:-3} tries)"
-      return "$DRIVER_E_GH"
+    # Unreadable is not "none", and not a reason to park either: the ticket is left
+    # ready, unclaimed, for the next tick.
+    if ! prs=$(driver_open_prs_for_patient "$t"); then
+      driver_say "⏳ start: could not ask GitHub whether #$t already has an open pull request, so a branch cut now might sit beside one. Left as it was for the next tick."
+      return "$DRIVER_E_UNREAD"
     fi
     if [ -n "$prs" ]; then
       driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."
@@ -117,6 +118,10 @@ driver_step_start() { # <ticket>
   # was not, and the two have to agree.
   branch=$(driver_state_get "$t" branch)
   if [ -z "$branch" ]; then
+    # A fresh run, not a resume: what an earlier run of this ticket took from a
+    # polish list and never reserved for a PR is let go, so nothing ships it unbuilt.
+    bash "$KIT_ROOT/scripts/polish-list.sh" forget "$t" >/dev/null 2>&1 \
+      || driver_say "   start: the polish items an earlier run of #$t took could not be let go"
     slug=$(printf '%s' "$meta" | cut -d$'\001' -f3 | tr '[:upper:]' '[:lower:]' \
            | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-40)
     [ -n "$slug" ] || slug="ticket-$t"
@@ -159,15 +164,18 @@ driver_step_start() { # <ticket>
           driver_say "   start: #$t is already ours — resuming"
         else
           driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "another run on this host holds the claim on #$t (branch ${cb:-unnamed}, worktree ${cw:-none})"
+          return "$DRIVER_E_BUSY"
         fi ;;
     12) driver_say "✋ start: a peer holds the claim on #$t. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
-        return "$DRIVER_E_REFUSED" ;;
+        driver_state_set "$t" park_note "a peer on another machine holds the claim on #$t"
+        return "$DRIVER_E_BUSY" ;;
     *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that
         # settles it, and losing it means a peer won between the two calls.
         if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
           driver_say "✋ start: a peer took the claim on #$t first. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
-          return "$DRIVER_E_REFUSED"
+          driver_state_set "$t" park_note "a peer took the claim on #$t first"
+          return "$DRIVER_E_BUSY"
         fi ;;
   esac
   driver_state_set "$t" branch "$branch"

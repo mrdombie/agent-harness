@@ -19,14 +19,14 @@ This brief owns only how a finding is graded here and what the driver needs back
 
 ## Grade every finding
 
-Every finding carries a **grade**, and the grade is what decides its effect. Two of
-the four send work back; the other two never do.
+Every finding carries a **grade**, and the grade is what decides its effect. Three
+of the four send work back; a Nit never does.
 
 | Grade | What it means | What happens to it |
 |---|---|---|
 | `critical` | wrong data, a security hole, lost work, something published unapproved | goes back to the build step; fixed in this ticket |
 | `major` | a person is misled or stuck: an untrue screen, a dead control, a failure shown as success | goes back to the build step; fixed in this ticket |
-| `minor` | polish: spacing, wording, a small visual slip | never blocks; leaves as one follow-up ticket for the whole review |
+| `minor` | polish: spacing, wording, a small visual slip | goes back to the build step; fixed in this change, never filed |
 | `nit` | taste | dropped |
 
 **A Critical or a Major names who is harmed and how, in the `reason`, in a user's
@@ -37,8 +37,9 @@ point of the scale: the step-runner went four rounds, eleven findings then seven
 then six, and about a quarter of them were spacing and wording. Each of those cost
 a round a real defect needed.
 
-Grading down is not being generous. A Minor is not dropped — it leaves as a ticket
-with your words in it, at the Minor priority, worked when nothing bigger waits.
+Grading down is not being generous. A Minor still blocks: it is fixed in this
+change. Minors filed as follow-ups made every passing review open new tickets,
+110 of 339 bugs in one week.
 
 Green checks are not a verdict. They mean nothing already tested broke; they do
 not mean the change is correct. Where a gate proved the evidence can be opened,

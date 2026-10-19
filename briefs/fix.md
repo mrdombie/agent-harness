@@ -2,9 +2,8 @@
 
 # Step 6 · Fix what blocks
 
-You are clearing the review's Critical and Major findings. Nothing else — a
-Minor left the review as its own follow-up and a Nit was dropped, so neither is
-here and neither is yours to fix in this ticket.
+You are clearing the review's Critical, Major and Minor findings. Nothing else —
+a Nit was dropped, so it is not here and not yours to fix in this ticket.
 
 ## Invoke the skill — do not work from this file
 

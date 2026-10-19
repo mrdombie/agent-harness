@@ -17,8 +17,11 @@
 #   2. members     open, not draft, on the trunk, no hold label, and auto-merge
 #                  armed or the lane label. Live: the label goes on and auto-merge
 #                  comes off, so the lane is the only thing that merges them.
-#   3. order       the PR in flight stays head; then the first label (P0), then the
-#                  pass that first saw it approved, then the PR number
+#   3. order       the PR in flight stays head; then the first label (P0), then
+#                  priority (the PR's own P label, else its ticket's; none last),
+#                  then product before our own tooling, then the pass that first
+#                  saw it approved, then the PR number — the queue's own key
+#                  (COORD_TICKET_JQ), owner call 2026-10-19: priority decides everywhere
 #   4. the head    hold put back after the lane's update  → re-cleared only when
 #                                 every commit since approval is a merge and the
 #                                 update touched none of its screen files; else the
@@ -120,8 +123,9 @@ elif ! jq -e --arg l "$LANE_LABEL" 'any(.[]; .name == $l)' >/dev/null <<<"$LABEL
 fi
 
 # ---- the open pull requests --------------------------------------------------
-PRS=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --base "$INTEGRATION_BRANCH" --limit 200 \
-        --json number,headRefName,headRefOid,isDraft,baseRefName,labels,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup 2>/dev/null)
+# Paged: one request for every open PR with its checks times out once the repo has ~80.
+PRS=$(gh_prs_paged number,title,headRefName,headRefOid,isDraft,baseRefName,labels,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup \
+        "$INTEGRATION_BRANCH" 2>/dev/null)
 if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   say "lane: the open pull requests could not be read — doing nothing"
   status "blind — the open pull requests could not be read"; exit 0
@@ -163,13 +167,30 @@ for n in $(jq -r '.[].n' <<<"$CANDS"); do
 done
 
 # ---- 3. order ----------------------------------------------------------------
-ORDER=$(jq -c --argjson c "$CANDS" --argjson prs "$PRS" --arg first "$FIRST_LABEL" '
+# A PR with no P label of its own takes its ticket's labels, in one batched read
+# made only for those; a ticket that cannot be read sorts as no priority.
+NEED=$(jq -r --argjson c "$CANDS" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
+  [ .[] | select(.number as $n | any($c[]; .n == $n))
+    | select(any(.labels[]?; .name | test("^P[0-9]$")) | not)
+    | (.headRefName // "" | branch_ticket($pre)) | select(. != "") ] | unique | .[]' <<<"$PRS" 2>/dev/null | tr '\n' ' ')
+TICKETS="{}"
+# shellcheck disable=SC2086  # a list of numbers, split on purpose
+[ -z "${NEED// /}" ] || TICKETS=$(gh_issues_batch $NEED 2>/dev/null) || true
+jq -e 'type == "object"' >/dev/null 2>&1 <<<"$TICKETS" || TICKETS="{}"
+ORDER=$(coord_jq -c --argjson c "$CANDS" --argjson prs "$PRS" --argjson tk "$TICKETS" --arg first "$FIRST_LABEL" \
+          --arg pre "$BRANCH_PREFIX" "$COORD_TICKET_JQ$BRANCH_TICKET_JQ"'
   .head.pr as $h | .members as $m
   | [ $c[] | .n as $n
+      | ([$prs[] | select(.number == $n)] | first // {}) as $p
+      | [$p.labels[]?.name] as $pl
+      | ($tk[($p.headRefName // "" | branch_ticket($pre))] // {}) as $t
+      | (if any($pl[]; test("^P[0-9]$")) then $pl else ($pl + ($t.labels // [])) end) as $ls
       | {n: $n, h: (if $n == $h then 0 else 1 end),
-         p: (if any($prs[] | select(.number == $n) | .labels[]?; .name == $first) then 0 else 1 end),
+         p: (if any($pl[]; . == $first) then 0 else 1 end),
+         pri: coord_prin($ls; null),
+         tool: (if coord_tooling($ls; ($p.title // $t.title // "")) then 1 else 0 end),
          s: ($m[($n|tostring)].seen // 0)} ]
-  | sort_by(.h, .p, .s, .n) | map(.n)' <<<"$ST")
+  | sort_by(.h, .p, .pri, .tool, .s, .n) | map(.n)' <<<"$ST")
 st --argjson o "$ORDER" '.order = $o'
 
 drop() { # <pr> — gone from the lane's books

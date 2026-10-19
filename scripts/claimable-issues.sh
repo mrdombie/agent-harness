@@ -49,8 +49,7 @@ finish_rows() {
      && jq -e 'type == "array" and (length == 0 or (.[0] | has("mergeable") and has("closingIssuesReferences")))' "$CLAIMABLE_PRS_FILE" >/dev/null 2>&1; then
     prs=$(cat "$CLAIMABLE_PRS_FILE")
   else
-    prs=$(gh_call pr list --repo "$GH_REPO" --state open --limit 200 \
-      --json isDraft,mergeable,closingIssuesReferences,title 2>/dev/null)
+    prs=$(gh_prs_paged isDraft,mergeable,closingIssuesReferences,title 2>/dev/null)
   fi
   nums=$(printf '%s' "$prs" | jq -r '.[] | select((.isDraft | not) and .mergeable == "CONFLICTING")
          | if (.closingIssuesReferences | length) > 0 then .closingIssuesReferences[].number

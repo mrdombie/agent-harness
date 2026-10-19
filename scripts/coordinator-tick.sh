@@ -23,8 +23,11 @@
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest, and every
 #                    place while coordinator.healAllAt or more reds are left
-#                    (waiting plus being healed); a class
+#                    (waiting plus being healed, polish reds not counted); a class
 #                    with nothing spawnable lends its places to the other. The
+#                    queue runs by priority across classes (coord_queue_ordered);
+#                    polish new work starts only when nothing else can, or when
+#                    a polish list holds coordinator.polishListFull items. The
 #                    room is re-read before each start after the first; under
 #                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
 #                    that is claimed, gated, on hold or wearing the owner-decision
@@ -54,6 +57,7 @@ JUDGE="${COORDINATOR_JUDGE:-$SELF_DIR/coordinator-judge.sh}"
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
 QUEUE="$SELF_DIR/coordinator-queue.sh"
 SIGNOFF="$SELF_DIR/signoff-batch.sh"
+POLISH="$SELF_DIR/polish-list.sh"
 SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
@@ -121,8 +125,11 @@ for ended in "$RUNS_DIR"/*.ended; do
       bash "$NOTIFY" --class owner "login-lost:$(swarm_day)" "The agents' Claude login has gone: every run stops at once until someone runs /login on this machine"
     fi
   elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
-    # The driver put it back on the queue itself (a usage limit, a GitHub read): nothing to judge.
+    # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
     event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
+  elif [ "$code" = 26 ]; then
+    # The driver's DRIVER_E_UNREAD: GitHub could not be read, nothing parked, the ticket is picked again.
+    say "unread: run $rid left #${ticket:-?} as it was — GitHub could not be read; the next tick tries again"
   elif [ "$code" != 0 ] || printf '%s' "$last" | grep -qiE 'park|stood down|stand down|blocked|cannot continue'; then
     event "stood-down:$rid" stood-down true "$ticket" "" "run $rid ended exit $code: ${last:-no result line}"
   fi
@@ -321,7 +328,8 @@ fi
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
 # What a refused read misses comes from the last good snapshot while it is fresh.
 ISSUES=""
-ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
+# The live runs' tickets too: a polish red being healed never counts toward heal-all.
+ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; printf '%s\n' $LIVE_TICKETS; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
 if [ -n "${ISSUE_NUMS// /}" ]; then
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   if ISSUES=$(gh_issues_batch $ISSUE_NUMS); then coord_snap_save issues "$ISSUES"
@@ -345,10 +353,18 @@ live_class() { # <record>
   fi
   coord_healing_class "${c:-new}" && echo healing || echo new
 }
-LIVE_HEAL=0; LIVE_NEW=0
+# polish: P3, a polish kind or a polish list, read off the batched labels (coord_polish).
+ticket_polish() { # <ticket> — 0 when the tick's read holds it as polish
+  [ -n "${ISSUES:-}" ] && coord_jq -e --arg n "$1" "$COORD_TICKET_JQ"'
+    .[$n] // null | if . == null then false else coord_polish(.labels // []; null; .title) end' >/dev/null 2>&1 <<<"$ISSUES"
+}
+LIVE_HEAL=0; LIVE_NEW=0; LIVE_HEAL_POLISH=0
 while IFS= read -r rec; do
   [ -n "$rec" ] || continue
-  if [ "$(live_class "$rec")" = healing ]; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi
+  if [ "$(live_class "$rec")" = healing ]; then
+    LIVE_HEAL=$((LIVE_HEAL+1))
+    ticket_polish "$(jq -r '.ticket // empty' "$rec" 2>/dev/null)" && LIVE_HEAL_POLISH=$((LIVE_HEAL_POLISH+1))
+  else LIVE_NEW=$((LIVE_NEW+1)); fi
 done <<< "$LIVE_RECS"
 
 # The ceiling is what is running plus as many as the spare CPU fits (coord_room),
@@ -371,36 +387,87 @@ fi
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
 # The split needs the reds left — waiting plus being healed — so candidates()
-# redoes it once the waiting ones are counted.
+# redoes it once the waiting ones are counted. Polish reds are healed in their
+# turn but never count toward heal-all: on 2026-10-19 34 of 79 open changes were
+# polish, and counting them let a backlog of spacing fixes stop all new building.
 split_places() {
-  REDS_LEFT=$(( REDS_WAITING + LIVE_HEAL ))
+  REDS_LEFT=$(( REDS_WAITING - REDS_WAITING_POLISH + LIVE_HEAL - LIVE_HEAL_POLISH ))
   HEAL_ALL=""; coord_heal_all "$REDS_LEFT" && HEAL_ALL=1
   HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_LEFT"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
   HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
   NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
 }
-REDS_WAITING=0; split_places
+REDS_WAITING=0; REDS_WAITING_POLISH=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""
 # The spawnable entries, in queue order: every healing one (so the reds waiting
 # are counted), and new work up to one past the free places (the next pick).
+# CANDS rows: <ticket> \t <class> \t <polish 0|1> \t <note>.
+# Polish new work starts only when nothing else can, or when it is a polish list
+# holding coordinator.polishListFull free items (owner call 2026-10-19): 20 of
+# the 35 PRs waiting on the owner's sign-off were polish, one picture each. The
+# hold never parks an entry put at the front (a resume, an owner's answer) or
+# half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls note why nn=0
-  while IFS=$'\t' read -r t cls note; do
+  local t cls pri pol pl ex note why nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
+  CANDS=""
+  wide=$(coord_queue_ordered --wide)
+  # A full list goes in its place in the order, ahead of lower-priority work, so the
+  # lists' bodies are read first: one batched request, only when a list is queued.
+  lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $5 == 1 { print $1 }' | tr '\n' ' ')
+  # shellcheck disable=SC2086  # a list of numbers, split on purpose
+  [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
+  while IFS=$'\t' read -r t cls pri pol pl ex note; do
     [ -n "${t:-}" ] || continue
+    i=$((i+1))
+    # A list with nothing free on it is never work, however idle the factory: every
+    # item is ticked, reserved by a PR, or taken by another run. Its own takes count.
+    if [ "$cls" = new ] && [ "$pl" = 1 ]; then
+      cnt=$(jq -r --arg n "$t" '.[$n].body // ""' <<<"$bodies" 2>/dev/null | bash "$POLISH" count - "$t" 2>/dev/null)
+      case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
+      [ "$cnt" -gt 0 ] || { say "skip #$t (polish list): nothing free on it — every item is ticked, reserved or taken"; continue; }
+    fi
+    # Held: new polish work that is neither put at the front nor half-built, unless
+    # it is a full list.
+    if ! coord_healing_class "$cls" && [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
+      [ "$pl" = 1 ] || cnt=0
+      if [ "$pl" != 1 ] || [ "$cnt" -lt "$COORD_POLISH_LIST_FULL" ]; then
+        held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
+      fi
+    fi
     coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
     if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
     coord_healing_class "$cls" || nn=$((nn+1))
-    CANDS="$CANDS$t"$'\t'"$cls"$'\t'"$note"$'\n'
-  done <<< "$(coord_queue_ordered)"
+    [ "$pol" = 1 ] || other=1
+    rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"$note"$'\n'
+  done <<< "$wide"
+  if [ -n "$held" ]; then
+    while IFS=$'\t' read -r i t cls pl cnt note; do
+      [ -n "${t:-}" ] || continue
+      if [ "$other" = 1 ]; then
+        if [ "$pl" = 1 ]; then say "skip #$t (polish list): $cnt of $COORD_POLISH_LIST_FULL items — rides along with its screen's next ticket"
+        else waits=$((waits+1)); fi
+        continue
+      fi
+      [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue
+      if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
+      nn=$((nn+1))
+      rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'"$note"$'\n'
+    done <<< "$held"
+    [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
+  fi
+  CANDS=$(printf '%s' "$rows" | sort -t$'\t' -k1,1n | cut -f2-); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
   reds_waiting; split_places
 }
-reds_waiting() { REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .); }
+reds_waiting() {
+  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
+  REDS_WAITING_POLISH=$(printf '%s' "$CANDS" | awk -F'\t' '($2 == "repair" || $2 == "approved-merge") && $3 == 1' | grep -c .)
+}
 first_of() { # <healing|new> — the first candidate of that kind: <ticket> \t <class> \t <note>
-  local t cls note
-  while IFS=$'\t' read -r t cls note; do
+  local t cls pol note
+  while IFS=$'\t' read -r t cls pol note; do
     [ -n "${t:-}" ] || continue
     if coord_healing_class "$cls"; then [ "$1" = healing ] || continue; else [ "$1" = new ] || continue; fi
     printf '%s\t%s\t%s' "$t" "$cls" "$note"; return 0
@@ -478,7 +545,11 @@ else
       if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); else HEAL_FREE=$((HEAL_FREE-1)); fi
     fi
     # Counted live only once it is (or, in shadow, would be) running.
-    count_live() { if coord_healing_class "$cls"; then LIVE_HEAL=$((LIVE_HEAL+1)); else LIVE_NEW=$((LIVE_NEW+1)); fi; }
+    count_live() {
+      if coord_healing_class "$cls"; then
+        LIVE_HEAL=$((LIVE_HEAL+1)); ticket_polish "$t" && LIVE_HEAL_POLISH=$((LIVE_HEAL_POLISH+1))
+      else LIVE_NEW=$((LIVE_NEW+1)); fi
+    }
     coord_act_log spawn "$t" "$cls${note:+ — $note}"
     if coord_shadow; then
       say "would spawn #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; count_live
@@ -516,7 +587,7 @@ else
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi
 fi
-say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}"
+say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}$( [ $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) -eq 0 ] || echo " · $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) polish red(s) not counted toward heal-all")"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \

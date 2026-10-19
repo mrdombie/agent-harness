@@ -100,7 +100,7 @@ or goes nowhere.
 |---|---|---|
 | **Critical** | a number, a state or a name that is WRONG — the screen asserts something untrue about the person's data | blocks; fixed now |
 | **Major** | the person is misled or stuck: interchangeable-generic, a decision buried, contrast under AA, a state indistinguishable from another, a drift from the approved mock, narration on most elements | blocks; fixed in this ticket |
-| **Minor** | polish: a spacing step, one stray token, a single narrated line, a weight one notch off | never blocks; leaves as one follow-up |
+| **Minor** | polish: a spacing step, one stray token, a single narrated line, a weight one notch off | blocks; fixed in this ticket, never filed as a follow-up |
 | **Nit** | taste — your preference, not a defect | dropped |
 
 **A Critical or a Major names who is harmed and how, in one line, in a user's
@@ -115,7 +115,7 @@ is that a spacing step no longer arrives with the same weight as a screen that
 could be any other SaaS.
 
 `DRIFT` works the same way: every drift you list is graded, and a drift graded
-Minor does not hold the ship.
+Minor holds the ship like any other Minor; only a Nit does not.
 
 ## Output (exactly this shape, no preamble)
 

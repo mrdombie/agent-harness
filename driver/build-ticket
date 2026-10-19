@@ -31,7 +31,7 @@
 #      through park.sh — pushed, draft pull request, resume brief, label, claim
 #      released — so the work is recoverable by somebody who is not this process.
 #
-# A review that grades something critical or major is the one code that is not an ending: it rewinds
+# A review that grades something critical, major or minor is the one code that is not an ending: it rewinds
 # to the build step and the steps between are reopened, which is what a rework
 # round is. That loop is bounded here as well as inside the build step, because
 # a step returning "go back" forever is indistinguishable from a hung agent.
@@ -185,11 +185,12 @@ fi
 # Park first: it is the exit from every other step, so a run that cannot park is
 # a run that must not start. Loading it late would mean discovering that at the
 # exact moment it was needed.
-# driver_last_refusal <step> — the step's own last ✋ line from this run's log, so a
-# refusal that set no park_note still parks or requeues with its reason.
+# driver_last_refusal — the last ✋ or ⏳ line this step wrote to the log, so a refusal
+# that set no park_note still parks or requeues with its reason. Any prefix, not only
+# the step's own: the review step's refusals are push-requires' lines.
 driver_last_refusal() {
   tail -n +"${RUN_LOG_FROM:-1}" "$(driver_state_dir "$TICKET")/log" 2>/dev/null \
-    | grep -F "✋ $1:" | tail -1 | sed "s/^[^ ]* ✋ //" | cut -c1-400
+    | grep -E "^[^ ]* (✋|⏳) " | tail -1 | sed -E "s/^[^ ]* (✋|⏳) //" | cut -c1-400
 }
 
 step_fn() { printf 'driver_step_%s' "$(printf '%s' "$1" | tr '-' '_')"; }
@@ -268,7 +269,7 @@ N=${#STEPS[@]}
 # Where a rework goes back to. Two answers, because they are two different
 # questions.
 #
-# A REVIEW that graded something critical or major is asking for the findings to be
+# A REVIEW that graded something critical, major or minor is asking for the findings to be
 # cleared, so it goes back to the FIX step — which is the only step that reads
 # review.json. It used to go back to `build`, which re-ran the original plan task
 # blind to what the reviewer had just found, so the two-round ceiling bounded a loop
@@ -359,8 +360,8 @@ while [ "$i" -lt "$N" ]; do
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
   # A note a step left behind. An exit code says which check said no; it cannot say
-  # WHAT, and a step that knows — what a review graded critical or major, a leftover that could
-  # not be filed — writes it here. Read once and cleared, so a note from an earlier
+  # WHAT, and a step that knows — what a review graded critical, major or minor —
+  # writes it here. Read once and cleared, so a note from an earlier
   # refusal cannot become the question a later one asks.
   note=""; asked=""; park_reason=""; park_question=""; park_cause="driver"
   # A STEP MAY SAY ITS REFUSAL NEEDS A PERSON. The exit code cannot: a gate saying
@@ -408,13 +409,13 @@ while [ "$i" -lt "$N" ]; do
   # and it is not about `case` — it is that a pair of apostrophes inside `${:-}` defeats
   # the syntax check. The arms therefore set two plain variables and the park happens
   # once, after the esac, where no default-expansion appears at all.
-  park_reason=""; park_question=""
+  park_reason=""; park_question=""; unread=0; requeue=0
   PARK_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
   PARK_LOG="$(driver_state_dir "$TICKET")/log"
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
-      [ "$(driver_state_get "$TICKET" '.counters.gh_requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.gh_requeue = 0' 
+      [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.requeue = 0'
       [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
       ;;
@@ -469,24 +470,12 @@ while [ "$i" -lt "$N" ]; do
       park_question="The briefs are a separate deliverable — has briefs/$step.md landed yet?"
       ;;
 
-    "$DRIVER_E_USAGE"|"$DRIVER_E_GH")
-      # NOBODY'S TO ANSWER, AND GONE BY THE NEXT RUN: requeued, never parked. A
-      # park is never retried, so 8 of 20 runs on 2026-10-18 starved the queue.
-      requeue_why="$note"
-      [ -n "$requeue_why" ] || requeue_why=$(driver_last_refusal "$step")
-      [ -n "$requeue_why" ] || requeue_why="$step: $([ "$rc" = "$DRIVER_E_USAGE" ] && echo "the plan's usage limit" || echo "GitHub could not be read")"
-      if [ "$rc" = "$DRIVER_E_GH" ]; then
-        driver_state_bump "$TICKET" gh_requeue
-        # A read that fails run after run is not an outage passing: it parks, said.
-        if [ "$(driver_state_get "$TICKET" '.counters.gh_requeue // 0')" -gt "${DRIVER_MAX_GH_REQUEUES:-3}" ]; then
-          park_reason="GitHub could not be read on ${DRIVER_MAX_GH_REQUEUES:-3} requeued runs in a row"
-          park_question="$requeue_why"
-        fi
-      fi
-      if [ -z "$park_reason" ]; then
-        driver_requeue "$TICKET" "$requeue_why"
-        exit "$DRIVER_E_REQUEUE"
-      fi
+    "$DRIVER_E_UNREAD")
+      unread=1
+      ;;
+
+    "$DRIVER_E_USAGE"|"$DRIVER_E_BUSY")
+      requeue=1
       ;;
 
     "$DRIVER_E_TIMEOUT")
@@ -503,6 +492,33 @@ while [ "$i" -lt "$N" ]; do
       [ -n "$park_question" ] || park_question="$step left no reason on the record. Its own lines are in the run log on $PARK_HOST at $PARK_LOG"
       ;;
   esac
+
+  # NOBODY'S TO ANSWER, AND GONE BY A LATER RUN: GitHub unreadable (a 504 parked every
+  # ready ticket it reached on 2026-10-19), the plan's usage limit, a claim another run
+  # on this host holds. A park is never retried, so these go back on the queue instead.
+  # One that comes back run after run is not an outage passing: past the cap it parks,
+  # carrying the step's own reason. The usage limit has no cap: it clears at its reset.
+  if [ "$unread" -eq 1 ] || [ "$requeue" -eq 1 ]; then
+    requeue_why="$note"
+    [ -n "$requeue_why" ] || requeue_why=$(driver_last_refusal "$step")
+    [ -n "$requeue_why" ] || requeue_why="$step stopped on something that clears by itself (exit $rc)"
+    if [ "$rc" != "$DRIVER_E_USAGE" ]; then
+      driver_state_bump "$TICKET" requeue
+      # A claim lasts as long as its holder's run, or until the reconciler frees it: a longer wait.
+      _cap="${DRIVER_MAX_REQUEUES:-3}"; [ "$rc" != "$DRIVER_E_BUSY" ] || _cap="${DRIVER_MAX_BUSY_REQUEUES:-10}"
+      if [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" -gt "$_cap" ]; then
+        park_reason="$step could not go on for $_cap requeued runs in a row"
+        park_question="$requeue_why"; unread=0; requeue=0
+      fi
+    fi
+  fi
+  if [ "$unread" -eq 1 ] || [ "$requeue" -eq 1 ]; then
+    # start and reenter stop before they take the claim, so one held now is a peer's.
+    case "$step" in start|reenter) _keep=keep ;; *) _keep="" ;; esac
+    driver_requeue "$TICKET" "$requeue_why" "$_keep"
+    [ "$unread" -eq 0 ] || exit "$DRIVER_E_UNREAD"
+    exit "$DRIVER_E_REQUEUE"
+  fi
 
   # A note the step left on the record outranks the wording above: it is the actual
   # finding rather than a description of the code that stopped.

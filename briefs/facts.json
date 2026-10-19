@@ -25,7 +25,8 @@
         "PREMISE_REPORT": "what the driver's premise gather printed: each path the ticket cites, marked present, moved or absent",
         "IN_FLIGHT": "open pull requests, remote branches and live claims that touch the files this ticket names",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: trunk branch, gate commands, coding-standards path, the component kit, the design law",
-        "SCREEN_STEPS": "the setup-step vocabulary this project's renderer can perform for a screen state (design.renderSteps), or a sentence saying it takes none"
+        "SCREEN_STEPS": "the setup-step vocabulary this project's renderer can perform for a screen state (design.renderSteps), or a sentence saying it takes none",
+        "POLISH_LIST": "the unticked items on the open polish list of every screen:<slug> label the ticket carries, and how to tick one — or a sentence saying there is none"
       }
     },
     "build": {
@@ -37,7 +38,8 @@
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: gate commands, changelog convention, the component kit",
         "STANDARDS": "the coding-standards document this project holds a change to",
         "SURFACE_RULES": "the project's rules for a screen — empty when this task touches none",
-        "LAST_TRY": "what the driver's proof said about the previous try at this task — why it was sent back — or a sentence saying this is the first try"
+        "LAST_TRY": "what the driver's proof said about the previous try at this task — why it was sent back — or a sentence saying this is the first try",
+        "POLISH_LIST": "the unticked items on the open polish list of every screen:<slug> label the ticket carries, and how to tick one — or a sentence saying there is none"
       }
     },
     "compare": {

@@ -81,7 +81,7 @@ echo "--- free memory: what the kernel says is available, less swap in use ---"
 # Measured 2026-10-16 on the operator's machine (32 GB): memorystatus 38%, 15.5 of
 # 16 GB swap used. vm_stat's free + inactive called that 6 GB free.
 got=$(bash -c '. "$1"; swarm_free_mem_calc $(( 34359738368 / 100 * 38 )) 16642998272' _ "$LOADSH")
-[ "$got" = 0 ] && ok "38% available with 15.5 GB swapped reads 0 GB, not 6" || fail "read '$got'"
+[ "$got" = 0 ] && ok "with no total the swap always counts: 38% and 15.5 GB swapped reads 0" || fail "read '$got'"
 got=$(bash -c '. "$1"; swarm_free_mem_calc 17179869184 0' _ "$LOADSH")
 [ "$got" = 16 ] && ok "16 GB available and no swap reads 16" || fail "read '$got'"
 got=$(printf 'total = 16384.00M  used = 14747.50M  free = 1636.50M  (encrypted)\n' | bash -c '. "$1"; swarm_parse_swapusage_used' _ "$LOADSH")
@@ -92,6 +92,47 @@ got=$(bash -c '. "$1"; swarm_free_mem_calc "" 0' _ "$LOADSH"); rc=$?
 [ "$rc" != 0 ] && [ -z "$got" ] && ok "no available figure is no reading" || fail "rc $rc got '$got'"
 got=$(SWARM_FREE_MEM_GB=12 bash -c '. "$1"; swarm_free_mem_gb' _ "$LOADSH")
 [ "$got" = 12 ] && ok "SWARM_FREE_MEM_GB stands in for the reading" || fail "seam read '$got'"
+
+echo "--- swap counts only while memory is tight ---"
+# Measured 2026-10-19 on the operator's machine (32 GB): memorystatus 71%, 11.5 GB of
+# swap left over from four days up. Counting it read 6 GB and held the builders back.
+# A fake sysctl drives the real Darwin branch, so the call site is under test too.
+mkdir -p "$T/mem"
+fake_sysctl() { # <level> <memsize> <swap-used>
+  cat > "$T/mem/sysctl" <<SH
+#!/usr/bin/env bash
+case "\$2" in
+  kern.memorystatus_level) echo $1 ;;
+  hw.memsize) echo $2 ;;
+  vm.swapusage) echo "total = 12288.00M  used = $3  free = 0.00M  (encrypted)" ;;
+esac
+SH
+  chmod +x "$T/mem/sysctl"
+}
+memgb() { env -u SWARM_FREE_MEM_GB -u SWARM_FREE_MEM_FILE "$@" bash -c '. "$1"; swarm_free_mem_gb' _ "$LOADSH"; }
+fake_sysctl 71 34359738368 11776.00M
+got=$(memgb SWARM_MEM_OS=Darwin SWARM_SYSCTL="$T/mem/sysctl")
+[ "$got" = 22 ] && ok "Darwin 71% of 32 GB with 11.5 GB stale swap reads 22 GB, swap ignored" || fail "Darwin high level read '$got'"
+fake_sysctl 20 34359738368 4096.00M
+got=$(memgb SWARM_MEM_OS=Darwin SWARM_SYSCTL="$T/mem/sysctl")
+[ "$got" = 2 ] && ok "Darwin 20% of 32 GB with 4 GB swap reads 2 GB, swap subtracted" || fail "Darwin low level read '$got'"
+fake_sysctl 30 34359738368 4096.00M
+got=$(memgb SWARM_MEM_OS=Darwin SWARM_SYSCTL="$T/mem/sysctl" SWARM_SWAP_COUNTS_BELOW=40)
+[ "$got" = 5 ] && ok "SWARM_SWAP_COUNTS_BELOW=40 counts the swap at 30%" || fail "threshold seam read '$got'"
+got=$(memgb SWARM_MEM_OS=Darwin SWARM_SYSCTL="$T/mem/sysctl")
+[ "$got" = 9 ] && ok "the same 30% under the default 25 ignores the swap" || fail "default threshold read '$got'"
+# /proc/meminfo, in kB: 32 GB total.
+printf 'MemTotal:       33554432 kB\nMemFree:         1048576 kB\nMemAvailable:   23068672 kB\nSwapTotal:      16777216 kB\nSwapFree:        4718592 kB\n' > "$T/mem/meminfo-roomy"
+got=$(memgb SWARM_MEM_OS=Linux SWARM_MEMINFO="$T/mem/meminfo-roomy")
+[ "$got" = 22 ] && ok "Linux 22 of 32 GB available with 11.5 GB swap reads 22 GB, swap ignored" || fail "Linux roomy read '$got'"
+printf 'MemTotal:       33554432 kB\nMemFree:          524288 kB\nMemAvailable:    6291456 kB\nSwapTotal:      16777216 kB\nSwapFree:       12582912 kB\n' > "$T/mem/meminfo-tight"
+got=$(memgb SWARM_MEM_OS=Linux SWARM_MEMINFO="$T/mem/meminfo-tight")
+[ "$got" = 2 ] && ok "Linux 6 of 32 GB available with 4 GB swap reads 2 GB, swap subtracted" || fail "Linux tight read '$got'"
+printf 'MemAvailable:   23068672 kB\nSwapTotal:      16777216 kB\nSwapFree:        4718592 kB\n' > "$T/mem/meminfo-nototal"
+got=$(memgb SWARM_MEM_OS=Linux SWARM_MEMINFO="$T/mem/meminfo-nototal")
+[ "$got" = 10 ] && ok "Linux with no MemTotal counts the swap, never guesses roomy" || fail "Linux no-total read '$got'"
+got=$(bash -c '. "$1"; swarm_free_mem_calc $(( 34359738368 / 100 * 71 )) 12348030976 34359738368' _ "$LOADSH")
+[ "$got" = 22 ] && ok "calc: 71% available with a total ignores the swap" || fail "calc high read '$got'"
 got=$(env -u SWARM_IDLE -u SWARM_IDLE_FILE bash -c '. "$1"; _swarm_sample_idle() { :; }; SWARM_IDLE_CACHE="$2/none/x" swarm_cpu_idle' _ "$LOADSH" "$T")
 [ -z "$got" ] && ok "a CPU sample nobody could take is no reading, not 100" || fail "unread idle read '$got'"
 now=$(date +%s); mkdir -p "$T/hc"; printf '%s 40\n%s 42\n%s 38\n' $((now-900)) $((now-600)) $((now-300)) > "$T/hc/idle.history"

@@ -77,6 +77,11 @@ esac
 if [ -f "$FIX/gh/ratelimit" ]; then
   echo "GraphQL: API rate limit already exceeded for user ID 1." >&2; exit 1
 fi
+# The open-PR read (gh_prs_paged): one page of $FIX/gh/prs-all.json.
+case "$*" in "api graphql "*OpenPullRequests*)
+  [ -f "$FIX/gh/prs-all.json" ] || printf '[]\n' > "$FIX/gh/prs-all.json"
+  exec bash "$GH_OPEN_PRS_PAGE" "$FIX/gh/prs-all.json" "$@" ;;
+esac
 q=""; key=""; labels=""; prev=""
 for a in "$@"; do
   case "$prev" in -q|--jq) q="$a" ;; --label) labels="$labels${labels:+,}$a" ;; esac
@@ -134,7 +139,7 @@ case "$1 $2" in
       f="$FIX/gh/issue-$n.json"
       if [ -f "$f" ]; then
         out=$(jq -c --arg k "i$n" --argjson n "$n" --slurpfile i "$f" \
-          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}})}' <<<"$out")
+          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}} + (if has("body") then {body} else {} end))}' <<<"$out")
       else out=$(jq -c --arg k "i$n" '. + {($k): null}' <<<"$out"); fi
     done
     jq -c '{data: {repository: .}}' <<<"$out" ;;
@@ -190,6 +195,8 @@ SH
   chmod +x "$BIN/gh" "$BIN/curl" "$BIN/spawn" "$BIN/gh-labels"
 
   export FIX REPO STATE BIN GH_LOG SPAWNS
+  GH_OPEN_PRS_PAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/fixtures" && pwd)/gh-open-prs-page.sh"; export GH_OPEN_PRS_PAGE
+  export GH_PRS_RETRY_SEC=0
   export PATH="$BIN:$PATH"
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"

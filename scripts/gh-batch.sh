@@ -10,7 +10,8 @@
 #   gh_issues_batch <n…>            {"<n>": {number,state,title,updatedAt,labels:[name…]}}
 #                                   for every number GitHub resolved, in one
 #                                   GraphQL request per 50; exit 1 when a request
-#                                   came back with no data at all
+#                                   came back with no data at all. GH_BATCH_BODY=1
+#                                   adds each body (a polish list's items)
 #   gh_prs_by_head_batch <branch…>  {"<branch>": [{number,state}…]}, newest
 #                                   first, same shape and exit as above
 #   gh_pr_commits_batch <n…>        {"<n>": {headRefOid, commits:[{oid,message,files,
@@ -19,6 +20,8 @@
 #                                   GitHub could not count
 #   gh_open_prs [max-age-sec]       the open PRs, from one shared copy (prs.json)
 #                                   every reader takes while it is young enough
+#   gh_prs_paged <fields> [base]    every open PR in `gh pr list --json` shape, read
+#                                   GH_PRS_PAGE (25) a request; exit 1 on any failed page
 #   gh_allowance_read / _low        what is left of the hourly allowance (free reads);
 #                                   _low holds below GH_ALLOWANCE_LOW_PCT (10)
 #   gh_limit_why                    the rate limit and its reset, as a sentence
@@ -167,11 +170,79 @@ gh_open_prs() {
     if [ "$max" -gt 0 ] && { [ "$age" -le "$max" ] || gh_allowance_low >/dev/null; }; then cat "$f"; return 0; fi
   fi
   slug="${GH_REPO:-${REPO_SLUG:-}}"; [ -n "$slug" ] || return 1
-  prs=$(gh_call pr list --repo "$slug" --state open --limit 200 --json "$GH_PRS_FIELDS" 2>/dev/null)
+  prs=$(gh_prs_paged "$GH_PRS_FIELDS" 2>/dev/null) || return 1
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs" || return 1
   mkdir -p "$(dirname "$f")" 2>/dev/null
   printf '%s\n' "$prs" > "$f.$$" && mv -f "$f.$$" "$f"
   printf '%s\n' "$prs"
+}
+
+# gh_prs_paged <fields> [base] — every open PR (on <base> when given) as ONE JSON
+# array in the shape `gh pr list --json <fields>` prints, read GH_PRS_PAGE (25) a
+# request. Any page that fails fails the whole read: exit 1, never a partial list.
+# A read whose size grows with the repo is paged: `gh pr list --limit 200` asks
+# for 100 a request, and with statusCheckRollup on 81 open PRs GitHub answered
+# 504 every time while 50 came back. A page that times out is asked again at half
+# the size (GH_PRS_PAGE_TRIES, 3), since the timeout tracks the work per request.
+GH_PRS_PAGE="${GH_PRS_PAGE:-25}"
+gh_prs_paged() {
+  local fields="${1:?gh_prs_paged: need fields}" base="${2:-}" _o _r f sel="" proj="" q
+  local after="" size="$GH_PRS_PAGE" tries page out="[]" pages=0 rc err
+  _gh_batch_repo || return 1
+  for f in $(printf '%s' "$fields" | tr ',' ' '); do
+    case "$f" in
+      number|title|headRefName|headRefOid|baseRefName|isDraft|mergeStateStatus|mergeable|updatedAt|createdAt|body|url|state|reviewDecision)
+        sel="$sel $f"; proj="$proj,$f:.$f" ;;
+      labels)
+        sel="$sel labels(first:100){nodes{id name description color}}"
+        proj="$proj,labels:[.labels.nodes[]? | {id, name, description:(.description // \"\"), color}]" ;;
+      closingIssuesReferences)
+        sel="$sel closingIssuesReferences(first:100){nodes{id number url repository{id name owner{id login}}}}"
+        proj="$proj,closingIssuesReferences:[.closingIssuesReferences.nodes[]?]" ;;
+      statusCheckRollup) # gh prints a missing time as Go's zero time and a missing string as ""
+        sel="$sel statusCheckRollup:commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ... on StatusContext{context state targetUrl createdAt} ... on CheckRun{name status conclusion startedAt completedAt detailsUrl checkSuite{workflowRun{workflow{name}}}}}}}}}}"
+        proj="$proj,statusCheckRollup:[.statusCheckRollup.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | if .__typename == \"StatusContext\" then {__typename, context, state, targetUrl:(.targetUrl // \"\"), startedAt:(.createdAt // \"0001-01-01T00:00:00Z\")} else {__typename, completedAt:(.completedAt // \"0001-01-01T00:00:00Z\"), conclusion:(.conclusion // \"\"), detailsUrl:(.detailsUrl // \"\"), name, startedAt:(.startedAt // \"0001-01-01T00:00:00Z\"), status, workflowName:(.checkSuite.workflowRun.workflow.name // \"\")} end]" ;;
+      autoMergeRequest|author)
+        local who="__typename login ... on User{id name} ... on Bot{id} ... on Organization{id name} ... on Mannequin{id} ... on EnterpriseUserAccount{id name}"
+        local whoj="{id:(.id // \"\"), is_bot:(.__typename == \"Bot\"), login, name:(.name // \"\")}"
+        if [ "$f" = author ]; then
+          sel="$sel author{$who}"; proj="$proj,author:(.author | if . == null then null else $whoj end)"
+        else
+          sel="$sel autoMergeRequest{authorEmail commitBody commitHeadline mergeMethod enabledAt enabledBy{$who}}"
+          proj="$proj,autoMergeRequest:(.autoMergeRequest | if . == null then null else {authorEmail, commitBody, commitHeadline, mergeMethod, enabledAt, enabledBy:(.enabledBy | if . == null then null else $whoj end)} end)"
+        fi ;;
+      '') ;;
+      *) echo "gh_prs_paged: no paged reading for the field '$f' — add it here rather than reading every PR in one request" >&2; return 1 ;;
+    esac
+  done
+  [ -n "$sel" ] || return 1
+  err=$(mktemp "${TMPDIR:-/tmp}/ghprs.XXXXXX") || return 1
+  q="query OpenPullRequests(\$owner:String!,\$name:String!,\$first:Int!,\$after:String,\$base:String){repository(owner:\$owner,name:\$name){pullRequests(states:OPEN,first:\$first,after:\$after,baseRefName:\$base,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{$sel}}}}"
+  while :; do
+    pages=$((pages+1))
+    [ "$pages" -le "${GH_PRS_MAX_PAGES:-60}" ] || { echo "gh_prs_paged: more than ${GH_PRS_MAX_PAGES:-60} pages of open PRs" >&2; rm -f "$err"; return 1; }
+    tries=0
+    while :; do
+      tries=$((tries+1)); rc=0
+      page=$(gh_call api graphql -f query="$q" -f owner="$_o" -f name="$_r" -F first="$size" \
+               ${after:+-f after="$after"} ${base:+-f base="$base"} 2>"$err") || rc=$?
+      if [ "$rc" -eq 0 ] && jq -e '(.errors // [] | length) == 0 and (.data.repository.pullRequests.nodes | type == "array")' >/dev/null 2>&1 <<<"$page"; then
+        break
+      fi
+      cat "$err" >&2
+      # Only a timeout is asked again, smaller; anything else, or past the tries, fails whole.
+      grep -qiE 'HTTP 50[234]|gateway|time-?out|timed out' "$err" && [ "$tries" -lt "${GH_PRS_PAGE_TRIES:-3}" ] \
+        || { rm -f "$err"; return 1; }
+      size=$(( size / 2 )); [ "$size" -ge 5 ] || size=5
+      sleep "${GH_PRS_RETRY_SEC:-2}"
+    done
+    out=$(jq -c --argjson acc "$out" "\$acc + [.data.repository.pullRequests.nodes[] | {${proj#,}}]" <<<"$page") || { rm -f "$err"; return 1; }
+    jq -e '.data.repository.pullRequests.pageInfo.hasNextPage == true' >/dev/null 2>&1 <<<"$page" || break
+    after=$(jq -r '.data.repository.pullRequests.pageInfo.endCursor // ""' <<<"$page")
+    [ -n "$after" ] || { rm -f "$err"; return 1; }
+  done
+  rm -f "$err"
+  printf '%s\n' "$out"
 }
 
 # gh_call <args…> — gh through the backoff. Stdout and stderr pass through.
@@ -208,20 +279,23 @@ _gh_graphql() {
 # A request that came back with no data is asked again one number at a time, so a
 # gh that cannot batch still answers; under a backoff each of those fails at once.
 gh_issues_batch() {
-  local _o _r n q="" k=0 out="{}" part fail=0 nums="" one
+  local _o _r n q="" k=0 out="{}" part fail=0 nums="" one b=""
+  [ "${GH_BATCH_BODY:-0}" = 1 ] && b=" body"
   _gh_batch_repo || return 1
   _ghb_flush() {
     [ -n "$q" ] || return 0
     if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
       part=$(jq -c --argjson acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
-              | {key: (.number|tostring), value: {number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
+              | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
+                                                   + (if has("body") then {body: (.body // "")} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
       [ -n "$part" ] && out="$part" || fail=1
     else
       fail=1
       for one in $nums; do
-        part=$(gh_call issue view "$one" --repo "$_o/$_r" --json number,state,title,labels,updatedAt 2>/dev/null) || continue
+        part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt${b:+,body}" 2>/dev/null) || continue
         part=$(jq -c --argjson acc "$out" --arg n "$one" 'select(type == "object" and .state != null)
-                | $acc + {($n): {number: ($n|tonumber), state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels[]?.name]}}' <<<"$part" 2>/dev/null)
+                | $acc + {($n): ({number: ($n|tonumber), state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels[]?.name]}
+                                 + (if has("body") then {body: (.body // "")} else {} end))}' <<<"$part" 2>/dev/null)
         [ -z "$part" ] || out="$part"
       done
     fi
@@ -230,7 +304,7 @@ gh_issues_batch() {
   for n in "$@"; do
     case "$n" in ''|*[!0-9]*) continue ;; esac
     nums="$nums $n"
-    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state title updatedAt labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt labels(first:50){nodes{name}}}}"
+    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state title updatedAt$b labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt$b labels(first:50){nodes{name}}}}"
     k=$((k+1)); [ "$k" -lt 50 ] || _ghb_flush
   done
   _ghb_flush

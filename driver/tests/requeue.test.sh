@@ -94,7 +94,7 @@ echo "--- a GitHub read that fails at start: retried, then requeued with its rea
 reset_case 605
 fix_gh_fail "issue view"
 out=$(bash "$BT" 605 --steps "start" 2>&1); rc=$?
-want "it ends as a requeue" "28" "$rc"
+want "it ends as unread, left for the next tick" "26" "$rc"
 want "the read was tried three times" "3" "$(grep -c '^issue view 605' "$GH_LOG")"
 want_in "the reason is said" 'requeued.*could not read #605' "$out"
 want_in "and kept on the record" 'could not read #605' "$(driver_state_get 605 requeued)"
@@ -102,9 +102,9 @@ want "no label goes on the ticket" "" "$(labels_added)"
 want_in "it is back on the queue" '^add 605 ' "$(cat "$FIX/queue.log" 2>/dev/null)"
 
 echo "--- one that fails run after run parks, said ---"
-DRIVER_MAX_GH_REQUEUES=1 bash "$BT" 605 --steps "start" >/dev/null 2>&1; rc=$?
+DRIVER_MAX_REQUEUES=1 bash "$BT" 605 --steps "start" >/dev/null 2>&1; rc=$?
 want "the second in a row with a ceiling of 1 parks" "20" "$rc"
-want_in "naming the reads" 'GitHub could not be read on 1 requeued run' "$(cat "$STATE/driver/605/log")"
+want_in "naming the requeues" 'start could not go on for 1 requeued runs in a row' "$(cat "$STATE/driver/605/log")"
 
 echo "--- a refusal that set no note parks with the step's own words ---"
 reset_case 606

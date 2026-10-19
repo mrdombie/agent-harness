@@ -66,15 +66,19 @@ A question only a person can answer goes through `scripts/owner-question.sh`
 the queue as a brief the driver carries. The hold label goes on only when the
 question could not be asked. A driver-caused park asks nobody.
 
-**A requeue is not a park.** Two stops go back on the queue instead (exit 28),
-because nobody has to answer them and the next run clears them:
+**A requeue is not a park.** Three stops go back on the queue instead, because
+nobody has to answer them and a later run clears them:
 
-- **The plan's usage limit.** A step's transcript carries the CLI's rejection. The
-  reset goes into `$STATE_DIR/usage-hold`, and the coordinator spawns nothing until
-  then.
-- **A GitHub read that failed in `start`, `reenter` or `ship`.** It is retried
-  `DRIVER_LOOKUP_TRIES` times first. After `DRIVER_MAX_GH_REQUEUES` requeues in a
-  row, it parks.
+- **The plan's usage limit** (step exit 27, run exit 28). A step's transcript carries
+  the CLI's rejection. The reset goes into `$STATE_DIR/usage-hold`, and the
+  coordinator spawns nothing until then.
+- **A GitHub read that failed in `start`, `reenter` or `ship`** (exit 26). It is
+  retried `DRIVER_LOOKUP_TRIES` times first.
+- **A claim another run on this host holds** (step exit 29, run exit 28), met by
+  `start` or `reenter`. That run's claim is left alone.
+
+The last two park, with the step's own reason, after `DRIVER_MAX_REQUEUES` (3)
+requeues in a row, so a ticket that does not exist cannot loop.
 
 A requeue adds no label, opens no pull request and asks no question. The record and
 the worktree are kept, so the next run resumes at the step that stopped. The reason
@@ -221,7 +225,7 @@ even when inherited. A push still refused falls back to a bundle under
   before the next one starts, so a killed run resumes at the one after it.
 - **It asks rather than guesses.** Any step may answer with a question instead of
   an answer; that parks the ticket with the question on it. A step that knows what
-  stopped it — what a review graded critical or major, a leftover that could not be filed —
+  stopped it — what a review graded critical, major or minor —
   leaves the text on the record, and that becomes the question the park brief asks
   rather than an exit code.
 - **A question goes to whoever owns its answer.** The step names that in

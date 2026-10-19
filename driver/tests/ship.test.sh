@@ -212,12 +212,11 @@ want_not_in "but never marked ready"   'pr ready' "$(cat "$GH_LOG")"
 want_in "the blockers are left for the handover" 'the save button calls nothing' \
   "$(driver_state_get 107 park_note)"
 want_in "with the file and line"                 'a.ts:9' "$(driver_state_get 107 park_note)"
-# ONLY WHAT BLOCKS. A Minor left the review as its own follow-up ticket, so listing it
-# here hands the operator polish to "clear" before a merge — the exact weighting the
-# grade exists to remove. It must not appear on the refusal or in the park note.
-want_not_in "and the Minor is NOT something to clear" 'spacing step out' "$out"
-want_not_in "nor in the handover note"                'spacing step out' "$(driver_state_get 107 park_note)"
-want_in "the count is of what blocks, not of everything" '1 critical/major' "$out"
+# A MINOR BLOCKS TOO, so it is on the refusal and in the handover: it is fixed in
+# this change, never filed as a follow-up.
+want_in "and the Minor is something to clear" 'spacing step out' "$out"
+want_in "in the handover note too"            'spacing step out' "$(driver_state_get 107 park_note)"
+want_in "the count is of what blocks"         '2 blocking' "$out"
 
 echo "--- a branch with no commits on it has nothing to ship ---"
 : > "$GH_LOG"
@@ -453,7 +452,7 @@ fix_issue 121 OPEN "status:claimed"
 printf 'pr list\n' > "$FIX/gh-fail"
 : > "$GH_LOG"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_ship 121 2>&1); rc=$?
-want "it stops as a GitHub failure"        "27" "$rc"
+want "it stops as unread, not a refusal"   "26" "$rc"
 want_in "saying it could not ask"          'could not ask GitHub' "$out"
 want_not_in "and nothing is marked ready"  'pr ready' "$(cat "$GH_LOG")"
 rm -f "$FIX/gh-fail"

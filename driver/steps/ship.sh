@@ -33,6 +33,56 @@ _driver_ship_replaced() {
       else "- `\(.file)` → removed on purpose: \(.removedBecause)" end' "$(driver_state_dir "$1")/steps/replaced.jsonl" 2>/dev/null
 }
 
+# _driver_ship_reserve <ticket> <pr> — reserves on the polish lists every item this
+# run's builder took (polish-list.sh take), for this PR: other runs skip them, and
+# the coordinator's housekeeping ticks them when the PR merges. An item another PR
+# already holds is not this run's to name. Records what it reserved in state.
+_driver_ship_reserve() {
+  local t="$1" pr="$2" pl="$KIT_ROOT/scripts/polish-list.sh" n item got=""
+  while IFS=$'\t' read -r n item; do
+    [ -n "$item" ] || continue
+    if bash "$pl" reserve --ticket "$t" "$n" "$pr" "$item" >/dev/null 2>&1; then
+      got="$got$n"$'\t'"$item"$'\n'
+      # Reserved, it leaves the run's record: a later run never re-reserves it.
+      bash "$pl" forget "$t" "$n" "$item" >/dev/null 2>&1
+    else driver_say "   ship: polish item not reserved for #$pr (another PR holds it, or it is gone): $item (#$n)"; fi
+  done <<<"$(bash "$pl" taken "$t" 2>/dev/null)"
+  # Added to what earlier passes reserved: a resumed ship names them all.
+  driver_state_set "$t" polish_reserved "$(printf '%s%s' "$(driver_state_get "$t" polish_reserved)" "$got" | awk 'NF && !seen[$0]++')"$'\n'
+
+}
+
+# _driver_ship_polish <ticket> — the "## Polish list" section: the items this run
+# reserved for its PR, and the ones the plan saw that it left. Nothing reserved,
+# nothing said.
+_driver_ship_polish() {
+  local got items left="" n item lists
+  got=$(driver_state_get "$1" polish_reserved)
+  [ -n "$(printf '%s' "$got" | tr -d '[:space:]')" ] || return 0
+  items=$(driver_state_get "$1" polish_items)
+  lists=$(printf '%s\n' "$got" | cut -f1 | grep -E '^[0-9]+$' | sort -un | sed 's/^/#/' | paste -sd' ' -)
+  while IFS=$'\t' read -r n item; do
+    [ -n "$item" ] || continue
+    printf '%s\n' "$got" | grep -qxF -- "$n	$item" || left="$left- $item (#$n)"$'\n'
+  done <<<"$items"
+  printf '## Polish list\nRode along from %s.\n\nFixed here, ticked on the list when this pull request merges:\n' "$lists"
+  printf '%s\n' "$got" | awk -F'\t' 'NF == 2 { print "- " $2 " (#" $1 ")" }'
+  [ -z "$left" ] || printf '\nLeft on the list:\n%s' "$left"
+}
+
+# _driver_ship_closes <ticket> — "Closes" for a ticket, "Refs" for a polish list: a
+# list closes only once nothing is left on it (polish-list.sh sweep), never because
+# one PR that fixed some of it merged. Its labels are read now; a read that fails
+# falls back to what the plan recorded.
+_driver_ship_closes() {
+  local labels
+  if labels=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null); then
+    printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST" && { printf 'Refs'; return; }
+  elif [ "$(driver_state_get "$1" polish_self)" = 1 ]; then printf 'Refs'; return
+  fi
+  printf 'Closes'
+}
+
 # _driver_ship_push_to_fix <ticket> — a push the project's own pre-push refused goes
 # to fix once, its output as the finding, inside the fix-round ceiling (#236).
 # Self-check runs the same checks, except while a reviewer is owed, so this is the
@@ -131,7 +181,7 @@ driver_step_ship() { # <ticket>
     open_row=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number,isDraft -q '.[0] // empty | "\(.number) \(.isDraft // false)"' 2>/dev/null) || {
       driver_say "✋ ship: could not ask GitHub whether the pull request for $branch is still open (${DRIVER_LOOKUP_TRIES:-3} tries)."
       driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
-      return "$DRIVER_E_GH"; }
+      return "$DRIVER_E_UNREAD"; }
     open_pr=${open_row%% *}
     if [ -z "$open_pr" ]; then
       driver_say "✋ ship: the pull request this repair was for is no longer open on $branch. A repair never opens a new one."
@@ -170,7 +220,7 @@ driver_step_ship() { # <ticket>
     rbody=$(driver_gh_read swarm_gh pr view "$open_pr" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) || {
       driver_say "✋ ship: could not read the body of pull request #$open_pr (${DRIVER_LOOKUP_TRIES:-3} tries), so the deleted-tests check has nothing to read. Nothing is pushed."
       driver_state_set "$t" park_note "could not read the body of #$open_pr at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
-      return "$DRIVER_E_GH"; }
+      return "$DRIVER_E_UNREAD"; }
     rlines=$(_driver_ship_replaced "$t")
     while IFS= read -r l; do
       [ -n "$l" ] || continue
@@ -235,9 +285,13 @@ driver_step_ship() { # <ticket>
   local d replaced=""
   d="$(driver_state_dir "$t")/steps"
   replaced=$(_driver_ship_replaced "$t")
+  local polish="" closes pr_n; closes=$(_driver_ship_closes "$t")
+  # A PR already open has its number now: its items are reserved before the body says so.
+  pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
+  if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
   body=$(cat <<PRBODY
-Closes #$t
+$closes #$t
 
 Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 
@@ -251,7 +305,9 @@ $(if [ -n "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ]; then
     echo "Renders this run took (designSource=$(driver_state_get "$t" design_source): no approved picture, so no parity check was made):"
   fi)
 $(driver_state_get "$t" renders | sed 's/^/  /')
-${replaced:+
+${polish:+
+$polish
+}${replaced:+
 ## Deleted tests
 $replaced}
 PRBODY
@@ -272,7 +328,7 @@ PRBODY
   open_pr=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
     driver_say "✋ ship: could not ask GitHub whether $branch already has a pull request (${DRIVER_LOOKUP_TRIES:-3} tries), so its title and body cannot be made right."
     driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
-    return "$DRIVER_E_GH"; }
+    return "$DRIVER_E_UNREAD"; }
   if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
     # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
     # body ships "parked" as its squash subject, without the section the gate judged.
@@ -284,10 +340,27 @@ PRBODY
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true
-  if ! swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number >/dev/null 2>&1; then
+  if ! pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null); then
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
   fi
+  fi
+  # A new PR has its number only now, and a repair keeps its own body: reserve, then
+  # add the section to the body it carries.
+  if [ -z "$polish" ] && [ -n "$(bash "$KIT_ROOT/scripts/polish-list.sh" taken "$t" 2>/dev/null)" ]; then
+    case "$pr_n" in ''|*[!0-9]*) pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null) ;; esac
+    case "$pr_n" in
+      ''|*[!0-9]*) driver_say "   ship: the pull request's number could not be read, so its polish items are not reserved" ;;
+      *) _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t")
+         # A repair rewrites none of the PR's words: its items go in the repair comment.
+         if [ -n "$polish" ] && [ "$mode" != repair ]; then
+           body="$body
+
+$polish"
+           swarm_gh pr edit "$pr_n" --repo "$REPO_SLUG" --body "$body" >/dev/null 2>&1 \
+             || driver_say "   ship: the polish section could not be added to #$pr_n's body"
+         fi ;;
+    esac
   fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
@@ -313,21 +386,21 @@ PRBODY
   if [ "$verdict" != "SHIP" ]; then
     # NAME WHAT BLOCKS, not the code. review is recorded finished by the time this
     # runs, so every resume walks straight back to here and refuses identically —
-    # and what blocks is every finding graded critical or major, none of which ship.
-    # Minors left as a follow-up and Nits were dropped in the review step, so reading
-    # the whole list here would hand the operator polish to "clear" before a merge.
+    # and what blocks is every finding whose grade blocks, none of which ship. Nits
+    # were dropped in the review step, so reading the whole list here would hand the
+    # operator taste to "clear" before a merge.
     # The operator has to be handed the findings, or the ticket is simply stuck with
     # "exit 24" as its only explanation.
-    nblock=$(jq -r '[.findings[]? | select(.grade == "critical" or .grade == "major")] | length' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
+    nblock=$(jq -r "[.findings[]? | $(driver_blocking_select)] | length" "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
     driver_say "✋ ship: the review verdict is '${verdict:-none}' after ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS round(s), so the pull request stays a draft. The work is pushed and visible; it is not landing."
     if [ "${nblock:-0}" -gt 0 ]; then
-      blist=$(jq -r '[.findings[]? | select(.grade == "critical" or .grade == "major") | "\(.grade) \(.file // "?"):\(.line // "?") \(.summary // "")"] | join("; ")' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
-      driver_say "   ship: ${nblock} critical/major finding(s) to clear — $blist"
+      blist=$(jq -r '[.findings[]? | '"$(driver_blocking_select)"' | "\(.grade) \(.file // "?"):\(.line // "?") \(.summary // "")"] | join("; ")' "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
+      driver_say "   ship: ${nblock} blocking finding(s) to clear — $blist"
       # ON THE RECORD, not just on stdout. driver_say writes the terminal and a log
       # file inside the state directory — the one place a handover must not depend on,
       # because a park exists to be read by somebody who is not this process. The
       # orchestrator puts this note in the park brief.
-      driver_state_set "$t" park_note "${nblock} critical/major finding(s) from the review to clear: $blist"
+      driver_state_set "$t" park_note "${nblock} blocking finding(s) from the review to clear: $blist"
     fi
     return "$DRIVER_E_REFUSED"
   fi
@@ -355,7 +428,9 @@ PRBODY
     else
       said="Repaired by the driver at $head: $(jq -r '.cause // "see the run log"' "$rj" 2>/dev/null || echo "see the run log")."
     fi
-    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")')." >/dev/null 2>&1 || true
+    swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")').${polish:+
+
+$polish}" >/dev/null 2>&1 || true
   fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true

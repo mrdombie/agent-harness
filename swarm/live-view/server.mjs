@@ -92,16 +92,21 @@ function refreshHold(now) {
 }
 
 const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
-// The queue in the order the coordinator runs it: class first, then position —
-// the same order as coord_queue_ordered. An unknown class sorts last.
+const KIND = { 'half-built': 0, feature: 1, other: 2, polish: 3 }
+// The queue in the order the coordinator runs it: a front entry first, then
+// priority (none last), then class, product before tooling, then kind for new
+// work, then position — the
+// same order as coord_queue_ordered. An unknown class sorts last.
 export function queueOf(file = COORD_QUEUE) {
   let q
   try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [] } }
   const fallback = q.label || q.scope || ''
   const rows = (Array.isArray(q.tickets) ? q.tickets : [])
-    .map((t, pos) => ({ t, pos, rank: RANK[t?.class] ?? 3 }))
-    .filter(({ t }) => t && t.n != null)
-    .sort((a, b) => a.rank - b.rank || a.pos - b.pos)
+    .filter((t) => t && t.n != null)
+    .map((t, pos) => ({ t, pos, front: t.front ? 0 : 1, prin: Number.isInteger(t.prin) ? t.prin : 9,
+                        rank: RANK[t.class] ?? 3, tool: t.tooling ? 1 : 0, kind: t.class === 'new' ? (KIND[t.kind] ?? 2) : 0 }))
+    .sort((a, b) => a.front - b.front || (a.front === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
+                    || a.rank - b.rank || a.tool - b.tool || a.kind - b.kind || a.pos - b.pos)
     .map(({ t }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
                        scope: String(t.scope || fallback), pinned: !!t.pinned }))
   const scopes = Array.isArray(q.scopes) ? q.scopes.map((s) => String(s.label || s.scope || s))

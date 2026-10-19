@@ -88,11 +88,12 @@ DRIVER_E_SCHEMA=22
 DRIVER_E_NO_BRIEF=23
 DRIVER_E_REFUSED=24
 DRIVER_E_TIMEOUT=25
-DRIVER_E_REWORK=30
-# Not the ticket's fault, so never a park: the run ends as a requeue.
-DRIVER_E_USAGE=26     # a model step hit the plan's usage limit
-DRIVER_E_GH=27        # GitHub could not be read, after retries
+# NOT THE TICKET'S FAULT, SO NEVER A PARK: a park is never retried.
+DRIVER_E_UNREAD=26    # GitHub could not be read, after retries: nothing was decided
+DRIVER_E_USAGE=27     # a model step hit the plan's usage limit
 DRIVER_E_REQUEUE=28   # build-ticket's own exit: back on the queue, no label, no park
+DRIVER_E_BUSY=29      # another run on this host holds the ticket's claim
+DRIVER_E_REWORK=30
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
 # growing pause. One failed read parked a ticket for good on 2026-10-18.
@@ -526,6 +527,17 @@ driver_open_prs_for() {
     | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false), (.mergeable // "")] | @tsv'
 }
 
+# driver_open_prs_for_patient <ticket> — driver_open_prs_for, asked DRIVER_LOOKUP_TRIES
+# (3) times DRIVER_LOOKUP_RETRY_SEC (5) apart: a GitHub timeout is usually gone by then.
+driver_open_prs_for_patient() {
+  local n=0 out
+  until out=$(driver_open_prs_for "$1"); do
+    n=$((n+1)); [ "$n" -lt "${DRIVER_LOOKUP_TRIES:-3}" ] || return 1
+    sleep "${DRIVER_LOOKUP_RETRY_SEC:-5}"
+  done
+  printf '%s' "$out"; [ -z "$out" ] || printf '\n'
+}
+
 # driver_open_prs — every open pull request as a JSON array, from the shared copy.
 driver_open_prs() {
   local j
@@ -566,23 +578,34 @@ driver_built() {
 
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
 # that files work grades what it raises, and the grade — not the list it arrived
-# in — decides the effect: a Critical or a Major sends work back, a Minor leaves
-# as one follow-up, a Nit is dropped. Two representations of the same judgement is
-# how a check and the thing it checks end up derived from different inputs.
+# in — decides the effect: a Critical, a Major or a Minor sends work back and is
+# fixed in the change that caused it; a Nit is dropped. Two representations of the
+# same judgement is how a check and the thing it checks end up derived from
+# different inputs.
 DRIVER_GRADES="${DRIVER_GRADES:-critical major minor nit}"
+
+# WHAT BLOCKS, named once. A Minor filed as its own follow-up made every merge open
+# new tickets: 110 of 339 bugs filed in one week came out of reviews that passed.
+DRIVER_BLOCKING_GRADES="${DRIVER_BLOCKING_GRADES:-critical major minor}"
+
+# driver_blocking_select — the jq selector for a finding whose grade blocks. Every
+# step reads this; a literal copy is refused by tests/blocking-grades.test.sh.
+driver_blocking_select() {
+  printf 'select((.grade // "") as $g | ("%s" | split(" ")) | index($g) != null)' "$DRIVER_BLOCKING_GRADES"
+}
 
 # The priority a filed follow-up carries, read off the grade, so the queue orders
 # by the same judgement the reviewer made. P0-P3 is the kit's own vocabulary (the
 # same labels /queue, /work and /project already sort on); a project that names
 # them differently says so under labels.priority. A Nit is never filed, so it has
-# no label here.
+# no label here; the Minor label stays for work filed outside a review.
 DRIVER_LABEL_CRITICAL="${DRIVER_LABEL_CRITICAL:-$(driver_opt labels.priority.critical P0)}"
 DRIVER_LABEL_MAJOR="${DRIVER_LABEL_MAJOR:-$(driver_opt labels.priority.major P1)}"
 DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)}"
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
-export DRIVER_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
+export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_REWORK DRIVER_E_USAGE DRIVER_E_GH DRIVER_E_REQUEUE
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK

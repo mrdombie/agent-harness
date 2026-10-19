@@ -127,7 +127,7 @@ want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
 echo "--- a note a step left behind becomes the question the park asks ---"
 # A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
-# — what a review graded critical or major, a follow-up that could not be filed — leaves the text
+# — what a review graded critical, major or minor — leaves the text
 # on the record, and the park brief asks about that rather than about the code.
 # The note is written by the step that refuses, which is the only way a real one
 # arrives: a note sitting on the record BEFORE the run belongs to a previous one and
@@ -185,7 +185,7 @@ want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
 
 echo "--- a note a step left behind becomes the question the park asks ---"
 # A refusal's exit code says which check said no; it cannot say WHAT. A step that knows
-# — what a review graded critical or major, a follow-up that could not be filed — leaves the text
+# — what a review graded critical, major or minor — leaves the text
 # on the record, and the park brief asks about that rather than about the code.
 # The note is written by the step that refuses, which is the only way a real one
 # arrives: a note sitting on the record BEFORE the run belongs to a previous one and
@@ -216,7 +216,7 @@ out=$(bt 105); rc=$?
 want "the run stops"    "20" "$rc"
 want_in "the park names the skill problem" 'Skill' "$(cat "$FIX/park.log")"
 
-echo "--- a review that grades something critical or major sends the work back to FIX ---"
+echo "--- a review that grades something critical, major or minor sends the work back to FIX ---"
 # BLOCKED on round 1, clean on round 2. It goes back to `fix` — the only step that
 # reads review.json — not to `build`, which would re-run the original plan task
 # blind to what the reviewer just found. That was T2-3: the two-round ceiling
@@ -736,7 +736,7 @@ want "with no PR it finishes"                "0" "$rc"
 want "as a build, every step of it"          "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "the record says build"                 "build" "$(driver_state_get 423 mode)"
 want "and keeps the note for every step"     "The owner answered q2: keep the old copy." "$(cat "$(driver_state_get 423 run_brief)" 2>/dev/null)"
-reset_fakes; echo "pr list" > "$FIX/gh-fail"
+reset_fakes; echo "open-prs" > "$FIX/gh-fail"
 out=$(bt 424 --brief "$FIX/brief-g.md"); rc=$?
 rm -f "$FIX/gh-fail"
 want "an unreadable PR list refuses"         "2" "$rc"
@@ -757,20 +757,20 @@ want "the new repair round cleared it"      "" "$(driver_state_get 426 run_brief
 echo "--- a --brief whose lookup keeps failing is retried, then put back on the queue with its note ---"
 # The coordinator took the queue entry off when it spawned; an exit 2 here with the
 # brief gone would lose an owner's answer.
-reset_fakes; echo "pr list" > "$FIX/gh-fail"; : > "$GH_LOG"
+reset_fakes; echo "open-prs" > "$FIX/gh-fail"; : > "$GH_LOG"
 printf 'The owner answered q7: two columns.\n' > "$FIX/brief-j.md"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 bt 427 --brief "$FIX/brief-j.md"); rc=$?
 rm -f "$FIX/gh-fail"
 want "it still refuses"                      "2" "$rc"
-want "after asking three times"              "3" "$(grep -c '^pr list' "$GH_LOG")"
+want "after asking three times"              "3" "$(grep -c 'OpenPullRequests' "$GH_LOG")"
 want "the ticket is back on the queue"       "427" "$(jq -r '.tickets[]? | select(.n == 427) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
 want "with its note"                         "The owner answered q7: two columns." "$(jq -r '.tickets[]? | select(.n == 427) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 want_in "and it says so"                     'back on the queue' "$out"
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
-echo "pr list" > "$FIX/gh-once"
+echo "open-prs" > "$FIX/gh-once"
 cat > "$BIN/gh-flaky" <<'SH'
 #!/usr/bin/env bash
-if [ "$1 $2" = "pr list" ] && [ -f "$FIX/gh-once" ]; then rm -f "$FIX/gh-once"; echo "flake" >&2; exit 1; fi
+if [ -f "$FIX/gh-once" ] && case "$*" in *OpenPullRequests*) true ;; *) false ;; esac; then rm -f "$FIX/gh-once"; echo "flake" >&2; exit 1; fi
 exec "$BIN/gh" "$@"
 SH
 chmod +x "$BIN/gh-flaky"
@@ -885,7 +885,7 @@ want "and so is the refused-push count"        "0" "$(driver_state_count 518 pus
 printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a brief put back on the queue is not wrapped twice ---"
-reset_fakes; rm -rf "$STATE/coordinator"; echo "pr list" > "$FIX/gh-fail"
+reset_fakes; rm -rf "$STATE/coordinator"; echo "open-prs" > "$FIX/gh-fail"
 printf 'Coordinator note (new): The owner answered q9: yes.\n' > "$FIX/brief-n.md"
 DRIVER_LOOKUP_RETRY_SEC=0 bt 516 --brief "$FIX/brief-n.md" >/dev/null
 rm -f "$FIX/gh-fail"
@@ -894,7 +894,7 @@ want "the note is the caller's words alone"    "The owner answered q9: yes." "$(
 echo "--- the open PRs come from the shared copy while it is young ---"
 reset_fakes; jq -n '[{number:78, headRefName:"tkt-517-x", isDraft:false}]' > "$FIX/gh/prs.json"; : > "$GH_LOG"; rm -f "$STATE/swarm/prs.json"
 ( . "$HERE/../driver-env.sh"; DRIVER_PRS_MAX_AGE=300; driver_open_prs_for 517 >/dev/null; driver_open_prs_for 517 >/dev/null )
-want "two reads, one call to GitHub"           "1" "$(grep -c '^pr list' "$GH_LOG")"
+want "two reads, one call to GitHub"           "1" "$(grep -c 'OpenPullRequests' "$GH_LOG")"
 printf '[]\n' > "$FIX/gh/prs.json"
 echo "--- a question goes to whoever owns its answer: the PM for ticket shape, the owner otherwise ---"
 # Every question used to park as the owner's: three of them on 2026-10-17/18 asked
@@ -939,5 +939,23 @@ bt 145 >/dev/null
 : > "$RAN"
 out=$(bt 145); rc=$?
 want "an unchanged ticket keeps its plan" "start build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+
+echo "--- GitHub unreadable at start: the ticket is left ready, never parked ---"
+# 2026-10-19: the open-PR read 504'd every tick, start refused (24) and every ticket
+# it reached was parked. The real start and park, so the label edit is what is read.
+rm -f "$STATE/swarm/prs.json"; echo "open-prs" > "$FIX/gh-fail"; : > "$GH_LOG"
+fix_issue 150 OPEN "status:ready"
+out=$(DRIVER_LOOKUP_RETRY_SEC=0 bash "$BT" 150 2>&1); rc=$?
+rm -f "$FIX/gh-fail"
+want "it stops as unread"                      "26" "$rc"
+want_not_in "and nothing is labelled parked"   'status:parked' "$(cat "$GH_LOG")"
+want_not_in "or opened as a draft"             '^pr create' "$(cat "$GH_LOG")"
+want_in "and it says the next tick tries again" 'next tick' "$out"
+reset_fakes "reenter:26"; rm -rf "$STATE/coordinator"
+printf 'REPAIR on PR #80: red\n' > "$FIX/brief-u.md"
+bt 151 --repair "$FIX/brief-u.md" >/dev/null; rc=$?
+want "a repair that cannot read its PR stops as unread" "26" "$rc"
+want "without parking"                         "" "$(cat "$FIX/park.log")"
+want "and its brief is back on the queue"      "REPAIR on PR #80: red" "$(jq -r '.tickets[]? | select(.n == 151) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
 exit $FAILED

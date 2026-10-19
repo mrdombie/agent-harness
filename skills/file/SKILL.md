@@ -56,8 +56,22 @@ gh issue create --repo "$REPO_SLUG" \
 
    A project that names those labels differently says so under `labels.priority` in
    its `.claude/harness.json`; `P0`/`P1`/`P3` is what the kit uses otherwise. **A
-   Nit is never a ticket** — a queue of taste is a queue nobody reads. Several
-   Minors from one review are ONE ticket, not one each.
+   Nit is never a ticket** — a queue of taste is a queue nobody reads.
+
+   **A Minor is never a ticket either.** It goes on its screen's one polish list,
+   and the next ticket for that screen fixes it in the same change:
+
+   ```bash
+   bash "$KIT_ROOT/scripts/polish-list.sh" add <screen-slug> "<the finding, verbatim, and where it was raised>"
+   ```
+
+   The slug is the screen's `screen:<slug>` label. The script finds the screen's
+   open list or opens it (`Polish list: <Screen>`, P3, ready), adds one task line,
+   and never adds the same text twice. A list ships on its own only once it holds
+   `coordinator.polishListFull` items (8). Why: 380 of the 1,000 tickets filed 8–18
+   Oct 2026 were follow-ups from finished work, and 200 of the 206 still open were
+   Minor — each a build, a PR and a picture for the owner of its own. Critical and
+   Major findings are filed as tickets, as above.
 
    This table is the same one the review step, the frontend gate and the design
    critic grade against. Say the grade in the issue body too, so the label can be
@@ -96,6 +110,7 @@ about work nobody started.
 - It does not decide area for you — that is a PM call. Priority it DOES decide when an
   agent is filing a graded finding: the grade picks the label, per the table above. A
   human filing an idea still sets their own.
+- It does not file a Minor as a ticket: that goes on the screen's polish list.
 - It does not set `$LBL_READY`.
 
 ## Epics

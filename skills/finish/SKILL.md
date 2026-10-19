@@ -312,8 +312,8 @@ review raising one point per round, having cleared the design reviewer hours
 earlier: *"apply all those rules, not just the two."*
 
 **Two rounds, then the PR ships.** Run the set, fix the batch, run the set
-again. After the second round anything still raised that is **not a blocker** is
-filed as its own ticket, linked on the PR, and the PR merges. A blocker is a
+again. After the second round anything still raised that is **not a blocker** goes
+on its screen's polish list, linked on the PR, and the PR merges. A blocker is a
 Critical or Major finding — wrong data, a security hole, lost work, an
 unapproved publish, a dead control, a broken flow, a user misled or stuck.
 Everything else — a spacing call, a copy preference, a nice-to-have — is a
@@ -321,8 +321,15 @@ follow-up. `rules/standing-rules.md` has the grade table.
 
 The cap is **recorded, not promised**: the PR body carries `Review rounds: N of
 2`, so a reader can see the rule was applied rather than take the agent's word
-for it. A follow-up ticket carries the reviewer's finding **verbatim**, the
-evidence it was raised against, and the parent's `project:` label.
+for it. A polish-list item carries the reviewer's finding **verbatim** and the
+evidence it was raised against — never a ticket of its own:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" add <screen-slug> "<finding, verbatim> — raised on #<PR>"
+```
+
+The slug is the screen's `screen:<slug>` label (`labels.screenPrefix`); the next
+ticket for that screen fixes the list in its own change.
 
 **Which reviewers, and what proves one ran.** Both come from the config, because
 which reviewers a project runs and how it attests them are project facts:
@@ -421,6 +428,12 @@ Closes ticket $TICKET.
 EOF
 )"
 ```
+
+**A polish list's PR says `Refs #N`, never `Closes`** (a ticket labelled
+`polish-list`): the list closes only when nothing is left on it. Reserve each item
+the change fixed for the PR, so no other run takes it; the coordinator ticks it
+when the PR merges:
+`bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" reserve <list> <pr> "<item>"`.
 
 `## Evidence routes` is what CI photographs: a contiguous list, one route per line,
 each starting `/`, ended by a blank line. Delete the section on a diff that changes
@@ -777,8 +790,8 @@ if [ "$PR_TOUCHES_UI_OR_KIT" = "yes" ]; then
     echo "❌ /agent-harness:finish REFUSED: this PR touches UI and has no SHIP verdict from /agent-harness:ui-gate." >&2
     echo "   Recorded verdict: $UI_GATE_VERDICT" >&2
     echo "   Action: run /agent-harness:ui-gate on this branch. On SHIP, re-run /agent-harness:finish." >&2
-    echo "   A SPIT-BACK is the gate doing its job — fix the Critical and Major findings, then re-review." >&2
-    echo "   Minors do NOT hold this merge: they leave as one follow-up ticket at the Minor priority, and Nits are dropped." >&2
+    echo "   A SPIT-BACK is the gate doing its job — fix the Critical, Major and Minor findings, then re-review." >&2
+    echo "   Only Nits are dropped; nothing is filed as a follow-up." >&2
     exit 1
   fi
 
@@ -1174,7 +1187,8 @@ else
   MERGE_NOTE="$MERGE_NOTE No UAT step for $REPO_NAME — develop merge IS the deploy."
 fi
 [ "$ISSUE_NUM" != "null" ] && gh issue comment "$ISSUE_NUM" --repo "$REPO_SLUG" --body "$MERGE_NOTE"
-[ "$ISSUE_NUM" != "null" ] && gh issue close "$ISSUE_NUM" --repo "$REPO_SLUG" --reason completed
+# Closes the ticket, except a polish list: that closes only once nothing is left on it.
+[ "$ISSUE_NUM" != "null" ] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/close-ticket.sh" "$ISSUE_NUM" "$PR_NUMBER"
 # A batch ticket's PR closes the batch only: close every child its body lists, naming the PR.
 [ "$ISSUE_NUM" != "null" ] && bash "${CLAUDE_PLUGIN_ROOT}/scripts/close-batch-children.sh" "$ISSUE_NUM" "$PR_NUMBER"
 node "$(git rev-parse --show-toplevel)/scripts/sync-project-board.js" >/dev/null 2>&1 || true   # the board mirrors the labels

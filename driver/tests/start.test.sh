@@ -59,7 +59,10 @@ echo "--- a ready ticket starts ---"
 fix_issue 101 OPEN "status:ready,type:feature"
 mkdir -p "$(driver_state_dir 101)/steps"
 printf '%s\n' '{"file":"stale.test.sh","removedBecause":"a run on another branch"}' > "$(driver_state_dir 101)/steps/replaced.jsonl"
+# An earlier run's polish take, never reserved for a PR (its run died before ship).
+TK="$STATE/swarm/polish-taken"; mkdir -p "$TK"; fix_issue 950 OPEN "polish-list"; printf '950\told item\n' > "$TK/101.tsv"
 out=$(driver_step_start 101 2>&1); rc=$?
+want "a fresh run lets go of an earlier run's polish take" "" "$(ls "$TK/101.tsv" 2>/dev/null)"
 want "a fresh branch starts with an empty reworded-tests ledger (#11222)" "" "$(cat "$(driver_state_dir 101)/steps/replaced.jsonl")"
 want "it finishes"            "0" "$rc"
 want "the claim was taken"    "101" "$(claimed_tickets)"
@@ -76,7 +79,9 @@ want "claimed_at is recorded" "$(git -C "$REPO" rev-parse develop)" "$(driver_st
 echo "--- a second start on the same ticket does not cut a second worktree ---"
 before="$WT"
 printf '%s\n' '{"file":"kept.test.sh","coveredBy":"kept.test.sh"}' > "$(driver_state_dir 101)/steps/replaced.jsonl"
+printf '950\tthis run took it\n' > "$TK/101.tsv"
 rc=0; driver_step_start 101 >/dev/null 2>&1 || rc=$?
+want "a resume keeps its own polish take" "950	this run took it" "$(cat "$TK/101.tsv" 2>/dev/null)"
 want "it still finishes"      "0"        "$rc"
 want "same worktree"          "$before"  "$(driver_state_get 101 worktree)"
 want_in "and a resume keeps the ledger its commits still need" 'kept.test.sh' "$(cat "$(driver_state_dir 101)/steps/replaced.jsonl")"
@@ -117,7 +122,9 @@ echo "--- a peer already holds the claim ---"
 fix_issue 106 OPEN "status:ready"
 claim_row 106 somebody@else tkt-106/theirs "$FIX/theirs"
 out=$(driver_step_start 106 2>&1); rc=$?
-want "a peer's claim is never adopted" "24" "$rc"
+# 29, busy: never adopted, and never a refusal a person must clear (build-ticket requeues it).
+want "a peer's claim is never adopted, and the run is busy" "29" "$rc"
+want_in "the reason is on the record" 'peer on another machine holds the claim' "$(driver_state_get 106 park_note)"
 want_in "and it says a peer holds it"  'peer' "$out"
 want "no worktree was cut"             ""     "$(driver_state_get 106 worktree)"
 # There are TWO ways a peer's claim shows up, and they get different wording because
@@ -160,7 +167,8 @@ fix_issue 108 OPEN "status:ready"
 claim_row 108 "${CLAIM_AGENT:-tester@fixture}" "tkt-108/a-peer-got-here-first" "$FIX/peer-wt"
 mkdir -p "$FIX/peer-wt"
 out=$(driver_step_start 108 2>&1); rc=$?
-want "a sibling's claim is not adopted" "24" "$rc"
+want "a sibling's claim is not adopted, and the run is busy" "29" "$rc"
+want_in "the reason is on the record" 'another run on this host holds the claim on #108' "$(driver_state_get 108 park_note)"
 want_in "and it says another run holds it" 'another|peer' "$out"
 want "the sibling's branch is untouched"   "tkt-108/a-peer-got-here-first" \
   "$(awk -F'\t' '$1==108{print $3}' "$CLAIMS")"
@@ -193,9 +201,9 @@ want "in the same worktree"        "$FIX/ours-wt" "$(driver_state_get 109 worktr
 
 echo "--- a ticket that does not resolve ---"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_start 999 2>&1); rc=$?
-# 27: gh cannot tell "no such issue" from an outage, so it is retried and requeued;
-# build-ticket parks it after DRIVER_MAX_GH_REQUEUES runs in a row (requeue.test.sh).
-want "an unreadable ticket is a GitHub failure" "27" "$rc"
+# 26: gh cannot tell "no such issue" from an outage, so it is retried and requeued;
+# build-ticket parks it after DRIVER_MAX_REQUEUES runs in a row (requeue.test.sh).
+want "an unreadable ticket is unread, not a refusal" "26" "$rc"
 want_in "and says it could not read it" 'could not be read' "$out"
 
 echo "--- the claim is released when a gate says no, never squatted ---"
@@ -270,12 +278,14 @@ printf '[{"number":78,"headRefName":"tkt-1150/other","headRefOid":"abc","isDraft
 rc=0; driver_step_start 115 >/dev/null 2>&1 || rc=$?
 want "another ticket's PR whose number merely starts the same does not count" "0" "$rc"
 printf '[]\n' > "$FIX/gh/prs.json"
-echo "pr list" > "$FIX/gh-fail"
+echo "open-prs" > "$FIX/gh-fail"; : > "$GH_LOG"
 fix_issue 116 OPEN "status:ready"
 out=$(DRIVER_LOOKUP_RETRY_SEC=0 driver_step_start 116 2>&1); rc=$?
-# 27: a failed read is retried, then build-ticket requeues it — never read as none.
-want "an unreadable PR list is a GitHub failure, rather than reading as none" "27" "$rc"
+want "an unreadable PR list stops start as unread, rather than reading as none" "26" "$rc"
 want_in "and says so"                      'could not ask' "$out"
+want "after asking three times"            "3" "$(grep -c 'OpenPullRequests' "$GH_LOG")"
+want "no worktree was cut"                 "" "$(driver_state_get 116 worktree)"
+want "no claim was taken"                  "" "$(awk '$1==116' "$CLAIMS")"
 rm -f "$FIX/gh-fail"
 
 echo "--- end to end: the REAL claim lock notes the run's worktree for the spawner ---"
