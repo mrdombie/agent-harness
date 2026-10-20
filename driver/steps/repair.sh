@@ -163,6 +163,8 @@ EOS
     if git -C "$wt" merge --no-edit "$trunk" >"$d/steps/repair-merge.out" 2>&1; then
       merged=1
       driver_say "   repair: merged $trunk into $branch cleanly at $(git -C "$wt" rev-parse --short HEAD)"
+      # The trunk can bring packages the tree's install was never linked with.
+      driver_refresh_install "$MAIN_REPO" "$wt" || driver_say "   repair: relinking the install after the merge failed — self-check tries again."
     else
       conflicted=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
       if [ -z "$conflicted" ]; then

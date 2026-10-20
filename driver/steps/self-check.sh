@@ -164,6 +164,35 @@ _driver_gate_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | tr -s ' ' | cut -c1-400
 }
 
+# A GATE THAT CANNOT FIND A PACKAGE THE BRANCH DECLARES IS A STALE INSTALL, NOT A RED.
+# #12858 (2026-10-20): develop added @axe-core/playwright, the branch merged develop, and
+# its node_modules — linked before the merge — never got the new entry, so self-check
+# failed on "Cannot find module '@axe-core/playwright'" and sent it to fix.
+# _driver_missing_dep <tree> <output> — prints the package a "Cannot find module/package"
+# line names, when the tree's root or a workspace package.json declares it. 1 otherwise.
+_driver_missing_dep() {
+  local wt="$1" out="$2" spec name f
+  [ -f "$out" ] || return 1
+  while IFS= read -r spec; do
+    case "$spec" in ''|.*|/*|node:*) continue ;; esac
+    case "$spec" in
+      @*/*) name=$(printf '%s' "$spec" | cut -d/ -f1-2) ;;
+      *) name=${spec%%/*} ;;
+    esac
+    for f in "$wt/package.json" "$wt"/*/package.json "$wt"/*/*/package.json; do
+      case "$f" in */node_modules/*) continue ;; esac
+      [ -f "$f" ] || continue
+      if jq -e --arg n "$name" '[.dependencies, .devDependencies, .optionalDependencies, .peerDependencies]
+           | map(select(type == "object") | has($n)) | any' "$f" >/dev/null 2>&1; then
+        printf '%s' "$name"; return 0
+      fi
+    done
+  done <<EOF
+$(perl -ne 's/\e\[[0-9;]*[A-Za-z]//g; print "$1\n" while /Cannot find (?:module|package) [\x27"`]([^\x27"`\s]+)[\x27"`]/g' "$out" 2>/dev/null | awk '!seen[$0]++')
+EOF
+  return 1
+}
+
 _driver_order_has() { case " ${DRIVER_STEPS:-} " in *" $1 "*) return 0 ;; esac; return 1; }
 
 # A GATE'S TIME LIMIT FOLLOWS THE MACHINE. cmdTimeout is what a gate takes on a quiet
@@ -472,6 +501,13 @@ driver_step_self_check() { # <ticket>
   { machine_gate_wait_load 0 && machine_gate_acquire 0 "self-check #$t"; } || mrc=$?
   if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
 
+  # MACHINE SETUP, NOT A FIX ROUND: the install is relinked when the branch's lockfile
+  # or package.json files moved since it was linked (a merge of the trunk).
+  local relinked=0 missing=""
+  if [ ! "$wt" -ef "$MAIN_REPO" ] && ! driver_refresh_install "$MAIN_REPO" "$wt"; then
+    driver_say "   self-check: relinking the install in $wt failed — the reason is above. The gates run on it as it is."
+  fi
+
   # The branch's files are formatted before any gate reads them: a format check is a
   # command the driver can run, never a finding to send to fix.
   driver_format_changed "$t" "$wt" self-check || true
@@ -517,6 +553,26 @@ driver_step_self_check() { # <ticket>
       gsecs=$(_driver_gate_secs)
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
+    fi
+    # A package the branch declares that the install does not have: relinked once per
+    # run and the gate run again, before it counts as red.
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$relinked" -eq 0 ] && [ ! "$wt" -ef "$MAIN_REPO" ] \
+       && missing=$(_driver_missing_dep "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
+      relinked=1
+      driver_say "⏳ self-check: $name could not find $missing, which this branch's package.json declares — a stale install, not the change. Relinking it (machine setup, not a fix round) and running $name again."
+      driver_link_install "$MAIN_REPO" "$wt" || driver_say "   self-check: the relink failed — the reason is above."
+      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      rc=$?
+      # Still missing, linked from the shared clone, and the shared clone has not got it:
+      # the shared install is behind its own lockfile. Installing it is an ops step.
+      if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ -f "$wt/node_modules/.linked-from-shared-install" ] \
+         && missing=$(_driver_missing_dep "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out") \
+         && [ ! -e "$MAIN_REPO/node_modules/$missing" ]; then
+        driver_say "🛑 self-check: machine fault — the shared clone $MAIN_REPO has no node_modules/$missing, which this branch declares and links from it. Installing the shared clone is an ops step; a build does not install into it. Back on the queue, not sent to fix."
+        driver_state_set "$t" park_note "machine fault: the shared clone $MAIN_REPO has no node_modules/$missing, which the branch declares — run the install in the shared clone (an ops step), then requeue"
+        machine_gate_release
+        return "$DRIVER_E_BUSY"
+      fi
     fi
     if [ "$rc" -eq 124 ]; then
       # The park question a reader needs is "which command hangs", not "which check failed".

@@ -32,76 +32,30 @@
 # symlink. A real install (a node_modules directory this script did not build) is
 # left alone.
 #
-# Exit 0 linked (or nothing to link) · 1 a workspace does not resolve to this
-# worktree afterwards, or the arguments are wrong.
+# THE LINKS ARE A SNAPSHOT OF THE MANIFESTS. A merge of the trunk that adds a package
+# changes package-lock.json and package.json and nothing re-ran this, so the new
+# top-level package was never linked and every gate importing it failed with "Cannot
+# find module". So each run records a fingerprint of what it was built from — this
+# tree's package-lock.json, the shared clone's, the root package.json and each
+# workspace's — in node_modules/.harness-link-stamp as "<linked|own> <sha256>", and
+# `--if-stale` rebuilds only when that fingerprint moved (or was never written).
+#
+# Exit 0 linked, up to date, or nothing to link · 1 a workspace does not resolve to
+# this worktree afterwards, the own install failed, or the arguments are wrong.
 set -euo pipefail
 
+IF_STALE=0
+[ "${1:-}" = "--if-stale" ] && { IF_STALE=1; shift; }
 SHARED_REPO=${1:-}
 WT=${2:-}
-[ -n "$SHARED_REPO" ] && [ -n "$WT" ] || { echo "usage: link-node-modules.sh <shared-repo> <worktree>" >&2; exit 1; }
+[ -n "$SHARED_REPO" ] && [ -n "$WT" ] || { echo "usage: link-node-modules.sh [--if-stale] <shared-repo> <worktree>" >&2; exit 1; }
 SHARED_REPO=$(cd "$SHARED_REPO" && pwd -P)
 WT=$(cd "$WT" && pwd -P)
 SHARED_NM="$SHARED_REPO/node_modules"
 MARK=".linked-from-shared-install"
+STAMP=".harness-link-stamp"
 
 [ -d "$SHARED_NM" ] || { echo "link-node-modules: $SHARED_REPO has no node_modules — nothing to link."; exit 0; }
-
-# A worktree whose lockfile is not the shared one's needs packages the shared install lacks:
-# it gets its own install (from the npm cache where it can), never the shared links.
-if [ -f "$WT/package-lock.json" ] && [ -f "$SHARED_REPO/package-lock.json" ] \
-   && ! cmp -s "$WT/package-lock.json" "$SHARED_REPO/package-lock.json"; then
-  if [ -d "$WT/node_modules" ] && [ ! -L "$WT/node_modules" ] && [ ! -f "$WT/node_modules/$MARK" ]; then
-    echo "link-node-modules: $WT/package-lock.json differs from the shared one and $WT/node_modules is already its own install — left alone."
-    exit 0
-  fi
-  # Only links this script made go: a symlink, or a directory carrying the mark (symlinks are not followed).
-  [ -L "$WT/node_modules" ] && rm -f "$WT/node_modules"
-  for d in "$WT/node_modules" "$WT"/*/*/node_modules "$WT"/*/node_modules; do
-    [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/$MARK" ] && rm -rf "$d"
-  done
-  echo "link-node-modules: $WT/package-lock.json differs from $SHARED_REPO/package-lock.json — installing the worktree's own dependencies." >&2
-  (cd "$WT" && ${LINK_NODE_MODULES_INSTALL:-npm ci --prefer-offline --no-audit --no-fund}) >&2 \
-    || { echo "link-node-modules: the worktree's own install failed." >&2; exit 1; }
-  echo "link-node-modules: own install in $WT/node_modules (its lockfile differs from the shared one)."
-  exit 0
-fi
-
-# Git Bash's `ln -s` writes a deep COPY of a directory unless MSYS=winsymlinks is
-# set, so Windows gets a junction for a directory and a copy for a file.
-windows=0
-case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) windows=1 ;; esac
-link() { # <target> <link>
-  if [ "$windows" = 1 ]; then
-    if [ -d "$1" ]; then cmd //c mklink //J "$(cygpath -w "$2")" "$(cygpath -w "$1")" >/dev/null
-    else cp -p "$1" "$2"; fi
-  else
-    ln -sfn "$1" "$2"
-  fi
-}
-
-# A node_modules directory to (re)build. A symlink (the old layout) is replaced. A
-# directory this script built, or one holding nothing but workspace-scope links
-# (what a per-workspace shadowing step leaves), is emptied of its links. Anything
-# else is a real install and is refused.
-fresh_dir() { # <dir> → 0 ready · 1 a real install, leave it
-  local d=$1 e
-  if [ -L "$d" ] || [ -f "$d" ]; then rm -f "$d"
-  elif [ -d "$d" ]; then
-    if [ ! -f "$d/$MARK" ]; then
-      for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
-        [ -e "$e" ] || [ -L "$e" ] || continue
-        owned "${e##*/}" && [ -d "$e" ] && [ ! -L "$e" ] && continue
-        return 1
-      done
-    fi
-    find "$d" -mindepth 1 -maxdepth 2 -type l -exec rm -f {} +
-    # A scope directory left empty (a scope that is no longer a workspace scope)
-    # would otherwise survive and swallow the link to the shared one INSIDE it.
-    find "$d" -mindepth 1 -maxdepth 1 -type d -empty -exec rmdir {} +
-  fi
-  mkdir -p "$d"
-  printf '%s\n' "$SHARED_REPO" > "$d/$MARK"
-}
 
 # The workspaces THIS checkout declares: "<package name>\t<dir relative to root>",
 # from the root package.json's `workspaces` (an array, or { packages: [...] }).
@@ -140,6 +94,109 @@ WORKSPACES=$(node -e '
   }
 ' "$WT")
 
+# The fingerprint of everything the install is built from. A file that is not there
+# hashes as absent, so adding or removing one moves it too.
+FP=$(printf '%s\n' "$WORKSPACES" | cut -f2 | node -e '
+  const fs = require("fs"), path = require("path"), crypto = require("crypto")
+  const [wt, shared] = process.argv.slice(1)
+  const h = crypto.createHash("sha256")
+  const add = (label, f) => { let c = "<absent>"; try { c = fs.readFileSync(f) } catch {} ; h.update(label + "\0"); h.update(c); h.update("\0") }
+  add("lock", path.join(wt, "package-lock.json"))
+  add("shared-lock", path.join(shared, "package-lock.json"))
+  add("package.json", path.join(wt, "package.json"))
+  for (const d of fs.readFileSync(0, "utf8").split("\n").filter(Boolean)) add(d, path.join(wt, d, "package.json"))
+  process.stdout.write(h.digest("hex"))
+' "$WT" "$SHARED_REPO")
+STAMPED=$(cat "$WT/node_modules/$STAMP" 2>/dev/null || true)
+if [ "$IF_STALE" = 1 ] && [ -n "$FP" ]; then
+  case "$STAMPED" in
+    "linked $FP"|"own $FP") echo "link-node-modules: $WT/node_modules is up to date with its lockfile and package.json files — nothing to do."; exit 0 ;;
+    "") echo "link-node-modules: $WT/node_modules has no fingerprint — rebuilding it." >&2 ;;
+    *) echo "link-node-modules: $WT's lockfile or package.json files changed since its node_modules was built — rebuilding it." >&2 ;;
+  esac
+fi
+
+# A worktree whose lockfile is not the shared one's needs packages the shared install lacks:
+# it gets its own install (from the npm cache where it can), never the shared links.
+if [ -f "$WT/package-lock.json" ] && [ -f "$SHARED_REPO/package-lock.json" ] \
+   && ! cmp -s "$WT/package-lock.json" "$SHARED_REPO/package-lock.json"; then
+  if [ -d "$WT/node_modules" ] && [ ! -L "$WT/node_modules" ] && [ ! -f "$WT/node_modules/$MARK" ]; then
+    case "$STAMPED" in
+      # An own install this script made, from an older lockfile: made again.
+      own\ *) [ "$STAMPED" = "own $FP" ] || { rm -rf "$WT/node_modules"; STAMPED=""; } ;;
+    esac
+    if [ -d "$WT/node_modules" ]; then
+      echo "link-node-modules: $WT/package-lock.json differs from the shared one and $WT/node_modules is already its own install — left alone."
+      exit 0
+    fi
+  fi
+  # Only links this script made go: a symlink, or a directory carrying the mark (symlinks are not followed).
+  [ -L "$WT/node_modules" ] && rm -f "$WT/node_modules"
+  for d in "$WT/node_modules" "$WT"/*/*/node_modules "$WT"/*/node_modules; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/$MARK" ] && rm -rf "$d"
+  done
+  echo "link-node-modules: $WT/package-lock.json differs from $SHARED_REPO/package-lock.json — installing the worktree's own dependencies." >&2
+  (cd "$WT" && ${LINK_NODE_MODULES_INSTALL:-npm ci --prefer-offline --no-audit --no-fund}) >&2 \
+    || { echo "link-node-modules: the worktree's own install failed." >&2; exit 1; }
+  printf 'own %s\n' "$FP" > "$WT/node_modules/$STAMP"
+  echo "link-node-modules: own install in $WT/node_modules (its lockfile differs from the shared one)."
+  exit 0
+fi
+
+# An own install this script made, for a lockfile that now matches the shared one: links
+# instead. Its workspace node_modules came from the same install, so they go too.
+case "$STAMPED" in
+  own\ *)
+    if [ -d "$WT/node_modules" ] && [ ! -L "$WT/node_modules" ] && [ ! -f "$WT/node_modules/$MARK" ]; then
+      echo "link-node-modules: $WT/node_modules was its own install for an older lockfile — the lockfile now matches the shared one, so it is linked instead." >&2
+      rm -rf "$WT/node_modules"
+      while IFS=$'\t' read -r _n dir; do
+        [ -n "$dir" ] && [ -d "$WT/$dir/node_modules" ] && [ ! -L "$WT/$dir/node_modules" ] \
+          && [ ! -f "$WT/$dir/node_modules/$MARK" ] && rm -rf "$WT/$dir/node_modules"
+      done <<EOF
+$WORKSPACES
+EOF
+    fi ;;
+esac
+
+# Git Bash's `ln -s` writes a deep COPY of a directory unless MSYS=winsymlinks is
+# set, so Windows gets a junction for a directory and a copy for a file.
+windows=0
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) windows=1 ;; esac
+link() { # <target> <link>
+  if [ "$windows" = 1 ]; then
+    if [ -d "$1" ]; then cmd //c mklink //J "$(cygpath -w "$2")" "$(cygpath -w "$1")" >/dev/null
+    else cp -p "$1" "$2"; fi
+  else
+    ln -sfn "$1" "$2"
+  fi
+}
+
+# A node_modules directory to (re)build. A symlink (the old layout) is replaced. A
+# directory this script built, or one holding nothing but workspace-scope links
+# (what a per-workspace shadowing step leaves), is emptied of its links. Anything
+# else is a real install and is refused.
+fresh_dir() { # <dir> → 0 ready · 1 a real install, leave it
+  local d=$1 e
+  if [ -L "$d" ] || [ -f "$d" ]; then rm -f "$d"
+  elif [ -d "$d" ]; then
+    if [ ! -f "$d/$MARK" ]; then
+      for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+        [ -e "$e" ] || [ -L "$e" ] || continue
+        owned "${e##*/}" && [ -d "$e" ] && [ ! -L "$e" ] && continue
+        return 1
+      done
+    fi
+    find "$d" -mindepth 1 -maxdepth 2 -type l -exec rm -f {} +
+    # A scope directory left empty (a scope that is no longer a workspace scope)
+    # would otherwise survive and swallow the link to the shared one INSIDE it.
+    find "$d" -mindepth 1 -maxdepth 1 -type d -empty -exec rmdir {} +
+  fi
+  mkdir -p "$d"
+  printf '%s\n' "$SHARED_REPO" > "$d/$MARK"
+}
+
+
 # The top-level entries the worktree owns: each workspace scope ("@scope"), and the
 # name of each unscoped workspace package.
 OWNED=$(printf '%s\n' "$WORKSPACES" | awk -F'\t' 'NF==2 { split($1, a, "/"); print a[1] }' | sort -u)
@@ -152,7 +209,7 @@ link_entries() {
   for e in "$src"/* "$src"/.[!.]* "$src"/..?*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     name=${e##*/}
-    [ "$name" = "$MARK" ] && continue
+    [ "$name" = "$MARK" ] || [ "$name" = "$STAMP" ] && continue
     owned "$name" && continue
     link "$e" "$dst/$name"
   done
@@ -162,6 +219,8 @@ if ! fresh_dir "$WT/node_modules"; then
   echo "link-node-modules: $WT/node_modules is a real install — left alone."
   exit 0
 fi
+# Gone until this run proves the links: a run that fails part-way is never "up to date".
+rm -f "$WT/node_modules/$STAMP"
 link_entries "$SHARED_NM" "$WT/node_modules"
 
 # The owned scopes: whatever the shared scope holds that is NOT a workspace here
@@ -220,5 +279,6 @@ done <<EOF
 $WORKSPACES
 EOF
 [ "$bad" = 0 ] || exit 1
+printf 'linked %s\n' "$FP" > "$WT/node_modules/$STAMP"
 
 echo "link-node-modules: shared install linked into $WT/node_modules; $links workspace package(s) point at this worktree; $mirrored workspace node_modules mirrored."
