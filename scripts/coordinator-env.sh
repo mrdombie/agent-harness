@@ -246,12 +246,28 @@ COORD_TICKET_JQ='
     if ($ls | index($partial)) or ($ls | index($inreview)) or $mode == "[RESUME PR]" then "half-built"
     elif ($ls | index("type:feature")) then "feature"
     elif coord_polish($ls; $pri; $title) then "polish"
-    else "other" end;'
+    else "other" end;
+  # Nobody can start it: closed, or a stop label. A repair or approved-merge row is
+  # stopped only by the labels that park the ticket; a hold or a question to a person
+  # stops new work but never a red or clashing PR.
+  def coord_stopped($ls; $class; $state):
+    (($state // "OPEN") != "OPEN")
+    or ($ls | any(. as $l | (if $class == "new" then $stopnew else $stopall end) | index($l) != null));
+  def coord_repair_note($note): (($note // "") | test("(^|\n)REPAIR on PR #[0-9]"));
+  def coord_class($c; $note): if ($c // "new") == "new" and coord_repair_note($note) then "repair" else ($c // "new") end;'
+# The stop labels coord_stopped reads, one JSON array each.
+coord_stop_json() { # all|new
+  { printf '%s\n' "${LBL_BATCHED:-status:batched}" "$LBL_PARKED" "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" \
+      "$LBL_GATED" "$LBL_DRAFTING" "$LBL_PM_DECISION" "$LBL_PM_TRACK"
+    [ "$1" = new ] && printf '%s\n' "$HOLD_LABEL" "$LBL_NEEDS_HUMAN" "${LBL_OWNER_DECISION:-}" $DECISION_LABELS
+  } | awk 'NF && !seen[$0]++' | jq -R . | jq -sc .
+}
 coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it needs
   jq --arg plist "$LBL_POLISH_LIST" --arg partial "${LBL_PARTIAL:-status:partial}" \
      --argjson tooling "$(printf '%s' "$COORD_TOOLING_LABELS" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0))')" \
      --argjson toolscopes "$(printf '%s' "$COORD_TOOLING_SCOPES" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0) | ascii_downcase)')" \
-     --arg inreview "${LBL_IN_REVIEW:-status:in-review}" "$@"
+     --arg inreview "${LBL_IN_REVIEW:-status:in-review}" \
+     --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" "$@"
 }
 
 # The queue in run order: <ticket> \t <class> \t <note>; with --wide,
@@ -282,14 +298,18 @@ coord_queue_ordered() {
                  polish: (if $ls then coord_polish($ls; null; $i.title) else ($t.polish // ($t.kind == "polish")) end),
                  plist: (if $ls then ($ls | index($plist)) != null else ($t.plist // false) end),
                  tool: (if $ls then coord_tooling($ls; $i.title) else ($t.tooling // false) end),
-                 rank: ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3)})
+                 class: coord_class($t.class; $t.note)}
+         | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
-     | if $sheet then sort_by(if .front then 0 else 1 end, .pos)
-       else sort_by(if .front then 0 else 1 end, (if .front then .pos else 0 end), .prin, .rank, (if .tool then 1 else 0 end),
+     # .top (the PM putting it on top with add --front) is first overall; .front (a resume, an answer,
+     # a requeue) is first only among its own priority.
+     | if $sheet then sort_by(if .top or .front then 0 else 1 end, .pos)
+       else sort_by(if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+               (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
-                           (if .front or .kind == "half-built" then "1" else "0" end), (.note // "")]
+                           (if .top or .front or .kind == "half-built" then "1" else "0" end), (.note // "")]
        else [(.n|tostring), .class, (.note // "")] end | @tsv' "$COORD_QUEUE" 2>/dev/null
 }
 

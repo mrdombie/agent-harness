@@ -140,8 +140,8 @@ elif [ -n "$RUN_BRIEF" ]; then
   until _prs=$(driver_open_prs_for "$TICKET"); do
     _tries=$((_tries+1))
     if [ "$_tries" -ge "${DRIVER_LOOKUP_TRIES:-3}" ]; then
-      if bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$RUN_BRIEF")" --front >/dev/null 2>&1; then
-        die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries) — #$TICKET is back on the queue at the front with its brief as the note"
+      if bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$RUN_BRIEF")" --first >/dev/null 2>&1; then
+        die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries) — #$TICKET is back on the queue, first in its priority, with its brief as the note"
       fi
       mkdir -p "$DRIVER_DIR/$TICKET"; cp "$RUN_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null
       die "--brief: could not ask GitHub whether #$TICKET has an open pull request ($_tries tries), and could not put it back on the queue — the brief is kept at $DRIVER_DIR/$TICKET/brief-unrouted.md"
@@ -169,11 +169,11 @@ if [ -n "$REPAIR_BRIEF" ]; then
   if ! driver_built "$TICKET" \
      && [ "$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f5)" = true ]; then
     if [ "$REPAIR_SOURCE" = caller ]; then
-      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$REPAIR_BRIEF")" --front >/dev/null 2>&1 \
+      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$REPAIR_BRIEF")" --first >/dev/null 2>&1 \
         || { mkdir -p "$DRIVER_DIR/$TICKET"; cp "$REPAIR_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null; }
     else
       # A healing class too: back on the queue as that class, which the spawner routes to prose.
-      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --class "$REPAIR_CLASS" --front >/dev/null 2>&1 || true
+      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --class "$REPAIR_CLASS" --first >/dev/null 2>&1 || true
     fi
     die "#$TICKET has an open pull request that is a draft the driver did not build, and a repair never readies one. The prose claim resumes it; a brief the caller sent is back on the queue, or kept at $DRIVER_DIR/$TICKET/brief-unrouted.md."
   fi
@@ -216,14 +216,14 @@ driver_requeue() { # <ticket> <reason> [keep]
   fi
   [ -n "$rb" ] && [ -s "$rb" ] && note=$(driver_brief_note "$rb")
   driver_state_set "$t" requeued "$(swarm_stamp) $reason"
-  if bash "$q" add "$t" --class "$cls" ${note:+--note "$note"} --front >/dev/null 2>&1; then
+  if bash "$q" add "$t" --class "$cls" ${note:+--note "$note"} --first >/dev/null 2>&1; then
     queued=1
   else
     if [ -n "$rb" ] && [ -s "$rb" ]; then mkdir -p "$DRIVER_DIR/$t"; cp "$rb" "$DRIVER_DIR/$t/brief-unrouted.md" 2>/dev/null; fi
     driver_say "   requeue: #$t could not be put back on the queue ($q) — the next tick's refresh picks it up from the board"
   fi
   [ "$keep" = keep ] || bash "$CL" release "$t" >/dev/null 2>&1 || true
-  driver_say "↻ #$t requeued for the next tick$([ "$queued" -eq 1 ] && echo ", at the front of the queue as $cls"), not parked: $reason"
+  driver_say "↻ #$t requeued for the next tick$([ "$queued" -eq 1 ] && echo ", at the front of its priority as $cls"), not parked: $reason"
   return "$DRIVER_E_REQUEUE"
 }
 

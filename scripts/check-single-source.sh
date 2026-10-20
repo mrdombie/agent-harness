@@ -95,7 +95,7 @@ if [ -n "$REPO" ] && [ -d "$REPO/.claude" ]; then
   if [ -f "$REPO/.claude/settings.json" ] && command -v jq >/dev/null; then
     for n in "${HOOKS[@]}"; do
       jq -r '[.hooks // {} | .[][].hooks[].command] | join("\n")' "$REPO/.claude/settings.json" 2>/dev/null \
-        | grep -qF "$n" && report REGISTERED ".claude/settings.json -> $n" "fires twice; the plugin already registers it"
+        | grep -F "$n" >/dev/null && report REGISTERED ".claude/settings.json -> $n" "fires twice; the plugin already registers it"
     done
   fi
   [ "$findings" -eq 0 ] && echo "  none"
@@ -119,7 +119,7 @@ done
 if [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null; then
   for n in "${HOOKS[@]}"; do
     jq -r '[.hooks // {} | .[][].hooks[].command] | join("\n")' "$HOME/.claude/settings.json" 2>/dev/null \
-      | grep -qF "$n" && hreport REGISTERED "settings.json -> $n" "fires twice; the plugin already registers it"
+      | grep -F "$n" >/dev/null && hreport REGISTERED "settings.json -> $n" "fires twice; the plugin already registers it"
   done
 fi
 [ "$home_findings" -eq 0 ] && echo "  none"

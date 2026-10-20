@@ -146,7 +146,7 @@ done_why() {
   br=$(branch_of "$wt")
   rows=""
   [ -n "$br" ] && rows=$(printf '%s' "$FORGE" | awk -F'\t' -v b="$br" '$1=="B" && $2==b')
-  printf '%s\n' "$rows" | awk -F'\t' '$3=="OPEN"' | grep -q . && return 1
+  printf '%s\n' "$rows" | awk -F'\t' '$3=="OPEN"' | grep . >/dev/null && return 1
   MERGED_HEADS=$(printf '%s\n' "$rows" | awk -F'\t' '$3=="MERGED"{print $5}')
   if [ -n "$MERGED_HEADS" ]; then
     FINISHED="PR #$(printf '%s\n' "$rows" | awk -F'\t' '$3=="MERGED"{print $4; exit}') merged"; return 0

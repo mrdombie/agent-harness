@@ -256,9 +256,9 @@ requeue_cut() { # <ticket> <run-id> <log> <why> — 0 once settled, 1 to try aga
   case "$old" in Resume:*"Earlier note: "*) old="${old#*Earlier note: }" ;; Resume:*) old="" ;; esac
   [ -z "$old" ] || note="$note Earlier note: $old"
   coord_act_log requeue "$t" "$cls — cut off by $why"
-  if coord_shadow; then say "would re-queue #$t ($cls) at the front — cut off by $why"; return 0; fi
-  if bash "$QUEUE" add "$t" --class "$cls" --note "$note" --front >/dev/null 2>&1; then
-    say "re-queued #$t ($cls) at the front — cut off by $why"; return 0
+  if coord_shadow; then say "would re-queue #$t ($cls) at the front of its priority — cut off by $why"; return 0; fi
+  if bash "$QUEUE" add "$t" --class "$cls" --note "$note" --first >/dev/null 2>&1; then
+    say "re-queued #$t ($cls) at the front of its priority — cut off by $why"; return 0
   fi
   say "cut: could not re-queue #$t — trying again next tick"; return 1
 }

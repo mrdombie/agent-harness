@@ -249,7 +249,7 @@ coord_sheet_read() {
 coord_sheet_seed_queue() {
   local cur; cur=$( [ -s "$COORD_QUEUE" ] && cat "$COORD_QUEUE" || echo '{}')
   jq -c --argjson o "$1" --arg at "$(swarm_stamp)" '
-    ((.tickets // []) | map(select(.front))) as $front
+    ((.tickets // []) | map(select(.front or .top))) as $front
     | ($front | map(.n)) as $fn
     | .source = "sheet" | .sheet_at = $at
     | .scope = (.scope // "sheet") | .label = (.label // "the shared sheet")

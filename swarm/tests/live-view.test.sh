@@ -128,10 +128,39 @@ cat > "$STATE/coordinator/queue.json" <<'JSON'
  {"n":713,"class":"new","prin":1,"kind":"feature","note":""},
  {"n":714,"class":"repair","prin":1,"note":""},
  {"n":715,"class":"new","prin":0,"note":""},
- {"n":716,"class":"new","prin":3,"front":true,"note":""}]}
+ {"n":716,"class":"new","prin":3,"front":true,"note":""},
+ {"n":717,"class":"new","prin":3,"top":true,"note":""}]}
 JSON
 s=$(snap)
-want "priority first across classes, as the coordinator runs it" "716 715 714 713 712 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "priority first across classes; a resume leads only its own priority; the PM's top leads all" \
+  "717 715 714 713 712 716 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+
+echo "--- the queue lists and counts only rows somebody can start ---"
+cat > "$STATE/coordinator/queue.json" <<'JSON'
+{"scope":"widgets","label":"project:widgets","tickets":[
+ {"n":720,"class":"new","prin":1,"note":""},
+ {"n":721,"class":"new","prin":1,"note":""},
+ {"n":722,"class":"new","prin":1,"note":""},
+ {"n":723,"class":"new","prin":1,"note":""},
+ {"n":724,"class":"repair","prin":1,"note":""},
+ {"n":725,"class":"new","prin":1,"note":"REPAIR on PR #9: it clashes"},
+ {"n":726,"class":"new","prin":1,"note":""}]}
+JSON
+mkdir -p "$STATE/coordinator/snapshot"
+cat > "$STATE/coordinator/snapshot/issues.json" <<'JSON'
+{"720":{"number":720,"state":"OPEN","labels":["status:ready"]},
+ "721":{"number":721,"state":"CLOSED","labels":["status:ready"]},
+ "722":{"number":722,"state":"OPEN","labels":["status:ready","status:batched"]},
+ "723":{"number":723,"state":"OPEN","labels":["status:ready","needs:human-approval"]},
+ "724":{"number":724,"state":"OPEN","labels":["status:in-review","needs:human-approval"]},
+ "725":{"number":725,"state":"OPEN","labels":["status:in-review","needs:human-approval"]}}
+JSON
+s=$(snap)
+want "closed, batched and held new rows are not listed; a held PR's repair and an unread row are" \
+  "724 725 720 726" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "the count is the rows that can start" "4" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
+want "a new row with a REPAIR brief is shown as a repair" "repair" "$(printf '%s' "$s" | jq -r '.queue.tickets[] | select(.ticket=="725") | .class')"
+rm -f "$STATE/coordinator/snapshot/issues.json"
 rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"

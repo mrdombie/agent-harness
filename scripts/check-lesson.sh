@@ -365,10 +365,10 @@ CHANGES=$(g -c diff.renameLimit=100000 diff -z --name-status -M --diff-filter=AM
 substance() {
   local d
   case "$1" in
-    A) g show "$H:$3" 2>/dev/null | grep -q '[^[:space:]]'; return ;;
+    A) g show "$H:$3" 2>/dev/null | grep '[^[:space:]]' >/dev/null; return ;;
     *) d=$(g diff -w --ignore-blank-lines "$B:$2" "$H:$3" 2>/dev/null) ;;
   esac
-  printf '%s\n' "$d" | grep -vE '^(\+\+\+|---)( |$)' | grep -qE '^[+-].*[^[:space:]]'
+  printf '%s\n' "$d" | grep -vE '^(\+\+\+|---)( |$)' | grep -E '^[+-].*[^[:space:]]' >/dev/null
 }
 
 missing=""

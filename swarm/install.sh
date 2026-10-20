@@ -175,7 +175,7 @@ cron_install() { # <job>
   { [ -z "$rest" ] || printf '%s\n' "$rest"; cron_line "$1"; } | "$SWARM_CRONTAB" - && echo "installed $(label "$1") in crontab ($(shadow_vars "$1" | tr '\n' ' ' | sed 's/ $//'))"
 }
 cron_uninstall() { # <job>
-  "$SWARM_CRONTAB" -l 2>/dev/null | grep -qF -- "$(cron_mark "$1")" || { echo "$1 was not installed"; return 0; }
+  "$SWARM_CRONTAB" -l 2>/dev/null | grep -F -- "$(cron_mark "$1")" >/dev/null || { echo "$1 was not installed"; return 0; }
   local rest; rest=$(cron_rest "$1")
   { [ -z "$rest" ] || printf '%s\n' "$rest"; } | "$SWARM_CRONTAB" - && echo "removed $(label "$1") from crontab"
 }
@@ -369,8 +369,8 @@ case "${1:-}" in
   *) if script_for "$1" >/dev/null 2>&1; then audit "$1" "${2:-}"; fi ;;
 esac
 
-if cron_jobs | grep -qx -- "${1:-}" && ! on_launchd; then cron_install "$1"; exit $?; fi
-if [ "${1:-}" = uninstall ] && cron_jobs | grep -qx -- "${2:-}" && ! on_launchd; then cron_uninstall "$2"; exit $?; fi
+if cron_jobs | grep -x -- "${1:-}" >/dev/null && ! on_launchd; then cron_install "$1"; exit $?; fi
+if [ "${1:-}" = uninstall ] && cron_jobs | grep -x -- "${2:-}" >/dev/null && ! on_launchd; then cron_uninstall "$2"; exit $?; fi
 
 if is_windows; then
   case "${1:-}" in

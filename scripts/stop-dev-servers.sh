@@ -145,7 +145,7 @@ if [ "$MODE" = session ]; then
   ticket_tree() {
     local p="$1"
     while [ "$p" != / ] && [ -n "$p" ]; do
-      basename "$p" | grep -qE '^([A-Za-z]+-)?[0-9]+-' && { printf '%s' "$p"; return 0; }
+      basename "$p" | grep -E '^([A-Za-z]+-)?[0-9]+-' >/dev/null && { printf '%s' "$p"; return 0; }
       p=$(dirname "$p")
     done
     return 1

@@ -103,7 +103,7 @@ labels_of() { # <ticket> — "OPEN,label,label"
 # minute apart both launch.
 already_going() { # <ticket>
   swarm_ticket_live "$1" && return 0
-  ps -eo command 2>/dev/null | grep -q "[s]pawn-claim.sh $1\$"
+  ps -eo command 2>/dev/null | grep "[s]pawn-claim.sh $1\$" >/dev/null
 }
 
 attempts_today() { # <ticket> [kind]
@@ -372,7 +372,7 @@ section_alarm() {
   [ "${stops:-0}" -gt 0 ] && reasons="$reasons
 - **Stopped after 3 repairs today:** $stops fix(es) — no more agents will be sent until a person looks."
 
-  tail -1 "$SWARM_LOGS/scheduler.log" 2>/dev/null | grep -q 'usage limit' && \
+  tail -1 "$SWARM_LOGS/scheduler.log" 2>/dev/null | grep 'usage limit' >/dev/null && \
     reasons="$reasons
 - **The swarm is holding on the plan's usage limit.**"
 

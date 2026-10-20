@@ -48,7 +48,7 @@ near() { # <file> <epoch> <ticket> — a row for this ticket within the grace
   awk -F'\t' -v e="$2" -v n="$3" -v g="$G" '$2==n && $1>=e-g && $1<=e+g{f=1} END{exit !f}' "$1"
 }
 named_next() { # <epoch> <ticket> — the last shadow tick before e named it next
-  awk -F'\t' -v e="$1" -v g="$G" '$1<=e && $1>=e-g{last=$2} END{print last}' "$TMP/next" | grep -qx -- "$2"
+  awk -F'\t' -v e="$1" -v g="$G" '$1<=e && $1>=e-g{last=$2} END{print last}' "$TMP/next" | grep -x -- "$2" >/dev/null
 }
 
 DIS=0

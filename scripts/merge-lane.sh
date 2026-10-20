@@ -339,7 +339,7 @@ CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" '
 flaky() { # <conclusion> <job-id>
   case "$1" in TIMED_OUT|CANCELLED|STARTUP_FAILURE) return 0 ;; esac
   [ -n "$2" ] || return 1
-  swarm_gh api "repos/$REPO_SLUG/check-runs/$2/annotations" --jq '.[].message' 2>/dev/null | grep -qiE -- "$FLAKE_RE"
+  swarm_gh api "repos/$REPO_SLUG/check-runs/$2/annotations" --jq '.[].message' 2>/dev/null | grep -iE -- "$FLAKE_RE" >/dev/null
 }
 
 waiting=""

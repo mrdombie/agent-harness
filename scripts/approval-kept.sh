@@ -270,7 +270,7 @@ signed_head() {
   all=$(signoffs "$pr" place) || return 2
   last=$(jq -c 'last // empty' <<<"$all")
   [ -n "$last" ] || { echo "PR #$pr was never signed off" >&2; return 1; }
-  jq -r '.sha' <<<"$last" | grep -qE '^[0-9a-f]{40}$' || { echo "PR #$pr was signed off at $(jq -r '.at | todate' <<<"$last"), and its head then cannot be placed" >&2; return 3; }
+  jq -r '.sha' <<<"$last" | grep -E '^[0-9a-f]{40}$' >/dev/null || { echo "PR #$pr was signed off at $(jq -r '.at | todate' <<<"$last"), and its head then cannot be placed" >&2; return 3; }
   jq -r '.sha' <<<"$last"
 }
 

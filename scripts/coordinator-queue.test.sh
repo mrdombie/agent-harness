@@ -197,6 +197,69 @@ rm -f "$QF"; bash "$Q" seed 640 >/dev/null
 want "a scope of one ticket stays exactly that ticket" "640:new" "$(order)"
 bash "$Q" in-scope 643; want "and a polish list is not in it" "1" "$?"
 
+echo "--- a resume or an answer (add --first) is first only within its priority ---"
+printf '%s\n' \
+  "650	P0	OPS			Login drops the session	P0,type:bug,project:widgets" \
+  "651	P0	OPS			Inbox loses a draft	P0,type:bug,project:widgets" \
+  "652	P1	OPS			Saved views	P1,type:bug,project:widgets" > "$FIX/claimable.tsv"
+fix_issue 653 OPEN "P3,status:ready,type:feature,project:widgets"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+bash "$Q" add 653 --first --note "Resume: run r1 was cut off" >/dev/null
+bash "$Q" add 652 --first --note "The owner answered" >/dev/null
+want "a pinned P3 does not jump the P0s; a pinned P1 leads its own priority" "651:new 650:new 652:new 653:new" "$(order)"
+bash "$Q" refresh >/dev/null
+want "and the same after a refresh"        "651:new 650:new 652:new 653:new" "$(order)"
+fix_issue 654 OPEN "P3,status:ready,project:widgets"
+bash "$Q" add 654 --front --note "PM: this first" >/dev/null
+bash "$Q" refresh >/dev/null
+want "the PM's --front is still first overall" "654:new 651:new 650:new 652:new 653:new" "$(order)"
+
+echo "--- a new entry carrying a REPAIR brief is a repair ---"
+fix_issue 655 OPEN "P2,status:in-review,project:widgets"
+bash "$Q" add 655 --first --note "$(printf 'Sign-off comes last.\n\nREPAIR on PR #9 at abc: it clashes with develop.')" >/dev/null
+want "added as new with a REPAIR note, it is queued as repair" "repair" "$(jq -r '.tickets[] | select(.n==655) | .class' "$QF")"
+jq '.tickets += [{n: 656, class: "new", pinned: true, note: "REPAIR on PR #10: CI went red", prin: 2}]' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
+fix_issue 656 OPEN "P2,status:in-review,project:widgets"
+bash "$Q" refresh >/dev/null
+want "one already queued as new comes out of a refresh as repair" "repair" "$(jq -r '.tickets[] | select(.n==656) | .class' "$QF")"
+want "a Resume note stays new"             "new" "$(jq -r '.tickets[] | select(.n==653) | .class' "$QF")"
+
+echo "--- the queue holds only rows somebody can start ---"
+printf '%s\n' \
+  "660	P1	OPS			can start	P1,status:ready,project:widgets" \
+  "661	P1	OPS			folded into a batch	P1,status:ready,status:batched,project:widgets" \
+  "662	P1	OPS			parked yet ready	P1,status:parked,status:ready,project:widgets" \
+  "663	P1	OPS			blocked	P1,status:blocked,project:widgets" \
+  "664	P1	OPS			held for the owner	P1,status:ready,needs:human-approval,project:widgets" \
+  "665	P1	OPS		[FINISH PR]	a held PR that clashes	P1,status:in-review,needs:human-approval,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+fix_issue 666 CLOSED "P1,status:ready,project:widgets"
+fix_issue 667 OPEN "P1,status:ready,project:widgets"
+fix_issue 668 OPEN "P1,status:batched,project:widgets"
+for t in 666 667 668; do bash "$Q" add "$t" --note "pinned" >/dev/null; done
+out=$(bash "$Q" refresh 2>&1)
+want "only the rows that can start: a ready one, a held PR's repair, an open pinned one" "665:repair 667:new 660:new" "$(order)"
+want_in "and the count says so"            'seeded 3 ticket' "$out"
+want "the file holds the same rows"        "3" "$(jq '.tickets | length' "$QF")"
+rm -f "$FIX/gh/issue-667.json"
+bash "$Q" refresh >/dev/null
+want "a pinned row that could not be read is kept" "665:repair 667:new 660:new" "$(order)"
+
+echo "--- a label gh is still writing about is found (grep -q under pipefail) ---"
+mv "$BIN/gh" "$BIN/gh.fixture"
+cat > "$BIN/gh" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "label list" ]; then
+  echo "area:create"; sleep 0.3; for i in $(seq 1 3000); do echo "area:create-$i"; done; exit 0
+fi
+exec "$(dirname "$0")/gh.fixture" "$@"
+SH
+chmod +x "$BIN/gh"
+fix_issue_list "area:create" '[]'
+out=$(bash "$Q" seed area:create 2>&1); rc=$?
+want "the label is found while gh is still writing" "0" "$rc"
+mv -f "$BIN/gh.fixture" "$BIN/gh"
+
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null
 out=$(bash "$Q" add 12 --class urgent 2>&1); rc=$?
