@@ -454,7 +454,7 @@ swarm_held() { [ -f "$SWARM_HOLD_FILE" ] || return 1; head -1 "$SWARM_HOLD_FILE"
 SWARM_PROCESS_LABEL="${COORDINATOR_PROCESS_LABEL:-$(swarm_opt coordinator.processLabel process)}"
 swarm_hold_lets_process() {
   [ -f "$SWARM_HOLD_FILE" ] || return 1
-  head -1 "$SWARM_HOLD_FILE" | grep -qiE 'for process fixes' && return 0
+  grep -qiE 'for process fixes' <<<"$(head -1 "$SWARM_HOLD_FILE")" && return 0
   grep -qiE "^[[:space:]]*allow:[[:space:]]*(process|$SWARM_PROCESS_LABEL)[[:space:]]*\$" "$SWARM_HOLD_FILE"
 }
 # Read whole, then matched: a piped grep -q under pipefail can fail on SIGPIPE.
