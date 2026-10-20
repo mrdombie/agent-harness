@@ -776,6 +776,63 @@ want "its shot is kept, under the PR's number"       'click the "Open" button' \
   "$(jq -r '.shots[] | select(.name=="desk-drawer-laptop-light") | .setup[0]' "$FIX/wt188/docs/evidence/4322/plan.json" 2>/dev/null)"
 want "and the tree is clean"                         "" "$(git -C "$FIX/wt188" status --porcelain)"
 
+echo "--- the plan ship writes is formatted as the project formats it, so pre-push passes ---"
+# Python's indent-2 JSON unfolds every short array; prettier folds them, so the project's
+# pre-push format check failed on the plan alone and every screen ticket spent a fix
+# round on it. The stand-in prettier folds arrays of scalars, as the real one does.
+cat > "$FIX/fake-prettier" <<'PY'
+#!/usr/bin/env python3
+import json, re, sys
+def fmt(p):
+    s = json.dumps(json.load(open(p)), indent=2)
+    return re.sub(r'\[\s*\n((?:\s*(?:"(?:[^"\\]|\\.)*"|-?[0-9.]+|true|false|null),?\n)+)\s*\]',
+                  lambda m: "[" + ", ".join(x.strip().rstrip(",") for x in m.group(1).strip().splitlines()) + "]", s) + "\n"
+check = "--check" in sys.argv
+bad = 0
+for p in [a for a in sys.argv[1:] if not a.startswith("--")]:
+    if not p.endswith(".json"): continue
+    want = fmt(p)
+    if check: bad |= open(p).read() != want
+    else: open(p, "w").write(want)
+sys.exit(1 if bad else 0)
+PY
+chmod +x "$FIX/fake-prettier"
+: > "$GH_LOG"
+setup_wt 199
+mkdir -p "$FIX/wt199/.design" "$FIX/wt199/node_modules/.bin"
+cp "$FIX/fake-prettier" "$FIX/wt199/node_modules/.bin/prettier"
+printf '{ "semi": false }\n' > "$FIX/wt199/.prettierrc"
+# A JSON file the branch carries that ship never wrote: it is not ship's to format.
+printf '{"keep":[\n1]}\n' > "$FIX/wt199/other.json"
+cat > "$FIX/wt199/.design/desk-mock.html" <<'HTML'
+<html><body>
+<section data-evidence-shot="desk-grid-laptop-light" data-evidence-route="/desk" data-evidence-viewport="laptop" data-evidence-theme="light" data-evidence-setup='press Meta+K'></section>
+</body></html>
+HTML
+printf 'node_modules/\n' > "$FIX/wt199/.gitignore"
+git -C "$FIX/wt199" add .design .prettierrc .gitignore other.json; git -C "$FIX/wt199" commit -qm "feat: the desk, to the picture"
+driver_state_put 199 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 199 review
+for st in start plan build self-check review record; do driver_state_done 199 "$st"; done
+rc=0; out=$(driver_step_ship 199 2>&1) || rc=$?
+want "it ships"                                        "0" "$rc"
+want "the plan is written"                             "desk-grid-laptop-light" \
+  "$(jq -r '[.shots[].name] | join(" ")' "$FIX/wt199/docs/evidence/199/plan.json" 2>/dev/null)"
+rc=0; ( cd "$FIX/wt199" && node_modules/.bin/prettier --check docs/evidence/199/plan.json ) || rc=$?
+want "prettier --check passes on the committed plan"   "0" "$rc"
+want "the commit holds the formatted plan"             "$(cat "$FIX/wt199/docs/evidence/199/plan.json")" \
+  "$(git -C "$FIX/wt199" show HEAD:docs/evidence/199/plan.json)"
+want "a file ship did not write is left as it was"     "$(printf '{"keep":[\n1]}')" "$(cat "$FIX/wt199/other.json")"
+want "and the tree is clean"                           "" "$(git -C "$FIX/wt199" status --porcelain)"
+
+echo "--- with no formatter the plan is canonical 2-space JSON with a trailing newline ---"
+mkdir -p "$FIX/plain"; printf '{"shots":[{"a":[1,2]}]}' > "$FIX/plain/p.json"
+rc=0; driver_format_files "$FIX/plain" p.json || rc=$?
+want "it formats"                                      "0" "$rc"
+want "the canonical form"                              "$(printf '{\n  "shots": [\n    {\n      "a": [\n        1,\n        2\n      ]\n    }\n  ]\n}\nX')" \
+  "$(cat "$FIX/plain/p.json"; printf X)"
+rc=0; driver_format_files "$FIX/plain" missing.json || rc=$?
+want "a file that is not there is nothing to do"       "1" "$rc"
+
 echo "--- a design verdict this run committed is never pushed ---"
 : > "$GH_LOG"
 setup_wt 196
