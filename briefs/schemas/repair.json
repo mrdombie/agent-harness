@@ -210,6 +210,39 @@
       "description": "For unchanged only: why the pull request needs no change \u2014 the brief is already met, and nothing is red or clashing.",
       "type": "string",
       "minLength": 1
+    },
+    "lesson": {
+      "description": "Only when the lesson check is red: the `## Lesson` the driver writes into the pull request body. `guard` is one path to an executable test the diff adds or changes in substance: a test the PR already carries, or one this repair added and reports under `fixes` with proof test (red, then green). The driver re-runs the lesson check on the body before it writes it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principle",
+        "guard",
+        "beforeAfter",
+        "reach"
+      ],
+      "properties": {
+        "principle": {
+          "description": "One sentence naming the class of mistake, not the instance.",
+          "type": "string",
+          "minLength": 1
+        },
+        "guard": {
+          "description": "The repo-relative path of the test that guards it, bare (no backticks).",
+          "type": "string",
+          "minLength": 1
+        },
+        "beforeAfter": {
+          "description": "How the guard fails on the pre-fix code and passes on the fix.",
+          "type": "string",
+          "minLength": 1
+        },
+        "reach": {
+          "description": "The sibling the guard also catches, or the search that found none.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   },
   "if": {
@@ -221,15 +254,26 @@
   },
   "then": {
     "required": [
-      "cause",
-      "fixes"
+      "cause"
     ],
-    "properties": {
-      "fixes": {
-        "type": "array",
-        "minItems": 1
+    "anyOf": [
+      {
+        "required": [
+          "fixes"
+        ],
+        "properties": {
+          "fixes": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      },
+      {
+        "required": [
+          "lesson"
+        ]
       }
-    }
+    ]
   },
   "else": {
     "if": {

@@ -88,7 +88,8 @@
         "CONFLICTS": "what merging the integration branch did: not needed, merged clean, or the files left conflicted for this step",
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet",
-        "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed"
+        "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed",
+        "LESSON": "when the lesson check is red: what the lesson check says about the pull request body as it stands, and the body's current `## Lesson` section if it has one — or a sentence saying the lesson check is not red"
       }
     }
   }

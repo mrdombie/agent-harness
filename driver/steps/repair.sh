@@ -82,6 +82,118 @@ _driver_repair_evidence_left() {
   [ -z "$gaps" ] || printf 'still on no evidence route or capture step: %s' "$gaps"
 }
 
+# THE LESSON CHECK READS THE BODY, NOT THE TREE. #13321 parked on a red lesson check a
+# code-only repair could never clear. When it is red, the answer's `lesson` is written
+# into the PR body as `## Lesson`, the check is re-run on that body here, and only a
+# guard the PR's diff carries, or one this repair proved red-then-green, is named.
+#
+# _driver_repair_reds <failing> <pattern> <in|out> — the ", " list of red check names
+# that match the pattern (in), or the ones that do not (out), case-insensitively.
+_driver_repair_reds() {
+  printf '%s' "$1" | awk -v p="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" -v want="$3" 'BEGIN { RS = ", " }
+    { sub(/\n$/, "") } $0 == "" { next }
+    { hit = index(tolower($0), p) > 0 } (want == "in" && hit) || (want == "out" && !hit) { o = o (o == "" ? "" : ", ") $0 }
+    END { printf "%s", o }'
+}
+
+# _driver_repair_body <pr> <out> — the PR body as GitHub holds it now; 1 when unreadable.
+_driver_repair_body() {
+  swarm_gh api "repos/$REPO_SLUG/pulls/$1" --jq '.body // ""' > "$2" 2>/dev/null
+}
+
+# _driver_repair_lesson_run <tree> <trunk> <body-file> <row> — the lesson check, run
+# here on that body exactly as CI runs it on the PR; prints its output, returns its exit.
+_driver_repair_lesson_run() {
+  local wt="$1" trunk="$2" body="$3" row="$4" cl rc=0 mb
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || mb="$trunk"
+  cl=$(mktemp "${TMPDIR:-/tmp}/repair-lesson-closing.XXXXXX") || return 2
+  printf '%s' "$row" | jq -c '[.closingIssuesReferences[]? | {number}]' > "$cl" 2>/dev/null || printf '[]' > "$cl"
+  bash "${DRIVER_CHECK_LESSON:-$KIT_ROOT/scripts/check-lesson.sh}" --repo "$wt" --base "$mb" --head HEAD \
+    --body-file "$body" --class repair --closing-file "$cl" \
+    --labels "$(printf '%s' "$row" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null)" \
+    --title "$(printf '%s' "$row" | jq -r '.title // ""' 2>/dev/null)" \
+    --branch "$(printf '%s' "$row" | jq -r '.headRefName // ""' 2>/dev/null)" 2>&1 || rc=$?
+  rm -f "$cl"
+  return "$rc"
+}
+
+# _driver_repair_with_lesson <section-file> — stdin's body with its `## Lesson` section
+# replaced by the file's, or the section added before a closing "Generated with" line.
+_driver_repair_with_lesson() {
+  SECTION="$(cat "$1")" perl -0777 -ne '
+    my $s = $ENV{SECTION}; $s =~ s/\s+\z//;
+    my @l = split /\n/, $_, -1; pop @l if @l && $l[-1] eq "";
+    my ($i) = grep { $l[$_] =~ /^\s*##\s*Lesson\s*$/i } 0..$#l;
+    if (defined $i) {
+      my $j = $i + 1; $j++ while $j <= $#l && $l[$j] !~ /^\s*#{1,2}\s/ && $l[$j] !~ /Generated with \[Claude/;
+      splice @l, $i, $j - $i, (split(/\n/, $s), "");
+    } else {
+      my ($g) = grep { $l[$_] =~ /Generated with \[Claude/ } reverse 0..$#l;
+      if (defined $g) { splice @l, $g, 0, (split(/\n/, $s), "") } else { push @l, "", split(/\n/, $s) }
+    }
+    print join("\n", @l), "\n";'
+}
+
+# _driver_repair_write_lesson <ticket> <tree> <trunk> <base> <pr> <answer> <row> — the
+# answer's lesson, judged, written into the body by the REST API and judged again there.
+_driver_repair_write_lesson() {
+  local t="$1" wt="$2" trunk="$3" base="$4" pr="$5" ans="$6" row="$7" d guard mb out rc=0 k v
+  d="$(driver_state_dir "$t")/steps"
+  guard=$(jq -r '.lesson.guard // ""' "$ans" | tr -d '`' | sed 's#^\./##; s/^[[:space:]]*//; s/[[:space:]]*$//')
+  if [ -z "$guard" ]; then
+    driver_say "✋ repair: the lesson check is red and the answer wrote no lesson."
+    driver_state_set "$t" park_note "the lesson check is red and the repair wrote no lesson for the PR body"
+    return "$DRIVER_E_REFUSED"
+  fi
+  mb=$(git -C "$wt" merge-base "$trunk" "$base" 2>/dev/null) || mb="$trunk"
+  if ! git -C "$wt" diff --name-only "$mb" "$base" 2>/dev/null | grep -qxF -- "$guard" \
+     && ! jq -e --arg g "$guard" '[.fixes[]? | select(.proof == "test") | .test.file // "" | ltrimstr("./")] | index($g) != null' "$ans" >/dev/null 2>&1; then
+    driver_say "✋ repair: the lesson names \`$guard\` as its guard, and that is neither in PR #$pr's diff nor a test this repair proved red-then-green."
+    driver_state_set "$t" park_note "the repair's lesson named a guard ($guard) that is neither in the PR's diff nor proved by the repair"
+    return "$DRIVER_E_REFUSED"
+  fi
+  {
+    printf '## Lesson\n'
+    for k in principle:Principle guard:Guard beforeAfter:Before/after reach:Reach; do
+      v=$(jq -r --arg k "${k%%:*}" '.lesson[$k] // ""' "$ans" | tr '\r\n' '  ' | sed 's/[[:space:]]*$//')
+      [ "${k%%:*}" = guard ] && v="\`$guard\`"
+      printf -- '- %s: %s\n' "${k#*:}" "$v"
+    done
+  } > "$d/repair-lesson.md"
+  if ! _driver_repair_body "$pr" "$d/repair-body-was.md"; then
+    driver_say "✋ repair: could not read PR #$pr's body, so the lesson could not be written into it."
+    driver_state_set "$t" park_note "could not read the body of #$pr to write its lesson"
+    return "$DRIVER_E_UNREAD"
+  fi
+  _driver_repair_with_lesson "$d/repair-lesson.md" < "$d/repair-body-was.md" > "$d/repair-body.md"
+  out=$(_driver_repair_lesson_run "$wt" "$trunk" "$d/repair-body.md" "$row") || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s\n' "$out" | head -1 | grep -q '^lesson: complete'; then
+    driver_say "✋ repair: the lesson it wrote does not pass the lesson check here — $(printf '%s' "$out" | head -1)"
+    driver_state_set "$t" park_note "the repair's lesson fails the lesson check before it is written: $(printf '%s' "$out" | head -1)"
+    return "$DRIVER_E_REFUSED"
+  fi
+  # gh pr edit is refused by a hook on some machines; the REST call is not.
+  if ! swarm_gh api -X PATCH "repos/$REPO_SLUG/pulls/$pr" -F "body=@$d/repair-body.md" >/dev/null 2>&1; then
+    driver_say "✋ repair: the lesson passes here and PR #$pr's body could not be updated with it."
+    driver_state_set "$t" park_note "could not write the lesson into the body of #$pr"
+    return "$DRIVER_E_REFUSED"
+  fi
+  # COUNTED ON THE BODY GITHUB NOW HOLDS, not on the copy that was sent.
+  rc=0
+  if ! _driver_repair_body "$pr" "$d/repair-body-now.md"; then
+    driver_say "✋ repair: the lesson was sent and PR #$pr's body could not be read back to judge it."
+    return "$DRIVER_E_UNREAD"
+  fi
+  out=$(_driver_repair_lesson_run "$wt" "$trunk" "$d/repair-body-now.md" "$row") || rc=$?
+  if [ "$rc" -ne 0 ] || ! printf '%s\n' "$out" | head -1 | grep -q '^lesson: complete'; then
+    driver_say "✋ repair: PR #$pr's body, read back, still fails the lesson check — $(printf '%s' "$out" | head -1)"
+    driver_state_set "$t" park_note "the lesson was written into #$pr and the body read back still fails the lesson check: $(printf '%s' "$out" | head -1)"
+    return "$DRIVER_E_REFUSED"
+  fi
+  driver_say "   repair: wrote the lesson into PR #$pr's body — $(printf '%s' "$out" | head -1)"
+  return "$DRIVER_OK"
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -148,6 +260,11 @@ EOS
     fi
   fi
 
+  # The lesson check's red is the PR body's to answer; every other red is the tree's.
+  local lesson_pat lesson_red code_failing
+  lesson_pat=$(driver_opt lesson.check lesson)
+  lesson_red=$(_driver_repair_reds "$failing" "$lesson_pat" in)
+
   # ---- the clash ---------------------------------------------------------------
   local resumed_merge=0 marked
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
@@ -212,8 +329,10 @@ EOS
     driver_say "   repair: this tree is $carried commit(s) ahead of PR #$pr's head with $trunk merged in — an earlier round's work, never pushed. ${old_red:+The red (${old_red}) is on the older head; }the gates, the review and the push take this one."
     base=$prhead; driver_state_set "$t" repair_base "$prhead"
   fi
+  code_failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
   [ -n "$conflicted" ] && need=1
   [ -n "$failing" ] && need=1
+  [ -n "$lesson_red" ] && need=1
   [ "$unreadable" -eq 1 ] && need=1
   # A CALLER'S BRIEF IS ALWAYS READ. An owner's answer on a ticket with an open PR
   # arrives as a repair with a note; read only when something is red, it would be
@@ -246,6 +365,22 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     driver_fact_put "$t" repair FAILING "${failing:-none settled red}"
   fi
   driver_fact_put "$t" repair CONFLICTS "$conflicts_fact"
+  local lfact="it is not red, so answer no \`lesson\`." lbody lout lhow
+  if [ -n "$lesson_red" ]; then
+    lhow="It reads the pull request BODY, so no code change turns it green. Answer \`lesson\`: the driver writes it into the body as \`## Lesson\`, re-runs the check on that body, and only then counts it. The principle is one sentence naming the class of mistake, read off this PR's own diff and tests. \`guard\` is one test the diff already adds or changes in substance. When the fix has no test, add one and prove it though the fix is already in: commit the new test with the fix reverted (red), then a commit restoring the fix (green), and report it under \`fixes\` with proof test, \`testCommit\` the first and \`implCommit\` the second. With no other red and the guard already in the diff, \`lesson\` alone with nothing committed is the whole repair. A guard neither in the PR's diff nor proved by this repair is refused: never name a guard that is not there."
+    lbody="$d/steps/repair-body-before.md"
+    if _driver_repair_body "$pr" "$lbody"; then
+      lout=$(_driver_repair_lesson_run "$wt" "$trunk" "$lbody" "$row")
+      lfact="red ($lesson_red). $lhow
+Run here on the body as it stands, it says:
+$(printf '%s\n' "$lout" | head -3)
+The body's current lesson section: $(perl -ne 'if (/^\s*##\s*Lesson\s*$/i) { $in = 1 } elsif ($in && /^\s*#{1,2}\s/) { $in = 0 } print if $in' "$lbody" | head -12)"
+    else
+      lfact="red ($lesson_red). $lhow
+The body could not be read here: read it yourself (gh pr view $pr --json body)."
+    fi
+  fi
+  driver_fact_put "$t" repair LESSON "$lfact"
   local diff; diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
   driver_fact_put "$t" repair DIFF "${diff:-(none — the branch carries no change against $trunk)}"
 
@@ -253,7 +388,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   # answered 'repaired' and then 'unchanged', committing nothing both times, with five
   # checks red, and parked twice as "the driver's" fault. So it is asked once more,
   # the red checks named in front of its brief; a second empty answer parks with them.
-  local pre_model attempt=1 reask st
+  local pre_model attempt=1 reask st lesson_only=0
   while :; do
     pre_model=$(git -C "$wt" rev-parse HEAD)
     rc=0; driver_ai_step "$t" repair || rc=$?
@@ -261,13 +396,19 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     ans="$d/steps/repair.json"
     jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
     reask=""; st=$(jq -r '.status // ""' "$ans")
-    if [ -n "$failing" ] || [ "$unreadable" -eq 1 ]; then
+    lesson_only=0
+    [ -n "$lesson_red" ] && [ -z "$code_failing" ] && [ "$unreadable" -eq 0 ] && [ -z "$conflicted" ] \
+      && [ -n "$(jq -r '.lesson.guard // ""' "$ans")" ] && lesson_only=1
+    if [ -n "$failing" ] || [ -n "$lesson_red" ] || [ "$unreadable" -eq 1 ]; then
       if [ "$st" = unchanged ]; then
         reask="answered unchanged"
-      elif [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$wt" rev-parse "$base" 2>/dev/null)" ] \
+      elif [ "$lesson_only" -eq 0 ] && [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$wt" rev-parse "$base" 2>/dev/null)" ] \
            && [ ! -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
         reask="answered '${st:-?}' and committed nothing (the head is still $(printf '%s' "$base" | cut -c1-8))"
       fi
+    fi
+    if [ -z "$reask" ] && [ -n "$lesson_red" ] && [ "$st" = repaired ] && [ -z "$(jq -r '.lesson.guard // ""' "$ans")" ]; then
+      reask="answered repaired with no lesson while the lesson check ($lesson_red) is red, and only a lesson in the PR body turns it green"
     fi
     if [ -z "$reask" ] && [ -n "$ev_tasks" ] && [ "$st" != park ]; then
       left=$(_driver_repair_evidence_left "$t" "$wt" "$trunk" "$base" "$plan_rel" "$pr")
@@ -306,6 +447,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   # nothing clashes, and nothing was committed. A red check or a conflict answered
   # "unchanged" is a guess — that is what a park and its question are for.
   if [ "$(jq -r '.status // ""' "$ans")" = unchanged ]; then
+    [ -z "$failing" ] && [ -n "$lesson_red" ] && failing="$lesson_red"
     if [ -n "$failing" ] || [ -n "$conflicted" ] || [ "$unreadable" -eq 1 ]; then
       driver_say "✋ repair: answered unchanged while ${failing:+checks are red ($failing)}${conflicted:+ a merge conflicts}$([ "$unreadable" -eq 1 ] && echo ' the checks could not be read'). Unchanged is not an answer to those — park with a question instead."
       driver_state_set "$t" park_note "the repair answered unchanged $attempt time(s) while the PR is red or clashing${failing:+ — red checks: $failing}${conflicted:+ — conflicted: $(printf '%s' "$conflicted" | tr '\n' ' ')}"
@@ -381,7 +523,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     driver_say "✋ repair: uncommitted changes — $(printf '%s' "$dirty" | awk '{print $NF}' | tr '\n' ' '). A change that is not committed is a change the gates never read."
     return "$DRIVER_E_REFUSED"
   fi
-  if [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$wt" rev-parse "$base" 2>/dev/null)" ]; then
+  if [ "$lesson_only" -eq 0 ] && [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$wt" rev-parse "$base" 2>/dev/null)" ]; then
     driver_say "✋ repair: the repair committed nothing — the head is still $(printf '%s' "$base" | cut -c1-8)."
     driver_state_set "$t" park_note "the repair step answered '$(jq -r '.status // "?"' "$ans")' and committed nothing, $attempt time(s)${failing:+ — red checks: $failing}"
     return "$DRIVER_E_REFUSED"
@@ -431,7 +573,11 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
       driver_say "   repair '$bid' — $tcmd green at the head (no test can pin it: $(jq -r --argjson i "$((i-1))" '.fixes[$i].noTestBecause // "?"' "$ans"))"
     fi
   done
+  if [ -n "$lesson_red" ]; then
+    rc=0; _driver_repair_write_lesson "$t" "$wt" "$trunk" "$base" "$pr" "$ans" "$row" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+  fi
   driver_state_set "$t" repair_conflicted ""
-  driver_say "   repair: $(jq -r '.cause // ""' "$ans") — ${n:-0} fix(es), each proved"
+  driver_say "   repair: $(jq -r '.cause // ""' "$ans") — ${n:-0} fix(es), each proved${lesson_red:+, and the lesson written}"
   return "$DRIVER_OK"
 }
