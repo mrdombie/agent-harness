@@ -150,10 +150,28 @@ fix_issue 401 CLOSED ""; fix_issue 402 CLOSED ""
 fix_issue 302 OPEN "status:blocked,project:widgets"
 fix_comments 302 "Blocked until #403 merges"
 fix_issue 403 OPEN "status:ready"
+# The list read carries each held ticket's comments, as GitHub answers --json number,comments.
+fix_issue_list "status:blocked" "$(jq -s '[.[] | {number, comments}]' "$FIX/gh/issue-301.json" "$FIX/gh/issue-302.json")"
+: > "$GH_LOG"
 out=$(w --only unblock)
 want_in "the ready one is released"    'unblocked #301' "$out"
 want_in "and relabelled"               'issue edit 301 .*--remove-label status:blocked --add-label status:ready' "$(cat "$GH_LOG")"
 want_not_in "the held one stays held"  'unblocked #302' "$out"
+want "two held tickets and three parents: no ticket read on its own" "0" "$(grep -c '^issue view' "$GH_LOG")"
+want "and every parent in one batched read" "1" "$(grep -c '^api graphql' "$GH_LOG")"
+
+echo "--- a pass over many broken PRs reads their tickets in one request ---"
+: > "$SPAWNS"; : > "$TRIED"; : > "$GH_LOG"
+for t in 501 502 503 504 505; do fix_issue "$t" OPEN "status:needs-human,project:widgets"; done
+fix_prs "51 501 a501 DIRTY 0 -" "52 502 a502 DIRTY 0 -" "53 503 a503 CLEAN 0 typecheck" "54 504 a504 DIRTY 0 -" "55 505 a505 DIRTY 0 -"
+w --only repair >/dev/null
+want "five paused tickets: none spawned" "0" "$(grep -c . "$SPAWNS")"
+want "and none read on its own"          "0" "$(grep -c '^issue view' "$GH_LOG")"
+want_in "they were read in one batch"    'i501:issueOrPullRequest.*i505:issueOrPullRequest' "$(grep '^api graphql' "$GH_LOG" | grep -v OpenPullRequests)"
+printf '%s\t%s\t%s\t%s\n' 501 a501 conflict "$T0" 502 a502 conflict "$T0" 503 a503 ci "$T0" 504 a504 conflict "$T0" 505 a505 conflict "$T0" > "$TRIED"
+: > "$GH_LOG"; w --only repair >/dev/null
+want "every head already tried: no ticket is read at all" "0" "$(grep -cE '^issue view|issueOrPullRequest' "$GH_LOG")"
+: > "$TRIED"; fix_prs; fix_issue 101 OPEN "status:in-review,project:widgets"
 
 echo "--- a run that died on an infrastructure error is restarted, twice at most ---"
 : > "$SPAWNS"; : > "$TRIED"

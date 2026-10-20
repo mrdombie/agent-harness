@@ -75,6 +75,30 @@ function sharedPrs(maxAge = Number(env.SWARM_PRS_MAX_AGE || 300)) {
   } catch { return null }
 }
 
+// What the gather learnt about PRs and plans, kept on disk between gathers (each is
+// a process of its own): a merged or closed PR is final, a branch with no PR stays
+// so until it shows in the shared open list, and a plan's issues change slowly.
+// Without it every gather asked once per agent branch and once per plan, ~320/h.
+const NONE_TTL = () => Number(env.SWARM_PR_NONE_TTL || 900)
+const PLAN_TTL = () => Number(env.SWARM_PLAN_TTL || 600)
+function memoFile() {
+  if (env.SWARM_PR_MEMO) return env.SWARM_PR_MEMO
+  return env.SWARM_PRS_FILE ? path.join(path.dirname(env.SWARM_PRS_FILE), 'live-view-memo.json') : ''
+}
+function loadMemo() {
+  const m = json(memoFile(), null)
+  return { prs: (m && m.prs) || {}, plans: (m && m.plans) || {} }
+}
+function saveMemo(m, now = Date.now() / 1000) {
+  const f = memoFile()
+  if (!f) return
+  const young = (o, age) => Object.fromEntries(Object.entries(o).filter(([, v]) => v && now - v.at < age))
+  try {
+    fs.writeFileSync(`${f}.${process.pid}`, JSON.stringify({ prs: young(m.prs, 7 * 86400), plans: young(m.plans, 86400) }))
+    fs.renameSync(`${f}.${process.pid}`, f)
+  } catch {}
+}
+
 function sh(cmd, args, opts = {}) {
   if (cmd === GH()) noteGh(args)
   try {
@@ -307,19 +331,28 @@ export function rollupOf(p) {
   }
 }
 
-function prOf(slug, branch, shared = null, sharedSlug = '') {
+function prOf(slug, branch, shared = null, sharedSlug = '', memo = { prs: {} }, now = Date.now() / 1000) {
   // An open PR in the shared copy is answered from it; only a branch it lacks asks GitHub.
-  const hit = shared && slug === sharedSlug
+  const covered = !!shared && slug === sharedSlug
+  const key = `${slug} ${branch}`
+  const hit = covered
     ? shared.filter((p) => p.headRefName === branch).sort((a, b) => a.number - b.number).pop() : null
-  if (hit) return { prRead: true, pr: rollupOf(hit) }
+  if (hit) { memo.prs[key] = { state: 'OPEN', at: now }; return { prRead: true, pr: rollupOf(hit) } }
+  const m = memo.prs[key]
+  if (m && (m.state === 'MERGED' || m.state === 'CLOSED') && m.pr) return { prRead: true, pr: m.pr }
+  // A PR opens before it can merge, so a branch with none that is still missing from
+  // a fresh open list has none yet — re-asked only after NONE_TTL.
+  if (covered && m && m.state === 'NONE' && now - m.at < NONE_TTL()) return { prRead: true, pr: null }
   const out = sh(GH(), ['pr', 'list', '--repo', slug, '--head', branch, '--state', 'all',
     '--limit', '5', '--json', 'number,state,statusCheckRollup'])
   if (out == null) return { prRead: false, pr: null }
   let rows = []
   try { rows = JSON.parse(out) } catch { return { prRead: false, pr: null } }
-  if (!rows.length) return { prRead: true, pr: null }
+  if (!rows.length) { memo.prs[key] = { state: 'NONE', at: now }; return { prRead: true, pr: null } }
   const p = rows.sort((a, b) => a.number - b.number).pop()
-  return { prRead: true, pr: rollupOf(p) }
+  const pr = rollupOf(p)
+  memo.prs[key] = pr.state === 'MERGED' || pr.state === 'CLOSED' ? { state: pr.state, pr, at: now } : { state: 'OPEN', at: now }
+  return { prRead: true, pr }
 }
 
 // The branch, from the local worktree when it is still there and from the forge
@@ -359,7 +392,7 @@ function branchOf(slug, branch, worktree) {
 // facts(tickets, opts) — one pass, one entry per ticket that has a claim record.
 // A ticket with no claim record is absent, which is what makes its whole bar read
 // `unknown` rather than `not started`.
-export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {}) {
+export function facts(tickets, { repo = '', queueRepo = '', driverDir = '', memo = { prs: {}, plans: {} } } = {}) {
   const cl = CLAIM_LOCK()
   const owner = String(repo).split('/')[0]
   const seen = new Map()
@@ -387,7 +420,7 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
       // step-runner writes one before it commits anything.
       planFile: !!(dir && fs.existsSync(path.join(dir, 'steps', 'plan.json'))),
       trailers: trailers || [], stampsReviews: stampsReviews(slug, seen),
-      ...prOf(slug, rec.branch, shared, repo),
+      ...prOf(slug, rec.branch, shared, repo, memo),
       driver: dir ? json(path.join(dir, 'state.json'), null) : null,
     }
   }
@@ -395,14 +428,17 @@ export function facts(tickets, { repo = '', queueRepo = '', driverDir = '' } = {
 }
 
 // plans(ids, opts) — the issue list per plan, weighed. One call per plan.
-export function plans(ids, { repo = '', prefix = 'project:' } = {}) {
+export function plans(ids, { repo = '', prefix = 'project:', memo = { plans: {} } } = {}, now = Date.now() / 1000) {
   const out = {}
   for (const id of ids) {
     if (!/^[A-Za-z0-9:_.-]+$/.test(String(id))) continue
+    const key = `${repo} ${prefix}${id}`
+    const m = memo.plans[key]
+    if (m && m.weighed && now - m.at < PLAN_TTL()) { out[id] = m.weighed; continue }
     const raw = sh(GH(), ['issue', 'list', '--repo', repo, '--label', `${prefix}${id}`,
       '--state', 'all', '--limit', '400', '--json', 'number,state,labels'])
     if (raw == null) continue
-    try { out[id] = weigh(JSON.parse(raw)) } catch {}
+    try { out[id] = weigh(JSON.parse(raw)); memo.plans[key] = { weighed: out[id], at: now } } catch {}
   }
   return out
 }
@@ -410,7 +446,10 @@ export function plans(ids, { repo = '', prefix = 'project:' } = {}) {
 // `node progress.mjs --gather '<json>'` — one refresh in a process of its own,
 // printed as JSON. The reads are synchronous git and forge calls, ~45 s a pass.
 export function gather({ tickets = [], ids = [], repo = '', queueRepo = '', driverDir = '', prefix = 'project:' } = {}) {
-  return { tickets: facts(tickets, { repo, queueRepo, driverDir }), plans: plans(ids, { repo, prefix }) }
+  const memo = loadMemo()
+  const out = { tickets: facts(tickets, { repo, queueRepo, driverDir, memo }), plans: plans(ids, { repo, prefix, memo }) }
+  saveMemo(memo)
+  return out
 }
 if (process.argv[2] === '--gather' && process.argv[1]
     && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

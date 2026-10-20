@@ -171,6 +171,45 @@ want "but a clause that is not one is kept" "The driver" \
 want "a ticket id prefix goes too" "The rules gate judged the draft" \
   "$(ask "return P.shortTitle('SH-10104: the rules gate judged the draft', '', 'one-desk', $NAME)")"
 
+echo "--- a second gather asks GitHub nothing it already knows ---"
+cat > "$BIN/gh-memo" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+head=""; prev=""; for a in "$@"; do [ "$prev" = --head ] && head="$a"; prev="$a"; done
+case "$1 $2" in
+  "pr list") f="$FIX/gh/memo-pr-${head//\//_}.json"; [ -f "$f" ] && cat "$f" || echo '[]' ;;
+  "issue list") echo '[{"state":"CLOSED","labels":[{"name":"effort:M"}]},{"state":"OPEN","labels":[]}]' ;;
+esac
+SH
+cat > "$BIN/claim-memo" <<'SH'
+#!/usr/bin/env bash
+printf '{"branch":"tkt-%s/work"}\n' "$2"
+SH
+chmod +x "$BIN/gh-memo" "$BIN/claim-memo"
+echo '[{"number":71,"headRefName":"tkt-701/work","state":"OPEN","statusCheckRollup":[]}]' > "$STATE/swarm/memo-prs.json"
+echo '[{"number":72,"state":"MERGED","statusCheckRollup":[]}]' > "$FIX/gh/memo-pr-tkt-702_work.json"
+rm -f "$STATE/swarm/live-view-memo.json"
+gather() {
+  SWARM_PRS_MAX_AGE=300 SWARM_GH="$BIN/gh-memo" SWARM_CLAIM_LOCK="$BIN/claim-memo" SWARM_GIT=false SWARM_PRS_FILE="$STATE/swarm/memo-prs.json" \
+    node "$M" --gather '{"tickets":["701","702","703"],"ids":["widgets"],"repo":"acme/widgets"}'
+}
+prs() { jq -r '[.tickets["701","702","703"].pr | if . == null then "none" else "\(.number):\(.state)" end] | join(" ")'; }
+: > "$GH_LOG"; g1=$(gather)
+want "first gather: the open one from the shared copy, the others asked" "71:OPEN 72:MERGED none" "$(prs <<<"$g1")"
+want "one pr list per branch the copy lacks"   "2" "$(grep -c '^pr list' "$GH_LOG")"
+want "and one issue list for the plan"         "1" "$(grep -c '^issue list' "$GH_LOG")"
+: > "$GH_LOG"; g2=$(gather)
+want "second gather: the same answer"          "71:OPEN 72:MERGED none" "$(prs <<<"$g2")"
+want "with no pr list while the copy is fresh" "0" "$(grep -c '^pr list' "$GH_LOG")"
+want "and the plan from its last read"         "$(jq -c .plans <<<"$g1")" "$(jq -c .plans <<<"$g2")"
+want "no issue list inside its age"            "0" "$(grep -c '^issue list' "$GH_LOG")"
+: > "$GH_LOG"; SWARM_PR_NONE_TTL=0 SWARM_PLAN_TTL=0 gather >/dev/null
+want "past their age: the branch with no PR and the plan are asked again" "1 1" \
+  "$(grep -c '^pr list' "$GH_LOG") $(grep -c '^issue list' "$GH_LOG")"
+want_not_in "a merged PR never is"             "^pr list .*tkt-702" "$(cat "$GH_LOG")"
+touch -t 202601010000 "$STATE/swarm/memo-prs.json"; : > "$GH_LOG"; gather >/dev/null
+want "a stale copy proves nothing about a branch with no PR" "1" "$(grep -c '^pr list .*tkt-703' "$GH_LOG")"
+
 echo "--- the live view carries it, and so does the reporter ---"
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '{"run_id":"claim-601-a","ticket":"601","child_pid":%s,"started_at":"%s","budget_usd":150,"log":"%s"}\n' \

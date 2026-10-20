@@ -141,14 +141,25 @@ screen_set() { # paths on stdin, the screen set on stdout
   return 0
 }
 
+# A file at a commit never changes, so its answer is kept on disk by (commit, path):
+# the tick re-checks the same held PRs every pass, and re-asked ~60 files a check.
+blob_cache() { printf '%s' "${APPROVAL_BLOB_CACHE:-$(dirname "$(gh_backoff_file)")/blobs}"; }
 blob_at() { # <sha> <path> — the file's blob, "absent" when the commit has none, 1 unreadable
-  local enc out
+  local enc out key=""
+  if [[ "$1" =~ ^[0-9a-f]{40}$ ]]; then
+    key="$(blob_cache)/$1/$(printf '%s' "$2" | shasum | awk "{print \$1}")"
+    if [ -s "$key" ]; then cat "$key"; return 0; fi
+  fi
   enc=$(jq -rn --arg p "$2" '$p | split("/") | map(@uri) | join("/")')
   if out=$(gh_call api "repos/$REPO/contents/$enc?ref=$1" --jq .sha 2>&1); then
-    [ -n "$out" ] && printf '%s' "$out" && return 0; return 1
+    [ -n "$out" ] || return 1
+  else
+    case "$out" in *"Not Found"*|*"HTTP 404"*) out=absent ;; *) return 1 ;; esac
   fi
-  case "$out" in *"Not Found"*|*"HTTP 404"*) printf absent; return 0 ;; esac
-  return 1
+  if [ -n "$key" ] && mkdir -p "$(dirname "$key")" 2>/dev/null; then
+    printf '%s' "$out" > "$key.$$" && mv -f "$key.$$" "$key"
+  fi
+  printf '%s' "$out"
 }
 
 cut() { jq -e '(.files | length) >= 300 or ((.total_commits // (.commits | length)) > (.commits | length))' >/dev/null <<<"$1"; }
@@ -188,6 +199,7 @@ check() { # <approved> <head> [--screens cmd]
       <(jq -r '.files[] | .filename, (.previous_filename // empty)' <<<"$since" | sort -u) | sed '/^$/d')
   else
     # A busy trunk fills the 300-file list; then each own screen is compared by blob.
+    find "$(blob_cache)" -type f -mtime +14 -delete 2>/dev/null
     moved=""
     while IFS= read -r f; do
       [ -n "$f" ] || continue
