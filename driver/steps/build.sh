@@ -22,6 +22,7 @@
 # commit, and all three fail here.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 
 # driver_prove_red_green <repo> <test-file> <test-commit> <impl-commit> <command>
 #
@@ -345,12 +346,38 @@ driver_step_build() { # <ticket>
 
   bad=0
   : > "$(driver_state_dir "$t")/steps/build.all.json"
+  # A REWORK REBUILDS WHAT WAS SENT BACK, NOT THE PLAN. #13623 had six tasks proved and
+  # one refused; the rework round rebuilt all seven (15:13–15:35Z), and the resume after
+  # a usage stop rebuilt five already proved. A task proved on an earlier pass, whose
+  # plan entry is unchanged and whose commits are still on the branch, is kept.
+  local keep kept=0
+  keep=$(_driver_build_keepable "$t" "$repo" "$ntasks")
+  if [ -n "$keep" ]; then
+    driver_say "   build: $(printf '%s' "$keep" | wc -w | tr -d ' ') of $ntasks task(s) kept from an earlier pass (proved, commits still on the branch); building the rest again"
+  fi
   local i=0
   while [ "$i" -lt "$ntasks" ]; do
     task=$(jq -c --argjson i "$i" '.tasks[$i]' "$(driver_state_dir "$t")/steps/plan.json")
     i=$((i+1))
     slot="build-task-$i"
     ans="$(driver_state_dir "$t")/steps/$slot.json"
+    local proved="$(driver_state_dir "$t")/steps/$slot.proved"
+
+    if _driver_build_in "$i" "$keep"; then
+      jq -c '.answer' "$proved" >> "$(driver_state_dir "$t")/steps/build.all.json"
+      pair=$(jq -r '.pair' "$proved")
+      if [ "$(jq -r '.merged' "$proved")" = true ]; then
+        merged=$((merged+1))
+      else
+        seen_pairs="$seen_pairs $pair"
+        seen_titles="$seen_titles$pair	$(jq -r '.title' "$proved")
+"
+      fi
+      kept=$((kept+1))
+      driver_say "   build $(jq -r '.title' "$proved") — kept: proved on an earlier pass"
+      continue
+    fi
+    rm -f "$proved"
 
     # The one task this call builds, as the brief's own placeholder.
     driver_fact_put "$t" "$slot" PLAN_TASK "$(printf '%s' "$task" | jq .)"
@@ -370,6 +397,9 @@ driver_step_build() { # <ticket>
       return "$rc"
     fi
     jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
+    # Formatted with the task, so a format check can never be the thing self-check
+    # sends back. After the answer is read: the proof names its own two commits.
+    driver_format_changed "$t" "$repo" "build $slot" || true
     # The tests this task reworded or removed, on the run's one ledger: the commits
     # stay on the branch across build tries and restarts, so their reports must too.
     jq -c '(.replacedTests // [])[]' "$ans" >> "$(driver_state_dir "$t")/steps/replaced.jsonl" 2>/dev/null || true
@@ -403,6 +433,7 @@ driver_step_build() { # <ticket>
     # code it covers is already there and nothing can be red before it. Dom's rule,
     # 2026-09-30: break the production code, show red, restore, show green.
     if jq -e '.testOnly | type == "object"' "$ans" >/dev/null 2>&1; then
+      isha=""
       tfile=$(jq -r '.testOnly.test.file // ""' "$ans")
       tcmd=$(jq -r  '.testOnly.command // ""'   "$ans")
       tsha=$(jq -r  '.testOnly.testCommit // ""' "$ans")
@@ -414,6 +445,7 @@ driver_step_build() { # <ticket>
       pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile"
       if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
         driver_say "   build '$got_task' is proved by the same test commit and break as '$same' — one change, so the two are one task: merged, and proved once."
+        _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha"
         merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
       fi
       seen_pairs="$seen_pairs $pair"
@@ -442,6 +474,7 @@ driver_step_build() { # <ticket>
     # (#13584). So the later task is merged into the earlier one, said, and not re-proved.
     if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
       driver_say "   build '$got_task' is proved by the same two commits as '$same' ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)) — one change, so the two are one task: merged, and proved once."
+      _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha" "$isha"
       merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
     fi
     seen_pairs="$seen_pairs $pair"
@@ -452,6 +485,7 @@ driver_step_build() { # <ticket>
     fi
     if [ "$prc" -eq 0 ]; then
       rm -f "$(driver_state_dir "$t")/steps/$slot.refused"
+      _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" false "$tsha" $isha
     else
       printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
     fi
@@ -479,7 +513,9 @@ driver_step_build() { # <ticket>
   done
 
   if [ "$bad" -eq 0 ]; then
-    if [ "$merged" -gt 0 ]; then
+    if [ "$kept" -gt 0 ]; then
+      driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
+    elif [ "$merged" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green, as $((ntasks - merged)) change(s) — $merged merged into the task proved by the same commits"
     else
       driver_say "   build: all $ntasks task(s) proved red before green"
@@ -488,6 +524,60 @@ driver_step_build() { # <ticket>
   fi
   _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
   return "$DRIVER_E_REWORK"
+}
+
+# _driver_build_in <n> <list> — 0 when <n> is one of the space-separated <list>.
+_driver_build_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+
+# _driver_build_mark_proved <marker> <plan-task> <answer> <pair> <title> <merged> <sha…>
+# — what a later pass needs to keep this task without building it again: the plan
+# entry it was proved against, the answer, and the commits that have to stay on the branch.
+_driver_build_mark_proved() {
+  local m="$1" task="$2" ans="$3" pair="$4" title="$5" merged="$6"; shift 6
+  jq -n --argjson task "$task" --slurpfile a "$ans" --arg pair "$pair" --arg title "$title" \
+    --argjson merged "$merged" --args \
+    '{task: $task, answer: $a[0], pair: $pair, title: $title, merged: $merged,
+      commits: [$ARGS.positional[] | select(. != "")]}' "$@" > "$m" 2>/dev/null || rm -f "$m"
+}
+
+# _driver_build_keepable <ticket> <repo> <ntasks> — the task numbers a pass can keep,
+# space-separated. A task is kept when it was proved on an earlier pass, against the
+# same plan entry, and every commit that proved it is still on the branch. Everything
+# else is built again — and so is each LATER task whose files overlap one being built
+# again, because it was proved on top of the code that is about to change.
+_driver_build_keepable() {
+  local t="$1" repo="$2" n="$3" d i m ok c task touched="" files f keep="" redo
+  d="$(driver_state_dir "$t")/steps"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    task=$(jq -c --argjson i "$i" '.tasks[$i]' "$d/plan.json" 2>/dev/null)
+    i=$((i+1))
+    m="$d/build-task-$i.proved"
+    ok=0
+    if [ -s "$m" ] && jq -e --argjson task "$task" '(.task == $task) and (.commits | length > 0)' "$m" >/dev/null 2>&1; then
+      ok=1
+      for c in $(jq -r '.commits[]' "$m"); do
+        git -C "$repo" merge-base --is-ancestor "$c" HEAD 2>/dev/null || { ok=0; break; }
+      done
+    fi
+    files=$(printf '%s' "$task" | jq -r '(.files // [])[] | if type == "object" then (.path // empty) else . end' 2>/dev/null)
+    redo=$((1 - ok))
+    if [ "$redo" -eq 0 ] && [ -n "$touched" ]; then
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        grep -Fxq -- "$f" <<<"$touched" && { redo=1; break; }
+      done <<EOF
+$files
+EOF
+    fi
+    if [ "$redo" -eq 1 ]; then
+      touched="$touched
+$files"
+    else
+      keep="$keep $i"
+    fi
+  done
+  printf '%s' "${keep# }"
 }
 
 # _driver_build_same_proof <pair> <seen> — the title of the earlier task <pair> proved
