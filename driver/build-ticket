@@ -538,7 +538,7 @@ while [ "$i" -lt "$N" ]; do
       unread=1
       ;;
 
-    "$DRIVER_E_USAGE"|"$DRIVER_E_BUSY")
+    "$DRIVER_E_USAGE"|"$DRIVER_E_BUSY"|"$DRIVER_E_REQUEUE")
       requeue=1
       ;;
 

@@ -52,6 +52,33 @@ driver_step_plan() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
+  # THE BINDING PICTURE IS READ ON THIS MACHINE, or the run goes back on the queue.
+  # A designRef that is a path where the picture was drawn finds nothing on any other
+  # machine; the ticket's "Picture for any machine" comment carries the file, which is
+  # fetched, checked against its sha256 and committed into the tree. None reachable is
+  # nobody's question: requeued with the reason, never parked, never asked.
+  local dref dwt dout drc=0 derr
+  dref=$(jq -r '.designRef // ""' "$ans")
+  dwt=$(driver_state_get "$t" worktree)
+  if [ -n "$(printf '%s' "$dref" | tr -d '[:space:]')" ] && [ -n "$dwt" ] && [ -d "$dwt" ]; then
+    derr="$(driver_state_dir "$t")/steps/picture-fetch.err"
+    dout=$(bash "$KIT_ROOT/scripts/picture-fetch.sh" "$t" "$dref" "$dwt" 2>"$derr") || drc=$?
+    if [ "$drc" -ne 0 ]; then
+      driver_say "⏳ plan: the approved picture could not be read on this machine — $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //'). Back on the queue until it is published, not parked."
+      driver_state_set "$t" park_note "the approved picture is not readable on this machine: $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //')"
+      return "$DRIVER_E_REQUEUE"
+    fi
+    if [ "$dout" != "$dref" ]; then
+      if ! { git -C "$dwt" add -- "$dout" && git -C "$dwt" commit -q --no-verify -m "chore(design): the approved picture for #$t, from its published copy" -- "$dout"; } >/dev/null 2>&1; then
+        driver_say "✋ plan: the approved picture was fetched to $dout and could not be committed."
+        driver_state_set "$t" park_note "the approved picture was fetched to $dout in $dwt and could not be committed"
+        return "$DRIVER_E_REFUSED"
+      fi
+      driver_say "   plan: $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //'), committed"
+      jq --arg r "$dout" '.designRef = $r' "$ans" > "$ans.tmp" && mv "$ans.tmp" "$ans"
+    fi
+  fi
+
   # Where the design goes. On the ticket, not into the repo: the comment outlives
   # the worktree and is what the next reader — or the next agent — opens.
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(

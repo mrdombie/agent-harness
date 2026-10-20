@@ -33,6 +33,9 @@
 #                        one per MACHINE, not per project — the cores are shared)
 #   MACHINE_GATE_POLL    seconds between checks (default 30)
 #   MACHINE_GATE_MAX_WAIT  default for --max (0 = wait as long as it takes)
+#   MACHINE_GATE_ON_WAIT   a command run on every busy poll, before the sleep. When it
+#                        exits non-zero the wait is moot (what it waited to do can no
+#                        longer land): the call returns 76 and NOTHING RAN.
 #
 # A slot is a directory made with mkdir, which is atomic, holding the holder's
 # pid. A holder that died without letting go is found by its pid, not its age.
@@ -42,6 +45,15 @@ _mg_self="${BASH_SOURCE[0]}"
 unset _mg_self
 
 MG_BUSY=75
+MG_MOOT=76
+
+# _mg_still_wanted — 0 while the caller's MACHINE_GATE_ON_WAIT says the wait still matters.
+_mg_still_wanted() {
+  [ -n "${MACHINE_GATE_ON_WAIT:-}" ] || return 0
+  $MACHINE_GATE_ON_WAIT && return 0
+  echo "stopped waiting for the machine: the caller's check says the wait is moot — nothing ran" >&2
+  return 1
+}
 
 _mg_cfg() { # <jq path> — an optional fact from harness.json, or nothing
   local cfg="${HARNESS_CFG:-${HARNESS_CFG_PATH:-}}"
@@ -72,7 +84,7 @@ _mg_alive() { [ -n "${1:-}" ] && [ "$1" -gt 0 ] 2>/dev/null && kill -0 "$1" 2>/d
 # _mg_waited <start-epoch> <max> — 0 while there is still time to wait.
 _mg_time_left() { [ "${2:-0}" -le 0 ] && return 0; [ $(( $(date +%s) - $1 )) -lt "$2" ]; }
 
-# Wait until the machine is not busy. 0 when clear, 75 when --max ran out.
+# Wait until the machine is not busy. 0 when clear, 75 when --max ran out, 76 when moot.
 machine_gate_wait_load() { # [max-seconds]
   machine_gate_init
   local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" start why said=""
@@ -84,6 +96,7 @@ machine_gate_wait_load() { # [max-seconds]
     fi
     echo "machine busy ($why), waiting" >&2
     said=1
+    _mg_still_wanted || return "$MG_MOOT"
     _mg_time_left "$start" "$max" || {
       echo "machine still busy after ${max}s ($why) — nothing ran; run the same command again" >&2
       return "$MG_BUSY"; }
@@ -124,7 +137,7 @@ _mg_slot_dead() { # <slot-dir>
   if [ -z "$pid" ]; then [ "$(_mg_age "$1")" -gt 10 ]; else ! _mg_alive "$pid"; fi
 }
 
-# Take one of the machine's gate slots. Sets MG_SLOT. 0 when held, 75 when --max ran out.
+# Take one of the machine's gate slots. Sets MG_SLOT. 0 when held, 75 when --max ran out, 76 when moot.
 machine_gate_acquire() { # [max-seconds] [label]
   machine_gate_init
   local max="${1:-${MACHINE_GATE_MAX_WAIT:-0}}" label="${2:-gate}" start i s said=""
@@ -147,6 +160,7 @@ machine_gate_acquire() { # [max-seconds] [label]
     done
     echo "machine busy ($MG_SLOTS of $MG_SLOTS gate runs going: $(machine_gate_holders)), waiting" >&2
     said=1
+    _mg_still_wanted || return "$MG_MOOT"
     _mg_time_left "$start" "$max" || {
       echo "no gate slot after ${max}s — nothing ran; run the same command again" >&2
       return "$MG_BUSY"; }
