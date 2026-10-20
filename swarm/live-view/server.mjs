@@ -531,8 +531,49 @@ export function claimsFromList(out) {
   try {
     const j = JSON.parse(out)
     if (!Array.isArray(j)) return null
-    return j.filter((c) => c && c.issue != null).map((c) => ({ issue: String(c.issue), host: String(c.host || '') }))
+    return j.filter((c) => c && c.issue != null).map((c) => ({ issue: String(c.issue), host: String(c.host || ''),
+      step: c.step ? String(c.step) : null, claimedAt: c.claimed_at ? String(c.claimed_at) : null }))
   } catch { return null }
+}
+
+// The claims, kept apart from the board: the board waits on forge reads and the
+// allowance, a claim list is one git fetch and changes by the minute. One call in
+// flight, killed at its deadline, never on the request path.
+const CLAIMS_FILE = process.env.SWARM_CLAIMS_FILE || path.join(path.dirname(BOARD_FILE), 'claims.json')
+const CLAIMS_MS = Math.max(15_000, Number(process.env.SWARM_CLAIMS_MS || 60_000))
+const CLAIMS_TIMEOUT_MS = Number(process.env.SWARM_CLAIMS_TIMEOUT_MS || 30_000)
+// Older than this, a kept list says nothing about who is building now.
+const CLAIMS_MAX_AGE_MS = Math.max(CLAIMS_MS * 3, 600_000)
+let claimsTried = 0, claimsBusy = false
+function refreshClaims(now) {
+  if (!CLAIM_LOCK || claimsBusy || now - claimsTried < CLAIMS_MS) return
+  try { if (now - fs.statSync(CLAIMS_FILE).mtimeMs < CLAIMS_MS) return } catch {}
+  claimsTried = now
+  const keep = (out) => {
+    const claims = claimsFromList(out)
+    if (!claims) return
+    try {
+      fs.mkdirSync(path.dirname(CLAIMS_FILE), { recursive: true })
+      fs.writeFileSync(CLAIMS_FILE + '.tmp', JSON.stringify({ at: new Date(now).toISOString(), claims }))
+      fs.renameSync(CLAIMS_FILE + '.tmp', CLAIMS_FILE)
+    } catch (e) { warn('claims cache', e) }
+  }
+  const env = { ...process.env, CLAIM_REPO: QUEUE_REPO || process.env.CLAIM_REPO || '' }
+  if (process.env.SWARM_PROGRESS_SYNC) {
+    try { keep(execFileSync(CLAIM_LOCK, ['list', '--json'], { timeout: CLAIMS_TIMEOUT_MS, encoding: 'utf8', env })) } catch {}
+    return
+  }
+  claimsBusy = true
+  runChild('claims', CLAIM_LOCK, ['list', '--json'], { timeout: CLAIMS_TIMEOUT_MS, env }, (err, out) => {
+    claimsBusy = false
+    if (!err) keep(out)
+  })
+}
+// The kept claim list, or null when there is none young enough to believe.
+function claimsNow(now) {
+  const j = readJsonCached(CLAIMS_FILE)
+  if (!j || !Array.isArray(j.claims) || !(now - Date.parse(j.at) < CLAIMS_MAX_AGE_MS)) return null
+  return j.claims
 }
 
 let boardTried = 0, boardBusy = false
@@ -559,23 +600,17 @@ function refreshBoard(now) {
       fs.renameSync(BOARD_FILE + '.tmp', BOARD_FILE)
     } catch (e) { warn('board cache', e) }
   }
-  const claimEnv = { ...process.env, CLAIM_REPO: QUEUE_REPO || process.env.CLAIM_REPO || '' }
   noteGh(['api', 'graphql'])
   if (process.env.SWARM_PROGRESS_SYNC) {
-    let out = '', claims = null
+    let out = ''
     try { out = execFileSync(GH, args, { timeout: 120_000, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }) } catch { return }
-    if (CLAIM_LOCK) { try { claims = claimsFromList(execFileSync(CLAIM_LOCK, ['list', '--json'], { timeout: 60_000, encoding: 'utf8', env: claimEnv })) } catch {} }
-    keep(out, claims)
+    keep(out, claimsNow(now))
     return
   }
   boardBusy = true
   runChild('board', GH, args, { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
-    if (err) { boardBusy = false; return }
-    if (!CLAIM_LOCK) { boardBusy = false; keep(out, null); return }
-    runChild('board claims', CLAIM_LOCK, ['list', '--json'], { timeout: 60_000, env: claimEnv }, (e2, c) => {
-      boardBusy = false
-      keep(out, e2 ? null : claimsFromList(c))
-    })
+    boardBusy = false
+    if (!err) keep(out, claimsNow(Date.now()))
   })
 }
 
@@ -907,6 +942,27 @@ export function hostsOf(live, claims) {
   return Object.entries(by).filter(([, n]) => n > 0).map(([host, n]) => ({ host, n })).sort((a, b) => b.n - a.n)
 }
 
+// Another machine's builds, from its claims: one row per ticket that is not running
+// here. Its progress, activity and quiet time live in logs on that machine, so they
+// are absent (null), never guessed. A claim on this host with no run is stale.
+export function elsewhereOf(claims, live, now = Date.now(), title = () => ({})) {
+  const here = new Set([THIS_HOST, ...live.map((a) => a.host)].filter(Boolean))
+  const seen = new Set(live.map((a) => a.ticket))
+  const rows = []
+  for (const c of claims || []) {
+    const host = hostName(c.host)
+    if (!host || here.has(host) || seen.has(c.issue)) continue
+    seen.add(c.issue)
+    const t = title(c.issue) || {}
+    const at = Date.parse(c.claimedAt || '')
+    rows.push({ ticket: c.issue, title: t.title || `Ticket ${c.issue}`, short: t.short || t.title || `Ticket ${c.issue}`,
+                project: t.project || '', host, remote: true, claimStep: c.step || null,
+                startedAgoMin: Number.isFinite(at) ? Math.max(0, Math.round((now - at) / 60000)) : null,
+                progress: null, quietSec: null, steps: null })
+  }
+  return rows.sort((a, b) => (a.startedAgoMin ?? 1e9) - (b.startedAgoMin ?? 1e9))
+}
+
 // The words and tone a finished row's state is shown with. Only `stopped` is a failure.
 export const NOW_STATES = {
   shipped: { tone: 'ok', count: 'shipped' },
@@ -994,7 +1050,7 @@ export function snapshot(now = Date.now()) {
       startedAgoMin: Math.round((now - Date.parse(run.started_at)) / 60000),
       quietSec: log.mtime ? Math.round((now - log.mtime) / 1000) : null,
       budget: run.budget_usd,
-      host: hostName(run.host || run.operator),
+      host: hostName(run.host || run.operator) || THIS_HOST,
       steps: log.steps,
     }
     if (isLive) live.push(row)
@@ -1023,11 +1079,19 @@ export function snapshot(now = Date.now()) {
     .map(({ park, endedAt, ...d }) => ({ ...d, now: nowOf({ ...d, park }, ctx) }))
   guard('progress', () => refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now))
   guard('hold', () => refreshHold(now))
+  guard('claims', () => refreshClaims(now))
   guard('board', () => refreshBoard(now))
   guard('trend', () => refreshTrend(now))
   guard('wrappers', () => refreshWrappers(now))
   ctx.wrappers = readJsonCached(WRAPPERS_FILE)
-  const board = boardOf(readJsonCached(BOARD_FILE), ctx, now)
+  const boardFile = readJsonCached(BOARD_FILE)
+  const claims = claimsNow(now) || (boardFile && boardFile.claims) || null
+  const board = boardOf(boardFile && { ...boardFile, claims }, ctx, now)
+  const elsewhere = elsewhereOf(claims, live, now, (t) => {
+    guard('title', () => fetchTitle(t))
+    const x = titleOf(t)
+    return x.title ? { ...x, short: shortTitle(x.title, plainTitles[t], x.project, plainName) } : {}
+  })
   const launch = launchOf(board, readJsonCached(TREND_FILE), ctx.wrappers, now)
   const queue = queued
   for (const r of queue.tickets) {
@@ -1038,9 +1102,9 @@ export function snapshot(now = Date.now()) {
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
-           plans: plansOf(live, progress.plans, plainName), live, done: doneRows, doneSummary: doneSummary(doneRows),
+           plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
            hold, queue, capacity: capacityOf(), disk: diskOf(), board, launch, usage: usageOf(PACE_FILE, now),
-           hosts: hostsOf(live, board && board.claims),
+           hosts: hostsOf(live, claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,
                     toolingLabels: TOOLING_LABELS, toolingScopes: TOOLING_SCOPES, ownerLabels: OWNER_ASK } }
 }

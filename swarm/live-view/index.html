@@ -23,6 +23,7 @@ h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3
 .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none}
 .dot.ok{background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 20%,transparent);animation:pulse 2s infinite}
 .dot.slow{background:var(--warn)} .dot.stuck{background:var(--bad)}
+.dot.away{background:transparent;border:2px solid var(--ink3);box-sizing:border-box}
 .disklow{color:var(--bad);font-weight:600} .diskheld{color:var(--warn);font-weight:600}
 @keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--good) 0%,transparent)}}
 .title{font-weight:600;line-height:1.3}
@@ -155,13 +156,29 @@ function stepText(p){
 }
 const ticketLink = (n, kind = 'issues') => repo
   ? `<a href="https://github.com/${esc(repo)}/${kind}/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a>` : `#${esc(n)}`
+// The machine a row runs on, in plain words. thisHost comes from the snapshot.
+let thisHost = ''
+const machineOf = (h) => !h ? 'Machine not recorded' : h === thisHost ? `This machine (${esc(h)})` : `On ${esc(h)}`
+// Another machine's claim: its step as the claim names it; progress and activity
+// stay in logs on that machine, so they are left out, never invented.
+const CLAIM_WORD = { start: 'Setting up', plan: 'Planning', build: 'Building', 'self-check': 'Checking', review: 'Being reviewed',
+  ship: 'Opening the pull request', reenter: 'Going back to the pull request', repair: 'Repairing', fix: 'Fixing', push: 'Pushing the fix' }
+function remoteRow(a){
+  const step = a.claimStep ? `<b>${esc(CLAIM_WORD[a.claimStep] || a.claimStep)}</b>` : ''
+  const time = a.startedAgoMin != null ? `claimed ${esc(dur(a.startedAgoMin))} ago` : ''
+  return `<div class="row build remote"><span class="dot away" title="activity is only visible on ${esc(a.host)}"></span><div class="main">
+    <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
+    <div class="step">${[machineOf(a.host), step, time].filter(Boolean).join(' · ')}</div>
+    <div class="line">Progress and activity show on ${esc(a.host)} only</div></div></div>`
+}
 function buildRow(a){
+  if (a.remote) return remoteRow(a)
   const q = a.quietSec ?? 99999
   const cls = q < 90 ? 'ok' : q < 600 ? 'slow' : 'stuck'
   const last = a.steps?.length ? a.steps[a.steps.length - 1].text : 'No activity yet'
   return `<div class="row build"><span class="dot ${cls}" title="last active ${esc(ago(a.quietSec))}"></span><div class="main">
     <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
-    <div class="step">${stepText(a.progress)} · ${esc(dur(a.startedAgoMin))} running</div>
+    <div class="step">${machineOf(a.host)} · ${stepText(a.progress)} · ${esc(dur(a.startedAgoMin))} running</div>
     <div class="line" title="${esc(last)}">${esc(last)}</div></div></div>`
 }
 const num = (n) => Number(n).toLocaleString()
@@ -295,9 +312,11 @@ function render(s){
   const td = s.launch?.today
   document.getElementById('today').innerHTML = todayLine(td
     ? { merged: td.merged, done: td.done, made: td.added, delta: td.done - td.added } : s.board?.today)
-  document.getElementById('buildinghead').textContent = s.live.length ? `Building now · ${s.live.length}` : 'Building now'
-  document.getElementById('building').innerHTML = s.live.length
-    ? `<div class="rows">${s.live.map(buildRow).join('')}</div>` : '<p class="empty">Nothing is being built.</p>'
+  thisHost = s.thisHost || ''
+  const building = [...s.live, ...(s.elsewhere || [])]
+  document.getElementById('buildinghead').textContent = building.length ? `Building now · ${building.length}` : 'Building now'
+  document.getElementById('building').innerHTML = building.length
+    ? `<div class="rows">${building.map(buildRow).join('')}</div>` : '<p class="empty">Nothing is being built.</p>'
   document.getElementById('needshead').textContent = s.board?.needsYou?.length ? `Needs you · ${s.board.needsYou.length}` : 'Needs you'
   document.getElementById('needs').innerHTML = needsList(s.board)
   // Collapsed to its counts: the rows are there for whoever opens it.
