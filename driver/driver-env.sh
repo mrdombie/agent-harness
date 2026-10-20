@@ -303,6 +303,70 @@ driver_push() {
   return "$rc"
 }
 
+# driver_take_origin <ticket> <tree> <branch> [trunk] — bring in what origin's copy of
+# the ticket's OWN branch has and this tree lacks, before a push. An earlier run of
+# the same ticket that pushed first made every later push "rejected (fetch first)",
+# and the park left the ticket ready to hit it again (measured 2026-10-20: 2 commits
+# on origin, 12 newer here). Merged, never rebased or forced. On a conflict this
+# run's version wins for a file its own commits changed; any other conflicted file
+# aborts the merge and is named in DRIVER_TAKE_WHY (return 1). DRIVER_TAKE_MERGED=1
+# when the merge changed the tree, so the caller re-runs the gates on it.
+driver_take_origin() {
+  local t="$1" wt="$2" branch="$3" trunk="${4:-}" ob lrc=0 before n mine conflicted f rest="" out="" msg
+  DRIVER_TAKE_MERGED=0; DRIVER_TAKE_WHY=""; DRIVER_TAKE_COUNT=0
+  ob="refs/remotes/origin/$branch"
+  git -C "$wt" ls-remote --exit-code -q origin "refs/heads/$branch" >/dev/null 2>&1 || lrc=$?
+  [ "$lrc" -ne 2 ] || return 0
+  if [ "$lrc" -ne 0 ] || ! out=$(git -C "$wt" fetch -q origin "+refs/heads/$branch:$ob" 2>&1); then
+    driver_say "   could not fetch origin's $branch (the push will say why if it matters): $(printf '%s' "$out" | tail -1 | cut -c1-200)"
+    return 0
+  fi
+  n=$(git -C "$wt" rev-list --count "HEAD..$ob" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*)
+    DRIVER_TAKE_WHY="could not count origin's $branch against this tree"; return 1 ;; esac
+  [ "$n" -gt 0 ] || return 0
+  DRIVER_TAKE_COUNT="$n"
+  before=$(git -C "$wt" rev-parse 'HEAD^{tree}')
+  if [ -n "$trunk" ] && git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1; then
+    mine=$(git -C "$wt" log --no-merges --format= --name-only HEAD --not "$ob" "$trunk" 2>/dev/null | sort -u)
+  else
+    mine=$(git -C "$wt" log --no-merges --format= --name-only HEAD --not "$ob" 2>/dev/null | sort -u)
+  fi
+  msg="chore(merge): take the earlier run's commits on this ticket's branch (#$t)"
+  if git -C "$wt" merge -q --no-ff --no-verify -m "$msg" "$ob" >/dev/null 2>&1; then
+    [ "$(git -C "$wt" rev-parse 'HEAD^{tree}')" = "$before" ] || DRIVER_TAKE_MERGED=1
+    return 0
+  fi
+  conflicted=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
+  if [ -z "$conflicted" ]; then
+    git -C "$wt" merge --abort >/dev/null 2>&1
+    DRIVER_TAKE_WHY="merging origin's $branch failed with no conflicted file to name"; return 1
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "$mine" | grep -qxF -- "$f" || rest="$rest$f "
+  done <<< "$conflicted"
+  if [ -n "$rest" ]; then
+    git -C "$wt" merge --abort >/dev/null 2>&1
+    DRIVER_TAKE_WHY="${rest% }"; return 1
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if git -C "$wt" cat-file -e "HEAD:$f" 2>/dev/null; then
+      git -C "$wt" checkout -q --ours -- "$f" && git -C "$wt" add -- "$f"
+    else
+      git -C "$wt" rm -q --cached --ignore-unmatch -- "$f" >/dev/null 2>&1; rm -f -- "$wt/$f"
+    fi
+  done <<< "$conflicted"
+  if [ -n "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ] \
+     || ! git -C "$wt" commit -q --no-verify -m "$msg" >/dev/null 2>&1; then
+    git -C "$wt" merge --abort >/dev/null 2>&1
+    DRIVER_TAKE_WHY="the conflicts in $(printf '%s' "$conflicted" | tr '\n' ' ')could not be settled for this run's side"; return 1
+  fi
+  [ "$(git -C "$wt" rev-parse 'HEAD^{tree}')" = "$before" ] || DRIVER_TAKE_MERGED=1
+  return 0
+}
+
 # driver_step_tools <step> — the allowlist for one step: briefs/facts.json's
 # `steps.<step>.tools` when it names one, else DRIVER_TOOLS.
 driver_step_tools() {

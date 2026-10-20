@@ -20,6 +20,8 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
+# driver_step_self_check: the gates again, on a tree the merge from origin changed.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
 
 # _driver_ship_replaced <ticket> — the "## Deleted tests" lines for the tests this
 # ticket's steps reported rewording or removing (steps/replaced.jsonl), last word per file.
@@ -310,6 +312,21 @@ driver_step_ship() { # <ticket>
   if [ "$ahead" -eq 0 ]; then
     driver_say "✋ ship: $branch has no commits on it against $trunk. There is nothing to ship."
     return "$DRIVER_E_REFUSED"
+  fi
+
+  # ORIGIN'S COPY OF THIS BRANCH FIRST. An earlier run of the same ticket may have
+  # pushed to it; without its commits the push is "rejected (fetch first)" on every
+  # run. Merged here, before the verdicts are matched to HEAD, so a merge that moved
+  # HEAD is re-recorded like any other commit — and the gates run again on it.
+  if ! driver_take_origin "$t" "$wt" "$branch" "$trunk"; then
+    driver_say "✋ ship: origin's $branch has commits from an earlier run that conflict with this run outside the files this run changed: $DRIVER_TAKE_WHY. Nothing is pushed."
+    driver_state_set "$t" park_note "origin's $branch has an earlier run's commits that conflict in files this run did not change: $DRIVER_TAKE_WHY"
+    return "$DRIVER_E_REFUSED"
+  fi
+  if [ "$DRIVER_TAKE_MERGED" = 1 ]; then
+    driver_say "   ship: merged $DRIVER_TAKE_COUNT commit(s) an earlier run pushed to $branch — self-check runs again on the merged tree."
+    local scrc=0; driver_step_self_check "$t" || scrc=$?
+    [ "$scrc" -eq 0 ] || return "$scrc"
   fi
 
   # THE VERDICTS HAVE TO DESCRIBE THIS HEAD. The review step records them, and any
