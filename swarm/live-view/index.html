@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Build, live</title>
+<title>Release, live</title>
 <style>
 :root{
   --ground:#F3EADB; --card:#FFFCF7; --sunk:#FBEBD3; --ink:#1F1B16; --ink2:#5E554A; --ink3:#8A7F71;
@@ -103,9 +103,9 @@ a{color:inherit}
 </head>
 <body>
 <div class="page">
-  <header><h1>Build, live</h1><span class="meta" id="meta">loading…</span></header>
+  <header><h1>Release, live</h1><span class="meta" id="meta">loading…</span></header>
   <div class="banner" id="hold" role="status" hidden></div>
-  <section class="headline" id="headline"><div class="big">Before launch: counting…</div></section>
+  <section class="headline" id="headline"><div class="ptitle">Release progress</div><div class="big">Release: counting…</div></section>
   <h2>Today</h2>
   <div class="today" id="today"><span class="empty">Not read yet.</span></div>
   <h2 id="buildinghead">Building now</h2>
@@ -169,12 +169,14 @@ function spark(vals){
   const pts = vals.map((v, i) => `${(i * w / Math.max(1, vals.length - 1)).toFixed(1)},${(h - 2 - v * (h - 4) / max).toFixed(1)}`).join(' ')
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`
 }
-// The bar of done against the whole list since the start date.
-function progressBar(l){
-  if (!l) return '<div class="progress"><div class="ptitle">Progress to launch</div><div class="sub">The pace lands with the next count.</div></div>'
-  return `<div class="progress"><div class="ptitle">Progress to launch</div>
-    <div class="bar" role="img" aria-label="${esc(l.pct)}% done"><i style="width:${Math.min(100, l.pct)}%"></i></div>
-    <div class="pline"><span><b>${num(l.done)}</b> done of <b>${num(l.total)}</b> · <b>${esc(l.pct)}%</b> since ${esc(dateName(l.base))}</span></div></div>`
+// The release: every ticket done since the start date plus every one still open
+// before launch, as the big number, then the bar of done against it.
+function releaseTop(l){
+  if (!l) return '<div class="ptitle">Release progress</div><div class="big">Release: counting…</div>'
+    + '<div class="sub">The release total lands with the next count.</div>'
+  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>
+    <div class="progress"><div class="bar" role="img" aria-label="${esc(l.pct)}% done"><i style="width:${Math.min(100, l.pct)}%"></i></div>
+    <div class="pline"><span><b>${num(l.done)}</b> done · <b>${num(l.open)}</b> left · <b>${esc(l.pct)}%</b></span><span class="sub">counted since ${esc(dateName(l.base))}</span></div></div>`
 }
 // Added against done for each of the last seven days and today, with the pace and where it lands.
 function paceBlock(l){
@@ -199,11 +201,11 @@ function mergedBlock(l){
     <div class="spark">${spark(merged)}<span>${num(merged.slice(0, -1).reduce((a, b) => a + b, 0))} in the last seven days · ${num(merged[merged.length - 1])} today</span></div>`
 }
 function headline(b, l){
-  if (!b) return progressBar(null) + '<div class="big">Before launch: counting…</div><div class="sub">The first full count of open tickets lands within a few minutes.</div>'
+  if (!b) return releaseTop(null)
   const chips = b.buckets.map(c => `<span class="chip${c.n ? '' : ' zero'}" data-k="${esc(c.key)}"><b>${num(c.n)}</b> ${esc(c.label)}</span>`)
   const label = b.afterLabel && b.afterLabel !== 'after-launch' ? ` (${esc(b.afterLabel)})` : ''
   chips.push(`<span class="chip muted" data-k="after"><b>${num(b.afterLaunch)}</b> After launch${label} · parked</span>`)
-  return `${progressBar(l)}<div class="big">Before launch: ${num(b.beforeLaunch)} <small>left</small></div><div class="chips">${chips.join('')}</div>${paceBlock(l)}${mergedBlock(l)}`
+  return `${releaseTop(l)}<div class="chips">${chips.join('')}</div>${paceBlock(l)}${mergedBlock(l)}`
 }
 function todayLine(t){
   if (!t) return '<span class="empty">Today’s counts land with the next full count.</span>'

@@ -553,9 +553,10 @@ const STUCK_LABELS = [LBL('LBL_BLOCKED', 'status:blocked'), LBL('LBL_EXTERNAL_BL
 
 // Where one open ticket stands, first match wins. Owner waits come before review
 // only while its pull request is clean: a red or clashing one is healing work first.
+// Building is a live run, never the claimed label: a label outlives the run that set it.
 export function bucketOf(labels, pr, building) {
   const has = (l) => labels.includes(l)
-  if (building || has(LBL('LBL_CLAIMED', 'status:claimed'))) return 'building'
+  if (building) return 'building'
   const ownerWait = OWNER_LABELS.some(has) || (pr && pr.held)
   if (ownerWait && !(pr && pr.red)) return 'owner'
   if (pr || has(LBL('LBL_IN_REVIEW', 'status:in-review')) || has('status:merged-needs-rollout')) return 'review'
@@ -574,7 +575,9 @@ export function boardOf(board, ctx, now = Date.now()) {
   const counts = Object.fromEntries(Object.keys(BUCKETS).map((k) => [k, 0]))
   let after = 0
   const needsYou = []
-  const claimed = new Set((board.claims || []).map((c) => c.issue))
+  // Another host's claim is its live run; one on this host without a run here is stale.
+  const here = new Set([THIS_HOST, ...(ctx.liveHosts || [])].filter(Boolean))
+  const claimed = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))
   for (const i of board.open) {
     const labels = i.labels || []
     if (labels.includes(AFTER_LAUNCH)) { after++; continue }
@@ -619,12 +622,15 @@ function boardTitle(ticket) {
 }
 
 const hostName = (h) => String(h || '').replace(/^.*@/, '')
-// Who is building where: this machine's live runs, and every host's claims.
+const THIS_HOST = process.env.SWARM_HOST || os.hostname().split('.')[0]
+// Who is building where: this machine's live runs, and every other host's claims.
 export function hostsOf(live, claims) {
   const by = {}
   for (const a of live) if (a.host) by[a.host] = (by[a.host] || 0) + 1
+  const here = new Set([THIS_HOST, ...live.map((a) => a.host)].filter(Boolean))
   for (const c of claims || []) {
     const h = hostName(c.host)
+    if (here.has(h) && !live.some((a) => a.ticket === c.issue)) continue
     if (h && !(h in by)) by[h] = 0
     if (h && !live.some((a) => a.ticket === c.issue)) by[h]++
   }
@@ -742,7 +748,7 @@ export function snapshot(now = Date.now()) {
   const queued = queueOf()
   const prRows = prRowsByTicket()
   const ctx = { issues: issuesByTicket(), prs: Object.fromEntries(Object.entries(prRows).map(([t, r]) => [t, r.number])),
-                prRows, live: new Set(live.map((a) => a.ticket)), queued: new Set(queued.tickets.map((r) => r.ticket)) }
+                prRows, live: new Set(live.map((a) => a.ticket)), liveHosts: live.map((a) => a.host), queued: new Set(queued.tickets.map((r) => r.ticket)) }
   const doneRows = [...newest.values()].sort((a, b) => b.endedAt - a.endedAt).slice(0, 20)
     .map(({ park, endedAt, ...d }) => ({ ...d, now: nowOf({ ...d, park }, ctx) }))
   refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
