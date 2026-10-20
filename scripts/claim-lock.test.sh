@@ -120,6 +120,12 @@ git -C "$SB/elsewhere" -c user.email=t@f.local -c user.name=f commit -q --allow-
 run "$SB/work" acquire 555 --branch tkt-555/x --worktree "$SB/wt5" --pid $$
 [ "$RC" -eq 0 ] || bad "fixture could not take a claim (rc $RC: $(tail -1 "$SB/out"))"
 
+run "$SB/elsewhere" list --json
+[ "$RC" -eq 0 ] && jq -e 'map(.issue) == [555]' "$SB/out" >/dev/null 2>&1 \
+  && ok "list --json that lists exits 0 with the claim (a caller trusts the exit)" \
+  || bad "list --json that lists exits 0 with the claim (rc $RC: $(head -c 200 "$SB/out"))"
+run "$SB/elsewhere" list
+[ "$RC" -eq 0 ] && ok "list that lists exits 0" || bad "list that lists exits 0 (rc $RC)"
 run "$SB/elsewhere" list
 if grep -q '#555' "$SB/out"; then
   ok "CLAIM_REPO wins over the cwd checkout"

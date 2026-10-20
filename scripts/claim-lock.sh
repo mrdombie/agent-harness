@@ -389,33 +389,33 @@ cmd_list() {
     {
       # `mine` is decided here, by owns_claim — the one rule (login@host, with
       # the bare-host fallback) — so no reader re-derives it from the agent string.
-      [ -n "$refs" ] && while IFS= read -r r; do
+      if [ -n "$refs" ]; then while IFS= read -r r; do
         c=$(read_claim "$r") || continue
         if owns_claim "$c"; then jq -c '. + {mine: true}' <<<"$c"; else jq -c '. + {mine: false}' <<<"$c"; fi
-      done <<<"$refs"
-      [ -n "$legacy" ] && while IFS= read -r n; do
+      done <<<"$refs"; fi
+      if [ -n "$legacy" ]; then while IFS= read -r n; do
         jq -c --argjson issue "$n" '. + {issue: $issue, source: "legacy-lockfile"}' \
           "$LOCK_DIR/$n.lock/meta.json" 2>/dev/null \
           || jq -cn --argjson issue "$n" '{issue: $issue, source: "legacy-lockfile"}'
-      done <<<"$legacy"
+      done <<<"$legacy"; fi
     } | jq -s '.'
   else
     FMT='%-8s %-30s %-34s %s\n'
     # shellcheck disable=SC2059
     printf "$FMT" ISSUE AGENT BRANCH CLAIMED_AT
-    [ -n "$refs" ] && while IFS= read -r r; do
+    if [ -n "$refs" ]; then while IFS= read -r r; do
       read_claim "$r" | jq -r '[("#"+(.issue|tostring)),.agent,.branch,.claimed_at]|@tsv' 2>/dev/null \
         | awk -F'\t' -v fmt="$FMT" '{printf fmt,$1,$2,$3,$4}'
-    done <<<"$refs"
+    done <<<"$refs"; fi
     # Marked so the row's origin is legible, and so it is obvious which claims
     # still need migrating.
-    [ -n "$legacy" ] && while IFS= read -r n; do
+    if [ -n "$legacy" ]; then while IFS= read -r n; do
       jq -r --argjson issue "$n" \
         '[("#"+($issue|tostring)),"LOCKFILE(unmigrated)",(.branch // "?"),(.claimed_at // "?")]|@tsv' \
         "$LOCK_DIR/$n.lock/meta.json" 2>/dev/null \
         | awk -F'\t' -v fmt="$FMT" '{printf fmt,$1,$2,$3,$4}' \
         || printf "$FMT" "#$n" "LOCKFILE(unmigrated)" "?" "?"
-    done <<<"$legacy"
+    done <<<"$legacy"; fi
   fi
 }
 

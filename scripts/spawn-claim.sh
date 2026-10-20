@@ -262,7 +262,7 @@ cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, revie
 run_worktrees() {
   local claims
   if [ -s "$RUNS_DIR/$RUN_ID.worktrees" ]; then cat "$RUNS_DIR/$RUN_ID.worktrees"; return 0; fi
-  claims=$(perl -e 'alarm shift; exec @ARGV' 20 bash "$SCRIPT_DIR/claim-lock.sh" list --json 2>/dev/null)   # can exit 1 with every claim printed
+  claims=$(perl -e 'alarm shift; exec @ARGV' 20 bash "$SCRIPT_DIR/claim-lock.sh" list --json 2>/dev/null)
   jq -r --arg r "$RUN_ID" '.[] | select(.run_id == $r) | .worktree // empty' <<<"$claims" 2>/dev/null
 }
 
