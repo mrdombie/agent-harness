@@ -24,7 +24,18 @@
 #        claimable-issues.sh --count    # how many
 #        CLAIMABLE_WITH_LABELS=1 …      # a 7th column: every label, comma-joined
 #        CLAIMABLE_PRS_FILE=<f> …       # the open PRs already read, in place of a pr list
+#        CLAIMABLE_ORDER=newest …       # newest ticket first, ignoring priority (default: priority, then oldest)
 set -uo pipefail
+
+# The order work is handed out in. Resumes always lead (column 1). After that the
+# default is priority, then oldest number; `newest` is newest number first, for an
+# operator clearing the recent backlog before the old one.
+claimable_sort() {
+  case "${CLAIMABLE_ORDER:-}" in
+    newest) sort -t $'\t' -k1,1n -k2,2nr ;;
+    *)      sort -t $'\t' -k1,1n -k3,3 -k2,2n ;;
+  esac
+}
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || exit 1
 GH_REPO="${GH_REPO:-$REPO_SLUG}"
@@ -94,7 +105,7 @@ rows() {
               $i.title
             ] | @tsv' 2>/dev/null
   done; } \
-    | sort -t $'\t' -k1,1n -k3,3 -k2,2n \
+    | claimable_sort \
     | awk -F'\t' '!seen[$2]++' \
     | while IFS=$'\t' read -r _rank id pri area repo mode labels title; do
         # Empty TSV fields collapse under a tab IFS, so jq never emits one: repo
