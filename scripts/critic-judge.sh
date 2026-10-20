@@ -5,7 +5,8 @@
 #                                        design status on that head, naming the shot set
 #   critic-judge.sh due                  the PRs owed a judgement now: pr \t head, one a line
 #   critic-judge.sh sweep [--dry-run]    start `run` for each PR that is due, detached, up to
-#                                        review.judge.maxLive at once (default 1)
+#                                        coordinator.critic.maxLive at once (default 3) while the
+#                                        machine has room; a run past its time is stopped
 #   critic-judge.sh shotset <dir>        the id of the shots in <dir> (12 hex)
 #   critic-judge.sh self-verdicts <pr>   the commits on the PR that carry a design verdict a
 #                                        builder wrote (sha \t subject); exit 1 when there are any
@@ -25,9 +26,16 @@
 #   2. Only CI's pinned shots of the head count (scripts/ci-evidence.sh). Stale shots,
 #      from before a merge that changed this PR's screens, are a failure, not a pass.
 #   3. The approved picture — every one the PR adds or changes, and the plan's designRef
-#      on the ticket — must pass scripts/picture-evidence.py lint (regions, laptop and
-#      phone, real data), and every region it declares must be among the shots. A
-#      picture with no regions fails closed. A gap fails before any model is paid for.
+#      on the ticket — must pass scripts/picture-evidence.py lint, and every region it
+#      declares must be among the shots. A gap fails before any model is paid for.
+#      A picture drawn before the region convention is not failed for carrying no
+#      markers: its regions are derived (its frames, else the PR's `## Evidence routes`
+#      at laptop/phone x light/dark), and the status description says which. Real data,
+#      and a laptop and a phone frame, are owed only by a picture approved on or after
+#      coordinator.critic.realDataFrom (2026-10-20): the date is the picture's own
+#      data-picture-approved, else the earliest of its first commit and the ticket's
+#      "Picture approved" comment; with no date known it is exempt. The critic still
+#      grades real data on the built screen.
 #   4. The critic is handed every shot, the approved picture(s), the regions and the
 #      open findings for the screen (scripts/screen-findings.sh). Its answer must quote
 #      the shot set's id, name every shot it judged, and close with a FINDINGS block of
@@ -44,7 +52,15 @@
 #
 # CONFIG (review.judge in harness.json): context ("Design critic"), trailer
 # ("Design-Critic"), agent ("agent-harness:design-critic"), mockGlob
-# (".design/*-mock.html"), maxLive (1), turns (40).
+# (".design/*-mock.html"), turns (40). Under coordinator.critic: maxLive (3; the
+# older review.judge.maxLive is read when it is unset), timeoutMin (20), realDataFrom
+# (2026-10-20).
+#
+# PLACES. One judge place is always open; each place above it is taken only while the
+# coordinator's own room test (coord_room) says the machine fits another agent. A run
+# that passes timeoutMin is stopped, its place given back and the try counted, so one
+# PR cannot hold a place; and the PRs owed a judgement are started least recently
+# started first, so a PR that keeps coming back cannot keep the others waiting.
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/../swarm/swarm-env.sh" || exit 2
@@ -53,7 +69,10 @@ CONTEXT=$(swarm_opt review.judge.context "Design critic")
 TRAILER=$(swarm_opt review.judge.trailer "Design-Critic")
 AGENT=$(swarm_opt review.judge.agent "agent-harness:design-critic")
 MOCKGLOB=$(swarm_opt review.judge.mockGlob ".design/*-mock.html")
-MAXLIVE=$(swarm_opt review.judge.maxLive 1)
+MAXLIVE="${CRITIC_JUDGE_MAX_LIVE:-$(swarm_opt coordinator.critic.maxLive "")}"
+[ -n "$MAXLIVE" ] || MAXLIVE=$(swarm_opt review.judge.maxLive 3)
+TIMEOUT_MIN="${CRITIC_JUDGE_TIMEOUT_MIN:-$(swarm_opt coordinator.critic.timeoutMin 20)}"
+REAL_DATA_FROM="${CRITIC_JUDGE_REAL_DATA_FROM:-$(swarm_opt coordinator.critic.realDataFrom 2026-10-20)}"
 TURNS=$(swarm_opt review.judge.turns 40)
 MARK="${CRITIC_JUDGE_MARK:-critic-judge}"
 PREFIX="Independent critic"
@@ -67,7 +86,9 @@ JDIR="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}"
 LEDGER="$JDIR/verdicts.tsv"     # pr \t head \t set \t verdict \t state \t url — written only here
 TRIES=2
 mkdir -p "$JDIR"
-case "$MAXLIVE" in ''|*[!0-9]*) MAXLIVE=1 ;; esac
+case "$MAXLIVE" in ''|*[!0-9]*|0) MAXLIVE=3 ;; esac
+case "$TIMEOUT_MIN" in ''|*[!0-9]*|0) TIMEOUT_MIN=20 ;; esac
+case "$REAL_DATA_FROM" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) REAL_DATA_FROM=2026-10-20 ;; esac
 . "$SELF_DIR/branch-ticket.sh" 2>/dev/null || true
 
 die() { echo "critic-judge: $*" >&2; exit 2; }
@@ -150,6 +171,26 @@ pictures_for() {
   fi
 }
 
+pic_file() { printf '%s/pic-%s' "$1" "$(printf '%s' "$2" | tr '/' '_')"; } # <dir> <repo path>
+
+# picture_date <repo path> <head> <ticket comments json> — the earliest date the picture
+# is known to have been approved: its first commit, or the ticket's "Picture approved"
+# comment. Nothing when neither is known (the picture is then exempt from real data).
+picture_date() {
+  local c="" t=""
+  c=$(swarm_gh api "repos/$REPO_SLUG/commits?path=$1&sha=$2&per_page=100" --paginate 2>/dev/null \
+        | jq -rs '[.[] | if type == "array" then .[] else empty end | .commit.committer.date // .commit.author.date // empty] | min // empty' 2>/dev/null)
+  [ -f "$3" ] && t=$(jq -rs '[.[] | if type == "array" then .[] else empty end | select((.body // "") | test("picture approved"; "i")) | .created_at // empty] | min // empty' "$3" 2>/dev/null)
+  printf '%s\n%s\n' "${c:0:10}" "${t:0:10}" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | LC_ALL=C sort | head -1
+}
+
+# derivation_of — reads picture-evidence.py derivation; prints how the regions were found.
+derivation_of() {
+  awk -F'\t' 'NF >= 3 { if ($2 == "marked") m = "marked"; else if ($2 == "frames") f += $3; else if ($2 == "routes") r += $3 }
+    END { s = m; if (f) s = s (s ? ", " : "") "derived from frames (" f ")"; if (r) s = s (s ? ", " : "") "derived from the PR routes (" r ")";
+          if (!s) s = "none found"; print "regions " s }'
+}
+
 record() { # <pr> <head> <set> <verdict> <state> <url> <description>
   post_status "$2" "$5" "$7" "$6" || return 1
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >> "$LEDGER"
@@ -157,10 +198,12 @@ record() { # <pr> <head> <set> <verdict> <state> <url> <description>
 
 run() { # <pr>
   local pr="$1" j head draft st evsha W n set prev url mocks req miss lint rc pass verdict parity blocks why body ignored t signed=0 judged
+  local deriv="" routes="" f d pf
+  local -a popt=()
   [ -z "${HARNESS_DRIVER_RUN:-}" ] || die "a build run ($HARNESS_DRIVER_RUN) cannot judge screens: the verdict comes from a critic the build did not start"
   [ "${CRITIC_JUDGE_LAUNCHER:-}" = coordinator ] || [ "${CRITIC_JUDGE_MANUAL:-}" = 1 ] \
     || die "the independent critic is started by the coordinator (or by a person with CRITIC_JUDGE_MANUAL=1), never by a build"
-  j=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,isDraft,state,headRefName 2>/dev/null) || die "could not read PR #$pr"
+  j=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,isDraft,state,headRefName,body 2>/dev/null) || die "could not read PR #$pr"
   head=$(jq -r .headRefOid <<<"$j"); draft=$(jq -r .isDraft <<<"$j")
   t=$(branch_ticket "$(jq -r '.headRefName // ""' <<<"$j")" 2>/dev/null)
   [ "$(jq -r .state <<<"$j")" = OPEN ] || { say "PR #$pr is not open — nothing to judge"; return 3; }
@@ -198,10 +241,24 @@ run() { # <pr>
   ignored=$(self_verdicts "$pr")
   req="(no approved picture binds this PR)"; miss=""; lint=""
   if [ -n "$mocks" ]; then
-    lint=$(python3 -I "$PE" lint "$W/pictures"/* 2>&1 >/dev/null) || true
-    rc=0; req=$(python3 -I "$PE" required "$W/pictures"/* 2>/dev/null) || rc=$?
+    # A picture with no region markers predates them: its regions are derived, from its
+    # frames or else the routes the PR names, never failed closed for the missing markers.
+    routes=$(jq -r '.body // ""' <<<"$j" | bash "$SELF_DIR/ci-evidence.sh" routes 2>/dev/null) || routes=""
+    popt=(--derive)
+    while IFS= read -r f; do [ -n "$f" ] && popt+=(--route "$f"); done <<<"$routes"
+    [ -z "$t" ] || swarm_gh api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate > "$W/ticket-comments.json" 2>/dev/null || true
+    # Each picture is linted on its own approval date: real data is owed from REAL_DATA_FROM.
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      pf=$(pic_file "$W/pictures" "$f"); d=$(picture_date "$f" "$head" "$W/ticket-comments.json")
+      lint="$lint"$'\n'"$(python3 -I "$PE" lint "${popt[@]}" --real-data-from "$REAL_DATA_FROM" --approved "${d:-none}" "$pf" 2>&1 >/dev/null | grep -v '^picture-evidence: note:')"
+    done <<<"$mocks"
+    lint=$(printf '%s\n' "$lint" | grep -v '^$')
+    deriv=$(python3 -I "$PE" derivation "${popt[@]}" "$W/pictures"/* 2>/dev/null | derivation_of)
+    say "PR #$pr: the approved picture's $deriv"
+    rc=0; req=$(python3 -I "$PE" required "${popt[@]}" "$W/pictures"/* 2>/dev/null) || rc=$?
     if [ "$rc" -eq 0 ]; then
-      rc=0; miss=$(cut -f1 "$W/shots.tsv" | python3 -I "$PE" missing --shots - "$W/pictures"/* 2>/dev/null) || rc=$?
+      rc=0; miss=$(python3 -I "$PE" missing "${popt[@]}" --shots "$W/shots.tsv" "$W/pictures"/* 2>/dev/null) || rc=$?
       [ "$rc" -le 1 ] || { say "PR #$pr: the picture's regions could not be checked"; note_try "$pr" "$head"; return 2; }
     elif [ "$rc" -ne 3 ]; then say "PR #$pr: the approved picture could not be read for regions"; note_try "$pr" "$head"; return 2; fi
   fi
@@ -237,7 +294,9 @@ run() { # <pr>
       echo "## The shots (name, file, theme, route)"; cat "$W/shots.tsv"
       echo; echo "## The approved picture(s)"
       if [ -n "$mocks" ]; then ls "$W/pictures"/*; else echo "(none binds this PR)"; fi
-      echo; echo "## The regions the picture declares (name, route, viewport, theme, shows, setup)"; printf '%s\n' "$req"
+      echo; echo "## The regions the picture declares (name, route, viewport, theme, shows, setup)"
+      [ -z "$deriv" ] || echo "(The picture's $deriv. A derived region is a frame the picture draws, not a name CI used: hold the shot of its route, width and theme to it.)"
+      printf '%s\n' "$req"
       echo; echo "## Open findings already known on this screen — in scope for this change"
       echo "Check each against the shots. Still visible: list it in FINDINGS at its grade. Gone: leave it out."
       printf '%s\n' "${open:-(none)}"
@@ -286,7 +345,7 @@ run() { # <pr>
     echo "<!-- $MARK head=$head shots=$set verdict=$verdict -->"
     echo "## Design critic — $verdict (independent)"
     echo
-    echo "Judged CI's pinned shots of \`${evsha:0:12}\` — shot set \`$set\`, $n shot(s) — for head \`${head:0:12}\`, by a critic the build did not start.${parity:+ Parity against the approved picture: $parity.}"
+    echo "Judged CI's pinned shots of \`${evsha:0:12}\` — shot set \`$set\`, $n shot(s) — for head \`${head:0:12}\`, by a critic the build did not start.${parity:+ Parity against the approved picture: $parity.}${deriv:+ The approved picture: $deriv.}"
     [ "$pass" = success ] || [ -z "$why" ] || { echo; echo "$why"; }
     [ "$signed" = 0 ] || { echo; echo "**This PR's screens are signed off**, so these findings are the PM's call, not a repair's: a fix would change pixels after the sign-off."; }
     echo; echo "### Findings"
@@ -305,8 +364,8 @@ run() { # <pr>
   [ -n "$url" ] || { say "PR #$pr: the verdict comment could not be posted, so no status is set"; note_try "$pr" "$head"; return 2; }
   # The driver's steps read the open findings from here, never from a PR comment.
   if [ "$pass" = success ]; then rm -f "$JDIR/findings-$pr.txt"; else printf '%s\n' "$blocks" > "$JDIR/findings-$pr.txt"; fi
-  if [ "$pass" = success ]; then record "$pr" "$head" "$set" SHIP success "$url" "$PREFIX: SHIP on shots $set ($n) at ${evsha:0:9}" || return 2
-  else record "$pr" "$head" "$set" "$verdict" failure "$url" "$PREFIX: $verdict on shots $set ($n) at ${evsha:0:9} — $(printf '%s\n' "$blocks" | grep -c .) blocking" || return 2; fi
+  if [ "$pass" = success ]; then record "$pr" "$head" "$set" SHIP success "$url" "$PREFIX: SHIP on shots $set ($n) at ${evsha:0:9}${deriv:+ · $deriv}" || return 2
+  else record "$pr" "$head" "$set" "$verdict" failure "$url" "$PREFIX: $verdict on shots $set ($n) at ${evsha:0:9} — $(printf '%s\n' "$blocks" | grep -c .) blocking${deriv:+ · $deriv}" || return 2; fi
   # A red verdict on a signed-off screen is the PM's to call: the ticket is held for it,
   # which every repairer reads as "do not send an agent".
   [ "$signed" = 0 ] || swarm_gh issue edit "$t" --repo "$REPO_SLUG" --add-label "$LBL_PM_DECISION" >/dev/null 2>&1 || true
@@ -335,22 +394,65 @@ due() {
       done
 }
 
-live() { local n=0 p; for p in "$JDIR"/*.pid; do [ -f "$p" ] || continue; if kill -0 "$(cat "$p")" 2>/dev/null; then n=$((n+1)); else rm -f "$p"; fi; done; echo "$n"; }
+# A place: <pr>.pid holds "pid head started-epoch". The run leads its own session
+# (detach.sh), so stopping its group stops the critic it started too.
+pid_of() { local p h e; read -r p h e < "$1" 2>/dev/null; printf '%s' "$p"; }
+live() { local n=0 p; for p in "$JDIR"/*.pid; do [ -f "$p" ] || continue; if kill -0 "$(pid_of "$p")" 2>/dev/null; then n=$((n+1)); else rm -f "$p"; fi; done; echo "$n"; }
+
+# reap — a run past TIMEOUT_MIN is stopped and its place given back; the try counts,
+# so a PR that never finishes is left for a person after TRIES, not retried for ever.
+reap() {
+  local f p h e pr now; now=$(date +%s)
+  for f in "$JDIR"/*.pid; do
+    [ -f "$f" ] || continue
+    p=""; h=""; e=""; read -r p h e < "$f" 2>/dev/null
+    kill -0 "$p" 2>/dev/null || continue
+    # A place written before it carried its start: its file's age.
+    case "$e" in ''|*[!0-9]*) e=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) ;; esac
+    case "$e" in ''|*[!0-9]*) continue ;; esac
+    [ $(( now - e )) -ge $(( TIMEOUT_MIN * 60 )) ] || continue
+    pr=$(basename "$f" .pid)
+    kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+    rm -f "$f"; note_try "$pr" "${h:--}"
+    say "PR #$pr: the judge ran past ${TIMEOUT_MIN} min at ${h:0:9} — stopped, its place given back"
+  done
+}
+
+# room — the places the machine fits beyond the first, by the coordinator's own test.
+room() {
+  if [ -n "${CRITIC_JUDGE_ROOM:-}" ]; then printf '%s' "$CRITIC_JUDGE_ROOM"; return; fi
+  ( . "$SELF_DIR/coordinator-env.sh" >/dev/null 2>&1 || { printf 0; exit 0; }
+    r=$(coord_room 2>/dev/null) && printf '%s\n' "$r" | cut -f1 || printf 0 )
+}
+
+# by_last_start — the due list, least recently started first (never started first).
+by_last_start() {
+  awk -F'\t' -v L="$JDIR/launched.tsv" 'BEGIN { while ((getline l < L) > 0) { split(l, a, "\t"); last[a[1]] = a[3] } }
+    NF >= 2 { printf "%s\t%s\t%d\t%d\n", $1, $2, (($1 in last) ? last[$1] : 0), NR }' | sort -t"$(printf '\t')" -k3,3n -k4,4n | cut -f1,2
+}
 
 sweep() { # [--dry-run]
-  local dry=0 pr head slots
+  local dry=0 pr head slots cap r live_now
   [ "${1:-}" = --dry-run ] && dry=1
-  slots=$(( MAXLIVE - $(live) ))
+  [ "$dry" = 1 ] || reap
+  live_now=$(live)
+  # The first place is always open; every place above it needs room on the machine.
+  r=$(room); case "$r" in ''|*[!0-9]*) r=0 ;; esac
+  cap=$(( 1 + r )); [ "$cap" -le "$MAXLIVE" ] || cap=$MAXLIVE
+  slots=$(( cap - live_now ))
   while IFS=$'\t' read -r pr head; do
     [ -n "${pr:-}" ] || continue
-    [ -f "$JDIR/$pr.pid" ] && kill -0 "$(cat "$JDIR/$pr.pid")" 2>/dev/null && continue
+    [ -f "$JDIR/$pr.pid" ] && kill -0 "$(pid_of "$JDIR/$pr.pid")" 2>/dev/null && continue
     [ "$(tried "$pr" "$head")" -lt "$TRIES" ] || { say "PR #$pr: $TRIES tries at ${head:0:9} gave no usable verdict — left for a person"; continue; }
-    [ "$slots" -gt 0 ] || { say "PR #$pr owed a judgement; $MAXLIVE judge(s) already running"; continue; }
-    if [ "$dry" = 1 ]; then say "would judge PR #$pr at ${head:0:9}"; continue; fi
+    [ "$slots" -gt 0 ] || { say "PR #$pr owed a judgement; $live_now of $cap judge place(s) in use (most $MAXLIVE, machine room for $r more)"; continue; }
+    if [ "$dry" = 1 ]; then say "would judge PR #$pr at ${head:0:9}"; slots=$((slots - 1)); continue; fi
     CRITIC_JUDGE_LAUNCHER=coordinator bash "$SELF_DIR/../swarm/detach.sh" bash "$SELF_DIR/critic-judge.sh" run "$pr" >> "$JDIR/judge.out" 2>&1 < /dev/null &
-    printf '%s\n' "$!" > "$JDIR/$pr.pid"; slots=$((slots - 1))
+    printf '%s %s %s\n' "$!" "$head" "$(date +%s)" > "$JDIR/$pr.pid"; slots=$((slots - 1)); live_now=$((live_now + 1))
+    printf '%s\t%s\t%s\n' "$pr" "$head" "$(date +%s)" >> "$JDIR/launched.tsv"
     say "judging PR #$pr at ${head:0:9}"
-  done <<<"$(due)"
+  done <<<"$(due | by_last_start)"
+  [ -f "$JDIR/launched.tsv" ] && tail -500 "$JDIR/launched.tsv" > "$JDIR/launched.tsv.$$" 2>/dev/null && mv -f "$JDIR/launched.tsv.$$" "$JDIR/launched.tsv"
+  return 0
 }
 
 case "${1:-}" in

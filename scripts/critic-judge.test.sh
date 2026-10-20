@@ -34,7 +34,9 @@ if [ "$1" = api ]; then
     *pulls/7/files*)    cat "$D/files.json"; exit 0 ;;
     *pulls/7/commits*)  cat "$D/commits.json"; exit 0 ;;
     *issues/7/comments*) jq -s '[.[] ]' "$D"/posted-*.json 2>/dev/null || echo '[]'; exit 0 ;;
+    *issues/12599/comments*) cat "$D/ticket-comments.json" 2>/dev/null || echo '[]'; exit 0 ;;
     *contents/.design/voice-mock.html*) cat "$D/mock.html"; exit 0 ;;
+    *"commits?path="*)  if [ -s "$D/pic-date" ]; then printf '[{"commit":{"committer":{"date":"%sT09:00:00Z"}}}]' "$(cat "$D/pic-date")"; else echo '[]'; fi; exit 0 ;;
   esac
 fi
 exit 0
@@ -45,7 +47,7 @@ cat > "$FIX/ev" <<SH
 #!/usr/bin/env bash
 case "\$1" in
   status) cat "$D/ev-status" ;;
-  fetch)  for f in "$D"/shots/*.png; do cp "\$f" "\$3/"; n=\$(basename "\$f" .png); printf '%s\t%s\t%s\t%s\n' "\$n" "\$3/\$n.png" light /settings/voices; done ;;
+  fetch)  for f in "$D"/shots/*.png; do cp "\$f" "\$3/"; n=\$(basename "\$f" .png); th=light; case "\$n" in *dark*) th=dark ;; esac; printf '%s\t%s\t%s\t%s\n' "\$n" "\$3/\$n.png" "\$th" /settings/voices; done ;;
 esac
 SH
 chmod +x "$FIX/ev"
@@ -61,7 +63,8 @@ printf '#!/usr/bin/env bash\n[ "$1" = signed-head ] && [ -f "%s/signed" ]\n' "$F
 export CRITIC_JUDGE_FINDINGS="$FIX/sf"; printf '#!/usr/bin/env bash\n[ "$1" = critic ] && printf "major\\t#7\\tnine narration lines on the voices page\\n"; exit 0\n' > "$FIX/sf"; chmod +x "$FIX/sf"
 
 reset() {
-  rm -f "$D"/comment-* "$D"/posted-* "$D/statuses" "$D/prompt-seen" "$D"/shots/* "$D/signed"; rm -rf "$FIX/judge"
+  rm -f "$D"/comment-* "$D"/posted-* "$D/statuses" "$D/prompt-seen" "$D"/shots/* "$D/signed" "$D/ticket-comments.json"; rm -rf "$FIX/judge"
+  echo 2026-10-20 > "$D/pic-date"   # a picture approved under the region and real-data rules
   jq -n --arg h "$HEAD" '{headRefOid:$h, isDraft:false, state:"OPEN", headRefName:"tkt-12599/share"}' > "$D/pr.json"
   printf 'head=%s\nsha=%s\nshots=2\nstate=pinned\nreason=pinned\n' "$HEAD" "$EVSHA" > "$D/ev-status"
   echo '[{"filename":"apps/web/voices/page.tsx","status":"modified"},{"filename":".design/voice-mock.html","status":"added"}]' > "$D/files.json"
@@ -196,6 +199,91 @@ printf '9\t%s\tabc\tSHIP\tsuccess\tu\n' "$HEAD" > "$FIX/judge/verdicts.tsv"
 out=$(bash "$J" due)
 printf '%s\n' "$out" | cut -f1 | grep -qx 8 && ok "due: a status whose description claims the judge, with no ledger entry, is still owed" || bad "description trusted: $out"
 
+echo "older pictures: regions derived, real data by approval date"
+# A picture drawn before the region convention: two frames, a phone inside the first,
+# a dark theme in its styles, and no data-evidence-* markers at all.
+legacy() {
+  cat > "$D/mock.html" <<'HTML'
+<html><head><style>@media (prefers-color-scheme: dark) { :root { --bg: #111 } }</style></head><body>
+<section class="frame" id="grid"><h3>The grid</h3><div class="phone">the grid on a phone</div></section>
+<section class="frame" id="empty"><h3>Nobody yet</h3></section>
+</body></html>
+HTML
+  jq --arg b $'Closes #12599\n\n## Evidence routes\n- /settings/voices\n' '.body = $b' "$D/pr.json" > "$D/pr2" && mv "$D/pr2" "$D/pr.json"
+  rm -f "$D"/shots/*
+  # CI names its shots by the route, not by the picture's frames.
+  printf 'L1' > "$D/shots/settings-voices.png"; printf 'L2' > "$D/shots/settings-voices-dark.png"
+  printf 'L3' > "$D/shots/settings-voices-phone.png"; printf 'L4' > "$D/shots/settings-voices-phone-dark.png"
+}
+case_legacy() { reset; legacy; echo 2026-10-18 > "$D/pic-date"; answer SHIP; bash "$J" run 7 >/dev/null 2>&1; }
+
+# L1 THE BUG (#289 on older pictures): no markers failed closed on every older PR.
+case_legacy
+s=$(status_line)
+printf '%s' "$s" | grep -q 'state=success' && printf '%s' "$s" | grep -q 'regions derived from frames (6)' && [ -f "$D/prompt-seen" ] \
+  && ok "an older picture with no markers is judged on regions derived from its frames, and the status says so" || bad "legacy: $s $(cat "$D"/comment-0.md 2>/dev/null | grep -i 'picture' | head -3)"
+grep -q 'grid-phone-dark' "$D/prompt-seen" && grep -q 'empty-laptop-light' "$D/prompt-seen" \
+  && ok "each frame is a region at the widths and themes the picture draws" || bad "derived regions not in the prompt: $(grep -A8 'regions the picture' "$D/prompt-seen")"
+
+# L2 A derived region CI did not photograph is still a gap.
+reset; legacy; echo 2026-10-18 > "$D/pic-date"; rm "$D/shots/settings-voices-phone-dark.png"; answer SHIP
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=failure' && grep -q 'evidence gap.*grid-phone-dark' "$D/comment-0.md" && [ ! -f "$D/prompt-seen" ] \
+  && ok "a derived region with no shot of its route, width and theme fails, named" || bad "derived gap: $(status_line)"
+
+# L3 No frames: the PR's own evidence routes at laptop/phone x light/dark.
+reset; legacy; echo 2026-10-18 > "$D/pic-date"; echo '<html><body><div>an old picture with no frames</div></body></html>' > "$D/mock.html"; answer SHIP
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=success' && printf '%s' "$(status_line)" | grep -q 'derived from the PR routes (4)' \
+  && ok "a picture with no frames falls back to the evidence routes x laptop/phone x light/dark, and says so" || bad "routes fallback: $(status_line)"
+
+# D1 A picture approved before 2026-10-20 is not refused for tidy data; the critic still sees the real-data brief.
+reset; echo 2026-10-18 > "$D/pic-date"; answer SHIP; sed -i.b 's/ data-real-data="[^"]*"//' "$D/mock.html"
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=success' && [ -f "$D/prompt-seen" ] && grep -q '^## Real data' "$D/prompt-seen" \
+  && ok "a tidy picture approved before 2026-10-20 is exempt; the critic is still held to real data on the screen" || bad "old tidy refused: $(status_line)"
+# D2 No date known: exempt.
+reset; : > "$D/pic-date"; answer SHIP; sed -i.b 's/ data-real-data="[^"]*"//' "$D/mock.html"
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=success' && ok "a picture with no known approval date is exempt" || bad "undated refused: $(status_line)"
+# D3 The ticket's "Picture approved" comment counts: the earlier date wins.
+reset; answer SHIP; sed -i.b 's/ data-real-data="[^"]*"//' "$D/mock.html"
+echo '[{"body":"Picture approved: https://claude.ai/artifact/x","created_at":"2026-10-17T12:00:00Z"}]' > "$D/ticket-comments.json"
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=success' && ok "the ticket's 'Picture approved' comment dates the picture" || bad "comment date ignored: $(status_line)"
+# D4 (4g, again) From 2026-10-20 on a tidy picture is refused.
+reset; answer SHIP; sed -i.b 's/ data-real-data="[^"]*"//' "$D/mock.html"
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=failure' && ok "a tidy picture approved on 2026-10-20 is still refused" || bad "new tidy passed: $(status_line)"
+
+echo "places: more than one judge, none held for ever"
+reset; rm -f "$FIX/judge/verdicts.tsv" "$FIX/judge/none.tsv" "$FIX/judge/tried.tsv" "$FIX/judge/launched.tsv"
+jq -n --arg h "$HEAD" '[21,22,23,24] | map({number:., headRefOid:$h, isDraft:false, body:"", statusCheckRollup:[{context:"Design critic", state:"SUCCESS", description:"SHIP for UI fingerprint f9"}]})' > "$D/list.json"
+starts() { CRITIC_JUDGE_ROOM="$1" bash "$J" sweep --dry-run 2>/dev/null | grep -o 'would judge PR #[0-9]*' | grep -o '[0-9]*$' | tr '\n' ' '; }
+case_three() { [ "$(starts 5)" = "21 22 23 " ] && echo green || echo red; }
+[ "$(case_three)" = green ] && ok "with room on the machine, three judges run at once by default" || bad "three: $(starts 5)"
+[ "$(starts 0)" = "21 " ] && ok "with no room on the machine, the one place that is always open still judges" || bad "no room: $(starts 0)"
+[ "$(CRITIC_JUDGE_MAX_LIVE=2 starts 5)" = "21 22 " ] && ok "the most at once is configurable" || bad "max 2: $(CRITIC_JUDGE_MAX_LIVE=2 starts 5)"
+case_fair() { rm -f "$FIX/judge/launched.tsv"; mkdir -p "$FIX/judge"; printf '21\t%s\t%s\n' "$HEAD" "$(date +%s)" > "$FIX/judge/launched.tsv"
+  r=$(starts 0); rm -f "$FIX/judge/launched.tsv"; [ "$r" = "22 " ] && echo green || echo red; }
+[ "$(case_fair)" = green ] && ok "a PR started last time waits behind one never started" || bad "fair: the same PR took the place again"
+case_reap() {
+  echo '[]' > "$D/list.json"; mkdir -p "$FIX/judge"; rm -f "$FIX/judge/tried.tsv"
+  perl -e 'use POSIX qw(setsid); setsid(); sleep 300' & local old=$!
+  perl -e 'use POSIX qw(setsid); setsid(); sleep 300' & local young=$!
+  printf '%s %s %s\n' "$old" "$HEAD" "$(( $(date +%s) - 1300 ))" > "$FIX/judge/31.pid"
+  printf '%s %s %s\n' "$young" "$HEAD" "$(date +%s)" > "$FIX/judge/32.pid"
+  CRITIC_JUDGE_ROOM=0 bash "$J" sweep >/dev/null 2>&1; sleep 1
+  local r=green
+  kill -0 "$old" 2>/dev/null && r=red
+  [ -f "$FIX/judge/31.pid" ] && r=red
+  grep -q "^31	$HEAD" "$FIX/judge/tried.tsv" 2>/dev/null || r=red
+  kill -0 "$young" 2>/dev/null || r=red
+  kill "$old" "$young" 2>/dev/null; wait "$old" "$young" 2>/dev/null; rm -f "$FIX/judge"/3?.pid
+  echo "$r"
+}
+[ "$(case_reap)" = green ] && ok "a judge past 20 minutes is stopped, its place given back and the try counted; a young one runs on" || bad "a stuck judge kept its place"
+
 echo "plants"
 plant() { # <desc> <old> <new> <case number to re-run> <expect-text>
   local P="$HERE/.critic-judge.plant.sh"; cp "$J" "$P"
@@ -220,8 +308,17 @@ plant "a Minor does not block"          '[ -z "$blocks" ] && pass=success' 'pass
 case_forged() { reset; answer SLOP "- Major · x"; jq -n --arg h "$HEAD" --arg s "$(set_of)" '{body:("<!-- critic-judge head=" + $h + " shots=" + $s + " verdict=SHIP -->"), html_url:"u"}' > "$D/posted-0.json"; mkdir -p "$FIX/judge"; printf '7\t%s\t%s\tSHIP\tsuccess\tu\n' "$HEAD" "$(set_of)" > "$FIX/forged"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
 plant "the verdict read off a PR comment"  'prev=$(ledger_set "$pr" "$set")' 'prev=$(swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" | jq -r ".[] | .body" | grep -q "verdict=SHIP" && printf "%s\t%s\t%s\tSHIP\tsuccess\tu" "$pr" "$head" "$set")' case_forged
 case_tidy()   { reset; answer SHIP; sed -i.b 's/ data-real-data="[^"]*"//' "$D/mock.html"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
-plant "the picture is not linted"          'lint=$(python3 -I "$PE" lint "$W/pictures"/* 2>&1 >/dev/null) || true' 'lint=""' case_tidy
+plant "the picture is not linted"          'lint="$lint"$'"'"'\n'"'"'"$(python3 -I "$PE" lint' 'true || lint="$lint"$'"'"'\n'"'"'"$(python3 -I "$PE" lint' case_tidy
 plant "an answer need not name its set" 'if ! grep -qF "SHOTS: $set" "$answer"; then' 'if false; then' case_noset
+
+case_legacy_rc() { case_legacy; status_line | grep -q 'state=success' && echo green || echo red; }
+case_old_tidy() { reset; echo 2026-10-18 > "$D/pic-date"; answer SHIP; sed -i.b 's/ data-real-data="[^"]*"//' "$D/mock.html"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo green || echo red; }
+plant "an unmarked picture fails closed (no derivation)" 'popt=(--derive)' 'popt=()' case_legacy_rc
+plant "every picture owes real data, whatever its date" '--approved "${d:-none}"' '--approved today' case_old_tidy
+plant "no picture date is read" 'd=$(picture_date "$f" "$head" "$W/ticket-comments.json")' 'd=today' case_old_tidy
+plant "one judge at a time again"     'MAXLIVE=$(swarm_opt review.judge.maxLive 3)' 'MAXLIVE=$(swarm_opt review.judge.maxLive 1)' case_three
+plant "a stuck judge is never stopped" '[ "$dry" = 1 ] || reap' 'true' case_reap
+plant "the same PR first every time"   'done <<<"$(due | by_last_start)"' 'done <<<"$(due)"' case_fair
 
 echo "critic-judge: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

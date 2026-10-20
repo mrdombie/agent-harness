@@ -7,6 +7,32 @@
                                                           plan already names keeps the plan's own setup
   picture-evidence.py missing --shots <file|-> <mock>...  the required shots no name in <file> covers
   picture-evidence.py lint <mock.html>...                 the picture's regions and its real-data cover
+  picture-evidence.py derivation <mock.html>...           per picture: path, how its regions were found
+                                                          (marked | frames | routes | none), how many
+
+Options, before the pictures, on any command:
+  --derive              an unmarked picture's regions are derived instead of none (below)
+  --route <path>        a route the PR names under `## Evidence routes`; once per route
+  --approved <date>     when the picture was approved (YYYY-MM-DD), for lint's real-data rule;
+                        "none" when no date is known. Left out, the picture is being drawn now.
+  --real-data-from <d>  the first approval date that owes real data (default 2026-10-20)
+
+OLDER PICTURES. Pictures approved before the region convention carry no markers. With
+--derive their regions are derived, not failed closed: each outermost frame or screen
+the picture draws (an element whose class says frame, screen, artboard, device, phone,
+laptop, desktop, mobile or browser) becomes a region named by its id, label, heading or
+caption, at laptop and phone and light and dark where the picture draws them (a phone
+inside a frame, a dark theme in its styles). A picture with no frames falls back to
+every --route at laptop 1440 / phone 390 x light / dark. A derived region is covered by
+a CI shot of the same route, viewport and theme, whatever CI named the file, and lint
+does not ask a derived picture for the both-widths rule it predates.
+scripts/picture-label.py writes the markers into such a picture for good.
+
+REAL DATA, and a laptop and a phone frame, are owed by pictures approved on or after
+--real-data-from. The date is the
+picture's own data-picture-approved attribute, else --approved; a picture approved
+earlier, or with no known date (--approved none), is exempt from lint's real-data refusal. The critic
+still grades real data on the built screen.
 
 The builder wrote its own `## Evidence routes` on one pull request and listed the
 one region it had built; the approved picture had four, two of them a menu and a
@@ -35,21 +61,75 @@ import sys
 from html.parser import HTMLParser
 
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 VIEWPORTS = ("laptop", "phone")
 THEMES = ("light", "dark")
 REAL_DATA = ("duplicate-names", "longest-names", "empty", "scrolled")
+REAL_DATA_FROM = "2026-10-20"
 STEP_SEP = ";;"
+FRAME_WORDS = {"frame", "screen", "artboard", "device", "phone", "laptop", "desktop", "mobile", "browser"}
+FRAME_ATTRS = ("data-frame", "data-screen", "data-artboard")
+PHONE_WORDS = {"phone", "mobile", "iphone", "android", "handset", "390"}
+DARK_WORDS = {"dark", "theme-dark", "dark-mode", "is-dark"}
+CAPTION_WORDS = {"caption", "title", "label", "frame-h", "frame-title", "frame-label", "frame-name"}
+NAME_KEYS = ("data-name", "data-label", "data-title", "aria-label")
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+DARK_CSS = re.compile(r"prefers-color-scheme\s*:\s*dark|data-theme\s*=\s*['\"]?dark")
+
+
+def words(a):
+    return set((a.get("class") or "").lower().split())
+
+
+def tokens(text):
+    return set(re.split(r"[^a-z0-9]+", (text or "").lower()))
+
+
+def is_frame(a):
+    return bool(words(a) & FRAME_WORDS) or any(k in a for k in FRAME_ATTRS)
+
+
+def is_phone(a):
+    if (words(a) | tokens(a.get("id"))) & PHONE_WORDS or (a.get("data-viewport") or "").lower() == "phone":
+        return True
+    m = re.search(r"(?:^|;)\s*(?:max-)?width\s*:\s*(\d+)px", a.get("style") or "")
+    return bool(m) and int(m.group(1)) <= 480
+
+
+def is_dark(a, own):
+    if (a.get("data-theme") or "").lower() == "dark":
+        return True
+    # A bare "dark" class inside a frame is a dark button, not a dark frame.
+    return bool(words(a) & (DARK_WORDS if own else DARK_WORDS - {"dark"}))
+
+
+def slug(text):
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (text or "").lower())).strip("-")[:40].strip("-")
 
 
 class Picture(HTMLParser):
+    """The markers a picture carries, and the outermost frames it draws."""
+
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.shots = []
         self.covered = set()
         self.excused = {}
+        self.approved = ""
+        self.frames = []
+        self.dark_css = False
+        self._stack = []       # [tag, frame or None]
+        self._caption = None   # [frame, depth] while a frame's first heading or caption is read
 
-    def handle_starttag(self, tag, attrs):
-        a = {k: (v if v is not None else "") for k, v in attrs}
+    def _outer(self):
+        for _, f in reversed(self._stack):
+            if f is not None:
+                return f
+        return None
+
+    def _take(self, a):
+        if DATE_RE.match(a.get("data-picture-approved", "")) and not self.approved:
+            self.approved = a["data-picture-approved"][:10]
         if "data-evidence-shot" in a:
             self.shots.append({
                 "name": a.get("data-evidence-shot", "").strip(),
@@ -67,7 +147,49 @@ class Picture(HTMLParser):
                 if why.strip():
                     self.excused[case.strip().lower()] = why.strip()
 
-    handle_startendtag = handle_starttag
+    def _where(self):
+        return self.getpos(), self.get_starttag_text() or ""
+
+    def _see(self, tag, a, closes):
+        self._take(a)
+        outer, mine = self._outer(), None
+        if outer is None and is_frame(a):
+            pos, raw = self._where()
+            mine = {"attrs": a, "pos": pos, "raw": raw, "caption": "", "phone": is_phone(a),
+                    "inner_phone": None, "dark": is_dark(a, True), "dark_inside": False}
+            self.frames.append(mine)
+        elif outer is not None:
+            if is_phone(a) and not outer["phone"] and outer["inner_phone"] is None:
+                pos, raw = self._where()
+                outer["inner_phone"] = {"attrs": a, "pos": pos, "raw": raw}
+            if is_dark(a, False):
+                outer["dark_inside"] = True
+            if (not closes and not outer["caption"] and self._caption is None
+                    and (tag in ("h1", "h2", "h3", "h4", "figcaption", "caption") or words(a) & CAPTION_WORDS)):
+                self._caption = [outer, len(self._stack) + 1]
+        if not closes and tag not in VOID:
+            self._stack.append([tag, mine])
+
+    def handle_starttag(self, tag, attrs):
+        self._see(tag, {k: (v if v is not None else "") for k, v in attrs}, False)
+
+    def handle_startendtag(self, tag, attrs):
+        self._see(tag, {k: (v if v is not None else "") for k, v in attrs}, True)
+
+    def handle_endtag(self, tag):
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i][0] == tag:
+                del self._stack[i:]
+                break
+        if self._caption is not None and len(self._stack) < self._caption[1]:
+            self._caption = None
+
+    def handle_data(self, data):
+        if self._stack and self._stack[-1][0] == "style" and DARK_CSS.search(data):
+            self.dark_css = True
+        if self._caption is not None:
+            f = self._caption[0]
+            f["caption"] = " ".join((f["caption"] + " " + data).split())[:80]
 
 
 def die(msg):
@@ -75,17 +197,121 @@ def die(msg):
     sys.exit(2)
 
 
-def read(paths):
-    if not paths:
-        die("name at least one picture")
+def load(path):
     pic = Picture()
-    for p in paths:
-        try:
-            with open(p, encoding="utf-8") as f:
-                pic.feed(f.read())
-        except OSError as e:
-            die(f"cannot read {p}: {e.strerror}")
+    try:
+        with open(path, encoding="utf-8") as f:
+            pic.feed(f.read())
+        pic.close()
+    except OSError as e:
+        die(f"cannot read {path}: {e.strerror}")
     return pic
+
+
+def frame_name(f, i):
+    a = f["attrs"]
+    for v in [a.get("id")] + [a.get(k) for k in NAME_KEYS] + [f["caption"]]:
+        if slug(v):
+            return slug(v)
+    return f"frame-{i + 1}"
+
+
+def frame_regions(pic, routes):
+    """[(frame, element, name, route, viewport, theme)] for each outermost frame: the
+    element is the frame itself, or for its phone the phone drawn inside it."""
+    out = []
+    for i, f in enumerate(pic.frames):
+        base, a = frame_name(f, i), f["attrs"]
+        route = next((r for r in (a.get("data-evidence-route"), a.get("data-route")) if (r or "").startswith("/")),
+                     routes[0] if routes else "")
+        if f["phone"] or tokens(f["caption"]) & PHONE_WORDS:   # "Phone · 390 wide" names a phone frame
+            views = [("phone", f)]
+        else:
+            views = [("laptop", f)] + ([("phone", f["inner_phone"])] if f["inner_phone"] else [])
+        themes = ["dark"] if f["dark"] else ["light"] + (["dark"] if f["dark_inside"] or pic.dark_css else [])
+        for vp, el in views:
+            for th in themes:
+                out.append((f, el, f"{base}-{vp}-{th}", route, vp, th))
+    return out
+
+
+def derive(pic, routes):
+    """(shots, how): the regions of an unmarked picture, by its frames, else by the routes."""
+    rows = frame_regions(pic, routes)
+    if rows:
+        how = "frames"
+        shots = [{"name": n, "route": r, "viewport": vp, "theme": th,
+                  "shows": f"the frame '{f['caption'] or n}' (derived)", "setup": [], "derived": True}
+                 for f, _, n, r, vp, th in rows]
+    elif routes:
+        how = "routes"
+        shots = [{"name": f"{slug(r) or 'root'}-{vp}-{th}", "route": r, "viewport": vp, "theme": th,
+                  "shows": f"{r} (derived from the PR's evidence routes)", "setup": [], "derived": True}
+                 for r in routes for vp in VIEWPORTS for th in THEMES]
+    else:
+        return [], "none"
+    seen = {}
+    for s in shots:
+        n = s["name"]
+        seen[n] = seen.get(n, 0) + 1
+        if seen[n] > 1:
+            s["name"] = f"{n}-{seen[n]}"
+    return shots, how
+
+
+class Opts:
+    def __init__(self):
+        self.derive = False
+        self.routes = []
+        self.approved = "today"   # lint at drawing time: a picture being drawn owes real data
+        self.real_data_from = REAL_DATA_FROM
+
+
+def opts_of(args):
+    o, rest, i = Opts(), [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--derive":
+            o.derive = True
+        elif a in ("--route", "--approved", "--real-data-from"):
+            if i + 1 >= len(args):
+                die(f"{a} needs a value")
+            v = args[i + 1].strip()
+            i += 1
+            if a == "--route":
+                if v.startswith("/") and v not in o.routes:
+                    o.routes.append(v)
+            elif a == "--approved":
+                o.approved = v[:10] if DATE_RE.match(v) else ("today" if v == "today" else "")   # "none": no date known
+            elif DATE_RE.match(v):
+                o.real_data_from = v[:10]
+            else:
+                die(f"--real-data-from wants YYYY-MM-DD, not '{v}'")
+        else:
+            rest.append(a)
+        i += 1
+    return o, rest
+
+
+class Read:
+    """Every picture named, each derived on its own."""
+
+    def __init__(self, paths, o):
+        if not paths:
+            die("name at least one picture")
+        self.shots, self.covered, self.excused, self.each = [], set(), {}, []
+        for p in paths:
+            pic = load(p)
+            if pic.shots:
+                shots, how = pic.shots, "marked"
+            elif o.derive:
+                shots, how = derive(pic, o.routes)
+            else:
+                shots, how = [], "none"
+            self.shots += shots
+            self.covered |= pic.covered
+            self.excused.update(pic.excused)
+            self.each.append({"path": p, "how": how, "n": len(shots), "pic": pic, "shots": shots})
 
 
 def unique(shots):
@@ -102,21 +328,24 @@ def flat(s):
     return " ".join(str(s).split())
 
 
-def cmd_required(paths):
-    shots = unique(read(paths).shots)
+def no_regions():
+    print("picture-evidence: the picture declares no data-evidence-shot regions", file=sys.stderr)
+    return 3
+
+
+def cmd_required(paths, o):
+    shots = unique(Read(paths, o).shots)
     if not shots:
-        print("picture-evidence: the picture declares no data-evidence-shot regions", file=sys.stderr)
-        return 3
+        return no_regions()
     for s in shots:
         print("\t".join([s["name"], s["route"], s["viewport"], s["theme"], flat(s["shows"]), f" {STEP_SEP} ".join(s["setup"])]))
     return 0
 
 
-def cmd_routes(paths):
-    shots = unique(read(paths).shots)
+def cmd_routes(paths, o):
+    shots = unique(Read(paths, o).shots)
     if not shots:
-        print("picture-evidence: the picture declares no data-evidence-shot regions", file=sys.stderr)
-        return 3
+        return no_regions()
     seen = []
     for s in shots:
         if s["route"] and s["route"] not in seen:
@@ -125,16 +354,15 @@ def cmd_routes(paths):
     return 0
 
 
-def cmd_plan(args):
+def cmd_plan(args, o):
     into = None
     if args[:1] == ["--into"]:
         if len(args) < 2:
             die("--into needs a plan.json path")
         into, args = args[1], args[2:]
-    shots = unique(read(args).shots)
+    shots = unique(Read(args, o).shots)
     if not shots:
-        print("picture-evidence: the picture declares no data-evidence-shot regions", file=sys.stderr)
-        return 3
+        return no_regions()
     plan = {"shots": []}
     if into:
         try:
@@ -149,7 +377,7 @@ def cmd_plan(args):
         plan.setdefault("shots", [])
     have = {s.get("name") for s in plan["shots"] if isinstance(s, dict)}
     for s in shots:
-        if s["name"] in have:
+        if s["name"] in have or not s["route"]:
             continue
         shot = {"name": s["name"], "route": s["route"], "viewport": s["viewport"], "theme": s["theme"]}
         if s["setup"]:
@@ -159,7 +387,32 @@ def cmd_plan(args):
     return 0
 
 
-def cmd_missing(args):
+def shot_of(line):
+    """A pinned shot: its name, and the route, viewport and theme it shows."""
+    cols = line.split("\t")
+    base = cols[0].strip().rsplit("/", 1)[-1]
+    name = re.sub(r"\.(png|jpe?g|webp)$", "", base, flags=re.I)
+    t = tokens(name)
+    theme = cols[2].strip() if len(cols) > 2 and cols[2].strip() in THEMES else ("dark" if "dark" in t else "light")
+    route = cols[3].strip() if len(cols) > 3 and cols[3].strip().startswith("/") else ""
+    return {"name": name, "route": route, "viewport": "phone" if t & PHONE_WORDS else "laptop", "theme": theme}
+
+
+def covers(shot, region):
+    if shot["name"] == region["name"]:
+        return True
+    if not region.get("derived") or shot["viewport"] != region["viewport"] or shot["theme"] != region["theme"]:
+        return False
+    r = region["route"]
+    if not r:
+        return False
+    if shot["route"] == r:
+        return True
+    rs = slug(r)
+    return bool(rs) and (shot["name"] == rs or shot["name"].startswith(rs + "-"))
+
+
+def cmd_missing(args, o):
     if args[:1] != ["--shots"] or len(args) < 3:
         die("usage: missing --shots <file|-> <mock.html>...")
     src, paths = args[1], args[2:]
@@ -167,19 +420,11 @@ def cmd_missing(args):
         text = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
     except OSError as e:
         die(f"cannot read {src}: {e.strerror}")
-    # A shot is known by its file name, with or without the folder and extension.
-    have = set()
-    for line in text.splitlines():
-        first = line.split("\t", 1)[0].strip()
-        if not first:
-            continue
-        base = first.rsplit("/", 1)[-1]
-        have.add(re.sub(r"\.(png|jpe?g|webp)$", "", base, flags=re.I))
-    shots = unique(read(paths).shots)
+    have = [shot_of(l) for l in text.splitlines() if l.split("\t", 1)[0].strip()]
+    shots = unique(Read(paths, o).shots)
     if not shots:
-        print("picture-evidence: the picture declares no data-evidence-shot regions", file=sys.stderr)
-        return 3
-    gone = [s for s in shots if s["name"] not in have]
+        return no_regions()
+    gone = [s for s in shots if not any(covers(h, s) for h in have)]
     for s in gone:
         print("\t".join([s["name"], s["route"], s["viewport"], s["theme"], flat(s["shows"])]))
     if gone:
@@ -188,18 +433,32 @@ def cmd_missing(args):
     return 0
 
 
-def cmd_lint(paths):
-    pic = read(paths)
-    gaps = []
-    if not pic.shots:
+def owes_real_data(pic, o):
+    """(owed, why): a picture approved before the cut-off, or on no known date, is exempt."""
+    date = pic.approved or o.approved
+    if date == "today":
+        return True, "being drawn now"
+    if not date:
+        return False, "no approval date known"
+    if date < o.real_data_from:
+        return False, f"approved {date}, before {o.real_data_from}"
+    return True, f"approved {date}"
+
+
+def cmd_lint(paths, o):
+    r = Read(paths, o)
+    gaps, notes = [], []
+    if not r.shots:
         gaps.append("it declares no evidence shots: mark each frame with data-evidence-shot, data-evidence-route, data-evidence-viewport and data-evidence-theme")
     names = {}
-    for s in pic.shots:
+    for s in r.shots:
         n = s["name"]
         if not NAME_RE.match(n):
             gaps.append(f"shot '{n}': a name is lower-case letters, digits and dashes")
         names[n] = names.get(n, 0) + 1
-        if not s["route"].startswith("/"):
+        if s.get("derived") and not s["route"]:
+            gaps.append(f"derived region '{n}': no route — name the screen under the PR's '## Evidence routes'")
+        elif not s["route"].startswith("/"):
             gaps.append(f"shot '{n}': its route '{s['route']}' does not start with '/'")
         if s["viewport"] not in VIEWPORTS:
             gaps.append(f"shot '{n}': viewport '{s['viewport']}' is not laptop or phone")
@@ -208,20 +467,38 @@ def cmd_lint(paths):
     for n, c in names.items():
         if c > 1:
             gaps.append(f"shot '{n}' is declared {c} times: one name, one picture")
-    if pic.shots:
-        vps = {s["viewport"] for s in pic.shots}
+    # Both widths is a drawing rule, like real data: owed by a marked picture drawn under it.
+    owed = [e for e in r.each if owes_real_data(e["pic"], o)[0]]
+    drawn = [s for e in owed if e["how"] == "marked" for s in e["shots"]]
+    if drawn:
+        vps = {s["viewport"] for s in drawn}
         for vp in VIEWPORTS:
             if vp not in vps:
                 gaps.append(f"no {vp} frame: a picture shows the screen on a laptop (1440) and a phone (390)")
-    for case in REAL_DATA:
-        if case not in pic.covered and case not in pic.excused:
-            gaps.append(f"real data: '{case}' is neither drawn (data-real-data) nor excused with a reason (data-real-data-na)")
+    for e in r.each:
+        if e["how"] in ("frames", "routes"):
+            notes.append(f"{e['path']}: {e['n']} region(s) derived from its {e['how']}")
+        due, why = owes_real_data(e["pic"], o)
+        if not due:
+            notes.append(f"{e['path']}: real data exempt — {why}")
+    if owed:
+        for case in REAL_DATA:
+            if case not in r.covered and case not in r.excused:
+                gaps.append(f"real data: '{case}' is neither drawn (data-real-data) nor excused with a reason (data-real-data-na)")
     for g in gaps:
         print(f"picture-evidence: {g}", file=sys.stderr)
+    for n in notes:
+        print(f"picture-evidence: note: {n}", file=sys.stderr)
     if gaps:
         return 1
-    print(f"picture-evidence: ok — {len(pic.shots)} shot(s), real data drawn: {' '.join(sorted(pic.covered & set(REAL_DATA))) or 'none'}"
-          + (f"; excused: {', '.join(sorted(pic.excused))}" if pic.excused else ""))
+    print(f"picture-evidence: ok — {len(r.shots)} shot(s), real data drawn: {' '.join(sorted(r.covered & set(REAL_DATA))) or 'none'}"
+          + (f"; excused: {', '.join(sorted(r.excused))}" if r.excused else ""))
+    return 0
+
+
+def cmd_derivation(paths, o):
+    for e in Read(paths, o).each:
+        print(f"{e['path']}\t{e['how']}\t{e['n']}")
     return 0
 
 
@@ -229,18 +506,21 @@ def main(argv):
     if not argv:
         print(__doc__.split("\n\n")[0], file=sys.stderr)
         return 2
-    cmd, rest = argv[0], argv[1:]
+    cmd = argv[0]
+    o, rest = opts_of(argv[1:])
     if cmd == "required":
-        return cmd_required(rest)
+        return cmd_required(rest, o)
     if cmd == "routes":
-        return cmd_routes(rest)
+        return cmd_routes(rest, o)
     if cmd == "plan":
-        return cmd_plan(rest)
+        return cmd_plan(rest, o)
     if cmd == "missing":
-        return cmd_missing(rest)
+        return cmd_missing(rest, o)
     if cmd == "lint":
-        return cmd_lint(rest)
-    die(f"unknown command '{cmd}' — required|routes|plan|missing|lint")
+        return cmd_lint(rest, o)
+    if cmd == "derivation":
+        return cmd_derivation(rest, o)
+    die(f"unknown command '{cmd}' — required|routes|plan|missing|lint|derivation")
     return 2
 
 

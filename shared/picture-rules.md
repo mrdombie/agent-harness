@@ -48,6 +48,30 @@ A case the screen cannot have is excused with its reason:
 One picture used tidy unique names; the real data had five "Sam Member" rows that
 nobody could tell apart.
 
+## Pictures approved before these rules (2026-10-20)
+
+An older approved picture carries no markers and was not drawn to the real-data
+table. It is not failed for either:
+
+- **Its regions are derived.** Each outermost frame or screen it draws becomes a
+  region, named by its id, label, heading or caption, at laptop and phone and light
+  and dark where it draws them; a picture with no frames falls back to the PR's
+  `## Evidence routes` at laptop 1440 / phone 390 x light / dark. A derived region is
+  covered by CI's shot of the same route, width and theme. The judge's status says
+  which derivation it used (`regions marked`, `derived from frames (N)`, `derived
+  from the PR routes (N)`).
+- **Real data, and both widths, are owed from 2026-10-20.** The approval date is the
+  picture's `data-picture-approved="YYYY-MM-DD"`, else the earliest of its first
+  commit and the ticket's "Picture approved" comment. Earlier, or no date known:
+  exempt. The critic still grades real data on the built screen.
+
+To label one for good, without changing anything it renders (attributes only; it
+prints the diff and checks the file minus the added attributes is the original):
+
+```bash
+python3 -I "$KIT_ROOT/scripts/picture-label.py" --route /the/route --approved 2026-10-14 .design/<surface>-mock.html
+```
+
 ## Before the picture goes anywhere
 
 ```bash

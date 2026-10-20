@@ -71,5 +71,51 @@ sed 's/voice-share-phone-dark/Voice Share/' "$T/mock.html" > "$T/badname.html"
 out=$(pe lint "$T/badname.html" 2>&1)
 printf '%s' "$out" | grep -q "'Voice Share': a name is lower-case" && ok "a shot name CI cannot use is refused" || bad "bad name passed"
 
+# OLDER PICTURES: no markers. With --derive the regions come from its frames, not "none".
+cat > "$T/legacy.html" <<'HTML'
+<html><head><style>@media (prefers-color-scheme: dark) { :root { --bg: #111 } }</style></head><body>
+<div class="states">
+  <div class="frame"><div class="frame-h">1 · Arriving</div><div class="frame-b"><button class="btn dark">Go</button></div></div>
+  <div class="frame"><div class="frame-h">Phone · 390 wide, scrolled</div><div class="frame-b"></div></div>
+</div>
+<section class="frame" id="empty-room"><h3>No rooms yet</h3></section>
+</body></html>
+HTML
+pe required "$T/legacy.html" >/dev/null 2>&1; rc=$?
+[ $rc -eq 3 ] && ok "without --derive an unmarked picture still says it declares nothing (exit 3)" || bad "no-derive: rc=$rc"
+out=$(pe required --derive --route /desk "$T/legacy.html"); rc=$?
+names=$(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')
+[ $rc -eq 0 ] && [ "$names" = "1-arriving-laptop-light 1-arriving-laptop-dark phone-390-wide-scrolled-phone-light phone-390-wide-scrolled-phone-dark empty-room-laptop-light empty-room-laptop-dark " ] \
+  && ok "each outermost frame is a region, named by id or caption, at the widths and themes drawn" || bad "derived: rc=$rc $names"
+printf '%s\n' "$out" | awk -F'\t' '$2 != "/desk"' | grep -q . && bad "a derived region lost its route" || ok "a frame with no route of its own is on the PR's route"
+[ "$(pe derivation --derive --route /desk "$T/legacy.html" | cut -f2,3)" = $'frames\t6' ] && ok "derivation names how: frames 6" || bad "derivation: $(pe derivation --derive --route /desk "$T/legacy.html")"
+echo '<html><body><p>an old picture with no frames</p></body></html>' > "$T/flat.html"
+out=$(pe required --derive --route /desk --route /desk/new "$T/flat.html" | cut -f1 | tr '\n' ' ')
+[ "$out" = "desk-laptop-light desk-laptop-dark desk-phone-light desk-phone-dark desk-new-laptop-light desk-new-laptop-dark desk-new-phone-light desk-new-phone-dark " ] \
+  && ok "no frames: every evidence route at laptop/phone x light/dark" || bad "routes fallback: $out"
+[ "$(pe derivation --derive "$T/flat.html" | cut -f2)" = none ] && ok "no frames and no routes: none, said so" || bad "none"
+
+# A derived region is covered by CI's shot of its route, width and theme, whatever CI named it.
+printf 'desk\tx/desk.png\tlight\t/desk\ndesk-dark\tx/desk-dark.png\tdark\t/desk\ndesk-phone.png\ndesk-phone-dark.png\n' > "$T/ci"
+pe missing --derive --route /desk --shots "$T/ci" "$T/legacy.html" > "$T/out" 2>/dev/null; rc=$?
+[ $rc -eq 0 ] && ok "CI's route-named shots cover the derived regions" || bad "derived missing: rc=$rc $(cat "$T/out")"
+grep -v 'phone-dark' "$T/ci" > "$T/ci2"
+out=$(pe missing --derive --route /desk --shots "$T/ci2" "$T/legacy.html" 2>/dev/null); rc=$?
+[ $rc -eq 1 ] && [ "$(printf '%s\n' "$out" | cut -f1)" = "phone-390-wide-scrolled-phone-dark" ] && ok "a derived region with no matching shot is named" || bad "derived gap: rc=$rc $out"
+printf 'desk\tx/desk.png\tlight\t/desk\n' > "$T/ci3"
+pe missing --shots "$T/ci3" "$T/mock.html" >/dev/null 2>&1 && bad "a marked region was matched by route, not name" || ok "a marked region is still matched by its name only"
+
+# REAL DATA by approval date: the cut-off is 2026-10-20; with no date known, exempt.
+pe lint --approved 2026-10-19 "$T/tidy.html" >/dev/null 2>&1 && ok "a tidy picture approved 2026-10-19 is exempt" || bad "old tidy refused"
+pe lint --approved none "$T/tidy.html" >/dev/null 2>&1 && ok "a tidy picture with no known date is exempt" || bad "undated tidy refused"
+pe lint --approved 2026-10-20 "$T/tidy.html" >/dev/null 2>&1 && bad "a tidy picture approved 2026-10-20 passed" || ok "a tidy picture approved 2026-10-20 is refused"
+pe lint "$T/tidy.html" >/dev/null 2>&1 && bad "a tidy picture being drawn passed" || ok "a picture being drawn (no date given) owes real data"
+sed 's/<html>/<html data-picture-approved="2026-10-01">/' "$T/tidy.html" > "$T/tidy-dated.html"
+pe lint --approved 2026-10-20 "$T/tidy-dated.html" >/dev/null 2>&1 && ok "the picture's own data-picture-approved wins" || bad "own date ignored"
+pe lint --approved 2026-10-19 "$T/laptop.html" >/dev/null 2>&1 && ok "an older picture is not refused for one width" || bad "old laptop-only refused"
+pe lint --derive --route /desk --approved none "$T/legacy.html" >/dev/null 2>&1 && ok "an older unmarked picture lints clean once derived" || bad "legacy lint: $(pe lint --derive --route /desk --approved none "$T/legacy.html" 2>&1)"
+out=$(pe lint --derive --approved none "$T/legacy.html" 2>&1)
+printf '%s' "$out" | grep -q "derived region .* no route" && ok "a derived region with no route is a gap, named" || bad "routeless derived region passed"
+
 echo "picture-evidence: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
