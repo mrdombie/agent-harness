@@ -642,4 +642,33 @@ want "the plan is committed on the branch"   "yes" \
   "$(git -C "$FIX/wt194" ls-files --error-unmatch docs/superpowers/plans/2026-10-18-194-plan.md >/dev/null 2>&1 && echo yes)"
 want "and the tree is clean"                 "" "$(git -C "$FIX/wt194" status --porcelain)"
 
+echo "--- evidence follows the approved picture, not the builder's list ---"
+# The builder listed the one region it built; the picture had a menu and a phone frame
+# too, and nobody photographed them. Every region the picture declares is planned.
+: > "$GH_LOG"
+setup_wt 195
+mkdir -p "$FIX/wt195/.design" "$FIX/wt195/docs/evidence/195"
+cat > "$FIX/wt195/.design/voices-mock.html" <<'HTML'
+<html><body>
+<section data-evidence-shot="voices-grid-laptop-light" data-evidence-route="/settings/voices" data-evidence-viewport="laptop" data-evidence-theme="light"></section>
+<section data-evidence-shot="voices-menu-laptop-dark" data-evidence-route="/settings/voices" data-evidence-viewport="laptop" data-evidence-theme="dark" data-evidence-setup='press Meta+K'></section>
+<section data-evidence-shot="voices-share-phone-light" data-evidence-route="/voices/share" data-evidence-viewport="phone" data-evidence-theme="light"></section>
+</body></html>
+HTML
+# The builder's own plan named only the grid, with a setup of its own.
+printf '{"shots":[{"name":"voices-grid-laptop-light","route":"/settings/voices","viewport":"laptop","theme":"light","setup":["wait for the text \\"Voices\\""]}]}\n' > "$FIX/wt195/docs/evidence/195/plan.json"
+git -C "$FIX/wt195" add .design docs; git -C "$FIX/wt195" commit -qm "feat: the voices grid, to the picture"
+driver_state_put 195 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 195 review
+for st in start plan build self-check review record; do driver_state_done 195 "$st"; done
+rc=0; out=$(driver_step_ship 195 2>&1) || rc=$?
+want "it ships"                                    "0" "$rc"
+want "every region the picture declares is planned" "voices-grid-laptop-light voices-menu-laptop-dark voices-share-phone-light" \
+  "$(jq -r '[.shots[].name] | join(" ")' "$FIX/wt195/docs/evidence/195/plan.json")"
+want "the builder's own setup for its shot is kept" 'wait for the text "Voices"' \
+  "$(jq -r '.shots[0].setup[0]' "$FIX/wt195/docs/evidence/195/plan.json")"
+want "and the plan is committed"                   "" "$(git -C "$FIX/wt195" status --porcelain)"
+want_in "the body names every required shot"       'Required evidence' "$(cat "$GH_LOG")"
+want_in "including the phone frame"                'voices-share-phone-light' "$(cat "$GH_LOG")"
+want_in "and the picture's routes are the evidence routes" '- /voices/share' "$(cat "$GH_LOG")"
+
 exit $FAILED

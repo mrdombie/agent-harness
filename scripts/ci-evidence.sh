@@ -8,6 +8,8 @@
 #   ci-evidence.sh at-head <verdict-sha> [<head>]   a verdict taken there still covers the head
 #   ci-evidence.sh routes [<body-file>]        the body names the routes CI photographs
 #   ci-evidence.sh local                       exit 0 only when local capture is switched on
+#   ci-evidence.sh moved <pr> <from-sha> <head> exit 0 when something between the two changes
+#                                              what this PR's own screens render (names it)
 #
 # THE OWNER'S CALL (2026-10-16): agents stop taking screenshots locally; CI takes
 # them. Measured that day: one agent spent ~58 minutes and 72 tool calls on local
@@ -30,6 +32,8 @@
 #   pinned   shots are pinned and nothing after them changes what renders   exit 0
 #   failed   the capture or the decide check failed: read its log, fix, push  exit 1
 #   none     CI decided nothing on this head needs a picture                  exit 4
+#   stale    CI kept shots from before a merge that changed this PR's own      exit 6
+#            screens (or a file one of them imports): they show other pixels
 #   pending  a capture is queued or running, or has not started yet          wait keeps waiting
 #   off      the PR is a draft: CI photographs only a PR marked ready         exit 5
 #
@@ -84,6 +88,45 @@ carry_remote() { # <base-sha> <head-sha> → 0 when every commit between is a ca
 }
 ghr_api() { local p="$1"; shift; p="${p//\{repo\}/${REPO:-\{owner\}/\{repo\}}}"; gh api "$p" "$@"; }
 
+# moved <pr> <from> <head> — 0 (and the files, one a line) when a change between the two
+# touches what this PR's own screens render: one of its screen files, or a file one of
+# them imports by a relative path. A develop merge that brings other screens leaves the
+# shots standing; one whose conflict resolution edits this PR's screen does not. Anything
+# unreadable counts as moved: a shot of other pixels must never stand as evidence.
+screens_of() { # paths on stdin → the screen ones
+  local in out; in=$(cat)
+  if out=$(printf '%s\n' "$in" | bash "$(dirname "${BASH_SOURCE[0]}")/approval-kept.sh" screens 2>/dev/null); then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$in" | grep -vE '(^|/)(__tests__|__mocks__)/|\.(test|spec)\.[a-z]+$|\.md$|^docs/' || true
+  fi
+}
+moved() { # <pr> <from> <head>
+  local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c
+  changed=$(ghr_api "repos/{repo}/compare/$from...$head" 2>/dev/null | jq -r '.files[]?.filename') || { echo "(the change since ${from:0:9} could not be read)"; return 0; }
+  own=$(ghr_api "repos/{repo}/pulls/$pr/files?per_page=100" --paginate 2>/dev/null | jq -r '.[]?.filename') || { echo "(this PR's files could not be read)"; return 0; }
+  scr=$(printf '%s\n' "$own" | grep -v '^$' | grep -vF "$EV_DIR/" | screens_of | grep -v '^$')
+  [ -n "$scr" ] && [ -n "$changed" ] || return 1
+  hit=$(printf '%s\n' "$changed" | grep -xF -f <(printf '%s\n' "$scr") || true)
+  if [ -z "$hit" ]; then
+    # One step out: a file this PR's screens import by a relative path.
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      dir=$(dirname "$f")
+      while IFS= read -r spec; do
+        [ -n "$spec" ] || continue
+        base=$(python3 -I -c 'import os,sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$dir" "$spec" 2>/dev/null) || continue
+        c=$(printf '%s\n' "$changed" | awk -v b="$base" '{ s=$0; sub(/\.[A-Za-z]+$/, "", s); if (s == b || s == b "/index") print }')
+        [ -n "$c" ] && hit="$hit$c"$'\n'
+      done < <(ghr_api "repos/{repo}/contents/$f?ref=$head" -H "Accept: application/vnd.github.raw" 2>/dev/null \
+                 | grep -oE "(from|import)[[:space:]]*\(?['\"]\.{1,2}/[^'\"]+['\"]" | sed -E "s/^[^'\"]*['\"]//; s/['\"]$//")
+    done < <(printf '%s\n' "$scr" | head -40)
+  fi
+  hit=$(printf '%s' "$hit" | grep -v '^$' | sort -u)
+  [ -n "$hit" ] || return 1
+  printf '%s\n' "$hit"; return 0
+}
+
 check() { # <check-runs json> <name> → status/conclusion of its latest run, or nothing
   jq -r --arg n "$2" '[.check_runs[]? | select(.name == $n)] | sort_by(.started_at) | last
     | if . == null then "" else "\(.status // "")/\(.conclusion // "")" end' <<<"$1" 2>/dev/null
@@ -116,7 +159,10 @@ status() { # <pr>
     */failure|*/timed_out|*/startup_failure|*/action_required|*/cancelled)
       echo "state=failed"; echo "reason='$EV_CAPTURE' ${cap#*/} on ${head:0:9} — read the check's log"; return ;;
     completed/skipped)
-      if [ -n "$evsha" ] && [ "$n" -gt 0 ]; then
+      local mv
+      if [ -n "$evsha" ] && [ "$n" -gt 0 ] && mv=$(moved "$pr" "$evsha" "$head"); then
+        echo "state=stale"; echo "reason=CI kept the shots it pinned at ${evsha:0:9}, and since then $(printf '%s' "$mv" | head -3 | tr '\n' ' ')changed what this PR's screens render — they need a fresh capture"
+      elif [ -n "$evsha" ] && [ "$n" -gt 0 ]; then
         echo "state=pinned"; echo "reason=CI kept the shots it pinned at ${evsha:0:9}: nothing since changes this PR's screens"
       else
         echo "state=none"; echo "reason=CI decided nothing on ${head:0:9} needs a picture"
@@ -150,6 +196,7 @@ case "${1:-}" in
         failed) printf '%s\n' "$out"; exit 1 ;;
         none)   printf '%s\n' "$out"; exit 4 ;;
         off)    printf '%s\n' "$out"; exit 5 ;;
+        stale)  printf '%s\n' "$out"; exit 6 ;;
       esac
       if [ $(( $(date +%s) - start )) -ge "$max" ]; then
         printf '%s\n' "$out"; echo "still waiting after ${max}s — run the same wait again; do not capture locally"; exit 3
@@ -217,5 +264,9 @@ case "${1:-}" in
   local)
     [ "${HARNESS_LOCAL_EVIDENCE:-0}" = 1 ] ;;
 
-  *) die "usage: ci-evidence.sh status|wait|shots|fetch|at-head|routes|local …" ;;
+  moved)
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || die "usage: moved <pr> <from-sha> <head>"
+    moved "$2" "$3" "$4" ;;
+
+  *) die "usage: ci-evidence.sh status|wait|shots|fetch|at-head|routes|local|moved …" ;;
 esac

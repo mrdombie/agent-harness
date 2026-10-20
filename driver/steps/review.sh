@@ -149,6 +149,9 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   rc=0; _driver_review_hold_signed "$t" "$ans_file" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
 
+  _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
+  verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
+
   nsend=$(_driver_count "$ans_file" blocking)
   # `-le`, not `-lt`: the design's flowchart sends work back on round 1 OR 2, so two
   # rounds means two chances to fix, and the pass after them ships.
@@ -179,6 +182,41 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   [ "${nnit:-0}" -gt 0 ] && driver_say "   review: $nnit nit(s) dropped — taste, and taste never blocks"
   driver_say "   review: $verdict after $round round(s)"
   return "$DRIVER_OK"
+}
+
+# _driver_review_touched <ticket> <review.json> <tree> <trunk> — FIX WHAT YOU TOUCH (the
+# owner, 2026-10-20). Every free item on the polish list of a screen this change touches
+# — the ticket's screen labels, and design.screenOf over the files it changes — is a
+# finding of this review at the grade it carries (none named: Minor). Critical, Major and
+# Minor block, so it comes back to fix like any other; it is cleared by fixing it and
+# recording it on its list (polish-list.sh take), never by leaving it because this change
+# did not add it. One PR left narration an earlier critic had flagged on its screen, and
+# the next critic failed the screen for it. A repair is judged on its own change and
+# takes none on; a list that cannot be read is said, not guessed.
+_driver_review_touched() {
+  local t="$1" f="$2" wt="$3" trunk="$4" files items taken add pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}"
+  [ "$(driver_state_get "$t" mode)" = repair ] && return 0
+  files="$(driver_state_dir "$t")/steps/touched-files.txt"
+  git -C "$wt" diff --name-only "$trunk"...HEAD > "$files" 2>/dev/null || : > "$files"
+  if ! items=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" polish "$t" "$files" 2>&1); then
+    driver_say "   review: the polish lists of the screens this change touches could not be read — $(printf '%s' "$items" | head -1)"
+    return 0
+  fi
+  [ -n "$items" ] || return 0
+  taken=$(bash "$pl" taken "$t" 2>/dev/null)
+  add=$(printf '%s\n' "$items" | while IFS=$'\t' read -r g n it; do
+          [ -n "$it" ] || continue
+          printf '%s\n' "$taken" | grep -qxF -- "$n	$it" && continue
+          jq -nc --arg g "$g" --arg n "$n" --arg it "$it" --arg t "$t" --arg pl "$pl" '{
+            id: ("polish-" + $n + "-" + ($it | @base64 | gsub("[^A-Za-z0-9]"; "") | .[0:10])),
+            file: ("(polish list #" + $n + ")"), line: 0, grade: $g, summary: $it,
+            reason: "already known on a screen this change touches: what you touch, you fix",
+            fix: ("fix it in this change, then record it: bash " + $pl + " take " + $n + " " + $t + " \"" + $it + "\"")}'
+        done | jq -sc '.')
+  [ "$(printf '%s' "$add" | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null || return 0
+  jq --argjson add "$add" '.findings = ((.findings // []) + $add)
+      | if ([$add[] | select(.grade != "nit")] | length) > 0 then .verdict = "BLOCKED" else . end' "$f" > "$f.t" && mv "$f.t" "$f"
+  driver_say "   review: $(printf '%s' "$add" | jq 'length') item(s) already on the polish list of a screen this change touches are findings of this review"
 }
 
 # _driver_review_hold_signed <ticket> <review.json> — on a repair of a PR the owner

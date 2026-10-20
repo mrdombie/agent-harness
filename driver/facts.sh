@@ -330,13 +330,33 @@ EOS
     out="${out:+$out
 
 }Polish list #$n$([ "$n" = "$t" ] && echo " (this ticket)") — fix these in this change. Record each one you fixed with
-\`bash $pl take $n $t \"<the item, exactly as written>\"\`; it is ticked when the pull request merges, never by you. Leave any you cannot fix alone:
+\`bash $pl take $n $t \"<the item, exactly as written>\"\`; it is ticked when the pull request merges, never by you. Each blocks at its grade (none named: Minor) whoever put it there — the review adds every one not recorded as a finding:
 $(printf '%s\n' "$items" | sed 's/^/- /')"
   done
   [ -n "$out" ] || out=$(_driver_fact_none "no open polish list for this ticket holds a free item")
   driver_state_set "$t" polish_items "$kept"
   driver_state_set "$t" polish_fact "$out"
   printf '%s' "$out"
+}
+
+# THE INDEPENDENT CRITIC'S OPEN FINDINGS on this ticket's pull request, when it has one
+# and the critic's latest verdict did not pass (scripts/screen-findings.sh critic). What
+# you touch, you fix: each is in scope for this change and blocks at its grade, whether
+# or not this change put it there — one PR left narration an earlier critic had flagged,
+# and the next critic failed the screen for it.
+driver_fact_critic_findings() { # <ticket>
+  local t="$1" pr branch out
+  pr=$(driver_state_get "$t" pr)
+  if [ -z "$pr" ]; then
+    branch=$(driver_state_get "$t" branch)
+    [ -n "$branch" ] && pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null)
+  fi
+  [ -n "$pr" ] || { _driver_fact_none "#$t has no open pull request, so no critic has judged it yet"; return 0; }
+  out=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" critic "$pr" 2>/dev/null) \
+    || { _driver_fact_none "the independent critic's findings on PR #$pr could not be read"; return 0; }
+  [ -n "$out" ] || { _driver_fact_none "the independent critic has no open finding on PR #$pr"; return 0; }
+  printf 'The independent design critic failed PR #%s on these. Each is in scope for this change and blocks at its grade, whoever put it there; fix every one (a Minor too), and the critic judges the screen again after CI photographs it:\n' "$pr"
+  printf '%s\n' "$out" | awk -F'\t' '{ printf "- %s · %s\n", $1, $3 }'
 }
 
 # driver_facts_common <ticket> <slot> — the ten every step may ask for. Cheap ones
@@ -354,4 +374,5 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" SURFACE_RULES   "$(driver_fact_surface_rules)"
   driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
   driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
+  driver_fact_put "$t" "$s" CRITIC_FINDINGS "$(driver_fact_critic_findings "$t")"
 }

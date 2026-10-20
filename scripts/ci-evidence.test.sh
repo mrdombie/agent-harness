@@ -81,6 +81,15 @@ pr 8 "$(h 8)" false "$body_routes"
 pr 9 "$(h 9)" false "$body_routes- [hand](https://github.com/o/r/blob/$A/docs/evidence/7/hand.png)"
 # 10 capture skipped on a develop merge, earlier pins stand
 pr 10 "$(h 10)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 10)" ahead 2 apps/web/x.tsx
+prfiles() { local n="$1"; shift; jq -n --args '[$ARGS.positional[] | {filename:.}]' "$@" > "$SB/fx/repos_o_r_pulls_${n}_files_per_page_100"; }
+prfiles 10 apps/web/page.tsx docs/evidence/7/dashboard.png
+# 11 capture skipped, but the merge's resolution edited this PR's own screen file
+pr 11 "$(h 11)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 11)" ahead 2 apps/web/room.tsx lib/other.ts
+prfiles 11 apps/web/room.tsx
+# 12 capture skipped, and the merge changed a file this PR's screen imports
+pr 12 "$(h 12)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 12)" ahead 2 apps/web/parts/band.tsx
+prfiles 12 apps/web/page.tsx
+printf "import { Band } from './parts/band'\nexport default 1\n" > "$SB/fx/repos_o_r_contents_apps_web_page.tsx_ref_$(h 12)"
 
 S="$HERE/ci-evidence.sh"
 st() { bash "$1" status "$2" 2>/dev/null | sed -n 's/^state=//p'; }
@@ -100,6 +109,11 @@ core() { # <script> → failed cases, one per line
   runs "$(h 10)" completed/skipped completed/success
   o=$(st "$s" 10); [ "$o" = pinned ] || echo "a skipped capture over earlier pins read $o"
   rm -f "$SB/fx/repos_o_r_commits_$(h 10)_check-runs_per_page_100"
+  runs "$(h 11)" completed/skipped completed/success
+  o=$(st "$s" 11); [ "$o" = stale ] || echo "a skipped capture after a merge that edited this PR's screen read $o"
+  o=$(w "$s" 11); [ "$o" = 6 ] || echo "wait on stale shots exited $o"
+  runs "$(h 12)" completed/skipped completed/success
+  o=$(st "$s" 12); [ "$o" = stale ] || echo "a skipped capture after a merge that changed an import of this PR's screen read $o"
   o=$(st "$s" 10); [ "$o" = pending ] || echo "a merge after the pins with no verdict from CI read $o"
   o=$(w "$s" 1); [ "$o" = 0 ] || echo "wait on pinned exited $o"
   o=$(w "$s" 6); [ "$o" = 1 ] || echo "wait on failed exited $o"
@@ -172,6 +186,8 @@ PY
   grep -qF -- "$4" <<<"$r" && ok "planted: $1 → red" || bad "planted: $1 → not red on its case ($4)"
 }
 echo "plants"
+plant "kept shots never go stale"           'local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c' 'return 1' 'merge that edited this PR'"'"'s screen read'
+plant "imports are not followed"             'c=$(printf '"'"'%s\n'"'"' "$changed" | awk' 'c=$(true | awk' 'changed an import of this PR'"'"'s screen read'
 plant "a merge counts as a carry"            '[ "$parents" = 2 ] || return 1'            ':'                               'a verdict with a merge after it passed'
 plant "a code file counts as a carry"        '| grep -qvF "$EV_DIR/"'                    '| grep -q NOTHING-MATCHES-THIS'  'a verdict with a code commit after it passed'
 plant "the forge's carry ignores code files" 'select(startswith($d) | not)] | length == 0)' 'select(false)] | length == 0)' 'shots with code after them and a capture running read'

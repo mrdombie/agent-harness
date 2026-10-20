@@ -56,6 +56,24 @@ out="$(run "$d")"; rc=$?
 [ $rc -eq 1 ] && ok "a critic without the picture-mode output block is refused" || bad "a critic without the output block passed: $out"
 rm -rf "$d"
 
+# Real data: each sender loses its hold on the picture rules; the critic loses the real-data grade.
+for s in auto bug needsme; do
+  d="$(fresh)"; f="$d/skills/$s/SKILL.md"
+  grep -vF 'picture-rules.md' "$f" > "$f.new" && mv "$f.new" "$f"
+  out="$(run "$d")"; rc=$?
+  [ $rc -eq 1 ] && printf '%s' "$out" | grep -q "skills/$s/SKILL.md.*picture-rules.md" && ok "$s without the real-data picture rules is refused" || bad "$s without picture rules passed: $out"
+  rm -rf "$d"
+done
+d="$(fresh)"; c="$d/agents/design-critic.md"
+grep -vF 'REAL DATA: COVERED' "$c" > "$c.new" && mv "$c.new" "$c"
+out="$(run "$d")"; rc=$?
+[ $rc -eq 1 ] && printf '%s' "$out" | grep -q "no 'REAL DATA: COVERED'" && ok "a critic that no longer grades real data is refused" || bad "a critic without the real-data grade passed: $out"
+rm -rf "$d"
+d="$(fresh)"; rm "$d/shared/picture-rules.md"
+out="$(run "$d")"; rc=$?
+[ $rc -eq 1 ] && printf '%s' "$out" | grep -q 'picture-rules.md is missing' && ok "the picture rules removed is refused" || bad "no picture rules passed: $out"
+rm -rf "$d"
+
 # The standing rule is deleted.
 d="$(fresh)"; r="$d/rules/standing-rules.md"
 grep -vi 'picture mode' "$r" > "$r.new" && mv "$r.new" "$r"

@@ -25,12 +25,19 @@ Anything graphic gets a rendered artifact, not ASCII.
 
 **A picture is drawn with real data, not a tidy still.** Approval shots show the
 screen as people will meet it: a long history, real counts, the longest names,
-the empty state, and the page scrolled to the bottom on a laptop and a phone.
+display names that repeat, the empty state, and the page scrolled to the bottom on
+a laptop and a phone. Every frame is a named evidence region, and the evidence the
+pull request owes is read off those regions, never chosen by the builder
+(`shared/picture-rules.md`, checked by `scripts/picture-evidence.py lint`).
 Evidence captured at the end of the ticket does the same. Measured when this rule
 landed: of 23 defects the owner found by hand in one test session, 6 had passed
 review on pictures with a short thread, single-digit counts or an unscrolled
 page: the page scrolling away from its input, a count of 246, cards cut off by
 a sticky band.
+
+**Only an independent critic records a design verdict** (the owner, 2026-10-20). The design status is set by a critic the build never started, judging CI's pinned shots of the exact head and naming the shot set it judged (`scripts/critic-judge.sh`, run by the coordinator). A build, fix or repair run never runs the design critic to record its verdict and never commits a design-verdict trailer; one that does is ignored and named on the PR. On the PR that set this rule, the builder's own critic said SHIP and an independent one on CI's shots of the same fingerprint said SLOP with four Majors.
+
+**What you touch, you fix** (the owner, 2026-10-20). A change that touches a screen takes on that screen's open polish items and the critic's open findings: Critical, Major and Minor block and are fixed in that change, whoever put them there.
 
 **Evidence comes from CI.** An agent building a screen change does not take
 screenshots on its own machine: it pushes, opens the pull request held with an

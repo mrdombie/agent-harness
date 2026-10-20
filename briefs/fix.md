@@ -14,7 +14,10 @@ and the traps this project keeps falling into.
 
 ## What you are given
 
-- The findings graded critical or major: {{BLOCKERS}}
+- The findings that block (Critical, Major and Minor): {{BLOCKERS}}
+- The independent critic's open findings on this ticket's pull request: {{CRITIC_FINDINGS}}
+
+**What you touch, you fix.** A finding whose id starts `polish-` is an item already on the polish list of a screen this change touches. Fix it here, whoever put it there, then record it with the exact `take` command its fix names: the next review clears an item only once it is recorded. A critic finding above is fixed the same way; the critic judges the screen again after CI photographs it.
 - The change as it stands: {{DIFF}}
 - The round: {{ROUND}}
 

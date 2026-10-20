@@ -94,10 +94,64 @@ _driver_ship_closes() {
 # the plan's screen states, then every Next.js page the branch changes. Without a
 # '## Evidence routes' list CI takes no pictures and the design critic never runs.
 _driver_ship_routes() {
+  # The approved picture's routes first, and all of them: it says what is owed.
+  driver_state_get "$1" picture_shots | cut -f2 | grep '^/' | awk '!seen[$0]++'
   { driver_state_get "$1" screen_states | jq -r '.[]?.route // empty' 2>/dev/null
     git -C "$2" diff --name-only "$3"...HEAD 2>/dev/null \
       | grep -E '/app/.*page\.(t|j)sx?$' | sed -E 's#^.*/app/##; s#(^|/)page\.[tj]sx?$##; s#\([^/]*\)/?##g; s#/$##; s#^#/#'
   } | grep '^/' | grep -v '\[' | awk '!seen[$0]++' | head -8
+}
+
+# _driver_ship_pictures <ticket> <tree> <trunk> — the approved pictures this branch is
+# bound to: every picture file it adds or changes (review.judge.mockGlob, default
+# .design/*-mock.html), and the plan's design_ref when that is a picture in the tree.
+_driver_ship_pictures() {
+  local t="$1" wt="$2" trunk="$3" g ref
+  g=$(driver_opt review.judge.mockGlob ".design/*-mock.html")
+  ref=$(driver_state_get "$t" design_ref | tr -d '[:space:]')
+  { git -C "$wt" diff --name-only "$trunk"...HEAD -- "$g" 2>/dev/null
+    case "$ref" in *.html) printf '%s\n' "$ref" ;; esac
+  } | awk 'NF && !seen[$0]++' | while IFS= read -r f; do [ -f "$wt/$f" ] && printf '%s\n' "$f"; done
+}
+
+# _driver_ship_evidence_plan <ticket> <tree> <trunk> — EVIDENCE FOLLOWS THE PICTURE.
+# A builder once wrote its own routes and listed the one region it had built; the
+# approved picture had four, and two were never photographed. So every shot the bound
+# picture declares (scripts/picture-evidence.py) goes into the capture plan CI reads,
+# <evidence.dir>/<ticket>/plan.json — a shot the builder already planned keeps its own
+# setup — and is recorded as picture_shots for the body's "## Required evidence". The
+# independent critic fails the PR while any of them has no pinned shot.
+_driver_ship_evidence_plan() {
+  local t="$1" wt="$2" trunk="$3" pics rc=0 req dir plan new pe="$KIT_ROOT/scripts/picture-evidence.py"
+  driver_state_set "$t" picture_shots ""
+  pics=$(_driver_ship_pictures "$t" "$wt" "$trunk")
+  [ -n "$pics" ] || return 0
+  local -a paths=(); local f
+  while IFS= read -r f; do paths+=("$wt/$f"); done <<<"$pics"
+  req=$(python3 -I "$pe" required "${paths[@]}" 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    driver_say "   ship: the approved picture ($(printf '%s' "$pics" | tr '\n' ' '| sed 's/ $//')) declares no evidence regions, so the critic holds every frame it draws against CI's shots"
+    return 0
+  fi
+  [ "$rc" -eq 0 ] || { driver_say "   ship: the approved picture's regions could not be read (exit $rc)"; return 0; }
+  driver_state_set "$t" picture_shots "$req"
+  driver_state_set "$t" picture_files "$pics"
+  dir=$(driver_opt evidence.dir "docs/evidence")/$t; plan="$dir/plan.json"
+  new=$(python3 -I "$pe" plan --into "$wt/$plan" "${paths[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the picture's shots"; return 0; }
+  if [ -f "$wt/$plan" ] && [ "$(jq -S . "$wt/$plan" 2>/dev/null)" = "$(printf '%s' "$new" | jq -S . 2>/dev/null)" ]; then return 0; fi
+  mkdir -p "$wt/$dir" && printf '%s\n' "$new" > "$wt/$plan" || return 0
+  git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
+  git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the shots the approved picture declares (#$t)" >/dev/null 2>&1 \
+    && driver_say "   ship: $plan holds the $(printf '%s\n' "$req" | grep -c .) shot(s) the approved picture declares"
+}
+
+# _driver_ship_required <ticket> — the "## Required evidence" section, or nothing.
+_driver_ship_required() {
+  local req; req=$(driver_state_get "$1" picture_shots)
+  [ -n "$(printf '%s' "$req" | tr -d '[:space:]')" ] || return 0
+  printf '## Required evidence\nThe approved picture (%s) declares these shots. The independent design critic fails this pull request while any of them has no shot pinned by CI:\n' \
+    "$(driver_state_get "$1" picture_files | sed 's/^/`/; s/$/`/' | paste -sd, - | sed 's/,/, /g')"
+  printf '%s\n' "$req" | awk -F'\t' 'NF { printf "- `%s` — %s · %s · %s\n", $1, $2, $3, $4 }'
 }
 
 _driver_ship_push_to_fix() {
@@ -150,6 +204,11 @@ driver_step_ship() { # <ticket>
     git -C "$wt" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" >/dev/null 2>&1 \
       && driver_say "   ship: committed the run's own plan under $sp"
   done <<< "$(driver_scratch_paths)"
+
+  # The trunk is resolved again below, and measured; here it only finds the pictures.
+  local ptrunk="origin/$INTEGRATION_BRANCH"
+  git -C "$wt" rev-parse --verify -q "$ptrunk" >/dev/null 2>&1 || ptrunk="$INTEGRATION_BRANCH"
+  _driver_ship_evidence_plan "$t" "$wt" "$ptrunk"
 
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then
@@ -312,7 +371,7 @@ driver_step_ship() { # <ticket>
   pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
   if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
-  local routes; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /')
+  local routes required; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t")
   body=$(cat <<PRBODY
 $closes #$t
 
@@ -331,6 +390,8 @@ $(driver_state_get "$t" renders | sed 's/^/  /')
 ${routes:+
 ## Evidence routes
 $routes
+}${required:+
+$required
 }${polish:+
 $polish
 }${replaced:+

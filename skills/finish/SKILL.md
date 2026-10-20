@@ -371,7 +371,9 @@ unblock a push is the failure this step exists to catch.
 The code reviewer (`/agent-harness:ui-gate`) runs here, as above. The design
 critic and the parity check judge rendered screens, and those pictures come from
 CI after the push — Step 5.4 — never from a dev server or a capture script on
-this machine. Do not start one to get a picture for this step.
+this machine. Do not start one to get a picture for this step. And their verdict
+is never yours to record: the independent critic sets the design status after
+the push (Step 5.4).
 
 ### Step 4 — Push the branch
 
@@ -511,40 +513,33 @@ What `wait` returns, and the move for each:
 | 4 | `none` — CI found nothing on this head that needs a picture | no picture is owed; say so on the PR |
 | 5 | `off` — the PR is still a draft | mark it ready (step 2) |
 
-**Judge CI's pictures.** Fetch them, then run the design critic — slop mode, and
-parity mode against the approved picture when there is one — on those files:
+**The design verdict is not yours to give.** The independent critic
+(`scripts/critic-judge.sh`, started by the coordinator's housekeeping, never by the
+session that built the change) fetches CI's pinned shots of the head, fails the PR
+on any region of the approved picture with no shot, runs the `design-critic` agent
+on the shots, the approved picture and the screen's open findings, holds its answer
+to the first look (`scripts/check-first-look.sh`) and to the shot set it names, and
+sets the design status on the head, naming that set. Do not run the critic to record
+a verdict, and never commit a design-verdict trailer (`Design-Critic:` or the
+project's `review.judge.trailer`): one written by the builder counts for nothing and
+is named on the PR as ignored. On the PR that set this rule (2026-10-20) the
+builder's own critic said SHIP, and the independent one on CI's shots of the same
+fingerprint said SLOP with four Majors.
+
+**Evidence follows the picture.** With an approved picture on the branch, its
+regions are the evidence owed (`shared/picture-rules.md`): write them into the
+capture plan CI reads and list them in the body before marking ready —
 
 ```bash
-SHOTS=$(mktemp -d "${TMPDIR:-/tmp}/ci-shots-$TICKET_KEY-XXXXXX")
-bash "$EV" fetch "$PR_NUMBER" "$SHOTS"      # one line per shot: name<TAB>path<TAB>theme<TAB>route
-EVSHA=$(bash "$EV" status "$PR_NUMBER" | sed -n 's/^sha=//p')   # the commit CI photographed
+PICS=$(git diff --name-only "origin/$INTEGRATION_BRANCH"...HEAD -- '.design/*-mock.html')
+[ -z "$PICS" ] || python3 -I "$KIT_ROOT/scripts/picture-evidence.py" plan \
+  --into "docs/evidence/$TICKET_KEY/plan.json" $PICS > /tmp/plan.$$ && mv /tmp/plan.$$ "docs/evidence/$TICKET_KEY/plan.json"
 ```
 
-Spawn the `agent-harness:design-critic` agent with those paths and, for parity,
-the approved picture. Its verdict is about CI's pictures of `$EVSHA`.
-
-**Hold its answer to the first look.** Save the critic's whole answer and run the
-check on it. A refusal means the critic skipped the first-look test, or passed a
-screen it could not read: run the critic again, never record that verdict.
-
-```bash
-printf '%s\n' "$CRITIC_ANSWER" > "$SHOTS/critic.md"
-bash "$KIT_ROOT/scripts/check-first-look.sh" "$SHOTS/critic.md" || exit 1
-```
-
-**Record it against the evidence head, then push it.** Bring CI's evidence commit
-down first, so the trailer sits on top of it:
-
-```bash
-git pull --ff-only origin "$BRANCH"
-# The project's own recorder (review.attest.<name>.record), with the reviewed sha = $EVSHA.
-git push origin "HEAD:refs/heads/$(git branch --show-current)"
-```
-
-The trailer commit is empty, so CI's re-capture of it changes nothing, and
-`ci-evidence.sh at-head` counts both CI's evidence commit and an empty trailer as
-carrying a verdict forward (Gate 5). A Critical or Major from the critic: fix,
-push, `wait` again — CI photographs the new head. Two rounds, as Step 3.5 says.
+A red design status: read the critic's comment on the PR, fix every finding it
+grades (a Minor too, and the screen's open ones it lists — what you touch, you fix),
+push, and `wait` again — CI photographs the new head and the critic judges it again.
+Two rounds, as Step 3.5 says.
 
 **When the project's push gate wants the picture verdict BEFORE the push.** Some
 projects refuse the first push of a screen change until a picture reviewer's
