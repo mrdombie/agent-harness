@@ -103,6 +103,16 @@ _driver_typecheck_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# The runner's own failure lines when it printed any, else the tail. The first lines
+# are a runner's banner — vitest's config warning on every maktura run — so a reason
+# made of them named no case, and the fix round's one retry was handed nothing.
+_driver_fail_lines() { # <file>
+  local l
+  l=$(grep -E '(^|[[:space:]])(FAIL|not ok|×|✗|✖)([[:space:]]|$)|AssertionError|Error:|[0-9]+ (case|test)\(?s?\)? failed' "$1" 2>/dev/null | head -6)
+  [ -n "$l" ] || l=$(tail -5 "$1" 2>/dev/null)
+  printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
+}
+
 driver_prove_red_green() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
@@ -180,8 +190,8 @@ driver_prove_red_green() {
   git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
   git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1
   local red_out after_out
-  red_out=$(head -5 "$tmp/before.out" 2>/dev/null | tr '\n' ' ')
-  after_out=$(head -5 "$tmp/after.out" 2>/dev/null | tr '\n' ' ')
+  red_out=$(_driver_fail_lines "$tmp/before.out")
+  after_out=$(_driver_fail_lines "$tmp/after.out")
   rm -rf "$tmp"
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
@@ -206,7 +216,14 @@ driver_prove_red_green() {
     return 1
   fi
   if [ "$rc_green" -ne 0 ]; then
-    printf '%s still fails with the change (exit %s): %s\n' "$tfile" "$rc_green" "$after_out"
+    # THE TEST COMMIT'S VERSION RUNS IN BOTH TREES, so a case the change rewrote —
+    # a sibling that asserted the old behaviour — still asserts it here. Said, so
+    # the retry moves the edit rather than re-sending the same two commits.
+    local moved=""
+    git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null \
+      && ! git -C "$repo" diff --quiet "$tsha" "$isha" -- "$tfile" 2>/dev/null \
+      && moved=" — and $tfile changes between the test commit $(printf '%s' "$tsha" | cut -c1-8) and the change commit $(printf '%s' "$isha" | cut -c1-8). The proof runs the test commit's version in both trees, so a case the change rewrote still fails there: make every edit to $tfile in the test commit"
+    printf '%s still fails with the change (exit %s): %s%s\n' "$tfile" "$rc_green" "$after_out" "$moved"
     return 2
   fi
   printf '%s: red (exit %s) at %s, then green at %s\n' \
@@ -282,8 +299,8 @@ driver_prove_by_break() {
     tc_rc=$?
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
-  red_out=$(head -5 "$tmp/red.out" 2>/dev/null | tr '\n' ' ')
-  green_out=$(head -5 "$tmp/green.out" 2>/dev/null | tr '\n' ' ')
+  red_out=$(_driver_fail_lines "$tmp/red.out")
+  green_out=$(_driver_fail_lines "$tmp/green.out")
   _driver_break_done
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) on the tree with the code restored\n' "$tc" "$DRIVER_CMD_TIMEOUT"

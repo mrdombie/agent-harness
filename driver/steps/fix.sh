@@ -151,7 +151,7 @@ driver_step_fix() { # <ticket>
   local proofnote; proofnote=$(driver_state_get "$t" fix_proof_note)
   [ -z "$proofnote" ] || blockers="$blockers
 
-THE LAST FIX ROUND'S PROOF FAILED, so answer again. For each cleared finding: commit the test alone first (testCommit) so it FAILS at that commit, then commit the fix (implCommit) so it passes, and make sure the change type-checks. What failed:
+THE LAST FIX ROUND'S PROOF FAILED, so answer again. For each cleared finding: commit the test alone first (testCommit) so it FAILS at that commit, then commit the fix (implCommit) so it passes, and make sure the change type-checks. The test file is run whole, in its testCommit version, in both trees: every edit to it — a sibling case the fix changes too — goes in the test commit, and each finding's case goes in its own test commit, straight before its own fix, so no other finding's case is red at its change. What failed:
 $proofnote"
   driver_fact_put "$t" fix BLOCKERS "$blockers"
   driver_fact_put "$t" fix DIFF \
@@ -223,7 +223,7 @@ EOB
       4) driver_say "✋ fix $bid — $why"
          return "$DRIVER_E_TIMEOUT" ;;
       *) driver_say "✋ fix $bid — $why"; bad=1
-         fails="$fails- $bid: $(printf '%s' "$why" | cut -c1-600)
+         fails="$fails- $bid: $(printf '%s' "$why" | cut -c1-1000)
 " ;;
     esac
   done
@@ -244,7 +244,7 @@ EOB
     # second pass would be handed the same list. It parks with what could not be
     # proved.
     driver_say "✋ fix: a cleared finding is not proved by its own test. A fix whose test is green before the fix is a fix nothing pins."
-    driver_state_set "$t" park_note "the fix round cleared $ncleared finding(s) and at least one is not proved red-then-green by the test it names"
+    driver_state_set "$t" park_note "the fix round cleared $ncleared finding(s) and at least one is not proved red-then-green by the test it names, after one retry told why: $(printf '%s' "$fails" | tr '\n' ' ')"
     return "$DRIVER_E_REFUSED"
   fi
 
