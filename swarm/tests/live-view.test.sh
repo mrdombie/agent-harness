@@ -965,4 +965,46 @@ got=$(SWARM_PROGRESS_MS=999999999999999 psnap | jq -r '.live[] | select(.ticket=
 [ "$got" != "4" ] && ok "planted: the repair read from the build → step $got → red" || bad "planted: the repair's own step dropped and the test cannot see it"
 rm -f "$STATE/swarm/progress.json" "$STATE"/runs/claim-1301-a.json
 
+echo "--- another machine's builds show beside this one's, each with its machine ---"
+# Measured 2026-10-20: the page listed 4 builds, all on this Mac, while the claim
+# list held 8 — 4 on the Windows VM. A view of shared work read only local runs.
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-* "$STATE/swarm/claims.json" "$STATE/swarm/board.json"
+run 1401 "$$"
+AGO=$(node -e 'console.log(new Date(Date.now() - 20 * 60000).toISOString().replace(/\.\d{3}Z$/, "Z"))')
+cat > "$BIN/claims-lock" <<SH
+#!/usr/bin/env bash
+cat <<'JSON'
+[{"issue":1401,"host":"laptop","agent":"dom@laptop","step":"build","claimed_at":"$AGO"},
+ {"issue":1402,"host":"studio-mac","agent":"dom@studio-mac","step":"fix","claimed_at":"$AGO"},
+ {"issue":1403,"host":"laptop","agent":"dom@laptop","step":"build"},
+ {"issue":1404,"host":"studio-mac","agent":"dom@studio-mac"}]
+JSON
+SH
+chmod +x "$BIN/claims-lock"
+printf '{"1401":{"title":"Local build","project":""},"1402":{"title":"Remote fix","project":""},"1404":{"title":"Remote bare","project":""}}' > "$FIX/titles.json"
+csnap() { SWARM_CLAIM_LOCK="$BIN/claims-lock" BRANCH_PREFIX=tkt- snap; }
+s=$(csnap)
+want "this machine's count is still its own runs"          "1" "$(printf '%s' "$s" | jq '.live | length')"
+want "the other machine's claims are rows, a local one once, a stale one never" "1402 1404" \
+  "$(printf '%s' "$s" | jq -r '[.elsewhere[].ticket] | join(" ")')"
+want "each with its machine, title and claim step"         "studio-mac Remote fix fix" \
+  "$(printf '%s' "$s" | jq -r '.elsewhere[] | select(.ticket=="1402") | "\(.host) \(.title) \(.claimStep)"')"
+want "progress and activity absent, not invented"          "null null null 20" \
+  "$(printf '%s' "$s" | jq -r '.elsewhere[] | select(.ticket=="1402") | "\(.progress) \(.quietSec) \(.steps) \(.startedAgoMin)"')"
+want "the local row names its machine too"                 "laptop" "$(printf '%s' "$s" | jq -r '.live[0].host')"
+r=$(page_render "$LV")
+want_in "the heading counts both machines"                 '^buildinghead=Building now · 3$' "$r"
+want_in "the local row says it is this machine"            '^building=.*Local build.*This machine \(laptop\) · ' "$r"
+want_in "the remote row says where, and its step"          '^building=.*Remote fix.*On studio-mac · <b>Fixing</b> · claimed 20 min ago' "$r"
+want_in "a claim with no step or time still renders"       '^building=.*Remote bare.*<div class="step">On studio-mac</div>' "$r"
+want_not_in "nothing absent reads as a value"              '^building=.*(undefined|NaN|null)' "$r"
+plant index.html "  const building = [...s.live, ...(s.elsewhere || [])]" "  const building = [...s.live]"
+[ "$(page_render "$P2" | grep '^building=' | grep -c 'studio-mac')" = 0 ] \
+  && ok "planted: the page drops the merge → no remote row → red" || bad "planted: the page drops the merge and the test cannot see it"
+plant server.mjs "    seen.add(c.issue)" "    continue"
+rm -f "$STATE/swarm/claims.json"
+got=$(SWARM_CLAIM_LOCK="$BIN/claims-lock" psnap | jq '.elsewhere | length')
+[ "$got" != "2" ] && ok "planted: the server drops the merge → $got remote rows → red" || bad "planted: the server drops the merge and the test cannot see it"
+rm -f "$STATE"/runs/claim-1401-a.json "$STATE/swarm/claims.json" "$FIX/titles.json"
+
 exit $FAILED
