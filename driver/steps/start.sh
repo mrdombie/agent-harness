@@ -105,6 +105,22 @@ driver_step_start() { # <ticket>
       driver_say "⏳ start: could not ask GitHub whether #$t already has an open pull request, so a branch cut now might sit beside one. Left as it was for the next tick."
       return "$DRIVER_E_UNREAD"
     fi
+    # OUR OWN PARKED DRAFT, ITS TREE SWEPT: the PR is on the record's branch, so the
+    # tree is cut again from origin's head of it and the build resumes.
+    local rb; rb=$(driver_state_get "$t" branch)
+    if [ -n "$prs" ] && [ -n "$rb" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ] \
+       && [ "$(printf '%s' "$prs" | cut -f2)" = "$rb" ] \
+       && git -C "$MAIN_REPO" fetch -q origin "+refs/heads/$rb:refs/remotes/origin/$rb" 2>/dev/null; then
+      local wroot; wroot=$(driver_worktree_root) || return "$DRIVER_E_REFUSED"
+      owt="$wroot/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
+      mkdir -p "$(dirname "$owt")" 2>/dev/null || true
+      if bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$MAIN_REPO" "$owt" -q -B "$rb" "origin/$rb" 2>/dev/null \
+         && driver_link_install "$MAIN_REPO" "$owt" && driver_prepare_worktree "$owt"; then
+        driver_state_set "$t" worktree "$owt"
+        driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
+        prs=""
+      fi
+    fi
     if [ -n "$prs" ]; then
       driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."
       return "$DRIVER_E_REFUSED"
