@@ -75,7 +75,10 @@ nobody has to answer them and a later run clears them:
 - **A GitHub read that failed in `start`, `reenter` or `ship`** (exit 26). It is
   retried `DRIVER_LOOKUP_TRIES` times first.
 - **A claim another run on this host holds** (step exit 29, run exit 28), met by
-  `start` or `reenter`. That run's claim is left alone.
+  `start` or `reenter`, or by `repair` before it touches the tree and again before
+  it hands over to the model. A step's question that names a claim a peer or
+  another run holds is read the same way, never as a question for the PM or the
+  owner. That run's claim is left alone.
 
 The last two park, with the step's own reason, after `DRIVER_MAX_REQUEUES` (3)
 requeues in a row, so a ticket that does not exist cannot loop.

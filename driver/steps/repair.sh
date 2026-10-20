@@ -30,6 +30,19 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 # driver_prove_red_green lives with the build step: one proof, read by every step.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
+# driver_claim_held_elsewhere lives with reenter: one claim rule for the way in and the model call.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reenter.sh" || exit 1
+
+# _driver_repair_claim_busy <ticket> <when> — 0 (and the step returns DRIVER_E_BUSY) when
+# another live run holds the claim: the repair waits on the queue, it never asks about it.
+_driver_repair_claim_busy() {
+  local held
+  held=$(driver_claim_held_elsewhere "$1") || return 1
+  driver_say "✋ repair: $held, $2. Never adopt a live claim; back on the queue to wait it out."
+  driver_state_set "$1" park_note "$held"
+  driver_state_set "$1" claim_elsewhere 1
+  return 0
+}
 
 # _driver_repair_clashes <tree> <trunk> <mergeStateStatus> <mergeable> — 0 when the
 # branch clashes with the trunk: GitHub says DIRTY or CONFLICTING, or a trial merge
@@ -81,6 +94,7 @@ driver_step_repair() { # <ticket>
     driver_say "✋ repair: there is no re-entered worktree on the record for #$t — reenter runs first."
     return "$DRIVER_E_REFUSED"
   fi
+  _driver_repair_claim_busy "$t" "before the repair touches its tree" && return "$DRIVER_E_BUSY"
   trunk="origin/$INTEGRATION_BRANCH"
   git -C "$wt" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/$trunk" 2>/dev/null || true
   git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
@@ -218,6 +232,7 @@ EOS
   fi
 
   # ---- the one model call ------------------------------------------------------
+  _driver_repair_claim_busy "$t" "before the model is handed the repair" && return "$DRIVER_E_BUSY"
   briefs_text=$(cat "$(driver_state_get "$t" repair_brief)" 2>/dev/null)
   driver_fact_put "$t" repair BRIEF "$DRIVER_BRIEF_PREFACE
 
