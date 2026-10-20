@@ -353,7 +353,11 @@ say-so. Do not block the loop on it:
    `design-critic` agent in **picture mode** on it (the project's `design.reference`
    beside it, and the current screen when the brief is a change). On `KIT: DRIFT`
    redraw and run it again; only on `KIT: MATCH` post the URL on the ticket, with the
-   line `KIT: MATCH` in the same comment.
+   line `KIT: MATCH` in the same comment. The picture follows `shared/picture-rules.md`
+   first: every frame a named evidence region (laptop and phone), drawn with real
+   data (duplicate names, the longest names, the empty state, scrolled), and
+   `python3 -I "$KIT_ROOT/scripts/picture-evidence.py" lint` passes on it. Those
+   regions are the evidence the PR owes; nobody chooses them later.
 2. Label `$HOLD_LABEL`, append to `.auto-skip` with reason `needs-human`.
 3. **Move to the next row immediately.**
 

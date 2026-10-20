@@ -121,7 +121,10 @@ Phase 2 wiring.
 Before any picture of the target goes to the operator, run the `design-critic` agent in
 **picture mode** on it, with the project's `design.reference` and the current screen. On
 `KIT: DRIFT` it is redrawn and checked again; it is sent only on `KIT: MATCH`, and the
-comment carrying its URL says `KIT: MATCH`.
+comment carrying its URL says `KIT: MATCH`. The picture follows `shared/picture-rules.md`:
+every frame a named evidence region on laptop and phone, real data drawn (duplicate
+names, the longest names, the empty state, scrolled), and
+`python3 -I "$KIT_ROOT/scripts/picture-evidence.py" lint` passes before it is sent.
 
 If nothing visible changes, skip to Step 5. Do not invent a design phase for a
 backend fix.
@@ -146,7 +149,7 @@ Run both, they are not substitutes:
 
 ```
 /agent-harness:ui-gate          # functional honesty — dead controls, fake-live data, parity
-design-critic on CI's shots   # rendered anti-slop, if the fix touches a surface — /agent-harness:finish Step 5.4
+design status          # set by the independent critic on CI's shots after the push — never by you (finish Step 5.4)
 ```
 
 The critic judges the shots CI pins on the PR after the push, never a local

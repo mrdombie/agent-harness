@@ -45,6 +45,17 @@ Return BOTH verdicts in parity mode (parity first, then the slop read): a build 
 
 `KIT: DRIFT` is a **Major** (the operator is asked to approve a look the product does not have, and the build then copies it faithfully) and the picture goes **back to be redrawn**, never to the operator. Only a picture that comes back `KIT: MATCH` is sent. Return the slop read after the kit block, as in parity mode.
 
+**Real data, in picture mode too** (`shared/picture-rules.md`). A picture drawn from tidy data passes review and fails the person: one used unique short names, and the real screen had five "Sam Member" rows nobody could tell apart. Grade the picture on each case and return `REAL DATA: COVERED | MISSING <cases>`:
+
+- **duplicate-names** — two or more rows with the same display name, drawn so a person can tell them apart.
+- **longest-names** — the longest names and labels the data holds, wrapping or truncating as built.
+- **empty** — the empty state, as a frame of its own.
+- **scrolled** — the page scrolled to the bottom, on a laptop (1440) and a phone (390) frame.
+
+A case missing and not excused in the picture (`data-real-data-na` with a reason) is a **Major**: the owner approves a screen that will not look like this once real data arrives. Also check every frame carries its evidence region (`data-evidence-shot`, route, viewport, theme): a frame without one is never photographed, a **Major**. Only `KIT: MATCH` with `REAL DATA: COVERED` is sent.
+
+**When the caller names a shot set** (the independent judge does), your first line is exactly the `SHOTS:` line it gives you, then the output below. Judge only the shots it lists; the regions it names that have no shot are evidence gaps, each a **Major**.
+
 ## The rubric — two lenses
 
 ### 1. The project's design philosophy (the `law` path in its harness.json, or whatever philosophy path the caller passes you — read it before judging)
@@ -123,6 +134,7 @@ Minor holds the ship like any other Minor; only a Nit does not.
 
 > **KIT: MATCH** or **KIT: DRIFT** — the sharpest divergence from the reference in one sentence, naming the reference path(s) you read.
 > **Drifts (ranked):** each as `<grade> · reference: … → picture: … → fix: …`. Empty list ⇒ MATCH.
+> **REAL DATA: COVERED** or **REAL DATA: MISSING** `<duplicate-names | longest-names | empty | scrolled …>` — each missing case is a Major.
 
 **In parity mode, lead with this block, THEN the slop block below:**
 

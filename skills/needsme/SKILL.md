@@ -231,7 +231,11 @@ pasted Artifact link does nothing in VSCode and offer to `open` it.
 must also say `KIT: MATCH`, the `design-critic` agent's **picture mode** verdict against
 the project's `design.reference`. Without it, run picture mode on the link first. On
 `KIT: DRIFT` the row is not the operator's: the concept goes back to be redrawn, and the
-row moves to the agents' list as "picture drifted from the kit".
+row moves to the agents' list as "picture drifted from the kit". The same holds for
+`REAL DATA: MISSING` and for a picture `scripts/picture-evidence.py lint` refuses
+(`shared/picture-rules.md`: every frame a named evidence region, laptop and phone,
+duplicate names, the longest names, the empty state, scrolled): it goes back to be
+redrawn as "picture drawn from tidy data".
 
 ### 1d · Claims vs live processes
 

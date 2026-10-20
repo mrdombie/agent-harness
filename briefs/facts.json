@@ -26,7 +26,8 @@
         "IN_FLIGHT": "open pull requests, remote branches and live claims that touch the files this ticket names",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: trunk branch, gate commands, coding-standards path, the component kit, the design law",
         "SCREEN_STEPS": "the setup-step vocabulary this project's renderer can perform for a screen state (design.renderSteps), or a sentence saying it takes none",
-        "POLISH_LIST": "the unticked items on the open polish list of every screen:<slug> label the ticket carries, and how to tick one — or a sentence saying there is none"
+        "POLISH_LIST": "the unticked items on the open polish list of every screen:<slug> label the ticket carries, and how to tick one — or a sentence saying there is none",
+        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet"
       }
     },
     "build": {
@@ -70,7 +71,8 @@
       "facts": {
         "BLOCKERS": "the review step's findings graded critical or major — the only two grades that come back here — each with its id, file, line, grade, summary, reason and proposed fix; or, after a red self-check, each red gate with its id (gate-…), command, exit code and the last lines of its output",
         "DIFF": "the change as it stands, against the trunk it will merge into",
-        "ROUND": "which fix round this is: 1 or 2"
+        "ROUND": "which fix round this is: 1 or 2",
+        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet"
       }
     },
     "repair": {
@@ -83,7 +85,8 @@
         "PR": "the pull request's number, its branch, the head it was repaired from, and its merge state",
         "FAILING": "the names of the checks that settled red on the pull request's head, or a sentence saying none did or that they could not be read",
         "CONFLICTS": "what merging the integration branch did: not needed, merged clean, or the files left conflicted for this step",
-        "DIFF": "the change as it stands, against the trunk it will merge into"
+        "DIFF": "the change as it stands, against the trunk it will merge into",
+        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet"
       }
     }
   }

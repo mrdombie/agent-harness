@@ -48,6 +48,14 @@ else
   say "merge lane: off — harness.json has no merge.method"
 fi
 
+# ---- 5c. the independent design critic --------------------------------------------
+# The design status is set only by a critic the build never started, on CI's pinned
+# shots of the head (critic-judge.sh). This pass starts one for each PR owed one.
+CRITIC="${COORDINATOR_CRITIC_JUDGE:-$SELF_DIR/critic-judge.sh}"
+if [ -n "$GH_WAIT" ]; then say "design critic: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$CRITIC" sweep --dry-run >> "$COORD_LOG" 2>&1 || say "design critic sweep (dry) exited $?"
+else bash "$CRITIC" sweep >> "$COORD_LOG" 2>&1 || say "design critic sweep exited $?"; fi
+
 # ---- 6. housekeeping ---------------------------------------------------------
 if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"

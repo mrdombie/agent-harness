@@ -81,6 +81,41 @@ pr 8 "$(h 8)" false "$body_routes"
 pr 9 "$(h 9)" false "$body_routes- [hand](https://github.com/o/r/blob/$A/docs/evidence/7/hand.png)"
 # 10 capture skipped on a develop merge, earlier pins stand
 pr 10 "$(h 10)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 10)" ahead 2 apps/web/x.tsx
+prfiles() { local n="$1"; shift; jq -n --args '[$ARGS.positional[] | {filename:.}]' "$@" > "$SB/fx/repos_o_r_pulls_${n}_files_per_page_100"; }
+prfiles 10 apps/web/page.tsx docs/evidence/7/dashboard.png
+# 16 the merge changed a file this PR's screen imports through an alias
+pr 16 "$(h 16)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 16)" ahead 2 apps/web/src/components/band.tsx
+prfiles 16 apps/web/page.tsx
+printf "import { Band } from '@/components/band'\n" > "$SB/fx/repos_o_r_contents_apps_web_page.tsx_ref_$(h 16)"
+# 17 more files changed than GitHub lists: unreadable, so stale
+pr 17 "$(h 17)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 17)" ahead 2 $(seq -f 'lib/f%g.ts' 1 300)
+prfiles 17 apps/web/other.tsx
+# CI's own evidence commit A wrote dashboard.png and hand.png; B is a builder's commit of renders.
+P=$(printf 'f%.0s' {1..40})   # the head CI photographed: its capture passed there
+cicommit() { local sha="$1" msg="$2"; shift 2; jq -n --arg m "$msg" --arg p "$P" --args '{commit:{message:$m}, parents:[{sha:$p}], files:[$ARGS.positional[] | {filename:., status:"added"}]}' "$@" > "$SB/fx/repos_o_r_commits_$sha"; }
+cicommit "$A" "chore(evidence): screenshots captured by ci for #7" docs/evidence/7/dashboard.png docs/evidence/7/hand.png
+cicommit "$B" "docs(evidence): owner-only sharing renders" docs/evidence/7/dashboard.png
+runs "$P" completed/success completed/success
+# 18 a commit dressed as CI's, on a head where no capture ran
+C2=$(printf 'd%.0s' {1..40}); Q=$(printf '9%.0s' {1..40})
+jq -n --arg q "$Q" '{commit:{message:"chore(evidence): screenshots captured by ci for #7"}, parents:[{sha:$q}], files:[{filename:"docs/evidence/7/dashboard.png", status:"added"}]}' > "$SB/fx/repos_o_r_commits_$C2"
+runs "$Q" completed/failure completed/success
+runs "$Q" completed/failure completed/success
+pr 18 "$C2" false "$(printf "$(blockfor "$C2" dashboard)")"
+# 13 CI's block, and a link at CI's sha outside it
+pr 13 "$A" false "$(printf "$(blockfor "$A" dashboard)")
+- [hand](https://github.com/o/r/blob/$A/docs/evidence/7/hand.png)"
+# 14 inside CI's block, a shot CI's commit did not write (a builder's, from an older head)
+pr 14 "$A" false "$(printf "$(blockfor "$A" dashboard builder-old)")"
+# 15 a block naming a commit that is not CI's
+pr 15 "$B" false "$(printf "$(blockfor "$B" dashboard)")"
+# 11 capture skipped, but the merge's resolution edited this PR's own screen file
+pr 11 "$(h 11)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 11)" ahead 2 apps/web/room.tsx lib/other.ts
+prfiles 11 apps/web/room.tsx
+# 12 capture skipped, and the merge changed a file this PR's screen imports
+pr 12 "$(h 12)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 12)" ahead 2 apps/web/parts/band.tsx
+prfiles 12 apps/web/page.tsx
+printf "import { Band } from './parts/band'\nexport default 1\n" > "$SB/fx/repos_o_r_contents_apps_web_page.tsx_ref_$(h 12)"
 
 S="$HERE/ci-evidence.sh"
 st() { bash "$1" status "$2" 2>/dev/null | sed -n 's/^state=//p'; }
@@ -100,6 +135,15 @@ core() { # <script> → failed cases, one per line
   runs "$(h 10)" completed/skipped completed/success
   o=$(st "$s" 10); [ "$o" = pinned ] || echo "a skipped capture over earlier pins read $o"
   rm -f "$SB/fx/repos_o_r_commits_$(h 10)_check-runs_per_page_100"
+  runs "$(h 11)" completed/skipped completed/success
+  o=$(st "$s" 11); [ "$o" = stale ] || echo "a skipped capture after a merge that edited this PR's screen read $o"
+  o=$(w "$s" 11); [ "$o" = 6 ] || echo "wait on stale shots exited $o"
+  runs "$(h 12)" completed/skipped completed/success
+  o=$(st "$s" 12); [ "$o" = stale ] || echo "a skipped capture after a merge that changed an import of this PR's screen read $o"
+  runs "$(h 16)" completed/skipped completed/success
+  o=$(st "$s" 16); [ "$o" = stale ] || echo "a skipped capture after a merge that changed an alias import read $o"
+  runs "$(h 17)" completed/skipped completed/success
+  o=$(st "$s" 17); [ "$o" = stale ] || echo "a comparison GitHub may have cut read $o"
   o=$(st "$s" 10); [ "$o" = pending ] || echo "a merge after the pins with no verdict from CI read $o"
   o=$(w "$s" 1); [ "$o" = 0 ] || echo "wait on pinned exited $o"
   o=$(w "$s" 6); [ "$o" = 1 ] || echo "wait on failed exited $o"
@@ -108,6 +152,12 @@ core() { # <script> → failed cases, one per line
   o=$(w "$s" 8); [ "$o" = 3 ] || echo "wait on nothing-yet exited $o (want 3, still waiting)"
   o=$(bash "$s" shots 9 2>/dev/null | grep -c .); [ "$o" = 0 ] || echo "shots listed a link outside CI's block"
   o=$(bash "$s" shots 1 2>/dev/null | grep -c .); [ "$o" = 1 ] || echo "shots did not list CI's link ($o)"
+  o=$(bash "$s" shots 13 2>/dev/null | grep -c .); [ "$o" = 1 ] || echo "shots listed a link outside CI's block ($o)"
+  o=$(bash "$s" shots 14 2>/dev/null | grep -c .); [ "$o" = 1 ] || echo "shots took a file CI's commit did not write ($o)"
+  bash "$s" shots 14 2>&1 >/dev/null | grep -q 'refused: docs/evidence/7/builder-old.png' || echo "a builder-made shot was not named as refused"
+  o=$(st "$s" 15); [ "$o" != pinned ] || echo "a block at a builder's commit read pinned"
+  o=$(st "$s" 18); [ "$o" != pinned ] || echo "a commit dressed as CI's, with no capture run behind it, read pinned"
+  o=$(bash "$s" shots 15 2>/dev/null | grep -c .); [ "$o" = 0 ] || echo "shots took links at a commit that is not CI's ($o)"
   (unset HARNESS_LOCAL_EVIDENCE; bash "$s" local) && echo "local capture is on with no flag set"
   HARNESS_LOCAL_EVIDENCE=1 bash "$s" local || echo "local capture stays off with the flag set"
   printf '%s' "$body_routes" | bash "$s" routes >/dev/null 2>&1 || echo "a good routes list was refused"
@@ -126,6 +176,9 @@ fetch_case() { # <script>
   [ "$(cut -f4 <<<"$line")" = /dashboard ] || echo "fetch did not name the route ($line)"
   [ "$(cut -f3 <<<"$line")" = light ] || echo "fetch did not name the theme ($line)"
   bash "$1" fetch 9 "$d-hand" >/dev/null 2>&1 && echo "fetch took a hand-pinned shot from outside CI's block"
+  bash "$1" fetch 13 "$d-13" >/dev/null 2>&1; [ -f "$d-13/hand.png" ] && echo "fetch took a hand-pinned shot from outside CI's block"
+  bash "$1" fetch 14 "$d-14" >/dev/null 2>&1; [ -f "$d-14/builder-old.png" ] && echo "fetch took a file CI's commit did not write"
+  bash "$1" fetch 15 "$d-15" >/dev/null 2>&1 && echo "fetch took shots at a commit that is not CI's"
   return 0
 }
 
@@ -172,11 +225,16 @@ PY
   grep -qF -- "$4" <<<"$r" && ok "planted: $1 → red" || bad "planted: $1 → not red on its case ($4)"
 }
 echo "plants"
+plant "kept shots never go stale"           'local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c' 'return 1' 'merge that edited this PR'"'"'s screen read'
+plant "imports are not followed"             'c=$(printf '"'"'%s\n'"'"' "$changed" | awk -v b="$base"' 'c=$(true | awk -v b="$base"' 'changed an import of this PR'"'"'s screen read'
 plant "a merge counts as a carry"            '[ "$parents" = 2 ] || return 1'            ':'                               'a verdict with a merge after it passed'
 plant "a code file counts as a carry"        '| grep -qvF "$EV_DIR/"'                    '| grep -q NOTHING-MATCHES-THIS'  'a verdict with a code commit after it passed'
 plant "the forge's carry ignores code files" 'select(startswith($d) | not)] | length == 0)' 'select(false)] | length == 0)' 'shots with code after them and a capture running read'
-plant "evidence read from the whole body"    'urls=$(printf '"'"'%s\n'"'"' "$body" | block | links)' 'urls=$(printf '"'"'%s\n'"'"' "$body" | links)' 'fetch took a hand-pinned shot'
-plant "shots read from the whole body"       'tr -d '"'"'\r'"'"' | block | links ;;' 'tr -d '"'"'\r'"'"' | links ;;' 'shots listed a link outside'
+plant "evidence read from the whole body"    'urls=$(printf '"'"'%s\n'"'"' "$body" | block | links | ci_links' 'urls=$(printf '"'"'%s\n'"'"' "$body" | links | ci_links' 'fetch took a hand-pinned shot'
+plant "shots read from the whole body"       'printf '"'"'%s\n'"'"' "$blk" | links | ci_links "$evsha" ;;' 'ghr pr view "$2" --json body -q .body | links | ci_links "$evsha" ;;' 'shots listed a link outside'
+plant "a builder's file passes as CI's"      'if [ "$sha" = "$ev" ] && printf' 'if [ "$sha" = "$ev" ] || printf' 'took a file CI'"'"'s commit did not write'
+plant "no capture run is asked for"         '[ "$(check "$runs" "$EV_CAPTURE")" = completed/success ] || return 1' ':' 'with no capture run behind it, read pinned'
+plant "any commit counts as CI's"            '| startswith($p)'"'"' >/dev/null' '| (startswith($p) or true)'"'"' >/dev/null' 'at a builder'"'"'s commit read pinned'
 plant "a draft is not told apart"            '[ "$draft" = true ] && {'                  '[ "$draft" = never ] && {'       'a draft read'
 plant "a failed decide check is ignored"     '*/failure|*/timed_out|*/startup_failure|*/action_required)
       echo "state=failed"; echo "reason='"'"'$EV_DECIDE'"'"'' '*/NEVER)

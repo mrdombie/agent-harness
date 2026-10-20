@@ -51,7 +51,7 @@ done
 # finish runs the check on the critic's answer.
 grep -q 'check-first-look.sh' "$HERE/../skills/finish/SKILL.md" && ok "finish runs the check" || bad "finish does not run check-first-look.sh"
 
-# The step driver runs the check before recording a design-critic verdict.
-grep -q 'check-first-look.sh' "$HERE/../driver/push-requires.sh" && ok "the driver runs the check" || bad "driver/push-requires.sh does not run check-first-look.sh"
+# The independent judge runs the check before it records a design verdict; the driver records none.
+grep -q 'check-first-look.sh' "$HERE/critic-judge.sh" && ok "the independent judge runs the check" || bad "scripts/critic-judge.sh does not run check-first-look.sh"
 
 exit $fail
