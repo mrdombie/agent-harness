@@ -334,6 +334,8 @@ cat > "$FIX/ai/repair.sh" <<'SH'
 git commit -q --allow-empty -m "fix: x"
 git push -q origin HEAD:tkt-321/work 2>"$FIX/shim-git.err"
 gh pr ready 321 2>"$FIX/shim-gh.err"; gh pr merge 321 --auto --squash 2>>"$FIX/shim-gh.err"
+gh api -X PUT repos/o/r/rulesets/17138103 --input r.json 2>"$FIX/shim-rs.err"
+gh api repos/o/r/rulesets/17138103 >/dev/null 2>&1
 SH
 answer "$(repaired "$(gate_fix 'bash lint.sh')")"; : > "$GH_LOG"
 out=$(driver_step_repair 321 2>&1); rc=$?
@@ -341,6 +343,9 @@ want "a step's git push is stopped"        "$ORIG" "$(git -C "$FIX/origin" rev-p
 want_in "and told why"                     'driver alone pushes' "$(cat "$FIX/shim-git.err")"
 want_not_in "its gh pr ready and merge never reach GitHub" 'pr ready|pr merge' "$(cat "$GH_LOG")"
 want_in "and are told why"                 'driver alone' "$(cat "$FIX/shim-gh.err")"
+want_not_in "a step's ruleset write never reaches GitHub" 'api -X PUT' "$(cat "$GH_LOG")"
+want_in "and is told to leave it to the PM" 'PM step' "$(cat "$FIX/shim-rs.err")"
+want_in "while a read of the ruleset still goes through" 'api repos/o/r/rulesets/17138103' "$(cat "$GH_LOG")"
 setup 322; prs 322 CLEAN unit
 cat > "$FIX/ai/repair.sh" <<SH
 git commit -q --allow-empty -m "fix: y"

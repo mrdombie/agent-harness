@@ -73,4 +73,15 @@ driver_step_plan 120 >/dev/null 2>&1
 want "they are on the record" "/x" "$(driver_state_get 120 screen_states | jq -r '.[0].route')"
 want "and so is whether the change is visible" "visible" "$(driver_state_get 120 screen_change)"
 
+echo "--- a repo-settings change is the PM's, after the merge, never a task ---"
+driver_state_init 130
+fix_issue 130 OPEN "status:claimed"
+: > "$GH_LOG"
+fix_ai plan '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"ticket-body","premise":{"verdict":"still-true","evidence":"a.sh:1"},"tasks":[{"title":"t","files":[{"path":"a.sh","action":"modify"}],"tests":[{"file":"a.test.sh","behaviour":"b","redWhen":"r"}]}],"pmAfterMerge":["add Lesson as a required check on the develop ruleset: gh api -X PUT repos/o/r/rulesets/1 --input r.json"]}' superpowers:writing-plans
+out=$(driver_step_plan 130 2>&1); rc=$?
+want "the plan goes ahead" "0" "$rc"
+want_in "the change is posted on the ticket as a PM step" 'PM step after merge' "$(cat "$GH_LOG")"
+want_in "and kept for the PR body" 'required check' "$(driver_state_get 130 pm_after_merge)"
+want_in "and the run says so" 'handed to the PM' "$out"
+
 exit $FAILED

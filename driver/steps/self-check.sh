@@ -73,6 +73,54 @@ _driver_note_changelog_skip() {
   return 0
 }
 
+# A RATCHET THAT WENT DOWN IS LOCKED IN, NOT PARKED. A shrink-only ratchet fails when
+# its baseline sits ABOVE actual — the build improved things and left the headroom —
+# and prints the command that lowers the baseline. Parked on exactly that (2026-10-20:
+# "1 entry sits ABOVE actual — 3 … of free headroom"), a build that made the code
+# better stopped. The driver runs the gate's own lowering command and commits. Only
+# when the output names no rise: a ratchet's update refuses to raise a number, and a
+# rise is code to fix. Only a package-script command, and only the files it changed.
+#   ✗ N entries sit ABOVE actual — … / Lock the cleanup in: <cmd>
+#   ✗ N baseline entries name things that no longer exist / Drop the entries: <cmd>
+#   Lock the progress in:  <cmd>
+# _driver_ratchet_tighten <ticket> <tree> <gate output> <label> — 0 when it committed
+# a lowered baseline and the gate should run again.
+DRIVER_RATCHET_CMD_RE='^(npm|pnpm|yarn|bun) run [A-Za-z0-9:._/-]+( --)?( --[A-Za-z][A-Za-z-]*)+$'
+_driver_ratchet_tighten() {
+  local t="$1" wt="$2" out="$3" label="$4" cmds c ran="" log
+  [ -f "$out" ] || return 1
+  grep -qE 'ABOVE actual|no longer exist|free headroom|Lock the (cleanup|progress) in' "$out" || return 1
+  if grep -qE '(^|[[:space:]])ROSE([[:space:](]|$)|RISEN' "$out"; then
+    driver_say "   self-check: $label — a ratchet has slack to lock in, but one also ROSE; that is code to fix, so nothing is tightened"
+    return 1
+  fi
+  cmds=$(sed -nE 's/^.*(Lock the (cleanup|progress) in|Drop the entries):[[:space:]]+//p' "$out" \
+         | sed -e 's/[[:space:]]*$//' | grep -E "$DRIVER_RATCHET_CMD_RE" | awk '!seen[$0]++')
+  [ -n "$cmds" ] || return 1
+  local before after changed
+  before=$(git -C "$wt" diff --name-only HEAD 2>/dev/null | sort)
+  log="$(driver_state_dir "$t")/steps/ratchet-tighten.out"; : > "$log"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    driver_say "   self-check: $label — a ratchet sits above actual; locking the improvement in: $c"
+    ( cd "$wt" && driver_run_project "${DRIVER_CMD_TIMEOUT:-900}" "$c" ) >> "$log" 2>&1 && ran="$ran${ran:+, }$c"
+  done <<EOS
+$cmds
+EOS
+  [ -n "$ran" ] || { driver_say "   self-check: $label — the lowering command failed: $(tail -2 "$log" | tr '\n' ' ')"; return 1; }
+  # Only what the command changed is committed: anything already dirty is not swept in.
+  after=$(git -C "$wt" diff --name-only HEAD 2>/dev/null | sort)
+  changed=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+  [ -n "$changed" ] || { driver_say "   self-check: $label — the lowering command changed nothing"; return 1; }
+  local files=(); while IFS= read -r c; do files+=("$c"); done <<<"$changed"
+  if ! ( cd "$wt" && git commit -q -m "$(driver_opt commit.parkType chore): lock in the lower ratchet baseline for #$t" -m "Ran: $ran" -- "${files[@]}" ) >> "$log" 2>&1; then
+    driver_say "   self-check: $label — the lowered baseline could not be committed: $(tail -2 "$log" | tr '\n' ' ')"
+    return 1
+  fi
+  driver_say "   self-check: $label — lowered baseline committed; running it again"
+  return 0
+}
+
 # The compiler's or runner's own error lines when it printed any, else the tail.
 _driver_gate_lines() { # <file>
   local l
@@ -242,6 +290,9 @@ _driver_prepush_gate() {
     off)  driver_say "   self-check: pre-push off (gates.$key is false)"; return 0 ;;
   esac
   pushran=1
+  if [ "$prc" -ne 0 ] && [ "$prc" -ne 124 ] && _driver_ratchet_tighten "$t" "$wt" "$pout" pre-push; then
+    prc=0; DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+  fi
   if [ "$prc" -eq 0 ]; then
     driver_say "   self-check: pre-push ok"
     return 0
@@ -351,6 +402,11 @@ driver_step_self_check() { # <ticket>
       _driver_gate_quiet_retry "$name" "$gsecs"
       gsecs="$DRIVER_GATE_RETRY_SECS"
       [ "$(_driver_gate_scale)" -le 1 ] || gscale=2
+      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      rc=$?
+    fi
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
+       && _driver_ratchet_tighten "$t" "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$name"; then
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi

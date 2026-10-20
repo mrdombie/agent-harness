@@ -386,4 +386,40 @@ want "a named command is told too"               "1" "$(cat "$PP/dryrun.cmd" 2>/
 rm -f "$PP/dryrun.cmd"
 jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 
+echo "--- LESSON: a ratchet the build pushed DOWN is locked in and re-run, not parked ---"
+# 2026-10-20: parked at self-check on "1 entry sits ABOVE actual — 3 … of free
+# headroom": the build made things better and a shrink-only ratchet wanted its
+# baseline lowered. The gate prints its own lowering command; the driver runs it.
+if command -v npm >/dev/null 2>&1; then
+  cat > "$REPO/ratchet.sh" <<'SH'
+b=$(cat baseline.txt); a=$(cat actual.txt)
+if [ "${1:-}" = --update ]; then [ "$a" -le "$b" ] || { echo "✗ --update refused — 1 entry has RISEN"; exit 1; }; echo "$a" > baseline.txt; exit 0; fi
+[ "$a" -gt "$b" ] && { echo "✗ 1 entry ROSE (calls):"; echo "  x: baseline $b, actual $a"; exit 1; }
+[ "$a" -lt "$b" ] && { echo "✗ 1 entry sits ABOVE actual — $((b - a)) calls of free headroom:"; echo "  x: baseline $b, actual $a"; echo "  Lock the cleanup in: npm run check:r -- --update"; exit 1; }
+echo "ratchet ok"
+SH
+  printf '{"name":"fx","private":true,"scripts":{"check:r":"bash ratchet.sh"}}\n' > "$REPO/package.json"
+  echo 6 > "$REPO/baseline.txt"; echo 3 > "$REPO/actual.txt"
+  git -C "$REPO" add ratchet.sh package.json baseline.txt actual.txt && git -C "$REPO" commit -qm "fixture: a ratchet with slack"
+  jq '.gates = {"ratchet":"npm run --silent check:r"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+  driver_state_init 401 --worktree "$REPO"
+  head0=$(git -C "$REPO" rev-parse HEAD)
+  out=$(driver_step_self_check 401 2>&1); rc=$?
+  want "the improvement is locked in and self-check passes" "0" "$rc"
+  want "the baseline is lowered to actual"                  "3" "$(cat "$REPO/baseline.txt")"
+  want "committed, and nothing else swept in"               " M .claude/harness.json" "$(git -C "$REPO" status --porcelain --untracked-files=no)"
+  want_in "in one commit naming what ran"                   'npm run check:r -- --update' "$(git -C "$REPO" log -1 --format=%B)"
+  want "one commit was added"                               "1" "$(git -C "$REPO" rev-list --count "$head0"..HEAD)"
+  want_in "and the run says so"                             'locking the improvement in' "$out"
+
+  echo "--- a ratchet that ROSE is code to fix: nothing is tightened ---"
+  echo 9 > "$REPO/actual.txt"; git -C "$REPO" commit -qam "fixture: it rose"
+  driver_state_init 402 --worktree "$REPO"
+  out=$(driver_step_self_check 402 2>&1); rc=$?
+  want "a rise goes to fix"                                 "30" "$rc"
+  want "the baseline is not raised"                         "3" "$(cat "$REPO/baseline.txt")"
+else
+  echo "SKIP — no npm on this machine"
+fi
+
 exit $FAILED

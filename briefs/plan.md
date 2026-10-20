@@ -68,11 +68,9 @@ toward an exemption is the signal the step applies.
 
 ## Err broad on what counts as a surface
 
-The driver already refused a ticket that ships a screen and names no endpoint. Its
-trigger is deliberately wide, and keeping it wide is your job here too: a narrowed
-one missed a real UI ticket. Treat a ticket as touching a surface whenever it
-plausibly does, because a wrongly-included ticket costs you a sentence saying so,
-and a missed one ships a screen with nothing behind it.
+Treat a ticket as touching a surface whenever it plausibly does: a wrongly-included
+ticket costs a sentence, and a missed one ships a screen with nothing behind it. A
+narrowed trigger once missed a real UI ticket.
 
 Refusing a fine ticket costs a clarification. Accepting an unplannable one costs
 the slice mistakes this gate exists to stop. Return a question instead.
@@ -113,6 +111,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `question`: string
 - `questionFor`: one of "owner", "pm"
 - `notes`: string
+- `pmAfterMerge`: list of string
 - `designRef`: string
 - `screenStates`: list of object
 - `screenStates[].route` (required): string
@@ -149,6 +148,9 @@ a reproduction.
 A question names who answers it in `questionFor`: `owner` for pixels, a picture,
 a product or commercial call, or the data model; `pm` for the ticket's shape —
 repo, split, order, acceptance wording. Unsure is `owner`.
+
+A repo-settings change (ruleset, branch protection, required check, secrets) is
+never a task: put it in `pmAfterMerge` with its exact command, for the PM after merge.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.
