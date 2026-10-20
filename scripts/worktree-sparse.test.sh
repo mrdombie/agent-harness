@@ -15,7 +15,7 @@ G() { git -c user.email=t@example.com -c user.name=tester -c commit.gpgsign=fals
 
 REPO="$SB/repo"
 mkdir -p "$REPO/docs/evidence/1" "$REPO/src"
-printf 'png\n' > "$REPO/docs/evidence/1/a.png"; printf 'doc\n' > "$REPO/docs/readme.md"; printf 'c\n' > "$REPO/src/c.ts"
+printf 'png\n' > "$REPO/docs/evidence/1/a.png"; printf '{}\n' > "$REPO/docs/evidence/1/plan.json"; printf 'doc\n' > "$REPO/docs/readme.md"; printf 'c\n' > "$REPO/src/c.ts"
 G init -q "$REPO"; G -C "$REPO" add -A; G -C "$REPO" commit -qm base
 printf '{"worktree":{"sparseExclude":["docs/evidence"]}}\n' > "$SB/on.json"
 printf '{"worktree":{}}\n' > "$SB/off.json"
@@ -35,7 +35,7 @@ out=$(add "$SB/on.json" "$SB/wt-on" -b t-on develop)
 [ -f "$SB/wt-on/docs/readme.md" ] && [ -f "$SB/wt-on/src/c.ts" ] && ok "every other file is" || bad "a file outside the exclusion is missing"
 [ "$(G -C "$SB/wt-on" symbolic-ref --short HEAD)" = t-on ] && ok "the worktree is on the branch it was asked for" || bad "wrong branch"
 [ -z "$(G -C "$SB/wt-on" status --porcelain)" ] && ok "and it reads as clean" || bad "the sparse tree reads dirty: $(G -C "$SB/wt-on" status --porcelain)"
-[ "$(G -C "$SB/wt-on" ls-files docs/evidence | wc -l | tr -d ' ')" = 1 ] && ok "the left-out files are still tracked, not deleted" || bad "the excluded files left the index"
+[ "$(G -C "$SB/wt-on" ls-files docs/evidence | wc -l | tr -d ' ')" = 2 ] && ok "the left-out files are still tracked, not deleted" || bad "the excluded files left the index"
 [ -f "$REPO/docs/evidence/1/a.png" ] && [ -z "$(G -C "$REPO" config --get core.sparseCheckout)" ] \
   && ok "the main checkout stays full and is not made sparse" || bad "the main checkout was changed"
 
@@ -51,6 +51,13 @@ printf '{"worktree":{"sparseExclude":["../up","/abs"]}}\n' > "$SB/bad.json"
 out=$(add "$SB/bad.json" "$SB/wt-bad" --detach develop)
 [ -f "$SB/wt-bad/docs/evidence/1/a.png" ] && ok "patterns that leave the worktree are ignored" || bad "a bad pattern changed the checkout: $out"
 printf '%s' "$out" | grep -q "ignoring '../up'" && ok "and named" || bad "the bad pattern was not named: $out"
+
+# --- 5. a file pattern leaves out only the files it names ------------------------
+printf '{"worktree":{"sparseExclude":["docs/evidence/**/*.png"]}}\n' > "$SB/glob.json"
+out=$(add "$SB/glob.json" "$SB/wt-glob" --detach develop)
+[ ! -e "$SB/wt-glob/docs/evidence/1/a.png" ] && ok "a file pattern leaves its files out" || bad "the pattern's files were checked out: $out"
+[ -f "$SB/wt-glob/docs/evidence/1/plan.json" ] && ok "and keeps the other files in the same folder" || bad "a file the pattern does not name was left out: $out"
+[ -z "$(G -C "$SB/wt-glob" status --porcelain)" ] && ok "and reads as clean" || bad "the patterned tree reads dirty"
 
 echo
 [ "$fail" -eq 0 ] && echo "worktree-sparse: all cases pass" || echo "worktree-sparse: FAILURES above"

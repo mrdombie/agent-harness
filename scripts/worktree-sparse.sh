@@ -26,7 +26,8 @@ while IFS= read -r p; do
   [ -n "$p" ] || continue
   p="${p%/}"; p="${p#./}"
   case "$p" in /*|*..*|'!'*|'') echo "worktree-sparse: ignoring '$p' — a folder inside the worktree, relative to its top level" >&2; continue ;; esac
-  PATTERNS+=("!/$p/")
+  # A glob names files (docs/evidence/**/*.png); anything else is a folder.
+  case "$p" in *'*'*) PATTERNS+=("!/$p") ;; *) PATTERNS+=("!/$p/") ;; esac
 done <<<"$(wt_cfg "$CFG" '.worktree.sparseExclude')"
 
 if [ ${#PATTERNS[@]} -eq 1 ]; then
