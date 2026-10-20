@@ -308,12 +308,20 @@ driver_prove_by_break() {
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs=""
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0
   export DRIVER_TICKET="$t"
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
 
   driver_check_timeout || true
+  # A RUN THAT RESUMES A BUILD WHICH SPENT ITS TRIES STARTS A FRESH ROUND. The count
+  # lives on the record across runs, so the run after a park opened at 6 of 5 and
+  # parked again after one try (#13584).
+  tries=$(driver_state_count "$t" build)
+  if [ "${tries:-0}" -ge "$DRIVER_MAX_BUILD_TRIES" ]; then
+    _driver_state_edit "$t" '.counters.build = 0'
+    driver_say "   build: an earlier run spent its $DRIVER_MAX_BUILD_TRIES tries — this run starts a fresh round of $DRIVER_MAX_BUILD_TRIES"
+  fi
   driver_state_bump "$t" build
   tries=$(driver_state_count "$t" build)
 
@@ -404,12 +412,13 @@ driver_step_build() { # <ticket>
         bad=1; continue
       fi
       pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile"
-      case " $seen_pairs " in
-        *" $pair "*)
-          driver_say "✋ build '$got_task' is proved by the same test commit and break as an earlier task. One proof cannot be two tasks."
-          bad=1; continue ;;
-      esac
+      if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
+        driver_say "   build '$got_task' is proved by the same test commit and break as '$same' — one change, so the two are one task: merged, and proved once."
+        merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
+      fi
       seen_pairs="$seen_pairs $pair"
+      seen_titles="$seen_titles$pair	${got_task:-$want_task}
+"
       why=""; prc=0
       why=$(driver_prove_by_break "$repo" "$tfile" "$tsha" "$bfile" "$(jq -r '.testOnly.break.find' "$ans")" "$(jq -r '.testOnly.break.replace' "$ans")" "$tcmd") || prc=$?
     else
@@ -428,12 +437,16 @@ driver_step_build() { # <ticket>
     # for seven characters or more, so `a1b2c3d` and its full sha are two keys for one
     # commit — and that is a third door to the same hole.
     pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")"
-    case " $seen_pairs " in
-      *" $pair "*)
-        driver_say "✋ build '$got_task' is proved by the same two commits as an earlier task ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)). One change cannot be two tasks built test-first."
-        bad=1; continue ;;
-    esac
+    # TWO TASKS ONE CHANGE PROVES ARE ONE TASK. Refused, the model was asked five times
+    # to split a change that was rightly one, and the ticket parked on a proof that held
+    # (#13584). So the later task is merged into the earlier one, said, and not re-proved.
+    if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
+      driver_say "   build '$got_task' is proved by the same two commits as '$same' ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)) — one change, so the two are one task: merged, and proved once."
+      merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
+    fi
     seen_pairs="$seen_pairs $pair"
+    seen_titles="$seen_titles$pair	${got_task:-$want_task}
+"
     why=""; prc=0
     why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     fi
@@ -466,11 +479,21 @@ driver_step_build() { # <ticket>
   done
 
   if [ "$bad" -eq 0 ]; then
-    driver_say "   build: all $ntasks task(s) proved red before green"
+    if [ "$merged" -gt 0 ]; then
+      driver_say "   build: all $ntasks task(s) proved red before green, as $((ntasks - merged)) change(s) — $merged merged into the task proved by the same commits"
+    else
+      driver_say "   build: all $ntasks task(s) proved red before green"
+    fi
     return "$DRIVER_OK"
   fi
   _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
   return "$DRIVER_E_REWORK"
+}
+
+# _driver_build_same_proof <pair> <seen> — the title of the earlier task <pair> proved
+# (<seen>: one "pair<TAB>title" per line); 1 when no earlier task used it.
+_driver_build_same_proof() {
+  printf '%s' "$2" | awk -F'\t' -v p="$1" '$1 == p { print $2; f = 1; exit } END { exit !f }'
 }
 
 # True when this was the last try. Five, per the approved design's flowchart: a

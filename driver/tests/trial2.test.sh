@@ -745,8 +745,13 @@ jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
    "$REPO/.claude/harness.json" > "$FIX/hr.json" && mv "$FIX/hr.json" "$REPO/.claude/harness.json"
 : > "$GH_LOG"
 rc=0; out=$(driver_step_review 413 2>&1) || rc=$?
-want "the review refuses on the recorder" "24" "$rc"
+want "a SPIT-BACK inside the round limit goes to fix" "30" "$rc"
 want_not_in "and no follow-up ticket was filed" 'issue create' "$(cat "$GH_LOG")"
+printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\necho "a.ts:3 needs a data-flow call · auto-fixable: no"\n' > "$FIX/reviewer"
+driver_state_set 413 park_note ""; : > "$GH_LOG"
+rc=0; out=$(driver_step_review 413 2>&1) || rc=$?
+want "one not auto-fixable refuses on the recorder" "24" "$rc"
+want_not_in "and still no follow-up ticket was filed" 'issue create' "$(cat "$GH_LOG")"
 
 echo "--- T2-2 · a reviewer that says SPIT-BACK is not recorded, and it stops there ---"
 git -C "$FIX/wt410" commit --allow-empty -qm "chore: a change nobody has reviewed"

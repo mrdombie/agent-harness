@@ -121,6 +121,16 @@ driver_step_start() { # <ticket>
         prs=""
       fi
     fi
+    # ONE OPEN PR IS REPAIRED, NOT PARKED. #12649 parked on "start will not cut a second
+    # branch" with its PR right there to work on. A ready PR, or a draft on this record's
+    # own branch, becomes a repair of it (build-ticket re-enters it). A draft on another
+    # branch is not this driver's to ready, and several PRs are a person's call.
+    if [ -n "$prs" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ] \
+       && { [ "$(printf '%s' "$prs" | cut -f5)" != true ] || { [ -n "$rb" ] && [ "$(printf '%s' "$prs" | cut -f2)" = "$rb" ]; }; }; then
+      driver_say "↪ start: #$t already has an open pull request — #$(printf '%s' "$prs" | cut -f1) on $(printf '%s' "$prs" | cut -f2) — so this run repairs it rather than cut a second branch."
+      driver_state_set "$t" repair_pr "$(printf '%s' "$prs" | cut -f1)"
+      return "$DRIVER_E_TO_REPAIR"
+    fi
     if [ -n "$prs" ]; then
       driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."
       return "$DRIVER_E_REFUSED"

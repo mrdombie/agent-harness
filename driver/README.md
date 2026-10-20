@@ -312,6 +312,11 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
 | 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first repair round, goes back to `fix` |
+| 31 | start found the ticket's one open pull request (ready, or a draft on the record's own branch): the run becomes a repair of it (`build-ticket --repair`), once per run |
+
+A gate that outruns its limit (25) is tried once more after the machine quietens, its
+limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second
+timeout on a loaded machine goes back on the queue (29), on a quiet one it parks.
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
 when the call or the configuration was wrong (an unreadable `--repair` brief

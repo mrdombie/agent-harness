@@ -121,6 +121,39 @@ _driver_first_line() {
   printf '%s' "${l:-(it printed nothing)}" | sed 's/^[[:space:]]*//' | cut -c1-300
 }
 
+# _driver_spitback_to_fix <ticket> <name> <reviewer-output> — 0 when this is not a
+# SPIT-BACK the fix step can take (the caller parks as before); DRIVER_E_REWORK once the
+# reviewer's answer is on the review record as a blocking finding for fix.
+_driver_spitback_to_fix() {
+  local t="$1" name="$2" out="$3" d round file line
+  grep -m1 -E '^[[:space:]]*VERDICT:' "$out" 2>/dev/null | grep -q 'SPIT-BACK' || return 0
+  case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 0 ;; esac
+  round=$(driver_state_count "$t" review)
+  if [ "${round:-0}" -gt "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
+    driver_say "   push-requires: '$name' said SPIT-BACK and the $DRIVER_MAX_REVIEW_ROUNDS review round(s) are spent — parking with its findings"
+    return 0
+  fi
+  if grep -iqE 'auto-?fixable[^A-Za-z]*(\*\*)?[[:space:]|:]*(\*\*)?no\b' "$out" 2>/dev/null; then
+    driver_say "   push-requires: '$name' said SPIT-BACK and marked a finding not auto-fixable — parking for a person"
+    return 0
+  fi
+  d=$(driver_state_dir "$t")
+  file=$(grep -oE '[][A-Za-z0-9_./@-]+\.[A-Za-z0-9]+:[0-9]+' "$out" 2>/dev/null | head -1)
+  line=${file##*:}; file=${file%:*}
+  case "$line" in ''|*[!0-9]*) line=0 ;; esac
+  [ -n "$file" ] || file="(the '$name' reviewer's answer)"
+  jq --arg id "attest-$name-$round" --arg f "$file" --argjson l "$line" --arg name "$name" \
+     --arg body "$(head -c 12000 "$out")" \
+     '.findings = ((.findings // []) + [{id: $id, file: $f, line: $l, grade: "major",
+        summary: ("The \($name) reviewer said SPIT-BACK; the push needs its SHIP"),
+        reason: ("this project'"'"'s pre-push refuses the push until the \($name) reviewer passes the change"),
+        fix: ("Clear every finding the reviewer graded, as it proposes. Its whole answer:\n" + $body)}])
+      | .verdict = "BLOCKED"' "$d/steps/review.json" > "$d/steps/review.json.tmp" 2>/dev/null \
+    && mv "$d/steps/review.json.tmp" "$d/steps/review.json" || { rm -f "$d/steps/review.json.tmp"; return 0; }
+  driver_say "↩ push-requires: '$name' said SPIT-BACK (review round $round of $DRIVER_MAX_REVIEW_ROUNDS) — its findings go to fix, then the review runs again"
+  return "$DRIVER_E_REWORK"
+}
+
 driver_push_requires() { # <ticket>
   local t="${1:?driver_push_requires: need a ticket}"
   local wt trunk r ptype half name review record d out rc sha before after
@@ -273,6 +306,12 @@ driver_push_requires() { # <ticket>
       return "$DRIVER_E_TIMEOUT"
     fi
     if [ "$rc" -ne 0 ]; then
+      # A SPIT-BACK IS THE GATE WORKING, so it goes to fix like a review's own finding:
+      # #13461 and #13305 parked on one. Its findings become one blocking finding on the
+      # review record, and the walk loops review -> fix -> re-review within the round
+      # limit. It parks only past the limit, or when a finding is marked not auto-fixable.
+      local srv; srv=0; _driver_spitback_to_fix "$t" "$name" "$out" || srv=$?
+      [ "$srv" -eq 0 ] || return "$srv"
       driver_say "✋ push-requires: '$name' could not be recorded — $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
       driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict and the recorder refused it: $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
       return "$DRIVER_E_REFUSED"

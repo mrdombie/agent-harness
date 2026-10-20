@@ -76,9 +76,43 @@ driver_step_repair() { # <ticket>
   if [ -n "$row" ]; then
     mstate=$(printf '%s' "$row" | jq -r '.mergeStateStatus // ""')
     mergeable=$(printf '%s' "$row" | jq -r '.mergeable // ""')
-    failing=$(printf '%s' "$row" | jq -r '[.statusCheckRollup[]? | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED")) | (.name // .context // "?")] | join(", ")')
+    # The sign-off hold's own check is red BY the hold: no repair turns it green.
+    failing=$(printf '%s' "$row" | jq -r --arg gate "$(driver_opt coordinator.holdCheck approval)" '[.statusCheckRollup[]? | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
+      | select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not) | (.name // .context // "?")] | join(", ")')
   else
     mstate=$(driver_state_get "$t" merge_state); unreadable=1
+  fi
+
+  # A STALE RED IS RE-RUN, NOT ASKED ABOUT. #12612 parked on a lesson check that failed
+  # on 18 Oct against a PR body fixed since. A failing Actions check that finished before
+  # the PR's last update, or more than DRIVER_STALE_CHECK_HOURS (12) ago, is re-run
+  # (each run once per record) and leaves the red list; a fresh red stays on it.
+  if [ -n "$failing" ] && [ -n "$row" ]; then
+    local stale sname srun rerun_done rerun_names=""
+    rerun_done=$(driver_state_get "$t" reran_runs)
+    stale=$(printf '%s' "$row" | jq -r --argjson h "${DRIVER_STALE_CHECK_HOURS:-12}" '
+      (.updatedAt // "") as $upd | ((now - $h * 3600) | todate) as $cut
+      | .statusCheckRollup[]? | select(.__typename == "CheckRun")
+      | select((.conclusion // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
+      | select((.completedAt // "") != "" and ((.completedAt < $upd) or (.completedAt < $cut)))
+      | ((.detailsUrl // "") | ((capture("/actions/runs/(?<r>[0-9]+)") | .r) // "")) as $run
+      | select($run != "") | "\(.name)\t\($run)"' 2>/dev/null)
+    while IFS=$'\t' read -r sname srun; do
+      [ -n "$srun" ] || continue
+      case " $rerun_done " in *" $srun "*) continue ;; esac
+      if swarm_gh run rerun "$srun" --failed --repo "$REPO_SLUG" >/dev/null 2>&1; then
+        rerun_done="$rerun_done $srun"
+        driver_say "   repair: '$sname' failed on an older run ($srun) — re-run rather than asked about"
+        rerun_names="$rerun_names|$sname|"
+      fi
+    done <<EOS
+$stale
+EOS
+    driver_state_set "$t" reran_runs "${rerun_done# }"
+    if [ -n "$rerun_names" ]; then
+      failing=$(printf '%s' "$failing" | awk -v k="$rerun_names" 'BEGIN { RS = ", " }
+        { sub(/\n$/, "") } $0 != "" && index(k, "|" $0 "|") == 0 { o = o (o == "" ? "" : ", ") $0 } END { printf "%s", o }')
+    fi
   fi
 
   # ---- the clash ---------------------------------------------------------------
@@ -126,6 +160,23 @@ driver_step_repair() { # <ticket>
       return "$DRIVER_E_REFUSED"
     fi
   fi
+  # WORK AN EARLIER ROUND MADE AND NEVER PUSHED. A repair that parks is not pushed, so
+  # the next round re-enters a tree ahead of the PR: the trunk already merged, fixes
+  # already committed. GitHub still reads the old head as clashing and red, the model
+  # rightly finds nothing to do, and #12840 parked ten times on "committed nothing".
+  # Those commits are this repair's: the PR's red and its clash belong to the older
+  # head, and the gates, the review and the push after this step take the new one.
+  local prhead carried=0 old_red=""
+  prhead=$(printf '%s' "$row" | jq -r '.headRefOid // ""' 2>/dev/null)
+  if [ -n "$prhead" ] && [ -z "$conflicted" ] \
+     && [ "$(git -C "$wt" rev-parse HEAD)" != "$prhead" ] \
+     && git -C "$wt" merge-base --is-ancestor "$prhead" HEAD 2>/dev/null \
+     && git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null; then
+    carried=$(git -C "$wt" rev-list --count "$prhead"..HEAD 2>/dev/null || echo 0)
+    old_red="$failing"; failing=""
+    driver_say "   repair: this tree is $carried commit(s) ahead of PR #$pr's head with $trunk merged in — an earlier round's work, never pushed. ${old_red:+The red (${old_red}) is on the older head; }the gates, the review and the push take this one."
+    base=$prhead; driver_state_set "$t" repair_base "$prhead"
+  fi
   [ -n "$conflicted" ] && need=1
   [ -n "$failing" ] && need=1
   [ "$unreadable" -eq 1 ] && need=1
@@ -154,11 +205,35 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   local diff; diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
   driver_fact_put "$t" repair DIFF "${diff:-(none — the branch carries no change against $trunk)}"
 
-  local pre_model; pre_model=$(git -C "$wt" rev-parse HEAD)
-  rc=0; driver_ai_step "$t" repair || rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
-  ans="$d/steps/repair.json"
-  jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
+  # NO COMMIT ON A RED PR IS NOT A REPAIR, whatever the answer calls itself. #13317
+  # answered 'repaired' and then 'unchanged', committing nothing both times, with five
+  # checks red, and parked twice as "the driver's" fault. So it is asked once more,
+  # the red checks named in front of its brief; a second empty answer parks with them.
+  local pre_model attempt=1 reask st
+  while :; do
+    pre_model=$(git -C "$wt" rev-parse HEAD)
+    rc=0; driver_ai_step "$t" repair || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    ans="$d/steps/repair.json"
+    jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true
+    reask=""; st=$(jq -r '.status // ""' "$ans")
+    if [ -n "$failing" ] || [ "$unreadable" -eq 1 ]; then
+      if [ "$st" = unchanged ]; then
+        reask="answered unchanged"
+      elif [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$wt" rev-parse "$base" 2>/dev/null)" ] \
+           && [ ! -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
+        reask="answered '${st:-?}' and committed nothing (the head is still $(printf '%s' "$base" | cut -c1-8))"
+      fi
+    fi
+    [ -n "$reask" ] && [ "$attempt" -eq 1 ] || break
+    attempt=2
+    driver_say "↩ repair: $reask while ${failing:+checks are red ($failing)}$([ "$unreadable" -eq 1 ] && echo 'the checks could not be read') — asked once more, with the red checks named."
+    driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER WAS NOT A REPAIR. You $reask, and the pull request is still red: ${failing:-its checks could not be read — run gh pr checks $pr}. A repair on a red PR ends in commits that turn those checks green, each with its proof. If a check is red for a reason you cannot fix here (it waits on a person's sign-off, or on something outside this branch), answer with a question that names the check and what it waits on — do not answer unchanged or repaired with nothing committed.
+
+$DRIVER_BRIEF_PREFACE
+
+${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
+  done
 
   # UNCHANGED is an answer only to a brief: the brief is already met, nothing is red,
   # nothing clashes, and nothing was committed. A red check or a conflict answered
@@ -166,8 +241,12 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   if [ "$(jq -r '.status // ""' "$ans")" = unchanged ]; then
     if [ -n "$failing" ] || [ -n "$conflicted" ] || [ "$unreadable" -eq 1 ]; then
       driver_say "✋ repair: answered unchanged while ${failing:+checks are red ($failing)}${conflicted:+ a merge conflicts}$([ "$unreadable" -eq 1 ] && echo ' the checks could not be read'). Unchanged is not an answer to those — park with a question instead."
-      driver_state_set "$t" park_note "the repair answered unchanged while the PR is red or clashing"
+      driver_state_set "$t" park_note "the repair answered unchanged $attempt time(s) while the PR is red or clashing${failing:+ — red checks: $failing}${conflicted:+ — conflicted: $(printf '%s' "$conflicted" | tr '\n' ' ')}"
       return "$DRIVER_E_REFUSED"
+    fi
+    if [ "$carried" -gt 0 ] && [ "$(git -C "$wt" rev-parse HEAD)" = "$pre_model" ] && [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+      driver_say "   repair: unchanged — the $carried unpushed commit(s) are the repair; they go to the gates and the push"
+      return "$DRIVER_OK"
     fi
     if [ "$(git -C "$wt" rev-parse HEAD)" != "$pre_model" ] || [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
       driver_say "✋ repair: answered unchanged and changed the tree. Either it is a fix, with its proof, or it is unchanged."
@@ -196,8 +275,10 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   # ---- what the tree says ------------------------------------------------------
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] \
      || [ -n "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ]; then
-    driver_say "✋ repair: the merge is unfinished — unmerged paths or a merge still in progress in $wt."
-    driver_state_set "$t" park_note "the repair left the merge of $trunk unfinished"
+    local um; um=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
+    [ -n "$um" ] || um=$(driver_state_get "$t" repair_conflicted | tr '\n' ' ')
+    driver_say "✋ repair: the merge is unfinished — unmerged paths or a merge still in progress in $wt${um:+: $um}"
+    driver_state_set "$t" park_note "the repair left the merge of $trunk unfinished${um:+ — still conflicting: $um}"
     return "$DRIVER_E_REFUSED"
   fi
   conflicted=$(driver_state_get "$t" repair_conflicted)
@@ -235,7 +316,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   fi
   if [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$wt" rev-parse "$base" 2>/dev/null)" ]; then
     driver_say "✋ repair: the repair committed nothing — the head is still $(printf '%s' "$base" | cut -c1-8)."
-    driver_state_set "$t" park_note "the repair step answered 'repaired' and committed nothing"
+    driver_state_set "$t" park_note "the repair step answered '$(jq -r '.status // "?"' "$ans")' and committed nothing, $attempt time(s)${failing:+ — red checks: $failing}"
     return "$DRIVER_E_REFUSED"
   fi
 

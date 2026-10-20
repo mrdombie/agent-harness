@@ -263,17 +263,23 @@ want "it finishes"                         "0" "$rc"
 want_in "the claim is tagged with the run" 'run_id=claim-114-run' "$(cat "$FIX/cl-updates.log")"
 want_in "and the run's log"                "run_log=$FIX/run-114.log" "$(cat "$FIX/cl-updates.log")"
 
-echo "--- a ticket with an open pull request is never cut a second branch ---"
+echo "--- a ticket with an open pull request is never cut a second branch: it is repaired ---"
 # A healing row that reached the plain build used to park, come back as parked, and
-# cut a fresh branch from the trunk beside the open PR's own.
+# cut a fresh branch from the trunk beside the open PR's own. Then it parked on the PR
+# instead (#12649); now the run becomes a repair of it.
 fix_issue 115 OPEN "status:parked"
 printf '[{"number":77,"headRefName":"tkt-115/the-real-one","headRefOid":"abc","isDraft":false,"mergeStateStatus":"DIRTY"}]\n' > "$FIX/gh/prs.json"
 out=$(driver_step_start 115 2>&1); rc=$?
-want "it refuses"                          "24" "$rc"
+want "it hands the run to a repair"        "31" "$rc"
 want_in "naming the pull request and its branch" '#77.*tkt-115/the-real-one' "$out"
-want_in "and the way in that does fit"     '--repair' "$out"
+want_in "and that it repairs it"           'repairs it' "$out"
+want "the PR is on the record"             "77" "$(driver_state_get 115 repair_pr)"
 want "no worktree was cut"                 "" "$(driver_state_get 115 worktree)"
 want "no claim was taken"                  "" "$(awk '$1==115' "$CLAIMS")"
+printf '[{"number":79,"headRefName":"tkt-115/someone-elses-draft","headRefOid":"abc","isDraft":true,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
+out=$(driver_step_start 115 2>&1); rc=$?
+want "a draft on another branch is not this driver's to ready: it refuses" "24" "$rc"
+want_in "and the way in that does fit"     '--repair' "$out"
 printf '[{"number":78,"headRefName":"tkt-1150/other","headRefOid":"abc","isDraft":false,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
 rc=0; driver_step_start 115 >/dev/null 2>&1 || rc=$?
 want "another ticket's PR whose number merely starts the same does not count" "0" "$rc"

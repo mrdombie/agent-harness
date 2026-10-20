@@ -199,6 +199,9 @@ section_repair() {
     # A clash with the integration branch does not move the PR's head, so the
     # kind is part of the key: one attempt per head commit PER KIND.
     grep -q "^$T	$SHA	$kind" "$TRIED" && continue
+    if swarm_heal_parked_out "$T" "$SHA"; then
+      say "skip #$PR ($T): parked past its cap on this head — a person looks first"; continue
+    fi
 
     labs=$(labels_of "$T")
     [ -n "$labs" ] || continue
@@ -234,13 +237,16 @@ section_repair() {
 # pr \t ticket \t sha \t mergeState \t pendingChecks \t failedCheckNames
 # A commit status has a state and no status/conclusion: a failed one is red, and a
 # pending one never holds a red PR back, since no CI job is still running for it.
+# The sign-off hold's own check is red BY the hold: never a red to repair.
+HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval 2>/dev/null || echo approval)}"
 open_prs() {
   gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r "[.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
            | [.number,
               (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
               .headRefOid, .mergeStateStatus,
               ([.statusCheckRollup[]? | select((.status // \"COMPLETED\") != \"COMPLETED\")] | length),
-              ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\"))) | (.name // .context)] | join(\";\"))]]
+              ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\")))
+                | select(((.name // .context // \"\") | ascii_downcase) | contains(\"$HOLD_CHECK\" | ascii_downcase) | not) | (.name // .context)] | join(\";\"))]]
            | .[] | @tsv" 2>/dev/null
 }
 

@@ -272,7 +272,7 @@ echo "--- the last try does not turn a question into a refusal ---"
 # shape are not retries — they park, and the reason has to survive the last try or
 # the operator is handed "build refused" in place of the model's actual question.
 driver_state_init 404 --worktree "$REPO" --repo "$REPO"
-i=1; while [ $i -le "$DRIVER_MAX_BUILD_TRIES" ]; do driver_state_bump 404 build; i=$((i+1)); done
+i=1; while [ $i -lt "$DRIVER_MAX_BUILD_TRIES" ]; do driver_state_bump 404 build; i=$((i+1)); done
 fix_plan 404 1
 fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"park","task":"task 1","question":"which of the two schemas is the approved one?"}' superpowers:subagent-driven-development
 rc=0; out=$(driver_step_build 404 2>&1) || rc=$?
@@ -352,8 +352,10 @@ out=$(driver_step_build 710 2>&1); rc=$?
 want "a near miss is not a refusal" "0" "$rc"
 want_in "and the difference is said"  "calls this task 'task 1.'" "$out"
 
-echo "--- and it must be proved by its own two commits ---"
-# The other door to the same hole: the right title, a pair already spent on task 1.
+echo "--- two tasks one change proves are merged into one, not refused ---"
+# The right title, a pair already proved for task 1: the change is one, so the tasks
+# are one. Refused, #13584 was sent back five times to split a change that was rightly
+# whole and parked on a proof that held.
 driver_state_init 708 --worktree "$REPO" --repo "$REPO"
 fix_plan 708 2
 nth_claude
@@ -364,8 +366,9 @@ fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$I
   superpowers:subagent-driven-development
 cp "$FIX/ai/build.jsonl" "$FIX/ai/build.2.jsonl"
 out=$(driver_step_build 708 2>&1); rc=$?
-want "one change cannot be two tasks built test-first" "30" "$rc"
+want "one change proving two tasks is one task, built" "0" "$rc"
 want_in "and it says so"  'same two commits' "$out"
+want_in "naming the merge" 'merged, and proved once' "$out"
 rm -f "$FIX"/nth.* "$FIX/ai/build.1.jsonl" "$FIX/ai/build.2.jsonl"
 
 echo "--- a proof tree that could not be prepared is not a red ---"
