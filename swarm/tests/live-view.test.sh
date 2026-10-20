@@ -36,7 +36,7 @@ run() { # <ticket> <pid> [ended-exit-code]
 }
 snap() {
   SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="${SNAP_GH:-$BIN/gh}" \
-  SWARM_PROGRESS_SYNC=1 SWARM_SERVER_MJS="${SNAP_MJS:-$SERVER_URLPATH}" node --input-type=module -e "
+  SWARM_PROGRESS_SYNC=1 SWARM_HOST="${SNAP_HOST:-laptop}" SWARM_SERVER_MJS="${SNAP_MJS:-$SERVER_URLPATH}" node --input-type=module -e "
     import { pathToFileURL } from 'node:url'
     const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
     console.log(JSON.stringify(snapshot()))"
@@ -407,10 +407,12 @@ echo "--- the headline counts every open ticket before launch, and the chips add
 rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
 SINCE=$(node -e 'const d=new Date();d.setHours(0,0,0,0);console.log(d.toISOString().replace(/\.\d{3}Z$/,"Z"))')
 BOARD="$STATE/swarm/board.json"
-board_fixture() { # <since> — thirteen before launch, two after, one of each kind of wait
+board_fixture() { # <since> — sixteen before launch, two after, one of each kind of wait
+  # 1116-1118 carry the claimed label with no run anywhere (1118 also a claim on
+  # this host, laptop): stale, so they sort by their other labels, not as building.
   cat > "$BOARD" <<JSON
 {"at":"$NOW_ISO","since":"$1","doneToday":5,"newToday":2,"mergedToday":4,
- "claims":[{"issue":"1114","host":"dom@studio-mac"},{"issue":"1113","host":"dom@laptop"}],
+ "claims":[{"issue":"1114","host":"dom@studio-mac"},{"issue":"1113","host":"dom@laptop"},{"issue":"1118","host":"dom@laptop"}],
  "open":[
   {"number":1101,"title":"Ready one","labels":["status:ready"]},
   {"number":1102,"title":"Later ready","labels":["status:ready","after-launch"]},
@@ -426,7 +428,10 @@ board_fixture() { # <since> — thirteen before launch, two after, one of each k
   {"number":1112,"title":"No status","labels":["P3"]},
   {"number":1113,"title":"Running here","labels":["status:ready"]},
   {"number":1114,"title":"Claimed elsewhere","labels":["status:ready"]},
-  {"number":1115,"title":"Held and blocked","labels":["needs:human-approval","status:blocked"]}]}
+  {"number":1115,"title":"Held and blocked","labels":["needs:human-approval","status:blocked"]},
+  {"number":1116,"title":"Stale claim, ready","labels":["status:claimed","status:ready"]},
+  {"number":1117,"title":"Stale claim, bare","labels":["status:claimed"]},
+  {"number":1118,"title":"Stale claim here","labels":["status:claimed","status:in-review"]}]}
 JSON
 }
 board_fixture "$SINCE"
@@ -439,18 +444,22 @@ printf '{"run_id":"claim-1113-a","ticket":"1113","child_pid":%s,"started_at":"%s
   "$$" "$NOW_ISO" "$STATE/logs/claim-1113-a.log" > "$STATE/runs/claim-1113-a.json"
 printf 'build: writing the tests\n' > "$STATE/logs/claim-1113-a.log"
 s=$(BRANCH_PREFIX=tkt- snap)
-want "before launch leaves the after-launch tickets out" "13" "$(printf '%s' "$s" | jq '.board.beforeLaunch')"
+want "before launch leaves the after-launch tickets out" "16" "$(printf '%s' "$s" | jq '.board.beforeLaunch')"
 want "after launch is counted apart"                     "2"  "$(printf '%s' "$s" | jq '.board.afterLaunch')"
-want "the chips add up to the headline"                  "13" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
-want "each ticket in its one place" \
-  "ready=1 building=2 review=2 pm=1 owner=3 stuck=2 batched=1 other=1" \
+want "the chips add up to what is left"                  "16" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
+# Measured 2026-10-20: the chip said Building 10 beside "Building now · 5" — it
+# counted the status:claimed label, which outlives the run that set it.
+want "the building chip is live runs plus other hosts' claims, never a stale label" \
+  "2" "$(printf '%s' "$s" | jq '[.board.buckets[] | select(.key=="building") | .n] | add')"
+want "a stale claim sorts by its other labels" \
+  "ready=2 building=2 review=3 pm=1 owner=3 stuck=2 batched=1 other=2" \
   "$(printf '%s' "$s" | jq -r '[.board.buckets[] | "\(.key)=\(.n)"] | join(" ")')"
 want "needs you: the decision, the green held PR, the held ticket — never the red one" "1105 1107 1115" \
   "$(printf '%s' "$s" | jq -r '[.board.needsYou[].ticket] | join(" ")')"
 want "a held PR links to the PR"                          "2105 A sign-off" "$(printf '%s' "$s" | jq -r '.board.needsYou[0] | "\(.pr) \(.why)"')"
 want "today: merged, done, new and the delta"             "4 5 2 3" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made) \(.delta)"')"
 want "who is building where"                              "laptop:1 studio-mac:1" "$(printf '%s' "$s" | jq -r '[.hosts[] | "\(.host):\(.n)"] | sort | join(" ")')"
-want "the after-launch label is the project's to name"    "14 1" \
+want "the after-launch label is the project's to name"    "17 1" \
   "$(SWARM_AFTER_LAUNCH_LABEL=status:batched BRANCH_PREFIX=tkt- snap | jq -r '"\(.board.beforeLaunch) \(.board.afterLaunch)"')"
 board_fixture "2001-01-01T00:00:00Z"
 want "yesterday's today counts say nothing"               "null" "$(BRANCH_PREFIX=tkt- snap | jq '.board.today')"
@@ -509,13 +518,15 @@ page_render() { # <live-view dir> — every element the page wrote, as id=html l
     for (const [k, v] of Object.entries(els)) console.log(k + "=" + (v.innerHTML || v.textContent).replace(/\s+/g, " "))' 2>&1
 }
 r=$(page_render "$LV")
-want_in "the headline names what is left before launch"   '^headline=.*Before launch: 13 <small>left' "$r"
+want_in "the block is the release's progress"             '^headline=<div class="ptitle">Release progress</div>' "$r"
+want_not_in "it no longer leads with what is left"        'Before launch:' "$r"
+want_in "the building chip counts the live run and the other host's claim" 'data-k="building"><b>2</b> Building' "$r"
 want_in "with a chip per place"                           'data-k="owner"><b>3</b> Waiting on the owner' "$r"
 want_in "and after launch muted beside it"                'chip muted" data-k="after"><b>2</b> After launch' "$r"
 want_in "today, with the list shrinking"                  '^today=.*<b>4</b> merged.*List shrinking by 3' "$r"
 want_in "a builder is one row with its step and time"     '^building=.*class="row build".*Running here.*[0-9]+ min running.*build: writing the tests' "$r"
 want_in "needs you lists the owner's items"               '^needs=.*Held and green.*A sign-off' "$r"
-want_in "the machine line names the hosts"                '^machine=.*Building on: laptop \(1\), studio-mac \(1\)' "$r"
+want_in "the machine line names the hosts, not a stale claim here" '^machine=.*Building on: laptop \(1\), studio-mac \(1\)' "$r"
 want_not_in "the finished rows start folded"              '<details class="fold" id="donefold" open' "$(cat "$LV/index.html")"
 board_fixture "$SINCE"
 jq '.open |= map(select((.labels | index("needs:owner-decision") or index("needs:human-approval")) | not))' "$BOARD" > "$BOARD.t" && mv "$BOARD.t" "$BOARD"
@@ -531,7 +542,7 @@ cat > "$STATE/swarm/prs.json" <<'JSON'
 JSON
 plant server.mjs "    if (labels.includes(AFTER_LAUNCH)) { after++; continue }"
 got=$(psnap | jq '.board.beforeLaunch')
-[ "$got" != "13" ] && ok "planted: no after-launch rule → before launch reads $got → red" || bad "planted: the after-launch rule deleted and the test cannot see it"
+[ "$got" != "16" ] && ok "planted: no after-launch rule → before launch reads $got → red" || bad "planted: the after-launch rule deleted and the test cannot see it"
 plant server.mjs "  if (ownerWait && !(pr && pr.red)) return 'owner'"
 got=$(psnap | jq -r '[.board.needsYou[].ticket] | join(" ")')
 [ "$got" != "1105 1107 1115" ] && ok "planted: no owner rule → needs you reads '$got' → red" || bad "planted: the owner rule deleted and the test cannot see it"
@@ -542,8 +553,19 @@ got=$(SNAP_GH="$FIX/board-gh" psnap | jq '.board.beforeLaunch')
 board_fixture "$SINCE"
 s=$(BRANCH_PREFIX=tkt- snap)
 plant index.html "  document.getElementById('headline').innerHTML = headline(s.board, s.launch)"
-[ "$(page_render "$P2" | grep -c 'Before launch: 13')" = 0 ] \
-  && ok "planted: the page drops the headline → no 'Before launch: 13' → red" || bad "planted: the page drops the headline and the test cannot see it"
+[ "$(page_render "$P2" | grep -c 'Release progress')" = 0 ] \
+  && ok "planted: the page drops the headline → no 'Release progress' → red" || bad "planted: the page drops the headline and the test cannot see it"
+plant server.mjs "  if (building) return 'building'"
+got=$(psnap | jq '[.board.buckets[] | select(.key=="building") | .n] | add')
+[ "$got" != "2" ] && ok "planted: no live-run rule → building reads $got → red" || bad "planted: the live-run rule deleted and the test cannot see it"
+plant server.mjs "  const claimed = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))" \
+  "  const claimed = new Set()"
+got=$(psnap | jq '[.board.buckets[] | select(.key=="building") | .n] | add')
+[ "$got" != "2" ] && ok "planted: other hosts' claims dropped → building reads $got → red" || bad "planted: other hosts' claims dropped and the test cannot see it"
+plant server.mjs "  const claimed = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))" \
+  "  const claimed = new Set((board.claims || []).map((c) => c.issue))"
+got=$(psnap | jq '[.board.buckets[] | select(.key=="building") | .n] | add')
+[ "$got" != "2" ] && ok "planted: a stale claim here counted → building reads $got → red" || bad "planted: a stale claim here counted and the test cannot see it"
 
 echo "--- progress to launch: done since the start, the pace, and where it lands ---"
 TREND="$STATE/swarm/trend.json"
@@ -558,15 +580,22 @@ trend_fixture() { # <added per whole day> <done per whole day> — today: 1 adde
 board_fixture "$SINCE"
 trend_fixture 2 5
 s=$(BRANCH_PREFIX=tkt- snap)
-want "done and still open make the whole"               "37 13 50" "$(printf '%s' "$s" | jq -r '.launch | "\(.done) \(.open) \(.total)"')"
-want "the bar is done of the whole"                     "74" "$(printf '%s' "$s" | jq '.launch.pct')"
-want "the open side leaves after launch out"            "13" "$(printf '%s' "$s" | jq '.launch.open')"
+want "done and still open make the whole"               "37 16 53" "$(printf '%s' "$s" | jq -r '.launch | "\(.done) \(.open) \(.total)"')"
+want "the bar is done of the whole"                     "69.8" "$(printf '%s' "$s" | jq '.launch.pct')"
+want "the open side leaves after launch out"            "16" "$(printf '%s' "$s" | jq '.launch.open')"
 want "burn is done less added over the whole days"      "3 true" "$(printf '%s' "$s" | jq -r '.launch | "\(.burn) \(.converging)"')"
-ETA=$(node -e 'const d=new Date();d.setDate(d.getDate()+5);console.log(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`)')
-want "at this pace: thirteen left at three a day is five days" "$ETA" "$(printf '%s' "$s" | jq -r '.launch.eta')"
+ETA=$(node -e 'const d=new Date();d.setDate(d.getDate()+6);console.log(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`)')
+want "at this pace: sixteen left at three a day is six days" "$ETA" "$(printf '%s' "$s" | jq -r '.launch.eta')"
 want "today is today's own counts"                      "1 2" "$(printf '%s' "$s" | jq -r '.launch.today | "\(.added) \(.done)"')"
 r=$(page_render "$LV")
-want_in "the page shows the bar and the share"          'Progress to launch.*width:74%.*<b>37</b> done of <b>50</b> · <b>74%</b>.*Before launch: 13.*Added and done, per day.*Pull requests merged' "$r"
+want_in "the big number is the release: done plus left" '^headline=<div class="ptitle">Release progress</div><div class="big">Release: 53 <small>tickets</small></div>' "$r"
+want_in "then the bar: done, left, share"               'width:69.8%.*<b>37</b> done · <b>16</b> left · <b>69.8%</b>.*Added and done, per day.*Pull requests merged' "$r"
+want "the chips add up to the bar's left"               "$(printf '%s' "$s" | jq '.launch.open')" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
+# Dom, 2026-10-20: "it's 1669; this is a screen for the release" — the numbers he read.
+s=$(printf '%s' "$s" | jq '.launch |= (.done = 410 | .open = 1259 | .total = 1669 | .pct = 24.6)')
+r=$(page_render "$LV")
+want_in "the release in his numbers"                     'Release: 1,669 <small>tickets</small>.*<b>410</b> done · <b>1,259</b> left · <b>24.6%</b>' "$r"
+want_in "the page is titled for the release"             '<title>Release, live</title>.*<h1>Release, live</h1>' "$(tr -d '\n' < "$LV/index.html")"
 want_in "a converging pace is a date"                   'pace ok">Shrinking 3/day</span><span>At this pace: <b>' "$r"
 want_in "eight days of added and done, today last"      '(class="day[^"]*".*){8}' "$r"
 want_in "and today's line reads from the same counts"   '^today=.*<b>2</b> done.*<b>1</b> new.*List shrinking by 1' "$r"
