@@ -145,11 +145,12 @@ function holdBanner(h){
 
 // One plain row per builder: what it is, how far along, how long, what it last did.
 const STEP_WORD = { 'Set up': 'Setting up', Plan: 'Planning', Build: 'Building', Check: 'Checking',
-  Review: 'Being reviewed', PR: 'Opening the pull request', Merged: 'Merging' }
+  Review: 'Being reviewed', PR: 'Opening the pull request', Merged: 'Merging',
+  'Back on the PR': 'Going back to the pull request', Repair: 'Repairing', Fix: 'Fixing', Record: 'Recording', Push: 'Pushing the fix' }
 function stepText(p){
   if (!p || !p.of || (p.unreadable || []).length === p.of) return '<b>Starting</b>'
   const name = (p.steps || [])[p.step - 1]?.name || ''
-  return `${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
+  return `${p.repair ? 'Repair · ' : ''}${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
 }
 const ticketLink = (n, kind = 'issues') => repo
   ? `<a href="https://github.com/${esc(repo)}/${kind}/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a>` : `#${esc(n)}`
@@ -171,22 +172,27 @@ function spark(vals){
   const pts = vals.map((v, i) => `${(i * w / Math.max(1, vals.length - 1)).toFixed(1)},${(h - 2 - v * (h - 4) / max).toFixed(1)}`).join(' ')
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`
 }
-// The release: every ticket done since the start date plus every one still open
-// before launch, as the big number, then the bar of done against it.
-// The containers left out of every count, so the number can be checked against the board.
-function notCounted(b){
-  const n = b?.notCounted
-  if (!n) return ''
-  const one = (k, w) => n[k] ? `${num(n[k])} ${w}${n[k] === 1 ? '' : 's'}` : ''
-  const parts = [one('batch', 'batch wrapper'), one('epic', 'epic')].filter(Boolean)
-  return parts.length ? `<div class="sub notcounted">Not counted: ${parts.join(' · ')}</div>` : ''
+// The release: every release ticket done since the start date plus every one still
+// open, as the big number, then the bar of done against it.
+// What was left out of it and why, so the number can be checked against the board.
+function outsideLine(b){
+  const o = b?.outside
+  if (!o) return ''
+  const pri = (b.lowerPriorities || []).map(p => p === 'none' ? 'no priority' : p).join('/')
+  const parts = [[o.lower, `lower-priority${pri ? ` (${esc(pri)})` : ''}`], [o.post, 'post-launch'],
+    [(o.batch || 0) + (o.epic || 0), 'wrappers'], [o.parked, 'parked']]
+    .filter(([n]) => n).map(([n, w]) => `${num(n)} ${w}`)
+  return parts.length ? `<div class="sub outside">Outside the release: ${parts.join(' · ')}</div>` : ''
 }
+// The left side, split as the coordinator splits it: product first, our own tooling after.
+const splitLine = (l) => l && Number.isInteger(l.product) && Number.isInteger(l.tooling)
+  ? `<div class="pline split"><span>Left: Product <b>${num(l.product)}</b> · Our tooling <b>${num(l.tooling)}</b></span></div>` : ''
 function releaseTop(l, b){
   if (!l) return '<div class="ptitle">Release progress</div><div class="big">Release: counting…</div>'
-    + '<div class="sub">The release total lands with the next count.</div>'
-  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>${notCounted(b)}
+    + '<div class="sub">The release total lands with the next count.</div>' + outsideLine(b)
+  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>
     <div class="progress"><div class="bar" role="img" aria-label="${esc(l.pct)}% done"><i style="width:${Math.min(100, l.pct)}%"></i></div>
-    <div class="pline"><span><b>${num(l.done)}</b> done · <b>${num(l.open)}</b> left · <b>${esc(l.pct)}%</b></span><span class="sub">counted since ${esc(dateName(l.base))}</span></div></div>`
+    <div class="pline"><span><b>${num(l.done)}</b> done · <b>${num(l.open)}</b> left · <b>${esc(l.pct)}%</b></span><span class="sub">counted since ${esc(dateName(l.base))}</span></div>${splitLine(l)}</div>${outsideLine(b)}`
 }
 // Added against done for each of the last seven days and today, with the pace and where it lands.
 function paceBlock(l){
@@ -211,10 +217,8 @@ function mergedBlock(l){
     <div class="spark">${spark(merged)}<span>${num(merged.slice(0, -1).reduce((a, b) => a + b, 0))} in the last seven days · ${num(merged[merged.length - 1])} today</span></div>`
 }
 function headline(b, l){
-  if (!b) return releaseTop(null)
+  if (!b) return releaseTop(null, null)
   const chips = b.buckets.map(c => `<span class="chip${c.n ? '' : ' zero'}" data-k="${esc(c.key)}"><b>${num(c.n)}</b> ${esc(c.label)}</span>`)
-  const label = b.afterLabel && b.afterLabel !== 'after-launch' ? ` (${esc(b.afterLabel)})` : ''
-  chips.push(`<span class="chip muted" data-k="after"><b>${num(b.afterLaunch)}</b> After launch${label} · parked</span>`)
   return `${releaseTop(l, b)}<div class="chips">${chips.join('')}</div>${paceBlock(l)}${mergedBlock(l)}`
 }
 function todayLine(t){
@@ -230,7 +234,7 @@ function needsList(b){
   if (!b) return '<p class="empty">Not read yet.</p>'
   if (!b.needsYou.length) return '<div class="allclear">Nothing needs you</div>'
   const row = (n) => `<div class="row need"><div class="main"><div class="title">${esc(n.title)}</div>
-    <div class="sub">${esc(n.why)} · ${n.pr ? ticketLink(n.pr, 'pull') : ticketLink(n.ticket)}</div></div></div>`
+    <div class="sub">${esc(n.why)} · ${n.kind === 'pr' ? `pull request ${ticketLink(n.number, 'pull')}` : ticketLink(n.number)}</div></div></div>`
   const head = b.needsYou.slice(0, NEEDS_SHOWN).map(row).join('')
   const rest = b.needsYou.slice(NEEDS_SHOWN)
   return `<div class="rows">${head}</div>` + (rest.length
