@@ -603,7 +603,7 @@ PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
 fix_issue 210 OPEN "status:in-review"
 jq -n '[{number:61, headRefName:"tkt-210/work", headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
          statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-61"; printf '{"number":61,"isDraft":false,"body":"The PR as its author wrote it."}\n' > "$FIX/gh/pr-view.json"
+: > "$FIX/pr-created-61"; printf '{"number":61,"isDraft":false,"body":"The PR as its author wrote it.\\n\\nCloses #210"}\n' > "$FIX/gh/pr-view.json"
 fix_brief repair superpowers:systematic-debugging
 cat > "$BIN/claude-hands" <<'SH'
 #!/usr/bin/env bash

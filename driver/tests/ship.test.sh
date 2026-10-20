@@ -44,6 +44,7 @@ want_in "the PR is opened as a draft"     'pr create.*--draft' "$(cat "$GH_LOG")
 want_in "and marked ready once reviewed"  'pr ready'           "$(cat "$GH_LOG")"
 want_in "auto-merge is armed"             'pr merge.*--auto'   "$(cat "$GH_LOG")"
 want_in "the body carries the round count" 'Review rounds: 1 of 2' "$(cat "$GH_LOG")"
+want_in "the body closes its ticket"     'pr create .*--body Closes #101' "$(tr '\n' ' ' < "$GH_LOG")"
 want_in "and the SHA it was claimed at"   "$(git -C "$REPO" rev-parse develop | cut -c1-8)" "$(cat "$GH_LOG")"
 want_in "a hand-off comment is left"      'Handed off at' "$(cat "$GH_LOG")"
 
@@ -490,7 +491,7 @@ driver_state_put 140 repair '{"step":"repair","cause":"the reader dropped its er
 for st in reenter repair fix self-check review record; do driver_state_done 140 "$st"; done
 printf '[{"number":88}]\n' > "$FIX/gh/prs.json"
 : > "$FIX/pr-created-88"; : > "$FIX/pr-created-tkt-140_work"
-printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\n## Lesson\\n- Principle: kept."}\n' > "$FIX/gh/pr-view.json"
+printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\n## Lesson\\n- Principle: kept.\\n\\nCloses #140"}\n' > "$FIX/gh/pr-view.json"
 : > "$GH_LOG"
 out=$(driver_step_ship 140 2>&1); rc=$?
 want "it ships"                              "0" "$rc"
@@ -502,6 +503,23 @@ want_in "it is ready"                        'pr ready' "$(cat "$GH_LOG")"
 want_in "auto-merge is armed"                'pr merge.*--auto' "$(cat "$GH_LOG")"
 want_in "and the repair is said on the PR"   'pr comment 88 .*Repaired by the driver' "$(tr '\n' ' ' < "$GH_LOG")"
 want_in "with its cause"                     'the reader dropped its error branch' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh/pr-view.json"
+
+echo "--- a repair puts back the closing line a PR's body lacks, and keeps every word ---"
+# #5654: a body without "Closes #n" on a branch without the prefix — every reader that
+# finds a ticket's PR missed it, and its repair parked "no open pull request".
+setup_wt 150
+driver_state_set 150 mode repair; driver_state_set 150 pr 99
+driver_state_put 150 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 150 review
+for st in reenter repair fix self-check review record; do driver_state_done 150 "$st"; done
+printf '[{"number":99}]\n' > "$FIX/gh/prs.json"
+: > "$FIX/pr-created-99"; : > "$FIX/pr-created-tkt-150_work"
+printf '{"number":99,"isDraft":false,"body":"Closes ticket 150.\\n\\n## Lesson\\n- Principle: kept."}\n' > "$FIX/gh/pr-view.json"
+: > "$GH_LOG"
+out=$(driver_step_ship 150 2>&1); rc=$?
+want "it ships"                              "0" "$rc"
+want_in "the body gets the line, its words kept" 'pr edit 99 .*--body Closes ticket 150\.  ## Lesson - Principle: kept\.  Closes #150' "$(tr '\n' ' ' < "$GH_LOG")"
+want_not_in "the title is left alone"        'pr edit 99 .*--title' "$(tr '\n' ' ' < "$GH_LOG")"
 rm -f "$FIX/gh/pr-view.json"
 
 echo "--- a repair whose PR has gone refuses rather than opening a new one ---"

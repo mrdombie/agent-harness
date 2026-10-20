@@ -131,7 +131,9 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
     swarm_gh pr create --repo "$REPO_SLUG" --draft \
       --base "$INTEGRATION_BRANCH" --head "$branch" \
       --title "#$t: parked — $reason" \
-      --body "Parked mid-run. See the resume brief on #$t." >/dev/null 2>&1 || true
+      --body "Parked mid-run. See the resume brief on #$t.
+
+$([ "$(driver_state_get "$t" polish_self)" = 1 ] && printf Refs || printf Closes) #$t" >/dev/null 2>&1 || true
   fi
 
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(cat <<BRIEF

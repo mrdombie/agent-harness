@@ -425,14 +425,18 @@ $STATE_DIR/<spec-file>
 - Guard: `<the test, lint or gate file this PR adds or changes>`
 - Before/after: <how the guard failed on the pre-fix code and passes now>
 - Reach: <the sibling it also catches, or the search that found none>
-
-Closes ticket $TICKET.
 EOF
+printf '\nCloses #%s\n' "$TICKET_KEY"
 )"
+PR_NUMBER=$(gh pr view --json number -q .number)
+# The body names its ticket, always: the repair and the coordinator find a ticket's PR
+# by it, and a PR into develop gets no closing reference from GitHub without it.
+# Re-run after any later edit that rewrites the body.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-closes.sh" ensure "$PR_NUMBER" "$TICKET_KEY"
 ```
 
 **A polish list's PR says `Refs #N`, never `Closes`** (a ticket labelled
-`polish-list`): the list closes only when nothing is left on it. Reserve each item
+`polish-list`; the `printf` writes `Refs #%s`): the list closes only when nothing is left on it. Reserve each item
 the change fixed for the PR, so no other run takes it; the coordinator ticks it
 when the PR merges:
 `bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" reserve <list> <pr> "<item>"`.
@@ -466,7 +470,7 @@ Put the region's route with its anchor first in `## Evidence routes`
 
 If you find yourself wanting to add a "deferred to follow-up" line under AC, **stop**. That's a partial, which the rule forbids — keep working OR open new properly-sized tickets for the deferred work.
 
-**Epic-mode PR shape (#3572):** title is `#NNNN slice k/M: <slice title>`; the AC list in the body is the SLICE's AC (from the state file), not the epic's; and the closing line is `Part of #NNNN` — never `Closes`. GitHub's auto-close linking must not see this PR as closing the epic.
+**Epic-mode PR shape (#3572):** title is `#NNNN slice k/M: <slice title>`; the AC list in the body is the SLICE's AC (from the state file), not the epic's; and the closing line is `Part of #NNNN` — never `Closes`: the `printf` after the body writes `Part of #%s` instead. GitHub's auto-close linking must not see this PR as closing the epic, and `pr-closes.sh ensure` leaves a body that already says `Part of #NNNN` alone.
 
 ```bash
 PR_NUMBER=$(gh pr view --json number -q .number)
@@ -752,6 +756,7 @@ elif [ "$PR_TOUCHES_UI" = "yes" ]; then
       gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json body -q .body
       printf '\n\n## Evidence\n\n%s\n' "$EVIDENCE_MD"
     )"
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/pr-closes.sh" ensure "$PR_NUMBER" "$TICKET_KEY"
     echo "✓ Published $(ls "$EVIDENCE_DIR"/*.png | wc -l | tr -d ' ') screenshot(s) to $EVIDENCE_DIR, SHA-pinned at $HEAD_SHA."
   fi
 fi

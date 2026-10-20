@@ -44,7 +44,9 @@ the context, and the resume brief is what buys that back.
 
 ```bash
 gh pr create --draft --base develop --head "$BRANCH" \
-  --title "$TICKET: <what this is>" --body "Parked for a design call. See the resume brief on #$TICKET_KEY."
+  --title "$TICKET: <what this is>" --body "Parked for a design call. See the resume brief on #$TICKET_KEY.
+
+Closes #$TICKET_KEY"
 
 gh issue edit "$TICKET_KEY" --repo "$REPO_SLUG" --add-label "$HOLD_LABEL"
 gh issue comment "$TICKET_KEY" --repo "$REPO_SLUG" --body "**Parked — needs a design call.**

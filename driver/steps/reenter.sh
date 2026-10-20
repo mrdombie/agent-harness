@@ -65,7 +65,7 @@ driver_step_reenter() { # <ticket>
   fi
   n=$(printf '%s' "$prs" | grep -c .)
   if [ "$n" -eq 0 ]; then
-    driver_say "✋ reenter: #$t has no open pull request on a ${BRANCH_PREFIX}${t} branch. A repair re-enters an existing pull request; with none there is nothing to repair, and building the ticket fresh is not a repair."
+    driver_say "✋ reenter: #$t has no open pull request — none on a ${BRANCH_PREFIX}${t} or ${t}/ branch, none closing it, none whose body says Closes #$t. A repair re-enters an existing pull request; with none there is nothing to repair, and building the ticket fresh is not a repair."
     driver_state_set "$t" park_note "a repair was sent for #$t and it has no open pull request to repair"
     return "$DRIVER_E_REFUSED"
   fi
