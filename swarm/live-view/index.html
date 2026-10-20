@@ -251,9 +251,10 @@ function machineLine(s){
   if (mem) parts.push(`${mem[1]} GB memory free`)
   const d = s.disk
   if (d && d.freeGb != null) {
-    parts.push(d.low ? `<span class="disklow">${esc(d.freeGb)} GB disk free — under ${esc(d.stopBelowGb)} GB, nothing new starts</span>`
-      : d.held ? `<span class="diskheld">${esc(d.freeGb)} GB disk free — starts resume at ${esc(d.resumeAtGb)} GB</span>`
-      : `${esc(d.freeGb)} GB disk free`)
+    const fr = `${esc(d.freeGb)} GB disk free${d.where ? ' ' + esc(d.where) : ''}`
+    parts.push(d.low ? `<span class="disklow">${fr} — under ${esc(d.stopBelowGb)} GB, nothing new starts</span>`
+      : d.held ? `<span class="diskheld">${fr} — starts resume at ${esc(d.resumeAtGb)} GB</span>`
+      : fr)
   } else if (d) parts.push('disk free not read')
   parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
   const hosts = (s.hosts || []).map(h => `${esc(h.host)} (${esc(h.n)})`).join(', ')

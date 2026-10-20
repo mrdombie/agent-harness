@@ -51,7 +51,7 @@ case "$COORD_SHEET_STALE_MIN" in ""|0|*[!0-9]*) COORD_SHEET_STALE_MIN=15 ;; esac
 COORD_SHEET_LABEL="${COORDINATOR_SHEET_LABEL:-$(swarm_opt coordinator.sheet.label build-sheet)}"
 COORD_SHEET_TITLE="${COORDINATOR_SHEET_TITLE:-$(swarm_opt coordinator.sheet.title "Build queue — the shared sheet")}"
 COORD_SHEET_STOP_LABELS="${COORDINATOR_SHEET_STOP_LABELS:-$(swarm_opt coordinator.sheet.stopLabels after-launch)}"
-COORD_SHEET_ISSUE_FILE="$COORD_DIR/sheet.issue"
+COORD_SHEET_ISSUE_FILE="$COORD_DIR/sheet.issue"   # <number> \t <the label it was found by>
 COORD_SHEET_STATE="$COORD_DIR/sheet.written"   # <hash> \t <epoch written>
 COORD_SHEET_COPY="$COORD_DIR/sheet.read.md"    # a reader's last good copy
 
@@ -63,12 +63,16 @@ coord_sheet_role() {
   if [ "$(_sheet_lower "$COORD_HOST")" = "$(_sheet_lower "$COORD_SHEET_OWNER")" ]; then printf owner; else printf reader; fi
 }
 
-# coord_sheet_issue [create] — the sheet's number: cached, else the open issue with
-# the label (one REST list), else, with create, a new pinned one. 1 when none.
+# coord_sheet_issue [create] — the sheet's number: cached under the label it was found
+# by, else the open issue with the label (one REST list), else, with create, a new
+# pinned one. 1 when none. A cache made under another label is looked up again.
 coord_sheet_issue() {
-  local n label_q
-  n=$(cat "$COORD_SHEET_ISSUE_FILE" 2>/dev/null)
-  case "$n" in ''|*[!0-9]*) n="" ;; *) printf '%s' "$n"; return 0 ;; esac
+  local n label_q cached
+  cached=$(head -1 "$COORD_SHEET_ISSUE_FILE" 2>/dev/null)
+  n=${cached%%$'\t'*}
+  case "$n" in ''|*[!0-9]*) n="" ;; esac
+  if [ -n "$n" ] && [ "$cached" = "$n"$'\t'"$COORD_SHEET_LABEL" ]; then printf '%s' "$n"; return 0; fi
+  n=""
   label_q=$(jq -rn --arg l "$COORD_SHEET_LABEL" '$l | @uri')
   n=$(gh_call api "repos/$REPO_SLUG/issues?labels=$label_q&state=open&per_page=10" \
         --jq '[.[] | select(.pull_request | not)] | sort_by(.number) | .[0].number // empty' 2>/dev/null)
@@ -83,8 +87,13 @@ coord_sheet_issue() {
   fi
   [ -n "$n" ] || return 1
   mkdir -p "$COORD_DIR" 2>/dev/null
-  printf '%s\n' "$n" > "$COORD_SHEET_ISSUE_FILE"
+  printf '%s\t%s\n' "$n" "$COORD_SHEET_LABEL" > "$COORD_SHEET_ISSUE_FILE"
   printf '%s' "$n"
+}
+
+# _sheet_carries <issue json> — the issue is open and still carries the sheet's label.
+_sheet_carries() {
+  jq -e --arg l "$COORD_SHEET_LABEL" '.state == "open" and ([.labels[]? | (.name? // .)] | index($l) != null)' >/dev/null 2>&1 <<<"$1"
 }
 
 # ---- what is startable -------------------------------------------------------
@@ -180,7 +189,7 @@ _sheet_hash() { printf '%s' "$1" | cksum | awk '{ print $1 "-" $2 }'; }
 coord_sheet_publish() {
   local e="$1" h old_h old_at now beat n body
   now=$(swarm_now)
-  h=$(_sheet_hash "$(jq -cS . <<<"$e")")
+  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS . <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
@@ -188,14 +197,21 @@ coord_sheet_publish() {
     printf 'unchanged — not written'; return 0
   fi
   if coord_shadow; then printf 'would write it (%s)' "$([ "$h" = "$old_h" ] && echo heartbeat || echo changed)"; return 0; fi
-  n=$(coord_sheet_issue create) || { printf 'no sheet issue could be found or made'; return 1; }
   body=$(coord_sheet_render "$e" "$now")
-  if ! jq -n --arg b "$body" --arg t "$COORD_SHEET_TITLE" '{body: $b, title: $t}' \
-       | gh_call api -X PATCH "repos/$REPO_SLUG/issues/$n" --input - >/dev/null 2>&1; then
-    # A sheet that was closed or deleted is looked for again next tick.
+  local try resp
+  for try in 1 2; do
+    n=$(coord_sheet_issue create) || { printf 'no sheet issue could be found or made'; return 1; }
+    if ! resp=$(jq -n --arg b "$body" --arg t "$COORD_SHEET_TITLE" '{body: $b, title: $t}' \
+         | gh_call api -X PATCH "repos/$REPO_SLUG/issues/$n" --input - 2>/dev/null); then
+      # A sheet that was closed or deleted is looked for again next tick.
+      rm -f "$COORD_SHEET_ISSUE_FILE"
+      printf 'the write to #%s was refused — trying again next tick' "$n"; return 1
+    fi
+    # Written to an issue that is closed or lost the label: readers never look there.
+    _sheet_carries "$resp" && break
     rm -f "$COORD_SHEET_ISSUE_FILE"
-    printf 'the write to #%s was refused — trying again next tick' "$n"; return 1
-  fi
+    [ "$try" = 2 ] && { printf '#%s does not carry %s once written — looked for again next tick' "$n" "$COORD_SHEET_LABEL"; return 1; }
+  done
   printf '%s\t%s\n' "$h" "$now" > "$COORD_SHEET_STATE.$$" && mv -f "$COORD_SHEET_STATE.$$" "$COORD_SHEET_STATE"
   printf 'wrote #%s (%s)' "$n" "$([ "$h" = "$old_h" ] && echo heartbeat || echo changed)"
 }
@@ -223,15 +239,18 @@ coord_sheet_read() {
   local n raw body parsed from=github age
   SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""
   body=""
-  if n=$(coord_sheet_issue); then
+  local try
+  for try in 1 2; do
+    n=$(coord_sheet_issue) || break
     raw=$(gh_call api "repos/$REPO_SLUG/issues/$n" 2>/dev/null) || raw=""
-    if [ -n "$raw" ] && jq -e '.state == "open"' >/dev/null 2>&1 <<<"$raw"; then
+    [ -n "$raw" ] || break
+    if _sheet_carries "$raw"; then
       body=$(jq -r '.body // ""' <<<"$raw")
       printf '%s\n' "$body" > "$COORD_SHEET_COPY.$$" && mv -f "$COORD_SHEET_COPY.$$" "$COORD_SHEET_COPY"
-    elif [ -n "$raw" ]; then
-      rm -f "$COORD_SHEET_ISSUE_FILE"   # closed: looked for again next tick
+      break
     fi
-  fi
+    rm -f "$COORD_SHEET_ISSUE_FILE"   # closed, or the label moved: looked up again
+  done
   if [ -z "$body" ]; then
     from=copy
     body=$(cat "$COORD_SHEET_COPY" 2>/dev/null)
