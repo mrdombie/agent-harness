@@ -456,6 +456,10 @@ driver_step_ship() { # <ticket>
       driver_state_set "$t" park_note "the repair deletes tests the PR body does not account for under '## Deleted tests': $(printf '%s\n' "$rdt" | awk '/ — /{sub(/^ +/, ""); print}' | tr '\n' ';')"
       return "$DRIVER_E_REFUSED"
     fi
+    # THE TICKET IS NAMED IN THE BODY, whoever wrote it: every reader that finds a
+    # ticket's PR by its body or its closing references misses one that does not.
+    newbody=$(printf '%s\n' "$newbody" | pr_closes_ensure "$t" "$(_driver_ship_closes "$t")")
+    newbody=${newbody%$'\n'}
     if [ "$newbody" != "$rbody" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --body "$newbody" >/dev/null 2>&1; then
       driver_say "✋ ship: the '## Deleted tests' lines or the plan's evidence routes could not be added to PR #$open_pr's body, so CI would refuse the push. Nothing is pushed."
       driver_state_set "$t" park_note "could not add the Deleted tests section to #$open_pr"
@@ -549,6 +553,8 @@ $polish
 $replaced}
 PRBODY
 )
+  # Written above as the first line; held here so no later section drops it.
+  body=$(printf '%s\n' "$body" | pr_closes_ensure "$t" "$closes")
   # `|| true` on the create alone is right: a park may already have opened the draft,
   # and a resume finds it there. What is NOT right is taking the create's silence as a
   # pull request existing — so the next line asks.

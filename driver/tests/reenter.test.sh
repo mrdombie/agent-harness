@@ -130,6 +130,31 @@ want "it finishes"                    "0" "$rc"
 want "in the tree that holds the branch" "$(cd "$FIX/old231" && pwd -P)" "$(cd "$(driver_state_get 231 worktree)" && pwd -P)"
 want_in "and says so"                 'taking that tree over' "$out"
 
+echo "--- a PR on a <ticket>/ branch with no closing reference is still the ticket's (#5654) ---"
+# A person's or /claim's branch carries no prefix, and a body saying "Closes ticket n"
+# gives GitHub nothing to link: the repair parked "no open pull request" beside it.
+src=$(mktemp -d "$FIX/src-232.XXXX"); rmdir "$src"
+git clone -q -b develop "$FIX/origin" "$src"
+git -C "$src" -c user.email=t@example.invalid -c user.name=T checkout -q -b 232/approval-preview
+printf 'pr 232\n' > "$src/pr232.txt"; git -C "$src" add .
+git -C "$src" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 232"
+git -C "$src" push -q origin 232/approval-preview
+fix_issue 232 OPEN "status:in-review"
+prs "[$(pr_json 62 232/approval-preview | jq -c '.body = "Closes ticket 232." | .closingIssuesReferences = []'), $(pr_json 63 2320/other)]"
+out=$(driver_step_reenter 232 2>&1); rc=$?
+want "it finishes"                    "0" "$rc"
+want "on that PR"                     "62" "$(driver_state_get 232 pr)"
+want "and its branch"                 "232/approval-preview" "$(driver_state_get 232 branch)"
+
+echo "--- a PR whose body says Closes #n is the ticket's, whatever its branch ---"
+pr_branch 233
+fix_issue 233 OPEN "status:in-review"
+git -C "$FIX/src-233" push -q origin "tkt-233/work:refs/heads/someone/else"
+prs "[$(pr_json 64 someone/else | jq -c '.body = "Did the thing.\n\nFixes #233"'), $(pr_json 65 x/y | jq -c '.body = "Closes #2330"')]"
+out=$(driver_step_reenter 233 2>&1); rc=$?
+want "it finishes"                    "0" "$rc"
+want "on the PR whose body closes it, not #2330's" "64" "$(driver_state_get 233 pr)"
+
 echo "--- no open pull request: nothing to repair, and nothing is built fresh ---"
 fix_issue 202 OPEN "status:in-review"; prs "[$(pr_json 32 tkt-2020/other)]"
 out=$(driver_step_reenter 202 2>&1); rc=$?

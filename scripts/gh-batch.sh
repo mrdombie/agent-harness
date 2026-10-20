@@ -150,7 +150,7 @@ gh_batch_clock() { date -u -r "$1" +%H:%MZ 2>/dev/null || date -u -d "@$1" +%H:%
 # ---- the open pull requests, read once and shared ----------------------------
 # Every reader takes this file while it is younger than the age it can bear; past
 # that, the first one to ask reads GitHub for all of them. Its mtime is its time.
-GH_PRS_FIELDS="${GH_PRS_FIELDS:-number,headRefName,headRefOid,baseRefName,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt}"
+GH_PRS_FIELDS="${GH_PRS_FIELDS:-number,headRefName,headRefOid,baseRefName,isDraft,labels,mergeStateStatus,statusCheckRollup,mergeable,closingIssuesReferences,title,updatedAt,body}"
 gh_prs_file() { printf '%s' "${GH_PRS_FILE:-$(dirname "$(gh_backoff_file)")/prs.json}"; }
 gh_prs_age() { # seconds since it was written; 1 when there is none
   local f m; f=$(gh_prs_file); [ -s "$f" ] || return 1

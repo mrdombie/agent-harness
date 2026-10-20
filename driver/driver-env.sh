@@ -604,8 +604,13 @@ driver_conflict_markers() {
     /^\+(<<<<<<<|>>>>>>>)( |$)/ { if (f != "" && !(f in seen)) { seen[f] = 1; print f } }'
 }
 
-# driver_open_prs_for <ticket> — the open pull requests on this ticket's own
-# branches (<prefix><ticket> then a non-digit), one per line:
+. "$KIT_ROOT/scripts/pr-closes.sh"
+
+# driver_open_prs_for <ticket> — the open pull requests that are this ticket's, one
+# per line. A PR is the ticket's by ANY of: a head branch <prefix><ticket> or
+# <ticket>/ (a person's or /claim's branch carries no prefix), GitHub's closing
+# references, or a Closes/Fixes/Resolves #<ticket> in its body (GitHub links none
+# on a PR into a non-default base):
 #   number \t headRefName \t headRefOid \t mergeStateStatus \t isDraft \t mergeable
 # Returns 1 when GitHub could not be asked: an unreadable list is not "none", and
 # read as none it lets start cut a second branch beside a PR that exists.
@@ -613,9 +618,10 @@ driver_conflict_markers() {
 driver_open_prs_for() {
   local t="${1:?driver_open_prs_for: need a ticket}" j
   j=$(driver_open_prs) || return 1
-  printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
-    .[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)"))
-                 or ([.closingIssuesReferences[]?.number | tostring] | index($t) != null))
+  printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --arg kw "$PR_CLOSES_JQ" '
+    .[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)") or test("^" + $t + "/"))
+                 or ([.closingIssuesReferences[]?.number | tostring] | index($t) != null)
+                 or ((.body // "") | test($kw + $t + "([^0-9]|$)"; "i")))
     | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false), (.mergeable // "")] | @tsv'
 }
 

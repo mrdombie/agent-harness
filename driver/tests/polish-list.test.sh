@@ -138,7 +138,7 @@ for st in reenter repair fix self-check review record; do driver_state_done 507 
 list_body 900 $'## Items\n- [ ] Header weight\n'
 bash "$KIT/scripts/polish-list.sh" take 900 507 "Header weight" >/dev/null
 printf '[{"number":88}]\n' > "$FIX/gh/prs.json"; : > "$FIX/pr-created-tkt-507_work"; : > "$FIX/pr-created-88"
-printf '{"number":88,"isDraft":false,"body":"A body a person wrote."}\n' > "$FIX/gh/pr-view.json"
+printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\nCloses #507"}\n' > "$FIX/gh/pr-view.json"
 : > "$GH_LOG"
 driver_step_ship 507 >/dev/null 2>&1
 want "the repair's take is reserved for its PR" "- [ ] Header weight (in PR #88)" "$(jq -r .body "$FIX/gh/issue-900.json" | grep 'Header weight')"
