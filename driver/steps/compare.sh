@@ -26,6 +26,7 @@
 #      fine — the distinction the whole kit is built on.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tier.sh" || exit 1
 
 # driver_surface_paths — the globs this project calls a screen. No default: the
 # kit names no project's directories, and inventing one would answer "does this
@@ -86,6 +87,14 @@ driver_step_compare() { # <ticket>
   touched=$(driver_touched_surfaces "$wt" "$trunk") || {
     driver_state_set "$t" park_note "design.surfacePaths holds only exclude pathspecs, which git reads as every other file"
     return "$DRIVER_E_REFUSED"; }
+  # A BUILD THAT DRAWS NOTHING HAS NO PICTURE TO COMPARE (tier.sh).
+  local tier why
+  IFS=$'\t' read -r tier why <<<"$(driver_change_tier "$t" "$wt" "$trunk")"
+  if [ "$tier" != screen ]; then
+    driver_state_set "$t" renders "(none — a $tier build: $why. It touches no screen, so nothing to render or compare)"
+    driver_say "   compare: a $tier build — this change touches no screen ($why), so no picture and no compare"
+    return "$DRIVER_OK"
+  fi
   if [ -z "$touched" ]; then
     driver_state_set "$t" renders \
       "(none — this change touches no file under this project's design.surfacePaths, so there is no screen to render)"
