@@ -33,7 +33,11 @@
 #                    room is re-read before each start after the first; under
 #                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
 #                    that is claimed, gated, on hold or wearing the owner-decision
-#                    label (owner-question.sh), and nothing while the machine is busy
+#                    label (owner-question.sh), and nothing while the machine is busy.
+#                    A process fix (coordinator.processLabel) starts first, ahead of
+#                    priority, kind, heal-all, the split and polish, in any free
+#                    place; a swarm HOLD "for process fixes" (or with an
+#                    `allow: process` line) starts only those (owner call 2026-10-20)
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
@@ -439,9 +443,16 @@ REDS_WAITING=0; REDS_WAITING_POLISH=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
+# A hold for process fixes holds everything else: only those are candidates.
+PROCESS_ONLY=""
+if held=$(swarm_held) && swarm_hold_lets_process; then
+  PROCESS_ONLY=1; say "spawn: held for everything but process fixes ($SWARM_PROCESS_LABEL) — $held"
+fi
 # The spawnable entries, in queue order: every healing one (so the reds waiting
 # are counted), and new work up to one past the free places (the next pick).
-# CANDS rows: <ticket> \t <class> \t <polish 0|1> \t <note>.
+# CANDS rows: <ticket> \t <class> \t <polish 0|1> \t <process 0|1> \t <note>.
+# A process fix is never held as polish, never capped at one past the free places,
+# and under a hold that lets process fixes through it is the only kind listed.
 # Polish new work starts only when nothing else can, or when it is a polish list
 # holding coordinator.polishListFull free items (owner call 2026-10-19): 20 of
 # the 35 PRs waiting on the owner's sign-off were polish, one picture each. The
@@ -449,7 +460,7 @@ PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
 # half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl ex note why nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
+  local t cls pri pol pl ex proc note why nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
   CANDS=""
   wide=$(coord_queue_ordered --wide)
   # A full list goes in its place in the order, ahead of lower-priority work, so the
@@ -457,9 +468,10 @@ candidates() {
   lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $5 == 1 { print $1 }' | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
-  while IFS=$'\t' read -r t cls pri pol pl ex note; do
+  while IFS=$'\t' read -r t cls pri pol pl ex proc note; do
     [ -n "${t:-}" ] || continue
     i=$((i+1))
+    if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then continue; fi
     # A list with nothing free on it is never work, however idle the factory: every
     # item is ticked, reserved by a PR, or taken by another run. Its own takes count.
     if [ "$cls" = new ] && [ "$pl" = 1 ]; then
@@ -475,11 +487,11 @@ candidates() {
         held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
       fi
     fi
-    coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
+    [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
     if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
-    coord_healing_class "$cls" || nn=$((nn+1))
+    [ "$proc" = 1 ] || coord_healing_class "$cls" || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
-    rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"$note"$'\n'
+    rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
   if [ -n "$held" ]; then
     while IFS=$'\t' read -r i t cls pl cnt note; do
@@ -492,7 +504,7 @@ candidates() {
       [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue
       if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
       nn=$((nn+1))
-      rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'"$note"$'\n'
+      rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'0$'\t'"$note"$'\n'
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
   fi
@@ -503,11 +515,12 @@ reds_waiting() {
   REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
   REDS_WAITING_POLISH=$(printf '%s' "$CANDS" | awk -F'\t' '($2 == "repair" || $2 == "approved-merge") && $3 == 1' | grep -c .)
 }
-first_of() { # <healing|new> — the first candidate of that kind: <ticket> \t <class> \t <note>
-  local t cls pol note
-  while IFS=$'\t' read -r t cls pol note; do
+first_of() { # <healing|new|process> — the first candidate of that kind: <ticket> \t <class> \t <note>
+  local t cls pol proc note
+  while IFS=$'\t' read -r t cls pol proc note; do
     [ -n "${t:-}" ] || continue
-    if coord_healing_class "$cls"; then [ "$1" = healing ] || continue; else [ "$1" = new ] || continue; fi
+    if [ "$1" = process ]; then [ "$proc" = 1 ] || continue
+    elif coord_healing_class "$cls"; then [ "$1" = healing ] || continue; else [ "$1" = new ] || continue; fi
     printf '%s\t%s\t%s' "$t" "$cls" "$note"; return 0
   done <<< "$CANDS"
   return 1
@@ -520,7 +533,7 @@ held_view() {
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
   event "cap-bad:$COORD_CAP_BAD" cap-bad false "" "" "coordinator.cap is '$COORD_CAP_BAD', so nothing is spawning" || true
-elif held=$(swarm_held); then
+elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
@@ -554,11 +567,12 @@ else
   RAMP=$SLOTS; RAMP_WHY=""
   if [ -n "$COORD_RAMP_MAX" ] && [ "$RAMP" -gt "$COORD_RAMP_MAX" ]; then RAMP=$COORD_RAMP_MAX; RAMP_WHY="coordinator.rampMax is $COORD_RAMP_MAX"; fi
   while [ "$started" -lt "$RAMP" ]; do
-    heal=$(first_of healing); new=$(first_of new)
-    # Each class fills its own share first; a class with nothing spawnable lends
-    # its places to the other, in both directions.
+    heal=$(first_of healing); new=$(first_of new); proc=$(first_of process)
+    # A process fix takes any free place first, whatever the split. Then each class
+    # fills its own share; a class with nothing spawnable lends its places to the other.
     pick=""; lent=""
-    if   [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
+    if   [ -n "$proc" ]; then pick="$proc"; lent="any free place, a process fix first"
+    elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
     elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$new" ];  then pick="$new"; lent="a healing place"
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$heal" ]; then pick="$heal"; lent="a new place"
@@ -581,9 +595,9 @@ else
     PLAN="${PLAN:+$PLAN,}$t"; TOOK="$cls"
     heal_free_was=$HEAL_FREE; new_free_was=$NEW_FREE
     if coord_healing_class "$cls"; then
-      if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); else NEW_FREE=$((NEW_FREE-1)); fi
+      if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); elif [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); fi
     else
-      if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); else HEAL_FREE=$((HEAL_FREE-1)); fi
+      if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); elif [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); fi
     fi
     # Counted live only once it is (or, in shadow, would be) running.
     count_live() {
@@ -593,7 +607,7 @@ else
     }
     coord_act_log spawn "$t" "$cls${note:+ — $note}"
     if coord_shadow; then
-      say "would spawn #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; count_live
+      say "would spawn #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; count_live
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
@@ -601,7 +615,7 @@ else
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live
-        say "spawned #$t ($cls)${lent:+ in $lent, nothing else spawnable}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
+        say "spawned #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
         SHEET_STARTED="${SHEET_STARTED:+$SHEET_STARTED,}$t"
       else
         say "spawn of #$t failed"

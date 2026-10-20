@@ -16,7 +16,8 @@
 #
 # The candidates and their order come from claimable-issues.sh, the one
 # definition of what may be picked up. A [FINISH PR] row is class repair, the rest
-# new. Priority orders the whole queue (P0 first, no priority last); within one
+# new. A process fix (coordinator.processLabel) goes first of all, ahead of every
+# rule below, even an entry put on top (owner call 2026-10-20). Priority orders the whole queue (P0 first, no priority last); within one
 # priority repair, approved-merge, then new; within a class product work before
 # our own tooling (coordinator.toolingLabels); then new work half-built, feature,
 # other, polish, newest first; repairs keep claimable order. Each entry keeps its
@@ -133,7 +134,8 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
         | .polish = coord_polish(.ls; .pri; .title)
         | .plist = ((.ls | index($plist)) != null)
         | .tooling = coord_tooling(.ls; .title)
-        | {n, class, kind, prin, polish, plist, tooling, ls})) as $fresh
+        | .process = coord_process(.ls)
+        | {n, class, kind, prin, polish, plist, tooling, process, ls})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
@@ -156,13 +158,14 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
     # repair and approved-merge keep the claimable order.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
-        | if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0, 0]
+        | [(if $t.process then 0 else 1 end)] +
+        (if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0, 0]
           else [1, 0, ($t.prin // 9),
                 (if $t.front then 0 else 1 end), (if $t.front then ($oldpos[($t.n|tostring)] // $i) else 0 end),
                 ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3),
                 (if $t.tooling then 1 else 0 end),
                 (if $t.class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9) else 0 end),
-                (if $t.class == "new" then -$t.n else $i end)] end)
+                (if $t.class == "new" then -$t.n else $i end)] end))
     | map(.value)
     | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: .}' | write
   echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
@@ -214,7 +217,7 @@ add() {
   meta=$(swarm_gh issue view "$n" --repo "$REPO_SLUG" --json labels,title 2>/dev/null \
     | coord_jq -c "$COORD_TICKET_JQ"'[.labels[]?.name] as $ls
         | {prin: coord_prin($ls; null), kind: coord_kind($ls; ""; null; .title), polish: coord_polish($ls; null; .title),
-           plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title)}' 2>/dev/null)
+           plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title), process: coord_process($ls)}' 2>/dev/null)
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
   cls=$(coord_jq -rn --arg c "$cls" --arg note "$note" "$COORD_TICKET_JQ"'coord_class($c; $note)')
   current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" --argjson top "$top" --argjson meta "$meta" '

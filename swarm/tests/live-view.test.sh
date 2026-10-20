@@ -161,6 +161,23 @@ want "closed, batched and held new rows are not listed; a held PR's repair and a
 want "the count is the rows that can start" "4" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
 want "a new row with a REPAIR brief is shown as a repair" "repair" "$(printf '%s' "$s" | jq -r '.queue.tickets[] | select(.ticket=="725") | .class')"
 rm -f "$STATE/coordinator/snapshot/issues.json"
+echo "--- process fixes are listed first and counted ---"
+cat > "$STATE/coordinator/queue.json" <<'JSON'
+{"scope":"widgets","label":"project:widgets","tickets":[
+ {"n":731,"class":"new","prin":0,"top":true,"note":""},
+ {"n":732,"class":"repair","prin":1,"note":""},
+ {"n":733,"class":"new","prin":3,"note":""},
+ {"n":734,"class":"new","prin":3,"process":true,"note":""}]}
+JSON
+cat > "$STATE/coordinator/snapshot/issues.json" <<'JSON'
+{"733":{"number":733,"state":"OPEN","labels":["status:ready","P3","process"]}}
+JSON
+s=$(snap)
+want "process fixes first, from the labels or the queue's own flag, ahead of the PM's top" \
+  "733 734 731 732" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "and the page's count of them" "2" "$(printf '%s' "$s" | jq '.queue.processFirst')"
+want_in "the page draws the line"  'Process fixes first: \$\{np\}' "$(cat "$HERE/../live-view/index.html")"
+rm -f "$STATE/coordinator/snapshot/issues.json"
 rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
@@ -181,6 +198,11 @@ printf 'testing the banner (held 2026-10-16T09:00Z by tester)\n' > "$STATE/swarm
 s=$(snap)
 want "the owner's pause"        "paused" "$(printf '%s' "$s" | jq -r '.hold.kind')"
 want_in "with its reason"       'testing the banner' "$(printf '%s' "$s" | jq -r '.hold.reason')"
+want "a plain pause lets nothing through" "null" "$(printf '%s' "$s" | jq -r '.hold.allows')"
+printf 'quiet night, for process fixes (held 2026-10-16T09:00Z by tester)\n' > "$STATE/swarm/HOLD"
+s=$(SWARM_HOLD_MS=0 snap)
+want "a pause for process fixes says it lets them through" "process" "$(printf '%s' "$s" | jq -r '.hold.allows')"
+printf 'testing the banner (held 2026-10-16T09:00Z by tester)\n' > "$STATE/swarm/HOLD"
 rm -f "$STATE/swarm/HOLD"
 printf '%s\thit your usage limit\n' "$(( $(date +%s) + 3600 ))" > "$STATE/usage-hold"
 s=$(snap)

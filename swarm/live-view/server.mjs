@@ -100,6 +100,8 @@ function refreshHold(now) {
 }
 
 const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
+// A process fix runs first of all (coord_process, owner call 2026-10-20).
+const PROCESS = process.env.SWARM_PROCESS_LABEL || 'process'
 const KIND = { 'half-built': 0, feature: 1, other: 2, polish: 3 }
 // The labels that mean nobody can start a row (coord_stopped): a repair is stopped
 // only by those that park the ticket; a hold or a question stops new work too.
@@ -117,29 +119,30 @@ export function startable(cls, issue) {
   const stop = cls === 'new' ? STOP_NEW : STOP_ALL
   return !(issue.labels || []).some((l) => stop.includes(l))
 }
-// The queue in the order the coordinator runs it: an entry the PM put on top first,
+// The queue in the order the coordinator runs it: a process fix first of all, then an entry the PM put on top,
 // then priority (none last), and within one priority a front entry (a resume, an
 // answer) first, then class, product before tooling, then kind for new work, then
 // position — the same order as coord_queue_ordered. An unknown class sorts last.
 // Only rows somebody can start are listed, so the count is the work there is.
 export function queueOf(file = COORD_QUEUE, issues = issuesByTicket()) {
   let q
-  try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [] } }
+  try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [], processFirst: 0 } }
   const fallback = q.label || q.scope || ''
   const rows = (Array.isArray(q.tickets) ? q.tickets : [])
     .filter((t) => t && t.n != null)
     .map((t) => ({ ...t, class: classOf(t) }))
     .filter((t) => startable(t.class, issues[String(t.n)]))
-    .map((t, pos) => ({ t, pos, top: t.top ? 0 : 1, front: t.front ? 0 : 1, prin: Number.isInteger(t.prin) ? t.prin : 9,
+    .map((t, pos) => ({ t, pos, proc: (issues[String(t.n)] ? (issues[String(t.n)].labels || []).includes(PROCESS) : !!t.process) ? 0 : 1,
+                        top: t.top ? 0 : 1, front: t.front ? 0 : 1, prin: Number.isInteger(t.prin) ? t.prin : 9,
                         rank: RANK[t.class] ?? 3, tool: t.tooling ? 1 : 0, kind: t.class === 'new' ? (KIND[t.kind] ?? 2) : 0 }))
-    .sort((a, b) => a.top - b.top || (a.top === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
+    .sort((a, b) => a.proc - b.proc || a.top - b.top || (a.top === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
                     || a.front - b.front || (a.front === 0 ? a.pos - b.pos : 0)
                     || a.rank - b.rank || a.tool - b.tool || a.kind - b.kind || a.pos - b.pos)
-    .map(({ t }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
-                       scope: String(t.scope || fallback), pinned: !!t.pinned }))
+    .map(({ t, proc }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
+                       scope: String(t.scope || fallback), pinned: !!t.pinned, process: proc === 0 }))
   const scopes = Array.isArray(q.scopes) ? q.scopes.map((s) => String(s.label || s.scope || s))
     : [...new Set(rows.map((r) => r.scope).filter(Boolean))]
-  return { scopes, seededAt: q.seeded_at || null, tickets: rows }
+  return { scopes, seededAt: q.seeded_at || null, tickets: rows, processFirst: rows.filter((r) => r.process).length }
 }
 
 export function capacityOf(file = COORD_CAPACITY) {

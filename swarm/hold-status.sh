@@ -3,6 +3,7 @@
 #
 #   hold-status.sh   {"held":false} or {"held":true,"kind":…,"reason":…,"until":…}
 #
+# allows is "process" on a pause that still lets process fixes start.
 # kind is "paused" (the owner's hold, swarm/install.sh hold) or "usage" (the
 # plan's usage limit). until is an ISO instant when the source names one, the
 # reset wording ("7:20pm") when it names only a time, null for a pause.
@@ -27,7 +28,8 @@ usage() { # <until> [window]
 }
 
 if h=$(swarm_held); then
-  jq -cn --arg r "$h" '{held: true, kind: "paused", reason: $r, until: null}'
+  a=""; swarm_hold_lets_process && a=process
+  jq -cn --arg r "$h" --arg a "$a" '{held: true, kind: "paused", reason: $r, until: null} + (if $a == "" then {} else {allows: $a} end)'
 elif swarm_usage_file_hold >/dev/null; then
   e=$(cut -f1 "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" | head -1)
   usage "$(swarm_iso "$e")"
