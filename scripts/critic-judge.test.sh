@@ -200,6 +200,26 @@ reset; answer SHIP; sed -i.b 's/state=pinned/state=pending/' "$D/ev-status"
 bash "$J" run 7 >/dev/null 2>&1; rc=$?
 [ $rc -eq 3 ] && [ ! -s "$D/statuses" ] && ok "with no pinned shots it waits and posts nothing" || bad "pending: rc=$rc"
 
+# 8b CI's own record says the head has nothing to photograph: success, no model.
+OLD=$(printf '3%.0s' {1..40})
+ev_none() { # <head CI read> [<head its nothing-to-photograph record names>]
+  { printf 'head=%s\nsha=\nshots=0\nstate=none\n' "$1"; [ -n "${2:-}" ] && printf 'nothing=%s\n' "$2"; echo "reason=r"; } > "$D/ev-status"
+}
+reset; answer SHIP; ev_none "$HEAD" "$HEAD"
+bash "$J" run 7 >/dev/null 2>&1; rc=$?
+printf '%s' "$(status_line)" | grep -q "statuses/$HEAD .*state=success.*description=No rendered change: CI found nothing to photograph at ${HEAD:0:9}" \
+  && [ $rc -eq 0 ] && [ ! -f "$D/prompt-seen" ] && ok "CI's nothing-to-photograph record for the head sets success, judged by nobody" || bad "nothing to photograph: rc=$rc $(status_line)"
+# 8c No record that the head has nothing (CI never decided, e.g. the PR is not armed): stays pending.
+reset; answer SHIP; ev_none "$HEAD"
+bash "$J" run 7 >/dev/null 2>&1; rc=$?
+[ $rc -eq 3 ] && [ ! -s "$D/statuses" ] && ! grep -q "^7	" "$FIX/judge/none.tsv" 2>/dev/null \
+  && ok "with no nothing-to-photograph record it posts nothing and asks again later" || bad "no record: rc=$rc $(status_line)"
+# 8d A record for an older head is not this head's record.
+reset; answer SHIP; ev_none "$OLD" "$OLD"; bash "$J" run 7 >/dev/null 2>&1
+[ ! -s "$D/statuses" ] && ok "a record CI made for an older head posts nothing" || bad "older head: $(status_line)"
+reset; answer SHIP; ev_none "$HEAD" "$OLD"; bash "$J" run 7 >/dev/null 2>&1
+[ ! -s "$D/statuses" ] && ok "a record naming an older sha posts nothing" || bad "older record: $(status_line)"
+
 # 9 due: a status a trailer earned (CI's own wording) is owed a judgement; the judge's own is not.
 jq -n --arg h "$HEAD" '[
   {number:7, headRefOid:$h, isDraft:false, body:"<!-- ci-evidence:begin -->", statusCheckRollup:[{context:"Design critic", state:"SUCCESS", description:"SHIP for UI fingerprint f9ad4e1a738d"}]},
@@ -417,6 +437,14 @@ plant "no picture date is read" 'd=$(picture_date "$f" "$head" "$W/ticket-commen
 plant "one judge at a time again"     'MAXLIVE=$(swarm_opt review.judge.maxLive 3)' 'MAXLIVE=$(swarm_opt review.judge.maxLive 1)' case_three
 plant "a stuck judge is never stopped" '[ "$dry" = 1 ] || reap' 'true' case_reap
 plant "the same PR first every time"   'done <<<"$(due | by_last_start)"' 'done <<<"$(due)"' case_fair
+
+case_none_ok()     { reset; answer SHIP; ev_none "$HEAD" "$HEAD"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo green || echo red; }
+case_none_absent() { reset; answer SHIP; ev_none "$HEAD";         bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/statuses" ] && echo red || echo green; }
+case_none_oldrec() { reset; answer SHIP; ev_none "$HEAD" "$OLD";  bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/statuses" ] && echo red || echo green; }
+NONE_IF='if [ -n "$head" ] && [ "$(sed -n '"'"'s/^nothing=//p'"'"' <<<"$st")" = "$head" ]; then'
+plant "nothing to photograph has no exit"        "$NONE_IF" 'if false; then' case_none_ok
+plant "no record is read as nothing to judge"    "$NONE_IF" 'if true; then' case_none_absent
+plant "the record's sha is not checked"          '[ "$(sed -n '"'"'s/^nothing=//p'"'"' <<<"$st")" = "$head" ]' 'true' case_none_oldrec
 
 echo "critic-judge: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

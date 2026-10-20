@@ -259,8 +259,14 @@ run() { # <pr>
       # Pending, not red: nothing on the branch is wrong, CI owes a fresh capture.
       post_status "$head" pending "$PREFIX: waiting for CI to photograph again — the pinned shots predate a change to this PR's screens"
       say "PR #$pr: $(sed -n 's/^reason=//p' <<<"$st")"; return 3 ;;
-    none) printf '%s\t%s\n' "$pr" "$head" >> "$JDIR/none.tsv"
-          say "PR #$pr: CI found nothing to photograph at ${head:0:9}"; return 3 ;;
+    none)
+      # Nothing to judge is an answer, not a wait — but only CI's own record for this very head says so.
+      if [ -n "$head" ] && [ "$(sed -n 's/^nothing=//p' <<<"$st")" = "$head" ]; then
+        record "$pr" "$head" - none success "" "No rendered change: CI found nothing to photograph at ${head:0:9}" || return 2
+        printf '%s\t%s\n' "$pr" "$head" >> "$JDIR/none.tsv"
+        say "PR #$pr: CI found nothing to photograph at ${head:0:9} — design status set to success"; return 0
+      fi
+      say "PR #$pr: no CI record that ${head:0:9} has nothing to photograph ($(sed -n 's/^reason=//p' <<<"$st"))"; return 3 ;;
     *) say "PR #$pr: no pinned shots of ${head:0:9} yet ($(sed -n 's/^reason=//p' <<<"$st"))"; return 3 ;;
   esac
 
@@ -470,7 +476,7 @@ run() { # <pr>
 
 # due — open, ready PRs carrying the design status whose head this judge has not
 # recorded, or whose status no longer says what the judge recorded (a CI run, or a
-# trailer, wrote over it). Read off the shared copy of the open PRs. A head CI found
+# trailer, wrote over it). Read off the shared copy of the open PRs. A head CI recorded
 # nothing to photograph on is remembered (none.tsv) and not asked about again.
 due() {
   local prs pr head state rec
