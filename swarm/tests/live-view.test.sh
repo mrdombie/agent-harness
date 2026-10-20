@@ -35,7 +35,7 @@ run() { # <ticket> <pid> [ended-exit-code]
   : > "$STATE/logs/claim-$t.log"
 }
 snap() {
-  SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="$BIN/gh" \
+  SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="${SNAP_GH:-$BIN/gh}" \
   SWARM_PROGRESS_SYNC=1 SWARM_SERVER_MJS="${SNAP_MJS:-$SERVER_URLPATH}" node --input-type=module -e "
     import { pathToFileURL } from 'node:url'
     const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
@@ -400,5 +400,208 @@ plant index.html '      <td>${nowPill(d)}</td>'
 [ "$(page_row "$P2" 1006 | grep -c 'Back in the queue')" = 0 ] \
   && ok "planted: the page drops the state → no 'Back in the queue' → red" || bad "planted: the page drops the state and the test cannot see it"
 rm -f "$STATE/coordinator/queue.json" "$STATE/coordinator/snapshot/issues.json" "$STATE/swarm/prs.json"
+
+echo "--- the headline counts every open ticket before launch, and the chips add up to it ---"
+# Measured 2026-10-20: the page said "Queued · 354" (the startable queue) with
+# 1,338 tickets open and 79 set after launch, so it showed a third of the work.
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
+SINCE=$(node -e 'const d=new Date();d.setHours(0,0,0,0);console.log(d.toISOString().replace(/\.\d{3}Z$/,"Z"))')
+BOARD="$STATE/swarm/board.json"
+board_fixture() { # <since> — thirteen before launch, two after, one of each kind of wait
+  cat > "$BOARD" <<JSON
+{"at":"$NOW_ISO","since":"$1","doneToday":5,"newToday":2,"mergedToday":4,
+ "claims":[{"issue":"1114","host":"dom@studio-mac"},{"issue":"1113","host":"dom@laptop"}],
+ "open":[
+  {"number":1101,"title":"Ready one","labels":["status:ready"]},
+  {"number":1102,"title":"Later ready","labels":["status:ready","after-launch"]},
+  {"number":1103,"title":"Later bare","labels":["after-launch"]},
+  {"number":1104,"title":"In review","labels":["status:in-review"]},
+  {"number":1105,"title":"Held and green","labels":["status:in-review"]},
+  {"number":1106,"title":"Held but red","labels":["status:in-review"]},
+  {"number":1107,"title":"Owner decides","labels":["needs:owner-decision"]},
+  {"number":1108,"title":"PM decides","labels":["status:pm-decision"]},
+  {"number":1109,"title":"Drafting","labels":["status:drafting"]},
+  {"number":1110,"title":"Parked","labels":["status:parked","status:ready"]},
+  {"number":1111,"title":"Batched","labels":["status:batched"]},
+  {"number":1112,"title":"No status","labels":["P3"]},
+  {"number":1113,"title":"Running here","labels":["status:ready"]},
+  {"number":1114,"title":"Claimed elsewhere","labels":["status:ready"]},
+  {"number":1115,"title":"Held and blocked","labels":["needs:human-approval","status:blocked"]}]}
+JSON
+}
+board_fixture "$SINCE"
+cat > "$STATE/swarm/prs.json" <<'JSON'
+[{"number":2104,"headRefName":"tkt-1104/a","closingIssuesReferences":[],"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
+ {"number":2105,"headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
+ {"number":2106,"headRefName":"tkt-1106/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"FAILURE"}]}]
+JSON
+printf '{"run_id":"claim-1113-a","ticket":"1113","child_pid":%s,"started_at":"%s","operator":"dom@laptop","log":"%s"}\n' \
+  "$$" "$NOW_ISO" "$STATE/logs/claim-1113-a.log" > "$STATE/runs/claim-1113-a.json"
+printf 'build: writing the tests\n' > "$STATE/logs/claim-1113-a.log"
+s=$(BRANCH_PREFIX=tkt- snap)
+want "before launch leaves the after-launch tickets out" "13" "$(printf '%s' "$s" | jq '.board.beforeLaunch')"
+want "after launch is counted apart"                     "2"  "$(printf '%s' "$s" | jq '.board.afterLaunch')"
+want "the chips add up to the headline"                  "13" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
+want "each ticket in its one place" \
+  "ready=1 building=2 review=2 pm=1 owner=3 stuck=2 batched=1 other=1" \
+  "$(printf '%s' "$s" | jq -r '[.board.buckets[] | "\(.key)=\(.n)"] | join(" ")')"
+want "needs you: the decision, the green held PR, the held ticket — never the red one" "1105 1107 1115" \
+  "$(printf '%s' "$s" | jq -r '[.board.needsYou[].ticket] | join(" ")')"
+want "a held PR links to the PR"                          "2105 A sign-off" "$(printf '%s' "$s" | jq -r '.board.needsYou[0] | "\(.pr) \(.why)"')"
+want "today: merged, done, new and the delta"             "4 5 2 3" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made) \(.delta)"')"
+want "who is building where"                              "laptop:1 studio-mac:1" "$(printf '%s' "$s" | jq -r '[.hosts[] | "\(.host):\(.n)"] | sort | join(" ")')"
+want "the after-launch label is the project's to name"    "14 1" \
+  "$(SWARM_AFTER_LAUNCH_LABEL=status:batched BRANCH_PREFIX=tkt- snap | jq -r '"\(.board.beforeLaunch) \(.board.afterLaunch)"')"
+board_fixture "2001-01-01T00:00:00Z"
+want "yesterday's today counts say nothing"               "null" "$(BRANCH_PREFIX=tkt- snap | jq '.board.today')"
+board_fixture "$SINCE"
+
+echo "--- the five-hour usage is the coordinator's newest reading still open ---"
+want "no readings: null"                                  "null" "$(printf '%s' "$s" | jq '.usage')"
+E=$(date +%s)
+printf '%s\t0.20\t%s\t3\n%s\t0.42\t%s\t3\n' $((E - 9000)) $((E - 60)) $((E - 120)) $((E + 3600)) > "$STATE/coordinator/pace.tsv"
+want "the newest open window, as a percentage"            "42" "$(BRANCH_PREFIX=tkt- snap | jq '.usage.pct')"
+rm -f "$STATE/coordinator/pace.tsv"
+
+echo "--- the count is one batched read, kept five minutes, and a short read is not a count ---"
+cat > "$FIX/board-gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/board-gh.log"
+case "$*" in *"issues(states:OPEN"*) cat "$FIX/board-pages.json" ;; *) cat "$FIX/trend-answer.json" 2>/dev/null ;; esac
+SH
+chmod +x "$FIX/board-gh"
+pages() { # <hasNextPage on the last page>
+  cat > "$FIX/board-pages.json" <<JSON
+[{"data":{"done":{"issueCount":7},"made":{"issueCount":1},"merged":{"issueCount":6},"repository":{"issues":{"totalCount":3,
+   "pageInfo":{"hasNextPage":true,"endCursor":"a"},"nodes":[{"number":1,"title":"fix(x): one","labels":{"nodes":[{"name":"status:ready"}]}},
+   {"number":2,"title":"two","labels":{"nodes":[{"name":"after-launch"}]}}]}}}},
+ {"data":{"done":{"issueCount":7},"made":{"issueCount":1},"merged":{"issueCount":6},"repository":{"issues":{"totalCount":3,
+   "pageInfo":{"hasNextPage":$1,"endCursor":"b"},"nodes":[{"number":3,"title":"three","labels":{"nodes":[]}}]}}}}]
+JSON
+}
+gsnap() { SNAP_GH="$FIX/board-gh" BRANCH_PREFIX=tkt- snap; }
+: > "$FIX/board-gh.log"
+want "a fresh count is not read again"                    "0" "$(gsnap >/dev/null; grep -c 'api graphql --paginate' "$FIX/board-gh.log")"
+rm -f "$BOARD"; pages true
+s=$(gsnap)
+want "a read that stopped part-way is not kept"           "null" "$(printf '%s' "$s" | jq '.board')"
+rm -f "$BOARD"; pages false; : > "$FIX/board-gh.log"
+s=$(gsnap)
+want "one read of every open ticket"                      "1" "$(grep -c 'api graphql --paginate' "$FIX/board-gh.log")"
+want "counted from both pages"                            "2 1" "$(printf '%s' "$s" | jq -r '"\(.board.beforeLaunch) \(.board.afterLaunch)"')"
+want "with today's counts"                                "6 7 1" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made)"')"
+want "and kept for the next ask"                          "One" "$(jq -r '.open[0].title' "$BOARD")"
+board_fixture "$SINCE"
+
+echo "--- the page leads with the headline, one row per builder, and the rest folded ---"
+s=$(BRANCH_PREFIX=tkt- snap)
+page_render() { # <live-view dir> — every element the page wrote, as id=html lines
+  printf '%s' "$s" > "$FIX/snap.json"
+  PAGE="$1/index.html" SNAP="$FIX/snap.json" node -e '
+    const fs = require("fs"), vm = require("vm")
+    const html = fs.readFileSync(process.env.PAGE, "utf8")
+    const js = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"))
+    const els = {}
+    const el = (id) => (els[id] ||= { textContent: "", innerHTML: "", hidden: false })
+    const ctx = { document: { getElementById: el }, fetch: () => new Promise(() => {}), setInterval: () => 0, console }
+    vm.createContext(ctx); vm.runInContext(js + "\n;globalThis.__render = render", ctx)
+    ctx.__render(JSON.parse(fs.readFileSync(process.env.SNAP, "utf8")))
+    for (const [k, v] of Object.entries(els)) console.log(k + "=" + (v.innerHTML || v.textContent).replace(/\s+/g, " "))' 2>&1
+}
+r=$(page_render "$LV")
+want_in "the headline names what is left before launch"   '^headline=.*Before launch: 13 <small>left' "$r"
+want_in "with a chip per place"                           'data-k="owner"><b>3</b> Waiting on the owner' "$r"
+want_in "and after launch muted beside it"                'chip muted" data-k="after"><b>2</b> After launch' "$r"
+want_in "today, with the list shrinking"                  '^today=.*<b>4</b> merged.*List shrinking by 3' "$r"
+want_in "a builder is one row with its step and time"     '^building=.*class="row build".*Running here.*[0-9]+ min running.*build: writing the tests' "$r"
+want_in "needs you lists the owner's items"               '^needs=.*Held and green.*A sign-off' "$r"
+want_in "the machine line names the hosts"                '^machine=.*Building on: laptop \(1\), studio-mac \(1\)' "$r"
+want_not_in "the finished rows start folded"              '<details class="fold" id="donefold" open' "$(cat "$LV/index.html")"
+board_fixture "$SINCE"
+jq '.open |= map(select((.labels | index("needs:owner-decision") or index("needs:human-approval")) | not))' "$BOARD" > "$BOARD.t" && mv "$BOARD.t" "$BOARD"
+rm -f "$STATE/swarm/prs.json"
+s=$(BRANCH_PREFIX=tkt- snap)
+want_in "nothing waiting on the owner says so"            '^needs=<div class="allclear">Nothing needs you' "$(page_render "$LV")"
+
+echo "--- planted: each rule removed is seen ---"
+board_fixture "$SINCE"
+cat > "$STATE/swarm/prs.json" <<'JSON'
+[{"number":2105,"headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
+ {"number":2106,"headRefName":"tkt-1106/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"FAILURE"}]}]
+JSON
+plant server.mjs "    if (labels.includes(AFTER_LAUNCH)) { after++; continue }"
+got=$(psnap | jq '.board.beforeLaunch')
+[ "$got" != "13" ] && ok "planted: no after-launch rule → before launch reads $got → red" || bad "planted: the after-launch rule deleted and the test cannot see it"
+plant server.mjs "  if (ownerWait && !(pr && pr.red)) return 'owner'"
+got=$(psnap | jq -r '[.board.needsYou[].ticket] | join(" ")')
+[ "$got" != "1105 1107 1115" ] && ok "planted: no owner rule → needs you reads '$got' → red" || bad "planted: the owner rule deleted and the test cannot see it"
+plant server.mjs "  if (!last || !last.pageInfo || last.pageInfo.hasNextPage !== false) return null"
+rm -f "$BOARD"; pages true
+got=$(SNAP_GH="$FIX/board-gh" psnap | jq '.board.beforeLaunch')
+[ "$got" != "null" ] && ok "planted: no short-read guard → a part read counts $got → red" || bad "planted: the short-read guard deleted and the test cannot see it"
+board_fixture "$SINCE"
+s=$(BRANCH_PREFIX=tkt- snap)
+plant index.html "  document.getElementById('headline').innerHTML = headline(s.board, s.launch)"
+[ "$(page_render "$P2" | grep -c 'Before launch: 13')" = 0 ] \
+  && ok "planted: the page drops the headline → no 'Before launch: 13' → red" || bad "planted: the page drops the headline and the test cannot see it"
+
+echo "--- progress to launch: done since the start, the pace, and where it lands ---"
+TREND="$STATE/swarm/trend.json"
+trend_fixture() { # <added per whole day> <done per whole day> — today: 1 added, 2 done
+  SERVER_MJS="$SERVER_URLPATH" A=$1 D=$2 node --input-type=module -e '
+    import { pathToFileURL } from "node:url"
+    const { trendDays } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+    const ds = trendDays(), last = ds.length - 1
+    console.log(JSON.stringify({ at: new Date().toISOString(), base: "2026-10-13", doneSinceBase: 37,
+      days: ds.map((d, i) => ({ day: d.day, added: i === last ? 1 : +process.env.A, done: i === last ? 2 : +process.env.D, merged: i + 1 })) }))' > "$TREND"
+}
+board_fixture "$SINCE"
+trend_fixture 2 5
+s=$(BRANCH_PREFIX=tkt- snap)
+want "done and still open make the whole"               "37 13 50" "$(printf '%s' "$s" | jq -r '.launch | "\(.done) \(.open) \(.total)"')"
+want "the bar is done of the whole"                     "74" "$(printf '%s' "$s" | jq '.launch.pct')"
+want "the open side leaves after launch out"            "13" "$(printf '%s' "$s" | jq '.launch.open')"
+want "burn is done less added over the whole days"      "3 true" "$(printf '%s' "$s" | jq -r '.launch | "\(.burn) \(.converging)"')"
+ETA=$(node -e 'const d=new Date();d.setDate(d.getDate()+5);console.log(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`)')
+want "at this pace: thirteen left at three a day is five days" "$ETA" "$(printf '%s' "$s" | jq -r '.launch.eta')"
+want "today is today's own counts"                      "1 2" "$(printf '%s' "$s" | jq -r '.launch.today | "\(.added) \(.done)"')"
+r=$(page_render "$LV")
+want_in "the page shows the bar and the share"          'Progress to launch.*width:74%.*<b>37</b> done of <b>50</b> · <b>74%</b>.*Before launch: 13.*Added and done, per day.*Pull requests merged' "$r"
+want_in "a converging pace is a date"                   'pace ok">Shrinking 3/day</span><span>At this pace: <b>' "$r"
+want_in "eight days of added and done, today last"      '(class="day[^"]*".*){8}' "$r"
+want_in "and today's line reads from the same counts"   '^today=.*<b>2</b> done.*<b>1</b> new.*List shrinking by 1' "$r"
+want_in "merged per day as a line"                      '<polyline points=.*28 in the last seven days · 8 today' "$r"
+trend_fixture 6 2
+s=$(BRANCH_PREFIX=tkt- snap)
+want "a growing list: no date"                          "-4 false null" "$(printf '%s' "$s" | jq -r '.launch | "\(.burn) \(.converging) \(.eta)"')"
+r=$(page_render "$LV")
+want_in "it says not converging, in red"                'pace bad">Not converging: \+4/day' "$r"
+want_not_in "and never shows a date"                    'At this pace' "$r"
+
+echo "--- the pace is one call of counts, kept fifteen minutes, after launch left out ---"
+rm -f "$TREND"; : > "$FIX/board-gh.log"
+SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e '
+  import { pathToFileURL } from "node:url"
+  const { trendDays } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+  const data = { base: { issueCount: 9 } }
+  trendDays().forEach((d, i) => { data["a" + i] = { issueCount: 1 }; data["d" + i] = { issueCount: 3 }; data["m" + i] = { issueCount: 2 } })
+  console.log(JSON.stringify({ data }))' > "$FIX/trend-answer.json"
+s=$(gsnap)
+want "one call"                                          "1" "$(grep -c 'base: search' "$FIX/board-gh.log")"
+want_in "done and added both leave after launch out"     'reason:completed closed:[^ ]+ -label:\\"after-launch\\".*created:[^ ]+ -label:\\"after-launch\\"|created:[^ ]+ -label:\\"after-launch\\".*reason:completed closed:[^ ]+ -label:\\"after-launch\\"' "$(grep 'base: search' "$FIX/board-gh.log")"
+want "kept, and read back"                               "9 2" "$(jq -r '"\(.doneSinceBase) \(.days[0].done - .days[0].added)"' "$TREND")"
+: > "$FIX/board-gh.log"; gsnap >/dev/null
+want "a fresh pace is not read again"                    "0" "$(grep -c 'base: search' "$FIX/board-gh.log")"
+
+echo "--- planted: the pace rules removed are seen ---"
+trend_fixture 6 2
+plant server.mjs "  const converging = burn != null && burn > 0" "  const converging = burn != null"
+got=$(psnap | jq -r '.launch.eta')
+[ "$got" != "null" ] && ok "planted: no converging rule → a growing list gets a date ($got) → red" || bad "planted: the converging rule deleted and the test cannot see it"
+plant server.mjs '  const not = `-label:"${label}"`' '  const not = ``'
+rm -f "$TREND"; : > "$FIX/board-gh.log"; SNAP_GH="$FIX/board-gh" psnap >/dev/null
+[ "$(grep 'base: search' "$FIX/board-gh.log" | grep -c 'after-launch')" = 0 ] \
+  && ok "planted: after launch left in the pace → the query no longer names it → red" || bad "planted: after launch left in and the test cannot see it"
+rm -f "$BOARD" "$TREND" "$STATE/swarm/prs.json" "$STATE"/runs/claim-1113-a.json
 
 exit $FAILED

@@ -298,17 +298,21 @@ export function branchTicket(b, pre = BRANCH_PREFIX) {
   return ''
 }
 
-// ticket -> its open pull request number, by closing reference or by branch.
-function openPrsByTicket(file = PRS_FILE) {
+// ticket -> its newest open pull request, by closing reference or by branch:
+// its number, whether it is red, and whether it waits on the owner's sign-off.
+function prRowsByTicket(file = PRS_FILE) {
   const rows = readJsonCached(file)
   const by = {}
   if (!Array.isArray(rows)) return by
+  const hold = LBL('HOLD_LABEL', 'needs:human-approval')
   for (const p of rows) {
     if (!p || p.number == null) continue
     const ts = new Set((p.closingIssuesReferences || []).map((r) => String(r && r.number)).filter((n) => n !== 'undefined'))
     const bt = branchTicket(p.headRefName)
     if (bt) ts.add(bt)
-    for (const t of ts) if (!(t in by) || p.number > by[t]) by[t] = p.number
+    const row = { number: p.number, red: prRed(p),
+                  held: (p.labels || []).some((l) => (typeof l === 'string' ? l : l && l.name) === hold) }
+    for (const t of ts) if (!(t in by) || p.number > by[t].number) by[t] = row
   }
   return by
 }
@@ -323,6 +327,308 @@ function issuesByTicket(file = COORD_ISSUES) {
       labels: (i.labels || []).map((l) => (typeof l === 'string' ? l : l && l.name)).filter(Boolean) }
   }
   return by
+}
+
+// ---- the board: every open ticket, counted once per five minutes -------------
+// The queue is only what can start now; the owner asked how much stands between
+// now and launch, which is every open ticket not marked for after it. The issue
+// snapshot holds only the queue's and the recent runs' tickets, so this is one
+// batched read of them all, off the request path and never more than once in
+// BOARD_MS. A read that stopped part-way is not a count and is not kept.
+const BOARD_FILE = process.env.SWARM_BOARD_FILE || path.join(RUNS, '..', 'swarm', 'board.json')
+const BOARD_MS = Math.max(300_000, Number(process.env.SWARM_BOARD_MS || 300_000))
+const AFTER_LAUNCH = process.env.SWARM_AFTER_LAUNCH_LABEL || 'after-launch'
+const CLAIM_LOCK = process.env.SWARM_CLAIM_LOCK || ''
+// The coordinator's own five-hour readings: <epoch> \t <utilization> \t <reset epoch> \t <builders>.
+const PACE_FILE = process.env.SWARM_PACE_FILE || path.join(path.dirname(COORD_QUEUE), 'pace.tsv')
+
+// Local midnight, as the instant the "today" counts start from.
+export function dayStart(now = Date.now()) {
+  const d = new Date(now); d.setHours(0, 0, 0, 0)
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+const BOARD_QUERY = `query($owner:String!,$name:String!,$done:String!,$made:String!,$merged:String!,$endCursor:String){
+ done: search(query:$done,type:ISSUE,first:0){issueCount}
+ made: search(query:$made,type:ISSUE,first:0){issueCount}
+ merged: search(query:$merged,type:ISSUE,first:0){issueCount}
+ repository(owner:$owner,name:$name){issues(states:OPEN,first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{number title createdAt labels(first:50){nodes{name}}}}}}`
+
+export function boardArgs(repo, since) {
+  const [owner, name] = String(repo).split('/')
+  const q = (s) => `repo:${repo} ${s}`
+  const not = `-label:"${AFTER_LAUNCH}"`
+  return ['api', 'graphql', '--paginate', '--slurp', '-F', `owner=${owner}`, '-F', `name=${name}`,
+    '-f', `done=${q(`is:issue is:closed reason:completed closed:>=${since} ${not}`)}`,
+    '-f', `made=${q(`is:issue created:>=${since} ${not}`)}`,
+    '-f', `merged=${q(`is:pr is:merged merged:>=${since}`)}`,
+    '-f', `query=${BOARD_QUERY}`]
+}
+
+// The pages of that read, as the board file keeps them. Null unless the last page
+// says there is no next one: a short read would count too few and look like progress.
+export function boardFromPages(pages, since, at) {
+  if (!Array.isArray(pages) || !pages.length) return null
+  const open = []
+  let last = null
+  for (const p of pages) {
+    const iss = p && p.data && p.data.repository && p.data.repository.issues
+    if (!iss || !Array.isArray(iss.nodes)) return null
+    for (const n of iss.nodes) {
+      if (!n || n.number == null) continue
+      open.push({ number: n.number, title: plainTitle(n.title), createdAt: n.createdAt || null,
+                  labels: ((n.labels && n.labels.nodes) || []).map((l) => l && l.name).filter(Boolean) })
+    }
+    last = iss
+  }
+  if (!last || !last.pageInfo || last.pageInfo.hasNextPage !== false) return null
+  const d = pages[0].data
+  const count = (k) => (d[k] && Number.isInteger(d[k].issueCount) ? d[k].issueCount : null)
+  return { at, since, open, doneToday: count('done'), newToday: count('made'), mergedToday: count('merged') }
+}
+
+// Every live claim and the host it is on, from the claim refs every host writes.
+export function claimsFromList(out) {
+  try {
+    const j = JSON.parse(out)
+    if (!Array.isArray(j)) return null
+    return j.filter((c) => c && c.issue != null).map((c) => ({ issue: String(c.issue), host: String(c.host || '') }))
+  } catch { return null }
+}
+
+let boardTried = 0, boardBusy = false
+function boardFresh(now) {
+  try { return now - fs.statSync(BOARD_FILE).mtimeMs < BOARD_MS } catch { return false }
+}
+function refreshBoard(now) {
+  if (!REPO || boardBusy || now - boardTried < BOARD_MS || boardFresh(now)) return
+  boardTried = now
+  if (allowanceLow()) return
+  const since = dayStart(now)
+  const args = boardArgs(REPO, since)
+  const keep = (out, claims) => {
+    let pages
+    try { pages = JSON.parse(out) } catch { return }
+    const b = boardFromPages(pages, since, new Date(now).toISOString())
+    if (!b) return
+    b.claims = claims
+    try {
+      fs.mkdirSync(path.dirname(BOARD_FILE), { recursive: true })
+      fs.writeFileSync(BOARD_FILE + '.tmp', JSON.stringify(b))
+      fs.renameSync(BOARD_FILE + '.tmp', BOARD_FILE)
+    } catch {}
+  }
+  const claimEnv = { ...process.env, CLAIM_REPO: QUEUE_REPO || process.env.CLAIM_REPO || '' }
+  noteGh(['api', 'graphql'])
+  if (process.env.SWARM_PROGRESS_SYNC) {
+    let out = '', claims = null
+    try { out = execFileSync(GH, args, { timeout: 120_000, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }) } catch { return }
+    if (CLAIM_LOCK) { try { claims = claimsFromList(execFileSync(CLAIM_LOCK, ['list', '--json'], { timeout: 60_000, encoding: 'utf8', env: claimEnv })) } catch {} }
+    keep(out, claims)
+    return
+  }
+  boardBusy = true
+  execFile(GH, args, { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
+    if (err) { boardBusy = false; return }
+    if (!CLAIM_LOCK) { boardBusy = false; keep(out, null); return }
+    execFile(CLAIM_LOCK, ['list', '--json'], { timeout: 60_000, env: claimEnv }, (e2, c) => {
+      boardBusy = false
+      keep(out, e2 ? null : claimsFromList(c))
+    })
+  })
+}
+
+// ---- progress to launch: done against a fixed start, and the pace per day ----
+// One GraphQL call of search counts (no per-ticket reads), kept TREND_MS, at least
+// fifteen minutes. A day is local midnight to midnight; after-launch tickets are
+// left out of both sides, so the pace is the pace of the work before launch.
+const TREND_FILE = process.env.SWARM_TREND_FILE || path.join(path.dirname(BOARD_FILE), 'trend.json')
+const TREND_MS = Math.max(900_000, Number(process.env.SWARM_TREND_MS || 900_000))
+const PROGRESS_SINCE = process.env.SWARM_PROGRESS_SINCE || '2026-10-13'
+const TREND_DAYS = 7
+
+const localDay = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z')
+// The last TREND_DAYS whole days and today so far, oldest first: [{day, from, to}].
+export function trendDays(now = Date.now()) {
+  const start = new Date(now); start.setHours(0, 0, 0, 0)
+  const out = []
+  for (let i = TREND_DAYS; i >= 0; i--) {
+    const a = new Date(start); a.setDate(a.getDate() - i)
+    const b = new Date(a); b.setDate(b.getDate() + 1)
+    out.push({ day: localDay(a.getTime()), from: iso(a.getTime()), to: iso(b.getTime() - 1000) })
+  }
+  return out
+}
+const baseStart = (base) => { const [y, m, d] = String(base).split('-').map(Number); return iso(new Date(y, m - 1, d).getTime()) }
+
+export function trendArgs(repo, now = Date.now(), base = PROGRESS_SINCE, label = AFTER_LAUNCH) {
+  const not = `-label:"${label}"`
+  const q = (s) => JSON.stringify(`repo:${repo} ${s}`)
+  const parts = [`base: search(query:${q(`is:issue is:closed reason:completed closed:>=${baseStart(base)} ${not}`)},type:ISSUE,first:0){issueCount}`]
+  trendDays(now).forEach((d, i) => {
+    parts.push(`a${i}: search(query:${q(`is:issue created:${d.from}..${d.to} ${not}`)},type:ISSUE,first:0){issueCount}`)
+    parts.push(`d${i}: search(query:${q(`is:issue is:closed reason:completed closed:${d.from}..${d.to} ${not}`)},type:ISSUE,first:0){issueCount}`)
+    parts.push(`m${i}: search(query:${q(`is:pr is:merged merged:${d.from}..${d.to}`)},type:ISSUE,first:0){issueCount}`)
+  })
+  return ['api', 'graphql', '-f', `query=query{ ${parts.join(' ')} }`]
+}
+
+// The answer as the trend file keeps it; null unless every count came back.
+export function trendFromData(j, now = Date.now(), base = PROGRESS_SINCE) {
+  const d = j && j.data
+  if (!d) return null
+  const n = (k) => (d[k] && Number.isInteger(d[k].issueCount) ? d[k].issueCount : null)
+  const days = trendDays(now).map((x, i) => ({ day: x.day, added: n(`a${i}`), done: n(`d${i}`), merged: n(`m${i}`) }))
+  if (n('base') == null || days.some((x) => x.added == null || x.done == null || x.merged == null)) return null
+  return { at: iso(now), base, doneSinceBase: n('base'), days }
+}
+
+let trendTried = 0, trendBusy = false
+function refreshTrend(now) {
+  if (!REPO || trendBusy || now - trendTried < TREND_MS) return
+  try { if (now - fs.statSync(TREND_FILE).mtimeMs < TREND_MS) return } catch {}
+  trendTried = now
+  if (allowanceLow()) return
+  const args = trendArgs(REPO, now)
+  const keep = (out) => {
+    let t = null
+    try { t = trendFromData(JSON.parse(out), now) } catch {}
+    if (!t) return
+    try {
+      fs.mkdirSync(path.dirname(TREND_FILE), { recursive: true })
+      fs.writeFileSync(TREND_FILE + '.tmp', JSON.stringify(t))
+      fs.renameSync(TREND_FILE + '.tmp', TREND_FILE)
+    } catch {}
+  }
+  noteGh(['api', 'graphql'])
+  if (process.env.SWARM_PROGRESS_SYNC) {
+    try { keep(execFileSync(GH, args, { timeout: 60_000, encoding: 'utf8' })) } catch {}
+    return
+  }
+  trendBusy = true
+  execFile(GH, args, { timeout: 60_000 }, (err, out) => { trendBusy = false; if (!err) keep(out) })
+}
+
+// Done of the whole before-launch list, the pace, and where that pace lands.
+// Burn is the average of (done - added) over the last whole days; at zero or
+// below there is no date, because the list is not getting shorter.
+export function launchOf(board, trend, now = Date.now()) {
+  if (!board || !trend || !Array.isArray(trend.days)) return null
+  const open = board.beforeLaunch
+  const done = trend.doneSinceBase
+  const total = done + open
+  const whole = trend.days.filter((d) => d.day !== localDay(now)).slice(-TREND_DAYS)
+  const burn = whole.length ? whole.reduce((a, d) => a + d.done - d.added, 0) / whole.length : null
+  const converging = burn != null && burn > 0
+  let eta = null
+  if (converging) { const e = new Date(now); e.setDate(e.getDate() + Math.ceil(open / burn)); eta = localDay(e.getTime()) }
+  return { base: trend.base, done, open, total, pct: total ? Math.round((done * 1000) / total) / 10 : 0,
+           burn: burn == null ? null : Math.round(burn * 10) / 10, converging, eta, days: trend.days, at: trend.at,
+           today: trend.days.find((d) => d.day === localDay(now)) || null }
+}
+
+// A pull request that cannot go to the owner yet: a check failed or it clashes.
+const RED_RUN = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE'])
+export const prRed = (p) => p.mergeable === 'CONFLICTING'
+  || (p.statusCheckRollup || []).some((c) => c && (RED_RUN.has(c.conclusion) || RED_RUN.has(c.state)))
+
+// The words each bucket is shown with, in the order the page lists them. Every
+// before-launch ticket lands in exactly one, so the chips add up to the headline.
+export const BUCKETS = {
+  ready: 'Ready',
+  building: 'Building',
+  review: 'In review',
+  pm: 'Waiting on PM',
+  owner: `Waiting on ${OWNER}`,
+  stuck: 'Blocked, drafting or parked',
+  batched: 'Folded into a batch',
+  other: 'Not sorted yet',
+}
+const OWNER_LABELS = [LBL('LBL_OWNER_DECISION', 'needs:owner-decision'), LBL('HOLD_LABEL', 'needs:human-approval'),
+  LBL('LBL_NEEDS_HUMAN', 'status:needs-human')]
+const PM_LABELS = [LBL('LBL_PM_DECISION', 'status:pm-decision'), LBL('LBL_PM_TRACK', 'status:pm-track'), 'needs:design', 'needs:data-model']
+const STUCK_LABELS = [LBL('LBL_BLOCKED', 'status:blocked'), LBL('LBL_EXTERNAL_BLOCKED', 'status:external-blocked'),
+  LBL('LBL_GATED', 'status:gated'), LBL('LBL_DRAFTING', 'status:drafting'), LBL('LBL_PARKED', 'status:parked')]
+
+// Where one open ticket stands, first match wins. Owner waits come before review
+// only while its pull request is clean: a red or clashing one is healing work first.
+export function bucketOf(labels, pr, building) {
+  const has = (l) => labels.includes(l)
+  if (building || has(LBL('LBL_CLAIMED', 'status:claimed'))) return 'building'
+  const ownerWait = OWNER_LABELS.some(has) || (pr && pr.held)
+  if (ownerWait && !(pr && pr.red)) return 'owner'
+  if (pr || has(LBL('LBL_IN_REVIEW', 'status:in-review')) || has('status:merged-needs-rollout')) return 'review'
+  if (PM_LABELS.some(has)) return 'pm'
+  if (STUCK_LABELS.some(has)) return 'stuck'
+  if (has(LBL('LBL_BATCHED', 'status:batched'))) return 'batched'
+  if (has(LBL('LBL_READY', 'status:ready'))) return 'ready'
+  return 'other'
+}
+
+const WHY_OWNER = (labels, pr) => labels.includes(LBL('LBL_OWNER_DECISION', 'needs:owner-decision')) ? 'A decision'
+  : (pr && pr.held) || labels.includes(LBL('HOLD_LABEL', 'needs:human-approval')) ? 'A sign-off' : 'Your input'
+
+export function boardOf(board, ctx, now = Date.now()) {
+  if (!board || !Array.isArray(board.open)) return null
+  const counts = Object.fromEntries(Object.keys(BUCKETS).map((k) => [k, 0]))
+  let after = 0
+  const needsYou = []
+  const claimed = new Set((board.claims || []).map((c) => c.issue))
+  for (const i of board.open) {
+    const labels = i.labels || []
+    if (labels.includes(AFTER_LAUNCH)) { after++; continue }
+    const t = String(i.number)
+    const pr = ctx.prRows[t]
+    const b = bucketOf(labels, pr, ctx.live.has(t) || claimed.has(t))
+    counts[b]++
+    if (b === 'owner') needsYou.push({ ticket: t, title: i.title || `Ticket ${t}`, why: WHY_OWNER(labels, pr), pr: pr ? pr.number : null })
+  }
+  const total = Object.values(counts).reduce((a, b) => a + b, 0)
+  // Today's counts belong to the day they were read on; past midnight they say nothing.
+  const today = board.since === dayStart(now)
+    ? { merged: board.mergedToday, done: board.doneToday, made: board.newToday,
+        delta: Number.isInteger(board.doneToday) && Number.isInteger(board.newToday) ? board.doneToday - board.newToday : null }
+    : null
+  needsYou.sort((a, b) => Number(a.ticket) - Number(b.ticket))
+  return { at: board.at || null, beforeLaunch: total, afterLaunch: after, afterLabel: AFTER_LAUNCH,
+           buckets: Object.keys(BUCKETS).map((k) => ({ key: k, label: BUCKETS[k], n: counts[k] })),
+           needsYou, today, claims: board.claims || null }
+}
+
+// The newest five-hour reading the coordinator took whose window is still open.
+export function usageOf(file = PACE_FILE, now = Date.now()) {
+  let rows
+  try { rows = fs.readFileSync(file, 'utf8').trim().split('\n') } catch { return null }
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const [at, u, r] = rows[i].split('\t').map(Number)
+    if (Number.isFinite(u) && Number.isFinite(r) && r * 1000 > now) {
+      return { pct: Math.round(u * 100), resets: new Date(r * 1000).toISOString(), readAt: new Date(at * 1000).toISOString() }
+    }
+  }
+  return null
+}
+
+// A ticket's title: its own read when that named one, else the board's.
+const titleOf = (t) => (titles[t] && titles[t].title ? titles[t] : { ...titles[t], ...boardTitle(t) })
+// A ticket's title from the board, for a row whose own title read has not landed.
+function boardTitle(ticket) {
+  const b = readJsonCached(BOARD_FILE)
+  const i = b && Array.isArray(b.open) ? b.open.find((x) => x && String(x.number) === String(ticket)) : null
+  return i && i.title ? { title: i.title } : {}
+}
+
+const hostName = (h) => String(h || '').replace(/^.*@/, '')
+// Who is building where: this machine's live runs, and every host's claims.
+export function hostsOf(live, claims) {
+  const by = {}
+  for (const a of live) if (a.host) by[a.host] = (by[a.host] || 0) + 1
+  for (const c of claims || []) {
+    const h = hostName(c.host)
+    if (h && !(h in by)) by[h] = 0
+    if (h && !live.some((a) => a.ticket === c.issue)) by[h]++
+  }
+  return Object.entries(by).filter(([, n]) => n > 0).map(([host, n]) => ({ host, n })).sort((a, b) => b.n - a.n)
 }
 
 // The words and tone a finished row's state is shown with. Only `stopped` is a failure.
@@ -398,7 +704,7 @@ export function snapshot(now = Date.now()) {
     if (!isLive && (!ended || now - Date.parse(ended.ended_at) > KEEP_HOURS * 3600_000)) continue
     fetchTitle(run.ticket)
     const log = parseLog(nativePath(run.log || ''))
-    const t = titles[run.ticket] || {}
+    const t = titleOf(run.ticket)
     // NOT `f`: that is the loop's filename, and a second `const f` in this block
     // shadows it into its own temporal dead zone — every read then throws into
     // the catch above and every run record is skipped in silence.
@@ -412,6 +718,7 @@ export function snapshot(now = Date.now()) {
       startedAgoMin: Math.round((now - Date.parse(run.started_at)) / 60000),
       quietSec: log.mtime ? Math.round((now - log.mtime) / 1000) : null,
       budget: run.budget_usd,
+      host: hostName(run.host || run.operator),
       steps: log.steps,
     }
     if (isLive) live.push(row)
@@ -433,23 +740,29 @@ export function snapshot(now = Date.now()) {
   const newest = new Map()
   for (const d of done) { const o = newest.get(d.ticket); if (!o || d.endedAt > o.endedAt) newest.set(d.ticket, d) }
   const queued = queueOf()
-  const ctx = { issues: issuesByTicket(), prs: openPrsByTicket(), live: new Set(live.map((a) => a.ticket)),
-                queued: new Set(queued.tickets.map((r) => r.ticket)) }
+  const prRows = prRowsByTicket()
+  const ctx = { issues: issuesByTicket(), prs: Object.fromEntries(Object.entries(prRows).map(([t, r]) => [t, r.number])),
+                prRows, live: new Set(live.map((a) => a.ticket)), queued: new Set(queued.tickets.map((r) => r.ticket)) }
   const doneRows = [...newest.values()].sort((a, b) => b.endedAt - a.endedAt).slice(0, 20)
     .map(({ park, endedAt, ...d }) => ({ ...d, now: nowOf({ ...d, park }, ctx) }))
   refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
   refreshHold(now)
+  refreshBoard(now)
+  refreshTrend(now)
+  const board = boardOf(readJsonCached(BOARD_FILE), ctx, now)
+  const launch = launchOf(board, readJsonCached(TREND_FILE), now)
   const queue = queued
   for (const r of queue.tickets) {
     fetchTitle(r.ticket)
-    const t = titles[r.ticket] || {}
+    const t = titleOf(r.ticket)
     r.title = t.title || `Ticket ${r.ticket}`
   }
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, done: doneRows, doneSummary: doneSummary(doneRows),
-           hold, queue, capacity: capacityOf() }
+           hold, queue, capacity: capacityOf(), board, launch, usage: usageOf(PACE_FILE, now),
+           hosts: hostsOf(live, board && board.claims) }
 }
 
 export function serve(port = PORT) {

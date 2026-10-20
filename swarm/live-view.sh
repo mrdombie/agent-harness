@@ -30,6 +30,14 @@ export SWARM_GH_CALLS="${SWARM_GH_CALLS:-$(gh_calls_file)}" GH_ALLOWANCE_LOW_PCT
 export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"
 # Who "Waiting on …" names on a finished row; unset reads "the owner".
 export SWARM_OWNER_NAME="${SWARM_OWNER_NAME:-$(swarm_opt swarm.ownerName "")}"
+# Every open ticket, counted once per five minutes; the label that sets a ticket
+# after launch is left out of the "before launch" count.
+export SWARM_BOARD_FILE="${SWARM_BOARD_FILE:-$SWARM_DIR/board.json}"
+export SWARM_AFTER_LAUNCH_LABEL="${SWARM_AFTER_LAUNCH_LABEL:-$(swarm_opt swarm.afterLaunchLabel after-launch)}"
+# The day "Progress to launch" counts done tickets from, and the pace file it reads.
+export SWARM_PROGRESS_SINCE="${SWARM_PROGRESS_SINCE:-$(swarm_opt swarm.progressSince 2026-10-13)}"
+export SWARM_TREND_FILE="${SWARM_TREND_FILE:-$SWARM_DIR/trend.json}"
+export SWARM_PACE_FILE="${SWARM_PACE_FILE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/pace.tsv}"
 export HARNESS_CFG_PATH="${HARNESS_CFG_PATH:-$HARNESS_CFG}" HARNESS_STATE_DIR="$STATE_DIR" HARNESS_MAIN_REPO="$MAIN_REPO" KIT_ROOT
 # The bash this runs under, by full path: node's own PATH lookup finds System32's
 # WSL launcher first when started by Task Scheduler.

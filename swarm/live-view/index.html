@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Swarm, live</title>
+<title>Build, live</title>
 <style>
 :root{
   --ground:#F3EADB; --card:#FFFCF7; --sunk:#FBEBD3; --ink:#1F1B16; --ink2:#5E554A; --ink3:#8A7F71;
@@ -20,24 +20,14 @@ header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-bott
 h1{font-size:22px;margin:0}
 .meta{color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums}
 h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin:22px 0 8px;font-weight:600}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:12px}
-@media (max-width:440px){.grid{grid-template-columns:1fr}}
-.card{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px;min-width:0}
-.top{display:flex;gap:8px;align-items:flex-start}
 .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none}
 .dot.ok{background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 20%,transparent);animation:pulse 2s infinite}
 .dot.slow{background:var(--warn)} .dot.stuck{background:var(--bad)}
 @keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--good) 0%,transparent)}}
-.title{font-weight:600;font-size:15px;line-height:1.3}
+.title{font-weight:600;line-height:1.3}
 .sub{color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums}
 .sub a{color:inherit}
-.now{background:var(--sunk);border-radius:7px;padding:8px 10px;font-size:14px}
-.now b{color:var(--ember);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:2px}
 .said{color:var(--ink2);font-size:13px;border-left:2px solid var(--rule);padding-left:9px}
-ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px}
-li{font-size:13px;color:var(--ink3);display:flex;gap:6px;min-width:0}
-li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-li.say span{font-style:italic}
 details summary{cursor:pointer;color:var(--ink3);font-size:13px}
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
 td{padding:8px 12px;border-top:1px solid var(--rule);font-size:13px;vertical-align:top}
@@ -58,27 +48,79 @@ tr:first-child td{border-top:0}
 .banner span{color:var(--ink2);font-size:13px}
 .note{color:var(--ink2);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
 .scope{color:var(--ink3);font-size:12px;white-space:nowrap}
+
+/* the digest: one headline, then one plain row per thing */
+.headline{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:16px 18px;margin-bottom:6px}
+.big{font-size:34px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.big small{font-size:16px;font-weight:600;color:var(--ink2);letter-spacing:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{display:inline-flex;gap:6px;align-items:baseline;border:1px solid var(--rule);background:var(--sunk);border-radius:999px;padding:3px 10px;font-size:13px;color:var(--ink2);white-space:nowrap}
+.chip b{color:var(--ink);font-variant-numeric:tabular-nums}
+.chip.zero{opacity:.55}
+.chip.muted{background:transparent;color:var(--ink3);border-style:dashed}
+.chip.muted b{color:var(--ink3)}
+.today{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:baseline;font-size:15px}
+.today b{font-size:20px;font-variant-numeric:tabular-nums}
+.delta{font-weight:600;font-size:14px}
+.delta.ok{color:var(--good)} .delta.bad{color:var(--bad)} .delta.neutral{color:var(--ink3)}
+.rows{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
+.row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--rule);min-width:0}
+.row:first-child{border-top:0}
+.row .main{min-width:0;flex:1}
+.row .title{font-size:14px;overflow-wrap:anywhere}
+.row .line{color:var(--ink3);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .step{font-size:13px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.row .step b{color:var(--ember);font-weight:600}
+.allclear{background:color-mix(in srgb,var(--good) 12%,var(--card));border:1px solid color-mix(in srgb,var(--good) 40%,transparent);color:var(--good);border-radius:10px;padding:12px 14px;font-weight:600}
+details.fold>summary{cursor:pointer;list-style:none;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin:22px 0 8px;font-weight:600}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::before{content:'▸ ';}
+details.fold[open]>summary::before{content:'▾ ';}
+details.fold>summary span{text-transform:none;letter-spacing:0;font-weight:500}
+footer{margin-top:26px;color:var(--ink3);font-size:12px;font-variant-numeric:tabular-nums;line-height:1.7;border-top:1px solid var(--rule);padding-top:10px}
+a{color:inherit}
+.progress{margin:4px 0 12px}
+.ptitle{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);font-weight:600;margin-bottom:6px}
+.bar{height:12px;border-radius:999px;background:var(--sunk);border:1px solid var(--rule);overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--good);border-radius:999px}
+.pline{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:6px;font-size:14px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.pline b{color:var(--ink)}
+.pace.ok{color:var(--good);font-weight:600} .pace.bad{color:var(--bad);font-weight:600}
+.week{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:10px}
+.days{display:flex;gap:6px;align-items:flex-end;height:64px}
+.day{display:flex;flex-direction:column;align-items:center;gap:3px;width:26px}
+.pair{display:flex;gap:2px;align-items:flex-end;height:48px}
+.pair i{display:block;width:9px;border-radius:2px 2px 0 0;min-height:1px}
+.pair i.add{background:var(--ink3);opacity:.55} .pair i.done{background:var(--good)}
+.day span{font-size:10px;color:var(--ink3)}
+.day.today span{color:var(--ink);font-weight:600}
+.legend{font-size:12px;color:var(--ink3);display:flex;flex-direction:column;gap:2px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.spark{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--ink3)}
+.spark svg{color:var(--ember)}
+@media (max-width:520px){.big{font-size:28px}.row{padding:10px 12px}}
 </style>
 </head>
 <body>
 <div class="page">
-  <header><h1>Swarm, live</h1><span class="meta" id="meta">loading…</span></header>
+  <header><h1>Build, live</h1><span class="meta" id="meta">loading…</span></header>
   <div class="banner" id="hold" role="status" hidden></div>
-  <div id="groups"></div>
-  <h2 id="queuehead">Queued</h2>
-  <div class="tablewrap"><table id="queue"></table></div>
-  <h2 id="donehead">Recently finished</h2>
-  <div class="tablewrap"><table id="done"></table></div>
+  <section class="headline" id="headline"><div class="big">Before launch: counting…</div></section>
+  <h2>Today</h2>
+  <div class="today" id="today"><span class="empty">Not read yet.</span></div>
+  <h2 id="buildinghead">Building now</h2>
+  <div id="building"></div>
+  <h2 id="needshead">Needs you</h2>
+  <div id="needs"></div>
+  <details class="fold" id="donefold"><summary id="donehead">Finished recently</summary>
+    <div class="tablewrap"><table id="done"></table></div></details>
+  <footer id="machine">Machine: not read yet.</footer>
 </div>
 <script>
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const ago = (sec) => sec == null ? '—' : sec < 60 ? `${sec}s ago` : sec < 3600 ? `${Math.round(sec/60)} min ago` : `${Math.round(sec/3600)} h ago`
 const dur = (min) => min < 60 ? `${min} min` : `${Math.floor(min/60)} h ${min%60} min`
-const nice = (p) => p ? p.replace(/-/g,' ').replace(/^./, c => c.toUpperCase()) : 'Other'
 let repo = ''
-const KIND = { repair: ['Fix', 'bad'], 'approved-merge': ['Merge', 'ok'], new: ['Build', 'warn'] }
-const kind = (c) => { const [t, cls] = KIND[c] || [c, 'warn']; return `<span class="pill ${cls}">${esc(t)}</span>` }
-const area = (s) => nice(String(s || '').replace(/^[a-z]+:/, ''))
 // An instant the reader can act on: "Tue 20 Oct, 20:00". A bare reset wording
 // ("7:20pm") is shown as it was written.
 const when = (u) => {
@@ -98,32 +140,101 @@ function holdBanner(h){
   el.innerHTML = `<span class="dot"></span><div><b>${head}</b><span>${sub}</span></div>`
   el.hidden = false
 }
-function queueRows(q){
-  const link = (n) => repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a>` : `#${esc(n)}`
-  if (!q || !q.tickets.length) return '<tr><td class="empty">Nothing waiting.</td></tr>'
-  return q.tickets.map((t, i) => `<tr>
-    <td class="num">${i + 1}</td>
-    <td>${kind(t.class)}</td>
-    <td><b>${esc(t.title)}</b> <span class="sub">${link(t.ticket)}</span>${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}</td>
-    <td class="scope">${esc(area(t.scope))}</td></tr>`).join('')
-}
 
-function card(a){
+// One plain row per builder: what it is, how far along, how long, what it last did.
+const STEP_WORD = { 'Set up': 'Setting up', Plan: 'Planning', Build: 'Building', Check: 'Checking',
+  Review: 'Being reviewed', PR: 'Opening the pull request', Merged: 'Merging' }
+function stepText(p){
+  if (!p || !p.of || (p.unreadable || []).length === p.of) return '<b>Starting</b>'
+  const name = (p.steps || [])[p.step - 1]?.name || ''
+  return `${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
+}
+const ticketLink = (n, kind = 'issues') => repo
+  ? `<a href="https://github.com/${esc(repo)}/${kind}/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a>` : `#${esc(n)}`
+function buildRow(a){
   const q = a.quietSec ?? 99999
   const cls = q < 90 ? 'ok' : q < 600 ? 'slow' : 'stuck'
-  const doing = [...a.steps].reverse().find(s => s.kind === 'do')
-  const said = [...a.steps].reverse().find(s => s.kind === 'say')
-  const recent = a.steps.slice(-7, -1).reverse()
-  const link = repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(a.ticket)}" target="_blank" rel="noopener">#${esc(a.ticket)}</a>` : `#${esc(a.ticket)}`
-  return `<div class="card">
-    <div class="top"><span class="dot ${cls}" title="${cls}"></span><div style="min-width:0">
-      <div class="title">${esc(a.title)}</div>
-      <div class="sub">running ${dur(a.startedAgoMin)} · last active ${ago(a.quietSec)}${a.budget != null ? ` · budget $${esc(a.budget)}` : ''} · ${link}</div>
-    </div></div>
-    <div class="now"><b>Now</b>${esc(doing?.text || 'Starting up')}</div>
-    ${said ? `<div class="said">“${esc(said.text)}”</div>` : ''}
-    ${recent.length ? `<details><summary>Earlier steps</summary><ol>${recent.map(s => `<li class="${s.kind}"><span>${s.kind==='say'?'💬':'›'} ${esc(s.text)}</span></li>`).join('')}</ol></details>` : ''}
-  </div>`
+  const last = a.steps?.length ? a.steps[a.steps.length - 1].text : 'No activity yet'
+  return `<div class="row build"><span class="dot ${cls}" title="last active ${esc(ago(a.quietSec))}"></span><div class="main">
+    <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
+    <div class="step">${stepText(a.progress)} · ${esc(dur(a.startedAgoMin))} running</div>
+    <div class="line" title="${esc(last)}">${esc(last)}</div></div></div>`
+}
+const num = (n) => Number(n).toLocaleString()
+const DAY = (d) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd) }
+const dayName = (d) => DAY(d).toLocaleDateString(undefined, { weekday: 'short' })
+const dateName = (d) => DAY(d).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+function spark(vals){
+  const w = 120, h = 28, max = Math.max(1, ...vals)
+  const pts = vals.map((v, i) => `${(i * w / Math.max(1, vals.length - 1)).toFixed(1)},${(h - 2 - v * (h - 4) / max).toFixed(1)}`).join(' ')
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`
+}
+// The bar of done against the whole list since the start date.
+function progressBar(l){
+  if (!l) return '<div class="progress"><div class="ptitle">Progress to launch</div><div class="sub">The pace lands with the next count.</div></div>'
+  return `<div class="progress"><div class="ptitle">Progress to launch</div>
+    <div class="bar" role="img" aria-label="${esc(l.pct)}% done"><i style="width:${Math.min(100, l.pct)}%"></i></div>
+    <div class="pline"><span><b>${num(l.done)}</b> done of <b>${num(l.total)}</b> · <b>${esc(l.pct)}%</b> since ${esc(dateName(l.base))}</span></div></div>`
+}
+// Added against done for each of the last seven days and today, with the pace and where it lands.
+function paceBlock(l){
+  if (!l) return ''
+  const pace = l.burn == null ? '' : l.converging
+    ? `<span class="pace ok">Shrinking ${num(l.burn)}/day</span><span>At this pace: <b>${esc(dateName(l.eta))}</b></span>`
+    : `<span class="pace bad">Not converging: +${num(Math.abs(l.burn))}/day</span>`
+  const max = Math.max(1, ...l.days.map(d => Math.max(d.added, d.done)))
+  const hgt = (n) => `${Math.round(n * 48 / max)}px`
+  const days = l.days.map((d, i) => `<div class="day${i === l.days.length - 1 ? ' today' : ''}" title="${esc(d.day)}: ${d.added} added, ${d.done} done, ${d.merged} merged">
+    <div class="pair"><i class="add" style="height:${hgt(d.added)}"></i><i class="done" style="height:${hgt(d.done)}"></i></div>
+    <span>${i === l.days.length - 1 ? 'Today' : esc(dayName(d.day))}</span></div>`).join('')
+  return `<div class="ptitle" style="margin-top:16px">Added and done, per day</div>
+    <div class="week"><div class="days">${days}</div>
+      <div class="legend"><span><i style="background:var(--ink3);opacity:.55"></i>added</span><span><i style="background:var(--good)"></i>done</span></div></div>
+    <div class="pline">${pace}</div>`
+}
+function mergedBlock(l){
+  if (!l) return ''
+  const merged = l.days.map(d => d.merged)
+  return `<div class="ptitle" style="margin-top:16px">Pull requests merged, per day</div>
+    <div class="spark">${spark(merged)}<span>${num(merged.slice(0, -1).reduce((a, b) => a + b, 0))} in the last seven days · ${num(merged[merged.length - 1])} today</span></div>`
+}
+function headline(b, l){
+  if (!b) return progressBar(null) + '<div class="big">Before launch: counting…</div><div class="sub">The first full count of open tickets lands within a few minutes.</div>'
+  const chips = b.buckets.map(c => `<span class="chip${c.n ? '' : ' zero'}" data-k="${esc(c.key)}"><b>${num(c.n)}</b> ${esc(c.label)}</span>`)
+  const label = b.afterLabel && b.afterLabel !== 'after-launch' ? ` (${esc(b.afterLabel)})` : ''
+  chips.push(`<span class="chip muted" data-k="after"><b>${num(b.afterLaunch)}</b> After launch${label} · parked</span>`)
+  return `${progressBar(l)}<div class="big">Before launch: ${num(b.beforeLaunch)} <small>left</small></div><div class="chips">${chips.join('')}</div>${paceBlock(l)}${mergedBlock(l)}`
+}
+function todayLine(t){
+  if (!t) return '<span class="empty">Today’s counts land with the next full count.</span>'
+  const v = (n) => n == null ? '—' : num(n)
+  const d = t.delta
+  const delta = d == null ? '' : d > 0 ? `<span class="delta ok">List shrinking by ${num(d)}</span>`
+    : d < 0 ? `<span class="delta bad">List growing by ${num(-d)}</span>` : '<span class="delta neutral">List holding steady</span>'
+  return `<span><b>${v(t.merged)}</b> merged</span><span><b>${v(t.done)}</b> done</span><span><b>${v(t.made)}</b> new</span>${delta}`
+}
+const NEEDS_SHOWN = 8
+function needsList(b){
+  if (!b) return '<p class="empty">Not read yet.</p>'
+  if (!b.needsYou.length) return '<div class="allclear">Nothing needs you</div>'
+  const row = (n) => `<div class="row need"><div class="main"><div class="title">${esc(n.title)}</div>
+    <div class="sub">${esc(n.why)} · ${n.pr ? ticketLink(n.pr, 'pull') : ticketLink(n.ticket)}</div></div></div>`
+  const head = b.needsYou.slice(0, NEEDS_SHOWN).map(row).join('')
+  const rest = b.needsYou.slice(NEEDS_SHOWN)
+  return `<div class="rows">${head}</div>` + (rest.length
+    ? `<details><summary>${rest.length} more</summary><div class="rows" style="margin-top:6px">${rest.map(row).join('')}</div></details>` : '')
+}
+function machineLine(s){
+  const c = s.capacity, u = s.usage, parts = []
+  const bs = (n) => `${n} builder${n === 1 ? '' : 's'}`
+  parts.push(c && c.ceiling != null ? `${s.live.length} of ${bs(c.ceiling)} running` : `${bs(s.live.length)} running`)
+  const r = String(c?.reading || '')
+  const cpu = /cpu idle (\d+)%/.exec(r), mem = /(\d+(?:\.\d+)?) GB free/.exec(r)
+  if (cpu) parts.push(`CPU ${100 - Number(cpu[1])}% busy`)
+  if (mem) parts.push(`${mem[1]} GB memory free`)
+  parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
+  const hosts = (s.hosts || []).map(h => `${esc(h.host)} (${esc(h.n)})`).join(', ')
+  return `Machine: ${parts.join(' · ')}<br>Building on: ${hosts || 'no host'} · updated ${esc(new Date(s.at).toLocaleTimeString())}`
 }
 
 // Where the ticket stands now, not how its last run ended: a run that parked on a
@@ -150,26 +261,28 @@ function doneRow(d){
       <td class="num">${ago(d.endedAgoMin*60)}</td></tr>`
 }
 
+function render(s){
+  repo = s.repo || ''
+  document.getElementById('meta').textContent = `updated ${new Date(s.at).toLocaleTimeString()}`
+  holdBanner(s.hold)
+  document.getElementById('headline').innerHTML = headline(s.board, s.launch)
+  const td = s.launch?.today
+  document.getElementById('today').innerHTML = todayLine(td
+    ? { merged: td.merged, done: td.done, made: td.added, delta: td.done - td.added } : s.board?.today)
+  document.getElementById('buildinghead').textContent = s.live.length ? `Building now · ${s.live.length}` : 'Building now'
+  document.getElementById('building').innerHTML = s.live.length
+    ? `<div class="rows">${s.live.map(buildRow).join('')}</div>` : '<p class="empty">Nothing is being built.</p>'
+  document.getElementById('needshead').textContent = s.board?.needsYou?.length ? `Needs you · ${s.board.needsYou.length}` : 'Needs you'
+  document.getElementById('needs').innerHTML = needsList(s.board)
+  // Collapsed to its counts: the rows are there for whoever opens it.
+  document.getElementById('donehead').innerHTML = `Finished recently${s.done.length ? ` <span>· ${esc(String(s.doneSummary || '').replace(/^Finished: ?/, ''))}</span>` : ''}`
+  document.getElementById('done').innerHTML = s.done.length ? s.done.map(doneRow).join('') : '<tr><td class="empty">Nothing yet.</td></tr>'
+  document.getElementById('machine').innerHTML = machineLine(s)
+}
 async function tick(){
   try{
-    const r = await fetch('/api/agents', {cache:'no-store'}); const s = await r.json()
-    repo = s.repo || ''
-    const queued = s.queue?.tickets?.length || 0
-    document.getElementById('meta').textContent =
-      `${s.live.length} running · ${queued} queued · machine load ${s.load.toFixed(0)} · updated ${new Date(s.at).toLocaleTimeString()}`
-    holdBanner(s.hold)
-    document.getElementById('queuehead').textContent = queued ? `Queued · ${queued}` : 'Queued'
-    document.getElementById('queue').innerHTML = queueRows(s.queue)
-    const groups = {}
-    for (const a of s.live) (groups[a.project] ||= []).push(a)
-    // Biggest programme first. No programme is named here — the kit ships to
-    // projects whose programmes it cannot know.
-    const order = Object.keys(groups).sort((a,b) => groups[b].length - groups[a].length || a.localeCompare(b))
-    document.getElementById('groups').innerHTML = order.length
-      ? order.map(p => `<h2>${esc(nice(p))} · ${groups[p].length}</h2><div class="grid">${groups[p].map(card).join('')}</div>`).join('')
-      : '<p class="empty">No agents running.</p>'
-    document.getElementById('donehead').textContent = s.done.length ? (s.doneSummary || 'Recently finished') : 'Recently finished'
-    document.getElementById('done').innerHTML = s.done.length ? s.done.map(doneRow).join('') : '<tr><td class="empty">Nothing yet.</td></tr>'
+    const r = await fetch('/api/agents', {cache:'no-store'})
+    render(await r.json())
   }catch(e){ document.getElementById('meta').textContent = 'Lost contact with the live view — is it still running?' }
 }
 tick(); setInterval(tick, 5000)
