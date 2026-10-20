@@ -20,8 +20,10 @@
 # photographs the routes the PR body names and pins the PNGs to the PR.
 #
 # THE SHAPE CI LEAVES, every part of it overridable under `evidence` in harness.json:
-#   - a commit on the branch, one parent, every file under docs/evidence/
-#     (evidence.dir)
+#   - a commit on the branch, one parent, every file under docs/evidence/<n>/
+#     (evidence.dir), where <n> is the PR's number or a ticket it closes (a closing
+#     reference, or the branch's ticket by branchPrefix), authored by
+#     evidence.authorEmail / evidence.authorName when the project names them
 #   - a block in the PR body between <!-- ci-evidence:begin --> and
 #     <!-- ci-evidence:end --> (evidence.begin / evidence.end) naming the commit
 #     as <!-- ci-evidence-head:<sha> --> and linking each PNG at that sha
@@ -56,10 +58,14 @@ EV_CAPTURE=$(cfg evidence.captureCheck "Capture and pin the evidence")
 EV_DECIDE=$(cfg evidence.decideCheck "Does this diff need pixels?")
 EV_ROUTES=$(cfg evidence.routesHeading "Evidence routes")
 EV_SUBJECT=$(cfg evidence.commitSubject "chore(evidence):")
+EV_AUTHOR_EMAIL=$(cfg evidence.authorEmail "")
+EV_AUTHOR_NAME=$(cfg evidence.authorName "")
+BR_PREFIX=$(cfg branchPrefix "${BRANCH_PREFIX:-}")
 REPO="${CI_EVIDENCE_REPO:-${REPO_SLUG:-}}"
 EVERY="${CI_EVIDENCE_EVERY:-30}"
 
 die() { echo "ci-evidence: $*" >&2; exit 2; }
+ERRF=$(mktemp "${TMPDIR:-/tmp}/ci-evidence-err-XXXXXX"); trap 'rm -f "$ERRF"' EXIT
 ghr() { gh "$@" ${REPO:+--repo "$REPO"}; }
 
 # The block CI wrote, and nothing outside it: a hand-pinned link elsewhere in the
@@ -71,21 +77,53 @@ links() { grep -oE "https://github\.com/[^ )\"<>]+/blob/[0-9a-f]{40}/[^ )\"<>]+\
 # "Captured by evidence run"; CI had written one, and the other four were a builder's,
 # from older heads, no longer matching what renders. A shot counts only when it is
 # linked at the sha the block names, that commit is CI's own (its subject starts
-# evidence.commitSubject) and that commit wrote the file. Unreadable is none.
-ci_files() { # <evsha> → the files CI's evidence commit wrote, one a line; 1 when it is not CI's
-  local j
-  j=$(ghr_api "repos/{repo}/commits/$1" 2>/dev/null) || return 1
-  printf '%s' "$j" | jq -e --arg p "$EV_SUBJECT" '(.commit.message // "") | startswith($p)' >/dev/null 2>&1 || return 1
-  # And CI's capture really ran, and passed, on the commit it photographed (its parent).
-  local par runs
-  par=$(printf '%s' "$j" | jq -r '.parents[0].sha // empty'); [ -n "$par" ] || return 1
-  runs=$(ghr_api "repos/{repo}/commits/$par/check-runs?per_page=100" 2>/dev/null) || return 1
-  [ "$(check "$runs" "$EV_CAPTURE")" = completed/success ] || return 1
+# evidence.commitSubject), its author is the project's CI identity when one is
+# configured, it writes only under the evidence folder of this PR or a ticket the PR
+# closes, and that commit wrote the file. Unreadable is none.
+#
+# CI PUSHES FROM INSIDE THE CAPTURE JOB, so the capture is still running when its
+# commit lands, and the push itself starts a run that cancels the old one
+# (cancel-in-progress). A capture running, or ended cancelled, on the parent is still
+# CI's capture; only a missing or failed one disowns the commit.
+ci_files() { # <evsha> <folders> → the files CI's evidence commit wrote, one a line; 1 (reason on stderr) when it is not CI's
+  local j why
+  j=$(ghr_api "repos/{repo}/commits/$1" 2>/dev/null) || { echo "the commit could not be read" >&2; return 1; }
+  why=$(printf '%s' "$j" | jq -r --arg p "$EV_SUBJECT" --arg em "$EV_AUTHOR_EMAIL" --arg nm "$EV_AUTHOR_NAME" \
+          --arg d "$EV_DIR/" --arg ns "$2" '
+    ($ns | split(" ") | map(select(. != ""))) as $n
+    | [(.files // [])[].filename | select(. as $f | any($n[]; . as $k | $f | startswith($d + $k + "/")) | not)] as $out
+    | if ((.commit.message // "") | startswith($p) | not) then "its subject does not start \($p)"
+      elif ((.parents // []) | length) != 1 then "it is not a one-parent commit"
+      elif $em != "" and (.commit.author.email // "") != $em then "its author is \(.commit.author.email // "nobody"), not \($em)"
+      elif $nm != "" and (.commit.author.name // "") != $nm then "its author is \(.commit.author.name // "nobody"), not \($nm)"
+      elif ((.files // []) | length) == 0 then "it writes no files"
+      elif ($out | length) > 0 then "it writes outside \($d)<\($n | join("|"))>/: \($out[0])"
+      else "" end' 2>/dev/null) || { echo "the commit could not be read" >&2; return 1; }
+  [ -z "$why" ] || { echo "$why" >&2; return 1; }
+  local par runs cap
+  par=$(printf '%s' "$j" | jq -r '.parents[0].sha // empty')
+  runs=$(ghr_api "repos/{repo}/commits/$par/check-runs?per_page=100" 2>/dev/null) || { echo "the checks on ${par:0:9} could not be read" >&2; return 1; }
+  cap=$(check "$runs" "$EV_CAPTURE")
+  case "$cap" in
+    completed/success|completed/cancelled|in_progress/*|queued/*) ;;
+    *) echo "'$EV_CAPTURE' on ${par:0:9} is ${cap:-absent}: no capture of CI's stands behind it" >&2; return 1 ;;
+  esac
   printf '%s' "$j" | jq -r '.files[]? | select(.status != "removed") | .filename'
 }
-ci_links() { # <evsha> — links on stdin; CI's own pass, every other is named on stderr
-  local ev="$1" ok u sha path
-  ok=$(ci_files "$ev") || { cat >/dev/null; echo "ci-evidence: ${ev:0:9} is not CI's evidence commit — no shot linked at it counts" >&2; return 0; }
+# The folders CI may write a PR's shots under: the PR's number, each ticket it closes,
+# and the branch's ticket. CI keys the folder by ticket; the reader holds the PR.
+ev_folders() { # <pr> <pr json with closingIssuesReferences, headRefName>
+  # shellcheck source=branch-ticket.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/branch-ticket.sh"
+  { printf '%s\n' "$1"
+    jq -r '.closingIssuesReferences[]?.number // empty' <<<"$2" 2>/dev/null
+    jq -r --arg pre "$BR_PREFIX" "$BRANCH_TICKET_JQ"' .headRefName // "" | branch_ticket($pre)' <<<"$2" 2>/dev/null
+  } | grep -E '^[0-9]+$' | sort -u | tr '\n' ' '
+}
+PR_FIELDS=headRefOid,body,isDraft,headRefName,closingIssuesReferences
+ci_links() { # <evsha> <folders> — links on stdin; CI's own pass, every other is named on stderr
+  local ev="$1" ok u sha path why
+  ok=$(ci_files "$ev" "$2" 2>"$ERRF") || { why=$(cat "$ERRF" 2>/dev/null); cat >/dev/null; echo "ci-evidence: ${ev:0:9} is not CI's evidence commit (${why:-unreadable}) — no shot linked at it counts" >&2; return 0; }
   while IFS= read -r u; do
     [ -n "$u" ] || continue
     sha=$(sed -E 's#.*/blob/([0-9a-f]{40})/.*#\1#' <<<"$u"); path=$(sed -E 's#.*/blob/[0-9a-f]{40}/##' <<<"$u")
@@ -170,11 +208,11 @@ check() { # <check-runs json> <name> → status/conclusion of its latest run, or
 
 status() { # <pr>
   local pr="$1" j head body draft blk evsha n runs cap dec
-  j=$(ghr pr view "$pr" --json headRefOid,body,isDraft 2>/dev/null) || { echo "state=failed"; echo "reason=could not read PR #$pr"; return; }
+  j=$(ghr pr view "$pr" --json "$PR_FIELDS" 2>/dev/null) || { echo "state=failed"; echo "reason=could not read PR #$pr"; return; }
   head=$(jq -r .headRefOid <<<"$j"); body=$(jq -r .body <<<"$j" | tr -d '\r'); draft=$(jq -r .isDraft <<<"$j")
   blk=$(printf '%s\n' "$body" | block)
   evsha=$(printf '%s\n' "$blk" | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
-  n=0; [ -n "$evsha" ] && n=$(printf '%s\n' "$blk" | links | ci_links "$evsha" 2>/dev/null | grep -c . || true)
+  n=0; [ -n "$evsha" ] && n=$(printf '%s\n' "$blk" | links | ci_links "$evsha" "$(ev_folders "$pr" "$j")" 2>/dev/null | grep -c . || true)
   printf 'head=%s\nsha=%s\nshots=%s\n' "$head" "$evsha" "$n"
 
   if [ -n "$evsha" ] && [ "$n" -gt 0 ]; then
@@ -242,17 +280,19 @@ case "${1:-}" in
 
   shots)
     [ -n "${2:-}" ] || die "usage: shots <pr>"
-    blk=$(ghr pr view "$2" --json body -q .body | tr -d '\r' | block)
+    j=$(ghr pr view "$2" --json "$PR_FIELDS") || exit 1
+    blk=$(jq -r .body <<<"$j" | tr -d '\r' | block)
     evsha=$(printf '%s\n' "$blk" | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
     [ -n "$evsha" ] || exit 0
-    printf '%s\n' "$blk" | links | ci_links "$evsha" ;;
+    printf '%s\n' "$blk" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" ;;
 
   fetch)
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "usage: fetch <pr> <dir>"
     mkdir -p "$3"; got=0
-    body=$(ghr pr view "$2" --json body -q .body | tr -d '\r')
+    j=$(ghr pr view "$2" --json "$PR_FIELDS") || exit 1
+    body=$(jq -r .body <<<"$j" | tr -d '\r')
     evsha=$(printf '%s\n' "$body" | block | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
-    urls=""; [ -n "$evsha" ] && urls=$(printf '%s\n' "$body" | block | links | ci_links "$evsha")
+    urls=""; [ -n "$evsha" ] && urls=$(printf '%s\n' "$body" | block | links | ci_links "$evsha" "$(ev_folders "$2" "$j")")
     # Route per shot: CI names each file by the route's slug, so slug the routes
     # the body lists the same way and match.
     routes=$(printf '%s\n' "$body" | bash "$0" routes 2>/dev/null || true)
