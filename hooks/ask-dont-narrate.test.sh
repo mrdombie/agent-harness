@@ -75,6 +75,55 @@ rm -rf "$MDIR"
 HARNESS_DRIVER_RUN=10867:review \
   t quiet 'and stands down for a driver step' 'Your call.' false d1 "$NOASK"
 
+# --- 2026-10-20 "Why are there two status every time too": replies that were
+#     refused, and so posted their status block a second time.
+# The transcript in Claude Code's own shape: an AskUserQuestion this turn, answered.
+REAL="$TDIR/real.jsonl"
+cat > "$REAL" <<'JSONL'
+{"type":"user","message":{"role":"user","content":"sort the VM out"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which VM?"}]}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"The big one"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]}}
+JSONL
+rm -rf "$MDIR"; t quiet 'a 🔴 block after AskUserQuestion, real transcript shape' '## 🔴 Needs you
+
+| Thing | What it needs |
+|---|---|
+| **Big VM** | Your approval |'                                                            false r1 "$REAL"
+VM='Runner is set up on this side.
+
+## 🔴 Needs you
+
+| Who | What |
+|---|---|
+| **You** | Run this on the VM, it needs your login |
+
+```
+sudo ./svc.sh install && sudo ./svc.sh start
+```'
+rm -rf "$MDIR"; t quiet 'a 🔴 "run this command on the VM" block'      "$VM"        false r2 "$NOASK"
+rm -rf "$MDIR"; t nag   'the control: the same 🔴 block, no command' "${VM%%\`\`\`*}" false r3 "$NOASK"
+DONE='Merged the chip PR.
+
+## 🔴 Your call stands
+
+As you chose, the digest stays weekly. Confirmed on the ticket.'
+rm -rf "$MDIR"; t quiet 'a decision already answered, reported back'  "$DONE"       false r4 "$NOASK"
+rm -rf "$MDIR"; t quiet '"your call stands" is not "your call"'       'Weekly digest: your call stands.' false r5 "$NOASK"
+rm -rf "$MDIR"; t nag   'a decided report with a NEW open choice'      "$DONE
+Next one is your call: daily or weekly for Echo?"                                     false r6 "$NOASK"
+rm -rf "$MDIR"; t nag   'a real open choice left in prose'            'The chip PR can merge now or wait for the icon set. Needs a decision.' false r7 "$NOASK"
+rm -rf "$MDIR"; t nag   'options listed with no ask'                  'Two ways to do it:
+- **Option A** — merge now
+- **Option B** — wait for the icon set'                                                 false r8 "$NOASK"
+rm -rf "$MDIR"; t quiet 'one "Option 1" mention is not a list'         'Shipped Option 1 from the plan.' false r9 "$NOASK"
+rm -rf "$MDIR"
+jq -nc --arg m 'Your call.' --arg p "$NOASK" '{session_id:"r10",stop_hook_active:false,last_assistant_message:$m,transcript_path:$p}' \
+  | "$H" 2>"$TDIR/err" >/dev/null
+grep -q 'Do not repeat the report or a status block' "$TDIR/err" \
+  && echo "OK        the nag says not to repeat the report or the block" \
+  || { echo "MISMATCH  the nag says not to repeat the report or the block"; fail=1; }
+
 rm -rf "$MDIR"
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$fail"

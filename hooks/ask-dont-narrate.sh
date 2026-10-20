@@ -53,21 +53,44 @@ LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 [ -n "$LAST" ] || { say "exit0 empty-message"; exit 0; }
 
 # 3. Did the closing message actually leave a decision hanging?
-#    These are the tells named in feedback_ask_dont_narrate_decisions, plus the interrogative forms that put a
-#    choice to them in prose. NOT included on purpose: `Reply "approve <n>"`,
-#    which /agent-harness:bug prescribes as its hand-back — a hook must not fight a documented
-#    flow.
-TELLS='your call|worth your eye|needs a decision|which would you prefer|let me know which|let me know if you.d|do you want me to|would you like me to|shall I |should I |want me to |or shall we|up to you|either way, tell me|needs you|calls? (for you|for your|only you)|on one page'
-printf '%s' "$LAST" | grep -qiE "$TELLS" && HIT=tell || HIT=""
-# The house output style opens every "needs him" block with 🔴, so a 🔴 heading
-# is a decision handed back whatever words follow it (2026-10-09: two of them
-# went out as prose, with the choices on a linked page).
-printf '%s' "$LAST" | grep -qE '^#+[[:space:]]*🔴' && HIT=red
+#    OPEN tells are the phrases named in feedback_ask_dont_narrate_decisions, the
+#    interrogative forms that put a choice in prose, and options listed with no
+#    ask. NOT included on purpose: `Reply "approve <n>"`, which /agent-harness:bug
+#    prescribes as its hand-back — a hook must not fight a documented flow.
+#
+#    A decision already taken is a report, not a question (2026-10-20: a fired
+#    nag on one forced a contrived second reply). Its wording is cut out before
+#    the open tells are read, so "your call stands" is not "your call".
+DONE='as you (chose|picked|decided|asked|said)|your (call|choice|decision|answer) (stands|holds|was|is (in|recorded|taken))|you (chose|picked|decided|approved|confirmed|signed off)|(already|now) (decided|answered|confirmed|approved)|(^|[^a-z])confirmed([^a-z]|$)|per your (call|answer|choice)'
+OPEN='your call|worth your eye|needs a decision|which would you prefer|let me know which|let me know if you.d|do you want me to|would you like me to|shall I |should I |want me to |or shall we|up to you|either way, tell me|calls? (for you|for your|only you)|on one page'
+LISTED='^[[:space:]]*([-*][[:space:]]*)?\**(option|choice)[[:space:]]+[a-c1-3]\b'
+# Lowercased first: BSD sed has no case-insensitive s///.
+REST=$(printf '%s' "$LAST" | tr '[:upper:]' '[:lower:]' | sed -E "s/($DONE)//g")
+HIT=""
+printf '%s' "$REST" | grep -qiE "$OPEN" && HIT=tell
+printf '%s\n' "$REST" | grep -iE "$LISTED" | wc -l | grep -qvE '^[[:space:]]*[01]$' && HIT=${HIT:-options}
 
-# A NEXT block with a row addressed to the operator is /agent-harness:standup's own shape, and that
-# command's Step 5 makes the question mandatory.
+# SHAPE tells: a 🔴 heading (the house style opens every "needs him" block with
+# it), a "needs you" line, or a NEXT block with a row addressed to the operator
+# (/agent-harness:standup's shape; its Step 5 makes the question mandatory).
+SHAPE=""
+printf '%s' "$LAST" | grep -qiE 'needs you' && SHAPE=needs-you
+printf '%s' "$LAST" | grep -qE '^#+[[:space:]]*🔴' && SHAPE=red
 printf '%s' "$LAST" | grep -qE '^\s*(▶️ *)?NEXT' \
-  && printf '%s' "$LAST" | grep -qiE '^\|[^|]*\*{0,2}You\*{0,2}[^|]*\|' && HIT=next
+  && printf '%s' "$LAST" | grep -qiE '^\|[^|]*\*{0,2}You\*{0,2}[^|]*\|' && SHAPE=next
+# A shape is only a question when something is left to choose. Not when the
+# reply reports a call already made, nor when what it hands over is a physical
+# step with the command spelled out ("run this on the VM").
+if [ -n "$SHAPE" ]; then
+  if printf '%s' "$LAST" | grep -qiE "$DONE"; then
+    say "shape-skipped decided shape=$SHAPE"
+  elif printf '%s' "$LAST" | grep -qE '^[[:space:]]*```' &&
+       printf '%s' "$LAST" | grep -qiE '\b(run|paste|type|execute)\b[^.|]{0,40}\b(this|these|the following|it|below|command)\b|\bon (the|your|that) [a-z0-9-]*[[:space:]]?(vm|mac|machine|server|box|laptop|phone|terminal|host)\b'; then
+    say "shape-skipped physical-action shape=$SHAPE"
+  else
+    HIT=${HIT:-$SHAPE}
+  fi
+fi
 
 [ -n "$HIT" ] || { say "exit0 no-decision-tell"; exit 0; }
 
@@ -99,7 +122,8 @@ Put the choice to the operator now with AskUserQuestion:
   - plain language, no ticket numbers or file paths in a label
   - no "do nothing" option; the tool always offers Other
 
-Then act on the answer in the same turn. Do not restate the question as prose,
-and do not explain this message.
+Your reply above stands: send only the AskUserQuestion call, then act on the
+answer in the same turn. Do not repeat the report or a status block, do not
+restate the question as prose, and do not explain this message.
 EOF
 exit 2

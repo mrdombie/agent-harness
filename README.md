@@ -219,7 +219,7 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | Stop | `signoff-backstop.sh` | refuses a hand-back without the sign-off banner while work is live |
 | Stop | `ask-dont-narrate.sh` | refuses a hand-back that narrates a decision instead of asking it |
 | Stop | `keep-working.sh` | refuses a hand-back mid-loop while the scope still has runnable tickets (the loop is marked by `scripts/loop-start.sh`) |
-| Stop | `heartbeat.sh` | refuses a loop wake with no status block, or one idle on a wait while work is ready |
+| Stop, UserPromptSubmit | `heartbeat.sh` | asks a loop wake with no status block to add one; a block whose Running row is only a wait gets advice on the next prompt, never a refusal |
 | StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets in `$STATE_DIR/usage-hold`, so the coordinator and the scheduler spawn nothing until then |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.

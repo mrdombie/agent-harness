@@ -20,11 +20,30 @@
 # 2026-08-30, so each guard below ends the turn on its own, and there is no
 # cooldown on purpose: the block is owed on every wake, and stop_hook_active
 # already stops a second nag inside one turn.
+#
+# Advice rides on UserPromptSubmit, not on the Stop's own additionalContext: that
+# one continues the turn just as exit 2 does, and a continued turn is a second reply.
 set -uo pipefail
 
 IN=$(cat)
 LOG=/tmp/claude-heartbeat.log
 say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
+
+NDIR="${TMPDIR:-/tmp}/claude-heartbeat"
+WORK='\b(build(ing)?|writ(e|ing)|plant(ing)?|test(s|ing)?|captur(e|ing)|fix(ing)?|draw(ing)?|render(ing)?|claim(ed|ing)?|spec(cing)?)\b'
+OTHERS='\b(builders?|coordinator|agents?|workers?|(another|other|the [a-z-]+) session|owned by)\b'
+NOTHING='(no|nothing|none)( other| else)? (ready|takeable|left|to take|in scope)|queue (is )?empty|nothing in scope'
+ADVICE='Last reply'"'"'s Running row was only a wait (checks, a watcher, reviewers, approval or a merge). If a ticket in your scope is ready, take it this turn and put it in Running. If the queue belongs to the coordinator or nothing is ready, name that in the Running row ("builders on X", "nothing else ready"). Do not resend the earlier status block.'
+
+# The UserPromptSubmit half: hand over advice the Stop half queued, once.
+if [ "$(printf '%s' "$IN" | jq -r '.hook_event_name // ""')" = "UserPromptSubmit" ]; then
+  SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
+  [ -f "$NDIR/$SID" ] || exit 0
+  NOTE=$(cat "$NDIR/$SID"); rm -f "$NDIR/$SID"
+  say "advice-delivered $SID"
+  jq -nc --arg c "$NOTE" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$c}}'
+  exit 0
+fi
 
 # 0. A driver step has no operator to read a status block.
 [ -n "${HARNESS_DRIVER_RUN:-}" ] && { say "exit0 driver-run"; exit 0; }
@@ -36,26 +55,24 @@ say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
 LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 [ -n "$LAST" ] || { say "exit0 empty-message"; exit 0; }
 
-# 2. The block is there. Its Running row must name work, not only a wait.
+# 2. The block is there, so the stop is never refused: a refusal here made the
+#    agent post the same block a second time (2026-10-20: "Why are there two
+#    status every time too"). A Running row that is only a wait gets advice for
+#    the NEXT turn instead, carried by the UserPromptSubmit half of this hook.
 #
 # THE PROXY, NAMED: "the Running row names only waits (checks, CI, a watcher,
-# reviewers, approval, a merge) and no work word" stands in for "the agent is
-# idle while a PR's checks run". On 2026-10-10 an agent sat through four CI runs
-# in a row: finish said to hold the claim until the merge and never said to move
-# on. A row that says nothing is ready is the honest exit.
+# reviewers, approval, a merge) and no work word, no work owned by others and no
+# 'nothing ready'" stands in for "the agent is idle while work it could take is
+# ready". A PM session whose queue the coordinator owns has nothing to take, and
+# says so by naming the builders, the coordinator or another session.
 case "$LAST" in
   *💓*)
     ROW=$(printf '%s\n' "$LAST" | grep -iE '^\|[[:space:]]*\**Running\**[[:space:]]*\|' | tail -1 | tr '[:upper:]' '[:lower:]')
     if printf '%s' "$ROW" | grep -qE '\b(checks?|ci|watcher|merg(e|es|ing)|sign-?off|approval|reviewers?|reviews?)\b' &&
-      ! printf '%s' "$ROW" | grep -qE '\b(build(ing)?|writ(e|ing)|plant(ing)?|test(s|ing)?|captur(e|ing)|fix(ing)?|draw(ing)?|render(ing)?|claim(ed|ing)?)\b|(no|nothing|none)( other| else)? (ready|takeable|left)|queue (is )?empty'; then
-      say "exit2 idle-while-waiting"
-      cat >&2 <<'EOF'
-Your Running row is only a wait: checks, a watcher, reviewers, approval or a merge.
-None of those needs you watching. Take the next ticket in your scope now and put
-it in Running; the watcher's event outranks it the moment it fires. If nothing in
-scope is ready, say so in the Running row ("nothing else ready").
-EOF
-      exit 2
+      ! printf '%s' "$ROW" | grep -qE "$WORK|$OTHERS|$NOTHING"; then
+      SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
+      mkdir -p "$NDIR" && printf '%s\n' "$ADVICE" > "$NDIR/$SID"
+      say "exit0 has-heartbeat idle-advice-queued $SID"; exit 0
     fi
     say "exit0 has-heartbeat"; exit 0 ;;
 esac
@@ -70,17 +87,17 @@ printf '%s' "$WAKE" | grep -qE '"stop"[[:space:]]*:[[:space:]]*true' && {
 
 say "exit2 missing-heartbeat"
 cat >&2 <<'EOF'
-A loop is running and this reply has no status block. End every wake with it,
-even when nothing changed, so the operator can tell idle from stuck:
+A loop is running and your reply has no status block. Your reply stands: do not
+resend or restate it. Add only the block, as the whole of your next message:
 
 ## 💓 Status
 
 | | |
 |---|---|
-| **Running** | what is working right now, or "nothing" |
+| **Running** | what is working right now, yours or others' (builders, the coordinator), or "nothing" |
 | Waiting for | the event or person each wait is on |
 | Next check | when the loop next wakes, or what wakes it |
 
-Add the block to the end of this reply now. Do not explain this message.
+Do not explain this message.
 EOF
 exit 2
