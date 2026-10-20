@@ -88,6 +88,45 @@ Unsure? Ask.
 
 JSON only, valid against `schemas/plan.json`.
 
+<!-- fields:begin — generated from schemas/plan.json by briefs/return-fields.sh --write plan; edit the schema, never this list -->
+Every field the contract has; `additionalProperties` is false, so no other.
+
+- `step` (required): "plan"
+- `skills` (required): list of string
+- `status` (required): one of "planned", "park"
+- `designSource` (required): one of "ticket-body", "brainstormed", "debugged", "approved-picture"
+- `premise` (required): object
+- `premise.verdict` (required): one of "still-true", "already-fixed", "changed-shape"
+- `premise.evidence` (required): string
+- `schemaChange`: boolean
+- `dataModelSpec`: string
+- `tasks`: list of object
+- `tasks[].title` (required): string
+- `tasks[].files` (required): list of object
+- `tasks[].files[].path` (required): string
+- `tasks[].files[].action` (required): one of "create", "modify", "delete"
+- `tasks[].tests` (required): list of object
+- `tasks[].tests[].file` (required): string
+- `tasks[].tests[].behaviour` (required): string
+- `tasks[].tests[].redWhen`: string
+- `tasks[].risks`: list of string
+- `question`: string
+- `questionFor`: one of "owner", "pm"
+- `notes`: string
+- `designRef`: string
+- `screenStates`: list of object
+- `screenStates[].route` (required): string
+- `screenStates[].setup` (required): list of string
+- `screenStates[].shows` (required): string
+- `screenChange`: one of "visible", "none"
+
+Conditional:
+- when `status` is "planned": requires `tasks`
+- otherwise: requires `question`
+- when `schemaChange` is true: requires `dataModelSpec`
+- when `designSource` is "approved-picture": requires `designRef`
+<!-- fields:end -->
+
 Every task carries the tests it writes **first**, and each test names the
 production change that would make it fail — the fix deleted, not a typo
 introduced. A task with no test has no shape in that contract, because it cannot

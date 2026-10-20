@@ -157,6 +157,8 @@ perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; al
 f="$FIX/ai/$step.jsonl"
 [ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
 cat "$f"
+# A second answer the test queued (<step>.then.jsonl) is what the NEXT call returns.
+[ ! -f "$FIX/ai/$step.then.jsonl" ] || mv "$FIX/ai/$step.then.jsonl" "$f"
 SH
 
   chmod +x "$BIN/gh" "$BIN/claude"

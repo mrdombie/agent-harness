@@ -12,6 +12,7 @@ briefs/
 ├── schemas/<step>.json   the JSON the answer is validated against
 ├── examples/<step>.valid*.json  ·  <step>.invalid-*.json
 ├── validate.sh       the one validator; the driver calls it
+├── return-fields.sh  each brief's Return field list, generated from its schema (--write, --check)
 └── tests/            both suites
 ```
 

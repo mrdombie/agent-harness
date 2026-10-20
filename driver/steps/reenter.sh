@@ -25,6 +25,14 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 
+# _driver_reenter_keep <git-dir-or-tree> <ref> <branch> — the local commits origin lacks,
+# kept on a backup branch so a repair can start from origin's head without losing them.
+_driver_reenter_keep() {
+  local b="backup/$3-$(date -u +%Y%m%d%H%M%S)"
+  git -C "$1" branch -f "$b" "$2" >/dev/null 2>&1 || return 1
+  driver_say "   reenter: the local $3 had commits origin lacks — kept on $b; the repair starts from origin's head"
+}
+
 driver_step_reenter() { # <ticket>
   local t="${1:?driver_step_reenter: need a ticket}"
   local meta st labels prs n pr branch mstate repo wt wt_root hrc cw cb ow ob here base
@@ -84,6 +92,9 @@ driver_step_reenter() { # <ticket>
         if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } \
         || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   reenter: #$t is already ours — resuming"
+        elif driver_claim_dead_here "$t" && bash "$CL" release "$t" --force >/dev/null 2>&1 \
+             && bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
+          driver_say "   reenter: the claim on #$t was a dead run's on this host — released and taken"
         else
           # BUSY, NOT REFUSED: the holder ends, or the reconciler frees a dead claim, and
           # the repair goes on then. Read as a refusal it parked #13139 and #13146.
@@ -130,9 +141,11 @@ driver_step_reenter() { # <ticket>
   else
     if git -C "$repo" rev-parse --verify -q "refs/heads/$branch" >/dev/null 2>&1 \
        && ! git -C "$repo" merge-base --is-ancestor "refs/heads/$branch" "origin/$branch" 2>/dev/null; then
-      driver_say "✋ reenter: the local $branch has diverged from origin's, and its own commits would be lost by re-cutting it. Push or remove them first."
-      driver_state_set "$t" park_note "the local $branch has commits origin does not; a repair will not overwrite them"
-      return "$DRIVER_E_REFUSED"
+      if ! _driver_reenter_keep "$repo" "refs/heads/$branch" "$branch"; then
+        driver_say "✋ reenter: the local $branch has diverged from origin's and could not be kept on a backup branch."
+        driver_state_set "$t" park_note "the local $branch has commits origin does not, and backing them up failed"
+        return "$DRIVER_E_REFUSED"
+      fi
     fi
     wt_root=$(driver_worktree_root) || {
       driver_say "✋ reenter: no worktree root — the reason is printed above."
@@ -156,8 +169,8 @@ driver_step_reenter() { # <ticket>
     fi
   fi
   if ! driver_ensure_hooks "$repo" "$wt"; then
-    driver_state_set "$t" park_note "git hooks could not be set up in $wt"
-    return "$DRIVER_E_REFUSED"
+    driver_state_set "$t" park_note "git hooks could not be set up in $wt (this machine, not the ticket)"
+    return "$DRIVER_E_BUSY"
   fi
 
   # Origin's head, taken: the merge robot or a person may have pushed since. Commits
@@ -187,13 +200,22 @@ driver_step_reenter() { # <ticket>
   if [ "$resuming_merge" -eq 1 ]; then
     :
   elif git -C "$wt" merge-base --is-ancestor "$here" "origin/$branch" 2>/dev/null; then
-    git -C "$wt" merge -q --ff-only "origin/$branch" >/dev/null 2>&1 || {
-      driver_say "✋ reenter: could not fast-forward $wt to origin/$branch."
-      return "$DRIVER_E_REFUSED"; }
+    if ! git -C "$wt" merge -q --ff-only "origin/$branch" >/dev/null 2>&1; then
+      # Usually uncommitted leftovers in the way: stashed, then origin's head is taken.
+      git -C "$wt" stash push -u -q -m "reenter #$t $(date -u +%Y%m%dT%H%M%SZ)" >/dev/null 2>&1 || true
+      git -C "$wt" merge -q --ff-only "origin/$branch" >/dev/null 2>&1 || {
+        driver_say "✋ reenter: could not fast-forward $wt to origin/$branch."
+        return "$DRIVER_E_REFUSED"; }
+      driver_say "   reenter: uncommitted files in $wt were stashed so origin's head could be taken"
+    fi
   elif ! git -C "$wt" merge-base --is-ancestor "origin/$branch" "$here" 2>/dev/null; then
-    driver_say "✋ reenter: $branch has diverged from origin's — commits here origin lacks, and commits on origin this tree lacks. Merging them is not the driver's call."
-    driver_state_set "$t" park_note "$branch in $wt has diverged from origin/$branch"
-    return "$DRIVER_E_REFUSED"
+    # Origin is the PR; the tree's own commits are kept on a backup branch, not merged.
+    git -C "$wt" stash push -u -q -m "reenter #$t $(date -u +%Y%m%dT%H%M%SZ)" >/dev/null 2>&1 || true
+    if ! _driver_reenter_keep "$wt" HEAD "$branch" || ! git -C "$wt" reset -q --hard "origin/$branch" >/dev/null 2>&1; then
+      driver_say "✋ reenter: $branch has diverged from origin's and the tree's own commits could not be set aside."
+      driver_state_set "$t" park_note "$branch in $wt has diverged from origin/$branch and could not be backed up"
+      return "$DRIVER_E_REFUSED"
+    fi
   fi
 
   # The head this repair starts from, once per repair round (build-ticket clears it

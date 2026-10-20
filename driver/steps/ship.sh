@@ -90,6 +90,16 @@ _driver_ship_closes() {
 # after it reached the remote, so a refusal ends "failed to push some refs" with no
 # `! [` ref line; an unreachable remote never gets that far. A hook's own "fatal:"
 # line says nothing about which it was. A sign-off refusal is the owner's call.
+# _driver_ship_routes <ticket> <tree> <trunk> — the routes CI photographs, one per line:
+# the plan's screen states, then every Next.js page the branch changes. Without a
+# '## Evidence routes' list CI takes no pictures and the design critic never runs.
+_driver_ship_routes() {
+  { driver_state_get "$1" screen_states | jq -r '.[]?.route // empty' 2>/dev/null
+    git -C "$2" diff --name-only "$3"...HEAD 2>/dev/null \
+      | grep -E '/app/.*page\.(t|j)sx?$' | sed -E 's#^.*/app/##; s#(^|/)page\.[tj]sx?$##; s#\([^/]*\)/?##g; s#/$##; s#^#/#'
+  } | grep '^/' | grep -v '\[' | awk '!seen[$0]++' | head -8
+}
+
 _driver_ship_push_to_fix() {
   local t="$1" f reds fixes
   [ -f "${DRIVER_PUSH_OUT:-}" ] || return 1
@@ -99,11 +109,8 @@ _driver_ship_push_to_fix() {
   grep -qE '^[[:space:]]*! \[' "$DRIVER_PUSH_OUT" && return 1
   reds=$(driver_state_count "$t" push_red); fixes=$(driver_state_count "$t" fix)
   driver_state_bump "$t" push_red
-  if [ "${reds:-0}" -ge 1 ]; then
-    driver_say "   ship: not sent to fix — this is the second push the pre-push refused on this run."; return 1
-  fi
-  if [ "${fixes:-0}" -ge "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
-    driver_say "   ship: not sent to fix — the $DRIVER_MAX_REVIEW_ROUNDS fix round(s) are used."; return 1
+  if [ "${reds:-0}" -ge "$DRIVER_MAX_GATE_FIXES" ]; then
+    driver_say "   ship: not sent to fix — the pre-push refused $DRIVER_MAX_GATE_FIXES pushes on this run."; return 1
   fi
   f="$(driver_state_dir "$t")/steps/self-check.findings.json"
   jq -n --arg out "$( { grep -E '✗' "$DRIVER_PUSH_OUT"; tail -40 "$DRIVER_PUSH_OUT"; } 2>/dev/null | awk '!seen[$0]++' | cut -c1-400 | head -60)" \
@@ -128,6 +135,21 @@ driver_step_ship() { # <ticket>
     driver_say "✋ ship: the worktree is on '$branch'. Nothing is ever pushed or merged straight to the trunk."
     return "$DRIVER_E_REFUSED"
   fi
+
+  # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. driver_sweep_scratch moves
+  # tooling leavings out of the worktree, but leaves a scratch path the project keeps
+  # in git alone (there it is the change). The plan this run wrote into it was then
+  # neither moved nor committed, and every such ticket stopped here after its build
+  # (five on 2026-10-18). Commit those new files, as park already does.
+  local sp newp
+  while IFS= read -r sp; do
+    [ -n "$sp" ] && [ -n "$(git -C "$wt" ls-files -- "$sp" 2>/dev/null | head -1)" ] || continue
+    newp=$(git -C "$wt" ls-files --others --exclude-standard -- "$sp" 2>/dev/null)
+    [ -n "$newp" ] || continue
+    printf '%s\n' "$newp" | while IFS= read -r f; do git -C "$wt" add -- "$f"; done
+    git -C "$wt" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" >/dev/null 2>&1 \
+      && driver_say "   ship: committed the run's own plan under $sp"
+  done <<< "$(driver_scratch_paths)"
 
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then
@@ -290,6 +312,7 @@ driver_step_ship() { # <ticket>
   pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
   if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
+  local routes; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /')
   body=$(cat <<PRBODY
 $closes #$t
 
@@ -305,7 +328,10 @@ $(if [ -n "$(driver_state_get "$t" design_ref | tr -d '[:space:]')" ]; then
     echo "Renders this run took (designSource=$(driver_state_get "$t" design_source): no approved picture, so no parity check was made):"
   fi)
 $(driver_state_get "$t" renders | sed 's/^/  /')
-${polish:+
+${routes:+
+## Evidence routes
+$routes
+}${polish:+
 $polish
 }${replaced:+
 ## Deleted tests
@@ -436,6 +462,7 @@ $polish}" >/dev/null 2>&1 || true
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true
 
   driver_state_set "$t" run_brief ""   # shipped: the run's brief has been acted on
+  _driver_state_edit "$t" '.counters.machine_parks = 0' 2>/dev/null || true
   driver_say "   ship: $branch pushed, pull request ready, auto-merge armed at $(printf '%s' "$head" | cut -c1-8). Handing off."
   return "$DRIVER_OK"
 }

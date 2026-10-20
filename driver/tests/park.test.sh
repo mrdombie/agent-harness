@@ -172,7 +172,33 @@ want "the branch is not on origin"            "" "$(on_origin tkt-307/work)"
 want_in "the park says the push failed"       'could not be pushed' "$out"
 want "and the commits are bundled"            "1" "$(bundles)"
 want_not_in "no draft pr for a branch that is not there" 'pr create.*tkt-307/work' "$(cat "$GH_LOG")"
-for n in 303 304 305 306 307; do git -C "$FIX/wt$n" config --unset core.hooksPath; done
+echo "--- a refused park push, where the project allows it, lands on a park ref the next run can find ---"
+: > "$GH_LOG"; rm -rf "$FIX/trees/backups"
+cfg_with '.driver.parkRefNoVerify = true'
+park_tree 308 tkt-308/work develop
+park_hook "$FIX/hooks308" -; git -C "$FIX/wt308" config core.hooksPath "$FIX/hooks308"
+out=$(driver_park 308 "build answered in a shape the driver cannot read" "" driver 2>&1); rc=$?
+pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/heads/park/308/' | head -1)
+want "park reports parked"                    "20" "$rc"
+want "the ticket's own branch is still refused" "" "$(on_origin tkt-308/work)"
+want_in "the work is on a park ref"           'refs/heads/park/308/' "$pref"
+want "at the worktree's head"                 "$(git -C "$FIX/wt308" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse --verify -q "$pref" 2>/dev/null)"
+want "the run's record names it"              "${pref#refs/heads/}" "$(driver_state_get 308 park_ref)"
+want_in "the ticket says where it is"         "${pref#refs/heads/}" "$(cat "$GH_LOG")"
+want "nothing else on origin moved"           "" "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/heads/' | grep -v -e '^refs/heads/park/308/' -e '^refs/heads/develop$' -e '^refs/heads/tkt-30[3-6]/work$' -e '^refs/heads/tkt-101/work$' | tr '\n' ' ')"
+cp "$CFG_KEEP" "$HARNESS_CFG_PATH"
+
+echo "--- not allowed, the ticket records the machine and the exact worktree ---"
+: > "$GH_LOG"
+park_tree 309 tkt-309/work develop
+park_hook "$FIX/hooks309" -; git -C "$FIX/wt309" config core.hooksPath "$FIX/hooks309"
+out=$(driver_park 309 "the gate stopped it" "" driver 2>&1); rc=$?
+want "no park ref without the project's say-so" "" "$(git -C "$FIX/origin" for-each-ref 'refs/heads/park/309/')"
+want_in "the ticket names the worktree"       "\`$FIX/wt309\`" "$(cat "$GH_LOG")"
+want_in "and the machine it is on"            "machine \`$(hostname -s 2>/dev/null || hostname)\`" "$(cat "$GH_LOG")"
+want_in "and the park says why there is no ref" 'parkRefNoVerify' "$out"
+
+for n in 303 304 305 306 307 308 309; do git -C "$FIX/wt$n" config --unset core.hooksPath; done
 
 echo "--- a park with nothing to push still parks ---"
 : > "$GH_LOG"; : > "$RELEASES"; : > "$ORDER"

@@ -40,6 +40,31 @@ An empty difference list is a parity claim, and the renders have to support it.
 
 JSON only, valid against `schemas/compare.json`.
 
+<!-- fields:begin — generated from schemas/compare.json by briefs/return-fields.sh --write compare; edit the schema, never this list -->
+Every field the contract has; `additionalProperties` is false, so no other.
+
+- `step` (required): "compare"
+- `skills` (required): list of string
+- `status` (required): one of "compared", "park"
+- `approved` (required): object
+- `approved.ref` (required): string
+- `renders`: list of object
+- `renders[].name` (required): string
+- `renders[].path` (required): string
+- `renders[].theme` (required): one of "light", "dark"
+- `differences`: list of object
+- `differences[].what` (required): string
+- `differences[].fixed` (required): boolean
+- `differences[].reason`: string
+- `question`: string
+- `questionFor`: one of "owner", "pm"
+- `notes`: string
+
+Conditional:
+- when `status` is "compared": requires `renders`, `differences`
+- otherwise: requires `question`
+<!-- fields:end -->
+
 Every difference is either `fixed: true`, or carries the `reason` it stands. A
 difference with neither is refused — that gap is the drift this step exists to
 catch.

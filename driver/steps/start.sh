@@ -162,6 +162,9 @@ driver_step_start() { # <ticket>
         if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } \
         || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   start: #$t is already ours — resuming"
+        elif driver_claim_dead_here "$t" && bash "$CL" release "$t" --force >/dev/null 2>&1 \
+             && bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
+          driver_say "   start: the claim on #$t was a dead run's on this host — released and taken"
         else
           driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."
           driver_state_set "$t" park_note "another run on this host holds the claim on #$t (branch ${cb:-unnamed}, worktree ${cw:-none})"
@@ -186,8 +189,8 @@ driver_step_start() { # <ticket>
   if [ -n "$wt" ] && [ -d "$wt" ]; then
     driver_say "   start: resuming in the worktree it already has ($wt)"
     if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
-      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
-      return "$DRIVER_E_REFUSED"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt (this machine, not the ticket)"
+      return "$DRIVER_E_BUSY"
     fi
   else
     repo="$MAIN_REPO"
@@ -197,6 +200,20 @@ driver_step_start() { # <ticket>
     if [ -z "$sha" ]; then
       driver_say "✋ start: no $INTEGRATION_BRANCH in $repo to cut from."
       return "$DRIVER_E_REFUSED"
+    fi
+    # Work an earlier park left on origin, from any machine, is where this branch starts.
+    local cut="$sha" pref pname
+    pref=$(git -C "$repo" ls-remote origin "refs/heads/park/$t/*" 2>/dev/null | awk '{print $2}' | sort | tail -1)
+    if [ -n "$pref" ]; then
+      pname=${pref#refs/heads/}
+      if git -C "$repo" fetch -q origin "+$pref:refs/remotes/origin/$pname" 2>/dev/null \
+         && cut=$(git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$pname^{commit}"); then
+        driver_say "   start: #$t has parked work on origin as $pname — the branch starts from it"
+        driver_state_set "$t" resumed_from "$pname"
+      else
+        cut="$sha"
+        driver_say "   start: #$t has parked work on origin as $pname and it could not be fetched — cutting from $INTEGRATION_BRANCH"
+      fi
     fi
     # UNDER THE PROJECT'S OWN WORKTREE ROOT, not $TMPDIR. On macOS $TMPDIR is a
     # /var/folders directory the system prunes, and between the build and the push
@@ -213,7 +230,7 @@ driver_step_start() { # <ticket>
     mkdir -p "$(dirname "$wt")" 2>/dev/null || true
     # A fresh branch has reworded and removed no tests: the ledger starts empty.
     mkdir -p "$(driver_state_dir "$t")/steps" && : > "$(driver_state_dir "$t")/steps/replaced.jsonl"
-    if ! bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$repo" "$wt" -q -b "$branch" "$sha" 2>/dev/null; then
+    if ! bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$repo" "$wt" -q -b "$branch" "$cut" 2>/dev/null; then
       driver_say "✋ start: could not create a worktree at $wt on $branch."
       return "$DRIVER_E_REFUSED"
     fi
@@ -227,8 +244,8 @@ driver_step_start() { # <ticket>
     fi
     if ! driver_ensure_hooks "$repo" "$wt"; then
       driver_state_set "$t" worktree "$wt"
-      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
-      return "$DRIVER_E_REFUSED"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt (this machine, not the ticket)"
+      return "$DRIVER_E_BUSY"
     fi
     if ! driver_prepare_worktree "$wt"; then
       driver_state_set "$t" worktree "$wt"

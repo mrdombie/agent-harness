@@ -42,7 +42,7 @@ for f in "$@"; do
   # Draft is pinned. Left to the tool's default it moves with the tool's major
   # version, and a schema silently read under a different draft is a contract
   # that changed without anybody editing it.
-  out=$($AJV validate --spec=draft7 -s "$schema" -d "$f" 2>&1); arc=$?
+  out=$($AJV validate --spec=draft7 --strict=false -s "$schema" -d "$f" 2>&1); arc=$?
   case "$arc" in
     0) : ;;
     # ajv-cli exits 1 for data that does not meet the schema and 2 for anything

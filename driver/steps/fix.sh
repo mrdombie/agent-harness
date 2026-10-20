@@ -146,6 +146,11 @@ driver_step_fix() { # <ticket>
     | join("\n")' "$review" 2>/dev/null)
 
   round=$(driver_state_count "$t" fix)
+  local proofnote; proofnote=$(driver_state_get "$t" fix_proof_note)
+  [ -z "$proofnote" ] || blockers="$blockers
+
+THE LAST FIX ROUND'S PROOF FAILED, so answer again. For each cleared finding: commit the test alone first (testCommit) so it FAILS at that commit, then commit the fix (implCommit) so it passes, and make sure the change type-checks. What failed:
+$proofnote"
   driver_fact_put "$t" fix BLOCKERS "$blockers"
   driver_fact_put "$t" fix DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
@@ -190,6 +195,7 @@ EOB
   fi
 
   ncleared=$(jq -r '[.cleared[]?] | length' "$ans")
+  local fails=""
   i=0
   while [ "$i" -lt "${ncleared:-0}" ]; do
     bid=$(jq -r --argjson i "$i" '.cleared[$i].blockerId // "?"' "$ans")
@@ -200,6 +206,8 @@ EOB
     i=$((i+1))
     if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; then
       driver_say "✋ fix '$bid' names no test to prove it (test.file, command, testCommit and implCommit)."
+      fails="$fails- $bid: names no test.file, command, testCommit and implCommit
+"
       bad=1; continue
     fi
     why=""; prc=0
@@ -211,10 +219,22 @@ EOB
          return "$DRIVER_E_REFUSED" ;;
       4) driver_say "✋ fix $bid — $why"
          return "$DRIVER_E_TIMEOUT" ;;
-      *) driver_say "✋ fix $bid — $why"; bad=1 ;;
+      *) driver_say "✋ fix $bid — $why"; bad=1
+         fails="$fails- $bid: $(printf '%s' "$why" | cut -c1-600)
+" ;;
     esac
   done
 
+  # ONE MORE TRY, TOLD WHY. A typecheck error or a test committed with its fix is
+  # the model's to repair; parking it put a person on a mechanical mistake.
+  if [ "$bad" -ne 0 ] && [ -z "$proofnote" ]; then
+    driver_state_set "$t" fix_proof_note "$fails"
+    driver_say "↩ fix: a cleared finding is not proved red-then-green — asking the fix step once more, with why"
+    rc=0; driver_step_fix "$t" || rc=$?
+    driver_state_set "$t" fix_proof_note ""
+    return "$rc"
+  fi
+  driver_state_set "$t" fix_proof_note ""
   if [ "$bad" -ne 0 ]; then
     # NOT A REWORK. A rework rewinds to here, so returning one from here is a loop
     # with this step at both ends; the reviewer's findings have not changed and a

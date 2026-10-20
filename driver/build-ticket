@@ -331,7 +331,7 @@ done
 # returning rework without counting — which is the only thing this exists to catch.
 REWORKS=0
 # Plus the one repair round a red self-check may send to fix.
-REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS + 1 ))
+REWORK_CEILING=$(( DRIVER_MAX_BUILD_TRIES + DRIVER_MAX_REVIEW_ROUNDS + 2 * ${DRIVER_MAX_GATE_FIXES:-3} + 1 ))
 
 # The steps that run on EVERY pass, finished or not. `start` is the re-entry check:
 # the hold label, the ticket's state and the claim are all read there, and a park

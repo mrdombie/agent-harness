@@ -83,6 +83,15 @@ fix_ai compare '{"differences":"none"}' superpowers:requesting-code-review
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "the wrong type refuses too"      "22" "$rc"
 
+echo "--- the contract is checked even when the step's folder was deleted under it ---"
+# npx refuses to start from a deleted working directory ("getcwd: cannot access
+# parent directories"), and that crash read as "the answer was never checked",
+# parking finished work (2026-10-18).
+fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
+GONE=$(mktemp -d)
+rc=0; ( cd "$GONE" && rmdir "$GONE" && driver_ai_step 101 compare >/dev/null 2>&1 ) || rc=$?
+want "from a deleted folder, a valid answer still passes" "0" "$rc"
+
 echo "--- the strictness that is NOT in top-level required or type ---"
 # These four are the reason the check is one call to briefs/validate.sh. The half a
 # validator that used to live in this file read top-level `required` and top-level
@@ -123,6 +132,53 @@ want_in "and it says what it wanted" 'object' "$out"
 fix_ai compare '"just prose"' superpowers:requesting-code-review
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "a bare string is refused too" "22" "$rc"
+
+echo "--- an answer the contract refuses is asked for once more, with the reason ---"
+fix_schema compare "$SCHEMA_OBJ"
+driver_state_set 101 park_note ""
+calls() { grep -cx compare "$CLAUDE_LOG"; }
+session() { # <session-id> <answer> — a transcript the real runner would write, its session named
+  { jq -nc --arg s "$1" '{type:"system", subtype:"init", session_id:$s}'
+    jq -nc '{type:"assistant", message:{content:[{type:"tool_use", name:"Skill", input:{skill:"superpowers:requesting-code-review"}}]}}'
+    jq -nc --arg r "$2" --arg s "$1" '{type:"result", subtype:"success", is_error:false, session_id:$s, result:$r, structured_output:($r | try fromjson catch null)}'
+  }
+}
+session sess-1 '{"notes":"no differences key"}' > "$FIX/ai/compare.jsonl"
+jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\"differences\":[]}", structured_output:{differences:[]}}' > "$FIX/ai/compare.then.jsonl"
+before=$(calls)
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "the second answer, read, passes"           "0" "$rc"
+want "the model was asked exactly twice"         "2" "$(( $(calls) - before ))"
+want_in "the re-ask resumes the same session"    'sess-1' "$(cat "$FIX/claude-args-compare.txt")"
+want_in "and carries the validator's reason"     'differences' "$(cat "$FIX/claude-stdin-compare.txt")"
+want_in "and says it is the answer's shape"      'could not be read by the driver' "$(cat "$FIX/claude-stdin-compare.txt")"
+want "the answer kept is the second"             "[]" "$(jq -c '.differences' "$(driver_state_dir 101)/steps/compare.json")"
+want "and no note is left to park on later"      "" "$(driver_state_get 101 park_note)"
+
+echo "--- the re-ask is bounded: a second unreadable answer parks ---"
+session sess-2 '{"notes":"still no differences"}' > "$FIX/ai/compare.jsonl"
+before=$(calls)
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "it parks with the shape code"              "22" "$rc"
+want "after exactly one re-ask"                  "2" "$(( $(calls) - before ))"
+want_in "and the park names the validator's reason" 'differences' "$(driver_state_get 101 park_note)"
+driver_state_set 101 park_note ""
+
+echo "--- an answer that is not JSON is asked for again too; with no session, the whole brief goes ---"
+fix_ai compare 'Here is my answer: differences are none' superpowers:requesting-code-review
+jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\"differences\":[]}", structured_output:{differences:[]}}' > "$FIX/ai/compare.then.jsonl"
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "read on the second ask"                    "0" "$rc"
+want_not_in "no session to resume"               '--resume' "$(cat "$FIX/claude-args-compare.txt")"
+want_in "so the re-ask carries the brief itself" "$(head -1 "$DRIVER_BRIEFS/compare.md")" "$(cat "$FIX/claude-stdin-compare.txt")"
+want_in "and the reason"                         'not JSON' "$(cat "$FIX/claude-stdin-compare.txt")"
+
+echo "--- a question is not re-asked ---"
+fix_ai compare '{"question":"which screen is approved?"}' superpowers:requesting-code-review
+before=$(calls)
+rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
+want "a question parks at once"                  "20" "$rc"
+want "asked once"                                "1" "$(( $(calls) - before ))"
 
 echo "--- a schema file that does not parse disables nothing ---"
 # Present-and-unmatched is a refusal, and so is present-and-unreadable. A broken

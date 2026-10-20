@@ -68,6 +68,31 @@ that is all it proved — not that the evidence is of this change.
 
 JSON only, valid against `schemas/review.json`.
 
+<!-- fields:begin — generated from schemas/review.json by briefs/return-fields.sh --write review; edit the schema, never this list -->
+Every field the contract has; `additionalProperties` is false, so no other.
+
+- `step` (required): "review"
+- `skills` (required): list of string
+- `status` (required): one of "reviewed", "park"
+- `round` (required): integer
+- `verdict` (required): one of "SHIP", "BLOCKED"
+- `findings` (required): list of object
+- `findings[].id` (required): string
+- `findings[].file` (required): string
+- `findings[].line` (required): integer
+- `findings[].grade` (required): one of "critical", "major", "minor", "nit"
+- `findings[].summary` (required): string
+- `findings[].reason` (required): string
+- `findings[].fix` (required): string
+- `question`: string
+- `questionFor`: one of "owner", "pm"
+- `notes`: string
+
+Conditional:
+- when `verdict` is "SHIP": a further rule on `findings` (see the schema)
+- when `verdict` is "BLOCKED": a further rule on `findings` (see the schema)
+<!-- fields:end -->
+
 The verdict is read off the grades, never typed beside them: `SHIP` with a Critical
 or a Major, and `BLOCKED` with neither, are both refused. Every finding carries its
 file, its line (0 when it is on no line of a file, such as the pull request's
