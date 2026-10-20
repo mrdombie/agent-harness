@@ -52,6 +52,11 @@ error; the driver re-runs every gate straight after this step, and nothing is
 pushed past a red one. A red gate you believe this change did not cause goes in
 `deferred` with the proof — that parks the ticket for a person.
 
+A ratchet that says its baseline sits ABOVE actual, or names entries that no
+longer exist, is telling you the change made things better: run the lowering
+command it prints, commit the lowered baseline, and never undo the improvement to
+make the numbers meet. Only a number that ROSE wants a code fix.
+
 ## A test you reword or remove is accounted for
 
 If you remove, reword or skip an `it(`/`test(` case, list its file in

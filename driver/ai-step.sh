@@ -255,11 +255,17 @@ if [ "\$sub" = push ]; then
 fi
 exec "$real_git" "\$@"
 SHIM
+  # And no step writes the repo's settings: a build added a required check to the
+  # live develop ruleset with `gh api` from inside a step (2026-10-20).
+  local rsw="$KIT_ROOT/hooks/lib/repo-settings-write.sh"
   cat > "$shim/gh" <<SHIM
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in "pr ready"|"pr merge"|"pr create")
   echo "gh \$1 \$2 refused inside a driver step: the driver alone readies, arms and opens pull requests (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1 ;;
 esac
+if [ -f "$rsw" ] && bash "$rsw" gh "\$@"; then
+  . "$rsw"; echo "gh \$* refused inside a driver step: \$REPO_SETTINGS_WRITE_REASON (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1
+fi
 ${real_gh:+exec "$real_gh" "\$@"}
 echo "gh: not installed" >&2; exit 127
 SHIM

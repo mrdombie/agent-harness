@@ -54,6 +54,11 @@
           },
           {
             "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/no-repo-settings-write.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/guard-pre-approved-writes.sh",
             "timeout": 15
           }

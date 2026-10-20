@@ -385,6 +385,7 @@ driver_step_ship() { # <ticket>
   if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
   local routes required; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t")
+  local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
 $closes #$t
 
@@ -405,6 +406,10 @@ ${routes:+
 $routes
 }${required:+
 $required
+}${pmsteps:+
+## After merge (PM step)
+Repository settings this change needs. A build never makes them; the PM does, once this has merged.
+$pmsteps
 }${polish:+
 $polish
 }${replaced:+

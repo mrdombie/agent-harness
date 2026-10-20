@@ -361,6 +361,46 @@ _kit_spawn_held() {
   return 1
 }
 
+# toolkit_main_checkout_sane — the shared manifests in the main checkout are whole.
+# Every build folder's pre-push runs the project's checks through the main checkout's
+# node_modules and manifests, so one emptied package.json there failed every
+# builder's push for 1.5 hours (2026-10-19, #277). Each tracked manifest present in
+# the main checkout (package.json at depth 3 or less, the lockfiles) that is empty or
+# not valid JSON is restored from origin/<trunk> with one line said; one that cannot
+# be restored, or unmerged files in a checkout with an index, refuses the spawn with
+# the reason, rather than starting a build that cannot push.
+toolkit_main_checkout_sane() {
+  local ref="origin/${INTEGRATION_BRANCH:-develop}" f bad="" fixed="" tmp unmerged
+  git -C "$MAIN_REPO" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 || return 0
+  if [ "$(git -C "$MAIN_REPO" rev-parse --is-bare-repository 2>/dev/null)" = false ]; then
+    unmerged=$(git -C "$MAIN_REPO" diff --name-only --diff-filter=U 2>/dev/null | head -5 | tr '\n' ' ')
+    if [ -n "$unmerged" ]; then
+      echo "toolkit-env: the main checkout $MAIN_REPO has unmerged files (${unmerged% }) — every build's push runs through it. Finish or abort that merge there (git -C $MAIN_REPO merge --abort), then spawn again." >&2
+      return 1
+    fi
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$MAIN_REPO/$f" ] || continue
+    if [ -s "$MAIN_REPO/$f" ]; then
+      case "$f" in *.json) jq empty "$MAIN_REPO/$f" >/dev/null 2>&1 && continue ;; *) continue ;; esac
+    fi
+    tmp="$MAIN_REPO/$f.harness-restore.$$"
+    if git -C "$MAIN_REPO" cat-file blob "$ref:$f" > "$tmp" 2>/dev/null && [ -s "$tmp" ] && mv -f "$tmp" "$MAIN_REPO/$f"; then
+      fixed="$fixed $f"
+    else
+      rm -f "$tmp"; bad="$bad $f"
+    fi
+  done <<EOF
+$(git -C "$MAIN_REPO" ls-tree -r --name-only "$ref" 2>/dev/null | grep -E '^([^/]+/){0,3}package\.json$|^(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lock)$')
+EOF
+  [ -z "$fixed" ] || echo "toolkit-env: restored$fixed in the main checkout $MAIN_REPO from $ref — it was empty or not valid JSON, and every build's push reads it." >&2
+  if [ -n "$bad" ]; then
+    echo "toolkit-env: the main checkout $MAIN_REPO has a broken shared manifest that could not be restored from $ref:$bad — every build's push would fail on it. Restore it by hand, then spawn again." >&2
+    return 1
+  fi
+  return 0
+}
+
 toolkit_spawn_root() {
   local sha base dir lock n old
   git -C "$MAIN_REPO" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
@@ -372,8 +412,26 @@ toolkit_spawn_root() {
     echo "toolkit-env: no origin/$INTEGRATION_BRANCH in '$MAIN_REPO' — refusing to start a run in a tree whose version nothing can name." >&2
     return 1
   fi
+  # A broken shared manifest in the main checkout fails every builder's push; it is
+  # repaired (or the spawn refused) here, before a run starts, not found by a push.
+  toolkit_main_checkout_sane || return 1
   base="${TMPDIR:-/tmp}"; base="${base%/}"
-  dir="$base/harness-spawn-$(printf '%.12s' "$sha")"
+  # KEYED BY CLONE AND COMMIT. Keyed by commit alone, two clones of one project on a
+  # machine shared one checkout: a run spawned for clone B started in clone A's, its
+  # MAIN_REPO resolved to A, and ensure-hooks parked every build (#278).
+  local mreal mkey common
+  mreal=$(cd "$MAIN_REPO" 2>/dev/null && pwd -P) || mreal="$MAIN_REPO"
+  mkey=$(printf '%s' "$mreal" | git hash-object --stdin 2>/dev/null | cut -c1-8)
+  dir="$base/harness-spawn-${mkey:+$mkey-}$(printf '%.12s' "$sha")"
+  # And on reuse, the checkout must still belong to this clone.
+  if [ -f "$dir.ready" ]; then
+    common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    common=$(cd "$common" 2>/dev/null && pwd -P)
+    case "$common" in
+      "$mreal"|"$mreal/.git") ;;
+      *) rm -f "$dir.ready" ;;
+    esac
+  fi
   if [ ! -f "$dir.ready" ]; then
     lock="$dir.lock"
     if mkdir "$lock" 2>/dev/null; then
@@ -405,6 +463,11 @@ toolkit_spawn_root() {
     [ "$old" = "$dir" ] && continue
     command -v lsof >/dev/null 2>&1 || continue
     _kit_spawn_held "$old" "$held" && continue
+    # Another clone's checkout is that clone's to retire: removed from here, its
+    # worktree record in the other clone would dangle.
+    common=$(git -C "$old" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    common=$(cd "$common" 2>/dev/null && pwd -P)
+    case "$common" in ""|"$mreal"|"$mreal/.git") ;; *) continue ;; esac
     git -C "$MAIN_REPO" worktree remove --force "$old" >/dev/null 2>&1 || rm -rf "$old"
     rm -f "$old.ready"
   done

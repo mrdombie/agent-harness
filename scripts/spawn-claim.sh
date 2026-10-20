@@ -246,6 +246,8 @@ export CLAIM_RUN_ID="$RUN_ID"
 export CLAIM_RUN_LOG="$LOG"
 export CLAIM_AGENT="$(toolkit_login)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)"   # resolved once per run, inherited by every claim-lock call
 
+# The spawner's clone wins over whatever the run's cwd resolves to (#278).
+export HARNESS_MAIN_REPO="$MAIN_REPO"
 SPAWN_ROOT=$(toolkit_spawn_root) || exit 1
 cd "$SPAWN_ROOT" || exit 1   # the branch's checkout: skills, guard rules, reviewers and CLAUDE.md load from its .claude/
 

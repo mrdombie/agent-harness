@@ -162,6 +162,14 @@
     "notes": {
       "type": "string"
     },
+    "pmAfterMerge": {
+      "description": "Repository settings this ticket needs changed: a ruleset, branch protection, a required check, collaborators, webhooks, secrets, the repo or org record. A build never makes them, and they are not tasks. Each entry is one change in plain words with its exact command; the driver posts them on the ticket and in the pull request as a PM step after merge.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "designRef": {
       "description": "The approved picture and where that approval is recorded: a URL, or a path on this branch. Required whenever designSource is approved-picture.",
       "type": "string",

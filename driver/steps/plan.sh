@@ -73,6 +73,22 @@ driver_step_plan() { # <ticket>
   # The screen states the change shows in, for the renderer to capture exactly.
   driver_state_set "$t" screen_states "$(jq -c '.screenStates // []' "$ans")"
   driver_state_set "$t" screen_change "$(jq -r '.screenChange // ""' "$ans")"
+  # REPO SETTINGS ARE THE PM'S, AFTER THE MERGE. A build changed the live develop
+  # ruleset from inside a step (2026-10-20); the step's gh now refuses that, and a
+  # plan that needs one hands it on here instead of leaving a build to try.
+  local pm
+  pm=$(jq -r '(.pmAfterMerge // [])[] | "- " + .' "$ans" 2>/dev/null)
+  driver_state_set "$t" pm_after_merge "$pm"
+  if [ -n "$pm" ]; then
+    swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(
+      printf '**PM step after merge** — repository settings this ticket needs. A build never changes them; the PM makes these once the pull request has merged.
+
+%s
+' "$pm"
+    )" >/dev/null 2>&1 || true
+    driver_say "   plan: $(printf '%s
+' "$pm" | grep -c .) repo-settings change(s) handed to the PM for after the merge"
+  fi
   driver_say "   plan: $(jq -r '[.tasks[]?] | length' "$ans") task(s), $(jq -r '[.tasks[]?.files[]?] | length' "$ans") file(s), $ntests test(s); posted on #$t"
   return "$DRIVER_OK"
 }
