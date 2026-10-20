@@ -2,6 +2,7 @@
 # ci-evidence.sh — the screenshots of a pixel PR come from CI, not from the agent.
 #
 #   ci-evidence.sh status <pr>                 state=… sha=… head=… shots=N reason=…
+#                                              (+ nothing=<head> when CI decided that head needs no picture)
 #   ci-evidence.sh wait <pr> [<max-seconds>]   wait in the shell until CI has pinned shots
 #   ci-evidence.sh shots <pr>                  the pinned links, one per line
 #   ci-evidence.sh fetch <pr> <dir>            download them; one line each: name<TAB>path<TAB>theme<TAB>route
@@ -238,8 +239,12 @@ status() { # <pr>
         echo "state=stale"; echo "reason=CI kept the shots it pinned at ${evsha:0:9}, and since then $(printf '%s' "$mv" | head -3 | tr '\n' ' ')changed what this PR's screens render — they need a fresh capture"
       elif [ -n "$evsha" ] && [ "$n" -gt 0 ]; then
         echo "state=pinned"; echo "reason=CI kept the shots it pinned at ${evsha:0:9}: nothing since changes this PR's screens"
+      elif [ "$dec" = completed/success ]; then
+        # CI's own record that this head has nothing to photograph; `nothing=` names the head it holds for.
+        echo "state=none"; echo "nothing=$head"; echo "reason=CI decided nothing on ${head:0:9} needs a picture"
       else
-        echo "state=none"; echo "reason=CI decided nothing on ${head:0:9} needs a picture"
+        # The capture skipped because the decide check never ran: CI has not decided anything.
+        echo "state=none"; echo "reason='$EV_DECIDE' was ${dec:-not run} on ${head:0:9} — CI only captures a ready PR the project arms for merge; check the PR is ready and armed"
       fi
       return ;;
     completed/success)

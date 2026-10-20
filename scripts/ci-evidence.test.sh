@@ -77,6 +77,8 @@ pr 5 "$(h 5)" false "no routes here"; runs "$(h 5)" - completed/failure
 pr 6 "$(h 6)" false "$body_routes"; runs "$(h 6)" completed/failure completed/success
 # 7 capture skipped, nothing pinned → none
 pr 7 "$(h 7)" false "$body_routes"; runs "$(h 7)" completed/skipped completed/success
+# 24 capture and decide both skipped (the PR is not armed): CI decided nothing
+pr 24 "$(h 24)" false "$body_routes"; runs "$(h 24)" completed/skipped completed/skipped
 # 8 nothing yet
 pr 8 "$(h 8)" false "$body_routes"
 # 9 a hand-pinned link outside CI's block is not CI's evidence
@@ -165,6 +167,8 @@ core() { # <script> → failed cases, one per line
   o=$(st "$s" 5); [ "$o" = failed ] || echo "a failed decide check read $o"
   o=$(st "$s" 6); [ "$o" = failed ] || echo "a failed capture read $o"
   o=$(st "$s" 7); [ "$o" = none ] || echo "a skipped capture with nothing pinned read $o"
+  o=$(bash "$s" status 7 2>/dev/null | sed -n 's/^nothing=//p'); [ "$o" = "$(h 7)" ] || echo "CI's nothing-to-photograph decision did not name its head ($o)"
+  o=$(bash "$s" status 24 2>/dev/null | grep -c '^nothing='); [ "$o" = 0 ] || echo "a decide check that never ran read as CI's nothing-to-photograph record"
   o=$(st "$s" 8); [ "$o" = pending ] || echo "no capture yet read $o"
   o=$(st "$s" 9); [ "$o" = pending ] || echo "a hand-pinned link outside the block read $o"
   runs "$(h 10)" completed/skipped completed/success
@@ -296,4 +300,6 @@ plant "local capture on by default"          '"${HARNESS_LOCAL_EVIDENCE:-0}" = 1
 plant "wait never gives up"                  '-ge "$max" ]'                              '-ge 999999 ]'                    'wait on nothing-yet exited'
 plant "routes list not required"             '[ -n "$list" ] || {'                       'true || {'                       'a body with no routes list passed'
 plant "the evidence dir is hardcoded"        'EV_DIR=$(cfg evidence.dir "docs/evidence")' 'EV_DIR=docs/evidence'           'the evidence dir from project config was ignored'
+plant "a decide that never ran is CI's no-picture record" '      elif [ "$dec" = completed/success ]; then' '      elif true; then' 'a decide check that never ran read as'
+plant "the no-picture record names no head" 'echo "nothing=$head"; ' '' 'nothing-to-photograph decision did not name its head'
 exit $fail
