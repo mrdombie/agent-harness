@@ -671,6 +671,31 @@ want_in "the body names every required shot"       'Required evidence' "$(cat "$
 want_in "including the phone frame"                'voices-share-phone-light' "$(cat "$GH_LOG")"
 want_in "and the picture's routes are the evidence routes" '- /voices/share' "$(cat "$GH_LOG")"
 
+echo "--- an older picture with no region markers: its frames are planned ---"
+# Approved before the markers existed, it draws two frames and a phone inside one.
+# Ship once planned nothing for it; the regions are derived on the build's route.
+: > "$GH_LOG"
+setup_wt 197
+mkdir -p "$FIX/wt197/.design"
+cat > "$FIX/wt197/.design/desk-mock.html" <<'HTML'
+<html><body>
+<div class="frame" id="arriving"><h3>Arriving</h3><div class="phone">on a phone</div></div>
+<section class="frame" id="empty"><h3>No rooms yet</h3></section>
+</body></html>
+HTML
+git -C "$FIX/wt197" add .design; git -C "$FIX/wt197" commit -qm "feat: the desk, to the picture"
+driver_state_set 197 screen_states '[{"route":"/desk"}]'
+driver_state_put 197 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 197 review
+for st in start plan build self-check review record; do driver_state_done 197 "$st"; done
+rc=0; out=$(driver_step_ship 197 2>&1) || rc=$?
+want "it ships"                                       "0" "$rc"
+want "each frame of the older picture is planned"     "arriving-laptop-light arriving-phone-light empty-laptop-light" \
+  "$(jq -r '[.shots[].name] | join(" ")' "$FIX/wt197/docs/evidence/197/plan.json" 2>/dev/null)"
+want "on the build's own route"                       "/desk" \
+  "$(jq -r '[.shots[].route] | unique | join(" ")' "$FIX/wt197/docs/evidence/197/plan.json" 2>/dev/null)"
+want_in "and ship says how the regions were found"    'desk-mock.html: frames' "$out"
+want_in "the body names the derived shots"            'arriving-phone-light' "$(cat "$GH_LOG")"
+
 echo "--- a design verdict this run committed is never pushed ---"
 : > "$GH_LOG"
 setup_wt 196

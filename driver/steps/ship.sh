@@ -95,7 +95,12 @@ _driver_ship_closes() {
 # '## Evidence routes' list CI takes no pictures and the design critic never runs.
 _driver_ship_routes() {
   # The approved picture's routes first, and all of them: it says what is owed.
-  driver_state_get "$1" picture_shots | cut -f2 | grep '^/' | awk '!seen[$0]++'
+  { driver_state_get "$1" picture_shots | cut -f2 | grep '^/'
+    _driver_ship_page_routes "$@"; } | awk '!seen[$0]++'
+}
+
+# _driver_ship_page_routes <ticket> <tree> <trunk> — the routes the build's own screens are on.
+_driver_ship_page_routes() {
   { driver_state_get "$1" screen_states | jq -r '.[]?.route // empty' 2>/dev/null
     git -C "$2" diff --name-only "$3"...HEAD 2>/dev/null \
       | grep -E '/app/.*page\.(t|j)sx?$' | sed -E 's#^.*/app/##; s#(^|/)page\.[tj]sx?$##; s#\([^/]*\)/?##g; s#/$##; s#^#/#'
@@ -128,16 +133,21 @@ _driver_ship_evidence_plan() {
   [ -n "$pics" ] || return 0
   local -a paths=(); local f
   while IFS= read -r f; do paths+=("$wt/$f"); done <<<"$pics"
-  req=$(python3 -I "$pe" required "${paths[@]}" 2>/dev/null) || rc=$?
+  # A picture approved before the region markers has its regions derived — its frames,
+  # else these routes at laptop/phone x light/dark — the same way the judge reads it.
+  local -a popt=(--derive)
+  while IFS= read -r f; do [ -n "$f" ] && popt+=(--route "$f"); done <<<"$(_driver_ship_page_routes "$t" "$wt" "$trunk")"
+  req=$(python3 -I "$pe" required "${popt[@]}" "${paths[@]}" 2>/dev/null) || rc=$?
   if [ "$rc" -eq 3 ]; then
-    driver_say "   ship: the approved picture ($(printf '%s' "$pics" | tr '\n' ' '| sed 's/ $//')) declares no evidence regions, so the critic holds every frame it draws against CI's shots"
+    driver_say "   ship: the approved picture ($(printf '%s' "$pics" | tr '\n' ' '| sed 's/ $//')) declares no evidence regions and draws no frame, and the branch names no route to derive them from"
     return 0
   fi
+  driver_say "   ship: the approved picture's $(python3 -I "$pe" derivation "${popt[@]}" "${paths[@]}" 2>/dev/null | awk -F'\t' '{ printf "%s%s: %s (%s)", (NR > 1 ? "; " : ""), $1, $2, $3 }' | sed "s#$wt/##g")"
   [ "$rc" -eq 0 ] || { driver_say "   ship: the approved picture's regions could not be read (exit $rc)"; return 0; }
   driver_state_set "$t" picture_shots "$req"
   driver_state_set "$t" picture_files "$pics"
   dir=$(driver_opt evidence.dir "docs/evidence")/$t; plan="$dir/plan.json"
-  new=$(python3 -I "$pe" plan --into "$wt/$plan" "${paths[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the picture's shots"; return 0; }
+  new=$(python3 -I "$pe" plan "${popt[@]}" --into "$wt/$plan" "${paths[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the picture's shots"; return 0; }
   if [ -f "$wt/$plan" ] && [ "$(jq -S . "$wt/$plan" 2>/dev/null)" = "$(printf '%s' "$new" | jq -S . 2>/dev/null)" ]; then return 0; fi
   mkdir -p "$wt/$dir" && printf '%s\n' "$new" > "$wt/$plan" || return 0
   git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
