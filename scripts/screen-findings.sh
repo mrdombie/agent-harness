@@ -32,7 +32,7 @@ PL="${SCREEN_FINDINGS_POLISH:-$(dirname "${BASH_SOURCE[0]}")/polish-list.sh}"
 
 die() { echo "screen-findings: $*" >&2; exit 2; }
 RESOLVED='^[[:space:]]*[-*]?[[:space:]]*\(?(none|nothing|n/?a|0|zero|gone|resolved|fixed|no (issues?|findings?))\)?[[:space:]]*[.!]?[[:space:]]*$|(—|–|:|\(|-)[[:space:]]*(now[[:space:]]+)?(gone|resolved|fixed)[[:space:]]*\)?[[:space:]]*[.!]?[[:space:]]*$'
-resolved() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' | grep -qE "$RESOLVED"; } # <text without its grade>
+resolved() { local t; t=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]'); grep -qE "$RESOLVED" <<<"$t"; } # <text without its grade>
 
 # grade_of <text> → "critical|major|minor \t text without the grade"
 grade_of() {
