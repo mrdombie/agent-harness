@@ -248,6 +248,8 @@ driver_step_reenter() { # <ticket>
     base=$(git -C "$wt" merge-base "origin/$INTEGRATION_BRANCH" HEAD 2>/dev/null)
     [ -z "$base" ] || driver_state_set "$t" claimed_at_sha "$base"
   fi
+  # Origin's head may carry a merge of the trunk the tree's install was never linked with.
+  driver_refresh_install "$repo" "$wt" || driver_say "   reenter: relinking the install in $wt failed — self-check tries again."
   driver_state_set "$t" pr "$pr"
   driver_state_set "$t" merge_state "$mstate"
 

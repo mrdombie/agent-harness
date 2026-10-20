@@ -160,4 +160,55 @@ rm -rf "$LW/node_modules"
 out=$(LINK_NODE_MODULES_INSTALL='false' bash "$SCRIPT" "$LS" "$LW" 2>&1); rc=$?
 want "a failed own install exits 1" 1 "$rc"
 
+echo "--- the fingerprint: --if-stale rebuilds only when the manifests moved ---"
+FW="$FIX/fp-wt"; FS="$FIX/fp-sh"; mkdir -p "$FW" "$FS"; build_shared "$FS"
+printf '{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"1.0.0"}}}\n' > "$FS/package-lock.json"
+cp "$FS/package.json" "$FS/package-lock.json" "$FW/"; pkg "$FW/packages/ui" "@acme/ui"
+bash "$SCRIPT" "$FS" "$FW" >/dev/null 2>&1
+want "a linked install carries a 'linked' fingerprint" "linked" "$(cut -d' ' -f1 "$FW/node_modules/.harness-link-stamp" 2>/dev/null)"
+want "…a sha256" "64" "$(cut -d' ' -f2 "$FW/node_modules/.harness-link-stamp" 2>/dev/null | tr -d '\n' | wc -c | tr -d ' ')"
+rm -f "$FW/node_modules/left-pad"                       # the planted absence
+out=$(bash "$SCRIPT" --if-stale "$FS" "$FW" 2>&1); rc=$?
+want "unchanged manifests: exits 0" 0 "$rc"
+want "…says it is up to date" "yes" "$(printf '%s' "$out" | grep -q 'up to date' && echo yes || echo no)"
+want "…and relinks nothing" "absent" "$([ -e "$FW/node_modules/left-pad" ] && echo present || echo absent)"
+# The trunk adds a package: both lockfiles move together, the shared clone installs it.
+printf '{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"1.0.0"},"node_modules/@axe-core/playwright":{"version":"4.0.0"}}}\n' > "$FS/package-lock.json"
+mkdir -p "$FS/node_modules/@axe-core/playwright"; cp "$FS/package-lock.json" "$FW/"
+out=$(bash "$SCRIPT" --if-stale "$FS" "$FW" 2>&1); rc=$?
+want "moved lockfile: exits 0" 0 "$rc"
+want "…the new package resolves" "$FS/node_modules/@axe-core/playwright" "$(real "$FW/node_modules/@axe-core/playwright")"
+want "…the planted absence is relinked too" "$FS/node_modules/left-pad" "$(real "$FW/node_modules/left-pad")"
+want "…and it is the shared install, linked" "yes" "$([ -f "$FW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+# A workspace's package.json is in the fingerprint too.
+printf '{"name":"@acme/ui","version":"0.0.1","dependencies":{"left-pad":"1"}}\n' > "$FW/packages/ui/package.json"
+out=$(bash "$SCRIPT" --if-stale "$FS" "$FW" 2>&1)
+want "a workspace manifest change rebuilds" "yes" "$(printf '%s' "$out" | grep -q 'changed since' && echo yes || echo no)"
+
+echo "--- an own install made from an older lockfile is made again ---"
+printf '{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"2.0.0"}}}\n' > "$FW/package-lock.json"
+LINK_NODE_MODULES_INSTALL='mkdir -p node_modules/v2' bash "$SCRIPT" --if-stale "$FS" "$FW" >/dev/null 2>&1
+want "an own install carries an 'own' fingerprint" "own" "$(cut -d' ' -f1 "$FW/node_modules/.harness-link-stamp" 2>/dev/null)"
+printf '{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"3.0.0"}}}\n' > "$FW/package-lock.json"
+out=$(LINK_NODE_MODULES_INSTALL='mkdir -p node_modules/v3' bash "$SCRIPT" --if-stale "$FS" "$FW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want "…the new install ran" "yes" "$([ -d "$FW/node_modules/v3" ] && echo yes || echo no)"
+want "…over a clean directory, not the old one" "absent" "$([ -e "$FW/node_modules/v2" ] && echo present || echo absent)"
+out=$(LINK_NODE_MODULES_INSTALL='mkdir -p node_modules/v4' bash "$SCRIPT" --if-stale "$FS" "$FW" 2>&1)
+want "…and an up-to-date own install is not made again" "absent" "$([ -e "$FW/node_modules/v4" ] && echo present || echo absent)"
+
+echo "--- an own install whose lockfile now matches the shared one is linked instead ---"
+cp "$FS/package-lock.json" "$FW/"
+out=$(bash "$SCRIPT" --if-stale "$FS" "$FW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want "…it is linked again" "yes" "$([ -f "$FW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+want "…the own install is gone" "absent" "$([ -e "$FW/node_modules/v3" ] && echo present || echo absent)"
+want "…the shared package resolves" "$FS/node_modules/@axe-core/playwright" "$(real "$FW/node_modules/@axe-core/playwright")"
+
+echo "--- a real install this script did not make is still left alone under --if-stale ---"
+RW="$FIX/real-wt"; mkdir -p "$RW/node_modules/react"; cp "$FS/package.json" "$RW/"
+out=$(bash "$SCRIPT" --if-stale "$FS" "$RW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want "…react untouched, nothing linked" "react" "$(ls -A "$RW/node_modules")"
+
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAIL"; exit 1; }

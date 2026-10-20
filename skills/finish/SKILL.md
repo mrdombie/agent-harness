@@ -1109,7 +1109,10 @@ git merge origin/develop || { git merge --abort; echo "CONFLICTED — resolve de
 ```
 
 And after ANY drift-retry merge (clean or resolved): re-run the gates before
-pushing — the merged result is new code that has never been gated.
+pushing — the merged result is new code that has never been gated. Relink the
+install first, because develop can bring a package the worktree was never linked
+with: `bash "$KIT_ROOT/scripts/link-node-modules.sh" --if-stale "$MAIN_REPO" "$PWD"`
+(a no-op when the lockfile and package.json files have not moved).
 
 (Note: `gh pr merge` will print a "failed to run git: 'develop' is already used by worktree" warning when run inside a worktree. The merge itself happens server-side and succeeds; the warning is gh attempting a local checkout it doesn't need. Verify with `gh pr view "$PR_NUMBER" --json state -q '.state'` — should be `MERGED`.)
 

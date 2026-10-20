@@ -83,6 +83,17 @@ driver_link_install() {
   bash "$KIT_ROOT/scripts/link-node-modules.sh" "$1" "$2" >&2
 }
 
+# driver_refresh_install <repo> <tree> — machine setup before anything reads the tree's
+# install: relinked only when the tree's lockfile or package.json files (or the shared
+# clone's lockfile) moved since it was linked. A merge of the trunk brings new packages,
+# and nothing else re-runs the linker. The shared clone itself is never relinked.
+# 0 up to date, relinked, or nothing to do · 1 the relink failed.
+driver_refresh_install() {
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -d "$2" ] || return 0
+  [ "$1" -ef "$2" ] && return 0
+  bash "$KIT_ROOT/scripts/link-node-modules.sh" --if-stale "$1" "$2" >&2
+}
+
 DRIVER_OK=0
 DRIVER_E_QUESTION=20
 DRIVER_E_NO_SKILL=21
