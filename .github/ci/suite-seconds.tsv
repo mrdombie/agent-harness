@@ -68,6 +68,7 @@
 37	scripts/coordinator-sheet.test.sh
 419	scripts/coordinator-tick.test.sh
 2	scripts/ensure-hooks.test.sh
+4	scripts/evidence-gaps.test.sh
 4	scripts/fix-lock.test.sh
 89	scripts/gh-calls.test.sh
 2	scripts/gh-open-prs-paged.test.sh

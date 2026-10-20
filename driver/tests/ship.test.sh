@@ -696,6 +696,19 @@ want "on the build's own route"                       "/desk" \
 want_in "and ship says how the regions were found"    'desk-mock.html: frames' "$out"
 want_in "the body names the derived shots"            'arriving-phone-light' "$(cat "$GH_LOG")"
 
+echo "--- no picture binds the ticket: its changed screens at laptop/phone x light/dark (#297) ---"
+: > "$GH_LOG"
+setup_wt 198
+driver_state_set 198 screen_states '[{"route":"/desk"}]'
+driver_state_put 198 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 198 review
+for st in start plan build self-check review record; do driver_state_done 198 "$st"; done
+rc=0; out=$(driver_step_ship 198 2>&1) || rc=$?
+want "it ships"                                       "0" "$rc"
+want "the route is planned at both widths and themes" "/desk laptop light,/desk laptop dark,/desk phone light,/desk phone dark" \
+  "$(jq -r '[.shots[] | "\(.route) \(.viewport) \(.theme)"] | join(",")' "$FIX/wt198/docs/evidence/198/plan.json" 2>/dev/null)"
+want "and the plan is committed"                      "" "$(git -C "$FIX/wt198" status --porcelain)"
+want_in "the body names its route"                    '- /desk' "$(cat "$GH_LOG")"
+
 echo "--- a design verdict this run committed is never pushed ---"
 : > "$GH_LOG"
 setup_wt 196

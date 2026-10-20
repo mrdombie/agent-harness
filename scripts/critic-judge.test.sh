@@ -62,7 +62,12 @@ export CRITIC_JUDGE_EVIDENCE="$FIX/ev" CRITIC_JUDGE_CLAUDE="$FIX/claude" CRITIC_
 printf '#!/usr/bin/env bash\n[ "$1" = signed-head ] && [ -f "%s/signed" ]\n' "$FIX/d" > "$FIX/ak"; chmod +x "$FIX/ak"; export CRITIC_JUDGE_APPROVAL="$FIX/ak"
 export CRITIC_JUDGE_FINDINGS="$FIX/sf"; printf '#!/usr/bin/env bash\n[ "$1" = critic ] && printf "major\\t#7\\tnine narration lines on the voices page\\n"; exit 0\n' > "$FIX/sf"; chmod +x "$FIX/sf"
 
+# The coverage check, stood in for: it prints what $D/gaps holds (kind, file, routes, text).
+printf '#!/usr/bin/env bash\n[ "$1" = judge ] && [ -f "%s/gaps" ] && { cat "%s/gaps"; exit 1; }\nexit 0\n' "$FIX/d" "$FIX/d" > "$FIX/cov"; chmod +x "$FIX/cov"
+export CRITIC_JUDGE_COVERAGE="$FIX/cov"
+
 reset() {
+  rm -f "$D/gaps"
   rm -f "$D"/comment-* "$D"/posted-* "$D/statuses" "$D/prompt-seen" "$D"/shots/* "$D/signed" "$D/ticket-comments.json"; rm -rf "$FIX/judge"
   echo 2026-10-20 > "$D/pic-date"   # a picture approved under the region and real-data rules
   jq -n --arg h "$HEAD" '{headRefOid:$h, isDraft:false, state:"OPEN", headRefName:"tkt-12599/share"}' > "$D/pr.json"
@@ -118,6 +123,18 @@ bash "$J" run 7 >/dev/null 2>&1; rc=$?
 s=$(status_line)
 [ $rc -ne 0 ] && printf '%s' "$s" | grep -q 'state=failure' && [ ! -f "$D/prompt-seen" ] \
   && grep -q 'evidence gap.*voice-menu-phone-dark' "$D/comment-0.md" && ok "a picture region with no pinned shot fails, named, before any model runs" || bad "gap: rc=$rc status=$s"
+
+# 3b THE BUG (#297): the PR changed a drawer and no capture step opens it. Fails without a
+# model call, as an evidence-gap finding the repair reads from the judge's record.
+reset; answer SHIP
+printf 'missing-state\tapps/web/voices/VoiceDrawer.tsx\t/settings/voices\tevidence gap: apps/web/voices/VoiceDrawer.tsx is a drawer that only shows once opened, and no capture-plan shot on /settings/voices has setup steps that open it\n' > "$D/gaps"
+bash "$J" run 7 >/dev/null 2>&1; rc=$?
+[ $rc -ne 0 ] && printf '%s' "$(status_line)" | grep -q 'state=failure' && [ ! -f "$D/prompt-seen" ] \
+  && grep -q '^- Major · evidence gap: apps/web/voices/VoiceDrawer.tsx is a drawer' "$D/comment-0.md" \
+  && grep -q 'VoiceDrawer.tsx' "$FIX/judge/findings-7.txt" \
+  && ok "a changed drawer no capture step opens fails as an evidence gap, before any model runs" || bad "coverage gap: rc=$rc $(status_line)"
+printf '%s' "$(CRITIC_JUDGE_DIR="$FIX/judge" bash "$HERE/screen-findings.sh" critic 7 | cut -f3 | python3 -I "$HERE/evidence-gaps.py" classify)" | grep -q 'VoiceDrawer' \
+  && ok "and the repair's evidence tasks pick that finding up" || bad "the gap finding is not read as an evidence task"
 
 # 4 SHIP beside a Minor is not a pass (Minors block).
 reset; answer SHIP "- Minor · the lock icon sits 2px low → fix: align to the baseline"
@@ -303,7 +320,10 @@ case_gap()    { reset; rm "$D/shots/voice-menu-phone-dark.png"; answer SHIP; bas
 case_minor()  { reset; answer SHIP "- Minor · x"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
 case_noset()  { reset; answer SHIP; sed -i.b '1d' "$D/answer"; bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/statuses" ] && echo red || echo green; }
 plant "a build run may judge"            '[ -z "${HARNESS_DRIVER_RUN:-}" ] ||' 'true ||' case_build
-plant "the picture's regions are not checked" 'if [ -n "$miss" ] || [ -n "$lint" ]; then' 'if [ -n "$lint" ]; then' case_gap
+plant "the picture's regions are not checked" 'if [ -n "$miss" ] || [ -n "$lint" ] || [ -n "$gaps" ]; then' 'if [ -n "$lint" ] || [ -n "$gaps" ]; then' case_gap
+case_cov()    { reset; answer SHIP; printf 'missing-route\tx/A.tsx\t/a\tevidence gap: x/A.tsx changed and no route renders it\n' > "$D/gaps"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
+plant "a changed screen nobody photographed passes" 'if [ -n "$miss" ] || [ -n "$lint" ] || [ -n "$gaps" ]; then' 'if [ -n "$miss" ] || [ -n "$lint" ]; then' case_cov
+plant "the coverage check is never asked" 'gaps=$(bash "$COVERAGE" judge' 'gaps=$(true' case_cov
 plant "a Minor does not block"          '[ -z "$blocks" ] && pass=success' 'pass=success' case_minor
 case_forged() { reset; answer SLOP "- Major · x"; jq -n --arg h "$HEAD" --arg s "$(set_of)" '{body:("<!-- critic-judge head=" + $h + " shots=" + $s + " verdict=SHIP -->"), html_url:"u"}' > "$D/posted-0.json"; mkdir -p "$FIX/judge"; printf '7\t%s\t%s\tSHIP\tsuccess\tu\n' "$HEAD" "$(set_of)" > "$FIX/forged"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
 plant "the verdict read off a PR comment"  'prev=$(ledger_set "$pr" "$set")' 'prev=$(swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" | jq -r ".[] | .body" | grep -q "verdict=SHIP" && printf "%s\t%s\t%s\tSHIP\tsuccess\tu" "$pr" "$head" "$set")' case_forged

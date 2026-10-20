@@ -357,4 +357,61 @@ want "a push that got past the shim refuses the step" "24" "$rc"
 want_in "naming what moved"                'origin/tkt-322/work moved' "$out"
 want_in "and the park says so"             'moved during the repair step' "$(driver_state_get 322 park_note)"
 
+echo "--- evidence owed is work: a repair told to add shots edits the capture plan (#297) ---"
+# Three repairs in one day were told to add shots (a drawer open, dark, 390) and pushed
+# without touching the capture plan: nothing red said the evidence was short.
+cat > "$FIX/evgaps" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  tasks)    [ -f "$FIX/ev-tasks" ] && sed 's/^/- /' "$FIX/ev-tasks"; exit 0 ;;
+  coverage) [ -f "$FIX/ev-left" ] && { cat "$FIX/ev-left"; exit 1; }; exit 0 ;;
+esac
+SH
+chmod +x "$FIX/evgaps"; export DRIVER_EVIDENCE_GAPS="$FIX/evgaps"
+printf 'evidence gap: apps/web/PersonDrawer.tsx is a drawer that only shows once opened, and no capture-plan shot opens it\n' > "$FIX/ev-tasks"
+PLANCMD="python3 -I $KIT_ROOT/scripts/evidence-gaps.py check-plan docs/evidence/370/plan.json"
+plan_fix() { jq -nc --arg c "$1" '{what:"the drawer is photographed open", proof:"gate", change:[{path:"docs/evidence/370/plan.json", action:"create"}], command:$c, noTestBecause:"evidence, not behaviour"}'; }
+
+setup 370; prs 370 CLEAN
+cat > "$FIX/ai/repair.sh" <<'SH'
+mkdir -p docs/evidence/370
+printf '{"shots":[{"name":"drawer-open-laptop-light","route":"/home","viewport":"laptop","theme":"light","setup":["click the \\"Ann\\" button"]}]}\n' > docs/evidence/370/plan.json
+git add docs && git commit -qm "chore(evidence-plan): the drawer open"
+SH
+answer "$(repaired "$(plan_fix "$PLANCMD")")"
+out=$(driver_step_repair 370 2>&1); rc=$?
+want "with nothing red, evidence owed still calls the model" "repair" "$(cat "$CLAUDE_LOG")"
+want_in "the evidence tasks reach the brief"   'PersonDrawer.tsx is a drawer' "$(cat "$FIX/claude-stdin-repair.txt")"
+want_in "said as edits to the capture plan"     'docs/evidence/370/plan.json' "$(cat "$FIX/claude-stdin-repair.txt")"
+want "a repair that adds the shot to the plan finishes" "0" "$rc"
+
+setup 371; prs 371 CLEAN
+cat > "$FIX/ai/repair.sh" <<'SH'
+printf 'value=good\n' > value371.txt; git add . && git commit -qm "fix: code only"
+SH
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+out=$(driver_step_repair 371 2>&1); rc=$?
+want "a repair that changes code and leaves the plan alone is asked again, then refused" "24" "$rc"
+want "asked twice"                              "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want_in "the second ask names what is open"    'LEFT THE EVIDENCE OPEN' "$(cat "$FIX/claude-stdin-repair.txt")"
+want_in "and the park says the plan is unchanged" 'capture plan docs/evidence/371/plan.json is unchanged' "$(driver_state_get 371 park_note)"
+
+setup 372; prs 372 CLEAN
+sed 's/370/372/g' > "$FIX/ai/repair.sh" <<'SH'
+mkdir -p docs/evidence/370
+printf '{"shots":[{"name":"home-laptop-light","route":"/home","viewport":"laptop","theme":"light"}]}\n' > docs/evidence/370/plan.json
+git add docs && git commit -qm "chore(evidence-plan): a shot that opens nothing"
+SH
+printf 'missing-state\tapps/web/PersonDrawer.tsx\t/home\tevidence gap: still unopened\n' > "$FIX/ev-left"
+answer "$(repaired "$(plan_fix "${PLANCMD//370/372}")")"
+out=$(driver_step_repair 372 2>&1); rc=$?
+want "a plan edit that leaves the drawer unopened is refused" "24" "$rc"
+want_in "naming the file"                       'PersonDrawer.tsx' "$(driver_state_get 372 park_note)"
+rm -f "$FIX/ev-left" "$FIX/ev-tasks"
+
+setup 373; prs 373 CLEAN
+out=$(driver_step_repair 373 2>&1); rc=$?
+want "with no evidence owed and nothing red, still no model" "" "$(cat "$CLAUDE_LOG")"
+unset DRIVER_EVIDENCE_GAPS
+
 exit $FAILED
