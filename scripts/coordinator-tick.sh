@@ -19,7 +19,9 @@
 #   4. pull requests red (unless fix-lock.sh says a session is on it), and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
 #   5. spawn         as many starts as the spare CPU fits, while the machine has room
-#                    (coord_room) and under coordinator.cap when one is set;
+#                    (coord_room) and under coordinator.cap when one is set, and
+#                    no more than this host's share of the five-hour window
+#                    (coord_pace: every host's builders burn the one account);
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest, and every
 #                    place while coordinator.healAllAt or more reds are left
@@ -414,6 +416,12 @@ if READING=$(coord_room); then
   CEILING=$((LIVE+STARTS))
 fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
+# The five-hour window is the account's, shared with every host: no more than its share here.
+if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST"); then
+  [ "$CEILING" -gt "${PACE%%$'\t'*}" ] && CEILING=${PACE%%$'\t'*}
+  PACE=${PACE#*$'\t'}
+fi
+say "$PACE"
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
 # The split needs the reds left — waiting plus being healed — so candidates()

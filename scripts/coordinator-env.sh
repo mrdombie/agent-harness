@@ -50,6 +50,10 @@
 #   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
 #                                                           tick may start work from
 #   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
+#   coordinator.pace.on      COORDINATOR_PACE           1    0: no usage pacing, the machine alone decides
+#   coordinator.pace.target  COORDINATOR_PACE_TARGET   0.95  five-hour window share the pacer aims to end at
+#   coordinator.pace.burnPerBuilderHour COORDINATOR_PACE_BURN 0.025  window share one builder burns an
+#                                                           hour, when the samples cannot say
 #   coordinator.judges       COORDINATOR_JUDGES         1    judges at once
 #   coordinator.judge.turns  COORDINATOR_JUDGE_TURNS   40
 #   coordinator.judge.budgetUsd   COORDINATOR_JUDGE_BUDGET_USD   5
@@ -145,6 +149,89 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
     printf '%s GB free, floor %s GB' "$mem" "$COORD_MIN_FREE_MEM_GB"; return 1
   fi
   printf '%s\t%s, %s GB free' "$starts" "$(swarm_idle_label "$idle" "$n")" "$mem"
+}
+
+# ---- the usage pacer ----------------------------------------------------------
+# Owner call 2026-10-20: "work out the maths and automatically adjust both
+# machines" — for the plan's five-hour window only. Every host on the account
+# burns the same window, so each tick works out how many builders, across every
+# host, the window affords until it resets, and this host takes what the other
+# hosts' live claims leave. It only limits starts: a running builder is never stopped.
+COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.pace.on 1)}"
+case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
+COORD_PACE_TARGET="${COORDINATOR_PACE_TARGET:-$(swarm_opt coordinator.pace.target 0.95)}"
+awk -v t="$COORD_PACE_TARGET" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_TARGET=0.95
+COORD_PACE_BURN="${COORDINATOR_PACE_BURN:-$(swarm_opt coordinator.pace.burnPerBuilderHour 0.025)}"
+awk -v b="$COORD_PACE_BURN" 'BEGIN{exit !(b ~ /^[0-9]*\.?[0-9]+$/ && b+0 > 0)}' || COORD_PACE_BURN=0.025
+# Samples: <epoch> \t <utilization> \t <window reset epoch> \t <builders on every host>
+COORD_PACE_SAMPLES="$COORD_DIR/pace.tsv"
+COORD_PACE_LOOKBACK_MIN=90
+# A burn measured over less than this, or fewer builder-hours, is noise at 1% steps.
+COORD_PACE_MIN_SPAN_MIN=30
+COORD_PACE_MIN_BUILDER_HOURS=0.25
+
+# coord_pace_reading — "<utilization>\t<reset epoch>" for the five-hour window now
+# open: the newest reading in the newest builder logs (a prose run's claim log, a
+# driver run's step logs), else the last sample taken while it is still open.
+coord_pace_reading() {
+  local now files f best
+  now=$(swarm_now)
+  # shellcheck disable=SC2012  # names we wrote, no newlines
+  files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
+  best=$(while IFS= read -r f; do
+           [ -n "$f" ] && swarm_usage_cli_events "$f" | awk -F'\t' '$2 == "window" && $4 == "five_hour" { print $5 "\t" $3 }'
+         done <<< "$files" \
+         | awk -F'\t' -v now="$now" '$2 + 0 > now + 0 && ($2 + 0 > r + 0 || ($2 == r && $1 + 0 > u + 0)) { r = $2; u = $1 }
+                                     END { if (r) printf "%s\t%s", u, r }')
+  if [ -z "$best" ] && [ -s "$COORD_PACE_SAMPLES" ]; then
+    best=$(awk -F'\t' -v now="$now" '$3 + 0 > now + 0 { u = $2; r = $3 } END { if (r) printf "%s\t%s", u, r }' "$COORD_PACE_SAMPLES")
+  fi
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
+# coord_pace_burn <reset epoch> — "<window share per builder-hour>\tmeasured|default":
+# the rise in utilization over the builder-hours run between the samples of the
+# last COORD_PACE_LOOKBACK_MIN inside this one window. Too short, too few or
+# falling (a reset), and the configured burn stands.
+coord_pace_burn() {
+  local now b=""
+  now=$(swarm_now)
+  [ -s "$COORD_PACE_SAMPLES" ] && b=$(sort -n -t$'\t' -k1,1 "$COORD_PACE_SAMPLES" | awk -F'\t' \
+      -v r="$1" -v from="$(( now - COORD_PACE_LOOKBACK_MIN * 60 ))" \
+      -v span="$(( COORD_PACE_MIN_SPAN_MIN * 60 ))" -v minbh="$COORD_PACE_MIN_BUILDER_HOURS" '
+    $3 == r && $1 + 0 >= from + 0 {
+      if (n) bh += ($1 - lt) / 3600 * ln; else { ft = $1; fu = $2 }
+      n++; lt = $1; ln = $4; lu = $2
+    }
+    END { if (n >= 2 && lt - ft >= span && bh >= minbh && lu - fu > 0) printf "%.6f", (lu - fu) / bh }')
+  if [ -n "$b" ]; then printf '%s\tmeasured' "$b"; else printf '%s\tdefault' "$COORD_PACE_BURN"; fi
+}
+
+# coord_pace <builders here> <claim rows> <this host> — "<this host's share>\t<line>",
+# 1 with the reason when there is nothing to pace on. Claim rows are
+# <ticket> \t <host> \t <step>; a row naming another host is a builder there.
+# Records this tick's sample, so the next tick's burn has it.
+coord_pace() {
+  local here="${1:-0}" rows="${2:-}" host="${3:-}" reading u r other total burn bsrc now
+  [ "$COORD_PACE" = 1 ] || { printf 'pace: off'; return 1; }
+  reading=$(coord_pace_reading) || { printf 'pace: no five-hour reading in the newest logs — the machine alone decides'; return 1; }
+  u=${reading%%$'\t'*}; r=${reading#*$'\t'}; now=$(swarm_now)
+  other=$(printf '%s\n' "$rows" | awk -F'\t' -v h="$host" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { n++ } END { print n + 0 }')
+  total=$(( here + other ))
+  mkdir -p "$(dirname "$COORD_PACE_SAMPLES")" 2>/dev/null
+  printf '%s\t%s\t%s\t%s\n' "$now" "$u" "$r" "$total" >> "$COORD_PACE_SAMPLES"
+  tail -300 "$COORD_PACE_SAMPLES" > "$COORD_PACE_SAMPLES.$$" 2>/dev/null && mv -f "$COORD_PACE_SAMPLES.$$" "$COORD_PACE_SAMPLES"
+  burn=$(coord_pace_burn "$r"); bsrc=${burn#*$'\t'}; burn=${burn%%$'\t'*}
+  awk -v u="$u" -v r="$r" -v now="$now" -v t="$COORD_PACE_TARGET" -v b="$burn" -v o="$other" \
+      -v at="$(swarm_iso "$r" | cut -c12-16)" -v src="$bsrc" '
+    BEGIN {
+      T = (r - now) / 3600; if (T < 0.1) T = 0.1
+      a = int((t - u) / (b * T) + 1e-9); if (a < 0) a = 0
+      s = a - o; if (s < 0) s = 0
+      printf "%d\tpace: 5h window %d%%, resets %sZ, %.1f%%/builder-hour%s → %d across all hosts, %d on other hosts → %d here",
+        s, u * 100 + 0.5, at, b * 100, (src == "default" ? " (default)" : ""), a, o, s
+    }'
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's
