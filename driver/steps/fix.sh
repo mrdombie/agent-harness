@@ -17,8 +17,9 @@
 # what lets it sit in the fixed order rather than being conditionally skipped —
 # and a step that is conditionally skipped reports exactly like a step that passed.
 #
-# EVERY BLOCKING GRADE. Critical, Major and Minor are fixed here, in the change that
-# caused them; a Nit was dropped. A Minor once left as its own follow-up, and every
+# EVERY BLOCKING GRADE. What the review left blocking is fixed here, in the change that
+# caused it: Critical, Major and Minor after round 1, Critical and Major after a later
+# round (its Minors went on the screen's polish list); a Nit was dropped. A Minor once left as its own follow-up, and every
 # passing review opened new tickets.
 #
 # AND THE FIX IS PROVED THE SAME WAY THE BUILD IS. Each cleared finding names the

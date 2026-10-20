@@ -265,6 +265,18 @@ _driver_ship_push_to_fix() {
   return 0
 }
 
+# _driver_ship_deferred <ticket> — the "## Minor, deferred" section: what a review from
+# round 2 on graded outside its blocking set (review.sh _driver_review_defer). Each
+# says where it went; one no screen could take is kept here, as a note that does not
+# block. Nothing deferred, nothing said.
+_driver_ship_deferred() {
+  local f; f="$(driver_state_dir "$1")/steps/review.deferred.jsonl"
+  [ -s "$f" ] || return 0
+  printf '## Minor, deferred\nFound from review round 2 on, where only Critical and Major block. Not blocking:\n'
+  jq -rs 'unique_by([.file, .line, .summary])[]
+    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
+}
+
 # _driver_ship_findings_to_fix <ticket> — 0 when the review's blocking findings go
 # back to fix for another round rather than parking. A park here was left ready as the
 # driver's own fault, so every resume walked straight back to this refusal (#13620,
@@ -520,7 +532,8 @@ driver_step_ship() { # <ticket>
   pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
   if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
-  local routes required; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t")
+  local routes required deferred; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t")
+  deferred=$(_driver_ship_deferred "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
 $closes #$t
@@ -548,6 +561,8 @@ Repository settings this change needs. A build never makes them; the PM does, on
 $pmsteps
 }${polish:+
 $polish
+}${deferred:+
+$deferred
 }${replaced:+
 ## Deleted tests
 $replaced}
@@ -674,7 +689,9 @@ $polish"
     fi
     swarm_gh pr comment "$open_pr" --repo "$REPO_SLUG" --body "$said Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS. Steps: $(driver_state_get "$t" 'done|join(" → ")').${polish:+
 
-$polish}" >/dev/null 2>&1 || true
+$polish}${deferred:+
+
+$deferred}" >/dev/null 2>&1 || true
   fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true
