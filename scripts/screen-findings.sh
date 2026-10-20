@@ -7,8 +7,9 @@
 #   screen-findings.sh polish <ticket> [<file-list>]    every free item on those screens' polish
 #                                                       lists: grade \t list \t item
 #   screen-findings.sh critic <pr>                      the graded findings of the independent
-#                                                       critic's latest verdict on the PR, when it
-#                                                       did not pass: grade \t PR \t finding
+#                                                       critic's latest verdict on the PR, from
+#                                                       its own record, when it did not pass:
+#                                                       grade \t PR \t finding
 #
 # FIX WHAT YOU TOUCH (the owner, 2026-10-20). A change that touches a screen takes on
 # what is already known to be wrong with it: its polish list and the critic's open
@@ -25,7 +26,6 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../swarm" && pwd)/swarm-env.sh" || exit 2
 PL="${SCREEN_FINDINGS_POLISH:-$(dirname "${BASH_SOURCE[0]}")/polish-list.sh}"
-MARK="${CRITIC_JUDGE_MARK:-critic-judge}"
 
 die() { echo "screen-findings: $*" >&2; exit 2; }
 
@@ -43,7 +43,10 @@ grade_of() {
 screens() { # <ticket> [<file-list>]
   local t="$1" files="${2:-}" cmd
   swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null \
-    | awk -v p="$LBL_SCREEN_PREFIX" 'p != "" && index($0, p) == 1 && length($0) > length(p) { print substr($0, length(p) + 1) }'
+    | while IFS= read -r l; do
+        [ -n "$LBL_SCREEN_PREFIX" ] || continue
+        case "$l" in "$LBL_SCREEN_PREFIX"?*) printf '%s\n' "${l#"$LBL_SCREEN_PREFIX"}" ;; esac
+      done
   cmd=$(swarm_opt design.screenOf "")
   if [ -n "$cmd" ] && [ -n "$files" ] && [ -f "$files" ]; then
     ( cd "${MAIN_REPO:-.}" 2>/dev/null; sh -c "$cmd" < "$files" ) 2>/dev/null | grep -E '^[a-z0-9-]+$'
@@ -70,15 +73,14 @@ case "${1:-}" in
     done <<<"$slugs" | awk -F'\t' '$1 != "nit" && !seen[$2 FS $3]++' ;;
   critic)
     [ -n "${2:-}" ] || die "usage: critic <pr>"
-    body=$(swarm_gh api "repos/$REPO_SLUG/issues/$2/comments?per_page=100" --paginate 2>/dev/null \
-            | jq -rs --arg m "<!-- $MARK " '[.[][] | select(.body | contains($m))] | last | .body // ""') \
-      || { echo "screen-findings: PR #$2's comments could not be read" >&2; exit 2; }
-    [ -n "$body" ] || exit 0
-    printf '%s\n' "$body" | grep -q "<!-- $MARK .*verdict=SHIP" && exit 0
-    printf '%s\n' "$body" | awk '/^### Findings/{f=1; next} f && /^#/{f=0} f && /^- /{ sub(/^- /, ""); print }' \
-      | while IFS= read -r line; do
-          g=$(grade_of "$line")
-          [ "${g%%$'\t'*}" = nit ] || printf '%s\t#%s\t%s\n' "${g%%$'\t'*}" "$2" "${g#*$'\t'}"
-        done ;;
+    # From the judge's own record on this machine, never from a PR comment: a comment
+    # can be written by anyone on the token. Present only while its latest verdict failed.
+    f="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}/findings-$2.txt"
+    [ -f "$f" ] || exit 0
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      g=$(grade_of "$line")
+      [ "${g%%$'\t'*}" = nit ] || printf '%s\t#%s\t%s\n' "${g%%$'\t'*}" "$2" "${g#*$'\t'}"
+    done < "$f" ;;
   *) die "usage: screen-findings.sh screens|polish|critic …" ;;
 esac

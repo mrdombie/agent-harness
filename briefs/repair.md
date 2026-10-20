@@ -23,7 +23,7 @@ and the traps this project keeps falling into.
 - The checks that settled red: {{FAILING}}
 - The independent critic's open findings on this pull request: {{CRITIC_FINDINGS}}
 
-When the design status is red, those findings are why: fix every one, a Minor too, whoever put it there. **Never write a design verdict** (no `Design-Critic:` trailer, no recorder run for it): only the independent critic sets that status, on CI's pinned shots after the push, and a verdict on the branch counts for nothing.
+When the design status is red, those findings are why: fix every one, a Minor too, whoever put it there — unless the PR's screens are signed off, when they are the PM's call and you change no pixel. **Never write a design verdict** (no `Design-Critic:` trailer, no recorder run for it): only the independent critic sets that status, on CI's pinned shots after the push, and a verdict on the branch counts for nothing.
 - The merge of the integration branch, and what conflicted: {{CONFLICTS}}
 - The change as it stands, against the trunk: {{DIFF}}
 

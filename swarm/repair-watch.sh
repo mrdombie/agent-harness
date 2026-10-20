@@ -137,7 +137,8 @@ may have added commits), read the failing job logs (gh run view <id>
 if the fingerprint moved, push, keep auto-merge armed, hand off. Never write a
 design verdict: the independent critic sets the design status on CI's shots after
 the push. A red design status is fixed by fixing every finding in the critic's
-comment on the PR, a Minor too, whoever put it there.
+comment on the PR, a Minor too, whoever put it there — unless the PR's screens are
+signed off: then those findings are the PM's call, and you change no pixel.
 
 A clash: merge the integration branch keeping both sides' intent. If the same
 failure also happens on the integration branch itself, say so on the PR and

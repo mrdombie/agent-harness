@@ -346,10 +346,12 @@ $(printf '%s\n' "$items" | sed 's/^/- /')"
 # and the next critic failed the screen for it.
 driver_fact_critic_findings() { # <ticket>
   local t="$1" pr branch out
-  pr=$(driver_state_get "$t" pr)
+  pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" critic_pr)
   if [ -z "$pr" ]; then
     branch=$(driver_state_get "$t" branch)
     [ -n "$branch" ] && pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null)
+    # Read once a run: every step asks, and the PR does not change number.
+    [ -n "$pr" ] && driver_state_set "$t" critic_pr "$pr"
   fi
   [ -n "$pr" ] || { _driver_fact_none "#$t has no open pull request, so no critic has judged it yet"; return 0; }
   out=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" critic "$pr" 2>/dev/null) \

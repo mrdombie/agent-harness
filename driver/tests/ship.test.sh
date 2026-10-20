@@ -671,4 +671,15 @@ want_in "the body names every required shot"       'Required evidence' "$(cat "$
 want_in "including the phone frame"                'voices-share-phone-light' "$(cat "$GH_LOG")"
 want_in "and the picture's routes are the evidence routes" '- /voices/share' "$(cat "$GH_LOG")"
 
+echo "--- a design verdict this run committed is never pushed ---"
+: > "$GH_LOG"
+setup_wt 196
+git -C "$FIX/wt196" commit -q --allow-empty -m "chore: design-critic" -m "Design-Critic: SHIP (agent) f9ad4e1a738d"
+driver_state_put 196 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 196 review
+for st in start plan build self-check review record; do driver_state_done 196 "$st"; done
+rc=0; out=$(driver_step_ship 196 2>&1) || rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "naming the verdict commit"        'committed a design verdict' "$out"
+want "and nothing reached origin"          "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-196/work 2>/dev/null)"
+
 exit $FAILED

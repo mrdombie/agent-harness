@@ -108,6 +108,13 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   fi
   [ -n "$diff" ] || [ -z "$own_paths$rbase" ] || [ "$(driver_state_get "$t" mode)" != repair ] \
     || diff="(none — this repair made no change of its own: a clean merge of $INTEGRATION_BRANCH, or nothing at all. The PR was reviewed before it; judge only this.)"
+  # THE REVIEWER CONFIRMS A POLISH ITEM IS FIXED, not the builder's own record of it.
+  local claimed=""
+  [ "$(driver_state_get "$t" mode)" = repair ] || claimed=$(bash "${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" taken "$t" 2>/dev/null)
+  [ -z "$claimed" ] || diff="${diff}
+
+[POLISH ITEMS THE BUILDER SAYS IT FIXED — confirm each one against the change. One that is not really fixed is a finding at its grade (an item that names no grade is a Minor), with the item's words as its summary:
+$(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n", $2, $1 }')]"
   driver_fact_put "$t" review DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   # RENDERS is a fact about a screen, and the driver takes none. Saying so is the
@@ -193,6 +200,12 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 # did not add it. One PR left narration an earlier critic had flagged on its screen, and
 # the next critic failed the screen for it. A repair is judged on its own change and
 # takes none on; a list that cannot be read is said, not guessed.
+#
+# TWO KINDS STAY ON THE LIST, NOT BLOCKING (the PM's call, 2026-10-20): an item that is
+# the owner's call, and one that needs a new picture — anything beyond the approved
+# picture's pixels. The list marks them ("owner's call", "needs:owner", "[picture]",
+# "needs a picture"). A taken item is cleared only because the review step was shown
+# it and raised nothing: the builder's record alone is a claim, the reviewer the check.
 _driver_review_touched() {
   local t="$1" f="$2" wt="$3" trunk="$4" files items taken add pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}"
   [ "$(driver_state_get "$t" mode)" = repair ] && return 0
@@ -204,8 +217,11 @@ _driver_review_touched() {
   fi
   [ -n "$items" ] || return 0
   taken=$(bash "$pl" taken "$t" 2>/dev/null)
+  local held; held=$(printf '%s\n' "$items" | cut -f3 | grep -ciE "owner'?s call|needs:owner|\[picture\]|needs a (new )?picture")
+  [ "${held:-0}" -eq 0 ] || driver_say "   review: $held item(s) on the screen's polish list are the owner's call or need a new picture — left on the list, not blocking"
   add=$(printf '%s\n' "$items" | while IFS=$'\t' read -r g n it; do
           [ -n "$it" ] || continue
+          printf '%s\n' "$it" | grep -qiE "owner'?s call|needs:owner|\[picture\]|needs a (new )?picture" && continue
           printf '%s\n' "$taken" | grep -qxF -- "$n	$it" && continue
           jq -nc --arg g "$g" --arg n "$n" --arg it "$it" --arg t "$t" --arg pl "$pl" '{
             id: ("polish-" + $n + "-" + ($it | @base64 | gsub("[^A-Za-z0-9]"; "") | .[0:10])),

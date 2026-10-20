@@ -55,6 +55,7 @@ EV_HEADMARK=$(cfg evidence.headMarker "ci-evidence-head:")
 EV_CAPTURE=$(cfg evidence.captureCheck "Capture and pin the evidence")
 EV_DECIDE=$(cfg evidence.decideCheck "Does this diff need pixels?")
 EV_ROUTES=$(cfg evidence.routesHeading "Evidence routes")
+EV_SUBJECT=$(cfg evidence.commitSubject "chore(evidence):")
 REPO="${CI_EVIDENCE_REPO:-${REPO_SLUG:-}}"
 EVERY="${CI_EVIDENCE_EVERY:-30}"
 
@@ -65,6 +66,33 @@ ghr() { gh "$@" ${REPO:+--repo "$REPO"}; }
 # body is not CI's evidence.
 block() { awk -v b="$EV_BEGIN" -v e="$EV_END" 'index($0,b){f=1} f{print} index($0,e){f=0}'; }
 links() { grep -oE "https://github\.com/[^ )\"<>]+/blob/[0-9a-f]{40}/[^ )\"<>]+\.(png|jpg|jpeg|webp)"; }
+
+# ONLY WHAT CI WROTE IS CI'S EVIDENCE. A PR's evidence block listed five PNGs under
+# "Captured by evidence run"; CI had written one, and the other four were a builder's,
+# from older heads, no longer matching what renders. A shot counts only when it is
+# linked at the sha the block names, that commit is CI's own (its subject starts
+# evidence.commitSubject) and that commit wrote the file. Unreadable is none.
+ci_files() { # <evsha> → the files CI's evidence commit wrote, one a line; 1 when it is not CI's
+  local j
+  j=$(ghr_api "repos/{repo}/commits/$1" 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e --arg p "$EV_SUBJECT" '(.commit.message // "") | startswith($p)' >/dev/null 2>&1 || return 1
+  # And CI's capture really ran, and passed, on the commit it photographed (its parent).
+  local par runs
+  par=$(printf '%s' "$j" | jq -r '.parents[0].sha // empty'); [ -n "$par" ] || return 1
+  runs=$(ghr_api "repos/{repo}/commits/$par/check-runs?per_page=100" 2>/dev/null) || return 1
+  [ "$(check "$runs" "$EV_CAPTURE")" = completed/success ] || return 1
+  printf '%s' "$j" | jq -r '.files[]? | select(.status != "removed") | .filename'
+}
+ci_links() { # <evsha> — links on stdin; CI's own pass, every other is named on stderr
+  local ev="$1" ok u sha path
+  ok=$(ci_files "$ev") || { cat >/dev/null; echo "ci-evidence: ${ev:0:9} is not CI's evidence commit — no shot linked at it counts" >&2; return 0; }
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    sha=$(sed -E 's#.*/blob/([0-9a-f]{40})/.*#\1#' <<<"$u"); path=$(sed -E 's#.*/blob/[0-9a-f]{40}/##' <<<"$u")
+    if [ "$sha" = "$ev" ] && printf '%s\n' "$ok" | grep -qxF -- "$path"; then printf '%s\n' "$u"
+    else echo "ci-evidence: not a CI capture of ${ev:0:9}, refused: $path" >&2; fi
+  done
+}
 
 # A commit after the shots that changes nothing they show: one parent, and no
 # file outside the evidence dir — CI's own evidence commit, or an empty trailer.
@@ -104,6 +132,9 @@ screens_of() { # paths on stdin → the screen ones
 moved() { # <pr> <from> <head>
   local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c
   changed=$(ghr_api "repos/{repo}/compare/$from...$head" 2>/dev/null | jq -r '.files[]?.filename') || { echo "(the change since ${from:0:9} could not be read)"; return 0; }
+  # GitHub lists at most 300 files of a comparison: a list that long may be cut, and a
+  # cut list cannot say a screen is untouched.
+  [ "$(printf '%s\n' "$changed" | grep -c .)" -lt 300 ] || { echo "(more files changed since ${from:0:9} than GitHub lists)"; return 0; }
   own=$(ghr_api "repos/{repo}/pulls/$pr/files?per_page=100" --paginate 2>/dev/null | jq -r '.[]?.filename') || { echo "(this PR's files could not be read)"; return 0; }
   scr=$(printf '%s\n' "$own" | grep -v '^$' | grep -vF "$EV_DIR/" | screens_of | grep -v '^$')
   [ -n "$scr" ] && [ -n "$changed" ] || return 1
@@ -115,11 +146,16 @@ moved() { # <pr> <from> <head>
       dir=$(dirname "$f")
       while IFS= read -r spec; do
         [ -n "$spec" ] || continue
+        # An alias import (`@/…`, `~/…`): matched by the path after the alias, anywhere.
+        case "$spec" in
+          @/*|'~/'*) c=$(printf '%s\n' "$changed" | awk -v b="/${spec#*/}" '{ s=$0; sub(/\.[A-Za-z]+$/, "", s); if (substr(s, length(s) - length(b) + 1) == b || substr(s, length(s) - length(b "/index") + 1) == b "/index") print }')
+                   [ -n "$c" ] && hit="$hit$c"$'\n'; continue ;;
+        esac
         base=$(python3 -I -c 'import os,sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$dir" "$spec" 2>/dev/null) || continue
         c=$(printf '%s\n' "$changed" | awk -v b="$base" '{ s=$0; sub(/\.[A-Za-z]+$/, "", s); if (s == b || s == b "/index") print }')
         [ -n "$c" ] && hit="$hit$c"$'\n'
       done < <(ghr_api "repos/{repo}/contents/$f?ref=$head" -H "Accept: application/vnd.github.raw" 2>/dev/null \
-                 | grep -oE "(from|import)[[:space:]]*\(?['\"]\.{1,2}/[^'\"]+['\"]" | sed -E "s/^[^'\"]*['\"]//; s/['\"]$//")
+                 | grep -oE "(from|import)[[:space:]]*\(?['\"](\.{1,2}|@|~)/[^'\"]+['\"]" | sed -E "s/^[^'\"]*['\"]//; s/['\"]$//")
     done < <(printf '%s\n' "$scr" | head -40)
   fi
   hit=$(printf '%s' "$hit" | grep -v '^$' | sort -u)
@@ -138,7 +174,7 @@ status() { # <pr>
   head=$(jq -r .headRefOid <<<"$j"); body=$(jq -r .body <<<"$j" | tr -d '\r'); draft=$(jq -r .isDraft <<<"$j")
   blk=$(printf '%s\n' "$body" | block)
   evsha=$(printf '%s\n' "$blk" | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
-  n=$(printf '%s\n' "$blk" | links | grep -c . || true)
+  n=0; [ -n "$evsha" ] && n=$(printf '%s\n' "$blk" | links | ci_links "$evsha" 2>/dev/null | grep -c . || true)
   printf 'head=%s\nsha=%s\nshots=%s\n' "$head" "$evsha" "$n"
 
   if [ -n "$evsha" ] && [ "$n" -gt 0 ]; then
@@ -206,13 +242,17 @@ case "${1:-}" in
 
   shots)
     [ -n "${2:-}" ] || die "usage: shots <pr>"
-    ghr pr view "$2" --json body -q .body | tr -d '\r' | block | links ;;
+    blk=$(ghr pr view "$2" --json body -q .body | tr -d '\r' | block)
+    evsha=$(printf '%s\n' "$blk" | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
+    [ -n "$evsha" ] || exit 0
+    printf '%s\n' "$blk" | links | ci_links "$evsha" ;;
 
   fetch)
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "usage: fetch <pr> <dir>"
     mkdir -p "$3"; got=0
     body=$(ghr pr view "$2" --json body -q .body | tr -d '\r')
-    urls=$(printf '%s\n' "$body" | block | links)
+    evsha=$(printf '%s\n' "$body" | block | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
+    urls=""; [ -n "$evsha" ] && urls=$(printf '%s\n' "$body" | block | links | ci_links "$evsha")
     # Route per shot: CI names each file by the route's slug, so slug the routes
     # the body lists the same way and match.
     routes=$(printf '%s\n' "$body" | bash "$0" routes 2>/dev/null || true)

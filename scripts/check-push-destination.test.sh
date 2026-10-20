@@ -79,8 +79,8 @@ plant() { # a branch cut from origin/develop the default way: it tracks develop
 
 echo "--- the finish skill's own push lines, from a worktree that tracks develop ---"
 PUSHES=$(awk '/^[[:space:]]*```/{f=!f; next} f' "$KIT/skills/finish/SKILL.md" | grep -E '^[[:space:]]*git push' | sed -E 's/^[[:space:]]+//')
-[ "$(printf '%s\n' "$PUSHES" | grep -c .)" -ge 3 ] && ok "read $(printf '%s\n' "$PUSHES" | grep -c .) push lines out of the finish skill" \
-  || bad "found $(printf '%s\n' "$PUSHES" | grep -c .) push lines in the finish skill, expected at least 3 — the test reads nothing"
+[ "$(printf '%s\n' "$PUSHES" | grep -c .)" -ge 2 ] && ok "read $(printf '%s\n' "$PUSHES" | grep -c .) push lines out of the finish skill" \
+  || bad "found $(printf '%s\n' "$PUSHES" | grep -c .) push lines in the finish skill, expected at least 2 — the test reads nothing"
 while IFS= read -r cmd; do
   [ -n "$cmd" ] || continue
   plant

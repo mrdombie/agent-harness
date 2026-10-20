@@ -332,6 +332,19 @@ driver_step_ship() { # <ticket>
     REPAIR_BODY="$newbody"
   fi
 
+  # NO DESIGN VERDICT THIS RUN WROTE IS PUSHED. Only the independent critic sets the
+  # design status; a trailer this run committed would read as one to a CI that still
+  # trusts trailers. Commits already on origin are not this run's to judge.
+  local vrange vkey selfv
+  vkey=$(driver_opt review.judge.trailer "Design-Critic")
+  if git -C "$wt" rev-parse --verify -q "origin/$branch" >/dev/null 2>&1; then vrange="origin/$branch..HEAD"; else vrange="$trunk..HEAD"; fi
+  selfv=$(git -C "$wt" log --format='%h %s' -i --grep="^$vkey:" "$vrange" 2>/dev/null)
+  if [ -n "$selfv" ]; then
+    driver_say "✋ ship: this run committed a design verdict ($(printf '%s' "$selfv" | tr '\n' ';')) — only the independent critic sets that status. Nothing is pushed."
+    driver_state_set "$t" park_note "this run committed a '$vkey:' verdict ($(printf '%s' "$selfv" | tr '\n' ';')); drop those commits — only the independent critic sets the design status"
+    return "$DRIVER_E_REFUSED"
+  fi
+
   if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"

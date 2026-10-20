@@ -20,7 +20,7 @@ driver_state_init 601 --worktree "$wt" --branch "tkt-601/work"
 cat > "$FIX/sf" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/sf.calls"
-printf 'major\t77\t[Major] nine narration lines on the voices page\nminor\t77\tthe lock icon sits 2px low\n'
+printf 'major\t77\t[Major] nine narration lines on the voices page\nminor\t77\tthe lock icon sits 2px low\nminor\t77\ta warmer empty state — needs a new picture\nmajor\t77\t[Major] merge the two share menus (owner'"'"'s call)\n'
 SH
 cat > "$FIX/pl" <<'SH'
 #!/usr/bin/env bash
@@ -35,6 +35,8 @@ echo '{"verdict":"SHIP","findings":[]}' > "$f"
 _driver_review_touched 601 "$f" "$wt" develop >/dev/null 2>&1
 want "the verdict is BLOCKED"                 "BLOCKED" "$(jq -r .verdict "$f")"
 want "both items are findings"                "2" "$(jq '.findings | length' "$f")"
+want_not_in "an item needing a new picture stays on the list" 'warmer empty state' "$(jq -r '.findings[].summary' "$f")"
+want_not_in "and so does the owner's call"     'share menus' "$(jq -r '.findings[].summary' "$f")"
 want "each at the grade it carries"           "major minor" "$(jq -r '[.findings[].grade] | join(" ")' "$f")"
 want "and they block"                         "2" "$(jq -r "[.findings[] | $(driver_blocking_select)] | length" "$f")"
 want_in "the fix names how to record it"      'take 77 601' "$(jq -r '.findings[1].fix' "$f")"
@@ -55,6 +57,10 @@ echo '{"verdict":"SHIP","findings":[]}' > "$f"
 _driver_review_touched 601 "$f" "$wt" develop >/dev/null 2>&1
 want "a repair takes nothing on"              "0" "$(jq '.findings | length' "$f")"
 driver_state_set 601 mode new
+
+echo "--- the reviewer, not the builder, confirms a taken item ---"
+awk '/POLISH ITEMS THE BUILDER SAYS IT FIXED/{c=NR} /driver_ai_step "\$t" review/{a=NR} END{exit !(c && a && c < a)}' "$HERE/../steps/review.sh" \
+  && ok "the items the builder took reach the review model before it runs" || bad "the review model is not shown the taken items to confirm"
 
 echo "--- the review step reads the verdict after it ---"
 grep -q '_driver_review_touched "$t" "$ans_file"' "$HERE/../steps/review.sh" \
