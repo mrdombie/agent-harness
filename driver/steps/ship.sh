@@ -105,7 +105,7 @@ _driver_ship_routes() {
 # _driver_ship_plan_routes <ticket> <tree> <trunk> — the routes of the capture plan, when
 # the branch adds or edits it: CI then photographs the plan, so the body names its routes.
 _driver_ship_plan_routes() {
-  local plan; plan="$(driver_opt evidence.dir "docs/evidence")/$1/plan.json"
+  local plan; plan=$(driver_evidence_plan "$1")
   git -C "$2" diff --name-only "$3"...HEAD -- "$plan" 2>/dev/null | grep -q . || return 0
   jq -r '.shots[]?.route // empty' "$2/$plan" 2>/dev/null | grep '^/' | awk '!seen[$0]++'
 }
@@ -158,12 +158,13 @@ _driver_ship_pictures() {
 # A builder once wrote its own routes and listed the one region it had built; the
 # approved picture had four, and two were never photographed. So every shot the bound
 # picture declares (scripts/picture-evidence.py) goes into the capture plan CI reads,
-# <evidence.dir>/<ticket>/plan.json — a shot the builder already planned keeps its own
+# <evidence.dir>/<key>/plan.json (driver_evidence_plan) — a shot the builder already planned keeps its own
 # setup — and is recorded as picture_shots for the body's "## Required evidence". The
 # independent critic fails the PR while any of them has no pinned shot.
 _driver_ship_evidence_plan() {
   local t="$1" wt="$2" trunk="$3" pics rc=0 req dir plan new pe="$KIT_ROOT/scripts/picture-evidence.py"
   driver_state_set "$t" picture_shots ""
+  _driver_ship_place_plan "$t" "$wt" "$trunk"
   pics=$(_driver_ship_pictures "$t" "$wt" "$trunk")
   [ -n "$pics" ] || { _driver_ship_derived_plan "$t" "$wt" "$trunk"; return 0; }
   local -a paths=(); local f
@@ -181,13 +182,28 @@ _driver_ship_evidence_plan() {
   [ "$rc" -eq 0 ] || { driver_say "   ship: the approved picture's regions could not be read (exit $rc)"; return 0; }
   driver_state_set "$t" picture_shots "$req"
   driver_state_set "$t" picture_files "$pics"
-  dir=$(driver_opt evidence.dir "docs/evidence")/$t; plan="$dir/plan.json"
+  plan=$(driver_evidence_plan "$t"); dir=${plan%/plan.json}
   new=$(python3 -I "$pe" plan "${popt[@]}" --into "$wt/$plan" "${paths[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the picture's shots"; return 0; }
   if [ -f "$wt/$plan" ] && [ "$(jq -S . "$wt/$plan" 2>/dev/null)" = "$(printf '%s' "$new" | jq -S . 2>/dev/null)" ]; then return 0; fi
   mkdir -p "$wt/$dir" && printf '%s\n' "$new" > "$wt/$plan" || return 0
   git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
   git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the shots the approved picture declares (#$t)" >/dev/null 2>&1 \
     && driver_say "   ship: $plan holds the $(printf '%s\n' "$req" | grep -c .) shot(s) the approved picture declares"
+}
+
+# _driver_ship_place_plan <ticket> <tree> <trunk> — A PLAN FILED WHERE CI NEVER LOOKS is
+# moved to where it does. Earlier runs wrote <evidence.dir>/<ticket>/plan.json on branches
+# CI keys by the PR's number (5654/approval-preview), so CI photographed the body's routes
+# and never the plan. Moved only when the branch itself added it and nothing is there yet.
+_driver_ship_place_plan() {
+  local t="$1" wt="$2" trunk="$3" want old
+  want=$(driver_evidence_plan "$t")
+  old="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"   # legacy-plan-path: where it was misfiled
+  [ "$want" != "$old" ] && [ -f "$wt/$old" ] && [ ! -e "$wt/$want" ] || return 0
+  git -C "$wt" diff --name-only "$trunk"...HEAD -- "$old" 2>/dev/null | grep -q . || return 0
+  mkdir -p "$wt/${want%/plan.json}" && git -C "$wt" mv -- "$old" "$want" >/dev/null 2>&1 || return 0
+  git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the plan where CI reads it (#$t)" >/dev/null 2>&1 \
+    && driver_say "   ship: moved $old to $want, where CI reads this branch's plan"
 }
 
 # _driver_ship_derived_plan <ticket> <tree> <trunk> — NO PICTURE BINDS THE TICKET, so the
@@ -209,7 +225,7 @@ _driver_ship_derived_plan() {
               bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" routes "$wt" "$mb" HEAD 2>/dev/null
             } | grep '^/' | grep -v '\[' | awk '!seen[$0]++' | head -8)
   [ -n "$routes" ] || return 0
-  dir=$(driver_opt evidence.dir "docs/evidence")/$t; plan="$dir/plan.json"
+  plan=$(driver_evidence_plan "$t"); dir=${plan%/plan.json}
   local -a a=(plan --into "$wt/$plan")
   while IFS= read -r r; do [ -n "$r" ] && a+=(--route "$r"); done <<<"$routes"
   new=$(python3 -I "$KIT_ROOT/scripts/evidence-gaps.py" "${a[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the derived shots"; return 0; }
