@@ -46,16 +46,35 @@ HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval
 REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and length > 0)' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
 [ -n "$REQUIRED" ] || REQUIRED=null
 VERDICTS=$(jq -c '[(.review.attest // {}) | objects | to_entries[]
+                   | select((.value | type) != "object" or .value.needsRenders != true)
                    | ((if (.value | type) == "object" then .value.trailer else null end) // .key) | ascii_downcase] | unique' \
            "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
 [ -n "$VERDICTS" ] || VERDICTS='[]'
+# A reviewer that judges pictures (needsRenders) is judged by critic-judge.sh, never
+# by a trailer the build wrote: its verdict is the judge's status on the head.
+NEED_JUDGE=$(jq -r '[(.review.attest // {}) | objects | to_entries[] | select((.value | type) == "object" and .value.needsRenders == true)] | length > 0' \
+             "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+[ "$NEED_JUDGE" = true ] || NEED_JUDGE=false
+JUDGE_CTX=$(swarm_opt review.judge.context "Design critic")
+JUDGE_PREFIX="Independent critic"
 EV_PREFIX=$(jq -r '.evidence.commitPrefix // empty' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
 [ -n "$EV_PREFIX" ] || EV_PREFIX="chore(evidence):"
 KEPT="${SIGNOFF_APPROVAL_KEPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/approval-kept.sh}"
 case "$BATCH" in ''|*[!0-9]*|0) echo "signoff-batch: batch size '$BATCH' is not a positive number" >&2; exit 2 ;; esac
 
 held_green() { # <pr> \t <sha7> \t <sha> \t <priority 0-9 or -> \t <ticket or ->
+  local line
+  held_green_rows | while IFS= read -r line; do
+    case "$line" in
+      "-	"*) echo "signoff-batch: #$(printf '%s' "$line" | cut -f2) is green apart from the hold, not counted: $(printf '%s' "$line" | cut -f3-)" >&2 ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+}
+
+held_green_rows() { # held_green's rows, plus "-" \t <pr> \t <why> for a PR the judge has not passed
   jq -r --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson req "$REQUIRED" \
+     --argjson needjudge "$NEED_JUDGE" --arg jctx "$JUDGE_CTX" --arg jpre "$JUDGE_PREFIX" \
      --arg plist "$LBL_POLISH_LIST" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
     def settled: ((.status // "COMPLETED") == "COMPLETED") and (((.state // "") | test("PENDING|EXPECTED")) | not);
     def ok: (.conclusion // .state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$");
@@ -70,13 +89,20 @@ held_green() { # <pr> \t <sha7> \t <sha> \t <priority 0-9 or -> \t <ticket or ->
             ($c | length) > 0 and all($c[]; settled)
             and all($c[]; ok or (((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase)))
           end)
+      | (([ $c[] | select(.context == $jctx or .name == $jctx) ] | last) as $j
+         | if $needjudge | not then ""
+           elif $j == null then "no \($jctx) status on its head"
+           elif ((($j.state // $j.conclusion // "") | ascii_upcase) != "SUCCESS") then "its \($jctx) status is \(($j.state // $j.conclusion // "unset") | ascii_downcase)"
+           elif (($j.description // "") | startswith($jpre) | not) then "its \($jctx) status was not posted by the independent critic"
+           else "" end) as $why
       | [.labels[]?.name] as $ls
-      | {n: .number, sha: (.headRefOid // ""),
+      | {n: .number, why: $why, sha: (.headRefOid // ""),
          pri: (([$ls[] | select(test("^P[0-9]$")) | ltrimstr("P")] | first)
                // (if ($ls | index($plist)) then "3" else "-" end)),
          t: (((.headRefName // "") | branch_ticket($pre)) as $b
              | if $b != "" then $b else ((.closingIssuesReferences // [])[0].number // "-" | tostring) end)} ]
-    | sort_by(.n) | .[] | "\(.n)\t\(.sha[0:7])\t\(.sha)\t\(.pri)\t\(.t)"'
+    | sort_by(.n) | .[]
+    | if .why != "" then "-\t\(.n)\t\(.why)" else "\(.n)\t\(.sha[0:7])\t\(.sha)\t\(.pri)\t\(.t)" end'
 }
 
 # walk <pr-json> <clean-merges-json> — from the head down: "" when every verdict is
