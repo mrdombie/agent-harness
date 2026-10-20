@@ -186,6 +186,7 @@ _driver_ship_evidence_plan() {
   new=$(python3 -I "$pe" plan "${popt[@]}" --into "$wt/$plan" "${paths[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the picture's shots"; return 0; }
   if [ -f "$wt/$plan" ] && [ "$(jq -S . "$wt/$plan" 2>/dev/null)" = "$(printf '%s' "$new" | jq -S . 2>/dev/null)" ]; then return 0; fi
   mkdir -p "$wt/$dir" && printf '%s\n' "$new" > "$wt/$plan" || return 0
+  driver_format_files "$wt" "$plan" || true
   git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
   git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the shots the approved picture declares (#$t)" >/dev/null 2>&1 \
     && driver_say "   ship: $plan holds the $(printf '%s\n' "$req" | grep -c .) shot(s) the approved picture declares"
@@ -231,6 +232,7 @@ _driver_ship_derived_plan() {
   new=$(python3 -I "$KIT_ROOT/scripts/evidence-gaps.py" "${a[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the derived shots"; return 0; }
   if [ -f "$wt/$plan" ] && [ "$(jq -S . "$wt/$plan" 2>/dev/null)" = "$(printf '%s' "$new" | jq -S . 2>/dev/null)" ]; then return 0; fi
   mkdir -p "$wt/$dir" && printf '%s\n' "$new" > "$wt/$plan" || return 0
+  driver_format_files "$wt" "$plan" || true
   git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
   git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the changed screens at laptop and phone, light and dark (#$t)" >/dev/null 2>&1 \
     && driver_say "   ship: no picture binds #$t — $plan photographs $(printf '%s\n' "$routes" | paste -sd' ' -) at laptop 1440 / phone 390 x light / dark"
@@ -335,6 +337,8 @@ driver_step_ship() { # <ticket>
     [ -n "$sp" ] && [ -n "$(git -C "$wt" ls-files -- "$sp" 2>/dev/null | head -1)" ] || continue
     newp=$(git -C "$wt" ls-files --others --exclude-standard -- "$sp" 2>/dev/null)
     [ -n "$newp" ] || continue
+    local -a newf=(); while IFS= read -r f; do [ -n "$f" ] && newf+=("$f"); done <<< "$newp"
+    driver_format_files "$wt" "${newf[@]}" || true
     printf '%s\n' "$newp" | while IFS= read -r f; do git -C "$wt" add -- "$f"; done
     git -C "$wt" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" >/dev/null 2>&1 \
       && driver_say "   ship: committed the run's own plan under $sp"

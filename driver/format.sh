@@ -83,3 +83,39 @@ EOF
   driver_say "   $label: formatted ${#changed[@]} file(s) the branch changed, committed"
   return 0
 }
+
+# driver_format_files <tree> <file>... — A FILE THE DRIVER WRITES INTO THE TREE is
+# formatted as the project formats it, before it is committed. The evidence plan was
+# written as Python's indent-2 JSON, which prettier rejects (it folds short arrays),
+# so the project's pre-push format check failed every screen ticket after ship.
+# The command is driver_format_cmd's; a tree with a prettier config and prettier
+# installed gets prettier too, unless formatWrite switches it off. With none, a .json
+# file is rewritten in its canonical 2-space form with a trailing newline. Only the
+# files named are touched. 0 formatted · 1 nothing to do · 2 the formatter failed.
+driver_format_files() {
+  local wt="$1" cmd f q="" rc=0; shift
+  local -a files=()
+  for f in "$@"; do [ -n "$f" ] && [ -f "$wt/$f" ] && [ ! -L "$wt/$f" ] && files+=("$f") && q="$q $(printf '%q' "$f")"; done
+  [ "${#files[@]}" -gt 0 ] || return 1
+  cmd=$(driver_format_cmd "$wt")
+  if [ -z "$cmd" ] && [ -x "$wt/node_modules/.bin/prettier" ] \
+     && ! { [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] \
+            && [ "$(jq -r '(.driver.formatWrite // null) | type' "$HARNESS_CFG" 2>/dev/null)" = string ]; } \
+     && { compgen -G "$wt/.prettierrc*" >/dev/null || compgen -G "$wt/prettier.config.*" >/dev/null \
+          || jq -e '.prettier' "$wt/package.json" >/dev/null 2>&1; }; then
+    cmd="node_modules/.bin/prettier --write --ignore-unknown"
+  fi
+  if [ -n "$cmd" ]; then
+    ( cd "$wt" && driver_run_project "${DRIVER_CMD_TIMEOUT:-900}" "$cmd$q" ) >/dev/null 2>&1 && return 0
+    driver_say "   the formatter ($cmd) failed on$q — left as written"
+    return 2
+  fi
+  for f in "${files[@]}"; do
+    case "$f" in *.json) ;; *) continue ;; esac
+    python3 -I -c 'import json,sys
+p=sys.argv[1]
+d=json.load(open(p))
+open(p,"w").write(json.dumps(d,indent=2)+"\n")' "$wt/$f" 2>/dev/null || rc=2
+  done
+  return "$rc"
+}
