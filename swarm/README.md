@@ -15,7 +15,7 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `queue.sh` | One queue. `add` · `list` · `next` · `remove` · `clear` · `drain`. |
 | `scheduler.sh` | One pass: top each programme's queue up, drain it to the cap. |
 | `repair-watch.sh` | Repair a red or clashing pull request · unblock · restart after an outage · raise the alarm. |
-| `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. It also shows the coordinator's queue (`$STATE_DIR/coordinator/queue.json`, in run order, with notes) and a banner while spawns are held. |
+| `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. It also shows the coordinator's queue (`$STATE_DIR/coordinator/queue.json`, in run order, with notes) and a banner while spawns are held. It leads with "Before launch: N left" over every open ticket (one batched read, kept in `$SWARM_DIR/board.json`, at most once in five minutes), then progress to launch (done since `swarm.progressSince`, added and done per day, the pace and the date it lands on, merged per day — one call of search counts, kept fifteen minutes), today's counts, one row per builder, what needs the owner, and the machine. |
 | `hold-status.sh` | Whether the owner's pause or the plan's usage limit holds spawns, why and until when, as JSON — the same functions the coordinator decides with. |
 | `report.sh` | One screen, one JSON, one push. |
 | `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. When the live view does not answer it shows the coordinator's last check (`last check 10:52 · 3 building · next 10:57`), or `coordinator silent since 10:40` past ten minutes. |
@@ -170,6 +170,8 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.gateSlots` | 2 | Local gate runs at once, machine-wide (`HARNESS_GATE_SLOTS`) |
 | `swarm.port` | 4777 | The live view's port |
 | `swarm.ownerName` | — | Who a finished row's "Waiting on …" names; unset reads "the owner" |
+| `swarm.progressSince` | 2026-10-13 | The day "Progress to launch" counts done tickets from (local midnight) |
+| `swarm.afterLaunchLabel` | after-launch | The label that sets a ticket after launch: the page counts it apart from "Before launch: N left" |
 | `swarm.staleSec` | 120 | A snapshot older than this is no answer |
 | `swarm.progressSec` | 60 | How often the step and plan facts are re-read |
 | `swarm.quietSec` | 1200 | An agent silent this long is stuck |
