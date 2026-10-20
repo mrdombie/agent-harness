@@ -61,7 +61,7 @@ SWEEP="${DISK_GUARD_SWEEP:-$HERE/sweep-orphan-worktrees.sh}"
 PROC="${DISK_GUARD_PROC:-/proc}"
 is_wsl() {
   [ -n "${WSL_DISTRO_NAME:-}" ] || [ -e "$PROC/sys/fs/binfmt_misc/WSLInterop" ] \
-    || grep -qi microsoft "$PROC/version" 2>/dev/null
+    || grep -i microsoft "$PROC/version" >/dev/null 2>&1
 }
 host_path() { is_wsl && printf '%s' "${COORDINATOR_DISK_HOST_PATH:-$(cfg coordinator.disk.hostPath /mnt/c)}"; }
 df_gb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{print int($4/1048576)}'; }
