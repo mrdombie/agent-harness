@@ -90,6 +90,13 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
         driver_say "   park: committed as $ctype(#$t), staging $staged"
       fi
     fi
+    # An earlier run's commits on origin's copy of the branch refuse the push below
+    # ("fetch first"), so they are merged in first, as ship does. A conflict leaves
+    # the tree as it was: the push is refused and the bundle keeps the work.
+    if [ -z "$merge_note" ] && [ "$(driver_state_get "$t" mode)" != repair ] \
+       && ! driver_take_origin "$t" "$wt" "$branch" "origin/$INTEGRATION_BRANCH"; then
+      driver_say "   park: origin's $branch has an earlier run's commits that conflict in $DRIVER_TAKE_WHY — not merged"
+    fi
     if [ "$(driver_state_get "$t" mode)" = repair ]; then
       # A REPAIR'S PARK IS NOT PUSHED. Its pull request is usually ready with
       # auto-merge armed, so a push there is a merge — of the work the park exists

@@ -20,6 +20,8 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
+# driver_step_self_check: the gates again, on a tree the merge from origin changed.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
 
 # _driver_ship_replaced <ticket> — the "## Deleted tests" lines for the tests this
 # ticket's steps reported rewording or removing (steps/replaced.jsonl), last word per file.
@@ -247,6 +249,26 @@ _driver_ship_push_to_fix() {
   return 0
 }
 
+# _driver_ship_findings_to_fix <ticket> — 0 when the review's blocking findings go
+# back to fix for another round rather than parking. A park here was left ready as the
+# driver's own fault, so every resume walked straight back to this refusal (#13620,
+# 2026-10-20: two Minors, review rounds spent). Bounded by its own counter, persisted,
+# at DRIVER_MAX_REVIEW_ROUNDS; past it the park is the PM's, so it is not re-picked.
+_driver_ship_findings_to_fix() {
+  local t="$1" n done_rounds
+  n=$(jq -r "[.findings[]? | $(driver_blocking_select)] | length" "$(driver_state_dir "$t")/steps/review.json" 2>/dev/null)
+  [ "${n:-0}" -gt 0 ] || return 1
+  done_rounds=$(driver_state_count "$t" ship_rework)
+  if [ "${done_rounds:-0}" -ge "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
+    driver_state_set "$t" park_cause pm
+    driver_say "   ship: $done_rounds extra fix round(s) from ship already ran and the review still blocks — parked for the PM, not left ready."
+    return 1
+  fi
+  driver_state_bump "$t" ship_rework
+  driver_say "↩ ship: $n blocking finding(s) from the review — back to fix, then review again (ship's round $((done_rounds + 1)) of $DRIVER_MAX_REVIEW_ROUNDS)."
+  return 0
+}
+
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
   local wt branch dirty ahead verdict rounds sha head body trunk r title nblock blist
@@ -312,6 +334,21 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
+  # ORIGIN'S COPY OF THIS BRANCH FIRST. An earlier run of the same ticket may have
+  # pushed to it; without its commits the push is "rejected (fetch first)" on every
+  # run. Merged here, before the verdicts are matched to HEAD, so a merge that moved
+  # HEAD is re-recorded like any other commit — and the gates run again on it.
+  if ! driver_take_origin "$t" "$wt" "$branch" "$trunk"; then
+    driver_say "✋ ship: origin's $branch has commits from an earlier run that conflict with this run outside the files this run changed: $DRIVER_TAKE_WHY. Nothing is pushed."
+    driver_state_set "$t" park_note "origin's $branch has an earlier run's commits that conflict in files this run did not change: $DRIVER_TAKE_WHY"
+    return "$DRIVER_E_REFUSED"
+  fi
+  if [ "$DRIVER_TAKE_MERGED" = 1 ]; then
+    driver_say "   ship: merged $DRIVER_TAKE_COUNT commit(s) an earlier run pushed to $branch — self-check runs again on the merged tree."
+    local scrc=0; driver_step_self_check "$t" || scrc=$?
+    [ "$scrc" -eq 0 ] || return "$scrc"
+  fi
+
   # THE VERDICTS HAVE TO DESCRIBE THIS HEAD. The review step records them, and any
   # commit after it — a park's work-in-progress commit is the real case — moves the
   # diff they were bound to. review is finished by then, so a resumed run comes
@@ -356,6 +393,7 @@ driver_step_ship() { # <ticket>
     if [ "$rverdict" != "SHIP" ]; then
       driver_say "✋ ship: the review verdict on this repair is '${rverdict:-none}', and PR #$open_pr may already have auto-merge armed — so nothing is pushed. The repair stays in $wt."
       driver_state_set "$t" park_note "the repair's review verdict is ${rverdict:-none}; it was not pushed, because PR #$open_pr would merge it"
+      _driver_ship_findings_to_fix "$t" && return "$DRIVER_E_REWORK"
       return "$DRIVER_E_REFUSED"
     fi
     # NO CONFLICT MARKER IS EVER PUSHED, whichever pass left it: the last look before
@@ -584,6 +622,7 @@ $polish"
       # because a park exists to be read by somebody who is not this process. The
       # orchestrator puts this note in the park brief.
       driver_state_set "$t" park_note "${nblock} blocking finding(s) from the review to clear: $blist"
+      _driver_ship_findings_to_fix "$t" && return "$DRIVER_E_REWORK"
     fi
     return "$DRIVER_E_REFUSED"
   fi

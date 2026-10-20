@@ -200,8 +200,17 @@ echo "--- past the review rounds with blockers still open: it refuses ONCE, answ
 setup_wt 107
 driver_state_put 107 review '{"verdict":"BLOCKED","findings":[{"file":"a.ts","line":9,"grade":"critical","summary":"the save button calls nothing","reason":"the person believes their work is saved and it is not"},{"file":"b.ts","line":4,"grade":"minor","summary":"the row is a spacing step out","reason":"it reads as misaligned"}]}'
 driver_state_bump 107 review; driver_state_bump 107 review; driver_state_bump 107 review
+# BACK TO FIX FIRST, not a park: a park was left ready as the driver's fault and every
+# resume walked straight back here (#13620). Ship's own rounds are bounded.
+for n in 1 2; do
+  out=$(driver_step_ship 107 2>&1); rc=$?
+  want "ship's round $n goes back to fix"   "30" "$rc"
+  want_in "saying so"                       'back to fix, then review again' "$out"
+done
+want "two rounds are counted"           "2" "$(driver_state_count 107 ship_rework)"
 out=$(driver_step_ship 107 2>&1); rc=$?
-want "it refuses"                      "24" "$rc"
+want "past its rounds it refuses"      "24" "$rc"
+want "and the park is the PM's, not left ready" "pm" "$(driver_state_get 107 park_cause)"
 want_in "naming the blocker"           'the save button calls nothing' "$out"
 want_in "and where it is"              'a.ts:9' "$out"
 want_in "and says the rounds are spent" "$DRIVER_MAX_REVIEW_ROUNDS" "$out"
@@ -513,6 +522,10 @@ printf 'repair\n' > "$FIX/wt142/r142.txt"; git -C "$FIX/wt142" add r142.txt; git
 driver_state_put 142 review '{"verdict":"BLOCKED","findings":[{"grade":"major","summary":"x"}]}'; driver_state_bump 142 review
 printf '[{"number":90}]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
 out=$(driver_step_ship 142 2>&1); rc=$?
+want "with rounds left it goes back to fix"  "30" "$rc"
+want "pushing nothing"                       "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
+driver_state_bump 142 ship_rework
+out=$(driver_step_ship 142 2>&1); rc=$?
 want "it refuses"                            "24" "$rc"
 want "origin still has the PR's old head"    "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
 want_in "and it says why"                    'nothing is pushed' "$out"
@@ -719,5 +732,62 @@ rc=0; out=$(driver_step_ship 196 2>&1) || rc=$?
 want "it refuses"                          "24" "$rc"
 want_in "naming the verdict commit"        'committed a design verdict' "$out"
 want "and nothing reached origin"          "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-196/work 2>/dev/null)"
+
+# earlier_run <ticket> <file> <content> — an earlier run of the same ticket pushed a
+# commit to the ticket's own branch on origin, from a clone this run never saw.
+earlier_run() {
+  local t=$1 c="$FIX/earlier$1"
+  git clone -q -n "$FIX/origin" "$c"
+  git -C "$c" checkout -q -b "tkt-$t/work" origin/develop
+  printf '%s\n' "$3" > "$c/$2"
+  git -C "$c" add "$2"
+  git -C "$c" -c user.name=Earlier -c user.email=e@example.invalid commit -qm "feat: the earlier run's $2"
+  git -C "$c" push -q origin "tkt-$t/work"
+  git -C "$c" rev-parse HEAD
+}
+
+echo "--- an earlier run of the ticket pushed first: its commits are merged, not refused (#300) ---"
+: > "$GH_LOG"
+setup_wt 190
+early=$(earlier_run 190 early190.txt "from the earlier run")
+driver_state_put 190 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 190 review
+for st in start plan build self-check review record; do driver_state_done 190 "$st"; done
+rc=0; out=$(driver_step_ship 190 2>&1) || rc=$?
+want "it ships"                                    "0" "$rc"
+want_not_in "no 'fetch first' refusal"             'fetch first' "$out"
+want "the earlier run's commit is kept, not forced" "yes" \
+  "$(git -C "$FIX/origin" merge-base --is-ancestor "$early" tkt-190/work && echo yes)"
+want "and this run's work is on origin too"        "change for 190" "$(git -C "$FIX/origin" show tkt-190/work:f190.txt 2>/dev/null)"
+want "by a merge, never a rebase"                  "2" "$(git -C "$FIX/origin" rev-list --parents -n1 tkt-190/work | wc -w | tr -d ' ' | awk '{print $1-1}')"
+want_in "whose subject passes commitlint"          '^chore\(merge\): [a-z]' "$(git -C "$FIX/origin" log -1 --format=%s tkt-190/work)"
+want_in "and self-check ran again on the merge"    'self-check runs again' "$out"
+
+echo "--- both runs changed one file: this run's version wins ---"
+: > "$GH_LOG"
+setup_wt 191
+earlier_run 191 f191.txt "the earlier run's version" >/dev/null
+driver_state_put 191 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 191 review
+for st in start plan build self-check review record; do driver_state_done 191 "$st"; done
+rc=0; out=$(driver_step_ship 191 2>&1) || rc=$?
+want "it ships"                          "0" "$rc"
+want "with this run's version"           "change for 191" "$(git -C "$FIX/origin" show tkt-191/work:f191.txt 2>/dev/null)"
+want "and no conflict marker"            "" "$(git -C "$FIX/origin" show tkt-191/work:f191.txt 2>/dev/null | grep -E '^(<<<<<<<|>>>>>>>)')"
+
+echo "--- a conflict in a file this run did not change: stop, name it, push nothing ---"
+: > "$GH_LOG"
+setup_wt 192
+early=$(earlier_run 192 shared192.txt "the earlier run's shared file")
+printf 'the trunk moved\n' > "$REPO/shared192.txt"
+git -C "$REPO" add shared192.txt; git -C "$REPO" commit -qm "feat: trunk change"; git -C "$REPO" push -q origin develop
+git -C "$FIX/wt192" fetch -q origin
+git -C "$FIX/wt192" merge -q --no-edit origin/develop
+driver_state_put 192 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 192 review
+for st in start plan build self-check review record; do driver_state_done 192 "$st"; done
+rc=0; out=$(driver_step_ship 192 2>&1) || rc=$?
+want "it refuses"                        "24" "$rc"
+want_in "naming the conflicting file"    'shared192.txt' "$out"
+want "origin's branch is untouched"      "$early" "$(git -C "$FIX/origin" rev-parse tkt-192/work)"
+want "and the tree is left clean"        "" "$(git -C "$FIX/wt192" status --porcelain)"
+want "with no merge half-done"           "" "$(test -f "$(git -C "$FIX/wt192" rev-parse --git-path MERGE_HEAD)" && echo merging)"
 
 exit $FAILED

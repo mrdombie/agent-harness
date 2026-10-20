@@ -275,7 +275,7 @@ if [ -n "$REPAIR_BRIEF" ]; then
     rmdir "$_arch" 2>/dev/null || true
     driver_state_reopen "$TICKET" $DRIVER_STEPS
     _driver_state_edit "$TICKET" --arg sha "$_rb_sha" --arg h "$_rb_head" --arg src "$REPAIR_SOURCE" \
-      '.counters.review = 0 | .counters.fix = 0 | .counters.selfcheck_red = 0 | .counters.push_red = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha | .repair_pr_head = $h | .repair_brief_source = $src'
+      '.counters.review = 0 | .counters.fix = 0 | .counters.selfcheck_red = 0 | .counters.push_red = 0 | .counters.ship_rework = 0 | .repair_base = "" | .repair_conflicted = "" | .repair_brief_sha = $sha | .repair_pr_head = $h | .repair_brief_source = $src'
     driver_state_set "$TICKET" run_brief ""   # a build's brief does not outlive into a repair
     driver_keep_brief "$REPAIR_BRIEF" "$_rd/repair-brief.md"
     driver_state_set "$TICKET" repair_brief "$_rd/repair-brief.md"

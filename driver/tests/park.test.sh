@@ -200,6 +200,22 @@ want_in "and the park says why there is no ref" 'parkRefNoVerify' "$out"
 
 for n in 303 304 305 306 307 308 309; do git -C "$FIX/wt$n" config --unset core.hooksPath; done
 
+echo "--- an earlier run pushed to the branch first: the park merges it and still pushes (#300) ---"
+: > "$GH_LOG"; unset PARK_PUSH MY_PARK
+park_tree 310 tkt-310/work develop
+git clone -q -n "$FIX/origin" "$FIX/earlier310"
+git -C "$FIX/earlier310" checkout -q -b tkt-310/work origin/develop
+printf 'earlier\n' > "$FIX/earlier310/early.txt"; git -C "$FIX/earlier310" add early.txt
+git -C "$FIX/earlier310" -c user.name=Earlier -c user.email=e@example.invalid commit -qm "feat: earlier run"
+git -C "$FIX/earlier310" push -q origin tkt-310/work
+early=$(git -C "$FIX/earlier310" rev-parse HEAD)
+rm -rf "$FIX/trees/backups"
+out=$(driver_park 310 "the gate stopped it" "" driver 2>&1); rc=$?
+want "park reports parked"                    "20" "$rc"
+want "this run's head reached origin"         "$(git -C "$FIX/wt310" rev-parse HEAD)" "$(on_origin tkt-310/work)"
+want "keeping the earlier run's commit"       "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor "$early" tkt-310/work && echo yes)"
+want "and no bundle was needed"               "0" "$(bundles)"
+
 echo "--- a park with nothing to push still parks ---"
 : > "$GH_LOG"; : > "$RELEASES"; : > "$ORDER"
 driver_state_init 202
