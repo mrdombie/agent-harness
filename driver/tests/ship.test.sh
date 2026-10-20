@@ -200,8 +200,17 @@ echo "--- past the review rounds with blockers still open: it refuses ONCE, answ
 setup_wt 107
 driver_state_put 107 review '{"verdict":"BLOCKED","findings":[{"file":"a.ts","line":9,"grade":"critical","summary":"the save button calls nothing","reason":"the person believes their work is saved and it is not"},{"file":"b.ts","line":4,"grade":"minor","summary":"the row is a spacing step out","reason":"it reads as misaligned"}]}'
 driver_state_bump 107 review; driver_state_bump 107 review; driver_state_bump 107 review
+# BACK TO FIX FIRST, not a park: a park was left ready as the driver's fault and every
+# resume walked straight back here (#13620). Ship's own rounds are bounded.
+for n in 1 2; do
+  out=$(driver_step_ship 107 2>&1); rc=$?
+  want "ship's round $n goes back to fix"   "30" "$rc"
+  want_in "saying so"                       'back to fix, then review again' "$out"
+done
+want "two rounds are counted"           "2" "$(driver_state_count 107 ship_rework)"
 out=$(driver_step_ship 107 2>&1); rc=$?
-want "it refuses"                      "24" "$rc"
+want "past its rounds it refuses"      "24" "$rc"
+want "and the park is the PM's, not left ready" "pm" "$(driver_state_get 107 park_cause)"
 want_in "naming the blocker"           'the save button calls nothing' "$out"
 want_in "and where it is"              'a.ts:9' "$out"
 want_in "and says the rounds are spent" "$DRIVER_MAX_REVIEW_ROUNDS" "$out"
@@ -512,6 +521,10 @@ git -C "$FIX/wt142" push -q origin tkt-142/work; ORIG=$(git -C "$FIX/wt142" rev-
 printf 'repair\n' > "$FIX/wt142/r142.txt"; git -C "$FIX/wt142" add r142.txt; git -C "$FIX/wt142" commit -qm "fix: repair"
 driver_state_put 142 review '{"verdict":"BLOCKED","findings":[{"grade":"major","summary":"x"}]}'; driver_state_bump 142 review
 printf '[{"number":90}]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
+out=$(driver_step_ship 142 2>&1); rc=$?
+want "with rounds left it goes back to fix"  "30" "$rc"
+want "pushing nothing"                       "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
+driver_state_bump 142 ship_rework
 out=$(driver_step_ship 142 2>&1); rc=$?
 want "it refuses"                            "24" "$rc"
 want "origin still has the PR's old head"    "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
