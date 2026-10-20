@@ -694,14 +694,25 @@ driver_built() {
 # different inputs.
 DRIVER_GRADES="${DRIVER_GRADES:-critical major minor nit}"
 
-# WHAT BLOCKS, named once. A Minor filed as its own follow-up made every merge open
-# new tickets: 110 of 339 bugs filed in one week came out of reviews that passed.
+# WHAT BLOCKS, named once, and by review round (the owner, 2026-10-20). Round 1 fixes
+# Critical, Major and Minor; from round 2 only Critical and Major block, and a Minor
+# goes on its screen's polish list for the next change there. A Minor filed as its own
+# follow-up made every merge open new tickets (110 of 339 bugs in one week); a Minor
+# that blocked every round made 4-5 hour loops (86 of 117 latest findings were Minor).
 DRIVER_BLOCKING_GRADES="${DRIVER_BLOCKING_GRADES:-critical major minor}"
+DRIVER_BLOCKING_GRADES_LATER="${DRIVER_BLOCKING_GRADES_LATER:-critical major}"
 
-# driver_blocking_select — the jq selector for a finding whose grade blocks. Every
-# step reads this; a literal copy is refused by tests/blocking-grades.test.sh.
+# driver_blocking_grades [round] — the grades that block in that review round; no
+# round, or round 1, is the first round's set.
+driver_blocking_grades() {
+  case "${1:-1}" in ''|*[!0-9]*|0|1) printf '%s' "$DRIVER_BLOCKING_GRADES" ;; *) printf '%s' "${DRIVER_BLOCKING_GRADES_LATER:-$DRIVER_BLOCKING_GRADES}" ;; esac
+}
+
+# driver_blocking_select [round] — the jq selector for a finding whose grade blocks in
+# that round. Every step reads this; a literal copy is refused by
+# tests/blocking-grades.test.sh.
 driver_blocking_select() {
-  printf 'select((.grade // "") as $g | ("%s" | split(" ")) | index($g) != null)' "$DRIVER_BLOCKING_GRADES"
+  printf 'select((.grade // "") as $g | ("%s" | split(" ")) | index($g) != null)' "$(driver_blocking_grades "${1:-1}")"
 }
 
 # The priority a filed follow-up carries, read off the grade, so the queue orders
@@ -715,7 +726,7 @@ DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
 export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
-export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
+export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
 export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_TO_REPAIR

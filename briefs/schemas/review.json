@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "review step answer",
-  "description": "A verdict, and every finding behind it, each carrying the grade that decides what it costs. Critical, Major and Minor send the work back and are fixed in this change; a Nit is dropped. The verdict is read off the grades, never typed beside them: SHIP with a Critical, Major or Minor, and BLOCKED with none, are both refused.",
+  "description": "A verdict, and every finding behind it, each carrying the grade that decides what it costs. Critical, Major and Minor send the work back and are fixed in this change; from review round 2 the driver moves each Minor to its screen's polish list instead; a Nit is dropped. The verdict is read off the grades, never typed beside them: SHIP with a Critical, Major or Minor, and BLOCKED with none, are both refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [

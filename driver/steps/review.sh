@@ -25,8 +25,10 @@
 #   minor     polish — spacing, wording, a small visual slip
 #   nit       taste
 #
-# Critical, Major and Minor go back to the build step and, past the rounds, stay
-# with this ticket: the ship step refuses and names them. Nothing leaves a review
+# In round 1 Critical, Major and Minor go back to the build step; from round 2 only
+# Critical and Major do, and a Minor goes on its screen's polish list
+# (_driver_review_defer). What blocks, past the rounds, stays with this ticket: the
+# ship step refuses and names it. Nothing leaves a review
 # as a follow-up ticket: filing Minors made every passing review open new work,
 # 110 of the 339 bugs filed in one week. Nits are dropped — and the count is SAID,
 # because dropped silently reads exactly like never raised.
@@ -132,6 +134,8 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   driver_state_bump "$t" review
   round=$((round + 1))
   ans_file="$(driver_state_dir "$t")/steps/review.json"
+  # A new review cycle (a build, or a repair) starts its deferred list empty.
+  [ "$round" -gt 1 ] || rm -f "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
 
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
   case "$verdict" in
@@ -153,11 +157,13 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
     return "$DRIVER_E_REFUSED"
   fi
 
-  rc=0; _driver_review_hold_signed "$t" "$ans_file" || rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
-
   _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
+  _driver_review_defer "$t" "$ans_file" "$round"
+  verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
+
+  rc=0; _driver_review_hold_signed "$t" "$ans_file" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
 
   nsend=$(_driver_count "$ans_file" blocking)
   # `-le`, not `-lt`: the design's flowchart sends work back on round 1 OR 2, so two
@@ -233,6 +239,51 @@ _driver_review_touched() {
   jq --argjson add "$add" '.findings = ((.findings // []) + $add)
       | if ([$add[] | select(.grade != "nit")] | length) > 0 then .verdict = "BLOCKED" else . end' "$f" > "$f.t" && mv "$f.t" "$f"
   driver_say "   review: $(printf '%s' "$add" | jq 'length') item(s) already on the polish list of a screen this change touches are findings of this review"
+}
+
+# _driver_review_defer <ticket> <review.json> <round> — FROM ROUND 2 A MINOR DOES NOT
+# BLOCK (the owner, 2026-10-20). Round 1 fixes every Critical, Major and Minor; a grade
+# that blocks in round 1 and not in this round leaves the findings and goes on the
+# polish list of the screen it is on (polish-list.sh add), fixed by the next change
+# there. No screen resolves, or the list cannot be written: it is kept as a note under
+# "Minor, deferred" in the PR, still not blocking. Either way it is recorded in
+# steps/review.deferred.jsonl. Builds and repairs count their own rounds the same way.
+_driver_review_defer() {
+  local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0
+  local pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" sf="${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}"
+  late=$(driver_blocking_grades "$round")
+  local first; first=$(driver_blocking_grades 1)
+  [ "$late" != "$first" ] || return 0
+  defer=$(jq -c --arg late "$late" "[.findings[]? | $(driver_blocking_select 1)
+      | select((.grade // \"\") as \$g | (\$late | split(\" \")) | index(\$g) == null)]" "$f" 2>/dev/null)
+  n=$(printf '%s' "$defer" | jq 'length' 2>/dev/null)
+  [ "${n:-0}" -gt 0 ] || return 0
+  d="$(driver_state_dir "$t")/steps"; tmp="$d/defer-file.txt"
+  labels=$(bash "$sf" screens "$t" 2>/dev/null)
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    x=$(printf '%s' "$defer" | jq -c ".[$i]"); i=$((i + 1))
+    list=""
+    case "$(printf '%s' "$x" | jq -r '.id // ""')" in
+      polish-*) list=$(printf '%s' "$x" | jq -r '.file // ""' | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p'); list="#${list:-?}" ;;
+      *)
+        printf '%s\n' "$(printf '%s' "$x" | jq -r '.file // ""')" > "$tmp"
+        # The screen the finding's own file maps to, before the ticket's own screen labels.
+        slug=$(bash "$sf" screens "$t" "$tmp" 2>/dev/null | L="$labels" awk 'BEGIN { n = split(ENVIRON["L"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") s[a[i]] = 1 } NF && !($0 in s) { print; exit }')
+        [ -n "$slug" ] || slug=$(printf '%s\n' "$labels" | sed '/^$/d' | head -1)
+        text=$(printf '%s' "$x" | jq -r --arg r "$round" --arg t "$t" '"[\(.grade | ascii_downcase | (.[0:1] | ascii_upcase) + .[1:])] \(.summary // "") — \(.file // "?"):\(.line // "?") (review round \($r) of #\($t))"')
+        if [ -n "$slug" ] && bash "$pl" add "$slug" "$text" >/dev/null 2>&1; then list="$slug"; fi ;;
+    esac
+    if [ -n "$list" ]; then put=$((put + 1)); else kept=$((kept + 1)); fi
+    printf '%s' "$x" | jq -c --arg l "$list" --argjson r "$round" '{grade, file, line, summary, round: $r, list: $l}' >> "$d/review.deferred.jsonl"
+  done
+  rm -f "$tmp"
+  jq --arg late "$late" --arg first "$first" '
+      ($late | split(" ")) as $L | ($first | split(" ")) as $F
+      | .findings = [(.findings // [])[] | select((.grade // "") as $g | (($F | index($g)) != null and ($L | index($g)) == null) | not)]
+      | if .verdict == "BLOCKED" and ([.findings[] | select((.grade // "") as $g | $L | index($g))] | length) == 0
+        then .verdict = "SHIP" else . end' "$f" > "$f.t" && mv "$f.t" "$f"
+  driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list, $kept noted in the PR under \"Minor, deferred\""
 }
 
 # _driver_review_hold_signed <ticket> <review.json> — on a repair of a PR the owner

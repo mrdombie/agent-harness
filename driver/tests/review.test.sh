@@ -58,12 +58,11 @@ want "round 1 with only a Minor asks for rework" "30" "$rc"
 want_in "and names the Minor"            'retry row sits a step off' "$out"
 want_not_in "and files no ticket"        'issue create' "$(cat "$GH_LOG")"
 
-echo "--- SHIP beside a Minor is refused ---"
+echo "--- SHIP beside a Minor in round 1 is refused ---"
 driver_state_init 108 --worktree "$REPO"
 fix_issue 108 OPEN "status:claimed,project:widgets"
 fix_ai review '{"verdict":"SHIP","findings":[{"file":"a.sh","line":1,"grade":"minor","summary":"first small thing","reason":"a"}]}' \
   superpowers:requesting-code-review
-i=0; while [ $i -le "$DRIVER_MAX_REVIEW_ROUNDS" ]; do driver_state_bump 108 review; i=$((i+1)); done
 : > "$GH_LOG"
 out=$(driver_step_review 108 2>&1); rc=$?
 want "a SHIP verdict cannot carry a Minor" "24" "$rc"
@@ -230,5 +229,90 @@ want "a build (not a repair) is not held" "30" "$rc"
 want "and asks for no sign-off record"    "" "$(cat "$FIX/ak.log")"
 jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 unset DRIVER_APPROVAL_KEPT AK_RC
+
+echo "--- from round 2 a Minor does not block: it goes on its screen's polish list ---"
+# The owner, 2026-10-20: round 1 fixes Critical, Major and Minor; from round 2 only
+# Critical and Major block. 86 of 117 latest findings were Minor, and the 4-5 hour
+# loops were mostly Minor churn.
+cat > "$FIX/sf" <<SH
+#!/usr/bin/env bash
+[ "\$1" = screens ] || exit 0
+[ -n "\${SF_NONE:-}" ] && exit 0
+echo inbox
+[ -n "\${3:-}" ] && grep -q '^screens/Settings' "\$3" && echo settings
+exit 0
+SH
+cat > "$FIX/pl" <<SH
+#!/usr/bin/env bash
+case "\$1" in add) printf '%s\n' "\$*" >> "$FIX/pl.adds"; exit "\${PL_RC:-0}" ;; esac
+exit 0
+SH
+chmod +x "$FIX/sf" "$FIX/pl"; : > "$FIX/pl.adds"
+export DRIVER_SCREEN_FINDINGS="$FIX/sf" DRIVER_POLISH_LIST="$FIX/pl"
+minor='{"verdict":"BLOCKED","findings":[{"file":"screens/Settings.tsx","line":12,"grade":"minor","summary":"the save row sits 4px off the scale","reason":"it looks misaligned"}]}'
+majmin='{"verdict":"BLOCKED","findings":[
+  {"file":"lib/a.ts","line":9,"grade":"major","summary":"the error branch is dropped","reason":"a failure shows as success"},
+  {"file":"lib/b.ts","line":3,"grade":"minor","summary":"the toast wording is stiff","reason":"reads oddly"}]}'
+driver_state_init 130 --worktree "$REPO"; fix_issue 130 OPEN "status:claimed,screen:inbox"
+fix_ai review "$minor" superpowers:requesting-code-review
+rc=0; driver_step_review 130 >/dev/null 2>&1 || rc=$?
+want "round 1: the Minor blocks"                 "30" "$rc"
+want "and nothing goes on a list"                "" "$(cat "$FIX/pl.adds")"
+out=$(driver_step_review 130 2>&1); rc=$?
+want "round 2: the same Minor does not block"    "0" "$rc"
+want_in "it lands on the polish list of the screen its file is on" '^add settings \[Minor\] the save row sits 4px off the scale — screens/Settings.tsx:12' "$(cat "$FIX/pl.adds")"
+want "it leaves the findings"                    "0" "$(jq '[.findings[] | select(.grade == "minor")] | length' "$(driver_state_dir 130)/steps/review.json")"
+want "and the verdict ships"                     "SHIP" "$(jq -r .verdict "$(driver_state_dir 130)/steps/review.json")"
+want "recorded as deferred, with its list"       "settings" "$(jq -r .list "$(driver_state_dir 130)/steps/review.deferred.jsonl")"
+want_in "and the deferral is said"               'do not block' "$out"
+
+echo "--- round 2: a Major still blocks, the Minor beside it does not ---"
+: > "$FIX/pl.adds"
+driver_state_init 131 --worktree "$REPO"; fix_issue 131 OPEN "status:claimed,screen:inbox"; driver_state_bump 131 review
+fix_ai review "$majmin" superpowers:requesting-code-review
+out=$(driver_step_review 131 2>&1); rc=$?
+want "the Major sends it back"                   "30" "$rc"
+want_in "named as what blocks"                   'error branch is dropped' "$out"
+want_not_in "and the Minor is not among it"      'blocking.*toast wording' "$out"
+want_in "the Minor goes on the ticket's screen's list" '^add inbox \[Minor\] the toast wording is stiff' "$(cat "$FIX/pl.adds")"
+want "only the Major is left to fix"             "major" "$(jq -r "[.findings[] | $(driver_blocking_select) | .grade] | join(\" \")" "$(driver_state_dir 131)/steps/review.json")"
+
+echo "--- round 2 with no screen: the Minor is a note in the PR, still not blocking ---"
+: > "$FIX/pl.adds"
+driver_state_init 132 --worktree "$REPO"; fix_issue 132 OPEN "status:claimed"; driver_state_bump 132 review
+fix_ai review "$minor" superpowers:requesting-code-review
+rc=0; SF_NONE=1 driver_step_review 132 >/dev/null 2>&1 || rc=$?
+want "it does not block"                         "0" "$rc"
+want "no list is written"                        "" "$(cat "$FIX/pl.adds")"
+. "$HERE/../steps/ship.sh" || exit 1
+sec=$(_driver_ship_deferred 132)
+want_in "the PR body says Minor, deferred"       '^## Minor, deferred' "$sec"
+want_in "with the finding, its file and line"    'screens/Settings.tsx:12 — the save row sits 4px off the scale.*no screen resolved' "$sec"
+want "a run with nothing deferred says nothing"  "" "$(driver_state_init 136 --worktree "$REPO"; _driver_ship_deferred 136)"
+driver_state_init 133 --worktree "$REPO"; fix_issue 133 OPEN "status:claimed,screen:inbox"; driver_state_bump 133 review
+fix_ai review "$minor" superpowers:requesting-code-review
+rc=0; PL_RC=1 driver_step_review 133 >/dev/null 2>&1 || rc=$?
+want "a list that cannot be written: still not blocking" "0" "$rc"
+want_in "and kept for the PR"                    'no screen resolved' "$(_driver_ship_deferred 133)"
+
+echo "--- a repair counts its own rounds the same way ---"
+cat > "$BIN/approval-kept" <<'SH'
+#!/usr/bin/env bash
+case "$1" in signed-head) exit 1 ;; screens) cat ;; esac
+SH
+chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
+: > "$FIX/pl.adds"
+repair_rec 134
+fix_ai review "$minor" superpowers:requesting-code-review
+rc=0; driver_step_review 134 >/dev/null 2>&1 || rc=$?
+want "repair round 1: the Minor blocks"          "30" "$rc"
+rc=0; driver_step_review 134 >/dev/null 2>&1 || rc=$?
+want "repair round 2: it does not"               "0" "$rc"
+want_in "and lands on the polish list"           '^add settings \[Minor\]' "$(cat "$FIX/pl.adds")"
+fix_ai review "$majmin" superpowers:requesting-code-review
+repair_rec 135; driver_state_bump 135 review
+rc=0; driver_step_review 135 >/dev/null 2>&1 || rc=$?
+want "repair round 2: a Major still blocks"      "30" "$rc"
+unset DRIVER_APPROVAL_KEPT DRIVER_SCREEN_FINDINGS DRIVER_POLISH_LIST
 
 exit $FAILED

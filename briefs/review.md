@@ -19,14 +19,15 @@ This brief owns only how a finding is graded here and what the driver needs back
 
 ## Grade every finding
 
-Every finding carries a **grade**, and the grade is what decides its effect. Three
-of the four send work back; a Nit never does.
+Every finding carries a **grade**, and the grade and the round decide its effect.
+In round 1 three of the four send work back; from round 2 only Critical and Major
+do. A Nit never does.
 
 | Grade | What it means | What happens to it |
 |---|---|---|
 | `critical` | wrong data, a security hole, lost work, something published unapproved | goes back to the build step; fixed in this ticket |
 | `major` | a person is misled or stuck: an untrue screen, a dead control, a failure shown as success | goes back to the build step; fixed in this ticket |
-| `minor` | polish: spacing, wording, a small visual slip | goes back to the build step; fixed in this change, never filed |
+| `minor` | polish: spacing, wording, a small visual slip | round 1: goes back to the build step, fixed in this change. From round 2: goes on the screen's polish list for the next change there. Never filed as a ticket |
 | `nit` | taste | dropped |
 
 **A Critical or a Major names who is harmed and how, in the `reason`, in a user's
@@ -37,9 +38,11 @@ point of the scale: the step-runner went four rounds, eleven findings then seven
 then six, and about a quarter of them were spacing and wording. Each of those cost
 a round a real defect needed.
 
-Grading down is not being generous. A Minor still blocks: it is fixed in this
-change. Minors filed as follow-ups made every passing review open new tickets,
-110 of 339 bugs in one week.
+Grading down is not being generous. A Minor in round 1 still blocks: it is fixed
+in this change. From round 2 the driver puts it on its screen's polish list, so
+grade it honestly and still return `BLOCKED` when one is all there is — the driver,
+not you, decides it no longer blocks. Minors filed as follow-ups made every passing
+review open new tickets, 110 of 339 bugs in one week.
 
 Green checks are not a verdict. They mean nothing already tested broke; they do
 not mean the change is correct. Where a gate proved the evidence can be opened,
