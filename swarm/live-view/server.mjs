@@ -14,7 +14,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { execFile, execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { gather as gatherProgress, plansOf, progressOf, shortTitle, allowanceLow, noteGh } from './progress.mjs'
 
@@ -54,6 +54,52 @@ const PRS_FILE = process.env.SWARM_PRS_FILE || path.join(RUNS, '..', 'swarm', 'p
 const OWNER = process.env.SWARM_OWNER_NAME || 'the owner'
 const BRANCH_PREFIX = process.env.BRANCH_PREFIX || ''
 const LBL = (k, d) => process.env[k] || d
+const WIN = process.platform === 'win32'
+
+// A refresh or cache write that fails (ENOSPC included) is logged and skipped: the
+// page answers from what it already has. Once a minute per kind, so a full disk is
+// one line a minute, not one a request.
+const warned = new Map()
+function warn(what, e) {
+  const now = Date.now()
+  if (now - (warned.get(what) || 0) < 60_000) return
+  warned.set(what, now)
+  const why = typeof e?.code === 'number' ? `exit ${e.code}` : (e?.code || e?.message || e)
+  try { console.error(`live-view: ${what} failed: ${why}`) } catch {}
+}
+const guard = (what, fn) => { try { fn() } catch (e) { warn(what, e) } }
+// A child run in its own process group and killed whole at its deadline. execFile's
+// own timeout kills only the child, and a grandchild still holding the pipe keeps
+// the callback, and the refresh's in-flight flag, pending for ever.
+const REFRESH_TIMEOUT_MS = Number(process.env.SWARM_REFRESH_TIMEOUT_MS || 0)
+function runChild(what, cmd, args, opts, done) {
+  const ms = REFRESH_TIMEOUT_MS || opts.timeout || 60_000
+  let settled = false, child = null, timer = null
+  const finish = (err, out) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    // A command that exits non-zero has answered; only a hang or a failed start is news.
+    if (err && typeof err.code !== 'number') warn(what, err)
+    try { done(err, out) } catch (e) { warn(what, e) }
+  }
+  // spawn, not execFile: execFile drops `detached`, and the group kill below needs it.
+  const max = opts.maxBuffer || 1024 * 1024, out = []
+  let size = 0
+  try { child = spawn(cmd, args, { env: opts.env, detached: !WIN, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }) } catch (e) { finish(e); return }
+  child.on('error', (e) => finish(e))
+  child.stdout.on('data', (d) => {
+    size += d.length
+    if (size <= max) out.push(d)
+    else { try { child.kill('SIGKILL') } catch {} ; finish(Object.assign(new Error('maxBuffer exceeded'), { code: 'EMAXBUFFER' })) }
+  })
+  child.on('close', (code, sig) => finish(code === 0 ? null : Object.assign(new Error(`exit ${code ?? sig}`), { code: code ?? sig }), Buffer.concat(out).toString('utf8')))
+  timer = setTimeout(() => {
+    try { if (WIN) child.kill('SIGKILL'); else process.kill(-child.pid, 'SIGKILL') } catch {}
+    finish(Object.assign(new Error(`no answer in ${ms} ms`), { code: 'EDEADLINE' }))
+  }, ms)
+  timer.unref?.()
+}
 
 let progressAt = 0, progress = { tickets: {}, plans: {} }
 try { progress = JSON.parse(fs.readFileSync(PROGRESS_CACHE, 'utf8')) } catch {}
@@ -75,11 +121,11 @@ function refreshProgress(tickets, ids, now) {
     try {
       fs.mkdirSync(path.dirname(PROGRESS_CACHE), { recursive: true })
       fs.writeFileSync(PROGRESS_CACHE, JSON.stringify(next))
-    } catch {}
+    } catch (e) { warn('progress cache', e) }
   }
   if (process.env.SWARM_PROGRESS_SYNC) { try { keep(gatherProgress(args)) } catch {} ; return }
   gathering = true
-  execFile(process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],
+  runChild('progress', process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],
     { timeout: 300_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
       gathering = false
       if (err) return
@@ -87,16 +133,17 @@ function refreshProgress(tickets, ids, now) {
     })
 }
 
-let holdAt = 0, hold = { held: false }
+let holdAt = 0, hold = { held: false }, holding = false
 function refreshHold(now) {
-  if (now - holdAt < HOLD_MS) return
+  if (holding || now - holdAt < HOLD_MS) return
   holdAt = now
   const take = (out) => { try { const j = JSON.parse(out); if (j && typeof j === 'object') hold = j } catch {} }
   if (process.env.SWARM_PROGRESS_SYNC) {
     try { take(execFileSync(BASH, [HOLD_SCRIPT], { timeout: 20_000, encoding: 'utf8' })) } catch {}
     return
   }
-  execFile(BASH, [HOLD_SCRIPT], { timeout: 20_000 }, (err, out) => { if (!err) take(out) })
+  holding = true
+  runChild('hold', BASH, [HOLD_SCRIPT], { timeout: 20_000 }, (err, out) => { holding = false; if (!err) take(out) })
 }
 
 const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
@@ -177,7 +224,7 @@ function fetchTitle(ticket) {
   if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4 || allowanceLow()) return
   pending.add(ticket)
   noteGh(['issue', 'view'])
-  execFile(GH, ['issue', 'view', String(ticket), '--repo', REPO, '--json', 'title,labels'],
+  runChild('title', GH, ['issue', 'view', String(ticket), '--repo', REPO, '--json', 'title,labels'],
     { timeout: 20_000 }, (err, out) => {
       pending.delete(ticket)
       if (err) return
@@ -186,7 +233,7 @@ function fetchTitle(ticket) {
         const programme = (j.labels || []).map((l) => l.name).find((n) => n.startsWith(PREFIX)) || ''
         titles[ticket] = { title: plainTitle(j.title), project: programme.slice(PREFIX.length) }
         fs.writeFileSync(TITLES, JSON.stringify(titles))
-      } catch {}
+      } catch (e) { warn('title cache', e) }
     })
 }
 
@@ -208,7 +255,6 @@ const alive = (pid) => { try { process.kill(pid, 0); return true } catch { retur
 // which reads the machine as empty and lets the scheduler fill it. The spawner
 // records the native pid beside the MSYS one; read that, and turn a drive path
 // back into one node can open.
-const WIN = process.platform === 'win32'
 const runPid = (run) => (WIN && (run.child_winpid || run.winpid)) || run.child_pid || run.pid
 const nativePath = (p) => (WIN && typeof p === 'string' ? p.replace(/^\/([a-zA-Z])\//, '$1:/') : p)
 
@@ -503,7 +549,7 @@ function refreshBoard(now) {
       fs.mkdirSync(path.dirname(BOARD_FILE), { recursive: true })
       fs.writeFileSync(BOARD_FILE + '.tmp', JSON.stringify(b))
       fs.renameSync(BOARD_FILE + '.tmp', BOARD_FILE)
-    } catch {}
+    } catch (e) { warn('board cache', e) }
   }
   const claimEnv = { ...process.env, CLAIM_REPO: QUEUE_REPO || process.env.CLAIM_REPO || '' }
   noteGh(['api', 'graphql'])
@@ -515,10 +561,10 @@ function refreshBoard(now) {
     return
   }
   boardBusy = true
-  execFile(GH, args, { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
+  runChild('board', GH, args, { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
     if (err) { boardBusy = false; return }
     if (!CLAIM_LOCK) { boardBusy = false; keep(out, null); return }
-    execFile(CLAIM_LOCK, ['list', '--json'], { timeout: 60_000, env: claimEnv }, (e2, c) => {
+    runChild('board claims', CLAIM_LOCK, ['list', '--json'], { timeout: 60_000, env: claimEnv }, (e2, c) => {
       boardBusy = false
       keep(out, e2 ? null : claimsFromList(c))
     })
@@ -586,7 +632,7 @@ function refreshTrend(now) {
       fs.mkdirSync(path.dirname(TREND_FILE), { recursive: true })
       fs.writeFileSync(TREND_FILE + '.tmp', JSON.stringify(t))
       fs.renameSync(TREND_FILE + '.tmp', TREND_FILE)
-    } catch {}
+    } catch (e) { warn('trend cache', e) }
   }
   noteGh(['api', 'graphql'])
   if (process.env.SWARM_PROGRESS_SYNC) {
@@ -594,7 +640,7 @@ function refreshTrend(now) {
     return
   }
   trendBusy = true
-  execFile(GH, args, { timeout: 60_000 }, (err, out) => { trendBusy = false; if (!err) keep(out) })
+  runChild('trend', GH, args, { timeout: 60_000 }, (err, out) => { trendBusy = false; if (!err) keep(out) })
 }
 
 // ---- the wrappers: every batch, epic and programme, read with the trend ----
@@ -664,7 +710,7 @@ function refreshWrappers(now) {
       fs.mkdirSync(path.dirname(WRAPPERS_FILE), { recursive: true })
       fs.writeFileSync(WRAPPERS_FILE + '.tmp', JSON.stringify(w))
       fs.renameSync(WRAPPERS_FILE + '.tmp', WRAPPERS_FILE)
-    } catch {}
+    } catch (e) { warn('wrappers cache', e) }
   }
   if (!calls.length) { keep([]); return }
   if (process.env.SWARM_PROGRESS_SYNC) {
@@ -681,9 +727,10 @@ function refreshWrappers(now) {
   const next = (i) => {
     if (i >= calls.length) { wrappersBusy = false; keep(outs); return }
     noteGh(['api', 'graphql'])
-    execFile(GH, calls[i], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
+    runChild('wrappers', GH, calls[i], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
       if (err) { wrappersBusy = false; return }
-      outs.push(out); next(i + 1)
+      outs.push(out)
+      try { next(i + 1) } catch (e) { wrappersBusy = false; throw e }
     })
   }
   next(0)
@@ -923,7 +970,7 @@ export function snapshot(now = Date.now()) {
     try { ended = JSON.parse(fs.readFileSync(path.join(RUNS, f.replace(/\.json$/, '.ended')), 'utf8')) } catch {}
     const isLive = !ended && alive(runPid(run))
     if (!isLive && (!ended || now - Date.parse(ended.ended_at) > KEEP_HOURS * 3600_000)) continue
-    fetchTitle(run.ticket)
+    guard('title', () => fetchTitle(run.ticket))
     const log = parseLog(nativePath(run.log || ''))
     const t = titleOf(run.ticket)
     // NOT `f`: that is the loop's filename, and a second `const f` in this block
@@ -966,17 +1013,17 @@ export function snapshot(now = Date.now()) {
                 prRows, prList: readJsonCached(PRS_FILE), live: new Set(live.map((a) => a.ticket)), liveHosts: live.map((a) => a.host), queued: new Set(queued.tickets.map((r) => r.ticket)) }
   const doneRows = [...newest.values()].sort((a, b) => b.endedAt - a.endedAt).slice(0, 20)
     .map(({ park, endedAt, ...d }) => ({ ...d, now: nowOf({ ...d, park }, ctx) }))
-  refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
-  refreshHold(now)
-  refreshBoard(now)
-  refreshTrend(now)
-  refreshWrappers(now)
+  guard('progress', () => refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now))
+  guard('hold', () => refreshHold(now))
+  guard('board', () => refreshBoard(now))
+  guard('trend', () => refreshTrend(now))
+  guard('wrappers', () => refreshWrappers(now))
   ctx.wrappers = readJsonCached(WRAPPERS_FILE)
   const board = boardOf(readJsonCached(BOARD_FILE), ctx, now)
   const launch = launchOf(board, readJsonCached(TREND_FILE), ctx.wrappers, now)
   const queue = queued
   for (const r of queue.tickets) {
-    fetchTitle(r.ticket)
+    guard('title', () => fetchTitle(r.ticket))
     const t = titleOf(r.ticket)
     r.title = t.title || `Ticket ${r.ticket}`
   }
@@ -992,7 +1039,15 @@ export function snapshot(now = Date.now()) {
 
 export function serve(port = PORT) {
   const page = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8')
-  return http.createServer((req, res) => {
+  const srv = http.createServer((req, res) => {
+    try { answer(req, res) } catch (e) {
+      warn('request', e)
+      try { if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end('{"error":"live-view"}') } catch {}
+    }
+  })
+  srv.on('clientError', (e, socket) => { try { socket.destroy() } catch {} })
+  return srv.listen(port, '127.0.0.1')
+  function answer(req, res) {
     if (req.url === '/api/agents') {
       // A throw here escapes to the process and kills the page for every viewer.
       let body
@@ -1007,9 +1062,12 @@ export function serve(port = PORT) {
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(page)
-  }).listen(port, '127.0.0.1')
+  }
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  // A log write that fails (a full disk) is no reason to stop answering.
+  process.stdout.on('error', () => {}); process.stderr.on('error', () => {})
+  process.on('unhandledRejection', (e) => warn('promise', e))
   serve().on('listening', () => console.log(`live-view on http://127.0.0.1:${PORT}`))
 }

@@ -110,3 +110,5 @@
 11	swarm/tests/supervisor.test.sh
 0	swarm/tests/time.test.sh
 3	swarm/tests/usage-hold.test.sh
+32	scripts/live-view-watchdog.test.sh
+10	swarm/tests/live-view-hang.test.sh

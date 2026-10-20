@@ -73,6 +73,9 @@ printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$1" "$1" "$T
   > "$STATE/runs/claim-$1-live.json"
 SH
 chmod +x "$BIN/spawn-live"
+# The live-view watchdog has its own suite (live-view-watchdog.test.sh); here it only records that it ran.
+printf '%s\n' 'live_view_watchdog() { echo probe >> "$FIX/watchdog.log"; }' > "$FIX/watchdog-stub.sh"
+export COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
 
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
@@ -1183,5 +1186,20 @@ out=$(COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" CO
   DISK_GUARD_SWEEP="$BIN/dgsweep" tick)
 want_in "shadow: the hold is said"         'starting nothing new — disk low: 29 GB' "$out"
 want_in "and the auto-clean runs dry"      '^sweep $' "$(cat "$FIX/dg/sweep.log")"
+
+echo "--- every tick probes the live view ---"
+# launchd restarts the live view only when it exits; the tick is what notices one that hangs.
+fresh; : > "$FIX/watchdog.log"
+tick >/dev/null
+want "one probe a tick" "probe" "$(cat "$FIX/watchdog.log")"
+# Plant: the hook deleted from a copy of the kit. The tick must then probe nothing.
+K="$FIX/kit"; mkdir -p "$K"; (cd "$HERE/.." && tar --exclude=.git -cf - .) | (cd "$K" && tar -xf -)
+grep -v 'live_view_watchdog; }$' "$HERE/coordinator-tick.sh" > "$K/scripts/coordinator-tick.sh"
+grep -q 'live_view_watchdog' "$K/scripts/coordinator-tick.sh" && bad "plant did not land"
+fresh; : > "$FIX/watchdog.log"
+bash "$K/scripts/coordinator-tick.sh" >/dev/null 2>&1
+want_in "planted: the copy's tick ran" 'tick: ' "$(cat "$C/tick.log" 2>/dev/null)"
+[ -s "$FIX/watchdog.log" ] && bad "planted: the hook removed and the tick still probed → the test cannot see it" \
+  || ok "planted: the hook removed → no probe → red"
 
 exit $FAILED

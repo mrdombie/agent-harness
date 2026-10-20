@@ -81,6 +81,9 @@ export GH_CALLER=coordinator-tick
 TICK_T0=$(swarm_now)
 
 say "tick: $(coord_mode) mode, cap ${COORD_CAP:-none}, config from ${HARNESS_CFG_FROM:-?}"
+# A live view that is up but answers nothing is never restarted by launchd: probe it.
+LV_WATCHDOG="${COORDINATOR_LIVE_VIEW_WATCHDOG:-$SELF_DIR/live-view-watchdog.sh}"
+[ "$LV_WATCHDOG" = off ] || { . "$LV_WATCHDOG" && live_view_watchdog; }
 
 # Writes an event once; the id is what makes it once.
 event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>

@@ -75,4 +75,6 @@ if [ "${1:-}" = "--print" ]; then
     console.log(JSON.stringify(snapshot(), null, 2))"
 fi
 echo "live-view on http://127.0.0.1:$SWARM_PORT"
+# exec keeps this pid for node: the coordinator's watchdog kills it when it stops answering.
+printf '%s\n' "$$" > "$SWARM_DIR/live-view.pid" 2>/dev/null
 exec node "$SERVER"
