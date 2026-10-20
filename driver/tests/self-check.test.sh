@@ -5,6 +5,8 @@
 # gate that found nothing, which is why the second rule exists.
 # Run: bash "$0"
 set -uo pipefail
+# The gate cap at 1, so a second red here is past it.
+export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 driver_fixture; trap 'rm -rf "$FIX"' EXIT
@@ -203,10 +205,10 @@ out=$(driver_step_self_check 302 2>&1); rc=$?
 want "a 127 refuses"                          "24" "$rc"
 want_in "and the note names it"               'lint' "$(driver_state_get 302 park_note)"
 
-echo "--- with the fix rounds already used, a red parks ---"
+echo "--- with the gate fix rounds already used, a red parks ---"
 jq '.gates = {"lint":"exit 1"}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 driver_state_init 303 --worktree "$REPO"
-driver_state_bump 303 fix; driver_state_bump 303 fix
+driver_state_bump 303 selfcheck_red
 out=$(driver_step_self_check 303 2>&1); rc=$?
 want "no fix round left: it refuses"          "24" "$rc"
 

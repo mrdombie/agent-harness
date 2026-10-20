@@ -99,11 +99,11 @@ rc=0; driver_step_reenter 201 >/dev/null 2>&1 || rc=$?
 want "it finishes"                    "0" "$rc"
 want "the local commit is still the head" "$mine" "$(git -C "$WT" rev-parse HEAD)"
 
-echo "--- a local branch that has gone its own way is refused, never merged ---"
+echo "--- a local branch that has gone its own way is kept on a backup branch, never merged ---"
 git -C "$FIX/src-201" commit -q --allow-empty -m "someone else"; git -C "$FIX/src-201" push -q origin tkt-201/work
 out=$(driver_step_reenter 201 2>&1); rc=$?
-want "it refuses"                     "24" "$rc"
-want_in "and says the two diverged"   'diverged' "$out"
+want "it goes on from origin"         "0" "$rc"
+want_in "and says its commits were kept" 'kept on backup/' "$out"
 
 echo "--- a draft PR the driver never built is not re-entered as a repair ---"
 pr_branch 230

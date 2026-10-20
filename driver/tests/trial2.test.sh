@@ -10,6 +10,8 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+# The gate cap at 1, so a second red here is past it.
+export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/fixture.sh"
@@ -212,7 +214,7 @@ want_not_in "not status:parked beside it"   'add-label status:parked' "$(cat "$G
 want_in "and a status label all the same: needs-human" 'add-label status:needs-human' "$(cat "$GH_LOG")"
 : > "$GH_LOG"
 driver_park 404 "a gate said no" "lint is red" driver >/dev/null 2>&1
-want_in "a park nobody is asked about is marked parked" 'add-label status:parked' "$(cat "$GH_LOG")"
+want_in "a park the machine caused is left ready for the next tick" 'add-label status:ready' "$(cat "$GH_LOG")"
 want_not_in "not the pixel sign-off hold"     'add-label needs:human-approval' "$(cat "$GH_LOG")"
 
 echo "--- T2-7 · a park the driver caused does not hide behind a human-only label ---"
@@ -225,7 +227,7 @@ git -C "$REPO" worktree add -q "$FIX/wt405" -b "tkt-405/work" develop
 printf 'work\n' > "$FIX/wt405/w.txt"
 driver_state_init 405 --worktree "$FIX/wt405" --branch "tkt-405/work"
 : > "$GH_LOG"
-out=$(driver_park 405 "the answer did not meet its contract" "is the brief in step?" driver 2>&1)
+out=$(DRIVER_MAX_MACHINE_PARKS=0 driver_park 405 "the answer did not meet its contract" "is the brief in step?" driver 2>&1)
 want_in "it is still marked parked"       'add-label status:parked' "$(cat "$GH_LOG")"
 want_not_in "and the hold is NOT applied" 'needs:human-approval' "$(cat "$GH_LOG")"
 want_in "the brief says nobody has to answer it" 'Needs:\*\* nothing from you' "$(cat "$GH_LOG")"

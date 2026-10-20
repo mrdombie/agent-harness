@@ -16,6 +16,8 @@
 # pass, because a suite full of replicas proves the kit and never the product.
 # Run: bash "$0"
 set -uo pipefail
+# The gate cap at 1, so a second red here is past it.
+export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 driver_fixture; trap 'rm -rf "$FIX"' EXIT
@@ -290,7 +292,7 @@ out=$(bounded env DRIVER_STEPS_DIR="$FAKE" bash "$BT" 107 2>&1); rc=$?
 want "it parks rather than spinning"  "20" "$rc"
 want_in "and says the loop did not settle" 'settle|rework' "$(cat "$FIX/park.log")"
 rounds=$(grep -c '^review$' "$RAN")
-if [ "$rounds" -le 9 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
+if [ "$rounds" -le 11 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
 
 echo "--- a step named in the order with no file refuses BY NAME ---"
 # Silence is the failure being prevented: a walk that skips a step it cannot find

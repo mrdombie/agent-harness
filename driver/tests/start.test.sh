@@ -210,11 +210,11 @@ echo "--- the claim is released when a gate says no, never squatted ---"
 want "nothing claimed for the refused tickets" "101 107 108 110 109" \
   "$(awk '$1!=106{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//')"
 
-echo "--- when the hooks cannot be made to run, start refuses ---"
+echo "--- when the hooks cannot be made to run, start requeues: the machine, not the ticket ---"
 printf '#!/usr/bin/env bash\necho "🛑 ensure-hooks: planted refusal" >&2\nexit 1\n' > "$BIN/ensure-hooks-refuses"
 fix_issue 111 OPEN "status:ready"
 out=$(DRIVER_ENSURE_HOOKS="$BIN/ensure-hooks-refuses" driver_step_start 111 2>&1); rc=$?
-want "it refuses"                       "24" "$rc"
+want "it requeues"                      "$DRIVER_E_BUSY" "$rc"
 want_in "and says hooks could not be set up" 'hooks could not be set up' "$out"
 want_in "with the script's own reason"  'planted refusal' "$out"
 

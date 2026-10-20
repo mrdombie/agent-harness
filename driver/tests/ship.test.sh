@@ -4,6 +4,8 @@
 # review verdict is in, and the run ENDS at the push rather than watching CI.
 # Run: bash "$0"
 set -uo pipefail
+# The gate cap at 1, so a second red here is past it.
+export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 driver_fixture; trap 'rm -rf "$FIX"' EXIT
