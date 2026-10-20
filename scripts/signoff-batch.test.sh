@@ -144,6 +144,35 @@ want_in "and the unreviewed ones say why" '#13217 .*no design-critic or ui-gate 
 # message: a recorder writes an empty commit, so those are no verdict on this code.
 want_in "trailers riding a commit that changes code are not verdicts" '#12914 ' "$(cat "$FIX/err")"
 
+echo "--- a reviewer that judges pictures: the independent critic's status, not a trailer ---"
+# needsRenders: nothing writes its trailer (the build cannot record a design verdict);
+# critic-judge.sh posts the "Design critic" status, its description led by its prefix.
+jq '.review.attest["design-critic"].needsRenders = true' "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"
+jpr() { # <n> <state|-> [description] — held green PR with that Design critic status
+  pr "$1" | jq --arg s "$2" --arg d "${3:-}" 'if $s == "-" then . else
+    .statusCheckRollup += [{context:"Design critic", state:$s, description:$d}] end' | jq -s . > "$FIX/prs.json"
+}
+JS='Independent critic: SHIP on shots 1a2b3c4d5e6f (4) at c4c9c6431'
+commits 1 "c1:3:1:feat: the page" "$(H 1):0:1:$UI"
+jpr 1 SUCCESS "$JS"
+want "no Design-Critic trailer, the judge passed it: counted" "1	h100000" "$(green)"
+jpr 1 FAILURE 'Independent critic: SLOP on shots 1a2b3c4d5e6f (4) at c4c9c6431 — 2 blocking'
+want "the judge failed it"                        "" "$(green)"
+jpr 1 PENDING 'Independent critic: waiting for CI to photograph again'
+want "the judge has not finished"                 "" "$(green)"
+jpr 1 SUCCESS 'Design-Critic: SHIP (agent) c4c9c643184f'
+want "a success the judge did not post"           "" "$(green)"
+want_in "named"                                   '#1 .*not posted by the independent critic' "$(cat "$FIX/err")"
+jpr 1 -
+want "no judge status at all"                     "" "$(green)"
+want_in "named"                                   '#1 .*no Design critic status' "$(cat "$FIX/err")"
+both 1
+want "a Design-Critic trailer stands in for nothing" "" "$(green)"
+commits 1 "c1:3:1:feat: the page" "$(H 1):1:1:fix: after the review"; jpr 1 SUCCESS "$JS"
+want "the other reviewers' trailers are still owed" "" "$(green)"
+want_in "named"                                   '#1 .*no ui-gate verdict on its head' "$(cat "$FIX/err")"
+want_not_in "and the picture reviewer's trailer is not asked for" 'design-critic' "$(cat "$FIX/err")"
+
 echo "--- a project that attests no reviewer ---"
 jq 'del(.review)' "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"
 prs 9; : > "$GH_LOG"
