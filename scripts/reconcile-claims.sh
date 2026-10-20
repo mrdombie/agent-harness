@@ -156,9 +156,78 @@ pr_state_for() {
 }
 
 # The claim record is the ref's commit message: {issue,agent,pid,branch,worktree,host,claimed_at}
+# Read by the sha ls-remote listed, never through FETCH_HEAD: every fetch in the
+# repo rewrites that one file, so under a busy coordinator it named another
+# ticket's record or none, and an unreadable record was taken for another host.
 claim_record() {
-  git -C "$REPO" fetch -q "$CLAIM_REMOTE" "$NS/$1" 2>/dev/null || return 1
-  git -C "$REPO" log -1 --format=%B FETCH_HEAD 2>/dev/null
+  local sha
+  sha=$(printf '%s\n' "$CLAIM_REF_ROWS" | awk -v r="$NS/$1" '$2 == r { print $1; exit }')
+  [ -n "$sha" ] || return 1
+  git -C "$REPO" cat-file -e "$sha^{commit}" 2>/dev/null \
+    || git -C "$REPO" fetch -q --no-write-fetch-head "$CLAIM_REMOTE" "$sha" 2>/dev/null \
+    || git -C "$REPO" fetch -q --no-write-fetch-head "$CLAIM_REMOTE" "$NS/$1" 2>/dev/null \
+    || return 1
+  git -C "$REPO" log -1 --format=%B "$sha" 2>/dev/null | sed '/^$/d' | tail -1
+}
+
+# A pid is the run's process only if that process is no younger than the run:
+# macOS reissues pids from a wrapping counter, so a bare `kill -0` on a long-dead
+# run's pid can answer for an unrelated process started since. Judged by elapsed
+# time, not the recorded start string — `ps -o lstart` follows the locale, so the
+# same process prints differently under launchd and a terminal. Anything
+# unreadable counts as the run: alive is the safe direction.
+pid_is() { # <pid> <run started_at>
+  claim_pid_alive "${1:-}" || return 1
+  local et d=0 h=0 m=0 s=0 born ran
+  et=$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')
+  ran=$(swarm_epoch "${2:-}" 2>/dev/null) || return 0
+  case "$et" in
+    *-*:*:*) d=${et%%-*}; et=${et#*-}; h=${et%%:*}; et=${et#*:}; m=${et%%:*}; s=${et#*:} ;;
+    *:*:*)   h=${et%%:*}; et=${et#*:}; m=${et%%:*}; s=${et#*:} ;;
+    *:*)     m=${et%%:*}; s=${et#*:} ;;
+    *) return 0 ;;
+  esac
+  case "$d$h$m$s$ran" in *[!0-9]*) return 0 ;; esac
+  born=$(( $(date +%s) - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s ))
+  [ "$born" -le $(( ran + 120 )) ]
+}
+
+# The spawned run that holds this claim: the run_id the record names, or else the
+# newest run for the ticket that started by the claim's time and had not ended
+# before it. Prints "alive", "dead" (a run is known and wrote .ended, or every
+# process of it is gone), or nothing (no run is known: a session or a bare trial).
+claim_run_state() { # <ticket> <record>
+  local n="$1" rec="$2" dir="$STATE_DIR/runs" rid at f best="" bestat="" st en p c
+  [ -d "$dir" ] || return 0
+  rid=$(printf '%s' "$rec" | jq -r '.run_id // empty' 2>/dev/null)
+  at=$(printf '%s' "$rec" | jq -r '.claimed_at // empty' 2>/dev/null)
+  if [ -n "$rid" ]; then
+    [ -f "$dir/$rid.json" ] && best="$dir/$rid.json"
+  elif [ -n "$at" ]; then
+    for f in "$dir"/claim-"$n"-*.json; do
+      [ -f "$f" ] || continue
+      st=$(jq -r '.started_at // empty' "$f" 2>/dev/null)
+      [ -n "$st" ] || continue
+      [ "$st" \> "$at" ] && continue
+      en=$(jq -r '.ended_at // empty' "${f%.json}.ended" 2>/dev/null)
+      [ -n "$en" ] && [ "$en" \< "$at" ] && continue
+      if [ -z "$bestat" ] || [ "$st" \> "$bestat" ]; then best="$f"; bestat="$st"; fi
+    done
+  fi
+  [ -n "$best" ] || return 0
+  [ -f "${best%.json}.ended" ] && { echo dead; return 0; }
+  p=$(jq -r '.pid // empty' "$best" 2>/dev/null); c=$(jq -r '.child_pid // empty' "$best" 2>/dev/null)
+  st=$(jq -r '.started_at // empty' "$best" 2>/dev/null)
+  [ -n "${CLAIM_EXITED_PID:-}" ] && [ "$p" = "$CLAIM_EXITED_PID" ] && { echo dead; return 0; }
+  if pid_is "$p" "$st" || pid_is "$c" "$st"; then echo alive; else echo dead; fi
+}
+
+# A step driver walking this ticket on this host, run by hand rather than spawned:
+# build-ticket is one process across every step, so between two steps it is alive
+# while the step's claude, which the claim may name, is not.
+driver_walking() { # <ticket>
+  ps -Ao command= 2>/dev/null \
+    | awk -v n="$1" '{ for (i = 1; i < NF; i++) if ($i ~ /(^|\/)build-ticket$/ && $(i+1) == n) f = 1 } END { exit !f }'
 }
 
 holder_alive() {
@@ -171,10 +240,25 @@ holder_alive() {
   claim_pid_alive "$2"
 }
 
+# No hooks, as in claim-lock.sh: a claim ref carries no code for the pre-push gates
+# to judge. They ran on every delete here and refused it (knip, on 2026-10-20), the
+# exit went unread, and the sweep said RELEASED and relabelled while the ref stayed
+# — so the ticket read as claimed to every reader and no later sweep freed it.
 release_ref() {
   local n="$1"
   [ "$DRY_RUN" -eq 1 ] && return 0
-  git -C "$REPO" push -q "$CLAIM_REMOTE" ":$NS/$n" 2>/dev/null
+  git -C "$REPO" push -q --no-verify "$CLAIM_REMOTE" ":$NS/$n" >/dev/null 2>&1 && return 0
+  # Gone already is released.
+  git -C "$REPO" ls-remote --exit-code "$CLAIM_REMOTE" "$NS/$n" >/dev/null 2>&1 && return 1
+  return 0
+}
+
+# The ref first: a label moved while the ref stays is the claim this file exists to clear.
+free_ref() { # <ticket> <has_ref>
+  [ "$2" -eq 1 ] || return 0
+  release_ref "$1" && return 0
+  say "  STUCK      #$1 — the claim ref could not be deleted; labels left as they are"
+  return 1
 }
 
 # Path of this ticket's lock dir in whichever form it exists, or nothing.
@@ -253,7 +337,8 @@ relabel() {
 # Every ticket with a claim ref, plus every ticket GitHub still calls claimed.
 # The second set is the one the old reconciler could not see: a label with no
 # claim behind it holds a ticket out of the queue forever.
-claimed_refs=$(git -C "$REPO" ls-remote "$CLAIM_REMOTE" "$NS/*" 2>/dev/null | sed 's|.*'"$NS"'/||' | sort -u)
+CLAIM_REF_ROWS=$(git -C "$REPO" ls-remote "$CLAIM_REMOTE" "$NS/*" 2>/dev/null)
+claimed_refs=$(printf '%s\n' "$CLAIM_REF_ROWS" | sed -n 's|.*'"$NS"'/||p' | sort -u)
 labelled=""
 if [ "$gh_ok" -eq 1 ]; then
   # status:in-review and status:partial are gathered too, and that is the whole
@@ -289,7 +374,7 @@ if [ "$gh_ok" -eq 1 ] && [ -n "$tickets" ]; then
   [ -z "$branches" ] || PR_CACHE=$(gh_prs_by_head_batch $branches 2>/dev/null) || true
 fi
 
-checked=0; live=0; elsewhere=0; released=0; inreview=0; partial=0; kept=0; shipped=0
+checked=0; live=0; elsewhere=0; released=0; inreview=0; partial=0; kept=0; shipped=0; stuck=0
 
 for n in $tickets; do
   checked=$((checked + 1))
@@ -317,6 +402,10 @@ for n in $tickets; do
   if [ "$has_ref" -eq 1 ]; then
     host=$(printf '%s' "$rec" | jq -r '.host // empty' 2>/dev/null)
     pid=$(printf '%s' "$rec" | jq -r '.pid // empty' 2>/dev/null)
+    if [ -z "$host" ]; then
+      say "  UNREADABLE #$n — the claim record could not be read; leaving it"
+      kept=$((kept + 1)); continue
+    fi
     holder_alive "$host" "$pid"; alive=$?
     if [ "$alive" -eq 0 ]; then
       say "  LIVE       #$n — held by pid $pid on $host"
@@ -335,7 +424,21 @@ for n in $tickets; do
     # NOT FOR THE SESSION THE CALLER NAMES AS EXITED. That is spawn-claim's own
     # post-exit reconcile, and the run it names is gone: its record is fresh only
     # because it was writing until it stopped.
-    if { [ -z "${CLAIM_EXITED_PID:-}" ] || [ "$pid" != "$CLAIM_EXITED_PID" ]; } \
+    # The run record answers first. A spawned run that wrote .ended, or whose every
+    # process is gone, is over whatever its driver state says: runs killed in a
+    # stop-all and runs a park ended kept their claims, and the repair lane skipped
+    # their PRs. The freshness window below is for a claim no run record explains.
+    run_state=$(claim_run_state "$n" "$rec")
+    if [ "$run_state" = alive ]; then
+      say "  LIVE       #$n — pid $pid is gone, but its run is still going"
+      live=$((live + 1)); continue
+    fi
+    if driver_walking "$n"; then
+      say "  LIVE       #$n — pid $pid is gone, and a step driver is walking it between steps"
+      live=$((live + 1)); continue
+    fi
+    if [ "$run_state" != dead ] \
+       && { [ -z "${CLAIM_EXITED_PID:-}" ] || [ "$pid" != "$CLAIM_EXITED_PID" ]; } \
        && claim_run_fresh "$n" "$STATE_DIR" "$STALE_HOURS"; then
       say "  LIVE       #$n — pid $pid is gone, and the driver's run record was written inside the last ${STALE_HOURS}h"
       live=$((live + 1)); continue
@@ -391,14 +494,14 @@ for n in $tickets; do
     # closes only when nothing is left on it (polish-list.sh sweep). Back to ready.
     if printf '%s\n' "$ticket_labels" | grep -qxF -- "$LBL_POLISH_LIST"; then
       say "  POLISH     #$n — PR #$pr_num merged; a polish list closes only when nothing is left on it, so it goes back to $LBL_READY"
-      [ "$has_ref" -eq 1 ] && release_ref "$n"
+      free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
       recover_lock "$n" "polish list"
       relabel "$n" "$LBL_READY" \
         "**Back on the queue.** PR #$pr_num merged and fixed part of this polish list. The list closes on its own once every item is ticked; until then its free items wait for the next ticket for this screen."
       kept=$((kept + 1)); continue
     fi
     say "  SHIPPED    #$n — PR #$pr_num is merged; closing the ticket"
-    [ "$has_ref" -eq 1 ] && release_ref "$n"
+    free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
     recover_lock "$n" "shipped"
     if [ "$DRY_RUN" -eq 0 ] && [ "$gh_ok" -eq 1 ]; then
       issue="$n"
@@ -411,7 +514,7 @@ for n in $tickets; do
 
   if [ -n "$pr_num" ] && [ "$pr_state" = "OPEN" ]; then
     say "  IN-REVIEW  #$n — PR #$pr_num is open; the work exists, not releasing"
-    [ "$has_ref" -eq 1 ] && release_ref "$n"
+    free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
     recover_lock "$n" "in-review"
     relabel "$n" "$LBL_IN_REVIEW" \
       "**Claim released, ticket not.** The agent holding this is gone, but PR #$pr_num is open with work in it. Marked \`$LBL_IN_REVIEW\` rather than \`$LBL_READY\` — releasing it would have a fresh agent rebuild what is already there."
@@ -420,22 +523,31 @@ for n in $tickets; do
 
   if [ -n "$branch" ]; then
     say "  PARTIAL    #$n — branch $branch exists, no PR; stranded, not releasing"
-    [ "$has_ref" -eq 1 ] && release_ref "$n"
+    free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
     recover_lock "$n" "partial"
     relabel "$n" "$LBL_PARTIAL" \
       "**Claim released, work stranded.** The agent holding this is gone and left branch \`$branch\` with no PR. Marked \`$LBL_PARTIAL\` — resume from that branch rather than starting over."
     partial=$((partial + 1)); continue
   fi
 
-  say "  RELEASED   #$n — no claim, no branch, no PR; back to ready"
-  [ "$has_ref" -eq 1 ] && release_ref "$n"
+  free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
   recover_lock "$n" "released"
+  # Parked or waiting on a person: the claim goes, the hold stays.
+  held_labels=$(labels_of "$n")
+  if printf '%s\n' "$held_labels" | grep -qE "^(${LBL_PARKED}|needs:.*)\$"; then
+    say "  RELEASED   #$n — no live claim, no branch, no PR; parked or waiting on a person, so not back to ready"
+    if [ "$DRY_RUN" -eq 0 ] && printf '%s\n' "$held_labels" | grep -qxF -- "$LBL_CLAIMED"; then
+      gh issue edit "$n" --repo "$GH_REPO" --remove-label "$LBL_CLAIMED" >/dev/null 2>&1
+    fi
+    released=$((released + 1)); continue
+  fi
+  say "  RELEASED   #$n — no live claim, no branch, no PR; back to ready"
   relabel "$n" "$LBL_READY" \
     "**Claim released.** The agent holding this is gone and left no branch and no PR, so there is nothing to lose. Back to \`$LBL_READY\`."
   released=$((released + 1))
 done
 
-say "[reconcile-claims]$([ "$DRY_RUN" -eq 1 ] && echo ' (dry run)') checked $checked · live $live · elsewhere $elsewhere · shipped $shipped · in-review $inreview · partial $partial · released $released · kept $kept"
+say "[reconcile-claims]$([ "$DRY_RUN" -eq 1 ] && echo ' (dry run)') checked $checked · live $live · elsewhere $elsewhere · shipped $shipped · in-review $inreview · partial $partial · released $released · kept $kept$([ "$stuck" -eq 0 ] || echo " · stuck $stuck")"
 
 # #11167 — the dev servers a crashed or abandoned window left behind, in a
 # worktree no claim holds any more. Every /claim runs this, so the sweep runs

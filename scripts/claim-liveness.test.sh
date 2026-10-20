@@ -115,7 +115,8 @@ cat > "$SB/bin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$1 $2" in
   "api repos/acme/widgets") echo acme/widgets ;;
-  "issue view") echo "st:claimed" ;;
+  "issue view") case "$3" in 712) printf 'st:claimed\nst:parked\n' ;; *) echo "st:claimed" ;; esac ;;
+  "issue edit") printf '%s\n' "$*" >> "${GH_EDITS:-/dev/null}" ;;
   "pr list")    case "$*" in *"--head 704/work"*) echo '[{"number":9704,"state":"OPEN"}]' ;; *) printf '[]\n' ;; esac ;;
   *) : ;;
 esac
@@ -130,11 +131,13 @@ while kill -0 "$DEADPID" 2>/dev/null; do DEADPID=$((DEADPID + 1)); done
 # The claim, in the shape claim-lock.sh writes: a parentless commit whose message is
 # the record. Planted straight into the sandbox's own bare remote — nothing here can
 # reach a live claim, and the reconciler is what gets to decide its fate.
-plant_claim() { # <ticket> [pid, default a dead one]
-  local rec sha empty
-  rec=$(jq -nc --arg i "$1" --argjson p "${2:-$DEADPID}" --arg h "$(hostname -s 2>/dev/null || hostname | cut -d. -f1)" \
+HERE_HOST=$(hostname -s 2>/dev/null || hostname | cut -d. -f1)
+plant_claim() { # <ticket> [pid, default a dead one] [host] [extra record fields, json]
+  local rec sha empty x="${4:-}"
+  [ -n "$x" ] || x='{}'
+  rec=$(jq -nc --arg i "$1" --argjson p "${2:-$DEADPID}" --arg h "${3:-$HERE_HOST}" --argjson x "$x" \
     '{issue:$i, agent:"tester@fixture", pid:$p, branch:("tkt-" + $i + "/work"),
-      worktree:"", host:$h, claimed_at:"2026-09-27T21:00:00Z"}')
+      worktree:"", host:$h, claimed_at:"2026-09-27T21:00:00Z"} + $x')
   empty=$(git -C "$SB/work" hash-object -t tree /dev/null)
   sha=$(printf '%s\n' "$rec" | git -C "$SB/work" commit-tree "$empty")
   git -C "$SB/work" update-ref "refs/claims/$1" "$sha"
@@ -214,5 +217,89 @@ out=$(CLAIM_EXITED_PID="$LIVEPID" reconcile)
 want "a crashed driver run's claim is released by its own post-exit reconcile" "no" "$(ref_present 705)"
 want_not_in "the fresh record did not rescue it" '#705 .*run record was written' "$out"
 kill "$LIVEPID" 2>/dev/null
+
+# A run record in the shape spawn-claim.sh writes; <ended> yes writes its .ended too.
+run_record() { # <ticket> <run_id> <pid> <child_pid> <started_at> <ended yes|no>
+  mkdir -p "$SB/state/runs"
+  rm -f "$SB/state/runs/$2.ended"
+  jq -n --arg r "$2" --arg t "$1" --argjson p "$3" --argjson c "$4" --arg at "$5" \
+    '{run_id:$r, pid:$p, child_pid:$c, ticket:$t, builder:"driver", started_at:$at}' > "$SB/state/runs/$2.json"
+  [ "$6" = yes ] && printf '{"run_id":"%s","exit_code":1,"ended_at":"2026-09-28T00:20:00Z"}\n' "$2" \
+    > "$SB/state/runs/$2.ended"
+  return 0
+}
+driver_record() { # <ticket> <seconds ago>
+  mkdir -p "$SB/state/driver/$1"
+  jq -n --arg t "$1" --arg at "$(stamp "$2")" '{ticket:$t, step:"build", done:["start","plan"], updated_at:$at}' \
+    > "$SB/state/driver/$1/state.json"
+}
+
+echo "--- a run that is over releases its claim; a run between steps keeps it ---"
+# 6. Killed in a stop-all, or ended by a park: the pid is dead, the run wrote .ended,
+# and its driver record is still inside the freshness window. The run is over; the
+# record's age must not hold the claim.
+driver_record 706 60
+run_record 706 claim-706-run "$DEADPID" "$DEADPID" "$(stamp 600)" yes
+plant_claim 706 "$DEADPID" "" '{"run_id":"claim-706-run"}'
+out=$(reconcile)
+want "a dead pid with an ended run is released, fresh record or not" "no" "$(ref_present 706)"
+want_not_in "the fresh record did not rescue it" '#706 .*run record was written' "$out"
+
+# 7. A spawned driver run between steps: the claim's pid is gone, the run's
+# build-ticket (child_pid) is alive and has not ended, and its driver record is
+# stale, so only the run record can keep it.
+sleep 300 & WALKER=$!
+driver_record 707 90000
+run_record 707 claim-707-run "$DEADPID" "$WALKER" "$(stamp 5)" no
+plant_claim 707 "$DEADPID" "" '{"run_id":"claim-707-run"}'
+out=$(reconcile)
+want "a dead pid with a live run between steps keeps its claim" "yes" "$(ref_present 707)"
+want_in "because its run is still going" 'LIVE +#707 .*run is still going' "$out"
+# The same pid on a run that started an hour before the process did is a reused
+# pid, not the run.
+run_record 707 claim-707-run "$DEADPID" "$WALKER" "$(stamp 3600)" no
+out=$(reconcile)
+want "a reused pid is not the run" "no" "$(ref_present 707)"
+kill "$WALKER" 2>/dev/null
+
+# 8. A step driver run by hand: no run record, the claim's pid is gone between two
+# steps, and build-ticket <n> is alive on this host.
+mkdir -p "$SB/kit/driver"; printf '#!/usr/bin/env bash\nsleep 300\n' > "$SB/kit/driver/build-ticket"
+bash "$SB/kit/driver/build-ticket" 708 & WALKER=$!
+driver_record 708 90000
+plant_claim 708
+out=$(reconcile)
+want "a hand-run driver walking the ticket keeps its claim" "yes" "$(ref_present 708)"
+want_in "because a driver is walking it" 'LIVE +#708 .*step driver is walking' "$out"
+kill "$WALKER" 2>/dev/null; wait "$WALKER" 2>/dev/null
+out=$(reconcile)
+want "and once the driver stops, the claim is released" "no" "$(ref_present 708)"
+
+# 9. Another machine's claim is never judged from here, dead pid and ended run or not.
+run_record 709 claim-709-run "$DEADPID" "$DEADPID" "$(stamp 600)" yes
+plant_claim 709 "$DEADPID" "some-other-mac" '{"run_id":"claim-709-run"}'
+out=$(reconcile)
+want "a claim held on another host is kept" "yes" "$(ref_present 709)"
+want_in "and reported as elsewhere" 'ELSEWHERE +#709' "$out"
+
+# 10. The project's pre-push hook refuses every push. A claim ref carries no code, so
+# its delete must not go through the gates; and a delete that failed must never be
+# reported RELEASED while the ref stays.
+mkdir -p "$SB/hooks"; printf '#!/bin/sh\necho "pre-push blocked" >&2\nexit 1\n' > "$SB/hooks/pre-push"
+chmod +x "$SB/hooks/pre-push"
+plant_claim 710
+want "the claim is planted before the hook is (the control)" "yes" "$(ref_present 710)"
+git -C "$SB/work" config core.hooksPath "$SB/hooks"
+out=$(reconcile)
+want "a refusing pre-push hook does not keep a dead claim" "no" "$(ref_present 710)"
+git -C "$SB/work" config --unset core.hooksPath
+
+# 11. A parked ticket's dead claim is released, but the ticket stays off the board.
+export GH_EDITS="$SB/edits.log"; : > "$GH_EDITS"
+plant_claim 712
+out=$(reconcile)
+want "a parked ticket's dead claim is released" "no" "$(ref_present 712)"
+want_not_in "and it is not put back on the board" '712 .*--add-label st:ready' "$(cat "$GH_EDITS")"
+want_in "but it loses status:claimed" '712 .*--remove-label st:claimed' "$(cat "$GH_EDITS")"
 
 exit $FAILED
