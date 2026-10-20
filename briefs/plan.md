@@ -140,7 +140,9 @@ the second whenever the first is true, and the driver reads the same two keys.
 mock-up, a rendered concept, a screenshot signed off on the ticket — and put the
 URL or the path on this branch in `designRef`. That pair is what the compare step
 holds this run's renders against, so answering `ticket-body` for a ticket whose
-picture was approved throws the comparison away. The other three are:
+picture was approved throws the comparison away. A picture path that does not
+exist on this machine is still named as it is: the driver fetches the published
+copy from the ticket's "Picture for any machine" comment, so it is never a question. The other three are:
 **ticket-body** when the ticket itself is the whole design, **brainstormed** when
 the spec was settled in the ticket thread, and **debugged** when the plan follows
 a reproduction.

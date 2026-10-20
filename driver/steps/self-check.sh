@@ -194,12 +194,63 @@ _driver_gate_quiet_retry() {
   local label="$1" secs="$2" s2
   driver_say "⏳ self-check: $label did not return within ${secs}s (load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for a quieter moment, then running it once more. A timeout is not a red gate."
   machine_gate_release
-  machine_gate_wait_load 0
-  machine_gate_acquire 0 "self-check #${DRIVER_TICKET:-?}"
+  machine_gate_wait_load 0 || return $?
+  machine_gate_acquire 0 "self-check #${DRIVER_TICKET:-?}" || return $?
   s2=$(_driver_gate_secs)
   case "$s2" in ''|*[!0-9]*) DRIVER_GATE_RETRY_SECS="$s2"; return 0 ;; esac
   [ "$s2" -ge $(( DRIVER_CMD_TIMEOUT * 2 )) ] || s2=$(( DRIVER_CMD_TIMEOUT * 2 ))
   DRIVER_GATE_RETRY_SECS="$s2"
+}
+
+# A REPAIR'S WAIT FOR THE MACHINE WATCHES ITS PULL REQUEST. A repair in self-check sat
+# 40 minutes in a load wait while its PR turned CONFLICTING, holding the claim and a
+# place the repair for that clash needed. So in repair mode every busy poll re-reads
+# the PR, and a clash or a red required check that was not there when self-check
+# began makes the wait moot: the run ends as a repair requeue. What was already
+# CONFLICTING or red at the start is what this repair is fixing, so it is not news.
+#
+# _driver_repair_pr_state <pr> — "<mergeable>\t<red required checks>", 1 when unreadable.
+_driver_repair_pr_state() {
+  local m reds hold
+  m=$(swarm_gh pr view "$1" --repo "$REPO_SLUG" --json mergeable -q '.mergeable // ""' 2>/dev/null) || return 1
+  [ -n "$m" ] || return 1
+  hold=$(driver_opt coordinator.holdCheck approval)
+  # `gh pr checks` exits non-zero while a check is red or pending, and still prints them.
+  reds=$(swarm_gh pr checks "$1" --repo "$REPO_SLUG" --required --json name,bucket 2>/dev/null \
+    | jq -r --arg gate "$hold" '[.[]? | select(.bucket == "fail") | .name
+        | select(ascii_downcase | contains($gate | ascii_downcase) | not)] | sort | join(", ")' 2>/dev/null)
+  printf '%s\t%s' "$m" "$reds"
+}
+
+# _driver_selfcheck_pr_watch — MACHINE_GATE_ON_WAIT in repair mode: 1 once the PR has
+# turned since DRIVER_SC_PR_BASE, with DRIVER_SC_MOOT_WHY set. Unreadable keeps waiting.
+_driver_selfcheck_pr_watch() {
+  local pr now m reds bm br r new=""
+  pr=$(driver_state_get "$DRIVER_TICKET" pr); [ -n "$pr" ] || return 0
+  now=$(_driver_repair_pr_state "$pr") || return 0
+  m=${now%%$'\t'*}; reds=${now#*$'\t'}
+  bm=${DRIVER_SC_PR_BASE%%$'\t'*}; br=${DRIVER_SC_PR_BASE#*$'\t'}
+  if [ "$m" = CONFLICTING ] && [ "$bm" != CONFLICTING ]; then
+    DRIVER_SC_MOOT_WHY="turned CONFLICTING with $INTEGRATION_BRANCH"; return 1
+  fi
+  local IFS=,
+  for r in $reds; do
+    r=${r# }
+    case ",$(printf '%s' "$br" | sed 's/, /,/g')," in *",$r,"*) ;; *) new="$new${new:+, }$r" ;; esac
+  done
+  unset IFS
+  [ -z "$new" ] || { DRIVER_SC_MOOT_WHY="has a required check gone red ($new)"; return 1; }
+  return 0
+}
+
+# _driver_selfcheck_moot <ticket> — end the run as a repair requeue, from the start of repair.
+_driver_selfcheck_moot() {
+  local t="$1" pr; pr=$(driver_state_get "$t" pr)
+  machine_gate_release
+  driver_say "⏳ self-check: #$t's pull request #$pr $DRIVER_SC_MOOT_WHY while this repair waited for the machine, so these gates could not have landed it. Back on the queue as a repair, from the PR as it is now."
+  driver_state_set "$t" park_note "pull request #$pr $DRIVER_SC_MOOT_WHY while self-check waited for the machine"
+  driver_state_reopen "$t" repair fix self-check
+  return "$DRIVER_E_REQUEUE"
 }
 
 # _driver_gate_timed_out <label> <secs> <cmd> <loaded> — the second try ran out too.
@@ -362,6 +413,7 @@ _driver_push_tail() { # <file>
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
   local wt names row name safe cmd rc gtype failed=0 ran=0 pushran=0 empty="" redlines="" infra="" findings gscale gsecs
+  local MACHINE_GATE_ON_WAIT="" DRIVER_SC_PR_BASE="" DRIVER_SC_MOOT_WHY="" mrc=0
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   findings="$(driver_state_dir "$t")/steps/self-check.findings.json"
@@ -413,8 +465,12 @@ driver_step_self_check() { # <ticket>
   . "$KIT_ROOT/scripts/machine-gate.sh" || {
     driver_state_set "$t" park_note "self-check could not load $KIT_ROOT/scripts/machine-gate.sh, so no gate ran"
     return "$DRIVER_E_REFUSED"; }
-  machine_gate_wait_load 0
-  machine_gate_acquire 0 "self-check #$t"
+  if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$(driver_state_get "$t" pr)" ] \
+     && DRIVER_SC_PR_BASE=$(_driver_repair_pr_state "$(driver_state_get "$t" pr)"); then
+    MACHINE_GATE_ON_WAIT=_driver_selfcheck_pr_watch
+  fi
+  { machine_gate_wait_load 0 && machine_gate_acquire 0 "self-check #$t"; } || mrc=$?
+  if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
 
   # The branch's files are formatted before any gate reads them: a format check is a
   # command the driver can run, never a finding to send to fix.
@@ -439,7 +495,8 @@ driver_step_self_check() { # <ticket>
     if [ "$rc" -eq 124 ]; then
       # Its own outcome, not a red gate: it says nothing about the change. One more
       # try once the machine is quiet, before anything is decided.
-      _driver_gate_quiet_retry "$name" "$gsecs"
+      _driver_gate_quiet_retry "$name" "$gsecs" || mrc=$?
+      if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
       gsecs="$DRIVER_GATE_RETRY_SECS"
       [ "$(_driver_gate_scale)" -le 1 ] || gscale=2
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
@@ -455,8 +512,8 @@ driver_step_self_check() { # <ticket>
        && _driver_gate_load_fault "$wt" "$rc" "$(driver_state_dir "$t")/steps/gate-$safe.out"; then
       driver_say "⏳ self-check: $name failed on the machine, not the change — $DRIVER_LOAD_WHY. Waiting for a quieter moment, then running it once more by itself."
       machine_gate_release
-      machine_gate_wait_load 0
-      machine_gate_acquire 0 "self-check #$t"
+      { machine_gate_wait_load 0 && machine_gate_acquire 0 "self-check #$t"; } || mrc=$?
+      if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
       gsecs=$(_driver_gate_secs)
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
