@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # worktree-cache.sh — remove a worktree's build caches, never its files.
-#   worktree-cache.sh clean [--idle-min N] [--dry-run] <worktree>...
+#   worktree-cache.sh clean [--idle-min N] [--dry-run] [--deep] <worktree>...
 # Folders: `build.cacheDirs` (globs from the top level), else the usual framework output.
+# --deep adds node_modules and dist (top level, apps/*, packages/*): the disk guard's pass. The next
+# start relinks or reinstalls them (link-node-modules.sh) and the next build regenerates dist.
 # Kept: a worktree a process sits in; a folder holding a tracked file, resolving outside, or changed within N min.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/worktree-lib.sh"
 
 DEFAULT_DIRS=".next .turbo .nuxt .svelte-kit .parcel-cache"
+DEEP_DIRS="node_modules dist"
 
-[ "${1:-}" = clean ] || { echo "usage: worktree-cache.sh clean [--idle-min N] [--dry-run] <worktree>..." >&2; exit 2; }
+[ "${1:-}" = clean ] || { echo "usage: worktree-cache.sh clean [--idle-min N] [--dry-run] [--deep] <worktree>..." >&2; exit 2; }
 shift
-IDLE=0 DRY=0 TREES=()
+IDLE=0 DRY=0 DEEP=0 TREES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --idle-min) IDLE="${2:-}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
+    --deep) DEEP=1; shift ;;
     -*) echo "worktree-cache: unknown flag '$1'" >&2; exit 2 ;;
     *) TREES+=("$1"); shift ;;
   esac
@@ -31,6 +35,7 @@ wt_cwds_load --exclude-self
 
 patterns() { # <worktree>
   local cfg="${HARNESS_CFG_PATH:-$1/.claude/harness.json}" got d
+  if [ "$DEEP" = 1 ]; then for d in $DEEP_DIRS; do printf '%s\n%s\n%s\n' "$d" "apps/*/$d" "packages/*/$d"; done; fi
   got=$(wt_cfg "$cfg" '.build.cacheDirs')
   if [ -n "$got" ]; then printf '%s\n' "$got"; return; fi
   for d in $DEFAULT_DIRS; do printf '%s\n%s\n%s\n' "$d" "apps/*/$d" "packages/*/$d"; done

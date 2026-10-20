@@ -646,6 +646,23 @@ rm -f "$STATE/swarm/prs.json"
 s=$(BRANCH_PREFIX=tkt- snap)
 want_in "nothing labelled for the owner says so"          '^needs=<div class="allclear">Nothing needs you' "$(page_render "$LV")"
 
+echo "--- the machine line shows free disk, red under the guard's floor ---"
+# Owner call 2026-10-20: under 30 GB nothing new starts, and the page says so where the machine is.
+s=$(SWARM_FREE_DISK_GB=12 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
+want "the snapshot carries the disk, low"                 "12 30 50 true" "$(printf '%s' "$s" | jq -r '.disk | "\(.freeGb) \(.stopBelowGb) \(.resumeAtGb) \(.low)"')"
+want_in "under the floor the line is red, and says nothing new starts" '^machine=.*<span class="disklow">12 GB disk free — under 30 GB, nothing new starts</span>' "$(page_render "$LV")"
+: > "$FIX/disk-hold"
+s=$(SWARM_FREE_DISK_GB=40 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
+want_in "over the floor but still held: amber, with the resume mark" '^machine=.*<span class="diskheld">40 GB disk free — starts resume at 50 GB</span>' "$(page_render "$LV")"
+rm -f "$FIX/disk-hold"
+s=$(SWARM_FREE_DISK_GB=80 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
+r=$(page_render "$LV")
+want_in "plenty free: the plain figure"                   '^machine=.* · 80 GB disk free · ' "$r"
+want_not_in "and never red"                               'disklow|diskheld' "$r"
+s=$(SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
+want_in "unplanted, the real volume is read"              '^[0-9]+$' "$(printf '%s' "$s" | jq -r '.disk.freeGb')"
+grep -q '^\.disklow{color:var(--bad)' "$LV/index.html" && ok "the low figure is drawn in the page's red" || bad "the low figure has no red rule"
+
 echo "--- product and tooling are told the way the coordinator tells them ---"
 # One rule, two readers: the page's split must say what coord_tooling says.
 CASES='[[["repo:agent-harness"],"x"],[[],"fix(gates): x"],[[],"Fix(CI)!: x"],[[],"feat(desk): x"],[[],"gates: x"],

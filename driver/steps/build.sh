@@ -129,6 +129,12 @@ driver_prove_red_green() {
     printf '%s is not in the change commit %s — a test committed after the change cannot have come before it\n' \
       "$tfile" "$(printf '%s' "$isha" | cut -c1-8)"; return 3; }
 
+  # Two more trees with their installs: under the disk guard's floor the proof is never taken.
+  local low
+  if [ -f "$DRIVER_HOME/../scripts/disk-guard.sh" ] \
+     && ! low=$(bash "$DRIVER_HOME/../scripts/disk-guard.sh" check "a red/green proof"); then
+    printf '%s, so the test was never run\n' "$low"; return 5
+  fi
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-proof-XXXXXX")
   git -C "$repo" worktree add -q --detach "$tmp/before" "$base" 2>/dev/null || {
     rm -rf "$tmp"; printf 'could not check out %s\n' "$base"; return 3; }

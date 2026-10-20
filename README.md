@@ -492,6 +492,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `processLabel` | `process` | The label of a process fix: it starts first of all, and a hold "for process fixes" still lets it through |
 | `polishListFull` | 8 | Unticked items at which a polish list starts on its own while other work can start. Under it, polish starts only when nothing else can |
 | `minFreeGb` | 20 | Disk alarm floor |
+| `disk.stopBelowGb` · `disk.resumeAtGb` | 30 · 50 | Under `stopBelowGb` free, nothing new starts (a build, a red/green proof) and the auto-clean runs (`scripts/disk-guard.sh`): driver proofs, unused spawn checkouts, idle build folders' installs and caches, the orphan sweep, then stale scratchpad folders over 500 MB. Starts resume only at `resumeAtGb` |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |

@@ -38,6 +38,8 @@
 #                    priority, kind, heal-all, the split and polish, in any free
 #                    place; a swarm HOLD "for process fixes" (or with an
 #                    `allow: process` line) starts only those (owner call 2026-10-20)
+#   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts and the
+#                    auto-clean runs (disk-guard.sh), until coordinator.disk.resumeAtGb is free
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
@@ -530,9 +532,39 @@ held_view() {
   candidates
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
 }
+# ---- 5a. disk ---------------------------------------------------------------------
+# Owner call 2026-10-20: "Auto-clean and stop below 30 GB". Held from under stopBelowGb until
+# resumeAtGb is free, so one freed GB does not start a build that fills the disk again.
+DISK_GUARD="${COORDINATOR_DISK_GUARD:-$SELF_DIR/disk-guard.sh}"
+DISK_HOLD=""; DISK_FREE=""
+DISK_SAID=$(DISK_GUARD_HOLD_FILE="${DISK_GUARD_HOLD_FILE:-$COORD_DIR/disk-hold}" bash "$DISK_GUARD" tick 2>/dev/null) || DISK_HOLD=1
+DISK_FREE=${DISK_SAID%%$'\t'*}; DISK_SAID=${DISK_SAID#*$'\t'}
+case "$DISK_FREE" in ''|*[!0-9]*) DISK_FREE="" ;; esac
+[ -z "$DISK_HOLD" ] || DISK_HOLD="${DISK_SAID:-disk low}"
+say "${DISK_SAID:-disk: the guard said nothing}"
+read -r DISK_STOP_GB DISK_RESUME_GB <<<"$(bash "$DISK_GUARD" limits 2>/dev/null)"
+if [ -n "$DISK_HOLD" ]; then
+  event "disk-hold:$(swarm_day)" disk-low false "" "" "$DISK_HOLD" || true
+  DISK_CLEAN_LOG="$COORD_DIR/disk-clean.log"
+  clean_args=""; coord_shadow || clean_args="--apply"
+  if [ "${COORDINATOR_DISK_CLEAN:-background}" = inline ]; then
+    DISK_GUARD_HOLD_FILE="${DISK_GUARD_HOLD_FILE:-$COORD_DIR/disk-hold}" bash "$DISK_GUARD" clean $clean_args >> "$DISK_CLEAN_LOG" 2>&1
+    DISK_FREE=$(bash "$DISK_GUARD" free 2>/dev/null) || DISK_FREE=""
+    say "disk: the auto-clean ran$([ -n "$clean_args" ] || echo ' dry') — ${DISK_FREE:-?} GB free after it ($DISK_CLEAN_LOG)"
+  else
+    DISK_GUARD_HOLD_FILE="${DISK_GUARD_HOLD_FILE:-$COORD_DIR/disk-hold}" \
+      bash "$SELF_DIR/../swarm/detach.sh" bash "$DISK_GUARD" clean $clean_args >> "$DISK_CLEAN_LOG" 2>&1 < /dev/null &
+    say "disk: the auto-clean started$([ -n "$clean_args" ] || echo ' dry') in the background (pid $!, $DISK_CLEAN_LOG)"
+  fi
+fi
+
 if [ -n "$COORD_CAP_BAD" ]; then
   say "spawn: coordinator.cap is '$COORD_CAP_BAD', not a whole number — holding"
   event "cap-bad:$COORD_CAP_BAD" cap-bad false "" "" "coordinator.cap is '$COORD_CAP_BAD', so nothing is spawning" || true
+elif [ -n "$DISK_HOLD" ]; then
+  say "spawn: starting nothing new — $DISK_HOLD"
+  coord_act_log disk-hold - "$DISK_HOLD"
+  held_view
 elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"
 elif [ -n "$SHEET_HOLD" ]; then
@@ -669,10 +701,15 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    --argjson hs "$HEAL_SLOTS" --argjson hl "$LIVE_HEAL" --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" \
    --argjson waiting "$REDS_WAITING" --arg took "$TOOK" \
    --arg healAllAt "$COORD_HEAL_ALL_AT" --argjson healAll "$([ -n "$HEAL_ALL" ] && echo true || echo false)" \
+   --arg diskFree "$DISK_FREE" --arg diskStop "${DISK_STOP_GB:-}" --arg diskResume "${DISK_RESUME_GB:-}" \
+   --argjson diskHeld "$([ -n "$DISK_HOLD" ] && echo true || echo false)" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
      healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
-     healAll:{at:(if $healAllAt == "" then null else ($healAllAt|tonumber) end), inForce:$healAll}, started:(if $took == "" then null else $took end)}' \
+     healAll:{at:(if $healAllAt == "" then null else ($healAllAt|tonumber) end), inForce:$healAll}, started:(if $took == "" then null else $took end),
+     disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
+           stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
+           resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld}}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
 # The compare report reads what this tick saw and chose; next= stays last.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \

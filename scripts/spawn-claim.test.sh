@@ -38,6 +38,8 @@ cleanup() {
 }
 trap cleanup EXIT
 fail=0
+# The runner's own disk is no case's input here (disk-guard.test.sh and spawn-wall.test.sh plant it).
+export HARNESS_DISK_GUARD=off
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
 

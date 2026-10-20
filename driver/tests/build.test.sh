@@ -34,6 +34,15 @@ out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "ba
 want "red then green is proved" "0" "$rc"
 want_in "and it says so"        'red .* then green' "$out"
 
+echo "--- under the disk guard's floor the proof is never taken ---"
+# Two more trees with their installs on a disk that has no room for them (owner call 2026-10-20).
+out=$(HARNESS_DISK_GUARD=on COORDINATOR_FREE_GB=12 driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1); rc=$?
+want "12 GB free: not taken, the code that parks without blaming the change" "5" "$rc"
+want_in "and it says why"       'disk low: 12 GB free, under the 30 GB a red/green proof needs, so the test was never run' "$out"
+want_not_in "and no half was run" 'red .* then green' "$out"
+out=$(HARNESS_DISK_GUARD=on COORDINATOR_FREE_GB=30 driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" "bash feature.test.sh" 2>&1); rc=$?
+want "30 GB free, at the floor: proved as before" "0" "$rc"
+
 echo "--- a test that was already green proves nothing ---"
 # The test asserts something true before the change: the classic test-shaped
 # thing that is not a test of the change.
