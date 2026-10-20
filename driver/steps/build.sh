@@ -48,6 +48,12 @@
 # both answers to the change. A first version that asserts the opposite of the
 # change is green before and red after, so the two readings disagree — and the
 # wrong one says "still fails with the change" about a change that works.
+#
+# Unless the test came FIRST and the change edited it. A fix that changes behaviour
+# rewrites the sibling cases asserting the old one, in the same file, and the test
+# commit's version then fails at the change for those siblings alone. When the test
+# commit is an ancestor of the change, the version that lands with the change is the
+# one run in both halves: red at the change's parent, green at the change.
 # The two proof trees need what the TICKET worktree was given, or a test command
 # that resolves through the shared install — `npx x`, `./node_modules/.bin/x`,
 # `npm test` — fails with 127 in both of them. 127 in the second reads as "the
@@ -103,6 +109,16 @@ _driver_typecheck_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# The runner's own failure lines when it printed any, else the tail. The first lines
+# are a runner's banner — a config warning on every run of some runners — so a reason
+# made of them named no case, and the fix round's one retry was handed nothing.
+_driver_fail_lines() { # <file>
+  local l
+  l=$(grep -E '(^|[[:space:]])(FAIL|not ok|×|✗|✖)([[:space:]]|$)|AssertionError|Error:|[0-9]+ (case|test)\(?s?\)? failed' "$1" 2>/dev/null | head -6)
+  [ -n "$l" ] || l=$(tail -5 "$1" 2>/dev/null)
+  printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
+}
+
 driver_prove_red_green() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
@@ -143,8 +159,12 @@ driver_prove_red_green() {
     printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
+  # The version run in both halves: the change's own when the test commit came first
+  # (the change may edit the test it names), else the reported one.
+  local vsha="$tsha"
+  git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null && vsha="$isha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
-  git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
+  git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
   ( cd "$tmp/before" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
@@ -157,12 +177,11 @@ driver_prove_red_green() {
     printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
-  # The SAME version of the test in both trees. A test sharpened while the change
-  # was built is ordinary, and then the change's own tree holds an EARLIER version:
-  # running that one measures a different test in each half, and the two answers get
-  # attributed to the change. One version, two trees.
+  # The SAME version of the test in both trees. A test sharpened after the change is
+  # ordinary, and then the change's own tree holds an EARLIER version: running that
+  # one measures a different test in each half. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
-  git -C "$repo" show "$tsha:$tfile" > "$tmp/after/$tfile"
+  git -C "$repo" show "$vsha:$tfile" > "$tmp/after/$tfile"
   ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
   # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
@@ -180,8 +199,8 @@ driver_prove_red_green() {
   git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
   git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1
   local red_out after_out
-  red_out=$(head -5 "$tmp/before.out" 2>/dev/null | tr '\n' ' ')
-  after_out=$(head -5 "$tmp/after.out" 2>/dev/null | tr '\n' ' ')
+  red_out=$(_driver_fail_lines "$tmp/before.out")
+  after_out=$(_driver_fail_lines "$tmp/after.out")
   rm -rf "$tmp"
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
@@ -282,8 +301,8 @@ driver_prove_by_break() {
     tc_rc=$?
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
-  red_out=$(head -5 "$tmp/red.out" 2>/dev/null | tr '\n' ' ')
-  green_out=$(head -5 "$tmp/green.out" 2>/dev/null | tr '\n' ' ')
+  red_out=$(_driver_fail_lines "$tmp/red.out")
+  green_out=$(_driver_fail_lines "$tmp/green.out")
   _driver_break_done
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) on the tree with the code restored\n' "$tc" "$DRIVER_CMD_TIMEOUT"
