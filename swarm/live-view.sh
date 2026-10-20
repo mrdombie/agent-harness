@@ -34,6 +34,9 @@ export SWARM_OWNER_NAME="${SWARM_OWNER_NAME:-$(swarm_opt swarm.ownerName "")}"
 # after launch is left out of the "before launch" count.
 export SWARM_BOARD_FILE="${SWARM_BOARD_FILE:-$SWARM_DIR/board.json}"
 export SWARM_AFTER_LAUNCH_LABEL="${SWARM_AFTER_LAUNCH_LABEL:-$(swarm_opt swarm.afterLaunchLabel after-launch)}"
+# Batch wrappers, epics and programmes hold other tickets: left out of every release count.
+export SWARM_WRAPPER_TITLE_PREFIXES="${SWARM_WRAPPER_TITLE_PREFIXES-$(swarm_opt swarm.wrapperTitlePrefixes "Batch PROGRAMME EPIC")}"
+export SWARM_WRAPPER_LABELS="${SWARM_WRAPPER_LABELS-$(swarm_opt swarm.wrapperLabels "epic programme")}"
 # The day "Progress to launch" counts done tickets from, and the pace file it reads.
 export SWARM_PROGRESS_SINCE="${SWARM_PROGRESS_SINCE:-$(swarm_opt swarm.progressSince 2026-10-13)}"
 export SWARM_TREND_FILE="${SWARM_TREND_FILE:-$SWARM_DIR/trend.json}"

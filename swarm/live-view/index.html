@@ -171,10 +171,18 @@ function spark(vals){
 }
 // The release: every ticket done since the start date plus every one still open
 // before launch, as the big number, then the bar of done against it.
-function releaseTop(l){
+// The containers left out of every count, so the number can be checked against the board.
+function notCounted(b){
+  const n = b?.notCounted
+  if (!n) return ''
+  const one = (k, w) => n[k] ? `${num(n[k])} ${w}${n[k] === 1 ? '' : 's'}` : ''
+  const parts = [one('batch', 'batch wrapper'), one('epic', 'epic')].filter(Boolean)
+  return parts.length ? `<div class="sub notcounted">Not counted: ${parts.join(' · ')}</div>` : ''
+}
+function releaseTop(l, b){
   if (!l) return '<div class="ptitle">Release progress</div><div class="big">Release: counting…</div>'
     + '<div class="sub">The release total lands with the next count.</div>'
-  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>
+  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>${notCounted(b)}
     <div class="progress"><div class="bar" role="img" aria-label="${esc(l.pct)}% done"><i style="width:${Math.min(100, l.pct)}%"></i></div>
     <div class="pline"><span><b>${num(l.done)}</b> done · <b>${num(l.open)}</b> left · <b>${esc(l.pct)}%</b></span><span class="sub">counted since ${esc(dateName(l.base))}</span></div></div>`
 }
@@ -205,7 +213,7 @@ function headline(b, l){
   const chips = b.buckets.map(c => `<span class="chip${c.n ? '' : ' zero'}" data-k="${esc(c.key)}"><b>${num(c.n)}</b> ${esc(c.label)}</span>`)
   const label = b.afterLabel && b.afterLabel !== 'after-launch' ? ` (${esc(b.afterLabel)})` : ''
   chips.push(`<span class="chip muted" data-k="after"><b>${num(b.afterLaunch)}</b> After launch${label} · parked</span>`)
-  return `${releaseTop(l)}<div class="chips">${chips.join('')}</div>${paceBlock(l)}${mergedBlock(l)}`
+  return `${releaseTop(l, b)}<div class="chips">${chips.join('')}</div>${paceBlock(l)}${mergedBlock(l)}`
 }
 function todayLine(t){
   if (!t) return '<span class="empty">Today’s counts land with the next full count.</span>'

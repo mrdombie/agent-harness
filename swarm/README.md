@@ -172,6 +172,8 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.ownerName` | — | Who a finished row's "Waiting on …" names; unset reads "the owner" |
 | `swarm.progressSince` | 2026-10-13 | The day "Progress to launch" counts done tickets from (local midnight) |
 | `swarm.afterLaunchLabel` | after-launch | The label that sets a ticket after launch: the page counts it apart from "Before launch: N left" |
+| `swarm.wrapperTitlePrefixes` | ["Batch", "PROGRAMME", "EPIC"] | Titles that start with one of these (any case, as a whole word) are containers, left out of the release's open, done and added counts. The first names the batch wrappers on the "Not counted" line; the rest count as epics |
+| `swarm.wrapperLabels` | ["epic", "programme"] | Labels that make a ticket a container (an epic or programme), left out the same way |
 | `swarm.staleSec` | 120 | A snapshot older than this is no answer |
 | `swarm.progressSec` | 60 | How often the step and plan facts are re-read |
 | `swarm.quietSec` | 1200 | An agent silent this long is stuck |

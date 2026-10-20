@@ -341,6 +341,22 @@ const AFTER_LAUNCH = process.env.SWARM_AFTER_LAUNCH_LABEL || 'after-launch'
 const CLAIM_LOCK = process.env.SWARM_CLAIM_LOCK || ''
 // The coordinator's own five-hour readings: <epoch> \t <utilization> \t <reset epoch> \t <builders>.
 const PACE_FILE = process.env.SWARM_PACE_FILE || path.join(path.dirname(COORD_QUEUE), 'pace.tsv')
+// Containers, not work: a batch folds child tickets that stay open on their own, and
+// an epic or programme is the sum of its children. Counted beside them, they count
+// the same work twice. The first prefix names the batch wrappers; the rest and the
+// labels are epics and programmes.
+const words = (v, d) => String(v ?? d).split(/\s+/).filter(Boolean)
+const WRAPPER_PREFIXES = words(process.env.SWARM_WRAPPER_TITLE_PREFIXES, 'Batch PROGRAMME EPIC')
+const WRAPPER_LABELS = words(process.env.SWARM_WRAPPER_LABELS, 'epic programme')
+const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const PREFIX_RE = WRAPPER_PREFIXES.map((p) => new RegExp(`^\\s*${reEsc(p)}(?![a-z])`, 'i'))
+// 'batch', 'epic', or null for a work item. Read from the forge's own title, never the plain one.
+export function wrapperOf(title, labels = []) {
+  const t = String(title ?? '')
+  if (PREFIX_RE.length && PREFIX_RE[0].test(t)) return 'batch'
+  if (PREFIX_RE.slice(1).some((r) => r.test(t)) || (labels || []).some((l) => WRAPPER_LABELS.includes(l))) return 'epic'
+  return null
+}
 
 // Local midnight, as the instant the "today" counts start from.
 export function dayStart(now = Date.now()) {
@@ -376,7 +392,7 @@ export function boardFromPages(pages, since, at) {
     if (!iss || !Array.isArray(iss.nodes)) return null
     for (const n of iss.nodes) {
       if (!n || n.number == null) continue
-      open.push({ number: n.number, title: plainTitle(n.title), createdAt: n.createdAt || null,
+      open.push({ number: n.number, title: plainTitle(n.title), raw: n.title, createdAt: n.createdAt || null,
                   labels: ((n.labels && n.labels.nodes) || []).map((l) => l && l.name).filter(Boolean) })
     }
     last = iss
@@ -510,14 +526,113 @@ function refreshTrend(now) {
   execFile(GH, args, { timeout: 60_000 }, (err, out) => { trendBusy = false; if (!err) keep(out) })
 }
 
+// ---- the wrappers: every batch, epic and programme, read with the trend ----
+// Search counts cannot test a title prefix, so the trend's counts include the
+// wrappers. They are read here as rows — one paginated search per prefix and per
+// label, kept as long as the trend — and taken off those counts at answer time.
+const WRAPPERS_FILE = process.env.SWARM_WRAPPERS_FILE || path.join(path.dirname(TREND_FILE), 'wrappers.json')
+const SEARCH_CAP = 1000
+const WRAPPER_QUERY = `query($q:String!,$endCursor:String){
+ wrappers: search(query:$q,type:ISSUE,first:100,after:$endCursor){issueCount pageInfo{hasNextPage endCursor}
+  nodes{... on Issue{number title state stateReason createdAt closedAt labels(first:50){nodes{name}}}}}}`
+
+export function wrapperSearches(repo, prefixes = WRAPPER_PREFIXES, labels = WRAPPER_LABELS) {
+  return [...prefixes.map((p) => `in:title "${p}"`), ...labels.map((l) => `label:"${l}"`)]
+    .map((c) => ['api', 'graphql', '-f', `q=repo:${repo} is:issue ${c}`, '-f', `query=${WRAPPER_QUERY}`, '--paginate', '--slurp'])
+}
+
+// Each search's pages as gh --slurp gives them, into the wrappers file. Null unless
+// every search came back whole and under the search cap: a short read undercounts.
+export function wrappersFromPages(answers, at) {
+  if (!Array.isArray(answers) || !answers.length) return null
+  const by = new Map()
+  for (const pages of answers) {
+    if (!Array.isArray(pages) || !pages.length) return null
+    let last = null
+    for (const p of pages) {
+      const s = p && p.data && p.data.wrappers
+      if (!s || !Array.isArray(s.nodes) || !Number.isInteger(s.issueCount) || s.issueCount > SEARCH_CAP) return null
+      for (const n of s.nodes) {
+        if (!n || n.number == null) continue
+        const labels = ((n.labels && n.labels.nodes) || []).map((l) => l && l.name).filter(Boolean)
+        if (!wrapperOf(n.title, labels)) continue
+        by.set(n.number, { number: n.number, title: n.title, labels, state: n.state || null, stateReason: n.stateReason || null,
+                           createdAt: n.createdAt || null, closedAt: n.closedAt || null })
+      }
+      last = s
+    }
+    if (!last.pageInfo || last.pageInfo.hasNextPage !== false) return null
+  }
+  return { at, issues: [...by.values()] }
+}
+
+// How many before-launch wrappers were added, or closed as done, in [from, to).
+export function wrappersIn(w, kind, from, to) {
+  if (!w || !Array.isArray(w.issues)) return 0
+  const inside = (ts) => { const t = Date.parse(ts); return Number.isFinite(t) && t >= from && t < to }
+  return w.issues.filter((i) => !(i.labels || []).includes(AFTER_LAUNCH) && wrapperOf(i.title, i.labels)
+    && (kind === 'added' ? inside(i.createdAt)
+      : i.state === 'CLOSED' && i.stateReason === 'COMPLETED' && inside(i.closedAt))).length
+}
+
+let wrappersTried = 0, wrappersBusy = false
+function refreshWrappers(now) {
+  if (!REPO || wrappersBusy || now - wrappersTried < TREND_MS) return
+  try { if (now - fs.statSync(WRAPPERS_FILE).mtimeMs < TREND_MS) return } catch {}
+  wrappersTried = now
+  if (allowanceLow()) return
+  const calls = wrapperSearches(REPO)
+  const keep = (outs) => {
+    let w = null
+    try { w = wrappersFromPages(outs.map((o) => JSON.parse(o)), iso(now)) } catch {}
+    if (!w) return
+    try {
+      fs.mkdirSync(path.dirname(WRAPPERS_FILE), { recursive: true })
+      fs.writeFileSync(WRAPPERS_FILE + '.tmp', JSON.stringify(w))
+      fs.renameSync(WRAPPERS_FILE + '.tmp', WRAPPERS_FILE)
+    } catch {}
+  }
+  if (!calls.length) { keep([]); return }
+  if (process.env.SWARM_PROGRESS_SYNC) {
+    const outs = []
+    for (const a of calls) {
+      noteGh(['api', 'graphql'])
+      try { outs.push(execFileSync(GH, a, { timeout: 120_000, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })) } catch { return }
+    }
+    keep(outs)
+    return
+  }
+  wrappersBusy = true
+  const outs = []
+  const next = (i) => {
+    if (i >= calls.length) { wrappersBusy = false; keep(outs); return }
+    noteGh(['api', 'graphql'])
+    execFile(GH, calls[i], { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => {
+      if (err) { wrappersBusy = false; return }
+      outs.push(out); next(i + 1)
+    })
+  }
+  next(0)
+}
+
 // Done of the whole before-launch list, the pace, and where that pace lands.
 // Burn is the average of (done - added) over the last whole days; at zero or
 // below there is no date, because the list is not getting shorter.
-export function launchOf(board, trend, now = Date.now()) {
-  if (!board || !trend || !Array.isArray(trend.days)) return null
+// The trend is search counts, which cannot see a title; the wrappers read beside it
+// comes off every one of them, so open, done and added are one population. No
+// wrappers read is no release: a total of work plus containers is the wrong number.
+export function launchOf(board, trend, wrappers, now = Date.now()) {
+  if (!board || !trend || !Array.isArray(trend.days) || !wrappers || !Array.isArray(wrappers.issues)) return null
   const open = board.beforeLaunch
-  const done = trend.doneSinceBase
+  const done = Math.max(0, trend.doneSinceBase - wrappersIn(wrappers, 'done', Date.parse(baseStart(trend.base)), Infinity))
   const total = done + open
+  const days = trend.days.map((d) => {
+    const [y, m, dd] = d.day.split('-').map(Number)
+    const from = new Date(y, m - 1, dd).getTime(), to = new Date(y, m - 1, dd + 1).getTime()
+    return { ...d, added: Math.max(0, d.added - wrappersIn(wrappers, 'added', from, to)),
+             done: Math.max(0, d.done - wrappersIn(wrappers, 'done', from, to)) }
+  })
+  trend = { ...trend, days }
   const whole = trend.days.filter((d) => d.day !== localDay(now)).slice(-TREND_DAYS)
   const burn = whole.length ? whole.reduce((a, d) => a + d.done - d.added, 0) / whole.length : null
   const converging = burn != null && burn > 0
@@ -573,6 +688,7 @@ const WHY_OWNER = (labels, pr) => labels.includes(LBL('LBL_OWNER_DECISION', 'nee
 export function boardOf(board, ctx, now = Date.now()) {
   if (!board || !Array.isArray(board.open)) return null
   const counts = Object.fromEntries(Object.keys(BUCKETS).map((k) => [k, 0]))
+  const notCounted = { batch: 0, epic: 0 }
   let after = 0
   const needsYou = []
   // Another host's claim is its live run; one on this host without a run here is stale.
@@ -581,6 +697,8 @@ export function boardOf(board, ctx, now = Date.now()) {
   for (const i of board.open) {
     const labels = i.labels || []
     if (labels.includes(AFTER_LAUNCH)) { after++; continue }
+    const w = wrapperOf(i.raw ?? i.title, labels)
+    if (w) { notCounted[w]++; continue }
     const t = String(i.number)
     const pr = ctx.prRows[t]
     const b = bucketOf(labels, pr, ctx.live.has(t) || claimed.has(t))
@@ -589,12 +707,16 @@ export function boardOf(board, ctx, now = Date.now()) {
   }
   const total = Object.values(counts).reduce((a, b) => a + b, 0)
   // Today's counts belong to the day they were read on; past midnight they say nothing.
-  const today = board.since === dayStart(now)
-    ? { merged: board.mergedToday, done: board.doneToday, made: board.newToday,
-        delta: Number.isInteger(board.doneToday) && Number.isInteger(board.newToday) ? board.doneToday - board.newToday : null }
+  // They are search counts, so the wrappers come off them; unread wrappers are no count.
+  const wr = ctx.wrappers
+  const since = Date.parse(board.since)
+  const less = (n, k) => (Number.isInteger(n) ? Math.max(0, n - wrappersIn(wr, k, since, Infinity)) : null)
+  const today = board.since === dayStart(now) && wr
+    ? { merged: board.mergedToday, done: less(board.doneToday, 'done'), made: less(board.newToday, 'added') }
     : null
+  if (today) today.delta = today.done != null && today.made != null ? today.done - today.made : null
   needsYou.sort((a, b) => Number(a.ticket) - Number(b.ticket))
-  return { at: board.at || null, beforeLaunch: total, afterLaunch: after, afterLabel: AFTER_LAUNCH,
+  return { at: board.at || null, beforeLaunch: total, afterLaunch: after, afterLabel: AFTER_LAUNCH, notCounted,
            buckets: Object.keys(BUCKETS).map((k) => ({ key: k, label: BUCKETS[k], n: counts[k] })),
            needsYou, today, claims: board.claims || null }
 }
@@ -755,8 +877,10 @@ export function snapshot(now = Date.now()) {
   refreshHold(now)
   refreshBoard(now)
   refreshTrend(now)
+  refreshWrappers(now)
+  ctx.wrappers = readJsonCached(WRAPPERS_FILE)
   const board = boardOf(readJsonCached(BOARD_FILE), ctx, now)
-  const launch = launchOf(board, readJsonCached(TREND_FILE), now)
+  const launch = launchOf(board, readJsonCached(TREND_FILE), ctx.wrappers, now)
   const queue = queued
   for (const r of queue.tickets) {
     fetchTitle(r.ticket)

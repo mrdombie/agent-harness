@@ -411,7 +411,7 @@ board_fixture() { # <since> — sixteen before launch, two after, one of each ki
   # 1116-1118 carry the claimed label with no run anywhere (1118 also a claim on
   # this host, laptop): stale, so they sort by their other labels, not as building.
   cat > "$BOARD" <<JSON
-{"at":"$NOW_ISO","since":"$1","doneToday":5,"newToday":2,"mergedToday":4,
+{"at":"$NOW_ISO","since":"$1","doneToday":6,"newToday":3,"mergedToday":4,
  "claims":[{"issue":"1114","host":"dom@studio-mac"},{"issue":"1113","host":"dom@laptop"},{"issue":"1118","host":"dom@laptop"}],
  "open":[
   {"number":1101,"title":"Ready one","labels":["status:ready"]},
@@ -431,10 +431,34 @@ board_fixture() { # <since> — sixteen before launch, two after, one of each ki
   {"number":1115,"title":"Held and blocked","labels":["needs:human-approval","status:blocked"]},
   {"number":1116,"title":"Stale claim, ready","labels":["status:claimed","status:ready"]},
   {"number":1117,"title":"Stale claim, bare","labels":["status:claimed"]},
-  {"number":1118,"title":"Stale claim here","labels":["status:claimed","status:in-review"]}]}
+  {"number":1118,"title":"Stale claim here","labels":["status:claimed","status:in-review"]},
+  {"number":1119,"title":"Three fixes","raw":"Batch: three fixes","labels":["status:ready"]},
+  {"number":1120,"title":"The platform","raw":"PROGRAMME(platform): the platform","labels":[]},
+  {"number":1121,"title":"Watch","raw":"Watch","labels":["epic","status:in-review"]}]}
 JSON
 }
+# Measured 2026-10-20: 1,262 open before launch held 89 batch wrappers and 80 epics
+# and programmes, each a container whose children are open tickets of their own.
+# The wrappers read beside the trend: one batch made and done today, one epic made
+# and done on the first whole day, and two the search never counted (after launch;
+# closed as not planned), which must not come off the counts either.
+WRAPPERS="$STATE/swarm/wrappers.json"
+wrappers_fixture() { # [none]
+  [ "${1:-}" = none ] && { printf '{"at":"%s","issues":[]}\n' "$NOW_ISO" > "$WRAPPERS"; return; }
+  SERVER_MJS="$SERVER_URLPATH" NOW="$NOW_ISO" TODAY="$SINCE" node --input-type=module -e '
+    import { pathToFileURL } from "node:url"
+    const { trendDays } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+    const d0 = trendDays()[0].from, N = process.env.NOW, T = process.env.TODAY
+    const row = (number, title, labels, createdAt, closedAt, stateReason = "COMPLETED") =>
+      ({ number, title, labels, state: "CLOSED", stateReason, createdAt, closedAt })
+    console.log(JSON.stringify({ at: N, issues: [
+      row(901, "Batch: two fixes", [], T, N),
+      row(902, "EPIC(time): the clock", [], d0, d0),
+      row(903, "Batch: later", ["after-launch"], T, N),
+      row(904, "A container", ["programme"], "2001-01-01T00:00:00Z", N, "NOT_PLANNED")] }))' > "$WRAPPERS"
+}
 board_fixture "$SINCE"
+wrappers_fixture
 cat > "$STATE/swarm/prs.json" <<'JSON'
 [{"number":2104,"headRefName":"tkt-1104/a","closingIssuesReferences":[],"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
  {"number":2105,"headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
@@ -445,6 +469,20 @@ printf '{"run_id":"claim-1113-a","ticket":"1113","child_pid":%s,"started_at":"%s
 printf 'build: writing the tests\n' > "$STATE/logs/claim-1113-a.log"
 s=$(BRANCH_PREFIX=tkt- snap)
 want "before launch leaves the after-launch tickets out" "16" "$(printf '%s' "$s" | jq '.board.beforeLaunch')"
+want "and the batch wrappers and epics, counted apart"    '{"batch":1,"epic":2}' "$(printf '%s' "$s" | jq -c '.board.notCounted')"
+want "the wrapper rules are the project's to name"        "19 null" \
+  "$(SWARM_WRAPPER_TITLE_PREFIXES= SWARM_WRAPPER_LABELS= BRANCH_PREFIX=tkt- snap | jq -c '"\(.board.beforeLaunch) \(.board.notCounted.batch | if . == 0 then null else . end)"' | tr -d '"')"
+want "a prefix of its own names the batch wrappers"       '{"batch":1,"epic":0}' \
+  "$(SWARM_WRAPPER_TITLE_PREFIXES=programme SWARM_WRAPPER_LABELS= BRANCH_PREFIX=tkt- snap | jq -c '.board.notCounted')"
+echo "--- a wrapper is told by its own title's first word, or a label ---"
+w=$(SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e '
+  import { pathToFileURL } from "node:url"
+  const { wrapperOf } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+  console.log([["Batch: x", []], ["batch — x", []], ["Batching jobs runs twice", []], ["A batch of fixes", []],
+    ["EPIC(access): x", []], ["Epic: x", []], ["PROGRAMME: x", []], ["Programmes page", []], ["Plain", ["epic"]],
+    ["Plain", ["programme"]], ["Plain", ["status:batched"]]].map(([t, l]) => wrapperOf(t, l) || "-").join(" "))')
+want "batch, epic and programme by title and label; a word that only starts the same is work" \
+  "batch batch - - epic epic epic - epic epic -" "$w"
 want "after launch is counted apart"                     "2"  "$(printf '%s' "$s" | jq '.board.afterLaunch')"
 want "the chips add up to what is left"                  "16" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
 # Measured 2026-10-20: the chip said Building 10 beside "Building now · 5" — it
@@ -494,13 +532,14 @@ want "a fresh count is not read again"                    "0" "$(gsnap >/dev/nul
 rm -f "$BOARD"; pages true
 s=$(gsnap)
 want "a read that stopped part-way is not kept"           "null" "$(printf '%s' "$s" | jq '.board')"
-rm -f "$BOARD"; pages false; : > "$FIX/board-gh.log"
+rm -f "$BOARD"; pages false; : > "$FIX/board-gh.log"; wrappers_fixture none
 s=$(gsnap)
 want "one read of every open ticket"                      "1" "$(grep -c 'api graphql --paginate' "$FIX/board-gh.log")"
 want "counted from both pages"                            "2 1" "$(printf '%s' "$s" | jq -r '"\(.board.beforeLaunch) \(.board.afterLaunch)"')"
 want "with today's counts"                                "6 7 1" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made)"')"
 want "and kept for the next ask"                          "One" "$(jq -r '.open[0].title' "$BOARD")"
-board_fixture "$SINCE"
+want "with the forge's own title beside the plain one"    "fix(x): one" "$(jq -r '.open[0].raw' "$BOARD")"
+board_fixture "$SINCE"; wrappers_fixture
 
 echo "--- the page leads with the headline, one row per builder, and the rest folded ---"
 s=$(BRANCH_PREFIX=tkt- snap)
@@ -574,8 +613,10 @@ trend_fixture() { # <added per whole day> <done per whole day> — today: 1 adde
     import { pathToFileURL } from "node:url"
     const { trendDays } = await import(pathToFileURL(process.env.SERVER_MJS).href)
     const ds = trendDays(), last = ds.length - 1
-    console.log(JSON.stringify({ at: new Date().toISOString(), base: "2026-10-13", doneSinceBase: 37,
-      days: ds.map((d, i) => ({ day: d.day, added: i === last ? 1 : +process.env.A, done: i === last ? 2 : +process.env.D, merged: i + 1 })) }))' > "$TREND"
+    // The raw search counts: what the page shows plus wrappers 901 (today) and 902 (day 0).
+    const w = (i) => (i === 0 || i === last ? 1 : 0)
+    console.log(JSON.stringify({ at: new Date().toISOString(), base: "2026-10-13", doneSinceBase: 39,
+      days: ds.map((d, i) => ({ day: d.day, added: (i === last ? 1 : +process.env.A) + w(i), done: (i === last ? 2 : +process.env.D) + w(i), merged: i + 1 })) }))' > "$TREND"
 }
 board_fixture "$SINCE"
 trend_fixture 2 5
@@ -587,8 +628,12 @@ want "burn is done less added over the whole days"      "3 true" "$(printf '%s' 
 ETA=$(node -e 'const d=new Date();d.setDate(d.getDate()+6);console.log(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`)')
 want "at this pace: sixteen left at three a day is six days" "$ETA" "$(printf '%s' "$s" | jq -r '.launch.eta')"
 want "today is today's own counts"                      "1 2" "$(printf '%s' "$s" | jq -r '.launch.today | "\(.added) \(.done)"')"
+want "a whole day's wrapper comes off its added and done" "2 5" "$(printf '%s' "$s" | jq -r '.launch.days[0] | "\(.added) \(.done)"')"
+want "no wrappers read is no release"                     "null" "$(rm -f "$WRAPPERS"; SWARM_REPO= BRANCH_PREFIX=tkt- SNAP_GH=false snap | jq '.launch')"
+wrappers_fixture
 r=$(page_render "$LV")
 want_in "the big number is the release: done plus left" '^headline=<div class="ptitle">Release progress</div><div class="big">Release: 53 <small>tickets</small></div>' "$r"
+want_in "under it, what was left out and why"           '</div><div class="sub notcounted">Not counted: 1 batch wrapper · 2 epics</div>' "$r"
 want_in "then the bar: done, left, share"               'width:69.8%.*<b>37</b> done · <b>16</b> left · <b>69.8%</b>.*Added and done, per day.*Pull requests merged' "$r"
 want "the chips add up to the bar's left"               "$(printf '%s' "$s" | jq '.launch.open')" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
 # Dom, 2026-10-20: "it's 1669; this is a screen for the release" — the numbers he read.
@@ -631,6 +676,72 @@ plant server.mjs '  const not = `-label:"${label}"`' '  const not = ``'
 rm -f "$TREND"; : > "$FIX/board-gh.log"; SNAP_GH="$FIX/board-gh" psnap >/dev/null
 [ "$(grep 'base: search' "$FIX/board-gh.log" | grep -c 'after-launch')" = 0 ] \
   && ok "planted: after launch left in the pace → the query no longer names it → red" || bad "planted: after launch left in and the test cannot see it"
-rm -f "$BOARD" "$TREND" "$STATE/swarm/prs.json" "$STATE"/runs/claim-1113-a.json
+
+echo "--- the wrappers are one search per prefix and per label, kept with the pace ---"
+cat > "$FIX/board-gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/board-gh.log"
+case "$*" in *"wrappers: search"*) cat "$FIX/wrapper-pages.json" ;; *"issues(states:OPEN"*) cat "$FIX/board-pages.json" ;; *) cat "$FIX/trend-answer.json" 2>/dev/null ;; esac
+SH
+chmod +x "$FIX/board-gh"
+wpages() { # <hasNextPage on the last page> [issueCount]
+  cat > "$FIX/wrapper-pages.json" <<JSON
+[{"data":{"wrappers":{"issueCount":${2:-3},"pageInfo":{"hasNextPage":true,"endCursor":"a"},"nodes":[
+   {"number":71,"title":"Batch: two fixes","state":"CLOSED","stateReason":"COMPLETED","createdAt":"$SINCE","closedAt":"$NOW_ISO","labels":{"nodes":[]}},
+   {"number":72,"title":"A batch of fixes","state":"OPEN","createdAt":"$SINCE","labels":{"nodes":[]}}]}}},
+ {"data":{"wrappers":{"issueCount":${2:-3},"pageInfo":{"hasNextPage":$1,"endCursor":"b"},"nodes":[
+   {"number":73,"title":"Watch","state":"OPEN","createdAt":"$SINCE","labels":{"nodes":[{"name":"epic"}]}}]}}}]
+JSON
+}
+rm -f "$WRAPPERS"; wpages false; : > "$FIX/board-gh.log"
+s=$(gsnap)
+want "one search for each prefix and each label"         "5" "$(grep -c 'wrappers: search' "$FIX/board-gh.log")"
+want_in "each a whole-word title or a label"             'is:issue in:title "Batch".*is:issue in:title "PROGRAMME".*is:issue in:title "EPIC".*is:issue label:"epic".*is:issue label:"programme"' "$(tr '\n' ' ' < "$FIX/board-gh.log")"
+want "kept: only the rows that are wrappers"             "71 73" "$(jq -r '[.issues[].number] | join(" ")' "$WRAPPERS")"
+: > "$FIX/board-gh.log"; gsnap >/dev/null
+want "a fresh read is not read again"                    "0" "$(grep -c 'wrappers: search' "$FIX/board-gh.log")"
+rm -f "$WRAPPERS"; wpages true; gsnap >/dev/null
+want "a read that stopped part-way is not kept"          "no" "$([ -f "$WRAPPERS" ] && echo yes || echo no)"
+rm -f "$WRAPPERS"; wpages false 1001; gsnap >/dev/null
+want "a search past the forge's cap is not kept"         "no" "$([ -f "$WRAPPERS" ] && echo yes || echo no)"
+
+echo "--- planted: the wrapper rules removed are seen ---"
+board_fixture "$SINCE"; wrappers_fixture; trend_fixture 2 5
+plant server.mjs "    if (w) { notCounted[w]++; continue }"
+got=$(psnap | jq '.board.beforeLaunch')
+[ "$got" != "16" ] && ok "planted: wrappers counted as work → before launch reads $got → red" || bad "planted: the wrapper rule deleted and the test cannot see it"
+plant server.mjs "    const w = wrapperOf(i.raw ?? i.title, labels)" "    const w = wrapperOf(i.title, labels)"
+got=$(psnap | jq '.board.beforeLaunch')
+[ "$got" != "16" ] && ok "planted: the plain title read → before launch reads $got → red" || bad "planted: the plain title read and the test cannot see it"
+plant server.mjs "  const done = Math.max(0, trend.doneSinceBase - wrappersIn(wrappers, 'done', Date.parse(baseStart(trend.base)), Infinity))" \
+  "  const done = trend.doneSinceBase"
+got=$(psnap | jq '.launch.done')
+[ "$got" != "37" ] && ok "planted: closed wrappers counted as done → done reads $got → red" || bad "planted: closed wrappers counted as done and the test cannot see it"
+plant server.mjs "    return { ...d, added: Math.max(0, d.added - wrappersIn(wrappers, 'added', from, to))," "    return { ...d, added: d.added,"
+got=$(psnap | jq -r '.launch.days[0].added')
+[ "$got" != "2" ] && ok "planted: new wrappers counted as added → day 0 reads $got → red" || bad "planted: new wrappers counted as added and the test cannot see it"
+plant server.mjs "  return w.issues.filter((i) => !(i.labels || []).includes(AFTER_LAUNCH) && wrapperOf(i.title, i.labels)" \
+  "  return w.issues.filter((i) => wrapperOf(i.title, i.labels)"
+got=$(psnap | jq -r '.launch.today.done')
+[ "$got" != "2" ] && ok "planted: after-launch wrappers taken off twice → today done reads $got → red" || bad "planted: after-launch wrappers taken off and the test cannot see it"
+plant server.mjs "      : i.state === 'CLOSED' && i.stateReason === 'COMPLETED' && inside(i.closedAt))).length" "      : inside(i.closedAt))).length"
+got=$(psnap | jq -r '.launch.today.done')
+[ "$got" != "2" ] && ok "planted: a not-planned wrapper taken off done → today done reads $got → red" || bad "planted: not-planned wrappers taken off and the test cannot see it"
+plant server.mjs "  if (!board || !trend || !Array.isArray(trend.days) || !wrappers || !Array.isArray(wrappers.issues)) return null" \
+  "  if (!board || !trend || !Array.isArray(trend.days)) return null"
+cp "$WRAPPERS" "$FIX/wrappers.keep"; rm -f "$WRAPPERS"
+got=$(SWARM_REPO= SNAP_GH=false psnap | jq -c '.launch.total')
+cp "$FIX/wrappers.keep" "$WRAPPERS"
+[ "$got" != "null" ] && ok "planted: no wrappers read still counts → the release reads $got → red" || bad "planted: the no-wrappers guard deleted and the test cannot see it"
+plant server.mjs "      if (!s || !Array.isArray(s.nodes) || !Number.isInteger(s.issueCount) || s.issueCount > SEARCH_CAP) return null" \
+  "      if (!s || !Array.isArray(s.nodes)) return null"
+rm -f "$WRAPPERS"; wpages false 1001; SNAP_GH="$FIX/board-gh" psnap >/dev/null
+[ -f "$WRAPPERS" ] && ok "planted: no search-cap guard → a capped read is kept → red" || bad "planted: the search-cap guard deleted and the test cannot see it"
+s=$(BRANCH_PREFIX=tkt- snap)
+plant index.html '  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>${notCounted(b)}' \
+  '  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>'
+[ "$(page_render "$P2" | grep -c 'Not counted:')" = 0 ] \
+  && ok "planted: the page drops the not-counted line → none shown → red" || bad "planted: the not-counted line dropped and the test cannot see it"
+rm -f "$BOARD" "$TREND" "$WRAPPERS" "$STATE/swarm/prs.json" "$STATE"/runs/claim-1113-a.json
 
 exit $FAILED
