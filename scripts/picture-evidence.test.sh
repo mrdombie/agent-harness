@@ -85,10 +85,10 @@ pe required "$T/legacy.html" >/dev/null 2>&1; rc=$?
 [ $rc -eq 3 ] && ok "without --derive an unmarked picture still says it declares nothing (exit 3)" || bad "no-derive: rc=$rc"
 out=$(pe required --derive --route /desk "$T/legacy.html"); rc=$?
 names=$(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')
-[ $rc -eq 0 ] && [ "$names" = "1-arriving-laptop-light 1-arriving-laptop-dark phone-390-wide-scrolled-phone-light phone-390-wide-scrolled-phone-dark empty-room-laptop-light empty-room-laptop-dark " ] \
-  && ok "each outermost frame is a region, named by id or caption, at the widths and themes drawn" || bad "derived: rc=$rc $names"
+[ $rc -eq 0 ] && [ "$names" = "1-arriving-laptop-light 1-arriving-laptop-dark phone-390-wide-scrolled-phone-light phone-390-wide-scrolled-phone-dark " ] \
+  && ok "each outermost frame is a region, named by id or caption, at the widths and themes drawn; a second frame of the same page state is not" || bad "derived: rc=$rc $names"
 printf '%s\n' "$out" | awk -F'\t' '$2 != "/desk"' | grep -q . && bad "a derived region lost its route" || ok "a frame with no route of its own is on the PR's route"
-[ "$(pe derivation --derive --route /desk "$T/legacy.html" | cut -f2,3)" = $'frames\t6' ] && ok "derivation names how: frames 6" || bad "derivation: $(pe derivation --derive --route /desk "$T/legacy.html")"
+[ "$(pe derivation --derive --route /desk "$T/legacy.html" | cut -f2,3)" = $'frames\t4' ] && ok "derivation names how: frames 4" || bad "derivation: $(pe derivation --derive --route /desk "$T/legacy.html")"
 echo '<html><body><p>an old picture with no frames</p></body></html>' > "$T/flat.html"
 out=$(pe required --derive --route /desk --route /desk/new "$T/flat.html" | cut -f1 | tr '\n' ' ')
 [ "$out" = "desk-laptop-light desk-laptop-dark desk-phone-light desk-phone-dark desk-new-laptop-light desk-new-laptop-dark desk-new-phone-light desk-new-phone-dark " ] \
@@ -104,6 +104,40 @@ out=$(pe missing --derive --route /desk --shots "$T/ci2" "$T/legacy.html" 2>/dev
 [ $rc -eq 1 ] && [ "$(printf '%s\n' "$out" | cut -f1)" = "phone-390-wide-scrolled-phone-dark" ] && ok "a derived region with no matching shot is named" || bad "derived gap: rc=$rc $out"
 printf 'desk\tx/desk.png\tlight\t/desk\n' > "$T/ci3"
 pe missing --shots "$T/ci3" "$T/mock.html" >/dev/null 2>&1 && bad "a marked region was matched by route, not name" || ok "a marked region is still matched by its name only"
+
+# AN OLDER PICTURE DRAWN AS MANY FRAMES OF ONE PAGE (PR 13415: 16 frames, 32 shots, its
+# phone frames read as laptop). A frame is a phone when a <style> rule draws it 320-480
+# wide, and frames with the same route, setup, width and theme are one shot.
+cat > "$T/many.html" <<'HTML'
+<html><head><style>
+.frame { border: 1px solid #ccc; padding: 16px }
+.frame.ph { width: 390px; border-radius: 22px }
+.lk { width: 22px; height: 22px }
+.tip { max-width: 300px }
+.ph .rail { width: 100% }
+@media (prefers-color-scheme: dark) { :root { --bg: #111 } }
+</style></head><body>
+<div class="frame lt" id="s1-lt-today"><span class="lk">i</span><span class="tip">tip</span></div>
+<div class="frame lt aft" id="s1-lt-after"></div>
+<div class="frame dk" id="s1-dk-today"></div>
+<div class="frame ph lt" id="s1-ph-lt"><div class="rail"></div></div>
+<div class="frame ph dk aft" id="s1-ph-dk"></div>
+<div class="frame ph lt" id="s2-ph-today"></div>
+<div class="frame lt aft" id="s2-lap-a"></div>
+</body></html>
+HTML
+out=$(pe required --derive --route /dashboard/approvals "$T/many.html"); rc=$?
+rows=$(printf '%s\n' "$out" | cut -f3,4 | tr '\t\n' ' ,')
+[ $rc -eq 0 ] && [ "$rows" = "laptop light,laptop dark,phone light,phone dark," ] \
+  && ok "seven frames of one page are four shots: laptop and phone, light and dark" || bad "many frames: rc=$rc [$rows] $(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')"
+[ "$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /-ph-/ { print $3 }' | sort -u)" = phone ] \
+  && ok "a frame a <style> rule draws 390 wide is a phone" || bad "css-sized phone frame read as: $(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /-ph-/ { print $1, $3 }')"
+printf '%s\n' "$out" | awk -F'\t' '$1 ~ /^s1-lt-today-phone/' | grep -q . \
+  && bad "a 22px icon or a 300px tooltip inside a laptop frame was read as a phone" || ok "an icon or tooltip narrower than a phone is not a phone"
+# Frames on different routes, or with different setups, stay apart.
+sed 's|<div class="frame lt aft" id="s2-lap-a">|<div class="frame lt aft" id="s2-lap-a" data-route="/dashboard/other">|' "$T/many.html" > "$T/many2.html"
+[ "$(pe required --derive --route /dashboard/approvals "$T/many2.html" | grep -c .)" = 6 ] \
+  && ok "a frame on another route is its own shot" || bad "routes merged: $(pe required --derive --route /dashboard/approvals "$T/many2.html" | cut -f1-4)"
 
 # REAL DATA by approval date: the cut-off is 2026-10-20; with no date known, exempt.
 pe lint --approved 2026-10-19 "$T/tidy.html" >/dev/null 2>&1 && ok "a tidy picture approved 2026-10-19 is exempt" || bad "old tidy refused"

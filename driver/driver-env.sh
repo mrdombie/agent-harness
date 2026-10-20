@@ -569,6 +569,25 @@ EOS
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
+# driver_evidence_plan <ticket> — the capture plan's path in the tree, where CI reads it:
+# <evidence.dir>/<key>/plan.json, the key by CI's own rule (scripts/evidence-plan.sh). Ship,
+# repair and the facts all ask here; a path built from the ticket alone missed CI on every
+# branch not named <prefix>NNNN/… (four PRs, 2026-10-20).
+. "$KIT_ROOT/scripts/evidence-plan.sh"
+driver_evidence_plan() { # <ticket>
+  local t="$1" b pr k wt
+  b=$(driver_state_get "$t" branch)
+  if [ -z "$b" ]; then wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && b=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null); fi
+  pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" critic_pr)
+  k=$(evidence_plan_key "$b" "$pr")
+  if [ -z "$k" ] && [ -n "$b" ]; then
+    pr=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$b" --state open --json number -q '.[0].number // empty' 2>/dev/null)
+    k=$(evidence_plan_key "$b" "$pr")
+  fi
+  # No PR yet on an unconventional branch: CI has no key either until one opens.
+  printf '%s/%s/plan.json' "$(driver_opt evidence.dir "docs/evidence")" "${k:-$t}"
+}
+
 # The preface every caller's brief is handed under. Briefs are written for the prose
 # flow and say "push, keep auto-merge armed, hand off"; inside the driver those are
 # the driver's alone, done after the review. ai-step.sh also enforces it.

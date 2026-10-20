@@ -532,8 +532,12 @@ capture plan CI reads and list them in the body before marking ready —
 
 ```bash
 PICS=$(git diff --name-only "origin/$INTEGRATION_BRANCH"...HEAD -- '.design/*-mock.html')
+# Where CI reads the plan: a <prefix>NNNN/ branch's ticket, else the PR's number.
+EVKEY=$(bash "$KIT_ROOT/scripts/evidence-plan.sh" key "$(git branch --show-current)" \
+  "$(gh pr view --json number -q .number 2>/dev/null)")
+EVPLAN="docs/evidence/${EVKEY:-$TICKET_KEY}/plan.json"; mkdir -p "$(dirname "$EVPLAN")"
 [ -z "$PICS" ] || python3 -I "$KIT_ROOT/scripts/picture-evidence.py" plan \
-  --into "docs/evidence/$TICKET_KEY/plan.json" $PICS > /tmp/plan.$$ && mv /tmp/plan.$$ "docs/evidence/$TICKET_KEY/plan.json"
+  --into "$EVPLAN" $PICS > /tmp/plan.$$ && mv /tmp/plan.$$ "$EVPLAN"
 ```
 
 A red design status: read the critic's comment on the PR, fix every finding it

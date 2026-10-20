@@ -702,7 +702,7 @@ driver_state_put 197 review '{"verdict":"SHIP","findings":[]}'; driver_state_bum
 for st in start plan build self-check review record; do driver_state_done 197 "$st"; done
 rc=0; out=$(driver_step_ship 197 2>&1) || rc=$?
 want "it ships"                                       "0" "$rc"
-want "each frame of the older picture is planned"     "arriving-laptop-light arriving-phone-light empty-laptop-light" \
+want "each page state of the older picture is planned once" "arriving-laptop-light arriving-phone-light" \
   "$(jq -r '[.shots[].name] | join(" ")' "$FIX/wt197/docs/evidence/197/plan.json" 2>/dev/null)"
 want "on the build's own route"                       "/desk" \
   "$(jq -r '[.shots[].route] | unique | join(" ")' "$FIX/wt197/docs/evidence/197/plan.json" 2>/dev/null)"
@@ -721,6 +721,42 @@ want "the route is planned at both widths and themes" "/desk laptop light,/desk 
   "$(jq -r '[.shots[] | "\(.route) \(.viewport) \(.theme)"] | join(",")' "$FIX/wt198/docs/evidence/198/plan.json" 2>/dev/null)"
 want "and the plan is committed"                      "" "$(git -C "$FIX/wt198" status --porcelain)"
 want_in "the body names its route"                    '- /desk' "$(cat "$GH_LOG")"
+
+echo "--- the plan goes where CI reads it: the PR's number on a branch not named <prefix>NNNN/ (#308) ---"
+# CI keys evidence by the ticket of a <prefix>NNNN/ branch, else by the PR's number. Four
+# PRs on 5654/approval-preview-shaped branches had their plan under the ticket, unseen.
+setup_odd() { # <ticket> <branch> <pr>
+  local t=$1 wt="$FIX/wt$1"
+  git -C "$REPO" worktree add -q "$wt" -b "$2" develop
+  printf 'change for %s\n' "$t" > "$wt/f$t.txt"
+  git -C "$wt" add "f$t.txt"; git -C "$wt" commit -qm "feat: thing $t"
+  driver_state_init "$t" --worktree "$wt" --branch "$2"
+  driver_state_set "$t" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
+  driver_state_set "$t" pr "$3"
+  fix_issue "$t" OPEN "status:claimed"
+  driver_state_set "$t" screen_states '[{"route":"/desk"}]'
+  driver_state_put "$t" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$t" review
+  for st in start plan build self-check review record; do driver_state_done "$t" "$st"; done
+}
+: > "$GH_LOG"
+setup_odd 187 187/approval-preview 4321
+rc=0; out=$(driver_step_ship 187 2>&1) || rc=$?
+want "it ships"                                      "0" "$rc"
+want "the plan is under the PR's number"             "yes" "$([ -f "$FIX/wt187/docs/evidence/4321/plan.json" ] && echo yes)"
+want "and not under the ticket"                      "" "$(ls "$FIX/wt187/docs/evidence/187" 2>/dev/null)"
+want "a prefixed branch still keys by its ticket"    "docs/evidence/198/plan.json" "$(driver_evidence_plan 198)"
+echo "--- a plan an earlier run filed under the ticket is moved to where CI reads it ---"
+: > "$GH_LOG"
+setup_odd 188 188/old-shape 4322
+mkdir -p "$FIX/wt188/docs/evidence/188"
+printf '{"shots":[{"name":"desk-drawer-laptop-light","route":"/desk","viewport":"laptop","theme":"light","setup":["click the \\"Open\\" button"]}]}\n' > "$FIX/wt188/docs/evidence/188/plan.json"
+git -C "$FIX/wt188" add docs; git -C "$FIX/wt188" commit -qm "chore: the plan, filed under the ticket"
+rc=0; out=$(driver_step_ship 188 2>&1) || rc=$?
+want "it ships"                                      "0" "$rc"
+want "the old plan is gone from the ticket's folder" "" "$(git -C "$FIX/wt188" ls-files docs/evidence/188)"
+want "its shot is kept, under the PR's number"       'click the "Open" button' \
+  "$(jq -r '.shots[] | select(.name=="desk-drawer-laptop-light") | .setup[0]' "$FIX/wt188/docs/evidence/4322/plan.json" 2>/dev/null)"
+want "and the tree is clean"                         "" "$(git -C "$FIX/wt188" status --porcelain)"
 
 echo "--- a design verdict this run committed is never pushed ---"
 : > "$GH_LOG"

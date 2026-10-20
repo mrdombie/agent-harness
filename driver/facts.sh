@@ -374,7 +374,8 @@ driver_evidence_tasks() { # <ticket> <tree> <trunk> <pr>
   swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json body -q .body > "$body" 2>/dev/null || : > "$body"
   base=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null)
   if [ -n "$base" ]; then
-    out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" "$wt" "$base" HEAD "$t" "$body" 2>/dev/null)
+    local key; key=$(driver_evidence_plan "$t"); key=$(basename "${key%/plan.json}")
+    out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" "$wt" "$base" HEAD "$key" "$body" 2>/dev/null)
   else
     out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" 2>/dev/null)
   fi
@@ -396,7 +397,7 @@ driver_fact_evidence_tasks() { # <ticket>
     fi
   fi
   [ -n "$tasks" ] || { _driver_fact_none "no evidence is owed: the critic names no missing shot and every changed screen file is on an evidence route"; return 0; }
-  plan="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"
+  plan=$(driver_evidence_plan "$t")
   printf 'This pull request owes evidence. Each line below is a task, and its answer is an edit to the capture plan `%s` — a fix that only changes code leaves it open, and the driver refuses a repair that leaves it open:
 %s
 

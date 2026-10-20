@@ -95,6 +95,7 @@ case "$MAXLIVE" in ''|*[!0-9]*|0) MAXLIVE=3 ;; esac
 case "$TIMEOUT_MIN" in ''|*[!0-9]*|0) TIMEOUT_MIN=20 ;; esac
 case "$REAL_DATA_FROM" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) REAL_DATA_FROM=2026-10-20 ;; esac
 . "$SELF_DIR/branch-ticket.sh" 2>/dev/null || true
+. "$SELF_DIR/evidence-plan.sh" 2>/dev/null || true
 
 die() { echo "critic-judge: $*" >&2; exit 2; }
 say() { echo "critic-judge: $*"; swarm_log "$JDIR/judge.log" "$*" 2>/dev/null || true; }
@@ -274,7 +275,8 @@ run() { # <pr>
   # them as tasks for the capture plan. Unreadable is no gap: the critic still judges.
   local gaps=""
   jq -r '.body // ""' <<<"$j" > "$W/body.md"
-  gaps=$(bash "$COVERAGE" judge "$pr" "$head" "$t" "$W/body.md" 2>/dev/null | awk -F'\t' 'NF >= 4 { print $4 }')
+  # The plan is read where CI reads it (scripts/evidence-plan.sh), not under the ticket.
+  gaps=$(bash "$COVERAGE" judge "$pr" "$head" "$(evidence_plan_key "$(jq -r '.headRefName // ""' <<<"$j")" "$pr")" "$W/body.md" 2>/dev/null | awk -F'\t' 'NF >= 4 { print $4 }')
   [ -z "$gaps" ] || say "PR #$pr: $(printf '%s\n' "$gaps" | grep -c .) changed screen file(s) no evidence route or capture step renders"
 
   local answer="$W/answer.md"

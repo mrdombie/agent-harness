@@ -75,6 +75,12 @@ CAPTION_WORDS = {"caption", "title", "label", "frame-h", "frame-title", "frame-l
 NAME_KEYS = ("data-name", "data-label", "data-title", "aria-label")
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 DARK_CSS = re.compile(r"prefers-color-scheme\s*:\s*dark|data-theme\s*=\s*['\"]?dark")
+# A phone is drawn 320 to 480 wide; narrower is an icon or a dot, wider a laptop.
+PHONE_MIN, PHONE_MAX = 320, 480
+WIDTH_DECL = re.compile(r"(?:^|[;{\s])(?:max-)?width\s*:\s*(\d+(?:\.\d+)?)px", re.I)
+STYLE_BLOCK = re.compile(r"<style\b[^>]*>(.*?)</style>", re.I | re.S)
+CSS_RULE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+COMPOUND = re.compile(r"^([a-z][a-z0-9-]*)?((?:[.#][a-zA-Z0-9_-]+)+)$|^([a-z][a-z0-9-]*)$")
 
 
 def words(a):
@@ -89,11 +95,42 @@ def is_frame(a):
     return bool(words(a) & FRAME_WORDS) or any(k in a for k in FRAME_ATTRS)
 
 
-def is_phone(a):
+def phone_wide(decls):
+    """True when declarations draw a phone's width (PHONE_MIN..PHONE_MAX px)."""
+    m = WIDTH_DECL.search(decls or "")
+    return bool(m) and PHONE_MIN <= float(m.group(1)) <= PHONE_MAX
+
+
+def narrow_selectors(html):
+    """[(tag, classes, id)] for each single-compound selector a <style> block draws phone-wide.
+    Combinator selectors (".ph .rail") are skipped: they size a child, not the frame."""
+    out = []
+    for block in STYLE_BLOCK.findall(html or ""):
+        block = re.sub(r"/\*.*?\*/", "", block, flags=re.S)
+        for sel, decls in CSS_RULE.findall(block):
+            if not phone_wide(decls):
+                continue
+            for one in sel.split(","):
+                one = one.strip()
+                m = COMPOUND.match(one)
+                if not m:
+                    continue
+                tag = (m.group(1) or m.group(3) or "").lower()
+                parts = re.findall(r"([.#])([a-zA-Z0-9_-]+)", m.group(2) or "")
+                out.append((tag, {v.lower() for k, v in parts if k == "."}, next((v for k, v in parts if k == "#"), None)))
+    return out
+
+
+def css_phone(tag, a, narrow):
+    cls = words(a)
+    return any((not t or t == tag) and c <= cls and (i is None or i == a.get("id")) and (t or c or i)
+               for t, c, i in narrow)
+
+
+def is_phone(a, tag="", narrow=()):
     if (words(a) | tokens(a.get("id"))) & PHONE_WORDS or (a.get("data-viewport") or "").lower() == "phone":
         return True
-    m = re.search(r"(?:^|;)\s*(?:max-)?width\s*:\s*(\d+)px", a.get("style") or "")
-    return bool(m) and int(m.group(1)) <= 480
+    return phone_wide(a.get("style")) or css_phone(tag, a, narrow)
 
 
 def is_dark(a, own):
@@ -118,8 +155,14 @@ class Picture(HTMLParser):
         self.approved = ""
         self.frames = []
         self.dark_css = False
+        self.narrow = []       # the <style> selectors that draw a phone's width
         self._stack = []       # [tag, frame or None]
         self._caption = None   # [frame, depth] while a frame's first heading or caption is read
+
+    def feed(self, data):
+        # Read first: a frame is sized by a rule in <style>, often far from the frame.
+        self.narrow += narrow_selectors(data)
+        super().feed(data)
 
     def _outer(self):
         for _, f in reversed(self._stack):
@@ -155,11 +198,11 @@ class Picture(HTMLParser):
         outer, mine = self._outer(), None
         if outer is None and is_frame(a):
             pos, raw = self._where()
-            mine = {"attrs": a, "pos": pos, "raw": raw, "caption": "", "phone": is_phone(a),
+            mine = {"attrs": a, "pos": pos, "raw": raw, "caption": "", "phone": is_phone(a, tag, self.narrow),
                     "inner_phone": None, "dark": is_dark(a, True), "dark_inside": False}
             self.frames.append(mine)
         elif outer is not None:
-            if is_phone(a) and not outer["phone"] and outer["inner_phone"] is None:
+            if is_phone(a, tag, self.narrow) and not outer["phone"] and outer["inner_phone"] is None:
                 pos, raw = self._where()
                 outer["inner_phone"] = {"attrs": a, "pos": pos, "raw": raw}
             if is_dark(a, False):
@@ -250,6 +293,15 @@ def derive(pic, routes):
                  for r in routes for vp in VIEWPORTS for th in THEMES]
     else:
         return [], "none"
+    # One photograph per page state: frames on the same route with the same setup, width
+    # and theme are the same shot however many the picture draws.
+    same, kept = set(), []
+    for s in shots:
+        k = (s["route"], tuple(s["setup"]), s["viewport"], s["theme"])
+        if k not in same:
+            same.add(k)
+            kept.append(s)
+    shots = kept
     seen = {}
     for s in shots:
         n = s["name"]

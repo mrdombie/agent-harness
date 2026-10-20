@@ -237,10 +237,10 @@ case_legacy() { reset; legacy; echo 2026-10-18 > "$D/pic-date"; answer SHIP; bas
 # L1 THE BUG (#289 on older pictures): no markers failed closed on every older PR.
 case_legacy
 s=$(status_line)
-printf '%s' "$s" | grep -q 'state=success' && printf '%s' "$s" | grep -q 'regions derived from frames (6)' && [ -f "$D/prompt-seen" ] \
+printf '%s' "$s" | grep -q 'state=success' && printf '%s' "$s" | grep -q 'regions derived from frames (4)' && [ -f "$D/prompt-seen" ] \
   && ok "an older picture with no markers is judged on regions derived from its frames, and the status says so" || bad "legacy: $s $(cat "$D"/comment-0.md 2>/dev/null | grep -i 'picture' | head -3)"
-grep -q 'grid-phone-dark' "$D/prompt-seen" && grep -q 'empty-laptop-light' "$D/prompt-seen" \
-  && ok "each frame is a region at the widths and themes the picture draws" || bad "derived regions not in the prompt: $(grep -A8 'regions the picture' "$D/prompt-seen")"
+grep -q 'grid-phone-dark' "$D/prompt-seen" && ! grep -q 'empty-laptop-light' "$D/prompt-seen" \
+  && ok "each page state is a region at the widths and themes the picture draws, once however many frames draw it" || bad "derived regions not in the prompt: $(grep -A8 'regions the picture' "$D/prompt-seen")"
 
 # L2 A derived region CI did not photograph is still a gap.
 reset; legacy; echo 2026-10-18 > "$D/pic-date"; rm "$D/shots/settings-voices-phone-dark.png"; answer SHIP

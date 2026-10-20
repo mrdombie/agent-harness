@@ -64,7 +64,7 @@ _driver_repair_evidence_left() {
   mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 0
   body=$(mktemp "${TMPDIR:-/tmp}/evidence-body.XXXXXX") || return 0
   swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json body -q .body > "$body" 2>/dev/null || : > "$body"
-  gaps=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" coverage "$wt" "$mb" HEAD "$t" "$body" 2>/dev/null | cut -f2 | paste -sd' ' -)
+  gaps=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" coverage "$wt" "$mb" HEAD "$(basename "${plan%/plan.json}")" "$body" 2>/dev/null | cut -f2 | paste -sd' ' -)
   rm -f "$body"
   [ -z "$gaps" ] || printf 'still on no evidence route or capture step: %s' "$gaps"
 }
@@ -208,7 +208,7 @@ EOS
   # critic. The judge's evidence-class findings and the changed screen files no route or
   # capture step renders are tasks, and a repair that leaves them open is refused.
   local ev_tasks="" plan_rel left=""
-  plan_rel="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"
+  plan_rel=$(driver_evidence_plan "$t")
   [ -n "$pr" ] && ev_tasks=$(driver_evidence_tasks "$t" "$wt" "$trunk" "$pr")
   [ -n "$ev_tasks" ] && { need=1; driver_say "   repair: PR #$pr owes evidence — $(printf '%s\n' "$ev_tasks" | grep -c .) task(s) for the capture plan"; }
   if [ "$need" -eq 0 ]; then
