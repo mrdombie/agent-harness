@@ -1,7 +1,7 @@
 name: CI
 on: [push, pull_request]
 jobs:
-  kit:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,38 +18,26 @@ jobs:
         run: |
           for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh swarm/*.sh swarm/tests/*.sh \
                    briefs/*.sh briefs/tests/*.sh \
-                   driver/*.sh driver/steps/*.sh driver/tests/*.sh driver/build-ticket; do
+                   driver/*.sh driver/steps/*.sh driver/tests/*.sh driver/build-ticket \
+                   .github/ci/*.sh; do
             bash -n "$f"
           done
-      - name: Self-tests
+      - name: Every suite is reached by a shard
+        # A suite CI does not glob is a suite that is not run, and it reports green
+        # by never reporting at all — hooks/lib/ was invisible that way once, and
+        # swarm/tests/ shipped six suites nothing here could see. The shards run
+        # exactly what `.github/ci/shard.sh --all` lists, so a tracked suite it
+        # misses fails the build by name.
+        # reference/ is excluded and must stay excluded: it holds the copies this
+        # plugin replaced, kept verbatim so a reader can see what the live version
+        # was reconciled FROM. Nothing loads them and they are not maintained.
         run: |
-          fail=0
-          # Every tracked suite, globbed by directory. A suite CI does not glob
-          # is a suite that is not run, and it reports green by never reporting
-          # at all — hooks/lib/ was invisible that way once, and swarm/tests/
-          # shipped six suites nothing here could see.
-          ran=$(mktemp)
-          for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh briefs/tests/*.test.sh driver/tests/*.test.sh; do
-            [ -f "$t" ] || continue
-            echo "== $t"; echo "$t" >> "$ran"
-            bash "$t" || fail=1
-          done
-          # The backstop for the next directory somebody adds: a tracked suite
-          # that no glob above reached fails the build by name rather than
-          # passing in silence.
-          # reference/ is excluded and must stay excluded: it holds the copies
-          # this plugin replaced, kept verbatim so a reader can see what the
-          # live version was reconciled FROM. Nothing loads them and they are
-          # not maintained, so running them would fail on the project they were
-          # written for. The exclusion is one path prefix, so a NEW suite
-          # anywhere else still fails this check by name.
-          missed=$(comm -23 <(git ls-files '*.test.sh' | grep -v '^reference/' | sort) <(sort "$ran"))
+          missed=$(comm -23 <(git ls-files '*.test.sh' | grep -v '^reference/' | sort) <(bash .github/ci/shard.sh --all | sort))
           if [ -n "$missed" ]; then
-            echo "these suites exist and nothing ran them — add their directory to the loop above:"
+            echo "these suites exist and nothing ran them — add their directory to suites() in .github/ci/shard.sh:"
             printf '%s\n' "$missed" | sed 's/^/  /'
-            fail=1
+            exit 1
           fi
-          exit $fail
       - name: Signals are read from their source
         # A phrase matched in a whole log matches every quote of it too.
         run: bash scripts/check-signal-source.sh
@@ -65,3 +53,40 @@ jobs:
         # the machine carries. Three were reachable on the origin machine and they
         # disagreed by 474 lines; the one that loaded was never the kit's.
         run: bash scripts/check-skill-namespacing.sh
+
+  tests:
+    # The suites split by measured time (.github/ci/suite-seconds.tsv). The wall clock
+    # is the slowest shard, so the longest suite sets the floor.
+    name: tests (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-tests
+        run: |
+          fail=0
+          mine=$(bash .github/ci/shard.sh "${{ strategy.job-total }}" "${{ strategy.job-index }}")
+          [ -n "$mine" ] || { echo "shard ${{ strategy.job-index }} was given no suites"; exit 1; }
+          times=$(mktemp)
+          for t in $mine; do
+            echo "== $t"; s=$SECONDS
+            bash "$t" || { echo "FAILED: $t"; fail=1; }
+            printf '%s\t%s\n' $((SECONDS - s)) "$t" >> "$times"
+          done
+          echo "== seconds per suite (refresh .github/ci/suite-seconds.tsv from these)"
+          sort -rn "$times"
+          exit $fail
+
+  kit:
+    # The one check name that stands for the whole of CI.
+    needs: [lint, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        run: |
+          echo "lint=${{ needs.lint.result }} tests=${{ needs.tests.result }}"
+          [ "${{ needs.lint.result }}" = success ] && [ "${{ needs.tests.result }}" = success ]
