@@ -72,7 +72,8 @@
         "BLOCKERS": "the review step's findings graded critical or major — the only two grades that come back here — each with its id, file, line, grade, summary, reason and proposed fix; or, after a red self-check, each red gate with its id (gate-…), command, exit code and the last lines of its output",
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "ROUND": "which fix round this is: 1 or 2",
-        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet"
+        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet",
+        "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed"
       }
     },
     "repair": {
@@ -86,7 +87,8 @@
         "FAILING": "the names of the checks that settled red on the pull request's head, or a sentence saying none did or that they could not be read",
         "CONFLICTS": "what merging the integration branch did: not needed, merged clean, or the files left conflicted for this step",
         "DIFF": "the change as it stands, against the trunk it will merge into",
-        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet"
+        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet",
+        "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed"
       }
     }
   }

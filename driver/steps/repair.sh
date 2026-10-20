@@ -50,6 +50,25 @@ _driver_repair_clashes() {
   [ -n "$u" ]
 }
 
+# _driver_repair_evidence_left <ticket> <tree> <trunk> <base> <plan> <pr> — what the
+# repair left of the evidence it owed: the plan untouched since <base>, or the changed
+# screen files still no route or capture step renders. Nothing when it is all answered.
+_driver_repair_evidence_left() {
+  local t="$1" wt="$2" trunk="$3" base="$4" plan="$5" pr="$6" mb body gaps
+  if git -C "$wt" diff --quiet "$base" HEAD -- "$plan" 2>/dev/null; then
+    printf 'the capture plan %s is unchanged' "$plan"; return 0
+  fi
+  if ! python3 -I "$KIT_ROOT/scripts/evidence-gaps.py" check-plan "$wt/$plan" >/dev/null 2>&1; then
+    printf 'the capture plan %s is not one CI can read (python3 -I %s check-plan %s)' "$plan" "$KIT_ROOT/scripts/evidence-gaps.py" "$plan"; return 0
+  fi
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 0
+  body=$(mktemp "${TMPDIR:-/tmp}/evidence-body.XXXXXX") || return 0
+  swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json body -q .body > "$body" 2>/dev/null || : > "$body"
+  gaps=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" coverage "$wt" "$mb" HEAD "$t" "$body" 2>/dev/null | cut -f2 | paste -sd' ' -)
+  rm -f "$body"
+  [ -z "$gaps" ] || printf 'still on no evidence route or capture step: %s' "$gaps"
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -184,6 +203,14 @@ EOS
   # arrives as a repair with a note; read only when something is red, it would be
   # dropped on a green PR. The brief written for a note-less healing run is not one.
   [ "$(driver_state_get "$t" repair_brief_source)" = caller ] && need=1
+  # EVIDENCE OWED IS WORK, though nothing red says so. Three repairs were told to add
+  # shots and pushed without touching the capture plan: the PR could never pass the
+  # critic. The judge's evidence-class findings and the changed screen files no route or
+  # capture step renders are tasks, and a repair that leaves them open is refused.
+  local ev_tasks="" plan_rel left=""
+  plan_rel="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"
+  [ -n "$pr" ] && ev_tasks=$(driver_evidence_tasks "$t" "$wt" "$trunk" "$pr")
+  [ -n "$ev_tasks" ] && { need=1; driver_say "   repair: PR #$pr owes evidence — $(printf '%s\n' "$ev_tasks" | grep -c .) task(s) for the capture plan"; }
   if [ "$need" -eq 0 ]; then
     if [ "$merged" -eq 1 ]; then driver_say "   repair: the clash is merged, and nothing is red"
     else driver_say "   repair: nothing red and nothing clashing on PR #$pr — no fix to make; the gates and the review still run"; fi
@@ -225,6 +252,20 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
         reask="answered '${st:-?}' and committed nothing (the head is still $(printf '%s' "$base" | cut -c1-8))"
       fi
     fi
+    if [ -z "$reask" ] && [ -n "$ev_tasks" ] && [ "$st" != park ]; then
+      left=$(_driver_repair_evidence_left "$t" "$wt" "$trunk" "$base" "$plan_rel" "$pr")
+      if [ -n "$left" ] && [ "$attempt" -eq 1 ]; then
+        attempt=2
+        driver_say "↩ repair: answered '${st:-?}' and left the evidence it owes open ($left) — asked once more, with the tasks named."
+        driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER LEFT THE EVIDENCE OPEN: $left. Each evidence task is answered by an edit to the capture plan $plan_rel, committed, with the setup steps that bring the state into view — a code change alone leaves it open. The tasks:
+$ev_tasks
+
+$DRIVER_BRIEF_PREFACE
+
+${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
+        continue
+      fi
+    fi
     [ -n "$reask" ] && [ "$attempt" -eq 1 ] || break
     attempt=2
     driver_say "↩ repair: $reask while ${failing:+checks are red ($failing)}$([ "$unreadable" -eq 1 ] && echo 'the checks could not be read') — asked once more, with the red checks named."
@@ -234,6 +275,15 @@ $DRIVER_BRIEF_PREFACE
 
 ${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
   done
+
+  if [ -n "$ev_tasks" ]; then
+    left=$(_driver_repair_evidence_left "$t" "$wt" "$trunk" "$base" "$plan_rel" "$pr")
+    if [ -n "$left" ]; then
+      driver_say "✋ repair: the evidence PR #$pr owes is still open after $attempt answer(s) — $left"
+      driver_state_set "$t" park_note "the repair left the evidence it owes open ($left); the tasks: $(printf '%s' "$ev_tasks" | tr '\n' ' ')"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
 
   # UNCHANGED is an answer only to a brief: the brief is already met, nothing is red,
   # nothing clashes, and nothing was committed. A red check or a conflict answered

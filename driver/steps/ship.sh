@@ -96,7 +96,40 @@ _driver_ship_closes() {
 _driver_ship_routes() {
   # The approved picture's routes first, and all of them: it says what is owed.
   { driver_state_get "$1" picture_shots | cut -f2 | grep '^/'
+    _driver_ship_plan_routes "$@"
     _driver_ship_page_routes "$@"; } | awk '!seen[$0]++'
+}
+
+# _driver_ship_plan_routes <ticket> <tree> <trunk> — the routes of the capture plan, when
+# the branch adds or edits it: CI then photographs the plan, so the body names its routes.
+_driver_ship_plan_routes() {
+  local plan; plan="$(driver_opt evidence.dir "docs/evidence")/$1/plan.json"
+  git -C "$2" diff --name-only "$3"...HEAD -- "$plan" 2>/dev/null | grep -q . || return 0
+  jq -r '.shots[]?.route // empty' "$2/$plan" 2>/dev/null | grep '^/' | awk '!seen[$0]++'
+}
+
+# _driver_ship_with_routes <routes> — the body on stdin with every route in <routes> under
+# `## Evidence routes`: added to the end of the list there, or a new section at the end.
+_driver_ship_with_routes() {
+  local h; h=$(driver_opt evidence.routesHeading "Evidence routes")
+  ADD="$1" H="$h" awk '
+    BEGIN { n = split(ENVIRON["ADD"], add, "\n") }
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) if (line[i] ~ "^##[ \t]+" ENVIRON["H"] "[ \t]*$") { at = i; break }
+      if (at) {
+        e = at; while (e < NR && line[e + 1] ~ /^[ \t]*[-*]?[ \t]*\//) e++
+        for (i = at + 1; i <= e; i++) { r = line[i]; sub(/^[ \t]*[-*]?[ \t]*/, "", r); sub(/[ \t]+$/, "", r); have[r] = 1 }
+      }
+      for (i = 1; i <= NR; i++) {
+        print line[i]
+        if (at && i == e) for (k = 1; k <= n; k++) if (add[k] != "" && !(add[k] in have)) { print "- " add[k]; have[add[k]] = 1 }
+      }
+      if (!at) {
+        out = ""; for (k = 1; k <= n; k++) if (add[k] != "" && !(add[k] in have)) { out = out "- " add[k] "\n"; have[add[k]] = 1 }
+        if (out != "") printf "\n## %s\n%s", ENVIRON["H"], out
+      }
+    }'
 }
 
 # _driver_ship_page_routes <ticket> <tree> <trunk> — the routes the build's own screens are on.
@@ -130,7 +163,7 @@ _driver_ship_evidence_plan() {
   local t="$1" wt="$2" trunk="$3" pics rc=0 req dir plan new pe="$KIT_ROOT/scripts/picture-evidence.py"
   driver_state_set "$t" picture_shots ""
   pics=$(_driver_ship_pictures "$t" "$wt" "$trunk")
-  [ -n "$pics" ] || return 0
+  [ -n "$pics" ] || { _driver_ship_derived_plan "$t" "$wt" "$trunk"; return 0; }
   local -a paths=(); local f
   while IFS= read -r f; do paths+=("$wt/$f"); done <<<"$pics"
   # A picture approved before the region markers has its regions derived — its frames,
@@ -153,6 +186,36 @@ _driver_ship_evidence_plan() {
   git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
   git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the shots the approved picture declares (#$t)" >/dev/null 2>&1 \
     && driver_say "   ship: $plan holds the $(printf '%s\n' "$req" | grep -c .) shot(s) the approved picture declares"
+}
+
+# _driver_ship_derived_plan <ticket> <tree> <trunk> — NO PICTURE BINDS THE TICKET, so the
+# evidence is derived from what changed: the routes the changed screen files render on
+# (scripts/evidence-gaps.sh routes), at laptop 1440 / phone 390 x light / dark — the same
+# fallback the judge uses for an unmarked picture. Merged into the capture plan: a shot the
+# plan already has for a route, width and theme keeps its own setup. A repair derives one
+# only when it was sent evidence tasks, so a signed screen is not re-photographed for nothing.
+_driver_ship_derived_plan() {
+  local t="$1" wt="$2" trunk="$3" dir plan new routes mb r body=""
+  if [ "$(driver_state_get "$t" mode)" = repair ]; then
+    [ -n "$(driver_state_get "$t" evidence_tasks)" ] || return 0
+    body=$(swarm_gh pr view "$(driver_state_get "$t" branch)" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null \
+             | bash "$KIT_ROOT/scripts/ci-evidence.sh" routes 2>/dev/null)
+  fi
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 0
+  routes=$( { _driver_ship_page_routes "$t" "$wt" "$trunk"
+              printf '%s\n' "$body"
+              bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" routes "$wt" "$mb" HEAD 2>/dev/null
+            } | grep '^/' | grep -v '\[' | awk '!seen[$0]++' | head -8)
+  [ -n "$routes" ] || return 0
+  dir=$(driver_opt evidence.dir "docs/evidence")/$t; plan="$dir/plan.json"
+  local -a a=(plan --into "$wt/$plan")
+  while IFS= read -r r; do [ -n "$r" ] && a+=(--route "$r"); done <<<"$routes"
+  new=$(python3 -I "$KIT_ROOT/scripts/evidence-gaps.py" "${a[@]}" 2>/dev/null) || { driver_say "   ship: $plan could not be merged with the derived shots"; return 0; }
+  if [ -f "$wt/$plan" ] && [ "$(jq -S . "$wt/$plan" 2>/dev/null)" = "$(printf '%s' "$new" | jq -S . 2>/dev/null)" ]; then return 0; fi
+  mkdir -p "$wt/$dir" && printf '%s\n' "$new" > "$wt/$plan" || return 0
+  git -C "$wt" add $(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$wt" 2>/dev/null) -- "$plan" >/dev/null 2>&1
+  git -C "$wt" commit -q --no-verify -m "chore(evidence-plan): the changed screens at laptop and phone, light and dark (#$t)" >/dev/null 2>&1 \
+    && driver_say "   ship: no picture binds #$t — $plan photographs $(printf '%s\n' "$routes" | paste -sd' ' -) at laptop 1440 / phone 390 x light / dark"
 }
 
 # _driver_ship_required <ticket> — the "## Required evidence" section, or nothing.
@@ -319,6 +382,11 @@ driver_step_ship() { # <ticket>
     done <<<"$rlines"
     missing=${missing%$'\n'}
     newbody="$rbody"
+    # THE PLAN'S ROUTES GO IN THE BODY. A repair that added shots to the capture plan
+    # needs its routes named under `## Evidence routes` too: the judge maps each shot to
+    # its route by them. Only routes are added; nothing the PR says is rewritten.
+    local proutes; proutes=$(_driver_ship_plan_routes "$t" "$wt" "$trunk")
+    [ -z "$proutes" ] || newbody=$(printf '%s\n' "$newbody" | _driver_ship_with_routes "$proutes")
     if [ -n "$missing" ]; then
       if printf '%s\n' "$rbody" | grep -qiE '^[[:space:]]*##[[:space:]]*Deleted tests[[:space:]]*$'; then
         newbody=$(printf '%s\n' "$rbody" | ADD="$missing" awk '{ print } !d && tolower($0) ~ /^[ \t]*##[ \t]*deleted tests[ \t]*$/ { print ENVIRON["ADD"]; d = 1 }')
@@ -335,7 +403,7 @@ driver_step_ship() { # <ticket>
       return "$DRIVER_E_REFUSED"
     fi
     if [ "$newbody" != "$rbody" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --body "$newbody" >/dev/null 2>&1; then
-      driver_say "✋ ship: the '## Deleted tests' lines could not be added to PR #$open_pr's body, so CI would refuse the push. Nothing is pushed."
+      driver_say "✋ ship: the '## Deleted tests' lines or the plan's evidence routes could not be added to PR #$open_pr's body, so CI would refuse the push. Nothing is pushed."
       driver_state_set "$t" park_note "could not add the Deleted tests section to #$open_pr"
       return "$DRIVER_E_REFUSED"
     fi

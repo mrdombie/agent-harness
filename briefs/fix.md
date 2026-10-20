@@ -18,6 +18,9 @@ and the traps this project keeps falling into.
 - The independent critic's open findings on this ticket's pull request: {{CRITIC_FINDINGS}}
 
 **What you touch, you fix.** A finding whose id starts `polish-` is an item already on the polish list of a screen this change touches. Fix it here, whoever put it there, then record it with the exact `take` command its fix names: the next review clears an item only once it is recorded. A critic finding above is fixed the same way; the critic judges the screen again after CI photographs it.
+- The evidence this pull request still owes: {{EVIDENCE_TASKS}}
+
+**Evidence owed is a task, not a note.** A missing shot (a region, an opened state, dark, the phone width) is answered by an edit to the capture plan, committed — a code change alone leaves it open, and the critic fails the PR again.
 - The change as it stands: {{DIFF}}
 - The round: {{ROUND}}
 

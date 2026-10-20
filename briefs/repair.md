@@ -24,6 +24,7 @@ and the traps this project keeps falling into.
 - The independent critic's open findings on this pull request: {{CRITIC_FINDINGS}}
 
 When the design status is red, those findings are why: fix every one, a Minor too, whoever put it there — unless the PR's screens are signed off, when they are the PM's call and you change no pixel. **Never write a design verdict** (no `Design-Critic:` trailer, no recorder run for it): only the independent critic sets that status, on CI's pinned shots after the push, and a verdict on the branch counts for nothing.
+- The evidence it still owes, each a task for the capture plan: {{EVIDENCE_TASKS}}
 - The merge of the integration branch, and what conflicted: {{CONFLICTS}}
 - The change as it stands, against the trunk: {{DIFF}}
 
@@ -48,8 +49,9 @@ above.
    A failure you could not reproduce is a question, not a guess.
 4. **The same failure on the integration branch itself is not this PR's to
    fix.** Park and say so.
-5. **Fix only what failed.** Do not refactor, rename or improve anything nearby.
-6. **The owner's sign-off comes last.** If the PR was signed off, change no
+5. **Evidence owed:** commit the plan edit each task names.
+6. **Fix only what failed.** Do not refactor, rename or improve anything nearby.
+7. **The owner's sign-off comes last.** If the PR was signed off, change no
    screen file unless the failure cannot be fixed any other way. A change to a
    screen voids the sign-off and sends the PR back to the owner. If the only
    fix changes what a screen shows, park and ask.

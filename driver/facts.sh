@@ -361,6 +361,50 @@ driver_fact_critic_findings() { # <ticket>
   printf '%s\n' "$out" | awk -F'\t' '{ printf "- %s · %s\n", $1, $3 }'
 }
 
+# EVIDENCE OWED IS WORK. Three repairs in one day were told to add shots (a drawer open,
+# dark, 390 wide) and pushed without touching the capture plan or `## Evidence routes`:
+# they read their job as "turn red checks green", and nothing red said the evidence was
+# short. driver_evidence_tasks lists what is owed — the judge's evidence-class findings on
+# the PR and the changed UI files no evidence route or capture step renders
+# (scripts/evidence-gaps.sh) — one "- " line each, and keeps it as evidence_tasks.
+driver_evidence_tasks() { # <ticket> <tree> <trunk> <pr>
+  local t="$1" wt="$2" trunk="$3" pr="$4" body base out
+  [ -n "$pr" ] || { driver_state_set "$t" evidence_tasks ""; return 0; }
+  body=$(mktemp "${TMPDIR:-/tmp}/evidence-body.XXXXXX") || return 0
+  swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json body -q .body > "$body" 2>/dev/null || : > "$body"
+  base=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null)
+  if [ -n "$base" ]; then
+    out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" "$wt" "$base" HEAD "$t" "$body" 2>/dev/null)
+  else
+    out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" 2>/dev/null)
+  fi
+  rm -f "$body"
+  driver_state_set "$t" evidence_tasks "$out"
+  printf '%s' "$out"
+}
+
+# driver_fact_evidence_tasks <ticket> — the tasks, said as edits to the capture plan.
+driver_fact_evidence_tasks() { # <ticket>
+  local t="$1" tasks plan pr wt trunk
+  tasks=$(driver_state_get "$t" evidence_tasks)
+  if [ -z "$tasks" ] && [ "$(driver_state_get "$t" mode)" != repair ]; then
+    pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" critic_pr)
+    wt=$(driver_state_get "$t" worktree)
+    if [ -n "$pr" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
+      trunk="origin/$INTEGRATION_BRANCH"; git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
+      tasks=$(driver_evidence_tasks "$t" "$wt" "$trunk" "$pr")
+    fi
+  fi
+  [ -n "$tasks" ] || { _driver_fact_none "no evidence is owed: the critic names no missing shot and every changed screen file is on an evidence route"; return 0; }
+  plan="$(driver_opt evidence.dir "docs/evidence")/$t/plan.json"
+  printf 'This pull request owes evidence. Each line below is a task, and its answer is an edit to the capture plan `%s` — a fix that only changes code leaves it open, and the driver refuses a repair that leaves it open:
+%s
+
+' "$plan" "$tasks"
+  printf 'How: the plan is {"shots":[{"name","route","viewport":"laptop"|"phone","theme":"light"|"dark","setup":[step sentences]}]}. A plan the PR adds or edits REPLACES the `## Evidence routes` list when CI photographs, so keep every shot it already owes and add the missing ones: a state that only shows once opened (a drawer, a dialog, a menu) is a shot whose `setup` opens it, at laptop and phone, light and dark; a missing theme or width is a shot at it. Setup steps use the project'"'"'s step sentences (the screen steps you were given). Commit the plan; report it as a fix with proof "gate" and command `python3 -I %s check-plan %s`. The driver copies the plan'"'"'s routes into the PR body'"'"'s `## Evidence routes` when it ships; you do not edit the body.
+' "$KIT_ROOT/scripts/evidence-gaps.py" "$plan"
+}
+
 # driver_facts_common <ticket> <slot> — the ten every step may ask for. Cheap ones
 # are always written; the expensive reads are the two gh calls, and they are the
 # same two the step would make anyway. The polish list is read once a run.
@@ -377,4 +421,5 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
   driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
   driver_fact_put "$t" "$s" CRITIC_FINDINGS "$(driver_fact_critic_findings "$t")"
+  case "$s" in repair|fix) driver_fact_put "$t" "$s" EVIDENCE_TASKS "$(driver_fact_evidence_tasks "$t")" ;; esac
 }

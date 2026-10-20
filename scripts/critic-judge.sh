@@ -36,6 +36,10 @@
 #      data-picture-approved, else the earliest of its first commit and the ticket's
 #      "Picture approved" comment; with no date known it is exempt. The critic still
 #      grades real data on the built screen.
+#   3a. Every changed screen file must render on an evidence route or capture-plan shot,
+#      and one that shows only once opened (a drawer, a dialog) needs a shot whose setup
+#      opens it (scripts/evidence-gaps.sh). A gap fails, as an evidence-gap finding, before
+#      any model is paid for — and a repair is handed it as a task for the capture plan.
 #   4. The critic is handed every shot, the approved picture(s), the regions and the
 #      open findings for the screen (scripts/screen-findings.sh). Its answer must quote
 #      the shot set's id, name every shot it judged, and close with a FINDINGS block of
@@ -81,6 +85,7 @@ EV="${CRITIC_JUDGE_EVIDENCE:-$SELF_DIR/ci-evidence.sh}"
 PE="$SELF_DIR/picture-evidence.py"
 SF="${CRITIC_JUDGE_FINDINGS:-$SELF_DIR/screen-findings.sh}"
 AK="${CRITIC_JUDGE_APPROVAL:-$SELF_DIR/approval-kept.sh}"
+COVERAGE="${CRITIC_JUDGE_COVERAGE:-$SELF_DIR/evidence-gaps.sh}"
 FIRST_LOOK="$SELF_DIR/check-first-look.sh"
 JDIR="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}"
 LEDGER="$JDIR/verdicts.tsv"     # pr \t head \t set \t verdict \t state \t url — written only here
@@ -263,16 +268,27 @@ run() { # <pr>
     elif [ "$rc" -ne 3 ]; then say "PR #$pr: the approved picture could not be read for regions"; note_try "$pr" "$head"; return 2; fi
   fi
 
+  # A CHANGED SCREEN FILE NO SHOT RENDERS was never seen either: a drawer the PR changed
+  # with no capture step that opens it, a component on a route nobody photographed
+  # (scripts/evidence-gaps.sh). Recorded as evidence-gap findings, so a repair is handed
+  # them as tasks for the capture plan. Unreadable is no gap: the critic still judges.
+  local gaps=""
+  jq -r '.body // ""' <<<"$j" > "$W/body.md"
+  gaps=$(bash "$COVERAGE" judge "$pr" "$head" "$t" "$W/body.md" 2>/dev/null | awk -F'\t' 'NF >= 4 { print $4 }')
+  [ -z "$gaps" ] || say "PR #$pr: $(printf '%s\n' "$gaps" | grep -c .) changed screen file(s) no evidence route or capture step renders"
+
   local answer="$W/answer.md"
-  if [ -n "$miss" ] || [ -n "$lint" ]; then
-    # The picture binds nothing it cannot name, and a region with no shot was never
-    # seen: judged without a model, because there is nothing to look at.
+  if [ -n "$miss" ] || [ -n "$lint" ] || [ -n "$gaps" ]; then
+    # The picture binds nothing it cannot name, and a region or a changed screen with
+    # no shot was never seen: judged without a model, because there is nothing to look at.
     verdict=SLOP; parity=""
     blocks=$( { printf '%s\n' "$lint" | sed -n 's/^picture-evidence: //p' | grep -v '^ok' \
                   | sed 's/^/Major · the approved picture: /'
                 printf '%s\n' "$miss" | awk -F'\t' 'NF { printf "Major · evidence gap: the approved picture declares %s (%s, %s, %s) and CI pinned no shot of it — nobody saw it\n", $1, $2, $3, $4 }'
+                printf '%s\n' "$gaps" | sed '/^$/d; s/^/Major · /'
               } | grep -v '^$')
-    printf 'VERDICT: SLOP — the evidence does not cover the approved picture.\n\nSHOTS: %s at %s\n\nFINDINGS\n%s\nEND FINDINGS\n' \
+    printf 'VERDICT: SLOP — the evidence does not cover the %s.\n\nSHOTS: %s at %s\n\nFINDINGS\n%s\nEND FINDINGS\n' \
+      "$( [ -n "$miss$lint" ] && echo "approved picture" || echo "change")" \
       "$set" "$evsha" "$(printf '%s\n' "$blocks" | sed 's/^/- /')" > "$answer"
   else
     local open; open=$( { bash "$SF" critic "$pr" 2>/dev/null; [ -n "$t" ] && bash "$SF" polish "$t" 2>/dev/null; } \
