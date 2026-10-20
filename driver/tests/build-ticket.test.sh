@@ -978,4 +978,45 @@ want "past its cap it parks"                   "20" "$rc"
 want_in "saying how many runs it waited"       'reenter could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
 bash "$CLK" release 152 --force >/dev/null 2>&1
 
+echo "--- a question about a claim another run holds is a requeue, not a PM park (#319) ---"
+# #13191 (2026-10-20): "a peer holds the claim on #13191. Never adopt a live claim."
+# parked as status:pm-decision. Nobody can answer a claim; the holder ends or the
+# reconciler frees it, so it goes back on the queue as a step's DRIVER_E_BUSY does.
+claim_q_case() { # <ticket> <question> <questionFor>
+  reset_fakes "plan:20"; rm -rf "$STATE/coordinator"
+  mkdir -p "$STATE/driver/$1/steps"
+  jq -nc --arg q "$2" --arg f "$3" '{step:"plan", status:"park", question:$q, questionFor:$f}' \
+    > "$STATE/driver/$1/steps/plan.json"
+}
+bash "$CLK" acquire 153 --branch tkt-153/theirs --worktree "$FIX/theirs-153" --pid $$ >/dev/null 2>&1
+claim_q_case 153 "a peer holds the claim on #153. Never adopt a live claim." pm
+out=$(bt 153); rc=$?
+want "it ends as a requeue, as a step's 29 does"   "28" "$rc"
+want "nothing parks"                               "" "$(cat "$FIX/park.log")"
+want_not_in "no pm-decision label goes on"         'pm-decision|status:parked' "$(cat "$GH_LOG")"
+want_in "saying it is not parked"                  'requeued.*not parked' "$out"
+want_in "the question is the requeue's reason"     'peer holds the claim on #153' "$(driver_state_get 153 requeued)"
+want "the ticket is back on the queue"             "153" "$(jq -r '.tickets[]? | select(.n == 153) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "the holder's claim is not released"          "$FIX/theirs-153" "$(bash "$CLK" show 153 2>/dev/null | jq -r '.worktree // ""')"
+bash "$CLK" release 153 --force >/dev/null 2>&1
+
+claim_q_case 154 "which repo does this belong in?" pm
+bt 154 >/dev/null; rc=$?
+want "a real PM question still parks"              "20" "$rc"
+want_in "as the PM's"                              'asked a question rather than guessing \| which repo does this belong in\? \| cause=pm' "$(cat "$FIX/park.log")"
+
+echo "--- a repair that meets another run's claim is requeued with that claim kept (#319) ---"
+reset_fakes; rm -rf "$STATE/coordinator"
+{ echo '#!/usr/bin/env bash'
+  echo 'driver_step_repair() { printf "%s\n" repair >> "$RAN"; driver_state_set "$1" claim_elsewhere 1; driver_state_set "$1" park_note "another run on this host holds the claim on #$1"; return "$DRIVER_E_BUSY"; }'
+} > "$FAKE/repair.sh"
+bash "$CLK" acquire 155 --branch tkt-155/theirs --worktree "$FIX/theirs-155" --pid $$ >/dev/null 2>&1
+printf 'REPAIR on PR #82: red\n' > "$FIX/brief-w.md"
+out=$(bt 155 --repair "$FIX/brief-w.md"); rc=$?
+want "it ends as a requeue"                        "28" "$rc"
+want "without parking"                             "" "$(cat "$FIX/park.log")"
+want "the holder's claim is not released"          "$FIX/theirs-155" "$(bash "$CLK" show 155 2>/dev/null | jq -r '.worktree // ""')"
+want "the keep-claim note is read once and cleared" "" "$(driver_state_get 155 claim_elsewhere)"
+bash "$CLK" release 155 --force >/dev/null 2>&1
+
 exit $FAILED

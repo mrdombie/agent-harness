@@ -414,4 +414,50 @@ out=$(driver_step_repair 373 2>&1); rc=$?
 want "with no evidence owed and nothing red, still no model" "" "$(cat "$CLAUDE_LOG")"
 unset DRIVER_EVIDENCE_GAPS
 
+echo "--- a claim another live run holds: the repair waits on the queue, never asks (#319) ---"
+# #13191 (2026-10-20) parked in the PM's lane over "a peer holds the claim": a state the
+# queue waits out reached the model as a question. The claim is checked before the step
+# touches the tree and again before the model is handed the repair.
+CLK="$HERE/../../scripts/claim-lock.sh"
+setup 380; prs 380 CLEAN unit
+bash "$CLK" acquire 380 --branch tkt-380/work --worktree "$FIX/theirs-380" --pid $$ >/dev/null 2>&1
+want "the fixture's sibling run holds the claim" "$FIX/theirs-380" "$(bash "$CLK" show 380 2>/dev/null | jq -r '.worktree // ""')"
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+out=$(driver_step_repair 380 2>&1); rc=$?
+want "a sibling run's claim is busy (29), not a question"  "29" "$rc"
+want "the model is never handed it"                        "" "$(cat "$CLAUDE_LOG")"
+want_in "it says another run holds the claim"              'another run on this host holds the claim on #380' "$out"
+want "the run is told to keep the holder's claim"          "1" "$(driver_state_get 380 claim_elsewhere)"
+want "and the holder's claim is untouched"                 "$FIX/theirs-380" "$(bash "$CLK" show 380 2>/dev/null | jq -r '.worktree // ""')"
+want "the tree is not touched"                             "$(driver_state_get 380 repair_base)" "$(git -C "$WT" rev-parse HEAD)"
+bash "$CLK" release 380 --force >/dev/null 2>&1
+
+setup 381; prs 381 CLEAN unit
+CLAIM_AGENT="peer@elsewhere" bash "$CLK" acquire 381 --branch tkt-381/work --worktree "$FIX/peer-381" >/dev/null 2>&1
+out=$(driver_step_repair 381 2>&1); rc=$?
+want "a peer machine's claim is busy (29) too"             "29" "$rc"
+want "and no model call"                                   "" "$(cat "$CLAUDE_LOG")"
+want_in "the reason is on the record"                      'peer on another machine holds the claim on #381' "$(driver_state_get 381 park_note)"
+bash "$CLK" release 381 --force >/dev/null 2>&1
+
+# Taken between the step's start and the model call: the second check is the one that holds.
+setup 382; prs 382 CLEAN unit
+printf '0\n' > "$FIX/held-calls"
+eval "_real_$(declare -f driver_claim_held_elsewhere)"
+driver_claim_held_elsewhere() {
+  local n=$(( $(cat "$FIX/held-calls") + 1 )); echo "$n" > "$FIX/held-calls"
+  [ "$n" -ge 2 ] || return 1
+  echo "a peer on another machine holds the claim on #$1"
+}
+out=$(driver_step_repair 382 2>&1); rc=$?
+want "a claim taken mid-step stops it before the model (29)" "29" "$rc"
+want "the model is never handed it"                        "" "$(cat "$CLAUDE_LOG")"
+eval "$(declare -f _real_driver_claim_held_elsewhere | sed '1s/^_real_//')"
+
+setup 383; prs 383 CLEAN unit
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+out=$(driver_step_repair 383 2>&1); rc=$?
+want_in "with our own claim (none here) the model is still called" 'repair' "$(cat "$CLAUDE_LOG")"
+want "and nothing says to keep a claim"                    "" "$(driver_state_get 383 claim_elsewhere)"
+
 exit $FAILED

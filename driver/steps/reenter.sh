@@ -33,6 +33,29 @@ _driver_reenter_keep() {
   driver_say "   reenter: the local $3 had commits origin lacks — kept on $b; the repair starts from origin's head"
 }
 
+# driver_claim_held_elsewhere <ticket> — 0, naming the holder on stdout, when a LIVE run
+# other than this one holds the claim: a peer on another machine, or a sibling run on this
+# host whose claim names another tree. Ours, a dead run's, or nobody's is 1. A step that
+# finds this returns DRIVER_E_BUSY and sets claim_elsewhere: a held claim is waited out,
+# and a model handed it can only turn it into a question nobody can answer.
+driver_claim_held_elsewhere() {
+  local t="${1:?driver_claim_held_elsewhere: need a ticket}" hrc c cw cb ow ob
+  bash "$CL" holds "$t" >/dev/null 2>&1; hrc=$?
+  case "$hrc" in
+    12) printf 'a peer on another machine holds the claim on #%s\n' "$t"; return 0 ;;
+    0)  c=$(bash "$CL" show "$t" 2>/dev/null)
+        cw=$(printf '%s' "$c" | jq -r '.worktree // ""' 2>/dev/null)
+        cb=$(printf '%s' "$c" | jq -r '.branch // ""' 2>/dev/null)
+        ow=$(driver_state_get "$t" worktree); ob=$(driver_state_get "$t" branch)
+        if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } \
+        || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then return 1; fi
+        driver_claim_dead_here "$t" && return 1
+        printf 'another run on this host holds the claim on #%s (branch %s, worktree %s)\n' "$t" "${cb:-unnamed}" "${cw:-none}"
+        return 0 ;;
+    *)  return 1 ;;
+  esac
+}
+
 driver_step_reenter() { # <ticket>
   local t="${1:?driver_step_reenter: need a ticket}"
   local meta st labels prs n pr branch mstate repo wt wt_root hrc cw cb ow ob here base
