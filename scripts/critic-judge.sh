@@ -44,8 +44,15 @@
 #      open findings for the screen (scripts/screen-findings.sh). Its answer must quote
 #      the shot set's id, name every shot it judged, and close with a FINDINGS block of
 #      live findings only; an answer missing any of them is refused.
-#   5. It passes only on VERDICT: SHIP, no PARITY: DRIFT and an empty FINDINGS block
-#      (a Nit aside). The verdict is kept in a ledger only this judge writes, keyed on
+#   5. It judges only what the change changed. Each finding names its scope: a region
+#      of the picture, or "changed" / "untouched". A region's scope is read off its
+#      data-evidence-files against the diff (picture-evidence.py scope), never the
+#      critic's say; a region naming no files counts as changed. An untouched finding
+#      goes to the screen's polish list (polish-list.sh add) and does not block; one
+#      that cannot be listed still blocks, so nothing is dropped. A line that says a
+#      finding is resolved ("none", "gone", "0") is no finding.
+#   5a. It passes only on no PARITY: DRIFT and no blocking finding (a Nit aside), with
+#      VERDICT: SHIP or every live finding outside the change. The verdict is kept in a ledger only this judge writes, keyed on
 #      the shot set: the same pixels at a new head (a develop merge that changed no
 #      screen) get the same verdict again, with no model call — a signed-off screen is
 #      not re-judged into new work. A red verdict on a signed-off PR goes to the PM.
@@ -84,12 +91,14 @@ CLAUDE_BIN="${CRITIC_JUDGE_CLAUDE:-claude}"
 EV="${CRITIC_JUDGE_EVIDENCE:-$SELF_DIR/ci-evidence.sh}"
 PE="$SELF_DIR/picture-evidence.py"
 SF="${CRITIC_JUDGE_FINDINGS:-$SELF_DIR/screen-findings.sh}"
+PL="${CRITIC_JUDGE_POLISH:-$SELF_DIR/polish-list.sh}"
 AK="${CRITIC_JUDGE_APPROVAL:-$SELF_DIR/approval-kept.sh}"
 COVERAGE="${CRITIC_JUDGE_COVERAGE:-$SELF_DIR/evidence-gaps.sh}"
 FIRST_LOOK="$SELF_DIR/check-first-look.sh"
 JDIR="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}"
 LEDGER="$JDIR/verdicts.tsv"     # pr \t head \t set \t verdict \t state \t url — written only here
 TRIES=2
+VLINE='^[[:space:]>#*_]*VERDICT:[[:space:]]*\*{0,2}(SHIP|SLOP)'
 mkdir -p "$JDIR"
 case "$MAXLIVE" in ''|*[!0-9]*|0) MAXLIVE=3 ;; esac
 case "$TIMEOUT_MIN" in ''|*[!0-9]*|0) TIMEOUT_MIN=20 ;; esac
@@ -140,16 +149,43 @@ tried() { # <pr> <head> — attempts at this head that gave no usable answer
   awk -F'\t' -v p="$1" -v h="$2" '$1 == p && $2 == h' "$JDIR/tried.tsv" 2>/dev/null | grep -c . | tr -d ' '
 }
 
-# findings_of <answer> — the live findings that block: the lines of the FINDINGS block,
-# each "- <Grade> · <finding>", Nits aside. 2 when the block is missing or malformed.
+# A line that says there is nothing: "none", "(none)", "0", "gone", "resolved", or a
+# finding closed by "— gone" / "(fixed)". Read as live, one blocked a clean screen.
+RESOLVED='^[[:space:]]*[-*]?[[:space:]]*\(?(none|nothing|n/?a|0|zero|gone|resolved|fixed|no (issues?|findings?))\)?[[:space:]]*[.!]?[[:space:]]*$|(—|–|:|\(|-)[[:space:]]*(now[[:space:]]+)?(gone|resolved|fixed)[[:space:]]*\)?[[:space:]]*[.!]?[[:space:]]*$'
+
+# findings_of <answer> — the live findings: the lines of the FINDINGS block, each
+# "- <Grade> · [<scope> · ]<finding>", Nits and resolved lines aside. 2 when the block
+# is missing or malformed.
 findings_of() {
   local blk bad
   grep -qE '^[[:space:]]*FINDINGS[[:space:]]*$' "$1" && grep -qE '^[[:space:]]*END FINDINGS[[:space:]]*$' "$1" || return 2
-  blk=$(awk '/^[[:space:]]*FINDINGS[[:space:]]*$/{f=1; next} /^[[:space:]]*END FINDINGS[[:space:]]*$/{f=0} f && NF' "$1")
-  bad=$(printf '%s\n' "$blk" | grep -v '^$' | grep -vE '^- (Critical|Major|Minor|Nit) · .+' | grep -viE '^\(?none\)?$')
+  blk=$(awk '/^[[:space:]]*FINDINGS[[:space:]]*$/{f=1; next} /^[[:space:]]*END FINDINGS[[:space:]]*$/{f=0} f && NF' "$1" \
+          | RE="$RESOLVED" awk '{ t = $0; sub(/^- (Critical|Major|Minor|Nit) · /, "", t); sub(/^[a-z0-9-]+ · /, "", t); if (tolower(t) !~ ENVIRON["RE"]) print }')
+  bad=$(printf '%s\n' "$blk" | grep -v '^$' | grep -vE '^- (Critical|Major|Minor|Nit) · .+')
   [ -z "$bad" ] || return 2
   printf '%s\n' "$blk" | grep -E '^- (Critical|Major|Minor) · .+' | sed 's/^- //' | cut -c1-400
   return 0
+}
+
+# split_scope <scope.tsv> — live findings on stdin, out as "changed|untouched \t Grade · finding".
+# A region's scope comes from the picture against the diff; "unknown" and no scope are changed.
+split_scope() {
+  awk -F'\t' -v S="$1" 'BEGIN { while ((getline l < S) > 0) { split(l, a, "\t"); sc[a[1]] = a[2] } }
+    { g = $0; sub(/ · .*/, "", g); r = $0; sub(/^[A-Za-z]+ · /, "", r); w = "changed"
+      t = r; sub(/ · .*/, "", t); rest = r; sub(/^[a-z0-9-]+ · /, "", rest)
+      if (t ~ /^[a-z0-9-]+$/ && rest != r) {
+        if (t == "changed" || t == "untouched") { w = t; r = rest }
+        else if (t in sc) { w = (sc[t] == "untouched") ? "untouched" : "changed"; r = rest } }
+      printf "%s\t%s · %s\n", w, g, r }'
+}
+
+# polish_slug <ticket> <changed-files> <shots.tsv> — the screen an untouched finding is
+# listed under: the ticket's screens, else the route of the first shot.
+polish_slug() {
+  local s
+  s=$( [ -n "$1" ] && bash "$SF" screens "$1" "$2" 2>/dev/null | head -1)
+  [ -n "$s" ] || s=$(awk -F'\t' '$4 ~ /^\// { print $4; exit }' "$3" | tr -c 'a-z0-9\n' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+  printf '%s' "$s"
 }
 
 # pictures_for <pr> <head> <ticket> <dir> — every approved picture that binds the PR, fetched
@@ -204,7 +240,7 @@ record() { # <pr> <head> <set> <verdict> <state> <url> <description>
 
 run() { # <pr>
   local pr="$1" j head draft st evsha W n set prev url mocks req miss lint rc pass verdict parity blocks why body ignored t signed=0 judged
-  local deriv="" routes="" f d pf
+  local deriv="" routes="" f d pf outside="" listed="" slug=""
   local -a popt=()
   [ -z "${HARNESS_DRIVER_RUN:-}" ] || die "a build run ($HARNESS_DRIVER_RUN) cannot judge screens: the verdict comes from a critic the build did not start"
   [ "${CRITIC_JUDGE_LAUNCHER:-}" = coordinator ] || [ "${CRITIC_JUDGE_MANUAL:-}" = 1 ] \
@@ -243,6 +279,10 @@ run() { # <pr>
     say "PR #$pr: shots $set were judged $verdict already — said again at ${head:0:9}"; rm -rf "$W"; return 0
   fi
 
+  # What the change changed: the critic is shown it, and a region is scoped by it.
+  swarm_gh api "repos/$REPO_SLUG/pulls/$pr/files?per_page=100" --paginate 2>/dev/null | jq -s 'add // []' > "$W/pr-files.json" 2>/dev/null || echo '[]' > "$W/pr-files.json"
+  jq -r '.[]? | .filename' "$W/pr-files.json" > "$W/changed.txt" 2>/dev/null || : > "$W/changed.txt"
+  : > "$W/scope.tsv"
   mocks=$(pictures_for "$pr" "$head" "$t" "$W/pictures") || { say "PR #$pr: its approved picture could not be read"; note_try "$pr" "$head"; return 2; }
   ignored=$(self_verdicts "$pr")
   req="(no approved picture binds this PR)"; miss=""; lint=""
@@ -266,6 +306,7 @@ run() { # <pr>
     if [ "$rc" -eq 0 ]; then
       rc=0; miss=$(python3 -I "$PE" missing "${popt[@]}" --shots "$W/shots.tsv" "$W/pictures"/* 2>/dev/null) || rc=$?
       [ "$rc" -le 1 ] || { say "PR #$pr: the picture's regions could not be checked"; note_try "$pr" "$head"; return 2; }
+      python3 -I "$PE" scope "${popt[@]}" --files "$W/changed.txt" "$W/pictures"/* > "$W/scope.tsv" 2>/dev/null || : > "$W/scope.tsv"
     elif [ "$rc" -ne 3 ]; then say "PR #$pr: the approved picture could not be read for regions"; note_try "$pr" "$head"; return 2; fi
   fi
 
@@ -305,9 +346,10 @@ run() { # <pr>
       echo "Then your output in the shape your instructions give, leading with VERDICT (and PARITY when in parity mode)."
       echo "END your answer with this block, listing ONLY findings still visible on the shots — one a line, nothing resolved, no counts, no 'none':"
       echo "FINDINGS"
-      echo "- <Critical|Major|Minor|Nit> · <the element, the failure, the fix>"
+      echo "- <Critical|Major|Minor|Nit> · <scope> · <the element, the failure, the fix>"
       echo "END FINDINGS"
       echo "An empty block means nothing is wrong."
+      echo "<scope> is the region the finding sits in, by its name below, when the picture declares one; else 'changed' when it is on a part of the screen this change draws or alters, or 'untouched' when it was there before this change and the change does not draw it. A check judges only what the change changed: an untouched finding goes to the screen's polish list and does not block. When unsure, say 'changed'."
       echo
       echo "## The shots (name, file, theme, route)"; cat "$W/shots.tsv"
       echo; echo "## The approved picture(s)"
@@ -315,8 +357,17 @@ run() { # <pr>
       echo; echo "## The regions the picture declares (name, route, viewport, theme, shows, setup)"
       [ -z "$deriv" ] || echo "(The picture's $deriv. A derived region is a frame the picture draws, not a name CI used: hold the shot of its route, width and theme to it.)"
       printf '%s\n' "$req"
+      if [ -s "$W/scope.tsv" ]; then
+        echo; echo "## Each region's scope, read off the picture against the diff (name, scope, the changed file that draws it)"
+        echo "Name the region in a finding inside it; its scope is taken from here, not from the finding. 'unknown' counts as changed."
+        cat "$W/scope.tsv"
+      fi
+      echo; echo "## What this change changed (the files in its diff)"
+      if [ -s "$W/changed.txt" ]; then cat "$W/changed.txt"; else echo "(the diff could not be read: call every finding 'changed')"; fi
+      jq -r '.[]? | select(.patch) | "--- \(.filename)\n\(.patch)"' "$W/pr-files.json" 2>/dev/null | head -"${CRITIC_JUDGE_PATCH_LINES:-600}" > "$W/patch.txt"
+      [ ! -s "$W/patch.txt" ] || { echo; echo "## The diff (its first ${CRITIC_JUDGE_PATCH_LINES:-600} lines)"; cat "$W/patch.txt"; }
       echo; echo "## Open findings already known on this screen — in scope for this change"
-      echo "Check each against the shots. Still visible: list it in FINDINGS at its grade. Gone: leave it out."
+      echo "Check each against the shots. Still visible: list it in FINDINGS at its grade and scope. Gone: leave it out."
       printf '%s\n' "${open:-(none)}"
       echo; echo "## Real data"
       echo "Hold the shots to how people will meet the screen: repeated display names told apart, the longest names, the empty state, the page scrolled on laptop and phone. Rows a person cannot tell apart are a Major."
@@ -344,16 +395,37 @@ run() { # <pr>
     if ! bash "$FIRST_LOOK" "$answer" > "$W/first-look.out" 2>&1; then
       note_try "$pr" "$head"; say "PR #$pr: $(head -1 "$W/first-look.out") — refused, not recorded"; return 1
     fi
-    verdict=$(grep -oiE 'VERDICT:[[:space:]]*\*{0,2}(SHIP|SLOP)' "$answer" | head -1 | grep -oiE 'SHIP|SLOP' | tr '[:lower:]' '[:upper:]')
+    # Read off the marker line only: "VERDICT:" quoted in prose is not the verdict.
+    verdict=$(grep -iE "$VLINE" "$answer" | head -1 | grep -oiE 'VERDICT:[[:space:]]*\*{0,2}(SHIP|SLOP)' | grep -oiE 'SHIP|SLOP' | tr '[:lower:]' '[:upper:]')
     [ -n "$verdict" ] || { note_try "$pr" "$head"; say "PR #$pr: no VERDICT line — refused"; return 1; }
-    parity=$(grep -oiE 'PARITY:[[:space:]]*\*{0,2}(MATCH|DRIFT)' "$answer" | head -1 | grep -oiE 'MATCH|DRIFT' | tr '[:lower:]' '[:upper:]')
+    parity=$(grep -iE '^[[:space:]>#*_]*PARITY:[[:space:]]*\*{0,2}(MATCH|DRIFT)' "$answer" | head -1 | grep -oiE 'PARITY:[[:space:]]*\*{0,2}(MATCH|DRIFT)' | grep -oiE 'MATCH|DRIFT' | tr '[:lower:]' '[:upper:]')
     rc=0; blocks=$(findings_of "$answer") || rc=$?
     [ "$rc" -eq 0 ] || { note_try "$pr" "$head"; say "PR #$pr: the answer's FINDINGS block is missing or not one finding a line — refused"; return 1; }
+    # JUDGE ONLY WHAT THE CHANGE CHANGED: a finding outside it goes to the screen's polish
+    # list, and blocks only when it cannot be listed there — never dropped.
+    blocks=$(printf '%s\n' "$blocks" | grep -v '^$' | split_scope "$W/scope.tsv")
+    outside=$(printf '%s\n' "$blocks" | awk -F'\t' '$1 == "untouched" { print $2 }')
+    blocks=$(printf '%s\n' "$blocks" | awk -F'\t' '$1 == "changed" { print $2 }')
+    if [ -n "$outside" ]; then
+      slug=$(polish_slug "$t" "$W/changed.txt" "$W/shots.tsv")
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ -n "$slug" ] && bash "$PL" add "$slug" "$f (seen by the design critic on PR #$pr, outside what it changed)" >/dev/null 2>&1; then
+          listed="$listed$f"$'\n'
+        else
+          blocks="$blocks${blocks:+$'\n'}$f"
+        fi
+      done <<<"$outside"
+      listed=$(printf '%s' "$listed" | grep -v '^$')
+      [ -n "$listed" ] && say "PR #$pr: $(printf '%s\n' "$listed" | grep -c .) finding(s) outside the change listed on the $slug polish list" \
+        || say "PR #$pr: findings outside the change could not be listed${slug:+ on $slug} — they block"
+    fi
   fi
   pass=failure
-  [ "$verdict" = SHIP ] && [ "$parity" != DRIFT ] && [ -z "$blocks" ] && pass=success
-  [ "$pass" = success ] || { [ "$verdict" = SHIP ] && verdict=SLOP; }
-  why=$(grep -m1 -iE 'VERDICT:' "$answer" | sed -E 's/.*VERDICT:[[:space:]]*\**[A-Za-z]+\**[[:space:]]*[—-]*[[:space:]]*//')
+  # SLOP for findings that are all outside the change is not this change's failure.
+  [ "$parity" != DRIFT ] && [ -z "$blocks" ] && { [ "$verdict" = SHIP ] || [ -n "$listed" ]; } && pass=success
+  if [ "$pass" = success ]; then verdict=SHIP; elif [ "$verdict" = SHIP ]; then verdict=SLOP; fi
+  why=$(grep -m1 -iE "$VLINE" "$answer" | sed -E 's/.*VERDICT:[[:space:]]*\**[A-Za-z]+\**[[:space:]]*[—-]*[[:space:]]*//')
   if [ "$pass" = failure ] && [ -n "$t" ]; then
     bash "$AK" signed-head "$pr" >/dev/null 2>&1 && signed=1
   fi
@@ -368,6 +440,10 @@ run() { # <pr>
     [ "$signed" = 0 ] || { echo; echo "**This PR's screens are signed off**, so these findings are the PM's call, not a repair's: a fix would change pixels after the sign-off."; }
     echo; echo "### Findings"
     if [ -n "$blocks" ]; then printf '%s\n' "$blocks" | sed 's/^/- /'; else echo "(none that block)"; fi
+    if [ -n "$listed" ]; then
+      echo; echo "### Outside this change — on the \`$slug\` polish list, not blocking"
+      printf '%s\n' "$listed" | sed 's/^/- /'
+    fi
     echo; echo "### Shots judged"
     awk -F'\t' '{ printf "- `%s` (%s, %s)\n", $1, $3, $4 }' "$W/shots.tsv"
     [ -z "$mocks" ] || { echo; echo "### Approved picture"; printf '%s\n' "$mocks" | sed 's/^/- `/; s/$/`/'; }

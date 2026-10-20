@@ -9,6 +9,9 @@
   picture-evidence.py lint <mock.html>...                 the picture's regions and its real-data cover
   picture-evidence.py derivation <mock.html>...           per picture: path, how its regions were found
                                                           (marked | frames | routes | none), how many
+  picture-evidence.py scope --files <file|-> <mock>...    per region: name \t changed|untouched|unknown \t
+                                                          the changed file that drew it, read off the
+                                                          region's data-evidence-files against the diff
 
 Options, before the pictures, on any command:
   --derive              an unmarked picture's regions are derived instead of none (below)
@@ -44,7 +47,16 @@ markup a machine reads, and nobody downstream chooses:
            data-evidence-viewport="phone"                  laptop (1440) or phone (390)
            data-evidence-theme="dark"                      light or dark
            data-evidence-shows="the owner-only lock row"   what a reviewer should see (optional)
-           data-evidence-setup='click the "Share" button ;; press Escape'>   steps, ";;" between (optional)
+           data-evidence-setup='click the "Share" button ;; press Escape'   steps, ";;" between (optional)
+           data-evidence-files="apps/web/voices/** apps/web/ui/Grid.tsx">   the source that draws it (optional)
+
+SCOPE. A check judges only what the change changed: on one PR every critic finding sat
+on a part of a shared screen the PR never touched, and the repair parked on them. A
+region's data-evidence-files (globs, space-separated; `**` any depth, `*` one segment,
+a bare directory everything under it) names the files and component folders that draw
+it. `scope` holds them against the PR's changed files: changed when one matches,
+untouched when none does, unknown when the region names no files (a derived region, or
+an older picture) — the judge then reads unknown as changed, never as a pass.
 
 Real data (lint): the picture says which hard cases it draws, on any element,
 `data-real-data="duplicate-names longest-names empty scrolled"`, and for a case the
@@ -181,6 +193,7 @@ class Picture(HTMLParser):
                 "theme": a.get("data-evidence-theme", "light").strip() or "light",
                 "shows": " ".join(a.get("data-evidence-shows", "").split()),
                 "setup": [s.strip() for s in a.get("data-evidence-setup", "").split(STEP_SEP) if s.strip()],
+                "files": a.get("data-evidence-files", "").split(),
             })
         for word in a.get("data-real-data", "").split():
             self.covered.add(word.strip().lower())
@@ -548,6 +561,51 @@ def cmd_lint(paths, o):
     return 0
 
 
+def glob_re(g):
+    """A data-evidence-files glob as a regex: `**` any depth, `*` and `?` within a segment,
+    a pattern with no wildcard the file itself or everything under it."""
+    g = g.strip()
+    g = g[2:] if g.startswith("./") else g
+    if not any(c in g for c in "*?["):
+        return re.compile(re.escape(g.rstrip("/")) + r"(?:/.*)?$")
+    out, i = "", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out, i = out + r"(?:.*/)?", i + 3
+        elif g.startswith("**", i):
+            out, i = out + r".*", i + 2
+        elif g[i] == "*":
+            out, i = out + r"[^/]*", i + 1
+        elif g[i] == "?":
+            out, i = out + r"[^/]", i + 1
+        else:
+            out, i = out + re.escape(g[i]), i + 1
+    return re.compile(out + "$")
+
+
+def cmd_scope(args, o):
+    if args[:1] != ["--files"] or len(args) < 3:
+        die("usage: scope --files <file|-> <mock.html>...")
+    src, paths = args[1], args[2:]
+    try:
+        text = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
+    except OSError as e:
+        die(f"cannot read {src}: {e.strerror}")
+    changed = [l.strip() for l in text.splitlines() if l.strip()]
+    shots = unique(Read(paths, o).shots)
+    if not shots:
+        return no_regions()
+    for s in shots:
+        globs = s.get("files") or []
+        if not globs:
+            print(f"{s['name']}\tunknown\t")
+            continue
+        res = [glob_re(g) for g in globs]
+        hit = next((f for f in changed if any(r.match(f) for r in res)), "")
+        print(f"{s['name']}\t{'changed' if hit else 'untouched'}\t{hit}")
+    return 0
+
+
 def cmd_derivation(paths, o):
     for e in Read(paths, o).each:
         print(f"{e['path']}\t{e['how']}\t{e['n']}")
@@ -572,7 +630,9 @@ def main(argv):
         return cmd_lint(rest, o)
     if cmd == "derivation":
         return cmd_derivation(rest, o)
-    die(f"unknown command '{cmd}' — required|routes|plan|missing|lint|derivation")
+    if cmd == "scope":
+        return cmd_scope(rest, o)
+    die(f"unknown command '{cmd}' — required|routes|plan|missing|lint|derivation|scope")
     return 2
 
 

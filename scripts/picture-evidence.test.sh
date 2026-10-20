@@ -151,5 +151,24 @@ pe lint --derive --route /desk --approved none "$T/legacy.html" >/dev/null 2>&1 
 out=$(pe lint --derive --approved none "$T/legacy.html" 2>&1)
 printf '%s' "$out" | grep -q "derived region .* no route" && ok "a derived region with no route is a gap, named" || bad "routeless derived region passed"
 
+
+# SCOPE: a region is changed only when a file it names is in the diff (#315).
+cat > "$T/scoped.html" <<'HTML'
+<html><body>
+<section data-evidence-shot="create-brief" data-evidence-route="/create" data-evidence-files="apps/web/desk/** apps/web/ui/Brief.tsx"></section>
+<section data-evidence-shot="create-recent" data-evidence-route="/create" data-evidence-files="apps/web/recent"></section>
+<section data-evidence-shot="create-header" data-evidence-route="/create"></section>
+</body></html>
+HTML
+printf 'apps/web/desk/a/TaskBrief.tsx\napps/web/recentish/x.ts\n' > "$T/diff"
+out=$(pe scope --files "$T/diff" "$T/scoped.html")
+[ "$(printf '%s\n' "$out" | cut -f1,2 | tr '\t\n' ' ,')" = "create-brief changed,create-recent untouched,create-header unknown," ] \
+  && printf '%s\n' "$out" | grep -q $'^create-brief\tchanged\tapps/web/desk/a/TaskBrief.tsx$' \
+  && ok "a region is changed by a file its globs name, untouched when none, unknown when it names no files" || bad "scope: $out"
+[ "$(printf 'apps/web/recent/List.tsx\n' | pe scope --files - "$T/scoped.html" | cut -f2 | tr '\n' ' ')" = "untouched changed unknown " ] \
+  && ok "a bare directory names everything under it, and only under it" || bad "dir: $(printf 'apps/web/recent/List.tsx\n' | pe scope --files - "$T/scoped.html")"
+[ "$(printf 'apps/web/ui/Brief.tsx.bak\n' | pe scope --files - "$T/scoped.html" | cut -f2 | head -1)" = untouched ] \
+  && ok "a named file is that file, not a longer name" || bad "file prefix matched"
+
 echo "picture-evidence: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
