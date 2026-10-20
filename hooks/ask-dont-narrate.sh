@@ -68,7 +68,7 @@ LISTED='^[[:space:]]*([-*][[:space:]]*)?\**(option|choice)[[:space:]]+[a-c1-3]\b
 REST=$(printf '%s' "$LAST" | tr '[:upper:]' '[:lower:]' | sed -E "s/($DONE)//g")
 HIT=""
 printf '%s' "$REST" | grep -qiE "$OPEN" && HIT=tell
-printf '%s\n' "$REST" | grep -iE "$LISTED" | wc -l | grep -qvE '^[[:space:]]*[01]$' && HIT=${HIT:-options}
+[ "$(printf '%s\n' "$REST" | grep -ciE "$LISTED")" -ge 2 ] && HIT=${HIT:-options}
 
 # SHAPE tells: a 🔴 heading (the house style opens every "needs him" block with
 # it), a "needs you" line, or a NEXT block with a row addressed to the operator
