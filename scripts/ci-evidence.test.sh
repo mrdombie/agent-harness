@@ -41,8 +41,10 @@ blockfor() { # <evsha> <name>…
   for n in "$@"; do printf -- '- [x](https://github.com/o/r/blob/%s/docs/evidence/7/%s.png)\\n' "$s" "$n"; done
   printf '<!-- ci-evidence:end -->'
 }
-pr() { # <n> <head> <draft> <body>
-  jq -n --arg h "$2" --argjson d "$3" --arg b "$4" '{headRefOid:$h, isDraft:$d, body:$b}' > "$SB/fx/pr-$1.json"
+pr() { # <n> <head> <draft> <body> [<branch>] [<closes, space-separated>] — closes ticket 7 unless told
+  jq -n --arg h "$2" --argjson d "$3" --arg b "$4" --arg br "${5:-feature/x}" --arg c "${6-7}" \
+    '{headRefOid:$h, isDraft:$d, body:$b, headRefName:$br,
+      closingIssuesReferences:[$c | split(" ")[] | select(. != "") | {number:tonumber}]}' > "$SB/fx/pr-$1.json"
 }
 runs() { # <head> <capture status/conclusion|-> <decide status/conclusion|->
   local cap="$2" dec="$3"
@@ -102,6 +104,39 @@ jq -n --arg q "$Q" '{commit:{message:"chore(evidence): screenshots captured by c
 runs "$Q" completed/failure completed/success
 runs "$Q" completed/failure completed/success
 pr 18 "$C2" false "$(printf "$(blockfor "$C2" dashboard)")"
+# 19–23 CI keys the folder by ticket while the reader holds the PR, and CI pushes from
+# inside its capture job: the capture is still running when the commit lands, and the
+# push starts a run that cancels it. Read with a project config naming CI's identity.
+blockat() { # <evsha> <folder> <name>…
+  local s="$1" d="$2"; shift 2
+  printf '<!-- ci-evidence:begin -->\\n<!-- ci-evidence-head:%s -->\\n' "$s"
+  for n in "$@"; do printf -- '- [x](https://github.com/o/r/blob/%s/docs/evidence/%s/%s.png)\\n' "$s" "$d" "$n"; done
+  printf '<!-- ci-evidence:end -->'
+}
+evcommit() { # <sha> <parent> <author email> <file>…
+  local sha="$1" par="$2" em="$3"; shift 3
+  jq -n --arg p "$par" --arg em "$em" --args '{commit:{message:"chore(evidence): screenshots captured by ci for #42",
+      author:{name:"ci-bot", email:$em}}, parents:[{sha:$p}], files:[$ARGS.positional[] | {filename:., status:"added"}]}' "$@" \
+    > "$SB/fx/repos_o_r_commits_$sha"
+}
+ev() { printf 'ab%038d' "$1"; }; par() { printf 'cd%038d' "$1"; }
+printf '{"branchPrefix":"tk-","evidence":{"authorEmail":"ci@example.com"}}' > "$SB/ids.json"
+# 19 the folder is the branch's ticket, no closing reference; capture still running
+evcommit "$(ev 19)" "$(par 19)" ci@example.com docs/evidence/42/dashboard.png; runs "$(par 19)" in_progress/ completed/success
+pr 19 "$(ev 19)" false "$body_routes$(printf "$(blockat "$(ev 19)" 42 dashboard)")" tk-42/slug ""
+printf 'PNG19' > "$SB/fx/repos_o_r_contents_docs_evidence_42_dashboard.png_ref_$(ev 19)"
+# 20 the folder is a ticket the PR closes; the capture ended cancelled after CI's push
+evcommit "$(ev 20)" "$(par 20)" ci@example.com docs/evidence/42/dashboard.png; runs "$(par 20)" completed/cancelled completed/success
+pr 20 "$(ev 20)" false "$(printf "$(blockat "$(ev 20)" 42 dashboard)")" feature/x "42"
+# 21 the folder belongs to no ticket of this PR
+evcommit "$(ev 21)" "$(par 21)" ci@example.com docs/evidence/99/dashboard.png; runs "$(par 21)" completed/success completed/success
+pr 21 "$(ev 21)" false "$(printf "$(blockat "$(ev 21)" 99 dashboard)")" tk-42/slug "42"
+# 22 the right folder and subject, but not CI's author
+evcommit "$(ev 22)" "$(par 22)" builder@example.com docs/evidence/42/dashboard.png; runs "$(par 22)" completed/success completed/success
+pr 22 "$(ev 22)" false "$(printf "$(blockat "$(ev 22)" 42 dashboard)")" tk-42/slug "42"
+# 23 the folder is the PR's own number
+evcommit "$(ev 23)" "$(par 23)" ci@example.com docs/evidence/23/dashboard.png; runs "$(par 23)" completed/success completed/success
+pr 23 "$(ev 23)" false "$(printf "$(blockat "$(ev 23)" 23 dashboard)")" feature/x ""
 # 13 CI's block, and a link at CI's sha outside it
 pr 13 "$A" false "$(printf "$(blockfor "$A" dashboard)")
 - [hand](https://github.com/o/r/blob/$A/docs/evidence/7/hand.png)"
@@ -207,7 +242,17 @@ athead() { # <script> → failed cases
 }
 cd "$HERE" || exit 1
 
-all() { core "$1"; fetch_case "$1"; (cd "$R" && athead "$1"); }
+tickets() { # <script> → failed cases
+  local s=$1 o d="$SB/got19-$RANDOM"
+  o=$(HARNESS_CFG="$SB/ids.json" st "$s" 19); [ "$o" = pinned ] || echo "shots in the branch ticket's folder, capture still running, read $o"
+  HARNESS_CFG="$SB/ids.json" bash "$s" fetch 19 "$d" >/dev/null 2>&1; [ "$(cat "$d/dashboard.png" 2>/dev/null)" = PNG19 ] || echo "fetch refused shots in the branch ticket's folder"
+  o=$(HARNESS_CFG="$SB/ids.json" st "$s" 20); [ "$o" = pinned ] || echo "shots in a closed ticket's folder, capture cancelled after the push, read $o"
+  o=$(HARNESS_CFG="$SB/ids.json" st "$s" 21); [ "$o" != pinned ] || echo "shots in another ticket's folder read pinned"
+  o=$(HARNESS_CFG="$SB/ids.json" st "$s" 22); [ "$o" != pinned ] || echo "an evidence commit by someone other than CI's author read pinned"
+  o=$(HARNESS_CFG="$SB/ids.json" st "$s" 23); [ "$o" = pinned ] || echo "shots in the PR number's folder read $o"
+  return 0
+}
+all() { core "$1"; fetch_case "$1"; tickets "$1"; (cd "$R" && athead "$1"); }
 
 echo "ci-evidence"
 r=$(all "$S"); [ -z "$r" ] && ok "every state, wait exit, fetch, verdict and routes case reads right" || { bad "cases failed:"; printf '         %s\n' "$r"; }
@@ -231,10 +276,18 @@ plant "a merge counts as a carry"            '[ "$parents" = 2 ] || return 1'   
 plant "a code file counts as a carry"        '| grep -vF "$EV_DIR/" >/dev/null'         '| grep NOTHING-MATCHES-THIS >/dev/null'  'a verdict with a code commit after it passed'
 plant "the forge's carry ignores code files" 'select(startswith($d) | not)] | length == 0)' 'select(false)] | length == 0)' 'shots with code after them and a capture running read'
 plant "evidence read from the whole body"    'urls=$(printf '"'"'%s\n'"'"' "$body" | block | links | ci_links' 'urls=$(printf '"'"'%s\n'"'"' "$body" | links | ci_links' 'fetch took a hand-pinned shot'
-plant "shots read from the whole body"       'printf '"'"'%s\n'"'"' "$blk" | links | ci_links "$evsha" ;;' 'ghr pr view "$2" --json body -q .body | links | ci_links "$evsha" ;;' 'shots listed a link outside'
+plant "shots read from the whole body"       'printf '"'"'%s\n'"'"' "$blk" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" ;;' 'jq -r .body <<<"$j" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" ;;' 'shots listed a link outside'
 plant "a builder's file passes as CI's"      'if [ "$sha" = "$ev" ] && printf' 'if [ "$sha" = "$ev" ] || printf' 'took a file CI'"'"'s commit did not write'
-plant "no capture run is asked for"         '[ "$(check "$runs" "$EV_CAPTURE")" = completed/success ] || return 1' ':' 'with no capture run behind it, read pinned'
-plant "any commit counts as CI's"            '| startswith($p)'"'"' >/dev/null' '| (startswith($p) or true)'"'"' >/dev/null' 'at a builder'"'"'s commit read pinned'
+plant "no capture run is asked for"          $'cap=$(check "$runs" "$EV_CAPTURE")\n  case "$cap" in\n    completed/success|' $'cap=completed/success\n  case "$cap" in\n    completed/success|' 'with no capture run behind it, read pinned'
+plant "any commit counts as CI's"            'startswith($p) | not) then' 'startswith($p) | not) and false then' 'at a builder'"'"'s commit read pinned'
+plant "only a finished capture owns its push" 'completed/success|completed/cancelled|in_progress/*|queued/*) ;;' 'completed/success) ;;' 'capture still running, read'
+plant "a cancelled capture disowns its push" 'completed/success|completed/cancelled|in_progress/*|queued/*) ;;' 'completed/success|in_progress/*|queued/*) ;;' 'capture cancelled after the push, read'
+plant "the folder is not checked"            'elif ($out | length) > 0 then' 'elif false then' 'in another ticket'"'"'s folder read pinned'
+plant "CI's author is not checked"           'elif $em != "" and (.commit.author.email // "") != $em then' 'elif false then' 'someone other than CI'"'"'s author read pinned'
+plant "the branch's ticket is not read"      'jq -r --arg pre "$BR_PREFIX" "$BRANCH_TICKET_JQ"' 'true || jq -r --arg pre "$BR_PREFIX" "$BRANCH_TICKET_JQ"' 'in the branch ticket'"'"'s folder, capture still running'
+plant "closed tickets are not read"          'jq -r '"'"'.closingIssuesReferences[]?.number // empty'"'"' <<<"$2"' 'true || jq -r '"'"'.closingIssuesReferences[]?.number // empty'"'"' <<<"$2"' 'in a closed ticket'"'"'s folder'
+plant "the PR's own number is not a folder"  '{ printf '"'"'%s\n'"'"' "$1"' '{ true' 'in the PR number'"'"'s folder read'
+plant "the branch prefix is not configurable" 'BR_PREFIX=$(cfg branchPrefix "${BRANCH_PREFIX:-}")' 'BR_PREFIX=' 'in the branch ticket'"'"'s folder, capture still running'
 plant "a draft is not told apart"            '[ "$draft" = true ] && {'                  '[ "$draft" = never ] && {'       'a draft read'
 plant "a failed decide check is ignored"     '*/failure|*/timed_out|*/startup_failure|*/action_required)
       echo "state=failed"; echo "reason='"'"'$EV_DECIDE'"'"'' '*/NEVER)
