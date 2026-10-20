@@ -41,10 +41,11 @@ case "$*" in
     echo '{"number":777}' | out ;;
   "issue pin "*) printf '%s\n' "$*" >> "$GH_LOG"; echo "pin $3" >> "$SH/writes.log" ;;
   "api -X PATCH repos/acme/widgets/issues/"*)
-    printf '%s\n' "$*" >> "$GH_LOG"; jq -r .body > "$SH/body"; echo "patch" >> "$SH/writes.log" ;;
+    printf '%s\n' "$*" >> "$GH_LOG"; jq -r .body > "$SH/body"; echo "patch" >> "$SH/writes.log"
+    jq -n --rawfile b "$SH/body" '{number: 777, state: "open", labels: [{name: "build-sheet"}], body: $b}' | out ;;
   "api repos/acme/widgets/issues/"*)
     printf '%s\n' "$*" >> "$GH_LOG"; [ -f "$SH/down" ] && exit 1
-    jq -n --rawfile b "$SH/body" '{number: 777, state: "open", body: $b}' | out ;;
+    jq -n --rawfile b "$SH/body" '{number: 777, state: "open", labels: [{name: "build-sheet"}], body: $b}' | out ;;
   *) exec "$BIN/gh" "$@" ;;
 esac
 STUB
@@ -186,6 +187,76 @@ tick_on mac 0 >/dev/null
 want "after-launch, owner decision, held, claimed, parked, unready, in review, batched and closed stay off" \
   "610:repair 501:new" "$(sheet_json | jq -r '.[] | "\(.n):\(.class)"' | tr '\n' ' ' | sed 's/ $//')"
 want_in "the repair reads as one"                   '#610 · High · Red PR to fix' "$(cat "$SH/body")"
+
+echo "--- the sheet's label changes: the cached issue is looked up again, never kept ---"
+# Live 2026-10-20: the label went build-sheet-paused and back to build-sheet; the owner kept
+# writing the paused sheet (#13630) while every reader looked up build-sheet (#13619).
+# Issues live in $FIX/sheets/<n>/{label,state,body}; every write is "patch <n>" in writes.log.
+SS="$FIX/sheets"
+cat > "$BIN/gh-sheets" <<'STUB'
+#!/usr/bin/env bash
+SS="$FIX/sheets"; q=""; prev=""
+for a in "$@"; do case "$prev" in --jq|-q) q="$a" ;; esac; prev="$a"; done
+out() { if [ -n "$q" ]; then jq -r "$q"; else cat; fi; }
+one() { jq -n --arg n "$1" --arg l "$(cat "$SS/$1/label")" --arg s "$(cat "$SS/$1/state")" --rawfile b "$SS/$1/body" \
+          '{number: ($n | tonumber), state: $s, labels: [$l | select(length > 0) | {name: .}], body: $b}'; }
+case "$*" in
+  "api repos/acme/widgets/issues?labels="*)
+    printf '%s\n' "$*" >> "$GH_LOG"
+    want=$(printf '%s' "$2" | sed -E 's/.*labels=([^&]*).*/\1/')
+    for d in "$SS"/*/; do d=${d%/}; n=${d##*/}
+      [ "$(cat "$d/state")" = open ] && [ "$(cat "$d/label")" = "$want" ] && one "$n"; done | jq -s . | out ;;
+  "api repos/acme/widgets/labels "*|"issue pin "*) : ;;
+  "api repos/acme/widgets/issues -f title="*) echo "create" >> "$SS/writes.log"; exit 1 ;;
+  "api -X PATCH repos/acme/widgets/issues/"*)
+    n=${4##*/}; jq -r .body > "$SS/$n/body"; echo "patch $n" >> "$SS/writes.log"; one "$n" | out ;;
+  "api repos/acme/widgets/issues/"*) n=${2##*/}; one "$n" | out ;;
+  *) exec "$BIN/gh" "$@" ;;
+esac
+STUB
+chmod +x "$BIN/gh-sheets"
+sheets() { # fresh issues: 13619 on build-sheet, 13630 on build-sheet-paused
+  rm -rf "$SS"; mkdir -p "$SS/13619" "$SS/13630"; : > "$SS/writes.log"
+  echo build-sheet > "$SS/13619/label"; echo build-sheet-paused > "$SS/13630/label"
+  for n in 13619 13630; do echo open > "$SS/$n/state"; : > "$SS/$n/body"; done
+}
+patched() { sed -n 's/^patch //p' "$SS/writes.log" | tr '\n' ' ' | sed 's/ $//'; }
+world; sheets
+queue_on mac 501 502
+SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet-paused tick_on mac 0 >/dev/null
+want "under build-sheet-paused the owner writes that sheet"   "13630" "$(patched)"
+want "and caches it with the label it was found by" "13630	build-sheet-paused" "$(cat "$FIX/m-mac/coordinator/sheet.issue")"
+out=$(SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on mac 0)
+want "the label back to build-sheet: the next write goes to build-sheet's issue" "13630 13619" "$(patched)"
+want_in "and says so"                                         'sheet: wrote #13619' "$out"
+want "the cache now names it under its label" "13619	build-sheet" "$(cat "$FIX/m-mac/coordinator/sheet.issue")"
+out=$(SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on box 1)
+want "the reader works the same sheet"                        "501" "$(by box)"
+
+echo "--- a cache from before the label was kept with it: looked up again ---"
+world; sheets
+mkdir -p "$FIX/m-mac/coordinator"; echo 13630 > "$FIX/m-mac/coordinator/sheet.issue"
+queue_on mac 501
+SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on mac 0 >/dev/null
+want "a bare number is not trusted for build-sheet"           "13619" "$(patched)"
+
+echo "--- the cached issue lost the label, or was closed: written once, then found again ---"
+world; sheets
+queue_on mac 501
+SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on mac 0 >/dev/null
+echo build-sheet-paused > "$SS/13619/label"; echo build-sheet > "$SS/13630/label"
+fix_issue 503 OPEN "status:ready,P0"; queue_on mac 503
+SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on mac 0 >/dev/null
+want "the label moved: the same tick rewrites the issue that carries it" "13619 13619 13630" "$(patched)"
+want "and caches that one" "13630	build-sheet" "$(cat "$FIX/m-mac/coordinator/sheet.issue")"
+echo closed > "$SS/13630/state"; echo build-sheet > "$SS/13619/label"
+out=$(SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on box 1)
+want "a reader whose cached sheet closed finds the open one"  "503" "$(by box)"
+want "and caches it" "13619	build-sheet" "$(cat "$FIX/m-box/coordinator/sheet.issue")"
+cp "$SS/13619/body" "$SS/13630/body"; : > "$SS/13619/body"; echo open > "$SS/13630/state"
+echo build-sheet-paused > "$SS/13619/label"; echo build-sheet > "$SS/13630/label"
+out=$(SWARM_GH="$BIN/gh-sheets" COORDINATOR_SHEET_LABEL=build-sheet tick_on box 2)
+want "the label moved off the reader's cached sheet: it reads the one that carries it" "503 501" "$(by box)"
 
 echo "--- no owner set: no sheet, no calls, each queue as before ---"
 world

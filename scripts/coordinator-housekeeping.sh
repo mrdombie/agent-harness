@@ -83,7 +83,7 @@ CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"
 free_gb() {
   if [ -n "${COORDINATOR_DF:-}" ]; then "$COORDINATOR_DF"
   elif [ -n "${COORDINATOR_FREE_GB:-}" ]; then printf '%s\n' "$COORDINATOR_FREE_GB"
-  else df -Pk "$STATE_DIR" 2>/dev/null | awk 'NR==2{print int($4/1048576)}'; fi
+  else STATE_DIR="$STATE_DIR" bash "$SELF_DIR/disk-guard.sh" free 2>/dev/null; fi   # WSL: the lower of Linux and the host
 }
 FREE_GB=$(free_gb)
 case "$FREE_GB" in ''|*[!0-9]*) say "disk: free space could not be read"; FREE_GB="" ;; esac

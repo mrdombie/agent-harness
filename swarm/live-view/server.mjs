@@ -151,15 +151,23 @@ const DISK_STOP = Number(process.env.SWARM_DISK_STOP_BELOW_GB || 30)
 const DISK_RESUME = Number(process.env.SWARM_DISK_RESUME_AT_GB || 50)
 const DISK_HOLD = process.env.SWARM_DISK_HOLD_FILE || path.join(path.dirname(COORD_QUEUE), 'disk-hold')
 const DISK_AT = process.env.HARNESS_STATE_DIR || path.join(RUNS, '..')
+// Under WSL the guard names the Windows drive too (disk-guard.sh host): Linux's figure is the
+// virtual disk's, which can show 831 GB free on a host drive with 37. The lower one counts.
+function freeGbAt(at, planted) {
+  if (planted != null && planted !== '') return /^\d+$/.test(planted) ? Number(planted) : null
+  try { const st = fs.statfsSync(at); return Math.floor(Number(st.bavail) * Number(st.bsize) / 2 ** 30) } catch { return null }
+}
 export function diskOf() {
-  let free = null
-  const planted = process.env.SWARM_FREE_DISK_GB
-  if (planted != null && planted !== '') free = /^\d+$/.test(planted) ? Number(planted) : null
-  else {
-    try { const st = fs.statfsSync(fs.existsSync(DISK_AT) ? DISK_AT : os.homedir()); free = Math.floor(Number(st.bavail) * Number(st.bsize) / 2 ** 30) } catch {}
+  const linux = freeGbAt(fs.existsSync(DISK_AT) ? DISK_AT : os.homedir(), process.env.SWARM_FREE_DISK_GB)
+  const hostPath = process.env.SWARM_DISK_HOST_PATH || ''
+  let free = linux, where = ''
+  if (hostPath) {
+    const host = freeGbAt(hostPath, process.env.SWARM_HOST_FREE_DISK_GB)
+    if (host != null && (linux == null || host < linux)) { free = host; where = linux == null ? 'on the Windows host' : `on the Windows host (Linux shows ${linux})` }
+    else if (linux != null) where = host == null ? `on Linux (the Windows host at ${hostPath} could not be read)` : `on Linux (the Windows host shows ${host})`
   }
   return { freeGb: free, stopBelowGb: DISK_STOP, resumeAtGb: DISK_RESUME, held: fs.existsSync(DISK_HOLD),
-           low: free != null && free < DISK_STOP }
+           low: free != null && free < DISK_STOP, ...(where ? { where } : {}) }
 }
 
 export function capacityOf(file = COORD_CAPACITY) {

@@ -203,6 +203,55 @@ want_in "it says so" 'no lsof here' "$out"
 
 echo "--- plant the absence: each keep-rule, deleted, loses the folder it alone protects ---"
 # In a copy of the kit's scripts, never the tree under test.
+echo "--- WSL: the lower of Linux's disk and the Windows drive under it, and which bound ---"
+# Live 2026-10-20: Linux's df showed 831 GB free on the virtual disk while Windows C:, which
+# holds it, had 37 GB (99% full). df here answers per path; every path it is asked is logged.
+WB="$SB/wslbin"; WP="$SB/proc"; mkdir -p "$WB"
+cat > "$WB/df" <<'SH'
+#!/usr/bin/env bash
+p="${*: -1}"; printf '%s\n' "$p" >> "$DF_LOG"
+kb=$DF_LINUX_KB; [ "$p" = "$DF_HOST_PATH" ] && kb=$DF_HOST_KB
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 1 1 %s 99%% %s\n' "$kb" "$p"
+SH
+chmod +x "$WB/df"
+wsl_guard() { # <linux GB> <host GB> <args…> — the SUT reading the planted df, no free-space seam
+  local l="$1" h="$2"; shift 2
+  env -u COORDINATOR_DF -u COORDINATOR_FREE_GB PATH="$WB:$PATH" HOME="$SB" HARNESS_STATE_DIR="$STATE" \
+    HARNESS_MAIN_REPO="$MAIN" HARNESS_REPO_ROOT="$MAIN" HARNESS_CFG_PATH="$SB/cfg.json" \
+    DISK_GUARD_PROC="$WP" DISK_GUARD_HOLD_FILE="$SB/wsl-hold" DF_LOG="$SB/df.log" WSL_DISTRO_NAME="${WSL_DISTRO_NAME:-}" \
+    DF_LINUX_KB=$(( l * 1048576 )) DF_HOST_KB=$(( h * 1048576 )) DF_HOST_PATH="${DF_HOST_PATH:-/mnt/c}" \
+    bash "$SUT" "$@" 2>&1
+}
+proc_is() { rm -rf "$WP"; mkdir -p "$WP/sys/fs/binfmt_misc"; printf '%s\n' "$1" > "$WP/version"; }
+proc_is 'Linux version 6.6.36.6-microsoft-standard-WSL2 (gcc) #1 SMP'
+rm -f "$SB/wsl-hold"
+want "WSL by /proc/version: free is the Windows host's 37, not Linux's 831" "37" "$(wsl_guard 831 37 free)"
+want "the tick names the drive that bound, and what Linux shows" \
+  "37	disk: 37 GB free on the Windows host (Linux shows 831)" "$(wsl_guard 831 37 tick)"
+out=$(wsl_guard 831 12 check "a build"); rc=$?
+want "12 GB on the host: a build is refused though Linux shows 831" "1" "$rc"
+want "and the refusal says where" "disk low: 12 GB free on the Windows host (Linux shows 831), under the 30 GB a build needs" "$out"
+out=$(wsl_guard 831 12 tick); rc=$?
+want "and the coordinator's hold holds on the host figure" "1" "$rc"
+rm -f "$SB/wsl-hold"
+want "Linux the lower: Linux binds, and says so" \
+  "70	disk: 70 GB free on Linux (the Windows host shows 400)" "$(wsl_guard 70 400 tick)"
+proc_is 'Linux version 6.1.0 (gcc) #1 SMP generic'
+: > "$WP/sys/fs/binfmt_misc/WSLInterop"
+want "WSL by WSLInterop alone" "37" "$(wsl_guard 831 37 free)"
+proc_is 'Linux version 6.1.0 (gcc) #1 SMP generic'
+want "WSL by WSL_DISTRO_NAME alone" "37" "$(WSL_DISTRO_NAME=Ubuntu wsl_guard 831 37 free)"
+want "coordinator.disk.hostPath picks the drive read" "41" \
+  "$(DF_HOST_PATH=/mnt/d COORDINATOR_DISK_HOST_PATH=/mnt/d WSL_DISTRO_NAME=Ubuntu wsl_guard 831 41 free)"
+want "and host names it" "/mnt/d" "$(COORDINATOR_DISK_HOST_PATH=/mnt/d WSL_DISTRO_NAME=Ubuntu wsl_guard 1 1 host)"
+
+echo "--- not WSL: one reading, the line as before ---"
+proc_is 'Linux version 6.1.0 (gcc) #1 SMP generic'; : > "$SB/df.log"; rm -f "$SB/wsl-hold"
+want "free is the one volume's"      "831" "$(wsl_guard 831 37 free)"
+want "the tick line carries no host" "831	disk: 831 GB free" "$(wsl_guard 831 37 tick)"
+want_not_in "and no Windows drive is read" '^/mnt/c$' "$(cat "$SB/df.log")"
+want "host is empty" "" "$(wsl_guard 1 1 host)"
+
 mkdir -p "$SB/kit"; cp -R "$HERE" "$SB/kit/scripts"; PSUT="$SB/kit/scripts/disk-guard.sh"
 plant() { # <label> <exact line> <folder that must then be removed>
   cp "$PSUT" "$SB/sut.bak"
