@@ -145,6 +145,23 @@ export function queueOf(file = COORD_QUEUE, issues = issuesByTicket()) {
   return { scopes, seededAt: q.seeded_at || null, tickets: rows, processFirst: rows.filter((r) => r.process).length }
 }
 
+// Free disk, read now: under the guard's floor nothing new starts (scripts/disk-guard.sh). The
+// floor and the resume mark come from live-view.sh; the hold is the guard's own file.
+const DISK_STOP = Number(process.env.SWARM_DISK_STOP_BELOW_GB || 30)
+const DISK_RESUME = Number(process.env.SWARM_DISK_RESUME_AT_GB || 50)
+const DISK_HOLD = process.env.SWARM_DISK_HOLD_FILE || path.join(path.dirname(COORD_QUEUE), 'disk-hold')
+const DISK_AT = process.env.HARNESS_STATE_DIR || path.join(RUNS, '..')
+export function diskOf() {
+  let free = null
+  const planted = process.env.SWARM_FREE_DISK_GB
+  if (planted != null && planted !== '') free = /^\d+$/.test(planted) ? Number(planted) : null
+  else {
+    try { const st = fs.statfsSync(fs.existsSync(DISK_AT) ? DISK_AT : os.homedir()); free = Math.floor(Number(st.bavail) * Number(st.bsize) / 2 ** 30) } catch {}
+  }
+  return { freeGb: free, stopBelowGb: DISK_STOP, resumeAtGb: DISK_RESUME, held: fs.existsSync(DISK_HOLD),
+           low: free != null && free < DISK_STOP }
+}
+
 export function capacityOf(file = COORD_CAPACITY) {
   try { const c = JSON.parse(fs.readFileSync(file, 'utf8')); return c && typeof c === 'object' ? c : null } catch { return null }
 }
@@ -967,7 +984,7 @@ export function snapshot(now = Date.now()) {
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, done: doneRows, doneSummary: doneSummary(doneRows),
-           hold, queue, capacity: capacityOf(), board, launch, usage: usageOf(PACE_FILE, now),
+           hold, queue, capacity: capacityOf(), disk: diskOf(), board, launch, usage: usageOf(PACE_FILE, now),
            hosts: hostsOf(live, board && board.claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,
                     toolingLabels: TOOLING_LABELS, toolingScopes: TOOLING_SCOPES, ownerLabels: OWNER_ASK } }

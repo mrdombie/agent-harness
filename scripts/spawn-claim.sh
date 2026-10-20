@@ -71,6 +71,13 @@ case " $* " in *" --fg "*) ;; *)
   fi ;;
 esac
 
+# A build fills ~1.5 GB before its first commit: under the disk guard's floor it never starts.
+if [ -z "${SPAWN_CLAIM_CANONICAL:-}" ] && [ -f "$SCRIPT_DIR/disk-guard.sh" ] \
+   && ! _disk=$(bash "$SCRIPT_DIR/disk-guard.sh" check "a build"); then
+  echo "spawn-claim: $_disk — not spawning" >&2
+  exit 76
+fi
+
 # A builder loads only the MCP servers it uses, also after the re-exec below.
 case " $* " in *" --fg "*) ;; *)
   { . "$SCRIPT_DIR/builder-mcp.sh" && builder_mcp_shim; } 2>/dev/null \

@@ -75,6 +75,23 @@ out=$(spawn --fg 4246)
 want_not_in "a person's own --fg window is theirs to open" "usage limit holds" "$out"
 rm -f "$STATE/usage-hold"
 
+echo "--- under the disk guard's floor the door is shut too ---"
+# Owner call 2026-10-20: a build fills ~1.5 GB, and on a full disk nothing can even start a shell.
+: > "$FIX/claude.log"
+out=$(HARNESS_DISK_GUARD=on COORDINATOR_FREE_GB=12 spawn 4247); rc=$?
+want "12 GB free: it exits 76" "76" "$rc"
+want_in "and says the disk is low, and what a build needs" "spawn-claim: disk low: 12 GB free, under the 30 GB a build needs — not spawning" "$out"
+want "it never starts a builder" "" "$(cat "$FIX/claude.log")"
+want "it writes no run record" "0" "$(ls "$STATE/runs" | grep -c 'claim-4247')"
+out=$(SWARM_SPAWN="$KIT/scripts/spawn-claim.sh" HARNESS_DISK_GUARD=on COORDINATOR_FREE_GB=12 bash -c '. "$1/swarm/swarm-env.sh" >/dev/null; swarm_spawn 4248' _ "$KIT" 2>&1); rc=$?
+[ "$rc" != 0 ] && ok "through swarm_spawn the refusal is reported ($rc)" || bad "swarm_spawn spawned on a low disk"
+want "and nothing started" "" "$(cat "$FIX/claude.log")"
+out=$(HARNESS_DISK_GUARD=on COORDINATOR_FREE_GB=30 spawn 4249); rc=$?
+want "30 GB free, at the floor: it spawns" "0" "$rc"
+want_in "and its builder starts" "^driver 4249" "$(started)"
+for _ in $(seq 1 50); do [ -f "$STATE/runs/"claim-4249-*.ended ] 2>/dev/null && break; sleep 0.1; done
+: > "$FIX/claude.log"; rm -f "$STATE"/runs/claim-4249-* "$STATE"/logs/claim-4249-*
+
 echo "--- the judge waits out the hold ---"
 C="$STATE/coordinator"; mkdir -p "$C"
 export COORDINATOR_SHADOW=0 COORDINATOR_CLAUDE="$BIN/claude"

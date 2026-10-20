@@ -30,6 +30,10 @@ export SWARM_GH_CALLS="${SWARM_GH_CALLS:-$(gh_calls_file)}" GH_ALLOWANCE_LOW_PCT
 # The coordinator's queue, and what hold-status.sh needs to answer without
 # resolving the project config again on every ask.
 export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"
+# The disk guard's floor and resume mark, read the one way the guard reads them.
+read -r SWARM_DISK_STOP_BELOW_GB SWARM_DISK_RESUME_AT_GB <<<"$(bash "$KIT_ROOT/scripts/disk-guard.sh" limits 2>/dev/null)"
+export SWARM_DISK_STOP_BELOW_GB SWARM_DISK_RESUME_AT_GB
+export SWARM_DISK_HOLD_FILE="${SWARM_DISK_HOLD_FILE:-${DISK_GUARD_HOLD_FILE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/disk-hold}}"
 # Who "Waiting on …" names on a finished row; unset reads "the owner".
 export SWARM_OWNER_NAME="${SWARM_OWNER_NAME:-$(swarm_opt swarm.ownerName "")}"
 # Every open ticket, counted once per five minutes. The release is the tickets at

@@ -57,6 +57,13 @@ export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
 unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_HEAL_ALL_AT COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
+# The disk guard has its own suite (disk-guard.test.sh); here it never holds and never cleans
+# this machine's real temp dir, whatever free space a case plants for the housekeeping pass.
+cat > "$BIN/diskguard" <<'SH'
+#!/usr/bin/env bash
+case "$1" in tick) printf '500\tdisk: 500 GB free\n' ;; limits) echo "30 50" ;; free) echo 500 ;; esac
+SH
+chmod +x "$BIN/diskguard"; export COORDINATOR_DISK_GUARD="$BIN/diskguard"
 # A spawner that leaves a live run behind and, like an older spawner,
 # writes no class: the coordinator's own record must carry it.
 cat > "$BIN/spawn-live" <<'SH'
@@ -1128,5 +1135,53 @@ want "a run that just ended: its ticket is in the issue snapshot" "true" "$(jq '
 want "with its labels"                     "status:parked" "$(jq -r '.["9001"].labels | join(",")' "$C/snapshot/issues.json" 2>/dev/null)"
 want "a run that ended long ago is not read" "false" "$(jq 'has("9002")' "$C/snapshot/issues.json" 2>/dev/null)"
 want "and the queue is still read"         "true" "$(jq 'has("501")' "$C/snapshot/issues.json" 2>/dev/null)"
+
+echo "--- under the disk floor nothing new starts, and it stays held until the resume mark ---"
+# The real guard, its roots in the fixture: a fake free-space reader, empty clean roots,
+# a sweep that only records it ran. Owner call 2026-10-20: stop below 30 GB, resume at 50.
+mkdir -p "$FIX/dg/tmp" "$FIX/dg/wt" "$FIX/dg/scratch"
+cat > "$BIN/dgsweep" <<'SH'
+#!/usr/bin/env bash
+echo "sweep $*" >> "$FIX/dg/sweep.log"
+SH
+cat > "$BIN/dgdf" <<'SH'
+#!/usr/bin/env bash
+cat "$FIX/dg/free"
+SH
+chmod +x "$BIN/dgsweep" "$BIN/dgdf"
+dtick() { # <free GB>
+  printf '%s\n' "$1" > "$FIX/dg/free"
+  COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" COORDINATOR_DISK_CLEAN=inline \
+  DISK_GUARD_TMP="$FIX/dg/tmp" DISK_GUARD_BUILD_ROOT="$FIX/dg/wt" DISK_GUARD_SCRATCH_ROOT="$FIX/dg/scratch" \
+  DISK_GUARD_SWEEP="$BIN/dgsweep" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick
+}
+fresh; queue 501 502; : > "$FIX/dg/sweep.log"
+out=$(dtick 29)
+want "29 GB free: nothing starts"          "" "$(spawned)"
+want_in "the hold names the disk"          'spawn: starting nothing new — disk low: 29 GB free, under 30 GB' "$out"
+want_in "the auto-clean ran, for real"     '^sweep --apply$' "$(cat "$FIX/dg/sweep.log")"
+want_in "and the tick says so"             'disk: the auto-clean ran — 29 GB free after it' "$out"
+want "the live page's file says held, with the free space" "29 true 30 50" "$(jq -r '"\(.disk.freeGb) \(.disk.held) \(.disk.stopBelowGb) \(.disk.resumeAtGb)"' "$C/capacity.json")"
+want "the act is logged"                   "disk-hold" "$(awk -F'\t' '$3=="disk-hold"{print $3}' "$C/actions.log" | head -1)"
+out=$(dtick 31)
+want "31 GB, one GB over the floor: still held" "" "$(spawned)"
+want_in "and it says until when"           'disk low: 31 GB free, held since under 30 GB — nothing new starts until 50 GB is free' "$out"
+out=$(dtick 49)
+want "49 GB: still held"                   "" "$(spawned)"
+out=$(dtick 50)
+want_in "50 GB: starts resume"             'disk: 50 GB free, at or above 50 GB — starts resume' "$out"
+want "and the queue starts"                "501 502" "$(spawned)"
+want "the live page's file says not held"  "50 false" "$(jq -r '"\(.disk.freeGb) \(.disk.held)"' "$C/capacity.json")"
+fresh; queue 501; : > "$FIX/dg/sweep.log"
+out=$(dtick 40)
+want "40 GB with no hold before: starts" "501" "$(spawned)"
+want "and no auto-clean"                   "" "$(cat "$FIX/dg/sweep.log")"
+fresh; queue 501; : > "$FIX/dg/sweep.log"
+printf '29\n' > "$FIX/dg/free"
+out=$(COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" COORDINATOR_DISK_CLEAN=inline \
+  DISK_GUARD_TMP="$FIX/dg/tmp" DISK_GUARD_BUILD_ROOT="$FIX/dg/wt" DISK_GUARD_SCRATCH_ROOT="$FIX/dg/scratch" \
+  DISK_GUARD_SWEEP="$BIN/dgsweep" tick)
+want_in "shadow: the hold is said"         'starting nothing new — disk low: 29 GB' "$out"
+want_in "and the auto-clean runs dry"      '^sweep $' "$(cat "$FIX/dg/sweep.log")"
 
 exit $FAILED

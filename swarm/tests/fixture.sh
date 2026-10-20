@@ -22,6 +22,8 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/time.sh" || exit 1
 
 swarm_fixture() {
+  # The runner's own disk is no case's input: a case that tests the guard plants its free space.
+  export HARNESS_DISK_GUARD=off
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; SPAWNS="$FIX/spawns.log"

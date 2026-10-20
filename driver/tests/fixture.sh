@@ -36,6 +36,8 @@ driver_fixture() {
   # The suites exercise the project renderer, which is the local-capture fallback:
   # switched on here, and the one case that proves it is off by default unsets it.
   export HARNESS_LOCAL_EVIDENCE=1
+  # The runner's own disk is no case's input: the guard's suite plants the free space it tests.
+  export HARNESS_DISK_GUARD=off
   FIX=$(mktemp -d)
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; CLAUDE_LOG="$FIX/claude.log"

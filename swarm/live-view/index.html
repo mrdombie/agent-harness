@@ -23,6 +23,7 @@ h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3
 .dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none}
 .dot.ok{background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 20%,transparent);animation:pulse 2s infinite}
 .dot.slow{background:var(--warn)} .dot.stuck{background:var(--bad)}
+.disklow{color:var(--bad);font-weight:600} .diskheld{color:var(--warn);font-weight:600}
 @keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--good) 0%,transparent)}}
 .title{font-weight:600;line-height:1.3}
 .sub{color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums}
@@ -248,6 +249,12 @@ function machineLine(s){
   const cpu = /cpu idle (\d+)%/.exec(r), mem = /(\d+(?:\.\d+)?) GB free/.exec(r)
   if (cpu) parts.push(`CPU ${100 - Number(cpu[1])}% busy`)
   if (mem) parts.push(`${mem[1]} GB memory free`)
+  const d = s.disk
+  if (d && d.freeGb != null) {
+    parts.push(d.low ? `<span class="disklow">${esc(d.freeGb)} GB disk free — under ${esc(d.stopBelowGb)} GB, nothing new starts</span>`
+      : d.held ? `<span class="diskheld">${esc(d.freeGb)} GB disk free — starts resume at ${esc(d.resumeAtGb)} GB</span>`
+      : `${esc(d.freeGb)} GB disk free`)
+  } else if (d) parts.push('disk free not read')
   parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
   const hosts = (s.hosts || []).map(h => `${esc(h.host)} (${esc(h.n)})`).join(', ')
   return `Machine: ${parts.join(' · ')}<br>Building on: ${hosts || 'no host'} · updated ${esc(new Date(s.at).toLocaleTimeString())}`
