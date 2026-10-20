@@ -473,16 +473,17 @@ want "it asks for rework"  "30" "$rc"
 git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true
 
 echo "--- a build's reworded tests reach the run's ledger, across tries (#11222) ---"
-export DRIVER_TICKET=131
-driver_state_init 131 --worktree "$REPO" --repo "$REPO"
-fix_plan 131 1
-printf '%s\n' '{"file":"earlier.test.sh","removedBecause":"an earlier try removed it"}' > "$(driver_state_dir 131)/steps/replaced.jsonl"
+# Its own ticket: 131 proved its task above, and a proved task is kept, not rebuilt.
+export DRIVER_TICKET=133
+driver_state_init 133 --worktree "$REPO" --repo "$REPO"
+fix_plan 133 1
+printf '%s\n' '{"file":"earlier.test.sh","removedBecause":"an earlier try removed it"}' > "$(driver_state_dir 133)/steps/replaced.jsonl"
 fix_ai build "$(FIX_REPLACED=feature.test.sh fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" \
   superpowers:subagent-driven-development
-out=$(driver_step_build 131 2>&1); rc=$?
+out=$(driver_step_build 133 2>&1); rc=$?
 want "the step finishes"                          "0" "$rc"
-want_in "its report is on the ledger"             'feature.test.sh' "$(cat "$(driver_state_dir 131)/steps/replaced.jsonl")"
-want_in "and an earlier try's report is still there" 'earlier.test.sh' "$(cat "$(driver_state_dir 131)/steps/replaced.jsonl")"
+want_in "its report is on the ledger"             'feature.test.sh' "$(cat "$(driver_state_dir 133)/steps/replaced.jsonl")"
+want_in "and an earlier try's report is still there" 'earlier.test.sh' "$(cat "$(driver_state_dir 133)/steps/replaced.jsonl")"
 
 echo "--- green under a runner that strips types is not green: the proof type-checks ---"
 # 2026-10-17, two runs: vitest proved each test red then green, then self-check's
@@ -536,4 +537,97 @@ rc=0; ( export HARNESS_CFG_PATH="$FIX/pinned.json"
           'test -z "${HARNESS_CFG_PATH:-}" && bash feature.test.sh' >/dev/null 2>&1 ) || rc=$?
 want "the pin does not reach the test"                  "0" "$rc"
 git -C "$REPO" checkout -- .claude/harness.json 2>/dev/null || true
+# --- a rework rebuilds what was sent back, not the plan --------------------------
+# #13623: six of seven tasks proved, one refused, and the rework round rebuilt all
+# seven. A proved task whose plan entry is unchanged and whose commits are still on
+# the branch is kept; the refused one, and any later task sharing its files, is built.
+plan_files() { # <ticket> <file-of-task-1> <file-of-task-2>
+  jq -n --arg a "$2" --arg b "$3" '{step:"plan",skills:["superpowers:writing-plans"],status:"planned",
+    designSource:"ticket-body",premise:{verdict:"still-true",evidence:"a.sh:1"},
+    tasks:[{title:"task 1",files:[{path:$a,action:"modify"}],tests:[{file:"a.test.sh",behaviour:"x",redWhen:"y"}]},
+           {title:"task 2",files:[{path:$b,action:"modify"}],tests:[{file:"b.test.sh",behaviour:"x",redWhen:"y"}]}]}' \
+    > "$(driver_state_dir "$1")/steps/plan.json"
+}
+answer_n() { # <n> <test-file> <command> <test-sha> <impl-sha> <task>
+  fix_ai build "$(fix_build "$2" "$3" "$4" "$5" "$6")" superpowers:subagent-driven-development
+  cp "$FIX/ai/build.jsonl" "$FIX/ai/build.$1.jsonl"
+}
+
+echo "--- a rework builds again only the task that was sent back ---"
+export DRIVER_TICKET=801
+driver_state_init 801 --worktree "$REPO" --repo "$REPO"
+plan_files 801 one.sh two.sh
+nth_claude
+answer_n 1 feature.test.sh  "bash feature.test.sh"  "$TEST_SHA" "$IMPL_SHA" "task 1"
+answer_n 2 vacuous.test.sh  "bash vacuous.test.sh"  "$V_TEST"   "$V_IMPL"   "task 2"
+answer_n 3 refine.test.sh   "bash refine.test.sh"   "$R_TEST"   "$R_IMPL"   "task 2"
+rc=0; driver_step_build 801 >/dev/null 2>&1 || rc=$?
+want "the first pass sends task 2 back"          "30" "$rc"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_build 801 2>&1) || rc=$?
+want "the rework pass finishes"                  "0" "$rc"
+want "and starts one agent, for task 2 alone"    "1" "$(grep -c . "$CLAUDE_LOG")"
+want_in "task 1 is kept, and said"               'task 1 — kept' "$out"
+want "both answers still reach the review"       "2" "$(grep -c . "$(driver_state_dir 801)/steps/build.all.json")"
+rm -f "$FIX"/nth.* "$FIX"/ai/build.[0-9].jsonl
+
+echo "--- a later task sharing files with one sent back is built again too ---"
+export DRIVER_TICKET=802
+driver_state_init 802 --worktree "$REPO" --repo "$REPO"
+plan_files 802 shared.sh shared.sh
+nth_claude
+answer_n 1 vacuous.test.sh  "bash vacuous.test.sh"  "$V_TEST"   "$V_IMPL"   "task 1"
+answer_n 2 refine.test.sh   "bash refine.test.sh"   "$R_TEST"   "$R_IMPL"   "task 2"
+answer_n 3 feature.test.sh  "bash feature.test.sh"  "$TEST_SHA" "$IMPL_SHA" "task 1"
+answer_n 4 refine.test.sh   "bash refine.test.sh"   "$R_TEST"   "$R_IMPL"   "task 2"
+rc=0; driver_step_build 802 >/dev/null 2>&1 || rc=$?
+want "the first pass sends task 1 back"          "30" "$rc"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_build 802 2>&1) || rc=$?
+want "the rework pass finishes"                  "0" "$rc"
+want "and builds both: task 2 sits on task 1's file" "2" "$(grep -c . "$CLAUDE_LOG")"
+want_not_in "nothing is kept"                    'kept' "$out"
+rm -f "$FIX"/nth.* "$FIX"/ai/build.[0-9].jsonl
+
+echo "--- a proved task whose commits left the branch is built again ---"
+export DRIVER_TICKET=803
+driver_state_init 803 --worktree "$REPO" --repo "$REPO"
+plan_files 803 one.sh two.sh
+nth_claude
+answer_n 1 feature.test.sh  "bash feature.test.sh"  "$TEST_SHA" "$IMPL_SHA" "task 1"
+answer_n 2 refine.test.sh   "bash refine.test.sh"   "$R_TEST"   "$R_IMPL"   "task 2"
+answer_n 3 feature.test.sh  "bash feature.test.sh"  "$TEST_SHA" "$IMPL_SHA" "task 1"
+answer_n 4 refine.test.sh   "bash refine.test.sh"   "$R_TEST"   "$R_IMPL"   "task 2"
+rc=0; driver_step_build 803 >/dev/null 2>&1 || rc=$?
+want "the first pass proves both"                "0" "$rc"
+# A commit nothing on the branch descends from: a reset or a fresh worktree.
+GONE=$(git -C "$REPO" commit-tree "HEAD^{tree}" -m "not on the branch")
+m="$(driver_state_dir 803)/steps/build-task-1.proved"
+jq --arg g "$GONE" '.commits = [$g]' "$m" > "$m.tmp" && mv "$m.tmp" "$m"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_build 803 2>&1) || rc=$?
+want "the next pass finishes"                    "0" "$rc"
+want "and builds task 1 again, keeping task 2"   "1" "$(grep -c . "$CLAUDE_LOG")"
+want_in "task 2 is the one kept"                 'task 2 — kept' "$out"
+rm -f "$FIX"/nth.* "$FIX"/ai/build.[0-9].jsonl
+
+echo "--- each task's files are formatted and committed with it ---"
+# #13623's only red after seven proved tasks was format:changed. Formatted as each task
+# lands, the check has nothing left to find.
+printf '#!/usr/bin/env bash\nfor f in "$@"; do perl -pi -e "s/UGLY/pretty/g" "$f"; done\n' > "$FIX/fmt.sh"; chmod +x "$FIX/fmt.sh"
+FWT="$FIX/fwt"
+git -C "$REPO" worktree add -q -b tkt-fmt "$FWT" develop
+printf 'UGLY\n' > "$FWT/task.txt"; git -C "$FWT" add task.txt; git -C "$FWT" commit -qm "feat: the task"
+cp "$REPO/.claude/harness.json" "$FIX/harness.keep"
+jq --arg f "$FIX/fmt.sh" '.driver.formatWrite = $f' "$FIX/harness.keep" > "$REPO/.claude/harness.json"
+export DRIVER_TICKET=811
+driver_state_init 811 --worktree "$FWT" --repo "$REPO"
+fix_plan 811 1
+fix_ai build "$(fix_build feature.test.sh "bash feature.test.sh" "$TEST_SHA" "$IMPL_SHA")" superpowers:subagent-driven-development
+rc=0; out=$(driver_step_build 811 2>&1) || rc=$?
+want "the task is built"                       "0" "$rc"
+want "and its file is formatted on the branch" "pretty" "$(git -C "$FWT" show HEAD:task.txt)"
+want_in "by a formatting commit"               '^style: ' "$(git -C "$FWT" log -1 --format=%s)"
+cp "$FIX/harness.keep" "$REPO/.claude/harness.json"
+git -C "$REPO" worktree remove --force "$FWT" >/dev/null 2>&1
 exit $FAILED

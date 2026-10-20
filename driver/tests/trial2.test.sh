@@ -410,6 +410,23 @@ want_not_in "and not the stale review's finding" 'the save button calls nothing'
 want "no placeholder survives"                 "0" "$(grep -c '{{' "$PROMPT" || true)"
 want "the findings are answered, once"          "absent" "$([ -e "$GF" ] && echo present || echo absent)"
 
+echo "--- a fix round's files are formatted and committed with it ---"
+printf '#!/usr/bin/env bash\nfor f in "$@"; do perl -pi -e "s/UGLY/pretty/g" "$f"; done\n' > "$FIX/fmt8.sh"; chmod +x "$FIX/fmt8.sh"
+cp "$REPO/.claude/harness.json" "$FIX/h8.keep"
+jq --arg f "$FIX/fmt8.sh" '.driver.formatWrite = $f' "$FIX/h8.keep" > "$REPO/.claude/harness.json"
+gate_findings
+printf 'UGLY fix\n' > "$WT8/fix8.txt"; git -C "$WT8" add fix8.txt
+git -C "$WT8" -c user.email=t@e.invalid -c user.name=T commit -qm "fix: the gate"
+GC9=$(git -C "$WT8" rev-parse HEAD)
+fix_ai fix "$(jq -nc --arg c "$GC9" '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,
+    gateFixes:[{blockerId:"gate-changed-2", change:[{path:"fix8.txt", action:"modify"}], commit:$c}]}')" \
+  superpowers:receiving-code-review
+rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
+want "the gate round finishes"                 "0" "$rc"
+want "and the fix's file is formatted"         "pretty fix" "$(git -C "$WT8" show HEAD:fix8.txt)"
+want_in "by a formatting commit"               '^style: ' "$(git -C "$WT8" log -1 --format=%s)"
+cp "$FIX/h8.keep" "$REPO/.claude/harness.json"
+
 echo "--- a red gate nobody answered, or answered off the branch, is not a clean round ---"
 gate_findings
 fix_ai fix "$(jq -nc --arg c "$GC8" '{step:"fix", skills:["superpowers:receiving-code-review"], status:"fixed", round:1,

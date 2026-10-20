@@ -37,6 +37,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 # _driver_owed: whether a reviewer the push demands is still owed on this diff.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 
 # _driver_note_changelog_skip <ticket> <tree> — the build steps answered `changelog:
 # {skipped: <reason>}`, and their commits did not carry the project's skip line: the
@@ -290,7 +291,8 @@ _driver_prepush_gate() {
     off)  driver_say "   self-check: pre-push off (gates.$key is false)"; return 0 ;;
   esac
   pushran=1
-  if [ "$prc" -ne 0 ] && [ "$prc" -ne 124 ] && _driver_ratchet_tighten "$t" "$wt" "$pout" pre-push; then
+  if [ "$prc" -ne 0 ] && [ "$prc" -ne 124 ] \
+     && { _driver_ratchet_tighten "$t" "$wt" "$pout" pre-push || driver_format_changed "$t" "$wt" "self-check: pre-push"; }; then
     prc=0; DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
   fi
   if [ "$prc" -eq 0 ]; then
@@ -380,6 +382,10 @@ driver_step_self_check() { # <ticket>
   machine_gate_wait_load 0
   machine_gate_acquire 0 "self-check #$t"
 
+  # The branch's files are formatted before any gate reads them: a format check is a
+  # command the driver can run, never a finding to send to fix.
+  driver_format_changed "$t" "$wt" self-check || true
+
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     name=${row%%	*}; cmd=${row#*	}
@@ -406,7 +412,8 @@ driver_step_self_check() { # <ticket>
       rc=$?
     fi
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
-       && _driver_ratchet_tighten "$t" "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$name"; then
+       && { _driver_ratchet_tighten "$t" "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$name" \
+            || driver_format_changed "$t" "$wt" "self-check: $name"; }; then
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi
