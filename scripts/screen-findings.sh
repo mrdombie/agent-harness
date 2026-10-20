@@ -18,7 +18,10 @@
 # Critical, Major and Minor block, and a Minor is fixed in the change; only a Nit drops.
 #
 # A grade is read off the item's own start — "[Major] …", "Major: …", "Major · …" — and
-# an item that names none is a Minor: polish is what the lists were opened for.
+# an item that names none is a Minor: polish is what the lists were opened for. A
+# critic's scope after the grade ("changed · …") is dropped. A line that says there is
+# nothing — "none", "0", "gone", or a finding closed with "— gone" / "(fixed)" — is no
+# finding: read as live, one blocked a clean screen.
 #
 # design.screenOf (harness.json) is a command that reads paths on stdin and prints the
 # screen slug of each it knows, one a line. Absent, only the ticket's labels say which
@@ -28,6 +31,8 @@ set -uo pipefail
 PL="${SCREEN_FINDINGS_POLISH:-$(dirname "${BASH_SOURCE[0]}")/polish-list.sh}"
 
 die() { echo "screen-findings: $*" >&2; exit 2; }
+RESOLVED='^[[:space:]]*[-*]?[[:space:]]*\(?(none|nothing|n/?a|0|zero|gone|resolved|fixed|no (issues?|findings?))\)?[[:space:]]*[.!]?[[:space:]]*$|(—|–|:|\(|-)[[:space:]]*(now[[:space:]]+)?(gone|resolved|fixed)[[:space:]]*\)?[[:space:]]*[.!]?[[:space:]]*$'
+resolved() { local t; t=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]'); grep -qE "$RESOLVED" <<<"$t"; } # <text without its grade>
 
 # grade_of <text> → "critical|major|minor \t text without the grade"
 grade_of() {
@@ -68,6 +73,7 @@ case "${1:-}" in
       while IFS= read -r it; do
         [ -n "$it" ] || continue
         g=$(grade_of "$it")
+        resolved "${g#*$'\t'}" && continue
         printf '%s\t%s\t%s\n' "${g%%$'\t'*}" "$n" "$it"
       done <<<"$items"
     done <<<"$slugs" | awk -F'\t' '$1 != "nit" && !seen[$2 FS $3]++' ;;
@@ -79,8 +85,9 @@ case "${1:-}" in
     [ -f "$f" ] || exit 0
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      g=$(grade_of "$line")
-      [ "${g%%$'\t'*}" = nit ] || printf '%s\t#%s\t%s\n' "${g%%$'\t'*}" "$2" "${g#*$'\t'}"
+      g=$(grade_of "$line"); txt="${g#*$'\t'}"; txt="${txt#changed · }"
+      resolved "$txt" && continue
+      [ "${g%%$'\t'*}" = nit ] || printf '%s\t#%s\t%s\n' "${g%%$'\t'*}" "$2" "$txt"
     done < "$f" ;;
   *) die "usage: screen-findings.sh screens|polish|critic …" ;;
 esac

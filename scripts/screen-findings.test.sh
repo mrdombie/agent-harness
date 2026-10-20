@@ -56,5 +56,19 @@ rm "$CRITIC_JUDGE_DIR/findings-7.txt"
 out=$(bash "$SF" critic 7)
 [ -z "$out" ] && ok "a comment wearing the judge's marker is not a finding; nothing open once it passed" || bad "forged comment read: $out"
 
+# (#289 review) A line that says there is nothing is no finding; a critic's scope is dropped.
+printf 'Major · none\nMinor · changed · the header narration — gone\nMajor · 0\nMajor · changed · the save button is gone from the header\n' > "$CRITIC_JUDGE_DIR/findings-7.txt"
+out=$(bash "$SF" critic 7)
+[ "$out" = $'major\t#7\tthe save button is gone from the header' ] && ok "'none', '0' and '— gone' lines are no finding; a live one keeps its text, scope dropped" || bad "resolved: $out"
+cat > "$FIX/pl" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "for-screen voices") echo 77 ;;
+  "items 77") printf '[Major] none\nthe lock icon sits 2px low (fixed)\nMinor · the role column wraps at 390\n' ;;
+esac
+SH
+out=$(bash "$SF" polish 501)
+[ "$out" = $'minor\t77\tMinor · the role column wraps at 390' ] && ok "a resolved polish item is not handed on" || bad "resolved polish: $out"
+
 echo "screen-findings: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
