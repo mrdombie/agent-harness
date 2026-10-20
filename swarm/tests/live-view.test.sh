@@ -1007,4 +1007,54 @@ got=$(SWARM_CLAIM_LOCK="$BIN/claims-lock" psnap | jq '.elsewhere | length')
 [ "$got" != "2" ] && ok "planted: the server drops the merge → $got remote rows → red" || bad "planted: the server drops the merge and the test cannot see it"
 rm -f "$STATE"/runs/claim-1401-a.json "$STATE/swarm/claims.json" "$FIX/titles.json"
 
+echo "--- the REAL claim-lock list reaches the page, under the env the page runs with ---"
+# Measured 2026-10-21: 0.7.135 served elsewhere: [] beside 3 claims on the Windows
+# VM. `claim-lock list` printed every claim and exited 1, the page took the exit
+# as a failure, and claims.json was never written. A hand-made fixture exited 0.
+CLS="$FIX/claim-sandbox"; mkdir -p "$CLS/bin" "$CLS/state"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$CLS/bin/gh"; chmod +x "$CLS/bin/gh"
+real_claims() { # <scripts dir> — a real claim taken and the page's snapshot of it
+  ( for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+    unset CLAIM_RUN_ID HARNESS_STATE_DIR
+    export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@test.local GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@test.local
+    export HARNESS_CFG_PATH="$CLS/work/.claude/harness.json" PATH="$CLS/bin:$PATH"
+    rm -rf "$CLS/origin.git" "$CLS/work" "$STATE/swarm/claims.json"
+    git init -q --bare -b main "$CLS/origin.git"
+    git clone -q "$CLS/origin.git" "$CLS/work" 2>/dev/null
+    mkdir -p "$CLS/work/.claude"
+    sed "s#/nonexistent-must-be-overridden#$CLS/state#; s#\"develop\"#\"main\"#" "$REPO/.claude/harness.json" > "$HARNESS_CFG_PATH"
+    git -C "$CLS/work" add -f .claude/harness.json && git -C "$CLS/work" commit -qm init && git -C "$CLS/work" push -q origin main
+    CLAIM_REPO="$CLS/work" bash "$1/claim-lock.sh" acquire 1501 --branch tkt-1501/x --worktree "$CLS/wt" --pid $$ >/dev/null 2>&1 \
+      || echo "the sandbox claim was not taken" >&2
+    # The page's own wiring: the real script, the queue's clone as CLAIM_REPO, and a
+    # host name of its own so this machine's claim reads as another machine's.
+    SWARM_CLAIM_LOCK="$1/claim-lock.sh" SWARM_QUEUE_REPO="$CLS/work" SNAP_HOST=page-host BRANCH_PREFIX=tkt- snap )
+}
+CLAIM_HOST=$(bash -c '. "$1/claim-proc.sh"; claim_host' _ "$HERE/../../scripts" 2>/dev/null)
+s=$(real_claims "$HERE/../../scripts")
+want "the real list's claim is a row, with the host it was taken on" "1501 $CLAIM_HOST" \
+  "$(printf '%s' "$s" | jq -r '[.elsewhere[]? | "\(.ticket) \(.host)"] | join(" ")')"
+want "and its step is absent, not invented"                "null" \
+  "$(printf '%s' "$s" | jq -r '.elsewhere[]? | select(.ticket=="1501") | .claimStep')"
+want "the list it read is kept for the next refresh"       "1501" \
+  "$(jq -r '[.claims[].issue] | join(" ")' "$STATE/swarm/claims.json" 2>/dev/null)"
+# Plant: the listing's old ending, a bare test as its last command, back in a copy.
+CP="$FIX/scripts-plant"; rm -rf "$CP"; cp -R "$HERE/../../scripts" "$CP"
+python3 - "$CP/claim-lock.sh" <<'PY' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = 'if [ -n "$legacy" ]; then while IFS= read -r n; do\n      jq -r'
+b = 'done <<<"$legacy"; fi\n  fi\n}'
+if s.count(a) != 1 or s.count(b) != 1: sys.exit(1)
+s = s.replace(a, '[ -n "$legacy" ] && while IFS= read -r n; do\n      jq -r').replace(b, 'done <<<"$legacy"\n  fi\n}')
+a = 'if [ -n "$legacy" ]; then while IFS= read -r n; do\n        jq -c'
+b = 'done <<<"$legacy"; fi\n    } | jq'
+if s.count(a) != 1 or s.count(b) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, '[ -n "$legacy" ] && while IFS= read -r n; do\n        jq -c').replace(b, 'done <<<"$legacy"\n    } | jq'))
+PY
+grep -qF 'if [ -n "$legacy" ]' "$CP/claim-lock.sh" && bad "plant: the listing still ends on an if"
+got=$(real_claims "$CP" | jq '[.elsewhere[]?] | length')
+[ "$got" = "0" ] && ok "planted: the list exits 1 again → $got remote rows → red" || bad "planted: the list exits 1 and the test cannot see it ($got)"
+rm -rf "$CP" "$CLS" "$STATE/swarm/claims.json"
+
 exit $FAILED
