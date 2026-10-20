@@ -341,6 +341,26 @@ toolkit_tools() {
 # agent's cwd is rewritten underneath it — which also keeps a run under the rules
 # it started with. REFUSES rather than handing back a tree it cannot vouch for; a
 # silent fallback to the invoking tree IS the defect.
+# _kit_spawn_held <dir> <cwds> — 0 when a process's cwd (one per line in <cwds>) is
+# inside <dir>, or a live run's record (no .ended, its pid answering) names it.
+_kit_spawn_held() {
+  local real runs f id pid
+  [ -z "${ZSH_VERSION:-}" ] || setopt localoptions nullglob
+  real=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  printf '%s\n' "$2" | awk -v r="$real/" 'index($0 "/", r) == 1 { f = 1; exit } END { exit !f }' && return 0
+  runs="${RUNS_DIR:-${STATE_DIR:+$STATE_DIR/runs}}"
+  [ -n "$runs" ] && [ -d "$runs" ] || return 1
+  for f in "$runs"/*.json; do
+    [ -f "$f" ] || continue
+    id=${f##*/}; id=${id%.json}
+    [ -e "$runs/$id.ended" ] && continue
+    pid=$(jq -r '.pid // .child_pid // empty' "$f" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    case "$(jq -r '.spawn_root // empty' "$f" 2>/dev/null)" in "$1"|"$real") return 0 ;; esac
+  done
+  return 1
+}
+
 toolkit_spawn_root() {
   local sha base dir lock n old
   git -C "$MAIN_REPO" fetch -q origin "$INTEGRATION_BRANCH" 2>/dev/null || true
@@ -370,11 +390,21 @@ toolkit_spawn_root() {
     echo "toolkit-env: could not check out origin/$INTEGRATION_BRANCH ($sha) from '$MAIN_REPO'." >&2
     return 1
   fi
-  # Retire checkouts nothing can still be reading. Anything touched in the last
-  # six hours is left alone: removing a directory a live agent is sitting in is
-  # worse than keeping a tree nobody reads.
+  # Used now: its age counts from this run, not from the first run on this commit.
+  touch "$dir" 2>/dev/null || true
+  # Retire checkouts nothing can still be reading. Age alone is not that: a run sits
+  # in its spawn checkout for its whole life, and a quiet trunk keeps one commit's
+  # checkout in use for many hours — removed at six, every git call a live driver
+  # made from it died on getcwd (#13480). So a checkout a process has its cwd in, or a
+  # live run's record names, is kept; without lsof nobody can tell, and nothing goes.
+  local held=""
+  if command -v lsof >/dev/null 2>&1; then
+    held=$(cd / && lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  fi
   find "$base" -maxdepth 1 -name 'harness-spawn-*' -type d -mmin +360 2>/dev/null | while read -r old; do
     [ "$old" = "$dir" ] && continue
+    command -v lsof >/dev/null 2>&1 || continue
+    _kit_spawn_held "$old" "$held" && continue
     git -C "$MAIN_REPO" worktree remove --force "$old" >/dev/null 2>&1 || rm -rf "$old"
     rm -f "$old.ready"
   done
