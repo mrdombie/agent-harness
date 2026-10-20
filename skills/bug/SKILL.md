@@ -126,6 +126,10 @@ every frame a named evidence region on laptop and phone, real data drawn (duplic
 names, the longest names, the empty state, scrolled), and
 `python3 -I "$KIT_ROOT/scripts/picture-evidence.py" lint` passes before it is sent.
 
+Once the operator approves the picture, publish it for every machine before the build
+starts: `bash "$KIT_ROOT/scripts/picture-approve.sh" <ticket> <picture.html>` (a secret
+gist and a **Picture for any machine** comment on the ticket; rerunning is a no-op).
+
 If nothing visible changes, skip to Step 5. Do not invent a design phase for a
 backend fix.
 

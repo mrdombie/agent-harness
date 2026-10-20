@@ -360,6 +360,9 @@ say-so. Do not block the loop on it:
    regions are the evidence the PR owes; nobody chooses them later.
 2. Label `$HOLD_LABEL`, append to `.auto-skip` with reason `needs-human`.
 3. **Move to the next row immediately.**
+4. When the operator approves the picture, publish it for every machine before
+   anything is built from it: `bash "$KIT_ROOT/scripts/picture-approve.sh" <ticket> <picture.html>`
+   (a secret gist and a **Picture for any machine** comment; rerunning is a no-op).
 
 An approval-gated item is parked, not failed. The loop keeps running.
 

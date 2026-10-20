@@ -72,6 +72,22 @@ prints the diff and checks the file minus the added attributes is the original):
 python3 -I "$KIT_ROOT/scripts/picture-label.py" --route /the/route --approved 2026-10-14 .design/<surface>-mock.html
 ```
 
+## The moment it is approved: publish it for any machine
+
+The page a picture is drawn on opens only for the person who drew it, so a builder on another
+machine cannot read the picture that binds its build. Whoever records the approval
+publishes the file itself, in the same motion:
+
+```bash
+bash "$KIT_ROOT/scripts/picture-approve.sh" <ticket> <picture.html>
+```
+
+It puts the file in a secret gist and posts a ticket comment starting
+**Picture for any machine** with the gist and raw URLs and the file's sha256. Run
+again on the same file, it does nothing; a new version of the picture is published
+again. A picture recorded as approved without that comment is not approved for any
+machine but the one that drew it.
+
 ## Before the picture goes anywhere
 
 ```bash
