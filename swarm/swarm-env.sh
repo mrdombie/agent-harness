@@ -49,6 +49,8 @@ SWARM_DIR="${SWARM_DIR:-$STATE_DIR/swarm}"
 SWARM_LOGS="${SWARM_LOGS:-$STATE_DIR/logs}"
 RUNS_DIR="${RUNS_DIR:-$STATE_DIR/runs}"
 mkdir -p "$SWARM_DIR" "$SWARM_LOGS" "$RUNS_DIR" 2>/dev/null || true
+# A launchd job's label. Two projects can share one machine, so it carries a key of the state directory.
+swarm_job_label() { printf 'agent-harness.swarm.%s.%s' "$1" "$(printf '%s' "$STATE_DIR" | cksum | awk '{printf "%08x", $1}')"; }
 
 # swarm_opt <dotted.key> <default> — an OPTIONAL project fact.
 #

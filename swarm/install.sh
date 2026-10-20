@@ -50,7 +50,7 @@ jobs_for_project() {
   [ -n "$SWARM_REPORT_URL" ] && printf 'report\n'
   return 0
 }
-label()  { printf '%s.%s.%s' "$NS" "$1" "$KEY"; }
+label()  { swarm_job_label "$1"; }
 plist()  { printf '%s/%s.plist' "$AGENTS_DIR" "$(label "$1")"; }
 
 script_for() { # <job> — the command line under the kit, one argument per line

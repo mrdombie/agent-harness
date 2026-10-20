@@ -283,11 +283,11 @@ P="$FIX/lv-plant"; mkdir -p "$P"; cp "$LV"/*.mjs "$LV"/index.html "$P/"
 python3 - "$P/server.mjs" <<'PY' || bad "plant did not land"
 import sys
 p = sys.argv[1]; s = open(p).read()
-a = "  gathering = true\n  execFile(process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],"
+a = "  gathering = true\n  runChild('progress', process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],"
 if s.count(a) != 1: sys.exit(1)
-open(p, "w").write(s.replace(a, "  setTimeout(() => { try { keep(gatherProgress(args)) } catch {} }, 0); if (0) execFile(process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],"))
+open(p, "w").write(s.replace(a, "  setTimeout(() => { try { keep(gatherProgress(args)) } catch {} }, 0); if (0) runChild('progress', process.execPath, [PROGRESS_JS, '--gather', JSON.stringify(args)],"))
 PY
-grep -q "if (0) execFile" "$P/server.mjs" || bad "plant: the child process is still in the copy"
+grep -q "if (0) runChild" "$P/server.mjs" || bad "plant: the child process is still in the copy"
 ms=$(served "$P")
 case "$ms" in *[!0-9]*|'') ms=99999 ;; esac
 [ "$ms" -ge 1500 ] && ok "planted: refresh in-process → two answers took ${ms} ms → red" \
