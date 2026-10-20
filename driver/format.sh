@@ -37,22 +37,29 @@ driver_format_cmd() { # <tree>
   printf '%s' "node_modules/.bin/prettier --write --ignore-unknown"
 }
 
-driver_format_changed() { # <ticket> <tree> <label>
-  local t="$1" wt="$2" label="$3" cmd base r f dirty files=() q="" out after changed=()
-  cmd=$(driver_format_cmd "$wt")
-  [ -n "$cmd" ] || return 1
-  base=""
+# driver_branch_files <tree> — what the branch changed since it left the integration
+# branch (added, copied, modified, renamed), one path per line; 1 when no base resolves.
+driver_branch_files() {
+  local wt="$1" r base=""
   for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}"; do
     base=$(git -C "$wt" merge-base "$r" HEAD 2>/dev/null) && [ -n "$base" ] && break
   done
   [ -n "$base" ] || return 1
+  git -C "$wt" diff --name-only --diff-filter=ACMR "$base" HEAD 2>/dev/null
+}
+
+driver_format_changed() { # <ticket> <tree> <label>
+  local t="$1" wt="$2" label="$3" cmd f dirty branch files=() q="" out after changed=()
+  cmd=$(driver_format_cmd "$wt")
+  [ -n "$cmd" ] || return 1
+  branch=$(driver_branch_files "$wt") || return 1
   dirty=$(git -C "$wt" diff --name-only HEAD 2>/dev/null)
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$wt/$f" ] && [ ! -L "$wt/$f" ] || continue
     grep -Fxq -- "$f" <<<"$dirty" && continue
     files+=("$f"); q="$q $(printf '%q' "$f")"
   done <<EOF
-$(git -C "$wt" diff --name-only --diff-filter=ACMR "$base" HEAD 2>/dev/null)
+$branch
 EOF
   [ "${#files[@]}" -gt 0 ] || return 1
   out="$(driver_state_dir "$t")/steps/format.out"

@@ -122,6 +122,40 @@ EOS
   return 0
 }
 
+# A GATE THAT FAILED ON THE MACHINE IS RUN AGAIN, NOT ASKED ABOUT. #13044 (2026-10-20):
+# the changed-tests gate was killed under load, then failed on one test outside the
+# change that passes alone — and the fix step asked the PM "re-run it, yes or no?". Two
+# shapes are the machine's, not the change's:
+#   - the gate was killed (exit 137 or 143: SIGKILL, SIGTERM);
+#   - every failing test file it names is outside the files this branch changed.
+# _driver_gate_load_fault <tree> <rc> <output> — 0 for either, with DRIVER_LOAD_WHY set.
+_driver_gate_load_fault() {
+  local wt="$1" rc="$2" out="$3" failing branch f inside=0 n=0
+  DRIVER_LOAD_WHY=""
+  case "$rc" in
+    137|143) DRIVER_LOAD_WHY="the gate was killed (exit $rc)"; return 0 ;;
+  esac
+  [ -f "$out" ] || return 1
+  # Test files on a failure line (vitest/jest `FAIL  x.test.ts`, `×`, `✗`), colour stripped.
+  failing=$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$out" 2>/dev/null \
+    | grep -E '(^|[[:space:]])(FAIL|×|✗|✕)[[:space:]]' \
+    | grep -oE '[A-Za-z0-9_@./-]+\.(test|spec)\.[cm]?[jt]sx?' | sed 's#^\./##' | awk '!seen[$0]++')
+  [ -n "$failing" ] || return 1
+  branch=$(driver_branch_files "$wt") || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    n=$((n+1))
+    grep -Fxq -- "$f" <<<"$branch" && { inside=1; break; }
+    # A path printed relative to a package root still names a branch file.
+    grep -Eq "(^|/)$(printf '%s' "$f" | sed 's/[.[\*^$/]/\\&/g')\$" <<<"$branch" && { inside=1; break; }
+  done <<EOF
+$failing
+EOF
+  [ "$inside" -eq 0 ] && [ "$n" -gt 0 ] || return 1
+  DRIVER_LOAD_WHY="every failing test ($(printf '%s' "$failing" | tr '\n' ' ' | sed 's/ $//' | cut -c1-200)) is outside this change"
+  return 0
+}
+
 # The compiler's or runner's own error lines when it printed any, else the tail.
 _driver_gate_lines() { # <file>
   local l
@@ -414,6 +448,16 @@ driver_step_self_check() { # <ticket>
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
        && { _driver_ratchet_tighten "$t" "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$name" \
             || driver_format_changed "$t" "$wt" "self-check: $name"; }; then
+      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      rc=$?
+    fi
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
+       && _driver_gate_load_fault "$wt" "$rc" "$(driver_state_dir "$t")/steps/gate-$safe.out"; then
+      driver_say "⏳ self-check: $name failed on the machine, not the change — $DRIVER_LOAD_WHY. Waiting for a quieter moment, then running it once more by itself."
+      machine_gate_release
+      machine_gate_wait_load 0
+      machine_gate_acquire 0 "self-check #$t"
+      gsecs=$(_driver_gate_secs)
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi
