@@ -358,6 +358,24 @@ export function doneSummary(rows) {
   return parts.length ? `Finished: ${parts.join(' · ')}` : 'Finished'
 }
 
+// A step-driver run writes almost nothing to its run log: each model step streams
+// into DRIVER_DIR/<ticket>/steps/<step>.log instead. Read the newest of those
+// written since this run started, so the card's Now line and last-active come from
+// the step that is working — not "Starting up" for a run 20 minutes in.
+function driverLog(ticket, startedMs) {
+  const dir = path.join(DRIVER_DIR, String(ticket), 'steps')
+  let best = null
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.log')) continue
+      let m = 0
+      try { m = fs.statSync(path.join(dir, f)).mtimeMs } catch { continue }
+      if (m >= startedMs && (!best || m > best.m)) best = { f, m }
+    }
+  } catch { return null }
+  return best ? parseLog(path.join(dir, best.f)) : null
+}
+
 // A run is live when it has no .ended marker AND its agent's process still
 // exists. The marker alone is not enough — a wrapper killed before it could
 // write one leaves a record that looks like a running agent forever, which is
@@ -377,7 +395,13 @@ export function snapshot(now = Date.now()) {
     const isLive = !ended && alive(runPid(run))
     if (!isLive && (!ended || now - Date.parse(ended.ended_at) > KEEP_HOURS * 3600_000)) continue
     fetchTitle(run.ticket)
-    const log = parseLog(nativePath(run.log || ''))
+    const runLog = parseLog(nativePath(run.log || ''))
+    const stepLog = run.builder === 'driver' ? driverLog(run.ticket, Date.parse(run.started_at) || 0) : null
+    // The step log speaks for the run while it has anything to say; the run log
+    // still owns the final result. Last active is whichever was written last.
+    const log = stepLog && stepLog.steps.length
+      ? { ...stepLog, result: runLog.result, mtime: Math.max(stepLog.mtime, runLog.mtime) }
+      : runLog
     const t = titles[run.ticket] || {}
     // NOT `f`: that is the loop's filename, and a second `const f` in this block
     // shadows it into its own temporal dead zone — every read then throws into
