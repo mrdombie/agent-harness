@@ -460,4 +460,89 @@ out=$(driver_step_repair 383 2>&1); rc=$?
 want_in "with our own claim (none here) the model is still called" 'repair' "$(cat "$CLAUDE_LOG")"
 want "and nothing says to keep a claim"                    "" "$(driver_state_get 383 claim_elsewhere)"
 
+
+echo "--- a red lesson check is answered in the PR body, from the diff's own guard (#332) ---"
+# The body lives in $FIX/gh/body-<n>.md: read and PATCHed through the REST API.
+cat > "$BIN/gh-body" <<'SH'
+#!/usr/bin/env bash
+case "$1 $*" in
+  "api "*pulls/[0-9]*)
+    printf '%s\n' "$*" >> "$GH_LOG"
+    n=$(printf '%s' "$*" | sed -n 's#.*pulls/\([0-9]*\).*#\1#p'); f="$FIX/gh/body-$n.md"
+    case " $* " in *" PATCH "*)
+      [ ! -f "$FIX/gh-body-patch-fails" ] || exit 1
+      src=$(printf '%s\n' "$@" | sed -n 's/^body=@//p'); cp "$src" "$f"; echo '{}'; exit 0 ;; esac
+    [ -f "$f" ] && cat "$f" ;;
+  *) exec "$BIN/gh" "$@" ;;
+esac
+SH
+chmod +x "$BIN/gh-body"; SWARM_GH_WAS="$SWARM_GH"; export SWARM_GH="$BIN/gh-body"
+LESSON_CHECK='Every fix ships a lesson'
+lesson_body() { printf 'Fixes the value.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n' > "$FIX/gh/body-$1.md"; }
+lesson() { jq -nc --arg g "$1" '{principle:"a value written without a check that reads it back ships wrong", guard:$g,
+  beforeAfter:"the guard fails on the bad value and passes on the good one", reach:"every value file this repo writes, by the same grep"}'; }
+lesson_only() { jq -nc --argjson l "$1" '{step:"repair", skills:["superpowers:systematic-debugging","superpowers:test-driven-development"], status:"repaired", cause:"the body had no lesson", lesson:$l}'; }
+printf '[]\n' > "$FIX/no-closing.json"
+judge_body() { # <ticket> — the lesson check, run on the body GitHub now holds
+  bash "$HERE/../../scripts/check-lesson.sh" --repo "$WT" --base develop --head HEAD --body-file "$FIX/gh/body-$1.md" \
+    --class repair --labels "" --title "" --branch "tkt-$1/work" --closing-file "$FIX/no-closing.json" 2>&1 | head -1
+}
+
+setup 401; lesson_body 401
+printf '#!/usr/bin/env bash\ngrep -q good value401.txt\n' > "$WT/value401.test.sh"; printf 'value=good\n' > "$WT/value401.txt"
+git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value, with its test"; git -C "$WT" push -q origin "tkt-401/work"
+driver_state_set 401 repair_base "$(git -C "$WT" rev-parse HEAD)"; HEAD401=$(git -C "$WT" rev-parse HEAD)
+prs 401 CLEAN "$LESSON_CHECK"
+want "before the repair the lesson check is red on the body" "lesson: this is a fix pull request" "$(judge_body 401 | cut -c1-34)"
+answer "$(lesson_only "$(lesson value401.test.sh)")"
+out=$(driver_step_repair 401 2>&1); rc=$?
+want "a lesson-only repair finishes"          "0" "$rc"
+want "after one model call"                   "repair" "$(cat "$CLAUDE_LOG")"
+want "with nothing committed"                 "$HEAD401" "$(git -C "$WT" rev-parse HEAD)"
+want_in "the lesson check reached the brief"  'red \(Every fix ships a lesson\)' "$(cat "$FIX/claude-stdin-repair.txt")"
+want_in "the body was written by the REST API" 'api -X PATCH repos/acme/widgets/pulls/401 -F body=@' "$(cat "$GH_LOG")"
+want_in "the body names the diff's guard"     '^- Guard: `value401.test.sh`$' "$(cat "$FIX/gh/body-401.md")"
+want_in "and keeps its own words"             '^Fixes the value\.$' "$(cat "$FIX/gh/body-401.md")"
+want "the section sits above the closing line" "## Lesson" "$(grep -E '^## Lesson|Generated with' "$FIX/gh/body-401.md" | head -1)"
+want_in "the step says it counted it"         'wrote the lesson into PR #401.*lesson: complete' "$out"
+want_in "the lesson check is green on the body now" '^lesson: complete' "$(judge_body 401)"
+
+echo "--- a fix with no test: the repair adds one, proves it, and the lesson names it (#332) ---"
+setup 402; lesson_body 402
+printf 'value=good\n' > "$WT/value402.txt"; git -C "$WT" commit -qam "fix: the value, no test" 2>/dev/null || { git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value, no test"; }
+git -C "$WT" push -q origin "tkt-402/work"; driver_state_set 402 repair_base "$(git -C "$WT" rev-parse HEAD)"
+prs 402 CLEAN "$LESSON_CHECK"
+printf '#!/usr/bin/env bash\ngrep -q good value402.txt\n' > "$WT/value402.test.sh"; printf 'value=bad\n' > "$WT/value402.txt"
+git -C "$WT" add . && git -C "$WT" commit -qm "test: the value, the fix reverted"; TS=$(git -C "$WT" rev-parse HEAD)
+printf 'value=good\n' > "$WT/value402.txt"; git -C "$WT" commit -qam "fix: the value restored"; IS=$(git -C "$WT" rev-parse HEAD)
+answer "$(jq -c --argjson f "$(test_fix "$TS" "$IS" value402.test.sh 'bash value402.test.sh')" --argjson l "$(lesson value402.test.sh)" '.fixes = [$f] | .lesson = $l' <<<"$(lesson_only '{}')")"
+out=$(driver_step_repair 402 2>&1); rc=$?
+want "it finishes"                            "0" "$rc"
+want_in "the added guard is proved"           'red .* then green' "$out"
+want_in "and the body names it"               '^- Guard: `value402.test.sh`$' "$(cat "$FIX/gh/body-402.md")"
+want_in "the lesson check is green on the body now" '^lesson: complete' "$(judge_body 402)"
+
+echo "--- a lesson naming a guard that is not there is never written (#332) ---"
+setup 403; lesson_body 403
+printf 'value=good\n' > "$WT/value403.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value, no test"
+git -C "$WT" push -q origin "tkt-403/work"; driver_state_set 403 repair_base "$(git -C "$WT" rev-parse HEAD)"
+prs 403 CLEAN "$LESSON_CHECK"
+answer "$(lesson_only "$(lesson value403.test.sh)")"
+out=$(driver_step_repair 403 2>&1); rc=$?
+want "it refuses"                             "24" "$rc"
+want_in "naming the missing guard"            'value403.test.sh. as its guard, and that is neither in PR #403' "$out"
+want_not_in "the body is not written"         'PATCH repos/acme/widgets/pulls/403' "$(cat "$GH_LOG")"
+want_not_in "and carries no lesson"           '## Lesson' "$(cat "$FIX/gh/body-403.md")"
+
+echo "--- a red lesson check answered with code alone is asked again, then refused (#332) ---"
+setup 404; lesson_body 404; prs 404 CLEAN "$LESSON_CHECK"
+printf 'ok\n' > "$WT/lint.state"; printf 'x\n' > "$WT/touch404"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: lint"
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+out=$(driver_step_repair 404 2>&1); rc=$?
+want "it refuses"                             "24" "$rc"
+want "the model was asked twice"              "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want_in "the second ask names the lesson"     'only a lesson in the PR body turns it green' "$(cat "$FIX/claude-stdin-repair.txt")"
+want_not_in "the body is not written"         'PATCH repos/acme/widgets/pulls/404' "$(cat "$GH_LOG")"
+export SWARM_GH="$SWARM_GH_WAS"
+
 exit $FAILED
