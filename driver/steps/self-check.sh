@@ -83,6 +83,57 @@ _driver_gate_lines() { # <file>
 
 _driver_order_has() { case " ${DRIVER_STEPS:-} " in *" $1 "*) return 0 ;; esac; return 1; }
 
+# A GATE'S TIME LIMIT FOLLOWS THE MACHINE. cmdTimeout is what a gate takes on a quiet
+# Mac; with five or six builds sharing it, `changed 3` ran past 900s three times on
+# 2026-10-20 and each parked a build that was fine (#12801, #12563, #12782). The limit
+# is scaled by load per core, between 1x and DRIVER_GATE_TIMEOUT_MAX_SCALE (3x).
+# _driver_gate_scale — the factor; _driver_gate_secs [factor] — the limit in seconds.
+_driver_gate_scale() {
+  local load cores max="${DRIVER_GATE_TIMEOUT_MAX_SCALE:-3}" f
+  load=$(swarm_load 2>/dev/null); cores=$(swarm_cores 2>/dev/null)
+  case "$load" in ''|*[!0-9]*) load=0 ;; esac
+  case "$cores" in ''|*[!0-9]*|0) cores=1 ;; esac
+  case "$max" in ''|*[!0-9]*|0) max=3 ;; esac
+  f=$(( (load + cores - 1) / cores ))
+  [ "$f" -ge 1 ] || f=1
+  [ "$f" -le "$max" ] || f=$max
+  printf '%s' "$f"
+}
+_driver_gate_secs() {
+  case "${DRIVER_CMD_TIMEOUT:-}" in ''|*[!0-9]*|0) printf '%s' "${DRIVER_CMD_TIMEOUT:-}"; return ;; esac
+  printf '%s' $(( DRIVER_CMD_TIMEOUT * ${1:-$(_driver_gate_scale)} ))
+}
+
+# _driver_gate_quiet_retry <label> <secs> — a gate ran past its limit: give the slot
+# back, wait until the machine is quiet, take a slot again. Sets DRIVER_GATE_RETRY_SECS
+# to the second try's limit: twice the base at least, scaled by the load then.
+_driver_gate_quiet_retry() {
+  local label="$1" secs="$2" s2
+  driver_say "⏳ self-check: $label did not return within ${secs}s (load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for a quieter moment, then running it once more. A timeout is not a red gate."
+  machine_gate_release
+  machine_gate_wait_load 0
+  machine_gate_acquire 0 "self-check #${DRIVER_TICKET:-?}"
+  s2=$(_driver_gate_secs)
+  case "$s2" in ''|*[!0-9]*) DRIVER_GATE_RETRY_SECS="$s2"; return 0 ;; esac
+  [ "$s2" -ge $(( DRIVER_CMD_TIMEOUT * 2 )) ] || s2=$(( DRIVER_CMD_TIMEOUT * 2 ))
+  DRIVER_GATE_RETRY_SECS="$s2"
+}
+
+# _driver_gate_timed_out <label> <secs> <cmd> <loaded> — the second try ran out too.
+# On a loaded machine that is the machine, not the change: the run goes back on the
+# queue (DRIVER_E_BUSY). On a quiet one it is a command that does not return: a park.
+_driver_gate_timed_out() {
+  local label="$1" secs="$2" cmd="$3" loaded="$4"
+  if [ "$loaded" -eq 1 ]; then
+    driver_say "⏳ self-check: $label did not return within ${secs}s on the second try either, with the machine loaded — back on the queue for a quieter machine, not parked."
+    driver_state_set "$DRIVER_TICKET" park_note "the '$label' gate did not return within ${secs}s twice while the machine was loaded: $cmd"
+    return "$DRIVER_E_BUSY"
+  fi
+  driver_say "✋ self-check: $label ran out of time twice (over ${secs}s) on a quiet machine. A gate that does not return is not a gate that passed."
+  driver_state_set "$DRIVER_TICKET" park_note "the '$label' gate did not return within ${secs}s, twice, on a quiet machine: $cmd"
+  return "$DRIVER_E_TIMEOUT"
+}
+
 # THE PUSH'S OWN CHECKS. On 2026-10-17 self-check said "3 gate(s) green" and the
 # push then refused on one of the 77 checks the project's pre-push runs: the work
 # parked after review was paid for, on a finding the fix step never saw (#236). So
@@ -112,7 +163,7 @@ _driver_prepush() {
       if [ -z "$(printf '%s' "$DRIVER_PREPUSH_CMD" | tr -d '[:space:]')" ]; then
         printf 'harness.json gates.%s is an empty command\n' "$key" > "$out"; return 127
       fi
-      ( cd "$wt" && export SIGNOFF_GUARD_DRYRUN=1 && driver_run_project "$DRIVER_CMD_TIMEOUT" "$DRIVER_PREPUSH_CMD" ) > "$out" 2>&1 || rc=$?
+      ( cd "$wt" && export SIGNOFF_GUARD_DRYRUN=1 && driver_run_project "${DRIVER_GATE_SECS:-$DRIVER_CMD_TIMEOUT}" "$DRIVER_PREPUSH_CMD" ) > "$out" 2>&1 || rc=$?
       return "$rc" ;;
     boolean)
       if [ "$(jq -r --arg k "$key" '.gates[$k]' "$HARNESS_CFG")" = false ]; then DRIVER_PREPUSH_DID=off; return 0; fi
@@ -131,7 +182,7 @@ _driver_prepush() {
   url=$(git -C "$wt" remote get-url origin 2>/dev/null) || url=origin
   DRIVER_PREPUSH_CMD="the pre-push hook ($hook)"
   printf 'refs/heads/%s %s refs/heads/%s %s\n' "$branch" "$head" "$branch" "$rsha" > "$out.stdin"
-  ( cd "$top" && export SIGNOFF_GUARD_DRYRUN=1 && driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$out.stdin" "$hook" origin "$url" ) > "$out" 2>&1 || rc=$?
+  ( cd "$top" && export SIGNOFF_GUARD_DRYRUN=1 && driver_bounded_argv "${DRIVER_GATE_SECS:-$DRIVER_CMD_TIMEOUT}" "$out.stdin" "$hook" origin "$url" ) > "$out" 2>&1 || rc=$?
   rm -f "$out.stdin"
   return "$rc"
 }
@@ -173,17 +224,25 @@ _driver_prepush_gate() {
     key=prePushOwed
     driver_say "   self-check: $owed is owed on this diff — running gates.prePushOwed, the push's checks without that verdict"
   fi
-  _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+  local pscale psecs; pscale=$(_driver_gate_scale); psecs=$(_driver_gate_secs "$pscale")
+  DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+  if [ "$prc" -eq 124 ]; then
+    _driver_gate_quiet_retry pre-push "$psecs"
+    psecs="$DRIVER_GATE_RETRY_SECS"; prc=0
+    [ "$(_driver_gate_scale)" -le 1 ] || pscale=2
+    DRIVER_GATE_SECS="$psecs" _driver_prepush "$t" "$wt" "$pout" "$key" || prc=$?
+    if [ "$prc" -eq 124 ]; then
+      pushran=1
+      _driver_gate_timed_out pre-push "$psecs" "$DRIVER_PREPUSH_CMD" "$([ "$pscale" -gt 1 ] && echo 1 || echo 0)"
+      return $?
+    fi
+  fi
   case "$DRIVER_PREPUSH_DID" in
     none) driver_say "   self-check: pre-push — this tree has no pre-push hook and harness.json names no gates.prePush"; return 0 ;;
     off)  driver_say "   self-check: pre-push off (gates.$key is false)"; return 0 ;;
   esac
   pushran=1
-  if [ "$prc" -eq 124 ]; then
-    driver_say "✋ self-check: pre-push ran out of time (over ${DRIVER_CMD_TIMEOUT}s). A gate that does not return is not a gate that passed."
-    driver_state_set "$t" park_note "the push verification did not return within ${DRIVER_CMD_TIMEOUT}s: $DRIVER_PREPUSH_CMD"
-    return "$DRIVER_E_TIMEOUT"
-  elif [ "$prc" -eq 0 ]; then
+  if [ "$prc" -eq 0 ]; then
     driver_say "   self-check: pre-push ok"
     return 0
   fi
@@ -215,7 +274,7 @@ _driver_push_tail() { # <file>
 
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
-  local wt names row name safe cmd rc gtype failed=0 ran=0 pushran=0 empty="" redlines="" infra="" findings
+  local wt names row name safe cmd rc gtype failed=0 ran=0 pushran=0 empty="" redlines="" infra="" findings gscale gsecs
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   findings="$(driver_state_dir "$t")/steps/self-check.findings.json"
@@ -281,17 +340,26 @@ driver_step_self_check() { # <ticket>
     esac
     ran=$((ran+1))
     safe=$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-')
-    # Its own command, its own exit code, nothing batched with it.
-    ( cd "$wt" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+    # Its own command, its own exit code, nothing batched with it. The limit is
+    # scaled by the machine's load, read now.
+    gscale=$(_driver_gate_scale); gsecs=$(_driver_gate_secs "$gscale")
+    ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
     rc=$?
     if [ "$rc" -eq 124 ]; then
-      # Its own outcome, not a red gate. A gate that does not return says nothing about
-      # the change, and the park question a reader needs is "which command hangs", not
-      # "which check failed".
-      driver_say "✋ self-check: $name ran out of time (over ${DRIVER_CMD_TIMEOUT}s). A gate that does not return is not a gate that passed."
-      driver_state_set "$t" park_note "the '$name' gate did not return within ${DRIVER_CMD_TIMEOUT}s: $cmd"
+      # Its own outcome, not a red gate: it says nothing about the change. One more
+      # try once the machine is quiet, before anything is decided.
+      _driver_gate_quiet_retry "$name" "$gsecs"
+      gsecs="$DRIVER_GATE_RETRY_SECS"
+      [ "$(_driver_gate_scale)" -le 1 ] || gscale=2
+      ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
+      rc=$?
+    fi
+    if [ "$rc" -eq 124 ]; then
+      # The park question a reader needs is "which command hangs", not "which check failed".
+      local trc=0
+      _driver_gate_timed_out "$name" "$gsecs" "$cmd" "$([ "$gscale" -gt 1 ] && echo 1 || echo 0)" || trc=$?
       machine_gate_release
-      return "$DRIVER_E_TIMEOUT"
+      return "$trc"
     elif [ "$rc" -eq 0 ]; then
       driver_say "   self-check: $name ok"
     else

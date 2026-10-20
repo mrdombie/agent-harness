@@ -212,6 +212,9 @@ BRIEF
       --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
     driver_say "   park: the cause is the driver's, not the ticket's — #$t is left ready for the next tick"
   else
+    # Counted past the cap too: the healing lane reads "over the cap on this PR head"
+    # off the record and stops re-picking it (#12840: 10 runs, every one a park).
+    [ "$cause" != driver ] || driver_state_bump "$t" machine_parks
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
       --add-label "$LBL_PARKED" \
       --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true

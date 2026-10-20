@@ -56,6 +56,17 @@ mkdir -p "$SWARM_DIR" "$SWARM_LOGS" "$RUNS_DIR" 2>/dev/null || true
 # cannot invent (the repo slug, the label names). These are different: a cap, a
 # load ceiling and a port are machine tuning, identical on every project until
 # someone tunes them, so a default here names no project and hides nothing.
+# swarm_heal_parked_out <ticket> <pr-head> — 0 when the driver parked this ticket past
+# its cap of driver-caused parks (driver.maxMachineParks, 2) on this same PR head. The
+# healing lane leaves it for a person; a new head on the PR heals it again.
+swarm_heal_parked_out() {
+  local f="${DRIVER_DIR:-${STATE_DIR:-}/driver}/$1/state.json" n h cap="${DRIVER_MAX_MACHINE_PARKS:-2}"
+  [ -n "$1" ] && [ -n "${2:-}" ] && [ -f "$f" ] || return 1
+  n=$(jq -r '.counters.machine_parks // 0' "$f" 2>/dev/null); h=$(jq -r '.repair_pr_head // ""' "$f" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$n" -gt "$cap" ] && [ "$h" = "$2" ]
+}
+
 swarm_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 
 SWARM_CAP="${SWARM_CAP:-$(swarm_opt swarm.cap 3)}"

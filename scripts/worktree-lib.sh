@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # worktree-lib.sh — sourced by the worktree sweeper and the cache pass.
-#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_can_see_processes · wt_cfg <cfg> <jq-path>
+#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_run_holder <real-wt> · wt_can_see_processes · wt_cfg <cfg> <jq-path>
 
 wt_real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
 
@@ -26,6 +26,30 @@ wt_occupant() { # <real-wt>
     index(self, " " $1 " ") { next }
     index($2 "/", root) == 1 { print $1; found = 1; exit }
     END { exit !found }'
+}
+
+# wt_run_holder <real-wt> — the id of a live run whose record names this tree (its
+# claim's worktree or the checkout it was spawned in); 1 when none does. Live: no
+# .ended beside the record and its pid answers. A run record is the one holder lsof
+# cannot see between two commands, and the one a branch name never carries.
+wt_run_holder() {
+  local runs="${RUNS_DIR:-${STATE_DIR:+$STATE_DIR/runs}}" f id pid w
+  [ -n "$runs" ] && [ -d "$runs" ] || return 1
+  for f in "$runs"/*.json; do
+    [ -f "$f" ] || continue
+    id=${f##*/}; id=${id%.json}
+    [ -e "$runs/$id.ended" ] && continue
+    pid=$(jq -r '.pid // .child_pid // empty' "$f" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    while IFS= read -r w; do
+      [ -n "$w" ] || continue
+      case "$(wt_real "$w")/" in "$1"/*) printf '%s' "$id"; return 0 ;; esac
+    done <<EOS
+$(cat "$runs/$id.worktrees" 2>/dev/null)
+$(jq -r '.spawn_root // empty' "$f" 2>/dev/null)
+EOS
+  done
+  return 1
 }
 
 wt_cfg() { # <cfg-file> <jq path>

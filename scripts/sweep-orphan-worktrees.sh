@@ -3,7 +3,8 @@
 #   sweep-orphan-worktrees.sh [--apply] [--caches-only]
 # Considers every worktree under the worktree root and the temp dirs, whatever its name, whichever
 # clone of the project registered it.
-# Never removed with: a claim on a ticket its folder or branch names, a process inside, uncommitted
+# Never removed with: a claim on a ticket its folder or branch names, a live run's record naming it,
+# a process inside, uncommitted
 # changes, or a commit pushed nowhere (a commit that is the head of a merged PR counts as pushed).
 # Otherwise removed when its PR has merged or its ticket is closed (with no open PR), and any other
 # one once untouched for SWEEP_WORKTREE_HOURS (24).
@@ -192,6 +193,7 @@ for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
     keep "$wt" "a worktree of another repo"; continue
   fi
   if why=$(claim_on "$wt"); then keep "$wt" "live claim ($why)"; continue; fi
+  if why=$(wt_run_holder "$real"); then keep "$wt" "a live run holds it ($why)"; continue; fi
   [ "$SEE" = 1 ] || { keep "$wt" "cannot see processes (no lsof)"; continue; }
   if pid=$(wt_occupant "$real"); then keep "$wt" "in use (pid $pid)"; continue; fi
   if ! done_why "$wt"; then

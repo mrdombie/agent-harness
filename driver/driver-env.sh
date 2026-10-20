@@ -96,6 +96,7 @@ DRIVER_E_USAGE=27     # a model step hit the plan's usage limit
 DRIVER_E_REQUEUE=28   # build-ticket's own exit: back on the queue, no label, no park
 DRIVER_E_BUSY=29      # another run on this host holds the ticket's claim
 DRIVER_E_REWORK=30
+DRIVER_E_TO_REPAIR=31 # start found the ticket's open PR: this run becomes a repair of it
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
 # growing pause. One failed read parked a ticket for good on 2026-10-18.
@@ -378,7 +379,8 @@ driver_lean_args() {
 # fails. Without it git finds no hook and pushes unchecked. A tree with no .husky/
 # keeps whatever hooks setup it has (the script says so and exits 0).
 driver_ensure_hooks() {
-  bash "${DRIVER_ENSURE_HOOKS:-$KIT_ROOT/scripts/ensure-hooks.sh}" "$1" "$2" >&2 || {
+  # From the tree itself: the run's own directory can be gone, and git refuses to start there.
+  ( cd "$2" 2>/dev/null || cd /; bash "${DRIVER_ENSURE_HOOKS:-$KIT_ROOT/scripts/ensure-hooks.sh}" "$1" "$2" ) >&2 || {
     driver_say "✋ git hooks could not be set up in $2 — the reason is printed above."
     return 1
   }
@@ -627,4 +629,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRI
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_TO_REPAIR

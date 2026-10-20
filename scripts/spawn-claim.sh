@@ -408,6 +408,7 @@ cat > "$RECORD" <<EOF
   "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
+  "spawn_root": $(jq -cn --arg p "$SPAWN_ROOT" '$p'),
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"$DRIVER_FIELDS
 }
 EOF
