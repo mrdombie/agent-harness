@@ -320,7 +320,10 @@ coord_lock() { # <dir> <noun>
 #                building. A title or label that merely says "polish" is not one.
 #   coord_tooling our own build tooling (coordinator.toolingLabels / toolingScopes):
 #                after product work of the same priority and class
+#   coord_process a process fix (coordinator.processLabel, default process): first of
+#                all, whatever its priority, class or kind (owner call 2026-10-20)
 COORD_TICKET_JQ='
+  def coord_process($ls): ($ls | index($process)) != null;
   def coord_pri($ls; $pri): ([$ls[]? | select(test("^P[0-9]$"))] | first) // $pri // "";
   def coord_prin($ls; $pri): ((coord_pri($ls; $pri) | capture("^P(?<d>[0-9])") | .d | tonumber) // 9);
   def coord_polish($ls; $pri; $title):
@@ -350,7 +353,7 @@ coord_stop_json() { # all|new
   } | awk 'NF && !seen[$0]++' | jq -R . | jq -sc .
 }
 coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it needs
-  jq --arg plist "$LBL_POLISH_LIST" --arg partial "${LBL_PARTIAL:-status:partial}" \
+  jq --arg plist "$LBL_POLISH_LIST" --arg process "$SWARM_PROCESS_LABEL" --arg partial "${LBL_PARTIAL:-status:partial}" \
      --argjson tooling "$(printf '%s' "$COORD_TOOLING_LABELS" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0))')" \
      --argjson toolscopes "$(printf '%s' "$COORD_TOOLING_SCOPES" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0) | ascii_downcase)')" \
      --arg inreview "${LBL_IN_REVIEW:-status:in-review}" \
@@ -359,8 +362,10 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 
 # The queue in run order: <ticket> \t <class> \t <note>; with --wide,
 # <ticket> \t <class> \t <priority 0-9> \t <polish 0|1> \t <polish list 0|1> \t
-# <never held 0|1> \t <note>. Never held: an entry put at the front (a resume, an
-# owner's answer) or half-built work — the polish hold never parks either.
+# <never held 0|1> \t <process 0|1> \t <note>. Never held: an entry put at the front
+# (a resume, an owner's answer), half-built work or a process fix — the polish hold
+# never parks any of them. A process fix (coord_process) runs first of all, ahead of
+# even an entry the PM put on top, in the sheet's order as in this machine's own.
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
 # < none); within one priority repair, approved-merge, then new; within one class
 # product work before our own tooling (coord_tooling); then new by kind; then the
@@ -385,18 +390,20 @@ coord_queue_ordered() {
                  polish: (if $ls then coord_polish($ls; null; $i.title) else ($t.polish // ($t.kind == "polish")) end),
                  plist: (if $ls then ($ls | index($plist)) != null else ($t.plist // false) end),
                  tool: (if $ls then coord_tooling($ls; $i.title) else ($t.tooling // false) end),
+                 proc: (if $ls then coord_process($ls) else ($t.process // false) end),
                  class: coord_class($t.class; $t.note)}
          | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # .top (the PM putting it on top with add --front) is first overall; .front (a resume, an answer,
      # a requeue) is first only among its own priority.
-     | if $sheet then sort_by(if .top or .front then 0 else 1 end, .pos)
-       else sort_by(if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+     | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
+       else sort_by(if .proc then 0 else 1 end, if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
-                           (if .top or .front or .kind == "half-built" then "1" else "0" end), (.note // "")]
+                           (if .top or .front or .kind == "half-built" or .proc then "1" else "0" end),
+                           (if .proc then "1" else "0" end), (.note // "")]
        else [(.n|tostring), .class, (.note // "")] end | @tsv' "$COORD_QUEUE" 2>/dev/null
 }
 

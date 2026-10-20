@@ -448,13 +448,31 @@ swarm_programme_of() { # <ticket>
 # two hours re-running tickets that had failed the night before (#42).
 SWARM_HOLD_FILE="${SWARM_HOLD_FILE:-$SWARM_DIR/HOLD}"
 swarm_held() { [ -f "$SWARM_HOLD_FILE" ] || return 1; head -1 "$SWARM_HOLD_FILE"; }
+# Process fixes trump everything (owner call 2026-10-20): a ticket wearing this label
+# starts first, and a hold whose reason says it is "for process fixes", or that carries
+# an `allow: process` line, still lets these through while it holds everything else.
+SWARM_PROCESS_LABEL="${COORDINATOR_PROCESS_LABEL:-$(swarm_opt coordinator.processLabel process)}"
+swarm_hold_lets_process() {
+  [ -f "$SWARM_HOLD_FILE" ] || return 1
+  grep -qiE 'for process fixes' <<<"$(head -1 "$SWARM_HOLD_FILE")" && return 0
+  grep -qiE "^[[:space:]]*allow:[[:space:]]*(process|$SWARM_PROCESS_LABEL)[[:space:]]*\$" "$SWARM_HOLD_FILE"
+}
+# Read whole, then matched: a piped grep -q under pipefail can fail on SIGPIPE.
+swarm_ticket_is_process() { # <ticket> — 0 when it wears the process label; unread is not
+  local ls; ls=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) || return 1
+  grep -qxF -- "$SWARM_PROCESS_LABEL" <<<"$ls"
+}
 
 swarm_spawn() { # <ticket> [brief-file] [budget]
   local t="$1" brief="${2:-}" budget="${3:-$SWARM_BUDGET_USD}" out
   local held
   if held=$(swarm_held); then
-    echo "held — not spawning #$t: $held" >&2
-    return 1
+    if swarm_hold_lets_process && swarm_ticket_is_process "$t"; then
+      echo "held for everything but process fixes — #$t is one: $held" >&2
+    else
+      echo "held — not spawning #$t: $held" >&2
+      return 1
+    fi
   fi
   out=$(mktemp)
   (
@@ -474,6 +492,6 @@ swarm_ping_page() {
   swarm_gh api "repos/$SWARM_STATUS_REPO/dispatches" -f event_type=claim-changed >/dev/null 2>&1
 }
 
-export SWARM_DIR SWARM_HOLD_FILE SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MIN_CPU_IDLE SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
+export SWARM_DIR SWARM_HOLD_FILE SWARM_PROCESS_LABEL SWARM_LOGS RUNS_DIR SWARM_CAP SWARM_MIN_CPU_IDLE SWARM_MAX_LOAD SWARM_PORT SWARM_LIVE_URL
 export SWARM_STATUS_REPO SWARM_REPORT_URL SWARM_BUDGET_USD SWARM_USAGE_CEILING SWARM_GH SWARM_CURL SWARM_SPAWN
 export SWARM_PROGRAMME_PREFIX SWARM_TOKEN_FILE SWARM_STALE_SEC LBL_OWNER_DECISION

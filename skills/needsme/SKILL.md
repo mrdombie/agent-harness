@@ -529,6 +529,22 @@ of which it was.
 sign-off` check-run is pinned to the head SHA and the gate patches it on its next
 run, so nudge the body (`gh pr edit --body`); a new commit also works. Do not thrash.
 
+### `approve` on a design call (a picture, nothing built)
+
+Approval must name the picture. Record it, then publish the file for every machine,
+in one motion — the artifact link opens only for whoever drew it:
+
+```bash
+gh issue comment "$N" --repo "$REPO_SLUG" --body "Picture approved: <the artifact URL>. Approved by @$OPERATOR in the agent window."
+# The picture's HTML on this machine (the drawn file, or the artifact read back to a file).
+bash "$KIT_ROOT/scripts/picture-approve.sh" "$N" "<picture.html>"
+gh issue edit "$N" --repo "$REPO_SLUG" --remove-label "$HOLD_LABEL"
+```
+
+`picture-approve.sh` makes a secret gist and posts the **Picture for any machine**
+comment; on the same file again it does nothing. If it fails, say so and leave the
+hold on: a picture no other machine can read is not ready to build from.
+
 ### A falsely-parked ticket
 
 Decision (Dom, 2026-09-01): every falsely-parked ticket is shown before release — a closed blocker does not always mean the work

@@ -100,7 +100,8 @@ coord_sheet_stop_labels() {
 
 # coord_sheet_entries <wide order> <issues json> <claims tsv> <started here, comma list>
 # — the sheet's content as JSON: {order: [...], building: [...]}. The order keeps
-# the queue's run order; an entry a host holds stays in its place, named.
+# the queue's run order; an entry a host holds stays in its place, named. Process
+# fixes (coordinator.processLabel) are listed first, whatever order the rows came in.
 #   wide order  coord_queue_ordered --wide rows
 #   claims tsv  <ticket> \t <host> \t <step>, every live claim on every host
 coord_sheet_entries() {
@@ -120,7 +121,7 @@ coord_sheet_entries() {
         ($cls != "new" or ($ls | index($ready)) != null)
         and ([$ls[] | select(. as $l | $stops | index($l) != null)
                     | select(. != $inreview_l or $cls == "new")] | length == 0);
-    {order: [$wide | split("\n")[] | select(length > 0) | split("\t")
+    {order: ([$wide | split("\n")[] | select(length > 0) | split("\t")
         | {n: (.[0] | tonumber), class: .[1], prin: (.[2] | tonumber? // 9)} as $e
         | ($iss[($e.n | tostring)] // null) as $i
         | select($i != null and ($i.state // "OPEN") == "OPEN")
@@ -128,7 +129,9 @@ coord_sheet_entries() {
         | ($heldby[($e.n | tostring)].host // "") as $h
         | select($h != "" or startable($ls; $e.class))
         | $e + {kind: coord_kind($ls; ""; null; $i.title), title: ($i.title // "")}
-          + (if $h != "" then {host: $h} else {} end)],
+          + (if coord_process($ls) then {process: true} else {} end)
+          + (if $h != "" then {host: $h} else {} end)]
+        | sort_by(if .process then 0 else 1 end)),
      building: [$held[] | . + {title: ($iss[(.n | tostring)].title // "")}] | sort_by(.n)}' <<<"$issues"
 }
 
@@ -144,10 +147,11 @@ coord_sheet_render() {
   local e="$1" at="$2"
   jq -r --arg when "$(_sheet_when "$at")" --arg owner "$COORD_HOST" --arg at "$at" '
     def pri: {"0":"Urgent","1":"High","2":"Normal","3":"Polish"}[tostring] // "No priority";
-    def kind: if .class == "repair" then "Red PR to fix" elif .class == "approved-merge" then "Approved, to merge"
+    def kind: if .process then "Process fix" elif .class == "repair" then "Red PR to fix" elif .class == "approved-merge" then "Approved, to merge"
               else {"half-built":"Half-built","feature":"Feature","polish":"Polish"}[.kind // ""] // "Fix" end;
     def cut: if length > 90 then .[0:89] + "…" else . end;
     (.order | length) as $n
+    | ([.order[] | select(.process)] | length) as $np
     | ([.order[] | .prin] | group_by(.) | map("\(.[0] | pri) \(length)") | join(" · ")) as $counts
     | "The order every machine builds in. Written by the coordinator on \($owner) each time it changes — please do not edit it by hand.",
       "",
@@ -158,13 +162,14 @@ coord_sheet_render() {
        else (.building[] | "- #\(.n)\(if .title != "" then " · " + (.title | cut) else "" end) — on \(.host)\(if (.step // "") != "" then ", step: " + .step else "" end)") end),
       "",
       "### Next up, in run order",
+      (if $np > 0 then "Process fixes first: \($np)\n" else empty end),
       (if $n == 0 then "Nothing is ready to start."
        else (.order | to_entries[] | .key as $i | .value
              | "\($i + 1). #\(.n) · \(.prin | pri) · \(kind) · \(.title | cut) — \(if (.host // "") != "" then "building on " + .host else "ready" end)") end),
       "",
       "<!-- sheet:v1 updated=\($at) owner=\($owner) -->",
       "```json",
-      (.order | map({n, class, prin} + (if (.host // "") != "" then {host} else {} end)) | tojson),
+      (.order | map({n, class, prin} + (if .process then {process} else {} end) + (if (.host // "") != "" then {host} else {} end)) | tojson),
       "```"' <<<"$e"
 }
 
@@ -254,7 +259,8 @@ coord_sheet_seed_queue() {
     | .source = "sheet" | .sheet_at = $at
     | .scope = (.scope // "sheet") | .label = (.label // "the shared sheet")
     | .tickets = ($front + [$o[] | select((.host // "") == "") | select(.n as $n | $fn | index($n) | not)
-                           | {n, class: (.class // "new"), prin: (.prin // 9), note: ""}])' <<<"$cur" \
+                           | {n, class: (.class // "new"), prin: (.prin // 9), note: ""}
+                             + (if .process then {process: true} else {} end)])' <<<"$cur" \
     > "$COORD_QUEUE.$$" && mv -f "$COORD_QUEUE.$$" "$COORD_QUEUE"
 }
 

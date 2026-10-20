@@ -115,6 +115,18 @@ want "the owner put its answer first"               "702 701" "$(sheet_json | jq
 tick_on box 1 >/dev/null
 want "the reader takes 702, though by priority alone 701 comes first" "702" "$(by box)"
 
+echo "--- process fixes are listed first on the sheet, and the reader starts them first ---"
+world
+fix_issue 711 OPEN "status:ready,P0"; fix_issue 712 OPEN "status:ready,P3,process"
+queue_on mac 711 712
+tick_on mac 0 >/dev/null
+want "the process fix heads the sheet's order, ahead of a P0" "712 711" "$(sheet_json | jq -r '.[].n' | tr '\n' ' ' | sed 's/ $//')"
+want "and the order says it is one"         "true" "$(sheet_json | jq -r '.[0].process')"
+want_in "the sheet says how many come first" '^Process fixes first: 1$' "$(cat "$SH/body")"
+want_in "and names it in plain words"        '^1\. #712 · Polish · Process fix · Ticket 712 — ready$' "$(cat "$SH/body")"
+tick_on box 1 >/dev/null
+want "the reader starts the process fix"     "712" "$(by box)"
+
 echo "--- unchanged order: zero writes; a change or the heartbeat: one ---"
 world
 queue_on mac 501 502

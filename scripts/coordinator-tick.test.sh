@@ -466,6 +466,40 @@ out=$(COORDINATOR_SHADOW=0 tick)
 want "the swarm hold stops every spawn"    "" "$(spawned)"
 want_in "and names the hold"               'held — owner said stop' "$out"
 
+echo "--- process fixes trump everything: priority, kind, polish, heal-all and the split ---"
+proc_q() { local l="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$l"; bash "$Q" add "$t" >/dev/null; done; }
+fresh; proc_q "P0,status:ready" 701; proc_q "P3,process,status:ready" 702
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1)
+want "a P3 process fix starts before a P0 that is not one" "702" "$(spawned)"
+want_in "and the log says why"             'spawned #702 \(new\) in any free place, a process fix first' "$out"
+fresh; queue_as repair $(seq 601 612); proc_q "P3,process,status:ready" 702
+SWARM_IDLE=90 COORDINATOR_CAP=1 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
+want "12 reds and heal-all in force: the process fix still takes the one place" "702" "$(spawned)"
+fresh; queue_as repair 601; proc_q "P2,status:ready" 701; proc_q "process,status:ready" 702 703
+SWARM_IDLE=90 COORDINATOR_CAP=2 COORDINATOR_HEALING_SHARE=0.5 ticks 1 >/dev/null
+want "both places go to process fixes, ahead of the split's red" "702 703" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+fresh; proc_q "P1,status:ready" 701; proc_q "P2,status:ready" 702
+fix_issue 703 OPEN "P3,process,status:ready"; bash "$Q" add 703 >/dev/null
+fix_issue 704 OPEN "P0,status:ready"; bash "$Q" add 704 --front >/dev/null
+want "the queue order: the process fix ahead even of an entry put on top" "703 704 701 702" \
+  "$(bash "$Q" list | awk '/^ *[0-9]+\./ { printf "%s%s", (n++ ? " " : ""), substr($2, 2) }')"
+
+echo "--- a hold for process fixes lets them through and holds everything else ---"
+fresh; proc_q "P0,status:ready" 501; proc_q "process,status:ready" 502
+printf 'quiet night, for process fixes (held 2026-10-20T22:00Z by dom)\n' > "$STATE/swarm/HOLD"
+out=$(SWARM_IDLE=90 ticks 1)
+want "held for process fixes: only the process fix starts" "502" "$(spawned)"
+want_in "and the log names the hold"       'held for everything but process fixes \(process\) — quiet night' "$out"
+fresh; proc_q "P0,status:ready" 501; proc_q "process,status:ready" 502
+printf 'owner said stop\nallow: process\n' > "$STATE/swarm/HOLD"
+SWARM_IDLE=90 ticks 1 >/dev/null
+want "an allow: process line does the same" "502" "$(spawned)"
+fresh; proc_q "P0,status:ready" 501; proc_q "process,status:ready" 502
+printf 'owner said stop\n' > "$STATE/swarm/HOLD"
+out=$(SWARM_IDLE=90 ticks 1)
+want "a plain hold holds the process fix too" "" "$(spawned)"
+want_in "and names the hold"               'held — owner said stop' "$out"
+
 echo "--- a busy machine spawns nothing: the same test as the gate ---"
 fresh; queue 501
 out=$(COORDINATOR_SHADOW=0 SWARM_IDLE=9 tick)

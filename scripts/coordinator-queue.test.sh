@@ -157,7 +157,7 @@ want "and keeps them on the entry"         "0 half-built false" "$(jq -r '.ticke
 . "$HERE/coordinator-env.sh"
 ISSUES='{"625":{"number":625,"state":"OPEN","title":"x","labels":["P0","status:in-review"]}}'
 want "with the tick's read, it ranks by its own ticket's priority" \
-  "625	approved-merge	0	0	0	1	|621	new	0	0	0	0	|622	repair	1	0	0	0	" \
+  "625	approved-merge	0	0	0	1	0	|621	new	0	0	0	0	0	|622	repair	1	0	0	0	0	" \
   "$(COORD_QUEUE="$QF" coord_queue_ordered --wide | head -3 | tr '\n' '|' | sed 's/|$//')"
 unset ISSUES
 
@@ -177,6 +177,17 @@ want "tooling by label or by title scope is recorded" "true true false" \
 rm -f "$QF"; COORDINATOR_TOOLING_LABELS="code-health" bash "$Q" seed widgets >/dev/null
 want "coordinator.toolingLabels decides which labels are tooling" \
   "634:repair 635:repair 630:new 631:new 633:new 632:new" "$(order)"
+
+echo "--- a process fix is seeded first of all, whatever its priority or class ---"
+printf '%s\n' \
+  "636	P0	OPS		[FINISH PR]	a P0 clash	P0,type:bug,project:widgets" \
+  "637	P0	OPS			a P0 feature	P0,type:feature,project:widgets" \
+  "638	P3	OPS			the claim flow skips a step	P3,process,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; bash "$Q" seed widgets >/dev/null
+want "the P3 process fix heads a P0 repair and a P0 feature" "638:new 636:repair 637:new" "$(order)"
+want "the queue file holds it first too"   "638" "$(jq -r '.tickets[0].n' "$QF")"
+want "and the entry says it is one"        "true false" \
+  "$(jq -r '[(.tickets[] | select(.n==638)), (.tickets[] | select(.n==637))] | map(.process) | join(" ")' "$QF")"
 
 echo "--- polish is a P3 label or a polish list, nothing else ---"
 printf '%s\n' \

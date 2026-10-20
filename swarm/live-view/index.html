@@ -105,6 +105,7 @@ a{color:inherit}
 <div class="page">
   <header><h1>Release, live</h1><span class="meta" id="meta">loading…</span></header>
   <div class="banner" id="hold" role="status" hidden></div>
+  <p class="sub" id="processfirst" hidden></p>
   <section class="headline" id="headline"><div class="ptitle">Release progress</div><div class="big">Release: counting…</div></section>
   <h2>Today</h2>
   <div class="today" id="today"><span class="empty">Not read yet.</span></div>
@@ -133,6 +134,7 @@ function holdBanner(h){
   if (!h || !h.held) { el.hidden = true; el.innerHTML = ''; return }
   const head = h.kind === 'usage'
     ? `Not starting new work: ${esc(h.reason || 'the usage limit was reached')}`
+    : h.allows === 'process' ? `Not starting new work except process fixes: paused by the owner`
     : `Not starting new work: paused by the owner`
   const sub = h.kind === 'usage'
     ? (h.until ? `Starts again ${esc(when(h.until))}. Work already running carries on.` : 'Work already running carries on.')
@@ -275,6 +277,8 @@ function render(s){
   repo = s.repo || ''
   document.getElementById('meta').textContent = `updated ${new Date(s.at).toLocaleTimeString()}`
   holdBanner(s.hold)
+  const pf = document.getElementById('processfirst'), np = s.queue?.processFirst || 0
+  pf.hidden = !np; pf.textContent = np ? `Process fixes first: ${np}` : ''
   document.getElementById('headline').innerHTML = headline(s.board, s.launch)
   const td = s.launch?.today
   document.getElementById('today').innerHTML = todayLine(td
