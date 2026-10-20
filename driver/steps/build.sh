@@ -48,6 +48,12 @@
 # both answers to the change. A first version that asserts the opposite of the
 # change is green before and red after, so the two readings disagree — and the
 # wrong one says "still fails with the change" about a change that works.
+#
+# Unless the test came FIRST and the change edited it. A fix that changes behaviour
+# rewrites the sibling cases asserting the old one, in the same file, and the test
+# commit's version then fails at the change for those siblings alone. When the test
+# commit is an ancestor of the change, the version that lands with the change is the
+# one run in both halves: red at the change's parent, green at the change.
 # The two proof trees need what the TICKET worktree was given, or a test command
 # that resolves through the shared install — `npx x`, `./node_modules/.bin/x`,
 # `npm test` — fails with 127 in both of them. 127 in the second reads as "the
@@ -104,7 +110,7 @@ _driver_typecheck_lines() { # <file>
 }
 
 # The runner's own failure lines when it printed any, else the tail. The first lines
-# are a runner's banner — vitest's config warning on every maktura run — so a reason
+# are a runner's banner — a config warning on every run of some runners — so a reason
 # made of them named no case, and the fix round's one retry was handed nothing.
 _driver_fail_lines() { # <file>
   local l
@@ -153,8 +159,12 @@ driver_prove_red_green() {
     printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
+  # The version run in both halves: the change's own when the test commit came first
+  # (the change may edit the test it names), else the reported one.
+  local vsha="$tsha"
+  git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null && vsha="$isha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
-  git -C "$repo" show "$tsha:$tfile" > "$tmp/before/$tfile"
+  git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
   ( cd "$tmp/before" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
@@ -167,12 +177,11 @@ driver_prove_red_green() {
     printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
-  # The SAME version of the test in both trees. A test sharpened while the change
-  # was built is ordinary, and then the change's own tree holds an EARLIER version:
-  # running that one measures a different test in each half, and the two answers get
-  # attributed to the change. One version, two trees.
+  # The SAME version of the test in both trees. A test sharpened after the change is
+  # ordinary, and then the change's own tree holds an EARLIER version: running that
+  # one measures a different test in each half. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
-  git -C "$repo" show "$tsha:$tfile" > "$tmp/after/$tfile"
+  git -C "$repo" show "$vsha:$tfile" > "$tmp/after/$tfile"
   ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
   # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
@@ -216,14 +225,7 @@ driver_prove_red_green() {
     return 1
   fi
   if [ "$rc_green" -ne 0 ]; then
-    # THE TEST COMMIT'S VERSION RUNS IN BOTH TREES, so a case the change rewrote —
-    # a sibling that asserted the old behaviour — still asserts it here. Said, so
-    # the retry moves the edit rather than re-sending the same two commits.
-    local moved=""
-    git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null \
-      && ! git -C "$repo" diff --quiet "$tsha" "$isha" -- "$tfile" 2>/dev/null \
-      && moved=" — and $tfile changes between the test commit $(printf '%s' "$tsha" | cut -c1-8) and the change commit $(printf '%s' "$isha" | cut -c1-8). The proof runs the test commit's version in both trees, so a case the change rewrote still fails there: make every edit to $tfile in the test commit"
-    printf '%s still fails with the change (exit %s): %s%s\n' "$tfile" "$rc_green" "$after_out" "$moved"
+    printf '%s still fails with the change (exit %s): %s\n' "$tfile" "$rc_green" "$after_out"
     return 2
   fi
   printf '%s: red (exit %s) at %s, then green at %s\n' \

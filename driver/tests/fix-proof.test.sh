@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# fix-proof.test.sh — a fix whose proof fails is told WHY, asked once more, and
-# still refused when the second answer is not proved either.
+# fix-proof.test.sh — a fix that edits the test it names is proved with the version
+# that lands; a proof that fails says which case failed; and a fix round whose proof
+# fails is asked once more, told why, and still refused when the retry proves nothing.
 #
-# Measured on maktura 18–20 Oct: 12 of 18 "still fails with the change" refusals in
-# a fix round were a test file the fix had rewritten (sibling cases asserting the old
-# behaviour), and the proof runs the TEST commit's version in both trees. The reason
-# the proof printed was `head -5` of the output — for vitest, its config banner every
-# time — so the one retry was handed nothing and re-sent the same commits (#13621).
+# Measured on the origin project, 18–20 Oct: 12 of 18 "still fails with the change"
+# refusals in a fix round were a test file the fix had also edited (sibling cases
+# that asserted the old behaviour), and the proof ran the TEST commit's version in
+# both trees. The reason it printed was `head -5` of the output — a runner's config
+# banner — so the one retry was handed nothing and re-sent the same commits.
 #
 # Run: bash "$0"
 set -uo pipefail
@@ -18,49 +19,59 @@ fix_real_briefs
 . "$HERE/../steps/fix.sh" || exit 1
 
 c() { git -C "$1" -c user.email=t@e.invalid -c user.name=T commit -qm "$2"; git -C "$1" rev-parse HEAD; }
+BANNER='for i in 1 2 3 4 5 6; do echo "(!) a config banner line $i that says nothing"; done'
 
-# A test file with a sibling case that asserts the OLD behaviour, and a fix that
-# changes the behaviour and rewrites that sibling in the change commit.
-#   test commit:  case "new" (red before) + case "old" (asserts mode=old)
-#   impl commit:  mode=new, and case "old" rewritten to assert mode=new
-mk_rewritten() { # <repo>
+# mk_mode <repo> — a test commit whose file holds the new case AND a sibling that
+# asserts the old behaviour, so the fix has to edit the test file it names.
+mk_mode() {
   local r="$1"
   printf 'mode=old\n' > "$r/mode.txt"
   git -C "$r" add mode.txt; c "$r" "base: mode" >/dev/null
-  cat > "$r/mode.test.sh" <<'SH'
-#!/usr/bin/env bash
-for i in 1 2 3 4 5 6; do echo "(!) a config banner line $i that says nothing"; done
-grep -q 'mode=new' mode.txt || { echo " FAIL  mode.test > new: mode is new"; exit 1; }
-grep -q 'mode=old' mode.txt || { echo " FAIL  mode.test > old: mode is old"; exit 1; }
-echo ok
-SH
-  git -C "$r" add mode.test.sh; RW_TEST=$(c "$r" "test: mode is new")
-  printf 'mode=new\n' > "$r/mode.txt"
-  sed -i.bak "s/'mode=old' mode.txt || { echo \" FAIL  mode.test > old: mode is old\"/'mode=new' mode.txt || { echo \" FAIL  mode.test > old: mode is old\"/" "$r/mode.test.sh"
-  rm -f "$r/mode.test.sh.bak"
-  grep -c "mode=new" "$r/mode.test.sh" | grep -qx 2 || { echo "fixture: the sibling rewrite did not land"; exit 1; }
-  git -C "$r" add mode.txt mode.test.sh; RW_IMPL=$(c "$r" "fix: mode is new, and the old case follows it")
+  { echo '#!/usr/bin/env bash'; echo "$BANNER"
+    echo "grep -q 'mode=new' mode.txt || { echo ' FAIL  mode.test > new'; exit 1; }"
+    echo "grep -q 'mode=old' mode.txt || { echo ' FAIL  mode.test > old'; exit 1; }"; } > "$r/mode.test.sh"
+  git -C "$r" add mode.test.sh; M_TEST=$(c "$r" "test: mode is new")
+}
+# set_sibling <repo> <line> — the sibling line of mode.test.sh, replaced and asserted.
+set_sibling() {
+  local r="$1" want="$2"
+  { echo '#!/usr/bin/env bash'; echo "$BANNER"
+    echo "grep -q 'mode=new' mode.txt || { echo ' FAIL  mode.test > new'; exit 1; }"
+    echo "$want"; } > "$r/mode.test.sh"
+  grep -qxF -- "$want" "$r/mode.test.sh" || { echo "fixture: the sibling edit did not land"; exit 1; }
 }
 
-echo "--- a proof that fails quotes the failing case, not the runner's banner ---"
-mk_rewritten "$REPO"
-out=$(driver_prove_red_green "$REPO" mode.test.sh "$RW_TEST" "$RW_IMPL" "bash mode.test.sh" 2>&1); rc=$?
-want "a sibling the change rewrote still fails in the test commit's version" "2" "$rc"
-want_in "the reason names the case that failed" 'FAIL  mode.test > old: mode is old' "$out"
-want_not_in "and not the banner in its place" 'config banner line 1' "$out"
-want_in "and says the change commit edits the test file" \
-  'mode.test.sh changes between the test commit .* and the change commit' "$out"
-want_in "with what to do about it" 'every edit to mode.test.sh in the test commit' "$out"
+echo "--- a fix that edits the test it names is proved with the version that lands ---"
+# The fix changes the behaviour and rewrites the sibling that asserted the old one.
+mk_mode "$REPO"
+printf 'mode=new\n' > "$REPO/mode.txt"
+set_sibling "$REPO" "grep -q 'mode=' mode.txt || { echo ' FAIL  mode.test > has a mode'; exit 1; }"
+git -C "$REPO" add mode.txt mode.test.sh; M_IMPL=$(c "$REPO" "fix: mode is new, and the sibling follows it")
+out=$(driver_prove_red_green "$REPO" mode.test.sh "$M_TEST" "$M_IMPL" "bash mode.test.sh" 2>&1); rc=$?
+want "red on the code before the fix, green after, with the fix's own version" "0" "$rc"
+want_in "and it says red then green" 'red .*then green' "$out"
+want_not_in "never blamed on the sibling the fix rewrote" 'still fails with the change' "$out"
 
-echo "--- a test file the change leaves alone is not blamed on a rewrite ---"
-printf 'n\n' > "$REPO/plain.txt"; git -C "$REPO" add plain.txt; c "$REPO" "base: plain" >/dev/null
-printf '#!/usr/bin/env bash\ngrep -q never plain.txt || { echo " FAIL  plain > never"; exit 1; }\n' > "$REPO/plain.test.sh"
-git -C "$REPO" add plain.test.sh; P_TEST=$(c "$REPO" "test: plain")
-printf 'still n\n' > "$REPO/plain.txt"; git -C "$REPO" add plain.txt; P_IMPL=$(c "$REPO" "fix: plain, not done")
-out=$(driver_prove_red_green "$REPO" plain.test.sh "$P_TEST" "$P_IMPL" "bash plain.test.sh" 2>&1); rc=$?
-want "a change that does not do the job still fails" "2" "$rc"
-want_in "quoting the case" 'FAIL  plain > never' "$out"
-want_not_in "and says nothing about a rewrite" 'changes between the test commit' "$out"
+echo "--- a case the fix ADDS to the test it names is run too ---"
+# Added red at the change itself, so only a run of the post-fix version can see it.
+mk_mode "$REPO"
+printf 'mode=new\n' > "$REPO/mode.txt"
+set_sibling "$REPO" "grep -q 'never' mode.txt || { echo ' FAIL  mode.test > added by the fix'; exit 1; }"
+git -C "$REPO" add mode.txt mode.test.sh; A_IMPL=$(c "$REPO" "fix: mode is new, with an added case")
+out=$(driver_prove_red_green "$REPO" mode.test.sh "$M_TEST" "$A_IMPL" "bash mode.test.sh" 2>&1); rc=$?
+want "the added case is red at the change, so the fix is not proved" "2" "$rc"
+want_in "and the reason quotes that case, not the runner's banner" 'FAIL  mode.test > added by the fix' "$out"
+want_not_in "the banner is not the reason" 'config banner line 1' "$out"
+
+echo "--- a fix that guts the test it names proves nothing ---"
+# Not a way round the rule: the post-fix version has to be RED on the code before it.
+mk_mode "$REPO"
+printf 'mode=new\n' > "$REPO/mode.txt"
+printf '#!/usr/bin/env bash\ntrue\n' > "$REPO/mode.test.sh"
+git -C "$REPO" add mode.txt mode.test.sh; G_IMPL=$(c "$REPO" "fix: mode is new, and the test says nothing")
+out=$(driver_prove_red_green "$REPO" mode.test.sh "$M_TEST" "$G_IMPL" "bash mode.test.sh" 2>&1); rc=$?
+want "a post-fix test green before the fix is refused" "1" "$rc"
+want_in "as one that does not test the change" 'passes without the change' "$out"
 
 echo "--- the sibling proof, by a planted break, quotes the failing case too ---"
 printf 'on\n' > "$REPO/brk.txt"
@@ -84,13 +95,12 @@ fix_issue 501 OPEN "status:claimed"
 printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"BLOCKED","findings":[{"id":"F7","file":"mode.txt","line":1,"grade":"major","summary":"the mode is still old","reason":"a person sees the old mode","fix":"make it new"}]}' \
   > "$(driver_state_dir 501)/steps/review.json"
 
-# Round 1 names the rewritten layout. The honest layout the retry can name: the
-# test file already in its final form (every case asserting the new mode) at a
-# commit where the mode is old, then the change alone.
-mk_rewritten "$WT"
-BAD_TS=$RW_TEST; BAD_IS=$RW_IMPL
-printf 'mode=old\n' > "$WT/mode.txt"; git -C "$WT" add mode.txt
-GOOD_TS=$(c "$WT" "test: every case of mode.test.sh in its final form, mode still old")
+# Round 1 names a change that does not do the job; the retry names the one that does.
+printf 'mode=old\n' > "$WT/mode.txt"
+{ echo '#!/usr/bin/env bash'; echo "$BANNER"
+  echo "grep -q 'mode=new' mode.txt || { echo ' FAIL  mode.test > new'; exit 1; }"; } > "$WT/mode.test.sh"
+git -C "$WT" add mode.txt mode.test.sh; TS=$(c "$WT" "test: mode is new")
+printf 'noise\n' > "$WT/other.txt"; git -C "$WT" add other.txt; BAD_IS=$(c "$WT" "fix: not the fix")
 printf 'mode=new\n' > "$WT/mode.txt"; git -C "$WT" add mode.txt; GOOD_IS=$(c "$WT" "fix: mode is new")
 
 answer() { # <testCommit> <implCommit>
@@ -108,29 +118,29 @@ queue_then() { # <json> — what the NEXT fix call answers
 
 echo "--- an unproved finding is asked for once more, named, and green when the retry proves it ---"
 : > "$CLAUDE_LOG"
-fix_ai fix "$(answer "$BAD_TS" "$BAD_IS")" superpowers:receiving-code-review
-queue_then "$(answer "$GOOD_TS" "$GOOD_IS")"
+fix_ai fix "$(answer "$TS" "$BAD_IS")" superpowers:receiving-code-review
+queue_then "$(answer "$TS" "$GOOD_IS")"
 rc=0; out=$(driver_step_fix 501 2>&1) || rc=$?
 want "the round finishes once the retry proves it" "0" "$rc"
 want "the fix step ran exactly twice" "2" "$(grep -cx fix "$CLAUDE_LOG")"
 want_in "it said it was asking again" 'asking the fix step once more' "$out"
 RETRY_PROMPT=$(grep -A4 "PROOF FAILED" "$FIX/claude-stdin-fix.txt")
 want_in "the retry is told which finding lacks proof" '- F7: ' "$RETRY_PROMPT"
-want_in "and the case that failed" 'FAIL  mode.test > old' "$RETRY_PROMPT"
-want_in "and that the change rewrote the test file" 'mode.test.sh changes between the test commit' "$RETRY_PROMPT"
+want_in "and the case that failed" 'FAIL  mode.test > new' "$RETRY_PROMPT"
+want_not_in "not the runner's banner" 'config banner line 1' "$RETRY_PROMPT"
 want_in "and it ends proved" 'red .*then green' "$out"
 want "the retry note is cleared afterwards" "" "$(driver_state_get 501 fix_proof_note)"
 
 echo "--- a retry that still proves nothing is refused with the same exit ---"
 : > "$CLAUDE_LOG"
 driver_state_set 501 park_note ""
-fix_ai fix "$(answer "$BAD_TS" "$BAD_IS")" superpowers:receiving-code-review
-queue_then "$(answer "$BAD_TS" "$BAD_IS")"
+fix_ai fix "$(answer "$TS" "$BAD_IS")" superpowers:receiving-code-review
+queue_then "$(answer "$TS" "$BAD_IS")"
 rc=0; out=$(driver_step_fix 501 2>&1) || rc=$?
 want "still unproved after the retry refuses" "24" "$rc"
 want "and the retry is bounded at one" "2" "$(grep -cx fix "$CLAUDE_LOG")"
 want_in "the park names what was not proved" 'not proved red-then-green' "$(driver_state_get 501 park_note)"
-want_in "and why, so the next run is told" 'F7: .*FAIL  mode.test > old' "$(driver_state_get 501 park_note)"
+want_in "and why, so the next run is told" 'F7: .*FAIL  mode.test > new' "$(driver_state_get 501 park_note)"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
 exit $FAILED

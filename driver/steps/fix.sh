@@ -151,7 +151,7 @@ driver_step_fix() { # <ticket>
   local proofnote; proofnote=$(driver_state_get "$t" fix_proof_note)
   [ -z "$proofnote" ] || blockers="$blockers
 
-THE LAST FIX ROUND'S PROOF FAILED, so answer again. For each cleared finding: commit the test alone first (testCommit) so it FAILS at that commit, then commit the fix (implCommit) so it passes, and make sure the change type-checks. The test file is run whole, in its testCommit version, in both trees: every edit to it — a sibling case the fix changes too — goes in the test commit, and each finding's case goes in its own test commit, straight before its own fix, so no other finding's case is red at its change. What failed:
+THE LAST FIX ROUND'S PROOF FAILED, so answer again. For each cleared finding: commit the test alone first (testCommit) so it FAILS at that commit, then commit the fix (implCommit) so it passes, and make sure the change type-checks. The test file is run whole, in the version implCommit holds, at implCommit's parent (it must fail) and at implCommit (it must pass): so implCommit is the commit where every case in that file passes, and each finding's case goes in its own test commit, straight before its own fix, so no other finding's case is red at its change. What failed:
 $proofnote"
   driver_fact_put "$t" fix BLOCKERS "$blockers"
   driver_fact_put "$t" fix DIFF \
