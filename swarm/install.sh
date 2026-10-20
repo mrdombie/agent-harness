@@ -140,16 +140,31 @@ $(if [ -n "$iv" ]; then printf '  <key>StartInterval</key><integer>%s</integer>'
 XML
 }
 
+# Every command handed to a timer goes through the launcher, so a plugin update
+# reaches the next run with no reinstall. Never a path inside one kit version.
+job_cmd() { # <job> — env assignments, then the launcher and the job's kit path
+  local vars a args=""
+  vars=$(shadow_vars "$1" | tr '\n' ' ')
+  for a in $(script_for "$1"); do args="$args $(printf '%q' "$a")"; done
+  # A timer's own PATH finds neither claude nor gh: carry the installer's.
+  printf 'PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q %s/bin/bash %q%s' \
+    "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$vars" "$RUNNER" "$args"
+}
+
 need_launchd() {
   on_launchd && return 0
-  cat >&2 <<MSG
-install: this machine has no launchd, so nothing was installed.
-
-Run these on whatever timer the machine does have:
-  every ${SWARM_EVERY_SCHEDULER:-300}s   $SWARM_ROOT/scheduler.sh
-  every ${SWARM_EVERY_REPAIR:-600}s   $SWARM_ROOT/repair-watch.sh
-  always     $SWARM_ROOT/live-view.sh$([ -n "$SWARM_REPORT_URL" ] && printf '\n  every %ss    %s/report.sh --push' "${SWARM_EVERY_REPORT:-60}" "$SWARM_ROOT")
-MSG
+  install_runner 2>/dev/null
+  local j iv
+  {
+    echo "install: this machine has no launchd, so nothing was installed."
+    echo
+    echo "Run these on whatever timer the machine does have:"
+    for j in $(jobs_for_project); do
+      iv=$(interval_for "$j")
+      if [ -n "$iv" ]; then iv="every ${iv}s"; else iv=always; fi
+      printf '  %s\n    %s\n' "$iv" "$(job_cmd "$j")"
+    done
+  } >&2
   return 1
 }
 
@@ -159,12 +174,8 @@ SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
 cron_jobs() { printf 'coordinator\nmerge-lane\n'; }
 cron_mark() { printf '# %s' "$(label "$1")"; }
 cron_line() { # <job>
-  local m=$(( $(interval_for "$1") / 60 )) vars=""; [ "$m" -ge 1 ] || m=1
-  vars=$(shadow_vars "$1" | tr '\n' ' ')
-  # cron's own PATH finds neither claude nor gh: carry the installer's.
-  printf '*/%s * * * * PATH=%q HARNESS_MAIN_REPO=%q HARNESS_STATE_DIR=%q HARNESS_CFG_PATH=%q KIT_ROOT=%q %s/bin/bash %q %q >> %q 2>&1 %s\n' \
-    "$m" "$PATH" "$MAIN_REPO" "$STATE_DIR" "$HARNESS_CFG" "$KIT_ROOT" "$vars" \
-    "$RUNNER" "$(script_for "$1" | head -1)" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
+  local m=$(( $(interval_for "$1") / 60 )); [ "$m" -ge 1 ] || m=1
+  printf '*/%s * * * * %s >> %q 2>&1 %s\n' "$m" "$(job_cmd "$1")" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
 }
 cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark "$1")"; }
 cron_install() { # <job>

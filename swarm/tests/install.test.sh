@@ -48,14 +48,31 @@ REG="$FIX/installed_plugins.json"
 jq -n --arg p "$CACHE/2.0.0" '{version:2, plugins:{"agent-harness@acme-market":[{scope:"project",installPath:"/nowhere"},{scope:"user",installPath:$p}]}}' > "$REG"
 want "installed from 1.0.0, now 2.0.0: it runs 2.0.0" "ran 2.0.0 with KIT_ROOT=$CACHE/2.0.0 args=a b" \
   "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh a b)"
-want "no registry: the baked version"       "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+jq -n --arg p "$CACHE/1.0.0" '{plugins:{"agent-harness@acme-market":[{scope:"user",installPath:$p}]}}' > "$REG"
+want "the registry is the authority: rolled back to 1.0.0, it runs 1.0.0" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh)"
+# Without a usable registry entry the newest version beside the baked one runs:
+# a Linux cron tick sat on the version it was installed from (2026-10-20).
+want "no registry: the newest installed version" "ran 2.0.0 with KIT_ROOT=$CACHE/2.0.0 args=" \
   "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$FIX/none.json" bash "$R" scripts/job.sh)"
 jq -n '{plugins:{"agent-harness@acme-market":[{scope:"user",installPath:"/gone/9.9.9"}]}}' > "$REG"
-want "a registry naming a missing path: the baked version" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+want "a registry naming a missing path: the newest installed version" "ran 2.0.0 with KIT_ROOT=$CACHE/2.0.0 args=" \
   "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh)"
 printf 'not json' > "$REG"
-want "an unreadable registry: the baked version" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+want "an unreadable registry: the newest installed version" "ran 2.0.0 with KIT_ROOT=$CACHE/2.0.0 args=" \
   "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" bash "$R" scripts/job.sh)"
+NOJQ="$FIX/nojq"; mkdir -p "$NOJQ"
+for t in bash dirname basename ls grep sort tail; do ln -s "$(command -v "$t")" "$NOJQ/$t"; done
+jq -n --arg p "$CACHE/1.0.0" '{plugins:{"agent-harness@acme-market":[{scope:"user",installPath:$p}]}}' > "$REG"
+want "no jq on the machine: the newest installed version" "ran 2.0.0 with KIT_ROOT=$CACHE/2.0.0 args=" \
+  "$(PATH="$NOJQ" KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$REG" /bin/bash "$R" scripts/job.sh)"
+mkdir -p "$CACHE/3.0.0/scripts" "$CACHE/2.0.10/scripts" "$CACHE/2.0.9/scripts"
+for v in 2.0.10 2.0.9; do printf '#!/usr/bin/env bash\necho "ran %s"\n' "$v" > "$CACHE/$v/scripts/job.sh"; done
+want "newest by version, not by spelling; a version without the job is passed over" "ran 2.0.10" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$FIX/none.json" bash "$R" scripts/job.sh)"
+rm -rf "$CACHE/2.0.0" "$CACHE/2.0.10" "$CACHE/2.0.9" "$CACHE/3.0.0"
+want "only the baked version has the job: the baked version" "ran 1.0.0 with KIT_ROOT=$CACHE/1.0.0 args=" \
+  "$(KIT_ROOT="$CACHE/1.0.0" SWARM_PLUGIN_REGISTRY="$FIX/none.json" bash "$R" scripts/job.sh)"
 out=$(KIT_ROOT="$FIX/nowhere/1.0.0" SWARM_PLUGIN_REGISTRY="$FIX/none.json" bash "$R" scripts/job.sh 2>&1); rc=$?
 want "a job found nowhere fails loudly, not as a missing-file shell error" "127" "$rc"
 want_in "and says what it looked for"      'run-current: no scripts/job.sh under' "$out"
@@ -155,6 +172,41 @@ want "and the lane is still there"        "1" "$(grep -c 'merge-lane.sh' "$FIX/c
 cr uninstall merge-lane >/dev/null
 want "the lane uninstalls alone"          "0 1" "$(grep -c 'merge-lane.sh' "$FIX/crontab") $(grep -c 'coordinator-tick.sh' "$FIX/crontab")"
 cr uninstall coordinator >/dev/null
+cr uninstall merge-lane >/dev/null
+
+echo "--- a crontab line follows a plugin update with no reinstall ---"
+CH="$FIX/cronhome"; CC="$CH/.claude/plugins/cache/acme-market/agent-harness"
+for v in 1.0.0 2.0.0; do
+  mkdir -p "$CC/$v/scripts"
+  for s in coordinator-tick merge-lane; do printf '#!/usr/bin/env bash\necho "%s %s"\n' "$s" "$v" > "$CC/$v/scripts/$s.sh"; done
+done
+creg() { jq -n --arg p "$CC/$1" '{version:2,plugins:{"agent-harness@acme-market":[{scope:"user",installPath:$p}]}}' > "$CH/.claude/plugins/installed_plugins.json"; }
+rm -rf "$CC/2.0.0.hidden"; mv "$CC/2.0.0" "$CC/2.0.0.hidden"; creg 1.0.0
+for j in coordinator merge-lane; do HOME="$CH" KIT_ROOT="$CC/1.0.0" SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" bash "$I" "$j" >/dev/null 2>&1; done
+mv "$CC/2.0.0.hidden" "$CC/2.0.0"; creg 2.0.0     # claude plugin update, nothing reinstalled
+# Run each line the way cron does: /bin/sh, an empty environment, only HOME.
+tick() { : > "$STATE/logs/$1.out.log"; env -i HOME="$CH" /bin/sh -c "$(grep -F "$2" "$FIX/crontab" | sed -E 's/^([^ ]+ ){5}//; s/ # [^ ]+$//')"; cat "$STATE/logs/$1.out.log"; }
+for j in coordinator:coordinator-tick merge-lane:merge-lane; do
+  want_in "${j%%:*}: the line calls the launcher" " /bin/bash $STATE/swarm/run-current.sh scripts/${j#*:}.sh " "$(grep -F "${j#*:}.sh" "$FIX/crontab")"
+  want "${j%%:*}: the next tick runs the updated version" "${j#*:} 2.0.0" "$(tick "${j%%:*}" "${j#*:}.sh")"
+done
+rm -f "$CH/.claude/plugins/installed_plugins.json"
+want "with no registry at all it still runs the updated version" "coordinator-tick 2.0.0" "$(tick coordinator coordinator-tick.sh)"
+creg 2.0.0
+for j in coordinator merge-lane; do HOME="$CH" KIT_ROOT="$CC/2.0.0" SWARM_UNAME=Linux SWARM_CRONTAB="$BIN/crontab" bash "$I" "$j" >/dev/null 2>&1; done
+want "re-installed from the new version: one line per job" "1 1" \
+  "$(grep -c 'coordinator-tick.sh' "$FIX/crontab") $(grep -c 'merge-lane.sh' "$FIX/crontab")"
+want "and the owner's own line is still there" "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
+cr uninstall coordinator >/dev/null; cr uninstall merge-lane >/dev/null
+
+echo "--- the timer commands printed off macOS go through the launcher too ---"
+out=$(KIT_ROOT="$CC/1.0.0" SWARM_UNAME=Linux bash "$I" 2>&1)
+for j in live-view scheduler repair-watch; do
+  want_in "$j: printed through the launcher" "/bin/bash $STATE/swarm/run-current.sh swarm/$j.sh" "$out"
+done
+want_not_in "never a path inside one copy of the kit" "$(cd "$HERE/.." && pwd)/" "$out"
+want_in "with the environment the timer lacks" "HARNESS_STATE_DIR=$STATE " "$out"
+if [ -x "$STATE/swarm/run-current.sh" ]; then ok "and the launcher they name exists"; else bad "and the launcher they name exists"; fi
 
 echo "--- a hold refuses a live coordinator, not a shadow one ---"
 printf 'stopped\n' > "$STATE/swarm/HOLD"
