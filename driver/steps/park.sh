@@ -203,6 +203,14 @@ BRIEF
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
       --add-label "$LBL_PARKED" --add-label "$DRIVER_PM_LABEL" \
       --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  elif [ "$(driver_state_get "$t" '.counters.machine_parks // 0')" -lt "${DRIVER_MAX_MACHINE_PARKS:-2}" ]; then
+    # THE MACHINE STOPPED, NOT THE TICKET: left ready, so the next tick resumes it from
+    # the last finished step. Past the cap in a row it stays parked for a look.
+    driver_state_bump "$t" machine_parks
+    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
+      --add-label "$LBL_READY" --remove-label "$LBL_PARKED" \
+      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    driver_say "   park: the cause is the driver's, not the ticket's — #$t is left ready for the next tick"
   else
     swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
       --add-label "$LBL_PARKED" \

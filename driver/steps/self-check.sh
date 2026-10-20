@@ -325,17 +325,15 @@ EOS
     # The failing gates travel with the refusal: a park pointing at a log on the host
     # that ran it is a reason nobody else can read.
     driver_state_set "$t" park_note "$failed of $((ran+pushran)) gate(s) red — $redlines"
-    # ONE REPAIR ROUND, then a park. A gate the model can repair goes to fix with its
+    # UP TO DRIVER_MAX_GATE_FIXES REPAIR ROUNDS, then a park. A gate the model can repair goes to fix with its
     # output as the finding, inside the fix-round ceiling; a second red parks.
     local reds fixes
     reds=$(driver_state_count "$t" selfcheck_red); fixes=$(driver_state_count "$t" fix)
     driver_state_bump "$t" selfcheck_red
     if [ -n "$infra" ]; then
       driver_say "   self-check: not sent to fix —${infra} could not run at all (exit 126/127), which is configuration, not the change."
-    elif [ "${reds:-0}" -ge 1 ]; then
-      driver_say "   self-check: not sent to fix — this is the second red self-check on this run."
-    elif [ "${fixes:-0}" -ge "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
-      driver_say "   self-check: not sent to fix — the $DRIVER_MAX_REVIEW_ROUNDS fix round(s) are used."
+    elif [ "${reds:-0}" -ge "$DRIVER_MAX_GATE_FIXES" ]; then
+      driver_say "   self-check: not sent to fix — $DRIVER_MAX_GATE_FIXES gate fix round(s) are used on this run."
     elif ! _driver_order_has fix; then
       driver_say "   self-check: not sent to fix — this run has no fix step."
     else

@@ -162,6 +162,9 @@ driver_step_start() { # <ticket>
         if { [ -n "$cw" ] && [ "$cw" = "$ow" ]; } \
         || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   start: #$t is already ours — resuming"
+        elif driver_claim_dead_here "$t" && bash "$CL" release "$t" --force >/dev/null 2>&1 \
+             && bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
+          driver_say "   start: the claim on #$t was a dead run's on this host — released and taken"
         else
           driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."
           driver_state_set "$t" park_note "another run on this host holds the claim on #$t (branch ${cb:-unnamed}, worktree ${cw:-none})"
@@ -186,8 +189,8 @@ driver_step_start() { # <ticket>
   if [ -n "$wt" ] && [ -d "$wt" ]; then
     driver_say "   start: resuming in the worktree it already has ($wt)"
     if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
-      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
-      return "$DRIVER_E_REFUSED"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt (this machine, not the ticket)"
+      return "$DRIVER_E_BUSY"
     fi
   else
     repo="$MAIN_REPO"
@@ -241,8 +244,8 @@ driver_step_start() { # <ticket>
     fi
     if ! driver_ensure_hooks "$repo" "$wt"; then
       driver_state_set "$t" worktree "$wt"
-      driver_state_set "$t" park_note "git hooks could not be set up in $wt"
-      return "$DRIVER_E_REFUSED"
+      driver_state_set "$t" park_note "git hooks could not be set up in $wt (this machine, not the ticket)"
+      return "$DRIVER_E_BUSY"
     fi
     if ! driver_prepare_worktree "$wt"; then
       driver_state_set "$t" worktree "$wt"

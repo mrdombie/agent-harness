@@ -477,11 +477,15 @@ EOC
     return "$DRIVER_E_SCHEMA"
   fi
   if [ -f "$DRIVER_SCHEMAS/$step.json" ]; then
+    # Harmless variance is settled before the contract reads it: a null optional field
+    # is an absent one, and a SHIP beside a blocking finding is a BLOCKED.
+    jq 'del(..|nulls) | if (.verdict? == "SHIP") and ([.findings[]? | select((.grade // "") | IN("critical","major","minor"))] | length > 0) then .verdict = "BLOCKED" else . end' \
+      "$ans" > "$ans.norm" 2>/dev/null && [ -s "$ans.norm" ] && mv "$ans.norm" "$ans" || rm -f "$ans.norm"
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash
     # read as "the answer was never checked" and parked finished work.
     vout=$(cd "$DRIVER_HOME" 2>/dev/null || cd /; BRIEFS_SCHEMAS="$DRIVER_SCHEMAS" bash "$validator" "$step" "$ans" 2>&1); vrc=$?
-    why=$(printf '%s' "$vout" | tr '\n' ' ' | cut -c1-400)
+    why=$(printf '%s' "$vout" | grep -v 'strict mode' | tr '\n' ' ' | tr -s ' ' | cut -c1-400)
     if [ "$vrc" -eq 1 ]; then
       driver_say "✋ $step: the answer does not match briefs/schemas/$step.json — $why"
       driver_state_set "$t" park_note "$step answered outside briefs/schemas/$step.json: $why"

@@ -64,6 +64,8 @@ DRIVER_STEPS="${DRIVER_STEPS:-start plan build fix compare self-check review rec
 # Five tries, then park — the number in the approved design's flowchart.
 DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
 DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-2}"
+# Red gates in the branch's own diff go back to fix this many times before a park.
+DRIVER_MAX_GATE_FIXES="${DRIVER_MAX_GATE_FIXES:-3}"
 
 DRIVER_CLAUDE="${DRIVER_CLAUDE:-claude}"
 
@@ -527,8 +529,21 @@ driver_open_prs_for() {
   local t="${1:?driver_open_prs_for: need a ticket}" j
   j=$(driver_open_prs) || return 1
   printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" '
-    .[] | select(.headRefName | test("^" + $pre + $t + "([^0-9]|$)"))
+    .[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)"))
+                 or ([.closingIssuesReferences[]?.number | tostring] | index($t) != null))
     | [.number, .headRefName, (.headRefOid // ""), (.mergeStateStatus // ""), (.isDraft // false), (.mergeable // "")] | @tsv'
+}
+
+# driver_claim_dead_here <ticket> — 0 when the claim was taken on this host by a
+# process that is gone: a dead run's claim, which nothing else will ever release.
+driver_claim_dead_here() {
+  local c host pid
+  type claim_pid_alive >/dev/null 2>&1 || . "$KIT_ROOT/scripts/claim-proc.sh" || return 1
+  c=$(bash "$CL" show "$1" 2>/dev/null) || return 1
+  host=$(printf '%s' "$c" | jq -r '.host // ""' 2>/dev/null); pid=$(printf '%s' "$c" | jq -r '.pid // ""' 2>/dev/null)
+  [ -n "$host" ] && [ "$host" = "$(claim_host 2>/dev/null)" ] || return 1
+  case "$pid" in ''|null|*[!0-9]*) return 1 ;; esac
+  ! claim_pid_alive "$pid"
 }
 
 # driver_open_prs_for_patient <ticket> — driver_open_prs_for, asked DRIVER_LOOKUP_TRIES
@@ -608,7 +623,7 @@ DRIVER_LABEL_MAJOR="${DRIVER_LABEL_MAJOR:-$(driver_opt labels.priority.major P1)
 DRIVER_LABEL_MINOR="${DRIVER_LABEL_MINOR:-$(driver_opt labels.priority.minor P3)}"
 
 export DRIVER_HOME DRIVER_DIR DRIVER_BRIEFS DRIVER_SCHEMAS DRIVER_VALIDATE DRIVER_STEPS
-export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
+export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRIVER_CLAUDE DRIVER_CMD_TIMEOUT
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
