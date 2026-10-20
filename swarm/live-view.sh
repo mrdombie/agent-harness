@@ -9,7 +9,9 @@
 # that reads harness.json, so a project's repo slug and state directory are
 # named once, here, and nowhere in the JavaScript.
 set -uo pipefail
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-env.sh" || exit 1
+# The coordinator's settings too (it sources swarm-env.sh): what counts as our own
+# tooling is its call, read here rather than kept a second time.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/coordinator-env.sh" || exit 1
 command -v node >/dev/null 2>&1 || { echo "live-view: node is not on PATH" >&2; exit 1; }
 
 export SWARM_RUNS_DIR="$RUNS_DIR" SWARM_PORT SWARM_REPO="$REPO_SLUG" SWARM_GH
@@ -30,10 +32,19 @@ export SWARM_GH_CALLS="${SWARM_GH_CALLS:-$(gh_calls_file)}" GH_ALLOWANCE_LOW_PCT
 export SWARM_COORD_QUEUE="${SWARM_COORD_QUEUE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/queue.json}"
 # Who "Waiting on …" names on a finished row; unset reads "the owner".
 export SWARM_OWNER_NAME="${SWARM_OWNER_NAME:-$(swarm_opt swarm.ownerName "")}"
-# Every open ticket, counted once per five minutes; the label that sets a ticket
-# after launch is left out of the "before launch" count.
+# Every open ticket, counted once per five minutes. The release is the tickets at
+# swarm.releasePriorities, less those set after launch (the label, or one of
+# swarm.postLaunchMilestones by title), less parked work and the wrappers below.
 export SWARM_BOARD_FILE="${SWARM_BOARD_FILE:-$SWARM_DIR/board.json}"
 export SWARM_AFTER_LAUNCH_LABEL="${SWARM_AFTER_LAUNCH_LABEL:-$(swarm_opt swarm.afterLaunchLabel after-launch)}"
+export SWARM_RELEASE_PRIORITIES="${SWARM_RELEASE_PRIORITIES:-$(swarm_opt swarm.releasePriorities "P0 P1")}"
+# Milestone titles hold spaces, so they travel as the JSON array the config holds.
+[ -n "${SWARM_POST_LAUNCH_MILESTONES:-}" ] || SWARM_POST_LAUNCH_MILESTONES=$(jq -c '.swarm.postLaunchMilestones // empty | arrays' "$HARNESS_CFG" 2>/dev/null)
+export SWARM_POST_LAUNCH_MILESTONES
+# Product against our own tooling, split as the coordinator orders it (coord_tooling).
+export SWARM_TOOLING_LABELS="${SWARM_TOOLING_LABELS:-$COORD_TOOLING_LABELS}" SWARM_TOOLING_SCOPES="${SWARM_TOOLING_SCOPES:-$COORD_TOOLING_SCOPES}"
+# Needs you: every open issue and pull request carrying one of these.
+export SWARM_OWNER_LABELS="${SWARM_OWNER_LABELS:-$(swarm_opt swarm.ownerLabels "${LBL_OWNER_DECISION:-needs:owner-decision} ${LBL_NEEDS_HUMAN:-status:needs-human} needs:data-model ${HOLD_LABEL:-needs:human-approval}")}"
 # Batch wrappers, epics and programmes hold other tickets: left out of every release count.
 export SWARM_WRAPPER_TITLE_PREFIXES="${SWARM_WRAPPER_TITLE_PREFIXES-$(swarm_opt swarm.wrapperTitlePrefixes "Batch PROGRAMME EPIC")}"
 export SWARM_WRAPPER_LABELS="${SWARM_WRAPPER_LABELS-$(swarm_opt swarm.wrapperLabels "epic programme")}"

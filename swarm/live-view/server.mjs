@@ -331,7 +331,7 @@ function issuesByTicket(file = COORD_ISSUES) {
 
 // ---- the board: every open ticket, counted once per five minutes -------------
 // The queue is only what can start now; the owner asked how much stands between
-// now and launch, which is every open ticket not marked for after it. The issue
+// now and launch: the release (releaseOf), read from every open ticket. The issue
 // snapshot holds only the queue's and the recent runs' tickets, so this is one
 // batched read of them all, off the request path and never more than once in
 // BOARD_MS. A read that stopped part-way is not a count and is not kept.
@@ -358,6 +358,55 @@ export function wrapperOf(title, labels = []) {
   return null
 }
 
+// ---- the release: which tickets it is made of -------------------------------
+// Owner call 2026-10-18 (the launch-runway study): the release is the urgent and
+// high-priority work only, less what is set for after launch (a label, or one of
+// the post-launch milestones), less parked work and the containers. Open, done,
+// added and the pace all count this one population, so the bar and the date agree.
+const listOf = (v, d) => { const w = String(v ?? '').split(/[\s,]+/).filter(Boolean); return w.length ? w : d }
+const jsonList = (v, d) => { try { const j = JSON.parse(v); return Array.isArray(j) ? j.map(String) : d } catch { return d } }
+export const RELEASE_PRIORITIES = listOf(process.env.SWARM_RELEASE_PRIORITIES, ['P0', 'P1'])
+export const POST_LAUNCH_MILESTONES = jsonList(process.env.SWARM_POST_LAUNCH_MILESTONES,
+  ['Post-launch', 'Mobile (fast-follow)', 'Echo phase 2 — Bodyguard + Sedric parity'])
+const PARKED = LBL('LBL_PARKED', 'status:parked')
+const msTitle = (m) => String((m && typeof m === 'object' ? m.title : m) ?? '')
+export const postLaunch = (labels, milestone) => (labels || []).includes(AFTER_LAUNCH) || POST_LAUNCH_MILESTONES.includes(msTitle(milestone))
+const releasePriority = (labels) => (labels || []).some((l) => RELEASE_PRIORITIES.includes(l))
+// What a search count can test: priority, the after-launch label and parked. The
+// forge's search honours only the FIRST -milestone: in a query (measured 2026-10-20:
+// two of them counted 365 and 444, each the count of the first alone), so the
+// post-launch milestones and the wrappers are read as rows and taken off after.
+export const searchScope = (labels) => releasePriority(labels) && !(labels || []).includes(AFTER_LAUNCH) && !(labels || []).includes(PARKED)
+const postLaunchMilestone = (milestone) => POST_LAUNCH_MILESTONES.includes(msTitle(milestone))
+// Where an open ticket stands against the release, first match wins:
+// 'post', 'lower', 'batch' / 'epic' (a wrapper), 'parked', or 'release'.
+export function releaseOf(title, labels = [], milestone = null) {
+  if (postLaunch(labels, milestone)) return 'post'
+  if (!releasePriority(labels)) return 'lower'
+  const w = wrapperOf(title, labels)
+  if (w) return w
+  if (labels.includes(PARKED)) return 'parked'
+  return 'release'
+}
+const quoted = (x) => `"${String(x).replace(/"/g, '')}"`
+// searchScope as a search clause, so the forge's counts are of the same tickets.
+export const scopeClause = () => [`label:${RELEASE_PRIORITIES.join(',')}`, `-label:${quoted(AFTER_LAUNCH)}`, `-label:${quoted(PARKED)}`].join(' ')
+// What a kept file was read under: a changed setting is a changed population. The
+// board and the trend are search counts under scopeClause; the rows taken off them
+// also depend on which wrappers and milestones there are.
+export const rowsKey = () => JSON.stringify([scopeClause(), POST_LAUNCH_MILESTONES, WRAPPER_PREFIXES, WRAPPER_LABELS])
+
+// Our own build tooling, as the coordinator tells it (coord_tooling in
+// scripts/coordinator-env.sh): one of its labels, or a title scope ("feat(gates): …").
+// The lists arrive from live-view.sh, which reads them from the coordinator's own settings.
+const TOOLING_LABELS = listOf(process.env.SWARM_TOOLING_LABELS, [])
+const TOOLING_SCOPES = listOf(process.env.SWARM_TOOLING_SCOPES, []).map((x) => x.toLowerCase())
+export function toolingOf(labels = [], title = '') {
+  if ((labels || []).some((l) => TOOLING_LABELS.includes(l))) return true
+  const m = /^[a-z]+\(([^)]*)\)!?:/i.exec(String(title ?? ''))
+  return TOOLING_SCOPES.includes(m ? m[1].toLowerCase() : '')
+}
+
 // Local midnight, as the instant the "today" counts start from.
 export function dayStart(now = Date.now()) {
   const d = new Date(now); d.setHours(0, 0, 0, 0)
@@ -368,12 +417,12 @@ const BOARD_QUERY = `query($owner:String!,$name:String!,$done:String!,$made:Stri
  done: search(query:$done,type:ISSUE,first:0){issueCount}
  made: search(query:$made,type:ISSUE,first:0){issueCount}
  merged: search(query:$merged,type:ISSUE,first:0){issueCount}
- repository(owner:$owner,name:$name){issues(states:OPEN,first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{number title createdAt labels(first:50){nodes{name}}}}}}`
+ repository(owner:$owner,name:$name){issues(states:OPEN,first:100,after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{number title createdAt milestone{title} labels(first:50){nodes{name}}}}}}`
 
 export function boardArgs(repo, since) {
   const [owner, name] = String(repo).split('/')
   const q = (s) => `repo:${repo} ${s}`
-  const not = `-label:"${AFTER_LAUNCH}"`
+  const not = scopeClause()
   return ['api', 'graphql', '--paginate', '--slurp', '-F', `owner=${owner}`, '-F', `name=${name}`,
     '-f', `done=${q(`is:issue is:closed reason:completed closed:>=${since} ${not}`)}`,
     '-f', `made=${q(`is:issue created:>=${since} ${not}`)}`,
@@ -392,7 +441,7 @@ export function boardFromPages(pages, since, at) {
     if (!iss || !Array.isArray(iss.nodes)) return null
     for (const n of iss.nodes) {
       if (!n || n.number == null) continue
-      open.push({ number: n.number, title: plainTitle(n.title), raw: n.title, createdAt: n.createdAt || null,
+      open.push({ number: n.number, title: plainTitle(n.title), raw: n.title, createdAt: n.createdAt || null, milestone: msTitle(n.milestone) || null,
                   labels: ((n.labels && n.labels.nodes) || []).map((l) => l && l.name).filter(Boolean) })
     }
     last = iss
@@ -400,7 +449,7 @@ export function boardFromPages(pages, since, at) {
   if (!last || !last.pageInfo || last.pageInfo.hasNextPage !== false) return null
   const d = pages[0].data
   const count = (k) => (d[k] && Number.isInteger(d[k].issueCount) ? d[k].issueCount : null)
-  return { at, since, open, doneToday: count('done'), newToday: count('made'), mergedToday: count('merged') }
+  return { at, since, scope: scopeClause(), open, doneToday: count('done'), newToday: count('made'), mergedToday: count('merged') }
 }
 
 // Every live claim and the host it is on, from the claim refs every host writes.
@@ -413,8 +462,10 @@ export function claimsFromList(out) {
 }
 
 let boardTried = 0, boardBusy = false
+// A file read under another scope (an older page, a changed setting) is not fresh.
+const sameScope = (file, key = scopeClause()) => { const j = readJsonCached(file); return !!j && j.scope === key }
 function boardFresh(now) {
-  try { return now - fs.statSync(BOARD_FILE).mtimeMs < BOARD_MS } catch { return false }
+  try { return now - fs.statSync(BOARD_FILE).mtimeMs < BOARD_MS && sameScope(BOARD_FILE) } catch { return false }
 }
 function refreshBoard(now) {
   if (!REPO || boardBusy || now - boardTried < BOARD_MS || boardFresh(now)) return
@@ -456,8 +507,8 @@ function refreshBoard(now) {
 
 // ---- progress to launch: done against a fixed start, and the pace per day ----
 // One GraphQL call of search counts (no per-ticket reads), kept TREND_MS, at least
-// fifteen minutes. A day is local midnight to midnight; after-launch tickets are
-// left out of both sides, so the pace is the pace of the work before launch.
+// fifteen minutes. A day is local midnight to midnight; both sides count only the
+// release's own scope (scopeClause), so the pace is the pace of the release.
 const TREND_FILE = process.env.SWARM_TREND_FILE || path.join(path.dirname(BOARD_FILE), 'trend.json')
 const TREND_MS = Math.max(900_000, Number(process.env.SWARM_TREND_MS || 900_000))
 const PROGRESS_SINCE = process.env.SWARM_PROGRESS_SINCE || '2026-10-13'
@@ -478,8 +529,8 @@ export function trendDays(now = Date.now()) {
 }
 const baseStart = (base) => { const [y, m, d] = String(base).split('-').map(Number); return iso(new Date(y, m - 1, d).getTime()) }
 
-export function trendArgs(repo, now = Date.now(), base = PROGRESS_SINCE, label = AFTER_LAUNCH) {
-  const not = `-label:"${label}"`
+export function trendArgs(repo, now = Date.now(), base = PROGRESS_SINCE, scope = scopeClause()) {
+  const not = scope
   const q = (s) => JSON.stringify(`repo:${repo} ${s}`)
   const parts = [`base: search(query:${q(`is:issue is:closed reason:completed closed:>=${baseStart(base)} ${not}`)},type:ISSUE,first:0){issueCount}`]
   trendDays(now).forEach((d, i) => {
@@ -497,13 +548,13 @@ export function trendFromData(j, now = Date.now(), base = PROGRESS_SINCE) {
   const n = (k) => (d[k] && Number.isInteger(d[k].issueCount) ? d[k].issueCount : null)
   const days = trendDays(now).map((x, i) => ({ day: x.day, added: n(`a${i}`), done: n(`d${i}`), merged: n(`m${i}`) }))
   if (n('base') == null || days.some((x) => x.added == null || x.done == null || x.merged == null)) return null
-  return { at: iso(now), base, doneSinceBase: n('base'), days }
+  return { at: iso(now), base, scope: scopeClause(), doneSinceBase: n('base'), days }
 }
 
 let trendTried = 0, trendBusy = false
 function refreshTrend(now) {
   if (!REPO || trendBusy || now - trendTried < TREND_MS) return
-  try { if (now - fs.statSync(TREND_FILE).mtimeMs < TREND_MS) return } catch {}
+  try { if (now - fs.statSync(TREND_FILE).mtimeMs < TREND_MS && sameScope(TREND_FILE)) return } catch {}
   trendTried = now
   if (allowanceLow()) return
   const args = trendArgs(REPO, now)
@@ -527,17 +578,19 @@ function refreshTrend(now) {
 }
 
 // ---- the wrappers: every batch, epic and programme, read with the trend ----
-// Search counts cannot test a title prefix, so the trend's counts include the
-// wrappers. They are read here as rows — one paginated search per prefix and per
-// label, kept as long as the trend — and taken off those counts at answer time.
+// Search counts cannot test a title prefix, nor more than one milestone, so the
+// trend's counts include the wrappers and the post-launch milestones. Both are read
+// here as rows — one paginated search per prefix, per label and per milestone, kept
+// as long as the trend — and taken off those counts at answer time.
 const WRAPPERS_FILE = process.env.SWARM_WRAPPERS_FILE || path.join(path.dirname(TREND_FILE), 'wrappers.json')
 const SEARCH_CAP = 1000
 const WRAPPER_QUERY = `query($q:String!,$endCursor:String){
  wrappers: search(query:$q,type:ISSUE,first:100,after:$endCursor){issueCount pageInfo{hasNextPage endCursor}
-  nodes{... on Issue{number title state stateReason createdAt closedAt labels(first:50){nodes{name}}}}}}`
+  nodes{... on Issue{number title state stateReason createdAt closedAt milestone{title} labels(first:50){nodes{name}}}}}}`
 
-export function wrapperSearches(repo, prefixes = WRAPPER_PREFIXES, labels = WRAPPER_LABELS) {
-  return [...prefixes.map((p) => `in:title "${p}"`), ...labels.map((l) => `label:"${l}"`)]
+export function wrapperSearches(repo, prefixes = WRAPPER_PREFIXES, labels = WRAPPER_LABELS, milestones = POST_LAUNCH_MILESTONES) {
+  return [...prefixes.map((p) => `in:title "${p}"`), ...labels.map((l) => `label:"${l}"`),
+          ...milestones.map((m) => `milestone:${quoted(m)} ${scopeClause()}`)]
     .map((c) => ['api', 'graphql', '-f', `q=repo:${repo} is:issue ${c}`, '-f', `query=${WRAPPER_QUERY}`, '--paginate', '--slurp'])
 }
 
@@ -555,22 +608,23 @@ export function wrappersFromPages(answers, at) {
       for (const n of s.nodes) {
         if (!n || n.number == null) continue
         const labels = ((n.labels && n.labels.nodes) || []).map((l) => l && l.name).filter(Boolean)
-        if (!wrapperOf(n.title, labels)) continue
+        if (!wrapperOf(n.title, labels) && !postLaunchMilestone(n.milestone)) continue
         by.set(n.number, { number: n.number, title: n.title, labels, state: n.state || null, stateReason: n.stateReason || null,
-                           createdAt: n.createdAt || null, closedAt: n.closedAt || null })
+                           milestone: msTitle(n.milestone) || null, createdAt: n.createdAt || null, closedAt: n.closedAt || null })
       }
       last = s
     }
     if (!last.pageInfo || last.pageInfo.hasNextPage !== false) return null
   }
-  return { at, issues: [...by.values()] }
+  return { at, scope: rowsKey(), issues: [...by.values()] }
 }
 
-// How many before-launch wrappers were added, or closed as done, in [from, to).
+// How many tickets the scoped search counted that are not the release — its wrappers
+// and its post-launch milestones — were added, or closed as done, in [from, to).
 export function wrappersIn(w, kind, from, to) {
   if (!w || !Array.isArray(w.issues)) return 0
   const inside = (ts) => { const t = Date.parse(ts); return Number.isFinite(t) && t >= from && t < to }
-  return w.issues.filter((i) => !(i.labels || []).includes(AFTER_LAUNCH) && wrapperOf(i.title, i.labels)
+  return w.issues.filter((i) => searchScope(i.labels) && (wrapperOf(i.title, i.labels) || postLaunchMilestone(i.milestone))
     && (kind === 'added' ? inside(i.createdAt)
       : i.state === 'CLOSED' && i.stateReason === 'COMPLETED' && inside(i.closedAt))).length
 }
@@ -578,7 +632,7 @@ export function wrappersIn(w, kind, from, to) {
 let wrappersTried = 0, wrappersBusy = false
 function refreshWrappers(now) {
   if (!REPO || wrappersBusy || now - wrappersTried < TREND_MS) return
-  try { if (now - fs.statSync(WRAPPERS_FILE).mtimeMs < TREND_MS) return } catch {}
+  try { if (now - fs.statSync(WRAPPERS_FILE).mtimeMs < TREND_MS && sameScope(WRAPPERS_FILE, rowsKey())) return } catch {}
   wrappersTried = now
   if (allowanceLow()) return
   const calls = wrapperSearches(REPO)
@@ -623,7 +677,9 @@ function refreshWrappers(now) {
 // wrappers read is no release: a total of work plus containers is the wrong number.
 export function launchOf(board, trend, wrappers, now = Date.now()) {
   if (!board || !trend || !Array.isArray(trend.days) || !wrappers || !Array.isArray(wrappers.issues)) return null
-  const open = board.beforeLaunch
+  // Counts read under another scope are of other tickets: no release until they are re-read.
+  if (trend.scope !== scopeClause() || wrappers.scope !== rowsKey()) return null
+  const open = board.releaseLeft
   const done = Math.max(0, trend.doneSinceBase - wrappersIn(wrappers, 'done', Date.parse(baseStart(trend.base)), Infinity))
   const total = done + open
   const days = trend.days.map((d) => {
@@ -638,7 +694,7 @@ export function launchOf(board, trend, wrappers, now = Date.now()) {
   const converging = burn != null && burn > 0
   let eta = null
   if (converging) { const e = new Date(now); e.setDate(e.getDate() + Math.ceil(open / burn)); eta = localDay(e.getTime()) }
-  return { base: trend.base, done, open, total, pct: total ? Math.round((done * 1000) / total) / 10 : 0,
+  return { base: trend.base, done, open, product: board.product, tooling: board.tooling, total, pct: total ? Math.round((done * 1000) / total) / 10 : 0,
            burn: burn == null ? null : Math.round(burn * 10) / 10, converging, eta, days: trend.days, at: trend.at,
            today: trend.days.find((d) => d.day === localDay(now)) || null }
 }
@@ -682,28 +738,45 @@ export function bucketOf(labels, pr, building) {
   return 'other'
 }
 
-const WHY_OWNER = (labels, pr) => labels.includes(LBL('LBL_OWNER_DECISION', 'needs:owner-decision')) ? 'A decision'
-  : (pr && pr.held) || labels.includes(LBL('HOLD_LABEL', 'needs:human-approval')) ? 'A sign-off' : 'Your input'
+// Needs you is everything labelled for the owner (Dom, 2026-10-20: "Everything
+// labelled for you"): every open issue and every open pull request carrying one of
+// these, whatever else it is — red, after launch or a container. One row each.
+const OWNER_ASK = listOf(process.env.SWARM_OWNER_LABELS, [LBL('LBL_OWNER_DECISION', 'needs:owner-decision'),
+  LBL('LBL_NEEDS_HUMAN', 'status:needs-human'), 'needs:data-model', LBL('HOLD_LABEL', 'needs:human-approval')])
+const ASK_WORDS = { [LBL('LBL_OWNER_DECISION', 'needs:owner-decision')]: 'A decision', [LBL('LBL_NEEDS_HUMAN', 'status:needs-human')]: 'Your input',
+  'needs:data-model': 'A data model to approve', [LBL('HOLD_LABEL', 'needs:human-approval')]: 'A sign-off' }
+const labelNames = (ls) => (ls || []).map((l) => (typeof l === 'string' ? l : l && l.name)).filter(Boolean)
+export function needsYouOf(open, prs) {
+  const out = []
+  const add = (kind, number, title, labels) => {
+    const asks = OWNER_ASK.filter((l) => labels.includes(l))
+    if (!asks.length) return
+    out.push({ kind, number: String(number), title: title || `${kind === 'pr' ? 'Pull request' : 'Ticket'} ${number}`,
+               why: asks.map((l) => ASK_WORDS[l] || l).join(' · ') })
+  }
+  for (const i of open || []) if (i && i.number != null) add('issue', i.number, i.title, i.labels || [])
+  for (const p of Array.isArray(prs) ? prs : []) if (p && p.number != null) add('pr', p.number, plainTitle(p.title), labelNames(p.labels))
+  return out.sort((a, b) => Number(a.number) - Number(b.number) || (a.kind < b.kind ? -1 : 1))
+}
 
 export function boardOf(board, ctx, now = Date.now()) {
-  if (!board || !Array.isArray(board.open)) return null
+  if (!board || !Array.isArray(board.open) || board.scope !== scopeClause()) return null
   const counts = Object.fromEntries(Object.keys(BUCKETS).map((k) => [k, 0]))
-  const notCounted = { batch: 0, epic: 0 }
-  let after = 0
-  const needsYou = []
+  const outside = { lower: 0, post: 0, batch: 0, epic: 0, parked: 0 }
+  let tooling = 0
+  const lowerSeen = new Set()
   // Another host's claim is its live run; one on this host without a run here is stale.
   const here = new Set([THIS_HOST, ...(ctx.liveHosts || [])].filter(Boolean))
   const claimed = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))
   for (const i of board.open) {
     const labels = i.labels || []
-    if (labels.includes(AFTER_LAUNCH)) { after++; continue }
-    const w = wrapperOf(i.raw ?? i.title, labels)
-    if (w) { notCounted[w]++; continue }
+    const r = releaseOf(i.raw ?? i.title, labels, i.milestone)
+    if (r === 'lower') { const p = labels.find((l) => /^P[0-9]$/.test(l)); lowerSeen.add(p || 'none') }
+    if (r !== 'release') { outside[r]++; continue }
+    if (toolingOf(labels, i.raw ?? i.title)) tooling++
     const t = String(i.number)
     const pr = ctx.prRows[t]
-    const b = bucketOf(labels, pr, ctx.live.has(t) || claimed.has(t))
-    counts[b]++
-    if (b === 'owner') needsYou.push({ ticket: t, title: i.title || `Ticket ${t}`, why: WHY_OWNER(labels, pr), pr: pr ? pr.number : null })
+    counts[bucketOf(labels, pr, ctx.live.has(t) || claimed.has(t))]++
   }
   const total = Object.values(counts).reduce((a, b) => a + b, 0)
   // Today's counts belong to the day they were read on; past midnight they say nothing.
@@ -711,14 +784,14 @@ export function boardOf(board, ctx, now = Date.now()) {
   const wr = ctx.wrappers
   const since = Date.parse(board.since)
   const less = (n, k) => (Number.isInteger(n) ? Math.max(0, n - wrappersIn(wr, k, since, Infinity)) : null)
-  const today = board.since === dayStart(now) && wr
+  const today = board.since === dayStart(now) && wr && wr.scope === rowsKey()
     ? { merged: board.mergedToday, done: less(board.doneToday, 'done'), made: less(board.newToday, 'added') }
     : null
   if (today) today.delta = today.done != null && today.made != null ? today.done - today.made : null
-  needsYou.sort((a, b) => Number(a.ticket) - Number(b.ticket))
-  return { at: board.at || null, beforeLaunch: total, afterLaunch: after, afterLabel: AFTER_LAUNCH, notCounted,
+  return { at: board.at || null, releaseLeft: total, product: total - tooling, tooling, outside,
+           priorities: RELEASE_PRIORITIES, lowerPriorities: [...lowerSeen].sort(), afterLabel: AFTER_LAUNCH,
            buckets: Object.keys(BUCKETS).map((k) => ({ key: k, label: BUCKETS[k], n: counts[k] })),
-           needsYou, today, claims: board.claims || null }
+           needsYou: needsYouOf(board.open, ctx.prList), today, claims: board.claims || null }
 }
 
 // The newest five-hour reading the coordinator took whose window is still open.
@@ -870,7 +943,7 @@ export function snapshot(now = Date.now()) {
   const queued = queueOf()
   const prRows = prRowsByTicket()
   const ctx = { issues: issuesByTicket(), prs: Object.fromEntries(Object.entries(prRows).map(([t, r]) => [t, r.number])),
-                prRows, live: new Set(live.map((a) => a.ticket)), liveHosts: live.map((a) => a.host), queued: new Set(queued.tickets.map((r) => r.ticket)) }
+                prRows, prList: readJsonCached(PRS_FILE), live: new Set(live.map((a) => a.ticket)), liveHosts: live.map((a) => a.host), queued: new Set(queued.tickets.map((r) => r.ticket)) }
   const doneRows = [...newest.values()].sort((a, b) => b.endedAt - a.endedAt).slice(0, 20)
     .map(({ park, endedAt, ...d }) => ({ ...d, now: nowOf({ ...d, park }, ctx) }))
   refreshProgress(live.map((a) => a.ticket), [...new Set(live.map((a) => a.project).filter(Boolean))], now)
@@ -892,7 +965,9 @@ export function snapshot(now = Date.now()) {
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, done: doneRows, doneSummary: doneSummary(doneRows),
            hold, queue, capacity: capacityOf(), board, launch, usage: usageOf(PACE_FILE, now),
-           hosts: hostsOf(live, board && board.claims) }
+           hosts: hostsOf(live, board && board.claims),
+           rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,
+                    toolingLabels: TOOLING_LABELS, toolingScopes: TOOLING_SCOPES, ownerLabels: OWNER_ASK } }
 }
 
 export function serve(port = PORT) {

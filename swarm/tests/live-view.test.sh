@@ -401,79 +401,114 @@ plant index.html '      <td>${nowPill(d)}</td>'
   && ok "planted: the page drops the state → no 'Back in the queue' → red" || bad "planted: the page drops the state and the test cannot see it"
 rm -f "$STATE/coordinator/queue.json" "$STATE/coordinator/snapshot/issues.json" "$STATE/swarm/prs.json"
 
-echo "--- the headline counts every open ticket before launch, and the chips add up to it ---"
-# Measured 2026-10-20: the page said "Queued · 354" (the startable queue) with
-# 1,338 tickets open and 79 set after launch, so it showed a third of the work.
+echo "--- the release is the urgent and high-priority work, and the chips add up to what is left ---"
+# Measured 2026-10-20: the page said "Release: 1,669 tickets" — every open ticket
+# not labelled after-launch. Dom: "1k tickets which isn't right". The release was
+# decided on 2026-10-18 (the launch-runway study): P0 and P1 only, less the
+# after-launch label and the Post-launch, Mobile (fast-follow) and Echo phase 2
+# milestones, less parked work and the containers; it came to 285.
 rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
 SINCE=$(node -e 'const d=new Date();d.setHours(0,0,0,0);console.log(d.toISOString().replace(/\.\d{3}Z$/,"Z"))')
 BOARD="$STATE/swarm/board.json"
-board_fixture() { # <since> — sixteen before launch, two after, one of each kind of wait
+# Our own tooling, as the coordinator would be told it.
+export SWARM_TOOLING_LABELS="repo:agent-harness code-health" SWARM_TOOLING_SCOPES="gates ci"
+scope_json() { # [rows] — the scope a kept file must carry, in this environment, as JSON
+  SERVER_MJS="$SERVER_URLPATH" KIND="${1:-}" node --input-type=module -e '
+    import { pathToFileURL } from "node:url"
+    const m = await import(pathToFileURL(process.env.SERVER_MJS).href)
+    console.log(JSON.stringify(process.env.KIND === "rows" ? m.rowsKey() : m.scopeClause()))'
+}
+board_fixture() { # <since> [scope] — sixteen in the release, eleven outside it, one of each kind of wait
   # 1116-1118 carry the claimed label with no run anywhere (1118 also a claim on
   # this host, laptop): stale, so they sort by their other labels, not as building.
+  local sc; sc=${2:-$(scope_json)}
   cat > "$BOARD" <<JSON
-{"at":"$NOW_ISO","since":"$1","doneToday":6,"newToday":3,"mergedToday":4,
+{"at":"$NOW_ISO","since":"$1","scope":$sc,"doneToday":6,"newToday":3,"mergedToday":4,
  "claims":[{"issue":"1114","host":"dom@studio-mac"},{"issue":"1113","host":"dom@laptop"},{"issue":"1118","host":"dom@laptop"}],
  "open":[
-  {"number":1101,"title":"Ready one","labels":["status:ready"]},
-  {"number":1102,"title":"Later ready","labels":["status:ready","after-launch"]},
-  {"number":1103,"title":"Later bare","labels":["after-launch"]},
-  {"number":1104,"title":"In review","labels":["status:in-review"]},
-  {"number":1105,"title":"Held and green","labels":["status:in-review"]},
-  {"number":1106,"title":"Held but red","labels":["status:in-review"]},
-  {"number":1107,"title":"Owner decides","labels":["needs:owner-decision"]},
-  {"number":1108,"title":"PM decides","labels":["status:pm-decision"]},
-  {"number":1109,"title":"Drafting","labels":["status:drafting"]},
-  {"number":1110,"title":"Parked","labels":["status:parked","status:ready"]},
-  {"number":1111,"title":"Batched","labels":["status:batched"]},
-  {"number":1112,"title":"No status","labels":["P3"]},
-  {"number":1113,"title":"Running here","labels":["status:ready"]},
-  {"number":1114,"title":"Claimed elsewhere","labels":["status:ready"]},
-  {"number":1115,"title":"Held and blocked","labels":["needs:human-approval","status:blocked"]},
-  {"number":1116,"title":"Stale claim, ready","labels":["status:claimed","status:ready"]},
-  {"number":1117,"title":"Stale claim, bare","labels":["status:claimed"]},
-  {"number":1118,"title":"Stale claim here","labels":["status:claimed","status:in-review"]},
-  {"number":1119,"title":"Three fixes","raw":"Batch: three fixes","labels":["status:ready"]},
-  {"number":1120,"title":"The platform","raw":"PROGRAMME(platform): the platform","labels":[]},
-  {"number":1121,"title":"Watch","raw":"Watch","labels":["epic","status:in-review"]}]}
+  {"number":1101,"title":"Ready one","labels":["status:ready","P1","repo:agent-harness"]},
+  {"number":1102,"title":"Later ready","labels":["status:ready","after-launch","P1"]},
+  {"number":1103,"title":"Later bare","labels":["after-launch","P1","status:needs-human"]},
+  {"number":1104,"title":"In review","raw":"fix(gates): in review","labels":["status:in-review","P1"]},
+  {"number":1105,"title":"Held and green","labels":["status:in-review","P1"]},
+  {"number":1106,"title":"Held but red","labels":["status:in-review","P1"]},
+  {"number":1107,"title":"Owner decides","labels":["needs:owner-decision","P0"]},
+  {"number":1108,"title":"PM decides","raw":"feat(desk): PM decides","labels":["status:pm-decision","P1"]},
+  {"number":1109,"title":"Drafting","labels":["status:drafting","P1"]},
+  {"number":1110,"title":"Parked","labels":["status:parked","status:ready","P1"]},
+  {"number":1111,"title":"Batched","labels":["status:batched","P1"]},
+  {"number":1112,"title":"No status","labels":["P0"]},
+  {"number":1113,"title":"Running here","labels":["status:ready","P1"]},
+  {"number":1114,"title":"Claimed elsewhere","labels":["status:ready","P1"]},
+  {"number":1115,"title":"Held and blocked","labels":["needs:human-approval","status:blocked","P1"]},
+  {"number":1116,"title":"Stale claim, ready","labels":["status:claimed","status:ready","P1"]},
+  {"number":1117,"title":"Stale claim, bare","labels":["status:claimed","P1"]},
+  {"number":1118,"title":"Stale claim here","labels":["status:claimed","status:in-review","P1"]},
+  {"number":1119,"title":"Three fixes","raw":"Batch: three fixes","labels":["status:ready","P1"]},
+  {"number":1120,"title":"The platform","raw":"PROGRAMME(platform): the platform","labels":["P1","needs:data-model"]},
+  {"number":1121,"title":"Watch","raw":"Watch","labels":["epic","status:in-review","P1"]},
+  {"number":1122,"title":"Lower one","labels":["P2","status:ready"]},
+  {"number":1123,"title":"Lower bare","labels":[]},
+  {"number":1124,"title":"Later by milestone","labels":["P1","status:ready"],"milestone":"Post-launch"},
+  {"number":1125,"title":"Mobile later","labels":["P0"],"milestone":"Mobile (fast-follow)"},
+  {"number":1126,"title":"Parked urgent","labels":["P0","status:parked"]},
+  {"number":1127,"title":"For the launch","labels":["P1"],"milestone":"v1.0 Launch"}]}
 JSON
 }
-# Measured 2026-10-20: 1,262 open before launch held 89 batch wrappers and 80 epics
-# and programmes, each a container whose children are open tickets of their own.
-# The wrappers read beside the trend: one batch made and done today, one epic made
-# and done on the first whole day, and two the search never counted (after launch;
-# closed as not planned), which must not come off the counts either.
+# The rows the scoped search counts that are not the release, read beside the trend
+# and taken off it: wrappers (batch 901 made and done today, epic 902 on the first
+# whole day) and a post-launch milestone (905, made and done today). The search never
+# counted 903 (after launch), 904 (not planned), 906 (P2) or 907 (no priority), so
+# none of them may come off.
 WRAPPERS="$STATE/swarm/wrappers.json"
 wrappers_fixture() { # [none]
-  [ "${1:-}" = none ] && { printf '{"at":"%s","issues":[]}\n' "$NOW_ISO" > "$WRAPPERS"; return; }
+  local sc; sc=$(scope_json rows)
+  [ "${1:-}" = none ] && { printf '{"at":"%s","scope":%s,"issues":[]}\n' "$NOW_ISO" "$sc" > "$WRAPPERS"; return; }
   SERVER_MJS="$SERVER_URLPATH" NOW="$NOW_ISO" TODAY="$SINCE" node --input-type=module -e '
     import { pathToFileURL } from "node:url"
-    const { trendDays } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+    const { trendDays, rowsKey } = await import(pathToFileURL(process.env.SERVER_MJS).href)
     const d0 = trendDays()[0].from, N = process.env.NOW, T = process.env.TODAY
-    const row = (number, title, labels, createdAt, closedAt, stateReason = "COMPLETED") =>
-      ({ number, title, labels, state: "CLOSED", stateReason, createdAt, closedAt })
-    console.log(JSON.stringify({ at: N, issues: [
-      row(901, "Batch: two fixes", [], T, N),
-      row(902, "EPIC(time): the clock", [], d0, d0),
-      row(903, "Batch: later", ["after-launch"], T, N),
-      row(904, "A container", ["programme"], "2001-01-01T00:00:00Z", N, "NOT_PLANNED")] }))' > "$WRAPPERS"
+    const row = (number, title, labels, createdAt, closedAt, stateReason = "COMPLETED", milestone = null) =>
+      ({ number, title, labels, milestone, state: "CLOSED", stateReason, createdAt, closedAt })
+    console.log(JSON.stringify({ at: N, scope: rowsKey(), issues: [
+      row(901, "Batch: two fixes", ["P1"], T, N),
+      row(902, "EPIC(time): the clock", ["P0"], d0, d0),
+      row(903, "Batch: later", ["after-launch", "P1"], T, N),
+      row(904, "A container", ["programme", "P1"], "2001-01-01T00:00:00Z", N, "NOT_PLANNED"),
+      row(905, "Later work", ["P1"], T, N, "COMPLETED", "Post-launch"),
+      row(906, "Lower later", ["P2"], T, N, "COMPLETED", "Post-launch"),
+      row(907, "Batch: no priority", [], T, N)] }))' > "$WRAPPERS"
 }
 board_fixture "$SINCE"
 wrappers_fixture
 cat > "$STATE/swarm/prs.json" <<'JSON'
-[{"number":2104,"headRefName":"tkt-1104/a","closingIssuesReferences":[],"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
- {"number":2105,"headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
- {"number":2106,"headRefName":"tkt-1106/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"FAILURE"}]}]
+[{"number":2104,"title":"fix(gates): in review","headRefName":"tkt-1104/a","closingIssuesReferences":[],"labels":[],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
+ {"number":2105,"title":"feat(x): held and green","headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
+ {"number":2106,"title":"fix(y): held but red","headRefName":"tkt-1106/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"FAILURE"}]},
+ {"number":2107,"title":"chore: pick the plan","headRefName":"misc-a","closingIssuesReferences":[],"labels":[{"name":"needs:owner-decision"}],"mergeable":"MERGEABLE","statusCheckRollup":[]},
+ {"number":2108,"title":"Your eyes on this","headRefName":"misc-b","closingIssuesReferences":[],"labels":[{"name":"status:needs-human"}],"mergeable":"MERGEABLE","statusCheckRollup":[]},
+ {"number":2109,"title":"feat(db): a new table","headRefName":"misc-c","closingIssuesReferences":[],"labels":[{"name":"needs:data-model"}],"mergeable":"CONFLICTING","statusCheckRollup":[]}]
 JSON
 printf '{"run_id":"claim-1113-a","ticket":"1113","child_pid":%s,"started_at":"%s","operator":"dom@laptop","log":"%s"}\n' \
   "$$" "$NOW_ISO" "$STATE/logs/claim-1113-a.log" > "$STATE/runs/claim-1113-a.json"
 printf 'build: writing the tests\n' > "$STATE/logs/claim-1113-a.log"
 s=$(BRANCH_PREFIX=tkt- snap)
-want "before launch leaves the after-launch tickets out" "16" "$(printf '%s' "$s" | jq '.board.beforeLaunch')"
-want "and the batch wrappers and epics, counted apart"    '{"batch":1,"epic":2}' "$(printf '%s' "$s" | jq -c '.board.notCounted')"
+want "the release is P0 and P1 work, less post-launch, parked and the wrappers" "16" "$(printf '%s' "$s" | jq '.board.releaseLeft')"
+want "outside it: lower priority, post-launch by label or milestone, wrappers, parked" \
+  '{"lower":2,"post":4,"batch":1,"epic":2,"parked":2}' "$(printf '%s' "$s" | jq -c '.board.outside')"
+want "the lower priorities it saw, named"                  '["P2","none"]' "$(printf '%s' "$s" | jq -c '.board.lowerPriorities')"
+want "a milestone that is not post-launch stays in"        "1" "$(printf '%s' "$s" | jq '[.board.buckets[] | select(.key=="other") | .n] | add | if . == 3 then 1 else 0 end')"
+want "left splits into product and our tooling, and they sum" "14 2 16" \
+  "$(printf '%s' "$s" | jq -r '.board | "\(.product) \(.tooling) \(.product + .tooling)"')"
 want "the wrapper rules are the project's to name"        "19 null" \
-  "$(SWARM_WRAPPER_TITLE_PREFIXES= SWARM_WRAPPER_LABELS= BRANCH_PREFIX=tkt- snap | jq -c '"\(.board.beforeLaunch) \(.board.notCounted.batch | if . == 0 then null else . end)"' | tr -d '"')"
+  "$(SWARM_WRAPPER_TITLE_PREFIXES= SWARM_WRAPPER_LABELS= BRANCH_PREFIX=tkt- snap | jq -c '"\(.board.releaseLeft) \(.board.outside.batch | if . == 0 then null else . end)"' | tr -d '"')"
 want "a prefix of its own names the batch wrappers"       '{"batch":1,"epic":0}' \
-  "$(SWARM_WRAPPER_TITLE_PREFIXES=programme SWARM_WRAPPER_LABELS= BRANCH_PREFIX=tkt- snap | jq -c '.board.notCounted')"
+  "$(SWARM_WRAPPER_TITLE_PREFIXES=programme SWARM_WRAPPER_LABELS= BRANCH_PREFIX=tkt- snap | jq -c '.board.outside | {batch, epic}')"
+want "the priorities are the project's to name"           "2 20" \
+  "$(board_fixture "$SINCE" "$(SWARM_RELEASE_PRIORITIES=P0 scope_json)"; SWARM_RELEASE_PRIORITIES=P0 BRANCH_PREFIX=tkt- snap | jq -r '"\(.board.releaseLeft) \(.board.outside.lower)"')"
+want "so are the post-launch milestones"                  "17 3" \
+  "$(board_fixture "$SINCE" "$(SWARM_POST_LAUNCH_MILESTONES='["Post-launch"]' scope_json)"; SWARM_POST_LAUNCH_MILESTONES='["Post-launch"]' BRANCH_PREFIX=tkt- snap | jq -r '"\(.board.releaseLeft) \(.board.outside.post)"')"
+board_fixture "$SINCE"
 echo "--- a wrapper is told by its own title's first word, or a label ---"
 w=$(SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e '
   import { pathToFileURL } from "node:url"
@@ -483,25 +518,36 @@ w=$(SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e '
     ["Plain", ["programme"]], ["Plain", ["status:batched"]]].map(([t, l]) => wrapperOf(t, l) || "-").join(" "))')
 want "batch, epic and programme by title and label; a word that only starts the same is work" \
   "batch batch - - epic epic epic - epic epic -" "$w"
-want "after launch is counted apart"                     "2"  "$(printf '%s' "$s" | jq '.board.afterLaunch')"
 want "the chips add up to what is left"                  "16" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
 # Measured 2026-10-20: the chip said Building 10 beside "Building now · 5" — it
 # counted the status:claimed label, which outlives the run that set it.
 want "the building chip is live runs plus other hosts' claims, never a stale label" \
   "2" "$(printf '%s' "$s" | jq '[.board.buckets[] | select(.key=="building") | .n] | add')"
 want "a stale claim sorts by its other labels" \
-  "ready=2 building=2 review=3 pm=1 owner=3 stuck=2 batched=1 other=2" \
+  "ready=2 building=2 review=3 pm=1 owner=3 stuck=1 batched=1 other=3" \
   "$(printf '%s' "$s" | jq -r '[.board.buckets[] | "\(.key)=\(.n)"] | join(" ")')"
-want "needs you: the decision, the green held PR, the held ticket — never the red one" "1105 1107 1115" \
-  "$(printf '%s' "$s" | jq -r '[.board.needsYou[].ticket] | join(" ")')"
-want "a held PR links to the PR"                          "2105 A sign-off" "$(printf '%s' "$s" | jq -r '.board.needsYou[0] | "\(.pr) \(.why)"')"
-want "today: merged, done, new and the delta"             "4 5 2 3" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made) \(.delta)"')"
+want "today: merged, done, new and the delta, the off rows taken off" "4 4 1 3" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made) \(.delta)"')"
 want "who is building where"                              "laptop:1 studio-mac:1" "$(printf '%s' "$s" | jq -r '[.hosts[] | "\(.host):\(.n)"] | sort | join(" ")')"
-want "the after-launch label is the project's to name"    "17 1" \
-  "$(SWARM_AFTER_LAUNCH_LABEL=status:batched BRANCH_PREFIX=tkt- snap | jq -r '"\(.board.beforeLaunch) \(.board.afterLaunch)"')"
+want "the after-launch label is the project's to name"    "17 3" \
+  "$(board_fixture "$SINCE" "$(SWARM_AFTER_LAUNCH_LABEL=status:batched scope_json)"; SWARM_AFTER_LAUNCH_LABEL=status:batched BRANCH_PREFIX=tkt- snap | jq -r '"\(.board.releaseLeft) \(.board.outside.post)"')"
+board_fixture "$SINCE" '"label:P0 -label:\"after-launch\""'
+want "a board read under another scope is no count"       "null" "$(BRANCH_PREFIX=tkt- snap | jq '.board')"
 board_fixture "2001-01-01T00:00:00Z"
 want "yesterday's today counts say nothing"               "null" "$(BRANCH_PREFIX=tkt- snap | jq '.board.today')"
 board_fixture "$SINCE"
+
+echo "--- needs you is everything labelled for the owner: issues and pull requests ---"
+# Dom, 2026-10-20: "Needs you is wrong too" — it listed only release tickets in the
+# owner's bucket and dropped a held PR that was red. He wants "everything labelled for you".
+want "every open issue and PR with an owner label, whatever else it is" \
+  "issue:1103 issue:1107 issue:1115 issue:1120 pr:2105 pr:2106 pr:2107 pr:2108 pr:2109" \
+  "$(printf '%s' "$s" | jq -r '[.board.needsYou[] | "\(.kind):\(.number)"] | join(" ")')"
+want "each says what it waits on, in words" \
+  "1103=Your input 1107=A decision 1115=A sign-off 1120=A data model to approve 2105=A sign-off 2107=A decision 2108=Your input 2109=A data model to approve" \
+  "$(printf '%s' "$s" | jq -r '[.board.needsYou[] | select(.number != "2106") | "\(.number)=\(.why)"] | join(" ")')"
+want "a PR is named by its plain title"                   "Pick the plan" "$(printf '%s' "$s" | jq -r '.board.needsYou[] | select(.number=="2107") | .title')"
+want "the owner labels are the project's to name"         "pr:2107" \
+  "$(SWARM_OWNER_LABELS="needs:owner-decision" BRANCH_PREFIX=tkt- snap | jq -r '[.board.needsYou[] | select(.kind=="pr") | "\(.kind):\(.number)"] | join(" ")')"
 
 echo "--- the five-hour usage is the coordinator's newest reading still open ---"
 want "no readings: null"                                  "null" "$(printf '%s' "$s" | jq '.usage')"
@@ -520,10 +566,10 @@ chmod +x "$FIX/board-gh"
 pages() { # <hasNextPage on the last page>
   cat > "$FIX/board-pages.json" <<JSON
 [{"data":{"done":{"issueCount":7},"made":{"issueCount":1},"merged":{"issueCount":6},"repository":{"issues":{"totalCount":3,
-   "pageInfo":{"hasNextPage":true,"endCursor":"a"},"nodes":[{"number":1,"title":"fix(x): one","labels":{"nodes":[{"name":"status:ready"}]}},
-   {"number":2,"title":"two","labels":{"nodes":[{"name":"after-launch"}]}}]}}}},
+   "pageInfo":{"hasNextPage":true,"endCursor":"a"},"nodes":[{"number":1,"title":"fix(x): one","milestone":null,"labels":{"nodes":[{"name":"status:ready"},{"name":"P1"}]}},
+   {"number":2,"title":"two","labels":{"nodes":[{"name":"after-launch"},{"name":"P1"}]}}]}}}},
  {"data":{"done":{"issueCount":7},"made":{"issueCount":1},"merged":{"issueCount":6},"repository":{"issues":{"totalCount":3,
-   "pageInfo":{"hasNextPage":$1,"endCursor":"b"},"nodes":[{"number":3,"title":"three","labels":{"nodes":[]}}]}}}}]
+   "pageInfo":{"hasNextPage":$1,"endCursor":"b"},"nodes":[{"number":3,"title":"three","milestone":{"title":"Post-launch"},"labels":{"nodes":[{"name":"P0"}]}}]}}}}]
 JSON
 }
 gsnap() { SNAP_GH="$FIX/board-gh" BRANCH_PREFIX=tkt- snap; }
@@ -535,10 +581,13 @@ want "a read that stopped part-way is not kept"           "null" "$(printf '%s' 
 rm -f "$BOARD"; pages false; : > "$FIX/board-gh.log"; wrappers_fixture none
 s=$(gsnap)
 want "one read of every open ticket"                      "1" "$(grep -c 'api graphql --paginate' "$FIX/board-gh.log")"
-want "counted from both pages"                            "2 1" "$(printf '%s' "$s" | jq -r '"\(.board.beforeLaunch) \(.board.afterLaunch)"')"
+want_in "it reads each ticket's milestone"                'nodes\{number title createdAt milestone\{title\}' "$(tr '\n' ' ' < "$FIX/board-gh.log")"
+want_in "and today's counts are of the release's scope"   'done=repo:acme/widgets is:issue is:closed reason:completed closed:>=[^ ]+ label:P0,P1 -label:"after-launch" -label:"status:parked"' "$(grep 'api graphql --paginate' "$FIX/board-gh.log")"
+want "counted from both pages, the milestone read"        "1 2" "$(printf '%s' "$s" | jq -r '"\(.board.releaseLeft) \(.board.outside.post)"')"
 want "with today's counts"                                "6 7 1" "$(printf '%s' "$s" | jq -r '.board.today | "\(.merged) \(.done) \(.made)"')"
 want "and kept for the next ask"                          "One" "$(jq -r '.open[0].title' "$BOARD")"
 want "with the forge's own title beside the plain one"    "fix(x): one" "$(jq -r '.open[0].raw' "$BOARD")"
+want "and the milestone by title"                         "Post-launch" "$(jq -r '.open[2].milestone' "$BOARD")"
 board_fixture "$SINCE"; wrappers_fixture
 
 echo "--- the page leads with the headline, one row per builder, and the rest folded ---"
@@ -561,39 +610,107 @@ want_in "the block is the release's progress"             '^headline=<div class=
 want_not_in "it no longer leads with what is left"        'Before launch:' "$r"
 want_in "the building chip counts the live run and the other host's claim" 'data-k="building"><b>2</b> Building' "$r"
 want_in "with a chip per place"                           'data-k="owner"><b>3</b> Waiting on the owner' "$r"
-want_in "and after launch muted beside it"                'chip muted" data-k="after"><b>2</b> After launch' "$r"
+want_not_in "after launch is no chip: it is outside the release" 'data-k="after"' "$r"
+want_in "what is outside the release, muted, with why"   'class="sub outside">Outside the release: 2 lower-priority \(P2/no priority\) · 4 post-launch · 3 wrappers · 2 parked</div>' "$r"
 want_in "today, with the list shrinking"                  '^today=.*<b>4</b> merged.*List shrinking by 3' "$r"
 want_in "a builder is one row with its step and time"     '^building=.*class="row build".*Running here.*[0-9]+ min running.*build: writing the tests' "$r"
-want_in "needs you lists the owner's items"               '^needs=.*Held and green.*A sign-off' "$r"
+want_in "needs you counts every row in its heading"       '^needshead=Needs you · 9$' "$r"
+want_in "a PR row says what it waits on and links the PR" '^needs=.*Pick the plan.*A decision · pull request <a href="https://github.com/acme/widgets/pull/2107"' "$r"
+want_in "an issue row links the issue"                    '^needs=.*Later bare.*Your input · <a href="https://github.com/acme/widgets/issues/1103"' "$r"
 want_in "the machine line names the hosts, not a stale claim here" '^machine=.*Building on: laptop \(1\), studio-mac \(1\)' "$r"
 want_not_in "the finished rows start folded"              '<details class="fold" id="donefold" open' "$(cat "$LV/index.html")"
-board_fixture "$SINCE"
-jq '.open |= map(select((.labels | index("needs:owner-decision") or index("needs:human-approval")) | not))' "$BOARD" > "$BOARD.t" && mv "$BOARD.t" "$BOARD"
+jq '.open |= map(.labels -= ["needs:owner-decision", "needs:human-approval", "status:needs-human", "needs:data-model"])' "$BOARD" > "$BOARD.t" && mv "$BOARD.t" "$BOARD"
 rm -f "$STATE/swarm/prs.json"
 s=$(BRANCH_PREFIX=tkt- snap)
-want_in "nothing waiting on the owner says so"            '^needs=<div class="allclear">Nothing needs you' "$(page_render "$LV")"
+want_in "nothing labelled for the owner says so"          '^needs=<div class="allclear">Nothing needs you' "$(page_render "$LV")"
+
+echo "--- product and tooling are told the way the coordinator tells them ---"
+# One rule, two readers: the page's split must say what coord_tooling says.
+CASES='[[["repo:agent-harness"],"x"],[[],"fix(gates): x"],[[],"Fix(CI)!: x"],[[],"feat(desk): x"],[[],"gates: x"],
+ [["area:OPS-CONSOLE"],""],[["area:ops"],"y"],[[],"feat(dev): x"],[[],"feat(gates)x"],[["code-health","P1"],"feat(desk): y"]]'
+JQ_SAYS=$(env -u SWARM_TOOLING_LABELS -u SWARM_TOOLING_SCOPES bash -c '. "$1/scripts/coordinator-env.sh" >/dev/null 2>&1 || exit 1
+  coord_jq -r "$COORD_TICKET_JQ"'"'"'[.[] | if coord_tooling(.[0]; .[1]) then "1" else "0" end] | join(" ")'"'"' <<<"$2"
+  printf "%s\t%s\n" "$COORD_TOOLING_LABELS" "$COORD_TOOLING_SCOPES" > "$3"' _ "$HERE/../.." "$CASES" "$FIX/coord-lists")
+JS_SAYS=$(SWARM_TOOLING_LABELS="$(cut -f1 "$FIX/coord-lists")" SWARM_TOOLING_SCOPES="$(cut -f2 "$FIX/coord-lists")" \
+  SERVER_MJS="$SERVER_URLPATH" CASES="$CASES" node --input-type=module -e '
+  import { pathToFileURL } from "node:url"
+  const { toolingOf } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+  console.log(JSON.parse(process.env.CASES).map(([l, t]) => (toolingOf(l, t) ? "1" : "0")).join(" "))')
+want "the coordinator's rule, on its own lists"           "1 1 1 0 0 1 0 1 0 1" "$JQ_SAYS"
+want "the page's rule says the same of every case"        "$JQ_SAYS" "$JS_SAYS"
+echo "--- live-view.sh hands the page the project's rules, the tooling lists from the coordinator ---"
+CFG2="$FIX/cfg-later.json"
+jq '.swarm = {postLaunchMilestones: ["Later list", "Some day"], releasePriorities: ["P0"]}' "$HARNESS_CFG_PATH" > "$CFG2"
+rules() { # <kit root> — the rules a --print snapshot was counted under
+  env -u SWARM_TOOLING_LABELS -u SWARM_TOOLING_SCOPES HARNESS_CFG_PATH="$CFG2" COORDINATOR_TOOLING_LABELS="lab-a lab-b" COORDINATOR_TOOLING_SCOPES="sc" \
+    bash "$1/swarm/live-view.sh" --print 2>/dev/null | jq -c '.rules | [.priorities, .postLaunchMilestones, .toolingLabels, .toolingScopes, .ownerLabels]'
+}
+want "priorities, milestones, tooling and owner labels"   '[["P0"],["Later list","Some day"],["lab-a","lab-b"],["sc"],["needs:owner-decision","status:needs-human","needs:data-model","needs:human-approval"]]' \
+  "$(rules "$HERE/../..")"
+KIT2="$FIX/kit-plant"; mkdir -p "$KIT2"; cp -R "$HERE/../../swarm" "$HERE/../../scripts" "$KIT2/"
+python3 - "$KIT2/swarm/live-view.sh" <<'PY' || bad "plant did not land: live-view.sh tooling lists"
+import sys
+p = sys.argv[1]; s = open(p).read(); a = 'SWARM_TOOLING_LABELS="${SWARM_TOOLING_LABELS:-$COORD_TOOLING_LABELS}"'
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, 'SWARM_TOOLING_LABELS="${SWARM_TOOLING_LABELS:-}"'))
+PY
+got=$(rules "$KIT2" | jq -c '.[2]')
+[ "$got" != '["lab-a","lab-b"]' ] && ok "planted: the coordinator's tooling labels not handed on → the page reads $got → red" \
+  || bad "planted: the tooling labels not handed on and the test cannot see it"
 
 echo "--- planted: each rule removed is seen ---"
 board_fixture "$SINCE"
 cat > "$STATE/swarm/prs.json" <<'JSON'
-[{"number":2105,"headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
- {"number":2106,"headRefName":"tkt-1106/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"FAILURE"}]}]
+[{"number":2105,"title":"feat(x): held and green","headRefName":"tkt-1105/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]},
+ {"number":2106,"title":"fix(y): held but red","headRefName":"tkt-1106/a","closingIssuesReferences":[],"labels":[{"name":"needs:human-approval"}],"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"FAILURE"}]},
+ {"number":2109,"title":"feat(db): a new table","headRefName":"misc-c","closingIssuesReferences":[],"labels":[{"name":"needs:data-model"}],"mergeable":"MERGEABLE","statusCheckRollup":[]}]
 JSON
-plant server.mjs "    if (labels.includes(AFTER_LAUNCH)) { after++; continue }"
-got=$(psnap | jq '.board.beforeLaunch')
-[ "$got" != "16" ] && ok "planted: no after-launch rule → before launch reads $got → red" || bad "planted: the after-launch rule deleted and the test cannot see it"
+left() { psnap | jq '.board.releaseLeft'; }
+plant server.mjs "export const postLaunch = (labels, milestone) => (labels || []).includes(AFTER_LAUNCH) || POST_LAUNCH_MILESTONES.includes(msTitle(milestone))" \
+  "export const postLaunch = (labels, milestone) => (labels || []).includes(AFTER_LAUNCH)"
+got=$(left); [ "$got" != "16" ] && ok "planted: no post-launch milestones → the release reads $got → red" || bad "planted: the milestone rule deleted and the test cannot see it"
+plant server.mjs "export const postLaunch = (labels, milestone) => (labels || []).includes(AFTER_LAUNCH) || POST_LAUNCH_MILESTONES.includes(msTitle(milestone))" \
+  "export const postLaunch = (labels, milestone) => POST_LAUNCH_MILESTONES.includes(msTitle(milestone))"
+got=$(left); [ "$got" != "16" ] && ok "planted: no after-launch label → the release reads $got → red" || bad "planted: the after-launch rule deleted and the test cannot see it"
+plant server.mjs "  if (!releasePriority(labels)) return 'lower'"
+got=$(left); [ "$got" != "16" ] && ok "planted: no priority rule → the release reads $got → red" || bad "planted: the priority rule deleted and the test cannot see it"
+plant server.mjs "  if (labels.includes(PARKED)) return 'parked'"
+got=$(left); [ "$got" != "16" ] && ok "planted: parked counted → the release reads $got → red" || bad "planted: the parked rule deleted and the test cannot see it"
+plant server.mjs "  if (w) return w"
+got=$(left); [ "$got" != "16" ] && ok "planted: wrappers counted as work → the release reads $got → red" || bad "planted: the wrapper rule deleted and the test cannot see it"
+plant server.mjs "    const r = releaseOf(i.raw ?? i.title, labels, i.milestone)" "    const r = releaseOf(i.title, labels, i.milestone)"
+got=$(left); [ "$got" != "16" ] && ok "planted: the plain title read → the release reads $got → red" || bad "planted: the plain title read and the test cannot see it"
+plant server.mjs "    if (toolingOf(labels, i.raw ?? i.title)) tooling++"
+got=$(psnap | jq -r '.board | "\(.product) \(.tooling)"'); [ "$got" != "14 2" ] && ok "planted: no tooling count → the split reads $got → red" || bad "planted: the tooling count deleted and the test cannot see it"
+plant server.mjs "  return TOOLING_SCOPES.includes(m ? m[1].toLowerCase() : '')" "  return false"
+got=$(psnap | jq -r '.board.tooling'); [ "$got" != "2" ] && ok "planted: no title scope → tooling reads $got → red" || bad "planted: the title-scope rule deleted and the test cannot see it"
+plant server.mjs "  if (!board || !Array.isArray(board.open) || board.scope !== scopeClause()) return null" "  if (!board || !Array.isArray(board.open)) return null"
+board_fixture "$SINCE" '"label:P0 -label:\"after-launch\""'
+got=$(psnap | jq -c '.board.releaseLeft'); board_fixture "$SINCE"
+[ "$got" != "null" ] && ok "planted: no scope check → an old board counts $got → red" || bad "planted: the board's scope check deleted and the test cannot see it"
+needs() { psnap | jq -r '[.board.needsYou[] | "\(.kind):\(.number)"] | join(" ")'; }
+want "needs you, before the plants"                       "issue:1103 issue:1107 issue:1115 issue:1120 pr:2105 pr:2106 pr:2109" "$(needs)"
+plant server.mjs "  for (const p of Array.isArray(prs) ? prs : []) if (p && p.number != null) add('pr', p.number, plainTitle(p.title), labelNames(p.labels))"
+got=$(needs); [ "$got" != "issue:1103 issue:1107 issue:1115 issue:1120 pr:2105 pr:2106 pr:2109" ] && ok "planted: no PRs → needs you reads '$got' → red" || bad "planted: the PR rows deleted and the test cannot see it"
+plant server.mjs "  LBL('LBL_NEEDS_HUMAN', 'status:needs-human'), 'needs:data-model', LBL('HOLD_LABEL', 'needs:human-approval')])" \
+  "  LBL('LBL_NEEDS_HUMAN', 'status:needs-human'), LBL('HOLD_LABEL', 'needs:human-approval')])"
+got=$(needs); [ "$got" != "issue:1103 issue:1107 issue:1115 issue:1120 pr:2105 pr:2106 pr:2109" ] && ok "planted: no data-model label → needs you reads '$got' → red" || bad "planted: the data-model label deleted and the test cannot see it"
 plant server.mjs "  if (ownerWait && !(pr && pr.red)) return 'owner'"
-got=$(psnap | jq -r '[.board.needsYou[].ticket] | join(" ")')
-[ "$got" != "1105 1107 1115" ] && ok "planted: no owner rule → needs you reads '$got' → red" || bad "planted: the owner rule deleted and the test cannot see it"
+got=$(psnap | jq '[.board.buckets[] | select(.key=="owner") | .n] | add')
+[ "$got" != "3" ] && ok "planted: no owner rule → the owner chip reads $got → red" || bad "planted: the owner rule deleted and the test cannot see it"
 plant server.mjs "  if (!last || !last.pageInfo || last.pageInfo.hasNextPage !== false) return null"
 rm -f "$BOARD"; pages true
-got=$(SNAP_GH="$FIX/board-gh" psnap | jq '.board.beforeLaunch')
+got=$(SNAP_GH="$FIX/board-gh" psnap | jq '.board.releaseLeft')
 [ "$got" != "null" ] && ok "planted: no short-read guard → a part read counts $got → red" || bad "planted: the short-read guard deleted and the test cannot see it"
 board_fixture "$SINCE"
 s=$(BRANCH_PREFIX=tkt- snap)
 plant index.html "  document.getElementById('headline').innerHTML = headline(s.board, s.launch)"
 [ "$(page_render "$P2" | grep -c 'Release progress')" = 0 ] \
   && ok "planted: the page drops the headline → no 'Release progress' → red" || bad "planted: the page drops the headline and the test cannot see it"
+plant index.html "    <div class=\"sub\">\${esc(n.why)} · \${n.kind === 'pr' ? \`pull request \${ticketLink(n.number, 'pull')}\` : ticketLink(n.number)}</div></div></div>\`" \
+  "    <div class=\"sub\">\${esc(n.why)} · \${ticketLink(n.number)}</div></div></div>\`"
+[ "$(page_render "$P2" | grep -c 'pull/2109')" = 0 ] \
+  && ok "planted: a PR row links as an issue → no pull link → red" || bad "planted: the PR link dropped and the test cannot see it"
 plant server.mjs "  if (building) return 'building'"
 got=$(psnap | jq '[.board.buckets[] | select(.key=="building") | .n] | add')
 [ "$got" != "2" ] && ok "planted: no live-run rule → building reads $got → red" || bad "planted: the live-run rule deleted and the test cannot see it"
@@ -611,11 +728,11 @@ TREND="$STATE/swarm/trend.json"
 trend_fixture() { # <added per whole day> <done per whole day> — today: 1 added, 2 done
   SERVER_MJS="$SERVER_URLPATH" A=$1 D=$2 node --input-type=module -e '
     import { pathToFileURL } from "node:url"
-    const { trendDays } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+    const { trendDays, scopeClause } = await import(pathToFileURL(process.env.SERVER_MJS).href)
     const ds = trendDays(), last = ds.length - 1
-    // The raw search counts: what the page shows plus wrappers 901 (today) and 902 (day 0).
-    const w = (i) => (i === 0 || i === last ? 1 : 0)
-    console.log(JSON.stringify({ at: new Date().toISOString(), base: "2026-10-13", doneSinceBase: 39,
+    // The raw search counts: what the page shows plus the off rows 901 and 905 (today) and 902 (day 0).
+    const w = (i) => (i === 0 ? 1 : i === last ? 2 : 0)
+    console.log(JSON.stringify({ at: new Date().toISOString(), base: "2026-10-13", scope: scopeClause(), doneSinceBase: 40,
       days: ds.map((d, i) => ({ day: d.day, added: (i === last ? 1 : +process.env.A) + w(i), done: (i === last ? 2 : +process.env.D) + w(i), merged: i + 1 })) }))' > "$TREND"
 }
 board_fixture "$SINCE"
@@ -623,7 +740,8 @@ trend_fixture 2 5
 s=$(BRANCH_PREFIX=tkt- snap)
 want "done and still open make the whole"               "37 16 53" "$(printf '%s' "$s" | jq -r '.launch | "\(.done) \(.open) \(.total)"')"
 want "the bar is done of the whole"                     "69.8" "$(printf '%s' "$s" | jq '.launch.pct')"
-want "the open side leaves after launch out"            "16" "$(printf '%s' "$s" | jq '.launch.open')"
+want "the open side is the release's own left"          "16" "$(printf '%s' "$s" | jq '.launch.open')"
+want "and it splits into product and tooling that sum"  "14 2 16" "$(printf '%s' "$s" | jq -r '.launch | "\(.product) \(.tooling) \(.product + .tooling)"')"
 want "burn is done less added over the whole days"      "3 true" "$(printf '%s' "$s" | jq -r '.launch | "\(.burn) \(.converging)"')"
 ETA=$(node -e 'const d=new Date();d.setDate(d.getDate()+6);console.log(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`)')
 want "at this pace: sixteen left at three a day is six days" "$ETA" "$(printf '%s' "$s" | jq -r '.launch.eta')"
@@ -631,15 +749,18 @@ want "today is today's own counts"                      "1 2" "$(printf '%s' "$s
 want "a whole day's wrapper comes off its added and done" "2 5" "$(printf '%s' "$s" | jq -r '.launch.days[0] | "\(.added) \(.done)"')"
 want "no wrappers read is no release"                     "null" "$(rm -f "$WRAPPERS"; SWARM_REPO= BRANCH_PREFIX=tkt- SNAP_GH=false snap | jq '.launch')"
 wrappers_fixture
+want "a pace read under another scope is no release"    "null" \
+  "$(jq '.scope = "label:P0"' "$TREND" > "$TREND.t" && mv "$TREND.t" "$TREND"; SWARM_REPO= BRANCH_PREFIX=tkt- SNAP_GH=false snap | jq '.launch')"
+trend_fixture 2 5
 r=$(page_render "$LV")
 want_in "the big number is the release: done plus left" '^headline=<div class="ptitle">Release progress</div><div class="big">Release: 53 <small>tickets</small></div>' "$r"
-want_in "under it, what was left out and why"           '</div><div class="sub notcounted">Not counted: 1 batch wrapper · 2 epics</div>' "$r"
 want_in "then the bar: done, left, share"               'width:69.8%.*<b>37</b> done · <b>16</b> left · <b>69.8%</b>.*Added and done, per day.*Pull requests merged' "$r"
+want_in "under it, left split into product and our tooling" '<b>69.8%</b>.*Left: Product <b>14</b> · Our tooling <b>2</b>.*Outside the release:' "$r"
 want "the chips add up to the bar's left"               "$(printf '%s' "$s" | jq '.launch.open')" "$(printf '%s' "$s" | jq '[.board.buckets[].n] | add')"
-# Dom, 2026-10-20: "it's 1669; this is a screen for the release" — the numbers he read.
-s=$(printf '%s' "$s" | jq '.launch |= (.done = 410 | .open = 1259 | .total = 1669 | .pct = 24.6)')
+# Dom, 2026-10-20: "it's 1669; this is a screen for the release" — big numbers still read.
+s=$(printf '%s' "$s" | jq '.launch |= (.done = 410 | .open = 1259 | .total = 1669 | .pct = 24.6 | .product = 1100 | .tooling = 159)')
 r=$(page_render "$LV")
-want_in "the release in his numbers"                     'Release: 1,669 <small>tickets</small>.*<b>410</b> done · <b>1,259</b> left · <b>24.6%</b>' "$r"
+want_in "the release in big numbers"                    'Release: 1,669 <small>tickets</small>.*<b>410</b> done · <b>1,259</b> left · <b>24.6%</b>.*Product <b>1,100</b> · Our tooling <b>159</b>' "$r"
 want_in "the page is titled for the release"             '<title>Release, live</title>.*<h1>Release, live</h1>' "$(tr -d '\n' < "$LV/index.html")"
 want_in "a converging pace is a date"                   'pace ok">Shrinking 3/day</span><span>At this pace: <b>' "$r"
 want_in "eight days of added and done, today last"      '(class="day[^"]*".*){8}' "$r"
@@ -652,7 +773,7 @@ r=$(page_render "$LV")
 want_in "it says not converging, in red"                'pace bad">Not converging: \+4/day' "$r"
 want_not_in "and never shows a date"                    'At this pace' "$r"
 
-echo "--- the pace is one call of counts, kept fifteen minutes, after launch left out ---"
+echo "--- the pace is one call of counts, kept fifteen minutes, of the release's own scope ---"
 rm -f "$TREND"; : > "$FIX/board-gh.log"
 SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e '
   import { pathToFileURL } from "node:url"
@@ -662,7 +783,11 @@ SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e '
   console.log(JSON.stringify({ data }))' > "$FIX/trend-answer.json"
 s=$(gsnap)
 want "one call"                                          "1" "$(grep -c 'base: search' "$FIX/board-gh.log")"
-want_in "done and added both leave after launch out"     'reason:completed closed:[^ ]+ -label:\\"after-launch\\".*created:[^ ]+ -label:\\"after-launch\\"|created:[^ ]+ -label:\\"after-launch\\".*reason:completed closed:[^ ]+ -label:\\"after-launch\\"' "$(grep 'base: search' "$FIX/board-gh.log")"
+want_in "done and added both count only the release's scope" \
+  'reason:completed closed:[^ ]+ label:P0,P1 -label:\\"after-launch\\" -label:\\"status:parked\\".*created:[^ ]+ label:P0,P1 -label:\\"after-launch\\" -label:\\"status:parked\\"' "$(grep 'base: search' "$FIX/board-gh.log")"
+# Measured 2026-10-20: the forge's search honours only the first -milestone: of a
+# query, so the milestones must never be left to it.
+want_not_in "and never ask the search to leave milestones out" '-milestone:' "$(grep 'base: search' "$FIX/board-gh.log")"
 want "kept, and read back"                               "9 2" "$(jq -r '"\(.doneSinceBase) \(.days[0].done - .days[0].added)"' "$TREND")"
 : > "$FIX/board-gh.log"; gsnap >/dev/null
 want "a fresh pace is not read again"                    "0" "$(grep -c 'base: search' "$FIX/board-gh.log")"
@@ -672,12 +797,17 @@ trend_fixture 6 2
 plant server.mjs "  const converging = burn != null && burn > 0" "  const converging = burn != null"
 got=$(psnap | jq -r '.launch.eta')
 [ "$got" != "null" ] && ok "planted: no converging rule → a growing list gets a date ($got) → red" || bad "planted: the converging rule deleted and the test cannot see it"
-plant server.mjs '  const not = `-label:"${label}"`' '  const not = ``'
+plant server.mjs "export function trendArgs(repo, now = Date.now(), base = PROGRESS_SINCE, scope = scopeClause()) {" \
+  "export function trendArgs(repo, now = Date.now(), base = PROGRESS_SINCE, scope = '') {"
 rm -f "$TREND"; : > "$FIX/board-gh.log"; SNAP_GH="$FIX/board-gh" psnap >/dev/null
-[ "$(grep 'base: search' "$FIX/board-gh.log" | grep -c 'after-launch')" = 0 ] \
-  && ok "planted: after launch left in the pace → the query no longer names it → red" || bad "planted: after launch left in and the test cannot see it"
+[ "$(grep 'base: search' "$FIX/board-gh.log" | grep -c 'label:P0,P1')" = 0 ] \
+  && ok "planted: the scope left out of the pace → the query no longer names it → red" || bad "planted: the pace's scope left out and the test cannot see it"
+plant server.mjs "  if (trend.scope !== scopeClause() || wrappers.scope !== rowsKey()) return null"
+trend_fixture 2 5; jq '.scope = "label:P0"' "$TREND" > "$TREND.t" && mv "$TREND.t" "$TREND"
+got=$(SWARM_REPO= SNAP_GH=false psnap | jq -c '.launch.total'); trend_fixture 2 5
+[ "$got" != "null" ] && ok "planted: no scope check → an old pace counts $got → red" || bad "planted: the pace's scope check deleted and the test cannot see it"
 
-echo "--- the wrappers are one search per prefix and per label, kept with the pace ---"
+echo "--- the off rows are one search per prefix, per label and per milestone, kept with the pace ---"
 cat > "$FIX/board-gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/board-gh.log"
@@ -690,14 +820,18 @@ wpages() { # <hasNextPage on the last page> [issueCount]
    {"number":71,"title":"Batch: two fixes","state":"CLOSED","stateReason":"COMPLETED","createdAt":"$SINCE","closedAt":"$NOW_ISO","labels":{"nodes":[]}},
    {"number":72,"title":"A batch of fixes","state":"OPEN","createdAt":"$SINCE","labels":{"nodes":[]}}]}}},
  {"data":{"wrappers":{"issueCount":${2:-3},"pageInfo":{"hasNextPage":$1,"endCursor":"b"},"nodes":[
-   {"number":73,"title":"Watch","state":"OPEN","createdAt":"$SINCE","labels":{"nodes":[{"name":"epic"}]}}]}}}]
+   {"number":73,"title":"Watch","state":"OPEN","createdAt":"$SINCE","labels":{"nodes":[{"name":"epic"}]}},
+   {"number":74,"title":"Later work","state":"OPEN","createdAt":"$SINCE","milestone":{"title":"Mobile (fast-follow)"},"labels":{"nodes":[{"name":"P1"}]}},
+   {"number":75,"title":"Plain work","state":"OPEN","createdAt":"$SINCE","milestone":{"title":"v1.0 Launch"},"labels":{"nodes":[{"name":"P1"}]}}]}}}]
 JSON
 }
 rm -f "$WRAPPERS"; wpages false; : > "$FIX/board-gh.log"
 s=$(gsnap)
-want "one search for each prefix and each label"         "5" "$(grep -c 'wrappers: search' "$FIX/board-gh.log")"
-want_in "each a whole-word title or a label"             'is:issue in:title "Batch".*is:issue in:title "PROGRAMME".*is:issue in:title "EPIC".*is:issue label:"epic".*is:issue label:"programme"' "$(tr '\n' ' ' < "$FIX/board-gh.log")"
-want "kept: only the rows that are wrappers"             "71 73" "$(jq -r '[.issues[].number] | join(" ")' "$WRAPPERS")"
+want "one search for each prefix, each label and each milestone" "8" "$(grep -c 'wrappers: search' "$FIX/board-gh.log")"
+want_in "each a whole-word title, a label, or a milestone in the release's scope" \
+  'is:issue in:title "Batch".*is:issue in:title "PROGRAMME".*is:issue in:title "EPIC".*is:issue label:"epic".*is:issue label:"programme".*is:issue milestone:"Post-launch" label:P0,P1 -label:"after-launch".*milestone:"Mobile \(fast-follow\)".*milestone:"Echo phase 2 — Bodyguard \+ Sedric parity"' \
+  "$(tr '\n' ' ' < "$FIX/board-gh.log")"
+want "kept: only the wrappers and the post-launch rows"  "71 73 74" "$(jq -r '[.issues[].number] | join(" ")' "$WRAPPERS")"
 : > "$FIX/board-gh.log"; gsnap >/dev/null
 want "a fresh read is not read again"                    "0" "$(grep -c 'wrappers: search' "$FIX/board-gh.log")"
 rm -f "$WRAPPERS"; wpages true; gsnap >/dev/null
@@ -705,30 +839,35 @@ want "a read that stopped part-way is not kept"          "no" "$([ -f "$WRAPPERS
 rm -f "$WRAPPERS"; wpages false 1001; gsnap >/dev/null
 want "a search past the forge's cap is not kept"         "no" "$([ -f "$WRAPPERS" ] && echo yes || echo no)"
 
-echo "--- planted: the wrapper rules removed are seen ---"
+echo "--- planted: the off-row rules removed are seen ---"
 board_fixture "$SINCE"; wrappers_fixture; trend_fixture 2 5
-plant server.mjs "    if (w) { notCounted[w]++; continue }"
-got=$(psnap | jq '.board.beforeLaunch')
-[ "$got" != "16" ] && ok "planted: wrappers counted as work → before launch reads $got → red" || bad "planted: the wrapper rule deleted and the test cannot see it"
-plant server.mjs "    const w = wrapperOf(i.raw ?? i.title, labels)" "    const w = wrapperOf(i.title, labels)"
-got=$(psnap | jq '.board.beforeLaunch')
-[ "$got" != "16" ] && ok "planted: the plain title read → before launch reads $got → red" || bad "planted: the plain title read and the test cannot see it"
 plant server.mjs "  const done = Math.max(0, trend.doneSinceBase - wrappersIn(wrappers, 'done', Date.parse(baseStart(trend.base)), Infinity))" \
   "  const done = trend.doneSinceBase"
 got=$(psnap | jq '.launch.done')
-[ "$got" != "37" ] && ok "planted: closed wrappers counted as done → done reads $got → red" || bad "planted: closed wrappers counted as done and the test cannot see it"
+[ "$got" != "37" ] && ok "planted: closed off rows counted as done → done reads $got → red" || bad "planted: closed off rows counted as done and the test cannot see it"
 plant server.mjs "    return { ...d, added: Math.max(0, d.added - wrappersIn(wrappers, 'added', from, to))," "    return { ...d, added: d.added,"
 got=$(psnap | jq -r '.launch.days[0].added')
 [ "$got" != "2" ] && ok "planted: new wrappers counted as added → day 0 reads $got → red" || bad "planted: new wrappers counted as added and the test cannot see it"
-plant server.mjs "  return w.issues.filter((i) => !(i.labels || []).includes(AFTER_LAUNCH) && wrapperOf(i.title, i.labels)" \
-  "  return w.issues.filter((i) => wrapperOf(i.title, i.labels)"
+plant server.mjs "  return w.issues.filter((i) => searchScope(i.labels) && (wrapperOf(i.title, i.labels) || postLaunchMilestone(i.milestone))" \
+  "  return w.issues.filter((i) => searchScope(i.labels) && (wrapperOf(i.title, i.labels))"
 got=$(psnap | jq -r '.launch.today.done')
-[ "$got" != "2" ] && ok "planted: after-launch wrappers taken off twice → today done reads $got → red" || bad "planted: after-launch wrappers taken off and the test cannot see it"
+[ "$got" != "2" ] && ok "planted: post-launch rows left on the counts → today done reads $got → red" || bad "planted: post-launch rows left on and the test cannot see it"
+plant server.mjs "  return w.issues.filter((i) => searchScope(i.labels) && (wrapperOf(i.title, i.labels) || postLaunchMilestone(i.milestone))" \
+  "  return w.issues.filter((i) => (wrapperOf(i.title, i.labels) || postLaunchMilestone(i.milestone))"
+got=$(psnap | jq -r '.launch.today.done')
+[ "$got" != "2" ] && ok "planted: rows the search never counted taken off → today done reads $got → red" || bad "planted: unsearched rows taken off and the test cannot see it"
 plant server.mjs "      : i.state === 'CLOSED' && i.stateReason === 'COMPLETED' && inside(i.closedAt))).length" "      : inside(i.closedAt))).length"
 got=$(psnap | jq -r '.launch.today.done')
 [ "$got" != "2" ] && ok "planted: a not-planned wrapper taken off done → today done reads $got → red" || bad "planted: not-planned wrappers taken off and the test cannot see it"
 plant server.mjs "  if (!board || !trend || !Array.isArray(trend.days) || !wrappers || !Array.isArray(wrappers.issues)) return null" \
   "  if (!board || !trend || !Array.isArray(trend.days)) return null"
+# The scope check reads the wrappers too; with the guard gone it must not be the one that refuses.
+python3 - "$P2/server.mjs" <<'PY2' || bad "plant did not land: the wrappers' scope check"
+import sys
+p = sys.argv[1]; s = open(p).read(); a = "trend.scope !== scopeClause() || wrappers.scope !== rowsKey()"
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, "trend.scope !== scopeClause() || (wrappers && wrappers.scope !== rowsKey())"))
+PY2
 cp "$WRAPPERS" "$FIX/wrappers.keep"; rm -f "$WRAPPERS"
 got=$(SWARM_REPO= SNAP_GH=false psnap | jq -c '.launch.total')
 cp "$FIX/wrappers.keep" "$WRAPPERS"
@@ -737,11 +876,46 @@ plant server.mjs "      if (!s || !Array.isArray(s.nodes) || !Number.isInteger(s
   "      if (!s || !Array.isArray(s.nodes)) return null"
 rm -f "$WRAPPERS"; wpages false 1001; SNAP_GH="$FIX/board-gh" psnap >/dev/null
 [ -f "$WRAPPERS" ] && ok "planted: no search-cap guard → a capped read is kept → red" || bad "planted: the search-cap guard deleted and the test cannot see it"
+plant server.mjs "          ...milestones.map((m) => \`milestone:\${quoted(m)} \${scopeClause()}\`)]" "          ]"
+rm -f "$WRAPPERS"; wpages false; : > "$FIX/board-gh.log"; SNAP_GH="$FIX/board-gh" psnap >/dev/null
+[ "$(grep -c 'wrappers: search' "$FIX/board-gh.log")" != 8 ] && ok "planted: no milestone searches → the post-launch rows are never read → red" || bad "planted: the milestone searches deleted and the test cannot see it"
+wrappers_fixture
 s=$(BRANCH_PREFIX=tkt- snap)
-plant index.html '  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>${notCounted(b)}' \
-  '  return `<div class="ptitle">Release progress</div><div class="big">Release: ${num(l.total)} <small>tickets</small></div>'
-[ "$(page_render "$P2" | grep -c 'Not counted:')" = 0 ] \
-  && ok "planted: the page drops the not-counted line → none shown → red" || bad "planted: the not-counted line dropped and the test cannot see it"
+plant index.html '    <div class="pline"><span><b>${num(l.done)}</b> done · <b>${num(l.open)}</b> left · <b>${esc(l.pct)}%</b></span><span class="sub">counted since ${esc(dateName(l.base))}</span></div>${splitLine(l)}</div>${outsideLine(b)}`' \
+  '    <div class="pline"><span><b>${num(l.done)}</b> done · <b>${num(l.open)}</b> left · <b>${esc(l.pct)}%</b></span><span class="sub">counted since ${esc(dateName(l.base))}</span></div>${splitLine(l)}</div>`'
+[ "$(page_render "$P2" | grep -c 'Outside the release:')" = 0 ] \
+  && ok "planted: the page drops the outside line → none shown → red" || bad "planted: the outside line dropped and the test cannot see it"
+plant server.mjs "  return { base: trend.base, done, open, product: board.product, tooling: board.tooling, total, pct: total ? Math.round((done * 1000) / total) / 10 : 0," \
+  "  return { base: trend.base, done, open, total, pct: total ? Math.round((done * 1000) / total) / 10 : 0,"
+s=$(psnap)
+[ "$(page_render "$P2" | grep -c 'Our tooling')" = 0 ] \
+  && ok "planted: the split not served → the page shows none → red" || bad "planted: the split not served and the test cannot see it"
 rm -f "$BOARD" "$TREND" "$WRAPPERS" "$STATE/swarm/prs.json" "$STATE"/runs/claim-1113-a.json
+
+echo "--- a repair run shows its own step, not the earlier build's last one ---"
+# Measured 2026-10-20 18:40Z: a repair of a green PR read "step 7 of 7 · Merged"
+# while it was in self-check — the bar was read from the build and the PR.
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
+run 1301 "$$"
+pcache() { # <driver record> — what the progress refresh last read for 1301
+  printf '{"tickets":{"1301":{"claim":true,"branch":"tkt-1301/a","commits":3,"pushed":true,"trailers":["UI-Gate: SHIP"],"stampsReviews":true,"prRead":true,"pr":{"number":2301,"state":"OPEN","fail":0,"pending":0},"driver":%s}},"plans":{}}\n' "$1" > "$STATE/swarm/progress.json"
+}
+rsnap() { SWARM_PROGRESS_MS=999999999999999 BRANCH_PREFIX=tkt- snap; }
+pcache '{"mode":"build","done":["start","plan","build","self-check","review","ship"]}'
+want "a finished build waiting to merge is at its last step" "7 Merged" \
+  "$(rsnap | jq -r '.live[] | select(.ticket=="1301") | .progress | "\(.step) \(.steps[.step - 1].name)"')"
+pcache '{"mode":"repair","done":["start","plan","build","reenter","repair","fix"]}'
+s=$(rsnap)
+want "a repair after that build, in self-check, is at its check" "4 of 7 Check true" \
+  "$(printf '%s' "$s" | jq -r '.live[] | select(.ticket=="1301") | .progress | "\(.step) of \(.of) \(.steps[.step - 1].name) \(.repair)"')"
+want_in "and the page says so"                            '^building=.*Repair · 4 of 7 · <b>Checking</b>' "$(page_render "$LV")"
+pcache '{"done":["start","plan","build","reenter"]}'
+want "a reenter with no mode on record is a repair too"    "2 Repair" \
+  "$(rsnap | jq -r '.live[] | select(.ticket=="1301") | .progress | "\(.step) \(.steps[.step - 1].name)"')"
+pcache '{"mode":"repair","done":["start","plan","build","reenter","repair","fix"]}'
+plant progress.mjs "  if (!(driver && (driver.mode === 'repair' || done.includes('reenter')))) return p" "  return p"
+got=$(SWARM_PROGRESS_MS=999999999999999 psnap | jq -r '.live[] | select(.ticket=="1301") | .progress.step')
+[ "$got" != "4" ] && ok "planted: the repair read from the build → step $got → red" || bad "planted: the repair's own step dropped and the test cannot see it"
+rm -f "$STATE/swarm/progress.json" "$STATE"/runs/claim-1301-a.json
 
 exit $FAILED
