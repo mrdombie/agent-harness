@@ -101,19 +101,39 @@ function refreshHold(now) {
 
 const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
 const KIND = { 'half-built': 0, feature: 1, other: 2, polish: 3 }
-// The queue in the order the coordinator runs it: a front entry first, then
-// priority (none last), then class, product before tooling, then kind for new
-// work, then position — the
-// same order as coord_queue_ordered. An unknown class sorts last.
-export function queueOf(file = COORD_QUEUE) {
+// The labels that mean nobody can start a row (coord_stopped): a repair is stopped
+// only by those that park the ticket; a hold or a question stops new work too.
+const STOP_ALL = [LBL('LBL_BATCHED', 'status:batched'), LBL('LBL_PARKED', 'status:parked'), LBL('LBL_BLOCKED', 'status:blocked'),
+  LBL('LBL_EXTERNAL_BLOCKED', 'status:external-blocked'), LBL('LBL_GATED', 'status:gated'), LBL('LBL_DRAFTING', 'status:drafting'),
+  LBL('LBL_PM_DECISION', 'status:pm-decision'), LBL('LBL_PM_TRACK', 'status:pm-track')]
+const STOP_NEW = [...STOP_ALL, LBL('HOLD_LABEL', 'needs:human-approval'), LBL('LBL_NEEDS_HUMAN', 'status:needs-human'),
+  LBL('LBL_OWNER_DECISION', 'needs:owner-decision')]
+const REPAIR_NOTE = /(^|\n)REPAIR on PR #[0-9]/
+export const classOf = (t) => (String(t.class || 'new') === 'new' && REPAIR_NOTE.test(String(t.note || '')) ? 'repair' : String(t.class || 'new'))
+// A row somebody can start: its ticket open and wearing no stop label. Unread, it counts.
+export function startable(cls, issue) {
+  if (!issue) return true
+  if (issue.state && issue.state !== 'OPEN') return false
+  const stop = cls === 'new' ? STOP_NEW : STOP_ALL
+  return !(issue.labels || []).some((l) => stop.includes(l))
+}
+// The queue in the order the coordinator runs it: an entry the PM put on top first,
+// then priority (none last), and within one priority a front entry (a resume, an
+// answer) first, then class, product before tooling, then kind for new work, then
+// position — the same order as coord_queue_ordered. An unknown class sorts last.
+// Only rows somebody can start are listed, so the count is the work there is.
+export function queueOf(file = COORD_QUEUE, issues = issuesByTicket()) {
   let q
   try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [] } }
   const fallback = q.label || q.scope || ''
   const rows = (Array.isArray(q.tickets) ? q.tickets : [])
     .filter((t) => t && t.n != null)
-    .map((t, pos) => ({ t, pos, front: t.front ? 0 : 1, prin: Number.isInteger(t.prin) ? t.prin : 9,
+    .map((t) => ({ ...t, class: classOf(t) }))
+    .filter((t) => startable(t.class, issues[String(t.n)]))
+    .map((t, pos) => ({ t, pos, top: t.top ? 0 : 1, front: t.front ? 0 : 1, prin: Number.isInteger(t.prin) ? t.prin : 9,
                         rank: RANK[t.class] ?? 3, tool: t.tooling ? 1 : 0, kind: t.class === 'new' ? (KIND[t.kind] ?? 2) : 0 }))
-    .sort((a, b) => a.front - b.front || (a.front === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
+    .sort((a, b) => a.top - b.top || (a.top === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
+                    || a.front - b.front || (a.front === 0 ? a.pos - b.pos : 0)
                     || a.rank - b.rank || a.tool - b.tool || a.kind - b.kind || a.pos - b.pos)
     .map(({ t }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
                        scope: String(t.scope || fallback), pinned: !!t.pinned }))

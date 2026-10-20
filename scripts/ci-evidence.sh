@@ -102,7 +102,7 @@ carry() { # <sha> — local git
   parents=$(git rev-list --parents -n1 "$c" 2>/dev/null | wc -w | tr -d ' ')
   [ "$parents" = 2 ] || return 1
   files=$(git diff-tree --no-commit-id --name-only -r "$c" 2>/dev/null)
-  ! printf '%s\n' "$files" | grep -v '^$' | grep -qvF "$EV_DIR/"
+  ! printf '%s\n' "$files" | grep -v '^$' | grep -vF "$EV_DIR/" >/dev/null
 }
 
 # Same question asked of the forge, for status, which may run with no clone.

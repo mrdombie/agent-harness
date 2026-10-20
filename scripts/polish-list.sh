@@ -121,13 +121,30 @@ set_item() {
     END { exit !done }'
 }
 
+# The list is looked up through the issues endpoint by label, never search, which
+# lags a few seconds behind a new issue. A list this machine opened is also kept on
+# disk, so an add seconds after the one that opened it finds it even if GitHub has
+# not listed it yet. Both are read under the lock add takes around find-or-create.
+LISTS_DIR="$STATE_DIR/swarm/polish-lists/${REPO_SLUG//\//_}"
 for_screen() { # <slug>
   slug_ok "$1" || die "a screen slug is lower-case letters, digits and dashes: '$1'"
-  local out
-  out=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$LBL_POLISH_LIST" \
-          --label "$LBL_SCREEN_PREFIX$1" --limit 20 --json number 2>/dev/null) || return 2
+  local out labels mine have
+  labels=$(jq -rn --arg a "$LBL_POLISH_LIST" --arg b "$LBL_SCREEN_PREFIX$1" '[$a, $b] | map(@uri) | join(",")')
+  out=$(swarm_gh api "repos/$REPO_SLUG/issues?state=open&labels=$labels&per_page=50" 2>/dev/null) || return 2
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$out" || return 2
-  jq -r 'map(.number) | sort | first // empty' <<<"$out"
+  out=$(jq -r '.[] | select(.pull_request | not) | .number' <<<"$out")
+  mine=$(cat "$LISTS_DIR/$1" 2>/dev/null)
+  if num_ok "$mine" && ! grep -qx -- "$mine" <<<"$out"; then
+    # Still open and still this screen's list: read directly, which does not lag.
+    have=$(swarm_gh issue view "$mine" --repo "$REPO_SLUG" --json state,labels 2>/dev/null)
+    if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$have"; then
+      out=$(printf '%s\n%s' "$out" "$mine")  # unreadable: a second list is worse than a stale number
+    elif jq -e --arg a "$LBL_POLISH_LIST" --arg b "$LBL_SCREEN_PREFIX$1" \
+           '.state == "OPEN" and ([.labels[].name] | index($a) and index($b))' >/dev/null 2>&1 <<<"$have"; then
+      out=$(printf '%s\n%s' "$out" "$mine")
+    fi
+  fi
+  printf '%s\n' "$out" | awk 'NF' | sort -n | head -1
 }
 
 open_list() { # <slug> — opens the screen's list, prints its number
@@ -146,6 +163,7 @@ open_list() { # <slug> — opens the screen's list, prints its number
 " 2>/dev/null) || die "could not open a polish list for $slug"
   n=$(printf '%s' "$url" | grep -oE '[0-9]+$')
   [ -n "$n" ] || die "opening a polish list for $slug answered '$url'"
+  mkdir -p "$LISTS_DIR" 2>/dev/null && printf '%s\n' "$n" > "$LISTS_DIR/$slug"
   printf '%s' "$n"
 }
 
@@ -159,7 +177,7 @@ add() { # <slug> <text…>
   [ -n "$n" ] || n=$(open_list "$slug") || exit 2
   body=$(body_of "$n") || die "#$n could not be read — nothing added"
   # Idempotent on the item's text: ticked, reserved or free, it is already on the list.
-  if printf '%s\n' "$body" | all_items | cut -f3 | grep -qxF -- "$text"; then
+  if printf '%s\n' "$body" | all_items | cut -f3 | grep -xF -- "$text" >/dev/null; then
     echo "#$n already lists: $text"; return 0
   fi
   new=$(printf '%s\n' "$body" | tr -d '\r' | ITEM="- [ ] $text" awk '

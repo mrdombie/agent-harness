@@ -6,7 +6,7 @@
 #   coordinator-queue.sh refresh           re-seed from the scopes already recorded
 #   coordinator-queue.sh list              the queue in the order it runs
 #   coordinator-queue.sh in-scope <n>      exit 0 when ticket n is under any recorded scope
-#   coordinator-queue.sh add <n> [--class repair|approved-merge|new] [--note TEXT] [--front]
+#   coordinator-queue.sh add <n> [--class repair|approved-merge|new] [--note TEXT] [--front|--first]
 #   coordinator-queue.sh remove <n>
 #
 # A scope resolves the way /agent-harness:work resolves one: a bare number is
@@ -20,8 +20,11 @@
 # priority repair, approved-merge, then new; within a class product work before
 # our own tooling (coordinator.toolingLabels); then new work half-built, feature,
 # other, polish, newest first; repairs keep claimable order. Each entry keeps its
-# priority (prin), kind and polish flag. An entry put there with `add --front`
-# stays first across re-seeds. An entry put there with `add` is pinned: it and every
+# priority (prin), kind and polish flag. An entry the PM put there with `add --front`
+# stays first overall across re-seeds; `add --first` (a resume, an owner's answer, a
+# requeue) is first only within its own priority, so it never jumps higher-priority
+# work. A `new` entry whose note is a REPAIR brief is class repair. A row nobody can
+# start (closed, batched, parked, blocked, held) is dropped. An entry put there with `add` is pinned: it and every
 # note survive a re-seed, because nothing on the forge can rebuild them. The
 # tick removes an entry once it has spawned it. A seed whose reads fail changes
 # nothing.
@@ -35,9 +38,12 @@ empty_queue() { jq -n '{scope: null, label: null, seeded_at: null, tickets: []}'
 current()     { if [ -s "$COORD_QUEUE" ]; then cat "$COORD_QUEUE"; else empty_queue; fi; }
 write()       { local tmp; tmp=$(mktemp "$COORD_DIR/.queue.XXXXXX") && cat > "$tmp" && mv "$tmp" "$COORD_QUEUE"; }
 
+# Read whole, then matched: `gh … | grep -q` under pipefail fails when grep quits on
+# an early match while gh is still writing (SIGPIPE), reporting a real label missing.
 label_exists() { # <name>
-  swarm_gh label list --repo "$REPO_SLUG" --search "$1" --limit 100 --json name \
-    -q '.[].name' 2>/dev/null | grep -qxF -- "$1"
+  local names
+  names=$(swarm_gh label list --repo "$REPO_SLUG" --search "$1" --limit 100 --json name -q '.[].name' 2>/dev/null)
+  grep -qxF -- "$1" <<<"$names"
 }
 
 resolve() { # <scope> — echoes the label, or "ticket <n>"
@@ -75,7 +81,7 @@ seed() { # <scope>[,<scope>…]
 # reach the queue to ship once it is full, whatever area or project was seeded. A
 # scope of named tickets stays exactly those tickets.
 with_lists() { # <scope labels, one a line> — plus the polish-list label when any is a label
-  if printf '%s\n' "$1" | grep -v '^ticket ' | grep -q .; then
+  if grep -v '^ticket ' <<<"$1" | grep . >/dev/null; then
     printf '%s\n%s\n' "$1" "$LBL_POLISH_LIST" | awk 'NF && !seen[$0]++'
   else printf '%s\n' "$1"; fi
 }
@@ -104,7 +110,16 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
              if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6
            }')
-  current | coord_jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" "$COORD_TICKET_JQ"'
+  # The pinned rows the board did not offer, read in one batch: a closed, batched,
+  # parked, blocked or held one is dropped rather than shown as work.
+  local pinned_nums pins='{}'
+  pinned_nums=$(current | jq -r --arg rows "$rows" '($rows | split("\n") | map(split("\t")[0])) as $f
+                  | (.tickets // [])[] | select(.pinned) | (.n|tostring) | select(. as $n | $f | index($n) | not)' 2>/dev/null)
+  if [ -n "$pinned_nums" ]; then
+    # shellcheck disable=SC2086  # a list of numbers, split on purpose
+    pins=$(gh_issues_batch $pinned_nums 2>/dev/null) && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$pins" || pins='{}'
+  fi
+  current | coord_jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" --argjson pins "$pins" "$COORD_TICKET_JQ"'
     (.tickets // []) as $old
     | ($labels | split("\n") | map(select(length > 0))) as $ls
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
@@ -118,22 +133,33 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
         | .polish = coord_polish(.ls; .pri; .title)
         | .plist = ((.ls | index($plist)) != null)
         | .tooling = coord_tooling(.ls; .title)
-        | {n, class, kind, prin, polish, plist, tooling})) as $fresh
+        | {n, class, kind, prin, polish, plist, tooling, ls})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
-                     | if $o.front then .front = true else . end)) as $merged
-    | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null))) as $kept
+                     | .class = coord_class(.class; .note)
+                     | if $o.front then .front = true else . end
+                     | if $o.top then .top = true else . end)
+                | map(select(coord_stopped(.ls; .class; "OPEN") | not) | del(.ls))) as $merged
+    # A pinned row the board no longer offers stays only while its ticket is open and
+    # unstopped; one that could not be read stays (a failed read drops nothing).
+    | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null)
+                  | .class = coord_class(.class; .note)
+                  | ($pins[(.n|tostring)] // null) as $p
+                  | select($p == null or (coord_stopped($p.labels // []; .class; $p.state) | not)))) as $kept
     | ($old | to_entries | map({key: (.value.n|tostring), value: .key}) | from_entries) as $oldpos
     # Priority first, across classes (coord_queue_ordered sorts the same way): an
-    # entry put at the front stays first in the order it was put; then priority;
+    # entry the PM put on top (.top) stays first in the order it was put; then
+    # priority, and within one priority a front entry (.front) first;
     # within one priority repair, approved-merge, then new; product before tooling;
     # then new by kind, newest first;
     # repair and approved-merge keep the claimable order.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
-        | if $t.front then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0]
-          else [1, 0, ($t.prin // 9), ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3),
+        | if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0, 0]
+          else [1, 0, ($t.prin // 9),
+                (if $t.front then 0 else 1 end), (if $t.front then ($oldpos[($t.n|tostring)] // $i) else 0 end),
+                ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3),
                 (if $t.tooling then 1 else 0 end),
                 (if $t.class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9) else 0 end),
                 (if $t.class == "new" then -$t.n else $i end)] end)
@@ -169,11 +195,12 @@ in_scope() { # <n> — 0 under any scope, 1 outside every one, 2 unreadable
 }
 
 add() {
-  local n="" cls=new note="" front=false
+  local n="" cls=new note="" front=false top=false
   while [ $# -gt 0 ]; do
     case "$1" in
       --class) cls="${2:?--class needs a value}"; shift 2 ;;
-      --front) front=true; shift ;;
+      --front) top=true; shift ;;
+      --first) front=true; shift ;;
       --note)  note="${2:-}"; shift 2 ;;
       -*)      die "unknown flag $1" ;;
       *)       n="$1"; shift ;;
@@ -189,10 +216,14 @@ add() {
         | {prin: coord_prin($ls; null), kind: coord_kind($ls; ""; null; .title), polish: coord_polish($ls; null; .title),
            plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title)}' 2>/dev/null)
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
-  current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" --argjson meta "$meta" '
-    ({n: $n, class: $c, note: $note, pinned: true} + $meta + (if $front then {front: true} else {} end)) as $e
+  cls=$(coord_jq -rn --arg c "$cls" --arg note "$note" "$COORD_TICKET_JQ"'coord_class($c; $note)')
+  current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" --argjson top "$top" --argjson meta "$meta" '
+    # What the queue already knew of it stands where this read came back empty.
+    (((.tickets // []) | map(select(.n == $n)) | first // {} | del(.front, .top))
+      + {n: $n, class: $c, note: $note, pinned: true} + $meta
+      + (if $top then {top: true} elif $front then {front: true} else {} end)) as $e
     | ((.tickets // []) | map(select(.n != $n))) as $rest
-    | .tickets = (if $front then [$e] + $rest else $rest + [$e] end)' | write
+    | .tickets = (if $top or $front then [$e] + $rest else $rest + [$e] end)' | write
   echo "queued #$n as $cls"
 }
 
@@ -219,6 +250,6 @@ case "${1:-}" in
   add)     shift; add "$@" ;;
   remove)  shift; remove "$@" ;;
   list)    list ;;
-  -h|--help|"") sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|"") sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)       die "unknown command '$1'" ;;
 esac

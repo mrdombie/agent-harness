@@ -40,6 +40,12 @@ case "$1 $2" in
     want=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -sc .)
     for f in "$S"/issue-*.json; do [ -f "$f" ] && cat "$f"; done \
       | jq -s --argjson w "$want" '[.[] | select(.state == "OPEN") | select([.labels[].name] as $l | all($w[]; . as $x | $l | index($x))) | {number, body}]' ;;
+  "api repos/"*)
+    # The issues endpoint by label. $S/lag: GitHub has not listed a new issue yet.
+    [ -f "$S/lag" ] && { echo '[]'; exit 0; }
+    want=$(printf '%s' "$2" | sed -n 's/.*[?&]labels=\([^&]*\).*/\1/p' | tr ',' '\n' | jq -Rr '@text' | while IFS= read -r l; do printf '%b\n' "${l//%/\\x}"; done | jq -R . | jq -sc .)
+    for f in "$S"/issue-*.json; do [ -f "$f" ] && cat "$f"; done \
+      | jq -s --argjson w "$want" '[.[] | select(.state == "OPEN") | select([.labels[].name] as $l | all($w[]; . as $x | $l | index($x))) | {number, body}]' ;;
   "issue close") f="$S/issue-$3.json"; jq '.state = "CLOSED"' "$f" > "$f.t" && mv "$f.t" "$f" ;;
   "api graphql")
     # A batched read of pull requests: each iN answered from $S/pr-N (its state).
@@ -202,5 +208,19 @@ want "refused"                             "2" "$rc"
 want_in "and says so"                      'could not be read — nothing added' "$out"
 want "nothing was opened"                  "903" "$(cat "$FIX/store/next")"
 want "a bad slug is refused"               "2" "$(bash "$P" add "Inbox Thread" x >/dev/null 2>&1; echo $?)"
+
+echo "--- two quick adds land on one list while GitHub has not listed it yet ---"
+touch "$FIX/store/lag"
+bash "$P" add lag-screen "first finding" >/dev/null
+first=$(($(cat "$FIX/store/next") - 1))
+bash "$P" add lag-screen "second finding" >/dev/null
+want "no second list was opened"           "$((first + 1))" "$(cat "$FIX/store/next")"
+want "both items are on the one list"      "2" "$(lines "$first")"
+rm -f "$FIX/store/lag"
+want "for-screen finds it once GitHub lists it" "$first" "$(bash "$P" for-screen lag-screen)"
+jq '.state = "CLOSED"' "$FIX/store/issue-$first.json" > "$FIX/store/c.json" && mv "$FIX/store/c.json" "$FIX/store/issue-$first.json"
+touch "$FIX/store/lag"
+want "a closed list on record is not used" "" "$(bash "$P" for-screen lag-screen)"
+rm -f "$FIX/store/lag"
 
 exit "$FAILED"

@@ -228,7 +228,7 @@ echo "plants"
 plant "kept shots never go stale"           'local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c' 'return 1' 'merge that edited this PR'"'"'s screen read'
 plant "imports are not followed"             'c=$(printf '"'"'%s\n'"'"' "$changed" | awk -v b="$base"' 'c=$(true | awk -v b="$base"' 'changed an import of this PR'"'"'s screen read'
 plant "a merge counts as a carry"            '[ "$parents" = 2 ] || return 1'            ':'                               'a verdict with a merge after it passed'
-plant "a code file counts as a carry"        '| grep -qvF "$EV_DIR/"'                    '| grep -q NOTHING-MATCHES-THIS'  'a verdict with a code commit after it passed'
+plant "a code file counts as a carry"        '| grep -vF "$EV_DIR/" >/dev/null'         '| grep NOTHING-MATCHES-THIS >/dev/null'  'a verdict with a code commit after it passed'
 plant "the forge's carry ignores code files" 'select(startswith($d) | not)] | length == 0)' 'select(false)] | length == 0)' 'shots with code after them and a capture running read'
 plant "evidence read from the whole body"    'urls=$(printf '"'"'%s\n'"'"' "$body" | block | links | ci_links' 'urls=$(printf '"'"'%s\n'"'"' "$body" | links | ci_links' 'fetch took a hand-pinned shot'
 plant "shots read from the whole body"       'printf '"'"'%s\n'"'"' "$blk" | links | ci_links "$evsha" ;;' 'ghr pr view "$2" --json body -q .body | links | ci_links "$evsha" ;;' 'shots listed a link outside'

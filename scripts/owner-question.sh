@@ -42,7 +42,7 @@ ask() { # <ticket> <slug> <question>
   key="decision:$t:$slug"
   # A key answered once is never written again, so a second question takes a fresh one.
   local seen="$COORD_DIR/notified.did.keys" i=1
-  if ! grep '^- \[ \] ' "$COORD_NEEDS_YOU" 2>/dev/null | grep -qF -- "<!-- key:$key -->"; then
+  if ! grep '^- \[ \] ' "$COORD_NEEDS_YOU" 2>/dev/null | grep -F -- "<!-- key:$key -->" >/dev/null; then
     while grep -qxF -- "$key" "$seen" 2>/dev/null; do i=$((i+1)); key="decision:$t:$slug-$i"; done
   fi
   swarm_gh label create "$LBL_OWNER_DECISION" --repo "$REPO_SLUG" --color D93F0B \
@@ -83,7 +83,7 @@ requeue() { # <ticket> <note> — echoes the class
   if [ "$cls" = repair ] && [ -f "$rec" ] && jq -e '(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' "$rec" >/dev/null 2>&1; then
     cls=new
   fi
-  bash "$QUEUE" add "$t" --class "$cls" --note "$2" --front >/dev/null 2>&1 || return 1
+  bash "$QUEUE" add "$t" --class "$cls" --note "$2" --first >/dev/null 2>&1 || return 1
   printf '%s' "$cls"
 }
 

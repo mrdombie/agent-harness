@@ -82,7 +82,7 @@ REG=()
 if [ -f "$C/settings.json" ]; then
   for n in "${HOOKS[@]}"; do
     jq -r '[.hooks // {} | .[][].hooks[].command] | join("\n")' "$C/settings.json" 2>/dev/null \
-      | grep -qF "$n" && REG+=("$n")
+      | grep -F "$n" >/dev/null && REG+=("$n")
   done
 fi
 

@@ -18,9 +18,13 @@ KIT="$(cd "$HERE/../.." && pwd)"
 mv "$BIN/gh" "$BIN/gh-base"
 cat > "$BIN/gh" <<'SH'
 #!/usr/bin/env bash
-if [ "$1 $2" = "issue list" ]; then
+if [ "$1 $2" = "issue list" ] || { [ "$1" = api ] && case "$2" in repos/*/issues\?*) true ;; *) false ;; esac; }; then
   printf '%s\n' "$*" >> "$GH_LOG"
   want=(); prev=""; for a in "$@"; do [ "$prev" = --label ] && want+=("$a"); prev="$a"; done
+  if [ "$1" = api ]; then
+    q=$(printf '%s' "$2" | sed -n 's/.*[?&]labels=\([^&]*\).*/\1/p')
+    while IFS= read -r l; do [ -n "$l" ] && want+=("$(printf '%b' "${l//%/\\x}")"); done < <(printf '%s\n' "$q" | tr ',' '\n')
+  fi
   f="$FIX/gh/issue-list.json"; [ -f "$f" ] || { echo '[]'; exit 0; }
   printf '%s\n' "${want[@]}" | jq -R . | jq -s --slurpfile l "$f" \
     '. as $w | [$l[0][] | select([.labels[].name] as $have | all($w[]; . as $x | $have | index($x))) | {number}]'

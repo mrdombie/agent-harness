@@ -363,7 +363,7 @@ fresh; list_body_issue 804 $'## Items\n- [x] done\n- [ ] reserved (in PR #9)\n- 
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
 want "nothing else queued, and still not started" "" "$(spawned)"
 want_in "it says why"                      'skip #804 \(polish list\): nothing free on it' "$out"
-fresh; list_body_issue 804 $'## Items\n- [x] done\n'; bash "$Q" add 804 --front --note "Resume: run cut off" >/dev/null
+fresh; list_body_issue 804 $'## Items\n- [x] done\n'; bash "$Q" add 804 --first --note "Resume: run cut off" >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
 want "not even put back at the front"      "" "$(spawned)"
 fresh; list_body_issue 805 $'## Items\n- [ ] mine (taken by #805)\n'; bash "$Q" add 805 >/dev/null
@@ -372,9 +372,9 @@ want "a list whose only items its own run took can resume" "805" "$(spawned)"
 
 echo "--- the polish hold never parks a resume, an owner's answer or half-built work ---"
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null
-fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 --front --note "Resume: run cut off" >/dev/null
+fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 --first --note "Resume: run cut off" >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
-want "a P3 entry put back at the front starts beside the P2" "802 701" "$(spawned)"
+want "a P3 resume starts beside the P2, after it" "701 802" "$(spawned)"
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null
 fix_issue 803 OPEN "P3,status:partial"; bash "$Q" add 803 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null

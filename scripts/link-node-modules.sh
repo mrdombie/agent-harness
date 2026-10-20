@@ -173,7 +173,7 @@ for scope in $OWNED; do
   mkdir -p "$WT/node_modules/$scope"
   for e in "$SHARED_NM/$scope"/*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
-    printf '%s\n' "$WORKSPACES" | cut -f1 | grep -qxF -- "$scope/${e##*/}" && continue
+    printf '%s\n' "$WORKSPACES" | cut -f1 | grep -xF -- "$scope/${e##*/}" >/dev/null && continue
     link "$e" "$WT/node_modules/$scope/${e##*/}"
   done
 done
