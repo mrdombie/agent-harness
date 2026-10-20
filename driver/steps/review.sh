@@ -40,6 +40,7 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tier.sh" || exit 1
 
 driver_step_review() { # <ticket>
   local t="${1:?driver_step_review: need a ticket}"
@@ -159,7 +160,11 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
 
   _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
-  _driver_review_defer "$t" "$ans_file" "$round"
+  # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
+  local tier maxr="$DRIVER_MAX_REVIEW_ROUNDS" ground="$round"
+  tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
+  if [ "$tier" = tooling ]; then maxr=1; [ "$ground" -ge 2 ] || ground=2; fi
+  _driver_review_defer "$t" "$ans_file" "$ground"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
 
   rc=0; _driver_review_hold_signed "$t" "$ans_file" || rc=$?
@@ -168,8 +173,8 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   nsend=$(_driver_count "$ans_file" blocking)
   # `-le`, not `-lt`: the design's flowchart sends work back on round 1 OR 2, so two
   # rounds means two chances to fix, and the pass after them ships.
-  if [ "$verdict" = "BLOCKED" ] && [ "${nsend:-0}" -gt 0 ] && [ "$round" -le "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
-    driver_say "✋ review round $round of $DRIVER_MAX_REVIEW_ROUNDS: $nsend blocking ($DRIVER_BLOCKING_GRADES) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
+  if [ "$verdict" = "BLOCKED" ] && [ "${nsend:-0}" -gt 0 ] && [ "$round" -le "$maxr" ]; then
+    driver_say "✋ review round $round of $maxr: $nsend blocking ($(driver_blocking_grades "$ground")) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
     return "$DRIVER_E_REWORK"
   fi
 

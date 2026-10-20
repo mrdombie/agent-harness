@@ -265,6 +265,18 @@ _driver_ship_push_to_fix() {
   return 0
 }
 
+# _driver_ship_tier_line <ticket> <tier> <why> — "Change tier: …", the process this build took.
+_driver_ship_tier_line() {
+  local p; p=$(driver_state_get "$1" tier_promoted 2>/dev/null)
+  case "$2" in
+    screen)  printf 'Change tier: screen — %s. Picture, compare, CI evidence, design critic and sign-off apply.' "$3" ;;
+    backend) printf 'Change tier: backend — %s. Full build and review; no picture, compare, evidence or design critic, and no sign-off hold.' "$3" ;;
+    tooling) printf 'Change tier: tooling — %s. Checks, CI and one review round where only Critical and Major block; no design steps, no hold.' "$3" ;;
+  esac
+  [ -z "$p" ] || printf ' Promoted from %s when a later push changed a screen.' "$p"
+  printf '\n'
+}
+
 # _driver_ship_deferred <ticket> — the "## Minor, deferred" section: what a review from
 # round 2 on graded outside its blocking set (review.sh _driver_review_defer). Each
 # says where it went; one no screen could take is kept here, as a note that does not
@@ -331,7 +343,10 @@ driver_step_ship() { # <ticket>
   # The trunk is resolved again below, and measured; here it only finds the pictures.
   local ptrunk="origin/$INTEGRATION_BRANCH"
   git -C "$wt" rev-parse --verify -q "$ptrunk" >/dev/null 2>&1 || ptrunk="$INTEGRATION_BRANCH"
-  _driver_ship_evidence_plan "$t" "$wt" "$ptrunk"
+  # THE TIER IS SAID IN THE BODY, and only a screen build owes pictures (tier.sh).
+  local tier tierwhy
+  IFS=$'\t' read -r tier tierwhy <<<"$(driver_change_tier "$t" "$wt" "$ptrunk")"
+  [ "$tier" != screen ] || _driver_ship_evidence_plan "$t" "$wt" "$ptrunk"
 
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then
@@ -532,7 +547,9 @@ driver_step_ship() { # <ticket>
   pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
   if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
-  local routes required deferred; routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t")
+  local routes="" required="" deferred tierline
+  if [ "$tier" = screen ]; then routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t"); fi
+  tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
   deferred=$(_driver_ship_deferred "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
@@ -541,6 +558,7 @@ $closes #$t
 Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 
 Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
+$tierline
 Claimed at: ${sha:-unknown}
 Head: $head
 

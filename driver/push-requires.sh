@@ -58,6 +58,7 @@
 # a branch that cannot be pushed and call it a hand-off.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tier.sh" || exit 1
 # driver_record_usage: an agent-form reviewer is a model call, and its spend is recorded like one.
 type driver_record_usage >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ai-step.sh" || exit 1
 
@@ -213,7 +214,9 @@ driver_push_requires() { # <ticket>
   # test-only diff to ui-gate on trial 3 (2026-09-30), the reviewer rightly said
   # there was no UI and gave no verdict, and a ticket the pre-push would have let
   # through parked here. A row with no `owed` is run on every ticket, as before.
-  local rows owed orc
+  local rows owed orc tier
+  # A BUILD THAT DRAWS NOTHING OWES NO PICTURE VERDICT (tier.sh): the critic judges pixels.
+  tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
   rows=$(jq -r '(.review.attest // {}) | to_entries[]
                 | (if (.value | type) == "string" then {owed: .value} else .value end) as $v
                 | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // ""), ($v.agent // ""), (if $v.needsRenders == true then "yes" else "" end)] | join("\u001f")' "$HARNESS_CFG" 2>/dev/null)
@@ -231,6 +234,11 @@ driver_push_requires() { # <ticket>
     # form ran `claude -p /agent-harness:ui-gate`, a whole session whose job was to
     # start the frontend-gate agent: two fixed loads for one review, the first unseen.
     [ -n "$agent" ] && review="agent:$agent"
+
+    if { [ "$needs_renders" = "yes" ] || [ "$agent" = "agent-harness:design-critic" ]; } && [ "$tier" != screen ]; then
+      driver_say "   push-requires: '$name' judges screens, and this is a $tier build that changes none — not owed"
+      continue
+    fi
 
     if [ -n "$owed" ]; then
       orc=0; _driver_owed "$t" "$name" "$owed" "$wt" "$trunk" || orc=$?
