@@ -1,4 +1,4 @@
-import glob, hashlib, json, os, re, shlex, subprocess, sys, tempfile
+import fnmatch, glob, hashlib, itertools, json, os, re, shlex, subprocess, sys, tempfile
 
 # Refuses an agent's change to `preApprovedWrites` in a .claude/harness.json, and
 # to `integrationBranch`, which names the branch the injector anchors it on.
@@ -20,6 +20,9 @@ import glob, hashlib, json, os, re, shlex, subprocess, sys, tempfile
 # Not seen, by construction: a write that never names the file (a variable, a
 # script behind npm/make, git plumbing). The injector covers those: it honours
 # only the value on origin's integration branch, which takes a push and a merge.
+#
+# Not the project's file: a fixture's stand-in under a sandbox variable, where every
+# value the variable can hold is provably a temp dir (see "Sandbox paths" below).
 
 KEYS = ('preApprovedWrites', 'integrationBranch')
 MAX_SCRIPT = 256 * 1024
@@ -107,9 +110,15 @@ def read(path):
 
 
 KNOWN = []  # (dev, ino) of the config files this call can reach
+TOPS = set()  # work trees this call can reach: the project's config is <top>/.claude/harness.json
+RES = []  # one Resolver per shell text being judged, innermost last
 
 
 def is_cfg(path):
+    if RES and RES[-1] is not None and path in RES[-1].paths:
+        # A sandbox path the Resolver proved cannot be the project's config. Skipping the inode
+        # check below is safe: expand() only records paths that do not exist, so none is a hard link.
+        return False
     # Case-folded: the default macOS volume is case-insensitive, so .CLAUDE/Harness.JSON is the file.
     for p in {os.path.abspath(path), os.path.realpath(path)}:
         if os.path.basename(p).lower() == 'harness.json' and os.path.basename(os.path.dirname(p)).lower() == '.claude':
@@ -157,6 +166,7 @@ def toplevel(d):
 
 def learn(d):
     for base in filter(None, {toplevel(d), os.environ.get('CLAUDE_PROJECT_DIR')}):
+        TOPS.add(base)
         try:
             st = os.stat(os.path.join(base, '.claude', 'harness.json'))
             KNOWN.append((st.st_dev, st.st_ino))
@@ -208,7 +218,8 @@ def scan(text):
             i += 1
             continue
         if c == '\\' and i + 1 < n:
-            out.append(text[i:i + 2])
+            if text[i + 1] != '\n':  # a line continuation is removed, as the shell removes it
+                out.append(text[i:i + 2])
             i += 2
             continue
         if q == '"':
@@ -294,16 +305,456 @@ def segments(toks):
         yield seg
 
 
+# ---- Sandbox paths (#169) -----------------------------------------------------------
+# A test fixture writes a stand-in config under a sandbox variable:
+#   SB="${TMPDIR:-/tmp}"; SB="${SB%/}/fx-$$"; UP="$SB/up"; cat > "$UP/.claude/harness.json"
+# The judge sees `$UP` unexpanded, so by name alone that is the project's config. A path
+# whose variable can be the repo is still judged exactly as before. It is let through
+# only when every value the variable can hold at that point, from the literal assignments
+# in the same text, is a sandbox: under $TMPDIR (whatever it holds), a new mktemp dir, or
+# a literal temp root, and matching neither the project's config nor any work tree of it.
+# Anything the Resolver cannot pin down (a variable from the environment, `$(pwd)`, a
+# conditional first assignment, eval, a link made in the same text, an unquoted use)
+# leaves the path judged as before.
+
+DQ, UQ = '\x04', '\x02'  # a `$` the shell expands, inside double quotes / unquoted
+ANY, FRESH, WILD = '\x05', '\x03', '\x06'  # $TMPDIR (any value) / a new mktemp dir / any text
+SANDBOX_ROOTS = ('/tmp/', '/var/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/')
+ASSIGN = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=(.*)', re.S)
+REF = re.compile(r'[\x02\x04](?:\{(?P<b>[A-Za-z_][A-Za-z0-9_]*|[\x02\x04])(?P<op>%%?/|:?-[^}\x02\x04]*)?\}|'
+                 r'(?P<n>[A-Za-z_][A-Za-z0-9_]*|[\x02\x04])|\((?P<sub>[^()`;|&]*)\))')
+REFNAMES = re.compile(r'[\x02\x04]\{?[#!]?([A-Za-z_][A-Za-z0-9_]*)')
+SETREF = re.compile(r'[\x02\x04]\{([A-Za-z_][A-Za-z0-9_]*):?[=?]')
+BARE = re.compile(r'(?<![\x02\x04{A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])')
+LINKS = re.compile(r'\bln\b|symlink|\bmount\b|bindfs|--link|--symbolic|\bcp\b[^\n;&|]*\s-[A-Za-z]*[ls]\b')
+NAMEREF = re.compile(r'\b(declare|typeset|local)\s+-[A-Za-z]*n')
+DYN_CMDS = {'eval', 'source', '.', 'trap'}
+VAR_CMDS = {'declare', 'typeset', 'local', 'export', 'readonly', 'read', 'mapfile', 'readarray', 'getopts',
+            'let', 'unset'}
+SPECIAL = {'RANDOM', 'SRANDOM', 'BASHPID'}
+COPIERS = {'cp', 'gcp', 'mv', 'gmv', 'rsync', 'ditto', 'install'}
+PREFIXES = {'sudo', 'command', 'exec', 'time', 'nohup', 'env', 'builtin', 'xargs', 'nice'}
+ARCHIVERS = {'tar', 'gtar', 'bsdtar', 'cpio', 'pax', 'unzip', '7z', 'ar'}
+MKTEMP_SHADOW = re.compile(r'\bmktemp\s*\(|\bfunction\s+mktemp\b|\balias\b|\bhash\b|\benable\b|\bPATH\+?=')
+MAX_ALTS = 64
+MAX_WILD = 4  # unknown parts in one sandbox path: the fixtures use three
+_PROTECTED = {}
+
+
+def mark_vars(code):
+    """The text with each `$` the shell expands marked DQ (in double quotes) or UQ. Same token boundaries."""
+    out, q, i, n = [], None, 0, len(code)
+    while i < n:
+        c = code[i]
+        if q == "'":
+            out.append(c)
+            q = None if c == "'" else q
+            i += 1
+            continue
+        if c == '\\' and i + 1 < n:
+            out.append(code[i:i + 2])
+            i += 2
+            continue
+        if c == '$':
+            out.append(DQ if q == '"' else UQ)
+        elif q == '"':
+            out.append(c)
+            q = None if c == '"' else q
+        else:
+            q = c if c in '\'"' else None
+            out.append(c)
+        i += 1
+    return ''.join(out)
+
+
+def protected():
+    """The project's config in every work tree this call can reach, as written and resolved."""
+    tops = set(TOPS)
+    try:
+        here = os.getcwd()
+    except OSError:  # the cwd was deleted: the tops this call learned still count
+        here = None
+    for d in filter(None, (os.environ.get('CLAUDE_PROJECT_DIR'), here and toplevel(here))):
+        tops.add(d)
+    key = frozenset(tops)
+    if key not in _PROTECTED:
+        all_tops = set(tops)
+        for t in tops:
+            for line in (git(t, 'worktree', 'list', '--porcelain') or '').splitlines():
+                if line.startswith('worktree '):
+                    all_tops.add(line[9:])
+        cfgs = set()
+        for t in all_tops:
+            c = os.path.join(t, '.claude', 'harness.json')
+            cfgs.update({os.path.abspath(c), os.path.realpath(c)})
+        _PROTECTED[key] = cfgs
+    return _PROTECTED[key]
+
+
+class Resolver:
+    """Every value a variable can hold where a path names it, from the literal assignments
+    in one shell text. What it cannot pin down is None, and the path is judged as before."""
+
+    def __init__(self, code, toks):
+        self.paths, self.ok = set(), False
+        if any(c in code for c in (DQ, UQ, ANY, FRESH, WILD)):
+            return  # the input carries the marker bytes themselves: they would be misread
+        try:
+            mt = tokens(mark_vars(code))
+        except ValueError:
+            return
+        if len(mt) != len(toks) or LINKS.search(code) or NAMEREF.search(code):
+            return
+        self.mt, self.toks, self.at = mt, toks, {}
+        for i, t in enumerate(toks):
+            self.at.setdefault(t, []).append(i)
+        self.nest = self.nesting()
+        if self.nest is None:
+            return
+        self.assigns, self.first_ok, self.taint, self.refs, self.setters = {}, set(), set(), {}, []
+        self.dyn, self.copiers, self.archive, self._copies = len(mt), [], False, None
+        # mktemp is a new dir only if it is the real mktemp: not a function, alias or PATH lookup the text changes.
+        self.fresh_ok = not MKTEMP_SHADOW.search(code)
+        for seg in self.segments():
+            self.read_segment(*seg)
+        self.read_words()
+        self.settle()
+        self.ok = True
+
+    def nesting(self):
+        """The loop, function, group, subshell, if or case frames around each token; None if unbalanced."""
+        nest, stack, cmdpos, func_next, prev = [], [], True, False, ''
+        for t in self.mt:
+            nest.append(tuple(stack))
+            if is_sep(t):
+                for c in t:
+                    if c == '(':
+                        stack.append('func' if t.startswith('(') and prev == '()' else 'sub')
+                    elif c == ')' and stack and stack[-1] in ('sub', 'func'):
+                        stack.pop()
+                    elif c == ')' and not (stack and stack[-1] == 'case'):
+                        return None
+                cmdpos = True
+                prev = t.replace(' ', '').replace('\n', '')
+                continue
+            if t == '{' and func_next:  # `function f {`: the name took the command position
+                stack.append('func')
+                func_next, cmdpos, prev = False, True, t
+                continue
+            if cmdpos:
+                if t in ('if', 'case', 'for', 'while', 'until', 'select', '{'):
+                    stack.append({'if': 'if', 'case': 'case', '{': 'func' if prev == '()' or func_next else 'group'}.get(t, 'loop'))
+                    func_next = False
+                elif t in ('fi', 'esac', 'done', '}'):
+                    want = {'fi': ('if',), 'esac': ('case',), 'done': ('loop',), '}': ('func', 'group')}[t]
+                    if not stack or stack[-1] not in want:
+                        return None
+                    stack.pop()
+                elif t == 'function':
+                    func_next = True
+                cmdpos = t in SHELL_WORDS or t in ('then', 'do', 'else', 'elif', 'in') or bool(ASSIGN.fullmatch(t))
+            prev = t
+        return None if stack else nest
+
+    def segments(self):
+        """(start, end, separator before, separator after) for each simple command."""
+        segs, cur, before = [], None, ''
+        for i, t in enumerate(self.mt):
+            if is_sep(t):
+                if cur is not None:
+                    segs.append((cur, i, before, t))
+                    cur = None
+                before = t
+            elif cur is None:
+                cur = i
+        if cur is not None:
+            segs.append((cur, len(self.mt), before, ''))
+        return segs
+
+    def read_segment(self, start, end, sep_b, sep_a):
+        """One command: its assignments, copies, archives, and what can set variables at run time."""
+        mt = self.mt
+        plain = lambda s: not any(c in '&|' for c in s)  # not one side of && || | or & (nesting is checked apart)
+        words = list(range(start, end))
+        while words and mt[words[0]] in SHELL_WORDS | {'then', 'do', 'else', 'elif', 'function'}:
+            if mt[words[0]] == 'function':
+                words = words[1:]  # and its name
+            words = words[1:]
+        only_assigns, cmd = True, None
+        for i in words:
+            m = ASSIGN.fullmatch(mt[i])
+            if m and (cmd is None or cmd in ('export', 'readonly', 'local', 'declare', 'typeset')):
+                continue
+            if cmd is None:
+                cmd = mt[i]
+                only_assigns = cmd in ('export', 'readonly')
+            elif mt[i].startswith('-'):
+                only_assigns = False
+        run = [i for i in words if not ASSIGN.fullmatch(mt[i])]
+        while run and mt[run[0]] in PREFIXES:
+            run = run[1:]
+        if run and os.path.basename(mt[run[0]]) in COPIERS:
+            self.copiers.append((os.path.basename(mt[run[0]]), run[1:]))
+        if any(os.path.basename(mt[i]) in ARCHIVERS or INTERPRETERS.match(os.path.basename(mt[i])) for i in run[:1]) \
+                or (run and mt[run[0]] == 'git' and any(mt[i] in ('clone', 'worktree', 'archive', 'bundle') for i in run)):
+            self.archive = True  # unpacks or copies a tree, links and all, the copy judge cannot see
+        if run and mt[run[0]] == '.':
+            self.dyn = min(self.dyn, run[0])  # `builtin .`, `command .`: a sourced file sets anything
+        if cmd in DYN_CMDS and not (cmd == 'trap' and not any(DQ in mt[i] or UQ in mt[i] for i in words)):
+            # A literal trap action is text the scans below already read; one built at run time is not.
+            self.dyn = min(self.dyn, start)
+        elif (cmd in VAR_CMDS and any((DQ in mt[i] or UQ in mt[i]) and not ASSIGN.fullmatch(mt[i]) for i in words)) or \
+                (cmd == 'printf' and any(mt[i] == '-v' for i in words)):
+            # Sets or clears a variable it names at run time. Before every assignment a
+            # path relies on, and outside a function, it cannot reach that path's value.
+            self.setters.append(words[0])  # the command itself: a leading `{` sits outside the frame it opens
+        for i in words:
+            m = ASSIGN.fullmatch(mt[i])
+            if not m:
+                continue
+            name, val, after = m.group(1), m.group(2), sep_a
+            if val.endswith(UQ) and i + 1 < len(mt) and mt[i + 1].startswith('('):
+                val, after = self.substitution(i, val)
+            self.assigns.setdefault(name, []).append((i, val))
+            if name not in self.first_ok and len(self.assigns[name]) == 1 and only_assigns and \
+                    not self.nest[i] and plain(sep_b) and after is not None and plain(after):
+                self.first_ok.add(name)
+
+    def read_words(self):
+        """Every word, wherever it stands: references, bare names, and the dynamic commands a walk missed."""
+        mt = self.mt
+        for i, t in enumerate(mt):
+            if t in ('eval', 'source'):
+                self.dyn = min(self.dyn, i)
+            elif t in VAR_CMDS or t in ('printf', 'trap'):
+                rest = []
+                for u in mt[i + 1:]:
+                    if is_sep(u):
+                        break
+                    rest.append(u)
+                if any((DQ in u or UQ in u) and not ASSIGN.fullmatch(u) for u in rest) and (t != 'printf' or '-v' in rest):
+                    if t == 'trap':
+                        self.dyn = min(self.dyn, i)
+                    else:
+                        self.setters.append(i)
+            for name in REFNAMES.findall(t):
+                self.refs.setdefault(name, []).append(i)
+            self.taint.update(SETREF.findall(t))
+            m = ASSIGN.fullmatch(t)
+            self.taint.update(BARE.findall(t[len(m.group(1)) + 1:] if m else t))
+
+    def settle(self):
+        for name, a in self.assigns.items():
+            if any(r <= a[0][0] for r in self.refs.get(name, [])):
+                self.first_ok.discard(name)  # read before it is first assigned: the environment's value
+        self.fresh_ok = self.fresh_ok and 'PATH' not in self.assigns
+
+    def copies_safe(self):
+        """A fixture config can be written and then copied out of its sandbox, where the copy
+        cannot see a tree that does not exist yet. So every copy in the text must land in a
+        sandbox, or copy only files the copy judge can read; and no archive is unpacked."""
+        if self._copies is None:
+            self._copies = not self.archive and all(self.copy_ok(c, ws) for c, ws in self.copiers)
+        return self._copies
+
+    def copy_ok(self, cmd, ws):
+        mt, dest, pos, k = self.mt, None, [], 0
+        while k < len(ws):
+            t = mt[ws[k]]
+            if t in ('-t', '--target-directory') and k + 1 < len(ws):
+                dest = ws[k + 1]
+                k += 2
+                continue
+            if t.startswith('--target-directory='):
+                return False
+            if not t.startswith('-') and not ASSIGN.fullmatch(t):
+                pos.append(ws[k])
+            k += 1
+        if dest is None:
+            if len(pos) < 2:
+                return True
+            dest, pos = pos[-1], pos[:-1]
+        if self.word_ok(dest):
+            return True
+        recursive = any(re.fullmatch(r'-[A-Za-z]*[rRa][A-Za-z]*|--recursive|--archive', mt[i]) for i in ws)
+        for i in pos:
+            src = self.toks[i]
+            if DQ in mt[i] or UQ in mt[i] or mt[dest].count(DQ) or mt[dest].count(UQ):
+                return False
+            if not (os.path.isabs(src) and os.path.isfile(src)) and (recursive or cmd not in ('cp', 'gcp', 'install')):
+                return False
+        return True
+
+    def substitution(self, i, val):
+        """An unquoted `V=$(...)`: the value, and the separator after its `)` (None: a word follows)."""
+        depth, mt = 0, self.mt
+        for j in range(i + 1, len(mt)):
+            t = mt[j]
+            if not is_sep(t):
+                continue
+            for k, c in enumerate(t):
+                depth += (c == '(') - (c == ')')
+                if depth == 0:
+                    inner = (' '.join(mt[i + 1:j]) + ' ' + t[:k])[1:].strip()  # less the opening `(`
+                    rest = t[k + 1:]
+                    if rest.strip(' '):
+                        after = rest
+                    elif j + 1 == len(mt):
+                        after = ''
+                    else:
+                        after = mt[j + 1] if is_sep(mt[j + 1]) else None  # `$(...)/x`: a word follows
+                    return (val + '(' + inner + ')' if after is not None else None), after
+        return None, None
+
+    def values(self, name, pos, seen):
+        """(every value `name` can hold read at token pos, the assigned variables it rests on) or None."""
+        if name == 'TMPDIR':
+            return [ANY], set()
+        if name in SPECIAL:
+            return [WILD], set()
+        if name in self.taint or name in seen or name not in self.first_ok:
+            return None
+        a, used = self.assigns[name], {name}
+        if pos <= a[0][0]:
+            return None
+        top = not self.nest[pos]
+        base, tails = [], []
+        for i, v in a:
+            if top and i >= pos:
+                continue  # runs after this point: a top-level line is never re-entered
+            r = self.parse(v, i, seen | {name}, name)
+            if r is None:
+                return None
+            alts, selfref, strip, u = r
+            used |= u
+            if selfref:
+                if any(not s.startswith('/') for s in alts):
+                    return None
+                tails.append((alts, strip))
+            else:
+                base.extend(alts)
+        out = list(base)
+        for alts, strip in tails:
+            out.extend((b[:-1] if strip and b.endswith('/') else b) + WILD + s for b in base for s in alts)
+        return (out, used) if base and len(out) <= MAX_ALTS else None
+
+    def parse(self, s, idx, seen, selfname=None):
+        """(alternatives, starts with the variable itself, its `%/` strip, variables used) or None."""
+        if s is None or any(c in s for c in '`\\$') or s.startswith('~'):
+            return None
+        parts, i, selfref, strip, used = [], 0, False, False, set()
+        while i < len(s):
+            js = [k for k in (s.find(UQ, i), s.find(DQ, i)) if k >= 0]
+            if not js:
+                parts.append([s[i:]])
+                break
+            j = min(js)
+            if j > i:
+                parts.append([s[i:j]])
+            m = REF.match(s, j)
+            if not m:
+                return None
+            i = m.end()
+            name, op, sub = m.group('b') or m.group('n'), m.group('op') or '', m.group('sub')
+            if sub is not None:
+                if not self.fresh_ok or not re.match(r'\s*mktemp(\s|$)', sub) or re.search(r'(^|\s)(-[A-Za-z]*u|--dry-run)', sub):
+                    return None
+                parts.append([FRESH])
+                continue
+            if name in (UQ, DQ):
+                parts.append([WILD])
+                continue
+            if name == selfname:
+                if parts or op not in ('', '%/', '%%/'):
+                    return None
+                selfref, strip = True, bool(op)
+                continue
+            r = self.values(name, idx, seen)
+            if r is None:
+                return None
+            vals, u = r
+            used |= u
+            if op in ('%/', '%%/'):
+                vals = [v.rstrip('/') if op == '%%/' else (v[:-1] if v.endswith('/') else v) for v in vals]
+            elif op:
+                vals = vals + [op.split('-', 1)[1]]
+            parts.append(vals)
+        alts = ['']
+        for p in parts:
+            alts = [a + b for a in alts for b in p]
+            if len(alts) > MAX_ALTS:
+                return None
+        return alts, selfref, strip, used
+
+    def sandbox(self, p):
+        if '..' in p.split('/'):
+            return False
+        if FRESH in p:
+            return all(p[k + 1:k + 2] in ('', '/') for k in range(len(p)) if p[k] == FRESH)
+        if p.count(ANY) + p.count(WILD) > MAX_WILD:
+            return False  # more unknowns than the link check below can walk
+        if not (p.startswith(ANY) or any(p.startswith(r) or p.startswith(r[:-1] + WILD) for r in SANDBOX_ROOTS)):
+            return False
+        pat = ''.join('*' if c in (ANY, WILD) else glob.escape(c) for c in p).lower()
+        cfgs = protected()
+        if any(fnmatch.fnmatchcase(c.lower(), pat) for c in cfgs):
+            return False
+        real = {os.path.realpath(c).lower() for c in cfgs}
+        # An existing path that links into the repo: judged by where it resolves.
+        for d in filter(None, {os.environ.get('TMPDIR'), '/tmp', tempfile.gettempdir()}):
+            g = ''.join(glob.escape(d.rstrip('/')) if c == ANY else '*' if c == WILD else glob.escape(c) for c in p)
+            for hit in itertools.islice(glob.iglob(g), 256):
+                try:
+                    st = os.stat(hit)
+                except OSError:
+                    st = None
+                if os.path.realpath(hit).lower() in real or (st and (st.st_dev, st.st_ino) in KNOWN):
+                    return False
+        return True
+
+    def exempt(self, tok):
+        if not self.ok or any(c in tok for c in '*?[') or not self.at.get(tok) or not self.copies_safe():
+            return False
+        return all(self.word_ok(i) for i in self.at[tok])
+
+    def word_ok(self, i):
+        """True when the word at token i is a path every value of which is a sandbox."""
+        m = self.mt[i]
+        if UQ in m or DQ not in m:
+            return False  # no variable, or an unquoted one the shell splits and globs
+        if self.dyn < len(self.mt) and (self.dyn < i or self.nest[i]):
+            return False  # eval or source can run before this and set anything
+        r = self.parse(m, i, frozenset())
+        if r is None or not all(self.sandbox(p) for p in r[0]):
+            return False
+        first = min([self.assigns[v][0][0] for v in r[3]] or [len(self.mt)])
+        # Harmless only in top-level flow that runs once, in place: anything else may be a function called later.
+        return not any(s >= first or not set(self.nest[s]) <= {'loop', 'if'} for s in self.setters)
+
+
+def sandboxed(tok):
+    """True when this shell word is a path the Resolver proved cannot be the project's config.
+    Any failure inside the proof is False: the path is judged as it was before the proof existed."""
+    try:
+        return bool(RES) and RES[-1] is not None and RES[-1].exempt(tok)
+    except Exception:
+        return False
+
+
 def expand(tok, cwd):
     p = os.path.expanduser(tok)
     p = p if os.path.isabs(p) else os.path.join(cwd, p)
-    if any(c in tok for c in '*?['):
-        return glob.glob(p) or [p]
-    return [p]
+    out = (glob.glob(p) or [p]) if any(c in tok for c in '*?[') else [p]
+    if sandboxed(tok):
+        if not any(os.path.lexists(x) for x in out):
+            RES[-1].paths.update(out)
+    return out
 
 
 def names_cfg(toks, cwd):
     for t in toks:
+        if sandboxed(t):
+            continue
         if 'harness.json' in t.lower():
             return True
         val = t.split('=', 1)[1] if t.startswith('-') and '=' in t else t
@@ -351,6 +802,20 @@ def judge_bash(cmd, cwd, depth=0):
             refuse('the guard could not parse this command, and it runs git or writes files, so it cannot see '
                    'what it does. Rewrite it in plainer shell (no unbalanced quotes).')
         return
+    if depth == 0:
+        TOPS.add(cwd)
+    try:
+        res = Resolver(code, toks)
+    except Exception:
+        res = None  # a proof that crashed proves nothing: the judgement without it stands
+    RES.append(res)
+    try:
+        judge_segments(toks, bodies, cwd, depth)
+    finally:
+        RES.pop()
+
+
+def judge_segments(toks, bodies, cwd, depth):
     body_i = 0
     for seg in segments(toks):
         args, redirs, assigns = args_of(seg)
@@ -444,7 +909,8 @@ def judge_bash(cmd, cwd, depth=0):
             continue
         if name in ('sed', 'gsed', 'awk', 'gawk'):
             # Reading the file is fine; naming it inside the script (sed `w`, awk `print >`) writes it.
-            if any('harness.json' in a.lower() and not is_cfg(expand(a, cwd)[0]) for a in args[1:]):
+            if any('harness.json' in a.lower() and not is_cfg(expand(a, cwd)[0]) and not sandboxed(a)
+                   for a in args[1:]):
                 refuse('this %s script names harness.json, and the guard cannot see what it writes there.' % name)
             continue
         if name not in READERS and any(is_gitprot(p) for a in args[1:] if not a.startswith('-') for p in expand(a, cwd)):
