@@ -37,6 +37,8 @@ export SWARM_DISK_HOST_PATH="${SWARM_DISK_HOST_PATH-$(bash "$KIT_ROOT/scripts/di
 export SWARM_DISK_HOLD_FILE="${SWARM_DISK_HOLD_FILE:-${DISK_GUARD_HOLD_FILE:-${COORDINATOR_DIR:-$STATE_DIR/coordinator}/disk-hold}}"
 # Who "Waiting on …" names on a finished row; unset reads "the owner".
 export SWARM_OWNER_NAME="${SWARM_OWNER_NAME:-$(swarm_opt swarm.ownerName "")}"
+# Until launch the PM takes the owner's calls but legal and commercial ones: who a person-park's "next" names.
+export SWARM_UNTIL_LAUNCH_PM="${SWARM_UNTIL_LAUNCH_PM:-$(swarm_opt signoff.untilLaunchPm false)}"
 # Every open ticket, counted once per five minutes. The release is the tickets at
 # swarm.releasePriorities, less those set after launch (the label, or one of
 # swarm.postLaunchMilestones by title), less parked work and the wrappers below.

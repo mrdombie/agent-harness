@@ -61,7 +61,7 @@ echo "--- the fixture: handed-off pull requests in every state, a merge, two par
 mkdir -p "$STATE/coordinator/snapshot"
 ended_run 2101 0 '{"type":"result","subtype":"success","result":"Opened https://github.com/acme/widgets/pull/3101"}'
 ended_run 2102 0 '{"type":"result","subtype":"success","result":"PR #3102 is open"}'
-for t in 2103 2104 2105 2106 2109 2110; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
+for t in 2103 2104 2105 2106 2109 2110 2111 2112; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
 ended_run 2107 20; park_line 2107 pm "build asked a question rather than guessing — which repo does this belong in?"
 ended_run 2108 20; park_line 2108 person "repair asked a question rather than guessing — ship the changes made since the sign-off?"
 ok_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"SUCCESS"}' "$1"; }
@@ -71,7 +71,7 @@ red_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"FAILURE"}' "
 pr() { # <number> <ticket> <mergeable> <labels json> <checks...>
   local n=$1 t=$2 m=$3 l=$4; shift 4
   local c; c=$(IFS=,; printf '%s' "$*")
-  printf '{"number":%s,"headRefName":"tkt-%s/work","mergeable":"%s","labels":%s,"closingIssuesReferences":[],"statusCheckRollup":[%s]}' "$n" "$t" "$m" "$l" "$c"
+  printf '{"number":%s,"headRefName":"tkt-%s/work","headRefOid":"h%s","mergeable":"%s","labels":%s,"closingIssuesReferences":[],"statusCheckRollup":[%s]}' "$n" "$t" "$n" "$m" "$l" "$c"
 }
 { echo '['
   pr 3101 2101 MERGEABLE '[]' "$(ok_run 'Code gates')" "$(busy_run 'Unit tests')" "$(busy_run 'Build web')"; echo ','
@@ -80,7 +80,9 @@ pr() { # <number> <ticket> <mergeable> <labels json> <checks...>
   pr 3104 2104 CONFLICTING '[]' "$(ok_run 'Code gates')"; echo ','
   pr 3105 2105 MERGEABLE '[]' "$(busy_run 'Design critic')" "$(ok_run 'Code gates')"; echo ','
   pr 3110 2110 MERGEABLE '[]' "$(at_run 'Lesson' SKIPPED 2026-10-21T10:00:00Z)" "$(at_run 'Lesson' FAILURE 2026-10-21T13:00:00Z)" \
-    "$(at_run 'Code gates' FAILURE 2026-10-21T10:00:00Z)" "$(at_run 'Code gates' SUCCESS 2026-10-21T13:00:00Z)"
+    "$(at_run 'Code gates' FAILURE 2026-10-21T10:00:00Z)" "$(at_run 'Code gates' SUCCESS 2026-10-21T13:00:00Z)"; echo ','
+  pr 3111 2111 CONFLICTING '[]' "$(red_run 'Code gates')"; echo ','
+  pr 3112 2112 MERGEABLE '[]' "$(red_run 'Unit tests')" "$(busy_run 'Build web')" "$(busy_run 'Lint')"
   echo ']'; } > "$STATE/swarm/prs.json"
 jq -e . "$STATE/swarm/prs.json" >/dev/null || bad "the open-PR fixture is not JSON"
 cat > "$STATE/coordinator/snapshot/issues.json" <<JSON
@@ -92,6 +94,10 @@ cat > "$FIX/gh/api-repos_acme_widgets_pulls_state_closed_sort_updated_direction_
  {"number":3109,"title":"feat: other","merged_at":"$MERGED_ISO","closed_at":"$MERGED_ISO","head":{"ref":"someone/else"},"body":"Closes #2109"},
  {"number":3001,"title":"old, closed unmerged","merged_at":null,"closed_at":"$MERGED_ISO","head":{"ref":"tkt-2101/old"},"body":""}]
 JSON
+# The open heads, fresh: 3104's copy is of its current head, 3111's of an older one.
+printf '[{"number":3104,"head":{"sha":"h3104"}},{"number":3111,"head":{"sha":"a-newer-push"}}]\n' \
+  > "$FIX/gh/api-repos_acme_widgets_pulls_state_open_sort_updated_direction_desc_per_page_100.json"
+ended_run 2113 20; park_line 2113 person "repair asked a question rather than guessing — is the pricing change cleared commercially?"
 cat > "$FIX/gh/api-search_issues.json" <<JSON
 {"total_count":2,"items":[{"number":3106,"title":"fix(desk): the strip","closed_at":"$MERGED_ISO","pull_request":{"merged_at":"$MERGED_ISO"}},
  {"number":3109,"title":"feat: other","closed_at":"$MERGED_ISO","pull_request":{"merged_at":"$MERGED_ISO"}}]}
@@ -104,6 +110,8 @@ want "a red check, by name"                   "A check failed: Code gates" "$(ro
 want "the approval check red under a hold is the sign-off" "Waiting for sign-off" "$(row_of "$s" 2103 .now.text)"
 want "a clash"                                "Clashes with newer code" "$(row_of "$s" 2104 .now.text)"
 want "the design critic still running"        "Waiting for design review" "$(row_of "$s" 2105 .now.text)"
+want "a clash read on an older head is not believed" "Waiting for checks on the newest push" "$(row_of "$s" 2111 .now.text)"
+want "a failure outranks running, and says what still runs" "A check failed: Unit tests (2 still running)" "$(row_of "$s" 2112 .now.text)"
 want "each check by its newest run: a failure after a skip fails, a pass after a failure passes" "A check failed: Lesson" "$(row_of "$s" 2110 .now.text)"
 want_not_in "no row's state says success or shipped" '(success|shipped)' "$(printf '%s' "$s" | jq -r '.done[] | "\(.now.text) \(.now.state) \(.lastRun)"' | tr 'A-Z' 'a-z')"
 want_not_in "nor does the header"             '(success|shipped)' "$(printf '%s' "$s" | jq -r '.doneSummary' | tr 'A-Z' 'a-z')"
@@ -139,6 +147,9 @@ echo "--- a parked ticket: Stopped: <reason> — next: <who> ---"
 want "a PM question"                          "Stopped: build asked a question — next: PM" "$(row_of "$s" 2107 .now.text)"
 want "with what it needs"                     "which repo does this belong in?" "$(row_of "$s" 2107 .now.detail)"
 want "a question for the owner names the owner" "Stopped: repair asked a question — next: Dom" "$(row_of "$s" 2108 .now.text)"
+sl=$(SWARM_UNTIL_LAUNCH_PM=true snap)
+want "until launch the PM takes it"            "Stopped: repair asked a question — next: PM" "$(row_of "$sl" 2108 .now.text)"
+want "but a commercial question still goes to the owner" "Stopped: repair asked a question — next: Dom" "$(row_of "$sl" 2113 .now.text)"
 
 echo "--- the page draws those states, the links and Merged today ---"
 r=$(page_render "$LV" "$s")
@@ -218,7 +229,16 @@ ended_run 2106 0; ended_run 2107 20; park_line 2107 pm "build asked a question r
 plant server.mjs "    if (!o || at >= o.at) by.set(name, { busy, failed, good, at })" "    by.set(name, { busy: (o && o.busy) || busy, failed: (o && o.failed) || failed, good: (o && o.good) || good, at })"
 got=$(row_of "$(snap "$P")" 2110 .now.text)
 [ "$got" != "A check failed: Lesson" ] && ok "planted: every run of a check counted alike → 2110 reads '$got' → red" || bad "planted: the newest-run rule dropped and the test cannot see it"
-plant server.mjs "status: openPrState(p) }" "status: null }"
+plant server.mjs "heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid" "false"
+got=$(row_of "$(snap "$P")" 2111 .now.text)
+[ "$got" != "Waiting for checks on the newest push" ] && ok "planted: no head check → 2111 reads '$got' → red" || bad "planted: the head check dropped and the test cannot see it"
+plant server.mjs "busy.length ? \`\${busy.length} still running\` : ''" "''"
+got=$(row_of "$(snap "$P")" 2112 .now.text)
+[ "$got" != "A check failed: Unit tests (2 still running)" ] && ok "planted: the running count dropped → 2112 reads '$got' → red" || bad "planted: the running count dropped and the test cannot see it"
+plant server.mjs "export const ownerAsk = (text) => (UNTIL_LAUNCH_PM && !OWNER_ONLY_RE.test(String(text || '')) ? 'PM' : OWNER)" "export const ownerAsk = () => OWNER"
+got=$(row_of "$(SWARM_UNTIL_LAUNCH_PM=true snap "$P")" 2108 .now.text)
+[ "$got" != "Stopped: repair asked a question — next: PM" ] && ok "planted: the until-launch rule dropped → 2108 reads '$got' → red" || bad "planted: the until-launch rule dropped and the test cannot see it"
+plant server.mjs " : openPrState(p) }" " : null }"
 got=$(row_of "$(snap "$P")" 2101 .now.text)
 [ "$got" != "Waiting for checks (2 running)" ] && ok "planted: no open-PR state → 2101 reads '$got' → red" || bad "planted: the open-PR state dropped and the test cannot see it"
 plant server.mjs "  if (closed && closed.mergedAt && !(open && open.number > closed.number)) {" "  if (false) {"
