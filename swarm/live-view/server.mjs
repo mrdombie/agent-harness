@@ -943,18 +943,21 @@ const DESIGN_RE = new RegExp(process.env.SWARM_DESIGN_CHECKS || 'design critic|j
 const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
 export function openPrState(p) {
   const labels = labelNames(p.labels)
+  // One answer per check name, its NEWEST run: a run still going counts as newest, then
+  // the latest finish. An older skipped run beside a newer failure is not a pass.
   const by = new Map()
   for (const c of p.statusCheckRollup || []) {
     if (!c) continue
     const name = String(c.name || c.context || 'a check')
     const busy = c.state ? /PENDING|EXPECTED/.test(c.state) : /IN_PROGRESS|QUEUED|PENDING|WAITING|REQUESTED/.test(c.status || '') || !c.conclusion
-    const failed = RED_RUN.has(c.conclusion) || /FAILURE|ERROR/.test(c.state || '')
-    const good = OK_RUN.has(c.conclusion) || c.state === 'SUCCESS'
-    const o = by.get(name) || { busy: false, failed: false, good: false }
-    by.set(name, { busy: o.busy || busy, failed: o.failed || failed, good: o.good || good })
+    const failed = !busy && (RED_RUN.has(c.conclusion) || /FAILURE|ERROR/.test(c.state || ''))
+    const good = !busy && (OK_RUN.has(c.conclusion) || c.state === 'SUCCESS')
+    const at = busy ? Infinity : Date.parse(c.completedAt || c.startedAt || c.createdAt || '') || 0
+    const o = by.get(name)
+    if (!o || at >= o.at) by.set(name, { busy, failed, good, at })
   }
   const names = [...by.entries()]
-  const failed = names.filter(([n, c]) => c.failed && !c.busy && !c.good && !APPROVAL_RE.test(n)).map(([n]) => n)
+  const failed = names.filter(([n, c]) => c.failed && !APPROVAL_RE.test(n)).map(([n]) => n)
   const busy = names.filter(([n, c]) => c.busy && !APPROVAL_RE.test(n)).map(([n]) => n)
   const held = labels.includes(LBL('HOLD_LABEL', 'needs:human-approval'))
   const approvalWaits = names.some(([n, c]) => APPROVAL_RE.test(n) && !c.good)
