@@ -147,6 +147,12 @@ rr=$(cd "$LV" && node --input-type=module -e '
     at("Code gates", "FAILURE", "2026-10-21T10:00:00Z"), at("Code gates", "SUCCESS", "2026-10-21T13:00:00Z")] })
   console.log(r.total + " " + r.fail + " " + r.pending)')
 want "the live card's PR cell reads each check by its newest run too" "2 1 0" "$rr"
+printf '{"contexts":["Code gates"]}\n' > "$FIX/req.json"
+rq=$(cd "$LV" && SWARM_REQUIRED_CHECKS_FILE="$FIX/req.json" node --input-type=module -e '
+  import { rollupOf } from "./progress.mjs"
+  const red = (name) => ({ name, status: "COMPLETED", conclusion: "FAILURE", completedAt: "2026-10-21T13:00:00Z" })
+  console.log(rollupOf({ number: 1, statusCheckRollup: [red("Lesson"), red("Code gates")] }).fail)')
+want "and turns red only for a required check" "1" "$rq"
 red=$(cd "$LV" && SWARM_RUNS_DIR="$STATE/runs" node --input-type=module -e '
   import { prRed } from "./server.mjs"
   const at = (name, conclusion, completedAt) => ({ name, status: "COMPLETED", conclusion, completedAt })

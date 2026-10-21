@@ -953,6 +953,8 @@ const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
 // minutes). Unread, every check counts. A check the project names report-only
 // (release.nonBlockingChecks, via live-view.sh) never blocks, whatever the ruleset says.
 const REQUIRED_FILE = process.env.SWARM_REQUIRED_CHECKS_FILE || path.join(RUNS, '..', 'swarm', 'required-checks.json')
+// The gather child (progress.mjs) reads the same set for the live card's PR cell.
+process.env.SWARM_REQUIRED_CHECKS_FILE = REQUIRED_FILE
 const REQUIRED_MS = Math.max(600_000, Number(process.env.SWARM_REQUIRED_MS || 600_000))
 const NON_BLOCKING = (() => { try { const j = JSON.parse(process.env.SWARM_NONBLOCKING_CHECKS || '[]'); return Array.isArray(j) ? j.map(String) : [] } catch { return [] } })()
 export function checkRules() {
