@@ -104,6 +104,9 @@ point of the scale, because a spacing step raised as a blocker costs a round a r
 defect needed.
 
 A **SPIT-BACK** verdict is exactly "there is at least one Critical, Major or Minor".
+When the caller names the grades that block in this review round (from round 2 only
+Critical and Major), SPIT-BACK means one of those is open: list a lower grade under
+its heading and say SHIP — the caller puts it on the screen's polish list.
 Nits never change the verdict. A surface whose elements *mostly* carry narration is
 a **Major**, because that one gets the screen rebuilt rather than patched.
 
