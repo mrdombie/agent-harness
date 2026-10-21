@@ -44,7 +44,9 @@ set -uo pipefail
 BATCH="${COORDINATOR_SIGNOFF_BATCH:-$(swarm_opt coordinator.signoffBatch 5)}"
 HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"
 REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and length > 0)' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
-[ -n "$REQUIRED" ] || REQUIRED=null
+# A check that warns until the release (release.nonBlockingChecks) is not waited on.
+[ -z "$REQUIRED" ] || REQUIRED=$(release_blocking_required "$REQUIRED")
+[ -n "$REQUIRED" ] && [ "$REQUIRED" != "[]" ] || REQUIRED=null
 VERDICTS=$(jq -c '[(.review.attest // {}) | objects | to_entries[]
                    | select((.value | type) != "object" or .value.needsRenders != true)
                    | ((if (.value | type) == "object" then .value.trailer else null end) // .key) | ascii_downcase] | unique' \
@@ -56,6 +58,8 @@ NEED_JUDGE=$(jq -r '[(.review.attest // {}) | objects | to_entries[] | select((.
              "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
 [ "$NEED_JUDGE" = true ] || NEED_JUDGE=false
 JUDGE_CTX=$(swarm_opt review.judge.context "Design critic")
+# The judge's check listed in release.nonBlockingChecks: the PM signs from the CI shots.
+release_check_nonblocking "$JUDGE_CTX" && NEED_JUDGE=false
 JUDGE_PREFIX="Independent critic"
 EV_PREFIX=$(jq -r '.evidence.commitPrefix // empty' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
 [ -n "$EV_PREFIX" ] || EV_PREFIX="chore(evidence):"

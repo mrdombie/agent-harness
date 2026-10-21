@@ -565,6 +565,16 @@ the whole ceiling to healing, and the split line and `capacity.json` (`healAll`)
 say so; once fewer are left the share returns. Polish reds never count toward it:
 they are healed in their turn, at their priority, and never stop new building.
 
+**Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
+in harness.json lists check names (a run's name, a status context, or
+`<workflow> / <job>`, ignoring case); while `release.done` is not true, a red in one
+of them is a warning: repair-watch logs it and comments once per head on the pull
+request, and nothing repairs it, counts it red or toward heal-all, parks or
+fix-rounds on it (the driver's repair, the critic's findings), or waits on it (the
+sign-off batch, the merge lane, `pr-watch.sh`). Every check still runs and reports.
+`release.done: true`, an empty list or no key is exactly as before. The one switch
+is `scripts/release-checks.sh`; every reader of a red asks it.
+
 **Process fixes trump everything** (owner call 2026-10-20). A ticket wearing
 `coordinator.processLabel` (default `process`) starts first, in any free place:
 ahead of priority, kind order, heal-all, the healing / new split, polish and even an

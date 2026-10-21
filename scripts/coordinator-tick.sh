@@ -228,9 +228,14 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   # when the owner signs; a healing run can do nothing for it. #12827 shipped, was
   # respawned 15 minutes later on that check alone, and parked on it.
   HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"
-  printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" "$BRANCH_TICKET_JQ"'
+  # A CHECK THAT WARNS UNTIL THE RELEASE IS NOT A RED (release.nonBlockingChecks): it
+  # sends no healing run and never counts toward heal-all. repair-watch notes it on the PR.
+  NB_CHECKS=$(release_nonblocking_json)
+  printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson nb "$NB_CHECKS" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
     .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
-    | ((.statusCheckRollup // []) | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))) as $c
+    | ((.statusCheckRollup // []) | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))) as $all
+    | ($all | map(select(release_nb($nb) | not))) as $c
+    | ($all | map(select(release_nb($nb)) | select(release_red) | (.name // .context // "?")) | unique | join(", ")) as $warn
     # Settled = no CHECK RUN still running. A pending commit status is a wait on something
     # outside CI (such as a design-critic verdict), so it never holds a real red back.
     | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $pending
@@ -239,6 +244,7 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
     | (.headRefName | branch_ticket($pre)) as $t
     | if .mergeStateStatus == "DIRTY" then [ "red", .number, .headRefOid, $t, "clashes with the integration branch" ]
       elif $pending == 0 and $failed > 0 then [ "red", .number, .headRefOid, $t, "checks settled red" ]
+      elif $pending == 0 and $warn != "" then [ "warn", .number, .headRefOid, $t, $warn ]
       else empty end
     | @tsv' 2>/dev/null \
   | while IFS=$'\t' read -r kind pr sha t why; do
@@ -248,6 +254,7 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
           if [ -n "$fixer" ]; then say "PR #$pr: $why — being fixed by $fixer, not judged"
           elif swarm_heal_parked_out "$t" "$sha"; then say "PR #$pr: $why — #$t parked past its cap on this head, so it waits for a person (a new head heals it again)"
           else event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true; fi ;;
+        warn) say "PR #$pr: red only on $why — a warning until the release (release.nonBlockingChecks), not a red" ;;
       esac
     done
   # Sign-offs reach the owner in batches, the moment a batch fills: one entry per

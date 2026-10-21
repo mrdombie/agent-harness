@@ -54,6 +54,8 @@ esac
 # Names may hold spaces, so they stay JSON rather than a space-joined toolkit_cfg list.
 REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and length > 0)' "$HARNESS_CFG" 2>/dev/null)
 [ -n "$REQUIRED" ] || { echo "merge-lane: harness.json has no 'gates.requiredChecks' — without them green cannot be told from unchecked." >&2; exit 1; }
+# A check that warns until the release (release.nonBlockingChecks) is not waited on.
+REQUIRED=$(release_blocking_required "$REQUIRED")
 LANE_LABEL=$(swarm_opt mergeLane.label "queue:merge")
 FIRST_LABEL=$(swarm_opt mergeLane.firstLabel "P0")
 FLAKE_RE=$(swarm_opt mergeLane.flakePattern 'shutdown signal|lost communication with the server|runner .*(lost|did not respond|offline)|exit code 137|exit code 143|The operation was canceled|exceeded the maximum execution time')

@@ -20,10 +20,14 @@ set -uo pipefail
 REPO="${PR_WATCH_REPO:-${REPO_SLUG:-}}"
 EVERY="${PR_WATCH_EVERY:-60}"; MAX="${PR_WATCH_MAX:-3000}"
 start=$(date +%s)
+# A check listed in release.nonBlockingChecks warns until the release: never a RED here.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-checks.sh" || exit 1
+HARNESS_CFG="${HARNESS_CFG:-$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json}"
+NB=$(release_nonblocking_json)
 
 state() { # <pr> → one event word, or nothing while it is still pending
-  gh pr view "$1" ${REPO:+--repo "$REPO"} --json state,mergeable,statusCheckRollup 2>/dev/null | jq -r '
-    ([.statusCheckRollup[]? | (.conclusion // .state // "") | ascii_upcase]) as $c
+  gh pr view "$1" ${REPO:+--repo "$REPO"} --json state,mergeable,statusCheckRollup 2>/dev/null | jq -r --argjson nb "$NB" "$RELEASE_NB_JQ"'
+    ([.statusCheckRollup[]? | select(release_nb($nb) | not) | (.conclusion // .state // "") | ascii_upcase]) as $c
     | if .state == "MERGED" then "MERGED"
       elif .state == "CLOSED" then "CLOSED"
       elif ($c | map(select(test("FAILURE|ERROR|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"))) | length) > 0 then "RED"
