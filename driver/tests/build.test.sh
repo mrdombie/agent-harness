@@ -103,7 +103,8 @@ chmod +x "$REPO/node_modules/.bin/runner"
 out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" \
         "./node_modules/.bin/runner feature.txt" 2>&1); rc=$?
 want "a command that needs the install still proves" "0" "$rc"
-want_not_in "and never reports it as not found" '127|No such file' "$out"
+# "exit 127", not a bare 127: a short sha in the verdict can hold those digits.
+want_not_in "and never reports it as not found" 'exit 127|No such file|command not found' "$out"
 
 echo "--- both halves run the SAME version of the test, the reported one ---"
 # A test refined while the change was built is ordinary: a weak first version, the

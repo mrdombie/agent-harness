@@ -339,8 +339,11 @@ _driver_ai_call() {
 # worktree, from driver_ai_step's locals. With a session id it resumes that session.
 _driver_ai_run() {
   local in="$1" out="$2" sid="${3:-}"
-  local resume=()
+  local resume=() dbw=()
   [ -z "$sid" ] || resume=(--resume "$sid")
+  # The steps that run the project's tests get the throwaway database the proof gets.
+  case "$step" in build|fix|repair) dbw=(driver_with_test_db --soft "$out.db" "$wt") ;; esac
+  rm -f "$out.db"
   (
     cd "$wt" || exit 1
     export PATH="$shim:$PATH"
@@ -348,18 +351,19 @@ _driver_ai_run() {
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
     if [ -n "$schema_for_model" ]; then
-      "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
+      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" --json-schema "$(cat "$schema_for_model")" \
         < "$in" > "$out" 2>"$out.err"
     else
-      "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
+      ${dbw[@]+"${dbw[@]}"} "$DRIVER_CLAUDE" -p ${resume[@]+"${resume[@]}"} \
         --output-format stream-json --verbose --name "$step" \
         --permission-mode "$DRIVER_PERMISSION_MODE" "${lean[@]}" \
         --add-dir "$wt" < "$in" > "$out" 2>"$out.err"
     fi
   ) || true
+  [ ! -s "$out.db" ] || driver_say "   $step: ran with no test database — $(cat "$out.db")"
 }
 
 # _driver_ai_judge — the checks on the transcript in $log, from driver_ai_step's

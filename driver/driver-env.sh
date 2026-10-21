@@ -618,6 +618,8 @@ driver_conflict_markers() {
 }
 
 . "$KIT_ROOT/scripts/pr-closes.sh"
+# A throwaway, migrated database for a proof or a step, when tests.db is configured.
+. "$DRIVER_HOME/test-db.sh"
 
 # driver_open_prs_for <ticket> — the open pull requests that are this ticket's, one
 # per line. A PR is the ticket's by ANY of: a head branch <prefix><ticket> or
