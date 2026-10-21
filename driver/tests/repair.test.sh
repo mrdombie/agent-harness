@@ -324,6 +324,69 @@ fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"s
 out=$(driver_step_repair 320 2>&1); rc=$?
 want "unchanged with a new commit is refused" "24" "$rc"
 
+echo "--- unchanged, and GitHub agrees nothing is owed: a clean no-op, never the owner's question ---"
+# #13636: "head 7a636eb4bd already contains origin/develop, GitHub reports MERGEABLE, no
+# check is red. This step committed nothing. Should the PR ship as it is?" went to the
+# owner. Every half of that is a read the driver makes itself, afresh, not the model's word.
+pr_view() { # <ticket> <mergeable> <auto: 1|0> [red-check-name] — the PR as a fresh read sees it
+  : > "$FIX/pr-created-$1"
+  jq -n --arg h "$(git -C "$WT" rev-parse HEAD)" --arg g "$2" --arg a "$3" --arg f "${4:-}" \
+    '{headRefOid:$h, mergeable:$g, isDraft:false,
+      autoMergeRequest:(if $a == "1" then {mergeMethod:"SQUASH"} else null end),
+      statusCheckRollup:([{name:"unit", status:"COMPLETED", conclusion:"SUCCESS"}, {name:"e2e", status:"IN_PROGRESS", conclusion:""}]
+        + (if $f == "" then [] else [{name:$f, status:"COMPLETED", conclusion:"FAILURE"}] end))}' > "$FIX/gh/pr-view.json"
+}
+noop_case() { # <ticket> — a caller's brief, a clean PR, and the model answers unchanged
+  setup "$1"; prs_m "$1" CLEAN MERGEABLE; driver_state_set "$1" repair_brief_source caller
+  printf 'The owner asked: fix the clash.\n' > "$(driver_state_dir "$1")/repair-brief.md"
+  fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"unchanged","reason":"the clash is already fixed; nothing to commit"}' superpowers:systematic-debugging
+  : > "$GH_LOG"
+}
+noop_case 341; pr_view 341 MERGEABLE 1
+out=$(driver_step_repair 341 2>&1); rc=$?
+want "up to date, mergeable, nothing red, armed: the run ends clean" "32" "$rc"
+want "with no question for anyone"         "" "$(driver_state_get 341 park_note)"
+want "and no person's cause"               "" "$(driver_state_get 341 park_cause)"
+want_in "it says there is nothing to repair" 'nothing to repair' "$out"
+want_in "and the PR says what was checked"  'pr comment 341 .*nothing to repair' "$(tr '\n' ' ' < "$GH_LOG")"
+
+noop_case 342; prs_m 342 CLEAN MERGEABLE
+jq '.[0].statusCheckRollup += [{name:"approval-gate", status:"COMPLETED", conclusion:"FAILURE"}]' "$FIX/gh/prs.json" > "$FIX/gh/prs.json.t" && mv "$FIX/gh/prs.json.t" "$FIX/gh/prs.json"
+pr_view 342 MERGEABLE 1 approval-gate
+out=$(driver_step_repair 342 2>&1); rc=$?
+want "a red check on the head (the sign-off hold) still asks" "20" "$rc"
+want_in "the question as before"           'should the PR ship as it is' "$(driver_state_get 342 park_note)"
+want "a person's"                          "person" "$(driver_state_get 342 park_cause)"
+want_in "and the log names what failed"    'approval-gate' "$out"
+
+noop_case 343; pr_view 343 MERGEABLE 1 unit
+out=$(driver_step_repair 343 2>&1); rc=$?
+want "a check red on the fresh read, green on the shared copy, still asks" "20" "$rc"
+
+noop_case 344; trunk_moves trunk336.txt "trunk moved on"; pr_view 344 MERGEABLE 1
+out=$(driver_step_repair 344 2>&1); rc=$?
+want "behind the base: still asks"         "20" "$rc"
+want_in "naming the base it lacks"         'does not contain origin/develop' "$out"
+
+noop_case 345; pr_view 345 MERGEABLE 0
+out=$(driver_step_repair 345 2>&1); rc=$?
+want "auto-merge not armed: still asks"    "20" "$rc"
+
+noop_case 346; pr_view 346 UNKNOWN 1
+out=$(driver_step_repair 346 2>&1); rc=$?
+want "mergeable not yet MERGEABLE: still asks" "20" "$rc"
+
+noop_case 347; pr_view 347 MERGEABLE 1; git -C "$WT" commit -q --allow-empty -m "local only"
+driver_state_set 347 repair_base "$(git -C "$WT" rev-parse HEAD)"
+jq --arg h "$(git -C "$WT" rev-parse HEAD~1)" '.headRefOid = $h' "$FIX/gh/pr-view.json" > "$FIX/gh/pr-view.json.t" && mv "$FIX/gh/pr-view.json.t" "$FIX/gh/pr-view.json"
+out=$(driver_step_repair 347 2>&1); rc=$?
+want "the PR's head is not the tree's: still asks" "20" "$rc"
+want_in "naming the head"                  'is not this tree head' "$out"
+
+noop_case 348; rm -f "$FIX/pr-created-348"
+out=$(driver_step_repair 348 2>&1); rc=$?
+want "the PR cannot be read afresh: still asks" "20" "$rc"
+
 echo "--- a step never pushes, readies or arms: only the driver does, after the review ---"
 # Briefs written for the prose flow say "push, keep auto-merge armed, hand off", and a
 # step has Bash. A push from inside a step lands through auto-merge before self-check,

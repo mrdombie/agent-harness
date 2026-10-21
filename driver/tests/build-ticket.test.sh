@@ -1019,4 +1019,21 @@ want "the holder's claim is not released"          "$FIX/theirs-155" "$(bash "$C
 want "the keep-claim note is read once and cleared" "" "$(driver_state_get 155 claim_elsewhere)"
 bash "$CLK" release 155 --force >/dev/null 2>&1
 
+echo "--- a repair with nothing to repair ends the run clean: no park, no later step (#358) ---"
+# The repair step returns 32 only when it has read the PR afresh and found it up to date,
+# mergeable, with nothing red and auto-merge armed. Nothing after it has work to do.
+reset_fakes "repair:32"; rm -rf "$STATE/coordinator"; : > "$GH_LOG"
+printf 'REPAIR on PR #83: the clash\n' > "$FIX/brief-x.md"
+out=$(bt 156 --repair "$FIX/brief-x.md"); rc=$?
+want "it exits 0"                                  "0" "$rc"
+want "no step after the repair runs"               "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "nothing parks"                               "" "$(cat "$FIX/park.log")"
+want_not_in "no owner or PM label goes on"         'owner-decision|pm-decision|status:parked|needs:human' "$(cat "$GH_LOG")"
+want_in "it says there was nothing to repair"      'nothing to repair' "$out"
+: > "$RAN"
+out=$(bt 156 --repair "$FIX/brief-x.md"); rc=$?
+want "the same brief again is a fresh round, read afresh, never a resumed ship" "0" "$rc"
+want "so the repair checks again and nothing else runs" "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and still nothing parks"                     "" "$(cat "$FIX/park.log")"
+
 exit $FAILED
