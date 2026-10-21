@@ -163,7 +163,7 @@ ci_links() { # <evsha> <folders> [<pr> <body>] — links on stdin; CI's own pass
     sha=$(sed -E 's#.*/blob/([0-9a-f]{40})/.*#\1#' <<<"$u"); path=$(sed -E 's#.*/blob/[0-9a-f]{40}/##' <<<"$u")
     if [ "$sha" = "$ev" ] && printf '%s\n' "$ok" | grep -qxF -- "$path"; then printf '%s\n' "$u"; continue; fi
     if [ "$sha" = "$ev" ] && [ -z "$asked" ]; then carry=$(carried "$ev" "$2" "${3:-}" "${4:-}"); asked=1; fi
-    if [ "$sha" = "$ev" ] && printf '%s\n' "$carry" | cut -f1 | grep -qxF -- "$path"; then printf '%s\n' "$u"
+    if [ "$sha" = "$ev" ] && grep -qxF -- "$path" <<<"$(cut -f1 <<<"$carry")"; then printf '%s\n' "$u"
     else echo "ci-evidence: not a CI capture of ${ev:0:9}, refused: $path" >&2; fi
   done
 }
