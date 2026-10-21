@@ -80,7 +80,7 @@ export COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
   : > "$SPAWNS"; : > "$FIX/house.log"; : > "$FIX/claude.log"; : > "$FIX/notify.log"; : > "$FIX/claims.txt"
-  printf '[]\n' > "$FIX/gh/prs-all.json"; printf '[]\n' > "$FIX/fixing.json"
+  printf '[]\n' > "$FIX/gh/prs-all.json"; printf '[]\n' > "$FIX/fixing.json"; rm -f "$STATE/swarm/prs.json"
   unset SWARM_NOW
 }
 queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
@@ -561,13 +561,25 @@ out=$(COORDINATOR_SHADOW=0 SWARM_GH="$FIX/gh-nopr" tick)
 want "unreadable pull requests spawn nothing" "" "$(spawned)"
 want_in "and says so"                      'pull requests could not be read' "$out"
 
-echo "--- fresh work never goes to a ticket whose PR is open; a spawned entry leaves the queue ---"
+echo "--- a new entry whose ticket has an open PR is that PR's repair, never a silent skip ---"
 fresh; queue 501 502
 jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "the open draft PR's ticket is spawned as a repair" "501	repair" "$(grep '^501	' "$SPAWNS")"
+want "and the other new ticket as new"     "502	new" "$(grep '^502	' "$SPAWNS")"
+want_in "and named"                        '#501 \(new\): has an open PR #9 — taken as its repair' "$out"
+want_not_in "never skipped for its PR"     'skip #501 .*has an open PR' "$out"
+want "the spawned tickets left the queue"  "" "$(jq -r '.tickets[].n' "$C/queue.json" | tr '\n' ' ' | sed 's/ $//')"
+fresh; queue 501
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a ready PR's ticket is a repair too" "501	repair" "$(grep '^501	' "$SPAWNS")"
+fresh; queue 501; echo 501 > "$FIX/claims.txt"
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
 out=$(COORDINATOR_SHADOW=0 tick)
-want "the open PR's ticket is skipped"     "502" "$(spawned)"
-want_in "and named"                        'skip #501 \(new\): has an open PR' "$out"
-want "the spawned ticket left the queue"   "501" "$(jq -r '.tickets[].n' "$C/queue.json" | tr '\n' ' ' | sed 's/ $//')"
+want "a PR claimed by a live run elsewhere is skipped" "" "$(spawned)"
+want_in "and named as claimed"             'skip #501 \(repair\): claimed' "$out"
+want "and its queue entry now reads repair" "repair" "$(jq -r '.tickets[] | select(.n==501) | .class' "$C/queue.json")"
 
 echo "--- a frozen run is noticed; a busy one is not ---"
 fresh; live_run 700

@@ -271,6 +271,18 @@ out=$(bash "$Q" seed area:create 2>&1); rc=$?
 want "the label is found while gh is still writing" "0" "$rc"
 mv -f "$BIN/gh.fixture" "$BIN/gh"
 
+echo "--- add --class new on a ticket with an open PR stores a repair, and warns ---"
+rm -f "$STATE/swarm/prs.json"
+printf '[{"number":41,"headRefName":"tkt-690-x","isDraft":true}]\n' > "$FIX/gh/prs-all.json"
+out=$(bash "$Q" add 690 --class new 2>&1)
+want "stored as repair"                    "repair" "$(jq -r '.tickets[] | select(.n==690) | .class' "$QF")"
+want_in "with a warning naming the PR"     'warning: #690 has an open PR #41 — queued as repair, not new' "$out"
+out=$(bash "$Q" add 691 2>&1)
+want "a ticket with no open PR stays new"  "new" "$(jq -r '.tickets[] | select(.n==691) | .class' "$QF")"
+want_not_in "and no warning"               'warning' "$out"
+bash "$Q" remove 690 >/dev/null; bash "$Q" remove 691 >/dev/null
+printf '[]\n' > "$FIX/gh/prs-all.json"; rm -f "$STATE/swarm/prs.json"
+
 echo "--- add and remove ---"
 bash "$Q" add 777 --class approved-merge >/dev/null
 out=$(bash "$Q" add 12 --class urgent 2>&1); rc=$?

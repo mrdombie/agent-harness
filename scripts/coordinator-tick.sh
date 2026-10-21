@@ -323,6 +323,12 @@ claims() {
 CLAIMS_OK=1; CLAIM_ROWS=$(claims 2>/dev/null) || CLAIMS_OK=0
 CLAIMED=$(printf '%s\n' "$CLAIM_ROWS" | cut -f1 | grep -E '^[0-9]+$')
 
+ticket_open_pr() { # <ticket> — echoes the number of its open PR, draft or not
+  local n
+  n=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$1" \
+    "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t)) | .number] | first // empty' 2>/dev/null)
+  [ -n "$n" ] && printf '%s' "$n"
+}
 spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   local t="$1" cls="$2" meta st lab l
   grep -qx "$t" <<<"$CLAIMED" && { echo "claimed"; return 0; }
@@ -331,11 +337,6 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   [ -n "$meta" ] || { echo "could not be read"; return 0; }
   st=${meta%% *}; lab=${meta#* }
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
-  if [ "$cls" = new ]; then
-    printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
-      "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1 \
-      && { echo "has an open PR"; return 0; }
-  fi
   while read -r l; do
     [ -n "$l" ] || continue
     # A repair or an approved merge is in review by definition; only fresh work waits on it.
@@ -508,7 +509,7 @@ fi
 # half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl ex proc note why nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
+  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
   CANDS=""
   wide=$(coord_queue_ordered --wide)
   # A full list goes in its place in the order, ahead of lower-priority work, so the
@@ -520,6 +521,14 @@ candidates() {
     [ -n "${t:-}" ] || continue
     i=$((i+1))
     if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then continue; fi
+    # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
+    # skipped as new it sat at the head of the queue on every tick doing nothing.
+    if [ "$cls" = new ] && pr=$(ticket_open_pr "$t"); then
+      cls=repair
+      say "#$t (new): has an open PR #$pr — taken as its repair"
+      coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
+        || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
+    fi
     # A list with nothing free on it is never work, however idle the factory: every
     # item is ticked, reserved by a PR, or taken by another run. Its own takes count.
     if [ "$cls" = new ] && [ "$pl" = 1 ]; then
