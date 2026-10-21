@@ -187,6 +187,27 @@ expect_rc 0 "a new scripts/check-*.sh is a guard"
 check "$(lesson packages/x/eslint-rules/no-assumed-idle.js)"
 expect_rc 0 "a new lint rule is a guard"
 
+repo baretest
+mkdir -p "$R/scripts/foo" "$R/docs" "$R/pkg/tests"
+printf '#!/bin/sh\n[ "$(idle)" = 0 ] || exit 1\n' > "$R/scripts/foo/test.sh"
+printf '#!/bin/sh\n[ "$(idle)" = 0 ] || exit 1\n' > "$R/docs/test.sh"
+printf 'idle_never_assumed() { :; }\n' > "$R/pkg/tests/idle.sh"
+commit "bare suites"
+check "$(lesson scripts/foo/test.sh)"
+expect_rc 0 "a bare scripts/<name>/test.sh suite is a guard"
+check "$(lesson pkg/tests/idle.sh)"
+expect_rc 0 "a file under a tests/ directory is a guard"
+check "$(lesson docs/test.sh)"
+expect_rc 1 "a test.sh under docs/ is still excluded"
+git -C "$R" checkout -q main && git -C "$R" branch -qD work && git -C "$R" checkout -q -b work
+mkdir -p "$R/scripts/foo"
+printf '#!/bin/sh\n[ "$(idle)" = 0 ] || exit 1\n' > "$R/scripts/foo/test.sh" && commit "suite on trunk"
+git -C "$R" branch -qf main HEAD
+printf '#!/bin/sh\n\n[ "$(idle)" = 0 ]   || exit 1\n\n' > "$R/scripts/foo/test.sh" && commit "re-space suite"
+check "$(lesson scripts/foo/test.sh)"
+expect_rc 1 "a whitespace-only edit to a bare test.sh is not a guard"
+expect_out 'only moves or re-spaces' "and the line says so"
+
 repo whitespace
 printf "it('lists', () => {});   \nit('sorts', () => {});\n\n" > "$R/src/other.test.ts"
 commit "re-space"
