@@ -107,7 +107,10 @@ case "$1 $2" in
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
   "pr create")  : > "$(mark "$head")"; echo "https://github.com/acme/widgets/pull/42" ;;
-  "pr list")    f="$FIX/gh/prs.json"; [ -f "$f" ] || printf '[]\n' > "$f"; emit "$f" ;;
+  "pr list")    f="$FIX/gh/prs.json"
+                # Merged PRs are their own list: an open list read as merged lands every open PR.
+                case " $* " in *" --state merged "*) f="$FIX/gh/prs-merged.json" ;; esac
+                [ -f "$f" ] || printf '[]\n' > "$f"; emit "$f" ;;
   "pr view")
     # A pull request exists only when one was created. `pr view` on a branch with
     # none exits non-zero, which is how a caller can tell a created PR from a

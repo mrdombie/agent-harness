@@ -579,7 +579,9 @@ while [ "$i" -lt "$N" ]; do
   # ticket in review, and the reconciler frees the claim on exit as after any ship.
   if [ "$noop" -eq 1 ]; then
     for _s in "${STEPS[@]:$i}"; do driver_state_done "$TICKET" "$_s"; done
-    driver_say "✓ #$TICKET nothing to repair: $step read its pull request afresh and nothing is owed. The run ends here; the ticket stays in review."
+    _nn=$(driver_state_get "$TICKET" noop_note)
+    if [ -n "$_nn" ]; then driver_state_set "$TICKET" noop_note ""; driver_say "✓ #$TICKET $_nn. The run ends here."
+    else driver_say "✓ #$TICKET nothing to repair: $step read its pull request afresh and nothing is owed. The run ends here; the ticket stays in review."; fi
     exit "$DRIVER_OK"
   fi
 

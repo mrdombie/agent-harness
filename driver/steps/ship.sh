@@ -20,6 +20,7 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
 # driver_step_self_check: the gates again, on a tree the merge from origin changed.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
 
@@ -311,6 +312,42 @@ _driver_ship_findings_to_fix() {
   return 0
 }
 
+# _driver_ship_gone_merged <ticket> <tree> <branch> — a repair's PR that is no longer
+# open, read afresh. 0: it MERGED, so the work is on the trunk and the run ends clean;
+# any commit the tree holds past the merged head goes to a stranded ref first, and the
+# claim is released. 1: closed unmerged. 2: unreadable. 3: merged, backup refused.
+_driver_ship_gone_merged() {
+  local t="$1" wt="$2" branch="$3" pr row st at mhead extra n
+  pr=$(driver_state_get "$t" pr)
+  row=$(driver_gh_read swarm_gh pr view "${pr:-$branch}" --repo "$REPO_SLUG" --json state,mergedAt,headRefOid \
+          -q '"\(.state // "")\t\(.mergedAt // "")\t\(.headRefOid // "")"' 2>/dev/null) || {
+    driver_say "✋ ship: the pull request for $branch is not open, and whether it merged could not be read (${DRIVER_LOOKUP_TRIES:-3} tries)."
+    driver_state_set "$t" park_note "could not read whether the pull request for $branch merged (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return 2; }
+  IFS=$'\t' read -r st at mhead <<<"$row"
+  [ "$st" = MERGED ] && [ -n "$at" ] || return 1
+  # A HEAD THIS TREE CANNOT SEE COUNTS FROM WHERE THE REPAIR STARTED: none of it is dropped unseen.
+  if [ -z "$mhead" ] || ! git -C "$wt" cat-file -e "$mhead^{commit}" 2>/dev/null; then
+    git -C "$wt" fetch -q origin "$mhead" 2>/dev/null || mhead=$(driver_state_get "$t" repair_base)
+  fi
+  extra=""; [ -n "$mhead" ] && extra=$(git -C "$wt" rev-list --oneline "$mhead..HEAD" 2>/dev/null)
+  [ -n "$mhead" ] || extra=$(git -C "$wt" log --oneline -1 HEAD 2>/dev/null)
+  n=$(printf '%s' "$extra" | grep -c .)
+  if [ "$n" -gt 0 ]; then
+    if ! driver_stranded_push "$t" "$wt"; then
+      driver_say "✋ ship: PR #${pr:-?} merged at $at, and the $n repair commit(s) past its head could not be backed up: $DRIVER_STRANDED_WHY. They stay in $wt."
+      driver_state_set "$t" park_note "PR #${pr:-?} merged mid-repair; $n unpushed repair commit(s) could not be backed up ($DRIVER_STRANDED_WHY) and stay in $wt"
+      return 3
+    fi
+    driver_say "   ship: dropping $n unpushed repair commit(s) — the branch already merged; kept on origin as $DRIVER_STRANDED_REF:"
+    printf '%s\n' "$extra" | while IFS= read -r l; do driver_say "     $l"; done
+  fi
+  [ -z "${CL:-}" ] || bash "$CL" release "$t" >/dev/null 2>&1 || true
+  driver_state_set "$t" noop_note "PR #${pr:-?} merged at $at while it was being repaired; nothing left to do"
+  driver_say "✓ ship: PR #${pr:-?} merged at $at while repairing; nothing left to do."
+  return 0
+}
+
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
   local wt branch dirty ahead verdict rounds sha head body trunk r title nblock blist
@@ -422,6 +459,8 @@ driver_step_ship() { # <ticket>
       return "$DRIVER_E_UNREAD"; }
     open_pr=${open_row%% *}
     if [ -z "$open_pr" ]; then
+      local grc=0; _driver_ship_gone_merged "$t" "$wt" "$branch" || grc=$?
+      case "$grc" in 0) return "$DRIVER_E_NOOP" ;; 2) return "$DRIVER_E_UNREAD" ;; 3) return "$DRIVER_E_REFUSED" ;; esac
       driver_say "✋ ship: the pull request this repair was for is no longer open on $branch. A repair never opens a new one."
       driver_state_set "$t" park_note "the pull request for $branch closed while it was being repaired"
       return "$DRIVER_E_REFUSED"

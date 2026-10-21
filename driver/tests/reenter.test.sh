@@ -163,6 +163,20 @@ want_in "naming what is missing"      'no open pull request' "$out"
 want "no worktree was cut"            "" "$(driver_state_get 202 worktree)"
 want "no claim was taken"             "" "$(awk '$1==202' "$CLAIMS")"
 
+echo "--- no open pull request because it MERGED: the run ends clean, no park ---"
+# #12766 parked "no open pull request to repair" an hour after its PR merged.
+fix_issue 281 OPEN "status:in-review"; prs "[]"; claim_row 281 tester@fixture tkt-281/work ""
+printf '%s\n' '[{"number":37,"headRefName":"tkt-2810/x","body":"","closingIssuesReferences":[],"mergedAt":"2026-10-18T11:00:00Z"},{"number":36,"headRefName":"tkt-281/work","body":"","closingIssuesReferences":[],"mergedAt":"2026-10-18T11:52:23Z"}]' > "$FIX/gh/prs-merged.json"
+out=$(driver_step_reenter 281 2>&1); rc=$?
+want "it ends as nothing owed"        "$DRIVER_E_NOOP" "$rc"
+want_in "naming the merged PR"        '#36 merged at 2026-10-18T11:52:23Z' "$out"
+want "no park note"                   "" "$(driver_state_get 281 park_note)"
+want "the claim is released"          "" "$(awk '$1==281' "$CLAIMS")"
+fix_issue 282 OPEN "status:in-review"
+out=$(driver_step_reenter 282 2>&1); rc=$?
+want "a merged PR for another ticket is not this one's" "24" "$rc"
+rm -f "$FIX/gh/prs-merged.json"
+
 echo "--- two open pull requests: which one is not the driver's guess ---"
 fix_issue 203 OPEN "status:in-review"; prs "[$(pr_json 33 tkt-203/a), $(pr_json 34 tkt-203/b)]"
 out=$(driver_step_reenter 203 2>&1); rc=$?
