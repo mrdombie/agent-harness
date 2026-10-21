@@ -25,7 +25,7 @@
 # read (the prose flow), or a process sitting in the shared clone (worktree-lib.sh).
 # Every step after start reads the install: measured on the Mac on 2026-10-21, plan
 # ran an install-reading command in 21 of 88 transcripts and review in 35 of 53, and
-# ship's push runs the project's pre-push (`npm run verify:push`). A run still in
+# ship's push runs the project's pre-push, which runs its own npm gates. A run still in
 # start is safe: a link made while the install is set aside writes no fingerprint,
 # and self-check relinks a tree without one.
 #
