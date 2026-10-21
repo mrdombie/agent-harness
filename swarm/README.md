@@ -126,12 +126,21 @@ default 60) and refreshed off the request path. A snapshot taken before the
 first refresh lands says `unknown` on every step.
 
 The finished list shows one row per ticket, its newest run, and says where the
-ticket stands **now** rather than how the run ended: Shipped, In review (with the
-PR), Back in the queue, Running again, Waiting on PM, Waiting on the owner,
-Blocked, or Stopped with the park reason. It is read from the coordinator's issue
-snapshot (`coordinator/snapshot/issues.json`, which the tick also fills for runs
-that ended inside the list's window) and the shared open-PR file, never a call per
-row. Only a true stop is red. The header counts the rows by state.
+ticket stands **now**, read from GitHub, rather than how the run ended: a run that
+handed off a pull request is not a ticket that merged. A row reads Merged <time>,
+Waiting for checks (n running), A check failed: <name>, Clashes with newer code,
+Waiting for design review, Waiting for sign-off, Back in the queue, Running again,
+or Stopped: <reason> — next: <who> (PM, the owner, a machine fault or the queue,
+from the park line the run logged), with its PR link and finished-at time. Open
+PRs come from the shared open-PR file; closed ones and today's merges into the
+trunk (the Merged today section) from two REST calls kept in `swarm/pr-states.json`
+(`SWARM_PR_STATES_MS`, default two minutes, never under one), never a call per
+row. Only a stop, a failed check or a clash is red. The header counts the rows by state.
+
+A live row names its step from the driver's state where the run is on this
+machine, else from the claim's `step`. Another machine's row is coloured from that
+host's heartbeat, which carries each live run's last activity and line; the grey
+ring means the heartbeat itself is older than `SWARM_HEARTBEAT_STALE_MIN` (15).
 
 `plain-titles.json` beside the run records maps a ticket to the short title a
 person should read; without one the title is cut back to the clause that names
