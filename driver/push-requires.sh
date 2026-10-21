@@ -307,6 +307,9 @@ driver_push_requires() { # <ticket>
   local rows owed orc tier
   # A BUILD THAT DRAWS NOTHING OWES NO PICTURE VERDICT (tier.sh): the critic judges pixels.
   tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
+  # An existing screen on the baseline route owes no critic verdict: CI's baseline diff decides.
+  local route=picture
+  [ "$tier" != screen ] || route=$(driver_screen_route "$t" | cut -f1)
   # THE REVIEW ROUND THESE VERDICTS SIT IN, graded as the review step grades it: a
   # tooling build gets one round, read as a later one.
   DRIVER_ATTEST_ROUND=$(driver_state_count "$t" review); DRIVER_ATTEST_GROUND="$DRIVER_ATTEST_ROUND"
@@ -334,6 +337,10 @@ driver_push_requires() { # <ticket>
 
     if { [ "$needs_renders" = "yes" ] || [ "$agent" = "agent-harness:design-critic" ]; } && [ "$tier" != screen ]; then
       driver_say "   push-requires: '$name' judges screens, and this is a $tier build that changes none — not owed"
+      continue
+    fi
+    if { [ "$needs_renders" = "yes" ] || [ "$agent" = "agent-harness:design-critic" ]; } && [ "$route" = baseline ]; then
+      driver_say "   push-requires: '$name' judges screens, and this existing screen takes the baseline route — CI diffs it against its last approved shots, so not owed"
       continue
     fi
 

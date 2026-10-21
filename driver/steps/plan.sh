@@ -20,6 +20,7 @@
 # outlives the worktree, which the document would not.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tier.sh" || exit 1
 
 driver_step_plan() { # <ticket>
   local t="${1:?driver_step_plan: need a ticket}"
@@ -57,8 +58,17 @@ driver_step_plan() { # <ticket>
   # machine; the ticket's "Picture for any machine" comment carries the file, which is
   # fetched, checked against its sha256 and committed into the tree. None reachable is
   # nobody's question: requeued with the reason, never parked, never asked.
-  local dref dwt dout drc=0 derr
+  local dref dwt dout drc=0 derr route rwhy
   dref=$(jq -r '.designRef // ""' "$ans")
+  # AN EXISTING SCREEN BINDS NO PICTURE (tier.sh, the screen route): CI diffs it against
+  # its last approved shots, so a picture the plan names is not fetched, not waited for
+  # and not compared. A screen:new or screen:redesign ticket keeps all of it.
+  IFS=$'\t' read -r route rwhy <<<"$(driver_screen_route "$t")"
+  if [ "$route" = baseline ] && { [ -n "$(printf '%s' "$dref" | tr -d '[:space:]')" ] || [ "$(jq -r '.designSource // ""' "$ans")" = approved-picture ]; }; then
+    driver_say "   plan: $rwhy — the picture it names (${dref:-none}) does not bind it. Label it screen:redesign to hold the build to a picture."
+    jq '.designRef = "" | (if .designSource == "approved-picture" then .designSource = "ticket-body" else . end)' "$ans" > "$ans.tmp" && mv "$ans.tmp" "$ans"
+    dref=""
+  fi
   dwt=$(driver_state_get "$t" worktree)
   if [ -n "$(printf '%s' "$dref" | tr -d '[:space:]')" ] && [ -n "$dwt" ] && [ -d "$dwt" ]; then
     derr="$(driver_state_dir "$t")/steps/picture-fetch.err"

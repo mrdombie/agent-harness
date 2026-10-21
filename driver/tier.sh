@@ -95,3 +95,34 @@ _driver_tier_not_tooling() {
 
 # driver_tier_of <ticket> — the tier the record holds; screen when none was decided.
 driver_tier_of() { local v; v=$(driver_state_get "$1" tier 2>/dev/null); printf '%s' "${v:-screen}"; }
+
+# THE SCREEN ROUTE (the owner, 2026-10-21): pictures and the AI design review are for new
+# or redesigned screens only. A ticket labelled one of design.baselineRoute.pictureLabels
+# (screen:new, screen:redesign) takes the picture route: picture first, compare, the
+# independent critic and sign-off, all unchanged. Any other screen build takes the
+# baseline route: the project's CI diffs its shots against each route's last approved
+# shots and decides the design status, so no picture is bound and no critic verdict is
+# owed. Off unless design.baselineRoute.enabled is true; labels that cannot be read take
+# the picture route. CI still sends a route with no approved shot to the picture route.
+driver_baseline_route_on() { [ "$(jq -r '.design.baselineRoute.enabled // false' "$HARNESS_CFG" 2>/dev/null)" = true ]; }
+driver_picture_labels() { jq -r '(.design.baselineRoute.pictureLabels // ["screen:new", "screen:redesign"])[]' "$HARNESS_CFG" 2>/dev/null; }
+
+# driver_screen_route <ticket> — prints "<picture|baseline>\t<why>" and records the route.
+driver_screen_route() {
+  local t="$1" labels l route why
+  if ! driver_baseline_route_on; then
+    printf 'picture\tthis project has no baseline route, so every screen build takes the picture route\n'; return 0
+  fi
+  if ! labels=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[].name] | join(",")' 2>/dev/null); then
+    route=picture; why="#$t's labels could not be read, so the picture route applies"
+  else
+    route=baseline
+    why="#$t is an existing screen (no $(driver_picture_labels | paste -sd/ -) label): CI diffs it against its last approved shots"
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      case ",$labels," in *",$l,"*) route=picture; why="#$t is labelled $l: picture first, the independent critic and sign-off"; break ;; esac
+    done <<<"$(driver_picture_labels)"
+  fi
+  driver_state_set "$t" screen_route "$route" 2>/dev/null
+  printf '%s\t%s\n' "$route" "$why"
+}

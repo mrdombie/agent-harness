@@ -27,6 +27,7 @@ case "$1 $2" in
                while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$D/comment-$n.md"; shift; done
                echo "https://github.com/acme/widgets/pull/7#issuecomment-$n"; exit 0 ;;
   "pr list")   cat "$D/list.json"; exit 0 ;;
+  "issue view") [ -f "$D/ticket-labels" ] && cat "$D/ticket-labels"; exit 0 ;;
 esac
 if [ "$1" = api ]; then
   case "$*" in
@@ -514,6 +515,38 @@ NONE_IF='if [ -n "$head" ] && [ "$(sed -n '"'"'s/^nothing=//p'"'"' <<<"$st")" = 
 plant "nothing to photograph has no exit"        "$NONE_IF" 'if false; then' case_none_ok
 plant "no record is read as nothing to judge"    "$NONE_IF" 'if true; then' case_none_absent
 plant "the record's sha is not checked"          '[ "$(sed -n '"'"'s/^nothing=//p'"'"' <<<"$st")" = "$head" ]' 'true' case_none_oldrec
+
+# 13 THE BASELINE ROUTE (the owner, 2026-10-21): pictures and this critic are for new or
+# redesigned screens. A PR CI put on the baseline route is never judged and nothing is
+# posted; a screen:new / screen:redesign one, or one CI sent to the picture route, still is.
+CFGF="$HARNESS_CFG_PATH"; cp "$CFGF" "$FIX/cfg.keep"
+jq '.design.baselineRoute = {enabled: true}' "$FIX/cfg.keep" > "$CFGF"
+MARKB='<!-- screen-route: baseline -->'
+on_baseline() { jq --arg m "$MARKB" '.body = ("<!-- ci-evidence:begin -->\n" + $m)' "$D/pr.json" > "$D/p2" && mv "$D/p2" "$D/pr.json"; }
+judged() { [ -s "$D/statuses" ] && [ -f "$D/prompt-seen" ]; }
+case_base()    { reset; answer SHIP; rm -f "$D/ticket-labels"; on_baseline; bash "$J" run 7 >/dev/null 2>&1; judged && echo red || echo green; }
+case_newtkt()  { reset; answer SHIP; echo '["status:in-review","screen:new"]' > "$D/ticket-labels"; on_baseline; bash "$J" run 7 >/dev/null 2>&1; judged && echo green || echo red; }
+case_redopr()  { reset; answer SHIP; rm -f "$D/ticket-labels"; on_baseline; jq '.labels = [{name:"screen:redesign"}]' "$D/pr.json" > "$D/p2" && mv "$D/p2" "$D/pr.json"; bash "$J" run 7 >/dev/null 2>&1; judged && echo green || echo red; }
+case_nomark()  { reset; answer SHIP; rm -f "$D/ticket-labels"; bash "$J" run 7 >/dev/null 2>&1; judged && echo green || echo red; }
+case_due_base() {
+  rm -rf "$FIX/judge"; mkdir -p "$FIX/judge"
+  jq -n --arg h "$HEAD" --arg m "$MARKB" '[
+    {number:21, headRefOid:$h, isDraft:false, body:("x " + $m), labels:[], statusCheckRollup:[{context:"Design critic", state:"PENDING"}]},
+    {number:22, headRefOid:$h, isDraft:false, body:("x " + $m), labels:[{name:"screen:new"}], statusCheckRollup:[{context:"Design critic", state:"PENDING"}]},
+    {number:23, headRefOid:$h, isDraft:false, body:"<!-- screen-route: picture -->", labels:[], statusCheckRollup:[{context:"Design critic", state:"PENDING"}]}]' > "$D/list.json"
+  [ "$(bash "$J" due | cut -f1 | tr '\n' ' ')" = "22 23 " ] && echo green || echo red; }
+[ "$(case_base)" = green ] && [ ! -s "$D/dispatches" ] && ok "baseline route: an existing screen is not judged — no model, no status, no dispatch" || bad "baseline route judged: $(status_line)"
+[ "$(case_newtkt)" = green ] && ok "baseline route: a ticket labelled screen:new is judged as before" || bad "screen:new ticket skipped"
+[ "$(case_redopr)" = green ] && ok "baseline route: a PR labelled screen:redesign is judged as before" || bad "screen:redesign PR skipped"
+[ "$(case_nomark)" = green ] && ok "baseline route: a PR CI did not mark (a route with no approved shot) is judged" || bad "unmarked PR skipped"
+[ "$(case_due_base)" = green ] && ok "due: a baseline-route PR is not due; a screen:new one and a picture-route one are" || bad "due: $(bash "$J" due | cut -f1 | tr '\n' ' ')"
+plant "the run judges a baseline-route PR"  'if [ "$tl" != '"'"'["(unreadable)"]'"'"' ] && baseline_route' 'if false && baseline_route' case_base
+plant "due lists a baseline-route PR"       '| select(($on == "true" and ((.body // "") | contains($m))' '| select((false and ((.body // "") | contains($m))' case_due_base
+plant "a picture label is not read"         '| any(. as $l | $pl | index($l)) | not)'"'"' >/dev/null' '| any(false) | not)'"'"' >/dev/null' case_newtkt
+plant "the ticket's labels are not read"    '. + {ticketLabels: $tl}' '.' case_newtkt
+jq '.design.baselineRoute = {enabled: false}' "$FIX/cfg.keep" > "$CFGF"
+[ "$(case_base)" = red ] && ok "baseline route off: the marker alone skips nothing" || bad "the marker skipped a judge with the route off"
+cp "$FIX/cfg.keep" "$CFGF"
 
 # Whatever the plants did, the judge as shipped never posted a raw status in any case above.
 grep -v '^$' "$FIX/raw-ever" 2>/dev/null | grep -q . && bad "a raw status POST was sent: $(head -1 "$FIX/raw-ever")" || ok "no case sent a raw status POST"
