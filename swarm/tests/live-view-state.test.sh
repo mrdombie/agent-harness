@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# live-view-state.test.sh — a finished row says where its ticket REALLY stands, read
+# from GitHub; a live row names its real step; another machine's run is coloured
+# from its heartbeat.
+#
+# Measured 2026-10-21 on /api/agents: six rows read outcome "success" and the header
+# "1 shipped · 15 in review", and none of the six had merged. "success" meant only
+# that the builder handed off a pull request. Every row had pr "" and at null, live
+# rows read every step "unknown", and the Yomato rows were grey whether busy or stuck.
+# Run: bash "$0"     LIVE_VIEW_DIR=<dir> runs it against another copy of the page.
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS="$HERE/../../scripts"
+. "$HERE/fixture.sh"
+swarm_fixture
+sleep 30 & DEAD=$!; kill "$DEAD" 2>/dev/null; wait "$DEAD" 2>/dev/null
+trap 'rm -rf "$FIX"' EXIT
+command -v node >/dev/null 2>&1 || { echo "SKIP live-view-state: node is not on PATH"; exit 0; }
+LV="${LIVE_VIEW_DIR:-$HERE/../live-view}"
+
+NOW_S=$(date +%s)
+iso() { node -e 'console.log(new Date(Number(process.argv[1]) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"))' "$1"; }
+hhmm() { node -e 'const d = new Date(Number(process.argv[1]) * 1000); console.log(String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"))' "$1"; }
+NOW_ISO=$(iso "$NOW_S")
+MERGED_S=$(( NOW_S - 60 )); MERGED_ISO=$(iso "$MERGED_S"); MERGED_HM=$(hhmm "$MERGED_S")
+SINCE=$(node -e 'const d = new Date(); d.setHours(0, 0, 0, 0); console.log(d.toISOString().replace(/\.\d{3}Z$/, "Z"))')
+
+snap() { # [server dir]
+  local mjs="${1:-$LV}/server.mjs"
+  SWARM_RUNS_DIR="$STATE/runs" SWARM_REPO=acme/widgets SWARM_TITLES="$FIX/titles.json" SWARM_GH="$BIN/gh" \
+  SWARM_PROGRESS_SYNC=1 SWARM_HOLD_SCRIPT="$HERE/../hold-status.sh" SWARM_HOST=laptop SWARM_OWNER_NAME=Dom BRANCH_PREFIX=tkt- SWARM_SERVER_MJS="$mjs" \
+  node --input-type=module -e "
+    import { pathToFileURL } from 'node:url'
+    const { snapshot } = await import(pathToFileURL(process.env.SWARM_SERVER_MJS).href)
+    console.log(JSON.stringify(snapshot()))"
+}
+page_render() { # <page dir> <snapshot> — every element the page wrote, as id=html lines
+  printf '%s' "$2" > "$FIX/snap.json"
+  PAGE="$1/index.html" SNAP="$FIX/snap.json" node -e '
+    const fs = require("fs"), vm = require("vm")
+    const html = fs.readFileSync(process.env.PAGE, "utf8")
+    const js = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"))
+    const els = {}
+    const el = (id) => (els[id] ||= { textContent: "", innerHTML: "", hidden: false })
+    const ctx = { document: { getElementById: el }, fetch: () => new Promise(() => {}), setInterval: () => 0, console }
+    vm.createContext(ctx); vm.runInContext(js + "\n;globalThis.__render = render", ctx)
+    ctx.__render(JSON.parse(fs.readFileSync(process.env.SNAP, "utf8")))
+    for (const [k, v] of Object.entries(els)) console.log(k + "=" + (v.innerHTML || v.textContent).replace(/\s+/g, " "))' 2>&1
+}
+ended_run() { # <ticket> <exit> [result line]
+  local t=$1 log="$STATE/logs/claim-$1-a.log"
+  printf '{"run_id":"claim-%s-a","ticket":"%s","child_pid":%s,"started_at":"%s","log":"%s"}\n' \
+    "$t" "$t" "$DEAD" "$NOW_ISO" "$log" > "$STATE/runs/claim-$t-a.json"
+  printf '{"exit_code":%s,"ended_at":"%s"}\n' "$2" "$NOW_ISO" > "$STATE/runs/claim-$t-a.ended"
+  printf '%s\n' "${3:-}" > "$log"
+}
+park_line() { printf '⏸ #%s parked (%s): %s\n' "$1" "$2" "$3" >> "$STATE/logs/claim-$1-a.log"; }
+row_of() { printf '%s' "$1" | jq -r --arg t "$2" ".done[] | select(.ticket==\$t) | $3"; }
+
+echo "--- the fixture: handed-off pull requests in every state, a merge, two parks ---"
+mkdir -p "$STATE/coordinator/snapshot"
+ended_run 2101 0 '{"type":"result","subtype":"success","result":"Opened https://github.com/acme/widgets/pull/3101"}'
+ended_run 2102 0 '{"type":"result","subtype":"success","result":"PR #3102 is open"}'
+for t in 2103 2104 2105 2106 2109; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
+ended_run 2107 20; park_line 2107 pm "build asked a question rather than guessing — which repo does this belong in?"
+ended_run 2108 20; park_line 2108 person "repair asked a question rather than guessing — ship the changes made since the sign-off?"
+ok_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"SUCCESS"}' "$1"; }
+busy_run() { printf '{"name":"%s","status":"IN_PROGRESS","conclusion":null}' "$1"; }
+red_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"FAILURE"}' "$1"; }
+pr() { # <number> <ticket> <mergeable> <labels json> <checks...>
+  local n=$1 t=$2 m=$3 l=$4; shift 4
+  local c; c=$(IFS=,; printf '%s' "$*")
+  printf '{"number":%s,"headRefName":"tkt-%s/work","mergeable":"%s","labels":%s,"closingIssuesReferences":[],"statusCheckRollup":[%s]}' "$n" "$t" "$m" "$l" "$c"
+}
+{ echo '['
+  pr 3101 2101 MERGEABLE '[]' "$(ok_run 'Code gates')" "$(busy_run 'Unit tests')" "$(busy_run 'Build web')"; echo ','
+  pr 3102 2102 MERGEABLE '[]' "$(red_run 'Code gates')" "$(ok_run 'Build web')"; echo ','
+  pr 3103 2103 MERGEABLE '["needs:human-approval"]' "$(red_run 'approval-gate')" "$(ok_run 'Code gates')"; echo ','
+  pr 3104 2104 CONFLICTING '[]' "$(ok_run 'Code gates')"; echo ','
+  pr 3105 2105 MERGEABLE '[]' "$(busy_run 'Design critic')" "$(ok_run 'Code gates')"
+  echo ']'; } > "$STATE/swarm/prs.json"
+jq -e . "$STATE/swarm/prs.json" >/dev/null || bad "the open-PR fixture is not JSON"
+cat > "$STATE/coordinator/snapshot/issues.json" <<JSON
+{"2107":{"number":2107,"state":"OPEN","labels":["status:parked","status:pm-decision"]},
+ "2108":{"number":2108,"state":"OPEN","labels":["status:needs-human"]}}
+JSON
+cat > "$FIX/gh/api-repos_acme_widgets_pulls_state_closed_sort_updated_direction_desc_per_page_100.json" <<JSON
+[{"number":3106,"title":"fix(desk): the strip","merged_at":"$MERGED_ISO","closed_at":"$MERGED_ISO","head":{"ref":"tkt-2106/strip"},"body":""},
+ {"number":3109,"title":"feat: other","merged_at":"$MERGED_ISO","closed_at":"$MERGED_ISO","head":{"ref":"someone/else"},"body":"Closes #2109"},
+ {"number":3001,"title":"old, closed unmerged","merged_at":null,"closed_at":"$MERGED_ISO","head":{"ref":"tkt-2101/old"},"body":""}]
+JSON
+cat > "$FIX/gh/api-search_issues.json" <<JSON
+{"total_count":2,"items":[{"number":3106,"title":"fix(desk): the strip","closed_at":"$MERGED_ISO","pull_request":{"merged_at":"$MERGED_ISO"}},
+ {"number":3109,"title":"feat: other","closed_at":"$MERGED_ISO","pull_request":{"merged_at":"$MERGED_ISO"}}]}
+JSON
+
+s=$(snap)
+echo "--- a handed-off pull request still open is NOT success, NOT shipped: it shows its real state ---"
+want "2 of its checks still running"          "Waiting for checks (2 running)" "$(row_of "$s" 2101 .now.text)"
+want "a red check, by name"                   "A check failed: Code gates" "$(row_of "$s" 2102 .now.text)"
+want "the approval check red under a hold is the sign-off" "Waiting for sign-off" "$(row_of "$s" 2103 .now.text)"
+want "a clash"                                "Clashes with newer code" "$(row_of "$s" 2104 .now.text)"
+want "the design critic still running"        "Waiting for design review" "$(row_of "$s" 2105 .now.text)"
+want_not_in "no row's state says success or shipped" '(success|shipped)' "$(printf '%s' "$s" | jq -r '.done[] | "\(.now.text) \(.now.state) \(.lastRun)"' | tr 'A-Z' 'a-z')"
+want_not_in "nor does the header"             '(success|shipped)' "$(printf '%s' "$s" | jq -r '.doneSummary' | tr 'A-Z' 'a-z')"
+want_not_in "no row carries the CLI's word"   'success' "$(printf '%s' "$s" | jq -c '.done[]' | tr 'A-Z' 'a-z')"
+want "each row has its PR"                    "3101" "$(row_of "$s" 2101 .pr)"
+want "and its link"                           "https://github.com/acme/widgets/pull/3101" "$(row_of "$s" 2101 .prUrl)"
+want "and when it finished"                   "$NOW_ISO" "$(row_of "$s" 2101 .at)"
+want "no row without a finished-at time"      "0" "$(printf '%s' "$s" | jq '[.done[] | select(.at == null or .finishedAt == null)] | length')"
+
+echo "--- a merged pull request reads Merged <time>, by branch or by its closing word ---"
+want "by branch"                              "Merged $MERGED_HM" "$(row_of "$s" 2106 .now.text)"
+want "by 'Closes #'"                          "Merged $MERGED_HM" "$(row_of "$s" 2109 .now.text)"
+want "with its PR"                            "3106" "$(row_of "$s" 2106 .pr)"
+want "merged today: the count"                "2" "$(printf '%s' "$s" | jq '.mergedToday.total')"
+want "and each pull request"                  "3106 3109" "$(printf '%s' "$s" | jq -r '[.mergedToday.items[].number] | sort | join(" ")')"
+want "counted from local midnight"            "$SINCE" "$(printf '%s' "$s" | jq -r '.mergedToday.since')"
+
+echo "--- a parked ticket: Stopped: <reason> — next: <who> ---"
+want "a PM question"                          "Stopped: build asked a question — next: PM" "$(row_of "$s" 2107 .now.text)"
+want "with what it needs"                     "which repo does this belong in?" "$(row_of "$s" 2107 .now.detail)"
+want "a question for the owner names the owner" "Stopped: repair asked a question — next: Dom" "$(row_of "$s" 2108 .now.text)"
+
+echo "--- the page draws those states, the links and Merged today ---"
+r=$(page_render "$LV" "$s")
+want_in "the open PR's state on the row"      '^done=.*Waiting for checks \(2 running\)</span><div class="note"><a href="https://github.com/acme/widgets/pull/3101"' "$r"
+want_in "the merge and its time"              "^done=.*Merged $MERGED_HM</span>" "$r"
+want_in "the stop and who moves it"           '^done=.*Stopped: build asked a question — next: PM</span>' "$r"
+want_in "a finished-at time on each row"      '^done=.*finished ' "$r"
+want_not_in "no success or shipped anywhere on the rows" '^done=.*([Ss]uccess|[Ss]hipped)' "$r"
+want_not_in "nor in the header"               '^donehead=.*([Ss]uccess|[Ss]hipped)' "$r"
+want_in "Merged today, counted"               '^mergedhead=Merged today · 2$' "$r"
+want_in "and linked"                          '^merged=.*href="https://github.com/acme/widgets/pull/3106".*merged ' "$r"
+
+echo "--- one batched read of PR states, kept, never per row ---"
+want "the closed list was read once"          "1" "$(grep -c 'pulls?state=closed' "$GH_LOG")"
+want "today's merges once"                    "1" "$(grep -c '^api search/issues' "$GH_LOG")"
+want "and no per-row PR read"                 "0" "$(grep -cE '^pr (view|list)' "$GH_LOG")"
+snap >/dev/null
+want "a second look inside the minute asks again for neither" "2" "$(grep -cE 'pulls\?state=closed|^api search/issues' "$GH_LOG")"
+
+echo "--- a live claim's step is the step shown, not unknown ---"
+rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
+printf '{"run_id":"claim-2201-a","ticket":"2201","child_pid":%s,"started_at":"%s","log":"%s"}\n' \
+  "$$" "$(iso $(( NOW_S - 3600 )))" "$STATE/logs/claim-2201-a.log" > "$STATE/runs/claim-2201-a.json"
+echo 'Reading the diff' > "$STATE/logs/claim-2201-a.log"
+cat > "$STATE/swarm/claims.json" <<JSON
+{"at":"$NOW_ISO","claims":[{"issue":"2201","host":"laptop","step":"review"},
+ {"issue":"2301","host":"studio-mac","step":"build"},{"issue":"2302","host":"studio-mac","step":"review"},
+ {"issue":"2303","host":"old-vm","step":"fix"}]}
+JSON
+STALE_S=$(( NOW_S - 2400 ))
+cat > "$STATE/coordinator/fleet.json" <<JSON
+{"at":$NOW_S,"hosts":[{"host":"laptop","tick":$NOW_S,"builds":1},
+ {"host":"studio-mac","tick":$(( NOW_S - 60 )),"builds":2,"runs":[{"t":"2301","at":$(( NOW_S - 30 )),"say":"build: task 3 of 5"},{"t":"2302","at":$(( NOW_S - 1200 )),"say":"review: round 2"}]},
+ {"host":"old-vm","tick":$STALE_S,"builds":1,"runs":[{"t":"2303","at":$STALE_S,"say":"fix: lint"}]}]}
+JSON
+s=$(snap)
+want "the step comes from the claim"          "claim review" "$(printf '%s' "$s" | jq -r '.live[] | select(.ticket=="2201") | "\(.stepFrom) \(.claimStep)"')"
+r=$(page_render "$LV" "$s")
+want_in "and the page names it"               '^building=.*This machine \(laptop\) · <b>Being reviewed</b>' "$r"
+want_not_in "not Starting, not unknown"       '^building=.*(Starting|unknown)' "$r"
+
+echo "--- another machine's run is coloured from its heartbeat; grey only when the machine stops reporting ---"
+want "fresh activity, quiet about 30s"        "true" "$(printf '%s' "$s" | jq '.elsewhere[] | select(.ticket=="2301") | .quietSec >= 30 and .quietSec < 90')"
+want_in "a busy remote run is green, with its last line" '<div class="row build remote"><span class="dot ok"[^>]*></span><div class="main"> <div class="title">Ticket 2301.*<div class="line">build: task 3 of 5</div>' "$r"
+want_in "one quiet 20 min is stuck"           '<span class="dot stuck"[^>]*></span><div class="main"> <div class="title">Ticket 2302' "$r"
+want_in "a stale heartbeat is the grey ring, saying since when" "<span class=\"dot away\"[^>]*></span><div class=\"main\"> <div class=\"title\">Ticket 2303.*old-vm not reporting since $(hhmm "$STALE_S")" "$r"
+
+printf '{"at":%s,"hosts":[{"host":"studio-mac","tick":%s,"builds":2}]}\n' "$NOW_S" "$(( NOW_S - 60 ))" > "$STATE/coordinator/fleet.json"
+r=$(page_render "$LV" "$(snap)")
+want_in "a fresh heartbeat with no runs on it is not a stuck run" '<span class="dot away"[^>]*></span><div class="main"> <div class="title">Ticket 2301.*studio-mac reports no activity for this run yet' "$r"
+want_not_in "and nothing reads stuck"         'dot stuck' "$r"
+
+echo "--- the heartbeat carries each live run's last activity and line ---"
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"description":"Run the <gates> -->"}}]}}\n' > "$FIX/beat-a.log"
+printf '   build: x\n\033[32m   self-check: changed 2 ok\033[0m\n\n' > "$FIX/beat-b.log"
+hb=$( export SWARM_NOW="$NOW_S"; . "$SCRIPTS/coordinator-env.sh" >/dev/null 2>&1; . "$SCRIPTS/coordinator-sheet.sh" >/dev/null 2>&1
+      runs=$( { coord_run_beat 41 100 "$FIX/beat-a.log"; coord_run_beat 42 200 "$FIX/beat-b.log"; } | jq -sc . )
+      coord_heartbeat 2 100 6 "$runs" )
+want "both runs ride on the heartbeat"        "41 100 42 200" "$(jq -r '[.runs[] | "\(.t) \(.at)"] | join(" ")' <<<"$hb")"
+want "a stream-json log's last action"        "Run the gates --" "$(jq -r '.runs[0].say' <<<"$hb")"
+want "a plain log's last line, colour codes gone" "self-check: changed 2 ok" "$(jq -r '.runs[1].say' <<<"$hb")"
+
+echo "--- planted: each rule removed is seen ---"
+P="$FIX/lv-plant"; mkdir -p "$P"
+plant() { # <file> <exact text> [replacement]
+  cp "$LV"/*.mjs "$LV/index.html" "$P/"
+  python3 - "$P/$1" "$2" "${3:-}" <<'PY' || bad "plant did not land: $2"
+import sys
+p, a, b = sys.argv[1], sys.argv[2], sys.argv[3]; s = open(p).read()
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, b))
+PY
+}
+rm -f "$STATE/swarm/claims.json" "$STATE/coordinator/fleet.json" "$STATE"/runs/claim-* "$STATE"/logs/claim-*
+ended_run 2101 0 '{"type":"result","subtype":"success","result":"Opened https://github.com/acme/widgets/pull/3101"}'
+ended_run 2106 0; ended_run 2107 20; park_line 2107 pm "build asked a question rather than guessing — which repo?"
+plant server.mjs "status: openPrState(p) }" "status: null }"
+got=$(row_of "$(snap "$P")" 2101 .now.text)
+[ "$got" != "Waiting for checks (2 running)" ] && ok "planted: no open-PR state → 2101 reads '$got' → red" || bad "planted: the open-PR state dropped and the test cannot see it"
+plant server.mjs "  if (closed && closed.mergedAt && !(open && open.number > closed.number)) {" "  if (false) {"
+got=$(row_of "$(snap "$P")" 2106 .now.text)
+[ "$got" != "Merged $MERGED_HM" ] && ok "planted: no merge rule → 2106 reads '$got' → red" || bad "planted: the merge rule dropped and the test cannot see it"
+plant server.mjs "  if (park && !(issue && issue.state === 'CLOSED')" "  if (false && park && !(issue && issue.state === 'CLOSED')"
+got=$(row_of "$(snap "$P")" 2107 .now.text)
+[ "$got" != "Stopped: build asked a question — next: PM" ] && ok "planted: no park rule → 2107 reads '$got' → red" || bad "planted: the park rule dropped and the test cannot see it"
+plant server.mjs "  guard('pr states', () => refreshPrStates(now))"
+rm -f "$STATE/swarm/pr-states.json"
+got=$(snap "$P" | jq -c '.mergedToday')
+[ "$got" = "null" ] && ok "planted: the PR-state read dropped → merged today reads $got → red" || bad "planted: the PR-state read dropped and the test cannot see it"
+plant index.html "  document.getElementById('merged').innerHTML = mergedList(s.mergedToday)"
+[ "$(page_render "$P" "$(snap)" | grep '^merged=' | grep -c 'pull/3106')" = 0 ] && ok "planted: the page drops Merged today → no link → red" || bad "planted: the page drops Merged today and the test cannot see it"
+# The live and remote rows, re-planted against their own fixture.
+printf '{"run_id":"claim-2201-a","ticket":"2201","child_pid":%s,"started_at":"%s","log":"%s"}\n' \
+  "$$" "$(iso $(( NOW_S - 3600 )))" "$STATE/logs/claim-2201-a.log" > "$STATE/runs/claim-2201-a.json"
+echo 'Reading the diff' > "$STATE/logs/claim-2201-a.log"
+cat > "$STATE/swarm/claims.json" <<JSON
+{"at":"$NOW_ISO","claims":[{"issue":"2201","host":"laptop","step":"review"},{"issue":"2301","host":"studio-mac","step":"build"}]}
+JSON
+printf '{"at":%s,"hosts":[{"host":"studio-mac","tick":%s,"runs":[{"t":"2301","at":%s,"say":"build: task 3 of 5"}]}]}\n' \
+  "$NOW_S" "$(( NOW_S - 60 ))" "$(( NOW_S - 30 ))" > "$STATE/coordinator/fleet.json"
+plant index.html "  if (a.stepFrom === 'claim' || (!a.stepFrom && a.claimStep)) return \`<b>\${esc(CLAIM_WORD[a.claimStep] || a.claimStep)}</b>\`"
+[ "$(page_render "$P" "$(snap)" | grep '^building=' | grep -c 'Being reviewed')" = 0 ] \
+  && ok "planted: the page ignores the claim's step → no 'Being reviewed' → red" || bad "planted: the claim step dropped and the test cannot see it"
+plant server.mjs "    const run = !beatStale ? (hb.runs || []).find((r) => String(r.t) === String(c.issue)) : null" "    const run = null"
+[ "$(page_render "$P" "$(snap "$P")" | grep -c 'dot ok[^>]*></span><div class="main"> <div class="title">Ticket 2301')" = 0 ] \
+  && ok "planted: the heartbeat's runs ignored → 2301 is not green → red" || bad "planted: the heartbeat's runs ignored and the test cannot see it"
+plant index.html "  const away = a.beatStale !== false" "  const away = true"
+[ "$(page_render "$P" "$(snap)" | grep -c 'dot ok[^>]*></span><div class="main"> <div class="title">Ticket 2301')" = 0 ] \
+  && ok "planted: every remote row grey again → red" || bad "planted: every remote row grey and the test cannot see it"
+
+exit $FAILED

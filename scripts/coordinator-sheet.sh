@@ -332,12 +332,28 @@ coord_sheet_floor() {
   printf '%s' "$v"
 }
 
-# coord_heartbeat <builds> <free GB> [machine capacity] — this host, as one JSON object:
-# with its capacity (the builders its CPU and memory fit, the owner's split weight)
-# and this tick's usage readings (pace.json), so every host acts on the newest number.
+# coord_run_beat <ticket> <last-activity epoch> <log> — one live run as the heartbeat carries it:
+# when it last did anything and its last line, so another machine's page can tell busy from stuck.
+# No < or >: the heartbeat travels inside an HTML comment, and "-->" would end it.
+coord_run_beat() {
+  local say at="${2:-0}"; case "$at" in ''|*[!0-9]*) at=0 ;; esac
+  say=$(tail -c 40000 "$3" 2>/dev/null | tr -d '\000' | jq -R -r '
+      gsub("\u001b\\[[0-9;?]*[ -/]*[@-~]"; "")
+      | if startswith("{") then (fromjson? // {} | select(.type? == "assistant") | .message.content[]?
+          | if .type == "text" then .text elif .type == "tool_use" then (.input.description // .name) else empty end)
+        else . end
+      | strings | gsub("\\s+"; " ") | ltrimstr(" ") | select(length > 0)' 2>/dev/null | tail -1 | tr -d '<>' | cut -c1-100)
+  jq -cn --arg t "$1" --argjson at "$at" --arg say "$say" '{t: $t, at: $at} + (if $say == "" then {} else {say: $say} end)'
+}
+
+# coord_heartbeat <builds> <free GB> [machine capacity] [runs json] — this host, as one JSON object:
+# with its capacity (the builders its CPU and memory fit, the owner's split weight),
+# this tick's usage readings (pace.json), so every host acts on the newest number, and
+# its live runs (coord_run_beat), at most eight.
 coord_heartbeat() {
-  local b="${1:-0}" c="${3:-}" usage; case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  local b="${1:-0}" c="${3:-}" runs="${4:-}" usage; case "$b" in ''|*[!0-9]*) b=0 ;; esac
   case "$c" in *[!0-9]*) c="" ;; esac
+  runs=$(jq -c 'if type == "array" then [.[] | objects][0:8] else empty end' <<<"${runs:-[]}" 2>/dev/null)
   usage=$(jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900) | .usage // empty' "${COORD_PACE_STATE:-$COORD_DIR/pace.json}" 2>/dev/null)
   # This host's last GitHub allowance reading: the token is the fleet's, so every host holds on it.
   local ghr
@@ -345,11 +361,12 @@ coord_heartbeat() {
           "$(gh_allowance_file)" 2>/dev/null)
   jq -cn --arg host "$COORD_HOST" --arg v "$(harness_running_version)" --arg inst "$(harness_installed_version)" \
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
-     --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" \
+     --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" --arg runs "${runs:-}" \
      '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}
       + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
       + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)
-      + (if $gh == "" then {} else {gh: ($gh | fromjson)} end)'
+      + (if $gh == "" then {} else {gh: ($gh | fromjson)} end)
+      + (if $runs == "" then {} else {runs: ($runs | fromjson)} end)'
 }
 
 # coord_fleet <own heartbeat> <others json array> <floor> — every machine, this one first,

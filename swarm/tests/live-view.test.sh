@@ -60,7 +60,7 @@ run 503 "$DEAD" 1
 s=$(snap)
 want "one finished"        "1" "$(printf '%s' "$s" | jq '.done | length')"
 want "carrying the code"   "1" "$(printf '%s' "$s" | jq '.done[0].exit')"
-want "and read as stopped" "stopped" "$(printf '%s' "$s" | jq -r '.done[0].outcome')"
+want "and its run read as stopped" "stopped" "$(printf '%s' "$s" | jq -r '.done[0].lastRun')"
 
 echo "--- a marker on a LIVE pid still means finished ---"
 # The marker wins over the process: an agent that wrote its marker and has not
@@ -68,7 +68,7 @@ echo "--- a marker on a LIVE pid still means finished ---"
 run 504 "$$" 0
 s=$(snap)
 want "not live"            "0" "$(printf '%s' "$s" | jq '[.live[] | select(.ticket=="504")] | length')"
-want "finished cleanly"    "success" "$(printf '%s' "$s" | jq -r '.done[] | select(.ticket=="504") | .outcome')"
+want "its run ended, which is all a clean exit says" "ended" "$(printf '%s' "$s" | jq -r '.done[] | select(.ticket=="504") | .lastRun')"
 
 echo "--- the snapshot is stamped, and names the repo ---"
 s=$(snap)
@@ -348,30 +348,30 @@ printf '{"scope":"widgets","tickets":[{"n":1006,"class":"new","note":""}]}\n' > 
 nows() { BRANCH_PREFIX=tkt- snap | jq -r '.done[] | "\(.ticket)=\(.now.text)"' | sort; }
 now_of() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
 n=$(nows)
-want "exit 0 with a PR no longer open: shipped"  "Shipped"             "$(now_of "$n" 1001)"
-want "closed done: shipped"                      "Shipped"             "$(now_of "$n" 1002)"
-want "closed not planned: closed"                "Closed"              "$(now_of "$n" 1003)"
-want "closed completed, labels left behind: shipped" "Shipped"         "$(now_of "$n" 1017)"
-want "an open PR by its branch: in review"       "In review — PR #2004" "$(now_of "$n" 1004)"
-want "an open PR by its closing reference"       "In review — PR #2005" "$(now_of "$n" 1005)"
+want "exit 0, a PR reported, nothing read about it: no claim it merged" "Handed off PR #2001 — its state is not read yet" "$(now_of "$n" 1001)"
+want "closed done"                               "Ticket closed as done" "$(now_of "$n" 1002)"
+want "closed not planned: closed"                "Ticket closed"       "$(now_of "$n" 1003)"
+want "closed completed, labels left behind: done" "Ticket closed as done" "$(now_of "$n" 1017)"
+want "an open PR by its branch: its checks"      "Waiting for checks (none started yet)" "$(now_of "$n" 1004)"
+want "an open PR by its closing reference"       "Waiting for checks (none started yet)" "$(now_of "$n" 1005)"
 want "on the coordinator's queue"                "Back in the queue"   "$(now_of "$n" 1006)"
 want "status:ready: back in the queue"           "Back in the queue"   "$(now_of "$n" 1007)"
 want "a live run for the ticket: running again"  "Running again"       "$(now_of "$n" 1008)"
-want "parked on a PM question"                   "Waiting on PM"       "$(now_of "$n" 1009)"
-want "status:pm-decision"                        "Waiting on PM"       "$(now_of "$n" 1010)"
-want "the owner's decision label"                "Waiting on the owner" "$(now_of "$n" 1011)"
-want "blocked, by the ticket its park names"     "Blocked by #77"      "$(now_of "$n" 1012)"
-want "a driver park: stopped, with its one-line reason" "Stopped — build refused (exit 24)" "$(now_of "$n" 1013)"
-want "ready AND parked is not queued"            "Stopped — review answered in a shape the driver cannot read" "$(now_of "$n" 1015)"
-want "a stop with no park line names the marker's note" "Stopped — stopped on the owner pause" "$(now_of "$n" 1016)"
+want "parked on a PM question"                   "Stopped: build asked a question — next: PM" "$(now_of "$n" 1009)"
+want "status:pm-decision"                        "Stopped: waiting on a PM decision — next: PM" "$(now_of "$n" 1010)"
+want "the owner's decision label"                "Stopped: waiting on the owner — next: the owner" "$(now_of "$n" 1011)"
+want "blocked, by the ticket its park names"     "Stopped: blocked by #77 — next: #77 finishing" "$(now_of "$n" 1012)"
+want "a driver park: stopped, with its one-line reason" "Stopped: build refused — next: machine fault" "$(now_of "$n" 1013)"
+want "ready AND parked is not queued"            "Stopped: review answered in a shape the driver cannot read — next: machine fault" "$(now_of "$n" 1015)"
+want "a stop with no park line names the marker's note" "Stopped: stopped on the owner pause — next: the queue" "$(now_of "$n" 1016)"
 s=$(BRANCH_PREFIX=tkt- snap)
 want "one row per ticket"                        "1" "$(printf '%s' "$s" | jq '[.done[] | select(.ticket=="1014")] | length')"
 want "and it is the newest run"                  "0" "$(printf '%s' "$s" | jq '.done[] | select(.ticket=="1014") | .exit')"
-want "the owner is named when the project names them" "Waiting on Dom" \
+want "the owner is named when the project names them" "Stopped: waiting on Dom — next: Dom" \
   "$(SWARM_OWNER_NAME=Dom BRANCH_PREFIX=tkt- snap | jq -r '.done[] | select(.ticket=="1011") | .now.text')"
 want "only a true stop is red" "stopped" "$(printf '%s' "$s" | jq -r '[.done[] | select(.now.tone=="bad") | .now.state] | unique | join(" ")')"
 want "the header counts by state" \
-  "Finished: 3 shipped · 1 closed · 2 in review · 2 back in queue · 1 running again · 2 waiting on PM · 1 waiting on the owner · 1 blocked · 1 finished · 3 stopped" \
+  "Finished: 2 waiting for checks · 1 running again · 2 back in queue · 2 waiting on PM · 1 waiting on the owner · 4 stopped · 2 closed as done · 1 closed · 1 not read yet · 1 no pull request" \
   "$(printf '%s' "$s" | jq -r '.doneSummary')"
 
 echo "--- the page shows that state, not the run's exit ---"
@@ -391,7 +391,7 @@ r=$(page_row "$LV" 1006)
 want_in "a queued ticket reads as back in the queue" 'pill neutral">Back in the queue' "$r"
 want "and nothing on it says stopped" "0" "$(printf '%s' "$r" | grep -c 'Stopped')"
 r=$(page_row "$LV" 1013)
-want_in "a true stop is red, with its reason" 'pill bad">Stopped</span><div class="note">build refused \(exit 24\)' "$r"
+want_in "a true stop is red, with its reason and who moves it" 'pill bad">Stopped: build refused — next: machine fault</span><div class="note">build left no reason on the record' "$r"
 
 echo "--- planted: each rule removed is seen ---"
 P2="$FIX/lv-plant-now"; mkdir -p "$P2"
@@ -406,7 +406,7 @@ PY
 }
 P2_URL="$P2/server.mjs"; command -v cygpath >/dev/null 2>&1 && P2_URL=$(cygpath -m "$P2_URL")
 psnap() { SNAP_MJS="$P2_URL" SWARM_HOLD_SCRIPT="$HERE/../hold-status.sh" BRANCH_PREFIX=tkt- snap; }
-plant server.mjs "  if (ctx.queued.has(t) || (has(LBL('LBL_READY', 'status:ready')) && !parked)) return at('queue', 'Back in the queue')"
+plant server.mjs "  if (ctx.queued.has(t) || (ready && !parked)) return at('queue', 'Back in the queue')"
 got=$(psnap | jq -r '.done[] | select(.ticket=="1006") | .now.text')
 [ -n "$got" ] && [ "$got" != "Back in the queue" ] \
   && ok "planted: no queue rule → a queued ticket reads '$got' → red" || bad "planted: the queue rule deleted and the test cannot see it ($got)"
@@ -414,9 +414,9 @@ plant server.mjs "  for (const d of done) { const o = newest.get(d.ticket); if (
   "  for (const d of done) newest.set(d.ticket + ':' + d.endedAt, d)"
 got=$(psnap | jq '[.done[] | select(.ticket=="1014")] | length' 2>/dev/null)
 [ "$got" != "1" ] && ok "planted: no de-duplication → $got rows for 1014 → red" || bad "planted: de-duplication deleted and the test cannot see it"
-plant server.mjs '  if (openPr) return at('"'"'review'"'"', `In review — PR #${openPr}`, { pr: openPr })'
+plant server.mjs "  if (open) return at(open.status ? open.status.state : 'checks', open.status ? open.status.text : 'Waiting for checks', { pr: open.number })"
 got=$(psnap | jq -r '.done[] | select(.ticket=="1004") | .now.text')
-[ -n "$got" ] && [ "$got" != "In review — PR #2004" ] \
+[ -n "$got" ] && [ "$got" != "Waiting for checks (none started yet)" ] \
   && ok "planted: no review rule → 1004 reads '$got' → red" || bad "planted: the review rule deleted and the test cannot see it ($got)"
 plant index.html '      <td>${nowPill(d)}</td>'
 [ "$(page_row "$P2" 1006 | grep -c 'Back in the queue')" = 0 ] \

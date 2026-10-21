@@ -180,7 +180,7 @@ progress_mtime() { # <record> <log>
   printf '%s' "$best"
 }
 NOW=$(swarm_now)
-LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""
+LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""; RUN_BEATS=""
 for rec in "$RUNS_DIR"/claim-*.json; do
   [ -f "$rec" ] || continue
   swarm_record_alive "$rec" || continue
@@ -191,6 +191,7 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   log=$(jq -r '.log // empty' "$rec" 2>/dev/null)
   [ -f "$log" ] || continue
   seen_at=$(progress_mtime "$rec" "$log")
+  RUN_BEATS="$RUN_BEATS$(coord_run_beat "${ticket:-?}" "$seen_at" "$log")"$'\n'
   quiet=$(( (NOW - seen_at) / 60 ))
   if [ "$quiet" -ge "$COORD_FROZEN_MIN" ]; then
     event "frozen:$rid:$seen_at" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
@@ -731,7 +732,8 @@ fi
 # The owner writes what is startable, in run order, and who is building what, once
 # the starts are made: its own starts show as building here before their claims land.
 # With it, the floor and every machine's heartbeat; a reader posts its own.
-HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE" "${MACHINE_CEILING:-}")
+HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE" "${MACHINE_CEILING:-}" \
+  "$(printf '%s' "$RUN_BEATS" | jq -sc '.' 2>/dev/null)")
 SHEET_FLOOR=""; FLEET="[]"
 case "$SHEET_ROLE" in
   owner)  SHEET_FLOOR=$(coord_sheet_floor)

@@ -100,6 +100,7 @@
 3	swarm/tests/hold.test.sh
 7	swarm/tests/install.test.sh
 16	swarm/tests/live-view.test.sh
+10	swarm/tests/live-view-state.test.sh
 2	swarm/tests/progress.test.sh
 3	swarm/tests/queue.test.sh
 11	swarm/tests/repair-watch.test.sh
