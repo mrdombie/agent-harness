@@ -230,7 +230,12 @@ _driver_review_touched() {
   taken=$(bash "$pl" taken "$t" 2>/dev/null)
   local held; held=$(printf '%s\n' "$items" | cut -f3 | grep -ciE "owner'?s call|needs:owner|\[picture\]|needs a (new )?picture")
   [ "${held:-0}" -eq 0 ] || driver_say "   review: $held item(s) on the screen's polish list are the owner's call or need a new picture — left on the list, not blocking"
-  add=$(printf '%s\n' "$items" | while IFS=$'\t' read -r g n it; do
+  # A BOUNDED RIDE-ALONG, OLDEST FIRST: the lowest list number, then list order. 55
+  # items on one change starved its three real findings of a fix round. The rest stay
+  # free on their lists for the next change, or for the list to ship alone when full.
+  local cap; cap="${DRIVER_POLISH_RIDE_ALONG:-$(driver_opt review.polishRideAlong 8)}"
+  case "$cap" in ''|*[!0-9]*) cap=8 ;; esac
+  add=$(printf '%s\n' "$items" | sort -s -t$'\t' -k2,2n | while IFS=$'\t' read -r g n it; do
           [ -n "$it" ] || continue
           printf '%s\n' "$it" | grep -qiE "owner'?s call|needs:owner|\[picture\]|needs a (new )?picture" && continue
           printf '%s\n' "$taken" | grep -qxF -- "$n	$it" && continue
@@ -240,6 +245,12 @@ _driver_review_touched() {
             reason: "already known on a screen this change touches: what you touch, you fix",
             fix: ("fix it in this change, then record it: bash " + $pl + " take " + $n + " " + $t + " \"" + $it + "\"")}'
         done | jq -sc '.')
+  local nall; nall=$(printf '%s' "$add" | jq 'length' 2>/dev/null)
+  [ "${nall:-0}" -gt 0 ] 2>/dev/null || return 0
+  if [ "$nall" -gt "$cap" ]; then
+    add=$(printf '%s' "$add" | jq -c --argjson c "$cap" '.[0:$c]')
+    driver_say "   review: $cap of $nall free polish item(s) on the screens this change touches ride along, oldest first; $((nall - cap)) stay on their lists"
+  fi
   [ "$(printf '%s' "$add" | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null || return 0
   jq --argjson add "$add" '.findings = ((.findings // []) + $add)
       | if ([$add[] | select(.grade != "nit")] | length) > 0 then .verdict = "BLOCKED" else . end' "$f" > "$f.t" && mv "$f.t" "$f"
