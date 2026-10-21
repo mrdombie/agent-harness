@@ -4,10 +4,11 @@
 # said "Closes ticket 5654", which GitHub links to nothing, and the branch had no prefix.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/pr-closes.sh"
 
 names() { if printf '%s' "$2" | pr_closes_names "$1"; then echo yes; else echo no; fi; }
@@ -66,4 +67,4 @@ want_in "the park's draft names it"    'Closes\) #\$t' "$(grep -A5 'pr create' "
 want_in "/claim's park names it"       'Closes #\$TICKET_KEY' "$(grep -A3 'gh pr create --draft' "$HERE/../skills/claim/SKILL.md")"
 want_in "/finish ensures it after create" 'pr-closes.sh" ensure "\$PR_NUMBER" "\$TICKET_KEY"' "$(cat "$HERE/../skills/finish/SKILL.md")"
 
-exit $FAILED
+suite_end "$FAILED"

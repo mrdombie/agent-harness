@@ -7,9 +7,10 @@
 # requeue (front of the queue, claim released, the reason logged).
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 BT="$HERE/../build-ticket"
 . "$HERE/../steps/self-check.sh" || exit 1
 
@@ -109,4 +110,4 @@ want_in "the reason is logged" 'requeued.*turned CONFLICTING' "$(cat "$FIX/bt.ou
 hrc=0; bash "$CL" holds 805 >/dev/null 2>&1 || hrc=$?
 want "the claim is released" "11" "$hrc"
 
-exit $FAILED
+suite_end "$FAILED"

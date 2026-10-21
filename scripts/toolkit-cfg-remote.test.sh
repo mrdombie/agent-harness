@@ -8,6 +8,7 @@
 # Sources the shipped toolkit-env.sh in a scratch project, then plants two deaths
 # in a copy: the remote read removed, and the fetch removed. Both must fail.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 ENV_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   — $1"; }
@@ -16,7 +17,7 @@ fail() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 # Under a git hook GIT_* would aim every command here at the real repo; HARNESS_*
 # would pin the config this test exists to resolve.
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p; s/^\(HARNESS_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
-TDIR=$(mktemp -d); trap 'rm -rf "$TDIR"' EXIT
+TDIR=$(mktemp -d); on_exit_keep_status 'rm -rf "$TDIR"'
 export HOME="$TDIR/home" TMPDIR="$TDIR/tmp"; mkdir -p "$HOME" "$TMPDIR"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 
@@ -87,4 +88,4 @@ out=$(read_key "$ENV_SH" "$WORK3" merge.method)
 [ "${out%%|*}" = squash ] && ok "the shipped file fetches past the stale ref" || fail "the shipped file read the stale ref: '${out%%|*}'"
 
 echo; echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

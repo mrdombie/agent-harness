@@ -7,9 +7,10 @@
 # PRs at once is a 504.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FIX=$(mktemp -d); trap 'rm -rf "$FIX"' EXIT
+FIX=$(mktemp -d); on_exit_keep_status 'rm -rf "$FIX"'
 FAILED=0
 want()        { if [ "$2" = "$3" ]; then echo "  ok  $1"; else echo "  FAIL $1: wanted '$2', got '$3'"; FAILED=1; fi; }
 
@@ -108,4 +109,4 @@ heavy=$(cd "$HERE/.." && git ls-files '*.sh' 'driver/build-ticket' 2>/dev/null |
     done)
 want "none"                                      "" "$heavy"
 
-exit $FAILED
+suite_end "$FAILED"

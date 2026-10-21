@@ -6,9 +6,10 @@
 # leaves goes back free on its list, is noted in the PR, and the run goes on.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../ai-step.sh" || exit 1
 . "$HERE/../steps/review.sh" || exit 1
@@ -73,4 +74,4 @@ rc=0; out=$(driver_step_fix 702 2>&1) || rc=$?
 want "refused"                            "$DRIVER_E_REFUSED" "$rc"
 want_in "naming the real one only"        'finding\(s\) F2 appear' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

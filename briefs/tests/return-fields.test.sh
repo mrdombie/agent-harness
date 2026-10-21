@@ -6,6 +6,7 @@
 # cannot read". The examples are validated against the schemas in schemas.test.sh.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 BRIEFS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RF="$BRIEFS/return-fields.sh"
@@ -45,7 +46,7 @@ for step in $steps; do
   want "$step.md names every field of schemas/$step.json" "" "${missing# }"
 done
 
-TD=$(mktemp -d); trap 'rm -rf "$TD"' EXIT
+TD=$(mktemp -d); on_exit_keep_status 'rm -rf "$TD"'
 fresh() { rm -rf "$TD/b"; mkdir -p "$TD/b"; cp -R "$BRIEFS/schemas" "$BRIEFS/build.md" "$RF" "$TD/b/"; }
 
 echo "--- a field the schema gains and the brief lacks is refused ---"
@@ -89,4 +90,4 @@ sed '/^<!-- fields:begin/,/^<!-- fields:end -->$/d' "$BRIEFS/build.md" > "$TD/b/
 bash "$TD/b/return-fields.sh" --check build >/dev/null 2>&1; want "refused as unreadable" 2 "$?"
 
 [ "$FAILED" = 0 ] && echo "briefs/return-fields: all good"
-exit "$FAILED"
+suite_end "$FAILED"

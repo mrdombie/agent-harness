@@ -9,6 +9,7 @@
 # from any one skill and its row goes red — the block either vanishes (not
 # found) or runs its work straight through (it did not wait).
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for _gv in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$_gv"; done
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +23,7 @@ fail() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 T=$(cd "$(mktemp -d)" && pwd -P)
 PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$T"; }
-trap cleanup EXIT
+on_exit_keep_status cleanup
 
 # Never the machine's own slots, load, config or plugin env.
 # SWARM_IDLE=90 by default so the load tests below test the load alone.
@@ -302,4 +303,4 @@ grep -nE '^[^#]*eval "\$CHANGED"' "$KIT/skills/finish/SKILL.md" >/dev/null \
 
 echo
 echo "machine-gate: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

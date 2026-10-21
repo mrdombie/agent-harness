@@ -8,13 +8,14 @@
 #   stops and names it — or plants one of the shapes that must NOT be flagged and
 #   asserts it passes. Nothing here reads the real kit.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-skill-namespacing.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
 
 SB="${TMPDIR:-/tmp}/ns-gate-fixture-$$"
 mkdir -p "$SB"
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -122,4 +123,4 @@ check
 
 echo
 [ "$fail" -eq 0 ] && echo "check-skill-namespacing: all cases pass" || echo "check-skill-namespacing: FAILURES above"
-exit $fail
+suite_end "$fail"

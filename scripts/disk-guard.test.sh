@@ -9,13 +9,14 @@
 # Every folder that only one keep-rule protects is checked to survive, so deleting that rule
 # deletes a folder this suite then finds missing.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$HERE/disk-guard.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
 
 SB=$(mktemp -d "${TMPDIR:-/tmp}/disk-guard-test-XXXXXX"); SB=$(cd "$SB" && pwd -P)
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -339,4 +340,4 @@ build_world; free_is 20; out=$(GUARD_SUT="$PSUT" guard clean --apply)
 [ -d "$TMPR/driver-proof-busy" ] && [ -d "$TMPR/driver-proof-plant" ] && [ -d "$TMPR/harness-spawn-current" ] \
   && ok "the copy, restored, keeps all four again" || bad "the planted copy was not restored"
 
-exit $fail
+suite_end "$fail"

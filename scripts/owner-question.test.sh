@@ -5,10 +5,11 @@
 # and syncs answers) is in coordinator-tick.test.sh.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 OQ="$HERE/owner-question.sh"; W="$HERE/needsme-watch.sh"
 C="$STATE/coordinator"
 cat > "$BIN/notify" <<'SH'
@@ -120,4 +121,4 @@ want_in "the step is there"                'owner-question\.sh" ask' "$step"
 want_in "it parks without the hold"        'never add `\$HOLD_LABEL`' "$step"
 want_not_in "it never tells the builder to add the hold" 'add-label "\$HOLD_LABEL"' "$step"
 
-exit $FAILED
+suite_end "$FAILED"

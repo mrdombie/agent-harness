@@ -7,6 +7,7 @@
 # repair brief are pinned in spawn-claim.test.sh and repair-watch.test.sh.
 # Run: bash "$0"
 set -u
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 2
 RULE=$(head -1 shared/signoff-last.md 2>/dev/null)
 fail=0
@@ -30,4 +31,4 @@ for st in $steps; do
     [ "$first" = "$RULE" ] && ok "$b leads with it" || bad "$b leads with: $(printf '%s' "$first" | cut -c1-80)"
   fi
 done
-exit "$fail"
+suite_end "$fail"

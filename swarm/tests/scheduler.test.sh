@@ -7,9 +7,10 @@
 # full because a down live view read as zero agents running.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 S="$HERE/../scheduler.sh"
 sched() { bash "$S" "$@" 2>&1; }
 reset_state() { : > "$SPAWNS"; : > "$STATE/swarm/queue.tsv" 2>/dev/null || true; rm -f "$STATE/logs/scheduler.log"; }
@@ -180,4 +181,4 @@ reset_state; fix_live widgets 0
 sched --programme widgets >/dev/null
 want "a fresh snapshot spawns"             "3" "$(grep -c . "$SPAWNS")"
 
-exit $FAILED
+suite_end "$FAILED"

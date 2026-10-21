@@ -6,9 +6,10 @@
 # all three: CI diffs its shots against the last approved shots and decides the status.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/plan.sh" || exit 1
 . "$HERE/../steps/compare.sh" || exit 1
 . "$HERE/../steps/ship.sh" || exit 1
@@ -79,4 +80,4 @@ echo "--- ship: the body says which route ---"
 want_in "an existing screen's tier line"          'Baseline route' "$(_driver_ship_tier_line 802 screen "it changes a screen")"
 want_in "a new screen's tier line"                'Picture, compare' "$(_driver_ship_tier_line 801 screen "it changes a screen")"
 
-exit $FAILED
+suite_end "$FAILED"

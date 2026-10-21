@@ -4,13 +4,14 @@
 # remote, the real push lines out of the finish skill, the real worktree wrapper.
 #   bash scripts/check-push-destination.test.sh
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$HERE/.." && pwd)"
 SUT="$HERE/check-push-destination.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
 SB=$(mktemp -d); SB=$(cd "$SB" && pwd -P)
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -131,5 +132,4 @@ HARNESS_CFG_PATH="$SB/none.json" bash "$SUT" --worktrees "$R" >/dev/null 2>&1; r
 [ "$rc" -eq 2 ] && ok "a config naming no trunk is refused, not reported clean" || bad "no trunk config exited $rc"
 
 echo
-[ "$fail" -eq 0 ] && { echo "check-push-destination: all checks passed"; exit 0; }
-echo "check-push-destination: checks failed"; exit 1
+suite_end "$fail"

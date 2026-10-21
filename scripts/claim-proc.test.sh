@@ -10,6 +10,7 @@
 # Elsewhere they print SKIP — so a green run on the macOS/Linux runner says
 # nothing about Windows, and says so.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-proc.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
@@ -94,4 +95,4 @@ fi
 
 echo
 echo "claim-proc: $PASS passed, $FAIL failed, $SKIP skipped"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

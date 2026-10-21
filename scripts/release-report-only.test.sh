@@ -4,10 +4,11 @@
 # once it is true; an unlisted check, or a missing config, is red either way.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUT="$HERE/release-report-only.sh"
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d); on_exit_keep_status 'rm -rf "$T"'
 
 FAILED=0
 want() { if [ "$2" = "$3" ]; then printf 'OK       %s\n' "$1"; else printf "MISMATCH %s — wanted '%s', got '%s'\n" "$1" "$2" "$3"; FAILED=1; fi; }
@@ -88,4 +89,4 @@ want_in "lesson.yml takes the kit's release-report-only.sh" '^ *report=kit/scrip
 want_in "lesson.yml runs the judge through it" 'bash "\$report" "\$cfg" "Every fix ships a lesson" -- ' "$seat"
 want_in "lesson.yml reads the config at the base"  'show "HEAD\^1:\.claude/harness\.json"' "$seat"
 
-[ "$FAILED" -eq 0 ] && echo "all release-report-only cases passed" || { echo "release-report-only: FAILURES"; exit 1; }
+suite_end "$FAILED"

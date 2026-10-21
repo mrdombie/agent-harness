@@ -14,9 +14,10 @@
 # both.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-FIX=$(mktemp -d); trap 'rm -rf "$FIX"' EXIT
+FIX=$(mktemp -d); on_exit_keep_status 'rm -rf "$FIX"'
 REAL=$(command -v date)
 
 # Which surface does this machine speak? GNU reads "0" as a filename.
@@ -124,4 +125,4 @@ done
 echo "--- an unparseable instant answers zero, it does not hang or guess ---"
 want "no date at all" "0" "$(bash -c ". '$HERE/../time.sh'; swarm_epoch 'not a date'" 2>/dev/null)"
 
-exit $FAILED
+suite_end "$FAILED"

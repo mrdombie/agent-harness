@@ -8,9 +8,10 @@
 # Nothing here loads anything: every case goes through --print.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 I="$HERE/../install.sh"
 i() { bash "$I" "$@" 2>&1; }
 
@@ -246,4 +247,4 @@ want_in "ours was loaded"                'load .*agent-harness\.swarm\.live-view
 out=$(HOME="$H" SWARM_UNAME=Darwin SWARM_PORT_HOLDER= bash "$I" live-view 2>&1); rc=$?
 want "a free port installs at once"      "0" "$rc"
 
-exit $FAILED
+suite_end "$FAILED"

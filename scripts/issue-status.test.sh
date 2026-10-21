@@ -3,10 +3,11 @@
 # ticket, and nothing in the kit adds a status label any other way.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 IS="$HERE/issue-status.sh"
 CHECK="$HERE/check-status-label-writes.sh"
 
@@ -101,4 +102,4 @@ printf 'gh issue edit "$N" --repo "$R" --add-label "$HOLD_LABEL"\n' > "$P/skills
 printf 'gh issue edit 1 --add-label status:ready\n' > "$P/driver/tests/t.sh"
 out=$(bash "$CHECK" "$P" 2>&1); want "the helper, the hold label and test files pass" 0 "$?"
 
-exit "$FAILED"
+suite_end "$FAILED"

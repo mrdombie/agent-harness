@@ -11,9 +11,10 @@
 # per-branch cases, in the shape the validator enforces.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/plan.sh" || exit 1
 fix_issue 101 OPEN "status:claimed"
 driver_state_init 101 --worktree "$REPO"
@@ -84,4 +85,4 @@ want_in "the change is posted on the ticket as a PM step" 'PM step after merge' 
 want_in "and kept for the PR body" 'required check' "$(driver_state_get 130 pm_after_merge)"
 want_in "and the run says so" 'handed to the PM' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

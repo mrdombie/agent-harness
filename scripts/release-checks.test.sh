@@ -6,10 +6,11 @@
 # true, or no key, is exactly as before; a red on a check not listed is red either way.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 CFG="$HARNESS_CFG_PATH"; cp "$CFG" "$FIX/cfg.base"
 LISTED='["Lesson / Every fix ships a lesson", "Design critic", "Approved picture", "Widths and contrast on changed routes"]'
 cfg_on()   { jq --argjson l "$LISTED" '.release = {nonBlockingChecks: $l, done: false}' "$FIX/cfg.base" > "$CFG"; }
@@ -154,4 +155,4 @@ jq --argjson l "$LISTED" '.release.done = true' "$CFG" > "$CFG.t" && cp "$CFG.t"
 want "release done: it waits on the critic, as before" "" \
   "$(bash "$HERE/signoff-batch.sh" green < "$FIX/held.json" 2>/dev/null | cut -f1)"
 
-exit $FAILED
+suite_end "$FAILED"

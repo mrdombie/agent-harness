@@ -5,10 +5,11 @@
 # each build task, after each fix round, and before the gates — and commits it.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/self-check.sh" || exit 1
 . "$HERE/../format.sh" || exit 1
 
@@ -87,4 +88,4 @@ want_in "after formatting"                 'formatted 1 file' "$out"
 want "and nothing went to fix"             "0" "$(driver_state_count 1 selfcheck_red)"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
-exit $FAILED
+suite_end "$FAILED"

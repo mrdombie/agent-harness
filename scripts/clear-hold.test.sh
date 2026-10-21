@@ -3,10 +3,11 @@
 # and a reason given is the reason recorded.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 jq '.labels.hold = "hold:pixels" | .branchPrefix = "wk-"' "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"
 
 cat > "$BIN/gh" <<'GH'
@@ -66,4 +67,4 @@ PR_HEAD="" bash "$HERE/clear-hold.sh" 88 --sha aaaaaaa >/dev/null 2>&1; rc=$?
 want "an unreadable head with --sha: refused" "1" "$rc"
 want_not_in "and nothing is written"          '^pr (comment|edit|review)' "$(cat "$GH_LOG")"
 
-exit $FAILED
+suite_end "$FAILED"

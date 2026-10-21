@@ -5,10 +5,11 @@
 # an answer that does not name the shot set it judged is refused.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX" "$HERE/.critic-judge.plant.sh"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX" "$HERE/.critic-judge.plant.sh"'
 J="$HERE/critic-judge.sh"
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok  $1"; }
@@ -551,4 +552,4 @@ cp "$FIX/cfg.keep" "$CFGF"
 # Whatever the plants did, the judge as shipped never posted a raw status in any case above.
 grep -v '^$' "$FIX/raw-ever" 2>/dev/null | grep -q . && bad "a raw status POST was sent: $(head -1 "$FIX/raw-ever")" || ok "no case sent a raw status POST"
 echo "critic-judge: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

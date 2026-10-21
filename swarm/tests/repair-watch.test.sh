@@ -8,9 +8,10 @@
 # agents, it says which programme, and it closes itself when they run again.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 W="$HERE/../repair-watch.sh"
 w() { bash "$W" "$@" 2>&1; }
 T0=$(date -u +%s)
@@ -298,4 +299,4 @@ want_in "it says what it would do"     'WOULD repair #11' "$out"
 want "but spawns nothing"              "0" "$(grep -c . "$SPAWNS")"
 want "and records no attempt"          "0" "$(grep -c . "$TRIED")"
 
-exit $FAILED
+suite_end "$FAILED"

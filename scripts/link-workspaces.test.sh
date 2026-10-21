@@ -11,12 +11,13 @@
 # a function", because the clone's copy predated that export. CI installs per
 # checkout and never sees it, so a red local run looked like the change's fault.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/link-workspaces.sh"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   — $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 
-T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT
+T=$(cd "$(mktemp -d)" && pwd -P); on_exit_keep_status 'rm -rf "$T"'
 SHARED="$T/shared"; WT="$T/wt"
 
 # The shared clone: a stale tree, with npm's relative workspace links.
@@ -84,4 +85,4 @@ grep -q 'scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"' "$CLAIM" && ok "c
 
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

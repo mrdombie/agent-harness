@@ -3,6 +3,7 @@
 #
 # Every case plants the thing that should make the hook fire or stay quiet.
 # A hook that never fires is decorative; a hook that always fires is a loop.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(dirname "$0")/signoff-backstop.sh"; fail=0
 # The hook reads the state dir through the resolver; pin it to a scratch dir so
 # the real .session-label is never the fixture.
@@ -14,7 +15,7 @@ BAK=$(mktemp); SAVED=no
 MDIR="${TMPDIR:-/tmp}/claude-signoff-backstop"
 
 restore(){ if [ "$SAVED" = yes ]; then cp "$BAK" "$LABEL"; else rm -f "$LABEL"; fi; rm -f "$BAK"; }
-trap restore EXIT
+on_exit_keep_status restore
 
 # want: nag | quiet ; args: <desc> <last_assistant_message> <stop_hook_active> <session>
 t(){ want=$1 desc=$2 msg=$3 active=$4 sess=$5
@@ -132,4 +133,4 @@ HARNESS_DRIVER_RUN=10867:plan \
   t quiet 'and stands down for a driver step'              'All done, merged it.'  false d1
 
 rm -rf "$MDIR"
-exit $fail
+suite_end "$fail"

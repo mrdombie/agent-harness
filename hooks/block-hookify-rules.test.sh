@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Plant tests for block-hookify-rules.sh. Every DENY row must deny, every
 # ALLOW row must pass. Exit 1 on any mismatch. Run: bash "$0"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(cd "$(dirname "$0")" && pwd)/block-hookify-rules.sh"
 fail=0
 # The hook reads the state dir and branch prefix through the resolver; pin both
@@ -115,4 +116,4 @@ echo "--- legacy env prefix: HARNESS_STATE_DIR unset, the config-declared prefix
 l(){ want=$1; shift; out=$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | (env -u HARNESS_STATE_DIR HARNESS_LEGACY_ENV_PREFIX=LEGACY LEGACY_STATE_DIR=/x/legacy-state HOME=/nonexistent bash "$H")); r=allow; [ -n "$out" ] && r=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'); mark=OK; [ "$r" = "$want" ] || { mark=MISMATCH; fail=1; }; printf '%-8s want=%-5s got=%-5s %s\n' "$mark" "$want" "$r" "$1"; }
 l deny  'rm -rf legacy-state/claims'
 l allow 'rm -rf other-state/claims'
-exit $fail
+suite_end "$fail"

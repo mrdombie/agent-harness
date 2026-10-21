@@ -11,10 +11,11 @@
 #   - at 95%, stops nobody: the running builds hold before their next step.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"; [ -z "${SLEEPER:-}" ] || kill "$SLEEPER" 2>/dev/null' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"; [ -z "${SLEEPER:-}" ] || kill "$SLEEPER" 2>/dev/null'
 T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
@@ -269,4 +270,4 @@ tickworld 0.50
 hs=$(SWARM_USAGE_CEILING=0.99 bash "$HERE/../swarm/hold-status.sh")
 want "at 50% no usage hold" "false" "$(jq -r '.held' <<<"$hs")"
 
-exit $FAILED
+suite_end "$FAILED"

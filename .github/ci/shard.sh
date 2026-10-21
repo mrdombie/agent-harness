@@ -9,7 +9,7 @@ cd "$(dirname "$0")/../.."
 # Every tracked suite, globbed by directory, the same set the backstop in ci.yml checks.
 suites() {
   local t
-  for t in hooks/*.test.sh hooks/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh briefs/tests/*.test.sh driver/tests/*.test.sh; do
+  for t in hooks/*.test.sh hooks/lib/*.test.sh tests/lib/*.test.sh scripts/*.test.sh swarm/tests/*.test.sh briefs/tests/*.test.sh driver/tests/*.test.sh; do
     [ -f "$t" ] && echo "$t"
   done
   return 0

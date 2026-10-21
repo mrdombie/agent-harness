@@ -5,9 +5,10 @@
 # read the way CI reads it, and local capture is off unless a person turns it on.
 # Then the plants: each guard made to match nothing, and the case it guards goes red.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-evidence-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-evidence-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 mkdir -p "$SB/bin" "$SB/fx"
 cat > "$SB/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -367,4 +368,4 @@ plant "an author's blob counts as CI's"      'ci_files "$c" "$ns" >/dev/null 2>&
 plant "any name counts as captured"          'select((.name | sub("\\.[A-Za-z]+$"; "")) as $b | $ok | index($b))' 'select(true)' 'a shot CI no longer captures at this head counted'
 plant "the capture plan is not read"         'if printf '"'"'%s'"'"' "$ls" | jq -e' 'if false && printf '"'"'%s'"'"' "$ls" | jq -e' 'a shot the capture plan no longer names counted'
 plant "a carried blob need not match CI's"   '| grep -xF -f <(printf '"'"'%s\n'"'"' "$wrote" | grep -v '"'"'^$'"'"')' '| grep -F -f <(printf '"'"'%s\n'"'"' "$wrote" | grep -v '"'"'^$'"'"' | cut -f1)' 'a shot an author changed after CI'"'"'s capture counted'
-exit $fail
+suite_end "$fail"

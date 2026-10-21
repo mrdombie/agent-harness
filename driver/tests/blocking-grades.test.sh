@@ -5,6 +5,7 @@
 # written out by hand in four steps, so changing the rule meant finding all four.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 pass=0; fail=0
@@ -44,4 +45,4 @@ hits=$(grep -n 'issue create' "$ROOT/steps/review.sh" 2>/dev/null)
 [ -z "$hits" ] && ok "review.sh opens no issues" || bad "review.sh still files tickets: $hits"
 
 echo "pass=$pass fail=$fail"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

@@ -7,9 +7,10 @@
 # refuses; every change is written to the audit log first.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 I="$HERE/../install.sh"; Q="$HERE/../queue.sh"
 q() { bash "$Q" "$@" 2>&1; }
 SYS="$FIX/system.log"; : > "$SYS"
@@ -90,4 +91,4 @@ want "hold, two refusals, release ×4" "hold refused-held refused-held release h
 want_in "who and which kit are recorded" 'session=.*parent=.*kit=' "$(head -1 "$AUDIT")"
 want_in "audit prints the log"        'release' "$(bash "$I" audit 1)"
 
-exit $FAILED
+suite_end "$FAILED"

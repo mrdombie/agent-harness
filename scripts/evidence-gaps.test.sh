@@ -5,10 +5,11 @@
 # ticket with no picture gets its changed screens at laptop/phone x light/dark.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="$HERE/evidence-gaps.py"
-T=$(mktemp -d "${TMPDIR:-/tmp}/evidence-gaps.XXXXXX"); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d "${TMPDIR:-/tmp}/evidence-gaps.XXXXXX"); on_exit_keep_status 'rm -rf "$T"'
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok  $1"; }
 bad() { fail=$((fail + 1)); echo "  FAIL $1"; }
@@ -146,4 +147,4 @@ plant "every changed file counts as shown"  'if f not in shown:' 'if False:' p_r
 plant "layouts above a page are not roots"  'lay = f"{d}/layout.{e}"' 'lay = f"{d}/nolayout.{e}"' p_layout
 
 echo "evidence-gaps: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

@@ -8,9 +8,10 @@
 # reads the worktree's node_modules the way an import does.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/self-check.sh" || exit 1
 
 # The shared clone: a lockfile, a manifest and an install of what they name.
@@ -141,4 +142,4 @@ want "its node_modules is untouched" "$snap" "$(cd "$CW/node_modules" && find . 
 want "no fix round was spent" "0" "$(driver_state_count 511 selfcheck_red)"
 printf '[]\n' > "$FIX/claims.json"
 
-exit $FAILED
+suite_end "$FAILED"

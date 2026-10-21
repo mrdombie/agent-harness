@@ -6,11 +6,12 @@
 # holds must then fail.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 unset KIT_ROOT HARNESS_KIT_ROOT
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 git config --global --get user.email >/dev/null 2>&1 || export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 C="$STATE/coordinator"
 SS="$HERE/stranded-sweep.sh"
@@ -99,4 +100,4 @@ diff -q "$SS" "$KIT/scripts/stranded-sweep.sh" >/dev/null && ok "the planted cop
 
 echo
 [ "$FAILED" -eq 0 ] && echo "stranded-sweep: all cases pass" || echo "stranded-sweep: FAILURES above"
-exit "$FAILED"
+suite_end "$FAILED"

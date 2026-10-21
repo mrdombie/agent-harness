@@ -4,10 +4,11 @@
 # an owner line carries its key, and shadow writes nothing anywhere.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 N="$HERE/coordinator-notify.sh"
 C="$STATE/coordinator"
 cat > "$BIN/ping" <<'SH'
@@ -60,4 +61,4 @@ want_in "the agent one too"                $'would\tnotify-agent\tred-pr:1:a' "$
 COORDINATOR_SHADOW=0 bash "$N" --class owner "disk-low:2026-10-15" "Disk is low"
 want "a key seen in shadow still reaches the owner live" "1" "$(needs | grep -c 'Disk is low')"
 
-exit $FAILED
+suite_end "$FAILED"

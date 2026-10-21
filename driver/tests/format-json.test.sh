@@ -6,13 +6,14 @@
 # Prettier: a replica of its rules can only agree with itself.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT_ROOT="$(cd "$HERE/../.." && pwd)"; export KIT_ROOT
 PRETTIER_PIN="${PRETTIER_PIN:-prettier@3.9.9}"
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "  ok   $1"; }
 bad() { fail=$((fail+1)); echo "  FAIL $1"; }
-T=$(mktemp -d "${TMPDIR:-/tmp}/format-json-XXXXXX"); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d "${TMPDIR:-/tmp}/format-json-XXXXXX"); on_exit_keep_status 'rm -rf "$T"'
 
 driver_say() { :; }
 eval "$(sed -n '/^driver_format_cmd()/,/^}/p; /^driver_format_files()/,/^}/p' "$HERE/../format.sh")"
@@ -74,4 +75,4 @@ for width in 80 100; do
 done
 
 echo "pass=$pass fail=$fail"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

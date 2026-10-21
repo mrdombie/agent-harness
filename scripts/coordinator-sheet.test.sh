@@ -8,10 +8,11 @@
 # does), so the only thing that can keep them apart is the shared sheet.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 
@@ -272,4 +273,4 @@ queue_on mac 501
 out=$(OWNER=MAC tick_on mac 0)
 want_in "MAC owns it on mac"                        'sheet: wrote' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

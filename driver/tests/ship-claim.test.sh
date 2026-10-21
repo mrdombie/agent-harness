@@ -4,9 +4,10 @@
 # reconciler, against a bare origin in the fixture and a gh that remembers labels.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/ship.sh" || exit 1
 CLK="$HERE/../../scripts/claim-lock.sh"
 R="$HERE/../../scripts/reconcile-claims.sh"
@@ -108,4 +109,4 @@ want_in "the dead holder is reported as gone" 'issue comment 603 .*Claim release
 want "its claim is freed"                     "no" "$(ref_present 603)"
 want "and it is marked in review"             "status:in-review" "$(labels 603)"
 
-exit "$FAILED"
+suite_end "$FAILED"

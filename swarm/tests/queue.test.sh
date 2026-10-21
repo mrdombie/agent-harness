@@ -4,9 +4,10 @@
 # re-adding keeps a place rather than losing it, and a drain stops at the cap.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 Q="$HERE/../queue.sh"
 q() { bash "$Q" "$@" 2>&1; }
 
@@ -68,4 +69,4 @@ if q add >/dev/null 2>&1; then bad "add with no ticket must refuse"; else ok "ad
 if q add abc >/dev/null 2>&1; then bad "a non-number must refuse"; else ok "a non-number refuses"; fi
 if q add 101 --brief /no/such/file >/dev/null 2>&1; then bad "a missing brief must refuse"; else ok "a missing brief refuses"; fi
 
-exit $FAILED
+suite_end "$FAILED"

@@ -4,11 +4,12 @@
 # marker cannot be planted to hide one; a reader cannot lose its markers. Then the
 # plant: the phrase rule deleted from the check lets the sibling through.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$HERE/.." && pwd)"
 C="$HERE/check-signal-source.sh"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/signal-source-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/signal-source-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -60,4 +61,4 @@ PY
 grep -q '!inr && \$0 ~ phr' "$SB/check.sh" && bad "plant: the rule is still in the copy"
 bash "$SB/check.sh" "$SB/kit" >/dev/null 2>&1 && ok "planted: the phrase rule deleted → the sibling passes → red" \
   || bad "planted: the phrase rule deleted and the sibling is still caught → the test cannot see it"
-exit $fail
+suite_end "$fail"

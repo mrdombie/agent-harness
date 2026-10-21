@@ -4,6 +4,7 @@
 # Each row is `block<TAB><command>` or `allow<TAB><command>`; a row whose command
 # spans lines (a heredoc) continues until the next row keyword. The table is the
 # spec — a new false positive is one line, not one function.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 D="$(cd "$(dirname "$0")" && pwd)"; H="$D/no-broad-kill.sh"; CASES="$D/no-broad-kill.cases.tsv"
 fail=0
 export HARNESS_BRANCH_PREFIX=sh- HARNESS_WORKTREE_ROOT=/Users/me/wt
@@ -37,4 +38,4 @@ if [ "$rc" -eq 2 ]; then echo "ok   block unconfigured — a bare worktree root 
 else echo "FAIL the worktree-root allowance fires without the config"; fail=1; fi
 
 [ "$fail" -eq 0 ] && echo "no-broad-kill: all cases pass"
-exit $fail
+suite_end "$fail"

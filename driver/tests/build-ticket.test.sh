@@ -16,11 +16,12 @@
 # pass, because a suite full of replicas proves the kit and never the product.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 # The gate cap at 1, so a second red here is past it.
 export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 BT="$HERE/../build-ticket"
 
 # ---- recorded steps ----------------------------------------------------------
@@ -1055,4 +1056,4 @@ want "nothing parks"                               "" "$(cat "$FIX/park.log")"
 want_in "it says the PR merged"                    'merged at 2026-10-21T07:14:34Z while it was being repaired' "$out"
 want_not_in "not that the ticket stays in review"  'stays in review' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

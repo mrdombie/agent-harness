@@ -10,10 +10,11 @@
 # their red-PR event marked judged — so those PRs were never queued for repair.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 FAILED=0
 KIT="${SPAWN_WALL_KIT:-$HERE/../..}"
 SOON=$(( $(date +%s) + 7200 ))
@@ -122,4 +123,4 @@ bash "$KIT/scripts/coordinator-judge.sh" >/dev/null 2>&1
 for _ in $(seq 1 50); do ls "$C"/judges/*.ended >/dev/null 2>&1 && break; sleep 0.1; done
 want "a judge that finished keeps its event judged" "1" "$(grep -c 'red-pr:41' "$C/judged.did.ids")"
 
-exit $FAILED
+suite_end "$FAILED"

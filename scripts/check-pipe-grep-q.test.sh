@@ -4,10 +4,11 @@
 # another change owns.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 C="$HERE/check-pipe-grep-q.sh"
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d); on_exit_keep_status 'rm -rf "$T"'
 FAILED=0
 ok()  { echo "OK       $1"; }
 bad() { echo "MISMATCH $1"; FAILED=1; }
@@ -37,4 +38,4 @@ out=$(bash "$C" "$T/good.sh"); rc=$?
 KNOWN='scripts/claim-lock.sh scripts/critic-judge.sh scripts/reconcile-claims.sh'
 got=$(bash "$C" | sed "s#^$(cd "$HERE/.." && pwd)/##" | cut -d: -f1 | sort -u | tr '\n' ' ' | sed 's/ $//')
 [ "$got" = "$KNOWN" ] && ok "the kit has none outside the known three" || bad "the kit: wanted '$KNOWN', got '$got'"
-exit $FAILED
+suite_end "$FAILED"

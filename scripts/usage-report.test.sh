@@ -2,8 +2,9 @@
 # Plant tests for usage-report.sh: a fixture state dir with three runs. Exit 1 on
 # any mismatch. Run: bash "$0"
 set -u
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 S="$(cd "$(dirname "$0")" && pwd)/usage-report.sh"
-D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
+D=$(mktemp -d); on_exit_keep_status 'rm -rf "$D"'
 mkdir -p "$D/runs" "$D/logs"
 mk(){ # <run_id> <ticket> <started> <operator> [result-json]
   local id=$1 t=$2 st=$3 op=$4 res=${5:-}
@@ -30,4 +31,4 @@ t '2026-W39.*1.*died'                    bash "$S" --state-dir "$D" --by week
 t '101.*10\.47'                          bash "$S" --state-dir "$D" --by ticket
 echo "--- refusals ---"
 if bash "$S" --state-dir "$D/nope" >/dev/null 2>&1; then echo "MISMATCH missing dir must refuse"; fail=1; else echo "OK       missing dir refuses"; fi
-exit $fail
+suite_end "$fail"

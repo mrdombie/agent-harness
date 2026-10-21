@@ -12,10 +12,11 @@
 # through a real pre-push hook.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 G="$HERE/signoff-push-guard.sh"
 jq '.design = {"surfacePaths": ["apps/web/**", ":(exclude)**/*.test.ts"], "surfacePathsComplete": true}' \
   "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"
@@ -266,4 +267,4 @@ want "with the trailer it goes"            "0" "$prc"
 want "and lands"                           "$(g rev-parse HEAD)" "$(git --git-dir="$FIX/origin.git" rev-parse tkt-5-x)"
 want_in "with the hold back on"            '^pr edit 7 .*--add-label needs:human-approval$' "$(cat "$GH_LOG")"
 
-exit "$FAILED"
+suite_end "$FAILED"
