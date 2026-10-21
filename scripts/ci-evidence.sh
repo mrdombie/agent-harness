@@ -122,13 +122,48 @@ ev_folders() { # <pr> <pr json with closingIssuesReferences, headRefName>
   } | grep -E '^[0-9]+$' | sort -u | tr '\n' ' '
 }
 PR_FIELDS=headRefOid,body,isDraft,headRefName,closingIssuesReferences
-ci_links() { # <evsha> <folders> — links on stdin; CI's own pass, every other is named on stderr
-  local ev="$1" ok u sha path why
+# CARRIED UNCHANGED. CI re-captures every shot at each head and git keeps only the
+# ones whose bytes moved, so a re-capture that came out identical sits in the tree at
+# the new evidence commit but not in its diff. Such a shot is CI's when its name is one
+# CI's capture produces for this head (the folder's plan.json shot names, or with no
+# plan the slugs of the body's routes) and its blob at the evidence commit is one an
+# earlier CI evidence commit on this PR wrote at that path. A blob only an author ever
+# wrote, a name CI no longer captures, or a shot changed since CI's capture stays refused.
+carried() { # <evsha> <folders> <pr> <body> → path<TAB>blob CI carries at the evsha, one a line
+  local ev="$1" ns="$2" pr="$3" body="$4" k d ls names have="" wrote="" c
+  [ -n "$pr" ] || return 0
+  for k in $ns; do
+    d="$EV_DIR/$k"
+    ls=$(ghr_api "repos/{repo}/contents/$d?ref=$ev" 2>/dev/null) || continue
+    if printf '%s' "$ls" | jq -e '.[]? | select(.name == "plan.json")' >/dev/null 2>&1; then
+      names=$(ghr_api "repos/{repo}/contents/$d/plan.json?ref=$ev" -H "Accept: application/vnd.github.raw" 2>/dev/null | jq -r '.shots[]?.name // empty' 2>/dev/null)
+    else
+      names=$(printf '%s\n' "$body" | bash "${BASH_SOURCE[0]}" routes 2>/dev/null | sed -E 's/[^a-zA-Z0-9]+/-/g; s/^-+|-+$//g')
+    fi
+    [ -n "$names" ] || continue
+    have="$have$(printf '%s' "$ls" | jq -r --arg d "$d" --arg n "$names" '($n | split("\n")) as $ok
+      | .[]? | select(.type == "file") | select((.name | sub("\\.[A-Za-z]+$"; "")) as $b | $ok | index($b))
+      | "\($d)/\(.name)\t\(.sha)"' 2>/dev/null)"$'\n'
+  done
+  [ -n "$(printf '%s' "$have" | grep -v '^$')" ] || return 0
+  # The blobs CI's own evidence commits before this one on the PR wrote.
+  for c in $(ghr_api "repos/{repo}/pulls/$pr/commits?per_page=100" --paginate 2>/dev/null \
+               | jq -rs --arg ev "$ev" 'add // [] | map(.sha) | .[:(index($ev) // 0)] | .[]' 2>/dev/null); do
+    ci_files "$c" "$ns" >/dev/null 2>&1 || continue
+    wrote="$wrote$(ghr_api "repos/{repo}/commits/$c" 2>/dev/null | jq -r '.files[]? | select(.status != "removed") | "\(.filename)\t\(.sha)"' 2>/dev/null)"$'\n'
+  done
+  [ -n "$(printf '%s' "$wrote" | grep -v '^$')" ] || return 0
+  printf '%s\n' "$have" | grep -v '^$' | grep -xF -f <(printf '%s\n' "$wrote" | grep -v '^$') || true
+}
+ci_links() { # <evsha> <folders> [<pr> <body>] — links on stdin; CI's own pass, every other is named on stderr
+  local ev="$1" ok u sha path why carry="" asked=""
   ok=$(ci_files "$ev" "$2" 2>"$ERRF") || { why=$(cat "$ERRF" 2>/dev/null); cat >/dev/null; echo "ci-evidence: ${ev:0:9} is not CI's evidence commit (${why:-unreadable}) — no shot linked at it counts" >&2; return 0; }
   while IFS= read -r u; do
     [ -n "$u" ] || continue
     sha=$(sed -E 's#.*/blob/([0-9a-f]{40})/.*#\1#' <<<"$u"); path=$(sed -E 's#.*/blob/[0-9a-f]{40}/##' <<<"$u")
-    if [ "$sha" = "$ev" ] && printf '%s\n' "$ok" | grep -qxF -- "$path"; then printf '%s\n' "$u"
+    if [ "$sha" = "$ev" ] && printf '%s\n' "$ok" | grep -qxF -- "$path"; then printf '%s\n' "$u"; continue; fi
+    if [ "$sha" = "$ev" ] && [ -z "$asked" ]; then carry=$(carried "$ev" "$2" "${3:-}" "${4:-}"); asked=1; fi
+    if [ "$sha" = "$ev" ] && grep -qxF -- "$path" <<<"$(cut -f1 <<<"$carry")"; then printf '%s\n' "$u"
     else echo "ci-evidence: not a CI capture of ${ev:0:9}, refused: $path" >&2; fi
   done
 }
@@ -213,7 +248,7 @@ status() { # <pr>
   head=$(jq -r .headRefOid <<<"$j"); body=$(jq -r .body <<<"$j" | tr -d '\r'); draft=$(jq -r .isDraft <<<"$j")
   blk=$(printf '%s\n' "$body" | block)
   evsha=$(printf '%s\n' "$blk" | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
-  n=0; [ -n "$evsha" ] && n=$(printf '%s\n' "$blk" | links | ci_links "$evsha" "$(ev_folders "$pr" "$j")" 2>/dev/null | grep -c . || true)
+  n=0; [ -n "$evsha" ] && n=$(printf '%s\n' "$blk" | links | ci_links "$evsha" "$(ev_folders "$pr" "$j")" "$pr" "$body" 2>/dev/null | grep -c . || true)
   printf 'head=%s\nsha=%s\nshots=%s\n' "$head" "$evsha" "$n"
 
   if [ -n "$evsha" ] && [ "$n" -gt 0 ]; then
@@ -289,7 +324,7 @@ case "${1:-}" in
     blk=$(jq -r .body <<<"$j" | tr -d '\r' | block)
     evsha=$(printf '%s\n' "$blk" | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
     [ -n "$evsha" ] || exit 0
-    printf '%s\n' "$blk" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" ;;
+    printf '%s\n' "$blk" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" "$2" "$(jq -r .body <<<"$j" | tr -d '\r')" ;;
 
   fetch)
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || die "usage: fetch <pr> <dir>"
@@ -297,7 +332,7 @@ case "${1:-}" in
     j=$(ghr pr view "$2" --json "$PR_FIELDS") || exit 1
     body=$(jq -r .body <<<"$j" | tr -d '\r')
     evsha=$(printf '%s\n' "$body" | block | grep -oE "${EV_HEADMARK}[0-9a-f]{40}" | head -1 | sed "s/^${EV_HEADMARK}//")
-    urls=""; [ -n "$evsha" ] && urls=$(printf '%s\n' "$body" | block | links | ci_links "$evsha" "$(ev_folders "$2" "$j")")
+    urls=""; [ -n "$evsha" ] && urls=$(printf '%s\n' "$body" | block | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" "$2" "$body")
     # Route per shot: CI names each file by the route's slug, so slug the routes
     # the body lists the same way and match.
     routes=$(printf '%s\n' "$body" | bash "$0" routes 2>/dev/null || true)
