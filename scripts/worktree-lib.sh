@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # worktree-lib.sh — sourced by the worktree sweeper and the cache pass.
-#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_run_holder <real-wt> · wt_can_see_processes · wt_cfg <cfg> <jq-path>
+#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_run_holder <real-wt> · wt_live_runs · wt_can_see_processes · wt_cfg <cfg> <jq-path>
 
 wt_real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
 
@@ -50,6 +50,19 @@ $(jq -r '.spawn_root // empty' "$f" 2>/dev/null)
 EOS
   done
   return 1
+}
+
+# wt_live_runs — the record of every live run on this host, one path a line: the
+# same liveness wt_run_holder reads (no .ended beside it, its pid answers).
+wt_live_runs() {
+  local runs="${RUNS_DIR:-${STATE_DIR:+$STATE_DIR/runs}}" f pid
+  [ -n "$runs" ] && [ -d "$runs" ] || return 0
+  for f in "$runs"/*.json; do
+    [ -f "$f" ] && [ ! -e "${f%.json}.ended" ] || continue
+    pid=$(jq -r '.pid // .child_pid // empty' "$f" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$f"
+  done
+  return 0
 }
 
 wt_cfg() { # <cfg-file> <jq path>
