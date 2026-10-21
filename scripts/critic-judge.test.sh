@@ -62,7 +62,8 @@ export CRITIC_JUDGE_EVIDENCE="$FIX/ev" CRITIC_JUDGE_CLAUDE="$FIX/claude" CRITIC_
 printf '#!/usr/bin/env bash\n[ "$1" = signed-head ] && [ -f "%s/signed" ]\n' "$FIX/d" > "$FIX/ak"; chmod +x "$FIX/ak"; export CRITIC_JUDGE_APPROVAL="$FIX/ak"
 export CRITIC_JUDGE_FINDINGS="$FIX/sf"; printf '#!/usr/bin/env bash\n[ "$1" = critic ] && printf "major\\t#7\\tnine narration lines on the voices page\\n"; [ "$1" = screens ] && [ -f "%s/d/screen" ] && cat "%s/d/screen"; exit 0\n' "$FIX" "$FIX" > "$FIX/sf"; chmod +x "$FIX/sf"
 # Polish lists, stood in for: each add is kept in $D/polish-adds; $D/polish-fail makes it fail.
-printf '#!/usr/bin/env bash\n[ "$1" = add ] || exit 2\n[ -f "%s/d/polish-fail" ] && exit 2\nshift; printf "%%s\\t%%s\\n" "$1" "$2" >> "%s/d/polish-adds"\n' "$FIX" "$FIX" > "$FIX/pl"; chmod +x "$FIX/pl"; export CRITIC_JUDGE_POLISH="$FIX/pl"
+# Like the real one, a Major is opened as its own ticket (#555) and add says so.
+printf '#!/usr/bin/env bash\n[ "$1" = add ] || exit 2\n[ -f "%s/d/polish-fail" ] && exit 2\nshift; printf "%%s\\t%%s\\n" "$1" "$2" >> "%s/d/polish-adds"\ncase "$2" in Major*) echo "#555: graded major, so not polish — its own ticket (P1), not an item on the list: $2" ;; esac\n' "$FIX" "$FIX" > "$FIX/pl"; chmod +x "$FIX/pl"; export CRITIC_JUDGE_POLISH="$FIX/pl"
 
 # The coverage check, stood in for: it prints what $D/gaps holds (kind, file, routes, text).
 printf '#!/usr/bin/env bash\n[ "$1" = judge ] && [ -f "%s/gaps" ] && { cat "%s/gaps"; exit 1; }\nexit 0\n' "$FIX/d" "$FIX/d" > "$FIX/cov"; chmod +x "$FIX/cov"
@@ -257,6 +258,8 @@ case_s1
 [ "$(grep -c . "$D/polish-adds" 2>/dev/null)" = 3 ] && [ "$(cut -f1 "$D/polish-adds" | sort -u)" = voices ] \
   && grep -q $'^voices\tMajor · the menu clips its last item' "$D/polish-adds" && grep -q 'toast fires on load.*outside what it changed' "$D/polish-adds" \
   && ok "the three outside it go to the screen's polish list, graded" || bad "polish adds: $(cat "$D/polish-adds" 2>/dev/null)"
+grep -q 'menu clips its last item.*its own ticket #555, not polish' "$D/comment-0.md" && ! grep -q 'toast fires on load.*its own ticket' "$D/comment-0.md" \
+  && ok "a Major outside the change is named as its own ticket, not as polish" || bad "own ticket: $(sed -n '/### Outside/,/###/p' "$D/comment-0.md")"
 grep -q 'Outside this change — on the `voices` polish list' "$D/comment-0.md" && ! sed -n '/^### Findings/,/^### Outside/p' "$D/comment-0.md" | grep -q 'menu clips' \
   && ok "the comment lists them apart, not as findings" || bad "comment: $(sed -n '/### Findings/,/### Shots/p' "$D/comment-0.md")"
 grep -q '^apps/web/voices/page.tsx$' "$D/prompt-seen" && grep -q $'^voice-menu-phone-dark\tuntouched' "$D/prompt-seen" \

@@ -240,7 +240,7 @@ record() { # <pr> <head> <set> <verdict> <state> <url> <description>
 
 run() { # <pr>
   local pr="$1" j head draft st evsha W n set prev url mocks req miss lint rc pass verdict parity blocks why body ignored t signed=0 judged
-  local deriv="" routes="" f d pf outside="" listed="" slug=""
+  local deriv="" routes="" f d pf outside="" listed="" slug="" got=""
   local -a popt=()
   [ -z "${HARNESS_DRIVER_RUN:-}" ] || die "a build run ($HARNESS_DRIVER_RUN) cannot judge screens: the verdict comes from a critic the build did not start"
   [ "${CRITIC_JUDGE_LAUNCHER:-}" = coordinator ] || [ "${CRITIC_JUDGE_MANUAL:-}" = 1 ] \
@@ -416,7 +416,9 @@ run() { # <pr>
       slug=$(polish_slug "$t" "$W/changed.txt" "$W/shots.tsv")
       while IFS= read -r f; do
         [ -n "$f" ] || continue
-        if [ -n "$slug" ] && bash "$PL" add "$slug" "$f (seen by the design critic on PR #$pr, outside what it changed)" >/dev/null 2>&1; then
+        if [ -n "$slug" ] && got=$(bash "$PL" add "$slug" "$f (seen by the design critic on PR #$pr, outside what it changed)" 2>/dev/null); then
+          # A Critical or Major is not polish: add opens it as its own ticket and says so.
+          case "$got" in *"its own ticket"*) f="$f — its own ticket $(printf '%s' "$got" | grep -oE '^#[0-9]+' | head -1), not polish" ;; esac
           listed="$listed$f"$'\n'
         else
           blocks="$blocks${blocks:+$'\n'}$f"

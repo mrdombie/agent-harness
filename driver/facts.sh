@@ -301,7 +301,7 @@ driver_fact_screen_steps() { # <ticket>
 # once per run and kept, so every step sees the list as the plan saw it.
 #   state: polish_fact · polish_items (<list> \t <item>, one a line) · polish_self (1: the ticket is a list)
 driver_fact_polish_list() { # <ticket>
-  local t="$1" cached labels slugs slug n items out="" kept="" pl lists=""
+  local t="$1" cached labels slugs slug n items out="" kept="" pl lists="" rc why alone=""
   cached=$(driver_state_get "$t" polish_fact)
   [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
   labels=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) || {
@@ -314,12 +314,18 @@ driver_fact_polish_list() { # <ticket>
   while IFS= read -r slug; do
     [ -n "$slug" ] || continue
     n=$(bash "$pl" for-screen "$slug" 2>/dev/null) || { _driver_fact_none "the polish list for ${LBL_SCREEN_PREFIX}$slug could not be read"; return 0; }
-    [ -n "$n" ] && [ "$n" != "$t" ] && lists="$lists $n"
+    [ -n "$n" ] && [ "$n" != "$t" ] || continue
+    # A list that ships alone lends none (polish-list.sh lends).
+    why=$(bash "$pl" lends "$n" "$t" 2>/dev/null); rc=$?
+    [ "$rc" -eq 1 ] && { alone="${alone:+$alone; }$why"; continue; }
+    [ "$rc" -eq 0 ] || { _driver_fact_none "polish list #$n could not be read"; return 0; }
+    lists="$lists $n"
   done <<EOS
 $slugs
 EOS
   if [ -z "${lists// /}" ]; then
-    if [ -z "$slugs" ]; then out=$(_driver_fact_none "#$t carries no ${LBL_SCREEN_PREFIX}<slug> label, so no screen's polish list rides along")
+    if [ -n "$alone" ]; then out=$(_driver_fact_none "$alone, so it lends this ticket none")
+    elif [ -z "$slugs" ]; then out=$(_driver_fact_none "#$t carries no ${LBL_SCREEN_PREFIX}<slug> label, so no screen's polish list rides along")
     else out=$(_driver_fact_none "no open polish list for $(printf '%s\n' "$slugs" | awk -v p="$LBL_SCREEN_PREFIX" 'NF { printf "%s%s%s", (n++ ? ", " : ""), p, $0 }')"); fi
     driver_state_set "$t" polish_fact "$out"; printf '%s' "$out"; return 0
   fi
