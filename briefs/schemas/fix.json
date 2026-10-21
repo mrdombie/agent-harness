@@ -237,6 +237,89 @@
           }
         }
       }
+    },
+    "pmProofs": {
+      "description": "A blocking finding a `## PM answer` on the ticket names and accepts a non-test proof for, answered without a red/green pair. `kind: mutation` (the answer accepts a mutation proof, for a test-only or type-only finding): the driver plants `break` in the fixed code at `commit`, runs `command` and requires it to FAIL, restores the code and requires it to PASS. `kind: commit` (the answer accepts the fixing commit, for a doc- or wording-only finding): the driver checks `commit` is the one the answer names, is on the branch, and touches the file the finding names. Never used without such an answer.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "blockerId",
+          "pmAnswer",
+          "kind",
+          "commit"
+        ],
+        "properties": {
+          "blockerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pmAnswer": {
+            "description": "The `ref` of the PM answer that accepts this proof, exactly as the brief lists it.",
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "mutation",
+              "commit"
+            ]
+          },
+          "commit": {
+            "description": "mutation: the commit holding the fix, where the break is planted. commit: the fixing commit the PM answer names. Seven characters or more, on the branch.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,40}$"
+          },
+          "testFile": {
+            "description": "mutation: the test (or the file the type check covers) the command runs.",
+            "type": "string",
+            "minLength": 1
+          },
+          "command": {
+            "description": "mutation: the named test or type check, run in the tree at commit.",
+            "type": "string",
+            "minLength": 1
+          },
+          "break": {
+            "description": "mutation: a literal find/replace in the fixed code, never in testFile, that the command must go red on.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "find",
+              "replace"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "find": {
+                "type": "string",
+                "minLength": 1
+              },
+              "replace": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "mutation"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "testFile",
+            "command",
+            "break"
+          ]
+        }
+      }
     }
   },
   "if": {
@@ -265,6 +348,17 @@
         ],
         "properties": {
           "gateFixes": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      },
+      {
+        "required": [
+          "pmProofs"
+        ],
+        "properties": {
+          "pmProofs": {
             "type": "array",
             "minItems": 1
           }

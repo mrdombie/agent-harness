@@ -69,6 +69,14 @@ If you remove, reword or skip an `it(`/`test(` case, list its file in
 `replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
 a bare path to the test that now pins it, or `removedBecause`. A gate checks them.
 
+## A PM answer already on the ticket
+
+{{PM_ANSWERS}}
+
+A blocking finding one of these names and accepts a non-test proof for (a
+mutation, or the fixing commit) goes in `pmProofs` citing its ref, never in
+`deferred`. The driver checks it. No such answer, no `pmProofs`.
+
 ## Return
 
 JSON only, valid against `schemas/fix.json`.
@@ -111,19 +119,28 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `gateFixes[].change[].path` (required): string
 - `gateFixes[].change[].action` (required): one of "create", "modify", "delete"
 - `gateFixes[].commit` (required): string
+- `pmProofs`: list of object
+- `pmProofs[].blockerId` (required): string
+- `pmProofs[].pmAnswer` (required): string
+- `pmProofs[].kind` (required): one of "mutation", "commit"
+- `pmProofs[].commit` (required): string
+- `pmProofs[].testFile`: string
+- `pmProofs[].command`: string
+- `pmProofs[].break`: object
+- `pmProofs[].break.file` (required): string
+- `pmProofs[].break.find` (required): string
+- `pmProofs[].break.replace` (required): string
 
 Conditional:
-- when `status` is "fixed": at least one of `cleared`, `gateFixes`
+- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`
 - otherwise: requires `question`
 <!-- fields:end -->
 
-One `cleared` entry per review finding, each carrying the change, the test that goes red
-when that finding returns, and the red and green runs. A finding cleared without
-a test is one that can come back unnoticed, so the contract has no shape for it.
+One `cleared` entry per review finding: the change, the test that goes red when
+it returns, and the red and green runs.
 
-It also carries `testCommit` and `implCommit`, and they must be two commits. The
-driver re-runs your test at the change's parent and at the change, exactly as it
-does in the build step, so those two shas are what make `failedBefore` checkable
+`testCommit` and `implCommit` must be two commits: the driver re-runs your test at
+the change's parent and at the change, so they make `failedBefore` checkable
 rather than claimed.
 
 A finding you are not clearing goes in `deferred` with its reason and where it
@@ -134,5 +151,4 @@ A question names who answers it in `questionFor`: `owner` for pixels, a picture,
 a product or commercial call, or the data model; `pm` for the ticket's shape —
 repo, split, order, acceptance wording. Unsure is `owner`.
 
-`skills` lists every skill you invoked. The driver reads the run log too, so a
-skill claimed here and absent there fails the step.
+`skills` lists every skill you invoked; the driver checks it against the run log.
