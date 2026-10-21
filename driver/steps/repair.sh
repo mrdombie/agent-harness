@@ -64,6 +64,56 @@ _driver_repair_clashes() {
   [ -n "$u" ]
 }
 
+# _driver_repair_deleted_on_base <tree> <path> — 0 when the merge in progress deletes
+# <path> on the trunk side: it is at a merge base and not at MERGE_HEAD.
+_driver_repair_deleted_on_base() {
+  local wt="$1" p="$2" mb
+  git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || return 1
+  git -C "$wt" cat-file -e "MERGE_HEAD:$p" 2>/dev/null && return 1
+  for mb in $(git -C "$wt" merge-base --all HEAD MERGE_HEAD 2>/dev/null); do
+    git -C "$wt" cat-file -e "$mb:$p" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# _driver_repair_branch_kept <tree> <path> — 0 when the branch never changed <path>:
+# HEAD's blob is every merge base's.
+_driver_repair_branch_kept() {
+  local wt="$1" p="$2" h mb n=0
+  h=$(git -C "$wt" rev-parse -q --verify "HEAD:$p" 2>/dev/null) || return 1
+  for mb in $(git -C "$wt" merge-base --all HEAD MERGE_HEAD 2>/dev/null); do
+    [ "$(git -C "$wt" rev-parse -q --verify "$mb:$p" 2>/dev/null)" = "$h" ] || return 1; n=$((n+1))
+  done
+  [ "$n" -gt 0 ]
+}
+
+# _driver_repair_take_listed <ticket> <tree> <answer> — runs the `git rm` of each path the
+# answer's takeBaseDeletions lists, then the merge commit once nothing is unmerged. The
+# model's permission mode refuses git rm, so the driver does it. All or none: a path the
+# trunk did not delete in this merge is refused (1) and nothing is removed.
+_driver_repair_take_listed() {
+  local t="$1" wt="$2" ans="$3" p bad="" list
+  list=$(jq -r '(.takeBaseDeletions // [])[]' "$ans" 2>/dev/null)
+  [ -n "$list" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    _driver_repair_deleted_on_base "$wt" "$p" || bad="$bad$p "
+  done <<<"$list"
+  if [ -n "$bad" ]; then
+    driver_say "✋ repair: takeBaseDeletions names ${bad}— not deleted on the trunk side of this merge, so the driver removes nothing."
+    driver_state_set "$t" park_note "the repair asked the driver to take a deletion the trunk never made: $bad"
+    return 1
+  fi
+  while IFS= read -r p; do
+    [ -n "$p" ] && git -C "$wt" rm -q -f --ignore-unmatch -- "$p" >/dev/null 2>&1
+  done <<<"$list"
+  driver_say "   repair: took the trunk's deletion of $(printf '%s' "$list" | tr '\n' ' ')as the answer listed"
+  if [ -z "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ]; then
+    git -C "$wt" commit -q --no-edit >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 # _driver_repair_evidence_left <ticket> <tree> <trunk> <base> <plan> <pr> — what the
 # repair left of the evidence it owed: the plan untouched since <base>, or the changed
 # screen files still no route or capture step renders. Nothing when it is all answered.
@@ -405,8 +455,35 @@ EOS
       driver_say "   repair: merging $trunk conflicted in $(printf '%s' "$conflicted" | tr '\n' ' ')— handed to the model"
     fi
   fi
+  # A DELETION ON THE TRUNK IS TAKEN BY THE DRIVER, never left to the model: its
+  # permission mode refuses `git rm`, and #13139 parked three times asking for one.
+  local p took="" rest="" retired=""
+  if [ -n "$conflicted" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      if _driver_repair_deleted_on_base "$wt" "$p"; then
+        if _driver_repair_branch_kept "$wt" "$p" && git -C "$wt" rm -q -f --ignore-unmatch -- "$p" >/dev/null 2>&1; then
+          took="$took$p "; continue
+        fi
+        retired="$retired$p "
+      fi
+      rest="$rest$p"$'\n'
+    done <<<"$conflicted"
+    conflicted=$(printf '%s' "$rest" | sed '/^$/d')
+    if [ -n "$took" ]; then
+      driver_say "   repair: took $trunk's deletion of ${took}— the branch never changed them"
+      if [ -z "$conflicted" ] && [ -z "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ] \
+         && git -C "$wt" commit -q --no-edit >/dev/null 2>&1; then
+        merged=1; resumed_merge=0; driver_state_set "$t" repair_conflicted ""
+        driver_say "   repair: merged $trunk into $branch at $(git -C "$wt" rev-parse --short HEAD) with nothing left conflicted"
+        driver_refresh_install "$MAIN_REPO" "$wt" || driver_say "   repair: relinking the install after the merge failed — self-check tries again."
+      fi
+    fi
+  fi
   if [ -n "$conflicted" ]; then
     conflicts_fact="merging $trunk into $branch conflicted, and the merge is left in progress for you in: $(printf '%s' "$conflicted" | tr '\n' ' ')"
+    [ -n "$retired" ] && conflicts_fact="$conflicts_fact
+$trunk DELETED ${retired}and this branch edited them. When the trunk retired a file and the branch's edits only served that retired purpose, take the deletion: never run \`git rm\` yourself (your permission mode refuses it) — list each path in \`takeBaseDeletions\`, resolve and stage the rest, and the driver runs the \`git rm\` and the merge commit. When the edit is still wanted, keep it and say why in \`conflicts\`."
     driver_state_set "$t" repair_conflicted "$conflicted"
   elif [ "$merged" -eq 1 ]; then
     conflicts_fact="merged $trunk cleanly; nothing conflicted"
@@ -654,6 +731,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   fi
 
   # ---- what the tree says ------------------------------------------------------
+  _driver_repair_take_listed "$t" "$wt" "$ans" || return "$DRIVER_E_REFUSED"
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] \
      || [ -n "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ]; then
     local um; um=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')

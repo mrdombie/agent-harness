@@ -2,9 +2,8 @@
 
 # Repair · a red or clashing pull request
 
-This pull request was built, pushed and handed off, and it then went red, began
-to clash with the integration branch, or came back with a brief (an owner's
-answer, a merge lane's note). You are repairing it on its own branch. You
+This pull request was built and handed off, then went red, began to clash
+with the integration branch, or came back with a brief. You are repairing it on its own branch. You
 are not rebuilding the ticket: the plan, build and review stand; change only
 what the failure needs.
 
@@ -41,7 +40,8 @@ conflicted.
    or hand off is void, and a push from this step refuses it.
 2. **A conflict:** resolve each file so that BOTH sides' intent survives. The
    trunk's change and this PR's change are both wanted. Leave no conflict
-   markers, then finish the merge with `git commit --no-edit`. Never rebase or
+   markers, then finish the merge with `git commit --no-edit`. A file the
+   trunk retired is listed in `takeBaseDeletions`, never `git rm`. Never rebase or
    force-push. The driver pushes a plain fast-forward of this branch.
 3. **A red check:** read the failing job's own log (`gh run view <id>
    --log-failed`) and reproduce the failure locally before you touch any code.
@@ -51,7 +51,7 @@ conflicted.
    fix.** Park and say so.
 5. **Evidence owed:** commit the plan edit each task names.
 6. **A red lesson check:** {{LESSON}}
-7. **Fix only what failed**, and nothing nearby.
+7. **Fix only what failed.**
 8. **The owner's sign-off comes last.** If the PR was signed off, change no
    screen file unless the failure cannot be fixed any other way. A change to a
    screen voids the sign-off and sends the PR back to the owner. If the only
@@ -93,6 +93,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `conflicts`: list of object
 - `conflicts[].file` (required): string
 - `conflicts[].resolution` (required): string
+- `takeBaseDeletions`: list of string
 - `fixes`: list of object
 - `fixes[].what` (required): string
 - `fixes[].proof` (required): one of "test", "gate"
