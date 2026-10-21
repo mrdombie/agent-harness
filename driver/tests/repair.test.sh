@@ -727,4 +727,70 @@ want_not_in "the cancelled run never reached the brief" 'Deleted tests' "$(cat "
 
 export SWARM_GH="$SWARM_GH_WAS"
 
+echo "--- a repair tree whose own install lacks a declared package: relinked before its proof (#12442) ---"
+# The shared clone installs @axe-core/playwright; the repair worktree has a private install
+# made before its lockfile gained it. The proof trees link from the worktree.
+printf 'node_modules\n' >> "$REPO/.git/info/exclude"
+AXLOCK='{"lockfileVersion":3,"packages":{"":{},"node_modules/@axe-core/playwright":{"version":"4.0.0"}}}'
+printf '{"name":"fx","private":true}\n' > "$REPO/package.json"; printf '%s\n' "$AXLOCK" > "$REPO/package-lock.json"
+mkdir -p "$REPO/node_modules/@axe-core/playwright"; printf '%s\n' "$AXLOCK" > "$REPO/node_modules/.package-lock.json"
+printf '[]\n' > "$FIX/claims.json"
+printf '#!/bin/sh\ncat "%s"\n' "$FIX/claims.json" > "$FIX/claim-list"; printf '#!/bin/sh\n:\n' > "$FIX/claim-refs"
+chmod +x "$FIX/claim-list" "$FIX/claim-refs"
+export WT_CLAIM_LIST="$FIX/claim-list" WT_CLAIM_REFS="$FIX/claim-refs"
+behind_repair() { # <ticket> — a red PR whose tree's private install lacks the package its test imports
+  local t=$1
+  setup "$t"; prs "$t" CLEAN unit
+  cp "$REPO/package.json" "$REPO/package-lock.json" "$WT/"; git -C "$WT" add package.json package-lock.json; git -C "$WT" commit -qm "deps"
+  driver_state_set "$t" repair_base "$(git -C "$WT" rev-parse HEAD)"
+  mkdir -p "$WT/node_modules/left-pad"; printf '{"lockfileVersion":3,"packages":{}}\n' > "$WT/node_modules/.package-lock.json"
+  printf '#!/usr/bin/env bash\ntest -e node_modules/@axe-core/playwright || { echo "Error: Cannot find module '"'"'@axe-core/playwright'"'"'"; exit 1; }\ngrep -q good value%s.txt\n' "$t" > "$WT/ax$t.test.sh"
+  git -C "$WT" add . && git -C "$WT" commit -qm "test: the value"; TS=$(git -C "$WT" rev-parse HEAD)
+  printf 'value=good\n' > "$WT/value$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value"; IS=$(git -C "$WT" rev-parse HEAD)
+  answer "$(repaired "$(test_fix "$TS" "$IS" "ax$t.test.sh" "bash ax$t.test.sh")")"
+}
+behind_repair 461
+want "the tree is behind before the repair" "0" "$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$WT" >/dev/null 2>&1; echo $?)"
+out=$(DRIVER_TICKET=461 driver_step_repair 461 2>&1); rc=$?
+want "the repair finishes"                    "0" "$rc"
+want_in "the fix is proved"                   'red .* then green' "$out"
+want_in "it says the install was relinked"    'install: .* relinking it to the shared install' "$out"
+want_not_in "before the proof, not after a failed one" 'taken once more' "$out"
+want "the tree is linked from the shared install" "yes" "$([ -f "$WT/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+W461="$WT"
+
+echo "--- …held by another run, it cannot be relinked: a machine fault, back on the queue, never 'not proved' ---"
+behind_repair 462
+printf '[{"issue":"999","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$(cd "$WT" && pwd -P)" > "$FIX/claims.json"
+out=$(DRIVER_TICKET=462 driver_step_repair 462 2>&1); rc=$?
+want "back on the queue, not refused"         "29" "$rc"
+want_in "named a machine fault"               'machine fault, not the change: the proof failed on a missing module' "$out"
+want_not_in "never 'not proved'"              'not proved red-then-green' "$(driver_state_get 462 park_note)"
+W462="$WT"
+
+echo "--- …and a missing module the install is not behind on is still the change's ---"
+behind_repair 463; printf '[]\n' > "$FIX/claims.json"
+bash "$KIT_ROOT/scripts/link-node-modules.sh" "$REPO" "$WT" >/dev/null 2>&1
+printf '#!/usr/bin/env bash\necho "Error: Cannot find module '"'"'not-declared'"'"'"; exit 1\n' > "$FIX/nd.sh"
+answer "$(repaired "$(test_fix "$TS" "$IS" "ax463.test.sh" "bash $FIX/nd.sh")")"
+out=$(DRIVER_TICKET=463 driver_step_repair 463 2>&1); rc=$?
+want "refused as the change's"                "24" "$rc"
+want_not_in "not called a machine fault"      'machine fault' "$out"
+
+echo "--- plants: each guard out, its case fails ---"
+# The relink before the proof gone (and so the retry's): the #461 case is never proved.
+( driver_relink_if_behind() { DRIVER_BEHIND_WHY="planted"; return 1; }
+  behind_repair 471; out=$(DRIVER_TICKET=471 driver_step_repair 471 2>&1); rc=$?
+  [ "$rc" != 0 ] && echo flipped ) > "$FIX/plant1" 2>&1
+want "planted (no relink): the behind tree is not proved" "flipped" "$(tail -1 "$FIX/plant1")"
+# The proof read straight, without the machine-fault reading: the #462 case is "not proved".
+printf '[{"issue":"999","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$W462" > "$FIX/claims.json"
+( driver_prove_red_green() { _driver_prove_red_green_once "$@"; }
+  behind_repair 472
+  printf '[{"issue":"999","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$(cd "$WT" && pwd -P)" > "$FIX/claims.json"
+  out=$(DRIVER_TICKET=472 driver_step_repair 472 2>&1); rc=$?
+  [ "$rc" = 24 ] && echo flipped ) > "$FIX/plant2" 2>&1
+want "planted (no machine-fault reading): the held tree reads as not proved" "flipped" "$(tail -1 "$FIX/plant2")"
+unset WT_CLAIM_LIST WT_CLAIM_REFS
+
 exit $FAILED

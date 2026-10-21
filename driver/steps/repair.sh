@@ -701,6 +701,9 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     return "$DRIVER_E_REFUSED"
   fi
 
+  # Before any proof or gate reads it: an install behind its lockfile is relinked here,
+  # not found later as a red the repair is blamed for.
+  driver_relink_if_behind "$MAIN_REPO" "$wt" || true
   n=$(jq -r '[.fixes[]?] | length' "$ans" 2>/dev/null)
   i=0
   local own_fixes=0 earlier_fixes=0 kind
@@ -732,6 +735,9 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
       case "$prc" in
         0) driver_say "   repair '$bid' — $why" ;;
         4) driver_say "✋ repair '$bid' — $why"; return "$DRIVER_E_TIMEOUT" ;;
+        8) driver_say "🛑 repair '$bid' — $why. Back on the queue, not parked."
+           driver_state_set "$t" park_note "$why"
+           return "$DRIVER_E_BUSY" ;;
         *) driver_say "✋ repair '$bid' — $why"
            driver_state_set "$t" park_note "a repair fix is not proved red-then-green by its own test: $why"
            return "$DRIVER_E_REFUSED" ;;
