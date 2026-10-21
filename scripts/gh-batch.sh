@@ -123,21 +123,47 @@ gh_allowance_read() {
   printf '%s' "$rows"
 }
 
+# Every host on the account spends the one token's allowance: the other hosts'
+# readings ride on their heartbeats, kept in the coordinator's fleet file.
+gh_allowance_fleet_file() { printf '%s' "${GH_FLEET_FILE:-${COORDINATOR_DIR:-${STATE_DIR:-${HARNESS_STATE_DIR:-/tmp}}/coordinator}/fleet.json}"; }
+
+# gh_allowance_rows — <resource> \t <remaining> \t <limit> \t <reset-epoch> \t <host>, one row a
+# resource: the freshest of this host's reading and every host's heartbeat. Inside one
+# hourly window what is left only falls, so the lowest of the newest window is the newest.
+gh_allowance_rows() {
+  { awk -F'\t' 'NF >= 4 { print $1 "\t" $2 "\t" $3 "\t" $4 "\there" }' "$(gh_allowance_file)" 2>/dev/null
+    jq -r '.hosts[]? | (.host // "?") as $h | (.gh // [])[]?
+           | select((.remaining | type) == "number" and (.limit | type) == "number" and (.reset | type) == "number")
+           | "\(.resource)\t\(.remaining)\t\(.limit)\t\(.reset)\t\($h)"' "$(gh_allowance_fleet_file)" 2>/dev/null
+    true   # no fleet file is no reading, never a failure: callers run under pipefail
+  } | awk -F'\t' -v now="$(gh_batch_now)" '
+    $4 + 0 > now + 0 { n++; K[n] = $1; L[n] = $0; Rm[n] = $2 + 0; Rs[n] = $4 + 0; if (Rs[n] > top[$1]) top[$1] = Rs[n] }
+    END { for (i = 1; i <= n; i++) { k = K[i]
+            if (Rs[i] >= top[k] - 300 && (!(k in best) || Rm[i] < best[k])) { best[k] = Rm[i]; row[k] = L[i] } }
+          for (k in row) print row[k] }'
+}
+
+# _gh_allowance_short <resource> — 0 while that resource is under the low mark on any host.
+_gh_allowance_short() {
+  gh_allowance_rows | awk -F'\t' -v r="$1" -v p="$GH_ALLOWANCE_LOW_PCT" '$1 == r && $3 + 0 > 0 && $2 * 100 < $3 * p { f = 1 } END { exit !f }'
+}
+
 # gh_allowance_low — 0 while a resource is under GH_ALLOWANCE_LOW_PCT of its limit
-# and its reset is still ahead; prints <resource> \t <remaining> \t <limit> \t <reset-epoch>.
+# and its reset is still ahead, by the freshest reading on any host (gh_allowance_rows);
+# prints <resource> \t <remaining> \t <limit> \t <reset-epoch> \t <host it was read on>.
 gh_allowance_low() {
-  local f; f=$(gh_allowance_file); [ -s "$f" ] || return 1
-  awk -F'\t' -v now="$(gh_batch_now)" -v p="$GH_ALLOWANCE_LOW_PCT" '
-    $4 + 0 > now + 0 && $3 + 0 > 0 && $2 * 100 < $3 * p { if (!found || $2 / $3 < best) { best = $2 / $3; row = $0; found = 1 } }
-    END { if (found) { print row; exit 0 } exit 1 }' "$f"
+  gh_allowance_rows | awk -F'\t' -v p="$GH_ALLOWANCE_LOW_PCT" '
+    $3 + 0 > 0 && $2 * 100 < $3 * p { if (!found || $2 / $3 < best) { best = $2 / $3; row = $0; found = 1 } }
+    END { if (found) { print row; exit 0 } exit 1 }'
 }
 
 # gh_limit_why — one sentence naming the rate limit and its reset, when that is why GitHub is refusing.
 gh_limit_why() {
   local row until
   if row=$(gh_allowance_low); then
-    printf "GitHub's hourly API allowance is spent: %s %s of %s left until %s" "$(cut -f1 <<<"$row" | sed 's/graphql/GraphQL/; s/core/REST/')" \
-      "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$(gh_batch_clock "$(cut -f4 <<<"$row")")"
+    printf "GitHub's hourly API allowance is spent: %s %s of %s left until %s%s" "$(cut -f1 <<<"$row" | sed 's/graphql/GraphQL/; s/core/REST/')" \
+      "$(cut -f2 <<<"$row")" "$(cut -f3 <<<"$row")" "$(gh_batch_clock "$(cut -f4 <<<"$row")")" \
+      "$(h=$(cut -f5 <<<"$row"); [ -z "$h" ] || [ "$h" = here ] || printf ', as %s read it' "$h")"
     return 0
   fi
   if until=$(gh_backoff_active); then
@@ -295,9 +321,13 @@ gh_issues_batch() {
   local _o _r n q="" k=0 out="{}" part fail=0 nums="" one b=""
   [ "${GH_BATCH_BODY:-0}" = 1 ] && b=" body"
   _gh_batch_repo || return 1
+  # GraphQL under its low mark on any host while REST still has room: one REST read a
+  # ticket costs the allowance that is left, not the one that is spent.
+  local rest_only=0
+  _gh_allowance_short graphql && ! _gh_allowance_short core && rest_only=1
   _ghb_flush() {
     [ -n "$q" ] || return 0
-    if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
+    if [ "$rest_only" = 0 ] && part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
       part=$(_gh_jq_acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
               | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
                                                    + (if has("body") then {body: (.body // "")} else {} end)
@@ -305,6 +335,20 @@ gh_issues_batch() {
       [ -n "$part" ] && out="$part" || fail=1
     else
       fail=1
+      if [ "$rest_only" = 1 ]; then
+        fail=0
+        for one in $nums; do
+          # REST, not `gh issue view`: that is GraphQL, the allowance that is spent.
+          part=$(gh_call api "repos/$_o/$_r/issues/$one" 2>/dev/null) || { fail=1; continue; }
+          part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
+                  | $acc + {($n): ({number: ($n|tonumber), state: (.state | ascii_upcase), title: (.title // ""),
+                                    updatedAt: (.updated_at // .updatedAt // null), labels: [.labels[]? | if type == "object" then .name else . end]}
+                                   + (if $b != "" then {body: (.body // "")} else {} end)
+                                   + (if (.state_reason // "") != "" then {stateReason: (.state_reason | ascii_upcase)} else {} end))}' \
+                  --arg n "$one" --arg b "$b" <<<"$part" 2>/dev/null)
+          [ -z "$part" ] || out="$part"
+        done
+      else
       for one in $nums; do
         part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt${b:+,body}" 2>/dev/null) || continue
         part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
@@ -312,6 +356,7 @@ gh_issues_batch() {
                                  + (if has("body") then {body: (.body // "")} else {} end))}' --arg n "$one" <<<"$part" 2>/dev/null)
         [ -z "$part" ] || out="$part"
       done
+      fi
     fi
     q=""; k=0; nums=""
   }
