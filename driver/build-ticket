@@ -465,7 +465,7 @@ while [ "$i" -lt "$N" ]; do
   # and it is not about `case` — it is that a pair of apostrophes inside `${:-}` defeats
   # the syntax check. The arms therefore set two plain variables and the park happens
   # once, after the esac, where no default-expansion appears at all.
-  park_reason=""; park_question=""; unread=0; requeue=0; to_repair=0; claim_busy=0; noop=0
+  park_reason=""; park_question=""; unread=0; requeue=0; to_repair=0; claim_busy=0; noop=0; machine=0
   [ -z "$claim_elsewhere" ] || claim_busy=1
   PARK_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
   PARK_LOG="$(driver_state_dir "$TICKET")/log"
@@ -532,6 +532,14 @@ while [ "$i" -lt "$N" ]; do
     "$DRIVER_E_NO_BRIEF")
       park_reason="there is no brief for the $step step"
       park_question="The briefs are a separate deliverable — has briefs/$step.md landed yet?"
+      ;;
+
+    "$DRIVER_E_MACHINE")
+      # THE API FAILED, NOT THE TICKET: a driver park (no owner label, left ready for
+      # the coordinator under the machine-park cap) whose exit says machine.
+      park_reason="machine fault: the $step model call failed at the API twice"
+      park_question="nothing to answer: the model call failed at the API, and the next run tries again"
+      machine=1
       ;;
 
     "$DRIVER_E_UNREAD")
@@ -635,6 +643,7 @@ while [ "$i" -lt "$N" ]; do
     [ -z "$note" ] || park_question="$note"
     [ -z "$step_cause" ] || park_cause="$step_cause"
     driver_park "$TICKET" "$park_reason" "$park_question" "$park_cause"
+    [ "$machine" -eq 0 ] || exit "$DRIVER_E_MACHINE"
     exit "$DRIVER_E_QUESTION"
   fi
 done

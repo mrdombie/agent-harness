@@ -168,6 +168,8 @@ SH
   export FIX REPO STATE BIN GH_LOG CLAUDE_LOG CLAUDE_ENV_LOG
   GH_OPEN_PRS_PAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/fixtures" && pwd)/gh-open-prs-page.sh"; export GH_OPEN_PRS_PAGE
   export GH_PRS_RETRY_SEC=0
+  # Retries wait in real runs; a suite counts them instead.
+  export DRIVER_API_RETRY_SEC=0 DRIVER_STRANDED_RETRY_SEC=0
   export PATH="$BIN:$PATH"
   export HARNESS_REPO_ROOT="$REPO" HARNESS_MAIN_REPO="$REPO" HARNESS_STATE_DIR="$STATE"
   export HARNESS_CFG_PATH="$REPO/.claude/harness.json"

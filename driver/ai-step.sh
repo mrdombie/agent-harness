@@ -275,9 +275,8 @@ SHIM
     before=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); brc=$?
   fi
 
-  _driver_ai_run "$prompt" "$log"
-  driver_record_usage "$t" "$slot" "$log" "$prompt"
-  driver_usage_wall "$t" "$step" "$log" && return "$DRIVER_E_USAGE"
+  local crc=0
+  _driver_ai_call "$prompt" "$log" || return $?
 
   # ONE RE-ASK, WITH THE REASON, BEFORE A PARK. An answer the driver cannot read
   # parked the ticket outright, and the run's work with it (#13249, 2026-10-17); the
@@ -296,16 +295,63 @@ SHIM
     driver_say "↩ $step: the answer could not be read — asking once more with the reason: $(printf '%s' "$reask_why" | cut -c1-200)"
     [ ! -f "$ans" ] || cp "$ans" "$d/steps/$slot.first.json"
     cp "$log" "$first_log"
-    _driver_ai_run "$reask" "$log.reask" "$sid"
-    driver_record_usage "$t" "$slot" "$log.reask" "$reask"
-    driver_usage_wall "$t" "$step" "$log.reask" && return "$DRIVER_E_USAGE"
+    crc=0; _driver_ai_call "$reask" "$log.reask" "$sid" || crc=$?
+    [ "$crc" -eq 0 ] || { cat "$log.reask" >> "$log"; return "$crc"; }
     # Both transcripts, in order: the skills ran in the first, the answer is the last result.
     cat "$log.reask" >> "$log"
     jrc=0; _driver_ai_judge || jrc=$?
-    # A re-ask that was read leaves no note behind for a later refusal to be mistaken for.
-    [ "$jrc" -ne 0 ] || driver_state_set "$t" park_note "$note_was"
+    # A re-ask that was read leaves no note behind for a later refusal to be mistaken for,
+    # and nor does one that asked a question: the stale "not JSON" note outranks the
+    # question at the park, which is how an API error reached the owner as his question.
+    [ "$jrc" -ne 0 ] && [ "$jrc" -ne "$DRIVER_E_QUESTION" ] || driver_state_set "$t" park_note "$note_was"
   fi
   return "$jrc"
+}
+
+# driver_api_error <log> — 0, printing what failed, when the call never answered: the
+# API refused or failed (API Error, overloaded, rate-limited, safeguards, 5xx) or no
+# result came back. Read before the answer, because read as an answer it is "not JSON",
+# and that parked #13642 for the owner over a false safeguards flag. An answer with
+# structured output, and prose from a run that did not error, are answers.
+driver_api_error() {
+  local r
+  [ -s "$1" ] || { printf 'the call left an empty transcript'; return 0; }
+  r=$(driver_log_events "$1" | jq -r -s '
+    ([.[] | select(.type == "result")] | last) as $r
+    | if $r == null then "no result came back"
+      elif ($r.structured_output? // null) != null then empty
+      else (($r.result // "") | tostring) as $x
+        | (($r.api_error_status // 0) | tonumber? // 0) as $st
+        | if ($x | test("^\\s*API Error"; "i")) or $st >= 500 or $st == 429
+             or (($r.is_error // false) == true
+                 and ($x == "" or ($x | test("overloaded|rate.?limit|safeguards|usage policy|\\b5[0-9][0-9]\\b|server error|timed? ?out|connection (error|reset)"; "i"))))
+          then (if $x == "" then "an API error with no message" else ($x | gsub("\\s+"; " ") | .[0:300]) end)
+          else empty end
+      end' 2>/dev/null)
+  [ -n "$r" ] || return 1
+  printf '%s' "$r"
+}
+
+# _driver_ai_call <prompt> <log> [session-id] — one model call, its spend and the usage
+# wall, from driver_ai_step's locals. A call that failed at the API is made ONCE more
+# after DRIVER_API_RETRY_SEC; failing again it is a machine fault, never a question.
+# No step chunks its diff, so a safeguards flag is retried whole.
+_driver_ai_call() {
+  local in="$1" out="$2" sid="${3:-}" err
+  _driver_ai_run "$in" "$out" "$sid"
+  driver_record_usage "$t" "$slot" "$out" "$in"
+  driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+  err=$(driver_api_error "$out") || return 0
+  driver_say "↻ $step: the model call failed at the API — $err. Trying once more in ${DRIVER_API_RETRY_SEC:-30}s."
+  cp "$out" "$out.apierr" 2>/dev/null
+  sleep "${DRIVER_API_RETRY_SEC:-30}"
+  _driver_ai_run "$in" "$out" "$sid"
+  driver_record_usage "$t" "$slot" "$out" "$in"
+  driver_usage_wall "$t" "$step" "$out" && return "$DRIVER_E_USAGE"
+  err=$(driver_api_error "$out") || return 0
+  driver_say "✋ $step: the model call failed at the API twice — $err. A machine fault, not a question."
+  driver_state_set "$t" park_note "machine fault, nothing to answer: the $step model call failed at the API twice ($err). The next run tries again."
+  return "$DRIVER_E_MACHINE"
 }
 
 # _driver_ai_run <prompt> <log> [session-id] — one model call in the ticket's

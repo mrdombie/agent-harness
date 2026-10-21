@@ -104,12 +104,26 @@ _driver_attest_agent() {
     printf '## The diff\n\n```diff\n%s\n```\n' "$diff"
   } > "$prompt"
   driver_lean_args "$wt" "attest"
-  ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:$slot" && \
-    driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$prompt" "$DRIVER_CLAUDE" -p --output-format stream-json --verbose \
-      --name "$slot" --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt" \
-  ) > "$log" 2>"$log.err" || rc=$?
-  driver_record_usage "$t" "$slot" "$log" "$prompt"
-  driver_usage_wall "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
+  # An API error is retried once and then is the machine's, as every step's call is.
+  local try err
+  for try in 1 2; do
+    rc=0
+    ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:$slot" && \
+      driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$prompt" "$DRIVER_CLAUDE" -p --output-format stream-json --verbose \
+        --name "$slot" --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt" \
+    ) > "$log" 2>"$log.err" || rc=$?
+    driver_record_usage "$t" "$slot" "$log" "$prompt"
+    driver_usage_wall "$t" "$slot" "$log" && return "$DRIVER_E_USAGE"
+    [ "$rc" -ne 124 ] || break
+    err=$(driver_api_error "$log") || break
+    if [ "$try" -eq 2 ]; then
+      driver_say "✋ push-requires: the '$name' reviewer's call failed at the API twice — $err. A machine fault, not a question."
+      driver_state_set "$t" park_note "machine fault, nothing to answer: this project's '$name' reviewer call failed at the API twice ($err). The next run tries again."
+      return "$DRIVER_E_MACHINE"
+    fi
+    driver_say "↻ push-requires: the '$name' reviewer's call failed at the API — $err. Trying once more in ${DRIVER_API_RETRY_SEC:-30}s."
+    sleep "${DRIVER_API_RETRY_SEC:-30}"
+  done
   jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$log" > "$out" 2>/dev/null
   return "$rc"
 }
@@ -283,6 +297,7 @@ driver_push_requires() { # <ticket>
       ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:attest-$name" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$review" ) > "$out" 2>&1; rc=$?
     fi
     [ "$rc" -ne "$DRIVER_E_USAGE" ] || return "$DRIVER_E_USAGE"
+    [ "$rc" -ne "$DRIVER_E_MACHINE" ] || return "$DRIVER_E_MACHINE"
     if [ "$rc" -eq 124 ]; then
       driver_say "✋ push-requires: the '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s."
       driver_state_set "$t" park_note "this project's '$name' reviewer did not return within ${DRIVER_CMD_TIMEOUT}s: $review"
