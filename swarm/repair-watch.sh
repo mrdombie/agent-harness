@@ -165,7 +165,10 @@ integration_red() {
   out=$(swarm_gh api "repos/$REPO_SLUG/commits/$INTEGRATION_BRANCH/check-runs?per_page=100" \
     -q '[.check_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .name] | join(";")' \
     2>/dev/null) || { printf 'unknown'; return; }
-  printf '%s' "$out"
+  # A check that warns until the release does not hold the trunk red either.
+  local n keep="" IFS=';'
+  for n in $out; do release_check_nonblocking "$n" || keep="$keep${keep:+;}$n"; done
+  printf '%s' "$keep"
 }
 
 # repair_kind <mergeState> <pending> <fails> — "conflict" or "ci"; 1 when nothing to repair.

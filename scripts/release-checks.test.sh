@@ -77,6 +77,14 @@ jq -s . <(red_pr 12 102 bbbbbbbbb1 Lesson "Code gates") > "$FIX/gh/prs-all.json"
 out=$(pass)
 want "red on Code gates as well: repaired, as before" "1" "$(grep -c '^102' "$SPAWNS")"
 want_in "on the check that blocks alone"    'CI went red on: Code gates$' "$(grep -o 'CI went red on: [^.]*' "$STATE/swarm/briefs/repair-102.md" | head -1)"
+TRUNK="$FIX/gh/api-repos_acme_widgets_commits_develop_check-runs_per_page_100.json"
+printf '{"check_runs":[{"name":"Approved picture","conclusion":"failure"},{"name":"build","conclusion":"success"}]}\n' > "$TRUNK"
+out=$(pass)
+want "a trunk red only on a listed check holds no repair" "1" "$(grep -c '^102' "$SPAWNS")"
+cfg_done
+out=$(pass)
+want "release done: that trunk red holds CI repairs, as before" "0" "$(grep -c '^102' "$SPAWNS")"
+cfg_on; fix_trunk green
 
 echo "--- the driver's repair: what it answers, and what it calls owed ---"
 cfg_on
