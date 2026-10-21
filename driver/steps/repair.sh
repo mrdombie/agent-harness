@@ -194,6 +194,35 @@ _driver_repair_write_lesson() {
   return "$DRIVER_OK"
 }
 
+# _driver_repair_nothing_owed <tree> <trunk> <pr> — 0 when a fresh read of the PR says
+# nothing is owed: its head is this tree's and contains the trunk, GitHub reads it
+# MERGEABLE, no check on that head settled red (pending is not red), and it is ready
+# with auto-merge armed, so it lands with nobody's help. Otherwise prints why not.
+_driver_repair_nothing_owed() {
+  local wt="$1" trunk="$2" pr="$3" v h red
+  v=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,mergeable,isDraft,autoMergeRequest,statusCheckRollup 2>/dev/null)
+  if ! printf '%s' "$v" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    printf 'PR #%s could not be read afresh' "$pr"; return 1
+  fi
+  h=$(printf '%s' "$v" | jq -r '.headRefOid // ""')
+  if [ -z "$h" ] || [ "$h" != "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" ]; then
+    printf 'the head of PR #%s on GitHub (%s) is not this tree head' "$pr" "$(printf '%s' "$h" | cut -c1-10)"; return 1
+  fi
+  if ! git -C "$wt" merge-base --is-ancestor "$trunk" "$h" 2>/dev/null; then
+    printf 'the head %s does not contain %s' "$(printf '%s' "$h" | cut -c1-10)" "$trunk"; return 1
+  fi
+  if [ "$(printf '%s' "$v" | jq -r '.mergeable // ""')" != MERGEABLE ]; then
+    printf 'GitHub reads it as %s, not MERGEABLE' "$(printf '%s' "$v" | jq -r '.mergeable // "unknown"')"; return 1
+  fi
+  red=$(printf '%s' "$v" | jq -r '[.statusCheckRollup[]? | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE"))
+    | (.name // .context // "?")] | join(", ")')
+  if [ -n "$red" ]; then printf 'red on the head: %s' "$red"; return 1; fi
+  if [ "$(printf '%s' "$v" | jq -r '(.isDraft == false) and (.autoMergeRequest != null)')" != true ]; then
+    printf 'it is a draft or auto-merge is not armed, so nothing lands it'; return 1
+  fi
+  return 0
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -462,6 +491,15 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
       driver_state_set "$t" park_note "the repair answered unchanged and changed the tree"
       return "$DRIVER_E_REFUSED"
     fi
+    # NOTHING OWED IS READ, NOT ASKED. #13636 asked the owner to confirm "the head holds
+    # develop, GitHub says MERGEABLE, nothing is red": all of it a read the driver makes.
+    local owed
+    if owed=$(_driver_repair_nothing_owed "$wt" "$trunk" "$pr"); then
+      driver_say "   repair: nothing to repair — $(jq -r '.reason // ""' "$ans") — PR #$pr is at this head with $trunk in, MERGEABLE, nothing red, auto-merge armed"
+      swarm_gh pr comment "$pr" --repo "$REPO_SLUG" --body "Re-checked by the driver at $(git -C "$wt" rev-parse --short HEAD): nothing to repair. The head contains $trunk, GitHub reads it MERGEABLE, no check on it is red and auto-merge is armed, so nothing was changed. The repair said: $(jq -r '.reason // "no reason given"' "$ans")" >/dev/null 2>&1 || true
+      return "$DRIVER_E_NOOP"
+    fi
+    driver_say "   repair: unchanged, and the driver cannot confirm nothing is owed: $owed"
     # A CALLER'S BRIEF ANSWERED "UNCHANGED" IS A QUESTION, not a ship. The model saying
     # the owner's answer is already met is its judgement; shipped on it, a draft PR
     # would be readied and armed without the change anyone asked for.
