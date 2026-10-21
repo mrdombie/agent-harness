@@ -169,6 +169,18 @@ want "with its own red too: counted"           "1" "$(_driver_gate_base_only 805
 printf 'error TS2322\n' > "$FIX/gate-none.out"
 want "a gate naming no test: counted"          "1" "$(_driver_gate_base_only 805 "$FIX/gate-none.out" >/dev/null; echo $?)"
 
+echo "--- self-check, run whole: the gate red only on the base's test passes; red on its own as well, it does not ---"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"
+jq --arg c "cat $FIX/gate-base.out; exit 1" '.gates = {"unit": $c}' "$FIX/cfg.bak" > "$HARNESS_CFG_PATH"
+out=$(driver_step_self_check 805 2>&1); rc=$?
+want "the gate does not count"                 "0" "$rc"
+want_in "and says why"                         'unit red only on src/legacy.test.ts — outside this PR and red on the base too' "$out"
+jq --arg c "cat $FIX/gate-own.out; exit 1" '.gates = {"unit": $c}' "$FIX/cfg.bak" > "$HARNESS_CFG_PATH"
+out=$(driver_step_self_check 805 2>&1); rc=$?
+want_not_in "its own red still counts"         '^0$' "$rc"
+want_in "named as red"                         'self-check: unit failed' "$out"
+cp "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
+
 echo "--- the whole run: a base wait ends with no label, no park, and the ledger names the check ---"
 setup 806; prs 806 unit
 runs "$HEAD_SHA" unit:failure:506;  joblog 506 src/legacy.test.ts
