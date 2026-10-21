@@ -37,8 +37,15 @@ echo "/feed scrolls sideways at 375" > "$T/findings.txt"
 out=$(run "Widths and contrast on changed routes" --failed "$T/findings.txt")
 want_in "--failed: a listed check passes"    '^rc=0' "$out"
 want_in "--failed: the findings file is summarised" 'scrolls sideways' "$(cat "$T/summary")"
-out=$(run "every fix ships a LESSON" -- bash -c 'findings 2')
-want_in "case does not matter; exit 2 is a finding too" '^rc=0' "$out"
+out=$(run "every fix ships a LESSON" -- bash -c 'findings 1')
+want_in "case does not matter"               '^rc=0' "$out"
+out=$(run "Every fix ships a lesson" -- bash -c 'findings 2')
+want_in "exit 2 (could not measure) stays red while report-only" '^rc=2' "$out"
+want_in "and says it could not run"          'could not run \(exit 2\)' "$out"
+want_not_in "with no warning"                '::warning title=' "$out"
+out=$(run "Every fix ships a lesson" -- bash -c 'echo "::error file=a.sh::no lesson"; exit 1')
+want_in "while report-only, ::error annotations stream as warnings" '^::warning file=a\.sh::no lesson' "$out"
+want_not_in "and no ::error is left"         '^::error file' "$out"
 out=$(run "Every fix ships a lesson" -- true)
 want_in "a clean check passes"               '^rc=0' "$out"
 want_not_in "a clean check warns nothing"    '::warning' "$out"
@@ -50,6 +57,8 @@ want_in "the run fails with the check's own code" '^rc=1' "$out"
 want_not_in "no warning stands in for it"    '::warning' "$out"
 out=$(run "Every fix ships a lesson" -- bash -c 'findings 2')
 want_in "exit 2 passes through"              '^rc=2' "$out"
+out=$(run "Every fix ships a lesson" -- bash -c 'echo "::error file=a.sh::no lesson"; exit 1')
+want_in "once done, the output is untouched" '^::error file=a\.sh::no lesson' "$out"
 out=$(run "Widths and contrast on changed routes" --failed)
 want_in "--failed fails"                     '^rc=1' "$out"
 
