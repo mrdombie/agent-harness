@@ -824,11 +824,11 @@ want "the commit holds the formatted plan"             "$(cat "$FIX/wt199/docs/e
 want "a file ship did not write is left as it was"     "$(printf '{"keep":[\n1]}')" "$(cat "$FIX/wt199/other.json")"
 want "and the tree is clean"                           "" "$(git -C "$FIX/wt199" status --porcelain)"
 
-echo "--- with no formatter the plan is canonical 2-space JSON with a trailing newline ---"
+echo "--- with no formatter the plan is in Prettier's JSON layout, with a trailing newline ---"
 mkdir -p "$FIX/plain"; printf '{"shots":[{"a":[1,2]}]}' > "$FIX/plain/p.json"
 rc=0; driver_format_files "$FIX/plain" p.json || rc=$?
 want "it formats"                                      "0" "$rc"
-want "the canonical form"                              "$(printf '{\n  "shots": [\n    {\n      "a": [\n        1,\n        2\n      ]\n    }\n  ]\n}\nX')" \
+want "Prettier's layout: a short array on one line"   "$(printf '{\n  "shots": [\n    {\n      "a": [1, 2]\n    }\n  ]\n}\nX')" \
   "$(cat "$FIX/plain/p.json"; printf X)"
 rc=0; driver_format_files "$FIX/plain" missing.json || rc=$?
 want "a file that is not there is nothing to do"       "1" "$rc"

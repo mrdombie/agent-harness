@@ -90,7 +90,8 @@ EOF
 # so the project's pre-push format check failed every screen ticket after ship.
 # The command is driver_format_cmd's; a tree with a prettier config and prettier
 # installed gets prettier too, unless formatWrite switches it off. With none, a .json
-# file is rewritten in its canonical 2-space form with a trailing newline. Only the
+# file is rewritten in the layout Prettier prints (scripts/prettier-json.py) — plain
+# indent-2 JSON is the very layout prettier rejected. Only the
 # files named are touched. 0 formatted · 1 nothing to do · 2 the formatter failed.
 driver_format_files() {
   local wt="$1" cmd f q="" rc=0; shift
@@ -112,10 +113,7 @@ driver_format_files() {
   fi
   for f in "${files[@]}"; do
     case "$f" in *.json) ;; *) continue ;; esac
-    python3 -I -c 'import json,sys
-p=sys.argv[1]
-d=json.load(open(p))
-open(p,"w").write(json.dumps(d,indent=2)+"\n")' "$wt/$f" 2>/dev/null || rc=2
+    python3 -I "$KIT_ROOT/scripts/prettier-json.py" "$wt/$f" --root "$wt" 2>/dev/null || rc=2
   done
   return "$rc"
 }

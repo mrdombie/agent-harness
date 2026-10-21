@@ -286,7 +286,7 @@ _driver_ship_tier_line() {
 _driver_ship_deferred() {
   local f; f="$(driver_state_dir "$1")/steps/review.deferred.jsonl"
   [ -s "$f" ] || return 0
-  printf '## Minor, deferred\nFound from review round 2 on, where only Critical and Major block. Not blocking:\n'
+  printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
   jq -rs 'unique_by([.file, .line, .summary])[]
     | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
 }
