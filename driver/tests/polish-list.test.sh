@@ -145,4 +145,16 @@ want "the repair's take is reserved for its PR" "- [ ] Header weight (in PR #88)
 want_in "named in the repair comment"      'Header weight \(#900\)' "$(grep -A20 '^pr comment 88' "$GH_LOG")"
 want_not_in "and the PR's own words are not rewritten" '^pr edit 88' "$(cat "$GH_LOG")"
 
+
+echo "--- a list that ships alone lends none to another ticket's brief ---"
+list_body 900 "$(printf '## Items\n'; for i in 1 2 3 4 5 6 7 8; do printf -- '- [ ] full item %s\n' "$i"; done)"
+fix_issue 508 OPEN "status:claimed,screen:inbox"; driver_state_init 508
+fact=$(driver_fact_polish_list 508)
+want_not_in "a full list lends no item"    'full item' "$fact"
+want_in "the brief says why"               '#900 ships alone: 8 free items, full at 8, so it lends this ticket none' "$fact"
+jq '.labels += [{name:"status:claimed"}]' "$FIX/gh/issue-900.json" > "$FIX/gh/c.json" && mv "$FIX/gh/c.json" "$FIX/gh/issue-900.json"
+driver_state_init 900
+fact=$(driver_fact_polish_list 900)
+want_in "the list's own run still gets it" 'full item 8' "$fact"
+
 exit "$FAILED"

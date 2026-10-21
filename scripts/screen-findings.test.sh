@@ -70,5 +70,34 @@ SH
 out=$(bash "$SF" polish 501)
 [ "$out" = $'minor\t77\tMinor · the role column wraps at 390' ] && ok "a resolved polish item is not handed on" || bad "resolved polish: $out"
 
+# (#364) Only the screens the change touches lend items, and a list that ships alone lends none.
+cat > "$BIN/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in "issue view") echo "status:claimed"; exit 0 ;; esac
+exit 0
+SH
+cat > "$FIX/pl" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "for-screen team")   echo 78 ;;
+  "for-screen voices") echo 77 ;;
+  "items 78") printf 'Minor · the role column wraps at 390\n' ;;
+  "items 77") printf 'Minor · the voices grid gap\n' ;;
+  "lends 78") [ -f "$FIX/released" ] && [ "${3:-}" != 78 ] && { echo "#78 ships alone"; exit 1; }; exit 0 ;;
+  "lends 77") exit 0 ;;
+esac
+SH
+printf 'apps/web/team/page.tsx\n' > "$FIX/files"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-screens.json" bash "$SF" polish 501 "$FIX/files")
+[ "$out" = $'minor\t78\tMinor · the role column wraps at 390' ] && ok "a change touching screen A takes A's list only, never B's" || bad "scope: $out"
+touch "$FIX/released"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-screens.json" bash "$SF" polish 501 "$FIX/files"); rc=$?
+[ "$rc" = 0 ] && [ -z "$out" ] && ok "a list released to ship alone lends none" || bad "released list lent: rc=$rc $out"
+out=$(HARNESS_CFG_PATH="$FIX/cfg-screens.json" bash "$SF" polish 78 "$FIX/files")
+[ -n "$out" ] && ok "the list's own run still takes its items" || bad "own list: $out"
+printf '#!/usr/bin/env bash\ncase "$1" in for-screen) echo 78 ;; lends) exit 2 ;; esac\n' > "$FIX/pl"
+rc=0; HARNESS_CFG_PATH="$FIX/cfg-screens.json" bash "$SF" polish 501 "$FIX/files" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && ok "a list that cannot be read is said, not lent" || bad "unreadable lends: rc=$rc"
+
 echo "screen-findings: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

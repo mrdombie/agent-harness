@@ -9,6 +9,9 @@
 #   polish-list.sh count <issue|-> [ticket]      how many are free to take; with a ticket,
 #                                                its own takes count too (its run resumes them)
 #   polish-list.sh for-screen <screen-slug>      the open list's number, or nothing
+#   polish-list.sh lends <issue> [<ticket>]      0 when another change may take its items;
+#                                                1, saying why, when the list ships alone:
+#                                                its own run holds it, or it is full
 #   polish-list.sh take <issue> <ticket> <text…> a builder fixed that item: marked
 #                                                "(taken by #<ticket>)" so other runs skip it,
 #                                                and recorded for the run; never ticked yet;
@@ -35,6 +38,12 @@
 # those items for its PR (reserve), and the coordinator's housekeeping settles them
 # once the PR is merged or closed (sweep). A list closes only when it has no item
 # left, never by a PR: its own PR says "Refs", not "Closes".
+#
+# POLISH IS MINOR BY DEFINITION (rules/standing-rules.md: Minor = polish; Major = a
+# person misled or stuck, fixed in its own ticket). An item graded Critical or Major
+# is never added: it is opened as its own ticket (P0 / P1, the screen's label) and
+# add says so. One Major on a list was handed to a change on another screen, could
+# not be deferred, and parked the run asking the PM.
 #
 # A list is an issue labelled labels.polishList (default polish-list) and
 # <labels.screenPrefix><slug> (default screen:<slug>), opened as P3, ready, type:bug.
@@ -167,12 +176,45 @@ open_list() { # <slug> — opens the screen's list, prints its number
   printf '%s' "$n"
 }
 
+# grade_of <text> — the grade the item names at its start ("[Major] …", "Major · …"), or
+# nothing. The same reading as screen-findings.sh, so what it would hand on as a Major
+# is what is refused here.
+grade_of() {
+  printf '%s\n' "$1" | awk '{ s = tolower($0)
+    if (match(s, /^[[:space:]*]*\[?(critical|major|minor|nit)\]?[^a-z0-9]+/)) { w = substr(s, RSTART, RLENGTH); gsub(/[^a-z]/, "", w); print w } }'
+}
+
+# own_ticket <slug> <grade> <text> — a Critical or Major opened as a ticket of its own,
+# once: an open one for the screen with the same title is reused.
+own_ticket() {
+  local slug="$1" g="$2" text="$3" title pri open n url
+  title="$(screen_name "$slug"): $(printf '%s' "$text" | sed -E 's/^[[:space:]*]*\[?[A-Za-z]+\]?[^A-Za-z0-9]+//' | cut -c1-110)"
+  pri=P1; [ "$g" = critical ] && pri=P0
+  open=$(swarm_gh api "repos/$REPO_SLUG/issues?state=open&labels=$(jq -rn --arg l "$LBL_SCREEN_PREFIX$slug" '$l | @uri')&per_page=100" 2>/dev/null) \
+    || die "the open tickets for $slug could not be read — nothing added"
+  n=$(jq -r --arg t "$title" 'if type == "array" then .[] | select(.pull_request | not) | select(.title == $t) | .number else empty end' <<<"$open" 2>/dev/null | head -1)
+  if [ -z "$n" ]; then
+    swarm_gh label create "$LBL_SCREEN_PREFIX$slug" --repo "$REPO_SLUG" --color EDEDED >/dev/null 2>&1 || true
+    url=$(swarm_gh issue create --repo "$REPO_SLUG" --title "$title" \
+            --label "$pri" --label type:bug --label "$LBL_SCREEN_PREFIX$slug" ${LBL_DRAFTING:+--label "$LBL_DRAFTING"} \
+            --body "$text
+
+Graded $g, so it is not polish: polish is Minor by definition, and a $g is fixed in a ticket of its own. Opened by polish-list.sh add in place of an item on the $(screen_name "$slug") polish list." 2>/dev/null) \
+      || die "could not open a ticket for a $g on $slug — nothing added"
+    n=$(printf '%s' "$url" | grep -oE '[0-9]+$')
+    [ -n "$n" ] || die "opening a ticket for a $g on $slug answered '$url'"
+  fi
+  echo "#$n: graded $g, so not polish — its own ticket ($pri), not an item on the list: $text"
+}
+
 add() { # <slug> <text…>
-  local slug="${1:-}" text n body new
+  local slug="${1:-}" text n body new g
   shift || true
   slug_ok "$slug" || die "usage: polish-list.sh add <screen-slug> <text…>"
   text=$(one_line "$*"); [ -n "$text" ] || die "nothing to add"
   lock
+  g=$(grade_of "$text")
+  case "$g" in critical|major) own_ticket "$slug" "$g" "$text"; return ;; esac
   n=$(for_screen "$slug") || die "the open polish lists could not be read — nothing added"
   [ -n "$n" ] || n=$(open_list "$slug") || exit 2
   body=$(body_of "$n") || die "#$n could not be read — nothing added"
@@ -261,6 +303,27 @@ reserve() { # [--ticket <t>] <issue> <pr> <text…>
   echo "#$n: reserved for PR #$pr: $text"
 }
 
+# lends <issue> [<ticket>] — A LIST THAT SHIPS ALONE LENDS NONE. Its own run holds it
+# (claimed or in review), or it holds coordinator.polishListFull free items, so the
+# coordinator starts it on its own: an item taken by a change on another screen then
+# raced the list's own run for it. The ticket itself is the list: it lends to itself.
+LIST_FULL="${COORDINATOR_POLISH_LIST_FULL:-$(swarm_opt coordinator.polishListFull 8)}"
+case "$LIST_FULL" in ''|0|*[!0-9]*) LIST_FULL=8 ;; esac
+lends() {
+  local n="${1:-}" t="${2:-}" j l free
+  num_ok "$n" || die "usage: polish-list.sh lends <issue> [<ticket>]"
+  [ "$n" = "$t" ] && return 0
+  j=$(swarm_gh issue view "$n" --repo "$REPO_SLUG" --json body,labels 2>/dev/null) || return 2
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$j" || return 2
+  for l in "${LBL_CLAIMED:-}" "${LBL_IN_REVIEW:-}"; do
+    [ -n "$l" ] && jq -e --arg l "$l" '[.labels[]?.name] | index($l)' >/dev/null 2>&1 <<<"$j" \
+      && { echo "#$n ships alone: its own run holds it ($l)"; return 1; }
+  done
+  free=$(jq -r '.body // ""' <<<"$j" | free_items | grep -c .)
+  [ "$free" -ge "$LIST_FULL" ] && { echo "#$n ships alone: $free free items, full at $LIST_FULL"; return 1; }
+  return 0
+}
+
 # take_stalled <ticket> <states json> — why a ticket's takes should go back, or 1.
 # A take must not hide an item while its run is parked, waits on the owner, or has
 # stopped: no live run and the ticket untouched for polishList.takeStaleHours (24).
@@ -334,6 +397,7 @@ case "${1:-}" in
               # With a ticket: what that ticket's own run may still work, its takes included.
               printf '%s\n' "$body" | all_items | awk -F'\t' -v m="t${3:-x}" '$1 == " " && ($2 == "" || $2 == m)' | grep -c . || true ;;
   for-screen) shift; for_screen "${1:-}" || die "the open polish lists could not be read" ;;
-  -h|--help|"") sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  lends)      shift; lends "$@" ;;
+  -h|--help|"") sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)          die "unknown command '$1'" ;;
 esac

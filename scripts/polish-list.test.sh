@@ -45,7 +45,7 @@ case "$1 $2" in
     [ -f "$S/lag" ] && { echo '[]'; exit 0; }
     want=$(printf '%s' "$2" | sed -n 's/.*[?&]labels=\([^&]*\).*/\1/p' | tr ',' '\n' | jq -Rr '@text' | while IFS= read -r l; do printf '%b\n' "${l//%/\\x}"; done | jq -R . | jq -sc .)
     for f in "$S"/issue-*.json; do [ -f "$f" ] && cat "$f"; done \
-      | jq -s --argjson w "$want" '[.[] | select(.state == "OPEN") | select([.labels[].name] as $l | all($w[]; . as $x | $l | index($x))) | {number, body}]' ;;
+      | jq -s --argjson w "$want" '[.[] | select(.state == "OPEN") | select([.labels[].name] as $l | all($w[]; . as $x | $l | index($x))) | {number, title, body}]' ;;
   "issue close") f="$S/issue-$3.json"; jq '.state = "CLOSED"' "$f" > "$f.t" && mv "$f.t" "$f" ;;
   "api graphql")
     # A batched read of pull requests: each iN answered from $S/pr-N (its state).
@@ -222,5 +222,50 @@ jq '.state = "CLOSED"' "$FIX/store/issue-$first.json" > "$FIX/store/c.json" && m
 touch "$FIX/store/lag"
 want "a closed list on record is not used" "" "$(bash "$P" for-screen lag-screen)"
 rm -f "$FIX/store/lag"
+
+
+echo "--- polish is Minor by definition: a Major or Critical is its own ticket, never an item ---"
+rm -f "$FIX/store/lag"
+bash "$P" add grade-screen "the gap is 4px off" >/dev/null
+gl=$(bash "$P" for-screen grade-screen)
+before=$(lines "$gl")
+out=$(bash "$P" add grade-screen "Major · the masthead clips the primary verb off screen" 2>&1); rc=$?
+want "handled, not an error"               "0" "$rc"
+want_not_in "the Major is not on the list" 'masthead clips' "$(body "$gl")"
+want "the list keeps its Minor only"       "$before" "$(lines "$gl")"
+mj=$(printf '%s' "$out" | grep -oE '^#[0-9]+' | tr -d '#')
+want_in "add says where it went"           '^#[0-9]+: graded major, so not polish — its own ticket \(P1\)' "$out"
+want "a ticket of its own, P1, for the screen, a bug" "P1,screen:grade-screen,status:drafting,type:bug" \
+  "$(jq -r '[.labels[].name] | sort | join(",")' "$FIX/store/issue-$mj.json" 2>/dev/null)"
+want "titled for the screen, grade dropped" "Grade Screen: the masthead clips the primary verb off screen" "$(jq -r .title "$FIX/store/issue-$mj.json" 2>/dev/null)"
+n0=$(cat "$FIX/store/next")
+out=$(bash "$P" add grade-screen "Major · the masthead clips the primary verb off screen" 2>&1)
+want "the same Major twice opens one ticket" "$n0" "$(cat "$FIX/store/next")"
+want_in "and names it again"               "^#$mj: graded major" "$out"
+out=$(bash "$P" add grade-screen "[Critical] the save loses the draft" 2>&1)
+cr=$(printf '%s' "$out" | grep -oE '^#[0-9]+' | tr -d '#')
+want_in "a Critical is P0"                 'P0' "$(jq -r '[.labels[].name] | join(",")' "$FIX/store/issue-$cr.json" 2>/dev/null)"
+bash "$P" add grade-screen "Minor · the label wraps at 390" >/dev/null
+want "a Minor still lands on the list"     "$((before + 1))" "$(lines "$gl")"
+
+echo "--- a list that ships alone lends none ---"
+for i in 1 2 3 4 5 6 7; do bash "$P" add full-screen "full item $i" >/dev/null; done
+fl=$(bash "$P" for-screen full-screen)
+rc=0; bash "$P" lends "$fl" 42 >/dev/null || rc=$?
+want "7 free items: it lends"              "0" "$rc"
+bash "$P" add full-screen "full item 8" >/dev/null
+rc=0; out=$(bash "$P" lends "$fl" 42) || rc=$?
+want "8 free items: full, it lends none"   "1" "$rc"
+want_in "and says why"                     'ships alone: 8 free items, full at 8' "$out"
+rc=0; bash "$P" lends "$fl" "$fl" >/dev/null || rc=$?
+want "the list's own run takes its own"    "0" "$rc"
+rc=0; COORDINATOR_POLISH_LIST_FULL=20 bash "$P" lends "$fl" 42 >/dev/null || rc=$?
+want "full follows coordinator.polishListFull" "0" "$rc"
+jq '.labels += [{name:"status:claimed"}]' "$FIX/store/issue-$gl.json" > "$FIX/store/c.json" && mv "$FIX/store/c.json" "$FIX/store/issue-$gl.json"
+rc=0; out=$(bash "$P" lends "$gl" 42) || rc=$?
+want "claimed by its own run: it lends none" "1" "$rc"
+want_in "and says so"                      'its own run holds it' "$out"
+rc=0; SWARM_GH="$BIN/gh-down" bash "$P" lends "$gl" 42 >/dev/null 2>&1 || rc=$?
+want "unreadable is not 'lends'"           "2" "$rc"
 
 exit "$FAILED"
