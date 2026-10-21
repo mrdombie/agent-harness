@@ -85,6 +85,10 @@ SWARM_STATUS_REPO="${SWARM_STATUS_REPO:-$(swarm_opt swarm.statusRepo "")}"
 SWARM_REPORT_URL="${SWARM_REPORT_URL:-$(swarm_opt swarm.reportUrl "")}"
 SWARM_BUDGET_USD="${SWARM_BUDGET_USD:-$(swarm_opt swarm.budgetUsd 150)}"
 SWARM_USAGE_CEILING="${SWARM_USAGE_CEILING:-$(swarm_opt swarm.usageCeiling 0.95)}"
+# At this share of either window a builder holds before its next step: the step it is
+# on finishes, and nothing is killed or parked (swarm_usage_step_hold).
+SWARM_USAGE_STEP_HOLD="${SWARM_USAGE_STEP_HOLD:-$(swarm_opt swarm.usageStepHold 0.95)}"
+awk -v t="$SWARM_USAGE_STEP_HOLD" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || SWARM_USAGE_STEP_HOLD=0.95
 SWARM_GH="${SWARM_GH:-gh}"
 SWARM_CURL="${SWARM_CURL:-curl}"
 SWARM_SPAWN="${SWARM_SPAWN:-$KIT_ROOT/scripts/spawn-claim.sh}"
@@ -277,6 +281,47 @@ swarm_usage_near_hold() {
   printf '%s (%s window at %s%%)' "$(swarm_iso "$(printf '%s' "$pick" | cut -f1)")" \
     "$(printf '%s' "$pick" | cut -f2)" "$(printf '%s' "$pick" | cut -f3)"
 }
+# swarm_usage_freshest <window> [readings json] — "<utilization>\t<reset epoch>" for
+# that window (five_hour, seven_day) while it is open: the highest of the newest
+# builder logs here (prose claim logs, driver step logs), every host's heartbeat in
+# the coordinator's fleet file, and the readings passed ([{u, reset}]). The window
+# is the account's, so any host's reading counts; inside one window utilization only
+# rises, so the highest is the newest. Resets within 10 min are one window.
+swarm_usage_freshest() {
+  local w="${1:-five_hour}" extra="${2:-[]}" now files f best
+  now=$(swarm_now)
+  # shellcheck disable=SC2012  # names we wrote, no newlines
+  files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
+  best=$( { while IFS= read -r f; do
+              [ -n "$f" ] && swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" '$2 == "window" && $4 == w { print $5 "\t" $3 }'
+            done <<< "$files"
+            jq -r --arg w "$w" '.hosts[]? | .usage? | .[$w]? // empty | select((.u | type) == "number" and (.reset | type) == "number")
+                                | "\(.u)\t\(.reset)"' "${COORDINATOR_DIR:-$STATE_DIR/coordinator}/fleet.json" 2>/dev/null
+            printf '%s' "$extra" | jq -r '.[]? | select(type == "object" and (.u | type) == "number" and (.reset | type) == "number")
+                                          | "\(.u)\t\(.reset)"' 2>/dev/null
+          } | awk -F'\t' -v now="$now" '
+            $2 + 0 > now + 0 { n++; U[n] = $1 + 0; R[n] = $2 + 0; if (R[n] > top) top = R[n] }
+            END { for (i = 1; i <= n; i++) if (R[i] >= top - 600 && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] }
+                  if (p) printf "%s\t%d", bu, br }')
+  [ -n "$best" ] || return 1
+  printf '%s' "$best"
+}
+
+# swarm_usage_step_hold — "<reset epoch>\t<window>\t<percent>" while either window is at
+# or over swarm.usageStepHold: a step started now would likely meet the wall, so a
+# running builder waits before its next step. 1 when neither is.
+swarm_usage_step_hold() {
+  local w r u
+  for w in five_hour seven_day; do
+    r=$(swarm_usage_freshest "$w") || continue
+    u=${r%%$'\t'*}
+    awk -v u="$u" -v c="$SWARM_USAGE_STEP_HOLD" 'BEGIN{exit !(u + 0 >= c + 0)}' || continue
+    printf '%s\t%s\t%s' "${r#*$'\t'}" "$w" "$(awk -v u="$u" 'BEGIN{printf "%d", u * 100 + 0.5}')"
+    return 0
+  done
+  return 1
+}
+
 # Did this model call fail at the API rather than answer: an API Error result, an
 # is_error result naming an overload, rate limit, safeguards flag, 5xx, timeout or
 # dropped connection, a 5xx/429 api_error_status, or no result at all. Prints what

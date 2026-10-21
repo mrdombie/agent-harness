@@ -451,8 +451,10 @@ if READING=$(coord_room); then
   CEILING=$((LIVE+STARTS))
 fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
-# The five-hour window is the account's, shared with every host: no more than its share here.
-if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST"); then
+# The windows are the account's, shared with every host: no more than its share here.
+# The machine's own ceiling is this host's capacity, the weight the owner splits by.
+MACHINE_CEILING=$CEILING
+if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST" "$MACHINE_CEILING"); then
   [ "$CEILING" -gt "${PACE%%$'\t'*}" ] && CEILING=${PACE%%$'\t'*}
   PACE=${PACE#*$'\t'}
 fi
@@ -474,6 +476,8 @@ REDS_WAITING=0; REDS_WAITING_POLISH=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
+# Either window at swarm.usageStepHold: the running builders hold before their next step.
+STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
 # A hold for process fixes holds everything else: only those are candidates.
 PROCESS_ONLY=""
 if held=$(swarm_held) && swarm_hold_lets_process; then
@@ -616,6 +620,10 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
   event "usage-hold:$until" usage-limit false "" "" "the plan's usage limit holds until $until" || true
+elif [ -n "$STEP_HOLD" ]; then
+  IFS=$'\t' read -r sh_until sh_win sh_pct <<<"$STEP_HOLD"
+  say "spawn: usage hold — the $sh_win window is at ${sh_pct}%, at or over ${SWARM_USAGE_STEP_HOLD}: nothing new starts, and the $LIVE running finish their step and wait before the next until $(swarm_iso "$sh_until"); none is stopped"
+  held_view
 elif busy=$(swarm_machine_busy); then
   say "spawn: machine busy ($busy) — holding"
   held_view
@@ -715,7 +723,7 @@ fi
 # The owner writes what is startable, in run order, and who is building what, once
 # the starts are made: its own starts show as building here before their claims land.
 # With it, the floor and every machine's heartbeat; a reader posts its own.
-HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE")
+HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE" "${MACHINE_CEILING:-}")
 SHEET_FLOOR=""; FLEET="[]"
 case "$SHEET_ROLE" in
   owner)  SHEET_FLOOR=$(coord_sheet_floor)
@@ -734,7 +742,9 @@ if [ "$SHEET_ROLE" = owner ]; then
     say "sheet: the claim list could not be read — not written"
   else
     if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ] \
-       && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)' <<<"$entries"); then
+       && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" --arg pace "$(coord_pace_fresh)" \
+                      '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
+                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, sevenDay, maxBuildsFleet, shares})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
     else
@@ -753,13 +763,16 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    --arg healAllAt "$COORD_HEAL_ALL_AT" --argjson healAll "$([ -n "$HEAL_ALL" ] && echo true || echo false)" \
    --arg diskFree "$DISK_FREE" --arg diskStop "${DISK_STOP_GB:-}" --arg diskResume "${DISK_RESUME_GB:-}" \
    --argjson diskHeld "$([ -n "$DISK_HOLD" ] && echo true || echo false)" \
+   --arg pace "$(coord_pace_fresh)" --arg stepHold "${STEP_HOLD:-}" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
      healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
      healAll:{at:(if $healAllAt == "" then null else ($healAllAt|tonumber) end), inForce:$healAll}, started:(if $took == "" then null else $took end),
      disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
-           resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld}}' \
+           resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld},
+     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, sevenDay, maxBuildsFleet, share, shares, source}) end),
+     usageHold:(if $stepHold == "" then null else ($stepHold | split("\t") | {until: (.[0] | tonumber), window: .[1], pct: (.[2] | tonumber)}) end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
 # The compare report reads what this tick saw and chose; next= stays last.
 printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \

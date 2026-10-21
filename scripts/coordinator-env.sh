@@ -52,7 +52,10 @@
 #                                                           tick may start work from
 #   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
 #   coordinator.pace.on      COORDINATOR_PACE           1    0: no usage pacing, the machine alone decides
-#   coordinator.pace.target  COORDINATOR_PACE_TARGET   0.95  five-hour window share the pacer aims to end at
+#   coordinator.pace.target  COORDINATOR_PACE_TARGET   0.85  five-hour window share the pacer aims to end at
+#   coordinator.pace.headroom COORDINATOR_PACE_HEADROOM 0.05  allowance over the straight line: a start only
+#                                                           while use <= elapsed share x target + headroom
+#   coordinator.pace.weekTarget / .weekHeadroom  0.9 / 0.05  the same line over the seven-day window
 #   coordinator.pace.burnPerBuilderHour COORDINATOR_PACE_BURN 0.025  window share one builder burns an
 #                                                           hour, when the samples cannot say
 #   coordinator.judges       COORDINATOR_JUDGES         1    judges at once
@@ -154,37 +157,63 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 
 # ---- the usage pacer ----------------------------------------------------------
 # Owner call 2026-10-20: "work out the maths and automatically adjust both
-# machines" — for the plan's five-hour window only. Every host on the account
-# burns the same window, so each tick works out how many builders, across every
-# host, the window affords until it resets, and this host takes what the other
-# hosts' live claims leave. It only limits starts: a running builder is never stopped.
+# machines". Every host on the account burns the same two windows (five hours,
+# seven days), so each tick works out how many builders, across every host, the
+# budget affords, and this host takes its share. Owner call 2026-10-21: "13 builds
+# may eat all of our 5hr session before something gets complete" — so the budget is
+# a straight line across the window, ending at the target at the reset, not a wall:
+#   - a start only while utilization <= elapsed share of the window x target + headroom,
+#     for the five-hour and the seven-day window both;
+#   - and no more builders than the measured burn affords to the target by the reset;
+#   - the owner splits that fleet cap across the hosts by their machine capacity and
+#     writes it to the sheet; each reader takes its share.
+# It only limits starts: a running builder is never stopped. At swarm.usageStepHold
+# the builders hold before their next step instead (swarm_usage_step_hold).
 COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.pace.on 1)}"
 case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
-COORD_PACE_TARGET="${COORDINATOR_PACE_TARGET:-$(swarm_opt coordinator.pace.target 0.95)}"
-awk -v t="$COORD_PACE_TARGET" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_TARGET=0.95
+_coord_share() { awk -v t="$1" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 >= 0 && t+0 <= 1)}'; }
+COORD_PACE_TARGET="${COORDINATOR_PACE_TARGET:-$(swarm_opt coordinator.pace.target 0.85)}"
+_coord_share "$COORD_PACE_TARGET" && awk -v t="$COORD_PACE_TARGET" 'BEGIN{exit !(t+0 > 0)}' || COORD_PACE_TARGET=0.85
+COORD_PACE_HEADROOM="${COORDINATOR_PACE_HEADROOM:-$(swarm_opt coordinator.pace.headroom 0.05)}"
+_coord_share "$COORD_PACE_HEADROOM" || COORD_PACE_HEADROOM=0.05
+COORD_PACE_WEEK_TARGET="${COORDINATOR_PACE_WEEK_TARGET:-$(swarm_opt coordinator.pace.weekTarget 0.9)}"
+_coord_share "$COORD_PACE_WEEK_TARGET" && awk -v t="$COORD_PACE_WEEK_TARGET" 'BEGIN{exit !(t+0 > 0)}' || COORD_PACE_WEEK_TARGET=0.9
+COORD_PACE_WEEK_HEADROOM="${COORDINATOR_PACE_WEEK_HEADROOM:-$(swarm_opt coordinator.pace.weekHeadroom 0.05)}"
+_coord_share "$COORD_PACE_WEEK_HEADROOM" || COORD_PACE_WEEK_HEADROOM=0.05
 COORD_PACE_BURN="${COORDINATOR_PACE_BURN:-$(swarm_opt coordinator.pace.burnPerBuilderHour 0.025)}"
 awk -v b="$COORD_PACE_BURN" 'BEGIN{exit !(b ~ /^[0-9]*\.?[0-9]+$/ && b+0 > 0)}' || COORD_PACE_BURN=0.025
 # Samples: <epoch> \t <utilization> \t <window reset epoch> \t <builders on every host>
 COORD_PACE_SAMPLES="$COORD_DIR/pace.tsv"
+# This tick's budget, for the heartbeat, the sheet and the live view.
+COORD_PACE_STATE="$COORD_DIR/pace.json"
 COORD_PACE_LOOKBACK_MIN=90
 # A burn measured over less than this, or fewer builder-hours, is noise at 1% steps.
 COORD_PACE_MIN_SPAN_MIN=30
 COORD_PACE_MIN_BUILDER_HOURS=0.25
+COORD_PACE_FIVE_SEC=18000
+COORD_PACE_WEEK_SEC=604800
+# A host whose heartbeat is older than this takes no share of the fleet cap.
+COORD_PACE_HOST_FRESH_MIN=30
 
-# coord_pace_reading — "<utilization>\t<reset epoch>" for the five-hour window now
-# open: the newest reading in the newest builder logs (a prose run's claim log, a
-# driver run's step logs), else the last sample taken while it is still open.
+# coord_pace_others — every reading the other hosts published, as [{host, usage, capacity, builds, tick}]:
+# the sheet this tick read (a reader), else the fleet the last tick wrote (the owner).
+coord_pace_others() {
+  local f="${SHEET_FLEET:-}"
+  [ -n "$f" ] && [ "$f" != "[]" ] || f=$(jq -c '.hosts // []' "$COORD_DIR/fleet.json" 2>/dev/null)
+  [ -n "$f" ] || f="[]"
+  printf '%s' "$f"
+}
+
+# coord_pace_reading [window] — "<utilization>\t<reset epoch>" for that window now
+# open (five_hour by default): the freshest of this host's builder logs and every
+# host's heartbeat (swarm_usage_freshest), else the last sample taken while it is open.
 coord_pace_reading() {
-  local now files f best
+  local w="${1:-five_hour}" now best extra
   now=$(swarm_now)
-  # shellcheck disable=SC2012  # names we wrote, no newlines
-  files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
-  best=$(while IFS= read -r f; do
-           [ -n "$f" ] && swarm_usage_cli_events "$f" | awk -F'\t' '$2 == "window" && $4 == "five_hour" { print $5 "\t" $3 }'
-         done <<< "$files" \
-         | awk -F'\t' -v now="$now" '$2 + 0 > now + 0 && ($2 + 0 > r + 0 || ($2 == r && $1 + 0 > u + 0)) { r = $2; u = $1 }
-                                     END { if (r) printf "%s\t%s", u, r }')
-  if [ -z "$best" ] && [ -s "$COORD_PACE_SAMPLES" ]; then
+  extra=$(coord_pace_others | jq -c --arg w "$w" --arg sp "${SHEET_PACE:-}" \
+            '[.[]? | .usage? | .[$w]? // empty] + [($sp | fromjson? // {}) | .usage? | .[$w]? // empty]' 2>/dev/null) || extra="[]"
+  best=$(swarm_usage_freshest "$w" "${extra:-[]}") || best=""
+  if [ -z "$best" ] && [ "$w" = five_hour ] && [ -s "$COORD_PACE_SAMPLES" ]; then
     best=$(awk -F'\t' -v now="$now" '$3 + 0 > now + 0 { u = $2; r = $3 } END { if (r) printf "%s\t%s", u, r }' "$COORD_PACE_SAMPLES")
   fi
   [ -n "$best" ] || return 1
@@ -209,30 +238,110 @@ coord_pace_burn() {
   if [ -n "$b" ]; then printf '%s\tmeasured' "$b"; else printf '%s\tdefault' "$COORD_PACE_BURN"; fi
 }
 
-# coord_pace <builders here> <claim rows> <this host> — "<this host's share>\t<line>",
-# 1 with the reason when there is nothing to pace on. Claim rows are
-# <ticket> \t <host> \t <step>; a row naming another host is a builder there.
-# Records this tick's sample, so the next tick's burn has it.
+# coord_pace_split <fleet cap> <hosts json [{host, capacity}]> — {host: share}: the cap
+# shared by machine capacity, largest remainder first, never more than a host's
+# capacity while another has room. No capacity anywhere: shared evenly.
+coord_pace_split() {
+  jq -c --argjson cap "${1:-0}" '
+    [.[] | select(type == "object" and (.host // "") != "") | {host, c: ((.capacity // 0) | tonumber? // 0 | if . < 0 then 0 else . end)}]
+    | unique_by(.host | ascii_downcase) as $h
+    | ($h | map(.c) | add // 0) as $sum
+    | ($h | length) as $n
+    | if $n == 0 then {}
+      else ($h | map(. + {q: (if $sum > 0 then $cap * .c / $sum else $cap / $n end)})
+                | map(. + {f: (.q | floor)})) as $q
+           | ($cap - ($q | map(.f) | add)) as $left
+           | ($q | sort_by(-(.q - .f), .host) | to_entries
+              | map(.value + {s: (.value.f + (if .key < $left then 1 else 0 end))})
+              | map({(.host): .s}) | add)
+      end' <<<"${2:-[]}" 2>/dev/null || printf '{}'
+}
+
+# coord_pace_fresh — this tick's pace.json, or nothing when no tick wrote one in the last 15 minutes.
+coord_pace_fresh() {
+  jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900)' "$COORD_PACE_STATE" 2>/dev/null
+}
+
+# coord_pace <builders here> <claim rows> <this host> [machine ceiling here] —
+# "<this host's share>\t<line>", 1 with the reason when there is nothing to pace on.
+# Claim rows are <ticket> \t <host> \t <step>; a row naming another host is a builder
+# there. Records this tick's sample, so the next tick's burn has it, and the budget
+# in pace.json. The share: the sheet's for a reader, the owner's own split for the
+# owner, the whole cap with no sheet — less what the other hosts already run.
 coord_pace() {
-  local here="${1:-0}" rows="${2:-}" host="${3:-}" reading u r other total burn bsrc now
+  local here="${1:-0}" rows="${2:-}" host="${3:-}" mine="${4:-}" reading u r w7="" u7="" r7="" other total burn bsrc now role shares="{}" src=local out
   [ "$COORD_PACE" = 1 ] || { printf 'pace: off'; return 1; }
-  reading=$(coord_pace_reading) || { printf 'pace: no five-hour reading in the newest logs — the machine alone decides'; return 1; }
+  reading=$(coord_pace_reading five_hour) || { printf 'pace: no five-hour reading in the newest logs — the machine alone decides'; return 1; }
   u=${reading%%$'\t'*}; r=${reading#*$'\t'}; now=$(swarm_now)
+  if w7=$(coord_pace_reading seven_day); then u7=${w7%%$'\t'*}; r7=${w7#*$'\t'}; fi
+  case "$mine" in ''|*[!0-9]*) mine=$here ;; esac
   other=$(printf '%s\n' "$rows" | awk -F'\t' -v h="$host" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { n++ } END { print n + 0 }')
   total=$(( here + other ))
   mkdir -p "$(dirname "$COORD_PACE_SAMPLES")" 2>/dev/null
   printf '%s\t%s\t%s\t%s\n' "$now" "$u" "$r" "$total" >> "$COORD_PACE_SAMPLES"
   tail -300 "$COORD_PACE_SAMPLES" > "$COORD_PACE_SAMPLES.$$" 2>/dev/null && mv -f "$COORD_PACE_SAMPLES.$$" "$COORD_PACE_SAMPLES"
   burn=$(coord_pace_burn "$r"); bsrc=${burn#*$'\t'}; burn=${burn%%$'\t'*}
-  awk -v u="$u" -v r="$r" -v now="$now" -v t="$COORD_PACE_TARGET" -v b="$burn" -v o="$other" \
-      -v at="$(swarm_iso "$r" | cut -c12-16)" -v src="$bsrc" '
+  # budget: "<fleet cap>\t<5h line>\t<5h elapsed>\t<ahead 0|1>\t<7d line>\t<7d ahead 0|1>\t<projection>"
+  local budget cap
+  budget=$(awk -v u="$u" -v r="$r" -v now="$now" -v t="$COORD_PACE_TARGET" -v h="$COORD_PACE_HEADROOM" -v b="$burn" \
+      -v L="$COORD_PACE_FIVE_SEC" -v u7="$u7" -v r7="$r7" -v t7="$COORD_PACE_WEEK_TARGET" -v h7="$COORD_PACE_WEEK_HEADROOM" \
+      -v L7="$COORD_PACE_WEEK_SEC" -v total="$total" '
+    function frac(reset, len,   f) { f = 1 - (reset - now) / len; return f < 0 ? 0 : (f > 1 ? 1 : f) }
     BEGIN {
       T = (r - now) / 3600; if (T < 0.1) T = 0.1
-      a = int((t - u) / (b * T) + 1e-9); if (a < 0) a = 0
-      s = a - o; if (s < 0) s = 0
+      p = int((t - u) / (b * T) + 1e-9); if (p < 0) p = 0
+      f = frac(r, L); line = f * t + h; ahead = (u + 0 > line + 1e-9)
+      line7 = ""; ahead7 = 0
+      if (r7 != "") { f7 = frac(r7, L7); line7 = f7 * t7 + h7; ahead7 = (u7 + 0 > line7 + 1e-9) }
+      a = p; if ((ahead || ahead7) && a > total) a = total
+      printf "%d\t%.4f\t%.4f\t%d\t%s\t%d\t%d", a, line, f, ahead, (line7 == "" ? "" : sprintf("%.4f", line7)), ahead7, p
+    }')
+  cap=${budget%%$'\t'*}
+  role=off; ! declare -F coord_sheet_role >/dev/null || role=$(coord_sheet_role)
+  local others; others=$(coord_pace_others)
+  case "$role" in
+    owner)
+      # This host's machine capacity and every fresh heartbeat's: the cap shared by them.
+      shares=$(jq -cn --arg me "$host" --argjson mine "$mine" --argjson o "$others" --argjson now "$now" \
+                 --argjson fresh "$(( COORD_PACE_HOST_FRESH_MIN * 60 ))" '
+        [{host: $me, capacity: $mine}]
+        + [$o[]? | select(type == "object" and (.host // "") != "" and (.host | ascii_downcase) != ($me | ascii_downcase))
+                 | select(($now - (.tick // 0)) < $fresh)
+                 | {host, capacity: (.capacity // .builds // 1)}]' 2>/dev/null) || shares="[]"
+      shares=$(coord_pace_split "$cap" "$shares"); src=split ;;
+    reader)
+      shares=$(jq -cn --arg sp "${SHEET_PACE:-}" '($sp | fromjson? // {}) | .shares // {} | if type == "object" then . else {} end' 2>/dev/null) || shares="{}"
+      [ -n "$shares" ] || shares="{}"
+      src=sheet ;;
+  esac
+  local s
+  s=$(jq -r --arg me "$host" 'to_entries | map(select(.key | ascii_downcase == ($me | ascii_downcase))) | .[0].value // empty' <<<"$shares" 2>/dev/null)
+  case "$s" in ''|*[!0-9]*) s=$cap; [ "$src" = local ] || src="local (the sheet names no share for $host)" ;; esac
+  # Never past the fleet cap, whatever the share: the other hosts' builders count first.
+  [ "$s" -gt $(( cap - other )) ] && s=$(( cap - other ))
+  [ "$s" -ge 0 ] || s=0
+  out=$(awk -v u="$u" -v r="$r" -v at="$(swarm_iso "$r" | cut -c12-16)" -v b="$burn" -v src="$bsrc" -v bud="$budget" \
+            -v o="$other" -v s="$s" -v u7="$u7" -v shares="$(jq -r 'to_entries | map("\(.key) \(.value)") | join(", ")' <<<"$shares" 2>/dev/null)" '
+    BEGIN {
+      split(bud, x, "\t"); a = x[1]; line = x[2]; f = x[3]; ahead = x[4]; line7 = x[5]; ahead7 = x[6]
       printf "%d\tpace: 5h window %d%%, resets %sZ, %.1f%%/builder-hour%s → %d across all hosts, %d on other hosts → %d here",
         s, u * 100 + 0.5, at, b * 100, (src == "default" ? " (default)" : ""), a, o, s
-    }'
+      printf " · straight line: 5h %d%% at %d%% of the window%s", line * 100 + 0.5, f * 100 + 0.5, (ahead ? " (ahead of it: no new starts)" : "")
+      if (line7 != "") printf " · 7d %d%% against %d%%%s", u7 * 100 + 0.5, line7 * 100 + 0.5, (ahead7 ? " (ahead of it: no new starts)" : "")
+      if (shares != "") printf " · fleet cap %d: %s", a, shares
+    }')
+  jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --arg u7 "$u7" --arg r7 "$r7" --arg bud "$budget" \
+     --argjson burn "$burn" --arg bsrc "$bsrc" --argjson running "$total" --argjson other "$other" --argjson shares "$shares" \
+     --argjson share "$s" --arg src "$src" --argjson capacity "$mine" '
+    ($bud | split("\t")) as $b
+    | {at: $at, host: $host, capacity: $capacity,
+       usage: ({five_hour: {u: $u, reset: $r}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber)}} end)),
+       fiveHour: {u: $u, reset: $r, line: ($b[1] | tonumber), elapsed: ($b[2] | tonumber), ahead: ($b[3] == "1")},
+       sevenDay: (if $u7 == "" then null else {u: ($u7 | tonumber), reset: ($r7 | tonumber), line: ($b[4] | tonumber), ahead: ($b[5] == "1")} end),
+       burn: $burn, burnSource: $bsrc, projection: ($b[6] | tonumber), maxBuildsFleet: ($b[0] | tonumber),
+       running: $running, otherHosts: $other, shares: $shares, share: $share, source: $src}' \
+     > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
+  printf '%s' "$out"
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's

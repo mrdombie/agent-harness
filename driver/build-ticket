@@ -380,6 +380,41 @@ if [ "$PLAN_AT" -ge 0 ] && driver_state_is_done "$TICKET" plan; then
 fi
 plan_hash=""
 
+# driver_usage_step_wait <ticket> <step> — before a step starts, while either usage
+# window is at swarm.usageStepHold (swarm_usage_step_hold), the run waits here: the
+# step before it finished, nothing is killed, nothing parks, and the claim names the
+# hold so every host's live view shows it. 0 once the window clears; 1 when the wait
+# passes DRIVER_USAGE_WAIT_MAX_SEC, and the caller requeues: the record resumes here.
+driver_usage_step_wait() {
+  local t="$1" step="$2" held until win pct waited=0 said=0
+  local every="${DRIVER_USAGE_WAIT_SEC:-300}" max="${DRIVER_USAGE_WAIT_MAX_SEC:-21600}"
+  case "$every" in ''|0|*[!0-9]*) every=300 ;; esac
+  case "$max" in ''|*[!0-9]*) max=21600 ;; esac
+  while held=$(swarm_usage_step_hold); do
+    IFS=$'\t' read -r until win pct <<<"$held"
+    if [ "$waited" -ge "$max" ]; then
+      USAGE_WAIT_WHY="the $win usage window stayed at ${pct}% for $(( waited / 60 )) min before $step"
+      return 1
+    fi
+    if [ "$said" -eq 0 ]; then
+      driver_say "⏸ $step: usage hold — the $win window is at ${pct}%, so this step waits for it to reset ($(swarm_iso "$until")). The step before it finished, and nothing is stopped."
+      driver_state_set "$t" usage_hold "$(swarm_iso "$until") $win ${pct}%"
+      [ -z "$SHARE_STEP" ] || bash "$CL" update "$t" "step=usage-hold" >/dev/null 2>&1 || true
+      said=1
+    else
+      driver_say "   $step: still on the usage hold, the $win window at ${pct}% — $(( waited / 60 )) min so far"
+    fi
+    ${DRIVER_USAGE_WAIT_CMD:-sleep} "$every"
+    waited=$(( waited + every ))
+  done
+  if [ "$said" -eq 1 ]; then
+    driver_say "▶ $step: the usage hold cleared after $(( waited / 60 )) min — carrying on"
+    driver_state_set "$t" usage_hold ""
+    [ -z "$SHARE_STEP" ] || bash "$CL" update "$t" "step=$step" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 skipped=0
 ran=0        # steps that did real work — start re-checking itself is not work
 # With a shared sheet, the claim carries the step, so every host's coordinator can say
@@ -395,6 +430,16 @@ while [ "$i" -lt "$N" ]; do
 
   if driver_state_is_done "$TICKET" "$step" && ! always "$step"; then
     skipped=$((skipped+1)); i=$((i+1)); continue
+  fi
+
+  # NEAR THE WALL, THE NEXT STEP WAITS. On 2026-10-19 five builds ran into the plan's
+  # limit at once and every session died mid-step. Held here, between steps, nothing
+  # running is lost; a wait past its limit goes back on the queue, never a park.
+  USAGE_WAIT_WHY=""
+  if ! driver_usage_step_wait "$TICKET" "$step"; then
+    case "$step" in start|reenter) _keep=keep ;; *) _keep="" ;; esac
+    driver_requeue "$TICKET" "$USAGE_WAIT_WHY" "$_keep"
+    exit "$DRIVER_E_REQUEUE"
   fi
 
   # Its own command, and the exit code is the verdict. Never batched with

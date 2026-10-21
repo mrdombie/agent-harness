@@ -12,6 +12,9 @@ T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
 NOWE=$(date +%s)
+# The projection alone, as #302 built it: the straight line has its own suite
+# (coordinator-fleet-pace.test.sh), so here it sits out of reach.
+export COORDINATOR_PACE_TARGET=0.95 COORDINATOR_PACE_HEADROOM=1 COORDINATOR_PACE_WEEK_HEADROOM=1
 
 # <utilization> <reset epoch> [window] — one stream-json limit event, as the CLI writes it.
 win() {
@@ -28,9 +31,11 @@ pace() {
 
 echo "--- the window's room, at the default burn ---"
 clean; win 0.81 $((NOWE + 7200)) > "$STATE/logs/claim-1-a.log"
+out=$(pace 1 "")
 want "81% with 2h left at 2.5%/builder-hour affords 2" \
-  "2	pace: 5h window 81%, resets $(swarm_iso $((NOWE + 7200)) | cut -c12-16)Z, 2.5%/builder-hour (default) → 2 across all hosts, 0 on other hosts → 2 here rc=0" \
-  "$(pace 1 "")"
+  "2	pace: 5h window 81%, resets $(swarm_iso $((NOWE + 7200)) | cut -c12-16)Z, 2.5%/builder-hour (default) → 2 across all hosts, 0 on other hosts → 2 here" \
+  "${out%% · *}"
+want "and it is read as a share" "rc=0" "${out##* }"
 want "and the tick's reading is kept as a sample" "$NOWE	0.81	$((NOWE + 7200))	1" "$(cat "$C/pace.tsv")"
 
 echo "--- other hosts' live claims come off this host's share ---"
