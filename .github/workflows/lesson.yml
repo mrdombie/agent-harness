@@ -26,6 +26,9 @@
 #     so a pull request cannot loosen the check that judges it (bootstrap: when the
 #     base has no script yet, the head's runs, and says so);
 #   - guard-patterns can only narrow the guard set, never widen it.
+# Until the consumer's release, a check listed in release.nonBlockingChecks ends green
+# with a warning instead of red (scripts/release-report-only.sh); release.done true
+# restores the failure.
 # Relabelling a linked issue does not re-run this; a push, a body edit or a label does.
 name: Lesson
 on:
@@ -103,6 +106,17 @@ jobs:
             echo "lesson: the base has no check-lesson.sh yet — bootstrapping with this pull request's copy"
             judge=repo/scripts/check-lesson.sh
           fi
+          # Until the consumer's release, a listed check warns rather than failing the
+          # run (release.nonBlockingChecks, read at the base like the rest of the config).
+          cfg="$RUNNER_TEMP/base-harness.json"
+          git -C repo show "HEAD^1:.claude/harness.json" > "$cfg" 2>/dev/null || rm -f "$cfg"
+          report=kit/scripts/release-report-only.sh
+          [ -f "$report" ] || report=""
           # Body, labels, title and linked issues are read fresh from GitHub, not from
           # the event: a re-run carries the event as it was when the job first fired.
-          bash "$judge" --repo repo --base HEAD^1 --head HEAD --pr "$PR" --slug "$REPO"
+          if [ -n "$report" ]; then
+            bash "$report" "$cfg" "Every fix ships a lesson" -- \
+              bash "$judge" --repo repo --base HEAD^1 --head HEAD --pr "$PR" --slug "$REPO"
+          else
+            bash "$judge" --repo repo --base HEAD^1 --head HEAD --pr "$PR" --slug "$REPO"
+          fi
