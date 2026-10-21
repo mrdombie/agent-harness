@@ -147,7 +147,7 @@ FIX_TYPES=$(cfg_list lesson.fixIssueTypes "Bug") || exit 2
 FIX_CLASSES=$(cfg_list lesson.fixClasses "repair approved-merge") || exit 2
 CLASS_PREFIX=$(printf '%s' "$CFG_JSON" | jq -r '.lesson.classLabelPrefix // "class:"')
 TEST_PATTERNS=$(cfg_list tests.patterns "*.test.ts *.test.tsx *.spec.ts") || exit 2
-GUARD_DEFAULT="**/*.test.* **/*.spec.* **/*_test.* **/test_*.py **/__tests__/**
+GUARD_DEFAULT="**/*.test.* **/*.spec.* **/*_test.* **/test_*.py **/__tests__/** **/test.sh **/test.*.sh **/tests/**
 **/.eslintrc* **/eslint.config.* **/eslint-rules/** **/lint-rules/**
 **/*.semgrep.yml **/*.semgrep.yaml **/.semgrep/** **/check-*.* **/gates/**"
 EXCLUDE_DEFAULT="*.md *.mdx *.markdown *.txt *.rst *.adoc docs/** **/docs/**"
