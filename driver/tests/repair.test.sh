@@ -777,6 +777,73 @@ out=$(DRIVER_TICKET=463 driver_step_repair 463 2>&1); rc=$?
 want "refused as the change's"                "24" "$rc"
 want_not_in "not called a machine fault"      'machine fault' "$out"
 
+echo "--- a file the trunk deleted is taken by the driver; the model never runs git rm (#13139, #12975) ---"
+TRIGGERS='.deploy-trigger apps/api/.deploy-trigger apps/web/.deploy-trigger'
+triggers_in() { # <ticket> — the sentinel files on the trunk, before the branch is cut
+  mkdir -p "$REPO/apps/api" "$REPO/apps/web"
+  for f in $TRIGGERS; do printf 'bump %s\n' "$1" > "$REPO/$f"; done
+  git -C "$REPO" add -f $TRIGGERS && git -C "$REPO" commit -qm "trunk: sentinels $1" && git -C "$REPO" push -q origin develop
+}
+triggers_retired() { git -C "$REPO" rm -q $TRIGGERS && git -C "$REPO" commit -qm "retire the deploy sentinel files" && git -C "$REPO" push -q origin develop; }
+gone_at_head() { local f o=""; for f in $TRIGGERS; do git -C "$WT" cat-file -e "HEAD:$f" 2>/dev/null && o="$o$f "; done; printf '%s' "$o"; }
+take_answer() { # <paths-json> [conflicts-json]
+  repaired "$(gate_fix 'bash lint.sh')" "${2:-[]}" | jq -c --argjson d "$1" '. + {takeBaseDeletions:$d}'
+}
+# #13139: the branch only appended bump lines; the model's mode refuses git rm, so it lists them.
+triggers_in 13139; setup 13139
+for f in $TRIGGERS; do printf 'bump again\n' >> "$WT/$f"; done; git -C "$WT" commit -qam "chore: bump deploy"
+driver_state_set 13139 repair_base "$(git -C "$WT" rev-parse HEAD)"
+triggers_retired; prs 13139 DIRTY
+answer "$(take_answer '[".deploy-trigger","apps/api/.deploy-trigger","apps/web/.deploy-trigger"]' '[{"file":".deploy-trigger","resolution":"took develop'"'"'s deletion"}]')"
+out=$(driver_step_repair 13139 2>&1); rc=$?
+want "13139: it finishes"                      "0" "$rc"
+want_in "13139: the brief tells the model to list them" 'takeBaseDeletions' "$(cat "$FIX/claude-stdin-repair.txt")"
+want_in "13139: and when to take the deletion"  'only served that retired purpose' "$(cat "$FIX/claude-stdin-repair.txt")"
+want "13139: the driver removed all three"      "" "$(gone_at_head)"
+want "13139: the merge is finished"             "yes" "$([ ! -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "13139: the tree is clean"                 "" "$(git -C "$WT" status --porcelain)"
+# #12975: the branch edited the sentinels and a real file conflicts too; the model resolves
+# the file, stages it, and lists the sentinels.
+triggers_in 12975; setup 12975
+printf 'branch line\n' > "$WT/shared.txt"
+for f in $TRIGGERS; do printf 'edited by the branch\n' > "$WT/$f"; done; git -C "$WT" commit -qam "feat: our line, and deploy edits"
+driver_state_set 12975 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves shared.txt "trunk line 12975"; triggers_retired; prs 12975 DIRTY
+printf '%s\n' 'printf "trunk line 12975\nbranch line\n" > shared.txt; git add shared.txt' > "$FIX/ai/repair.sh"
+answer "$(take_answer '[".deploy-trigger","apps/api/.deploy-trigger","apps/web/.deploy-trigger"]' '[{"file":"shared.txt","resolution":"both lines kept"}]')"
+out=$(driver_step_repair 12975 2>&1); rc=$?
+want "12975: it finishes"                       "0" "$rc"
+want "12975: the sentinels are gone"            "" "$(gone_at_head)"
+want "12975: both sides of the real file kept"  "trunk line 12975 branch line" "$(git -C "$WT" show HEAD:shared.txt | tr '\n' ' ' | sed 's/ $//')"
+want "12975: the merge is finished"             "yes" "$([ ! -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+# A sentinel the branch never changed, left conflicted by an earlier pass: no model at all.
+triggers_in 13140; setup 13140; triggers_retired; prs 13140 CLEAN
+git -C "$WT" fetch -q origin; git -C "$WT" merge -q --no-commit --no-ff origin/develop >/dev/null 2>&1
+mb=$(git -C "$WT" merge-base HEAD MERGE_HEAD)
+for f in $TRIGGERS; do
+  bl=$(git -C "$WT" rev-parse "$mb:$f")
+  printf '100644 %s 1\t%s\n100644 %s 2\t%s\n' "$bl" "$f" "$bl" "$f" | git -C "$WT" update-index --index-info
+  mkdir -p "$(dirname "$WT/$f")"; git -C "$WT" show "$mb:$f" > "$WT/$f"
+done
+want "13140: the fixture conflicts on the sentinels" "3" "$(git -C "$WT" diff --name-only --diff-filter=U | wc -l | tr -d ' ')"
+out=$(driver_step_repair 13140 2>&1); rc=$?
+want "13140: it finishes"                       "0" "$rc"
+want "13140: no model was asked"                "" "$(cat "$CLAUDE_LOG")"
+want "13140: the driver took the deletion"      "" "$(gone_at_head)"
+want "13140: the merge is finished"             "yes" "$([ ! -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+# A listed path the trunk never deleted is refused, and nothing is removed.
+setup 13141
+printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+driver_state_set 13141 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves shared.txt "trunk line 13141"; prs 13141 DIRTY
+printf '%s\n' 'printf "trunk line 13141\nbranch line\n" > shared.txt; git add shared.txt' > "$FIX/ai/repair.sh"
+answer "$(take_answer '["value13141.txt"]' '[{"file":"shared.txt","resolution":"both lines kept"}]')"
+out=$(driver_step_repair 13141 2>&1); rc=$?
+want "13141: it refuses"                        "24" "$rc"
+want_in "13141: naming the path"                'not deleted on the trunk' "$out"
+want "13141: the branch's file is still there"  "yes" "$([ -f "$WT/value13141.txt" ] && git -C "$WT" ls-files --error-unmatch value13141.txt >/dev/null 2>&1 && echo yes)"
+git -C "$WT" merge --abort 2>/dev/null
+
 echo "--- plants: each guard out, its case fails ---"
 # The relink before the proof gone (and so the retry's): the #461 case is never proved.
 ( driver_relink_if_behind() { DRIVER_BEHIND_WHY="planted"; return 1; }
@@ -792,5 +859,25 @@ printf '[{"issue":"999","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$W4
   [ "$rc" = 24 ] && echo flipped ) > "$FIX/plant2" 2>&1
 want "planted (no machine-fault reading): the held tree reads as not proved" "flipped" "$(tail -1 "$FIX/plant2")"
 unset WT_CLAIM_LIST WT_CLAIM_REFS
+
+# The driver's own git rm gone: the listed deletions are never taken, so the merge stays unfinished.
+( _driver_repair_take_listed() { return 0; }
+  triggers_in 13142; setup 13142
+  for f in $TRIGGERS; do printf 'bump again\n' >> "$WT/$f"; done; git -C "$WT" commit -qam "chore: bump deploy"
+  driver_state_set 13142 repair_base "$(git -C "$WT" rev-parse HEAD)"; triggers_retired; prs 13142 DIRTY
+  answer "$(take_answer '[".deploy-trigger","apps/api/.deploy-trigger","apps/web/.deploy-trigger"]')"
+  out=$(driver_step_repair 13142 2>&1); rc=$?
+  [ "$rc" != 0 ] && echo flipped ) > "$FIX/plant3" 2>&1
+want "planted (no driver git rm): the listed deletions leave the merge unfinished" "flipped" "$(tail -1 "$FIX/plant3")"
+# The on-base reading gone: the untouched sentinel goes to the model, and a listed one is refused.
+( _driver_repair_deleted_on_base() { return 1; }
+  triggers_in 13143; setup 13143; triggers_retired; prs 13143 CLEAN
+  git -C "$WT" fetch -q origin; git -C "$WT" merge -q --no-commit --no-ff origin/develop >/dev/null 2>&1
+  mb=$(git -C "$WT" merge-base HEAD MERGE_HEAD)
+  for f in $TRIGGERS; do bl=$(git -C "$WT" rev-parse "$mb:$f")
+    printf '100644 %s 1\t%s\n100644 %s 2\t%s\n' "$bl" "$f" "$bl" "$f" | git -C "$WT" update-index --index-info; done
+  out=$(driver_step_repair 13143 2>&1); rc=$?
+  [ -n "$(cat "$CLAUDE_LOG")" ] || [ "$rc" != 0 ] && echo flipped ) > "$FIX/plant4" 2>&1
+want "planted (no on-base reading): the untouched sentinel is not taken by the driver" "flipped" "$(tail -1 "$FIX/plant4")"
 
 exit $FAILED

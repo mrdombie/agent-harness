@@ -56,6 +56,14 @@
         }
       }
     },
+    "takeBaseDeletions": {
+      "description": "Each conflicted path the integration branch deleted whose deletion this merge takes. The driver checks each is deleted on the trunk side of this merge, runs the `git rm` itself and makes the merge commit; a path the trunk did not delete is refused.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "fixes": {
       "type": "array",
       "items": {
