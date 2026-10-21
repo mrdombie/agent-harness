@@ -94,14 +94,51 @@ out=$(driver_step_repair 302 2>&1); rc=$?
 want "it refuses"                      "24" "$rc"
 want_in "and says why"                 'passes without the change' "$out"
 
-echo "--- a fix commit that is not this repair's own proves nothing ---"
+echo "--- a fix answered only by the branch's earlier commit: asked once more, then refused ---"
 setup 303; prs 303 CLEAN unit
 BASE=$(driver_state_get 303 repair_base)
 git -C "$WT" commit -q --allow-empty -m "fix: something"
 answer "$(repaired "$(test_fix "$BASE" "$(git -C "$WT" rev-parse HEAD~1)" value303.txt 'true')")"
 out=$(driver_step_repair 303 2>&1); rc=$?
 want "it refuses"                      "24" "$rc"
+want "the model was asked twice"       "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want_in "the second ask names the earlier round" "an earlier round's, proved then" "$(cat "$FIX/claude-stdin-repair.txt")"
+want_in "and the refusal says so"      "every fix it named is an earlier round's" "$out"
+want_not_in "it was never re-proved"   'red .* then green' "$out"
+
+echo "--- a fix commit that is on neither the branch nor this round is refused (#12858) ---"
+setup 391; prs 391 CLEAN unit
+git -C "$WT" commit -q --allow-empty -m "fix: something"
+TRUNK0=$(git -C "$REPO" rev-list --max-parents=0 develop)
+answer "$(repaired "$(test_fix "$TRUNK0" "$TRUNK0" value391.txt 'true')")"
+out=$(driver_step_repair 391 2>&1); rc=$?
+want "a trunk commit is refused"       "24" "$rc"
+want "at once, with no second ask"     "repair" "$(cat "$CLAUDE_LOG")"
 want_in "naming the commit"            'not a commit this repair made' "$out"
+want "and the park note keeps its words" "a repair fix named a commit that is not this repair's own" "$(driver_state_get 391 park_note)"
+setup 392; prs 392 CLEAN unit
+git -C "$WT" commit -q --allow-empty -m "fix: something"
+answer "$(repaired "$(test_fix 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 value392.txt 'true')")"
+out=$(driver_step_repair 392 2>&1); rc=$?
+want "a commit that does not exist is refused" "24" "$rc"
+want_in "naming it"                    'not a commit this repair made' "$out"
+
+echo "--- this round's proved pair beside an earlier round's: the earlier one is noted, not refused (#12858) ---"
+setup 393; prs 393 CLEAN unit
+printf '#!/usr/bin/env bash\ngrep -q mended old393.txt\n' > "$WT/old393.test.sh"
+git -C "$WT" add . && git -C "$WT" commit -qm "test: an earlier round's"; OTS=$(git -C "$WT" rev-parse HEAD)
+printf 'mended\n' > "$WT/old393.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: an earlier round's"; OIS=$(git -C "$WT" rev-parse HEAD)
+driver_state_set 393 repair_base "$OIS"
+printf '#!/usr/bin/env bash\ngrep -q good value393.txt\n' > "$WT/value393.test.sh"
+git -C "$WT" add . && git -C "$WT" commit -qm "test: the value"; TS=$(git -C "$WT" rev-parse HEAD)
+printf 'value=good\n' > "$WT/value393.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value"; IS=$(git -C "$WT" rev-parse HEAD)
+answer "$(repaired "$(test_fix "$OTS" "$OIS" old393.test.sh 'bash old393.test.sh'),$(test_fix "$TS" "$IS" value393.test.sh 'bash value393.test.sh')")"
+out=$(driver_step_repair 393 2>&1); rc=$?
+want "it finishes"                     "0" "$rc"
+want "the model was called once"       "repair" "$(cat "$CLAUDE_LOG")"
+want_in "this round's fix is proved"   'red .* then green' "$out"
+want_in "the earlier pair is noted"    "$(printf '%s' "$OIS" | cut -c1-10) is on the branch from before this repair started .*proved in an earlier round" "$out"
+want_in "and counted apart"            '1 fix\(es\), each proved, 1 from an earlier round noted' "$out"
 
 echo "--- a gate-proved fix: its command is run at the head, by exit code ---"
 setup 304; prs 304 CLEAN lint

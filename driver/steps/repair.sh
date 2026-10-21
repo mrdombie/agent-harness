@@ -22,8 +22,9 @@
 #   - no conflict marker in any file that conflicted
 #   - nothing uncommitted, and the head has moved past where the repair started
 #   - each fix carries its proof. A TEST is re-run at its fix's parent and at the
-#     fix, by the same proof build and fix use, and both commits must be this
-#     repair's own. A GATE (a fix no test can pin, such as a lint rule, a type error
+#     fix, by the same proof build and fix use, when the fix is this repair's own; a
+#     pair the branch carried from before it started is noted, not re-proved, and any
+#     other commit is refused. A GATE (a fix no test can pin, such as a lint rule, a type error
 #     or a lockfile) has its command run at the head, read by its exit code. The
 #     self-check step after this one runs every gate regardless.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
@@ -257,6 +258,47 @@ _driver_repair_bad_cmds() {
   done
 }
 
+# AN EARLIER ROUND'S FIX IS NOT THIS ROUND'S, AND NOT A SPOOF EITHER. #12858 was refused
+# whole because its answer listed pairs a parked round had committed on the branch
+# before this one started, throwing away this round's proved fixes with them.
+#
+# _driver_repair_fix_kind <tree> <base> <trunk> <implCommit> — own (made after <base>),
+# earlier (on the branch at or before <base>, not on the trunk), or foreign (refused).
+# A test fix with no testCommit never gets here: the answer's schema sends it back.
+_driver_repair_fix_kind() {
+  local wt="$1" base="$2" trunk="$3" fx b
+  fx=$(git -C "$wt" rev-parse --verify -q "${4:-none}^{commit}" 2>/dev/null) || { echo foreign; return; }
+  b=$(git -C "$wt" rev-parse --verify -q "$base^{commit}" 2>/dev/null) || { echo foreign; return; }
+  git -C "$wt" merge-base --is-ancestor "$fx" HEAD 2>/dev/null || { echo foreign; return; }
+  if [ "$fx" != "$b" ] && git -C "$wt" merge-base --is-ancestor "$b" "$fx" 2>/dev/null; then
+    echo own; return
+  fi
+  if git -C "$wt" merge-base --is-ancestor "$fx" "$b" 2>/dev/null \
+     && ! git -C "$wt" merge-base --is-ancestor "$fx" "$trunk" 2>/dev/null; then
+    echo earlier; return
+  fi
+  echo foreign
+}
+
+# _driver_repair_stale_answers <tree> <base> <trunk> <answer> <owes 0|1> — a line when
+# this round owes a fix and every fix it named is an earlier round's; nothing otherwise.
+_driver_repair_stale_answers() {
+  local wt="$1" base="$2" trunk="$3" ans="$4" owes="$5" n i k own=0 old=""
+  n=$(jq -r '[.fixes[]?] | length' "$ans" 2>/dev/null); i=0
+  while [ "$i" -lt "${n:-0}" ]; do
+    if [ "$(jq -r --argjson i "$i" '.fixes[$i].proof // ""' "$ans")" != test ]; then own=$((own+1)); i=$((i+1)); continue; fi
+    k=$(_driver_repair_fix_kind "$wt" "$base" "$trunk" "$(jq -r --argjson i "$i" '.fixes[$i].implCommit // ""' "$ans")")
+    case "$k" in
+      own) own=$((own+1)) ;;
+      earlier) old="$old $(jq -r --argjson i "$i" '.fixes[$i].implCommit // ""' "$ans" | cut -c1-10)" ;;
+    esac
+    i=$((i+1))
+  done
+  if [ "$owes" -eq 1 ] && [ "$own" -eq 0 ] && [ -n "$old" ]; then
+    printf -- "- every fix named (%s) was committed at or before %s, where this repair started: an earlier round's, proved then. What this round owes needs a fix of its own, committed after it, with its own test.\n" "${old# }" "$(printf '%s' "$base" | cut -c1-8)"
+  fi
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -414,6 +456,9 @@ EOS
     fi
   fi
   code_failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
+  # What only a fix of this round's own answers: a red in the tree, unread checks, a caller's brief.
+  local owes=0
+  { [ -n "$code_failing" ] || [ "$unreadable" -eq 1 ] || [ "$(driver_state_get "$t" repair_brief_source)" = caller ]; } && owes=1
   [ -n "$conflicted" ] && need=1
   [ -n "$failing" ] && need=1
   [ -n "$lesson_red" ] && need=1
@@ -520,6 +565,21 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
         driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER NAMED A COMMAND THE DRIVER CANNOT RUN. Each fix's \`command\` is run verbatim from the worktree root, at the fix's parent and at the fix:
 $badcmd
 Answer again with the exact command; the commits you made stay.
+
+$DRIVER_BRIEF_PREFACE
+
+${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
+        continue
+      fi
+    fi
+    if [ -z "$reask" ] && [ "$attempt" -eq 1 ] && [ "$st" != park ]; then
+      local stale; stale=$(_driver_repair_stale_answers "$wt" "$base" "$trunk" "$ans" "$owes")
+      if [ -n "$stale" ]; then
+        attempt=2
+        driver_say "↩ repair: every fix it named is an earlier round's — asked once more, told why."
+        driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER NAMED FIXES THIS ROUND CANNOT PROVE. This repair started at $(printf '%s' "$base" | cut -c1-12); a pair at or before it is an earlier round's and is not re-proved here:
+$stale
+Answer again; the commits you made stay.
 
 $DRIVER_BRIEF_PREFACE
 
@@ -643,6 +703,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
 
   n=$(jq -r '[.fixes[]?] | length' "$ans" 2>/dev/null)
   i=0
+  local own_fixes=0 earlier_fixes=0 kind
   while [ "$i" -lt "${n:-0}" ]; do
     proof=$(jq -r --argjson i "$i" '.fixes[$i].proof // ""' "$ans")
     bid=$(jq -r --argjson i "$i" '.fixes[$i].what // "a fix"' "$ans")
@@ -653,15 +714,19 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
       tsha=$(jq -r  --argjson i "$((i-1))" '.fixes[$i].testCommit // ""' "$ans")
       isha=$(jq -r  --argjson i "$((i-1))" '.fixes[$i].implCommit // ""' "$ans")
       # THIS REPAIR'S OWN COMMITS. A test and a fix the PR already carried prove the
-      # build, not this repair: the fix must sit after where the repair started.
-      local fx; fx=$(git -C "$wt" rev-parse --verify -q "$isha" 2>/dev/null)
-      if [ -z "$fx" ] || [ "$fx" = "$(git -C "$wt" rev-parse "$base")" ] \
-         || ! git -C "$wt" merge-base --is-ancestor "$base" "$fx" 2>/dev/null \
-         || ! git -C "$wt" merge-base --is-ancestor "$fx" HEAD 2>/dev/null; then
-        driver_say "✋ repair '$bid': ${isha:-no commit} is not a commit this repair made (it started at $(printf '%s' "$base" | cut -c1-8))."
-        driver_state_set "$t" park_note "a repair fix named a commit that is not this repair's own"
-        return "$DRIVER_E_REFUSED"
-      fi
+      # build, not this repair: only a fix after where the repair started is proved here.
+      # One the branch carried from before is dropped with a note; any other is refused.
+      kind=$(_driver_repair_fix_kind "$wt" "$base" "$trunk" "$isha")
+      case "$kind" in
+        earlier)
+          driver_say "   repair '$bid' — $(printf '%s' "$isha" | cut -c1-10) is on the branch from before this repair started ($(printf '%s' "$base" | cut -c1-8)): proved in an earlier round, not re-proved"
+          earlier_fixes=$((earlier_fixes+1)); continue ;;
+        foreign)
+          driver_say "✋ repair '$bid': ${isha:-no commit} is not a commit this repair made (it started at $(printf '%s' "$base" | cut -c1-8))."
+          driver_state_set "$t" park_note "a repair fix named a commit that is not this repair's own"
+          return "$DRIVER_E_REFUSED" ;;
+      esac
+      own_fixes=$((own_fixes+1))
       why=""; prc=0
       why=$(driver_prove_red_green "$wt" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
       case "$prc" in
@@ -682,14 +747,20 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
         driver_state_set "$t" park_note "a repair fix's gate '$tcmd' is still red at the head"
         return "$DRIVER_E_REFUSED"
       fi
+      own_fixes=$((own_fixes+1))
       driver_say "   repair '$bid' — $tcmd green at the head (no test can pin it: $(jq -r --argjson i "$((i-1))" '.fixes[$i].noTestBecause // "?"' "$ans"))"
     fi
   done
+  if [ "$owes" -eq 1 ] && [ "$own_fixes" -eq 0 ] && [ "$earlier_fixes" -gt 0 ]; then
+    driver_say "✋ repair: every fix it named is an earlier round's, from before $(printf '%s' "$base" | cut -c1-8) — nothing this round made answers what is owed."
+    driver_state_set "$t" park_note "the repair named only an earlier round's fixes, $attempt time(s), and none of its own"
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ -n "$lesson_red" ]; then
     rc=0; _driver_repair_write_lesson "$t" "$wt" "$trunk" "$base" "$pr" "$ans" "$row" || rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
   fi
   driver_state_set "$t" repair_conflicted ""
-  driver_say "   repair: $(jq -r '.cause // ""' "$ans") — ${n:-0} fix(es), each proved${lesson_red:+, and the lesson written}"
+  driver_say "   repair: $(jq -r '.cause // ""' "$ans") — $own_fixes fix(es), each proved${earlier_fixes:+$([ "$earlier_fixes" -gt 0 ] && echo ", $earlier_fixes from an earlier round noted")}${lesson_red:+, and the lesson written}"
   return "$DRIVER_OK"
 }
