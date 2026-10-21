@@ -43,6 +43,9 @@ if [ "$1" = api ]; then
         'client_payload[context]='*) cx=${a#*=} ;; 'client_payload[description]='*) ds=${a#*=} ;;
         'client_payload[target_url]='*) tu=${a#*=} ;; esac; done
       printf 'relayed statuses/%s state=%s context=%s description=%s%s\n' "$sha" "$st" "$cx" "$ds" "${tu:+ target_url=$tu}" >> "$D/statuses"; exit 0 ;;
+    *"commits/"*"/statuses"*) printf '%s\n' "$*" >> "$D/status-reads"
+                        if [ -f "$D/head-statuses.json" ]; then cat "$D/head-statuses.json"
+                        else echo '[{"context":"Design critic","state":"success","description":"Independent critic: SHIP","creator":{"login":"github-actions[bot]"}}]'; fi; exit 0 ;;
     *pulls/7/files*)    cat "$D/files.json"; exit 0 ;;
     *pulls/7/commits*)  cat "$D/commits.json"; exit 0 ;;
     *issues/7/comments*) jq -s '[.[] ]' "$D"/posted-*.json 2>/dev/null || echo '[]'; exit 0 ;;
@@ -266,6 +269,28 @@ case_unrelayed() {
   [ "$a" = "8 12 " ] && [ -z "$b" ] && echo green || echo red
 }
 [ "$(case_unrelayed)" = green ] && ok "due: a verdict never sent through the relay is owed again (no model: the ledger answers); once sent it is settled" || bad "unrelayed: $(case_unrelayed)"
+# 9b2 Sent is not posted: a head whose newest status the relay did not post is owed again,
+# nothing-to-photograph included; once read back as the relay's, it is settled and not read again.
+case_unposted() {
+  jq -n --arg h "$HEAD" '[8,12] | map({number:., headRefOid:$h, isDraft:false, body:"", statusCheckRollup:[{context:"Design critic", state:"SUCCESS"}]})' > "$D/list.json"
+  printf '8\t%s\tabc\tSHIP\tsuccess\tu\n' "$HEAD" > "$FIX/judge/verdicts.tsv"; printf '12\t%s\n' "$HEAD" > "$FIX/judge/none.tsv"
+  printf '8\t%s\tsuccess\n12\t%s\tsuccess\n' "$HEAD" "$HEAD" > "$FIX/judge/relayed.tsv"; rm -f "$FIX/judge/confirmed.tsv" "$D/status-reads"
+  local a b c
+  # The Mac's own status is still the newest: the relay never posted.
+  echo '[{"context":"Design critic","state":"success","description":"Independent critic: SHIP","creator":{"login":"the-owner"}},{"context":"Design critic","state":"success","description":"Independent critic: SHIP","creator":{"login":"github-actions[bot]"}}]' > "$D/head-statuses.json"
+  a=$(bash "$J" due | cut -f1 | tr '\n' ' ')
+  rm -f "$D/head-statuses.json"; b=$(bash "$J" due | cut -f1 | tr '\n' ' ')
+  : > "$D/status-reads"; c=$(bash "$J" due | cut -f1 | tr '\n' ' ')
+  rm -f "$D/head-statuses.json"
+  [ "$a" = "8 12 " ] && [ -z "$b" ] && [ -z "$c" ] && [ ! -s "$D/status-reads" ] && echo green || echo "red: '$a' '$b' '$c' reads=$(grep -c . "$D/status-reads" 2>/dev/null)"
+}
+r=$(case_unposted); [ "$r" = green ] && ok "due: a verdict sent but never posted by the relay is owed again; once read back it is settled, and not read again" || bad "unposted: $r"
+
+# 9b3 Stale shots: the pending verdict goes once a head, not once a sweep.
+reset; answer SHIP; sed -i.b 's/state=pinned/state=stale/' "$D/ev-status"
+bash "$J" run 7 >/dev/null 2>&1; bash "$J" run 7 >/dev/null 2>&1
+[ "$(grep -c . "$D/dispatches" 2>/dev/null)" = 1 ] && ok "a stale head's pending verdict is sent once, not on every sweep" || bad "stale sends: $(grep -c . "$D/dispatches" 2>/dev/null)"
+
 # 9c A run that sends the verdict records it as relayed.
 case_relayed_rec() { reset; answer SHIP; bash "$J" run 7 >/dev/null 2>&1; grep -q "^7	$HEAD	success$" "$FIX/judge/relayed.tsv" 2>/dev/null && echo green || echo red; }
 [ "$(case_relayed_rec)" = green ] && ok "a sent verdict is recorded as relayed for its head" || bad "relayed.tsv: $(cat "$FIX/judge/relayed.tsv" 2>/dev/null)"
@@ -442,7 +467,12 @@ case_minor()  { reset; answer SHIP "- Minor · x"; bash "$J" run 7 >/dev/null 2>
 case_noset()  { reset; answer SHIP; sed -i.b '1d' "$D/answer"; bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/statuses" ] && echo red || echo green; }
 case_relay()  { reset; answer SHIP; bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/raw-statuses" ] || [ ! -s "$D/dispatches" ] && echo red || echo green; }
 plant "the verdict posted as a raw status again" 'local a=(api -X POST "repos/$REPO_SLUG/dispatches"' 'local a=(api -X POST "repos/$REPO_SLUG/statuses/$1"' case_relay
-plant "the sent verdict is never recorded as relayed" 'printf '"'"'%s\t%s\t%s\n'"'"' "$1" "$2" "$5" >> "$JDIR/relayed.tsv"' ':' case_relayed_rec
+case_unposted_rc() { [ "$(case_unposted)" = green ] && echo green || echo red; }
+plant "a sent verdict counts as posted" 'relayed "$pr" "$head" && posted "$pr" "$head" && continue
+        rec=' 'relayed "$pr" "$head" && continue
+        rec=' case_unposted_rc
+plant "the poster is never checked" '(.creator.login // "") == $who and ' '' case_unposted_rc
+plant "the sent verdict is never recorded as relayed" 'printf '"'"'%s\t%s\t%s\n'"'"' "$1" "$2" "$5" >> "$RELAYED"' ':' case_relayed_rec
 plant "a build run may judge"            '[ -z "${HARNESS_DRIVER_RUN:-}" ] ||' 'true ||' case_build
 plant "the picture's regions are not checked" 'if [ -n "$miss" ] || [ -n "$lint" ] || [ -n "$gaps" ]; then' 'if [ -n "$lint" ] || [ -n "$gaps" ]; then' case_gap
 case_cov()    { reset; answer SHIP; printf 'missing-route\tx/A.tsx\t/a\tevidence gap: x/A.tsx changed and no route renders it\n' > "$D/gaps"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }

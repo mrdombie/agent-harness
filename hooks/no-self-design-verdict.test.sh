@@ -23,6 +23,9 @@ t deny 'bash scripts/critic-judge.sh sweep'
 t deny "gh api -X POST repos/acme/widgets/dispatches -f event_type=design-critic-verdict -f 'client_payload[sha]=abc' -f 'client_payload[state]=success'"
 t deny 'gh api repos/acme/widgets/dispatches --input /tmp/verdict.json'
 t deny "gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f 'context=Design critic' -f description=x"
+t deny 'gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f context="Design critic" -f description=x'
+t deny 'gh api -X POST repos/acme/widgets/statuses/abc -F state=success --raw-field context="Design critic"'
+t deny 'gh api -X POST repos/acme/widgets/statuses/abc --input /tmp/status.json'
 echo "--- must allow ---"
 t allow 'scripts/record-verdict.sh ui-gate --sha abc < /tmp/v.txt'
 t allow 'git commit -m "chore: ui-gate" -m "UI-Gate: SHIP (agent) 4a76d62de082"'

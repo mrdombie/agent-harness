@@ -32,8 +32,10 @@ printf '%s' "$cmd" | grep -qE "critic-judge\.sh[\"']?$S+(run|sweep)" \
   && deny "The independent critic is started by the coordinator, never from a session that builds. $WHY"
 printf '%s' "$cmd" | grep -qE "repos/[^/[:space:]\"']+/[^/[:space:]\"']+/dispatches" \
   && deny "A repository dispatch from a session: that is how the independent critic's verdict reaches the design status. $WHY"
-printf '%s' "$cmd" | grep -qE "statuses/[0-9a-fA-F\$]" && printf '%s' "$cmd" | grep -qF "context=$CONTEXT" \
-  && deny "Posting the '$CONTEXT' status by hand. $WHY"
+if printf '%s' "$cmd" | grep -qE "statuses/[0-9a-fA-F\$]" \
+   && { printf '%s' "$cmd" | grep -qE "context=[\"']?$CONTEXT" || printf '%s' "$cmd" | grep -qE -- "--input"; }; then
+  deny "Posting the '$CONTEXT' status by hand. $WHY"
+fi
 if printf '%s' "$cmd" | grep -qE "(^|[^A-Za-z0-9_-])git($S+-[^[:space:]]+($S+[^-[:space:]][^[:space:]]*)?)*$S+commit" \
    && printf '%s' "$cmd" | grep -qiE "(^|[^A-Za-z0-9-])$TRAILER:"; then
   deny "A commit carrying a '$TRAILER:' trailer. $WHY"

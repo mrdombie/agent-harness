@@ -65,6 +65,10 @@
 #      the owner and the sha is the PR's head, then posts it with the Actions token.
 #      Each sent verdict is kept in relayed.tsv; one the ledger holds but never sent
 #      (recorded before the relay) is owed again, answered from the ledger, no model.
+#      Sent is not posted: the dispatch is accepted with no workflow listening, and a relay
+#      run can fail. A head is settled only once its newest design status is the judge's,
+#      posted by review.judge.poster (github-actions[bot]); that is read off the head once
+#      and kept in confirmed.tsv. Until then the verdict is owed again.
 # A design-verdict trailer on the branch counts for nothing here and is named in the
 # comment as ignored: the builder that wrote it is the one thing that cannot judge.
 #
@@ -89,6 +93,7 @@ TRAILER=$(swarm_opt review.judge.trailer "Design-Critic")
 AGENT=$(swarm_opt review.judge.agent "agent-harness:design-critic")
 MOCKGLOB=$(swarm_opt review.judge.mockGlob ".design/*-mock.html")
 DISPATCH=$(swarm_opt review.judge.dispatch "design-critic-verdict")
+POSTER=$(swarm_opt review.judge.poster "github-actions[bot]")
 MAXLIVE="${CRITIC_JUDGE_MAX_LIVE:-$(swarm_opt coordinator.critic.maxLive "")}"
 [ -n "$MAXLIVE" ] || MAXLIVE=$(swarm_opt review.judge.maxLive 3)
 TIMEOUT_MIN="${CRITIC_JUDGE_TIMEOUT_MIN:-$(swarm_opt coordinator.critic.timeoutMin 20)}"
@@ -107,6 +112,7 @@ FIRST_LOOK="$SELF_DIR/check-first-look.sh"
 JDIR="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}"
 LEDGER="$JDIR/verdicts.tsv"     # pr \t head \t set \t verdict \t state \t url — written only here
 RELAYED="$JDIR/relayed.tsv"     # pr \t head \t state — a verdict sent to the project's relay
+CONFIRMED="$JDIR/confirmed.tsv" # pr \t head — the relay's status on that head was read back
 JUDGING_PR=""
 TRIES=2
 VLINE='^[[:space:]>#*_]*VERDICT:[[:space:]]*\*{0,2}(SHIP|SLOP)'
@@ -139,7 +145,18 @@ post_status() { # <head> <success|failure|pending> <description> [<url>]
   [ -n "${4:-}" ] && a+=(-f "client_payload[target_url]=$4")
   swarm_gh "${a[@]}" >/dev/null 2>&1 || { echo "critic-judge: could not send the $CONTEXT verdict for ${1:0:9}" >&2; return 1; }
 }
-relayed() { grep -qF "$1	$2	" "$RELAYED" 2>/dev/null; } # <pr> <head>
+relayed() { grep -q "^$1	$2	" "$RELAYED" 2>/dev/null; } # <pr> <head>
+# posted <pr> <head> — the head's newest design status is the judge's, posted by the relay.
+# Read once per head; an unreadable answer is "not yet", so the verdict is sent again.
+posted() {
+  grep -qxF "$1	$2" "$CONFIRMED" 2>/dev/null && return 0
+  swarm_gh api "repos/$REPO_SLUG/commits/$2/statuses?per_page=100" 2>/dev/null \
+    | jq -e --arg c "$CONTEXT" --arg p "$PREFIX" --arg who "$POSTER" '
+        [.[]? | select(.context == $c)] | first
+        | . != null and (.creator.login // "") == $who and ((.description // "") | startswith($p))' >/dev/null 2>&1 \
+    || return 1
+  printf '%s\t%s\n' "$1" "$2" >> "$CONFIRMED"
+}
 
 # pictures_only — paths on stdin that match the picture glob (a function: a case inside $( ) breaks bash 3.2).
 pictures_only() {
@@ -252,7 +269,7 @@ derivation_of() {
 record() { # <pr> <head> <set> <verdict> <state> <url> <description>
   post_status "$2" "$5" "$7" "$6" || return 1
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >> "$LEDGER"
-  printf '%s\t%s\t%s\n' "$1" "$2" "$5" >> "$JDIR/relayed.tsv"
+  printf '%s\t%s\t%s\n' "$1" "$2" "$5" >> "$RELAYED"
 }
 
 run() { # <pr>
@@ -275,7 +292,10 @@ run() { # <pr>
     pinned) : ;;
     stale)
       # Pending, not red: nothing on the branch is wrong, CI owes a fresh capture.
-      post_status "$head" pending "$PREFIX: waiting for CI to photograph again — the pinned shots predate a change to this PR's screens"
+      # Once a head: every sweep sending it again is an Actions run each time.
+      grep -qxF "$pr	$head" "$JDIR/stale-sent.tsv" 2>/dev/null \
+        || { post_status "$head" pending "$PREFIX: waiting for CI to photograph again — the pinned shots predate a change to this PR's screens" \
+             && printf '%s\t%s\n' "$pr" "$head" >> "$JDIR/stale-sent.tsv"; }
       say "PR #$pr: $(sed -n 's/^reason=//p' <<<"$st")"; return 3 ;;
     none)
       # Nothing to judge is an answer, not a wait — but only CI's own record for this very head says so.
@@ -508,9 +528,9 @@ due() {
         | select($s != null)
         | "\(.number)\t\(.headRefOid)\t\($s.state // "" | ascii_downcase)"' \
     | while IFS=$'\t' read -r pr head state; do
-        grep -qxF "$pr	$head" "$JDIR/none.tsv" 2>/dev/null && relayed "$pr" "$head" && continue
+        grep -qxF "$pr	$head" "$JDIR/none.tsv" 2>/dev/null && relayed "$pr" "$head" && posted "$pr" "$head" && continue
         rec=$(ledger_head "$pr" "$head" | cut -f5)
-        [ -n "$rec" ] && [ "$rec" = "$state" ] && relayed "$pr" "$head" && continue
+        [ -n "$rec" ] && [ "$rec" = "$state" ] && relayed "$pr" "$head" && posted "$pr" "$head" && continue
         printf '%s\t%s\n' "$pr" "$head"
       done
 }
