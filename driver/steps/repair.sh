@@ -33,6 +33,8 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
 # driver_claim_held_elsewhere lives with reenter: one claim rule for the way in and the model call.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reenter.sh" || exit 1
+# A red the base branch has too: read, classified, and waited out (base-wait.sh).
+. "$KIT_ROOT/scripts/base-wait.sh" || exit 1
 
 # _driver_repair_claim_busy <ticket> <when> — 0 (and the step returns DRIVER_E_BUSY) when
 # another live run holds the claim: the repair waits on the queue, it never asks about it.
@@ -537,6 +539,32 @@ $trunk DELETED ${retired}and this branch edited them. When the trunk retired a f
     fi
   fi
   code_failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
+  # A RED THE BASE HAS TOO IS THE BASE'S, NEVER A QUESTION. #13365, #13314 and #8476 each
+  # parked asking "this test is outside the PR and fails on develop too — fix it here?",
+  # which the PM's standing answer settles: it waits for develop's fix. Read, not assumed
+  # (base-wait.sh): the failing tests from the PR's CI log are outside its diff, and the
+  # base's newest completed run of the same check fails on them too.
+  local base_only="" base_tests="" cname ckind cwhy
+  driver_state_set "$t" base_red_tests ""
+  if [ -n "$code_failing" ] && [ -n "$prhead" ] && [ -z "$conflicted" ] && [ "$merged" -eq 0 ]; then
+    while IFS=$'\t' read -r cname ckind cwhy; do
+      [ -n "$cname" ] || continue
+      if [ "$ckind" = base ]; then
+        base_only="$base_only${base_only:+, }$cname"; base_tests="$base_tests${base_tests:+ }$cwhy"
+        driver_say "   repair: '$cname' is red on $cwhy — outside this PR, and red on $trunk's latest completed run too: the base's to fix, not this repair's"
+      else
+        driver_say "   repair: '$cname' is this PR's own red — $cwhy"
+      fi
+    done <<EOS
+$(base_red_classify "$wt" "$trunk" "$prhead" "$code_failing" "$d/steps/base-red")
+EOS
+    if [ -n "$base_only" ]; then
+      failing=$(printf '%s' "$failing" | awk -v k="|$(printf '%s' "$base_only" | sed 's/, /|/g')|" 'BEGIN { RS = ", " }
+        { sub(/\n$/, "") } $0 != "" && index(k, "|" $0 "|") == 0 { o = o (o == "" ? "" : ", ") $0 } END { printf "%s", o }')
+      code_failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
+      driver_state_set "$t" base_red_tests "$base_tests"
+    fi
+  fi
   # What only a fix of this round's own answers: a red in the tree, unread checks, a caller's brief.
   local owes=0
   { [ -n "$code_failing" ] || [ "$unreadable" -eq 1 ] || [ "$(driver_state_get "$t" repair_brief_source)" = caller ]; } && owes=1
@@ -556,6 +584,28 @@ $trunk DELETED ${retired}and this branch edited them. When the trunk retired a f
   plan_rel=$(driver_evidence_plan "$t")
   [ -n "$pr" ] && ev_tasks=$(driver_evidence_tasks "$t" "$wt" "$trunk" "$pr")
   [ -n "$ev_tasks" ] && { need=1; driver_say "   repair: PR #$pr owes evidence — $(printf '%s\n' "$ev_tasks" | grep -c .) task(s) for the capture plan"; }
+  # EVERY RED THE BASE'S: the repair waits for the base. No model, no label, no question.
+  # A brief a caller sent is never lost to the wait: it rides on the ledger and comes
+  # back in the note that ends the wait (a finished wait's own note carries the one before).
+  if [ -n "$base_only" ] && [ -z "$failing" ] && [ -z "$lesson_red" ] && [ -z "$conflicted" ] \
+     && [ "$unreadable" -eq 0 ] && [ -z "$ev_tasks" ]; then
+    local bw_brief="$d/base-wait-brief.md"
+    : > "$bw_brief"
+    if [ "$(driver_state_get "$t" repair_brief_source)" = caller ]; then
+      sed '1s/^Coordinator note ([a-z-]*): //' "$(driver_state_get "$t" repair_brief)" > "$bw_brief.tmp" 2>/dev/null
+      if head -1 "$bw_brief.tmp" 2>/dev/null | grep -q "^$BASE_WAIT_NOTE_PREFIX"; then
+        sed -n "s/.*$BASE_WAIT_BRIEF_MARK//p" "$bw_brief.tmp" > "$bw_brief"
+      else
+        cat "$bw_brief.tmp" > "$bw_brief"
+      fi
+      rm -f "$bw_brief.tmp"
+    fi
+    driver_state_set "$t" base_wait_checks "$base_only"
+    driver_state_set "$t" base_wait_head "$prhead"
+    driver_state_set "$t" base_wait_brief "$bw_brief"
+    driver_say "⏸ repair: every red on PR #$pr ($base_only) is in tests outside it that fail on $trunk too — waiting for $INTEGRATION_BRANCH's fix, never repaired in the PR"
+    return "$DRIVER_E_BASE_WAIT"
+  fi
   if [ "$need" -eq 0 ]; then
     if [ "$merged" -eq 1 ]; then driver_say "   repair: the clash is merged, and nothing is red"
     else driver_say "   repair: nothing red and nothing clashing on PR #$pr — no fix to make; the gates and the review still run"; fi
@@ -572,7 +622,12 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   if [ "$unreadable" -eq 1 ]; then
     driver_fact_put "$t" repair FAILING "the pull request's checks could not be read from GitHub — read them yourself (gh pr checks $pr) before deciding anything is green"
   else
-    driver_fact_put "$t" repair FAILING "${failing:-none settled red}"
+    # Built apart: an apostrophe inside ${var:+...} breaks bash 3.2's parse.
+    local base_fact=""
+    [ -z "$base_only" ] || base_fact="
+
+Not yours to fix: $base_only is red in $base_tests, tests outside this PR that fail on the latest completed run of $trunk too. It waits for the fix on $INTEGRATION_BRANCH and is never repaired in this PR: touch nothing for it, ask nothing about it, and leave it out of your fixes."
+    driver_fact_put "$t" repair FAILING "${failing:-none settled red}$base_fact"
   fi
   driver_fact_put "$t" repair CONFLICTS "$conflicts_fact"
   local lfact="it is not red, so answer no \`lesson\`." lbody lout lhow

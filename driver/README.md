@@ -319,6 +319,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 31 | start found the ticket's one open pull request (ready, or a draft on the record's own branch): the run becomes a repair of it (`build-ticket --repair`), once per run |
 | 32 | the repair read its pull request afresh and nothing is owed (its head holds the trunk, GitHub reads it MERGEABLE, no check on it is red, auto-merge is armed): the round is closed and the run exits 0, still in review, with no park |
 | 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
+| 34 | waiting for the base: every red check on the repair's PR fails only in tests outside its diff that fail on the base branch's latest completed run too (`scripts/base-wait.sh`). No label, no park, no question; the ticket goes on `base-waits.tsv` and the coordinator queues the repair again when that check goes green on the base or after `coordinator.baseWaitHours` (6) |
 
 A gate that outruns its limit (25) is tried once more after the machine quietens, its
 limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second

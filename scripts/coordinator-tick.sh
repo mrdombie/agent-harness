@@ -66,6 +66,7 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/coordinator-waits.sh" || exit 1
+. "$SELF_DIR/base-wait.sh" || exit 1
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
 . "$SELF_DIR/shared-install-hold.sh" || exit 1
 
@@ -148,6 +149,9 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
     # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
     event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
+  elif [ "$code" = "${DRIVER_E_BASE_WAIT:-34}" ]; then
+    # Every red is in tests outside the PR that fail on the base too: base-waits.tsv holds it.
+    say "base wait: run $rid left #${ticket:-?} waiting for $INTEGRATION_BRANCH's fix — queued again when that check goes green or in $BASE_WAIT_HOURS h"
   elif [ "$code" = "${DRIVER_E_MACHINE:-33}" ]; then
     # A model call failed at the API twice: parked as the machine's, left ready, picked again.
     say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again"
@@ -252,6 +256,7 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
         red)
           fixer=$(awk -F'\t' -v p="$pr" '$1 == p { print $2; exit }' <<<"$FIXING")
           if [ -n "$fixer" ]; then say "PR #$pr: $why — being fixed by $fixer, not judged"
+          elif base_wait_holds "$t" "$sha"; then say "PR #$pr: $why — #$t waits for $INTEGRATION_BRANCH's fix on this head (base-waits.tsv), not healed"
           elif swarm_heal_parked_out "$t" "$sha"; then say "PR #$pr: $why — #$t parked past its cap on this head, so it waits for a person (a new head heals it again)"
           else event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true; fi ;;
         warn) say "PR #$pr: red only on $why — a warning until the release (release.nonBlockingChecks), not a red" ;;
@@ -305,6 +310,12 @@ if [ -s "$CUT_PENDING" ]; then
   mv -f "$CUT_PENDING.next" "$CUT_PENDING"
 fi
 
+# A repair waiting on the base goes back on the queue once the base's check is green,
+# or once coordinator.baseWaitHours have passed, whichever is first.
+if [ -s "$BASE_WAITS" ]; then
+  base_wait_release "$QUEUE" "$(coord_shadow && echo dry)" | while IFS= read -r l; do say "base wait: $l"; done
+fi
+
 # The waits recorded this tick, snapshotted while the open PRs are fresh.
 [ -n "${PRS:-}" ] && [ "$PRS_STALE" = 0 ] && coord_wait_snap_pending
 
@@ -345,6 +356,8 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   done <<< "$(stop_labels)"
   # Respawned before the human moves, it ends on the same wait again.
   coord_wait_holds "$t" "$lab" && return 0
+  # A repair waiting on the base ends on the same wait until base_wait_release frees it.
+  if coord_healing_class "$cls" && base_wait_holds "$t"; then echo "waiting for $INTEGRATION_BRANCH's fix (base-waits.tsv)"; return 0; fi
   return 1
 }
 

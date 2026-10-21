@@ -31,6 +31,8 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-env.sh" || exit 1
 
+. "$KIT_ROOT/scripts/base-wait.sh" || exit 1
+
 LOG="$SWARM_LOGS/repair-watch.log"
 TRIED="$SWARM_DIR/repair-attempts.tsv"          # ticket \t sha \t kind \t epoch
 touch "$TRIED"
@@ -211,6 +213,9 @@ section_repair() {
     grep -q "^$T	$SHA	$kind" "$TRIED" && continue
     if swarm_heal_parked_out "$T" "$SHA"; then
       say "skip #$PR ($T): parked past its cap on this head — a person looks first"; continue
+    fi
+    if [ "$kind" = ci ] && base_wait_holds "$T" "$SHA"; then
+      say "skip #$PR ($T): its reds fail on $INTEGRATION_BRANCH too — waiting for that fix (base-waits.tsv)"; continue
     fi
 
     labs=$(labels_of "$T")
