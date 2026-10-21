@@ -339,12 +339,17 @@ coord_heartbeat() {
   local b="${1:-0}" c="${3:-}" usage; case "$b" in ''|*[!0-9]*) b=0 ;; esac
   case "$c" in *[!0-9]*) c="" ;; esac
   usage=$(jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900) | .usage // empty' "${COORD_PACE_STATE:-$COORD_DIR/pace.json}" 2>/dev/null)
+  # This host's last GitHub allowance reading: the token is the fleet's, so every host holds on it.
+  local ghr
+  ghr=$(awk -F'\t' 'NF >= 4 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { printf "%s{\"resource\":\"%s\",\"remaining\":%s,\"limit\":%s,\"reset\":%s}", (n++ ? "," : ""), $1, $2, $3, $4 }' \
+          "$(gh_allowance_file)" 2>/dev/null)
   jq -cn --arg host "$COORD_HOST" --arg v "$(harness_running_version)" --arg inst "$(harness_installed_version)" \
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
-     --arg cap "$c" --arg usage "${usage:-}" \
+     --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" \
      '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}
       + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
-      + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)'
+      + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)
+      + (if $gh == "" then {} else {gh: ($gh | fromjson)} end)'
 }
 
 # coord_fleet <own heartbeat> <others json array> <floor> — every machine, this one first,
@@ -387,8 +392,10 @@ coord_heartbeat_post() {
   local hb="$1" n h now beat id old_h old_at body resp line
   now=$(swarm_now); beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
   # Capacity and whole-percent usage too: the owner splits the fleet cap on them.
+  # The allowance in tenths: a host going low reaches the others within a tick.
   h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role, capacity,
-                              usage: ((.usage // {}) | map_values((.u * 100 | round)))}' <<<"$hb")")
+                              usage: ((.usage // {}) | map_values((.u * 100 | round))),
+                              gh: [(.gh // [])[] | {resource, reset, tenth: (if .limit > 0 then (.remaining * 10 / .limit | floor) else 0 end)}]}' <<<"$hb")")
   IFS=$'\t' read -r id old_h old_at < "$COORD_HEARTBEAT_STATE" 2>/dev/null || { id=""; old_h=""; old_at=0; }
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   case "$id" in *[!0-9]*) id="" ;; esac

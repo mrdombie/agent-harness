@@ -212,6 +212,9 @@ FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list -
 # line, repair-watch and the live view take instead of asking GitHub themselves.
 PRS_STALE=0
 ALLOWANCE=$(gh_allowance_read) || ALLOWANCE=""
+# The GitHub allowance under its low mark on any host: the token is the fleet's.
+# Read once, here: the fleet file is rewritten later in the tick.
+GH_LOW=$(gh_allowance_low) || GH_LOW=""
 PRS=$(gh_open_prs 0)
 if [ -n "$PRS" ] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   coord_snap_save prs "$PRS"
@@ -360,6 +363,8 @@ if [ "$SHEET_ROLE" = reader ]; then
 elif [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
   if until=$(gh_backoff_active); then
     say "queue: GitHub is rate-limiting this token until $(swarm_iso "$until") — working the queue as it stands"
+  elif [ -n "$GH_LOW" ]; then
+    say "queue: board refresh skipped — $(gh_limit_why) — working the queue as it stands"
   elif [ $(( $(swarm_now) - $(coord_mtime "$REFRESH_STAMP") )) -ge $(( COORD_REFRESH_EVERY_MIN * 60 )) ]; then
     pf=""; if [ "$PRS_STALE" = 0 ] && [ -s "$(coord_snap_file prs)" ]; then pf=$(coord_snap_file prs); fi
     if CLAIMABLE_PRS_FILE="$pf" bash "$QUEUE" refresh >/dev/null 2>&1; then touch "$REFRESH_STAMP"
@@ -620,6 +625,9 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
   event "usage-hold:$until" usage-limit false "" "" "the plan's usage limit holds until $until" || true
+elif [ -n "$GH_LOW" ]; then
+  say "spawn: holding — $(gh_limit_why). A build spends the token every machine shares; starts resume once it is over ${GH_ALLOWANCE_LOW_PCT}% again"
+  held_view
 elif [ -n "$STEP_HOLD" ]; then
   IFS=$'\t' read -r sh_until sh_win sh_pct <<<"$STEP_HOLD"
   say "spawn: usage hold — the $sh_win window is at ${sh_pct}%, at or over ${SWARM_USAGE_STEP_HOLD}: nothing new starts, and the $LIVE running finish their step and wait before the next until $(swarm_iso "$sh_until"); none is stopped"
@@ -791,6 +799,11 @@ HOUSE="${COORDINATOR_HOUSEKEEPING_CMD:-$SELF_DIR/coordinator-housekeeping.sh}"
 HOUSE_STAMP="$COORD_DIR/housekeeping.stamp"
 COORD_HOUSE_EVERY_MIN="${COORDINATOR_HOUSEKEEPING_EVERY_MIN:-$(swarm_opt coordinator.housekeepingEveryMin 5)}"
 case "$COORD_HOUSE_EVERY_MIN" in ""|*[!0-9]*) COORD_HOUSE_EVERY_MIN=5 ;; esac
+# With the shared GitHub allowance low, the sweeps and the judge's resends wait four times as long.
+if [ -n "$GH_LOW" ]; then
+  COORD_HOUSE_EVERY_MIN=$(( COORD_HOUSE_EVERY_MIN * 4 )); [ "$COORD_HOUSE_EVERY_MIN" -ge 20 ] || COORD_HOUSE_EVERY_MIN=20
+  say "housekeeping: slowed to every ${COORD_HOUSE_EVERY_MIN} min — $(gh_limit_why)"
+fi
 if [ $(( $(date +%s) - $(coord_mtime "$HOUSE_STAMP") )) -lt $(( COORD_HOUSE_EVERY_MIN * 60 )) ]; then
   say "housekeeping: ran under ${COORD_HOUSE_EVERY_MIN} min ago — not this tick"
 elif [ "${COORDINATOR_HOUSEKEEPING:-background}" = inline ]; then

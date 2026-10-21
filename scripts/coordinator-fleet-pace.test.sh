@@ -135,6 +135,32 @@ want_in "a person reads it" 'at most 8 building across every machine: mac 2, yom
 want "and a reader parses it back" '{"mac":2,"yomato":6}' \
   "$(printf '%s\n' "$body" | sed -nE 's/^<!-- sheet:pace (\{.*\}) -->$/\1/p' | jq -cS '.shares')"
 
+echo "--- the GitHub allowance is the fleet's too: the freshest reading on any host ---"
+GHR=$(( NOWE + 1800 ))
+ghfleet() { # <yomato graphql remaining> [reset] — Yomato's heartbeat with its allowance reading
+  jq -nc --argjson g "$1" --argjson r "${2:-$GHR}" --argjson t "$(date +%s)" \
+    '{hosts:[{host:"Yomato", tick:$t, builds:3, capacity:14, gh:[{resource:"graphql", remaining:$g, limit:5000, reset:$r},
+                                                   {resource:"core", remaining:4900, limit:5000, reset:$r}]}]}' > "$C/fleet.json"
+}
+gh_here() { printf 'graphql\t%s\t5000\t%s\ncore\t4800\t5000\t%s\n' "$1" "$GHR" "$GHR" > "$STATE/swarm/gh-allowance"; }
+ghlow() { ( export SWARM_NOW="$NOWE"; . "$HERE/coordinator-env.sh" >/dev/null 2>&1 || exit 9; gh_allowance_low; echo " rc=$?" ); }
+clean; mkdir -p "$STATE/swarm"; gh_here 4000; ghfleet 100
+want_in "4000 left here, 100 as Yomato read it: low, and named" '^graphql	100	5000	[0-9]+	Yomato' "$(ghlow)"
+want_in "the reason says where it was read" "GraphQL 100 of 5000 left until .*, as Yomato read it" \
+  "$( export SWARM_NOW="$NOWE"; . "$HERE/coordinator-env.sh" >/dev/null 2>&1; gh_limit_why )"
+clean; mkdir -p "$STATE/swarm"; gh_here 4000; ghfleet 100 $(( NOWE - 60 ))
+want_in "Yomato's low reading from a window already reset: not low" 'rc=1' "$(ghlow)"
+clean; mkdir -p "$STATE/swarm"; gh_here 4000; ghfleet 4500
+want_in "both hosts well over the mark: not low" 'rc=1' "$(ghlow)"
+clean; mkdir -p "$STATE/swarm"; gh_here 200; rm -f "$C/fleet.json"
+out=$(ghlow)
+want_in "this host's own low reading, with no fleet file at all, still holds" '^graphql	200	5000	[0-9]+	here' "$out"
+want_in "as low" 'rc=0$' "$out"
+clean; mkdir -p "$STATE/swarm"; gh_here 1234
+hb=$( export SWARM_NOW="$NOWE"; . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . "$HERE/coordinator-sheet.sh" >/dev/null 2>&1; coord_heartbeat 0 100 6 )
+want "the heartbeat publishes this host's allowance reading" "graphql 1234 5000 $GHR" \
+  "$(jq -r '.gh[] | select(.resource == "graphql") | "\(.resource) \(.remaining) \(.limit) \(.reset)"' <<<"$hb")"
+
 echo "--- the tick: the owner starts only its share ---"
 printf '#!/usr/bin/env bash\n:\n' > "$BIN/judge"; chmod +x "$BIN/judge"
 for s in reconcile sweep wtsweep; do printf '#!/usr/bin/env bash\n:\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
@@ -169,6 +195,18 @@ want "the live view's capacity carries the share" "3 7" "$(jq -r '"\(.pace.share
 tickworld 0.05; fleet 14 "$(date +%s)"
 out=$(COORDINATOR_SHEET_OWNER=here COORDINATOR_PACE=0 live)
 want "unpaced, the machine fills all five" "5" "$(grep -c . "$SPAWNS")"
+
+echo "--- the other host's low GitHub reading holds starts and slows the sweeps here ---"
+tickworld 0.05; ghfleet 100; GHR=$(( $(date +%s) + 1800 )); ghfleet 100
+out=$(COORDINATOR_SHEET_OWNER=here COORDINATOR_REFRESH=1 live)
+want "no start while Yomato reads 100 of 5000" "0" "$(grep -c . "$SPAWNS")"
+want_in "the tick says why, and where it was read" "spawn: holding — GitHub's hourly API allowance is spent: GraphQL 100 of 5000 left until .*, as Yomato read it" "$out"
+want_in "housekeeping slows" 'housekeeping: slowed to every 20 min' "$out"
+want_in "and the board refresh waits" 'queue: board refresh skipped' "$out"
+tickworld 0.05; GHR=$(( $(date +%s) + 1800 )); ghfleet 4000
+out=$(COORDINATOR_SHEET_OWNER=here live)
+want "Yomato over the mark: the share starts again" "2" "$(grep -c . "$SPAWNS")"
+want_not_in "and nothing slows" 'housekeeping: slowed' "$out"
 
 echo "--- at 95%, nothing is stopped and nothing new starts ---"
 tickworld 0.96
