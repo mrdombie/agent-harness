@@ -46,6 +46,11 @@ echo "sweep $*" >> "$DG_SWEEP_LOG"
 [ "${1:-}" = --apply ] && rm -rf "$DG_ORPHAN"
 echo "removed orphan"
 SH
+# The claim list (claim-lock.sh list --json): the planted file; unreadable when it is missing.
+cat > "$BIN/claimlist" <<'SH'
+#!/usr/bin/env bash
+cat "$DG_CLAIMS"
+SH
 chmod +x "$BIN"/*
 
 ORIGIN="$SB/origin.git"; MAIN="$SB/main"
@@ -59,7 +64,7 @@ printf '{"repo":"example/thing","integrationBranch":"develop","branchPrefix":"tk
 guard() { # <args…> — the SUT with every root in the fixture
   PATH="$BIN:$PATH" HOME="$SB" HARNESS_MAIN_REPO="$MAIN" HARNESS_REPO_ROOT="$MAIN" HARNESS_CFG_PATH="$SB/cfg.json" \
   HARNESS_STATE_DIR="$STATE" COORDINATOR_DF="$BIN/dgfree" DG_BASE="$SB/base" DG_WEIGHTS="$SB/weights" DG_LSOF="$SB/lsof.txt" \
-  DG_SWEEP_LOG="$SB/sweep.log" DG_ORPHAN="$SB/orphan" \
+  DG_SWEEP_LOG="$SB/sweep.log" DG_ORPHAN="$SB/orphan" WT_CLAIM_LIST="$BIN/claimlist" DG_CLAIMS="$SB/claims.json" \
   DISK_GUARD_TMP="$TMPR" DISK_GUARD_BUILD_ROOT="$WT" DISK_GUARD_SCRATCH_ROOT="$SCR" DISK_GUARD_SWEEP="$BIN/sweep" \
   DISK_GUARD_HOLD_FILE="$STATE/coordinator/disk-hold" DISK_GUARD_SCRATCH_MB=1 \
   bash "${GUARD_SUT:-$SUT}" "$@" 2>&1
@@ -74,6 +79,8 @@ build_world() {
   rm -rf "$TMPR" "$WT" "$SCR" "$SB/orphan"; G -C "$MAIN" worktree prune
   mkdir -p "$TMPR" "$WT" "$SCR/proj/sess1/scratchpad" "$SCR/proj/sess2/scratchpad" "$SB/orphan"
   : > "$SB/weights"; : > "$SB/lsof.txt"; : > "$SB/sweep.log"; rm -f "$STATE/coordinator/disk-hold"
+  printf '[]\n' > "$SB/claims.json"
+  for r in $(G -C "$MAIN" ls-remote origin 'refs/claims/*' | cut -f2); do G -C "$MAIN" push -q origin ":$r" 2>/dev/null; done
   # a. driver proofs: one finished, one in use, one recent, one holding a plant.
   wt_at "$TMPR/driver-proof-done/before"; G -C "$MAIN" show HEAD:a.txt > "$TMPR/driver-proof-done/before/copy.txt"
   wt_at "$TMPR/driver-proof-busy/before"
@@ -92,6 +99,14 @@ build_world() {
     mkdir -p "$WT/$b/node_modules/pkg" "$WT/$b/.next"; printf 'x\n' > "$WT/$b/node_modules/pkg/i.js"; printf 'x\n' > "$WT/$b/.next/o"
   done
   printf 'not committed\n' > "$WT/dirty/new.txt"
+  # A build whose ticket holds a claim on origin, one another host's claim names by path, one just
+  # touched: each keeps its install however idle the rest of it looks.
+  for b in sh-13621-claimed listed fresh; do
+    G -C "$MAIN" worktree add -q "$WT/$b" -B "tkt-$b" origin/develop
+    mkdir -p "$WT/$b/node_modules/pkg"; printf 'x\n' > "$WT/$b/node_modules/pkg/i.js"
+  done
+  G -C "$MAIN" push -q origin develop:refs/claims/13621 2>/dev/null
+  jq -n --arg w "$WT/listed" '[{issue: 4242, worktree: $w, branch: "tkt-4242/x", host: "other-mac"}]' > "$SB/claims.json"
   weigh "$WT/idle/node_modules" 4
   # d. the orphan sweep frees 2.
   weigh "$SB/orphan" 2
@@ -103,7 +118,7 @@ build_world() {
   weigh "$SCR/proj/sess1/scratchpad/big" 5
   old "$TMPR" "$WT" "$SCR"
   touch -t 202001020000 "$TMPR/harness-spawn-current"
-  touch "$TMPR/driver-proof-fresh/before/a.txt"
+  touch "$TMPR/driver-proof-fresh/before/a.txt" "$WT/fresh/a.txt"
   printf 'p4242\nn%s/node_modules/pkg/i.js\np4243\nn%s/before\np4244\nn%s/blob\n' \
     "$WT/busy" "$TMPR/driver-proof-busy" "$SCR/proj/sess2/scratchpad/inuse" > "$SB/lsof.txt"
 }
@@ -161,6 +176,10 @@ want_in "  and says why" 'harness-spawn-lost — 1 commit\(s\) on no remote' "$o
 [ -f "$WT/idle/a.txt" ] && ok "and never its files" || bad "a build folder lost a tracked file"
 [ -d "$WT/busy/node_modules" ] && ok "a build folder a process has open keeps its install" || bad "a busy build folder lost its install"
 [ -d "$WT/dirty/node_modules" ] && ok "a build folder with uncommitted work is left whole" || bad "a dirty build folder was touched"
+[ -d "$WT/sh-13621-claimed/node_modules" ] && ok "a build folder whose ticket holds a claim keeps its install" || bad "a claimed build folder lost its install"
+want_in "  and says which claim" 'keep .*/sh-13621-claimed — claim #13621' "$out"
+[ -d "$WT/listed/node_modules" ] && ok "a build folder another host's claim names keeps its install" || bad "a build folder claimed by path lost its install"
+[ -d "$WT/fresh/node_modules" ] && ok "a build folder touched in the last 30 min keeps its install" || bad "a recently touched build folder lost its install"
 want "the sweep ran with --apply" "sweep --apply" "$(cat "$SB/sweep.log")"
 [ -d "$SCR/proj/sess1/scratchpad/big" ] && bad "a stale big scratchpad folder survived" || ok "a stale big scratchpad folder is removed"
 [ -d "$SCR/proj/sess2/scratchpad/inuse" ] && ok "a scratchpad folder with a file open is kept" || bad "a scratchpad folder in use was removed"
@@ -200,6 +219,50 @@ out=$(PATH="$SB/nolsof" HOME="$SB" HARNESS_MAIN_REPO="$MAIN" HARNESS_REPO_ROOT="
   DISK_GUARD_HOLD_FILE="$STATE/coordinator/disk-hold" "$SB/nolsof/bash" "$SUT" clean --apply 2>&1)
 want_in "it says so" 'no lsof here' "$out"
 [ -d "$TMPR/driver-proof-done" ] && ok "and removes nothing" || bad "it removed a folder it could not see the users of"
+
+echo "--- the claim list unreadable: nothing is removed anywhere ---"
+build_world; free_is 20; rm -f "$SB/claims.json"
+out=$(guard clean --apply)
+want_in "it says so" 'the claim list could not be read .*cleaning nothing' "$out"
+[ -d "$TMPR/driver-proof-done" ] && [ -d "$TMPR/harness-spawn-old" ] && [ -d "$WT/idle/node_modules" ] \
+  && [ -d "$SCR/proj/sess1/scratchpad/big" ] && ok "and removes nothing, not even the idle folders" || bad "it removed something with the claims unread"
+want "nor runs the sweep" "" "$(cat "$SB/sweep.log")"
+build_world; free_is 20; G -C "$MAIN" remote set-url origin "$SB/no-such-origin.git"
+out=$(guard clean --apply); G -C "$MAIN" remote set-url origin "$ORIGIN"
+[ -d "$WT/idle/node_modules" ] && [ -d "$TMPR/driver-proof-done" ] && ok "origin's claim refs unreadable: nothing is removed either" \
+  || bad "it removed something with origin unreachable"
+
+echo "--- a recency test that errors keeps everything (bfs rejects a timestamp and prints nothing) ---"
+build_world; free_is 20
+mkdir -p "$SB/badfind"; printf '#!/usr/bin/env bash\necho "find: Invalid timestamp" >&2; exit 1\n' > "$SB/badfind/find"; chmod +x "$SB/badfind/find"
+out=$(PATH="$SB/badfind:$PATH" guard clean --apply)
+[ -d "$TMPR/driver-proof-done" ] && [ -d "$WT/idle/node_modules" ] && ok "a failing find removes nothing" || bad "a failing find let the idle test pass"
+
+echo "--- plant the absence: the claim rule, deleted, loses the claimed build's install ---"
+mkdir -p "$SB/kitc"; cp -R "$HERE" "$SB/kitc/scripts"
+python3 -I - "$SB/kitc/scripts/worktree-lib.sh" <<'PY2'
+import sys
+p = sys.argv[1]; s = open(p).read()
+t = [l for l in s.splitlines(True) if 'case "$WT_CLAIM_NUMS" in' in l]
+assert len(t) == 1; open(p, "w").write(s.replace(t[0], "", 1))
+PY2
+grep -qF 'case "$WT_CLAIM_NUMS" in' "$SB/kitc/scripts/worktree-lib.sh" && bad "the claim plant did not land" || {
+  build_world; free_is 20; GUARD_SUT="$SB/kitc/scripts/disk-guard.sh" guard clean --apply >/dev/null
+  [ -d "$WT/sh-13621-claimed/node_modules" ] && bad "planted (claim by ticket): the claimed install survived, so this suite cannot see the rule" \
+    || ok "planted (claim by ticket): the claimed build loses its install, so the rule is what kept it"
+}
+python3 -I - "$SB/kitc/scripts/disk-guard.sh" <<'PY2'
+import sys
+p = sys.argv[1]; s = open(p).read()
+t = [l for l in s.splitlines(True) if 'if ! wt_claims_load "$CLAIM_REPO"' in l]
+assert len(t) == 1; open(p, "w").write(s.replace(t[0], "", 1))
+PY2
+cp "$HERE/worktree-lib.sh" "$SB/kitc/scripts/worktree-lib.sh"
+grep -qF 'if ! wt_claims_load "$CLAIM_REPO"' "$SB/kitc/scripts/disk-guard.sh" && bad "the unreadable plant did not land" || {
+  build_world; free_is 20; rm -f "$SB/claims.json"; GUARD_SUT="$SB/kitc/scripts/disk-guard.sh" guard clean --apply >/dev/null
+  [ -d "$SCR/proj/sess1/scratchpad/big" ] && bad "planted (claims unread): the scratchpad folder survived, so this suite cannot see the rule" \
+    || ok "planted (claims unread): a folder goes, so the stop is what kept everything"
+}
 
 echo "--- plant the absence: each keep-rule, deleted, loses the folder it alone protects ---"
 # In a copy of the kit's scripts, never the tree under test.

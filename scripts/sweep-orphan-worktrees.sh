@@ -81,23 +81,12 @@ now=$(date -u +%s)
 SEE=1; wt_can_see_processes && wt_cwds_load || SEE=0
 
 # ---- worktrees -----------------------------------------------------------------
+# One claim check for every deleter (worktree-lib.sh): origin's refs, the claim list, the lockfiles.
 CLAIMS_OK=1
-CLAIM_REFS=$(perl -e 'alarm shift; exec @ARGV' 20 git -C "$MAIN_REPO" ls-remote origin 'refs/claims/*' 2>/dev/null) || CLAIMS_OK=0
+wt_claims_load "$MAIN_REPO" || CLAIMS_OK=0
 
-ticket_of() { printf '%s' "$1" | sed -n 's/^[A-Za-z_]*-\{0,1\}\([0-9][0-9]*\).*/\1/p'; }
+ticket_of() { wt_ticket_of "$1"; }
 branch_of() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null; }
-
-claim_on() { # <worktree> — echoes what claims it
-  local n src form
-  for src in "$(basename "$1")" "$(branch_of "$1")"; do
-    n=$(ticket_of "$src"); [ -n "$n" ] || continue
-    for form in "$n" "#$n"; do
-      [ -d "$CLAIMS_DIR/$form.lock" ] && { echo "lockfile $form.lock"; return 0; }
-    done
-    grep -q "refs/claims/$n\$" <<<"$CLAIM_REFS" && { echo "refs/claims/$n on origin"; return 0; }
-  done
-  return 1
-}
 
 # Every branch's PRs and every named ticket's state, in one query per 40 worktrees.
 # FORGE lines: "B<TAB>branch<TAB>state<TAB>number<TAB>headOid" and "T<TAB>number<TAB>state".
@@ -192,7 +181,9 @@ for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
   if [ "$common" != "$MAIN_COMMON" ] && [ "$(origin_of "$wt")" != "$MAIN_ORIGIN" ]; then
     keep "$wt" "a worktree of another repo"; continue
   fi
-  if why=$(claim_on "$wt"); then keep "$wt" "live claim ($why)"; continue; fi
+  why=$(wt_claim_holder "$wt"); crc=$?
+  [ "$crc" = 2 ] && { keep "$wt" "claims could not be read for it"; continue; }
+  [ "$crc" = 0 ] && { keep "$wt" "live claim ($why)"; continue; }
   if why=$(wt_run_holder "$real"); then keep "$wt" "a live run holds it ($why)"; continue; fi
   [ "$SEE" = 1 ] || { keep "$wt" "cannot see processes (no lsof)"; continue; }
   if pid=$(wt_occupant "$real"); then keep "$wt" "in use (pid $pid)"; continue; fi

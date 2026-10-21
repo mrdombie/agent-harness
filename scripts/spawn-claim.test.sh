@@ -378,6 +378,10 @@ spawn_and_wait() { # a detached spawn under the caller's env; waits for its post
 }
 srv() { sed -n "${1}p" "$OUT/srvpids" 2>/dev/null; }
 export SPAWN_TEST_SRVPIDS="$OUT/srvpids" SPAWN_TEST_RUNID="$OUT/runid"
+# The cache pass reads the claims before it cleans: these trees have no origin, so no claim holds them.
+printf '#!/usr/bin/env bash\necho "[]"\n' > "$SB/no-claims"; printf '#!/usr/bin/env bash\n:\n' > "$SB/no-claim-refs"
+chmod +x "$SB/no-claims" "$SB/no-claim-refs"
+export WT_CLAIM_LIST="$SB/no-claims" WT_CLAIM_REFS="$SB/no-claim-refs"
 
 # 8a. the run's noted worktree: its server stops, a sibling worktree's does not.
 TKT=4801 SPAWN_TEST_SERVE="$SB/wt-801 $SB/wt-802" SPAWN_TEST_NOTE="$SB/wt-801" spawn_and_wait
