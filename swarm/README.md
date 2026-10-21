@@ -20,6 +20,7 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `report.sh` | One screen, one JSON, one push. |
 | `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. When the live view does not answer it shows the coordinator's last check (`last check 10:52 · 3 building · next 10:57`), or `coordinator silent since 10:40` past ten minutes. |
 | `coordinator-feed.sh` | Signs of life: the coordinator's log followed live, one row per check, build started or finished, red PR and sign-off batch. No model calls. `install.sh coordinator` opens it once in a terminal window; `--open` opens it again. |
+| `keeper.sh` | Keeps one interactive session (the coordinator tab) going. `keeper.sh adopt <session-id> [cwd]` names it in `$STATE_DIR/coordinator/keeper.json`; every 15 minutes (`install.sh keeper`, opt-in) a pass that finds its transcript quiet for 40 minutes and no claude process holding it (`~/.claude/sessions/<pid>.json`, or the id in a claude's args) runs one `claude -p --resume <id> "<prompt>"` from its cwd, under a lock and a 30-minute limit, unless the usage hold or the swarm hold is on. One line per decision in `$STATE_DIR/coordinator/keeper.log`. Stop it: `install.sh uninstall keeper`. |
 | `install.sh` | Writes and loads the timers. `status` reads back what is loaded. |
 | `detach.sh` | Runs a command in a session of its own. |
 
