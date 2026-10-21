@@ -392,7 +392,7 @@ export function branchTicket(b, pre = BRANCH_PREFIX) {
 
 // ticket -> its newest open pull request, by closing reference or by branch:
 // its number, whether it is red, and whether it waits on the owner's sign-off.
-function prRowsByTicket(file = PRS_FILE, heads = (readJsonCached(PR_STATES_FILE) || {}).heads || null) {
+export function prRowsByTicket(file = PRS_FILE, heads = (readJsonCached(PR_STATES_FILE) || {}).heads || null) {
   const rows = readJsonCached(file)
   const by = {}
   if (!Array.isArray(rows)) return by
@@ -402,11 +402,11 @@ function prRowsByTicket(file = PRS_FILE, heads = (readJsonCached(PR_STATES_FILE)
     const ts = new Set((p.closingIssuesReferences || []).map((r) => String(r && r.number)).filter((n) => n !== 'undefined'))
     const bt = branchTicket(p.headRefName)
     if (bt) ts.add(bt)
-    const row = { number: p.number, red: prRed(p),
-                  held: (p.labels || []).some((l) => (typeof l === 'string' ? l : l && l.name) === hold),
-                  // A copy read on an older head says nothing about the newest push: no clash, no red from it.
-                  status: heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
-                    ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p) }
+    // A copy read on an older head says nothing about the newest push: no clash, no red from it.
+    const status = heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
+      ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p)
+    const row = { number: p.number, red: ['clash', 'failed'].includes(status.state),
+                  held: (p.labels || []).some((l) => (typeof l === 'string' ? l : l && l.name) === hold), status }
     for (const t of ts) if (!(t in by) || p.number > by[t].number) by[t] = row
   }
   return by

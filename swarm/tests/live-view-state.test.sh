@@ -111,6 +111,11 @@ want "the approval check red under a hold is the sign-off" "Waiting for sign-off
 want "a clash"                                "Clashes with newer code" "$(row_of "$s" 2104 .now.text)"
 want "the design critic still running"        "Waiting for design review" "$(row_of "$s" 2105 .now.text)"
 want "a clash read on an older head is not believed" "Waiting for checks on the newest push" "$(row_of "$s" 2111 .now.text)"
+red=$(cd "$LV" && SWARM_RUNS_DIR="$STATE/runs" BRANCH_PREFIX=tkt- node --input-type=module -e '
+  import { prRowsByTicket } from "./server.mjs"
+  const r = prRowsByTicket(process.argv[1], { "3104": "h3104", "3111": "a-newer-push" })
+  console.log(r["2104"].red + " " + r["2111"].red)' "$STATE/swarm/prs.json")
+want "the board's red believes a clash only on the current head too" "true false" "$red"
 want "a failure outranks running, and says what still runs" "A check failed: Unit tests (2 still running)" "$(row_of "$s" 2112 .now.text)"
 want "each check by its newest run: a failure after a skip fails, a pass after a failure passes" "A check failed: Lesson" "$(row_of "$s" 2110 .now.text)"
 want_not_in "no row's state says success or shipped" '(success|shipped)' "$(printf '%s' "$s" | jq -r '.done[] | "\(.now.text) \(.now.state) \(.lastRun)"' | tr 'A-Z' 'a-z')"
@@ -229,6 +234,11 @@ ended_run 2106 0; ended_run 2107 20; park_line 2107 pm "build asked a question r
 plant server.mjs "    if (!o || at >= o.at) by.set(name, { busy, failed, good, at })" "    by.set(name, { busy: (o && o.busy) || busy, failed: (o && o.failed) || failed, good: (o && o.good) || good, at })"
 got=$(row_of "$(snap "$P")" 2110 .now.text)
 [ "$got" != "A check failed: Lesson" ] && ok "planted: every run of a check counted alike → 2110 reads '$got' → red" || bad "planted: the newest-run rule dropped and the test cannot see it"
+plant server.mjs "    const row = { number: p.number, red: ['clash', 'failed'].includes(status.state)," "    const row = { number: p.number, red: prRed(p),"
+got=$(cd "$P" && SWARM_RUNS_DIR="$STATE/runs" BRANCH_PREFIX=tkt- node --input-type=module -e '
+  import { prRowsByTicket } from "./server.mjs"
+  console.log(prRowsByTicket(process.argv[1], { "3111": "a-newer-push" })["2111"].red)' "$STATE/swarm/prs.json")
+[ "$got" = "true" ] && ok "planted: the board's red from the copy alone → a stale clash is red → red" || bad "planted: the board's red from the copy alone and the test cannot see it ($got)"
 plant server.mjs "heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid" "false"
 got=$(row_of "$(snap "$P")" 2111 .now.text)
 [ "$got" != "Waiting for checks on the newest push" ] && ok "planted: no head check → 2111 reads '$got' → red" || bad "planted: the head check dropped and the test cannot see it"
@@ -238,7 +248,7 @@ got=$(row_of "$(snap "$P")" 2112 .now.text)
 plant server.mjs "export const ownerAsk = (text) => (UNTIL_LAUNCH_PM && !OWNER_ONLY_RE.test(String(text || '')) ? 'PM' : OWNER)" "export const ownerAsk = () => OWNER"
 got=$(row_of "$(SWARM_UNTIL_LAUNCH_PM=true snap "$P")" 2108 .now.text)
 [ "$got" != "Stopped: repair asked a question — next: PM" ] && ok "planted: the until-launch rule dropped → 2108 reads '$got' → red" || bad "planted: the until-launch rule dropped and the test cannot see it"
-plant server.mjs " : openPrState(p) }" " : null }"
+plant server.mjs "'Waiting for checks on the newest push' } : openPrState(p)" "'Waiting for checks on the newest push' } : { state: 'checks', text: 'Waiting for checks' }"
 got=$(row_of "$(snap "$P")" 2101 .now.text)
 [ "$got" != "Waiting for checks (2 running)" ] && ok "planted: no open-PR state → 2101 reads '$got' → red" || bad "planted: the open-PR state dropped and the test cannot see it"
 plant server.mjs "  if (closed && closed.mergedAt && !(open && open.number > closed.number)) {" "  if (false) {"
