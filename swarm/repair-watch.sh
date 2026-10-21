@@ -267,8 +267,9 @@ open_prs() {
 warn_prs() {
   local nb; nb=$(release_nonblocking_json)
   [ "$nb" != "[]" ] || return 0
-  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$nb" --arg pre "$BRANCH_PREFIX" "$RELEASE_NB_JQ"'
-    .[] | select(.headRefName | startswith($pre)) | select(.isDraft | not)
+  # The same PRs open_prs reads, chosen the same way.
+  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$nb" "$RELEASE_NB_JQ"'
+    .[] | select(.headRefName | startswith("'"$BRANCH_PREFIX"'")) | select(.isDraft | not)
     | select([.statusCheckRollup[]? | select((.status // "COMPLETED") != "COMPLETED")] | length == 0)
     | ([.statusCheckRollup[]? | select(release_nb($nb)) | select(release_red) | (.name // .context)] | unique | join(", ")) as $w
     | select($w != "") | [.number, .headRefOid, $w] | @tsv' 2>/dev/null
