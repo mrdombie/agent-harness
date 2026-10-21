@@ -26,8 +26,9 @@
 # Sourced into zsh (an agent's Bash tool is the operator's login shell): run the
 # bash body as a command, since zsh does not split the flag list below.
 if [ -z "${BASH_VERSION:-}" ]; then
-  issue_status_set()  { bash "${KIT_ROOT:?}/scripts/issue-status.sh" set "$@"; }
-  issue_status_mark() { bash "${KIT_ROOT:?}/scripts/issue-status.sh" mark "$@"; }
+  eval '_issue_status_self="${${(%):-%x}:A}"'
+  issue_status_set()  { bash "$_issue_status_self" set "$@"; }
+  issue_status_mark() { bash "$_issue_status_self" mark "$@"; }
   return 0
 fi
 

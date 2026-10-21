@@ -62,6 +62,7 @@ out=$(HARNESS_CFG_PATH="$TDIR/pin.json" read_key "$ENV_SH" "$WORK" merge.method)
 
 plant() { # <name> <sed program> <must-not-match> — a copy of toolkit-env.sh with one death
   mkdir -p "$TDIR/$1/scripts"; sed "$2" "$ENV_SH" > "$TDIR/$1/scripts/toolkit-env.sh"
+  cp "$(dirname "$ENV_SH")/issue-status.sh" "$TDIR/$1/scripts/"   # toolkit-env sources it from beside itself
   if grep -qE "$3" "$TDIR/$1/scripts/toolkit-env.sh"; then fail "plant $1 did not land"; return 1; fi
   printf '%s' "$TDIR/$1/scripts/toolkit-env.sh"
 }
