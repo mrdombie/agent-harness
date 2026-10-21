@@ -821,6 +821,9 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
         8) driver_say "🛑 repair '$bid' — $why. Back on the queue, not parked."
            driver_state_set "$t" park_note "$why"
            return "$DRIVER_E_BUSY" ;;
+        9) driver_say "✋ repair '$bid' — $why"
+           driver_state_set "$t" park_note "a repair fix's test was never run: $why"
+           return "$DRIVER_E_REFUSED" ;;
         *) driver_say "✋ repair '$bid' — $why"
            driver_state_set "$t" park_note "a repair fix is not proved red-then-green by its own test: $why"
            return "$DRIVER_E_REFUSED" ;;

@@ -25,6 +25,7 @@ When the design status is red, those findings are why: fix every one, a Minor to
 - The evidence it still owes, each a task for the capture plan: {{EVIDENCE_TASKS}}
 - The merge of the integration branch, and what conflicted: {{CONFLICTS}}
 - The change as it stands, against the trunk: {{DIFF}}
+- Proof limits: {{PROOF_LIMITS}}
 
 The worktree is on the PR's branch at origin's head. When the PR clashed, the
 driver has run the merge: committed when clean, left in progress for you when

@@ -37,6 +37,7 @@
 #   7  the command cannot be run as given (a placeholder, no such program) — never run
 #   8  it failed on a missing module from an install behind its lockfile, relinked and
 #      taken again, and the install is still behind — the machine's, never the change's
+#   9  a half could not reach the app (no server runs in a proof tree) — never run there
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -126,6 +127,23 @@ _driver_fail_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# NO APP SERVER RUNS IN A PROOF TREE. A Playwright spec named as a proof died on
+# `page.goto: net::ERR_CONNECTION_REFUSED` in both halves, and the second was read as
+# "still fails with the change" about a change nothing had measured. Unless the project
+# says its e2e harness brings the app up (`tests.e2eProofs: true`), an e2e spec is
+# turned back before a tree is built, and a half that could not reach the app is 9.
+DRIVER_PROOF_UNREACHABLE_RE='net::ERR_CONNECTION_REFUSED|page\.goto: net::ERR_|ECONNREFUSED[^[:cntrl:]]{0,40}(localhost|127\.0\.0\.1|::1)'
+DRIVER_PROOF_E2E_HOW='prove it with a unit or DOM test (vitest, a *.test.ts or *.dom.test.tsx) that goes red without the change; the e2e spec can still ship as extra coverage'
+driver_proof_e2e_ok() { [ "$(driver_opt tests.e2eProofs false)" = true ]; }
+# _driver_proof_unreachable <rc> <out-file> — 0 when a failing half could not reach the app.
+_driver_proof_unreachable() {
+  [ "$1" -ne 0 ] && ! driver_proof_e2e_ok && grep -qE -- "$DRIVER_PROOF_UNREACHABLE_RE" "$2" 2>/dev/null
+}
+_driver_proof_unreachable_why() { # <test-file> <out-file>
+  printf '%s could not reach the app (%s): a proof tree runs no app server, so the test was never run there — %s\n' \
+    "$1" "$(grep -oE -- "$DRIVER_PROOF_UNREACHABLE_RE" "$2" 2>/dev/null | head -1)" "$DRIVER_PROOF_E2E_HOW"
+}
+
 # driver_proof_cmd_check <tree> <command> [<test-file>] — 0 when the command can be
 # run verbatim from the tree's root; else prints why and returns 1.
 #
@@ -139,6 +157,11 @@ driver_proof_cmd_check() {
   ph=$(printf '%s' "$cmd" | grep -oE '<[A-Za-z][^<>]*>' | head -1)
   if [ -n "$ph" ]; then
     printf "the command holds a placeholder '%s' and is run verbatim — %s\n" "$ph" "$eg"; return 1
+  fi
+  if ! driver_proof_e2e_ok && { printf '%s' "$tfile" | grep -qE '(^|/)e2e/.*\.spec\.[cm]?[jt]sx?$' \
+       || printf '%s' "$cmd" | grep -qE '(^|[^a-z])playwright[[:space:]]+test'; }; then
+    printf 'an e2e browser spec cannot prove a change here: a proof tree runs no app server, so every page load is refused on both sides — %s\n' "$DRIVER_PROOF_E2E_HOW"
+    return 1
   fi
   # read -a, not `for w in $cmd`: a bare `*.test.ts` would glob against the cwd.
   read -rd '' -a words <<<"$cmd" || true
@@ -293,7 +316,10 @@ _driver_prove_red_green_once() {
   if [ -n "$dbwhy" ]; then
     rm -rf "$tmp"; printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
   fi
-  local red_out after_out
+  local red_out after_out uwhy=""
+  if _driver_proof_unreachable "$rc_red" "$tmp/before.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/before.out")
+  elif _driver_proof_unreachable "$rc_green" "$tmp/after.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/after.out"); fi
+  [ -z "$uwhy" ] || { rm -rf "$tmp"; printf '%s' "$uwhy"; return 9; }
   red_out=$(_driver_fail_lines "$tmp/before.out")
   after_out=$(_driver_fail_lines "$tmp/after.out")
   rm -rf "$tmp"
@@ -346,7 +372,8 @@ _driver_prove_red_green_once() {
 # 0 red with the break, green without · 1 green with the break — the test does not
 # cover that code · 2 red without the break · 3 the answer cannot be checked ·
 # 4 out of time · 5 the tree could not be prepared · 6 it does not type-check ·
-# 7 the command cannot be run as given · 8 a machine fault: an install behind its lockfile
+# 7 the command cannot be run as given · 8 a machine fault: an install behind its lockfile ·
+# 9 a half could not reach the app — never run there
 _driver_prove_by_break_once() {
   local repo="$1" tfile="$2" tsha="$3" bfile="$4" find="$5" repl="$6" cmd="$7"
   local tmp n rc_red rc_green red_out green_out cwhy
@@ -403,9 +430,13 @@ _driver_prove_by_break_once() {
   local dbwhy=""
   [ -s "$tmp/red.db" ] && dbwhy="with the break: $(cat "$tmp/red.db")"
   [ -z "$dbwhy" ] && [ -s "$tmp/green.db" ] && dbwhy="with the code restored: $(cat "$tmp/green.db")"
+  local uwhy=""
+  if _driver_proof_unreachable "$rc_red" "$tmp/red.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/red.out")
+  elif _driver_proof_unreachable "$rc_green" "$tmp/green.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/green.out"); fi
   red_out=$(_driver_fail_lines "$tmp/red.out")
   green_out=$(_driver_fail_lines "$tmp/green.out")
   _driver_break_done
+  [ -z "$uwhy" ] || { printf '%s' "$uwhy"; return 9; }
   if [ -n "$dbwhy" ]; then
     printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
   fi
