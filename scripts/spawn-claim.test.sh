@@ -17,6 +17,7 @@
 #
 #   Nothing here touches the real repo, the real state directory, or the network.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # A git hook exports GIT_DIR / GIT_WORK_TREE; inherited, every git call below
@@ -36,7 +37,7 @@ cleanup() {
   for p in $(lsof -a -d cwd -Fpn 2>/dev/null | awk -v t="$SB_REAL/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2) "/", t) == 1) print p}'); do kill "$p" 2>/dev/null; done
   rm -rf "$SB"
 }
-trap cleanup EXIT
+on_exit_keep_status cleanup
 fail=0
 # The runner's own disk is no case's input here (disk-guard.test.sh and spawn-wall.test.sh plant it).
 export HARNESS_DISK_GUARD=off
@@ -659,4 +660,4 @@ for _ in $(seq 1 20); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"
-exit $fail
+suite_end "$fail"

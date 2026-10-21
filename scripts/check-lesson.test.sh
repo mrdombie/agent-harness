@@ -6,6 +6,7 @@
 # exit code and the line that says what is missing. Nothing here reads the real kit
 # or talks to GitHub; the cases that take the GitHub path run a stub `gh`.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="${SUT:-$HERE/check-lesson.sh}"
@@ -22,7 +23,7 @@ mkdir -p "$HOME"
 
 SB="${TMPDIR:-/tmp}/cl-fixture-$$"
 mkdir -p "$SB"
-trap 'rm -rf "$SB" "$HOME"' EXIT
+on_exit_keep_status 'rm -rf "$SB" "$HOME"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -355,4 +356,4 @@ OUT=$(PATH="$SB/bin:$PATH" bash "$SUT" --repo "$R" --base main --head work --pr 
 expect_rc 2 "a GitHub read that fails refuses (exit 2), never passes"
 first_line "lesson: could not read GitHub, not a missing lesson" "and its first line says so"
 
-exit $fail
+suite_end "$fail"

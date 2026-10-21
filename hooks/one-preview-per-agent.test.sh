@@ -2,11 +2,12 @@
 # Self-test for one-preview-per-agent.sh: a server start under an agent session
 # hands that session's pid to the stopper; anything else hands it nothing.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/one-preview-per-agent.sh"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   — $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d); on_exit_keep_status 'rm -rf "$T"'
 
 # The hook runs under a stand-in agent session: a process whose command names claude.
 run() { # <command> → the stopper's recorded arguments, or nothing
@@ -38,4 +39,4 @@ sleep 3
 [ -z "$(cat "$T/calls")" ] && ok "outside an agent session nothing is stopped" || fail "no session: '$(cat "$T/calls")'"
 
 echo "one-preview-per-agent: $PASS passed, $FAIL failed"
-[ "$FAIL" = 0 ]
+suite_end "$FAIL"

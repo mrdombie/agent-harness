@@ -8,6 +8,7 @@
 # dropped from the kit skill, and each reads the project fact from harness.json
 # rather than naming any project.
 set -u
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 cd "$(dirname "$0")/.." || exit 2
 SKILL="${CLAIM_SKILL:-skills/claim/SKILL.md}"
 [ -f "$SKILL" ] || { echo "missing $SKILL"; exit 2; }
@@ -40,4 +41,4 @@ has "the build loop runs only the changed-file gates"         "jq -r '.gates.cha
 
 echo
 [ "$fail" -eq 0 ] && echo "claim-skill-ports: all cases pass" || echo "claim-skill-ports: FAILURES above"
-exit $fail
+suite_end "$fail"

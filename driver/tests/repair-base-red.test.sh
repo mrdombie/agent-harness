@@ -14,10 +14,10 @@
 #   self-check does not count a gate red only on those base tests
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-# The exit is the verdict: an abort mid-suite (set -u) must not leave the cleanup's 0 as it.
-driver_fixture; trap 'rc=$?; rm -rf "$FIX"; [ "$rc" = 0 ] && [ "$FAILED" = 0 ] || exit 1' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../steps/repair.sh" || exit 1
 . "$HERE/../steps/self-check.sh" || exit 1
@@ -239,4 +239,4 @@ runs "$BASE_SHA" unit:success:910
 base_wait_release "$FIX/queue-stub.sh" >/dev/null
 want_in "the release note carries it"          "^add 808 --class repair --note Base-red wait over .*The brief this repair was sent with: Also rename the button to Save. --first$" "$(cat "$FIX/queue.log" 2>/dev/null)"
 
-exit "$FAILED"
+suite_end "$FAILED"

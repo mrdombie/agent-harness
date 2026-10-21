@@ -6,13 +6,14 @@
 # out of a copy of the kit, and the case it holds must then fail.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 unset KIT_ROOT HARNESS_KIT_ROOT
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; HOLDER=""
 # Never `kill 0`: that signals this whole process group, the shell that ran the suite too.
-trap '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; rm -rf "$FIX"' EXIT
+on_exit_keep_status '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; rm -rf "$FIX"'
 git config --global --get user.email >/dev/null 2>&1 || export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 C="$STATE/coordinator"
 SI="$HERE/shared-install.sh"
@@ -141,7 +142,7 @@ want "a hold its writer stopped rewriting holds nothing" "free" "$(tick_reads_ho
 rm -f "$HOLDF"
 
 echo "--- a process in the clone: only one reading node_modules holds it, and never the hold ---"
-SITTER=""; trap '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; [ -z "$SITTER" ] || kill "$SITTER" 2>/dev/null; rm -rf "$FIX"' EXIT
+SITTER=""; on_exit_keep_status '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; [ -z "$SITTER" ] || kill "$SITTER" 2>/dev/null; rm -rf "$FIX"'
 reset_install "$V1"; (cd "$REPO" && exec sleep 60) & SITTER=$!; sleep 1
 OUT=$(run)
 want "a shell sitting in the clone does not hold it" "1" "$(npm_runs)"
@@ -235,4 +236,4 @@ done
 
 echo
 [ "$FAILED" -eq 0 ] && echo "shared-install: all cases pass" || echo "shared-install: FAILURES above"
-exit "$FAILED"
+suite_end "$FAILED"

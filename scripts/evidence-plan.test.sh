@@ -4,6 +4,7 @@
 # no script or step may build the plan's path from the ticket alone.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 pass=0; fail=0
@@ -40,4 +41,4 @@ hits=$(grep -rnE '(evidence\.dir|EV_DIR)[^|;]*/\$\{?t\}?/plan\.json' "$ROOT/driv
 [ -z "$hits" ] && ok "no step builds the plan's path from the ticket" || bad "the plan's path is built from the ticket: $hits"
 
 echo "evidence-plan: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

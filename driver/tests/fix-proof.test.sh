@@ -11,9 +11,10 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../ai-step.sh" || exit 1
 . "$HERE/../steps/fix.sh" || exit 1
@@ -143,4 +144,4 @@ want_in "the park names what was not proved" 'not proved red-then-green' "$(driv
 want_in "and why, so the next run is told" 'F7: .*FAIL  mode.test > new' "$(driver_state_get 501 park_note)"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
-exit $FAILED
+suite_end "$FAILED"

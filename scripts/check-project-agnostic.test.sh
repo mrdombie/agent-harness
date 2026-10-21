@@ -14,6 +14,7 @@
 # Every case runs against a THROWAWAY CLONE. Nothing here can touch the working
 # tree it was launched from.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -21,7 +22,7 @@ SB="${TMPDIR:-/tmp}/project-agnostic-fixture-$$"
 FAILURES=0
 
 cleanup() { rm -rf "$SB"; }
-trap cleanup EXIT
+on_exit_keep_status cleanup
 
 ok()   { echo "  ok   — $1"; }
 fail() { echo "  FAIL — $1"; FAILURES=$((FAILURES + 1)); }
@@ -117,4 +118,4 @@ if [ "$FAILURES" -eq 0 ]; then
 else
   echo "project-agnostic fixture: $FAILURES check(s) failed"
 fi
-exit $([ "$FAILURES" -eq 0 ] && echo 0 || echo 1)
+suite_end "$FAILURES"

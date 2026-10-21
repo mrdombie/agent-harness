@@ -5,10 +5,11 @@
 # that passes alone, and the fix step asked the PM "re-run it, yes or no?".
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/self-check.sh" || exit 1
 
 cfg() { jq "$1" "$REPO/.claude/harness.json" > "$FIX/hc" && mv "$FIX/hc" "$REPO/.claude/harness.json"; }
@@ -58,4 +59,4 @@ want "it is sent to fix"                 "30" "$rc"
 want_not_in "and not run again"          'on the machine, not the change' "$out"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
-exit $FAILED
+suite_end "$FAILED"

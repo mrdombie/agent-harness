@@ -10,10 +10,11 @@
 # Each block is cut from skills/finish/SKILL.md and executed. Then each guard is
 # planted dead in a copy of the skill, and the case it guards must go red.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL="$KIT/skills/finish/SKILL.md"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-ev-sites-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-ev-sites-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 mkdir -p "$SB/bin" "$SB/fx"
 cat > "$SB/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -126,4 +127,4 @@ plant "Gate 2 refuses but carries on"   '    echo "   Do not capture locally. Re
     exit 1' '    echo "   Do not capture locally. Re-run this step when wait exits 0." >&2' 'fell through to local capture with the flag off'
 plant "Gate 5 strict equality again"    'if ! AT_HEAD=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" at-head "$UI_GATE_SHA" "$HEAD_SHA"); then' 'if ! AT_HEAD=$(false); then' "refused a verdict under CI's evidence commit"
 plant "Gate 5 waves everything through" 'if ! AT_HEAD=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" at-head "$UI_GATE_SHA" "$HEAD_SHA"); then' 'if ! AT_HEAD=$(true); then' 'passed a verdict with code after it'
-exit $fail
+suite_end "$fail"

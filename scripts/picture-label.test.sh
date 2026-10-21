@@ -4,10 +4,11 @@
 # original, byte for byte.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PL="$HERE/picture-label.py"
 PE="$HERE/picture-evidence.py"
-T=$(mktemp -d "${TMPDIR:-/tmp}/pl-test.XXXXXX"); trap 'rm -rf "$T" "$HERE/.picture-label.plant.py"' EXIT
+T=$(mktemp -d "${TMPDIR:-/tmp}/pl-test.XXXXXX"); on_exit_keep_status 'rm -rf "$T" "$HERE/.picture-label.plant.py"'
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok  $1"; }
 bad() { fail=$((fail + 1)); echo "  FAIL $1"; }
@@ -83,4 +84,4 @@ plant "the phone inside a frame is not labelled" case_label \
   '    rows = pe.frame_regions(pic, routes)' '    rows = [r for r in pe.frame_regions(pic, routes) if r[4] != "phone"]'
 
 echo "picture-label: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

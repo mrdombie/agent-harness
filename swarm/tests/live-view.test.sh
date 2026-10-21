@@ -8,6 +8,7 @@
 # has to still be there.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture
@@ -17,10 +18,10 @@ swarm_fixture
 # out from under the suite the moment it is killed — every later case then reads
 # an empty directory and the suite reports a machine with no agents as correct.
 sleep 30 & DEAD=$!; kill "$DEAD" 2>/dev/null; wait "$DEAD" 2>/dev/null
-trap 'rm -rf "$FIX"' EXIT
+on_exit_keep_status 'rm -rf "$FIX"'
 SERVER="$HERE/../live-view/server.mjs"
 SERVER_URLPATH="$SERVER"; command -v cygpath >/dev/null 2>&1 && SERVER_URLPATH=$(cygpath -m "$SERVER")
-command -v node >/dev/null 2>&1 || { echo "SKIP live-view: node is not on PATH"; exit 0; }
+command -v node >/dev/null 2>&1 || { suite_skip "SKIP live-view: node is not on PATH"; }
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 run() { # <ticket> <pid> [ended-exit-code]
@@ -1057,4 +1058,4 @@ got=$(real_claims "$CP" | jq '[.elsewhere[]?] | length')
 [ "$got" = "0" ] && ok "planted: the list exits 1 again → $got remote rows → red" || bad "planted: the list exits 1 and the test cannot see it ($got)"
 rm -rf "$CP" "$CLS" "$STATE/swarm/claims.json"
 
-exit $FAILED
+suite_end "$FAILED"

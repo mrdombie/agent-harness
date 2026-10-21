@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Fixture test for worktree-sparse.sh — agent worktrees that leave configured folders out.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$HERE/worktree-sparse.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
 
 SB=$(mktemp -d); SB=$(cd "$SB" && pwd -P)
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -61,4 +62,4 @@ out=$(add "$SB/glob.json" "$SB/wt-glob" --detach develop)
 
 echo
 [ "$fail" -eq 0 ] && echo "worktree-sparse: all cases pass" || echo "worktree-sparse: FAILURES above"
-exit $fail
+suite_end "$fail"

@@ -7,9 +7,10 @@
 # question for a person.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 BT="$HERE/../build-ticket"
 . "$HERE/../steps/plan.sh" || exit 1
 fix_brief plan superpowers:writing-plans
@@ -110,4 +111,4 @@ rc=0; driver_step_plan 705 >/dev/null 2>&1 || rc=$?
 want "it goes ahead" "0" "$rc"
 want "the ref is unchanged" "https://claude.ai/artifact/desk-v3 — approved on #705" "$(driver_state_get 705 design_ref)"
 
-exit $FAILED
+suite_end "$FAILED"

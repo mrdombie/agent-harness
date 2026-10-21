@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Plant tests for block-push-no-verify.sh. Exit 1 on any mismatch.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(dirname "$0")/block-push-no-verify.sh"; fail=0
 t(){ want=$1; shift; out=$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | "$H"); r=allow; [ -n "$out" ] && r=deny; mark=OK; [ "$r" = "$want" ] || { mark=MISMATCH; fail=1; }; printf '%-8s want=%-5s got=%-5s %s\n' "$mark" "$want" "$r" "$1"; }
 t deny  'git push --no-verify origin x'
@@ -11,4 +12,4 @@ t allow 'git commit --no-verify -m x; git push'
 t allow 'git push -n origin x'
 t allow 'git push origin x'
 t allow 'echo "never git push --no-verify" > notes.md'
-exit $fail
+suite_end "$fail"

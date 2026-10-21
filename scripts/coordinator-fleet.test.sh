@@ -13,11 +13,12 @@
 #   the self-update      → once per interval, never two at once, a failure keeps the old version
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/.." && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 Q="$HERE/coordinator-queue.sh"
 
 for s in reconcile sweep notify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
@@ -276,4 +277,4 @@ want_in "a current machine: version, disk, builds, last tick" '<br>mac: harness 
 want_in "a behind one says so, in amber"              '<br>box: harness 0\.7\.10 <span class="behind">behind — starts nothing new until it updates to 0\.7\.12</span> · 37 GB disk free · 0 building · last tick 10 min ago' "$r"
 grep -q '\.behind{color:var(--warn)' "$KIT/swarm/live-view/index.html" && ok "behind is drawn in the page's amber" || bad "behind has no amber rule"
 
-exit $FAILED
+suite_end "$FAILED"

@@ -5,9 +5,10 @@
 # block). A later push that touches a screen promotes the build.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/review.sh" || exit 1
 . "$HERE/../steps/compare.sh" || exit 1
 . "$HERE/../steps/ship.sh" || exit 1
@@ -100,4 +101,4 @@ want_in "tooling"  '^Change tier: tooling — .*one review round' "$(_driver_shi
 want_in "screen"   '^Change tier: screen — .*sign-off apply' "$(_driver_ship_tier_line 703 screen "it changes a screen")"
 want_in "ship writes it into the body" '\$tierline' "$(sed -n '/body=\$(cat <<PRBODY/,/^PRBODY/p' "$HERE/../steps/ship.sh")"
 
-exit $FAILED
+suite_end "$FAILED"

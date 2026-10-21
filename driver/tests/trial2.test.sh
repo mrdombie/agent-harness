@@ -10,12 +10,13 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 # The gate cap at 1, so a second red here is past it.
 export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 
 jq '.gates = {"local": ["echo lint-ok"]}
     | .worktreeRoot = "'"$FIX"'/trees"
@@ -1016,4 +1017,4 @@ rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
 want "a review written as a string refuses rather than running nothing" "24" "$rc"
 want_in "and says what shape it reads" 'owed, review, record' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

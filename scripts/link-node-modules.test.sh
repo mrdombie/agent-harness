@@ -10,9 +10,10 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 SCRIPT="$(cd "$(dirname "$0")" && pwd)/link-node-modules.sh"
 
-FIX=$(mktemp -d); trap 'rm -rf "$FIX"' EXIT
+FIX=$(mktemp -d); on_exit_keep_status 'rm -rf "$FIX"'
 FIX=$(cd "$FIX" && pwd -P)
 FAILED=0
 ok()   { printf 'OK       %s\n' "$1"; }
@@ -310,4 +311,4 @@ bash "$FIX/kit/link-node-modules.sh" --if-stale "$PS" "$KPW" >/dev/null 2>&1
 want "…the claimed tree was replaced" "yes" "$([ -f "$KPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
 printf '[]\n' > "$FIX/claims.json"
 
-[ "$FAILED" = 0 ] && echo "PASS" || { echo "FAIL"; exit 1; }
+suite_end "$FAILED"

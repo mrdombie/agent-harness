@@ -10,6 +10,7 @@
 #   The first case is the incident itself: a case called "a writer can post for a
 #   teammate" leaves a file that stays, and nothing says where it went.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="${SUT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-deleted-tests.sh}"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
@@ -26,7 +27,7 @@ mkdir -p "$HOME"
 
 SB="${TMPDIR:-/tmp}/dt-fixture-$$"
 mkdir -p "$SB"
-trap 'rm -rf "$SB" "$HOME"' EXIT
+on_exit_keep_status 'rm -rf "$SB" "$HOME"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -579,4 +580,4 @@ expect_not_out 'turned off' "and nothing is reported as turned off"
 
 echo
 [ "$fail" -eq 0 ] && echo "check-deleted-tests: all cases pass" || echo "check-deleted-tests: FAILURES above"
-exit $fail
+suite_end "$fail"

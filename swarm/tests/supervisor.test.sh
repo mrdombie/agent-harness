@@ -6,9 +6,10 @@
 # comes back after a restart does not fire every job at once, and a second
 # supervisor on the same state directory refuses rather than doubling every pass.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 SUP="$HERE/../supervisor.sh"
 fix_ready widgets 301 302
 fix_live widgets 0
@@ -55,4 +56,4 @@ out=$(SWARM_PROGRAMMES=gadgets SWARM_REPAIR_ONLY=infra SWARM_NOW=$(date +%s) bas
 want_in    "its programme is scheduled"      '^40[12]'  "$(cat "$SPAWNS")"
 want_not_in "the other programme is left alone" '^30[12]' "$(cat "$SPAWNS")"
 
-exit $FAILED
+suite_end "$FAILED"

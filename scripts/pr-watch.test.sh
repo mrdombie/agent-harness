@@ -3,8 +3,9 @@
 # an empty rollup never reads green, and a watch with nothing to report gives up
 # with TIMEOUT instead of running for ever. Then the plants.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/pr-watch-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/pr-watch-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 mkdir -p "$SB/bin" "$SB/pr"
 cat > "$SB/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -55,4 +56,4 @@ echo "plants"
 plant "an empty rollup reads green" 'elif ($c | length) > 0 and ($c' 'elif ($c' 'an empty rollup reported'
 plant "a running check reads green" '(SUCCESS|NEUTRAL|SKIPPED)' '(SUCCESS|NEUTRAL|SKIPPED|IN_PROGRESS|)' 'a check still running reported'
 plant "the watch never gives up" '-ge "$MAX" ]' '-ge 999999999 ]' 'an empty rollup reported'
-exit $fail
+suite_end "$fail"

@@ -4,10 +4,11 @@
 # slow housekeeping sat between one tick's starts and the next.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 HK="$HERE/coordinator-housekeeping.sh"
 Q="$HERE/coordinator-queue.sh"
@@ -162,4 +163,4 @@ out=$(COORDINATOR_SHADOW=0 bash "$HK" 2>&1)
 want_in "with the holder gone, it runs"    '^reconcile --quiet' "$(cat "$FIX/house.log")"
 want "and frees its lock"                  "" "$(ls -d "$C/housekeeping.lock" 2>/dev/null)"
 
-exit $FAILED
+suite_end "$FAILED"

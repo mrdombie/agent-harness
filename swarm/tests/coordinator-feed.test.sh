@@ -4,10 +4,11 @@
 # Then the plant: a kind deleted from the feed falls through to the plain row.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 FAILED=0
 F="$HERE/../coordinator-feed.sh"
 export NO_COLOR=1
@@ -63,4 +64,4 @@ pout=$(bash "$P/swarm/coordinator-feed.sh" --render < "$FIX/coordinator.out.log"
   && bad "planted: the red row deleted and it still renders → the test cannot see it" \
   || ok "planted: the red row deleted → '$pout' → red"
 
-exit $FAILED
+suite_end "$FAILED"

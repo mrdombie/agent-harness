@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Plant tests for no-repo-settings-write.sh and its classifier. Exit 1 on any mismatch.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(dirname "$0")/no-repo-settings-write.sh"; L="$(dirname "$0")/lib/repo-settings-write.sh"; fail=0
 t(){ want=$1; shift; out=$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | CLAIM_RUN_ID=run-1 HARNESS_DRIVER_RUN= bash "$H"); r=allow; [ -n "$out" ] && r=deny; mark=OK; [ "$r" = "$want" ] || { mark=MISMATCH; fail=1; }; printf '%-8s want=%-5s got=%-5s %s\n' "$mark" "$want" "$r" "$1"; }
 t deny  'gh api -X PUT repos/o/r/rulesets/1 --input r.json'
@@ -33,4 +34,4 @@ out=$(jq -nc '{tool_name:"Bash",tool_input:{command:"gh api -X PUT repos/o/r/rul
 # The argv form the driver's gh shim uses.
 bash "$L" gh api -X PUT repos/o/r/rulesets/1 && echo "OK       argv form refuses a ruleset write" || { echo "MISMATCH argv form let a ruleset write through"; fail=1; }
 bash "$L" gh api repos/o/r/rulesets && { echo "MISMATCH argv form refused a read"; fail=1; } || echo "OK       argv form allows a read"
-exit $fail
+suite_end "$fail"

@@ -6,9 +6,10 @@
 # (polish-list.sh take) is cleared; a repair takes none on.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/review.sh" || exit 1
 
 wt="$FIX/wt601"
@@ -67,4 +68,4 @@ grep -q '_driver_review_touched "$t" "$ans_file"' "$HERE/../steps/review.sh" \
   && grep -A1 '_driver_review_touched "$t" "$ans_file"' "$HERE/../steps/review.sh" | grep -q 'verdict=' \
   && ok "the step calls it and re-reads the verdict" || bad "the review step does not call it, or acts on the verdict it had before"
 
-exit $FAILED
+suite_end "$FAILED"

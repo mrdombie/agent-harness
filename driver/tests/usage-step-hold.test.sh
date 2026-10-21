@@ -8,9 +8,10 @@
 #   - a wait past its limit goes back on the queue: never a park, never a label.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 BT="$HERE/../build-ticket"
 . "$HERE/../driver-env.sh" || exit 1
 . "$HERE/../state.sh" || exit 1
@@ -93,4 +94,4 @@ jq -nc --argjson r "$(( SWARM_NOW + 86400 ))" '{type:"rate_limit_event", rate_li
 out=$(bash "$BT" 704 --steps "plan" 2>&1)
 want_in "a week at 95% holds the step" '⏸ plan: usage hold — the seven_day window is at 95%' "$out"
 
-exit "$FAILED"
+suite_end "$FAILED"

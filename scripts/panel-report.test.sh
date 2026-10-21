@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # panel-report.test.sh — the report counts from the files, and the gate is honest.
 set -u; cd "$(dirname "$0")/.." || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 T=$(mktemp -d); fail=0
 ok(){ if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 row(){ printf 'screens\t%s\t%s\tC%s\t%s\t\t%s\t-\tQuestion %s\t\n' "$1" "$2" "$3" "$4" "$4" "$2"; }
@@ -15,4 +16,4 @@ ok "an older verdict name still counts as not in scope" 'grep -q "<b>1</b><span>
 out2=$(python3 scripts/panel-report.py "$T" --bar 80)
 ok "70% at an 80 bar stops the build" '[[ "$out2" == *"STOP"* ]] && grep -q "Stops the build" "$T/report.html"'
 ok "the one missing question is listed" 'grep -q "Question 9" "$T/report.html"'
-rm -rf "$T"; exit $fail
+rm -rf "$T"; suite_end "$fail"

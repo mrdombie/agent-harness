@@ -5,10 +5,11 @@
 # a frozen run is noticed. Plus the events, the owner channel and the judge.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
@@ -1282,4 +1283,4 @@ touch -t 202601010000 "$C/shared-install-hold"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
 want_in "a hold not rewritten for two hours holds nothing" '801' "$(spawned)"
 
-exit $FAILED
+suite_end "$FAILED"

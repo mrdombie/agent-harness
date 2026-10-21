@@ -3,10 +3,11 @@
 # lists, and nothing else; and /agent-harness:finish calls it after the close.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 S="$HERE/close-batch-children.sh"
 
 # The stub answers `issue view <n> --json body|state -q …` from $FIX/gh/issue-<n>.json.
@@ -44,4 +45,4 @@ want_in "Step 7d runs close-batch-children.sh with the ticket and the PR" \
 after=$(printf '%s\n' "$step" | awk '/gh issue close "\$ISSUE_NUM"|close-ticket\.sh" "\$ISSUE_NUM"/{c=NR} /close-batch-children\.sh/{b=NR} END{print (c && b > c) ? "after" : "before"}')
 want "and only once the ticket itself is closed" "after" "$after"
 
-exit $FAILED
+suite_end "$FAILED"

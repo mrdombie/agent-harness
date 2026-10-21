@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Self-test for no-repo-wide-format.sh — the formatter half and the
 # whole-app-check half, each with the allow case that proves it discriminates.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 D="$(cd "$(dirname "$0")" && pwd)"; H="$D/no-repo-wide-format.sh"; fail=0
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); on_exit_keep_status 'rm -rf "$TMP"'
 # A package.json whose plain names are WHOLE-APP, so `full()` answers truthfully
 # rather than on whatever repo the suite happens to run in.
 cat > "$TMP/package.json" <<'PKG'
@@ -45,4 +46,4 @@ if printf '%s' "$out" | grep -q 'just check'; then echo "ok   the configured cha
 else echo "FAIL the message ignored HARNESS_GATES_CHANGED"; fail=1; fi
 
 [ "$fail" -eq 0 ] && echo "no-repo-wide-format: all cases pass"
-exit $fail
+suite_end "$fail"

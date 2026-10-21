@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fixture test for check-first-look.sh: real critic-shaped answers in, exit code and reason out.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="${SUT:-$HERE/check-first-look.sh}"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
@@ -54,4 +55,4 @@ grep -q 'check-first-look.sh' "$HERE/../skills/finish/SKILL.md" && ok "finish ru
 # The independent judge runs the check before it records a design verdict; the driver records none.
 grep -q 'check-first-look.sh' "$HERE/critic-judge.sh" && ok "the independent judge runs the check" || bad "scripts/critic-judge.sh does not run check-first-look.sh"
 
-exit $fail
+suite_end "$fail"

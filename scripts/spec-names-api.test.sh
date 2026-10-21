@@ -10,6 +10,7 @@
 # from one intervention on 2026-05-24 and contradicted each other whenever the
 # contract was empty — or listed only routes that already EXISTED.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/spec-names-api.sh"
 PASS=0; FAIL=0
 yes() { if printf '%s\n' "$2" | bash "$SUT"; then PASS=$((PASS+1)); echo "  ok   — names an API: $1"; else FAIL=$((FAIL+1)); echo "  FAIL — should name an API: $1"; fi; }
@@ -45,4 +46,4 @@ grep -q '## Backend contract|## API contract' "$FIN" && { FAIL=$((FAIL+1)); echo
 
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

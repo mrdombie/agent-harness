@@ -12,13 +12,14 @@
 #   Each run uses a throwaway config directory. Nothing here reads or writes the
 #   real one.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/harness-update.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
 
 SB="${TMPDIR:-/tmp}/harness-update-fixture-$$"
 mkdir -p "$SB"
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -276,4 +277,4 @@ grep -q "kit.ref = " "$SUT" && bad "the script still writes kit.ref into harness
 echo
 [ "$fail" -eq 0 ] && echo "harness-update fixture: all checks hold" \
                   || echo "harness-update fixture: FAILURES"
-exit "$fail"
+suite_end "$fail"

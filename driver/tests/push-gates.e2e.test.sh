@@ -24,6 +24,7 @@
 # Run: bash "$0"
 #      HARNESS_E2E_REPO=/path/to/the/project bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/../.." && pwd)"
 
@@ -48,16 +49,16 @@ if [ -z "$REF" ]; then
   echo "SKIPPED — no consuming project with attestation gates to run against."
   echo "SKIPPED — looked in '${PROJECT:-<nothing>}' for: $(printf '%s' "$GATE_FILES" | tr '\n' ' ')"
   echo "SKIPPED — set HARNESS_E2E_REPO to a checkout that has them. NOTHING WAS PROVED."
-  exit 0
+  suite_skip "no consuming project with attestation gates"
 fi
 if [ ! -d "$PROJECT/node_modules/.bin" ]; then
   echo "SKIPPED — '$PROJECT' has no installed node_modules, so its gates cannot run. NOTHING WAS PROVED."
-  exit 0
+  suite_skip "the project has no installed node_modules"
 fi
 echo "running against $PROJECT at $REF"
 
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 
 # ---- the scratch clone: the project's real gates, and nothing else of it -------
@@ -282,4 +283,4 @@ want_not_in "no trailer was written"  'UI-Gate:' "$(git -C "$WT2" log --format=%
 want_not_in "and nothing was marked ready" 'pr ready' "$(cat "$GH_LOG")"
 want_in "the park carries a status label"  'add-label status:parked' "$(cat "$GH_LOG")"
 
-exit $FAILED
+suite_end "$FAILED"

@@ -5,9 +5,10 @@
 # read the way CI reads it, and local capture is off unless a person turns it on.
 # Then the plants: each guard made to match nothing, and the case it guards goes red.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-evidence-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/ci-evidence-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 mkdir -p "$SB/bin" "$SB/fx"
 cat > "$SB/bin/gh" <<'SH'
 #!/usr/bin/env bash
@@ -302,4 +303,4 @@ plant "routes list not required"             '[ -n "$list" ] || {'              
 plant "the evidence dir is hardcoded"        'EV_DIR=$(cfg evidence.dir "docs/evidence")' 'EV_DIR=docs/evidence'           'the evidence dir from project config was ignored'
 plant "a decide that never ran is CI's no-picture record" '      elif [ "$dec" = completed/success ]; then' '      elif true; then' 'a decide check that never ran read as'
 plant "the no-picture record names no head" 'echo "nothing=$head"; ' '' 'nothing-to-photograph decision did not name its head'
-exit $fail
+suite_end "$fail"

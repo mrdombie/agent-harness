@@ -3,10 +3,11 @@
 # made the same call, and lists every place they did not.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 CMP="$HERE/coordinator-compare.sh"
 A="$STATE/coordinator/actions.log"
 mkdir -p "$STATE/coordinator"
@@ -48,4 +49,4 @@ printf '%s\twould\tjudge\tred-pr:41:abc\tred-pr: checks settled red\n' "$(at 30)
 out=$(cmp)
 want_in "listed with what it was"              'red-pr:41:abc \| red-pr: checks settled red' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

@@ -5,8 +5,9 @@
 # ~/.claude rather than the one beside it. Both are fixed here: the subject is
 # this directory's hook, and every trap has a deny case AND the allow case that
 # proves the deny is not firing on everything.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(cd "$(dirname "$0")" && pwd)/block-write-traps.sh"; fail=0
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); on_exit_keep_status 'rm -rf "$TMP"'
 run(){ printf '{"tool_input":{"file_path":%s,"content":%s}}' \
          "$(jq -Rn --arg v "$1" '$v')" "$(jq -Rn --arg v "${2:-x}" '$v')" \
        | env -u HARNESS_MAIN_REPO HOME="$HOME" HARNESS_MAIN_REPO="${MAIN:-}" bash "$H"; }
@@ -37,4 +38,4 @@ mkdir -p "$TMP/real/memory"
 allow "$TMP/real/memory/x.md" "ordinary memory content" "Dom prefers short replies."
 
 [ "$fail" -eq 0 ] && echo "block-write-traps: all cases pass"
-exit $fail
+suite_end "$fail"

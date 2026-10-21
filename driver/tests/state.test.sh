@@ -4,9 +4,10 @@
 # that has not finished is not.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../state.sh" || exit 1
 
 echo "--- init ---"
@@ -78,4 +79,4 @@ out=$(driver_bounded 30 'a=(one two); [[ ${a[1]} == two ]] && echo bash-ok' 2>&1
 out=$(driver_bounded 0 'a=(x); echo ${#a[@]}' 2>/dev/null)
 [ "$out" = "1" ] && ok "and unbounded too" || bad "unbounded run is not bash: $out"
 
-exit $FAILED
+suite_end "$FAILED"

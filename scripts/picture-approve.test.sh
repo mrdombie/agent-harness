@@ -3,10 +3,11 @@
 # and the ticket says where; a second run is a no-op; a new version publishes again.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 P="$HERE/picture-approve.sh"
 
 # A stand-in gh: the ticket's comments live in $FIX/comments.json, a posted comment
@@ -86,4 +87,4 @@ bash "$P" abc "$PIC" >/dev/null 2>&1; want "a ticket that is not a number exits 
 bash "$P" 42 "$FIX/missing.html" >/dev/null 2>&1; want "a missing file exits 2" "2" "$?"
 want "and gh was never asked"               "0" "$(grep -c . "$GH_LOG" | tr -d ' ')"
 
-exit $FAILED
+suite_end "$FAILED"

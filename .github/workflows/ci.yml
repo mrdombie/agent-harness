@@ -16,7 +16,7 @@ jobs:
         run: npx --yes @anthropic-ai/claude-code@latest plugin validate .
       - name: Scripts and hooks parse
         run: |
-          for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh swarm/*.sh swarm/tests/*.sh \
+          for f in scripts/*.sh hooks/*.sh hooks/lib/*.sh tests/lib/*.sh swarm/*.sh swarm/tests/*.sh \
                    briefs/*.sh briefs/tests/*.sh \
                    driver/*.sh driver/steps/*.sh driver/tests/*.sh driver/build-ticket \
                    .github/ci/*.sh; do
@@ -38,6 +38,11 @@ jobs:
             printf '%s\n' "$missed" | sed 's/^/  /'
             exit 1
           fi
+      - name: Every suite proves it reached its end
+        # Exit 0 alone cannot prove a suite finished: a cleanup that calls exit turns
+        # a crash into 0. Each suite cleans up through on_exit_keep_status and ends on
+        # suite_end, whose summary line .github/ci/run-suite.sh requires.
+        run: bash scripts/check-suite-ending.sh
       - name: Signals are read from their source
         # A phrase matched in a whole log matches every quote of it too.
         run: bash scripts/check-signal-source.sh
@@ -77,7 +82,7 @@ jobs:
           times=$(mktemp)
           for t in $mine; do
             echo "== $t"; s=$SECONDS
-            bash "$t" || { echo "FAILED: $t"; fail=1; }
+            bash .github/ci/run-suite.sh "$t" || { echo "FAILED: $t"; fail=1; }
             printf '%s\t%s\n' $((SECONDS - s)) "$t" >> "$times"
           done
           echo "== seconds per suite (refresh .github/ci/suite-seconds.tsv from these)"

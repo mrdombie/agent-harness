@@ -3,10 +3,11 @@
 # scope that resolves to nothing is refused, and the order is class first.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 Q="$HERE/coordinator-queue.sh"
 QF="$STATE/coordinator/queue.json"
 
@@ -290,4 +291,4 @@ want "an unknown class is refused"         "2" "$rc"
 bash "$Q" remove 777 >/dev/null
 want "removed"                             "" "$(jq -r '.tickets[] | select(.n==777) | .n' "$QF")"
 
-exit $FAILED
+suite_end "$FAILED"

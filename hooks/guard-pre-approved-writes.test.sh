@@ -2,10 +2,11 @@
 # Plant tests for guard-pre-approved-writes.sh. Every route that widens the key
 # is refused, unrelated edits pass, and each route's guard switched off in a copy
 # lets its case through, so the case is proved to test that guard.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 D="$(cd "$(dirname "$0")" && pwd)"; G="$D/guard-pre-approved-writes.sh"
 KIT="$(cd "$D/.." && pwd)"
 fail=0
-TDIR=$(mktemp -d); trap '[ -n "${KEEP:-}" ] || rm -rf "$TDIR"' EXIT
+TDIR=$(mktemp -d); on_exit_keep_status '[ -n "${KEEP:-}" ] || rm -rf "$TDIR"'
 ok(){ printf 'ok    %s\n' "$1"; }
 bad(){ printf 'FAIL  %s\n' "$1"; fail=1; }
 
@@ -354,4 +355,4 @@ reg "$TDIR/hooks.json" Bash && bad "registration plant did not land, or the chec
 
 [ "$(cat "$C")" = "$BASE" ] || bad "the suite changed the fixture: a guarded case was run, not judged"
 [ "$fail" -eq 0 ] && echo "guard-pre-approved-writes: all cases pass"
-exit $fail
+suite_end "$fail"

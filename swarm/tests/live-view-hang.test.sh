@@ -7,11 +7,12 @@
 # hour, from about when the disk filled. launchd restarts it only when it exits.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture
-trap 'for p in $(cat "$FIX"/hold-pids "$FIX"/hold-kids 2>/dev/null); do kill -9 "$p" 2>/dev/null; done; rm -rf "$FIX"' EXIT
-command -v node >/dev/null 2>&1 || { echo "SKIP live-view-hang: node is not on PATH"; exit 0; }
+on_exit_keep_status 'for p in $(cat "$FIX"/hold-pids "$FIX"/hold-kids 2>/dev/null); do kill -9 "$p" 2>/dev/null; done; rm -rf "$FIX"'
+command -v node >/dev/null 2>&1 || { suite_skip "SKIP live-view-hang: node is not on PATH"; }
 LV="$HERE/../live-view"
 
 printf '{"run_id":"claim-501-a","ticket":"501","child_pid":%s,"started_at":"%s","log":"%s"}\n' \
@@ -111,4 +112,4 @@ read -r starts first answers <<<"$(stuck "$P2")"
 { [ "$first" = 1 ] || [ "${starts:-0}" -gt 6 ]; } && ok "planted: execFile's own timeout → grandchild kept ($first), $starts starts → red" \
   || bad "planted: the old refresh and the test still passed ($starts starts, grandchild $first)"
 
-[ "$FAILED" -eq 0 ] && echo "PASS live-view-hang" || { echo "FAIL live-view-hang"; exit 1; }
+suite_end "$FAILED"

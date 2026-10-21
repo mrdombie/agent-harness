@@ -4,9 +4,10 @@
 # one means exactly one run, and a usage hold, a hold or a running pass mean none.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"; [ -n "${SLEEPER:-}" ] && kill "$SLEEPER" 2>/dev/null' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"; [ -n "${SLEEPER:-}" ] && kill "$SLEEPER" 2>/dev/null'
 K="$HERE/../keeper.sh"
 ID=11111111-2222-3333-4444-555555555555
 WORK="$FIX/work dir"; mkdir -p "$WORK"
@@ -122,4 +123,4 @@ want_in "and hands it the keeper's path under the kit"   "<string>swarm/keeper.s
 want_in "every 900 seconds"                              "<key>StartInterval</key><integer>900</integer>" "$p"
 want_in "with the usage ceiling the coordinator reads"   "<key>SWARM_USAGE_CEILING</key>" "$p"
 
-exit $FAILED
+suite_end "$FAILED"

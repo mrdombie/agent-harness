@@ -3,9 +3,10 @@
 #
 # Every case plants the thing that should make the hook fire or stay quiet.
 # A hook that never fires is decorative; a hook that always fires is a loop.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(dirname "$0")/ask-dont-narrate.sh"; fail=0
 MDIR="${TMPDIR:-/tmp}/claude-ask-dont-narrate"
-TDIR=$(mktemp -d); trap 'rm -rf "$TDIR"' EXIT
+TDIR=$(mktemp -d); on_exit_keep_status 'rm -rf "$TDIR"'
 
 # A transcript with the operator's message, then an assistant turn. $1 = did we ask?
 transcript(){
@@ -150,4 +151,4 @@ grep -q 'Do not repeat the report or a status block' "$TDIR/err" \
 
 rm -rf "$MDIR"
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES"
-exit "$fail"
+suite_end "$fail"
