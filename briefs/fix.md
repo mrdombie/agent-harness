@@ -33,8 +33,7 @@ reach.
   tree whose generated artefacts exist. A fresh worktree reports failures that
   belong to the worktree, not the branch — a missing generated client, an absent
   environment file, a workspace package resolving to another checkout's copy.
-  Prove it against a pristine control cut from the trunk before you say the
-  branch is innocent.
+  Prove it against a pristine control cut from the trunk first.
 - **Changed a value?** Grep the whole test tree for the old one and add every hit
   to the run. The test that pins it is rarely the one you were looking at.
 - **A peer may have landed the same feature while you worked.** Reconcile against
@@ -45,7 +44,7 @@ change. If it survives the reason, it was a real finding.
 
 ## When the findings are red gates
 
-A finding whose id starts `gate-` is not a review finding: one of this project's
+A `gate-` finding is not a review finding: one of this project's
 self-check gates went red, and its output is the finding. Repair what the output
 names, run that gate's command yourself until it exits 0, commit, and answer each
 in `gateFixes` with the commit. There is no red/green test for a compile or lint
@@ -56,10 +55,9 @@ pushed past a red one. A red gate you believe this change did not cause goes in
 A gate killed, or red only on a test outside this change, is load, never a
 question: re-run it; green, answer it in `gateFixes` with the head commit.
 
-A ratchet that says its baseline sits ABOVE actual, or names entries that no
-longer exist, is telling you the change made things better: run the lowering
-command it prints, commit the lowered baseline, and never undo the improvement to
-make the numbers meet. Only a number that ROSE wants a code fix.
+A ratchet whose baseline sits ABOVE actual, or names entries that no longer
+exist, means the change made things better: run the lowering command it prints,
+commit the lowered baseline, and never undo the improvement. Only a number that ROSE wants a code fix.
 
 ## A test you reword or remove is accounted for
 
@@ -147,7 +145,8 @@ it returns, and the red and green runs.
 
 `testCommit` and `implCommit` must be two commits: the driver runs `command`
 verbatim from the worktree root at the change's parent and at the change. Give
-the exact command, no placeholders.
+the exact command, no placeholders: where the project has a test database,
+`DATABASE_URL` is already set to a fresh migrated one, here and in the proof.
 
 A finding you are not clearing goes in `deferred` with its reason and where it
 went. A deferral with no follow-up is a finding dropped — and a Critical or a

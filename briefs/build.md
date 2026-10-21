@@ -121,10 +121,11 @@ Conditional:
 shape in it for a change whose test did not fail first, so a task that cannot
 produce a red run is a question, not a build.
 
-It also carries `testCommit` and `implCommit`, and they must be two commits. The
-driver runs `command` verbatim from the worktree root at the change's parent and
-at the change, so those two shas make `failedBefore` checkable; one squashed
-commit cannot show which came first. Give the exact command, no placeholders.
+`testCommit` and `implCommit` must be two commits: the driver runs `command`
+verbatim from the worktree root at the change's parent and at the change, and one
+squashed commit cannot show which came first. Give the exact command, no
+placeholders: where the project has a test database, `DATABASE_URL` is already set
+to a fresh migrated one, here and in the proof.
 
 **When the task IS the test** — the code it covers already exists and you change
 no production code — return `testOnly` instead of `testFirst`. There is no tree

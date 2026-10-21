@@ -216,7 +216,7 @@ driver_prove_red_green() {
   git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null && vsha="$isha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
-  ( cd "$tmp/before" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
+  ( cd "$tmp/before" && driver_with_test_db "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
   git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
@@ -233,7 +233,7 @@ driver_prove_red_green() {
   # one measures a different test in each half. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/after/$tfile"
-  ( cd "$tmp/after" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
+  ( cd "$tmp/after" && driver_with_test_db "$tmp/after.db" "$tmp/after" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
   # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
   # test whose calls do not type-check passed this proof and then failed self-check's
@@ -247,8 +247,15 @@ driver_prove_red_green() {
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
 
+  # A DATABASE THAT COULD NOT BE MADE IS NOT A RED: the test never ran against one.
+  local dbwhy=""
+  [ -s "$tmp/before.db" ] && dbwhy="without the change: $(cat "$tmp/before.db")"
+  [ -z "$dbwhy" ] && [ -s "$tmp/after.db" ] && dbwhy="with the change: $(cat "$tmp/after.db")"
   git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
   git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1
+  if [ -n "$dbwhy" ]; then
+    rm -rf "$tmp"; printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
+  fi
   local red_out after_out
   red_out=$(_driver_fail_lines "$tmp/before.out")
   after_out=$(_driver_fail_lines "$tmp/after.out")
@@ -343,10 +350,10 @@ driver_prove_by_break() {
     printf 'the break text is not in %s at %s — nothing was broken, so nothing would be measured\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
     return 3
   fi
-  ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
+  ( cd "$tmp/tree" && driver_with_test_db "$tmp/red.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
   rc_red=$?
   cp "$tmp/original" "$tmp/tree/$bfile"
-  ( cd "$tmp/tree" && driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
+  ( cd "$tmp/tree" && driver_with_test_db "$tmp/green.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
   rc_green=$?
   # The same compile check as the red/green proof, on the restored tree.
   local tc_rc=0 tc_out="" tc
@@ -356,9 +363,15 @@ driver_prove_by_break() {
     tc_rc=$?
     tc_out=$(_driver_typecheck_lines "$tmp/typecheck.out")
   fi
+  local dbwhy=""
+  [ -s "$tmp/red.db" ] && dbwhy="with the break: $(cat "$tmp/red.db")"
+  [ -z "$dbwhy" ] && [ -s "$tmp/green.db" ] && dbwhy="with the code restored: $(cat "$tmp/green.db")"
   red_out=$(_driver_fail_lines "$tmp/red.out")
   green_out=$(_driver_fail_lines "$tmp/green.out")
   _driver_break_done
+  if [ -n "$dbwhy" ]; then
+    printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
+  fi
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) on the tree with the code restored\n' "$tc" "$DRIVER_CMD_TIMEOUT"
     return 4
