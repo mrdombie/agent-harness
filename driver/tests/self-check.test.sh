@@ -419,7 +419,7 @@ SH
   want "a rise goes to fix"                                 "30" "$rc"
   want "the baseline is not raised"                         "3" "$(cat "$REPO/baseline.txt")"
   echo "--- a printed command with a trailing note after it still runs ---"
-  # "Lock the cleanup in: npm run check:complexity -- --update  (and commit baseline.json
+  # "Lock the cleanup in: npm run check:size -- --update  (and commit baseline.json
   # in this PR)" failed the anchored command pattern, so 18 tickets parked on headroom.
   sed -i.bak 's#Lock the cleanup in: npm run check:r -- --update#Lock the cleanup in: npm run check:r -- --update  (and commit baseline.txt in this PR)#' "$REPO/ratchet.sh" && rm -f "$REPO/ratchet.sh.bak"
   echo 2 > "$REPO/actual.txt"; git -C "$REPO" commit -qam "fixture: a trailing note, and slack again"

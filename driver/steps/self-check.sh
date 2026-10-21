@@ -81,8 +81,8 @@ _driver_note_changelog_skip() {
 # driver runs the ratchet's own lowering command, refuses any baseline number that
 # rose, commits, and the gate runs again. Never when the output names a rise: that is
 # code to fix. The command comes from harness.json first, then from the gate's text:
-#   gates.ratchets  [{ "check": "check:complexity",           a name the output carries
-#                      "tighten": "npm run check:complexity -- --update",
+#   gates.ratchets  [{ "check": "<gate name>",           a name the output carries
+#                      "tighten": "<command that lowers it>",
 #                      "baseline": ["scripts/…/baseline.json"] }]   optional: only these may change
 #   ✗ N entries sit ABOVE actual — … / Lock the cleanup in: <cmd>
 #   ✗ N baseline entries name things that no longer exist / Drop the entries: <cmd>
