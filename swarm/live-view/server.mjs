@@ -932,8 +932,8 @@ export function launchOf(board, trend, wrappers, now = Date.now()) {
 
 // A pull request that cannot go to the owner yet: a check failed or it clashes.
 const RED_RUN = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE'])
-export const prRed = (p) => p.mergeable === 'CONFLICTING'
-  || (p.statusCheckRollup || []).some((c) => c && (RED_RUN.has(c.conclusion) || RED_RUN.has(c.state)))
+// Read by each check's newest run, the same rule as openPrState.
+export const prRed = (p) => ['clash', 'failed'].includes(openPrState(p).state)
 
 // Where one OPEN pull request stands, in the words the page shows, first match wins.
 // The approval check is red by design until the sign-off, so it is the sign-off, not

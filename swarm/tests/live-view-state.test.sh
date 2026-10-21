@@ -113,6 +113,20 @@ want "and its link"                           "https://github.com/acme/widgets/p
 want "and when it finished"                   "$NOW_ISO" "$(row_of "$s" 2101 .at)"
 want "no row without a finished-at time"      "0" "$(printf '%s' "$s" | jq '[.done[] | select(.at == null or .finishedAt == null)] | length')"
 
+rr=$(cd "$LV" && node --input-type=module -e '
+  import { rollupOf } from "./progress.mjs"
+  const at = (name, conclusion, completedAt) => ({ name, status: "COMPLETED", conclusion, completedAt })
+  const r = rollupOf({ number: 1, statusCheckRollup: [at("Lesson", "SKIPPED", "2026-10-21T10:00:00Z"), at("Lesson", "FAILURE", "2026-10-21T13:00:00Z"),
+    at("Code gates", "FAILURE", "2026-10-21T10:00:00Z"), at("Code gates", "SUCCESS", "2026-10-21T13:00:00Z")] })
+  console.log(r.total + " " + r.fail + " " + r.pending)')
+want "the live card's PR cell reads each check by its newest run too" "2 1 0" "$rr"
+red=$(cd "$LV" && SWARM_RUNS_DIR="$STATE/runs" node --input-type=module -e '
+  import { prRed } from "./server.mjs"
+  const at = (name, conclusion, completedAt) => ({ name, status: "COMPLETED", conclusion, completedAt })
+  console.log(prRed({ statusCheckRollup: [at("Code gates", "FAILURE", "2026-10-21T10:00:00Z"), at("Code gates", "SUCCESS", "2026-10-21T13:00:00Z")] })
+    + " " + prRed({ statusCheckRollup: [at("Lesson", "SKIPPED", "2026-10-21T10:00:00Z"), at("Lesson", "FAILURE", "2026-10-21T13:00:00Z")] }))')
+want "and so does the board's red: a pass after a failure is not red, a failure after a skip is" "false true" "$red"
+
 echo "--- a merged pull request reads Merged <time>, by branch or by its closing word ---"
 want "by branch"                              "Merged $MERGED_HM" "$(row_of "$s" 2106 .now.text)"
 want "by 'Closes #'"                          "Merged $MERGED_HM" "$(row_of "$s" 2109 .now.text)"
