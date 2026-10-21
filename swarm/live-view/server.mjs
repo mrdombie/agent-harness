@@ -949,8 +949,50 @@ export const prRed = (p) => ['clash', 'failed'].includes(openPrState(p).state)
 const APPROVAL_RE = new RegExp(process.env.SWARM_APPROVAL_CHECKS || '^approval-gate', 'i')
 const DESIGN_RE = new RegExp(process.env.SWARM_DESIGN_CHECKS || 'design critic|judge the composed screen', 'i')
 const OK_RUN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED'])
-export function openPrState(p) {
+// Which checks block a merge: the trunk's ruleset, read once in REQUIRED_MS (at least ten
+// minutes). Unread, every check counts. A check the project names report-only
+// (release.nonBlockingChecks, via live-view.sh) never blocks, whatever the ruleset says.
+const REQUIRED_FILE = process.env.SWARM_REQUIRED_CHECKS_FILE || path.join(RUNS, '..', 'swarm', 'required-checks.json')
+const REQUIRED_MS = Math.max(600_000, Number(process.env.SWARM_REQUIRED_MS || 600_000))
+const NON_BLOCKING = (() => { try { const j = JSON.parse(process.env.SWARM_NONBLOCKING_CHECKS || '[]'); return Array.isArray(j) ? j.map(String) : [] } catch { return [] } })()
+export function checkRules() {
+  const v = readJsonCached(REQUIRED_FILE)
+  return { required: v && Array.isArray(v.contexts) && v.contexts.length ? new Set(v.contexts.map(String)) : null, nonBlocking: new Set(NON_BLOCKING) }
+}
+export const requiredArgs = (repo, trunk = TRUNK) => ['api', `repos/${repo}/rules/branches/${trunk}`, '--jq',
+  '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context]']
+let requiredTried = 0, requiredBusy = false
+function refreshRequired(now) {
+  if (!REPO || requiredBusy || now - requiredTried < REQUIRED_MS) return
+  try { if (now - fs.statSync(REQUIRED_FILE).mtimeMs < REQUIRED_MS) return } catch {}
+  requiredTried = now
+  if (allowanceLow()) return
+  const a = requiredArgs(REPO)
+  const keep = (out) => {
+    let c
+    try { c = JSON.parse(out) } catch { return }
+    if (!Array.isArray(c)) return
+    try {
+      fs.mkdirSync(path.dirname(REQUIRED_FILE), { recursive: true })
+      fs.writeFileSync(REQUIRED_FILE + '.tmp', JSON.stringify({ at: iso(now), branch: TRUNK, contexts: c.map(String) }))
+      fs.renameSync(REQUIRED_FILE + '.tmp', REQUIRED_FILE)
+    } catch (e) { warn('required checks cache', e) }
+  }
+  noteGh(a)
+  if (process.env.SWARM_PROGRESS_SYNC) { try { keep(execFileSync(GH, a, { timeout: 30_000, encoding: 'utf8' })) } catch {} ; return }
+  requiredBusy = true
+  runChild('required checks', GH, a, { timeout: 30_000 }, (err, out) => { requiredBusy = false; if (!err) keep(out) })
+}
+// "Widths and contrast on changed routes" → "widths"; "Code gates" → "code gates".
+const SHORT_STOP = new Set(['approved', 'does', 'which', 'did', 'the', 'a', 'every'])
+export function shortCheck(n) {
+  const w = String(n).split(/ \/ | — /)[0].replace(/[()]/g, '').trim().toLowerCase().split(/\s+/)
+  return (w[0].length <= 5 || SHORT_STOP.has(w[0])) && w[1] ? `${w[0]} ${w[1]}` : w[0]
+}
+
+export function openPrState(p, rules = checkRules()) {
   const labels = labelNames(p.labels)
+  const blocks = (n) => !rules.nonBlocking.has(n) && (!rules.required || rules.required.has(n))
   // One answer per check name, its NEWEST run: a run still going counts as newest, then
   // the latest finish. An older skipped run beside a newer failure is not a pass.
   const by = new Map()
@@ -965,21 +1007,25 @@ export function openPrState(p) {
     if (!o || at >= o.at) by.set(name, { busy, failed, good, at })
   }
   const names = [...by.entries()]
-  const failed = names.filter(([n, c]) => c.failed && !APPROVAL_RE.test(n)).map(([n]) => n)
-  const busy = names.filter(([n, c]) => c.busy && !APPROVAL_RE.test(n)).map(([n]) => n)
+  // A report-only check that failed is a note beside the state, never the state.
+  const reds = names.filter(([n, c]) => c.failed && !APPROVAL_RE.test(n)).map(([n]) => n)
+  const failed = reds.filter(blocks)
+  const notes = reds.filter((n) => !blocks(n)).map(shortCheck)
+  const busy = names.filter(([n, c]) => c.busy && !APPROVAL_RE.test(n) && (blocks(n) || DESIGN_RE.test(n))).map(([n]) => n)
   const held = labels.includes(LBL('HOLD_LABEL', 'needs:human-approval'))
   const approvalWaits = names.some(([n, c]) => APPROVAL_RE.test(n) && !c.good)
-  if (p.mergeable === 'CONFLICTING' || p.mergeStateStatus === 'DIRTY') return { state: 'clash', text: 'Clashes with newer code' }
-  const other = busy.filter((n) => !DESIGN_RE.test(n))
+  const n = notes.length ? { notes } : {}
+  if (p.mergeable === 'CONFLICTING' || p.mergeStateStatus === 'DIRTY') return { state: 'clash', text: 'Clashes with newer code', ...n }
+  const other = busy.filter((x) => !DESIGN_RE.test(x))
   if (failed.length) {
     const also = [failed.length > 1 ? `and ${failed.length - 1} more` : '', busy.length ? `${busy.length} still running` : ''].filter(Boolean).join(' · ')
-    return { state: 'failed', text: `A check failed: ${failed[0]}${also ? ` (${also})` : ''}`, checks: failed }
+    return { state: 'failed', text: `A check failed: ${failed[0]}${also ? ` (${also})` : ''}`, checks: failed, ...n }
   }
-  if (other.length) return { state: 'checks', text: `Waiting for checks (${other.length} running)` }
-  if (busy.length || labels.includes('needs:design')) return { state: 'design', text: 'Waiting for design review' }
-  if (held || approvalWaits) return { state: 'signoff', text: 'Waiting for sign-off' }
+  if (other.length) return { state: 'checks', text: `Waiting for checks (${other.length} running)`, ...n }
+  if (busy.length || labels.includes('needs:design')) return { state: 'design', text: 'Waiting for design review', ...n }
+  if (held || approvalWaits) return { state: 'signoff', text: 'Waiting for sign-off', ...n }
   if (!names.length) return { state: 'checks', text: 'Waiting for checks (none started yet)' }
-  return { state: 'ready', text: 'Checks passed — waiting to merge' }
+  return { state: 'ready', text: 'Checks passed — waiting to merge', ...n }
 }
 
 // The words each bucket is shown with, in the order the page lists them. Every
@@ -1221,7 +1267,8 @@ export function nowOf(d, ctx) {
     if (park.cause === 'person') { const who = ownerAsk(park.full); return stop(who === 'PM' ? 'pm' : 'owner', why, who, extra) }
     return stop('stopped', why, queued && !parked ? 'the queue (it tries again)' : 'machine fault', extra)
   }
-  if (open) return at(open.status ? open.status.state : 'checks', open.status ? open.status.text : 'Waiting for checks', { pr: open.number })
+  if (open) return at(open.status ? open.status.state : 'checks', open.status ? open.status.text : 'Waiting for checks',
+    { pr: open.number, ...(open.status && open.status.notes ? { notes: open.status.notes } : {}) })
   if (issue && issue.state === 'CLOSED') {
     return issue.reason === 'COMPLETED' || has(LBL('LBL_DONE', 'status:done')) ? at('done', 'Ticket closed as done') : at('closed', 'Ticket closed')
   }
@@ -1313,6 +1360,7 @@ export function snapshot(now = Date.now()) {
   for (const d of done) { const o = newest.get(d.ticket); if (!o || d.endedAt > o.endedAt) newest.set(d.ticket, d) }
   const queued = queueOf()
   // Read before the rows are, so a row answers from the newest states there are.
+  guard('required checks', () => refreshRequired(now))
   guard('pr states', () => refreshPrStates(now))
   const prStates = readJsonCached(PR_STATES_FILE)
   const prRows = prRowsByTicket(PRS_FILE, (prStates || {}).heads || null)

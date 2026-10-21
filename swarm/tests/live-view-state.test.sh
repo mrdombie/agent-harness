@@ -61,7 +61,7 @@ echo "--- the fixture: handed-off pull requests in every state, a merge, two par
 mkdir -p "$STATE/coordinator/snapshot"
 ended_run 2101 0 '{"type":"result","subtype":"success","result":"Opened https://github.com/acme/widgets/pull/3101"}'
 ended_run 2102 0 '{"type":"result","subtype":"success","result":"PR #3102 is open"}'
-for t in 2103 2104 2105 2106 2109 2110 2111 2112; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
+for t in 2103 2104 2105 2106 2109 2110 2111 2112 2114 2115; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
 ended_run 2107 20; park_line 2107 pm "build asked a question rather than guessing — which repo does this belong in?"
 ended_run 2108 20; park_line 2108 person "repair asked a question rather than guessing — ship the changes made since the sign-off?"
 ok_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"SUCCESS"}' "$1"; }
@@ -82,7 +82,9 @@ pr() { # <number> <ticket> <mergeable> <labels json> <checks...>
   pr 3110 2110 MERGEABLE '[]' "$(at_run 'Lesson' SKIPPED 2026-10-21T10:00:00Z)" "$(at_run 'Lesson' FAILURE 2026-10-21T13:00:00Z)" \
     "$(at_run 'Code gates' FAILURE 2026-10-21T10:00:00Z)" "$(at_run 'Code gates' SUCCESS 2026-10-21T13:00:00Z)"; echo ','
   pr 3111 2111 CONFLICTING '[]' "$(red_run 'Code gates')"; echo ','
-  pr 3112 2112 MERGEABLE '[]' "$(red_run 'Unit tests')" "$(busy_run 'Build web')" "$(busy_run 'Lint')"
+  pr 3112 2112 MERGEABLE '[]' "$(red_run 'Unit tests')" "$(busy_run 'Build web')" "$(busy_run 'Lint')"; echo ','
+  pr 3114 2114 MERGEABLE '["needs:human-approval"]' "$(red_run 'Widths and contrast on changed routes')" "$(red_run 'approval-gate')" "$(ok_run 'Code gates')"; echo ','
+  pr 3115 2115 MERGEABLE '[]' "$(red_run 'Lesson / Every fix ships a lesson')" "$(busy_run 'Code gates')" "$(busy_run 'Did develop move this PR')"
   echo ']'; } > "$STATE/swarm/prs.json"
 jq -e . "$STATE/swarm/prs.json" >/dev/null || bad "the open-PR fixture is not JSON"
 cat > "$STATE/coordinator/snapshot/issues.json" <<JSON
@@ -98,6 +100,11 @@ JSON
 printf '[{"number":3104,"head":{"sha":"h3104"}},{"number":3111,"head":{"sha":"a-newer-push"}}]\n' \
   > "$FIX/gh/api-repos_acme_widgets_pulls_state_open_sort_updated_direction_desc_per_page_100.json"
 ended_run 2113 20; park_line 2113 person "repair asked a question rather than guessing — is the pricing change cleared commercially?"
+# The trunk's ruleset: what blocks a merge. Widths and the lesson are report-only.
+cat > "$FIX/gh/api-repos_acme_widgets_rules_branches_develop.json" <<'JSON'
+[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Code gates"},{"context":"Unit tests"},
+ {"context":"Build web"},{"context":"Lint"},{"context":"approval-gate"}]}},{"type":"pull_request","parameters":{}}]
+JSON
 cat > "$FIX/gh/api-search_issues.json" <<JSON
 {"total_count":2,"items":[{"number":3106,"title":"fix(desk): the strip","closed_at":"$MERGED_ISO","pull_request":{"merged_at":"$MERGED_ISO"}},
  {"number":3109,"title":"feat: other","closed_at":"$MERGED_ISO","pull_request":{"merged_at":"$MERGED_ISO"}}]}
@@ -117,7 +124,14 @@ red=$(cd "$LV" && SWARM_RUNS_DIR="$STATE/runs" BRANCH_PREFIX=tkt- node --input-t
   console.log(r["2104"].red + " " + r["2111"].red)' "$STATE/swarm/prs.json")
 want "the board's red believes a clash only on the current head too" "true false" "$red"
 want "a failure outranks running, and says what still runs" "A check failed: Unit tests (2 still running)" "$(row_of "$s" 2112 .now.text)"
-want "each check by its newest run: a failure after a skip fails, a pass after a failure passes" "A check failed: Lesson" "$(row_of "$s" 2110 .now.text)"
+want "each check by its newest run: a failure after a skip fails, a pass after a failure passes" "lesson" "$(row_of "$s" 2110 '.now.notes[0] // .now.text')"
+want "a report-only failure is not the state"  "Checks passed — waiting to merge" "$(row_of "$s" 2110 .now.text)"
+want "only a REQUIRED check's failure is"      "A check failed: Code gates" "$(row_of "$s" 2102 .now.text)"
+want "report-only reds beside a hold: the sign-off, with the note" "Waiting for sign-off|widths" "$(row_of "$s" 2114 '"\(.now.text)|\(.now.notes | join(","))"')"
+want "a report-only red while a required check runs: waiting for that one" "Waiting for checks (1 running)|lesson" "$(row_of "$s" 2115 '"\(.now.text)|\(.now.notes | join(","))"')"
+want "the ruleset was read once"              "1" "$(grep -c 'rules/branches/develop' "$GH_LOG")"
+sn=$(SWARM_NONBLOCKING_CHECKS='["Code gates"]' snap)
+want "a check the project names report-only never blocks" "Checks passed — waiting to merge|code gates" "$(row_of "$sn" 2102 '"\(.now.text)|\(.now.notes | join(","))"')"
 want_not_in "no row's state says success or shipped" '(success|shipped)' "$(printf '%s' "$s" | jq -r '.done[] | "\(.now.text) \(.now.state) \(.lastRun)"' | tr 'A-Z' 'a-z')"
 want_not_in "nor does the header"             '(success|shipped)' "$(printf '%s' "$s" | jq -r '.doneSummary' | tr 'A-Z' 'a-z')"
 want_not_in "no row carries the CLI's word"   'success' "$(printf '%s' "$s" | jq -c '.done[]' | tr 'A-Z' 'a-z')"
@@ -137,7 +151,7 @@ red=$(cd "$LV" && SWARM_RUNS_DIR="$STATE/runs" node --input-type=module -e '
   import { prRed } from "./server.mjs"
   const at = (name, conclusion, completedAt) => ({ name, status: "COMPLETED", conclusion, completedAt })
   console.log(prRed({ statusCheckRollup: [at("Code gates", "FAILURE", "2026-10-21T10:00:00Z"), at("Code gates", "SUCCESS", "2026-10-21T13:00:00Z")] })
-    + " " + prRed({ statusCheckRollup: [at("Lesson", "SKIPPED", "2026-10-21T10:00:00Z"), at("Lesson", "FAILURE", "2026-10-21T13:00:00Z")] }))')
+    + " " + prRed({ statusCheckRollup: [at("Unit tests", "SKIPPED", "2026-10-21T10:00:00Z"), at("Unit tests", "FAILURE", "2026-10-21T13:00:00Z")] }))')
 want "and so does the board's red: a pass after a failure is not red, a failure after a skip is" "false true" "$red"
 
 echo "--- a merged pull request reads Merged <time>, by branch or by its closing word ---"
@@ -160,6 +174,8 @@ echo "--- the page draws those states, the links and Merged today ---"
 r=$(page_render "$LV" "$s")
 want_in "the open PR's state on the row"      '^done=.*Waiting for checks \(2 running\)</span><div class="note"><a href="https://github.com/acme/widgets/pull/3101"' "$r"
 want_in "the merge and its time"              "^done=.*Merged $MERGED_HM</span>" "$r"
+want_in "report-only reds are a muted note on the row" '^done=.*Waiting for sign-off</span>.*<div class="note muted">notes: widths</div>' "$r"
+want_not_in "and never the pill"               '^done=.*pill [a-z]+">A check failed: (Widths|Lesson)' "$r"
 want_in "the stop and who moves it"           '^done=.*Stopped: build asked a question — next: PM</span>' "$r"
 want_in "a finished-at time on each row"      '^done=.*finished ' "$r"
 want_not_in "no success or shipped anywhere on the rows" '^done=.*([Ss]uccess|[Ss]hipped)' "$r"
@@ -239,6 +255,11 @@ got=$(cd "$P" && SWARM_RUNS_DIR="$STATE/runs" BRANCH_PREFIX=tkt- node --input-ty
   import { prRowsByTicket } from "./server.mjs"
   console.log(prRowsByTicket(process.argv[1], { "3111": "a-newer-push" })["2111"].red)' "$STATE/swarm/prs.json")
 [ "$got" = "true" ] && ok "planted: the board's red from the copy alone → a stale clash is red → red" || bad "planted: the board's red from the copy alone and the test cannot see it ($got)"
+plant server.mjs "  const blocks = (n) => !rules.nonBlocking.has(n) && (!rules.required || rules.required.has(n))" "  const blocks = () => true"
+got=$(row_of "$(snap "$P")" 2114 .now.text)
+[ "$got" != "Waiting for sign-off" ] && ok "planted: every red blocks again → 2114 reads '$got' → red" || bad "planted: the required-only rule dropped and the test cannot see it"
+plant index.html "  const notes = (n.notes || []).length ? \`<div class=\"note muted\">notes: \${esc(n.notes.join(', '))}</div>\` : ''" "  const notes = ''"
+[ "$(page_render "$P" "$(snap)" | grep '^done=' | grep -c 'notes: widths')" = 0 ] && ok "planted: the page drops the notes → red" || bad "planted: the page drops the notes and the test cannot see it"
 plant server.mjs "heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid" "false"
 got=$(row_of "$(snap "$P")" 2111 .now.text)
 [ "$got" != "Waiting for checks on the newest push" ] && ok "planted: no head check → 2111 reads '$got' → red" || bad "planted: the head check dropped and the test cannot see it"
