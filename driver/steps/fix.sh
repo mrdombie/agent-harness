@@ -169,6 +169,32 @@ _driver_fix_pm_proof() { # <tree> <answers.json> <review.json> <entry-json>
   printf 'kind "%s" is neither mutation nor commit\n' "$kind"; return 3
 }
 
+# _driver_fix_critic_head <pr> — the head the critic last FAILED, from the judge's own
+# ledger (pr, head, set, verdict, state, url); nothing when it has none.
+_driver_fix_critic_head() { # <pr>
+  [ -n "$1" ] || return 0
+  awk -F'\t' -v p="$1" '$1 == p && $5 == "failure" { h = $2 } END { if (h != "") print h }' \
+    "${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}/verdicts.tsv" 2>/dev/null
+}
+
+# _driver_fix_stale_check <tree> <judged-head> <sha…> — 0 when every cited commit is on
+# this branch and none is in the head the critic failed: the finding was judged on a
+# tree without them, so the critic judging the pushed head again is the proof.
+_driver_fix_stale_check() { # <tree> <judged-head> <sha…>
+  local wt="$1" jh="$2" c cs jhs; shift 2
+  [ -n "$jh" ] || { printf "the critic's failing verdict is not in its ledger, so \"after the critic's run\" cannot be checked\n"; return 1; }
+  jhs=$(git -C "$wt" rev-parse --verify -q "$jh^{commit}" 2>/dev/null) || {
+    printf 'the head the critic judged (%s) is not in this clone\n' "$(printf '%s' "$jh" | cut -c1-10)"; return 1; }
+  for c in "$@"; do
+    cs=$(git -C "$wt" rev-parse --verify -q "$c^{commit}" 2>/dev/null) || { printf 'commit %s does not resolve\n' "$c"; return 1; }
+    git -C "$wt" merge-base --is-ancestor "$cs" HEAD 2>/dev/null || { printf 'commit %s is not on this branch\n' "$c"; return 1; }
+    if git -C "$wt" merge-base --is-ancestor "$cs" "$jhs" 2>/dev/null; then
+      printf 'commit %s was already in %s, the head the critic failed\n' "$c" "$(printf '%s' "$jh" | cut -c1-10)"; return 1
+    fi
+  done
+  printf 'commit(s) %s are on the branch and came after %s, the head the critic failed: the critic judges the pushed head again\n' "$*" "$(printf '%s' "$jh" | cut -c1-10)"
+}
+
 _driver_fix_diff() { # <tree>
   local wt="$1" r trunk="" diff=""
   for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
@@ -286,9 +312,46 @@ EOB
     driver_state_set "$t" fix_proof_note ""
     return "$rc"
   fi
-  if [ "$(jq -r '[.deferred[]?] | length' "$ans" 2>/dev/null)" != "0" ]; then
-    driver_say "✋ fix: $(jq -r '[.deferred[]?] | length' "$ans") of the findings were deferred, and a blocking finding is not deferrable — $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
-    driver_state_set "$t" park_note "the fix round deferred a blocking finding: $(jq -r '[.deferred[]? | "\(.blockerId): \(.reason)"] | join("; ")' "$ans")"
+  # A FINDING SAID TO BE STALE IS RE-CHECKED, NEVER THE OWNER'S. A deferral of a
+  # finding that is not the review's own (a critic's) and that cites commits says the
+  # critic judged a tree without them. Every cited commit on the branch and absent
+  # from the head the critic failed: the critic judges the pushed head again, and its
+  # status blocks the merge while it still fails. Anything else is refused, for the PM.
+  local rids stale_ids="" stale_recs="" stale_bad="" shas sw src pr jh
+  rids=$(jq -c '[.findings[]?.id]' "$review" 2>/dev/null); [ -n "$rids" ] || rids='[]'
+  pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" critic_pr)
+  jh=$(_driver_fix_critic_head "$pr")
+  i=0
+  while [ "$i" -lt "$(jq -r '[.deferred[]?] | length' "$ans" 2>/dev/null)" ]; do
+    bid=$(jq -r --argjson i "$i" '.deferred[$i].blockerId' "$ans")
+    shas=$(jq -r --argjson i "$i" '.deferred[$i].reason' "$ans" | grep -oE '(^|[^0-9a-zA-Z])[0-9a-f]{7,40}([^0-9a-zA-Z]|$)' | grep -oE '[0-9a-f]{7,40}' | sort -u | tr '\n' ' ')
+    i=$((i+1))
+    jq -e --arg b "$bid" --argjson r "$rids" '$r | index($b) != null' -n >/dev/null 2>&1 && continue
+    [ -n "$shas" ] || continue
+    src=0; sw=$(_driver_fix_stale_check "$wt" "$jh" $shas) || src=$?
+    if [ "$src" -eq 0 ]; then
+      driver_say "   fix $bid — said not outstanding, and re-checked: $sw"
+      stale_ids="$stale_ids $bid"
+      stale_recs="$stale_recs$(jq -nc --arg b "$bid" --arg w "$sw" '{blockerId:$b, proof:"critic-recheck", pmAnswer:null, why:$w}')
+"
+    else
+      stale_bad="$stale_bad- $bid: said not outstanding, and the re-check failed: $sw
+"
+    fi
+  done
+  local left
+  left=$(jq -c --arg s "$stale_ids $(printf '%s' "$stale_bad" | sed -n 's/^- \([^:]*\):.*/\1/p' | tr '\n' ' ')" \
+    '[.deferred[]? | select(.blockerId as $b | ($s | split(" ") | index($b)) == null)]' "$ans" 2>/dev/null)
+  if [ "${left:-[]}" = "[]" ] && [ -n "$stale_bad" ]; then
+    driver_say "✋ fix: a finding said to be stale could not be re-checked — $(printf '%s' "$stale_bad" | tr '\n' ' ')"
+    driver_state_set "$t" park_note "the fix round said a critic finding is not outstanding and the driver could not confirm it: $(printf '%s' "$stale_bad" | tr '\n' ' ')"
+    # THE PM'S, NOT THE OWNER'S. Whether commits cover a finding is not a product call.
+    driver_state_set "$t" park_cause pm
+    return "$DRIVER_E_REFUSED"
+  fi
+  if [ "${left:-[]}" != "[]" ]; then
+    driver_say "✋ fix: $(jq -r 'length' <<<"$left") of the findings were deferred, and a blocking finding is not deferrable — $(jq -r '[.[] | "\(.blockerId): \(.reason)"] | join("; ")' <<<"$left")"
+    driver_state_set "$t" park_note "the fix round deferred a blocking finding: $(jq -r '[.[] | "\(.blockerId): \(.reason)"] | join("; ")' <<<"$left")$([ -z "$stale_bad" ] || printf '; %s' "$(printf '%s' "$stale_bad" | tr '\n' ' ')")"
     # A PERSON DECIDES WHETHER A BLOCKER IS REALLY ONE. The fixer disagreeing with
     # a grade is a legitimate answer and it is not the driver's to settle; parking
     # it as the driver's own would leave the ticket resumable and the next round
@@ -299,7 +362,7 @@ EOB
 
   ncleared=$(jq -r '[.cleared[]?] | length' "$ans")
   local fails="" rec="$d/steps/fix.proofs.jsonl"
-  : > "$rec"
+  printf '%s' "$stale_recs" > "$rec"
   i=0
   while [ "$i" -lt "${ncleared:-0}" ]; do
     bid=$(jq -r --argjson i "$i" '.cleared[$i].blockerId // "?"' "$ans")
