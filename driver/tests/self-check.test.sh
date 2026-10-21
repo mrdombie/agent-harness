@@ -418,8 +418,95 @@ SH
   out=$(driver_step_self_check 402 2>&1); rc=$?
   want "a rise goes to fix"                                 "30" "$rc"
   want "the baseline is not raised"                         "3" "$(cat "$REPO/baseline.txt")"
+  echo "--- a printed command with a trailing note after it still runs ---"
+  # "Lock the cleanup in: npm run check:size -- --update  (and commit baseline.json
+  # in this PR)" failed the anchored command pattern, so 18 tickets parked on headroom.
+  sed -i.bak 's#Lock the cleanup in: npm run check:r -- --update#Lock the cleanup in: npm run check:r -- --update  (and commit baseline.txt in this PR)#' "$REPO/ratchet.sh" && rm -f "$REPO/ratchet.sh.bak"
+  echo 2 > "$REPO/actual.txt"; git -C "$REPO" commit -qam "fixture: a trailing note, and slack again"
+  driver_state_init 403 --worktree "$REPO"
+  out=$(driver_step_self_check 403 2>&1); rc=$?
+  want "the trailing note does not hide the command"        "0" "$rc"
+  want "the baseline is lowered to actual"                  "2" "$(cat "$REPO/baseline.txt")"
 else
   echo "SKIP — no npm on this machine"
 fi
+
+echo "--- LESSON: gates.ratchets — a gate that punishes improvement gets a mechanical tighten ---"
+# The tighten comes from harness.json, not from parsing the gate's prose. A JSON
+# baseline of {key: count}; the gate prints which keys have slack or rose.
+cat > "$REPO/jr.sh" <<'SH'
+b=jr-baseline.json; a=jr-actual.json
+if [ "${1:-}" = --update ]; then cp "$a" "$b"; exit 0; fi
+if [ "${1:-}" = --raise ]; then jq '.b = 9' "$a" > "$b"; exit 0; fi
+rose=$(jq -rn --slurpfile b "$b" --slurpfile a "$a" '[$a[0] | to_entries[] | select(.value > ($b[0][.key] // 0))] | length')
+slack=$(jq -rn --slurpfile b "$b" --slurpfile a "$a" '[$b[0] | to_entries[] | select(.value > ($a[0][.key] // 0))] | length')
+[ "$rose" -gt 0 ] && { echo "✗ check:jr — $rose entry ROSE (calls):"; exit 1; }
+[ "$slack" -gt 0 ] && { echo "✗ check:jr — $slack entry sits ABOVE actual — of free headroom:"; [ -n "${JR_PRINT:-}" ] && echo "  Lock the cleanup in: $JR_PRINT"; exit 1; }
+echo "check:jr ok"
+SH
+printf '{"a": 6, "b": 2}\n' > "$REPO/jr-baseline.json"; printf '{"a": 3, "b": 2}\n' > "$REPO/jr-actual.json"
+git -C "$REPO" add jr.sh jr-baseline.json jr-actual.json && git -C "$REPO" commit -qm "fixture: a JSON ratchet with slack"
+jq '.gates = {"jr":"bash jr.sh"} | .gates.ratchets = [{"check":"check:jr","tighten":"bash jr.sh --update","baseline":["jr-baseline.json"]}]' \
+  "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 421 --worktree "$REPO"
+head0=$(git -C "$REPO" rev-parse HEAD)
+out=$(driver_step_self_check 421 2>&1); rc=$?
+want "above actual: tightened, and the gate passes"       "0" "$rc"
+want "the baseline went down to actual"                   '{"a":3,"b":2}' "$(jq -c . "$REPO/jr-baseline.json")"
+want "one commit, the baseline alone"                     "jr-baseline.json" "$(git -C "$REPO" diff --name-only "$head0" HEAD)"
+want_in "naming the configured command"                   'bash jr.sh --update' "$(git -C "$REPO" log -1 --format=%B)"
+want_not_in "and nothing parked"                          'refused' "$out"
+
+echo "--- below actual (the code got worse) is never tightened: it goes to fix ---"
+printf '{"a": 3, "b": 4}\n' > "$REPO/jr-actual.json"; git -C "$REPO" commit -qam "fixture: b rose"
+driver_state_init 422 --worktree "$REPO"
+out=$(driver_step_self_check 422 2>&1); rc=$?
+want "a rise goes to fix"                                 "30" "$rc"
+want "the baseline is not raised"                         '{"a":3,"b":2}' "$(jq -c . "$REPO/jr-baseline.json")"
+want_not_in "no tighten ran"                              'locking the improvement in' "$out"
+
+echo "--- a tighten that would raise any number is refused and put back ---"
+printf '{"a": 1, "b": 2}\n' > "$REPO/jr-actual.json"; git -C "$REPO" commit -qam "fixture: slack on a"
+jq '.gates.ratchets[0].tighten = "bash jr.sh --raise"' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 423 --worktree "$REPO"
+head0=$(git -C "$REPO" rev-parse HEAD)
+out=$(driver_step_self_check 423 2>&1); rc=$?
+want "the raise goes to fix, not through"                 "30" "$rc"
+want "the baseline is exactly as it was"                  '{"a":3,"b":2}' "$(jq -c . "$REPO/jr-baseline.json")"
+want "nothing was committed"                              "0" "$(git -C "$REPO" rev-list --count "$head0"..HEAD)"
+want_in "the run names the number that rose"              'RAISE a baseline.*b: 2 → 9' "$out"
+want_in "and fix is told"                                 'would raise a baseline' \
+  "$(jq -r '.[0].output' "$(driver_state_dir 423)/steps/self-check.findings.json" 2>/dev/null)"
+
+echo "--- headroom with no tighten command goes to fix, named — not a refusal ---"
+jq '.gates.ratchets = []' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 424 --worktree "$REPO"
+out=$(driver_step_self_check 424 2>&1); rc=$?
+want "it goes to fix"                                     "30" "$rc"
+want_in "and fix reads why"                               'names no tighten command' \
+  "$(jq -r '.[0].output' "$(driver_state_dir 424)/steps/self-check.findings.json" 2>/dev/null)"
+
+echo "--- the push's own checks: verify:push's summary of a slack ratchet is tightened too ---"
+# A build parked on the pre-push, not a gate: "✗ check:jr (required check: …)".
+cat > "$REPO/verify.sh" <<'SH'
+out=$(bash jr.sh) && exit 0
+echo "✗ check:jr  (required check: Code gates)"; echo "$out"; echo "✗ verify:push — 1 of 80 failed: check:jr"; exit 1
+SH
+git -C "$REPO" add verify.sh && git -C "$REPO" commit -qm "fixture: a push verification"
+jq '.gates = {"changed":["true"],"prePush":"bash verify.sh","ratchets":[{"check":"check:jr","tighten":"bash jr.sh --update"}]}' \
+  "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+driver_state_init 425 --worktree "$REPO"
+out=$(driver_step_self_check 425 2>&1); rc=$?
+want "the pre-push's headroom is locked in and it passes" "0" "$rc"
+want "the baseline went down to actual"                   '{"a":1,"b":2}' "$(jq -c . "$REPO/jr-baseline.json")"
+jq '.gates = {"changed": ["true"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+
+echo "--- a text baseline may only lose lines ---"
+printf 'x\ny\n' > "$REPO/list.txt"; git -C "$REPO" add list.txt && git -C "$REPO" commit -qm "fixture: a list baseline"
+printf 'x\n' > "$REPO/list.txt"
+want "a removed line is not a raise"                      "1" "$(_driver_baseline_raised "$REPO" list.txt >/dev/null; echo $?)"
+printf 'x\ny\nz\n' > "$REPO/list.txt"
+want "an added line is"                                   "0" "$(_driver_baseline_raised "$REPO" list.txt >/dev/null; echo $?)"
+git -C "$REPO" checkout -q HEAD -- list.txt
 
 exit $FAILED

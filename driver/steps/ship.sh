@@ -565,7 +565,11 @@ driver_step_ship() { # <ticket>
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
   fi
+  # A push refused only for ratchet headroom is lowered, committed and pushed once more.
   driver_push "$t" "$wt" "$branch" ship || {
+    ! grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null \
+      && _driver_ratchet_tighten "$t" "$wt" "$DRIVER_PUSH_OUT" "ship: pre-push" \
+      && driver_push "$t" "$wt" "$branch" ship; } || {
     # Sign-off comes last: a refusal for changing signed screens is the owner's call, said as one.
     if grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null; then
       local signed_why; signed_why=$(grep -m1 'sign-off comes last' "$DRIVER_PUSH_OUT" | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300)

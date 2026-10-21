@@ -75,50 +75,119 @@ _driver_note_changelog_skip() {
 }
 
 # A RATCHET THAT WENT DOWN IS LOCKED IN, NOT PARKED. A shrink-only ratchet fails when
-# its baseline sits ABOVE actual — the build improved things and left the headroom —
-# and prints the command that lowers the baseline. Parked on exactly that (2026-10-20:
-# "1 entry sits ABOVE actual — 3 … of free headroom"), a build that made the code
-# better stopped. The driver runs the gate's own lowering command and commits. Only
-# when the output names no rise: a ratchet's update refuses to raise a number, and a
-# rise is code to fix. Only a package-script command, and only the files it changed.
+# its baseline sits ABOVE actual — the build improved things and left the headroom.
+# Parked on exactly that on 18 tickets (2026-10-21: "1 entry sits ABOVE actual —
+# 2 complexity … of free headroom"), a build that made the code better stopped. The
+# driver runs the ratchet's own lowering command, refuses any baseline number that
+# rose, commits, and the gate runs again. Never when the output names a rise: that is
+# code to fix. The command comes from harness.json first, then from the gate's text:
+#   gates.ratchets  [{ "check": "<gate name>",           a name the output carries
+#                      "tighten": "<command that lowers it>",
+#                      "baseline": ["scripts/…/baseline.json"] }]   optional: only these may change
 #   ✗ N entries sit ABOVE actual — … / Lock the cleanup in: <cmd>
 #   ✗ N baseline entries name things that no longer exist / Drop the entries: <cmd>
-#   Lock the progress in:  <cmd>
+#   Lock the progress in: run `<cmd>` and commit …
 # _driver_ratchet_tighten <ticket> <tree> <gate output> <label> — 0 when it committed
-# a lowered baseline and the gate should run again.
+# a lowered baseline and the gate should run again. 1 otherwise; when the failure was
+# only headroom and nothing lowered it, the reason is appended to the output, so the
+# fix round reads it.
 DRIVER_RATCHET_CMD_RE='^(npm|pnpm|yarn|bun) run [A-Za-z0-9:._/-]+( --)?( --[A-Za-z][A-Za-z-]*)+$'
+DRIVER_RATCHET_RISE_RE='(^|[[:space:]])(ROSE|GREW)([[:space:](.:]|$)|RISEN|new violation'
+
+# _driver_ratchet_cmds <output> — the lowering commands: each gates.ratchets entry
+# whose check the output names, then each one the output prints. One per line.
+_driver_ratchet_cmds() {
+  local out="$1" chk tcmd
+  {
+    while IFS=$'\t' read -r chk tcmd; do
+      [ -n "$chk" ] && [ -n "$tcmd" ] || continue
+      grep -qF -- "$chk" "$out" && printf '%s\n' "$tcmd"
+    done <<EOS
+$(jq -r '(.gates.ratchets // []) | if type == "array" then .[] | select(type == "object") | "\(.check // "")\t\(.tighten // "")" else empty end' "$HARNESS_CFG" 2>/dev/null)
+EOS
+    # A printed command loses a leading "run ", its backticks and a note after it.
+    sed -nE 's/^.*(Lock the (cleanup|progress) in|Drop the entries):[[:space:]]+//p' "$out" \
+      | sed -E -e 's/^run[[:space:]]+//' -e 's/`//g' -e 's/[[:space:]]{2,}.*$//' -e 's/[[:space:]]+and commit .*$//' -e 's/[[:space:]]*$//' \
+      | grep -E "$DRIVER_RATCHET_CMD_RE"
+  } | awk 'NF && !seen[$0]++'
+}
+
+# _driver_baseline_raised <tree> <file> — prints what rose and returns 0 when the
+# working copy of a baseline holds any number above HEAD's, or anything new. JSON:
+# every numeric leaf is held to HEAD's at the same path (a new key counts from 0),
+# and every other leaf must already be there. Any other file may only lose lines.
+_driver_baseline_raised() {
+  local wt="$1" f="$2" old new up adds
+  if ! old=$(git -C "$wt" show "HEAD:$f" 2>/dev/null); then
+    printf '%s is new' "$f"; return 0
+  fi
+  [ -f "$wt/$f" ] || return 1
+  new=$(cat "$wt/$f")
+  if jq -e . >/dev/null 2>&1 <<<"$old" && jq -e . >/dev/null 2>&1 <<<"$new"; then
+    up=$(jq -rn --argjson o "$old" --argjson n "$new" '
+      def leaves($d): [$d | paths(scalars) as $p | {p: $p, v: ($d | getpath($p))}];
+      def shape: map(select(.v | type != "number") | {p: (.p | map(select(type == "string"))), v});
+      (leaves($o) | map(select(.v | type == "number") | {key: (.p | tojson), value: .v}) | from_entries) as $on
+      | ( [leaves($n)[] | select(.v | type == "number") | select(.v > ($on[.p | tojson] // 0))
+            | "\(.p | map(tostring) | join(".")): \($on[.p | tojson] // "none") → \(.v)"]
+          + [ (leaves($n) | shape) - (leaves($o) | shape) | .[] | "\(.p | join(".")): added \(.v | tostring)"] )
+      | .[:5] | join("; ")') || { printf '%s could not be compared' "$f"; return 0; }
+    [ -n "$up" ] || return 1
+    printf '%s (%s)' "$f" "$up"; return 0
+  fi
+  adds=$(git -C "$wt" diff --numstat HEAD -- "$f" 2>/dev/null | awk '{s += $1} END {print s + 0}')
+  [ "${adds:-0}" -eq 0 ] && return 1
+  printf '%s gained %s line(s)' "$f" "$adds"; return 0
+}
+
 _driver_ratchet_tighten() {
   local t="$1" wt="$2" out="$3" label="$4" cmds c ran="" log
   [ -f "$out" ] || return 1
   grep -qE 'ABOVE actual|no longer exist|free headroom|Lock the (cleanup|progress) in' "$out" || return 1
-  if grep -qE '(^|[[:space:]])ROSE([[:space:](]|$)|RISEN' "$out"; then
-    driver_say "   self-check: $label — a ratchet has slack to lock in, but one also ROSE; that is code to fix, so nothing is tightened"
+  if grep -qE "$DRIVER_RATCHET_RISE_RE" "$out"; then
+    driver_say "   ratchet: $label — a ratchet has slack to lock in, but one also ROSE; that is code to fix, so nothing is tightened"
     return 1
   fi
-  cmds=$(sed -nE 's/^.*(Lock the (cleanup|progress) in|Drop the entries):[[:space:]]+//p' "$out" \
-         | sed -e 's/[[:space:]]*$//' | grep -E "$DRIVER_RATCHET_CMD_RE" | awk '!seen[$0]++')
-  [ -n "$cmds" ] || return 1
-  local before after changed
+  cmds=$(_driver_ratchet_cmds "$out")
+  if [ -z "$cmds" ]; then
+    driver_say "   ratchet: $label — only headroom, but harness.json gates.ratchets names no tighten command for it and the gate printed none; it goes to fix"
+    printf '\nharness: this ratchet failed only on headroom (the code improved). harness.json gates.ratchets names no tighten command for it: lower its baseline to the actual numbers above, never raise one.\n' >> "$out"
+    return 1
+  fi
+  local before after changed allowed why="" f r
   before=$(git -C "$wt" diff --name-only HEAD 2>/dev/null | sort)
   log="$(driver_state_dir "$t")/steps/ratchet-tighten.out"; : > "$log"
   while IFS= read -r c; do
     [ -n "$c" ] || continue
-    driver_say "   self-check: $label — a ratchet sits above actual; locking the improvement in: $c"
+    driver_say "   ratchet: $label — a ratchet sits above actual; locking the improvement in: $c"
     ( cd "$wt" && driver_run_project "${DRIVER_CMD_TIMEOUT:-900}" "$c" ) >> "$log" 2>&1 && ran="$ran${ran:+, }$c"
   done <<EOS
 $cmds
 EOS
-  [ -n "$ran" ] || { driver_say "   self-check: $label — the lowering command failed: $(tail -2 "$log" | tr '\n' ' ')"; return 1; }
+  [ -n "$ran" ] || { driver_say "   ratchet: $label — the lowering command failed: $(tail -2 "$log" | tr '\n' ' ')"; return 1; }
   # Only what the command changed is committed: anything already dirty is not swept in.
   after=$(git -C "$wt" diff --name-only HEAD 2>/dev/null | sort)
   changed=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
-  [ -n "$changed" ] || { driver_say "   self-check: $label — the lowering command changed nothing"; return 1; }
+  [ -n "$changed" ] || { driver_say "   ratchet: $label — the lowering command changed nothing"; return 1; }
   local files=(); while IFS= read -r c; do files+=("$c"); done <<<"$changed"
-  if ! ( cd "$wt" && git commit -q -m "$(driver_opt commit.parkType chore): lock in the lower ratchet baseline for #$t" -m "Ran: $ran" -- "${files[@]}" ) >> "$log" 2>&1; then
-    driver_say "   self-check: $label — the lowered baseline could not be committed: $(tail -2 "$log" | tr '\n' ' ')"
+  # NEVER LOOSENED. Every number in every file it changed went down or stayed; else
+  # the files go back to HEAD (they were clean before it ran) and the red goes to fix.
+  allowed=$(jq -r '[(.gates.ratchets // [])[]? | select(type == "object") | (.baseline // empty) | if type == "array" then .[] else . end] | .[]' "$HARNESS_CFG" 2>/dev/null)
+  for f in "${files[@]}"; do
+    if [ -n "$allowed" ] && ! grep -qFx -- "$f" <<<"$allowed"; then why="$why${why:+; }$f is not a baseline gates.ratchets names"; continue; fi
+    r=$(_driver_baseline_raised "$wt" "$f") && why="$why${why:+; }$r"
+  done
+  if [ -n "$why" ]; then
+    git -C "$wt" checkout -q HEAD -- "${files[@]}" >> "$log" 2>&1
+    driver_say "✋ ratchet: $label — the lowering command would RAISE a baseline ($why); refused and put back, so the red goes to fix"
+    printf '\nharness: the ratchet tighten (%s) was refused — it would raise a baseline: %s. A baseline only goes down.\n' "$ran" "$why" >> "$out"
     return 1
   fi
-  driver_say "   self-check: $label — lowered baseline committed; running it again"
+  if ! ( cd "$wt" && git commit -q -m "$(driver_opt commit.parkType chore): lock in the lower ratchet baseline for #$t" -m "Ran: $ran" -- "${files[@]}" ) >> "$log" 2>&1; then
+    driver_say "   ratchet: $label — the lowered baseline could not be committed: $(tail -2 "$log" | tr '\n' ' ')"
+    return 1
+  fi
+  driver_say "   ratchet: $label — lowered baseline committed; running it again"
   return 0
 }
 
@@ -481,7 +550,7 @@ driver_step_self_check() { # <ticket>
     # command, so the "every gate is empty, nothing ran" refusal counts it by name.
     # Dropped here it would have left a key configured, unrun and unmentioned.
     # prePush is the push verification below, not a gate of this list.
-    names=$(jq -r '.gates | del(.prePush) | to_entries[] |"\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null)
+    names=$(jq -r '.gates | del(.prePush, .ratchets) | to_entries[] |"\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null)
   fi
   if [ -z "$names" ]; then
     driver_say "✋ self-check: harness.json configures no local 'gates' command. A check that never ran reports exactly like one that found nothing, so this refuses rather than passing."
