@@ -1216,4 +1216,15 @@ want_in "planted: the copy's tick ran" 'tick: ' "$(cat "$C/tick.log" 2>/dev/null
 [ -s "$FIX/watchdog.log" ] && bad "planted: the hook removed and the tick still probed → the test cannot see it" \
   || ok "planted: the hook removed → no probe → red"
 
+echo "--- the shared install's drain hold: nothing new starts while it holds; a stale one holds nothing ---"
+fresh; queue 801 802; mkdir -p "$C"
+printf 'lock abc has waited 31 min; in use: claim-12827-x (#12827, past self-check)\n' > "$C/shared-install-hold"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
+want "held: nothing starts"                "" "$(spawned)"
+want_in "the tick names the hold"          'spawn: starting nothing new — the shared install waits on the builds running here: lock abc has waited 31 min' "$out"
+want "the act is logged"                   "install-hold" "$(awk -F'\t' '$3=="install-hold"{print $3}' "$C/actions.log" | head -1)"
+touch -t 202601010000 "$C/shared-install-hold"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
+want_in "a hold not rewritten for two hours holds nothing" '801' "$(spawned)"
+
 exit $FAILED

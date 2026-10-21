@@ -35,7 +35,8 @@ cat > "$BIN/fake-npm" <<'SH'
 #!/usr/bin/env bash
 printf '%s %s\n' "$PWD" "$(git hash-object package-lock.json)" >> "$FIX/npm.log"
 case "${FAKE_NPM:-ok}" in
-  ok)   mkdir -p node_modules/left-pad packages/ui/node_modules; echo new > node_modules/marker ;;
+  ok)   [ -f "$STATE/coordinator/shared-install-hold" ] && echo held >> "$FIX/held.log"
+        mkdir -p node_modules/left-pad packages/ui/node_modules; echo new > node_modules/marker ;;
   fail) mkdir -p node_modules; echo partial > node_modules/marker; exit 1 ;;
   slow) sleep 30 ;;
 esac
@@ -106,13 +107,37 @@ want "nothing installed while #601 is mid-gate" "npm=0" "$R"
 want_in "it names what it waits on"           "waiting 0 min — in use on this host: claim-601-x \(#601, past build\)" "$OUT"
 touch "$STATE/runs/claim-601-x.ended"; OUT=$(run)
 want "once the run ends, the next check installs" "1" "$(npm_runs)"
-reset_install "$V2"; live_driver_run 602 start; OUT=$(run)
-want "a run still at plan does not hold it"   "1" "$(npm_runs)"
+reset_install "$V2"; live_driver_run 602; OUT=$(run)
+want "a run still in its start step does not hold it" "1" "$(npm_runs)"
+reset_install "$V2"; live_driver_run 604 start; OUT=$(run)
+want "a run past start does (plan reads the install too)" "0" "$(npm_runs)"
 reset_install "$V2"
 printf '{"run_id":"claim-603-x","ticket":"603","pid":%s}\n' "$$" > "$STATE/runs/claim-603-x.json"
 OUT=$(run)
 want "a run whose step cannot be read holds it" "0" "$(npm_runs)"
 want_in "and says why"                        "its step cannot be read" "$OUT"
+
+echo "--- a wait past the drain bound holds new starts until the builds drain ---"
+HOLDF="$STATE/coordinator/shared-install-hold"
+tick_reads_hold() { (. "$HERE/coordinator-env.sh" && . "$HERE/shared-install-hold.sh" && shared_install_hold >/dev/null) && echo held || echo free; }
+case_drain() { # a build past its gates, and a lock that has waited 31 min
+  reset_install "$V1"; live_driver_run 605 start plan build self-check
+  printf '%s %s\n' "$(git -C "$PUSHER" rev-parse HEAD:package-lock.json)" "$(( $(date +%s) - 31 * 60 ))" > "$STATE/coordinator/shared-install.waiting"
+  OUT=$(run); R="hold=$(tick_reads_hold) npm=$(npm_runs)"
+}
+reset_install "$V1"; live_driver_run 605 start plan build self-check; OUT=$(run)
+want "under the bound: it waits, holding nothing" "free" "$(tick_reads_hold)"
+case_drain
+want "past the bound: new starts are held, nothing installed yet" "hold=held npm=0" "$R"
+want_in "and it says so"                      "waiting 31 min, past 30 — holding new starts on this host" "$OUT"
+want_in "the tick names the hold"             "the shared install waits on the builds running here" "$( (. "$HERE/coordinator-env.sh" && . "$HERE/shared-install-hold.sh" && shared_install_hold) )"
+: > "$FIX/held.log"; touch "$STATE/runs/claim-605-x.ended"; OUT=$(run)
+want "once they drain, it installs"           "1" "$(npm_runs)"
+want "with new starts held while it installs" "held" "$(cat "$FIX/held.log")"
+want "and the hold is lifted after"           "free" "$(tick_reads_hold)"
+printf 'old\n' > "$HOLDF"; touch -t 202601010000 "$HOLDF"
+want "a hold its writer stopped rewriting holds nothing" "free" "$(tick_reads_hold)"
+rm -f "$HOLDF"
 
 echo "--- a held lock: no second install ---"
 move_lock 4
@@ -181,7 +206,8 @@ plant() { # <label> <file> <exact line to delete> <case> <the result the guard p
   cp "$FIX/plant.bak" "$f"
 }
 plant "the lock compare" shared-install.sh 'if [ "$have" = "$want" ]; then say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi' case_unchanged "npm=1"
-plant "the in-use wait"  shared-install.sh '  say "waiting $(( ($(date +%s) - wat) / 60 )) min — in use on this host: $busy; checked again next pass"; exit 0' case_mid_gate "npm=1"
+plant "the in-use wait"  shared-install.sh '  say "waiting $waited min — in use on this host: $busy; checked again next pass"; exit 0' case_mid_gate "npm=1"
+plant "the drain hold"   shared-install.sh '      shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"' case_drain "hold=free npm=0"
 plant "the flock"        shared-install.sh '_si_flock "$LOCKF" ' case_locked "npm=1"
 plant "the put-back"     shared-install.sh '  for d in $(prev_dirs); do mv "$d" "${d%"$PREV"}"; done' case_fail "marker= ui="
 plant "the call"         coordinator-housekeeping.sh '  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0 0"

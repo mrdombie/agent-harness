@@ -20,22 +20,34 @@
 #   3. success records the lock and drops the old install; a failure or a timeout puts
 #      the old install and the old checkout back, logs it, and waits
 #      coordinator.sharedInstall.retryMin (60) before trying the same lock again.
-# Busy is: a live run on this host past its first steps (driver state's finished
-# steps beyond coordinator.sharedInstall.preGateSteps, "start"), a run whose step
-# cannot be read (the prose flow), or a process sitting in the shared clone
-# (worktree-lib.sh). Busy waits for the next check; it is never forced.
+# Busy is: a live run on this host past its start step (any finished step outside
+# coordinator.sharedInstall.preGateSteps, default none), a run whose step cannot be
+# read (the prose flow), or a process sitting in the shared clone (worktree-lib.sh).
+# Every step after start reads the install: measured on the Mac on 2026-10-21, plan
+# ran an install-reading command in 21 of 88 transcripts and review in 35 of 53, and
+# ship's push runs the project's pre-push (`npm run verify:push`). A run still in
+# start is safe: a link made while the install is set aside writes no fingerprint,
+# and self-check relinks a tree without one.
+#
+# BUSY IS BOUNDED. Five builds overlap nearly all the time, so a host could wait for
+# ever. Once the lock has waited coordinator.sharedInstall.drainAfterMin (30), and for
+# the whole install, it holds new starts on this host (shared-install-hold.sh, read
+# by the tick like the disk hold); the live builds finish, the install runs, and the
+# hold goes whenever nothing is pending any more: installed, failed, or unchanged.
 #
 # No stamp yet, but the clone's own package-lock.json is that blob and npm's record
 # of the install agrees with it: adopted, nothing installed.
 #
 # Settings (harness.json, or the env var): coordinator.sharedInstall.on (1;
 # SHARED_INSTALL=0 turns it off), .timeoutMin (30; SHARED_INSTALL_TIMEOUT_SEC),
-# .retryMin (60), .preGateSteps ("start"). SHARED_INSTALL_CMD replaces the install
+# .retryMin (60), .preGateSteps (""), .drainAfterMin (30), .holdStaleMin (120).
+# SHARED_INSTALL_CMD replaces the install
 # command (tests).
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/worktree-lib.sh" || exit 1
+. "$SELF_DIR/shared-install-hold.sh" || exit 1
 
 LOGF="$COORD_DIR/shared-install.log"
 STAMP_NAME=".harness-shared-install"
@@ -106,8 +118,10 @@ locked_install() { # <lock blob>
 ON="${SHARED_INSTALL:-$(swarm_opt coordinator.sharedInstall.on 1)}"
 TIMEOUT_SEC="${SHARED_INSTALL_TIMEOUT_SEC:-$(( $(swarm_opt coordinator.sharedInstall.timeoutMin 30) * 60 ))}"
 RETRY_MIN="$(swarm_opt coordinator.sharedInstall.retryMin 60)"
-PRE_GATE=" $(swarm_opt coordinator.sharedInstall.preGateSteps start) "
+PRE_GATE=" $(swarm_opt coordinator.sharedInstall.preGateSteps "") "
+DRAIN_MIN="$(swarm_opt coordinator.sharedInstall.drainAfterMin 30)"
 case "$TIMEOUT_SEC" in ''|*[!0-9]*) TIMEOUT_SEC=1800 ;; esac
+case "$DRAIN_MIN" in ''|*[!0-9]*) DRAIN_MIN=30 ;; esac
 case "$RETRY_MIN" in ''|*[!0-9]*) RETRY_MIN=60 ;; esac
 
 if [ "${1:-}" = --locked ]; then
@@ -115,6 +129,10 @@ if [ "${1:-}" = --locked ]; then
   locked_install "$2"; exit $?
 fi
 
+# The hold lasts only while an install is pending: every exit lifts it but a wait
+# past the drain bound and another install holding the lock.
+KEEP_HOLD=0
+trap 'coord_shadow || [ "$KEEP_HOLD" = 1 ] || shared_install_hold_clear' EXIT
 [ "$ON" = 0 ] && { say "off (coordinator.sharedInstall.on is 0)"; exit 0; }
 [ -d "$CLONE/node_modules" ] || { say "$CLONE has no node_modules — no shared install to keep current"; exit 0; }
 GITDIR=$(git -C "$CLONE" rev-parse --absolute-git-dir 2>/dev/null) || { say "$CLONE is not a git clone — skipped"; exit 0; }
@@ -166,10 +184,22 @@ WAITF="$COORD_DIR/shared-install.waiting"
 [ -n "$busy" ] || rm -f "$WAITF"
 if [ -n "$busy" ]; then
   { [ -f "$WAITF" ] && read -r wwant wat < "$WAITF" && [ "$wwant" = "$want" ]; } || { wat=$(date +%s); printf '%s %s\n' "$want" "$wat" > "$WAITF"; }
-  say "waiting $(( ($(date +%s) - wat) / 60 )) min — in use on this host: $busy; checked again next pass"; exit 0
+  waited=$(( ($(date +%s) - wat) / 60 ))
+  if [ "$waited" -ge "$DRAIN_MIN" ]; then
+    KEEP_HOLD=1
+    if coord_shadow; then say "waiting $waited min — would hold new starts on this host until the builds drain (shadow)"
+    else
+      shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"
+      say "waiting $waited min, past ${DRAIN_MIN} — holding new starts on this host until the builds drain: $busy"
+    fi
+    exit 0
+  fi
+  say "waiting $waited min — in use on this host: $busy; checked again next pass"; exit 0
 fi
 
 if coord_shadow; then say "would install lock ${want:0:12} (shadow)"; exit 0; fi
+# Nothing new starts while the install is set aside; the exit lifts it.
+shared_install_hold_set "lock ${want:0:12} is being installed"
 _si_flock "$LOCKF" bash "${BASH_SOURCE[0]}" --locked "$want"; rc=$?
-[ "$rc" -ne 75 ] || say "another install holds $LOCKF — checked again next pass"
+[ "$rc" -ne 75 ] || { KEEP_HOLD=1; say "another install holds $LOCKF — checked again next pass"; }
 exit 0

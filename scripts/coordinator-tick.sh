@@ -44,6 +44,8 @@
 #                    starts nothing new and updates at once; it resumes at the floor
 #   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts and the
 #                    auto-clean runs (disk-guard.sh), until coordinator.disk.resumeAtGb is free
+#   5a. install      while shared-install.sh holds new starts (a moved lock waited past
+#                    coordinator.sharedInstall.drainAfterMin, or it is installing), nothing new starts
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   5c. sheet        the owner writes the order, the floor and every machine's heartbeat;
 #                    a reader posts its heartbeat on the sheet (coordinator-sheet.sh)
@@ -65,6 +67,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/coordinator-waits.sh" || exit 1
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
+. "$SELF_DIR/shared-install-hold.sh" || exit 1
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
 SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
@@ -590,6 +593,10 @@ if [ -n "$COORD_CAP_BAD" ]; then
 elif [ -n "$DISK_HOLD" ]; then
   say "spawn: starting nothing new — $DISK_HOLD"
   coord_act_log disk-hold - "$DISK_HOLD"
+  held_view
+elif INSTALL_HOLD=$(shared_install_hold); then
+  say "spawn: starting nothing new — $INSTALL_HOLD"
+  coord_act_log install-hold - "$INSTALL_HOLD"
   held_view
 elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"
