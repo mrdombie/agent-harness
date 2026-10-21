@@ -96,6 +96,7 @@ want "the new install is in place"            "new" "$(cat "$REPO/node_modules/m
 want "the lock it was made from is recorded"  "$V2" "$(awk '{print $1}' "$REPO/node_modules/.harness-shared-install")"
 want "the old install is gone, not left beside it" "" "$(ls -d "$REPO"/node_modules.harness-prev "$REPO"/packages/ui/node_modules.harness-prev 2>/dev/null)"
 want_in "the install is logged"               "shared install: installed origin/develop's lock ${V2:0:12}" "$(cat "$C/tick.log")"
+want_in "the lock it replaces is named once, short" "the install was made from ${V1:0:12}$" "$(grep 'lock checked: origin' "$C/tick.log")"
 OUT=$(run)
 want "the next check runs nothing again"      "1" "$(npm_runs)"
 want_in "and says the lock is unchanged"      "checked: unchanged" "$OUT"

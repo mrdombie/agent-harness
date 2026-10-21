@@ -152,7 +152,7 @@ if [ -z "$have" ] && [ "$(git hash-object "$CLONE/package-lock.json" 2>/dev/null
   say "lock ${want:0:12} checked: the install already matches it — recorded, nothing installed"; exit 0
 fi
 if [ "$have" = "$want" ]; then say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi
-say "lock checked: origin/$BR has ${want:0:12}, the install was made from ${have:+${have:0:12}}${have:-an unrecorded lock}"
+say "lock checked: origin/$BR has ${want:0:12}, the install was made from $(if [ -n "$have" ]; then printf '%s' "${have:0:12}"; else printf 'an unrecorded lock'; fi)"
 
 if [ -f "$FAILED_F" ] && read -r fwant fat < "$FAILED_F" && [ "$fwant" = "$want" ] \
    && [ $(( $(date +%s) - ${fat:-0} )) -lt $(( RETRY_MIN * 60 )) ]; then
