@@ -223,6 +223,23 @@ _driver_repair_nothing_owed() {
   return 0
 }
 
+# _driver_repair_asked_merge <ticket> <tree> <trunk> <answer> <head> — 0 when the answer's
+# question asks to merge the trunk and the driver merged it cleanly: never a question,
+# so it is taken as yes, once, on a tree left clean at <head>; a head with the trunk in parks.
+_driver_repair_asked_merge() {
+  local wt="$2" trunk="$3" q
+  q=$(jq -r '.question // ""' "$4" 2>/dev/null)
+  printf '%s' "$q" | grep -qiE "merg(e|ing)[^.?]*(origin/)?($INTEGRATION_BRANCH|base|trunk)" || return 1
+  git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null && return 1
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$5" ] && [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || return 1
+  [ ! -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] || return 1
+  if ! git -C "$wt" merge --no-edit "$trunk" >/dev/null 2>&1; then
+    git -C "$wt" merge --abort >/dev/null 2>&1; return 1
+  fi
+  driver_say "   repair: asked \"$q\" — merging $trunk is never a question; merged at $(git -C "$wt" rev-parse --short HEAD), and the push re-runs CI"
+  return 0
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -295,7 +312,11 @@ EOS
   lesson_red=$(_driver_repair_reds "$failing" "$lesson_pat" in)
 
   # ---- the clash ---------------------------------------------------------------
-  local resumed_merge=0 marked
+  # A RED ON A BRANCH BEHIND THE TRUNK MERGES THE TRUNK FIRST. #13285 parked on the owner
+  # asking "merge origin/develop and re-run?": merging the base is always allowed, so a
+  # red on a head that lacks the trunk is merged and re-run by CI, never asked about.
+  local resumed_merge=0 marked behind_red
+  behind_red=$(_driver_repair_reds "$failing" "$lesson_pat" out)
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ]; then
     # A resumed pass finds the merge it left for the model. What it conflicted in is
     # the record's list as well as git's: a file staged unresolved is no longer a U
@@ -305,10 +326,14 @@ EOS
     [ -n "$conflicted" ] || conflicted=$(git -C "$wt" diff --cached --name-only 2>/dev/null)
     driver_say "   repair: resuming the merge of $trunk an earlier pass left in progress"
   elif ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null \
-       && _driver_repair_clashes "$wt" "$trunk" "$mstate" "$mergeable"; then
+       && { [ -n "$behind_red" ] || _driver_repair_clashes "$wt" "$trunk" "$mstate" "$mergeable"; }; then
     if git -C "$wt" merge --no-edit "$trunk" >"$d/steps/repair-merge.out" 2>&1; then
       merged=1
       driver_say "   repair: merged $trunk into $branch cleanly at $(git -C "$wt" rev-parse --short HEAD)"
+      if [ -n "$behind_red" ]; then
+        failing=$(_driver_repair_reds "$failing" "$lesson_pat" in)
+        driver_say "   repair: the red ($behind_red) is on a head behind $trunk — the push re-runs CI on the merge rather than asking"
+      fi
       # The trunk can bring packages the tree's install was never linked with.
       driver_refresh_install "$MAIN_REPO" "$wt" || driver_say "   repair: relinking the install after the merge failed — self-check tries again."
     else
@@ -434,6 +459,10 @@ The body could not be read here: read it yourself (gh pr view $pr --json body)."
   while :; do
     pre_model=$(git -C "$wt" rev-parse HEAD)
     rc=0; driver_ai_step "$t" repair || rc=$?
+    if [ "$rc" -eq "$DRIVER_E_QUESTION" ] && _driver_repair_asked_merge "$t" "$wt" "$trunk" "$d/steps/repair.json" "$pre_model"; then
+      driver_refresh_install "$MAIN_REPO" "$wt" || driver_say "   repair: relinking the install after the merge failed — self-check tries again."
+      return "$DRIVER_OK"
+    fi
     [ "$rc" -eq 0 ] || return "$rc"
     ans="$d/steps/repair.json"
     jq -c '(.replacedTests // [])[]' "$ans" >> "$d/steps/replaced.jsonl" 2>/dev/null || true

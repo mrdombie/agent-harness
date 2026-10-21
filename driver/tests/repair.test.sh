@@ -252,6 +252,28 @@ fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"s
 out=$(driver_step_repair 314 2>&1); rc=$?
 want "it asks"                         "20" "$rc"
 
+echo "--- a red on a branch behind the trunk merges the trunk first, never asks (#13285) ---"
+setup 361; trunk_moves trunk361.txt "trunk work 361"; prs 361 CLEAN unit
+out=$(driver_step_repair 361 2>&1); rc=$?
+want "it finishes"                     "0" "$rc"
+want "no model was called"             "" "$(cat "$CLAUDE_LOG")"
+want "the trunk is now in the branch"  "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "with no question for anyone"     "" "$(driver_state_get 361 park_note)"
+
+echo "--- the model asking 'merge develop?' is a yes: merged, re-run, no owner park ---"
+setup 362; trunk_moves trunk362.txt "trunk work 362"; prs 362 CLEAN
+driver_state_set 362 repair_brief_source caller
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"park","question":"The branch base predates develop'"'"'s changes to ci.yml. Merge origin/develop and re-run, yes/no?"}' "superpowers:systematic-debugging"
+out=$(driver_step_repair 362 2>&1); rc=$?
+want "it does not ask"                 "0" "$rc"
+want "the trunk is now in the branch"  "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "the tree is clean"               "" "$(git -C "$WT" status --porcelain)"
+want "with no question for anyone"     "" "$(driver_state_get 362 park_note)$(driver_state_get 362 park_cause)"
+setup 363; prs 363 CLEAN; driver_state_set 363 repair_brief_source caller
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"park","question":"Merge origin/develop and re-run, yes/no?"}' "superpowers:systematic-debugging"
+out=$(driver_step_repair 363 2>&1); rc=$?
+want "with the trunk already in, the same question still parks" "20" "$rc"
+
 echo "--- markers committed by an earlier pass are caught with no model call and nothing red ---"
 setup 315
 printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
