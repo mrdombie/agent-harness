@@ -38,6 +38,7 @@
 # discovering it after the whole build.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
@@ -227,20 +228,21 @@ driver_step_start() { # <ticket>
       driver_say "✋ start: no $INTEGRATION_BRANCH in $repo to cut from."
       return "$DRIVER_E_REFUSED"
     fi
-    # Work an earlier park left on origin, from any machine, is where this branch starts.
-    local cut="$sha" pref pname
-    pref=$(git -C "$repo" ls-remote origin "refs/heads/park/$t/*" 2>/dev/null | awk '{print $2}' | sort | tail -1)
-    if [ -n "$pref" ]; then
-      pname=${pref#refs/heads/}
-      if git -C "$repo" fetch -q origin "+$pref:refs/remotes/origin/$pname" 2>/dev/null \
-         && cut=$(git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$pname^{commit}"); then
-        driver_say "   start: #$t has parked work on origin as $pname — the branch starts from it"
-        driver_state_set "$t" resumed_from "$pname"
-      else
-        cut="$sha"
-        driver_say "   start: #$t has parked work on origin as $pname and it could not be fetched — cutting from $INTEGRATION_BRANCH"
+    # Work an earlier park stranded on origin, from any machine, is where this branch
+    # starts — unless origin's own branch already has it.
+    local cut="$sha" obase=""
+    git -C "$repo" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null \
+      && obase="refs/remotes/origin/$branch"
+    if driver_stranded_restore "$t" "$repo" "$obase"; then
+      if [ -n "$DRIVER_STRANDED_SHA" ]; then
+        cut="$DRIVER_STRANDED_SHA"
+        driver_say "   start: #$t has stranded work on origin as $DRIVER_STRANDED_FROM — the branch starts from it"
+        driver_state_set "$t" resumed_from "$DRIVER_STRANDED_FROM"
       fi
+    else
+      driver_say "   start: #$t has stranded work on origin as ${DRIVER_STRANDED_FROM:-a ref} and it could not be fetched — cutting from $INTEGRATION_BRANCH"
     fi
+    [ -z "$obase" ] || driver_stranded_expire "$t" "$repo" "$branch"
     # UNDER THE PROJECT'S OWN WORKTREE ROOT, not $TMPDIR. On macOS $TMPDIR is a
     # /var/folders directory the system prunes, and between the build and the push
     # the tree is the only copy of the work — the 2026-09-28 trial ended with 9

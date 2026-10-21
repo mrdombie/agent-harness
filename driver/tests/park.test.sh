@@ -34,7 +34,7 @@ exec "$BIN/gh" "$@"
 SH
 cat > "$BIN/git" <<'SH'
 #!/usr/bin/env bash
-case " $* " in *" push "*) printf 'git push\n' >> "$ORDER" ;; esac
+case " $* " in *" push "*) printf 'git push %s\n' "${*: -1}" >> "$ORDER" ;; esac
 exec /usr/bin/git "$@"
 SH
 chmod +x "$BIN/gh-order" "$BIN/git"; export SWARM_GH="$BIN/gh-order"
@@ -172,31 +172,32 @@ want "the branch is not on origin"            "" "$(on_origin tkt-307/work)"
 want_in "the park says the push failed"       'could not be pushed' "$out"
 want "and the commits are bundled"            "1" "$(bundles)"
 want_not_in "no draft pr for a branch that is not there" 'pr create.*tkt-307/work' "$(cat "$GH_LOG")"
-echo "--- a refused park push, where the project allows it, lands on a park ref the next run can find ---"
+echo "--- a refused park push lands on a stranded ref the next run on any machine can find ---"
 : > "$GH_LOG"; rm -rf "$FIX/trees/backups"
-cfg_with '.driver.parkRefNoVerify = true'
 park_tree 308 tkt-308/work develop
 park_hook "$FIX/hooks308" -; git -C "$FIX/wt308" config core.hooksPath "$FIX/hooks308"
 out=$(driver_park 308 "build answered in a shape the driver cannot read" "" driver 2>&1); rc=$?
-pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/heads/park/308/' | head -1)
+pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/stranded/308/' | head -1)
 want "park reports parked"                    "20" "$rc"
 want "the ticket's own branch is still refused" "" "$(on_origin tkt-308/work)"
-want_in "the work is on a park ref"           'refs/heads/park/308/' "$pref"
+want_in "the work is on a stranded ref"       'refs/stranded/308/' "$pref"
 want "at the worktree's head"                 "$(git -C "$FIX/wt308" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse --verify -q "$pref" 2>/dev/null)"
-want "the run's record names it"              "${pref#refs/heads/}" "$(driver_state_get 308 park_ref)"
-want_in "the ticket says where it is"         "${pref#refs/heads/}" "$(cat "$GH_LOG")"
-want "nothing else on origin moved"           "" "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/heads/' | grep -v -e '^refs/heads/park/308/' -e '^refs/heads/develop$' -e '^refs/heads/tkt-30[3-6]/work$' -e '^refs/heads/tkt-101/work$' | tr '\n' ' ')"
-cp "$CFG_KEEP" "$HARNESS_CFG_PATH"
+want "the run's record names it"              "$pref" "$(driver_state_get 308 park_ref)"
+want_in "the ticket says where it is"         "$pref" "$(cat "$GH_LOG")"
+want "no branch on origin moved for it"       "" "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/heads/' | grep -v -e '^refs/heads/develop$' -e '^refs/heads/tkt-30[3-6]/work$' -e '^refs/heads/tkt-101/work$' | tr '\n' ' ')"
 
-echo "--- not allowed, the ticket records the machine and the exact worktree ---"
+echo "--- origin refuses the stranded ref too: the ticket records the machine and the exact worktree ---"
 : > "$GH_LOG"
+printf '#!/usr/bin/env sh\nwhile read o n r; do case "$r" in refs/stranded/309/*) echo "denied"; exit 1 ;; esac; done\n' > "$FIX/origin/hooks/pre-receive"
+chmod +x "$FIX/origin/hooks/pre-receive"
 park_tree 309 tkt-309/work develop
 park_hook "$FIX/hooks309" -; git -C "$FIX/wt309" config core.hooksPath "$FIX/hooks309"
 out=$(driver_park 309 "the gate stopped it" "" driver 2>&1); rc=$?
-want "no park ref without the project's say-so" "" "$(git -C "$FIX/origin" for-each-ref 'refs/heads/park/309/')"
+rm -f "$FIX/origin/hooks/pre-receive"
+want "no stranded ref"                        "" "$(git -C "$FIX/origin" for-each-ref 'refs/stranded/309/')"
 want_in "the ticket names the worktree"       "\`$FIX/wt309\`" "$(cat "$GH_LOG")"
 want_in "and the machine it is on"            "machine \`$(hostname -s 2>/dev/null || hostname)\`" "$(cat "$GH_LOG")"
-want_in "and the park says why there is no ref" 'parkRefNoVerify' "$out"
+want_in "and the park says why there is no ref" 'refused too' "$out"
 
 for n in 303 304 305 306 307 308 309; do git -C "$FIX/wt$n" config --unset core.hooksPath; done
 
@@ -239,7 +240,8 @@ fix_issue 150 OPEN "status:in-review"; : > "$ORDER"
 out=$(driver_park 150 "the review blocked the repair" "is the reviewer right?" 2>&1); rc=$?
 want "park reports parked"                 "20" "$rc"
 want "origin keeps the PR's head"          "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-150/work)"
-want_not_in "nothing was pushed"           'git push' "$(cat "$ORDER")"
+want "nothing was pushed but the stranded backup" "" "$(grep '^git push' "$ORDER" | grep -v ':refs/stranded/150/' || true)"
+want_in "and the backup was pushed"         '^git push HEAD:refs/stranded/150/' "$(cat "$ORDER")"
 want_not_in "no draft PR is opened"        'pr create' "$(cat "$ORDER")"
 want "the work is committed locally"       "" "$(git -C "$FIX/wt150" status --porcelain)"
 want_in "the brief says where the repair is, and why it was not pushed" 'auto-merge' "$(cat "$GH_LOG")"

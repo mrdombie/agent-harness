@@ -24,13 +24,17 @@
 # the ticket, the PR and the claim, and it is idempotent: it keeps the tree it has.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
 
 # _driver_reenter_keep <git-dir-or-tree> <ref> <branch> — the local commits origin lacks,
-# kept on a backup branch so a repair can start from origin's head without losing them.
+# kept on a backup branch so a repair can start from origin's head without losing them,
+# and on a stranded ref on origin, since a local branch is on this machine only.
 _driver_reenter_keep() {
-  local b="backup/$3-$(date -u +%Y%m%d%H%M%S)"
+  local b="backup/$3-$(date -u +%Y%m%d%H%M%S)" where
   git -C "$1" branch -f "$b" "$2" >/dev/null 2>&1 || return 1
-  driver_say "   reenter: the local $3 had commits origin lacks — kept on $b; the repair starts from origin's head"
+  if driver_stranded_push "${DRIVER_TICKET:-}" "$1" "refs/heads/$b"; then where="and on origin as $DRIVER_STRANDED_REF"
+  else where="on this machine only (${DRIVER_STRANDED_WHY:-no stranded ref})"; fi
+  driver_say "   reenter: the local $3 had commits origin lacks — kept on $b $where; the repair starts from origin's head"
 }
 
 # driver_claim_held_elsewhere <ticket> — 0, naming the holder on stdout, when a LIVE run
@@ -244,6 +248,22 @@ driver_step_reenter() { # <ticket>
   # The head this repair starts from, once per repair round (build-ticket clears it
   # when a new brief arrives), so a resumed pass measures from the same place.
   [ -n "$(driver_state_get "$t" repair_base)" ] || driver_state_set "$t" repair_base "$(git -C "$wt" rev-parse HEAD)"
+  # A REPAIR STRANDED ON ANOTHER MACHINE — its push withheld or refused — is resumed
+  # here when it sits on top of origin's head. One that has diverged is left for a person.
+  if [ "$resuming_merge" -eq 0 ]; then
+    if ! driver_stranded_restore "$t" "$wt" HEAD; then
+      driver_say "   reenter: stranded work on origin as ${DRIVER_STRANDED_FROM:-a ref} could not be fetched — the repair starts from origin's head"
+    elif [ -n "$DRIVER_STRANDED_SHA" ]; then
+      if git -C "$wt" merge-base --is-ancestor HEAD "$DRIVER_STRANDED_SHA" 2>/dev/null \
+         && git -C "$wt" merge -q --ff-only "$DRIVER_STRANDED_SHA" >/dev/null 2>&1; then
+        driver_state_set "$t" resumed_from "$DRIVER_STRANDED_FROM"
+        driver_say "   reenter: #$t has stranded work on origin as $DRIVER_STRANDED_FROM — the repair resumes from it"
+      else
+        driver_say "   reenter: stranded work on origin as $DRIVER_STRANDED_FROM has diverged from $branch — not taken; fetch it by hand"
+      fi
+    fi
+  fi
+  driver_stranded_expire "$t" "$wt" "$branch"
   if [ -z "$(driver_state_get "$t" claimed_at_sha)" ]; then
     base=$(git -C "$wt" merge-base "origin/$INTEGRATION_BRANCH" HEAD 2>/dev/null)
     [ -z "$base" ] || driver_state_set "$t" claimed_at_sha "$base"

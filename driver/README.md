@@ -11,6 +11,7 @@ driver/
 ├── state.sh        the run record — what has to survive the process that wrote it
 ├── ai-step.sh      the one place control is handed to a model, and checked after
 ├── push-requires.sh  the reviews this project's own pre-push insists on
+├── stranded.sh     work a push could not hand over, kept on origin under refs/stranded/
 ├── steps/          start · plan · build · fix · self-check · compare · review · record · ship · park
 │                   reenter · repair (the repair order)
 └── tests/          every step and every refusal
