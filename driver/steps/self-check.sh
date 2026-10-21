@@ -315,7 +315,8 @@ _driver_repair_pr_state() {
   hold=$(driver_opt coordinator.holdCheck approval)
   # `gh pr checks` exits non-zero while a check is red or pending, and still prints them.
   reds=$(swarm_gh pr checks "$1" --repo "$REPO_SLUG" --required --json name,bucket 2>/dev/null \
-    | jq -r --arg gate "$hold" '[.[]? | select(.bucket == "fail") | .name
+    | jq -r --arg gate "$hold" --argjson nb "$(release_nonblocking_json)" '[.[]? | select(.bucket == "fail") | .name
+        | select(ascii_downcase as $n | any($nb[]; . == $n) | not)
         | select(ascii_downcase | contains($gate | ascii_downcase) | not)] | sort | join(", ")' 2>/dev/null)
   printf '%s\t%s' "$m" "$reds"
 }

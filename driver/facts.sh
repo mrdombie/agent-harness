@@ -363,6 +363,11 @@ driver_fact_critic_findings() { # <ticket>
   out=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" critic "$pr" 2>/dev/null) \
     || { _driver_fact_none "the independent critic's findings on PR #$pr could not be read"; return 0; }
   [ -n "$out" ] || { _driver_fact_none "the independent critic has no open finding on PR #$pr"; return 0; }
+  # Its check listed in release.nonBlockingChecks: a warning until the release, never a fix round.
+  if release_check_nonblocking "$(driver_opt review.judge.context "Design critic")"; then
+    _driver_fact_none "the independent critic failed PR #$pr on $(printf '%s\n' "$out" | grep -c .) finding(s), and until the release its check warns and does not block (release.nonBlockingChecks), so none is a blocker of this step; the PM reads them with the CI shots at sign-off"
+    return 0
+  fi
   printf 'The independent design critic failed PR #%s on these. Each is in scope for this change and blocks at its grade, whoever put it there; fix every one (a Minor too), and the critic judges the screen again after CI photographs it:\n' "$pr"
   printf '%s\n' "$out" | awk -F'\t' '{ printf "- %s · %s\n", $1, $3 }'
 }

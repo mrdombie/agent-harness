@@ -788,6 +788,30 @@ tick >/dev/null
 want "a red PR waiting on a status is still judged" "1" "$(grep -c '"id":"red-pr:46:sha46a' "$C/events.would.jsonl")"
 want "a pending status alone is not red"   "0" "$(grep -c '"id":"red-pr:47:' "$C/events.would.jsonl")"
 want "a failed status is red"              "1" "$(grep -c '"id":"red-pr:48:sha48a' "$C/events.would.jsonl")"
+
+echo "--- a check that warns until the release is not a red (release.nonBlockingChecks) ---"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.release.bak"
+lesson() { jq '.statusCheckRollup += [{__typename:"CheckRun", name:"Every fix ships a lesson", workflowName:"Lesson", status:"COMPLETED", conclusion:"FAILURE"}]'; }
+gates() { jq '.statusCheckRollup += [{__typename:"CheckRun", name:"Code gates", status:"COMPLETED", conclusion:"FAILURE"}]'; }
+release_prs() {
+  jq -s . <(pr 61 621 - SUCCESS | lesson | withstatus FAILURE) <(pr 62 622 - SUCCESS | lesson | gates) > "$FIX/gh/prs-all.json"
+}
+jq '.release = {nonBlockingChecks: ["Lesson / Every fix ships a lesson", "Design critic", "Approved picture", "Widths and contrast on changed routes"], done: false}' \
+  "$FIX/cfg.release.bak" > "$HARNESS_CFG_PATH"
+fresh; release_prs
+out=$(tick)
+want "red only on Lesson and Design critic is not judged red" "0" "$(grep -c '"id":"red-pr:61:' "$C/events.would.jsonl")"
+want_in "a warning is noted instead"       'PR #61: red only on .*Design critic.*a warning until the release' "$out"
+want "red on Code gates as well is still red" "1" "$(grep -c '"id":"red-pr:62:sha62a' "$C/events.would.jsonl")"
+jq '.release.done = true' "$HARNESS_CFG_PATH" > "$FIX/cfg.release.t" && cp "$FIX/cfg.release.t" "$HARNESS_CFG_PATH"
+fresh; release_prs
+out=$(tick)
+want "after the release the same PR is red again" "1" "$(grep -c '"id":"red-pr:61:sha61a' "$C/events.would.jsonl")"
+want_not_in "and no warning is noted"      'a warning until the release' "$out"
+cp "$FIX/cfg.release.bak" "$HARNESS_CFG_PATH"
+fresh; release_prs
+tick >/dev/null
+want "with no release key it is red, as before" "1" "$(grep -c '"id":"red-pr:61:sha61a' "$C/events.would.jsonl")"
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"

@@ -180,6 +180,7 @@ section_repair() {
   trunk_red=$(integration_red)
   [ -z "$trunk_red" ] || say "$INTEGRATION_BRANCH is red ($trunk_red) — CI repairs wait until it is green"
   rows=$(open_prs)
+  section_release_warn
   # The tickets this pass may still act on, read in one request before the loop.
   while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
     [ -n "${PR:-}" ] || continue
@@ -245,15 +246,37 @@ section_repair() {
 # pending one never holds a red PR back, since no CI job is still running for it.
 # The sign-off hold's own check is red BY the hold: never a red to repair.
 HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval 2>/dev/null || echo approval)}"
+# A check in release.nonBlockingChecks is a warning until the release: never a red here.
 open_prs() {
-  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r "[.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
+  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$(release_nonblocking_json)" "$RELEASE_NB_JQ"" [.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
            | [.number,
               (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
               .headRefOid, .mergeStateStatus,
               ([.statusCheckRollup[]? | select((.status // \"COMPLETED\") != \"COMPLETED\")] | length),
               ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\")))
+                | select(release_nb(\$nb) | not)
                 | select(((.name // .context // \"\") | ascii_downcase) | contains(\"$HOLD_CHECK\" | ascii_downcase) | not) | (.name // .context)] | join(\";\"))]]
            | .[] | @tsv" 2>/dev/null
+}
+
+# warn_prs — pr \t head \t listed reds, for every open PR on a ticket branch whose checks
+# have settled with a release.nonBlockingChecks check red. Nothing while the list is off.
+warn_prs() {
+  local nb; nb=$(release_nonblocking_json)
+  [ "$nb" != "[]" ] || return 0
+  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$nb" --arg pre "$BRANCH_PREFIX" "$RELEASE_NB_JQ"'
+    .[] | select(.headRefName | startswith($pre)) | select(.isDraft | not)
+    | select([.statusCheckRollup[]? | select((.status // "COMPLETED") != "COMPLETED")] | length == 0)
+    | ([.statusCheckRollup[]? | select(release_nb($nb)) | select(release_red) | (.name // .context)] | unique | join(", ")) as $w
+    | select($w != "") | [.number, .headRefOid, $w] | @tsv' 2>/dev/null
+}
+
+section_release_warn() {
+  local pr sha names
+  while IFS=$'\t' read -r pr sha names; do
+    [ -n "${pr:-}" ] || continue
+    RELEASE_WARN_DRY=$DRY release_warn_pr "$pr" "$sha" "$names" say
+  done <<< "$(warn_prs)"
 }
 
 # Three repairs in a day and still red: hand it to a person, and make the hand-
