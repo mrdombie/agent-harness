@@ -247,6 +247,36 @@ want "the work is committed locally"       "" "$(git -C "$FIX/wt150" status --po
 want_in "the brief says where the repair is, and why it was not pushed" 'auto-merge' "$(cat "$GH_LOG")"
 want_in "and the claim is still released"  'release 150' "$(cat "$ORDER")"
 
+echo "--- a repair on a PR held by the approval label IS pushed: the hold keeps it from merging (#13365) ---"
+cat > "$BIN/gh-labels" <<'SH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "pr view" ] && [ -f "$FIX/gh/labels-$3.json" ]; then
+  printf 'gh %s\n' "$*" >> "$ORDER"; cat "$FIX/gh/labels-$3.json"; exit 0
+fi
+exec "$BIN/gh-order" "$@"
+SH
+chmod +x "$BIN/gh-labels"; SWARM_GH_WAS="$SWARM_GH"; export SWARM_GH="$BIN/gh-labels"
+held_case() { # <ticket> <pr> <labels-json>
+  git -C "$REPO" worktree add -q "$FIX/wt$1" -b "tkt-$1/work" develop
+  git -C "$FIX/wt$1" push -q origin "tkt-$1/work"; ORIG=$(git -C "$FIX/wt$1" rev-parse HEAD)
+  printf 'repair %s\n' "$1" > "$FIX/wt$1/r.txt"
+  driver_state_init "$1" --worktree "$FIX/wt$1" --branch "tkt-$1/work"
+  driver_state_set "$1" mode repair; driver_state_set "$1" pr "$2"
+  printf '{"labels":%s,"autoMergeRequest":{"mergeMethod":"SQUASH"}}\n' "$3" > "$FIX/gh/labels-$2.json"
+  fix_issue "$1" OPEN "status:in-review"; : > "$ORDER"; : > "$GH_LOG"
+  out=$(driver_park "$1" "the repair asked whether to push" "push it?" 2>&1); rc=$?
+}
+held_case 154 97 '[{"name":"needs:human-approval"},{"name":"status:in-review"}]'
+want "park reports parked"                 "20" "$rc"
+want "the armed, held PR's branch moved"   "$(git -C "$FIX/wt154" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-154/work)"
+want_not_in "no draft PR is opened beside it" 'pr create' "$(cat "$ORDER")"
+want_in "the step says why it pushed"      'carries needs:human-approval, so a push cannot merge it' "$out"
+want_in "and the brief says so"            'This repair was pushed' "$(cat "$GH_LOG")"
+held_case 155 98 '[{"name":"status:in-review"}]'
+want "an armed PR with no hold is not pushed" "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-155/work)"
+want_in "and says auto-merge is why"       'may have auto-merge armed' "$out"
+export SWARM_GH="$SWARM_GH_WAS"
+
 echo "--- a park never commits a merge in progress: that would commit its conflict markers ---"
 git -C "$REPO" worktree add -q "$FIX/wt151" -b tkt-151/work develop
 printf 'branch\n' > "$FIX/wt151/clash.txt"; git -C "$FIX/wt151" add clash.txt; git -C "$FIX/wt151" commit -qm "feat: ours"

@@ -606,6 +606,48 @@ want "it refuses"                             "24" "$rc"
 want "the model was asked twice"              "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
 want_in "the second ask names the lesson"     'only a lesson in the PR body turns it green' "$(cat "$FIX/claude-stdin-repair.txt")"
 want_not_in "the body is not written"         'PATCH repos/acme/widgets/pulls/404' "$(cat "$GH_LOG")"
+
+echo "--- a lesson red on an older head is re-run here on the body now and this tree (#13321) ---"
+# The PR's head on GitHub is behind an earlier round's unpushed commits, and its lesson
+# check run is red there. The body already carries a lesson whose guard this tree's diff
+# has: run as CI runs it, the check passes, so "unchanged" is the right answer.
+unchanged() { jq -nc '{step:"repair", skills:["superpowers:systematic-debugging"], status:"unchanged", reason:"the unpushed commits are the repair"}'; }
+with_lesson_body() { # <ticket>
+  { printf 'Fixes the value.\n\n## Lesson\n'
+    printf -- '- Principle: a value written without a check that reads it back ships wrong\n'
+    printf -- '- Guard: `value%s.test.sh`\n' "$1"
+    printf -- '- Before/after: the guard fails on the bad value and passes on the good one\n'
+    printf -- '- Reach: every value file this repo writes, by the same grep\n\n'
+    printf '🤖 Generated with [Claude Code](https://claude.com/claude-code)\n'; } > "$FIX/gh/body-$1.md"
+}
+stale_head() { # <ticket> — the PR head is the pushed commit; two unpushed commits ride on top
+  local t=$1
+  printf 'value=good\n' > "$WT/value$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value"
+  git -C "$WT" push -q origin "tkt-$t/work"; PRHEAD=$(git -C "$WT" rev-parse HEAD)
+  printf '#!/usr/bin/env bash\ngrep -q good value%s.txt\n' "$t" > "$WT/value$t.test.sh"
+  git -C "$WT" add . && git -C "$WT" commit -qm "test: the value"
+  printf 'x\n' > "$WT/more$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: an earlier round, never pushed"
+  driver_state_set "$t" repair_base "$PRHEAD"; driver_state_set "$t" repair_brief_source caller
+  jq -n --argjson n "$t" --arg b "tkt-$t/work" --arg h "$PRHEAD" --arg f "$LESSON_CHECK" \
+    '[{number:$n, headRefName:$b, headRefOid:$h, isDraft:false, mergeStateStatus:"CLEAN",
+       statusCheckRollup:[{name:$f, status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
+}
+setup 405; with_lesson_body 405; stale_head 405; HEAD405=$(git -C "$WT" rev-parse HEAD)
+answer "$(unchanged)"
+out=$(driver_step_repair 405 2>&1); rc=$?
+want "an unchanged answer is accepted"        "0" "$rc"
+want_in "the lesson red is re-run, not owed"  "Every fix ships a lesson' reads red on GitHub.*it passes \(lesson: complete" "$out"
+want "the model was asked once"               "repair" "$(cat "$CLAUDE_LOG")"
+want_not_in "and never told the lesson is red" 'red \(Every fix ships a lesson\)' "$(cat "$FIX/claude-stdin-repair.txt")"
+want "nothing was committed"                  "$HEAD405" "$(git -C "$WT" rev-parse HEAD)"
+want_not_in "the body is not rewritten"       'PATCH repos/acme/widgets/pulls/405' "$(cat "$GH_LOG")"
+
+setup 406; lesson_body 406; stale_head 406
+answer "$(unchanged)"
+out=$(driver_step_repair 406 2>&1); rc=$?
+want "with no lesson in the body it still refuses" "24" "$rc"
+want_not_in "the lesson red is not waved off"  "reads red on GitHub" "$out"
+want_in "and the lesson is still demanded"    'red \(Every fix ships a lesson\)' "$(cat "$FIX/claude-stdin-repair.txt")"
 export SWARM_GH="$SWARM_GH_WAS"
 
 exit $FAILED

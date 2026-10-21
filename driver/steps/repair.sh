@@ -358,6 +358,19 @@ EOS
     driver_say "   repair: this tree is $carried commit(s) ahead of PR #$pr's head with $trunk merged in — an earlier round's work, never pushed. ${old_red:+The red (${old_red}) is on the older head; }the gates, the review and the push take this one."
     base=$prhead; driver_state_set "$t" repair_base "$prhead"
   fi
+  # A LESSON RED IS RE-RUN HERE BEFORE IT IS OWED. GitHub's check run may be on an older
+  # head or an older body; the push takes this tree and the body as it is now.
+  if [ -n "$lesson_red" ] && [ -n "$row" ]; then
+    local fbody="$d/steps/repair-body-fresh.md" fout frc=0
+    if _driver_repair_body "$pr" "$fbody"; then
+      fout=$(_driver_repair_lesson_run "$wt" "$trunk" "$fbody" "$row") || frc=$?
+      if [ "$frc" -eq 0 ]; then
+        driver_say "   repair: '$lesson_red' reads red on GitHub, and run here on PR #$pr's body now and this tree's diff it passes ($(printf '%s\n' "$fout" | head -1)) — not owed"
+        lesson_red=""
+        failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
+      fi
+    fi
+  fi
   code_failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
   [ -n "$conflicted" ] && need=1
   [ -n "$failing" ] && need=1
@@ -455,8 +468,8 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     fi
     [ -n "$reask" ] && [ "$attempt" -eq 1 ] || break
     attempt=2
-    driver_say "↩ repair: $reask while ${failing:+checks are red ($failing)}$([ "$unreadable" -eq 1 ] && echo 'the checks could not be read') — asked once more, with the red checks named."
-    driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER WAS NOT A REPAIR. You $reask, and the pull request is still red: ${failing:-its checks could not be read — run gh pr checks $pr}. A repair on a red PR ends in commits that turn those checks green, each with its proof. If a check is red for a reason you cannot fix here (it waits on a person's sign-off, or on something outside this branch), answer with a question that names the check and what it waits on — do not answer unchanged or repaired with nothing committed.
+    driver_say "↩ repair: $reask while ${failing:+checks are red ($failing)}${lesson_red:+${failing:+ and }the lesson check is red ($lesson_red)}$([ "$unreadable" -eq 1 ] && echo 'the checks could not be read') — asked once more, with the red checks named."
+    driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER WAS NOT A REPAIR. You $reask, and the pull request is still red: ${failing:-${lesson_red:-its checks could not be read — run gh pr checks $pr}}. A repair on a red PR ends in commits that turn those checks green, each with its proof. If a check is red for a reason you cannot fix here (it waits on a person's sign-off, or on something outside this branch), answer with a question that names the check and what it waits on — do not answer unchanged or repaired with nothing committed.
 
 $DRIVER_BRIEF_PREFACE
 
