@@ -308,29 +308,10 @@ SHIM
   return "$jrc"
 }
 
-# driver_api_error <log> — 0, printing what failed, when the call never answered: the
-# API refused or failed (API Error, overloaded, rate-limited, safeguards, 5xx) or no
-# result came back. Read before the answer, because read as an answer it is "not JSON",
-# and that parked #13642 for the owner over a false safeguards flag. An answer with
-# structured output, and prose from a run that did not error, are answers.
-driver_api_error() {
-  local r
-  [ -s "$1" ] || { printf 'the call left an empty transcript'; return 0; }
-  r=$(driver_log_events "$1" | jq -r -s '
-    ([.[] | select(.type == "result")] | last) as $r
-    | if $r == null then "no result came back"
-      elif ($r.structured_output? // null) != null then empty
-      else (($r.result // "") | tostring) as $x
-        | (($r.api_error_status // 0) | tonumber? // 0) as $st
-        | if ($x | test("^\\s*API Error"; "i")) or $st >= 500 or $st == 429
-             or (($r.is_error // false) == true
-                 and ($x == "" or ($x | test("overloaded|rate.?limit|safeguards|usage policy|\\b5[0-9][0-9]\\b|server error|timed? ?out|connection (error|reset)"; "i"))))
-          then (if $x == "" then "an API error with no message" else ($x | gsub("\\s+"; " ") | .[0:300]) end)
-          else empty end
-      end' 2>/dev/null)
-  [ -n "$r" ] || return 1
-  printf '%s' "$r"
-}
+# driver_api_error <log> — 0, printing what failed, when the call never answered at the
+# API (swarm_api_error_log). Read before the answer, because read as an answer it is
+# "not JSON", and that parked #13642 for the owner over a false safeguards flag.
+driver_api_error() { swarm_api_error_log "$1"; }
 
 # _driver_ai_call <prompt> <log> [session-id] — one model call, its spend and the usage
 # wall, from driver_ai_step's locals. A call that failed at the API is made ONCE more
