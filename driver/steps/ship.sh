@@ -501,11 +501,21 @@ driver_step_ship() { # <ticket>
 
   # NO DESIGN VERDICT THIS RUN WROTE IS PUSHED. Only the independent critic sets the
   # design status; a trailer this run committed would read as one to a CI that still
-  # trusts trailers. Commits already on origin are not this run's to judge.
-  local vrange vkey selfv
+  # trusts trailers. Commits already on origin — this branch or the trunk — are not
+  # this run's: a trunk merge brings in other PRs' squashes, real critic trailers and all.
+  local vkey selfv vfout; local -a vnot=()
   vkey=$(driver_opt review.judge.trailer "Design-Critic")
-  if git -C "$wt" rev-parse --verify -q "origin/$branch" >/dev/null 2>&1; then vrange="origin/$branch..HEAD"; else vrange="$trunk..HEAD"; fi
-  selfv=$(git -C "$wt" log --format='%h %s' -i --grep="^$vkey:" "$vrange" 2>/dev/null)
+  if [ "$trunk" = "origin/$INTEGRATION_BRANCH" ] && \
+     ! vfout=$(git -C "$wt" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>&1); then
+    driver_say "   ship: could not fetch origin's $INTEGRATION_BRANCH; trunk commits merged since the last fetch may read as this run's: $(printf '%s' "$vfout" | tail -1 | cut -c1-200)"
+  fi
+  git -C "$wt" rev-parse --verify -q "origin/$branch" >/dev/null 2>&1 && vnot+=("origin/$branch")
+  vnot+=("$trunk")
+  if ! selfv=$(git -C "$wt" log --format='%h %s' -i --grep="^$vkey:" HEAD --not "${vnot[@]}" 2>&1); then
+    driver_say "✋ ship: could not read this run's commits for a design verdict ($(printf '%s' "$selfv" | tail -1 | cut -c1-200)). Nothing is pushed."
+    driver_state_set "$t" park_note "could not read this run's commits for a '$vkey:' verdict: $(printf '%s' "$selfv" | tail -1 | cut -c1-200)"
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ -n "$selfv" ]; then
     driver_say "✋ ship: this run committed a design verdict ($(printf '%s' "$selfv" | tr '\n' ';')) — only the independent critic sets that status. Nothing is pushed."
     driver_state_set "$t" park_note "this run committed a '$vkey:' verdict ($(printf '%s' "$selfv" | tr '\n' ';')); drop those commits — only the independent critic sets the design status"
