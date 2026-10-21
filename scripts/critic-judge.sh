@@ -58,12 +58,20 @@
 #      not re-judged into new work. A red verdict on a signed-off PR goes to the PM.
 #   6. The verdict goes on the PR as a comment carrying the head, the shot set and the
 #      findings, and as the design status on the head, its description naming the set.
+#      The status is never posted from here: a ruleset that takes the check from one app
+#      (GitHub Actions) never counts a status this machine's user token posts, and GitHub
+#      reads only the newest one. The verdict goes as a repository_dispatch
+#      (review.judge.dispatch) to the project's relay workflow, which checks the sender is
+#      the owner and the sha is the PR's head, then posts it with the Actions token.
+#      Each sent verdict is kept in relayed.tsv; one the ledger holds but never sent
+#      (recorded before the relay) is owed again, answered from the ledger, no model.
 # A design-verdict trailer on the branch counts for nothing here and is named in the
 # comment as ignored: the builder that wrote it is the one thing that cannot judge.
 #
 # CONFIG (review.judge in harness.json): context ("Design critic"), trailer
 # ("Design-Critic"), agent ("agent-harness:design-critic"), mockGlob
-# (".design/*-mock.html"), turns (40). Under coordinator.critic: maxLive (3; the
+# (".design/*-mock.html"), turns (40), dispatch ("design-critic-verdict": the event type
+# the project's relay workflow listens for). Under coordinator.critic: maxLive (3; the
 # older review.judge.maxLive is read when it is unset), timeoutMin (20), realDataFrom
 # (2026-10-20).
 #
@@ -80,6 +88,7 @@ CONTEXT=$(swarm_opt review.judge.context "Design critic")
 TRAILER=$(swarm_opt review.judge.trailer "Design-Critic")
 AGENT=$(swarm_opt review.judge.agent "agent-harness:design-critic")
 MOCKGLOB=$(swarm_opt review.judge.mockGlob ".design/*-mock.html")
+DISPATCH=$(swarm_opt review.judge.dispatch "design-critic-verdict")
 MAXLIVE="${CRITIC_JUDGE_MAX_LIVE:-$(swarm_opt coordinator.critic.maxLive "")}"
 [ -n "$MAXLIVE" ] || MAXLIVE=$(swarm_opt review.judge.maxLive 3)
 TIMEOUT_MIN="${CRITIC_JUDGE_TIMEOUT_MIN:-$(swarm_opt coordinator.critic.timeoutMin 20)}"
@@ -97,6 +106,8 @@ COVERAGE="${CRITIC_JUDGE_COVERAGE:-$SELF_DIR/evidence-gaps.sh}"
 FIRST_LOOK="$SELF_DIR/check-first-look.sh"
 JDIR="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}"
 LEDGER="$JDIR/verdicts.tsv"     # pr \t head \t set \t verdict \t state \t url — written only here
+RELAYED="$JDIR/relayed.tsv"     # pr \t head \t state — a verdict sent to the project's relay
+JUDGING_PR=""
 TRIES=2
 VLINE='^[[:space:]>#*_]*VERDICT:[[:space:]]*\*{0,2}(SHIP|SLOP)'
 mkdir -p "$JDIR"
@@ -119,11 +130,16 @@ shotset() { # <dir> — names and bytes, so a re-capture of other pixels is anot
   done | LC_ALL=C sort | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12
 }
 
+# post_status — the verdict, sent to the project's relay workflow (see 6), which posts it
+# as the design status on that head with the Actions token. Never a status from here.
 post_status() { # <head> <success|failure|pending> <description> [<url>]
-  local a=(api -X POST "repos/$REPO_SLUG/statuses/$1" -f "state=$2" -f "context=$CONTEXT" -f "description=$(clip "$3")")
-  [ -n "${4:-}" ] && a+=(-f "target_url=$4")
-  swarm_gh "${a[@]}" >/dev/null 2>&1 || { echo "critic-judge: could not post the $CONTEXT status on ${1:0:9}" >&2; return 1; }
+  local a=(api -X POST "repos/$REPO_SLUG/dispatches" -f "event_type=$DISPATCH"
+           -f "client_payload[sha]=$1" -f "client_payload[pr]=$JUDGING_PR" -f "client_payload[state]=$2"
+           -f "client_payload[context]=$CONTEXT" -f "client_payload[description]=$(clip "$3")")
+  [ -n "${4:-}" ] && a+=(-f "client_payload[target_url]=$4")
+  swarm_gh "${a[@]}" >/dev/null 2>&1 || { echo "critic-judge: could not send the $CONTEXT verdict for ${1:0:9}" >&2; return 1; }
 }
+relayed() { grep -qF "$1	$2	" "$RELAYED" 2>/dev/null; } # <pr> <head>
 
 # pictures_only — paths on stdin that match the picture glob (a function: a case inside $( ) breaks bash 3.2).
 pictures_only() {
@@ -236,12 +252,14 @@ derivation_of() {
 record() { # <pr> <head> <set> <verdict> <state> <url> <description>
   post_status "$2" "$5" "$7" "$6" || return 1
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >> "$LEDGER"
+  printf '%s\t%s\t%s\n' "$1" "$2" "$5" >> "$JDIR/relayed.tsv"
 }
 
 run() { # <pr>
   local pr="$1" j head draft st evsha W n set prev url mocks req miss lint rc pass verdict parity blocks why body ignored t signed=0 judged
   local deriv="" routes="" f d pf outside="" listed="" slug="" got=""
   local -a popt=()
+  JUDGING_PR="$pr"
   [ -z "${HARNESS_DRIVER_RUN:-}" ] || die "a build run ($HARNESS_DRIVER_RUN) cannot judge screens: the verdict comes from a critic the build did not start"
   [ "${CRITIC_JUDGE_LAUNCHER:-}" = coordinator ] || [ "${CRITIC_JUDGE_MANUAL:-}" = 1 ] \
     || die "the independent critic is started by the coordinator (or by a person with CRITIC_JUDGE_MANUAL=1), never by a build"
@@ -262,7 +280,7 @@ run() { # <pr>
     none)
       # Nothing to judge is an answer, not a wait — but only CI's own record for this very head says so.
       if [ -n "$head" ] && [ "$(sed -n 's/^nothing=//p' <<<"$st")" = "$head" ]; then
-        record "$pr" "$head" - none success "" "No rendered change: CI found nothing to photograph at ${head:0:9}" || return 2
+        record "$pr" "$head" - none success "" "$PREFIX: no rendered change — CI found nothing to photograph at ${head:0:9}" || return 2
         printf '%s\t%s\n' "$pr" "$head" >> "$JDIR/none.tsv"
         say "PR #$pr: CI found nothing to photograph at ${head:0:9} — design status set to success"; return 0
       fi
@@ -478,8 +496,9 @@ run() { # <pr>
 
 # due — open, ready PRs carrying the design status whose head this judge has not
 # recorded, or whose status no longer says what the judge recorded (a CI run, or a
-# trailer, wrote over it). Read off the shared copy of the open PRs. A head CI recorded
-# nothing to photograph on is remembered (none.tsv) and not asked about again.
+# trailer, wrote over it), or whose verdict was never sent through the relay. Read off
+# the shared copy of the open PRs. A head CI recorded nothing to photograph on is
+# remembered (none.tsv) and not asked about again once its verdict was sent.
 due() {
   local prs pr head state rec
   prs=$(gh_open_prs "${CRITIC_JUDGE_PRS_MAX_AGE:-300}" 2>/dev/null) || return 0
@@ -489,9 +508,9 @@ due() {
         | select($s != null)
         | "\(.number)\t\(.headRefOid)\t\($s.state // "" | ascii_downcase)"' \
     | while IFS=$'\t' read -r pr head state; do
-        grep -qxF "$pr	$head" "$JDIR/none.tsv" 2>/dev/null && continue
+        grep -qxF "$pr	$head" "$JDIR/none.tsv" 2>/dev/null && relayed "$pr" "$head" && continue
         rec=$(ledger_head "$pr" "$head" | cut -f5)
-        [ -n "$rec" ] && [ "$rec" = "$state" ] && continue
+        [ -n "$rec" ] && [ "$rec" = "$state" ] && relayed "$pr" "$head" && continue
         printf '%s\t%s\n' "$pr" "$head"
       done
 }

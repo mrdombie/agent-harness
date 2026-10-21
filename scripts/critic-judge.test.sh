@@ -30,7 +30,19 @@ case "$1 $2" in
 esac
 if [ "$1" = api ]; then
   case "$*" in
-    *"-X POST"*statuses*) printf '%s\n' "$*" >> "$D/statuses"; exit 0 ;;
+    # The judge never posts the status itself: GitHub reads only the newest status, and a
+    # ruleset that takes the check from one app would never see one posted with a user token.
+    *"-X POST"*statuses*) printf '%s\n' "$*" >> "$D/raw-statuses"; printf '%s\n' "$*" >> "$FIX/raw-ever"; exit 0 ;;
+    # It sends the verdict to the project's relay, which posts it with the Actions token.
+    # What the relay would post is kept in $D/statuses, one line a status, as before.
+    *"-X POST"*dispatches*)
+      printf '%s\n' "$*" >> "$D/dispatches"
+      sha=; st=; cx=; ds=; tu=
+      for a in "$@"; do case "$a" in
+        'client_payload[sha]='*) sha=${a#*=} ;; 'client_payload[state]='*) st=${a#*=} ;;
+        'client_payload[context]='*) cx=${a#*=} ;; 'client_payload[description]='*) ds=${a#*=} ;;
+        'client_payload[target_url]='*) tu=${a#*=} ;; esac; done
+      printf 'relayed statuses/%s state=%s context=%s description=%s%s\n' "$sha" "$st" "$cx" "$ds" "${tu:+ target_url=$tu}" >> "$D/statuses"; exit 0 ;;
     *pulls/7/files*)    cat "$D/files.json"; exit 0 ;;
     *pulls/7/commits*)  cat "$D/commits.json"; exit 0 ;;
     *issues/7/comments*) jq -s '[.[] ]' "$D"/posted-*.json 2>/dev/null || echo '[]'; exit 0 ;;
@@ -71,7 +83,7 @@ export CRITIC_JUDGE_COVERAGE="$FIX/cov"
 
 reset() {
   rm -f "$D/gaps" "$D/polish-adds" "$D/polish-fail" "$D/screen"
-  rm -f "$D"/comment-* "$D"/posted-* "$D/statuses" "$D/prompt-seen" "$D"/shots/* "$D/signed" "$D/ticket-comments.json"; rm -rf "$FIX/judge"
+  rm -f "$D"/comment-* "$D"/posted-* "$D/statuses" "$D/dispatches" "$D/raw-statuses" "$D/prompt-seen" "$D"/shots/* "$D/signed" "$D/ticket-comments.json"; rm -rf "$FIX/judge"
   echo 2026-10-20 > "$D/pic-date"   # a picture approved under the region and real-data rules
   jq -n --arg h "$HEAD" '{headRefOid:$h, isDraft:false, state:"OPEN", headRefName:"tkt-12599/share"}' > "$D/pr.json"
   printf 'head=%s\nsha=%s\nshots=2\nstate=pinned\nreason=pinned\n' "$HEAD" "$EVSHA" > "$D/ev-status"
@@ -117,6 +129,11 @@ s=$(status_line); set=$(set_of)
 grep -q "<!-- critic-judge head=$HEAD shots=$set verdict=SHIP -->" "$D/comment-0.md" && ok "the verdict comment carries head, shot set and verdict" || bad "comment marker: $(head -2 "$D/comment-0.md")"
 grep -q 'Ignored: design verdicts written on the branch' "$D/comment-0.md" && grep -q 'aaaaaaaaaaaa` chore: design-critic' "$D/comment-0.md" \
   && ok "a Design-Critic trailer the builder committed is named as ignored" || bad "trailer not flagged"
+d=$(tail -1 "$D/dispatches" 2>/dev/null)
+printf '%s' "$d" | grep -qE 'repos/[^ ]+/dispatches' && printf '%s' "$d" | grep -q 'event_type=design-critic-verdict' \
+  && printf '%s' "$d" | grep -q "client_payload\[sha\]=$HEAD" && printf '%s' "$d" | grep -q 'client_payload\[pr\]=7' \
+  && [ ! -s "$D/raw-statuses" ] \
+  && ok "the verdict goes to the project's relay as a dispatch naming the head and the PR, never as a raw status" || bad "dispatch: $d / raw: $(cat "$D/raw-statuses" 2>/dev/null)"
 grep -q 'nine narration lines' "$D/prompt-seen" && grep -q 'voice-mock.html' "$D/prompt-seen" \
   && ok "the critic is handed the open findings for the screen and the approved picture" || bad "prompt lacks findings/picture"
 
@@ -208,7 +225,7 @@ ev_none() { # <head CI read> [<head its nothing-to-photograph record names>]
 }
 reset; answer SHIP; ev_none "$HEAD" "$HEAD"
 bash "$J" run 7 >/dev/null 2>&1; rc=$?
-printf '%s' "$(status_line)" | grep -q "statuses/$HEAD .*state=success.*description=No rendered change: CI found nothing to photograph at ${HEAD:0:9}" \
+printf '%s' "$(status_line)" | grep -q "statuses/$HEAD .*state=success.*description=Independent critic: no rendered change — CI found nothing to photograph at ${HEAD:0:9}" \
   && [ $rc -eq 0 ] && [ ! -f "$D/prompt-seen" ] && ok "CI's nothing-to-photograph record for the head sets success, judged by nobody" || bad "nothing to photograph: rc=$rc $(status_line)"
 # 8c No record that the head has nothing (CI never decided, e.g. the PR is not armed): stays pending.
 reset; answer SHIP; ev_none "$HEAD"
@@ -231,6 +248,7 @@ jq -n --arg h "$HEAD" '[
   {number:12, headRefOid:$h, isDraft:false, body:"", statusCheckRollup:[{context:"Design critic", state:"SUCCESS", description:"Nothing owed"}]}]' > "$D/list.json"
 export GH_PRS_FILE="$D/list.json"; mkdir -p "$FIX/judge"; printf '12\t%s\n' "$HEAD" > "$FIX/judge/none.tsv"
 printf '8\t%s\tabc\tSHIP\tsuccess\tu\n' "$HEAD" > "$FIX/judge/verdicts.tsv"
+printf '8\t%s\tsuccess\n12\t%s\tsuccess\n' "$HEAD" "$HEAD" > "$FIX/judge/relayed.tsv"
 out=$(bash "$J" due)
 [ "$(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')" = "7 11 " ] && ok "due: what the ledger holds for the head is settled; a trailer's status, a pending one are owed" || bad "due: $out"
 printf '7\t%s\tabc\tSHIP\tsuccess\tu\n' "$HEAD" > "$FIX/judge/verdicts.tsv"
@@ -238,6 +256,19 @@ jq '.[0].statusCheckRollup[0].description = "Independent critic: SHIP on shots a
 printf '9\t%s\tabc\tSHIP\tsuccess\tu\n' "$HEAD" > "$FIX/judge/verdicts.tsv"
 out=$(bash "$J" due)
 printf '%s\n' "$out" | cut -f1 | grep -qx 8 && ok "due: a status whose description claims the judge, with no ledger entry, is still owed" || bad "description trusted: $out"
+# 9b A verdict recorded before it went through the relay is owed once more, from the ledger.
+case_unrelayed() {
+  jq -n --arg h "$HEAD" '[{number:8, headRefOid:$h, isDraft:false, body:"", statusCheckRollup:[{context:"Design critic", state:"SUCCESS", description:"Independent critic: SHIP on shots abc"}]},
+    {number:12, headRefOid:$h, isDraft:false, body:"", statusCheckRollup:[{context:"Design critic", state:"SUCCESS", description:"Independent critic: no rendered change"}]}]' > "$D/list.json"
+  printf '8\t%s\tabc\tSHIP\tsuccess\tu\n' "$HEAD" > "$FIX/judge/verdicts.tsv"; printf '12\t%s\n' "$HEAD" > "$FIX/judge/none.tsv"
+  rm -f "$FIX/judge/relayed.tsv"; local a b; a=$(bash "$J" due | cut -f1 | tr '\n' ' ')
+  printf '8\t%s\tsuccess\n12\t%s\tsuccess\n' "$HEAD" "$HEAD" > "$FIX/judge/relayed.tsv"; b=$(bash "$J" due | cut -f1 | tr '\n' ' ')
+  [ "$a" = "8 12 " ] && [ -z "$b" ] && echo green || echo red
+}
+[ "$(case_unrelayed)" = green ] && ok "due: a verdict never sent through the relay is owed again (no model: the ledger answers); once sent it is settled" || bad "unrelayed: $(case_unrelayed)"
+# 9c A run that sends the verdict records it as relayed.
+case_relayed_rec() { reset; answer SHIP; bash "$J" run 7 >/dev/null 2>&1; grep -q "^7	$HEAD	success$" "$FIX/judge/relayed.tsv" 2>/dev/null && echo green || echo red; }
+[ "$(case_relayed_rec)" = green ] && ok "a sent verdict is recorded as relayed for its head" || bad "relayed.tsv: $(cat "$FIX/judge/relayed.tsv" 2>/dev/null)"
 
 echo "scope: only what the change changed blocks (#315)"
 # The picture names the files that draw each region: the grid is drawn by the voices page
@@ -400,13 +431,18 @@ if s.count(a) != 1: sys.exit(1)
 open(p, "w").write(s.replace(a, b))
 PY
   J_ORIG="$J"; J="$P"
-  local r; r=$("$4"); J="$J_ORIG"; rm -f "$P"
+  # A plant's own raw POSTs are not the shipped judge's.
+  cp "$FIX/raw-ever" "$FIX/raw-ever.keep" 2>/dev/null || : > "$FIX/raw-ever.keep"
+  local r; r=$("$4"); J="$J_ORIG"; rm -f "$P"; mv -f "$FIX/raw-ever.keep" "$FIX/raw-ever"
   [ "$r" = red ] && ok "planted: $1 → red" || bad "planted: $1 → not caught"
 }
 case_build()  { reset; answer SHIP; HARNESS_DRIVER_RUN=x bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/statuses" ] && echo red || echo green; }
 case_gap()    { reset; rm "$D/shots/voice-menu-phone-dark.png"; answer SHIP; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
 case_minor()  { reset; answer SHIP "- Minor · x"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
 case_noset()  { reset; answer SHIP; sed -i.b '1d' "$D/answer"; bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/statuses" ] && echo red || echo green; }
+case_relay()  { reset; answer SHIP; bash "$J" run 7 >/dev/null 2>&1; [ -s "$D/raw-statuses" ] || [ ! -s "$D/dispatches" ] && echo red || echo green; }
+plant "the verdict posted as a raw status again" 'local a=(api -X POST "repos/$REPO_SLUG/dispatches"' 'local a=(api -X POST "repos/$REPO_SLUG/statuses/$1"' case_relay
+plant "the sent verdict is never recorded as relayed" 'printf '"'"'%s\t%s\t%s\n'"'"' "$1" "$2" "$5" >> "$JDIR/relayed.tsv"' ':' case_relayed_rec
 plant "a build run may judge"            '[ -z "${HARNESS_DRIVER_RUN:-}" ] ||' 'true ||' case_build
 plant "the picture's regions are not checked" 'if [ -n "$miss" ] || [ -n "$lint" ] || [ -n "$gaps" ]; then' 'if [ -n "$lint" ] || [ -n "$gaps" ]; then' case_gap
 case_cov()    { reset; answer SHIP; printf 'missing-route\tx/A.tsx\t/a\tevidence gap: x/A.tsx changed and no route renders it\n' > "$D/gaps"; bash "$J" run 7 >/dev/null 2>&1; status_line | grep -q 'state=success' && echo red || echo green; }
@@ -449,5 +485,7 @@ plant "nothing to photograph has no exit"        "$NONE_IF" 'if false; then' cas
 plant "no record is read as nothing to judge"    "$NONE_IF" 'if true; then' case_none_absent
 plant "the record's sha is not checked"          '[ "$(sed -n '"'"'s/^nothing=//p'"'"' <<<"$st")" = "$head" ]' 'true' case_none_oldrec
 
+# Whatever the plants did, the judge as shipped never posted a raw status in any case above.
+grep -v '^$' "$FIX/raw-ever" 2>/dev/null | grep -q . && bad "a raw status POST was sent: $(head -1 "$FIX/raw-ever")" || ok "no case sent a raw status POST"
 echo "critic-judge: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
