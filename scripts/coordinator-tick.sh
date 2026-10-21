@@ -38,9 +38,15 @@
 #                    priority, kind, heal-all, the split and polish, in any free
 #                    place; a swarm HOLD "for process fixes" (or with an
 #                    `allow: process` line) starts only those (owner call 2026-10-20)
+#   4c. self-update  at most every coordinator.selfUpdate.everyMin, the marketplace's
+#                    version against the newest installed; ahead, the CLI update runs
+#                    (self-update.sh). A reader running under the sheet's minHarness
+#                    starts nothing new and updates at once; it resumes at the floor
 #   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts and the
 #                    auto-clean runs (disk-guard.sh), until coordinator.disk.resumeAtGb is free
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
+#   5c. sheet        the owner writes the order, the floor and every machine's heartbeat;
+#                    a reader posts its heartbeat on the sheet (coordinator-sheet.sh)
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
 #   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
@@ -358,6 +364,20 @@ elif [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
   fi
 fi
 
+# ---- 4c. self-update ------------------------------------------------------------
+# The fleet moves itself: no machine waits for a person to paste an update into it.
+# A reader under the sheet's floor starts nothing new and updates now; this tick's own
+# code is the old one, so the tick after the update is the first to take work again.
+FLOOR_HOLD=""; HARNESS_RUNNING=$(harness_running_version)
+if [ "$SHEET_ROLE" = reader ] && [ -n "${SHEET_MIN_HARNESS:-}" ] && [ -n "$HARNESS_RUNNING" ] \
+   && harness_ver_lt "$HARNESS_RUNNING" "$SHEET_MIN_HARNESS"; then
+  FLOOR_HOLD="this machine runs harness $HARNESS_RUNNING, under the sheet's floor $SHEET_MIN_HARNESS"
+  say "floor: $FLOOR_HOLD — updating now"
+  say "$(harness_self_update --floor)"
+else
+  say "$(harness_self_update)"
+fi
+
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
 # What a refused read misses comes from the last good snapshot while it is fresh.
@@ -573,6 +593,9 @@ elif [ -n "$DISK_HOLD" ]; then
   held_view
 elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"
+elif [ -n "$FLOOR_HOLD" ]; then
+  say "spawn: starting nothing new — $FLOOR_HOLD; it takes work again once it runs the floor"
+  coord_act_log floor-hold - "$FLOOR_HOLD"
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
   coord_act_log sheet-hold - "$SHEET_HOLD"
@@ -684,13 +707,27 @@ fi
 # ---- 5c. the shared sheet --------------------------------------------------------
 # The owner writes what is startable, in run order, and who is building what, once
 # the starts are made: its own starts show as building here before their claims land.
+# With it, the floor and every machine's heartbeat; a reader posts its own.
+HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE")
+SHEET_FLOOR=""; FLEET="[]"
+case "$SHEET_ROLE" in
+  owner)  SHEET_FLOOR=$(coord_sheet_floor)
+          FLEET=$(coord_fleet "$HEARTBEAT" "$(coord_heartbeat_read)" "$SHEET_FLOOR") || FLEET="[]" ;;
+  reader) SHEET_FLOOR="${SHEET_MIN_HARNESS:-}"
+          FLEET=$(coord_fleet "$HEARTBEAT" "${SHEET_FLEET:-[]}" "$SHEET_FLOOR") || FLEET="[]"
+          say "$(coord_heartbeat_post "$HEARTBEAT")" ;;
+  *)      FLEET=$(coord_fleet "$HEARTBEAT" "[]" "") || FLEET="[]" ;;
+esac
+[ -n "$FLEET" ] || FLEET="[]"
+coord_fleet_write "$FLEET" "$SHEET_FLOOR"
 if [ "$SHEET_ROLE" = owner ]; then
   if [ "$ISSUES_OK" = 0 ]; then
     say "sheet: the queue's tickets could not be read — not written; readers start nothing once it is ${COORD_SHEET_STALE_MIN} min old"
   elif [ "$CLAIMS_OK" = 0 ]; then
     say "sheet: the claim list could not be read — not written"
   else
-    if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ]; then
+    if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ] \
+       && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
     else

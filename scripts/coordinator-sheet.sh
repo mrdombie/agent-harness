@@ -34,7 +34,19 @@
 #   label      COORDINATOR_SHEET_LABEL       build-sheet
 #   title      COORDINATOR_SHEET_TITLE       Build queue — the shared sheet
 #   stopLabels COORDINATOR_SHEET_STOP_LABELS after-launch  more labels that keep a ticket off it
+#   minHarness COORDINATOR_MIN_HARNESS      unset  the version floor the owner publishes; unset,
+#                                                   the owner's own installed version
 #   COORDINATOR_HOST                         this machine's name; default the one claims carry
+#
+# THE FLEET. Every host's heartbeat — {host, version, free disk, builds, last tick} —
+# rides on the sheet. A reader posts its own as ONE comment on the sheet issue,
+# edited in place (one PATCH when it changes or every third of staleMin; a git ref
+# would cost a push and a fetch a tick, and the owner already reads this issue).
+# The owner reads those comments (one GET a tick), adds its own, and writes every
+# machine into the sheet with the floor: minHarness, `<!-- sheet:floor … -->`.
+# A reader running under the floor starts nothing new and updates itself at once
+# (self-update.sh); the tick after it runs the floor, it takes work again. Each
+# host keeps what it knows in $COORD_DIR/fleet.json for the live view.
 
 _sheet_self="${BASH_SOURCE[0]}"
 if [ "$_sheet_self" = "$0" ]; then
@@ -42,6 +54,7 @@ if [ "$_sheet_self" = "$0" ]; then
   . "$(cd "$(dirname "$_sheet_self")" && pwd)/coordinator-env.sh" || exit 1
 fi
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/claim-proc.sh" || return 1 2>/dev/null || exit 1
+. "$(cd "$(dirname "$_sheet_self")" && pwd)/self-update.sh" || return 1 2>/dev/null || exit 1
 unset _sheet_self
 
 COORD_HOST="${COORDINATOR_HOST:-$(claim_host)}"
@@ -54,6 +67,11 @@ COORD_SHEET_STOP_LABELS="${COORDINATOR_SHEET_STOP_LABELS:-$(swarm_opt coordinato
 COORD_SHEET_ISSUE_FILE="$COORD_DIR/sheet.issue"   # <number> \t <the label it was found by>
 COORD_SHEET_STATE="$COORD_DIR/sheet.written"   # <hash> \t <epoch written>
 COORD_SHEET_COPY="$COORD_DIR/sheet.read.md"    # a reader's last good copy
+COORD_SHEET_MIN_HARNESS="${COORDINATOR_MIN_HARNESS:-$(swarm_opt coordinator.sheet.minHarness "")}"
+COORD_HEARTBEAT_STATE="$COORD_DIR/heartbeat.posted"   # <comment id> \t <hash> \t <epoch posted>
+COORD_FLEET="$COORD_DIR/fleet.json"
+# A heartbeat older than this is left off the sheet: the machine is gone, not quiet.
+COORD_FLEET_FORGET_MIN="${COORDINATOR_FLEET_FORGET_MIN:-1440}"
 
 _sheet_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -175,11 +193,19 @@ coord_sheet_render() {
       (if $n == 0 then "Nothing is ready to start."
        else (.order | to_entries[] | .key as $i | .value
              | "\($i + 1). #\(.n) · \(.prin | pri) · \(kind) · \(.title | cut) — \(if (.host // "") != "" then "building on " + .host else "ready" end)") end),
+      (if (.fleet // []) | length > 0 then
+        "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)",
+        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)"
+                    + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
+                    + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update")
+       else empty end),
       "",
       "<!-- sheet:v1 updated=\($at) owner=\($owner) -->",
       "```json",
       (.order | map({n, class, prin} + (if .process then {process} else {} end) + (if (.host // "") != "" then {host} else {} end)) | tojson),
-      "```"' <<<"$e"
+      "```",
+      (if (.minHarness // "") != "" then "<!-- sheet:floor minHarness=\(.minHarness) -->" else empty end),
+      (if (.fleet // []) | length > 0 then "<!-- sheet:fleet \(.fleet | tojson) -->" else empty end)' <<<"$e"
 }
 
 _sheet_hash() { printf '%s' "$1" | cksum | awk '{ print $1 "-" $2 }'; }
@@ -189,7 +215,8 @@ _sheet_hash() { printf '%s' "$1" | cksum | awk '{ print $1 "-" $2 }'; }
 coord_sheet_publish() {
   local e="$1" h old_h old_at now beat n body
   now=$(swarm_now)
-  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS . <<<"$e")")
+  # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
+  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet) + {fleet: [(.fleet // [])[] | {host, version, behind}]}' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
@@ -237,7 +264,7 @@ coord_sheet_parse() {
 # be worked from: unreadable with no fresh copy, or older than staleMin.
 coord_sheet_read() {
   local n raw body parsed from=github age
-  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""
+  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"
   body=""
   local try
   for try in 1 2; do
@@ -256,6 +283,10 @@ coord_sheet_read() {
     body=$(cat "$COORD_SHEET_COPY" 2>/dev/null)
     [ -n "$body" ] || { SHEET_WHY="the sheet could not be read$(gh_limit_why >/dev/null 2>&1 && printf ' (%s)' "$(gh_limit_why)") and there is no copy of it"; return 1; }
   fi
+  # The floor and the fleet are read before the age test: a stale sheet still says how far behind this host is.
+  SHEET_MIN_HARNESS=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:floor minHarness=([0-9][0-9.]*) -->$/\1/p' | tail -1)
+  SHEET_FLEET=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:fleet (\[.*\]) -->$/\1/p' | tail -1 | jq -c 'if type == "array" then . else [] end' 2>/dev/null)
+  [ -n "$SHEET_FLEET" ] || SHEET_FLEET="[]"
   parsed=$(coord_sheet_parse "$body") || { SHEET_WHY="the sheet holds no order this coordinator can read"; return 1; }
   SHEET_AT=$(cut -f1 <<<"$parsed"); SHEET_ORDER=$(cut -f3- <<<"$parsed"); SHEET_FROM=$from
   age=$(( ($(swarm_now) - SHEET_AT) / 60 )); [ "$age" -ge 0 ] || age=0
@@ -281,6 +312,92 @@ coord_sheet_seed_queue() {
                            | {n, class: (.class // "new"), prin: (.prin // 9), note: ""}
                              + (if .process then {process: true} else {} end)])' <<<"$cur" \
     > "$COORD_QUEUE.$$" && mv -f "$COORD_QUEUE.$$" "$COORD_QUEUE"
+}
+
+# ---- the fleet -------------------------------------------------------------------
+# coord_sheet_floor — the version floor the owner publishes: the configured one, else its own install.
+coord_sheet_floor() {
+  local v="$COORD_SHEET_MIN_HARNESS"
+  [ -n "$v" ] || v=$(harness_installed_version)
+  printf '%s' "$v"
+}
+
+# coord_heartbeat <builds> <free GB> — this host, as one JSON object.
+coord_heartbeat() {
+  local b="${1:-0}"; case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  jq -cn --arg host "$COORD_HOST" --arg v "$(harness_running_version)" --arg inst "$(harness_installed_version)" \
+     --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
+     '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}'
+}
+
+# coord_fleet <own heartbeat> <others json array> <floor> — every machine, this one first,
+# each marked behind when it runs under the floor. A host silent past forgetMin is dropped.
+coord_fleet() {
+  local now; now=$(swarm_now)
+  jq -cn --argjson me "$1" --argjson others "${2:-[]}" --arg floor "${3:-}" --argjson now "$now" \
+     --argjson forget "$(( COORD_FLEET_FORGET_MIN * 60 ))" '
+    def vlt($a; $b): ($a | split(".") | map(tonumber? // 0)) < ($b | split(".") | map(tonumber? // 0));
+    [$me] + ([$others[]? | select(type == "object" and (.host // "") != "" and (.host | ascii_downcase) != ($me.host | ascii_downcase))
+              | select(($now - (.tick // 0)) < $forget)] | unique_by(.host | ascii_downcase) | sort_by(.host))
+    | map(. + {behind: ($floor != "" and (.version // "") != "" and vlt(.version; $floor))})' 2>/dev/null
+}
+
+# coord_fleet_write <fleet json> <floor> — what the live view draws a line per machine from.
+coord_fleet_write() {
+  jq -cn --argjson f "${1:-[]}" --arg floor "${2:-}" --arg owner "$COORD_SHEET_OWNER" --argjson at "$(swarm_now)" \
+     '{at: $at, owner: (if $owner == "" then null else $owner end), minHarness: (if $floor == "" then null else $floor end), hosts: $f}' \
+     > "$COORD_FLEET.$$" 2>/dev/null && mv -f "$COORD_FLEET.$$" "$COORD_FLEET"
+}
+
+_hb_marker() { printf '<!-- sheet:heartbeat host=%s -->' "$COORD_HOST"; }
+
+# coord_heartbeat_read — the owner's read of every reader's heartbeat comment, as a JSON array.
+coord_heartbeat_read() {
+  local n raw cached
+  # Only the sheet it has written: before the first write no reader can have posted, and a lookup would cost a call.
+  cached=$(head -1 "$COORD_SHEET_ISSUE_FILE" 2>/dev/null); n=${cached%%$'\t'*}
+  case "$n" in ''|*[!0-9]*) printf '[]'; return 0 ;; esac
+  [ "$cached" = "$n"$'\t'"$COORD_SHEET_LABEL" ] || { printf '[]'; return 0; }
+  raw=$(gh_call api "repos/$REPO_SLUG/issues/$n/comments?per_page=100" 2>/dev/null) || { printf '[]'; return 1; }
+  jq -c '[if type == "array" then .[] else empty end | (.body // "") | split("\n")[]
+          | capture("^<!-- sheet:heartbeat-json (?<j>\\{.*\\}) -->\r?$")? | .j | fromjson? | select(type == "object")]' <<<"$raw" 2>/dev/null \
+    || printf '[]'
+}
+
+# coord_heartbeat_post <heartbeat json> — a reader's comment on the sheet, edited in place: written
+# when what it says changes, or every third of staleMin so the owner can tell quiet from gone.
+coord_heartbeat_post() {
+  local hb="$1" n h now beat id old_h old_at body resp line
+  now=$(swarm_now); beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
+  h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role}' <<<"$hb")")
+  IFS=$'\t' read -r id old_h old_at < "$COORD_HEARTBEAT_STATE" 2>/dev/null || { id=""; old_h=""; old_at=0; }
+  case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
+  case "$id" in *[!0-9]*) id="" ;; esac
+  if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
+  if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
+  n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
+  line=$(jq -r '"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"' <<<"$hb")
+  body=$(printf '%s\n%s · last tick %s\n<!-- sheet:heartbeat-json %s -->' "$(_hb_marker)" "$line" "$(_sheet_when "$now")" "$hb")
+  _hb_patch() { [ -n "$id" ] && resp=$(jq -n --arg b "$body" '{body: $b}' | gh_call api --method PATCH "repos/$REPO_SLUG/issues/comments/$id" --input - 2>/dev/null) \
+                 && [ "$(jq -r '.id // empty' <<<"$resp" 2>/dev/null)" = "$id" ]; }
+  if ! _hb_patch; then
+    # Its comment looked up by marker; posted anew only when the list was read and holds none,
+    # so a refused edit never leaves a second heartbeat beside the first.
+    resp=$(gh_call api "repos/$REPO_SLUG/issues/$n/comments?per_page=100" 2>/dev/null) \
+      && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$resp" \
+      || { printf 'heartbeat: the comments on #%s could not be read — trying again next tick' "$n"; return 1; }
+    id=$(jq -r --arg m "$(_hb_marker)" '[.[] | select((.body // "") | startswith($m)) | .id] | .[0] // empty' <<<"$resp" 2>/dev/null)
+    case "$id" in *[!0-9]*) id="" ;; esac
+    if [ -n "$id" ]; then
+      _hb_patch || { printf 'heartbeat: the edit to its comment on #%s was refused — trying again next tick' "$n"; return 1; }
+    else
+      resp=$(jq -n --arg b "$body" '{body: $b}' | gh_call api --method POST "repos/$REPO_SLUG/issues/$n/comments" --input - 2>/dev/null) || resp=""
+      id=$(jq -r '.id // empty' <<<"$resp" 2>/dev/null)
+      case "$id" in ''|*[!0-9]*) rm -f "$COORD_HEARTBEAT_STATE"; printf 'heartbeat: the post to #%s was refused — trying again next tick' "$n"; return 1 ;; esac
+    fi
+  fi
+  printf '%s\t%s\t%s\n' "$id" "$h" "$now" > "$COORD_HEARTBEAT_STATE.$$" && mv -f "$COORD_HEARTBEAT_STATE.$$" "$COORD_HEARTBEAT_STATE"
+  printf 'heartbeat: posted on #%s' "$n"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
