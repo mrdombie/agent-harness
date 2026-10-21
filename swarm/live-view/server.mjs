@@ -392,7 +392,7 @@ export function branchTicket(b, pre = BRANCH_PREFIX) {
 
 // ticket -> its newest open pull request, by closing reference or by branch:
 // its number, whether it is red, and whether it waits on the owner's sign-off.
-function prRowsByTicket(file = PRS_FILE) {
+export function prRowsByTicket(file = PRS_FILE, heads = (readJsonCached(PR_STATES_FILE) || {}).heads || null) {
   const rows = readJsonCached(file)
   const by = {}
   if (!Array.isArray(rows)) return by
@@ -402,8 +402,11 @@ function prRowsByTicket(file = PRS_FILE) {
     const ts = new Set((p.closingIssuesReferences || []).map((r) => String(r && r.number)).filter((n) => n !== 'undefined'))
     const bt = branchTicket(p.headRefName)
     if (bt) ts.add(bt)
-    const row = { number: p.number, red: prRed(p),
-                  held: (p.labels || []).some((l) => (typeof l === 'string' ? l : l && l.name) === hold), status: openPrState(p) }
+    // A copy read on an older head says nothing about the newest push: no clash, no red from it.
+    const status = heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
+      ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p)
+    const row = { number: p.number, red: ['clash', 'failed'].includes(status.state),
+                  held: (p.labels || []).some((l) => (typeof l === 'string' ? l : l && l.name) === hold), status }
     for (const t of ts) if (!(t in by) || p.number > by[t].number) by[t] = row
   }
   return by
@@ -609,6 +612,9 @@ export function prStateArgs(repo, since, trunk = TRUNK) {
      '[.[] | {number, title, mergedAt: .merged_at, closedAt: .closed_at, head: .head.ref, body: ((.body // "")[0:4000])}]'],
     ['api', 'search/issues', '-X', 'GET', '-f', `q=repo:${repo} is:pr is:merged base:${trunk} merged:>=${since}`, '-f', 'per_page=100',
      '--jq', '{total: .total_count, items: [.items[] | {number, title, mergedAt: (.pull_request.merged_at // .closed_at)}]}'],
+    // The newest-updated open pull requests' heads: a state read off the shared copy is
+    // only believed for the head it was read on. Optional: without it the copy stands.
+    ['api', `repos/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=100`, '--jq', '[.[] | {number, head: .head.sha}]'],
   ]
 }
 // Both answers as the file keeps them; null unless both are the shape asked for.
@@ -616,7 +622,9 @@ export function prStatesFrom(outs, since, at) {
   let closed, merged
   try { closed = JSON.parse(outs[0]); merged = JSON.parse(outs[1]) } catch { return null }
   if (!Array.isArray(closed) || !merged || !Number.isInteger(merged.total) || !Array.isArray(merged.items)) return null
-  return { at, since, trunk: TRUNK, closed: closed.filter((p) => p && p.number != null), merged }
+  let heads = null
+  try { const h = JSON.parse(outs[2]); if (Array.isArray(h)) heads = Object.fromEntries(h.filter((x) => x && x.number != null && x.head).map((x) => [String(x.number), String(x.head)])) } catch {}
+  return { at, since, trunk: TRUNK, closed: closed.filter((p) => p && p.number != null), merged, heads }
 }
 let prStatesTried = 0, prStatesBusy = false
 function refreshPrStates(now) {
@@ -639,7 +647,7 @@ function refreshPrStates(now) {
     const outs = []
     for (const a of calls) {
       noteGh(a)
-      try { outs.push(execFileSync(GH, a, { timeout: 60_000, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })) } catch { return }
+      try { outs.push(execFileSync(GH, a, { timeout: 60_000, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })) } catch { if (outs.length < 2) return; break }
     }
     keep(outs)
     return
@@ -650,7 +658,7 @@ function refreshPrStates(now) {
     if (i >= calls.length) { prStatesBusy = false; keep(outs); return }
     noteGh(calls[i])
     runChild('pr states', GH, calls[i], { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 }, (err, out) => {
-      if (err) { prStatesBusy = false; return }
+      if (err) { prStatesBusy = false; if (outs.length >= 2) keep(outs); return }
       outs.push(out)
       try { next(i + 1) } catch (e) { prStatesBusy = false; throw e }
     })
@@ -962,8 +970,11 @@ export function openPrState(p) {
   const held = labels.includes(LBL('HOLD_LABEL', 'needs:human-approval'))
   const approvalWaits = names.some(([n, c]) => APPROVAL_RE.test(n) && !c.good)
   if (p.mergeable === 'CONFLICTING' || p.mergeStateStatus === 'DIRTY') return { state: 'clash', text: 'Clashes with newer code' }
-  if (failed.length) return { state: 'failed', text: `A check failed: ${failed[0]}${failed.length > 1 ? ` (and ${failed.length - 1} more)` : ''}`, checks: failed }
   const other = busy.filter((n) => !DESIGN_RE.test(n))
+  if (failed.length) {
+    const also = [failed.length > 1 ? `and ${failed.length - 1} more` : '', busy.length ? `${busy.length} still running` : ''].filter(Boolean).join(' · ')
+    return { state: 'failed', text: `A check failed: ${failed[0]}${also ? ` (${also})` : ''}`, checks: failed }
+  }
   if (other.length) return { state: 'checks', text: `Waiting for checks (${other.length} running)` }
   if (busy.length || labels.includes('needs:design')) return { state: 'design', text: 'Waiting for design review' }
   if (held || approvalWaits) return { state: 'signoff', text: 'Waiting for sign-off' }
@@ -1165,6 +1176,11 @@ const EXIT_WHY = {
   31: ['it found an open pull request to repair', 'the queue'], 33: ['the model service failed twice', 'machine fault'],
   143: ['it was stopped', 'the queue'], 137: ['it was killed', 'the queue'],
 }
+// Until launch the PM takes the owner's calls (the project config's signoff.untilLaunchPm,
+// via live-view.sh); only a legal or commercial question still goes to the owner.
+const UNTIL_LAUNCH_PM = /^(1|true|yes)$/i.test(process.env.SWARM_UNTIL_LAUNCH_PM || '')
+const OWNER_ONLY_RE = new RegExp(process.env.SWARM_OWNER_ONLY_WORDS || '\\b(legal|commercial|contract|pricing|price|licen[cs]e|terms of|lawyer|GDPR|invoice|billing)\\b', 'i')
+export const ownerAsk = (text) => (UNTIL_LAUNCH_PM && !OWNER_ONLY_RE.test(String(text || '')) ? 'PM' : OWNER)
 // A park's reason in plain words: no exit codes, no "rather than guessing".
 const plainReason = (r) => String(r || '').replace(/\s*\(exit \d+\)/g, '').replace(/ rather than guessing/, '').trim()
 const cut = (x, n) => (x.length > n ? x.slice(0, n - 1) + '…' : x)
@@ -1202,7 +1218,7 @@ export function nowOf(d, ctx) {
     const extra = { ...(detail ? { detail } : {}), ...(open ? { pr: open.number } : {}), ...(by ? { by: Number(by[1]) } : {}) }
     if (by) return stop('stopped', `blocked by #${by[1]}`, `#${by[1]} finishing`, extra)
     if (park.cause === 'pm') return stop('pm', why, 'PM', extra)
-    if (park.cause === 'person') return stop('owner', why, OWNER, extra)
+    if (park.cause === 'person') { const who = ownerAsk(park.full); return stop(who === 'PM' ? 'pm' : 'owner', why, who, extra) }
     return stop('stopped', why, queued && !parked ? 'the queue (it tries again)' : 'machine fault', extra)
   }
   if (open) return at(open.status ? open.status.state : 'checks', open.status ? open.status.text : 'Waiting for checks', { pr: open.number })
@@ -1296,10 +1312,10 @@ export function snapshot(now = Date.now()) {
   const newest = new Map()
   for (const d of done) { const o = newest.get(d.ticket); if (!o || d.endedAt > o.endedAt) newest.set(d.ticket, d) }
   const queued = queueOf()
-  const prRows = prRowsByTicket()
   // Read before the rows are, so a row answers from the newest states there are.
   guard('pr states', () => refreshPrStates(now))
   const prStates = readJsonCached(PR_STATES_FILE)
+  const prRows = prRowsByTicket(PRS_FILE, (prStates || {}).heads || null)
   const ctx = { issues: issuesByTicket(), prs: Object.fromEntries(Object.entries(prRows).map(([t, r]) => [t, r.number])),
                 prRows, closed: closedByTicket(prStates), closedNumbers: closedByNumber(prStates), now, prList: readJsonCached(PRS_FILE), live: new Set(live.map((a) => a.ticket)), liveHosts: live.map((a) => a.host), queued: new Set(queued.tickets.map((r) => r.ticket)) }
   const doneRows = [...newest.values()].sort((a, b) => b.endedAt - a.endedAt).slice(0, 20)

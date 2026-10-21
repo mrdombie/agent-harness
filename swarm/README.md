@@ -135,7 +135,12 @@ from the park line the run logged), with its PR link and finished-at time. Open
 PRs come from the shared open-PR file; closed ones and today's merges into the
 trunk (the Merged today section) from two REST calls kept in `swarm/pr-states.json`
 (`SWARM_PR_STATES_MS`, default two minutes, never under one), never a call per
-row. Only a stop, a failed check or a clash is red. The header counts the rows by state.
+row. An open PR's state is believed only for the head it was read on (a third
+REST call names the newest-updated open PRs' heads), and a failed check outranks
+checks still running ("A check failed: X (2 still running)"). With
+`signoff.untilLaunchPm: true` in harness.json, a person-park's "next" is the PM,
+unless its text is legal or commercial (`SWARM_OWNER_ONLY_WORDS`). Only a stop, a
+failed check or a clash is red. The header counts the rows by state.
 
 A live row names its step from the driver's state where the run is on this
 machine, else from the claim's `step`. Another machine's row is coloured from that
