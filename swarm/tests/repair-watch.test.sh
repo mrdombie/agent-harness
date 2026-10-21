@@ -276,6 +276,19 @@ out=$(w --only alarm)
 want_in "two in a row is"              'ALARM opened' "$out"
 want_in "and says the view is down"    'The live view is not answering' "$(cat "$GH_LOG")"
 
+echo "--- a repair waiting for develop's fix (base-waits.tsv) is not sent again on that head ---"
+: > "$SPAWNS"; : > "$TRIED"
+fix_live widgets 0; fix_at "$T0"; fix_trunk green
+printf '101\t11\teeeeeeeee1\tdevelop\ttypecheck\tsrc/legacy.test.ts\t%s\t\n' "$T0" > "$STATE/swarm/base-waits.tsv"
+fix_prs "11 101 eeeeeeeee1 CLEAN 0 typecheck"
+out=$(w --only repair)
+want "no agent while it waits"         "0" "$(grep -c . "$SPAWNS")"
+want_in "and it says why"              'skip #11 \(101\): its reds fail on develop too' "$out"
+fix_prs "11 101 eeeeeeeee2 CLEAN 0 typecheck"
+w --only repair >/dev/null
+want "a new head is repaired"          "1" "$(grep -c . "$SPAWNS")"
+rm -f "$STATE/swarm/base-waits.tsv"
+
 echo "--- --explain changes nothing ---"
 : > "$GH_LOG"; : > "$SPAWNS"; : > "$TRIED"
 fix_live widgets 0; fix_at "$T0"

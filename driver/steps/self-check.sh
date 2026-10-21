@@ -38,6 +38,27 @@
 # _driver_owed: whether a reviewer the push demands is still owed on this diff.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
+. "$KIT_ROOT/scripts/base-wait.sh" || exit 1
+
+# _driver_gate_base_only <ticket> <gate-output> — 0 in a repair when every failing test the
+# gate printed is one the repair read as red on the base too (base_red_tests): outside the
+# PR and failing on the base, so it waits for the base's fix and never counts against this
+# PR. A gate whose output names no failing test is red as before.
+_driver_gate_base_only() {
+  local known got tst k hit
+  [ "$(driver_state_get "$1" mode)" = repair ] || return 1
+  known=$(driver_state_get "$1" base_red_tests); [ -n "$known" ] || return 1
+  got=$(base_red_tests_in_log "$2"); [ -n "$got" ] || return 1
+  while IFS= read -r tst; do
+    hit=0
+    for k in $known; do
+      case "$tst" in "$k"|*/"$k") hit=1 ;; esac
+      case "$k" in */"$tst") hit=1 ;; esac
+    done
+    [ "$hit" -eq 1 ] || return 1
+  done <<<"$got"
+  printf '%s' "$got" | tr '\n' ' ' | sed 's/ $//'
+}
 
 # _driver_note_changelog_skip <ticket> <tree> — the build steps answered `changelog:
 # {skipped: <reason>}`, and their commits did not carry the project's skip line: the
@@ -512,7 +533,7 @@ _driver_push_tail() { # <file>
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
   local wt names row name safe cmd rc gtype failed=0 ran=0 pushran=0 empty="" redlines="" infra="" findings gscale gsecs
-  local MACHINE_GATE_ON_WAIT="" DRIVER_SC_PR_BASE="" DRIVER_SC_MOOT_WHY="" mrc=0
+  local MACHINE_GATE_ON_WAIT="" DRIVER_SC_PR_BASE="" DRIVER_SC_MOOT_WHY="" mrc=0 bred=""
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   findings="$(driver_state_dir "$t")/steps/self-check.findings.json"
@@ -656,6 +677,8 @@ driver_step_self_check() { # <ticket>
       return "$trc"
     elif [ "$rc" -eq 0 ]; then
       driver_say "   self-check: $name ok"
+    elif bred=$(_driver_gate_base_only "$t" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
+      driver_say "   self-check: $name red only on $bred — outside this PR and red on the base too, so it waits for the base and does not count here"
     else
       failed=$((failed+1))
       driver_say "✋ self-check: $name failed (exit $rc) — $(tail -3 "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>/dev/null | tr '\n' ' ')"

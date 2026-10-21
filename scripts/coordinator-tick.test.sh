@@ -832,6 +832,25 @@ want "a red PR a session is fixing is not judged" "0" "$(grep -c '"id":"[a-z-]*:
 want_in "and the tick says who has it"     'PR #41: .*being fixed by mac:4242' "$out"
 want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
 
+echo "--- a repair waiting for develop's fix: not judged red on that head, said when it ends, queued again when due ---"
+fresh
+jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
+printf '601\t41\tsha41abcdef\tdevelop\tci\tsrc/legacy.test.ts\t%s\t\n' "$(date +%s)" > "$STATE/swarm/base-waits.tsv"
+out=$(tick)
+want "the waiting PR is not judged"         "0" "$(grep -c '"id":"red-pr:41:' "$C/events.would.jsonl" 2>/dev/null)"
+want_in "and the tick says what it waits on" "PR #41: .*#601 waits for develop.s fix on this head" "$out"
+want_not_in "nothing is due an hour in"     'base wait: would queue #601' "$out"
+fresh
+printf '601\t41\tsha41abcdef\tdevelop\tci\tsrc/legacy.test.ts\t%s\t\n' "$(( $(date +%s) - 7 * 3600 ))" > "$STATE/swarm/base-waits.tsv"
+printf '{"run_id":"claim-601-bw","ticket":"601","log":"%s","runner":"driver"}\n' "$STATE/logs/claim-601-bw.log" > "$STATE/runs/claim-601-bw.json"
+jq -cn '{type:"result",result:"⏸ #601 waiting for develop, not parked: ci"}' > "$STATE/logs/claim-601-bw.log"
+printf '{"run_id":"claim-601-bw","exit_code":34}\n' > "$STATE/runs/claim-601-bw.ended"
+out=$(tick)
+want_in "the ended wait is said"            'base wait: run claim-601-bw left #601 waiting' "$out"
+want_not_in "and raises no stand-down"      '"kind":"stood-down".*"ticket":"601"' "$(cat "$C/events.would.jsonl" 2>/dev/null)"
+want_in "past the hours it would be queued" 'base wait: would queue #601 as a repair: 6 hours passed' "$out"
+rm -f "$STATE/swarm/base-waits.tsv"
+
 echo "--- sign-off batches: five green held PRs, the moment the fifth goes green ---"
 fresh
 jq -s . <(held 51 52 53 54) <(pr 55 615 needs:human-approval SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
