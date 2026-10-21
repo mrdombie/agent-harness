@@ -314,16 +314,16 @@ git -C "$REPO" remote add origin "$FIX/origin-park" 2>/dev/null || git -C "$REPO
 git -C "$REPO" push -q origin develop
 git -C "$REPO" worktree add -q "$FIX/elsewhere" -b scratch-140 develop
 printf 'parked\n' > "$FIX/elsewhere/parked.txt"; git -C "$FIX/elsewhere" add parked.txt; git -C "$FIX/elsewhere" commit -qm "chore(#140): parked"
-git -C "$FIX/elsewhere" push -q origin "HEAD:refs/heads/park/140/other-box-20261017T182734Z"
+git -C "$FIX/elsewhere" push -q origin "HEAD:refs/stranded/140/other-box-20261017T182734Z"
 fix_issue 140 OPEN "status:ready,type:feature"
 rc=0; out=$(driver_step_start 140 2>&1) || rc=$?
 want "it finishes"                         "0" "$rc"
 want "the branch starts at the parked commit" "$(git -C "$FIX/elsewhere" rev-parse HEAD)" "$(git -C "$(driver_state_get 140 worktree)" rev-parse HEAD)"
-want "on the ticket's own branch, not the park ref" "tkt-140/ticket-140" "$(git -C "$(driver_state_get 140 worktree)" rev-parse --abbrev-ref HEAD)"
-want_in "and it says so"                   'park/140/other-box-20261017T182734Z' "$out"
+want "on the ticket's own branch, not the stranded ref" "tkt-140/ticket-140" "$(git -C "$(driver_state_get 140 worktree)" rev-parse --abbrev-ref HEAD)"
+want_in "and it says so"                   'refs/stranded/140/other-box-20261017T182734Z' "$out"
 want "claimed_at stays the trunk"          "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 140 claimed_at_sha)"
 fix_issue 141 OPEN "status:ready,type:feature"
 rc=0; driver_step_start 141 >/dev/null 2>&1 || rc=$?
-want "a ticket with no park ref is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 141 worktree)" rev-parse HEAD)"
+want "a ticket with no stranded ref is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 141 worktree)" rev-parse HEAD)"
 
 exit $FAILED
