@@ -12,13 +12,22 @@
 #
 #   release_nonblocking_json          → JSON array of the listed names, lowercased; [] when off
 #   release_check_nonblocking <name>  → 0 when that check is listed and the switch is on
-#   RELEASE_NB_JQ                     → jq defs: `release_nb($nb)` on a rollup entry is true
+#   CHECK_NEWEST_JQ                   → jq def `newest_runs`: each check's newest run only
+#   RELEASE_NB_JQ                     → CHECK_NEWEST_JQ, and jq defs: `release_nb($nb)` on a rollup entry is true
 #                                       when it is listed; `release_red` when it settled red
 #   release_blocking_required <json>  → gates.requiredChecks less the listed checks
 #   release_warn_reds <rollup-json>   → the listed checks whose newest run is red, ", "-joined
 #   release_warn_pr <pr> <head> <names> <log-fn> — the warning, logged and commented once per head
 
-RELEASE_NB_JQ='def release_nb($nb): ((.name // .context // "") | ascii_downcase) as $n
+# CHECK_NEWEST_JQ — `newest_runs` on a rollup array: one entry per check, its NEWEST run.
+# A re-run sits beside the run it replaced, so reading every run counts a cleared red.
+# A run still going is newest; then the latest finish (start, for a commit status).
+CHECK_NEWEST_JQ='def newest_runs: [ .[]? | select(type == "object") ]
+  | group_by((.workflowName // "") + "\u0000" + (.name // .context // "?"))
+  | map(max_by([ (if ((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("PENDING|EXPECTED")) then 1 else 0 end),
+                 ([.completedAt, .startedAt, .createdAt] | map(select(type == "string" and . != "" and (startswith("0001-") | not))) | first // "") ]));'
+
+RELEASE_NB_JQ="$CHECK_NEWEST_JQ"'def release_nb($nb): ((.name // .context // "") | ascii_downcase) as $n
   | (((.workflowName // "") + " / " + (.name // "")) | ascii_downcase) as $w
   | any($nb[]; . == $n or . == $w);
 def release_red: (.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE");'
@@ -45,7 +54,7 @@ release_blocking_required() {
 
 release_warn_reds() { # <rollup json array>
   printf '%s' "${1:-[]}" | jq -r --argjson nb "$(release_nonblocking_json)" "$RELEASE_NB_JQ"'
-    [ [.[]?] | group_by(.name // .context // "?") | map(max_by(.startedAt // .createdAt // "")) | .[]
+    [ newest_runs | .[]
       | select(release_nb($nb)) | select(release_red) | (.name // .context // "?") ] | unique | join(", ")' 2>/dev/null
 }
 

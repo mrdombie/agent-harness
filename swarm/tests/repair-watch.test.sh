@@ -119,6 +119,27 @@ w --only repair >/dev/null
 want "a pending status alone is not red"   "0" "$(grep -c . "$SPAWNS")"
 : > "$SPAWNS"; : > "$TRIED"
 
+echo "--- each check is read by its NEWEST run, not any run ---"
+fix_prs "15 102 a15a15a15a1 CLEAN 0 -"
+fix_pr_run 15 typecheck COMPLETED FAILURE 2026-10-21T08:00:00Z
+fix_pr_run 15 typecheck COMPLETED SUCCESS 2026-10-21T10:00:00Z
+w --only repair >/dev/null
+want "a failure that passed on re-run is not red" "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "15 102 b15b15b15b1 CLEAN 0 -"
+fix_pr_run 15 typecheck COMPLETED SUCCESS 2026-10-21T08:00:00Z
+fix_pr_run 15 typecheck COMPLETED FAILURE 2026-10-21T10:00:00Z
+w --only repair >/dev/null
+want "a check that failed on its newest run is red" "1" "$(grep -c . "$SPAWNS")"
+want_in "and is named once"            'CI went red on: typecheck$' "$(grep -o 'CI went red on: [^.]*' "$STATE/swarm/briefs/repair-102.md" | head -1)"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "15 102 c15c15c15c1 CLEAN 0 -"
+fix_pr_run 15 typecheck COMPLETED FAILURE 2026-10-21T08:00:00Z
+fix_pr_run 15 typecheck IN_PROGRESS - 2026-10-21T10:00:00Z
+w --only repair >/dev/null
+want "a failure being re-run waits for the re-run" "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"
+
 echo "--- three repairs in a day: the stop is a LABEL, not a count ---"
 : > "$SPAWNS"
 for s in s1 s2 s3; do printf '101\t%s\tci\t%s\n' "$s" "$T0" >> "$TRIED"; done

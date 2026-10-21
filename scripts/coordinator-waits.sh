@@ -61,7 +61,7 @@ coord_wait_snapshot() { # <ticket> <labels, comma-joined> — uses $PRS
         'NF && $0 != a && $0 != b && $0 != c && $0 != d' | sort -u | paste -sd, -)
   pr=$(printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --argjson nb "$(release_nonblocking_json 2>/dev/null || echo "[]")" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
     [ .[] | select(.headRefName | branch_is_ticket($pre; $t)) ] | first // empty
-    | ((.statusCheckRollup // []) | map(select(release_nb($nb) | not))) as $c
+    | ((.statusCheckRollup // []) | newest_runs | map(select(release_nb($nb) | not))) as $c
     | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $p
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $f
     | "pr=\(.number)@\(.headRefOid) prlabels=\([.labels[]?.name] | sort | join(",")) red=\(if $p == 0 and $f > 0 then 1 else 0 end) clash=\(if .mergeStateStatus == "DIRTY" then 1 else 0 end)"' 2>/dev/null)

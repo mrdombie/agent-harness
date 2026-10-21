@@ -247,7 +247,7 @@ _driver_repair_write_lesson() {
 
 # A SUPERSEDED RUN IS NOT RED. #13629 refused a lesson-only repair over a CANCELLED run of a
 # check whose re-run had passed: each check is read by its latest run alone.
-_DRIVER_REPAIR_LATEST='def latest: [.statusCheckRollup[]?] | group_by(.name // .context // "?") | map(max_by(.startedAt // "")) | .[];'
+_DRIVER_REPAIR_LATEST='def latest: .statusCheckRollup | newest_runs | .[];'
 
 # _driver_repair_nothing_owed <tree> <trunk> <pr> — 0 when a fresh read of the PR says
 # nothing is owed: its head is this tree's and contains the trunk, GitHub reads it

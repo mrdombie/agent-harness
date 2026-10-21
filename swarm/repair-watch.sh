@@ -248,6 +248,7 @@ section_repair() {
 # A commit status has a state and no status/conclusion: a failed one is red, and a
 # pending one never holds a red PR back, since no CI job is still running for it.
 # The sign-off hold's own check is red BY the hold: never a red to repair.
+# Each check counts by its newest run (newest_runs): a red cleared by a re-run is not red.
 HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval 2>/dev/null || echo approval)}"
 # A check in release.nonBlockingChecks is a warning until the release: never a red here.
 open_prs() {
@@ -255,8 +256,8 @@ open_prs() {
            | [.number,
               (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
               .headRefOid, .mergeStateStatus,
-              ([.statusCheckRollup[]? | select((.status // \"COMPLETED\") != \"COMPLETED\")] | length),
-              ([.statusCheckRollup[]? | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\")))
+              ([.statusCheckRollup | newest_runs | .[] | select((.status // \"COMPLETED\") != \"COMPLETED\")] | length),
+              ([.statusCheckRollup | newest_runs | .[] | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\")))
                 | select(release_nb(\$nb) | not)
                 | select(((.name // .context // \"\") | ascii_downcase) | contains(\"$HOLD_CHECK\" | ascii_downcase) | not) | (.name // .context)] | join(\";\"))]]
            | .[] | @tsv" 2>/dev/null
@@ -270,8 +271,8 @@ warn_prs() {
   # The same PRs open_prs reads, chosen the same way.
   gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$nb" "$RELEASE_NB_JQ"'
     .[] | select(.headRefName | startswith("'"$BRANCH_PREFIX"'")) | select(.isDraft | not)
-    | select([.statusCheckRollup[]? | select((.status // "COMPLETED") != "COMPLETED")] | length == 0)
-    | ([.statusCheckRollup[]? | select(release_nb($nb)) | select(release_red) | (.name // .context)] | unique | join(", ")) as $w
+    | select([.statusCheckRollup | newest_runs | .[] | select((.status // "COMPLETED") != "COMPLETED")] | length == 0)
+    | ([.statusCheckRollup | newest_runs | .[] | select(release_nb($nb)) | select(release_red) | (.name // .context)] | unique | join(", ")) as $w
     | select($w != "") | [.number, .headRefOid, $w] | @tsv' 2>/dev/null
 }
 

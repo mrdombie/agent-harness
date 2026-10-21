@@ -43,6 +43,21 @@ lib release_check_nonblocking "Code gates";    want "a check not listed blocks" 
 want "the workflow / job form of a check run matches" "Design critic, Every fix ships a lesson" \
   "$(lib release_warn_reds "$(red_pr 1 1 a Lesson "Design critic" | jq -c .statusCheckRollup)")"
 want "a red not listed is no warning" "" "$(lib release_warn_reds "$(red_pr 1 1 a "Code gates" | jq -c .statusCheckRollup)")"
+rerun() { # <rollup json> <name> <conclusion> <at> — one more run of <name>, a re-run
+  printf '%s' "$1" | jq -c --arg n "$2" --arg c "$3" --arg at "$4" \
+    '. + [{__typename:"CheckRun", name:$n, workflowName:"Lesson", status:"COMPLETED", conclusion:$c, startedAt:$at, completedAt:$at}]'
+}
+want "a listed red cleared by a re-run is no warning" "" \
+  "$(lib release_warn_reds "$(rerun "$(red_pr 1 1 a Lesson | jq -c .statusCheckRollup)" "Every fix ships a lesson" SUCCESS 2026-10-21T11:00:00Z)")"
+newest() { HARNESS_CFG="$CFG" bash -c '. "$1"; jq -c "$CHECK_NEWEST_JQ"'"'"'newest_runs | map(.conclusion // .state)'"'" _ "$HERE/release-checks.sh"; }
+want "newest_runs: a failure passed on re-run reads as its pass" '["SUCCESS"]' \
+  "$(newest <<<'[{"name":"t","status":"COMPLETED","conclusion":"FAILURE","completedAt":"2026-10-21T08:00:00Z"},{"name":"t","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2026-10-21T10:00:00Z"}]')"
+want "newest_runs: order in the rollup does not decide it" '["FAILURE"]' \
+  "$(newest <<<'[{"name":"t","status":"COMPLETED","conclusion":"FAILURE","completedAt":"2026-10-21T10:00:00Z"},{"name":"t","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2026-10-21T08:00:00Z"}]')"
+want "newest_runs: a run still going is the newest" '[null]' \
+  "$(newest <<<'[{"name":"t","status":"IN_PROGRESS","conclusion":null,"startedAt":"2026-10-21T09:00:00Z","completedAt":"0001-01-01T00:00:00Z"},{"name":"t","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2026-10-21T10:00:00Z"}]')"
+want "newest_runs: different checks stay apart" '["FAILURE","SUCCESS"]' \
+  "$(newest <<<'[{"name":"a","status":"COMPLETED","conclusion":"FAILURE"},{"name":"b","status":"COMPLETED","conclusion":"SUCCESS"}]')"
 want "the required list loses the listed checks" '["Code gates"]' \
   "$(lib release_blocking_required '["Code gates","Design critic","Lesson / Every fix ships a lesson"]')"
 cfg_done

@@ -328,8 +328,8 @@ fi
 
 # ---- 4c. the required checks on this head --------------------------------------
 # One row per required check: name, green|pending|missing|failed, conclusion, url.
-CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" '
-  (.[] | select(.number == $n) | .statusCheckRollup // []) as $c
+CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" "$CHECK_NEWEST_JQ"'
+  (.[] | select(.number == $n) | .statusCheckRollup // [] | newest_runs) as $c
   | $req[] as $r
   | ([ $c[] | select(.name == $r or .context == $r or (((.workflowName // "") + " / " + (.name // "")) == $r)) ] | last) as $x
   | if $x == null then [$r, "missing", "", ""]
