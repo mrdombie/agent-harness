@@ -166,6 +166,8 @@ house() {
 }
 house
 want "the shared install and the stranded sweep each ran once" "1 1" "$R"
+order=$(grep -nE '^(own-stranded|wtsweep)' "$FIX/house.log" | cut -d' ' -f1 | tr '\n' ' ')
+want_in "the stranded backup runs before the worktree sweep" '^[0-9]+:own-stranded [0-9]+:wtsweep $' "$order"
 
 echo "--- plants: each guard out, its case fails ---"
 KIT="$FIX/kit"; mkdir -p "$KIT"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$KIT/"

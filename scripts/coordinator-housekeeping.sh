@@ -69,6 +69,14 @@ elif coord_shadow; then bash "$POLISH" sweep --dry-run >> "$COORD_LOG" 2>&1 || s
 else bash "$POLISH" sweep >> "$COORD_LOG" 2>&1 || say "polish-list sweep exited $?"; fi
 if coord_shadow; then bash "$SWEEP" --sweep --dry-run >> "$COORD_LOG" 2>&1 || say "server sweep (dry) exited $?"
 else bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"; fi
+# ---- 6b. this host's own shared state -----------------------------------------
+# What only a person kept current: the shared clone's install at the trunk's lockfile
+# (shared-install.sh), and worktree commits on no ref of origin (stranded-sweep.sh).
+# Before the worktree sweep: that runs for most of an hour on a full root, and the
+# backup of a tree's commits belongs ahead of anything that may remove trees.
+for own in "${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}" "${COORDINATOR_STRANDED_SWEEP:-$SELF_DIR/stranded-sweep.sh}"; do
+  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"
+done
 # An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.
 WT_SWEEP="${COORDINATOR_WORKTREE_SWEEP:-$SELF_DIR/sweep-orphan-worktrees.sh}"
 WT_STAMP="$COORD_DIR/worktree-sweep.stamp"
@@ -104,10 +112,4 @@ fi
 # ---- 8. judgement ------------------------------------------------------------
 if [ -n "$GH_WAIT" ]; then say "judge: $GH_WAIT — next pass"
 else bash "$JUDGE" >> "$COORD_LOG" 2>&1 || say "judge exited $?"; fi
-# ---- 9. this host's own shared state -----------------------------------------
-# What only a person kept current: the shared clone's install at the trunk's lockfile
-# (shared-install.sh), and worktree commits on no ref of origin (stranded-sweep.sh).
-for own in "${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}" "${COORDINATOR_STRANDED_SWEEP:-$SELF_DIR/stranded-sweep.sh}"; do
-  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"
-done
 say "housekeeping: done"
