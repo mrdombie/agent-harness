@@ -5,8 +5,8 @@
 This pull request was built, pushed and handed off, and it then went red, began
 to clash with the integration branch, or came back with a brief (an owner's
 answer, a merge lane's note). You are repairing it on its own branch. You
-are not rebuilding the ticket: the plan, the build and the earlier review stand,
-and this step changes only what the failure needs.
+are not rebuilding the ticket: the plan, build and review stand; change only
+what the failure needs.
 
 ## Invoke the skill — do not work from this file
 
@@ -42,11 +42,12 @@ above.
    or hand off is void, and a push from this step refuses it.
 2. **A conflict:** resolve each file so that BOTH sides' intent survives. The
    trunk's change and this PR's change are both wanted. Leave no conflict
-   markers, then finish the merge with `git commit --no-edit`. Do not rebase and
-   do not force-push. The driver pushes a plain fast-forward of this branch.
+   markers, then finish the merge with `git commit --no-edit`. Never rebase or
+   force-push. The driver pushes a plain fast-forward of this branch.
 3. **A red check:** read the failing job's own log (`gh run view <id>
    --log-failed`) and reproduce the failure locally before you touch any code.
-   A failure you could not reproduce is a question, not a guess.
+   A failure you could not reproduce is a question, not a guess. Merging the
+   integration branch in is never a question: when the branch is behind it, merge it first.
 4. **The same failure on the integration branch itself is not this PR's to
    fix.** Park and say so.
 5. **Evidence owed:** commit the plan edit each task names.
@@ -69,7 +70,7 @@ above.
   can pin it. The driver runs that command and reads its exit code, and every
   local gate runs after this step.
 
-Commit everything. An uncommitted change is a change the gates never read.
+Commit everything; the gates never read an uncommitted change.
 
 ## A test you reword or remove is accounted for
 
@@ -136,5 +137,5 @@ Conditional:
   example, a failure that is the trunk's, a check you could not reproduce, or a
   conflict whose two sides cannot both be kept.
 
-`skills` lists every skill you invoked. The driver reads the run log too, so a
-skill claimed here and absent there fails the step.
+`skills` lists every skill you invoked; one claimed here and absent from the run
+log fails the step.

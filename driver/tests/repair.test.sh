@@ -252,6 +252,28 @@ fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"s
 out=$(driver_step_repair 314 2>&1); rc=$?
 want "it asks"                         "20" "$rc"
 
+echo "--- a red on a branch behind the trunk merges the trunk first, never asks (#13285) ---"
+setup 361; trunk_moves trunk361.txt "trunk work 361"; prs 361 CLEAN unit
+out=$(driver_step_repair 361 2>&1); rc=$?
+want "it finishes"                     "0" "$rc"
+want "no model was called"             "" "$(cat "$CLAUDE_LOG")"
+want "the trunk is now in the branch"  "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "with no question for anyone"     "" "$(driver_state_get 361 park_note)"
+
+echo "--- the model asking 'merge develop?' is a yes: merged, re-run, no owner park ---"
+setup 362; trunk_moves trunk362.txt "trunk work 362"; prs 362 CLEAN
+driver_state_set 362 repair_brief_source caller
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"park","question":"The branch base predates develop'"'"'s changes to ci.yml. Merge origin/develop and re-run, yes/no?"}' "superpowers:systematic-debugging"
+out=$(driver_step_repair 362 2>&1); rc=$?
+want "it does not ask"                 "0" "$rc"
+want "the trunk is now in the branch"  "yes" "$(git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "the tree is clean"               "" "$(git -C "$WT" status --porcelain)"
+want "with no question for anyone"     "" "$(driver_state_get 362 park_note)$(driver_state_get 362 park_cause)"
+setup 363; prs 363 CLEAN; driver_state_set 363 repair_brief_source caller
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"park","question":"Merge origin/develop and re-run, yes/no?"}' "superpowers:systematic-debugging"
+out=$(driver_step_repair 363 2>&1); rc=$?
+want "with the trunk already in, the same question still parks" "20" "$rc"
+
 echo "--- markers committed by an earlier pass are caught with no model call and nothing red ---"
 setup 315
 printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
@@ -648,6 +670,24 @@ out=$(driver_step_repair 406 2>&1); rc=$?
 want "with no lesson in the body it still refuses" "24" "$rc"
 want_not_in "the lesson red is not waved off"  "reads red on GitHub" "$out"
 want_in "and the lesson is still demanded"    'red \(Every fix ships a lesson\)' "$(cat "$FIX/claude-stdin-repair.txt")"
+echo "--- a superseded CANCELLED run is not red: a lesson-only repair still passes (#13629) ---"
+setup 407; lesson_body 407
+printf '#!/usr/bin/env bash\ngrep -q good value407.txt\n' > "$WT/value407.test.sh"; printf 'value=good\n' > "$WT/value407.txt"
+git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value, with its test"; git -C "$WT" push -q origin "tkt-407/work"
+driver_state_set 407 repair_base "$(git -C "$WT" rev-parse HEAD)"; HEAD407=$(git -C "$WT" rev-parse HEAD)
+jq -n --arg l "$LESSON_CHECK" '[{number:407, headRefName:"tkt-407/work", headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
+  statusCheckRollup:[{name:"Deleted tests", status:"COMPLETED", conclusion:"CANCELLED", startedAt:"2026-10-21T04:04:27Z"},
+    {name:$l, status:"COMPLETED", conclusion:"CANCELLED", startedAt:"2026-10-21T04:04:27Z"},
+    {name:"Deleted tests", status:"COMPLETED", conclusion:"SUCCESS", startedAt:"2026-10-21T04:05:35Z"},
+    {name:$l, status:"COMPLETED", conclusion:"FAILURE", startedAt:"2026-10-21T04:05:44Z"}]}]' > "$FIX/gh/prs.json"
+answer "$(lesson_only "$(lesson value407.test.sh)")"
+out=$(driver_step_repair 407 2>&1); rc=$?
+want "a lesson-only repair finishes"          "0" "$rc"
+want "with nothing committed"                 "$HEAD407" "$(git -C "$WT" rev-parse HEAD)"
+want_in "the body names the diff's guard"     '^- Guard: `value407.test.sh`$' "$(cat "$FIX/gh/body-407.md")"
+want_in "the lesson check is green on the body now" '^lesson: complete' "$(judge_body 407)"
+want_not_in "the cancelled run never reached the brief" 'Deleted tests' "$(cat "$FIX/claude-stdin-repair.txt")"
+
 export SWARM_GH="$SWARM_GH_WAS"
 
 exit $FAILED
