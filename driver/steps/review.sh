@@ -257,12 +257,13 @@ _driver_review_defer() {
   local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0
   local pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" sf="${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}"
   late=$(driver_blocking_grades "$round")
-  local first; first=$(driver_blocking_grades 1)
-  [ "$late" != "$first" ] || return 0
-  defer=$(jq -c --arg late "$late" "[.findings[]? | $(driver_blocking_select 1)
-      | select((.grade // \"\") as \$g | (\$late | split(\" \")) | index(\$g) == null)]" "$f" 2>/dev/null)
+  # What does not block this round and is not a Nit is deferred — read off this round's
+  # set alone. Comparing it with round 1's set skipped the whole step when an operator
+  # configured both the same, and the reviewer's BLOCKED then stood over two Minors.
+  defer=$(jq -c --arg late "$late" '[.findings[]?
+      | select((.grade // "") as $g | $g != "nit" and (($late | split(" ")) | index($g)) == null)]' "$f" 2>/dev/null)
   n=$(printf '%s' "$defer" | jq 'length' 2>/dev/null)
-  [ "${n:-0}" -gt 0 ] || return 0
+  [ "${n:-0}" -gt 0 ] || { _driver_review_verdict_off_grades "$f" "$late"; return 0; }
   d="$(driver_state_dir "$t")/steps"; tmp="$d/defer-file.txt"
   labels=$(bash "$sf" screens "$t" 2>/dev/null)
   i=0
@@ -283,12 +284,22 @@ _driver_review_defer() {
     printf '%s' "$x" | jq -c --arg l "$list" --argjson r "$round" '{grade, file, line, summary, round: $r, list: $l}' >> "$d/review.deferred.jsonl"
   done
   rm -f "$tmp"
-  jq --arg late "$late" --arg first "$first" '
-      ($late | split(" ")) as $L | ($first | split(" ")) as $F
-      | .findings = [(.findings // [])[] | select((.grade // "") as $g | (($F | index($g)) != null and ($L | index($g)) == null) | not)]
-      | if .verdict == "BLOCKED" and ([.findings[] | select((.grade // "") as $g | $L | index($g))] | length) == 0
-        then .verdict = "SHIP" else . end' "$f" > "$f.t" && mv "$f.t" "$f"
+  jq --arg late "$late" '
+      ($late | split(" ")) as $L
+      | .findings = [(.findings // [])[] | select((.grade // "") as $g | ($g != "nit" and ($L | index($g)) == null) | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
+  _driver_review_verdict_off_grades "$f" "$late" 1
   driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list, $kept noted in the PR under \"Minor, deferred\""
+}
+
+# _driver_review_verdict_off_grades <review.json> <blocking grades> [had-findings] — a
+# BLOCKED over findings of which none blocks this round is a SHIP: the verdict is read
+# off the grades. A BLOCKED that names nothing at all is left as the reviewer gave it.
+_driver_review_verdict_off_grades() {
+  jq --arg late "$2" --arg had "${3:-}" '
+      ($late | split(" ")) as $L
+      | if (.verdict // "" | ascii_upcase) == "BLOCKED" and (((.findings // []) | length) > 0 or $had != "")
+           and ([(.findings // [])[] | select((.grade // "") as $g | $L | index($g))] | length) == 0
+        then .verdict = "SHIP" else . end' "$1" > "$1.t" && mv "$1.t" "$1"
 }
 
 # _driver_review_hold_signed <ticket> <review.json> — on a repair of a PR the owner

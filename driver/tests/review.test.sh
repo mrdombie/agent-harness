@@ -295,6 +295,42 @@ rc=0; PL_RC=1 driver_step_review 133 >/dev/null 2>&1 || rc=$?
 want "a list that cannot be written: still not blocking" "0" "$rc"
 want_in "and kept for the PR"                    'no screen resolved' "$(_driver_ship_deferred 133)"
 
+echo "--- past the round limit, with the first round's set configured as Critical and Major ---"
+# #13621: round 3 of 2, two Minors and a Nit, DRIVER_BLOCKING_GRADES="critical major".
+# The two sets matched, so nothing was deferred, the reviewer's BLOCKED stood with
+# nothing blocking under it, and ship parked the ticket on Minors.
+late='{"verdict":"BLOCKED","findings":[
+  {"file":"screens/Settings.tsx","line":4,"grade":"minor","summary":"a doc block sits above the wrong function","reason":"misleads a reader"},
+  {"file":"lib/b.ts","line":7,"grade":"minor","summary":"a pin test can pass vacuously","reason":"weak test"},
+  {"file":"lib/b.ts","line":9,"grade":"nit","summary":"judge reads a stack trace as a catch","reason":"taste"}]}'
+: > "$FIX/pl.adds"
+driver_state_init 140 --worktree "$REPO"; fix_issue 140 OPEN "status:claimed,screen:inbox"
+driver_state_bump 140 review; driver_state_bump 140 review
+fix_ai review "$late" superpowers:requesting-code-review
+rc=0; DRIVER_BLOCKING_GRADES="critical major" driver_step_review 140 >/dev/null 2>&1 || rc=$?
+want "round 3, Minors and a Nit only: it finishes"  "0" "$rc"
+want "and the verdict is not BLOCKED"               "SHIP" "$(jq -r .verdict "$(driver_state_dir 140)/steps/review.json")"
+want "both Minors go on a polish list"              "2" "$(grep -c '\[Minor\]' "$FIX/pl.adds")"
+want "and the Nit does not"                         "0" "$(grep -c 'stack trace' "$FIX/pl.adds")"
+want "the Minors are recorded as deferred"          "2" "$(grep -c . "$(driver_state_dir 140)/steps/review.deferred.jsonl" 2>/dev/null)"
+: > "$FIX/pl.adds"
+driver_state_init 141 --worktree "$REPO"; fix_issue 141 OPEN "status:claimed,screen:inbox"
+driver_state_bump 141 review; driver_state_bump 141 review
+fix_ai review "$majmin" superpowers:requesting-code-review
+rc=0; DRIVER_BLOCKING_GRADES="critical major" driver_step_review 141 >/dev/null 2>&1 || rc=$?
+want "round 3 with a Major: BLOCKED"                "BLOCKED" "$(jq -r .verdict "$(driver_state_dir 141)/steps/review.json")"
+want "the Major stays to clear"                     "major" "$(jq -r "[.findings[] | $(driver_blocking_select) | .grade] | join(\" \")" "$(driver_state_dir 141)/steps/review.json")"
+driver_state_init 142 --worktree "$REPO"; fix_issue 142 OPEN "status:claimed,screen:inbox"
+driver_state_bump 142 review; driver_state_bump 142 review
+fix_ai review "$late" superpowers:requesting-code-review
+rc=0; driver_step_review 142 >/dev/null 2>&1 || rc=$?
+want "round 3 with the default sets: SHIP too"      "SHIP" "$(jq -r .verdict "$(driver_state_dir 142)/steps/review.json")"
+driver_state_init 143 --worktree "$REPO"; fix_issue 143 OPEN "status:claimed"
+driver_state_bump 143 review; driver_state_bump 143 review
+fix_ai review '{"verdict":"BLOCKED","findings":[]}' superpowers:requesting-code-review
+rc=0; driver_step_review 143 >/dev/null 2>&1 || rc=$?
+want "a BLOCKED that names nothing stays BLOCKED"   "BLOCKED" "$(jq -r .verdict "$(driver_state_dir 143)/steps/review.json")"
+
 echo "--- a repair counts its own rounds the same way ---"
 cat > "$BIN/approval-kept" <<'SH'
 #!/usr/bin/env bash
