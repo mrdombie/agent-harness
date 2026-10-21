@@ -7,6 +7,7 @@
 #   coordinator-queue.sh list              the queue in the order it runs
 #   coordinator-queue.sh in-scope <n>      exit 0 when ticket n is under any recorded scope
 #   coordinator-queue.sh add <n> [--class repair|approved-merge|new] [--note TEXT] [--front|--first]
+#   coordinator-queue.sh set-class <n> repair|approved-merge|new   rewrite one entry's class, all else kept
 #   coordinator-queue.sh remove <n>
 #
 # A scope resolves the way /agent-harness:work resolves one: a bare number is
@@ -220,6 +221,16 @@ add() {
            plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title), process: coord_process($ls)}' 2>/dev/null)
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
   cls=$(coord_jq -rn --arg c "$cls" --arg note "$note" "$COORD_TICKET_JQ"'coord_class($c; $note)')
+  # Fresh work is never started on a ticket whose PR is open: queued as new it waits forever.
+  local pr=""
+  if [ "$cls" = new ]; then
+    pr=$(gh_open_prs "${GH_PRS_MAX_AGE:-300}" 2>/dev/null | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$n" \
+      "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t)) | .number] | first // empty' 2>/dev/null)
+    if [ -n "$pr" ]; then
+      echo "coordinator-queue: warning: #$n has an open PR #$pr — queued as repair, not new" >&2
+      cls=repair
+    fi
+  fi
   current | jq --argjson n "$n" --arg c "$cls" --arg note "$note" --argjson front "$front" --argjson top "$top" --argjson meta "$meta" '
     # What the queue already knew of it stands where this read came back empty.
     (((.tickets // []) | map(select(.n == $n)) | first // {} | del(.front, .top))
@@ -228,6 +239,14 @@ add() {
     | ((.tickets // []) | map(select(.n != $n))) as $rest
     | .tickets = (if $top or $front then [$e] + $rest else $rest + [$e] end)' | write
   echo "queued #$n as $cls"
+}
+
+set_class() { # <n> <class>
+  case "${1:-}" in ''|*[!0-9]*) die "set-class needs a ticket number" ;; esac
+  case "${2:-}" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
+  current | jq -e --argjson n "$1" 'any(.tickets[]?; .n == $n)' >/dev/null 2>&1 || die "#$1 is not queued"
+  current | jq --argjson n "$1" --arg c "$2" '.tickets = ((.tickets // []) | map(if .n == $n then .class = $c else . end))' | write
+  echo "#$1 is now $2"
 }
 
 remove() {
@@ -252,6 +271,7 @@ case "${1:-}" in
   in-scope) shift; in_scope "$@" ;;
   add)     shift; add "$@" ;;
   remove)  shift; remove "$@" ;;
+  set-class) shift; set_class "$@" ;;
   list)    list ;;
   -h|--help|"") sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)       die "unknown command '$1'" ;;
