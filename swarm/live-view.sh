@@ -48,6 +48,9 @@ export SWARM_RELEASE_PRIORITIES="${SWARM_RELEASE_PRIORITIES:-$(swarm_opt swarm.r
 # Milestone titles hold spaces, so they travel as the JSON array the config holds.
 [ -n "${SWARM_POST_LAUNCH_MILESTONES:-}" ] || SWARM_POST_LAUNCH_MILESTONES=$(jq -c '.swarm.postLaunchMilestones // empty | arrays' "$HARNESS_CFG" 2>/dev/null)
 export SWARM_POST_LAUNCH_MILESTONES
+# Checks the project calls report-only: a row lists them as notes, never as the failure.
+[ -n "${SWARM_NONBLOCKING_CHECKS:-}" ] || SWARM_NONBLOCKING_CHECKS=$(jq -c '.release.nonBlockingChecks // empty | arrays' "$HARNESS_CFG" 2>/dev/null)
+export SWARM_NONBLOCKING_CHECKS
 # Product against our own tooling, split as the coordinator orders it (coord_tooling).
 export SWARM_TOOLING_LABELS="${SWARM_TOOLING_LABELS:-$COORD_TOOLING_LABELS}" SWARM_TOOLING_SCOPES="${SWARM_TOOLING_SCOPES:-$COORD_TOOLING_SCOPES}"
 # Needs you: every open issue and pull request carrying one of these.

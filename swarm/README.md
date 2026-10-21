@@ -137,7 +137,11 @@ trunk (the Merged today section) from two REST calls kept in `swarm/pr-states.js
 (`SWARM_PR_STATES_MS`, default two minutes, never under one), never a call per
 row. An open PR's state is believed only for the head it was read on (a third
 REST call names the newest-updated open PRs' heads), and a failed check outranks
-checks still running ("A check failed: X (2 still running)"). With
+checks still running ("A check failed: X (2 still running)"). Only a check the
+trunk's ruleset requires (`rules/branches/<trunk>`, read once in ten minutes into
+`swarm/required-checks.json`) and the project does not list in
+`release.nonBlockingChecks` can be the failure; a report-only red is a muted
+"notes: widths, lesson" beside the row's real state. With
 `signoff.untilLaunchPm: true` in harness.json, a person-park's "next" is the PM,
 unless its text is legal or commercial (`SWARM_OWNER_ONLY_WORDS`). Only a stop, a
 failed check or a clash is red. The header counts the rows by state.

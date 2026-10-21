@@ -414,7 +414,7 @@ plant server.mjs "  for (const d of done) { const o = newest.get(d.ticket); if (
   "  for (const d of done) newest.set(d.ticket + ':' + d.endedAt, d)"
 got=$(psnap | jq '[.done[] | select(.ticket=="1014")] | length' 2>/dev/null)
 [ "$got" != "1" ] && ok "planted: no de-duplication → $got rows for 1014 → red" || bad "planted: de-duplication deleted and the test cannot see it"
-plant server.mjs "  if (open) return at(open.status ? open.status.state : 'checks', open.status ? open.status.text : 'Waiting for checks', { pr: open.number })"
+plant server.mjs "  if (open) return at(open.status ? open.status.state : 'checks'," "  if (false) return at(open.status ? open.status.state : 'checks',"
 got=$(psnap | jq -r '.done[] | select(.ticket=="1004") | .now.text')
 [ -n "$got" ] && [ "$got" != "Waiting for checks (none started yet)" ] \
   && ok "planted: no review rule → 1004 reads '$got' → red" || bad "planted: the review rule deleted and the test cannot see it ($got)"

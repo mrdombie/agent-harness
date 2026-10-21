@@ -348,12 +348,19 @@ export function rollupOf(p) {
     if (!o || at >= o.at) newest.set(name, { c, at })
   }
   const roll = [...newest.values()].map((x) => x.c)
+  // Only a check that blocks the merge can make the cell red: the trunk's required set
+  // (the live view's ruleset read) less the project's report-only list.
+  let req = null
+  try { const v = JSON.parse(fs.readFileSync(env.SWARM_REQUIRED_CHECKS_FILE || '', 'utf8')); if (Array.isArray(v.contexts) && v.contexts.length) req = new Set(v.contexts) } catch {}
+  let off = []
+  try { off = JSON.parse(env.SWARM_NONBLOCKING_CHECKS || '[]') } catch {}
+  const blocks = (c) => { const n = String(c.name || c.context || ''); return !off.includes(n) && (!req || req.has(n)) }
   const bad = /FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED/
   const busy = /IN_PROGRESS|QUEUED|PENDING|WAITING/
   return {
     number: String(p.number), state: p.state || 'OPEN', total: roll.length,
     // A commit status carries only a state: PENDING is waiting, FAILURE/ERROR is red.
-    fail: roll.filter((c) => bad.test(c.conclusion || '') || /FAILURE|ERROR/.test(c.state || '')).length,
+    fail: roll.filter((c) => blocks(c) && (bad.test(c.conclusion || '') || /FAILURE|ERROR/.test(c.state || ''))).length,
     pending: roll.filter((c) => (c.state
       ? /PENDING|EXPECTED/.test(c.state)
       : busy.test(c.status || '') || !(c.conclusion || ''))).length,
