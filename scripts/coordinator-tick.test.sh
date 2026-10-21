@@ -1151,7 +1151,10 @@ cat > "$BIN/dgdf" <<'SH'
 #!/usr/bin/env bash
 cat "$FIX/dg/free"
 SH
-chmod +x "$BIN/dgsweep" "$BIN/dgdf"
+# The clean reads the claims before it removes anything; here none is held.
+printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/dgclaims"; printf '#!/usr/bin/env bash\n:\n' > "$BIN/dgclaimrefs"
+chmod +x "$BIN/dgsweep" "$BIN/dgdf" "$BIN/dgclaims" "$BIN/dgclaimrefs"
+export WT_CLAIM_LIST="$BIN/dgclaims" WT_CLAIM_REFS="$BIN/dgclaimrefs"
 dtick() { # <free GB>
   printf '%s\n' "$1" > "$FIX/dg/free"
   COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" COORDINATOR_DISK_CLEAN=inline \
@@ -1186,6 +1189,7 @@ out=$(COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" CO
   DISK_GUARD_SWEEP="$BIN/dgsweep" tick)
 want_in "shadow: the hold is said"         'starting nothing new — disk low: 29 GB' "$out"
 want_in "and the auto-clean runs dry"      '^sweep $' "$(cat "$FIX/dg/sweep.log")"
+unset WT_CLAIM_LIST WT_CLAIM_REFS
 
 echo "--- every tick probes the live view ---"
 # launchd restarts the live view only when it exits; the tick is what notices one that hangs.
