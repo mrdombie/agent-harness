@@ -22,6 +22,7 @@ weighed and how the cycle runs; this brief owns what the driver needs back.
 **Evidence owed is a task, not a note.** A missing shot (a region, an opened state, dark, the phone width) is answered by an edit to the capture plan, committed — a code change alone leaves it open, and the critic fails the PR again.
 - The change as it stands: {{DIFF}}
 - The round: {{ROUND}}
+- Proof limits: {{PROOF_LIMITS}}
 
 ## Trace the failure path before you land a fix
 

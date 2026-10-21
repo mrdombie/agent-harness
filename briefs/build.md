@@ -27,6 +27,7 @@ passing test can still get wrong.
 - The screen rules, when this task touches a screen: {{SURFACE_RULES}}
 - Why the last try at this task was sent back: {{LAST_TRY}}
 - The screen's polish list: {{POLISH_LIST}}
+- Proof limits: {{PROOF_LIMITS}}
 
 Read {{STANDARDS}} once for the ticket, not once per file.
 

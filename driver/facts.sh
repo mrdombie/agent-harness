@@ -434,4 +434,16 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
   driver_fact_put "$t" "$s" CRITIC_FINDINGS "$(driver_fact_critic_findings "$t")"
   case "$s" in repair|fix) driver_fact_put "$t" "$s" EVIDENCE_TASKS "$(driver_fact_evidence_tasks "$t")" ;; esac
+  case "$s" in build*|fix|repair) driver_fact_put "$t" "$s" PROOF_LIMITS "$(driver_fact_proof_limits)" ;; esac
+}
+
+# driver_fact_proof_limits — what cannot prove a change here. A proof tree runs no app
+# server, so an e2e browser spec is refused on both sides unless the project's own e2e
+# harness brings the app up (`tests.e2eProofs: true`).
+driver_fact_proof_limits() {
+  if [ "$(driver_opt tests.e2eProofs false)" = true ]; then
+    printf 'This project'"'"'s e2e harness brings the app up, so an e2e browser spec can prove a change here, as can a unit or DOM test.'
+  else
+    printf 'An e2e browser spec (Playwright, e2e/**/*.spec.ts) cannot prove a change here: a proof tree runs no app server, so every page load is refused on both sides. Prove it with a unit or DOM test (vitest, a *.test.ts or *.dom.test.tsx) that goes red without the change; the e2e spec can still ship as extra coverage.'
+  fi
 }
