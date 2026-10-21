@@ -43,7 +43,7 @@ Then **harness-tools snapshots** (`harness-tools-<sha>`, the `scripts/` copies `
 
 Anything whose git state cannot be read is KEPT and reported `unreadable`.
 
-Then the **cache pass** runs over every worktree it kept (`scripts/worktree-cache.sh`): the folders in `build.cacheDirs` (default: the usual framework output) are removed when no process is inside the worktree and nothing in the folder changed in `build.cacheIdleMin` minutes (30). A folder holding a tracked file is never touched.
+Then the **cache pass** runs over every worktree it kept (`scripts/worktree-cache.sh`): the folders in `build.cacheDirs` (default: the usual framework output) are removed when no process is inside the worktree, no live run or claim on any host holds it, and nothing in the worktree changed in `build.cacheIdleMin` minutes (30). A folder holding a tracked file is never touched. When the claims cannot be read, nothing is cleaned.
 
 ## What it does NOT do
 

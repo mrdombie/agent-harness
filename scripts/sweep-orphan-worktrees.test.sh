@@ -77,10 +77,14 @@ printf '%s\n' "$q" > "$FORGE_LOG"
 } | jq -s '{data: {repository: (add // {})}}'
 GH
 chmod +x "$SB/bin/gh"
+# The claim list (claim-lock.sh list --json): the planted file, or unreadable when there is none.
+printf '[]\n' > "$SB/claims.json"
+printf '#!/usr/bin/env bash\ncat "$SWEEP_CLAIMS_JSON"\n' > "$SB/bin/claimlist"; chmod +x "$SB/bin/claimlist"
 
 sweep() {
   HOME="$SB/home" HARNESS_MAIN_REPO="$MAIN" HARNESS_REPO_ROOT="$MAIN" HARNESS_CFG_PATH="$SB/cfg.json" \
   HARNESS_STATE_DIR="$STATE" HARNESS_LOGIN=tester SWEEP_WORKTREE_ROOTS="$ROOT" \
+  WT_CLAIM_LIST="$SB/bin/claimlist" SWEEP_CLAIMS_JSON="$SB/claims.json" \
   SWEEP_GH="$SB/bin/gh" FORGE_PRS="$SB/prs.tsv" FORGE_ISSUES="$SB/issues.tsv" FORGE_LOG="$SB/forge.log" FORGE_DOWN="$SB/forge-down" \
   bash "$SUT" "$@" 2>&1
 }
@@ -92,7 +96,7 @@ build_world() {
   for b in $(G -C "$MAIN" for-each-ref --format='%(refname:short)' refs/heads | grep -v '^develop$'); do G -C "$MAIN" branch -qD "$b"; done
   add_wt 12619-any-name tkt-12619/a          # names the old glob never matched
   add_wt harness-spawn-0a1b2c                # detached, no number at all
-  add_wt sh-5-claimed-ref tkt-5/a;  G -C "$MAIN" push -q origin develop:refs/claims/5 2>/dev/null
+  add_wt sh-5-claimed-ref tkt-5/a;  G -C "$MAIN" push -q origin develop:refs/claims/5 2>/dev/null; cache "$ROOT/sh-5-claimed-ref"
   add_wt odd-folder tkt-706/work;   G -C "$MAIN" push -q origin develop:refs/claims/706 2>/dev/null
   add_wt 705-lockfile tkt-705/a;    mkdir -p "$STATE/claims/705.lock"
   add_wt 701-dirty tkt-701/a;       printf 'wip\n' > "$ROOT/701-dirty/apps/web/page.ts"; cache "$ROOT/701-dirty"
@@ -135,6 +139,7 @@ printf '%s' "$out" | grep -q 'Sweep complete: kept=7 removed=2' && ok "the summa
 [ ! -e "$ROOT/701-dirty/apps/web/.next" ] && ok "a kept worktree loses its idle build cache" || bad "the kept worktree's cache survived the sweep"
 [ "$(cat "$ROOT/701-dirty/apps/web/page.ts")" = wip ] && ok "and keeps its uncommitted work" || bad "the dirty worktree's change was lost"
 [ -f "$ROOT/703-busy/apps/web/.next/out" ] && ok "a worktree in use keeps its cache" || bad "a cache was removed under a live process"
+[ -f "$ROOT/sh-5-claimed-ref/apps/web/.next/out" ] && ok "a claimed worktree keeps its cache" || bad "the cache pass cleaned a claimed worktree"
 
 # --- 4. --caches-only removes no worktree --------------------------------------
 build_world

@@ -20,9 +20,10 @@
 #   d. the orphan-worktree sweep, sweep-orphan-worktrees.sh --apply
 #   e. folders over 500 MB in Claude session scratchpads (<root>/<project>/<session>/scratchpad/*)
 # Never removed: anything a live process has open or its cwd in, anything a live run's record names,
-# anything changed in the last 30 min (scratchpads: 60), and anything holding a git checkout with an
-# uncommitted change whose content git does not already hold, or a commit no remote and no other
-# branch holds. Without lsof nobody can tell who is using what, so nothing goes.
+# any checkout a claim on any host holds (its worktree, branch or ticket), anything changed in the last
+# 30 min (scratchpads: 60), and anything holding a git checkout with an uncommitted change whose content
+# git does not already hold, or a commit no remote and no other branch holds. Without lsof nobody can
+# tell who is using what, and without the claim list nobody can tell whose a tree is: nothing goes.
 #
 # Settings (harness.json, or the env var):
 #   coordinator.disk.stopBelowGb   COORDINATOR_DISK_STOP_BELOW_GB   30
@@ -144,6 +145,8 @@ read_free || { say "free space could not be read — cleaning nothing"; exit 0; 
 FREE=$FREE_NOW
 START_FREE=$FREE
 if ! wt_can_see_processes; then say "no lsof here — cannot tell who is using what, cleaning nothing"; exit 0; fi
+CLAIM_REPO="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}"
+if ! wt_claims_load "$CLAIM_REPO"; then say "the claim list could not be read${CLAIM_REPO:+ from $CLAIM_REPO} — cannot tell whose a tree is, cleaning nothing"; exit 0; fi
 say "$FREE GB free$FREE_WHERE, cleaning until $RESUME_GB GB$([ "$APPLY" = 1 ] || echo ' (dry run: nothing is removed)')"
 enough() { [ "$APPLY" = 1 ] && [ "$FREE" -ge "$RESUME_GB" ]; }
 
@@ -153,9 +156,7 @@ load_open() { OPEN=$(cd / && lsof -nP -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2
 holder() { # <real-dir> — the pid with a file open or its cwd inside it
   printf '%s\n' "$OPEN" | awk -F'\t' -v root="$1/" 'index($2 "/", root) == 1 { print $1; found = 1; exit } END { exit !found }'
 }
-recent() { # <dir> <min> — something in it changed in the last <min> minutes
-  [ -n "$(find "$1" -mmin "-$2" -print -quit 2>/dev/null)" ]
-}
+recent() { wt_recent "$@"; }   # <dir> <min> — a find that errors counts as recent
 # A change is lost only when git does not already hold its content. A proof tree carries a copy
 # of a committed test; a plant does not, and a deleted file is never held.
 lost_work() { # <checkout> — prints why and returns 0 when removing it would lose work
@@ -193,6 +194,10 @@ kept_why() {
   if recent "$d" "$2"; then printf 'changed in the last %s min' "$2"; return 0; fi
   while IFS= read -r c; do
     [ -n "$c" ] || continue
+    why=$(wt_claim_holder "$c"); case $? in
+      0) printf '%s on %s' "$why" "${c#"$d"/}"; return 0 ;;
+      2) printf 'the claims for %s could not be read' "${c#"$d"/}"; return 0 ;;
+    esac
     if why=$(lost_work "$c"); then printf '%s in %s' "$why" "${c#"$d"/}"; return 0; fi
   done <<<"$(checkouts_in "$d")"
   return 1

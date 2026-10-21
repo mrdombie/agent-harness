@@ -4,7 +4,9 @@
 # Folders: `build.cacheDirs` (globs from the top level), else the usual framework output.
 # --deep adds node_modules and dist (top level, apps/*, packages/*): the disk guard's pass. The next
 # start relinks or reinstalls them (link-node-modules.sh) and the next build regenerates dist.
-# Kept: a worktree a process sits in; a folder holding a tracked file, resolving outside, or changed within N min.
+# Kept: a worktree a process sits in, a live run's record names, a claim on any host holds (claims
+# unreadable: nothing is cleaned) or, with --idle-min N, whose files changed within N min; a folder
+# holding a tracked file, resolving outside, or changed within N min.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/worktree-lib.sh"
@@ -42,6 +44,8 @@ patterns() { # <worktree>
 }
 
 cleaned=0 kept=0 freed_kb=0
+# Read once here, not in each tree's subshell; a tree of another clone reads its own.
+r=$(wt_repo_of "${TREES[0]}" 2>/dev/null) && wt_claims_load "$r"
 for wt in "${TREES[@]}"; do
   [ -d "$wt" ] || { echo "skip $wt — no such directory"; continue; }
   real=$(wt_real "$wt")
@@ -50,6 +54,13 @@ for wt in "${TREES[@]}"; do
   if pid=$(wt_occupant "$real"); then
     echo "keep $wt — in use (pid $pid has its cwd there)"; kept=$((kept+1)); continue
   fi
+  if why=$(wt_run_holder "$real"); then echo "keep $wt — a live run holds it ($why)"; kept=$((kept+1)); continue; fi
+  why=$(wt_claim_holder "$real"); crc=$?
+  [ "$crc" = 2 ] && { echo "keep $wt — the claim list could not be read, so nothing here is cleaned"; kept=$((kept+1)); continue; }
+  [ "$crc" = 0 ] && { echo "keep $wt — $why"; kept=$((kept+1)); continue; }
+  # The cache folders answer for themselves below; the rest of the tree answers here.
+  # shellcheck disable=SC2046
+  if [ "$IDLE" -gt 0 ] && wt_recent "$real" "$IDLE" $(patterns "$real" | sed 's#.*/##' | sort -u); then echo "keep $wt — its files changed in the last $IDLE min"; kept=$((kept+1)); continue; fi
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     case "$pat" in /*|*..*) echo "skip pattern '$pat' — must stay inside the worktree"; continue ;; esac
@@ -62,7 +73,7 @@ for wt in "${TREES[@]}"; do
         echo "keep $d — git could not list its files"; kept=$((kept+1)); continue
       fi
       [ -z "$tracked" ] || { echo "keep $d — holds tracked files"; kept=$((kept+1)); continue; }
-      if [ "$IDLE" -gt 0 ] && [ -n "$(find "$abs" -mmin "-$IDLE" -print -quit 2>/dev/null)" ]; then
+      if [ "$IDLE" -gt 0 ] && wt_recent "$abs" "$IDLE"; then
         echo "keep $d — changed in the last $IDLE min"; kept=$((kept+1)); continue
       fi
       kb=$(du -sk "$abs" 2>/dev/null | awk '{print $1}'); kb=${kb:-0}
