@@ -28,6 +28,9 @@
 #                 Opt-in the same way, and in shadow unless MERGE_LANE_SHADOW=0
 #                 is set at install. The coordinator tick also runs it; the
 #                 lane's own lock keeps the two from overlapping.
+#   keeper        every 15 minutes: swarm/keeper.sh, which resumes the session
+#                 `keeper.sh adopt <id>` named once it goes quiet. Opt-in the
+#                 same way. Stop it: install.sh uninstall keeper.
 #
 # Installing the coordinator also opens swarm/coordinator-feed.sh once in a
 # terminal window: a line per check, build, red PR and sign-off batch.
@@ -62,6 +65,7 @@ script_for() { # <job> — the command line under the kit, one argument per line
     report)       printf 'swarm/report.sh\n--push\n' ;;
     coordinator)  printf 'scripts/coordinator-tick.sh\n' ;;
     merge-lane)   printf 'scripts/merge-lane.sh\n' ;;
+    keeper)       printf 'swarm/keeper.sh\n' ;;
     *) return 1 ;;
   esac
 }
@@ -75,6 +79,7 @@ interval_for() {
     report) printf '%s' "${SWARM_EVERY_REPORT:-60}" ;;
     coordinator) printf '%s' "${SWARM_EVERY_COORDINATOR:-120}" ;;
     merge-lane) printf '%s' "${SWARM_EVERY_MERGE_LANE:-180}" ;;
+    keeper) printf '%s' "${SWARM_EVERY_KEEPER:-900}" ;;
   esac
 }
 
@@ -88,6 +93,7 @@ lane_shadow() { [ "${MERGE_LANE_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
 # The mode variables a job carries, one NAME=value per line.
 shadow_vars() { # <job>
   case "$1" in
+    keeper)      printf 'SWARM_USAGE_CEILING=%s\n' "$SWARM_USAGE_CEILING" ;;
     coordinator) printf 'COORDINATOR_SHADOW=%s\nMERGE_LANE_SHADOW=%s\n' "$(coordinator_shadow)" "$(lane_shadow)" ;;
     merge-lane)  printf 'MERGE_LANE_SHADOW=%s\n' "$(lane_shadow)" ;;
   esac
@@ -171,7 +177,7 @@ need_launchd() {
 # ---- elsewhere: the coordinator and the merge lane as one crontab line each,
 # marked so a line is replaced, never doubled
 SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
-cron_jobs() { printf 'coordinator\nmerge-lane\n'; }
+cron_jobs() { printf 'coordinator\nmerge-lane\nkeeper\n'; }
 cron_mark() { printf '# %s' "$(label "$1")"; }
 cron_line() { # <job>
   local m=$(( $(interval_for "$1") / 60 )); [ "$m" -ge 1 ] || m=1
@@ -403,16 +409,16 @@ case "${1:-}" in
   --jobs)   jobs_for_project; exit 0 ;;
   status)
     need_launchd || exit 1
-    for j in $(jobs_for_project) $(for o in coordinator merge-lane; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
+    for j in $(jobs_for_project) $(for o in coordinator merge-lane keeper; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
       line=$(launchctl list 2>/dev/null | awk -v l="$(label "$j")" '$3==l{print "pid "$1", last exit "$2}')
       printf '%-14s %s\n' "$j" "${line:-not loaded}"
     done; hold_status; exit 0 ;;
   restart)  need_launchd || exit 1; do_install "${2:?restart needs a job}"; exit $? ;;
   uninstall)
     need_launchd || exit 1
-    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane; do do_uninstall "$j"; done; fi
+    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane keeper; do do_uninstall "$j"; done; fi
     exit 0 ;;
-  -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;
   *)        need_launchd || exit 1; do_install "$1"; exit $? ;;
 esac
