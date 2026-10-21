@@ -622,6 +622,16 @@ want_in "the driver's verdict is recorded"  'claim-720-drv.*exit=20 ⏸ #720 par
 want_not_in "not the reconcile output"     'claim-720-drv.*reconcile' "$(cat "$C/runs.log")"
 want_in "a parked driver run is a stand-down" '"kind":"stood-down".*"ticket":"720"' "$(cat "$C/events.would.jsonl")"
 
+echo "--- a driver run that hit an API error twice is the machine's, not a stand-down ---"
+fresh
+printf '{"run_id":"claim-721-drv","ticket":"721","log":"%s","runner":"driver"}\n' "$STATE/logs/claim-721-drv.log" > "$STATE/runs/claim-721-drv.json"
+{ echo '⏸ #721 parked (driver): machine fault: the review model call failed at the API twice'
+  jq -cn '{type:"result",result:"⏸ #721 parked (driver): machine fault: the review model call failed at the API twice"}'; } > "$STATE/logs/claim-721-drv.log"
+printf '{"run_id":"claim-721-drv","exit_code":33}\n' > "$STATE/runs/claim-721-drv.ended"
+out=$(tick 2>&1)
+want_in "the tick says machine"             'machine: run claim-721-drv' "$out"
+want_not_in "and raises no stand-down"      '"kind":"stood-down".*"ticket":"721"' "$(cat "$C/events.would.jsonl" 2>/dev/null)"
+
 echo "--- a spawn the spawner refuses raises an event naming why ---"
 cat > "$BIN/spawn-refuse" <<'SH'
 #!/usr/bin/env bash

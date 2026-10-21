@@ -59,7 +59,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   local cause="${4:-person}"
   case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
   local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
-  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note="" park_ref="" host
+  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note="" park_ref="" strand_note="" host
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
   branch=$(driver_state_get "$t" branch)
@@ -173,6 +173,7 @@ $(if [ "$pushed" -ne 1 ] && [ -n "$park_ref" ]; then
     printf '📌 The work is on origin as `%s` — a backup ref, not a branch: no workflow, auto-merge or pull request sees it, and `%s` did not move. The next run on any machine resumes from it; by hand: `git fetch origin %s && git checkout -B %s FETCH_HEAD`.' "$park_ref" "$branch" "$park_ref" "$branch"
   elif [ "$pushed" -ne 1 ] && [ -n "$branch" ]; then
     printf '📌 The work is only on machine `%s`, in `%s`.' "$host" "$wt"
+    [ -z "$strand_note" ] || printf ' The backup to origin never landed: %s' "$strand_note"
   fi)
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
@@ -296,6 +297,7 @@ _driver_park_strand() {
     driver_state_set "$1" park_ref "$park_ref"
     driver_say "   park: the work is on origin as $park_ref — the next run on any machine resumes from it"
   else
-    driver_say "   park: ${DRIVER_STRANDED_WHY:-no stranded ref} — the work stays on $host in $2"
+    strand_note="${DRIVER_STRANDED_WHY:-no stranded ref was made}"
+    driver_say "   park: $strand_note — the work stays on $host in $2"
   fi
 }

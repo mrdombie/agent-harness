@@ -139,6 +139,9 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
     # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
     event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
+  elif [ "$code" = "${DRIVER_E_MACHINE:-33}" ]; then
+    # A model call failed at the API twice: parked as the machine's, left ready, picked again.
+    say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again"
   elif [ "$code" = 26 ]; then
     # The driver's DRIVER_E_UNREAD: GitHub could not be read, nothing parked, the ticket is picked again.
     say "unread: run $rid left #${ticket:-?} as it was — GitHub could not be read; the next tick tries again"

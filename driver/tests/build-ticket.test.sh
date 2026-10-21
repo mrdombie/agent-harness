@@ -338,6 +338,14 @@ out=$(bt 111); rc=$?
 want "the run stops" "20" "$rc"
 want_in "and points at the schema" 'schemas/plan.json' "$(cat "$FIX/park.log")"
 
+echo "--- an API error twice is the machine's park: exit 33, driver cause, never the owner's ---"
+# #13642: a false safeguards flag on the review reply parked for the owner as his question.
+reset_fakes "review:33"
+out=$(bt 112); rc=$?
+want "the run's exit says machine"     "33" "$rc"
+want_in "the park says machine fault"  'PARK machine fault' "$(cat "$FIX/park.log")"
+want_in "and it is the driver's"       'cause=driver' "$(cat "$FIX/park.log")"
+
 echo "--- a missing brief parks, and says the briefs are a separate deliverable ---"
 # 23 is not a failure of the ticket. The briefs land under their own number, so a
 # driver that met this before they did has to say which is missing rather than
@@ -696,7 +704,8 @@ rm -f "$FIX/ai/repair.jsonl" "$FIX/hands-resolve"   # pass 1: the model call die
 printf 'REPAIR on PR #63: it clashes with develop\n' > "$FIX/brief-212.md"
 out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
 WT212=$(driver_state_get 212 worktree)
-want "pass 1 parks"                          "20" "$rc"
+# A call that dies with no transcript is the machine, retried once and then parked as such.
+want "pass 1 parks, as the machine"          "33" "$rc"
 want "the park committed nothing"            "$PR_HEAD" "$(git -C "$WT212" rev-parse HEAD)"
 want "the merge is left in progress"         "yes" "$([ -f "$(git -C "$WT212" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"
 want "origin still has the PR's head"        "$PR_HEAD" "$(git -C "$FIX/origin" rev-parse tkt-212/work)"

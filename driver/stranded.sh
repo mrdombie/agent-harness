@@ -25,9 +25,16 @@ driver_stranded_push() {
   ref="$STRANDED_NS/$t/$h-$(date -u +%Y%m%dT%H%M%SZ)"
   # Skipping the pre-push reaches nothing outside this namespace.
   case "$ref" in "$STRANDED_NS"/[0-9]*/?*) ;; *) DRIVER_STRANDED_WHY="'$ref' is outside $STRANDED_NS/"; return 1 ;; esac
-  if ! out=$(env -u PARK_PUSH git -C "$wt" push --no-verify origin "$rev:$ref" 2>&1); then
-    DRIVER_STRANDED_WHY="the push to $ref was refused too: $(printf '%s' "$out" | tail -2 | tr '\n' ' ' | cut -c1-200)"; return 1
-  fi
+  # TRIED THREE TIMES. GitHub answered one with "! [remote rejected] … (failed)" and
+  # took the same push a moment later; one refusal left the work on one machine.
+  local n=0 tries="${DRIVER_STRANDED_TRIES:-3}" wait="${DRIVER_STRANDED_RETRY_SEC:-5}"
+  until out=$(env -u PARK_PUSH git -C "$wt" push --no-verify origin "$rev:$ref" 2>&1); do
+    n=$((n+1))
+    if [ "$n" -ge "$tries" ]; then
+      DRIVER_STRANDED_WHY="the push to $ref was refused $n time(s): $(printf '%s' "$out" | tail -2 | tr '\n' ' ' | cut -c1-200)"; return 1
+    fi
+    sleep $((wait * n))
+  done
   DRIVER_STRANDED_REF="$ref"
 }
 

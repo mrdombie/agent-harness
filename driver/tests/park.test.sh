@@ -197,7 +197,28 @@ rm -f "$FIX/origin/hooks/pre-receive"
 want "no stranded ref"                        "" "$(git -C "$FIX/origin" for-each-ref 'refs/stranded/309/')"
 want_in "the ticket names the worktree"       "\`$FIX/wt309\`" "$(cat "$GH_LOG")"
 want_in "and the machine it is on"            "machine \`$(hostname -s 2>/dev/null || hostname)\`" "$(cat "$GH_LOG")"
-want_in "and the park says why there is no ref" 'refused too' "$out"
+want_in "and the park says why there is no ref" 'refused 3 time' "$out"
+want_in "and the ticket says the backup never landed" 'backup to origin never landed' "$(cat "$GH_LOG")"
+
+echo "--- origin rejects the stranded ref ONCE: the backup lands on the retry ---"
+# GitHub answered "! [remote rejected] … (failed)" once and took the same push a moment
+# later (2026-10-21); one refusal left the work on one machine.
+: > "$GH_LOG"; rm -f "$FIX/rejected-once"
+printf '#!/usr/bin/env sh
+while read o n r; do case "$r" in refs/stranded/311/*) [ -f "%s" ] && exit 0; : > "%s"; echo "failed"; exit 1 ;; esac; done
+' \
+  "$FIX/rejected-once" "$FIX/rejected-once" > "$FIX/origin/hooks/pre-receive"
+chmod +x "$FIX/origin/hooks/pre-receive"
+park_tree 311 tkt-311/work develop
+park_hook "$FIX/hooks311" -; git -C "$FIX/wt311" config core.hooksPath "$FIX/hooks311"
+out=$(driver_park 311 "the gate stopped it" "" driver 2>&1); rc=$?
+rm -f "$FIX/origin/hooks/pre-receive"
+pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/stranded/311/' | head -1)
+want "origin did reject the first push"       "1" "$([ -f "$FIX/rejected-once" ] && echo 1)"
+want_in "the backup landed on the retry"      'refs/stranded/311/' "$pref"
+want "at the worktree's head"                 "$(git -C "$FIX/wt311" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse --verify -q "$pref" 2>/dev/null)"
+want_not_in "and the ticket does not say it never landed" 'never landed' "$(cat "$GH_LOG")"
+git -C "$FIX/wt311" config --unset core.hooksPath
 
 for n in 303 304 305 306 307 308 309; do git -C "$FIX/wt$n" config --unset core.hooksPath; done
 

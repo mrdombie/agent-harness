@@ -928,6 +928,26 @@ want "a row naming both a command and an agent refuses" "24" "$rc"
 want_in "saying so" "both a review command and an agent" "$out"
 want "and runs neither" "" "$(cat "$CLAUDE_LOG")"
 
+echo "--- T2-2 · an agent reviewer's API error is retried once, then is the machine's ---"
+jq --arg w "$FIX/recorder" --arg o "$FIX/owed" \
+   '.review = {"attest":{"ui-gate":{"owed":$o,"agent":"agent-harness:frontend-gate","record":$w}}}' \
+   "$REPO/.claude/harness.json" > "$FIX/hg.json" && mv "$FIX/hg.json" "$REPO/.claude/harness.json"
+GOOD_ATTEST="$FIX/attest-good.jsonl"; cp "$FIX/ai/attest-ui-gate.jsonl" "$GOOD_ATTEST"
+attest_err() { jq -nc '{type:"result", subtype:"success", is_error:true, result:"API Error: 529 Overloaded"}'; }
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: reviewed while the API was overloaded"
+attest_err > "$FIX/ai/attest-ui-gate.jsonl"; cp "$GOOD_ATTEST" "$FIX/ai/attest-ui-gate.then.jsonl"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "a success on the retry is recorded"     "0" "$rc"
+want "after exactly one retry"                "2" "$(grep -cx attest-ui-gate "$CLAUDE_LOG")"
+git -C "$FIX/wt410" commit --allow-empty -qm "chore: reviewed while the API stayed down"
+attest_err > "$FIX/ai/attest-ui-gate.jsonl"; rm -f "$FIX/ai/attest-ui-gate.then.jsonl"
+: > "$CLAUDE_LOG"
+rc=0; out=$(driver_push_requires 410 2>&1) || rc=$?
+want "failing twice is a machine fault"       "33" "$rc"
+want_in "the note says machine"               'machine fault' "$(driver_state_get 410 park_note)"
+driver_state_set 410 park_note ""; cp "$GOOD_ATTEST" "$FIX/ai/attest-ui-gate.jsonl"
+
 echo "--- T2-2 · a reviewer that judges pictures is never run blind, and never parks for it ---"
 git -C "$FIX/wt410" commit --allow-empty -qm "chore: unreviewed again"
 cat > "$FIX/recorder" <<'SH'

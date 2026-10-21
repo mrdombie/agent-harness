@@ -313,4 +313,72 @@ printf 'old build brief\n' > "$FIX/run-brief-274.md"; driver_state_set 274 run_b
 DRIVER_TICKET=274 driver_ai_step 274 review >/dev/null 2>&1
 want_not_in "a build's brief is not read in repair mode" 'old build brief' "$(cat "$FIX/claude-stdin-review.txt")"
 
+echo "--- an API error is not an answer: one retry, then a machine fault (#13642) ---"
+# The review reply on #13642 was a false safeguards flag. Read as an answer it was
+# "not JSON", the re-ask on the same session came back a question, and the park went to
+# the owner. Each case writes the error as the real runner does: a result, no answer.
+apierr() { # <text> [is_error]
+  jq -nc '{type:"assistant", message:{content:[{type:"tool_use", name:"Skill", input:{skill:"superpowers:requesting-code-review"}}]}}'
+  jq -nc --arg r "$1" --argjson e "${2:-true}" '{type:"result", subtype:"success", is_error:$e, result:$r}'
+}
+fix_brief review superpowers:requesting-code-review
+rm -f "$DRIVER_SCHEMAS/review.json"
+rcalls() { grep -cx review "$CLAUDE_LOG"; }
+SAFE="API Error: Opus 5.5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations."
+
+driver_state_init 281
+apierr "$SAFE" > "$FIX/ai/review.jsonl"
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+mv "$FIX/ai/review.jsonl" "$FIX/ai/review.ok"; apierr "$SAFE" > "$FIX/ai/review.jsonl"; mv "$FIX/ai/review.ok" "$FIX/ai/review.then.jsonl"
+before=$(rcalls)
+out=$(DRIVER_TICKET=281 driver_ai_step 281 review 2>&1); rc=$?
+want "a success on the retry carries the step on"  "0" "$rc"
+want "after exactly one retry"                     "2" "$(( $(rcalls) - before ))"
+want "the answer kept is the retry's"              "SHIP" "$(jq -r '.verdict' "$(driver_state_dir 281)/steps/review.json")"
+want_in "and it says it retried"                   'failed at the API' "$out"
+want_not_in "the retry is the brief, not a re-ask"  'could not be read by the driver' "$(cat "$FIX/claude-stdin-review.txt")"
+want "and no note is left to park on"              "" "$(driver_state_get 281 park_note)"
+
+driver_state_init 282
+apierr "$SAFE" > "$FIX/ai/review.jsonl"; rm -f "$FIX/ai/review.then.jsonl"
+before=$(rcalls)
+out=$(DRIVER_TICKET=282 driver_ai_step 282 review 2>&1); rc=$?
+want "failing again is a machine fault"            "33" "$rc"
+want "asked exactly twice, never re-asked"         "2" "$(( $(rcalls) - before ))"
+want_in "the note says machine"                    'machine fault' "$(driver_state_get 282 park_note)"
+want_in "and carries the API's own words"          'safeguards flagged' "$(driver_state_get 282 park_note)"
+
+for e in "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}" "API Error: 500 Internal server error" "Request rate limited (rate_limit_error)" ""; do
+  driver_state_init 283
+  apierr "$e" > "$FIX/ai/review.jsonl"
+  rc=0; DRIVER_TICKET=283 driver_ai_step 283 review >/dev/null 2>&1 || rc=$?
+  want "'$(printf '%s' "$e" | cut -c1-30)' is a machine fault" "33" "$rc"
+done
+driver_state_init 284
+: > "$FIX/ai/review.jsonl"
+rc=0; DRIVER_TICKET=284 driver_ai_step 284 review >/dev/null 2>&1 || rc=$?
+want "an empty transcript is a machine fault"      "33" "$rc"
+
+echo "--- an answer that only MENTIONS an outage is an answer ---"
+driver_state_init 285
+fix_ai review '{"verdict":"SHIP","findings":[],"note":"handles API Error: 529 overloaded and rate limit replies"}' superpowers:requesting-code-review
+before=$(rcalls)
+rc=0; DRIVER_TICKET=285 driver_ai_step 285 review >/dev/null 2>&1 || rc=$?
+want "it passes"                                   "0" "$rc"
+want "asked once"                                  "1" "$(( $(rcalls) - before ))"
+apierr "The overloaded queue is fine; nothing to change." false > "$FIX/ai/review.jsonl"
+rc=0; DRIVER_TICKET=285 driver_ai_step 285 review >/dev/null 2>&1 || rc=$?
+want "prose from a run that did not error is the shape refusal, not the machine" "22" "$rc"
+driver_state_set 285 park_note ""
+
+echo "--- a re-ask answered with a question leaves no stale note to outrank it ---"
+driver_state_init 286
+fix_ai review 'Here is what I think' superpowers:requesting-code-review
+mv "$FIX/ai/review.jsonl" "$FIX/ai/review.first"
+fix_ai review '{"question":"which screen is approved?"}' superpowers:requesting-code-review
+mv "$FIX/ai/review.jsonl" "$FIX/ai/review.then.jsonl"; mv "$FIX/ai/review.first" "$FIX/ai/review.jsonl"
+rc=0; DRIVER_TICKET=286 driver_ai_step 286 review >/dev/null 2>&1 || rc=$?
+want "the question parks as a question"            "20" "$rc"
+want "with no 'not JSON' note to stand in for it"  "" "$(driver_state_get 286 park_note)"
+
 exit $FAILED
