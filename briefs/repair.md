@@ -62,8 +62,9 @@ above.
 
 - **A fix that changes behaviour gets a test.** Commit the test that goes red
   first, then the fix, as two commits. Report `proof: "test"`, the test, the
-  command and both shas. The driver re-runs that test at the fix's parent and at
-  the fix. A test that is green before the fix is refused.
+  command and both shas. The driver runs `command` verbatim, from the worktree
+  root, before and after the fix: no placeholders. A test green beforehand is
+  refused.
 - **A fix no test can pin** (a lint rule, a type error, a lockfile, a merge
   resolution that only needed to compile) is `proof: "gate"`. It names the gate
   command that was red and is now green, and says in `noTestBecause` why no test

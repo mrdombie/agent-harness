@@ -33,6 +33,7 @@
 #   4  a half ran out of time — a hang says nothing about the change
 #   5  a proof tree could not be prepared — the measurement was never made
 #   6  red then green, and the tree with the change does not type-check
+#   7  the command cannot be run as given (a placeholder, no such program) — never run
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -119,9 +120,59 @@ _driver_fail_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# driver_proof_cmd_check <tree> <command> [<test-file>] — 0 when the command can be
+# run verbatim from the tree's root; else prints why and returns 1.
+#
+# A PLACEHOLDER IS NOT A RED. `DATABASE_URL=<throwaway postgres> npx vitest …` died
+# in bash on `<throwaway` as a redirect from a missing file, in both halves, and the
+# proof read the second as "still fails with the change" about a change that worked.
+driver_proof_cmd_check() {
+  local tree="$1" cmd="$2" tfile="${3:-<file>}" ph w lw first="" eg
+  local -a words=()
+  eg="give the exact command, run from the worktree root, e.g. npx vitest run $tfile"
+  ph=$(printf '%s' "$cmd" | grep -oE '<[A-Za-z][^<>]*>' | head -1)
+  if [ -n "$ph" ]; then
+    printf "the command holds a placeholder '%s' and is run verbatim — %s\n" "$ph" "$eg"; return 1
+  fi
+  # read -a, not `for w in $cmd`: a bare `*.test.ts` would glob against the cwd.
+  read -rd '' -a words <<<"$cmd" || true
+  # The first word is judged only where a split on spaces finds it: past an
+  # assignment holding quotes, `$(`, or a `;`, the shell's own parse is needed.
+  local compound=0
+  for w in ${words[@]+"${words[@]}"}; do
+    case "$w" in
+      [A-Za-z_]*=*) case "$w" in *[\"\'\`\;]*|*'$('*) compound=1; break ;; esac; continue ;;
+    esac
+    first="${w#[\"\']}"; first="${first%[\"\']}"
+    while :; do case "$first" in [\(\{!]*) first="${first#?}" ;; *) break ;; esac; done
+    case "$first" in *[\$\`]*|'') compound=1 ;; esac
+    break
+  done
+  [ "${#words[@]}" -gt 0 ] || { printf 'the command is empty — %s\n' "$eg"; return 1; }
+  if [ "$compound" -eq 0 ] && [ -n "$first" ] \
+     && ! ( cd "$tree" 2>/dev/null && command -v -- "$first" >/dev/null 2>&1 ) && [ ! -e "$tree/$first" ]; then
+    printf "the command's first word '%s' is not a program on PATH or a file in the tree — %s\n" "$first" "$eg"
+    return 1
+  fi
+  for w in ${words[@]+"${words[@]}"}; do
+    lw=$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')
+    case "$lw" in
+      '...'|*'…'*|throwaway|todo|tbd|fixme|placeholder|xxx)
+        printf "the command holds a placeholder word '%s' and is run verbatim — %s\n" "$w" "$eg"; return 1 ;;
+    esac
+  done
+  return 0
+}
+
 driver_prove_red_green() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
+
+  # Checked before any tree is built: a command that cannot run proves nothing.
+  local cwhy
+  if ! cwhy=$(driver_proof_cmd_check "$repo" "$cmd" "$tfile"); then
+    printf '%s, so the test was never run\n' "$cwhy"; return 7
+  fi
 
   # TWO COMMITS HAVE TO BE TWO. Reported as one, the parent holds neither the test
   # nor the change, the test is copied in and goes red, and the commit makes it
@@ -250,11 +301,15 @@ driver_prove_red_green() {
 #
 # 0 red with the break, green without · 1 green with the break — the test does not
 # cover that code · 2 red without the break · 3 the answer cannot be checked ·
-# 4 out of time · 5 the tree could not be prepared · 6 it does not type-check
+# 4 out of time · 5 the tree could not be prepared · 6 it does not type-check ·
+# 7 the command cannot be run as given
 driver_prove_by_break() {
   local repo="$1" tfile="$2" tsha="$3" bfile="$4" find="$5" repl="$6" cmd="$7"
-  local tmp n rc_red rc_green red_out green_out
+  local tmp n rc_red rc_green red_out green_out cwhy
 
+  if ! cwhy=$(driver_proof_cmd_check "$repo" "$cmd" "$tfile"); then
+    printf '%s, so the test was never run\n' "$cwhy"; return 7
+  fi
   git -C "$repo" cat-file -e "$tsha:$tfile" 2>/dev/null || {
     printf 'no %s in %s — the commit named as adding the test does not contain it\n' "$tfile" "$tsha"; return 3; }
   # THE BREAK IS IN THE CODE, NEVER IN THE TEST. Breaking the test itself proves the
