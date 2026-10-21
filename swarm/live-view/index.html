@@ -24,7 +24,7 @@ h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3
 .dot.ok{background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 20%,transparent);animation:pulse 2s infinite}
 .dot.slow{background:var(--warn)} .dot.stuck{background:var(--bad)}
 .dot.away{background:transparent;border:2px solid var(--ink3);box-sizing:border-box}
-.disklow{color:var(--bad);font-weight:600} .diskheld{color:var(--warn);font-weight:600}
+.disklow{color:var(--bad);font-weight:600} .diskheld{color:var(--warn);font-weight:600} .behind{color:var(--warn);font-weight:600}
 @keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--good) 0%,transparent)}}
 .title{font-weight:600;line-height:1.3}
 .sub{color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums}
@@ -275,7 +275,18 @@ function machineLine(s){
   } else if (d) parts.push('disk free not read')
   parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
   const hosts = (s.hosts || []).map(h => `${esc(h.host)} (${esc(h.n)})`).join(', ')
-  return `Machine: ${parts.join(' · ')}<br>Building on: ${hosts || 'no host'} · updated ${esc(new Date(s.at).toLocaleTimeString())}`
+  return `Machine: ${parts.join(' · ')}<br>Building on: ${hosts || 'no host'} · updated ${esc(new Date(s.at).toLocaleTimeString())}` + fleetLines(s.fleet)
+}
+// One line per machine from the heartbeats on the shared sheet; "behind" under its version floor.
+function fleetLines(f){
+  if (!f || !Array.isArray(f.hosts) || !f.hosts.length) return ''
+  const line = (h) => [
+    `${esc(h.host)}: harness ${esc(h.version || '?')}` + (h.behind ? ` <span class="behind">behind — starts nothing new until it updates to ${esc(f.minHarness)}</span>` : ''),
+    h.freeGb == null ? 'disk not read' : `${esc(h.freeGb)} GB disk free`,
+    `${esc(h.builds)} building`,
+    h.tickAgoMin == null ? 'no tick on record' : h.tickAgoMin < 1 ? 'last tick just now' : `last tick ${esc(dur(h.tickAgoMin))} ago`,
+  ].join(' · ')
+  return `<br>Machines${f.minHarness ? ` (harness floor ${esc(f.minHarness)})` : ''}:` + f.hosts.map((h) => `<br>${line(h)}`).join('')
 }
 
 // Where the ticket stands now, not how its last run ended: a run that parked on a

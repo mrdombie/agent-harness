@@ -42,6 +42,8 @@ const PLAIN = process.env.SWARM_PLAIN_TITLES || path.join(RUNS, '..', 'plain-tit
 const COORD_QUEUE = process.env.SWARM_COORD_QUEUE || path.join(RUNS, '..', 'coordinator', 'queue.json')
 // The last tick's ceiling, the reading behind it and the healing / new split.
 const COORD_CAPACITY = path.join(path.dirname(COORD_QUEUE), 'capacity.json')
+// Every machine's heartbeat and the sheet's version floor, as the last tick knew them.
+const COORD_FLEET = path.join(path.dirname(COORD_QUEUE), 'fleet.json')
 const HOLD_SCRIPT = process.env.SWARM_HOLD_SCRIPT
   || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hold-status.sh')
 const HOLD_MS = Number(process.env.SWARM_HOLD_MS || 30_000)
@@ -215,6 +217,21 @@ export function diskOf() {
   }
   return { freeGb: free, stopBelowGb: DISK_STOP, resumeAtGb: DISK_RESUME, held: fs.existsSync(DISK_HOLD),
            low: free != null && free < DISK_STOP, ...(where ? { where } : {}) }
+}
+
+// One row per machine: its harness, disk, builds and how long since its last tick.
+export function fleetOf(file = COORD_FLEET, now = Date.now()) {
+  let f
+  try { f = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
+  if (!f || !Array.isArray(f.hosts)) return null
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  return {
+    minHarness: f.minHarness || null,
+    owner: f.owner || null,
+    hosts: f.hosts.filter((h) => h && h.host).map((h) => ({
+      host: String(h.host), version: h.version || null, freeGb: num(h.freeGb), builds: num(h.builds) ?? 0,
+      tickAgoMin: num(h.tick) == null ? null : Math.max(0, Math.round((now / 1000 - h.tick) / 60)), behind: !!h.behind })),
+  }
 }
 
 export function capacityOf(file = COORD_CAPACITY) {
@@ -1103,7 +1120,7 @@ export function snapshot(now = Date.now()) {
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
-           hold, queue, capacity: capacityOf(), disk: diskOf(), board, launch, usage: usageOf(PACE_FILE, now),
+           hold, queue, capacity: capacityOf(), fleet: fleetOf(COORD_FLEET, now), disk: diskOf(), board, launch, usage: usageOf(PACE_FILE, now),
            hosts: hostsOf(live, claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,
                     toolingLabels: TOOLING_LABELS, toolingScopes: TOOLING_SCOPES, ownerLabels: OWNER_ASK } }

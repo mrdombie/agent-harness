@@ -24,7 +24,11 @@ set -uo pipefail
 swarm_fixture() {
   # The runner's own disk is no case's input: a case that tests the guard plants its free space.
   export HARNESS_DISK_GUARD=off
+  # Nor is its own plugin estate: no case updates the runner's installed harness.
+  export COORDINATOR_SELF_UPDATE=off
   FIX=$(mktemp -d)
+  # The runner's installed harness is no case's version: the floor and the self-update read this.
+  export SWARM_PLUGIN_REGISTRY="$FIX/no-plugin-registry.json"
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; SPAWNS="$FIX/spawns.log"
   mkdir -p "$REPO/.claude" "$STATE/runs" "$STATE/logs" "$STATE/swarm" "$BIN" "$FIX/gh"
