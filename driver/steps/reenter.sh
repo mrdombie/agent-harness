@@ -95,10 +95,9 @@ driver_step_reenter() { # <ticket>
     # NOT OPEN MAY BE MERGED: the repair was sent, then automerge landed the PR.
     local landed
     landed=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --state merged --search "$t" --limit 30 \
-               --json number,headRefName,body,closingIssuesReferences,mergedAt 2>/dev/null \
+               --json number,headRefName,body,mergedAt 2>/dev/null \
              | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --arg kw "$PR_CLOSES_JQ" '
                  [.[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)") or test("^" + $t + "/"))
-                   or ([.closingIssuesReferences[]?.number | tostring] | index($t) != null)
                    or ((.body // "") | test($kw + $t + "([^0-9]|$)"; "i")))]
                  | first // empty | "#\(.number) merged at \(.mergedAt)"' 2>/dev/null)
     if [ -n "$landed" ]; then

@@ -166,7 +166,7 @@ want "no claim was taken"             "" "$(awk '$1==202' "$CLAIMS")"
 echo "--- no open pull request because it MERGED: the run ends clean, no park ---"
 # #12766 parked "no open pull request to repair" an hour after its PR merged.
 fix_issue 281 OPEN "status:in-review"; prs "[]"; claim_row 281 tester@fixture tkt-281/work ""
-printf '%s\n' '[{"number":37,"headRefName":"tkt-2810/x","body":"","closingIssuesReferences":[],"mergedAt":"2026-10-18T11:00:00Z"},{"number":36,"headRefName":"tkt-281/work","body":"","closingIssuesReferences":[],"mergedAt":"2026-10-18T11:52:23Z"}]' > "$FIX/gh/prs-merged.json"
+printf '%s\n' '[{"number":37,"headRefName":"tkt-2810/x","body":"","mergedAt":"2026-10-18T11:00:00Z"},{"number":36,"headRefName":"tkt-281/work","body":"","mergedAt":"2026-10-18T11:52:23Z"}]' > "$FIX/gh/prs-merged.json"
 out=$(driver_step_reenter 281 2>&1); rc=$?
 want "it ends as nothing owed"        "$DRIVER_E_NOOP" "$rc"
 want_in "naming the merged PR"        '#36 merged at 2026-10-18T11:52:23Z' "$out"
