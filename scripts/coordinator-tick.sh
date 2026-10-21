@@ -233,7 +233,7 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   NB_CHECKS=$(release_nonblocking_json)
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson nb "$NB_CHECKS" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
     .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
-    | ((.statusCheckRollup // []) | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))) as $all
+    | ((.statusCheckRollup // []) | newest_runs | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))) as $all
     | ($all | map(select(release_nb($nb) | not))) as $c
     | ($all | map(select(release_nb($nb)) | select(release_red) | (.name // .context // "?")) | unique | join(", ")) as $warn
     # Settled = no CHECK RUN still running. A pending commit status is a wait on something

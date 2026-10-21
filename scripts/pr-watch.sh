@@ -27,7 +27,7 @@ NB=$(release_nonblocking_json)
 
 state() { # <pr> → one event word, or nothing while it is still pending
   gh pr view "$1" ${REPO:+--repo "$REPO"} --json state,mergeable,statusCheckRollup 2>/dev/null | jq -r --argjson nb "$NB" "$RELEASE_NB_JQ"'
-    ([.statusCheckRollup[]? | select(release_nb($nb) | not) | (.conclusion // .state // "") | ascii_upcase]) as $c
+    ([.statusCheckRollup | newest_runs | .[] | select(release_nb($nb) | not) | (.conclusion // .state // "") | ascii_upcase]) as $c
     | if .state == "MERGED" then "MERGED"
       elif .state == "CLOSED" then "CLOSED"
       elif ($c | map(select(test("FAILURE|ERROR|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"))) | length) > 0 then "RED"

@@ -79,13 +79,13 @@ held_green() { # <pr> \t <sha7> \t <sha> \t <priority 0-9 or -> \t <ticket or ->
 held_green_rows() { # held_green's rows, plus "-" \t <pr> \t <why> for a PR the judge has not passed
   jq -r --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson req "$REQUIRED" \
      --argjson needjudge "$NEED_JUDGE" --arg jctx "$JUDGE_CTX" --arg jpre "$JUDGE_PREFIX" \
-     --arg plist "$LBL_POLISH_LIST" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
+     --arg plist "$LBL_POLISH_LIST" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ$CHECK_NEWEST_JQ"'
     def settled: ((.status // "COMPLETED") == "COMPLETED") and (((.state // "") | test("PENDING|EXPECTED")) | not);
     def ok: (.conclusion // .state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$");
     def named($r): .name == $r or .context == $r or (((.workflowName // "") + " / " + (.name // "")) == $r);
     [ .[] | select(.isDraft | not) | select(any(.labels[]?; .name == $hold))
       | select(.mergeStateStatus != "DIRTY")
-      | (.statusCheckRollup // []) as $c
+      | (.statusCheckRollup // [] | newest_runs) as $c
       | select(
           if $req != null then
             all($req[]; . as $r | ([ $c[] | select(named($r)) ] | last) as $x | $x != null and ($x | settled) and ($x | ok))

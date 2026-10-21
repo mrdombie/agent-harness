@@ -319,6 +319,16 @@ fix_pr_status() {
     "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
+# fix_pr_run <pr> <name> <status> <conclusion> <completedAt> — add one more CHECK RUN of
+# <name> to a PR fix_prs wrote: a re-run sits beside the earlier run, as GitHub returns it.
+fix_pr_run() {
+  local f="$FIX/gh/prs-all.json"
+  jq --argjson n "$1" --arg c "$2" --arg st "$3" --arg co "$4" --arg at "$5" \
+    'map(if .number == $n then .statusCheckRollup += [{__typename:"CheckRun", name:$c, status:$st,
+       conclusion:(if $co == "-" then null else $co end), startedAt:$at, completedAt:(if $st == "COMPLETED" then $at else null end)}] else . end)' \
+    "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
 # fix_comments <ticket> <body…> — the comments `gh issue view --json comments` returns
 fix_comments() {
   local n=$1; shift
