@@ -61,10 +61,11 @@ echo "--- the fixture: handed-off pull requests in every state, a merge, two par
 mkdir -p "$STATE/coordinator/snapshot"
 ended_run 2101 0 '{"type":"result","subtype":"success","result":"Opened https://github.com/acme/widgets/pull/3101"}'
 ended_run 2102 0 '{"type":"result","subtype":"success","result":"PR #3102 is open"}'
-for t in 2103 2104 2105 2106 2109; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
+for t in 2103 2104 2105 2106 2109 2110; do ended_run "$t" 0 '{"type":"result","subtype":"success","result":"handed off"}'; done
 ended_run 2107 20; park_line 2107 pm "build asked a question rather than guessing — which repo does this belong in?"
 ended_run 2108 20; park_line 2108 person "repair asked a question rather than guessing — ship the changes made since the sign-off?"
 ok_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"SUCCESS"}' "$1"; }
+at_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"%s","completedAt":"%s"}' "$1" "$2" "$3"; }
 busy_run() { printf '{"name":"%s","status":"IN_PROGRESS","conclusion":null}' "$1"; }
 red_run() { printf '{"name":"%s","status":"COMPLETED","conclusion":"FAILURE"}' "$1"; }
 pr() { # <number> <ticket> <mergeable> <labels json> <checks...>
@@ -77,7 +78,9 @@ pr() { # <number> <ticket> <mergeable> <labels json> <checks...>
   pr 3102 2102 MERGEABLE '[]' "$(red_run 'Code gates')" "$(ok_run 'Build web')"; echo ','
   pr 3103 2103 MERGEABLE '["needs:human-approval"]' "$(red_run 'approval-gate')" "$(ok_run 'Code gates')"; echo ','
   pr 3104 2104 CONFLICTING '[]' "$(ok_run 'Code gates')"; echo ','
-  pr 3105 2105 MERGEABLE '[]' "$(busy_run 'Design critic')" "$(ok_run 'Code gates')"
+  pr 3105 2105 MERGEABLE '[]' "$(busy_run 'Design critic')" "$(ok_run 'Code gates')"; echo ','
+  pr 3110 2110 MERGEABLE '[]' "$(at_run 'Lesson' SKIPPED 2026-10-21T10:00:00Z)" "$(at_run 'Lesson' FAILURE 2026-10-21T13:00:00Z)" \
+    "$(at_run 'Code gates' FAILURE 2026-10-21T10:00:00Z)" "$(at_run 'Code gates' SUCCESS 2026-10-21T13:00:00Z)"
   echo ']'; } > "$STATE/swarm/prs.json"
 jq -e . "$STATE/swarm/prs.json" >/dev/null || bad "the open-PR fixture is not JSON"
 cat > "$STATE/coordinator/snapshot/issues.json" <<JSON
@@ -101,6 +104,7 @@ want "a red check, by name"                   "A check failed: Code gates" "$(ro
 want "the approval check red under a hold is the sign-off" "Waiting for sign-off" "$(row_of "$s" 2103 .now.text)"
 want "a clash"                                "Clashes with newer code" "$(row_of "$s" 2104 .now.text)"
 want "the design critic still running"        "Waiting for design review" "$(row_of "$s" 2105 .now.text)"
+want "each check by its newest run: a failure after a skip fails, a pass after a failure passes" "A check failed: Lesson" "$(row_of "$s" 2110 .now.text)"
 want_not_in "no row's state says success or shipped" '(success|shipped)' "$(printf '%s' "$s" | jq -r '.done[] | "\(.now.text) \(.now.state) \(.lastRun)"' | tr 'A-Z' 'a-z')"
 want_not_in "nor does the header"             '(success|shipped)' "$(printf '%s' "$s" | jq -r '.doneSummary' | tr 'A-Z' 'a-z')"
 want_not_in "no row carries the CLI's word"   'success' "$(printf '%s' "$s" | jq -c '.done[]' | tr 'A-Z' 'a-z')"
@@ -108,6 +112,20 @@ want "each row has its PR"                    "3101" "$(row_of "$s" 2101 .pr)"
 want "and its link"                           "https://github.com/acme/widgets/pull/3101" "$(row_of "$s" 2101 .prUrl)"
 want "and when it finished"                   "$NOW_ISO" "$(row_of "$s" 2101 .at)"
 want "no row without a finished-at time"      "0" "$(printf '%s' "$s" | jq '[.done[] | select(.at == null or .finishedAt == null)] | length')"
+
+rr=$(cd "$LV" && node --input-type=module -e '
+  import { rollupOf } from "./progress.mjs"
+  const at = (name, conclusion, completedAt) => ({ name, status: "COMPLETED", conclusion, completedAt })
+  const r = rollupOf({ number: 1, statusCheckRollup: [at("Lesson", "SKIPPED", "2026-10-21T10:00:00Z"), at("Lesson", "FAILURE", "2026-10-21T13:00:00Z"),
+    at("Code gates", "FAILURE", "2026-10-21T10:00:00Z"), at("Code gates", "SUCCESS", "2026-10-21T13:00:00Z")] })
+  console.log(r.total + " " + r.fail + " " + r.pending)')
+want "the live card's PR cell reads each check by its newest run too" "2 1 0" "$rr"
+red=$(cd "$LV" && SWARM_RUNS_DIR="$STATE/runs" node --input-type=module -e '
+  import { prRed } from "./server.mjs"
+  const at = (name, conclusion, completedAt) => ({ name, status: "COMPLETED", conclusion, completedAt })
+  console.log(prRed({ statusCheckRollup: [at("Code gates", "FAILURE", "2026-10-21T10:00:00Z"), at("Code gates", "SUCCESS", "2026-10-21T13:00:00Z")] })
+    + " " + prRed({ statusCheckRollup: [at("Lesson", "SKIPPED", "2026-10-21T10:00:00Z"), at("Lesson", "FAILURE", "2026-10-21T13:00:00Z")] }))')
+want "and so does the board's red: a pass after a failure is not red, a failure after a skip is" "false true" "$red"
 
 echo "--- a merged pull request reads Merged <time>, by branch or by its closing word ---"
 want "by branch"                              "Merged $MERGED_HM" "$(row_of "$s" 2106 .now.text)"
@@ -197,6 +215,9 @@ PY
 rm -f "$STATE/swarm/claims.json" "$STATE/coordinator/fleet.json" "$STATE"/runs/claim-* "$STATE"/logs/claim-*
 ended_run 2101 0 '{"type":"result","subtype":"success","result":"Opened https://github.com/acme/widgets/pull/3101"}'
 ended_run 2106 0; ended_run 2107 20; park_line 2107 pm "build asked a question rather than guessing — which repo?"
+plant server.mjs "    if (!o || at >= o.at) by.set(name, { busy, failed, good, at })" "    by.set(name, { busy: (o && o.busy) || busy, failed: (o && o.failed) || failed, good: (o && o.good) || good, at })"
+got=$(row_of "$(snap "$P")" 2110 .now.text)
+[ "$got" != "A check failed: Lesson" ] && ok "planted: every run of a check counted alike → 2110 reads '$got' → red" || bad "planted: the newest-run rule dropped and the test cannot see it"
 plant server.mjs "status: openPrState(p) }" "status: null }"
 got=$(row_of "$(snap "$P")" 2101 .now.text)
 [ "$got" != "Waiting for checks (2 running)" ] && ok "planted: no open-PR state → 2101 reads '$got' → red" || bad "planted: the open-PR state dropped and the test cannot see it"

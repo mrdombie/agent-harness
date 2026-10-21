@@ -337,7 +337,17 @@ function pushedOf(slug, branch) {
 }
 
 export function rollupOf(p) {
-  const roll = p.statusCheckRollup || []
+  // Each check by its newest run: one still going counts as newest, then the latest finish.
+  const newest = new Map()
+  for (const c of p.statusCheckRollup || []) {
+    if (!c) continue
+    const name = String(c.name || c.context || '')
+    const going = c.state ? /PENDING|EXPECTED/.test(c.state) : !c.conclusion
+    const at = going ? Infinity : Date.parse(c.completedAt || c.startedAt || c.createdAt || '') || 0
+    const o = newest.get(name)
+    if (!o || at >= o.at) newest.set(name, { c, at })
+  }
+  const roll = [...newest.values()].map((x) => x.c)
   const bad = /FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED/
   const busy = /IN_PROGRESS|QUEUED|PENDING|WAITING/
   return {
