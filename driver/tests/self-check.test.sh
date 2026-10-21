@@ -418,11 +418,11 @@ SH
   out=$(driver_step_self_check 402 2>&1); rc=$?
   want "a rise goes to fix"                                 "30" "$rc"
   want "the baseline is not raised"                         "3" "$(cat "$REPO/baseline.txt")"
-  echo "--- Maktura's printed command, with its trailing note, still runs (maktura#5701) ---"
+  echo "--- a printed command with a trailing note after it still runs ---"
   # "Lock the cleanup in: npm run check:complexity -- --update  (and commit baseline.json
   # in this PR)" failed the anchored command pattern, so 18 tickets parked on headroom.
   sed -i.bak 's#Lock the cleanup in: npm run check:r -- --update#Lock the cleanup in: npm run check:r -- --update  (and commit baseline.txt in this PR)#' "$REPO/ratchet.sh" && rm -f "$REPO/ratchet.sh.bak"
-  echo 2 > "$REPO/actual.txt"; git -C "$REPO" commit -qam "fixture: Maktura's wording, and slack again"
+  echo 2 > "$REPO/actual.txt"; git -C "$REPO" commit -qam "fixture: a trailing note, and slack again"
   driver_state_init 403 --worktree "$REPO"
   out=$(driver_step_self_check 403 2>&1); rc=$?
   want "the trailing note does not hide the command"        "0" "$rc"
@@ -487,7 +487,7 @@ want_in "and fix reads why"                               'names no tighten comm
   "$(jq -r '.[0].output' "$(driver_state_dir 424)/steps/self-check.findings.json" 2>/dev/null)"
 
 echo "--- the push's own checks: verify:push's summary of a slack ratchet is tightened too ---"
-# maktura#5701 parked on the pre-push, not a gate: "✗ check:jr (required check: …)".
+# A build parked on the pre-push, not a gate: "✗ check:jr (required check: …)".
 cat > "$REPO/verify.sh" <<'SH'
 out=$(bash jr.sh) && exit 0
 echo "✗ check:jr  (required check: Code gates)"; echo "$out"; echo "✗ verify:push — 1 of 80 failed: check:jr"; exit 1
