@@ -298,38 +298,23 @@ is_epic() {
 }
 
 relabel() {
-  # Strips EVERY other status:* label, not just status:claimed. Removing one
-  # while adding another left tickets wearing two, and every label reader took
-  # whichever GitHub returned first — so the queue's view of a ticket was a coin
-  # flip. Five open issues carried two status labels before this.
+  # Through issue_status_set, which strips EVERY other lifecycle status, not just
+  # status:claimed: removing one while adding another left tickets wearing two,
+  # and every label reader took whichever GitHub returned first. It reads the
+  # labels fresh, so a ticket already wearing $want beside another is still fixed.
   #
   # Comments only when the label actually moves. The old unconditional post put
   # the same "Claim released, ticket not" note on #8326, #8475 and #8547 three
   # times each, once per sweep, which trains a reader to skip the channel.
-  local n="$1" want="$2" body="$3" issue current drop
+  local n="$1" want="$2" body="$3"
   [ "$DRY_RUN" -eq 1 ] && return 0
   [ "$gh_ok" -eq 1 ] || return 0
-  issue="$n"
-  current=$(labels_of "$issue")
-
-  if printf '%s\n' "$current" | grep -qx "$want"; then
-    say "  (already $want — no relabel, no comment)"
+  issue_status_set "$n" "$want" --repo "$GH_REPO" >/dev/null 2>&1 || return 0
+  if [ "${ISSUE_STATUS_ADDED:-0}" -eq 0 ]; then
+    say "  (already $want — no comment)"
     return 0
   fi
-
-  # Built as a flat string, not an array: macOS ships bash 3.2, where expanding
-  # an empty array under `set -u` is itself an error.
-  drop=""
-  while IFS= read -r l; do
-    case "$l" in
-      status:*) [ "$l" = "$want" ] || drop="$drop --remove-label $l" ;;
-    esac
-  done <<<"$current"
-
-  # shellcheck disable=SC2086  # $drop is a built flag list, deliberately split
-  gh issue edit "$issue" --repo "$GH_REPO" \
-    $drop --add-label "$want" >/dev/null 2>&1
-  [ -n "$body" ] && gh issue comment "$issue" --repo "$GH_REPO" --body "$body" >/dev/null 2>&1
+  [ -n "$body" ] && gh issue comment "$n" --repo "$GH_REPO" --body "$body" >/dev/null 2>&1
   return 0
 }
 

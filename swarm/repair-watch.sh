@@ -261,7 +261,7 @@ open_prs() {
 stop_sticky() { # <pr> <ticket> <reason>
   grep -q "STOP #$1 " <<< "$(grep "^$(swarm_day)" "$LOG" 2>/dev/null)" && return 0
   if [ "$DRY" = 1 ]; then echo "WOULD STOP #$1 ($2): 3 repairs in 24h and still $3"; return 0; fi
-  swarm_gh issue edit "$2" --repo "$REPO_SLUG" --add-label "$LBL_NEEDS_HUMAN" >/dev/null 2>&1
+  issue_status_set "$2" "$LBL_NEEDS_HUMAN" >/dev/null 2>&1
   swarm_gh issue comment "$2" --repo "$REPO_SLUG" --body \
     "**Stopped after 3 repairs in 24 hours** and still: $3. Labelled \`$LBL_NEEDS_HUMAN\`, so no agent is sent again until a person looks and removes the label." >/dev/null 2>&1
   say "STOP #$1 ($2): 3 repairs in 24h and still $3 — labelled $LBL_NEEDS_HUMAN"
@@ -288,7 +288,7 @@ section_unblock() {
     done
     [ "$open" = 0 ] || continue
     if [ "$DRY" = 1 ]; then echo "WOULD unblock #$B (every parent closed)"; continue; fi
-    swarm_gh issue edit "$B" --repo "$REPO_SLUG" --remove-label "$LBL_BLOCKED" --add-label "$LBL_READY" >/dev/null 2>&1 &&
+    issue_status_set "$B" "$LBL_READY" >/dev/null 2>&1 &&
     swarm_gh issue comment "$B" --repo "$REPO_SLUG" --body "Unblocked: every parent has merged. Back in the queue." >/dev/null 2>&1
     say "unblocked #$B"
   done <<< "$held"

@@ -26,12 +26,7 @@ until labels=$(gh_call issue view "$T" --repo "$REPO_SLUG" --json labels -q '.la
   sleep "$DELAY"
 done
 if printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST"; then
-  drop=""
-  while IFS= read -r l; do
-    case "$l" in "$STATUS_PREFIX"*) [ "$l" = "$LBL_READY" ] || drop="$drop --remove-label $l" ;; esac
-  done <<<"$labels"
-  # shellcheck disable=SC2086  # $drop is a built flag list, deliberately split
-  gh issue edit "$T" --repo "$REPO_SLUG" $drop --add-label "$LBL_READY" >/dev/null 2>&1
+  issue_status_set "$T" "$LBL_READY" >/dev/null 2>&1
   gh issue comment "$T" --repo "$REPO_SLUG" --body "PR #$PR merged and fixed part of this polish list. The list closes on its own once every item is ticked; until then its free items wait for the next ticket for this screen." >/dev/null 2>&1
   echo "polish list #$T left open"; exit 0
 fi

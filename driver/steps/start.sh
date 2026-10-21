@@ -290,10 +290,8 @@ driver_step_start() { # <ticket>
   # this worktree's dev servers and build caches.
   bash "$CL" update "$t" worktree="$wt" branch="$branch" \
     ${CLAIM_RUN_ID:+run_id="$CLAIM_RUN_ID"} ${CLAIM_RUN_LOG:+run_log="$CLAIM_RUN_LOG"} >/dev/null 2>&1 || true
-  # status:parked comes off as well as status:ready: a resumed park that kept it
-  # would read as stopped on a board while an agent is building it.
-  swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-    --remove-label "$LBL_READY" --remove-label "$LBL_PARKED" \
-    --add-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  # Every other status comes off: a resumed park that kept status:parked read as
+  # stopped, and a kept status:in-review as waiting, while an agent built it.
+  issue_status_set "$t" "$LBL_CLAIMED" >/dev/null 2>&1 || true
   return "$DRIVER_OK"
 }

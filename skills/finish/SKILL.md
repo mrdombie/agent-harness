@@ -1221,8 +1221,7 @@ if [ "$ISSUE_NUM" != "null" ]; then
   IS_EPIC=$(echo "$ISSUE_META" | jq -r '[.labels[].name] | index("epic")' 2>/dev/null)
   if [ "$ISSUE_STATE" = "CLOSED" ] && [ "$IS_EPIC" != "null" ] && [ -n "$IS_EPIC" ]; then
     gh issue reopen "$ISSUE_NUM" --repo "$REPO_SLUG" 2>&1 | tail -1
-    gh issue edit "$ISSUE_NUM" --repo "$REPO_SLUG" \
-      --remove-label "$LBL_CLAIMED" --add-label "$LBL_READY" 2>&1 | tail -1
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$ISSUE_NUM" "$LBL_READY" 2>&1 | tail -1
     gh issue comment "$ISSUE_NUM" --repo "$REPO_SLUG" --body \
       "**Auto-reopened by /agent-harness:finish.** GitHub closed this on PR #$PR_NUMBER merge, but the \`epic\` label means this is a multi-phase parent — the other phases still need claiming. Flipped back to \`$LBL_READY\`. Don't manually close until every phase has shipped." 2>&1 | tail -1
     EPIC_REOPENED="yes"
@@ -1244,7 +1243,7 @@ TOOLS=$(toolkit_tools) || exit 1
 UNBLOCKED=$("$TOOLS/scripts/auto-promote-gated-children.sh" "$CLOSED_NUM" "$MERGE_SHA" 2>&1 | grep '^unblocked ' | awk '{print $2}' | tr '\n' ' ')
 ```
 
-For a partial (human-blocker case): leave the issue open, post the merge comment but flip the label to `$LBL_IN_REVIEW` (in-review) or `$LBL_BLOCKED` (blocked). The auto-promote step is still safe to run — it only acts on `$LBL_GATED` (gated) siblings, which a partial isn't.
+For a partial (human-blocker case): leave the issue open, post the merge comment but flip the label to `$LBL_IN_REVIEW` (in-review) or `$LBL_BLOCKED` (blocked) with `bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$ISSUE_NUM" "$LBL_BLOCKED"`, which takes every other status off — never `gh issue edit --add-label` a status. The auto-promote step is still safe to run — it only acts on `$LBL_GATED` (gated) siblings, which a partial isn't.
 
 **7e. (removed) — promoting `develop → uat` is the review gate's job, not `/agent-harness:finish`'s.**
 

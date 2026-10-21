@@ -585,8 +585,8 @@ Then mirror the state onto GitHub for human visibility. This is bookkeeping,
 not the claim — if it fails, you still own the ticket:
 
 ```bash
-gh issue edit "$TICKET_KEY" --repo "$REPO_SLUG" \
-  --remove-label "$LBL_READY" --add-label "$LBL_CLAIMED" 2>/dev/null || true
+# Every other status comes off with it — never add a status label by hand.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$TICKET_KEY" "$LBL_CLAIMED" 2>/dev/null || true
 node "$(git rev-parse --show-toplevel)/scripts/sync-project-board.js" >/dev/null 2>&1 || true   # the board mirrors the labels
 ```
 
