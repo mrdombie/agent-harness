@@ -98,7 +98,21 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
        && ! driver_take_origin "$t" "$wt" "$branch" "origin/$INTEGRATION_BRANCH"; then
       driver_say "   park: origin's $branch has an earlier run's commits that conflict in $DRIVER_TAKE_WHY — not merged"
     fi
-    if [ "$(driver_state_get "$t" mode)" = repair ]; then
+    local held_pushed=0
+    if [ "$(driver_state_get "$t" mode)" = repair ] && _driver_park_held "$(driver_state_get "$t" pr)"; then
+      # A HELD PR CANNOT MERGE ON A PUSH: the hold label keeps its required approval
+      # check red whatever is armed, so the repair is pushed for CI and the critic.
+      if driver_push "$t" "$wt" "$branch" park; then
+        pushed=1; held_pushed=1
+        repair_note="This repair was pushed: pull request #$(driver_state_get "$t" pr) carries \`${HOLD_LABEL:-needs:human-approval}\`, so its approval check stays red and the push cannot merge it. CI and the critic re-run on it."
+        driver_say "   park: the repair is pushed — PR #$(driver_state_get "$t" pr) carries ${HOLD_LABEL:-needs:human-approval}, so a push cannot merge it"
+      else
+        driver_say "   park: the branch could not be pushed: $DRIVER_PUSH_WHY"
+        bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
+        [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
+        _driver_park_strand "$t" "$wt" "$branch"
+      fi
+    elif [ "$(driver_state_get "$t" mode)" = repair ]; then
       # A REPAIR'S PARK IS NOT PUSHED. Its pull request is usually ready with
       # auto-merge armed, so a push there is a merge — of the work the park exists
       # to stop. It stays committed in the tree, and bundled beside it.
@@ -122,7 +136,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
     fi
   fi
 
-  if [ "$pushed" -eq 1 ]; then
+  if [ "$pushed" -eq 1 ] && [ "${held_pushed:-0}" -eq 0 ]; then
     swarm_gh pr create --repo "$REPO_SLUG" --draft \
       --base "$INTEGRATION_BRANCH" --head "$branch" \
       --title "#$t: parked — $reason" \
@@ -264,6 +278,14 @@ _driver_park_bundle() { # <ticket> <tree> <branch>
 # _driver_park_strand <ticket> <tree> <branch> — the commits the push could not hand
 # over, to refs/stranded/ on origin (stranded.sh). A bundle is on this machine's disk
 # only. Sets park_ref for the brief.
+# _driver_park_held <pr> — 0 when a fresh read shows the PR carries the hold label, whose
+# required approval check stays red until a person clears it; 1 otherwise or unreadable.
+_driver_park_held() {
+  [ -n "$1" ] || return 1
+  swarm_gh pr view "$1" --repo "$REPO_SLUG" --json labels 2>/dev/null \
+    | jq -e --arg h "${HOLD_LABEL:-needs:human-approval}" 'any(.labels[]?; .name == $h)' >/dev/null 2>&1
+}
+
 _driver_park_strand() {
   local n
   n=$(git -C "$2" rev-list --count "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)
