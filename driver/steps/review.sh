@@ -264,10 +264,12 @@ _driver_review_touched() {
 # there. No screen resolves, or the list cannot be written: it is kept as a note under
 # "Minor, deferred" in the PR, still not blocking. Either way it is recorded in
 # steps/review.deferred.jsonl. Builds and repairs count their own rounds the same way.
+# [late] replaces the round's blocking set and [cite] is added to each list entry: the
+# signed-off hold defers a screen's Minors with both.
 _driver_review_defer() {
-  local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0
+  local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0 cite="${5:-}"
   local pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" sf="${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}"
-  late=$(driver_blocking_grades "$round")
+  late="${4:-$(driver_blocking_grades "$round")}"
   # What does not block this round and is not a Nit is deferred — read off this round's
   # set alone. Comparing it with round 1's set skipped the whole step when an operator
   # configured both the same, and the reviewer's BLOCKED then stood over two Minors.
@@ -288,7 +290,7 @@ _driver_review_defer() {
         # The screen the finding's own file maps to, before the ticket's own screen labels.
         slug=$(bash "$sf" screens "$t" "$tmp" 2>/dev/null | L="$labels" awk 'BEGIN { n = split(ENVIRON["L"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") s[a[i]] = 1 } NF && !($0 in s) { print; exit }')
         [ -n "$slug" ] || slug=$(printf '%s\n' "$labels" | sed '/^$/d' | head -1)
-        text=$(printf '%s' "$x" | jq -r --arg r "$round" --arg t "$t" '"[\(.grade | ascii_downcase | (.[0:1] | ascii_upcase) + .[1:])] \(.summary // "") — \(.file // "?"):\(.line // "?") (review round \($r) of #\($t))"')
+        text=$(printf '%s' "$x" | jq -r --arg r "$round" --arg t "$t" --arg c "${cite:+, $cite}" '"[\(.grade | ascii_downcase | (.[0:1] | ascii_upcase) + .[1:])] \(.summary // "") — \(.file // "?"):\(.line // "?") (review round \($r) of #\($t)\($c))"')
         if [ -n "$slug" ] && bash "$pl" add "$slug" "$text" >/dev/null 2>&1; then list="$slug"; fi ;;
     esac
     if [ -n "$list" ]; then put=$((put + 1)); else kept=$((kept + 1)); fi
@@ -316,7 +318,9 @@ _driver_review_verdict_off_grades() {
 # _driver_review_hold_signed <ticket> <review.json> — on a repair of a PR the owner
 # signed off, a Critical or Major on a screen file is the owner's call: a fix there
 # changes pixels after the sign-off. It parks for the owner, naming them, and the
-# verdict is left as the reviewer gave it. Signed is approval-kept's signed-head (a
+# verdict is left as the reviewer gave it. A Minor there is polish, never a "cannot
+# merge without": it goes on its screen's polish list citing the PR, and the repair
+# carries on with no park and no pixel change (the owner's rule; #13339 parked on one). Signed is approval-kept's signed-head (a
 # hold removed on GitHub counts); unreadable counts as signed, the cautious side.
 # Screens are #234's one screen set (approval-kept.sh screens: surfacePaths plus
 # extraScreens), never "every file" while surfacePaths is set.
@@ -331,7 +335,20 @@ _driver_review_hold_signed() {
   [ "${screens:-[]}" != "[]" ] || return 0
   arc=0; bash "$ak" signed-head "$pr" >/dev/null 2>&1 || arc=$?
   [ "$arc" -eq 1 ] && return 0
+  local must polish minors
+  must=$(driver_blocking_grades 2)
+  polish=$(driver_blocking_grades "$(driver_state_count "$t" review)" | tr ' ' '\n' | grep -vxF -f <(printf '%s\n' $must) | tr '\n' ' ' | sed 's/ $//')
+  minors=$(jq -c --argjson s "$screens" --arg p "$polish" '[.findings[]? | select((.grade // "") as $g | ($p | split(" ")) | index($g)) | select((.file // "") as $x | $s | index($x))]' "$f")
+  if [ -n "$polish" ] && [ "$(printf '%s' "$minors" | jq length)" -gt 0 ]; then
+    printf '%s' "$minors" | jq '{verdict: "BLOCKED", findings: .}' > "$f.signed"
+    _driver_review_defer "$t" "$f.signed" "$(driver_state_count "$t" review)" "$must" "found on PR #$pr after its sign-off"
+    rm -f "$f.signed"
+    jq --argjson s "$screens" --arg p "$polish" '.findings = [(.findings // [])[] | select(((.grade // "") as $g | ($p | split(" ")) | index($g)) and ((.file // "") as $x | $s | index($x)) | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
+    _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$(driver_state_count "$t" review)")" 1
+    driver_say "   review: PR #$pr is signed off — its screens' polish goes on their lists, not into this repair"
+  fi
   held=$(jq -r --argjson s "$screens" "[.findings[]? | $(_driver_class blocking) | select((.file // \"\") as \$x | \$s | index(\$x)) | \"\\(.grade) \\(.file):\\(.line // \"?\") \\(.summary // \"\")\"] | join(\"; \")" "$f")
+  [ -n "$held" ] || return 0
   driver_say "✋ review: PR #$pr $([ "$arc" -eq 2 ] && echo 'may be signed off (its sign-offs could not be read)' || echo 'is signed off'), and the review graded its screens: $held — a fix would change pixels after the sign-off, so it parks for the owner."
   driver_state_set "$t" park_note "Needs the owner: PR #$pr's screens were signed off$([ "$arc" -eq 2 ] && echo ' (or its sign-offs could not be read)'), and the review of this repair found on them: $held. Either each becomes a follow-up ticket, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
   driver_state_set "$t" park_cause person

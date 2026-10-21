@@ -349,6 +349,47 @@ fix_ai review "$majmin" superpowers:requesting-code-review
 repair_rec 135; driver_state_bump 135 review
 rc=0; driver_step_review 135 >/dev/null 2>&1 || rc=$?
 want "repair round 2: a Major still blocks"      "30" "$rc"
+
+echo "--- on a signed-off PR, a Minor on its screens goes on the polish list: no park, no fix round ---"
+# The owner's rule: after sign-off a screen's review note is polish, never a call for
+# the owner. #13339 parked on one Minor (a HelpTip bubble off a 375px phone).
+jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+cat > "$BIN/approval-kept" <<SH
+#!/usr/bin/env bash
+case "\$1" in
+  signed-head) echo 1111111111111111111111111111111111111111 ;;
+  screens) exec bash "$HERE/../../scripts/approval-kept.sh" screens ;;
+esac
+SH
+chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
+: > "$FIX/pl.adds"; : > "$GH_LOG"
+repair_rec 150
+fix_ai review "$minor" superpowers:requesting-code-review
+out=$(driver_step_review 150 2>&1); rc=$?
+want "repair round 1, one Minor on a signed screen: it carries on" "0" "$rc"
+want "and parks for nobody"                      "" "$(driver_state_get 150 park_note)"
+want_in "the Minor is on its screen's polish list, citing the PR" '^add settings \[Minor\] the save row sits 4px off the scale — screens/Settings.tsx:12 .*PR #88' "$(cat "$FIX/pl.adds")"
+want "it leaves the findings, so no fix round touches the screen" "0" "$(jq '.findings | length' "$(driver_state_dir 150)/steps/review.json")"
+want "and the verdict ships"                     "SHIP" "$(jq -r .verdict "$(driver_state_dir 150)/steps/review.json")"
+want "recorded as deferred"                      "settings" "$(jq -r .list "$(driver_state_dir 150)/steps/review.deferred.jsonl")"
+want_not_in "and nothing is filed"               'issue create' "$(cat "$GH_LOG")"
+: > "$FIX/pl.adds"
+repair_rec 151
+fix_ai review '{"verdict":"BLOCKED","findings":[
+  {"file":"screens/Settings.tsx","line":12,"grade":"minor","summary":"the save row sits 4px off the scale","reason":"it looks misaligned"},
+  {"file":"lib/b.ts","line":3,"grade":"minor","summary":"the toast wording is stiff","reason":"reads oddly"}]}' superpowers:requesting-code-review
+rc=0; driver_step_review 151 >/dev/null 2>&1 || rc=$?
+want "a Minor off the screens is still fixed in round 1" "30" "$rc"
+want "only the screen's Minor went on a list"    "1" "$(grep -c . "$FIX/pl.adds")"
+want "the code Minor is what is left to fix"     "lib/b.ts" "$(jq -r '[.findings[].file] | join(" ")' "$(driver_state_dir 151)/steps/review.json")"
+: > "$FIX/pl.adds"
+repair_rec 152
+fix_ai review "$screen" superpowers:requesting-code-review
+out=$(driver_step_review 152 2>&1); rc=$?
+want "a Major on a signed screen still parks for the owner" "24" "$rc"
+want_in "naming it"                              '^Needs the owner: PR #88.*major screens/Home.tsx' "$(driver_state_get 152 park_note)"
+want "and nothing goes on a list"                "" "$(cat "$FIX/pl.adds")"
+jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 unset DRIVER_APPROVAL_KEPT DRIVER_SCREEN_FINDINGS DRIVER_POLISH_LIST
 
 exit $FAILED
