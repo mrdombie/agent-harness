@@ -111,6 +111,8 @@ a{color:inherit}
   <section class="headline" id="headline"><div class="ptitle">Release progress</div><div class="big">Release: counting…</div></section>
   <h2>Today</h2>
   <div class="today" id="today"><span class="empty">Not read yet.</span></div>
+  <h2 id="mergedhead">Merged today</h2>
+  <div id="merged"></div>
   <h2 id="buildinghead">Building now</h2>
   <div id="building"></div>
   <h2 id="needshead">Needs you</h2>
@@ -149,8 +151,11 @@ function holdBanner(h){
 const STEP_WORD = { 'Set up': 'Setting up', Plan: 'Planning', Build: 'Building', Check: 'Checking',
   Review: 'Being reviewed', PR: 'Opening the pull request', Merged: 'Merging',
   'Back on the PR': 'Going back to the pull request', Repair: 'Repairing', Fix: 'Fixing', Record: 'Recording', Push: 'Pushing the fix' }
-function stepText(p){
-  if (!p || !p.of || (p.unreadable || []).length === p.of) return '<b>Starting</b>'
+// The step as the record that knows it names it: the driver's state, else the claim's step.
+function stepText(a){
+  const p = a.progress
+  if (a.stepFrom === 'claim' || (!a.stepFrom && a.claimStep)) return `<b>${esc(CLAIM_WORD[a.claimStep] || a.claimStep)}</b>`
+  if (!a.stepFrom || !p || !p.of) return (a.startedAgoMin ?? 0) < 5 ? '<b>Starting</b>' : '<b>Step not reported yet</b>'
   const name = (p.steps || [])[p.step - 1]?.name || ''
   return `${p.repair ? 'Repair · ' : ''}${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
 }
@@ -164,22 +169,33 @@ const machineOf = (h) => !h ? 'Machine not recorded' : h === thisHost ? `This ma
 const CLAIM_WORD = { start: 'Setting up', plan: 'Planning', build: 'Building', 'self-check': 'Checking', review: 'Being reviewed',
   ship: 'Opening the pull request', reenter: 'Going back to the pull request', repair: 'Repairing', fix: 'Fixing', push: 'Pushing the fix',
   'usage-hold': 'Waiting for usage to reset' }
+// Another machine's run, from its heartbeat: coloured like a local row while the
+// heartbeat is fresh; the grey ring only when the machine itself has stopped reporting.
+const quietCls = (q) => q < 90 ? 'ok' : q < 600 ? 'slow' : 'stuck'
 function remoteRow(a){
   const step = a.claimStep ? `<b>${esc(CLAIM_WORD[a.claimStep] || a.claimStep)}</b>` : ''
   const time = a.startedAgoMin != null ? `claimed ${esc(dur(a.startedAgoMin))} ago` : ''
-  return `<div class="row build remote"><span class="dot away" title="activity is only visible on ${esc(a.host)}"></span><div class="main">
+  const away = a.beatStale !== false
+  // A fresh heartbeat that names no activity for this run (an older harness there) is not a stuck run.
+  const cls = away || a.quietSec == null ? 'away' : quietCls(a.quietSec)
+  const last = a.steps?.length ? a.steps[a.steps.length - 1].text : ''
+  const line = a.beatStale === true ? `${esc(a.host)} not reporting since ${esc(a.beatTime || 'its last heartbeat')}`
+    : away ? `No heartbeat from ${esc(a.host)} on record`
+    : a.quietSec == null ? `${esc(a.host)} reports no activity for this run yet`
+    : last ? esc(last) : 'No activity reported yet'
+  const tip = cls === 'away' ? 'no activity reported from its machine' : `last active ${ago(a.quietSec)}`
+  return `<div class="row build remote"><span class="dot ${cls}" title="${esc(tip)}"></span><div class="main">
     <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
     <div class="step">${[machineOf(a.host), step, time].filter(Boolean).join(' · ')}</div>
-    <div class="line">Progress and activity show on ${esc(a.host)} only</div></div></div>`
+    <div class="line">${line}</div></div></div>`
 }
 function buildRow(a){
   if (a.remote) return remoteRow(a)
-  const q = a.quietSec ?? 99999
-  const cls = q < 90 ? 'ok' : q < 600 ? 'slow' : 'stuck'
+  const cls = quietCls(a.quietSec ?? 99999)
   const last = a.steps?.length ? a.steps[a.steps.length - 1].text : 'No activity yet'
   return `<div class="row build"><span class="dot ${cls}" title="last active ${esc(ago(a.quietSec))}"></span><div class="main">
     <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
-    <div class="step">${machineOf(a.host)} · ${stepText(a.progress)} · ${esc(dur(a.startedAgoMin))} running</div>
+    <div class="step">${machineOf(a.host)} · ${stepText(a)} · ${esc(dur(a.startedAgoMin))} running</div>
     <div class="line" title="${esc(last)}">${esc(last)}</div></div></div>`
 }
 const num = (n) => Number(n).toLocaleString()
@@ -299,28 +315,38 @@ function fleetLines(f){
   return `<br>Machines${f.minHarness ? ` (harness floor ${esc(f.minHarness)})` : ''}:` + f.hosts.map((h) => `<br>${line(h)}`).join('')
 }
 
-// Where the ticket stands now, not how its last run ended: a run that parked on a
-// question and went back on the queue is not a failure. Only a true stop is red.
+// Where the ticket stands now, read from GitHub, not how its last run ended: a run
+// that handed off a pull request is not a ticket that merged.
 const TONES = { ok: 'ok', warn: 'warn', bad: 'bad', neutral: 'neutral' }
+const prLink = (n) => repo && n ? `<a href="https://github.com/${esc(repo)}/pull/${esc(n)}" target="_blank" rel="noopener">PR #${esc(n)}</a>` : ''
 function nowPill(d){
-  const n = d.now || { text: d.exit === 0 ? 'Finished' : 'Stopped', tone: d.exit === 0 ? 'neutral' : 'bad' }
-  const [head, ...rest] = String(n.text).split(' — ')
-  const pr = n.pr && repo ? ` — <a href="https://github.com/${esc(repo)}/pull/${esc(n.pr)}" target="_blank" rel="noopener">PR #${esc(n.pr)}</a>` : ''
-  const tail = pr || (rest.length ? `<div class="note">${esc(rest.join(' — '))}</div>` : '')
-  return `<span class="pill ${TONES[n.tone] || 'neutral'}">${esc(head)}</span>${tail}`
+  const n = d.now || { text: d.exit === 0 ? 'Run ended' : 'Stopped', tone: d.exit === 0 ? 'neutral' : 'bad' }
+  const pr = prLink(d.pr || n.pr)
+  const detail = n.detail ? `<div class="note">${esc(n.detail)}</div>` : ''
+  return `<span class="pill ${TONES[n.tone] || 'neutral'}">${esc(n.text)}</span>${pr ? `<div class="note">${pr}</div>` : ''}${detail}`
 }
 function ranOut(d){
-  if (d.outcome === 'error_max_budget_usd') return 'Last run ran out of budget'
-  if (d.exit === 0) return 'Last run finished'
+  if (d.lastRun === 'out-of-budget') return 'Last run ran out of budget'
+  if (d.exit === 0) return 'Last run ended'
   return `Last run ended (exit ${esc(d.exit)})`
 }
 function doneRow(d){
   const link = repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(d.ticket)}" target="_blank" rel="noopener">#${esc(d.ticket)}</a>` : `#${esc(d.ticket)}`
+  const fin = d.finishedAt ? `finished ${esc(when(d.finishedAt))}` : ago(d.endedAgoMin*60)
   return `<tr>
       <td>${nowPill(d)}</td>
       <td><b>${esc(d.title)}</b> <span class="sub">${link}</span><div class="ran">${ranOut(d)}</div><details><summary>What it reported</summary><div class="said" style="margin-top:6px">${esc(d.summary || 'No report.')}</div></details></td>
       <td class="num">${d.cost != null ? '$'+d.cost.toFixed(0) : '—'}</td>
-      <td class="num">${ago(d.endedAgoMin*60)}</td></tr>`
+      <td class="num">${fin}</td></tr>`
+}
+// Merged today: every pull request merged into the trunk since midnight, with its link and time.
+function mergedList(m){
+  if (!m) return '<p class="empty">Not read yet.</p>'
+  if (!m.items.length) return '<p class="empty">Nothing merged yet today.</p>'
+  const row = (i) => `<div class="row merged"><div class="main"><div class="title">${esc(i.title || `Pull request ${i.number}`)}</div>
+    <div class="sub">${prLink(i.number)}${i.time ? ` · merged ${esc(i.time)}` : ''}</div></div></div>`
+  const more = m.total > m.items.length ? `<p class="sub">${num(m.total - m.items.length)} more not listed</p>` : ''
+  return `<div class="rows">${m.items.map(row).join('')}</div>${more}`
 }
 
 function render(s){
@@ -331,8 +357,10 @@ function render(s){
   pf.hidden = !np; pf.textContent = np ? `Process fixes first: ${np}` : ''
   document.getElementById('headline').innerHTML = headline(s.board, s.launch)
   const td = s.launch?.today
-  document.getElementById('today').innerHTML = todayLine(td
-    ? { merged: td.merged, done: td.done, made: td.added, delta: td.done - td.added } : s.board?.today)
+  const tl = td ? { merged: td.merged, done: td.done, made: td.added, delta: td.done - td.added } : s.board?.today
+  document.getElementById('today').innerHTML = todayLine(tl && s.mergedToday ? { ...tl, merged: s.mergedToday.total } : tl)
+  document.getElementById('mergedhead').textContent = s.mergedToday ? `Merged today · ${s.mergedToday.total}` : 'Merged today'
+  document.getElementById('merged').innerHTML = mergedList(s.mergedToday)
   thisHost = s.thisHost || ''
   const building = [...s.live, ...(s.elsewhere || [])]
   document.getElementById('buildinghead').textContent = building.length ? `Building now · ${building.length}` : 'Building now'
