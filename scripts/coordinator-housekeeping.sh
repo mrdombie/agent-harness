@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # coordinator-housekeeping.sh — the slow half of a coordinator tick: the merge
-# lane, reconcile, the sweeps, the disk pass and the judge. coordinator-tick.sh
+# lane, reconcile, the sweeps, the disk pass, the judge, and the host's own shared
+# state (its shared install, its stranded worktrees). coordinator-tick.sh
 # starts it in the background once its starts are made, so none of it delays a
 # start. One at a time: a housekeeping still running means this one exits.
 #
@@ -103,4 +104,10 @@ fi
 # ---- 8. judgement ------------------------------------------------------------
 if [ -n "$GH_WAIT" ]; then say "judge: $GH_WAIT — next pass"
 else bash "$JUDGE" >> "$COORD_LOG" 2>&1 || say "judge exited $?"; fi
+# ---- 9. this host's own shared state -----------------------------------------
+# What only a person kept current: the shared clone's install at the trunk's lockfile
+# (shared-install.sh), and worktree commits on no ref of origin (stranded-sweep.sh).
+for own in "${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}" "${COORDINATOR_STRANDED_SWEEP:-$SELF_DIR/stranded-sweep.sh}"; do
+  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"
+done
 say "housekeeping: done"
