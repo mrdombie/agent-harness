@@ -901,4 +901,44 @@ want "origin's branch is untouched"      "$early" "$(git -C "$FIX/origin" rev-pa
 want "and the tree is left clean"        "" "$(git -C "$FIX/wt192" status --porcelain)"
 want "with no merge half-done"           "" "$(test -f "$(git -C "$FIX/wt192" rev-parse --git-path MERGE_HEAD)" && echo merging)"
 
+echo "--- a trunk merge's squash commits carry their own critic's verdict: not this run's ---"
+# Another PR's squash lands on origin's develop with its real critic trailer, this run
+# merges develop in, and this tree's origin/develop is older than that merge.
+other="$FIX/other-trunk"
+git clone -q -b develop "$FIX/origin" "$other"
+git -C "$other" -c user.name=O -c user.email=o@example.invalid commit -q --allow-empty \
+  -m "polish(home): another PR (#9001)" -m "Design-Critic: SHIP (agent) 0123456789ab"
+git -C "$other" push -q origin HEAD:develop
+squash=$(git -C "$other" rev-parse HEAD)
+trunk_merge() { # <ticket> — merge origin's develop in, leaving origin/develop stale
+  git -C "$FIX/wt$1" fetch -q "$FIX/origin" "+refs/heads/develop:refs/tmp/dev$1"
+  git -C "$FIX/wt$1" merge -q --no-ff --no-verify -m "chore(merge): develop into the branch" "refs/tmp/dev$1"
+}
+: > "$GH_LOG"
+setup_wt 181
+trunk_merge 181
+want "the fixture's origin/develop is stale"   "no" \
+  "$(git -C "$FIX/wt181" merge-base --is-ancestor "$squash" origin/develop && echo yes || echo no)"
+driver_state_put 181 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 181 review
+for st in start plan build self-check review record; do driver_state_done 181 "$st"; done
+rc=0; out=$(driver_step_ship 181 2>&1) || rc=$?
+want_not_in "the trunk's verdict is not called this run's" 'committed a design verdict' "$out"
+want "it ships"                                "0" "$rc"
+want "with the trunk merge on origin"          "yes" \
+  "$(git -C "$FIX/origin" merge-base --is-ancestor "$squash" tkt-181/work 2>/dev/null && echo yes)"
+
+echo "--- after a trunk merge, a verdict this run committed is still refused ---"
+: > "$GH_LOG"
+setup_wt 182
+trunk_merge 182
+git -C "$FIX/wt182" commit -q --allow-empty -m "chore: design-critic" -m "Design-Critic: SHIP (agent) f9ad4e1a738d"
+own=$(git -C "$FIX/wt182" rev-parse --short HEAD)
+driver_state_put 182 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 182 review
+for st in start plan build self-check review record; do driver_state_done 182 "$st"; done
+rc=0; out=$(driver_step_ship 182 2>&1) || rc=$?
+want "it refuses"                              "24" "$rc"
+want_in "naming this run's commit"             "$own chore: design-critic" "$out"
+want_not_in "and only that one"                'another PR' "$out"
+want "and nothing reached origin"              "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-182/work 2>/dev/null)"
+
 exit $FAILED
