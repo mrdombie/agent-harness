@@ -123,6 +123,24 @@ case "$REAL_DATA_FROM" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) RE
 . "$SELF_DIR/branch-ticket.sh" 2>/dev/null || true
 . "$SELF_DIR/evidence-plan.sh" 2>/dev/null || true
 
+# THE BASELINE ROUTE (the owner, 2026-10-21): pictures and this critic are for new or
+# redesigned screens only. An existing screen is diffed by the project's CI against its
+# last approved shots, and CI posts its design status. A PR CI put on that route — its body
+# carries BASELINE_MARK and neither it nor its ticket is labelled one of
+# design.baselineRoute.pictureLabels — is never judged, and nothing is posted on it. CI
+# sends a route with no approved shot to the picture route, and those are judged as before.
+BASELINE_ON=$(jq -r '.design.baselineRoute.enabled // false' "$HARNESS_CFG" 2>/dev/null)
+PICTURE_LABELS=$(jq -c '.design.baselineRoute.pictureLabels // ["screen:new", "screen:redesign"]' "$HARNESS_CFG" 2>/dev/null)
+[ -n "$PICTURE_LABELS" ] || PICTURE_LABELS='["screen:new", "screen:redesign"]'
+BASELINE_MARK='<!-- screen-route: baseline -->'
+# baseline_route <pr json> — 0 when CI put the PR on the baseline route (labels: PR and ticket).
+baseline_route() {
+  [ "$BASELINE_ON" = true ] || return 1
+  jq -e --arg m "$BASELINE_MARK" --argjson pl "$PICTURE_LABELS" '
+      ((.body // "") | contains($m))
+      and ([(.labels // [])[]?.name, (.ticketLabels // [])[]?] | any(. as $l | $pl | index($l)) | not)' >/dev/null 2>&1 <<<"$1"
+}
+
 die() { echo "critic-judge: $*" >&2; exit 2; }
 say() { echo "critic-judge: $*"; swarm_log "$JDIR/judge.log" "$*" 2>/dev/null || true; }
 clip() { printf '%s' "$*" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' | cut -c1-139; }
@@ -280,9 +298,19 @@ run() { # <pr>
   [ -z "${HARNESS_DRIVER_RUN:-}" ] || die "a build run ($HARNESS_DRIVER_RUN) cannot judge screens: the verdict comes from a critic the build did not start"
   [ "${CRITIC_JUDGE_LAUNCHER:-}" = coordinator ] || [ "${CRITIC_JUDGE_MANUAL:-}" = 1 ] \
     || die "the independent critic is started by the coordinator (or by a person with CRITIC_JUDGE_MANUAL=1), never by a build"
-  j=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,isDraft,state,headRefName,body 2>/dev/null) || die "could not read PR #$pr"
+  j=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,isDraft,state,headRefName,body,labels 2>/dev/null) || die "could not read PR #$pr"
   head=$(jq -r .headRefOid <<<"$j"); draft=$(jq -r .isDraft <<<"$j")
   t=$(branch_ticket "$(jq -r '.headRefName // ""' <<<"$j")" 2>/dev/null)
+  if [ "$BASELINE_ON" = true ]; then
+    local tl='[]'
+    [ -z "$t" ] || tl=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[].name]' 2>/dev/null) || tl='["(unreadable)"]'
+    case "$tl" in '['*) : ;; *) tl='[]' ;; esac
+    # An unreadable ticket is judged: a label that could not be read may be a picture label.
+    if [ "$tl" != '["(unreadable)"]' ] && baseline_route "$(jq --argjson tl "$tl" '. + {ticketLabels: $tl}' <<<"$j")"; then
+      say "PR #$pr: an existing screen on the baseline route — CI diffs it against its last approved shots and posts its status; nothing judged, nothing posted"
+      return 3
+    fi
+  fi
   [ "$(jq -r .state <<<"$j")" = OPEN ] || { say "PR #$pr is not open — nothing to judge"; return 3; }
   [ "$draft" != true ] || { say "PR #$pr is a draft — CI photographs a PR only once it is ready"; return 3; }
 
@@ -522,10 +550,13 @@ run() { # <pr>
 due() {
   local prs pr head state rec
   prs=$(gh_open_prs "${CRITIC_JUDGE_PRS_MAX_AGE:-300}" 2>/dev/null) || return 0
-  printf '%s' "$prs" | jq -r --arg c "$CONTEXT" '
+  # A PR CI put on the baseline route is not due (BASELINE_MARK); `run` checks its ticket too.
+  printf '%s' "$prs" | jq -r --arg c "$CONTEXT" --arg on "$BASELINE_ON" --arg m "$BASELINE_MARK" --argjson pl "$PICTURE_LABELS" '
         .[] | select(.isDraft | not)
         | ([.statusCheckRollup[]? | select(.context == $c)] | last) as $s
         | select($s != null)
+        | select(($on == "true" and ((.body // "") | contains($m))
+                  and ([(.labels // [])[]?.name] | any(. as $l | $pl | index($l)) | not)) | not)
         | "\(.number)\t\(.headRefOid)\t\($s.state // "" | ascii_downcase)"' \
     | while IFS=$'\t' read -r pr head state; do
         grep -qxF "$pr	$head" "$JDIR/none.tsv" 2>/dev/null && relayed "$pr" "$head" && posted "$pr" "$head" && continue

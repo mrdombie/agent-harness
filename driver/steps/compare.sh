@@ -95,6 +95,15 @@ driver_step_compare() { # <ticket>
     driver_say "   compare: a $tier build — this change touches no screen ($why), so no picture and no compare"
     return "$DRIVER_OK"
   fi
+  # AN EXISTING SCREEN HAS NO PICTURE TO MATCH (tier.sh, the screen route): CI diffs its
+  # shots against the route's last approved shots after the push and decides the status.
+  local route rwhy
+  IFS=$'\t' read -r route rwhy <<<"$(driver_screen_route "$t")"
+  if [ "$route" = baseline ]; then
+    driver_state_set "$t" renders "(none — $rwhy. No picture binds it, so nothing is compared here; CI holds a visible difference for the PM)"
+    driver_say "   compare: $rwhy — no picture, no compare on this machine"
+    return "$DRIVER_OK"
+  fi
   if [ -z "$touched" ]; then
     driver_state_set "$t" renders \
       "(none — this change touches no file under this project's design.surfacePaths, so there is no screen to render)"

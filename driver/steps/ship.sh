@@ -272,7 +272,12 @@ _driver_ship_push_to_fix() {
 _driver_ship_tier_line() {
   local p; p=$(driver_state_get "$1" tier_promoted 2>/dev/null)
   case "$2" in
-    screen)  printf 'Change tier: screen — %s. Picture, compare, CI evidence, design critic and sign-off apply.' "$3" ;;
+    screen)
+      if [ "$(driver_state_get "$1" screen_route 2>/dev/null)" = baseline ]; then
+        printf 'Change tier: screen, existing screen — %s. Baseline route: CI diffs its shots against the last approved shots; a visible difference is held for the PM. No picture, compare or design critic.' "$3"
+      else
+        printf 'Change tier: screen — %s. Picture, compare, CI evidence, design critic and sign-off apply.' "$3"
+      fi ;;
     backend) printf 'Change tier: backend — %s. Full build and review; no picture, compare, evidence or design critic, and no sign-off hold.' "$3" ;;
     tooling) printf 'Change tier: tooling — %s. Checks, CI and one review round where only Critical and Major block; no design steps, no hold.' "$3" ;;
   esac
@@ -605,7 +610,11 @@ driver_step_ship() { # <ticket>
   if [ -n "$pr_n" ] && [ "$mode" != repair ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
   local routes="" required="" deferred tierline
-  if [ "$tier" = screen ]; then routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /'); required=$(_driver_ship_required "$t"); fi
+  if [ "$tier" = screen ]; then
+    routes=$(_driver_ship_routes "$t" "$wt" "$trunk" | sed 's/^/- /')
+    # The picture's shots are owed only on the picture route; the baseline route still names its routes.
+    [ "$(driver_screen_route "$t" | cut -f1)" = baseline ] || required=$(_driver_ship_required "$t")
+  fi
   tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
   deferred=$(_driver_ship_deferred "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
