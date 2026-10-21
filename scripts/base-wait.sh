@@ -3,7 +3,7 @@
 # Sourced by the repair and self-check steps, the coordinator tick and repair-watch,
 # after toolkit-env.sh (REPO_SLUG, STATE_DIR, CHECK_NEWEST_JQ).
 #
-# The standing answer (Maktura PM, 2026-10-21): "a red from a test this PR does not touch
+# The standing answer (the PM, 2026-10-21): "a red from a test this PR does not touch
 # that also fails on develop waits for develop's fix and is never repaired in the PR."
 # A red check is BASE-ONLY when all of these are read, never assumed:
 #   - its CI job log on the PR names the tests that failed, and none of them is a file the

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # repair-base-red.test.sh — a red the base branch has too waits for the base; it is never
-# repaired in the PR and never parked as a question. The PM's standing answer (Maktura,
+# repaired in the PR and never parked as a question. The PM's standing answer (the PM,
 # 2026-10-21): "a red from a test this PR does not touch that also fails on develop waits
 # for develop's fix and is never repaired in the PR." #13365, #13314 and #8476 parked on
 # the owner asking exactly that.
