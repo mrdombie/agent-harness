@@ -31,12 +31,12 @@ NOASK=$(transcript noask); ASKED=$(transcript asked)
 rm -rf "$MDIR"; t nag 'a decision left as "your call"' 'Two options here. Your call.' false s1 "$NOASK"
 rm -rf "$MDIR"; t nag 'the "worth your eye" tell'      'This one is worth your eye.'  false s2 "$NOASK"
 rm -rf "$MDIR"; t nag 'offering a choice in prose'     'Do you want me to merge it?'  false s3 "$NOASK"
-rm -rf "$MDIR"; t nag 'a NEXT block with a You row'    '▶️ NEXT
+rm -rf "$MDIR"; t quiet 'a NEXT block with a You row is a report (2026-10-21)' '▶️ NEXT
 | Who | What to do | Run |
 |---|---|---|
 | **You** | Approve the connections work | github.com/x |'                            false s4 "$NOASK"
 
-rm -rf "$MDIR"; t nag 'a 🔴 block, no tell words (2026-10-09)' '## 🔴 Feed and Comments
+rm -rf "$MDIR"; t quiet 'a 🔴 block, no tell words, is a report (2026-10-21)' '## 🔴 Feed and Comments
 
 | Thing | What it needs |
 |---|---|
@@ -102,7 +102,7 @@ VM='Runner is set up on this side.
 sudo ./svc.sh install && sudo ./svc.sh start
 ```'
 rm -rf "$MDIR"; t quiet 'a 🔴 "run this command on the VM" block'      "$VM"        false r2 "$NOASK"
-rm -rf "$MDIR"; t nag   'the control: the same 🔴 block, no command' "${VM%%\`\`\`*}" false r3 "$NOASK"
+rm -rf "$MDIR"; t quiet 'the same 🔴 block without the command is still a report' "${VM%%\`\`\`*}" false r3 "$NOASK"
 DONE='Merged the chip PR.
 
 ## 🔴 Your call stands
@@ -117,6 +117,30 @@ rm -rf "$MDIR"; t nag   'options listed with no ask'                  'Two ways 
 - **Option A** — merge now
 - **Option B** — wait for the icon set'                                                 false r8 "$NOASK"
 rm -rf "$MDIR"; t quiet 'one "Option 1" mention is not a list'         'Shipped Option 1 from the plan.' false r9 "$NOASK"
+# --- 2026-10-21: reports are not questions. Only the tells and a question to the
+#     operator fire; a report's shape (🔴, "Needs you", who it waits on) does not.
+RED='## 🔴 Billing
+
+The billing fix is in review. The chip PR waits on Dom'"'"'s sign-off.
+
+| Thing | State |
+|---|---|
+| Billing fix | review round 2 |'
+rm -rf "$MDIR"; t quiet 'a plain report with a 🔴 heading and no question'    "$RED"       false q1 "$NOASK"
+rm -rf "$MDIR"; t quiet 'a "Needs you" table that only reports'              '## Needs you
+
+| Thing | State |
+|---|---|
+| Chip PR | waiting on your sign-off |'                                                     false q2 "$NOASK"
+rm -rf "$MDIR"; t nag   '"This is your call: A or B?"'                         "$RED
+
+This is your call: A or B?"                                                             false q3 "$NOASK"
+rm -rf "$MDIR"; t nag   'a question to the operator, no tell phrase'           'The chip PR can merge now or wait for the icons. Which would you pick?' false q4 "$NOASK"
+rm -rf "$MDIR"; t nag   '"should I" left in prose'                             'Should I merge the chip PR now.' false q5 "$NOASK"
+rm -rf "$MDIR"; t nag   '"up to you" left in prose'                            'Weekly or daily is up to you.' false q6 "$NOASK"
+rm -rf "$MDIR"; t quiet 'a question not addressed to the operator'             'Why did CI fail? A flaky runner, now re-run.' false q7 "$NOASK"
+rm -rf "$MDIR"; t quiet 'a URL query string is not a question'                 'You can see it at https://x.dev/pr?you=1&tab=checks now.' false q8 "$NOASK"
+
 rm -rf "$MDIR"
 jq -nc --arg m 'Your call.' --arg p "$NOASK" '{session_id:"r10",stop_hook_active:false,last_assistant_message:$m,transcript_path:$p}' \
   | "$H" 2>"$TDIR/err" >/dev/null

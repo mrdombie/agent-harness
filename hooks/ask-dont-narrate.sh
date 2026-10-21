@@ -8,7 +8,7 @@
 # three places and still missed is not a memory problem; it needs enforcement.
 #
 # THE PROXY, NAMED: this uses "the closing message contains one of the operator's own
-# tells named in feedback_ask_dont_narrate_decisions, and no AskUserQuestion ran since the operator's last message" as a
+# tells, or a question to the operator, and no AskUserQuestion ran since the operator's last message" as a
 # stand-in for "a decision was left as prose". Those are not the same thing — a
 # decision phrased in words this does not match slips through, which is why the
 # tell list is the specific phrases they have called out rather than a guess at
@@ -53,44 +53,27 @@ LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
 [ -n "$LAST" ] || { say "exit0 empty-message"; exit 0; }
 
 # 3. Did the closing message actually leave a decision hanging?
-#    OPEN tells are the phrases named in feedback_ask_dont_narrate_decisions, the
-#    interrogative forms that put a choice in prose, and options listed with no
-#    ask. NOT included on purpose: `Reply "approve <n>"`, which /agent-harness:bug
+#    OPEN tells are the operator's own phrases, a question sentence addressed to
+#    him (ends "?", says "you"), and options listed with no ask. A report's shape
+#    is not a tell: a 🔴 heading, a "Needs you" table or a line naming who a thing
+#    waits on is information, and boxing it made plain reports hard to read
+#    (Dom, 2026-10-21). NOT included on purpose: `Reply "approve <n>"`, which /agent-harness:bug
 #    prescribes as its hand-back — a hook must not fight a documented flow.
 #
 #    A decision already taken is a report, not a question (2026-10-20: a fired
 #    nag on one forced a contrived second reply). Its wording is cut out before
 #    the open tells are read, so "your call stands" is not "your call".
 DONE='as you (chose|picked|decided|asked|said)|your (call|choice|decision|answer) (stands|holds|was|is (in|recorded|taken))|you (chose|picked|decided|approved|confirmed|signed off)|(already|now) (decided|answered|confirmed|approved)|(^|[^a-z])confirmed([^a-z]|$)|per your (call|answer|choice)'
-OPEN='your call|worth your eye|needs a decision|which would you prefer|let me know which|let me know if you.d|do you want me to|would you like me to|shall I |should I |want me to |or shall we|up to you|either way, tell me|calls? (for you|for your|only you)|on one page'
+OPEN='your call|worth your eye|needs a decision|up to you|do you want|should i |shall i |let me know which|calls? (for you|for your|only you)'
 LISTED='^[[:space:]]*([-*][[:space:]]*)?\**(option|choice)[[:space:]]+[a-c1-3]\b'
 # Lowercased first: BSD sed has no case-insensitive s///.
 REST=$(printf '%s' "$LAST" | tr '[:upper:]' '[:lower:]' | sed -E "s/($DONE)//g")
 HIT=""
 printf '%s' "$REST" | grep -qiE "$OPEN" && HIT=tell
+# A question to the operator: a sentence ending "?" that says "you". The "?" must
+# end the sentence, so a URL's query string is not one.
+printf '%s\n' "$REST" | grep -oE '[^.!?]*\?([[:space:]"'"'"')*_]|$)' | grep -qE '(^|[^a-z])your?([^a-z]|$)' && HIT=${HIT:-question}
 [ "$(printf '%s\n' "$REST" | grep -ciE "$LISTED")" -ge 2 ] && HIT=${HIT:-options}
-
-# SHAPE tells: a 🔴 heading (the house style opens every "needs him" block with
-# it), a "needs you" line, or a NEXT block with a row addressed to the operator
-# (/agent-harness:standup's shape; its Step 5 makes the question mandatory).
-SHAPE=""
-printf '%s' "$LAST" | grep -qiE 'needs you' && SHAPE=needs-you
-printf '%s' "$LAST" | grep -qE '^#+[[:space:]]*🔴' && SHAPE=red
-printf '%s' "$LAST" | grep -qE '^\s*(▶️ *)?NEXT' \
-  && printf '%s' "$LAST" | grep -qiE '^\|[^|]*\*{0,2}You\*{0,2}[^|]*\|' && SHAPE=next
-# A shape is only a question when something is left to choose. Not when the
-# reply reports a call already made, nor when what it hands over is a physical
-# step with the command spelled out ("run this on the VM").
-if [ -n "$SHAPE" ]; then
-  if printf '%s' "$LAST" | grep -qiE "$DONE"; then
-    say "shape-skipped decided shape=$SHAPE"
-  elif printf '%s' "$LAST" | grep -qE '^[[:space:]]*```' &&
-       printf '%s' "$LAST" | grep -qiE '\b(run|paste|type|execute)\b[^.|]{0,40}\b(this|these|the following|it|below|command)\b|\bon (the|your|that) [a-z0-9-]*[[:space:]]?(vm|mac|machine|server|box|laptop|phone|terminal|host)\b'; then
-    say "shape-skipped physical-action shape=$SHAPE"
-  else
-    HIT=${HIT:-$SHAPE}
-  fi
-fi
 
 [ -n "$HIT" ] || { say "exit0 no-decision-tell"; exit 0; }
 
@@ -113,8 +96,8 @@ say "exit2 nagging hit=$HIT session=$SID"
 cat >&2 <<'EOF'
 You are ending a turn with a decision left as prose. The house output style (recorded 2026-09-05) is
 explicit: decisions go in AskUserQuestion, never a line of prose — "your call",
-"worth your eye" and "needs a decision" are the tells, and a NEXT block with a
-row addressed to the operator is the same failure in table form.
+"worth your eye" and "needs a decision" are the tells, and so is a question to
+the operator written as a sentence.
 
 Put the choice to the operator now with AskUserQuestion:
   - options are the rows you just wrote, in the same words
