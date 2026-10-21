@@ -34,6 +34,8 @@
 #   5  a proof tree could not be prepared — the measurement was never made
 #   6  red then green, and the tree with the change does not type-check
 #   7  the command cannot be run as given (a placeholder, no such program) — never run
+#   8  it failed on a missing module from an install behind its lockfile, relinked and
+#      taken again, and the install is still behind — the machine's, never the change's
 #
 # BOTH trees are the reported test file copied into a checkout: the change's PARENT
 # for the red half, the change itself for the green half. Two things follow from
@@ -70,6 +72,9 @@
 # the ticket parks blaming a change that works. The measurement was never made, and a
 # measurement that could not be made is not a red.
 _driver_proof_install() { # <repo> <tree>
+  # The proof trees link from <repo>: a source install behind its lockfile is relinked
+  # first, or every import of a package it lacks fails both halves as the change's fault.
+  [ -z "${MAIN_REPO:-}" ] || driver_relink_if_behind "$MAIN_REPO" "$1" || true
   driver_link_install "$1" "$2" || { DRIVER_PREPARE_WHY="the shared install could not be linked into $2"; return 1; }
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
   # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
@@ -164,7 +169,38 @@ driver_proof_cmd_check() {
   return 0
 }
 
-driver_prove_red_green() {
+# A PROOF THAT FAILS ON A MISSING MODULE FROM A BEHIND INSTALL IS THE MACHINE'S.
+# A private install missing a declared package made every import of it "Cannot find
+# module", and the proof said the change does not type-check: a repair parked as not
+# proved on a tree whose code was right. So a failing verdict (1, 2 or 6) that names a
+# missing module, while the install the proof trees link from is behind its lockfile,
+# is relinked and taken once more. Still behind, or the shared install itself behind,
+# it is 8 — a machine fault, back on the queue, never "not proved".
+DRIVER_PROOF_MISSING_RE="Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Failed to resolve import|Failed to load url"
+_driver_proof_machine() { # <proof fn> <repo> <args…>
+  local fn="$1" repo="$2" out rc try=0 behind mod
+  shift 2
+  while :; do
+    rc=0; out=$("$fn" "$repo" "$@") || rc=$?
+    case "$rc" in 1|2|6) ;; *) break ;; esac
+    grep -qE -- "$DRIVER_PROOF_MISSING_RE" <<<"$out" || break
+    behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$repo" 2>/dev/null) || break
+    mod=$(grep -oE -- "$DRIVER_PROOF_MISSING_RE[^)]{0,80}" <<<"$out" | head -1)
+    if [ "$try" -ge 1 ] || [ "$repo" -ef "${MAIN_REPO:-/nonexistent}" ] || ! driver_relink_if_behind "$MAIN_REPO" "$repo"; then
+      printf 'machine fault, not the change: the proof failed on a missing module (%s) and the install it links from is behind its lockfile — %s\n' \
+        "$mod" "${DRIVER_BEHIND_WHY:-$behind}"
+      return 8
+    fi
+    try=1
+    driver_say "   proof: it failed on a missing module ($mod) from an install behind its lockfile — relinked, taken once more" >&2
+  done
+  printf '%s\n' "$out"
+  return "$rc"
+}
+driver_prove_red_green() { _driver_proof_machine _driver_prove_red_green_once "$@"; }
+driver_prove_by_break()  { _driver_proof_machine _driver_prove_by_break_once "$@"; }
+
+_driver_prove_red_green_once() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
 
@@ -309,8 +345,8 @@ driver_prove_red_green() {
 # 0 red with the break, green without · 1 green with the break — the test does not
 # cover that code · 2 red without the break · 3 the answer cannot be checked ·
 # 4 out of time · 5 the tree could not be prepared · 6 it does not type-check ·
-# 7 the command cannot be run as given
-driver_prove_by_break() {
+# 7 the command cannot be run as given · 8 a machine fault: an install behind its lockfile
+_driver_prove_by_break_once() {
   local repo="$1" tfile="$2" tsha="$3" bfile="$4" find="$5" repl="$6" cmd="$7"
   local tmp n rc_red rc_green red_out green_out cwhy
 
@@ -584,6 +620,11 @@ driver_step_build() { # <ticket>
     fi
     if [ "$prc" -eq 0 ]; then
       driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+    elif [ "$prc" -eq 8 ]; then
+      # The install's, not the change's: back on the queue, no try spent, no park.
+      driver_say "🛑 build $(jq -r '.task // "?"' "$ans") — $why"
+      driver_state_set "$t" park_note "$why"
+      return "$DRIVER_E_BUSY"
     elif [ "$prc" -eq 5 ]; then
       # Not a rework and not a red: the proof was never taken. Retrying it five times
       # would spend the whole ceiling on a tree this machine cannot build, and then

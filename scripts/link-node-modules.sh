@@ -45,7 +45,7 @@
 # be "a real install — left alone" for ever; when it fell behind package-lock.json every
 # gate checking the install went red, and a fixer that may not run an install asked a
 # person. Now, when npm's own record of it (node_modules/.package-lock.json) disagrees with
-# the lockfile on a version, it is removed and rebuilt — linked, or this script's own
+# the lockfile on a version, or lacks a package it declares, it is removed and rebuilt — linked, or this script's own
 # install — unless another process, live run or claim holds the tree (worktree-lib.sh),
 # which exits 3 and changes nothing. A private install that matches is still left alone.
 #
@@ -57,8 +57,11 @@
 # private install behind its lockfile, left alone because the tree is in use elsewhere.
 set -euo pipefail
 
-# install_drift <tree> — prints how many packages npm installed at a version the tree's
-# lockfile does not declare; nothing when either record is missing (cannot tell).
+# install_drift <tree> — prints how many packages the tree's lockfile declares that npm
+# installed at another version OR NOT AT ALL; nothing when either record is missing
+# (cannot tell). A missing one counts: an install made before the lockfile gained a
+# package has no entry for it, and every import of it is "Cannot find module".
+# Optional, linked and bundled entries are never required to be there.
 install_drift() {
   [ -f "$1/package-lock.json" ] && [ -f "$1/node_modules/.package-lock.json" ] || return 0
   node -e '
@@ -66,7 +69,11 @@ install_drift() {
     let a, b
     try { a = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).packages || {}; b = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).packages || {} } catch { process.exit(0) }
     let n = 0
-    for (const [k, d] of Object.entries(b)) { const i = a[k]; if (k && i && i.version && d && d.version && i.version !== d.version) n++ }
+    for (const [k, d] of Object.entries(b)) {
+      if (!k || !/(^|\/)node_modules\//.test(k) || !d || !d.version || d.link || d.inBundle || d.optional || d.devOptional) continue
+      const i = a[k]
+      if (!i || (i.version && i.version !== d.version)) n++
+    }
     process.stdout.write(String(n))
   ' "$1/node_modules/.package-lock.json" "$1/package-lock.json" 2>/dev/null || true
 }
@@ -76,7 +83,7 @@ if [ "${1:-}" = "--behind" ]; then
   n=$(install_drift "$2"); n=${n:-0}
   [ "$n" -gt 0 ] 2>/dev/null || exit 1
   where=$(cd "$2/node_modules" && cd "$(dirname "$(readlink .package-lock.json 2>/dev/null || echo .package-lock.json)")" 2>/dev/null && pwd -P)
-  echo "$n package(s) in ${where:-$2/node_modules} are installed at a version $2/package-lock.json does not declare"
+  echo "$n package(s) $2/package-lock.json declares are missing from ${where:-$2/node_modules} or installed there at another version"
   exit 0
 fi
 

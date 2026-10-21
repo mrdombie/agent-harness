@@ -94,6 +94,26 @@ driver_refresh_install() {
   bash "$KIT_ROOT/scripts/link-node-modules.sh" --if-stale "$1" "$2" >&2
 }
 
+# driver_relink_if_behind <repo> <tree> — a tree whose install is missing a package its
+# lockfile declares, or holds one at another version, is relinked to the shared install
+# before anything reads it: the machine's setup, never the change's. Narration on stderr.
+# 0 not behind, or relinked and no longer behind · 1 still behind (DRIVER_BEHIND_WHY says how).
+driver_relink_if_behind() {
+  DRIVER_BEHIND_WHY=""
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -d "$2" ] || return 0
+  [ "$1" -ef "$2" ] && return 0
+  local behind
+  behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$2" 2>/dev/null) || return 0
+  driver_say "   install: $behind — relinking it to the shared install before anything reads it (machine setup, not the change)" >&2
+  driver_link_install "$1" "$2" || true
+  if DRIVER_BEHIND_WHY=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$2" 2>/dev/null); then
+    driver_say "   install: still behind after the relink — $DRIVER_BEHIND_WHY" >&2
+    return 1
+  fi
+  DRIVER_BEHIND_WHY=""
+  return 0
+}
+
 DRIVER_OK=0
 DRIVER_E_QUESTION=20
 DRIVER_E_NO_SKILL=21

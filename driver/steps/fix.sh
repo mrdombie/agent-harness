@@ -484,6 +484,9 @@ EOB
     why=""; prc=0
     why=$(driver_prove_red_green "$wt" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     case "$prc" in
+      8) driver_say "🛑 fix $bid — $why. Back on the queue, not sent round again."
+         driver_state_set "$t" park_note "$why"
+         return "$DRIVER_E_BUSY" ;;
       0) driver_say "   fix $bid — $why"
          jq -nc --arg b "$bid" --arg w "$why" '{blockerId:$b, proof:"red-green", pmAnswer:null, why:$w}' >> "$rec" ;;
       5) driver_say "✋ fix $bid — $why"
@@ -510,6 +513,9 @@ EOB
     why=""; prc=0
     why=$(_driver_fix_pm_proof "$wt" "$pa" "$review" "$e") || prc=$?
     case "$prc" in
+      8) driver_say "🛑 fix $bid — $why. Back on the queue, not sent round again."
+         driver_state_set "$t" park_note "$why"
+         return "$DRIVER_E_BUSY" ;;
       0) driver_say "   fix $bid — $kind proof allowed by PM answer $ref — $why"
          jq -nc --arg b "$bid" --arg k "$kind" --arg r "$ref" --arg w "$why" '{blockerId:$b, proof:$k, pmAnswer:$r, why:$w}' >> "$rec" ;;
       5) driver_say "✋ fix $bid — $why"

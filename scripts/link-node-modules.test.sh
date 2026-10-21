@@ -255,6 +255,20 @@ want "exits 0" 0 "$rc"
 want "…not linked" "no" "$([ -f "$FPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
 want "…its own vite is still there" "dir" "$([ -d "$FPW/node_modules/vite" ] && [ ! -L "$FPW/node_modules/vite" ] && echo dir || echo other)"
 
+echo "--- a private install MISSING a package its lockfile declares is behind, and replaced ---"
+MPW="$FIX/priv-missing"; private_tree "$MPW" 8.3.4
+printf '{"lockfileVersion":3,"packages":{"node_modules/vite":{"version":"8.3.4"},"node_modules/opt":{"version":"1.0.0"}}}\n' > "$MPW/node_modules/.package-lock.json"
+# An optional package the platform skipped is never required to be there.
+node -e 'const f=process.argv[1],j=JSON.parse(require("fs").readFileSync(f,"utf8"));j.packages["node_modules/fsevents"]={version:"2.3.3",optional:true};require("fs").writeFileSync(f,JSON.stringify(j))' "$MPW/package-lock.json"
+out=$(bash "$SCRIPT" --behind "$MPW" 2>&1); rc=$?
+want "--behind says a tree missing left-pad is behind" "0" "$rc"
+want_in "…counting the one missing package, not the optional one" "1 package(s) $MPW/package-lock.json declares are missing from" "$out"
+cp "$PS/package-lock.json" "$MPW/"   # the shared lockfile again: linked, not its own install
+out=$(bash "$SCRIPT" --if-stale "$PS" "$MPW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want_in "…it is replaced" "private install 1 package(s) behind its lockfile — replaced" "$out"
+want "…linked from the shared install" "yes" "$([ -f "$MPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+
 echo "--- a stale private install claimed by another run is untouched ---"
 CPW="$FIX/sh-777-claimed"; private_tree "$CPW" 8.3.0
 printf '[{"issue":"777","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$CPW" > "$FIX/claims.json"
