@@ -211,4 +211,89 @@ out=$(bash "$SCRIPT" --if-stale "$FS" "$RW" 2>&1); rc=$?
 want "exits 0" 0 "$rc"
 want "…react untouched, nothing linked" "react" "$(ls -A "$RW/node_modules")"
 
+echo "--- a private install behind its lockfile is replaced by the shared links ---"
+# What npm wrote (node_modules/.package-lock.json) against what the tree's lockfile
+# declares, read the way a project's freshness gate reads it — not through the script.
+fresh_gate() { # <tree> → 0 when every installed version matches the lockfile
+  node -e '
+    const fs = require("fs"), [i, d] = process.argv.slice(1).map(f => JSON.parse(fs.readFileSync(f, "utf8")).packages || {})
+    process.exit(Object.entries(d).some(([k, v]) => k && i[k] && i[k].version !== v.version) ? 1 : 0)
+  ' "$1/node_modules/.package-lock.json" "$1/package-lock.json" 2>/dev/null
+}
+for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY; do unset "$v"; done
+PS="$FIX/priv-sh"; mkdir -p "$PS"; build_shared "$PS"
+LOCK='{"lockfileVersion":3,"packages":{"":{},"node_modules/vite":{"version":"8.3.4"},"node_modules/left-pad":{"version":"1.0.0"}}}'
+printf '%s\n' "$LOCK" > "$PS/package-lock.json"; printf '%s\n' "$LOCK" > "$PS/node_modules/.package-lock.json"
+printf '[]\n' > "$FIX/claims.json"
+printf '#!/bin/sh\ncat "%s"\n' "$FIX/claims.json" > "$FIX/claim-list"; printf '#!/bin/sh\n:\n' > "$FIX/claim-refs"
+chmod +x "$FIX/claim-list" "$FIX/claim-refs"
+export WT_CLAIM_LIST="$FIX/claim-list" WT_CLAIM_REFS="$FIX/claim-refs" STATE_DIR="$FIX/priv-state"
+private_tree() { # <dir> <installed vite version> — a checkout with its own npm install, no mark, no fingerprint
+  rm -rf "$1"; mkdir -p "$1"; cp "$PS/package.json" "$PS/package-lock.json" "$1/"; cp -R "$WT/apps" "$WT/packages" "$1/"
+  rm -rf "$1"/apps/*/node_modules "$1"/packages/*/node_modules
+  mkdir -p "$1/node_modules/vite" "$1/packages/ui/node_modules/@acme"
+  printf '{"lockfileVersion":3,"packages":{"node_modules/vite":{"version":"%s"},"node_modules/left-pad":{"version":"1.0.0"}}}\n' "$2" > "$1/node_modules/.package-lock.json"
+  git -C "$1" init -q 2>/dev/null
+}
+PW="$FIX/priv-wt"; private_tree "$PW" 8.3.0
+want "the fixture's private install fails the freshness gate" "red" "$(fresh_gate "$PW" && echo green || echo red)"
+want "…and --behind says so" "0" "$(bash "$SCRIPT" --behind "$PW" >/dev/null 2>&1; echo $?)"
+out=$(bash "$SCRIPT" --if-stale "$PS" "$PW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want_in() { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1 — '$2' not in: $3" ;; esac; }
+want_in "…says it replaced a private install" "private install 1 package(s) behind its lockfile — replaced" "$out"
+want "…it is linked from the shared install" "yes" "$([ -f "$PW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+want "…the freshness gate passes" "green" "$(fresh_gate "$PW" && echo green || echo red)"
+want "…--behind is quiet" "1" "$(bash "$SCRIPT" --behind "$PW" >/dev/null 2>&1; echo $?)"
+want "…vite resolves to the shared copy" "$PS/node_modules/.package-lock.json" "$(cd "$PW/node_modules" && cd "$(dirname "$(readlink .package-lock.json)")" && echo "$(pwd -P)/.package-lock.json")"
+want "…the workspace links point home" "$PW/packages/ui" "$(real "$PW/node_modules/@acme/ui")"
+
+echo "--- a private install that matches its lockfile is left alone ---"
+FPW="$FIX/priv-fresh"; private_tree "$FPW" 8.3.4
+out=$(bash "$SCRIPT" --if-stale "$PS" "$FPW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want "…not linked" "no" "$([ -f "$FPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+want "…its own vite is still there" "dir" "$([ -d "$FPW/node_modules/vite" ] && [ ! -L "$FPW/node_modules/vite" ] && echo dir || echo other)"
+
+echo "--- a stale private install claimed by another run is untouched ---"
+CPW="$FIX/sh-777-claimed"; private_tree "$CPW" 8.3.0
+printf '[{"issue":"777","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$CPW" > "$FIX/claims.json"
+snap=$(cd "$CPW/node_modules" && find . | sort | shasum)
+out=$(LINK_NODE_MODULES_TICKET=900 bash "$SCRIPT" --if-stale "$PS" "$CPW" 2>&1); rc=$?
+want "exits 3" 3 "$rc"
+want_in "…names the holder" "claim #777" "$out"
+want "…its node_modules is byte-for-byte the same" "$snap" "$(cd "$CPW/node_modules" && find . | sort | shasum)"
+echo "--- …but the run that holds that claim replaces it ---"
+out=$(LINK_NODE_MODULES_TICKET=777 bash "$SCRIPT" --if-stale "$PS" "$CPW" 2>&1); rc=$?
+want "exits 0" 0 "$rc"
+want "…linked" "yes" "$([ -f "$CPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+printf '[]\n' > "$FIX/claims.json"
+
+echo "--- a stale private install with another process inside it is untouched ---"
+OPW="$FIX/priv-occupied"; private_tree "$OPW" 8.3.0
+(cd "$OPW" && exec sleep 30) & occ=$!
+sleep 0.3
+snap=$(cd "$OPW/node_modules" && find . | sort | shasum)
+out=$(bash "$SCRIPT" --if-stale "$PS" "$OPW" 2>&1); rc=$?
+kill "$occ" 2>/dev/null; wait "$occ" 2>/dev/null
+want "exits 3" 3 "$rc"
+want_in "…names the process" "has its cwd there" "$out"
+want "…its node_modules is the same" "$snap" "$(cd "$OPW/node_modules" && find . | sort | shasum)"
+
+echo "--- unreadable claims: untouched ---"
+UPW="$FIX/priv-unread"; private_tree "$UPW" 8.3.0
+out=$(WT_CLAIM_LIST=false bash "$SCRIPT" --if-stale "$PS" "$UPW" 2>&1); rc=$?
+want "exits 3" 3 "$rc"
+want "…not linked" "no" "$([ -f "$UPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+
+echo "--- plant: the holder check deleted → a claimed tree is replaced (so the checks above are live) ---"
+mkdir -p "$FIX/kit"; cp "$(dirname "$SCRIPT")/worktree-lib.sh" "$FIX/kit/"
+sed 's/if who=$(held_elsewhere "$WT"); then/if false; then/' "$SCRIPT" > "$FIX/kit/link-node-modules.sh"
+want "the plant landed" "0" "$(grep -c 'held_elsewhere "$WT"' "$FIX/kit/link-node-modules.sh")"
+KPW="$FIX/sh-778-claimed"; private_tree "$KPW" 8.3.0
+printf '[{"issue":"778","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$KPW" > "$FIX/claims.json"
+bash "$FIX/kit/link-node-modules.sh" --if-stale "$PS" "$KPW" >/dev/null 2>&1
+want "…the claimed tree was replaced" "yes" "$([ -f "$KPW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+printf '[]\n' > "$FIX/claims.json"
+
 [ "$FAILED" = 0 ] && echo "PASS" || { echo "FAIL"; exit 1; }
