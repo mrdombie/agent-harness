@@ -154,6 +154,50 @@ pr 12 "$(h 12)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(
 prfiles 12 apps/web/page.tsx
 printf "import { Band } from './parts/band'\nexport default 1\n" > "$SB/fx/repos_o_r_contents_apps_web_page.tsx_ref_$(h 12)"
 
+# 30–34 CI re-captures every shot at each head, and git keeps only the ones whose bytes
+# moved: a shot that came out identical is in the tree at the new evidence commit but
+# not in its diff. Ticket 42's folder; CI's first capture E1, an author's commits, then
+# CI's second capture E2, which wrote only the shot that changed.
+E1=$(ev 31); E2=$(ev 32); XA=$(printf 'ad%038d' 1); XB=$(printf 'ad%038d' 2)
+blob() { printf 'b%s%038d' "$1" "$2" | cut -c1-40; }
+evblobs() { # <sha> <parent> <author email> <subject> <path=blob>…
+  local sha="$1" par="$2" em="$3" sub="$4"; shift 4
+  jq -n --arg p "$par" --arg em "$em" --arg s "$sub" --args '{commit:{message:$s, author:{name:"x", email:$em}},
+      parents:[{sha:$p}], files:[$ARGS.positional[] | split("=") | {filename:.[0], sha:.[1], status:"modified"}]}' "$@" \
+    > "$SB/fx/repos_o_r_commits_$sha"
+}
+D42=docs/evidence/42
+evblobs "$E1" "$(par 31)" ci@example.com "chore(evidence): screenshots captured by ci for #42" \
+  "$D42/dashboard.png=$(blob 1 1)" "$D42/settings.png=$(blob 2 1)" "$D42/gone.png=$(blob 3 1)" "$D42/team.png=$(blob 4 1)"
+runs "$(par 31)" completed/success completed/success
+evblobs "$XA" "$E1" builder@example.com "fix: the settings page" apps/web/settings.tsx=$(blob 9 1) "$D42/team.png=$(blob 4 2)"
+evblobs "$XB" "$XA" builder@example.com "chore(evidence): screenshots captured by ci for #42" "$D42/planted.png=$(blob 5 1)"
+evblobs "$E2" "$(par 32)" ci@example.com "chore(evidence): screenshots captured by ci for #42" "$D42/settings.png=$(blob 2 2)"
+runs "$(par 32)" completed/success completed/success
+jq -n --args '[$ARGS.positional[] | {sha:.}]' "$E1" "$XA" "$XB" "$E2" > "$SB/fx/repos_o_r_pulls_30_commits_per_page_100"
+cp "$SB/fx/repos_o_r_pulls_30_commits_per_page_100" "$SB/fx/repos_o_r_pulls_31_commits_per_page_100"
+listing() { # <sha> <name=blob>… → the folder as it stands at that commit
+  local sha="$1"; shift
+  jq -n --args '[$ARGS.positional[] | split("=") | {name:.[0], sha:.[1], type:"file"}]' "$@" > "$SB/fx/repos_o_r_contents_docs_evidence_42_ref_$sha"
+}
+listing "$E2" "dashboard.png=$(blob 1 1)" "settings.png=$(blob 2 2)" "gone.png=$(blob 3 1)" "team.png=$(blob 4 2)" "planted.png=$(blob 5 1)"
+r30=$'## Evidence routes\n- /dashboard\n- /settings\n- /team\n- /planted\n\n'
+pr 30 "$E2" false "$r30$(printf "$(blockat "$E2" 42 dashboard settings gone team planted)")" tk-42/slug "42"
+# 31 the same, with a capture plan in the folder: the plan, not the routes, names what CI captures
+E4=$(ev 34)
+evblobs "$E4" "$(par 34)" ci@example.com "chore(evidence): screenshots captured by ci for #42" "$D42/settings-laptop.png=$(blob 6 2)"
+runs "$(par 34)" completed/success completed/success
+evblobs "$(ev 33)" "$(par 33)" ci@example.com "chore(evidence): screenshots captured by ci for #42" \
+  "$D42/dashboard-laptop.png=$(blob 7 1)" "$D42/settings-laptop.png=$(blob 6 1)" "$D42/dashboard.png=$(blob 8 1)"
+runs "$(par 33)" completed/success completed/success
+jq -n --args '[$ARGS.positional[] | {sha:.}]' "$(ev 33)" "$E4" > "$SB/fx/repos_o_r_pulls_31_commits_per_page_100"
+jq -n --args '[$ARGS.positional[] | split("=") | {name:.[0], sha:.[1], type:"file"}]' \
+  "dashboard-laptop.png=$(blob 7 1)" "settings-laptop.png=$(blob 6 2)" "dashboard.png=$(blob 8 1)" "plan.json=$(blob 0 1)" \
+  > "$SB/fx/repos_o_r_contents_docs_evidence_42_ref_$E4"
+printf '{"shots":[{"name":"dashboard-laptop","route":"/dashboard"},{"name":"settings-laptop","route":"/settings"}]}' \
+  > "$SB/fx/repos_o_r_contents_docs_evidence_42_plan.json_ref_$E4"
+pr 31 "$E4" false "$r30$(printf "$(blockat "$E4" 42 dashboard-laptop settings-laptop dashboard)")" tk-42/slug "42"
+
 S="$HERE/ci-evidence.sh"
 st() { bash "$1" status "$2" 2>/dev/null | sed -n 's/^state=//p'; }
 w()  { perl -e 'alarm shift; exec @ARGV' 8 bash "$1" wait "$2" 1 >/dev/null 2>&1; echo $?; }
@@ -256,7 +300,23 @@ tickets() { # <script> → failed cases
   o=$(HARNESS_CFG="$SB/ids.json" st "$s" 23); [ "$o" = pinned ] || echo "shots in the PR number's folder read $o"
   return 0
 }
-all() { core "$1"; fetch_case "$1"; tickets "$1"; (cd "$R" && athead "$1"); }
+carries() { # <script> → failed cases
+  local s=$1 o e
+  o=$(HARNESS_CFG="$SB/ids.json" bash "$s" shots 30 2>/dev/null); e=$(HARNESS_CFG="$SB/ids.json" bash "$s" shots 30 2>&1 >/dev/null)
+  grep -q '/dashboard\.png$' <<<"$o" || echo "a byte-identical re-capture of a shot CI wrote earlier did not count as pinned"
+  grep -q '/settings\.png$' <<<"$o" || echo "the shot CI's second capture wrote did not count"
+  grep -q '/planted\.png$' <<<"$o" && echo "a blob only an author's commit ever wrote counted as pinned"
+  grep -q 'refused: docs/evidence/42/planted.png' <<<"$e" || echo "an author-written blob was not named as refused"
+  grep -q '/team\.png$' <<<"$o" && echo "a shot an author changed after CI's capture counted as pinned"
+  grep -q '/gone\.png$' <<<"$o" && echo "a shot CI no longer captures at this head counted as pinned"
+  o=$(HARNESS_CFG="$SB/ids.json" bash "$s" status 30 2>/dev/null)
+  grep -qx 'state=pinned' <<<"$o" && grep -qx 'shots=2' <<<"$o" || echo "status on a byte-identical re-capture read $(tr '\n' ' ' <<<"$o")"
+  o=$(HARNESS_CFG="$SB/ids.json" bash "$s" shots 31 2>/dev/null)
+  grep -q '/dashboard-laptop\.png$' <<<"$o" || echo "a byte-identical re-capture of a plan shot did not count as pinned"
+  grep -q '/dashboard\.png$' <<<"$o" && echo "a shot the capture plan no longer names counted as pinned"
+  return 0
+}
+all() { core "$1"; fetch_case "$1"; tickets "$1"; carries "$1"; (cd "$R" && athead "$1"); }
 
 echo "ci-evidence"
 r=$(all "$S"); [ -z "$r" ] && ok "every state, wait exit, fetch, verdict and routes case reads right" || { bad "cases failed:"; printf '         %s\n' "$r"; }
@@ -280,8 +340,8 @@ plant "a merge counts as a carry"            '[ "$parents" = 2 ] || return 1'   
 plant "a code file counts as a carry"        '| grep -vF "$EV_DIR/" >/dev/null'         '| grep NOTHING-MATCHES-THIS >/dev/null'  'a verdict with a code commit after it passed'
 plant "the forge's carry ignores code files" 'select(startswith($d) | not)] | length == 0)' 'select(false)] | length == 0)' 'shots with code after them and a capture running read'
 plant "evidence read from the whole body"    'urls=$(printf '"'"'%s\n'"'"' "$body" | block | links | ci_links' 'urls=$(printf '"'"'%s\n'"'"' "$body" | links | ci_links' 'fetch took a hand-pinned shot'
-plant "shots read from the whole body"       'printf '"'"'%s\n'"'"' "$blk" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" ;;' 'jq -r .body <<<"$j" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" ;;' 'shots listed a link outside'
-plant "a builder's file passes as CI's"      'if [ "$sha" = "$ev" ] && printf' 'if [ "$sha" = "$ev" ] || printf' 'took a file CI'"'"'s commit did not write'
+plant "shots read from the whole body"       'printf '"'"'%s\n'"'"' "$blk" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" "$2"' 'jq -r .body <<<"$j" | links | ci_links "$evsha" "$(ev_folders "$2" "$j")" "$2"' 'shots listed a link outside'
+plant "a builder's file passes as CI's"      'if [ "$sha" = "$ev" ] && printf '"'"'%s\n'"'"' "$ok"' 'if [ "$sha" = "$ev" ] || printf '"'"'%s\n'"'"' "$ok"' 'took a file CI'"'"'s commit did not write'
 plant "no capture run is asked for"          $'cap=$(check "$runs" "$EV_CAPTURE")\n  case "$cap" in\n    completed/success|' $'cap=completed/success\n  case "$cap" in\n    completed/success|' 'with no capture run behind it, read pinned'
 plant "any commit counts as CI's"            'startswith($p) | not) then' 'startswith($p) | not) and false then' 'at a builder'"'"'s commit read pinned'
 plant "only a finished capture owns its push" 'completed/success|completed/cancelled|in_progress/*|queued/*) ;;' 'completed/success) ;;' 'capture still running, read'
@@ -302,4 +362,9 @@ plant "routes list not required"             '[ -n "$list" ] || {'              
 plant "the evidence dir is hardcoded"        'EV_DIR=$(cfg evidence.dir "docs/evidence")' 'EV_DIR=docs/evidence'           'the evidence dir from project config was ignored'
 plant "a decide that never ran is CI's no-picture record" '      elif [ "$dec" = completed/success ]; then' '      elif true; then' 'a decide check that never ran read as'
 plant "the no-picture record names no head" 'echo "nothing=$head"; ' '' 'nothing-to-photograph decision did not name its head'
+plant "carried shots are never read"         'carry=$(carried "$ev" "$2" "${3:-}" "${4:-}"); asked=1;' 'asked=1;' 'byte-identical re-capture of a shot CI wrote earlier did not count'
+plant "an author's blob counts as CI's"      'ci_files "$c" "$ns" >/dev/null 2>&1 || continue' 'true' 'a blob only an author'"'"'s commit ever wrote counted'
+plant "any name counts as captured"          'select((.name | sub("\\.[A-Za-z]+$"; "")) as $b | $ok | index($b))' 'select(true)' 'a shot CI no longer captures at this head counted'
+plant "the capture plan is not read"         'if printf '"'"'%s'"'"' "$ls" | jq -e' 'if false && printf '"'"'%s'"'"' "$ls" | jq -e' 'a shot the capture plan no longer names counted'
+plant "a carried blob need not match CI's"   '| grep -xF -f <(printf '"'"'%s\n'"'"' "$wrote" | grep -v '"'"'^$'"'"')' '| grep -F -f <(printf '"'"'%s\n'"'"' "$wrote" | grep -v '"'"'^$'"'"' | cut -f1)' 'a shot an author changed after CI'"'"'s capture counted'
 exit $fail
