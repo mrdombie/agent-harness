@@ -770,6 +770,11 @@ $deferred}" >/dev/null 2>&1 || true
   fi
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a watcher brings an agent back on red or a conflict." >/dev/null 2>&1 || true
+  # A CLEAN ENDING FREES ITS OWN CLAIM, in review first: a claim left held reads to the
+  # reconciler as a dead holder, which posts the failure wording. No label, no release.
+  if issue_status_set "$t" "$LBL_IN_REVIEW" >/dev/null 2>&1; then
+    [ -z "${CL:-}" ] || bash "$CL" release "$t" >/dev/null 2>&1 || true
+  fi
 
   driver_state_set "$t" run_brief ""   # shipped: the run's brief has been acted on
   _driver_state_edit "$t" '.counters.machine_parks = 0' 2>/dev/null || true

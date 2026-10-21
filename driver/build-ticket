@@ -621,7 +621,7 @@ while [ "$i" -lt "$N" ]; do
   # NOTHING OWED IS A FINISHED ROUND, not a question. The step read the PR afresh and
   # found nothing to do, so no later step has work: the round is closed on the record
   # (a respawn is a fresh round, read again) and the run exits 0. The open PR keeps the
-  # ticket in review, and the reconciler frees the claim on exit as after any ship.
+  # ticket in review, and the reconciler frees the claim on exit.
   if [ "$noop" -eq 1 ]; then
     for _s in "${STEPS[@]:$i}"; do driver_state_done "$TICKET" "$_s"; done
     _nn=$(driver_state_get "$TICKET" noop_note)
