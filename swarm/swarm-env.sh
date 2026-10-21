@@ -285,7 +285,8 @@ swarm_usage_near_hold() {
 swarm_api_error_log() { # <log>
   local r
   [ -s "$1" ] || { printf 'the call left an empty transcript'; return 0; }
-  r=$(jq -c -R 'fromjson? // empty' "$1" 2>/dev/null | jq -r -s '
+  # Only the CLI's own result lines, which it writes compact, one per line.
+  r=$(grep -F '"type":"result"' "$1" 2>/dev/null | jq -r -s '
     ([.[] | select(.type == "result")] | last) as $r
     | if $r == null then "no result came back"
       elif ($r.structured_output? // null) != null then empty
