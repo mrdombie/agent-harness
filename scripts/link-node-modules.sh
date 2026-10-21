@@ -40,9 +40,45 @@
 # workspace's — in node_modules/.harness-link-stamp as "<linked|own> <sha256>", and
 # `--if-stale` rebuilds only when that fingerprint moved (or was never written).
 #
+# A PRIVATE INSTALL BEHIND ITS LOCKFILE IS REPLACED. A node_modules directory with no
+# mark and no fingerprint (made by hand, or by this script before it wrote them) used to
+# be "a real install — left alone" for ever; when it fell behind package-lock.json every
+# gate checking the install went red, and a fixer that may not run an install asked a
+# person. Now, when npm's own record of it (node_modules/.package-lock.json) disagrees with
+# the lockfile on a version, it is removed and rebuilt — linked, or this script's own
+# install — unless another process, live run or claim holds the tree (worktree-lib.sh),
+# which exits 3 and changes nothing. A private install that matches is still left alone.
+#
+#   link-node-modules.sh --behind <worktree> — exit 0 when the tree's install (through
+#   its links) disagrees with its lockfile, printing the count and where it lives; 1 not.
+#
 # Exit 0 linked, up to date, or nothing to link · 1 a workspace does not resolve to
-# this worktree afterwards, the own install failed, or the arguments are wrong.
+# this worktree afterwards, the own install failed, or the arguments are wrong · 3 a
+# private install behind its lockfile, left alone because the tree is in use elsewhere.
 set -euo pipefail
+
+# install_drift <tree> — prints how many packages npm installed at a version the tree's
+# lockfile does not declare; nothing when either record is missing (cannot tell).
+install_drift() {
+  [ -f "$1/package-lock.json" ] && [ -f "$1/node_modules/.package-lock.json" ] || return 0
+  node -e '
+    const fs = require("fs")
+    let a, b
+    try { a = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).packages || {}; b = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).packages || {} } catch { process.exit(0) }
+    let n = 0
+    for (const [k, d] of Object.entries(b)) { const i = a[k]; if (k && i && i.version && d && d.version && i.version !== d.version) n++ }
+    process.stdout.write(String(n))
+  ' "$1/node_modules/.package-lock.json" "$1/package-lock.json" 2>/dev/null || true
+}
+
+if [ "${1:-}" = "--behind" ]; then
+  [ -d "${2:-}" ] || { echo "usage: link-node-modules.sh --behind <worktree>" >&2; exit 1; }
+  n=$(install_drift "$2"); n=${n:-0}
+  [ "$n" -gt 0 ] 2>/dev/null || exit 1
+  where=$(cd "$2/node_modules" && cd "$(dirname "$(readlink .package-lock.json 2>/dev/null || echo .package-lock.json)")" 2>/dev/null && pwd -P)
+  echo "$n package(s) in ${where:-$2/node_modules} are installed at a version $2/package-lock.json does not declare"
+  exit 0
+fi
 
 IF_STALE=0
 [ "${1:-}" = "--if-stale" ] && { IF_STALE=1; shift; }
@@ -114,6 +150,47 @@ if [ "$IF_STALE" = 1 ] && [ -n "$FP" ]; then
     "") echo "link-node-modules: $WT/node_modules has no fingerprint — rebuilding it." >&2 ;;
     *) echo "link-node-modules: $WT's lockfile or package.json files changed since its node_modules was built — rebuilding it." >&2 ;;
   esac
+fi
+
+# A private install (no mark, no fingerprint) behind its lockfile: rebuilt below, as long as
+# nothing but this run holds the tree. The caller's own claim is its ticket's
+# (LINK_NODE_MODULES_TICKET, else DRIVER_TICKET); its own processes are its ancestry.
+held_elsewhere() { # <tree> — prints who holds it; 1 when nobody but the caller does
+  local why rc rid pid n mine="${LINK_NODE_MODULES_TICKET:-${DRIVER_TICKET:-}}"
+  # shellcheck source=worktree-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worktree-lib.sh" || { echo "worktree-lib.sh could not be loaded"; return 0; }
+  wt_can_see_processes || { echo "no lsof here, so who uses it cannot be told"; return 0; }
+  wt_cwds_load --exclude-self
+  if pid=$(wt_occupant "$1"); then echo "pid $pid has its cwd there"; return 0; fi
+  if rid=$(wt_run_holder "$1"); then
+    pid=$(jq -r '.pid // .child_pid // empty' "${RUNS_DIR:-${STATE_DIR:-}/runs}/$rid.json" 2>/dev/null)
+    case "$WT_SELF" in *" $pid "*) ;; *) echo "live run $rid holds it"; return 0 ;; esac
+  fi
+  why=$(wt_claim_holder "$1"); rc=$?
+  [ "$rc" = 2 ] && { echo "the claims could not be read"; return 0; }
+  if [ "$rc" = 0 ]; then
+    n=$(printf '%s' "$why" | sed -n 's/^claim #\([0-9][0-9]*\).*/\1/p')
+    [ -n "$mine" ] && [ "$n" = "$mine" ] || { echo "$why"; return 0; }
+  fi
+  return 1
+}
+if [ -d "$WT/node_modules" ] && [ ! -L "$WT/node_modules" ] && [ ! -f "$WT/node_modules/$MARK" ] && [ -z "$STAMPED" ]; then
+  drift=$(install_drift "$WT"); drift=${drift:-0}
+  if [ "$drift" -gt 0 ] 2>/dev/null; then
+    if who=$(held_elsewhere "$WT"); then
+      echo "link-node-modules: $WT/node_modules is a private install $drift package(s) behind its lockfile, but it is not this run's to replace ($who) — left alone." >&2
+      exit 3
+    fi
+    echo "link-node-modules: $WT/node_modules is a private install $drift package(s) behind its lockfile — replaced by the harness (machine setup; nobody installs into the worktree by hand)." >&2
+    rm -rf "$WT/node_modules"
+    while IFS=$'\t' read -r _n dir; do
+      [ -n "$dir" ] && [ -d "$WT/$dir/node_modules" ] && [ ! -L "$WT/$dir/node_modules" ] \
+        && [ ! -f "$WT/$dir/node_modules/$MARK" ] && rm -rf "$WT/$dir/node_modules"
+    done <<EOF
+$WORKSPACES
+EOF
+    STAMPED=""
+  fi
 fi
 
 # A worktree whose lockfile is not the shared one's needs packages the shared install lacks:

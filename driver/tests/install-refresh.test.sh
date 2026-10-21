@@ -101,4 +101,44 @@ want "self-check is green" "0" "$rc"
 want "its node_modules is untouched" "$before" "$(cd "$REPO/node_modules" && find . | sort | shasum)"
 want "no stamp is written into it" "no" "$([ -e "$REPO/node_modules/.harness-link-stamp" ] && echo yes || echo no)"
 
+echo "--- a private install behind its lockfile: replaced before the gates, no fix round, no question ---"
+# The gate reads the install the way a project's freshness check does: npm's record of
+# what it put on disk against the lockfile.
+FRESH='node -e '"'"'const fs=require("fs"),[i,d]=["node_modules/.package-lock.json","package-lock.json"].map(f=>JSON.parse(fs.readFileSync(f,"utf8")).packages||{});const bad=Object.keys(d).filter(k=>k&&i[k]&&i[k].version!==d[k].version);if(bad.length){console.error("FAIL — "+bad.length+" packages installed at a version the lockfile does not declare");process.exit(1)}'"'"''
+manifest "$REPO" left-pad @axe-core/playwright; cp "$REPO/package-lock.json" "$REPO/node_modules/.package-lock.json"
+printf '[]\n' > "$FIX/claims.json"
+printf '#!/bin/sh\ncat "%s"\n' "$FIX/claims.json" > "$FIX/claim-list"; printf '#!/bin/sh\n:\n' > "$FIX/claim-refs"
+chmod +x "$FIX/claim-list" "$FIX/claim-refs"
+export WT_CLAIM_LIST="$FIX/claim-list" WT_CLAIM_REFS="$FIX/claim-refs"
+private_wt() { # <ticket> — a worktree whose node_modules is its own npm install, one version behind
+  local w="$FIX/wt-$1"
+  git -C "$REPO" worktree add -q -b "tkt-$1" "$w" develop; w=$(cd "$w" && pwd -P)
+  cp "$REPO/package.json" "$REPO/package-lock.json" "$w/"
+  mkdir -p "$w/node_modules/left-pad"
+  jq '.packages["node_modules/left-pad"].version = "0.9.0"' "$REPO/package-lock.json" > "$w/node_modules/.package-lock.json"
+  printf '%s' "$w"
+}
+PW=$(private_wt 510)
+gate "$FRESH"
+want "the private install fails the gate" "1" "$(cd "$PW" && bash -c "$FRESH" >/dev/null 2>&1; echo $?)"
+driver_state_init 510 --worktree "$PW"
+out=$(DRIVER_TICKET=510 driver_step_self_check 510 2>&1); rc=$?
+want "self-check is green" "0" "$rc"
+want_in "it says the private install was replaced" 'behind its lockfile — replaced by the harness' "$out"
+want "it is linked from the shared clone" "yes" "$([ -f "$PW/node_modules/.linked-from-shared-install" ] && echo yes || echo no)"
+want "no fix round was spent" "0" "$(driver_state_count 510 selfcheck_red)"
+
+echo "--- …claimed by another run: untouched, back on the queue as a machine fault, never sent to fix ---"
+CW=$(private_wt 511)
+printf '[{"issue":"999","worktree":"%s","branch":"","host":"elsewhere"}]\n' "$CW" > "$FIX/claims.json"
+snap=$(cd "$CW/node_modules" && find . | sort | shasum)
+driver_state_init 511 --worktree "$CW"
+out=$(DRIVER_TICKET=511 driver_step_self_check 511 2>&1); rc=$?
+want "back on the queue" "29" "$rc"
+want_in "named a machine fault" 'machine fault' "$out"
+want_in "…the record names the shared install's place" "$REPO/node_modules" "$(driver_state_get 511 park_note)"
+want "its node_modules is untouched" "$snap" "$(cd "$CW/node_modules" && find . | sort | shasum)"
+want "no fix round was spent" "0" "$(driver_state_count 511 selfcheck_red)"
+printf '[]\n' > "$FIX/claims.json"
+
 exit $FAILED
