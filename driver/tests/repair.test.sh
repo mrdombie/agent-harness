@@ -670,6 +670,24 @@ out=$(driver_step_repair 406 2>&1); rc=$?
 want "with no lesson in the body it still refuses" "24" "$rc"
 want_not_in "the lesson red is not waved off"  "reads red on GitHub" "$out"
 want_in "and the lesson is still demanded"    'red \(Every fix ships a lesson\)' "$(cat "$FIX/claude-stdin-repair.txt")"
+echo "--- a superseded CANCELLED run is not red: a lesson-only repair still passes (#13629) ---"
+setup 407; lesson_body 407
+printf '#!/usr/bin/env bash\ngrep -q good value407.txt\n' > "$WT/value407.test.sh"; printf 'value=good\n' > "$WT/value407.txt"
+git -C "$WT" add . && git -C "$WT" commit -qm "fix: the value, with its test"; git -C "$WT" push -q origin "tkt-407/work"
+driver_state_set 407 repair_base "$(git -C "$WT" rev-parse HEAD)"; HEAD407=$(git -C "$WT" rev-parse HEAD)
+jq -n --arg l "$LESSON_CHECK" '[{number:407, headRefName:"tkt-407/work", headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
+  statusCheckRollup:[{name:"Deleted tests", status:"COMPLETED", conclusion:"CANCELLED", startedAt:"2026-10-21T04:04:27Z"},
+    {name:$l, status:"COMPLETED", conclusion:"CANCELLED", startedAt:"2026-10-21T04:04:27Z"},
+    {name:"Deleted tests", status:"COMPLETED", conclusion:"SUCCESS", startedAt:"2026-10-21T04:05:35Z"},
+    {name:$l, status:"COMPLETED", conclusion:"FAILURE", startedAt:"2026-10-21T04:05:44Z"}]}]' > "$FIX/gh/prs.json"
+answer "$(lesson_only "$(lesson value407.test.sh)")"
+out=$(driver_step_repair 407 2>&1); rc=$?
+want "a lesson-only repair finishes"          "0" "$rc"
+want "with nothing committed"                 "$HEAD407" "$(git -C "$WT" rev-parse HEAD)"
+want_in "the body names the diff's guard"     '^- Guard: `value407.test.sh`$' "$(cat "$FIX/gh/body-407.md")"
+want_in "the lesson check is green on the body now" '^lesson: complete' "$(judge_body 407)"
+want_not_in "the cancelled run never reached the brief" 'Deleted tests' "$(cat "$FIX/claude-stdin-repair.txt")"
+
 export SWARM_GH="$SWARM_GH_WAS"
 
 exit $FAILED

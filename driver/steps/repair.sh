@@ -194,6 +194,10 @@ _driver_repair_write_lesson() {
   return "$DRIVER_OK"
 }
 
+# A SUPERSEDED RUN IS NOT RED. #13629 refused a lesson-only repair over a CANCELLED run of a
+# check whose re-run had passed: each check is read by its latest run alone.
+_DRIVER_REPAIR_LATEST='def latest: [.statusCheckRollup[]?] | group_by(.name // .context // "?") | map(max_by(.startedAt // "")) | .[];'
+
 # _driver_repair_nothing_owed <tree> <trunk> <pr> — 0 when a fresh read of the PR says
 # nothing is owed: its head is this tree's and contains the trunk, GitHub reads it
 # MERGEABLE, no check on that head settled red (pending is not red), and it is ready
@@ -214,7 +218,7 @@ _driver_repair_nothing_owed() {
   if [ "$(printf '%s' "$v" | jq -r '.mergeable // ""')" != MERGEABLE ]; then
     printf 'GitHub reads it as %s, not MERGEABLE' "$(printf '%s' "$v" | jq -r '.mergeable // "unknown"')"; return 1
   fi
-  red=$(printf '%s' "$v" | jq -r '[.statusCheckRollup[]? | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE"))
+  red=$(printf '%s' "$v" | jq -r "$_DRIVER_REPAIR_LATEST"'[latest | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE"))
     | (.name // .context // "?")] | join(", ")')
   if [ -n "$red" ]; then printf 'red on the head: %s' "$red"; return 1; fi
   if [ "$(printf '%s' "$v" | jq -r '(.isDraft == false) and (.autoMergeRequest != null)')" != true ]; then
@@ -268,7 +272,7 @@ driver_step_repair() { # <ticket>
     mstate=$(printf '%s' "$row" | jq -r '.mergeStateStatus // ""')
     mergeable=$(printf '%s' "$row" | jq -r '.mergeable // ""')
     # The sign-off hold's own check is red BY the hold: no repair turns it green.
-    failing=$(printf '%s' "$row" | jq -r --arg gate "$(driver_opt coordinator.holdCheck approval)" '[.statusCheckRollup[]? | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
+    failing=$(printf '%s' "$row" | jq -r --arg gate "$(driver_opt coordinator.holdCheck approval)" "$_DRIVER_REPAIR_LATEST"'[latest | select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
       | select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not) | (.name // .context // "?")] | join(", ")')
   else
     mstate=$(driver_state_get "$t" merge_state); unreadable=1
@@ -281,9 +285,9 @@ driver_step_repair() { # <ticket>
   if [ -n "$failing" ] && [ -n "$row" ]; then
     local stale sname srun rerun_done rerun_names=""
     rerun_done=$(driver_state_get "$t" reran_runs)
-    stale=$(printf '%s' "$row" | jq -r --argjson h "${DRIVER_STALE_CHECK_HOURS:-12}" '
+    stale=$(printf '%s' "$row" | jq -r --argjson h "${DRIVER_STALE_CHECK_HOURS:-12}" "$_DRIVER_REPAIR_LATEST"'
       (.updatedAt // "") as $upd | ((now - $h * 3600) | todate) as $cut
-      | .statusCheckRollup[]? | select(.__typename == "CheckRun")
+      | latest | select(.__typename == "CheckRun")
       | select((.conclusion // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
       | select((.completedAt // "") != "" and ((.completedAt < $upd) or (.completedAt < $cut)))
       | ((.detailsUrl // "") | ((capture("/actions/runs/(?<r>[0-9]+)") | .r) // "")) as $run
