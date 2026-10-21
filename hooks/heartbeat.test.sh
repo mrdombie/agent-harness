@@ -114,9 +114,28 @@ for row in 'builders on the feed and digest tickets; CI on the chip PR' \
   ok '  and no advice is queued' test ! -e "$NDIR/s"
 done
 t nag   'a missing block in a loop is still asked for' 'Merged the chip PR.' false "$LIVE"
-ok '  the ask is to add the block' grep -q 'Add only the block' "$TDIR/err"
+ok '  the ask is to add the status line' grep -q 'Add only the status line' "$TDIR/err"
 ok '  and never to resend the reply' grep -q 'do not$' "$TDIR/err"
 ok '  ... (resend or restate it)' grep -q '^resend or restate it' "$TDIR/err"
+
+# --- 2026-10-21 "Don't shoehorn everything into tables and status blocks": one
+#     plain line is the status; the old block still passes.
+LINE='Merged the chip PR.
+
+Status: 3 builders running; waiting on the billing fix; next check when a build finishes.'
+t quiet 'a reply ending in a one-line status (2026-10-21)' "$LINE" false "$LIVE"
+t quiet '  ... in any case, bolded' 'Done.
+**status:** builders on the feed ticket; next check in 20 minutes.' false "$LIVE"
+t nag   'neither the block nor a status line, mid-loop' 'Merged the chip PR. 3 builders running.' false "$LIVE"
+t nag   '"status" mid-sentence is not a status line' 'The status of the chip PR is green.' false "$LIVE"
+ok '  the ask suggests the one-line form first' sh -c 'grep -n "^Status: " "$1" | head -1 | grep -q . && ! grep -q "^|" "$1"' _ "$TDIR/err"
+rm -rf "$NDIR"
+t quiet 'a wait-only status line is never refused' 'Status: waiting on checks for the chip PR; next check when they finish.' false "$LIVE"
+ok '  and its advice is queued for the next prompt' test -s "$NDIR/s"
+rm -rf "$NDIR"
+t quiet 'a status line naming builders' 'Status: builders on the feed ticket; CI on the chip PR.' false "$LIVE"
+ok '  and no advice is queued' test ! -e "$NDIR/s"
+rm -rf "$NDIR"
 
 # The advice is dead unless the plugin wires the prompt half: read the call site.
 HJ="$(dirname "$0")/hooks.json"
