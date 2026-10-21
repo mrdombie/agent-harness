@@ -844,6 +844,86 @@ want_in "13141: naming the path"                'not deleted on the trunk' "$out
 want "13141: the branch's file is still there"  "yes" "$([ -f "$WT/value13141.txt" ] && git -C "$WT" ls-files --error-unmatch value13141.txt >/dev/null 2>&1 && echo yes)"
 git -C "$WT" merge --abort 2>/dev/null
 
+echo "--- git steps the model's mode refuses are run by the driver, checked first (#12840, #13139, #13305, #13356) ---"
+ga() { jq -nc --argjson a "$1" '{gitActions:$a}' > "$FIX/ga.json"; }
+# #13139's third park: resolved, but `git commit --no-edit` refused. The model edits the
+# file, stages nothing, commits nothing, and lists commitMerge.
+merge_answer() { repaired "$(gate_fix 'bash lint.sh')" '[{"file":"shared.txt","resolution":"both lines kept"}]' | jq -c '. + {gitActions:[{action:"commitMerge"}]}'; }
+merge_case() { # <ticket> <hands> — a branch and trunk that both change shared.txt, merging
+  setup "$1"
+  printf 'branch line\n' > "$WT/shared.txt"; git -C "$WT" commit -qam "feat: our line"
+  driver_state_set "$1" repair_base "$(git -C "$WT" rev-parse HEAD)"
+  trunk_moves shared.txt "trunk line $1"; prs "$1" DIRTY
+  printf '%s\n' "$2" > "$FIX/ai/repair.sh"
+  answer "$(merge_answer)"
+}
+merge_done() { [ ! -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes; }
+merge_case 13600 'printf "trunk line 13600\nbranch line\n" > shared.txt'
+out=$(driver_step_repair 13600 2>&1); rc=$?
+want "commitMerge: it finishes"                 "0" "$rc"
+want_in "commitMerge: the driver made the commit" 'commitMerge — the driver finished the merge' "$out"
+want "commitMerge: the merge is finished"       "yes" "$(merge_done)"
+want "commitMerge: both sides kept"             "trunk line 13600 branch line" "$(git -C "$WT" show HEAD:shared.txt | tr '\n' ' ' | sed 's/ $//')"
+want "commitMerge: it is a merge commit"        "3" "$(git -C "$WT" rev-list --parents -1 HEAD | wc -w | tr -d ' ')"
+want_in "commitMerge: the brief names gitActions" 'gitActions' "$(cat "$FIX/claude-stdin-repair.txt")"
+want_in "and says to resolve with Edit, not a script" 'with the Edit tool, never a script' "$(cat "$FIX/claude-stdin-repair.txt")"
+# A marker left in: the driver stages nothing and commits nothing.
+merge_case 13601 'true'
+out=$(driver_step_repair 13601 2>&1); rc=$?
+want "commitMerge with markers: refused"        "24" "$rc"
+want_in "commitMerge with markers: says why"    'conflict markers are still in shared.txt' "$out"
+want "commitMerge with markers: still merging"  "yes" "$([ -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && echo yes)"
+git -C "$WT" merge --abort 2>/dev/null
+
+# resetTo and dropLocalCommits, at the helper: the branch pushed, then local commits.
+setup 13305
+printf 'a\n' > "$WT/a13305.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "local a"; LA=$(git -C "$WT" rev-parse HEAD)
+printf 'b\n' > "$WT/b13305.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "local b"; LB=$(git -C "$WT" rev-parse HEAD)
+TRUNK0=$(git -C "$REPO" rev-list --max-parents=0 develop)
+OTHER=$(git -C "$REPO" commit-tree -p "$TRUNK0" -m "someone else's" "$(git -C "$REPO" rev-parse "$TRUNK0^{tree}")")
+ga "[{\"action\":\"resetTo\",\"sha\":\"$TRUNK0\"}]"
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" build 2>&1); rc=$?
+want "resetTo a trunk commit: refused"          "1" "$rc"
+want_in "resetTo a trunk commit: says why"      "not one of this branch's own commits" "$out"
+want "resetTo a trunk commit: HEAD unmoved"     "$LB" "$(git -C "$WT" rev-parse HEAD)"
+want_in "resetTo refused: the park note says so" 'git step it refuses' "$(driver_state_get 13305 park_note)"
+ga "[{\"action\":\"resetTo\",\"sha\":\"$OTHER\"}]"
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" build 2>&1); rc=$?
+want "resetTo someone else's commit: refused"   "1" "$rc"
+want "resetTo someone else's commit: HEAD unmoved" "$LB" "$(git -C "$WT" rev-parse HEAD)"
+ga '[{"action":"resetTo","sha":"origin/develop"}]'
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" build 2>&1); rc=$?
+want "resetTo a ref name: refused"              "1" "$rc"
+want_in "resetTo a ref name: says why"          'not a commit sha' "$out"
+ga "[{\"action\":\"resetTo\",\"sha\":\"$LA\"}]"
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" build 2>&1); rc=$?
+want "resetTo an unpushed commit of its own: done" "0" "$rc"
+want "resetTo: HEAD is there"                   "$LA" "$(git -C "$WT" rev-parse HEAD)"
+git -C "$WT" reset -q --hard "$LB"; git -C "$WT" push -q origin HEAD
+printf 'c\n' > "$WT/c13305.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "local c"
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" build 2>&1); rc=$?
+want "resetTo behind origin's head: refused"    "1" "$rc"
+want_in "resetTo behind origin's head: says why" 'would drop pushed work' "$out"
+ga "[{\"action\":\"resetTo\",\"sha\":\"$LB\"}]"
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" build 2>&1); rc=$?
+want "resetTo the branch's head on origin: done" "0" "$rc"
+want "resetTo: HEAD is origin's"                "$LB" "$(git -C "$WT" rev-parse HEAD)"
+# dropLocalCommits: a commit origin lacks is refused; one origin has as the same patch is dropped.
+printf 'd\n' > "$WT/d13305.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "local d"; LD=$(git -C "$WT" rev-parse HEAD)
+ga '[{"action":"dropLocalCommits"}]'
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" fix 2>&1); rc=$?
+want "dropLocalCommits not on origin: refused"  "1" "$rc"
+want_in "dropLocalCommits not on origin: names it" "not on origin, so not dropped: $(git -C "$WT" rev-parse --short=10 "$LD")" "$out"
+want "dropLocalCommits not on origin: HEAD unmoved" "$LD" "$(git -C "$WT" rev-parse HEAD)"
+git -C "$WT" commit -q --amend -m "local d, as origin has it"; git -C "$WT" push -q origin HEAD
+git -C "$WT" reset -q --hard "$LD"
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" fix 2>&1); rc=$?
+want "dropLocalCommits already on origin: done" "0" "$rc"
+want "dropLocalCommits: HEAD is origin's"       "$(git -C "$WT" rev-parse "origin/tkt-13305/work")" "$(git -C "$WT" rev-parse HEAD)"
+ga '[{"action":"rebase"}]'
+out=$(driver_git_actions 13305 "$WT" "$FIX/ga.json" fix 2>&1); rc=$?
+want "an action not in the set: refused"        "1" "$rc"
+
 echo "--- plants: each guard out, its case fails ---"
 # The relink before the proof gone (and so the retry's): the #461 case is never proved.
 ( driver_relink_if_behind() { DRIVER_BEHIND_WHY="planted"; return 1; }
@@ -879,5 +959,21 @@ want "planted (no driver git rm): the listed deletions leave the merge unfinishe
   out=$(driver_step_repair 13143 2>&1); rc=$?
   [ -n "$(cat "$CLAUDE_LOG")" ] || [ "$rc" != 0 ] && echo flipped ) > "$FIX/plant4" 2>&1
 want "planted (no on-base reading): the untouched sentinel is not taken by the driver" "flipped" "$(tail -1 "$FIX/plant4")"
+# The driver's git actions gone (the call deleted): commitMerge never runs, so the merge stays unfinished.
+( driver_git_actions() { return 0; }
+  merge_case 13602 'printf "trunk line 13602\nbranch line\n" > shared.txt'
+  out=$(driver_step_repair 13602 2>&1); rc=$?
+  [ "$rc" != 0 ] && [ -z "$(merge_done)" ] && echo flipped ) > "$FIX/plant5" 2>&1
+want "planted (no driver git actions): commitMerge leaves the merge unfinished" "flipped" "$(tail -1 "$FIX/plant5")"
+# The own-history check gone: a trunk commit is taken as a reset target.
+( _driver_ga_reset_to() { git -C "$2" reset -q --keep "$4"; }
+  setup 13603; ga "[{\"action\":\"resetTo\",\"sha\":\"$TRUNK0\"}]"
+  driver_git_actions 13603 "$WT" "$FIX/ga.json" build >/dev/null 2>&1 && echo flipped ) > "$FIX/plant6" 2>&1
+want "planted (no reset check): a trunk commit is accepted" "flipped" "$(tail -1 "$FIX/plant6")"
+# The on-origin check gone: a commit origin lacks is dropped.
+( _driver_ga_drop_local() { git -C "$2" reset -q --keep "origin/$4"; }
+  setup 13604; git -C "$WT" commit -q --allow-empty -m "local only"; ga '[{"action":"dropLocalCommits"}]'
+  driver_git_actions 13604 "$WT" "$FIX/ga.json" fix >/dev/null 2>&1 && echo flipped ) > "$FIX/plant7" 2>&1
+want "planted (no on-origin check): a local-only commit is dropped" "flipped" "$(tail -1 "$FIX/plant7")"
 
 exit $FAILED

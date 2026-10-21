@@ -53,6 +53,7 @@ _driver_fix_gates() { # <ticket>
   driver_say "   fix round $((round + 1)): $n red gate(s) from self-check to repair"
   rc=0; driver_ai_step "$t" fix || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
+  driver_git_actions "$t" "$wt" "$d/steps/fix.json" fix || return "$DRIVER_E_REFUSED"
   driver_format_changed "$t" "$wt" fix || true
   driver_state_bump "$t" fix
   ans="$d/steps/fix.json"
@@ -359,6 +360,7 @@ $proofnote"
   driver_say "   fix round $((round + 1)): $n blocking finding(s) to clear"
   rc=0; driver_ai_step "$t" fix || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
+  driver_git_actions "$t" "$wt" "$d/steps/fix.json" fix || return "$DRIVER_E_REFUSED"
   driver_format_changed "$t" "$wt" fix || true
   driver_state_bump "$t" fix
   ans="$d/steps/fix.json"

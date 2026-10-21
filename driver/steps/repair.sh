@@ -481,7 +481,7 @@ EOS
     fi
   fi
   if [ -n "$conflicted" ]; then
-    conflicts_fact="merging $trunk into $branch conflicted, and the merge is left in progress for you in: $(printf '%s' "$conflicted" | tr '\n' ' ')"
+    conflicts_fact="merging $trunk into $branch conflicted, and the merge is left in progress for you in: $(printf '%s' "$conflicted" | tr '\n' ' ')— resolve each with the Edit tool, then list \`commitMerge\` in \`gitActions\` and the driver stages and commits the merge"
     [ -n "$retired" ] && conflicts_fact="$conflicts_fact
 $trunk DELETED ${retired}and this branch edited them. When the trunk retired a file and the branch's edits only served that retired purpose, take the deletion: never run \`git rm\` yourself (your permission mode refuses it) — list each path in \`takeBaseDeletions\`, resolve and stage the rest, and the driver runs the \`git rm\` and the merge commit. When the edit is still wanted, keep it and say why in \`conflicts\`."
     driver_state_set "$t" repair_conflicted "$conflicted"
@@ -732,6 +732,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
 
   # ---- what the tree says ------------------------------------------------------
   _driver_repair_take_listed "$t" "$wt" "$ans" || return "$DRIVER_E_REFUSED"
+  driver_git_actions "$t" "$wt" "$ans" repair || return "$DRIVER_E_REFUSED"
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] \
      || [ -n "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ]; then
     local um; um=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')

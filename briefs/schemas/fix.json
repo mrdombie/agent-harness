@@ -343,6 +343,43 @@
           }
         }
       }
+    },
+    "gitActions": {
+      "description": "Git steps your permission mode refuses, which the driver checks and runs after this answer, in order: commitMerge stages the resolved conflicted paths and finishes the merge in progress with --no-edit; resetTo moves the branch to sha, one of its own commits not on the trunk or its head on origin; dropLocalCommits resets the branch to origin when every local commit is already there. One refused stops the rest.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "commitMerge",
+              "resetTo",
+              "dropLocalCommits"
+            ]
+          },
+          "sha": {
+            "type": "string",
+            "minLength": 7
+          }
+        },
+        "if": {
+          "properties": {
+            "action": {
+              "const": "resetTo"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "sha"
+          ]
+        }
+      }
     }
   },
   "if": {
