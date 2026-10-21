@@ -2,7 +2,7 @@
 # attest-spitback.test.sh — a pre-push reviewer's SPIT-BACK is findings for the fix
 # round, graded like a review's own, never a terminal stop.
 #
-# Eight Maktura tickets parked on "the reviewer said SPIT-BACK, not SHIP" from
+# Eight tickets in one consuming project parked on "the reviewer said SPIT-BACK, not SHIP" from
 # 2026-10-20: #13044 on one Minor tagged `auto-fixable: no` in review round 2, and
 # #13362, #13460, #13461 on Minors alone in round 2, where a Minor does not block.
 #
