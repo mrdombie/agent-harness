@@ -1,0 +1,24 @@
+{
+  "step": "fix",
+  "skills": [
+    "superpowers:receiving-code-review"
+  ],
+  "status": "fixed",
+  "round": 1,
+  "pmProofs": [
+    {
+      "blockerId": "R2",
+      "pmAnswer": "https://github.com/acme/widgets/issues/7#issuecomment-1",
+      "kind": "mutation",
+      "commit": "a1b2c3d4",
+      "testFile": "src/queue/panel.test.tsx",
+      "command": "npm test -- src/queue/panel.test.tsx"
+    },
+    {
+      "blockerId": "R3",
+      "pmAnswer": "https://github.com/acme/widgets/issues/7#issuecomment-2",
+      "kind": "commit",
+      "commit": "e5f6a7b8"
+    }
+  ]
+}
