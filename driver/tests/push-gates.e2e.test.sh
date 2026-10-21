@@ -49,11 +49,11 @@ if [ -z "$REF" ]; then
   echo "SKIPPED — no consuming project with attestation gates to run against."
   echo "SKIPPED — looked in '${PROJECT:-<nothing>}' for: $(printf '%s' "$GATE_FILES" | tr '\n' ' ')"
   echo "SKIPPED — set HARNESS_E2E_REPO to a checkout that has them. NOTHING WAS PROVED."
-  exit 0
+  suite_skip "no consuming project with attestation gates"
 fi
 if [ ! -d "$PROJECT/node_modules/.bin" ]; then
   echo "SKIPPED — '$PROJECT' has no installed node_modules, so its gates cannot run. NOTHING WAS PROVED."
-  exit 0
+  suite_skip "the project has no installed node_modules"
 fi
 echo "running against $PROJECT at $REF"
 
