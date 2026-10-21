@@ -199,13 +199,21 @@ coord_sheet_render() {
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update")
        else empty end),
+      (if .pace then
+        "", "### Usage budget",
+        "Five-hour window \(.pace.usage.five_hour.u * 100 | round)% against a straight line of \(.pace.fiveHour.line * 100 | round)%"
+        + (if .pace.sevenDay then " · week \(.pace.sevenDay.u * 100 | round)% against \(.pace.sevenDay.line * 100 | round)%" else "" end)
+        + " · at most \(.pace.maxBuildsFleet) building across every machine: "
+        + (.pace.shares | to_entries | map("\(.key) \(.value)") | join(", "))
+       else empty end),
       "",
       "<!-- sheet:v1 updated=\($at) owner=\($owner) -->",
       "```json",
       (.order | map({n, class, prin} + (if .process then {process} else {} end) + (if (.host // "") != "" then {host} else {} end)) | tojson),
       "```",
       (if (.minHarness // "") != "" then "<!-- sheet:floor minHarness=\(.minHarness) -->" else empty end),
-      (if (.fleet // []) | length > 0 then "<!-- sheet:fleet \(.fleet | tojson) -->" else empty end)' <<<"$e"
+      (if (.fleet // []) | length > 0 then "<!-- sheet:fleet \(.fleet | tojson) -->" else empty end),
+      (if .pace then "<!-- sheet:pace \(.pace | tojson) -->" else empty end)' <<<"$e"
 }
 
 _sheet_hash() { printf '%s' "$1" | cksum | awk '{ print $1 "-" $2 }'; }
@@ -216,7 +224,8 @@ coord_sheet_publish() {
   local e="$1" h old_h old_at now beat n body
   now=$(swarm_now)
   # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
-  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet) + {fleet: [(.fleet // [])[] | {host, version, behind}]}' <<<"$e")")
+  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, behind}]}
+                                                + (if .pace then {pace: (.pace | {maxBuildsFleet, shares})} else {} end)' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
@@ -264,7 +273,7 @@ coord_sheet_parse() {
 # be worked from: unreadable with no fresh copy, or older than staleMin.
 coord_sheet_read() {
   local n raw body parsed from=github age
-  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"
+  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"; SHEET_PACE=""
   body=""
   local try
   for try in 1 2; do
@@ -287,6 +296,7 @@ coord_sheet_read() {
   SHEET_MIN_HARNESS=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:floor minHarness=([0-9][0-9.]*) -->$/\1/p' | tail -1)
   SHEET_FLEET=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:fleet (\[.*\]) -->$/\1/p' | tail -1 | jq -c 'if type == "array" then . else [] end' 2>/dev/null)
   [ -n "$SHEET_FLEET" ] || SHEET_FLEET="[]"
+  SHEET_PACE=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:pace (\{.*\}) -->$/\1/p' | tail -1 | jq -c 'if type == "object" then . else empty end' 2>/dev/null)
   parsed=$(coord_sheet_parse "$body") || { SHEET_WHY="the sheet holds no order this coordinator can read"; return 1; }
   SHEET_AT=$(cut -f1 <<<"$parsed"); SHEET_ORDER=$(cut -f3- <<<"$parsed"); SHEET_FROM=$from
   age=$(( ($(swarm_now) - SHEET_AT) / 60 )); [ "$age" -ge 0 ] || age=0
@@ -322,12 +332,19 @@ coord_sheet_floor() {
   printf '%s' "$v"
 }
 
-# coord_heartbeat <builds> <free GB> — this host, as one JSON object.
+# coord_heartbeat <builds> <free GB> [machine capacity] — this host, as one JSON object:
+# with its capacity (the builders its CPU and memory fit, the owner's split weight)
+# and this tick's usage readings (pace.json), so every host acts on the newest number.
 coord_heartbeat() {
-  local b="${1:-0}"; case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  local b="${1:-0}" c="${3:-}" usage; case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  case "$c" in *[!0-9]*) c="" ;; esac
+  usage=$(jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900) | .usage // empty' "${COORD_PACE_STATE:-$COORD_DIR/pace.json}" 2>/dev/null)
   jq -cn --arg host "$COORD_HOST" --arg v "$(harness_running_version)" --arg inst "$(harness_installed_version)" \
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
-     '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}'
+     --arg cap "$c" --arg usage "${usage:-}" \
+     '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}
+      + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
+      + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)'
 }
 
 # coord_fleet <own heartbeat> <others json array> <floor> — every machine, this one first,
@@ -369,14 +386,17 @@ coord_heartbeat_read() {
 coord_heartbeat_post() {
   local hb="$1" n h now beat id old_h old_at body resp line
   now=$(swarm_now); beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
-  h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role}' <<<"$hb")")
+  # Capacity and whole-percent usage too: the owner splits the fleet cap on them.
+  h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role, capacity,
+                              usage: ((.usage // {}) | map_values((.u * 100 | round)))}' <<<"$hb")")
   IFS=$'\t' read -r id old_h old_at < "$COORD_HEARTBEAT_STATE" 2>/dev/null || { id=""; old_h=""; old_at=0; }
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   case "$id" in *[!0-9]*) id="" ;; esac
   if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
-  line=$(jq -r '"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"' <<<"$hb")
+  line=$(jq -r '"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
+                + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)' <<<"$hb")
   body=$(printf '%s\n%s · last tick %s\n<!-- sheet:heartbeat-json %s -->' "$(_hb_marker)" "$line" "$(_sheet_when "$now")" "$hb")
   _hb_patch() { [ -n "$id" ] && resp=$(jq -n --arg b "$body" '{body: $b}' | gh_call api --method PATCH "repos/$REPO_SLUG/issues/comments/$id" --input - 2>/dev/null) \
                  && [ "$(jq -r '.id // empty' <<<"$resp" 2>/dev/null)" = "$id" ]; }

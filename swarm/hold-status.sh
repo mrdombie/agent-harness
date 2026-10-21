@@ -45,6 +45,12 @@ elif u=$(swarm_usage_near_hold); then
       reason: ("the plan'"'"'s " + (if $w == "" then "" else $w + " " end) + "usage is at " + $pct + "%, too near the limit to start a run")}'
 elif u=$(swarm_usage_text_hold); then
   usage "$u"
+elif u=$(swarm_usage_step_hold); then
+  # "<reset epoch>\t<window>\t<percent>": near the wall, the running builders wait between steps.
+  IFS=$'\t' read -r e w pct <<<"$u"
+  jq -cn --arg u "$(swarm_iso "$e")" --arg w "$(window_name "$w")" --arg pct "$pct" \
+    '{held: true, kind: "usage", step: true, until: $u,
+      reason: ("the plan'"'"'s " + (if $w == "" then "" else $w + " " end) + "usage is at " + $pct + "%: running builds finish the step they are on and wait before the next")}'
 else
   echo '{"held":false}'
 fi

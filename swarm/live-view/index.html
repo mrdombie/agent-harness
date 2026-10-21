@@ -162,7 +162,8 @@ const machineOf = (h) => !h ? 'Machine not recorded' : h === thisHost ? `This ma
 // Another machine's claim: its step as the claim names it; progress and activity
 // stay in logs on that machine, so they are left out, never invented.
 const CLAIM_WORD = { start: 'Setting up', plan: 'Planning', build: 'Building', 'self-check': 'Checking', review: 'Being reviewed',
-  ship: 'Opening the pull request', reenter: 'Going back to the pull request', repair: 'Repairing', fix: 'Fixing', push: 'Pushing the fix' }
+  ship: 'Opening the pull request', reenter: 'Going back to the pull request', repair: 'Repairing', fix: 'Fixing', push: 'Pushing the fix',
+  'usage-hold': 'Waiting for usage to reset' }
 function remoteRow(a){
   const step = a.claimStep ? `<b>${esc(CLAIM_WORD[a.claimStep] || a.claimStep)}</b>` : ''
   const time = a.startedAgoMin != null ? `claimed ${esc(dur(a.startedAgoMin))} ago` : ''
@@ -274,6 +275,15 @@ function machineLine(s){
       : fr)
   } else if (d) parts.push('disk free not read')
   parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
+  const p = c && c.pace
+  if (p && p.fiveHour) {
+    const ahead = p.fiveHour.ahead || (p.sevenDay && p.sevenDay.ahead)
+    parts.push(`usage budget: ${esc(Math.round(p.fiveHour.line * 100))}% by now`
+      + (p.sevenDay ? `, week ${esc(Math.round(p.sevenDay.u * 100))}% of ${esc(Math.round(p.sevenDay.line * 100))}%` : '')
+      + ` · at most ${esc(p.maxBuildsFleet)} building on every machine, ${esc(p.share)} here`
+      + (ahead ? ' — <span class="diskheld">ahead of budget, nothing new starts</span>' : ''))
+  }
+  if (c && c.usageHold) parts.push(`<span class="disklow">usage hold at ${esc(c.usageHold.pct)}%: running builds wait before their next step</span>`)
   const hosts = (s.hosts || []).map(h => `${esc(h.host)} (${esc(h.n)})`).join(', ')
   return `Machine: ${parts.join(' · ')}<br>Building on: ${hosts || 'no host'} · updated ${esc(new Date(s.at).toLocaleTimeString())}` + fleetLines(s.fleet)
 }
