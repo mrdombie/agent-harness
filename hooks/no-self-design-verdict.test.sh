@@ -20,7 +20,7 @@ Design-Critic: SHIP (agent) f9ad4e1a738d
 EOF'
 t deny 'bash "$KIT_ROOT/scripts/critic-judge.sh" run 12965'
 t deny 'bash scripts/critic-judge.sh sweep'
-t deny "gh api -X POST repos/mrdombie/maktura/dispatches -f event_type=design-critic-verdict -f 'client_payload[sha]=abc' -f 'client_payload[state]=success'"
+t deny "gh api -X POST repos/acme/widgets/dispatches -f event_type=design-critic-verdict -f 'client_payload[sha]=abc' -f 'client_payload[state]=success'"
 t deny 'gh api repos/acme/widgets/dispatches --input /tmp/verdict.json'
 t deny "gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f 'context=Design critic' -f description=x"
 echo "--- must allow ---"
