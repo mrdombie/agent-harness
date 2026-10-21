@@ -1045,4 +1045,14 @@ want "the same brief again is a fresh round, read afresh, never a resumed ship" 
 want "so the repair checks again and nothing else runs" "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and still nothing parks"                     "" "$(cat "$FIX/park.log")"
 
+echo "--- a repair whose PR merged under it ends clean at ship, saying so ---"
+reset_fakes "ship:32"; rm -rf "$STATE/coordinator"; : > "$GH_LOG"
+driver_state_init 157; driver_state_set 157 noop_note "PR #84 merged at 2026-10-21T07:14:34Z while it was being repaired; nothing left to do"
+printf 'REPAIR on PR #84: red\n' > "$FIX/brief-y.md"
+out=$(bt 157 --repair "$FIX/brief-y.md"); rc=$?
+want "it exits 0"                                  "0" "$rc"
+want "nothing parks"                               "" "$(cat "$FIX/park.log")"
+want_in "it says the PR merged"                    'merged at 2026-10-21T07:14:34Z while it was being repaired' "$out"
+want_not_in "not that the ticket stays in review"  'stays in review' "$out"
+
 exit $FAILED

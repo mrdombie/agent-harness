@@ -527,10 +527,49 @@ setup_wt 141
 driver_state_set 141 mode repair; driver_state_set 141 pr 89
 driver_state_put 141 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 141 review
 printf '[]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
+# Read afresh it is CLOSED, never merged: the park stands.
+: > "$FIX/pr-created-89"; printf '{"number":89,"state":"CLOSED","mergedAt":null,"headRefOid":""}\n' > "$FIX/gh/pr-view.json"
 out=$(driver_step_ship 141 2>&1); rc=$?
 want "it refuses"                            "24" "$rc"
 want_in "saying the PR is no longer open"    'no longer open' "$out"
+want_in "after reading whether it merged"    'pr view 89 .*state,mergedAt' "$(cat "$GH_LOG")"
+want_in "and the park says it closed"        'closed while it was being repaired' "$(driver_state_get 141 park_note)"
+rm -f "$FIX/gh/pr-view.json"
 want_not_in "and opens none"                 'pr create' "$(cat "$GH_LOG")"
+
+echo "--- a repair whose PR MERGED mid-run ends clean: no park, its extra commit backed up ---"
+# #13676 parked "closed while it was being repaired" on a PR automerge had landed.
+setup_wt 371
+driver_state_set 371 mode repair; driver_state_set 371 pr 191
+git -C "$FIX/wt371" push -q origin tkt-371/work; MERGED_HEAD=$(git -C "$FIX/wt371" rev-parse HEAD)
+driver_state_set 371 repair_base "$MERGED_HEAD"
+printf 'late\n' > "$FIX/wt371/r371.txt"; git -C "$FIX/wt371" add r371.txt; git -C "$FIX/wt371" commit -qm "fix: late repair 371"
+LATE=$(git -C "$FIX/wt371" rev-parse HEAD)
+driver_state_put 371 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 371 review
+printf '[]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
+: > "$FIX/pr-created-191"; printf '{"number":191,"state":"MERGED","mergedAt":"2026-10-21T07:14:34Z","headRefOid":"%s"}\n' "$MERGED_HEAD" > "$FIX/gh/pr-view.json"
+RELS="$FIX/rel371"; : > "$RELS"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$RELS" > "$BIN/claim-lock-371"; chmod +x "$BIN/claim-lock-371"
+out=$(CL="$BIN/claim-lock-371" driver_step_ship 371 2>&1); rc=$?
+want "it ends as nothing owed (exit 0 through the run)" "$DRIVER_E_NOOP" "$rc"
+want_in "saying it merged while repairing"   'merged at 2026-10-21T07:14:34Z while repairing' "$out"
+want "no park note is left"                  "" "$(driver_state_get 371 park_note)"
+want_in "the extra commit is named"          'fix: late repair 371' "$out"
+want "and backed up on a stranded ref"       "$LATE" "$(git -C "$FIX/origin" for-each-ref --format='%(objectname)' 'refs/stranded/371/' | head -1)"
+want "the merged branch is not pushed to"    "$MERGED_HEAD" "$(git -C "$FIX/origin" rev-parse tkt-371/work)"
+want_in "the claim is released"              'release 371' "$(cat "$RELS")"
+want_not_in "no PR is opened"                'pr create' "$(cat "$GH_LOG")"
+
+echo "--- a repair whose PR merged with nothing past its head backs nothing up ---"
+setup_wt 372
+driver_state_set 372 mode repair; driver_state_set 372 pr 192
+git -C "$FIX/wt372" push -q origin tkt-372/work
+driver_state_put 372 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 372 review
+: > "$FIX/pr-created-192"; printf '{"number":192,"state":"MERGED","mergedAt":"2026-10-21T07:14:34Z","headRefOid":"%s"}\n' "$(git -C "$FIX/wt372" rev-parse HEAD)" > "$FIX/gh/pr-view.json"
+out=$(driver_step_ship 372 2>&1); rc=$?
+want "it ends clean"                         "$DRIVER_E_NOOP" "$rc"
+want "no stranded ref"                       "" "$(git -C "$FIX/origin" for-each-ref 'refs/stranded/372/')"
+rm -f "$FIX/gh/pr-view.json"
 
 echo "--- a repair the review did not pass is not pushed: on an armed PR the push is the merge ---"
 setup_wt 142
