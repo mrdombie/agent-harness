@@ -100,6 +100,13 @@ _driver_attest_agent() {
   {
     printf 'You are the %s reviewer for ticket #%s. Review this change in the worktree you are in (the diff is against %s).\n\n' "$name" "$t" "$trunk"
     printf 'Your whole answer is handed, verbatim, to this project'"'"'s recorder. Lead with exactly one line, `VERDICT: SHIP` or `VERDICT: SPIT-BACK`, then your findings, each graded Critical, Major, Minor or Nit with a file and line.\n\n'
+    # THE ROUND'S RULE, the one the review step applies: a reviewer that blocks on a Minor
+    # the round defers parks a run the review step would have shipped (#13044).
+    printf '## What blocks in this round\n\nThis is review round %s. In it, only %s findings block: say SPIT-BACK when at least one of those is open, and SHIP otherwise. Still list every lower-graded finding under its grade; the driver puts it on the screen'"'"'s polish list, and a Nit is dropped.\n\n' \
+      "${DRIVER_ATTEST_ROUND:-1}" "$(driver_blocking_grades "${DRIVER_ATTEST_GROUND:-1}" | sed 's/ /, /g')"
+    if [ -s "$(_driver_attest_deferred_file "$t" "$name")" ]; then
+      printf '## Already deferred this round\n\nYour last answer said SPIT-BACK on these alone, and none blocks in this round. They are on the polish list; do not count them toward the verdict:\n\n%s\n\n' "$(cat "$(_driver_attest_deferred_file "$t" "$name")")"
+    fi
     printf '## Renders of the screens it touches\n\n%s\n\n' "${renders:-(none were taken)}"
     printf '## The diff\n\n```diff\n%s\n```\n' "$diff"
   } > "$prompt"
@@ -122,37 +129,106 @@ _driver_first_line() {
   printf '%s' "${l:-(it printed nothing)}" | sed 's/^[[:space:]]*//' | cut -c1-300
 }
 
-# _driver_spitback_to_fix <ticket> <name> <reviewer-output> — 0 when this is not a
-# SPIT-BACK the fix step can take (the caller parks as before); DRIVER_E_REWORK once the
-# reviewer's answer is on the review record as a blocking finding for fix.
+# _driver_attest_graded <reviewer-output> — the reviewer's findings, one JSON object per
+# line {grade, file, line, summary}, read off its grade headings ("**Major (2):**",
+# "## 🔴 Major (0)"). A heading's count caps its section; a section with fewer cited
+# files than its count is padded with the answer itself. No heading at all prints nothing.
+_driver_attest_graded() {
+  awk '
+    function flush() { while (sec != "" && got < want) { emit("", 0, verdict); } }
+    function emit(f, l, s) { gsub(/\t/, " ", s); printf "%s\t%s\t%s\t%s\n", sec, f, l, substr(s, 1, 240); got++ }
+    function clean(x) { gsub(/[`*|#]/, " ", x); gsub(/[[:space:]]+/, " ", x); sub(/^ /, "", x); sub(/ $/, "", x); return x }
+    NR == 1 || verdict == "" { if ($0 ~ /VERDICT:/) { verdict = $0; sub(/.*VERDICT:[^A-Za-z]*[A-Za-z-]+[^A-Za-z]*/, "", verdict); verdict = clean(verdict) } }
+    {
+      h = $0; sub(/^[^A-Za-z]*/, "", h)
+      if (match(h, /^(Critical|Major|Minor|Nit)s?[*:[:space:]]*\([0-9]+\)/)) {
+        flush()
+        g = substr(h, 1, RLENGTH); n = g; sub(/\).*/, "", n); sub(/.*\(/, "", n)
+        sub(/[s*:[:space:]]*\(.*/, "", g); sec = tolower(g); want = n + 0; got = 0; pend = ""
+        next
+      }
+      if (sec == "" || got >= want) next
+      if (pend != "") { t = clean($0); sub(/^(What is wrong|What.s wrong|What happens|Problem|Issue|Why)[[:space:]:]*/, "", t)
+                        if (t != "") { emit(pf, pl, (lbl ? t : pend " — " t)); pend = "" }; next }
+      if (match($0, /[][A-Za-z0-9_.\/@-]+\.[A-Za-z0-9]+:[0-9]+/)) {
+        ref = substr($0, RSTART, RLENGTH); f = ref; sub(/:[0-9]+$/, "", f); l = ref; sub(/.*:/, "", l)
+        rest = $0; sub(/[][A-Za-z0-9_.\/@-]+\.[A-Za-z0-9]+:[0-9]+/, "", rest); rest = clean(rest)
+        lbl = (rest ~ /^(Where|File|Location)([^A-Za-z]|$)/)
+        if (length(rest) < 24 || lbl) { pend = (rest == "" || lbl ? ref : rest); pf = f; pl = l } else emit(f, l, rest)
+      }
+    }
+    END { if (pend != "") emit(pf, pl, pend); flush() }
+  ' "$1" 2>/dev/null | jq -Rc 'split("\t") | {grade: .[0], file: (if .[1] == "" then null else .[1] end),
+                               line: (.[2] | tonumber? // 0), summary: .[3]}' 2>/dev/null
+}
+
+# _driver_spitback_to_fix <ticket> <name> <reviewer-output> — what a SPIT-BACK costs is
+# its GRADES, read as the review step reads its own (the owner, 2026-10-20): round 1
+# blocks on Critical, Major and Minor; later rounds on Critical and Major, a Minor goes
+# on its screen's polish list, a Nit is dropped. Returns
+#   0                 not a SPIT-BACK the fix step can take: the caller parks as before
+#   DRIVER_E_REWORK   a blocking finding is on the review record for fix, round left
+#   99                nothing in it blocks this round: the rest was deferred, run the
+#                     reviewer again (the caller does, once) — never recorded as SHIP
+# A finding tagged `auto-fixable: no` is still the fix step's: the tag means "not
+# mechanical", and the fix step is a model. Parking on it parked #13044 on one Minor.
 _driver_spitback_to_fix() {
-  local t="$1" name="$2" out="$3" d round file line
-  grep -m1 -E '^[[:space:]]*VERDICT:' "$out" 2>/dev/null | grep -q 'SPIT-BACK' || return 0
+  local t="$1" name="$2" out="$3" d round maxr ground block graded blocking defer nb nd
+  grep -m1 -E 'VERDICT:' "$out" 2>/dev/null | grep -q 'SPIT-BACK' || return 0
   case " ${DRIVER_STEPS:-} " in *" fix "*) ;; *) return 0 ;; esac
-  round=$(driver_state_count "$t" review)
-  if [ "${round:-0}" -gt "$DRIVER_MAX_REVIEW_ROUNDS" ]; then
-    driver_say "   push-requires: '$name' said SPIT-BACK and the $DRIVER_MAX_REVIEW_ROUNDS review round(s) are spent — parking with its findings"
-    return 0
-  fi
-  if grep -iqE 'auto-?fixable[^A-Za-z]*(\*\*)?[[:space:]|:]*(\*\*)?no\b' "$out" 2>/dev/null; then
-    driver_say "   push-requires: '$name' said SPIT-BACK and marked a finding not auto-fixable — parking for a person"
-    return 0
-  fi
+  round="${DRIVER_ATTEST_ROUND:-$(driver_state_count "$t" review)}"; ground="${DRIVER_ATTEST_GROUND:-$round}"
+  maxr="${DRIVER_ATTEST_MAXR:-$DRIVER_MAX_REVIEW_ROUNDS}"
+  block=$(driver_blocking_grades "$ground")
   d=$(driver_state_dir "$t")
-  file=$(grep -oE '[][A-Za-z0-9_./@-]+\.[A-Za-z0-9]+:[0-9]+' "$out" 2>/dev/null | head -1)
-  line=${file##*:}; file=${file%:*}
-  case "$line" in ''|*[!0-9]*) line=0 ;; esac
-  [ -n "$file" ] || file="(the '$name' reviewer's answer)"
-  jq --arg id "attest-$name-$round" --arg f "$file" --argjson l "$line" --arg name "$name" \
-     --arg body "$(head -c 12000 "$out")" \
-     '.findings = ((.findings // []) + [{id: $id, file: $f, line: $l, grade: "major",
-        summary: ("The \($name) reviewer said SPIT-BACK; the push needs its SHIP"),
+  graded=$(_driver_attest_graded "$out" | jq -sc '.')
+  # UNGRADED IS A MAJOR. A SPIT-BACK naming no grade still refused the push.
+  [ "$(printf '%s' "$graded" | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null \
+    || graded=$(jq -nc --arg s "$(grep -m1 -v '^[[:space:]]*$' "$out" | cut -c1-240)" '[{grade: "major", file: null, line: 0, summary: $s}]')
+  blocking=$(printf '%s' "$graded" | jq -c --arg b "$block" '[.[] | select(.grade as $g | ($b | split(" ")) | index($g))]')
+  defer=$(printf '%s' "$graded" | jq -c --arg b "$block" '[.[] | select(.grade != "nit" and (.grade as $g | ($b | split(" ")) | index($g) | not))]')
+  nb=$(printf '%s' "$blocking" | jq 'length'); nd=$(printf '%s' "$defer" | jq 'length')
+  # ONCE A ROUND: the run again does not put the same Minor on the list twice.
+  [ -s "$(_driver_attest_deferred_file "$t" "$name")" ] && { defer='[]'; nd=0; }
+  if [ "$nb" -gt 0 ] && [ "${round:-0}" -gt "$maxr" ]; then
+    driver_say "   push-requires: '$name' said SPIT-BACK with $nb blocking ($block) finding(s) and the $maxr review round(s) are spent — parking with its findings"
+    return 0
+  fi
+  [ -f "$d/steps/review.json" ] || return 0
+  local fallback; fallback="(the '$name' reviewer's answer)"
+  jq --argjson add "$(printf '%s' "$blocking $defer" | jq -sc 'add')" --arg name "$name" --arg r "$round" \
+     --arg fb "$fallback" --arg body "$(head -c 12000 "$out")" \
+     '.findings = ((.findings // []) + [$add | to_entries[] | .value as $x | {
+        id: ("attest-\($name)-\($r)-\(.key)"), file: ($x.file // $fb), line: ($x.line // 0), grade: $x.grade,
+        summary: ("\($name): " + ($x.summary // "said SPIT-BACK")),
         reason: ("this project'"'"'s pre-push refuses the push until the \($name) reviewer passes the change"),
-        fix: ("Clear every finding the reviewer graded, as it proposes. Its whole answer:\n" + $body)}])
-      | .verdict = "BLOCKED"' "$d/steps/review.json" > "$d/steps/review.json.tmp" 2>/dev/null \
+        fix: ("Clear this finding as the reviewer proposes. Its whole answer:\n" + $body)}])' \
+     "$d/steps/review.json" > "$d/steps/review.json.tmp" 2>/dev/null \
     && mv "$d/steps/review.json.tmp" "$d/steps/review.json" || { rm -f "$d/steps/review.json.tmp"; return 0; }
-  driver_say "↩ push-requires: '$name' said SPIT-BACK (review round $round of $DRIVER_MAX_REVIEW_ROUNDS) — its findings go to fix, then the review runs again"
+  # THE REVIEW STEP'S OWN DEFERRAL, so a gate's Minor lands where a review's does —
+  # once a round (set above).
+  if [ "$nd" -gt 0 ]; then
+    if type _driver_review_defer >/dev/null 2>&1; then
+      _driver_review_defer "$t" "$d/steps/review.json" "$ground"
+    else
+      printf '%s' "$defer" | jq -c --argjson r "$round" '.[] | {grade, file, line, summary, round: $r, list: ""}' >> "$d/steps/review.deferred.jsonl"
+      jq --argjson n "$nd" '.findings = ((.findings // [])[: ((.findings | length) - $n)])' "$d/steps/review.json" > "$d/steps/review.json.tmp" \
+        && mv "$d/steps/review.json.tmp" "$d/steps/review.json"
+    fi
+    printf '%s' "$defer" | jq -r '.[] | "- [\(.grade)] \(.file // "?"):\(.line // 0) — \(.summary // "")"' > "$(_driver_attest_deferred_file "$t" "$name")"
+  fi
+  if [ "$nb" -eq 0 ]; then
+    driver_say "↻ push-requires: '$name' said SPIT-BACK on nothing that blocks in review round $round ($block) — $nd deferred, the reviewer runs again"
+    return 99
+  fi
+  jq '.verdict = "BLOCKED"' "$d/steps/review.json" > "$d/steps/review.json.tmp" && mv "$d/steps/review.json.tmp" "$d/steps/review.json"
+  driver_say "↩ push-requires: '$name' said SPIT-BACK with $nb blocking ($block) finding(s) (review round $round of $maxr) — they go to fix, then the review and '$name' run again"
   return "$DRIVER_E_REWORK"
+}
+
+# _driver_attest_deferred_file <ticket> <name> — this round's deferred findings, told to
+# the reviewer when it runs again.
+_driver_attest_deferred_file() {
+  printf '%s/steps/attest-%s.deferred.txt' "$(driver_state_dir "$1")" "$(printf '%s' "$2" | tr -cs 'A-Za-z0-9._-' '-')"
 }
 
 driver_push_requires() { # <ticket>
@@ -217,6 +293,13 @@ driver_push_requires() { # <ticket>
   local rows owed orc tier
   # A BUILD THAT DRAWS NOTHING OWES NO PICTURE VERDICT (tier.sh): the critic judges pixels.
   tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
+  # THE REVIEW ROUND THESE VERDICTS SIT IN, graded as the review step grades it: a
+  # tooling build gets one round, read as a later one.
+  DRIVER_ATTEST_ROUND=$(driver_state_count "$t" review); DRIVER_ATTEST_GROUND="$DRIVER_ATTEST_ROUND"
+  DRIVER_ATTEST_MAXR="$DRIVER_MAX_REVIEW_ROUNDS"
+  if [ "$tier" = tooling ]; then DRIVER_ATTEST_MAXR=1; [ "${DRIVER_ATTEST_GROUND:-0}" -ge 2 ] || DRIVER_ATTEST_GROUND=2; fi
+  export DRIVER_ATTEST_ROUND DRIVER_ATTEST_GROUND DRIVER_ATTEST_MAXR
+  DRIVER_ATTEST_BLOCKING=$(driver_blocking_grades "$DRIVER_ATTEST_GROUND"); export DRIVER_ATTEST_BLOCKING
   rows=$(jq -r '(.review.attest // {}) | to_entries[]
                 | (if (.value | type) == "string" then {owed: .value} else .value end) as $v
                 | [.key, ($v.owed // ""), ($v.review // ""), ($v.record // ""), ($v.agent // ""), (if $v.needsRenders == true then "yes" else "" end)] | join("\u001f")' "$HARNESS_CFG" 2>/dev/null)
@@ -273,6 +356,12 @@ driver_push_requires() { # <ticket>
 
     # The reviewer, in the ticket's worktree, with its output kept whole.
     out="$d/verdict-$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-').txt"
+    rm -f "$(_driver_attest_deferred_file "$t" "$name")"
+    local again=0
+    # ONCE MORE, AT MOST: a SPIT-BACK on nothing this round blocks is run again with
+    # the deferral stated, and only the reviewer's own SHIP is ever recorded.
+    while :; do
+    export DRIVER_ATTEST_DEFERRED; DRIVER_ATTEST_DEFERRED="$(_driver_attest_deferred_file "$t" "$name")"
     # A STEP OF THE WALK, NOT A PERSON'S TURN. The reviewer is its own `claude -p`,
     # so without this the kit's sign-off Stop hook fires on it and its whole answer
     # comes back as the banner: no VERDICT line, and a test-only ticket parked here
@@ -315,15 +404,18 @@ driver_push_requires() { # <ticket>
     fi
     if [ "$rc" -ne 0 ]; then
       # A SPIT-BACK IS THE GATE WORKING, so it goes to fix like a review's own finding:
-      # #13461 and #13305 parked on one. Its findings become one blocking finding on the
-      # review record, and the walk loops review -> fix -> re-review within the round
-      # limit. It parks only past the limit, or when a finding is marked not auto-fixable.
+      # #13461 and #13305 parked on one. Its findings go on the
+      # review record at their grades, and the walk loops review -> fix -> re-review in the
+      # round limit. It parks only past the limit with a blocking finding left.
       local srv; srv=0; _driver_spitback_to_fix "$t" "$name" "$out" || srv=$?
-      [ "$srv" -eq 0 ] || return "$srv"
+      if [ "$srv" -eq 99 ] && [ "$again" -eq 0 ]; then again=1; continue; fi
+      [ "$srv" -eq 0 ] || [ "$srv" -eq 99 ] || return "$srv"
       driver_say "✋ push-requires: '$name' could not be recorded — $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
       driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict and the recorder refused it: $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
       return "$DRIVER_E_REFUSED"
     fi
+    break
+    done
     after=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
     if [ "$after" = "$before" ]; then
       driver_say "   push-requires: '$name' recorded nothing new — $(tr '\n' ' ' < "$out.recorded" | cut -c1-200)"
