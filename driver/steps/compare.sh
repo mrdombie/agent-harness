@@ -100,7 +100,7 @@ driver_step_compare() { # <ticket>
   local route rwhy
   IFS=$'\t' read -r route rwhy <<<"$(driver_screen_route "$t")"
   if [ "$route" = baseline ]; then
-    driver_state_set "$t" renders "(none — $rwhy. No picture binds it, so nothing is compared here; CI holds a visible difference for the PM)"
+    driver_state_set "$t" renders "(none — $rwhy. No picture binds it, so nothing is compared here; CI posts the diff and the PM looks at it)"
     driver_say "   compare: $rwhy — no picture, no compare on this machine"
     return "$DRIVER_OK"
   fi

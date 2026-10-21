@@ -274,7 +274,7 @@ _driver_ship_tier_line() {
   case "$2" in
     screen)
       if [ "$(driver_state_get "$1" screen_route 2>/dev/null)" = baseline ]; then
-        printf 'Change tier: screen, existing screen — %s. Baseline route: CI diffs its shots against the last approved shots; a visible difference is held for the PM. No picture, compare or design critic.' "$3"
+        printf 'Change tier: screen, existing screen — %s. Baseline route: CI diffs its shots against the last approved shots and the PM signs off with the diff in front of them. No picture, compare or design critic.' "$3"
       else
         printf 'Change tier: screen — %s. Picture, compare, CI evidence, design critic and sign-off apply.' "$3"
       fi ;;
