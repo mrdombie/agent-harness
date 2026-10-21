@@ -316,6 +316,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 25 | a command outran its time limit — a hang is not a failure to retry |
 | 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first repair round, goes back to `fix` |
 | 31 | start found the ticket's one open pull request (ready, or a draft on the record's own branch): the run becomes a repair of it (`build-ticket --repair`), once per run |
+| 32 | the repair read its pull request afresh and nothing is owed (its head holds the trunk, GitHub reads it MERGEABLE, no check on it is red, auto-merge is armed): the round is closed and the run exits 0, still in review, with no park |
 
 A gate that outruns its limit (25) is tried once more after the machine quietens, its
 limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second
