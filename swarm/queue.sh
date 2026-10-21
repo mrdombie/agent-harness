@@ -125,8 +125,7 @@ cmd_drain() {
     swarm_spawnable "$t" || continue
     if [ "$flags" = "reset" ]; then
       bash "$CL" release "$t" >/dev/null 2>&1 || true
-      swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-        --remove-label "$LBL_IN_REVIEW" --add-label "$LBL_READY" >/dev/null 2>&1 || true
+      issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || true
     fi
     if swarm_spawn "$t" "$([ "$brief" = "-" ] && echo "" || echo "$brief")" "$budget"; then
       drop "$t"; launched=$((launched+1)); echo "→ spawned #$t"

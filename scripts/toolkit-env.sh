@@ -481,6 +481,12 @@ LBL_POLISH_LIST="${LBL_POLISH_LIST:-$(toolkit_cfg labels.polishList 2>/dev/null 
 LBL_SCREEN_PREFIX="${LBL_SCREEN_PREFIX:-$(toolkit_cfg labels.screenPrefix 2>/dev/null || echo screen:)}"
 export LBL_POLISH_LIST LBL_SCREEN_PREFIX
 
+# A ticket's status changes only through issue_status_set / issue_status_mark.
+# From beside this file, not KIT_ROOT: a caller may point KIT_ROOT at another copy.
+if [ -n "${BASH_VERSION:-}" ]; then _kit_here="${BASH_SOURCE[0]}"; else eval '_kit_here="${(%):-%x}"'; fi
+. "$(cd "$(dirname "$_kit_here")" && pwd)/issue-status.sh" || return 1 2>/dev/null || exit 1
+unset _kit_here
+
 export KIT_ROOT STATE_DIR REPO_ROOT MAIN_REPO SUPPORT_REPO PROGRAMMES_DIR CL HARNESS_CFG HARNESS_CFG_FROM
 export REPO_SLUG INTEGRATION_BRANCH BRANCH_PREFIX DESIGN_KIT STATUS_PREFIX
 export LBL_DRAFTING LBL_READY LBL_CLAIMED LBL_IN_REVIEW LBL_GATED LBL_PARTIAL LBL_NEEDS_HUMAN LBL_PM_DECISION LBL_PM_TRACK LBL_BLOCKED LBL_EXTERNAL_BLOCKED LBL_PARKED HOLD_LABEL DECISION_LABELS

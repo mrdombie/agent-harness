@@ -157,7 +157,9 @@ out=$(w --only unblock)
 want_in "the ready one is released"    'unblocked #301' "$out"
 want_in "and relabelled"               'issue edit 301 .*--remove-label status:blocked --add-label status:ready' "$(cat "$GH_LOG")"
 want_not_in "the held one stays held"  'unblocked #302' "$out"
-want "two held tickets and three parents: no ticket read on its own" "0" "$(grep -c '^issue view' "$GH_LOG")"
+# The one read on its own is the relabel's fresh read of the ticket it moves (issue-status.sh).
+want "two held tickets and three parents: no parent or held ticket read on its own" "1" "$(grep -c '^issue view' "$GH_LOG")"
+want "and that one read is the released ticket's, before its relabel" "1" "$(grep -c '^issue view 301 ' "$GH_LOG")"
 want "and every parent in one batched read" "1" "$(grep -c '^api graphql' "$GH_LOG")"
 
 echo "--- a pass over many broken PRs reads their tickets in one request ---"

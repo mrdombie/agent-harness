@@ -337,8 +337,7 @@ cmd_release() {
                | grep -qv '^0$'; then
             printf '  #%s has a merged PR — shipped, not abandoned; leaving the label alone\n' "$issue"
           else
-            gh issue edit "$issue" --repo "$REPO_SLUG" \
-              --remove-label "$LBL_CLAIMED" --add-label "$LBL_READY" >/dev/null 2>&1 \
+            issue_status_set "$issue" "$LBL_READY" >/dev/null 2>&1 \
               && printf '  #%s back on the board (%s)\n' "$issue" "$LBL_READY"
           fi
           ;;
@@ -348,8 +347,7 @@ cmd_release() {
           local _pr _to="$LBL_READY"
           _pr=$(open_pr_closing "$issue")
           [ -n "$_pr" ] && _to="$LBL_IN_REVIEW"
-          gh issue edit "$issue" --repo "$REPO_SLUG" \
-            --add-label "$_to" >/dev/null 2>&1 \
+          issue_status_set "$issue" "$_to" >/dev/null 2>&1 \
             && printf '  #%s had no status — set %s\n' "$issue" "$_to"
           ;;
       esac

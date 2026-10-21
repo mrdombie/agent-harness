@@ -210,33 +210,25 @@ BRIEF
   if [ "$cause" = "person" ] && [ "$asked" -eq 1 ]; then
     # Its status is needs-human, which its answer lifts with the owner's label; not
     # status:parked, which an answer once left behind to block every spawn.
-    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-      --add-label "$LBL_NEEDS_HUMAN" --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    issue_status_set "$t" "$LBL_NEEDS_HUMAN" >/dev/null 2>&1 || true
   elif [ "$cause" = "person" ]; then
     [ ! -f "$oq" ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
       --body "The question could not be put in the owner's channel, so \`$HOLD_LABEL\` is on instead: answer it, clear the label, and run the driver again." >/dev/null 2>&1 || true
-    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-      --add-label "$LBL_PARKED" --add-label "$HOLD_LABEL" \
-      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    issue_status_set "$t" "$LBL_PARKED" --also "$HOLD_LABEL" >/dev/null 2>&1 || true
   elif [ "$cause" = "pm" ]; then
-    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-      --add-label "$LBL_PARKED" --add-label "$DRIVER_PM_LABEL" \
-      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    # The PM's question is a marker beside the parked status, kept until answered.
+    issue_status_set "$t" "$LBL_PARKED" --also "$DRIVER_PM_LABEL" >/dev/null 2>&1 || true
   elif [ "$(driver_state_get "$t" '.counters.machine_parks // 0')" -lt "${DRIVER_MAX_MACHINE_PARKS:-2}" ]; then
     # THE MACHINE STOPPED, NOT THE TICKET: left ready, so the next tick resumes it from
     # the last finished step. Past the cap in a row it stays parked for a look.
     driver_state_bump "$t" machine_parks
-    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-      --add-label "$LBL_READY" --remove-label "$LBL_PARKED" \
-      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || true
     driver_say "   park: the cause is the driver's, not the ticket's — #$t is left ready for the next tick"
   else
     # Counted past the cap too: the healing lane reads "over the cap on this PR head"
     # off the record and stops re-picking it (#12840: 10 runs, every one a park).
     [ "$cause" != driver ] || driver_state_bump "$t" machine_parks
-    swarm_gh issue edit "$t" --repo "$REPO_SLUG" \
-      --add-label "$LBL_PARKED" \
-      --remove-label "$LBL_CLAIMED" >/dev/null 2>&1 || true
+    issue_status_set "$t" "$LBL_PARKED" >/dev/null 2>&1 || true
   fi
 
   # Last. Everything above has to be true before the ticket is anyone else's.

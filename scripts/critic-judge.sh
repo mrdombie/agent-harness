@@ -470,7 +470,7 @@ run() { # <pr>
   else record "$pr" "$head" "$set" "$verdict" failure "$url" "$PREFIX: $verdict on shots $set ($n) at ${evsha:0:9} — $(printf '%s\n' "$blocks" | grep -c .) blocking${deriv:+ · $deriv}" || return 2; fi
   # A red verdict on a signed-off screen is the PM's to call: the ticket is held for it,
   # which every repairer reads as "do not send an agent".
-  [ "$signed" = 0 ] || swarm_gh issue edit "$t" --repo "$REPO_SLUG" --add-label "$LBL_PM_DECISION" >/dev/null 2>&1 || true
+  [ "$signed" = 0 ] || issue_status_mark "$t" "$LBL_PM_DECISION" >/dev/null 2>&1 || true
   say "PR #$pr: $verdict at ${head:0:9} on shots $set ($n)${ignored:+; $(printf '%s\n' "$ignored" | grep -c .) builder-written verdict(s) ignored}"
   rm -rf "$W"
   [ "$pass" = success ]

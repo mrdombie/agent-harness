@@ -25,7 +25,7 @@ Argument is the ticket number, e.g. `/agent-harness:release 9822`. If absent, as
 
    ```bash
    KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
-   gh issue edit <ISSUE_NUM> --repo "$REPO_SLUG" --remove-label "$LBL_CLAIMED" --add-label "$LBL_READY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set <ISSUE_NUM> "$LBL_READY"   # takes every other status off too
    gh issue comment <ISSUE_NUM> --repo "$REPO_SLUG" --body "Released by /agent-harness:release — claim went idle (>24h with no commits)."
    ```
 
@@ -62,7 +62,7 @@ Argument is the ticket number, e.g. `/agent-harness:release 9822`. If absent, as
 
    ```bash
    "$CL" release "$TICKET_KEY" --force
-   gh issue edit "$TICKET_KEY" --repo "$REPO_SLUG" --remove-label "$LBL_CLAIMED" --add-label "$LBL_READY"
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/issue-status.sh" set "$TICKET_KEY" "$LBL_READY"   # takes every other status off too
    gh issue comment "$TICKET_KEY" --repo "$REPO_SLUG" --body "Released by /agent-harness:release — claim went idle (>24h with no commits)."
    node "$(git rev-parse --show-toplevel)/scripts/sync-project-board.js" >/dev/null 2>&1 || true   # the board mirrors the labels
    ```
