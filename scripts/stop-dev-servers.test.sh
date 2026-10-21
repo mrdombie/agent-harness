@@ -8,10 +8,11 @@
 # real claim or server is ever a candidate, because every real one lives outside
 # this test's temp directory and none is named like its ticket folders.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stop-dev-servers.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
-command -v lsof >/dev/null || { echo "  SKIP — no lsof"; exit 0; }
+command -v lsof >/dev/null || { suite_skip "  SKIP — no lsof"; }
 
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   — $1"; }
@@ -25,7 +26,7 @@ cleanup() {
   for p in $(lsof -a -d cwd -Fpn 2>/dev/null | awk -v t="$T/" '/^p/{p=substr($0,2)} /^n/{if (index(substr($0,2) "/", t) == 1) print p}'); do kill "$p" 2>/dev/null; done
   rm -rf "$T"
 }
-trap cleanup EXIT
+on_exit_keep_status cleanup
 
 # Output goes nowhere: a stand-in holding the $(...) pipe would make the capture
 # wait for the whole sleep.
@@ -206,4 +207,4 @@ out=$(bash "$SUT" --session 1 --dry-run)
 printf '%s' "$out" | grep -q "would stop" && fail "--session 1 claimed every server on the machine" || ok "--session refuses launchd as a session"
 
 echo "stop-dev-servers: $PASS passed, $FAIL failed"
-[ "$FAIL" = 0 ]
+suite_end "$FAIL"

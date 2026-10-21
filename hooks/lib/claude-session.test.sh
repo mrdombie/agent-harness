@@ -16,6 +16,7 @@
 #   no test can conjure. It is replaced here AFTER sourcing, so what is under
 #   test is scope_owned_by_peer's decision table, not the process walk.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
 [ -f "$LIB" ] || { echo "missing $LIB"; exit 2; }
@@ -24,7 +25,7 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
 
 SB="${TMPDIR:-/tmp}/claude-session-fixture-$$"
 mkdir -p "$SB"
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()   { echo "  ok   — $1"; }
 bad()  { echo "  FAIL — $1"; fail=1; }
@@ -138,7 +139,7 @@ MINE=$ALIVE
 # rather than whatever happens to be running on the machine.
 echo
 echo "--- claude_session_pid: the real walk ---"
-WALKDIR=$(mktemp -d); trap 'rm -rf "$WALKDIR"' EXIT
+WALKDIR=$(mktemp -d); on_exit_keep_status 'rm -rf "$WALKDIR"'
 
 # $1 = the comm= that PID 100 reports. The tree is 300 -> 200 -> 100 -> 1.
 fake_ps() {
@@ -174,4 +175,4 @@ wcase "node"                            "(unresolved)" "no claude ancestor is un
 echo
 [ "$fail" -eq 0 ] && echo "claude-session fixture: all checks hold" \
                   || echo "claude-session fixture: FAILURES"
-exit "$fail"
+suite_end "$fail"

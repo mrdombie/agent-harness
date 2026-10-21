@@ -13,6 +13,7 @@
 # The function is read out of toolkit-env.sh itself, so this tests the shipped
 # text, with toolkit_cfg stubbed to the config each case needs.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 ENV_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh"
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   — $1"; }
@@ -29,7 +30,7 @@ NAME="wtroot-test-$$"
 REPO_SLUG="owner/$NAME"
 DEFAULT="$HOME/.harness-worktrees/$NAME"
 cleanup() { rmdir "$DEFAULT" 2>/dev/null; rmdir "$HOME/.harness-worktrees" 2>/dev/null; true; }
-trap cleanup EXIT
+on_exit_keep_status cleanup
 
 echo "--- the default is under HOME, keyed by the repo's name, and exists ---"
 unset HARNESS_WORKTREE_ROOT
@@ -72,4 +73,4 @@ grep -nE 'WORKTREE=.*TMPDIR|TMP_BASE=' "$CLAIM" >/dev/null && fail "claim still 
 
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

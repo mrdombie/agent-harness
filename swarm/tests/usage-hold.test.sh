@@ -5,10 +5,11 @@
 # hold names its source. Then the plant: delete the exclusion and the quote holds.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 FAILED=0
 KIT="$HERE/../.."
 LOG="$STATE/logs/claim-12554-20261016T092222Z-1.log"
@@ -131,4 +132,4 @@ grep -q "fromjson" "$P/swarm/swarm-env.sh" && bad "plant: the exclusion is still
 quoted_log
 if u=$(hold "$P"); then ok "planted: every line read as the CLI's → the quote holds ($u) → red"; else bad "planted: the exclusion deleted and the quote still holds nothing → the test cannot see it"; fi
 
-exit $FAILED
+suite_end "$FAILED"

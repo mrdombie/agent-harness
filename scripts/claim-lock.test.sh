@@ -15,12 +15,13 @@
 #   The case below runs the real script from inside a real bare clone. Planting
 #   the old exit-code test turns it red.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-lock.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
 
 SB=$(mktemp -d "${TMPDIR:-/tmp}/claim-lock-fixture-XXXXXX")
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -210,4 +211,4 @@ gh_run -- release 781 --force
 echo
 [ "$fail" -eq 0 ] && echo "claim-lock fixture: all checks hold" \
                   || echo "claim-lock fixture: FAILURES"
-exit "$fail"
+suite_end "$fail"

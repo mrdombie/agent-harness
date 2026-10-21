@@ -12,10 +12,11 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/../.." && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 
 # harness.json AS THE KIT'S OWN README DOCUMENTS IT. The fixture writes a flat
 # `gates` map, which is the shape self-check happened to read — so the documented
@@ -268,4 +269,4 @@ want "it still parks"                      "20" "$rc"
 want_in "and blames the commit, not the push" 'could NOT be committed' "$out"
 want_in "quoting the hook that refused it"    'subject-empty' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

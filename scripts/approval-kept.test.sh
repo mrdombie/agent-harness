@@ -8,10 +8,11 @@
 # comment the hold's removal followed. The last section runs on real git history.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 K="$HERE/approval-kept.sh"
 design() { jq --argjson d "$1" '.design = $d' "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"; }
 # Most cases pin the screen list as complete, so they test the rule, not the default.
@@ -382,4 +383,4 @@ want "no surfacePaths at all: the wide rule, minus release notes" "lib/y.ts" \
   "$(printf 'lib/y.ts\ndocs/x.md\nlib/y.test.ts\n' | bash "$K" screens)"
 design "$PRECISE"
 
-exit $FAILED
+suite_end "$FAILED"

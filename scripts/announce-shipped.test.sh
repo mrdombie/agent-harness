@@ -2,6 +2,7 @@
 # announce-shipped.sh: the banner names the ticket and title, a notification is
 # sent where osascript exists, and a machine without it still exits 0.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/announce-shipped.sh"
 [ -f "$SUT" ] || { echo "missing $SUT"; exit 2; }
@@ -10,7 +11,7 @@ PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok   — $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL — $1"; }
 
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d); on_exit_keep_status 'rm -rf "$T"'
 mkdir "$T/bin"
 cat > "$T/bin/osascript" <<'STUB'
 #!/usr/bin/env bash
@@ -37,4 +38,4 @@ out=$(PATH="$BASE" bash "$SUT" 7 'No mac'); rc=$?
 PATH="$BASE" bash "$SUT" 7 >/dev/null 2>&1 && fail "missing title accepted" || ok "missing title refused"
 
 echo "$PASS passed, $FAIL failed"
-[ $FAIL -eq 0 ]
+suite_end "$FAIL"

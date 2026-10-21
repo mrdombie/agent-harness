@@ -7,10 +7,11 @@
 # both windows share one login and one host — the case the claim identity
 # (login@host) cannot tell apart.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SB=$(mktemp -d "${TMPDIR:-/tmp}/fix-lock-XXXXXX")
 PIDS=""
-trap 'for p in $PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$SB"' EXIT
+on_exit_keep_status 'for p in $PIDS; do kill "$p" 2>/dev/null; done; rm -rf "$SB"'
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 unset CLAIM_RUN_ID HARNESS_STATE_DIR FIX_LOCK_WINDOW FIX_LOCK_PID
 export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@test.local
@@ -119,4 +120,4 @@ plant "the window is the machine, as the claim identity is" \
 plant "a dead window's lock is never taken over" \
   'if [ "$host" = "$HOST" ] && ! claim_pid_alive "$pid"; then' 'if false; then'
 
-exit $fail
+suite_end "$fail"

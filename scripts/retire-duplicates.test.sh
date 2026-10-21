@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Self-test for retire-duplicates.sh and check-single-source.sh, against a fake
 # CLAUDE_CONFIG_DIR — nothing real is read or moved.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 D="$(cd "$(dirname "$0")" && pwd)"; KIT="$(cd "$D/.." && pwd)"; fail=0
 ok(){ echo "ok   $1"; }; bad(){ echo "FAIL $1"; fail=1; }
-C=$(mktemp -d); REPO=$(mktemp -d); trap 'rm -rf "$C" "$REPO"' EXIT
+C=$(mktemp -d); REPO=$(mktemp -d); on_exit_keep_status 'rm -rf "$C" "$REPO"'
 export CLAUDE_CONFIG_DIR="$C" CLAUDE_PLUGIN_ROOT="$KIT"
 
 mkdir -p "$C/commands" "$C/agents" "$C/hooks/lib"
@@ -96,4 +97,4 @@ HOME="$C" bash "$D/check-single-source.sh" "$REPO" >/dev/null 2>&1 \
   && bad "a repo copy of a plugin skill passed the gate" || ok "a repo copy of a plugin skill fails the gate"
 
 [ "$fail" -eq 0 ] && echo "retire-duplicates: all cases pass"
-exit $fail
+suite_end "$fail"

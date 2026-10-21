@@ -8,9 +8,10 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../ai-step.sh" || exit 1
 . "$HERE/../push-requires.sh" || exit 1
@@ -165,4 +166,4 @@ want_in "and that only Critical and Major block in it" 'only critical, major fin
 want_in "and lists what was deferred" 'footer link stays hidden' "$sent"
 unset DRIVER_ATTEST_ROUND DRIVER_ATTEST_GROUND
 
-exit "$FAILED"
+suite_end "$FAILED"

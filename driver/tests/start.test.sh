@@ -5,9 +5,10 @@
 # PM has gated, and to one a peer already claimed.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/start.sh" || exit 1
 
 # The claim seam: a recorder, so the suite never writes a ref to a real origin.
@@ -326,4 +327,4 @@ fix_issue 141 OPEN "status:ready,type:feature"
 rc=0; driver_step_start 141 >/dev/null 2>&1 || rc=$?
 want "a ticket with no stranded ref is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 141 worktree)" rev-parse HEAD)"
 
-exit $FAILED
+suite_end "$FAILED"

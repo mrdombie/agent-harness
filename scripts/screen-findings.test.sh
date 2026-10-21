@@ -5,10 +5,11 @@
 # the independent critic's findings from its latest failing verdict on the PR.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 SF="$HERE/screen-findings.sh"
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok  $1"; }
@@ -100,4 +101,4 @@ rc=0; HARNESS_CFG_PATH="$FIX/cfg-screens.json" bash "$SF" polish 501 "$FIX/files
 [ "$rc" = 2 ] && ok "a list that cannot be read is said, not lent" || bad "unreadable lends: rc=$rc"
 
 echo "screen-findings: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

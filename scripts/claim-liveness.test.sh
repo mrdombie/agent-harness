@@ -9,9 +9,10 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 . "$(cd "$(dirname "$0")" && pwd)/claim-liveness.sh" || exit 1
 
-FIX=$(mktemp -d); trap 'rm -rf "$FIX"' EXIT
+FIX=$(mktemp -d); on_exit_keep_status 'rm -rf "$FIX"'
 FAILED=0
 ok()   { printf 'OK       %s\n' "$1"; }
 bad()  { printf 'MISMATCH %s\n' "$1"; FAILED=1; }
@@ -302,4 +303,4 @@ want "a parked ticket's dead claim is released" "no" "$(ref_present 712)"
 want_not_in "and it is not put back on the board" '712 .*--add-label st:ready' "$(cat "$GH_EDITS")"
 want_in "but it loses status:claimed" '712 .*--remove-label st:claimed' "$(cat "$GH_EDITS")"
 
-exit $FAILED
+suite_end "$FAILED"

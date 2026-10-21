@@ -4,10 +4,11 @@
 # A scratch repo on branch t-200/work and a stub `gh` that knows two PRs:
 # #101 is on t-100/first, #202 is on t-200/work. The first case is the death this
 # guard exists for: ticket 100's body pushed to ticket 200's PR.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 D="$(cd "$(dirname "$0")" && pwd)"; H="$D/pr-body-matches-branch.sh"
 fail=0
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d); on_exit_keep_status 'rm -rf "$T"'
 git -C "$T" init -q -b t-200/work repo
 git -C "$T/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 mkdir "$T/bin"
@@ -126,4 +127,4 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.co
 else echo "FAIL hooks.json does not register pr-body-matches-branch.sh"; fail=1; fi
 
 [ "$fail" -eq 0 ] && echo "pr-body-matches-branch: all cases pass"
-exit $fail
+suite_end "$fail"

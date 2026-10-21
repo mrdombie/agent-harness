@@ -6,6 +6,7 @@
 # Each case below plants the thing a guard exists for and asserts what is left
 # on disk, not what the script printed.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$HERE/worktree-cache.sh"
@@ -14,7 +15,7 @@ SUT="$HERE/worktree-cache.sh"
 SB=$(mktemp -d); SB=$(cd "$SB" && pwd -P)
 PIDS=""
 cleanup() { for p in $PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; rm -rf "$SB"; }
-trap cleanup EXIT
+on_exit_keep_status cleanup
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -196,4 +197,4 @@ diff -q "$HERE/worktree-cache.sh" "$SB/kit/worktree-cache.sh" >/dev/null && diff
 
 echo
 [ "$fail" -eq 0 ] && echo "worktree-cache: all cases pass" || echo "worktree-cache: FAILURES above"
-exit $fail
+suite_end "$fail"

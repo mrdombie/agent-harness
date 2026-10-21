@@ -11,10 +11,11 @@
 # clashing PRs, the claimed tickets — and asserts the calls do not grow with it.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
@@ -250,4 +251,4 @@ want_in "and so does the owner's alarm"            "allowance is spent: GraphQL 
 want_not_in "not the old guess"                    'gh auth or network' "$(cat "$FIX/house.log")"
 rm -f "$FIX/gh/ratelimit" "$FIX/gh/allowance"
 
-exit $FAILED
+suite_end "$FAILED"

@@ -7,6 +7,7 @@
 # driver checks. A copy of a skill's content drifts and loses every upgrade, so
 # the size ceiling and the copy probe are both here.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 BRIEFS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FACTS="$BRIEFS/facts.json"
 
@@ -132,4 +133,4 @@ PY
 fi
 
 [ "$FAILED" = 0 ] && echo "briefs: all good"
-exit "$FAILED"
+suite_end "$FAILED"

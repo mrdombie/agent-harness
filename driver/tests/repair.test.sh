@@ -13,9 +13,10 @@
 #   nothing red and nothing clashing is not a reason to call a model
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../steps/repair.sh" || exit 1
 
@@ -976,4 +977,4 @@ want "planted (no reset check): a trunk commit is accepted" "flipped" "$(tail -1
   driver_git_actions 13604 "$WT" "$FIX/ga.json" fix >/dev/null 2>&1 && echo flipped ) > "$FIX/plant7" 2>&1
 want "planted (no on-origin check): a local-only commit is dropped" "flipped" "$(tail -1 "$FIX/plant7")"
 
-exit $FAILED
+suite_end "$FAILED"

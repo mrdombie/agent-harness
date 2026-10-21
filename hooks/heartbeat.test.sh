@@ -3,8 +3,9 @@
 #
 # Each case plants what should make the hook fire or stay quiet. The first nag
 # case is the reply that started this: a bare "no change" line mid-loop.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(dirname "$0")/heartbeat.sh"; fail=0
-TDIR=$(mktemp -d); trap 'rm -rf "$TDIR"' EXIT
+TDIR=$(mktemp -d); on_exit_keep_status 'rm -rf "$TDIR"'
 export TMPDIR="$TDIR"; NDIR="$TDIR/claude-heartbeat"
 
 # A transcript whose newest wakeup is $1: live | stopped | none.
@@ -144,4 +145,4 @@ ok 'hooks.json still runs heartbeat.sh on Stop' sh -c 'jq -e "[.hooks.Stop[]?.ho
 
 HARNESS_DRIVER_RUN=1 t quiet 'a driver step'             'No change.'                                    false "$LIVE"
 
-exit $fail
+suite_end "$fail"

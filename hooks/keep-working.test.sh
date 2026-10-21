@@ -12,6 +12,7 @@
 # testing an installed copy is how a kit reports green about code it does not
 # ship. The project facts are planted in a scratch state dir and passed in the
 # environment, so the suite runs on any machine and touches no real queue.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(cd "$(dirname "$0")" && pwd)/keep-working.sh"; fail=0
 T=$(mktemp -d)
 export HARNESS_STATE_DIR="$T" HARNESS_REPO_SLUG="owner/repo"
@@ -20,7 +21,7 @@ OWNER="$LABEL.owner"
 MDIR="${TMPDIR:-/tmp}/claude-keep-working"
 
 MDIRC(){ rm -rf "$MDIR"; }
-trap 'MDIRC; rm -rf "$T"' EXIT
+on_exit_keep_status 'MDIRC; rm -rf "$T"'
 
 # want: nag | quiet ; args: <desc> <stop_hook_active> <session>
 t(){ want=$1 desc=$2 active=$3 sess=$4
@@ -143,4 +144,4 @@ t nag   'no owner recorded — unchanged from before the guard'     false s18
 
 echo
 [ "$fail" -eq 0 ] && echo "ALL PASS" || echo "FAILURES — see MISMATCH rows above"
-exit "$fail"
+suite_end "$fail"

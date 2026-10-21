@@ -3,9 +3,10 @@
 # not chosen by its builder; and a picture drawn from tidy data is refused.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PE="$HERE/picture-evidence.py"
-T=$(mktemp -d "${TMPDIR:-/tmp}/pe-test.XXXXXX"); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d "${TMPDIR:-/tmp}/pe-test.XXXXXX"); on_exit_keep_status 'rm -rf "$T"'
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok  $1"; }
 bad() { fail=$((fail + 1)); echo "  FAIL $1"; }
@@ -171,4 +172,4 @@ out=$(pe scope --files "$T/diff" "$T/scoped.html")
   && ok "a named file is that file, not a longer name" || bad "file prefix matched"
 
 echo "picture-evidence: $pass passed, $fail failed"
-[ "$fail" -eq 0 ]
+suite_end "$fail"

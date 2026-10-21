@@ -4,9 +4,10 @@
 # it was given on the record: those are the shadow run's measurements.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../ai-step.sh" || exit 1
 export DRIVER_TICKET=301
 driver_state_init 301
@@ -103,4 +104,4 @@ args="$(cat "$FIX/claude-args-plan.txt")"
 want_not_in "preload restores the old behaviour" 'claudeMdExcludes' "$args"
 rm -f "$wt/CLAUDE.md" "$wt/AGENTS.md"
 
-exit "$FAILED"
+suite_end "$FAILED"

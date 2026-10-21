@@ -4,6 +4,7 @@
 # The failure this pins: on Windows `python3` is a Store stub that exits 49, and
 # the guards exec'd it, so every command passed unjudged. Each case puts stubs
 # first on PATH, so it runs the same on a machine that has no stub at all.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 D="$(cd "$(dirname "$0")/.." && pwd)"; fail=0
 . "$D/lib/python.sh"
 harness_python || { echo "FAIL no working Python on this machine to test with"; exit 1; }
@@ -11,7 +12,7 @@ harness_python || { echo "FAIL no working Python on this machine to test with"; 
 # first on PATH, and a wrapper that ran a bare name would find the stub (#43 review).
 REAL=$(command -v "${HARNESS_PY[0]}") || { echo "FAIL cannot locate ${HARNESS_PY[0]}"; exit 1; }
 REAL_ARGS="${HARNESS_PY[*]:1}"
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); on_exit_keep_status 'rm -rf "$TMP"'
 
 stub(){ printf '#!/usr/bin/env bash\necho "Python was not found; run without arguments to install from the Microsoft Store" >&2\nexit 49\n' > "$1/$2"; chmod +x "$1/$2"; }
 ok(){ printf 'ok   %s\n' "$1"; }
@@ -49,4 +50,4 @@ if [ "${r%%|*}" = 2 ] && printf '%s' "$r" | grep -q 'matches processes of every 
 else no "broad kill past the stub gave '${r%%|*}' — ${r#*|}"; fi
 
 [ "$fail" -eq 0 ] && echo "lib/python: all cases pass"
-exit $fail
+suite_end "$fail"

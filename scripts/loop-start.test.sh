@@ -4,11 +4,12 @@
 # marker not written, and the owner written before the label — each must go red.
 # The ready count is planted through the hook's cache file: no network.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$HERE/.." && pwd)"
 SB=$(mktemp -d "${TMPDIR:-/tmp}/loop-start-XXXXXX")
 export TMPDIR="$SB/tmp"; mkdir -p "$TMPDIR"
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 unset HARNESS_CFG_PATH STATE_DIR
 export HARNESS_STATE_DIR="$SB/state" HARNESS_REPO_SLUG="acme/widgets"
@@ -57,4 +58,4 @@ echo "plants"
 plant "the loop marker is never written" 'touch "$SD/.loop-active" || exit 1' ': || exit 1'
 plant "the owner is never written, so an earlier loop's owner stands" \
   'printf '"'"'%s\n'"'"' "$(claude_session_pid 2>/dev/null || true)" > "$SD/.session-label.owner" || exit 1' ': || exit 1'
-exit $fail
+suite_end "$fail"

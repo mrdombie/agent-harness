@@ -8,9 +8,10 @@
 # made of commits and worktrees and a stubbed git would only test the stub.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/build.sh" || exit 1
 
 # A worked example, committed the way a disciplined build commits it.
@@ -640,4 +641,4 @@ want "and its file is formatted on the branch" "pretty" "$(git -C "$FWT" show HE
 want_in "by a formatting commit"               '^style: ' "$(git -C "$FWT" log -1 --format=%s)"
 cp "$FIX/harness.keep" "$REPO/.claude/harness.json"
 git -C "$REPO" worktree remove --force "$FWT" >/dev/null 2>&1
-exit $FAILED
+suite_end "$FAILED"

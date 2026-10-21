@@ -12,10 +12,11 @@
 # cache and nothing else, and the suite asserts GitHub was not called on it.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture
-trap 'rm -rf "$FIX"' EXIT
+on_exit_keep_status 'rm -rf "$FIX"'
 SL="$HERE/../status-line.sh"
 
 # The clock every case sits at, so "stale" is a decision and never a race.
@@ -479,4 +480,4 @@ out=$(slow_print "$K/swarm/status-line.sh")
 want_in "planted: no fallback → the warning → red" "not answering" "$out"
 rm -f "$TICKS"
 
-exit "$FAILED"
+suite_end "$FAILED"

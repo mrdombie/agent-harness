@@ -5,9 +5,10 @@
 # names a Skill has not run until that Skill call is in the run log.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../ai-step.sh" || exit 1
 export DRIVER_TICKET=101
 driver_state_init 101
@@ -381,4 +382,4 @@ rc=0; DRIVER_TICKET=286 driver_ai_step 286 review >/dev/null 2>&1 || rc=$?
 want "the question parks as a question"            "20" "$rc"
 want "with no 'not JSON' note to stand in for it"  "" "$(driver_state_get 286 park_note)"
 
-exit $FAILED
+suite_end "$FAILED"

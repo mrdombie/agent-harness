@@ -4,11 +4,12 @@
 # review verdict is in, and the run ENDS at the push rather than watching CI.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 # The gate cap at 1, so a second red here is past it.
 export DRIVER_MAX_GATE_FIXES=1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/ship.sh" || exit 1
 
 # A bare origin the worktree can really push to, so "the branch is on origin" is
@@ -980,4 +981,4 @@ want_in "naming this run's commit"             "$own chore: design-critic" "$out
 want_not_in "and only that one"                'another PR' "$out"
 want "and nothing reached origin"              "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-182/work 2>/dev/null)"
 
-exit $FAILED
+suite_end "$FAILED"

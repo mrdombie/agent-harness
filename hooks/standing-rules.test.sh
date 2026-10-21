@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Plant tests for standing-rules.sh: asserts the emitted context, then deletes the rule and expects failure.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(cd "$(dirname "$0")" && pwd)/standing-rules.sh"
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
-TDIR=$(mktemp -d); trap 'rm -rf "$TDIR"' EXIT
+TDIR=$(mktemp -d); on_exit_keep_status 'rm -rf "$TDIR"'
 
 ok(){ printf 'OK        %s\n' "$1"; }
 bad(){ printf 'MISMATCH  %s\n' "$1"; fail=1; }
@@ -220,4 +221,4 @@ grants "$(context "$KIT" "$TDIR/h/local.sh" "$TDIR/wide.json")" "Staging, Produc
   bad "remote check deleted, yet the forgery is still refused: the check proves nothing"
 publish "$TDIR/ok.json"
 
-exit $fail
+suite_end "$fail"

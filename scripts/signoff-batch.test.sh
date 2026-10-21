@@ -8,10 +8,11 @@
 # shapes of 25 real PRs.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 SB="$HERE/signoff-batch.sh"
 jq '.review = {attest: {"ui-gate": {owed: "true"}, "design-critic": {owed: "true", trailer: "Design-Critic"}}}' \
   "$HARNESS_CFG_PATH" > "$FIX/h.json" && mv "$FIX/h.json" "$HARNESS_CFG_PATH"
@@ -179,4 +180,4 @@ prs 9; : > "$GH_LOG"
 want "green apart from the hold is enough"      "9	h900000" "$(green)"
 want "and nothing is read"                      "" "$(cat "$GH_LOG")"
 
-exit "$FAILED"
+suite_end "$FAILED"

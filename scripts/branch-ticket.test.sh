@@ -3,6 +3,7 @@
 # shell forms agree, and no script reads a ticket out of a branch by itself.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 . "$HERE/branch-ticket.sh"
@@ -47,4 +48,4 @@ hits=$(grep -nE 'ltrimstr\(\$pre\)|"\^\(?" \+ \$pre|startswith\(\$pre\)|index\(\
   "$HERE"/*.sh "$HERE"/../swarm/*.sh 2>/dev/null | grep -v '/branch-ticket\.sh:' | grep -v '\.test\.sh:')
 want "no script matches a branch to a ticket by hand" "" "$hits"
 
-exit $FAILED
+suite_end "$FAILED"

@@ -9,6 +9,7 @@
 # has no examples at all, which is the same output as a step that passes — and a
 # zero from a strictness probe means clean, suppressed, or never ran.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 BRIEFS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 V="$BRIEFS/validate.sh"
 
@@ -110,7 +111,7 @@ want_in "  and names the file"      "does-not-exist.json" "$out"
 # BRIEFS_SCHEMAS, the seam the driver calls through. Without it the driver would
 # have had to re-derive the check against its own DRIVER_SCHEMAS, which is how the
 # half a validator got written in the first place.
-TD=$(mktemp -d); trap 'rm -rf "$TD"' EXIT
+TD=$(mktemp -d); on_exit_keep_status 'rm -rf "$TD"'
 mkdir -p "$TD/schemas"
 first=$(printf '%s' "$steps" | head -1)
 cp "$BRIEFS/schemas/$first.json" "$TD/schemas/$first.json"
@@ -148,4 +149,4 @@ BRIEFS_AJV="$TD/mixed" "$V" "$first" \
 want "a 1 then a 2 is still a 2"   2 "$rc"
 
 [ "$FAILED" = 0 ] && echo "briefs/schemas: all good"
-exit "$FAILED"
+suite_end "$FAILED"

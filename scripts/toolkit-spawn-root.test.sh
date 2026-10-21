@@ -10,6 +10,7 @@
 #
 # The functions are read out of toolkit-env.sh itself, so this tests the shipped text.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 ENV_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh"
 PASS=0; FAIL=0
@@ -22,7 +23,7 @@ for fn in _kit_spawn_held toolkit_main_checkout_sane toolkit_spawn_root; do
 done
 
 SB=$(mktemp -d "${TMPDIR:-/tmp}/spawn-root-test.XXXXXX"); SB=$(cd "$SB" && pwd -P)
-trap 'rm -rf "$SB"' EXIT
+on_exit_keep_status 'rm -rf "$SB"'
 export TMPDIR="$SB/tmp"; mkdir -p "$TMPDIR"
 G() { git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false -c init.defaultBranch=develop "$@"; }
 INTEGRATION_BRANCH=develop
@@ -74,4 +75,4 @@ printf '%s' "$out" | grep -q 'unmerged' && ok "naming the unmerged files" || fai
 
 echo
 echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+suite_end "$FAIL"

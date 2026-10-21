@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Plant tests for no-self-design-verdict.sh: every DENY row denies, every ALLOW row passes.
 # Run: bash "$0"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(cd "$(dirname "$0")" && pwd)/no-self-design-verdict.sh"
 export HARNESS_CFG_PATH=/nonexistent
 fail=0
@@ -40,4 +41,4 @@ echo "--- registered ---"
 if jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command] | any(test("no-self-design-verdict.sh"))' \
      "$(dirname "$H")/hooks.json" >/dev/null; then echo "OK       registered as a PreToolUse Bash hook"
 else echo "MISMATCH hooks.json does not register no-self-design-verdict.sh"; fail=1; fi
-exit $fail
+suite_end "$fail"

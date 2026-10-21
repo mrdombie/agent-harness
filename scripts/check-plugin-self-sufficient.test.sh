@@ -10,12 +10,13 @@
 #   the thing that asserts it has to fail when a rule or a hook is dropped from
 #   the plugin — which is exactly the case a human eyeballing a diff misses.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
 ok(){ echo "ok   $1"; }; bad(){ echo "FAIL $1"; fail=1; }
 H=$(mktemp -d)/clean-home; mkdir -p "$H"
 PROJ=$(mktemp -d); mkdir -p "$PROJ/.claude"
-trap 'rm -rf "$H" "$PROJ"' EXIT
+on_exit_keep_status 'rm -rf "$H" "$PROJ"'
 cat > "$PROJ/.claude/harness.json" <<'CFG'
 { "repo": "owner/repo", "integrationBranch": "trunk", "branchPrefix": "t-",
   "stateDir": "/tmp/nonexistent-state",
@@ -99,4 +100,4 @@ hardcoded=$(grep -lE 'npm run (lint|typecheck|test|format):changed' \
 echo
 [ "$fail" -eq 0 ] && echo "plugin-self-sufficient: the plugin alone supplies the rules and the guards" \
                   || echo "plugin-self-sufficient: FAILURES"
-exit $fail
+suite_end "$fail"

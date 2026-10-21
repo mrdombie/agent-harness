@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fixture test for check-picture-mode.sh: the real kit passes, and each planted absence is refused by name.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$HERE/.." && pwd)"
 SUT="${SUT:-$HERE/check-picture-mode.sh}"
@@ -88,4 +89,4 @@ out="$(run "$d")"; rc=$?
 [ $rc -eq 0 ] && ok "a skill that sends no picture is left alone" || bad "a non-sender was flagged: $out"
 rm -rf "$d"
 
-exit $fail
+suite_end "$fail"

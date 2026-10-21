@@ -12,9 +12,10 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../ai-step.sh" || exit 1
 . "$HERE/../steps/build.sh" || exit 1
 unset DATABASE_URL
@@ -199,4 +200,4 @@ want "no database was created" "" "$(cat "$FIX/pg.log")"
 want "the test ran in both halves" "2" "$(wc -l < "$FIX/seen.log" | tr -d ' ')"
 want "and saw no DATABASE_URL" "0" "$(grep -c . "$FIX/seen.log")"
 
-exit $FAILED
+suite_end "$FAILED"

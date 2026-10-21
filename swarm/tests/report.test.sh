@@ -5,9 +5,10 @@
 # authenticated to send it.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 R="$HERE/../report.sh"
 r() { bash "$R" "$@" 2>&1; }
 
@@ -84,4 +85,4 @@ out=$(SWARM_REPORT_URL= r --push)
 want_in "it says there is nowhere to send" 'nothing to push to' "$out"
 want "and sent nothing"          "0" "$(wc -c < "$FIX/pushed" | tr -d ' ')"
 
-exit $FAILED
+suite_end "$FAILED"

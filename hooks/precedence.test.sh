@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # precedence.sh: one line per kit skill the repo shadows; silent when none.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 H="$(cd "$(dirname "$0")" && pwd)/precedence.sh"; KIT="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
 T=$(mktemp -d); mkdir -p "$T/.claude/skills/claim" "$T/.claude/skills/design"; touch "$T/.claude/skills/claim/SKILL.md" "$T/.claude/skills/design/SKILL.md"
@@ -11,4 +12,4 @@ printf '%s' "$ctx" | grep -q '/design' && { echo "FAIL /design is not a kit skil
 rm -rf "$T/.claude/skills/claim"
 out=$(CLAUDE_PLUGIN_ROOT="$KIT" CLAUDE_PROJECT_DIR="$T" bash "$H")
 [ -z "$out" ] && echo "OK   silent when nothing is shadowed" || { echo "FAIL printed with nothing shadowed: $out"; fail=1; }
-rm -rf "$T"; exit $fail
+rm -rf "$T"; suite_end "$fail"

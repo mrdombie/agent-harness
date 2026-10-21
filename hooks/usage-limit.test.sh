@@ -4,8 +4,9 @@
 # read exactly; other API errors hold nothing; the later of two walls is kept.
 # Then the plant: the write removed must turn the recording case red.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/usage-limit-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/usage-limit-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 unset HARNESS_CFG_PATH CLAUDE_PROJECT_DIR
 export HARNESS_STATE_DIR="$SB/state"
 fail=0
@@ -73,4 +74,4 @@ open(p, "w").write(s.replace(a, '''TEXT="$TEXT $LAST"'''))
 PY
 grep -q 'NOTICE ]]' "$d2/hooks/usage-limit.sh" && bad "plant: the exclusion is still in the copy"
 quote_case "$d2/hooks/usage-limit.sh" && bad "planted: the exclusion deleted → still green" || ok "planted: the exclusion deleted → the quote is read → red"
-exit $fail
+suite_end "$fail"

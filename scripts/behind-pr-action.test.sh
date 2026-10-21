@@ -10,6 +10,7 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 S="$(cd "$(dirname "$0")" && pwd)/behind-pr-action.sh"
 
 FAILED=0
@@ -53,4 +54,4 @@ out=$(bash "$S" BEHIND MERGEABLE robot 2>&1); rc=$?
 want "unknown mode exits non-zero" "1" "$rc"
 if printf '%s' "$out" | grep -q 'merge.updateBehind'; then ok "names the key"; else bad "names the key — got: $out"; fi
 
-exit "$FAILED"
+suite_end "$FAILED"

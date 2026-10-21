@@ -4,10 +4,11 @@
 # affords until it resets, less the other hosts' live claims (coord_pace).
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
@@ -163,4 +164,4 @@ tickworld 3; out=$(live)
 want "other hosts over the share never stop the builder running here" "0" "$(grep -c . "$SPAWNS")"
 want_in "the ceiling still counts it" 'ceiling: 1 running · no room for more' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

@@ -6,9 +6,10 @@
 # that has gone its own way, a PR list nobody could read.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/reenter.sh" || exit 1
 
 # The claim seam, the same recorder start.test.sh uses: the real exit codes and the
@@ -231,4 +232,4 @@ want "a merge of something that is not the trunk refuses" "24" "$rc"
 want_in "naming it"                        'not the integration branch' "$out"
 git -C "$WT8" merge --abort
 
-exit $FAILED
+suite_end "$FAILED"

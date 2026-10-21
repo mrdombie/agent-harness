@@ -4,10 +4,11 @@
 # this script, and reconcile-claims.sh's "the PR merged and the close-out never ran".
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
-swarm_fixture; trap 'rm -rf "$FIX"' EXIT
+swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 CT="$HERE/close-ticket.sh"
 
 echo "--- /finish: an ordinary ticket closes ---"
@@ -83,4 +84,4 @@ want_in "a polish list whose PR merged is not" 'POLISH +#801 .*back to status:re
 want_not_in "and is never closed"          '^issue close 801' "$(cat "$GH_LOG")"
 want_in "it goes back to ready"            '^issue edit 801 .*--add-label status:ready' "$(cat "$GH_LOG")"
 
-exit "$FAILED"
+suite_end "$FAILED"

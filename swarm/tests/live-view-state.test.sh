@@ -9,13 +9,14 @@
 # rows read every step "unknown", and the Yomato rows were grey whether busy or stuck.
 # Run: bash "$0"     LIVE_VIEW_DIR=<dir> runs it against another copy of the page.
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$HERE/../../scripts"
 . "$HERE/fixture.sh"
 swarm_fixture
 sleep 30 & DEAD=$!; kill "$DEAD" 2>/dev/null; wait "$DEAD" 2>/dev/null
-trap 'rm -rf "$FIX"' EXIT
-command -v node >/dev/null 2>&1 || { echo "SKIP live-view-state: node is not on PATH"; exit 0; }
+on_exit_keep_status 'rm -rf "$FIX"'
+command -v node >/dev/null 2>&1 || { suite_skip "SKIP live-view-state: node is not on PATH"; }
 LV="${LIVE_VIEW_DIR:-$HERE/../live-view}"
 
 NOW_S=$(date +%s)
@@ -309,4 +310,4 @@ plant index.html "  const away = a.beatStale !== false" "  const away = true"
 [ "$(page_render "$P" "$(snap)" | grep -c 'dot ok[^>]*></span><div class="main"> <div class="title">Ticket 2301')" = 0 ] \
   && ok "planted: every remote row grey again → red" || bad "planted: every remote row grey and the test cannot see it"
 
-exit $FAILED
+suite_end "$FAILED"

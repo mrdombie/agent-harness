@@ -7,6 +7,7 @@
 # (`free`, `host`); the live page's server is the one other reader, and takes the host path from it.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -36,7 +37,7 @@ grep -qE 'disk-guard\.sh" host' "$ROOT/swarm/live-view.sh" \
   && ok "the live page takes the host drive from the guard" || bad "live-view.sh does not ask disk-guard.sh host"
 
 echo "--- the scan sees a planted reader, and passes what is not one ---"
-SB=$(mktemp -d "${TMPDIR:-/tmp}/disk-reads-test-XXXXXX"); trap 'rm -rf "$SB"' EXIT
+SB=$(mktemp -d "${TMPDIR:-/tmp}/disk-reads-test-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 mkdir -p "$SB/scripts" "$SB/swarm/live-view"
 printf '#!/usr/bin/env bash\nfree=$(df -Pk "$STATE_DIR" | awk "NR==2{print \\$4}")\n' > "$SB/scripts/a.sh"
 printf 'const st = fs.statfsSync(dir)\n' > "$SB/scripts/b.mjs"
@@ -47,4 +48,4 @@ got=$(readers "$SB" | cut -d: -f1 | tr '\n' ' ')
 [ "$got" = "scripts/a.sh scripts/b.mjs scripts/c.py " ] && ok "a df, a statfs and a disk_usage are found; a comment, a word and the allowed two are not" \
   || bad "wanted 'scripts/a.sh scripts/b.mjs scripts/c.py ', got '$got'"
 
-exit $fail
+suite_end "$fail"

@@ -8,13 +8,14 @@
 #
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 # A hook environment exports GIT_DIR and friends; left set, every git call below
 # would act on the repo the suite was launched from.
 while IFS= read -r v; do unset "$v"; done < <(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p')
 export GIT_CONFIG_NOSYSTEM=1 HOME
 SCRIPT="${ENSURE_HOOKS:-$(cd "$(dirname "$0")" && pwd)/ensure-hooks.sh}"
 
-FIX=$(mktemp -d); trap 'rm -rf "$FIX"' EXIT
+FIX=$(mktemp -d); on_exit_keep_status 'rm -rf "$FIX"'
 FIX=$(cd "$FIX" && pwd -P)
 HOME="$FIX/home"; mkdir -p "$HOME"
 git config --global user.email t@example.invalid
@@ -213,4 +214,4 @@ wait "$pushpid"; rc=$?
 want "the push exits non-zero" "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)"
 want "the branch did not reach the remote" "0" "$(pushed "$R7" t-7)"
 
-exit $FAILED
+suite_end "$FAILED"

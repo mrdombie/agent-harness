@@ -14,9 +14,10 @@
 #   - a refusal that set no note parks with the step's own words, not "left no reason".
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 BT="$HERE/../build-ticket"
 . "$HERE/../driver-env.sh" || exit 1
 . "$HERE/../state.sh" || exit 1
@@ -114,4 +115,4 @@ want "a closed ticket still parks" "20" "$rc"
 want_in "with the step's reason" '#606 is CLOSED' "$out"
 want_not_in "not 'left no reason'" 'left no reason' "$out"
 
-exit "$FAILED"
+suite_end "$FAILED"

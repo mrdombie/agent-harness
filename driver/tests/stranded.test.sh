@@ -4,9 +4,10 @@
 # on one machine's disk was once the only copy of 40 commits for days.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/park.sh" || exit 1
 . "$HERE/../steps/start.sh" || exit 1
 . "$HERE/../steps/reenter.sh" || exit 1
@@ -150,4 +151,4 @@ want "the set-aside commits are on origin"   "$mine" "$(git -C "$FIX/origin" rev
 want "the tree took origin's head"           "$(git -C "$src" rev-parse HEAD)" "$(git -C "$FIX/wt160" rev-parse HEAD)"
 want_in "and a diverged stranded ref is not taken" 'has diverged' "$out"
 
-exit $FAILED
+suite_end "$FAILED"

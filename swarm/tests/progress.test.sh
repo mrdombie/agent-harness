@@ -6,12 +6,13 @@
 # that fills in because the code assumed, so a card reports progress nobody made.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture
-trap 'rm -rf "$FIX"' EXIT
+on_exit_keep_status 'rm -rf "$FIX"'
 M="$HERE/../live-view/progress.mjs"
-command -v node >/dev/null 2>&1 || { echo "SKIP progress: node is not on PATH"; exit 0; }
+command -v node >/dev/null 2>&1 || { suite_skip "SKIP progress: node is not on PATH"; }
 
 # ask <js> — run an expression against the module and print it
 ask() { node --input-type=module -e "
@@ -247,3 +248,4 @@ want "the reporter passes the bar through" "bad" \
   "$(printf '%s' "$r" | jq -r '.live[0].progress.steps[5].state')"
 want "and the plan" "16" "$(printf '%s' "$r" | jq -r '.plans[0].pct')"
 want "and the plain title" "The step-runner" "$(printf '%s' "$r" | jq -r '.live[0].short')"
+suite_end "$FAILED"

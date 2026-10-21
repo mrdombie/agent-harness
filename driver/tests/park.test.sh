@@ -6,9 +6,10 @@
 # the claim, in that order.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
-driver_fixture; trap 'rm -rf "$FIX"' EXIT
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 . "$HERE/../steps/park.sh" || exit 1
 git init -q --bare "$FIX/origin"
 git -C "$REPO" remote add origin "$FIX/origin"
@@ -345,4 +346,4 @@ want_in     "the brief asks the question"   'which repo does this belong in' "$b
 want_in     "and names the label to clear"  'clear `status:pm-decision`' "$brief"
 want_not_in "and not the owner's"           'needs:human-approval' "$brief"
 
-exit $FAILED
+suite_end "$FAILED"

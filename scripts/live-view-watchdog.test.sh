@@ -6,13 +6,14 @@
 # which restarts a job only when it exits, left it there.
 # Run: bash "$0"
 set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture
 SERVERS="$FIX/servers"; : > "$SERVERS"
-trap 'for p in $(cat "$SERVERS" 2>/dev/null); do kill -9 "$p" 2>/dev/null; done; rm -rf "$FIX"' EXIT
-command -v node >/dev/null 2>&1 || { echo "SKIP live-view-watchdog: node is not on PATH"; exit 0; }
+on_exit_keep_status 'for p in $(cat "$SERVERS" 2>/dev/null); do kill -9 "$p" 2>/dev/null; done; rm -rf "$FIX"'
+command -v node >/dev/null 2>&1 || { suite_skip "SKIP live-view-watchdog: node is not on PATH"; }
 WD="$HERE/live-view-watchdog.sh"
 # The fixture's curl answers from a file; the probe here is against a real socket.
 export SWARM_CURL=$(PATH=$(getconf PATH):/usr/local/bin:/opt/homebrew/bin command -v curl)
@@ -124,4 +125,4 @@ want "the planted copy ran both probes" 2 "$(cat "$STATE/swarm/live-view.fails" 
 kill -0 "$SRV_PID" 2>/dev/null && [ ! -s "$FIX/started" ] && ok "planted: no restart → hung server still up → red" \
   || bad "planted: the restart removed and the server was still restarted → the test cannot see it"
 
-exit $FAILED
+suite_end "$FAILED"
