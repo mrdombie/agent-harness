@@ -107,11 +107,32 @@ want "the owner over its own share: the reader keeps under the cap, 7 - 5 = 2" "
 ( export COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato SHEET_PACE='{"maxBuildsFleet":7,"shares":{"here":3}}'; pace 0 "" 14 ) > "$FIX/out.txt"
 want "a sheet that names no share for it: the reader takes the cap" "7" "$(cut -f1 "$FIX/out.txt")"
 
+echo "--- the pacing settings are the fleet's: the reader paces by the owner's ---"
+clean; win 0.05 "$EARLY" 0.53 $(( NOWE + 518400 )) > "$STATE/logs/claim-1-a.log"
+# The owner: weekly line off (weekHeadroom 1). The reader keeps the default 0.05.
+fleet 14 "$NOWE"
+( export COORDINATOR_PACE_WEEK_HEADROOM=1 COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=here; pace 0 "" 10 ) > "$FIX/owner.txt"
+want_in "the owner, weekly line off, says so" '7d 53% \(no weekly line\)' "$(cat "$FIX/owner.txt")"
+want "and publishes the settings it paced by" "1 false" "$(jq -r '"\(.settings.weekHeadroom) \(.settings.week)"' "$C/pace.json")"
+OWNER_PACE=$(jq -c '{at, usage, fiveHour, sevenDay, maxBuildsFleet, shares, settings}' "$C/pace.json")
+OWNER_SHARES=$(jq -c '.shares' "$C/pace.json")
+( export SHEET_PACE="$OWNER_PACE" COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato; pace 0 "" 14 ) > "$FIX/reader.txt"
+want "the owner names the reader a share" "4" "$(jq -r '.yomato' <<<"$OWNER_SHARES")"
+want "a reader on its own default (weekly line on, the week ahead of it) still takes that share" "4" "$(cut -f1 "$FIX/reader.txt")"
+want_in "it applied the owner's weekly setting" '7d 53% \(no weekly line\)' "$(cat "$FIX/reader.txt")"
+want "and records it" "1" "$(jq -r '.settings.weekHeadroom' "$C/pace.json")"
+( export SHEET_PACE='{"maxBuildsFleet":6,"shares":{"yomato":4},"settings":{"target":0.85,"headroom":0.05,"weekTarget":0.9,"weekHeadroom":0.05}}' \
+         COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato; pace 0 "" 14 ) > "$FIX/reader2.txt"
+want "the owner's share stands in for the reader's own line, weekly line on" "4" "$(cut -f1 "$FIX/reader2.txt")"
+want_in "and the log says the share decides" "ahead of it: the share from the owner decides" "$(cat "$FIX/reader2.txt")"
+( export SHEET_PACE='{"maxBuildsFleet":6}' COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato; pace 1 "" 14 ) > "$FIX/reader3.txt"
+want "no share named for it: the reader's own line holds" "1" "$(cut -f1 "$FIX/reader3.txt")"
+
 echo "--- the freshest reading wins, from either host ---"
 clean; win 0.05 "$EARLY" > "$STATE/logs/claim-1-a.log"
 out=$( export SHEET_FLEET='[{"host":"here","tick":'"$NOWE"',"usage":{"five_hour":{"u":0.40,"reset":'"$EARLY"'}}}]'; reader 0 "" 14 )
 want_in "the owner's heartbeat at 40% outranks this host's 5%" '5h window 40%' "$out"
-want_in "and puts it ahead of the line" 'ahead of it: no new starts' "$out"
+want_in "it is ahead of the line, and the share the owner named it decides" 'ahead of it: the share from the owner decides' "$out"
 clean; win 0.05 "$EARLY" > "$STATE/logs/claim-1-a.log"; fleet 14 "$NOWE" 0.50
 want_in "the owner reads the reader's heartbeat in the fleet file" '5h window 50%' \
   "$(COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=here pace 0 "" 10)"
@@ -161,6 +182,31 @@ hb=$( export SWARM_NOW="$NOWE"; . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . 
 want "the heartbeat publishes this host's allowance reading" "graphql 1234 5000 $GHR" \
   "$(jq -r '.gh[] | select(.resource == "graphql") | "\(.resource) \(.remaining) \(.limit) \(.reset)"' <<<"$hb")"
 
+echo "--- GraphQL spent, REST not: the batched ticket read goes through REST ---"
+cat > "$BIN/gh-rest" <<'SH'
+#!/usr/bin/env bash
+# REST's issue read answered from the fixture's issue file; everything else to the fixture's gh.
+case "$1 $2" in "api repos/"*/issues/[0-9]*)
+  n=${2##*/}; printf 'api %s\n' "$2" >> "$GH_LOG"
+  [ -f "$FIX/gh/issue-$n.json" ] || exit 1
+  jq '{number, state: (.state | ascii_downcase), title, updated_at: .updatedAt, labels}' "$FIX/gh/issue-$n.json"; exit 0 ;;
+esac
+exec "$BIN/gh" "$@"
+SH
+chmod +x "$BIN/gh-rest"
+batch() { ( export SWARM_GH="$BIN/gh-rest" SWARM_NOW="$NOWE"; . "$HERE/coordinator-env.sh" >/dev/null 2>&1 || exit 9; gh_issues_batch 611 612 ) }
+clean; mkdir -p "$STATE/swarm"; gh_here 4000; ghfleet 100
+fix_issue 611 OPEN "status:ready"; fix_issue 612 CLOSED "P1"; : > "$GH_LOG"
+out=$(batch)
+want "both tickets read, in the batch's own shape" "611 OPEN status:ready|612 CLOSED P1" \
+  "$(jq -r '[.[] | "\(.number) \(.state) \(.labels | join(","))"] | join("|")' <<<"$out")"
+want "through REST, one read a ticket" "2" "$(grep -c '^api repos/acme/widgets/issues/61[12]$' "$GH_LOG")"
+want "and no GraphQL request" "0" "$(grep -c '^api graphql' "$GH_LOG")"
+clean; mkdir -p "$STATE/swarm"; gh_here 4000; ghfleet 4000; : > "$GH_LOG"
+batch >/dev/null
+want "with GraphQL to spare, one batched GraphQL request as before" "1" "$(grep -c '^api graphql' "$GH_LOG")"
+want "and no REST reads" "0" "$(grep -c '^api repos/' "$GH_LOG")"
+
 echo "--- the tick: the owner starts only its share ---"
 printf '#!/usr/bin/env bash\n:\n' > "$BIN/judge"; chmod +x "$BIN/judge"
 for s in reconcile sweep wtsweep; do printf '#!/usr/bin/env bash\n:\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
@@ -201,12 +247,12 @@ tickworld 0.05; ghfleet 100; GHR=$(( $(date +%s) + 1800 )); ghfleet 100
 out=$(COORDINATOR_SHEET_OWNER=here COORDINATOR_REFRESH=1 live)
 want "no start while Yomato reads 100 of 5000" "0" "$(grep -c . "$SPAWNS")"
 want_in "the tick says why, and where it was read" "spawn: holding — GitHub's hourly API allowance is spent: GraphQL 100 of 5000 left until .*, as Yomato read it" "$out"
-want_in "housekeeping slows" 'housekeeping: slowed to every 20 min' "$out"
+want_in "housekeeping waits for the reset" 'housekeeping: skipped until the allowance resets' "$out"
 want_in "and the board refresh waits" 'queue: board refresh skipped' "$out"
 tickworld 0.05; GHR=$(( $(date +%s) + 1800 )); ghfleet 4000
 out=$(COORDINATOR_SHEET_OWNER=here live)
 want "Yomato over the mark: the share starts again" "2" "$(grep -c . "$SPAWNS")"
-want_not_in "and nothing slows" 'housekeeping: slowed' "$out"
+want_not_in "and nothing waits" 'housekeeping: skipped' "$out"
 
 echo "--- at 95%, nothing is stopped and nothing new starts ---"
 tickworld 0.96

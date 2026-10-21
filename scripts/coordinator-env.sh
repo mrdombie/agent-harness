@@ -281,10 +281,22 @@ coord_pace() {
   printf '%s\t%s\t%s\t%s\n' "$now" "$u" "$r" "$total" >> "$COORD_PACE_SAMPLES"
   tail -300 "$COORD_PACE_SAMPLES" > "$COORD_PACE_SAMPLES.$$" 2>/dev/null && mv -f "$COORD_PACE_SAMPLES.$$" "$COORD_PACE_SAMPLES"
   burn=$(coord_pace_burn "$r"); bsrc=${burn#*$'\t'}; burn=${burn%%$'\t'*}
+  # The settings are the fleet's: a reader paces by the ones the owner published, and
+  # where the owner named it a share, that share stands in for the reader's own line.
+  local tgt="$COORD_PACE_TARGET" hd="$COORD_PACE_HEADROOM" wt="$COORD_PACE_WEEK_TARGET" wh="$COORD_PACE_WEEK_HEADROOM" noline=0 sheet_share=""
+  role=off; ! declare -F coord_sheet_role >/dev/null || role=$(coord_sheet_role)
+  if [ "$role" = reader ] && [ -n "${SHEET_PACE:-}" ]; then
+    IFS=$'\t' read -r tgt hd wt wh < <(jq -r --arg t "$tgt" --arg h "$hd" --arg wt "$wt" --arg wh "$wh" '
+      def ok($d): if type == "number" and . >= 0 and . <= 1 then tostring else $d end;
+      (.settings // {}) | [(.target | ok($t)), (.headroom | ok($h)), (.weekTarget | ok($wt)), (.weekHeadroom | ok($wh))] | @tsv' <<<"$SHEET_PACE" 2>/dev/null \
+      || printf '%s\t%s\t%s\t%s\n' "$tgt" "$hd" "$wt" "$wh")
+    sheet_share=$(jq -r --arg me "$host" '(.shares // {}) | to_entries | map(select(.key | ascii_downcase == ($me | ascii_downcase))) | .[0].value // empty' <<<"$SHEET_PACE" 2>/dev/null)
+    case "$sheet_share" in ''|*[!0-9]*) ;; *) noline=1 ;; esac
+  fi
   # budget: "<fleet cap>\t<5h line>\t<5h elapsed>\t<ahead 0|1>\t<7d line>\t<7d ahead 0|1>\t<projection>"
   local budget cap
-  budget=$(awk -v u="$u" -v r="$r" -v now="$now" -v t="$COORD_PACE_TARGET" -v h="$COORD_PACE_HEADROOM" -v b="$burn" \
-      -v L="$COORD_PACE_FIVE_SEC" -v u7="$u7" -v r7="$r7" -v t7="$COORD_PACE_WEEK_TARGET" -v h7="$COORD_PACE_WEEK_HEADROOM" \
+  budget=$(awk -v u="$u" -v r="$r" -v now="$now" -v t="$tgt" -v h="$hd" -v b="$burn" \
+      -v L="$COORD_PACE_FIVE_SEC" -v u7="$u7" -v r7="$r7" -v t7="$wt" -v h7="$wh" -v noline="$noline" \
       -v L7="$COORD_PACE_WEEK_SEC" -v total="$total" '
     function frac(reset, len,   f) { f = 1 - (reset - now) / len; return f < 0 ? 0 : (f > 1 ? 1 : f) }
     BEGIN {
@@ -293,11 +305,10 @@ coord_pace() {
       f = frac(r, L); line = f * t + h; ahead = (u + 0 > line + 1e-9)
       line7 = ""; ahead7 = 0
       if (r7 != "") { f7 = frac(r7, L7); line7 = f7 * t7 + h7; ahead7 = (u7 + 0 > line7 + 1e-9) }
-      a = p; if ((ahead || ahead7) && a > total) a = total
+      a = p; if (!noline && (ahead || ahead7) && a > total) a = total
       printf "%d\t%.4f\t%.4f\t%d\t%s\t%d\t%d", a, line, f, ahead, (line7 == "" ? "" : sprintf("%.4f", line7)), ahead7, p
     }')
   cap=${budget%%$'\t'*}
-  role=off; ! declare -F coord_sheet_role >/dev/null || role=$(coord_sheet_role)
   local others; others=$(coord_pace_others)
   case "$role" in
     owner)
@@ -321,25 +332,30 @@ coord_pace() {
   [ "$s" -gt $(( cap - other )) ] && s=$(( cap - other ))
   [ "$s" -ge 0 ] || s=0
   out=$(awk -v u="$u" -v r="$r" -v at="$(swarm_iso "$r" | cut -c12-16)" -v b="$burn" -v src="$bsrc" -v bud="$budget" \
-            -v o="$other" -v s="$s" -v u7="$u7" -v shares="$(jq -r 'to_entries | map("\(.key) \(.value)") | join(", ")' <<<"$shares" 2>/dev/null)" '
+            -v o="$other" -v s="$s" -v u7="$u7" -v noline="$noline" -v wh="$wh" -v shares="$(jq -r 'to_entries | map("\(.key) \(.value)") | join(", ")' <<<"$shares" 2>/dev/null)" '
     BEGIN {
       split(bud, x, "\t"); a = x[1]; line = x[2]; f = x[3]; ahead = x[4]; line7 = x[5]; ahead7 = x[6]
       printf "%d\tpace: 5h window %d%%, resets %sZ, %.1f%%/builder-hour%s → %d across all hosts, %d on other hosts → %d here",
         s, u * 100 + 0.5, at, b * 100, (src == "default" ? " (default)" : ""), a, o, s
-      printf " · straight line: 5h %d%% at %d%% of the window%s", line * 100 + 0.5, f * 100 + 0.5, (ahead ? " (ahead of it: no new starts)" : "")
-      if (line7 != "") printf " · 7d %d%% against %d%%%s", u7 * 100 + 0.5, line7 * 100 + 0.5, (ahead7 ? " (ahead of it: no new starts)" : "")
+      held = (noline ? " (ahead of it: the share from the owner decides)" : " (ahead of it: no new starts)")
+      printf " · straight line: 5h %d%% at %d%% of the window%s", line * 100 + 0.5, f * 100 + 0.5, (ahead ? held : "")
+      if (line7 != "" && wh + 0 >= 1) printf " · 7d %d%% (no weekly line)", u7 * 100 + 0.5
+      else if (line7 != "") printf " · 7d %d%% against %d%%%s", u7 * 100 + 0.5, line7 * 100 + 0.5, (ahead7 ? held : "")
       if (shares != "") printf " · fleet cap %d: %s", a, shares
     }')
   jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --arg u7 "$u7" --arg r7 "$r7" --arg bud "$budget" \
      --argjson burn "$burn" --arg bsrc "$bsrc" --argjson running "$total" --argjson other "$other" --argjson shares "$shares" \
-     --argjson share "$s" --arg src "$src" --argjson capacity "$mine" '
+     --argjson share "$s" --arg src "$src" --argjson capacity "$mine" \
+     --arg tgt "$tgt" --arg hd "$hd" --arg wt "$wt" --arg wh "$wh" '
     ($bud | split("\t")) as $b
     | {at: $at, host: $host, capacity: $capacity,
        usage: ({five_hour: {u: $u, reset: $r}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber)}} end)),
        fiveHour: {u: $u, reset: $r, line: ($b[1] | tonumber), elapsed: ($b[2] | tonumber), ahead: ($b[3] == "1")},
        sevenDay: (if $u7 == "" then null else {u: ($u7 | tonumber), reset: ($r7 | tonumber), line: ($b[4] | tonumber), ahead: ($b[5] == "1")} end),
        burn: $burn, burnSource: $bsrc, projection: ($b[6] | tonumber), maxBuildsFleet: ($b[0] | tonumber),
-       running: $running, otherHosts: $other, shares: $shares, share: $share, source: $src}' \
+       running: $running, otherHosts: $other, shares: $shares, share: $share, source: $src,
+       settings: {target: ($tgt | tonumber), headroom: ($hd | tonumber), weekTarget: ($wt | tonumber), weekHeadroom: ($wh | tonumber),
+                  week: (($wh | tonumber) < 1)}}' \
      > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
   printf '%s' "$out"
 }

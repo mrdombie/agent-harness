@@ -143,6 +143,11 @@ gh_allowance_rows() {
           for (k in row) print row[k] }'
 }
 
+# _gh_allowance_short <resource> — 0 while that resource is under the low mark on any host.
+_gh_allowance_short() {
+  gh_allowance_rows | awk -F'\t' -v r="$1" -v p="$GH_ALLOWANCE_LOW_PCT" '$1 == r && $3 + 0 > 0 && $2 * 100 < $3 * p { f = 1 } END { exit !f }'
+}
+
 # gh_allowance_low — 0 while a resource is under GH_ALLOWANCE_LOW_PCT of its limit
 # and its reset is still ahead, by the freshest reading on any host (gh_allowance_rows);
 # prints <resource> \t <remaining> \t <limit> \t <reset-epoch> \t <host it was read on>.
@@ -316,9 +321,13 @@ gh_issues_batch() {
   local _o _r n q="" k=0 out="{}" part fail=0 nums="" one b=""
   [ "${GH_BATCH_BODY:-0}" = 1 ] && b=" body"
   _gh_batch_repo || return 1
+  # GraphQL under its low mark on any host while REST still has room: one REST read a
+  # ticket costs the allowance that is left, not the one that is spent.
+  local rest_only=0
+  _gh_allowance_short graphql && ! _gh_allowance_short core && rest_only=1
   _ghb_flush() {
     [ -n "$q" ] || return 0
-    if part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
+    if [ "$rest_only" = 0 ] && part=$(_gh_graphql "query{repository(owner:\"$_o\",name:\"$_r\"){$q}}"); then
       part=$(_gh_jq_acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
               | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
                                                    + (if has("body") then {body: (.body // "")} else {} end)
@@ -326,6 +335,20 @@ gh_issues_batch() {
       [ -n "$part" ] && out="$part" || fail=1
     else
       fail=1
+      if [ "$rest_only" = 1 ]; then
+        fail=0
+        for one in $nums; do
+          # REST, not `gh issue view`: that is GraphQL, the allowance that is spent.
+          part=$(gh_call api "repos/$_o/$_r/issues/$one" 2>/dev/null) || { fail=1; continue; }
+          part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
+                  | $acc + {($n): ({number: ($n|tonumber), state: (.state | ascii_upcase), title: (.title // ""),
+                                    updatedAt: (.updated_at // .updatedAt // null), labels: [.labels[]? | if type == "object" then .name else . end]}
+                                   + (if $b != "" then {body: (.body // "")} else {} end)
+                                   + (if (.state_reason // "") != "" then {stateReason: (.state_reason | ascii_upcase)} else {} end))}' \
+                  --arg n "$one" --arg b "$b" <<<"$part" 2>/dev/null)
+          [ -z "$part" ] || out="$part"
+        done
+      else
       for one in $nums; do
         part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt${b:+,body}" 2>/dev/null) || continue
         part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
@@ -333,6 +356,7 @@ gh_issues_batch() {
                                  + (if has("body") then {body: (.body // "")} else {} end))}' --arg n "$one" <<<"$part" 2>/dev/null)
         [ -z "$part" ] || out="$part"
       done
+      fi
     fi
     q=""; k=0; nums=""
   }

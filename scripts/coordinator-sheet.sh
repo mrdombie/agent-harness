@@ -225,7 +225,7 @@ coord_sheet_publish() {
   now=$(swarm_now)
   # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
   h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, behind}]}
-                                                + (if .pace then {pace: (.pace | {maxBuildsFleet, shares})} else {} end)' <<<"$e")")
+                                                + (if .pace then {pace: (.pace | {maxBuildsFleet, shares, settings})} else {} end)' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))

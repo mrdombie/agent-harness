@@ -752,7 +752,7 @@ if [ "$SHEET_ROLE" = owner ]; then
     if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ] \
        && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" --arg pace "$(coord_pace_fresh)" \
                       '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
-                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, sevenDay, maxBuildsFleet, shares})} end)' <<<"$entries"); then
+                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, sevenDay, maxBuildsFleet, shares, settings})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
     else
@@ -799,12 +799,10 @@ HOUSE="${COORDINATOR_HOUSEKEEPING_CMD:-$SELF_DIR/coordinator-housekeeping.sh}"
 HOUSE_STAMP="$COORD_DIR/housekeeping.stamp"
 COORD_HOUSE_EVERY_MIN="${COORDINATOR_HOUSEKEEPING_EVERY_MIN:-$(swarm_opt coordinator.housekeepingEveryMin 5)}"
 case "$COORD_HOUSE_EVERY_MIN" in ""|*[!0-9]*) COORD_HOUSE_EVERY_MIN=5 ;; esac
-# With the shared GitHub allowance low, the sweeps and the judge's resends wait four times as long.
+# With the shared GitHub allowance under its mark, the sweeps and the judge's resends wait for the reset.
 if [ -n "$GH_LOW" ]; then
-  COORD_HOUSE_EVERY_MIN=$(( COORD_HOUSE_EVERY_MIN * 4 )); [ "$COORD_HOUSE_EVERY_MIN" -ge 20 ] || COORD_HOUSE_EVERY_MIN=20
-  say "housekeeping: slowed to every ${COORD_HOUSE_EVERY_MIN} min — $(gh_limit_why)"
-fi
-if [ $(( $(date +%s) - $(coord_mtime "$HOUSE_STAMP") )) -lt $(( COORD_HOUSE_EVERY_MIN * 60 )) ]; then
+  say "housekeeping: skipped until the allowance resets — $(gh_limit_why)"
+elif [ $(( $(date +%s) - $(coord_mtime "$HOUSE_STAMP") )) -lt $(( COORD_HOUSE_EVERY_MIN * 60 )) ]; then
   say "housekeeping: ran under ${COORD_HOUSE_EVERY_MIN} min ago — not this tick"
 elif [ "${COORDINATOR_HOUSEKEEPING:-background}" = inline ]; then
   touch "$HOUSE_STAMP"; bash "$HOUSE"
