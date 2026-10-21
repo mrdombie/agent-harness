@@ -141,10 +141,11 @@ _su_locked() {
   local rc
   if [ "${SELF_UPDATE_LOCK:-}" != mkdir ] && command -v flock >/dev/null 2>&1; then
     # The subshell's verdict reaches the caller through this file.
-    ( flock -n 9 || exit 75; "$@"; rc=$?; printf '%s\t%s\n' "${SU_NOW_V:-}" "${SU_WHY:-}" > "$COORD_DIR/self-update.result"; exit "$rc" ) \
+    ( flock -n 9 || exit 75; "$@"; rc=$?; printf '%s\n%s\n' "${SU_NOW_V:-}" "${SU_WHY:-}" > "$COORD_DIR/self-update.result"; exit "$rc" ) \
       9>"$COORD_DIR/self-update.flock"
     rc=$?
-    [ "$rc" = 75 ] || IFS=$'\t' read -r SU_NOW_V SU_WHY < "$COORD_DIR/self-update.result" 2>/dev/null
+    # One per line: an empty first field read with a tab IFS would hand the reason to the version.
+    [ "$rc" = 75 ] || { IFS= read -r SU_NOW_V; IFS= read -r SU_WHY; } < "$COORD_DIR/self-update.result" 2>/dev/null
     return "$rc"
   fi
   coord_lock "$COORD_DIR/self-update.lock" self-update || return 75
