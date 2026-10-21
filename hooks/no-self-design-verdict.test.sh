@@ -20,12 +20,22 @@ Design-Critic: SHIP (agent) f9ad4e1a738d
 EOF'
 t deny 'bash "$KIT_ROOT/scripts/critic-judge.sh" run 12965'
 t deny 'bash scripts/critic-judge.sh sweep'
+t deny "gh api -X POST repos/acme/widgets/dispatches -f event_type=design-critic-verdict -f 'client_payload[sha]=abc' -f 'client_payload[state]=success'"
+t deny 'gh api repos/acme/widgets/dispatches --input /tmp/verdict.json'
+t deny "gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f 'context=Design critic' -f description=x"
+t deny 'gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f context="Design critic" -f description=x'
+t deny 'gh api -X POST repos/acme/widgets/statuses/abc -F state=success --raw-field context="Design critic"'
+t deny 'gh api -X POST repos/acme/widgets/statuses/abc --input /tmp/status.json'
 echo "--- must allow ---"
 t allow 'scripts/record-verdict.sh ui-gate --sha abc < /tmp/v.txt'
 t allow 'git commit -m "chore: ui-gate" -m "UI-Gate: SHIP (agent) 4a76d62de082"'
 t allow 'gh pr comment 1 --body "a Design-Critic: trailer on the branch counts for nothing"'
 t allow 'bash scripts/critic-judge.sh shotset /tmp/shots'
 t allow 'grep -n "Design-Critic:" scripts/record-verdict.sh'
+t allow 'gh workflow run ci.yml --ref develop'
+t allow 'gh api repos/acme/widgets/actions/workflows/ci.yml/dispatches -f ref=develop'
+t allow 'gh api repos/acme/widgets/commits/abc/statuses --jq ".[].context"'
+t allow "gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f 'context=Code gates'"
 echo "--- registered ---"
 if jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command] | any(test("no-self-design-verdict.sh"))' \
      "$(dirname "$H")/hooks.json" >/dev/null; then echo "OK       registered as a PreToolUse Bash hook"
