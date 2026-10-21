@@ -195,6 +195,79 @@ _driver_fix_stale_check() { # <tree> <judged-head> <sha…>
   printf 'commit(s) %s are on the branch and came after %s, the head the critic failed: the critic judges the pushed head again\n' "$*" "$(printf '%s' "$jh" | cut -c1-10)"
 }
 
+# _driver_fix_pr_body_now <pr> <out> — the description GitHub holds now, written to
+# <out>; prints the PR's labels, space-separated. 1 when it cannot be read.
+_driver_fix_pr_body_now() { # <pr> <out>
+  local j
+  [ -n "$1" ] || return 1
+  j=$(swarm_gh pr view "$1" --repo "$REPO_SLUG" --json body,labels 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e 'has("body")' >/dev/null 2>&1 || return 1
+  printf '%s' "$j" | jq -r '.body // ""' > "$2" || return 1
+  printf '%s' "$j" | jq -r '[(.labels // [])[].name] | join(" ")'
+}
+
+# _driver_fix_pr_body_at <pr> <epoch> <out> — the description as GitHub's edit history
+# held it at <epoch>: the newest recorded version no later than it. A description never
+# edited has no history, so it is the current one. 1 when it cannot be read.
+_driver_fix_pr_body_at() { # <pr> <epoch> <out>
+  local j
+  [ -n "$1" ] || return 1
+  j=$(swarm_gh api graphql \
+        -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){userContentEdits(first:100){nodes{editedAt diff}}}}}' \
+        -f o="${REPO_SLUG%%/*}" -f n="${REPO_SLUG#*/}" -F p="$1" 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e '.data.repository.pullRequest.userContentEdits.nodes | type == "array"' >/dev/null 2>&1 || return 1
+  if [ "$(printf '%s' "$j" | jq '.data.repository.pullRequest.userContentEdits.nodes | length')" = 0 ]; then
+    _driver_fix_pr_body_now "$1" "$3" >/dev/null; return $?
+  fi
+  printf '%s' "$j" | jq -e -r --argjson t "$2" '[.data.repository.pullRequest.userContentEdits.nodes[]
+      | select((.editedAt | sub("\\.[0-9]+"; "") | fromdateiso8601) <= $t)]
+      | max_by(.editedAt) // error("none") | .diff | strings' > "$3" 2>/dev/null
+}
+
+_driver_fix_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# _driver_fix_body_proof <tree> <trunk> <pr> <review.json> <entry> <keep-dir> — proves one
+# bodyProofs entry, printing why. The driver reads both descriptions from GitHub and runs
+# the named check on each, the branch's changed paths on stdin: it must fail on the one
+# the review judged and pass on the one now, so the edit is the only thing that varies.
+# 0 proved, 3 not proved, 4 the check timed out.
+_driver_fix_body_proof() { # <tree> <trunk> <pr> <review.json> <entry-json> <keep-dir>
+  local wt="$1" trunk="$2" pr="$3" review="$4" e="$5" keep="$6" cmd bid at labels tmp rc_old rc_new changed=""
+  bid=$(jq -r '.blockerId // ""' <<<"$e"); cmd=$(jq -r '.command // ""' <<<"$e")
+  [ -n "$cmd" ] || { printf 'names no check command\n'; return 3; }
+  [ -n "$pr" ] || { printf 'the run has no pull request, so there is no description to check\n'; return 3; }
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-body-proof-XXXXXX")
+  labels=$(_driver_fix_pr_body_now "$pr" "$tmp/now.md") || {
+    rm -rf "$tmp"; printf 'the description of PR #%s could not be read from GitHub\n' "$pr"; return 3; }
+  at=$(_driver_fix_mtime "$review")
+  if [ -z "$at" ] || ! _driver_fix_pr_body_at "$pr" "$at" "$tmp/was.md"; then
+    rm -rf "$tmp"; printf 'the description PR #%s had when the review judged it could not be read from its edit history\n' "$pr"; return 3
+  fi
+  cp "$tmp/now.md" "$keep/fix.body-now.$bid.md" 2>/dev/null || true
+  cp "$tmp/was.md" "$keep/fix.body-reviewed.$bid.md" 2>/dev/null || true
+  [ -z "$trunk" ] || changed=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null)
+  _driver_fix_body_run() { # <body-file> <out>
+    ( cd "$wt" || exit 2
+      export BODY_FILE="$1" LABELS="$labels" ROOT="$wt"
+      printf '%s\n' "$changed" | driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$2" 2>&1
+  }
+  rc_new=0; _driver_fix_body_run "$tmp/now.md" "$tmp/now.out" || rc_new=$?
+  rc_old=0; _driver_fix_body_run "$tmp/was.md" "$tmp/was.out" || rc_old=$?
+  if [ "$rc_new" -eq 124 ] || [ "$rc_old" -eq 124 ]; then
+    rm -rf "$tmp"; printf 'the check `%s` timed out after %ss\n' "$cmd" "$DRIVER_CMD_TIMEOUT"; return 4
+  fi
+  if [ "$rc_new" -ne 0 ]; then
+    printf 'the check `%s` fails on the description now (exit %s): %s\n' "$cmd" "$rc_new" "$(_driver_fail_lines "$tmp/now.out")"
+    rm -rf "$tmp"; return 3
+  fi
+  if [ "$rc_old" -eq 0 ]; then
+    rm -rf "$tmp"
+    printf 'the check `%s` already passes on the description the review judged, so the edit proved nothing\n' "$cmd"; return 3
+  fi
+  rm -rf "$tmp"
+  printf 'the check `%s` fails on the description the review judged (exit %s) and passes on the description now, both read from PR #%s\n' "$cmd" "$rc_old" "$pr"
+}
+
 _driver_fix_diff() { # <tree>
   local wt="$1" r trunk="" diff=""
   for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
@@ -298,7 +371,7 @@ $proofnote"
   local unanswered=""
   while IFS= read -r bid; do
     [ -n "$bid" ] || continue
-    jq -e --arg b "$bid" '([.cleared[]?.blockerId] + [.pmProofs[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
+    jq -e --arg b "$bid" '([.cleared[]?.blockerId] + [.pmProofs[]?.blockerId] + [.bodyProofs[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
       "$ans" >/dev/null 2>&1 || unanswered="$unanswered $bid"
   done <<EOB
 $(jq -r "[.findings[]? | $(driver_blocking_select) | (.id // empty)] | .[]" "$review" 2>/dev/null)
@@ -449,6 +522,27 @@ EOB
 " ;;
     esac
   done
+  # A FINDING CLEARED BY EDITING THE DESCRIPTION is proved on the description: both
+  # versions read from GitHub here, never the fixer's own run of the check.
+  local nbody bpr
+  nbody=$(jq -r '[.bodyProofs[]?] | length' "$ans" 2>/dev/null)
+  bpr=$(driver_state_get "$t" pr)
+  i=0
+  while [ "$i" -lt "${nbody:-0}" ]; do
+    e=$(jq -c --argjson i "$i" '.bodyProofs[$i]' "$ans"); i=$((i+1))
+    bid=$(jq -r '.blockerId // "?"' <<<"$e")
+    why=""; prc=0
+    why=$(_driver_fix_body_proof "$wt" "$trunk" "$bpr" "$review" "$e" "$d/steps") || prc=$?
+    case "$prc" in
+      0) driver_say "   fix $bid — proved on the PR description: $why"
+         jq -nc --arg b "$bid" --arg w "$why" --arg c "$(jq -r '.command' <<<"$e")" '{blockerId:$b, proof:"pr-body", pmAnswer:null, command:$c, why:$w}' >> "$rec" ;;
+      4) driver_say "✋ fix $bid — $why"
+         return "$DRIVER_E_TIMEOUT" ;;
+      *) driver_say "✋ fix $bid — the description proof is not accepted: $why"; bad=1
+         fails="$fails- $bid: the description proof is not accepted: $(printf '%s' "$why" | cut -c1-1000)
+" ;;
+    esac
+  done
   jq -s . "$rec" > "$d/steps/fix.proofs.json" 2>/dev/null; rm -f "$rec"
 
   # ONE MORE TRY, TOLD WHY. A typecheck error or a test committed with its fix is
@@ -471,6 +565,6 @@ EOB
     return "$DRIVER_E_REFUSED"
   fi
 
-  driver_say "   fix: $((ncleared + ${npm:-0})) finding(s) cleared — $ncleared proved red before green, ${npm:-0} by a proof a PM answer allowed and the driver checked"
+  driver_say "   fix: $((ncleared + ${npm:-0} + ${nbody:-0})) finding(s) cleared — $ncleared proved red before green, ${npm:-0} by a proof a PM answer allowed and the driver checked, ${nbody:-0} on the PR description"
   return "$DRIVER_OK"
 }

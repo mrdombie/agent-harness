@@ -27,8 +27,7 @@ and the traps this project keeps falling into.
 ## Trace the failure path before you land a fix
 
 Ask what a person sees when this throws, nulls, or runs where the checks do not
-reach. A run of fix-forwards here each repaired the happy path and broke the
-failure path.
+reach.
 
 - **Do not accept a failure as pre-existing until you have re-verified it** in a
   tree whose generated artefacts exist. A fresh worktree reports failures that
@@ -39,8 +38,7 @@ failure path.
 - **Changed a value?** Grep the whole test tree for the old one and add every hit
   to the run. The test that pins it is rarely the one you were looking at.
 - **A peer may have landed the same feature while you worked.** Reconcile against
-  the trunk, keep only the part that is genuinely additive, and file the rest. A
-  stub duplicate of something that already shipped is worse than nothing.
+  the trunk, keep only the part that is genuinely additive, and file the rest.
 
 A finding you think is wrong is answered with a reason, not with agreement and a
 change. If it survives the reason, it was a real finding.
@@ -76,6 +74,11 @@ a bare path to the test that now pins it, or `removedBecause`. A gate checks the
 A blocking finding one of these names and accepts a non-test proof for (a
 mutation, or the fixing commit) goes in `pmProofs` citing its ref, never in
 `deferred`. The driver checks it. No such answer, no `pmProofs`.
+
+## Cleared by editing the PR description
+
+Answer it in `bodyProofs`, naming the repo's check that reads the description.
+The driver runs it on the description now (must pass) and as reviewed (must fail).
 
 ## Return
 
@@ -130,9 +133,12 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `pmProofs[].break.file` (required): string
 - `pmProofs[].break.find` (required): string
 - `pmProofs[].break.replace` (required): string
+- `bodyProofs`: list of object
+- `bodyProofs[].blockerId` (required): string
+- `bodyProofs[].command` (required): string
 
 Conditional:
-- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`
+- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `bodyProofs`
 - otherwise: requires `question`
 <!-- fields:end -->
 
