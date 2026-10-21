@@ -178,6 +178,22 @@ _driver_fix_diff() { # <tree>
   printf '%s' "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
 }
 
+# _driver_fix_polish_back <ticket> <review.json> <polish-id> <why> — a ride-along polish
+# item this change did not finish goes back free on its list (any take released), is
+# noted in the PR's "Minor, deferred", and blocks nothing.
+_driver_fix_polish_back() {
+  local t="$1" review="$2" bid="$3" why="$4" x n it pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}"
+  x=$(jq -c --arg b "$bid" '[.findings[]? | select(.id == $b)] | first // empty' "$review" 2>/dev/null)
+  [ -n "$x" ] || return 0
+  n=$(printf '%s' "$x" | jq -r '.file // ""' | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p')
+  it=$(printf '%s' "$x" | jq -r '.summary // ""')
+  [ -z "$n" ] || bash "$pl" forget "$t" "$n" "$it" >/dev/null 2>&1 || true
+  printf '%s' "$x" | jq -c --arg l "#${n:-?}" --arg w "$why" --argjson r "$(driver_state_count "$t" review)" \
+    '{grade, file, line, summary: (.summary + " — back on its list: " + $w), round: $r, list: $l}' \
+    >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
+  driver_say "   fix: polish $bid is back on polish list #${n:-?} ($why) — it rides along with the next change there"
+}
+
 driver_step_fix() { # <ticket>
   local t="${1:?driver_step_fix: need a ticket}"
   local d review round wt trunk r diff blockers n rc ans i ncleared
@@ -261,6 +277,18 @@ $proofnote"
   done <<EOB
 $(jq -r "[.findings[]? | $(driver_blocking_select) | (.id // empty)] | .[]" "$review" 2>/dev/null)
 EOB
+  # A RIDE-ALONG POLISH ITEM IS NOT A BLOCKER OF THIS TICKET. One the fixer left, or
+  # deferred, goes back free on its list, noted in the PR, and the run goes on.
+  local pb kept_unanswered=""
+  for bid in $unanswered $(jq -r '.deferred[]?.blockerId' "$ans" 2>/dev/null); do
+    case "$bid" in
+      polish-*) _driver_fix_polish_back "$t" "$review" "$bid" "not finished by this change" ;;
+      *) case " $unanswered " in *" $bid "*) kept_unanswered="$kept_unanswered $bid" ;; esac ;;
+    esac
+  done
+  unanswered="$kept_unanswered"
+  pb=$(jq -c '[.deferred[]? | select((.blockerId // "") | startswith("polish-") | not)]' "$ans" 2>/dev/null)
+  [ -z "$pb" ] || { jq --argjson d "$pb" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"; }
   if [ -n "$unanswered" ]; then
     driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships."
     driver_state_set "$t" park_note "the fix round left${unanswered} unanswered — a blocking finding is neither cleared nor deferrable"
@@ -308,6 +336,9 @@ EOB
     tsha=$(jq -r  --argjson i "$i" '.cleared[$i].testCommit // ""' "$ans")
     isha=$(jq -r  --argjson i "$i" '.cleared[$i].implCommit // ""' "$ans")
     i=$((i+1))
+    if { [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; } && [ "${bid#polish-}" != "$bid" ]; then
+      _driver_fix_polish_back "$t" "$review" "$bid" "cleared with no test to prove it"; continue
+    fi
     if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; then
       driver_say "✋ fix '$bid' names no test to prove it (test.file, command, testCommit and implCommit)."
       fails="$fails- $bid: names no test.file, command, testCommit and implCommit
@@ -324,7 +355,10 @@ EOB
          return "$DRIVER_E_REFUSED" ;;
       4) driver_say "✋ fix $bid — $why"
          return "$DRIVER_E_TIMEOUT" ;;
-      *) driver_say "✋ fix $bid — $why"; bad=1
+      *) if [ "${bid#polish-}" != "$bid" ]; then
+           _driver_fix_polish_back "$t" "$review" "$bid" "its test did not prove it red then green"; continue
+         fi
+         driver_say "✋ fix $bid — $why"; bad=1
          fails="$fails- $bid: $(printf '%s' "$why" | cut -c1-1000)
 " ;;
     esac
