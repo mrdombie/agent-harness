@@ -9,8 +9,7 @@ the screen's polish list). Nothing else — a Nit was dropped.
 
 Run **`superpowers:receiving-code-review`** on the findings, and
 **`superpowers:test-driven-development`** for each fix. Those own how a finding is
-weighed and how the cycle runs. This brief owns only what the driver needs back
-and the traps this project keeps falling into.
+weighed and how the cycle runs; this brief owns what the driver needs back.
 
 ## What you are given
 
@@ -30,17 +29,17 @@ Ask what a person sees when this throws, nulls, or runs where the checks do not
 reach.
 
 - **Do not accept a failure as pre-existing until you have re-verified it** in a
-  tree whose generated artefacts exist. A fresh worktree reports failures that
-  belong to the worktree, not the branch — a missing generated client, an absent
-  environment file, a workspace package resolving to another checkout's copy.
+  tree whose generated artefacts exist. A fresh worktree reports failures of its
+  own — a missing generated client, an absent environment file, a workspace
+  package resolving to another checkout's copy.
   Prove it against a pristine control cut from the trunk first.
 - **Changed a value?** Grep the whole test tree for the old one and add every hit
-  to the run. The test that pins it is rarely the one you were looking at.
+  to the run.
 - **A peer may have landed the same feature while you worked.** Reconcile against
   the trunk, keep only the part that is genuinely additive, and file the rest.
 
 A finding you think is wrong is answered with a reason, not with agreement and a
-change. If it survives the reason, it was a real finding.
+change.
 
 ## When the findings are red gates
 
@@ -63,7 +62,11 @@ commit the lowered baseline, and never undo the improvement. Only a number that 
 
 If you remove, reword or skip an `it(`/`test(` case, list its file in
 `replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
-a bare path to the test that now pins it, or `removedBecause`. A gate checks them.
+a bare path to the test that now pins it, or `removedBecause`.
+
+**Git your permission mode refuses** (a reset, dropping commits origin already has,
+finishing a merge) is never run and never a question: list it in `gitActions`, and
+the driver checks it and runs it after your answer.
 
 ## A PM answer already on the ticket
 
@@ -134,6 +137,9 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `bodyProofs`: list of object
 - `bodyProofs[].blockerId` (required): string
 - `bodyProofs[].command` (required): string
+- `gitActions`: list of object
+- `gitActions[].action` (required): one of "commitMerge", "resetTo", "dropLocalCommits"
+- `gitActions[].sha`: string
 
 Conditional:
 - when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `bodyProofs`

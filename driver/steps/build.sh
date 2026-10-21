@@ -23,6 +23,7 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 
 # driver_prove_red_green <repo> <test-file> <test-commit> <impl-commit> <command>
 #
@@ -526,6 +527,7 @@ driver_step_build() { # <ticket>
       return "$rc"
     fi
     jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
+    driver_git_actions "$t" "$repo" "$ans" "build $slot" || return "$DRIVER_E_REFUSED"
     # Formatted with the task, so a format check can never be the thing self-check
     # sends back. After the answer is read: the proof names its own two commits.
     driver_format_changed "$t" "$repo" "build $slot" || true

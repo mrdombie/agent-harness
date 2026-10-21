@@ -8,8 +8,8 @@ You are building **one** task from the plan. Not the next one, not the ticket.
 
 Run **`superpowers:subagent-driven-development`** to execute the task, with
 **`superpowers:test-driven-development`** inside it. Those two own how the work
-is split and how the cycle runs. This brief owns only this project's facts and
-what the driver needs back.
+is split and how the cycle runs; this brief owns this project's facts and what the
+driver needs back.
 
 The driver runs your new test itself, before your change and after it, and
 refuses to continue unless it failed first. It then runs this project's
@@ -44,10 +44,9 @@ Read {{STANDARDS}} once for the ticket, not once per file.
 - **Say each fact once, in one wording.** Look at the whole composed screen before
   adding a line of copy: if a masthead, a band, a chip, a toast or a rail already
   says it, do not say it again — and never say it differently. The most repeated
-  review finding in this repo's history, by a wide margin.
+  review finding.
 - **A state change updates every surface that shows it.** Grep for every place the
-  state becomes words or colour and change them together. Missing the third
-  surface is the second most repeated finding.
+  state becomes words or colour and change them together.
 - **A failed read never looks empty, loading or finished.** Every fetch has three
   visible outcomes: loading, failed — which says so and offers a retry — and
   loaded. "Nothing here" is only ever loaded-and-empty.
@@ -61,7 +60,11 @@ its command, the item as written. Never tick one: it is ticked when the PR merge
 
 If you remove, reword or skip an `it(`/`test(` case, list its file in
 `replacedTests` (the repo-relative path git shows) with exactly one of `coveredBy`,
-a bare path to the test that now pins it, or `removedBecause`. A gate checks them.
+a bare path to the test that now pins it, or `removedBecause`.
+
+**Git your permission mode refuses** (a reset, dropping commits origin already has,
+finishing a merge) is never run and never a question: list it in `gitActions`, and
+the driver checks it and runs it after your answer.
 
 ## Return
 
@@ -110,6 +113,9 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `replacedTests[].file` (required): string
 - `replacedTests[].coveredBy`: string
 - `replacedTests[].removedBecause`: string
+- `gitActions`: list of object
+- `gitActions[].action` (required): one of "commitMerge", "resetTo", "dropLocalCommits"
+- `gitActions[].sha`: string
 
 Conditional:
 - when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`
@@ -141,8 +147,7 @@ this change has none. {{PROJECT_FACTS}} names this project's convention. Both
 keys, or neither, is refused.
 
 `task` is the title of the plan task you were given, copied as it is written there.
-The driver refuses an answer whose title belongs to a DIFFERENT task in the plan,
-because a task nobody built is a task that ships unbuilt.
+The driver refuses an answer whose title belongs to a DIFFERENT task in the plan.
 
 `surfaces` lists every other place that shows the state you changed, and what you
 changed there.
@@ -151,5 +156,5 @@ A question names who answers it in `questionFor`: `owner` for pixels, a picture,
 a product or commercial call, or the data model; `pm` for the ticket's shape —
 repo, split, order, acceptance wording. Unsure is `owner`.
 
-`skills` lists every skill you invoked. The driver reads the run log too, so a
-skill claimed here and absent there fails the step.
+`skills` lists every skill you invoked; one claimed here and absent from the run
+log fails the step.
