@@ -145,9 +145,9 @@ Conditional:
 One `cleared` entry per review finding: the change, the test that goes red when
 it returns, and the red and green runs.
 
-`testCommit` and `implCommit` must be two commits: the driver re-runs your test at
-the change's parent and at the change, so they make `failedBefore` checkable
-rather than claimed.
+`testCommit` and `implCommit` must be two commits: the driver runs `command`
+verbatim from the worktree root at the change's parent and at the change. Give
+the exact command, no placeholders.
 
 A finding you are not clearing goes in `deferred` with its reason and where it
 went. A deferral with no follow-up is a finding dropped — and a Critical or a

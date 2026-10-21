@@ -244,6 +244,19 @@ _driver_repair_asked_merge() {
   return 0
 }
 
+# _driver_repair_bad_cmds <tree> <answer> — one line per fix whose command cannot be
+# run as given, with why; nothing when every one can.
+_driver_repair_bad_cmds() {
+  local n i c f w why
+  n=$(jq -r '[.fixes[]?] | length' "$2" 2>/dev/null); i=0
+  while [ "$i" -lt "${n:-0}" ]; do
+    c=$(jq -r --argjson i "$i" '.fixes[$i].command // ""' "$2")
+    f=$(jq -r --argjson i "$i" '.fixes[$i].test.file // ""' "$2")
+    w=$(jq -r --argjson i "$i" '.fixes[$i].what // "a fix"' "$2"); i=$((i+1))
+    why=$(driver_proof_cmd_check "$1" "$c" "${f:-<file>}") || printf -- "- %s: \`%s\` — %s\n" "$w" "$c" "$why"
+  done
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -492,6 +505,21 @@ The body could not be read here: read it yourself (gh pr view $pr --json body)."
         driver_say "↩ repair: answered '${st:-?}' and left the evidence it owes open ($left) — asked once more, with the tasks named."
         driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER LEFT THE EVIDENCE OPEN: $left. Each evidence task is answered by an edit to the capture plan $plan_rel, committed, with the setup steps that bring the state into view — a code change alone leaves it open. The tasks:
 $ev_tasks
+
+$DRIVER_BRIEF_PREFACE
+
+${briefs_text:-(no brief came with this repair — it was sent as a healing spawn with no note)}"
+        continue
+      fi
+    fi
+    if [ -z "$reask" ] && [ "$attempt" -eq 1 ] && [ "$st" != park ]; then
+      local badcmd; badcmd=$(_driver_repair_bad_cmds "$wt" "$ans")
+      if [ -n "$badcmd" ]; then
+        attempt=2
+        driver_say "↩ repair: a fix's command cannot be run as given — asked once more, told why, with no proof run."
+        driver_fact_put "$t" repair BRIEF "YOUR LAST ANSWER NAMED A COMMAND THE DRIVER CANNOT RUN. Each fix's \`command\` is run verbatim from the worktree root, at the fix's parent and at the fix:
+$badcmd
+Answer again with the exact command; the commits you made stay.
 
 $DRIVER_BRIEF_PREFACE
 
