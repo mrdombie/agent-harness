@@ -140,6 +140,22 @@ printf 'old\n' > "$HOLDF"; touch -t 202601010000 "$HOLDF"
 want "a hold its writer stopped rewriting holds nothing" "free" "$(tick_reads_hold)"
 rm -f "$HOLDF"
 
+echo "--- a process in the clone: only one reading node_modules holds it, and never the hold ---"
+SITTER=""; trap '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; [ -z "$SITTER" ] || kill "$SITTER" 2>/dev/null; rm -rf "$FIX"' EXIT
+reset_install "$V1"; (cd "$REPO" && exec sleep 60) & SITTER=$!; sleep 1
+OUT=$(run)
+want "a shell sitting in the clone does not hold it" "1" "$(npm_runs)"
+kill "$SITTER" 2>/dev/null; wait "$SITTER" 2>/dev/null; SITTER=""
+case_reader() { # a node process working in the clone, and a lock that has waited 31 min
+  reset_install "$V1"; (cd "$REPO" && exec node -e 'setTimeout(() => {}, 60000)') & SITTER=$!; sleep 1
+  printf '%s %s\n' "$(git -C "$PUSHER" rev-parse HEAD:package-lock.json)" "$(( $(date +%s) - 31 * 60 ))" > "$STATE/coordinator/shared-install.waiting"
+  OUT=$(run); R="hold=$(tick_reads_hold) npm=$(npm_runs)"
+  kill "$SITTER" 2>/dev/null; wait "$SITTER" 2>/dev/null; SITTER=""
+}
+case_reader
+want "a node process holds it, and no drain hold is set over it" "hold=free npm=0" "$R"
+want_in "it names the process"                "pid [0-9]+ \(node\) works in" "$OUT"
+
 echo "--- a held lock: no second install ---"
 move_lock 4
 case_locked
@@ -209,6 +225,7 @@ plant() { # <label> <file> <exact line to delete> <case> <the result the guard p
 plant "the lock compare" shared-install.sh 'if [ "$have" = "$want" ]; then say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi' case_unchanged "npm=1"
 plant "the in-use wait"  shared-install.sh '  say "waiting $waited min — in use on this host: $busy; checked again next pass"; exit 0' case_mid_gate "npm=1"
 plant "the drain hold"   shared-install.sh '      shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"' case_drain "hold=free npm=0"
+plant "runs-only drain"  shared-install.sh ' && [ -n "$RUNS_BUSY" ]' case_reader "hold=held npm=0"
 plant "the flock"        shared-install.sh '_si_flock "$LOCKF" ' case_locked "npm=1"
 plant "the put-back"     shared-install.sh '  for d in $(prev_dirs); do mv "$d" "${d%"$PREV"}"; done' case_fail "marker= ui="
 plant "the call"         coordinator-housekeeping.sh '  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0 0"

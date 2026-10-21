@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # worktree-lib.sh — sourced by the worktree sweeper and the cache pass.
-#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_run_holder <real-wt> · wt_live_runs · wt_can_see_processes · wt_cfg <cfg> <jq-path>
+#   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_occupants <real-wt> · wt_run_holder <real-wt> · wt_live_runs · wt_can_see_processes · wt_cfg <cfg> <jq-path>
 
 wt_real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
 
@@ -26,6 +26,12 @@ wt_occupant() { # <real-wt>
     index(self, " " $1 " ") { next }
     index($2 "/", root) == 1 { print $1; found = 1; exit }
     END { exit !found }'
+}
+
+wt_occupants() { # <real-wt> — every pid whose cwd is in it, one a line (the caller excluded as wt_occupant does)
+  printf '%s\n' "$WT_CWDS" | awk -F'\t' -v root="$1/" -v self="$WT_SELF" '
+    index(self, " " $1 " ") { next }
+    $1 != "" && index($2 "/", root) == 1 { print $1 }'
 }
 
 # wt_run_holder <real-wt> — the id of a live run whose record names this tree (its

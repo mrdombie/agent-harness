@@ -175,9 +175,18 @@ while IFS= read -r rec; do
     busy="$busy${busy:+; }$rid (#${t:-?}, a ${b:-prose} run: its step cannot be read)"
   fi
 done < <(wt_live_runs)
+RUNS_BUSY="$busy"
+# A process in the clone counts only when it reads node_modules. Shells, git, tail
+# and the sessions that start there sit in it all day (measured on the Mac
+# 2026-10-21: monitors, a five-day-old git), and counting them never cleared.
 if wt_can_see_processes; then
   wt_cwds_load --exclude-self
-  if occ=$(wt_occupant "$(wt_real "$CLONE")"); then busy="$busy${busy:+; }pid $occ ($(ps -o comm= -p "$occ" 2>/dev/null | tr -d ' ')) works in $CLONE"; fi
+  for occ in $(wt_occupants "$(wt_real "$CLONE")"); do
+    comm=$(ps -o comm= -p "$occ" 2>/dev/null); comm=${comm##*/}; comm=${comm// /}
+    case "$comm" in node|npm|npx|pnpm|yarn|bun|tsc|tsx|vitest|jest|playwright|next|eslint)
+      busy="$busy${busy:+; }pid $occ ($comm) works in $CLONE" ;;
+    esac
+  done
 fi
 # How long this lock has waited, so a host that never falls quiet shows it.
 WAITF="$COORD_DIR/shared-install.waiting"
@@ -185,7 +194,8 @@ WAITF="$COORD_DIR/shared-install.waiting"
 if [ -n "$busy" ]; then
   { [ -f "$WAITF" ] && read -r wwant wat < "$WAITF" && [ "$wwant" = "$want" ]; } || { wat=$(date +%s); printf '%s %s\n' "$want" "$wat" > "$WAITF"; }
   waited=$(( ($(date +%s) - wat) / 60 ))
-  if [ "$waited" -ge "$DRAIN_MIN" ]; then
+  # Only builds drain: a hold over a process that is not one would hold for ever.
+  if [ "$waited" -ge "$DRAIN_MIN" ] && [ -n "$RUNS_BUSY" ]; then
     KEEP_HOLD=1
     if coord_shadow; then say "waiting $waited min — would hold new starts on this host until the builds drain (shadow)"
     else
