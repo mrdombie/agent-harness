@@ -141,11 +141,11 @@ sleep 3; echo done > "$FIX/slowhouse.done"
 SH
 chmod +x "$BIN/slowhouse"
 fresh; rm -f "$FIX/slowhouse.done"; issue 620 "status:ready"; queue 620
-t0=$(date +%s)
 out=$(COORDINATOR_HOUSEKEEPING=background COORDINATOR_HOUSEKEEPING_CMD="$BIN/slowhouse" live)
-took=$(( $(date +%s) - t0 ))
+# Whether the housekeeping had ended when the tick returned, not a wall-clock bound a loaded runner misses.
+ended=$([ -f "$FIX/slowhouse.done" ] && echo yes || echo no)
 want "the tick starts its builder"         "620" "$(spawned)"
-want "and returns before the housekeeping ends" "1" "$([ "$took" -lt 3 ] && echo 1 || echo "0 (took ${took}s)")"
+want "and returns before the housekeeping ends" "no" "$ended"
 want_in "it says the housekeeping went to the background" 'housekeeping: started in the background' "$out"
 for _ in $(seq 1 60); do [ -f "$FIX/slowhouse.done" ] && break; sleep 0.1; done
 want "which still runs to the end"         "done" "$(cat "$FIX/slowhouse.done" 2>/dev/null)"
