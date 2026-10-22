@@ -106,6 +106,15 @@ emit() { if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  api\ *)
+    # $FIX/gh/api-<endpoint>.json answers `gh api <endpoint>` (/ ? & = read as _); absent, empty as before.
+    ep=""; skip=0
+    for a in "${@:2}"; do
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      case "$a" in -X|-f|-F|-H|-q|--jq|--method|--input) skip=1 ;; -*) ;; *) [ -n "$ep" ] || ep="$a" ;; esac
+    done
+    f="$FIX/gh/api-$(printf '%s' "$ep" | tr '/?&=' '____').json"
+    [ -z "$ep" ] || [ ! -f "$f" ] || emit "$f" ;;
   "pr create")  : > "$(mark "$head")"; echo "https://github.com/acme/widgets/pull/42" ;;
   "pr list")    f="$FIX/gh/prs.json"
                 # Merged PRs are their own list: an open list read as merged lands every open PR.

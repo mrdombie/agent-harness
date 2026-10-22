@@ -160,11 +160,12 @@ driver_usage_wall() {
 driver_ticket_answers() { # <ticket> <out>
   local j
   : > "$2"
-  j=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json comments 2>/dev/null) || return 0
-  printf '%s' "$j" | jq -r '
-    [(.comments // [])[] | select((.body // "") | test("^\\s*(\\*\\*The owner answered\\*\\*|#+\\s*PM answer)"))]
-    | sort_by(.createdAt // "") | .[]
-    | "### \(.createdAt // "undated")\(if (.url // "") != "" then " — " + .url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || : > "$2"
+  j=$(swarm_gh api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" 2>/dev/null) || return 0
+  printf '%s' "$j" | jq -rs '
+    [.[] | if type == "array" then .[] else empty end
+     | select((.body // "") | test("^\\s*(\\*\\*The owner answered\\*\\*|#+\\s*PM answer)"))]
+    | sort_by(.created_at // "") | .[]
+    | "### \(.created_at // "undated")\(if (.html_url // "") != "" then " — " + .html_url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || : > "$2"
 }
 
 driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]

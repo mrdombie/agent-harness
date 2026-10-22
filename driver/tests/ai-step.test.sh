@@ -183,11 +183,12 @@ want "asked once"                                "1" "$(( $(calls) - before ))"
 
 echo "--- a person's answers on the ticket go in every brief, BINDING, newest last ---"
 # 2026-10-22: three repairs re-asked a question the PM had already answered on the ticket.
-fix_issue 101 OPEN "status:claimed"
-jq '.comments = [
-  {createdAt:"2026-10-22T09:00:00Z", url:"u2", body:"## PM answer (2026-10-22)\nThe newer call: show the date in UK format."},
-  {createdAt:"2026-10-21T09:00:00Z", url:"u1", body:"**The owner answered** (`decision:101:driver-park-4`): keep Published from"},
-  {createdAt:"2026-10-21T10:00:00Z", url:"u3", body:"Thanks, looking at it."}]' "$FIX/gh/issue-101.json" > "$FIX/i.json" && mv "$FIX/i.json" "$FIX/gh/issue-101.json"
+# The ticket's comments, over REST, as GitHub pages them.
+C101="$FIX/gh/api-repos_acme_widgets_issues_101_comments_per_page_100.json"
+jq -n '[
+  {created_at:"2026-10-22T09:00:00Z", html_url:"u2", body:"## PM answer (2026-10-22)\nThe newer call: show the date in UK format."},
+  {created_at:"2026-10-21T09:00:00Z", html_url:"u1", body:"**The owner answered** (`decision:101:driver-park-4`): keep Published from"},
+  {created_at:"2026-10-21T10:00:00Z", html_url:"u3", body:"Thanks, looking at it."}]' > "$C101"
 fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 P101="$(driver_state_dir 101)/steps/compare.prompt"
@@ -213,7 +214,7 @@ before=$(calls)
 rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "asked again, it is a real question: it parks" "20" "$rc"
 want "after exactly one re-ask"                  "2" "$(( $(calls) - before ))"
-rm -f "$FIX/ai/compare.then.jsonl" "$FIX/gh/issue-101.json"
+rm -f "$FIX/ai/compare.then.jsonl" "$C101"
 
 echo "--- a schema file that does not parse disables nothing ---"
 # Present-and-unmatched is a refusal, and so is present-and-unreadable. A broken
