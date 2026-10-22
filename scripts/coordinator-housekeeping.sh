@@ -38,6 +38,8 @@ event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
 # and keeps it shut for every builder on the same token too.
 GH_WAIT=""; if until=$(gh_backoff_active); then GH_WAIT="GitHub is rate-limiting this token until $(swarm_iso "$until")"; fi
 
+[ -n "$GH_WAIT" ] || bash "${COORDINATOR_KEEP_FRESH:-$SELF_DIR/keep-fresh.sh}" >> "$COORD_LOG" 2>&1 || say "keep-fresh exited $?"   # mechanical clashes, before the lane reads them
+
 # ---- 5b. the merge lane -------------------------------------------------------
 # Only where the project names a merge method. Its own lock, its own shadow.
 LANE="${COORDINATOR_LANE:-$SELF_DIR/merge-lane.sh}"
