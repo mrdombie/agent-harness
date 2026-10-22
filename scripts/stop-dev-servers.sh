@@ -391,7 +391,11 @@ if [ "$MODE" = strays ]; then
   done <<<"$ROWS"
   if [ ${#REAP[@]} -gt 0 ]; then
     for _ in $(seq 1 "$GRACE"); do
-      left=0; for p in "${REAP[@]}"; do kill -0 "$p" 2>/dev/null && ! ps -o stat= -p "$p" 2>/dev/null | grep -q Z && left=1; done
+      left=0
+      for p in "${REAP[@]}"; do   # a zombie is reaped already, it only waits on its parent
+        kill -0 "$p" 2>/dev/null || continue
+        case "$(ps -o stat= -p "$p" 2>/dev/null)" in *Z*) ;; *) left=1 ;; esac
+      done
       [ "$left" = 0 ] && break; sleep 1
     done
     for p in "${REAP[@]}"; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null && echo "strays: $p ignored TERM for ${GRACE}s — killed"; done

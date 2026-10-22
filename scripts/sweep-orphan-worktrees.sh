@@ -161,6 +161,28 @@ unpushed() {
   echo "$c"
 }
 
+# trunk_only <worktree> — 0 when every change git status reports is a file whose bytes equal
+# origin/<integration>'s copy: a tool's rewrite converging on trunk (Next rewrites its AGENTS.md
+# block on older branches), not work. Read only to decide a keep; the tree is never reset.
+trunk_only() {
+  local wt=$1 list rec st path h t
+  [ -n "${INTEGRATION_BRANCH:-}" ] || return 1
+  list=$(mktemp) || return 1
+  git -C "$wt" status --porcelain -z --untracked-files=all > "$list" 2>/dev/null || { rm -f "$list"; return 1; }
+  [ -s "$list" ] || { rm -f "$list"; return 1; }
+  while IFS= read -r -d '' rec; do
+    st=${rec:0:2} path=${rec:3}
+    # A rename, copy, delete or conflict is not a file sitting at trunk's bytes.
+    case "$st" in *R*|*C*|*D*|*U*) rm -f "$list"; return 1 ;; esac
+    if [ ! -f "$wt/$path" ] || [ -L "$wt/$path" ]; then rm -f "$list"; return 1; fi
+    h=$(git -C "$wt" hash-object --no-filters -- "$path" 2>/dev/null) \
+      && t=$(git -C "$wt" rev-parse --verify --quiet "origin/$INTEGRATION_BRANCH:$path" 2>/dev/null) \
+      && [ "$h" = "$t" ] || { rm -f "$list"; return 1; }
+  done < "$list"
+  rm -f "$list"
+  return 0
+}
+
 remove_wt() { # <worktree> <common-dir>
   git --git-dir="$2" worktree remove --force "$1" >/dev/null 2>&1
 }
@@ -192,7 +214,8 @@ for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
     [ $(( now - m )) -ge "$threshold" ] || { keep "$wt" "younger than ${THRESHOLD_HOURS}h"; continue; }
   fi
   status=$(git -C "$wt" status --porcelain 2>/dev/null) || { keep "$wt" "unreadable (git status failed)"; continue; }
-  [ -z "$status" ] || { keep "$wt" "uncommitted changes"; continue; }
+  # Only once its PR merged or its ticket closed does trunk's own bytes count as clean.
+  if [ -n "$status" ] && { [ -z "${FINISHED:-}" ] || ! trunk_only "$wt"; }; then keep "$wt" "uncommitted changes"; continue; fi
   orphans=$(unpushed "$wt") || { keep "$wt" "unreadable (rev-list failed)"; continue; }
   [ "$orphans" = 0 ] || { keep "$wt" "$orphans commit(s) on no remote"; continue; }
 
