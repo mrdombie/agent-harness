@@ -281,30 +281,57 @@ swarm_usage_near_hold() {
   printf '%s (%s window at %s%%)' "$(swarm_iso "$(printf '%s' "$pick" | cut -f1)")" \
     "$(printf '%s' "$pick" | cut -f2)" "$(printf '%s' "$pick" | cut -f3)"
 }
-# swarm_usage_freshest <window> [readings json] — "<utilization>\t<reset epoch>" for
-# that window (five_hour, seven_day) while it is open: the highest of the newest
-# builder logs here (prose claim logs, driver step logs), every host's heartbeat in
-# the coordinator's fleet file, and the readings passed ([{u, reset}]). The window
-# is the account's, so any host's reading counts; inside one window utilization only
-# rises, so the highest is the newest. Resets within 10 min are one window.
-swarm_usage_freshest() {
-  local w="${1:-five_hour}" extra="${2:-[]}" now files f best
+# A file's mtime, on either stat, always as digits (0 when unreadable).
+swarm_mtime() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null); case "$m" in ''|*[!0-9]*) m="" ;; esac
+  [ -n "$m" ] || { m=$(stat -f %m "$1" 2>/dev/null); case "$m" in ''|*[!0-9]*) m=0 ;; esac; }
+  printf '%s' "$m"
+}
+
+# swarm_usage_freshest_at <window> [readings json] — "<utilization>\t<reset epoch>\t<observed epoch>"
+# for that window (five_hour, seven_day) while it is open, from the newest builder logs
+# here (prose claim logs, driver step logs; observed = the log's mtime), every host's
+# heartbeat in the coordinator's fleet file, and the readings passed ([{u, reset, at}]).
+# The window is the account's, so any host's reading counts. The NEWEST observed
+# reading names the window by its reset: a reading with another reset is another
+# window (the account was switched, or the window reset) and is dropped, never
+# compared. Only inside that one window does utilization only rise, so the highest
+# of its readings wins. Resets within 10 min are one window. A reading with no `at`
+# (an older harness's heartbeat) is the oldest.
+swarm_usage_freshest_at() {
+  local w="${1:-five_hour}" extra="${2:-[]}" now files f m best
   now=$(swarm_now)
   # shellcheck disable=SC2012  # names we wrote, no newlines
   files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
   best=$( { while IFS= read -r f; do
-              [ -n "$f" ] && swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" '$2 == "window" && $4 == w { print $5 "\t" $3 }'
+              [ -n "$f" ] || continue
+              m=$(swarm_mtime "$f")
+              swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" -v m="$m" '$2 == "window" && $4 == w { print $5 "\t" $3 "\t" m }'
             done <<< "$files"
             jq -r --arg w "$w" '.hosts[]? | .usage? | .[$w]? // empty | select((.u | type) == "number" and (.reset | type) == "number")
-                                | "\(.u)\t\(.reset)"' "${COORDINATOR_DIR:-$STATE_DIR/coordinator}/fleet.json" 2>/dev/null
+                                | "\(.u)\t\(.reset)\t\((.at // 0) | tonumber? // 0)"' "${COORDINATOR_DIR:-$STATE_DIR/coordinator}/fleet.json" 2>/dev/null
             printf '%s' "$extra" | jq -r '.[]? | select(type == "object" and (.u | type) == "number" and (.reset | type) == "number")
-                                          | "\(.u)\t\(.reset)"' 2>/dev/null
+                                          | "\(.u)\t\(.reset)\t\((.at // 0) | tonumber? // 0)"' 2>/dev/null
           } | awk -F'\t' -v now="$now" '
-            $2 + 0 > now + 0 { n++; U[n] = $1 + 0; R[n] = $2 + 0; if (R[n] > top) top = R[n] }
-            END { for (i = 1; i <= n; i++) if (R[i] >= top - 600 && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] }
-                  if (p) printf "%s\t%d", bu, br }')
+            $2 + 0 > now + 0 {
+              n++; U[n] = $1 + 0; R[n] = $2 + 0; A[n] = $3 + 0
+              # The newest observation; at the same time, the later reset (a log that spans a reset).
+              if (n == 1 || A[n] > na || (A[n] == na && R[n] > nr)) { na = A[n]; nr = R[n] }
+            }
+            END { for (i = 1; i <= n; i++) { d = R[i] - nr; if (d < 0) d = -d
+                    if (d <= 600 && (!p || U[i] > bu)) { p = 1; bu = U[i]; br = R[i] } }
+                  if (p) printf "%s\t%d\t%d", bu, br, na }')
   [ -n "$best" ] || return 1
   printf '%s' "$best"
+}
+
+# swarm_usage_freshest <window> [readings json] — "<utilization>\t<reset epoch>": the
+# reading swarm_usage_freshest_at picks, without when it was observed.
+swarm_usage_freshest() {
+  local r
+  r=$(swarm_usage_freshest_at "$@") || return 1
+  printf '%s' "${r%$'\t'*}"
 }
 
 # swarm_usage_step_hold — "<reset epoch>\t<window>\t<percent>" while either window is at
