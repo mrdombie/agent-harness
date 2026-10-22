@@ -33,6 +33,15 @@
 # 110 of the 339 bugs filed in one week. Nits are dropped — and the count is SAID,
 # because dropped silently reads exactly like never raised.
 #
+# REVIEW ONCE (the owner, 2026-10-22: review was 26% of driver usage). The model reviews
+# a change once. A later pass calls it again only when the fix round touched a file the
+# first review never saw — files changed since the reviewed head, held against the
+# reviewed diff's file list — and that second review is graded as round 2: only Critical
+# and Major block. Never a third. Otherwise the pass records no new review: the fix step
+# already proved each finding red-then-green, or parked. Settings: review.maxRounds
+# (passes, default 2) and review.secondOnlyOnNewFiles (default true; false re-reviews
+# every pass up to the ceiling).
+#
 # ONE CALL, NOT SEVERAL AGENTS. The driver runs one review brief per round. What
 # that brief does inside itself — how many reviewers it asks, in what order — is
 # Superpowers' business. Inside a ticket, splitting the work belongs to the
@@ -111,6 +120,20 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   fi
   [ -n "$diff" ] || [ -z "$own_paths$rbase" ] || [ "$(driver_state_get "$t" mode)" != repair ] \
     || diff="(none — this repair made no change of its own: a clean merge of $INTEGRATION_BRANCH, or nothing at all. The PR was reviewed before it; judge only this.)"
+  # A LATER PASS ASKS FIRST WHETHER THERE IS ANYTHING NEW TO REVIEW.
+  local tier maxr="$DRIVER_MAX_REVIEW_ROUNDS" again
+  tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
+  [ "$tier" != tooling ] || maxr=1
+  if [ "$round" -ge 1 ]; then
+    again=$(_driver_review_again "$t" "$wt" "$round" "$maxr" "${dargs[@]}")
+    if [ "${again%% *}" != run ]; then
+      _driver_review_no_call "$t" "${again%% *}" "${again#* }"; return $?
+    fi
+    driver_say "   review: round $((round + 1)) of $maxr — ${again#run }"
+    diff="$diff
+
+[ROUND $((round + 1)): only $(driver_blocking_grades 2) block. ${again#run }]"
+  fi
   # THE REVIEWER CONFIRMS A POLISH ITEM IS FIXED, not the builder's own record of it.
   local claimed=""
   [ "$(driver_state_get "$t" mode)" = repair ] || claimed=$(bash "${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" taken "$t" 2>/dev/null)
@@ -130,9 +153,13 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   # The build answers: one per plan task, so the whole file rather than the last one.
   local built="$(driver_state_dir "$t")/steps/build.all.json"
   [ -s "$built" ] || built="$(driver_state_dir "$t")/steps/build.json"
+  local seen_head; seen_head=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
   rc=0; driver_ai_step "$t" review "$built" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   driver_state_bump "$t" review
+  # WHAT THIS REVIEW SAW is recorded only once its answer is read as a review (below):
+  # a refused answer is no review, and the next pass must not treat it as one.
+  driver_state_set "$t" reviewed_head ""
   round=$((round + 1))
   ans_file="$(driver_state_dir "$t")/steps/review.json"
   # A new review cycle (a build, or a repair) starts its deferred list empty.
@@ -161,9 +188,8 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
-  local tier maxr="$DRIVER_MAX_REVIEW_ROUNDS" ground="$round"
-  tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
-  if [ "$tier" = tooling ]; then maxr=1; [ "$ground" -ge 2 ] || ground=2; fi
+  local ground="$round"
+  if [ "$tier" = tooling ]; then [ "$ground" -ge 2 ] || ground=2; fi
   _driver_review_defer "$t" "$ans_file" "$ground"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
 
@@ -171,10 +197,11 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   [ "$rc" -eq 0 ] || return "$rc"
 
   nsend=$(_driver_count "$ans_file" blocking)
-  # `-le`, not `-lt`: the design's flowchart sends work back on round 1 OR 2, so two
-  # rounds means two chances to fix, and the pass after them ships.
+  # `-le`, not `-lt`: every model round's blockers go to fix, and the pass after the
+  # last round calls no model (_driver_review_again) — never a third review.
   if [ "$verdict" = "BLOCKED" ] && [ "${nsend:-0}" -gt 0 ] && [ "$round" -le "$maxr" ]; then
     driver_say "✋ review round $round of $maxr: $nsend blocking ($(driver_blocking_grades "$ground")) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
+    _driver_review_seen "$t" "$wt" "$seen_head" "${dargs[@]}"
     return "$DRIVER_E_REWORK"
   fi
 
@@ -187,6 +214,7 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
     driver_say "✋ review: SHIP beside $nsend open blocking ($DRIVER_BLOCKING_GRADES) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)"). The verdict is read off the grades; it is not typed beside them."
     return "$DRIVER_E_REFUSED"
   fi
+  _driver_review_seen "$t" "$wt" "$seen_head" "${dargs[@]}"
 
   rc=0; driver_push_requires "$t" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
@@ -199,6 +227,74 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   # found nothing, so the count is what tells a reader which happened.
   [ "${nnit:-0}" -gt 0 ] && driver_say "   review: $nnit nit(s) dropped — taste, and taste never blocks"
   driver_say "   review: $verdict after $round round(s)"
+  return "$DRIVER_OK"
+}
+
+# _driver_review_seen <ticket> <tree> <head> <diff args…> — what a review read as a
+# review saw: its head, its diff's file list and the fix count then, for the next pass.
+_driver_review_seen() {
+  local t="$1" wt="$2" h="$3"; shift 3
+  git -C "$wt" diff --name-only "$@" 2>/dev/null | sed '/^$/d' | sort -u > "$(driver_state_dir "$t")/steps/review.files.txt"
+  driver_state_set "$t" reviewed_head "$h"
+  driver_state_set "$t" reviewed_fix "$(driver_state_count "$t" fix)"
+}
+
+# _driver_review_again <ticket> <tree> <passes so far> <max> <diff args…> — whether a later
+# pass calls the model. One line: "run <why>" — review again; "skip <why>" — no new
+# review, the fix step proved the findings; "hold <why>" — no new review, and the findings
+# stand (no fix ran since). The files a fix round touched are those changed since the
+# reviewed head that are still in this change: a trunk merge brings files that are not.
+_driver_review_again() {
+  local t="$1" wt="$2" round="$3" maxr="$4" d rhead nb rfix now since new
+  shift 4
+  d="$(driver_state_dir "$t")/steps"
+  rhead=$(driver_state_get "$t" reviewed_head)
+  if [ -z "$rhead" ] || [ ! -f "$d/review.files.txt" ]; then echo "run the last pass recorded no review (refused, or never run) to compare with"; return 0; fi
+  nb=$(_driver_count "$d/review.json" blocking); rfix=$(driver_state_get "$t" reviewed_fix)
+  if [ "${nb:-0}" -gt 0 ] && [ "$(driver_state_count "$t" fix)" -le "${rfix:-0}" ]; then
+    if [ "$round" -ge "$maxr" ]; then echo "hold the $maxr review round(s) are spent, and no fix round has answered the last review's $nb blocking finding(s)"
+    else echo "run no fix round has answered the last review's $nb blocking finding(s)"; fi
+    return 0
+  fi
+  [ "$round" -lt "$maxr" ] || { echo "skip the $maxr review round(s) are spent — never a third"; return 0; }
+  case "$(driver_opt review.secondOnlyOnNewFiles true)" in
+    false|0|no|off) echo "run review.secondOnlyOnNewFiles is off, so every pass is reviewed"; return 0 ;;
+  esac
+  git -C "$wt" cat-file -e "$rhead^{commit}" 2>/dev/null || { echo "run the reviewed head $rhead is not in this tree"; return 0; }
+  now=$(git -C "$wt" diff --name-only "$@" 2>/dev/null | sed '/^$/d' | sort -u)
+  since=$(git -C "$wt" diff --name-only "$rhead" 2>/dev/null | sed '/^$/d' | sort -u)
+  new=$(comm -12 <(printf '%s\n' "$since") <(printf '%s\n' "$now") | comm -23 - "$d/review.files.txt" | sed '/^$/d')
+  if [ -n "$new" ]; then
+    echo "run the fix round touched $(printf '%s\n' "$new" | grep -c .) file(s) the last review never saw: $(printf '%s\n' "$new" | head -10 | tr '\n' ' ' | sed 's/ $//')"
+  else
+    echo "skip every file changed since the reviewed head $(printf '%s' "$rhead" | cut -c1-8) was in the reviewed diff"
+  fi
+}
+
+# _driver_review_no_call <ticket> <skip|hold> <why> — a pass that does not call the model.
+# skip: the last review's blocking findings were each answered by the fix step (proved,
+# or it would have parked), so they leave the answer and the verdict is read off what is
+# left. hold: they stand, and the ship step refuses on them. Either way the pass is
+# counted, and the push's own reviewers still run.
+_driver_review_no_call() {
+  local t="$1" how="$2" why="$3" f n rc
+  f="$(driver_state_dir "$t")/steps/review.json"
+  driver_state_bump "$t" review
+  driver_state_bump "$t" review_skipped
+  if [ "$how" = skip ] && [ -f "$f" ]; then
+    n=$(_driver_count "$f" blocking)
+    cp "$f" "$f.before-skip" 2>/dev/null || true
+    jq "del(.findings[]? | $(_driver_class blocking))
+        | if (.verdict // \"\" | ascii_upcase) == \"BLOCKED\" then .verdict = \"SHIP\" else . end" "$f" > "$f.t" && mv "$f.t" "$f"
+    driver_say "   review: no new review — $why. ${n:-0} finding(s) from the last review were answered by the fix round, which proved each one."
+  else
+    driver_say "   review: no new review — $why."
+  fi
+  rc=0; driver_push_requires "$t" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  n=$(_driver_count "$f" nit)
+  [ "${n:-0}" -gt 0 ] && driver_say "   review: $n nit(s) dropped — taste, and taste never blocks"
+  driver_say "   review: $(jq -r '.verdict // "none"' "$f" 2>/dev/null | tr '[:lower:]' '[:upper:]') after $(driver_state_count "$t" review) pass(es), $(( $(driver_state_count "$t" review) - $(driver_state_count "$t" review_skipped) )) reviewed by the model"
   return "$DRIVER_OK"
 }
 
