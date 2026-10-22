@@ -427,7 +427,7 @@ _driver_review_defer() {
         if [ -n "$slug" ] && bash "$pl" add "$slug" "$text" >/dev/null 2>&1; then list="$slug"; fi ;;
     esac
     if [ -n "$list" ]; then put=$((put + 1)); else kept=$((kept + 1)); fi
-    printf '%s' "$x" | jq -c --arg l "$list" --argjson r "$round" '{grade, file, line, summary, round: $r, list: $l}' >> "$d/review.deferred.jsonl"
+    printf '%s' "$x" | jq -c --arg l "$list" --argjson r "$round" '{id, grade, file, line, summary, round: $r, list: $l}' >> "$d/review.deferred.jsonl"
   done
   rm -f "$tmp"
   jq --arg late "$late" '

@@ -2,8 +2,9 @@
 
 # Step 6 · Fix what blocks
 
-You are clearing the review's blocking findings (from round 2, its Minors went on
-the screen's polish list). Nothing else — a Nit was dropped.
+You are clearing the review's blocking findings. Every finding listed below blocks
+this review round: what the round does not block (from review round 2, a Minor) the
+driver has already put on the screen's polish list, and a Nit was dropped. Nothing else.
 
 ## Invoke the skill — do not work from this file
 
