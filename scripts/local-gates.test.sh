@@ -23,9 +23,9 @@ cp -R "$F"/. "$T"/
 echo "--- the helper ---"
 out=$(cd "$T/lo" && bash "$LG"); rc=$?
 [ "$rc" = 0 ] && [ "$out" = "$(jq -r '.local[]' <<<"$GATES")" ] && ok "localOnly prints gates.local, in order" || bad "localOnly: rc=$rc out=$out"
-case "$out" in *test:changed*) bad "localOnly printed test:changed" ;; *) ok "localOnly never prints test:changed" ;; esac
+case "$out" in *unit-tests*) bad "localOnly printed gates.changed's test command" ;; *) ok "localOnly never prints gates.changed's test command" ;; esac
 out=$(cd "$T/lo" && bash "$LG" --joined)
-[ "$out" = "npm run lint:changed && npm run typecheck:changed && npm run format:changed" ] && ok "--joined joins gates.local with &&" || bad "joined: $out"
+[ "$out" = "sh lint.sh && sh types.sh && sh fmt.sh" ] && ok "--joined joins gates.local with &&" || bad "joined: $out"
 out=$(cd "$T/nolo" && bash "$LG"); rc=$?
 [ "$rc" = 0 ] && [ "$out" = "$(jq -r '.changed[]' <<<"$GATES")" ] && ok "without localOnly it prints gates.changed, as before" || bad "no localOnly: rc=$rc out=$out"
 out=$(cd "$T/lo" && HARNESS_CFG_PATH="$T/nolo/.claude/harness.json" bash "$LG")
@@ -33,7 +33,7 @@ out=$(cd "$T/lo" && HARNESS_CFG_PATH="$T/nolo/.claude/harness.json" bash "$LG")
 out=$(bash "$LG" "$T/nolo/.claude/harness.json")
 [ "$out" = "$(jq -r '.changed[]' <<<"$GATES")" ] && ok "a path argument names the config" || bad "path arg: $out"
 out=$(cd "$T/loempty" && bash "$LG" 2>&1); rc=$?
-[ "$rc" = 2 ] && ! printf '%s' "$out" | grep -q 'test:changed' && printf '%s' "$out" | grep -q 'gates.localOnly' \
+[ "$rc" = 2 ] && ! printf '%s' "$out" | grep -q 'unit-tests' && printf '%s' "$out" | grep -q 'gates.localOnly' \
   && ok "localOnly with no gates.local refuses, rather than fall back to gates.changed" || bad "loempty: rc=$rc out=$out"
 out=$(cd "$T/none" && bash "$LG"); rc=$?
 [ "$rc" = 0 ] && [ -z "$out" ] && ok "no lists: empty, exit 0" || bad "none: rc=$rc out=$out"

@@ -1,7 +1,7 @@
 {
   "gates": {
     "localOnly": true,
-    "local": ["npm run lint:changed", "npm run typecheck:changed", "npm run format:changed"],
-    "changed": ["npm run lint:changed", "npm run typecheck:changed", "npm run test:changed"]
+    "local": ["sh lint.sh", "sh types.sh", "sh fmt.sh"],
+    "changed": ["sh lint.sh", "sh types.sh", "sh unit-tests.sh"]
   }
 }
