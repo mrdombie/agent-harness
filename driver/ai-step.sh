@@ -258,6 +258,10 @@ SHIM
   # And no step writes the repo's settings: a build added a required check to the
   # live develop ruleset with `gh api` from inside a step (2026-10-20).
   local rsw="$KIT_ROOT/hooks/lib/repo-settings-write.sh"
+  # Built outside the heredoc: inside \${x:+…} the quotes are removed, and the shim ran
+  # `exec gh $@` — every argument with a space in it split (a -q filter, a --body).
+  local gh_exec='echo "gh: not installed" >&2; exit 127'
+  [ -z "$real_gh" ] || gh_exec="exec $(printf '%q' "$real_gh") \"\$@\""
   cat > "$shim/gh" <<SHIM
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in "pr ready"|"pr merge"|"pr create")
@@ -266,8 +270,7 @@ esac
 if [ -f "$rsw" ] && bash "$rsw" gh "\$@"; then
   . "$rsw"; echo "gh \$* refused inside a driver step: \$REPO_SETTINGS_WRITE_REASON (\${HARNESS_DRIVER_RUN:-})" >&2; exit 1
 fi
-${real_gh:+exec "$real_gh" "\$@"}
-echo "gh: not installed" >&2; exit 127
+$gh_exec
 SHIM
   chmod +x "$shim/git" "$shim/gh"
   pbranch=$(driver_state_get "$t" branch)

@@ -14,7 +14,8 @@
 # ONE TICKET PER PR AND FINDING. The key is "<pr> <finding id>": a ledger on this host
 # ($STATE_DIR/swarm/follow-ups.tsv) and a marker in the body, searched on the forge, so a
 # resumed ship or another host files nothing twice. Then status ready (issue-status.sh)
-# and `coordinator-queue.sh add --front`. FOLLOW_UP_QUEUE=off skips the queue (tests).
+# and `coordinator-queue.sh add --front`. Each wears release.followUpLabel (default
+# fix-after-merge, created if the repo lacks it): the clean-up after the release is one list. FOLLOW_UP_QUEUE=off skips the queue (tests).
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || exit 1
@@ -29,6 +30,17 @@ LEDGER="${FOLLOW_UP_LEDGER:-$STATE_DIR/swarm/follow-ups.tsv}"
 mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
 P_MAJOR=$(toolkit_cfg labels.priority.major 2>/dev/null); P_MAJOR="${P_MAJOR:-P1}"
 P_MINOR=$(toolkit_cfg labels.priority.minor 2>/dev/null); P_MINOR="${P_MINOR:-P3}"
+# Every follow-up wears one label, so the clean-up after the release is one list.
+FU_LABEL=$(toolkit_cfg release.followUpLabel 2>/dev/null); FU_LABEL="${FU_LABEL:-fix-after-merge}"
+fu_label_ready=""
+ensure_fu_label() { # created once if the repo lacks it; a failed create is said, the filing goes on
+  [ -z "$fu_label_ready" ] || return 0
+  fu_label_ready=1
+  "$GH" api "repos/$REPO_SLUG/labels/$(jq -rn --arg l "$FU_LABEL" '$l | @uri')" -q .name >/dev/null 2>&1 && return 0
+  "$GH" api "repos/$REPO_SLUG/labels" -X POST -f name="$FU_LABEL" -f color=d4c5f9 \
+    -f description="A review finding filed so its change could merge first; fixed after the merge" >/dev/null 2>&1 \
+    || echo "the label $FU_LABEL could not be created"
+}
 
 # The parent's screen and area labels ride along, so the follow-up sorts with its screen.
 carry=$("$GH" api "repos/$REPO_SLUG/issues/$T" -q '.labels[].name' 2>/dev/null \
@@ -62,7 +74,8 @@ while IFS= read -r x; do
     (if (.reason // "") != "" then "Why it matters: \(.reason)\n\n" else "" end) +
     (if (.fix // "") != "" then "The fix the reviewer proposed: \(.fix)\n\n" else "" end) +
     "Fix it on the trunk as its own change. PR #\($pr) has merged or is merging without it.\n\n\($m)"' <<<"$x")
-  args=(-f title="$title" -f body="$body" -f "labels[]=$pri")
+  ensure_fu_label
+  args=(-f title="$title" -f body="$body" -f "labels[]=$pri" -f "labels[]=$FU_LABEL")
   while IFS= read -r l; do [ -n "$l" ] && args+=(-f "labels[]=$l"); done <<<"$carry"
   if ! n=$("$GH" api "repos/$REPO_SLUG/issues" -X POST "${args[@]}" -q .number 2>/dev/null) || [ -z "$n" ]; then
     echo "finding $id ($grade, $where) could not be filed as a ticket"; failed=1; continue

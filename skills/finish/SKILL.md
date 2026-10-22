@@ -491,25 +491,6 @@ a dev server for evidence.**
 Skip this step on a diff that changes nothing a user sees (the project's own
 predicate decides that, as in Gate 2) and on a deletion-only UI PR.
 
-**Merge first, fix after** (the owner, 2026-10-22; `release.mergeFirst` in harness.json,
-read by `release_merge_first`). While it is on, a pixel PR is shipped like any other:
-no hold label, no wait for CI's shots, no picture parity, ready and armed at once. The
-review still runs once and only a Critical blocks; every Major and Minor is a follow-up
-(`scripts/follow-up.sh file <ticket> <pr> <findings.jsonl>`: one ticket per finding,
-P1 for a Major, P3 for a Minor no screen's polish list takes, status ready, at the front
-of the queue), and the PR ships. The owner reviews the screen on UAT.
-
-```bash
-KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
-if release_merge_first; then
-  gh pr ready "$PR_NUMBER" 2>/dev/null || true
-  gh pr merge "$PR_NUMBER" --auto "--$(toolkit_cfg merge.method 2>/dev/null || echo squash)"
-  echo "merge first: shipped without the hold or the CI-shot wait"   # then Step 6
-fi
-```
-
-Otherwise:
-
 ```bash
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 EV="$KIT_ROOT/scripts/ci-evidence.sh"
@@ -524,6 +505,24 @@ gh pr ready "$PR_NUMBER" 2>/dev/null || true
   && gh pr merge "$PR_NUMBER" --auto "--$(toolkit_cfg merge.method 2>/dev/null || echo squash)"
 # 3. Wait in the shell. One call, no tokens while CI works, nothing captured here.
 bash "$EV" wait "$PR_NUMBER"; echo "wait exit: $?"
+```
+
+**Merge first, fix after** (the owner, 2026-10-22; `release.mergeFirst` in harness.json,
+read by `release_merge_first`). While it is on, run this INSTEAD of the block above: a
+pixel PR ships like any other, with no hold label, no wait for CI's shots and no picture
+parity, ready and armed at once. The review still runs once and only a Critical blocks;
+every Major and Minor is a follow-up (`scripts/follow-up.sh file <ticket> <pr>
+<findings.jsonl>`: one ticket per finding, P1 for a Major, P3 for a Minor no screen's
+polish list takes, status ready, at the front of the queue), and the PR ships. The
+owner reviews the screen on UAT.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+if release_merge_first; then
+  gh pr ready "$PR_NUMBER" 2>/dev/null || true
+  gh pr merge "$PR_NUMBER" --auto "--$(toolkit_cfg merge.method 2>/dev/null || echo squash)"
+  echo "merge first: shipped without the hold or the CI-shot wait"   # then Step 6
+fi
 ```
 
 What `wait` returns, and the move for each:

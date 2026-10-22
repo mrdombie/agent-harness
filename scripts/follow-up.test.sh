@@ -20,6 +20,8 @@ case "$*" in
   *"repos/acme/widgets/issues -X POST"*)
      n=$(( $(cat "$FIX/fgh.next" 2>/dev/null || echo 776) + 1 )); echo "$n" > "$FIX/fgh.next"
      printf '%s\0' "$@" > "$FIX/fgh.create.$n"; echo "$n"; exit 0 ;;
+  *"repos/acme/widgets/labels -X POST"*) : > "$FIX/fgh.label"; exit 0 ;;
+  *"repos/acme/widgets/labels/"*) [ -f "$FIX/fgh.label" ] || exit 1; echo fix-after-merge; exit 0 ;;
   *"repos/acme/widgets/issues/"*) printf 'screen:home\narea:feed\nP2\n'; exit 0 ;;
 esac
 exit 0
@@ -47,6 +49,9 @@ want "it exits clean"                          "0" "$RC"
 want "two tickets"                             "created=2" "$R"
 want_in "the Major at P1"                      '^labels\[\]=P1$' "$(args_of 777)"
 want_in "the Minor at P3"                      '^labels\[\]=P3$' "$(args_of 778)"
+want_in "every follow-up wears fix-after-merge" '^labels\[\]=fix-after-merge$' "$(args_of 777)"
+want_in "the Minor too"                        '^labels\[\]=fix-after-merge$' "$(args_of 778)"
+want "the label was missing, so it was created once" "1" "$(grep -c 'labels -X POST -f name=fix-after-merge' "$FIX/fgh.log")"
 want_in "the parent's screen rides along"      '^labels\[\]=screen:home$' "$(args_of 777)"
 want_not_in "the parent's priority does not"   '^labels\[\]=P2$' "$(args_of 777)"
 want_in "the body names the PR"                'A review finding on PR #42 \(ticket #701\)' "$(args_of 777)"
@@ -80,5 +85,8 @@ plant "the ledger" '  if n=$(awk -F'"'"'\t'"'"' -v p="$PR" -v i="$id" '"'"'$1 ==
   fi' 'SUT="$KIT/scripts/follow-up.sh" case_file' "created=4"
 plant "the forge search" '  if [ -n "$n" ]; then printf '"'"'%s\t%s\n'"'"' "$key" "$n" >> "$LEDGER"; had=$((had + 1)); continue; fi' 'echo 900 > "$FIX/fgh.found"' "created=2"
 plant "the grade map" '    major) pri="$P_MAJOR" ;; minor) pri="$P_MINOR" ;;' ':' "created=0"
+plant "the follow-up label" ' -f "labels[]=$FU_LABEL"' 'case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="label=$(args_of 777 | grep -c "^labels\[\]=fix-after-merge$")"; }' "label=0"
+plant "the label's creation" '  ensure_fu_label
+' 'rm -f "$FIX/fgh.label"; case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="made=$(grep -c "labels -X POST" "$FIX/fgh.log")"; }' "made=0"
 
 suite_end "$FAILED"

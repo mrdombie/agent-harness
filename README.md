@@ -603,7 +603,8 @@ push through; the review runs once and only a **Critical** blocks, fixed in plac
 Every Major becomes a P1 follow-up ticket and every Minor goes on its screen's polish
 list, or becomes a P3 follow-up when no screen takes it: `scripts/follow-up.sh`, one
 ticket per PR and finding, naming the PR, the file:line and the finding, status
-ready, `coordinator-queue.sh add --front`. Then the PR ships. A ui-gate SPIT-BACK with
+ready, labelled `fix-after-merge` (`release.followUpLabel`, created if missing) so the
+clean-up after the release is one list, `coordinator-queue.sh add --front`. Then the PR ships. A ui-gate SPIT-BACK with
 no Critical is not recorded and does not refuse. The design critic and the picture
 check join the warn-only checks below, and only a `screen:new` or `screen:redesign`
 ticket still waits for an approved picture (the baseline route is on for every other
