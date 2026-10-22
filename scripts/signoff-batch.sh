@@ -175,8 +175,9 @@ by_priority() {
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   [ -z "${need// /}" ] || iss=$(gh_issues_batch $need 2>/dev/null) || true
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$iss" || iss="{}"
-  printf '%s\n' "$rows" | jq -R -r --argjson iss "$iss" --arg plist "$LBL_POLISH_LIST" '
-    split("\t") as $r
+  printf '%s\n' "$rows" | jq_slurp iss "$iss" -- jq -R -r --arg plist "$LBL_POLISH_LIST" '
+    $iss[0] as $iss
+    | split("\t") as $r
     | (if $r[3] != "-" then ($r[3] | tonumber)
        else (($iss[$r[4]].labels // []) as $ls
              | ([$ls[] | select(test("^P[0-9]$")) | ltrimstr("P") | tonumber] | first)

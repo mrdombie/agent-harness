@@ -261,6 +261,7 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   # A CHECK THAT WARNS UNTIL THE RELEASE IS NOT A RED (release.nonBlockingChecks): it
   # sends no healing run and never counts toward heal-all. repair-watch notes it on the PR.
   NB_CHECKS=$(release_nonblocking_json)
+  # argv-bounded: the few check names release.nonBlockingChecks lists.
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson nb "$NB_CHECKS" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
     .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
     | ((.statusCheckRollup // []) | newest_runs | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))) as $all
@@ -455,7 +456,7 @@ if [ -n "${ISSUE_NUMS// /}" ]; then
     snap=$(coord_snap_load issues) || snap="{}"
     [ "$snap" != "{}" ] || ISSUES_OK=0
     [ -n "$ISSUES" ] || ISSUES="{}"
-    ISSUES=$(jq -cn --argjson old "$snap" --argjson new "$ISSUES" '$old + $new' 2>/dev/null) || ISSUES=""
+    ISSUES=$(jq_slurp old "$snap" new "$ISSUES" -- jq -cn '$old[0] + $new[0]' 2>/dev/null) || ISSUES=""
     say "tickets: the batched read was refused$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — $( [ "$snap" = "{}" ] && echo 'no fresh snapshot to fall back on' || echo "the rest from the snapshot taken $(coord_snap_age issues) min ago")"
   fi
 fi

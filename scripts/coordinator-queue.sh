@@ -115,14 +115,15 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
   # The pinned rows the board did not offer, read in one batch: a closed, batched,
   # parked, blocked or held one is dropped rather than shown as work.
   local pinned_nums pins='{}'
-  pinned_nums=$(current | jq -r --arg rows "$rows" '($rows | split("\n") | map(split("\t")[0])) as $f
+  pinned_nums=$(current | jq_slurp raw:rows "$rows" -- jq -r '($rows | split("\n") | map(split("\t")[0])) as $f
                   | (.tickets // [])[] | select(.pinned) | (.n|tostring) | select(. as $n | $f | index($n) | not)' 2>/dev/null)
   if [ -n "$pinned_nums" ]; then
     # shellcheck disable=SC2086  # a list of numbers, split on purpose
     pins=$(gh_issues_batch $pinned_nums 2>/dev/null) && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$pins" || pins='{}'
   fi
-  current | coord_jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" --arg rows "$rows" --argjson pins "$pins" "$COORD_TICKET_JQ"'
-    (.tickets // []) as $old
+  current | jq_slurp raw:rows "$rows" pins "$pins" -- coord_jq --arg scope "$scope" --arg labels "$labels" --arg at "$(swarm_stamp)" "$COORD_TICKET_JQ"'
+    $pins[0] as $pins
+    | (.tickets // []) as $old
     | ($labels | split("\n") | map(select(length > 0))) as $ls
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
     | ($rows | split("\n") | map(select(length > 0) | split("\t")

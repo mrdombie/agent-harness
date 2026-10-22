@@ -138,7 +138,7 @@ coord_sheet_stop_labels() {
 coord_sheet_entries() {
   local wide="$1" issues="${2:-}" claims="$3" plan="${4:-}"
   [ -n "$issues" ] || issues='{}'
-  coord_jq -c --arg wide "$wide" --arg claims "$claims" --arg plan "$plan" --arg host "$COORD_HOST" \
+  jq_slurp raw:wide "$wide" raw:claims "$claims" -- coord_jq -c --arg plan "$plan" --arg host "$COORD_HOST" \
      --arg ready "$LBL_READY" --arg inreview_l "${LBL_IN_REVIEW:-status:in-review}" \
      --argjson stops "$(coord_sheet_stop_labels)" "$COORD_TICKET_JQ"'
     . as $iss
@@ -243,7 +243,7 @@ coord_sheet_publish() {
   local try resp
   for try in 1 2; do
     n=$(coord_sheet_issue create) || { printf 'no sheet issue could be found or made'; return 1; }
-    if ! resp=$(jq -n --arg b "$body" --arg t "$COORD_SHEET_TITLE" '{body: $b, title: $t}' \
+    if ! resp=$(jq_slurp raw:b "$body" -- jq -n --arg t "$COORD_SHEET_TITLE" '{body: $b, title: $t}' \
          | gh_call api -X PATCH "repos/$REPO_SLUG/issues/$n" --input - 2>/dev/null); then
       # A sheet that was closed or deleted is looked for again next tick.
       rm -f "$COORD_SHEET_ISSUE_FILE"

@@ -207,6 +207,23 @@ compare develop s81 0; compare develop s82 0
 live >/dev/null
 want "a P0 ticket's PR heads the train over a P3 one that wins on number" "82" "$(jq -r '.head.pr' "$C/lane.did.json")"
 
+echo "--- an open-PR list past the argument limit orders the train as a short one does ---"
+# Over 1 MiB of drafts with their check rollups: past Linux's 128 KiB per argument and macOS's ARG_MAX.
+pad_prs() { jq -c '. + [range(5000; 5900) | {number: ., headRefName: "pad-\(.)", headRefOid: "p\(.)", isDraft: true,
+                         baseRefName: "develop", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", labels: [], autoMergeRequest: null,
+                         statusCheckRollup: [range(10) as $i | {__typename: "CheckRun", name: "check-\($i)", status: "COMPLETED",
+                           conclusion: "SUCCESS", detailsUrl: ("https://github.com/acme/widgets/actions/runs/" + ("9" * 100))}]}]' \
+              "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"; }
+train() { fresh; pr 91 s91 P3 1 build:PENDING; pr 92 s92 - 1 build:PENDING; fix_issue 921 OPEN "P0"; pr 93 s93 P1 1 build:PENDING
+          compare develop s91 0; compare develop s92 0; compare develop s93 0; }
+train; small_out=$(live); small=$(jq -c '{order, head: .head.pr, members: (.members | keys)}' "$C/lane.did.json" 2>/dev/null)
+want "a short list: the P0 ticket's PR heads, then P1, then P3" '{"order":[92,93,91],"head":92,"members":["91","92","93"]}' "$small"
+train; pad_prs
+want "the open-PR list is over 1 MiB"       1 "$([ "$(wc -c < "$FIX/gh/prs-all.json")" -gt 1048576 ] && echo 1)"
+big_out=$(live); big=$(jq -c '{order, head: .head.pr, members: (.members | keys)}' "$C/lane.did.json" 2>/dev/null)
+want_not_in "no argument-list failure"      'Argument list too long' "$big_out"
+want "the same train as the short list"     "$small" "$big"
+
 echo "--- one at a time: the PR in flight stays head, one merge per pass ---"
 fresh
 pr 11 s11 - 1 build:SUCCESS lint:SUCCESS; compare develop s11 2
