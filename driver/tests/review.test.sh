@@ -393,4 +393,72 @@ want "and nothing goes on a list"                "" "$(cat "$FIX/pl.adds")"
 jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 unset DRIVER_APPROVAL_KEPT DRIVER_SCREEN_FINDINGS DRIVER_POLISH_LIST
 
+echo "--- a reviewer that had not reported is run again once, by the driver, and is not a round ---"
+# #13679 (2026-10-22) parked for the owner on "The review subagent had not reported when
+# this step was told to return. Should the review step run again?" The answer is always yes.
+SILENT_Q='{"step":"review","status":"park","question":"The review subagent had not reported when this step was told to return. Should the review step run again so its findings are graded before merge (yes/no)?"}'
+silent_case() { # <ticket>
+  driver_state_init "$1" --worktree "$REPO"
+  fix_issue "$1" OPEN "status:claimed,project:widgets"
+  : > "$CLAUDE_LOG"; rm -f "$FIX/ai/review.then.jsonl"
+}
+silent_case 160
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+mv "$FIX/ai/review.jsonl" "$FIX/ai/review.then.jsonl"
+fix_ai review "$SILENT_Q" superpowers:requesting-code-review
+out=$(driver_step_review 160 2>&1); rc=$?
+want "silent once, then a verdict: it ships"     "0" "$rc"
+want "the reviewer was called twice"             "2" "$(grep -cx review "$CLAUDE_LOG")"
+want_in "saying it ran the review once more"     'had not reported.*running the review once more' "$out"
+want "the retry is not a round"                  "1" "$(driver_state_count 160 review)"
+want "and the verdict used is the second answer" "SHIP" "$(jq -r .verdict "$(driver_state_dir 160)/steps/review.json")"
+want "nothing is left for a park to ask"         "" "$(driver_state_get 160 park_note)"
+
+echo "--- silent twice is a machine-fault park, never a person's question ---"
+silent_case 161
+fix_ai review "$SILENT_Q" superpowers:requesting-code-review
+out=$(driver_step_review 161 2>&1); rc=$?
+want "it exits as the machine's"                 "$DRIVER_E_MACHINE" "$rc"
+want "after exactly one retry"                   "2" "$(grep -cx review "$CLAUDE_LOG")"
+want "no round is counted"                       "0" "$(driver_state_count 161 review)"
+want "the park cause is the driver's"            "driver" "$(driver_state_get 161 park_cause)"
+want_in "the park note names the machine fault"  '^machine fault, nothing to answer: the review step.s reviewer had not reported, twice' "$(driver_state_get 161 park_note)"
+want_in "and the log line names the fault"       'machine fault reviewer-silent' "$out"
+
+echo "--- an answer with no verdict is a reviewer that did not report: once more ---"
+silent_case 162
+fix_ai review '{"verdict":"BLOCKED","findings":[{"file":"a.sh","line":3,"grade":"major","summary":"a dead control","reason":"the person clicks Save and nothing is saved"}]}' superpowers:requesting-code-review
+mv "$FIX/ai/review.jsonl" "$FIX/ai/review.then.jsonl"
+fix_ai review '{"step":"review","findings":[]}' superpowers:requesting-code-review
+out=$(driver_step_review 162 2>&1); rc=$?
+want "the second answer's Major goes back to fix" "30" "$rc"
+want "the reviewer was called twice"              "2" "$(grep -cx review "$CLAUDE_LOG")"
+want "and it is round 1"                          "1" "$(driver_state_count 162 review)"
+
+echo "--- a real verdict, and a real question, are never re-run ---"
+silent_case 163
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+out=$(driver_step_review 163 2>&1); rc=$?
+want "a verdict ships"                           "0" "$rc"
+want "after one call"                            "1" "$(grep -cx review "$CLAUDE_LOG")"
+want_not_in "and says nothing of a retry"        'once more' "$out"
+silent_case 164
+fix_ai review '{"step":"review","status":"park","question":"Should the export include archived workspaces?"}' superpowers:requesting-code-review
+out=$(driver_step_review 164 2>&1); rc=$?
+want "a person's question still asks"            "$DRIVER_E_QUESTION" "$rc"
+want "after one call"                            "1" "$(grep -cx review "$CLAUDE_LOG")"
+
+echo "--- the reader: a silent subagent is the machine's, a real question is not ---"
+for q in "The review subagent had not reported when this step was told to return. Should the review step run again?" \
+         "The reviewer timed out before it answered. Run it again?" \
+         "The code-review agent was still running when the step returned; re-run?"; do
+  driver_question_silent_agent "$q" && ok "machine: $q" || bad "not read as a silent agent: $q"
+done
+for q in "Should the export include archived workspaces?" \
+         "The test timed out on CI; is the 30s budget right for this suite?" \
+         "Which repo does this belong in?"; do
+  driver_question_silent_agent "$q" && bad "a person's question read as a machine fault: $q" || ok "a person's: $q"
+done
+rm -f "$FIX/ai/review.then.jsonl"
+
 suite_end "$FAILED"

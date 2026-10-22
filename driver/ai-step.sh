@@ -313,6 +313,14 @@ SHIM
 # "not JSON", and that parked #13642 for the owner over a false safeguards flag.
 driver_api_error() { swarm_api_error_log "$1"; }
 
+# driver_question_silent_agent <question> — 0 when a step's "question" is that a subagent
+# it started had not reported: still running, timed out, or returned nothing. That has
+# one answer (run it again), so it is the machine's, never a person's question.
+driver_question_silent_agent() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | grep -Eq \
+    "(sub-?agent|reviewer|review agent|agent)[^.?!]*((had|has|have|did|was|is)( not|n't)( yet)? (report|return|finish|complet|answer|respond|come back)|still running|timed? ?out|never (report|return|finish|answer))|(timed? ?out|still running)[^.?!]*(sub-?agent|reviewer)"
+}
+
 # _driver_ai_call <prompt> <log> [session-id] — one model call, its spend and the usage
 # wall, from driver_ai_step's locals. A call that failed at the API is made ONCE more
 # after DRIVER_API_RETRY_SEC; failing again it is a machine fault, never a question.

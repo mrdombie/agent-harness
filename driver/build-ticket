@@ -241,6 +241,8 @@ driver_question_names_held_claim() {
   || die "no park step at $DRIVER_STEPS_DIR/park.sh — every other step's refusal ends there, so nothing may start without it"
 . "$DRIVER_STEPS_DIR/park.sh" || die "could not load $DRIVER_STEPS_DIR/park.sh"
 command -v driver_park >/dev/null 2>&1 || die "$DRIVER_STEPS_DIR/park.sh defines no driver_park"
+# The step-question readers (a silent subagent is the machine's) live beside the model call.
+. "$DRIVER_HOME_SELF/ai-step.sh" || die "could not load $DRIVER_HOME_SELF/ai-step.sh"
 
 for s in $DRIVER_STEPS; do
   f="$DRIVER_STEPS_DIR/$s.sh"
@@ -557,6 +559,12 @@ while [ "$i" -lt "$N" ]; do
       if driver_question_names_held_claim "$asked"; then
         requeue=1; claim_busy=1
         [ -n "$note" ] || note="$asked"
+      elif driver_question_silent_agent "$asked"; then
+        # A SUBAGENT THAT HAD NOT REPORTED IS THE MACHINE'S: "run it again" is the only answer.
+        driver_say "✋ $step: machine fault agent-silent — it asked whether to run again because a subagent had not reported. Not a question; the next run does."
+        park_reason="machine fault: a $step subagent had not reported"
+        park_question="nothing to answer: a subagent of the $step step had not reported ($asked). The next run tries again."
+        note=""; machine=1
       else
         park_reason="$step asked a question rather than guessing"
         park_question="$asked"
@@ -584,6 +592,8 @@ while [ "$i" -lt "$N" ]; do
       # the coordinator under the machine-park cap) whose exit says machine.
       park_reason="machine fault: the $step model call failed at the API twice"
       park_question="nothing to answer: the model call failed at the API, and the next run tries again"
+      _mf=$(driver_state_get "$TICKET" machine_fault)
+      if [ -n "$_mf" ]; then driver_state_set "$TICKET" machine_fault ""; park_reason="machine fault: $_mf"; fi
       machine=1
       ;;
 
