@@ -1,0 +1,21 @@
+{
+  "step": "fix",
+  "skills": ["superpowers:receiving-code-review"],
+  "status": "fixed",
+  "round": 1,
+  "autoProofs": [
+    {
+      "blockerId": "R2",
+      "kind": "test-only",
+      "commit": "a1b2c3d4",
+      "testFile": "src/queue/panel.test.tsx",
+      "command": "npm test -- src/queue/panel.test.tsx",
+      "break": { "file": "src/queue/total.ts", "find": "total: 54", "replace": "total: 55" }
+    },
+    {
+      "blockerId": "R3",
+      "kind": "wording-only",
+      "commit": "e5f6a7b8"
+    }
+  ]
+}

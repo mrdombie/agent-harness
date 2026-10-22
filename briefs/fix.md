@@ -135,6 +135,16 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `pmProofs[].break.file` (required): string
 - `pmProofs[].break.find` (required): string
 - `pmProofs[].break.replace` (required): string
+- `autoProofs`: list of object
+- `autoProofs[].blockerId` (required): string
+- `autoProofs[].kind` (required): one of "docs-only", "comment-only", "wording-only", "test-only"
+- `autoProofs[].commit` (required): string
+- `autoProofs[].testFile`: string
+- `autoProofs[].command`: string
+- `autoProofs[].break`: object
+- `autoProofs[].break.file` (required): string
+- `autoProofs[].break.find` (required): string
+- `autoProofs[].break.replace` (required): string
 - `bodyProofs`: list of object
 - `bodyProofs[].blockerId` (required): string
 - `bodyProofs[].command` (required): string
@@ -143,7 +153,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `gitActions[].sha`: string
 
 Conditional:
-- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `bodyProofs`
+- when `status` is "fixed": at least one of `cleared`, `gateFixes`, `pmProofs`, `autoProofs`, `bodyProofs`
 - otherwise: requires `question`
 <!-- fields:end -->
 

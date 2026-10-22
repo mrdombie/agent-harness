@@ -321,6 +321,85 @@
         }
       }
     },
+    "autoProofs": {
+      "description": "A blocking finding no red/green pair can show, fixed by a commit that is only docs, only comments, only wording, or only tests — answered with no PM answer, because the driver checks the class itself (scripts/proof-class.py, off the commit's diff, for the kinds proof.autoAccept turns on). docs-only: every file the commit touches is docs. comment-only: every changed code line is a comment or blank. wording-only: the code differs only inside string literals or JSX text. test-only: every file is a test, and `break` is a literal find/replace in NON-test code that the driver plants at `commit`; `command` must FAIL with it and PASS once the code is restored. A claim the diff does not bear out is refused.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "blockerId",
+          "kind",
+          "commit"
+        ],
+        "properties": {
+          "blockerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "docs-only",
+              "comment-only",
+              "wording-only",
+              "test-only"
+            ]
+          },
+          "commit": {
+            "description": "The one commit holding the fix, on the branch, touching the file the finding names. Seven characters or more.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,40}$"
+          },
+          "testFile": {
+            "description": "test-only: the test the fix changed, which the command runs.",
+            "type": "string",
+            "minLength": 1
+          },
+          "command": {
+            "description": "test-only: the command that runs testFile, in the tree at commit.",
+            "type": "string",
+            "minLength": 1
+          },
+          "break": {
+            "description": "test-only: a literal find/replace in the code the test pins — never in a test file — that the command must go red on.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "find",
+              "replace"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "find": {
+                "type": "string",
+                "minLength": 1
+              },
+              "replace": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "test-only"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "testFile",
+            "command",
+            "break"
+          ]
+        }
+      }
+    },
     "bodyProofs": {
       "description": "A blocking finding about the PR description, or a check that reads it (an approved picture, a ## Lesson section, evidence routes), cleared by editing the description rather than by a commit. Name the repo's own check: the driver fetches the description from GitHub itself, runs `command` in the worktree with BODY_FILE set to the description and LABELS to the PR's labels, the branch's changed paths on stdin, and requires it to exit 0 on the description now and to fail on the description as it stood when the review judged it. Your own run of it is not evidence.",
       "type": "array",
@@ -419,6 +498,17 @@
         ],
         "properties": {
           "pmProofs": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      },
+      {
+        "required": [
+          "autoProofs"
+        ],
+        "properties": {
+          "autoProofs": {
             "type": "array",
             "minItems": 1
           }

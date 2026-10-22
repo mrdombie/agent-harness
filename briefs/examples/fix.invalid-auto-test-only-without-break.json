@@ -1,0 +1,15 @@
+{
+  "step": "fix",
+  "skills": ["superpowers:receiving-code-review"],
+  "status": "fixed",
+  "round": 1,
+  "autoProofs": [
+    {
+      "blockerId": "R2",
+      "kind": "test-only",
+      "commit": "a1b2c3d4",
+      "testFile": "src/queue/panel.test.tsx",
+      "command": "npm test -- src/queue/panel.test.tsx"
+    }
+  ]
+}
