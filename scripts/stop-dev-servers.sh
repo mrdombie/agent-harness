@@ -261,9 +261,13 @@ holder_gone() { # <ticket>
 # A process is a stray when its cwd (or a path in its argv) is inside a worktree
 # under the project's worktree root (ticket folders only, as above) or the harness
 # worktree root (every folder: only builds live there), and ALL of:
-#   - nothing in its own ancestry is interactive — a login shell, VS Code, a
-#     terminal, tmux, sshd — so the owner's shells, editors and what they started
-#     are never touched; an agent session (`claude`) is never a stray either;
+#   - it is not a person's: walking up its ancestry, a terminal host (VS Code,
+#     Terminal, iTerm, tmux, sshd, login) or a login shell with no `claude` above it
+#     comes before any `claude`. A process whose nearest such ancestor is a `claude`
+#     — an agent session, a VS Code extension session, a subagent's Bash — is AGENT
+#     WORK: kept only under a live claim or run and only up to the max age, however
+#     alive its session is (the 12-hour test script was a VS Code session's
+#     subagent's). An agent session (`claude`) itself is never a stray;
 #   - it is older than STOP_DEV_STRAY_MIN_AGE (coordinator.strayMinAgeMin, 30 min);
 #   - its worktree has no live run (runs/<id>.worktrees, no .ended, pid alive) and,
 #     for a ticket folder, no live claim (the rule `holder_gone` applies above) and
@@ -289,7 +293,7 @@ if [ "$MODE" = strays ]; then
   SELF_CHAIN=$(ps -axo pid=,ppid= 2>/dev/null | awk -v s="$$" '{ parent[$1] = $2 } END { q = s; for (d = 0; d < 64 && q > 1; d++) { print q; q = parent[q] } }')
 
   # One pass over the process table: "<class>\t<pid>\t<age>\t<cpu>\t<kind>\t<worktree>\t<command>".
-  # class: I interactive ancestry, A agent session, S server, C candidate.
+  # class: I a person, A agent session, G agent work, S server, C candidate.
   ROWS=$({ printf '%s\n' "$CWDS" | sed 's/^/W\t/'
            printf '%s\n' "$SELF_CHAIN" | sed 's/^/M\t/'
            ps -axo pid=,ppid=,etime=,pcpu=,command= 2>/dev/null | sed 's/^/P\t/'; } \
@@ -317,8 +321,9 @@ if [ "$MODE" = strays ]; then
         rest = substr(c, j); sub(/[ \t"'"'"':;=].*/, "", rest)
         t = tree(rest); if (t != "") return t }
       return "" }
+    function login_shell(c) { return c ~ /^-[a-z]*sh( |$)/ }
     function interactive(c) {
-      return c ~ /^-[a-z]*sh( |$)/ || c ~ /^(\/usr\/bin\/)?login( |$)/ ||
+      return c ~ /^(\/usr\/bin\/)?login( |$)/ ||
              c ~ /Visual Studio Code|Code Helper|\.vscode-server\/|code-server|Cursor\.app|Terminal\.app|iTerm|Warp\.app|^(\/[^ ]*\/)?tmux|^(\/[^ ]*\/)?screen( |$)|^sshd:/ }
     function agent(c) { return c ~ /^([^ ]*\/)?claude( |$)/ }
     function server(c) { return c ~ /^next-(server|build)/ || c ~ /^node [^ ]*\/next (dev|start)/ || c ~ /next\/dist\/bin\/next / ||
@@ -338,15 +343,22 @@ if [ "$MODE" = strays ]; then
         bycwd = (t != "")
         if (t == "") t = argv_tree(cmd[p])
         if (t == "") continue
-        cls = "C"; q = p
-        for (d = 0; d < 64 && q > 1 && (q in cmd); d++) { if (interactive(cmd[q])) { cls = "I"; break } q = ppid[q] }
-        if (cls == "C" && agent(cmd[p])) cls = "A"
-        if (cls == "C" && server(cmd[p])) cls = "S"
+        # The nearest marker wins: a claude above it makes it agent work (G), a terminal
+        # host makes it a person (I). A login shell counts as a person only with no claude
+        # above it (on WSL it sits under /init, with no host to see).
+        cls = "C"; q = p; shell = 0
+        for (d = 0; d < 64 && q > 1 && (q in cmd); d++) {
+          if (agent(cmd[q])) { cls = (q == p ? "A" : "G"); break }
+          if (interactive(cmd[q])) { cls = "I"; break }
+          if (login_shell(cmd[q])) shell = 1
+          q = ppid[q] }
+        if (cls == "C" && shell) cls = "I"
+        if ((cls == "C" || cls == "G") && server(cmd[p])) cls = "S"
         # Only somebody whose cwd is there is sitting there; an argv mention is not.
-        if (cls != "C" && cls != "S" && !bycwd) cls = cls "x"
+        if ((cls == "I" || cls == "A") && !bycwd) cls = cls "x"
         printf "%s\t%s\t%d\t%s\t%s\t%s\n", cls, p, secs(et[p]), cpu[p], t, cmd[p] } }')
 
-  # Worktrees somebody sits in.
+  # Worktrees somebody sits in: a person's process or an agent session, never agent work.
   SEATED=$(awk -F'\t' '$1 == "I" || $1 == "A" { print $6 }' <<<"$ROWS" | sort -u)
   # Worktrees a live run names. A run with no .ended whose pid is dead owns nothing.
   LIVE_RUNS=""
@@ -375,14 +387,21 @@ if [ "$MODE" = strays ]; then
   while IFS=$'\t' read -r cls pid age cpu kind wt cmd; do
     [ -n "$pid" ] || continue
     inwt=$((inwt+1))
-    case "$cls" in I|Ix) inter=$((inter+1)); continue ;; C) ;; *) continue ;; esac
+    case "$cls" in I|Ix) inter=$((inter+1)); continue ;; C|G) ;; *) continue ;; esac
     [ "$age" -ge "$STRAY_MIN" ] || { young=$((young+1)); continue; }
+    if [ "$cls" = G ]; then
+      # Agent work: a live claim or run keeps it up to the cap, nothing else does.
+      if [ "$age" -ge "$STRAY_MAX" ]; then why="agent work past the $((STRAY_MAX / 60))-minute cap"
+      elif run_owns "$wt" || { [ "$kind" = project ] && claim_holds "$wt"; }; then owned=$((owned+1)); continue
+      else why="agent work with no live claim or run on its worktree"; fi
+    else
     run_owns "$wt" && { owned=$((owned+1)); continue; }
     if [ "$kind" = project ] && claim_holds "$wt"; then owned=$((owned+1)); continue; fi
     why="no live claim or run owns its worktree, nobody is working there"
     if grep -qxF "$wt" <<<"$SEATED"; then
       [ "$age" -ge "$STRAY_MAX" ] || { seated=$((seated+1)); continue; }
       why="its worktree's claim is gone and it is past the $((STRAY_MAX / 60))-minute cap"
+    fi
     fi
     line=$(printf 'pid %s, %dm old, %s%% CPU, in %s — %s: %.160s' "$pid" $((age / 60)) "$cpu" "$wt" "$why" "$cmd")
     hits=$((hits+1))
