@@ -21,6 +21,8 @@ Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
 NOWE=$(date +%s)
 unset COORDINATOR_PACE_TARGET COORDINATOR_PACE_HEADROOM COORDINATOR_PACE_WEEK_TARGET COORDINATOR_PACE_WEEK_HEADROOM COORDINATOR_PACE_BURN
+# The line and the projection alone: the product floor that overrides them has its own suite.
+export COORDINATOR_PRODUCT_FLOOR=0
 
 # <5h use> <5h reset> [7d use] [7d reset] — one stream-json limit event, as the CLI writes it.
 win() {

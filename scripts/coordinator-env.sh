@@ -51,6 +51,15 @@
 #                                                           work of the same priority and class
 #   coordinator.toolingScopes COORDINATOR_TOOLING_SCOPES gates ci harness ops pre-push dev
 #                                                           title scopes ("feat(gates): …") that do too
+#   coordinator.toolingCap   COORDINATOR_TOOLING_CAP    2    most live runs, on every host together, on
+#                                                           tickets wearing coordinator.processLabel or a
+#                                                           toolingCapLabels label; over it they wait and
+#                                                           the places go to product work
+#   coordinator.toolingCapLabels COORDINATOR_TOOLING_CAP_LABELS project:harness-kit repo:agent-harness
+#   coordinator.productFloor COORDINATOR_PRODUCT_FLOOR  2    builders for product work, on every host
+#                                                           together, the pacer never goes under while
+#                                                           both windows are under swarm.usageCeiling and
+#                                                           the weekly line is not spent. 0: off
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.disk.stopBelowGb / .resumeAtGb  30 / 50    read by scripts/disk-guard.sh, the one reader
 #   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
@@ -121,6 +130,12 @@ case "$COORD_OPEN_PR_CAP" in off|false|none) COORD_OPEN_PR_CAP=0 ;; ""|*[!0-9]*)
 # Owner call 2026-10-19: at one priority, product work goes ahead of our own tooling.
 COORD_TOOLING_LABELS="${COORDINATOR_TOOLING_LABELS:-$(swarm_opt coordinator.toolingLabels "repo:agent-harness code-health project:ci-throughput project:harness-kit area:OPS area:HYGIENE area:OPS-CONSOLE")}"
 COORD_TOOLING_SCOPES="${COORDINATOR_TOOLING_SCOPES:-$(swarm_opt coordinator.toolingScopes "gates ci harness ops pre-push dev")}"
+# Owner call 2026-10-22: tooling builders capped at 2, so product builders get the usage back.
+COORD_TOOLING_CAP="${COORDINATOR_TOOLING_CAP:-$(swarm_opt coordinator.toolingCap 2)}"
+case "$COORD_TOOLING_CAP" in ""|*[!0-9]*) COORD_TOOLING_CAP=2 ;; esac
+COORD_TOOLING_CAP_LABELS="${COORDINATOR_TOOLING_CAP_LABELS:-$(swarm_opt coordinator.toolingCapLabels "project:harness-kit repo:agent-harness")}"
+COORD_PRODUCT_FLOOR="${COORDINATOR_PRODUCT_FLOOR:-$(swarm_opt coordinator.productFloor 2)}"
+case "$COORD_PRODUCT_FLOOR" in ""|*[!0-9]*) COORD_PRODUCT_FLOOR=2 ;; esac
 [ -n "$COORD_MAX_LOAD_SET" ] || COORD_MAX_LOAD_SET=$(swarm_opt swarm.maxLoad "")
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
@@ -319,14 +334,16 @@ coord_pace_fresh() {
   jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900)' "$COORD_PACE_STATE" 2>/dev/null
 }
 
-# coord_pace <builders here> <claim rows> <this host> [machine ceiling here] —
+# coord_pace <builders here> <claim rows> <this host> [machine ceiling here] [tooling runs live, every host] —
 # "<this host's share>\t<line>", 1 with the reason when there is nothing to pace on.
 # Claim rows are <ticket> \t <host> \t <step>; a row naming another host is a builder
 # there. Records this tick's sample, so the next tick's burn has it, and the budget
 # in pace.json. The share: the sheet's for a reader, the owner's own split for the
 # owner, the whole cap with no sheet — less what the other hosts already run.
+# The product floor (coord_pace_floor) keeps the fleet cap at productFloor plus the
+# tooling runs live, whatever the overhead estimate or the five-hour line says.
 coord_pace() {
-  local here="${1:-0}" rows="${2:-}" host="${3:-}" mine="${4:-}" reading u r a w7="" u7="" r7="" a7="" other total burn bsrc ov spans now role shares="{}" src=local out
+  local here="${1:-0}" rows="${2:-}" host="${3:-}" mine="${4:-}" tool="${5:-0}" reading u r a w7="" u7="" r7="" a7="" other total burn bsrc ov spans now role shares="{}" src=local out
   [ "$COORD_PACE" = 1 ] || { printf 'pace: off'; return 1; }
   reading=$(coord_pace_reading five_hour) || { printf 'pace: no five-hour reading in the newest logs — the machine alone decides'; return 1; }
   IFS=$'\t' read -r u r a <<<"$reading"; now=$(swarm_now)
@@ -374,6 +391,15 @@ coord_pace() {
       printf "%d\t%.4f\t%.4f\t%d\t%s\t%d\t%d\t%.4f\t%.4f", a, line, f, ahead, (line7 == "" ? "" : sprintf("%.4f", line7)), ahead7, p, os, left
     }')
   cap=${budget%%$'\t'*}
+  case "$tool" in ''|*[!0-9]*) tool=0 ;; esac
+  # Overhead never takes the product places to zero (owner call 2026-10-22): under the
+  # usage ceiling the fleet cap is never under the floor plus the tooling runs live.
+  local fl_why fl_want fl_would=$cap fl_on=0
+  fl_why=$(coord_pace_floor_off "$u" "$u7" "$wt" "$wh" "$(cut -f6 <<<"$budget")")
+  fl_want=$(( COORD_PRODUCT_FLOOR + tool ))
+  if [ -z "$fl_why" ] && [ "$cap" -lt "$fl_want" ]; then
+    cap=$fl_want; fl_on=1; budget="$cap"$'\t'"${budget#*$'\t'}"
+  fi
   local others; others=$(coord_pace_others)
   case "$role" in
     owner)
@@ -408,10 +434,13 @@ coord_pace() {
       else if (line7 != "") printf " · 7d %d%% against %d%%%s", u7 * 100 + 0.5, line7 * 100 + 0.5, (ahead7 ? held : "")
       if (shares != "") printf " · fleet cap %d: %s", a, shares
     }')
+  out="$out · $(coord_pace_floor_said "$fl_on" "$fl_would" "$s" "$fl_why" "$tool")"
   jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --argjson a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" --arg bud "$budget" \
      --argjson burn "$burn" --arg bsrc "$bsrc" --argjson ov "$ov" --argjson spans "$spans" --argjson running "$total" --argjson other "$other" --argjson shares "$shares" \
      --argjson share "$s" --arg src "$src" --argjson capacity "$mine" \
-     --arg tgt "$tgt" --arg hd "$hd" --arg wt "$wt" --arg wh "$wh" '
+     --arg tgt "$tgt" --arg hd "$hd" --arg wt "$wt" --arg wh "$wh" \
+     --argjson floor "$COORD_PRODUCT_FLOOR" --argjson flOn "$([ "$fl_on" = 1 ] && echo true || echo false)" \
+     --argjson flWould "$fl_would" --arg flWhy "$fl_why" --argjson tool "$tool" '
     ($bud | split("\t")) as $b
     | {at: $at, host: $host, capacity: $capacity,
        usage: ({five_hour: {u: $u, reset: $r, at: $a}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end)),
@@ -420,10 +449,35 @@ coord_pace() {
        burn: $burn, burnSource: $bsrc, burnSpans: $spans, overheadPerHour: $ov,
        overheadToReset: ($b[7] | tonumber), budgetForBuilders: ($b[8] | tonumber), projection: ($b[6] | tonumber), maxBuildsFleet: ($b[0] | tonumber),
        running: $running, otherHosts: $other, shares: $shares, share: $share, source: $src,
+       productFloor: {floor: $floor, applied: $flOn, wouldLeave: $flWould, toolingLive: $tool,
+                      off: (if $flWhy == "" then null else $flWhy end)},
        settings: {target: ($tgt | tonumber), headroom: ($hd | tonumber), weekTarget: ($wt | tonumber), weekHeadroom: ($wh | tonumber),
                   week: (($wh | tonumber) < 1)}}' \
      > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
   printf '%s' "$out"
+}
+
+# coord_pace_floor_off <5h use> <7d use> <week target> <week headroom> <7d ahead 0|1> — why
+# the product floor does not hold this tick, or nothing when it does: off, a window at or
+# over swarm.usageCeiling, or the weekly line spent (7d at its target or ahead of its
+# straight line, while it is on). The five-hour line never stops it: overhead is what
+# puts that window ahead, and the floor exists so overhead cannot take every place.
+coord_pace_floor_off() {
+  [ "$COORD_PRODUCT_FLOOR" -gt 0 ] || { printf 'off (coordinator.productFloor is 0)'; return; }
+  awk -v u="$1" -v u7="$2" -v wt="$3" -v wh="$4" -v a7="${5:-0}" -v c="$SWARM_USAGE_CEILING" 'BEGIN {
+    if (u + 0 >= c + 0) { printf "off: 5h %d%% is at or over the %d%% usage ceiling", u * 100 + 0.5, c * 100 + 0.5; exit }
+    if (u7 != "" && u7 + 0 >= c + 0) { printf "off: 7d %d%% is at or over the %d%% usage ceiling", u7 * 100 + 0.5, c * 100 + 0.5; exit }
+    if (u7 != "" && wh + 0 < 1 && u7 + 0 >= wt + 0) { printf "off: the weekly line is spent, 7d %d%% of %d%%", u7 * 100 + 0.5, wt * 100 + 0.5; exit }
+    if (u7 != "" && wh + 0 < 1 && a7 + 0 == 1) printf "off: 7d %d%% is ahead of the weekly line", u7 * 100 + 0.5
+  }'
+}
+# coord_pace_floor_said <applied 0|1> <the budget's own cap> <share here> <off why> <tooling live> — the line's floor part.
+coord_pace_floor_said() {
+  local f="$COORD_PRODUCT_FLOOR" plus=""
+  [ "${5:-0}" -eq 0 ] || plus=" + $5 tooling"
+  if [ -n "$4" ]; then printf 'product floor %d %s' "$f" "$4"
+  elif [ "$1" = 1 ]; then printf 'overhead would leave %d, product floor keeps %d%s (%d here)' "$2" "$f" "$plus" "$3"
+  else printf 'product floor %d%s: the budget already affords %d' "$f" "$plus" "$2"; fi
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's
