@@ -7,6 +7,8 @@
 #   critic-judge.sh sweep [--dry-run]    start `run` for each PR that is due, detached, up to
 #                                        coordinator.critic.maxLive at once (default 3) while the
 #                                        machine has room; a run past its time is stopped
+#   critic-judge.sh paused               exit 0, saying why, while the sweep is paused for the
+#                                        release (below); exit 1 when it runs
 #   critic-judge.sh shotset <dir>        the id of the shots in <dir> (12 hex)
 #   critic-judge.sh self-verdicts <pr>   the commits on the PR that carry a design verdict a
 #                                        builder wrote (sha \t subject); exit 1 when there are any
@@ -79,6 +81,10 @@
 # older review.judge.maxLive is read when it is unset), timeoutMin (20), realDataFrom
 # (2026-10-20).
 #
+# PAUSED UNTIL THE RELEASE. While the context is listed in release.nonBlockingChecks and
+# release.done is not true the verdict only reports, yet each sweep spent the plan usage
+# builders need. So the sweep starts nothing then; review.judge.duringRelease: true runs it.
+#
 # PLACES. One judge place is always open; each place above it is taken only while the
 # coordinator's own room test (coord_room) says the machine fits another agent. A run
 # that passes timeoutMin is stopped, its place given back and the try counted, so one
@@ -99,6 +105,7 @@ MAXLIVE="${CRITIC_JUDGE_MAX_LIVE:-$(swarm_opt coordinator.critic.maxLive "")}"
 TIMEOUT_MIN="${CRITIC_JUDGE_TIMEOUT_MIN:-$(swarm_opt coordinator.critic.timeoutMin 20)}"
 REAL_DATA_FROM="${CRITIC_JUDGE_REAL_DATA_FROM:-$(swarm_opt coordinator.critic.realDataFrom 2026-10-20)}"
 TURNS=$(swarm_opt review.judge.turns 40)
+PAUSED_WHY="design critic: paused until the release (report-only, release.nonBlockingChecks)"
 MARK="${CRITIC_JUDGE_MARK:-critic-judge}"
 PREFIX="Independent critic"
 CLAUDE_BIN="${CRITIC_JUDGE_CLAUDE:-claude}"
@@ -604,8 +611,15 @@ by_last_start() {
     NF >= 2 { printf "%s\t%s\t%d\t%d\n", $1, $2, (($1 in last) ? last[$1] : 0), NR }' | sort -t"$(printf '\t')" -k3,3n -k4,4n | cut -f1,2
 }
 
+# release_paused — 0 while the verdict only reports until the release and no override.
+release_paused() {
+  [ "$(jq -r '.review.judge.duringRelease // false' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)" = true ] && return 1
+  release_check_nonblocking "$CONTEXT"
+}
+
 sweep() { # [--dry-run]
   local dry=0 pr head slots cap r live_now
+  if release_paused; then say "$PAUSED_WHY"; return 0; fi
   [ "${1:-}" = --dry-run ] && dry=1
   [ "$dry" = 1 ] || reap
   live_now=$(live)
@@ -632,7 +646,8 @@ case "${1:-}" in
   run)     [ -n "${2:-}" ] || die "usage: run <pr>"; run "$2" ;;
   due)     due ;;
   sweep)   sweep "${2:-}" ;;
+  paused)  release_paused && { echo "$PAUSED_WHY"; exit 0; }; exit 1 ;;
   shotset) [ -d "${2:-}" ] || die "usage: shotset <dir>"; shotset "$2" ;;
   self-verdicts) [ -n "${2:-}" ] || die "usage: self-verdicts <pr>"; out=$(self_verdicts "$2"); [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; } ;;
-  *) die "usage: critic-judge.sh run|due|sweep|shotset|self-verdicts …" ;;
+  *) die "usage: critic-judge.sh run|due|sweep|paused|shotset|self-verdicts …" ;;
 esac
