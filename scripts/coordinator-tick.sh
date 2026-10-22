@@ -22,14 +22,18 @@
 #                    (coord_room) and under coordinator.cap when one is set, and
 #                    no more than this host's share of the five-hour window
 #                    (coord_pace: every host's builders burn the one account);
+#                    while more than coordinator.openPrCap PRs are open (drafts
+#                    too), no new ticket starts: only repairs, approved merges and
+#                    process fixes; at or under it healing takes free places first
+#                    and new work the rest (owner call 2026-10-22). With the cap 0:
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest, and every
 #                    place while coordinator.healAllAt or more reds are left
 #                    (waiting plus being healed, polish reds not counted); a class
 #                    with nothing spawnable lends its places to the other. The
 #                    queue runs by priority across classes (coord_queue_ordered);
-#                    polish new work starts only when nothing else can, or when
-#                    a polish list holds coordinator.polishListFull items. The
+#                    polish new work starts only when nothing else can; a polish
+#                    list never starts alone while other work can, however full. The
 #                    room is re-read before each start after the first; under
 #                    coordinator.rampFreeMemGb, one start a tick. Never a ticket
 #                    that is claimed, gated, on hold or wearing the owner-decision
@@ -227,6 +231,21 @@ elif PRS=$(coord_snap_load prs); then
   PRS_STALE=1
   say "open PRs: could not be read$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — working from the snapshot taken $(coord_snap_age prs) min ago"
 else PRS=""; fi
+# THE OPEN-WORK CAP (owner call 2026-10-22): new work started faster than finished work
+# could land left 100 open PRs for ~5 builders, and 80% of the time went on repairing
+# them as they went stale. Over coordinator.openPrCap open PRs, drafts included, no new
+# ticket starts. Counted from the read above: no extra call.
+OPEN_PRS=""; OVER_PR_CAP=""; OPEN_PR_SAID=""
+if [ "$COORD_OPEN_PR_CAP" -gt 0 ] && [ -n "$PRS" ]; then
+  OPEN_PRS=$(jq 'if type == "array" then length else empty end' <<<"$PRS" 2>/dev/null)
+  case "$OPEN_PRS" in ''|*[!0-9]*) OPEN_PRS="" ;; esac
+fi
+if [ -n "$OPEN_PRS" ]; then
+  if [ "$OPEN_PRS" -gt "$COORD_OPEN_PR_CAP" ]; then
+    OVER_PR_CAP=1; OPEN_PR_SAID="open changes $OPEN_PRS / cap $COORD_OPEN_PR_CAP: finishing before starting"
+  else OPEN_PR_SAID="open changes $OPEN_PRS / cap $COORD_OPEN_PR_CAP: new work may start"; fi
+  say "$OPEN_PR_SAID"
+fi
 if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   # THE SIGN-OFF HOLD'S OWN CHECK IS NOT A RED. It is red BY the hold and goes green
   # when the owner signs; a healing run can do nothing for it. #12827 shipped, was
@@ -494,6 +513,14 @@ SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
 # polish, and counting them let a backlog of spacing fixes stop all new building.
 split_places() {
   REDS_LEFT=$(( REDS_WAITING - REDS_WAITING_POLISH + LIVE_HEAL - LIVE_HEAL_POLISH ))
+  # The open-work cap decides in place of the split: healing may take every place,
+  # and new work every place only while under the cap.
+  if [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
+    HEAL_ALL=""; HEAL_SLOTS=$CEILING; NEW_SLOTS=$CEILING; [ -z "$OVER_PR_CAP" ] || NEW_SLOTS=0
+    HEAL_FREE=$(( CEILING - LIVE_HEAL - LIVE_NEW )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
+    NEW_FREE=$HEAL_FREE; [ -z "$OVER_PR_CAP" ] || NEW_FREE=0
+    return 0
+  fi
   HEAL_ALL=""; coord_heal_all "$REDS_LEFT" && HEAL_ALL=1
   HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_LEFT"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
   HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
@@ -522,7 +549,7 @@ fi
 # half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide
+  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0
   CANDS=""
   wide=$(coord_queue_ordered --wide)
   # A full list goes in its place in the order, ahead of lower-priority work, so the
@@ -542,6 +569,8 @@ candidates() {
       coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
         || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
     fi
+    # Over the open-work cap only finishing starts: repairs, approved merges, process fixes.
+    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then capped=$((capped+1)); continue; fi
     # A list with nothing free on it is never work, however idle the factory: every
     # item is ticked, reserved by a PR, or taken by another run. Its own takes count.
     if [ "$cls" = new ] && [ "$pl" = 1 ]; then
@@ -549,13 +578,12 @@ candidates() {
       case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
       [ "$cnt" -gt 0 ] || { say "skip #$t (polish list): nothing free on it — every item is ticked, reserved or taken"; continue; }
     fi
-    # Held: new polish work that is neither put at the front nor half-built, unless
-    # it is a full list.
+    # Held: new polish work that is neither put at the front nor half-built. A full
+    # polish list is held too: its items ride along with real changes on its screen,
+    # never one batch PR of its own (owner call 2026-10-22).
     if ! coord_healing_class "$cls" && [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
       [ "$pl" = 1 ] || cnt=0
-      if [ "$pl" != 1 ] || [ "$cnt" -lt "$COORD_POLISH_LIST_FULL" ]; then
-        held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
-      fi
+      held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
     fi
     [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
     if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
@@ -567,7 +595,7 @@ candidates() {
     while IFS=$'\t' read -r i t cls pl cnt note; do
       [ -n "${t:-}" ] || continue
       if [ "$other" = 1 ]; then
-        if [ "$pl" = 1 ]; then say "skip #$t (polish list): $cnt of $COORD_POLISH_LIST_FULL items — rides along with its screen's next ticket"
+        if [ "$pl" = 1 ]; then say "skip #$t (polish list): $cnt free item(s) — rides along with its screen's next ticket, never a build of its own while other work can start"
         else waits=$((waits+1)); fi
         continue
       fi
@@ -578,6 +606,7 @@ candidates() {
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
   fi
+  [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
   CANDS=$(printf '%s' "$rows" | sort -t$'\t' -k1,1n | cut -f2-); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
   reds_waiting; split_places
 }
@@ -686,6 +715,9 @@ else
     # fills its own share; a class with nothing spawnable lends its places to the other.
     pick=""; lent=""
     if   [ -n "$proc" ]; then pick="$proc"; lent="any free place, a process fix first"
+    elif [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
+      # The cap decides: healing first, then new work (none is a candidate over the cap).
+      if [ -n "$heal" ]; then pick="$heal"; elif [ -z "$OVER_PR_CAP" ] && [ -n "$new" ]; then pick="$new"; fi
     elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
     elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$new" ];  then pick="$new"; lent="a healing place"
@@ -753,7 +785,7 @@ else
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
   reds_waiting
-  if [ "$REDS_WAITING" -gt 0 ] && ! coord_healing_class "${TOOK:-new}"; then
+  if [ "$COORD_OPEN_PR_CAP" -eq 0 ] && [ "$REDS_WAITING" -gt 0 ] && ! coord_healing_class "${TOOK:-new}"; then
     say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
   fi
 fi
@@ -792,7 +824,11 @@ if [ "$SHEET_ROLE" = owner ]; then
   fi
 fi
 
+if [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
+  say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING, healing first) · ${OPEN_PR_SAID:-open changes unread / cap $COORD_OPEN_PR_CAP}"
+else
 say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}$( [ $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) -eq 0 ] || echo " · $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) polish red(s) not counted toward heal-all")"
+fi
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \
@@ -803,6 +839,7 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    --arg diskFree "$DISK_FREE" --arg diskStop "${DISK_STOP_GB:-}" --arg diskResume "${DISK_RESUME_GB:-}" \
    --argjson diskHeld "$([ -n "$DISK_HOLD" ] && echo true || echo false)" \
    --arg pace "$(coord_pace_fresh)" --arg stepHold "${STEP_HOLD:-}" \
+   --arg openPrs "$OPEN_PRS" --arg openPrCap "$COORD_OPEN_PR_CAP" --argjson overPrCap "$([ -n "$OVER_PR_CAP" ] && echo true || echo false)" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
      healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
@@ -811,6 +848,7 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
            resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld},
      pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, sevenDay, maxBuildsFleet, share, shares, source}) end),
+     openPrs:(if $openPrs == "" then null else {count:($openPrs|tonumber), cap:($openPrCap|tonumber), over:$overPrCap} end),
      usageHold:(if $stepHold == "" then null else ($stepHold | split("\t") | {until: (.[0] | tonumber), window: .[1], pct: (.[2] | tonumber)}) end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
 # The compare report reads what this tick saw and chose; next= stays last.

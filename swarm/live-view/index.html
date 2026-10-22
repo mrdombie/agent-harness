@@ -300,6 +300,10 @@ function machineLine(s){
       + ` · at most ${esc(p.maxBuildsFleet)} building on every machine, ${esc(p.share)} here`
       + (ahead ? ' — <span class="diskheld">ahead of budget, nothing new starts</span>' : ''))
   }
+  // The open-work cap (coordinator.openPrCap): over it, nothing new starts until changes land.
+  const op = c && c.openPrs
+  if (op && op.cap) parts.push(op.over ? `<span class="diskheld">open changes ${esc(op.count)} / cap ${esc(op.cap)}: finishing before starting</span>`
+    : `open changes ${esc(op.count)} / cap ${esc(op.cap)}`)
   if (c && c.usageHold) parts.push(`<span class="disklow">usage hold at ${esc(c.usageHold.pct)}%: running builds wait before their next step</span>`)
   const hosts = (s.hosts || []).map(h => `${esc(h.host)} (${esc(h.n)})`).join(', ')
   return `Machine: ${parts.join(' · ')}<br>Building on: ${hosts || 'no host'} · updated ${esc(new Date(s.at).toLocaleTimeString())}` + fleetLines(s.fleet)

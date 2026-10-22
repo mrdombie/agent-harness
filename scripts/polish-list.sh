@@ -4,14 +4,15 @@
 #   polish-list.sh add <screen-slug> <text…>     append "- [ ] <text>" under "## Items" on the
 #                                                screen's open list, opening the list when there
 #                                                is none; the same text is never added twice
-#   polish-list.sh items <issue|->               the items still free to take, one a line:
-#                                                unticked and not reserved by a pull request
+#   polish-list.sh items <issue|-> [--lend]      the items still free to take, one a line:
+#                                                unticked and not reserved by a pull request;
+#                                                --lend: only the first coordinator.polishListFull
+#                                                (8), what one other change takes along
 #   polish-list.sh count <issue|-> [ticket]      how many are free to take; with a ticket,
 #                                                its own takes count too (its run resumes them)
 #   polish-list.sh for-screen <screen-slug>      the open list's number, or nothing
 #   polish-list.sh lends <issue> [<ticket>]      0 when another change may take its items;
-#                                                1, saying why, when the list ships alone:
-#                                                its own run holds it, or it is full
+#                                                1, saying why, when its own run holds it
 #   polish-list.sh take <issue> <ticket> <text…> a builder fixed that item: marked
 #                                                "(taken by #<ticket>)" so other runs skip it,
 #                                                and recorded for the run; never ticked yet;
@@ -303,10 +304,11 @@ reserve() { # [--ticket <t>] <issue> <pr> <text…>
   echo "#$n: reserved for PR #$pr: $text"
 }
 
-# lends <issue> [<ticket>] — A LIST THAT SHIPS ALONE LENDS NONE. Its own run holds it
-# (claimed or in review), or it holds coordinator.polishListFull free items, so the
-# coordinator starts it on its own: an item taken by a change on another screen then
-# raced the list's own run for it. The ticket itself is the list: it lends to itself.
+# lends <issue> [<ticket>] — A LIST ITS OWN RUN HOLDS LENDS NONE (claimed or in review):
+# an item taken by another change then raced the list's own run for it. The ticket
+# itself is the list: it lends to itself. A FULL LIST STILL LENDS: it is never started
+# as a batch of its own while other work can start (owner call 2026-10-22), so its items
+# leave only by riding along, coordinator.polishListFull of them a change (items --lend).
 LIST_FULL="${COORDINATOR_POLISH_LIST_FULL:-$(swarm_opt coordinator.polishListFull 8)}"
 case "$LIST_FULL" in ''|0|*[!0-9]*) LIST_FULL=8 ;; esac
 lends() {
@@ -319,8 +321,6 @@ lends() {
     [ -n "$l" ] && jq -e --arg l "$l" '[.labels[]?.name] | index($l)' >/dev/null 2>&1 <<<"$j" \
       && { echo "#$n ships alone: its own run holds it ($l)"; return 1; }
   done
-  free=$(jq -r '.body // ""' <<<"$j" | free_items | grep -c .)
-  [ "$free" -ge "$LIST_FULL" ] && { echo "#$n ships alone: $free free items, full at $LIST_FULL"; return 1; }
   return 0
 }
 
@@ -391,8 +391,9 @@ case "${1:-}" in
   reserve)    shift; reserve "$@" ;;
   forget)     shift; forget "$@" ;;
   sweep)      shift; sweep "$@" ;;
-  items)      body=$(body_of "${2:?usage: polish-list.sh items <issue|->}") || die "#$2 could not be read"
-              printf '%s\n' "$body" | free_items ;;
+  items)      body=$(body_of "${2:?usage: polish-list.sh items <issue|-> [--lend]}") || die "#$2 could not be read"
+              if [ "${3:-}" = --lend ]; then printf '%s\n' "$body" | free_items | head -n "$LIST_FULL"
+              else printf '%s\n' "$body" | free_items; fi ;;
   count)      body=$(body_of "${2:?usage: polish-list.sh count <issue|-> [ticket]}") || die "#$2 could not be read"
               # With a ticket: what that ticket's own run may still work, its takes included.
               printf '%s\n' "$body" | all_items | awk -F'\t' -v m="t${3:-x}" '$1 == " " && ($2 == "" || $2 == m)' | grep -c . || true ;;

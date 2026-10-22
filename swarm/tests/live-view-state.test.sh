@@ -310,4 +310,18 @@ plant index.html "  const away = a.beatStale !== false" "  const away = true"
 [ "$(page_render "$P" "$(snap)" | grep -c 'dot ok[^>]*></span><div class="main"> <div class="title">Ticket 2301')" = 0 ] \
   && ok "planted: every remote row grey again → red" || bad "planted: every remote row grey and the test cannot see it"
 
+echo "--- the machine line shows the open-work cap ---"
+printf '{"live":2,"ceiling":4,"reading":"cpu idle 60%%, 9 GB free","openPrs":{"count":23,"cap":10,"over":true}}\n' > "$STATE/coordinator/capacity.json"
+r=$(page_render "$LV" "$(snap)")
+want_in "over the cap: finishing before starting" '^machine=.*open changes 23 / cap 10: finishing before starting' "$r"
+printf '{"live":2,"ceiling":4,"reading":"cpu idle 60%%, 9 GB free","openPrs":{"count":9,"cap":10,"over":false}}\n' > "$STATE/coordinator/capacity.json"
+r=$(page_render "$LV" "$(snap)")
+want_in "under it: the count alone"           '^machine=.*open changes 9 / cap 10' "$r"
+want_not_in "and no hold claimed"              'finishing before starting' "$r"
+printf '{"live":2,"ceiling":4,"reading":"cpu idle 60%%, 9 GB free","openPrs":{"count":23,"cap":10,"over":true}}\n' > "$STATE/coordinator/capacity.json"
+plant index.html "  if (op && op.cap) parts.push(" "  if (false) parts.push("
+[ "$(page_render "$P" "$(snap)" | grep -c 'open changes 23')" = 0 ] \
+  && ok "planted: the page drops the cap → red" || bad "planted: the page drops the cap and the test cannot see it"
+rm -f "$STATE/coordinator/capacity.json"
+
 suite_end "$FAILED"
