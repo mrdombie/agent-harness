@@ -55,7 +55,7 @@ reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
   : > "$RAN"; : > "$FIX/park.log"; rm -f "$FIX"/n.*
   fake_park
   local s
-  for s in start plan build fix compare self-check review record ship reenter repair; do fake_step "$s" 0; done
+  for s in start size plan build fix compare self-check review record ship reenter repair quick; do fake_step "$s" 0; done
   local pair
   for pair in "$@"; do fake_step "${pair%%:*}" "${pair#*:}"; done
 }
@@ -65,13 +65,13 @@ echo "--- every step runs, in the declared order ---"
 reset_fakes
 out=$(bt 101); rc=$?
 want "it finishes"        "0" "$rc"
-want "all nine ran once" "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "all ten ran once" "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "and it says so"  'shipped|finished|done' "$out"
 
 echo "--- and each one is recorded as finished ---"
 export HARNESS_STATE_DIR="$STATE"
 . "$HERE/../state.sh" || exit 1
-want "the record lists them in order" "start,plan,build,fix,compare,self-check,review,record,ship" \
+want "the record lists them in order" "start,size,plan,build,fix,compare,self-check,review,record,ship" \
   "$(driver_state_get 101 'done|join(",")')"
 
 echo "--- nothing is lost on a stop: a resumed run picks up where it stopped ---"
@@ -89,8 +89,8 @@ echo "--- nothing is lost on a stop: a resumed run picks up where it stopped ---
 reset_fakes "plan:24 0"
 bt 102 >/dev/null; rc=$?
 want "the first run refuses"      "20" "$rc"
-want "it got as far as plan"      "start plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "start is recorded finished" "start" "$(driver_state_get 102 'done|join(",")')"
+want "it got as far as plan"      "start size plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "start and size are recorded finished" "start,size" "$(driver_state_get 102 'done|join(",")')"
 : > "$RAN"
 out=$(bt 102); rc=$?
 want "the second run finishes"    "0" "$rc"
@@ -98,32 +98,31 @@ want_in "start ran again — it is the re-entry check" '^start$' "$(cat "$RAN")"
 want "and nothing else was repeated" "start plan build fix compare self-check review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and plan ran in the resumed run" "1" "$(grep -c '^plan$' "$RAN")"
-# NOTHING was skipped in that run and it correctly says nothing: start re-ran as the
-# re-entry check, and plan onwards had never finished. The skip line belongs to a run
-# that really skipped something, which the next case builds.
-want_not_in "it claims no skipping it did not do" 'were already finished' "$out"
+# Only size was skipped in that run, and the line counts it alone: start re-ran as the
+# re-entry check and is never counted, and plan onwards had never finished.
+want_in "it counts the one real skip, not start" 'resumed: 1 step\(s\)' "$out"
 
 echo "--- a run that really does skip says how many, not counting the re-entry check ---"
 reset_fakes "build:24 0"
 bt 119 >/dev/null
-want "start and plan finished" "start,plan" "$(driver_state_get 119 'done|join(",")')"
+want "start, size and plan finished" "start,size,plan" "$(driver_state_get 119 'done|join(",")')"
 : > "$RAN"
 out=$(bt 119); rc=$?
 want "it finishes"                     "0" "$rc"
-want_in "and counts the one real skip" 'resumed: 1 step\(s\)' "$out"
+want_in "and counts the two real skips" 'resumed: 2 step\(s\)' "$out"
 want_in "start ran again all the same" '^start$' "$(cat "$RAN")"
 
 echo "--- --restart runs the lot again ---"
 : > "$RAN"
 out=$(bt 102 --restart); rc=$?
 want "it finishes"            "0" "$rc"
-want "every step ran again"   "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "every step ran again"   "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
 echo "--- a refusal parks, with the reason, and does not fall through ---"
 reset_fakes "self-check:24"
 out=$(bt 103); rc=$?
 want "the run stops"                 "20" "$rc"
-want "it stopped AT the refusal"     "start plan build fix compare self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "it stopped AT the refusal"     "start size plan build fix compare self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_not_in "review never ran"       'review' "$(cat "$RAN")"
 want_in "it parked"                  'PARK' "$(cat "$FIX/park.log")"
 want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
@@ -181,7 +180,7 @@ echo "--- a refusal parks, with the reason, and does not fall through ---"
 reset_fakes "self-check:24"
 out=$(bt 103); rc=$?
 want "the run stops"                 "20" "$rc"
-want "it stopped AT the refusal"     "start plan build fix compare self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "it stopped AT the refusal"     "start size plan build fix compare self-check" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_not_in "review never ran"       'review' "$(cat "$RAN")"
 want_in "it parked"                  'PARK' "$(cat "$FIX/park.log")"
 want_in "naming the step"            'self-check' "$(cat "$FIX/park.log")"
@@ -228,7 +227,7 @@ reset_fakes "review:30 0"
 out=$(bt 106); rc=$?
 want "it finishes"  "0" "$rc"
 want "the rework repeats fix, compare, the gates and review" \
-  "start plan build fix compare self-check review fix compare self-check review record ship" \
+  "start size plan build fix compare self-check review fix compare self-check review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "and plan was not repeated"  "1" "$(grep -c '^plan$' "$RAN")"
 want "nor was build — the plan task is already built" "1" "$(grep -c '^build$' "$RAN")"
@@ -253,7 +252,7 @@ reset_fakes "self-check:30 0"
 out=$(bt 123); rc=$?
 want "it finishes"  "0" "$rc"
 want "fix, then the gates again" \
-  "start plan build fix compare self-check fix compare self-check review record ship" \
+  "start size plan build fix compare self-check fix compare self-check review record ship" \
   "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "it says it went back to fix" 'back to fix' "$out"
 
@@ -463,7 +462,7 @@ want "the real seven finish"        "0" "$rc"
 want "start kept the branch it was given" "tkt-$TICKET/work" "$(driver_state_get "$TICKET" branch)"
 want "and recorded the ticket's subject for the PR title" "Ticket $TICKET" "$(driver_state_get "$TICKET" title)"
 want_in "which is what the pull request is titled with" "Ticket $TICKET" "$(cat "$GH_LOG")"
-want "every one is recorded"        "start,plan,build,fix,compare,self-check,review,record,ship" \
+want "every one is recorded"        "start,size,plan,build,fix,compare,self-check,review,record,ship" \
   "$(driver_state_get "$TICKET" 'done|join(",")')"
 want_in "the plan named its Skill and the log showed it" 'superpowers:writing-plans ran' "$out"
 want_in "the build proved red before green" 'red .*then green' "$out"
@@ -532,7 +531,7 @@ echo "--- the re-plan command compare's park note gives re-runs plan, then carri
 # Without --restart, a done plan is skipped and compare refuses again for ever.
 reset_fakes "compare:24 0"
 out=$(bt 130); rc=$?
-want "the first walk stops at compare" "start plan build fix compare" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the first walk stops at compare" "start size plan build fix compare" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 : > "$RAN"
 out=$(bt 130 --restart --steps plan); rc=$?
 want "the first half of the command runs plan again" "plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
@@ -745,7 +744,7 @@ want "verbatim"                              "The owner answered q2: keep the ol
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
 bt 423 --brief "$FIX/brief-g.md" >/dev/null; rc=$?
 want "with no PR it finishes"                "0" "$rc"
-want "as a build, every step of it"          "start plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "as a build, every step of it"          "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "the record says build"                 "build" "$(driver_state_get 423 mode)"
 want "and keeps the note for every step"     "The owner answered q2: keep the old copy." "$(cat "$(driver_state_get 423 run_brief)" 2>/dev/null)"
 reset_fakes; echo "open-prs" > "$FIX/gh-fail"
@@ -812,7 +811,7 @@ park_at_compare() { # <ticket> — a build parked at compare, with the draft PR 
 }
 printf 'The owner answered q8: the deviation is approved.\n' > "$FIX/brief-k.md"
 park_at_compare 501
-want "fixture: the build parked at compare"  "start,plan,build,fix" "$(driver_state_get 501 'done|join(",")')"
+want "fixture: the build parked at compare"  "start,size,plan,build,fix" "$(driver_state_get 501 'done|join(",")')"
 out=$(bt 501 --brief "$FIX/brief-k.md"); rc=$?
 want "--brief: it finishes"                  "0" "$rc"
 want "--brief: the build resumes at compare, ship only after it" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
@@ -938,7 +937,7 @@ body_issue() { # <n> <body>
 reset_fakes "build:24 0"
 body_issue 144 "first version of the ticket"
 bt 144 >/dev/null
-want "the first walk parks after the plan" "start plan build" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the first walk parks after the plan" "start size plan build" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 : > "$RAN"
 body_issue 144 "the PM removed a task"
 out=$(bt 144); rc=$?

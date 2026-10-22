@@ -32,7 +32,9 @@ import { pathToFileURL } from 'node:url'
 
 export const STEPS = ['Set up', 'Plan', 'Build', 'Check', 'Review', 'PR', 'Merged']
 // The step-runner's own step names, in the same order.
-const DRIVER_STEP = { start: 0, plan: 1, build: 2, 'self-check': 3, review: 4, ship: 5 }
+// size is part of Set up; a quick run's one session (quick) edits and runs the gates, so
+// it stands for Plan, Build and Check together and is read as Check done.
+const DRIVER_STEP = { start: 0, size: 0, plan: 1, build: 2, quick: 3, 'self-check': 3, review: 4, ship: 5 }
 // A repair walks its own order (build-ticket's DRIVER_REPAIR_STEPS), entered by reenter
 // on the PR's branch. Its record keeps the earlier build's finished steps beside it.
 const REPAIR_ORDER = ['reenter', 'repair', 'fix', 'self-check', 'review', 'record', 'ship']

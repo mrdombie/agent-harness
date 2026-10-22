@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "quick step answer",
+  "description": "A change sized quick, made in one session: edited, committed, and said what it touched. The driver runs the gates and the review after it, reads the real diff, and sends the ticket to the full route when the diff is bigger than its size.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "skills",
+    "status"
+  ],
+  "properties": {
+    "step": {
+      "const": "quick"
+    },
+    "skills": {
+      "description": "Every Superpowers skill invoked in this step. The driver cross-checks this against the Skill calls in the run log.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^superpowers:[a-z][a-z-]*$"
+      }
+    },
+    "status": {
+      "enum": [
+        "edited",
+        "park"
+      ]
+    },
+    "summary": {
+      "description": "What changed, in one or two sentences a reviewer reads first.",
+      "type": "string",
+      "minLength": 1
+    },
+    "changed": {
+      "description": "Every file the commits change. The driver reads the real diff as well; this is the claim it is held to.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "checked": {
+      "description": "How the change was seen to work: the command run and what it printed, or what was read back.",
+      "type": "string",
+      "minLength": 1
+    },
+    "changelog": {
+      "description": "Either the entry file written, or the reason there is none. Never both, and never neither.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skipped": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "question": {
+      "description": "Why the change cannot be made as the ticket states it. Answerable in a line.",
+      "type": "string",
+      "minLength": 1
+    },
+    "questionFor": {
+      "description": "Who answers the question. `owner`: pixels, a product or commercial call, or the data model. `pm`: the ticket's shape. Unsure is `owner`.",
+      "enum": [
+        "owner",
+        "pm"
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "status": {
+        "const": "edited"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "summary",
+      "changed",
+      "checked",
+      "changelog"
+    ]
+  },
+  "else": {
+    "required": [
+      "question"
+    ]
+  }
+}

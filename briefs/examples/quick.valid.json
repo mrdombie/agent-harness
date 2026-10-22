@@ -1,0 +1,9 @@
+{
+  "step": "quick",
+  "skills": ["superpowers:verification-before-completion"],
+  "status": "edited",
+  "summary": "gates.local drops test:changed, so the Mac runs lint, typecheck and format only.",
+  "changed": [".claude/harness.json"],
+  "checked": "jq '.gates.local' .claude/harness.json printed the three commands, test:changed gone",
+  "changelog": {"skipped": "harness config only, nothing a user sees"}
+}

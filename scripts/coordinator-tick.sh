@@ -135,7 +135,11 @@ for ended in "$RUNS_DIR"/*.ended; do
   [ -n "$log" ] || log="$SWARM_LOGS/$rid.log"
   last=$(final_line "$log")
   printf '%s\n' "$rid" >> "$SEEN_ENDED"
-  printf '%s\tended\t%s\t%s\texit=%s %s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" >> "$COORD_DIR/runs.log"
+  # The route the driver took and its time from claim to PR, off the run's record (steps/size.sh).
+  rt=""; drec="${DRIVER_DIR:-$STATE_DIR/driver}/${ticket:-none}/state.json"
+  [ -z "$ticket" ] || [ ! -f "$drec" ] || rt=$(jq -r 'if (.route // "") == "" then empty
+      else "\troute=\(.route) size=\(.size // "?")\(if .claim_to_pr_secs then " claim_to_pr=\(.claim_to_pr_secs)s" else "" end) why=\((.size_reason // "") | gsub("[\t\n]"; " ") | .[0:160])" end' "$drec" 2>/dev/null)
+  printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
   if [ -n "$ticket" ]; then

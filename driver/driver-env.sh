@@ -60,7 +60,11 @@ mkdir -p "$DRIVER_DIR" 2>/dev/null || true
 # edit is never linted, typechecked or tested, and the change ships behind gates
 # that ran on the code before it. A render run on a branch whose gates then go red
 # is the cheaper mistake.
-DRIVER_STEPS="${DRIVER_STEPS:-start plan build fix compare self-check review record ship}"
+DRIVER_STEPS="${DRIVER_STEPS:-start size plan build fix compare self-check review record ship}"
+# THE QUICK ROUTE (steps/size.sh): a ticket sized quick walks this order instead, once
+# size has said so. One agent session edits, commits and runs the gates; one review;
+# ship opens the PR. A diff bigger than its size goes back to the full order from plan.
+DRIVER_QUICK_STEPS="${DRIVER_QUICK_STEPS:-start size quick review ship}"
 
 # Five tries, then park — the number in the approved design's flowchart.
 DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
@@ -134,6 +138,7 @@ DRIVER_E_TO_REPAIR=31 # start found the ticket's open PR: this run becomes a rep
 DRIVER_E_NOOP=32      # the step read the PR afresh and nothing is owed: the run ends clean, exit 0
 DRIVER_E_MACHINE=33   # a model call failed with an API error, twice: the machine, never a question
 DRIVER_E_BASE_WAIT=34 # every red is in tests outside the PR that fail on the base too: waits for the base
+DRIVER_E_UPSIZE=35    # the quick change is bigger than its size: the run goes on along the full route, from plan
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
 # growing pause. One failed read parked a ticket for good on 2026-10-18.
@@ -811,4 +816,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRI
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_TO_REPAIR DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_BASE_WAIT
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_TO_REPAIR DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_BASE_WAIT DRIVER_E_UPSIZE DRIVER_QUICK_STEPS

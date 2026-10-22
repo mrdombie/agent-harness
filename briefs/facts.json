@@ -95,6 +95,16 @@
         "LESSON": "when the lesson check is red: what the lesson check says about the pull request body as it stands, and the body's current `## Lesson` section if it has one — or a sentence saying the lesson check is not red",
         "PROOF_LIMITS": "what cannot prove a change in this project's proof trees (an e2e browser spec, unless tests.e2eProofs is true) and what to prove it with instead"
       }
+    },
+    "quick": {
+      "brief": "quick.md",
+      "schema": "schemas/quick.json",
+      "skills": ["superpowers:verification-before-completion"],
+      "facts": {
+        "TICKET": "the ticket body, verbatim, including its acceptance criteria and its type labels",
+        "SIZE": "the size step's verdict: why the ticket was sized quick, by rule or by the size call, and the files it named",
+        "PROJECT_FACTS": "the consuming project's facts from its harness config: commit and changelog convention, gate commands"
+      }
     }
   }
 }

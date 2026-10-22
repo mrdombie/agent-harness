@@ -1,0 +1,8 @@
+{
+  "step": "quick",
+  "skills": ["superpowers:verification-before-completion"],
+  "status": "edited",
+  "summary": "a change",
+  "changed": ["README.md"],
+  "checked": "read it back"
+}

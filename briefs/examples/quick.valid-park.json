@@ -1,0 +1,7 @@
+{
+  "step": "quick",
+  "skills": ["superpowers:verification-before-completion"],
+  "status": "park",
+  "question": "The ticket says to set gates.local, and .claude/harness.json has no gates key at all: add one, or is this the wrong repo?",
+  "questionFor": "pm"
+}
