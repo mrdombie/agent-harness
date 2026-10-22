@@ -5,8 +5,9 @@
 #                                                       <labels.screenPrefix><slug> labels, plus
 #                                                       design.screenOf run over the files
 #   screen-findings.sh polish <ticket> [<file-list>]    every free item on those screens' polish
-#                                                       lists: grade \t list \t item; a list that ships
-#                                                       alone (polish-list.sh lends) lends none
+#                                                       lists: grade \t list \t item; a list its own run
+#                                                       holds (polish-list.sh lends) lends none, and
+#                                                       another ticket takes at most polishListFull
 #   screen-findings.sh critic <pr>                      the graded findings of the independent
 #                                                       critic's latest verdict on the PR, from
 #                                                       its own record, when it did not pass:
@@ -70,11 +71,11 @@ case "${1:-}" in
       [ -n "$slug" ] || continue
       n=$(bash "$PL" for-screen "$slug" 2>/dev/null) || { echo "screen-findings: the polish list for $slug could not be read" >&2; exit 2; }
       [ -n "$n" ] || continue
-      # A list that ships alone lends none (polish-list.sh lends): only to itself.
+      # A list its own run holds lends none (polish-list.sh lends): only to itself.
       bash "$PL" lends "$n" "$2" >/dev/null 2>&1; rc=$?
       [ "$rc" -eq 1 ] && continue
       [ "$rc" -eq 0 ] || { echo "screen-findings: polish list #$n could not be read" >&2; exit 2; }
-      items=$(bash "$PL" items "$n" 2>/dev/null) || { echo "screen-findings: polish list #$n could not be read" >&2; exit 2; }
+      items=$(bash "$PL" items "$n" $([ "$n" = "$2" ] || echo --lend) 2>/dev/null) || { echo "screen-findings: polish list #$n could not be read" >&2; exit 2; }
       while IFS= read -r it; do
         [ -n "$it" ] || continue
         g=$(grade_of "$it")

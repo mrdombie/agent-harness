@@ -229,6 +229,8 @@ want "7 running and room: an 8th starts"   "501" "$(spawned)"
 want "the live view's file has no cap"     "null" "$(jq -r '.cap' "$C/capacity.json")"
 
 echo "--- of the ceiling, a quarter heals and the rest builds new ---"
+# The split and heal-all are what coordinator.openPrCap replaces; a cap of 0 runs them.
+export COORDINATOR_OPEN_PR_CAP=0
 # One agent's room per tick (23% idle keeping 15%, 8% each), so a ramp is visible.
 export SWARM_IDLE=23 SWARM_CORES=10
 fresh; queue_as repair 601 602 603 604 605; queue 701 702 703 704 705
@@ -334,7 +336,54 @@ fresh; reds_as P3 601; reds_as P1 602; reds_as P0 603; queue 701
 COORDINATOR_CAP=1 ticks 1 >/dev/null
 want "the P0 red takes the one healing place" "603" "$(spawned)"
 
-echo "--- a polish list ships alone only when it is full ---"
+unset COORDINATOR_OPEN_PR_CAP
+
+echo "--- coordinator.openPrCap: over the cap nothing new starts; every place finishes ---"
+# open_prs <count> — that many open PRs, drafts among them, none for a queued ticket
+open_prs() {
+  jq -n --argjson n "$1" '[range(0; $n) | {number: (9000 + .), headRefName: "tkt-\(9000 + .)-open", headRefOid: "h\(.)",
+    isDraft: (. % 3 == 0), mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
+}
+proc_q() { local l="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$l"; bash "$Q" add "$t" >/dev/null; done; }
+cap_tick() { # <open PRs> — three repairs 601.., three new 701.., room for 6
+  fresh; open_prs "$1"; queue_as repair 601 602 603; queue 701 702 703
+  SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1
+}
+out=$(cap_tick 12)
+want "12 open, cap 10: the repairs start and nothing new" "repair repair repair" "$(classes)"
+want "the three repairs"                   "601 602 603" "$(spawned)"
+want_in "the tick log shows the cap"       'open changes 12 / cap 10: finishing before starting' "$out"
+want_in "and names what waits"             '3 new ticket\(s\) wait' "$out"
+want "the live view's file carries it"     "12 10 true" "$(jq -r '"\(.openPrs.count) \(.openPrs.cap) \(.openPrs.over)"' "$C/capacity.json")"
+out=$(cap_tick 9)
+want "9 open, cap 10: new work starts too"  "601 602 603 701 702 703" "$(spawned)"
+want_in "the tick log says new may start"  'open changes 9 / cap 10: new work may start' "$out"
+want "the live view's file: under"         "9 10 false" "$(jq -r '"\(.openPrs.count) \(.openPrs.cap) \(.openPrs.over)"' "$C/capacity.json")"
+out=$(cap_tick 10)
+want "exactly at the cap is not over it"    "601 602 603 701 702 703" "$(spawned)"
+# Drafts count: 12 PRs, all drafts.
+fresh; open_prs 12; jq 'map(.isDraft = true)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
+queue 701; SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "12 drafts are 12 open changes: nothing new" "" "$(spawned)"
+fresh; open_prs 12; queue_as approved-merge 604; queue 701
+SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "an approved merge still starts over the cap" "604" "$(spawned)"
+fresh; open_prs 12; proc_q "P3,process,status:ready" 702; queue 701
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want "a process fix still starts over the cap" "702" "$(spawned)"
+fresh; open_prs 12; queue 701
+SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_OPEN_PR_CAP=20 ticks 1 >/dev/null
+want "coordinator.openPrCap sets N: 12 under 20 starts new" "701" "$(spawned)"
+fresh; open_prs 30; queue 701
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_OPEN_PR_CAP=0 ticks 1)
+want "a cap of 0 is off"                   "701" "$(spawned)"
+want_not_in "and says nothing of a cap"     'open changes' "$out"
+# Under the cap the split is gone: healing takes the free places first, new work the rest.
+fresh; open_prs 3; queue_as repair 601 602 603 604; queue 701 702 703 704
+SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
+want "under the cap, 4 places, 4 reds: all four heal (the split gave 1)" "repair repair repair repair" "$(classes)"
+
+echo "--- a polish list never ships alone while other work can start, full or not ---"
 # list_issue <n> <items> — an open polish list holding that many unticked items
 list_issue() {
   local body="## Items" i
@@ -347,13 +396,14 @@ list_issue() {
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 3
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
 want "3 items while a P2 ticket can start: only the P2 starts" "701" "$(spawned)"
-want_in "it says the list rides along"     'skip #801 \(polish list\): 3 of 8 items' "$out"
+want_in "it says the list rides along"     'skip #801 \(polish list\): 3 free item\(s\) — rides along' "$out"
 fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 8
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want "8 items: no batch build of the list, only the P2" "701" "$(spawned)"
+want_in "it rides along instead"           'skip #801 \(polish list\): 8 free item\(s\) — rides along' "$out"
+fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 12
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
-want "8 items: the full list starts too, after the P2" "701 801" "$(spawned)"
-fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; list_issue 801 3
-SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_POLISH_LIST_FULL=3 ticks 1 >/dev/null
-want "coordinator.polishListFull sets where full is" "701 801" "$(spawned)"
+want "12 items: still no build of its own"  "701" "$(spawned)"
 fresh; list_issue 801 3; fix_issue 802 OPEN "P3,status:ready"; bash "$Q" add 802 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
 want "nothing else can start: polish starts, a short list and a P3 ticket" "801 802" "$(spawned)"
@@ -390,13 +440,10 @@ fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null
 fix_issue 803 OPEN "P3,status:partial"; bash "$Q" add 803 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
 want "a half-built P3 ticket starts beside the P2" "701 803" "$(spawned)"
-echo "--- a full P3 list ranks ahead of work with no priority ---"
+echo "--- a full P3 list no longer jumps work with no priority ---"
 fresh; fix_issue 702 OPEN "status:ready"; bash "$Q" add 702 >/dev/null; list_issue 801 8
 SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "one place: the full list takes it, not the unprioritised ticket" "801" "$(spawned)"
-fresh; fix_issue 702 OPEN "status:ready"; bash "$Q" add 702 >/dev/null; list_issue 801 3
-SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "a short list still waits behind it"  "702" "$(spawned)"
+want "one place: the unprioritised ticket takes it, not the full list" "702" "$(spawned)"
 
 # Back to the fixture's reading: later sections must never read the real machine.
 export SWARM_IDLE=90; unset SWARM_CORES
@@ -445,7 +492,8 @@ printf '{"run_id":"claim-%s-old","ticket":"%s","child_pid":%s,"log":"/dev/null"}
 SH
 chmod +x "$FIX/oldspawn/spawn-claim.sh"
 # One agent of room a tick, so the second tick reads the class the first recorded.
-oldspawn() { SWARM_SPAWN="$FIX/oldspawn/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
+# The split (openPrCap 0) is what tells a healing run from a new one here.
+oldspawn() { COORDINATOR_OPEN_PR_CAP=0 SWARM_SPAWN="$FIX/oldspawn/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
 fresh; queue_as repair 601 602; queue 701 702
 oldspawn >/dev/null
 want "the older spawner ran"               "601	no-class" "$(head -1 "$SPAWNS")"

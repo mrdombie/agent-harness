@@ -36,9 +36,15 @@
 #                                                           under it the healingShare split returns.
 #                                                           Polish reds never count toward it.
 #                                                           Unset, empty or not a whole number >0: off
-#   coordinator.polishListFull COORDINATOR_POLISH_LIST_FULL 8 unticked items at which a polish list
-#                                                           starts while other work waits; under it,
-#                                                           polish starts only when nothing else can
+#   coordinator.polishListFull COORDINATOR_POLISH_LIST_FULL 8 most items of one polish list that ride
+#                                                           along with one change; a list never starts
+#                                                           on its own while other work can, full or not
+#   coordinator.openPrCap    COORDINATOR_OPEN_PR_CAP   10    open PRs (drafts too) over which no new ticket
+#                                                           starts: every place repairs or finishes, and
+#                                                           only repairs, approved merges and process fixes
+#                                                           start. While on it replaces the healingShare
+#                                                           split and heal-all (healing takes free places
+#                                                           first). 0: off, and the split runs again
 #   coordinator.toolingLabels COORDINATOR_TOOLING_LABELS (below) labels that make a ticket our own
 #                                                           build tooling: it runs after product
 #                                                           work of the same priority and class
@@ -108,6 +114,9 @@ COORD_HEAL_ALL_AT="${COORDINATOR_HEAL_ALL_AT:-$(swarm_opt coordinator.healAllAt 
 case "$COORD_HEAL_ALL_AT" in ""|*[!0-9]*) COORD_HEAL_ALL_AT="" ;; *) [ "$COORD_HEAL_ALL_AT" -gt 0 ] || COORD_HEAL_ALL_AT="" ;; esac
 COORD_POLISH_LIST_FULL="${COORDINATOR_POLISH_LIST_FULL:-$(swarm_opt coordinator.polishListFull 8)}"
 case "$COORD_POLISH_LIST_FULL" in ""|0|*[!0-9]*) COORD_POLISH_LIST_FULL=8 ;; esac
+# Owner call 2026-10-22: no new ticket starts while more than this many changes are open.
+COORD_OPEN_PR_CAP="${COORDINATOR_OPEN_PR_CAP:-$(swarm_opt coordinator.openPrCap 10)}"
+case "$COORD_OPEN_PR_CAP" in off|false|none) COORD_OPEN_PR_CAP=0 ;; ""|*[!0-9]*) COORD_OPEN_PR_CAP=10 ;; esac
 # Owner call 2026-10-19: at one priority, product work goes ahead of our own tooling.
 COORD_TOOLING_LABELS="${COORDINATOR_TOOLING_LABELS:-$(swarm_opt coordinator.toolingLabels "repo:agent-harness code-health project:ci-throughput project:harness-kit area:OPS area:HYGIENE area:OPS-CONSOLE")}"
 COORD_TOOLING_SCOPES="${COORDINATOR_TOOLING_SCOPES:-$(swarm_opt coordinator.toolingScopes "gates ci harness ops pre-push dev")}"

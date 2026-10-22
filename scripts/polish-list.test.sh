@@ -249,19 +249,17 @@ want_in "a Critical is P0"                 'P0' "$(jq -r '[.labels[].name] | joi
 bash "$P" add grade-screen "Minor · the label wraps at 390" >/dev/null
 want "a Minor still lands on the list"     "$((before + 1))" "$(lines "$gl")"
 
-echo "--- a list that ships alone lends none ---"
-for i in 1 2 3 4 5 6 7; do bash "$P" add full-screen "full item $i" >/dev/null; done
+echo "--- a full list still lends: its items ride along, at most polishListFull a change ---"
+for i in 1 2 3 4 5 6 7 8 9 10; do bash "$P" add full-screen "full item $i" >/dev/null; done
 fl=$(bash "$P" for-screen full-screen)
-rc=0; bash "$P" lends "$fl" 42 >/dev/null || rc=$?
-want "7 free items: it lends"              "0" "$rc"
-bash "$P" add full-screen "full item 8" >/dev/null
 rc=0; out=$(bash "$P" lends "$fl" 42) || rc=$?
-want "8 free items: full, it lends none"   "1" "$rc"
-want_in "and says why"                     'ships alone: 8 free items, full at 8' "$out"
+want "10 free items: it lends (never a batch of its own)" "0" "$rc"
+want "another change takes 8 of them"      "8" "$(bash "$P" items "$fl" --lend | grep -c .)"
+want "the first 8, in list order"          "full item 8" "$(bash "$P" items "$fl" --lend | tail -1)"
+want "the list itself sees all 10"         "10" "$(bash "$P" items "$fl" | grep -c .)"
+want "how many follows coordinator.polishListFull" "3" "$(COORDINATOR_POLISH_LIST_FULL=3 bash "$P" items "$fl" --lend | grep -c .)"
 rc=0; bash "$P" lends "$fl" "$fl" >/dev/null || rc=$?
 want "the list's own run takes its own"    "0" "$rc"
-rc=0; COORDINATOR_POLISH_LIST_FULL=20 bash "$P" lends "$fl" 42 >/dev/null || rc=$?
-want "full follows coordinator.polishListFull" "0" "$rc"
 jq '.labels += [{name:"status:claimed"}]' "$FIX/store/issue-$gl.json" > "$FIX/store/c.json" && mv "$FIX/store/c.json" "$FIX/store/issue-$gl.json"
 rc=0; out=$(bash "$P" lends "$gl" 42) || rc=$?
 want "claimed by its own run: it lends none" "1" "$rc"

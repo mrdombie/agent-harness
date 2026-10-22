@@ -499,7 +499,8 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
 | `healAllAt` | unset | Reds left at which every place heals, counting those waiting and those being healed; once fewer are left, `healingShare` returns. Polish reds (P3, a polish kind, or a polish list) never count. Unset, or not a whole number over 0, is off |
 | `processLabel` | `process` | The label of a process fix: it starts first of all, and a hold "for process fixes" still lets it through |
-| `polishListFull` | 8 | Unticked items at which a polish list starts on its own while other work can start. Under it, polish starts only when nothing else can |
+| `polishListFull` | 8 | Most items of one polish list that ride along with one change. A list never starts on its own while other work can, however full |
+| `openPrCap` | 10 | Open PRs (drafts too) over which no new ticket starts: every place repairs or finishes, and only repairs, approved merges and `process` fixes start. While on, it replaces `healingShare` and `healAllAt` (healing takes free places first, new work the rest). 0 turns it off and the split runs again |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `disk.stopBelowGb` · `disk.resumeAtGb` | 30 · 50 | Under `stopBelowGb` free, nothing new starts (a build, a red/green proof) and the auto-clean runs (`scripts/disk-guard.sh`): driver proofs, unused spawn checkouts, idle build folders' installs and caches, the orphan sweep, then stale scratchpad folders over 500 MB. A tree a claim on any host holds, a live process or run is in, or that changed in the last 30 minutes is never touched; when the claims cannot be read, nothing is removed. Starts resume only at `resumeAtGb` |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
@@ -560,7 +561,15 @@ samples less `keepCpuIdle`,
 divided by `agentCpuCores` as a share of the cores — so an idle machine fills in
 one tick (Dom, 2026-10-16: "fill all spare room"). Free memory must be at or over
 `minFreeMemGb` and the load under the backstop, or nothing starts. A running builder is
-never stopped for load. Of that ceiling, healing gets `ceil(ceiling × healingShare)`
+never stopped for load.
+
+**Open work is capped** (owner call 2026-10-22: 100 open PRs for ~5 builders, and 80%
+of the time spent repairing them as they went stale). While more than `openPrCap`
+PRs are open (default 10, drafts included, counted from the tick's one open-PR read),
+no new ticket starts: repairs, approved merges and `process` fixes still do. The tick
+log and the live view say "open changes 23 / cap 10: finishing before starting". At or
+under the cap, healing takes the free places first and new work the rest. With
+`openPrCap` 0 the split below runs instead. Of that ceiling, healing gets `ceil(ceiling × healingShare)`
 places and new work the rest. While both classes have spawnable work each keeps
 its share, so a run of red PRs waits its turn instead of stopping new work; a
 class with nothing spawnable lends its places to the other, in both directions.
@@ -604,8 +613,9 @@ which red heals first follows priority.
 (`scripts/polish-list.sh add <screen-slug> "<text>"`), never a ticket of its own.
 A ticket labelled `screen:<slug>` carries that list's unticked items into its plan
 and build (`{{POLISH_LIST}}`); the builder fixes them, ticks them, and the PR names
-them. Polish new work (P3, a polish kind, a polish list) starts only when nothing
-else can, or when a polish list holds `polishListFull` items. Sign-off batches are
+them, at most `polishListFull` (8) of one list a change. Polish new work (P3, a
+polish kind, a polish list) starts only when nothing else can; a full list is never
+started as a batch of its own (owner call 2026-10-22: one ticket, one PR). Sign-off batches are
 ordered by priority too, so polish screens come last.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
 The coordinator records each spawn's class in `run-classes.tsv` beside the queue,

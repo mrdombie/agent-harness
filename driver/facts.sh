@@ -315,7 +315,7 @@ driver_fact_polish_list() { # <ticket>
     [ -n "$slug" ] || continue
     n=$(bash "$pl" for-screen "$slug" 2>/dev/null) || { _driver_fact_none "the polish list for ${LBL_SCREEN_PREFIX}$slug could not be read"; return 0; }
     [ -n "$n" ] && [ "$n" != "$t" ] || continue
-    # A list that ships alone lends none (polish-list.sh lends).
+    # A list its own run holds lends none (polish-list.sh lends).
     why=$(bash "$pl" lends "$n" "$t" 2>/dev/null); rc=$?
     [ "$rc" -eq 1 ] && { alone="${alone:+$alone; }$why"; continue; }
     [ "$rc" -eq 0 ] || { _driver_fact_none "polish list #$n could not be read"; return 0; }
@@ -330,7 +330,8 @@ EOS
     driver_state_set "$t" polish_fact "$out"; printf '%s' "$out"; return 0
   fi
   for n in $lists; do
-    items=$(bash "$pl" items "$n" 2>/dev/null) || { _driver_fact_none "polish list #$n could not be read"; return 0; }
+    # Another screen ticket takes at most coordinator.polishListFull of a list's items (--lend).
+    items=$(bash "$pl" items "$n" $([ "$n" = "$t" ] || echo --lend) 2>/dev/null) || { _driver_fact_none "polish list #$n could not be read"; return 0; }
     [ -n "$items" ] || continue
     kept="$kept$(printf '%s\n' "$items" | awk -v n="$n" 'NF { print n "\t" $0 }')"$'\n'
     out="${out:+$out
