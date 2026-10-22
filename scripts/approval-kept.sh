@@ -17,6 +17,9 @@
 #   approval-kept.sh screens
 #       paths on stdin, the screens a sign-off covers on stdout — the one screen set
 #       the push guard, the briefs and the batch share (below).
+#   approval-kept.sh own-changed <from> <to> <trunk-ref>
+#       paths on stdin (local git), the ones whose own change differs between the two
+#       heads on stdout — `check`'s rule for a caller with a clone; exit 1 unreadable.
 #
 # An approval is attached to what was approved, and only a change to that thing
 # voids it. A develop merge brings other tickets' screens, which passed their own
@@ -25,7 +28,10 @@
 #
 #   since = approved..head            own = trunk...approved  ∪  trunk...head
 #   voided when a commit in both since and the PR's own diff is not a merge, or a
-#   screen file of `own` changed in `since`. The PR's screens are read at BOTH
+#   screen file of `own` changed in `since` AND the PR's own change to it differs:
+#   its hunks (context included) in trunk...approved against trunk...head. A file the
+#   trunk edited elsewhere differs between the heads after a clean merge while the
+#   PR's own edit of it is the same, so that keeps. The PR's screens are read at BOTH
 #   heads: a resolution that takes develop's version, or drops a screen the PR
 #   added, leaves no trace in the new head's diff alone.
 #
@@ -60,7 +66,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${GH_REPO:-$REPO_SLUG}"
 WINDOW="${APPROVAL_WINDOW_SEC:-300}"
 
-usage() { sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 marker() { printf '<!-- approval-head:%s -->\n' "$1"; }
 
@@ -162,6 +168,52 @@ blob_at() { # <sha> <path> — the file's blob, "absent" when the commit has non
   printf '%s' "$out"
 }
 
+# THE PR'S OWN CHANGE to a file, as a key: its hunks with their context lines, the @@
+# positions dropped (a trunk edit elsewhere in the file shifts them), or its blob when
+# there is no text patch. The context pins where each line went: without it the same
+# lines moved elsewhere, or onto a twin line, would read as the same change. A trunk
+# edit within a hunk's context counts as a change — a re-sign, the safe side.
+# own_changed_api <own-at-approved> <own-at-head> — paths on stdin; prints those whose
+# own change differs, or cannot be read (no patch and no blob: never kept).
+own_changed_api() {
+  local f ka kb
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    ka=$(own_key_api "$1" "$f"); kb=$(own_key_api "$2" "$f")
+    if [ "$ka" = "?" ] || [ "$kb" = "?" ] || [ "$ka" != "$kb" ]; then printf '%s\n' "$f"; fi
+  done
+}
+own_key_api() { # <compare-json> <path>
+  jq -r --arg f "$2" '
+    [.files[] | select(.filename == $f or (.previous_filename // "") == $f)
+     | {s: (.status // ""), n: .filename, p: (.previous_filename // ""),
+        c: (if (.patch | type) == "string" then (.patch | split("\n") | map(select(startswith("@@") | not)) | join("\n"))
+            elif (.sha | type) == "string" and (.sha | length) > 0 then "blob:" + .sha
+            else null end)}]
+    | if any(.[]; .c == null) then "?" else tojson end' <<<"$1" 2>/dev/null || echo "?"
+}
+# own_changed_git <from> <to> <trunk-ref> — the same rule on local history, for the push
+# guard: paths on stdin, those whose own change differs on stdout; exit 1 unreadable.
+own_changed_git() {
+  local ma mb f ka kb
+  ma=$(git merge-base "$3" "$1" 2>/dev/null) && mb=$(git merge-base "$3" "$2" 2>/dev/null) || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    ka=$(own_key_git "$ma" "$1" "$f") && kb=$(own_key_git "$mb" "$2" "$f") || return 1
+    [ "$ka" = "$kb" ] || printf '%s\n' "$f"
+  done
+  return 0
+}
+own_key_git() { # <base> <sha> <path>
+  local ns
+  ns=$(git --literal-pathspecs diff --no-ext-diff --no-renames --numstat "$1" "$2" -- "$3") || return 1
+  case "$ns" in
+    '') printf 'none' ;;
+    -$'\t'-$'\t'*) printf 'blob:%s' "$(git rev-parse -q --verify "$2:$3" 2>/dev/null || echo absent)" ;;
+    *) git --literal-pathspecs diff --no-ext-diff --no-textconv --no-color --no-renames -U3 "$1" "$2" -- "$3" | awk '/^@@/ { h = 1; next } /^diff --git / { h = 0 } h' ;;
+  esac
+}
+
 cut() { jq -e '(.files | length) >= 300 or ((.total_commits // (.commits | length)) > (.commits | length))' >/dev/null <<<"$1"; }
 shaped() { jq -e '(.commits | type == "array") and (.files | type == "array")' >/dev/null 2>&1 <<<"$1"; }
 
@@ -209,6 +261,9 @@ check() { # <approved> <head> [--screens cmd]
     done <<<"$screens"
     moved=$(printf '%s' "$moved" | sed '/^$/d')
   fi
+  # A file both the PR and the trunk edit differs between the heads after a clean merge;
+  # only a change to the PR's OWN edit of it (its diff from where it meets the trunk) voids.
+  [ -z "$moved" ] || moved=$(printf '%s\n' "$moved" | own_changed_api "$owna" "$own")
   if [ -n "$moved" ]; then
     echo "the update changed its own screen files: $(printf '%s' "$moved" | tr '\n' ' ' | sed 's/ $//')"; return 1
   fi
@@ -280,5 +335,6 @@ case "${1:-}" in
   signed-head)   shift; signed_head "$@" ;;
   marker)        [ -n "${2:-}" ] || usage; marker "$2" ;;
   screens)       [ -z "${2:-}" ] || usage; screen_set ;;
+  own-changed)   [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || usage; own_changed_git "$2" "$3" "$4" ;;
   *)             usage ;;
 esac

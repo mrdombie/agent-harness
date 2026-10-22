@@ -155,6 +155,25 @@ g push -q --no-verify origin HEAD:refs/heads/wip
 want_in "a screen commit that reached the remote on a side branch is refused" 'rc=1$' "$(guard)"
 g push -q --no-verify origin --delete wip; g fetch -q --prune origin
 
+echo "--- the PR's own change decides, not the heads: develop edits elsewhere in a signed screen ---"
+g checkout -q develop; printf 'l1\nl2\nl3\n\n\n\n\nl8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -qm "trunk: a long screen"; g push -q origin develop
+reset; g merge -q --no-edit -X ours develop >/dev/null 2>&1
+printf 'l1\nL2\nl3\n\n\n\n\nl8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -qm "feat: the long screen"; S3=$(g rev-parse HEAD)
+g push -q --no-verify -f origin HEAD:tkt-5-x; signed "$S3"; BASE_REMOTE=$S3
+g checkout -q develop; printf 'l1\nl2\nl3\n\n\n\n\nL8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -qm "trunk: another ticket's footer"; g push -q origin develop
+g checkout -q tkt-5-x; g merge -q --no-edit develop >/dev/null 2>&1
+want "(a clean merge: it resolved nothing)" "" "$(g show --remerge-diff --format= HEAD)"
+want_in "a clean merge where develop edited another part of the signed screen goes" 'rc=0$' "$(guard)"
+printf 'l1\nL2\nl3\n\nsneaked\n\n\nL8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -q --amend --no-edit
+want_in "a merge that slips an edit into it is refused" 'rc=1$' "$(guard)"
+g reset -q --hard "$S3"; g merge -q --no-edit develop >/dev/null 2>&1
+printf 'l1\nl2\nl3\n\n\n\nL2\nL8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -q --amend --no-edit
+want_in "a merge that moves the PR's own line elsewhere in it is refused" 'rc=1$' "$(guard)"
+g reset -q --hard "$S3"
+printf 'l1\nL2!\nl3\n\n\n\n\nl8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -qm "fix: the PR's own"
+want_in "a commit of the PR's own editing it is refused" 'rc=1$' "$(guard)"
+g push -q --no-verify -f origin "$SIGNED:refs/heads/tkt-5-x"
+
 echo "--- what goes ---"
 reset
 echo t > "$R/apps/web/page.test.ts"; echo e >> "$R/docs/x.md"; g add -A; g commit -qm "test: more"

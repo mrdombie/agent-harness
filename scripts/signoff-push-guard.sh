@@ -23,8 +23,10 @@
 # directly, so a merge taking the trunk's side, a resolution dropping a screen, a
 # force-push to an earlier commit and a commit that reached the remote through
 # another branch all show. A file counts only when it is the PR's own at either
-# head (it differs from where that head meets <remote>/<integrationBranch>); one
-# only the trunk changed is a trunk merge, as approval-kept.sh check reads it.
+# head (it differs from where that head meets <remote>/<integrationBranch>), and
+# only when the PR's own change to it differs between the heads (approval-kept.sh
+# own-changed): a trunk edit elsewhere in a shared file is a trunk merge, as
+# approval-kept.sh check reads it.
 #
 # SIGNED = approval-kept.sh signed-head: a review, a marked clear-hold, or a person
 # removing the hold on GitHub (its head is the PR's head then). A sign-off whose head
@@ -81,6 +83,8 @@ moved() { # <from> <to> — the PR's own screens that differ between two heads; 
     oa=$(own "$1") && ob=$(own "$2") || return 1
     o=$(printf '%s\n%s\n' "$oa" "$ob" | sed '/^$/d' | sort -u)
     d=$(comm -12 <(printf '%s\n' "$d" | sort -u) <(printf '%s\n' "$o"))
+    # A file the trunk also edited differs between the heads; only the PR's own edit counts.
+    [ -z "$d" ] || d=$(printf '%s\n' "$d" | bash "$KEPT" own-changed "$1" "$2" "$TRUNK") || return 1
   fi
   [ -n "$d" ] && printf '%s\n' "$d"
   return 0
