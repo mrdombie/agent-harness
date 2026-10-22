@@ -133,8 +133,60 @@ want "the ship refuses"             "24" "$rc"
 want_not_in "it is never marked ready" 'pr ready' "$(cat "$GH_LOG")"
 unset DRIVER_MAX_REVIEW_ROUNDS
 
+echo "--- the push names the head gates.local passed on, after a trunk merge too ---"
+jq '.gates = {localOnly: true, local: ["echo lint-ok"]}' "$FIX/mf-off.json" > "$FIX/lg-off.json"
+jq '.gates = {localOnly: true, local: ["echo lint-ok"]}' "$FIX/mf-on.json" > "$FIX/lg-on.json"
+HOOKS="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/hooks"; mkdir -p "$HOOKS"
+cat > "$HOOKS/pre-push" <<'SH'
+#!/usr/bin/env bash
+while read -r l s r rs; do printf '%s %s\n' "${HARNESS_LOCAL_GATES_HEAD:-none}" "$s" >> "$FIX/hook.log"; done
+[ -f "$FIX/hook.fail" ] && { echo "✗ check:composition failed on the trunk's own files"; exit 1; }
+exit 0
+SH
+printf "exit 0\n" > "$FIX/hooks-ok.sh"; chmod +x "$HOOKS/pre-push"; export DRIVER_ENSURE_HOOKS="$FIX/hooks-ok.sh"
+ship_ready() { # <ticket> — reviewed, gates.local passed on its head, every step before ship done
+  mf_tree "$1"
+  driver_state_put "$1" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$1" review
+  driver_state_set "$1" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
+  for st in start plan build self-check review record; do driver_state_done "$1" "$st"; done
+  driver_state_set "$1" local_gates_head "$(git -C "$FIX/mf$1" rev-parse HEAD)"
+}
+trunk_moves() { # <ticket> — a commit lands on the trunk and the branch merges it
+  printf 'trunk %s\n' "$1" > "$REPO/trunk-$1.txt"; git -C "$REPO" add "trunk-$1.txt"; git -C "$REPO" commit -qm "trunk $1"
+  git -C "$REPO" push -q origin develop; git -C "$FIX/mf$1" merge -q --no-edit develop
+}
+case_lg() { # <cfg> — R: whether the push named the pushed head
+  N=$((N + 1)); ship_ready "$N"; trunk_moves "$N"; : > "$FIX/hook.log"
+  HARNESS_CFG="$1" HARNESS_CFG_PATH="$1" bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT; . "$1/driver/driver-env.sh" && . "$1/driver/steps/ship.sh" && driver_step_ship "$2"' _ "${SUT_KIT:-$ROOT}" "$N" > "$FIX/ship-$N.out" 2>&1
+  R=$(awk -v h="$(git -C "$FIX/mf$N" rev-parse HEAD)" '{ print ($1 == h && $2 == h) ? "named" : "not named (" $1 ")" }' "$FIX/hook.log" | tail -1)
+}
+ROOT="$(cd "$HERE/../.." && pwd)"; N=750
+case_lg_off() { case_lg "$FIX/lg-off.json"; }
+case_lg_off
+want "a trunk merge after gates.local: the push names the pushed head" "named" "$R"
+want_in "gates.local ran again on it"   'gates.local runs again on' "$(cat "$FIX/ship-$N.out")"
+
+echo "--- the pre-push hook's own suite is never a local gate ---"
+jq '.gates = {localOnly: true, local: ["echo lint-ok", "echo suite-ran"]}' "$FIX/mf-off.json" > "$FIX/suite.json"
+cp "$HOOKS/pre-push" "$FIX/pre-push.keep"; printf 'echo suite-ran\n' >> "$HOOKS/pre-push"
+mf_tree 760
+rc=0; out=$(HARNESS_CFG="$FIX/suite.json" driver_step_self_check 760 2>&1) || rc=$?
+cp "$FIX/pre-push.keep" "$HOOKS/pre-push"
+want "self-check passes"                "0" "$rc"
+want_in "and names the suite it left to the hook and CI" "local 2 \(echo suite-ran\) is the pre-push hook's own suite" "$out"
+want "it never ran"                     "" "$(ls "$(driver_state_dir 760)/steps/gate-local-2.out" 2>/dev/null)"
+
+echo "--- merge first: a hook that refuses a head gates.local passed is retried once, then a machine fault ---"
+: > "$FIX/hook.fail"
+case_lg "$FIX/lg-on.json"
+want "the hook ran twice"               "2" "$(grep -c . "$FIX/hook.log")"
+want_in "parked as the machine's"       'machine fault pre-push-after-local-gates' "$(cat "$FIX/ship-$N.out")"
+want_in "naming the failing check"      'check:composition failed' "$(driver_state_get "$N" park_note)"
+want "never a question for anyone"      "driver" "$(driver_state_get "$N" park_cause)"
+rm -f "$FIX/hook.fail"
+
 echo "--- plants: each merge-first line out of a copy of the kit, its case fails ---"
-ROOT="$(cd "$HERE/../.." && pwd)"; KIT="$FIX/kit"
+KIT="$FIX/kit"
 kit_copy() { rm -rf "$KIT"; mkdir -p "$KIT"; cp -R "$ROOT/driver" "$ROOT/scripts" "$ROOT/swarm" "$ROOT/shared" "$KIT/"; }
 N=800
 case_major() { # <cfg> — a Major under that config: the step's exit and what waits to be filed
@@ -177,5 +229,23 @@ plant "the switch reads the config" scripts/release-checks.sh \
 plant "the baseline route"    driver/tier.sh '  driver_merge_first && return 0' case_route "picture"
 plant "the ship files them"   driver/steps/ship.sh \
   '  if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi' case_ship "calls=0"
+case_lg_kit() { SUT_KIT="$KIT" case_lg "$FIX/lg-off.json"; unset SUT_KIT; }
+case_fault_kit() { : > "$FIX/hook.fail"; SUT_KIT="$KIT" case_lg "$FIX/lg-on.json"; unset SUT_KIT; rm -f "$FIX/hook.fail"
+  R="hooks=$(grep -c . "$FIX/hook.log") cause=$(driver_state_get "$N" park_cause)"; }
+case_suite_kit() { # the hook's suite listed in gates.local: R says whether self-check ran it
+  N=$((N + 1)); mf_tree "$N"; printf 'echo suite-ran\n' >> "$HOOKS/pre-push"
+  HARNESS_CFG="$FIX/suite.json" HARNESS_CFG_PATH="$FIX/suite.json" bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT; . "$1/driver/driver-env.sh" && . "$1/driver/steps/self-check.sh" && driver_step_self_check "$2"' _ "$KIT" "$N" >/dev/null 2>&1
+  cp "$FIX/pre-push.keep" "$HOOKS/pre-push"
+  R="ran=$([ -f "$(driver_state_dir "$N")/steps/gate-local-2.out" ] && echo yes || echo no)"; }
+kit_copy
+case_lg_kit;    want "the unplanted kit: the push names the merged head" "named" "$R"
+case_fault_kit; want "the unplanted kit: a refused hook is retried, then the machine's" "hooks=2 cause=driver" "$R"
+case_suite_kit; want "the unplanted kit: the hook's suite is not run locally" "ran=no" "$R"
+plant "gates.local on the pushed head" driver/steps/ship.sh 'driver_step_self_check "$t" || lgrc=$?' case_lg_kit "not named (none)"
+plant "the hook retry" driver/steps/ship.sh ' || _driver_ship_hook_retry "$t" "$wt" "$branch"' case_fault_kit "hooks=1 cause="
+plant "the hook's suite skip" driver/steps/self-check.sh '    if _driver_gate_is_prepush_suite "$wt" "$cmd"; then
+      driver_say "   self-check: $name ($cmd) is the pre-push hook'"'"'s own suite — not run here; CI runs it"
+      continue
+    fi' case_suite_kit "ran=yes"
 
 suite_end "$FAILED"
