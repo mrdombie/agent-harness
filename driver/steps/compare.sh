@@ -104,6 +104,12 @@ driver_step_compare() { # <ticket>
     driver_say "   compare: $rwhy — no picture, no compare on this machine"
     return "$DRIVER_OK"
   fi
+  # MERGE FIRST (release.mergeFirst): nothing waits for picture parity; the owner looks on UAT.
+  if driver_merge_first; then
+    driver_state_set "$t" renders "(none — merge first until the release: no picture parity before the merge; the owner reviews the screen on UAT)"
+    driver_say "   compare: merge first (release.mergeFirst) — no picture parity before the merge"
+    return "$DRIVER_OK"
+  fi
   if [ -z "$touched" ]; then
     driver_state_set "$t" renders \
       "(none — this change touches no file under this project's design.surfacePaths, so there is no screen to render)"

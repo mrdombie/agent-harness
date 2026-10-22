@@ -104,7 +104,11 @@ driver_tier_of() { local v; v=$(driver_state_get "$1" tier 2>/dev/null); printf 
 # shots and decides the design status, so no picture is bound and no critic verdict is
 # owed. Off unless design.baselineRoute.enabled is true; labels that cannot be read take
 # the picture route. CI still sends a route with no approved shot to the picture route.
-driver_baseline_route_on() { [ "$(jq -r '.design.baselineRoute.enabled // false' "$HARNESS_CFG" 2>/dev/null)" = true ]; }
+# MERGE FIRST (release.mergeFirst) turns it on: only a screen:new or screen:redesign ticket waits for a picture.
+driver_baseline_route_on() {
+  driver_merge_first && return 0
+  [ "$(jq -r '.design.baselineRoute.enabled // false' "$HARNESS_CFG" 2>/dev/null)" = true ]
+}
 driver_picture_labels() { jq -r '(.design.baselineRoute.pictureLabels // ["screen:new", "screen:redesign"])[]' "$HARNESS_CFG" 2>/dev/null; }
 
 # driver_screen_route <ticket> — prints "<picture|baseline>\t<why>" and records the route.

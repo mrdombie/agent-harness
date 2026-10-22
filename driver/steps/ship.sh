@@ -282,6 +282,7 @@ _driver_ship_tier_line() {
     tooling) printf 'Change tier: tooling — %s. Checks, CI and one review round where only Critical and Major block; no design steps, no hold.' "$3" ;;
   esac
   [ -z "$p" ] || printf ' Promoted from %s when a later push changed a screen.' "$p"
+  driver_merge_first && printf ' Merge first until the release (release.mergeFirst): no hold, no wait for CI shots or picture parity; only a Critical blocks, every other review finding is a follow-up ticket.'
   printf '\n'
 }
 
@@ -292,9 +293,29 @@ _driver_ship_tier_line() {
 _driver_ship_deferred() {
   local f; f="$(driver_state_dir "$1")/steps/review.deferred.jsonl"
   [ -s "$f" ] || return 0
-  printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
+  if driver_merge_first; then
+    printf '## Review findings, deferred\nMerge first until the release: only a Critical blocks. Not blocking:\n'
+  else
+    printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
+  fi
   jq -rs 'unique_by([.file, .line, .summary])[]
-    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
+    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" elif .list == "follow-up" then "\(.grade // "") — a follow-up ticket at the front of the queue" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
+}
+
+# _driver_ship_follow_ups <ticket> <pr> — MERGE FIRST: each finding the review deferred as a
+# follow-up (steps/review.followups.jsonl) is filed as its own ticket naming the PR, the
+# file:line and the finding (scripts/follow-up.sh: one per PR and finding id, status ready,
+# at the front of the queue). A finding that could not be filed is said and stays in the
+# PR body's deferred section; it never holds the ship.
+_driver_ship_follow_ups() {
+  local t="$1" pr="$2" f out rc=0
+  f="$(driver_state_dir "$t")/steps/review.followups.jsonl"
+  [ -s "$f" ] || return 0
+  case "$pr" in ''|*[!0-9]*) driver_say "   ship: the pull request's number could not be read, so $(grep -c . "$f") review finding(s) are not filed as follow-ups yet"; return 0 ;; esac
+  out=$(bash "${DRIVER_FOLLOW_UP:-$KIT_ROOT/scripts/follow-up.sh}" file "$t" "$pr" "$f" 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed '/^$/d' | while IFS= read -r l; do driver_say "   ship: $l"; done
+  [ "$rc" -eq 0 ] || driver_say "⚠ ship: not every review finding was filed as a follow-up (exit $rc) — they stay in PR #$pr's deferred section, and the next ship files them"
+  return 0
 }
 
 # _driver_ship_findings_to_fix <ticket> — 0 when the review's blocking findings go
@@ -705,6 +726,9 @@ $polish"
          fi ;;
     esac
   fi
+
+  # MERGE FIRST: the review's Majors and Minors become follow-up tickets now the PR has a number.
+  if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
   # carries a "## Deleted tests" section only for what build and fix

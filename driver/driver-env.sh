@@ -798,8 +798,19 @@ DRIVER_BLOCKING_GRADES_LATER="${DRIVER_BLOCKING_GRADES_LATER:-critical major}"
 
 # driver_blocking_grades [round] — the grades that block in that review round; no
 # round, or round 1, is the first round's set.
+#
+# MERGE FIRST (release.mergeFirst, release-checks.sh): a Critical alone blocks, in every
+# round; a Major or a Minor is deferred, and the defer files it as a follow-up ticket.
+DRIVER_MERGE_FIRST_GRADES="${DRIVER_MERGE_FIRST_GRADES:-critical}"
 driver_blocking_grades() {
+  if driver_merge_first; then printf '%s' "$DRIVER_MERGE_FIRST_GRADES"; return 0; fi
   case "${1:-1}" in ''|*[!0-9]*|0|1) printf '%s' "$DRIVER_BLOCKING_GRADES" ;; *) printf '%s' "${DRIVER_BLOCKING_GRADES_LATER:-$DRIVER_BLOCKING_GRADES}" ;; esac
+}
+
+# driver_merge_first — release.mergeFirst is on (release-checks.sh); off when that reader
+# is not loaded.
+driver_merge_first() {
+  command -v release_merge_first >/dev/null 2>&1 && release_merge_first
 }
 
 # driver_blocking_select [round] — the jq selector for a finding whose grade blocks in

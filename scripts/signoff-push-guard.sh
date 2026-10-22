@@ -49,6 +49,9 @@
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || { echo "✗ pre-push blocked: signoff-push-guard could not load harness.json" >&2; exit 1; }
+# MERGE FIRST (release.mergeFirst): the owner reviews on UAT after the merge, so no push is
+# refused for changing signed screens and the hold never goes back on.
+release_merge_first && exit 0
 . "$SELF_DIR/gh-batch.sh" || exit 1
 . "$SELF_DIR/branch-ticket.sh" || exit 1
 KEPT="$SELF_DIR/approval-kept.sh"

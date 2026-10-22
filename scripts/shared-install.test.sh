@@ -35,6 +35,7 @@ V1=$(git -C "$REPO" rev-parse HEAD:package-lock.json)
 cat > "$BIN/fake-npm" <<'SH'
 #!/usr/bin/env bash
 printf '%s %s\n' "$PWD" "$(git hash-object package-lock.json)" >> "$FIX/npm.log"
+printf '%s\n' "$*" >> "$FIX/npm-args.log"
 case "${FAKE_NPM:-ok}" in
   ok)   [ -f "$STATE/coordinator/shared-install-hold" ] && echo held >> "$FIX/held.log"
         mkdir -p node_modules/left-pad packages/ui/node_modules; echo new > node_modules/marker ;;
@@ -189,6 +190,44 @@ OUT=$(run)
 want "nothing ran"                            "0" "$(npm_runs)"
 want "the lock is recorded"                   "$(git -C "$REPO" rev-parse refs/remotes/origin/develop:package-lock.json)" "$(awk '{print $1}' "$REPO/node_modules/.harness-shared-install")"
 
+echo "--- a stamp a hand install left behind: the install that matches the lock is adopted ---"
+reset_install "$V1"
+printf '{"lockfileVersion":3,"packages":{}}\n' > "$REPO/node_modules/.package-lock.json"
+OUT=$(run)
+want "nothing ran over the old stamp"         "0" "$(npm_runs)"
+want "the trunk's lock is recorded"           "$(git -C "$REPO" rev-parse refs/remotes/origin/develop:package-lock.json)" "$(awk '{print $1}' "$REPO/node_modules/.harness-shared-install")"
+
+echo "--- a lockfile bump runs the sync, the project's age rule lifted for it alone ---"
+case_age() { reset_install "$V1"; : > "$FIX/npm-args.log"; OUT=$(run); R="npm=$(npm_runs) args=$(tr '\n' ' ' < "$FIX/npm-args.log" | sed 's/ *$//')"; }
+move_lock 6
+case_age
+want "no age rule in the trunk's .npmrc: npm ci as it is" "npm=1 args=" "$R"
+printf 'prefer-offline=true\nmin-release-age=7\n' > "$PUSHER/.npmrc"; git -C "$PUSHER" add .npmrc
+move_lock 7
+case_age
+want "min-release-age in the trunk's .npmrc: the bump installs with it lifted" "npm=1 args=--min-release-age=0" "$R"
+want_in "and it says it lifted it"            "lifted for this lockfile install only \(--min-release-age=0\)" "$OUT"
+
+echo "--- a build already on the trunk's lock is not waited for; one on the old lock is, loudly ---"
+LOCK8='{"lock":8,"packages":{"":{},"node_modules/next":{"version":"16.4.2"},"node_modules/left-pad":{"version":"1.0.0"}}}'
+printf '%s\n' "$LOCK8" > "$PUSHER/package-lock.json"; git -C "$PUSHER" commit -qam "lock 8"; git -C "$PUSHER" push -q origin develop
+case_tree() { # <lock content for the live run's tree>
+  reset_install "$V1"
+  printf '{"lockfileVersion":3,"packages":{"node_modules/next":{"version":"16.4.0"},"node_modules/left-pad":{"version":"1.0.0"}}}\n' > "$REPO/node_modules/.package-lock.json"
+  live_driver_run 606 start plan build
+  mkdir -p "$FIX/wt606"; printf '%s\n' "$1" > "$FIX/wt606/package-lock.json"
+  jq --arg w "$FIX/wt606" '.worktree = $w' "$STATE/driver/606/state.json" > "$FIX/st.json" && mv "$FIX/st.json" "$STATE/driver/606/state.json"
+  OUT=$(run); R="npm=$(npm_runs)"
+}
+case_tree '{"lock":1}'
+want "a tree on the old lock is waited for"   "npm=0" "$R"
+want_in "and the wait is loud, with the count" "⚠ shared install behind the lockfile: 1 packages, pushes will fail" "$OUT"
+case_tree_on_lock() { case_tree "$LOCK8"; }
+case_tree_on_lock
+want "a tree already on the trunk's lock is not: the install is its fix" "npm=1" "$R"
+want_in "it says why"                         "claim-606-x \(#606\) is already on the trunk's lock" "$OUT"
+rm -f "$STATE/runs/claim-606-x.json"
+
 echo "--- a clone with no install is not one to keep ---"
 reset_install ""; rm -rf "$REPO/node_modules"; OUT=$(run)
 want "nothing ran"                            "0" "$(npm_runs)"
@@ -224,9 +263,13 @@ plant() { # <label> <file> <exact line to delete> <case> <the result the guard p
   cp "$FIX/plant.bak" "$f"
 }
 plant "the lock compare" shared-install.sh 'if [ "$have" = "$want" ]; then say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi' case_unchanged "npm=1"
-plant "the in-use wait"  shared-install.sh '  say "waiting $waited min — in use on this host: $busy; checked again next pass"; exit 0' case_mid_gate "npm=1"
+plant "the in-use wait"  shared-install.sh '  say "waiting $waited min — in use on this host: $busy; checked again next pass"
+  si_loud "$want" "the install waits on builds still on the old lock"; exit 0' case_mid_gate "npm=1"
 plant "the drain hold"   shared-install.sh '      shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"' case_drain "hold=free npm=0"
 plant "runs-only drain"  shared-install.sh ' && [ -n "$RUNS_BUSY" ]' case_reader "hold=held npm=0"
+plant "the age override" shared-install.sh '  grep -qE '"'"'^[[:space:]]*min-release-age[[:space:]]*='"'"' "$f" && out="--min-release-age=0"' case_age "npm=1 args="
+plant "the on-lock skip" shared-install.sh '    say "$rid (#${t:-?}) is already on the trunk'"'"'s lock — the install fixes it, so it is not waited for"
+    continue' case_tree_on_lock "npm=0"
 plant "the flock"        shared-install.sh '_si_flock "$LOCKF" ' case_locked "npm=1"
 plant "the put-back"     shared-install.sh '  for d in $(prev_dirs); do mv "$d" "${d%"$PREV"}"; done' case_fail "marker= ui="
 plant "the call"         coordinator-housekeeping.sh '  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0 0"
