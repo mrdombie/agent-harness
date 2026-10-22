@@ -215,17 +215,19 @@ coord_pace_others() {
   printf '%s' "$f"
 }
 
-# coord_pace_reading [window] — "<utilization>\t<reset epoch>" for that window now
-# open (five_hour by default): the freshest of this host's builder logs and every
-# host's heartbeat (swarm_usage_freshest), else the last sample taken while it is open.
+# coord_pace_reading [window] — "<utilization>\t<reset epoch>\t<observed epoch>" for that
+# window now open (five_hour by default): the freshest of this host's builder logs and
+# every host's heartbeat (swarm_usage_freshest_at), else the last sample taken while it
+# is open. The observed time rides on into pace.json and the heartbeat unchanged: a
+# republished reading is never newer than when it was read.
 coord_pace_reading() {
   local w="${1:-five_hour}" now best extra
   now=$(swarm_now)
   extra=$(coord_pace_others | jq -c --arg w "$w" --arg sp "${SHEET_PACE:-}" \
             '[.[]? | .usage? | .[$w]? // empty] + [($sp | fromjson? // {}) | .usage? | .[$w]? // empty]' 2>/dev/null) || extra="[]"
-  best=$(swarm_usage_freshest "$w" "${extra:-[]}") || best=""
+  best=$(swarm_usage_freshest_at "$w" "${extra:-[]}") || best=""
   if [ -z "$best" ] && [ "$w" = five_hour ] && [ -s "$COORD_PACE_SAMPLES" ]; then
-    best=$(awk -F'\t' -v now="$now" '$3 + 0 > now + 0 { u = $2; r = $3 } END { if (r) printf "%s\t%s", u, r }' "$COORD_PACE_SAMPLES")
+    best=$(awk -F'\t' -v now="$now" '$3 + 0 > now + 0 { u = $2; r = $3; a = $1 } END { if (r) printf "%s\t%s\t%s", u, r, a }' "$COORD_PACE_SAMPLES")
   fi
   [ -n "$best" ] || return 1
   printf '%s' "$best"
@@ -306,11 +308,12 @@ coord_pace_fresh() {
 # in pace.json. The share: the sheet's for a reader, the owner's own split for the
 # owner, the whole cap with no sheet — less what the other hosts already run.
 coord_pace() {
-  local here="${1:-0}" rows="${2:-}" host="${3:-}" mine="${4:-}" reading u r w7="" u7="" r7="" other total burn bsrc ov spans now role shares="{}" src=local out
+  local here="${1:-0}" rows="${2:-}" host="${3:-}" mine="${4:-}" reading u r a w7="" u7="" r7="" a7="" other total burn bsrc ov spans now role shares="{}" src=local out
   [ "$COORD_PACE" = 1 ] || { printf 'pace: off'; return 1; }
   reading=$(coord_pace_reading five_hour) || { printf 'pace: no five-hour reading in the newest logs — the machine alone decides'; return 1; }
-  u=${reading%%$'\t'*}; r=${reading#*$'\t'}; now=$(swarm_now)
-  if w7=$(coord_pace_reading seven_day); then u7=${w7%%$'\t'*}; r7=${w7#*$'\t'}; fi
+  IFS=$'\t' read -r u r a <<<"$reading"; now=$(swarm_now)
+  case "$a" in ''|*[!0-9]*) a=0 ;; esac
+  if w7=$(coord_pace_reading seven_day); then IFS=$'\t' read -r u7 r7 a7 <<<"$w7"; case "$a7" in ''|*[!0-9]*) a7=0 ;; esac; fi
   case "$mine" in ''|*[!0-9]*) mine=$here ;; esac
   other=$(printf '%s\n' "$rows" | awk -F'\t' -v h="$host" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { n++ } END { print n + 0 }')
   total=$(( here + other ))
@@ -387,13 +390,13 @@ coord_pace() {
       else if (line7 != "") printf " · 7d %d%% against %d%%%s", u7 * 100 + 0.5, line7 * 100 + 0.5, (ahead7 ? held : "")
       if (shares != "") printf " · fleet cap %d: %s", a, shares
     }')
-  jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --arg u7 "$u7" --arg r7 "$r7" --arg bud "$budget" \
+  jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --argjson a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" --arg bud "$budget" \
      --argjson burn "$burn" --arg bsrc "$bsrc" --argjson ov "$ov" --argjson spans "$spans" --argjson running "$total" --argjson other "$other" --argjson shares "$shares" \
      --argjson share "$s" --arg src "$src" --argjson capacity "$mine" \
      --arg tgt "$tgt" --arg hd "$hd" --arg wt "$wt" --arg wh "$wh" '
     ($bud | split("\t")) as $b
     | {at: $at, host: $host, capacity: $capacity,
-       usage: ({five_hour: {u: $u, reset: $r}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber)}} end)),
+       usage: ({five_hour: {u: $u, reset: $r, at: $a}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end)),
        fiveHour: {u: $u, reset: $r, line: ($b[1] | tonumber), elapsed: ($b[2] | tonumber), ahead: ($b[3] == "1")},
        sevenDay: (if $u7 == "" then null else {u: ($u7 | tonumber), reset: ($r7 | tonumber), line: ($b[4] | tonumber), ahead: ($b[5] == "1")} end),
        burn: $burn, burnSource: $bsrc, burnSpans: $spans, overheadPerHour: $ov,
