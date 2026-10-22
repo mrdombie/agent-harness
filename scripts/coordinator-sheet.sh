@@ -176,7 +176,7 @@ _sheet_when() { # <epoch> — the owner's local wall clock, as a person reads it
 # phone; the machine-readable order last, under its marker.
 coord_sheet_render() {
   local e="$1" at="$2"
-  jq -r --arg when "$(_sheet_when "$at")" --arg owner "$COORD_HOST" --arg at "$at" '
+  jq -r --arg when "$(_sheet_when "$at")" --arg owner "$COORD_HOST" --arg at "$at" "$COORD_WHY_JQ"'
     def pri: {"0":"Urgent","1":"High","2":"Normal","3":"Polish"}[tostring] // "No priority";
     def kind: if .process then "Process fix" elif .class == "repair" then "Red PR to fix" elif .class == "approved-merge" then "Approved, to merge"
               else {"half-built":"Half-built","feature":"Feature","polish":"Polish"}[.kind // ""] // "Fix" end;
@@ -202,7 +202,8 @@ coord_sheet_render() {
         (.fleet[] | "- \(.host) · harness \(.version // "?")\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)"
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
-                    + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update")
+                    + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
+                    + (why_words | if . == null then "" else "\n  - " + . end))
        else empty end),
       (if .pace then
         "", "### Usage budget",
@@ -354,12 +355,33 @@ coord_run_beat() {
   jq -cn --arg t "$1" --argjson at "$at" --arg say "$say" '{t: $t, at: $at} + (if $say == "" then {} else {say: $say} end)'
 }
 
-# coord_heartbeat <builds> <free GB> [machine capacity] [runs json] — this host, as one JSON object:
+# coord_tick_why <tick say file> — what the tick decided about starting, as one JSON object:
+# the last pace, ceiling, spawn, open-changes, sheet, cap and tooling lines, the first 5
+# skips and the skips counted by reason. A remote host nobody can log into says why it is idle.
+# Each line cut to 200 characters, no < or >: it travels inside an HTML comment.
+coord_tick_why() {
+  [ -s "${1:-}" ] || { printf '{}'; return 0; }
+  jq -R -s -c '
+    def c: gsub("[<>]"; "") | .[0:200];
+    def last($re): ([.[] | select(test($re))] | last // null | if . == null then null else c end);
+    split("\n") | map(select(length > 0)) as $l
+    | ([$l[] | select(test("^skip #[0-9]+ \\("))]) as $sk
+    | {pace: ($l | last("^pace: ")), ceiling: ($l | last("^ceiling: ")), spawn: ($l | last("^spawn: ")),
+       openChanges: ($l | last("^open changes .* / cap ")), sheet: ($l | last("^sheet: working .*'"'"'s order")),
+       cap: ($l | last("^cap: ")), tooling: ($l | last("^tooling: [0-9]+ tooling ticket")),
+       skips: ($sk[0:5] | map(c)),
+       skipsBy: ($sk | map(sub("^skip #[0-9]+ \\([^)]*\\): "; "") | gsub("#[0-9]+"; "#N") | c)
+                 | group_by(.) | map({key: .[0], value: length}) | from_entries)}
+    | with_entries(select(.value != null))' "$1" 2>/dev/null || printf '{}'
+}
+
+# coord_heartbeat <builds> <free GB> [machine capacity] [runs json] [why json] — this host, as one JSON object:
 # with its capacity (the builders its CPU and memory fit, the owner's split weight),
 # this tick's usage readings (pace.json), so every host acts on the newest number, and
 # its live runs (coord_run_beat), at most eight.
 coord_heartbeat() {
-  local b="${1:-0}" c="${3:-}" runs="${4:-}" usage; case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  local b="${1:-0}" c="${3:-}" runs="${4:-}" why="${5:-}" usage; case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  why=$(jq -c 'objects | select(length > 0)' <<<"${why:-}" 2>/dev/null)
   case "$c" in *[!0-9]*) c="" ;; esac
   runs=$(jq -c 'if type == "array" then [.[] | objects][0:8] else empty end' <<<"${runs:-[]}" 2>/dev/null)
   usage=$(jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900) | .usage // empty' "${COORD_PACE_STATE:-$COORD_DIR/pace.json}" 2>/dev/null)
@@ -369,14 +391,15 @@ coord_heartbeat() {
           "$(gh_allowance_file)" 2>/dev/null)
   jq -cn --arg host "$COORD_HOST" --arg v "$(harness_running_version)" --arg inst "$(harness_installed_version)" \
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
-     --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" --arg runs "${runs:-}" \
+     --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" --arg runs "${runs:-}" --arg why "${why:-}" \
      --argjson plugins "$(harness_plugins_state)" \
      '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}
       + (if $plugins == {} then {} else {plugins: $plugins} end)
       + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
       + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)
       + (if $gh == "" then {} else {gh: ($gh | fromjson)} end)
-      + (if $runs == "" then {} else {runs: ($runs | fromjson)} end)'
+      + (if $runs == "" then {} else {runs: ($runs | fromjson)} end)
+      + (if $why == "" then {} else {why: ($why | fromjson)} end)'
 }
 
 # coord_fleet <own heartbeat> <others json array> <floor> — every machine, this one first,
@@ -397,6 +420,16 @@ coord_fleet_write() {
      '{at: $at, owner: (if $owner == "" then null else $owner end), minHarness: (if $floor == "" then null else $floor end), hosts: $f}' \
      > "$COORD_FLEET.$$" 2>/dev/null && mv -f "$COORD_FLEET.$$" "$COORD_FLEET"
 }
+
+# The why in plain words, for the heartbeat comment and the sheet's machine list.
+COORD_WHY_JQ='def why_words: (.why // {}) as $w
+  | def bare: sub("^[a-z ]+: "; "");
+    if ($w | length) == 0 then null
+    else "why: " + ([($w.spawn // "spawn: no start decision this tick" | bare),
+                     (($w.pace // "") | capture("→ (?<n>[0-9]+) here") | "pace allows \(.n) here"),
+                     (($w.cap // $w.openChanges // empty) | bare), (($w.tooling // empty) | bare),
+                     (if ($w.skipsBy // {}) | length > 0 then "skipped " + ($w.skipsBy | to_entries | map("\(.value) \(.key)") | join(", ")) else empty end)]
+                    | join(" · ")) | .[0:400] end;'
 
 _hb_marker() { printf '<!-- sheet:heartbeat host=%s -->' "$COORD_HOST"; }
 
@@ -429,9 +462,10 @@ coord_heartbeat_post() {
   if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
-  line=$(jq -r '"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
+  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
                 + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)
-                + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))' <<<"$hb")
+                + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
+                + (why_words | if . == null then "" else "\n" + . end)' <<<"$hb")
   body=$(printf '%s\n%s · last tick %s\n<!-- sheet:heartbeat-json %s -->' "$(_hb_marker)" "$line" "$(_sheet_when "$now")" "$hb")
   _hb_patch() { [ -n "$id" ] && resp=$(jq -n --arg b "$body" '{body: $b}' | gh_call api --method PATCH "repos/$REPO_SLUG/issues/comments/$id" --input - 2>/dev/null) \
                  && [ "$(jq -r '.id // empty' <<<"$resp" 2>/dev/null)" = "$id" ]; }
