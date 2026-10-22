@@ -77,18 +77,6 @@ A blocking finding one of these names and accepts a non-test proof for (a
 mutation, or the fixing commit) goes in `pmProofs` citing its ref, never in
 `deferred`. The driver checks it. No such answer, no `pmProofs`.
 
-## No red/green pair, and no PM answer needed
-
-A finding whose fix is only docs, only comments, only wording (string literals
-or JSX text), or only tests needs no PM answer and is never a question or a
-deferral: answer it in `autoProofs` with the `kind` and the one `commit` that
-holds the fix, touching the file the finding names. The driver reads that
-commit's diff itself and refuses a claim the diff does not bear out, so keep
-the commit to that one kind. For `test-only`, add `testFile`, `command` and a
-`break`: a literal find/replace in the code the test pins (never a test file)
-that the command fails on. The driver plants it, then restores the code: red,
-then green. The kinds this project turns on are in the proof limits above.
-
 ## Cleared by editing the PR description
 
 Answer it in `bodyProofs`, naming the repo's check that reads the description.

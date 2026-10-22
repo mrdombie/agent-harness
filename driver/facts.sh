@@ -502,7 +502,7 @@ driver_fact_proof_limits() {
   fi
   local on; on=$(driver_auto_proof_kinds)
   if [ -n "$on" ]; then
-    printf ' A fix no red/green pair can show that is only %s goes in autoProofs, checked by the driver, with no PM answer (proof.autoAccept).' "$on"
+    printf ' A fix no red/green pair can show whose one commit is only %s needs no PM answer and is never a question or a deferral: it goes in autoProofs with the kind and the commit, which must touch the file the finding names. The driver reads that commit'"'"'s diff and refuses a claim it does not bear out. test-only also names testFile, command and a break: a literal find/replace in the code the test pins, never a test file, that the command fails on; the driver plants it, then restores the code (proof.autoAccept).' "$on"
   else
     printf ' proof.autoAccept is off here: a fix no red/green pair can show needs a PM answer (pmProofs).'
   fi

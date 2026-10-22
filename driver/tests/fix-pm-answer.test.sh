@@ -145,13 +145,17 @@ want "the fix step ran exactly twice" "2" "$(grep -cx fix "$CLAUDE_LOG")"
 want_in "the retry is told which answer covers R2" "R2: deferred, but PM answer $URL_M" "$(cat "$FIX/claude-stdin-fix.txt")"
 want "and the record cites it" "$URL_M" "$(proofs | jq -r '.[] | select(.blockerId=="R2") | .pmAnswer')"
 
-echo "--- a deferral no PM answer covers still parks for a person, with no retry ---"
+echo "--- a deferral no PM answer covers still parks for a person ---"
+# "No red/green pair" is the shape autoProofs answers, so it is asked once more, pointed
+# there (fix-auto-proof.test.sh); deferred again, it parks for a person.
 issue_comments 601 "$(jq -nc --arg cb "$(pm_c "$(printf '%s' "$DOCFIX" | cut -c1-10)")" --arg uc "$URL_C" '[{body:$cb, url:$uc}]')"
 reset; review_of R2 R3
 fix_ai fix "$(deferred)" superpowers:receiving-code-review
+queue_then "$(deferred)"
 rc=0; out=$(driver_step_fix 601 2>&1) || rc=$?
 want "refused" "24" "$rc"
-want "asked once only" "1" "$(grep -cx fix "$CLAUDE_LOG")"
+want "asked twice: once more, pointed at autoProofs" "2" "$(grep -cx fix "$CLAUDE_LOG")"
+want_in "the retry names autoProofs" 'R2: deferred as having no red-then-green pair.*autoProofs' "$(cat "$FIX/claude-stdin-fix.txt")"
 want "parked for a person" "person" "$(driver_state_get 601 park_cause)"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1

@@ -204,7 +204,7 @@ with_auto '{"kinds":["docs-only"]}'
 want "a kinds list turns on only those" "docs-only" "$(driver_auto_proof_kinds)"
 HARNESS_CFG="$CFG_REAL"
 want "by default all four are on" "docs-only comment-only wording-only test-only" "$(driver_auto_proof_kinds)"
-want_in "and the proof limits name them" 'only docs-only comment-only wording-only test-only goes in autoProofs' "$(driver_fact_proof_limits)"
+want_in "and the proof limits name them" 'only docs-only comment-only wording-only test-only needs no PM answer.*autoProofs.*break' "$(driver_fact_proof_limits)"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
 suite_end "$FAILED"
