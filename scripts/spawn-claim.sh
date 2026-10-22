@@ -6,20 +6,22 @@
 # one worktree, one PR, then exit. Typing /claim into a live session instead
 # inherits that session's context and whatever budget it has left.
 #
-#   claim              claim the next ready ticket
-#   claim 7897         claim that ticket
-#   claim --fg         interactive, in the foreground, so you can watch it
+#   claim 7897         build that ticket, detached, on the step driver
+#   claim --fg 7897    the same, in the foreground, so you can watch it
+#   claim --fg         interactive prose claim of the next ready ticket (a person watching)
+#   claim              refused: an unattended run builds one named ticket on the driver
 #
 # The detached path runs claude inside a subshell that outlives it, so when the
 # agent exits — cleanly, blocked, budget-capped, or killed — the subshell runs
 # reconcile-claims.sh immediately. That covers every exit the agent can observe
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
-# Who builds: a named ticket runs on the step driver (driver/build-ticket) — a new
-# build, a repair or approved-merge run (build-ticket --repair, on the open PR), and
-# any run a caller hands a brief (build-ticket --brief). The prose flow
-# (claude -p "/agent-harness:claim N") builds pick-next runs and --fg, where a person
-# is watching. `swarm.builder: "prose"` in harness.json puts every run on prose.
+# Who builds: every unattended run is the step driver (driver/build-ticket; the owner,
+# 2026-10-22) — a new build, a repair or approved-merge run (build-ticket --repair, on
+# the open PR), a run a caller hands a brief (build-ticket --brief), and a draft PR the
+# driver did not build (build-ticket --adopt). The prose flow (/agent-harness:claim)
+# runs only for `--fg` pick-next, where a person is watching, and when harness.json
+# sets `swarm.builder: "prose"` — which an unattended spawn warns about, loudly.
 #
 # Env: CLAIM_BUDGET_USD (default 150; per step on the driver), CLAIM_PERMISSION_MODE
 # (default auto; on the driver only when set), CLAIM_CLASS (recorded)
@@ -109,18 +111,25 @@ TICKET=""
 for arg in "$@"; do
   case "$arg" in
     --fg) FG=1 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown flag: $arg" >&2; exit 2 ;;
     *) TICKET="$arg" ;;
   esac
 done
 
+# PICK-NEXT IS A PERSON'S. The driver builds one named ticket, and the coordinator always
+# names one; an unattended run with no number would be a prose claim nobody watches.
+if [ -z "$TICKET" ] && [ "$FG" -eq 0 ]; then
+  echo "spawn-claim: no ticket named — an unattended run builds one named ticket on the step driver (the owner ruled every build runs on the driver). Name one (spawn-claim.sh <n>), or pick the next one yourself with --fg." >&2
+  exit 2
+fi
+
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not on PATH" >&2; exit 1; }
 
 mkdir -p "$RUNS_DIR" "$LOGS_DIR"
 
-# The builder. Pick-next mode (no ticket) stays prose: the driver builds one named ticket.
-BUILDER=prose; BUILDER_WHY="no ticket named: pick-next runs the prose claim"; DRIVER_MODE=build
+# The builder. Pick-next (--fg, no ticket) is the interactive prose claim: the driver builds one named ticket.
+BUILDER=prose; BUILDER_WHY="no ticket named: --fg pick-next runs the interactive prose claim"; DRIVER_MODE=build # prose: --fg only
 if [ -n "$TICKET" ]; then
   BUILDER=$(toolkit_cfg swarm.builder 2>/dev/null) || BUILDER=driver
   case "$BUILDER" in
@@ -145,20 +154,27 @@ if [ -n "$TICKET" ]; then
     esac
   fi
 fi
-# A DRAFT PR THE DRIVER NEVER BUILT IS NOT A REPAIR. The driver would ready it and arm
-# auto-merge on work its author left unfinished, so the prose claim resumes it. A draft
-# the driver's own build left (a park) stays on the driver, which resumes that build.
-if [ "$BUILDER" = driver ] && [ "$DRIVER_MODE" != build ] \
+# A DRAFT PR THE DRIVER NEVER BUILT IS NOT A REPAIR: readied and armed as one, it would
+# land work its author left unfinished. The driver ADOPTS it (build-ticket --adopt): it
+# finishes it on the draft's branch, reviews the whole PR, and readies it only when its
+# own gates pass. A draft the driver's own build left (a park) resumes that build.
+if [ "$BUILDER" = driver ] \
    && ! jq -e '(.done // []) | index("start") != null' "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET/state.json" >/dev/null 2>&1 \
    && [ -f "$SCRIPT_DIR/gh-batch.sh" ] && . "$SCRIPT_DIR/branch-ticket.sh" \
    && _draft=$(bash -c '. "$1" || exit 1; gh_open_prs "$2"' _ "$SCRIPT_DIR/gh-batch.sh" "${SWARM_PRS_MAX_AGE:-300}" 2>/dev/null \
         | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$TICKET" \
             "$BRANCH_TICKET_JQ"'[.[] | select((.headRefName | branch_is_ticket($pre; $t)) and .isDraft == true) | .number] | first // empty' 2>/dev/null) \
    && [ -n "$_draft" ]; then
-  BUILDER=prose; DRIVER_MODE=build
-  BUILDER_WHY="its open PR #$_draft is a draft the driver did not build: the prose claim resumes it, never a repair"
+  DRIVER_MODE=adopt
+  BUILDER_WHY="its open PR #$_draft is a draft the driver did not build: the driver adopts it (build-ticket --adopt), never a repair"
 fi
 unset _draft
+# A prose builder for an unattended run comes only from the config, and says so loudly.
+PROSE_WARN=""
+if [ "$BUILDER" = prose ] && [ "$FG" -eq 0 ]; then
+  PROSE_WARN="⚠ builder: prose by config — the owner ruled every build runs on the driver. #$TICKET runs /agent-harness:claim because harness.json sets swarm.builder \"prose\"; remove it to put this run on the step driver."
+  [ -z "${SPAWN_CLAIM_SESSION:-}" ] || echo "spawn-claim: $PROSE_WARN" >&2   # once: the copy after the setsid re-exec
+fi
 DRIVER_BIN="${SPAWN_CLAIM_DRIVER:-$KIT_ROOT/driver/build-ticket}"
 if [ "$BUILDER" = driver ] && [ ! -f "$DRIVER_BIN" ]; then
   echo "spawn-claim: no step driver at $DRIVER_BIN — set swarm.builder to \"prose\" in harness.json to build without it" >&2
@@ -178,6 +194,9 @@ driver_args() {
       fi ;;
     brief)
       printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--brief "$1") ;;
+    adopt)
+      DRIVER_ARGS+=(--adopt)
+      if [ -n "$CALLER_TEXT" ]; then printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--brief "$1"); fi ;;
   esac
 }
 
@@ -305,6 +324,7 @@ stop_run_servers() {
   CLAIM_SESSION_PID="${BASHPID:-$(exec sh -c 'echo $PPID')}"
   export CLAIM_SESSION_PID
   printf -- '--- builder: %s (%s) ---\n' "$BUILDER" "$BUILDER_WHY" >> "$LOG"
+  [ -z "$PROSE_WARN" ] || printf '%s\n' "$PROSE_WARN" >> "$LOG"
   if [ "$BUILDER" = driver ]; then
     # One claude per step: the budget caps each, and the project's
     # driver.permissionMode stands unless the spawner was given a mode.

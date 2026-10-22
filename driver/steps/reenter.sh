@@ -116,10 +116,11 @@ driver_step_reenter() { # <ticket>
   fi
   local isdraft
   IFS=$'\t' read -r pr branch _ mstate isdraft _ <<<"$prs"
-  # A draft the driver never built is a person's or /claim's work in progress, not a repair.
-  if [ "$isdraft" = true ] && ! driver_built "$t"; then
-    driver_say "✋ reenter: PR #$pr is a draft and #$t's record holds no build of the driver's. A repair would ready and arm work nobody finished; the prose claim resumes it."
-    driver_state_set "$t" park_note "PR #$pr is a draft the driver did not build; resume it with the prose claim, not a repair"
+  # A draft the driver never built is a person's or /claim's work in progress, not a
+  # repair: only an adoption (build-ticket --adopt) takes it on.
+  if [ "$isdraft" = true ] && ! driver_built "$t" && ! driver_adopted "$t"; then
+    driver_say "✋ reenter: PR #$pr is a draft and #$t's record holds no build of the driver's. A repair would ready and arm work nobody finished; build-ticket $t --adopt finishes it."
+    driver_state_set "$t" park_note "PR #$pr is a draft the driver did not build; adopt it (build-ticket $t --adopt), never repair it"
     return "$DRIVER_E_REFUSED"
   fi
 

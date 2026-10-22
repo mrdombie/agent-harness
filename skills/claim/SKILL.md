@@ -328,12 +328,13 @@ The sister-repo guard is a soft warn (no exit). Claims targeting only the main r
 There is also a spawner, off by default:
 
 ```
-claim            # next ready ticket, in a separate process
-claim 7897       # that ticket
-claim --fg       # interactive, in the foreground
+claim 7897       # that ticket, in a separate process, on the step driver
+claim --fg 7897  # the same, in the foreground
+claim --fg       # the next ready ticket, interactive prose claim (a person watching)
+claim            # refused: an unattended run needs a ticket number
 ```
 
-`claim` runs `scripts/spawn-claim.sh`, which starts a **fresh process** — new context, its own budget cap, its own worktree. For a named ticket that process is the step driver, not this skill (Dom, 2026-10-17). A new build is `driver/build-ticket <n>`; a repair or approved-merge run is `build-ticket <n> --repair`, on the open PR; and a run a caller hands a brief is `build-ticket <n> --brief`. This skill runs for pick-next (no number), for `--fg`, and for every run when the project sets `swarm.builder: "prose"`. A context window cannot clear itself (no hook event can do it), so a new process is the only way to get a genuinely clean context per ticket. Worth reaching for when a session has drifted a long way from the ticket in hand; not something to do reflexively.
+`claim` runs `scripts/spawn-claim.sh`, which starts a **fresh process** — new context, its own budget cap, its own worktree. For a named ticket that process is the step driver, not this skill (Dom, 2026-10-17). A new build is `driver/build-ticket <n>`; a repair or approved-merge run is `build-ticket <n> --repair`, on the open PR; a run a caller hands a brief is `build-ticket <n> --brief`; and a draft PR the driver did not build is `build-ticket <n> --adopt` (Dom, 2026-10-22: every build runs on the driver). This skill runs only for `--fg` pick-next, with a person watching, and for every run when the project sets `swarm.builder: "prose"`, which an unattended spawn warns about in the tick. An unattended spawn with no ticket is refused. A context window cannot clear itself (no hook event can do it), so a new process is the only way to get a genuinely clean context per ticket. Worth reaching for when a session has drifted a long way from the ticket in hand; not something to do reflexively.
 
 A spawned claim records `run_id` in its lockfile, which lets the watchdog tell "the agent died" from "the agent is thinking". A `/agent-harness:claim` typed into a session leaves no run record and falls back to artifact freshness — still covered, just less precisely.
 

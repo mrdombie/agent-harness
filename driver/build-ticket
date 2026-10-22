@@ -6,6 +6,7 @@
 #   build-ticket <ticket> --repair <brief-file>   a red or clashing PR, on its own branch
 #   build-ticket <ticket> --repair-class <class>  the same, for a healing run with no note
 #   build-ticket <ticket> --brief <brief-file>    a repair if the ticket has an open PR, else a build with the brief
+#   build-ticket <ticket> --adopt [--brief <f>]   a draft PR the driver did not build: finished, gated, reviewed whole, then shipped
 #
 # THIS FILE IS THE CHANGE THE EPIC IS ABOUT. Until now the order of the work was
 # a list an agent read in 49,657 words of instructions and then chose from: the
@@ -50,15 +51,16 @@ DRIVER_STEPS_DIR="${DRIVER_STEPS_DIR:-$DRIVER_HOME_SELF/steps}"
 
 die() { echo "build-ticket: $*" >&2; exit 2; }
 
-TICKET=""; RESTART=0; REPAIR_BRIEF=""; REPAIR_CLASS=""; RUN_BRIEF=""; REPAIR_SOURCE=caller
+TICKET=""; RESTART=0; REPAIR_BRIEF=""; REPAIR_CLASS=""; RUN_BRIEF=""; REPAIR_SOURCE=caller; ADOPT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --restart) RESTART=1; shift ;;
     --repair)  REPAIR_BRIEF="${2:?--repair needs a brief file}"; shift 2 ;;
     --repair-class) REPAIR_CLASS="${2:?--repair-class needs a class}"; shift 2 ;;
     --brief)   RUN_BRIEF="${2:?--brief needs a brief file}"; shift 2 ;;
+    --adopt)   ADOPT=1; shift ;;
     --steps)   DRIVER_STEPS="${2:?--steps needs a list}"; shift 2 ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)        die "unknown flag $1" ;;
     *)         TICKET="$1"; shift ;;
   esac
@@ -92,7 +94,7 @@ driver_keep_brief() {
 # saw) is stale: it moves aside, and the run is a fresh repair round from origin.
 UNSHIPPED_BUILD=0
 _unshipped='(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)'
-if { [ -n "$REPAIR_CLASS" ] || [ -n "$REPAIR_BRIEF" ] || [ -n "$RUN_BRIEF" ]; } \
+if { [ -n "$REPAIR_CLASS" ] || [ -n "$REPAIR_BRIEF" ] || [ -n "$RUN_BRIEF" ] || [ "$ADOPT" -eq 1 ]; } \
    && jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1 \
    && _live=$(driver_open_prs_for "$TICKET") && [ -n "$_live" ]; then
   _stale=$(driver_record_diverged "$TICKET" "$(printf '%s\n' "$_live" | head -1)")
@@ -114,6 +116,37 @@ if jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1; then
     echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build with this brief, not a repair" >&2
     RUN_BRIEF="$REPAIR_BRIEF"; REPAIR_BRIEF=""
   fi
+  if [ "$ADOPT" -eq 1 ]; then
+    echo "build-ticket: #$TICKET has an unshipped build of the driver's own on its record — resuming that build, not adopting its draft" >&2
+    ADOPT=0
+  fi
+fi
+
+# ---- adopting a draft the driver did not build ----------------------------------
+# A person's or an earlier prose claim's draft PR is finished HERE, never handed back
+# to a prose claim (the owner, 2026-10-22: every build runs on the driver). It walks
+# the repair order on the draft's own branch, with the review reading the whole PR
+# (the driver never reviewed any of it), and ship readies it and arms auto-merge only
+# after self-check and that review pass. The brief is fixed text plus the caller's
+# words, so a killed adoption resumes on the same brief.
+# driver_adopt_brief <ticket> [caller-brief] — the adoption brief on stdout.
+driver_adopt_brief() {
+  local t="$1" cb="${2:-}" words=""
+  [ -n "$cb" ] && [ -s "$cb" ] && words=$(driver_brief_note "$cb")
+  case "$words" in "Adopted: "*) printf '%s\n' "$words"; return 0 ;; esac
+  printf 'Adopted: #%s has an open pull request that is a draft the driver did not build — a person'"'"'s or an earlier prose claim'"'"'s work in progress. Finish it on its own branch: read the ticket'"'"'s acceptance and any resume brief on the issue, build what the draft left undone with a test for each change, and leave nothing half-done. Self-check, a review of the whole pull request and ship follow; it is readied and auto-merge armed only when they pass.\n' "$t"
+  [ -z "$words" ] || printf '\nThe brief this run was sent with:\n\n%s\n' "$words"
+}
+# driver_adopt_into <caller-brief> — this run becomes an adoption: REPAIR_BRIEF is the
+# adoption brief, written onto the record; the healing class and run brief are spent.
+driver_adopt_into() {
+  mkdir -p "$DRIVER_DIR/$TICKET"
+  local ab="$DRIVER_DIR/$TICKET/adopt-brief.md"
+  driver_adopt_brief "$TICKET" "${1:-}" > "$ab.tmp" && mv "$ab.tmp" "$ab" || die "could not write the adoption brief at $ab"
+  REPAIR_BRIEF="$ab"; RUN_BRIEF=""; REPAIR_CLASS=""; REPAIR_SOURCE=adopt; ADOPT=1
+}
+if [ "$ADOPT" -eq 1 ]; then
+  driver_adopt_into "${RUN_BRIEF:-$REPAIR_BRIEF}"
 fi
 
 # ---- what a run was handed ----------------------------------------------------
@@ -165,19 +198,12 @@ fi
 # missing would be a guess at what is wrong.
 if [ -n "$REPAIR_BRIEF" ]; then
   [ -s "$REPAIR_BRIEF" ] || die "--repair names '$REPAIR_BRIEF', which is missing or empty — a repair without its brief would be a guess at what is wrong"
-  # A DRAFT THE DRIVER NEVER BUILT IS NOT A REPAIR: readied and armed, it would land
-  # work its author left unfinished. The prose claim resumes it; a brief goes back on
-  # the queue so it is not lost, and the next spawn routes it there.
-  if ! driver_built "$TICKET" \
+  # A DRAFT THE DRIVER NEVER BUILT IS NOT A REPAIR: readied and armed as one, it would
+  # land work its author left unfinished. It is adopted instead, whoever sent the run.
+  if [ "$ADOPT" -eq 0 ] && ! driver_built "$TICKET" \
      && [ "$(driver_open_prs_for "$TICKET" 2>/dev/null | head -1 | cut -f5)" = true ]; then
-    if [ "$REPAIR_SOURCE" = caller ]; then
-      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --note "$(driver_brief_note "$REPAIR_BRIEF")" --first >/dev/null 2>&1 \
-        || { mkdir -p "$DRIVER_DIR/$TICKET"; cp "$REPAIR_BRIEF" "$DRIVER_DIR/$TICKET/brief-unrouted.md" 2>/dev/null; }
-    else
-      # A healing class too: back on the queue as that class, which the spawner routes to prose.
-      bash "$KIT_ROOT/scripts/coordinator-queue.sh" add "$TICKET" --class "$REPAIR_CLASS" --first >/dev/null 2>&1 || true
-    fi
-    die "#$TICKET has an open pull request that is a draft the driver did not build, and a repair never readies one. The prose claim resumes it; a brief the caller sent is back on the queue, or kept at $DRIVER_DIR/$TICKET/brief-unrouted.md."
+    echo "build-ticket: #$TICKET's open pull request is a draft the driver did not build — adopting it, not repairing it" >&2
+    if [ "$REPAIR_SOURCE" = caller ]; then driver_adopt_into "$REPAIR_BRIEF"; else driver_adopt_into ""; fi
   fi
   DRIVER_STEPS="${DRIVER_REPAIR_STEPS:-reenter repair fix self-check review record ship}"
   DRIVER_ALWAYS_STEPS="${DRIVER_ALWAYS_STEPS:-reenter}"
@@ -307,6 +333,13 @@ if [ -n "$REPAIR_BRIEF" ]; then
     driver_say "🔧 #$TICKET repair: $(head -1 "$_rd/repair-brief.md" | cut -c1-160)"
   fi
   driver_state_set "$TICKET" mode repair
+  # Adopted is per run: a later repair of the PR the adoption shipped reviews its own change.
+  if [ "$ADOPT" -eq 1 ]; then
+    [ -n "$(driver_state_get "$TICKET" adopted)" ] || driver_state_set "$TICKET" adopted "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    driver_say "🫴 #$TICKET adopted: its draft PR is finished on the driver — gates, a review of the whole PR, then ship"
+  else
+    driver_state_set "$TICKET" adopted ""
+  fi
   unset _rb_sha _rb_head _rb_new _rd _arch _f
 else
   driver_state_set "$TICKET" mode build

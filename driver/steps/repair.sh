@@ -682,6 +682,8 @@ EOS
   # arrives as a repair with a note; read only when something is red, it would be
   # dropped on a green PR. The brief written for a note-less healing run is not one.
   [ "$(driver_state_get "$t" repair_brief_source)" = caller ] && need=1
+  # AN ADOPTED DRAFT IS UNFINISHED WORK: the model reads the adoption brief and finishes it.
+  [ "$(driver_state_get "$t" repair_brief_source)" = adopt ] && need=1
   # EVIDENCE OWED IS WORK, though nothing red says so. Three repairs were told to add
   # shots and pushed without touching the capture plan: the PR could never pass the
   # critic. The judge's evidence-class findings and the changed screen files no route or
@@ -868,6 +870,12 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
       driver_say "✋ repair: answered unchanged and changed the tree. Either it is a fix, with its proof, or it is unchanged."
       driver_state_set "$t" park_note "the repair answered unchanged and changed the tree"
       return "$DRIVER_E_REFUSED"
+    fi
+    # AN ADOPTED DRAFT SAID TO BE FINISHED is not taken on the model's word, nor asked of
+    # a person: self-check and the review of the whole PR decide, and ship readies it after.
+    if [ "$(driver_state_get "$t" repair_brief_source)" = adopt ]; then
+      driver_say "   repair: unchanged — $(jq -r '.reason // ""' "$ans") — the adopted draft goes to the gates and a review of the whole PR"
+      return "$DRIVER_OK"
     fi
     # NOTHING OWED IS READ, NOT ASKED. #13636 asked the owner to confirm "the head holds
     # develop, GitHub says MERGEABLE, nothing is red": all of it a read the driver makes.

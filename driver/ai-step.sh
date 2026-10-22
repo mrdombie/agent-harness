@@ -191,7 +191,7 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   # class line is not a brief. A build's brief is never read in repair mode.
   local rb=""
   if [ "$(driver_state_get "$t" mode)" = repair ]; then
-    [ "$(driver_state_get "$t" repair_brief_source)" = caller ] && [ "$step" != repair ] && rb=$(driver_state_get "$t" repair_brief)
+    case "$(driver_state_get "$t" repair_brief_source)" in caller|adopt) [ "$step" != repair ] && rb=$(driver_state_get "$t" repair_brief) ;; esac
   else
     rb=$(driver_state_get "$t" run_brief)
   fi

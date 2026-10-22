@@ -471,9 +471,10 @@ driver_step_ship() { # <ticket>
       return "$DRIVER_E_REFUSED"
     fi
     # A DRAFT THE DRIVER NEVER BUILT IS NOT ITS TO READY: whoever left it a draft did so on purpose.
-    if [ "${open_row#* }" = true ] && ! driver_built "$t"; then
+    # An adoption may: its review read the whole PR, and the verdict is read next.
+    if [ "${open_row#* }" = true ] && ! driver_built "$t" && ! driver_adopted "$t"; then
       driver_say "✋ ship: PR #$open_pr is a draft and this ticket's record holds no build of the driver's — a repair does not ready or arm it, so nothing is pushed."
-      driver_state_set "$t" park_note "PR #$open_pr is a draft the driver did not build; a repair never readies it. Resume it with the prose claim."
+      driver_state_set "$t" park_note "PR #$open_pr is a draft the driver did not build; a repair never readies it. Adopt it: build-ticket $t --adopt."
       return "$DRIVER_E_REFUSED"
     fi
     # AND THE VERDICT IS READ BEFORE THE PUSH, not after. A repaired PR is usually

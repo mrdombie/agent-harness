@@ -690,9 +690,28 @@ want "a draft with no build on the record refuses" "24" "$rc"
 want "nothing reached origin"                "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-149/work)"
 want_not_in "never readied, never armed"     'pr ready|pr merge' "$(cat "$GH_LOG")"
 want_in "the park note says why"             'draft the driver did not build' "$(driver_state_get 149 park_note)"
+want_in "and sends it to the adoption"       'build-ticket 149 --adopt' "$(driver_state_get 149 park_note)"
 driver_state_done 149 start
 rc=0; driver_step_ship 149 >/dev/null 2>&1 || rc=$?
 want "the driver's own draft (a build ran start) ships" "0" "$rc"
+rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- an adopted draft is readied only on the review's SHIP ---"
+repair_wt 150 99; ORIG=$(git -C "$FIX/wt150" rev-parse HEAD)
+printf 'done\n' > "$FIX/wt150/r150.txt"; git -C "$FIX/wt150" add r150.txt
+git -C "$FIX/wt150" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: finish the draft"
+printf '[{"number":99,"isDraft":true}]\n' > "$FIX/gh/prs.json"
+driver_state_set 150 adopted "2026-10-22T00:00:00Z"
+driver_state_put 150 review '{"verdict":"SPIT-BACK","findings":[{"grade":"major","summary":"half the acceptance is missing"}]}'
+: > "$GH_LOG"; rc=0; driver_step_ship 150 >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] && ok "an adopted draft the review sent back is not shipped (rc $rc)" || bad "an adopted draft shipped on a SPIT-BACK"
+want "nothing reached origin"                "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-150/work)"
+want_not_in "and it is never readied"        'pr ready|pr merge' "$(cat "$GH_LOG")"
+driver_state_put 150 review '{"verdict":"SHIP","findings":[]}'
+: > "$GH_LOG"; rc=0; driver_step_ship 150 >/dev/null 2>&1 || rc=$?
+want "an adopted draft the review passed ships" "0" "$rc"
+want_in "readied, then armed"                'pr ready.*pr merge' "$(tr '\n' ' ' < "$GH_LOG")"
+want "and its work reached origin"           "$(git -C "$FIX/wt150" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-150/work 2>/dev/null)"
 rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a plan the run wrote into a TRACKED scratch folder is committed, not refused ---"
