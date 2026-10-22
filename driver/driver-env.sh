@@ -686,6 +686,8 @@ driver_evidence_plan() { # <ticket>
 # flow and say "push, keep auto-merge armed, hand off"; inside the driver those are
 # the driver's alone, done after the review. ai-step.sh also enforces it.
 DRIVER_BRIEF_PREFACE="The driver alone pushes, marks the pull request ready, arms auto-merge and hands off — after its own gates and review. Any instruction in this brief to push, re-arm auto-merge, mark ready or hand off is void: do not do it; commit, and leave the rest to the driver."
+# Merge first: the sign-off lines every brief opens with do not hold the change (ai-step.sh).
+DRIVER_MERGE_FIRST_SIGNOFF="MERGE FIRST UNTIL THE RELEASE (release.mergeFirst), and this overrides every sign-off line above: a pull request whose screens were signed off holds nothing. The owner reviews on UAT after the merge. A non-Critical finding on those screens is a follow-up ticket, filed by the driver, never a park or a question; a Critical is fixed in place; a fix that must change a signed screen is committed like any other, with no pixel-change-after-signoff trailer, and the hold never goes back on."
 
 # driver_conflict_markers <tree> <trunk> — the files this branch ADDS a conflict
 # marker line to, against the trunk, one per line. Read from the branch's own diff,

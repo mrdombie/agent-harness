@@ -608,7 +608,12 @@ clean-up after the release is one list, `coordinator-queue.sh add --front`. Then
 no Critical is not recorded and does not refuse. The design critic and the picture
 check join the warn-only checks below, and only a `screen:new` or `screen:redesign`
 ticket still waits for an approved picture (the baseline route is on for every other
-screen). Typecheck, lint and the fast local gates still block.
+screen). Typecheck, lint and the fast local gates still block. The release block is
+read from the trunk's harness.json as origin has it now (fetched at most every 2 min),
+not from the copy a run took when it started or a coordinator's pinned copy, so a
+repair already running when the switch lands follows it: a non-Critical finding on a
+signed-off PR's screens is a follow-up and the push goes through. Every driver step's
+prompt says the brief's sign-off lines do not hold.
 
 **Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
 in harness.json lists check names (a run's name, a status context, or
