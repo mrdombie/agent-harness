@@ -198,6 +198,8 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   if [ -n "$rb" ] && [ -s "$rb" ]; then
     { printf '\n---\nA brief came with this run, from whoever started it. %s Read it before anything else, and act on it where it bears on this step:\n\n' "$DRIVER_BRIEF_PREFACE"; cat "$rb"; } >> "$prompt"
   fi
+  # The brief's sign-off lines are the off case; merge first replaces them for every step.
+  if driver_merge_first; then printf '\n---\n%s\n' "$DRIVER_MERGE_FIRST_SIGNOFF" >> "$prompt"; fi
 
   # The contract, relaxed, so the model is BOUND to the answer's shape rather than
   # asked for it in prose. Derived from the contract by prompt-schema.jq — never a

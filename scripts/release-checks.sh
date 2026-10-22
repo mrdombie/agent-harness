@@ -42,8 +42,34 @@ RELEASE_NB_JQ="$CHECK_NEWEST_JQ"'def release_nb($nb): ((.name // .context // "")
   | any($nb[]; . == $n or . == $w);
 def release_red: (.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE");'
 
+# _release_cfg — the file the release block is read from: the trunk's harness.json as
+# origin has it now, when that carries a release block; else the run's own config.
+# A run snapshots its config when it starts and a coordinator pins a copy, so a switch
+# flipped on the trunk mid-run reached neither: a repair begun before mergeFirst landed
+# still parked a signed-off screen's Major for the owner. The trunk ref is fetched at
+# most every HARNESS_RELEASE_FETCH_SECS (default 120) per clone.
+_release_cfg() {
+  local repo="${MAIN_REPO:-}" br="${INTEGRATION_BRANCH:-}" blob f stamp now was
+  if [ -n "$repo" ] && [ -n "$br" ] && git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    stamp="${TMPDIR:-/tmp}"; stamp="${stamp%/}/harness-release-fetch.$(printf '%s' "$repo:$br" | cksum | cut -d' ' -f1)"
+    now=$(date +%s); was=$(stat -c %Y "$stamp" 2>/dev/null || stat -f %m "$stamp" 2>/dev/null || echo 0)
+    if [ $((now - was)) -ge "${HARNESS_RELEASE_FETCH_SECS:-120}" ]; then
+      : > "$stamp" 2>/dev/null
+      GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+        git -C "$repo" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br" >/dev/null 2>&1 || true
+    fi
+    blob=$(git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$br:.claude/harness.json" 2>/dev/null)
+    if [ -n "$blob" ]; then
+      f="${TMPDIR:-/tmp}"; f="${f%/}/harness.json.$(printf '%.12s' "$blob")"
+      [ -s "$f" ] || { git -C "$repo" cat-file blob "$blob" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"; } || rm -f "$f.$$"
+      if [ -s "$f" ] && jq -e '(.release // null) | type == "object"' "$f" >/dev/null 2>&1; then printf '%s' "$f"; return 0; fi
+    fi
+  fi
+  printf '%s' "${HARNESS_CFG:-}"
+}
+
 release_nonblocking_json() {
-  local cfg="${HARNESS_CFG:-}" out
+  local cfg out; cfg=$(_release_cfg)
   if [ -z "$cfg" ] || [ ! -f "$cfg" ]; then printf '[]'; return 0; fi
   # Merge first adds the design checks: the critic's status and the picture check warn.
   out=$(jq -c 'if ((.release // {}) | type) != "object" or (.release.done // false) == true then []
@@ -59,7 +85,7 @@ release_nonblocking_json() {
 # release_merge_first — 0 while harness.json says release.mergeFirst true and the release
 # is not done. A missing or unreadable config is off: every gate stays.
 release_merge_first() {
-  local cfg="${HARNESS_CFG:-}"
+  local cfg; cfg=$(_release_cfg)
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 1
   jq -e '(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true' "$cfg" >/dev/null 2>&1
 }
