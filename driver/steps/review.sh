@@ -157,10 +157,9 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   rc=0; driver_ai_step "$t" review "$built" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   driver_state_bump "$t" review
-  # WHAT THIS REVIEW SAW, for the next pass to hold the fix round against.
-  git -C "$wt" diff --name-only "${dargs[@]}" 2>/dev/null | sed '/^$/d' | sort -u > "$(driver_state_dir "$t")/steps/review.files.txt"
-  driver_state_set "$t" reviewed_head "$seen_head"
-  driver_state_set "$t" reviewed_fix "$(driver_state_count "$t" fix)"
+  # WHAT THIS REVIEW SAW is recorded only once its answer is read as a review (below):
+  # a refused answer is no review, and the next pass must not treat it as one.
+  driver_state_set "$t" reviewed_head ""
   round=$((round + 1))
   ans_file="$(driver_state_dir "$t")/steps/review.json"
   # A new review cycle (a build, or a repair) starts its deferred list empty.
@@ -202,6 +201,7 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   # last round calls no model (_driver_review_again) — never a third review.
   if [ "$verdict" = "BLOCKED" ] && [ "${nsend:-0}" -gt 0 ] && [ "$round" -le "$maxr" ]; then
     driver_say "✋ review round $round of $maxr: $nsend blocking ($(driver_blocking_grades "$ground")) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
+    _driver_review_seen "$t" "$wt" "$seen_head" "${dargs[@]}"
     return "$DRIVER_E_REWORK"
   fi
 
@@ -214,6 +214,7 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
     driver_say "✋ review: SHIP beside $nsend open blocking ($DRIVER_BLOCKING_GRADES) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)"). The verdict is read off the grades; it is not typed beside them."
     return "$DRIVER_E_REFUSED"
   fi
+  _driver_review_seen "$t" "$wt" "$seen_head" "${dargs[@]}"
 
   rc=0; driver_push_requires "$t" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
@@ -229,6 +230,15 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   return "$DRIVER_OK"
 }
 
+# _driver_review_seen <ticket> <tree> <head> <diff args…> — what a review read as a
+# review saw: its head, its diff's file list and the fix count then, for the next pass.
+_driver_review_seen() {
+  local t="$1" wt="$2" h="$3"; shift 3
+  git -C "$wt" diff --name-only "$@" 2>/dev/null | sed '/^$/d' | sort -u > "$(driver_state_dir "$t")/steps/review.files.txt"
+  driver_state_set "$t" reviewed_head "$h"
+  driver_state_set "$t" reviewed_fix "$(driver_state_count "$t" fix)"
+}
+
 # _driver_review_again <ticket> <tree> <passes so far> <max> <diff args…> — whether a later
 # pass calls the model. One line: "run <why>" — review again; "skip <why>" — no new
 # review, the fix step proved the findings; "hold <why>" — no new review, and the findings
@@ -238,6 +248,8 @@ _driver_review_again() {
   local t="$1" wt="$2" round="$3" maxr="$4" d rhead nb rfix now since new
   shift 4
   d="$(driver_state_dir "$t")/steps"
+  rhead=$(driver_state_get "$t" reviewed_head)
+  if [ -z "$rhead" ] || [ ! -f "$d/review.files.txt" ]; then echo "run the last pass recorded no review (refused, or never run) to compare with"; return 0; fi
   nb=$(_driver_count "$d/review.json" blocking); rfix=$(driver_state_get "$t" reviewed_fix)
   if [ "${nb:-0}" -gt 0 ] && [ "$(driver_state_count "$t" fix)" -le "${rfix:-0}" ]; then
     if [ "$round" -ge "$maxr" ]; then echo "hold the $maxr review round(s) are spent, and no fix round has answered the last review's $nb blocking finding(s)"
@@ -248,8 +260,6 @@ _driver_review_again() {
   case "$(driver_opt review.secondOnlyOnNewFiles true)" in
     false|0|no|off) echo "run review.secondOnlyOnNewFiles is off, so every pass is reviewed"; return 0 ;;
   esac
-  rhead=$(driver_state_get "$t" reviewed_head)
-  if [ -z "$rhead" ] || [ ! -f "$d/review.files.txt" ]; then echo "run the last review recorded no head or file list to compare with"; return 0; fi
   git -C "$wt" cat-file -e "$rhead^{commit}" 2>/dev/null || { echo "run the reviewed head $rhead is not in this tree"; return 0; }
   now=$(git -C "$wt" diff --name-only "$@" 2>/dev/null | sed '/^$/d' | sort -u)
   since=$(git -C "$wt" diff --name-only "$rhead" 2>/dev/null | sed '/^$/d' | sort -u)

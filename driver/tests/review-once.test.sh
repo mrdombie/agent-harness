@@ -85,6 +85,20 @@ rc=0; DRIVER_MAX_REVIEW_ROUNDS=1 driver_step_review 162 >/dev/null 2>&1 || rc=$?
 want "past the rounds it calls no reviewer"      "1" "$(calls)"
 want "the Major is still on the answer"          "1" "$(_driver_count "$(rj 162)" blocking)"
 
+echo "--- a refused answer is no review: the next pass calls the reviewer ---"
+ro_tree 164; : > "$CLAUDE_LOG"
+fix_ai review '{"verdict":"probably fine","findings":[]}' superpowers:requesting-code-review
+rc=0; driver_step_review 164 >/dev/null 2>&1 || rc=$?
+want "the unread verdict refuses"                "24" "$rc"
+fix_ai review '{"verdict":"SHIP","findings":[{"id":"c1","file":"a.sh","line":1,"grade":"critical","summary":"another workspace rows","reason":"r","fix":"f"}]}' superpowers:requesting-code-review
+rc=0; driver_step_review 164 >/dev/null 2>&1 || rc=$?
+want "the next pass reviews"                     "2" "$(calls)"
+want "and refuses SHIP beside a Critical"        "24" "$rc"
+fix_ai review '{"verdict":"BLOCKED","findings":[{"id":"c2","file":"a.sh","line":1,"grade":"critical","summary":"still there","reason":"r","fix":"f"}]}' superpowers:requesting-code-review
+rc=0; driver_step_review 164 >/dev/null 2>&1 || rc=$?
+want "past the rounds, still not skipped on a refused answer" "3" "$(calls)"
+want "and the Critical is not cleared"           "1" "$(_driver_count "$(rj 164)" blocking)"
+
 echo "--- the settings ---"
 jq '.review = {maxRounds: 1}' "$HARNESS_CFG" > "$FIX/ro-one.json"
 want "review.maxRounds is read"                  "1" "$(HARNESS_CFG_PATH="$FIX/ro-one.json" HARNESS_CFG="$FIX/ro-one.json" DRIVER_MAX_REVIEW_ROUNDS= bash -c '. "$1/../driver-env.sh" && printf %s "$DRIVER_MAX_REVIEW_ROUNDS"' _ "$HERE")"
