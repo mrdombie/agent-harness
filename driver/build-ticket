@@ -40,6 +40,8 @@ set -uo pipefail
 DRIVER_HOME_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DRIVER_HOME_SELF/driver-env.sh" || exit 1
 . "$DRIVER_HOME_SELF/state.sh" || exit 1
+# The order before any --steps: only a run walking it may switch to the quick order.
+DRIVER_DEFAULT_ORDER="$DRIVER_STEPS"
 
 # The step files. A seam, so a test can walk the orchestrator over recorders and
 # get a clean answer about control flow — the same reason every call out of the
@@ -251,6 +253,19 @@ for s in $DRIVER_STEPS; do
   command -v "$(step_fn "$s")" >/dev/null 2>&1 \
     || die "$f defines no $(step_fn "$s") — the step's file is there and the step is not."
 done
+# AN ORDER THAT SIZES ITS TICKET may switch to the quick order, so its steps are loaded
+# now, refused by name like the rest: a switch to a step that is not there is a refusal
+# found before the work, not after the size call.
+case " $DRIVER_STEPS " in *" size "*)
+  for s in $DRIVER_QUICK_STEPS; do
+    command -v "$(step_fn "$s")" >/dev/null 2>&1 && continue
+    f="$DRIVER_STEPS_DIR/$s.sh"
+    [ -f "$f" ] || die "the quick order names the step '$s' and there is no $f."
+    . "$f" || die "could not load $f"
+    command -v "$(step_fn "$s")" >/dev/null 2>&1 || die "$f defines no $(step_fn "$s")."
+  done ;;
+esac
+FULL_ORDER="$DRIVER_STEPS"
 
 # ---- the record ------------------------------------------------------------
 driver_state_init "$TICKET"
@@ -382,6 +397,44 @@ if [ "$PLAN_AT" -ge 0 ] && driver_state_is_done "$TICKET" plan; then
 fi
 plan_hash=""
 
+# THE ROUTE (steps/size.sh). driver_set_order rewrites the walk's list and the three
+# positions read off it; the run then carries on inside the new list.
+driver_set_order() { # <steps…>
+  local k=0
+  STEPS=("$@"); N=${#STEPS[@]}; BUILD_AT=-1; FIX_AT=-1; PLAN_AT=-1
+  while [ "$k" -lt "$N" ]; do
+    [ "${STEPS[$k]}" = build ] && [ "$BUILD_AT" -lt 0 ] && BUILD_AT=$k
+    [ "${STEPS[$k]}" = fix ]   && [ "$FIX_AT" -lt 0 ]   && FIX_AT=$k
+    [ "${STEPS[$k]}" = plan ]  && [ "$PLAN_AT" -lt 0 ]  && PLAN_AT=$k
+    k=$((k+1))
+  done
+  DRIVER_STEPS="$*"; export DRIVER_STEPS
+}
+step_at() { local k=0; while [ "$k" -lt "$N" ]; do [ "${STEPS[$k]}" = "$1" ] && { echo "$k"; return 0; }; k=$((k+1)); done; echo -1; }
+# driver_take_route — once size is finished: a quick ticket walks DRIVER_QUICK_STEPS
+# from the step after size. Only from the full order, and only once.
+driver_take_route() {
+  [ "$(driver_state_get "$TICKET" route)" = quick ] || return 0
+  [ "$DRIVER_STEPS" = "$FULL_ORDER" ] && [ "$FULL_ORDER" = "$DRIVER_DEFAULT_ORDER" ] || return 0
+  # shellcheck disable=SC2086
+  driver_set_order $DRIVER_QUICK_STEPS
+  i=$(( $(step_at size) + 1 ))
+  driver_say "⚡ #$TICKET route=quick: $(printf '%s' "$DRIVER_QUICK_STEPS" | sed 's/ / → /g')"
+}
+# driver_to_full <from-step> <why> — the quick change is bigger than its size: the
+# full order, reopened from <from-step>, the record saying so.
+driver_to_full() {
+  # shellcheck disable=SC2086
+  driver_set_order $FULL_ORDER
+  driver_state_set "$TICKET" route full
+  [ -n "$(driver_state_get "$TICKET" quick_fallback)" ] || driver_state_set "$TICKET" quick_fallback "$2"
+  driver_state_reopen "$TICKET" "${STEPS[@]:$(step_at "$1")}"
+  i=$(step_at "$1")
+  driver_say "↑ #$TICKET route=full from $1: $2"
+}
+# The claim to the open PR, timed: the start step takes the claim, ship opens the PR.
+_driver_mins() { printf '%dm%02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
+
 # driver_usage_step_wait <ticket> <step> — before a step starts, while either usage
 # window is at swarm.usageStepHold (swarm_usage_step_hold), the run waits here: the
 # step before it finished, nothing is killed, nothing parks, and the claim names the
@@ -431,7 +484,9 @@ while [ "$i" -lt "$N" ]; do
   [ -z "$SHARE_STEP" ] || bash "$CL" update "$TICKET" "step=$step" >/dev/null 2>&1 || true
 
   if driver_state_is_done "$TICKET" "$step" && ! always "$step"; then
-    skipped=$((skipped+1)); i=$((i+1)); continue
+    skipped=$((skipped+1)); i=$((i+1))
+    [ "$step" != size ] || driver_take_route
+    continue
   fi
 
   # NEAR THE WALL, THE NEXT STEP WAITS. On 2026-10-19 five builds ran into the plan's
@@ -455,7 +510,19 @@ while [ "$i" -lt "$N" ]; do
   # The body is read BEFORE the plan runs, so an edit made while it plans is a change.
   [ "$step" != "plan" ] || plan_hash=$(ticket_body_hash "$TICKET")
   RUN_LOG_FROM=$(( $( { wc -l < "$(driver_state_dir "$TICKET")/log"; } 2>/dev/null || echo 0) + 1 ))
+  step_t0=$(date +%s)
   "$(step_fn "$step")" "$TICKET" || rc=$?
+  # A REVIEW THAT SENDS A QUICK CHANGE BACK takes it to the full route's fix step: the
+  # quick order has none, and one more review round there is the only way to clear it.
+  if [ "$rc" = "$DRIVER_E_REWORK" ] && [ "$DRIVER_STEPS" != "$FULL_ORDER" ] && [ "$(step_at fix)" -lt 0 ]; then
+    driver_state_set "$TICKET" size small
+    driver_state_set "$TICKET" size_reason "sized quick, then the review found what blocks"
+    # shellcheck disable=SC2086
+    driver_set_order $FULL_ORDER
+    driver_state_set "$TICKET" route full
+    driver_state_set "$TICKET" quick_fallback "the review found Critical or Major findings"
+    driver_say "↑ #$TICKET route=full: the review of the quick change found what blocks — on to the full route's fix step"
+  fi
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
 
   # A note a step left behind. An exit code says which check said no; it cannot say
@@ -512,16 +579,25 @@ while [ "$i" -lt "$N" ]; do
   # and it is not about `case` — it is that a pair of apostrophes inside `${:-}` defeats
   # the syntax check. The arms therefore set two plain variables and the park happens
   # once, after the esac, where no default-expansion appears at all.
-  park_reason=""; park_question=""; unread=0; requeue=0; to_repair=0; claim_busy=0; noop=0; machine=0; base_wait=0
+  park_reason=""; park_question=""; unread=0; requeue=0; to_repair=0; claim_busy=0; noop=0; machine=0; base_wait=0; upsize=0
   [ -z "$claim_elsewhere" ] || claim_busy=1
   PARK_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null)
   PARK_LOG="$(driver_state_dir "$TICKET")/log"
   case "$rc" in
     "$DRIVER_OK")
       driver_state_done "$TICKET" "$step"
+      [ "$step" != start ] || [ -n "$(driver_state_get "$TICKET" claim_epoch)" ] || driver_state_set "$TICKET" claim_epoch "$step_t0"
+      if [ "$step" = ship ] && _ce=$(driver_state_get "$TICKET" claim_epoch) && [ -n "$_ce" ]; then
+        driver_state_set "$TICKET" claim_to_pr_secs "$(( $(date +%s) - _ce ))"
+      fi
       [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.requeue = 0'
       [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
+      [ "$step" != size ] || driver_take_route
+      ;;
+
+    "$DRIVER_E_UPSIZE")
+      upsize=1
       ;;
 
     "$DRIVER_E_REWORK")
@@ -632,6 +708,16 @@ while [ "$i" -lt "$N" ]; do
       ;;
   esac
 
+  # BIGGER THAN ITS SIZE: on along the full route from plan, with the work kept (quick.sh).
+  if [ "$upsize" -eq 1 ]; then
+    if case " $FULL_ORDER " in *" plan "*) true ;; *) false ;; esac; then
+      driver_to_full plan "$(driver_state_get "$TICKET" quick_fallback)"
+      continue
+    fi
+    park_reason="$step said the change is bigger than its size, and this order has no plan step to go on from"
+    park_question="Should the order include plan, or should $step not size the change?"
+  fi
+
   # NOTHING OWED IS A FINISHED ROUND, not a question. The step read the PR afresh and
   # found nothing to do, so no later step has work: the round is closed on the record
   # (a respawn is a fresh round, read again) and the run exits 0. The open PR keeps the
@@ -734,8 +820,16 @@ fi
 # "✓ #10907 shipped: start" on the 2026-09-27 trial, about a run that had claimed a
 # ticket and done nothing else — and a completion line that says the same thing
 # however far a run got is a line nobody can read a verdict off.
+# THE ROUTE AND THE TIME TO THE PR, on the run's last line: runs.log and the live view read it.
+_route_line=""
+if [ -n "$(driver_state_get "$TICKET" route)" ]; then
+  _route_line=" · route=$(driver_state_get "$TICKET" route) size=$(driver_state_get "$TICKET" size)"
+  _c2p=$(driver_state_get "$TICKET" claim_to_pr_secs)
+  [ -z "$_c2p" ] || _route_line="$_route_line claim→PR $(_driver_mins "$_c2p")"
+  _route_line="$_route_line ($(driver_state_get "$TICKET" size_reason | cut -c1-160))"
+fi
 if driver_state_is_done "$TICKET" ship; then
-  driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')"
+  driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')$_route_line"
 else
   driver_say "✓ #$TICKET ran $(driver_state_get "$TICKET" 'done|join(" · ")') — not shipped: the order given did not reach the ship step."
 fi

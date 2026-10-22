@@ -168,6 +168,7 @@ const machineOf = (h) => !h ? 'Machine not recorded' : h === thisHost ? `This ma
 // Another machine's claim: its step as the claim names it; progress and activity
 // stay in logs on that machine, so they are left out, never invented.
 const CLAIM_WORD = { start: 'Setting up', plan: 'Planning', build: 'Building', 'self-check': 'Checking', review: 'Being reviewed',
+  size: 'Sizing the change', quick: 'Making the quick change',
   ship: 'Opening the pull request', reenter: 'Going back to the pull request', repair: 'Repairing', fix: 'Fixing', push: 'Pushing the fix',
   'usage-hold': 'Waiting for usage to reset' }
 // Another machine's run, from its heartbeat: coloured like a local row while the
@@ -190,13 +191,15 @@ function remoteRow(a){
     <div class="step">${[machineOf(a.host), step, time].filter(Boolean).join(' · ')}</div>
     <div class="line">${line}</div></div></div>`
 }
+// The route the driver chose for the run: a quick change or a full build.
+const routeText = (a) => a.route === 'quick' ? 'Quick change · ' : a.route === 'full' ? 'Full build · ' : ''
 function buildRow(a){
   if (a.remote) return remoteRow(a)
   const cls = quietCls(a.quietSec ?? 99999)
   const last = a.steps?.length ? a.steps[a.steps.length - 1].text : 'No activity yet'
   return `<div class="row build"><span class="dot ${cls}" title="last active ${esc(ago(a.quietSec))}"></span><div class="main">
     <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
-    <div class="step">${machineOf(a.host)} · ${stepText(a)} · ${esc(dur(a.startedAgoMin))} running</div>
+    <div class="step">${machineOf(a.host)} · ${routeText(a)}${stepText(a)} · ${esc(dur(a.startedAgoMin))} running</div>
     <div class="line" title="${esc(last)}">${esc(last)}</div></div></div>`
 }
 const num = (n) => Number(n).toLocaleString()

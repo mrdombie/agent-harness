@@ -1339,6 +1339,8 @@ export function snapshot(now = Date.now()) {
       budget: run.budget_usd,
       host: hostName(run.host || run.operator) || THIS_HOST,
       steps: log.steps,
+      // quick or full, off the driver's record (steps/size.sh): null before size has run.
+      route: drv && (drv.route === 'quick' || drv.route === 'full') ? drv.route : null,
     }
     if (isLive) live.push(row)
     else done.push({

@@ -33,11 +33,12 @@ model's job, and a model under pressure decides to get on with it. So the
 decision moved into a list in code, and what the model is asked shrank to the
 thinking inside one step.
 
-## The nine steps
+## The ten steps
 
 | # | Step | Who | What it produces |
 |---|---|---|---|
 | 1 | `start` | driver | the claim, the worktree, the refusal gates |
+| 1b | `size` | driver | the ticket's size and route (below); one short model call only when its rules cannot tell |
 | 2 | `plan` | model | a plan the driver can enforce, or a question |
 | 3 | `build` | model | commits whose test the driver proves red then green |
 | 4 | `fix` | model | the review's Criticals and Majors cleared, each proved the same way |
@@ -46,6 +47,48 @@ thinking inside one step.
 | 7 | `review` | model | `SHIP`, or findings with a file, a line and a grade. Once per change: a later pass calls the model only when the fix round touched a file the first review never saw, graded Critical and Major only, and never past `review.maxRounds` |
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
 | 9 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
+
+## The quick route: `start → size → quick → review → ship`
+
+`size` reads the ticket before anything is planned (`steps/size.sh`): its labels, its
+body, the file paths it names, and whether it states the change (a fenced snippet or
+diff, a "set/change/rename … to …" line).
+
+- **quick**: 1 to `driver.quick.maxFiles` (3) named files, and the change is config,
+  copy or docs, or a small code edit the ticket states.
+- **small**: a few named files (up to `driver.quick.smallMaxFiles`, 8), no schema, no
+  new screen.
+- **project**: anything else. That means a schema, data-model or migration change
+  (never quick), a new or redesigned screen, `needs:design` or a picture label, a
+  never-quick file, or a ticket that names no file and states no change.
+
+Named code files with no stated change, or a stated change naming no file, is
+undecided. Only then is one short model call made: small prompt, read-only tools,
+three turns. It can answer quick, small or project; no answer means the full route.
+The route, the size and the reason go on the record and the run log (`size:
+route=… size=…`).
+
+A **quick** ticket walks `DRIVER_QUICK_STEPS`. The `quick` step is one agent session
+(`briefs/quick.md`): it edits and commits, and cannot push. The driver then reads the
+real diff and runs the same gates `self-check` runs (`gates.local` under
+`gates.localOnly`, else the changed list, plus the changelog skip line). `review`
+runs once: only Critical and Major block, and a Minor goes on the polish list. Then
+the unchanged `ship` step pushes, opens the PR, readies it and arms auto-merge. No
+plan, build, fix, compare, separate self-check or record step runs.
+
+**Bigger than its size moves up.** A real diff over `maxFiles`, or touching a
+never-quick file, moves the ticket up to the full route from `plan`. Never-quick files
+are the project's screen files, a route page, `*migrations/*`, `*.sql`, `*.prisma`,
+lockfiles, and `driver.quick.neverGlobs`. Red gates do the same. The quick commits
+are kept at `refs/driver/quick/<ticket>` and the branch goes back to its cut, so the
+build can still prove its test red first. The plan step is told where the attempt
+is. A review that blocks a quick change goes to the full route's `fix` step. A record
+that was already planned keeps the full route.
+
+`driver.quick.enabled: false` turns the route off (sizes are still read and logged).
+The run's last line, the coordinator's `runs.log` line (`route= size= claim_to_pr=`)
+and the live view's run row ("Quick change" / "Full build") all say the route. Only
+quick changes the route today; small and project both walk the full order.
 
 `fix` and `compare` are in the order on every pass and are no-ops with nothing to
 do — `fix` when no review has found anything, `compare` when the change touches no
@@ -320,6 +363,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 32 | the repair read its pull request afresh and nothing is owed (its head holds the trunk, GitHub reads it MERGEABLE, no check on it is red, auto-merge is armed): the round is closed and the run exits 0, still in review, with no park |
 | 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
 | 34 | waiting for the base: every red check on the repair's PR fails only in tests outside its diff that fail on the base branch's latest completed run too (`scripts/base-wait.sh`). No label, no park, no question; the ticket goes on `base-waits.tsv` and the coordinator queues the repair again when that check goes green on the base or after `coordinator.baseWaitHours` (6) |
+| 35 | the quick change is bigger than its size (more files than `driver.quick.maxFiles`, a never-quick file, or red gates): the run goes on along the full route from `plan`, with the quick commits kept at `refs/driver/quick/<ticket>`. Never a run's exit; `build-ticket` handles it |
 
 A gate that outruns its limit (25) is tried once more after the machine quietens, its
 limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second

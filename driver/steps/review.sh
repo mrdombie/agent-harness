@@ -124,6 +124,10 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   local tier maxr="$DRIVER_MAX_REVIEW_ROUNDS" again
   tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
   [ "$tier" != tooling ] || maxr=1
+  # A QUICK CHANGE (steps/size.sh) is graded as tooling is: Critical and Major block, a
+  # Minor goes on the polish list. One that blocks takes the ticket to the full route's
+  # fix step (build-ticket), so a quick change is never reviewed twice on its own route.
+  local quick=""; [ "$(driver_state_get "$t" route)" = quick ] && quick=1
   if [ "$round" -ge 1 ]; then
     again=$(_driver_review_again "$t" "$wt" "$round" "$maxr" "${dargs[@]}")
     if [ "${again%% *}" != run ]; then
@@ -204,7 +208,7 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
   local ground="$round"
-  if [ "$tier" = tooling ]; then [ "$ground" -ge 2 ] || ground=2; fi
+  if [ "$tier" = tooling ] || [ -n "$quick" ]; then [ "$ground" -ge 2 ] || ground=2; fi
   _driver_review_defer "$t" "$ans_file" "$ground"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
 

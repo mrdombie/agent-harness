@@ -1,0 +1,9 @@
+{
+  "step": "quick",
+  "skills": [],
+  "status": "edited",
+  "summary": "a change",
+  "changed": ["README.md"],
+  "checked": "read it back",
+  "changelog": {"skipped": "docs"}
+}
