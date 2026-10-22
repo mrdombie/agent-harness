@@ -75,10 +75,11 @@
 #   coordinator.pace.burnPerBuilderHour COORDINATOR_PACE_BURN 0.025  window share one builder burns an
 #                                                           hour, when the samples cannot say
 #   coordinator.releaseScopeOnly COORDINATOR_RELEASE_SCOPE_ONLY off  true, or {on, priorities, excludeLabels,
-#                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes}}:
+#                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes, titlePatterns}}:
 #                                                           no NEW ticket outside it is seeded or started.
 #                                                           In: a listed priority, or an alsoIn label ("x:*" is a
-#                                                           prefix) or title prefix; an excluded label or milestone
+#                                                           prefix), title prefix or title regex (case-insensitive,
+#                                                           e.g. "\\bcard\\b"); an excluded label or milestone
 #                                                           wins over both. Repairs, approved merges and process
 #                                                           fixes are never held. true: P0 P1, after-launch, the
 #                                                           milestones below, alsoIn the screen labels and
@@ -172,12 +173,14 @@ coord_release_scope_json() {
     ($raw | try fromjson catch $raw) as $v
     | {on: true, priorities: ["P0", "P1"], excludeLabels: ["after-launch"],
        excludeMilestones: ["(?i)post-?launch", "(?i)fast-follow", "(?i)phase 2"],
-       alsoIn: {labels: [$sp + "*"], titlePrefixes: ["Batch:", "Polish list:"]}} as $d
+       alsoIn: {labels: [$sp + "*"], titlePrefixes: ["Batch:", "Polish list:"], titlePatterns: []}} as $d
     | (if $v == true or $v == 1 or $v == "1" or $v == "true" or $v == "on" then $d
        elif ($v | type) == "object" then $d + $v + {on: (if $v | has("on") then $v.on == true else true end),
                                                   alsoIn: ($d.alsoIn + ($v.alsoIn // {}))}
        else {on: false} end)
-    | .excludeMilestones = [(.excludeMilestones // [])[] | strings | . as $re | select(try ("" | test($re) | true) catch false)]' 2>/dev/null \
+    | def compiles: [.[]? | strings | . as $re | select(try ("" | test($re; "i") | true) catch false)];
+      .excludeMilestones = ((.excludeMilestones // []) | compiles)
+    | if .alsoIn then .alsoIn.titlePatterns = ((.alsoIn.titlePatterns // []) | compiles) else . end' 2>/dev/null \
     || printf '{"on":false}'
 }
 COORD_RELEASE_SCOPE=$(coord_release_scope_json)
@@ -635,7 +638,8 @@ COORD_TICKET_JQ='
     ($ls | any(. as $l | ($release.alsoIn.labels // []) | any(. as $p
         | if ($p | endswith("*")) then ($l | startswith($p[:-1])) else $l == $p end)))
     or ((($title // "") | ascii_downcase) as $t
-        | ($release.alsoIn.titlePrefixes // []) | any(. as $p | $t | startswith($p | ascii_downcase)));
+        | ($release.alsoIn.titlePrefixes // []) | any(. as $p | $t | startswith($p | ascii_downcase)))
+    or (($title // "") as $t | ($release.alsoIn.titlePatterns // []) | any(. as $re | $t | test($re; "i")));
   def coord_release_held($ls; $title; $milestone; $class):
     ($release.on == true) and (($class // "new") == "new") and (coord_process($ls) | not)
     and (($ls | any(. as $l | ($release.excludeLabels // []) | any(. == $l)))
