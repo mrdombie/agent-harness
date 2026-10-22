@@ -9,6 +9,10 @@
 #   A CLASH  the integration branch is merged in. A clean merge is a commit and the
 #            step is done with it, with no model call. A conflicted merge is left in
 #            progress, with the files named, for the one model call this step makes.
+#            The merge is the driver's: after the answer it merges the trunk again
+#            as it stands (a peer's fetch moves it), keeps the model's resolution of
+#            a file the trunk has not changed since, and hands any other marked
+#            file back once. The head that leaves this step has the trunk in it.
 #   A RED    the PR's checks that settled red, read from its status rollup and handed
 #            over with the brief that sent the repair. A rollup nobody could read is
 #            said to be unreadable. It is not read as green.
@@ -372,6 +376,85 @@ _driver_repair_stale_answers() {
   fi
 }
 
+# _driver_repair_marked <ticket> <tree> — with a merge in progress, each conflicted
+# file (git's unmerged paths and the record's) that still carries a conflict marker.
+_driver_repair_marked() {
+  local wt="$2" p
+  git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || return 0
+  printf '%s\n%s\n' "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" "$(driver_state_get "$1" repair_conflicted)" \
+    | sed '/^$/d' | sort -u | while IFS= read -r p; do
+      [ -f "$wt/$p" ] && grep -qE '^(<<<<<<<|>>>>>>>)( |$)' "$wt/$p" 2>/dev/null && printf '%s\n' "$p"
+    done
+}
+
+# _driver_repair_own_trunk <ticket> <tree> <trunk-sha> <answer> — the driver's own merge
+# of the trunk. 0: the head has <trunk-sha> as an ancestor (already, or by a merge
+# commit made here with both parents). 2: the merge is left in progress and the files
+# in DRIVER_REPAIR_LEFT still need the model. 1: git refused it. A merge left in
+# progress is committed only with nothing unmerged and no marker. A head that lacks the trunk is merged with --no-ff; each
+# file it conflicts in takes the model's resolution (the tree's copy of a file on the
+# record, with no marker) when the trunk has not changed that file since the model
+# resolved it, and every other conflicted file is handed back.
+_driver_repair_own_trunk() {
+  local t="$1" wt="$2" tsha="$3" ans="$4" at rec p saved left="" took=""
+  DRIVER_REPAIR_LEFT=""
+  [ -n "$tsha" ] || return 1
+  if git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    left=$(printf '%s\n%s\n' "$(_driver_repair_marked "$t" "$wt")" "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" | sed '/^$/d' | sort -u)
+    [ -z "$left" ] || { DRIVER_REPAIR_LEFT="$left"; return 2; }
+    git -C "$wt" commit -q --no-edit >/dev/null 2>&1 || return 1
+  fi
+  git -C "$wt" merge-base --is-ancestor "$tsha" HEAD 2>/dev/null && return 0
+  at=$(driver_state_get "$t" repair_trunk_sha); rec=$(driver_state_get "$t" repair_conflicted)
+  saved=$(mktemp -d "${TMPDIR:-/tmp}/repair-own-trunk.XXXXXX")
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -f "$wt/$p" ] || continue
+    grep -qE '^(<<<<<<<|>>>>>>>)( |$)' "$wt/$p" 2>/dev/null && continue
+    mkdir -p "$saved/$(dirname "$p")" && cp -p "$wt/$p" "$saved/$p" || continue
+    git -C "$wt" diff --quiet HEAD -- ":(literal)$p" 2>/dev/null || git -C "$wt" checkout -q HEAD -- ":(literal)$p" 2>/dev/null
+  done <<<"$rec"
+  git -C "$wt" -c merge.conflictStyle=merge merge --no-ff --no-commit "$tsha" >"$(driver_state_dir "$t")/steps/repair-own-merge.out" 2>&1
+  if ! git -C "$wt" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    git -C "$wt" merge-base --is-ancestor "$tsha" HEAD 2>/dev/null && { rm -rf "$saved"; return 0; }
+    driver_say "   repair: the driver's merge of $(printf '%s' "$tsha" | cut -c1-10) did not start — $(tail -2 "$(driver_state_dir "$t")/steps/repair-own-merge.out" | tr '\n' ' ')"
+    rm -rf "$saved"; return 1
+  fi
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ -f "$saved/$p" ] && [ -n "$at" ] && git -C "$wt" diff --quiet "$at" "$tsha" -- ":(literal)$p" 2>/dev/null; then
+      cp -p "$saved/$p" "$wt/$p" && git -C "$wt" add -- ":(literal)$p" && { took="$took$p "; continue; }
+    fi
+    left="$left$p"$'\n'
+  done <<<"$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)"
+  rm -rf "$saved"
+  [ -z "$took" ] || driver_say "   repair: the driver merged $(printf '%s' "$tsha" | cut -c1-10) itself and kept the model's resolution of ${took}"
+  if [ -n "$left" ]; then DRIVER_REPAIR_LEFT="$left"; return 2; fi
+  git -C "$wt" commit -q --no-edit >/dev/null 2>&1 || return 1
+  driver_say "   repair: the driver made the merge of $(printf '%s' "$tsha" | cut -c1-10) at $(git -C "$wt" rev-parse --short HEAD), both parents kept"
+  return 0
+}
+
+# _driver_repair_hand_back <ticket> <tree> <trunk> <answer> <files> — asks the model once
+# more to resolve only <files>, marked in the driver's merge in progress. The first
+# answer's fixes stay; the second's conflicts and gitActions are taken.
+_driver_repair_hand_back() {
+  local t="$1" wt="$2" trunk="$3" ans="$4" files="$5" d rc=0
+  d=$(driver_state_dir "$t")
+  files=$(printf '%s\n' "$files" | sed '/^$/d' | sort -u)
+  driver_state_set "$t" repair_conflicted "$(printf '%s\n%s\n' "$(driver_state_get "$t" repair_conflicted)" "$files" | sed '/^$/d' | sort -u)"
+  driver_state_set "$t" repair_trunk_sha "$(git -C "$wt" rev-parse -q --verify MERGE_HEAD 2>/dev/null)"
+  driver_say "↩ repair: the driver's merge of $trunk is in progress with markers in $(printf '%s' "$files" | tr '\n' ' ')— handed back to the model"
+  cp "$ans" "$d/steps/repair-first.json"
+  driver_fact_put "$t" repair CONFLICTS "the driver merged $trunk into this branch itself; the merge is in progress and still conflicts in: $(printf '%s' "$files" | tr '\n' ' ')— resolve only those files with the Edit tool, never a script, leave every other file as it is, then list \`commitMerge\` in \`gitActions\`. Never abort, reset or commit the merge yourself."
+  driver_fact_put "$t" repair BRIEF "THE MERGE IS THE DRIVER'S. It merged $trunk itself and these files still carry conflict markers: $(printf '%s' "$files" | tr '\n' ' '). Resolve only them, keeping both sides' intent, and answer with \`commitMerge\` in \`gitActions\`; the commits and fixes you already made stay."
+  driver_ai_step "$t" repair || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  jq -s '.[0] + {gitActions: (.[1].gitActions // []), conflicts: ((.[0].conflicts // []) + (.[1].conflicts // []))}' \
+    "$d/steps/repair-first.json" "$ans" > "$d/steps/repair-merged.json" 2>/dev/null \
+    && mv "$d/steps/repair-merged.json" "$ans"
+  return 0
+}
+
 driver_step_repair() { # <ticket>
   local t="${1:?driver_step_repair: need a ticket}"
   local d wt branch pr base trunk row mstate failing="" unreadable=0 conflicted="" conflicts_fact merged=0
@@ -461,9 +544,11 @@ EOS
     conflicted=$(printf '%s\n%s\n' "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" "$(driver_state_get "$t" repair_conflicted)" | sed '/^$/d' | sort -u)
     [ -n "$conflicted" ] || conflicted=$(git -C "$wt" diff --cached --name-only 2>/dev/null)
     driver_say "   repair: resuming the merge of $trunk an earlier pass left in progress"
+    driver_state_set "$t" repair_trunk_sha "$(git -C "$wt" rev-parse -q --verify MERGE_HEAD 2>/dev/null)"
   elif ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null \
        && { [ -n "$behind_red" ] || _driver_repair_clashes "$wt" "$trunk" "$mstate" "$mergeable"; }; then
-    if git -C "$wt" merge --no-edit "$trunk" >"$d/steps/repair-merge.out" 2>&1; then
+    driver_state_set "$t" repair_trunk_sha "$(git -C "$wt" rev-parse -q --verify "$trunk^{commit}" 2>/dev/null)"
+    if git -C "$wt" merge --no-ff --no-edit "$trunk" >"$d/steps/repair-merge.out" 2>&1; then
       merged=1
       driver_say "   repair: merged $trunk into $branch cleanly at $(git -C "$wt" rev-parse --short HEAD)"
       if [ -n "$behind_red" ]; then
@@ -814,7 +899,27 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
 
   # ---- what the tree says ------------------------------------------------------
   _driver_repair_take_listed "$t" "$wt" "$ans" || return "$DRIVER_E_REFUSED"
-  driver_git_actions "$t" "$wt" "$ans" repair || return "$DRIVER_E_REFUSED"
+  # THE DRIVER OWNS THE MERGE. A clash is settled by a real merge of the trunk, made
+  # here; the model resolves only the files that merge leaves marked, handed back once.
+  local clash=0 handed=0 left owned=0 tsha=""
+  { [ -n "$(driver_state_get "$t" repair_conflicted)" ] || [ "$merged" -eq 1 ]; } && clash=1
+  while :; do
+    if [ "$clash" -eq 1 ] && [ "$handed" -eq 0 ]; then
+      left=$(_driver_repair_marked "$t" "$wt")
+      if [ -n "$left" ]; then
+        _driver_repair_hand_back "$t" "$wt" "$trunk" "$ans" "$left" || return "$?"
+        handed=1; continue
+      fi
+    fi
+    driver_git_actions "$t" "$wt" "$ans" repair || return "$DRIVER_E_REFUSED"
+    [ "$clash" -eq 1 ] || break
+    git -C "$wt" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null || true
+    tsha=$(git -C "$wt" rev-parse -q --verify "$trunk^{commit}" 2>/dev/null)
+    owned=0; _driver_repair_own_trunk "$t" "$wt" "$tsha" "$ans" || owned=$?
+    [ "$owned" -eq 2 ] && [ "$handed" -eq 0 ] || break
+    _driver_repair_hand_back "$t" "$wt" "$trunk" "$ans" "$DRIVER_REPAIR_LEFT" || return "$?"
+    handed=1
+  done
   if [ -f "$(git -C "$wt" rev-parse --git-path MERGE_HEAD 2>/dev/null)" ] \
      || [ -n "$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)" ]; then
     local um; um=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
@@ -825,8 +930,9 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   fi
   conflicted=$(driver_state_get "$t" repair_conflicted)
   if [ -n "$conflicted" ]; then
-    if ! git -C "$wt" merge-base --is-ancestor "$trunk" HEAD 2>/dev/null; then
-      driver_say "✋ repair: the clash was resolved without merging $trunk in — it is not an ancestor of the head."
+    if [ -z "$tsha" ] || ! git -C "$wt" merge-base --is-ancestor "$tsha" HEAD 2>/dev/null; then
+      driver_say "✋ repair: the driver merged $trunk${tsha:+ ($(printf '%s' "$tsha" | cut -c1-10))} and the head still lacks it — a machine fault, not the ticket's."
+      driver_state_set "$t" park_note "the driver's own merge of $trunk did not leave it an ancestor of the head"
       return "$DRIVER_E_REFUSED"
     fi
     # A resolution that takes the trunk's side everywhere leaves a PR with none of its change.
@@ -930,6 +1036,11 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
   if [ -n "$lesson_red" ]; then
     rc=0; _driver_repair_write_lesson "$t" "$wt" "$trunk" "$base" "$pr" "$ans" "$row" || rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
+  fi
+  if [ "$clash" -eq 1 ] && { [ -z "$tsha" ] || ! git -C "$wt" merge-base --is-ancestor "$tsha" HEAD 2>/dev/null; }; then
+    driver_say "✋ repair: the head lacks $trunk after the driver's own merge — it is not pushed as a settled clash."
+    driver_state_set "$t" park_note "the driver's own merge of $trunk did not leave it an ancestor of the head"
+    return "$DRIVER_E_REFUSED"
   fi
   driver_state_set "$t" repair_conflicted ""
   driver_say "   repair: $(jq -r '.cause // ""' "$ans") — $own_fixes fix(es), each proved${earlier_fixes:+$([ "$earlier_fixes" -gt 0 ] && echo ", $earlier_fixes from an earlier round noted")}${lesson_red:+, and the lesson written}"

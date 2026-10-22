@@ -1062,4 +1062,58 @@ want "planted (no reset check): a trunk commit is accepted" "flipped" "$(tail -1
   driver_git_actions 13604 "$WT" "$FIX/ga.json" fix >/dev/null 2>&1 && echo flipped ) > "$FIX/plant7" 2>&1
 want "planted (no on-origin check): a local-only commit is dropped" "flipped" "$(tail -1 "$FIX/plant7")"
 
+echo "--- the driver owns the trunk merge: a resolution without one is merged by the driver (#13362, #13044) ---"
+parents() { git -C "$WT" rev-list --parents -1 HEAD | wc -w | tr -d ' '; }
+# The model aborts the driver's merge and commits its resolution as a plain commit.
+nomerge_case() { merge_case "$1" "git merge --abort; printf 'trunk line $1\nbranch line\n' > shared.txt; git commit -qam 'resolve by hand'"
+  answer "$(repaired "$(gate_fix 'bash lint.sh')" '[{"file":"shared.txt","resolution":"both lines kept"}]')"; }
+nomerge_case 13700
+out=$(driver_step_repair 13700 2>&1); rc=$?
+want "no merge from the model: it finishes"         "0" "$rc"
+want "no merge from the model: a merge commit"      "3" "$(parents)"
+want "no merge from the model: the trunk is its second parent" "$(git -C "$WT" rev-parse origin/develop)" "$(git -C "$WT" rev-parse HEAD^2)"
+want "no merge from the model: the model's content kept" "trunk line 13700 branch line" "$(git -C "$WT" show HEAD:shared.txt | tr '\n' ' ' | sed 's/ $//')"
+want "no merge from the model: asked once"          "repair" "$(cat "$CLAUDE_LOG")"
+want_not_in "no merge from the model: never refused" 'without merging|machine fault' "$out"
+driver_push 13700 "$WT" tkt-13700/work repair >/dev/null 2>&1; prc=$?
+want "no merge from the model: then the push happens" "0 $(git -C "$WT" rev-parse HEAD)" "$prc $(git -C "$FIX/origin" rev-parse tkt-13700/work)"
+
+# The incident itself: a real merge, then the trunk moves (a peer's fetch in the shared
+# clone) before the ancestor check. The driver merges the newer trunk too.
+merge_case 13701 "printf 'trunk line 13701\nbranch line\n' > shared.txt
+( cd \"\$FIX/repo\"; printf 'later\n' > later13701.txt; git add later13701.txt; git commit -qm 'trunk: later'; git --git-dir=\"\$FIX/origin\" fetch -q \"\$FIX/repo\" +develop:develop )
+git fetch -q origin"
+out=$(driver_step_repair 13701 2>&1); rc=$?
+want "trunk moved under the model: it finishes"     "0" "$rc"
+want "trunk moved under the model: the newer trunk is in" "yes" "$(git -C "$WT" merge-base --is-ancestor "$(git -C "$REPO" rev-parse develop)" HEAD && echo yes)"
+want "trunk moved under the model: a merge commit"  "3" "$(parents)"
+want "trunk moved under the model: content kept"    "trunk line 13701 branch line" "$(git -C "$WT" show HEAD:shared.txt | tr '\n' ' ' | sed 's/ $//')"
+
+echo "--- a file the model left marked is handed back, once ---"
+merge_case 13702 "n=\$(cat \"\$FIX/n13702\" 2>/dev/null || echo 0); echo \$((n+1)) > \"\$FIX/n13702\"
+[ \"\$n\" -ge 1 ] && printf 'trunk line 13702\nbranch line\n' > shared.txt; true"
+out=$(driver_step_repair 13702 2>&1); rc=$?
+want "a marker left: it finishes"                   "0" "$rc"
+want "a marker left: the model was asked twice"     "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want_in "a marker left: the file was handed back"   'handed back to the model' "$out"
+want_in "a marker left: the second brief names it"  'still carry conflict markers: shared.txt' "$(cat "$FIX/claude-stdin-repair.txt")"
+want "a marker left: a merge commit with the trunk" "3 yes" "$(parents) $(merge_done)"
+want "a marker left: both sides kept"               "trunk line 13702 branch line" "$(git -C "$WT" show HEAD:shared.txt | tr '\n' ' ' | sed 's/ $//')"
+
+echo "--- a head that already has the trunk is not merged again ---"
+merge_case 13703 'printf "trunk line 13703\nbranch line\n" > shared.txt'
+out=$(driver_step_repair 13703 2>&1); rc=$?
+want "already merged: it finishes"                  "0" "$rc"
+want "already merged: exactly one merge of the trunk" "1" "$(git -C "$WT" rev-list --merges --count "$(driver_state_get 13703 repair_base)"..HEAD)"
+H=$(git -C "$WT" rev-parse HEAD)
+_driver_repair_own_trunk 13703 "$WT" "$(git -C "$WT" rev-parse origin/develop)" "$(driver_state_dir 13703)/steps/repair.json" >/dev/null 2>&1; orc=$?
+want "already merged: the driver's merge is a no-op" "0 $H" "$orc $(git -C "$WT" rev-parse HEAD)"
+
+echo "--- plant: the driver's merge gone, the resolution without one refuses again ---"
+( _driver_repair_own_trunk() { DRIVER_REPAIR_LEFT=""; return 0; }
+  nomerge_case 13704
+  out=$(driver_step_repair 13704 2>&1); rc=$?
+  [ "$rc" = 24 ] && [ "$(parents)" = 2 ] && echo flipped ) > "$FIX/plant-own-merge" 2>&1
+want "planted (no driver merge): the resolution without a merge is refused" "flipped" "$(tail -1 "$FIX/plant-own-merge")"
+
 suite_end "$FAILED"
