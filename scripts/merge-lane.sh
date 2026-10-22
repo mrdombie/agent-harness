@@ -139,20 +139,22 @@ has_label() { jq -e --argjson n "$1" --arg l "$2" '.[] | select(.number == $n) |
 # ---- 2. members --------------------------------------------------------------
 NOW=$(swarm_now)
 # A new head is a new PR as far as the out list goes.
-st --argjson prs "$PRS" '.out |= with_entries(.key as $k | .value as $v | select(any($prs[]; (.number|tostring) == $k and .headRefOid == $v)))'
-CANDS=$(jq -c --arg trunk "$INTEGRATION_BRANCH" --arg hold "$HOLD_LABEL" --arg lane "$LANE_LABEL" --argjson out "$(jq -c .out <<<"$ST")" '
-  [ .[] | select(.isDraft | not) | select(.baseRefName == $trunk)
+ST=$(jq_slurp prs "$PRS" -- jq -c '$prs[0] as $prs | .out |= with_entries(.key as $k | .value as $v | select(any($prs[]; (.number|tostring) == $k and .headRefOid == $v)))' <<<"$ST")
+CANDS=$(jq_slurp out "$(jq -c .out <<<"$ST")" -- jq -c --arg trunk "$INTEGRATION_BRANCH" --arg hold "$HOLD_LABEL" --arg lane "$LANE_LABEL" '
+  $out[0] as $out
+  | [ .[] | select(.isDraft | not) | select(.baseRefName == $trunk)
     | select(any(.labels[]?; .name == $hold) | not)
     | select(.autoMergeRequest != null or any(.labels[]?; .name == $lane))
     | select($out[(.number|tostring)] != .headRefOid)
     | {n: .number, sha: .headRefOid} ]' <<<"$PRS")
 HEAD_PR=$(jq -r '.head.pr // empty' <<<"$ST")
-st --argjson c "$CANDS" --argjson now "$NOW" --arg head "$HEAD_PR" '
-  .members |= with_entries(.key as $k | select($k == $head or any($c[]; (.n|tostring) == $k)))
+ST=$(jq_slurp c "$CANDS" -- jq -c --argjson now "$NOW" --arg head "$HEAD_PR" '
+  $c[0] as $c
+  | .members |= with_entries(.key as $k | select($k == $head or any($c[]; (.n|tostring) == $k)))
   | reduce $c[] as $x (.; (.members[($x.n|tostring)]) as $m
       | if $m == null then .members[($x.n|tostring)] = {seen: $now, approved: $x.sha, updated: false}
         elif ($m.updated | not) then .members[($x.n|tostring)].approved = $x.sha
-        else . end)'
+        else . end)' <<<"$ST")
 
 # The lane does the merge: label first, so a disarmed PR never drops out of it.
 for n in $(jq -r '.[].n' <<<"$CANDS"); do
@@ -171,17 +173,19 @@ done
 # ---- 3. order ----------------------------------------------------------------
 # A PR with no P label of its own takes its ticket's labels, in one batched read
 # made only for those; a ticket that cannot be read sorts as no priority.
-NEED=$(jq -r --argjson c "$CANDS" --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
-  [ .[] | select(.number as $n | any($c[]; .n == $n))
+NEED=$(jq_slurp c "$CANDS" -- jq -r --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
+  $c[0] as $c
+  | [ .[] | select(.number as $n | any($c[]; .n == $n))
     | select(any(.labels[]?; .name | test("^P[0-9]$")) | not)
     | (.headRefName // "" | branch_ticket($pre)) | select(. != "") ] | unique | .[]' <<<"$PRS" 2>/dev/null | tr '\n' ' ')
 TICKETS="{}"
 # shellcheck disable=SC2086  # a list of numbers, split on purpose
 [ -z "${NEED// /}" ] || TICKETS=$(gh_issues_batch $NEED 2>/dev/null) || true
 jq -e 'type == "object"' >/dev/null 2>&1 <<<"$TICKETS" || TICKETS="{}"
-ORDER=$(coord_jq -c --argjson c "$CANDS" --argjson prs "$PRS" --argjson tk "$TICKETS" --arg first "$FIRST_LABEL" \
+ORDER=$(jq_slurp c "$CANDS" prs "$PRS" tk "$TICKETS" -- coord_jq -c --arg first "$FIRST_LABEL" \
           --arg pre "$BRANCH_PREFIX" "$COORD_TICKET_JQ$BRANCH_TICKET_JQ"'
-  .head.pr as $h | .members as $m
+  $c[0] as $c | $prs[0] as $prs | $tk[0] as $tk
+  | .head.pr as $h | .members as $m
   | [ $c[] | .n as $n
       | ([$prs[] | select(.number == $n)] | first // {}) as $p
       | [$p.labels[]?.name] as $pl
@@ -193,7 +197,7 @@ ORDER=$(coord_jq -c --argjson c "$CANDS" --argjson prs "$PRS" --argjson tk "$TIC
          tool: (if coord_tooling($ls; ($p.title // $t.title // "")) then 1 else 0 end),
          s: ($m[($n|tostring)].seen // 0)} ]
   | sort_by(.h, .p, .pri, .tool, .s, .n) | map(.n)' <<<"$ST")
-st --argjson o "$ORDER" '.order = $o'
+ST=$(jq_slurp o "$ORDER" -- jq -c '.order = $o[0]' <<<"$ST")
 
 drop() { # <pr> — gone from the lane's books
   st --arg p "$1" 'del(.members[$p]) | del(.reruns[$p]) | del(.acts[$p]) | if (.head.pr|tostring) == $p then .head = null else . end'

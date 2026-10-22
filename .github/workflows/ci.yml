@@ -58,6 +58,9 @@ jobs:
         # the machine carries. Three were reachable on the origin machine and they
         # disagreed by 474 lines; the one that loaded was never the kit's.
         run: bash scripts/check-skill-namespacing.sh
+      - name: No GitHub list goes to jq on argv
+        # Past ~96 open PRs `--argjson prs "$PRS"` hit "Argument list too long" and keep-fresh wiped its state every pass.
+        run: bash scripts/check-argv-json.sh
       - name: A status label is set only through issue-status.sh
         # A step that added its status and removed only the one it expected left
         # tickets wearing ready, claimed, in-review and partial at once.

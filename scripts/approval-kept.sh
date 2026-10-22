@@ -287,11 +287,12 @@ signoffs() {
     commits=$(gh_call api "repos/$REPO/pulls/$pr/commits?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') \
       || { echo "could not read PR #$pr's commits" >&2; return 2; }
   fi
-  jq -cn --argjson c "$comments" --argjson r "$reviews" --argjson e "$events" --argjson k "$commits" \
+  jq_slurp c "$comments" r "$reviews" e "$events" k "$commits" -- jq -cn \
          --arg hold "$HOLD_LABEL" --argjson win "$WINDOW" '
     def t: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
     def human: (.type // "User") != "Bot" and ((.login // "") | endswith("[bot]") | not);
-    ([ $e[] | select(.event == "unlabeled" and .label.name == $hold and (.actor | human)) | .created_at | t ]) as $offs
+    $c[0] as $c | $r[0] as $r | $e[0] as $e | $k[0] as $k
+    | ([ $e[] | select(.event == "unlabeled" and .label.name == $hold and (.actor | human)) | .created_at | t ]) as $offs
     | [ ( $r[] | select(.state == "APPROVED" and (.user | human) and (.commit_id // "" | test("^[0-9a-f]{40}$")))
           | {at: (.submitted_at | t), sha: .commit_id, how: "marked"} ),
         ( $c[] | select(.user | human) | (.body // "") as $b
