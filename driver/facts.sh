@@ -485,10 +485,25 @@ driver_facts_common() { # <ticket> <slot>
 # driver_fact_proof_limits — what cannot prove a change here. A proof tree runs no app
 # server, so an e2e browser spec is refused on both sides unless the project's own e2e
 # harness brings the app up (`tests.e2eProofs: true`).
+# driver_auto_proof_kinds — the autoProofs kinds proof.autoAccept turns on, space-separated.
+driver_auto_proof_kinds() {
+  local k on=""
+  for k in docs-only comment-only wording-only test-only; do
+    python3 -I "$KIT_ROOT/scripts/proof-class.py" enabled --kind "$k" --cfg "${HARNESS_CFG:-}" 2>/dev/null && on="$on $k"
+  done
+  printf '%s' "${on# }"
+}
+
 driver_fact_proof_limits() {
   if [ "$(driver_opt tests.e2eProofs false)" = true ]; then
     printf 'This project'"'"'s e2e harness brings the app up, so an e2e browser spec can prove a change here, as can a unit or DOM test.'
   else
     printf 'An e2e browser spec (Playwright, e2e/**/*.spec.ts) cannot prove a change here: a proof tree runs no app server, so every page load is refused on both sides. Prove it with a unit or DOM test (vitest, a *.test.ts or *.dom.test.tsx) that goes red without the change; the e2e spec can still ship as extra coverage.'
+  fi
+  local on; on=$(driver_auto_proof_kinds)
+  if [ -n "$on" ]; then
+    printf ' A fix no red/green pair can show that is only %s goes in autoProofs, checked by the driver, with no PM answer (proof.autoAccept).' "$on"
+  else
+    printf ' proof.autoAccept is off here: a fix no red/green pair can show needs a PM answer (pmProofs).'
   fi
 }

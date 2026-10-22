@@ -170,6 +170,40 @@ _driver_fix_pm_proof() { # <tree> <answers.json> <review.json> <entry-json>
   printf 'kind "%s" is neither mutation nor commit\n' "$kind"; return 3
 }
 
+# _driver_fix_auto_proof <tree> <trunk> <review.json> <entry> — proves one autoProofs
+# entry, printing why. Exit as driver_prove_by_break; 3 = the commit is not that kind.
+# A finding no red-then-green pair can show, fixed by a commit that is only docs, only
+# comments, only wording or only tests, had one answer from the PM every time; it is
+# the machine's now. The class is read off the commit's diff by scripts/proof-class.py,
+# never taken from the fixer, and a test-only fix also carries a mutation the driver
+# plants in non-test code: the test must go red, then green once the code is restored.
+_driver_fix_auto_proof() { # <tree> <trunk> <review.json> <entry-json>
+  local wt="$1" trunk="$2" review="$3" e="$4" bid kind c cs tf why rc tfile bfile
+  bid=$(jq -r '.blockerId // ""' <<<"$e"); kind=$(jq -r '.kind // ""' <<<"$e"); c=$(jq -r '.commit // ""' <<<"$e")
+  tfile=$(jq -r '.testFile // ""' <<<"$e"); bfile=$(jq -r '.break.file // ""' <<<"$e")
+  cs=$(git -C "$wt" rev-parse --verify -q "$c^{commit}" 2>/dev/null) || {
+    printf 'commit %s does not resolve\n' "${c:-(none)}"; return 3; }
+  git -C "$wt" merge-base --is-ancestor "$cs" HEAD 2>/dev/null || {
+    printf 'commit %s is not on this branch\n' "$(printf '%s' "$c" | cut -c1-10)"; return 3; }
+  tf=$(jq -r --arg b "$bid" '[.findings[]? | select(.id == $b) | .file] | first // ""' "$review" 2>/dev/null)
+  [ -n "$tf" ] || { printf 'the review names no file for %s, so the commit cannot be held to it\n' "$bid"; return 3; }
+  rc=0
+  why=$(python3 -I "$KIT_ROOT/scripts/proof-class.py" check --repo "$wt" --commit "$cs" --kind "$kind" \
+          --file "$tf" ${trunk:+--trunk "$trunk"} --cfg "${HARNESS_CFG:-}" \
+          ${tfile:+--test-file "$tfile"} ${bfile:+--break-file "$bfile"} 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ]; then printf '%s\n' "$why"; return 3; fi
+  [ "$kind" = test-only ] || { printf '%s\n' "$why"; return 0; }
+  local by brc=0
+  by=$(driver_prove_by_break "$wt" "$tfile" "$cs" "$bfile" "$(jq -r '.break.find // ""' <<<"$e")" \
+         "$(jq -r '.break.replace // ""' <<<"$e")" "$(jq -r '.command // ""' <<<"$e")") || brc=$?
+  printf '%s; %s\n' "$why" "$by"
+  return "$brc"
+}
+
+# A park that asks for the proof the driver now checks itself: "no red/green pair is
+# possible — will you accept a mutation proof / the fixing commit?"
+DRIVER_FIX_AUTO_ASK_RE='mutation proof|commit proof|no red.{0,12}green|red.then.green pair|(wording|comment|docs?|test)[- ]only'
+
 # _driver_fix_critic_head <pr> — the head the critic last FAILED, from the judge's own
 # ledger (pr, head, set, verdict, state, url); nothing when it has none.
 _driver_fix_critic_head() { # <pr>
@@ -359,6 +393,19 @@ $proofnote"
 
   driver_say "   fix round $((round + 1)): $n blocking finding(s) to clear"
   rc=0; driver_ai_step "$t" fix || rc=$?
+  # A QUESTION THE MACHINE ANSWERS IS NOT A PARK. "No red/green pair is possible —
+  # accept the commit / a mutation?" had one answer from the PM every time; it is
+  # asked once more, pointed at autoProofs, and the driver checks what comes back.
+  local autokinds; autokinds=$(driver_auto_proof_kinds)
+  if [ "$rc" -eq "$DRIVER_E_QUESTION" ] && [ -z "$proofnote" ] && [ -n "$autokinds" ] \
+     && jq -r '.question // ""' "$d/steps/fix.json" 2>/dev/null | grep -qiE -- "$DRIVER_FIX_AUTO_ASK_RE"; then
+    driver_state_set "$t" fix_proof_note "- you asked: $(jq -r '.question' "$d/steps/fix.json" | tr '\n' ' ' | cut -c1-600)
+  That is not a question for a person. A finding no red-then-green pair can show, fixed by a commit that is only $autokinds, goes in autoProofs naming the kind and the commit (test-only also names testFile, command and a break in non-test code). The driver reads the commit's diff itself and, for test-only, plants the break: red, then green once restored."
+    driver_say "↩ fix: asked whether a docs/comment/wording/test-only fix can be accepted without a red-then-green pair — the driver checks that itself; asking the fix step once more, pointed at autoProofs"
+    rc=0; driver_step_fix "$t" || rc=$?
+    driver_state_set "$t" fix_proof_note ""
+    return "$rc"
+  fi
   [ "$rc" -eq 0 ] || return "$rc"
   driver_git_actions "$t" "$wt" "$d/steps/fix.json" fix || return "$DRIVER_E_REFUSED"
   driver_format_changed "$t" "$wt" fix || true
@@ -373,7 +420,7 @@ $proofnote"
   local unanswered=""
   while IFS= read -r bid; do
     [ -n "$bid" ] || continue
-    jq -e --arg b "$bid" '([.cleared[]?.blockerId] + [.pmProofs[]?.blockerId] + [.bodyProofs[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
+    jq -e --arg b "$bid" '([.cleared[]?.blockerId] + [.pmProofs[]?.blockerId] + [.autoProofs[]?.blockerId] + [.bodyProofs[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
       "$ans" >/dev/null 2>&1 || unanswered="$unanswered $bid"
   done <<EOB
 $(jq -r "[.findings[]? | $(driver_blocking_select) | (.id // empty)] | .[]" "$review" 2>/dev/null)
@@ -408,6 +455,13 @@ EOB
 "; break; }
     done
   done
+  if [ -n "$autokinds" ]; then
+    for bid in $(jq -r '.deferred[]? | select((.reason // "") | test($re; "i")) | .blockerId' --arg re "$DRIVER_FIX_AUTO_ASK_RE" "$ans" 2>/dev/null); do
+      case "$pmdue" in *"- $bid:"*) continue ;; esac
+      pmdue="$pmdue- $bid: deferred as having no red-then-green pair, but a fix that is only $autokinds needs no PM answer — answer it in autoProofs with the kind and the commit; the driver reads the commit's diff (and plants the break for test-only)
+"
+    done
+  fi
   if [ -n "$pmdue" ] && [ -z "$proofnote" ]; then
     driver_state_set "$t" fix_proof_note "$pmdue"
     driver_say "↩ fix: a deferred finding is one a PM answer on the ticket already accepts a non-test proof for — asking the fix step once more, with which answer"
@@ -530,6 +584,33 @@ EOB
 " ;;
     esac
   done
+  # A NON-TEST PROOF THE MACHINE CHECKS: the commit is only docs, comments, wording or
+  # tests, read off its diff; a test-only one also turns its test red with a mutation.
+  local nauto
+  nauto=$(jq -r '[.autoProofs[]?] | length' "$ans" 2>/dev/null)
+  i=0
+  while [ "$i" -lt "${nauto:-0}" ]; do
+    e=$(jq -c --argjson i "$i" '.autoProofs[$i]' "$ans"); i=$((i+1))
+    bid=$(jq -r '.blockerId // "?"' <<<"$e"); kind=$(jq -r '.kind // ""' <<<"$e")
+    why=""; prc=0
+    why=$(_driver_fix_auto_proof "$wt" "$trunk" "$review" "$e") || prc=$?
+    case "$prc" in
+      8) driver_say "🛑 fix $bid — $why. Back on the queue, not sent round again."
+         driver_state_set "$t" park_note "$why"
+         return "$DRIVER_E_BUSY" ;;
+      0) driver_say "   fix $bid — $kind, checked by the driver — $why"
+         jq -nc --arg b "$bid" --arg k "$kind" --arg c "$(jq -r '.commit' <<<"$e")" --arg w "$why" \
+           '{blockerId:$b, proof:(if $k == "test-only" then "mutation" else "commit" end), kind:$k, commit:$c, pmAnswer:null, why:$w}' >> "$rec" ;;
+      5) driver_say "✋ fix $bid — $why"
+         driver_state_set "$t" park_note "$why"
+         return "$DRIVER_E_REFUSED" ;;
+      4) driver_say "✋ fix $bid — $why"
+         return "$DRIVER_E_TIMEOUT" ;;
+      *) driver_say "✋ fix $bid — the $kind proof is not accepted: $why"; bad=1
+         fails="$fails- $bid: the $kind proof is not accepted: $(printf '%s' "$why" | cut -c1-1000)
+" ;;
+    esac
+  done
   # A FINDING CLEARED BY EDITING THE DESCRIPTION is proved on the description: both
   # versions read from GitHub here, never the fixer's own run of the check.
   local nbody bpr
@@ -573,6 +654,6 @@ EOB
     return "$DRIVER_E_REFUSED"
   fi
 
-  driver_say "   fix: $((ncleared + ${npm:-0} + ${nbody:-0})) finding(s) cleared — $ncleared proved red before green, ${npm:-0} by a proof a PM answer allowed and the driver checked, ${nbody:-0} on the PR description"
+  driver_say "   fix: $((ncleared + ${npm:-0} + ${nauto:-0} + ${nbody:-0})) finding(s) cleared — $ncleared proved red before green, ${npm:-0} by a proof a PM answer allowed and the driver checked, ${nauto:-0} by a docs/comment/wording/test-only proof the driver checked, ${nbody:-0} on the PR description"
   return "$DRIVER_OK"
 }
