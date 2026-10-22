@@ -430,7 +430,7 @@ else
   say "$(harness_self_update)"
 fi
 # The companion plugins the builds lean on, to the set the sheet declares (plugin-ensure.sh).
-say "$(harness_plugins_ensure "$(harness_plugins_declared "$SHEET_ROLE" "${SHEET_PLUGINS:-}")")"
+say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.

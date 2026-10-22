@@ -179,7 +179,7 @@ rm -f "$STATE/coordinator/plugins.json"
 want "with no reading, the heartbeat has no plugins key" "null" "$(jq -c .plugins <<<"$(sheet 'coord_heartbeat 0 100')")"
 
 echo "--- the tick runs the step ---"
-grep -q 'harness_plugins_ensure "$(harness_plugins_declared "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"' "$HERE/coordinator-tick.sh"
+grep -qF 'say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"' "$HERE/coordinator-tick.sh"
 want "coordinator-tick.sh calls the ensure step with the sheet's set" "0" "$?"
 
 suite_end "$FAILED"

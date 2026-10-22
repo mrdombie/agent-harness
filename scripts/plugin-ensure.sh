@@ -4,6 +4,7 @@
 #   . "$KIT_ROOT/scripts/plugin-ensure.sh"   (after coordinator-env.sh and self-update.sh)
 #   harness_plugins_declared <role> [sheet set]   the set this host must match, as JSON
 #   harness_plugins_ensure <set json>             one rate-limited pass; prints one line
+#   harness_plugins_tick <role> [sheet set]       the tick's call: declared, then ensured
 #   harness_plugins_state                         this host's readings, for the heartbeat
 #   plugin-ensure.sh show | check                 the same, run by hand
 #
@@ -207,6 +208,12 @@ harness_plugins_ensure() {
   if [ -s "$COORD_DIR/plugins.result" ]; then printf '%s' "$(cat "$COORD_DIR/plugins.result")"
   else printf 'plugins: the pass ended without a verdict (exit %s) — see %s' "$rc" "$SU_LOG"; fi
   return 0
+}
+
+# harness_plugins_tick <role> [sheet set] — the tick's call: the set is not even read when the step is off.
+harness_plugins_tick() {
+  case "$PE_ENABLED" in off|0|false|no) printf 'plugins: off'; return 0 ;; esac
+  harness_plugins_ensure "$(harness_plugins_declared "$@")"
 }
 
 # harness_plugins_state — {id: {v, on}} from the last pass, for the heartbeat; {} when none.
