@@ -18,7 +18,7 @@ C="$STATE/coordinator"
 NOWE=$(date +%s)
 unset COORDINATOR_PACE_TARGET COORDINATOR_PACE_HEADROOM COORDINATOR_PACE_WEEK_TARGET COORDINATOR_PACE_WEEK_HEADROOM \
       COORDINATOR_PACE_BURN COORDINATOR_PRODUCT_FLOOR COORDINATOR_TOOLING_CAP SWARM_USAGE_CEILING
-# As Maktura runs it: no weekly line.
+# As the owner runs it: no weekly line.
 export COORDINATOR_PACE_WEEK_HEADROOM=1
 
 # <5h use> <5h reset> [7d use] — one stream-json limit event, as the CLI writes it.
