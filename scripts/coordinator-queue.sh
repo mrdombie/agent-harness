@@ -25,7 +25,9 @@
 # priority (prin), kind and polish flag. An entry the PM put there with `add --front`
 # stays first overall across re-seeds; `add --first` (a resume, an owner's answer, a
 # requeue) is first only within its own priority, so it never jumps higher-priority
-# work. A `new` entry whose note is a REPAIR brief is class repair. A row nobody can
+# work. A `new` entry whose note is a REPAIR brief is class repair. With
+# coordinator.releaseScopeOnly on, a new ticket outside it is not seeded (the count
+# kept as release_held); repairs, approved merges and process fixes always are. A row nobody can
 # start (closed, batched, parked, blocked, held) is dropped. An entry put there with `add` is pinned: it and every
 # note survive a re-seed, because nothing on the forge can rebuild them. The
 # tick removes an entry once it has spawned it. A seed whose reads fail changes
@@ -110,7 +112,7 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
            NF >= 1 && $1 != "" {
              inside = ($1 in tk)
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
-             if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6
+             if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6 "\t" ($8 == "-" ? "" : $8)
            }')
   # The pinned rows the board did not offer, read in one batch: a closed, batched,
   # parked, blocked or held one is dropped rather than shown as work.
@@ -128,7 +130,7 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
     | ($old | map({key: (.n|tostring), value: .}) | from_entries) as $byn
     | ($rows | split("\n") | map(select(length > 0) | split("\t")
         | {n: (.[0]|tonumber), class: .[1], pri: (.[2] // ""), mode: (.[3] // ""),
-           ls: ((.[4] // "") | split(",")), title: ((.[5] // "") | ascii_downcase)}
+           ls: ((.[4] // "") | split(",")), title: ((.[5] // "") | ascii_downcase), ms: (.[6] // "")}
         # The kind of work, owner call 2026-10-18: half-built screens first, then
         # features, then other bugs and chores, then polish. Hard-coded, not config.
         | .kind = coord_kind(.ls; .mode; .pri; .title)
@@ -137,14 +139,18 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
         | .plist = ((.ls | index($plist)) != null)
         | .tooling = coord_tooling(.ls; .title)
         | .process = coord_process(.ls)
-        | {n, class, kind, prin, polish, plist, tooling, process, ls})) as $fresh
+        | {n, class, kind, prin, polish, plist, tooling, process, ls, title, ms})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
                      | .class = coord_class(.class; .note)
                      | if $o.front then .front = true else . end
                      | if $o.top then .top = true else . end)
-                | map(select(coord_stopped(.ls; .class; "OPEN") | not) | del(.ls))) as $merged
+                | map(select(coord_stopped(.ls; .class; "OPEN") | not))) as $open
+    # Outside coordinator.releaseScopeOnly a new ticket is never seeded; one the PM
+    # pinned stays, and the tick holds it at spawn.
+    | ([$open[] | select((.pinned | not) and coord_release_held(.ls; .title; .ms; .class))] | length) as $held
+    | ($open | map(select(.pinned or (coord_release_held(.ls; .title; .ms; .class) | not)) | del(.ls, .title, .ms))) as $merged
     # A pinned row the board no longer offers stays only while its ticket is open and
     # unstopped; one that could not be read stays (a failed read drops nothing).
     | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null)
@@ -169,7 +175,8 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
                 (if $t.class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9) else 0 end),
                 (if $t.class == "new" then -$t.n else $i end)] end))
     | map(.value)
-    | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: .}' | write
+    | {scope: $scope, label: ($ls | join(", ")), labels: $ls, seeded_at: $at, tickets: .}
+      + (if $release.on == true then {release_held: $held} else {} end)' | write
   echo "seeded $(jq '.tickets | length' "$COORD_QUEUE") ticket(s) for $(jq -r '.label' "$COORD_QUEUE")"
 }
 

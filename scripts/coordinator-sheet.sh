@@ -121,7 +121,8 @@ _sheet_carries() {
 # ---- what is startable -------------------------------------------------------
 # Open; a new build carries the ready label; none of the labels that keep a ticket
 # from every agent (the tick's own stop list), nor drafting, claimed, a decision
-# waiting on the PM, or the sheet's extra stops (after-launch). A repair or an
+# waiting on the PM, or the sheet's extra stops (after-launch), nor new work outside
+# coordinator.releaseScopeOnly (coord_release_held). A repair or an
 # approved merge is in review by definition, so that one label never stops it.
 coord_sheet_stop_labels() {
   { swarm_blocking_labels
@@ -158,7 +159,7 @@ coord_sheet_entries() {
         | select($i != null and ($i.state // "OPEN") == "OPEN")
         | ($i.labels // []) as $ls
         | ($heldby[($e.n | tostring)].host // "") as $h
-        | select($h != "" or startable($ls; $e.class))
+        | select($h != "" or (startable($ls; $e.class) and (coord_release_held($ls; $i.title; $i.milestone; $e.class) | not)))
         | $e + {kind: coord_kind($ls; ""; null; $i.title), title: ($i.title // "")}
           + (if coord_process($ls) then {process: true} else {} end)
           + (if $h != "" then {host: $h} else {} end)]

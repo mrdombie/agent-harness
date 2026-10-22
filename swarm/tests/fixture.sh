@@ -88,9 +88,9 @@ case "$*" in "api graphql "*OpenPullRequests*)
   [ -f "$FIX/gh/prs-all.json" ] || printf '[]\n' > "$FIX/gh/prs-all.json"
   exec bash "$GH_OPEN_PRS_PAGE" "$FIX/gh/prs-all.json" "$@" ;;
 esac
-q=""; key=""; labels=""; prev=""
+q=""; key=""; labels=""; prev=""; fields=""
 for a in "$@"; do
-  case "$prev" in -q|--jq) q="$a" ;; --label) labels="$labels${labels:+,}$a" ;; esac
+  case "$prev" in -q|--jq) q="$a" ;; --label) labels="$labels${labels:+,}$a" ;; --json) fields="$a" ;; esac
   case "$a" in head:*) key="${a#head:}" ;; esac
   prev="$a"
 done
@@ -111,6 +111,8 @@ case "$1 $2" in
     f="$FIX/gh/issue-list-$labels.json"
     [ -f "$f" ] || f="$FIX/gh/issue-list.json"
     [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
+    # A milestone comes back only when it was asked for, as GitHub answers.
+    case ",$fields," in *,milestone,*) ;; *) jq 'map(del(.milestone?))' "$f" > "$f.nomilestone" && f="$f.nomilestone" ;; esac
     emit "$f" ;;
   "label list")
     f="$FIX/gh/labels.json"; [ -f "$f" ] || { f="$FIX/gh/empty.json"; printf '[]\n' > "$f"; }
@@ -125,6 +127,7 @@ case "$1 $2" in
     # A batched PR-commits read: each pN alias answered from pr-commits-N.json, absent null.
     pcs=$(printf '%s' "$query" | grep -oE 'p[0-9]+:pullRequest\(number:' | sed 's/^p//; s/:.*//')
     [ -n "$nums$heads$pcs" ] || exit 1
+    askm=false; case "$query" in *"milestone{title}"*) askm=true ;; esac
     # $FIX/gh/graphql-fail-N: a request naming PR N fails whole, as one chunk.
     for n in $pcs; do [ -f "$FIX/gh/graphql-fail-$n" ] && exit 1; done
     out='{}'
@@ -145,7 +148,8 @@ case "$1 $2" in
       f="$FIX/gh/issue-$n.json"
       if [ -f "$f" ]; then
         out=$(jq -c --arg k "i$n" --argjson n "$n" --slurpfile i "$f" \
-          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}} + (if has("body") then {body} else {} end) + (if has("stateReason") then {stateReason} else {} end))}' <<<"$out")
+          --argjson askm "$askm" \
+          '. + {($k): ($i[0] | {number: $n, state, title: (.title // ""), labels: {nodes: (.labels // [])}} + (if has("body") then {body} else {} end) + (if has("stateReason") then {stateReason} else {} end) + (if $askm and has("milestone") then {milestone} else {} end))}' <<<"$out")
       else out=$(jq -c --arg k "i$n" '. + {($k): null}' <<<"$out"); fi
     done
     jq -c '{data: {repository: .}}' <<<"$out" ;;

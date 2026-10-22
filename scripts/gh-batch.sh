@@ -8,6 +8,7 @@
 #                                   a rate-limit refusal starts (or lengthens) it
 #   gh_backoff_active               0, printing the epoch it ends, while it holds
 #   gh_issues_batch <n…>            {"<n>": {number,state,title,updatedAt,labels:[name…]}}
+#                                   plus milestone (its title) when it has one,
 #                                   for every number GitHub resolved, in one
 #                                   GraphQL request per 50; exit 1 when a request
 #                                   came back with no data at all. GH_BATCH_BODY=1
@@ -331,7 +332,8 @@ gh_issues_batch() {
       part=$(_gh_jq_acc "$out" '$acc + ([.data.repository | to_entries[] | .value | select(type == "object" and .number != null)
               | {key: (.number|tostring), value: ({number, state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels.nodes[]?.name]}
                                                    + (if has("body") then {body: (.body // "")} else {} end)
-                                                   + (if .stateReason then {stateReason} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
+                                                   + (if .stateReason then {stateReason} else {} end)
+                                                   + (if (.milestone.title? // "") != "" then {milestone: .milestone.title} else {} end))}] | from_entries)' <<<"$part" 2>/dev/null) || part=""
       [ -n "$part" ] && out="$part" || fail=1
     else
       fail=1
@@ -344,16 +346,18 @@ gh_issues_batch() {
                   | $acc + {($n): ({number: ($n|tonumber), state: (.state | ascii_upcase), title: (.title // ""),
                                     updatedAt: (.updated_at // .updatedAt // null), labels: [.labels[]? | if type == "object" then .name else . end]}
                                    + (if $b != "" then {body: (.body // "")} else {} end)
-                                   + (if (.state_reason // "") != "" then {stateReason: (.state_reason | ascii_upcase)} else {} end))}' \
+                                   + (if (.state_reason // "") != "" then {stateReason: (.state_reason | ascii_upcase)} else {} end)
+                                   + (if (.milestone.title? // "") != "" then {milestone: .milestone.title} else {} end))}' \
                   --arg n "$one" --arg b "$b" <<<"$part" 2>/dev/null)
           [ -z "$part" ] || out="$part"
         done
       else
       for one in $nums; do
-        part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt${b:+,body}" 2>/dev/null) || continue
+        part=$(gh_call issue view "$one" --repo "$_o/$_r" --json "number,state,title,labels,updatedAt,milestone${b:+,body}" 2>/dev/null) || continue
         part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
                 | $acc + {($n): ({number: ($n|tonumber), state, title: (.title // ""), updatedAt: (.updatedAt // null), labels: [.labels[]?.name]}
-                                 + (if has("body") then {body: (.body // "")} else {} end))}' --arg n "$one" <<<"$part" 2>/dev/null)
+                                 + (if has("body") then {body: (.body // "")} else {} end)
+                                 + (if (.milestone.title? // "") != "" then {milestone: .milestone.title} else {} end))}' --arg n "$one" <<<"$part" 2>/dev/null)
         [ -z "$part" ] || out="$part"
       done
       fi
@@ -363,7 +367,7 @@ gh_issues_batch() {
   for n in "$@"; do
     case "$n" in ''|*[!0-9]*) continue ;; esac
     nums="$nums $n"
-    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state stateReason title updatedAt$b labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt$b labels(first:50){nodes{name}}}}"
+    q="$q i$n:issueOrPullRequest(number:$n){... on Issue{number state stateReason title updatedAt$b milestone{title} labels(first:50){nodes{name}}} ... on PullRequest{number state title updatedAt$b labels(first:50){nodes{name}}}}"
     k=$((k+1)); [ "$k" -lt 50 ] || _ghb_flush
   done
   _ghb_flush
