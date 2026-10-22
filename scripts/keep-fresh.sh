@@ -13,6 +13,7 @@
 # authority, never a local trial merge), oldest first, up to merge.keepFreshPerTick (5):
 #   claimed       its ticket has a claim (claim-lock.sh list), a live run, or a session
 #                 holds the PR (fix-lock.sh) → skipped: the run owns its branch
+#   queued        its ticket is already queued as a repair → skipped, not counted: a builder is coming
 #   tried         a real conflict was already found on this head → skipped until it moves
 #   merge         a scratch worktree at the PR's head merges origin/<integration branch>
 #     every conflicted file matches a merge.mechanical rule (keep-fresh-resolve.py)
@@ -80,6 +81,10 @@ jq -e 'type == "array"' >/dev/null 2>&1 <<<"$CLAIMS" \
   || { say "keep-fresh: the claim list could not be read — touching nothing"; exit 0; }
 FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list --json 2>/dev/null \
   | jq -r '.[]? | select(.expired | not) | .pr | tostring' 2>/dev/null)
+# A ticket already queued for repair has a builder coming: its PR is passed over, so the
+# per-pass limit goes to the PRs nothing has picked up yet.
+REPAIRS=$(bash "$QUEUE" list 2>/dev/null | awk '$3 == "repair" { sub(/^#/, "", $2); print $2 }')
+queued_n=0
 claimed() { # <ticket> <branch> <pr> — prints who, 0 when held
   if [ -n "$1" ] && jq -e --arg t "$1" 'any(.[]; (.issue | tostring) == $t)' >/dev/null <<<"$CLAIMS"; then echo "a claim on #$1"; return 0; fi
   if jq -e --arg b "$2" 'any(.[]; (.branch // "") == $b)' >/dev/null <<<"$CLAIMS"; then echo "a claim on $2"; return 0; fi
@@ -95,8 +100,10 @@ git -C "$MAIN_REPO" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remote
   || { say "keep-fresh: could not fetch $INTEGRATION_BRANCH — next pass"; exit 0; }
 TRUNK=$(git -C "$MAIN_REPO" rev-parse -q --verify "refs/remotes/origin/$INTEGRATION_BRANCH^{commit}" 2>/dev/null) \
   || { say "keep-fresh: $INTEGRATION_BRANCH cannot be read — next pass"; exit 0; }
-st --argjson prs "$PRS" '.tried |= with_entries(select(.key as $k | any($prs[]; (.number|tostring) == $k)))
-                        | .seen |= with_entries(select(.key as $k | any($prs[]; (.number|tostring) == $k)))'
+PRUNED=$(jq_slurp prs "$PRS" -- jq -c '$prs[0] as $prs
+  | .tried |= with_entries(select(.key as $k | any($prs[]; (.number|tostring) == $k)))
+  | .seen |= with_entries(select(.key as $k | any($prs[]; (.number|tostring) == $k)))' <<<"$ST") \
+  && ST="$PRUNED" || { say "keep-fresh: the state could not be pruned against the open pull requests — next pass"; exit 0; }
 
 ROWS=$(jq -r --arg repo "$REPO_SLUG" '
   sort_by(.number)[] | select(.draft | not) | select((.head.repo.full_name // "") == $repo)
@@ -121,6 +128,9 @@ comment_body() { # <resolved tsv> <trunk> <new sha>
 fresh_one() { # <pr> <branch> <head>
   local n="$1" br="$2" head="$3" t who v ms mg wt out rc resolved new why
   t=$(printf '%s\n' "$br" | branch_tickets | cut -f1)
+  if [ -n "$t" ] && grep -qxF -- "$t" <<<"$REPAIRS"; then
+    say "keep-fresh: #$n — #$t is already queued for repair — skipped"; queued_n=$((queued_n + 1)); return 1
+  fi
   # A real conflict stays real until the head moves; a shadow pass says "would" once a head.
   if jq -e --arg p "$n" --arg h "$head" '.tried[$p] | select(.head == $h) | .outcome | IN("real", "would-push")' >/dev/null 2>&1 <<<"$ST"; then return 1; fi
   # A state already read on this head against this trunk is not asked for again.
@@ -220,4 +230,4 @@ while IFS=$'\t' read -r n br head <&3; do
   [ "$done_n" -lt "$PER_TICK" ] || { say "keep-fresh: $PER_TICK this pass — the rest next pass"; break; }
   if fresh_one "$n" "$br" "$head"; then done_n=$((done_n + 1)); fi
 done 3<<<"$ROWS"
-say "keep-fresh: $done_n settled or sent on this pass ($(coord_mode))"
+say "keep-fresh: $done_n settled or sent on this pass, $queued_n already queued for repair ($(coord_mode))"
