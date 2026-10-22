@@ -391,6 +391,32 @@ _driver_ship_gone_merged() {
   return 0
 }
 
+# _driver_ship_person_stop <ticket> <branch> [<pr>] — 0 when no person has stopped it.
+# A PERSON'S STOP WINS OVER THE MACHINE: a do-not-merge label, a draft a person made, or
+# a Critical a person named since the last hand-off parks the run for that person —
+# never readied, armed or pushed onto a PR that would land it. mergeFirst relaxes none.
+_driver_ship_person_stop() {
+  local t="$1" branch="$2" pr="${3:-}" out rc=0
+  if [ -z "$pr" ]; then
+    pr=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || {
+      driver_say "✋ ship: could not ask GitHub for $branch's pull request, so a person's stop on it cannot be read. Nothing is readied or armed."
+      driver_state_set "$t" park_note "could not list the open pull requests for $branch to read a person's stop on it"
+      return "$DRIVER_E_UNREAD"; }
+  fi
+  out=$(bash "${DRIVER_PERSON_STOP:-$KIT_ROOT/scripts/person-stop.sh}" check "$t" $pr 2>&1) || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) driver_say "✋ ship: a person has stopped this${pr:+ (PR #$pr)}, and a person's stop wins over the machine — nothing is readied, armed or pushed onto it:"
+       printf '%s\n' "$out" | sed 's/^/   /' | while IFS= read -r l; do driver_say "$l"; done
+       driver_state_set "$t" park_note "Needs the person who stopped it: $(printf '%s' "$out" | tr '\n' ' ')— fix what they named and have them clear it (a '## PM answer' or a comment starting 'Cleared:'), take the label off, or ready the PR themselves."
+       driver_state_set "$t" park_cause pm
+       return "$DRIVER_E_REFUSED" ;;
+    *) driver_say "✋ ship: a person's stop on #$t${pr:+ / PR #$pr} could not be read ($(printf '%s' "$out" | tail -1)). Nothing is readied or armed."
+       driver_state_set "$t" park_note "could not read whether a person stopped #$t${pr:+ / PR #$pr}: $(printf '%s' "$out" | tail -1)"
+       return "$DRIVER_E_UNREAD" ;;
+  esac
+}
+
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
   local wt branch dirty ahead verdict rounds sha head body trunk r title nblock blist
@@ -508,6 +534,9 @@ driver_step_ship() { # <ticket>
       driver_state_set "$t" park_note "the pull request for $branch closed while it was being repaired"
       return "$DRIVER_E_REFUSED"
     fi
+    # A PERSON'S STOP FIRST: on a ready, armed PR the push below is the landing.
+    local psrc=0; _driver_ship_person_stop "$t" "$branch" "$open_pr" || psrc=$?
+    [ "$psrc" -eq 0 ] || return "$psrc"
     # A DRAFT THE DRIVER NEVER BUILT IS NOT ITS TO READY: whoever left it a draft did so on purpose.
     # An adoption may: its review read the whole PR, and the verdict is read next.
     if [ "${open_row#* }" = true ] && ! driver_built "$t" && ! driver_adopted "$t"; then
@@ -812,6 +841,9 @@ $polish"
   # THESE TWO ARE THE HAND-OFF, so their exit codes are read. A draft nobody marked
   # ready never lands, and an unarmed pull request waits for a person who was told the
   # run was finished — both of which read exactly like success when the call is wrapped.
+  # READ AGAIN AT THE HAND-OFF: a person may have spoken while the run was pushing.
+  local psrc2=0; _driver_ship_person_stop "$t" "$branch" "${open_pr:-$pr_n}" || psrc2=$?
+  [ "$psrc2" -eq 0 ] || return "$psrc2"
   if ! swarm_gh pr ready "$branch" --repo "$REPO_SLUG" >/dev/null 2>&1; then
     driver_say "✋ ship: the pull request for $branch could not be marked ready, so it is still a draft and cannot land. The work is pushed and reviewed; the hand-off is not done."
     return "$DRIVER_E_REFUSED"

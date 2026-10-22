@@ -273,6 +273,45 @@ gh_prs_paged() {
 }
 
 # gh_call <args…> — gh through the backoff. Stdout and stderr pass through.
+# EVERY COMMENT THE HARNESS POSTS CARRIES THE MACHINE MARKER, so person-stop.sh can tell
+# the driver's words from a person's when both post on one token. It goes before a
+# closing marker line (approval-kept.sh reads its marker as the body's last line).
+GH_MACHINE_MARK='<!-- harness:machine -->'
+_gh_mark_body() { # <body> — the body with the marker in it
+  local b="$1" last
+  case "$b" in *"$GH_MACHINE_MARK"*) printf '%s' "$b"; return 0 ;; esac
+  b="${b%"${b##*[!$'\n']}"}"
+  last="${b##*$'\n'}"
+  if [ "$last" != "$b" ] && [[ "$last" =~ ^[[:space:]]*\<!--.*--\>[[:space:]]*$ ]]; then
+    printf '%s\n%s\n%s' "${b%$'\n'*}" "$GH_MACHINE_MARK" "$last"
+  else
+    printf '%s\n\n%s' "$b" "$GH_MACHINE_MARK"
+  fi
+}
+_gh_mark_args() { # <gh args…> — sets _GH_MARKED to them, each comment body marked;
+  # a body file is copied, marked, into a temp file listed in _GH_MARK_TMP
+  _GH_MARKED=(); _GH_MARK_TMP=()
+  local a next="" mf
+  for a in "$@"; do
+    case "$next:$a" in
+      body:*) _GH_MARKED+=("$(_gh_mark_body "$a")"); next=""; continue ;;
+      file:*) if mf=$(mktemp "${TMPDIR:-/tmp}/ghmark.XXXXXX"); then
+                _GH_MARK_TMP+=("$mf")
+                if { if [ "$a" = - ]; then cat; else cat -- "$a"; fi; } > "$mf.in" 2>/dev/null \
+                   && _gh_mark_body "$(cat "$mf.in")" > "$mf"; then _GH_MARKED+=("$mf"); else _GH_MARKED+=("$a"); fi
+                rm -f "$mf.in"
+              else _GH_MARKED+=("$a"); fi
+              next=""; continue ;;
+    esac
+    case "$a" in
+      --body|-b) next=body; _GH_MARKED+=("$a") ;;
+      --body-file|-F) next=file; _GH_MARKED+=("$a") ;;
+      --body=*) _GH_MARKED+=("--body=$(_gh_mark_body "${a#--body=}")") ;;
+      *) _GH_MARKED+=("$a") ;;
+    esac
+  done
+}
+
 gh_call() {
   local until e rc
   if until=$(gh_backoff_active); then
@@ -280,8 +319,11 @@ gh_call() {
     return 75
   fi
   gh_calls_note "$@"
-  e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { "$(gh_batch_bin)" "$@"; return; }
+  local -a _GH_MARKED=() _GH_MARK_TMP=()
+  case "${1:-} ${2:-}" in "issue comment"|"pr comment") _gh_mark_args "$@"; set -- "${_GH_MARKED[@]}" ;; esac
+  e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { "$(gh_batch_bin)" "$@"; rc=$?; [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"; return "$rc"; }
   "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
+  [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"
   if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" || true; fi
   cat "$e" >&2; rm -f "$e"
   return "$rc"

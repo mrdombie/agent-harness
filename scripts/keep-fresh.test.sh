@@ -186,6 +186,14 @@ rm -f "$STATE/runs"/claim-19-*.json
 printf 'not json' > "$FIX/claims.json"; out=$(live)
 want "an unreadable claim list touches nothing"  "$before" "$(remote_head 19)"
 
+echo "--- a PR carrying do-not-merge is never pushed onto: a person's stop wins ---"
+fresh; branch 23 'printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 23 false dirty
+jq 'map(if .number == 23 then .labels = [{name: "do-not-merge"}] else . end)' "$FIX/gh/pulls.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/pulls.json"
+before=$(pushed_for 23); out=$(live)
+want "the branch is untouched"                   "$before" "$(remote_head 23)"
+want "no comment"                                "" "$(cat "$FIX/comments.log" 2>/dev/null)"
+want "and no repair queued for it"               "" "$(repairs)"
+
 echo "--- shadow is the default, and pushes nothing ---"
 fresh; branch 20 'printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 20 false dirty
 before=$(pushed_for 20); out=$(bash "$K" 2>&1)

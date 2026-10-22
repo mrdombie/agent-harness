@@ -151,6 +151,14 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 
 [POLISH ITEMS THE BUILDER SAYS IT FIXED — confirm each one against the change. One that is not really fixed is a finding at its grade (an item that names no grade is a Minor), with the item's words as its summary:
 $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n", $2, $1 }')]"
+  # A PERSON'S STOP IS READ BY THE REVIEW TOO: a Critical a person named since the last
+  # hand-off is an open blocking finding, not history. Ship refuses on it regardless.
+  local pstop pstoprc=0
+  pstop=$(bash "${DRIVER_PERSON_STOP:-$KIT_ROOT/scripts/person-stop.sh}" check "$t" $(driver_state_get "$t" pr) 2>&1) || pstoprc=$?
+  [ "$pstoprc" -ne 1 ] || diff="${diff}
+
+[A PERSON HAS STOPPED THIS — each line is an open blocking finding of theirs. Report each as a Critical finding unless this change visibly fixes it, and say which. Ship will not land it while their stop stands, whatever your verdict:
+$(printf '%s\n' "$pstop" | sed 's/^/- /')]"
   driver_fact_put "$t" review DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   # RENDERS is a fact about a screen, and the driver takes none. Saying so is the

@@ -499,6 +499,9 @@ gh pr view "$PR_NUMBER" --json body -q .body | bash "$EV" routes || exit 1
 # 2. Held, then ready, then armed. The hold is owed on every screen change and is
 #    what keeps this PR from merging; CI photographs only a PR that is ready (and,
 #    where the project says so, armed). Read the auto-merge setting first (Step 6).
+# A person's stop wins: a do-not-merge label, a draft a person made, or a Critical a
+# person named stops here, and the ticket parks for them (mergeFirst relaxes none).
+bash "${PERSON_STOP:-$KIT_ROOT/scripts/person-stop.sh}" check "${TICKET_KEY:-${TICKET#\#}}" "$PR_NUMBER" || exit 1
 gh pr edit "$PR_NUMBER" --add-label "$HOLD_LABEL"
 gh pr ready "$PR_NUMBER" 2>/dev/null || true
 [ "$(gh api "repos/$REPO_SLUG" -q .allow_auto_merge)" = true ] \
@@ -519,6 +522,7 @@ owner reviews the screen on UAT.
 ```bash
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 if release_merge_first; then
+  bash "${PERSON_STOP:-$KIT_ROOT/scripts/person-stop.sh}" check "${TICKET_KEY:-${TICKET#\#}}" "$PR_NUMBER" || exit 1   # a person's stop still wins
   gh pr ready "$PR_NUMBER" 2>/dev/null || true
   gh pr merge "$PR_NUMBER" --auto "--$(toolkit_cfg merge.method 2>/dev/null || echo squash)"
   echo "merge first: shipped without the hold or the CI-shot wait"   # then Step 6
