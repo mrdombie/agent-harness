@@ -19,7 +19,9 @@ touch "$COORD_EVENTS" "$COORD_ACTIONS"
 say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; }
 
 LOCK="$COORD_DIR/housekeeping.lock"
-coord_lock "$LOCK" housekeeping || { say "housekeeping: $COORD_LOCK_WHY — not started again"; exit 0; }
+# A start refused here ran nothing: the tick's interval stamp goes, so the next tick
+# starts one the moment this holder ends, not a whole interval after.
+coord_lock "$LOCK" housekeeping || { rm -f "$COORD_DIR/housekeeping.stamp"; say "housekeeping: $COORD_LOCK_WHY — not started again"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 export GH_CALLER=coordinator-housekeeping
 

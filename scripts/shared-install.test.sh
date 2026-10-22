@@ -122,7 +122,7 @@ want_in "and says why"                        "its step cannot be read" "$OUT"
 
 echo "--- a wait past the drain bound holds new starts until the builds drain ---"
 HOLDF="$STATE/coordinator/shared-install-hold"
-tick_reads_hold() { (. "$HERE/coordinator-env.sh" && . "$HERE/shared-install-hold.sh" && shared_install_hold >/dev/null) && echo held || echo free; }
+tick_reads_hold() { local d; d=$(dirname "${SUT:-$SI}"); (. "$d/coordinator-env.sh" && . "$d/shared-install-hold.sh" && shared_install_hold >/dev/null) && echo held || echo free; }
 case_drain() { # a build past its gates, and a lock that has waited 31 min
   reset_install "$V1"; live_driver_run 605 start plan build self-check
   printf '%s %s\n' "$(git -C "$PUSHER" rev-parse HEAD:package-lock.json)" "$(( $(date +%s) - 31 * 60 ))" > "$STATE/coordinator/shared-install.waiting"
@@ -141,6 +141,45 @@ want "and the hold is lifted after"           "free" "$(tick_reads_hold)"
 printf 'old\n' > "$HOLDF"; touch -t 202601010000 "$HOLDF"
 want "a hold its writer stopped rewriting holds nothing" "free" "$(tick_reads_hold)"
 rm -f "$HOLDF"
+
+echo "--- a hold has an end: stale past holdStaleMin, dropped past drainMaxMin, lifted once its run ends ---"
+age_min() { touch -t "$(date -v-"$2"M +%Y%m%d%H%M.%S 2>/dev/null || date -d "-$2 min" +%Y%m%d%H%M.%S)" "$1"; }
+case_stale_hold() { # a hold last written 16 min ago, by a check that has stopped
+  printf 'lock abc has waited 102 min; in use: claim-13447-x (#13447, past repair)\n' > "$HOLDF"; age_min "$HOLDF" 16
+  R="hold=$(tick_reads_hold)"; rm -f "$HOLDF"
+}
+case_stale_hold
+want "a hold 16 min old holds nothing (holdStaleMin 15)" "hold=free" "$R"
+case_ended_lifts() { # the 22 Oct shape: a drain whose only listed run has ended
+  case_drain; touch "$STATE/runs/claim-605-x.ended"; OUT=$(run); R="hold=$(tick_reads_hold) npm=$(npm_runs)"
+}
+case_ended_lifts
+want "a drain whose only run has .ended lifts on the next pass" "hold=free npm=1" "$R"
+case_drain_max() { # a build past its gates, and a lock held past drainAfterMin + drainMaxMin
+  reset_install "$V1"; live_driver_run 607 start plan build self-check
+  printf '%s %s\n' "$(git -C "$PUSHER" rev-parse HEAD:package-lock.json)" "$(( $(date +%s) - 91 * 60 ))" > "$STATE/coordinator/shared-install.waiting"
+  printf 'lock abc has waited 90 min\n' > "$HOLDF"
+  OUT=$(run); R="hold=$(tick_reads_hold) npm=$(npm_runs)"
+}
+case_drain_max
+want "a drain past drainMaxMin drops the hold" "hold=free npm=0" "$R"
+want_in "and says so, loudly"                 "⚠ shared install drain timed out: lock [0-9a-f]{12} has waited 91 min, new starts held past 60 min" "$OUT"
+want "the timeout is marked for the tick's alert" "1" "$([ -f "$C/shared-install.drain-timeout" ] && echo 1 || echo 0)"
+OUT=$(run)
+want "the next pass holds nothing either"     "free" "$(tick_reads_hold)"
+rm -f "$STATE/runs/claim-607-x.json"; OUT=$(run)
+want "once the build ends it installs, and the alert goes" "npm=1 marker=0" "npm=$(npm_runs) marker=$([ -f "$C/shared-install.drain-timeout" ] && echo 1 || echo 0)"
+case_check_running() { # another check is live; the hold it wrote is 16 min old
+  reset_install "$V1"; sleep 30 & HOLDER=$!
+  mkdir -p "$C/shared-install.check"; echo "$HOLDER" > "$C/shared-install.check/pid"
+  (. "$HERE/coordinator-env.sh" && coord_started_of "$HOLDER") > "$C/shared-install.check/started"
+  printf 'lock abc is being installed\n' > "$HOLDF"; age_min "$HOLDF" 16
+  OUT=$(run); R="hold=$(tick_reads_hold) npm=$(npm_runs)"
+  kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; HOLDER=""; rm -rf "$C/shared-install.check" "$HOLDF"
+}
+case_check_running
+want "a check already running: no second one, and its hold stays live" "hold=held npm=0" "$R"
+want_in "it says so"                          "another shared install check \(pid [0-9]+\) is running — checked by it" "$OUT"
 
 echo "--- a process in the clone: only one reading node_modules holds it, and never the hold ---"
 SITTER=""; on_exit_keep_status '[ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null; [ -z "$SITTER" ] || kill "$SITTER" 2>/dev/null; rm -rf "$FIX"'
@@ -262,10 +301,13 @@ plant() { # <label> <file> <exact line to delete> <case> <the result the guard p
   want "planted ($1): the case now fails" "$5" "$R"
   cp "$FIX/plant.bak" "$f"
 }
-plant "the lock compare" shared-install.sh 'if [ "$have" = "$want" ]; then say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi' case_unchanged "npm=1"
+plant "the lock compare" shared-install.sh 'if [ "$have" = "$want" ]; then rm -f "$DRAIN_TO"; say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi' case_unchanged "npm=1"
 plant "the in-use wait"  shared-install.sh '  say "waiting $waited min — in use on this host: $busy; checked again next pass"
   si_loud "$want" "the install waits on builds still on the old lock"; exit 0' case_mid_gate "npm=1"
 plant "the drain hold"   shared-install.sh '      shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"' case_drain "hold=free npm=0"
+plant "the stale limit"  shared-install-hold.sh '  ! shared_install_hold_stale >/dev/null || return 1' case_stale_hold "hold=held"
+plant "the drain timeout" shared-install.sh '      si_loud "$want" "its drain timed out; it waits on builds still on the old lock"; exit 0' case_drain_max "hold=held npm=0"
+plant "the live check's refresh" shared-install.sh '  [ ! -f "$(shared_install_hold_file)" ] || coord_shadow || touch "$(shared_install_hold_file)"' case_check_running "hold=free npm=0"
 plant "runs-only drain"  shared-install.sh ' && [ -n "$RUNS_BUSY" ]' case_reader "hold=held npm=0"
 plant "the age override" shared-install.sh '  grep -qE '"'"'^[[:space:]]*min-release-age[[:space:]]*='"'"' "$f" && out="--min-release-age=0"' case_age "npm=1 args="
 plant "the on-lock skip" shared-install.sh '    say "$rid (#${t:-?}) is already on the trunk'"'"'s lock — the install fixes it, so it is not waited for"
@@ -273,7 +315,7 @@ plant "the on-lock skip" shared-install.sh '    say "$rid (#${t:-?}) is already 
 plant "the flock"        shared-install.sh '_si_flock "$LOCKF" ' case_locked "npm=1"
 plant "the put-back"     shared-install.sh '  for d in $(prev_dirs); do mv "$d" "${d%"$PREV"}"; done' case_fail "marker= ui="
 plant "the call"         coordinator-housekeeping.sh '  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0 0"
-for f in shared-install.sh coordinator-housekeeping.sh; do
+for f in shared-install.sh shared-install-hold.sh coordinator-housekeeping.sh; do
   diff -q "$HERE/$f" "$KIT/scripts/$f" >/dev/null && ok "the planted $f is restored" || bad "the planted $f was not restored"
 done
 
