@@ -24,8 +24,9 @@
 #                    (coord_pace: every host's builders burn the one account);
 #                    while more than coordinator.openPrCap PRs are open (drafts
 #                    too), no new ticket starts: only repairs, approved merges and
-#                    process fixes; at or under it healing takes free places first
-#                    and new work the rest (owner call 2026-10-22). With the cap 0:
+#                    process fixes; at or under it the queue's priority order decides
+#                    across repairs and new work, a repair first at one priority
+#                    (owner call 2026-10-22). With the cap 0:
 #                    healing (repair, approved-merge) fills ceil(ceiling x
 #                    healingShare) of the places and new work the rest, and every
 #                    place while coordinator.healAllAt or more reds are left
@@ -716,8 +717,11 @@ else
     pick=""; lent=""
     if   [ -n "$proc" ]; then pick="$proc"; lent="any free place, a process fix first"
     elif [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
-      # The cap decides: healing first, then new work (none is a candidate over the cap).
-      if [ -n "$heal" ]; then pick="$heal"; elif [ -z "$OVER_PR_CAP" ] && [ -n "$new" ]; then pick="$new"; fi
+      # The cap decides, then priority: under it the first candidate in queue order,
+      # repair or new (a red ranks at its ticket's priority, ahead at the same one);
+      # over it healing only (no new is a candidate then either).
+      if [ -n "$OVER_PR_CAP" ]; then pick="$heal"
+      else pick=$(awk -F'\t' 'NF { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS"); fi
     elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
     elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$new" ];  then pick="$new"; lent="a healing place"
@@ -825,7 +829,7 @@ if [ "$SHEET_ROLE" = owner ]; then
 fi
 
 if [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
-  say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING, healing first) · ${OPEN_PR_SAID:-open changes unread / cap $COORD_OPEN_PR_CAP}"
+  say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING, by priority) · ${OPEN_PR_SAID:-open changes unread / cap $COORD_OPEN_PR_CAP}"
 else
 say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}$( [ $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) -eq 0 ] || echo " · $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) polish red(s) not counted toward heal-all")"
 fi

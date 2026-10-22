@@ -43,8 +43,9 @@
 #                                                           starts: every place repairs or finishes, and
 #                                                           only repairs, approved merges and process fixes
 #                                                           start. While on it replaces the healingShare
-#                                                           split and heal-all (healing takes free places
-#                                                           first). 0: off, and the split runs again
+#                                                           split and heal-all: under it priority decides
+#                                                           across repairs and new work, a repair first at
+#                                                           one priority. 0: off, and the split runs again
 #   coordinator.toolingLabels COORDINATOR_TOOLING_LABELS (below) labels that make a ticket our own
 #                                                           build tooling: it runs after product
 #                                                           work of the same priority and class
