@@ -155,6 +155,21 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   [ -s "$built" ] || built="$(driver_state_dir "$t")/steps/build.json"
   local seen_head; seen_head=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
   rc=0; driver_ai_step "$t" review "$built" || rc=$?
+  # A REVIEWER THAT HAD NOT REPORTED IS RUN AGAIN, NOT ASKED ABOUT: the answer is always
+  # yes. Once, by itself, and not a round (nothing is counted until a verdict is read).
+  local silent
+  if silent=$(_driver_review_silent "$t" "$rc"); then
+    driver_say "↻ review: the reviewer had not reported ($silent) — running the review once more; this is not a second round"
+    driver_state_set "$t" park_note ""
+    rc=0; driver_ai_step "$t" review "$built" || rc=$?
+    if silent=$(_driver_review_silent "$t" "$rc"); then
+      driver_say "✋ review: machine fault reviewer-silent — the reviewer had not reported twice ($silent). Parked as the machine's, not a question; the next run reviews again."
+      driver_state_set "$t" machine_fault "the review step's reviewer had not reported, twice"
+      driver_state_set "$t" park_note "machine fault, nothing to answer: the review step's reviewer had not reported, twice ($silent). The next run reviews again."
+      driver_state_set "$t" park_cause driver
+      return "$DRIVER_E_MACHINE"
+    fi
+  fi
   [ "$rc" -eq 0 ] || return "$rc"
   driver_state_bump "$t" review
   # WHAT THIS REVIEW SAW is recorded only once its answer is read as a review (below):
@@ -228,6 +243,28 @@ $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n",
   [ "${nnit:-0}" -gt 0 ] && driver_say "   review: $nnit nit(s) dropped — taste, and taste never blocks"
   driver_say "   review: $verdict after $round round(s)"
   return "$DRIVER_OK"
+}
+
+# _driver_review_silent <ticket> <rc> — 0, printing how, when the review call came back
+# without its reviewer having reported: a question saying a subagent had not reported
+# (still running, timed out), no answer at all, or an answer carrying no verdict.
+_driver_review_silent() {
+  local t="$1" rc="$2" f q
+  f="$(driver_state_dir "$t")/steps/review.json"
+  if [ "$rc" -eq "$DRIVER_E_QUESTION" ]; then
+    q=$(jq -r '(.question // .park // "")' "$f" 2>/dev/null)
+    driver_question_silent_agent "$q" || return 1
+    printf 'it said: %s' "$(printf '%s' "$q" | cut -c1-160)"; return 0
+  fi
+  if [ "$rc" -eq "$DRIVER_E_SCHEMA" ]; then
+    case "$(driver_state_get "$t" park_note)" in
+      *"ended without an answer"*) printf 'the run ended with no answer'; return 0 ;;
+    esac
+    return 1
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  [ -z "$(jq -r '.verdict // "" | tostring' "$f" 2>/dev/null)" ] || return 1
+  printf 'the answer carried no verdict'
 }
 
 # _driver_review_seen <ticket> <tree> <head> <diff args…> — what a review read as a

@@ -1056,4 +1056,18 @@ want "nothing parks"                               "" "$(cat "$FIX/park.log")"
 want_in "it says the PR merged"                    'merged at 2026-10-21T07:14:34Z while it was being repaired' "$out"
 want_not_in "not that the ticket stays in review"  'stays in review' "$out"
 
+echo "--- a step asking whether to re-run a subagent that had not reported is the machine's park ---"
+# The sibling of review's own retry: any step's "the subagent had not reported, run again?"
+reset_fakes "fix:20"
+mkdir -p "$STATE/driver/170/steps"
+jq -nc '{step:"fix", status:"park", question:"The fix subagent had not reported when this step was told to return. Should the fix step run again?"}' \
+  > "$STATE/driver/170/steps/fix.json"
+: > "$GH_LOG"
+out=$(bt 170); rc=$?
+want "the run's exit says machine"           "33" "$rc"
+want_in "the park says machine fault"        'PARK machine fault: a fix subagent had not reported' "$(cat "$FIX/park.log")"
+want_in "and it is the driver's"             'cause=driver' "$(cat "$FIX/park.log")"
+want_not_in "no owner or PM label goes on"   'needs:owner|pm-decision|human-approval' "$(cat "$GH_LOG")"
+want_in "and the log line names the fault"   'machine fault agent-silent' "$out"
+
 suite_end "$FAILED"
