@@ -378,10 +378,20 @@ fresh; open_prs 30; queue 701
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_OPEN_PR_CAP=0 ticks 1)
 want "a cap of 0 is off"                   "701" "$(spawned)"
 want_not_in "and says nothing of a cap"     'open changes' "$out"
-# Under the cap the split is gone: healing takes the free places first, new work the rest.
+# Under the cap the split is gone: priority decides across repairs and new work, and at
+# one priority a repair goes first (a red ranks at its ticket's priority).
 fresh; open_prs 3; queue_as repair 601 602 603 604; queue 701 702 703 704
 SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
-want "under the cap, 4 places, 4 reds: all four heal (the split gave 1)" "repair repair repair repair" "$(classes)"
+want "under the cap, one priority, 4 places, 4 reds: all four heal (the split gave 1)" "repair repair repair repair" "$(classes)"
+fresh; open_prs 3; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "under the cap, one place: a P0 new ticket starts before a P2 repair" "701" "$(spawned)"
+fresh; open_prs 3; reds_as P1 601; fix_issue 701 OPEN "P1,status:ready"; bash "$Q" add 701 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "at one priority the repair goes first" "601" "$(spawned)"
+fresh; open_prs 12; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "over the cap the P0 new ticket still waits; the P2 repair starts" "601" "$(spawned)"
 
 echo "--- a polish list never ships alone while other work can start, full or not ---"
 # list_issue <n> <items> — an open polish list holding that many unticked items
