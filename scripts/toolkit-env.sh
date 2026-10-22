@@ -475,6 +475,28 @@ toolkit_spawn_root() {
   printf '%s\n' "$dir"
 }
 
+# jq_slurp <name> <json> [<name> <json>…] -- <jq|coord_jq> [args…] — runs the command with
+# each JSON bound as `--slurpfile <name> <file>` (read it as `$name[0]`); a name written
+# raw:<name> binds the text as `--rawfile <name> <file>` (a string, as --arg would). A list that
+# grows with the project never goes on argv: one argument over 128 KiB (Linux) or the
+# whole argv over ARG_MAX (macOS) fails with "Argument list too long". Temp files, not
+# <(…): a native jq.exe under Git Bash cannot open the fd path.
+jq_slurp() {
+  local _js_files=() _js_args=() _js_f _js_rc
+  while [ $# -ge 2 ] && [ "$1" != -- ]; do
+    _js_f=$(mktemp "${TMPDIR:-/tmp}/jqslurp.XXXXXX") || { [ ${#_js_files[@]} -eq 0 ] || rm -f "${_js_files[@]}"; return 1; }
+    _js_files+=("$_js_f"); printf '%s' "$2" > "$_js_f"
+    case "$1" in raw:*) _js_args+=(--rawfile "${1#raw:}" "$_js_f") ;; *) _js_args+=(--slurpfile "$1" "$_js_f") ;; esac
+    shift 2
+  done
+  [ "${1:-}" = -- ] && [ $# -ge 2 ] || { [ ${#_js_files[@]} -eq 0 ] || rm -f "${_js_files[@]}"; echo "jq_slurp: usage: <name> <json>… -- <command> [args…]" >&2; return 2; }
+  shift
+  local _js_cmd="$1"; shift
+  if [ ${#_js_args[@]} -eq 0 ]; then "$_js_cmd" "$@"; else "$_js_cmd" "${_js_args[@]}" "$@"; fi; _js_rc=$?
+  [ ${#_js_files[@]} -eq 0 ] || rm -f "${_js_files[@]}"
+  return "$_js_rc"
+}
+
 # One open list of small fixes per screen (scripts/polish-list.sh), never one ticket
 # per fix. Here, not in swarm-env.sh: the closers (reconcile, /finish) source only this.
 LBL_POLISH_LIST="${LBL_POLISH_LIST:-$(toolkit_cfg labels.polishList 2>/dev/null || echo polish-list)}"

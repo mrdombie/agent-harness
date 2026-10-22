@@ -234,4 +234,36 @@ want "approval-kept: the PR's own screen change is the same at both heads" "" "$
 printf 'HEAD %s refs/heads/tkt-23-work %s\n' "$after" "$before" | (cd "$REPO" && SIGNOFF_GUARD_DRYRUN=1 HARNESS_CFG_PATH="$HARNESS_CFG_PATH" bash "$HERE/signoff-push-guard.sh" origin >/dev/null 2>&1)
 want "the sign-off guard passes the same push"   0 "$?"
 
+echo "--- a PR whose ticket is already queued for repair is passed over, and the limit goes to the next ---"
+fresh
+for n in 51 52; do branch "$n" "printf 'pr$n\n' > .deploy-trigger" ''; done
+(cd "$W" && printf 'dev\n' > .deploy-trigger && git add -A && git commit -qm dev && git push -q origin develop)
+for n in 51 52; do reads "$n" false dirty; done
+mkdir -p "$C"; printf '{"tickets":[{"n":51,"class":"repair","note":"a builder is on it"}]}\n' > "$C/queue.json"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"; cfg '.merge.keepFreshPerTick = 1'
+b51=$(pushed_for 51); out=$(live)
+want "the queued one is untouched"               "$b51" "$(remote_head 51)"
+want "the next one takes the pass's one place"   dev "$(at_head 52 .deploy-trigger)"
+want_in "it says why the first was passed over"  '#51 — #51 is already queued for repair — skipped' "$out"
+want_in "and counts it apart"                    '1 settled or sent on this pass, 1 already queued for repair' "$out"
+mv "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
+
+echo "--- an open-PR list past the argument limit prunes the state as a short one does ---"
+# Over 1 MiB: past Linux's 128 KiB per argument and macOS's whole-argv ARG_MAX alike.
+pad() { jq -c '. + [range(5000; 6400) | {number: ., draft: true, body: ("x" * 800),
+                     head: {ref: "fork-\(.)", sha: "0", repo: {full_name: "elsewhere/fork"}}}]' "$FIX/gh/pulls.json" > "$FIX/gh/p.json" \
+        && mv "$FIX/gh/p.json" "$FIX/gh/pulls.json"; }
+seed() { jq -n --arg h "$(pushed_for 41)" '{tried: {"41": {head: $h, outcome: "real"}, "999": {head: "gone", outcome: "real"}},
+                                            seen: {"41": {head: $h, trunk: "t", state: "clean"}, "999": {head: "gone", trunk: "t", state: "clean"}}}' > "$C/keep-fresh.did.json"; }
+kept() { jq -c '{tried: (.tried | keys), seen: (.seen | keys)}' "$C/keep-fresh.did.json" 2>/dev/null; }
+fresh; branch 41 'printf "b\n" > src/other.ts' ''; reads 41 true clean; mkdir -p "$C"; seed
+small_out=$(live); small=$(kept)
+want "a short list: the closed PR's entries go, the open one's stay" '{"tried":["41"],"seen":["41"]}' "$small"
+fresh; branch 41 'printf "b\n" > src/other.ts' ''; reads 41 true clean; mkdir -p "$C"; seed; pad
+want "the open-PR list is over 1 MiB"           1 "$([ "$(wc -c < "$FIX/gh/pulls.json")" -gt 1048576 ] && echo 1)"
+big_out=$(live); big=$(kept)
+want_not_in "no argument-list failure"           'Argument list too long' "$big_out"
+want "the same state as the short list"          "$small" "$big"
+want_not_in "and no complaint either way"        'could not be pruned' "$small_out$big_out"
+
 suite_end "$FAILED"
