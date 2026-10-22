@@ -136,3 +136,5 @@ plant "the guard reads the trunk" scripts/release-checks.sh \
 ' case_guard "off"
 plant "the step is told" driver/ai-step.sh \
   '  if driver_merge_first; then printf '"'"'\n---\n%s\n'"'"' "$DRIVER_MERGE_FIRST_SIGNOFF" >> "$prompt"; fi' case_prompt "0"
+
+suite_end "$FAILED"
