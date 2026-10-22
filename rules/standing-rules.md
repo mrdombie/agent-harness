@@ -142,7 +142,10 @@ Local checks are **changed-only**. CI runs the whole suite before anything
 merges, and a red CI brings an agent back — so a local full-suite run is the
 same work done twice, at the cost of the machine every other agent is sharing.
 
-Take the commands from `gates.changed` in the repo's `.claude/harness.json`.
+Take the commands from the kit's `scripts/local-gates.sh`: `gates.local` when the
+repo's `.claude/harness.json` sets `gates.localOnly: true` (no tests locally, CI
+runs them once; the one exception is the single test file the change names for
+its red-then-green proof), else `gates.changed`.
 Run the whole-app form only when a person asks for it by name, or when CI has
 gone red and you are reproducing it.
 

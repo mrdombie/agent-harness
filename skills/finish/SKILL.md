@@ -35,7 +35,7 @@ Before stepping into Step 3 (run gates locally) on a ticket that touches >5 file
 Use Agent tool with subagent_type=agent-harness:gate-runner, prompt="Run lint + typecheck + tests for the current branch <BRANCH>; report new vs pre-existing failures only. The machine gate is ${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh."
 ```
 
-The agent runs the repo's `gates.changed` commands in isolation, filters out failures in files NOT touched by this branch (pre-existing), and returns a structured verdict. Stops your main context from being polluted with thousands of lines of test output.
+The agent runs the repo's local gate commands (`scripts/local-gates.sh`: `gates.local` under `gates.localOnly`, else `gates.changed`) in isolation, filters out failures in files NOT touched by this branch (pre-existing), and returns a structured verdict. Stops your main context from being polluted with thousands of lines of test output.
 
 Use the in-session `npm run` only on small tickets (<5 files) where the noise won't matter.
 
@@ -236,11 +236,10 @@ own command and stop on a non-zero exit BEFORE any commit/push/merge
 command executes:
 
 ```bash
-# The commands come from gates.changed in .claude/harness.json — the CHANGED-ONLY
-# checks, never the whole app. Read the rule below before reaching for the
-# whole-app form.
-CHANGED=$(jq -r '(.gates.changed // []) | join(" && ")' .claude/harness.json)
-[ -n "$CHANGED" ] || { echo "🛑 harness.json names no gates.changed"; exit 1; }
+# The commands come from local-gates.sh: gates.local under gates.localOnly (no tests —
+# CI runs them once), else gates.changed. Never the whole app; read the rule below.
+CHANGED=$("${CLAUDE_PLUGIN_ROOT}/scripts/local-gates.sh" --joined) || { echo "🛑 local-gates.sh refused (see above)"; exit 1; }
+[ -n "$CHANGED" ] || { echo "🛑 harness.json names no local gates"; exit 1; }
 # Heavy local work waits for the machine: under the load ceiling, and holding one
 # of its gate slots. 75 = still busy and NOTHING RAN — run this block again.
 "${CLAUDE_PLUGIN_ROOT}/scripts/machine-gate.sh" run --max "${MACHINE_GATE_MAX_WAIT:-100}" -- bash -c "$CHANGED"
@@ -258,6 +257,11 @@ session and project). It prints
 ran out inside one tool call: **nothing ran and nothing failed** — run the block
 again. Never run the gate commands bare to get past it. On 2026-10-15 the machine
 sat at load 77 on 10 cores, with 3 vitest, 9 dev servers and 5 tsc runs going.
+
+**Under `gates.localOnly: true` no test runs here.** The list is `gates.local`
+(lint, typecheck, format and the like) and every test runs once, in CI. The one
+exception is the single test file this change names for its red-then-green proof,
+run by its path. Never run `gates.changed`'s test commands to make up for it.
 
 **CHANGED-ONLY, not the whole app.** CI runs the whole suite before anything
 merges, and a red CI brings an agent back — so a local whole-app run is the same
@@ -280,7 +284,7 @@ exit code is the gate.
 # `npm test` has no such hook — generate explicitly. Idempotent.
 sh scripts/prisma-generate-if-needed.sh >/dev/null  # #3570 — fingerprint-skips when unchanged
 
-# gates.changed runs through the machine-gate block above, never as a bare eval.
+# The local gates run through the machine-gate block above, never as a bare eval.
 
 # #9966 (2026-09-01): the trio above does NOT include check:deploy-trigger.
 # That gate reads COMMITS (merge-base..HEAD), so it must run after Step 2's

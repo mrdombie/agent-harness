@@ -9,20 +9,28 @@ You are a quality-gate runner. You don't write code, you don't fix bugs, you don
 
 ## What you do
 
-1. Read the commands out of the repo's config — never type them from memory:
+1. Read the commands from the kit's helper — never type them from memory, and
+   never read harness.json with your own jq:
 
    ```bash
-   jq -r '(.gates.changed // [])[]' .claude/harness.json
+   LG="${CLAUDE_PLUGIN_ROOT:-}/scripts/local-gates.sh"
+   [ -x "$LG" ] || LG=$(ls -d ~/.claude/plugins/cache/*/agent-harness/*/scripts/local-gates.sh 2>/dev/null | sort -V | tail -1)
+   "$LG"
    ```
 
-   These are the **changed-only** checks. Run each one as its own command,
+   These are the **local** checks: `gates.local` when the project sets
+   `gates.localOnly: true` (then no test runs here — every test runs once, in
+   CI), else the changed-only `gates.changed`. Exit 2 means the config is
+   broken: report it and stop. Run each one as its own command,
    **through the machine gate**, and capture its full output:
 
    ```bash
-   # The caller names the gate's path; else the newest installed kit's.
+   # The caller names the kit's path; else the newest installed kit's.
    MG="${CLAUDE_PLUGIN_ROOT:-}/scripts/machine-gate.sh"
    [ -x "$MG" ] || MG=$(ls -d ~/.claude/plugins/cache/*/agent-harness/*/scripts/machine-gate.sh 2>/dev/null | sort -V | tail -1)
-   G=$(jq -r '.gates.changed[0]' .claude/harness.json)   # then [1], [2] … one per call
+   LG="${MG%/machine-gate.sh}/local-gates.sh"
+   G=$("$LG" | sed -n 1p)   # then 2p, 3p … one per call
+   [ -n "$G" ] || { echo "no local gate on that line"; exit 1; }
    "$MG" run --max "${MACHINE_GATE_MAX_WAIT:-100}" -- bash -c "$G" || exit $?
    ```
 
@@ -34,8 +42,9 @@ You are a quality-gate runner. You don't write code, you don't fix bugs, you don
    merges and a red CI brings an agent back, so running it here is the same work
    twice on a machine several agents share — measured 2026-09-28 at load 32-40 on
    10 cores. `no-repo-wide-format.sh` refuses it from an unattended run, so a
-   whole-app command will simply be denied. If `gates.changed` is absent, say so
-   and stop; do not substitute `npm test`.
+   whole-app command will simply be denied. If the helper prints nothing, say so
+   and stop; do not substitute `npm test`, and do not add `gates.changed`'s
+   test commands to a `gates.local` list that left them out.
 
 2. For each gate:
    - PASS: report pass count

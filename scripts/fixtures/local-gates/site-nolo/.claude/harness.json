@@ -1,0 +1,6 @@
+{
+  "gates": {
+    "local": ["touch \"$MARK/local\""],
+    "changed": ["touch \"$MARK/local\"", "touch \"$MARK/test\""]
+  }
+}

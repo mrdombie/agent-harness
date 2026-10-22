@@ -37,7 +37,7 @@ has "a commit that keeps an approval is told apart"           "toolkit_cfg appro
 has "the park brief says whether an approval is carried"      "**Approval carried forward:**"
 has "a project that owns finish keeps its own finish step"    'toolkit_cfg owns.skills'
 has "the review cap is the project's review.rounds"           '`review.rounds`'
-has "the build loop runs only the changed-file gates"         "jq -r '.gates.changed[]'"
+has "the build loop runs only the local gates, from the helper" 'scripts/local-gates.sh'
 
 echo
 [ "$fail" -eq 0 ] && echo "claim-skill-ports: all cases pass" || echo "claim-skill-ports: FAILURES above"
