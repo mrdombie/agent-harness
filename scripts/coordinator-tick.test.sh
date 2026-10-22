@@ -111,6 +111,7 @@ want_in "it names where the config came from" "config from $HARNESS_CFG_PATH" "$
 want "the act is logged as would"          "would spawn 501" "$(awk -F'\t' '$3=="spawn"{print $2, $3, $4}' "$C/actions.log" | head -1)"
 want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/house.log")"
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
+want_in "the stray sweep runs dry"         '^sweep --strays --dry-run$' "$(cat "$FIX/house.log")"
 want_in "the polish-list sweep runs dry"   '^polish sweep --dry-run$' "$(cat "$FIX/house.log")"
 
 echo "--- live spawns, and a set cap is a hard ceiling ---"
@@ -118,6 +119,7 @@ fresh; queue 501 502 503 504 505 506; live_run 900
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
 want "room under the cap: it fills to the cap, in queue order" "501 502 503" "$(spawned)"
 want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
+want_in "the stray sweep reaps for real"   '^sweep --strays$' "$(cat "$FIX/house.log")"
 want_in "the polish-list sweep runs: merged items ticked, lists closed" '^polish sweep$' "$(cat "$FIX/house.log")"
 fresh; queue 501 502; live_run 900; live_run 901
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 tick)

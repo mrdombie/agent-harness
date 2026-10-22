@@ -71,6 +71,10 @@ elif coord_shadow; then bash "$POLISH" sweep --dry-run >> "$COORD_LOG" 2>&1 || s
 else bash "$POLISH" sweep >> "$COORD_LOG" 2>&1 || say "polish-list sweep exited $?"; fi
 if coord_shadow; then bash "$SWEEP" --sweep --dry-run >> "$COORD_LOG" 2>&1 || say "server sweep (dry) exited $?"
 else bash "$SWEEP" --sweep >> "$COORD_LOG" 2>&1 || say "server sweep exited $?"; fi
+# Any other process a dead or finished run left in its worktree: CPU the starts count as taken.
+STRAY_ENV=(STOP_DEV_STRAY_MIN_AGE=$((COORD_STRAY_MIN_AGE_MIN * 60)) STOP_DEV_STRAY_MAX_AGE=$((COORD_STRAY_MAX_AGE_MIN * 60)) STOP_DEV_STRAY_GRACE="$COORD_STRAY_GRACE_SEC")
+if coord_shadow; then env "${STRAY_ENV[@]}" bash "$SWEEP" --strays --dry-run >> "$COORD_LOG" 2>&1 || say "stray sweep (dry) exited $?"
+else env "${STRAY_ENV[@]}" bash "$SWEEP" --strays >> "$COORD_LOG" 2>&1 || say "stray sweep exited $?"; fi
 # ---- 6b. this host's own shared state -----------------------------------------
 # What only a person kept current: the shared clone's install at the trunk's lockfile
 # (shared-install.sh), and worktree commits on no ref of origin (stranded-sweep.sh).

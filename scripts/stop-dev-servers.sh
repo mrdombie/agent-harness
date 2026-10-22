@@ -6,6 +6,8 @@
 #   stop-dev-servers.sh --session <pid> [--dry-run]  one preview per agent: stop the
 #                                                servers <pid> started in every worktree
 #                                                but the one it started a server in last
+#   stop-dev-servers.sh --strays [--dry-run]     reap ANY process left running in a
+#                                                worktree nothing owns (see "strays" below)
 #
 # Each agent starts a web and an api server to render its screen, and nothing
 # stopped them when the ticket shipped. Measured on 2026-09-30: 16 servers up to
@@ -49,12 +51,15 @@ while [ $# -gt 0 ]; do
     --worktree) MODE=worktree; TARGET="${2:-}"; shift 2 ;;
     --sweep) MODE=sweep; shift ;;
     --session) MODE=session; TARGET="${2:-}"; shift 2 ;;
+    --strays) MODE=strays; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "stop-dev-servers: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
-[ -n "$MODE" ] || { echo "usage: stop-dev-servers.sh --worktree <path> | --sweep [--dry-run] | --session <pid> [--dry-run]" >&2; exit 2; }
-command -v lsof >/dev/null || { echo "stop-dev-servers: no lsof here — cannot see working directories, stopping nothing"; exit 0; }
+[ -n "$MODE" ] || { echo "usage: stop-dev-servers.sh --worktree <path> | --sweep [--dry-run] | --session <pid> [--dry-run] | --strays [--dry-run]" >&2; exit 2; }
+# WSL images often ship without lsof; /proc says the same thing there.
+command -v lsof >/dev/null || [ -d /proc/self/cwd ] \
+  || { echo "stop-dev-servers: no lsof and no /proc here — cannot see working directories, stopping nothing"; exit 0; }
 
 # ps elapsed time, [[dd-]hh:]mm:ss, in seconds.
 age_sec() {
@@ -68,7 +73,14 @@ age_sec() {
 real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }   # /tmp and /private/tmp are one place
 # Every process's working directory, read ONCE: one lsof for the machine takes a
 # second, one per process takes half a minute, and this runs inside every /claim.
-CWDS=$(lsof -a -d cwd -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2)} /^n/{print p "\t" substr($0,2)}')
+read_cwds() {
+  if command -v lsof >/dev/null; then
+    lsof -a -d cwd -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2)} /^n/{print p "\t" substr($0,2)}'
+  else
+    local d c; for d in /proc/[0-9]*; do c=$(readlink "$d/cwd" 2>/dev/null) && printf '%s\t%s\n' "${d#/proc/}" "$c"; done
+  fi
+}
+CWDS=$(read_cwds)
 cwd_of() { printf '%s\n' "$CWDS" | awk -F'\t' -v p="$1" '$1 == p {print $2; exit}'; }
 inside() { case "$1/" in "$2"/*) return 0 ;; *) return 1 ;; esac; }   # <path> <root>
 
@@ -239,6 +251,159 @@ holder_gone() { # <ticket>
   claim_run_fresh "$1" "$STATE" && return 1
   return 0
 }
+
+# ---- strays: any process left in a worktree nothing owns ------------------------
+# The sweep above stops Next servers only. A test run, a type check or a watcher
+# outlives its ticket just as well: on 2026-10-22 a `ci-tooling-scope/test.sh` sat
+# 12h29m at 95% of a core in a closed ticket's worktree, beside a 3-day tsc and a
+# 6-day vitest, all reparented to launchd — CPU the coordinator counts as taken.
+#
+# A process is a stray when its cwd (or a path in its argv) is inside a worktree
+# under the project's worktree root (ticket folders only, as above) or the harness
+# worktree root (every folder: only builds live there), and ALL of:
+#   - nothing in its own ancestry is interactive — a login shell, VS Code, a
+#     terminal, tmux, sshd — so the owner's shells, editors and what they started
+#     are never touched; an agent session (`claude`) is never a stray either;
+#   - it is older than STOP_DEV_STRAY_MIN_AGE (coordinator.strayMinAgeMin, 30 min);
+#   - its worktree has no live run (runs/<id>.worktrees, no .ended, pid alive) and,
+#     for a ticket folder, no live claim (the rule `holder_gone` applies above) and
+#     no fresh driver state;
+#   - nobody sits there: no interactive or agent process has its cwd in it — or one
+#     does, the claim is gone, and the process is past STOP_DEV_STRAY_MAX_AGE
+#     (coordinator.strayMaxAgeMin, 3 h).
+# A stray gets TERM, then KILL after STOP_DEV_STRAY_GRACE seconds. Next servers
+# and their launchers are left to the server sweep.
+if [ "$MODE" = strays ]; then
+  STRAY_MIN="${STOP_DEV_STRAY_MIN_AGE:-1800}" STRAY_MAX="${STOP_DEV_STRAY_MAX_AGE:-10800}" GRACE="${STOP_DEV_STRAY_GRACE:-10}"
+  for v in "$STRAY_MIN" "$STRAY_MAX" "$GRACE"; do
+    case "$v" in ''|*[!0-9]*) echo "strays: an age or grace setting is not a whole number ('$v') — reaping nothing"; exit 0 ;; esac
+  done
+  if [ -n "${STOP_DEV_PROJECT_ROOT+x}" ]; then PROOT="$STOP_DEV_PROJECT_ROOT"
+  else PROOT=$(toolkit_worktree_root 2>/dev/null) || PROOT=""; fi
+  HROOT="${STOP_DEV_HARNESS_ROOT-$HOME/.harness-worktrees}"
+  [ -z "$PROOT" ] || [ ! -d "$PROOT" ] || PROOT=$(real "$PROOT")
+  [ -z "$HROOT" ] || [ ! -d "$HROOT" ] || HROOT=$(real "$HROOT")
+  [ -n "$PROOT$HROOT" ] || { echo "strays: no worktree root to look in — reaping nothing"; exit 0; }
+
+  # This script and everything above it, whatever their cwd.
+  SELF_CHAIN=$(ps -axo pid=,ppid= 2>/dev/null | awk -v s="$$" '{ parent[$1] = $2 } END { q = s; for (d = 0; d < 64 && q > 1; d++) { print q; q = parent[q] } }')
+
+  # One pass over the process table: "<class>\t<pid>\t<age>\t<cpu>\t<kind>\t<worktree>\t<command>".
+  # class: I interactive ancestry, A agent session, S server, C candidate.
+  ROWS=$({ printf '%s\n' "$CWDS" | sed 's/^/W\t/'
+           printf '%s\n' "$SELF_CHAIN" | sed 's/^/M\t/'
+           ps -axo pid=,ppid=,etime=,pcpu=,command= 2>/dev/null | sed 's/^/P\t/'; } \
+    | awk -F'\t' -v proot="$PROOT" -v hroot="$HROOT" -v prefix="$PREFIX" '
+    function secs(e,   d, n, a) { d = 0
+      if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1); e = substr(e, index(e, "-") + 1) }
+      n = split(e, a, ":")
+      if (n == 3) return d * 86400 + a[1] * 3600 + a[2] * 60 + a[3]
+      return d * 86400 + a[1] * 60 + a[2] }
+    # The worktree <path> is in, as "<kind>\t<worktree>", or "".
+    function tree(path,   root, kind, i, rest, name) {
+      for (i = 1; i <= 2; i++) {
+        root = (i == 1 ? first : second); kind = (i == 1 ? firstk : secondk)
+        if (root == "" || index(path "/", root "/") != 1) continue
+        rest = substr(path, length(root) + 2); if (rest == "") return ""
+        name = rest; sub(/\/.*/, "", name)
+        if (kind == "project") { n = name; if (prefix != "" && index(n, prefix) == 1) n = substr(n, length(prefix) + 1)
+          if (n !~ /^[0-9]+-/) return "" }
+        return kind "\t" root "/" name }
+      return "" }
+    function argv_tree(c,   i, root, j, rest, t) {
+      for (i = 1; i <= 2; i++) {
+        root = (i == 1 ? first : second); if (root == "") continue
+        j = index(c, root "/"); if (!j) continue
+        rest = substr(c, j); sub(/[ \t"'"'"':;=].*/, "", rest)
+        t = tree(rest); if (t != "") return t }
+      return "" }
+    function interactive(c) {
+      return c ~ /^-[a-z]*sh( |$)/ || c ~ /^(\/usr\/bin\/)?login( |$)/ ||
+             c ~ /Visual Studio Code|Code Helper|\.vscode-server\/|code-server|Cursor\.app|Terminal\.app|iTerm|Warp\.app|^(\/[^ ]*\/)?tmux|^(\/[^ ]*\/)?screen( |$)|^sshd:/ }
+    function agent(c) { return c ~ /^([^ ]*\/)?claude( |$)/ }
+    function server(c) { return c ~ /^next-(server|build)/ || c ~ /^node [^ ]*\/next (dev|start)/ || c ~ /next\/dist\/bin\/next / ||
+                                c ~ /^(npm exec next|npx next)/ }
+    BEGIN { # the longer root first, so a project root nested in the harness root wins
+      if (length(proot) >= length(hroot)) { first = proot; firstk = "project"; second = hroot; secondk = "harness" }
+      else { first = hroot; firstk = "harness"; second = proot; secondk = "project" } }
+    $1 == "W" { cwd[$2] = $3; next }
+    $1 == "M" { mine[$2] = 1; next }
+    $1 == "P" { line = substr($0, 3); sub(/^[ \t]+/, "", line)
+      split(line, f, /[ \t]+/); pid = f[1]; ppid[pid] = f[2]; et[pid] = f[3]; cpu[pid] = f[4]
+      c = line; for (k = 1; k <= 4; k++) sub(/^[^ \t]+[ \t]+/, "", c); cmd[pid] = c; order[++np] = pid }
+    END {
+      for (i = 1; i <= np; i++) { p = order[i]
+        if (p in mine) continue
+        t = (p in cwd) ? tree(cwd[p]) : ""
+        bycwd = (t != "")
+        if (t == "") t = argv_tree(cmd[p])
+        if (t == "") continue
+        cls = "C"; q = p
+        for (d = 0; d < 64 && q > 1 && (q in cmd); d++) { if (interactive(cmd[q])) { cls = "I"; break } q = ppid[q] }
+        if (cls == "C" && agent(cmd[p])) cls = "A"
+        if (cls == "C" && server(cmd[p])) cls = "S"
+        # Only somebody whose cwd is there is sitting there; an argv mention is not.
+        if (cls != "C" && cls != "S" && !bycwd) cls = cls "x"
+        printf "%s\t%s\t%d\t%s\t%s\t%s\n", cls, p, secs(et[p]), cpu[p], t, cmd[p] } }')
+
+  # Worktrees somebody sits in.
+  SEATED=$(awk -F'\t' '$1 == "I" || $1 == "A" { print $6 }' <<<"$ROWS" | sort -u)
+  # Worktrees a live run names. A run with no .ended whose pid is dead owns nothing.
+  LIVE_RUNS=""
+  if [ -n "$STATE" ] && [ -d "$STATE/runs" ]; then
+    for f in "$STATE"/runs/*.worktrees; do
+      [ -f "$f" ] || continue
+      rid="${f%.worktrees}"; [ -e "$rid.ended" ] && continue
+      pids=$(jq -r '[.pid, .child_pid] | map(select(. != null)) | .[]' "$rid.json" 2>/dev/null)
+      live=0; for p in $pids; do claim_pid_alive "$p" && live=1; done
+      [ "$live" = 1 ] || continue
+      while read -r w; do [ -n "$w" ] && LIVE_RUNS="$LIVE_RUNS$(real "$w")"$'\n'; done < "$f"
+    done
+  fi
+  run_owns() { local w; while read -r w; do [ -n "$w" ] && { inside "$w" "$1" || inside "$1" "$w"; } && return 0; done <<<"$LIVE_RUNS"; return 1; }
+  # 0 when a live claim (or a fresh driver run) holds this ticket folder.
+  claim_holds() { # <worktree>
+    local n base; base=$(basename "$1"); n=$(printf '%s' "${base#"$PREFIX"}" | sed -n 's/^\([0-9][0-9]*\)-.*/\1/p')
+    [ -n "$n" ] || return 1
+    claim_run_fresh "$n" "$STATE" && return 0
+    grep -qx "$n" <<<"$CLAIMED" || return 1
+    holder_gone "$n" && return 1
+    return 0
+  }
+
+  hits=0 inwt=0 young=0 owned=0 seated=0 inter=0 REAP=()
+  while IFS=$'\t' read -r cls pid age cpu kind wt cmd; do
+    [ -n "$pid" ] || continue
+    inwt=$((inwt+1))
+    case "$cls" in I|Ix) inter=$((inter+1)); continue ;; C) ;; *) continue ;; esac
+    [ "$age" -ge "$STRAY_MIN" ] || { young=$((young+1)); continue; }
+    run_owns "$wt" && { owned=$((owned+1)); continue; }
+    if [ "$kind" = project ] && claim_holds "$wt"; then owned=$((owned+1)); continue; fi
+    why="no live claim or run owns its worktree, nobody is working there"
+    if grep -qxF "$wt" <<<"$SEATED"; then
+      [ "$age" -ge "$STRAY_MAX" ] || { seated=$((seated+1)); continue; }
+      why="its worktree's claim is gone and it is past the $((STRAY_MAX / 60))-minute cap"
+    fi
+    line=$(printf 'pid %s, %dm old, %s%% CPU, in %s — %s: %.160s' "$pid" $((age / 60)) "$cpu" "$wt" "$why" "$cmd")
+    hits=$((hits+1))
+    if [ "$DRY" = 1 ]; then echo "strays: would reap $line"; continue; fi
+    kill -TERM "$pid" 2>/dev/null && { REAP+=("$pid"); echo "strays: reaped $line"; }
+  done <<<"$ROWS"
+  if [ ${#REAP[@]} -gt 0 ]; then
+    for _ in $(seq 1 "$GRACE"); do
+      left=0
+      for p in "${REAP[@]}"; do   # a zombie is reaped already, it only waits on its parent
+        kill -0 "$p" 2>/dev/null || continue
+        case "$(ps -o stat= -p "$p" 2>/dev/null)" in *Z*) ;; *) left=1 ;; esac
+      done
+      [ "$left" = 0 ] && break; sleep 1
+    done
+    for p in "${REAP[@]}"; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null && echo "strays: $p ignored TERM for ${GRACE}s — killed"; done
+  fi
+  verb=reaped; [ "$DRY" = 1 ] && verb="would reap"
+  echo "strays: $verb $hits of $inwt process(es) in worktrees; kept $owned owned by a live claim or run, $young under $((STRAY_MIN / 60))m, $seated with somebody working there, $inter interactive"
+  exit 0
+fi
 
 servers | while read -r pid ppid age cwd; do
   # 1. which ticket worktree, if any: the nearest folder named <prefix><digits>-…

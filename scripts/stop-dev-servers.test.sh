@@ -206,5 +206,74 @@ fi
 out=$(bash "$SUT" --session 1 --dry-run)
 printf '%s' "$out" | grep -q "would stop" && fail "--session 1 claimed every server on the machine" || ok "--session refuses launchd as a session"
 
+echo "stop-dev-servers: --strays — any process left in a worktree nothing owns"
+# Stand-ins are DETACHED (their parent exits, so launchd adopts them), the shape a
+# run that died or moved on leaves — and the only shape a test started from an
+# editor's terminal can produce without its own interactive ancestry protecting it.
+orphan() { # <cwd> <argv0> → pid
+  mkdir -p "$1"
+  (cd "$1" || exit; (exec -a "$2" sleep 600) </dev/null >/dev/null 2>&1 & echo $!)
+}
+# <cwd> <ancestor name> → pid of a plain `sleep` child under a process of that name.
+under_named() {
+  mkdir -p "$1"; local f="$T/under.$RANDOM"
+  (cd "$1" || exit; (exec bash --noprofile --norc -c '(exec -a "tool run" sleep 600) & echo $! > "$1"; exec -a "$0" sleep 600' "$2" "$f") </dev/null >/dev/null 2>&1 &)
+  for _ in $(seq 1 25); do [ -s "$f" ] && break; sleep 0.2; done
+  cat "$f" 2>/dev/null
+}
+P="$T/proj" H="$T/hw" ST="$T/stray-state"; mkdir -p "$P" "$H" "$ST/runs"
+gone=$(orphan "$P/tk-401-gone/apps/web" "node vitest run");              PIDS+=("$gone")
+held=$(orphan "$P/tk-402-held" "node tsc --noEmit");                     PIDS+=("$held")
+argv=$(orphan "$T" "node $P/tk-404-argv/node_modules/.bin/tsc --noEmit"); PIDS+=("$argv")
+prev=$(orphan "$P/develop-view" "node watcher");                         PIDS+=("$prev")   # no ticket number
+hfree=$(orphan "$H/some-build" "bash scripts/x.test.sh");                PIDS+=("$hfree")
+hrun=$(orphan "$H/live-build" "bash scripts/y.test.sh");                 PIDS+=("$hrun")
+vsc=$(under_named "$P/tk-403-seat" "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"); PIDS+=("$vsc")
+login=$(under_named "$P/tk-405-login" "-zsh");                           PIDS+=("$login")
+seatbg=$(orphan "$P/tk-403-seat/apps" "bash index.sh");                  PIDS+=("$seatbg")  # beside somebody's editor, claim gone
+mkdir -p "$P/tk-406-stub"
+stub=$(cd "$P/tk-406-stub" || exit; (trap '' TERM; exec -a "stubborn run" sleep 600) </dev/null >/dev/null 2>&1 & echo $!); PIDS+=("$stub")
+printf '%s\n' "$H/live-build" > "$ST/runs/run-501.worktrees"
+jq -cn --argjson p "$$" '{run_id:"run-501", pid:$p}' > "$ST/runs/run-501.json"
+printf '%s\n' "$P/tk-401-gone" > "$ST/runs/run-502.worktrees"                     # a run that ended
+jq -cn --argjson p "$$" '{run_id:"run-502", pid:$p}' > "$ST/runs/run-502.json"; : > "$ST/runs/run-502.ended"
+sleep 1
+SCL=$(printf '402\n401\n')
+SRECS=$(jq -cn --arg h "$HOST" --argjson live "$$" --argjson dead "$DEAD" '[{issue:402, host:$h, pid:$live}, {issue:401, host:$h, pid:$dead}]')
+strays() { # <min-age> <max-age> [--dry-run]
+  STOP_DEV_BRANCH_PREFIX=tk- STOP_DEV_CLAIMED="$SCL" STOP_DEV_CLAIM_RECORDS="$SRECS" STOP_DEV_STATE_DIR="$ST" \
+  STOP_DEV_PROJECT_ROOT="$P" STOP_DEV_HARNESS_ROOT="$H" STOP_DEV_STRAY_MIN_AGE="$1" STOP_DEV_STRAY_MAX_AGE="$2" \
+  STOP_DEV_STRAY_GRACE=2 bash "$SUT" --strays ${3:-}
+}
+if [ -z "$vsc" ] || [ -z "$login" ]; then fail "fixture: an interactive stand-in never started"; fi
+
+out=$(strays 3600 3600)
+alive "$gone" && ok "a stray younger than the minimum age is kept" || fail "a young process was reaped: '$out'"
+
+out=$(strays 0 0 --dry-run)
+{ alive "$gone" && printf '%s' "$out" | grep -q "would reap pid $gone, .* in $P/tk-401-gone — "; } \
+  && ok "shadow (--dry-run) logs the stray with its worktree and kills nothing" || fail "--strays --dry-run: '$out'"
+
+out=$(strays 0 3600)
+sleep 1
+alive "$gone"  && fail "an unowned, old process is still running"  || ok "an unowned, old process is reaped"
+printf '%s' "$out" | grep -q "^strays: reaped pid $gone, [0-9]*m old, [0-9.]*% CPU, in $P/tk-401-gone — .*vitest run" \
+  && ok "the reap is logged: pid, age, CPU, worktree, command" || fail "no reap log line for $gone: '$out'"
+alive "$held"  && ok "a process in a worktree a live claim holds is kept"          || fail "a live claim's process was reaped"
+alive "$argv"  && fail "a process naming an unowned worktree in its argv was kept" || ok "a process whose argv names an unowned worktree is reaped"
+alive "$prev"  && ok "a project folder with no ticket number (a preview) is kept"  || fail "a preview's process was reaped"
+alive "$hfree" && fail "an unowned harness-root build process was kept"            || ok "an unowned process in the harness worktree root is reaped"
+alive "$hrun"  && ok "a process in a worktree a live run names is kept"            || fail "a live run's process was reaped"
+alive "$vsc"   && ok "a process with VS Code in its ancestry is kept"              || fail "a VS Code-started process was reaped"
+alive "$login" && ok "a process under an interactive login shell is kept"         || fail "a login shell's process was reaped"
+alive "$seatbg" && ok "under the cap, a process beside somebody working there is kept" || fail "a process beside somebody's editor was reaped under the cap"
+alive "$stub"  && fail "a process ignoring TERM outlived the grace period"         || ok "a process that ignores TERM is KILLed after the grace period"
+
+out=$(strays 0 0)
+sleep 1
+alive "$seatbg" && fail "a process past the max age with its claim gone was kept"  || ok "past the max age, a claimless worktree's process is reaped even with somebody there"
+alive "$vsc"   && ok "the interactive process itself is never reaped, cap or not"  || fail "the cap reaped an interactive process"
+alive "$held"  && ok "the cap never reaps under a live claim"                      || fail "the cap reaped a live claim's process"
+
 echo "stop-dev-servers: $PASS passed, $FAIL failed"
 suite_end "$FAIL"

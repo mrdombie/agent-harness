@@ -124,6 +124,14 @@ COORD_TOOLING_SCOPES="${COORDINATOR_TOOLING_SCOPES:-$(swarm_opt coordinator.tool
 [ -n "$COORD_MAX_LOAD_SET" ] || COORD_MAX_LOAD_SET=$(swarm_opt swarm.maxLoad "")
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
+# A process left in a worktree nothing owns is reaped once this old (stop-dev-servers.sh --strays),
+# and at the cap even with somebody sitting there, once the worktree's claim is gone.
+COORD_STRAY_MIN_AGE_MIN="${COORDINATOR_STRAY_MIN_AGE_MIN:-$(swarm_opt coordinator.strayMinAgeMin 30)}"
+case "$COORD_STRAY_MIN_AGE_MIN" in ""|*[!0-9]*) COORD_STRAY_MIN_AGE_MIN=30 ;; esac
+COORD_STRAY_MAX_AGE_MIN="${COORDINATOR_STRAY_MAX_AGE_MIN:-$(swarm_opt coordinator.strayMaxAgeMin 180)}"
+case "$COORD_STRAY_MAX_AGE_MIN" in ""|*[!0-9]*) COORD_STRAY_MAX_AGE_MIN=180 ;; esac
+COORD_STRAY_GRACE_SEC="${COORDINATOR_STRAY_GRACE_SEC:-$(swarm_opt coordinator.strayGraceSec 10)}"
+case "$COORD_STRAY_GRACE_SEC" in ""|*[!0-9]*) COORD_STRAY_GRACE_SEC=10 ;; esac
 COORD_FROZEN_MIN="${COORDINATOR_FROZEN_MIN:-$(swarm_opt coordinator.frozenMin 20)}"
 COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 1)}"
 COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turns 40)}"

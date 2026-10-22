@@ -207,6 +207,17 @@ build_finished() {
   merged tkt-809/a 1809 "$(G -C "$MAIN" rev-parse develop)"
   G -C "$FOREIGN" worktree add -q "$ROOT/810-foreign" -b tkt-810/a develop
   merged tkt-810/a 1810 "$(G -C "$FOREIGN" rev-parse develop)"
+  # Trunk moves on with a tool's rewrite of a tracked file; older trees rewrite it the same way.
+  add_wt 812-trunk-drift tkt-812/a;   merged tkt-812/a 1812 "$(G -C "$MAIN" rev-parse develop)"
+  add_wt 813-drift-edit tkt-813/a;    merged tkt-813/a 1813 "$(G -C "$MAIN" rev-parse develop)"
+  add_wt 814-drift-open tkt-814/a;    printf '814\tOPEN\n' >> "$SB/issues.tsv"
+  if [ "$(G -C "$MAIN" show develop:apps/web/page.ts 2>/dev/null)" != "## src" ]; then
+    printf '## src\n' > "$MAIN/apps/web/page.ts"; G -C "$MAIN" commit -qam "trunk rewrite"
+    G -C "$MAIN" push -q origin HEAD:develop 2>/dev/null; G -C "$MAIN" fetch -q origin
+  fi
+  printf '## src\n' > "$ROOT/812-trunk-drift/apps/web/page.ts"
+  printf '## src\n' > "$ROOT/813-drift-edit/apps/web/page.ts"; printf 'mine\n' > "$ROOT/813-drift-edit/notes.txt"
+  printf '## src\n' > "$ROOT/814-drift-open/apps/web/page.ts"; touch -t 202001010000 "$ROOT/814-drift-open"   # past the age rule
   sit_in "$ROOT/804-busy"
 }
 build_finished
@@ -224,6 +235,11 @@ printf '%s' "$out" | grep -q 'keep    802-extra — 1 commit(s) on no remote' &&
 there 803-dirty && ok "uncommitted changes keep a merged worktree" || bad "a merged worktree with uncommitted changes was removed"
 [ "$(cat "$ROOT/803-dirty/apps/web/page.ts" 2>/dev/null)" = wip ] && ok "and its change survives" || bad "the dirty merged worktree lost its change"
 there 811-untracked && ok "an untracked file keeps a merged worktree" || bad "a merged worktree with an untracked file was removed"
+there 812-trunk-drift && bad "a merged worktree whose only change is trunk's own bytes was kept: $(printf '%s' "$out" | grep 812)" \
+  || ok "a merged worktree whose only change equals trunk's copy is removed"
+there 813-drift-edit && ok "a real edit beside a trunk-equal file keeps a merged worktree" || bad "a merged worktree with a real edit was removed"
+there 814-drift-open && ok "trunk-equal changes count as clean only once the work is finished" || bad "an open ticket's worktree was removed for trunk drift"
+printf '%s' "$out" | grep -q 'keep    814-drift-open — uncommitted changes' && ok "and it is kept for its changes, not its age" || bad "814 reason: $(printf '%s' "$out" | grep 814)"
 there 804-busy && ok "a process inside keeps a merged worktree" || bad "a merged worktree in use was removed"
 there 805-claimed && ok "a live claim keeps a merged worktree" || bad "a claimed merged worktree was removed"
 there 807-open-pr && ok "an open PR keeps a closed ticket's young worktree" || bad "a worktree with an open PR was removed"
