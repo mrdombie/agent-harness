@@ -320,7 +320,14 @@ case "$ep" in
     mb=$(g merge-base "$B" "$H")
     if [ "$B" = "$H" ]; then st=identical; elif [ "$mb" = "$B" ]; then st=ahead; elif [ "$mb" = "$H" ]; then st=behind; else st=diverged; fi
     commits=$(g rev-list --reverse --parents "$mb..$H" | jq -R 'split(" ") | {sha: .[0], parents: (.[1:] | map({sha: .}))}' | jq -s .)
-    files=$(g diff --name-status -M "$mb" "$H" | jq -R 'split("\t") | if (.[0]|startswith("R")) then {filename: .[2], previous_filename: .[1]} else {filename: .[1]} end' | jq -s .)
+    # As GitHub lists them: a blob sha, and a text file's hunks with no header lines.
+    files=$(g diff --name-status -M "$mb" "$H" | while IFS=$'\t' read -r st a b; do
+      n=${b:-$a}; patch=$(g diff -M "$mb" "$H" -- ${b:+"$a"} "$n" | awk '/^@@/ { h = 1 } h')
+      if g diff --numstat -M "$mb" "$H" -- ${b:+"$a"} "$n" | grep -q $'^-\t-\t'; then patch=""; fi
+      jq -n --arg st "$st" --arg a "$a" --arg n "$n" --arg p "$patch" --arg s "$(g rev-parse -q --verify "$H:$n" 2>/dev/null || g rev-parse "$mb:$a")" \
+        '{filename: $n, sha: $s, status: ({"A": "added", "D": "removed", "M": "modified"}[$st[0:1]] // "renamed")}
+         + (if ($st | startswith("R")) then {previous_filename: $a} else {} end) + (if $p == "" then {} else {patch: $p} end)'
+    done | jq -s .)
     out=$(jq -n --arg st "$st" --argjson c "$commits" --argjson f "$files" '{status:$st, total_commits:($c|length), commits:$c, files:$f}') ;;
   repos/*/contents/*)
     r=${ep#*/contents/}; p=${r%%\?ref=*}; ref=${r#*\?ref=}; p=$(printf '%b' "${p//%/\\x}")
@@ -362,6 +369,26 @@ want "the same past 300 files, by blob: voided" "1" "$(real)"
 reset; w apps/web/src/Old.tsx $'a\nb\nc\nd\ne'; G add -A; G commit -qm base3; G checkout -qb pr; G mv apps/web/src/Old.tsx apps/web/src/Renamed.tsx; G commit -qm rename; A=$(G rev-parse HEAD)
 G checkout -q develop; w lib/x.txt b; G commit -qam dev; mergedev; G mv apps/web/src/Renamed.tsx apps/web/src/Old.tsx; G commit -q --amend --no-edit
 want "the merge undid the PR's rename: voided" "1" "$(real)"
+# The PR's own change, not the heads: develop edits elsewhere in a screen the PR edits.
+long() { reset; w apps/web/src/Card.tsx $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=plain'; G commit -qam base2
+  G checkout -qb pr; w apps/web/src/Card.tsx $'line1\ncolor=RED\nline3\n\n\n\n\nfooter=plain'; G commit -qam pr; A=$(G rev-parse HEAD)
+  G checkout -q develop; w apps/web/src/Card.tsx "$1"; G commit -qam dev; }
+long $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=BOLD'; mergedev
+want "a clean merge where develop edited another part of the PR's screen: kept" "0" "$(real)"
+want "(the merge resolved nothing)" "" "$(G show --remerge-diff --format= HEAD)"
+long $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=BOLD'; mergedev; w apps/web/src/Card.tsx $'line1\ncolor=RED\nline3\n\n\nsneaked=in\n\nfooter=BOLD'; G add -A; G commit -q --amend --no-edit
+want "a merge that slips an edit into the PR's screen, conflict or none: voided" "1" "$(real)"
+long $'line1\ncolor=green\nline3\n\n\n\n\nfooter=plain'
+G checkout -q pr; G merge -q develop >/dev/null 2>&1; w apps/web/src/Card.tsx $'line1\ncolor=PURPLE\nline3\n\n\n\n\nfooter=plain'; G add -A; G commit -qm merge
+want "a conflict resolution that edits the PR's screen: voided" "1" "$(real)"
+long $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=BOLD'; mergedev; w apps/web/src/Card.tsx $'line1\ncolor=RED!\nline3\n\n\n\n\nfooter=BOLD'; G commit -qam "fix: the PR's own"
+want "a commit of the PR's own editing its screen after a clean merge: voided" "1" "$(real)"
+long $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=BOLD'; G checkout -q develop; for i in $(seq 1 305); do w "lib/gen/f$i.txt" "$i"; done; G add -A; G commit -qm dev2; mergedev
+want "the same clean merge past 300 files, read by blob: kept" "0" "$(real)"
+printf 'plant' > "$SIMREPO/apps/web/src/logo.png"; printf '\0\1\2' >> "$SIMREPO/apps/web/src/logo.png"
+reset; G checkout -qb pr; printf 'a\0b' > "$SIMREPO/apps/web/src/Logo.tsx"; G add -A; G commit -qm pr; A=$(G rev-parse HEAD)
+G checkout -q develop; w lib/x.txt b; G commit -qam dev; mergedev; printf 'a\0c' > "$SIMREPO/apps/web/src/Logo.tsx"; G add -A; G commit -q --amend --no-edit
+want "a binary screen the merge changed: voided by its blob" "1" "$(real)"
 reset; w apps/web/src/__tests__/a.tsx $'x\n\n\n\ny'; G add -A; G commit -qm b4; G checkout -qb pr; w apps/web/src/__tests__/a.tsx $'X\n\n\n\ny'; G commit -qam pr; A=$(G rev-parse HEAD)
 G checkout -q develop; w apps/web/src/__tests__/a.tsx $'x\n\n\n\nY'; G commit -qam dev; mergedev
 want "a nested test both sides changed: kept" "0" "$(real)"
