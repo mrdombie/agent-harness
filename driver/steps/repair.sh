@@ -116,6 +116,27 @@ _driver_repair_take_listed() {
   return 0
 }
 
+# _driver_repair_put_back <ticket> <tree> <answer.json> <dirty-before> — put back every
+# tracked file changed in the tree since <dirty-before> (the model's turn began) that the
+# answer does not name: a tool's rewrite, not the repair (Next rewrites AGENTS.md
+# while checks run). Each change is kept as a patch first; a named file is left for the check.
+_driver_repair_put_back() {
+  local t="$1" wt="$2" ans="$3" before="$4" named p back="" patch
+  named=$(driver_answer_paths "$ans")
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf '%s\n' "$before" | grep -qxF -- "$p" && continue
+    printf '%s\n' "$named" | grep -qxF -- "$p" && continue
+    back="$back$p"$'\n'
+  done <<<"$(git -C "$wt" diff --name-only --diff-filter=MDT 2>/dev/null)"
+  [ -n "$back" ] || return 0
+  patch="$(driver_state_dir "$t")/steps/put-back-$(date -u +%Y%m%dT%H%M%SZ).patch"
+  local -a paths=(); while IFS= read -r p; do [ -n "$p" ] && paths+=(":(literal)$p"); done <<<"$back"
+  git -C "$wt" diff -- "${paths[@]}" > "$patch" 2>/dev/null || { driver_say "   repair: could not keep a patch of $(printf '%s' "$back" | tr '\n' ' ')— nothing put back"; return 0; }
+  git -C "$wt" checkout -- "${paths[@]}" >/dev/null 2>&1 || return 0
+  driver_say "   repair: put back $(printf '%s' "$back" | tr '\n' ' ')— changed in the tree during the repair and named by no part of its answer, so a tool's edit, not the repair's; the change is kept at $patch"
+}
+
 # _driver_repair_evidence_left <ticket> <tree> <trunk> <base> <plan> <pr> — what the
 # repair left of the evidence it owed: the plan untouched since <base>, or the changed
 # screen files still no route or capture step renders. Nothing when it is all answered.
@@ -653,7 +674,9 @@ The body could not be read here: read it yourself (gh pr view $pr --json body)."
   # answered 'repaired' and then 'unchanged', committing nothing both times, with five
   # checks red, and parked twice as "the driver's" fault. So it is asked once more,
   # the red checks named in front of its brief; a second empty answer parks with them.
-  local pre_model attempt=1 reask st lesson_only=0
+  local pre_model pre_dirty attempt=1 reask st lesson_only=0
+  # Once, before the first ask: a re-ask must not adopt a tool's edit from the first.
+  pre_dirty=$(git -C "$wt" diff --name-only 2>/dev/null)
   while :; do
     pre_model=$(git -C "$wt" rev-parse HEAD)
     rc=0; driver_ai_step "$t" repair || rc=$?
@@ -828,6 +851,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     driver_state_set "$t" park_note "the repair committed conflict markers in: $(printf '%s' "$marked" | tr '\n' ' ')"
     return "$DRIVER_E_REFUSED"
   fi
+  _driver_repair_put_back "$t" "$wt" "$ans" "$pre_dirty"
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then
     driver_say "✋ repair: uncommitted changes — $(printf '%s' "$dirty" | awk '{print $NF}' | tr '\n' ' '). A change that is not committed is a change the gates never read."

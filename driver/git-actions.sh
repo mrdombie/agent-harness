@@ -9,9 +9,9 @@
 # model lists the step in its answer's `gitActions` and the driver runs it, after
 # checking it is one of these, in this tree, on this branch:
 #
-#   commitMerge       stages the conflicted paths that carry no marker, then
-#                     `git commit --no-edit` — only with a merge in progress and
-#                     nothing left unmerged
+#   commitMerge       stages the conflicted paths that carry no marker and every
+#                     path the answer lists as changed, then `git commit --no-edit`
+#                     — only with a merge in progress and nothing left unmerged
 #   resetTo <sha>     `git reset --keep <sha>` — only to the branch's own head on
 #                     origin, or a commit on HEAD's first-parent line that is not on
 #                     the trunk and still contains what origin's branch has
@@ -27,10 +27,18 @@ _driver_ga_refuse() { # <ticket> <where> <why>
   return 1
 }
 
+# driver_answer_paths <answer.json> — every path the answer says it changed, one a line:
+# its conflicts' files, its fixes' change paths and its takeBaseDeletions.
+driver_answer_paths() {
+  jq -r '[(.conflicts // [])[]?.file?, (.fixes // [])[]?.change[]?.path?, (.takeBaseDeletions // [])[]?]
+         | map(select(type == "string" and . != "")) | unique | .[]' "$1" 2>/dev/null \
+    | grep -vE '^/|(^|/)\.\.(/|$)' || true
+}
+
 _driver_ga_merging() { git -C "$1" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; }
 
-_driver_ga_commit_merge() { # <ticket> <tree> <where>
-  local t="$1" wt="$2" w="$3" p left="" marked=""
+_driver_ga_commit_merge() { # <ticket> <tree> <where> [answer.json]
+  local t="$1" wt="$2" w="$3" ans="${4:-}" p left="" marked="" took=""
   if ! _driver_ga_merging "$wt"; then
     driver_say "   $w: commitMerge — no merge in progress, nothing to commit"; return 0
   fi
@@ -42,6 +50,18 @@ _driver_ga_commit_merge() { # <ticket> <tree> <where>
   done <<<"$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)"
   [ -z "$marked" ] || { _driver_ga_refuse "$t" "$w" "commitMerge: conflict markers are still in ${marked% }"; return 1; }
   [ -z "$left" ] || { _driver_ga_refuse "$t" "$w" "commitMerge: still unmerged: ${left% }"; return 1; }
+  # A clean side of the merge the model had to fix (a duplicate key in package.json)
+  # is its edit too: left unstaged, the merge commit leaves it behind.
+  if [ -n "$ans" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      [ -n "$(git -C "$wt" diff --name-only -- ":(literal)$p" 2>/dev/null)$(git -C "$wt" ls-files --others --exclude-standard -- ":(literal)$p" 2>/dev/null)" ] || continue
+      grep -q -E '^(<<<<<<<|>>>>>>>)( |$)' "$wt/$p" 2>/dev/null && { marked="$marked$p "; continue; }
+      git -C "$wt" add -A -- ":(literal)$p" >/dev/null 2>&1 && took="$took$p "
+    done <<<"$(driver_answer_paths "$ans")"
+    [ -z "$marked" ] || { _driver_ga_refuse "$t" "$w" "commitMerge: conflict markers are still in ${marked% }"; return 1; }
+    [ -z "$took" ] || driver_say "   $w: commitMerge — the answer's own edits go into the merge too: ${took% }"
+  fi
   git -C "$wt" commit -q --no-edit >/dev/null 2>&1 \
     || { _driver_ga_refuse "$t" "$w" "commitMerge: git commit --no-edit failed in $wt"; return 1; }
   driver_say "   $w: commitMerge — the driver finished the merge at $(git -C "$wt" rev-parse --short HEAD)"
@@ -93,7 +113,7 @@ driver_git_actions() { # <ticket> <tree> <answer.json> <where>
     sha=$(jq -r --argjson i "$i" '.gitActions[$i].sha // ""' "$ans")
     i=$((i+1))
     case "$a" in
-      commitMerge)      _driver_ga_commit_merge "$t" "$wt" "$w" || return 1 ;;
+      commitMerge)      _driver_ga_commit_merge "$t" "$wt" "$w" "$ans" || return 1 ;;
       resetTo)          _driver_ga_reset_to "$t" "$wt" "$w" "$sha" "$b" "$trunk" || return 1 ;;
       dropLocalCommits) _driver_ga_drop_local "$t" "$wt" "$w" "$b" || return 1 ;;
       *)                _driver_ga_refuse "$t" "$w" "'$a' is not one of commitMerge, resetTo, dropLocalCommits"; return 1 ;;

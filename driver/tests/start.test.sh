@@ -327,4 +327,57 @@ fix_issue 141 OPEN "status:ready,type:feature"
 rc=0; driver_step_start 141 >/dev/null 2>&1 || rc=$?
 want "a ticket with no stranded ref is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 141 worktree)" rev-parse HEAD)"
 
+echo "--- a swept tree's branch left behind: start cuts again, never 'could not create' (#13392) ---"
+# The tree was deleted and its registration pruned, but the branch stayed in the clone
+# with a commit nowhere else. `worktree add -b` refuses an existing branch.
+fix_issue 150 OPEN "status:ready,type:feature"
+git -C "$REPO" branch -q tkt-150/ticket-150 develop
+git -C "$REPO" worktree add -q "$FIX/swept-150" tkt-150/ticket-150
+printf 'local only\n' > "$FIX/swept-150/local.txt"; git -C "$FIX/swept-150" add local.txt; git -C "$FIX/swept-150" commit -qm "wip(#150)"
+lone=$(git -C "$FIX/swept-150" rev-parse HEAD)
+rm -rf "$FIX/swept-150"; git -C "$REPO" worktree prune
+rc=0; out=$(driver_step_start 150 2>&1) || rc=$?
+want "a branch left in the clone does not stop start" "0" "$rc"
+want "the tree is on the ticket's branch"             "tkt-150/ticket-150" "$(git -C "$(driver_state_get 150 worktree)" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+want "the left-behind commit is kept on origin first" "1" "$(git -C "$REPO" ls-remote origin 'refs/stranded/150/*' | grep -c "^$lone")"
+
+echo "--- the branch checked out in an orphan tree: that tree is freed, start succeeds ---"
+fix_issue 151 OPEN "status:ready,type:feature"
+git -C "$REPO" worktree add -q "$FIX/orphan-151" -b tkt-151/ticket-151 develop
+rc=0; out=$(driver_step_start 151 2>&1) || rc=$?
+want "an orphan tree on the branch does not stop start" "0" "$rc"
+want "the new tree is on the branch"                    "tkt-151/ticket-151" "$(git -C "$(driver_state_get 151 worktree)" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+want "the orphan's registration is gone"                "0" "$(git -C "$REPO" worktree list | grep -c orphan-151)"
+want_in "and it says so"                                'held by nothing' "$out"
+
+echo "--- an orphan tree with uncommitted work is left alone, and the refusal says why ---"
+fix_issue 152 OPEN "status:ready,type:feature"
+git -C "$REPO" worktree add -q "$FIX/orphan-152" -b tkt-152/ticket-152 develop
+printf 'unsaved\n' > "$FIX/orphan-152/unsaved.txt"
+rc=0; out=$(driver_step_start 152 2>&1) || rc=$?
+want "a dirty orphan refuses"                 "24" "$rc"
+want "its work is untouched"                  "unsaved" "$(cat "$FIX/orphan-152/unsaved.txt" 2>/dev/null)"
+want_in "the park note carries the real cause" 'uncommitted changes' "$(driver_state_get 152 park_note)"
+
+echo "--- an orphan tree a live process sits in is not taken ---"
+fix_issue 153 OPEN "status:ready,type:feature"
+git -C "$REPO" worktree add -q "$FIX/orphan-153" -b tkt-153/ticket-153 develop
+(cd "$FIX/orphan-153" && exec sleep 30) & sleeper=$!
+sleep 1
+rc=0; out=$(driver_step_start 153 2>&1) || rc=$?
+kill "$sleeper" 2>/dev/null; wait "$sleeper" 2>/dev/null
+want "a tree in use refuses"     "24" "$rc"
+want "and is still there"        "1" "$(git -C "$REPO" worktree list | grep -c orphan-153)"
+want_in "naming who uses it"     'process' "$(driver_state_get 153 park_note)"
+
+echo "--- a stray directory at the target path is moved aside, never deleted ---"
+fix_issue 154 OPEN "status:ready,type:feature"
+printf '#!/bin/sh\necho abc154\n' > "$BIN/openssl"; chmod +x "$BIN/openssl"
+stray="$(driver_worktree_root)/${BRANCH_PREFIX}154-abc154"; mkdir -p "$stray"; printf 'keep\n' > "$stray/keep.txt"
+rc=0; out=$(driver_step_start 154 2>&1) || rc=$?
+rm -f "$BIN/openssl"
+want "a stray dir does not stop start"   "0" "$rc"
+want "the tree is cut at the path"       "tkt-154/ticket-154" "$(git -C "$stray" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+want "the stray dir's file survives"     "keep" "$(cat "$stray".aside-*/keep.txt 2>/dev/null)"
+
 suite_end "$FAILED"
