@@ -166,6 +166,9 @@ want "(a clean merge: it resolved nothing)" "" "$(g show --remerge-diff --format
 want_in "a clean merge where develop edited another part of the signed screen goes" 'rc=0$' "$(guard)"
 printf 'l1\nL2\nl3\n\nsneaked\n\n\nL8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -q --amend --no-edit
 want_in "a merge that slips an edit into it is refused" 'rc=1$' "$(guard)"
+g reset -q --hard "$S3"; g merge -q --no-edit develop >/dev/null 2>&1
+printf 'l1\nl2\nl3\n\n\n\nL2\nL8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -q --amend --no-edit
+want_in "a merge that moves the PR's own line elsewhere in it is refused" 'rc=1$' "$(guard)"
 g reset -q --hard "$S3"
 printf 'l1\nL2!\nl3\n\n\n\n\nl8\n' > "$R/apps/web/long.tsx"; g add apps/web/long.tsx; g commit -qm "fix: the PR's own"
 want_in "a commit of the PR's own editing it is refused" 'rc=1$' "$(guard)"

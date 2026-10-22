@@ -385,10 +385,23 @@ long $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=BOLD'; mergedev; w apps/web/src/
 want "a commit of the PR's own editing its screen after a clean merge: voided" "1" "$(real)"
 long $'line1\ncolor=blue\nline3\n\n\n\n\nfooter=BOLD'; G checkout -q develop; for i in $(seq 1 305); do w "lib/gen/f$i.txt" "$i"; done; G add -A; G commit -qm dev2; mergedev
 want "the same clean merge past 300 files, read by blob: kept" "0" "$(real)"
-printf 'plant' > "$SIMREPO/apps/web/src/logo.png"; printf '\0\1\2' >> "$SIMREPO/apps/web/src/logo.png"
 reset; G checkout -qb pr; printf 'a\0b' > "$SIMREPO/apps/web/src/Logo.tsx"; G add -A; G commit -qm pr; A=$(G rev-parse HEAD)
 G checkout -q develop; w lib/x.txt b; G commit -qam dev; mergedev; printf 'a\0c' > "$SIMREPO/apps/web/src/Logo.tsx"; G add -A; G commit -q --amend --no-edit
 want "a binary screen the merge changed: voided by its blob" "1" "$(real)"
+reset; w apps/web/src/List.tsx $'<A/>\n<B/>\n<C/>\n<D/>\n<E/>\n<F/>\n<G/>\n<H/>'; G add -A; G commit -qm base4
+G checkout -qb pr; w apps/web/src/List.tsx $'<A/>\n<New/>\n<B/>\n<C/>\n<D/>\n<E/>\n<F/>\n<G/>\n<H/>'; G commit -qam pr; A=$(G rev-parse HEAD)
+G checkout -q develop; w lib/x.txt b; G commit -qam dev; mergedev; w apps/web/src/List.tsx $'<A/>\n<B/>\n<C/>\n<D/>\n<E/>\n<F/>\n<G/>\n<New/>\n<H/>'; G add -A; G commit -q --amend --no-edit
+want "a merge that moves the PR's own line elsewhere in its screen: voided" "1" "$(real)"
+want "  and the push guard's local-git reading agrees" "apps/web/src/List.tsx" "$(cd "$SIMREPO" && printf 'apps/web/src/List.tsx\n' | bash "$K" own-changed "$A" HEAD develop)"
+reset; w apps/web/src/Btn.tsx $'<Btn red/>\n1\n2\n3\n4\n5\n6\n<Btn red/>'; G add -A; G commit -qm base5
+G checkout -qb pr; w apps/web/src/Btn.tsx $'<Btn blue/>\n1\n2\n3\n4\n5\n6\n<Btn red/>'; G commit -qam pr; A=$(G rev-parse HEAD)
+G checkout -q develop; w lib/x.txt b; G commit -qam dev; mergedev; w apps/web/src/Btn.tsx $'<Btn red/>\n1\n2\n3\n4\n5\n6\n<Btn blue/>'; G add -A; G commit -q --amend --no-edit
+want "a merge that moves the PR's edit onto a twin line: voided" "1" "$(real)"
+want "  and the push guard's local-git reading agrees" "apps/web/src/Btn.tsx" "$(cd "$SIMREPO" && printf 'apps/web/src/Btn.tsx\n' | bash "$K" own-changed "$A" HEAD develop)"
+reset; G checkout -qb pr; mkdir -p "$SIMREPO/apps/web/src/[id]" "$SIMREPO/apps/web/src/i"; w 'apps/web/src/[id]/page.tsx' $'p1\np2\np3\n\n\n\n\np8'; w apps/web/src/i/page.tsx x; G add -A; G commit -qm pr; A=$(G rev-parse HEAD)
+G checkout -q develop; w lib/x.txt b; G commit -qam dev; mergedev; w apps/web/src/i/page.tsx y; G add -A; G commit -q --amend --no-edit
+printf 'apps/web/src/[id]/page.tsx\n' > "$FIX/paths"
+want "a bracketed route folder is read as a path, not a pattern (its sibling i/ changed)" "" "$(cd "$SIMREPO" && bash "$K" own-changed "$A" HEAD develop < "$FIX/paths")"
 reset; w apps/web/src/__tests__/a.tsx $'x\n\n\n\ny'; G add -A; G commit -qm b4; G checkout -qb pr; w apps/web/src/__tests__/a.tsx $'X\n\n\n\ny'; G commit -qam pr; A=$(G rev-parse HEAD)
 G checkout -q develop; w apps/web/src/__tests__/a.tsx $'x\n\n\n\nY'; G commit -qam dev; mergedev
 want "a nested test both sides changed: kept" "0" "$(real)"

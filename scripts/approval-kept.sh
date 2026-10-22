@@ -29,7 +29,7 @@
 #   since = approved..head            own = trunk...approved  ∪  trunk...head
 #   voided when a commit in both since and the PR's own diff is not a merge, or a
 #   screen file of `own` changed in `since` AND the PR's own change to it differs:
-#   its added and removed lines in trunk...approved against trunk...head. A file the
+#   its hunks (context included) in trunk...approved against trunk...head. A file the
 #   trunk edited elsewhere differs between the heads after a clean merge while the
 #   PR's own edit of it is the same, so that keeps. The PR's screens are read at BOTH
 #   heads: a resolution that takes develop's version, or drops a screen the PR
@@ -168,9 +168,11 @@ blob_at() { # <sha> <path> — the file's blob, "absent" when the commit has non
   printf '%s' "$out"
 }
 
-# THE PR'S OWN CHANGE to a file, as a key: its added and removed lines in order, hunk
+# THE PR'S OWN CHANGE to a file, as a key: its hunks with their context lines, the @@
 # positions dropped (a trunk edit elsewhere in the file shifts them), or its blob when
-# there is no text patch. Two heads whose keys match changed the file the same way.
+# there is no text patch. The context pins where each line went: without it the same
+# lines moved elsewhere, or onto a twin line, would read as the same change. A trunk
+# edit within a hunk's context counts as a change — a re-sign, the safe side.
 # own_changed_api <own-at-approved> <own-at-head> — paths on stdin; prints those whose
 # own change differs, or cannot be read (no patch and no blob: never kept).
 own_changed_api() {
@@ -185,7 +187,7 @@ own_key_api() { # <compare-json> <path>
   jq -r --arg f "$2" '
     [.files[] | select(.filename == $f or (.previous_filename // "") == $f)
      | {s: (.status // ""), n: .filename, p: (.previous_filename // ""),
-        c: (if (.patch | type) == "string" then (.patch | split("\n") | map(select(test("^[-+]"))) | join("\n"))
+        c: (if (.patch | type) == "string" then (.patch | split("\n") | map(select(startswith("@@") | not)) | join("\n"))
             elif (.sha | type) == "string" and (.sha | length) > 0 then "blob:" + .sha
             else null end)}]
     | if any(.[]; .c == null) then "?" else tojson end' <<<"$1" 2>/dev/null || echo "?"
@@ -204,11 +206,11 @@ own_changed_git() {
 }
 own_key_git() { # <base> <sha> <path>
   local ns
-  ns=$(git diff --no-ext-diff --no-renames --numstat "$1" "$2" -- "$3") || return 1
+  ns=$(git --literal-pathspecs diff --no-ext-diff --no-renames --numstat "$1" "$2" -- "$3") || return 1
   case "$ns" in
     '') printf 'none' ;;
     -$'\t'-$'\t'*) printf 'blob:%s' "$(git rev-parse -q --verify "$2:$3" 2>/dev/null || echo absent)" ;;
-    *) git diff --no-ext-diff --no-textconv --no-color --no-renames -U0 "$1" "$2" -- "$3" | awk '/^@@/ { h = 1; next } /^diff --git / { h = 0 } h && /^[-+]/' ;;
+    *) git --literal-pathspecs diff --no-ext-diff --no-textconv --no-color --no-renames -U3 "$1" "$2" -- "$3" | awk '/^@@/ { h = 1; next } /^diff --git / { h = 0 } h' ;;
   esac
 }
 
