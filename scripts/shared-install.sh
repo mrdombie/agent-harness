@@ -34,6 +34,16 @@
 # the whole install, it holds new starts on this host (shared-install-hold.sh, read
 # by the tick like the disk hold); the live builds finish, the install runs, and the
 # hold goes whenever nothing is pending any more: installed, failed, or unchanged.
+# The drain is bounded too: past coordinator.sharedInstall.drainMaxMin (60) of holding,
+# the hold is dropped for this lock, every pass logs "⚠ shared install drain timed out"
+# and the tick puts it on the sheet heartbeat's why. Builds on the old lock still finish
+# before it installs; new starts take the trunk's lock and are not waited for. On
+# 2026-10-22 a drain held every start on the Mac from 17:31Z to 18:55Z.
+#
+# ONE CHECK AT A TIME. Housekeeping runs it each pass and the tick runs it each tick a
+# hold stands (housekeeping can take most of a quarter hour, and a refused start waited
+# out a whole interval: 17 min between checks that day). A second check finding one
+# running only refreshes the hold, whose writer is alive.
 #
 # The clone's own package-lock.json is that blob and npm's record of the install agrees
 # with it — no stamp yet, or a stamp a hand install left behind: adopted, nothing installed.
@@ -55,7 +65,7 @@
 #
 # Settings (harness.json, or the env var): coordinator.sharedInstall.on (1;
 # SHARED_INSTALL=0 turns it off), .timeoutMin (30; SHARED_INSTALL_TIMEOUT_SEC),
-# .retryMin (60), .preGateSteps (""), .drainAfterMin (30), .holdStaleMin (120).
+# .retryMin (60), .preGateSteps (""), .drainAfterMin (30), .drainMaxMin (60), .holdStaleMin (15).
 # SHARED_INSTALL_CMD replaces the install
 # command (tests).
 set -uo pipefail
@@ -68,6 +78,8 @@ LOGF="$COORD_DIR/shared-install.log"
 STAMP_NAME=".harness-shared-install"
 FAILED_F="$COORD_DIR/shared-install.failed"
 LOCKF="$COORD_DIR/shared-install.lock"
+CHECK_LOCK="$COORD_DIR/shared-install.check"
+DRAIN_TO="$COORD_DIR/shared-install.drain-timeout"
 PREV=".harness-prev"
 say() { printf '%s shared install: %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "shared install: $*"; swarm_log "$LOGF" "$*"; }
 
@@ -141,7 +153,7 @@ locked_install() { # <lock blob>
     printf '%s %s %s\n' "$want" "$(git_c rev-parse HEAD)" "$(swarm_stamp)" > "$CLONE/node_modules/$STAMP_NAME"
     # A node_modules the install did not make again was not its own: it goes back.
     for d in $(prev_dirs); do if [ -e "${d%"$PREV"}" ]; then rm -rf "$d"; else mv "$d" "${d%"$PREV"}"; fi; done
-    rm -f "$FAILED_F"
+    rm -f "$FAILED_F" "$DRAIN_TO"
     say "installed origin/$BR's lock ${want:0:12} at $(git_c rev-parse --short HEAD) in $(( $(date +%s) - t0 ))s"
     return 0
   fi
@@ -164,6 +176,8 @@ TIMEOUT_SEC="${SHARED_INSTALL_TIMEOUT_SEC:-$(( $(swarm_opt coordinator.sharedIns
 RETRY_MIN="$(swarm_opt coordinator.sharedInstall.retryMin 60)"
 PRE_GATE=" $(swarm_opt coordinator.sharedInstall.preGateSteps "") "
 DRAIN_MIN="$(swarm_opt coordinator.sharedInstall.drainAfterMin 30)"
+DRAIN_MAX="$(swarm_opt coordinator.sharedInstall.drainMaxMin 60)"
+case "$DRAIN_MAX" in ''|*[!0-9]*) DRAIN_MAX=60 ;; esac
 case "$TIMEOUT_SEC" in ''|*[!0-9]*) TIMEOUT_SEC=1800 ;; esac
 case "$DRAIN_MIN" in ''|*[!0-9]*) DRAIN_MIN=30 ;; esac
 case "$RETRY_MIN" in ''|*[!0-9]*) RETRY_MIN=60 ;; esac
@@ -176,7 +190,12 @@ fi
 # The hold lasts only while an install is pending: every exit lifts it but a wait
 # past the drain bound and another install holding the lock.
 KEEP_HOLD=0
-trap 'coord_shadow || [ "$KEEP_HOLD" = 1 ] || shared_install_hold_clear' EXIT
+if ! coord_lock "$CHECK_LOCK" "shared install check"; then
+  # Its holder is alive and checking: its hold is not stale.
+  [ ! -f "$(shared_install_hold_file)" ] || coord_shadow || touch "$(shared_install_hold_file)"
+  say "$COORD_LOCK_WHY — checked by it"; exit 0
+fi
+trap 'rm -rf "$CHECK_LOCK"; coord_shadow || [ "$KEEP_HOLD" = 1 ] || shared_install_hold_clear' EXIT
 [ "$ON" = 0 ] && { say "off (coordinator.sharedInstall.on is 0)"; exit 0; }
 [ -d "$CLONE/node_modules" ] || { say "$CLONE has no node_modules — no shared install to keep current"; exit 0; }
 GITDIR=$(git -C "$CLONE" rev-parse --absolute-git-dir 2>/dev/null) || { say "$CLONE is not a git clone — skipped"; exit 0; }
@@ -187,15 +206,16 @@ if ! (cd / && GIT_TERMINAL_PROMPT=0 _si_timeout 120 git -C "$CLONE" fetch -q ori
 fi
 want=$(git -C "$CLONE" rev-parse -q --verify "refs/remotes/origin/$BR:package-lock.json" 2>/dev/null) \
   || { say "origin/$BR has no package-lock.json — nothing to install"; exit 0; }
+{ [ -f "$DRAIN_TO" ] && read -r twant _ < "$DRAIN_TO" && [ "$twant" = "$want" ]; } || rm -f "$DRAIN_TO"
 have=$(awk 'NR == 1 { print $1 }' "$CLONE/node_modules/$STAMP_NAME" 2>/dev/null)
 if [ "$have" != "$want" ] && [ "$(git hash-object "$CLONE/package-lock.json" 2>/dev/null)" = "$want" ] \
    && ! bash "$SELF_DIR/link-node-modules.sh" --behind "$CLONE" >/dev/null 2>&1 \
    && [ -f "$CLONE/node_modules/.package-lock.json" ]; then
   if coord_shadow; then say "lock ${want:0:12} checked: the install already matches it — would record it (shadow)"; exit 0; fi
   printf '%s %s %s\n' "$want" "$(git_c rev-parse HEAD 2>/dev/null)" "$(swarm_stamp)" > "$CLONE/node_modules/$STAMP_NAME"
-  say "lock ${want:0:12} checked: the install already matches it — recorded, nothing installed"; exit 0
+  rm -f "$DRAIN_TO"; say "lock ${want:0:12} checked: the install already matches it — recorded, nothing installed"; exit 0
 fi
-if [ "$have" = "$want" ]; then say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi
+if [ "$have" = "$want" ]; then rm -f "$DRAIN_TO"; say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi
 say "lock checked: origin/$BR has ${want:0:12}, the install was made from $(if [ -n "$have" ]; then printf '%s' "${have:0:12}"; else printf 'an unrecorded lock'; fi)"
 
 if [ -f "$FAILED_F" ] && read -r fwant fat < "$FAILED_F" && [ "$fwant" = "$want" ] \
@@ -242,12 +262,19 @@ if wt_can_see_processes; then
 fi
 # How long this lock has waited, so a host that never falls quiet shows it.
 WAITF="$COORD_DIR/shared-install.waiting"
-[ -n "$busy" ] || rm -f "$WAITF"
+[ -n "$busy" ] || rm -f "$WAITF" "$DRAIN_TO"
 if [ -n "$busy" ]; then
   { [ -f "$WAITF" ] && read -r wwant wat < "$WAITF" && [ "$wwant" = "$want" ]; } || { wat=$(date +%s); printf '%s %s\n' "$want" "$wat" > "$WAITF"; }
   waited=$(( ($(date +%s) - wat) / 60 ))
   # Only builds drain: a hold over a process that is not one would hold for ever.
   if [ "$waited" -ge "$DRAIN_MIN" ] && [ -n "$RUNS_BUSY" ]; then
+    # A hold only the builds it waits on can lift has an end: past it, starts go on.
+    held=$(( waited - DRAIN_MIN ))
+    if [ -f "$DRAIN_TO" ] || [ "$held" -ge "$DRAIN_MAX" ]; then
+      [ -f "$DRAIN_TO" ] || coord_shadow || printf '%s %s %s\n' "$want" "$(date +%s)" "$held" > "$DRAIN_TO"
+      say "⚠ shared install drain timed out: lock ${want:0:12} has waited $waited min, new starts held past ${DRAIN_MAX} min (coordinator.sharedInstall.drainMaxMin) — the hold is dropped$(coord_shadow && printf ' (shadow)'); it installs once these finish: $busy"
+      si_loud "$want" "its drain timed out; it waits on builds still on the old lock"; exit 0
+    fi
     KEEP_HOLD=1
     if coord_shadow; then say "waiting $waited min — would hold new starts on this host until the builds drain (shadow)"
     else

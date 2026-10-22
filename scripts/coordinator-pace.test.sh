@@ -155,9 +155,20 @@ want_in "inside its interval it is not started again" 'housekeeping: ran under 5
 fresh; mkdir -p "$C"; sleep 30 & holder=$!
 mkdir "$C/housekeeping.lock"; echo "$holder" > "$C/housekeeping.lock/pid"
 LC_ALL=C TZ=UTC ps -o lstart= -p "$holder" | tr -s ' ' | sed 's/^ *//;s/ *$//' > "$C/housekeeping.lock/started"
-out=$(COORDINATOR_SHADOW=0 bash "$HK" 2>&1)
+case_refused_stamp() { # the tick stamped this start; the lock refuses it
+  touch "$C/housekeeping.stamp"; out=$(COORDINATOR_SHADOW=0 bash "${HK_SUT:-$HK}" 2>&1)
+  R="stamp=$([ -f "$C/housekeeping.stamp" ] && echo kept || echo gone)"
+}
+case_refused_stamp
 want_in "one still running: a second does not start" 'housekeeping: another housekeeping \(pid [0-9]+\) is running — not started again' "$out"
 want "and touches nothing"                 "" "$(cat "$FIX/house.log")"
+want "a refused start leaves no interval stamp: the next tick starts one" "stamp=gone" "$R"
+KHK="$FIX/kit-hk"; rm -rf "$KHK"; mkdir -p "$KHK"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$KHK/"
+PLANT_LINE='rm -f "$COORD_DIR/housekeeping.stamp"; '
+python3 -I -c 'import sys; p, a = sys.argv[1:3]; s = open(p).read(); n = s.count(a); open(p, "w").write(s.replace(a, "", 1)); sys.exit(0 if n == 1 else 1)' \
+  "$KHK/scripts/coordinator-housekeeping.sh" "$PLANT_LINE" || bad "plant did not land: the stamp reset"
+HK_SUT="$KHK/scripts/coordinator-housekeeping.sh" case_refused_stamp
+want "planted (the stamp reset): the case now fails" "stamp=kept" "$R"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 out=$(COORDINATOR_SHADOW=0 bash "$HK" 2>&1)
 want_in "with the holder gone, it runs"    '^reconcile --quiet' "$(cat "$FIX/house.log")"

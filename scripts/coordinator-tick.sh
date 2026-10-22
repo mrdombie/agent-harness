@@ -52,7 +52,8 @@
 #   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts and the
 #                    auto-clean runs (disk-guard.sh), until coordinator.disk.resumeAtGb is free
 #   5a. install      while shared-install.sh holds new starts (a moved lock waited past
-#                    coordinator.sharedInstall.drainAfterMin, or it is installing), nothing new starts
+#                    coordinator.sharedInstall.drainAfterMin, or it is installing), nothing new starts;
+#                    each tick re-runs its check, and a hold not rewritten for .holdStaleMin holds nothing
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   5c. sheet        the owner writes the order, the floor and every machine's heartbeat;
 #                    a reader posts its heartbeat on the sheet (coordinator-sheet.sh)
@@ -697,6 +698,26 @@ if [ -n "$DISK_HOLD" ]; then
       bash "$SELF_DIR/../swarm/detach.sh" bash "$DISK_GUARD" clean $clean_args >> "$DISK_CLEAN_LOG" 2>&1 < /dev/null &
     say "disk: the auto-clean started$([ -n "$clean_args" ] || echo ' dry') in the background (pid $!, $DISK_CLEAN_LOG)"
   fi
+fi
+
+# The shared install's hold is re-checked every tick it stands, not only by housekeeping:
+# a long housekeeping pass, and a start its lock refused, left it unread for 17 min.
+if [ -f "$(shared_install_hold_file)" ]; then
+  SI_CHECK="${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}"
+  if [ "$SI_CHECK" = off ]; then :
+  elif [ "${COORDINATOR_SHARED_INSTALL_RECHECK:-background}" = inline ]; then
+    bash "$SI_CHECK" >> "$COORD_DIR/shared-install.out" 2>&1 < /dev/null
+    say "shared install: its hold re-checked this tick"
+  else
+    bash "$SELF_DIR/../swarm/detach.sh" bash "$SI_CHECK" >> "$COORD_DIR/shared-install.out" 2>&1 < /dev/null &
+    say "shared install: its hold re-checked in the background (pid $!)"
+  fi
+  if SI_AGE=$(shared_install_hold_stale); then
+    say "shared install: its hold was last written $SI_AGE min ago, past coordinator.sharedInstall.holdStaleMin $(shared_install_hold_stale_min) — nothing is checking it, so it holds nothing"
+  fi
+fi
+if [ -f "$COORD_DIR/shared-install.drain-timeout" ]; then
+  say "shared install: ⚠ shared install drain timed out — new starts are no longer held for it; it installs once the builds on the old lock finish ($COORD_DIR/shared-install.log)"
 fi
 
 if [ -n "$COORD_CAP_BAD" ]; then

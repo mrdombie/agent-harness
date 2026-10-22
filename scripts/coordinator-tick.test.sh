@@ -1343,4 +1343,55 @@ touch -t 202601010000 "$C/shared-install-hold"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
 want_in "a hold not rewritten for two hours holds nothing" '801' "$(spawned)"
 
+echo "--- a hold has an end: 16 min unwritten holds nothing, the tick re-runs its check, a timed-out drain is on the why ---"
+age_min() { touch -t "$(date -v-"$2"M +%Y%m%d%H%M.%S 2>/dev/null || date -d "-$2 min" +%Y%m%d%H%M.%S)" "$1"; }
+case_tick_stale() {
+  fresh; queue 801 802; mkdir -p "$C"
+  printf 'lock abc has waited 102 min; in use: claim-13447-x (#13447, past repair)\n' > "$C/shared-install-hold"; age_min "$C/shared-install-hold" 16
+  out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off bash "${TICK_SUT:-$T}" 2>&1)
+  R="spawned=$(spawned | cut -d' ' -f1)"
+}
+case_tick_stale
+want "a hold last written 16 min ago blocks no spawn" "spawned=801" "$R"
+want_in "and the tick says it ignored it" 'shared install: its hold was last written 16 min ago, past coordinator.sharedInstall.holdStaleMin 15 — nothing is checking it' "$out"
+# The check the hold waits on: what the real one does once its only run has ended.
+cat > "$BIN/si-check" <<'SH'
+#!/usr/bin/env bash
+echo checked >> "$FIX/si-check.log"; rm -f "$STATE/coordinator/shared-install-hold"
+SH
+chmod +x "$BIN/si-check"
+case_tick_recheck() { # housekeeping inside its interval; a fresh hold stands
+  fresh; queue 801 802; mkdir -p "$C"; : > "$FIX/si-check.log"; touch "$C/housekeeping.stamp"
+  printf 'lock abc has waited 102 min; in use: claim-13447-x (#13447, past repair)\n' > "$C/shared-install-hold"
+  out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL="$BIN/si-check" \
+        COORDINATOR_SHARED_INSTALL_RECHECK=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=60 bash "${TICK_SUT:-$T}" 2>&1)
+  R="checks=$(grep -c . "$FIX/si-check.log") hold=$([ -f "$C/shared-install-hold" ] && echo 1 || echo 0)"
+}
+case_tick_recheck
+want "housekeeping skipped, the tick still re-runs the drain check" "checks=1 hold=0" "$R"
+want_in "housekeeping was skipped this tick" 'housekeeping: ran under 60 min ago' "$out"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
+want_in "with the hold lifted, the next tick starts" '801' "$(spawned)"
+fresh; queue 801; mkdir -p "$C"; printf 'x 1 61\n' > "$C/shared-install.drain-timeout"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
+want_in "a timed-out drain is said every tick" 'shared install: ⚠ shared install drain timed out' "$out"
+why=$(. "$HERE/coordinator-env.sh" && . "$HERE/coordinator-sheet.sh" && coord_tick_why "$C/tick.say" | jq -r "$COORD_WHY_JQ"' {why: .} | why_words')
+want_in "and it is on the sheet heartbeat's why" '^why: .* · ⚠ shared install drain timed out' "$why"
+
+# Plants: each new line out of a copy of the kit, and its case goes red.
+K507="$FIX/kit507"; rm -rf "$K507"; mkdir -p "$K507"; (cd "$HERE/.." && tar --exclude=.git -cf - .) | (cd "$K507" && tar -xf -)
+plant507() { # <label> <exact line> <case> <the result the guard prevents>
+  cp "$HERE/coordinator-tick.sh" "$K507/scripts/coordinator-tick.sh"
+  python3 -I -c 'import sys; p, l = sys.argv[1], sys.argv[2]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, "", 1)); sys.exit(0 if n == 1 else 1)' "$K507/scripts/coordinator-tick.sh" "$2" \
+    || { bad "plant did not land: $1"; return; }
+  TICK_SUT="$K507/scripts/coordinator-tick.sh" "$3"
+  want "planted ($1): the case now fails" "$4" "$R"
+}
+plant507 "the tick's re-check" '    bash "$SI_CHECK" >> "$COORD_DIR/shared-install.out" 2>&1 < /dev/null' case_tick_recheck "checks=0 hold=1"
+cp "$HERE/coordinator-tick.sh" "$K507/scripts/coordinator-tick.sh"
+python3 -I -c 'import sys; p, l = sys.argv[1], sys.argv[2]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, "", 1)); sys.exit(0 if n == 1 else 1)' \
+  "$K507/scripts/shared-install-hold.sh" '  ! shared_install_hold_stale >/dev/null || return 1' || bad "plant did not land: the stale limit"
+TICK_SUT="$K507/scripts/coordinator-tick.sh" case_tick_stale
+want "planted (the stale limit): the case now fails" "spawned=" "$R"
+
 suite_end "$FAILED"
