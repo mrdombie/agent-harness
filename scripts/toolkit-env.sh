@@ -178,6 +178,7 @@ _toolkit_facts=$(jq -r '
     need("LBL_NEEDS_HUMAN"; "labels.needsHuman"), need("LBL_PM_DECISION"; "labels.pmDecision"), need("LBL_PM_TRACK"; "labels.pmTrack"),
     need("LBL_BLOCKED"; "labels.blocked"), need("LBL_EXTERNAL_BLOCKED"; "labels.externalBlocked"), need("LBL_PARKED"; "labels.parked"),
     need("HOLD_LABEL"; "labels.hold"), need("DECISION_LABELS"; "labels.decision"),
+    "LBL_DO_NOT_MERGE=\(.labels.doNotMerge // "do-not-merge" | @sh)",
     "DESIGN_KIT=\(.design.kit // "" | @sh)", "CFG_STATE_DIR=\(.stateDir // "" | @sh)" ] | .[]
 ' "$HARNESS_CFG" 2>/dev/null) || {
   if [ -z "$HARNESS_CFG" ]; then

@@ -407,6 +407,24 @@ out=$(live)
 want_in "an unreadable label list is said, not guessed" 'could not read whether the label queue:merge exists' "$out"
 want_not_in "and nothing is created on a guess" '^label create' "$(cat "$GH_LOG")"
 
+echo "--- do-not-merge: a person's stop — never in the lane, never merged, auto-merge disarmed ---"
+fresh
+pr 51 s51 do-not-merge 1 build:SUCCESS lint:SUCCESS; pr 52 s52 do-not-merge,queue:merge 0 build:SUCCESS lint:SUCCESS
+for n in 51 52; do compare develop s$n 0; done
+live >/dev/null
+want "neither is in the lane"                     "" "$(jq -r '.order | map(tostring) | join(" ")' "$C/lane.did.json")"
+want "nothing merges"                             "" "$(merges)"
+want_in "the armed one's auto-merge comes off"   '^pr merge 51 .*--disable-auto' "$(cat "$GH_LOG")"
+want_not_in "and it is not labelled into the lane" '^pr edit 51 .*--add-label queue:merge' "$(cat "$GH_LOG")"
+echo "--- a head that gains do-not-merge leaves the lane before it merges ---"
+fresh; pr 53 s53 - 1 build:PENDING lint:SUCCESS; compare develop s53 0
+live >/dev/null
+want "it is the head"                             "53" "$(jq -r '.head.pr' "$C/lane.did.json")"
+set_pr 53 '.labels += [{name:"do-not-merge"}] | .statusCheckRollup |= map(.status = "COMPLETED" | .conclusion = "SUCCESS")'
+: > "$GH_LOG"; out=$(live)
+want "it never merges"                            "" "$(merges)"
+want_in "and leaves, saying why"                  'head #53 carries do-not-merge' "$out"
+
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
 printf 'owner said stop\n' > "$STATE/swarm/HOLD"

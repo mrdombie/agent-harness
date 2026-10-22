@@ -1000,4 +1000,48 @@ want_in "naming this run's commit"             "$own chore: design-critic" "$out
 want_not_in "and only that one"                'another PR' "$out"
 want "and nothing reached origin"              "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-182/work 2>/dev/null)"
 
+echo "--- a person's stop wins over the machine: a draft a person made is never readied ---"
+# 22 Oct: a PM named a Critical and put the PR back to draft; a driver re-check
+# ("unchanged … meets every acceptance item") readied it, armed it, and it merged.
+repair_wt 731 734; ORIG=$(git -C "$FIX/wt731" rev-parse HEAD)
+printf 'fix\n' > "$FIX/wt731/r731.txt"; git -C "$FIX/wt731" add r731.txt
+git -C "$FIX/wt731" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: repair"
+driver_state_done 731 start
+driver_state_put 731 repair '{"step":"repair","status":"unchanged","reason":"meets every acceptance item"}'
+printf '[{"number":734,"isDraft":true}]\n' > "$FIX/gh/prs.json"
+printf 'a person (pm) put this back to draft on 2026-10-22: Back to draft: must not merge until the COLLEAGUE key (Critical, lost data) is fixed\n' > "$FIX/person-stop.out"
+printf '1\n' > "$FIX/person-stop.rc"; : > "$FIX/person-stop.log"; : > "$GH_LOG"
+out=$(driver_step_ship 731 2>&1); rc=$?
+want "a draft a person made refuses"              "24" "$rc"
+want_not_in "never readied, never armed"          'pr ready|pr merge' "$(cat "$GH_LOG")"
+want "nothing reached origin"                     "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-731/work)"
+want_in "the stop was read for the ticket and its PR" '^check 731 734$' "$(cat "$FIX/person-stop.log")"
+want_in "the park names the person and their words" 'put this back to draft on 2026-10-22: Back to draft' "$(driver_state_get 731 park_note)"
+want "and parks for the person, not the machine"  "pm" "$(driver_state_get 731 park_cause)"
+want_not_in "no re-check comment claims it unchanged" 'Re-checked by the driver' "$(cat "$GH_LOG")"
+rm -f "$FIX/person-stop.out" "$FIX/person-stop.rc"; printf '[]\n' > "$FIX/gh/prs.json"
+
+echo "--- a person's Critical newer than the review makes ship refuse at the hand-off ---"
+setup_wt 732
+driver_state_put 732 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 732 review
+for st in start plan build self-check review record; do driver_state_done 732 "$st"; done
+printf 'pm named a blocking finding on #732 on 2026-10-22: Critical (lost data): erasing one member deletes another'"'"'s facts\n' > "$FIX/person-stop.out"
+printf '1\n' > "$FIX/person-stop.rc"; : > "$GH_LOG"
+out=$(driver_step_ship 732 2>&1); rc=$?
+want "a SHIP verdict does not outvote a person's Critical" "24" "$rc"
+want_not_in "the PR is never readied or armed"    'pr ready|pr merge' "$(cat "$GH_LOG")"
+want_in "the refusal names the finding"           'Critical \(lost data\)' "$out"
+want_not_in "no hand-off is announced"            'Handed off at' "$(cat "$GH_LOG")"
+rm -f "$FIX/person-stop.out" "$FIX/person-stop.rc"
+
+echo "--- a stop that cannot be read holds, as a stop does ---"
+setup_wt 733
+driver_state_put 733 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 733 review
+for st in start plan build self-check review record; do driver_state_done 733 "$st"; done
+printf 'could not read the comments on #733\n' > "$FIX/person-stop.out"; printf '2\n' > "$FIX/person-stop.rc"; : > "$GH_LOG"
+rc=0; driver_step_ship 733 >/dev/null 2>&1 || rc=$?
+want "unreadable is not clear"                    "26" "$rc"
+want_not_in "never readied or armed"              'pr ready|pr merge' "$(cat "$GH_LOG")"
+rm -f "$FIX/person-stop.out" "$FIX/person-stop.rc"
+
 suite_end "$FAILED"

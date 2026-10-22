@@ -185,6 +185,16 @@ SH
   export DRIVER_CLAUDE="$BIN/claude"
   export DRIVER_BRIEFS="$FIX/briefs"
   mkdir -p "$DRIVER_BRIEFS/schemas"
+  # A person's stop (scripts/person-stop.sh) answers from $FIX/person-stop.{rc,out}:
+  # absent, nobody stopped it. Its own suite runs the real one.
+  cat > "$BIN/person-stop" <<'PS'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/person-stop.log"
+[ -f "$FIX/person-stop.out" ] && cat "$FIX/person-stop.out"
+exit "$(cat "$FIX/person-stop.rc" 2>/dev/null || echo 0)"
+PS
+  chmod +x "$BIN/person-stop"
+  export DRIVER_PERSON_STOP="$BIN/person-stop"
   # Anything the OPERATOR'S shell exports that would let a suite be answered by
   # the real world instead of this one. CLAIM_REPO is the dangerous one: the claim
   # lock resolves it ahead of the working directory, so a session that happens to

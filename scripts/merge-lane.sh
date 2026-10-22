@@ -140,10 +140,22 @@ has_label() { jq -e --argjson n "$1" --arg l "$2" '.[] | select(.number == $n) |
 NOW=$(swarm_now)
 # A new head is a new PR as far as the out list goes.
 ST=$(jq_slurp prs "$PRS" -- jq -c '$prs[0] as $prs | .out |= with_entries(.key as $k | .value as $v | select(any($prs[]; (.number|tostring) == $k and .headRefOid == $v)))' <<<"$ST")
-CANDS=$(jq_slurp out "$(jq -c .out <<<"$ST")" -- jq -c --arg trunk "$INTEGRATION_BRANCH" --arg hold "$HOLD_LABEL" --arg lane "$LANE_LABEL" '
+# A PERSON'S do-not-merge STOPS THE LANE: never a member, and its auto-merge comes off.
+DNM_LABEL="${LBL_DO_NOT_MERGE:-do-not-merge}"
+for n in $(jq -r --arg d "$DNM_LABEL" '.[] | select(any(.labels[]?; .name == $d)) | select(.autoMergeRequest != null) | .number' <<<"$PRS"); do
+  if lane_shadow; then
+    act disarm "$n" "$(pr_field "$n" .headRefOid)" "auto-merge off: $DNM_LABEL is on"
+  else
+    swarm_gh pr merge "$n" --repo "$REPO_SLUG" --disable-auto >/dev/null 2>&1 \
+      && act disarm "$n" "$(pr_field "$n" .headRefOid)" "auto-merge off: $DNM_LABEL is on" \
+      || say "lane: could not disarm auto-merge on #$n, which carries $DNM_LABEL"
+  fi
+done
+CANDS=$(jq_slurp out "$(jq -c .out <<<"$ST")" -- jq -c --arg trunk "$INTEGRATION_BRANCH" --arg hold "$HOLD_LABEL" --arg lane "$LANE_LABEL" --arg dnm "$DNM_LABEL" '
   $out[0] as $out
   | [ .[] | select(.isDraft | not) | select(.baseRefName == $trunk)
     | select(any(.labels[]?; .name == $hold) | not)
+    | select(any(.labels[]?; .name == $dnm) | not)
     | select(.autoMergeRequest != null or any(.labels[]?; .name == $lane))
     | select($out[(.number|tostring)] != .headRefOid)
     | {n: .number, sha: .headRefOid} ]' <<<"$PRS")
@@ -205,6 +217,10 @@ drop() { # <pr> — gone from the lane's books
 
 if [ -n "$HEAD_PR" ] && [ -z "$(pr_json "$HEAD_PR")" ]; then
   say "lane: head #$HEAD_PR is no longer open — merged or closed elsewhere"
+  drop "$HEAD_PR"; HEAD_PR=""
+fi
+if [ -n "$HEAD_PR" ] && has_label "$HEAD_PR" "$DNM_LABEL"; then
+  say "lane: head #$HEAD_PR carries $DNM_LABEL — it leaves, and nothing merges it"
   drop "$HEAD_PR"; HEAD_PR=""
 fi
 if [ -n "$HEAD_PR" ] && ! has_label "$HEAD_PR" "$HOLD_LABEL" \

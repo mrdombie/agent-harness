@@ -127,8 +127,10 @@ PRUNED=$(jq_slurp prs "$PRS" -- jq -c '$prs[0] as $prs
   | .seen |= with_entries(select(.key as $k | any($prs[]; (.number|tostring) == $k)))' <<<"$ST") \
   && ST="$PRUNED" || { say "keep-fresh: the state could not be pruned against the open pull requests — next pass"; exit 0; }
 
-ROWS=$(jq -r --arg repo "$REPO_SLUG" '
+# A person's do-not-merge: nothing is pushed onto that PR.
+ROWS=$(jq -r --arg repo "$REPO_SLUG" --arg dnm "${LBL_DO_NOT_MERGE:-do-not-merge}" '
   sort_by(.number)[] | select(.draft | not) | select((.head.repo.full_name // "") == $repo)
+  | select(any(.labels[]?; .name == $dnm) | not)
   | [.number, .head.ref, .head.sha] | @tsv' <<<"$PRS")
 # Queued tickets first, in the queue's own order; the rest after, oldest first.
 ROWS=$(while IFS=$'\t' read -r n br head; do
