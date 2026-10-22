@@ -773,6 +773,13 @@ driver_built() {
   jq -e '(.done // []) | index("start") != null' "$DRIVER_DIR/$1/state.json" >/dev/null 2>&1
 }
 
+# driver_adopted <ticket> — 0 when this run adopted a draft the driver did not build
+# (build-ticket --adopt): a repair-mode walk whose review reads the whole PR, and the
+# only way such a draft is ever readied — after the driver's own gates and review pass.
+driver_adopted() {
+  jq -e '(.mode // "") == "repair" and ((.adopted // "") != "")' "$DRIVER_DIR/$1/state.json" >/dev/null 2>&1
+}
+
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
 # that files work grades what it raises, and the grade — not the list it arrived
 # in — decides the effect: a Critical, a Major or a Minor sends work back and is

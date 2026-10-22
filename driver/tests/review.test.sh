@@ -169,6 +169,15 @@ want_in "the repair's own file is reviewed" 'repair-fix.txt' "$(cat "$(driver_fa
 want_not_in "the PR's earlier change is not" 'screens/Home.tsx' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
 want_not_in "nor the trunk's commits a merge brought in" 'develop-only.txt' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
 
+echo "--- an adopted draft is reviewed whole: the driver never reviewed any of it ---"
+repair_rec 1190; driver_state_set 1190 adopted "2026-10-22T00:00:00Z"
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+out=$(driver_step_review 1190 2>&1); rc=$?
+want "it finishes"                         "0" "$rc"
+want_in "the draft's earlier change is reviewed" 'screens/Home.tsx' "$(cat "$(driver_fact_dir 1190 review)/DIFF")"
+want_in "and so is the newest commit"      'repair-fix.txt' "$(cat "$(driver_fact_dir 1190 review)/DIFF")"
+want_not_in "the trunk's commits still are not" 'develop-only.txt' "$(cat "$(driver_fact_dir 1190 review)/DIFF")"
+
 echo "--- on a signed-off PR, a blocking finding on a screen parks for the owner; the verdict is never flipped ---"
 # A fix there changes pixels after the sign-off: the owner's call. A Critical anywhere
 # else is still fixed: filed away and shipped as SHIP, it landed a repair's own defect.

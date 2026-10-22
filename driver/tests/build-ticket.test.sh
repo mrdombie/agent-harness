@@ -868,19 +868,46 @@ out=$(bt 514 --repair-class repair); rc=$?
 want "the record's own draft at its own head: the build resumes" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_not_in "and is not called stale"          'stale' "$out"
 
-echo "--- a draft PR the driver never built is never repaired: the brief goes back on the queue ---"
+echo "--- a draft PR the driver never built is adopted, never repaired and never sent to prose ---"
 reset_fakes; rm -rf "$STATE/coordinator"
 jq -n '[{number:77, headRefName:"tkt-515-x", headRefOid:"p1", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
 printf 'Coordinator note (repair): REPAIR on PR #77: red\n' > "$FIX/brief-m.md"
 out=$(bt 515 --repair "$FIX/brief-m.md"); rc=$?
-want "it refuses before any step"              "2" "$rc"
-want "and nothing ran"                         "" "$(cat "$RAN")"
-want_in "naming the draft"                     'draft the driver did not build' "$out"
-want "the brief is back on the queue, unwrapped" "REPAIR on PR #77: red" "$(jq -r '.tickets[]? | select(.n == 515) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "a repair sent to it finishes as an adoption" "0" "$rc"
+want "the adoption walks the repair order, gates and review before ship" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_in "and says it adopts"                   'adopting it' "$out"
+want "the record is marked adopted"            "0" "$(driver_adopted 515; echo $?)"
+want "its brief source is adopt"               "adopt" "$(driver_state_get 515 repair_brief_source)"
+want_in "the adoption brief names the draft"   '^Adopted: #515 .*draft the driver did not build' "$(cat "$(driver_state_get 515 repair_brief)")"
+want_in "and carries the coordinator's note, unwrapped" 'REPAIR on PR #77: red' "$(cat "$(driver_state_get 515 repair_brief)")"
+want "nothing went back on the queue for prose" "" "$(jq -r '.tickets[]? | select(.n == 515) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
 reset_fakes; rm -rf "$STATE/coordinator"
 out=$(bt 515 --repair-class repair); rc=$?
-want "a class run on it refuses too"           "2" "$rc"
-want "and goes back on the queue as its class, for the spawner to route to prose" "repair" "$(jq -r '.tickets[]? | select(.n == 515) | .class' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "a class run on it is adopted too"        "0" "$rc"
+want "on the repair order"                     "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and marked adopted"                      "0" "$(driver_adopted 515; echo $?)"
+reset_fakes
+out=$(bt 515 --adopt); rc=$?
+want "--adopt with no brief finishes"          "0" "$rc"
+want "and walks the repair order"              "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+_ab1=$(cat "$(driver_state_get 515 repair_brief)")
+: > "$RAN"; out=$(bt 515 --adopt); rc=$?
+want "a second --adopt on the same draft resumes on the same brief" "$_ab1" "$(cat "$(driver_state_get 515 repair_brief)")"
+echo "--- an adoption is per run: a later repair of the PR it shipped is a plain repair ---"
+reset_fakes
+jq -n '[{number:77, headRefName:"tkt-515-x", headRefOid:"p2", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+bt 515 --adopt >/dev/null
+printf 'REPAIR on PR #77: red again\n' > "$FIX/brief-m2.md"
+bt 515 --repair "$FIX/brief-m2.md" >/dev/null
+want "the record is no longer adopted"         "1" "$(driver_adopted 515; echo $?)"
+want "the brief is the caller's"               "caller" "$(driver_state_get 515 repair_brief_source)"
+echo "--- --adopt on a ticket whose record holds the driver's own unshipped build resumes that build ---"
+park_at_compare 516
+driver_state_set 516 worktree "$REPO"
+jq -n --arg h "$(git -C "$REPO" rev-parse HEAD)" '[{number:78, headRefName:"tkt-516/work", headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 516 --adopt); rc=$?
+want "the build resumes, not an adoption"      "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "and the record is not adopted"           "1" "$(driver_adopted 516; echo $?)"
 printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a new repair round starts its red counters at zero ---"

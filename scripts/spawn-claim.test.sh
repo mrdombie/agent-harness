@@ -497,14 +497,22 @@ case "$BARGS" in
        || bad "swarm.builder=prose: the prose claim did not run: '${BARGS:-never started}'" ;;
 esac
 
-builder_case next
-case "$BARGS" in
-  build-ticket*) bad "pick-next: the driver ran with no ticket: '$BARGS'" ;;
-  *) printf '%s' "$BARGS" | grep -Eq -- '/agent-harness:claim( |$)' \
-       && ! printf '%s' "$BARGS" | grep -Eq -- '/agent-harness:claim [0-9]' \
-       && ok "pick-next: no ticket stays on the prose claim, with no number" \
-       || bad "pick-next: the prose pick-next claim did not run: '${BARGS:-never started}'" ;;
-esac
+# Pick-next unattended is refused (the owner, 2026-10-22): nobody watches a prose claim.
+rm -f "$OUT/seen"; run >"$OUT/pick.log"; sleep 1
+[ "$RC" = 2 ] && [ ! -f "$OUT/seen" ] && grep -q 'no ticket named' "$OUT/pick.log" \
+  && ok "pick-next: an unattended run with no ticket is refused, and nothing starts" \
+  || bad "pick-next: an unattended no-ticket run was not refused (rc $RC, started: $([ -f "$OUT/seen" ] && seen_args || echo no)): $(cat "$OUT/pick.log")"
+ls "$STATE"/runs/claim-next-*.json >/dev/null 2>&1 && bad "pick-next: a refused run left a run record" || ok "pick-next: a refused run leaves no run record"
+
+# swarm.builder prose is honoured, and an unattended spawn says loudly that it is.
+rm -f "$OUT/seen"; CFG="$SB/cfg-prose.json" run 4966 >"$OUT/prose.log"; wait_seen
+grep -q 'builder: prose by config — the owner ruled every build runs on the driver' "$OUT/prose.log" \
+  && ok "swarm.builder=prose: the spawn's own output (the tick's log) carries the warning" \
+  || bad "swarm.builder=prose: no warning in the spawn's output: $(cat "$OUT/prose.log")"
+grep -q 'builder: prose by config' "$STATE"/logs/claim-4966-*.log 2>/dev/null \
+  && ok "swarm.builder=prose: and the run log carries it" || bad "swarm.builder=prose: the run log has no warning"
+rm -f "$OUT/seen"; run 4967 >"$OUT/driver.log"; wait_seen
+grep -q 'prose by config' "$OUT/driver.log" && bad "a driver spawn warned about prose" || ok "a driver spawn carries no prose warning"
 
 # No unattended run falls back to prose (the operator, 2026-10-17): a briefed run and
 # a healing run stay on the driver, and take their brief with them.
@@ -541,7 +549,8 @@ mv "$SB/driver/build-ticket.away" "$SB/driver/build-ticket"
 # dropped, a red PR's repair would rebuild the ticket; refused, it would never run.
 cat > "$SB/bin/build-ticket-stub" <<'STUB'
 #!/usr/bin/env bash
-b=""; case "${2:-}" in --repair|--brief) b=$(tr '\n' '|' < "$3" | sed 's/|$//') ;; esac
+b=""; prev=""
+for a in "$@"; do case "$prev" in --repair|--brief) b=$(tr '\n' '|' < "$a" | sed 's/|$//') ;; esac; prev="$a"; done
 printf 'cwd=%s\nargs=%s\nclaude.md=%s\nrun=%s\nbrief=%s\n' "$PWD" "$*" "$(cat CLAUDE.md 2>/dev/null)" "${CLAIM_RUN_ID:-}" "$b" > "$SPAWN_TEST_DRIVER_SEEN"
 echo "build-ticket: walking #$1"
 echo "  step build: green"
@@ -612,8 +621,9 @@ CLAIM_CLASS=repair dcase 4973 4973
 CLAIM_CLASS=new dcase 4975 4975
 [ "$(dseen args)" = 4975 ] && ok "a new-class run with no brief is a plain build" || bad "a new-class run ran build-ticket '$(dseen args)'"
 
-# 11f. a draft PR the driver never built is not a repair: the prose claim resumes it.
-# Readied by a repair, auto-merge would land work its author left unfinished.
+# 11f. a draft PR the driver never built is not a repair: the driver ADOPTS it
+# (build-ticket --adopt). Readied by a repair, auto-merge would land work its author
+# left unfinished; handed to the prose claim, nobody's gates would run (the owner, 2026-10-22).
 cat > "$SB/bin/gh-prs" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in "api graphql "*OpenPullRequests*) exec bash "$GH_OPEN_PRS_PAGE" "$SPAWN_TEST_PRS" "$@" ;; esac
@@ -623,11 +633,19 @@ chmod +x "$SB/bin/gh-prs"
 export SWARM_GH="$SB/bin/gh-prs" SWARM_PRS_MAX_AGE=0 SPAWN_TEST_PRS="$OUT/prs.json" GH_OPEN_PRS_PAGE="$SUT_DIR/fixtures/gh-open-prs-page.sh"
 echo '[{"number":81,"headRefName":"tk-4981-x","isDraft":true},{"number":82,"headRefName":"tk-4982-x","isDraft":false},{"number":83,"headRefName":"tk-4983-x","isDraft":true}]' > "$OUT/prs.json"
 CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #81: red" dcase 4981 4981
-[ ! -f "$OUT/driver-seen" ] && [ -f "$OUT/seen" ] && ok "a repair of a draft the driver never built runs the prose claim" \
-  || bad "a repair of an unbuilt draft ran build-ticket '$(dseen args)'"
-grep -q 'draft the driver did not build' "$STATE"/logs/claim-4981-*.log && ok "and the run log says why" || bad "the run log does not say why it is prose"
+case "$(dseen args)" in
+  "4981 --adopt --brief "*) [ ! -f "$OUT/seen" ] && ok "a noted repair of a draft the driver never built is build-ticket --adopt, not prose" \
+                              || bad "an adopt run also ran the prose claim" ;;
+  *) bad "a repair of an unbuilt draft ran '$(dseen args)' (prose ran: $([ -f "$OUT/seen" ] && echo yes || echo no))" ;;
+esac
+[ "$(dseen brief)" = "REPAIR on PR #81: red" ] && ok "and carries the coordinator's note verbatim" || bad "the adopt brief was '$(dseen brief)'"
+grep -q 'the driver adopts it' "$STATE"/logs/claim-4981-*.log && ok "and the run log says why" || bad "the run log does not say it adopts"
+CLAIM_CLASS=repair dcase 4981 4981
+[ "$(dseen args)" = "4981 --adopt" ] && ok "a note-less repair of that draft is --adopt alone" || bad "a note-less repair of an unbuilt draft ran '$(dseen args)'"
 CLAIM_EXTRA="The owner answered: B" dcase 4983 4983
-[ ! -f "$OUT/driver-seen" ] && ok "a briefed run on an unbuilt draft is prose too" || bad "a briefed run on an unbuilt draft ran build-ticket '$(dseen args)'"
+case "$(dseen args)" in "4983 --adopt --brief "*) ok "a briefed run on an unbuilt draft is adopted too" ;; *) bad "a briefed run on an unbuilt draft ran '$(dseen args)'" ;; esac
+CLAIM_CLASS=new dcase 4983 4983
+[ "$(dseen args)" = "4983 --adopt" ] && ok "a plain build of a ticket with an unbuilt draft adopts the draft" || bad "a plain build beside an unbuilt draft ran '$(dseen args)'"
 CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #82: red" dcase 4982 4982
 case "$(dseen args)" in "4982 --repair "*) ok "a ready PR is still the driver's repair" ;; *) bad "a ready PR's repair ran '$(dseen args)'" ;; esac
 mkdir -p "$STATE/driver/4983"; echo '{"mode":"build","done":["start","plan"]}' > "$STATE/driver/4983/state.json"

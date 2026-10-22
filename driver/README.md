@@ -168,6 +168,17 @@ again, so a repair has its own order (`DRIVER_REPAIR_STEPS`):
   then ship. `owner-question.sh` requeues such a ticket as `new` for the same
   reason. Only a shipped ticket, or one with no driver record, is repaired on its
   PR.
+- **A draft the driver did not build is adopted: `build-ticket <ticket> --adopt
+  [--brief <file>]`.** A person's or an earlier prose claim's draft is never
+  readied as a repair and never handed back to the prose claim (the owner,
+  2026-10-22: every build runs on the driver). It walks the repair order on the
+  draft's own branch with an adoption brief (`repair_brief_source` `adopt`) that
+  the repair step's model always reads, the review reads the whole PR rather
+  than the repair's own change, and ship readies it and arms auto-merge only on
+  the review's SHIP after self-check. `--repair`, `--repair-class` and `start`
+  turn into an adoption by themselves when they meet such a draft; the spawner
+  passes `--adopt` outright. `adopted` on the record lasts one run: a later
+  repair of the PR it shipped is a plain repair.
 - **A round is the brief, the PR head and whether it shipped.** The same brief on
   an unmoved PR resumes. A new round starts when any of these holds:
   - the brief changed
@@ -359,7 +370,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
 | 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first repair round, goes back to `fix` |
-| 31 | start found the ticket's one open pull request (ready, or a draft on the record's own branch): the run becomes a repair of it (`build-ticket --repair`), once per run |
+| 31 | start found the ticket's one open pull request: the run becomes a repair of it (`build-ticket --repair`), or an adoption when it is a draft the driver did not build, once per run |
 | 32 | the repair read its pull request afresh and nothing is owed (its head holds the trunk, GitHub reads it MERGEABLE, no check on it is red, auto-merge is armed): the round is closed and the run exits 0, still in review, with no park |
 | 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
 | 34 | waiting for the base: every red check on the repair's PR fails only in tests outside its diff that fail on the base branch's latest completed run too (`scripts/base-wait.sh`). No label, no park, no question; the ticket goes on `base-waits.tsv` and the coordinator queues the repair again when that check goes green on the base or after `coordinator.baseWaitHours` (6) |

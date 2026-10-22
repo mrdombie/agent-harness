@@ -279,7 +279,12 @@ want "no worktree was cut"                 "" "$(driver_state_get 115 worktree)"
 want "no claim was taken"                  "" "$(awk '$1==115' "$CLAIMS")"
 printf '[{"number":79,"headRefName":"tkt-115/someone-elses-draft","headRefOid":"abc","isDraft":true,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
 out=$(driver_step_start 115 2>&1); rc=$?
-want "a draft on another branch is not this driver's to ready: it refuses" "24" "$rc"
+want "a draft on another branch goes to the repair path, which adopts it (never a prose claim)" "31" "$rc"
+want "its PR is on the record"             "79" "$(driver_state_get 115 repair_pr)"
+want "and no worktree was cut beside it"   "" "$(driver_state_get 115 worktree)"
+printf '[{"number":79,"headRefName":"tkt-115/a","headRefOid":"abc","isDraft":true},{"number":80,"headRefName":"tkt-115/b","headRefOid":"abd","isDraft":false}]\n' > "$FIX/gh/prs.json"
+out=$(driver_step_start 115 2>&1); rc=$?
+want "two open PRs are still a person's call: it refuses" "24" "$rc"
 want_in "and the way in that does fit"     '--repair' "$out"
 printf '[{"number":78,"headRefName":"tkt-1150/other","headRefOid":"abc","isDraft":false,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
 rc=0; driver_step_start 115 >/dev/null 2>&1 || rc=$?

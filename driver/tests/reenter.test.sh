@@ -114,7 +114,12 @@ out=$(driver_step_reenter 230 2>&1); rc=$?
 want "it refuses"                     "24" "$rc"
 want_in "naming the draft"            'draft' "$out"
 want "and takes no claim"             "" "$(awk '$1==230{print $1}' "$CLAIMS")"
-want_in "the park note sends it to the prose claim" 'prose claim' "$(driver_state_get 230 park_note)"
+want_in "the park note sends it to the driver's adoption, never the prose claim" 'build-ticket 230 --adopt' "$(driver_state_get 230 park_note)"
+want_not_in "and names no prose claim"  'prose' "$(driver_state_get 230 park_note)"
+driver_state_set 230 mode repair; driver_state_set 230 adopted "2026-10-22T00:00:00Z"
+rc=0; driver_step_reenter 230 >/dev/null 2>&1 || rc=$?
+want "an adopted draft is re-entered" "0" "$rc"
+driver_state_set 230 adopted ""
 driver_state_done 230 start
 rc=0; driver_step_reenter 230 >/dev/null 2>&1 || rc=$?
 want "a draft the driver's own build left is re-entered" "0" "$rc"

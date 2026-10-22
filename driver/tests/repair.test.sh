@@ -371,6 +371,18 @@ driver_state_set 318 repair_brief_sha "answer-brief-sha"
 git -C "$WT" commit -q --allow-empty -m "moved"
 out=$(driver_step_repair 318 2>&1); rc=$?
 want "at a new head it asks again"         "20" "$rc"
+
+echo "--- an adopted draft: the model reads the adoption brief; unchanged goes on to the gates ---"
+setup 3640; prs 3640 CLEAN; driver_state_set 3640 repair_brief_source adopt
+printf 'Adopted: #3640 has an open pull request that is a draft the driver did not build.\n' > "$(driver_state_dir 3640)/repair-brief.md"
+driver_state_set 3640 repair_brief "$(driver_state_dir 3640)/repair-brief.md"
+: > "$CLAUDE_LOG"
+fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"unchanged","reason":"the draft already meets the acceptance"}' superpowers:systematic-debugging
+out=$(driver_step_repair 3640 2>&1); rc=$?
+want "the model was called on a green, clean draft" "repair" "$(cat "$CLAUDE_LOG")"
+want_in "with the adoption brief"          'Adopted: #3640' "$(cat "$FIX/claude-stdin-repair.txt")"
+want "unchanged carries on to self-check and the whole-PR review, never asked of a person" "0" "$rc"
+want "and parks nothing"                   "" "$(driver_state_get 3640 park_note)"
 setup 319; prs 319 CLEAN unit; driver_state_set 319 repair_brief_source caller
 fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"unchanged","reason":"flaky"}' superpowers:systematic-debugging
 out=$(driver_step_repair 319 2>&1); rc=$?

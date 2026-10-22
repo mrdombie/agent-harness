@@ -80,7 +80,8 @@ driver_step_review() { # <ticket>
   # files whose resolution differs from both sides.
   local -a dargs=(); local rbase own_paths="" p
   rbase=$(driver_state_get "$t" repair_base)
-  if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$rbase" ]; then
+  # AN ADOPTED DRAFT IS REVIEWED WHOLE: the driver never reviewed any of it.
+  if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$rbase" ] && ! driver_adopted "$t"; then
     # --first-parent: a merge's second side is the trunk's commits, never the repair's.
     own_paths=$(git -C "$wt" log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
     dargs=("$rbase"..HEAD --)
@@ -118,7 +119,7 @@ driver_step_review() { # <ticket>
 $(git -C "$wt" diff --stat "${dargs[@]}" 2>/dev/null)
 Read the rest in the worktree — do NOT review the part above as if it were the whole change.]"
   fi
-  [ -n "$diff" ] || [ -z "$own_paths$rbase" ] || [ "$(driver_state_get "$t" mode)" != repair ] \
+  [ -n "$diff" ] || [ -z "$own_paths$rbase" ] || [ "$(driver_state_get "$t" mode)" != repair ] || driver_adopted "$t" \
     || diff="(none — this repair made no change of its own: a clean merge of $INTEGRATION_BRANCH, or nothing at all. The PR was reviewed before it; judge only this.)"
   # A LATER PASS ASKS FIRST WHETHER THERE IS ANYTHING NEW TO REVIEW.
   local tier maxr="$DRIVER_MAX_REVIEW_ROUNDS" again
