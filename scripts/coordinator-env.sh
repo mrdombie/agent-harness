@@ -454,6 +454,14 @@ coord_pace() {
        settings: {target: ($tgt | tonumber), headroom: ($hd | tonumber), weekTarget: ($wt | tonumber), weekHeadroom: ($wh | tonumber),
                   week: (($wh | tonumber) < 1)}}' \
      > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
+  # The owner paces the fleet. A sheet with no budget on it is an owner not pacing: a reader
+  # pacing alone counts every owner build against a cap nobody keeps, and starts nothing.
+  if [ "$role" = reader ] && [ -z "${SHEET_PACE:-}" ]; then
+    out=${out#*$'\t'}
+    printf 'pace: not applied — the sheet carries no budget from %s (its pacing is off), so the machine alone decides here; the reading was %s' \
+      "${COORD_SHEET_OWNER:-its owner}" "${out#pace: }"
+    return 1
+  fi
   printf '%s' "$out"
 }
 

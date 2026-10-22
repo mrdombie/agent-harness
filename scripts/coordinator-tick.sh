@@ -87,12 +87,15 @@ POLISH="$SELF_DIR/polish-list.sh"
 SEEN_ENDED="$COORD_DIR/ended.seen"
 touch "$SEEN_ENDED" "$COORD_EVENTS" "$COORD_ACTIONS"
 
-say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; }
+# Every line this tick says, kept apart from the log: the heartbeat's why reads this tick alone.
+TICK_SAY="$COORD_DIR/tick.say"
+say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; printf '%s\n' "$*" >> "$TICK_SAY" 2>/dev/null; }
 
 # ---- 1. lock ----------------------------------------------------------------
 LOCK="$COORD_DIR/tick.lock"
 coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
+: > "$TICK_SAY" 2>/dev/null
 # Every gh call this tick and what it runs is counted against the tick.
 export GH_CALLER=coordinator-tick
 TICK_T0=$(swarm_now)
@@ -525,13 +528,16 @@ fi
 # The windows are the account's, shared with every host: no more than its share here.
 # The machine's own ceiling is this host's capacity, the weight the owner splits by.
 MACHINE_CEILING=$CEILING
+PACE_OK=""
 if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST" "$MACHINE_CEILING" "$TOOLING_LIVE"); then
+  PACE_OK=1
   [ "$CEILING" -gt "${PACE%%$'\t'*}" ] && CEILING=${PACE%%$'\t'*}
   PACE=${PACE#*$'\t'}
 fi
 say "$PACE"
 # The places the product floor added are product work's: no tooling start takes them.
-PACE_FLOORED=""; coord_pace_fresh | jq -e '.productFloor.applied == true' >/dev/null 2>&1 && PACE_FLOORED=1
+# Only this tick's budget says so: a pace.json left from a tick that paced is not one.
+PACE_FLOORED=""; [ -z "$PACE_OK" ] || ! coord_pace_fresh | jq -e '.productFloor.applied == true' >/dev/null 2>&1 || PACE_FLOORED=1
 TOOLING_ROOM=$(( COORD_TOOLING_CAP - TOOLING_LIVE )); [ "$TOOLING_ROOM" -ge 0 ] || TOOLING_ROOM=0
 [ -z "$PACE_FLOORED" ] || TOOLING_ROOM=0
 say "tooling: $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP on every host${TOOLING_LIVE_TICKETS:+ (${TOOLING_LIVE_TICKETS# })}$( [ -z "$PACE_FLOORED" ] || echo ' · the places now are the product floor'"'"'s: no tooling start')"
@@ -835,7 +841,7 @@ fi
 # the starts are made: its own starts show as building here before their claims land.
 # With it, the floor and every machine's heartbeat; a reader posts its own.
 HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE" "${MACHINE_CEILING:-}" \
-  "$(printf '%s' "$RUN_BEATS" | jq -sc '.' 2>/dev/null)")
+  "$(printf '%s' "$RUN_BEATS" | jq -sc '.' 2>/dev/null)" "$(coord_tick_why "$TICK_SAY")")
 SHEET_FLOOR=""; FLEET="[]"
 case "$SHEET_ROLE" in
   owner)  SHEET_FLOOR=$(coord_sheet_floor)
