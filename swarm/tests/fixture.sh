@@ -25,7 +25,7 @@ swarm_fixture() {
   # The runner's own disk is no case's input: a case that tests the guard plants its free space.
   export HARNESS_DISK_GUARD=off
   # Nor is its own plugin estate: no case updates the runner's installed harness.
-  export COORDINATOR_SELF_UPDATE=off
+  export COORDINATOR_SELF_UPDATE=off COORDINATOR_PLUGINS_ENSURE=off
   FIX=$(mktemp -d)
   # The runner's installed harness is no case's version: the floor and the self-update read this.
   export SWARM_PLUGIN_REGISTRY="$FIX/no-plugin-registry.json"

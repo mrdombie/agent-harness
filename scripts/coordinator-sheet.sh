@@ -36,6 +36,9 @@
 #   stopLabels COORDINATOR_SHEET_STOP_LABELS after-launch  more labels that keep a ticket off it
 #   minHarness COORDINATOR_MIN_HARNESS      unset  the version floor the owner publishes; unset,
 #                                                   the owner's own installed version
+#   plugins    COORDINATOR_SHEET_PLUGINS     unset  the companion plugins every host ensures
+#                                                   (plugin-ensure.sh); unset, the file
+#                                                   `coordinator-sheet.sh plugins set` writes
 #   COORDINATOR_HOST                         this machine's name; default the one claims carry
 #
 # THE FLEET. Every host's heartbeat — {host, version, free disk, builds, last tick} —
@@ -55,6 +58,7 @@ if [ "$_sheet_self" = "$0" ]; then
 fi
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/claim-proc.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/self-update.sh" || return 1 2>/dev/null || exit 1
+. "$(cd "$(dirname "$_sheet_self")" && pwd)/plugin-ensure.sh" || return 1 2>/dev/null || exit 1
 unset _sheet_self
 
 COORD_HOST="${COORDINATOR_HOST:-$(claim_host)}"
@@ -196,6 +200,7 @@ coord_sheet_render() {
       (if (.fleet // []) | length > 0 then
         "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)",
         (.fleet[] | "- \(.host) · harness \(.version // "?")\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)"
+                    + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update")
        else empty end),
@@ -212,6 +217,7 @@ coord_sheet_render() {
       (.order | map({n, class, prin} + (if .process then {process} else {} end) + (if (.host // "") != "" then {host} else {} end)) | tojson),
       "```",
       (if (.minHarness // "") != "" then "<!-- sheet:floor minHarness=\(.minHarness) -->" else empty end),
+      (if (.plugins // []) | length > 0 then "<!-- sheet:plugins \(.plugins | tojson) -->" else empty end),
       (if (.fleet // []) | length > 0 then "<!-- sheet:fleet \(.fleet | tojson) -->" else empty end),
       (if .pace then "<!-- sheet:pace \(.pace | tojson) -->" else empty end)' <<<"$e"
 }
@@ -224,7 +230,7 @@ coord_sheet_publish() {
   local e="$1" h old_h old_at now beat n body
   now=$(swarm_now)
   # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
-  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, behind}]}
+  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, behind, plugins}]}
                                                 + (if .pace then {pace: (.pace | {maxBuildsFleet, shares, settings})} else {} end)' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
@@ -273,7 +279,7 @@ coord_sheet_parse() {
 # be worked from: unreadable with no fresh copy, or older than staleMin.
 coord_sheet_read() {
   local n raw body parsed from=github age
-  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"; SHEET_PACE=""
+  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"; SHEET_PACE=""; SHEET_PLUGINS=""
   body=""
   local try
   for try in 1 2; do
@@ -297,6 +303,8 @@ coord_sheet_read() {
   SHEET_FLEET=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:fleet (\[.*\]) -->$/\1/p' | tail -1 | jq -c 'if type == "array" then . else [] end' 2>/dev/null)
   [ -n "$SHEET_FLEET" ] || SHEET_FLEET="[]"
   SHEET_PACE=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:pace (\{.*\}) -->$/\1/p' | tail -1 | jq -c 'if type == "object" then . else empty end' 2>/dev/null)
+  SHEET_PLUGINS=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:plugins (\[.*\]) -->$/\1/p' | tail -1 | harness_plugins_normalise)
+  [ "$SHEET_PLUGINS" != "[]" ] || SHEET_PLUGINS=""
   parsed=$(coord_sheet_parse "$body") || { SHEET_WHY="the sheet holds no order this coordinator can read"; return 1; }
   SHEET_AT=$(cut -f1 <<<"$parsed"); SHEET_ORDER=$(cut -f3- <<<"$parsed"); SHEET_FROM=$from
   age=$(( ($(swarm_now) - SHEET_AT) / 60 )); [ "$age" -ge 0 ] || age=0
@@ -362,7 +370,9 @@ coord_heartbeat() {
   jq -cn --arg host "$COORD_HOST" --arg v "$(harness_running_version)" --arg inst "$(harness_installed_version)" \
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
      --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" --arg runs "${runs:-}" \
+     --argjson plugins "$(harness_plugins_state)" \
      '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role}
+      + (if $plugins == {} then {} else {plugins: $plugins} end)
       + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
       + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)
       + (if $gh == "" then {} else {gh: ($gh | fromjson)} end)
@@ -410,7 +420,7 @@ coord_heartbeat_post() {
   now=$(swarm_now); beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
   # Capacity and whole-percent usage too: the owner splits the fleet cap on them.
   # The allowance in tenths: a host going low reaches the others within a tick.
-  h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role, capacity,
+  h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role, capacity, plugins,
                               usage: ((.usage // {}) | map_values((.u * 100 | round))),
                               gh: [(.gh // [])[] | {resource, reset, tenth: (if .limit > 0 then (.remaining * 10 / .limit | floor) else 0 end)}]}' <<<"$hb")")
   IFS=$'\t' read -r id old_h old_at < "$COORD_HEARTBEAT_STATE" 2>/dev/null || { id=""; old_h=""; old_at=0; }
@@ -420,7 +430,8 @@ coord_heartbeat_post() {
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
   line=$(jq -r '"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
-                + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)' <<<"$hb")
+                + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)
+                + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))' <<<"$hb")
   body=$(printf '%s\n%s · last tick %s\n<!-- sheet:heartbeat-json %s -->' "$(_hb_marker)" "$line" "$(_sheet_when "$now")" "$hb")
   _hb_patch() { [ -n "$id" ] && resp=$(jq -n --arg b "$body" '{body: $b}' | gh_call api --method PATCH "repos/$REPO_SLUG/issues/comments/$id" --input - 2>/dev/null) \
                  && [ "$(jq -r '.id // empty' <<<"$resp" 2>/dev/null)" = "$id" ]; }
@@ -455,6 +466,20 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       else
         echo "sheet: not workable — $SHEET_WHY"; exit 1
       fi ;;
+    plugins)
+      # The owner's write path for the companion-plugin set it publishes (plugin-ensure.sh).
+      case "${2:-show}" in
+        set)
+          set_json=$(printf '%s' "${3:-}" | harness_plugins_normalise)
+          [ "$(jq length <<<"$set_json")" -gt 0 ] && [ "$(jq length <<<"$set_json")" = "$(printf '%s' "${3:-}" | jq 'length' 2>/dev/null)" ] \
+            || { echo "plugins set: every entry needs id plugin@market, marketplace {name, source}, a numeric min and a disable list of ids" >&2; exit 2; }
+          mkdir -p "$COORD_DIR" && printf '%s\n' "$set_json" > "$PE_SHEET_FILE.$$" && mv -f "$PE_SHEET_FILE.$$" "$PE_SHEET_FILE" || exit 1
+          echo "set: $set_json — the owner publishes it on its next sheet write" ;;
+        clear) rm -f "$PE_SHEET_FILE"; echo "cleared" ;;
+        show)  echo "published by the owner: $(harness_plugins_published)"
+               [ -z "${COORDINATOR_SHEET_PLUGINS:-}" ] || echo "(from COORDINATOR_SHEET_PLUGINS, which wins over the file)" ;;
+        *) echo "usage: coordinator-sheet.sh plugins set '<json array>' | clear | show" >&2; exit 2 ;;
+      esac ;;
     *) sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   esac
 fi
