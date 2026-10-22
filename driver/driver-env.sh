@@ -300,15 +300,28 @@ driver_signoff_refusal() {
 }
 driver_signoff_line() { grep -m1 'sign-off comes last' "$1" 2>/dev/null | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300; }
 
-# driver_gates_local_set — 0 when the project's `gates.local` is THE local set: a list
-# holding every `gates.changed` command, or with no changed list beside it. Then
-# self-check runs it alone and CI runs the rest once. A `gates.local` that leaves the
-# changed list out is the older whole-app form, and self-check runs as it did.
+# driver_gates_local_only — 0 when harness.json says `gates.localOnly: true`.
+driver_gates_local_only() {
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
+  jq -e '((.gates // {}) | type) == "object" and .gates.localOnly == true' "$HARNESS_CFG" >/dev/null 2>&1
+}
+
+# driver_gates_local_set — 0 when the project's `gates.local` is THE local set. Then
+# self-check runs it alone and CI runs the rest once.
+#
+# SAID, NOT INFERRED. `gates.localOnly: true` makes a non-empty `gates.local` the set
+# on its own word, whatever `gates.changed` holds: inferring it from the two lists
+# flipped the mode off when a project dropped its test command from the local list
+# but kept it in the changed list other tools read, and self-check then ran the
+# changed list, tests and all. Without the setting the inference stands: a list
+# holding every `gates.changed` command, or with no changed list beside it, is the
+# set; one that leaves the changed list out is the older whole-app form.
 driver_gates_local_set() {
   [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
   jq -e '(.gates // {}) as $g
          | (($g | type) == "object") and (($g.local | type) == "array") and (($g.local | length) > 0)
-           and ((($g.changed // null) == null)
+           and (($g.localOnly == true)
+                or (($g.changed // null) == null)
                 or ((($g.changed | type) == "array") and ((($g.changed - $g.local) | length) == 0)))' \
     "$HARNESS_CFG" >/dev/null 2>&1
 }

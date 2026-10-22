@@ -52,6 +52,47 @@ want "it is green"                               "0" "$rc"
 want "the changed list then the pre-push ran"    "lint-changed pre-push" "$(ran)"
 want "and no local-set head is recorded"         "" "$(driver_state_get 301 local_gates_head)"
 
+echo "--- localOnly: gates.local is the set even when gates.changed holds a test command it left out ---"
+: > "$FIX/ran"
+LO_GATES=$(jq -nc --arg l "$(g lint)" --arg c "$(g typecheck)" --arg t "$(g TEST-CHANGED)" --arg p "$(g FULL-PRE-PUSH)" \
+  '{changed: [$l, $c, $t], local: [$l, $c], prePush: $p}')
+cfg "$FIX/lg-lo.json" "$(jq -c '. + {localOnly: true}' <<<"$LO_GATES")"
+rc=0; out=$(HARNESS_CFG="$FIX/lg-lo.json" driver_step_self_check 301 2>&1) || rc=$?
+want "it is green"                               "0" "$rc"
+want "only gates.local ran: no test, no pre-push" "lint typecheck" "$(ran)"
+want_not_in "the changed list's test never ran"   'TEST-CHANGED' "$(cat "$FIX/ran")"
+want "the head is recorded for the push"         "$(git -C "$REPO" rev-parse HEAD)" "$(driver_state_get 301 local_gates_head)"
+want_in "the brief's facts tell the model the same" 'never gates.changed or the whole suite' "$(HARNESS_CFG="$FIX/lg-lo.json" driver_fact_project)"
+
+echo "--- the same lists without localOnly: today's rule, the changed list and the pre-push run ---"
+: > "$FIX/ran"
+cfg "$FIX/lg-nolo.json" "$LO_GATES"
+rc=0; out=$(HARNESS_CFG="$FIX/lg-nolo.json" driver_step_self_check 301 2>&1) || rc=$?
+want "it is green"                               "0" "$rc"
+want "changed list then pre-push, as before"     "lint typecheck TEST-CHANGED FULL-PRE-PUSH" "$(ran)"
+want "no local-set head"                         "" "$(driver_state_get 301 local_gates_head)"
+want_not_in "and no localOnly line in the facts" 'gates.localOnly' "$(HARNESS_CFG="$FIX/lg-nolo.json" driver_fact_project)"
+
+echo "--- localOnly with no local list refuses, rather than fall back to the changed list ---"
+: > "$FIX/ran"
+cfg "$FIX/lg-lo-empty.json" "$(jq -c '. + {localOnly: true} | del(.local)' <<<"$LO_GATES")"
+rc=0; out=$(HARNESS_CFG="$FIX/lg-lo-empty.json" driver_step_self_check 301 2>&1) || rc=$?
+want "it is refused"                             "$DRIVER_E_REFUSED" "$rc"
+want "and nothing ran"                           "" "$(ran)"
+want_in "naming the setting"                     'gates.localOnly' "$out"
+
+echo "--- localOnly leaves the single named test file's red-then-green proof running ---"
+. "$HERE/../steps/build.sh" || exit 1
+printf 'no\n' > "$REPO/lo.txt"; git -C "$REPO" add lo.txt; git -C "$REPO" commit -qm "base: lo"
+printf '#!/usr/bin/env bash\necho proof-file >> "%s/ran"\ngrep -q yes lo.txt\n' "$FIX" > "$REPO/lo.test.sh"
+git -C "$REPO" add lo.test.sh; git -C "$REPO" commit -qm "test: lo"; LO_T=$(git -C "$REPO" rev-parse HEAD)
+printf 'yes\n' > "$REPO/lo.txt"; git -C "$REPO" add lo.txt; git -C "$REPO" commit -qm "feat: lo"; LO_I=$(git -C "$REPO" rev-parse HEAD)
+: > "$FIX/ran"
+rc=0; out=$(HARNESS_CFG="$FIX/lg-lo.json" driver_prove_red_green "$REPO" lo.test.sh "$LO_T" "$LO_I" "bash lo.test.sh" 2>&1) || rc=$?
+want "the proof is taken and proved"             "0" "$rc"
+want "the named file ran in both halves"         "2" "$(grep -c '^proof-file$' "$FIX/ran")"
+want_not_in "and no changed-list test ran"       'TEST-CHANGED' "$(cat "$FIX/ran")"
+
 echo "--- the push tells the hook the head the local set passed on ---"
 git init -q --bare "$FIX/origin.git"
 git -C "$REPO" remote add origin "$FIX/origin.git"

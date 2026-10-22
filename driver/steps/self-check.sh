@@ -565,12 +565,19 @@ driver_step_self_check() { # <ticket>
   # the 2026-09-30 trial the whole-app form ran repo-wide lint and typecheck plus 37
   # repo checks for a one-file fix, and failed on a check the change never touched.
   #
-  # CI IS THE ONE GATE (the owner, 2026-10-22). When `gates.local` holds every
-  # `gates.changed` command (or there is no changed list), it is THE local set — the
-  # fast checks — and self-check runs it and nothing else: no trial of the project's
-  # whole pre-push. The full suite runs once, in CI. A `gates.local` that leaves the
-  # changed list out is the older whole-app form, and the step runs as it did.
+  # CI IS THE ONE GATE (the owner, 2026-10-22). With `gates.localOnly: true`, or when
+  # `gates.local` holds every `gates.changed` command (or there is no changed list),
+  # `gates.local` is THE local set — the fast checks — and self-check runs it and
+  # nothing else: no trial of the project's whole pre-push. The full suite runs once,
+  # in CI. Without the setting, a `gates.local` that leaves the changed list out is the
+  # older whole-app form, and the step runs as it did.
   local localset=""; driver_gates_local_set && localset=1
+  # localOnly with no local list would fall through to gates.changed, tests and all.
+  if [ -z "$localset" ] && driver_gates_local_only; then
+    driver_say "✋ self-check: harness.json sets gates.localOnly but gates.local is not a non-empty list, so there is no local set to run — and gates.changed in its place would run what the setting keeps for CI."
+    driver_state_set "$t" park_note "harness.json sets gates.localOnly with no non-empty gates.local list; self-check refuses rather than run gates.changed"
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ -n "$localset" ]; then
     names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
   elif [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
@@ -582,7 +589,7 @@ driver_step_self_check() { # <ticket>
     # command, so the "every gate is empty, nothing ran" refusal counts it by name.
     # Dropped here it would have left a key configured, unrun and unmentioned.
     # prePush is the push verification below, not a gate of this list.
-    names=$(jq -r '.gates | del(.prePush, .ratchets) | to_entries[] |"\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null)
+    names=$(jq -r '.gates | del(.prePush, .ratchets, .localOnly) | to_entries[] |"\(.key)\t\(if (.value | type) == "string" then .value else "" end)"' "$HARNESS_CFG" 2>/dev/null)
   fi
   if [ -z "$names" ]; then
     driver_say "✋ self-check: harness.json configures no local 'gates' command. A check that never ran reports exactly like one that found nothing, so this refuses rather than passing."
