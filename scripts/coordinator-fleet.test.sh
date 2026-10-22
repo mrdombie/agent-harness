@@ -77,6 +77,11 @@ cc="$CLAUDE_CONFIG_DIR"; reg="$cc/plugins/installed_plugins.json"; cache="$cc/pl
 printf '%s\n' "$*" >> "$cc/claude.log"
 case "$*" in
   --version) echo "2.1.999 (Claude Code)" ;;
+  # The companion plugins (plugin-ensure.sh): a list in $cc/plist.json, marketplaces in $cc/mlist.json.
+  "plugin list --json") cat "$cc/plist.json" 2>/dev/null || echo '[]' ;;
+  "plugin marketplace list --json") cat "$cc/mlist.json" 2>/dev/null || echo '[]' ;;
+  "plugin marketplace add "*) jq -n --arg n "${4##*/}" '[{name: $n}]' > "$cc/mlist.json" ;;
+  "plugin install "*" --scope user") jq -n --arg id "$3" '[{id: $id, version: "7.0.1", scope: "user", enabled: true}]' > "$cc/plist.json" ;;
   "plugin marketplace update agent-harness") [ -f "$cc/fail-market" ] && { echo "network down" >&2; exit 1; }; exit 0 ;;
   "plugin update agent-harness@agent-harness --scope user")
     [ -f "$cc/fail-update" ] && { echo "Failed to update plugin" >&2; exit 1; }
@@ -194,6 +199,23 @@ want "the plant removed the floor gate's one line"    "0" "$(grep -c 'FLOOR_HOLD
 tick box 1 >/dev/null
 want "planted: the behind host starts work, which the guard above refuses" "502" "$(by box)"
 cp "$FIX/tick.orig" "$PT"
+
+echo "--- the companion plugins: the owner publishes the set, box puts itself in line and reports it ---"
+PSET='[{"marketplace":{"name":"superpowers-marketplace","source":"obra/superpowers-marketplace"},"id":"superpowers@superpowers-marketplace","min":"7.0.1","disable":["superpowers@claude-plugins-official"]}]'
+world 0.7.12 0.7.12 0.7.12
+queue_on mac 501
+COORDINATOR_SHEET_PLUGINS="$PSET" tick mac 1 >/dev/null
+want_in "the sheet carries the set under its marker"  '^<!-- sheet:plugins \[\{"id":"superpowers@superpowers-marketplace"' "$(cat "$SH/body")"
+out=$(COORDINATOR_PLUGINS_ENSURE=on tick box 1)
+want_in "box's tick adds the missing marketplace"      '^plugin marketplace add obra/superpowers-marketplace$' "$(cat "$FIX/cc-box/claude.log")"
+want_in "and installs the plugin for the user"         '^plugin install superpowers@superpowers-marketplace --scope user$' "$(cat "$FIX/cc-box/claude.log")"
+want_in "the tick's line says so"                      'plugins: added marketplace superpowers-marketplace, installed superpowers@superpowers-marketplace' "$out"
+want_in "box's heartbeat reports the version"          '"plugins":\{"superpowers@superpowers-marketplace":\{"v":"7\.0\.1","on":true\}' "$(jq -r '.[0].body' "$SH/comments.json")"
+COORDINATOR_SHEET_PLUGINS="$PSET" tick mac 1 >/dev/null
+want_in "the owner's sheet shows box's plugin version" '^- box · harness 0\.7\.12 · superpowers@superpowers-marketplace 7\.0\.1 ·' "$(cat "$SH/body")"
+: > "$FIX/cc-box/claude.log"
+COORDINATOR_PLUGINS_ENSURE=on tick box 1 >/dev/null
+want_not_in "box's next tick inside the interval changes nothing" '^plugin (install|update|disable|marketplace add)' "$(cat "$FIX/cc-box/claude.log")"
 
 # ---- the self-update on its own -----------------------------------------------------
 su() { # <host> <args…> — harness_self_update from that host's installed kit

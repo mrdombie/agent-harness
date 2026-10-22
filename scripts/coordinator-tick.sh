@@ -46,7 +46,9 @@
 #   4c. self-update  at most every coordinator.selfUpdate.everyMin, the marketplace's
 #                    version against the newest installed; ahead, the CLI update runs
 #                    (self-update.sh). A reader running under the sheet's minHarness
-#                    starts nothing new and updates at once; it resumes at the floor
+#                    starts nothing new and updates at once; it resumes at the floor.
+#                    Then the companion plugins the sheet declares are put in line
+#                    (plugin-ensure.sh), on the same interval and lock
 #   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts and the
 #                    auto-clean runs (disk-guard.sh), until coordinator.disk.resumeAtGb is free
 #   5a. install      while shared-install.sh holds new starts (a moved lock waited past
@@ -427,6 +429,8 @@ if [ "$SHEET_ROLE" = reader ] && [ -n "${SHEET_MIN_HARNESS:-}" ] && [ -n "$HARNE
 else
   say "$(harness_self_update)"
 fi
+# The companion plugins the builds lean on, to the set the sheet declares (plugin-ensure.sh).
+say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
@@ -818,7 +822,9 @@ if [ "$SHEET_ROLE" = owner ]; then
   else
     if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ] \
        && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" --arg pace "$(coord_pace_fresh)" \
+                      --argjson plugins "$(harness_plugins_published)" \
                       '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
+                       + (if ($plugins | length) == 0 then {} else {plugins: $plugins} end)
                        + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, sevenDay, maxBuildsFleet, shares, settings})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
