@@ -1,0 +1,6 @@
+{
+  "gates": {
+    "localOnly": true,
+    "changed": ["sh lint.sh", "sh types.sh", "sh unit-tests.sh"]
+  }
+}

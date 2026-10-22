@@ -12,7 +12,7 @@ cmd=$(jq -r '.tool_input.command // empty')
 [ -z "$cmd" ] && exit 0
 _cfg="${HARNESS_CFG_PATH:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}/.claude/harness.json}"
 if [ -f "$_cfg" ]; then
-  _gc=$(jq -r '(.gates.changed // []) | join(" && ")' "$_cfg" 2>/dev/null)
+  _gc=$(bash "$(dirname "$0")/../scripts/local-gates.sh" --joined "$_cfg" 2>/dev/null)
   _fc=$(jq -r '.gates.formatChanged // ""' "$_cfg" 2>/dev/null)
   [ -n "$_gc" ] && export HARNESS_GATES_CHANGED="$_gc"
   [ -n "$_fc" ] && export HARNESS_FORMAT_CHANGED="$_fc"

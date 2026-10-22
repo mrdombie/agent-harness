@@ -1,0 +1,6 @@
+{
+  "gates": {
+    "local": ["sh lint.sh", "sh types.sh", "sh fmt.sh"],
+    "changed": ["sh lint.sh", "sh types.sh", "sh unit-tests.sh"]
+  }
+}

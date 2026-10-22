@@ -65,6 +65,9 @@ jobs:
         # A step that added its status and removed only the one it expected left
         # tickets wearing ready, claimed, in-review and partial at once.
         run: bash scripts/check-status-label-writes.sh
+      - name: The local gates are read only through local-gates.sh
+        # The driver honoured gates.localOnly and the prose claim flow, reading gates.changed itself, ran test:changed anyway.
+        run: bash scripts/check-local-gates-inline.sh
 
   tests:
     # The suites split by measured time (.github/ci/suite-seconds.tsv). The wall clock

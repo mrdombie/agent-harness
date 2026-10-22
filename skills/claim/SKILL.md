@@ -1203,10 +1203,13 @@ merge commits so a routine catch-up does not void an approval.
 
 1. Read every AC checkbox + the "How to verify" section.
 2. Implement until every AC is met. Run the checks as you go, **scoped, not
-   whole-repo**: inside the loop run the project's `gates.changed` commands
-   (`jq -r '.gates.changed[]' .claude/harness.json`); the full `gates.local`
-   run happens once, at finish. A whole-repo typecheck answers a question about
-   files you did not touch, several times per ticket.
+   whole-repo**: inside the loop run the project's local gate commands, one
+   per line from `"${CLAUDE_PLUGIN_ROOT}/scripts/local-gates.sh"` (never your
+   own jq over harness.json). Under `gates.localOnly: true` that is `gates.local`
+   and no test command: every test runs once, in CI, and the only test you run
+   is the single test file your change names for its red-then-green proof, by
+   its path. Without the setting it is `gates.changed`. A whole-repo typecheck
+   answers a question about files you did not touch, several times per ticket.
 3. **When you believe the AC is fully met, immediately invoke `/agent-harness:finish`.** Do NOT stop and ask the user "should I finish?" — that's the question the AC list already answered.
 4. `/agent-harness:finish` will gate-check (re-walks every AC + runs gates + AC catches mistakes), so if you're wrong about being done, `/agent-harness:finish` refuses and surfaces back. That's the safety net.
 5. Only stop for the user when:
