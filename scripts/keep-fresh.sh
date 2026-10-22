@@ -10,16 +10,20 @@
 #
 # A pass, for each open, non-draft PR on the integration branch that GitHub reads as
 # conflicting (REST: mergeable false and mergeable_state "dirty" — GitHub is the
-# authority, never a local trial merge), oldest first, up to merge.keepFreshPerTick (5):
+# authority, never a local trial merge), up to merge.keepFreshPerTick (5) — tickets on
+# the coordinator queue first, in its order (priority first), then the rest oldest first:
 #   claimed       its ticket has a claim (claim-lock.sh list), a live run, or a session
 #                 holds the PR (fix-lock.sh) → skipped: the run owns its branch
-#   queued        its ticket is already queued as a repair → skipped, not counted: a builder is coming
 #   tried         a real conflict was already found on this head → skipped until it moves
 #   merge         a scratch worktree at the PR's head merges origin/<integration branch>
 #     every conflicted file matches a merge.mechanical rule (keep-fresh-resolve.py)
 #                 → resolved, committed as the merge, the sign-off push guard run on
-#                   it as the pre-push would, pushed, and one comment naming file and rule
-#     any other   → aborted; the branch is untouched and its ticket queued as a repair
+#                   it as the pre-push would, pushed, and one comment naming file and rule;
+#                   a repair entry queued for that clash alone (no note, or a note keep-fresh
+#                   or the merge lane wrote for a conflict) is removed — a person's note stays
+#     any other   → aborted; the branch is untouched and its ticket queued as a repair,
+#                   unless a repair is already queued for it: that entry is left as it is
+# A queued repair is tried like any other: a builder costs a model run for a clash a rule settles.
 #
 # A PR that is merely behind and clean is never read past its state: merging the trunk
 # into it only queues another CI run (merge.updateBehind: bot).
@@ -81,10 +85,28 @@ jq -e 'type == "array"' >/dev/null 2>&1 <<<"$CLAIMS" \
   || { say "keep-fresh: the claim list could not be read — touching nothing"; exit 0; }
 FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list --json 2>/dev/null \
   | jq -r '.[]? | select(.expired | not) | .pr | tostring' 2>/dev/null)
-# A ticket already queued for repair has a builder coming: its PR is passed over, so the
-# per-pass limit goes to the PRs nothing has picked up yet.
-REPAIRS=$(bash "$QUEUE" list 2>/dev/null | awk '$3 == "repair" { sub(/^#/, "", $2); print $2 }')
-queued_n=0
+# The queue in the order it runs: <ticket> <class> <note>, priority first.
+QROWS=$(coord_queue_ordered 2>/dev/null)
+REPAIRS=$(awk -F'\t' '$2 == "repair" { print $1 }' <<<"$QROWS")
+cleared_n=0
+# A note nobody but a script wrote for a clash: removing the entry loses nothing a person said.
+clash_only_note() { # <note>
+  case "$1" in
+    ''|'Keep fresh: '*) return 0 ;;
+    'Merge lane: PR #'*' left the lane — it conflicts with '*) return 0 ;;
+  esac
+  return 1
+}
+clear_repair() { # <ticket> <pr> — the clash is settled: a repair queued for it alone goes
+  local note
+  [ -n "$1" ] && grep -qxF -- "$1" <<<"$REPAIRS" || return 0
+  note=$(awk -F'\t' -v t="$1" '$1 == t && $2 == "repair" { print $3; exit }' <<<"$QROWS")
+  if ! clash_only_note "$note"; then say "keep-fresh: #$2 settled; #$1's repair entry carries a person's note — left queued"; return 0; fi
+  if coord_shadow; then say "would remove #$1's repair entry — its clash is settled"; return 0; fi
+  bash "$QUEUE" remove "$1" >/dev/null 2>&1 \
+    && { say "keep-fresh: #$1's repair entry removed — #$2's clash is settled"; cleared_n=$((cleared_n + 1)); } \
+    || say "keep-fresh: #$1's repair entry could not be removed"
+}
 claimed() { # <ticket> <branch> <pr> — prints who, 0 when held
   if [ -n "$1" ] && jq -e --arg t "$1" 'any(.[]; (.issue | tostring) == $t)' >/dev/null <<<"$CLAIMS"; then echo "a claim on #$1"; return 0; fi
   if jq -e --arg b "$2" 'any(.[]; (.branch // "") == $b)' >/dev/null <<<"$CLAIMS"; then echo "a claim on $2"; return 0; fi
@@ -108,10 +130,18 @@ PRUNED=$(jq_slurp prs "$PRS" -- jq -c '$prs[0] as $prs
 ROWS=$(jq -r --arg repo "$REPO_SLUG" '
   sort_by(.number)[] | select(.draft | not) | select((.head.repo.full_name // "") == $repo)
   | [.number, .head.ref, .head.sha] | @tsv' <<<"$PRS")
+# Queued tickets first, in the queue's own order; the rest after, oldest first.
+ROWS=$(while IFS=$'\t' read -r n br head; do
+         [ -n "${n:-}" ] || continue
+         t=$(printf '%s\n' "$br" | branch_tickets | cut -f1)
+         pos=$(awk -F'\t' -v t="$t" 't != "" && $1 == t { print NR; exit }' <<<"$QROWS")
+         printf '%s\t%s\t%s\t%s\t%s\n' "$([ -n "$pos" ] && echo 0 || echo 1)" "${pos:-0}" "$n" "$br" "$head"
+       done <<<"$ROWS" | sort -t$'\t' -k1,1n -k2,2n -k3,3n | cut -f3-)
 
 queue_repair() { # <ticket> <pr> <why>
   local note="Keep fresh: PR #$2 clashes with $INTEGRATION_BRANCH and a rule cannot settle it — $3. Merge $INTEGRATION_BRANCH into its branch, resolve, and push."
   [ -n "$1" ] || { say "keep-fresh: #$2's branch names no ticket — no repair to queue"; return 0; }
+  if grep -qxF -- "$1" <<<"$REPAIRS"; then say "keep-fresh: #$1 is already queued for repair — its entry is left as it is"; return 0; fi
   if coord_shadow; then say "would queue #$1 as a repair — $3"; return 0; fi
   bash "$QUEUE" add "$1" --class repair --note "$note" >/dev/null 2>&1 \
     && say "keep-fresh: #$1 queued as a repair — $3" || say "keep-fresh: could not queue #$1 as a repair"
@@ -128,9 +158,6 @@ comment_body() { # <resolved tsv> <trunk> <new sha>
 fresh_one() { # <pr> <branch> <head>
   local n="$1" br="$2" head="$3" t who v ms mg wt out rc resolved new why
   t=$(printf '%s\n' "$br" | branch_tickets | cut -f1)
-  if [ -n "$t" ] && grep -qxF -- "$t" <<<"$REPAIRS"; then
-    say "keep-fresh: #$n — #$t is already queued for repair — skipped"; queued_n=$((queued_n + 1)); return 1
-  fi
   # A real conflict stays real until the head moves; a shadow pass says "would" once a head.
   if jq -e --arg p "$n" --arg h "$head" '.tried[$p] | select(.head == $h) | .outcome | IN("real", "would-push")' >/dev/null 2>&1 <<<"$ST"; then return 1; fi
   # A state already read on this head against this trunk is not asked for again.
@@ -194,6 +221,7 @@ fresh_one() { # <pr> <branch> <head>
     say "would push #$n: $INTEGRATION_BRANCH merged, $rules_line"
     act would-push "$n" "$rules_line"
     st --arg p "$n" --arg h "$head" '.tried[$p] = {head: $h, outcome: "would-push"}'
+    clear_repair "$t" "$n"
     cleanup_scratch; return 0
   fi
   # The pre-push contract, as `git push` would hand it to the project's own hook.
@@ -213,6 +241,7 @@ fresh_one() { # <pr> <branch> <head>
   act pushed "$n" "$new: $rules_line"
   swarm_gh api -X POST "repos/$REPO_SLUG/issues/$n/comments" -f body="$(comment_body "$resolved" "$TRUNK" "$new")" >/dev/null 2>&1 \
     || say "keep-fresh: #$n pushed; its comment could not be posted"
+  clear_repair "$t" "$n"
   cleanup_scratch; return 0
 }
 cleanup_scratch() {
@@ -230,4 +259,4 @@ while IFS=$'\t' read -r n br head <&3; do
   [ "$done_n" -lt "$PER_TICK" ] || { say "keep-fresh: $PER_TICK this pass — the rest next pass"; break; }
   if fresh_one "$n" "$br" "$head"; then done_n=$((done_n + 1)); fi
 done 3<<<"$ROWS"
-say "keep-fresh: $done_n settled or sent on this pass, $queued_n already queued for repair ($(coord_mode))"
+say "keep-fresh: $done_n settled or sent on this pass, $cleared_n repair entries cleared ($(coord_mode))"
