@@ -103,6 +103,10 @@ driver_fact_ticket() { # <ticket>
 driver_fact_project() {
   if [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ]; then
     jq -S . "$HARNESS_CFG" 2>/dev/null || cat "$HARNESS_CFG"
+    # The model reads gates.changed above too, and would run its tests as the checks.
+    if driver_gates_local_only; then
+      printf '\nLocal checks are gates.local and nothing more (gates.localOnly): run those and the one test file you wrote, never gates.changed or the whole suite. Every test runs once, in CI.\n'
+    fi
   else
     _driver_fact_none "this run resolved no harness.json"
   fi
