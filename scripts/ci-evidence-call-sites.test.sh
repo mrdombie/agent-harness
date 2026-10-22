@@ -62,7 +62,7 @@ cut_gate5() { # <skill> → Gate 5's head check
 
 run54() { # <skill> <pr> → exit code; log in $CIE_LOG
   : > "$CIE_LOG"
-  (cd "$SB" && KIT_ROOT="$KIT" PR_NUMBER="$2" REPO_SLUG=o/r HOLD_LABEL=hold TICKET_KEY=7 \
+  (cd "$SB" && KIT_ROOT="$KIT" PR_NUMBER="$2" REPO_SLUG=o/r HOLD_LABEL=hold TICKET_KEY=7 PERSON_STOP="$SB/person-stop" \
      bash -c "toolkit_cfg() { echo squash; }; $(cut_step54 "$1")" >/dev/null 2>&1)
 }
 
@@ -81,9 +81,14 @@ run2() { # <skill> <pr> → output (stderr and stdout)
   (cd "$SB" && KIT_ROOT="$KIT" PR_NUMBER="$2" bash -c "$(cut_gate2 "$1")" 2>&1)
 }
 
+# A person's stop answers from $SB/person-stop.rc: absent, nobody stopped it.
+printf '#!/usr/bin/env bash\nexit "$(cat "%s/person-stop.rc" 2>/dev/null || echo 0)"\n' "$SB" > "$SB/person-stop"; chmod +x "$SB/person-stop"
 cases() { # <skill> → failed cases, one per line
   local s=$1 o
   [ -n "$(cut_step54 "$s")" ] || echo "Step 5.4's block is missing"
+  echo 1 > "$SB/person-stop.rc"; run54 "$s" 1 && echo "Step 5.4 went on past a person's stop"
+  grep -qE 'pr (ready|edit|merge)' "$CIE_LOG" && echo "Step 5.4 readied a PR a person stopped"
+  rm -f "$SB/person-stop.rc"
   run54 "$s" 2 && echo "Step 5.4 went on with no routes list"
   grep -q 'pr ready' "$CIE_LOG" && echo "Step 5.4 readied a PR with no routes list"
   run54 "$s" 1 || echo "Step 5.4 refused a PR with routes and pinned shots"
@@ -117,6 +122,8 @@ PY
   grep -qF -- "$4" <<<"$r" && ok "planted: $1 → red" || bad "planted: $1 → not red on its case ($4)"
 }
 echo "plants"
+plant "Step 5.4 skips a person's stop" 'bash "${PERSON_STOP:-$KIT_ROOT/scripts/person-stop.sh}" check "${TICKET_KEY:-${TICKET#\#}}" "$PR_NUMBER" || exit 1
+gh pr edit' 'gh pr edit' 'went on past a person'"'"'s stop'
 plant "Step 5.4 skips the routes check" 'gh pr view "$PR_NUMBER" --json body -q .body | bash "$EV" routes || exit 1' 'true' 'went on with no routes list'
 plant "Step 5.4 readies before holding" 'gh pr edit "$PR_NUMBER" --add-label "$HOLD_LABEL"
 gh pr ready "$PR_NUMBER" 2>/dev/null || true' 'gh pr ready "$PR_NUMBER" 2>/dev/null || true
