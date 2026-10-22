@@ -876,6 +876,43 @@ want_in "commitMerge with markers: says why"    'conflict markers are still in s
 want "commitMerge with markers: still merging"  "yes" "$([ -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && echo yes)"
 git -C "$WT" merge --abort 2>/dev/null
 
+echo "--- the model's own edit to a cleanly merged file goes into the merge (#13365) ---"
+# The clean side of the merge doubled a key in package.json; the model fixed it,
+# named it in its answer, and only the conflicted file was staged.
+setup 13365
+printf '{"scripts":{"a":"1"}}\n' > "$WT/package.json"; printf 'branch line\n' > "$WT/shared.txt"
+git -C "$WT" add . && git -C "$WT" commit -qm "feat: our line"
+driver_state_set 13365 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves shared.txt "trunk line 13365"; prs 13365 DIRTY
+printf '%s\n' 'printf "trunk line 13365\nbranch line\n" > shared.txt; printf "{\"scripts\":{}}\n" > package.json' > "$FIX/ai/repair.sh"
+answer "$(merge_answer | jq -c '.fixes[0].change += [{path:"package.json", action:"modify"}]')"
+out=$(driver_step_repair 13365 2>&1); rc=$?
+want "13365: it finishes"                       "0" "$rc"
+want "13365: the merge carries the model's package.json" '{"scripts":{}}' "$(git -C "$WT" show HEAD:package.json)"
+want "13365: nothing is left uncommitted"       "" "$(git -C "$WT" status --porcelain)"
+want_not_in "13365: no uncommitted refusal"     'uncommitted changes' "$out"
+
+echo "--- a tool's rewrite of a tracked file the answer never names is put back, and kept (#13160) ---"
+setup 13160
+printf '# rules\n' > "$WT/AGENTS.md"; git -C "$WT" add . && git -C "$WT" commit -qm "docs: agents"
+driver_state_set 13160 repair_base "$(git -C "$WT" rev-parse HEAD)"; prs 13160 CLEAN unit
+printf '%s\n' 'printf "fixed\n" > fix13160.txt; git add fix13160.txt; git commit -qm "fix: lint"; printf "## rules\n" > AGENTS.md' > "$FIX/ai/repair.sh"
+answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+out=$(driver_step_repair 13160 2>&1); rc=$?
+want "13160: it finishes"                       "0" "$rc"
+want "13160: the tool's edit is put back"       "# rules" "$(cat "$WT/AGENTS.md")"
+want_in "13160: and it says so"                 'put back AGENTS.md' "$out"
+want_in "13160: the change is kept as a patch"  '## rules' "$(cat "$(driver_state_dir 13160)"/steps/put-back-*.patch 2>/dev/null)"
+
+echo "--- the model's own named edit, left uncommitted, is still refused ---"
+setup 13161; prs 13161 CLEAN unit
+printf '%s\n' 'printf "fixed\n" > fix13161.txt; git add fix13161.txt; git commit -qm "fix: lint"; printf "value=mine\n" > value13161.txt' > "$FIX/ai/repair.sh"
+answer "$(repaired "$(gate_fix 'bash lint.sh' | jq -c '.change += [{path:"value13161.txt", action:"modify"}]')")"
+out=$(driver_step_repair 13161 2>&1); rc=$?
+want "13161: refused"                           "24" "$rc"
+want_in "13161: as uncommitted"                 'uncommitted changes — value13161.txt' "$out"
+want "13161: the model's edit is not discarded" "value=mine" "$(cat "$WT/value13161.txt")"
+
 # resetTo and dropLocalCommits, at the helper: the branch pushed, then local commits.
 setup 13305
 printf 'a\n' > "$WT/a13305.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "local a"; LA=$(git -C "$WT" rev-parse HEAD)

@@ -39,6 +39,76 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/worktree-lib.sh" || exit 1
+
+# _driver_start_clear_way <ticket> <repo> <tree> <branch> <cut> — make room for
+# `worktree add` at <tree> on <branch>. 1, with DRIVER_START_WHY, when it must not.
+# A swept tree leaves its branch behind, and `-b` on a branch that exists fails,
+# so: prune dead registrations; move a stray dir at <tree> aside;
+# free the branch from a tree nothing holds, when that tree is clean; and keep a
+# branch tip the cut lacks on origin (or a local ref) before `-B` moves it.
+_driver_start_clear_way() {
+  local t="$1" repo="$2" wt="$3" b="$4" cut="$5" other tip holder stamp
+  DRIVER_START_WHY=""
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  git -C "$repo" worktree prune 2>/dev/null || true
+  if [ -e "$wt" ] && ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $(wt_real "$wt")"; then
+    if mv "$wt" "$wt.aside-$stamp" 2>/dev/null; then
+      driver_say "   start: $wt was there and is no worktree — moved aside to $wt.aside-$stamp"
+    else
+      DRIVER_START_WHY="$wt is there, is no worktree, and could not be moved aside"; return 1
+    fi
+  fi
+  other=$(git -C "$repo" worktree list --porcelain 2>/dev/null \
+    | awk -v ref="branch refs/heads/$b" '/^worktree /{w=substr($0,10)} $0==ref{print w; exit}')
+  if [ -n "$other" ]; then
+    if ! wt_can_see_processes; then
+      DRIVER_START_WHY="$b is checked out in $other, and with no lsof here nothing can show that tree is unused"; return 1
+    fi
+    wt_cwds_load
+    holder=$(wt_run_holder "$(wt_real "$other")") || holder=""
+    [ "$holder" = "${CLAIM_RUN_ID:-}" ] && holder=""
+    [ -n "$holder" ] || { holder=$(wt_occupant "$(wt_real "$other")") && holder="process $holder"; } || holder=""
+    if [ -n "$holder" ]; then
+      DRIVER_START_WHY="$b is checked out in $other, which $holder is using"; return 1
+    fi
+    if [ -n "$(git -C "$other" status --porcelain 2>/dev/null)" ]; then
+      DRIVER_START_WHY="$b is checked out in $other, which nothing holds but which has uncommitted changes — left for a person"; return 1
+    fi
+    if ! git -C "$repo" worktree remove "$other" 2>/dev/null; then
+      DRIVER_START_WHY="$b is checked out in $other, which nothing holds, and git would not remove it: $(git -C "$repo" worktree remove "$other" 2>&1 | tail -1)"; return 1
+    fi
+    driver_say "   start: $b was checked out in $other, clean and held by nothing — that tree was removed (its commits stay on $b)"
+  fi
+  tip=$(git -C "$repo" rev-parse -q --verify "refs/heads/$b" 2>/dev/null) || return 0
+  git -C "$repo" merge-base --is-ancestor "$tip" "$cut" 2>/dev/null && return 0
+  if [ -n "$(git -C "$repo" for-each-ref --contains "$tip" --format=x refs/remotes/origin/ 2>/dev/null)" ] \
+     || driver_stranded_list "$t" "$repo" | cut -d' ' -f1 | grep -qxF "$tip"; then
+    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10), already on origin — the branch is reset to the cut"
+    return 0
+  fi
+  if driver_stranded_push "$t" "$repo" "$tip"; then
+    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10) with commits nowhere else — kept on origin as $DRIVER_STRANDED_REF before the branch is reset"
+  elif git -C "$repo" update-ref "refs/driver-kept/$t/$stamp" "$tip" 2>/dev/null; then
+    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10) with commits nowhere else, and origin refused them ($DRIVER_STRANDED_WHY) — kept as refs/driver-kept/$t/$stamp before the branch is reset"
+  else
+    DRIVER_START_WHY="$b holds commits at $(printf '%s' "$tip" | cut -c1-10) that are nowhere else and could not be kept"; return 1
+  fi
+}
+
+# _driver_start_cut <ticket> <repo> <tree> <branch> <cut> — clear the way, add the
+# worktree, and retry once. 1 with DRIVER_START_WHY carrying git's own words.
+_driver_start_cut() {
+  local t="$1" repo="$2" wt="$3" b="$4" cut="$5" n=0 flag err
+  while [ "$n" -lt 2 ]; do
+    n=$((n+1))
+    _driver_start_clear_way "$t" "$repo" "$wt" "$b" "$cut" || return 1
+    flag=-b; git -C "$repo" show-ref --verify -q "refs/heads/$b" && flag=-B
+    err=$(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$repo" "$wt" -q "$flag" "$b" "$cut" 2>&1) && return 0
+    DRIVER_START_WHY="git: $(printf '%s\n' "$err" | grep -v '^worktree-sparse: ' | tail -3 | tr '\n' ' ' | sed 's/ *$//')"
+  done
+  return 1
+}
 
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
@@ -115,7 +185,7 @@ driver_step_start() { # <ticket>
       local wroot; wroot=$(driver_worktree_root) || return "$DRIVER_E_REFUSED"
       owt="$wroot/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
       mkdir -p "$(dirname "$owt")" 2>/dev/null || true
-      if bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$MAIN_REPO" "$owt" -q -B "$rb" "origin/$rb" 2>/dev/null \
+      if _driver_start_cut "$t" "$MAIN_REPO" "$owt" "$rb" "origin/$rb" \
          && driver_link_install "$MAIN_REPO" "$owt" && driver_prepare_worktree "$owt"; then
         driver_state_set "$t" worktree "$owt"
         driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
@@ -258,8 +328,9 @@ driver_step_start() { # <ticket>
     mkdir -p "$(dirname "$wt")" 2>/dev/null || true
     # A fresh branch has reworded and removed no tests: the ledger starts empty.
     mkdir -p "$(driver_state_dir "$t")/steps" && : > "$(driver_state_dir "$t")/steps/replaced.jsonl"
-    if ! bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$repo" "$wt" -q -b "$branch" "$cut" 2>/dev/null; then
-      driver_say "✋ start: could not create a worktree at $wt on $branch."
+    if ! _driver_start_cut "$t" "$repo" "$wt" "$branch" "$cut"; then
+      driver_say "✋ start: could not create a worktree at $wt on $branch — $DRIVER_START_WHY"
+      driver_state_set "$t" park_note "start could not create a worktree at $wt on $branch — $DRIVER_START_WHY"
       return "$DRIVER_E_REFUSED"
     fi
     # The shared install, never one per worktree. A missing one is not fatal:
