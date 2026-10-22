@@ -74,6 +74,16 @@
 #   coordinator.pace.weekTarget / .weekHeadroom  0.9 / 0.05  the same line over the seven-day window
 #   coordinator.pace.burnPerBuilderHour COORDINATOR_PACE_BURN 0.025  window share one builder burns an
 #                                                           hour, when the samples cannot say
+#   coordinator.releaseScopeOnly COORDINATOR_RELEASE_SCOPE_ONLY off  true, or {on, priorities, excludeLabels,
+#                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes}}:
+#                                                           no NEW ticket outside it is seeded or started.
+#                                                           In: a listed priority, or an alsoIn label ("x:*" is a
+#                                                           prefix) or title prefix; an excluded label or milestone
+#                                                           wins over both. Repairs, approved merges and process
+#                                                           fixes are never held. true: P0 P1, after-launch, the
+#                                                           milestones below, alsoIn the screen labels and
+#                                                           "Batch:" / "Polish list:" titles; an object's missing
+#                                                           keys take those defaults
 #   coordinator.judges       COORDINATOR_JUDGES         1    judges at once
 #   coordinator.judge.turns  COORDINATOR_JUDGE_TURNS   40
 #   coordinator.judge.budgetUsd   COORDINATOR_JUDGE_BUDGET_USD   5
@@ -152,6 +162,26 @@ COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 1)}"
 COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turns 40)}"
 COORD_JUDGE_BUDGET="${COORDINATOR_JUDGE_BUDGET_USD:-$(swarm_opt coordinator.judge.budgetUsd 5)}"
 COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.compactWindow 150000)}"
+
+# The release scope, as one JSON object coord_jq hands to coord_release_held. Off unless
+# set; a regex that does not compile is dropped, so one typo never fails every read.
+coord_release_scope_json() {
+  local raw="${COORDINATOR_RELEASE_SCOPE_ONLY-}"
+  [ -n "$raw" ] || { [ -n "${HARNESS_CFG:-}" ] && raw=$(jq -c '.coordinator.releaseScopeOnly // false' "$HARNESS_CFG" 2>/dev/null); }
+  jq -nc --arg raw "${raw:-false}" --arg sp "${LBL_SCREEN_PREFIX:-screen:}" '
+    ($raw | try fromjson catch $raw) as $v
+    | {on: true, priorities: ["P0", "P1"], excludeLabels: ["after-launch"],
+       excludeMilestones: ["(?i)post-?launch", "(?i)fast-follow", "(?i)phase 2"],
+       alsoIn: {labels: [$sp + "*"], titlePrefixes: ["Batch:", "Polish list:"]}} as $d
+    | (if $v == true or $v == 1 or $v == "1" or $v == "true" or $v == "on" then $d
+       elif ($v | type) == "object" then $d + $v + {on: (if $v | has("on") then $v.on == true else true end),
+                                                  alsoIn: ($d.alsoIn + ($v.alsoIn // {}))}
+       else {on: false} end)
+    | .excludeMilestones = [(.excludeMilestones // [])[] | strings | . as $re | select(try ("" | test($re) | true) catch false)]' 2>/dev/null \
+    || printf '{"on":false}'
+}
+COORD_RELEASE_SCOPE=$(coord_release_scope_json)
+coord_release_on() { jq -e '.on == true' >/dev/null 2>&1 <<<"$COORD_RELEASE_SCOPE"; }
 
 # coord_room [fresh] — room for one more builder? Prints the reading; 0 when there is.
 # Never a reason to stop a running one: it only gates the next start.
@@ -576,6 +606,8 @@ coord_lock() { # <dir> <noun>
 #                after product work of the same priority and class
 #   coord_process a process fix (coordinator.processLabel, default process): first of
 #                all, whatever its priority, class or kind (owner call 2026-10-20)
+#   coord_release_held new work outside coordinator.releaseScopeOnly: never seeded,
+#                never started. Repairs, approved merges and process fixes never are.
 COORD_TICKET_JQ='
   def coord_process($ls): ($ls | index($process)) != null;
   def coord_pri($ls; $pri): ([$ls[]? | select(test("^P[0-9]$"))] | first) // $pri // "";
@@ -598,7 +630,19 @@ COORD_TICKET_JQ='
     (($state // "OPEN") != "OPEN")
     or ($ls | any(. as $l | (if $class == "new" then $stopnew else $stopall end) | index($l) != null));
   def coord_repair_note($note): (($note // "") | test("(^|\n)REPAIR on PR #[0-9]"));
-  def coord_class($c; $note): if ($c // "new") == "new" and coord_repair_note($note) then "repair" else ($c // "new") end;'
+  def coord_class($c; $note): if ($c // "new") == "new" and coord_repair_note($note) then "repair" else ($c // "new") end;
+  def coord_release_also($ls; $title):
+    ($ls | any(. as $l | ($release.alsoIn.labels // []) | any(. as $p
+        | if ($p | endswith("*")) then ($l | startswith($p[:-1])) else $l == $p end)))
+    or ((($title // "") | ascii_downcase) as $t
+        | ($release.alsoIn.titlePrefixes // []) | any(. as $p | $t | startswith($p | ascii_downcase)));
+  def coord_release_held($ls; $title; $milestone; $class):
+    ($release.on == true) and (($class // "new") == "new") and (coord_process($ls) | not)
+    and (($ls | any(. as $l | ($release.excludeLabels // []) | any(. == $l)))
+         or ((($milestone // "") | if type == "object" then (.title // "") else . end) as $m
+             | $m != "" and (($release.excludeMilestones // []) | any(. as $re | $m | test($re))))
+         or ((coord_pri($ls; null) as $p | ($release.priorities // []) | any(. == $p) | not)
+             and (coord_release_also($ls; $title) | not)));'
 # The stop labels coord_stopped reads, one JSON array each.
 coord_stop_json() { # all|new
   { printf '%s\n' "${LBL_BATCHED:-status:batched}" "$LBL_PARKED" "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" \
@@ -610,7 +654,7 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
   jq --arg plist "$LBL_POLISH_LIST" --arg process "$SWARM_PROCESS_LABEL" --arg partial "${LBL_PARTIAL:-status:partial}" \
      --argjson tooling "$(printf '%s' "$COORD_TOOLING_LABELS" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0))')" \
      --argjson toolscopes "$(printf '%s' "$COORD_TOOLING_SCOPES" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0) | ascii_downcase)')" \
-     --arg inreview "${LBL_IN_REVIEW:-status:in-review}" \
+     --arg inreview "${LBL_IN_REVIEW:-status:in-review}" --argjson release "${COORD_RELEASE_SCOPE:-null}" \
      --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" "$@"
 }
 

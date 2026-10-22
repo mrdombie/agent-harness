@@ -586,7 +586,14 @@ fi
 CANDS=""
 candidates() {
   local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
+  local rel_out="" rel_held=0
   CANDS=""
+  # The backstop to the seed: new work outside coordinator.releaseScopeOnly never starts,
+  # read off this tick's labels and milestones. A ticket the read missed is spawn_block's.
+  if coord_release_on; then
+    rel_out=$(printf '%s' "${ISSUES:-}" | coord_jq -r "$COORD_TICKET_JQ"'objects | to_entries[]
+      | select(.value | coord_release_held(.labels // []; .title; .milestone; "new")) | .key' 2>/dev/null)
+  fi
   wide=$(coord_queue_ordered --wide)
   # A full list goes in its place in the order, ahead of lower-priority work, so the
   # lists' bodies are read first: one batched request, only when a list is queued.
@@ -605,6 +612,7 @@ candidates() {
       coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
         || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
     fi
+    if [ "$cls" = new ] && [ "$proc" != 1 ] && grep -qx "$t" <<<"$rel_out"; then rel_held=$((rel_held+1)); continue; fi
     # Tooling (a process fix or a harness ticket) is capped on every host together: over
     # the cap it waits, and the places go to product work. Process-first holds inside it.
     tool=0; { [ "$proc" = 1 ] || ticket_tooling "$t"; } && tool=1
@@ -648,6 +656,7 @@ candidates() {
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
   fi
+  coord_release_on && say "scope: release only — $(( $(jq -r '.release_held // 0' "$COORD_QUEUE" 2>/dev/null || echo 0) + rel_held )) new outside scope held back"
   [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
   [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP$( [ -z "$PACE_FLOORED" ] || echo ', and the places now are the product floor'"'"'s'); the places go to product work"
   TOOLING_WAITING=$tool_wait
