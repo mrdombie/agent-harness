@@ -282,6 +282,7 @@ _driver_ship_tier_line() {
     tooling) printf 'Change tier: tooling — %s. Checks, CI and one review round where only Critical and Major block; no design steps, no hold.' "$3" ;;
   esac
   [ -z "$p" ] || printf ' Promoted from %s when a later push changed a screen.' "$p"
+  driver_merge_first && printf ' Merge first until the release (release.mergeFirst): no hold, no wait for CI shots or picture parity; only a Critical blocks, every other review finding is a follow-up ticket.'
   printf '\n'
 }
 
@@ -292,9 +293,46 @@ _driver_ship_tier_line() {
 _driver_ship_deferred() {
   local f; f="$(driver_state_dir "$1")/steps/review.deferred.jsonl"
   [ -s "$f" ] || return 0
-  printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
+  if driver_merge_first; then
+    printf '## Review findings, deferred\nMerge first until the release: only a Critical blocks. Not blocking:\n'
+  else
+    printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
+  fi
   jq -rs 'unique_by([.file, .line, .summary])[]
-    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
+    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" elif .list == "follow-up" then "\(.grade // "") — a follow-up ticket at the front of the queue" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
+}
+
+# _driver_ship_hook_retry <ticket> <tree> <branch> — MERGE FIRST: a push the project's
+# pre-push hook refused, on a head gates.local passed on, is no finding and no question:
+# CI is the gate. It is pushed once more; 0 when that lands. Refused again, it sets
+# DRIVER_SHIP_HOOK_FAULT=1 and the caller parks it as a machine fault naming the check.
+_driver_ship_hook_retry() {
+  local t="$1" wt="$2" branch="$3"
+  DRIVER_SHIP_HOOK_FAULT=0
+  driver_merge_first || return 1
+  [ -n "$(driver_local_gates_head "$t" "$wt")" ] || return 1
+  grep -q 'failed to push some refs' "$DRIVER_PUSH_OUT" 2>/dev/null || return 1
+  grep -qE '^[[:space:]]*! \[' "$DRIVER_PUSH_OUT" 2>/dev/null && return 1
+  driver_say "↻ ship: the pre-push refused a head gates.local passed on ($DRIVER_PUSH_WHY) — merge first: pushed once more, never a question"
+  driver_push "$t" "$wt" "$branch" ship && return 0
+  DRIVER_SHIP_HOOK_FAULT=1
+  return 1
+}
+
+# _driver_ship_follow_ups <ticket> <pr> — MERGE FIRST: each finding the review deferred as a
+# follow-up (steps/review.followups.jsonl) is filed as its own ticket naming the PR, the
+# file:line and the finding (scripts/follow-up.sh: one per PR and finding id, status ready,
+# at the front of the queue). A finding that could not be filed is said and stays in the
+# PR body's deferred section; it never holds the ship.
+_driver_ship_follow_ups() {
+  local t="$1" pr="$2" f out rc=0
+  f="$(driver_state_dir "$t")/steps/review.followups.jsonl"
+  [ -s "$f" ] || return 0
+  case "$pr" in ''|*[!0-9]*) driver_say "   ship: the pull request's number could not be read, so $(grep -c . "$f") review finding(s) are not filed as follow-ups yet"; return 0 ;; esac
+  out=$(bash "${DRIVER_FOLLOW_UP:-$KIT_ROOT/scripts/follow-up.sh}" file "$t" "$pr" "$f" 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed '/^$/d' | while IFS= read -r l; do driver_say "   ship: $l"; done
+  [ "$rc" -eq 0 ] || driver_say "⚠ ship: not every review finding was filed as a follow-up (exit $rc) — they stay in PR #$pr's deferred section, and the next ship files them"
+  return 0
 }
 
 # _driver_ship_findings_to_fix <ticket> — 0 when the review's blocking findings go
@@ -567,6 +605,18 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
+  # THE HEAD THE PUSH NAMES IS THE HEAD gates.local PASSED ON. A merge or a commit since
+  # self-check (origin's copy of the branch, a trunk merge it carried, the run's own plan
+  # or capture plan) left HARNESS_LOCAL_GATES_HEAD unset, and the project's hook then ran
+  # its whole suite, red on the trunk itself (#13471, 2026-10-22). So the local set runs
+  # again on the exact head being pushed — seconds — and that head is what the push names.
+  # Only where self-check runs gates.local: the local set, or a project with no changed list.
+  if driver_gates_reads_local && [ -z "$(driver_local_gates_head "$t" "$wt")" ]; then
+    driver_say "   ship: the head moved since gates.local passed — gates.local runs again on $(git -C "$wt" rev-parse --short HEAD 2>/dev/null), the head this push names"
+    local lgrc=0; driver_step_self_check "$t" || lgrc=$?
+    [ "$lgrc" -eq 0 ] || return "$lgrc"
+  fi
+
   if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
@@ -575,7 +625,14 @@ driver_step_ship() { # <ticket>
   driver_push "$t" "$wt" "$branch" ship || {
     ! grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null \
       && _driver_ratchet_tighten "$t" "$wt" "$DRIVER_PUSH_OUT" "ship: pre-push" \
-      && driver_push "$t" "$wt" "$branch" ship; } || {
+      && driver_push "$t" "$wt" "$branch" ship; } || _driver_ship_hook_retry "$t" "$wt" "$branch" || {
+    if [ "${DRIVER_SHIP_HOOK_FAULT:-0}" = 1 ]; then
+      driver_say "✋ ship: machine fault pre-push-after-local-gates — the project's pre-push refused twice a head gates.local passed on: $DRIVER_PUSH_WHY. Parked as the machine's, not a question."
+      driver_state_set "$t" machine_fault "the pre-push hook refused a head gates.local passed on: $DRIVER_PUSH_WHY"
+      driver_state_set "$t" park_note "machine fault, nothing to answer: the project's pre-push hook refused the push twice, on a head gates.local passed on (merge first: CI is the gate). The failing check: $DRIVER_PUSH_WHY (all of it: $DRIVER_PUSH_OUT)"
+      driver_state_set "$t" park_cause driver
+      return "$DRIVER_E_MACHINE"
+    fi
     # Sign-off comes last: a refusal for changing signed screens is the owner's call, said as one.
     if grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null; then
       local signed_why; signed_why=$(grep -m1 'sign-off comes last' "$DRIVER_PUSH_OUT" | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300)
@@ -705,6 +762,9 @@ $polish"
          fi ;;
     esac
   fi
+
+  # MERGE FIRST: the review's Majors and Minors become follow-up tickets now the PR has a number.
+  if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
   # carries a "## Deleted tests" section only for what build and fix

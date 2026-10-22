@@ -530,6 +530,24 @@ _driver_push_tail() { # <file>
   { grep -E '✗' "$1"; tail -40 "$1"; } 2>/dev/null | awk '!seen[$0]++' | cut -c1-400 | head -60
 }
 
+# _driver_gate_is_prepush_suite <tree> <command> — 0 when <command> is the suite the tree's
+# pre-push hook ends on (its last command line). On 2026-10-22 builds parked asking
+# whether to push after verify:push:fast, listed in gates.local, failed in self-check.
+_driver_gate_is_prepush_suite() {
+  local wt="$1" cmd hook top last
+  cmd=$(printf '%s' "$2" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  [ -n "$cmd" ] || return 1
+  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || top="$wt"
+  hook="$top/.husky/pre-push"
+  [ -f "$hook" ] || hook="$(git -C "$wt" rev-parse --path-format=absolute --git-path hooks 2>/dev/null)/pre-push"
+  [ -f "$hook" ] || return 1
+  last=$(grep -vE '^[[:space:]]*(#|$)' "$hook" 2>/dev/null | tail -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  # A command the hook runs, not the shell's own words: `exit 1` ends a hook, it is no suite.
+  case "$last" in exit*|return*|true|false|fi|done|esac|'}'|:) return 1 ;; esac
+  case "$last" in "$cmd"|"$cmd "*) return 0 ;; esac
+  return 1
+}
+
 driver_step_self_check() { # <ticket>
   local t="${1:?driver_step_self_check: need a ticket}"
   local wt names row name safe cmd rc gtype failed=0 ran=0 pushran=0 empty="" redlines="" infra="" findings gscale gsecs
@@ -578,11 +596,14 @@ driver_step_self_check() { # <ticket>
     driver_state_set "$t" park_note "harness.json sets gates.localOnly with no non-empty gates.local list; self-check refuses rather than run gates.changed"
     return "$DRIVER_E_REFUSED"
   fi
+  local fromlocal=""
   if [ -n "$localset" ]; then
+    fromlocal=1
     names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
   elif [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
     names=$(jq -r '.gates.changed | to_entries[] | "changed \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
   elif [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+    fromlocal=1
     names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
   else
     # A value that is not a string is NOT skipped: it falls through as an empty
@@ -633,6 +654,12 @@ driver_step_self_check() { # <ticket>
     case "$(printf '%s' "$cmd" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')" in
       ''|null|'#'*) empty="$empty $name"; continue ;;
     esac
+    # THE PUSH'S OWN SUITE IS NEVER A LOCAL GATE: the hook runs it, or skips it on a head
+    # the local set passed (HARNESS_LOCAL_GATES_HEAD), and CI runs it once.
+    if _driver_gate_is_prepush_suite "$wt" "$cmd"; then
+      driver_say "   self-check: $name ($cmd) is the pre-push hook's own suite — not run here; CI runs it"
+      continue
+    fi
     ran=$((ran+1))
     safe=$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '-')
     # Its own command, its own exit code, nothing batched with it. The limit is
@@ -714,6 +741,8 @@ EOS
   local pgrc=0
   if [ -n "$localset" ]; then
     driver_say "   self-check: the project's whole pre-push is not run here — gates.local is the local set, and CI runs every required check once"
+  elif driver_merge_first; then
+    driver_say "   self-check: the project's whole pre-push is not run here — merge first (release.mergeFirst): CI runs every required check once"
   else
     _driver_prepush_gate "$t" "$wt" || pgrc=$?
   fi
@@ -772,7 +801,7 @@ EOS
   fi
   rm -f "$findings.rows"
   # The head the local set passed on: the push tells the project's hook (driver_push).
-  [ -z "$localset" ] || driver_state_set "$t" local_gates_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+  [ -z "$fromlocal" ] || driver_state_set "$t" local_gates_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   driver_say "   self-check: $((ran+pushran)) gate(s) green"
   return "$DRIVER_OK"
 }

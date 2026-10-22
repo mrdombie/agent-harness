@@ -18,6 +18,16 @@
 #   release_blocking_required <json>  → gates.requiredChecks less the listed checks
 #   release_warn_reds <rollup-json>   → the listed checks whose newest run is red, ", "-joined
 #   release_warn_pr <pr> <head> <names> <log-fn> — the warning, logged and commented once per head
+#   release_merge_first               → 0 while release.mergeFirst is true and release.done is not
+#
+# MERGE FIRST, FIX AFTER (the owner, 2026-10-22): "release": {"mergeFirst": true} is the one
+# switch for every gate that holds a change for a person or a picture until the release.
+# While it is on: no step adds the hold label; the review blocks on a Critical only, and
+# every Major and Minor becomes a follow-up ticket at the front of the queue (a Minor on a
+# screen goes on its polish list); only a screen:new or screen:redesign ticket owes a
+# picture; nothing waits for CI's shots or picture parity; and the design critic and the
+# picture check warn like a listed check. Real gates (typecheck, lint, tests) still block.
+# Off, or release.done true: every gate is what it was.
 
 # CHECK_NEWEST_JQ — `newest_runs` on a rollup array: one entry per check, its NEWEST run.
 # A re-run sits beside the run it replaced, so reading every run counts a cleared red.
@@ -35,9 +45,23 @@ def release_red: (.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|C
 release_nonblocking_json() {
   local cfg="${HARNESS_CFG:-}" out
   if [ -z "$cfg" ] || [ ! -f "$cfg" ]; then printf '[]'; return 0; fi
+  # Merge first adds the design checks: the critic's status and the picture check warn.
   out=$(jq -c 'if ((.release // {}) | type) != "object" or (.release.done // false) == true then []
-               else [(.release.nonBlockingChecks // [])[]? | strings | ascii_downcase | select(. != "")] end' "$cfg" 2>/dev/null)
+               else [ (.release.nonBlockingChecks // [])[]?,
+                      (if .release.mergeFirst == true
+                       then ((.review.judge.context // "Design critic"), (.evidence.gapChecks // ["Approved picture"])[]?)
+                       else empty end)
+                    | strings | ascii_downcase | select(. != "")]
+                  | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end) end' "$cfg" 2>/dev/null)
   printf '%s' "${out:-[]}"
+}
+
+# release_merge_first — 0 while harness.json says release.mergeFirst true and the release
+# is not done. A missing or unreadable config is off: every gate stays.
+release_merge_first() {
+  local cfg="${HARNESS_CFG:-}"
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 1
+  jq -e '(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true' "$cfg" >/dev/null 2>&1
 }
 
 release_check_nonblocking() { # <check name>

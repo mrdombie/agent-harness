@@ -481,6 +481,9 @@ want_in "and are told why"                 'driver alone' "$(cat "$FIX/shim-gh.e
 want_not_in "a step's ruleset write never reaches GitHub" 'api -X PUT' "$(cat "$GH_LOG")"
 want_in "and is told to leave it to the PM" 'PM step' "$(cat "$FIX/shim-rs.err")"
 want_in "while a read of the ruleset still goes through" 'api repos/o/r/rulesets/17138103' "$(cat "$GH_LOG")"
+printf '#!/usr/bin/env bash\necho $#\n' > "$FIX/argc"; chmod +x "$FIX/argc"
+sed "s#$BIN/gh#$FIX/argc#" "$(driver_state_dir 321)/steps/.driver-shim/gh" > "$FIX/shim-argc"
+want "the gh shim hands each argument through whole" "3" "$(bash "$FIX/shim-argc" api x 'a filter | with spaces')"
 setup 322; prs 322 CLEAN unit
 cat > "$FIX/ai/repair.sh" <<SH
 git commit -q --allow-empty -m "fix: y"

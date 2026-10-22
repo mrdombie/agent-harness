@@ -507,6 +507,24 @@ gh pr ready "$PR_NUMBER" 2>/dev/null || true
 bash "$EV" wait "$PR_NUMBER"; echo "wait exit: $?"
 ```
 
+**Merge first, fix after** (the owner, 2026-10-22; `release.mergeFirst` in harness.json,
+read by `release_merge_first`). While it is on, run this INSTEAD of the block above: a
+pixel PR ships like any other, with no hold label, no wait for CI's shots and no picture
+parity, ready and armed at once. The review still runs once and only a Critical blocks;
+every Major and Minor is a follow-up (`scripts/follow-up.sh file <ticket> <pr>
+<findings.jsonl>`: one ticket per finding, P1 for a Major, P3 for a Minor no screen's
+polish list takes, status ready, at the front of the queue), and the PR ships. The
+owner reviews the screen on UAT.
+
+```bash
+KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
+if release_merge_first; then
+  gh pr ready "$PR_NUMBER" 2>/dev/null || true
+  gh pr merge "$PR_NUMBER" --auto "--$(toolkit_cfg merge.method 2>/dev/null || echo squash)"
+  echo "merge first: shipped without the hold or the CI-shot wait"   # then Step 6
+fi
+```
+
 What `wait` returns, and the move for each:
 
 | Exit | State | Move |
@@ -707,6 +725,9 @@ elif [ "$PR_TOUCHES_UI" = "yes" ]; then
   # The leading `!` is optional now — a link is the viewable form here.
   if echo "$PR_BODY" | grep -qE 'https://github\.com/[^ )]+/blob/[0-9a-f]{7,40}/[^ )]+\.(png|jpg|jpeg|webp|gif)|!?\[[^]]*\]\(https?://[^)]+\.(png|jpg|jpeg|webp|gif)\)|<img[^>]+src='; then
     echo "✓ Gate 2: body already carries viewable evidence."
+  elif release_merge_first; then
+    # Merge first (release.mergeFirst): nothing waits for CI's shots; the owner looks on UAT.
+    echo "✓ Gate 2: merge first until the release — no wait for CI's pictures."
   elif ! bash "$KIT_ROOT/scripts/ci-evidence.sh" local; then
     # No evidence in the body yet. CI takes it (the owner's call, 2026-10-16):
     # Step 5.4 names the routes, readies the held PR and waits. Nothing is
@@ -790,6 +811,13 @@ if echo "$PR_FILES" | grep -qE '^packages/ui/'; then PR_TOUCHES_UI_OR_KIT="yes";
 UI_GATE_VERDICT="${UI_GATE_VERDICT:-missing}"
 UI_GATE_SHA="${UI_GATE_SHA:-missing}"
 if [ "$PR_TOUCHES_UI_OR_KIT" = "yes" ]; then
+  # Merge first (release.mergeFirst): a SPIT-BACK with no Critical ships. Set UI_GATE_CRITICAL
+  # to the count of its Criticals, and file every Major and Minor first:
+  #   bash "$KIT_ROOT/scripts/follow-up.sh" file <ticket> "$PR_NUMBER" <findings.jsonl>
+  if [ "$UI_GATE_VERDICT" = "SPIT-BACK" ] && release_merge_first && [ "${UI_GATE_CRITICAL:-unknown}" = 0 ]; then
+    echo "✓ Gate 4: merge first — the ui-gate's findings are follow-up tickets, none is Critical."
+    UI_GATE_VERDICT=SHIP
+  fi
   if [ "$UI_GATE_VERDICT" != "SHIP" ]; then
     echo "❌ /agent-harness:finish REFUSED: this PR touches UI and has no SHIP verdict from /agent-harness:ui-gate." >&2
     echo "   Recorded verdict: $UI_GATE_VERDICT" >&2

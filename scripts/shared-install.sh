@@ -35,8 +35,23 @@
 # by the tick like the disk hold); the live builds finish, the install runs, and the
 # hold goes whenever nothing is pending any more: installed, failed, or unchanged.
 #
-# No stamp yet, but the clone's own package-lock.json is that blob and npm's record
-# of the install agrees with it: adopted, nothing installed.
+# The clone's own package-lock.json is that blob and npm's record of the install agrees
+# with it — no stamp yet, or a stamp a hand install left behind: adopted, nothing installed.
+#
+# EXACTLY WHAT THE LOCK PINS, whatever the project's age rule. `npm ci` installs only the
+# lockfile's versions, so the age cutoff the project's .npmrc sets (min-release-age,
+# before) guards nothing there: it is lifted on that command alone (--min-release-age=0,
+# --before=<now>), read from the trunk's .npmrc. On 2026-10-22 develop moved Next to
+# 16.4.2, published seven days before less a few hours, and the PM installed by hand past
+# the rule.
+#
+# A BUILD THE INSTALL WOULD FIX IS NOT A BUILD IT WAITS FOR. A live run counts as busy
+# only when its tree's package-lock.json is not already the trunk's: one that merged the
+# trunk (every repair does) is failing on the old install, and the wait only kept it
+# failing. Measured that day: the lock moved at 16:54Z, the install waited on four
+# builds (three repairs) for 36 min, held new starts, and every builder's pre-push failed
+# meanwhile. While the install is behind and not run, every pass says so loudly, with
+# the number of packages behind: "shared install behind the lockfile: N packages".
 #
 # Settings (harness.json, or the env var): coordinator.sharedInstall.on (1;
 # SHARED_INSTALL=0 turns it off), .timeoutMin (30; SHARED_INSTALL_TIMEOUT_SEC),
@@ -80,6 +95,32 @@ nm_dirs()   { find "$CLONE" -maxdepth 4 \( -name .git -o -name "node_modules$PRE
 prev_dirs() { find "$CLONE" -maxdepth 4 \( -name .git -o -name node_modules \) -prune -o -type d -name "node_modules$PREV" -print -prune 2>/dev/null; }
 git_c() { git --git-dir="$GITDIR" --work-tree="$CLONE" "$@"; }
 
+# si_age_flags <npmrc> — the flags that lift the project's own age cutoff for a lockfile
+# install: --min-release-age=0 when it sets min-release-age, --before=<now> when it sets
+# before. Nothing when it sets neither, or there is no .npmrc.
+si_age_flags() {
+  local f="$1" out=""
+  [ -f "$f" ] || return 0
+  grep -qE '^[[:space:]]*min-release-age[[:space:]]*=' "$f" && out="--min-release-age=0"
+  grep -qE '^[[:space:]]*before[[:space:]]*=' "$f" && out="$out${out:+ }--before=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s' "$out"
+}
+
+# si_behind <lock blob> — how many packages the trunk's lock pins that the install does not
+# hold at that version (npm's own record, node_modules/.package-lock.json); "?" unreadable.
+si_behind() {
+  local n
+  n=$(git -C "$CLONE" show "$1" 2>/dev/null | jq -n --slurpfile b "$CLONE/node_modules/.package-lock.json" '
+        input as $a | [($a.packages // {}) | to_entries[] | select(.key | startswith("node_modules/"))
+          | select((($b[0].packages // {})[.key].version // "") != (.value.version // ""))] | length' 2>/dev/null)
+  printf '%s' "${n:-?}"
+}
+
+# si_loud <lock blob> <why> — the install is behind the trunk and is not being run now.
+si_loud() {
+  say "⚠ shared install behind the lockfile: $(si_behind "$1") packages, pushes will fail — $2"
+}
+
 # ---- the install itself, under the lock ---------------------------------------
 locked_install() { # <lock blob>
   local want="$1" t0 old rc=0 d why
@@ -91,9 +132,11 @@ locked_install() { # <lock blob>
   fi
   # Listed first, moved after: find is not walked while its tree changes.
   for d in $(nm_dirs); do rm -rf "$d$PREV"; mv "$d" "$d$PREV"; done
-  printf '%s --- %s in %s at %s\n' "$(swarm_stamp)" "${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund}" "$CLONE" "$(git_c rev-parse --short HEAD)" >> "$LOGF"
-  # shellcheck disable=SC2086 # the command is words on purpose
-  (cd "$CLONE" && _si_timeout "$TIMEOUT_SEC" ${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund}) >> "$LOGF" 2>&1 || rc=$?
+  local age; age=$(si_age_flags "$CLONE/.npmrc")
+  printf '%s --- %s%s in %s at %s\n' "$(swarm_stamp)" "${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund}" "${age:+ $age}" "$CLONE" "$(git_c rev-parse --short HEAD)" >> "$LOGF"
+  [ -z "$age" ] || say "the trunk's .npmrc sets an age cutoff; lifted for this lockfile install only ($age): npm ci installs exactly what the lock pins"
+  # shellcheck disable=SC2086 # the command and the flags are words on purpose
+  (cd "$CLONE" && _si_timeout "$TIMEOUT_SEC" ${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund} $age) >> "$LOGF" 2>&1 || rc=$?
   if [ "$rc" -eq 0 ] && [ -d "$CLONE/node_modules" ]; then
     printf '%s %s %s\n' "$want" "$(git_c rev-parse HEAD)" "$(swarm_stamp)" > "$CLONE/node_modules/$STAMP_NAME"
     # A node_modules the install did not make again was not its own: it goes back.
@@ -111,6 +154,7 @@ locked_install() { # <lock blob>
   [ -z "$old" ] || git_c checkout -q -f --detach "$old" >> "$LOGF" 2>&1 || true
   printf '%s %s\n' "$want" "$(date +%s)" > "$FAILED_F"
   say "the install of lock ${want:0:12} failed ($why) — the old install and checkout are back; tried again in ${RETRY_MIN} min; output in $LOGF"
+  si_loud "$want" "its install failed ($why)"
   return 1
 }
 
@@ -144,7 +188,7 @@ fi
 want=$(git -C "$CLONE" rev-parse -q --verify "refs/remotes/origin/$BR:package-lock.json" 2>/dev/null) \
   || { say "origin/$BR has no package-lock.json — nothing to install"; exit 0; }
 have=$(awk 'NR == 1 { print $1 }' "$CLONE/node_modules/$STAMP_NAME" 2>/dev/null)
-if [ -z "$have" ] && [ "$(git hash-object "$CLONE/package-lock.json" 2>/dev/null)" = "$want" ] \
+if [ "$have" != "$want" ] && [ "$(git hash-object "$CLONE/package-lock.json" 2>/dev/null)" = "$want" ] \
    && ! bash "$SELF_DIR/link-node-modules.sh" --behind "$CLONE" >/dev/null 2>&1 \
    && [ -f "$CLONE/node_modules/.package-lock.json" ]; then
   if coord_shadow; then say "lock ${want:0:12} checked: the install already matches it — would record it (shadow)"; exit 0; fi
@@ -156,7 +200,8 @@ say "lock checked: origin/$BR has ${want:0:12}, the install was made from $(if [
 
 if [ -f "$FAILED_F" ] && read -r fwant fat < "$FAILED_F" && [ "$fwant" = "$want" ] \
    && [ $(( $(date +%s) - ${fat:-0} )) -lt $(( RETRY_MIN * 60 )) ]; then
-  say "the install of this lock failed $(( ($(date +%s) - fat) / 60 )) min ago — tried again ${RETRY_MIN} min after it"; exit 0
+  say "the install of this lock failed $(( ($(date +%s) - fat) / 60 )) min ago — tried again ${RETRY_MIN} min after it"
+  si_loud "$want" "its install failed; output in $LOGF"; exit 0
 fi
 
 # Nothing on this host may be reading the install while it is replaced.
@@ -165,6 +210,13 @@ while IFS= read -r rec; do
   [ -n "$rec" ] || continue
   rid=$(basename "$rec" .json)
   t=$(jq -r '.ticket // empty' "$rec" 2>/dev/null); b=$(jq -r '.builder // empty' "$rec" 2>/dev/null)
+  # A tree already on the trunk's lock is failing on the old install: the install is its fix.
+  rwt=$(jq -r '.worktree // empty' "${DRIVER_DIR:-$STATE_DIR/driver}/$t/state.json" 2>/dev/null)
+  [ -n "$rwt" ] || rwt=$(jq -r '.worktree // empty' "$rec" 2>/dev/null)
+  if [ -n "$rwt" ] && [ -f "$rwt/package-lock.json" ] && [ "$(git hash-object "$rwt/package-lock.json" 2>/dev/null)" = "$want" ]; then
+    say "$rid (#${t:-?}) is already on the trunk's lock — the install fixes it, so it is not waited for"
+    continue
+  fi
   if [ "$b" = driver ]; then
     past=""
     for s in $(jq -r '(.done // [])[]' "${DRIVER_DIR:-$STATE_DIR/driver}/$t/state.json" 2>/dev/null); do
@@ -202,14 +254,16 @@ if [ -n "$busy" ]; then
       shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"
       say "waiting $waited min, past ${DRAIN_MIN} — holding new starts on this host until the builds drain: $busy"
     fi
+    si_loud "$want" "the install waits $waited min on builds still on the old lock"
     exit 0
   fi
-  say "waiting $waited min — in use on this host: $busy; checked again next pass"; exit 0
+  say "waiting $waited min — in use on this host: $busy; checked again next pass"
+  si_loud "$want" "the install waits on builds still on the old lock"; exit 0
 fi
 
 if coord_shadow; then say "would install lock ${want:0:12} (shadow)"; exit 0; fi
 # Nothing new starts while the install is set aside; the exit lifts it.
 shared_install_hold_set "lock ${want:0:12} is being installed"
 _si_flock "$LOCKF" bash "${BASH_SOURCE[0]}" --locked "$want"; rc=$?
-[ "$rc" -ne 75 ] || { KEEP_HOLD=1; say "another install holds $LOCKF — checked again next pass"; }
+[ "$rc" -ne 75 ] || { KEEP_HOLD=1; say "another install holds $LOCKF — checked again next pass"; si_loud "$want" "another install holds the lock"; }
 exit 0

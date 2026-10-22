@@ -593,6 +593,23 @@ the whole ceiling to healing, and the split line and `capacity.json` (`healAll`)
 say so; once fewer are left the share returns. Polish reds never count toward it:
 they are healed in their turn, at their priority, and never stop new building.
 
+**Merge first, fix after, until the release** (owner's ruling 2026-10-22).
+`"release": {"mergeFirst": true}` in harness.json is one switch for every gate that
+held a change for a person or a picture; `release.done: true` or removing the key
+turns it all back. While it is on (`release_merge_first`, `scripts/release-checks.sh`):
+the driver and `/agent-harness:finish` never add the hold label and never wait for
+CI's shots or picture parity (compare is a no-op); the sign-off push guard lets every
+push through; the review runs once and only a **Critical** blocks, fixed in place.
+Every Major becomes a P1 follow-up ticket and every Minor goes on its screen's polish
+list, or becomes a P3 follow-up when no screen takes it: `scripts/follow-up.sh`, one
+ticket per PR and finding, naming the PR, the file:line and the finding, status
+ready, labelled `fix-after-merge` (`release.followUpLabel`, created if missing) so the
+clean-up after the release is one list, `coordinator-queue.sh add --front`. Then the PR ships. A ui-gate SPIT-BACK with
+no Critical is not recorded and does not refuse. The design critic and the picture
+check join the warn-only checks below, and only a `screen:new` or `screen:redesign`
+ticket still waits for an approved picture (the baseline route is on for every other
+screen). Typecheck, lint and the fast local gates still block.
+
 **Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
 in harness.json lists check names (a run's name, a status context, or
 `<workflow> / <job>`, ignoring case); while `release.done` is not true, a red in one

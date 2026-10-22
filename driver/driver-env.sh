@@ -331,13 +331,22 @@ driver_gates_local_set() {
     "$HARNESS_CFG" >/dev/null 2>&1
 }
 
+# driver_gates_reads_local — 0 when self-check runs gates.local: it is the local set, or
+# the project names no gates.changed list and gates.local is a non-empty list.
+driver_gates_reads_local() {
+  driver_gates_local_set && return 0
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
+  jq -e '((.gates.changed // null) | type) != "array" and ((.gates.local // null) | type) == "array" and (.gates.local | length) > 0' "$HARNESS_CFG" >/dev/null 2>&1
+}
+
 # driver_local_gates_head <ticket> <tree> — the tree's head when self-check's local set
 # passed on it, or on a head with the same files (a verdict trailer is an empty commit);
 # nothing otherwise. The push hands it to the project's pre-push as
-# HARNESS_LOCAL_GATES_HEAD, so a hook that honours it runs nothing twice.
+# HARNESS_LOCAL_GATES_HEAD, so a hook that honours it runs nothing twice. Whenever
+# self-check ran gates.local and it passed, whether or not it is the whole local set.
 driver_local_gates_head() {
   local g h
-  driver_gates_local_set || return 0
+  driver_gates_reads_local || return 0
   g=$(driver_state_get "$1" local_gates_head); [ -n "$g" ] || return 0
   h=$(git -C "$2" rev-parse HEAD 2>/dev/null) || return 0
   [ "$g" = "$h" ] || git -C "$2" diff --quiet "$g" "$h" -- 2>/dev/null || return 0
@@ -798,8 +807,19 @@ DRIVER_BLOCKING_GRADES_LATER="${DRIVER_BLOCKING_GRADES_LATER:-critical major}"
 
 # driver_blocking_grades [round] — the grades that block in that review round; no
 # round, or round 1, is the first round's set.
+#
+# MERGE FIRST (release.mergeFirst, release-checks.sh): a Critical alone blocks, in every
+# round; a Major or a Minor is deferred, and the defer files it as a follow-up ticket.
+DRIVER_MERGE_FIRST_GRADES="${DRIVER_MERGE_FIRST_GRADES:-critical}"
 driver_blocking_grades() {
+  if driver_merge_first; then printf '%s' "$DRIVER_MERGE_FIRST_GRADES"; return 0; fi
   case "${1:-1}" in ''|*[!0-9]*|0|1) printf '%s' "$DRIVER_BLOCKING_GRADES" ;; *) printf '%s' "${DRIVER_BLOCKING_GRADES_LATER:-$DRIVER_BLOCKING_GRADES}" ;; esac
+}
+
+# driver_merge_first — release.mergeFirst is on (release-checks.sh); off when that reader
+# is not loaded.
+driver_merge_first() {
+  command -v release_merge_first >/dev/null 2>&1 && release_merge_first
 }
 
 # driver_blocking_select [round] — the jq selector for a finding whose grade blocks in

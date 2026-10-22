@@ -430,6 +430,11 @@ driver_push_requires() { # <ticket>
       # review record at their grades, and the walk loops review -> fix -> re-review in the
       # round limit. It parks only past the limit with a blocking finding left.
       local srv; srv=0; _driver_spitback_to_fix "$t" "$name" "$out" || srv=$?
+      # MERGE FIRST: nothing Critical, so its findings are follow-ups and the change ships unrecorded.
+      if [ "$srv" -eq 99 ] && driver_merge_first; then
+        driver_say "   push-requires: '$name' said SPIT-BACK on nothing Critical — merge first: its findings are follow-up tickets, no verdict is recorded and the push goes ahead"
+        continue 2
+      fi
       if [ "$srv" -eq 99 ] && [ "$again" -eq 0 ]; then again=1; continue; fi
       [ "$srv" -eq 0 ] || [ "$srv" -eq 99 ] || return "$srv"
       driver_say "✋ push-requires: '$name' could not be recorded — $(tr '\n' ' ' < "$out.recorded" | cut -c1-400)"
