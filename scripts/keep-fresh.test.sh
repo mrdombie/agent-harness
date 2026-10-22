@@ -234,19 +234,41 @@ want "approval-kept: the PR's own screen change is the same at both heads" "" "$
 printf 'HEAD %s refs/heads/tkt-23-work %s\n' "$after" "$before" | (cd "$REPO" && SIGNOFF_GUARD_DRYRUN=1 HARNESS_CFG_PATH="$HARNESS_CFG_PATH" bash "$HERE/signoff-push-guard.sh" origin >/dev/null 2>&1)
 want "the sign-off guard passes the same push"   0 "$?"
 
-echo "--- a PR whose ticket is already queued for repair is passed over, and the limit goes to the next ---"
+echo "--- a queued repair whose clash is mechanical is settled, pushed, and its repair entry removed ---"
 fresh
 for n in 51 52; do branch "$n" "printf 'pr$n\n' > .deploy-trigger" ''; done
 (cd "$W" && printf 'dev\n' > .deploy-trigger && git add -A && git commit -qm dev && git push -q origin develop)
 for n in 51 52; do reads "$n" false dirty; done
-mkdir -p "$C"; printf '{"tickets":[{"n":51,"class":"repair","note":"a builder is on it"}]}\n' > "$C/queue.json"
+mkdir -p "$C"; printf '{"tickets":[{"n":7,"class":"new","note":""},{"n":52,"class":"repair","note":"Keep fresh: PR #52 clashes with develop and a rule cannot settle it — x"}]}\n' > "$C/queue.json"
 cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"; cfg '.merge.keepFreshPerTick = 1'
 b51=$(pushed_for 51); out=$(live)
-want "the queued one is untouched"               "$b51" "$(remote_head 51)"
-want "the next one takes the pass's one place"   dev "$(at_head 52 .deploy-trigger)"
-want_in "it says why the first was passed over"  '#51 — #51 is already queued for repair — skipped' "$out"
-want_in "and counts it apart"                    '1 settled or sent on this pass, 1 already queued for repair' "$out"
+want "the queued one is settled first, ahead of an older one" dev "$(at_head 52 .deploy-trigger)"
+want "the older unqueued one waits for the next pass"  "$b51" "$(remote_head 51)"
+want "its repair entry is removed"               "" "$(repairs)"
+want "the rest of the queue is kept"             7 "$(jq -r '[.tickets[].n] | join(" ")' "$C/queue.json" 2>/dev/null)"
+want_in "it says it cleared the entry"           '#52'"'"'s repair entry removed' "$out"
+want_in "and counts it"                          '1 settled or sent on this pass, 1 repair entries cleared' "$out"
 mv "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
+
+echo "--- a queued repair carrying a person's note is settled, and its entry stays ---"
+fresh; branch 53 'printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 53 false dirty
+mkdir -p "$C"; printf '{"tickets":[{"n":53,"class":"repair","note":"PM: fix the Major too, then ship"}]}\n' > "$C/queue.json"
+out=$(live)
+want "the branch is settled"                     dev "$(at_head 53 .deploy-trigger)"
+want "the entry stays"                           53 "$(repairs)"
+want "its note is unchanged"                     'PM: fix the Major too, then ship' "$(jq -r '.tickets[0].note' "$C/queue.json" 2>/dev/null)"
+
+echo "--- a queued repair with a real clash is left queued as it was, with no duplicate ---"
+fresh
+branch 54 'printf "export const a = 2;\n" > src/app.ts' 'printf "export const a = 3;\n" > src/app.ts'; reads 54 false dirty
+mkdir -p "$C"; printf '{"tickets":[{"n":54,"class":"repair","note":"Merge lane: PR #54 left the lane — it conflicts with develop."}]}\n' > "$C/queue.json"
+q_before=$(jq -c . "$C/queue.json"); before=$(pushed_for 54); out=$(live)
+want "the branch is untouched"                   "$before" "$(remote_head 54)"
+want_in "it was tried"                           '#54 has a real conflict' "$out"
+want "the entry is exactly as it was"            "$q_before" "$(jq -c . "$C/queue.json" 2>/dev/null)"
+want_in "it says so"                             '#54 is already queued for repair — its entry is left as it is' "$out"
+out=$(live)
+want "the same head is not tried again"          "" "$(grep 'real conflict' <<<"$out")"
 
 echo "--- an open-PR list past the argument limit prunes the state as a short one does ---"
 # Over 1 MiB: past Linux's 128 KiB per argument and macOS's whole-argv ARG_MAX alike.
