@@ -41,9 +41,9 @@ thinking inside one step.
 | 2 | `plan` | model | a plan the driver can enforce, or a question |
 | 3 | `build` | model | commits whose test the driver proves red then green |
 | 4 | `fix` | model | the review's Criticals and Majors cleared, each proved the same way |
-| 5 | `self-check` | driver | every gate run as its own command, read by exit code — the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` — then the push's own checks: `gates.prePush`, or the tree's pre-push hook run as `git push` runs it |
+| 5 | `self-check` | driver | every gate run as its own command, read by exit code. When `gates.local` holds every `gates.changed` command (or there is none) it is the local set: that list alone, and CI runs the rest once. Otherwise the project's `gates.changed` list when it has one (what the change touches; CI runs the rest), else `gates.local` — then the push's own checks: `gates.prePush`, or the tree's pre-push hook run as `git push` runs it |
 | 6 | `compare` | model | this run's renders held beside the approved design |
-| 7 | `review` | model | `SHIP`, or findings with a file, a line and a grade |
+| 7 | `review` | model | `SHIP`, or findings with a file, a line and a grade. Once per change: a later pass calls the model only when the fix round touched a file the first review never saw, graded Critical and Major only, and never past `review.maxRounds` |
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
 | 9 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
 

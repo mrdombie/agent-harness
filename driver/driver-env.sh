@@ -16,7 +16,8 @@
 #   DRIVER_VALIDATE  briefs/validate.sh — the one thing that reads a whole schema
 #   DRIVER_STEPS     the fixed order, one name per step
 #   DRIVER_MAX_BUILD_TRIES   red-before-green attempts before the ticket parks (5)
-#   DRIVER_MAX_REVIEW_ROUNDS review rounds before leftovers become a ticket (2)
+#   DRIVER_MAX_REVIEW_ROUNDS review passes per change (review.maxRounds, 2); only the first
+#                            always calls the model (steps/review.sh)
 #
 # The seams, each overridable so a test points it at a recorder:
 #   DRIVER_CLAUDE    the agent runner   (default: claude)
@@ -63,7 +64,9 @@ DRIVER_STEPS="${DRIVER_STEPS:-start plan build fix compare self-check review rec
 
 # Five tries, then park — the number in the approved design's flowchart.
 DRIVER_MAX_BUILD_TRIES="${DRIVER_MAX_BUILD_TRIES:-5}"
-DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-2}"
+# Review rounds: a project fact (review.maxRounds), 2 when unset or not a whole number.
+DRIVER_MAX_REVIEW_ROUNDS="${DRIVER_MAX_REVIEW_ROUNDS:-$(toolkit_cfg review.maxRounds 2>/dev/null)}"
+case "$DRIVER_MAX_REVIEW_ROUNDS" in ''|*[!0-9]*|0) DRIVER_MAX_REVIEW_ROUNDS=2 ;; esac
 # Red gates in the branch's own diff go back to fix this many times before a park.
 DRIVER_MAX_GATE_FIXES="${DRIVER_MAX_GATE_FIXES:-3}"
 
@@ -297,6 +300,32 @@ driver_signoff_refusal() {
 }
 driver_signoff_line() { grep -m1 'sign-off comes last' "$1" 2>/dev/null | sed 's/^[^A-Za-z]*pre-push blocked: //' | cut -c1-300; }
 
+# driver_gates_local_set — 0 when the project's `gates.local` is THE local set: a list
+# holding every `gates.changed` command, or with no changed list beside it. Then
+# self-check runs it alone and CI runs the rest once. A `gates.local` that leaves the
+# changed list out is the older whole-app form, and self-check runs as it did.
+driver_gates_local_set() {
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
+  jq -e '(.gates // {}) as $g
+         | (($g | type) == "object") and (($g.local | type) == "array") and (($g.local | length) > 0)
+           and ((($g.changed // null) == null)
+                or ((($g.changed | type) == "array") and ((($g.changed - $g.local) | length) == 0)))' \
+    "$HARNESS_CFG" >/dev/null 2>&1
+}
+
+# driver_local_gates_head <ticket> <tree> — the tree's head when self-check's local set
+# passed on it, or on a head with the same files (a verdict trailer is an empty commit);
+# nothing otherwise. The push hands it to the project's pre-push as
+# HARNESS_LOCAL_GATES_HEAD, so a hook that honours it runs nothing twice.
+driver_local_gates_head() {
+  local g h
+  driver_gates_local_set || return 0
+  g=$(driver_state_get "$1" local_gates_head); [ -n "$g" ] || return 0
+  h=$(git -C "$2" rev-parse HEAD 2>/dev/null) || return 0
+  [ "$g" = "$h" ] || git -C "$2" diff --quiet "$g" "$h" -- 2>/dev/null || return 0
+  printf '%s' "$h"
+}
+
 # driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
 # project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
 # said "read its own output" and that output existed nowhere, so the one line that
@@ -314,7 +343,7 @@ driver_push() {
   local t="$1" wt="$2" branch="$3" slot="$4" f rc=0 esc tr
   f="$(driver_state_dir "$t")/steps/$slot-push.out"
   mkdir -p "$(dirname "$f")"
-  local penv=(env -u PARK_PUSH)
+  local penv=(env -u PARK_PUSH -u HARNESS_LOCAL_GATES_HEAD) lg=""
   esc=$(driver_opt driver.parkPushEnv PARK_PUSH)
   if [[ "$esc" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
     penv+=(-u "$esc")
@@ -325,6 +354,10 @@ driver_push() {
   elif [ "$slot" = park ]; then
     driver_say "   park: driver.parkPushEnv '$esc' is not an environment variable name, so the push carries no park escape"
   fi
+  # CI IS THE ONE GATE: the head the local set already passed on, said to the hook.
+  # After every `-u`, so env reads it as an assignment rather than the command.
+  [ "$slot" = park ] || lg=$(driver_local_gates_head "$t" "$wt")
+  [ -z "$lg" ] || penv+=("HARNESS_LOCAL_GATES_HEAD=$lg")
   "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""

@@ -538,6 +538,7 @@ driver_step_self_check() { # <ticket>
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   findings="$(driver_state_dir "$t")/steps/self-check.findings.json"
   rm -f "$findings" "$findings.rows"
+  driver_state_set "$t" local_gates_head ""
   # Said before the gates run, and through the ticket's log: each gate's own output goes
   # to a file, so a warning printed inside one is a warning nobody sees.
   driver_check_timeout || true
@@ -563,7 +564,16 @@ driver_step_self_check() { # <ticket>
   # project's `gates.changed` is that list; `gates.local` is the whole-app form. On
   # the 2026-09-30 trial the whole-app form ran repo-wide lint and typecheck plus 37
   # repo checks for a one-file fix, and failed on a check the change never touched.
-  if [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
+  #
+  # CI IS THE ONE GATE (the owner, 2026-10-22). When `gates.local` holds every
+  # `gates.changed` command (or there is no changed list), it is THE local set — the
+  # fast checks — and self-check runs it and nothing else: no trial of the project's
+  # whole pre-push. The full suite runs once, in CI. A `gates.local` that leaves the
+  # changed list out is the older whole-app form, and the step runs as it did.
+  local localset=""; driver_gates_local_set && localset=1
+  if [ -n "$localset" ]; then
+    names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
+  elif [ "$(jq -r '(.gates.changed // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
     names=$(jq -r '.gates.changed | to_entries[] | "changed \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
   elif [ "$(jq -r '(.gates.local // null) | type' "$HARNESS_CFG" 2>/dev/null)" = "array" ]; then
     names=$(jq -r '.gates.local | to_entries[] | "local \(.key + 1)\t\(.value)"' "$HARNESS_CFG" 2>/dev/null)
@@ -692,8 +702,14 @@ driver_step_self_check() { # <ticket>
   done <<EOS
 $names
 EOS
-  # The push verification last, after every gate above ran whatever it said.
-  local pgrc=0; _driver_prepush_gate "$t" "$wt" || pgrc=$?
+  # The push verification last, after every gate above ran whatever it said — unless
+  # gates.local is the local set: then the push's checks beyond it are CI's.
+  local pgrc=0
+  if [ -n "$localset" ]; then
+    driver_say "   self-check: the project's whole pre-push is not run here — gates.local is the local set, and CI runs every required check once"
+  else
+    _driver_prepush_gate "$t" "$wt" || pgrc=$?
+  fi
   if [ "$pgrc" -ne 0 ]; then machine_gate_release; return "$pgrc"; fi
   machine_gate_release
 
@@ -748,6 +764,8 @@ EOS
     return "$DRIVER_E_REFUSED"
   fi
   rm -f "$findings.rows"
+  # The head the local set passed on: the push tells the project's hook (driver_push).
+  [ -z "$localset" ] || driver_state_set "$t" local_gates_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   driver_say "   self-check: $((ran+pushran)) gate(s) green"
   return "$DRIVER_OK"
 }
