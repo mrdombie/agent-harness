@@ -587,7 +587,12 @@ request, and nothing repairs it, counts it red or toward heal-all, parks or
 fix-rounds on it (the driver's repair, the critic's findings), or waits on it (the
 sign-off batch, the merge lane, `pr-watch.sh`). Every check still runs and reports.
 `release.done: true`, an empty list or no key is exactly as before. The one switch
-is `scripts/release-checks.sh`; every reader of a red asks it.
+is `scripts/release-checks.sh`; every reader of a red asks it. The driver's own
+evidence-gap tasks (`driver_evidence_tasks`) ask it too: while a check that finds
+evidence gaps (`evidence.gapChecks`, default `review.judge.context` and
+`Approved picture`) is listed, the gaps are printed in the run log and commented on
+the pull request once per head as report-only until the release, and are no repair
+or fix task, so no repair is refused (exit 24) over them.
 
 **Process fixes trump everything** (owner call 2026-10-20). A ticket wearing
 `coordinator.processLabel` (default `process`) starts first, in any free place:

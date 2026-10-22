@@ -535,6 +535,54 @@ rm -f "$FIX/ev-left" "$FIX/ev-tasks"
 setup 373; prs 373 CLEAN
 out=$(driver_step_repair 373 2>&1); rc=$?
 want "with no evidence owed and nothing red, still no model" "" "$(cat "$CLAUDE_LOG")"
+
+echo "--- an evidence gap while its check is report-only until the release: a warning, not a refusal ---"
+# #13305 and #13362 (2026-10-22) parked on exit 24 over approved-picture shots while
+# "Design critic" and "Approved picture" sat in release.nonBlockingChecks: the CI red
+# warned, and the repair derived the same gaps as tasks of its own.
+CFGF="$REPO/.claude/harness.json"; cp "$CFGF" "$FIX/cfg.nb-orig"
+cfg_release() { jq --argjson l "$1" --argjson d "$2" '.release = {nonBlockingChecks: $l, done: $d}' "$FIX/cfg.nb-orig" > "$CFGF"; }
+EV_ONLY='evidence gap: the approved picture declares today-laptop-light (/today, laptop, light) and CI pinned no shot of it — nobody saw it'
+ev_only_case() { # <ticket> — nothing red, one evidence gap, a code-only answer if asked
+  setup "$1"; prs "$1" CLEAN; printf '%s\n' "$EV_ONLY" > "$FIX/ev-tasks"; : > "$GH_LOG"
+  cat > "$FIX/ai/repair.sh" <<SH
+printf 'value=good\n' > value$1.txt; git add . && git commit -qm "fix: code only"
+SH
+  answer "$(repaired "$(gate_fix 'bash lint.sh')")"
+}
+cfg_release '["Lesson / Every fix ships a lesson", "Design critic", "Approved picture"]' false
+ev_only_case 374
+out=$(driver_step_repair 374 2>&1); rc=$?
+want "the only task an evidence gap, its check report-only: no refusal" "0" "$rc"
+want "and no model is asked for it"                 "" "$(cat "$CLAUDE_LOG")"
+want_in "the run log carries the warning"           'report-only until the release' "$out"
+want_in "naming the gap"                            'today-laptop-light' "$out"
+want "it is no owed task"                           "" "$(driver_state_get 374 evidence_tasks)"
+want_in "the PR is told, report-only"               'issues/374/comments -X POST' "$(cat "$GH_LOG")"
+want "and the park note is empty"                   "" "$(driver_state_get 374 park_note)"
+
+cfg_release '["approved picture"]' false
+ev_only_case 375
+out=$(driver_step_repair 375 2>&1); rc=$?
+want "one of the two names listed, any case, is enough" "0" "$rc"
+
+cfg_release '["Lesson / Every fix ships a lesson", "Widths and contrast on changed routes"]' false
+ev_only_case 376
+out=$(driver_step_repair 376 2>&1); rc=$?
+want "neither check listed: the gap is owed and a code-only repair is refused" "24" "$rc"
+want_in "the park names the plan"                   'capture plan docs/evidence/376/plan.json is unchanged' "$(driver_state_get 376 park_note)"
+
+cfg_release '["Design critic", "Approved picture"]' true
+ev_only_case 377
+out=$(driver_step_repair 377 2>&1); rc=$?
+want "after the release (done:true) the gap blocks again" "24" "$rc"
+# Plant: the report-only reading gone, the first case parks on exit 24 again.
+cfg_release '["Lesson / Every fix ships a lesson", "Design critic", "Approved picture"]' false
+( _driver_evidence_report_only() { return 1; }
+  ev_only_case 378; out=$(driver_step_repair 378 2>&1); rc=$?
+  [ "$rc" = 24 ] && echo flipped ) > "$FIX/plant-evnb" 2>&1
+want "planted (no report-only reading): the evidence-gap-only repair is refused" "flipped" "$(tail -1 "$FIX/plant-evnb")"
+cp "$FIX/cfg.nb-orig" "$CFGF"; rm -f "$FIX/ev-tasks"
 unset DRIVER_EVIDENCE_GAPS
 
 echo "--- a claim another live run holds: the repair waits on the queue, never asks (#319) ---"

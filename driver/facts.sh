@@ -381,6 +381,7 @@ driver_fact_critic_findings() { # <ticket>
 # (scripts/evidence-gaps.sh) — one "- " line each, and keeps it as evidence_tasks.
 driver_evidence_tasks() { # <ticket> <tree> <trunk> <pr>
   local t="$1" wt="$2" trunk="$3" pr="$4" body base out
+  driver_state_set "$t" evidence_warnings ""
   [ -n "$pr" ] || { driver_state_set "$t" evidence_tasks ""; return 0; }
   body=$(mktemp "${TMPDIR:-/tmp}/evidence-body.XXXXXX") || return 0
   swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json body -q .body > "$body" 2>/dev/null || : > "$body"
@@ -392,8 +393,48 @@ driver_evidence_tasks() { # <ticket> <tree> <trunk> <pr>
     out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" 2>/dev/null)
   fi
   rm -f "$body"
+  if [ -n "$out" ] && _driver_evidence_report_only; then
+    _driver_evidence_warn "$t" "$wt" "$pr" "$out"
+    out=""
+  fi
   driver_state_set "$t" evidence_tasks "$out"
   printf '%s' "$out"
+}
+
+# An evidence gap is the critic's and the picture check's finding: while either check is
+# in release.nonBlockingChecks it warns, so the gaps are no task, no refusal, no park.
+# evidence.gapChecks names those checks (default: review.judge.context and "Approved picture").
+_driver_evidence_report_only() {
+  local names n
+  names=$(jq -r --arg j "$(driver_opt review.judge.context "Design critic")" \
+    '(.evidence.gapChecks // [$j, "Approved picture"]) | if type == "array" then .[] else empty end | strings' \
+    "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+  while IFS= read -r n; do
+    [ -n "$n" ] && release_check_nonblocking "$n" && return 0
+  done <<<"$names"
+  return 1
+}
+
+# _driver_evidence_warn <ticket> <tree> <pr> <tasks> — said in the run log (stderr: the
+# caller captures stdout as the task list) and commented on the PR once per head and set.
+_driver_evidence_warn() {
+  local t="$1" wt="$2" pr="$3" tasks="$4" head key ledger body
+  driver_state_set "$t" evidence_warnings "$tasks"
+  driver_say "   evidence: warning, not blocking — $(printf '%s\n' "$tasks" | grep -c .) evidence gap(s) on PR #$pr are report-only until the release (release.nonBlockingChecks), so no repair task:" >&2
+  printf '%s\n' "$tasks" | sed 's/^/     /' >&2
+  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null | cut -c1-9)
+  key="$pr	${head:-?}	$(printf '%s' "$tasks" | cksum | cut -d' ' -f1)"
+  ledger="${DRIVER_EVIDENCE_WARN_LEDGER:-${STATE_DIR:-${TMPDIR:-/tmp}}/swarm/evidence-warnings.tsv}"
+  grep -qxF -- "$key" "$ledger" 2>/dev/null && return 0
+  body="**Warning, not blocking — report-only until the release.** The evidence this pull request is missing, at \`${head:-?}\`:
+$tasks
+
+Until the release, the checks that find evidence gaps report but do not block (\`release.nonBlockingChecks\` in harness.json), so no repair is sent for them. The PM reads them with the CI shots at sign-off."
+  if swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" -X POST -f body="$body" >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$ledger")" 2>/dev/null
+    printf '%s\n' "$key" >> "$ledger"
+  fi
+  return 0
 }
 
 # driver_fact_evidence_tasks <ticket> — the tasks, said as edits to the capture plan.
@@ -407,6 +448,9 @@ driver_fact_evidence_tasks() { # <ticket>
       trunk="origin/$INTEGRATION_BRANCH"; git -C "$wt" rev-parse --verify -q "$trunk" >/dev/null 2>&1 || trunk="$INTEGRATION_BRANCH"
       tasks=$(driver_evidence_tasks "$t" "$wt" "$trunk" "$pr")
     fi
+  fi
+  if [ -z "$tasks" ] && [ -n "$(driver_state_get "$t" evidence_warnings)" ]; then
+    _driver_fact_none "the evidence gaps on this pull request are report-only until the release (release.nonBlockingChecks), so none is a task of this step; the PM reads them with the CI shots at sign-off"; return 0
   fi
   [ -n "$tasks" ] || { _driver_fact_none "no evidence is owed: the critic names no missing shot and every changed screen file is on an evidence route"; return 0; }
   plan=$(driver_evidence_plan "$t")
