@@ -147,4 +147,59 @@ order=$(
 want "the sheet lists only what may start" "803 804 805 806" "$order"
 unset COORDINATOR_RELEASE_SCOPE_ONLY
 
+# alsoIn.titlePatterns: card work carries no screen label and no title prefix, so only a
+# title regex can bring it in. 808 is card work; 809 only contains the letters.
+#   808 P3 new  "polish(pulse): Templates card shows its count"  in only with the pattern
+#   809 P3 new  "Cardinal sort order"                             out: \b is a word edge
+cat > "$BIN/claimable" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' \
+  "808	P3	A			polish(pulse): Templates CARD shows its count	P3,status:ready,project:rel	-" \
+  "809	P3	A			Cardinal sort order	P3,status:ready,project:rel	-"
+STUB
+chmod +x "$BIN/claimable"
+titled() { issue "$1" "$2"; jq --arg t "$3" '.title = $t' "$FIX/gh/issue-$1.json" > "$FIX/gh/issue-$1.tmp" && mv "$FIX/gh/issue-$1.tmp" "$FIX/gh/issue-$1.json"; }
+titled 808 "P3,status:ready,project:rel" "polish(pulse): Templates CARD shows its count"
+titled 809 "P3,status:ready,project:rel" "Cardinal sort order"
+queued() { jq -r '[.tickets[].n] | sort | map(tostring) | join(" ")' "$QF"; }
+sheet_order() (
+  . "$HERE/coordinator-env.sh" >/dev/null 2>&1
+  . "$HERE/coordinator-sheet.sh" >/dev/null 2>&1
+  . "$HERE/gh-batch.sh" >/dev/null 2>&1
+  iss=$(gh_issues_batch 808 809 2>/dev/null)
+  coord_sheet_entries "$(printf '%s\n' "808	new	3" "809	new	3")" "$iss" "" "" | jq -r '[.order[].n] | sort | map(tostring) | join(" ")')
+
+echo "--- on, no titlePatterns: a P3 card ticket with no screen label is held, and stays queued ---"
+export COORDINATOR_RELEASE_SCOPE_ONLY=true
+fresh
+bash "$Q" seed rel >/dev/null
+want "neither is seeded"                   "" "$(seeded)"
+fresh
+bash "$Q" add 808 >/dev/null; bash "$Q" add 809 >/dev/null
+out=$(ticks)
+want "a pinned card ticket does not start" "" "$(spawned)"
+want_in "the tick counts both as held"     'scope: release only — 2 new outside scope held back' "$out"
+want "a held entry stays in the queue"     "808 809" "$(queued)"
+COORDINATOR_REFRESH=1 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_CAP=10 bash "$T" >/dev/null 2>&1
+want "and through a refresh too"           "808 809" "$(queued)"
+want "the sheet leaves both off"           "" "$(sheet_order)"
+
+echo "--- on, titlePatterns [\\bcard\\b]: the card ticket is in at seed, tick and sheet; the near miss is not ---"
+export COORDINATOR_RELEASE_SCOPE_ONLY='{"alsoIn":{"titlePatterns":["\\bcard\\b","(?i)never-matches","("]}}'
+fresh
+bash "$Q" seed rel >/dev/null
+want "the seed takes the card ticket, case-insensitively" "808" "$(seeded)"
+want "a pattern that does not compile is dropped, not fatal" '["\\bcard\\b","(?i)never-matches"]' \
+  "$( . "$HERE/coordinator-env.sh" >/dev/null 2>&1; jq -c '.alsoIn.titlePatterns' <<<"$COORD_RELEASE_SCOPE")"
+want "the default alsoIn keys stay"        '["Batch:","Polish list:"]' \
+  "$( . "$HERE/coordinator-env.sh" >/dev/null 2>&1; jq -c '.alsoIn.titlePrefixes' <<<"$COORD_RELEASE_SCOPE")"
+fresh
+bash "$Q" add 808 >/dev/null; bash "$Q" add 809 >/dev/null
+out=$(ticks)
+want "the tick starts the card ticket only" "808" "$(spawned)"
+want_in "and holds the near miss"          'scope: release only — 1 new outside scope held back' "$out"
+want "the held one is still queued"        "809" "$(queued)"
+want "the sheet lists the card ticket"     "808" "$(sheet_order)"
+unset COORDINATOR_RELEASE_SCOPE_ONLY
+
 suite_end "$FAILED"
