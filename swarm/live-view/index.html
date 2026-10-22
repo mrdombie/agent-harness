@@ -303,6 +303,14 @@ function machineLine(s){
       + ` · at most ${esc(p.maxBuildsFleet)} building on every machine, ${esc(p.share)} here`
       + (ahead ? ' — <span class="diskheld">ahead of budget, nothing new starts</span>' : ''))
   }
+  // The product floor (coordinator.productFloor): overhead never takes product places to zero.
+  const pf = p && p.productFloor
+  if (pf && pf.floor) parts.push(pf.off ? `product floor ${esc(pf.floor)} ${esc(pf.off)}`
+    : pf.applied ? `<span class="diskheld">overhead would leave ${esc(pf.wouldLeave)}, product floor keeps ${esc(pf.floor)}</span>`
+    : `product floor ${esc(pf.floor)}`)
+  // The tooling cap (coordinator.toolingCap): harness and process runs on every machine together.
+  const tl = c && c.tooling
+  if (tl) parts.push(`tooling ${esc(tl.live)} / cap ${esc(tl.cap)}` + (tl.waiting ? `, ${esc(tl.waiting)} waiting` : ''))
   // The open-work cap (coordinator.openPrCap): over it, nothing new starts until changes land.
   const op = c && c.openPrs
   if (op && op.cap) parts.push(op.over ? `<span class="diskheld">open changes ${esc(op.count)} / cap ${esc(op.cap)}: finishing before starting</span>`

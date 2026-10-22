@@ -446,9 +446,10 @@ ISSUES=""; ISSUES_OK=1
 # where each of those tickets stands now from this read, not from a call per row.
 ENDED_TICKETS=$(find "$RUNS_DIR" -maxdepth 1 -name 'claim-*.ended' -mmin -"$(( ${SWARM_DONE_HOURS:-6} * 60 ))" 2>/dev/null \
   | while IFS= read -r e; do jq -r '.ticket // empty' "${e%.ended}.json" 2>/dev/null; done)
-# The sheet's owner names every host's builds, so it reads their titles in the same request.
+# Every host's claimed tickets too: the sheet's owner names their titles, and the
+# tooling cap counts the ones wearing a tooling label, on every host.
 ISSUE_NUMS=$( { coord_queue_ordered | cut -f1; cut -f1 "$COORD_WAITS" 2>/dev/null; printf '%s\n' $LIVE_TICKETS $ENDED_TICKETS
-                [ "$SHEET_ROLE" != owner ] || printf '%s\n' "$CLAIMED"; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
+                printf '%s\n' "$CLAIMED"; } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')
 if [ -n "${ISSUE_NUMS// /}" ]; then
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   if ISSUES=$(gh_issues_batch $ISSUE_NUMS); then coord_snap_save issues "$ISSUES"
@@ -481,6 +482,20 @@ ticket_polish() { # <ticket> — 0 when the tick's read holds it as polish
   [ -n "${ISSUES:-}" ] && coord_jq -e --arg n "$1" "$COORD_TICKET_JQ"'
     .[$n] // null | if . == null then false else coord_polish(.labels // []; null; .title) end' >/dev/null 2>&1 <<<"$ISSUES"
 }
+# tooling: a process fix or a toolingCapLabels ticket, read off the batched labels.
+ticket_tooling() { # <ticket> — 0 when the tick's read holds it as tooling under the cap
+  [ -n "${ISSUES:-}" ] && jq -e --arg n "$1" --arg p "$SWARM_PROCESS_LABEL" --arg tl "$COORD_TOOLING_CAP_LABELS" '
+    (.[$n] // null) as $i | ($tl | split(" ") | map(select(length > 0)) + [$p]) as $want
+    | $i != null and any(($i.labels // [])[]; . as $l | $want | index($l) != null)' >/dev/null 2>&1 <<<"$ISSUES"
+}
+# The tooling runs live on every host: this host's runs, and the other hosts' claims.
+TOOLING_LIVE=0; TOOLING_LIVE_TICKETS=""
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
+  ticket_tooling "$t" && { TOOLING_LIVE=$((TOOLING_LIVE+1)); TOOLING_LIVE_TICKETS="$TOOLING_LIVE_TICKETS #$t"; }
+done < <( { printf '%s\n' $LIVE_TICKETS
+            printf '%s\n' "$CLAIM_ROWS" | awk -F'\t' -v h="$COORD_HOST" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { print $1 }'; } \
+          | grep -E '^[0-9]+$' | sort -un)
 LIVE_HEAL=0; LIVE_NEW=0; LIVE_HEAL_POLISH=0
 while IFS= read -r rec; do
   [ -n "$rec" ] || continue
@@ -510,11 +525,16 @@ fi
 # The windows are the account's, shared with every host: no more than its share here.
 # The machine's own ceiling is this host's capacity, the weight the owner splits by.
 MACHINE_CEILING=$CEILING
-if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST" "$MACHINE_CEILING"); then
+if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST" "$MACHINE_CEILING" "$TOOLING_LIVE"); then
   [ "$CEILING" -gt "${PACE%%$'\t'*}" ] && CEILING=${PACE%%$'\t'*}
   PACE=${PACE#*$'\t'}
 fi
 say "$PACE"
+# The places the product floor added are product work's: no tooling start takes them.
+PACE_FLOORED=""; coord_pace_fresh | jq -e '.productFloor.applied == true' >/dev/null 2>&1 && PACE_FLOORED=1
+TOOLING_ROOM=$(( COORD_TOOLING_CAP - TOOLING_LIVE )); [ "$TOOLING_ROOM" -ge 0 ] || TOOLING_ROOM=0
+[ -z "$PACE_FLOORED" ] || TOOLING_ROOM=0
+say "tooling: $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP on every host${TOOLING_LIVE_TICKETS:+ (${TOOLING_LIVE_TICKETS# })}$( [ -z "$PACE_FLOORED" ] || echo ' · the places now are the product floor'"'"'s: no tooling start')"
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
 # The split needs the reds left — waiting plus being healed — so candidates()
@@ -559,7 +579,7 @@ fi
 # half-built work: those are paid for already.
 CANDS=""
 candidates() {
-  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0
+  local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
   CANDS=""
   wide=$(coord_queue_ordered --wide)
   # A full list goes in its place in the order, ahead of lower-priority work, so the
@@ -579,6 +599,10 @@ candidates() {
       coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
         || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
     fi
+    # Tooling (a process fix or a harness ticket) is capped on every host together: over
+    # the cap it waits, and the places go to product work. Process-first holds inside it.
+    tool=0; { [ "$proc" = 1 ] || ticket_tooling "$t"; } && tool=1
+    if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
     # Over the open-work cap only finishing starts: repairs, approved merges, process fixes.
     if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then capped=$((capped+1)); continue; fi
     # A list with nothing free on it is never work, however idle the factory: every
@@ -593,16 +617,17 @@ candidates() {
     # never one batch PR of its own (owner call 2026-10-22).
     if ! coord_healing_class "$cls" && [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
       [ "$pl" = 1 ] || cnt=0
-      held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$note"$'\n'; continue
+      held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$tool"$'\t'"$note"$'\n'; continue
     fi
     [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
     if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
     [ "$proc" = 1 ] || coord_healing_class "$cls" || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
+    [ "$tool" = 0 ] || tool_left=$((tool_left-1))
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
   if [ -n "$held" ]; then
-    while IFS=$'\t' read -r i t cls pl cnt note; do
+    while IFS=$'\t' read -r i t cls pl cnt tool note; do
       [ -n "${t:-}" ] || continue
       if [ "$other" = 1 ]; then
         if [ "$pl" = 1 ]; then say "skip #$t (polish list): $cnt free item(s) — rides along with its screen's next ticket, never a build of its own while other work can start"
@@ -610,13 +635,16 @@ candidates() {
         continue
       fi
       [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue
+      if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
-      nn=$((nn+1))
+      nn=$((nn+1)); [ "$tool" = 0 ] || tool_left=$((tool_left-1))
       rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'0$'\t'"$note"$'\n'
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
   fi
   [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
+  [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP$( [ -z "$PACE_FLOORED" ] || echo ', and the places now are the product floor'"'"'s'); the places go to product work"
+  TOOLING_WAITING=$tool_wait
   CANDS=$(printf '%s' "$rows" | sort -t$'\t' -k1,1n | cut -f2-); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
   reds_waiting; split_places
 }
@@ -855,6 +883,8 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    --argjson diskHeld "$([ -n "$DISK_HOLD" ] && echo true || echo false)" \
    --arg pace "$(coord_pace_fresh)" --arg stepHold "${STEP_HOLD:-}" \
    --arg openPrs "$OPEN_PRS" --arg openPrCap "$COORD_OPEN_PR_CAP" --argjson overPrCap "$([ -n "$OVER_PR_CAP" ] && echo true || echo false)" \
+   --argjson toolCap "$COORD_TOOLING_CAP" --argjson toolLive "$TOOLING_LIVE" --argjson toolWait "${TOOLING_WAITING:-0}" \
+   --argjson floored "$([ -n "$PACE_FLOORED" ] && echo true || echo false)" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
      healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
@@ -862,7 +892,8 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
      disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
            resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld},
-     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, sevenDay, maxBuildsFleet, share, shares, source}) end),
+     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, sevenDay, maxBuildsFleet, share, shares, source, productFloor}) end),
+     tooling:{cap:$toolCap, live:$toolLive, waiting:$toolWait, floorHolds:$floored},
      openPrs:(if $openPrs == "" then null else {count:($openPrs|tonumber), cap:($openPrCap|tonumber), over:$overPrCap} end),
      usageHold:(if $stepHold == "" then null else ($stepHold | split("\t") | {until: (.[0] | tonumber), window: .[1], pct: (.[2] | tonumber)}) end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
