@@ -32,6 +32,8 @@
 # driver_prove_red_green lives with the build step: one proof, read by both, so a
 # second copy cannot start disagreeing with it about what red means.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
+# The review's own defer: what a round does not block goes on the polish list one way.
+command -v _driver_review_defer >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review.sh" || exit 1
 
 # _driver_fix_gates <ticket> — the fix round for gates self-check found red. Every gate
 # finding is answered in `gateFixes` with a commit on the branch; a gate is not
@@ -328,6 +330,32 @@ _driver_fix_polish_back() {
   driver_say "   fix: polish $bid is back on polish list #${n:-?} ($why) — it rides along with the next change there"
 }
 
+# _driver_fix_drop_nonblocking <ticket> <fix.json> <graded json> <round> — a deferral of a
+# finding this round does not block leaves `deferred` and never refuses: a Minor from
+# round 2 is on its screen's polish list (_driver_review_defer put it there), a Nit was
+# dropped, and one the driver already deferred this cycle (review.deferred.jsonl) is on
+# its list. The grade is the one the review recorded, never the fixer's wording; an id
+# found in neither stays, unless the critic's check only warns until the release.
+_driver_fix_drop_nonblocking() {
+  local t="$1" ans="$2" graded="$3" round="$4" late dj kept dropped
+  late=$(driver_blocking_grades "$round")
+  dj="$(driver_state_dir "$t")/steps/review.deferred.jsonl"
+  [ -s "$dj" ] && graded=$(jq -c --slurpfile x "$dj" '. + [$x[] | select((.id // "") != "") | {id, grade: (.grade // ""), was: "deferred"}]' <<<"$graded" 2>/dev/null || printf '%s' "$graded")
+  # Not a review finding while the critic's check warns until the release: the critic
+  # handed this round nothing (driver_fact_critic_findings), so it is no blocker either.
+  local warn=""
+  command -v release_check_nonblocking >/dev/null 2>&1 \
+    && release_check_nonblocking "$(driver_opt review.judge.context "Design critic")" && warn=1
+  dropped=$(jq -c --argjson g "$graded" --arg late "$late" --arg warn "$warn" '[.deferred[]? | .blockerId as $b
+      | ([$g[] | select(.id == $b)] | first) as $f
+      | if $f == null then (select($warn != "") | . + {grade: "a check that warns until the release"})
+        else (select($f.was == "deferred" or (($late | split(" ")) | index($f.grade)) == null) | . + {grade: $f.grade}) end]' "$ans" 2>/dev/null)
+  [ "${dropped:-[]}" != "[]" ] && [ -n "$dropped" ] || return 0
+  kept=$(jq -c --argjson x "$dropped" '[.deferred[]? | .blockerId as $b | select([$x[].blockerId] | index($b) | not)]' "$ans")
+  jq --argjson d "$kept" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"
+  driver_say "   fix: $(jq -r 'length' <<<"$dropped") deferred finding(s) do not block in review round $round ($late) — $(jq -r '[.[] | "\(.blockerId) (\(.grade))"] | join(", ")' <<<"$dropped"): a Minor is on its screen's polish list, a Nit was dropped; no refusal"
+}
+
 driver_step_fix() { # <ticket>
   local t="${1:?driver_step_fix: need a ticket}"
   local d review round wt trunk r diff blockers n rc ans i ncleared
@@ -350,9 +378,19 @@ driver_step_fix() { # <ticket>
     return "$DRIVER_OK"
   fi
 
+  # WHAT BLOCKS IS THE ROUND'S, HERE AS IN THE REVIEW. Read off the review round the
+  # driver counted and the grade the review recorded, never the fixer's wording: from
+  # round 2 a Minor goes on its screen's polish list, before the fixer and after it.
+  local fround bsel graded
+  fround=$(driver_state_count "$t" review); [ "${fround:-0}" -ge 1 ] 2>/dev/null || fround=1
+  bsel=$(driver_blocking_select "$fround")
+  graded=$(jq -c '[.findings[]? | {id: (.id // ""), grade: (.grade // "")}]' "$review" 2>/dev/null)
+  [ -n "$graded" ] || graded='[]'
+  _driver_review_defer "$t" "$review" "$fround"
+
   # ONE READER FOR "WHAT BLOCKS". The review step's own selector, so the list this
   # step is handed and the list that sent the work back cannot differ.
-  n=$(jq -r "[.findings[]? | $(driver_blocking_select)] | length" "$review" 2>/dev/null)
+  n=$(jq -r "[.findings[]? | $bsel] | length" "$review" 2>/dev/null)
   if [ "${n:-0}" -eq 0 ]; then
     driver_say "   fix: the review graded nothing that blocks, so there is nothing to fix."
     return "$DRIVER_OK"
@@ -373,7 +411,7 @@ driver_step_fix() { # <ticket>
   # fallback to a second spelling would be this driver reading a shape the contract
   # forbids — the exact defect that made the plan step refuse its own valid example.
   blockers=$(jq -r '
-    [.findings[]? | '"$(driver_blocking_select)"'
+    [.findings[]? | '"$bsel"'
      | "- id \(.id) · \(.grade) · \(.file):\(.line)\n  \(.summary)\n  why: \(.reason)\n  proposed: \(.fix)"]
     | join("\n")' "$review" 2>/dev/null)
 
@@ -423,7 +461,7 @@ $proofnote"
     jq -e --arg b "$bid" '([.cleared[]?.blockerId] + [.pmProofs[]?.blockerId] + [.autoProofs[]?.blockerId] + [.bodyProofs[]?.blockerId] + [.deferred[]?.blockerId]) | index($b) != null' \
       "$ans" >/dev/null 2>&1 || unanswered="$unanswered $bid"
   done <<EOB
-$(jq -r "[.findings[]? | $(driver_blocking_select) | (.id // empty)] | .[]" "$review" 2>/dev/null)
+$(jq -r "[.findings[]? | $bsel | (.id // empty)] | .[]" "$review" 2>/dev/null)
 EOB
   # A RIDE-ALONG POLISH ITEM IS NOT A BLOCKER OF THIS TICKET. One the fixer left, or
   # deferred, goes back free on its list, noted in the PR, and the run goes on.
@@ -437,6 +475,7 @@ EOB
   unanswered="$kept_unanswered"
   pb=$(jq -c '[.deferred[]? | select((.blockerId // "") | startswith("polish-") | not)]' "$ans" 2>/dev/null)
   [ -z "$pb" ] || { jq --argjson d "$pb" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"; }
+  _driver_fix_drop_nonblocking "$t" "$ans" "$graded" "$fround"
   if [ -n "$unanswered" ]; then
     driver_say "✋ fix: finding(s)${unanswered} appear in neither cleared nor deferred. A blocker nobody answered is a blocker that ships."
     driver_state_set "$t" park_note "the fix round left${unanswered} unanswered — a blocking finding is neither cleared nor deferrable"
