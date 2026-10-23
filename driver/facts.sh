@@ -530,4 +530,20 @@ driver_fact_proof_limits() {
   else
     printf ' proof.autoAccept is off here: a fix no red/green pair can show needs a PM answer (pmProofs).'
   fi
+  # Every step a model runs commands in reads this; the project facts reach only some.
+  _driver_fact_base_red_limits
+  ! driver_gates_local_only || _driver_fact_local_only_limits
+}
+
+# _driver_fact_base_red_limits — a red the trunk has too is never the step's question.
+_driver_fact_base_red_limits() {
+  printf ' A check or test red on %s itself is base-red: never yours, never a question, never a deferral, and "wait or fix here" is not asked. The driver runs it on the commit this branch merged, files the one develop-red ticket and does not count it here. This check is red on %s itself; the develop-red ticket owns it; carry on. A red only on this branch is yours.' \
+    "${INTEGRATION_BRANCH:-the integration branch}" "${INTEGRATION_BRANCH:-the integration branch}"
+}
+
+# _driver_fact_local_only_limits — what a model never runs here under gates.localOnly.
+_driver_fact_local_only_limits() {
+  printf ' Local runs here are gates.local (%s) and the one test file your proof names, run by itself: never %s, a test:changed or any whole suite. Every other test runs once, in CI. A proof command names its test file.' \
+    "$(jq -r '[(.gates.local // [])[]? | select(type == "string")] | join(", ")' "$HARNESS_CFG" 2>/dev/null)" \
+    "$(jq -r '[(.gates.local // []) as $l | (.gates.changed // [])[]? | select(type == "string") | select(. as $c | $l | index($c) | not)] | if length > 0 then join(", ") else "gates.changed" end' "$HARNESS_CFG" 2>/dev/null)"
 }

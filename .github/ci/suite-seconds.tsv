@@ -113,3 +113,4 @@
 3	swarm/tests/usage-hold.test.sh
 32	scripts/live-view-watchdog.test.sh
 10	swarm/tests/live-view-hang.test.sh
+45	driver/tests/base-red-steps.test.sh

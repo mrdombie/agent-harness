@@ -39,6 +39,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 . "$KIT_ROOT/scripts/base-wait.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
 
 # _driver_gate_base_only <ticket> <gate-output> — 0 in a repair when every failing test the
 # gate printed is one the repair read as red on the base too (base_red_tests): outside the
@@ -510,6 +511,12 @@ _driver_prepush_gate() {
     driver_say "✋ self-check: the owner has signed this PR's screens and this change moves them — nothing goes to fix. $(driver_signoff_line "$pout")"
     return "$DRIVER_E_REFUSED"
   fi
+  local pbred
+  if [ "$prc" -ne 126 ] && [ "$prc" -ne 127 ] && pbred=$(driver_base_red_gate "$wt" "" "$pout" prepush); then
+    DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
+    driver_base_red_say "$t" self-check pre-push "$pbred"
+    return 0
+  fi
   failed=$((failed+1))
   driver_say "✋ self-check: pre-push failed (exit $prc) — $(_driver_gate_lines "$pout")"
   redlines="$redlines${redlines:+ | }pre-push ($DRIVER_PREPUSH_CMD, exit $prc): $(_driver_push_lines "$pout")"
@@ -555,7 +562,7 @@ driver_step_self_check() { # <ticket>
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
   findings="$(driver_state_dir "$t")/steps/self-check.findings.json"
-  rm -f "$findings" "$findings.rows"
+  rm -f "$findings" "$findings.rows" "$findings.head"
   driver_state_set "$t" local_gates_head ""
   # Said before the gates run, and through the ticket's log: each gate's own output goes
   # to a file, so a warning printed inside one is a warning nobody sees.
@@ -723,6 +730,10 @@ driver_step_self_check() { # <ticket>
       driver_say "   self-check: $name ok"
     elif bred=$(_driver_gate_base_only "$t" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
       driver_say "   self-check: $name red only on $bred — outside this PR and red on the base too, so it waits for the base and does not count here"
+    elif [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] \
+         && bred=$(driver_base_red_gate "$wt" "$cmd" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
+      DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
+      driver_base_red_say "$t" self-check "$name" "$bred"
     else
       failed=$((failed+1))
       driver_say "✋ self-check: $name failed (exit $rc) — $(tail -3 "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>/dev/null | tr '\n' ' ')"
@@ -731,7 +742,8 @@ driver_step_self_check() { # <ticket>
       case "$rc" in 126|127) infra="$infra $name" ;; esac
       jq -cn --arg id "gate-$safe" --arg name "$name" --arg cmd "$cmd" --argjson rc "$rc" \
         --arg out "$(tail -60 "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>/dev/null | cut -c1-400)" \
-        '{id: $id, gate: $name, command: $cmd, exit: $rc, output: $out}' >> "$findings.rows"
+        --arg file "$(driver_state_dir "$t")/steps/gate-$safe.out" \
+        '{id: $id, gate: $name, command: $cmd, exit: $rc, output: $out, outFile: $file}' >> "$findings.rows"
     fi
   done <<EOS
 $names
@@ -792,6 +804,8 @@ EOS
       driver_say "   self-check: not sent to fix — this run has no fix step."
     else
       jq -s . "$findings.rows" > "$findings" && rm -f "$findings.rows"
+      # The head these reds are of: the fix step hands them on only at that head.
+      git -C "$wt" rev-parse HEAD > "$findings.head" 2>/dev/null
       driver_state_set "$t" park_note ""
       driver_say "↩ self-check: $failed red gate(s) go to fix with their output as the findings."
       return "$DRIVER_E_REWORK"

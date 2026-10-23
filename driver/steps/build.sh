@@ -163,6 +163,16 @@ driver_proof_cmd_check() {
     printf 'an e2e browser spec cannot prove a change here: a proof tree runs no app server, so every page load is refused on both sides — %s\n' "$DRIVER_PROOF_E2E_HOW"
     return 1
   fi
+  # LOCAL ONLY IS THE ONE FILE. Under gates.localOnly a proof runs the test file it names,
+  # never a command the local set leaves for CI (a test:changed, a suite).
+  if driver_cmd_ci_only "$cmd"; then
+    printf 'the command is one gates.localOnly keeps for CI (it is in gates.changed, not gates.local), and a proof runs only its own test file — %s\n' "$eg"
+    return 1
+  fi
+  if [ "$tfile" != "<file>" ] && driver_gates_local_only && [[ "$cmd" != *"$(basename "$tfile")"* ]]; then
+    printf 'the command does not name %s, and under gates.localOnly a proof runs that one test file and nothing more — %s\n' "$tfile" "$eg"
+    return 1
+  fi
   # read -a, not `for w in $cmd`: a bare `*.test.ts` would glob against the cwd.
   read -rd '' -a words <<<"$cmd" || true
   # The first word is judged only where a split on spaces finds it: past an
@@ -209,7 +219,7 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
     case "$rc" in 1|2|6) ;; *) break ;; esac
     grep -qE -- "$DRIVER_PROOF_MISSING_RE" <<<"$out" || break
     behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$repo" 2>/dev/null) || break
-    mod=$(grep -oE -- "$DRIVER_PROOF_MISSING_RE[^)]{0,80}" <<<"$out" | head -1)
+    mod=$(grep -oE -- "${DRIVER_PROOF_MISSING_RE}[^)]{0,80}" <<<"$out" | head -1)
     if [ "$try" -ge 1 ] || [ "$repo" -ef "${MAIN_REPO:-/nonexistent}" ] || ! driver_relink_if_behind "$MAIN_REPO" "$repo"; then
       printf 'machine fault, not the change: the proof failed on a missing module (%s) and the install it links from is behind its lockfile — %s\n' \
         "$mod" "${DRIVER_BEHIND_WHY:-$behind}"

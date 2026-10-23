@@ -39,6 +39,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reenter.sh" || exit 1
 # A red the base branch has too: read, classified, and waited out (base-wait.sh).
 . "$KIT_ROOT/scripts/base-wait.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
 
 # _driver_repair_claim_busy <ticket> <when> — 0 (and the step returns DRIVER_E_BUSY) when
 # another live run holds the claim: the repair waits on the queue, it never asks about it.
@@ -669,6 +670,9 @@ EOS
         { sub(/\n$/, "") } $0 != "" && index(k, "|" $0 "|") == 0 { o = o (o == "" ? "" : ", ") $0 } END { printf "%s", o }')
       code_failing=$(_driver_repair_reds "$failing" "$lesson_pat" out)
       driver_state_set "$t" base_red_tests "$base_tests"
+      # The trunk's red gets its one ticket, whichever step met it first.
+      local brsha; brsha=$(driver_base_red_sha "$wt") \
+        && driver_base_red_note "$t" "$brsha" "$(printf '%s' "$base_tests" | tr ' ' '\n' | sed '/^$/d' | sort -u | paste -sd, -)" "$pr"
     fi
   fi
   # What only a fix of this round's own answers: a red in the tree, unread checks, a caller's brief.
@@ -734,7 +738,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     local base_fact=""
     [ -z "$base_only" ] || base_fact="
 
-Not yours to fix: $base_only is red in $base_tests, tests outside this PR that fail on the latest completed run of $trunk too. It waits for the fix on $INTEGRATION_BRANCH and is never repaired in this PR: touch nothing for it, ask nothing about it, and leave it out of your fixes."
+Not yours to fix: $base_only is red in $base_tests, tests outside this PR that fail on the latest completed run of $trunk too. It waits for the fix on $INTEGRATION_BRANCH and is never repaired in this PR: touch nothing for it, ask nothing about it, and leave it out of your fixes. This check is red on $INTEGRATION_BRANCH itself; the develop-red ticket owns it; carry on."
     driver_fact_put "$t" repair FAILING "${failing:-none settled red}$base_fact"
   fi
   driver_fact_put "$t" repair CONFLICTS "$conflicts_fact"
