@@ -19,6 +19,8 @@
 #   release_warn_reds <rollup-json>   → the listed checks whose newest run is red, ", "-joined
 #   release_warn_pr <pr> <head> <names> <log-fn> — the warning, logged and commented once per head
 #   release_merge_first               → 0 while release.mergeFirst is true and release.done is not
+#   release_review_priorities         → JSON array of the priorities the driver's review model runs
+#                                       for under merge first (release.reviewPriorities, ["P0","P1"])
 #
 # MERGE FIRST, FIX AFTER (the owner, 2026-10-22): "release": {"mergeFirst": true} is the one
 # switch for every gate that holds a change for a person or a picture until the release.
@@ -88,6 +90,16 @@ release_merge_first() {
   local cfg; cfg=$(_release_cfg)
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 1
   jq -e '(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true' "$cfg" >/dev/null 2>&1
+}
+
+# release_review_priorities — under merge first the driver's review model runs only for a
+# ticket at one of these priorities; any other ships on CI. Read live, like the switch. A
+# value that is not a list of strings is the default.
+release_review_priorities() {
+  local cfg out=""; cfg=$(_release_cfg)
+  [ -n "$cfg" ] && [ -f "$cfg" ] \
+    && out=$(jq -c '(.release.reviewPriorities // null) | if type == "array" and all(.[]; type == "string") then . else empty end' "$cfg" 2>/dev/null)
+  printf '%s' "${out:-[\"P0\",\"P1\"]}"
 }
 
 # THE DESIGN CRITIC IS OFF UNTIL THE RELEASE (the owner, 2026-10-22: "anything after

@@ -47,6 +47,10 @@
 # (passes, default 2) and review.secondOnlyOnNewFiles (default true; false re-reviews
 # every pass up to the ceiling).
 #
+# BY PRIORITY UNDER MERGE FIRST (the owner, 2026-10-23). Only a Critical blocks then, so
+# the model reviews only a ticket at release.reviewPriorities (default P0 P1). Any other
+# ships on CI with no model call; a person's stop and the push's own reviewers still run.
+#
 # ONE CALL, NOT SEVERAL AGENTS. The driver runs one review brief per round. What
 # that brief does inside itself — how many reviewers it asks, in what order — is
 # Superpowers' business. Inside a ticket, splitting the work belongs to the
@@ -68,6 +72,12 @@ driver_step_review() { # <ticket>
   # refuse there, or at the push.
   rc=0; driver_push_requires_unpayable "$t" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
+
+  # Merge first: below the review priorities the model's answer cannot stop the merge.
+  local skipwhy
+  if skipwhy=$(_driver_review_priority_skip "$t"); then
+    _driver_review_priority_skipped "$t" "$skipwhy"; return $?
+  fi
 
   # The three facts only this step can gather. The brief asks for the DIFF against
   # the trunk it will merge into, the renders of every screen the change touches, and
@@ -263,6 +273,57 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
   # found nothing, so the count is what tells a reader which happened.
   [ "${nnit:-0}" -gt 0 ] && driver_say "   review: $nnit nit(s) dropped — taste, and taste never blocks"
   driver_say "   review: $verdict after $round round(s)"
+  return "$DRIVER_OK"
+}
+
+# _driver_review_priority_skip <ticket> — prints the priority and returns 0 when merge first
+# skips the review model for this ticket; 1 when the review runs. Under release.mergeFirst
+# only a Critical blocks, and only a ticket at one of release.reviewPriorities (default P0
+# P1) is reviewed: anything else, unprioritised and polish included, ships on CI. The
+# priority is the PR's own P label, else its ticket's (as the merge lane reads it). Labels
+# that cannot be read, a person's stop, or an open Critical from an earlier review: the
+# review runs as before.
+_driver_review_priority_skip() {
+  local t="$1" pr il pl pri pris stoprc=0 f
+  driver_merge_first || return 1
+  il=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name]' 2>/dev/null) || return 1
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$il" || return 1
+  pl='[]'
+  pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" repair_pr)
+  if [ -n "$pr" ]; then
+    pl=$(driver_gh_read swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name]' 2>/dev/null) || return 1
+    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pl" || return 1
+  fi
+  pris=$(release_review_priorities 2>/dev/null) || pris='["P0","P1"]'
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pris" || pris='["P0","P1"]'
+  pri=$(jq -rn --argjson il "$il" --argjson pl "$pl" --argjson pris "$pris" --arg plist "${LBL_POLISH_LIST:-polish-list}" '
+    def pri($ls): [$ls[]? | select(type == "string" and test("^P[0-9]$"))] | first // "";
+    (if pri($pl) != "" then $pl else ($pl + $il) end) as $ls
+    | pri($ls) as $p
+    | if ($ls | index($plist)) != null then "polish"
+      elif $p == "" then "no priority"
+      elif ($pris | index($p)) != null then ""
+      else $p end') || return 1
+  [ -n "$pri" ] || return 1
+  # A person's stop is theirs to clear, and the review is how the fix step learns of it.
+  bash "${DRIVER_PERSON_STOP:-$KIT_ROOT/scripts/person-stop.sh}" check "$t" $pr >/dev/null 2>&1 || stoprc=$?
+  [ "$stoprc" -eq 0 ] || return 1
+  f="$(driver_state_dir "$t")/steps/review.json"
+  [ ! -f "$f" ] || [ "$(_driver_count "$f" blocking)" = 0 ] || return 1
+  printf '%s' "$pri"
+}
+
+# _driver_review_priority_skipped <ticket> <priority> — no model call: the answer is a
+# clean SHIP that names why, so record and ship proceed.
+_driver_review_priority_skipped() {
+  local t="$1" pri="$2" d
+  d="$(driver_state_dir "$t")/steps"; mkdir -p "$d"
+  jq -n --arg why "$pri, merge-first: ships on CI" '{verdict: "SHIP", findings: [], skipped: $why}' > "$d/review.json.t" \
+    && mv "$d/review.json.t" "$d/review.json" || return "$DRIVER_E_REFUSED"
+  driver_state_bump "$t" review
+  driver_state_bump "$t" review_skipped
+  driver_state_set "$t" review_skipped_priority "$pri"
+  driver_say "   review: skipped ($pri, merge-first: ships on CI)"
   return "$DRIVER_OK"
 }
 

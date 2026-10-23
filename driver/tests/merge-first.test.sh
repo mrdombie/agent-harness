@@ -37,11 +37,11 @@ jq '.release = {mergeFirst: true, done: true}' "$BASE" > "$FIX/mf-done.json"
 on()  { HARNESS_CFG="$FIX/mf-on.json" "$@"; }
 off() { HARNESS_CFG="$FIX/mf-off.json" "$@"; }
 
-mf_tree() { # <ticket> — a branch with one change, claimed
+mf_tree() { # <ticket> — a branch with one change, claimed; P1, so merge first still reviews it
   git -C "$REPO" worktree add -q "$FIX/mf$1" -b "tkt-$1/work" develop
   printf 'a\n' > "$FIX/mf$1/a.sh"; git -C "$FIX/mf$1" add -A; git -C "$FIX/mf$1" commit -qm "feat: a"
   driver_state_init "$1" --worktree "$FIX/mf$1" --branch "tkt-$1/work"
-  fix_issue "$1" OPEN "status:claimed"
+  fix_issue "$1" OPEN "status:claimed,P1"
 }
 rj() { printf '%s/steps/review.json' "$(driver_state_dir "$1")"; }
 fu() { printf '%s/steps/review.followups.jsonl' "$(driver_state_dir "$1")"; }
