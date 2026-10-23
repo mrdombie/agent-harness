@@ -527,8 +527,8 @@ _driver_review_defer() {
 }
 
 # _driver_review_follow_up <ticket> <finding json> <round> — MERGE FIRST: the finding goes
-# on steps/review.followups.jsonl, one line per finding id; the ship step files each as a
-# ticket once the pull request has a number (scripts/follow-up.sh), and the PR ships.
+# on steps/review.followups.jsonl, one line per finding id; the ship step hands them to
+# scripts/follow-up.sh, which files each as a ticket once the pull request merges, and the PR ships.
 _driver_review_follow_up() {
   local t="$1" x="$2" round="$3" f id
   f="$(driver_state_dir "$t")/steps/review.followups.jsonl"

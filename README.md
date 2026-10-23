@@ -629,7 +629,9 @@ CI's shots or picture parity (compare is a no-op); the sign-off push guard lets 
 push through; the review runs once and only a **Critical** blocks, fixed in place.
 Every Major becomes a P1 follow-up ticket and every Minor goes on its screen's polish
 list, or becomes a P3 follow-up when no screen takes it: `scripts/follow-up.sh`, one
-ticket per PR and finding, naming the PR, the file:line and the finding, status
+ticket per PR and finding, filed only once the PR merges (until then the findings are
+held on the PR's fix list, labelled `follow-ups-held`; a PR closed unmerged drops them,
+and a follow-up already filed for an open PR is blocked until it merges), naming the PR, the file:line and the finding, status
 ready, labelled `fix-after-merge` (`release.followUpLabel`, created if missing) so the
 clean-up after the release is one list, `coordinator-queue.sh add --front`. Then the PR ships. A ui-gate SPIT-BACK with
 no Critical is not recorded and does not refuse. The design critic and the picture

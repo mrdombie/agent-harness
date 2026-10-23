@@ -71,6 +71,13 @@ CLOSE_MERGED="${COORDINATOR_CLOSE_MERGED:-$SELF_DIR/close-merged.sh}"
 if [ -n "$GH_WAIT" ]; then say "merged closer: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$CLOSE_MERGED" --dry-run >> "$COORD_LOG" 2>&1 || say "merged closer (dry) exited $?"
 else bash "$CLOSE_MERGED" >> "$COORD_LOG" 2>&1 || say "merged closer exited $?"; fi
+# Merge first, fix after: a PR's held review findings are filed once it merges, dropped if
+# it closes unmerged; a follow-up already filed for an open PR waits for it (follow-up.sh).
+FOLLOW_UP="${COORDINATOR_FOLLOW_UP:-$SELF_DIR/follow-up.sh}"
+if [ "$FOLLOW_UP" = off ]; then :
+elif [ -n "$GH_WAIT" ]; then say "follow-ups: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$FOLLOW_UP" settle --dry-run >> "$COORD_LOG" 2>&1 || say "follow-up settle (dry) exited $?"
+else bash "$FOLLOW_UP" settle >> "$COORD_LOG" 2>&1 || say "follow-up settle exited $?"; fi
 if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
 else bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"; fi

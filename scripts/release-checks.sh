@@ -152,7 +152,9 @@ release_warn_pr() {
   grep -qxF -- "$key" "$ledger" 2>/dev/null && return 0
   "$logf" "warning, not blocking: PR #$pr is red on $names at ${head:0:9} — listed in release.nonBlockingChecks, so no repair, park or heal count"
   [ "${RELEASE_WARN_DRY:-0}" = 1 ] && return 0
-  body="**Warning, not blocking:** $names failed on \`${head:0:9}\`. Until the release these checks report but do not block (\`release.nonBlockingChecks\` in harness.json): nothing is sent to repair them, and they do not count this pull request as red. Read the check for what it found."
+  body="**Warning, not blocking:** $names failed on \`${head:0:9}\`. Until the release these checks report but do not block (\`release.nonBlockingChecks\` in harness.json): nothing is sent to repair them, and they do not count this pull request as red. Read the check for what it found.
+
+<!-- harness:machine -->"
   local ghf=gh; type swarm_gh >/dev/null 2>&1 && ghf=swarm_gh
   if "$ghf" api "repos/${REPO_SLUG:?}/issues/$pr/comments" -X POST -f body="$body" >/dev/null 2>&1; then
     mkdir -p "$(dirname "$ledger")" 2>/dev/null

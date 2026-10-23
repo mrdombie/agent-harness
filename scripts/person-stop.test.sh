@@ -285,5 +285,18 @@ want_in "a closing marker stays the last line"  'harness:machine -->.<!-- approv
 : > "$GH_LOG"
 ( . "$HERE/toolkit-env.sh" && . "$HERE/gh-batch.sh" && gh_call issue edit 5 --repo "$R" --body "an issue body" ) >/dev/null 2>&1
 want_not_in "an issue's own body is not marked" 'harness:machine' "$(cat "$GH_LOG")"
+: > "$GH_LOG"
+( . "$HERE/toolkit-env.sh" && . "$HERE/gh-batch.sh" && gh_call api "repos/$R/issues/5/comments" -X POST -f body="**Warning, not blocking** the driver's words" ) >/dev/null 2>&1
+want_in "a comment posted through gh api is marked" 'harness:machine' "$(cat "$GH_LOG")"
+: > "$GH_LOG"
+( . "$HERE/toolkit-env.sh" && . "$HERE/gh-batch.sh" && gh_call api "repos/$R/issues" -X POST -f title=t -f body="a new issue's body" ) >/dev/null 2>&1
+want_not_in "an issue created through gh api is not" 'harness:machine' "$(cat "$GH_LOG")"
+# The evidence warning's own words carry it, whichever gh posts them.
+( export DRIVER_EVIDENCE_WARN_LEDGER="$FIX/ev-warn.tsv"
+  . "$HERE/../driver/driver-env.sh" && . "$HERE/../driver/facts.sh" || exit 1
+  driver_state_set() { :; }; driver_say() { :; }
+  swarm_gh() { printf '%s\n' "$@" > "$FIX/ev-warn.args"; }
+  _driver_evidence_warn 701 "$FIX" 42 "- capture /home at 390px" ) >/dev/null 2>&1
+want_in "the evidence warning on a PR carries the marker" '<!-- harness:machine -->' "$(cat "$FIX/ev-warn.args" 2>/dev/null)"
 
 suite_end "$FAILED"

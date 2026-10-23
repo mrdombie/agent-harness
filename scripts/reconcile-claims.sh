@@ -316,7 +316,7 @@ relabel() {
     say "  (already $want — no comment)"
     return 0
   fi
-  [ -n "$body" ] && gh issue comment "$n" --repo "$GH_REPO" --body "$body" >/dev/null 2>&1
+  [ -n "$body" ] && gh_call issue comment "$n" --repo "$GH_REPO" --body "$body" >/dev/null 2>&1
   return 0
 }
 
@@ -505,7 +505,7 @@ for n in $tickets; do
     recover_lock "$n" "shipped"
     if [ "$DRY_RUN" -eq 0 ] && [ "$gh_ok" -eq 1 ]; then
       issue="$n"
-      gh issue comment "$issue" --repo "$GH_REPO" --body \
+      gh_call issue comment "$issue" --repo "$GH_REPO" --body \
         "**Shipped.** PR #$pr_num merged, but the claim was still held and the ticket still open — \`/finish\`'s bookkeeping runs locally and dies with its session, while \`--auto\` merges server-side without it. Closing against the merged PR." >/dev/null 2>&1
       gh issue close "$issue" --repo "$GH_REPO" --reason completed >/dev/null 2>&1
     fi

@@ -301,8 +301,23 @@ _gh_mark_body() { # <body> — the body with the marker in it
 _gh_mark_args() { # <gh args…> — sets _GH_MARKED to them, each comment body marked;
   # a body file is copied, marked, into a temp file listed in _GH_MARK_TMP
   _GH_MARKED=(); _GH_MARK_TMP=()
-  local a next="" mf
+  local a next="" mf api=0
+  # `gh api` on an issue's comments (a POST to issues/N/comments, a PATCH of issues/comments/ID):
+  # its body field is the comment. Any other api call is passed as it came.
+  if [ "${1:-}" = api ]; then
+    for a in "$@"; do case "$a" in */issues/[0-9]*/comments|*/issues/comments/[0-9]*) api=1 ;; esac; done
+    [ "$api" = 1 ] || { _GH_MARKED=("$@"); return 0; }
+  fi
   for a in "$@"; do
+    if [ "$api" = 1 ]; then
+      if [ "$next" = field ]; then
+        case "$a" in body=@*) ;; body=*) a="body=$(_gh_mark_body "${a#body=}")" ;; esac
+        next=""
+      else
+        case "$a" in -f|-F|--field|--raw-field) next=field ;; esac
+      fi
+      _GH_MARKED+=("$a"); continue
+    fi
     case "$next:$a" in
       body:*) _GH_MARKED+=("$(_gh_mark_body "$a")"); next=""; continue ;;
       file:*) if mf=$(mktemp "${TMPDIR:-/tmp}/ghmark.XXXXXX"); then
@@ -330,7 +345,7 @@ gh_call() {
   fi
   gh_calls_note "$@"
   local -a _GH_MARKED=() _GH_MARK_TMP=()
-  case "${1:-} ${2:-}" in "issue comment"|"pr comment") _gh_mark_args "$@"; set -- "${_GH_MARKED[@]}" ;; esac
+  case "${1:-} ${2:-}" in "issue comment"|"pr comment"|api\ *) _gh_mark_args "$@"; set -- "${_GH_MARKED[@]}" ;; esac
   e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { "$(gh_batch_bin)" "$@"; rc=$?; [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"; return "$rc"; }
   "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
   [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"
