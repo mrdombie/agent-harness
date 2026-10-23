@@ -10,7 +10,9 @@
 # The owner's ruling, 2026-10-22 (release.mergeFirst, release-checks.sh): until the
 # release a Critical alone blocks, and is fixed in the change, never filed. A Major is filed at labels.priority.major (P1), a Minor
 # no screen's polish list took at labels.priority.minor (P3); the review step already put
-# a Minor on a screen's list. Each ticket names the PR, the file:line and the finding.
+# a Minor on a screen file on that screen's list. A Major found on a ticket that wears
+# release.followUpLabel is never filed (the owner, 2026-10-23: 26 of 187 filed in a day were
+# findings on a fix of a finding). Each ticket names the PR, the file:line and the finding.
 #
 # WORK IS FILED ONLY AGAINST CODE THAT HAS LANDED. A finding on a PR that has not merged
 # is on that PR's fix list, not the trunk's: `file` HOLDS it — $STATE_DIR/swarm/follow-up-held/
@@ -95,8 +97,10 @@ file_findings() {
   local -a args
   # The parent's screen and area labels ride along, so the follow-up sorts with its screen.
   # gh-read-ok: the screen labels sort the follow-up; it is filed either way
-  carry=$("$GH" api "repos/$REPO_SLUG/issues/$T" -q '.labels[].name' 2>/dev/null \
-    | grep -E "^(${LBL_SCREEN_PREFIX:-screen:}|area:|repo:)" || true)
+  local all; all=$("$GH" api "repos/$REPO_SLUG/issues/$T" -q '.labels[].name' 2>/dev/null)
+  carry=$(printf '%s\n' "$all" | grep -E "^(${LBL_SCREEN_PREFIX:-screen:}|area:|repo:)" || true)
+  # A Major found on a follow-up's own PR is not filed: chains of fixes of fixes ran 4 deep.
+  local parent_fu=""; printf '%s\n' "$all" | grep -qxF -- "$FU_LABEL" && parent_fu=1
   while IFS= read -r x; do
     [ -n "$x" ] || continue
     id=$(jq -r '.id // empty | tostring' <<<"$x" 2>/dev/null)
@@ -114,7 +118,9 @@ file_findings() {
     if [ -n "$n" ]; then printf '%s\t%s\n' "$key" "$n" >> "$LEDGER"; had=$((had + 1)); continue; fi
     grade=$(jq -r '.grade // "" | ascii_downcase' <<<"$x")
     case "$grade" in
-      major) pri="$P_MAJOR" ;; minor) pri="$P_MINOR" ;;
+      major) [ -z "${parent_fu:-}" ] || { echo "finding $id is a Major on a follow-up's own PR, which files only a Critical: dropped"; continue; }
+             pri="$P_MAJOR" ;;
+      minor) pri="$P_MINOR" ;;
       # A Critical holds the change and is fixed in it; a Nit is dropped. Neither is filed.
       *) echo "finding $id is graded '${grade:-none}', which is never filed as a follow-up"; continue ;;
     esac

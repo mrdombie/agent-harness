@@ -222,9 +222,7 @@ plant() { # <label> <file under the kit> <exact text to delete> <case> <the resu
 plant "only a Critical blocks" driver/driver-env.sh \
   '  if driver_merge_first; then printf '"'"'%s'"'"' "$DRIVER_MERGE_FIRST_GRADES"; return 0; fi' case_major_on "rc=30 fu="
 plant "the follow-up record"  driver/steps/review.sh \
-  '        if [ -n "$mf" ] && [ -z "$list" ]; then
-          _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }
-        fi' case_major_on "rc=0 fu="
+  'else _driver_review_follow_up "$t" "$x" "$round" && ' case_major_on "rc=0 fu="
 plant "the switch reads the config" scripts/release-checks.sh \
   '  jq -e '"'"'(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true'"'"' "$cfg" >/dev/null 2>&1' case_major_off "rc=0 fu=m1"
 plant "the baseline route"    driver/size-rules.sh '  { command -v release_merge_first >/dev/null 2>&1 && release_merge_first; } && return 0' case_route "picture"

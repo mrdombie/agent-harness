@@ -34,9 +34,10 @@
 # because dropped silently reads exactly like never raised.
 #
 # MERGE FIRST (release.mergeFirst, the owner, 2026-10-22): until the release a Critical
-# alone blocks and is fixed in place. Every Major, and every Minor no screen's polish list
-# takes, becomes a follow-up ticket at the front of the queue (_driver_review_follow_up,
-# filed by the ship step once the PR has a number), and the change ships.
+# alone blocks and is fixed in place. Every Major becomes a follow-up ticket at the front of
+# the queue (_driver_review_follow_up, filed by the ship step once the PR has a number),
+# unless the ticket is itself a follow-up: then it is dropped with a note on the PR. A Minor
+# on a screen file goes on that screen's polish list; any other Minor is a follow-up too.
 #
 # REVIEW ONCE (the owner, 2026-10-22: review was 26% of driver usage). The model reviews
 # a change once. A later pass calls it again only when the fix round touched a file the
@@ -483,7 +484,7 @@ _driver_review_touched() {
 # [late] replaces the round's blocking set and [cite] is added to each list entry: the
 # signed-off hold defers a screen's Minors with both.
 _driver_review_defer() {
-  local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0 filed=0 cite="${5:-}" mf=""
+  local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0 filed=0 dropped=0 fam="" cite="${5:-}" mf=""
   driver_merge_first && mf=1
   local pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" sf="${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}"
   late="${4:-$(driver_blocking_grades "$round")}"
@@ -508,14 +509,24 @@ _driver_review_defer() {
         slug=$(bash "$sf" screens "$t" "$tmp" 2>/dev/null | L="$labels" awk 'BEGIN { n = split(ENVIRON["L"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") s[a[i]] = 1 } NF && !($0 in s) { print; exit }')
         [ -n "$slug" ] || slug=$(printf '%s\n' "$labels" | sed '/^$/d' | head -1)
         text=$(printf '%s' "$x" | jq -r --arg r "$round" --arg t "$t" --arg c "${cite:+, $cite}" '"[\(.grade | ascii_downcase | (.[0:1] | ascii_upcase) + .[1:])] \(.summary // "") — \(.file // "?"):\(.line // "?") (review round \($r) of #\($t)\($c))"')
-        # MERGE FIRST: a Major is never polish — it is a follow-up ticket, as is a Minor no screen takes.
-        if [ -n "$mf" ] && [ "$(printf '%s' "$x" | jq -r '.grade // ""')" = major ]; then :
-        elif [ -n "$slug" ] && bash "$pl" add "$slug" "$text" >/dev/null 2>&1; then list="$slug"; fi
-        if [ -n "$mf" ] && [ -z "$list" ]; then
-          _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }
+        # MERGE FIRST: a Major is never polish — it is a follow-up ticket, unless this ticket
+        # is itself a follow-up (then it is dropped, noted on the PR: chains ran 4 deep). A
+        # Minor on a screen file goes on that screen's polish list; any other Minor (tests,
+        # docs, tooling, backend) is a follow-up ticket, as is one no list takes.
+        if [ -n "$mf" ] && [ "$(printf '%s' "$x" | jq -r '.grade // ""')" = major ]; then
+          [ -n "$fam" ] || fam=$(_driver_review_is_follow_up "$t")
+          if [ "$fam" = yes ]; then list="dropped"; dropped=$((dropped + 1))
+          else _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }; fi
+        else
+          if [ -z "$mf" ] || driver_is_screen_file "$(driver_state_get "$t" worktree)" "$(printf '%s' "$x" | jq -r '.file // ""')"; then
+            [ -n "$slug" ] && bash "$pl" add "$slug" "$text" >/dev/null 2>&1 && list="$slug"
+          fi
+          if [ -n "$mf" ] && [ -z "$list" ]; then
+            _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }
+          fi
         fi ;;
     esac
-    if [ "$list" = follow-up ]; then :
+    if [ "$list" = follow-up ] || [ "$list" = dropped ]; then :
     elif [ -n "$list" ]; then put=$((put + 1)); else kept=$((kept + 1)); fi
     printf '%s' "$x" | jq -c --arg l "$list" --argjson r "$round" '{id, grade, file, line, summary, round: $r, list: $l}' >> "$d/review.deferred.jsonl"
   done
@@ -524,7 +535,7 @@ _driver_review_defer() {
       ($late | split(" ")) as $L
       | .findings = [(.findings // [])[] | select((.sameChange // false) == true or ((.grade // "") as $g | ($g != "nit" and ($L | index($g)) == null) | not))]' "$f" > "$f.t" && mv "$f.t" "$f"
   _driver_review_verdict_off_grades "$f" "$late" 1
-  driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list,${mf:+ $filed filed as follow-up tickets when the PR is open (merge first),} $kept noted in the PR under \"Minor, deferred\""
+  driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list,${mf:+ $filed filed as follow-up tickets when the PR is open (merge first), $dropped Major(s) dropped because this ticket is itself a follow-up,} $kept noted in the PR under \"Minor, deferred\""
 }
 
 # _driver_review_same_change <ticket> <review.json> <graded round> <tree> <diff args…> — SAME FILE,
@@ -549,6 +560,14 @@ _driver_review_same_change() {
   [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
   jq '.verdict = "BLOCKED"' "$f" > "$f.t" && mv "$f.t" "$f"
   driver_say "   review: $n finding(s) ($grades) are in files this change touched — fixed in this change's fix round, never filed as follow-ups (same file, same change)"
+}
+
+# _driver_review_is_follow_up <ticket> — "yes" when the ticket wears release.followUpLabel
+# (default fix-after-merge), else "no"; labels that cannot be read are "no", as before.
+_driver_review_is_follow_up() {
+  local ls lbl; lbl=$(driver_opt release.followUpLabel fix-after-merge)
+  ls=$(driver_gh_read swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name] | join("\n")' 2>/dev/null) || { echo no; return 0; }
+  if printf '%s\n' "$ls" | grep -qxF -- "$lbl"; then echo yes; else echo no; fi
 }
 
 # _driver_review_follow_up <ticket> <finding json> <round> — MERGE FIRST: the finding goes
