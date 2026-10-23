@@ -59,6 +59,9 @@ P_MINOR=$(toolkit_cfg labels.priority.minor 2>/dev/null); P_MINOR="${P_MINOR:-P3
 # Every follow-up wears one label, so the clean-up after the release is one list.
 FU_LABEL=$(toolkit_cfg release.followUpLabel 2>/dev/null); FU_LABEL="${FU_LABEL:-fix-after-merge}"
 HELD_LABEL=$(toolkit_cfg release.followUpHeldLabel 2>/dev/null); HELD_LABEL="${HELD_LABEL:-follow-ups-held}"
+# A Minor waits until after the launch (the owner, 23 Oct): its follow-up wears that label too.
+AFTER_LAUNCH=$(toolkit_cfg swarm.afterLaunchLabel 2>/dev/null); AFTER_LAUNCH="${AFTER_LAUNCH:-after-launch}"
+FU_VIA=""
 MARK="${GH_MACHINE_MARK:-<!-- harness:machine -->}"
 uri() { jq -rn --arg l "$1" '$l | @uri'; }
 labels_made=""
@@ -117,14 +120,20 @@ file_findings() {
     where=$(jq -r '"\(.file // "?"):\(.line // "?")"' <<<"$x")
     summary=$(jq -r '.summary // "" | gsub("[\r\n]+"; " ")' <<<"$x")
     title="$(printf '%s' "$summary" | cut -c1-110) ($where, from PR #$PR)"
-    body=$(jq -r --arg pr "$PR" --arg t "$T" --arg w "$where" --arg m "$marker" --arg g "$grade" '
+    body=$(jq -r --arg pr "$PR" --arg t "$T" --arg w "$where" --arg m "$marker" --arg g "$grade" --arg via "$FU_VIA" '
       "A review finding on PR #\($pr) (ticket #\($t)), filed once the change merged first (release.mergeFirst).\n\n" +
       "**\($g | (.[0:1] | ascii_upcase) + .[1:])** at `\($w)`: \(.summary // "")\n\n" +
       (if (.reason // "") != "" then "Why it matters: \(.reason)\n\n" else "" end) +
       (if (.fix // "") != "" then "The fix the reviewer proposed: \(.fix)\n\n" else "" end) +
-      "Fix it on the trunk as its own change. PR #\($pr) has merged without it.\n\n\($m)"' <<<"$x")
+      "Fix it on the trunk as its own change. " +
+      (if $via != "" then "PR #\($pr) was closed to rebuild fresh, and its rebuild, PR #\($via), merged without it." else "PR #\($pr) has merged without it." end) +
+      "\n\n\($m)"' <<<"$x")
     ensure_fu_label
     args=(-f title="$title" -f body="$body" -f "labels[]=$pri" -f "labels[]=$FU_LABEL")
+    if [ "$grade" = minor ]; then
+      ensure_label "$AFTER_LAUNCH" c5def5 "Outside the release: done after the launch"
+      args+=(-f "labels[]=$AFTER_LAUNCH")
+    fi
     while IFS= read -r l; do [ -n "$l" ] && args+=(-f "labels[]=$l"); done <<<"$carry"
     if ! n=$("$GH" api "repos/$REPO_SLUG/issues" -X POST "${args[@]}" -q .number 2>/dev/null) || [ -z "$n" ]; then
       echo "finding $id ($grade, $where) could not be filed as a ticket"; failed=1; continue
@@ -170,12 +179,28 @@ $MARK
     || echo "the held findings could not be listed on PR #$PR; they are held on this host"
 }
 
+# is_rebuild <pr> <ticket> — 0 when the PR was closed to rebuild fresh: the ticket's work is kept
+# at refs/stale/<ticket>/…, or a comment on the PR says so. 1 not; 2 unreadable.
+is_rebuild() {
+  local refs said
+  refs=$(SWARM_GH="$GH" gh_read "ticket #$2's stale refs" api "repos/$REPO_SLUG/git/matching-refs/stale/$2/" -q '.[].ref') || return 2
+  [ -z "$refs" ] || return 0
+  said=$(SWARM_GH="$GH" gh_read "PR #$1's comments" api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" \
+           -q '.[] | .body // "" | select(test("closed to rebuild fresh"; "i")) | "y"') || return 2
+  [ -n "$said" ]
+}
+
 if [ "$CMD" = file ]; then
   if ! row=$(pr_state "$PR" 2>/dev/null); then
     echo "unknown — whether PR #$PR merged could not be read, so its findings are held, not filed"
     row="unknown	?"
   fi
   IFS=$'\t' read -r st head <<<"$row"
+  if [ "$st" = closed ]; then
+    is_rebuild "$PR" "$T"; r=$?
+    # Closed to rebuild fresh: the work comes back in the ticket's next PR, so the findings wait for it.
+    if [ "$r" -ne 1 ]; then st=rebuild; echo "PR #$PR was closed to rebuild fresh (or that could not be read): its findings wait for ticket #$T's next PR"; fi
+  fi
   case "$st" in
     merged) ;;
     closed) echo "PR #$PR closed without merging: its $(grep -c . "$F") finding(s) are dropped, not filed"; exit 0 ;;
@@ -189,15 +214,40 @@ fi
 rc=0
 say_do() { if [ "$DRY" -eq 1 ]; then echo "would $1"; return 1; fi; return 0; }
 
-# parent_state <pr> — merged|open|closed; a merged or closed parent is remembered (it never changes).
+# The open PRs, from the copy the tick shares (gh_open_prs): an open parent costs no read.
+if open_prs=$(SWARM_GH="$GH" gh_open_prs 2>/dev/null | jq -r '.[].number' 2>/dev/null) && [ -n "$open_prs" ]; then OPEN_KNOWN=1
+else OPEN_KNOWN=0; open_prs=""; fi
+cached() { awk -v k="$1" '$1 == k { print $2; exit }' "$PARENTS" 2>/dev/null; }
+
+# parent_state <pr> [ticket] — merged|open|closed|rebuild. Every state but open is remembered.
+# A closed PR is "rebuild" when it was closed to rebuild fresh; without a ticket that is
+# not asked, and the answer is not remembered.
 parent_state() {
-  local s row
-  s=$(awk -v p="$1" '$1 == p { print $2; exit }' "$PARENTS" 2>/dev/null)
-  [ -z "$s" ] || { printf '%s' "$s"; return 0; }
+  local s row r
+  if [ "$OPEN_KNOWN" = 1 ] && printf '%s\n' "$open_prs" | grep -qx "$1"; then printf open; return 0; fi
+  s=$(cached "$1"); [ -z "$s" ] || { printf '%s' "$s"; return 0; }
   row=$(pr_state "$1" 2>/dev/null) || return 1
   s="${row%%$'\t'*}"
-  case "$s" in merged|closed) printf '%s %s\n' "$1" "$s" >> "$PARENTS" ;; esac
+  if [ "$s" = closed ]; then
+    [ -n "${2:-}" ] || { printf closed; return 0; }
+    is_rebuild "$1" "$2"; r=$?
+    [ "$r" -ne 2 ] || return 1
+    [ "$r" -ne 0 ] || s=rebuild
+  fi
+  case "$s" in merged|closed|rebuild) printf '%s %s\n' "$1" "$s" >> "$PARENTS" ;; esac
   printf '%s' "$s"
+}
+
+# rebuilt <ticket> <old pr> — the ticket's next PR that merged, or nothing yet. 1 unreadable.
+rebuilt() {
+  local n
+  n=$(cached "t$1"); [ -z "$n" ] || { printf '%s' "$n"; return 0; }
+  n=$(SWARM_GH="$GH" gh_read "ticket #$1's merged PRs" api -X GET search/issues \
+        -f q="repo:$REPO_SLUG is:pr is:merged $1 in:title,body" \
+        -q '[.items[] | select(.number != '"$2"')
+             | select(((.title // "") + " " + (.body // "")) | test("#'"$1"'([^0-9]|$)")) | .number] | max // empty') || return 1
+  [ -z "$n" ] || printf 't%s %s\n' "$1" "$n" >> "$PARENTS"
+  printf '%s' "$n"
 }
 
 # 1. The held findings. Their PRs: this host's state, and every PR wearing the held label.
@@ -210,25 +260,36 @@ else
   echo "the PRs labelled $HELD_LABEL could not be read; only this host's held findings are settled"; rc=1
 fi
 for pr in $(printf '%s\n' "$held" | grep -E '^[0-9]+$' | sort -un); do
-  st=$(parent_state "$pr") || { echo "unknown — whether PR #$pr merged could not be read; its findings stay held"; rc=1; continue; }
   hf="$HELD_DIR/$pr.jsonl"
+  ticket=$(jq -r '.ticket // empty' "$hf" 2>/dev/null | head -1)
+  st=$(parent_state "$pr" "$ticket") || { echo "unknown — whether PR #$pr merged could not be read; its findings stay held"; rc=1; continue; }
+  [ "$st" != open ] || continue
+  if [ ! -s "$hf" ]; then
+    # Held on another host: the data is in the PR's fix-list comment.
+    data=$(SWARM_GH="$GH" gh_read "PR #$pr's held findings" api --paginate "repos/$REPO_SLUG/issues/$pr/comments?per_page=100" \
+             -q '.[] | .body // "" | capture("<!-- follow-up-held: pr=[0-9]+ head=[^ ]* data=(?<d>[A-Za-z0-9+/=]*) -->").d') \
+      || { echo "unknown — PR #$pr is $st and its held findings could not be read; next pass"; rc=1; continue; }
+    data=$(printf '%s\n' "$data" | sed '/^$/d' | tail -1)
+    [ -n "$data" ] || echo "PR #$pr is $st and wears $HELD_LABEL, but no held findings were found on it"
+    [ -z "$data" ] || printf '%s' "$data" | base64 --decode > "$hf" 2>/dev/null \
+      || { echo "PR #$pr's held findings could not be decoded; next pass"; rm -f "$hf"; rc=1; continue; }
+    ticket=$(jq -r '.ticket // empty' "$hf" 2>/dev/null | head -1)
+    if [ "$st" = closed ] && [ -n "$ticket" ]; then
+      st=$(parent_state "$pr" "$ticket") || { echo "unknown — whether PR #$pr was closed to rebuild could not be read; its findings stay held"; rc=1; continue; }
+    fi
+  fi
+  FU_VIA=""
+  if [ "$st" = rebuild ]; then
+    # Closed to rebuild fresh: they wait for the ticket's next PR, and file when it merges.
+    FU_VIA=$(rebuilt "$ticket" "$pr") || { echo "unknown — whether ticket #$ticket's next PR merged could not be read; PR #$pr's findings stay held"; rc=1; continue; }
+    [ -n "$FU_VIA" ] || continue
+  fi
   case "$st" in
-    open) continue ;;
-    merged)
-      if [ ! -s "$hf" ]; then
-        # Held on another host: the data is in the PR's fix-list comment.
-        data=$(SWARM_GH="$GH" gh_read "PR #$pr's held findings" api --paginate "repos/$REPO_SLUG/issues/$pr/comments?per_page=100" \
-                 -q '.[] | .body // "" | capture("<!-- follow-up-held: pr=[0-9]+ head=[^ ]* data=(?<d>[A-Za-z0-9+/=]*) -->").d') \
-          || { echo "unknown — PR #$pr merged and its held findings could not be read; next pass"; rc=1; continue; }
-        data=$(printf '%s\n' "$data" | sed '/^$/d' | tail -1)
-        [ -n "$data" ] || { echo "PR #$pr merged and wears $HELD_LABEL, but no held findings were found on it"; data=""; }
-        [ -z "$data" ] || printf '%s' "$data" | base64 --decode > "$hf" 2>/dev/null \
-          || { echo "PR #$pr's held findings could not be decoded; next pass"; rm -f "$hf"; rc=1; continue; }
-      fi
+    merged|rebuild)
       if [ -s "$hf" ]; then
-        say_do "file $(grep -c . "$hf") held finding(s) of PR #$pr, which merged" || continue
+        say_do "file $(grep -c . "$hf") held finding(s) of PR #$pr, which merged${FU_VIA:+ as its rebuild #$FU_VIA}" || continue
         failed=0; had=0
-        file_findings "$(jq -r '.ticket // empty' "$hf" | head -1)" "$pr" "$hf"
+        file_findings "$ticket" "$pr" "$hf"
         [ "$failed" -eq 0 ] || { rc=1; continue; }
       else
         say_do "take $HELD_LABEL off PR #$pr" || continue
@@ -247,33 +308,43 @@ done
 
 # 2. The follow-ups already filed: one of an open parent waits for it.
 blocked_by_us() { awk -v n="$1" -v p="$2" '$1 == n && $2 == p { f = 1 } END { exit !f }' "$BLOCKED_LEDGER" 2>/dev/null; }
-said_blocked_on() { # <ticket> <pr> — a comment says the ticket is blocked on, or waits for, the PR
-  local c
+said_blocked_on() { # <ticket> <pr> [parent ticket] — a comment says it is blocked on, or waits for, either
+  local c re="#$2"
+  [ -z "${3:-}" ] || re="#($2|$3)"
   c=$(SWARM_GH="$GH" gh_read "#$1's comments" api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" \
-        -q '.[] | .body // "" | select(test("(block|wait)[^\\n]{0,40}#'"$2"'([^0-9]|$)"; "i")) | "y"' 2>/dev/null) || return 2
+        -q '.[] | .body // "" | select(test("(block|wait)[^\\n]{0,40}'"$re"'([^0-9]|$)"; "i")) | "y"' 2>/dev/null) || return 2
   [ -n "$c" ]
 }
 kids=$(SWARM_GH="$GH" gh_read "the open follow-up tickets" api --paginate \
          "repos/$REPO_SLUG/issues?state=open&labels=$(uri "$FU_LABEL")&per_page=100" \
          -q '.[] | select(.pull_request | not)
              | [(.number | tostring), ([.labels[].name] | join(",")),
-                ((.body // "") | ((capture("follow-up: pr=(?<p>[0-9]+)") | .p) // (capture("PR #(?<p>[0-9]+)") | .p) // ""))] | @tsv') \
+                ((.body // "") | ((capture("follow-up: pr=(?<p>[0-9]+)") | .p) // (capture("PR #(?<p>[0-9]+)") | .p) // "-")),
+                ((.body // "") | ((capture("\\(ticket #(?<t>[0-9]+)\\)") | .t) // "-"))] | @tsv') \
   || { echo "the open $FU_LABEL tickets could not be read; none is blocked or unblocked this pass"; exit 1; }
-while IFS=$'\t' read -r n labels p; do
-  case "$n$p" in ''|*[!0-9]*) continue ;; esac
-  st=$(parent_state "$p") || { echo "unknown — whether #$n's parent PR #$p merged could not be read"; rc=1; continue; }
+while IFS=$'\t' read -r n labels p pt; do
+  # A follow-up that names no parent PR (filed by hand, naming a ticket) is not this pass's.
+  case "$n" in ''|*[!0-9]*) continue ;; esac
+  case "$p" in ''|*[!0-9]*) continue ;; esac
+  case "$pt" in ''|*[!0-9]*) pt="" ;; esac
   case ",$labels," in *",$LBL_CLAIMED,"*|*",$LBL_IN_REVIEW,"*) continue ;; esac
+  st=$(parent_state "$p" "$pt") || { echo "unknown — whether #$n's parent PR #$p merged could not be read"; rc=1; continue; }
+  merged_as="$p"
+  if [ "$st" = rebuild ]; then
+    m=$(rebuilt "$pt" "$p") || { echo "unknown — whether ticket #$pt's next PR merged could not be read; #$n is left as it is"; rc=1; continue; }
+    if [ -n "$m" ]; then st=merged; merged_as="$m"; fi
+  fi
   is_blocked=0; case ",$labels," in *",$LBL_BLOCKED,"*) is_blocked=1 ;; esac
   case "$st" in
-    open|closed)
+    open|closed|rebuild)
       [ "$is_blocked" -eq 0 ] || continue
       ! blocked_by_us "$n" "$p" || continue   # this pass blocked it; the list it came from lags
       say_do "set #$n $LBL_BLOCKED — its parent PR #$p is $st, not merged" || continue
-      if [ "$st" = open ]; then
-        note="Blocked: waits for #$p to merge. This finding is on code in PR #$p, which has not merged, so $INTEGRATION_BRANCH has nothing to fix yet. The merge pass sets it back to ready when #$p merges."
-      else
-        note="Blocked: PR #$p closed without merging, so the code this finding is on never landed. Close this ticket, or rehome it — the PM's call."
-      fi
+      case "$st" in
+        open) note="Blocked: waits for #$p to merge. This finding is on code in PR #$p, which has not merged, so $INTEGRATION_BRANCH has nothing to fix yet. The merge pass sets it back to ready when #$p merges." ;;
+        rebuild) note="Blocked: waits for ticket #$pt's next PR to merge. PR #$p was closed to rebuild fresh, so the code this finding is on has not landed. The merge pass sets it back to ready when the rebuild merges." ;;
+        *) note="Blocked: PR #$p closed without merging, so the code this finding is on never landed. Close this ticket, or rehome it — the PM's call." ;;
+      esac
       issue_status_set "$n" "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_BLOCKED"; rc=1; continue; }
       printf '%s %s\n' "$n" "$p" >> "$BLOCKED_LEDGER"
       SWARM_GH="$GH" gh_call issue comment "$n" --repo "$REPO_SLUG" --body "$note" >/dev/null 2>&1 || echo "#$n is blocked; its comment could not be posted"
@@ -282,18 +353,18 @@ while IFS=$'\t' read -r n labels p; do
     merged)
       [ "$is_blocked" -eq 1 ] || continue
       if ! blocked_by_us "$n" "$p"; then
-        said_blocked_on "$n" "$p"; r=$?
+        said_blocked_on "$n" "$p" "$pt"; r=$?
         [ "$r" -eq 2 ] && { echo "unknown — #$n's comments could not be read; it stays blocked"; rc=1; continue; }
         [ "$r" -eq 0 ] || continue   # blocked on something else: not this pass's to lift
       fi
-      say_do "set #$n back to $LBL_READY — its parent PR #$p merged" || continue
+      say_do "set #$n back to $LBL_READY — its parent PR #$merged_as merged" || continue
       issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_READY"; rc=1; continue; }
       [ -f "$BLOCKED_LEDGER" ] && { awk -v n="$n" -v p="$p" '!($1 == n && $2 == p)' "$BLOCKED_LEDGER" > "$BLOCKED_LEDGER.t" && mv "$BLOCKED_LEDGER.t" "$BLOCKED_LEDGER"; }
       SWARM_GH="$GH" gh_call issue comment "$n" --repo "$REPO_SLUG" \
-        --body "Unblocked: #$p merged to $INTEGRATION_BRANCH, so the code this finding is on has landed. Ready to build as its own small change." >/dev/null 2>&1 \
+        --body "Unblocked: #$merged_as merged to $INTEGRATION_BRANCH, so the code this finding is on has landed. Ready to build as its own small change." >/dev/null 2>&1 \
         || echo "#$n is ready; its comment could not be posted"
-      queue add "$n" --front --note "follow-up of PR #$p, which merged" || true
-      echo "unblocked #$n — parent PR #$p merged" ;;
+      queue add "$n" --front --note "follow-up of PR #$p, merged as #$merged_as" || true
+      echo "unblocked #$n — #$merged_as merged" ;;
   esac
 done <<<"$kids"
 exit "$rc"
