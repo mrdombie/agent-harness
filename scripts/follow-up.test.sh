@@ -123,6 +123,25 @@ want "nothing created on the failed search"    "created=1" "$R"
 want_in "it logs unknown"                      'unknown — whether finding .* was filed could not be read' "$OUT"
 want "and exits non-zero"                      "1" "$RC"
 
+echo "--- a clash is never a ticket: it is its PR's repair ---"
+# Seen 2026-10-23: a Minor whose whole finding was the branch conflicting with develop was filed.
+FC="$FIX/clash.jsonl"
+cat > "$FC" <<'J'
+{"id":"R1-2","grade":"minor","file":"apps/web/src/app/dashboard/settings/voice/page.dom.test.tsx","line":7,"summary":"The branch conflicts with develop. #14086 landed with its own `hookState`, and `git merge-tree origin/develop HEAD` reports a content conflict in this file.","fix":"Rebase onto develop.","round":1}
+{"id":"m1","grade":"major","file":"apps/web/a.tsx","line":3,"summary":"the save is dropped","round":1}
+{"id":"k5","grade":"minor","file":"lib/k.ts","line":4,"summary":"conflict markers left in lib/k.ts","round":1}
+J
+reset; OUT=$(bash "$SUT" file 701 42 "$FC" 2>&1); RC=$?
+want "the clash is not filed; the Major and the marker Minor are" "2" "$(created)"
+want_in "  and it says why"                    'dropped R1-2: only says the branch clashes with or is behind develop' "$OUT"
+want_not_in "  no ticket names it"             'finding=R1-2' "$(cat "$FIX"/fgh.create.* 2>/dev/null | tr '\0' '\n')"
+head -1 "$FC" > "$FIX/clash-only.jsonl"
+reset; : > "$GH_LOG"; OUT=$(bash "$SUT" file 701 42 "$FIX/clash-only.jsonl" 2>&1); RC=$?
+want "a clash alone files nothing"             "0 0" "$(created) $RC"
+want_in "  and says there was nothing left"    'nothing left to file' "$OUT"
+reset; echo open > "$FIX/fgh.pr.42"; OUT=$(bash "$SUT" file 701 42 "$FC" 2>&1)
+want "on an open PR the clash is not held either" "0" "$(cat "$FIX/held/42.jsonl" 2>/dev/null | grep -c '"R1-2"')"
+
 echo "--- a review on an open PR files no ticket: the findings are held on its fix list ---"
 reset; echo open > "$FIX/fgh.pr.42"; case_file
 want "it exits clean"                          "0" "$RC"

@@ -389,6 +389,19 @@ driver_fact_critic_findings() { # <ticket>
 # 1 when nothing left it. A
 # review that copied a critic finding off the PR sent it to fix, the fix round could
 # only defer it, and the deferral parked for the owner (#12209, three times).
+# driver_drop_clash_findings <file> <list name> — a finding that only says the branch clashes
+# with or is behind its base is no finding (clash-finding.sh): the clash is the PR's repair.
+# 0 when it dropped one.
+driver_drop_clash_findings() { # <file> <list name>
+  local f="$1" ids
+  [ -s "$f" ] || return 1
+  declare -F clash_finding_filter >/dev/null || . "$KIT_ROOT/scripts/clash-finding.sh" || return 1
+  ids=$(jq -r "$CLASH_FINDING_JQ"' [.findings[]? | select(clash_only) | (.id // "?" | tostring)] | join(", ")' "$f" 2>/dev/null)
+  [ -n "$ids" ] || return 1
+  jq "$CLASH_FINDING_JQ"' .findings = [(.findings // [])[] | select(clash_only | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
+  driver_say "   a clash with $INTEGRATION_BRANCH is the PR's repair, never a finding — dropped from the $2 list: $ids"
+}
+
 driver_drop_critic_findings() { # <file> <list name>
   local f="$1" ids
   [ -s "$f" ] && release_critic_paused || return 1
