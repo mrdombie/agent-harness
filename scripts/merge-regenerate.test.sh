@@ -6,6 +6,8 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# The library commits a merge it finished: a runner with no git identity must still have one.
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@invalid
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/merge-regenerate.sh"
 FIX=$(mktemp -d); on_exit_keep_status 'rm -rf "$FIX"'
