@@ -233,6 +233,7 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
   # Merge first: the screen's polish list stays a list, never this review's findings.
   driver_merge_first || _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
+  _driver_review_same_change "$t" "$ans_file" "$round" "$wt" "${dargs[@]}"
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
   local ground="$round"
   if [ "$tier" = tooling ] || [ -n "$quick" ]; then [ "$ground" -ge 2 ] || ground=2; fi
@@ -489,7 +490,7 @@ _driver_review_defer() {
   # What does not block this round and is not a Nit is deferred — read off this round's
   # set alone. Comparing it with round 1's set skipped the whole step when an operator
   # configured both the same, and the reviewer's BLOCKED then stood over two Minors.
-  defer=$(jq -c --arg late "$late" '[.findings[]?
+  defer=$(jq -c --arg late "$late" '[.findings[]? | select((.sameChange // false) != true)
       | select((.grade // "") as $g | $g != "nit" and (($late | split(" ")) | index($g)) == null)]' "$f" 2>/dev/null)
   n=$(printf '%s' "$defer" | jq 'length' 2>/dev/null)
   [ "${n:-0}" -gt 0 ] || { _driver_review_verdict_off_grades "$f" "$late"; return 0; }
@@ -521,9 +522,32 @@ _driver_review_defer() {
   rm -f "$tmp"
   jq --arg late "$late" '
       ($late | split(" ")) as $L
-      | .findings = [(.findings // [])[] | select((.grade // "") as $g | ($g != "nit" and ($L | index($g)) == null) | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
+      | .findings = [(.findings // [])[] | select((.sameChange // false) == true or ((.grade // "") as $g | ($g != "nit" and ($L | index($g)) == null) | not))]' "$f" > "$f.t" && mv "$f.t" "$f"
   _driver_review_verdict_off_grades "$f" "$late" 1
   driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list,${mf:+ $filed filed as follow-up tickets when the PR is open (merge first),} $kept noted in the PR under \"Minor, deferred\""
+}
+
+# _driver_review_same_change <ticket> <review.json> <round> <tree> <diff args…> — SAME FILE,
+# SAME CHANGE (the owner, 2026-10-23). A Major or a Minor in a file this change itself
+# touched is fixed in this change, in its one fix round, never filed: one ticket once
+# spawned 24 findings over 8 follow-up PRs, all in the same four files. Such a finding is
+# marked sameChange, which driver_blocking_select blocks in any round and under merge first.
+# From round 2 (the fix round touched new code) a Major alone is marked. A finding in a file
+# the change did not touch is graded as before: a polish list, or a follow-up.
+_driver_review_same_change() {
+  local t="$1" f="$2" round="$3" wt="$4" own grades n
+  shift 4
+  own=$(git -C "$wt" diff --name-only "$@" 2>/dev/null | sed '/^$/d' | jq -Rsc 'split("\n") | map(select(length > 0))')
+  [ -n "$own" ] && [ "$own" != "[]" ] || return 0
+  if [ "$round" -le 1 ]; then grades="major minor"; else grades="major"; fi
+  jq --argjson own "$own" --arg gs "$grades" '.findings = [(.findings // [])[]
+      | (.grade // "") as $g | ((.file // "") | tostring | sub("^\\./"; "") | sub(":[0-9]+$"; "")) as $p
+      | if (($gs | split(" ")) | index($g)) != null and ($own | index($p)) != null then . + {sameChange: true} else . end]' "$f" > "$f.t" \
+    && mv "$f.t" "$f" || return 0
+  n=$(jq '[.findings[]? | select(.sameChange == true)] | length' "$f" 2>/dev/null)
+  [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
+  jq '.verdict = "BLOCKED"' "$f" > "$f.t" && mv "$f.t" "$f"
+  driver_say "   review: $n finding(s) ($grades) are in files this change touched — fixed in this change's fix round, never filed as follow-ups (same file, same change)"
 }
 
 # _driver_review_follow_up <ticket> <finding json> <round> — MERGE FIRST: the finding goes
@@ -546,7 +570,7 @@ _driver_review_verdict_off_grades() {
   jq --arg late "$2" --arg had "${3:-}" '
       ($late | split(" ")) as $L
       | if (.verdict // "" | ascii_upcase) == "BLOCKED" and (((.findings // []) | length) > 0 or $had != "")
-           and ([(.findings // [])[] | select((.grade // "") as $g | $L | index($g))] | length) == 0
+           and ([(.findings // [])[] | select(((.grade // "") as $g | $L | index($g)) or (.sameChange // false) == true)] | length) == 0
         then .verdict = "SHIP" else . end' "$1" > "$1.t" && mv "$1.t" "$1"
 }
 
@@ -577,7 +601,7 @@ _driver_review_hold_signed() {
   polish=$(driver_blocking_grades "$(driver_state_count "$t" review)" | tr ' ' '\n' | grep -vxF -f <(printf '%s\n' $must) | tr '\n' ' ' | sed 's/ $//')
   minors=$(jq -c --argjson s "$screens" --arg p "$polish" '[.findings[]? | select((.grade // "") as $g | ($p | split(" ")) | index($g)) | select((.file // "") as $x | $s | index($x))]' "$f")
   if [ -n "$polish" ] && [ "$(printf '%s' "$minors" | jq length)" -gt 0 ]; then
-    printf '%s' "$minors" | jq '{verdict: "BLOCKED", findings: .}' > "$f.signed"
+    printf '%s' "$minors" | jq '{verdict: "BLOCKED", findings: [.[] | del(.sameChange)]}' > "$f.signed"
     _driver_review_defer "$t" "$f.signed" "$(driver_state_count "$t" review)" "$must" "found on PR #$pr after its sign-off"
     rm -f "$f.signed"
     jq --argjson s "$screens" --arg p "$polish" '.findings = [(.findings // [])[] | select(((.grade // "") as $g | ($p | split(" ")) | index($g)) and ((.file // "") as $x | $s | index($x)) | not)]' "$f" > "$f.t" && mv "$f.t" "$f"

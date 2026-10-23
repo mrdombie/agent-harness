@@ -428,7 +428,7 @@ _driver_fix_drop_nonblocking() {
   dropped=$(jq -c --argjson g "$graded" --arg late "$late" --arg warn "$warn" '[.deferred[]? | .blockerId as $b
       | ([$g[] | select(.id == $b)] | first) as $f
       | if $f == null then (select($warn != "") | . + {grade: "a check that warns until the release"})
-        else (select($f.was == "deferred" or (($late | split(" ")) | index($f.grade)) == null) | . + {grade: $f.grade}) end]' "$ans" 2>/dev/null)
+        else (select($f.was == "deferred" or (($f.sameChange // false) != true and (($late | split(" ")) | index($f.grade)) == null)) | . + {grade: $f.grade}) end]' "$ans" 2>/dev/null)
   [ "${dropped:-[]}" != "[]" ] && [ -n "$dropped" ] || return 0
   kept=$(jq -c --argjson x "$dropped" '[.deferred[]? | .blockerId as $b | select([$x[].blockerId] | index($b) | not)]' "$ans")
   jq --argjson d "$kept" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"
@@ -464,7 +464,7 @@ driver_step_fix() { # <ticket>
   local fround bsel graded
   fround=$(driver_state_count "$t" review); [ "${fround:-0}" -ge 1 ] 2>/dev/null || fround=1
   bsel=$(driver_blocking_select "$fround")
-  graded=$(jq -c '[.findings[]? | {id: (.id // ""), grade: (.grade // "")}]' "$review" 2>/dev/null)
+  graded=$(jq -c '[.findings[]? | {id: (.id // ""), grade: (.grade // ""), sameChange: (.sameChange // false)}]' "$review" 2>/dev/null)
   [ -n "$graded" ] || graded='[]'
   _driver_review_defer "$t" "$review" "$fround"
 

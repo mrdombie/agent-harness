@@ -888,8 +888,11 @@ driver_merge_first() {
 # driver_blocking_select [round] — the jq selector for a finding whose grade blocks in
 # that round. Every step reads this; a literal copy is refused by
 # tests/blocking-grades.test.sh.
+#
+# SAME FILE, SAME CHANGE: a finding the review step marked sameChange (a Major or a Minor in
+# a file the change itself touched, _driver_review_same_change) blocks whatever the round's set.
 driver_blocking_select() {
-  printf 'select((.grade // "") as $g | ("%s" | split(" ")) | index($g) != null)' "$(driver_blocking_grades "${1:-1}")"
+  printf 'select(((.grade // "") as $g | ("%s" | split(" ")) | index($g) != null) or ((.sameChange // false) == true and (.grade // "") != "nit"))' "$(driver_blocking_grades "${1:-1}")"
 }
 
 # The priority a filed follow-up carries, read off the grade, so the queue orders

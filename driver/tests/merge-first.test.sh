@@ -45,7 +45,8 @@ mf_tree() { # <ticket> — a branch with one change, claimed; P1, so merge first
 }
 rj() { printf '%s/steps/review.json' "$(driver_state_dir "$1")"; }
 fu() { printf '%s/steps/review.followups.jsonl' "$(driver_state_dir "$1")"; }
-major='{"verdict":"BLOCKED","findings":[{"id":"m1","file":"a.sh","line":3,"grade":"major","summary":"the save is dropped","reason":"a failure shows as success","fix":"keep it"}]}'
+# In a file the change did not touch: a Major in one it did is fixed in place (same-file-same-change.test.sh).
+major='{"verdict":"BLOCKED","findings":[{"id":"m1","file":"lib/other.sh","line":3,"grade":"major","summary":"the save is dropped","reason":"a failure shows as success","fix":"keep it"}]}'
 critical='{"verdict":"BLOCKED","findings":[{"id":"c1","file":"a.sh","line":1,"grade":"critical","summary":"another workspace sees the rows","reason":"wrong data","fix":"scope it"}]}'
 minors='{"verdict":"BLOCKED","findings":[
   {"id":"n1","file":"app/page.tsx","line":9,"grade":"minor","summary":"the gap is 12 not 16","reason":"r","fix":"f"},
@@ -69,7 +70,7 @@ rc=0; out=$(on driver_step_review 701 2>&1) || rc=$?
 want "the review finishes"          "0" "$rc"
 want "the verdict ships"            "SHIP" "$(jq -r .verdict "$(rj 701)")"
 want "nothing blocks"               "0" "$(on _driver_count "$(rj 701)" blocking)"
-want "the Major waits to be filed"  "m1 major a.sh:3" "$(jq -r '"\(.id) \(.grade) \(.file):\(.line)"' "$(fu 701)")"
+want "the Major waits to be filed"  "m1 major lib/other.sh:3" "$(jq -r '"\(.id) \(.grade) \(.file):\(.line)"' "$(fu 701)")"
 want_in "and the run says so"       'filed as follow-up tickets when the PR is open' "$out"
 
 echo "--- on: a Critical still blocks, and is fixed in place ---"
