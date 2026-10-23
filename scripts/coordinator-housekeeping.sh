@@ -64,6 +64,13 @@ elif coord_shadow; then bash "$CRITIC" sweep --dry-run >> "$COORD_LOG" 2>&1 || s
 else bash "$CRITIC" sweep >> "$COORD_LOG" 2>&1 || say "design critic sweep exited $?"; fi
 
 # ---- 6. housekeeping ---------------------------------------------------------
+# GitHub closes "Closes #N" only on the default branch; a merge into the integration
+# branch closes its tickets here. Ahead of reconcile, which reads a shipped ticket whose
+# branch is gone as "no branch, no PR" and puts it back on the queue.
+CLOSE_MERGED="${COORDINATOR_CLOSE_MERGED:-$SELF_DIR/close-merged.sh}"
+if [ -n "$GH_WAIT" ]; then say "merged closer: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$CLOSE_MERGED" --dry-run >> "$COORD_LOG" 2>&1 || say "merged closer (dry) exited $?"
+else bash "$CLOSE_MERGED" >> "$COORD_LOG" 2>&1 || say "merged closer exited $?"; fi
 if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
 else bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"; fi
