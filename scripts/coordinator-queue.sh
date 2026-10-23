@@ -25,7 +25,10 @@
 # priority (prin), kind and polish flag. An entry the PM put there with `add --front`
 # stays first overall across re-seeds; `add --first` (a resume, an owner's answer, a
 # requeue) is first only within its own priority, so it never jumps higher-priority
-# work. A `new` entry whose note is a REPAIR brief is class repair. With
+# work. With coordinator.screensFirst on, the tier comes right after process: P0s that
+# are not screen work, then all screen work at any priority, then the rest, then the
+# release:last tickets (coordinator.lastInReleaseLabel; never a P0) (coord_tier).
+# A `new` entry whose note is a REPAIR brief is class repair. With
 # coordinator.releaseScopeOnly on, a new ticket outside it is not seeded (the count
 # kept as release_held); repairs, approved merges and process fixes always are. A row nobody can
 # start (closed, batched, parked, blocked, held) is dropped. An entry put there with `add` is pinned: it and every
@@ -92,6 +95,8 @@ with_lists() { # <scope labels, one a line> — plus the polish-list label when 
 fill() { # <scope> <resolved labels, one a line> — the members, the claimable rows, the write
   local scope="$1" labels="$2" claimable rows label members="" m match
   match=$(with_lists "$labels")
+  # The approved-picture tickets screensFirst counts as screen work: re-read with the seed.
+  coord_screen_pics_refresh 2>/dev/null || true
   claimable=$(CLAIMABLE_WITH_LABELS=1 bash "$CLAIMABLE" 2>/dev/null) || die "claimable-issues.sh failed — queue left as it was"
   if printf '%s\n' "$claimable" | awk -F'\t' 'NF && $1 != "" && NF < 7 { bad = 1 } END { exit !bad }'; then
     while IFS= read -r label; do
@@ -146,7 +151,9 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
         | .plist = ((.ls | index($plist)) != null)
         | .tooling = coord_tooling(.ls; .title)
         | .process = coord_process(.ls)
-        | {n, class, kind, prin, polish, plist, tooling, process, ls, title, ms})) as $fresh
+        | .screen = coord_screen(.ls; .title; .n)
+        | .last = coord_last(.ls; .prin)
+        | {n, class, kind, prin, polish, plist, tooling, process, screen, last, ls, title, ms})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
@@ -176,7 +183,7 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
     # repair and approved-merge keep the claimable order.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
-        | [(if $t.process then 0 else 1 end)] +
+        | [(if $t.process then 0 else 1 end), coord_tier($t.screen // false; $t.prin // 9; $t.process // false; $t.last // false)] +
         (if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0, 0]
           else [1, 0, ($t.prin // 9),
                 (if $t.front then 0 else 1 end), (if $t.front then ($oldpos[($t.n|tostring)] // $i) else 0 end),
@@ -233,10 +240,11 @@ add() {
   # What the seed would know of it, read now: `list` and the live view rank it
   # the way the tick does. Unread, it ranks as no priority until the tick reads it.
   local meta
-  meta=$(swarm_gh issue view "$n" --repo "$REPO_SLUG" --json labels,title 2>/dev/null \
+  meta=$(swarm_gh issue view "$n" --repo "$REPO_SLUG" --json number,labels,title 2>/dev/null \
     | coord_jq -c "$COORD_TICKET_JQ"'[.labels[]?.name] as $ls
         | {prin: coord_prin($ls; null), kind: coord_kind($ls; ""; null; .title), polish: coord_polish($ls; null; .title),
-           plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title), process: coord_process($ls)}' 2>/dev/null)
+           plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title), process: coord_process($ls),
+           screen: coord_screen($ls; .title; .number), last: coord_last($ls; coord_prin($ls; null))}' 2>/dev/null)
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
   cls=$(coord_jq -rn --arg c "$cls" --arg note "$note" "$COORD_TICKET_JQ"'coord_class($c; $note)')
   # Fresh work is never started on a ticket whose PR is open: queued as new it waits forever.

@@ -192,6 +192,57 @@ coord_release_scope_json() {
 COORD_RELEASE_SCOPE=$(coord_release_scope_json)
 coord_release_on() { jq -e '.on == true' >/dev/null 2>&1 <<<"$COORD_RELEASE_SCOPE"; }
 
+# coordinator.screensFirst (owner call 2026-10-23: until the release every screen reaches
+# its final form first). On, the order is: process fixes (develop-red P0s carry the
+# process label), then P0s that are not screen work, then all screen work at any
+# priority, then the rest, then coordinator.lastInReleaseLabel (default release:last):
+# still in the release, built after everything else in it. A P0 never goes last, label
+# or not (owner, 2026-10-23: a P0 Critical stays at the top). true, or {"on": true, "screenMatch": {labels, titlePrefixes,
+# titlePatterns, pictures}}; screenMatch keys replace the defaults. Off unless set.
+coord_screens_first_json() {
+  local raw="${COORDINATOR_SCREENS_FIRST-}" last="${COORDINATOR_LAST_IN_RELEASE_LABEL-}"
+  [ -n "$raw" ] || { [ -n "${HARNESS_CFG:-}" ] && raw=$(jq -c '.coordinator.screensFirst // false' "$HARNESS_CFG" 2>/dev/null); }
+  [ -n "$last" ] || { [ -n "${HARNESS_CFG:-}" ] && last=$(jq -r '.coordinator.lastInReleaseLabel // empty' "$HARNESS_CFG" 2>/dev/null); }
+  jq -nc --arg raw "${raw:-false}" --arg sp "${LBL_SCREEN_PREFIX:-screen:}" --arg last "${last:-release:last}" '
+    ($raw | try fromjson catch $raw) as $v
+    | {labels: [$sp + "*"], titlePrefixes: ["Polish list:"], titlePatterns: ["\\bcard\\b"], pictures: true} as $d
+    | (if $v == true or $v == 1 or $v == "1" or $v == "true" or $v == "on" then {on: true} + $d
+       elif ($v | type) == "object" then {on: (if $v | has("on") then $v.on == true else true end)} + $d + ($v.screenMatch // {})
+       else {on: false} end)
+    | .lastLabel = $last
+    | .titlePatterns = [(.titlePatterns // [])[]? | strings | . as $re | select(try ("" | test($re; "i") | true) catch false)]' 2>/dev/null \
+    || printf '{"on":false}'
+}
+COORD_SCREENS_FIRST=$(coord_screens_first_json)
+coord_screens_first_on() { jq -e '.on == true' >/dev/null 2>&1 <<<"$COORD_SCREENS_FIRST"; }
+# The tickets with an approved picture, as the picture code marks one: picture-approve.sh's
+# "Picture for any machine" comment (picture-fetch.sh HEAD_LINE) or a "Picture approved"
+# comment (critic-judge.sh picture_date). One search per marker, cached here by the seed.
+COORD_PICTURE_MARKERS=("Picture for any machine" "Picture approved")
+COORD_SCREEN_PICS_FILE="$COORD_DIR/screen-pictures.json"
+coord_screen_pics_load() {
+  COORD_SCREEN_PICS=$(jq -c '[.tickets[]? | numbers]' "$COORD_SCREEN_PICS_FILE" 2>/dev/null) || COORD_SCREEN_PICS='[]'
+  [ -n "$COORD_SCREEN_PICS" ] || COORD_SCREEN_PICS='[]'
+}
+coord_screen_pics_load
+# coord_screen_pics_refresh — re-read the picture tickets; a failed read keeps the last
+# good list (an unread search is unknown, never "no pictures").
+coord_screen_pics_refresh() {
+  coord_screens_first_on || return 0
+  jq -e '.pictures != false' >/dev/null 2>&1 <<<"$COORD_SCREENS_FIRST" || return 0
+  declare -F gh_read >/dev/null 2>&1 || . "$KIT_ROOT/scripts/gh-batch.sh" || return 1
+  local m got all=""
+  for m in "${COORD_PICTURE_MARKERS[@]}"; do
+    got=$(gh_read "the tickets with a \"$m\" comment" api -X GET search/issues --paginate \
+          -f q="repo:$REPO_SLUG is:issue is:open in:comments \"$m\"" -f per_page=100 \
+          --jq '.items[]?.number') || return 1
+    all="$all$got"$'\n'
+  done
+  printf '%s\n' "$all" | grep -E '^[0-9]+$' | sort -un | jq -R 'tonumber' | jq -sc --arg at "$(swarm_stamp)" '{at: $at, tickets: .}' \
+    > "$COORD_SCREEN_PICS_FILE.$$" && mv -f "$COORD_SCREEN_PICS_FILE.$$" "$COORD_SCREEN_PICS_FILE"
+  coord_screen_pics_load
+}
+
 # coord_room [fresh] — room for one more builder? Prints the reading; 0 when there is.
 # Never a reason to stop a running one: it only gates the next start.
 coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the median
@@ -653,6 +704,24 @@ COORD_TICKET_JQ='
     or ((($title // "") | ascii_downcase) as $t
         | ($release.alsoIn.titlePrefixes // []) | any(. as $p | $t | startswith($p | ascii_downcase)))
     or (($title // "") as $t | ($release.alsoIn.titlePatterns // []) | any(. as $re | $t | test($re; "i")));
+  # Screen work under coordinator.screensFirst: a screen label, a "Polish list:" title,
+  # a card title, or an approved picture on the ticket ($pics). A "Batch:" of screen
+  # work carries its screen label, so the label covers it.
+  def coord_screen($ls; $title; $n):
+    ($screens.on == true) and (
+      ($ls | any(. as $l | ($screens.labels // []) | any(. as $p
+          | if ($p | endswith("*")) then ($l | startswith($p[:-1])) else $l == $p end)))
+      or ((($title // "") | ascii_downcase) as $t
+          | ($screens.titlePrefixes // []) | any(. as $p | $t | startswith($p | ascii_downcase)))
+      or (($title // "") as $t | ($screens.titlePatterns // []) | any(. as $re | $t | test($re; "i")))
+      or (($screens.pictures != false) and ($n != null) and (($pics | index($n | tonumber)) != null)));
+  # Last in the release: the label, never on a P0.
+  def coord_last($ls; $prin): ($screens.on == true) and $prin != 0 and (($ls | index($screens.lastLabel // "release:last")) != null);
+  # The tier screensFirst orders by, ahead of everything but process: 0 off or a process
+  # fix, 1 a P0 that is not screen work, 2 screen work at any priority, 3 the rest,
+  # 4 last in the release.
+  def coord_tier($screen; $prin; $proc; $last):
+    if ($screens.on != true) or $proc then 0 elif $last then 4 elif $screen then 2 elif $prin == 0 then 1 else 3 end;
   def coord_release_held($ls; $title; $milestone; $class):
     ($release.on == true) and (($class // "new") == "new") and (coord_process($ls) | not)
     and (($ls | any(. as $l | ($release.excludeLabels // []) | any(. == $l)))
@@ -673,7 +742,8 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
      --argjson toolscopes "$(printf '%s' "$COORD_TOOLING_SCOPES" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0) | ascii_downcase)')" \
      --arg inreview "${LBL_IN_REVIEW:-status:in-review}" --argjson release "${COORD_RELEASE_SCOPE:-null}" \
      --argjson ownrepos "${COORD_OWN_REPOS_JSON:-$(driver_repo_own | jq -R . | jq -sc .)}" \
-     --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" "$@"
+     --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" \
+     --argjson screens "${COORD_SCREENS_FIRST:-null}" --argjson pics "${COORD_SCREEN_PICS:-[]}" "$@"
 }
 
 # The queue in run order: <ticket> \t <class> \t <note>; with --wide,
@@ -691,7 +761,7 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # sheet's order: its owner already ordered it. The tick's batched read ($ISSUES) is fresher than the seed: when it
 # holds a ticket, its labels decide that ticket's priority and kind.
 coord_queue_ordered() {
-  local wide=0; [ "${1:-}" = --wide ] && wide=1
+  local wide=0; [ "${1:-}" = --wide ] && wide=1; [ "${1:-}" = --tiers ] && wide=2
   [ -s "$COORD_QUEUE" ] || return 0
   coord_jq -r --argjson wide "$wide" --slurpfile iss <(printf '%s' "${ISSUES:-}" | jq -c 'objects' 2>/dev/null || true) \
     "$COORD_TICKET_JQ"'
@@ -707,20 +777,23 @@ coord_queue_ordered() {
                  plist: (if $ls then ($ls | index($plist)) != null else ($t.plist // false) end),
                  tool: (if $ls then coord_tooling($ls; $i.title) else ($t.tooling // false) end),
                  proc: (if $ls then coord_process($ls) else ($t.process // false) end),
+                 screen: (if $ls then coord_screen($ls; $i.title; $t.n) else ($t.screen // false) end),
                  class: coord_class($t.class; $t.note)}
-         | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3)})
+         | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
+         | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3), tier: coord_tier(.screen; .prin; .proc; .last)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # .top (the PM putting it on top with add --front) is first overall; .front (a resume, an answer,
      # a requeue) is first only among its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
-       else sort_by(if .proc then 0 else 1 end, if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+       else sort_by(if .proc then 0 else 1 end, .tier, if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
-     | .[]
+     | if $wide == 2 then [range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t")
+       else .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
-                           (if .top or .front or .kind == "half-built" or .proc then "1" else "0" end),
+                           (if .top or .front or .kind == "half-built" or .proc or .screen then "1" else "0" end),
                            (if .proc then "1" else "0" end), (.note // "")]
-       else [(.n|tostring), .class, (.note // "")] end | @tsv' "$COORD_QUEUE" 2>/dev/null
+       else [(.n|tostring), .class, (.note // "")] end | @tsv end' "$COORD_QUEUE" 2>/dev/null
 }
 
 # The last good read of the forge, kept for the ticks GitHub refuses. A tick
