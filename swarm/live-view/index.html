@@ -385,7 +385,7 @@ function mergedList(m){
 }
 
 // By area: one row per section, its counts as chips; open a row for its tickets.
-const AREA_BUCKETS = ['building','review','ready','pm','owner','stuck','batched','later','container','post','other']
+const AREA_BUCKETS = ['building','review','ready','pm','owner','stuck','batched','other','parked','later','container','post']
 const AREA_TONE = { building:'ok', review:'ok', ready:'', pm:'warn', owner:'warn', stuck:'bad' }
 const PRIOS = ['Urgent','High','Normal','Polish']
 let areaPick = new Set(), areaOpen = new Set()
@@ -417,7 +417,7 @@ function areasBlock(a){
       <a href="https://github.com/${esc(repo)}/issues/${esc(r.number)}" target="_blank" rel="noopener">${esc(r.title)}</a>
       <span class="pill ${AREA_TONE[r.bucket] || 'neutral'}">${esc(a.labels[r.bucket] || r.bucket)}</span></div>`).join('')
     return `<details class="area" data-k="${esc(g.key)}"${areaOpen.has(g.key) ? ' open' : ''}>
-      <summary><span class="aname">${esc(g.name)}</span><span class="num">${rows.length}</span> ${chips}</summary>
+      <summary><span class="aname">${esc(g.name)}</span><span class="num">${rows.filter((r) => !(a.outside || []).includes(r.bucket)).length} in the release · ${rows.length} open</span> ${chips}</summary>
       <div class="alist">${list || '<div class="arow"><span></span><span class="empty">None at this priority.</span><span></span></div>'}</div></details>`
   }).join('')
 }

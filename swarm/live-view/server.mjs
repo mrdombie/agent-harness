@@ -1136,17 +1136,20 @@ export function areasOf(board, ctx, sections = SECTIONS) {
     const t = String(i.number)
     const g = toolingOf(labels, i.raw ?? i.title) ? '__tooling' : (sections.find((s) => labels.includes(s.label)) || { label: '__other' }).label
     const r = releaseOf(i.raw ?? i.title, labels, i.milestone)
-    const bucket = r === 'release' || r === 'batch' ? bucketOf(labels, ctx.prRows[t], ctx.live.has(t) || claimed.has(t))
-      : r === 'lower' ? 'later' : r === 'post' ? 'post' : r === 'parked' ? 'stuck' : 'container'
+    // The same split as the headline (boardOf): only 'release' rows are release work; batches,
+    // epics and parked tickets are counted beside it, never in it, so the areas add up to it.
+    const bucket = r === 'release' ? bucketOf(labels, ctx.prRows[t], ctx.live.has(t) || claimed.has(t))
+      : r === 'lower' ? 'later' : r === 'post' ? 'post' : r === 'parked' ? 'parked' : 'container'
     const p = labels.find((l) => /^P[0-9]$/.test(l))
     const row = by[g]
     row.counts[bucket] = (row.counts[bucket] || 0) + 1
     row.rows.push({ number: t, title: i.title, priority: PRIO_NAMES[p] || 'None', bucket, screen: labels.some((l) => l.startsWith('screen:')) })
   }
-  const order = { building: 0, review: 1, ready: 2, pm: 3, owner: 4, stuck: 5, batched: 6, other: 7, later: 8, container: 9, post: 10 }
+  const order = { building: 0, review: 1, ready: 2, pm: 3, owner: 4, stuck: 5, batched: 6, other: 7, parked: 8, later: 9, container: 10, post: 11 }
   const pr = { Urgent: 0, High: 1, Normal: 2, Polish: 3, None: 4 }
   for (const g of Object.values(by)) g.rows.sort((a, b) => order[a.bucket] - order[b.bucket] || pr[a.priority] - pr[b.priority] || Number(a.number) - Number(b.number))
-  return { labels: { ...BUCKETS, later: 'After higher priority', container: 'Batch or epic', post: 'After launch' },
+  return { labels: { ...BUCKETS, parked: 'Parked', later: 'After higher priority', container: 'Batch or epic', post: 'After launch' },
+           outside: ['parked', 'later', 'container', 'post'],
            groups: groups.map((g) => by[g.key]).filter((g) => g.rows.length) }
 }
 
