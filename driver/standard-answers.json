@@ -1,0 +1,76 @@
+{
+  "_": "Standard merge-first answers (driver/standard-answer.sh). Read only while release.mergeFirst is on; release.standardAnswers in harness.json replaces this file, false turns it off. Patterns are jq regexes, case-insensitive, over the step's question and its park reason. park is read first and always wins; then the classes in order, first match taken.",
+  "park": [
+    "\\bcritical\\b",
+    "data[- ]?model",
+    "\\bschema\\b",
+    "\\bmigrat",
+    "\\b(column|table)s?\\b",
+    "secret",
+    "credential",
+    "api[ _-]?key",
+    "password",
+    "\\benv(ironment)?[ _-]?var",
+    "product (call|decision|question)",
+    "owner[’']?s (own )?call",
+    "design (call|decision|choice)",
+    "\\blegal\\b",
+    "pricing",
+    "approved (copy|words|wording)",
+    "user-facing (copy|words|text|wording)"
+  ],
+  "order": ["a", "b", "e", "c", "d"],
+  "classes": {
+    "a": {
+      "name": "base red: wait",
+      "answer": "Wait. A red the base branch has too is the base's to fix, never this change's: the ticket waits for the base (base-red), and nothing of the base is fixed here.",
+      "action": "base-wait",
+      "any": [
+        "(red|fails?|failing|broken) on (the )?(pristine |clean |plain )?(develop|base|trunk|main)\\b",
+        "on (pristine|clean|plain) (develop|base|trunk|main)",
+        "(develop|the base|trunk) itself (fails|is red|is broken)",
+        "base[- ]red",
+        "wait or fix[- ]here",
+        "(fix|land)[^.?]{0,30} on (develop|the base|the trunk) first",
+        "(does|should) (that|the|this) fix land on (develop|the base|the trunk)"
+      ],
+      "context": "baseRed"
+    },
+    "b": {
+      "name": "follow-up of an open PR: wait for the parent",
+      "answer": "Wait. A follow-up of a pull request that has not merged waits for that pull request: the ticket is blocked on the parent and goes back to ready when it merges. Nothing is folded into the parent.",
+      "action": "parent-wait",
+      "any": [
+        "wait(s|ing)? (until|for) (pr )?#[0-9]+ (to )?merge",
+        "#[0-9]+ (hasn[’']?t|has not|isn[’']?t|is not|never) (yet )?merged",
+        "wait or fold",
+        "fold(ed|ing)? (it |this |the fix |them )?in(to)?\\b",
+        "go into (pr )?#[0-9]+ itself"
+      ]
+    },
+    "e": {
+      "name": "signed off: ship",
+      "answer": "Ship as signed off. Under merge first nothing is re-captured or re-signed before the merge; the owner looks on UAT.",
+      "action": "carry",
+      "all": ["signed[- ]off", "(ship|re-?capture|re-?shoot|re-?sign)"]
+    },
+    "c": {
+      "name": "Minor or Major finding: defer",
+      "answer": "Defer it as fix-after-merge and ship. Until the release only a Critical blocks; a Major or Minor finding is its own follow-up ticket (a Minor waits until after launch).",
+      "action": "carry",
+      "all": ["\\b(minor|major)\\b", "(defer|fix (it |this |them )?now|follow-?up|fix-after-merge|after (the )?merge|later|this (pr|change)|its own (ticket|change))"],
+      "context": "deferredGrades"
+    },
+    "d": {
+      "name": "critic, evidence or pictures: ignore",
+      "answer": "Ignore it and ship. Until the release the design critic, the evidence, the screenshots and the picture hold nothing; the owner looks on UAT.",
+      "action": "carry",
+      "any": ["\\bcritic", "evidence", "screen ?shots?", "\\bshots?\\b", "picture", "re-?capture", "parity", "\\bslop\\b"]
+    }
+  },
+  "classifier": {
+    "enabled": true,
+    "model": "opus",
+    "timeoutSec": 90
+  }
+}
