@@ -75,6 +75,48 @@
         "owner",
         "pm"
       ]
+    },
+    "screenChecklist": {
+      "description": "When the change touches a screen: one entry per screen state it touches (`state`), saying how the code handles it while loading, when the read fails, while a retry is in flight (nothing announced or shown as settled before the answer), when empty, and at phone width (390px: nothing cut off, every panel closable, counts fresh after an edit). \"n/a: <why>\" where one does not apply. The review holds the shipped code to these lines; a plan that touches a screen without it is sent back once. Omit it when no screen is touched.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "loading",
+          "failed",
+          "retry",
+          "empty",
+          "phone"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "minLength": 1
+          },
+          "loading": {
+            "type": "string",
+            "minLength": 1
+          },
+          "failed": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retry": {
+            "type": "string",
+            "minLength": 1
+          },
+          "empty": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phone": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   },
   "if": {

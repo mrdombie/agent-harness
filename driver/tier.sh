@@ -93,6 +93,34 @@ driver_is_screen_file() {
   return 1
 }
 
+# _driver_screen_checklist_due <ticket> <step> <answer.json> <files, one a line> [screenChange]
+# — a change that touches a screen (a file driver_is_screen_file reads as one, or a plan
+# saying screenChange visible) carries screenChecklist. Missing, the step is asked once
+# more, naming it; still missing, it goes on with a warning. The checklist is kept on the
+# record (screen_checklist) for the review. Returns the step's own refusal, else 0.
+_driver_screen_checklist_due() {
+  local t="$1" step="$2" ans="$3" files="$4" vis="${5:-}" wt f screen="" note rc
+  [ "$(jq -r '.status // ""' "$ans" 2>/dev/null)" != park ] || return 0
+  wt=$(driver_state_get "$t" worktree)
+  [ "$vis" = visible ] && screen=visible
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -z "$screen" ] && driver_is_screen_file "$wt" "$f" && screen="$f"
+  done <<<"$files"
+  [ -n "$screen" ] || { driver_state_set "$t" screen_checklist ""; return 0; }
+  if [ "$(jq -r '(.screenChecklist // []) | length' "$ans" 2>/dev/null)" = 0 ]; then
+    note="$(driver_state_dir "$t")/steps/$step.checklist-note.md"
+    printf 'SENT BACK ONCE: this change touches a screen (%s) and the answer has no `screenChecklist`. Give the same answer again with it: one entry per screen state the change touches, saying how the code handles loading, failed, a retry in flight, empty and phone width ("n/a: <why>" where one does not apply).
+' "$screen" > "$note"
+    driver_say "↩ $step: it touches a screen ($screen) and wrote no screen checklist — asked once more"
+    rc=0; driver_ai_step "$t" "$step" "$note" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    [ "$(jq -r '(.screenChecklist // []) | length' "$ans" 2>/dev/null)" != 0 ] \
+      || driver_say "⚠ $step: still no screen checklist for $screen — the review checks the states without one"
+  fi
+  driver_state_set "$t" screen_checklist "$(jq -c '.screenChecklist // []' "$ans" 2>/dev/null)"
+  return 0
+}
+
 # Paths on stdin; the ones matching no tooling pattern on stdout. A pattern is a shell
 # glob over the whole path, where * crosses directories.
 _driver_tier_not_tooling() {

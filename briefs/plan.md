@@ -69,8 +69,7 @@ toward an exemption is the signal the step applies.
 ## Err broad on what counts as a surface
 
 Treat a ticket as touching a surface whenever it plausibly does: a wrongly-included
-ticket costs a sentence, and a missed one ships a screen with nothing behind it. A
-narrowed trigger once missed a real UI ticket.
+ticket costs a sentence, and a missed one ships a screen with nothing behind it.
 
 Refusing a fine ticket costs a clarification. Accepting an unplannable one costs
 the slice mistakes this gate exists to stop. Return a question instead.
@@ -79,8 +78,8 @@ the slice mistakes this gate exists to stop. Return a question instead.
 
 Set `screenChange`: `visible` if a user will see the change, else `none`. A
 `visible` change names each state that shows it in `screenStates` (`route`,
-`setup` steps in the vocabulary above, what a reviewer should see in `shows`).
-Unsure? Ask.
+`setup` steps in the vocabulary above, what a reviewer should see in `shows`),
+and a change touching a screen fills `screenChecklist`.
 
 ## Return
 
@@ -118,6 +117,13 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `screenStates[].setup` (required): list of string
 - `screenStates[].shows` (required): string
 - `screenChange`: one of "visible", "none"
+- `screenChecklist`: list of object
+- `screenChecklist[].state` (required): string
+- `screenChecklist[].loading` (required): string
+- `screenChecklist[].failed` (required): string
+- `screenChecklist[].retry` (required): string
+- `screenChecklist[].empty` (required): string
+- `screenChecklist[].phone` (required): string
 
 Conditional:
 - when `status` is "planned": requires `tasks`
