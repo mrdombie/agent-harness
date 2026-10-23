@@ -117,6 +117,15 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
         [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
         _driver_park_strand "$t" "$wt" "$branch"
       fi
+    elif [ "$(driver_state_get "$t" park_split)" = 1 ]; then
+      # SPLIT NEEDED: the branch is over the size cap, so it is neither pushed nor opened
+      # as a pull request. The work is kept on a stranded ref and in a bundle.
+      driver_state_set "$t" park_split ""
+      repair_note="This change was NOT pushed: it is over driver.split.maxFiles, so it is split instead. The work is committed in $wt and kept on a stranded ref."
+      driver_say "   park: split needed — the branch is not pushed and no pull request is opened"
+      bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
+      [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
+      _driver_park_strand "$t" "$wt" "$branch"
     elif [ "$(driver_state_get "$t" mode)" = repair ]; then
       # A REPAIR'S PARK IS NOT PUSHED. Its pull request is usually ready with
       # auto-merge armed, so a push there is a merge — of the work the park exists

@@ -92,6 +92,12 @@ build can still prove its test red first. The plan step is told where the attemp
 is. A review that blocks a quick change goes to the full route's `fix` step. A record
 that was already planned keeps the full route.
 
+**Past the size cap, split.** A branch changing more than `driver.split.maxFiles` (20)
+files, counted two-dot against its merge base with the trunk and not counting lockfiles
+(`driver.split.exclude` replaces that list), is never pushed and opens no pull request:
+ship refuses with "split needed" and parks it for the PM, the work kept on a stranded
+ref and in a bundle. `0` turns the cap off.
+
 `driver.quick.enabled: false` turns the route off (sizes are still read and logged).
 The run's last line, the coordinator's `runs.log` line (`route= size= claim_to_pr=`)
 and the live view's run row ("Quick change" / "Full build") all say the route. Only

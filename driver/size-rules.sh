@@ -21,6 +21,38 @@ DRIVER_SIZE_EXT='json|jsonc|md|mdx|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|sh|bash|py|r
 DRIVER_QUICK_NEVER_EFFORT_DEFAULT='["effort:M", "effort:L", "effort:XL"]'
 DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^|/)\.env(\.[a-z]+)?$'
 
+# THE SIZE CAP ON A CHANGE (owner call 2026-10-23, "small changes merged fast"). A branch past
+# driver.split.maxFiles (20) changed files, counted two-dot against its merge base with the
+# trunk, never pushes or opens a PR: it parks for the PM with "split needed". Lockfiles are
+# not counted (driver.split.exclude replaces the list: globs, matched on the path or the
+# file name). 0 turns the cap off. Seen: a "Batch … 2 fixes" PR at 200 files after 5 hours.
+DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "go.sum", "composer.lock"]'
+driver_split_max() {
+  local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"
+}
+# driver_split_count <tree> <trunk ref> — the files the branch changes, less the excluded; 1 unread.
+driver_split_count() {
+  local wt="$1" trunk="$2" mb files pats f p n=0 skip
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 1
+  files=$(git -C "$wt" diff --name-only "$mb" HEAD 2>/dev/null) || return 1
+  pats=$(jq -r --argjson d "$DRIVER_SPLIT_EXCLUDE_DEFAULT" '(.driver.split.exclude // $d) | if type == "array" then .[] else empty end | strings' "$HARNESS_CFG" 2>/dev/null) \
+    || pats=$(jq -r '.[]' <<<"$DRIVER_SPLIT_EXCLUDE_DEFAULT")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    skip=0
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      # shellcheck disable=SC2254  # the pattern is a glob on purpose
+      case "$f" in $p) skip=1; break ;; esac
+      # shellcheck disable=SC2254
+      case "${f##*/}" in $p) skip=1; break ;; esac
+    done <<<"$pats"
+    [ "$skip" = 1 ] || n=$((n+1))
+  done <<<"$files"
+  printf '%s' "$n"
+}
+
 # `== false`, not `// true`: jq's alternative treats false as absent, so `// true` reads it as on.
 driver_quick_on() { [ "$(jq -r 'if .driver.quick.enabled == false then "off" else "on" end' "$HARNESS_CFG" 2>/dev/null)" != off ]; }
 driver_quick_max_files() {
