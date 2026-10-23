@@ -606,7 +606,6 @@ want "the swarm hold stops every spawn"    "" "$(spawned)"
 want_in "and names the hold"               'held — owner said stop' "$out"
 
 echo "--- process fixes trump everything: priority, kind, polish, heal-all and the split ---"
-proc_q() { local l="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$l"; bash "$Q" add "$t" >/dev/null; done; }
 fresh; proc_q "P0,status:ready" 701; proc_q "P3,process,status:ready" 702
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1)
 want "a P3 process fix starts before a P0 that is not one" "702" "$(spawned)"
