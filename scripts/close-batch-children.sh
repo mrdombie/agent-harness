@@ -9,17 +9,21 @@
 #
 # Prints one line per child: "closed #n", "already closed #n" or "FAILED #n".
 # A ticket that lists no children closes nothing. Exits 1 when a close failed.
+#
+# Sourced, it defines batch_children only (close-merged.sh reads a batch with it).
+
+# The same lines the pr-body-matches-branch hook reads a batch's children from.
+batch_children() { # [ticket] <body on stdin> — one number per line, in the order listed
+  grep -iE '^[[:space:]>*_-]*(children([[:space:]]*\([0-9]+\))?|rolled in)[[:space:]]*:?' \
+    | grep -oE '#[0-9]+' | tr -d '#' | awk -v t="${1:-${T:-}}" '$0 != t && !seen[$0]++'
+}
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
+
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || exit 1
 T="${1:?usage: close-batch-children.sh <ticket> <pr>}"; PR="${2:?usage: close-batch-children.sh <ticket> <pr>}"
 T="${T#\#}"; PR="${PR#\#}"
-
-# The same lines the pr-body-matches-branch hook reads a batch's children from.
-batch_children() { # <body on stdin> — one number per line, in the order listed
-  grep -iE '^[[:space:]>*_-]*(children([[:space:]]*\([0-9]+\))?|rolled in)[[:space:]]*:?' \
-    | grep -oE '#[0-9]+' | tr -d '#' | awk -v t="$T" '$0 != t && !seen[$0]++'
-}
 
 body=$(gh issue view "$T" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) \
   || { echo "close-batch-children: could not read #$T — no child closed" >&2; exit 1; }

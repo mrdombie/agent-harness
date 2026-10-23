@@ -16,6 +16,11 @@
 # coordinator's queue. A polish list is left to polish-list.sh: it closes only when
 # nothing is left on it.
 #
+# A PARKED OR BATCH RUN CLOSES NOTHING: a PR whose title opens "parked" or "WIP", or one
+# naming a ticket whose body lists children (a batch), leaves every ticket it names open
+# with "Merged by #PR, a parked/batch run; check this ticket's acceptance before
+# closing." A batch's open children still labelled batched go back to ready, with it.
+#
 # The high-water mark is the newest merged_at handled, in $COORD_DIR/close-merged.hwm;
 # with none, the pass looks back CLOSE_MERGED_LOOKBACK_DAYS (default 14). A read that
 # fails changes nothing and moves no mark: the list unread ends the pass, a ticket
@@ -26,6 +31,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/gh-batch.sh" || exit 1
 . "$SELF_DIR/pr-closes.sh" || exit 1
 . "$SELF_DIR/issue-status.sh" || exit 1
+. "$SELF_DIR/close-batch-children.sh" || exit 1
 export GH_CALLER="${GH_CALLER:-close-merged}"
 
 DRY=0
@@ -50,26 +56,81 @@ export CLOSE_MERGED_HWM="$hwm" CLOSE_MERGED_BASE="$BASE"
 slug_re=$(printf '%s' "$REPO_SLUG" | sed 's/[].[^$*+?(){}|\\/]/\\&/g')
 REF_RE="(?i)(?:^|[^A-Za-z0-9_])(?:${PR_CLOSES_KEYWORDS}):?[ \\t]+(?:#|${slug_re}#|https?://github\\.com/${slug_re}/issues/)([0-9]+)(?![0-9A-Za-z_])"
 
-# One row per merged PR since the mark, oldest first: <merged_at> TAB <pr> TAB <ticket ticket…>
+# One row per merged PR since the mark, oldest first:
+# <merged_at> TAB <pr> TAB <parked|-> TAB <ticket ticket…>
+# PARKED is a title that opens "parked" or "WIP", after the driver's "#N: " or a "[tag]".
 export CLOSE_MERGED_RE="$REF_RE"
 rows=$(gh_read "the PRs merged into $BASE" api "repos/$REPO_SLUG/pulls?state=closed&base=$BASE&sort=updated&direction=desc&per_page=100" \
   --jq '[.[] | select(.merged_at != null and .merged_at > $ENV.CLOSE_MERGED_HWM and .base.ref == $ENV.CLOSE_MERGED_BASE)]
         | sort_by(.merged_at)[]
-        | [.merged_at, (.number | tostring), ([(.body // "") | scan($ENV.CLOSE_MERGED_RE) | .[-1]] | unique | join(" "))] | @tsv') \
+        | [.merged_at, (.number | tostring),
+           (if ((.title // "") | test("^\\s*(#[0-9]+\\s*:\\s*)?(\\[[^]]*\\]\\s*)?(parked|wip)([^a-z]|$)"; "i")) then "parked" else "-" end),
+           ([(.body // "") | scan($ENV.CLOSE_MERGED_RE) | .[-1]] | unique | join(" "))] | @tsv') \
   || { echo "close-merged: nothing closed this pass"; exit 1; }
 
+RD=$(mktemp -d "${TMPDIR:-/tmp}/close-merged.XXXXXX") || { echo "close-merged: no temp dir — nothing closed this pass"; exit 1; }
+trap 'rm -rf "$RD"' EXIT
+
+# note_once <ticket> <pr> <body> — one comment per ticket and PR, ever. 1 when it failed.
+note_once() {
+  grep -qxF "$1 $2" "$DONE_FILE" 2>/dev/null && return 0
+  gh_call issue comment "$1" --repo "$REPO_SLUG" --body "$3" >/dev/null 2>&1 \
+    || { echo "close-merged: could not comment on #$1" >&2; return 1; }
+  echo "$1 $2" >> "$DONE_FILE"
+}
+
+# A PARKED OR BATCH RUN'S MERGE CLOSES NOTHING. 23 Oct: a "parked — …" PR merged under
+# merge-first; its "Closes" closed a batch ticket with 5 of its 6 children half done.
+# Each named ticket is told to have its acceptance checked instead, and a batch's
+# children still marked batched go back to ready, where a run can finish them.
+unfinished() { # <pr> <why> <ticket…> — 1 when a write or a read failed
+  local pr="$1" why="$2" t c info kids f=0 msg; shift 2
+  msg="Merged by #$pr, a $why run; check this ticket's acceptance before closing."
+  for t in "$@"; do
+    if [ "$DRY" -eq 1 ]; then echo "would comment on #$t — PR #$pr was a $why run, so it is not closed"; else
+      note_once "$t" "$pr" "$msg" || { f=1; continue; }
+      echo "left open #$t — PR #$pr was a $why run"
+    fi
+    kids=$(cut -f4 "$RD/$t" | base64 --decode 2>/dev/null | batch_children "$t")
+    for c in $kids; do
+      info=$(gh_read "batch child #$c" api "repos/$REPO_SLUG/issues/$c" \
+        --jq '[.state, ([.labels[].name] | join(","))] | join("\t")') || { f=1; continue; }
+      [ "${info%%$'\t'*}" = open ] || continue
+      case ",${info#*$'\t'}," in *",${LBL_BATCHED:-status:batched},"*) ;; *) continue ;; esac
+      if [ "$DRY" -eq 1 ]; then echo "would release batch child #$c to ${LBL_READY}"; continue; fi
+      note_once "$c" "$pr" "$msg" || { f=1; continue; }
+      issue_status_set "$c" "$LBL_READY" --drop "${LBL_BATCHED:-status:batched}" >/dev/null 2>&1 \
+        || { echo "close-merged: could not release batch child #$c" >&2; f=1; continue; }
+      echo "released #$c to $LBL_READY — batch #$t merged by #$pr"
+    done
+  done
+  return "$f"
+}
+
 new_hwm="$hwm"; hold=""; rc=0; closed=0
-while IFS=$'\t' read -r at pr tickets; do
+while IFS=$'\t' read -r at pr parked tickets; do
   [ -n "${at:-}" ] || continue
-  failed=0
+  failed=0; open_named=""; batch=0
   for t in $tickets; do
     info=$(gh_read "ticket #$t" api "repos/$REPO_SLUG/issues/$t" \
-      --jq '[.state, (if .pull_request then "pr" else "issue" end), ([.labels[].name] | join("\n"))] | join("\t")'); r=$?
+      --jq '[.state, (if .pull_request then "pr" else "issue" end), ([.labels[].name] | join(",")), ((.body // "") | @base64)] | join("\t")'); r=$?
     [ "$r" -eq "$GH_READ_MISSING" ] && { echo "PR #$pr names #$t, which does not exist — skipped"; continue; }
     [ "$r" -eq 0 ] || { failed=1; continue; }
-    state=${info%%$'\t'*}; rest=${info#*$'\t'}; kind=${rest%%$'\t'*}; labels=${rest#*$'\t'}
-    [ "$kind" = issue ] || continue
-    [ "$state" = open ] || continue
+    printf '%s\n' "$info" > "$RD/$t"
+    [ "$(cut -f1,2 "$RD/$t")" = "open"$'\t'"issue" ] || continue
+    open_named="$open_named $t"
+    [ -z "$(cut -f4 "$RD/$t" | base64 --decode 2>/dev/null | batch_children "$t")" ] || batch=1
+  done
+  if [ "$failed" -eq 0 ] && { [ "$parked" = parked ] || [ "$batch" -eq 1 ]; }; then
+    why=$([ "$parked" = parked ] && echo parked || echo batch)
+    [ "$parked" != parked ] || [ "$batch" -eq 0 ] || why="parked batch"
+    # shellcheck disable=SC2086  # a space-separated ticket list
+    unfinished "$pr" "$why" $open_named || failed=1
+    open_named=""
+  fi
+  [ "$failed" -eq 0 ] || open_named=""   # a ticket unread: nothing of this PR closes this pass
+  for t in $open_named; do
+    labels=$(cut -f3 "$RD/$t" | tr ',' '\n')
     if printf '%s\n' "$labels" | grep -qxF -- "${LBL_POLISH_LIST:-polish-list}"; then
       echo "PR #$pr names polish list #$t — left to the polish-list sweep"; continue
     fi
@@ -78,11 +139,7 @@ while IFS=$'\t' read -r at pr tickets; do
     while IFS= read -r l; do
       case "$l" in "$(issue_status_prefix)"*) args="$args"$'\n'"--remove-label"$'\n'"$l" ;; esac
     done <<<"$labels"
-    if ! grep -qxF "$t $pr" "$DONE_FILE" 2>/dev/null; then
-      gh_call issue comment "$t" --repo "$REPO_SLUG" --body "Closed by #$pr, merged to $BASE." >/dev/null 2>&1 \
-        || { echo "close-merged: could not comment on #$t" >&2; failed=1; continue; }
-      echo "$t $pr" >> "$DONE_FILE"
-    fi
+    note_once "$t" "$pr" "Closed by #$pr, merged to $BASE." || { failed=1; continue; }
     if [ -n "$args" ]; then
       ( IFS=$'\n'
         # shellcheck disable=SC2086  # a newline-separated flag list, split on newlines only

@@ -12,14 +12,14 @@ swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 CM="$HERE/close-merged.sh"
 LIST="$FIX/gh/api-repos_acme_widgets_pulls_state_closed_base_develop_sort_updated_direction_desc_per_page_100.json"
 CD="$STATE/coordinator"; mkdir -p "$CD"
-api_issue() { # <n> <open|closed> <label,label…> [pr]
-  jq -n --argjson n "$1" --arg s "$2" --arg l "$3" --arg pr "${4:-}" \
-    '{number:$n, state:$s, labels:($l|split(",")|map(select(length>0)|{name:.}))} + (if $pr == "" then {} else {pull_request:{}} end)' \
+api_issue() { # <n> <open|closed> <label,label…> [pr] [body]
+  jq -n --argjson n "$1" --arg s "$2" --arg l "$3" --arg pr "${4:-}" --arg b "${5:-}" \
+    '{number:$n, state:$s, body:$b, labels:($l|split(",")|map(select(length>0)|{name:.}))} + (if $pr == "" then {} else {pull_request:{}} end)' \
     > "$FIX/gh/api-repos_acme_widgets_issues_$1.json"
 }
-pr() { # <n> <merged_at|null> <merged_by> <body> [base]
-  jq -n --argjson n "$1" --arg m "$2" --arg by "$3" --arg b "$4" --arg base "${5:-develop}" \
-    '{number:$n, merged_at:(if $m == "null" then null else $m end), merged_by:{login:$by}, body:$b, base:{ref:$base}}'
+pr() { # <n> <merged_at|null> <merged_by> <body> [base] [title]
+  jq -n --argjson n "$1" --arg m "$2" --arg by "$3" --arg b "$4" --arg base "${5:-develop}" --arg t "${6:-}" \
+    '{number:$n, title:$t, merged_at:(if $m == "null" then null else $m end), merged_by:{login:$by}, body:$b, base:{ref:$base}}'
 }
 run() { bash "$CM" "$@" 2>&1; }
 
@@ -99,6 +99,54 @@ out=$(run --dry-run)
 want_in "it says what it would close"             'would close #512 — PR #48' "$out"
 want_not_in "and writes nothing"                  '^issue (close|comment|edit)' "$(cat "$GH_LOG")"
 want "nor moves the mark"                         2026-10-22T16:30:00Z "$(cat "$CD/close-merged.hwm")"
+
+echo "--- a merged \"parked — \" PR closes nothing: each named ticket is told to check its acceptance ---"
+# 23 Oct: #13565 "#13477: parked — …" merged under merge-first with auto-merge armed, and
+# its "Closes" closed a batch ticket with 5 of its 6 children half done.
+pr 60 2026-10-22T18:00:00Z dom "Parked mid-run.
+
+Closes #520" develop "#520: parked — the build step ran out of turns" | jq -s . > "$LIST"
+api_issue 520 open "status:in-review"
+echo 2026-10-22T17:30:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"
+out=$(run); rc=$?
+want "the pass succeeds"                          0 "$rc"
+log=$(cat "$GH_LOG")
+want_not_in "the parked PR closes nothing"        '^issue (close|edit) 520 ' "$log"
+want_in "it comments on the ticket instead"       "^issue comment 520 .*Merged by #60, a parked run; check this ticket's acceptance before closing\." "$log"
+want "and only once"                              1 "$(grep -c '^issue comment 520 ' <<<"$log")"
+want "the mark moves past it"                     2026-10-22T18:00:00Z "$(cat "$CD/close-merged.hwm")"
+: > "$GH_LOG"; echo 2026-10-22T17:30:00Z > "$CD/close-merged.hwm"; run >/dev/null
+want_not_in "a re-read pass comments no second time" '^issue comment 520 ' "$(cat "$GH_LOG")"
+
+echo "--- a WIP title is the same ---"
+pr 61 2026-10-22T18:10:00Z dom "Fixes #521" develop "WIP: half a migration" | jq -s . > "$LIST"
+api_issue 521 open "status:in-review"
+echo 2026-10-22T18:05:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"; run >/dev/null
+want_not_in "a WIP PR closes nothing"             '^issue close 521 ' "$(cat "$GH_LOG")"
+want_in "and comments"                            '^issue comment 521 .*Merged by #61, a parked run' "$(cat "$GH_LOG")"
+
+echo "--- a batch PR closes nothing, and its batched children come back to ready ---"
+pr 62 2026-10-22T18:20:00Z dom "Closes #530" develop "#530: settings polish batch" | jq -s . > "$LIST"
+api_issue 530 open "status:in-review" "" "Batch of small settings fixes.
+
+**Children (3):** #531, #532, #533"
+api_issue 531 open "status:ready,status:batched,P2"
+api_issue 532 open "status:batched"
+api_issue 533 closed "status:batched"
+for n in 531 532 533; do
+  jq '{number, state:(.state | ascii_upcase), labels}' "$FIX/gh/api-repos_acme_widgets_issues_$n.json" > "$FIX/gh/issue-$n.json"
+done
+echo 2026-10-22T18:15:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"
+out=$(SWARM_GH="$BIN/gh-labels" run); rc=$?
+want "the pass succeeds"                          0 "$rc"
+log=$(cat "$GH_LOG")
+want_not_in "the batch ticket is not closed"      '^issue close 530 ' "$log"
+want_in "it is told to check its acceptance"      "^issue comment 530 .*Merged by #62, a batch run; check this ticket's acceptance before closing\." "$log"
+want "child #531 is ready and no longer batched"  "status:ready,P2" "$(jq -r '[.labels[].name] | join(",")' "$FIX/gh/issue-531.json")"
+want "child #532 is ready"                        "status:ready" "$(jq -r '[.labels[].name] | join(",")' "$FIX/gh/issue-532.json")"
+want_in "with the same comment"                   "^issue comment 532 .*Merged by #62, a batch run; check this ticket's acceptance" "$log"
+want_not_in "a closed child is not touched"       '^issue (comment|edit|close) 533 ' "$log"
+want_not_in "no child is closed"                  '^issue close 53[123] ' "$log"
 
 echo "--- housekeeping runs it every pass, before reconcile, in shadow as a dry run ---"
 HK="$HERE/coordinator-housekeeping.sh"; ORDER="$FIX/order.log"

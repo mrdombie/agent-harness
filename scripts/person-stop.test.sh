@@ -67,6 +67,21 @@ run "$T" "$N"
 want "the driver's account is the machine"      "0" "$rc"
 cp "$FIX/h.orig" "$HARNESS_CFG_PATH"
 
+echo "--- a park's conversion the driver marked as its own is the machine's, on a shared login ---"
+PARKMARK='{"created_at":"2026-10-22T17:32:11Z","user":'"$PERSON"',"body":"**Parked** by the driver: back to draft. <!-- harness:driver-draft --> <!-- harness:machine -->"}'
+world "[$HANDOFF]" "[$PARKMARK]" \
+  '[{"event":"ready_for_review","created_at":"2026-10-22T15:40:53Z","actor":'"$PERSON"'},{"event":"convert_to_draft","created_at":"2026-10-22T17:32:10Z","actor":'"$PERSON"'}]' "$DRAFT"
+run "$T" "$N"
+want "the driver's own park draft is no person's stop" "0" "$rc"
+want "and says nothing"                         "" "$out"
+
+echo "--- a person's draft still stops it when an older park mark is on the PR ---"
+world "[$HANDOFF]" "[$PARKMARK"',{"created_at":"2026-10-22T19:00:05Z","user":'"$PERSON"',"body":"Not this one yet."}]' \
+  '[{"event":"convert_to_draft","created_at":"2026-10-22T17:32:10Z","actor":'"$PERSON"'},{"event":"ready_for_review","created_at":"2026-10-22T18:00:00Z","actor":'"$PERSON"'},{"event":"convert_to_draft","created_at":"2026-10-22T19:00:00Z","actor":'"$PERSON"'}]' "$DRAFT"
+run "$T" "$N"
+want "the person's later draft stops it"        "1" "$rc"
+want_in "naming them"                           'a person \(pm\) put this back to draft on 2026-10-22: Not this one yet' "$out"
+
 echo "--- a person's Critical newer than the last hand-off stops it ---"
 world "[$HANDOFF"',{"created_at":"2026-10-22T18:00:00Z","user":'"$PERSON"',"body":"PM review of the data model:\n1. **Critical (lost data):** same-name colleagues fold into one key."}]' \
   '[]' '[]' "$READY"

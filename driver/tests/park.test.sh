@@ -346,4 +346,54 @@ want_in     "the brief asks the question"   'which repo does this belong in' "$b
 want_in     "and names the label to clear"  'clear `status:pm-decision`' "$brief"
 want_not_in "and not the owner's"           'needs:human-approval' "$brief"
 
+echo "--- a parked run's open PR loses auto-merge and goes back to draft, marked as the driver's ---"
+# 23 Oct: an earlier ship had readied and armed it; `pr create --draft` changed nothing
+# on a PR that already existed, and the "parked — …" PR merged with its work half done.
+PRJ="$FIX/gh/api-repos_acme_widgets_pulls_77.json"
+cat > "$BIN/gh-pr77" <<'SH'
+#!/usr/bin/env bash
+# GitHub's side of the two writes: disarm clears auto_merge, --undo makes it a draft.
+f="$FIX/gh/api-repos_acme_widgets_pulls_77.json"
+case "$*" in
+  "pr merge 77 "*--disable-auto*) if [ ! -f "$FIX/no-disarm" ]; then jq '.auto_merge = null' "$f" > "$f.n" && mv "$f.n" "$f"; fi ;;
+  "pr ready 77 "*--undo*)         if [ ! -f "$FIX/no-undraft" ]; then jq '.draft = true' "$f" > "$f.n" && mv "$f.n" "$f"; fi ;;
+esac
+exec "$BIN/gh-order" "$@"
+SH
+chmod +x "$BIN/gh-pr77"; SWARM_GH_WAS2="$SWARM_GH"; export SWARM_GH="$BIN/gh-pr77"
+printf '[{"number":77,"headRefName":"tkt-401/work"}]\n' > "$FIX/gh/prs.json"
+printf '{"number":77,"state":"open","draft":false,"auto_merge":{"merge_method":"squash"}}\n' > "$PRJ"
+park_tree 401 tkt-401/work develop
+: > "$GH_LOG"; : > "$ORDER"
+out=$(driver_park 401 "the build step ran out of turns" "" driver 2>&1); rc=$?
+want "it parks"                                   "20" "$rc"
+log=$(cat "$GH_LOG")
+want_in "auto-merge is disarmed"                  '^pr merge 77 .*--disable-auto' "$log"
+want_in "it is converted back to draft"           '^pr ready 77 .*--undo' "$log"
+want_in "and marked as the driver's own draft"    '^pr comment 77 .*harness:driver-draft' "$log"
+want "GitHub now holds a draft"                   "true" "$(jq -r .draft "$PRJ")"
+want "with auto-merge off"                        "null" "$(jq -c .auto_merge "$PRJ")"
+want_in "the brief says it cannot land by itself" 'PR #77 is a draft with auto-merge off \(auto-merge disarmed, converted to draft\), so it cannot land' "$(grep -A30 '^issue comment 401' "$GH_LOG")"
+seq=$(sed -e 's/^gh pr merge 77 .*/DISARM/' -e 's/^gh pr ready 77 .*/UNDRAFT/' -e 's/^gh issue comment 401.*/BRIEF/' \
+          -e 's/^claim-lock release 401.*/RELEASE/' "$ORDER" | grep -E '^(DISARM|UNDRAFT|BRIEF|RELEASE)$' | tr '\n' ' ' | sed 's/ $//')
+want "disarmed and drafted before the brief and the release" "DISARM UNDRAFT BRIEF RELEASE" "$seq"
+
+echo "--- a draft the park itself opened is left alone: nothing to disarm, no mark ---"
+printf '{"number":77,"state":"open","draft":true,"auto_merge":null}\n' > "$PRJ"
+park_tree 402 tkt-402/work develop
+: > "$GH_LOG"
+driver_park 402 "a refusal" "" driver >/dev/null 2>&1
+log=$(cat "$GH_LOG")
+want_not_in "no disarm, no undraft, no mark"      '^pr (merge|ready|comment) 77 ' "$log"
+want_in "the brief still says it is a draft with auto-merge off" 'PR #77 is a draft with auto-merge off, so it cannot land' "$(grep -A30 '^issue comment 402' "$GH_LOG")"
+
+echo "--- a PR that will not go back to draft is said to be able to land by itself ---"
+printf '{"number":77,"state":"open","draft":false,"auto_merge":{"merge_method":"squash"}}\n' > "$PRJ"
+: > "$FIX/no-undraft"; : > "$FIX/no-disarm"
+park_tree 403 tkt-403/work develop
+: > "$GH_LOG"
+driver_park 403 "a refusal" "" driver >/dev/null 2>&1
+want_in "the brief warns it could land by itself" '⚠ PR #77 is still ready with auto-merge armed — it could land by itself' "$(grep -A30 '^issue comment 403' "$GH_LOG")"
+rm -f "$FIX/no-undraft" "$FIX/no-disarm" "$PRJ"; printf '[]\n' > "$FIX/gh/prs.json"; export SWARM_GH="$SWARM_GH_WAS2"
+
 suite_end "$FAILED"
