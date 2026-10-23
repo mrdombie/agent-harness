@@ -450,7 +450,18 @@ coord_heartbeat_read() {
   cached=$(head -1 "$COORD_SHEET_ISSUE_FILE" 2>/dev/null); n=${cached%%$'\t'*}
   case "$n" in ''|*[!0-9]*) printf '[]'; return 0 ;; esac
   [ "$cached" = "$n"$'\t'"$COORD_SHEET_LABEL" ] || { printf '[]'; return 0; }
-  raw=$(gh_call api "repos/$REPO_SLUG/issues/$n/comments?per_page=100" 2>/dev/null) || { printf '[]'; return 1; }
+  # A READ THAT FAILED IS NOT AN EMPTY FLEET. On a secondary rate limit it returned [], the
+  # fleet dropped every reader, and the live view showed a machine heartbeating every few
+  # minutes as "no heartbeat". So the last fleet's other hosts are kept: each still ages
+  # out by coordinator.fleetForgetMin from its own last tick, as a read one would.
+  if ! raw=$(gh_call api "repos/$REPO_SLUG/issues/$n/comments?per_page=100" 2>/dev/null) \
+     || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$raw"; then
+    # Said on stderr: stdout is the JSON the caller reads.
+    if declare -F say >/dev/null; then say "heartbeats: read failed, kept last" >&2; else echo "heartbeats: read failed, kept last" >&2; fi
+    jq -c --arg me "${COORD_HOST:-}" '[(.hosts // [])[]? | select(type == "object" and ((.host // "") | ascii_downcase) != ($me | ascii_downcase))]' "$COORD_FLEET" 2>/dev/null \
+      || printf '[]'
+    return 1
+  fi
   jq -c '[if type == "array" then .[] else empty end | (.body // "") | split("\n")[]
           | capture("^<!-- sheet:heartbeat-json (?<j>\\{.*\\}) -->\r?$")? | .j | fromjson? | select(type == "object")]' <<<"$raw" 2>/dev/null \
     || printf '[]'
