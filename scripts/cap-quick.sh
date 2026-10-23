@@ -46,7 +46,7 @@ coord_cap_exempt_prins() {
   elif [ -r "${HARNESS_CFG:-}" ]; then
     v=$(jq -r '(.coordinator.capExemptPriorities // ["P0"]) | if type == "array" then join(" ") else tostring end' "$HARNESS_CFG" 2>/dev/null) || v=P0
   else v=P0; fi
-  printf '%s\n' $v | tr ',' '\n' | sed -n 's/^[Pp]\([0-9]\)$/\1/p' | tr '\n' ' '
+  printf '%s\n' "$v" | tr -s ', ' '\n' | sed -n 's/^[Pp]\([0-9]\)$/\1/p' | tr '\n' ' '
 }
 
 # _coord_quick_one <ticket> <updatedAt> <title> <labels-csv> <body> — sizes one read
