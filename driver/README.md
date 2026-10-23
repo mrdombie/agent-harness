@@ -48,6 +48,13 @@ thinking inside one step.
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
 | 9 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
 
+The kit ships one gate a project can list in `gates.local` as it is:
+`bash "$KIT_ROOT/scripts/check-changed-shell.sh"`. It reads only the shell scripts
+the change touches (`.sh`, or a bash/sh shebang) and refuses, by file:line and rule,
+a shellcheck error (the project's `.shellcheckrc` applies) or an added `curl`, `wget`,
+`gh api`, `git fetch`, `npm`, `npx` or `docker` with no timeout or bounded wrapper.
+No shellcheck on the machine is a log line, not a failure.
+
 ## The quick route: `start → size → quick → review → ship`
 
 `size` reads the ticket before anything is planned (`steps/size.sh`): its labels, its

@@ -99,6 +99,8 @@ _coord_self="${BASH_SOURCE[0]}"
 COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_coord_self")" && pwd)/branch-ticket.sh" || return 1 2>/dev/null || exit 1
+# driver_repo_self / driver_repo_foreign: a repo:<other> ticket is never seeded, ordered or started here.
+. "$(cd "$(dirname "$_coord_self")/../driver" && pwd)/size-rules.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
 
 COORD_DIR="${COORDINATOR_DIR:-$STATE_DIR/coordinator}"
@@ -636,6 +638,13 @@ COORD_TICKET_JQ='
   def coord_stopped($ls; $class; $state):
     (($state // "OPEN") != "OPEN")
     or ($ls | any(. as $l | (if $class == "new" then $stopnew else $stopall end) | index($l) != null));
+  # The other repo a repo:<name> label names, or null: a ticket with repo: labels, none
+  # of them a repo this project builds ($ownrepos, driver_repo_own), belongs to that repo.
+  def coord_foreign($ls):
+    ([$ls[]? | select(type == "string" and test("^repo:"; "i")) | sub("^repo:\\s*"; ""; "i")
+      | split("/") | last | ascii_downcase | select(length > 0)]) as $r
+    | if ($ownrepos | length) == 0 or ($r | length) == 0 or ($r | any(. as $x | $ownrepos | index($x) != null))
+      then null else $r[0] end;
   def coord_repair_note($note): (($note // "") | test("(^|\n)REPAIR on PR #[0-9]"));
   def coord_class($c; $note): if ($c // "new") == "new" and coord_repair_note($note) then "repair" else ($c // "new") end;
   def coord_release_also($ls; $title):
@@ -663,6 +672,7 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
      --argjson tooling "$(printf '%s' "$COORD_TOOLING_LABELS" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0))')" \
      --argjson toolscopes "$(printf '%s' "$COORD_TOOLING_SCOPES" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0) | ascii_downcase)')" \
      --arg inreview "${LBL_IN_REVIEW:-status:in-review}" --argjson release "${COORD_RELEASE_SCOPE:-null}" \
+     --argjson ownrepos "${COORD_OWN_REPOS_JSON:-$(driver_repo_own | jq -R . | jq -sc .)}" \
      --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" "$@"
 }
 

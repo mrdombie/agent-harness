@@ -504,6 +504,8 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   [ -n "$meta" ] || { echo "could not be read"; return 0; }
   st=${meta%% *}; lab=${meta#* }
   [ "$st" = "OPEN" ] || { echo "$st"; return 0; }
+  # A repo:<other> ticket is that repo's work, whatever queue it reached this one by.
+  if l=$(driver_repo_foreign "$lab"); then echo "belongs to $l"; return 0; fi
   while read -r l; do
     [ -n "$l" ] || continue
     # A repair or an approved merge is in review by definition; only fresh work waits on it.

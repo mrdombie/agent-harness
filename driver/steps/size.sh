@@ -28,7 +28,9 @@
 #
 # Settings, all optional, under driver.quick in harness.json:
 #   enabled     false turns the quick route off (sizes are still read and logged)
-#   maxFiles    the most files a quick change touches (3)
+#   maxFiles    the most files a quick change touches (3); only a named file on the
+#               integration branch counts, and a ticket naming only missing ones is undecided
+#   neverEffort the effort labels never quick (effort:M, effort:L, effort:XL)
 #   smallMaxFiles  the most named files a small one touches (8)
 #   neverGlobs  more globs never quick, beside the defaults: schema and migration
 #               files, lockfiles. A NEW screen file or page (design.surfacePaths,
