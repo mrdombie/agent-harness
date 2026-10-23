@@ -135,6 +135,9 @@ printf 'PNG19' > "$SB/fx/repos_o_r_contents_docs_evidence_42_dashboard.png_ref_$
 # 20 the folder is a ticket the PR closes; the capture ended cancelled after CI's push
 evcommit "$(ev 20)" "$(par 20)" ci@example.com docs/evidence/42/dashboard.png; runs "$(par 20)" completed/cancelled completed/success
 pr 20 "$(ev 20)" false "$(printf "$(blockat "$(ev 20)" 42 dashboard)")" feature/x "42"
+# 26 the folder is a ticket the body closes; a PR into a non-default branch has no closingIssuesReferences
+evcommit "$(ev 26)" "$(par 26)" ci@example.com docs/evidence/42/dashboard.png; runs "$(par 26)" completed/success completed/success
+pr 26 "$(ev 26)" false "$(printf "$(blockat "$(ev 26)" 42 dashboard)")$(printf '\n\nFixes #42')" feature/x ""
 # 21 the folder belongs to no ticket of this PR
 evcommit "$(ev 21)" "$(par 21)" ci@example.com docs/evidence/99/dashboard.png; runs "$(par 21)" completed/success completed/success
 pr 21 "$(ev 21)" false "$(printf "$(blockat "$(ev 21)" 99 dashboard)")" tk-42/slug "42"
@@ -303,6 +306,7 @@ tickets() { # <script> → failed cases
   o=$(HARNESS_CFG="$SB/ids.json" st "$s" 19); [ "$o" = pinned ] || echo "shots in the branch ticket's folder, capture still running, read $o"
   HARNESS_CFG="$SB/ids.json" bash "$s" fetch 19 "$d" >/dev/null 2>&1; [ "$(cat "$d/dashboard.png" 2>/dev/null)" = PNG19 ] || echo "fetch refused shots in the branch ticket's folder"
   o=$(HARNESS_CFG="$SB/ids.json" st "$s" 20); [ "$o" = pinned ] || echo "shots in a closed ticket's folder, capture cancelled after the push, read $o"
+  o=$(HARNESS_CFG="$SB/ids.json" st "$s" 26); [ "$o" = pinned ] || echo "shots in the folder of a ticket the body closes read $o"
   o=$(HARNESS_CFG="$SB/ids.json" st "$s" 21); [ "$o" != pinned ] || echo "shots in another ticket's folder read pinned"
   o=$(HARNESS_CFG="$SB/ids.json" st "$s" 22); [ "$o" != pinned ] || echo "an evidence commit by someone other than CI's author read pinned"
   o=$(HARNESS_CFG="$SB/ids.json" st "$s" 23); [ "$o" = pinned ] || echo "shots in the PR number's folder read $o"
@@ -330,7 +334,7 @@ echo "ci-evidence"
 r=$(all "$S"); [ -z "$r" ] && ok "every state, wait exit, fetch, verdict and routes case reads right" || { bad "cases failed:"; printf '         %s\n' "$r"; }
 
 plant() { # <desc> <old> <new> <the case that must go red>
-  cp "$S" "$SB/p.sh"; cp "$(dirname "$S")/gh-batch.sh" "$SB/gh-batch.sh"
+  cp "$S" "$SB/p.sh"; cp "$(dirname "$S")/gh-batch.sh" "$(dirname "$S")/branch-ticket.sh" "$(dirname "$S")/pr-closes.sh" "$SB/"
   python3 - "$SB/p.sh" "$2" "$3" <<'PY' || { bad "plant did not land: $1"; return; }
 import sys
 p, a, b = sys.argv[1:]
@@ -358,6 +362,7 @@ plant "the folder is not checked"            'elif ($out | length) > 0 then' 'el
 plant "CI's author is not checked"           'elif $em != "" and (.commit.author.email // "") != $em then' 'elif false then' 'someone other than CI'"'"'s author read pinned'
 plant "the branch's ticket is not read"      'jq -r --arg pre "$BR_PREFIX" "$BRANCH_TICKET_JQ"' 'true || jq -r --arg pre "$BR_PREFIX" "$BRANCH_TICKET_JQ"' 'in the branch ticket'"'"'s folder, capture still running'
 plant "closed tickets are not read"          'jq -r '"'"'.closingIssuesReferences[]?.number // empty'"'"' <<<"$2"' 'true || jq -r '"'"'.closingIssuesReferences[]?.number // empty'"'"' <<<"$2"' 'in a closed ticket'"'"'s folder'
+plant "a ticket the body closes is not read"  'jq -r --arg kw "$PR_CLOSES_JQ"' 'true || jq -r --arg kw "$PR_CLOSES_JQ"' 'the folder of a ticket the body closes'
 plant "the PR's own number is not a folder"  '{ printf '"'"'%s\n'"'"' "$1"' '{ true' 'in the PR number'"'"'s folder read'
 plant "the branch prefix is not configurable" 'BR_PREFIX=$(cfg branchPrefix "${BRANCH_PREFIX:-}")' 'BR_PREFIX=' 'in the branch ticket'"'"'s folder, capture still running'
 plant "a draft is not told apart"            '[ "$draft" = true ] && {'                  '[ "$draft" = never ] && {'       'a draft read'

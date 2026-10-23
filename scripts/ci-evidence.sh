@@ -117,8 +117,12 @@ ci_files() { # <evsha> <folders> → the files CI's evidence commit wrote, one a
 ev_folders() { # <pr> <pr json with closingIssuesReferences, headRefName>
   # shellcheck source=branch-ticket.sh
   . "$(dirname "${BASH_SOURCE[0]}")/branch-ticket.sh"
+  # shellcheck source=pr-closes.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/pr-closes.sh"
   { printf '%s\n' "$1"
     jq -r '.closingIssuesReferences[]?.number // empty' <<<"$2" 2>/dev/null
+    # GitHub fills closingIssuesReferences only for a PR into the default branch.
+    jq -r --arg kw "$PR_CLOSES_JQ" '(.body // "") | scan("(?i)" + $kw + "([0-9]+)(?![0-9])") | .[-1]' <<<"$2" 2>/dev/null
     jq -r --arg pre "$BR_PREFIX" "$BRANCH_TICKET_JQ"' .headRefName // "" | branch_ticket($pre)' <<<"$2" 2>/dev/null
   } | grep -E '^[0-9]+$' | sort -u | tr '\n' ' '
 }
