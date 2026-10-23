@@ -96,8 +96,9 @@ coord_sheet_issue() {
   if [ -n "$n" ] && [ "$cached" = "$n"$'\t'"$COORD_SHEET_LABEL" ]; then printf '%s' "$n"; return 0; fi
   n=""
   label_q=$(jq -rn --arg l "$COORD_SHEET_LABEL" '$l | @uri')
-  n=$(gh_call api "repos/$REPO_SLUG/issues?labels=$label_q&state=open&per_page=10" \
-        --jq '[.[] | select(.pull_request | not)] | sort_by(.number) | .[0].number // empty' 2>/dev/null)
+  # Unreadable is not "no sheet": a second sheet is made only when the list was read and holds none.
+  n=$(gh_read "the sheet's issue" api "repos/$REPO_SLUG/issues?labels=$label_q&state=open&per_page=10" \
+        --jq '[.[] | select(.pull_request | not)] | sort_by(.number) | .[0].number // empty') || return "$GH_READ_UNKNOWN"
   case "$n" in ''|*[!0-9]*) n="" ;; esac
   if [ -z "$n" ] && [ "${1:-}" = create ]; then
     gh_call api "repos/$REPO_SLUG/labels" -f name="$COORD_SHEET_LABEL" -f color=0E8A16 \
@@ -245,7 +246,7 @@ coord_sheet_publish() {
   body=$(coord_sheet_render "$e" "$now")
   local try resp
   for try in 1 2; do
-    n=$(coord_sheet_issue create) || { printf 'no sheet issue could be found or made'; return 1; }
+    n=$(coord_sheet_issue create) || { printf 'unknown — no sheet issue could be read or made; nothing written this tick'; return 1; }
     if ! resp=$(jq_slurp raw:b "$body" -- jq -n --arg t "$COORD_SHEET_TITLE" '{body: $b, title: $t}' \
          | gh_call api -X PATCH "repos/$REPO_SLUG/issues/$n" --input - 2>/dev/null); then
       # A sheet that was closed or deleted is looked for again next tick.
@@ -287,6 +288,7 @@ coord_sheet_read() {
   local try
   for try in 1 2; do
     n=$(coord_sheet_issue) || break
+    # gh-read-ok: unreadable falls back to the last copy, named as the copy
     raw=$(gh_call api "repos/$REPO_SLUG/issues/$n" 2>/dev/null) || raw=""
     [ -n "$raw" ] || break
     if _sheet_carries "$raw"; then

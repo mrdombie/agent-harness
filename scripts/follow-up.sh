@@ -26,6 +26,7 @@ T="${2:-}"; PR="${3:-}"; F="${4:-}"
 case "$T$PR" in ''|*[!0-9]*) die "the ticket and the pull request are numbers" ;; esac
 [ -f "$F" ] || die "no findings file at $F"
 GH="${FOLLOW_UP_GH:-gh}"
+declare -F gh_read >/dev/null 2>&1 || . "$SELF_DIR/gh-batch.sh" || exit 1
 LEDGER="${FOLLOW_UP_LEDGER:-$STATE_DIR/swarm/follow-ups.tsv}"
 mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
 P_MAJOR=$(toolkit_cfg labels.priority.major 2>/dev/null); P_MAJOR="${P_MAJOR:-P1}"
@@ -36,6 +37,7 @@ fu_label_ready=""
 ensure_fu_label() { # created once if the repo lacks it; a failed create is said, the filing goes on
   [ -z "$fu_label_ready" ] || return 0
   fu_label_ready=1
+  # gh-read-ok: unreadable only tries to create the label, which GitHub refuses if it exists
   "$GH" api "repos/$REPO_SLUG/labels/$(jq -rn --arg l "$FU_LABEL" '$l | @uri')" -q .name >/dev/null 2>&1 && return 0
   "$GH" api "repos/$REPO_SLUG/labels" -X POST -f name="$FU_LABEL" -f color=d4c5f9 \
     -f description="A review finding filed so its change could merge first; fixed after the merge" >/dev/null 2>&1 \
@@ -43,6 +45,7 @@ ensure_fu_label() { # created once if the repo lacks it; a failed create is said
 }
 
 # The parent's screen and area labels ride along, so the follow-up sorts with its screen.
+# gh-read-ok: the screen labels sort the follow-up; it is filed either way
 carry=$("$GH" api "repos/$REPO_SLUG/issues/$T" -q '.labels[].name' 2>/dev/null \
   | grep -E "^(${LBL_SCREEN_PREFIX:-screen:}|area:|repo:)" || true)
 
@@ -56,8 +59,11 @@ while IFS= read -r x; do
     had=$((had + 1)); continue
   fi
   marker="<!-- follow-up: pr=$PR finding=$id -->"
-  n=$("$GH" api -X GET search/issues -f q="repo:$REPO_SLUG is:issue in:body \"follow-up: pr=$PR finding=$id\"" \
-        -q '.items[0].number // empty' 2>/dev/null)
+  # An unreadable search is unknown, not "never filed": filing then would make a second ticket.
+  if ! n=$(SWARM_GH="$GH" gh_read "whether finding $id on PR #$PR was filed" api -X GET search/issues \
+             -f q="repo:$REPO_SLUG is:issue in:body \"follow-up: pr=$PR finding=$id\"" -q '.items[0].number // empty'); then
+    echo "unknown — whether finding $id was filed could not be read; it is not filed this pass"; failed=1; continue
+  fi
   if [ -n "$n" ]; then printf '%s\t%s\n' "$key" "$n" >> "$LEDGER"; had=$((had + 1)); continue; fi
   grade=$(jq -r '.grade // "" | ascii_downcase' <<<"$x")
   case "$grade" in

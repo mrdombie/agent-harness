@@ -175,6 +175,7 @@ relayed() { grep -q "^$1	$2	" "$RELAYED" 2>/dev/null; } # <pr> <head>
 # Read once per head; an unreadable answer is "not yet", so the verdict is sent again.
 posted() {
   grep -qxF "$1	$2" "$CONFIRMED" 2>/dev/null && return 0
+  # gh-read-ok: unreadable is "not yet posted": the verdict is sent again
   swarm_gh api "repos/$REPO_SLUG/commits/$2/statuses?per_page=100" 2>/dev/null \
     | jq -e --arg c "$CONTEXT" --arg p "$PREFIX" --arg who "$POSTER" '
         [.[]? | select(.context == $c)] | first
@@ -193,6 +194,7 @@ pictures_only() {
 }
 
 self_verdicts() { # <pr> — commits on the PR carrying the design trailer
+  # gh-read-ok: the list is only shown as ignored; the ledger is the verdict
   swarm_gh api "repos/$REPO_SLUG/pulls/$1/commits?per_page=100" --paginate 2>/dev/null \
     | jq -rs --arg k "$TRAILER" '[.[][] | select(.commit.message | test("(^|\\n)" + $k + ":"; "i"))
         | "\(.sha[0:12])\t\(.commit.message | split("\n")[0])"] | .[]'
@@ -251,23 +253,30 @@ polish_slug() {
 # on the ticket (a picture approved in an earlier PR binds this one too). Prints their paths.
 pictures_for() {
   local pr="$1" head="$2" t="$3" d="$4" list ref="" f
-  list=$(swarm_gh api "repos/$REPO_SLUG/pulls/$pr/files?per_page=100" --paginate 2>/dev/null \
-           | jq -r '.[]? | select(.status != "removed") | .filename' | pictures_only) || return 1
+  list=$(gh_read "PR #$pr's files" api "repos/$REPO_SLUG/pulls/$pr/files?per_page=100" --paginate) || return 1
+  list=$(jq -r '.[]? | select(.status != "removed") | .filename' <<<"$list" | pictures_only) || return 1
   if [ -n "$t" ]; then
-    ref=$(swarm_gh api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate 2>/dev/null \
-            | jq -rs '[.[][] | select(.body | startswith("**Plan**"))] | last | .body // ""' \
+    # Unreadable comments are unknown, not "no designRef": the picture they name would go unjudged.
+    ref=$(gh_read "#$t's comments" api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate) || return 1
+    ref=$(jq -rs '[.[][] | select(.body | startswith("**Plan**"))] | last | .body // ""' <<<"$ref" \
             | awk '/^```json/{f=1; next} /^```/{f=0} f' | jq -r '.designRef // empty' 2>/dev/null)
     case "$ref" in *.html) : ;; *) ref="" ;; esac
   fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    # gh-read-ok: a picture that will not download fails pictures_for, and the PR is not judged
     swarm_gh api "repos/$REPO_SLUG/contents/$f?ref=$head" -H "Accept: application/vnd.github.raw" > "$d/pic-$(printf '%s' "$f" | tr '/' '_')" 2>/dev/null || return 1
     printf '%s\n' "$f"
   done <<<"$list"
   # The plan's designRef, when the PR does not carry it: read when it is in the tree.
   if [ -n "$ref" ] && ! printf '%s\n' "$list" | grep -qxF -- "$ref"; then
-    swarm_gh api "repos/$REPO_SLUG/contents/$ref?ref=$head" -H "Accept: application/vnd.github.raw" > "$d/pic-$(printf '%s' "$ref" | tr '/' '_')" 2>/dev/null \
-      && printf '%s\n' "$ref" || rm -f "$d/pic-$(printf '%s' "$ref" | tr '/' '_')"
+    local rc=0
+    gh_read "the approved picture $ref" api "repos/$REPO_SLUG/contents/$ref?ref=$head" -H "Accept: application/vnd.github.raw" > "$d/pic-$(printf '%s' "$ref" | tr '/' '_')" || rc=$?
+    case "$rc" in
+      0) printf '%s\n' "$ref" ;;
+      "$GH_READ_MISSING") rm -f "$d/pic-$(printf '%s' "$ref" | tr '/' '_')" ;;   # not in the tree at this head
+      *) rm -f "$d/pic-$(printf '%s' "$ref" | tr '/' '_')"; return 1 ;;
+    esac
   fi
 }
 
@@ -275,13 +284,15 @@ pic_file() { printf '%s/pic-%s' "$1" "$(printf '%s' "$2" | tr '/' '_')"; } # <di
 
 # picture_date <repo path> <head> <ticket comments json> — the earliest date the picture
 # is known to have been approved: its first commit, or the ticket's "Picture approved"
-# comment. Nothing when neither is known (the picture is then exempt from real data).
+# comment. Nothing when neither is known (the picture is then exempt from real data);
+# 1 when the history could not be read, which is unknown, never "no date".
 picture_date() {
   local c="" t=""
-  c=$(swarm_gh api "repos/$REPO_SLUG/commits?path=$1&sha=$2&per_page=100" --paginate 2>/dev/null \
-        | jq -rs '[.[] | if type == "array" then .[] else empty end | .commit.committer.date // .commit.author.date // empty] | min // empty' 2>/dev/null)
+  c=$(gh_read "the history of $1" api "repos/$REPO_SLUG/commits?path=$1&sha=$2&per_page=100" --paginate) || return 1
+  c=$(jq -rs '[.[] | if type == "array" then .[] else empty end | .commit.committer.date // .commit.author.date // empty] | min // empty' <<<"$c" 2>/dev/null)
   [ -f "$3" ] && t=$(jq -rs '[.[] | if type == "array" then .[] else empty end | select((.body // "") | test("picture approved"; "i")) | .created_at // empty] | min // empty' "$3" 2>/dev/null)
   printf '%s\n%s\n' "${c:0:10}" "${t:0:10}" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | LC_ALL=C sort | head -1
+  return 0   # no date known is an answer; only an unreadable history is not
 }
 
 # derivation_of — reads picture-evidence.py derivation; prints how the regions were found.
@@ -359,7 +370,10 @@ run() { # <pr>
   fi
 
   # What the change changed: the critic is shown it, and a region is scoped by it.
-  swarm_gh api "repos/$REPO_SLUG/pulls/$pr/files?per_page=100" --paginate 2>/dev/null | jq -s 'add // []' > "$W/pr-files.json" 2>/dev/null || echo '[]' > "$W/pr-files.json"
+  local prfiles
+  prfiles=$(gh_read "PR #$pr's files" api "repos/$REPO_SLUG/pulls/$pr/files?per_page=100" --paginate) \
+    && jq -s 'add // []' > "$W/pr-files.json" 2>/dev/null <<<"$prfiles" \
+    || { say "PR #$pr: unknown — its changed files could not be read; not judged this pass"; note_try "$pr" "$head"; rm -rf "$W"; return 2; }
   jq -r '.[]? | .filename' "$W/pr-files.json" > "$W/changed.txt" 2>/dev/null || : > "$W/changed.txt"
   : > "$W/scope.tsv"
   mocks=$(pictures_for "$pr" "$head" "$t" "$W/pictures") || { say "PR #$pr: its approved picture could not be read"; note_try "$pr" "$head"; return 2; }
@@ -371,11 +385,16 @@ run() { # <pr>
     routes=$(jq -r '.body // ""' <<<"$j" | bash "$SELF_DIR/ci-evidence.sh" routes 2>/dev/null) || routes=""
     popt=(--derive)
     while IFS= read -r f; do [ -n "$f" ] && popt+=(--route "$f"); done <<<"$routes"
-    [ -z "$t" ] || swarm_gh api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate > "$W/ticket-comments.json" 2>/dev/null || true
+    if [ -n "$t" ]; then
+      gh_read "#$t's comments" api "repos/$REPO_SLUG/issues/$t/comments?per_page=100" --paginate > "$W/ticket-comments.json" \
+        || { say "PR #$pr: unknown — #$t's comments could not be read; not judged this pass"; note_try "$pr" "$head"; rm -rf "$W"; return 2; }
+    fi
     # Each picture is linted on its own approval date: real data is owed from REAL_DATA_FROM.
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      pf=$(pic_file "$W/pictures" "$f"); d=$(picture_date "$f" "$head" "$W/ticket-comments.json")
+      pf=$(pic_file "$W/pictures" "$f")
+      d=$(picture_date "$f" "$head" "$W/ticket-comments.json") \
+        || { say "PR #$pr: unknown — when $f was approved could not be read; not judged this pass"; note_try "$pr" "$head"; rm -rf "$W"; return 2; }
       lint="$lint"$'\n'"$(python3 -I "$PE" lint "${popt[@]}" --real-data-from "$REAL_DATA_FROM" --approved "${d:-none}" "$pf" 2>&1 >/dev/null | grep -v '^picture-evidence: note:')"
     done <<<"$mocks"
     lint=$(printf '%s\n' "$lint" | grep -v '^$')

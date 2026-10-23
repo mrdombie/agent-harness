@@ -324,6 +324,7 @@ fi
 if [ "$(pr_field "$HEAD_PR" .mergeable)" = CONFLICTING ]; then
   take_out "it conflicts with $INTEGRATION_BRANCH"; exit 0
 fi
+# gh-read-ok: a non-number waits, below
 BEHIND=$(swarm_gh api "repos/$REPO_SLUG/compare/$INTEGRATION_BRANCH...$SHA" --jq .behind_by 2>/dev/null)
 case "$BEHIND" in
   ''|*[!0-9]*) say "lane: cannot read how far #$HEAD_PR is behind — waiting"; head_status "cannot read how far behind it is"; exit 0 ;;
@@ -358,10 +359,12 @@ CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" "$CHECK_NEWEST_J
     else [$r, "failed", ($x.conclusion // $x.state // ""), ($x.detailsUrl // $x.targetUrl // "")] end
   | @tsv' <<<"$PRS")
 
-flaky() { # <conclusion> <job-id>
+flaky() { # <conclusion> <job-id> — 0 a flake, 1 a real red, GH_READ_UNKNOWN when its annotations could not be read
+  local notes
   case "$1" in TIMED_OUT|CANCELLED|STARTUP_FAILURE) return 0 ;; esac
   [ -n "$2" ] || return 1
-  swarm_gh api "repos/$REPO_SLUG/check-runs/$2/annotations" --jq '.[].message' 2>/dev/null | grep -iE -- "$FLAKE_RE" >/dev/null
+  notes=$(gh_read "the annotations of check run $2" api "repos/$REPO_SLUG/check-runs/$2/annotations" --jq '.[].message') || return "$GH_READ_UNKNOWN"
+  grep -iE -- "$FLAKE_RE" >/dev/null <<<"$notes"
 }
 
 waiting=""
@@ -378,7 +381,12 @@ while IFS=$'\t' read -r name verdict concl url; do
       if [ "$rec" != null ] && [ -n "$job" ] && jq -e --arg j "$job" 'index($j) != null' >/dev/null <<<"$rec"; then
         waiting="$waiting${waiting:+, }$name (re-run starting)"; continue
       fi
-      if [ "$rec" = null ] && [ -n "$run" ] && flaky "$concl" "$job"; then
+      fl=1; [ "$rec" = null ] && [ -n "$run" ] && { flaky "$concl" "$job"; fl=$?; }
+      if [ "$fl" = "$GH_READ_UNKNOWN" ]; then
+        say "lane: unknown — whether $name on #$HEAD_PR is a flake could not be read; nothing done this pass"
+        waiting="$waiting${waiting:+, }$name (unknown: its annotations could not be read)"; continue
+      fi
+      if [ "$fl" = 0 ]; then
         act rerun "$HEAD_PR" "$SHA:$name" "$name $concl — an infrastructure flake, re-run once"
         if lane_shadow; then say "would re-run $name on #$HEAD_PR ($concl)"
         else

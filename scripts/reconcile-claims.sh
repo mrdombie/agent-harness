@@ -116,6 +116,7 @@ NOW_EPOCH=$(date +%s)
 # GitHub looks identical to "no PR exists", and that difference is the whole
 # classification — a network blip would release every claim to ready.
 gh_ok=1
+# gh-read-ok: this is the reachability probe: unreachable reports only, releases nothing
 gh api "repos/$GH_REPO" -q .full_name >/dev/null 2>&1 || gh_ok=0
 if [ "$gh_ok" -eq 0 ]; then
   say "[reconcile-claims] cannot reach $GH_REPO — every verdict here depends on"

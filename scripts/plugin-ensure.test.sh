@@ -163,7 +163,7 @@ cat > "$BIN/gh-pe" <<'STUB'
 #!/usr/bin/env bash
 q=""; prev=""; for a in "$@"; do case "$prev" in --jq) q="$a" ;; esac; prev="$a"; done
 case "$*" in
-  "api repos/acme/widgets/issues?labels="*) echo '[{"number":777}]' | jq -r "$q" ;;
+  "api repos/acme/widgets/issues?labels="*) echo '[{"number":777}]' | jq -r "${q:-.}" ;;
   "api repos/acme/widgets/issues/777") jq -n --rawfile b "$FIX/gh-sheet/body" '{number: 777, state: "open", labels: [{name: "build-sheet"}], body: $b}' ;;
   *) exit 1 ;;
 esac

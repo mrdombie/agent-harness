@@ -658,7 +658,9 @@ case "$1 $*" in
     case " $* " in *" PATCH "*)
       [ ! -f "$FIX/gh-body-patch-fails" ] || exit 1
       src=$(printf '%s\n' "$@" | sed -n 's/^body=@//p'); cp "$src" "$f"; echo '{}'; exit 0 ;; esac
-    [ -f "$f" ] && cat "$f" ;;
+    # The PR as GitHub answers it; the caller's --jq picks the body out.
+    q=""; prev=""; for a in "$@"; do case "$prev" in -q|--jq) q="$a" ;; esac; prev="$a"; done
+    [ -f "$f" ] && jq -Rs '{number: 0, body: .}' "$f" | if [ -n "$q" ]; then jq -r "$q"; else cat; fi ;;
   *) exec "$BIN/gh" "$@" ;;
 esac
 SH

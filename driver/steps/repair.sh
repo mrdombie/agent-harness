@@ -176,7 +176,7 @@ _driver_repair_reds() {
 
 # _driver_repair_body <pr> <out> — the PR body as GitHub holds it now; 1 when unreadable.
 _driver_repair_body() {
-  swarm_gh api "repos/$REPO_SLUG/pulls/$1" --jq '.body // ""' > "$2" 2>/dev/null
+  gh_read "PR #$1's body" api "repos/$REPO_SLUG/pulls/$1" --jq '.body // ""' > "$2"
 }
 
 # _driver_repair_lesson_run <tree> <trunk> <body-file> <row> — the lesson check, run

@@ -68,6 +68,7 @@ EVERY="${CI_EVIDENCE_EVERY:-30}"
 die() { echo "ci-evidence: $*" >&2; exit 2; }
 ERRF=$(mktemp "${TMPDIR:-/tmp}/ci-evidence-err-XXXXXX"); trap 'rm -f "$ERRF"' EXIT
 ghr() { gh "$@" ${REPO:+--repo "$REPO"}; }
+declare -F gh_read >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || die "scripts/gh-batch.sh could not be read"
 
 # The block CI wrote, and nothing outside it: a hand-pinned link elsewhere in the
 # body is not CI's evidence.
@@ -134,8 +135,10 @@ carried() { # <evsha> <folders> <pr> <body> → path<TAB>blob CI carries at the 
   [ -n "$pr" ] || return 0
   for k in $ns; do
     d="$EV_DIR/$k"
+    # gh-read-ok: an unreadable folder carries no shot: refused, never counted
     ls=$(ghr_api "repos/{repo}/contents/$d?ref=$ev" 2>/dev/null) || continue
     if printf '%s' "$ls" | jq -e '.[]? | select(.name == "plan.json")' >/dev/null 2>&1; then
+      # gh-read-ok: an unreadable plan names no shot: refused, never counted
       names=$(ghr_api "repos/{repo}/contents/$d/plan.json?ref=$ev" -H "Accept: application/vnd.github.raw" 2>/dev/null | jq -r '.shots[]?.name // empty' 2>/dev/null)
     else
       names=$(printf '%s\n' "$body" | bash "${BASH_SOURCE[0]}" routes 2>/dev/null | sed -E 's/[^a-zA-Z0-9]+/-/g; s/^-+|-+$//g')
@@ -147,9 +150,11 @@ carried() { # <evsha> <folders> <pr> <body> → path<TAB>blob CI carries at the 
   done
   [ -n "$(printf '%s' "$have" | grep -v '^$')" ] || return 0
   # The blobs CI's own evidence commits before this one on the PR wrote.
+  # gh-read-ok: unreadable commits prove no blob CI wrote: refused, never counted
   for c in $(ghr_api "repos/{repo}/pulls/$pr/commits?per_page=100" --paginate 2>/dev/null \
                | jq -rs --arg ev "$ev" 'add // [] | map(.sha) | .[:(index($ev) // 0)] | .[]' 2>/dev/null); do
     ci_files "$c" "$ns" >/dev/null 2>&1 || continue
+    # gh-read-ok: an unreadable commit proves no blob CI wrote: refused, never counted
     wrote="$wrote$(ghr_api "repos/{repo}/commits/$c" 2>/dev/null | jq -r '.files[]? | select(.status != "removed") | "\(.filename)\t\(.sha)"' 2>/dev/null)"$'\n'
   done
   [ -n "$(printf '%s' "$wrote" | grep -v '^$')" ] || return 0
@@ -204,11 +209,13 @@ screens_of() { # paths on stdin → the screen ones
   fi
 }
 moved() { # <pr> <from> <head>
-  local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c
+  local pr="$1" from="$2" head="$3" changed own scr hit="" f dir spec base c p src rc
+  # gh-read-ok: pipefail: unreadable says so and counts as moved
   changed=$(ghr_api "repos/{repo}/compare/$from...$head" 2>/dev/null | jq -r '.files[]?.filename') || { echo "(the change since ${from:0:9} could not be read)"; return 0; }
   # GitHub lists at most 300 files of a comparison: a list that long may be cut, and a
   # cut list cannot say a screen is untouched.
   [ "$(printf '%s\n' "$changed" | grep -c .)" -lt 300 ] || { echo "(more files changed since ${from:0:9} than GitHub lists)"; return 0; }
+  # gh-read-ok: pipefail: unreadable says so and counts as moved
   own=$(ghr_api "repos/{repo}/pulls/$pr/files?per_page=100" --paginate 2>/dev/null | jq -r '.[]?.filename') || { echo "(this PR's files could not be read)"; return 0; }
   scr=$(printf '%s\n' "$own" | grep -v '^$' | grep -vF "$EV_DIR/" | screens_of | grep -v '^$')
   [ -n "$scr" ] && [ -n "$changed" ] || return 1
@@ -218,6 +225,11 @@ moved() { # <pr> <from> <head>
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       dir=$(dirname "$f")
+      # Unreadable source is unknown, never "imports nothing": that would call the shots current.
+      p="repos/{repo}/contents/$f?ref=$head"; p="${p//\{repo\}/${REPO:-\{owner\}/\{repo\}}}"
+      rc=0; src=$(SWARM_GH="${SWARM_GH:-gh}" gh_read "$f at ${head:0:9}" api "$p" -H "Accept: application/vnd.github.raw") || rc=$?
+      [ "$rc" = "$GH_READ_MISSING" ] && continue   # gone at the head: it imports nothing
+      [ "$rc" = 0 ] || { echo "(unknown — $f at ${head:0:9} could not be read)"; return 0; }
       while IFS= read -r spec; do
         [ -n "$spec" ] || continue
         # An alias import (`@/…`, `~/…`): matched by the path after the alias, anywhere.
@@ -228,7 +240,7 @@ moved() { # <pr> <from> <head>
         base=$(python3 -I -c 'import os,sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$dir" "$spec" 2>/dev/null) || continue
         c=$(printf '%s\n' "$changed" | awk -v b="$base" '{ s=$0; sub(/\.[A-Za-z]+$/, "", s); if (s == b || s == b "/index") print }')
         [ -n "$c" ] && hit="$hit$c"$'\n'
-      done < <(ghr_api "repos/{repo}/contents/$f?ref=$head" -H "Accept: application/vnd.github.raw" 2>/dev/null \
+      done < <(printf '%s\n' "$src" \
                  | grep -oE "(from|import)[[:space:]]*\(?['\"](\.{1,2}|@|~)/[^'\"]+['\"]" | sed -E "s/^[^'\"]*['\"]//; s/['\"]$//")
     done < <(printf '%s\n' "$scr" | head -40)
   fi
@@ -259,6 +271,7 @@ status() { # <pr>
 
   [ "$draft" = true ] && { echo "state=off"; echo "reason=the PR is a draft — CI photographs a PR only once it is marked ready"; return; }
 
+  # gh-read-ok: unreadable runs read as pending, and wait asks again
   runs=$(ghr_api "repos/{repo}/commits/$head/check-runs?per_page=100" 2>/dev/null); runs=${runs:-'{}'}
   cap=$(check "$runs" "$EV_CAPTURE"); dec=$(check "$runs" "$EV_DECIDE")
   case "$dec" in

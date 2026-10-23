@@ -116,8 +116,10 @@ claimed() { # <ticket> <branch> <pr> — prints who, 0 when held
 }
 
 # ---- the open pull requests, over REST --------------------------------------------
-PRS=$(swarm_gh api "repos/$REPO_SLUG/pulls?state=open&base=$INTEGRATION_BRANCH&per_page=100" --paginate 2>/dev/null | jq -cs 'add // []' 2>/dev/null)
-jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS" || { say "keep-fresh: the open pull requests could not be read — next pass"; exit 0; }
+# A page that failed is unknown, not fewer PRs: a short list would prune the state of the rest.
+PRS=$(gh_read "the open pull requests" api "repos/$REPO_SLUG/pulls?state=open&base=$INTEGRATION_BRANCH&per_page=100" --paginate) \
+  && PRS=$(jq -cs 'add // []' 2>/dev/null <<<"$PRS") && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS" \
+  || { say "keep-fresh: unknown — the open pull requests could not be read; nothing pruned or updated — next pass"; exit 0; }
 git -C "$MAIN_REPO" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null \
   || { say "keep-fresh: could not fetch $INTEGRATION_BRANCH — next pass"; exit 0; }
 TRUNK=$(git -C "$MAIN_REPO" rev-parse -q --verify "refs/remotes/origin/$INTEGRATION_BRANCH^{commit}" 2>/dev/null) \
@@ -165,6 +167,7 @@ fresh_one() { # <pr> <branch> <head>
   # A state already read on this head against this trunk is not asked for again.
   ms=$(jq -r --arg p "$n" --arg h "$head" --arg tr "$TRUNK" '.seen[$p] | select(.head == $h and .trunk == $tr) | .state // empty' <<<"$ST" 2>/dev/null)
   if [ -z "$ms" ]; then
+    # gh-read-ok: unreadable reads mergeable unknown below: next pass
     v=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n" 2>/dev/null)
     mg=$(jq -r 'if .mergeable == null then "unknown" else (.mergeable | tostring) end' <<<"$v" 2>/dev/null)
     ms=$(jq -r '.mergeable_state // "unknown"' <<<"$v" 2>/dev/null)

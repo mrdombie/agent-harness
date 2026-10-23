@@ -16,7 +16,11 @@ cat > "$FIX/fgh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/fgh.log"
 case "$*" in
-  *"-X GET search/issues"*) [ -f "$FIX/fgh.found" ] && cat "$FIX/fgh.found"; exit 0 ;;
+  # The search answers as GitHub does (the caller's -q applies to it); fgh.search-fails refuses it once.
+  *"-X GET search/issues"*)
+     if [ -f "$FIX/fgh.search-fails" ]; then rm -f "$FIX/fgh.search-fails"; echo 'gh: HTTP 502: Bad Gateway' >&2; exit 1; fi
+     if [ -f "$FIX/fgh.found" ]; then printf '{"total_count":1,"items":[{"number":%s}]}\n' "$(cat "$FIX/fgh.found")"
+     else echo '{"total_count":0,"items":[]}'; fi; exit 0 ;;
   *"repos/acme/widgets/issues -X POST"*)
      n=$(( $(cat "$FIX/fgh.next" 2>/dev/null || echo 776) + 1 )); echo "$n" > "$FIX/fgh.next"
      printf '%s\0' "$@" > "$FIX/fgh.create.$n"; echo "$n"; exit 0 ;;
@@ -40,7 +44,8 @@ cat > "$F" <<'J'
 J
 created() { ls "$FIX"/fgh.create.* 2>/dev/null | grep -c .; }
 args_of() { tr '\0' '\n' < "$FIX/fgh.create.$1"; }
-reset() { rm -f "$FIX"/fgh.create.* "$FIX/fgh.next" "$FIX/fgh.found" "$FIX/ledger.tsv"; : > "$FIX/fgh.log"; : > "$FIX/queue.log"; : > "$GH_LOG"; }
+export GH_BACKOFF_FILE="$FIX/gh-backoff"
+reset() { rm -f "$FIX"/fgh.create.* "$FIX/fgh.next" "$FIX/fgh.found" "$FIX/ledger.tsv" "$GH_BACKOFF_FILE"; : > "$FIX/fgh.log"; : > "$FIX/queue.log"; : > "$GH_LOG"; }
 case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="created=$(created)"; }
 
 echo "--- a Major and a Minor are filed; a Critical and a Nit are not ---"
@@ -71,6 +76,12 @@ echo "--- filed once even when this host forgot: the forge's marker is found ---
 reset; echo 900 > "$FIX/fgh.found"; case_file
 want "nothing created"                         "created=0" "$R"
 want_in "the key is searched for"              'follow-up: pr=42 finding=m1' "$(cat "$FIX/fgh.log")"
+
+echo "--- a search that fails is unknown: nothing is filed, and it says so ---"
+reset; : > "$FIX/fgh.search-fails"; case_file
+want "nothing created on the failed search"    "created=1" "$R"
+want_in "it logs unknown"                      'unknown — whether finding .* was filed could not be read' "$OUT"
+want "and exits non-zero"                      "1" "$RC"
 
 echo "--- plants: each guard out, its case fails ---"
 KIT="$FIX/kit"

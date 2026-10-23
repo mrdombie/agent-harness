@@ -97,6 +97,7 @@ forge_load() {
   flush() {
     [ -n "$q" ] || return 0
     # A partial answer (a number that is no issue) exits non-zero but still prints the data.
+    # gh-read-ok: the body is checked for data on the next line; none sets FORGE_OK=0
     out=$("$GH" api graphql -f query="query { repository(owner: \"$owner\", name: \"$name\") { $q } }" 2>/dev/null)
     q=""; n=0
     printf '%s' "$out" | jq -e '.data.repository' >/dev/null 2>&1 || { FORGE_OK=0; return 0; }

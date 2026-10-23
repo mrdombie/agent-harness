@@ -37,7 +37,8 @@ if [ "$1" = api ]; then
   done
   case "$ep" in
     */issues/*/comments) for a in "$@"; do case "$a" in body=*) printf '%s\n---\n' "${a#body=}" >> "$FIX/comments.log" ;; esac; done; exit 0 ;;
-    *"/pulls?"*) cat "$FIX/gh/pulls.json"; exit 0 ;;
+    # pulls.fail: the first page answers and a later one is refused, as gh --paginate does.
+    *"/pulls?"*) cat "$FIX/gh/pulls.json"; [ -f "$FIX/gh/pulls.fail" ] && { echo 'gh: HTTP 502: Bad Gateway' >&2; exit 1; }; exit 0 ;;
     */pulls/*) n=${ep##*/}; [ -f "$FIX/gh/pull-$n.json" ] || exit 1; cat "$FIX/gh/pull-$n.json"; exit 0 ;;
   esac
   exit 1
@@ -295,5 +296,13 @@ big_out=$(live); big=$(kept)
 want_not_in "no argument-list failure"           'Argument list too long' "$big_out"
 want "the same state as the short list"          "$small" "$big"
 want_not_in "and no complaint either way"        'could not be pruned' "$small_out$big_out"
+
+echo "--- an open-PR list that failed part way is unknown: nothing is pruned ---"
+fresh; branch 41 'printf "b\n" > src/other.ts' ''; reads 41 true clean; mkdir -p "$C"; seed
+printf '[]\n' > "$FIX/gh/pulls.json"; : > "$FIX/gh/pulls.fail"
+out=$(live); rm -f "$FIX/gh/pulls.fail"
+want "the state is kept whole"                   '{"tried":["41","999"],"seen":["41","999"]}' "$(kept)"
+want_in "it logs unknown"                        'unknown — the open pull requests could not be read' "$out"
+want_not_in "and pushes nothing"                 'pushed' "$out"
 
 suite_end "$FAILED"

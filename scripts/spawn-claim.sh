@@ -425,6 +425,8 @@ if [ "$BUILDER" = driver ]; then
   \"driver_mode\": \"$DRIVER_MODE\",
   \"progress_paths\": $(jq -cn --arg p "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET" '[$p]')"
 fi
+# gh-read-ok: a login for the run record's operator label; whoami stands in
+OPERATOR_LOGIN=$(gh api user --jq .login 2>/dev/null || whoami)
 cat > "$RECORD" <<EOF
 {
   "run_id": "$RUN_ID",
@@ -438,7 +440,7 @@ cat > "$RECORD" <<EOF
   "ticket": "${TICKET:-}",
   "class": "$CLASS",
   "builder": "$BUILDER",
-  "operator": "$(gh api user --jq .login 2>/dev/null || whoami)@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
+  "operator": "$OPERATOR_LOGIN@$(hostname -s 2>/dev/null || hostname | cut -d. -f1)",
   "budget_usd": $BUDGET,
   "permission_mode": "$PERM_MODE",
   "spawn_root": $(jq -cn --arg p "$SPAWN_ROOT" '$p'),
