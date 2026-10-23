@@ -21,6 +21,7 @@
 # so it is not tiered (every build is a screen build, as before), unless tiers.enabled
 # says otherwise; tiers.enabled false turns tiering off.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/size-rules.sh" || exit 1
 
 DRIVER_TOOLING_PATHS_DEFAULT='[".github/*", ".claude/*", ".husky/*", "docs/*", "*.md", ".changeset/*", "CHANGELOG*"]'
 
@@ -96,20 +97,8 @@ _driver_tier_not_tooling() {
 # driver_tier_of <ticket> — the tier the record holds; screen when none was decided.
 driver_tier_of() { local v; v=$(driver_state_get "$1" tier 2>/dev/null); printf '%s' "${v:-screen}"; }
 
-# THE SCREEN ROUTE (the owner, 2026-10-21): pictures and the AI design review are for new
-# or redesigned screens only. A ticket labelled one of design.baselineRoute.pictureLabels
-# (screen:new, screen:redesign) takes the picture route: picture first, compare, the
-# independent critic and sign-off, all unchanged. Any other screen build takes the
-# baseline route: the project's CI diffs its shots against each route's last approved
-# shots and decides the design status, so no picture is bound and no critic verdict is
-# owed. Off unless design.baselineRoute.enabled is true; labels that cannot be read take
-# the picture route. CI still sends a route with no approved shot to the picture route.
-# MERGE FIRST (release.mergeFirst) turns it on: only a screen:new or screen:redesign ticket waits for a picture.
-driver_baseline_route_on() {
-  driver_merge_first && return 0
-  [ "$(jq -r '.design.baselineRoute.enabled // false' "$HARNESS_CFG" 2>/dev/null)" = true ]
-}
-driver_picture_labels() { jq -r '(.design.baselineRoute.pictureLabels // ["screen:new", "screen:redesign"])[]' "$HARNESS_CFG" 2>/dev/null; }
+# driver_baseline_route_on and driver_picture_labels live in size-rules.sh: the size
+# step asks them too, of a screen file it would let through as an existing screen.
 
 # driver_screen_route <ticket> — prints "<picture|baseline>\t<why>" and records the route.
 driver_screen_route() {

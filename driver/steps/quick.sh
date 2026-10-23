@@ -11,7 +11,8 @@
 # gates.localOnly, else the changed list, the changelog skip line, the push trial).
 #
 # THE FALLBACK KEEPS THE WORK. A diff past driver.quick.maxFiles, one touching a
-# never-quick file (a screen, a page, a schema or migration, a lockfile) or red gates
+# never-quick file (a new screen or page, any screen without the baseline route, a
+# schema or migration, a lockfile) or red gates
 # move the ticket up a size: the commits are kept at refs/driver/quick/<ticket>, the
 # branch goes back to where it was cut, and the plan step is told where they are —
 # so the full route's build proves its test red before the change, as it must.
@@ -25,17 +26,22 @@
 # driver_quick_exceeds <ticket> <tree> <trunk> — prints why the branch's real diff is
 # bigger than a quick change and returns 0; 1 when it fits.
 driver_quick_exceeds() {
-  local t="$1" wt="$2" trunk="$3" files n max never tier why
+  local t="$1" wt="$2" trunk="$3" files n max never tier why base
   files=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null | sed '/^$/d')
   n=$(printf '%s' "$files" | grep -c .)
   max=$(driver_quick_max_files)
   if [ "$n" -gt "$max" ]; then
     printf 'the change touches %s files, more than a quick change (%s): %s' "$n" "$max" "$(printf '%s' "$files" | head -5 | paste -sd, - | sed 's/,/, /g')"; return 0
   fi
-  never=$(printf '%s\n' "$files" | driver_quick_never | head -1)
+  # Existing or new is read against the branch's own base: a screen file it adds is a new screen.
+  base=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null)
+  never=$(printf '%s\n' "$files" | DRIVER_SIZE_REPO="$wt" DRIVER_SIZE_REV="${base:-$trunk}" driver_quick_never | head -1)
   if [ -n "$never" ]; then printf 'the change touches %s — %s' "${never%%	*}" "${never#*	}"; return 0; fi
   IFS=$'\t' read -r tier why <<<"$(driver_change_tier "$t" "$wt" "$trunk")"
-  if [ "$tier" = screen ] && driver_tiers_on; then printf 'the change is screen work: %s' "$why"; return 0; fi
+  # An existing screen on the baseline route stays quick: CI diffs it against its last approved shots.
+  if [ "$tier" = screen ] && driver_tiers_on && [ "$(driver_screen_route "$t" | cut -f1)" != baseline ]; then
+    printf 'the change is screen work: %s' "$why"; return 0
+  fi
   return 1
 }
 
