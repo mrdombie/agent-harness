@@ -15,7 +15,8 @@
 #   finish   a draft with every required check settled and none failed: finishing it is the repair
 # and 1 for every other:
 #   pending  a required check is still queued or running: its result is not in yet
-#   rerun    a required check was cancelled, timed out or never got a runner: a re-run, not a repair
+#   rerun    a required check was cancelled, timed out or never got a runner: a re-run, not a repair.
+#            A third field names the workflow runs to re-run, space-separated (pr_red_rerun).
 #   green    no required check failed and nothing clashes (a red that is not required included)
 #   unread   the PR or the branch's rules could not be read; the next tick asks again
 #
@@ -63,6 +64,7 @@ pr_red_classify() { # <pr-json> <required-json> [hold] [nb-json]
     def running: ((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("^(PENDING|EXPECTED|QUEUED|IN_PROGRESS)$"));
     [ ($p.statusCheckRollup // [])[] | select(type == "object")
       | {name: (.name // .context // ""), run: (if running then 1 else 0 end), at: stamp,
+         rid: ([(.detailsUrl // .targetUrl // "") | capture("/actions/runs/(?<r>[0-9]+)")? | .r] | first // ""),
          state: (if running then "IN_PROGRESS" else (.conclusion // .state // "") end)} ]
     | group_by(.name) | map(max_by([.run, .at]))
     | map(select((.name | ascii_downcase) as $n
@@ -74,12 +76,39 @@ pr_red_classify() { # <pr-json> <required-json> [hold] [nb-json]
     | if ($p.mergeable // "") == "CONFLICTING" or ($p.mergeStateStatus // "") == "DIRTY" then "clash\tit conflicts with its base branch"
       elif ($running | length) > 0 then "pending\trequired \($running | names) still running"
       elif ($failed | length) > 0 then "red\trequired check(s) failed: \($failed | names)"
-      elif ($cancelled | length) > 0 then "rerun\trequired \($cancelled | names) cancelled or never ran — a re-run, not a repair"
+      elif ($cancelled | length) > 0 then "rerun\trequired \($cancelled | names) cancelled or never ran — a re-run, not a repair\t\($cancelled | map(.rid) | map(select(. != "")) | unique | join(" "))"
       elif ($p.isDraft // false) then "finish\ta draft with its required checks settled"
       else "green\tno required check failed and nothing clashes" end' 2>/dev/null)
   [ -n "$out" ] || { printf 'unread\tits checks could not be read\n'; return 1; }
   printf '%s\n' "$out"
   case "${out%%$'\t'*}" in red|clash|finish) return 0 ;; *) return 1 ;; esac
+}
+
+# pr_red_rerun <pr> <head> <run ids> [ledger] [max] — re-run each cancelled workflow run's
+# failed jobs (`gh run rerun --failed`), at most <max> (2) times per PR head and run, kept in
+# <ledger> (pr \t head \t run \t tries). Prints what it did, one line; 1 when every run is
+# spent or none could be re-run, so the caller says a person looks.
+# CANCELLED IS NOT RED. On 2026-10-23 two required checks were cancelled twice on one PR
+# after five minutes with no runner; each was handed to a repair builder.
+pr_red_rerun() {
+  local pr="$1" head="$2" ids="$3" led="${4:-${PR_RED_RERUNS:-}}" max="${5:-${PR_RED_RERUN_MAX:-2}}" id n did="" spent="" bad=""
+  case "$max" in ''|*[!0-9]*) max=2 ;; esac
+  [ -n "$ids" ] || { printf 'no run to re-run was named'; return 1; }
+  [ -n "$led" ] || { printf 'no ledger to count re-runs in'; return 1; }
+  touch "$led" 2>/dev/null || { printf 'the re-run ledger could not be written'; return 1; }
+  for id in $ids; do
+    n=$(awk -F'\t' -v p="$pr" -v h="$head" -v r="$id" '$1 == p && $2 == h && $3 == r { n = $4 } END { print n + 0 }' "$led")
+    if [ "$n" -ge "$max" ]; then spent="$spent $id"; continue; fi
+    if _pr_red_gh run rerun "$id" --failed ${REPO_SLUG:+--repo "$REPO_SLUG"} >/dev/null 2>&1; then
+      awk -F'\t' -v OFS='\t' -v p="$pr" -v h="$head" -v r="$id" '!($1 == p && $2 == h && $3 == r)' "$led" > "$led.$$" && mv -f "$led.$$" "$led"
+      printf '%s\t%s\t%s\t%s\n' "$pr" "$head" "$id" "$((n + 1))" >> "$led"
+      did="$did $id ($((n + 1)) of $max)"
+    else bad="$bad $id"; fi
+  done
+  [ -z "$did" ] || printf 're-ran%s' "$did"
+  [ -z "$bad" ] || printf '%sthe re-run of%s was refused' "${did:+; }" "$bad"
+  [ -z "$spent" ] || printf '%s%s re-run %s times already: a person looks' "${did:+; }${bad:+; }" "$spent" "$max"
+  [ -n "$did" ]
 }
 
 pr_red_verdict() { # <pr-json> [hold] [nb-json]

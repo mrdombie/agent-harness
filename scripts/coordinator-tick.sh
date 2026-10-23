@@ -538,6 +538,9 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   if [ "$cls" = repair ] && ! repair_pr_red "$t"; then return 0; fi
   return 1
 }
+# A cancelled, timed-out or runner-less required check is re-run this many times a head.
+COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
+case "$COORD_RERUN_MAX" in ''|*[!0-9]*) COORD_RERUN_MAX=2 ;; esac
 # The base branch's required checks, read from its live rules once per tick (pr-red.sh).
 PR_RED_REQ_FILE="$COORD_DIR/required-checks.$(coord_mode)"; : > "$PR_RED_REQ_FILE" 2>/dev/null; export PR_RED_REQ_FILE
 repair_pr_red() { # <ticket> — 0 when its open PR is really red; else echoes why not
@@ -549,7 +552,15 @@ repair_pr_red() { # <ticket> — 0 when its open PR is really red; else echoes w
     return 0
   fi
   v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json)") && return 0
-  echo "PR #$(jq -r .number <<<"$pj") is not red (${v%%$'\t'*}: ${v#*$'\t'}) — no repair"
+  local n kind why ids did
+  n=$(jq -r .number <<<"$pj"); IFS=$'\t' read -r kind why ids <<<"$v"
+  # A cancelled required check is re-run, never repaired (coordinator.rerunCancelled, 2 a head).
+  if [ "$kind" = rerun ]; then
+    if coord_shadow; then did="would re-run ${ids:-nothing named}"
+    else did=$(pr_red_rerun "$n" "$(jq -r '.headRefOid // ""' <<<"$pj")" "$ids" "$COORD_DIR/reruns.tsv" "$COORD_RERUN_MAX"); fi
+    echo "PR #$n is not red ($why) — $did; no repair"; return 1
+  fi
+  echo "PR #$n is not red ($kind: $why) — no repair"
   return 1
 }
 

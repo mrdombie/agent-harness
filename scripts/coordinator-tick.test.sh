@@ -733,8 +733,29 @@ for case in "IN_PROGRESS:-:Typecheck:still running" "COMPLETED:SUCCESS:Typecheck
     statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"SUCCESS"}, {name:$nm, status:$st, conclusion:(if $co == "-" then null else $co end)}]}]' > "$FIX/gh/prs-all.json"
   out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
   want "$nm $st/$co: no repair spawned" "" "$(spawned)"
-  want_in "  the skip says why" "skip #501 \(repair\): PR #9 is not red .*$why.* — no repair" "$out"
+  want_in "  the skip says why" "skip #501 \(repair\): PR #9 is not red .*$why.*no repair" "$out"
 done
+echo "--- a cancelled required check is re-run, never repaired ---"
+# Two required checks cancelled twice on one PR with no runner; each went to a repair builder.
+rerun_world() { fresh; queue_as repair 501; fix_required "Typecheck"
+  jq -n --arg h "$1" '[{number:9, headRefName:"tkt-501-x", headRefOid:$h, isDraft:false, mergeStateStatus:"BLOCKED", labels:[],
+    statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"CANCELLED", detailsUrl:"https://github.com/acme/widgets/actions/runs/777/job/1"}]}]' > "$FIX/gh/prs-all.json"; }
+rerun_world s; : > "$GH_LOG"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "cancelled: no repair spawned"         "" "$(spawned)"
+want "  the run is re-run, its failed jobs" "1" "$(grep -c '^run rerun 777 --failed' "$GH_LOG")"
+want_in "  and said"                        'skip #501 \(repair\): PR #9 is not red .*cancelled.* — re-ran 777 \(1 of 2\); no repair' "$out"
+# fresh() clears the coordinator's dir, so the ledger is carried across it by hand.
+cp "$C/reruns.tsv" "$FIX/reruns.keep"
+rerun_world s; cp "$FIX/reruns.keep" "$C/reruns.tsv"; SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+cp "$C/reruns.tsv" "$FIX/reruns.keep"; rerun_world s; cp "$FIX/reruns.keep" "$C/reruns.tsv"; : > "$GH_LOG"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a third cancel on the head: no re-run" "0" "$(grep -c '^run rerun' "$GH_LOG")"
+want "  and still no repair"                "" "$(spawned)"
+want_in "  a person looks"                  're-run 2 times already: a person looks' "$out"
+rerun_world s; : > "$GH_LOG"
+out=$(SWARM_SPAWN="$BIN/spawn-live" tick)
+want "shadow: nothing re-run"               "0" "$(grep -c '^run rerun' "$GH_LOG")"
 fresh; queue_as repair 501; fix_required "Typecheck"
 jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"DIRTY", mergeable:"CONFLICTING", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null

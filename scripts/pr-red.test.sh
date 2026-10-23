@@ -13,6 +13,7 @@ FAILED=0
 ok()   { printf 'OK       %s\n' "$1"; }
 bad()  { printf 'MISMATCH %s\n' "$1"; FAILED=1; }
 want() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 — wanted '$2', got '$3'"; fi; }
+want_in() { if printf '%s' "$3" | grep -qE -- "$2"; then ok "$1"; else bad "$1 — no /$2/ in: $3"; fi; }
 
 pr() { # <mergeState> <mergeable> <draft> <name:status:conclusion>…
   local ms="$1" m="$2" d="$3" rows="[]" c n st co; shift 3
@@ -56,6 +57,34 @@ for k in CANCELLED TIMED_OUT STARTUP_FAILURE; do
   want "$k"                                rerun "$(verdict "$p")"
   want "  starts nothing"                  1   "$(rc "$p")"
 done
+
+echo "--- a cancelled run is named, to re-run ---"
+p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:CANCELLED" "Schema drift:COMPLETED:TIMED_OUT")
+p=$(jq -c '.statusCheckRollup[0].detailsUrl = "https://github.com/o/r/actions/runs/111/job/9" | .statusCheckRollup[1].detailsUrl = "https://github.com/o/r/actions/runs/222/job/8"' <<<"$p")
+want "the runs to re-run ride as the third field" "111 222" "$(pr_red_classify "$p" "$REQ" approval '[]' | cut -f3)"
+
+echo "--- pr_red_rerun: at most twice a head, counted, never a loop ---"
+RB=$(mktemp -d)
+cat > "$RB/gh" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$RB/calls"
+[ -f "$RB/refuse" ] && exit 1
+exit 0
+SH
+chmod +x "$RB/gh"; export RB
+L="$RB/reruns.tsv"
+rr() { PATH="$RB:$PATH" pr_red_rerun 7 sha-a "$1" "$L" 2; echo " rc=$?"; }
+want_in "the first try re-runs its failed jobs"  '^re-ran 111 \(1 of 2\) rc=0$' "$(rr 111)"
+want "  through gh run rerun --failed"         "run rerun 111 --failed" "$(tail -1 "$RB/calls")"
+want_in "the second try"                         '^re-ran 111 \(2 of 2\) rc=0$' "$(rr 111)"
+: > "$RB/calls"
+want_in "the third: spent, a person looks"        '111 re-run 2 times already: a person looks rc=1$' "$(rr 111)"
+want "  and nothing is asked of GitHub"          "0" "$(grep -c . "$RB/calls")"
+want_in "a new head counts afresh"               '^re-ran 111 \(1 of 2\) rc=0$' "$(PATH="$RB:$PATH" pr_red_rerun 7 sha-b 111 "$L" 2; echo " rc=$?")"
+touch "$RB/refuse"
+want_in "a refused re-run is said, and not counted" 'the re-run of 333 was refused rc=1$' "$(rr 333)"
+want "  so it is tried again next time"         "0" "$(awk -F'\t' '$3 == 333' "$L" | grep -c .)"
+rm -rf "$RB"
 
 echo "--- the newest run of a check is the one read ---"
 p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:FAILURE")
