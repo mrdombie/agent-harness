@@ -101,7 +101,25 @@ want_in "and the instruction files are named" 'CLAUDE.md, AGENTS.md' "$args"
 want_not_in "no setting source is dropped, so project skills and agents stay" '^--setting-sources$' "$args"
 DRIVER_PROJECT_INSTRUCTIONS=preload DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
 args="$(cat "$FIX/claude-args-plan.txt")"
-want_not_in "preload restores the old behaviour" 'claudeMdExcludes' "$args"
+want_not_in "preload restores the old behaviour" "\"$wt/CLAUDE.md\"" "$args"
 rm -f "$wt/CLAUDE.md" "$wt/AGENTS.md"
+
+echo "--- a step never loads the operator's own memory, and keeps user settings ---"
+mkdir -p "$FIX/home-cfg"; printf '# the PM rules\n' > "$FIX/home-cfg/CLAUDE.md"
+export CLAUDE_CONFIG_DIR="$FIX/home-cfg"
+DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+args="$(cat "$FIX/claude-args-plan.txt")"
+want_in "the user-level CLAUDE.md is excluded by its path" "claudeMdExcludes.*\"$FIX/home-cfg/CLAUDE.md\"" "$args"
+want_not_in "with no setting source dropped, so the plugin and its hooks still load" '^--setting-sources$' "$args"
+want_not_in "and not by bare mode, which skips hooks" '^--bare$' "$args"
+DRIVER_PROJECT_INSTRUCTIONS=preload DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+want_in "preloading the project's files still leaves it out" "claudeMdExcludes.*\"$FIX/home-cfg/CLAUDE.md\"" "$(cat "$FIX/claude-args-plan.txt")"
+DRIVER_USER_MEMORY=load DRIVER_TICKET=302 driver_ai_step 302 plan >/dev/null 2>&1
+want_not_in "driver.userMemory load restores it" 'home-cfg/CLAUDE.md' "$(cat "$FIX/claude-args-plan.txt")"
+. "$HERE/../steps/size.sh" || exit 1
+fix_ai size '{"size":"small","reason":"r"}' 2>/dev/null || true
+_driver_size_ask 302 "Change a thing" "" >/dev/null 2>&1
+want_in "the size call leaves it out too" "claudeMdExcludes.*\"$FIX/home-cfg/CLAUDE.md\"" "$(cat "$FIX/claude-args-size.txt" 2>/dev/null)"
+unset CLAUDE_CONFIG_DIR
 
 suite_end "$FAILED"

@@ -182,6 +182,11 @@ DRIVER_TOOLS="${DRIVER_TOOLS-$(driver_opt_early driver.tools 'Bash Read Edit Wri
 # the origin project's CLAUDE.md + AGENTS.md were ~17k tokens on every call of every step; the
 # brief already carries the project's facts. "preload" restores the old behaviour.
 DRIVER_PROJECT_INSTRUCTIONS="${DRIVER_PROJECT_INSTRUCTIONS-$(driver_opt_early driver.projectInstructions on-demand)}"
+# A STEP NEVER LOADS THE OPERATOR'S OWN MEMORY. The user-level CLAUDE.md holds the PM's and
+# the owner's rules, which no step uses: 30.7 KB, 19,526 → 8,502 starting tokens a call
+# measured. It is excluded by path, so user settings, the plugin and its hooks still load.
+# "load" restores it (driver.userMemory).
+DRIVER_USER_MEMORY="${DRIVER_USER_MEMORY-$(driver_opt_early driver.userMemory skip)}"
 
 # driver_bounded <seconds> <command> — run a command with a ceiling on its life.
 #
@@ -553,6 +558,24 @@ driver_bounded_argv() {
   fi
 }
 
+# driver_md_exclude_args <tree> — fills DRIVER_MD_ARGS with the one --settings that keeps
+# instruction files out of a step's context by path (`claudeMdExcludes`): the operator's
+# user-level CLAUDE.md always (DRIVER_USER_MEMORY), and the tree's own unless "preload".
+# DRIVER_MD_FILES names the tree's files it left out, for the system prompt.
+driver_md_exclude_args() {
+  local wt="${1:-}" f excl="" um="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+  DRIVER_MD_ARGS=(); DRIVER_MD_FILES=""
+  [ "$DRIVER_USER_MEMORY" = "load" ] || [ ! -f "$um" ] || excl=$(jq -Rn --arg p "$um" '$p')
+  if [ "$DRIVER_PROJECT_INSTRUCTIONS" != "preload" ] && [ -n "$wt" ]; then
+    for f in CLAUDE.md AGENTS.md .claude/CLAUDE.md; do
+      [ -f "$wt/$f" ] || continue
+      DRIVER_MD_FILES="$DRIVER_MD_FILES${DRIVER_MD_FILES:+, }$f"
+      excl="$excl${excl:+,}$(jq -Rn --arg p "$wt/$f" '$p')"
+    done
+  fi
+  [ -z "$excl" ] || DRIVER_MD_ARGS=(--settings "{\"claudeMdExcludes\":[$excl]}")
+}
+
 # driver_lean_args <tree> [step] — fills the array DRIVER_LEAN_ARGS with what every
 # model call the driver makes carries: no connectors, only the tools the step uses,
 # and — unless the project asks for "preload" — the tree's CLAUDE.md / AGENTS.md
@@ -562,7 +585,7 @@ driver_bounded_argv() {
 # (`--setting-sources user` also left CLAUDE.md out, and silently took the
 # project's 32 skills and its agents with it — review of #11172.)
 driver_lean_args() {
-  local wt="${1:-}" step="${2:-}" tools f files="" excl=""
+  local wt="${1:-}" step="${2:-}" tools files=""
   local -a list
   DRIVER_LEAN_ARGS=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
   # Off unless a spawner sets it: a runaway stop per step, never a measurement.
@@ -582,15 +605,10 @@ driver_lean_args() {
     read -r -a list <<<"$DRIVER_DISALLOWED_TOOLS $deny"
     DRIVER_LEAN_ARGS+=(--disallowed-tools "${list[@]}")
   fi
-  [ "$DRIVER_PROJECT_INSTRUCTIONS" = "preload" ] && return 0
-  [ -n "$wt" ] || return 0
-  for f in CLAUDE.md AGENTS.md .claude/CLAUDE.md; do
-    [ -f "$wt/$f" ] || continue
-    files="$files${files:+, }$f"
-    excl="$excl${excl:+,}$(jq -Rn --arg p "$wt/$f" '$p')"
-  done
+  driver_md_exclude_args "$wt"
+  DRIVER_LEAN_ARGS+=(${DRIVER_MD_ARGS[@]+"${DRIVER_MD_ARGS[@]}"})
+  files="$DRIVER_MD_FILES"
   [ -n "$files" ] || return 0
-  DRIVER_LEAN_ARGS+=(--settings "{\"claudeMdExcludes\":[$excl]}")
   DRIVER_LEAN_ARGS+=(--append-system-prompt "This project's instruction files are not preloaded, to keep every call small: $files, at the root of the tree you are working in. Before you change code, read the parts of them that bear on the change. You do not need them to answer from what you were given.")
 }
 

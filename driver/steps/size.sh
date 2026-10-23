@@ -61,6 +61,7 @@ _driver_size_ask() {
     printf '\n---\n%s\n' "$(printf '%s' "$text" | head -c 6000)"
   } > "$prompt"
   local -a args=(--strict-mcp-config --mcp-config '{"mcpServers":{}}' --tools Read Grep Glob --max-turns 3)
+  driver_md_exclude_args "$wt"; args+=(${DRIVER_MD_ARGS[@]+"${DRIVER_MD_ARGS[@]}"})
   ( cd "$wt" 2>/dev/null || cd /
     HARNESS_DRIVER_RUN="$t:size" "$DRIVER_CLAUDE" -p --output-format stream-json --verbose --name size \
       --permission-mode "$DRIVER_PERMISSION_MODE" "${args[@]}" --json-schema "$(cat "$schema")" \
