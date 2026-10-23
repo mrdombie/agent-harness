@@ -456,7 +456,8 @@ coord_heartbeat_read() {
   # out by coordinator.fleetForgetMin from its own last tick, as a read one would.
   if ! raw=$(gh_call api "repos/$REPO_SLUG/issues/$n/comments?per_page=100" 2>/dev/null) \
      || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$raw"; then
-    if declare -F say >/dev/null; then say "heartbeats: read failed, kept last"; else echo "heartbeats: read failed, kept last" >&2; fi
+    # Said on stderr: stdout is the JSON the caller reads.
+    if declare -F say >/dev/null; then say "heartbeats: read failed, kept last" >&2; else echo "heartbeats: read failed, kept last" >&2; fi
     jq -c --arg me "${COORD_HOST:-}" '[(.hosts // [])[]? | select(type == "object" and ((.host // "") | ascii_downcase) != ($me | ascii_downcase))]' "$COORD_FLEET" 2>/dev/null \
       || printf '[]'
     return 1

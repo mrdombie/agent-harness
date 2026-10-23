@@ -35,6 +35,11 @@ fleet_file $((NOWE - 120)) $((NOWE - 90000))
 want "a fresh reader stays in the fleet"        "mac Yomato" "$(read_fleet)"
 want_in "  and it is said"                      'heartbeats: read failed, kept last' "$(cat "$FIX/err")"
 want "  the read still reports it failed"       "rc=1" "$(cat "$FIX/rc")"
+want "  and its output is the JSON alone, with a tick's say defined" "array" "$( export SWARM_NOW="$NOWE" COORDINATOR_HOST=mac SWARM_GH="$BIN/gh-limited" GH_BACKOFF_FILE="$FIX/backoff"
+  . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . "$HERE/coordinator-sheet.sh" >/dev/null 2>&1
+  say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
+  printf '7\t%s\n' "$COORD_SHEET_LABEL" > "$COORD_SHEET_ISSUE_FILE"
+  coord_heartbeat_read 2>/dev/null | jq -r type 2>/dev/null)"
 want "  a reader silent past forgetMin still ages out" "0" "$(read_fleet | grep -c old-vm)"
 rm -f "$C/fleet.json"
 want "no earlier fleet: only this host"          "mac" "$(read_fleet)"
