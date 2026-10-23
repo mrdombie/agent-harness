@@ -80,6 +80,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/shared-install-hold.sh" || exit 1
 . "$SELF_DIR/cap-quick.sh" || exit 1
 . "$SELF_DIR/pr-red.sh" || exit 1
+declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
 QUICK_OK=""; QUICK_STARTED=0; CAP_EXEMPT_OK=""
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
@@ -537,6 +538,36 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   # A repair starts only on a PR that is really red: a required check failed, or it clashes.
   if [ "$cls" = repair ] && ! repair_pr_red "$t"; then return 0; fi
   return 1
+}
+# REBUILD AFTER N REPAIRS. The 12 most-repaired PRs (14-18 Oct, each repaired 5-11 times)
+# were 48% of three days' repair usage. A PR this host has repaired coordinator.rebuildAfterRepairs
+# (2) times since its ticket last started fresh is not patched again: its head is kept at
+# refs/stale/<ticket>/pr-<n>, the PR is closed with "closed to rebuild fresh" (follow-up.sh
+# holds its findings for the next PR), its branch deleted, and the ticket queued at the
+# front as a fresh build from the integration branch. 0 turns it off.
+COORD_REBUILD_AFTER="${COORDINATOR_REBUILD_AFTER_REPAIRS:-$(swarm_opt coordinator.rebuildAfterRepairs 2)}"
+case "$COORD_REBUILD_AFTER" in ''|*[!0-9]*) COORD_REBUILD_AFTER=2 ;; esac
+repairs_since_fresh() { # <ticket> — repair spawns on record since its last rebuild or new build
+  awk -F'\t' -v t="$1" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0
+}
+rebuild_fresh() { # <ticket> <repairs> — 0 when the PR was closed and the ticket queued fresh; says what it did
+  local t="$1" n="$2" pj pr sha ref note
+  pj=$(open_pr_json "$t"); [ -n "$pj" ] || { say "rebuild: #$t has no open PR this tick — left as a repair"; return 1; }
+  pr=$(jq -r .number <<<"$pj"); sha=$(jq -r '.headRefOid // ""' <<<"$pj"); ref="refs/stale/$t/pr-$pr"
+  coord_act_log rebuild "$t" "PR #$pr repaired $n times"
+  if coord_shadow; then say "rebuild: would close PR #$pr (repaired $n times) and build #$t fresh from $INTEGRATION_BRANCH"; return 0; fi
+  [ -n "$sha" ] && swarm_gh api "repos/$REPO_SLUG/git/refs" -f ref="$ref" -f sha="$sha" >/dev/null 2>&1 \
+    || swarm_gh api "repos/$REPO_SLUG/git/refs/${ref#refs/}" -X PATCH -f sha="$sha" -F force=true >/dev/null 2>&1 \
+    || { say "rebuild: #$t — PR #$pr's head could not be kept at $ref; left as a repair"; return 1; }
+  note="Closed to rebuild fresh: this PR was repaired $n times and is still not mergeable, so ticket #$t builds again from $INTEGRATION_BRANCH (coordinator.rebuildAfterRepairs). Its work is kept at \`$ref\` ($sha)."
+  swarm_gh pr close "$pr" --repo "$REPO_SLUG" --delete-branch --comment "$note" >/dev/null 2>&1 \
+    || { say "rebuild: #$t — PR #$pr could not be closed; left as a repair"; return 1; }
+  issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY"
+  bash "$QUEUE" add "$t" --class new --first --note "Rebuild: PR #$pr was closed after $n repairs. Build the ticket fresh from $INTEGRATION_BRANCH; the old head is at $ref for reference only." >/dev/null 2>&1 \
+    || say "rebuild: #$t could not be queued — the next seed finds it ready"
+  bash "$QUEUE" set-class "$t" new >/dev/null 2>&1 || true
+  coord_record_class "$t" rebuild
+  say "rebuild: closed PR #$pr after $n repairs (head kept at $ref) — #$t is queued to build fresh from $INTEGRATION_BRANCH"
 }
 # A cancelled, timed-out or runner-less required check is re-run this many times a head.
 COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
@@ -1093,6 +1124,11 @@ else
       say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — $exp #$t $(coord_shadow && echo 'would start' || echo 'starts') anyway"
     elif [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
       bypass=1; lent="${lent:-over the open-work cap: sized quick}"; QUICK_STARTED=$((QUICK_STARTED+1))
+    fi
+    # Repaired enough: rebuilt fresh instead of patched again; its place goes to the next one.
+    if [ "$cls" = repair ] && [ "$COORD_REBUILD_AFTER" -gt 0 ] && reps=$(repairs_since_fresh "$t") && [ "$reps" -ge "$COORD_REBUILD_AFTER" ]; then
+      rebuild_fresh "$t" "$reps" || true
+      started=$((started-1)); HEAL_FREE=$heal_free_was; NEW_FREE=$new_free_was; continue
     fi
     coord_act_log spawn "$t" "$cls${bypass:+ (quick, over the cap)}${note:+ — $note}"
     if coord_shadow; then
