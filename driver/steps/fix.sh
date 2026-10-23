@@ -389,7 +389,7 @@ _driver_fix_diff() { # <tree>
   for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
     git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
   done
-  [ -z "$trunk" ] || diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  [ -z "$trunk" ] || diff=$(driver_handover_diff "$wt" "$trunk"...HEAD)
   printf '%s' "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
 }
 
@@ -482,7 +482,12 @@ driver_step_fix() { # <ticket>
     git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
   done
   diff=""
-  [ -z "$trunk" ] || diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  # The diff of the files the findings name, the rest by name: the step reads more itself.
+  local -a ffiles=(); local p changed=""
+  [ -z "$trunk" ] || changed=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null)
+  while IFS= read -r p; do [ -n "$p" ] && printf '%s\n' "$changed" | grep -qxF -- "$p" && ffiles+=("$p"); done \
+    < <(jq -r "[.findings[]? | $bsel | .file // empty | sub(\":[0-9]+\$\"; \"\")] | unique | .[]" "$review" 2>/dev/null)
+  [ -z "$trunk" ] || diff=$(driver_handover_diff "$wt" "$trunk"...HEAD ${ffiles[@]+"${ffiles[@]}"})
 
   # VERBATIM, WITH THE GRADE AND THE PROPOSED FIX. A finding summarised on the way
   # here is a finding the fixer answers a paraphrase of.
