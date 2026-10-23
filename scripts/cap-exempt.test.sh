@@ -80,7 +80,7 @@ want_in "the P1 keeps its skip line"               'skip #802 \(new\): over the 
 want_not_in "the P0 has no skip line"              'skip #801' "$out"
 
 echo "--- over the cap: a P0 ranks with healing by priority; quick work comes after ---"
-fresh; open_prs 12; fix_issue 803 OPEN "status:in-review,P1"; bash "$Q" add 803 --class repair >/dev/null
+fresh; open_prs 12; fix_issue 803 OPEN "status:in-review,P1"; bash "$Q" add 803 --class repair >/dev/null; fix_pr_for 803
 ticket 804 "status:ready,P2" "$CONFIG_BODY"; ticket 805 "status:ready,P0" "$SCHEMA"
 out=$(tick)
 want "the P0 first, then the P1 repair, then the quick one" "805 803 804" "$(spawned)"

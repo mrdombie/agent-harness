@@ -316,6 +316,22 @@ fix_prs() {
   _fix_require_add $(jq -r '[.[].statusCheckRollup[]?.name] | unique | .[]' <<<"$out")
 }
 
+# fix_pr_for <ticket…> — an open draft PR for each, checks settled: a queued repair has a
+# change to finish (the coordinator starts none on a ticket without one). Count-neutral: a
+# filler PR a case seeded (a branch ending "-open") is re-pointed at the ticket first, so
+# the open-change count the case set stays; with none left, one is added.
+fix_pr_for() {
+  local t f="$FIX/gh/prs-all.json"
+  [ -s "$f" ] || printf '[]\n' > "$f"
+  for t in "$@"; do
+    jq --argjson t "$t" --arg br "${BRANCH_PREFIX:-tkt-}$t-fix" '
+      ([.[] | .headRefName] | index([.[] | select(endswith("-open"))][0])) as $i
+      | if $i != null then .[$i] += {headRefName: $br, isDraft: true, statusCheckRollup: []}
+        else . + [{number: ($t + 5000), headRefName: $br, headRefOid: "f\($t)", isDraft: true,
+                   mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}] end' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  done
+}
+
 # fix_required <name…> — the checks develop's live rules require (rules/branches/develop),
 # replacing the list. Every check fix_prs, fix_pr_status and fix_pr_run name is added to
 # it, so a fixture PR's checks are required unless a case says otherwise.

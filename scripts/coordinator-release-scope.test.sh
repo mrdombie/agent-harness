@@ -44,6 +44,7 @@ fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
   : > "$SPAWNS"; : > "$FIX/claims.txt"
   printf '[]\n' > "$FIX/gh/prs-all.json"; printf '[]\n' > "$FIX/fixing.json"; rm -f "$STATE/swarm/prs.json"
+  fix_pr_for 804   # the repair's open PR
 }
 # issue <n> <labels> [milestone] — a ticket the stand-in GitHub answers for.
 issue() {

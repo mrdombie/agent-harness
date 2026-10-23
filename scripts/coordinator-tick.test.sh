@@ -85,7 +85,7 @@ fresh() {
   unset SWARM_NOW
 }
 queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
-queue_as() { local c="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$c" >/dev/null; done; }
+queue_as() { local c="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$c" >/dev/null; [ "$c" != repair ] || fix_pr_for "$t"; done; }
 tick() { bash "$T" 2>&1; }
 live_run() { # <ticket> [log-age-from-now-in-min]
   local log="$STATE/logs/claim-$1-live.log"
@@ -313,7 +313,7 @@ want "3 waiting + 6 healing, under healAllAt: 2 healing places" "2 4 10 false" "
 
 echo "--- polish never stops the factory: polish reds never count toward heal-all ---"
 # reds_as <priority> <tickets…> — repairs whose tickets carry that priority
-reds_as() { local p="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$p,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; done; }
+reds_as() { local p="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$p,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done; }
 pri_heal_tick() { # <priority> <reds> — reds 601.., six new 701..706, ceiling 6, share 0.25, healAllAt 10
   fresh; reds_as "$1" $(seq 601 $((600 + $2))); queue 701 702 703 704 705 706
   SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1
@@ -324,7 +324,7 @@ out=$(pri_heal_tick P3 10)
 want "10 polish reds, healAllAt 10: the share holds, 2 healing" "2 4 10 false" "$(slots_view)"
 want "2 heal and 4 build new"              "2 4" "$(heal_new)"
 want_in "the split line says why"          '10 polish red\(s\) not counted toward heal-all' "$out"
-fresh; for t in 601 602 603 604 605 606 607 608 609 610; do fix_issue "$t" OPEN "polish-list,screen:inbox,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; done
+fresh; for t in 601 602 603 604 605 606 607 608 609 610; do fix_issue "$t" OPEN "polish-list,screen:inbox,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done
 queue 701 702 703 704 705 706
 SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
 want "10 polish-list reds with no priority label: no heal-all either" "2 4 10 false" "$(slots_view)"
@@ -705,6 +705,23 @@ fresh; queue 501; fix_required "Typecheck"
 jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[], statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs-all.json"
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
 want "a ready red PR's ticket is a repair too" "501	repair" "$(grep '^501	' "$SPAWNS")"
+
+echo "--- no run without a change to make ---"
+# About 16 runs in 3 days: repairs with no open PR, closed tickets, builds of tickets not ready.
+fresh; fix_issue 501 OPEN "status:in-review"; bash "$Q" add 501 --class repair >/dev/null
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a repair with no open PR: nothing spawned" "" "$(spawned)"
+want_in "  and says why"                     'skip #501 \(repair\): has no open PR — nothing to repair' "$out"
+fresh; fix_issue 501 OPEN "status:drafting"; bash "$Q" add 501 >/dev/null
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a build of a ticket not ready: nothing spawned" "" "$(spawned)"
+want_in "  and says why"                     'skip #501 \(new\): not status:ready \(status:drafting\)' "$out"
+fresh; fix_issue 501 OPEN "status:claimed"; bash "$Q" add 501 --note "Resume: run claim-501-a was cut off by the wall." >/dev/null
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a resume carries on whatever its status" "501" "$(spawned)"
+fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 >/dev/null
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a closed ticket: nothing spawned"      "" "$(spawned)"
 
 echo "--- a repair starts only on a PR that is really red ---"
 # Repairs started while CI still ran, and on a red develop does not require: each parked.
