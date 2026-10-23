@@ -509,9 +509,8 @@ driver_step_build() { # <ticket>
   # could read was refused by the validator. The same defect as the plan step's, in
   # the step the trial never reached.
   #
-  # Sequential, never parallel: inside a ticket the fan-out belongs to
-  # superpowers:subagent-driven-development, which the brief invokes, with a fresh
-  # helper per task. The driver never starts several agents on one ticket.
+  # Sequential, never parallel: each task is a fresh session of its own, followed by the
+  # review step. The driver never starts several agents on one ticket.
   ntasks=$(jq -r '[.tasks[]?] | length' "$(driver_state_dir "$t")/steps/plan.json" 2>/dev/null)
   if [ "${ntasks:-0}" -eq 0 ]; then
     driver_say "✋ build: the plan carries no task to build. A build that changed nothing is not a build that passed."

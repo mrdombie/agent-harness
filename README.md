@@ -33,7 +33,7 @@ The repo is its own marketplace. In the consuming repo's `.claude/settings.json`
 
 Or per machine: `claude plugin marketplace add mrdombie/agent-harness && claude plugin install agent-harness@agent-harness`.
 
-**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging`, `subagent-driven-development`, `test-driven-development`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list — and it is the list the driver READS, not prose. The driver parks the ticket when a step's transcript shows none of the skills that file declares for it, and again when the answer claims a skill the transcript never shows.
+**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging` (a plan on a bug ticket, and repair), `test-driven-development`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list — and it is the list the driver READS, not prose. The driver parks the ticket when a step's transcript shows none of the skills that file declares for it, and again when the answer claims a skill the transcript never shows.
 
 `brainstorming` is deliberately NOT in that list. It waits on a person, so an unattended step cannot invoke it — the approved spec stands in for it, and `briefs/facts.json` records that under `notInvoked`.
 
