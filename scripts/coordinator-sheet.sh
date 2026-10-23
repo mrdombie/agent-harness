@@ -210,11 +210,9 @@ coord_sheet_render() {
                     + (why_words | if . == null then "" else "\n  - " + . end))
        else empty end),
       (if .pace then
-        "", "### Usage budget",
-        "Five-hour window \(.pace.usage.five_hour.u * 100 | round)% against a straight line of \(.pace.fiveHour.line * 100 | round)%"
-        + (if .pace.sevenDay then " · week \(.pace.sevenDay.u * 100 | round)% against \(.pace.sevenDay.line * 100 | round)%" else "" end)
-        + " · at most \(.pace.maxBuildsFleet) building across every machine: "
-        + (.pace.shares | to_entries | map("\(.key) \(.value)") | join(", "))
+        "", "### Usage pacing",
+        "Pacing \(.pace.pacing // "?"): five-hour window \(.pace.usage.five_hour.u * 100 | round)% against a target of \(.pace.fiveHour.line * 100 | round)%"
+        + (if .pace.pacing == "ahead" then " · no new builder starts on any machine\(((.pace.settings.exempt // []) | join("/")) as $x | if $x == "" then "" else " but " + $x end)" else " · places fill" end)
        else empty end),
       "",
       "<!-- sheet:v1 updated=\($at) owner=\($owner) -->",
@@ -237,7 +235,7 @@ coord_sheet_publish() {
   now=$(swarm_now)
   # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
   h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, behind, plugins}]}
-                                                + (if .pace then {pace: (.pace | {maxBuildsFleet, shares, settings})} else {} end)' <<<"$e")")
+                                                + (if .pace then {pace: (.pace | {pacing, settings})} else {} end)' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
   beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
@@ -375,7 +373,7 @@ coord_tick_why() {
     def last($re): ([.[] | select(test($re))] | last // null | if . == null then null else c end);
     split("\n") | map(select(length > 0)) as $l
     | ([$l[] | select(test("^skip #[0-9]+ \\("))]) as $sk
-    | {pace: ($l | last("^pace: ")), ceiling: ($l | last("^ceiling: ")), spawn: ($l | last("^spawn: ")),
+    | {pace: ($l | last("^pacing: ")), ceiling: ($l | last("^ceiling: ")), spawn: ($l | last("^spawn: ")),
        openChanges: ($l | last("^open changes .* / cap ")), sheet: ($l | last("^sheet: working .*'"'"'s order")),
        cap: ($l | last("^cap: ")), hostCap: ($l | last("^host cap: ")), config: ($l | last("^config: ")), tooling: ($l | last("^tooling: [0-9]+ tooling ticket")),
        install: ($l | last("^shared install: ⚠")),

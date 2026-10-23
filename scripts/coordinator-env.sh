@@ -63,10 +63,6 @@
 #                                                           toolingCapLabels label; over it they wait and
 #                                                           the places go to product work
 #   coordinator.toolingCapLabels COORDINATOR_TOOLING_CAP_LABELS project:harness-kit repo:agent-harness
-#   coordinator.productFloor COORDINATOR_PRODUCT_FLOOR  2    builders for product work, on every host
-#                                                           together, the pacer never goes under while
-#                                                           both windows are under swarm.usageCeiling and
-#                                                           the weekly line is not spent. 0: off
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.disk.stopBelowGb / .resumeAtGb  30 / 50    read by scripts/disk-guard.sh, the one reader
 #   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
@@ -74,13 +70,7 @@
 #   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
 #                                                           tick may start work from
 #   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
-#   coordinator.pace.on      COORDINATOR_PACE           1    0: no usage pacing, the machine alone decides
-#   coordinator.pace.target  COORDINATOR_PACE_TARGET   0.85  five-hour window share the pacer aims to end at
-#   coordinator.pace.headroom COORDINATOR_PACE_HEADROOM 0.05  allowance over the straight line: a start only
-#                                                           while use <= elapsed share x target + headroom
-#   coordinator.pace.weekTarget / .weekHeadroom  0.9 / 0.05  the same line over the seven-day window
-#   coordinator.pace.burnPerBuilderHour COORDINATOR_PACE_BURN 0.025  window share one builder burns an
-#                                                           hour, when the samples cannot say
+#   coordinator.paceToWindow  {on, factor, exempt}  true / 0.95 / ["P0"]: the five-hour line (the usage pacer, below)
 #   coordinator.releaseScopeOnly COORDINATOR_RELEASE_SCOPE_ONLY off  true, or {on, priorities, excludeLabels,
 #                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes, titlePatterns}}:
 #                                                           no NEW ticket outside it is seeded or started.
@@ -154,8 +144,6 @@ COORD_TOOLING_SCOPES="${COORDINATOR_TOOLING_SCOPES:-$(swarm_opt coordinator.tool
 COORD_TOOLING_CAP="${COORDINATOR_TOOLING_CAP:-$(swarm_opt coordinator.toolingCap 2)}"
 case "$COORD_TOOLING_CAP" in ""|*[!0-9]*) COORD_TOOLING_CAP=2 ;; esac
 COORD_TOOLING_CAP_LABELS="${COORDINATOR_TOOLING_CAP_LABELS:-$(swarm_opt coordinator.toolingCapLabels "project:harness-kit repo:agent-harness")}"
-COORD_PRODUCT_FLOOR="${COORDINATOR_PRODUCT_FLOOR:-$(swarm_opt coordinator.productFloor 2)}"
-case "$COORD_PRODUCT_FLOOR" in ""|*[!0-9]*) COORD_PRODUCT_FLOOR=2 ;; esac
 [ -n "$COORD_MAX_LOAD_SET" ] || COORD_MAX_LOAD_SET=$(swarm_opt swarm.maxLoad "")
 COORD_MIN_FREE_GB="${COORDINATOR_MIN_FREE_GB:-$(swarm_opt coordinator.minFreeGb 20)}"
 COORD_SWEEP_EVERY_MIN="${COORDINATOR_SWEEP_EVERY_MIN:-$(swarm_opt coordinator.sweepEveryMin 30)}"
@@ -282,55 +270,42 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 }
 
 # ---- the usage pacer ----------------------------------------------------------
-# Owner call 2026-10-20: "work out the maths and automatically adjust both
-# machines". Every host on the account burns the same two windows (five hours,
-# seven days), so each tick works out how many builders, across every host, the
-# budget affords, and this host takes its share. Owner call 2026-10-21: "13 builds
-# may eat all of our 5hr session before something gets complete" — so the budget is
-# a straight line across the window, ending at the target at the reset, not a wall:
-#   - a start only while utilization <= elapsed share of the window x target + headroom,
-#     for the five-hour and the seven-day window both;
-#   - and no more builders than the measured burn affords to the target by the reset;
-#   - the owner splits that fleet cap across the hosts by their machine capacity and
-#     writes it to the sheet; each reader takes its share.
-# It only limits starts: a running builder is never stopped. At swarm.usageStepHold
-# the builders hold before their next step instead (swarm_usage_step_hold).
-COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.pace.on 1)}"
+# PACE TO THE FIVE-HOUR WINDOW (owner call 2026-10-23, "a speed-up"). Every host on the
+# account burns one five-hour window. Each tick reads its utilization u and reset
+# (the freshest on any host: coord_pace_reading) and draws a straight line to
+# factor x 100% at the reset:
+#     elapsed = 1 - (reset - now) / 5h        target = elapsed x factor
+#   - u > target (ahead): no new builder starts, but a priority in `exempt` (P0);
+#     the running ones carry on, and swarm.usageStepHold stays the backstop at the wall;
+#   - u <= target (behind): places fill as they would unpaced, to the machine and the cap;
+#   - no reading (or the window already reset): nothing to pace on, places fill (fail open).
+# The seven-day window is never paced on. Every host draws the same line from the same
+# freshest reading, a sheet reader with the owner's factor, so the fleet follows one rule.
+# Replaces the budget pacer of 2026-10-20/21 (coordinator.pace.*: target, headroom, the
+# weekly line, the measured burn, the owner's split and the product floor), retired here.
+#
+#   coordinator.paceToWindow.on      COORDINATOR_PACE          true   false: no pacing, the machine alone decides
+#   coordinator.paceToWindow.factor  COORDINATOR_PACE_FACTOR   0.95   the share of the window the line ends at
+#   coordinator.paceToWindow.exempt  COORDINATOR_PACE_EXEMPT   ["P0"] priorities that start while ahead
+COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on true)}"
 case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
-_coord_share() { awk -v t="$1" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 >= 0 && t+0 <= 1)}'; }
-COORD_PACE_TARGET="${COORDINATOR_PACE_TARGET:-$(swarm_opt coordinator.pace.target 0.85)}"
-_coord_share "$COORD_PACE_TARGET" && awk -v t="$COORD_PACE_TARGET" 'BEGIN{exit !(t+0 > 0)}' || COORD_PACE_TARGET=0.85
-COORD_PACE_HEADROOM="${COORDINATOR_PACE_HEADROOM:-$(swarm_opt coordinator.pace.headroom 0.05)}"
-_coord_share "$COORD_PACE_HEADROOM" || COORD_PACE_HEADROOM=0.05
-COORD_PACE_WEEK_TARGET="${COORDINATOR_PACE_WEEK_TARGET:-$(swarm_opt coordinator.pace.weekTarget 0.9)}"
-_coord_share "$COORD_PACE_WEEK_TARGET" && awk -v t="$COORD_PACE_WEEK_TARGET" 'BEGIN{exit !(t+0 > 0)}' || COORD_PACE_WEEK_TARGET=0.9
-COORD_PACE_WEEK_HEADROOM="${COORDINATOR_PACE_WEEK_HEADROOM:-$(swarm_opt coordinator.pace.weekHeadroom 0.05)}"
-_coord_share "$COORD_PACE_WEEK_HEADROOM" || COORD_PACE_WEEK_HEADROOM=0.05
-COORD_PACE_BURN="${COORDINATOR_PACE_BURN:-$(swarm_opt coordinator.pace.burnPerBuilderHour 0.025)}"
-awk -v b="$COORD_PACE_BURN" 'BEGIN{exit !(b ~ /^[0-9]*\.?[0-9]+$/ && b+0 > 0)}' || COORD_PACE_BURN=0.025
+COORD_PACE_FACTOR="${COORDINATOR_PACE_FACTOR:-$(swarm_opt coordinator.paceToWindow.factor 0.95)}"
+awk -v t="$COORD_PACE_FACTOR" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_FACTOR=0.95
+# coord_pace_exempt — the exempt priorities as digits, space-separated ("0").
+coord_pace_exempt() {
+  local v
+  if [ -n "${COORDINATOR_PACE_EXEMPT+x}" ]; then v="$COORDINATOR_PACE_EXEMPT"
+  elif [ -r "${HARNESS_CFG:-}" ]; then
+    v=$(jq -r '(.coordinator.paceToWindow.exempt // ["P0"]) | if type == "array" then join(" ") else tostring end' "$HARNESS_CFG" 2>/dev/null) || v=P0
+  else v=P0; fi
+  printf '%s\n' "$v" | tr -s ', ' '\n' | sed -n 's/^[Pp]\([0-9]\)$/\1/p' | tr '\n' ' '
+}
 # Samples: <epoch> \t <utilization> \t <window reset epoch> \t <builders on every host>
 COORD_PACE_SAMPLES="$COORD_DIR/pace.tsv"
-# Kept for the per-builder cost's history: about two days of ticks.
 COORD_PACE_KEEP=1000
-# This tick's budget, for the heartbeat, the sheet and the live view.
+# This tick's reading and verdict, for the heartbeat, the sheet and the live view.
 COORD_PACE_STATE="$COORD_DIR/pace.json"
-COORD_PACE_LOOKBACK_MIN=90
-# A burn measured over less than this is noise at 1% steps.
-COORD_PACE_MIN_SPAN_MIN=30
-# Utilization is the whole account, not the builders: a span counts toward the
-# per-builder cost only while builders were most of the load, and the cost is the
-# median of enough such spans, held inside a sane range.
-COORD_PACE_COST_MIN_BUILDERS=3
-COORD_PACE_COST_MIN_SPANS=2
-COORD_PACE_COST_MAX_GAP_MIN=60
-COORD_PACE_BURN_MIN="${COORDINATOR_PACE_BURN_MIN:-$(swarm_opt coordinator.pace.burnMin 0.01)}"
-awk -v b="$COORD_PACE_BURN_MIN" 'BEGIN{exit !(b ~ /^[0-9]*\.?[0-9]+$/ && b+0 > 0)}' || COORD_PACE_BURN_MIN=0.01
-COORD_PACE_BURN_MAX="${COORDINATOR_PACE_BURN_MAX:-$(swarm_opt coordinator.pace.burnMax 0.08)}"
-awk -v b="$COORD_PACE_BURN_MAX" -v lo="$COORD_PACE_BURN_MIN" 'BEGIN{exit !(b ~ /^[0-9]*\.?[0-9]+$/ && b+0 >= lo+0)}' || COORD_PACE_BURN_MAX=0.08
 COORD_PACE_FIVE_SEC=18000
-COORD_PACE_WEEK_SEC=604800
-# A host whose heartbeat is older than this takes no share of the fleet cap.
-COORD_PACE_HOST_FRESH_MIN=30
 
 # coord_pace_others — every reading the other hosts published, as [{host, usage, capacity, builds, tick}]:
 # the sheet this tick read (a reader), else the fleet the last tick wrote (the owner).
@@ -359,226 +334,57 @@ coord_pace_reading() {
   printf '%s' "$best"
 }
 
-# coord_pace_burn <reset epoch> — "<share per builder-hour>\t<source>\t<overhead share per hour>\t<spans>".
-# The five-hour utilization is every session on the account (coordinator, PM,
-# subagents, critics), so it is never divided by builder-hours alone:
-#   - per-builder cost: the median rise per builder-hour over COORD_PACE_MIN_SPAN_MIN
-#     spans of the sample history (any window, no reset or long gap inside; the
-#     builders on the two ends of each step averaged) that
-#     averaged COORD_PACE_COST_MIN_BUILDERS or more builders, clamped to
-#     [burnMin, burnMax]; too few spans and the configured burn stands;
-#   - overhead: over the last COORD_PACE_LOOKBACK_MIN of this window, the total rise
-#     per hour less the builders' share at that cost, never below 0; 0 when too short.
-coord_pace_burn() {
-  local now
-  now=$(swarm_now)
-  { [ -s "$COORD_PACE_SAMPLES" ] && sort -n -t$'\t' -k1,1 "$COORD_PACE_SAMPLES"; } | awk -F'\t' \
-      -v r="$1" -v from="$(( now - COORD_PACE_LOOKBACK_MIN * 60 ))" -v span="$(( COORD_PACE_MIN_SPAN_MIN * 60 ))" \
-      -v gap="$(( COORD_PACE_COST_MAX_GAP_MIN * 60 ))" -v mindom="$COORD_PACE_COST_MIN_BUILDERS" \
-      -v minspans="$COORD_PACE_COST_MIN_SPANS" -v def="$COORD_PACE_BURN" -v lo="$COORD_PACE_BURN_MIN" -v hi="$COORD_PACE_BURN_MAX" '
-    function cut() { cs = cb = cr = 0 }
-    {
-      t = $1 + 0; u = $2 + 0; w = $3 + 0; nb = $4 + 0
-      if (have && w == pw && t > pt && t - pt <= gap) {
-        cs += t - pt; cb += (t - pt) / 3600 * (pn + nb) / 2; cr += u - pu
-        if (cs >= span) { if (cr >= 0 && cb / (cs / 3600) >= mindom) rate[k++] = cr / cb; cut() }
-      } else cut()
-      if (w == r && t >= from + 0) {
-        if (n) bh += (t - lt) / 3600 * (ln + nb) / 2; else { ft = t; fu = u }
-        n++; lt = t; ln = nb; lu = u
-      }
-      have = 1; pt = t; pu = u; pw = w; pn = nb
-    }
-    END {
-      if (k >= minspans) {
-        for (i = 1; i < k; i++) { v = rate[i]; for (j = i - 1; j >= 0 && rate[j] > v; j--) rate[j + 1] = rate[j]; rate[j + 1] = v }
-        c = (k % 2) ? rate[int(k / 2)] : (rate[k / 2 - 1] + rate[k / 2]) / 2
-        src = "median of " k " spans of " mindom "+ builders"
-        if (c < lo + 0) { c = lo + 0; src = src ", held at the floor" }
-        if (c > hi + 0) { c = hi + 0; src = src ", held at the ceiling" }
-      } else { c = def + 0; src = "default" }
-      ov = 0
-      if (n >= 2 && lt - ft >= span && lu - fu > 0) { ov = ((lu - fu) - bh * c) / ((lt - ft) / 3600); if (ov < 0) ov = 0 }
-      printf "%.6f\t%s\t%.6f\t%d", c, src, ov, k
-    }'
-}
-
-# coord_pace_split <fleet cap> <hosts json [{host, capacity}]> — {host: share}: the cap
-# shared by machine capacity, largest remainder first, never more than a host's
-# capacity while another has room. No capacity anywhere: shared evenly.
-coord_pace_split() {
-  jq -c --argjson cap "${1:-0}" '
-    [.[] | select(type == "object" and (.host // "") != "") | {host, c: ((.capacity // 0) | tonumber? // 0 | if . < 0 then 0 else . end)}]
-    | unique_by(.host | ascii_downcase) as $h
-    | ($h | map(.c) | add // 0) as $sum
-    | ($h | length) as $n
-    | if $n == 0 then {}
-      else ($h | map(. + {q: (if $sum > 0 then $cap * .c / $sum else $cap / $n end)})
-                | map(. + {f: (.q | floor)})) as $q
-           | ($cap - ($q | map(.f) | add)) as $left
-           | ($q | sort_by(-(.q - .f), .host) | to_entries
-              | map(.value + {s: (.value.f + (if .key < $left then 1 else 0 end))})
-              | map({(.host): .s}) | add)
-      end' <<<"${2:-[]}" 2>/dev/null || printf '{}'
-}
-
 # coord_pace_fresh — this tick's pace.json, or nothing when no tick wrote one in the last 15 minutes.
 coord_pace_fresh() {
   jq -c --argjson now "$(swarm_now)" 'select((.at // 0) > $now - 900)' "$COORD_PACE_STATE" 2>/dev/null
 }
 
-# coord_pace <builders here> <claim rows> <this host> [machine ceiling here] [tooling runs live, every host] —
-# "<this host's share>\t<line>", 1 with the reason when there is nothing to pace on.
+# coord_pace <builders here> <claim rows> <this host> — "<ahead 1|0>\t<line>", 1 with the
+# reason when there is nothing to pace on (off, or no five-hour reading: places fill).
 # Claim rows are <ticket> \t <host> \t <step>; a row naming another host is a builder
-# there. Records this tick's sample, so the next tick's burn has it, and the budget
-# in pace.json. The share: the sheet's for a reader, the owner's own split for the
-# owner, the whole cap with no sheet — less what the other hosts already run.
-# The product floor (coord_pace_floor) keeps the fleet cap at productFloor plus the
-# tooling runs live, whatever the overhead estimate or the five-hour line says.
+# there, counted into the sample. Writes pace.json; a sheet reader paces by the factor
+# the owner published, so every host draws the same line.
 coord_pace() {
-  local here="${1:-0}" rows="${2:-}" host="${3:-}" mine="${4:-}" tool="${5:-0}" reading u r a w7="" u7="" r7="" a7="" other total burn bsrc ov spans now role shares="{}" src=local out
-  [ "$COORD_PACE" = 1 ] || { printf 'pace: off'; return 1; }
-  reading=$(coord_pace_reading five_hour) || { printf 'pace: no five-hour reading in the newest logs — the machine alone decides'; return 1; }
+  local here="${1:-0}" rows="${2:-}" host="${3:-}" reading u r a w7 u7="" r7="" a7="" other total now f="$COORD_PACE_FACTOR" role verdict
+  rm -f "$COORD_PACE_STATE" 2>/dev/null
+  [ "$COORD_PACE" = 1 ] || { printf 'pacing: off (coordinator.paceToWindow.on) — the machine alone decides'; return 1; }
+  role=off; ! declare -F coord_sheet_role >/dev/null || role=$(coord_sheet_role)
+  if [ "$role" = reader ] && [ -n "${SHEET_PACE:-}" ]; then
+    f=$(jq -r --arg d "$f" '(.settings.factor // null) | if type == "number" and . > 0 and . <= 1 then tostring else $d end' <<<"$SHEET_PACE" 2>/dev/null) || f="$COORD_PACE_FACTOR"
+    [ -n "$f" ] || f="$COORD_PACE_FACTOR"
+  fi
+  reading=$(coord_pace_reading five_hour) || { printf 'pacing: no five-hour reading — places fill, the machine alone decides'; return 1; }
   IFS=$'\t' read -r u r a <<<"$reading"; now=$(swarm_now)
   case "$a" in ''|*[!0-9]*) a=0 ;; esac
   if w7=$(coord_pace_reading seven_day); then IFS=$'\t' read -r u7 r7 a7 <<<"$w7"; case "$a7" in ''|*[!0-9]*) a7=0 ;; esac; fi
-  case "$mine" in ''|*[!0-9]*) mine=$here ;; esac
   other=$(printf '%s\n' "$rows" | awk -F'\t' -v h="$host" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { n++ } END { print n + 0 }')
   total=$(( here + other ))
   mkdir -p "$(dirname "$COORD_PACE_SAMPLES")" 2>/dev/null
   printf '%s\t%s\t%s\t%s\n' "$now" "$u" "$r" "$total" >> "$COORD_PACE_SAMPLES"
   tail -"$COORD_PACE_KEEP" "$COORD_PACE_SAMPLES" > "$COORD_PACE_SAMPLES.$$" 2>/dev/null && mv -f "$COORD_PACE_SAMPLES.$$" "$COORD_PACE_SAMPLES"
-  IFS=$'\t' read -r burn bsrc ov spans < <(coord_pace_burn "$r")
-  case "$burn" in ''|*[!0-9.]*) burn=$COORD_PACE_BURN; bsrc=default ;; esac
-  case "$ov" in ''|*[!0-9.]*) ov=0 ;; esac
-  case "$spans" in ''|*[!0-9]*) spans=0 ;; esac
-  # The settings are the fleet's: a reader paces by the ones the owner published, and
-  # where the owner named it a share, that share stands in for the reader's own line.
-  local tgt="$COORD_PACE_TARGET" hd="$COORD_PACE_HEADROOM" wt="$COORD_PACE_WEEK_TARGET" wh="$COORD_PACE_WEEK_HEADROOM" noline=0 sheet_share=""
-  role=off; ! declare -F coord_sheet_role >/dev/null || role=$(coord_sheet_role)
-  if [ "$role" = reader ] && [ -n "${SHEET_PACE:-}" ]; then
-    IFS=$'\t' read -r tgt hd wt wh < <(jq -r --arg t "$tgt" --arg h "$hd" --arg wt "$wt" --arg wh "$wh" '
-      def ok($d): if type == "number" and . >= 0 and . <= 1 then tostring else $d end;
-      (.settings // {}) | [(.target | ok($t)), (.headroom | ok($h)), (.weekTarget | ok($wt)), (.weekHeadroom | ok($wh))] | @tsv' <<<"$SHEET_PACE" 2>/dev/null \
-      || printf '%s\t%s\t%s\t%s\n' "$tgt" "$hd" "$wt" "$wh")
-    sheet_share=$(jq -r --arg me "$host" '(.shares // {}) | to_entries | map(select(.key | ascii_downcase == ($me | ascii_downcase))) | .[0].value // empty' <<<"$SHEET_PACE" 2>/dev/null)
-    case "$sheet_share" in ''|*[!0-9]*) ;; *) noline=1 ;; esac
-  fi
-  # budget: "<fleet cap>\t<5h line>\t<5h elapsed>\t<ahead 0|1>\t<7d line>\t<7d ahead 0|1>\t<projection>
-  #          \t<overhead to the reset>\t<left for builders>"
-  # The projection: what is left to the target, less the overhead's spend until the
-  # reset, over one builder's cost until the reset.
-  local budget cap
-  budget=$(awk -v u="$u" -v r="$r" -v now="$now" -v t="$tgt" -v h="$hd" -v b="$burn" -v ov="$ov" \
-      -v L="$COORD_PACE_FIVE_SEC" -v u7="$u7" -v r7="$r7" -v t7="$wt" -v h7="$wh" -v noline="$noline" \
-      -v L7="$COORD_PACE_WEEK_SEC" -v total="$total" '
-    function frac(reset, len,   f) { f = 1 - (reset - now) / len; return f < 0 ? 0 : (f > 1 ? 1 : f) }
-    BEGIN {
-      T = (r - now) / 3600; if (T < 0.1) T = 0.1
-      os = ov * T; left = t - u - os
-      p = int(left / (b * T) + 1e-9); if (p < 0) p = 0
-      f = frac(r, L); line = f * t + h; ahead = (u + 0 > line + 1e-9)
-      line7 = ""; ahead7 = 0
-      if (r7 != "") { f7 = frac(r7, L7); line7 = f7 * t7 + h7; ahead7 = (u7 + 0 > line7 + 1e-9) }
-      a = p; if (!noline && (ahead || ahead7) && a > total) a = total
-      printf "%d\t%.4f\t%.4f\t%d\t%s\t%d\t%d\t%.4f\t%.4f", a, line, f, ahead, (line7 == "" ? "" : sprintf("%.4f", line7)), ahead7, p, os, left
-    }')
-  cap=${budget%%$'\t'*}
-  case "$tool" in ''|*[!0-9]*) tool=0 ;; esac
-  # Overhead never takes the product places to zero (owner call 2026-10-22): under the
-  # usage ceiling the fleet cap is never under the floor plus the tooling runs live.
-  local fl_why fl_want fl_would=$cap fl_on=0
-  fl_why=$(coord_pace_floor_off "$u" "$u7" "$wt" "$wh" "$(cut -f6 <<<"$budget")")
-  fl_want=$(( COORD_PRODUCT_FLOOR + tool ))
-  if [ -z "$fl_why" ] && [ "$cap" -lt "$fl_want" ]; then
-    cap=$fl_want; fl_on=1; budget="$cap"$'\t'"${budget#*$'\t'}"
-  fi
-  local others; others=$(coord_pace_others)
-  case "$role" in
-    owner)
-      # This host's machine capacity and every fresh heartbeat's: the cap shared by them.
-      shares=$(jq -cn --arg me "$host" --argjson mine "$mine" --argjson o "$others" --argjson now "$now" \
-                 --argjson fresh "$(( COORD_PACE_HOST_FRESH_MIN * 60 ))" '
-        [{host: $me, capacity: $mine}]
-        + [$o[]? | select(type == "object" and (.host // "") != "" and (.host | ascii_downcase) != ($me | ascii_downcase))
-                 | select(($now - (.tick // 0)) < $fresh)
-                 | {host, capacity: (.capacity // .builds // 1)}]' 2>/dev/null) || shares="[]"
-      shares=$(coord_pace_split "$cap" "$shares"); src=split ;;
-    reader)
-      shares=$(jq -cn --arg sp "${SHEET_PACE:-}" '($sp | fromjson? // {}) | .shares // {} | if type == "object" then . else {} end' 2>/dev/null) || shares="{}"
-      [ -n "$shares" ] || shares="{}"
-      src=sheet ;;
-  esac
-  local s
-  s=$(jq -r --arg me "$host" 'to_entries | map(select(.key | ascii_downcase == ($me | ascii_downcase))) | .[0].value // empty' <<<"$shares" 2>/dev/null)
-  case "$s" in ''|*[!0-9]*) s=$cap; [ "$src" = local ] || src="local (the sheet names no share for $host)" ;; esac
-  # Never past the fleet cap, whatever the share: the other hosts' builders count first.
-  [ "$s" -gt $(( cap - other )) ] && s=$(( cap - other ))
-  [ "$s" -ge 0 ] || s=0
-  out=$(awk -v u="$u" -v r="$r" -v at="$(swarm_iso "$r" | cut -c12-16)" -v b="$burn" -v src="$bsrc" -v ov="$ov" -v tgt="$tgt" -v bud="$budget" \
-            -v o="$other" -v s="$s" -v u7="$u7" -v noline="$noline" -v wh="$wh" -v shares="$(jq -r 'to_entries | map("\(.key) \(.value)") | join(", ")' <<<"$shares" 2>/dev/null)" '
-    BEGIN {
-      split(bud, x, "\t"); a = x[1]; line = x[2]; f = x[3]; ahead = x[4]; line7 = x[5]; ahead7 = x[6]; os = x[8]; left = x[9]
-      printf "%d\tpace: 5h window %d%%, resets %sZ, %.1f%%/builder-hour (%s), overhead %.1f%%/h, budget %.0f%% to the target − %.0f%% overhead = %.0f%% → %d across all hosts, %d on other hosts → %d here",
-        s, u * 100 + 0.5, at, b * 100, src, ov * 100, (tgt - u) * 100, os * 100, (left < 0 ? 0 : left) * 100, a, o, s
-      held = (noline ? " (ahead of it: the share from the owner decides)" : " (ahead of it: no new starts)")
-      printf " · straight line: 5h %d%% at %d%% of the window%s", line * 100 + 0.5, f * 100 + 0.5, (ahead ? held : "")
-      if (line7 != "" && wh + 0 >= 1) printf " · 7d %d%% (no weekly line)", u7 * 100 + 0.5
-      else if (line7 != "") printf " · 7d %d%% against %d%%%s", u7 * 100 + 0.5, line7 * 100 + 0.5, (ahead7 ? held : "")
-      if (shares != "") printf " · fleet cap %d: %s", a, shares
-    }')
-  out="$out · $(coord_pace_floor_said "$fl_on" "$fl_would" "$s" "$fl_why" "$tool")"
-  jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --argjson a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" --arg bud "$budget" \
-     --argjson burn "$burn" --arg bsrc "$bsrc" --argjson ov "$ov" --argjson spans "$spans" --argjson running "$total" --argjson other "$other" --argjson shares "$shares" \
-     --argjson share "$s" --arg src "$src" --argjson capacity "$mine" \
-     --arg tgt "$tgt" --arg hd "$hd" --arg wt "$wt" --arg wh "$wh" \
-     --argjson floor "$COORD_PRODUCT_FLOOR" --argjson flOn "$([ "$fl_on" = 1 ] && echo true || echo false)" \
-     --argjson flWould "$fl_would" --arg flWhy "$fl_why" --argjson tool "$tool" '
-    ($bud | split("\t")) as $b
-    | {at: $at, host: $host, capacity: $capacity,
-       usage: ({five_hour: {u: $u, reset: $r, at: $a}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end)),
-       fiveHour: {u: $u, reset: $r, line: ($b[1] | tonumber), elapsed: ($b[2] | tonumber), ahead: ($b[3] == "1")},
-       sevenDay: (if $u7 == "" then null else {u: ($u7 | tonumber), reset: ($r7 | tonumber), line: ($b[4] | tonumber), ahead: ($b[5] == "1")} end),
-       burn: $burn, burnSource: $bsrc, burnSpans: $spans, overheadPerHour: $ov,
-       overheadToReset: ($b[7] | tonumber), budgetForBuilders: ($b[8] | tonumber), projection: ($b[6] | tonumber), maxBuildsFleet: ($b[0] | tonumber),
-       running: $running, otherHosts: $other, shares: $shares, share: $share, source: $src,
-       productFloor: {floor: $floor, applied: $flOn, wouldLeave: $flWould, toolingLive: $tool,
-                      off: (if $flWhy == "" then null else $flWhy end)},
-       settings: {target: ($tgt | tonumber), headroom: ($hd | tonumber), weekTarget: ($wt | tonumber), weekHeadroom: ($wh | tonumber),
-                  week: (($wh | tonumber) < 1)}}' \
+  # "<ahead 0|1>\t<elapsed>\t<target>"
+  verdict=$(awk -v u="$u" -v r="$r" -v now="$now" -v f="$f" -v L="$COORD_PACE_FIVE_SEC" 'BEGIN {
+    e = 1 - (r - now) / L; if (e < 0) e = 0; if (e > 1) e = 1
+    t = e * f; printf "%d\t%.4f\t%.4f", (u + 0 > t + 1e-9), e, t }')
+  local ahead e t ex
+  IFS=$'\t' read -r ahead e t <<<"$verdict"
+  ex=$(coord_pace_exempt | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
+  jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --argjson a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" \
+     --argjson e "$e" --argjson t "$t" --argjson ahead "$([ "$ahead" = 1 ] && echo true || echo false)" --argjson f "$f" --arg ex "$ex" \
+     --argjson running "$total" --argjson other "$other" '
+    {at: $at, host: $host,
+     usage: ({five_hour: {u: $u, reset: $r, at: $a}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end)),
+     fiveHour: {u: $u, reset: $r, elapsed: $e, line: $t, ahead: $ahead},
+     pacing: (if $ahead then "ahead" else "behind" end),
+     running: $running, otherHosts: $other,
+     settings: {factor: $f, exempt: ($ex | split("/") | map(select(. != "")))}}' \
      > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
-  # The owner paces the fleet. A sheet with no budget on it is an owner not pacing: a reader
-  # pacing alone counts every owner build against a cap nobody keeps, and starts nothing.
-  if [ "$role" = reader ] && [ -z "${SHEET_PACE:-}" ]; then
-    out=${out#*$'\t'}
-    printf 'pace: not applied — the sheet carries no budget from %s (its pacing is off), so the machine alone decides here; the reading was %s' \
-      "${COORD_SHEET_OWNER:-its owner}" "${out#pace: }"
-    return 1
-  fi
-  printf '%s' "$out"
-}
-
-# coord_pace_floor_off <5h use> <7d use> <week target> <week headroom> <7d ahead 0|1> — why
-# the product floor does not hold this tick, or nothing when it does: off, a window at or
-# over swarm.usageCeiling, or the weekly line spent (7d at its target or ahead of its
-# straight line, while it is on). The five-hour line never stops it: overhead is what
-# puts that window ahead, and the floor exists so overhead cannot take every place.
-coord_pace_floor_off() {
-  [ "$COORD_PRODUCT_FLOOR" -gt 0 ] || { printf 'off (coordinator.productFloor is 0)'; return; }
-  awk -v u="$1" -v u7="$2" -v wt="$3" -v wh="$4" -v a7="${5:-0}" -v c="$SWARM_USAGE_CEILING" 'BEGIN {
-    if (u + 0 >= c + 0) { printf "off: 5h %d%% is at or over the %d%% usage ceiling", u * 100 + 0.5, c * 100 + 0.5; exit }
-    if (u7 != "" && u7 + 0 >= c + 0) { printf "off: 7d %d%% is at or over the %d%% usage ceiling", u7 * 100 + 0.5, c * 100 + 0.5; exit }
-    if (u7 != "" && wh + 0 < 1 && u7 + 0 >= wt + 0) { printf "off: the weekly line is spent, 7d %d%% of %d%%", u7 * 100 + 0.5, wt * 100 + 0.5; exit }
-    if (u7 != "" && wh + 0 < 1 && a7 + 0 == 1) printf "off: 7d %d%% is ahead of the weekly line", u7 * 100 + 0.5
-  }'
-}
-# coord_pace_floor_said <applied 0|1> <the budget's own cap> <share here> <off why> <tooling live> — the line's floor part.
-coord_pace_floor_said() {
-  local f="$COORD_PRODUCT_FLOOR" plus=""
-  [ "${5:-0}" -eq 0 ] || plus=" + $5 tooling"
-  if [ -n "$4" ]; then printf 'product floor %d %s' "$f" "$4"
-  elif [ "$1" = 1 ]; then printf 'overhead would leave %d, product floor keeps %d%s (%d here)' "$2" "$f" "$plus" "$3"
-  else printf 'product floor %d%s: the budget already affords %d' "$f" "$plus" "$2"; fi
+  printf '%s\t' "$ahead"
+  awk -v u="$u" -v t="$t" -v e="$e" -v f="$f" -v at="$(swarm_iso "$r" | cut -c12-16)" -v ahead="$ahead" -v ex="$ex" 'BEGIN {
+    printf "pacing: %s — 5h window %d%% against a target of %d%% (%d%% of the window gone x %.2f, resets %sZ)",
+      (ahead ? "ahead" : "behind"), u * 100 + 0.5, t * 100 + 0.5, e * 100 + 0.5, f, at
+    if (ahead) printf ": no new builder starts%s; the running ones carry on", (ex == "" ? "" : " but " ex)
+    else printf ": places fill" }'
 }
 
 # The class each spawn was for, kept here: the spawner hands over to the project's

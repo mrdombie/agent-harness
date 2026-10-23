@@ -683,22 +683,18 @@ if READING=$(coord_room); then
   CEILING=$((LIVE+STARTS))
 fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
-# The windows are the account's, shared with every host: no more than its share here.
-# The machine's own ceiling is this host's capacity, the weight the owner splits by.
 MACHINE_CEILING=$CEILING
-PACE_OK=""
-if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST" "$MACHINE_CEILING" "$TOOLING_LIVE"); then
-  PACE_OK=1
-  [ "$CEILING" -gt "${PACE%%$'\t'*}" ] && CEILING=${PACE%%$'\t'*}
+# The five-hour window is the account's, one line for every host (coord_pace): ahead of
+# it, only the exempt priorities start; behind it, or with no reading, places fill.
+PACE_AHEAD=""; PACE_EXEMPT=" $(coord_pace_exempt)"
+PACE_EXEMPT_SAID=$(printf '%s' "$PACE_EXEMPT" | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
+if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST"); then
+  [ "${PACE%%$'\t'*}" != 1 ] || PACE_AHEAD=1
   PACE=${PACE#*$'\t'}
 fi
 say "$PACE"
-# The places the product floor added are product work's: no tooling start takes them.
-# Only this tick's budget says so: a pace.json left from a tick that paced is not one.
-PACE_FLOORED=""; [ -z "$PACE_OK" ] || ! coord_pace_fresh | jq -e '.productFloor.applied == true' >/dev/null 2>&1 || PACE_FLOORED=1
 TOOLING_ROOM=$(( COORD_TOOLING_CAP - TOOLING_LIVE )); [ "$TOOLING_ROOM" -ge 0 ] || TOOLING_ROOM=0
-[ -z "$PACE_FLOORED" ] || TOOLING_ROOM=0
-say "tooling: $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP on every host${TOOLING_LIVE_TICKETS:+ (${TOOLING_LIVE_TICKETS# })}$( [ -z "$PACE_FLOORED" ] || echo ' · the places now are the product floor'"'"'s: no tooling start')"
+say "tooling: $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP on every host${TOOLING_LIVE_TICKETS:+ (${TOOLING_LIVE_TICKETS# })}"
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
 # The split needs the reds left — waiting plus being healed — so candidates()
@@ -745,7 +741,7 @@ CANDS=""
 candidates() {
   local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
   local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
-  local sk_rel="" sk_proc="" sk_behind="" sk_unsized="" sk_polish="" sk_capped="" qwhy
+  local sk_rel="" sk_proc="" sk_pace="" sk_behind="" sk_unsized="" sk_polish="" sk_capped="" qwhy
   local exempt exm exempt_said
   CANDS=""; QUICK_OK=""; CAP_EXEMPT_OK=""
   exempt=" $(coord_cap_exempt_prins)"
@@ -771,6 +767,7 @@ candidates() {
     [ -n "${t:-}" ] || continue
     i=$((i+1)); exm=""
     if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then sk_proc="$sk_proc #$t"; continue; fi
+    if [ -n "$PACE_AHEAD" ] && case "$PACE_EXEMPT" in *" $pri "*) false ;; *) true ;; esac; then sk_pace="$sk_pace #$t"; continue; fi
     # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
     # skipped as new it sat at the head of the queue on every tick doing nothing.
     if [ "$cls" = new ] && pr=$(ticket_open_pr "$t"); then
@@ -868,6 +865,7 @@ candidates() {
   # NO QUEUED TICKET IS PASSED OVER UNSAID: a reason one ticket has gets its own line
   # above; a reason many share gets one line naming each of them.
   [ -z "$sk_proc" ] || say "skip${sk_proc}: the hold lets only process fixes start"
+  [ -z "$sk_pace" ] || say "skip${sk_pace}: pacing ahead of the five-hour line — no new builder starts${PACE_EXEMPT_SAID:+ but $PACE_EXEMPT_SAID}"
   [ -z "$sk_rel" ] || say "skip${sk_rel}: outside the release scope (coordinator.releaseScopeOnly)"
   [ -z "$sk_capped" ] || say "skip${sk_capped}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) — only finishing, and quick new work, starts over it"
   [ -z "$sk_unsized" ] || say "skip${sk_unsized}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP), not sized this tick; only quick work starts over it"
@@ -875,7 +873,7 @@ candidates() {
   [ -z "$sk_behind" ] || say "skip${sk_behind}: behind the $SLOTS free place(s) — earlier entries in the order take them"
   coord_release_on && say "scope: release only — $(( $(jq -r '.release_held // 0' "$COORD_QUEUE" 2>/dev/null || echo 0) + rel_held )) new outside scope held back"
   [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
-  [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP$( [ -z "$PACE_FLOORED" ] || echo ', and the places now are the product floor'"'"'s'); the places go to product work"
+  [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP; the places go to product work"
   TOOLING_WAITING=$tool_wait
   CANDS=$(printf '%s' "$rows" | sort -t$'\t' -k1,1n | cut -f2-); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
   reds_waiting; split_places
@@ -1127,7 +1125,7 @@ while IFS= read -r c; do
   [ -n "$c" ] || continue
   case " $LIVE_TICKETS " in *" $c "*) ;; *) FLEET_LIVE=$((FLEET_LIVE+1)) ;; esac
 done <<< "$(printf '%s\n' "$CLAIMED" | grep -E '^[0-9]+$' | sort -u)"
-if [ -n "$OVER_PR_CAP" ] && [ "$FLEET_LIVE" -eq 0 ] && [ -n "${SPAWN_RAN:-}" ] && [ "${started:-0}" -eq 0 ]; then
+if [ -n "$OVER_PR_CAP" ] && [ "$FLEET_LIVE" -eq 0 ] && [ -n "${SPAWN_RAN:-}" ] && [ "${started:-0}" -eq 0 ] && [ -z "$PACE_AHEAD" ]; then
   STALLS=$(( $(cat "$STALL_FILE" 2>/dev/null | grep -E '^[0-9]+$' || echo 0) + 1 ))
   printf '%s\n' "$STALLS" > "$STALL_FILE"
   if [ "$STALLS" -ge "$COORD_STALL_TICKS" ]; then
@@ -1199,7 +1197,7 @@ if [ "$SHEET_ROLE" = owner ]; then
                       '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
                        + (if ($hcap | tonumber? // 0) > 0 then {hostCap: {perHost: ($hcap | tonumber)}} else {} end)
                        + (if ($plugins | length) == 0 then {} else {plugins: $plugins} end)
-                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, sevenDay, maxBuildsFleet, shares, settings})} end)' <<<"$entries"); then
+                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, pacing, settings})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
     else
@@ -1225,7 +1223,6 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    --arg pace "$(coord_pace_fresh)" --arg stepHold "${STEP_HOLD:-}" \
    --arg openPrs "$OPEN_PRS" --arg openPrCap "$COORD_OPEN_PR_CAP" --argjson overPrCap "$([ -n "$OVER_PR_CAP" ] && echo true || echo false)" \
    --argjson toolCap "$COORD_TOOLING_CAP" --argjson toolLive "$TOOLING_LIVE" --argjson toolWait "${TOOLING_WAITING:-0}" \
-   --argjson floored "$([ -n "$PACE_FLOORED" ] && echo true || echo false)" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
      healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
@@ -1233,8 +1230,8 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
      disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
            resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld},
-     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, sevenDay, maxBuildsFleet, share, shares, source, productFloor}) end),
-     tooling:{cap:$toolCap, live:$toolLive, waiting:$toolWait, floorHolds:$floored},
+     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, pacing, settings}) end),
+     tooling:{cap:$toolCap, live:$toolLive, waiting:$toolWait},
      openPrs:(if $openPrs == "" then null else {count:($openPrs|tonumber), cap:($openPrCap|tonumber), over:$overPrCap} end),
      usageHold:(if $stepHold == "" then null else ($stepHold | split("\t") | {until: (.[0] | tonumber), window: .[1], pct: (.[2] | tonumber)}) end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
