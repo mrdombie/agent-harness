@@ -63,11 +63,34 @@
 # meanwhile. While the install is behind and not run, every pass says so loudly, with
 # the number of packages behind: "shared install behind the lockfile: N packages".
 #
+# AN INSTALL THAT SAYS IT WORKED IS CHECKED BEFORE IT IS RECORDED. On 2026-10-23 npm ci
+# exited 0, the lock was recorded, every later check said "unchanged", and the tree had
+# 379 packages missing (the required @eslint-community/eslint-utils among them): every
+# builder's lint and pre-commit failed. So the result is verified first: every manifest
+# the lockfile names (the root's and each workspace's package.json, and the lock) is the
+# commit's own; `npm ls --all` lists no missing package that is not optional (a healthy
+# tree lists hundreds of UNMET OPTIONAL peers: 249 measured that night); and each load
+# probe passes. A failure installs once more; failing again records nothing, puts the old
+# install back, and holds new starts on this host with "⚠ shared install broken: N
+# required missing — <why>" until a check verifies the tree. An unchanged lock is
+# verified again every coordinator.sharedInstall.reverifyEvery (4) passes, and an install
+# adopted without running one is verified too: a tree broken after its install loses its
+# record, holds starts and installs again.
+#
+# The install scripts npm skipped (its allowScripts warning: esbuild, prisma, @prisma/engines,
+# @sentry/cli, unrs-resolver, msgpackr-extract) were measured on the Mac that night: each
+# loads or runs without them (platform binaries come as optional packages, and the project
+# runs prisma generate itself), so nothing is approved here; a project that needs one says
+# so in a load probe, which then fails loudly.
+#
 # Settings (harness.json, or the env var): coordinator.sharedInstall.on (1;
 # SHARED_INSTALL=0 turns it off), .timeoutMin (30; SHARED_INSTALL_TIMEOUT_SEC),
-# .retryMin (60), .preGateSteps (""), .drainAfterMin (30), .drainMaxMin (60), .holdStaleMin (15).
-# SHARED_INSTALL_CMD replaces the install
-# command (tests).
+# .retryMin (60), .preGateSteps (""), .drainAfterMin (30), .drainMaxMin (60), .holdStaleMin (15),
+# .reverifyEvery (4; 0 never), .verify (the load probes: a list of shell commands run in
+# the clone; default `node -e "require('eslint')"` and `node_modules/.bin/tsc --version`,
+# each when the root package.json declares eslint or typescript; SHARED_INSTALL_VERIFY,
+# one per line). SHARED_INSTALL_CMD replaces the install command and SHARED_INSTALL_NPM
+# the npm that lists the tree (tests).
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
@@ -81,6 +104,8 @@ LOCKF="$COORD_DIR/shared-install.lock"
 CHECK_LOCK="$COORD_DIR/shared-install.check"
 DRAIN_TO="$COORD_DIR/shared-install.drain-timeout"
 PREV=".harness-prev"
+BROKEN_F="$COORD_DIR/shared-install.broken"
+PASSES_F="$COORD_DIR/shared-install.passes"
 say() { printf '%s shared install: %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "shared install: $*"; swarm_log "$LOGF" "$*"; }
 
 # _si_timeout <sec> <cmd…> — runs it in its own process group and kills the group at
@@ -128,6 +153,62 @@ si_behind() {
   printf '%s' "${n:-?}"
 }
 
+# si_probes — the load probes, one shell command per line.
+_si_declares() { jq -e --arg d "$1" '((.dependencies // {}) + (.devDependencies // {})) | has($d)' "$CLONE/package.json" >/dev/null 2>&1; }
+si_probes() {
+  if [ -n "${SHARED_INSTALL_VERIFY+set}" ]; then printf '%s\n' "$SHARED_INSTALL_VERIFY"; return 0; fi
+  local p
+  p=$(jq -r '.coordinator.sharedInstall.verify // empty | if type == "array" then .[] else . end' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+  if [ -n "$p" ]; then printf '%s\n' "$p"; return 0; fi
+  ! _si_declares eslint || printf '%s\n' "node -e \"require('eslint')\""
+  ! _si_declares typescript || printf '%s\n' "node_modules/.bin/tsc --version"
+}
+
+# si_manifest_drift <commit> — the manifests the lockfile names that are not that commit's
+# blob: the root package.json and package-lock.json, and each workspace's package.json.
+si_manifest_drift() {
+  local c="$1" p bad=""
+  for p in package.json package-lock.json $(jq -r '(.packages // {}) | keys[]
+        | select(. != "" and (startswith("node_modules/") | not) and (contains("/node_modules/") | not))
+        | . + "/package.json"' "$CLONE/package-lock.json" 2>/dev/null); do
+    [ "$(git hash-object "$CLONE/$p" 2>/dev/null)" = "$(git_c rev-parse -q --verify "$c:$p" 2>/dev/null)" ] || bad="$bad${bad:+ }$p"
+  done
+  printf '%s' "$bad"
+}
+
+# si_verify <commit> — 0 when the install in place is whole: its manifests are the commit's,
+# npm ls finds no missing package that is not optional, and every load probe passes.
+# Sets SI_N (required missing; "?" when npm ls read nothing) and SI_WHY.
+si_verify() {
+  local c="$1" drift out names probe
+  SI_N=0; SI_WHY=""
+  drift=$(si_manifest_drift "$c")
+  [ -z "$drift" ] || SI_WHY="manifests not at ${c:0:10}: $drift"
+  # An UNMET OPTIONAL DEPENDENCY line never matches: an optional peer left out is not missing.
+  out=$(cd "$CLONE" && _si_timeout 300 "${SHARED_INSTALL_NPM:-npm}" ls --all 2>/dev/null)
+  if [ -z "$out" ]; then SI_N="?"; SI_WHY="${SI_WHY:+$SI_WHY; }npm ls read no tree"
+  else
+    names=$(printf '%s\n' "$out" | sed -nE 's/.*UNMET DEPENDENCY ([^ ]+).*/\1/p' | sort -u)
+    SI_N=$(printf '%s' "$names" | grep -c .)
+    [ "$SI_N" -eq 0 ] || SI_WHY="${SI_WHY:+$SI_WHY; }npm ls: $(printf '%s\n' "$names" | head -3 | tr '\n' ' ')$([ "$SI_N" -le 3 ] || printf '…')"
+  fi
+  while IFS= read -r probe; do
+    [ -n "$probe" ] || continue
+    (cd "$CLONE" && _si_timeout 120 bash -c "$probe") >> "$LOGF" 2>&1 || SI_WHY="${SI_WHY:+$SI_WHY; }the load probe failed: $probe"
+  done < <(si_probes)
+  [ -z "$SI_WHY" ]
+}
+
+# si_broken — the install in place failed si_verify: new starts are held while it stands.
+si_broken() {
+  local line="⚠ shared install broken: $SI_N required missing — ${SI_WHY:0:300}"
+  if coord_shadow; then say "$line (shadow: would hold new starts)"; return 0; fi
+  printf '%s\n' "$line" > "$BROKEN_F"; shared_install_hold_set "$line"; say "$line — new starts held on this host"
+}
+
+# si_adoptable — an install made without this script is recorded only once it verifies.
+si_adoptable() { si_verify "$(git_c rev-parse HEAD 2>/dev/null)" && return 0; si_broken; return 1; }
+
 # si_loud <lock blob> <why> — the install is behind the trunk and is not being run now.
 si_loud() {
   say "⚠ shared install behind the lockfile: $(si_behind "$1") packages, pushes will fail — $2"
@@ -149,15 +230,26 @@ locked_install() { # <lock blob>
   [ -z "$age" ] || say "the trunk's .npmrc sets an age cutoff; lifted for this lockfile install only ($age): npm ci installs exactly what the lock pins"
   # shellcheck disable=SC2086 # the command and the flags are words on purpose
   (cd "$CLONE" && _si_timeout "$TIMEOUT_SEC" ${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund} $age) >> "$LOGF" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] && [ -d "$CLONE/node_modules" ]; then
+  # An exit 0 is npm's word, not the tree's: the tree is verified before it is recorded.
+  local verified=1 head; head=$(git_c rev-parse HEAD)
+  if [ "$rc" -eq 0 ] && [ -d "$CLONE/node_modules" ] && ! si_verify "$head"; then
+    si_broken
+    say "the install of lock ${want:0:12} exited 0 but its tree is broken — installing once more"
+    for d in $(nm_dirs); do rm -rf "$d"; done
+    # shellcheck disable=SC2086 # as above
+    (cd "$CLONE" && _si_timeout "$TIMEOUT_SEC" ${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund} $age) >> "$LOGF" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ] && [ -d "$CLONE/node_modules" ] && ! si_verify "$head"; then verified=0; fi
+  fi
+  if [ "$rc" -eq 0 ] && [ -d "$CLONE/node_modules" ] && [ "$verified" = 1 ]; then
     printf '%s %s %s\n' "$want" "$(git_c rev-parse HEAD)" "$(swarm_stamp)" > "$CLONE/node_modules/$STAMP_NAME"
     # A node_modules the install did not make again was not its own: it goes back.
     for d in $(prev_dirs); do if [ -e "${d%"$PREV"}" ]; then rm -rf "$d"; else mv "$d" "${d%"$PREV"}"; fi; done
-    rm -f "$FAILED_F" "$DRAIN_TO"
-    say "installed origin/$BR's lock ${want:0:12} at $(git_c rev-parse --short HEAD) in $(( $(date +%s) - t0 ))s"
+    rm -f "$FAILED_F" "$DRAIN_TO" "$BROKEN_F" "$PASSES_F"
+    say "installed origin/$BR's lock ${want:0:12} at $(git_c rev-parse --short HEAD) in $(( $(date +%s) - t0 ))s, verified: 0 required missing"
     return 0
   fi
   if [ "$rc" -eq 124 ]; then why="timed out after $((TIMEOUT_SEC / 60)) min"
+  elif [ "$verified" = 0 ]; then why="it exited 0 twice and its tree was broken both times: $SI_N required missing"
   elif [ "$rc" -eq 0 ]; then why="it made no node_modules"
   else why="it exited $rc"; fi
   # The partial install goes; the old one and its checkout come back.
@@ -167,6 +259,8 @@ locked_install() { # <lock blob>
   printf '%s %s\n' "$want" "$(date +%s)" > "$FAILED_F"
   say "the install of lock ${want:0:12} failed ($why) — the old install and checkout are back; tried again in ${RETRY_MIN} min; output in $LOGF"
   si_loud "$want" "its install failed ($why)"
+  # Nothing is recorded, and a broken result keeps new starts held until a tree verifies.
+  [ "$verified" = 1 ] || si_broken
   return 1
 }
 
@@ -195,11 +289,19 @@ if ! coord_lock "$CHECK_LOCK" "shared install check"; then
   [ ! -f "$(shared_install_hold_file)" ] || coord_shadow || touch "$(shared_install_hold_file)"
   say "$COORD_LOCK_WHY — checked by it"; exit 0
 fi
-trap 'rm -rf "$CHECK_LOCK"; coord_shadow || [ "$KEEP_HOLD" = 1 ] || shared_install_hold_clear' EXIT
-[ "$ON" = 0 ] && { say "off (coordinator.sharedInstall.on is 0)"; exit 0; }
-[ -d "$CLONE/node_modules" ] || { say "$CLONE has no node_modules — no shared install to keep current"; exit 0; }
-GITDIR=$(git -C "$CLONE" rev-parse --absolute-git-dir 2>/dev/null) || { say "$CLONE is not a git clone — skipped"; exit 0; }
-[ "$(wt_real "$GITDIR")" != "$(wt_real "$CLONE")" ] || { say "$CLONE is a bare clone with no working tree — skipped"; exit 0; }
+# A broken install keeps its hold through every exit, rewritten so it never goes stale.
+si_on_exit() {
+  rm -rf "$CHECK_LOCK"; coord_shadow && return 0
+  [ "$KEEP_HOLD" = 1 ] || shared_install_hold_clear
+  [ ! -s "$BROKEN_F" ] || shared_install_hold_set "$(head -1 "$BROKEN_F")"
+}
+trap si_on_exit EXIT
+[ "$ON" = 0 ] && { rm -f "$BROKEN_F"; say "off (coordinator.sharedInstall.on is 0)"; exit 0; }
+[ -d "$CLONE/node_modules" ] || { rm -f "$BROKEN_F"; say "$CLONE has no node_modules — no shared install to keep current"; exit 0; }
+GITDIR=$(git -C "$CLONE" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f "$BROKEN_F"; say "$CLONE is not a git clone — skipped"; exit 0; }
+[ "$(wt_real "$GITDIR")" != "$(wt_real "$CLONE")" ] || { rm -f "$BROKEN_F"; say "$CLONE is a bare clone with no working tree — skipped"; exit 0; }
+REVERIFY="${SHARED_INSTALL_REVERIFY_EVERY:-$(swarm_opt coordinator.sharedInstall.reverifyEvery 4)}"
+case "$REVERIFY" in ''|*[!0-9]*) REVERIFY=4 ;; esac
 
 if ! (cd / && GIT_TERMINAL_PROMPT=0 _si_timeout 120 git -C "$CLONE" fetch -q origin "+refs/heads/$BR:refs/remotes/origin/$BR") >> "$LOGF" 2>&1; then
   say "origin/$BR could not be fetched — compared with the last fetch"
@@ -210,12 +312,28 @@ want=$(git -C "$CLONE" rev-parse -q --verify "refs/remotes/origin/$BR:package-lo
 have=$(awk 'NR == 1 { print $1 }' "$CLONE/node_modules/$STAMP_NAME" 2>/dev/null)
 if [ "$have" != "$want" ] && [ "$(git hash-object "$CLONE/package-lock.json" 2>/dev/null)" = "$want" ] \
    && ! bash "$SELF_DIR/link-node-modules.sh" --behind "$CLONE" >/dev/null 2>&1 \
-   && [ -f "$CLONE/node_modules/.package-lock.json" ]; then
+   && [ -f "$CLONE/node_modules/.package-lock.json" ] && [ ! -s "$BROKEN_F" ] \
+   && si_adoptable; then
   if coord_shadow; then say "lock ${want:0:12} checked: the install already matches it — would record it (shadow)"; exit 0; fi
   printf '%s %s %s\n' "$want" "$(git_c rev-parse HEAD 2>/dev/null)" "$(swarm_stamp)" > "$CLONE/node_modules/$STAMP_NAME"
   rm -f "$DRAIN_TO"; say "lock ${want:0:12} checked: the install already matches it — recorded, nothing installed"; exit 0
 fi
-if [ "$have" = "$want" ]; then rm -f "$DRAIN_TO"; say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi
+if [ "$have" = "$want" ]; then
+  rm -f "$DRAIN_TO"
+  passes=$(( $(cat "$PASSES_F" 2>/dev/null || echo 0) + 1 )); coord_shadow || printf '%s\n' "$passes" > "$PASSES_F"
+  due=0; [ -s "$BROKEN_F" ] && due=1
+  [ "$REVERIFY" -gt 0 ] && [ $(( passes % REVERIFY )) -eq 0 ] && due=1
+  if [ "$due" = 1 ]; then
+    if si_verify "$(awk 'NR == 1 { print $2 }' "$CLONE/node_modules/$STAMP_NAME")"; then
+      rm -f "$BROKEN_F"; say "lock ${want:0:12} checked: unchanged — verified: 0 required missing"; exit 0
+    fi
+    # The record goes: the tree is not what it says. It installs again below.
+    si_broken; coord_shadow || rm -f "$CLONE/node_modules/$STAMP_NAME"; have=""
+    say "lock ${want:0:12} checked: unchanged, but its tree is broken — the record is removed and it installs again"
+  else
+    say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0
+  fi
+fi
 say "lock checked: origin/$BR has ${want:0:12}, the install was made from $(if [ -n "$have" ]; then printf '%s' "${have:0:12}"; else printf 'an unrecorded lock'; fi)"
 
 if [ -f "$FAILED_F" ] && read -r fwant fat < "$FAILED_F" && [ "$fwant" = "$want" ] \

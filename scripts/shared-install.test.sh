@@ -36,21 +36,36 @@ cat > "$BIN/fake-npm" <<'SH'
 #!/usr/bin/env bash
 printf '%s %s\n' "$PWD" "$(git hash-object package-lock.json)" >> "$FIX/npm.log"
 printf '%s\n' "$*" >> "$FIX/npm-args.log"
-case "${FAKE_NPM:-ok}" in
+# A whole tree: the workspace linked in, as npm ci leaves it; the modes below spoil it.
+whole() { mkdir -p node_modules/left-pad node_modules/@w packages/ui/node_modules; ln -sfn ../../packages/ui node_modules/@w/ui; echo new > node_modules/marker; }
+# A required dependency left out, under a package npm ci "installed".
+spoil() { mkdir -p node_modules/eslint; printf '{"name":"eslint","version":"9.1.0","dependencies":{"@eslint-community/eslint-utils":"^4.0.0"}}\n' > node_modules/eslint/package.json; }
+mode="${FAKE_NPM:-ok}"
+# missing-once: the first install of a check is spoiled, the next is whole.
+[ "$mode" != missing-once ] || { [ -f "$FIX/npm-once" ] && mode=ok || { : > "$FIX/npm-once"; mode=missing; }; }
+case "$mode" in
   ok)   [ -f "$STATE/coordinator/shared-install-hold" ] && echo held >> "$FIX/held.log"
-        mkdir -p node_modules/left-pad packages/ui/node_modules; echo new > node_modules/marker ;;
+        whole ;;
+  missing)  whole; spoil ;;
+  optional) whole; mkdir -p node_modules/sassy
+            printf '{"name":"sassy","version":"1.0.0","peerDependencies":{"sass":"^1"},"peerDependenciesMeta":{"sass":{"optional":true}}}\n' > node_modules/sassy/package.json ;;
+  stale-ws) whole; printf '{"name":"@w/ui","stale":true}\n' > packages/ui/package.json ;;
   fail) mkdir -p node_modules; echo partial > node_modules/marker; exit 1 ;;
   slow) sleep 30 ;;
 esac
 SH
 chmod +x "$BIN/fake-npm"
 export SHARED_INSTALL_CMD="$BIN/fake-npm"
-unset COORDINATOR_SHADOW SHARED_INSTALL SHARED_INSTALL_TIMEOUT_SEC
+# The tree is listed by the real npm (npm ls reads node_modules only); no load probes but where a case sets them.
+export SHARED_INSTALL_VERIFY=""
+unset COORDINATOR_SHADOW SHARED_INSTALL SHARED_INSTALL_TIMEOUT_SEC SHARED_INSTALL_NPM SHARED_INSTALL_REVERIFY_EVERY
 
 reset_install() { # <stamp blob> — an old install, recorded at that lock
   rm -rf "$REPO/node_modules" "$REPO/packages/ui/node_modules" "$C"
-  mkdir -p "$REPO/node_modules" "$REPO/packages/ui/node_modules" "$C"
+  mkdir -p "$REPO/node_modules/@w" "$REPO/packages/ui/node_modules" "$C"
+  ln -sfn ../../packages/ui "$REPO/node_modules/@w/ui"
   echo old > "$REPO/node_modules/marker"; echo old > "$REPO/packages/ui/node_modules/marker"
+  rm -f "$FIX/npm-once"
   [ -z "$1" ] || printf '%s %s 2026-10-20T00:00:00Z\n' "$1" "$(git -C "$REPO" rev-parse HEAD)" > "$REPO/node_modules/.harness-shared-install"
   rm -f "$STATE/runs"/*; rm -rf "$STATE/driver"; : > "$FIX/npm.log"
 }
@@ -267,6 +282,68 @@ want "a tree already on the trunk's lock is not: the install is its fix" "npm=1"
 want_in "it says why"                         "claim-606-x \(#606\) is already on the trunk's lock" "$OUT"
 rm -f "$STATE/runs/claim-606-x.json"
 
+echo "--- an install that exits 0 is verified before it is recorded ---"
+stamp() { awk '{print $1}' "$REPO/node_modules/.harness-shared-install" 2>/dev/null; }
+move_lock 9; V9=$(git -C "$PUSHER" rev-parse HEAD:package-lock.json)
+case_missing() { # npm ci "succeeds" twice, each time leaving a required package out
+  reset_install "$V1"; OUT=$(FAKE_NPM=missing run); R="npm=$(npm_runs) rec=$(stamp) hold=$(tick_reads_hold)"
+}
+case_missing
+want "a required package missing: installed once more, nothing recorded, new starts held" "npm=2 rec=$V1 hold=held" "$R"
+want_in "it says so, with the count"          "⚠ shared install broken: 1 required missing — npm ls: @eslint-community/eslint-utils@\^4.0.0" "$OUT"
+want_in "the tick names it as broken, not as a wait" "^⚠ shared install broken: 1 required missing" "$( (. "$HERE/coordinator-env.sh" && . "$HERE/shared-install-hold.sh" && shared_install_hold) )"
+want "the old install is back"                "old" "$(cat "$REPO/node_modules/marker" 2>/dev/null)"
+OUT=$(run)
+want "the next check, inside retryMin: nothing runs, and starts stay held" "npm=2 hold=held" "npm=$(npm_runs) hold=$(tick_reads_hold)"
+case_missing_once() { reset_install "$V1"; OUT=$(FAKE_NPM=missing-once run); R="npm=$(npm_runs) rec=$(stamp) hold=$(tick_reads_hold)"; }
+case_missing_once
+want "broken once, whole the second time: recorded, and the hold lifted" "npm=2 rec=$V9 hold=free" "$R"
+want_in "the record says it was verified"     "installed origin/develop's lock ${V9:0:12} .*verified: 0 required missing" "$OUT"
+case_optional() { reset_install "$V1"; OUT=$(FAKE_NPM=optional run); R="npm=$(npm_runs) rec=$(stamp) hold=$(tick_reads_hold)"; }
+case_optional
+want "only an optional peer unmet: it passes, once" "npm=1 rec=$V9 hold=free" "$R"
+case_probe() { # the tree lists whole, but a load probe fails
+  reset_install "$V1"; OUT=$(SHARED_INSTALL_VERIFY='node -e "require(\"no-such-module-516\")"' run); R="npm=$(npm_runs) rec=$(stamp) hold=$(tick_reads_hold)"
+}
+case_probe
+want "a failed load probe: nothing recorded, starts held" "npm=2 rec=$V1 hold=held" "$R"
+want_in "it names the probe"                  "the load probe failed: node -e" "$OUT"
+
+echo "--- every manifest the lock names comes from the trunk's commit ---"
+printf '{"name":"@w/ui","version":"2.0.0"}\n' > "$PUSHER/packages/ui/package.json"
+printf '{"lock":10,"packages":{"":{"name":"w"},"packages/ui":{"name":"@w/ui","version":"2.0.0"},"node_modules/@w/ui":{"resolved":"packages/ui","link":true}}}\n' > "$PUSHER/package-lock.json"
+git -C "$PUSHER" commit -qam "lock 10: a workspace moves"; git -C "$PUSHER" push -q origin develop
+V10=$(git -C "$PUSHER" rev-parse HEAD:package-lock.json); UI10=$(git -C "$PUSHER" rev-parse HEAD:packages/ui/package.json)
+case_ws() { # the clone's checkout one commit behind the trunk, as a stale checkout is
+  git -C "$REPO" checkout -q -f --detach "$(git -C "$PUSHER" rev-parse HEAD~1)"
+  reset_install "$V1"; OUT=$(run); R="rec=$(stamp) ui=$(git hash-object "$REPO/packages/ui/package.json")"; }
+case_ws
+want "the workspace's manifest is the trunk's, and the install is recorded" "rec=$V10 ui=$UI10" "$R"
+case_stale_ws() { reset_install "$V1"; OUT=$(FAKE_NPM=stale-ws run); R="rec=$(stamp) hold=$(tick_reads_hold)"; }
+case_stale_ws
+want "a workspace manifest left off the commit: nothing recorded, starts held" "rec=$V1 hold=held" "$R"
+want_in "it names the manifest"               "manifests not at [0-9a-f]{10}: packages/ui/package.json" "$OUT"
+
+echo "--- a tree broken after its install: caught on the unchanged pass, its record dropped, installed again ---"
+case_reverify() { # recorded whole at V10, then spoiled in place; re-verified every 2nd pass
+  reset_install "$V10"; (cd "$REPO" && spoil); : > "$FIX/npm.log"
+  export SHARED_INSTALL_REVERIFY_EVERY=2
+  OUT1=$(run); OUT=$(run); R="npm=$(npm_runs) rec=$(stamp) hold=$(tick_reads_hold)"
+  unset SHARED_INSTALL_REVERIFY_EVERY
+}
+spoil() { mkdir -p node_modules/eslint; printf '{"name":"eslint","version":"9.1.0","dependencies":{"@eslint-community/eslint-utils":"^4.0.0"}}\n' > node_modules/eslint/package.json; }
+case_reverify
+want_in "the first pass is the cheap one"     "checked: unchanged — nothing to install" "$OUT1"
+want "the second verifies, finds it broken, and installs it again" "npm=1 rec=$V10 hold=free" "$R"
+want_in "and says so"                         "⚠ shared install broken: 1 required missing" "$OUT"
+case_adopt_broken() { # a hand install at the trunk's lock, unrecorded, with a required package out
+  git -C "$REPO" checkout -q -f --detach refs/remotes/origin/develop
+  reset_install ""; printf '{"lockfileVersion":3,"packages":{}}\n' > "$REPO/node_modules/.package-lock.json"
+  (cd "$REPO" && spoil); OUT=$(run); R="npm=$(npm_runs) rec=$(stamp)"
+}
+case_adopt_broken
+want "a broken hand install is not adopted: it is installed" "npm=1 rec=$V10" "$R"
+
 echo "--- a clone with no install is not one to keep ---"
 reset_install ""; rm -rf "$REPO/node_modules"; OUT=$(run)
 want "nothing ran"                            "0" "$(npm_runs)"
@@ -292,16 +369,16 @@ want_in "the stranded backup runs before the worktree sweep" '^[0-9]+:own-strand
 
 echo "--- plants: each guard out, its case fails ---"
 KIT="$FIX/kit"; mkdir -p "$KIT"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$KIT/"
-plant() { # <label> <file> <exact line to delete> <case> <the result the guard prevents>
+plant() { # <label> <file> <exact text to delete> <case> <the result the guard prevents> [<text put in its place>]
   local f="$KIT/scripts/$2"; cp "$f" "$FIX/plant.bak"
-  python3 -I -c 'import sys; p, l = sys.argv[1], sys.argv[2]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, "", 1)); sys.exit(0 if n == 1 else 1)' "$f" "$3" \
+  python3 -I -c 'import sys; p, l, r = sys.argv[1], sys.argv[2], sys.argv[3]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, r, 1)); sys.exit(0 if n == 1 else 1)' "$f" "$3" "${6:-}" \
     || { bad "plant did not land: $1"; cp "$FIX/plant.bak" "$f"; return; }
   SUT="$KIT/scripts/shared-install.sh" HOUSE_SUT="$KIT/scripts/coordinator-housekeeping.sh"; export SUT HOUSE_SUT
   "$4"; unset SUT HOUSE_SUT
   want "planted ($1): the case now fails" "$5" "$R"
   cp "$FIX/plant.bak" "$f"
 }
-plant "the lock compare" shared-install.sh 'if [ "$have" = "$want" ]; then rm -f "$DRAIN_TO"; say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0; fi' case_unchanged "npm=1"
+plant "the lock compare" shared-install.sh '    say "lock ${want:0:12} checked: unchanged — nothing to install"; exit 0' case_unchanged "npm=1" '    :'
 plant "the in-use wait"  shared-install.sh '  say "waiting $waited min — in use on this host: $busy; checked again next pass"
   si_loud "$want" "the install waits on builds still on the old lock"; exit 0' case_mid_gate "npm=1"
 plant "the drain hold"   shared-install.sh '      shared_install_hold_set "lock ${want:0:12} has waited $waited min; in use: $busy"' case_drain "hold=free npm=0"
@@ -314,6 +391,25 @@ plant "the on-lock skip" shared-install.sh '    say "$rid (#${t:-?}) is already 
     continue' case_tree_on_lock "npm=0"
 plant "the flock"        shared-install.sh '_si_flock "$LOCKF" ' case_locked "npm=1"
 plant "the put-back"     shared-install.sh '  for d in $(prev_dirs); do mv "$d" "${d%"$PREV"}"; done' case_fail "marker= ui="
+plant "the verify before the record" shared-install.sh ' && [ "$verified" = 1 ]; then' case_missing "npm=2 rec=$V10 hold=free" '; then'
+plant "the required count" shared-install.sh '    SI_N=$(printf '"'"'%s'"'"' "$names" | grep -c .)
+' case_missing "npm=1 rec=$V10 hold=free"
+plant "optional unmet ignored" shared-install.sh 'UNMET DEPENDENCY ([^ ]+)' case_optional "npm=2 rec=$V1 hold=held" 'UNMET [A-Z ]*DEPENDENCY ([^ ]+)'
+plant "the load probes"  shared-install.sh '    (cd "$CLONE" && _si_timeout 120 bash -c "$probe") >> "$LOGF" 2>&1 || SI_WHY="${SI_WHY:+$SI_WHY; }the load probe failed: $probe"
+' case_probe "npm=1 rec=$V10 hold=free"
+plant "the manifest compare" shared-install.sh '  [ -z "$drift" ] || SI_WHY="manifests not at ${c:0:10}: $drift"
+' case_stale_ws "rec=$V10 hold=free"
+UI1=$(printf '{"name":"@w/ui"}\n' | git hash-object --stdin)
+plant "the whole checkout" shared-install.sh 'git_c checkout -q -f --detach "refs/remotes/origin/$BR"' case_ws "rec=$V1 ui=$UI1" 'git_c checkout -q -f "refs/remotes/origin/$BR" -- package.json package-lock.json'
+plant "the retry"        shared-install.sh '    # shellcheck disable=SC2086 # as above
+    (cd "$CLONE" && _si_timeout "$TIMEOUT_SEC" ${SHARED_INSTALL_CMD:-npm ci --no-audit --no-fund} $age) >> "$LOGF" 2>&1 || rc=$?
+' case_missing_once "npm=1 rec=$V1 hold=held"
+plant "the broken hold kept" shared-install.sh '  [ ! -s "$BROKEN_F" ] || shared_install_hold_set "$(head -1 "$BROKEN_F")"
+' case_missing "npm=2 rec=$V1 hold=free"
+plant "the unchanged re-verify" shared-install.sh '  [ "$REVERIFY" -gt 0 ] && [ $(( passes % REVERIFY )) -eq 0 ] && due=1
+' case_reverify "npm=0 rec=$V10 hold=free"
+plant "the adopt verify" shared-install.sh ' \
+   && si_adoptable; then' case_adopt_broken "npm=0 rec=$V10" '; then'
 plant "the call"         coordinator-housekeeping.sh '  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0 0"
 for f in shared-install.sh shared-install-hold.sh coordinator-housekeeping.sh; do
   diff -q "$HERE/$f" "$KIT/scripts/$f" >/dev/null && ok "the planted $f is restored" || bad "the planted $f was not restored"
