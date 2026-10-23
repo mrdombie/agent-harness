@@ -409,6 +409,34 @@ _driver_fix_polish_back() {
   driver_say "   fix: polish $bid is back on polish list #${n:-?} ($why) — it rides along with the next change there"
 }
 
+# _driver_fix_mf_file_deferred <ticket> <review.json> <deferred json> <round> — MERGE FIRST:
+# each deferred finding the review graded below Critical leaves the review's findings and is
+# filed as a follow-up (_driver_review_follow_up), or recorded dropped when the ticket is
+# itself a follow-up; it is noted for the PR either way. Prints the deferrals left: the Criticals,
+# and any whose grade the review did not record.
+_driver_fix_mf_file_deferred() {
+  local t="$1" review="$2" left="$3" round="$4" x bid g f fam="" keep="[]" done_ids="" list
+  while IFS= read -r x; do
+    [ -n "$x" ] || continue
+    bid=$(jq -r '.blockerId // ""' <<<"$x")
+    g=$(jq -r --arg b "$bid" '[.findings[]? | select(.id == $b) | .grade // ""] | first // ""' "$review" 2>/dev/null)
+    case "$g" in major|minor) ;; *) keep=$(jq -c --argjson x "$x" '. + [$x]' <<<"$keep"); continue ;; esac
+    [ -n "$fam" ] || fam=$(_driver_review_is_follow_up "$t")
+    f=$(jq -c --arg b "$bid" '[.findings[]? | select(.id == $b)] | first' "$review")
+    if [ "$fam" = yes ]; then list=dropped
+    else _driver_review_follow_up "$t" "$f" "$round" && list=follow-up || { keep=$(jq -c --argjson x "$x" '. + [$x]' <<<"$keep"); continue; }; fi
+    jq -c --arg l "$list" --argjson r "$round" --arg why "$(jq -r '.reason // ""' <<<"$x")" '{id, grade, file, line, summary: (.summary + " — the fix round could not fix it here: " + $why), round: $r, list: $l}' <<<"$f" \
+      >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
+    done_ids="$done_ids $bid"
+    driver_say "   fix: $bid ($g) could not be fixed here — merge first: $([ "$list" = dropped ] && echo 'dropped, this ticket is itself a follow-up' || echo 'filed as a follow-up when the PR is open'), and the change ships" >&2
+  done < <(jq -c '.[]' <<<"$left")
+  if [ -n "$done_ids" ]; then
+    jq --arg ids "$done_ids" '($ids | split(" ") | map(select(length > 0))) as $d
+        | .findings = [(.findings // [])[] | select((.id // "") as $i | $d | index($i) | not)]' "$review" > "$review.t" && mv "$review.t" "$review"
+  fi
+  printf '%s' "$keep"
+}
+
 # _driver_fix_drop_nonblocking <ticket> <fix.json> <graded json> <round> — a deferral of a
 # finding this round does not block leaves `deferred` and never refuses: a Minor from
 # round 2 is on its screen's polish list (_driver_review_defer put it there), a Nit was
@@ -645,6 +673,12 @@ EOB
     # THE PM'S, NOT THE OWNER'S. Whether commits cover a finding is not a product call.
     driver_state_set "$t" park_cause pm
     return "$DRIVER_E_REFUSED"
+  fi
+  # MERGE FIRST: ONLY A CRITICAL PARKS. A Major the fix round could not fix here (it needs a
+  # schema change the spec rules out, say) is filed as a fix-after-merge follow-up, or dropped
+  # with a note on a ticket that is itself one, and the change ships. Two parked on it by hand.
+  if [ "${left:-[]}" != "[]" ] && driver_merge_first; then
+    left=$(_driver_fix_mf_file_deferred "$t" "$review" "$left" "$fround")
   fi
   if [ "${left:-[]}" != "[]" ]; then
     driver_say "✋ fix: $(jq -r 'length' <<<"$left") of the findings were deferred, and a blocking finding is not deferrable — $(jq -r '[.[] | "\(.blockerId): \(.reason)"] | join("; ")' <<<"$left")"
