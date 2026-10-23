@@ -81,7 +81,11 @@ trap 'rm -rf "$RD"' EXIT
 export TICKET_OPEN_PRS_CACHE="$RD/open-prs.json"
 
 # The tickets a merge left open for another open PR: "<ticket> <merged pr>" a line.
-wait_add() { [ "$DRY" -eq 1 ] || grep -q "^$1 " "$WAIT_FILE" 2>/dev/null || echo "$1 $2" >> "$WAIT_FILE"; }
+wait_add() { # <ticket> <merged pr>
+  [ "$DRY" -eq 0 ] || return 0
+  grep -q "^$1 " "$WAIT_FILE" 2>/dev/null && return 0
+  echo "$1 $2" >> "$WAIT_FILE"
+}
 wait_drop() { # <ticket>
   [ "$DRY" -eq 0 ] && [ -f "$WAIT_FILE" ] || return 0
   grep -v "^$1 " "$WAIT_FILE" > "$WAIT_FILE.t" 2>/dev/null; mv "$WAIT_FILE.t" "$WAIT_FILE"
