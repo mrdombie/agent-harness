@@ -618,7 +618,10 @@ FAILURE or ERROR with none still running, or GitHub says it clashes, or it is a 
 with its required checks settled. Anything else is skipped with its reason
 ("skip #N (repair): PR #M is not red (pending: …) — no repair"): CI still running, a red
 on a check the base does not require, a cancelled or timed-out check (a re-run, not a
-repair), or rules that could not be read. At or
+repair), or rules that could not be read. A required check cancelled, timed out or never
+given a runner has its workflow run's failed jobs re-run (`gh run rerun --failed`), at most
+`coordinator.rerunCancelled` (2) times a PR head, counted in `<coordinator>/reruns.tsv`;
+past that the skip says a person looks. At or
 under the cap, priority decides across repairs and new work (a red ranks at its
 ticket's priority), and at one priority a repair goes first. With
 `openPrCap` 0 the split below runs instead. Of that ceiling, healing gets `ceil(ceiling × healingShare)`
