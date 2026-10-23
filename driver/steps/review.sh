@@ -238,6 +238,8 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
 
   # Off until the release: a critic finding the reviewer copied off the PR is no finding.
   driver_drop_critic_findings "$ans_file" review && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
+  # A finding that only says the branch clashes is the PR's repair, never a block or a ticket.
+  driver_drop_clash_findings "$ans_file" review && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
   # Merge first: the screen's polish list stays a list, never this review's findings.
   driver_merge_first || _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')

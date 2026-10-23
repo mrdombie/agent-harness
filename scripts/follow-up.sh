@@ -198,6 +198,13 @@ is_rebuild() {
 }
 
 if [ "$CMD" = file ]; then
+  # A CLASH IS NEVER A TICKET: a finding that only says the branch conflicts with or is
+  # behind its base is its PR's repair (clash-finding.sh), so it is dropped here.
+  . "$SELF_DIR/clash-finding.sh" || exit 1
+  CF=$(mktemp); clashed=$(clash_finding_filter "$F" "$CF")
+  [ -z "$clashed" ] || echo "dropped $clashed: only says the branch clashes with or is behind $INTEGRATION_BRANCH — its PR's repair, never a ticket"
+  F="$CF"
+  [ -s "$F" ] || { [ -z "$clashed" ] || echo "nothing left to file"; exit 0; }
   if ! row=$(pr_state "$PR" 2>/dev/null); then
     echo "unknown — whether PR #$PR merged could not be read, so its findings are held, not filed"
     row="unknown	?"

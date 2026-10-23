@@ -20,6 +20,21 @@ out=$(driver_step_review 101 2>&1); rc=$?
 want "it finishes"        "0" "$rc"
 want "round 1 is counted" "1" "$(driver_state_count 101 review)"
 
+echo "--- a finding that only says the branch clashes is no finding: the PR's repair ---"
+driver_state_init 171 --worktree "$REPO"
+fix_issue 171 OPEN "status:claimed,project:widgets"
+fix_ai review '{"verdict":"BLOCKED","findings":[{"id":"R1-2","file":"a.sh","line":7,"grade":"major","summary":"The branch conflicts with develop. #14086 landed with its own hookState.","reason":"it cannot merge as it is"}]}' superpowers:requesting-code-review
+out=$(driver_step_review 171 2>&1); rc=$?
+want "a clash alone does not send it back"      "0" "$rc"
+want_in "  it says the clash is the PR's repair" "a clash with develop is the PR's repair, never a finding — dropped from the review list: R1-2" "$out"
+want "  the verdict is read off what is left"   "SHIP 0" "$(jq -r '"\(.verdict) \(.findings | length)"' "$(driver_state_dir 171)/steps/review.json")"
+driver_state_init 172 --worktree "$REPO"
+fix_issue 172 OPEN "status:claimed,project:widgets"
+fix_ai review '{"verdict":"BLOCKED","findings":[{"id":"R1-1","file":"a.sh","line":3,"grade":"major","summary":"a dead control","reason":"nothing is saved"},{"id":"R1-2","file":"a.sh","line":7,"grade":"minor","summary":"PR is out of date with develop","reason":"behind"}]}' superpowers:requesting-code-review
+out=$(driver_step_review 172 2>&1); rc=$?
+want "beside a real Major, the Major still blocks" "30" "$rc"
+want "  and only the clash is dropped"          "R1-1" "$(jq -r '[.findings[].id] | join(" ")' "$(driver_state_dir 172)/steps/review.json")"
+
 echo "--- a Major in round 1 goes back to the build step ---"
 driver_state_init 102 --worktree "$REPO"
 fix_issue 102 OPEN "status:claimed,project:widgets"
