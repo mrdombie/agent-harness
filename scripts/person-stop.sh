@@ -16,7 +16,11 @@
 #                  and marks that conversion as its own (driver-draft.sh), so any other
 #                  conversion by a person's login is a person saying "not yet". A bot
 #                  (type Bot, or a login ending [bot]) and the logins in driver.accounts
-#                  are the machine.
+#                  are the machine. A draft from before that mark existed is the driver's
+#                  too when the converting login posted a park comment ("**Parked",
+#                  "## Parked", or one carrying the machine marker) within 5 minutes of
+#                  the conversion and no person commented from 5 minutes before it to an
+#                  hour after (PERSON_STOP_PARK_NEAR_SEC, PERSON_STOP_PARK_QUIET_SEC).
 #   a Critical     a comment by a person on the ticket or the PR, or a review on the PR,
 #                  newer than the driver's last hand-off (or --since), that GRADES a
 #                  Critical ("Critical:", "[Critical]", "Critical —", "grade: Critical";
@@ -46,6 +50,10 @@ usage() { sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 # The machine marker gh_call puts in the comments the harness posts.
 PERSON_STOP_MARK='<!-- harness:machine -->'
+# An unmarked old driver draft: its park comment within NEAR seconds of the conversion,
+# and no person's comment from NEAR before it to QUIET after it.
+PS_NEAR="${PERSON_STOP_PARK_NEAR_SEC:-300}"; case "$PS_NEAR" in ''|*[!0-9]*) PS_NEAR=300 ;; esac
+PS_QUIET="${PERSON_STOP_PARK_QUIET_SEC:-3600}"; case "$PS_QUIET" in ''|*[!0-9]*) PS_QUIET=3600 ;; esac
 
 # jq definitions every read shares.
 PS_JQ='
@@ -55,6 +63,22 @@ PS_JQ='
     | ($b | contains($mark))
       or ($b | test("^\\s*(\\*\\*Parked|\\*\\*Plan\\*\\*|\\*\\*Waiting on the owner\\*\\*|\\*\\*The owner answered\\*\\*|\\*\\*Claim released|\\*\\*Shipped\\.\\*\\*|Re-checked by the driver|Repaired by the driver|Handed off at|Kept fresh:|Merge lane:|Set to merge into|Unblocked:|Blocked until)"));
   def handoff: (. // "") | test("^\\s*(Handed off at|Re-checked by the driver|Repaired by the driver)");
+  def park_body: (. // "") as $b | ($b | contains($mark)) or ($b | test("^\\s*(\\*\\*Parked|#+\\s*Parked)"));
+  def epoch: (. // "") | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null);
+  # A draft the driver made before driver-draft.sh marked its own: the converting login
+  # posted a park comment (or a machine-marked one) within $near seconds of it, and no
+  # person said anything from $near before it to $quiet after.
+  def old_driver_draft($c; $cs; $near; $quiet):
+    ($c.created_at | epoch) as $at
+    | $at != null
+      and any($cs[]?; ((.created_at | epoch) // -1e12) as $w
+                      | ($w - $at) >= -$near and ($w - $at) <= $near
+                        and (.user.login // "") == ($c.actor.login // "") and (.body | park_body))
+      and ([ $cs[]? | ((.created_at | epoch) // -1e12) as $w
+             | select(($w - $at) >= -$near and ($w - $at) <= $quiet)
+             | select((.user | human) and (.body | machine_body | not) and (.body | park_body | not)) ]
+           | length) == 0;
+  def drivers_draft($c; $cs): driver_draft($c; $cs) or old_driver_draft($c; $cs; $near; $quiet);
 '
 
 ps_read() { # <endpoint> — every page as one array, or exit 1
@@ -90,7 +114,8 @@ check() {
     '{tc: $tc, pc: $pc, rv: $rv, tl: $tl, pj: $pj}' > "$f" 2>/dev/null || { rm -f "$f"; echo "could not read what GitHub answered"; return 2; }
   local out rc=0
   out=$(jq -r --arg t "$t" --arg pr "$pr" --arg since "$since" --arg dnm "$dnm" --arg mark "$PERSON_STOP_MARK" \
-          --argjson drivers "$drivers" "$PERSON_WORDS_JQ$PS_JQ$DRIVER_DRAFT_JQ"'
+          --argjson near "$PS_NEAR" --argjson quiet "$PS_QUIET" \
+          --argjson drivers "$drivers" "$PERSON_WORDS_JQ$DRIVER_DRAFT_JQ$PS_JQ"'
     def day: (. // "") | .[0:10];
     def oneline: gsub("[\\r\\n]+"; " ") | gsub("\\s+"; " ") | gsub("^ | $"; "") | .[0:240];
     ( [ (.tc[] | {at: .created_at, user: .user, body: (.body // ""), where: "#\($t)"}),
@@ -105,7 +130,7 @@ check() {
           then "PR #\($pr) carries the `\($dnm)` label: nothing merges it, and no run readies or arms it, until a person takes the label off." else empty end ),
         ( if $pr != "" and (.pj.draft == true) then
             ([ .tl[] | select(.event == "convert_to_draft") ] | last) as $c
-            | if $c != null and ($c.actor | human) and (driver_draft($c; .pc) | not) then
+            | if $c != null and ($c.actor | human) and (drivers_draft($c; .pc) | not) then
                 ([ $people[] | select(.at >= $c.created_at) ] | first // ([ $people[] | select(.at <= $c.created_at) ] | last)) as $why
                 | "a person (\($c.actor.login)) put this back to draft on \($c.created_at | day): \(($why.body // "no comment") | oneline)"
               else empty end
@@ -132,9 +157,11 @@ drafted() {
   drivers=$(jq -c '.driver.accounts // [] | if type == "array" then map(tostring) else [] end' "$HARNESS_CFG" 2>/dev/null) || drivers='[]'
   tl=$(ps_read "repos/$REPO/issues/$pr/timeline?per_page=100") || { echo "could not read the timeline of #$pr"; return 2; }
   local out
-  out=$(jq -r --argjson drivers "$drivers" --arg mark "$PERSON_STOP_MARK" --arg pr "$pr" "$PS_JQ"'
+  out=$(jq -r --argjson drivers "$drivers" --arg mark "$PERSON_STOP_MARK" --arg pr "$pr" \
+          --argjson near "$PS_NEAR" --argjson quiet "$PS_QUIET" "$DRIVER_DRAFT_JQ$PS_JQ"'
     ([ .[] | select(.event == "convert_to_draft") ] | last) as $c
-    | if $c != null and ($c.actor | human)
+    | [ .[] | select(.event == "commented") | {created_at, user: (.user // .actor), body} ] as $cs
+    | if $c != null and ($c.actor | human) and (drivers_draft($c; $cs) | not)
       then "a person (\($c.actor.login)) put PR #\($pr) back to draft on \($c.created_at | .[0:10])" else empty end' <<<"$tl" 2>/dev/null) \
     || { echo "could not read the timeline of #$pr as JSON"; return 2; }
   [ -n "$out" ] || return 1

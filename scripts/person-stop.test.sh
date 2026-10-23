@@ -207,6 +207,64 @@ rm -f "$FIX/gh/api-repos_acme_widgets_issues_50_timeline_per_page_100.json"
 dr "$N"
 want "an unread timeline is unread, never clear" "2" "$rc"
 
+echo "--- drafted honours the driver's own draft mark too ---"
+api "repos/$R/issues/$N/timeline?per_page=100" '[{"event":"convert_to_draft","created_at":"2026-10-22T17:32:10Z","actor":'"$PERSON"'},{"event":"commented","created_at":"2026-10-22T17:32:11Z","user":'"$PERSON"',"body":"**Parked** by the driver: back to draft. <!-- harness:driver-draft --> <!-- harness:machine -->"}]'
+dr "$N"
+want "a marked park conversion is the driver's" "1" "$rc"
+
+echo "--- an old driver draft, from before the mark: a live PR's timeline (#10673) ---"
+# 26 Sep: the driver, on the PM's shared login, posted "## Parked — …", disarmed
+# auto-merge and converted 9 seconds later, with no mark; 0.7.230 counted it a person's
+# draft, so it was never repaired. The next comments are a sweep's and the driver's.
+MK='{"login":"shared-pm","type":"User"}'
+ev() { jq -nc --arg e "$1" --arg at "$2" --argjson u "$3" --arg b "${4:-}" \
+  'if $e == "commented" then {event:$e, created_at:$at, user:$u, actor:$u, body:$b} else {event:$e, created_at:$at, actor:$u} end'; }
+TL10673=$(jq -sc . <<EOF
+$(ev commented 2026-09-26T02:33:01Z "$MK" "Handed off at 7684bd804399c28f6e46a4ecb210de1edfedf913 — the red was the attestation fingerprint, not the code")
+$(ev commented 2026-09-26T03:19:43Z "$MK" "## The bounce, split three ways — one is develop's, two are one gate bug")
+$(ev commented 2026-09-26T17:09:16Z "$MK" "## Parked — the re-gate that was meant to clear the red returned SPIT-BACK, on a blocker I then confirmed by hand")
+$(ev auto_merge_disabled 2026-09-26T17:09:24Z "$MK")
+$(ev convert_to_draft 2026-09-26T17:09:25Z "$MK")
+$(ev commented 2026-09-27T17:22:51Z "$MK" "The design page this PR links (https://claude.ai/artifact/x, 'Voice Picker Fix') was deleted on 2026-09-27.")
+$(ev commented 2026-10-22T23:54:26Z "$MK" "**Warning, not blocking — report-only until the release.** The evidence this pull request is missing, at \`1ee385838\`:")
+EOF
+)
+api "repos/$R/issues/$N/timeline?per_page=100" "$TL10673"
+dr "$N"
+want "#10673 is the driver's draft"             "1" "$rc"
+want "and says nothing"                         "" "$out"
+world "[]" "$(jq -c '[.[] | select(.event == "commented")]' <<<"$TL10673")" "$TL10673" "$DRAFT"
+run "$T" "$N"
+want "check reads it the same"                  "0" "$rc"
+api "repos/$R/issues/$N/timeline?per_page=100" "$(jq -c 'map(select((.body // "") | test("Parked") | not))' <<<"$TL10673")"
+dr "$N"
+want "without the park comment it is a person's" "0" "$rc"
+
+echo "--- a person's draft with their own comment around it is still a person's ---"
+OLDPARK=$(ev commented 2026-10-22T17:30:00Z "$PERSON" "**Parked** — the build step ran out of turns.")
+CONV=$(ev convert_to_draft 2026-10-22T17:32:10Z "$PERSON")
+for said in "2026-10-22T17:32:40Z|Back to draft: the key folds two colleagues." \
+            "2026-10-22T17:31:30Z|Drafting this, not ready." \
+            "2026-10-22T18:10:00Z|Holding: Dom wants to see it first."; do
+  tl=$(jq -sc . <<<"$OLDPARK
+$CONV
+$(ev commented "${said%%|*}" "$PERSON" "${said#*|}")")
+  api "repos/$R/issues/$N/timeline?per_page=100" "$tl"
+  dr "$N"
+  want "a person's comment at ${said%%|*} keeps it theirs" "0" "$rc"
+  world "[]" "$(jq -c '[.[] | select(.event == "commented")]' <<<"$tl")" "$tl" "$DRAFT"
+  run "$T" "$N"
+  want "and check stops on it"                  "1" "$rc"
+done
+api "repos/$R/issues/$N/timeline?per_page=100" "$(jq -sc . <<<"$(ev commented 2026-10-22T17:30:00Z '{"login":"someone-else","type":"User"}' "**Parked** — out of turns.")
+$CONV")"
+dr "$N"
+want "a park comment by another login does not cover it" "0" "$rc"
+api "repos/$R/issues/$N/timeline?per_page=100" "$(jq -sc . <<<"$(ev commented 2026-10-22T16:00:00Z "$PERSON" "**Parked** — out of turns.")
+$CONV")"
+dr "$N"
+want "nor does a park comment from an hour before" "0" "$rc"
+
 echo "--- every comment the harness posts carries the machine marker ---"
 : > "$GH_LOG"
 ( . "$HERE/toolkit-env.sh" && . "$HERE/gh-batch.sh" && gh_call issue comment 5 --repo "$R" --body "Critical: the driver's own words" ) >/dev/null 2>&1

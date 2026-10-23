@@ -80,6 +80,7 @@ done
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-liveness.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-ticket.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-open-prs.sh" || exit 1
 TICKETS_DIR="$STATE_DIR"
 CLAIMS_DIR="$TICKETS_DIR/claims"
 RECOVERED_DIR="$CLAIMS_DIR/.recovered"
@@ -485,6 +486,19 @@ for n in $tickets; do
       relabel "$n" "$LBL_READY" \
         "**Back on the queue.** PR #$pr_num merged and fixed part of this polish list. The list closes on its own once every item is ticked; until then its free items wait for the next ticket for this screen."
       kept=$((kept + 1)); continue
+    fi
+    # One merge is not the whole ticket: another open PR naming it keeps it open, in
+    # review, and the last merge closes it (close-merged.sh). Unread, nothing closes.
+    if ! others=$(ticket_open_prs "$n" "$pr_num"); then
+      say "  KEEP       #$n — PR #$pr_num merged, but the open PRs could not be read, so whether work is still open is unknown; not closing"
+      kept=$((kept + 1)); continue
+    fi
+    if [ -n "$others" ]; then
+      say "  IN-REVIEW  #$n — PR #$pr_num merged; $(printf '#%s ' $others)still open for it, not closing"
+      free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
+      recover_lock "$n" "in-review"
+      relabel "$n" "$LBL_IN_REVIEW" "$(for y in $others; do printf 'Merged #%s; #%s is still open for this ticket.\n' "$pr_num" "$y"; done)"
+      inreview=$((inreview + 1)); continue
     fi
     say "  SHIPPED    #$n — PR #$pr_num is merged; closing the ticket"
     free_ref "$n" "$has_ref" || { stuck=$((stuck + 1)); continue; }
