@@ -91,10 +91,6 @@ run "$T" "$N"
 want "none of those stops it"                   "0" "$rc"
 want "and nothing is said"                      "" "$out"
 
-echo "--- a PM answer that says it must not merge is a stop without the grade word ---"
-world "[$HANDOFF"',{"created_at":"2026-10-22T18:00:00Z","user":'"$PERSON"',"body":"## PM answer (2026-10-22)\nThis must not merge until the key keeps two members apart."}]' '[]' '[]' "$READY"
-run "$T" "$N"
-want "stopped"                                  "1" "$rc"
 
 echo "--- a later PM answer that names no stop clears it ---"
 world "[$HANDOFF"',{"created_at":"2026-10-22T18:00:00Z","user":'"$PERSON"',"body":"**Critical (lost data):** fold."},
@@ -105,6 +101,42 @@ world "[$HANDOFF"',{"created_at":"2026-10-22T18:00:00Z","user":'"$PERSON"',"body
   {"created_at":"2026-10-22T19:00:00Z","user":'"$PERSON"',"body":"Thanks, looking."}]' '[]' '[]' "$READY"
 run "$T" "$N"
 want "but a comment that is not a clearing leaves it open" "1" "$rc"
+
+echo "--- a Cleared or a PM answer never raises, and clears every finding before it ---"
+# Live texts from a consuming project, 2026-10-23 (product name swapped): each refused ship by its own clearing.
+CLEARED='Cleared: the Critical (a restored row losing the app'"'"'s checks and generation) is fixed in 31a7685c64. `appWords` now counts a row carrying a generationId or checks as the app'"'"'s words, so restoring it again keeps them. Ship.'
+LIFT='**PM (merge-first until the release, Dom 22 Oct):** the sign-off hold is off and Dom reviews on UAT. Lifting `needs:human-approval`: merge develop in, push, arm auto-merge, ship. Only a Critical blocks.'
+FIND='Critical: erasing one member deletes another'"'"'s facts'
+c() { jq -nc --arg at "$1" --arg b "$2" --argjson u "$PERSON" '{created_at: $at, user: $u, body: $b}'; }
+world "[$HANDOFF,$(c 2026-10-22T18:00:00Z "$CLEARED")]" '[]' '[]' "$READY"
+run "$T" "$N"
+want "the #12749 Cleared on its own raises nothing" "0" "$rc"
+want "and says nothing"                          "" "$out"
+world "[$HANDOFF,$(c 2026-10-22T18:00:00Z "$LIFT")]" '[]' '[]' "$READY"
+run "$T" "$N"
+want "the #11331 hold-lift note raises nothing"  "0" "$rc"
+for m in 'only a Critical blocks' 'no Critical here' 'the Critical is fixed' 'a Critical still blocks' 'fix the Critical in this PR'; do
+  world "[$HANDOFF,$(c 2026-10-22T18:00:00Z "Note: $m.")]" '[]' '[]' "$READY"
+  run "$T" "$N"
+  want "a mention is not a grade: $m"            "0" "$rc"
+done
+for g in "$FIND" '[Critical] erasing one member' 'Critical — erasing one member' 'grade: Critical, erasing one member' '1. **Critical (lost data):** fold'; do
+  world "[$HANDOFF,$(c 2026-10-22T18:00:00Z "$g")]" '[]' '[]' "$READY"
+  run "$T" "$N"
+  want "an affirmative grade blocks: $g"         "1" "$rc"
+done
+world "[$HANDOFF,$(c 2026-10-22T18:00:00Z "$FIND"),$(c 2026-10-22T19:00:00Z "$CLEARED")]" '[]' '[]' "$READY"
+run "$T" "$N"
+want "a Cleared after a Critical clears it"      "0" "$rc"
+world "[$HANDOFF,$(c 2026-10-22T18:00:00Z "$CLEARED"),$(c 2026-10-22T19:00:00Z "$FIND")]" '[]' '[]' "$READY"
+run "$T" "$N"
+want "a Critical after a Cleared blocks again"   "1" "$rc"
+want_in "naming the later finding"               "pm named a blocking finding on #5 on 2026-10-22: $FIND" "$out"
+world "[$HANDOFF,$(c 2026-10-22T19:00:00Z "  ## **PM answer** (2026-10-22)
+The Critical: a restore drops the gate's findings — fixed. Ship.")]" \
+  "[$(c 2026-10-22T18:00:00Z "$FIND")]" '[]' "$READY"
+run "$T" "$N"
+want "a PM answer on the ticket clears the PR's older Critical, and raises none itself" "0" "$rc"
 
 echo "--- a review on the PR counts like a comment ---"
 world "[$HANDOFF]" '[]' '[]' "$READY"
