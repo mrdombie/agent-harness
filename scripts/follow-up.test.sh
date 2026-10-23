@@ -50,7 +50,7 @@ case "$*" in
      printf '%s\0' "$@" > "$FIX/fgh.create.$n"; echo "$n"; exit 0 ;;
   *"repos/acme/widgets/labels -X POST"*) : > "$FIX/fgh.label"; exit 0 ;;
   *"repos/acme/widgets/labels/"*) [ -f "$FIX/fgh.label" ] || exit 1; echo fix-after-merge; exit 0 ;;
-  *"repos/acme/widgets/issues/"*) printf 'screen:home\narea:feed\nP2\n'; exit 0 ;;
+  *"repos/acme/widgets/issues/"*) if [ -f "$FIX/fgh.parent" ]; then cat "$FIX/fgh.parent"; else printf 'screen:home\narea:feed\nP2\n'; fi; exit 0 ;;
 esac
 exit 0
 SH
@@ -226,6 +226,13 @@ echo '[{"number":55}]' > "$FIX/prs.json"; case_settle
 want_not_in "PR #55 is not read on its own"    'pulls/55' "$(cat "$FIX/fgh.log")"
 want_in "and the child is blocked all the same" 'issue edit 950 .*--add-label status:blocked' "$(tr '\n' ' ' < "$GH_LOG")"
 
+echo "--- a follow-up's own PR files no Major; its Minor (no screen took it) is filed as before ---"
+reset; printf 'fix-after-merge\nP1\n' > "$FIX/fgh.parent"; OUT=$(bash "$SUT" file 701 42 "$F" 2>&1)
+want "only the Minor is filed"                 "1" "$(created)"
+want_in "it is the Minor, at P3"               '^labels\[\]=P3$' "$(args_of 777)"
+want_in "and the Major is said dropped"        "m1 is a Major on a follow-up's own PR, which files only a Critical: dropped" "$OUT"
+rm -f "$FIX/fgh.parent"
+
 echo "--- plants: each guard out, its case fails ---"
 KIT="$FIX/kit"
 plant() { # <label> <exact text to delete> <setup> <the result the guard prevents> [case]
@@ -238,7 +245,7 @@ plant "the ledger" '    if n=$(awk -F'"'"'\t'"'"' -v p="$PR" -v i="$id" '"'"'$1 
       had=$((had + 1)); continue
     fi' 'SUT="$KIT/scripts/follow-up.sh" case_file' "created=4"
 plant "the forge search" '  if [ -n "$n" ]; then printf '"'"'%s\t%s\n'"'"' "$key" "$n" >> "$LEDGER"; had=$((had + 1)); continue; fi' 'echo 900 > "$FIX/fgh.found"' "created=2"
-plant "the grade map" '    major) pri="$P_MAJOR" ;; minor) pri="$P_MINOR" ;;' ':' "created=0"
+plant "the grade map" '      minor) pri="$P_MINOR" ;;' ':' "created=1"
 plant "the follow-up label" ' -f "labels[]=$FU_LABEL"' 'case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="label=$(args_of 777 | grep -c "^labels\[\]=fix-after-merge$")"; }' "label=0"
 plant "the label's creation" '  ensure_fu_label
 ' 'rm -f "$FIX/fgh.label"; case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="made=$(grep -c "labels -X POST -f name=fix-after-merge" "$FIX/fgh.log")"; }' "made=0"
@@ -267,5 +274,9 @@ plant "the shared open-PR copy" '  if [ "$OPEN_KNOWN" = 1 ] && printf '"'"'%s\n'
 plant "the merged-after-close rule" ' merged:>$at' 'echo open > "$FIX/fgh.pr.42"; case_file; echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"; echo "{\"items\":[{\"number\":61,\"title\":\"#701: x\"}]}" > "$FIX/fgh.merged"; case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="after=$(grep -c "merged:>" "$FIX/fgh.log")"; }' "after=0" case_settle
 plant "the after-launch label" '      args+=(-f "labels[]=$AFTER_LAUNCH")
 ' 'case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); R="al=$(args_of 778 | grep -c "^labels\[\]=after-launch$")"; }' "al=0"
+std_cases
+plant "a follow-up's own PR files no Major" '  local parent_fu=""; printf '"'"'%s\n'"'"' "$all" | grep -qxF -- "$FU_LABEL" && parent_fu=1' \
+  'printf "fix-after-merge\nP1\n" > "$FIX/fgh.parent"' "created=2"
+rm -f "$FIX/fgh.parent"
 
 suite_end "$FAILED"

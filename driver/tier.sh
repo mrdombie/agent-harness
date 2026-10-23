@@ -76,6 +76,23 @@ driver_change_tier() {
   printf '%s\t%s\n' "$tier" "$why"
 }
 
+# driver_is_screen_file <tree> <file> — 0 when the file is screen code, read the way
+# driver_change_tier reads a diff: the screen set (approval-kept.sh screens), a page under
+# app/, or one design.screenOf maps to a screen. Tests, docs, tooling and backend are not.
+driver_is_screen_file() {
+  local wt="${1:-}" f="${2:-}" cmd
+  f=$(printf '%s' "$f" | sed 's#^\./##; s/:[0-9][0-9]*$//')
+  [ -n "$f" ] || return 1
+  printf '%s\n' "$f" | grep -qE '(^|/)app/(.*/)?page\.(t|j)sx?$' && return 0
+  # With no design.surfacePaths every file is in the screen set: it tells nothing then.
+  if [ "$(jq -r '((.design.surfacePaths // []) | length) > 0' "$HARNESS_CFG" 2>/dev/null)" = true ]; then
+    [ -n "$(printf '%s\n' "$f" | HARNESS_CFG="$HARNESS_CFG" bash "${DRIVER_APPROVAL_KEPT:-$KIT_ROOT/scripts/approval-kept.sh}" screens 2>/dev/null | sed '/^$/d')" ] && return 0
+  fi
+  cmd=$(jq -r '.design.screenOf // ""' "$HARNESS_CFG" 2>/dev/null)
+  [ -n "$cmd" ] && [ -n "$(printf '%s\n' "$f" | ( cd "${wt:-.}" 2>/dev/null && sh -c "$cmd" ) 2>/dev/null | grep -E '^[a-z0-9-]+$')" ] && return 0
+  return 1
+}
+
 # Paths on stdin; the ones matching no tooling pattern on stdout. A pattern is a shell
 # glob over the whole path, where * crosses directories.
 _driver_tier_not_tooling() {

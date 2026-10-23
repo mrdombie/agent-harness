@@ -300,7 +300,7 @@ _driver_ship_deferred() {
     printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
   fi
   jq -rs 'unique_by([.file, .line, .summary])[]
-    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" elif .list == "follow-up" then "\(.grade // "") — a follow-up ticket at the front of the queue" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
+    | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" elif .list == "follow-up" then "\(.grade // "") — a follow-up ticket at the front of the queue" elif .list == "dropped" then "\(.grade // "") — not filed: this ticket is itself a fix-after-merge follow-up, and only a Critical is filed from one" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
 }
 
 # _driver_ship_hook_retry <ticket> <tree> <branch> — MERGE FIRST: a push the project's
