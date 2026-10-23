@@ -221,6 +221,15 @@ under_named() {
   for _ in $(seq 1 25); do [ -s "$f" ] && break; sleep 0.2; done
   cat "$f" 2>/dev/null
 }
+# <cwd> <host name> <middle name> → pid of a `sleep` under <middle> under <host>, detached.
+under_chain() {
+  mkdir -p "$1"; local f="$T/chain.$RANDOM"
+  (cd "$1" || exit; (exec bash --noprofile --norc -c '
+     (exec bash --noprofile --norc -c "(exec -a \"tool run\" sleep 600) & echo \$! > \"\$1\"; exec -a \"\$0\" sleep 600" "$1" "$2") &
+     exec -a "$0" sleep 600' "$2" "$3" "$f") </dev/null >/dev/null 2>&1 &)
+  for _ in $(seq 1 25); do [ -s "$f" ] && break; sleep 0.2; done
+  cat "$f" 2>/dev/null
+}
 P="$T/proj" H="$T/hw" ST="$T/stray-state"; mkdir -p "$P" "$H" "$ST/runs"
 gone=$(orphan "$P/tk-401-gone/apps/web" "node vitest run");              PIDS+=("$gone")
 held=$(orphan "$P/tk-402-held" "node tsc --noEmit");                     PIDS+=("$held")
@@ -231,6 +240,15 @@ hrun=$(orphan "$H/live-build" "bash scripts/y.test.sh");                 PIDS+=(
 vsc=$(under_named "$P/tk-403-seat" "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"); PIDS+=("$vsc")
 login=$(under_named "$P/tk-405-login" "-zsh");                           PIDS+=("$login")
 seatbg=$(orphan "$P/tk-403-seat/apps" "bash index.sh");                  PIDS+=("$seatbg")  # beside somebody's editor, claim gone
+CODE="/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+CLAUDE_BIN="/Users/x/.vscode/extensions/anthropic.claude-code-9.9.9/resources/native-binary/claude --output-format stream-json"
+# A VS Code Claude session's subagent Bash: the incident's shape. Agent work, not a person.
+agent_gone=$(under_chain "$P/tk-407-agent" "$CODE" "$CLAUDE_BIN");     PIDS+=("$agent_gone")
+agent_held=$(under_chain "$P/tk-402-held/x" "$CODE" "$CLAUDE_BIN");    PIDS+=("$agent_held")   # under a live claim
+agent_hw=$(under_chain "$H/agent-build" "$CODE" "$CLAUDE_BIN");        PIDS+=("$agent_hw")     # harness root, no run
+agent_login=$(under_chain "$P/tk-409-agent-login" "$CLAUDE_BIN" "-zsh"); PIDS+=("$agent_login") # a login shell an agent started
+# A person: a login shell in a terminal, with no claude anywhere above it.
+human=$(under_chain "$P/tk-408-human" "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal" "-zsh"); PIDS+=("$human")
 mkdir -p "$P/tk-406-stub"
 stub=$(cd "$P/tk-406-stub" || exit; (trap '' TERM; exec -a "stubborn run" sleep 600) </dev/null >/dev/null 2>&1 & echo $!); PIDS+=("$stub")
 printf '%s\n' "$H/live-build" > "$ST/runs/run-501.worktrees"
@@ -245,10 +263,11 @@ strays() { # <min-age> <max-age> [--dry-run]
   STOP_DEV_PROJECT_ROOT="$P" STOP_DEV_HARNESS_ROOT="$H" STOP_DEV_STRAY_MIN_AGE="$1" STOP_DEV_STRAY_MAX_AGE="$2" \
   STOP_DEV_STRAY_GRACE=2 bash "$SUT" --strays ${3:-}
 }
-if [ -z "$vsc" ] || [ -z "$login" ]; then fail "fixture: an interactive stand-in never started"; fi
+if [ -z "$vsc" ] || [ -z "$login" ] || [ -z "$agent_gone" ] || [ -z "$agent_held" ] || [ -z "$agent_hw" ] || [ -z "$agent_login" ] || [ -z "$human" ]; then fail "fixture: an interactive stand-in never started"; fi
 
 out=$(strays 3600 3600)
 alive "$gone" && ok "a stray younger than the minimum age is kept" || fail "a young process was reaped: '$out'"
+alive "$agent_gone" && ok "young agent work is kept" || fail "young agent work was reaped: '$out'"
 
 out=$(strays 0 0 --dry-run)
 { alive "$gone" && printf '%s' "$out" | grep -q "would reap pid $gone, .* in $P/tk-401-gone — "; } \
@@ -268,12 +287,25 @@ alive "$vsc"   && ok "a process with VS Code in its ancestry is kept"           
 alive "$login" && ok "a process under an interactive login shell is kept"         || fail "a login shell's process was reaped"
 alive "$seatbg" && ok "under the cap, a process beside somebody working there is kept" || fail "a process beside somebody's editor was reaped under the cap"
 alive "$stub"  && fail "a process ignoring TERM outlived the grace period"         || ok "a process that ignores TERM is KILLed after the grace period"
+alive "$agent_gone" && fail "a claude subagent's process under VS Code was kept as a person's" \
+  || ok "agent work under VS Code (a claude session's Bash), old and unclaimed, is reaped"
+printf '%s' "$out" | grep -q "^strays: reaped pid $agent_gone, .*— agent work with no live claim or run" \
+  && ok "and the log names it agent work" || fail "no agent-work reap line for $agent_gone: '$out'"
+alive "$agent_login" && fail "a login shell with claude above it was kept as a person's" || ok "a login shell an agent started is agent work, not a person"
+# Past the minimum age and under the cap: a 45-minute harness test run, no claim, no run record.
+alive "$agent_hw"   && ok "agent work in the harness root with no claim, past the minimum age but under the cap (a 45-minute run), is kept" \
+  || fail "a harness builder's agent work was reaped before the cap"
+alive "$agent_held" && ok "agent work under a live claim is kept, up to the cap"   || fail "agent work under a live claim was reaped under the cap"
+alive "$human"      && ok "a login shell's child under a terminal is a person's and kept" || fail "a human shell's process was reaped"
 
 out=$(strays 0 0)
 sleep 1
 alive "$seatbg" && fail "a process past the max age with its claim gone was kept"  || ok "past the max age, a claimless worktree's process is reaped even with somebody there"
 alive "$vsc"   && ok "the interactive process itself is never reaped, cap or not"  || fail "the cap reaped an interactive process"
-alive "$held"  && ok "the cap never reaps under a live claim"                      || fail "the cap reaped a live claim's process"
+alive "$held"  && ok "the cap never reaps a non-agent process under a live claim" || fail "the cap reaped a live claim's process"
+alive "$agent_held" && fail "agent work past the cap was kept by its claim" || ok "past the max age, agent work is reaped even under a live claim"
+alive "$agent_hw"   && fail "harness agent work past the cap (a 4-hour run) was kept" || ok "past the max age (a 4-hour run), harness agent work with no claim is reaped"
+alive "$human" && ok "a person's process is never reaped, cap or not" || fail "the cap reaped a human shell's process"
 
 echo "stop-dev-servers: $PASS passed, $FAIL failed"
 suite_end "$FAIL"
