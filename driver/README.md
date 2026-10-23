@@ -92,11 +92,12 @@ build can still prove its test red first. The plan step is told where the attemp
 is. A review that blocks a quick change goes to the full route's `fix` step. A record
 that was already planned keeps the full route.
 
-**Past the size cap, split.** A branch changing more than `driver.split.maxFiles` (20)
-files, counted two-dot against its merge base with the trunk and not counting lockfiles
-(`driver.split.exclude` replaces that list), is never pushed and opens no pull request:
-ship refuses with "split needed" and parks it for the PM, the work kept on a stranded
-ref and in a bundle. `0` turns the cap off.
+**Past the size cap, split before building.** The plan step splits a plan of more than
+`driver.split.maxTasks` (3) build tasks, or whose tasks name more than `driver.split.maxFiles`
+(20) distinct files (lockfiles not counted; `driver.split.exclude` replaces that list), into
+one ticket a task, before anything is built. A finished build is never stranded for its size:
+ship counts the branch two-dot against its merge base and, over the cap, says so in the run
+and in a "## Size" section on the PR, and ships. `0` turns either limit off.
 
 **A plan past the task cap, split before it builds.** A plan with more than
 `driver.split.maxTasks` (3) build tasks files one ticket per task, in the plan's order,
