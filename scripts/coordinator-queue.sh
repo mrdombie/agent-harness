@@ -114,6 +114,13 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
              if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6 "\t" ($8 == "-" ? "" : $8)
            }')
+  # A repo:<other> ticket belongs to that repo: said here, dropped by the write below.
+  local fr fn fl
+  # awk, not read: a tab is whitespace to read, so an empty field shifts the rest.
+  while IFS=$'\t' read -r fn fl; do
+    [ -n "${fn:-}" ] || continue
+    if fr=$(driver_repo_foreign "$fl"); then echo "skip #$fn: belongs to $fr"; fi
+  done < <(printf '%s\n' "$rows" | awk -F'\t' 'NF && $5 ~ /(^|,)[Rr][Ee][Pp][Oo]:/ { print $1 "\t" $5 }')
   # The pinned rows the board did not offer, read in one batch: a closed, batched,
   # parked, blocked or held one is dropped rather than shown as work.
   local pinned_nums pins='{}'
@@ -146,7 +153,9 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
                      | .class = coord_class(.class; .note)
                      | if $o.front then .front = true else . end
                      | if $o.top then .top = true else . end)
-                | map(select(coord_stopped(.ls; .class; "OPEN") | not))) as $open
+                | map(select(coord_stopped(.ls; .class; "OPEN") | not))
+                # A repo:<other> ticket belongs to that repo, pinned or not: never built here.
+                | map(select(coord_foreign(.ls) == null))) as $open
     # Outside coordinator.releaseScopeOnly a new ticket is never seeded; one the PM
     # pinned stays, and the tick holds it at spawn.
     | ([$open[] | select((.pinned | not) and coord_release_held(.ls; .title; .ms; .class))] | length) as $held
@@ -156,7 +165,8 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
     | ($old | map(select(.pinned) | select((.n) as $n | ($fresh | map(.n) | index($n)) == null)
                   | .class = coord_class(.class; .note)
                   | ($pins[(.n|tostring)] // null) as $p
-                  | select($p == null or (coord_stopped($p.labels // []; .class; $p.state) | not)))) as $kept
+                  | select($p == null or ((coord_stopped($p.labels // []; .class; $p.state) | not)
+                                          and coord_foreign($p.labels // []) == null)))) as $kept
     | ($old | to_entries | map({key: (.value.n|tostring), value: .key}) | from_entries) as $oldpos
     # Priority first, across classes (coord_queue_ordered sorts the same way): an
     # entry the PM put on top (.top) stays first in the order it was put; then

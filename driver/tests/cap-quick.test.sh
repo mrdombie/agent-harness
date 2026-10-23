@@ -60,6 +60,40 @@ want "a schema change on an existing screen is never quick"      project "$(bsz 
 want "four files on an existing screen is not quick"             small   "$(bsz 'Copy' 'Set a to b in src/screens/home.tsx, src/lib/a.ts, src/lib/b.ts and src/lib/c.ts.')"
 want "a feature naming no file is not quick"                     project "$(bsz 'Saved searches' 'Recruiters want to save a search and be told when new candidates match it.')"
 
+echo "--- sized by what the ticket is, not what it mentions ---"
+# Maktura #8807: effort:XL, ~715 routes, one named file and a fenced block, so it read quick.
+XL_BODY='Group the gated routes into permission classes. Inputs:
+```bash
+grep -rn "OPEN_ROUTES" config/app.json
+```'
+want "the #8807 shape reads quick with no effort label (the plant's control)" quick "$(bsz 'test(access): permission matrix' "$XL_BODY")"
+want "effort:XL naming one file is not quick"                    project "$(bsz 'test(access): permission matrix' "$XL_BODY" 'P1,effort:XL,type:chore')"
+want "effort:L is not quick"                                     project "$(bsz 'Lint' "$CONFIG_BODY" 'effort:L')"
+want "effort:M is not quick"                                     small   "$(bsz 'Lint' "$CONFIG_BODY" 'effort:M')"
+want_in "and says why" 'it carries effort:XL: an effort that size is never quick' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' 'effort:XL' "$XL_BODY")"
+want "effort:S stays quick"                                      quick   "$(bsz 'Lint' "$CONFIG_BODY" 'effort:S')"
+jq '.driver.quick.neverEffort = ["size:big"]' "$FIX/h-base.json" > "$FIX/h-effort.json"
+want "driver.quick.neverEffort replaces the default list" quick   "$(HARNESS_CFG="$FIX/h-effort.json" driver_size_read 1 'Lint' 'effort:L' "$CONFIG_BODY" | cut -f1)"
+want "and its own label is never quick"                  project "$(HARNESS_CFG="$FIX/h-effort.json" driver_size_read 1 'Lint' 'size:big' "$CONFIG_BODY" | cut -f1)"
+# Maktura #10936: names labelled.json, a scratchpad file that is in no repo.
+GONE_BODY='In `labelled.json`, change `sample` from 270 to 300.'
+want "a ticket whose only named file is missing is undecided, not quick" undecided "$(bsz 'Self-check' "$GONE_BODY")"
+want_in "and names the missing file" 'none of the files it names is on develop \(labelled.json\)' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' '' "$GONE_BODY")"
+want "a missing file beside an existing one is not counted"      quick   "$(bsz 'Lint' "$CONFIG_BODY Also see notes/missing.md.")"
+want_in "and is said as not counted" 'not counted: notes/missing.md' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' '' "$CONFIG_BODY Also see notes/missing.md.")"
+want "with no readable trunk no named file counts"               undecided "$(MAIN_REPO="$FIX/nowhere" bsz 'Lint' "$CONFIG_BODY")"
+# This project is acme/widgets: a repo:<other> label is another repo's work.
+want "a repo:<other> ticket is never quick here"                 project "$(bsz 'Lint' "$CONFIG_BODY" 'repo:agent-harness')"
+want_in "and says whose it is" 'it belongs to agent-harness, not this project' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' 'repo:agent-harness' "$CONFIG_BODY")"
+want "the #10936 shape (effort:M, repo:agent-harness, a missing file) is not quick" project "$(bsz 'Self-check' "$GONE_BODY" 'P1,effort:M,type:feature,repo:agent-harness')"
+want "a repo label naming this repo stays quick"                 quick   "$(bsz 'Lint' "$CONFIG_BODY" 'repo:widgets')"
+want "an owner/name repo label naming this repo stays quick"     quick   "$(bsz 'Lint' "$CONFIG_BODY" 'repo:Acme/Widgets')"
+want "a ticket for both repos is this repo's too"                quick   "$(bsz 'Lint' "$CONFIG_BODY" 'repo:agent-harness,repo:widgets')"
+jq '.sisterRepos = ["widgets-support"]' "$FIX/h-base.json" > "$FIX/h-sister.json"
+want "a sister repo's ticket is this project's to build" quick "$(HARNESS_CFG="$FIX/h-sister.json" driver_size_read 1 'Lint' 'repo:widgets-support' "$CONFIG_BODY" | cut -f1)"
+rc=0; driver_repo_foreign 'P1,status:ready' >/dev/null || rc=$?
+want "no repo label is this repo's"                              1 "$rc"
+
 echo "--- the real diff: an existing screen fits, a screen it adds does not ---"
 issue 904 "status:ready" "Copy" "$WORDING"
 git -C "$REPO" worktree add -q "$FIX/wt904" -b tkt-904/x develop
