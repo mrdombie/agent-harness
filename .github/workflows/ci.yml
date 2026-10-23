@@ -5,6 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the changed-shell check diffs against the trunk's merge-base
       - name: Manifests parse
         run: |
           jq . .claude-plugin/plugin.json >/dev/null
@@ -71,6 +73,11 @@ jobs:
       - name: No unattended build runs the prose claim
         # A prose fallback left wired in after the driver could take the case sent drafts and pick-next to prose.
         run: bash scripts/check-driver-only-spawn.sh
+      - name: Changed shell scripts pass shellcheck and bound their network calls
+        # The same fast check a project lists in gates.local; the runner image carries shellcheck.
+        run: |
+          command -v shellcheck >/dev/null || { echo "shellcheck is missing from the runner, so this check would skip"; exit 1; }
+          bash scripts/check-changed-shell.sh --base "origin/${{ github.base_ref || 'main' }}"
 
   tests:
     # The suites split by measured time (.github/ci/suite-seconds.tsv). The wall clock
