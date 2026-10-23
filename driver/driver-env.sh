@@ -353,12 +353,35 @@ driver_local_gates_head() {
   printf '%s' "$h"
 }
 
+# _driver_trunk_prepush <tree> — the trunk's pre-push, written beside the tree's hook
+# dispatcher, when the tree's own .husky/pre-push never reads HARNESS_LOCAL_GATES_HEAD
+# and the trunk's does. Nothing otherwise.
+_driver_trunk_prepush() {
+  local wt="$1" f gd
+  [ -f "$wt/.husky/pre-push" ] || return 1
+  grep -q HARNESS_LOCAL_GATES_HEAD "$wt/.husky/pre-push" 2>/dev/null && return 1
+  gd=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) && [ -n "$gd" ] || return 1
+  f="$gd/harness-trunk-pre-push"
+  git -C "$wt" show "origin/$INTEGRATION_BRANCH:.husky/pre-push" > "$f.tmp" 2>/dev/null \
+    && grep -q HARNESS_LOCAL_GATES_HEAD "$f.tmp" && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+  printf '%s' "$f"
+}
+
 # driver_push <ticket> <tree> <branch> <slot> — push the branch, keeping what the
 # project's pre-push said. A refused push used to be `>/dev/null 2>&1`: the park
 # said "read its own output" and that output existed nowhere, so the one line that
 # named the failing check had to be got by re-running the push by hand (#10955,
 # trial 3). The whole output goes to steps/<slot>-push.out; DRIVER_PUSH_WHY is the
 # lines that say no (✗, error:, fatal:), joined, for the log and the park note.
+#
+# BASE-RED: DRIVER_PUSH_BASE_RED=1 names the head itself — every check the hook refused
+# it on is red on the trunk commit it merged too (ship.sh _driver_ship_base_red).
+#
+# THE HOOK THE TRUNK CARRIES, when the branch's own copy predates the skip. git runs the
+# pre-push from the branch's checkout, so a branch cut before its project's hook learned
+# HARNESS_LOCAL_GATES_HEAD ran the old full suite on a head gates.local passed on, and
+# was refused on checks red on the trunk itself (#13480, 2026-10-22). With a head to name
+# and a trunk hook that reads it, HARNESS_PREPUSH_SCRIPT points the dispatcher at that one.
 #
 # THE PARK ESCAPE. A park's push of a draft branch carries `<name>=1` (PARK_PUSH by
 # default, `driver.parkPushEnv` to rename it), which a project's pre-push may honour
@@ -370,7 +393,7 @@ driver_push() {
   local t="$1" wt="$2" branch="$3" slot="$4" f rc=0 esc tr
   f="$(driver_state_dir "$t")/steps/$slot-push.out"
   mkdir -p "$(dirname "$f")"
-  local penv=(env -u PARK_PUSH -u HARNESS_LOCAL_GATES_HEAD) lg=""
+  local penv=(env -u PARK_PUSH -u HARNESS_LOCAL_GATES_HEAD -u HARNESS_PREPUSH_SCRIPT) lg="" th=""
   esc=$(driver_opt driver.parkPushEnv PARK_PUSH)
   if [[ "$esc" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
     penv+=(-u "$esc")
@@ -384,7 +407,9 @@ driver_push() {
   # CI IS THE ONE GATE: the head the local set already passed on, said to the hook.
   # After every `-u`, so env reads it as an assignment rather than the command.
   [ "$slot" = park ] || lg=$(driver_local_gates_head "$t" "$wt")
+  [ "$slot" = park ] || [ "${DRIVER_PUSH_BASE_RED:-0}" != 1 ] || lg=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
   [ -z "$lg" ] || penv+=("HARNESS_LOCAL_GATES_HEAD=$lg")
+  [ -z "$lg" ] || ! th=$(_driver_trunk_prepush "$wt") || penv+=("HARNESS_PREPUSH_SCRIPT=$th")
   "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""

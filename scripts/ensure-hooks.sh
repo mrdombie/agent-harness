@@ -143,6 +143,11 @@ n=$(basename "$0")
 top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$PWD
 [ -d "$top/.husky" ] || { echo "agent-harness hooks: no .husky in $top — refusing $n" >&2; exit 1; }
 s="$top/.husky/$n"
+# The driver names the trunk's pre-push when this checkout's copy predates the head it names.
+if [ "$n" = "pre-push" ] && [ -n "${HARNESS_PREPUSH_SCRIPT:-}" ] && [ -f "$HARNESS_PREPUSH_SCRIPT" ]; then
+  echo "agent-harness hooks: running the trunk's pre-push ($HARNESS_PREPUSH_SCRIPT) — this checkout's copy does not read HARNESS_LOCAL_GATES_HEAD" >&2
+  s=$HARNESS_PREPUSH_SCRIPT
+fi
 if [ ! -f "$s" ]; then
   [ "$n" = "pre-push" ] && echo "agent-harness hooks: no .husky/pre-push in $top — pushing with no pre-push gate" >&2
   exit 0

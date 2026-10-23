@@ -21,6 +21,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
 # driver_step_self_check: the gates again, on a tree the merge from origin changed.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
 
@@ -317,6 +318,52 @@ _driver_ship_hook_retry() {
   driver_push "$t" "$wt" "$branch" ship && return 0
   DRIVER_SHIP_HOOK_FAULT=1
   return 1
+}
+
+# _driver_ship_base_red <ticket> <tree> <branch> — 0 when a push the pre-push refused went
+# out as BASE-RED: every check it named is red on the trunk commit the branch merged too
+# (driver/base-red.sh, run once per check and commit on the host). That red is the
+# trunk's: the push carries the bypass a head gates.local passed on carries, the run log
+# and the pull request say "base-red: <checks> on <trunk>@<sha>", and the coordinator
+# files one ticket for the trunk. One check green on the base, or unreadable there, is
+# the branch's own red and blocks as before.
+_driver_ship_base_red() {
+  local t="$1" wt="$2" branch="$3" checks sha c v red="" own="" unk="" list
+  [ -f "${DRIVER_PUSH_OUT:-}" ] || return 1
+  grep -q 'failed to push some refs' "$DRIVER_PUSH_OUT" 2>/dev/null || return 1
+  grep -qE '^[[:space:]]*! \[' "$DRIVER_PUSH_OUT" 2>/dev/null && return 1
+  grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null && return 1
+  checks=$(driver_base_red_checks "$DRIVER_PUSH_OUT"); [ -n "$checks" ] || return 1
+  sha=$(driver_base_red_sha "$wt") || { driver_say "   ship: the $INTEGRATION_BRANCH commit this branch merged could not be read, so the refused checks are the branch's"; return 1; }
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    v=$(driver_base_check "$wt" "$sha" "$c")
+    case "$v" in red) red="$red $c" ;; green) own="$own $c" ;; *) unk="$unk $c" ;; esac
+  done <<<"$checks"
+  if [ -n "$own$unk" ]; then
+    local why=""
+    [ -z "$own" ] || why=" green there, so this branch's own:$own;"
+    [ -z "$unk" ] || why="$why could not be run there:$unk"
+    driver_say "   ship: not base-red on $INTEGRATION_BRANCH@$(printf '%s' "$sha" | cut -c1-7) —$why"
+    return 1
+  fi
+  list=$(printf '%s\n' $red | sort -u | paste -sd, -)
+  driver_say "↷ ship: base-red: ${list//,/, } on $INTEGRATION_BRANCH@$(printf '%s' "$sha" | cut -c1-7) — red on the commit this branch merged too, so the trunk's to fix: pushed past the pre-push, never parked"
+  DRIVER_PUSH_BASE_RED=1 driver_push "$t" "$wt" "$branch" ship || return 1
+  driver_state_set "$t" base_red "$list"
+  driver_state_set "$t" base_red_sha "$sha"
+  driver_base_red_note "$t" "$sha" "$list" "$(driver_state_get "$t" pr)"
+  return 0
+}
+
+# _driver_ship_base_red_comment <ticket> <pr> — the pull request says the push went out base-red.
+_driver_ship_base_red_comment() {
+  local list sha
+  list=$(driver_state_get "$1" base_red); [ -n "$list" ] || return 0
+  sha=$(driver_state_get "$1" base_red_sha)
+  case "$2" in ''|*[!0-9]*) driver_say "   ship: base-red: ${list//,/, } on $INTEGRATION_BRANCH@$(printf '%s' "$sha" | cut -c1-7) — the pull request's number could not be read, so it is not said there"; return 0 ;; esac
+  swarm_gh pr comment "$2" --repo "$REPO_SLUG" --body "base-red: ${list//,/, } on $INTEGRATION_BRANCH@$sha — the pre-push refused this branch on checks that fail the same way on the $INTEGRATION_BRANCH commit it merged, so they are $INTEGRATION_BRANCH's to fix, not this PR's. Pushed past the pre-push; CI is the gate, and one ticket for $INTEGRATION_BRANCH goes to the front of the queue." >/dev/null 2>&1 \
+    || driver_say "   ship: the base-red comment could not be posted on #$2"
 }
 
 # _driver_ship_follow_ups <ticket> <pr> — MERGE FIRST: each finding the review deferred as a
@@ -650,11 +697,13 @@ driver_step_ship() { # <ticket>
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
   fi
+  driver_state_set "$t" base_red ""
   # A push refused only for ratchet headroom is lowered, committed and pushed once more.
   driver_push "$t" "$wt" "$branch" ship || {
     ! grep -q 'sign-off comes last' "$DRIVER_PUSH_OUT" 2>/dev/null \
       && _driver_ratchet_tighten "$t" "$wt" "$DRIVER_PUSH_OUT" "ship: pre-push" \
-      && driver_push "$t" "$wt" "$branch" ship; } || _driver_ship_hook_retry "$t" "$wt" "$branch" || {
+      && driver_push "$t" "$wt" "$branch" ship; } || _driver_ship_hook_retry "$t" "$wt" "$branch" \
+    || _driver_ship_base_red "$t" "$wt" "$branch" || {
     if [ "${DRIVER_SHIP_HOOK_FAULT:-0}" = 1 ]; then
       driver_say "✋ ship: machine fault pre-push-after-local-gates — the project's pre-push refused twice a head gates.local passed on: $DRIVER_PUSH_WHY. Parked as the machine's, not a question."
       driver_state_set "$t" machine_fault "the pre-push hook refused a head gates.local passed on: $DRIVER_PUSH_WHY"
@@ -794,6 +843,7 @@ $polish"
 
   # MERGE FIRST: the review's Majors and Minors become follow-up tickets now the PR has a number.
   if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi
+  if [ "$mode" = repair ]; then _driver_ship_base_red_comment "$t" "$open_pr"; else _driver_ship_base_red_comment "$t" "$pr_n"; fi
 
   # A DELETED TEST IS ACCOUNTED FOR BEFORE ANYTHING LANDS. The body this step writes
   # carries a "## Deleted tests" section only for what build and fix

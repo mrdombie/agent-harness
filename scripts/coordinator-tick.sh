@@ -348,6 +348,13 @@ if [ -s "$BASE_WAITS" ]; then
   base_wait_release "$QUEUE" "$(coord_shadow && echo dry)" | while IFS= read -r l; do say "base wait: $l"; done
 fi
 
+# A pre-push check red on the trunk itself is ONE ticket at the front of the queue, filed
+# before the starts so a builder takes it this tick; every push it refused went out base-red.
+DEVELOP_RED_PENDING="${DEVELOP_RED_FILE:-$STATE_DIR/swarm/develop-red.tsv}"
+if [ -s "$DEVELOP_RED_PENDING" ]; then
+  bash "${COORDINATOR_DEVELOP_RED:-$SELF_DIR/develop-red.sh}" file $(coord_shadow && echo dry) 2>&1 | while IFS= read -r l; do say "develop red: $l"; done
+fi
+
 # The waits recorded this tick, snapshotted while the open PRs are fresh.
 [ -n "${PRS:-}" ] && [ "$PRS_STALE" = 0 ] && coord_wait_snap_pending
 
