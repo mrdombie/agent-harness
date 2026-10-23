@@ -517,8 +517,9 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `healAllAt` | unset | Reds left at which every place heals, counting those waiting and those being healed; once fewer are left, `healingShare` returns. Polish reds (P3, a polish kind, or a polish list) never count. Unset, or not a whole number over 0, is off |
 | `processLabel` | `process` | The label of a process fix: it starts first of all, and a hold "for process fixes" still lets it through |
 | `polishListFull` | 8 | Most items of one polish list that ride along with one change. A list never starts on its own while other work can, however full |
-| `openPrCap` | 10 | Open PRs (drafts too) over which no new ticket starts but the quick-sized ones: every place repairs or finishes first, and only repairs, approved merges, `process` fixes and quick tickets start. While on, it replaces `healingShare` and `healAllAt` (under it, priority decides across repairs and new work; at one priority a repair goes first). 0 turns it off and the split runs again |
+| `openPrCap` | 10 | Open PRs (drafts too) over which no new ticket starts but the quick-sized ones: every place repairs or finishes first, and only repairs, approved merges, `process` fixes, quick tickets and `capExemptPriorities` (P0) tickets start. While on, it replaces `healingShare` and `healAllAt` (under it, priority decides across repairs and new work; at one priority a repair goes first). 0 turns it off and the split runs again |
 | `stallTicks` | 2 | Over `openPrCap` with no build on any host and nothing spawnable for this many ticks in a row, the oldest repairable open PR starts anyway (the stall guard) |
+| `capExemptPriorities` | `["P0"]` | Priorities the open-work cap never holds: over `openPrCap` a new ticket at one of them starts whatever its size, ranked with healing by priority, and the tick says "cap: over (12/10) — P0 #N starts anyway". The host cap, the tooling cap, release scope and the machine's room still apply. `[]` turns it off |
 | `openPrCapQuick` | true | Over `openPrCap`, new tickets the driver's size rules call quick start anyway, after healing (`scripts/cap-quick.sh`); `openPrCapQuickScan` (40) bodies are read a tick to size them. false: none does |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `disk.stopBelowGb` · `disk.resumeAtGb` | 30 · 50 | Under `stopBelowGb` free, nothing new starts (a build, a red/green proof) and the auto-clean runs (`scripts/disk-guard.sh`): driver proofs, unused spawn checkouts, idle build folders' installs and caches, the orphan sweep, then stale scratchpad folders over 500 MB. A tree a claim on any host holds, a live process or run is in, or that changed in the last 30 minutes is never touched; when the claims cannot be read, nothing is removed. Starts resume only at `resumeAtGb` |
@@ -594,7 +595,9 @@ Each ticket is sized once per text (cached by its title, labels and body under
 `<stateDir>/size-cache`). A run started this way that the driver sizes bigger stops
 before plan ("waits behind the open-work cap"), goes back on the queue with its quick
 attempt kept at `refs/driver/quick/<n>`, and that body never starts over the cap again.
-`openPrCapQuick: false` turns it off. **The cap waits only on work something is
+`openPrCapQuick: false` turns it off. **Urgent tickets start anyway** (owner call
+2026-10-23): a new ticket at a `capExemptPriorities` priority (default P0) is never held
+by the cap, whatever its size; a P0 sized project waited a night behind it. **The cap waits only on work something is
 finishing** (23 Oct: 19 open, 17 clashing, none queued, 0 builds). Each tick, every open
 PR the cap counts is being finished (claimed on any host, live, queued, fixed in a session,
 or a ready PR waiting on CI or a merge), or, when it clashes, settled red, or is a draft

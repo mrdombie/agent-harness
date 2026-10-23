@@ -393,7 +393,10 @@ SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
 want "at one priority the repair goes first" "601" "$(spawned)"
 fresh; open_prs 12; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "over the cap the P0 new ticket still waits; the P2 repair starts" "601" "$(spawned)"
+want "over the cap a P0 new ticket still starts, ahead of a P2 repair (capExemptPriorities)" "701" "$(spawned)"
+fresh; open_prs 12; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
+COORDINATOR_CAP_EXEMPT_PRIORITIES="" SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "with no exempt priority the P0 waits over the cap; the P2 repair starts" "601" "$(spawned)"
 
 echo "--- the cap waits only on work something is finishing (23 Oct: 19 open, 17 clashing, 0 builds) ---"
 # A person's draft, read off a stand-in person-stop: PR 8005 and 8105 are a person's.

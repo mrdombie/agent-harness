@@ -79,7 +79,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
 . "$SELF_DIR/shared-install-hold.sh" || exit 1
 . "$SELF_DIR/cap-quick.sh" || exit 1
-QUICK_OK=""; QUICK_STARTED=0
+QUICK_OK=""; QUICK_STARTED=0; CAP_EXEMPT_OK=""
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
 SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
@@ -730,7 +730,10 @@ candidates() {
   local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
   local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
   local sk_rel="" sk_proc="" sk_behind="" sk_unsized="" sk_polish="" sk_capped="" qwhy
-  CANDS=""; QUICK_OK=""
+  local exempt exm exempt_said
+  CANDS=""; QUICK_OK=""; CAP_EXEMPT_OK=""
+  exempt=" $(coord_cap_exempt_prins)"
+  exempt_said=$(printf '%s' "$exempt" | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
   # The backstop to the seed: new work outside coordinator.releaseScopeOnly never starts,
   # read off this tick's labels and milestones. A ticket the read missed is spawn_block's.
   if coord_release_on; then
@@ -750,7 +753,7 @@ candidates() {
   [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
   while IFS=$'\t' read -r t cls pri pol pl ex proc note; do
     [ -n "${t:-}" ] || continue
-    i=$((i+1))
+    i=$((i+1)); exm=""
     if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then sk_proc="$sk_proc #$t"; continue; fi
     # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
     # skipped as new it sat at the head of the queue on every tick doing nothing.
@@ -768,7 +771,11 @@ candidates() {
     # Over the open-work cap only finishing starts: repairs, approved merges, process fixes.
     # Quick-sized new work starts anyway (the owner, 2026-10-22; cap-quick.sh): held here,
     # sized after the loop by the driver's own rules. Polish rides along, never alone.
-    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then
+    # A capExemptPriorities ticket (P0) is never held by it (the owner, 2026-10-23): it
+    # goes on as under the cap, still behind the host cap, tooling cap, scope and room.
+    if [ -n "$OVER_PR_CAP" ] && [ "$cls" = new ] && [ "$proc" != 1 ] && [ "$pl" != 1 ] \
+       && case "$exempt" in *" $pri "*) true ;; *) false ;; esac; then exm=1
+    elif [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then
       if [ "$cls" = new ] && [ "$pol" != 1 ] && [ "$pl" != 1 ] && coord_cap_quick_on; then
         qwait="$qwait$i"$'\t'"$t"$'\t'"$tool"$'\t'"$note"$'\n'
       else sk_capped="$sk_capped #$t"
@@ -794,6 +801,7 @@ candidates() {
     [ "$proc" = 1 ] || coord_healing_class "$cls" || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+    [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:P$pri"
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
   # Over the cap: the quick ones of the new work it held, in queue order, up to the free places.
@@ -813,7 +821,7 @@ candidates() {
       case "$sz" in
         quick) ;;
         ''|unread) sk_unsized="$sk_unsized #$t"; continue ;;
-        *) say "skip #$t (new): over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) and sized $sz${qwhy:+ — $qwhy}; only quick work starts over it"; continue ;;
+        *) say "skip #$t (new): over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) and sized $sz${qwhy:+ — $qwhy}; only quick${exempt_said:+ and $exempt_said} work starts over it"; continue ;;
       esac
       [ "$qn" -lt "$qroom" ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
@@ -859,6 +867,17 @@ candidates() {
 reds_waiting() {
   REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
   REDS_WAITING_POLISH=$(printf '%s' "$CANDS" | awk -F'\t' '($2 == "repair" || $2 == "approved-merge") && $3 == 1' | grep -c .)
+}
+cap_exempt_pri() { # <ticket> — its priority ("P0") when the cap let it through as exempt
+  local e; for e in $CAP_EXEMPT_OK; do [ "${e%%:*}" != "$1" ] || { printf '%s' "${e#*:}"; return 0; }; done; return 1
+}
+over_cap_first() { # over the open-work cap: the first healing or cap-exempt candidate, in queue order
+  local t cls pol proc note
+  while IFS=$'\t' read -r t cls pol proc note; do
+    [ -n "${t:-}" ] || continue
+    coord_healing_class "$cls" || cap_exempt_pri "$t" >/dev/null || continue
+    printf '%s\t%s\t%s' "$t" "$cls" "$note"; return 0
+  done <<< "$CANDS"
 }
 first_of() { # <healing|new|process> — the first candidate of that kind: <ticket> \t <class> \t <note>
   local t cls pol proc note
@@ -992,7 +1011,8 @@ else
       # repair or new (a red ranks at its ticket's priority, ahead at the same one);
       # over it healing only (no new is a candidate then either).
       if [ -n "$OVER_PR_CAP" ]; then
-        pick="$heal"
+        # Healing and the cap-exempt (P0) new work, in queue order.
+        pick=$(over_cap_first)
         # Then the quick new work the cap lets through (cap-quick.sh), in queue order.
         [ -n "$pick" ] || [ -z "${QUICK_OK// /}" ] || pick=$(awk -F'\t' -v q=" $QUICK_OK " 'NF && index(q, " " $1 " ") { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS")
       else pick=$(awk -F'\t' 'NF { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS"); fi
@@ -1030,7 +1050,10 @@ else
       else LIVE_NEW=$((LIVE_NEW+1)); fi
     }
     bypass=""
-    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
+    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && exp=$(cap_exempt_pri "$t"); then
+      lent="${lent:-over the open-work cap: $exp}"
+      say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — $exp #$t $(coord_shadow && echo 'would start' || echo 'starts') anyway"
+    elif [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
       bypass=1; lent="${lent:-over the open-work cap: sized quick}"; QUICK_STARTED=$((QUICK_STARTED+1))
     fi
     coord_act_log spawn "$t" "$cls${bypass:+ (quick, over the cap)}${note:+ — $note}"
