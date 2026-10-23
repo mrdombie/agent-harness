@@ -32,6 +32,7 @@ swarm_fixture() {
   REPO="$FIX/repo"; STATE="$FIX/state"; BIN="$FIX/bin"
   GH_LOG="$FIX/gh.log"; SPAWNS="$FIX/spawns.log"
   mkdir -p "$REPO/.claude" "$STATE/runs" "$STATE/logs" "$STATE/swarm" "$BIN" "$FIX/gh"
+  printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_rules_branches_develop.json"   # develop requires nothing until a case says
   : > "$GH_LOG"; : > "$SPAWNS"
   # The integration branch is green unless a test says otherwise (fix_trunk).
   printf '{"check_runs":[{"name":"build","conclusion":"success"}]}\n' \
@@ -312,6 +313,22 @@ fix_prs() {
       }]')
   done
   printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
+  _fix_require_add $(jq -r '[.[].statusCheckRollup[]?.name] | unique | .[]' <<<"$out")
+}
+
+# fix_required <name…> — the checks develop's live rules require (rules/branches/develop),
+# replacing the list. Every check fix_prs, fix_pr_status and fix_pr_run name is added to
+# it, so a fixture PR's checks are required unless a case says otherwise.
+fix_required() {
+  printf '%s\n' "$@" | jq -R 'select(. != "")' | jq -s \
+    '[{type: "required_status_checks", parameters: {required_status_checks: map({context: .})}}]' \
+    > "$FIX/gh/api-repos_acme_widgets_rules_branches_develop.json"
+}
+_fix_require_add() { # <name…>
+  local f="$FIX/gh/api-repos_acme_widgets_rules_branches_develop.json" have
+  have=$(jq -r '.[]?.parameters.required_status_checks[]?.context' "$f" 2>/dev/null)
+  # shellcheck disable=SC2086  # one name per line, read whole
+  fix_required $have "$@"
 }
 
 # fix_pr_status <pr> <context> <state> — add a commit status (StatusContext) to a PR
@@ -321,6 +338,7 @@ fix_pr_status() {
   jq --argjson n "$1" --arg c "$2" --arg s "$3" \
     'map(if .number == $n then .statusCheckRollup += [{__typename:"StatusContext", context:$c, state:$s}] else . end)' \
     "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  _fix_require_add "$2"
 }
 
 # fix_pr_run <pr> <name> <status> <conclusion> <completedAt> — add one more CHECK RUN of
@@ -331,6 +349,7 @@ fix_pr_run() {
     'map(if .number == $n then .statusCheckRollup += [{__typename:"CheckRun", name:$c, status:$st,
        conclusion:(if $co == "-" then null else $co end), startedAt:$at, completedAt:(if $st == "COMPLETED" then $at else null end)}] else . end)' \
     "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  _fix_require_add "$2"
 }
 
 # fix_comments <ticket> <body…> — the comments `gh issue view --json comments` returns

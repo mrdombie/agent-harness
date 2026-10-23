@@ -79,6 +79,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
 . "$SELF_DIR/shared-install-hold.sh" || exit 1
 . "$SELF_DIR/cap-quick.sh" || exit 1
+. "$SELF_DIR/pr-red.sh" || exit 1
 QUICK_OK=""; QUICK_STARTED=0; CAP_EXEMPT_OK=""
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
@@ -303,6 +304,10 @@ has_open_pr() { # <ticket>
   printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$1" \
     "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1
 }
+open_pr_json() { # <ticket> — its open PR as this tick read it, or nothing
+  printf '%s' "${PRS:-[]}" | jq -c --arg pre "$BRANCH_PREFIX" --arg t "$1" \
+    "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t))] | sort_by(.number) | last // empty' 2>/dev/null
+}
 requeue_cut() { # <ticket> <run-id> <log> <why> — 0 once settled, 1 to try again next tick
   local t="$1" rid="$2" log="$3" why="$4" st cls wt sid note old
   st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null)
@@ -521,6 +526,17 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
   fi
   # A repair waiting on the base ends on the same wait until base_wait_release frees it.
   if coord_healing_class "$cls" && base_wait_holds "$t"; then echo "waiting for $INTEGRATION_BRANCH's fix (base-waits.tsv)"; return 0; fi
+  # A repair starts only on a PR that is really red: a required check failed, or it clashes.
+  if [ "$cls" = repair ] && ! repair_pr_red "$t"; then return 0; fi
+  return 1
+}
+# The base branch's required checks, read from its live rules once per tick (pr-red.sh).
+PR_RED_REQ_FILE="$COORD_DIR/required-checks.$(coord_mode)"; : > "$PR_RED_REQ_FILE" 2>/dev/null; export PR_RED_REQ_FILE
+repair_pr_red() { # <ticket> — 0 when its open PR is really red (or it has none); else echoes why not
+  local pj v
+  pj=$(open_pr_json "$1"); [ -n "$pj" ] || return 0
+  v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json)") && return 0
+  echo "PR #$(jq -r .number <<<"$pj") is not red (${v%%$'\t'*}: ${v#*$'\t'}) — no repair"
   return 1
 }
 
@@ -1122,6 +1138,7 @@ if [ -n "$OVER_PR_CAP" ] && [ "$FLEET_LIVE" -eq 0 ] && [ -n "${SPAWN_RAN:-}" ] &
       grep -qxF "$pr:$sha" "$STALL_SPAWNED" 2>/dev/null && continue
       grep -qx "$t" <<<"$CLAIMED" && continue
       swarm_ticket_live "$t" && continue
+      if why=$(repair_pr_red "$t"); then :; else say "stall: skip #$t: $why"; continue; fi
       pick="$pr"$'\t'"$t"$'\t'"$sha"; break
     done <<< "$FINISH_STALL"
     if [ -z "$pick" ]; then
