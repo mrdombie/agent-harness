@@ -106,11 +106,11 @@ want "the two process fixes and the three repairs start; no new ticket" "13044 1
 want_in "the tick says the cap holds new work" 'open changes 87 / cap 10: finishing before starting' "$out"
 want_in "and that it paces behind the line, from its own reading" 'pacing: behind — 5h window 39% against a target of 41%' "$out"
 
-echo "--- ahead of the line, the reader starts nothing new either ---"
+echo "--- ahead of the line, the reader starts nothing new but its process fixes ---"
 cp "$SH/comments.json" "$FIX/comments.first.json"
 world 0.80; sheet
 out=$(vm_tick)
-want "80% at 44% of the window: nothing starts"       "" "$(spawned)"
+want "80% at 44% of the window: only the process fixes start" "13621 13788" "$(spawned)"
 want_in "and the tick says why"                       'pacing ahead of the five-hour line — no new builder starts but P0' "$out"
 cp "$FIX/comments.first.json" "$SH/comments.json"
 
@@ -157,7 +157,7 @@ echo "--- with a reading on the sheet, the reader paces by the owner's fresher o
 world 0.10; printf '%s\tmac\tbuild\n' 13001 13002 13003 > "$FIX/claims.tsv"
 sheet '{"usage":{"five_hour":{"u":0.60,"reset":'"$(( NOWE + 10166 ))"',"at":'"$NOWE"'}},"settings":{"factor":0.95}}'
 out=$(vm_tick)
-want "the owner's 60% puts it ahead: nothing starts"  "" "$(spawned)"
+want "the owner's 60% puts it ahead: only the process fixes start" "13621 13788" "$(spawned)"
 want_in "the pacing line reads the owner's reading"   'pacing: ahead — 5h window 60%' "$out"
 
 suite_end "$FAILED"
