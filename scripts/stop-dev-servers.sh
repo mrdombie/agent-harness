@@ -265,7 +265,8 @@ holder_gone() { # <ticket>
 #     Terminal, iTerm, tmux, sshd, login) or a login shell with no `claude` above it
 #     comes before any `claude`. A process whose nearest such ancestor is a `claude`
 #     — an agent session, a VS Code extension session, a subagent's Bash — is AGENT
-#     WORK: kept only under a live claim or run and only up to the max age, however
+#     WORK: kept only under a live claim or run (or anywhere in the harness root,
+#     whose builders have neither) and only up to the max age, however
 #     alive its session is (the 12-hour test script was a VS Code session's
 #     subagent's). An agent session (`claude`) itself is never a stray;
 #   - it is older than STOP_DEV_STRAY_MIN_AGE (coordinator.strayMinAgeMin, 30 min);
@@ -383,7 +384,7 @@ if [ "$MODE" = strays ]; then
     return 0
   }
 
-  hits=0 inwt=0 young=0 owned=0 seated=0 inter=0 REAP=()
+  hits=0 inwt=0 young=0 harness=0 owned=0 seated=0 inter=0 REAP=()
   while IFS=$'\t' read -r cls pid age cpu kind wt cmd; do
     [ -n "$pid" ] || continue
     inwt=$((inwt+1))
@@ -393,6 +394,9 @@ if [ "$MODE" = strays ]; then
       # Agent work: a live claim or run keeps it up to the cap, nothing else does.
       if [ "$age" -ge "$STRAY_MAX" ]; then why="agent work past the $((STRAY_MAX / 60))-minute cap"
       elif run_owns "$wt" || { [ "$kind" = project ] && claim_holds "$wt"; }; then owned=$((owned+1)); continue
+      # Harness builders work there with no claim or run record, and one test run takes
+      # ~25 minutes under load: their work keeps to the cap, not the minimum age.
+      elif [ "$kind" = harness ]; then harness=$((harness+1)); continue
       else why="agent work with no live claim or run on its worktree"; fi
     else
     run_owns "$wt" && { owned=$((owned+1)); continue; }
@@ -420,7 +424,7 @@ if [ "$MODE" = strays ]; then
     for p in "${REAP[@]}"; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null && echo "strays: $p ignored TERM for ${GRACE}s — killed"; done
   fi
   verb=reaped; [ "$DRY" = 1 ] && verb="would reap"
-  echo "strays: $verb $hits of $inwt process(es) in worktrees; kept $owned owned by a live claim or run, $young under $((STRAY_MIN / 60))m, $seated with somebody working there, $inter interactive"
+  echo "strays: $verb $hits of $inwt process(es) in worktrees; kept $owned owned by a live claim or run, $young under $((STRAY_MIN / 60))m, $seated with somebody working there, $harness harness agent work under the cap, $inter interactive"
   exit 0
 fi
 

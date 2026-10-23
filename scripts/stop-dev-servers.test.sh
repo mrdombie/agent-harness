@@ -292,7 +292,9 @@ alive "$agent_gone" && fail "a claude subagent's process under VS Code was kept 
 printf '%s' "$out" | grep -q "^strays: reaped pid $agent_gone, .*— agent work with no live claim or run" \
   && ok "and the log names it agent work" || fail "no agent-work reap line for $agent_gone: '$out'"
 alive "$agent_login" && fail "a login shell with claude above it was kept as a person's" || ok "a login shell an agent started is agent work, not a person"
-alive "$agent_hw"   && fail "agent work in a harness worktree with no run was kept" || ok "agent work in the harness root with no live run is reaped"
+# Past the minimum age and under the cap: a 45-minute harness test run, no claim, no run record.
+alive "$agent_hw"   && ok "agent work in the harness root with no claim, past the minimum age but under the cap (a 45-minute run), is kept" \
+  || fail "a harness builder's agent work was reaped before the cap"
 alive "$agent_held" && ok "agent work under a live claim is kept, up to the cap"   || fail "agent work under a live claim was reaped under the cap"
 alive "$human"      && ok "a login shell's child under a terminal is a person's and kept" || fail "a human shell's process was reaped"
 
@@ -302,6 +304,7 @@ alive "$seatbg" && fail "a process past the max age with its claim gone was kept
 alive "$vsc"   && ok "the interactive process itself is never reaped, cap or not"  || fail "the cap reaped an interactive process"
 alive "$held"  && ok "the cap never reaps a non-agent process under a live claim" || fail "the cap reaped a live claim's process"
 alive "$agent_held" && fail "agent work past the cap was kept by its claim" || ok "past the max age, agent work is reaped even under a live claim"
+alive "$agent_hw"   && fail "harness agent work past the cap (a 4-hour run) was kept" || ok "past the max age (a 4-hour run), harness agent work with no claim is reaped"
 alive "$human" && ok "a person's process is never reaped, cap or not" || fail "the cap reaped a human shell's process"
 
 echo "stop-dev-servers: $PASS passed, $FAIL failed"
