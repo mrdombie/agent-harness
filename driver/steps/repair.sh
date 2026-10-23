@@ -739,7 +739,7 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
     [ -z "$base_only" ] || base_fact="
 
 Not yours to fix: $base_only is red in $base_tests, tests outside this PR that fail on the latest completed run of $trunk too. It waits for the fix on $INTEGRATION_BRANCH and is never repaired in this PR: touch nothing for it, ask nothing about it, and leave it out of your fixes. This check is red on $INTEGRATION_BRANCH itself; the develop-red ticket owns it; carry on."
-    driver_fact_put "$t" repair FAILING "${failing:-none settled red}$base_fact"
+    driver_fact_put "$t" repair FAILING "${failing:-none settled red}$(driver_failing_log_tails "$(printf '%s' "$row" | jq -c '.statusCheckRollup // []' 2>/dev/null)" "$code_failing")$base_fact"
   fi
   driver_fact_put "$t" repair CONFLICTS "$conflicts_fact"
   local lfact="it is not red, so answer no \`lesson\`." lbody lout lhow
@@ -758,7 +758,7 @@ The body could not be read here: read it yourself (gh pr view $pr --json body)."
     fi
   fi
   driver_fact_put "$t" repair LESSON "$lfact"
-  local diff; diff=$(git -C "$wt" diff "$trunk"...HEAD 2>/dev/null)
+  local diff; diff=$(driver_handover_diff "$wt" "$trunk"...HEAD $conflicted)
   driver_fact_put "$t" repair DIFF "${diff:-(none — the branch carries no change against $trunk)}"
 
   # NO COMMIT ON A RED PR IS NOT A REPAIR, whatever the answer calls itself. #13317

@@ -551,3 +551,56 @@ _driver_fact_local_only_limits() {
     "$(jq -r '[(.gates.local // []) as $l | (.gates.changed // [])[]? | select(type == "string") | select(. as $c | $l | index($c) | not)] | if length > 0 then join(", ") else "gates.changed" end' "$HARNESS_CFG" 2>/dev/null)" \
     "$(jq -r '[(.gates.ratchets // [])[]? | select(type == "object") | .check // empty | strings] | if length > 0 then " (" + join(", ") + ")" else "" end' "$HARNESS_CFG" 2>/dev/null)"
 }
+
+# driver_handover_diff <tree> <range> [focus file…] — the change as a fix or repair step is
+# handed it, bounded: the files it touches (--stat), then the diff of the focus files (every
+# file when none is named), cut at driver.handoverDiffBytes (default 8000) and the cut said.
+# Nothing when the range carries no change, so a caller's own "(none …)" still shows. Handed
+# whole, a repair's diff ran to 92 KB and a fix's to 1 MB: the step reads the rest itself.
+driver_handover_diff() {
+  local wt="$1" range="$2" cap stat d bytes
+  shift 2
+  cap=$(driver_opt driver.handoverDiffBytes 8000)
+  case "$cap" in ''|*[!0-9]*|0) cap=8000 ;; esac
+  stat=$(git -C "$wt" diff --stat=160 "$range" 2>/dev/null)
+  [ -n "$stat" ] || return 0
+  # At most 60 files by name, then git's own total line.
+  [ "$(printf '%s\n' "$stat" | wc -l)" -le 61 ] \
+    || stat="$(printf '%s\n' "$stat" | head -60)
+ … $(( $(printf '%s\n' "$stat" | wc -l) - 61 )) more (git diff --stat $range)
+$(printf '%s\n' "$stat" | tail -1)"
+  if [ "$#" -gt 0 ]; then d=$(git -C "$wt" diff "$range" -- "$@" 2>/dev/null); else d=$(git -C "$wt" diff "$range" 2>/dev/null); fi
+  printf 'Files this change touches:\n%s\n\n' "$stat"
+  [ "$#" -eq 0 ] || printf '[The diff below is only of %s, the file(s) this step is about. Any other: git diff %s -- <file>]\n\n' "$*" "$range"
+  bytes=$(LC_ALL=C printf '%s' "$d" | wc -c | tr -d ' ')
+  if [ "${bytes:-0}" -gt "$cap" ]; then
+    { LC_ALL=C printf "%s" "$d" 2>/dev/null; } | LC_ALL=C head -c "$cap"
+    printf '\n\n[CUT at %s of %s bytes. Read the rest in the worktree: git diff %s -- <file>. Do not judge the part above as the whole change.]' "$cap" "$bytes" "$range"
+  else
+    printf '%s' "$d"
+  fi
+}
+
+# driver_failing_log_tails <rollup json> <failing names, ", "-separated> — the last lines of
+# each failing check's own log (at most 3 checks, 40 lines and 4000 bytes each), read with
+# `gh run view --job <id> --log-failed` off the check's details URL. A check whose log cannot
+# be read is named with the command that reads it. So the step starts from the failure,
+# not from the whole history.
+driver_failing_log_tails() {
+  local rollup="$1" names="$2" n url job tail i=0
+  [ -n "$names" ] || return 0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    i=$((i + 1)); [ "$i" -le 3 ] || { printf '\n(more red checks: read each with gh pr checks)\n'; break; }
+    url=$(printf '%s' "$rollup" | jq -r --arg n "$n" '[.[]? | select((.name // .context // "") == $n) | (.detailsUrl // .targetUrl // "")] | first // ""' 2>/dev/null)
+    job=$(printf '%s' "$url" | sed -n 's#.*/job/\([0-9][0-9]*\).*#\1#p')
+    tail=""
+    [ -z "$job" ] || tail=$(swarm_gh run view --repo "$REPO_SLUG" --job "$job" --log-failed </dev/null 2>/dev/null \
+      | sed -E 's/^[^	]*	[^	]*	//; s/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' | tail -40 | LC_ALL=C cut -c1-300 | LC_ALL=C head -c 4000)
+    if [ -n "$tail" ]; then
+      printf '\n\n%s, the last lines of its failed step:\n```\n%s\n```' "$n" "$tail"
+    else
+      printf '\n\n%s: its log could not be read here — read it: gh run view --job %s --log-failed' "$n" "${job:-<id from gh pr checks>}"
+    fi
+  done < <(printf '%s' "$names" | awk 'BEGIN { RS = ", " } NF { sub(/\n$/, ""); print }')
+}
