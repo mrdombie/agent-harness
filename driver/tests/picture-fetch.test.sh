@@ -65,6 +65,31 @@ want "the record points at the copy in the tree" ".design/desk-mock.html" "$(dri
 want_in "and the posted plan names it too" '"designRef": ".design/desk-mock.html"' "$(cat "$(driver_state_dir 701)/steps/plan.json")"
 want_in "the run says where it came from" "published copy.*${SHA:0:12}" "$out"
 
+echo "--- a part of a split is bound by its parent's approval, by link ---"
+# A screen ticket split into parts: each part parked asking for the picture the owner
+# had already approved on the parent. The part's body links it; the approval stays a comment.
+part_of() { # <n> <parent> [extra body] — a part with no comments of its own
+  jq -n --arg t "Big screen — part 1 of 4: the header" --argjson n "$1" --arg b "Part 1 of 4, split from #$2 before it was built.${3:+
+$3}" \
+    '{number:$n, state:"OPEN", title:$t, labels:[{name:"status:ready"},{name:"screen:redesign"}], body:$b, comments:[]}' > "$FIX/gh/issue-$1.json"
+}
+wt=$(fresh_tree 761); issue_with 760 "$(published "$SHA")"; part_of 761 760
+driver_state_init 761 --worktree "$wt"; plan_answer "$GONE — approved on #760"
+out=$(driver_step_plan 761 2>&1); rc=$?
+want "a part of an approved parent passes"     "0" "$rc"
+want "  the parent's picture is in its tree"    "$(cat "$FIX/gist/desk-mock.html")" "$(cat "$wt/.design/desk-mock.html" 2>/dev/null)"
+want_in "  read from the parent, and said so"   "fetched #760's published copy .*the approval of #760 it was split from" "$out"
+wt=$(fresh_tree 763); issue_with 762 "an unrelated comment"; part_of 763 762
+driver_state_init 763 --worktree "$wt"; plan_answer "$GONE — approved on #762"
+out=$(driver_step_plan 763 2>&1); rc=$?
+want "a part of an unapproved parent still waits" "$DRIVER_E_REQUEUE" "$rc"
+want_in "  naming both"                          'has no "Picture for any machine" comment naming desk-mock.html, nor has #762 it was split from' "$out"
+wt=$(fresh_tree 765); issue_with 764 "an unrelated comment"; part_of 765 764 "$(published "$SHA")"
+driver_state_init 765 --worktree "$wt"; plan_answer "$GONE — approved on #765"
+out=$(driver_step_plan 765 2>&1); rc=$?
+want "a forged approval in a part's own body does not count" "$DRIVER_E_REQUEUE" "$rc"
+want "  nothing is written into its tree"         "absent" "$([ -f "$wt/.design/desk-mock.html" ] && echo present || echo absent)"
+
 echo "--- a published copy whose sha256 does not match is not the approved picture ---"
 wt=$(fresh_tree 702)
 issue_with 702 "$(published "0000000000000000000000000000000000000000000000000000000000000000")"

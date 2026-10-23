@@ -30,17 +30,36 @@
 # part of a split (it builds: a part is never split again). Nothing has been built yet.
 _driver_plan_split() {
   local t="$1" ans="$2" max="$3" meta title inherit n i url c kids="" task body l args
-  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels 2>/dev/null) || return 1
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
   title=$(jq -r '.title // ""' <<<"$meta")
   if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
     driver_say "   plan: $(jq '[.tasks[]?] | length' "$ans") build tasks, but #$t is itself a part of a split — it builds"; return 2
   fi
   inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
   n=$(jq '[.tasks[]?] | length' "$ans")
+  # WHAT THE PARENT ALREADY HAS, CARRIED BY LINK, NEVER BY COPY. An approved picture lives in
+  # the parent's own comment; a part that re-posted it would be an agent approving its own
+  # picture. So the part names it, and picture-fetch.sh follows "split from #<parent>" to that
+  # comment, checked there as on the parent. The parent's PM and owner answers ride quoted.
+  local carried
+  carried=$(jq -r '
+    def link: (.url // "") | if . == "" then "" else " (" + . + ")" end;
+    [(.comments // [])[] | select((.body // "") | startswith("**Picture for any machine**"))] as $pics
+    | [(.comments // [])[] | select((.body // "") | test("^\\*\\*(The owner answered|PM answer|The PM answered)"; "i"))] as $ans
+    | (if ($pics | length) > 0 then
+         "\n**Approved picture — the parent'"'"'s, by link:** the approval is #'"$t"''"'"'s comment" + ($pics | last | link)
+         + ((($pics | last | .body) | capture("picture-approve: sha256=(?<s>[0-9a-f]{64}) file=(?<f>[^ ]+)")?) // {} | if .s then ", `" + .f + "`, sha256 `" + .s[0:12] + "…`" else "" end)
+         + ". This part is bound by it; the picture step reads it there.\n"
+       else "" end)
+    + (if ($ans | length) > 0 then
+         "\n**Answers already given on #'"$t"'** (quoted, not asked again):\n"
+         + ($ans | map("> " + ((.body // "") | split("\n") | join("\n> ")) + "\n> — " + (.url // "")) | join("\n\n")) + "\n"
+       else "" end)' <<<"$meta" 2>/dev/null)
   i=0
   while [ "$i" -lt "$n" ]; do
     task=$(jq -c --argjson i "$i" '.tasks[$i]' "$ans")
     body=$(printf 'Part %s of %s, split from #%s before it was built: its plan had %s build tasks, over `driver.split.maxTasks` (%s). One change, merged on its own.
+%s
 
 **This part:** %s
 
@@ -50,7 +69,7 @@ _driver_plan_split() {
 
 Refs #%s
 ' \
-      "$((i+1))" "$n" "$t" "$n" "$max" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
+      "$((i+1))" "$n" "$t" "$n" "$max" "$carried" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
       "$(jq -r '[.files[]? | (.path // .) | tostring] | join(", ") | if . == "" then "(none named)" else . end' <<<"$task")" \
       "$(jq -r '[.tests[]? | (.file // .name // .behaviour // .) | tostring] | join("; ") | if . == "" then "(none named)" else . end' <<<"$task")" "$t")
     args=(issue create --repo "$REPO_SLUG" --title "$title — part $((i+1)) of $n: $(jq -r '.title // ""' <<<"$task" | cut -c1-80)" --body "$body" --label "$LBL_READY")

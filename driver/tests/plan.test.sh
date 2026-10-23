@@ -46,6 +46,22 @@ want_in "  each names its part and the parent"    'Ticket 151 — part 2 of 4: t
 want_in "  the parent is told"                     'issue comment 151 .*Split.* into #999' "$(tr '\n' ' ' < "$GH_LOG")"
 want_in "  and closed as split"                    'issue close 151' "$(cat "$GH_LOG")"
 want_in "  the run says why"                       'split into .* the parent closed as split' "$out"
+echo "--- a part carries the parent's approved picture and its answers, by link ---"
+jq -n '{number:156, state:"OPEN", title:"Ticket 156", labels:[{name:"status:claimed"},{name:"screen:redesign"}], body:"spec",
+  comments:[{url:"https://github.com/acme/widgets/issues/156#issuecomment-1", body:"**Picture for any machine** — `desk-mock.html`, approved for #156\n\n<!-- picture-approve: sha256=aaaaaaaaaaaabbbbbbbbbbbbccccccccccccddddddddddddeeeeeeeeeeeeffff file=desk-mock.html gist=abc -->"},
+            {url:"https://github.com/acme/widgets/issues/156#issuecomment-2", body:"**The owner answered** (`decision:156:scope`): keep the old filter"},
+            {url:"https://github.com/acme/widgets/issues/156#issuecomment-3", body:"an unrelated note"}]}' > "$FIX/gh/issue-156.json"
+driver_state_init 156 --worktree "$REPO"
+fix_ai plan "$(plan_of 4)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 156 2>&1); rc=$?
+log=$(tr '\n' ' ' < "$GH_LOG")
+want "it splits"                                   "$DRIVER_E_NOOP" "$rc"
+want_in "  each part links the parent's approval"  'Approved picture — the parent.s, by link:\*\* the approval is #156.s comment \(https://github.com/acme/widgets/issues/156#issuecomment-1\), `desk-mock.html`, sha256 `aaaaaaaaaaaa…`' "$log"
+want_in "  and records where it was split from"   'split from #156' "$log"
+want_in "  the owner's answer rides quoted, linked" '> \*\*The owner answered\*\* \(`decision:156:scope`\): keep the old filter > — https://github.com/acme/widgets/issues/156#issuecomment-2' "$log"
+want_not_in "  an unrelated comment does not"      'an unrelated note' "$log"
+want_not_in "  no approval is re-posted as a comment" '^issue comment [0-9]+ .*Picture for any machine' "$(grep '^issue comment' "$GH_LOG")"
+
 fix_issue 152 OPEN "status:claimed,P1"; driver_state_init 152 --worktree "$REPO"
 fix_ai plan "$(plan_of 3)" superpowers:writing-plans
 : > "$GH_LOG"; out=$(driver_step_plan 152 2>&1); rc=$?
