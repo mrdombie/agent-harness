@@ -774,6 +774,44 @@ want "a PR claimed by a live run elsewhere is skipped" "" "$(spawned)"
 want_in "and named as claimed"             'skip #501 \(repair\): claimed' "$out"
 want "and its queue entry now reads repair" "repair" "$(jq -r '.tickets[] | select(.n==501) | .class' "$C/queue.json")"
 
+echo "--- repaired twice: rebuilt fresh from the trunk, never patched a third time ---"
+# The 12 most-repaired PRs (each 5-11 times) were 48% of three days' repair usage.
+rebuild_world() { # <repair spawns on record> [a rebuild after them: 1]
+  fresh; queue_as repair 501; printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"; mkdir -p "$C"
+  local i=0; while [ "$i" -lt "$1" ]; do i=$((i+1)); printf 'claim-501-%s\t501\trepair\t%s\n' "$i" "$((NOWE - 9000 + i))" >> "$C/run-classes.tsv"; done
+  [ -z "${2:-}" ] || printf 'claim-501-r\t501\trebuild\t%s\n' "$NOWE" >> "$C/run-classes.tsv"
+  : > "$GH_LOG"
+}
+NOWE=$(date +%s)
+rebuild_world 2
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "two repairs on record: no third repair"   "" "$(spawned)"
+want "  the head is kept on a stale ref"        "1" "$(grep -c '^api repos/acme/widgets/git/refs -f ref=refs/stale/501/pr-5501 -f sha=f501' "$GH_LOG")"
+want "  the PR is closed, its branch deleted"   "1" "$(grep -c '^pr close 5501 .*--delete-branch .*Closed to rebuild fresh' "$GH_LOG")"
+want "  the ticket is queued fresh, at the front" "new" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
+want_in "  with a note that says so"            '^Rebuild: PR #5501 was closed after 2 repairs' "$(jq -r '.tickets[] | select(.n == 501) | .note' "$C/queue.json")"
+want_in "  and the tick says it"                'rebuild: closed PR #5501 after 2 repairs \(head kept at refs/stale/501/pr-5501\)' "$out"
+want "  the rebuild is on record"               "rebuild" "$(tail -1 "$C/run-classes.tsv" | cut -f3)"
+rebuild_world 1
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "one repair on record: repaired again"     "501" "$(spawned)"
+want "  and nothing is closed"                  "0" "$(grep -c '^pr close' "$GH_LOG")"
+rebuild_world 2 1
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "repairs before the last rebuild do not count" "501" "$(spawned)"
+rebuild_world 2
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_REBUILD_AFTER_REPAIRS=0 tick >/dev/null
+want "0 turns it off"                           "501" "$(spawned)"
+rebuild_world 3
+out=$(SWARM_SPAWN="$BIN/spawn-live" tick)
+want_in "shadow says it would rebuild"          'rebuild: would close PR #5501 \(repaired 3 times\)' "$out"
+want "  and closes nothing"                     "0" "$(grep -c '^pr close' "$GH_LOG")"
+rebuild_world 2; rm -f "$FIX/gh/api-repos_acme_widgets_git_refs.json"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "the head could not be kept: nothing closed" "0" "$(grep -c '^pr close' "$GH_LOG")"
+want "  and no third repair either"             "" "$(spawned)"
+want_in "  the tick says so"                    "rebuild: #501 — PR #5501's head could not be kept" "$out"
+
 echo "--- a frozen run is noticed; a busy one is not ---"
 fresh; live_run 700
 tick >/dev/null
