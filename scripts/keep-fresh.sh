@@ -38,6 +38,7 @@
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
+. "$SELF_DIR/merge-regenerate.sh" || exit 1
 
 KF_LOG="$COORD_DIR/keep-fresh.log"
 say() { printf '%s\n' "$*"; swarm_log "$KF_LOG" "$*"; }
@@ -202,8 +203,13 @@ fresh_one() { # <pr> <branch> <head>
     say "keep-fresh: #$n — merging $INTEGRATION_BRANCH failed with nothing conflicted: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
     cleanup_scratch; return 1
   fi
-  printf '%s\n' "$RULES" > "$SCRATCH/rules.json"
-  resolved=$(cd "$wt" && python3 -I "$RESOLVE" "$SCRATCH/rules.json" 2>"$SCRATCH/resolve.err"); rc=$?
+  # Generated tally files (merge.regenerate) are recounted on the merged tree first.
+  regen=$(merge_regenerate_conflicts "$wt" 2>/dev/null) || true
+  resolved=""; rc=0
+  if [ -n "$(g ls-files -u 2>/dev/null)" ]; then
+    printf '%s\n' "$RULES" > "$SCRATCH/rules.json"
+    resolved=$(cd "$wt" && python3 -I "$RESOLVE" "$SCRATCH/rules.json" 2>"$SCRATCH/resolve.err"); rc=$?
+  fi
   if [ "$rc" -ne 0 ]; then
     g merge --abort >/dev/null 2>&1 || true
     if [ "$rc" -eq 1 ]; then
@@ -220,6 +226,7 @@ fresh_one() { # <pr> <branch> <head>
   if ! g commit -q --no-edit --no-verify >/dev/null 2>&1; then
     say "keep-fresh: #$n — the resolved merge could not be committed"; g merge --abort >/dev/null 2>&1; cleanup_scratch; return 1
   fi
+  [ -z "$regen" ] || resolved=$(printf '%s\n%s' "$regen" "$resolved" | sed '/^$/d')
   new=$(g rev-parse HEAD)
   rules_line=$(printf '%s\n' "$resolved" | awk -F'\t' 'NF { printf "%s%s (%s)", sep, $1, $2; sep = ", " }')
   if coord_shadow; then

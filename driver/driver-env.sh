@@ -495,6 +495,9 @@ driver_take_origin() {
     git -C "$wt" merge --abort >/dev/null 2>&1
     DRIVER_TAKE_WHY="merging origin's $branch failed with no conflicted file to name"; return 1
   fi
+  # Only generated tally files clashed: recounted on the merged tree, the merge is done.
+  if driver_regenerate "$wt" ship; then DRIVER_TAKE_MERGED=1; return 0; fi
+  conflicted=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     printf '%s\n' "$mine" | grep -qxF -- "$f" || rest="$rest$f "
@@ -780,6 +783,16 @@ driver_conflict_markers() {
 }
 
 . "$KIT_ROOT/scripts/pr-closes.sh"
+# A generated tally file that clashes in a merge is regenerated from the merged tree.
+. "$KIT_ROOT/scripts/merge-regenerate.sh"
+# driver_regenerate <tree> <where> — merge_regenerate_conflicts, committing a merge it
+# leaves with nothing unmerged, each recount said. 0 when nothing is left unmerged.
+driver_regenerate() {
+  local out l
+  out=$(merge_regenerate_conflicts "$1" commit 2>&1)
+  while IFS= read -r l; do [ -n "$l" ] && driver_say "   $2: ${l%%$'\t'*} — ${l#*$'\t'} from the merged tree"; done <<<"$out"
+  [ -z "$(git -C "$1" diff --name-only --diff-filter=U 2>/dev/null)" ] && ! git -C "$1" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1
+}
 # A throwaway, migrated database for a proof or a step, when tests.db is configured.
 . "$DRIVER_HOME/test-db.sh"
 
