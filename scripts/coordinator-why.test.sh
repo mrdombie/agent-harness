@@ -7,9 +7,9 @@
 #   - the heartbeat carries `why`: this tick's last pace, ceiling, spawn, open-changes and
 #     sheet lines, the first 5 skips and the skips by reason, and a plain-words line on
 #     the comment and the sheet's machine list;
-#   - a reader that paces while the sheet carries no budget (the owner's pacing is off)
-#     counted every owner build against a fleet cap nobody keeps, and started nothing.
-#     The sheet's order over the open-work cap starts its process fixes and repairs.
+#   - a reader paces by the same five-hour line as the owner, from its own reading when
+#     the sheet carries none. The sheet's order over the open-work cap starts its
+#     process fixes and repairs while behind the line, and nothing new while ahead.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -104,21 +104,20 @@ world; sheet
 out=$(vm_tick)
 want "the two process fixes and the three repairs start; no new ticket" "13044 13447 13621 13625 13788" "$(spawned)"
 want_in "the tick says the cap holds new work" 'open changes 87 / cap 10: finishing before starting' "$out"
-want_in "and that the pace is not applied, and why" 'pace: not applied — the sheet carries no budget from mac' "$out"
+want_in "and that it paces behind the line, from its own reading" 'pacing: behind — 5h window 39% against a target of 41%' "$out"
 
-echo "--- a budget this tick did not apply never takes the tooling places ---"
+echo "--- ahead of the line, the reader starts nothing new either ---"
 cp "$SH/comments.json" "$FIX/comments.first.json"
 world 0.80; sheet
 out=$(vm_tick)
-want "the floor the unapplied budget computed holds nothing back" "true" "$(jq -r '.productFloor.applied' "$M/coordinator/pace.json")"
-want "the process fixes and repairs still start"      "13044 13447 13621 13625 13788" "$(spawned)"
-want_not_in "no tooling hold from it"                 'the places now are the product floor' "$out"
+want "80% at 44% of the window: nothing starts"       "" "$(spawned)"
+want_in "and the tick says why"                       'pacing ahead of the five-hour line — no new builder starts but P0' "$out"
 cp "$FIX/comments.first.json" "$SH/comments.json"
 
 echo "--- the heartbeat says why, from this tick's own lines ---"
 hb=$(hb_json)
 want "the heartbeat carries a why"                    "object" "$(jq -r '.why | type' <<<"$hb")"
-want_in "its pace line"                               '^pace: not applied' "$(jq -r '.why.pace' <<<"$hb")"
+want_in "its pacing line"                             '^pacing: behind' "$(jq -r '.why.pace' <<<"$hb")"
 want_in "its ceiling line"                            '^ceiling: 0 running · room for [0-9]+ more' "$(jq -r '.why.ceiling' <<<"$hb")"
 want_in "its open-changes line"                       '^open changes 87 / cap 10: finishing before starting$' "$(jq -r '.why.openChanges' <<<"$hb")"
 want_in "its sheet line"                              "^sheet: working mac's order, 0 min old — 7 on it$" "$(jq -r '.why.sheet' <<<"$hb")"
@@ -154,11 +153,11 @@ out=$( . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . "$HERE/coordinator-sheet.
 want_in "a why line under the machine"                '^  - why: .*skipped 5 claimed' "$out"
 want_not_in "no < or > inside the heartbeat comment"  '[<>]' "$(jq -r '.why | .. | strings' <<<"$hb")"
 
-echo "--- with a budget on the sheet, the reader still paces by the owner's share ---"
-world; printf '%s\tmac\tbuild\n' 13001 13002 13003 > "$FIX/claims.tsv"
-sheet '{"maxBuildsFleet":9,"shares":{"mac":8,"Yomato":1},"usage":{"five_hour":{"u":0.39,"reset":'"$(( NOWE + 10166 ))"'}}}'
+echo "--- with a reading on the sheet, the reader paces by the owner's fresher one ---"
+world 0.10; printf '%s\tmac\tbuild\n' 13001 13002 13003 > "$FIX/claims.tsv"
+sheet '{"usage":{"five_hour":{"u":0.60,"reset":'"$(( NOWE + 10166 ))"',"at":'"$NOWE"'}},"settings":{"factor":0.95}}'
 out=$(vm_tick)
-want "its share of 1: one start, the first process fix" "13621" "$(spawned)"
-want_in "the pace line is the owner's split"          'pace: 5h window 39%' "$out"
+want "the owner's 60% puts it ahead: nothing starts"  "" "$(spawned)"
+want_in "the pacing line reads the owner's reading"   'pacing: ahead — 5h window 60%' "$out"
 
 suite_end "$FAILED"

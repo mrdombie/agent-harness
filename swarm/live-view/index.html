@@ -313,18 +313,12 @@ function machineLine(s){
   } else if (d) parts.push('disk free not read')
   parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
   const p = c && c.pace
+  // Pacing to the five-hour window (coordinator.paceToWindow): ahead of the line, nothing new starts.
   if (p && p.fiveHour) {
-    const ahead = p.fiveHour.ahead || (p.sevenDay && p.sevenDay.ahead)
-    parts.push(`usage budget: ${esc(Math.round(p.fiveHour.line * 100))}% by now`
-      + (p.sevenDay ? `, week ${esc(Math.round(p.sevenDay.u * 100))}% of ${esc(Math.round(p.sevenDay.line * 100))}%` : '')
-      + ` · at most ${esc(p.maxBuildsFleet)} building on every machine, ${esc(p.share)} here`
-      + (ahead ? ' — <span class="diskheld">ahead of budget, nothing new starts</span>' : ''))
+    const said = `pacing: ${p.fiveHour.ahead ? 'ahead' : 'behind'} — ${esc(Math.round(p.fiveHour.u * 100))}% used against a target of ${esc(Math.round(p.fiveHour.line * 100))}%`
+    const ex = (p.settings && p.settings.exempt || []).join('/')
+    parts.push(p.fiveHour.ahead ? `<span class="diskheld">${said}: no new builder starts${ex ? ' but ' + esc(ex) : ''}</span>` : `${said}: places fill`)
   }
-  // The product floor (coordinator.productFloor): overhead never takes product places to zero.
-  const pf = p && p.productFloor
-  if (pf && pf.floor) parts.push(pf.off ? `product floor ${esc(pf.floor)} ${esc(pf.off)}`
-    : pf.applied ? `<span class="diskheld">overhead would leave ${esc(pf.wouldLeave)}, product floor keeps ${esc(pf.floor)}</span>`
-    : `product floor ${esc(pf.floor)}`)
   // The tooling cap (coordinator.toolingCap): harness and process runs on every machine together.
   const tl = c && c.tooling
   if (tl) parts.push(`tooling ${esc(tl.live)} / cap ${esc(tl.cap)}` + (tl.waiting ? `, ${esc(tl.waiting)} waiting` : ''))
