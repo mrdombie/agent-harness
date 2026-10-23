@@ -262,7 +262,7 @@ printf '%s\n' \
   "670	P1	OPS			ours	P1,status:ready,project:widgets" \
   "671	P1	OPS			the harness's	P1,status:ready,effort:M,repo:agent-harness,project:widgets" \
   "672	P1	OPS			named for us	P1,status:ready,repo:widgets,project:widgets" \
-  "673	P1	OPS		[FINISH PR]	the harness's red	P1,status:in-review,repo:mrdombie/agent-harness,project:widgets" > "$FIX/claimable.tsv"
+  "673	P1	OPS		[FINISH PR]	the harness's red	P1,status:in-review,repo:acme/agent-harness,project:widgets" > "$FIX/claimable.tsv"
 rm -f "$QF"; out=$(bash "$Q" seed widgets 2>&1)
 want "only this repo's rows are seeded"      "672:new 670:new" "$(order)"
 want_in "each skip says whose it is"         'skip #671: belongs to agent-harness' "$out"

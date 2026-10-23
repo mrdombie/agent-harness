@@ -61,7 +61,7 @@ want "four files on an existing screen is not quick"             small   "$(bsz 
 want "a feature naming no file is not quick"                     project "$(bsz 'Saved searches' 'Recruiters want to save a search and be told when new candidates match it.')"
 
 echo "--- sized by what the ticket is, not what it mentions ---"
-# Maktura #8807: effort:XL, ~715 routes, one named file and a fenced block, so it read quick.
+# The live ticket #8807: effort:XL, ~715 routes, one named file and a fenced block, so it read quick.
 XL_BODY='Group the gated routes into permission classes. Inputs:
 ```bash
 grep -rn "OPEN_ROUTES" config/app.json
@@ -75,7 +75,7 @@ want "effort:S stays quick"                                      quick   "$(bsz 
 jq '.driver.quick.neverEffort = ["size:big"]' "$FIX/h-base.json" > "$FIX/h-effort.json"
 want "driver.quick.neverEffort replaces the default list" quick   "$(HARNESS_CFG="$FIX/h-effort.json" driver_size_read 1 'Lint' 'effort:L' "$CONFIG_BODY" | cut -f1)"
 want "and its own label is never quick"                  project "$(HARNESS_CFG="$FIX/h-effort.json" driver_size_read 1 'Lint' 'size:big' "$CONFIG_BODY" | cut -f1)"
-# Maktura #10936: names labelled.json, a scratchpad file that is in no repo.
+# The live ticket #10936: names labelled.json, a scratchpad file that is in no repo.
 GONE_BODY='In `labelled.json`, change `sample` from 270 to 300.'
 want "a ticket whose only named file is missing is undecided, not quick" undecided "$(bsz 'Self-check' "$GONE_BODY")"
 want_in "and names the missing file" 'none of the files it names is on develop \(labelled.json\)' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' '' "$GONE_BODY")"

@@ -116,7 +116,7 @@ COORDINATOR_RELEASE_SCOPE_ONLY='{"priorities":["P0"]}' tick >/dev/null
 want "a quick ticket outside the release scope stays held; one inside starts" "710" "$(spawned)"
 
 echo "--- another repo's ticket is never started here (this repo is acme/widgets) ---"
-# Maktura #10936: effort:M, repo:agent-harness, names labelled.json — no file of this repo.
+# The live ticket #10936: effort:M, repo:agent-harness, names labelled.json — no file of this repo.
 fresh; open_prs 22; ticket 713 "status:ready,P1,effort:M,type:feature,repo:agent-harness" 'In `labelled.json`, change `sample` from 270 to 300.'
 ticket 714 "status:ready" "$CONFIG_BODY"
 out=$(tick)
@@ -127,7 +127,7 @@ fresh; open_prs 3; ticket 715 "status:ready,repo:agent-harness" "$FEATURE"; tick
 out=$(tick)
 want "under the cap: the other repo's ticket is skipped at spawn" "716" "$(spawned)"
 want_in "and the skip says whose it is" 'skip #715 \(new\): belongs to agent-harness' "$out"
-# Maktura #8807: effort:XL with one named file and a fenced block — read quick before.
+# The live ticket #8807: effort:XL with one named file and a fenced block — read quick before.
 fresh; open_prs 22; ticket 717 "status:ready,P1,effort:XL,type:chore" 'Inputs:
 ```bash
 grep -rn "OPEN_ROUTES" config/app.json
