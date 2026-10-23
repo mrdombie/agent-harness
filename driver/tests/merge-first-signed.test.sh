@@ -39,7 +39,7 @@ JSON
 
 # A repair of PR #88: the PR's screen, and the repair's own commit.
 git -C "$REPO" worktree add -q "$FIX/wtr" -b tkt-120/work develop
-mkdir -p "$FIX/wtr/screens"; printf 'the PR change\n' > "$FIX/wtr/screens/Home.tsx"
+mkdir -p "$FIX/wtr/screens"; printf 'the PR change\n' > "$FIX/wtr/screens/Home.tsx"; printf 'the PR card\n' > "$FIX/wtr/screens/Card.tsx"
 git -C "$FIX/wtr" add . && git -C "$FIX/wtr" commit -qm "feat: the PR"
 RB=$(git -C "$FIX/wtr" rev-parse HEAD)
 printf 'the repair\n' >> "$FIX/wtr/screens/Home.tsx"; git -C "$FIX/wtr" commit -qam "fix: the repair"
@@ -57,7 +57,8 @@ printf '#!/usr/bin/env bash\ncase "$1" in add) printf "%%s\\n" "$*" >> "$FIX/pl.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIX/sf"; chmod +x "$FIX/pl" "$FIX/sf"
 export DRIVER_POLISH_LIST="$FIX/pl" DRIVER_SCREEN_FINDINGS="$FIX/sf"
 
-major='{"verdict":"BLOCKED","findings":[{"id":"m1","file":"screens/Home.tsx","line":448,"grade":"major","summary":"the notice stays up after reset","reason":"a person is misled","fix":"clear it"}]}'
+# On a signed screen the repair did not touch: one in a file it did is fixed in place (same file, same change).
+major='{"verdict":"BLOCKED","findings":[{"id":"m1","file":"screens/Card.tsx","line":448,"grade":"major","summary":"the notice stays up after reset","reason":"a person is misled","fix":"clear it"}]}'
 critical='{"verdict":"BLOCKED","findings":[{"id":"c1","file":"screens/Home.tsx","line":4,"grade":"critical","summary":"another workspace sees the rows","reason":"wrong data","fix":"scope it"}]}'
 
 N=900
@@ -74,6 +75,7 @@ case_signed() { # <kit> <answer> — a repair of the signed PR under the stale s
   R="rc=$rc fu=$(jq -r .id "$f" 2>/dev/null | tr '\n' ' ' | sed 's/ $//') owner=$owner"
 }
 case_major()    { case_signed "${SUT_KIT:-$ROOT}" "$major"; }
+case_own()      { case_signed "${SUT_KIT:-$ROOT}" "$(printf '%s' "$major" | sed 's#screens/Card.tsx#screens/Home.tsx#')"; }
 case_critical() { case_signed "${SUT_KIT:-$ROOT}" "$critical"; }
 case_guard() { # what the pre-push sign-off guard's first line reads, under the run's exported snapshot
   R=$(HARNESS_CFG="$FIX/stale.json" HARNESS_CFG_PATH="$FIX/stale.json" bash -c 'unset KIT_ROOT HARNESS_KIT_ROOT; . "$1/scripts/toolkit-env.sh" >/dev/null 2>&1 && release_merge_first && echo on || echo off' _ "${SUT_KIT:-$ROOT}")
@@ -90,6 +92,8 @@ want_in "and the run says it is filed, not held"  'filed as follow-up tickets' "
 want_not_in "it is never parked for the owner"    'parks for the owner' "$(cat "$FIX/out-$N")"
 case_critical
 want "on: a Critical on signed-off screens still blocks, fixed in place" "rc=30 fu= owner=no" "$R"
+case_own
+want "on: a Major in the file the repair touched is fixed in place, never held" "rc=30 fu= owner=no" "$R"
 case_guard
 want "on: the push guard sees the switch, so the push is not withheld" "on" "$R"
 case_prompt
