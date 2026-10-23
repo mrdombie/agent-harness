@@ -46,6 +46,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/facts.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/person-words.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/standard-answer.sh" || exit 1
 
 # The Skill a brief names in its own front matter, when it has one. Kept because a
 # brief MAY pin one, and the fixtures that write it are testing a real feature —
@@ -368,6 +369,24 @@ SHIM
     cat "$log.critic-off" >> "$log" 2>/dev/null
     [ "$crc" -eq 0 ] || return "$crc"
     jrc=0; _driver_ai_judge || jrc=$?
+  fi
+  # MERGE FIRST: a question a standing rule answers "carry on" to (standard-answer.sh) is
+  # asked once more with that answer. A wait (a, b) is build-ticket's to act on.
+  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ]; then
+    local sq sreask="$d/steps/$slot.standard.prompt" ssid
+    sq=$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)
+    if driver_standard_answer "$t" "$step" "$sq" && [ "$SA_ACTION" = carry ]; then
+      driver_standard_answer_note "$t" "$step" "$sq"
+      ssid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+      if [ -n "$ssid" ]; then : > "$sreask"; else cp "$prompt" "$sreask"; fi
+      printf '\n---\nYou asked: %s\n\nUntil the release a standing rule answers it (standard answer (%s), release.mergeFirst): %s\nAct on that and give the step'"'"'s answer. Do not ask it again.\n' \
+        "$sq" "$SA_CLASS" "$SA_ANSWER" >> "$sreask"
+      [ ! -f "$ans" ] || cp "$ans" "$d/steps/$slot.standard-asked.json"
+      crc=0; _driver_ai_call "$sreask" "$log.standard" "$ssid" || crc=$?
+      cat "$log.standard" >> "$log" 2>/dev/null
+      [ "$crc" -eq 0 ] || return "$crc"
+      jrc=0; _driver_ai_judge || jrc=$?
+    fi
   fi
   return "$jrc"
 }

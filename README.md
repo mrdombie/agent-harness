@@ -641,6 +641,24 @@ repair already running when the switch lands follows it: a non-Critical finding 
 signed-off PR's screens is a follow-up and the push goes through. Every driver step's
 prompt says the brief's sign-off lines do not hold.
 
+**Standard answers under merge first** (owner call 2026-10-23). While `release.mergeFirst`
+is on, a driver step that would park with a question a standing rule answers takes that
+answer instead (`driver/standard-answer.sh`): (a) the base is red too, wait or fix here:
+the ticket waits for the base (the base-wait ledger; with no PR yet it carries on);
+(b) a follow-up of a PR that has not merged, fold in or wait: `status:blocked` with
+"Blocked on #N: waits for #N to merge"; (c) a Minor or Major, fix now or defer: deferred
+as fix-after-merge, and the run goes on; (d) anything about the critic, evidence,
+screenshots or the picture: ignored; (e) signed off, ship or re-capture: ship. A model's
+question is asked once more with the answer; a step's own refusal is marked done and the
+walk goes on. Each logs `standard answer: (<class>)` and is written on the PR (the ticket
+while there is none); nothing gets `needs:owner-decision`. Patterns over the question and
+the step's record (base-red cache, deferred findings' grades, the parent PR) decide
+first; a product, design, data-model, secrets or Critical question always parks; only an
+undecided text gets one short model call returning a–e or park, and anything else parks.
+The classes and patterns are one setting, `driver/standard-answers.json`;
+`release.standardAnswers` in harness.json replaces it, `false` turns it off, and it is off
+with mergeFirst.
+
 **Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
 in harness.json lists check names (a run's name, a status context, or
 `<workflow> / <job>`, ignoring case); while `release.done` is not true, a red in one

@@ -764,6 +764,33 @@ while [ "$i" -lt "$N" ]; do
       ;;
   esac
 
+  # MERGE FIRST: a park a standing rule answers is no park (standard-answer.sh). A model's
+  # carry-on question was already asked again with it (ai-step.sh), so here only a step's
+  # own refusal carries on; the two waits act for either.
+  if [ -n "$park_reason" ] && [ "$machine" -eq 0 ]; then
+    _sa_cause="$park_cause"; [ -z "$step_cause" ] || _sa_cause="$step_cause"
+    _sa_q="$park_question"; [ -z "$note" ] || _sa_q="$note"
+    if [ "$_sa_cause" != driver ] && driver_standard_answer "$TICKET" "$step" "$park_reason: $_sa_q"; then
+      if [ "$SA_ACTION" = carry ] && [ "$rc" != "$DRIVER_E_QUESTION" ]; then
+        driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
+        driver_state_done "$TICKET" "$step"; i=$((i+1)); continue
+      elif [ "$SA_ACTION" = base-wait ]; then
+        driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
+        _bw=$(driver_state_get "$TICKET" base_red); [ -n "$_bw" ] || _bw="the red $step named on $INTEGRATION_BRANCH"
+        driver_state_set "$TICKET" base_wait_checks "$_bw"
+        driver_state_set "$TICKET" base_wait_head "$(git -C "$(driver_state_get "$TICKET" worktree)" rev-parse HEAD 2>/dev/null)"
+        base_wait=1; park_reason=""
+      elif [ "$SA_ACTION" = parent-wait ]; then
+        driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
+        swarm_gh issue comment "$TICKET" --repo "$REPO_SLUG" --body "Blocked on #$SA_PARENT: this ticket waits for #$SA_PARENT to merge, then builds on $INTEGRATION_BRANCH (standard answer (b), release.mergeFirst)." >/dev/null 2>&1 || true
+        issue_status_set "$TICKET" "$LBL_BLOCKED" >/dev/null 2>&1 || driver_say "   standard answer: #$TICKET could not be set ${LBL_BLOCKED}"
+        bash "$CL" release "$TICKET" >/dev/null 2>&1 || true
+        driver_say "⏸ #$TICKET waits for PR #$SA_PARENT to merge — standard answer (b); nothing for a person"
+        exit "$DRIVER_OK"
+      fi
+    fi
+  fi
+
   # BIGGER THAN ITS SIZE: on along the full route from plan, with the work kept (quick.sh).
   if [ "$upsize" -eq 1 ]; then
     ! driver_cap_bypassed || driver_cap_slip "$(driver_state_get "$TICKET" quick_fallback | cut -c1-200)"
