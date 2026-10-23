@@ -81,6 +81,7 @@ want "a ticket whose only named file is missing is undecided, not quick" undecid
 want_in "and names the missing file" 'none of the files it names is on develop \(labelled.json\)' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' '' "$GONE_BODY")"
 want "a missing file beside an existing one is not counted"      quick   "$(bsz 'Lint' "$CONFIG_BODY Also see notes/missing.md.")"
 want_in "and is said as not counted" 'not counted: notes/missing.md' "$(HARNESS_CFG="$FIX/h-base.json" driver_size_read 1 'x' '' "$CONFIG_BODY Also see notes/missing.md.")"
+want "a missing code file does not make a config ticket a code one" quick "$(bsz 'Lint' 'Tidy `config/app.json`; the old reader was src/lib/gone.ts.')"
 want "with no readable trunk no named file counts"               undecided "$(MAIN_REPO="$FIX/nowhere" bsz 'Lint' "$CONFIG_BODY")"
 # This project is acme/widgets: a repo:<other> label is another repo's work.
 want "a repo:<other> ticket is never quick here"                 project "$(bsz 'Lint' "$CONFIG_BODY" 'repo:agent-harness')"
