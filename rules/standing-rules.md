@@ -187,6 +187,14 @@ load at 77 on 10 cores.
   screen that does not exist cannot be signed off.
 - **A re-read is not a re-run**, and a correction carries the same bar as the
   claim it corrects.
+- **Test the behaviour after an edit.** "Fixed" from reading the code is a guess.
+  Broadcast the test, not the conclusion: a test fails safe, a conclusion cannot be checked.
+- **The lint "potentially fixable" line is not the error count.**
+- **A plant whose commit silently failed reports the guard as sound.** Assert on
+  the file's content, never on git diff state.
+- **A property that resolves is not one that draws** (a border colour at zero
+  width): assert what a person would see. Cover every component the change
+  touches, and pin a call site only with a test that reads that call site.
 
 ## A refused command, and one that may have run
 
@@ -244,6 +252,19 @@ recorded as "rejected but ran anyway".
 - A test that runs git in a scratch repo must drop every `GIT_*` variable; under
   a hook they aim it at the real repo.
 - Kill only processes you started, by a pattern that cannot match a peer's.
+- Plant in a worktree of your own when anyone else edits the tree: a plant in a
+  live worktree ships if any commit lands before its undo.
+- Re-read a region after a formatter runs before anchoring an edit on it. When
+  the spec says replace a thing, replace it; do not patch around it.
+- `npm run <missing>` prints nothing and exits 1, which reads like a gate
+  failure: check the script exists first. `git rev-parse <bad-ref>` echoes the
+  ref on stdout while it errors.
+- Both `git merge-tree` forms can report clean on a real conflict; the host's own
+  mergeability is the authority.
+- On macOS `find` may be `bfs`: `-newermt '-24 hours'` errors to stderr and
+  matches nothing, so a filter built on it passes everything (it once deleted
+  node_modules in 26 live worktrees). Age-filter with `stat -f %m` arithmetic,
+  and dry-run any delete list with its count before `rm`.
 
 ## Where tooling lives
 
