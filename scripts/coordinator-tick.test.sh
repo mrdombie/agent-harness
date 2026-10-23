@@ -701,10 +701,34 @@ want "and the other new ticket as new"     "502	new" "$(grep '^502	' "$SPAWNS")"
 want_in "and named"                        '#501 \(new\): has an open PR #9 — taken as its repair' "$out"
 want_not_in "never skipped for its PR"     'skip #501 .*has an open PR' "$out"
 want "the spawned tickets left the queue"  "" "$(jq -r '.tickets[].n' "$C/queue.json" | tr '\n' ' ' | sed 's/ $//')"
-fresh; queue 501
-jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+fresh; queue 501; fix_required "Typecheck"
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[], statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs-all.json"
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a ready PR's ticket is a repair too" "501	repair" "$(grep '^501	' "$SPAWNS")"
+want "a ready red PR's ticket is a repair too" "501	repair" "$(grep '^501	' "$SPAWNS")"
+
+echo "--- a repair starts only on a PR that is really red ---"
+# Repairs started while CI still ran, and on a red develop does not require: each parked.
+for case in "IN_PROGRESS:-:Typecheck:still running" "COMPLETED:SUCCESS:Typecheck:no required check failed" \
+            "COMPLETED:FAILURE:Capture evidence:no required check failed" "COMPLETED:CANCELLED:Typecheck:a re-run, not a repair"; do
+  IFS=: read -r st co nm why <<<"$case"
+  fresh; queue_as repair 501; fix_required "Typecheck"
+  jq -n --arg st "$st" --arg co "$co" --arg nm "$nm" '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[],
+    statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"SUCCESS"}, {name:$nm, status:$st, conclusion:(if $co == "-" then null else $co end)}]}]' > "$FIX/gh/prs-all.json"
+  out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+  want "$nm $st/$co: no repair spawned" "" "$(spawned)"
+  want_in "  the skip says why" "skip #501 \(repair\): PR #9 is not red .*$why.* — no repair" "$out"
+done
+fresh; queue_as repair 501; fix_required "Typecheck"
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"DIRTY", mergeable:"CONFLICTING", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a clash is repaired"                 "501" "$(spawned)"
+fresh; queue_as repair 501
+printf 'nope\n' > "$FIX/gh/api-repos_acme_widgets_rules_branches_develop.json"
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[], statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs-all.json"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "develop's rules unreadable: no repair" "" "$(spawned)"
+want_in "  and said"                       'rules of develop could not be read' "$out"
+fix_required
 fresh; queue 501; echo 501 > "$FIX/claims.txt"
 jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
 out=$(COORDINATOR_SHADOW=0 tick)

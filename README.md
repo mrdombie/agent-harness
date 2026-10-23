@@ -610,7 +610,14 @@ a park or hold still on it when it does not clash, parked past its cap, or a rep
 already started at this head that left it as it was. **The stall guard**: over the cap,
 no build on any host, and nothing spawnable for `stallTicks` (2) ticks in a row, the tick
 says "⚠ stall: cap reached with nothing finishing" (in the heartbeat's `why` too) and
-starts the oldest repairable PR anyway, once per head. At or
+starts the oldest repairable PR anyway, once per head. **A repair starts only on a PR
+that is really red** (`scripts/pr-red.sh`), whoever queued it: a check the base branch's
+live rules require (its rulesets plus classic protection, read once per tick) concluded
+FAILURE or ERROR with none still running, or GitHub says it clashes, or it is a draft
+with its required checks settled. Anything else is skipped with its reason
+("skip #N (repair): PR #M is not red (pending: …) — no repair"): CI still running, a red
+on a check the base does not require, a cancelled or timed-out check (a re-run, not a
+repair), or rules that could not be read. At or
 under the cap, priority decides across repairs and new work (a red ranks at its
 ticket's priority), and at one priority a repair goes first. With
 `openPrCap` 0 the split below runs instead. Of that ceiling, healing gets `ceil(ceiling × healingShare)`

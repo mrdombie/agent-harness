@@ -45,12 +45,13 @@ ended() { # <ticket> <run> <final result text> — a run of <ticket> that ended 
   jq -nc --arg r "$2" --arg at "$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '-10 min' +%Y-%m-%dT%H:%M:%SZ)" \
     '{run_id:$r, exit_code:0, ended_at:$at}' > "$STATE/runs/$2.ended"
 }
-pr() { # <ticket> <sha> [labels,…] [branch] [merge state] — its open PR, checks green
-  jq -n --arg t "$1" --arg s "$2" --arg l "${3:-}" --arg b "${4:-tkt-$1-x}" --arg m "${5:-CLEAN}" \
+pr() { # <ticket> <sha> [labels,…] [branch] [merge state] [conclusion] — its open PR, checks green unless said
+  jq -n --arg t "$1" --arg s "$2" --arg l "${3:-}" --arg b "${4:-tkt-$1-x}" --arg m "${5:-CLEAN}" --arg c "${6:-SUCCESS}" \
     '[{number:($t|tonumber + 1000), headRefName:$b, headRefOid:$s, isDraft:false,
        labels:($l|split(",")|map(select(length>0)|{name:.})), mergeStateStatus:$m,
-       statusCheckRollup:[{status:"COMPLETED", conclusion:"SUCCESS"}]}]' > "$FIX/gh/prs-all.json"
+       statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:$c}]}]' > "$FIX/gh/prs-all.json"
 }
+fix_required "Typecheck"   # a repair starts only on a required red (pr-red.sh)
 queue() { local t; for t in "$@"; do bash "$Q" add "$t" >/dev/null; done; }
 queue_repair() { local t; for t in "$@"; do bash "$Q" add "$t" --class repair >/dev/null; done; }
 live() { SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
@@ -115,16 +116,16 @@ live >/dev/null; queue 609
 issue 609 "status:ready"; live >/dev/null
 want "reconcile flipping claimed to ready moves nothing" "" "$(spawned)"
 
-fresh; issue 610 "status:in-review"; pr 610 sha-a "needs:human-approval"
+fresh; issue 610 "status:in-review"; pr 610 sha-a "needs:human-approval" "" CLEAN FAILURE
 ended 610 claim-610-a "$(STATUS 'Your screen sign-off on the PR')"
 live >/dev/null; queue_repair 610
-pr 610 sha-a ""; issue 610 "status:in-review"; live >/dev/null
+pr 610 sha-a "" "" CLEAN FAILURE; issue 610 "status:in-review"; live >/dev/null
 want "the hold taken off the PR: the repair is picked" "610" "$(spawned)"
-fresh; issue 611 "status:in-review"; pr 611 sha-a
+fresh; issue 611 "status:in-review"; pr 611 sha-a "" "" CLEAN FAILURE
 ended 611 claim-611-a "$(STATUS 'Your sign-off, then CI')"
 live >/dev/null; queue_repair 611; live >/dev/null
 want "same head, same labels: held"        "" "$(spawned)"
-pr 611 sha-b; live >/dev/null
+pr 611 sha-b "" "" CLEAN FAILURE; live >/dev/null
 want "a new commit on the PR: picked"      "611" "$(spawned)"
 # A branch named for the ticket alone, without the prefix, is still its PR.
 fresh; issue 614 "status:in-review"; pr 614 sha-a "" "614/ask-files"
