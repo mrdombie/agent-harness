@@ -1061,7 +1061,8 @@ rm -rf "$CP" "$CLS" "$STATE/swarm/claims.json"
 echo "--- by area: open tickets grouped by the project's sections, tooling and the rest apart ---"
 # Dom, 2026-10-23: "update the tracker so I can see all this properly, per area".
 areas() { # <server.mjs> [sections json]
-  SWARM_SECTIONS="${2-[{\"label\":\"section:pulse\",\"name\":\"Pulse\"},{\"label\":\"section:one-desk\",\"name\":\"One Desk\"}]}" \
+  local secs='[{"label":"section:pulse","name":"Pulse"},{"label":"section:one-desk","name":"One Desk"}]'
+  SWARM_SECTIONS="${2-$secs}" \
     SWARM_RELEASE_PRIORITIES="P0 P1" SWARM_TOOLING_LABELS="repo:agent-harness" SERVER_MJS="$1" node --input-type=module -e '
   import { pathToFileURL } from "node:url"
   const { areasOf } = await import(pathToFileURL(process.env.SERVER_MJS).href)

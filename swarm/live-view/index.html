@@ -385,7 +385,7 @@ function mergedList(m){
 }
 
 // By area: one row per section, its counts as chips; open a row for its tickets.
-const AREA_BUCKETS = ['building','review','ready','pm','owner','stuck','batched','other','parked','later','container','post']
+const AREA_BUCKETS = ['building','review','ready','pm','owner','stuck','batched','other','last','parked','later','container','post']
 const AREA_TONE = { building:'ok', review:'ok', ready:'', pm:'warn', owner:'warn', stuck:'bad' }
 const PRIOS = ['Urgent','High','Normal','Polish']
 let areaPick = new Set(), areaOpen = new Set()

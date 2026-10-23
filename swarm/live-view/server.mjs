@@ -1125,30 +1125,33 @@ export function boardOf(board, ctx, now = Date.now()) {
 // counted by the board's buckets; tooling gets its own group; the rest is "Other".
 const SECTIONS = (() => { try { const j = JSON.parse(process.env.SWARM_SECTIONS || '[]'); return Array.isArray(j) ? j.filter((x) => x && x.label && x.name) : [] } catch { return [] } })()
 const PRIO_NAMES = { P0: 'Urgent', P1: 'High', P2: 'Normal', P3: 'Polish' }
+const LAST_IN_RELEASE = process.env.SWARM_LAST_IN_RELEASE_LABEL || 'release:last'
 export function areasOf(board, ctx, sections = SECTIONS) {
   if (!board || !Array.isArray(board.open) || !sections.length) return null
   const here = new Set([THIS_HOST, ...(ctx.liveHosts || [])].filter(Boolean))
-  const claimed = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))
+  const away = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))
   const groups = [...sections.map((s) => ({ key: s.label, name: s.name })), { key: '__tooling', name: 'Tooling' }, { key: '__other', name: 'Other' }]
   const by = Object.fromEntries(groups.map((g) => [g.key, { ...g, counts: {}, rows: [] }]))
   for (const i of board.open) {
     const labels = i.labels || []
     const t = String(i.number)
     const g = toolingOf(labels, i.raw ?? i.title) ? '__tooling' : (sections.find((s) => labels.includes(s.label)) || { label: '__other' }).label
-    const r = releaseOf(i.raw ?? i.title, labels, i.milestone)
+    const rel = releaseOf(i.raw ?? i.title, labels, i.milestone)
     // The same split as the headline (boardOf): only 'release' rows are release work; batches,
     // epics and parked tickets are counted beside it, never in it, so the areas add up to it.
-    const bucket = r === 'release' ? bucketOf(labels, ctx.prRows[t], ctx.live.has(t) || claimed.has(t))
-      : r === 'lower' ? 'later' : r === 'post' ? 'post' : r === 'parked' ? 'parked' : 'container'
+    // Last in the release (owner, 2026-10-23): release work the coordinator builds after everything else.
+    const bucket = rel === 'release' && labels.includes(LAST_IN_RELEASE) && !ctx.live.has(t) && !away.has(t) && !ctx.prRows[t] ? 'last'
+      : rel === 'release' ? bucketOf(labels, ctx.prRows[t], ctx.live.has(t) || away.has(t))
+      : rel === 'lower' ? 'later' : rel === 'post' ? 'post' : rel === 'parked' ? 'parked' : 'container'
     const p = labels.find((l) => /^P[0-9]$/.test(l))
     const row = by[g]
     row.counts[bucket] = (row.counts[bucket] || 0) + 1
     row.rows.push({ number: t, title: i.title, priority: PRIO_NAMES[p] || 'None', bucket, screen: labels.some((l) => l.startsWith('screen:')) })
   }
-  const order = { building: 0, review: 1, ready: 2, pm: 3, owner: 4, stuck: 5, batched: 6, other: 7, parked: 8, later: 9, container: 10, post: 11 }
+  const order = { building: 0, review: 1, ready: 2, pm: 3, owner: 4, stuck: 5, batched: 6, other: 7, last: 8, parked: 8, later: 9, container: 10, post: 11 }
   const pr = { Urgent: 0, High: 1, Normal: 2, Polish: 3, None: 4 }
   for (const g of Object.values(by)) g.rows.sort((a, b) => order[a.bucket] - order[b.bucket] || pr[a.priority] - pr[b.priority] || Number(a.number) - Number(b.number))
-  return { labels: { ...BUCKETS, parked: 'Parked', later: 'After higher priority', container: 'Batch or epic', post: 'After launch' },
+  return { labels: { ...BUCKETS, last: 'Last in the release', parked: 'Parked', later: 'After higher priority', container: 'Batch or epic', post: 'After launch' },
            outside: ['parked', 'later', 'container', 'post'],
            groups: groups.map((g) => by[g.key]).filter((g) => g.rows.length) }
 }
