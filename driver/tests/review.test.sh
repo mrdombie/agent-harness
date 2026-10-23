@@ -459,6 +459,28 @@ want "the second answer's Major goes back to fix" "30" "$rc"
 want "the reviewer was called twice"              "2" "$(grep -cx review "$CLAUDE_LOG")"
 want "and it is round 1"                          "1" "$(driver_state_count 162 review)"
 
+echo "--- an unfinished review is never a person's decision (#12986's own question) ---"
+RERUN_Q='{"step":"review","status":"park","question":"Should the review step be run again so the reviewer can finish before a verdict is recorded? (yes/no)"}'
+silent_case 166
+fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
+mv "$FIX/ai/review.jsonl" "$FIX/ai/review.then.jsonl"
+fix_ai review "$RERUN_Q" superpowers:requesting-code-review
+out=$(driver_step_review 166 2>&1); rc=$?
+want "asked to run again, then SHIP: it ships, no park" "0" "$rc"
+want "  the reviewer was called twice"           "2" "$(grep -cx review "$CLAUDE_LOG")"
+want "  nothing for a person"                    "" "$(driver_state_get 166 park_note)$(driver_state_get 166 park_cause)"
+silent_case 167
+fix_ai review "$RERUN_Q" superpowers:requesting-code-review
+out=$(driver_step_review 167 2>&1); rc=$?
+want "twice in a row: one park, the machine's"   "$DRIVER_E_MACHINE" "$rc"
+want "  after exactly one retry"                 "2" "$(grep -cx review "$CLAUDE_LOG")"
+want "  the cause is the driver's, not a person's" "driver" "$(driver_state_get 167 park_cause)"
+want_in "  and the reason is recorded"           'reviewer had not reported, twice' "$(driver_state_get 167 park_note)"
+for q in "Should the review run again so its findings are graded?" "Run the review once more before merge?" "No verdict yet — wait for the reviewer?"; do
+  want "  '$q' reads as an unfinished review"    "0" "$(_driver_review_rerun_question "$q"; echo $?)"
+done
+want "  a real question about the code does not" "1" "$(_driver_review_rerun_question "Should the empty state say none yet or nothing here?"; echo $?)"
+
 echo "--- a real verdict, and a real question, are never re-run ---"
 silent_case 163
 fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
