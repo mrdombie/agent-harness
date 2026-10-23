@@ -12,10 +12,11 @@
 # THREE STOPS, and mergeFirst relaxes none of them:
 #   do-not-merge   the PR carries labels.doNotMerge ("do-not-merge").
 #   draft          the PR is a draft and the last convert_to_draft on its timeline was
-#                  a person's. Nothing in the harness converts a PR to draft (the driver
-#                  opens its drafts as drafts), so a conversion by a person's login is
-#                  a person saying "not yet". A bot (type Bot, or a login ending [bot])
-#                  and the logins in driver.accounts are the machine.
+#                  a person's. The harness converts a PR to draft only when a run parks,
+#                  and marks that conversion as its own (driver-draft.sh), so any other
+#                  conversion by a person's login is a person saying "not yet". A bot
+#                  (type Bot, or a login ending [bot]) and the logins in driver.accounts
+#                  are the machine.
 #   a Critical     a comment by a person on the ticket or the PR, or a review on the PR,
 #                  newer than the driver's last hand-off (or --since), that GRADES a
 #                  Critical ("Critical:", "[Critical]", "Critical —", "grade: Critical";
@@ -38,6 +39,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || exit 2
 . "$SELF_DIR/gh-batch.sh" || exit 2
 . "$SELF_DIR/person-words.sh" || exit 2
+. "$SELF_DIR/driver-draft.sh" || exit 2
 REPO="${GH_REPO:-$REPO_SLUG}"
 
 usage() { sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
@@ -88,7 +90,7 @@ check() {
     '{tc: $tc, pc: $pc, rv: $rv, tl: $tl, pj: $pj}' > "$f" 2>/dev/null || { rm -f "$f"; echo "could not read what GitHub answered"; return 2; }
   local out rc=0
   out=$(jq -r --arg t "$t" --arg pr "$pr" --arg since "$since" --arg dnm "$dnm" --arg mark "$PERSON_STOP_MARK" \
-          --argjson drivers "$drivers" "$PERSON_WORDS_JQ$PS_JQ"'
+          --argjson drivers "$drivers" "$PERSON_WORDS_JQ$PS_JQ$DRIVER_DRAFT_JQ"'
     def day: (. // "") | .[0:10];
     def oneline: gsub("[\\r\\n]+"; " ") | gsub("\\s+"; " ") | gsub("^ | $"; "") | .[0:240];
     ( [ (.tc[] | {at: .created_at, user: .user, body: (.body // ""), where: "#\($t)"}),
@@ -103,7 +105,7 @@ check() {
           then "PR #\($pr) carries the `\($dnm)` label: nothing merges it, and no run readies or arms it, until a person takes the label off." else empty end ),
         ( if $pr != "" and (.pj.draft == true) then
             ([ .tl[] | select(.event == "convert_to_draft") ] | last) as $c
-            | if $c != null and ($c.actor | human) then
+            | if $c != null and ($c.actor | human) and (driver_draft($c; .pc) | not) then
                 ([ $people[] | select(.at >= $c.created_at) ] | first // ([ $people[] | select(.at <= $c.created_at) ] | last)) as $why
                 | "a person (\($c.actor.login)) put this back to draft on \($c.created_at | day): \(($why.body // "no comment") | oneline)"
               else empty end

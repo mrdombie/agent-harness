@@ -13,6 +13,7 @@
 #   2. A DRAFT PULL REQUEST. This is what makes the work visible: a ticket with an
 #      open PR is classified in-review and never released back to ready, so no
 #      fresh agent rebuilds what is already built.
+#      One already open loses auto-merge and goes back to draft (driver-draft.sh).
 #   3. THE RESUME BRIEF, as an issue comment: built · stopped at · needs · resume.
 #      "Needs" is phrased so a yes/no or a pick answers it, because a question
 #      that needs an essay is a question nobody answers.
@@ -149,6 +150,23 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
 $([ "$(driver_state_get "$t" polish_self)" = 1 ] && printf Refs || printf Closes) #$t" >/dev/null 2>&1 || true
   fi
 
+  # A PARKED RUN'S PULL REQUEST NEVER LANDS BY ITSELF. An earlier ship may have readied
+  # and armed it, and `pr create --draft` above changes nothing on one that exists: on
+  # 23 Oct a "parked — …" PR merged under merge-first with its batch's work half done.
+  # So the open PR loses auto-merge and goes back to draft, marked as the driver's own.
+  local draft_note="" draft_rc=0 ppr=""
+  if [ -n "$branch" ]; then
+    ppr=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) \
+      || { ppr=$(driver_state_get "$t" pr); [ -n "$ppr" ] || { draft_note="the open pull requests for $branch could not be listed, so whether one is still armed is unknown"; draft_rc=1; }; }
+  else
+    ppr=$(driver_state_get "$t" pr)
+  fi
+  if [ -n "$ppr" ]; then
+    draft_note=$(bash "${DRIVER_DRAFT:-$KIT_ROOT/scripts/driver-draft.sh}" park "$ppr" 2>&1) || draft_rc=1
+    draft_note=$(printf '%s' "$draft_note" | tail -1)
+  fi
+  [ -z "$draft_note" ] || driver_say "   park: $draft_note"
+
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(cat <<BRIEF
 **Parked — $reason.**
 
@@ -179,6 +197,7 @@ $(if [ "$pushed" -ne 1 ] && [ -n "$park_ref" ]; then
     printf '📌 The work is only on machine `%s`, in `%s`.' "$host" "$wt"
     [ -z "$strand_note" ] || printf ' The backup to origin never landed: %s' "$strand_note"
   fi)
+$(if [ -n "$draft_note" ] && [ "$draft_rc" -ne 0 ]; then printf '⚠ %s' "$draft_note"; elif [ -n "$draft_note" ]; then printf '🔒 %s, so it cannot land until the driver resumes and finishes it.' "$draft_note"; fi)
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
 ${merge_note:+⚠ The merge: $merge_note}

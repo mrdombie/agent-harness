@@ -112,6 +112,10 @@ act. The build step sending ITSELF back is the other case and goes back to
 pull request, resume brief, the question, labels, release the claim — in that
 order, because an unpushed branch is the only thing a park can lose and a claim
 released early is a ticket a peer can take against a branch that is not there.
+A pull request already open for the branch loses auto-merge and goes back to
+draft (`scripts/driver-draft.sh`), with a comment marking the conversion as the
+driver's own, so a parked run never lands by itself and a person's stop still
+tells the driver's draft from a person's.
 A question only a person can answer goes through `scripts/owner-question.sh`
 (`DRIVER_OWNER_QUESTION`): the owner's label and channel, and the answer back on
 the queue as a brief the driver carries. The hold label goes on only when the
