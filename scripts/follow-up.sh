@@ -26,13 +26,14 @@
 # fix-after-merge tickets; one whose parent (its marker's pr=, else "PR #N") is open is set
 # status blocked, "waits for #PR to merge"; once the parent merges, a blocked one this pass
 # blocked, or one a comment says is blocked on or waits for the parent, goes back to ready
-# and to the front of the queue. A parent closed unmerged blocks it for the PM to close.
+# and back on the queue at its priority. A parent closed unmerged blocks it for the PM to close.
 # A ticket being built (claimed, in review) is left alone.
 #
 # ONE TICKET PER PR AND FINDING. The key is "<pr> <finding id>": a ledger on this host
 # ($STATE_DIR/swarm/follow-ups.tsv) and a marker in the body, searched on the forge, so a
 # resumed ship or another host files nothing twice. Then status ready (issue-status.sh)
-# and `coordinator-queue.sh add --front`. Each wears release.followUpLabel (default
+# and `coordinator-queue.sh add`, never --front or --first: a follow-up ranks by its priority, after
+# every other ticket at that priority (coord_queue_ordered). --front put 33 P3 findings above every P0. Each wears release.followUpLabel (default
 # fix-after-merge, created if the repo lacks it): the clean-up after the release is one list. FOLLOW_UP_QUEUE=off skips the queue (tests).
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,10 +141,10 @@ file_findings() {
     fi
     printf '%s\t%s\n' "$key" "$n" >> "$LEDGER"
     issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "follow-up #$n is filed but could not be marked ${LBL_READY}"; failed=1; }
-    queue add "$n" --front --note "follow-up of PR #$PR: $grade at $where" \
-      || echo "follow-up #$n is filed and ready, and could not be put at the front of the coordinator queue"
+    queue add "$n" --note "follow-up of PR #$PR: $grade at $where" \
+      || echo "follow-up #$n is filed and ready, and could not be put on the coordinator queue"
     filed=$((filed + 1))
-    echo "filed #$n ($pri) for the $grade at $where on PR #$PR, ready and at the front of the queue"
+    echo "filed #$n ($pri) for the $grade at $where on PR #$PR, ready and queued at its priority"
   done < "$F"
   [ "$had" -eq 0 ] || echo "$had finding(s) on PR #$PR were already filed as follow-ups"
 }
@@ -392,7 +393,7 @@ while IFS=$'\t' read -r n labels p pt; do
       SWARM_GH="$GH" gh_call issue comment "$n" --repo "$REPO_SLUG" \
         --body "Unblocked: #$merged_as merged to $INTEGRATION_BRANCH, so the code this finding is on has landed. Ready to build as its own small change." >/dev/null 2>&1 \
         || echo "#$n is ready; its comment could not be posted"
-      queue add "$n" --front --note "follow-up of PR #$p, merged as #$merged_as" || true
+      queue add "$n" --note "follow-up of PR #$p, merged as #$merged_as" || true
       echo "unblocked #$n — #$merged_as merged" ;;
   esac
 done <<<"$kids"

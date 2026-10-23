@@ -104,6 +104,8 @@ COORD_ACTIONS="$COORD_DIR/actions.log"
 COORD_NEEDS_YOU="$COORD_DIR/needs-you.md"
 COORD_LOG="$COORD_DIR/tick.log"
 COORD_CAP="${COORDINATOR_CAP:-$(swarm_opt coordinator.cap "")}"
+# The label every merge-first follow-up wears: such a ticket ranks after the rest at its priority.
+COORD_FU_LABEL="${COORD_FU_LABEL:-$(swarm_opt release.followUpLabel fix-after-merge)}"
 # 0 means spawn nothing; anything not a whole number holds every spawn, named.
 COORD_CAP_BAD=""
 case "$COORD_CAP" in ''|*[!0-9]*) [ -z "$COORD_CAP" ] || { COORD_CAP_BAD="$COORD_CAP"; COORD_CAP=""; } ;; esac
@@ -552,7 +554,8 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
      --arg inreview "${LBL_IN_REVIEW:-status:in-review}" --argjson release "${COORD_RELEASE_SCOPE:-null}" \
      --argjson ownrepos "${COORD_OWN_REPOS_JSON:-$(driver_repo_own | jq -R . | jq -sc .)}" \
      --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" \
-     --argjson screens "${COORD_SCREENS_FIRST:-null}" --argjson pics "${COORD_SCREEN_PICS:-[]}" "$@"
+     --argjson screens "${COORD_SCREENS_FIRST:-null}" --argjson pics "${COORD_SCREEN_PICS:-[]}" \
+     --arg fulabel "${COORD_FU_LABEL:-fix-after-merge}" "$@"
 }
 
 # The queue in run order: <ticket> \t <class> \t <note>; with --wide,
@@ -562,7 +565,9 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # never parks any of them. A process fix (coord_process) runs first of all, ahead of
 # even an entry the PM put on top, in the sheet's order as in this machine's own.
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
-# < none); within one priority repair, approved-merge, then new; within one class
+# < none); within one priority every non-follow-up ticket before a fix-after-merge one
+# (release.followUpLabel, or a queue note "follow-up of PR #": owner call 2026-10-23, after
+# 187 were filed in a day, each put at the front), then repair, approved-merge, then new; within one class
 # product work before our own tooling (coord_tooling); then new by kind; then the
 # queue's own position. A repair of any priority used to outrank every new
 # ticket, so a P3 red held a P0 build back. An entry put at the front stays first
@@ -589,13 +594,14 @@ coord_queue_ordered() {
                  screen: (if $ls then coord_screen($ls; $i.title; $t.n) else ($t.screen // false) end),
                  class: coord_class($t.class; $t.note)}
          | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
+         | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
          | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3), tier: coord_tier(.screen; .prin; .proc; .last)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # .top (the PM putting it on top with add --front) is first overall; .front (a resume, an answer,
      # a requeue) is first only among its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
        else sort_by(if .proc then 0 else 1 end, .tier, if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
-               (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
+               (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | if $wide == 2 then [range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t")
        else .[]

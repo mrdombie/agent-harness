@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # follow-up.test.sh — merge first, fix after: each review finding that does not hold the
 # change is one ticket, naming the PR, the file:line and the finding; a Major at P1, a
-# Minor at P3; status ready and at the front of the queue; filed once per PR and
+# Minor at P3; status ready and queued at its priority, never on top; filed once per PR and
 # finding, whether this host or the forge remembers it; a Critical or a Nit never.
 # Run: bash "$0"
 set -uo pipefail
@@ -103,7 +103,8 @@ want_in "the file:line"                        'apps/web/a.tsx:3' "$(args_of 777
 want_in "the finding"                          'the save is dropped' "$(args_of 777)"
 want_in "and carries its dedupe key"           'follow-up: pr=42 finding=m1' "$(args_of 777)"
 want_in "it is made ready"                     'issue edit 777 .*--add-label.status:ready' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "and put at the front of the queue"    '^add 777 --front --note follow-up of PR #42: major at apps/web/a.tsx:3$' "$(cat "$FIX/queue.log")"
+want_in "and queued at its priority, never on top" '^add 777 --note follow-up of PR #42: major at apps/web/a.tsx:3$' "$(cat "$FIX/queue.log")"
+want_not_in "no follow-up is added --front or --first" '--front|--first' "$(cat "$FIX/queue.log")"
 want_in "a Critical is never filed"            "c3 is graded 'critical', which is never filed" "$OUT"
 
 echo "--- filed once: a second ship files nothing ---"
@@ -176,7 +177,8 @@ jq -n --argjson k "$(kid 950 status:blocked,fix-after-merge 55)" '[$k]' > "$FIX/
 want_not_in "still open: it stays blocked"     'status:ready' "$(cat "$GH_LOG")"
 echo merged > "$FIX/fgh.pr.55"; case_settle
 want_in "the merge sets it ready"              'issue edit 950 .*--add-label status:ready' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "and at the front of the queue"        '^add 950 --front' "$(cat "$FIX/queue.log")"
+want_in "and back on the queue at its priority" '^add 950 --note' "$(cat "$FIX/queue.log")"
+want_not_in "never on top"                     '^add 950 --(front|first)' "$(cat "$FIX/queue.log")"
 
 echo "--- one a person blocked on its parent is unblocked too; one blocked on something else is not ---"
 reset; fix_issue 951 OPEN "status:blocked,fix-after-merge"; fix_issue 952 OPEN "status:blocked,fix-after-merge"
