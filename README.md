@@ -660,6 +660,18 @@ The classes and patterns are one setting, `driver/standard-answers.json`;
 `release.standardAnswers` in harness.json replaces it, `false` turns it off, and it is off
 with mergeFirst.
 
+**Review by priority under merge first** (owner call 2026-10-23). While `release.mergeFirst`
+is on, the driver's review model (the full route's review and the quick route's single
+review) runs only for a ticket at one of `release.reviewPriorities` (default
+`["P0","P1"]`), read live like the switch. The priority is the PR's own P label, else its
+ticket's. A P2, P3, unprioritised or `polish-list` ticket makes no review call: the run
+logs `review: skipped (P2, merge-first: ships on CI)`, the step is done with a clean SHIP,
+and record and ship go on. A person's stop (`scripts/person-stop.sh`: do-not-merge, a
+person's draft, a person's `Critical:`), an open Critical from an earlier review, or
+labels that cannot be read: the review runs as before, and ship still refuses on a stop.
+The push's own reviewers (`review.attest`) are not this review and still run. Off, every
+ticket is reviewed.
+
 **Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
 in harness.json lists check names (a run's name, a status context, or
 `<workflow> / <job>`, ignoring case); while `release.done` is not true, a red in one
