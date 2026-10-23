@@ -25,7 +25,9 @@ how a change is seen to work before anyone says it does.
    beside it: no refactor, no tidy-up in a file you were not sent to.
 2. Check it the cheapest way that is still an observation: parse the JSON you
    edited, run the one command the change is about, read the rendered text back.
-   Record that command and what it printed in `checked`.
+   Record that command and what it printed in `checked`. Under `gates.localOnly`,
+   run only the fast local checks; CI is the one gate: no test suite, ratchet or
+   check script.
 3. Commit it on the branch you are on, with this project's commit and changelog
    convention from the facts above. The driver alone pushes and opens the pull
    request; a push from here is refused.

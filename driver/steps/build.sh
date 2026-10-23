@@ -98,6 +98,9 @@ driver_proof_typecheck_cmd() {
     def tc: type == "string" and test("typecheck|(^|[^a-z])tsc([^a-z]|$)");
     if (.driver.proofTypecheck | type) == "string" then
       (.driver.proofTypecheck | if . == "none" then "" else . end)
+    elif .gates.localOnly == true then
+      # Under gates.localOnly every other list is for CI: only gates.local names the check.
+      ([(.gates.local // []) | if type == "array" then .[] | select(tc) else empty end] | first // "")
     else
       ([ ((.gates.changed // []) | if type == "array" then .[] | select(tc) else empty end),
          ((.gates.local   // []) | if type == "array" then .[] | select(tc) else empty end),

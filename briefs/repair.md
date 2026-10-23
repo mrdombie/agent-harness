@@ -43,9 +43,10 @@ conflicted.
    conflict markers. A file the trunk retired goes in `takeBaseDeletions`, never
    `git rm`. Never rebase or force-push.
 3. **A red check:** read the failing job's own log (`gh run view <id>
-   --log-failed`) and reproduce the failure locally before you touch any code.
+   --log-failed`) and reproduce the failure locally (under `gates.localOnly`, the
+   log is the reproduction) before you touch any code.
    A failure you could not reproduce is a question, not a guess. Merging the
-   integration branch in is never a question: when the branch is behind it, merge it first.
+   integration branch in is never a question: when behind it, merge it first.
 4. **The same failure on the integration branch itself is not this PR's to
    fix.** Never park on it.
 5. **Evidence owed:** commit the plan edit each task names.

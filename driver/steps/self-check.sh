@@ -166,6 +166,11 @@ _driver_ratchet_tighten() {
   local t="$1" wt="$2" out="$3" label="$4" cmds c ran="" log
   [ -f "$out" ] || return 1
   grep -qE 'ABOVE actual|no longer exist|free headroom|Lock the (cleanup|progress) in' "$out" || return 1
+  # A lowering command is a ratchet run, and under gates.localOnly every ratchet is CI's.
+  if driver_gates_local_only; then
+    driver_say "   ratchet: $label — gates.localOnly: no ratchet runs here; CI runs it"
+    return 1
+  fi
   if grep -qE "$DRIVER_RATCHET_RISE_RE" "$out"; then
     driver_say "   ratchet: $label — a ratchet has slack to lock in, but one also ROSE; that is code to fix, so nothing is tightened"
     return 1

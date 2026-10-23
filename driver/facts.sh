@@ -105,7 +105,8 @@ driver_fact_project() {
     jq -S . "$HARNESS_CFG" 2>/dev/null || cat "$HARNESS_CFG"
     # The model reads gates.changed above too, and would run its tests as the checks.
     if driver_gates_local_only; then
-      printf '\nLocal checks are gates.local and nothing more (gates.localOnly): run those and the one test file you wrote, never gates.changed or the whole suite. Every test runs once, in CI.\n'
+      printf '\nLocal checks are gates.local and nothing more (gates.localOnly): run those and the one test file you wrote, never gates.changed or the whole suite. Every test runs once, in CI.'
+      _driver_fact_local_only_limits; printf '\n'
     fi
   else
     _driver_fact_none "this run resolved no harness.json"
@@ -543,7 +544,8 @@ _driver_fact_base_red_limits() {
 
 # _driver_fact_local_only_limits — what a model never runs here under gates.localOnly.
 _driver_fact_local_only_limits() {
-  printf ' Local runs here are gates.local (%s) and the one test file your proof names, run by itself: never %s, a test:changed or any whole suite. Every other test runs once, in CI. A proof command names its test file.' \
+  printf ' Run only the fast local checks; CI is the one gate. Local runs here are gates.local (%s) and the one test file your proof names, run by itself: never %s, a test:changed or any whole suite, never a ratchet or check script%s, never verify:push or the pre-push hook. Every other test and check runs once, in CI. A red CI check is read from its CI log (gh run view <id> --log-failed) and fixed; the push lets CI prove it, so a gate proof names the CI check and the driver does not run it here. A proof command names its test file.' \
     "$(jq -r '[(.gates.local // [])[]? | select(type == "string")] | join(", ")' "$HARNESS_CFG" 2>/dev/null)" \
-    "$(jq -r '[(.gates.local // []) as $l | (.gates.changed // [])[]? | select(type == "string") | select(. as $c | $l | index($c) | not)] | if length > 0 then join(", ") else "gates.changed" end' "$HARNESS_CFG" 2>/dev/null)"
+    "$(jq -r '[(.gates.local // []) as $l | (.gates.changed // [])[]? | select(type == "string") | select(. as $c | $l | index($c) | not)] | if length > 0 then join(", ") else "gates.changed" end' "$HARNESS_CFG" 2>/dev/null)" \
+    "$(jq -r '[(.gates.ratchets // [])[]? | select(type == "object") | .check // empty | strings] | if length > 0 then " (" + join(", ") + ")" else "" end' "$HARNESS_CFG" 2>/dev/null)"
 }

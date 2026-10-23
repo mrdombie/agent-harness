@@ -353,6 +353,16 @@ driver_cmd_ci_only() {
       and any((.gates.changed // [])[]? | t; . as $g | $g != "" and ($c == $g or ($c | startswith($g + " "))))' "$HARNESS_CFG" >/dev/null 2>&1
 }
 
+# driver_cmd_local <command> — 0 when <command> is one of `gates.local`, read trimmed.
+# Under `gates.localOnly` it is the only shell line a step may run as a check: a ratchet,
+# a check script, a test:changed or verify:push named anywhere else is CI's.
+driver_cmd_local() {
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] || return 1
+  jq -e --arg c "$1" '
+    def t: if type == "string" then gsub("^\\s+|\\s+$"; "") else "" end;
+    ($c | t) as $c | $c != "" and ([(.gates.local // [])[]? | t] | index($c)) != null' "$HARNESS_CFG" >/dev/null 2>&1
+}
+
 # driver_local_gates_head <ticket> <tree> — the tree's head when self-check's local set
 # passed on it, or on a head with the same files (a verdict trailer is an empty commit);
 # nothing otherwise. The push hands it to the project's pre-push as
@@ -421,6 +431,11 @@ driver_push() {
   # CI IS THE ONE GATE: the head the local set already passed on, said to the hook.
   # After every `-u`, so env reads it as an assignment rather than the command.
   [ "$slot" = park ] || lg=$(driver_local_gates_head "$t" "$wt")
+  # UNDER gates.localOnly EVERY PUSH NAMES ITS HEAD, a park's too: the hook's suite is
+  # CI's, and a push that did not say so ran verify:push on the Mac (2026-10-23).
+  if [ -z "$lg" ] && driver_gates_local_only && driver_gates_local_set; then
+    lg=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
+  fi
   [ "$slot" = park ] || [ "${DRIVER_PUSH_BASE_RED:-0}" != 1 ] || lg=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
   [ -z "$lg" ] || penv+=("HARNESS_LOCAL_GATES_HEAD=$lg")
   [ -z "$lg" ] || ! th=$(_driver_trunk_prepush "$wt") || penv+=("HARNESS_PREPUSH_SCRIPT=$th")

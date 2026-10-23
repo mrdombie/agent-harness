@@ -229,7 +229,9 @@ plant "the switch reads the config" scripts/release-checks.sh \
 plant "the baseline route"    driver/size-rules.sh '  { command -v release_merge_first >/dev/null 2>&1 && release_merge_first; } && return 0' case_route "picture"
 plant "the ship files them"   driver/steps/ship.sh \
   '  if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi' case_ship "calls=0"
-case_lg_kit() { SUT_KIT="$KIT" case_lg "$FIX/lg-off.json"; unset SUT_KIT; }
+# Under localOnly every push names its head, so the case also reads that gates.local ran on it.
+case_lg_kit() { SUT_KIT="$KIT" case_lg "$FIX/lg-off.json"; unset SUT_KIT
+  R="$R local=$([ "$(driver_state_get "$N" local_gates_head)" = "$(git -C "$FIX/mf$N" rev-parse HEAD)" ] && echo yes || echo no)"; }
 case_fault_kit() { : > "$FIX/hook.fail"; SUT_KIT="$KIT" case_lg "$FIX/lg-on.json"; unset SUT_KIT; rm -f "$FIX/hook.fail"
   R="hooks=$(grep -c . "$FIX/hook.log") cause=$(driver_state_get "$N" park_cause)"; }
 case_suite_kit() { # the hook's suite listed in gates.local: R says whether self-check ran it
@@ -238,10 +240,10 @@ case_suite_kit() { # the hook's suite listed in gates.local: R says whether self
   cp "$FIX/pre-push.keep" "$HOOKS/pre-push"
   R="ran=$([ -f "$(driver_state_dir "$N")/steps/gate-local-2.out" ] && echo yes || echo no)"; }
 kit_copy
-case_lg_kit;    want "the unplanted kit: the push names the merged head" "named" "$R"
+case_lg_kit;    want "the unplanted kit: the push names the merged head, which gates.local passed" "named local=yes" "$R"
 case_fault_kit; want "the unplanted kit: a refused hook is retried, then the machine's" "hooks=2 cause=driver" "$R"
 case_suite_kit; want "the unplanted kit: the hook's suite is not run locally" "ran=no" "$R"
-plant "gates.local on the pushed head" driver/steps/ship.sh 'driver_step_self_check "$t" || lgrc=$?' case_lg_kit "not named (none)"
+plant "gates.local on the pushed head" driver/steps/ship.sh 'driver_step_self_check "$t" || lgrc=$?' case_lg_kit "named local=no"
 plant "the hook retry" driver/steps/ship.sh ' || _driver_ship_hook_retry "$t" "$wt" "$branch"' case_fault_kit "hooks=1 cause="
 plant "the hook's suite skip" driver/steps/self-check.sh '    if _driver_gate_is_prepush_suite "$wt" "$cmd"; then
       driver_say "   self-check: $name ($cmd) is the pre-push hook'"'"'s own suite — not run here; CI runs it"
