@@ -537,7 +537,10 @@ driver_step_ship() { # <ticket>
   # PAST THE SIZE CAP NOTHING IS PUSHED: the change is split instead (size-rules.sh).
   local smax snum
   smax=$(driver_split_max)
-  if [ "$smax" -gt 0 ] && snum=$(driver_split_count "$wt" "$trunk") && [ "$snum" -gt "$smax" ]; then
+  if [ "$smax" -gt 0 ] && snum=$(driver_split_count "$wt" "$trunk") && [ "$snum" -gt "$smax" ] \
+     && driver_split_exempt "$wt" "$trunk"; then
+    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax), but was started before the cap (driver.split.since): it ships as before"
+  elif [ "$smax" -gt 0 ] && [ -n "${snum:-}" ] && [ "$snum" -gt "$smax" ]; then
     driver_say "✋ ship: split needed — $branch changes $snum files against $trunk, over driver.split.maxFiles ($smax; lockfiles not counted). Nothing is pushed and no pull request is opened."
     driver_state_set "$t" park_note "split needed: $snum files changed against $INTEGRATION_BRANCH, over driver.split.maxFiles ($smax). Split the ticket into changes of at most $smax files each; this branch's work is kept on a stranded ref for them to take from."
     driver_state_set "$t" park_cause pm
