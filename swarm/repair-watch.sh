@@ -127,6 +127,13 @@ room_for() { # <programme> — echoes why not, returns 1
 repair_brief() { # <pr> <sha> <reason>
   local rule; rule=$(head -1 "$KIT_ROOT/shared/signoff-last.md" 2>/dev/null)
   [ -n "$rule" ] || { echo "repair-watch: $KIT_ROOT/shared/signoff-last.md is missing" >&2; return 1; }
+  local critic="A red design status is fixed by fixing every finding in the critic's
+comment on the PR, a Minor too, whoever put it there — unless the PR's screens are
+signed off: then those findings are the PM's call, and you change no pixel."
+  # Off until the release: its comments on the PR are no task and no question.
+  release_critic_paused && critic="The design critic is off until the release: ignore each of its verdicts and
+findings on the PR, signed off or not — no fix, no deferral, no question, and never
+run the critic."
   cat <<BRIEF
 $rule
 
@@ -138,9 +145,7 @@ may have added commits), read the failing job logs (gh run view <id>
 --log-failed), fix, re-run the local gates, re-stamp the code-review trailer only
 if the fingerprint moved, push, keep auto-merge armed, hand off. Never write a
 design verdict: the independent critic sets the design status on CI's shots after
-the push. A red design status is fixed by fixing every finding in the critic's
-comment on the PR, a Minor too, whoever put it there — unless the PR's screens are
-signed off: then those findings are the PM's call, and you change no pixel.
+the push. $critic
 
 Your own code review counts its rounds from this repair: round 1 fixes every
 Critical, Major and Minor; from round 2 only Critical and Major block, and each

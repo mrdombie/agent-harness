@@ -97,7 +97,7 @@ want "nothing waits to be filed"    "" "$(cat "$(fu 704)" 2>/dev/null)"
 
 echo "--- on: the critic's findings are no blocker; off they are ---"
 driver_state_set 701 pr 4701
-want_in "on: no critic finding reaches the step" 'warns and does not block' "$(on driver_fact_critic_findings 701)"
+want_in "on: no critic finding reaches the step" 'design critic: off until the release' "$(on driver_fact_critic_findings 701)"
 want_in "off: the critic's finding is the step's" 'the headline wraps at 390' "$(off driver_fact_critic_findings 701)"
 
 echo "--- on: a screen ticket with no picture starts; a screen:new one still waits ---"

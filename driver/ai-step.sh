@@ -348,6 +348,23 @@ SHIM
     [ "$crc" -eq 0 ] || return "$crc"
     jrc=0; _driver_ai_judge || jrc=$?
   fi
+  # A QUESTION ABOUT THE DESIGN CRITIC WHILE IT IS OFF has one answer: carry on without
+  # it. Asked once more, told so; asked again, the owner channel refuses it (exit 5).
+  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused \
+     && jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null | grep -qi 'critic'; then
+    local cq creask="$d/steps/$slot.critic-off.prompt" csid
+    cq=$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)
+    csid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+    if [ -n "$csid" ]; then : > "$creask"; else cp "$prompt" "$creask"; fi
+    printf '\n---\nYou asked: %s\n\nThe %s (release.nonBlockingChecks). Its verdicts and findings, on the pull request or the ticket and whether or not the screens are signed off, are not a task, a blocker or a question of this step: do not fix, defer or ask about them, and never run the design critic. Give the step'"'"'s answer without them.\n' \
+      "$cq" "$RELEASE_CRITIC_OFF" >> "$creask"
+    driver_say "↩ $step: $RELEASE_CRITIC_OFF — it asked about the critic; asking once more, told to carry on without it: $(printf '%s' "$cq" | cut -c1-160)"
+    [ ! -f "$ans" ] || cp "$ans" "$d/steps/$slot.critic-asked.json"
+    crc=0; _driver_ai_call "$creask" "$log.critic-off" "$csid" || crc=$?
+    cat "$log.critic-off" >> "$log" 2>/dev/null
+    [ "$crc" -eq 0 ] || return "$crc"
+    jrc=0; _driver_ai_judge || jrc=$?
+  fi
   return "$jrc"
 }
 

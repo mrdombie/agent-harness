@@ -514,11 +514,18 @@ driver_lean_args() {
   # Off unless a spawner sets it: a runaway stop per step, never a measurement.
   [ -z "${DRIVER_STEP_BUDGET_USD:-}" ] || DRIVER_LEAN_ARGS+=(--max-budget-usd "$DRIVER_STEP_BUDGET_USD")
   tools=$(driver_step_tools "$step")
+  # Off until the release: no step can start the design critic as a subagent either.
+  local deny="" ja
+  if command -v release_critic_paused >/dev/null 2>&1 && release_critic_paused; then
+    ja=$(driver_opt review.judge.agent "agent-harness:design-critic")
+    deny="Agent($ja) Task($ja)"
+  fi
   if [ -n "$tools" ] && [ "$tools" != "default" ]; then
     read -r -a list <<<"$tools"
     DRIVER_LEAN_ARGS+=(--tools "${list[@]}")
-  elif [ -n "$DRIVER_DISALLOWED_TOOLS" ]; then
-    read -r -a list <<<"$DRIVER_DISALLOWED_TOOLS"
+    if [ -n "$deny" ]; then read -r -a list <<<"$deny"; DRIVER_LEAN_ARGS+=(--disallowed-tools "${list[@]}"); fi
+  elif [ -n "$DRIVER_DISALLOWED_TOOLS$deny" ]; then
+    read -r -a list <<<"$DRIVER_DISALLOWED_TOOLS $deny"
     DRIVER_LEAN_ARGS+=(--disallowed-tools "${list[@]}")
   fi
   [ "$DRIVER_PROJECT_INSTRUCTIONS" = "preload" ] && return 0

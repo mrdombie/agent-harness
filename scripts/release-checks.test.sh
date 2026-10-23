@@ -138,7 +138,8 @@ crit() {
     DRIVER_SCREEN_FINDINGS="$1" driver_fact_critic_findings 101' _ "$FIX/findings.sh" 2>&1
 }
 cfg_on
-want_in "listed: the findings are advisory, not blockers" '^\(none — the independent critic failed PR #11 on 1 finding\(s\), and until the release its check warns' "$(crit)"
+want_in "listed: the critic is off, so no finding is handed on" '^\(none — design critic: off until the release \(release\.nonBlockingChecks\)' "$(crit)"
+want_not_in "and none of its findings is"                 'warns and does not block' "$(crit)"
 cfg_done
 want_in "release done: they block at their grade, as before" '^The independent design critic failed PR #11 on these' "$(crit)"
 cfg_off

@@ -377,6 +377,7 @@ driver_step_fix() { # <ticket>
     driver_say "   fix: no review has run yet, so there is nothing to fix."
     return "$DRIVER_OK"
   fi
+  driver_drop_critic_findings "$review" fix || true
 
   # WHAT BLOCKS IS THE ROUND'S, HERE AS IN THE REVIEW. Read off the review round the
   # driver counted and the grade the review recorded, never the fixer's wording: from

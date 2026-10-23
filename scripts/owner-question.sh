@@ -5,6 +5,8 @@
 #   owner-question.sh ask <ticket> <slug> "<the question, its options in plain words>"
 #        the ticket gets labels.ownerDecision, then needs-you.md gets the question under
 #        decision:<ticket>:<slug> (coordinator-notify, owner class) and the ticket a comment.
+#        Exit 5, nothing asked: a question about the design critic while it is off until
+#        the release (release_critic_paused).
 #   owner-question.sh answer <decision-key> "<the owner's answer>"
 #        the label comes off, the answer is commented on the ticket, the ticket goes back
 #        on the coordinator's queue at the front with the answer in its note, the line is
@@ -39,6 +41,12 @@ ask() { # <ticket> <slug> <question>
   num "$t" || usage; [ -n "$q" ] || usage
   slug=$(printf '%s' "$slug" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
   [ -n "$slug" ] || slug=question
+  # Off until the release, the design critic is nobody's question: #12704 parked on a
+  # critic-after-signoff ask the owner had already ruled out ("turn it off").
+  if release_critic_paused && printf '%s %s' "$slug" "$q" | grep -qi 'critic'; then
+    echo "owner-question: not asked — $RELEASE_CRITIC_OFF. Its verdicts and findings are no question for the owner: carry on without them, and do not ask again." >&2
+    return 5
+  fi
   key="decision:$t:$slug"
   # A key answered once is never written again, so a second question takes a fresh one.
   local seen="$COORD_DIR/notified.did.keys" i=1
