@@ -3,7 +3,7 @@
 #
 # The owner, 2026-10-23: urgent tickets always start, even over coordinator.openPrCap,
 # like process fixes, repairs and quick work (coordinator.capExemptPriorities, default
-# ["P0"]). Maktura #13818, a P0 sized project, waited all night behind the cap while
+# ["P0"]). The live #13818, a P0 sized project, waited all night behind the cap while
 # quick tickets started past it. The host cap, the tooling cap, release scope and the
 # machine's room still apply. These cases run the real tick on the real size rules:
 # only GitHub and the spawner are stubbed.
