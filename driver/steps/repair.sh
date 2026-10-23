@@ -1025,6 +1025,10 @@ ${briefs_text:-(no brief came with this repair — it was sent as a healing spaw
            driver_state_set "$t" park_note "a repair fix is not proved red-then-green by its own test: $why"
            return "$DRIVER_E_REFUSED" ;;
       esac
+    elif driver_gates_local_only && ! driver_cmd_local "$tcmd"; then
+      # A ratchet, a check script or a test run named as the gate is CI's under localOnly.
+      own_fixes=$((own_fixes+1))
+      driver_say "   repair '$bid' — $tcmd is not in gates.local, so it is not run here (gates.localOnly): CI runs it on the push"
     else
       grc=0
       ( cd "$wt" && driver_bounded "$DRIVER_CMD_TIMEOUT" "$tcmd" ) > "$d/steps/repair-gate-$i.out" 2>&1 || grc=$?

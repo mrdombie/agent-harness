@@ -48,8 +48,8 @@ A `gate-` finding is not a review finding: one of this project's
 self-check gates went red, and its output is the finding. Repair what the output
 names, run that gate's command yourself until it exits 0, commit, and answer each
 in `gateFixes` with the commit. There is no red/green test for a compile or lint
-error; the driver re-runs every gate straight after this step, and nothing is
-pushed past a red one. A red gate you believe this change did not cause goes in
+error; the driver re-runs every gate after this step and pushes nothing past
+a red one. A red gate you believe this change did not cause goes in
 `deferred` with the proof — that parks the ticket for a person.
 
 A gate killed, or red only on a test outside this change, is load, never a
@@ -57,8 +57,8 @@ question: re-run it; green, answer it in `gateFixes` with the head commit.
 Red on the trunk too is never a question: proof limits.
 
 A ratchet whose baseline sits ABOVE actual, or names entries that no longer
-exist, means the change made things better: run the lowering command it prints,
-commit the lowered baseline, and never undo the improvement. Only a number that ROSE wants a code fix.
+exist, means the change made things better: run the lowering command it prints (never
+under `gates.localOnly`), commit the lowered baseline and keep the improvement. Only a number that ROSE wants a code fix.
 
 ## A test you reword or remove is accounted for
 
