@@ -62,6 +62,40 @@ echo "--- it does NOT wait for CI: a watcher brings an agent back ---"
 want_not_in "no run watch" 'run watch'   "$(cat "$GH_LOG")"
 want_not_in "no check wait" 'pr checks.*--watch' "$(cat "$GH_LOG")"
 
+echo "--- past the size cap nothing is pushed: split needed ---"
+# A "Batch … 2 fixes" PR reached 200 files after 5 hours of repairs.
+wide_wt() { # <ticket> <files> [lockfile] — a branch changing that many files
+  local t=$1 n=$2 wt i
+  wt="$FIX/wt$t"
+  git -C "$REPO" worktree add -q "$wt" -b "tkt-$t/work" develop
+  i=0; while [ "$i" -lt "$n" ]; do i=$((i+1)); printf 'f %s\n' "$i" > "$wt/w$t-$i.txt"; done
+  [ -z "${3:-}" ] || printf '{}\n' > "$wt/package-lock.json"
+  git -C "$wt" add -A; git -C "$wt" commit -qm "feat: wide $t"
+  driver_state_init "$t" --worktree "$wt" --branch "tkt-$t/work"
+  driver_state_set "$t" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
+  fix_issue "$t" OPEN "status:claimed"
+}
+: > "$GH_LOG"; wide_wt 761 21
+out=$(driver_step_ship 761 2>&1); rc=$?
+want "21 files: refused"                  "24" "$rc"
+want_in "  and says split needed"         'split needed — tkt-761/work changes 21 files .* over driver.split.maxFiles \(20' "$out"
+want "  nothing reached origin"           "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-761/work 2>/dev/null)"
+want_not_in "  no pull request opened"    'pr create' "$(cat "$GH_LOG")"
+want_in "  the park note says split needed" '^split needed: 21 files changed' "$(driver_state_get 761 park_note)"
+want "  it parks for the PM"              "pm 1" "$(driver_state_get 761 park_cause) $(driver_state_get 761 park_split)"
+: > "$GH_LOG"; wide_wt 762 20 lock
+out=$(driver_step_ship 762 2>&1); rc=$?
+want_not_in "20 files and a lockfile: not over the cap" 'split needed' "$out"
+want_in "  the draft is opened as before"  'pr create.*--draft' "$(cat "$GH_LOG")"
+: > "$GH_LOG"; wide_wt 763 25
+jq '.driver.split.maxFiles = 0' "$HARNESS_CFG" > "$FIX/cfg0.json"
+out=$(HARNESS_CFG="$FIX/cfg0.json" driver_step_ship 763 2>&1); rc=$?
+want_not_in "maxFiles 0 turns the cap off"  'split needed' "$out"
+: > "$GH_LOG"; wide_wt 764 6
+jq '.driver.split.maxFiles = 5' "$HARNESS_CFG" > "$FIX/cfg5.json"
+out=$(HARNESS_CFG="$FIX/cfg5.json" driver_step_ship 764 2>&1); rc=$?
+want_in "the cap is a setting: 6 over 5"   'split needed — tkt-764/work changes 6 files' "$out"
+
 echo "--- an unreviewed ticket opens the draft and stops there ---"
 : > "$GH_LOG"
 setup_wt 102

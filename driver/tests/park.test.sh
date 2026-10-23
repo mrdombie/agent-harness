@@ -50,6 +50,21 @@ mkdir -p "$FIX/wt101/apps/web/.next"; printf 'build\n' > "$FIX/wt101/apps/web/.n
 driver_state_init 101 --worktree "$FIX/wt101" --branch tkt-101/work
 fix_issue 101 OPEN "status:claimed"
 
+echo "--- split needed: the park keeps the work but pushes nothing and opens no PR ---"
+git -C "$REPO" worktree add -q "$FIX/wt131" -b tkt-131/work develop
+printf 'wide\n' > "$FIX/wt131/wide.txt"; git -C "$FIX/wt131" add wide.txt; git -C "$FIX/wt131" commit -qm "feat: wide"
+driver_state_init 131 --worktree "$FIX/wt131" --branch tkt-131/work
+fix_issue 131 OPEN "status:claimed"; driver_state_set 131 park_split 1
+: > "$GH_LOG"
+out=$(driver_park 131 "split needed" "" pm 2>&1); rc=$?
+want "it parks"                              "20" "$rc"
+want "the branch is not on origin"           "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-131/work 2>/dev/null)"
+want_not_in "no pull request is opened"      'pr create' "$(cat "$GH_LOG")"
+want_in "the work is on a stranded ref"      'refs/stranded/131/' "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' refs/stranded/131/)"
+want_in "and it says why"                    'split needed — the branch is not pushed' "$out"
+want "the flag is used once"                 "" "$(driver_state_get 131 park_split)"
+: > "$ORDER"; : > "$RELEASES"
+
 echo "--- a park pushes, opens a draft, briefs, labels, then releases ---"
 out=$(driver_park 101 "the plan asked a question" "which table owns the org id?" 2>&1); rc=$?
 want "park reports parked"  "20" "$rc"

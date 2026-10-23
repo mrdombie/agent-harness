@@ -22,6 +22,50 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tier.sh" || exit 1
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/size-rules.sh" || exit 1
+
+# _driver_plan_split <ticket> <plan.json> <max> — one ticket per build task, each inheriting the
+# parent's priority, area, screen, project and repo labels, filed ready in the plan's order; the
+# parent is told and closed as split. 0 when every part was filed; 2 when the ticket is itself a
+# part of a split (it builds: a part is never split again). Nothing has been built yet.
+_driver_plan_split() {
+  local t="$1" ans="$2" max="$3" meta title inherit n i url c kids="" task body l args
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels 2>/dev/null) || return 1
+  title=$(jq -r '.title // ""' <<<"$meta")
+  if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
+    driver_say "   plan: $(jq '[.tasks[]?] | length' "$ans") build tasks, but #$t is itself a part of a split — it builds"; return 2
+  fi
+  inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
+  n=$(jq '[.tasks[]?] | length' "$ans")
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    task=$(jq -c --argjson i "$i" '.tasks[$i]' "$ans")
+    body=$(printf 'Part %s of %s, split from #%s before it was built: its plan had %s build tasks, over `driver.split.maxTasks` (%s). One change, merged on its own.
+
+**This part:** %s
+
+**Files:** %s
+
+**Tests:** %s
+
+Refs #%s
+' \
+      "$((i+1))" "$n" "$t" "$n" "$max" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
+      "$(jq -r '[.files[]? | (.path // .) | tostring] | join(", ") | if . == "" then "(none named)" else . end' <<<"$task")" \
+      "$(jq -r '[.tests[]? | (.file // .name // .behaviour // .) | tostring] | join("; ") | if . == "" then "(none named)" else . end' <<<"$task")" "$t")
+    args=(issue create --repo "$REPO_SLUG" --title "$title — part $((i+1)) of $n: $(jq -r '.title // ""' <<<"$task" | cut -c1-80)" --body "$body" --label "$LBL_READY")
+    while IFS= read -r l; do [ -n "$l" ] && args+=(--label "$l"); done <<<"$inherit"
+    url=$(swarm_gh "${args[@]}" 2>/dev/null) || { driver_state_set "$t" park_note "split needed: filing part $((i+1)) of $n failed after ${kids:-none} were filed"; return 1; }
+    c=${url##*/}; case "$c" in ''|*[!0-9]*) driver_state_set "$t" park_note "split needed: part $((i+1)) came back as '$url'"; return 1 ;; esac
+    kids="${kids:+$kids }#$c"
+    i=$((i+1))
+  done
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "**Split** into $kids — one change each, in this order. Its plan had $n build tasks, over \`driver.split.maxTasks\` ($max), so nothing was built here. Closed as split." >/dev/null 2>&1 || true
+  swarm_gh issue close "$t" --repo "$REPO_SLUG" --reason "not planned" >/dev/null 2>&1 || true
+  driver_state_set "$t" noop_note "was split into $kids before it built: its plan had $n build tasks, over driver.split.maxTasks ($max)"
+  driver_say "✂ plan: $n build tasks, over driver.split.maxTasks ($max) — split into $kids, the parent closed as split"
+}
+
 driver_step_plan() { # <ticket>
   local t="${1:?driver_step_plan: need a ticket}"
   local rc ans schema spec ntests
@@ -58,6 +102,21 @@ driver_step_plan() { # <ticket>
   if [ "${ntests:-0}" -eq 0 ]; then
     driver_say "✋ plan: it names no test. Every guarantee after this one is the build step proving a test red then green; a plan with no test has nothing to prove."
     return "$DRIVER_E_REFUSED"
+  fi
+
+  # MORE THAN driver.split.maxTasks BUILD TASKS: split before anything is built. A repair, a
+  # resume past build, or a part of an earlier split never is.
+  local ntasks tmax
+  ntasks=$(jq '[.tasks[]?] | length' "$ans" 2>/dev/null); tmax=$(driver_split_max_tasks)
+  case "$ntasks" in ''|*[!0-9]*) ntasks=0 ;; esac
+  if [ "$tmax" -gt 0 ] && [ "$ntasks" -gt "$tmax" ] && [ "$(driver_state_get "$t" mode)" != repair ] \
+     && [ -z "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
+    local src=0; _driver_plan_split "$t" "$ans" "$tmax" || src=$?
+    case "$src" in
+      0) return "$DRIVER_E_NOOP" ;;
+      2) ;;
+      *) driver_state_set "$t" park_cause pm; return "$DRIVER_E_REFUSED" ;;
+    esac
   fi
 
   # THE BINDING PICTURE IS READ ON THIS MACHINE, or the run goes back on the queue.

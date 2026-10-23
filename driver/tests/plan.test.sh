@@ -28,6 +28,43 @@ want_in "the plan is posted on the ticket" 'issue comment 101' "$(cat "$GH_LOG")
 want_in "and the design source is recorded" 'ticket-body|brainstormed' "$(driver_state_get 101 design_source)"
 want "no screen states named, none recorded" "[]" "$(driver_state_get 101 screen_states)"
 
+echo "--- more than driver.split.maxTasks build tasks: split before anything is built ---"
+# Builds of 6-8 planned tasks ran about two hours a ticket; "no batch tickets".
+plan_of() { # <tasks> — a valid plan answer with that many build tasks
+  jq -nc --argjson n "$1" '{step:"plan",skills:["superpowers:writing-plans"],status:"planned",designSource:"ticket-body",
+    premise:{verdict:"still-true",evidence:"a.sh:1"},
+    tasks:[range($n) | {title:"task \(. + 1)",files:[{path:"f\(. + 1).sh",action:"modify"}],tests:[{file:"f\(. + 1).test.sh",behaviour:"b",redWhen:"r"}]}]}'
+}
+fix_issue 151 OPEN "status:claimed,P1,area:inbox,screen:inbox,needs:human-approval"; driver_state_init 151 --worktree "$REPO"
+fix_ai plan "$(plan_of 4)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 151 2>&1); rc=$?
+want "4 tasks: the run ends clean, nothing built" "$DRIVER_E_NOOP" "$rc"
+want "  one ticket a task"                      "4" "$(grep -c '^issue create' "$GH_LOG")"
+want_in "  each ready, with the parent's priority, area and screen" 'issue create .*--label status:ready --label P1 --label area:inbox --label screen:inbox' "$(tr '\n' ' ' < "$GH_LOG")"
+want_not_in "  a person's hold is not inherited"   'label needs:human-approval' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  each names its part and the parent"    'Ticket 151 — part 2 of 4: task 2' "$(grep '^issue create' "$GH_LOG" | sed -n 2p)"
+want_in "  the parent is told"                     'issue comment 151 .*Split.* into #999' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  and closed as split"                    'issue close 151' "$(cat "$GH_LOG")"
+want_in "  the run says why"                       'split into .* the parent closed as split' "$out"
+fix_issue 152 OPEN "status:claimed,P1"; driver_state_init 152 --worktree "$REPO"
+fix_ai plan "$(plan_of 3)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 152 2>&1); rc=$?
+want "3 tasks: it builds"                         "0" "$rc"
+want "  nothing is filed"                         "0" "$(grep -c '^issue create' "$GH_LOG")"
+jq '.title = "Big — part 2 of 4: task 2"' "$FIX/gh/issue-152.json" > "$FIX/gh/i152" && mv "$FIX/gh/i152" "$FIX/gh/issue-152.json"
+fix_ai plan "$(plan_of 5)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 152 2>&1); rc=$?
+want "a part of a split is never split again"     "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+fix_issue 153 OPEN "status:claimed"; driver_state_init 153 --worktree "$REPO"; driver_state_set 153 mode repair
+fix_ai plan "$(plan_of 6)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 153 2>&1); rc=$?
+want "a repair is never split"                    "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+fix_issue 154 OPEN "status:claimed"; driver_state_init 154 --worktree "$REPO"
+jq '.driver.split.maxTasks = 0' "$HARNESS_CFG" > "$FIX/cfg-t0.json"
+fix_ai plan "$(plan_of 6)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(HARNESS_CFG="$FIX/cfg-t0.json" driver_step_plan 154 2>&1); rc=$?
+want "maxTasks 0 turns it off"                    "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+
 echo "--- a schema change with no approved data model is refused ---"
 : > "$GH_LOG"
 fix_ai plan '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"ticket-body","premise":{"verdict":"still-true","evidence":"a.sh:1 still does the old thing"},"tasks":[{"title":"t","files":[{"path":"a.sh","action":"modify"}],"tests":[{"file":"a.test.sh","behaviour":"it does the thing","redWhen":"the fix is deleted"}]}],"schemaChange":true}' superpowers:writing-plans
