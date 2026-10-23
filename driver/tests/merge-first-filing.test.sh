@@ -4,7 +4,8 @@
 # that itself fixed a finding, chains 4 deep). A Minor on a SCREEN file goes on that
 # screen's polish list; a Minor in tests, docs, tooling or backend stays a P3 follow-up. On
 # a ticket that is itself a follow-up (release.followUpLabel) a Major is dropped with a note
-# on the PR, a non-screen Minor is filed as before, and a Critical blocks. Findings in files
+# on the PR, a non-screen Minor is filed as before, and a Critical blocks. A screen Minor no
+# screen resolves for is filed too, never dropped. Findings in files
 # the change touched are fixed in place first.
 # Run: bash "$0"
 set -uo pipefail
@@ -19,6 +20,8 @@ fix_brief review superpowers:requesting-code-review "Review round {{ROUND}}. The
 cat > "$FIX/sf" <<'SH'
 #!/usr/bin/env bash
 # A .tsx file is on the home screen, and the ticket itself carries screen:home.
+# $FIX/sf.none: no screen resolves, for the file or the ticket.
+[ -f "$FIX/sf.none" ] && exit 0
 case "$1" in screens) if [ -n "${3:-}" ]; then grep -q 'tsx' "$3" && echo home; else echo home; fi ;; esac
 exit 0
 SH
@@ -78,6 +81,13 @@ case_k() { # <labels> — R: what waits to be filed
   R="fu=$(fu "$N")"
 }
 case_plain() { case_k "status:claimed,P1"; }
+case_unmapped() { # a Minor on a screen file no screen resolves for, the ticket no screen label
+  N=$((N + 1)); ff_tree "$N" "status:claimed,P1"; : > "$FIX/sf.none"; : > "$FIX/pl.adds"
+  fix_ai review '{"verdict":"BLOCKED","findings":[{"id":"u1","file":"components/Drawer.tsx","line":7,"grade":"minor","summary":"the drawer has no close at 390px","reason":"r","fix":"f"}]}' superpowers:requesting-code-review
+  HARNESS_CFG="$FIX/mf-on.json" HARNESS_CFG_PATH="$FIX/mf-on.json" bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT; . "$1/driver/driver-env.sh" && . "$1/driver/steps/review.sh" && driver_step_review "$2"' _ "$KIT" "$N" >/dev/null 2>&1
+  rm -f "$FIX/sf.none"
+  R="fu=$(fu "$N") polish=$(grep -c . "$FIX/pl.adds")"
+}
 case_fam()   { case_k "status:claimed,P1,fix-after-merge"; }
 plant() { # <label> <file under the kit> <exact text> <case> <the result the line prevents> [what replaces it]
   kit_copy
@@ -88,6 +98,9 @@ plant() { # <label> <file under the kit> <exact text> <case> <the result the lin
 kit_copy
 case_plain; want "the unplanted kit: the Major and the non-screen Minor" "fu=m1 n2" "$R"
 case_fam;   want "the unplanted kit: on a follow-up, the non-screen Minor alone" "fu=n2" "$R"
+case_unmapped; want "the unplanted kit: a screen Minor no screen resolves for is a follow-up, never dropped" "fu=u1 polish=0" "$R"
+plant "an unlisted screen Minor is filed" driver/steps/review.sh \
+  '            _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }' case_unmapped "fu= polish=0" '            :'
 plant "only a screen file's Minor is polish" driver/steps/review.sh \
   'driver_is_screen_file "$(driver_state_get "$t" worktree)" "$(printf '"'"'%s'"'"' "$x" | jq -r '"'"'.file // ""'"'"')"' case_plain "fu=m1" true
 plant "a follow-up's Major is dropped" driver/steps/review.sh '[ "$fam" = yes ]' case_fam "fu=m1 n2" false
