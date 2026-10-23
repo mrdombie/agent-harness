@@ -73,13 +73,17 @@ export GH_BACKOFF_FILE="$FIX/gh-backoff"
 reset() { rm -rf "$FIX"/fgh.create.* "$FIX"/fgh.comment.* "$FIX"/fgh.comments.* "$FIX"/fgh.pr.* "$FIX/fgh.kids" "$FIX/fgh.heldprs" \
     "$FIX/fgh.next" "$FIX/fgh.found" "$FIX"/fgh.stale.* "$FIX/fgh.merged" "$FIX/prs.json" "$FIX/ledger.tsv" "$FIX/held" "$FIX/blocked.tsv" "$FIX/parents.tsv" "$GH_BACKOFF_FILE"
   echo merged > "$FIX/fgh.pr.42"; : > "$FIX/fgh.log"; : > "$FIX/queue.log"; : > "$GH_LOG"; }
-case_settle() { OUT=$(bash "$SUT" settle 2>&1); RC=$?; R="created=$(created)"; }
+# The two cases, as a plant that measured something else leaves them: std_cases puts them back.
+std_cases() {
+  case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="created=$(created)"; }
+  case_settle() { OUT=$(bash "$SUT" settle 2>&1); RC=$?; R="created=$(created)"; }
+}
+std_cases
 held_n() { grep -c . "$FIX/held/42.jsonl" 2>/dev/null || echo 0; }
 comment_of() { tr '\0' '\n' < "$FIX/fgh.comment.$1.${2:-0}" 2>/dev/null; }
 kid() { # <n> <labels csv> <parent pr> [parent ticket] — one open follow-up ticket of that parent
   jq -n --argjson n "$1" --arg l "$2" --arg p "$3" --arg t "${4:-701}" '{number: $n, labels: ($l | split(",") | map({name: .})),
     body: "A review finding on PR #\($p) (ticket #\($t)).\n\n<!-- follow-up: pr=\($p) finding=m1 -->"}'; }
-case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="created=$(created)"; }
 
 echo "--- a Major and a Minor are filed; a Critical and a Nit are not ---"
 reset; case_file
@@ -236,8 +240,7 @@ plant "the grade map" '    major) pri="$P_MAJOR" ;; minor) pri="$P_MINOR" ;;' ':
 plant "the follow-up label" ' -f "labels[]=$FU_LABEL"' 'case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="label=$(args_of 777 | grep -c "^labels\[\]=fix-after-merge$")"; }' "label=0"
 plant "the label's creation" '  ensure_fu_label
 ' 'rm -f "$FIX/fgh.label"; case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="made=$(grep -c "labels -X POST -f name=fix-after-merge" "$FIX/fgh.log")"; }' "made=0"
-case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="created=$(created)"; }
-case_settle() { OUT=$(bash "$SUT" settle 2>&1); RC=$?; R="created=$(created)"; }
+std_cases
 plant "the hold on an open PR" '    *) hold_findings "$T" "$PR" "$head" "$F"; exit "$failed" ;;' 'echo open > "$FIX/fgh.pr.42"' "created=2"
 plant "the filing on merge" '        file_findings "$ticket" "$pr" "$hf"' \
   'echo open > "$FIX/fgh.pr.42"; case_file; echo merged > "$FIX/fgh.pr.42"' "created=0" case_settle
@@ -250,8 +253,7 @@ plant "the unblock on merge" '      issue_status_set "$n" "$LBL_READY" >/dev/nul
   'fix_issue 950 OPEN "status:blocked,fix-after-merge"; jq -n --argjson k "$(kid 950 status:blocked,fix-after-merge 55)" "[\$k]" > "$FIX/fgh.kids"; echo "950 55" > "$FIX/blocked.tsv"; echo merged > "$FIX/fgh.pr.55"
    case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="ready=$(grep -c "issue edit 950 .*status:ready" "$GH_LOG")"; }' "ready=0" case_settle
 
-case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="created=$(created)"; }
-case_settle() { OUT=$(bash "$SUT" settle 2>&1); RC=$?; R="created=$(created)"; }
+std_cases
 plant "the wait for a rebuild" '    [ -n "$FU_VIA" ] || continue
 ' 'echo open > "$FIX/fgh.pr.42"; case_file; echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"' "created=2" case_settle
 plant "the rebuild check" '    [ "$r" -ne 0 ] || s=rebuild
