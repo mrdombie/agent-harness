@@ -10,6 +10,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 CT="$HERE/close-ticket.sh"
+OPEN="$FIX/gh/api-repos_acme_widgets_pulls_state_open_per_page_100_page_1.json"
+echo '[]' > "$OPEN"
 
 echo "--- /finish: an ordinary ticket closes ---"
 fix_issue 501 OPEN "status:in-review,type:bug"
@@ -41,6 +43,17 @@ CLOSE_TICKET_RETRY_SEC=0 bash "$CT" 999 43 2>/dev/null; want "refused"  "1" "$?"
 want "after every try"                     "3" "$(grep -c '^issue view 999' "$GH_LOG")"
 want_not_in "nothing closed"               '^issue close' "$(cat "$GH_LOG")"
 
+echo "--- /finish: a ticket another open PR still names is left open ---"
+: > "$GH_LOG"; fix_issue 503 OPEN "status:in-review"
+echo '[{"number":45,"head":{"ref":"tkt-503/build"},"body":""},{"number":46,"head":{"ref":"x/y"},"body":"Refs #503"}]' > "$OPEN"
+want "it says which"                       "#503 left open — #45 still open for it" "$(bash "$CT" 503 44)"
+want_not_in "and does not close it"        '^issue close 503' "$(cat "$GH_LOG")"
+want "the PR that merged is not counted"   "closed #503" "$(echo '[{"number":44,"head":{"ref":"tkt-503/a"},"body":"Closes #503"}]' > "$OPEN"; bash "$CT" 503 44)"
+rm -f "$OPEN"; : > "$GH_LOG"
+bash "$CT" 503 47 >/dev/null 2>&1; want "unread open PRs: refused" "1" "$?"
+want_not_in "and nothing closed"           '^issue close' "$(cat "$GH_LOG")"
+echo '[]' > "$OPEN"
+
 echo "--- /finish's Step 7 closes through this script, never gh issue close ---"
 F="$HERE/../skills/finish/SKILL.md"
 want_in "the close-out calls it"           'scripts/close-ticket.sh" "\$ISSUE_NUM" "\$PR_NUMBER"' "$(cat "$F")"
@@ -60,6 +73,7 @@ case "$1 $2" in
   "api repos/acme/widgets") echo acme/widgets ;;
   "issue view") case "$3" in 801) printf 'status:claimed\npolish-list\nscreen:inbox\n' ;; *) printf 'status:claimed\n' ;; esac ;;
   "pr list") case "$*" in *"--head tkt-80"*) echo '[{"number":9801,"state":"MERGED"}]' ;; *) printf '[]\n' ;; esac ;;
+  "api repos/acme/widgets/pulls?state=open"*) [ -f "$FIX/rc-open.json" ] && cat "$FIX/rc-open.json" || exit 1 ;;
   *) : ;;
 esac
 exit 0
@@ -74,8 +88,10 @@ plant_claim() { # <ticket>
   sha=$(printf '%s\n' "$rec" | git -C "$REPO" -c user.name=t -c user.email=t@t commit-tree "$empty")
   git -C "$REPO" update-ref "refs/claims/$1" "$sha" && git -C "$REPO" push -q origin "refs/claims/$1"
 }
-plant_claim 801; plant_claim 802
-git -C "$REPO" push -q origin HEAD:refs/heads/tkt-801/work HEAD:refs/heads/tkt-802/work
+plant_claim 801; plant_claim 802; plant_claim 803
+git -C "$REPO" push -q origin HEAD:refs/heads/tkt-801/work HEAD:refs/heads/tkt-802/work HEAD:refs/heads/tkt-803/work
+# #803's work is in two PRs: 9801 merged, 9904 still open and saying Part of #803.
+echo '[{"number":9904,"head":{"ref":"other/rest"},"body":"Part of #803"}]' > "$FIX/rc-open.json"
 : > "$GH_LOG"
 out=$( cd "$REPO" && PATH="$FIX/rcbin:$PATH" SWARM_GH="$FIX/rcbin/gh" CLAIM_REPO="$REPO" CLAIM_REMOTE=origin NOTIFY=0 bash "$R" 2>&1 )
 want_in "an ordinary ticket whose PR merged is closed" 'SHIPPED +#802' "$out"
@@ -83,5 +99,16 @@ want_in "and it is"                        '^issue close 802 ' "$(cat "$GH_LOG")
 want_in "a polish list whose PR merged is not" 'POLISH +#801 .*back to status:ready' "$out"
 want_not_in "and is never closed"          '^issue close 801' "$(cat "$GH_LOG")"
 want_in "it goes back to ready"            '^issue edit 801 .*--add-label status:ready' "$(cat "$GH_LOG")"
+want_in "a ticket another open PR names is kept in review" 'IN-REVIEW +#803 — PR #9801 merged; #9904 still open' "$out"
+want_not_in "and is never closed"          '^issue close 803' "$(cat "$GH_LOG")"
+want_in "it says which PR is still open"   '^issue comment 803 .*Merged #9801; #9904 is still open for this ticket\.' "$(cat "$GH_LOG")"
+want_in "and is marked in review"          '^issue edit 803 .*--add-label status:in-review' "$(cat "$GH_LOG")"
+
+echo "--- reconcile: open PRs that cannot be read close nothing ---"
+plant_claim 804; git -C "$REPO" push -q origin HEAD:refs/heads/tkt-804/work
+rm -f "$FIX/rc-open.json"; : > "$GH_LOG"
+out=$( cd "$REPO" && PATH="$FIX/rcbin:$PATH" SWARM_GH="$FIX/rcbin/gh" CLAIM_REPO="$REPO" CLAIM_REMOTE=origin NOTIFY=0 bash "$R" 2>&1 )
+want_in "it is kept"                       'KEEP +#804 — PR #9801 merged, but the open PRs could not be read' "$out"
+want_not_in "and not closed"               '^issue close 804' "$(cat "$GH_LOG")"
 
 suite_end "$FAILED"

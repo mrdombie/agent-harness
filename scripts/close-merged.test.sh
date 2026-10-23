@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # close-merged.test.sh — a PR merged into the integration branch closes every ticket it
 # names with a closing keyword, whoever merged it; GitHub does that only on the default
-# branch. "Refs" closes nothing, and a failed read changes nothing.
+# branch. "Refs" closes nothing, a failed read changes nothing, and a ticket another open
+# PR still names stays open until the last of its PRs merges.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -11,6 +12,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 CM="$HERE/close-merged.sh"
 LIST="$FIX/gh/api-repos_acme_widgets_pulls_state_closed_base_develop_sort_updated_direction_desc_per_page_100.json"
+OPEN="$FIX/gh/api-repos_acme_widgets_pulls_state_open_per_page_100_page_1.json"
+echo '[]' > "$OPEN"   # no open PRs: a merge is the whole of its tickets' work
 CD="$STATE/coordinator"; mkdir -p "$CD"
 api_issue() { # <n> <open|closed> <label,label…> [pr] [body]
   jq -n --argjson n "$1" --arg s "$2" --arg l "$3" --arg pr "${4:-}" --arg b "${5:-}" \
@@ -147,6 +150,94 @@ want "child #532 is ready"                        "status:ready" "$(jq -r '[.lab
 want_in "with the same comment"                   "^issue comment 532 .*Merged by #62, a batch run; check this ticket's acceptance" "$log"
 want_not_in "a closed child is not touched"       '^issue (comment|edit|close) 533 ' "$log"
 want_not_in "no child is closed"                  '^issue close 53[123] ' "$log"
+
+echo "--- one merge is not the whole ticket: another open PR naming it keeps it open ---"
+# 23 Oct: a consuming project's #13006 closed when its docs PR #13016 merged, with build PR #13073
+# (branch sh-13006/…) still open; #12831 closed with two criteria in open PR #12847.
+pr 80 2026-10-22T19:00:00Z dom "Docs half.
+
+Closes #540" | jq -s . > "$LIST"
+api_issue 540 open "status:in-review,P1"
+openpr() { # <n> <branch> <body>
+  jq -n --argjson n "$1" --arg h "$2" --arg b "$3" '{number:$n, head:{ref:$h}, body:$b, state:"open"}'; }
+{ openpr 81 tkt-540/build "The build half."
+  openpr 82 other/work "Part of #540"
+  openpr 83 other/refs "Refs #540"
+  openpr 84 other/near "Closes #5400 and fixes #54"
+  openpr 85 tkt-5401/x "" ; } | jq -s . > "$OPEN"
+printf '{"tickets":[{"n":540,"class":"new"}]}\n' > "$CD/queue.json"
+echo 2026-10-22T18:30:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"
+out=$(run); rc=$?
+want "the pass succeeds"                          0 "$rc"
+log=$(cat "$GH_LOG")
+want_not_in "the ticket is not closed"            '^issue (close|edit) 540 ' "$log"
+want_in "a PR on the ticket's branch is its work" '^issue comment 540 .*Merged #80; #81 is still open for this ticket\.' "$log"
+want_in "so is one saying Part of"                '^issue comment 540 .*Merged #80; #82 is still open for this ticket\.' "$log"
+want "one comment a pair, nothing else"           2 "$(grep -c '^issue comment 540 ' <<<"$log")"
+want_not_in "Refs is no claim on the ticket"      'Merged #80; #83' "$log"
+want_not_in "#5400, #54 and tkt-5401 are other tickets" 'Merged #80; #8[45]' "$log"
+want_in "it says why"                             'left open #540 — PR #80 merged; #81 #82 still open' "$out"
+want "it stays on the queue"                      "540" "$(jq -r '[.tickets[].n | tostring] | join(",")' "$CD/queue.json")"
+want "the mark moves past the PR"                 2026-10-22T19:00:00Z "$(cat "$CD/close-merged.hwm")"
+: > "$GH_LOG"; echo 2026-10-22T18:30:00Z > "$CD/close-merged.hwm"; run >/dev/null
+want_not_in "a re-read pass comments no second time" '^issue (comment|close) 540 ' "$(cat "$GH_LOG")"
+
+echo "--- the second merge, with a third PR still open, still leaves it open ---"
+pr 81 2026-10-22T19:10:00Z dom "The build half." | jq -s . > "$LIST"
+{ openpr 82 other/work "Part of #540"; openpr 83 other/refs "Refs #540"; } | jq -s . > "$OPEN"
+echo 2026-10-22T19:05:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"
+run >/dev/null
+want_not_in "not closed while #82 is open"        '^issue close 540 ' "$(cat "$GH_LOG")"
+
+echo "--- the last merge closes it, whichever PR it was ---"
+pr 82 2026-10-22T19:20:00Z dom "Part of #540" | jq -s . > "$LIST"
+{ openpr 83 other/refs "Refs #540"; } | jq -s . > "$OPEN"
+echo 2026-10-22T19:15:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"
+out=$(run); rc=$?
+want "the pass succeeds"                          0 "$rc"
+log=$(cat "$GH_LOG")
+want_in "the ticket closes"                       '^issue close 540 .*--reason completed' "$log"
+want_in "saying no open PR names it any more"     '^issue comment 540 .*Closed: #80 merged to develop, and no open pull request names this ticket any more\.' "$log"
+want_in "its status labels come off"              '^issue edit 540 .*--remove-label status:in-review' "$log"
+want "it leaves the queue"                        "" "$(jq -r '[.tickets[].n | tostring] | join(",")' "$CD/queue.json")"
+want "and stops waiting"                          "" "$(grep '^540 ' "$CD/close-merged.waiting" 2>/dev/null)"
+: > "$GH_LOG"; run >/dev/null
+want_not_in "it is closed once"                   '^issue (close|comment) 540 ' "$(cat "$GH_LOG")"
+
+echo "--- the other PR merging with its own Closes line closes it on that merge ---"
+pr 90 2026-10-22T20:00:00Z dom "Closes #545" | jq -s . > "$LIST"; api_issue 545 open "status:in-review"
+openpr 91 tkt-545/rest "Closes #545" | jq -s . > "$OPEN"
+echo 2026-10-22T19:55:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"; run >/dev/null
+want_not_in "the first merge leaves it open"      '^issue close 545 ' "$(cat "$GH_LOG")"
+{ pr 90 2026-10-22T20:00:00Z dom "Closes #545"; pr 91 2026-10-22T20:10:00Z dom "Closes #545"; } | jq -s . > "$LIST"
+echo '[]' > "$OPEN"; echo 2026-10-22T20:05:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"; run >/dev/null
+want_in "the second closes it"                    '^issue comment 545 .*Closed by #91, merged to develop\.' "$(cat "$GH_LOG")"
+want "once"                                       1 "$(grep -c '^issue close 545 ' "$GH_LOG")"
+
+echo "--- a waiting ticket whose last PR was a parked run is not closed by the wait ---"
+pr 95 2026-10-22T20:20:00Z dom "Closes #547" | jq -s . > "$LIST"; api_issue 547 open "status:in-review"
+openpr 96 tkt-547/rest "Closes #547" | jq -s . > "$OPEN"
+echo 2026-10-22T20:15:00Z > "$CD/close-merged.hwm"; run >/dev/null
+pr 96 2026-10-22T20:30:00Z dom "Closes #547" develop "#547: parked — out of turns" | jq -s . > "$LIST"
+echo '[]' > "$OPEN"; echo 2026-10-22T20:25:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"; run >/dev/null
+want_not_in "the parked merge leaves it open"     '^issue close 547 ' "$(cat "$GH_LOG")"
+want_in "asking for its acceptance to be checked" "^issue comment 547 .*Merged by #96, a parked run" "$(cat "$GH_LOG")"
+: > "$GH_LOG"; run >/dev/null
+want_not_in "and no later pass closes it"         '^issue close 547 ' "$(cat "$GH_LOG")"
+
+echo "--- open PRs that cannot be read close nothing and hold the mark ---"
+pr 92 2026-10-22T21:00:00Z dom "Fixes #546" | jq -s . > "$LIST"; api_issue 546 open "status:ready"
+mv "$OPEN" "$OPEN.away"; echo 2026-10-22T20:30:00Z > "$CD/close-merged.hwm"; : > "$GH_LOG"
+out=$(run); rc=$?
+want "it fails"                                   1 "$rc"
+want_not_in "#546 is not closed"                  '^issue (close|comment|edit) 546 ' "$(cat "$GH_LOG")"
+want "the mark sits before the PR"                2026-10-22T20:59:59Z "$(cat "$CD/close-merged.hwm")"
+echo 'not json' > "$OPEN"; : > "$GH_LOG"; run >/dev/null
+want_not_in "nor does an answer that is not a list" '^issue close 546 ' "$(cat "$GH_LOG")"
+: > "$OPEN"; : > "$GH_LOG"; run >/dev/null
+want_not_in "nor an empty answer"                 '^issue close 546 ' "$(cat "$GH_LOG")"
+echo '[]' > "$OPEN"; rm -f "$OPEN.away"; : > "$GH_LOG"; run >/dev/null
+want_in "read again, it closes"                   '^issue close 546 ' "$(cat "$GH_LOG")"
 
 echo "--- housekeeping runs it every pass, before reconcile, in shadow as a dry run ---"
 HK="$HERE/coordinator-housekeeping.sh"; ORDER="$FIX/order.log"
