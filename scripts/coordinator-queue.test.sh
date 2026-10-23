@@ -311,4 +311,26 @@ want "an unknown class is refused"         "2" "$rc"
 bash "$Q" remove 777 >/dev/null
 want "removed"                             "" "$(jq -r '.tickets[] | select(.n==777) | .n' "$QF")"
 
+echo "--- a follow-up ranks by its priority, after every other ticket there, never on top (owner call 2026-10-23) ---"
+rm -f "$QF"
+fix_issue 801 OPEN "P0,type:feature,status:ready"
+fix_issue 802 OPEN "P1,type:bug,status:ready"
+fix_issue 803 OPEN "P1,type:bug,status:ready,fix-after-merge"
+fix_issue 804 OPEN "P3,type:bug,status:ready,fix-after-merge"
+fix_issue 805 OPEN "P1,type:bug,status:ready"
+# As scripts/follow-up.sh adds one, and before the P1 it must still rank behind.
+bash "$Q" add 803 --note "follow-up of PR #42: major at a.tsx:3" >/dev/null
+bash "$Q" add 801 >/dev/null; bash "$Q" add 802 >/dev/null
+bash "$Q" add 804 --note "follow-up of PR #42: minor at b.ts:1" >/dev/null
+bash "$Q" add 805 --first >/dev/null
+want "a P0 first; at P1 the others, then the follow-up; the P3 follow-up last" \
+  "801:new 805:new 802:new 803:new 804:new" "$(order)"
+. "$HERE/coordinator-env.sh"
+ISSUES='{"803":{"number":803,"state":"OPEN","title":"x","labels":["P1","fix-after-merge"]},"802":{"number":802,"state":"OPEN","title":"y","labels":["P1"]}}'
+want "with the tick's read, the label decides the same way" "802 803" \
+  "$(COORD_QUEUE="$QF" coord_queue_ordered | cut -f1 | grep -E '^80[23]$' | tr '\n' ' ' | sed 's/ $//')"
+unset ISSUES
+want "a follow-up's note alone ranks it so, with no labels read" "1" \
+  "$(COORD_QUEUE="$QF" ISSUES='' coord_queue_ordered | cut -f1 | tr '\n' ' ' | grep -c '802 803')"
+
 suite_end "$FAILED"
