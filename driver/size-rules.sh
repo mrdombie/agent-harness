@@ -27,6 +27,13 @@ DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^
 # not counted (driver.split.exclude replaces the list: globs, matched on the path or the
 # file name). 0 turns the cap off. Seen: a "Batch … 2 fixes" PR at 200 files after 5 hours.
 DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "go.sum", "composer.lock"]'
+# A PLAN PAST driver.split.maxTasks (3) BUILD TASKS IS SPLIT before it builds (owner call
+# 2026-10-23, "no batch tickets; split unstarted batches"): plans of 6-8 tasks built for about
+# two hours a ticket. 0 turns it off.
+driver_split_max_tasks() {
+  local n; n=$(jq -r '.driver.split.maxTasks // 3' "$HARNESS_CFG" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=3 ;; esac; printf '%s' "$n"
+}
 driver_split_max() {
   local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"

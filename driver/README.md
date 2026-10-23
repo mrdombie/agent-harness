@@ -98,6 +98,13 @@ files, counted two-dot against its merge base with the trunk and not counting lo
 ship refuses with "split needed" and parks it for the PM, the work kept on a stranded
 ref and in a bundle. `0` turns the cap off.
 
+**A plan past the task cap, split before it builds.** A plan with more than
+`driver.split.maxTasks` (3) build tasks files one ticket per task, in the plan's order,
+each ready and carrying the parent's priority, area, screen, project, repo and effort
+labels (never a person's hold), and closes the parent as split; the run ends clean
+with nothing built. A repair, a branch that already has commits, and a part of an
+earlier split (" — part N of M: " in its title) build as before. `0` turns it off.
+
 `driver.quick.enabled: false` turns the route off (sizes are still read and logged).
 The run's last line, the coordinator's `runs.log` line (`route= size= claim_to_pr=`)
 and the live view's run row ("Quick change" / "Full build") all say the route. Only
