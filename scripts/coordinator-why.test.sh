@@ -139,8 +139,11 @@ out=$(vm_tick)
 want "nothing is startable: nothing starts"           "" "$(spawned)"
 hb=$(hb_json)
 want "the first 5 skips, in order"                    "5" "$(jq -r '.why.skips | length' <<<"$hb")"
-want_in "a skip line as the tick said it"             '^skip #13625 \(repair\): claimed$' "$(jq -r '.why.skips[0]' <<<"$hb")"
-want "all six skips counted by reason"                '{"claimed":5,"status:blocked":1}' "$(jq -c '.why.skipsBy' <<<"$hb")"
+want_in "a skip line as the tick said it: the process fix the tooling cap holds" \
+  '^skip #13621 \(new\): the tooling cap — 2 live of 2$' "$(jq -r '.why.skips[0]' <<<"$hb")"
+want_in "and the second one"                         '^skip #13788 \(new\): the tooling cap' "$(jq -r '.why.skips[1]' <<<"$hb")"
+want "every skip counted by reason, the tooling-capped ones named too" \
+  '{"claimed":5,"status:blocked":1,"the tooling cap — 2 live of 2":2}' "$(jq -c '.why.skipsBy' <<<"$hb")"
 want_in "the tooling line says the process fixes wait" '^tooling: 2 tooling ticket\(s\) wait' "$(jq -r '.why.tooling // ""' <<<"$hb")"
 want_in "and the spawn line"                          '^spawn: ' "$(jq -r '.why.spawn // ""' <<<"$hb")"
 want_in "the plain-words line names the skips"        '^why: .*skipped 5 claimed, 1 status:blocked' "$(jq -r '.[0].body' "$SH/comments.json")"

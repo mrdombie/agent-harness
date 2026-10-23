@@ -729,6 +729,7 @@ CANDS=""
 candidates() {
   local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
   local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
+  local sk_rel="" sk_proc="" sk_behind="" sk_unsized="" sk_polish="" sk_capped="" qwhy
   CANDS=""; QUICK_OK=""
   # The backstop to the seed: new work outside coordinator.releaseScopeOnly never starts,
   # read off this tick's labels and milestones. A ticket the read missed is spawn_block's.
@@ -737,6 +738,11 @@ candidates() {
       | select(.value | coord_release_held(.labels // []; .title; .milestone; "new")) | .key' 2>/dev/null)
   fi
   wide=$(coord_queue_ordered --wide)
+  if coord_screens_first_on; then
+    local tp tz ts tr tl
+    IFS=$'\t' read -r tp tz ts tr tl <<<"$(coord_queue_ordered --tiers)"
+    say "order: screens first — ${ts:-0} screen tickets ahead of ${tr:-0} others · tiers: process ${tp:-0} · P0 ${tz:-0} · screens ${ts:-0} · rest ${tr:-0} · last in the release ${tl:-0}"
+  fi
   # A full list goes in its place in the order, ahead of lower-priority work, so the
   # lists' bodies are read first: one batched request, only when a list is queued.
   lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $5 == 1 { print $1 }' | tr '\n' ' ')
@@ -745,7 +751,7 @@ candidates() {
   while IFS=$'\t' read -r t cls pri pol pl ex proc note; do
     [ -n "${t:-}" ] || continue
     i=$((i+1))
-    if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then continue; fi
+    if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then sk_proc="$sk_proc #$t"; continue; fi
     # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
     # skipped as new it sat at the head of the queue on every tick doing nothing.
     if [ "$cls" = new ] && pr=$(ticket_open_pr "$t"); then
@@ -754,17 +760,18 @@ candidates() {
       coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
         || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
     fi
-    if [ "$cls" = new ] && [ "$proc" != 1 ] && grep -qx "$t" <<<"$rel_out"; then rel_held=$((rel_held+1)); continue; fi
+    if [ "$cls" = new ] && [ "$proc" != 1 ] && grep -qx "$t" <<<"$rel_out"; then rel_held=$((rel_held+1)); sk_rel="$sk_rel #$t"; continue; fi
     # Tooling (a process fix or a harness ticket) is capped on every host together: over
     # the cap it waits, and the places go to product work. Process-first holds inside it.
     tool=0; { [ "$proc" = 1 ] || ticket_tooling "$t"; } && tool=1
-    if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
+    if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); say "skip #$t ($cls): the tooling cap — $TOOLING_LIVE live of $COORD_TOOLING_CAP"; continue; fi
     # Over the open-work cap only finishing starts: repairs, approved merges, process fixes.
     # Quick-sized new work starts anyway (the owner, 2026-10-22; cap-quick.sh): held here,
     # sized after the loop by the driver's own rules. Polish rides along, never alone.
     if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then
       if [ "$cls" = new ] && [ "$pol" != 1 ] && [ "$pl" != 1 ] && coord_cap_quick_on; then
         qwait="$qwait$i"$'\t'"$t"$'\t'"$tool"$'\t'"$note"$'\n'
+      else sk_capped="$sk_capped #$t"
       fi
       capped=$((capped+1)); continue
     fi
@@ -782,8 +789,8 @@ candidates() {
       [ "$pl" = 1 ] || cnt=0
       held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$tool"$'\t'"$note"$'\n'; continue
     fi
-    [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue; }
-    if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
+    [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }; }
+    if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): ${why:-waits on a person (coordinator-waits.sh)}"; continue; fi
     [ "$proc" = 1 ] || coord_healing_class "$cls" || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
@@ -800,9 +807,15 @@ candidates() {
     qroom=$(( SLOTS - $(printf '%s' "$rows" | grep -c .) )); [ "$qroom" -ge 0 ] || qroom=0
     while IFS=$'\t' read -r i t tool note; do
       [ -n "${t:-}" ] || continue
-      [ "$qn" -lt "$qroom" ] || break
       sz=$(printf '%s\n' "$qsizes" | awk -F'\t' -v t="$t" '$1 == t { print $2; exit }')
-      [ "$sz" = quick ] || continue
+      qwhy=$(printf '%s\n' "$qsizes" | awk -F'\t' -v t="$t" '$1 == t { print $3; exit }')
+      # Every one the cap holds is named with why: a P0 sized big waited a night unsaid.
+      case "$sz" in
+        quick) ;;
+        ''|unread) sk_unsized="$sk_unsized #$t"; continue ;;
+        *) say "skip #$t (new): over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) and sized $sz${qwhy:+ — $qwhy}; only quick work starts over it"; continue ;;
+      esac
+      [ "$qn" -lt "$qroom" ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" new); then say "skip #$t (new, quick): $why"; continue; fi
       qn=$((qn+1)); capped=$((capped-1)); other=1
@@ -817,10 +830,10 @@ candidates() {
       [ -n "${t:-}" ] || continue
       if [ "$other" = 1 ]; then
         if [ "$pl" = 1 ]; then say "skip #$t (polish list): $cnt free item(s) — rides along with its screen's next ticket, never a build of its own while other work can start"
-        else waits=$((waits+1)); fi
+        else waits=$((waits+1)); sk_polish="$sk_polish #$t"; fi
         continue
       fi
-      [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || continue
+      [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
       if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
       nn=$((nn+1)); [ "$tool" = 0 ] || tool_left=$((tool_left-1))
@@ -828,6 +841,14 @@ candidates() {
     done <<< "$held"
     [ "$waits" -eq 0 ] || say "polish: $waits polish ticket(s) wait while other work can start"
   fi
+  # NO QUEUED TICKET IS PASSED OVER UNSAID: a reason one ticket has gets its own line
+  # above; a reason many share gets one line naming each of them.
+  [ -z "$sk_proc" ] || say "skip${sk_proc}: the hold lets only process fixes start"
+  [ -z "$sk_rel" ] || say "skip${sk_rel}: outside the release scope (coordinator.releaseScopeOnly)"
+  [ -z "$sk_capped" ] || say "skip${sk_capped}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) — only finishing, and quick new work, starts over it"
+  [ -z "$sk_unsized" ] || say "skip${sk_unsized}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP), not sized this tick; only quick work starts over it"
+  [ -z "$sk_polish" ] || say "skip${sk_polish}: polish — rides along while other work can start"
+  [ -z "$sk_behind" ] || say "skip${sk_behind}: behind the $SLOTS free place(s) — earlier entries in the order take them"
   coord_release_on && say "scope: release only — $(( $(jq -r '.release_held // 0' "$COORD_QUEUE" 2>/dev/null || echo 0) + rel_held )) new outside scope held back"
   [ "$capped" -eq 0 ] || say "cap: $capped new ticket(s) wait — $OPEN_PR_SAID"
   [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP$( [ -z "$PACE_FLOORED" ] || echo ', and the places now are the product floor'"'"'s'); the places go to product work"
@@ -853,6 +874,11 @@ first_of() { # <healing|new|process> — the first candidate of that kind: <tick
 held_view() {
   candidates
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
+  cands_left "nothing starts this tick (the hold above)"
+}
+cands_left() { # <why> — the candidates no start took, named
+  local left; left=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { printf " #%s", $1 }')
+  [ -z "$left" ] || say "skip${left}: $1"
 }
 # ---- 5a. disk ---------------------------------------------------------------------
 # Owner call 2026-10-20: "Auto-clean and stop below 30 GB". Held from under stopBelowGb until
@@ -1039,6 +1065,7 @@ else
   if [ "$started" -eq 0 ] && [ -z "$CANDS" ]; then
     say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
   fi
+  cands_left "no place left this tick — $started started of $SLOTS"
   [ -z "$OVER_PR_CAP" ] || [ "$QUICK_STARTED" -eq 0 ] || say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — $QUICK_STARTED quick ticket(s) started anyway"
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
