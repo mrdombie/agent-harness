@@ -62,9 +62,26 @@ _driver_ga_commit_merge() { # <ticket> <tree> <where> [answer.json]
     [ -z "$marked" ] || { _driver_ga_refuse "$t" "$w" "commitMerge: conflict markers are still in ${marked% }"; return 1; }
     [ -z "$took" ] || driver_say "   $w: commitMerge — the answer's own edits go into the merge too: ${took% }"
   fi
-  git -C "$wt" commit -q --no-edit >/dev/null 2>&1 \
-    || { _driver_ga_refuse "$t" "$w" "commitMerge: git commit --no-edit failed in $wt"; return 1; }
-  driver_say "   $w: commitMerge — the driver finished the merge at $(git -C "$wt" rev-parse --short HEAD)"
+  # THE REFUSAL'S OWN WORDS ARE THE PARK NOTE. Thrown away, the next run retried the same
+  # merge blind: one ticket failed this commit 14 times, another 8. The same words twice
+  # is no machine retry: it parks for the PM, who rebuilds it or clears the cause.
+  local out why sig was
+  if out=$(git -C "$wt" commit -q --no-edit 2>&1); then
+    driver_state_set "$t" commit_merge_fail ""
+    driver_say "   $w: commitMerge — the driver finished the merge at $(git -C "$wt" rev-parse --short HEAD)"
+    return 0
+  fi
+  why=$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -5 | tr '\n' ' ' | sed 's/[[:space:]]*$//' | cut -c1-400)
+  [ -n "$why" ] || why="git said nothing"
+  sig=$(printf '%s' "$why" | sed "s#$wt#<tree>#g" | cksum | cut -d' ' -f1)
+  was=$(driver_state_get "$t" commit_merge_fail)
+  driver_state_set "$t" commit_merge_fail "$sig"
+  if [ "$was" = "$sig" ]; then
+    _driver_ga_refuse "$t" "$w" "commitMerge: git commit --no-edit failed the same way as the last try, so it is not retried: $why"
+    driver_state_set "$t" park_cause pm
+    return 1
+  fi
+  _driver_ga_refuse "$t" "$w" "commitMerge: git commit --no-edit failed: $why"
 }
 
 _driver_ga_reset_to() { # <ticket> <tree> <where> <sha> <branch> <trunk>

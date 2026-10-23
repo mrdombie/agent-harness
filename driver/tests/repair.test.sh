@@ -941,6 +941,28 @@ want_in "commitMerge with markers: says why"    'conflict markers are still in s
 want "commitMerge with markers: still merging"  "yes" "$([ -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && echo yes)"
 git -C "$WT" merge --abort 2>/dev/null
 
+echo "--- a refused merge commit keeps git's words, and the same refusal twice is not retried ---"
+# The commit's stderr was thrown away, so each run retried the same merge blind (14 times, 8 times).
+merge_case 13610 'printf "trunk line 13610\nbranch line\n" > shared.txt'
+HOOKS=$(git -C "$WT" rev-parse --git-path hooks); case "$HOOKS" in /*) ;; *) HOOKS="$WT/$HOOKS" ;; esac
+mkdir -p "$HOOKS"; cp "$HOOKS/commit-msg" "$FIX/commit-msg.was" 2>/dev/null || rm -f "$FIX/commit-msg.was"
+printf '#!/bin/sh\necho "subject may not be longer than 72 characters [header-max-length]" >&2\nexit 1\n' > "$HOOKS/commit-msg"; chmod +x "$HOOKS/commit-msg"
+out=$(driver_step_repair 13610 2>&1); rc=$?
+want "a refused merge commit: refused"          "24" "$rc"
+want_in "  git's own words are in the log"      'commitMerge: git commit --no-edit failed: .*header-max-length' "$out"
+want_in "  and in the park note"                'header-max-length' "$(driver_state_get 13610 park_note)"
+want "  a first refusal is the driver's"        "" "$(driver_state_get 13610 park_cause)"
+ga '[{"action":"commitMerge"}]'
+out=$(driver_git_actions 13610 "$WT" "$FIX/ga.json" repair 2>&1); rc=$?
+want "the same refusal again: refused"          "1" "$rc"
+want_in "  says it is not retried"              'failed the same way as the last try, so it is not retried: .*header-max-length' "$out"
+want "  parked for the PM, not the machine"     "pm" "$(driver_state_get 13610 park_cause)"
+if [ -f "$FIX/commit-msg.was" ]; then mv "$FIX/commit-msg.was" "$HOOKS/commit-msg"; else rm -f "$HOOKS/commit-msg"; fi
+driver_state_set 13610 park_cause ""
+out=$(driver_git_actions 13610 "$WT" "$FIX/ga.json" repair 2>&1); rc=$?
+want "once the cause is gone it commits"        "0" "$rc"
+want "  and the failure is forgotten"           "" "$(driver_state_get 13610 commit_merge_fail)"
+
 echo "--- the model's own edit to a cleanly merged file goes into the merge (#13365) ---"
 # The clean side of the merge doubled a key in package.json; the model fixed it,
 # named it in its answer, and only the conflicted file was staged.
