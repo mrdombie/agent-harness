@@ -87,6 +87,59 @@ _driver_proof_install() { # <repo> <tree>
   return 0
 }
 
+# PROOF TREES ARE REUSED ACROSS A RUN'S TASKS. Two fresh trees per proof, each with its
+# own `worktree.prepare` (prisma:ensure), were ~30% of proof time on the origin project
+# (21 proofs on 23 Oct: 1,672 of 5,676 s). Within one driver run (DRIVER_TICKET, this
+# process) the before/after trees stay: a later proof checks the tree out at its commit
+# (checkout -f, clean -fd: ignored installs and generated files stay), relinks only a
+# stale install, and runs worktree.prepare again only when the prepare fingerprint at that
+# commit moved — worktree.prepareFingerprint (path regexes), default every prisma file plus
+# the lockfiles. driver.proofReuse false, or no ticket, builds fresh trees as before. The run's
+# exit removes them (driver_proof_trees_drop, build-ticket's EXIT trap).
+_driver_proof_reuse_dir() { # prints the run's proof-tree dir, or fails when reuse is off
+  [ -n "${DRIVER_TICKET:-}" ] || return 1
+  case "$(driver_opt driver.proofReuse true)" in false|0|no|off) return 1 ;; esac
+  printf '%s/driver-proof-t%s-run%s' "${TMPDIR:-/tmp}" "$DRIVER_TICKET" "$$"
+}
+_driver_proof_fingerprint() { # <repo> <sha>
+  local re
+  re=$(jq -r '(.worktree.prepareFingerprint // empty) | if type == "array" then join("|") else . end' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+  [ -n "$re" ] || re='(^|/)prisma/|[.]prisma$|(^|/)(package-lock[.]json|pnpm-lock[.]yaml|yarn[.]lock)$'
+  # The prepare commands are part of it: a changed worktree.prepare prepares again.
+  { jq -c '.worktree.prepare // null' "${HARNESS_CFG:-/dev/null}" 2>/dev/null
+    git -C "$1" ls-tree -r "$2" 2>/dev/null | awk -F'\t' -v re="$re" '$2 ~ re'; } | git hash-object --stdin
+}
+# _driver_proof_tree <repo> <tree> <sha> — <tree> checked out at <sha> and prepared.
+# Reused when the run's dir holds it; 0 ready · 1 could not be checked out · 2 not prepared.
+_driver_proof_tree() {
+  local repo="$1" tree="$2" sha="$3" fp old
+  fp=$(_driver_proof_fingerprint "$repo" "$sha")
+  if [ -e "$tree/.git" ] && git -C "$tree" checkout -q --detach -f "$sha" 2>/dev/null && git -C "$tree" clean -fdq 2>/dev/null; then
+    old=$(cat "$tree.fp" 2>/dev/null)
+    driver_refresh_install "$repo" "$tree" || true
+    if [ -n "$fp" ] && [ "$fp" = "$old" ]; then
+      driver_say "   proof: reused $tree at $(printf '%s' "$sha" | cut -c1-8) — the prepare fingerprint is unchanged, so worktree.prepare is skipped" >&2
+      return 0
+    fi
+    rm -f "$tree.fp"
+    driver_prepare_worktree "$tree" >&2 || return 2
+    printf '%s' "$fp" > "$tree.fp"
+    return 0
+  fi
+  git -C "$repo" worktree remove --force "$tree" >/dev/null 2>&1; rm -rf "$tree" "$tree.fp"; git -C "$repo" worktree prune 2>/dev/null
+  mkdir -p "$(dirname "$tree")"
+  git -C "$repo" worktree add -q --detach "$tree" "$sha" 2>/dev/null || return 1
+  _driver_proof_install "$repo" "$tree" || return 2
+  printf '%s' "$fp" > "$tree.fp"
+}
+# driver_proof_trees_drop — the run's proof trees removed (the run's exit).
+driver_proof_trees_drop() {
+  local d t; d=$(_driver_proof_reuse_dir) || return 0
+  [ -d "$d" ] || return 0
+  for t in "$d"/*; do [ -e "$t/.git" ] && git -C "$t" worktree remove --force "$t" >/dev/null 2>&1; done
+  rm -rf "$d"
+}
+
 # driver_proof_typecheck_cmd — the compile check a proof runs beside the test, or
 # nothing. `driver.proofTypecheck` names it outright ("" or "none" switches it off);
 # otherwise it is this project's own typecheck gate, the first `gates.changed` (then
@@ -275,11 +328,25 @@ _driver_prove_red_green_once() {
      && ! low=$(bash "$DRIVER_HOME/../scripts/disk-guard.sh" check "a red/green proof"); then
     printf '%s, so the test was never run\n' "$low"; return 5
   fi
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-proof-XXXXXX")
-  git -C "$repo" worktree add -q --detach "$tmp/before" "$base" 2>/dev/null || {
-    rm -rf "$tmp"; printf 'could not check out %s\n' "$base"; return 3; }
-  if ! _driver_proof_install "$repo" "$tmp/before"; then
-    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
+  # Reused across the run's tasks when it can be; the outputs go to a scratch dir of their own.
+  local keep="" rd prc
+  if rd=$(_driver_proof_reuse_dir); then keep=1; tmp="$rd"; mkdir -p "$tmp"; rm -f "$tmp"/*.out "$tmp"/*.db
+  else tmp=$(mktemp -d "${TMPDIR:-/tmp}/driver-proof-XXXXXX"); fi
+  _driver_proof_done() { # drop the trees unless the run keeps them
+    [ -n "$keep" ] && return 0
+    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
+    git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1
+  }
+  _driver_proof_rmtmp() { [ -n "$keep" ] && { rm -f "$tmp"/*.out "$tmp"/*.db; return 0; }; rm -rf "$tmp"; }
+  prc=0
+  if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/before" "$base" || prc=$?
+  else
+    git -C "$repo" worktree add -q --detach "$tmp/before" "$base" 2>/dev/null || prc=1
+    [ "$prc" -ne 0 ] || _driver_proof_install "$repo" "$tmp/before" || prc=2
+  fi
+  if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$base"; return 3; fi
+  if [ "$prc" -ne 0 ]; then
+    _driver_proof_done; _driver_proof_rmtmp
     printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
@@ -292,12 +359,15 @@ _driver_prove_red_green_once() {
   ( cd "$tmp/before" && driver_with_test_db "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
-  git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || {
-    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1; rm -rf "$tmp"
-    printf 'could not check out %s\n' "$isha"; return 3; }
-  if ! _driver_proof_install "$repo" "$tmp/after"; then
-    git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
-    git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1; rm -rf "$tmp"
+  prc=0
+  if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/after" "$isha" || prc=$?
+  else
+    git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || prc=1
+    [ "$prc" -ne 0 ] || _driver_proof_install "$repo" "$tmp/after" || prc=2
+  fi
+  if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$isha"; return 3; fi
+  if [ "$prc" -ne 0 ]; then
+    _driver_proof_done; _driver_proof_rmtmp
     printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
@@ -324,18 +394,17 @@ _driver_prove_red_green_once() {
   local dbwhy=""
   [ -s "$tmp/before.db" ] && dbwhy="without the change: $(cat "$tmp/before.db")"
   [ -z "$dbwhy" ] && [ -s "$tmp/after.db" ] && dbwhy="with the change: $(cat "$tmp/after.db")"
-  git -C "$repo" worktree remove --force "$tmp/before" >/dev/null 2>&1
-  git -C "$repo" worktree remove --force "$tmp/after"  >/dev/null 2>&1
+  _driver_proof_done
   if [ -n "$dbwhy" ]; then
-    rm -rf "$tmp"; printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
+    _driver_proof_rmtmp; printf 'the test database could not be prepared %s, so the test was never run there\n' "$dbwhy"; return 5
   fi
   local red_out after_out uwhy=""
   if _driver_proof_unreachable "$rc_red" "$tmp/before.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/before.out")
   elif _driver_proof_unreachable "$rc_green" "$tmp/after.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/after.out"); fi
-  [ -z "$uwhy" ] || { rm -rf "$tmp"; printf '%s' "$uwhy"; return 9; }
+  [ -z "$uwhy" ] || { _driver_proof_rmtmp; printf '%s' "$uwhy"; return 9; }
   red_out=$(_driver_fail_lines "$tmp/before.out")
   after_out=$(_driver_fail_lines "$tmp/after.out")
-  rm -rf "$tmp"
+  _driver_proof_rmtmp
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
     return 4
