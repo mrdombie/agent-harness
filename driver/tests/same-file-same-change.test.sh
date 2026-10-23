@@ -97,7 +97,7 @@ plant() { # <label> <file under the kit> <exact text to delete> <case> <the resu
   "$4"; want "planted ($1): the case now fails" "$5" "$R"
 }
 plant "the review marks same-change findings" driver/steps/review.sh \
-  '  _driver_review_same_change "$t" "$ans_file" "$round" "$wt" "${dargs[@]}"' case_review "rc=0 fu=m1 n1 m2"
+  '  _driver_review_same_change "$t" "$ans_file" "$ground" "$wt" "${dargs[@]}"' case_review "rc=0 fu=m1 n1 m2"
 plant "the selector blocks them" driver/driver-env.sh \
   ' or ((.sameChange // false) == true and (.grade // "") != "nit")' case_review "rc=0 fu=m2"
 plant "the defer leaves them" driver/steps/review.sh \

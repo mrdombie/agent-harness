@@ -233,10 +233,10 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
   # Merge first: the screen's polish list stays a list, never this review's findings.
   driver_merge_first || _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
-  _driver_review_same_change "$t" "$ans_file" "$round" "$wt" "${dargs[@]}"
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
   local ground="$round"
   if [ "$tier" = tooling ] || [ -n "$quick" ]; then [ "$ground" -ge 2 ] || ground=2; fi
+  _driver_review_same_change "$t" "$ans_file" "$ground" "$wt" "${dargs[@]}"
   _driver_review_defer "$t" "$ans_file" "$ground"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
 
@@ -527,12 +527,13 @@ _driver_review_defer() {
   driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list,${mf:+ $filed filed as follow-up tickets when the PR is open (merge first),} $kept noted in the PR under \"Minor, deferred\""
 }
 
-# _driver_review_same_change <ticket> <review.json> <round> <tree> <diff args…> — SAME FILE,
+# _driver_review_same_change <ticket> <review.json> <graded round> <tree> <diff args…> — SAME FILE,
 # SAME CHANGE (the owner, 2026-10-23). A Major or a Minor in a file this change itself
 # touched is fixed in this change, in its one fix round, never filed: one ticket once
 # spawned 24 findings over 8 follow-up PRs, all in the same four files. Such a finding is
 # marked sameChange, which driver_blocking_select blocks in any round and under merge first.
-# From round 2 (the fix round touched new code) a Major alone is marked. A finding in a file
+# Graded as a later round (a second review, a tooling or a quick change: only Critical
+# and Major block there) a Major alone is marked. A finding in a file
 # the change did not touch is graded as before: a polish list, or a follow-up.
 _driver_review_same_change() {
   local t="$1" f="$2" round="$3" wt="$4" own grades n

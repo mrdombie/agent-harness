@@ -679,10 +679,10 @@ ticket is reviewed.
 
 **Same file, same change** (owner call 2026-10-23). A Major or a Minor the review finds in a
 file the change itself touched (its reviewed diff: a repair's own change) is fixed in that
-change, in its one fix round, never filed: merge first included, and for tooling and quick
-changes too. `_driver_review_same_change` marks it `sameChange`, which `driver_blocking_select`
-blocks in any round, and the fix step may not defer it. A later review (the fix round touched
-new code) holds only a Major there. A finding in a file the change did not touch goes to a
+change, in its one fix round, never filed: merge first included. `_driver_review_same_change`
+marks it `sameChange`, which `driver_blocking_select` blocks in any round, and the fix step may
+not defer it. Where only Critical and Major block (a second review after the fix round touched
+new code, a tooling or a quick change) a Major alone is held there. A finding in a file the change did not touch goes to a
 polish list or a follow-up as before; a Critical blocks as before.
 
 **Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
