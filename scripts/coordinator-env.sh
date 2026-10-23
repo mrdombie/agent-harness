@@ -50,6 +50,9 @@
 #                                                           rules call quick start anyway, after healing
 #                                                           (scripts/cap-quick.sh); false: none does
 #   coordinator.openPrCapQuickScan COORDINATOR_OPEN_PR_CAP_QUICK_SCAN 40  bodies read a tick to pre-size
+#   coordinator.capExemptPriorities COORDINATOR_CAP_EXEMPT_PRIORITIES ["P0"]  priorities the open-work cap
+#                                                           never holds: they start over it whatever their
+#                                                           size (scripts/cap-quick.sh); [] none
 #   coordinator.toolingLabels COORDINATOR_TOOLING_LABELS (below) labels that make a ticket our own
 #                                                           build tooling: it runs after product
 #                                                           work of the same priority and class

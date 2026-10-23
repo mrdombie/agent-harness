@@ -4,6 +4,7 @@
 #   . "$KIT_ROOT/scripts/cap-quick.sh"
 #   coord_cap_quick_on                      0 while coordinator.openPrCapQuick is on (default)
 #   coord_quick_sizes <ticket>…             "<ticket>\t<size>\t<why>" for each, in order
+#   coord_cap_exempt_prins                  "0 " — priorities the cap never holds (capExemptPriorities)
 #
 # THE OWNER, 2026-10-22: quick-sized new tickets bypass coordinator.openPrCap; bigger new
 # tickets still wait. The cap was set so open work could land before more started, and it
@@ -34,6 +35,18 @@ coord_cap_quick_scan() {
   local n="${COORDINATOR_OPEN_PR_CAP_QUICK_SCAN:-}"
   [ -n "$n" ] || n=$(jq -r '.coordinator.openPrCapQuickScan // 40' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=40 ;; esac; printf '%s' "$n"
+}
+
+# coord_cap_exempt_prins — the priorities the open-work cap never holds, as coord_prin
+# digits ("0 "): coordinator.capExemptPriorities (default ["P0"]; [] none). The owner,
+# 2026-10-23: a P0 sized project waited all night behind the cap while quick work started.
+coord_cap_exempt_prins() {
+  local v
+  if [ -n "${COORDINATOR_CAP_EXEMPT_PRIORITIES+x}" ]; then v="$COORDINATOR_CAP_EXEMPT_PRIORITIES"
+  elif [ -r "${HARNESS_CFG:-}" ]; then
+    v=$(jq -r '(.coordinator.capExemptPriorities // ["P0"]) | if type == "array" then join(" ") else tostring end' "$HARNESS_CFG" 2>/dev/null) || v=P0
+  else v=P0; fi
+  printf '%s\n' $v | tr ',' '\n' | sed -n 's/^[Pp]\([0-9]\)$/\1/p' | tr '\n' ' '
 }
 
 # _coord_quick_one <ticket> <updatedAt> <title> <labels-csv> <body> — sizes one read
