@@ -37,7 +37,7 @@ export COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" COORDINATOR_CLAUDE="$BIN/claude
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
 unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_HEAL_ALL_AT COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
-unset COORDINATOR_OPEN_PR_CAP COORDINATOR_OPEN_PR_CAP_QUICK COORDINATOR_RELEASE_SCOPE_ONLY COORDINATOR_SCREENS_FIRST
+unset COORDINATOR_OPEN_PR_CAP COORDINATOR_OPEN_PR_CAP_QUICK COORDINATOR_RELEASE_SCOPE_ONLY COORDINATOR_SCREENS_FIRST COORDINATOR_CAP_EXEMPT_PRIORITIES
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
 cat > "$BIN/spawn-live" <<'SH'
 #!/usr/bin/env bash
@@ -139,12 +139,19 @@ out=$(CAP=1 tick)
 want_in "the order line counts the last tier" 'tiers: process 0 · P0 1 · screens 1 · rest 1 · last in the release 1' "$out"
 unset COORDINATOR_SCREENS_FIRST
 
-echo "--- #13818: over the cap, a P0 sized big is named with why ---"
+echo "--- #13818: over the cap, a P0 sized big starts anyway (capExemptPriorities) ---"
 export COORDINATOR_RELEASE_SCOPE_ONLY=true
 fresh; open_prs 12
 ticket 13818 "status:ready,P0,area:AI-INFRA,type:chore,project:person-facts" \
   "Person-facts data model: a colleague is keyed by member, not by name, and uses orgId" "$SCHEMA"
 out=$(tick)
+want "it starts over the cap" "13818" "$(spawned)"
+want_in "and says so" 'cap: over \(12/10\) — P0 #13818 starts anyway' "$out"
+echo "--- #13818: with no exempt priority, a P0 sized big is named with why ---"
+fresh; open_prs 12
+ticket 13818 "status:ready,P0,area:AI-INFRA,type:chore,project:person-facts" \
+  "Person-facts data model: a colleague is keyed by member, not by name, and uses orgId" "$SCHEMA"
+out=$(COORDINATOR_CAP_EXEMPT_PRIORITIES="" tick)
 want "it does not start over the cap" "" "$(spawned)"
 want_in "but its skip line says why" '^[0-9:]+ skip #13818 \(new\): over the open-work cap \(12/10\) and sized project — .*(schema|data-model|migration)' "$out"
 
