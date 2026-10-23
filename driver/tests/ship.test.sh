@@ -95,6 +95,18 @@ want_not_in "maxFiles 0 turns the cap off"  'split needed' "$out"
 jq '.driver.split.maxFiles = 5' "$HARNESS_CFG" > "$FIX/cfg5.json"
 out=$(HARNESS_CFG="$FIX/cfg5.json" driver_step_ship 764 2>&1); rc=$?
 want_in "the cap is a setting: 6 over 5"   'split needed — tkt-764/work changes 6 files' "$out"
+# A branch begun before the cap landed ships as before: builds in flight were at 40-95 files.
+: > "$GH_LOG"; wide_wt 765 30
+git -C "$FIX/wt765" commit -q --amend --no-edit --date=@1792700000
+out=$(driver_step_ship 765 2>&1); rc=$?
+want_not_in "a branch from before the cap: no split" 'split needed' "$out"
+want_in "  it says why it ships"            'started before the cap' "$out"
+want_in "  the draft is opened as before"  'pr create.*--draft' "$(cat "$GH_LOG")"
+: > "$GH_LOG"; wide_wt 766 30
+git -C "$FIX/wt766" commit -q --amend --no-edit --date=@1792700000
+jq '.driver.split.since = 1792600000' "$HARNESS_CFG" > "$FIX/cfgsince.json"
+out=$(HARNESS_CFG="$FIX/cfgsince.json" driver_step_ship 766 2>&1); rc=$?
+want_in "the cut-off is a setting: older than the branch, it caps" 'split needed — tkt-766/work changes 30 files' "$out"
 
 echo "--- an unreviewed ticket opens the draft and stops there ---"
 : > "$GH_LOG"

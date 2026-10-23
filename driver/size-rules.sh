@@ -38,6 +38,20 @@ driver_split_max() {
   local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"
 }
+# Branches started before the cap landed ship as before (PM call 2026-10-23: builds in flight
+# at 40-95 files would have parked hours of work). driver.split.since: epoch seconds, default
+# the cap's own landing; a branch whose first commit past its merge base is older is exempt.
+DRIVER_SPLIT_SINCE_DEFAULT=1792789535
+# driver_split_exempt <tree> <trunk ref> — 0 when the branch predates driver.split.since.
+driver_split_exempt() {
+  local wt="$1" trunk="$2" since mb first
+  since=$(jq -r --argjson d "$DRIVER_SPLIT_SINCE_DEFAULT" '.driver.split.since // $d' "$HARNESS_CFG" 2>/dev/null)
+  case "$since" in ''|*[!0-9]*) since=$DRIVER_SPLIT_SINCE_DEFAULT ;; esac
+  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 1
+  first=$(git -C "$wt" log --reverse --format=%at "$mb..HEAD" 2>/dev/null | head -1)
+  case "$first" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$first" -lt "$since" ]
+}
 # driver_split_count <tree> <trunk ref> — the files the branch changes, less the excluded; 1 unread.
 driver_split_count() {
   local wt="$1" trunk="$2" mb files pats f p n=0 skip
