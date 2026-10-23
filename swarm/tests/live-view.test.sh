@@ -1058,4 +1058,30 @@ got=$(real_claims "$CP" | jq '[.elsewhere[]?] | length')
 [ "$got" = "0" ] && ok "planted: the list exits 1 again → $got remote rows → red" || bad "planted: the list exits 1 and the test cannot see it ($got)"
 rm -rf "$CP" "$CLS" "$STATE/swarm/claims.json"
 
+echo "--- by area: open tickets grouped by the project's sections, tooling and the rest apart ---"
+# Dom, 2026-10-23: "update the tracker so I can see all this properly, per area".
+areas() { # <server.mjs> [sections json]
+  SWARM_SECTIONS="${2-[{\"label\":\"section:pulse\",\"name\":\"Pulse\"},{\"label\":\"section:one-desk\",\"name\":\"One Desk\"}]}" \
+    SWARM_RELEASE_PRIORITIES="P0 P1" SWARM_TOOLING_LABELS="repo:agent-harness" SERVER_MJS="$1" node --input-type=module -e '
+  import { pathToFileURL } from "node:url"
+  const { areasOf } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+  const board = { claims: [], open: [
+    { number: 1, title: "a", labels: ["section:pulse", "P1", "status:ready"] },
+    { number: 2, title: "b", labels: ["section:one-desk", "P0", "status:blocked"] },
+    { number: 3, title: "c", labels: ["section:pulse", "P3", "status:ready"] },
+    { number: 4, title: "d", labels: ["repo:agent-harness", "P1"] },
+    { number: 5, title: "e", labels: ["P1", "status:ready"] },
+    { number: 6, title: "f", labels: ["section:pulse", "P1", "status:ready"] } ] }
+  const a = areasOf(board, { prRows: {}, live: new Set(["6"]), liveHosts: [] })
+  console.log(a ? a.groups.map((g) => g.name + "=" + g.rows.map((r) => r.number + r.bucket[0]).join(",")).join(";") : "null")' 2>/dev/null
+}
+want "each section its own group, building first, tooling and the rest apart" \
+  "Pulse=6b,1r,3l;One Desk=2s;Tooling=4o;Other=5r" "$(areas "$SERVER_URLPATH")"
+want "no sections set: no block"                          "null" "$(areas "$SERVER_URLPATH" '[]')"
+plant server.mjs "    const g = toolingOf(labels, i.raw ?? i.title) ? '__tooling' : (sections.find((s) => labels.includes(s.label)) || { label: '__other' }).label" \
+  "    const g = (sections.find((s) => labels.includes(s.label)) || { label: '__other' }).label"
+got=$(areas "$P2/server.mjs")
+[ "$got" != "Pulse=6b,1r,3l;One Desk=2s;Tooling=4o;Other=5r" ] && ok "planted: tooling not split out → $got → red" || bad "planted: the tooling split deleted and the test cannot see it"
+want_in "the page has the By area block"                  'id="areas"' "$(cat "$LV/index.html")"
+
 suite_end "$FAILED"

@@ -1120,6 +1120,36 @@ export function boardOf(board, ctx, now = Date.now()) {
            needsYou: needsYouOf(board.open, ctx.prList), today, claims: board.claims || null }
 }
 
+// By area (the owner, 2026-10-23: "see all this properly, per area"): every open ticket,
+// grouped by the project's own section labels (liveView.sections, via SWARM_SECTIONS),
+// counted by the board's buckets; tooling gets its own group; the rest is "Other".
+const SECTIONS = (() => { try { const j = JSON.parse(process.env.SWARM_SECTIONS || '[]'); return Array.isArray(j) ? j.filter((x) => x && x.label && x.name) : [] } catch { return [] } })()
+const PRIO_NAMES = { P0: 'Urgent', P1: 'High', P2: 'Normal', P3: 'Polish' }
+export function areasOf(board, ctx, sections = SECTIONS) {
+  if (!board || !Array.isArray(board.open) || !sections.length) return null
+  const here = new Set([THIS_HOST, ...(ctx.liveHosts || [])].filter(Boolean))
+  const claimed = new Set((board.claims || []).filter((c) => !here.has(hostName(c.host))).map((c) => c.issue))
+  const groups = [...sections.map((s) => ({ key: s.label, name: s.name })), { key: '__tooling', name: 'Tooling' }, { key: '__other', name: 'Other' }]
+  const by = Object.fromEntries(groups.map((g) => [g.key, { ...g, counts: {}, rows: [] }]))
+  for (const i of board.open) {
+    const labels = i.labels || []
+    const t = String(i.number)
+    const g = toolingOf(labels, i.raw ?? i.title) ? '__tooling' : (sections.find((s) => labels.includes(s.label)) || { label: '__other' }).label
+    const r = releaseOf(i.raw ?? i.title, labels, i.milestone)
+    const bucket = r === 'release' || r === 'batch' ? bucketOf(labels, ctx.prRows[t], ctx.live.has(t) || claimed.has(t))
+      : r === 'lower' ? 'later' : r === 'post' ? 'post' : r === 'parked' ? 'stuck' : 'container'
+    const p = labels.find((l) => /^P[0-9]$/.test(l))
+    const row = by[g]
+    row.counts[bucket] = (row.counts[bucket] || 0) + 1
+    row.rows.push({ number: t, title: i.title, priority: PRIO_NAMES[p] || 'None', bucket, screen: labels.some((l) => l.startsWith('screen:')) })
+  }
+  const order = { building: 0, review: 1, ready: 2, pm: 3, owner: 4, stuck: 5, batched: 6, other: 7, later: 8, container: 9, post: 10 }
+  const pr = { Urgent: 0, High: 1, Normal: 2, Polish: 3, None: 4 }
+  for (const g of Object.values(by)) g.rows.sort((a, b) => order[a.bucket] - order[b.bucket] || pr[a.priority] - pr[b.priority] || Number(a.number) - Number(b.number))
+  return { labels: { ...BUCKETS, later: 'After higher priority', container: 'Batch or epic', post: 'After launch' },
+           groups: groups.map((g) => by[g.key]).filter((g) => g.rows.length) }
+}
+
 // The newest five-hour reading the coordinator took whose window is still open.
 export function usageOf(file = PACE_FILE, now = Date.now()) {
   let rows
@@ -1386,6 +1416,8 @@ export function snapshot(now = Date.now()) {
   const boardFile = readJsonCached(BOARD_FILE)
   const claims = claimsNow(now) || (boardFile && boardFile.claims) || null
   const board = boardOf(boardFile && { ...boardFile, claims }, ctx, now)
+  let areas = null
+  guard('areas', () => { areas = areasOf(boardFile && { ...boardFile, claims }, ctx) })
   const fleet = fleetOf(COORD_FLEET, now)
   const elsewhere = elsewhereOf(claims, live, now, (t) => {
     guard('title', () => fetchTitle(t))
@@ -1404,7 +1436,7 @@ export function snapshot(now = Date.now()) {
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
            hold, queue, capacity: capacityOf(), fleet,
-           mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, launch, usage: usageOf(PACE_FILE, now),
+           mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, areas, launch, usage: usageOf(PACE_FILE, now),
            hosts: hostsOf(live, claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,
                     toolingLabels: TOOLING_LABELS, toolingScopes: TOOLING_SCOPES, ownerLabels: OWNER_ASK } }

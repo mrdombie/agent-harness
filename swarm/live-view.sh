@@ -48,6 +48,9 @@ export SWARM_RELEASE_PRIORITIES="${SWARM_RELEASE_PRIORITIES:-$(swarm_opt swarm.r
 # Milestone titles hold spaces, so they travel as the JSON array the config holds.
 [ -n "${SWARM_POST_LAUNCH_MILESTONES:-}" ] || SWARM_POST_LAUNCH_MILESTONES=$(jq -c '.swarm.postLaunchMilestones // empty | arrays' "$HARNESS_CFG" 2>/dev/null)
 export SWARM_POST_LAUNCH_MILESTONES
+# The project's areas for the By-area block: [{label, name}] (liveView.sections).
+[ -n "${SWARM_SECTIONS:-}" ] || SWARM_SECTIONS=$(jq -c '.liveView.sections // empty | arrays' "$HARNESS_CFG" 2>/dev/null)
+export SWARM_SECTIONS
 # Checks the project calls report-only: a row lists them as notes, never as the failure.
 [ -n "${SWARM_NONBLOCKING_CHECKS:-}" ] || SWARM_NONBLOCKING_CHECKS=$(jq -c '.release.nonBlockingChecks // empty | arrays' "$HARNESS_CFG" 2>/dev/null)
 export SWARM_NONBLOCKING_CHECKS
