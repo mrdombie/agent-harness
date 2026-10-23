@@ -28,7 +28,7 @@ until labels=$(gh_call issue view "$T" --repo "$REPO_SLUG" --json labels -q '.la
 done
 if printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST"; then
   issue_status_set "$T" "$LBL_READY" >/dev/null 2>&1
-  gh issue comment "$T" --repo "$REPO_SLUG" --body "PR #$PR merged and fixed part of this polish list. The list closes on its own once every item is ticked; until then its free items wait for the next ticket for this screen." >/dev/null 2>&1
+  gh_call issue comment "$T" --repo "$REPO_SLUG" --body "PR #$PR merged and fixed part of this polish list. The list closes on its own once every item is ticked; until then its free items wait for the next ticket for this screen." >/dev/null 2>&1
   echo "polish list #$T left open"; exit 0
 fi
 # One merge is not the whole ticket: another open PR naming it leaves it open, and that

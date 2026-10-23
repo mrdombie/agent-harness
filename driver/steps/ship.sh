@@ -367,10 +367,10 @@ _driver_ship_base_red_comment() {
 }
 
 # _driver_ship_follow_ups <ticket> <pr> — MERGE FIRST: each finding the review deferred as a
-# follow-up (steps/review.followups.jsonl) is filed as its own ticket naming the PR, the
-# file:line and the finding (scripts/follow-up.sh: one per PR and finding id, status ready,
-# at the front of the queue). A finding that could not be filed is said and stays in the
-# PR body's deferred section; it never holds the ship.
+# follow-up (steps/review.followups.jsonl) goes to scripts/follow-up.sh, which holds it on
+# the PR's fix list while the PR is unmerged and files it as its own ticket once the PR
+# merges (the coordinator's settle pass). A finding that could not be held or filed is
+# said and stays in the PR body's deferred section; it never holds the ship.
 _driver_ship_follow_ups() {
   local t="$1" pr="$2" f out rc=0
   f="$(driver_state_dir "$t")/steps/review.followups.jsonl"

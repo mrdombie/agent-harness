@@ -454,7 +454,9 @@ _driver_evidence_warn() {
   body="**Warning, not blocking — report-only until the release.** The evidence this pull request is missing, at \`${head:-?}\`:
 $tasks
 
-Until the release, the checks that find evidence gaps report but do not block (\`release.nonBlockingChecks\` in harness.json), so no repair is sent for them. The PM reads them with the CI shots at sign-off."
+Until the release, the checks that find evidence gaps report but do not block (\`release.nonBlockingChecks\` in harness.json), so no repair is sent for them. The PM reads them with the CI shots at sign-off.
+
+<!-- harness:machine -->"
   if swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" -X POST -f body="$body" >/dev/null 2>&1; then
     mkdir -p "$(dirname "$ledger")" 2>/dev/null
     printf '%s\n' "$key" >> "$ledger"
