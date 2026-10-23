@@ -457,6 +457,7 @@ finish_open_work() {
       case ",$lab," in *",$l,"*) stop="$l"; break ;; esac
     done <<< "$fl"
     [ -z "$stop" ] || { not_counted "$pr" "waits on a person ($stop)"; continue; }
+    if stop=$(driver_repo_foreign "$lab"); then not_counted "$pr" "belongs to $stop"; continue; fi
     FINISH_STALL="$FINISH_STALL$pr"$'\t'"$t"$'\t'"$sha"$'\n'
     if [ "$kind" = queued ]; then counted=$((counted+1)); continue; fi
     why="it clashes with $INTEGRATION_BRANCH"
