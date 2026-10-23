@@ -22,6 +22,9 @@ jq --arg r "$FIX/trees" '.gates = {"local": ["echo lint-ok"]} | .worktreeRoot = 
 mkdir -p "$REPO/config" "$REPO/src/screens" "$REPO/src/lib"
 printf '{ "lint": "loose" }\n' > "$REPO/config/app.json"
 printf 'export const Home = () => null\n' > "$REPO/src/screens/home.tsx"
+# Named by the size cases below: a named file counts toward quick only once it is on the trunk.
+mkdir -p "$REPO/docs"; printf 'Every reply you recieve is kept.\n' > "$REPO/docs/guide.md"
+printf 'export const fmt = (d: Date) => d.toISOString()\n' > "$REPO/src/lib/util.ts"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm "a project with a config file and a screen"
 git init -q --bare "$FIX/origin"
 git -C "$REPO" remote add origin "$FIX/origin"
