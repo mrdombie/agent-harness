@@ -60,7 +60,8 @@ echo "--- the run's exit removes them ---"
 driver_proof_trees_drop
 want "no tree left"                            "0" "$(git -C "$REPO" worktree list | grep -c "$(basename "$D")" || true)"
 want "nor the dir"                             "no" "$([ -e "$D" ] && echo yes || echo no)"
-want_in "build-ticket drops them on exit"      "trap .*driver_proof_trees_drop.* EXIT" "$(cat "$ROOT/driver/build-ticket")"
+# Read with grep on the file: a whole build-ticket piped into grep -q dies on SIGPIPE under pipefail.
+want "build-ticket drops them on exit"         "1" "$(grep -cE "^trap .*driver_proof_trees_drop.* EXIT$" "$ROOT/driver/build-ticket")"
 
 echo "--- driver.proofReuse false builds fresh trees, as before ---"
 jq '.driver = ((.driver // {}) + {proofReuse: false})' "$FIX/cfg.json" > "$FIX/off.json"; : > "$FIX/prepare.log"
