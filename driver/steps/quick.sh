@@ -11,7 +11,8 @@
 # gates.localOnly, else the changed list, the changelog skip line, the push trial).
 #
 # THE FALLBACK KEEPS THE WORK. A diff past driver.quick.maxFiles, one touching a
-# never-quick file (a screen, a page, a schema or migration, a lockfile) or red gates
+# never-quick file (a new screen or page, any screen without the baseline route, a
+# schema or migration, a lockfile) or red gates
 # move the ticket up a size: the commits are kept at refs/driver/quick/<ticket>, the
 # branch goes back to where it was cut, and the plan step is told where they are —
 # so the full route's build proves its test red before the change, as it must.
@@ -32,10 +33,14 @@ driver_quick_exceeds() {
   if [ "$n" -gt "$max" ]; then
     printf 'the change touches %s files, more than a quick change (%s): %s' "$n" "$max" "$(printf '%s' "$files" | head -5 | paste -sd, - | sed 's/,/, /g')"; return 0
   fi
+  # A screen file the branch adds is not on the trunk, so it reads as a new screen.
   never=$(printf '%s\n' "$files" | driver_quick_never | head -1)
   if [ -n "$never" ]; then printf 'the change touches %s — %s' "${never%%	*}" "${never#*	}"; return 0; fi
   IFS=$'\t' read -r tier why <<<"$(driver_change_tier "$t" "$wt" "$trunk")"
-  if [ "$tier" = screen ] && driver_tiers_on; then printf 'the change is screen work: %s' "$why"; return 0; fi
+  # An existing screen on the baseline route stays quick: CI diffs it against its last approved shots.
+  if [ "$tier" = screen ] && driver_tiers_on && [ "$(driver_screen_route "$t" | cut -f1)" != baseline ]; then
+    printf 'the change is screen work: %s' "$why"; return 0
+  fi
   return 1
 }
 

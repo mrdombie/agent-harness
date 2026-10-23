@@ -226,7 +226,7 @@ plant "the follow-up record"  driver/steps/review.sh \
         fi' case_major_on "rc=0 fu="
 plant "the switch reads the config" scripts/release-checks.sh \
   '  jq -e '"'"'(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true'"'"' "$cfg" >/dev/null 2>&1' case_major_off "rc=0 fu=m1"
-plant "the baseline route"    driver/tier.sh '  driver_merge_first && return 0' case_route "picture"
+plant "the baseline route"    driver/size-rules.sh '  { command -v release_merge_first >/dev/null 2>&1 && release_merge_first; } && return 0' case_route "picture"
 plant "the ship files them"   driver/steps/ship.sh \
   '  if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi' case_ship "calls=0"
 case_lg_kit() { SUT_KIT="$KIT" case_lg "$FIX/lg-off.json"; unset SUT_KIT; }

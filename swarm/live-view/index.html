@@ -311,7 +311,7 @@ function machineLine(s){
   // The tooling cap (coordinator.toolingCap): harness and process runs on every machine together.
   const tl = c && c.tooling
   if (tl) parts.push(`tooling ${esc(tl.live)} / cap ${esc(tl.cap)}` + (tl.waiting ? `, ${esc(tl.waiting)} waiting` : ''))
-  // The open-work cap (coordinator.openPrCap): over it, nothing new starts until changes land.
+  // The open-work cap (coordinator.openPrCap): over it, only quick new tickets start until changes land.
   const op = c && c.openPrs
   if (op && op.cap) parts.push(op.over ? `<span class="diskheld">open changes ${esc(op.count)} / cap ${esc(op.cap)}: finishing before starting</span>`
     : `open changes ${esc(op.count)} / cap ${esc(op.cap)}`)

@@ -465,6 +465,29 @@ driver_to_full() {
   i=$(step_at "$1")
   driver_say "↑ #$TICKET route=full from $1: $2"
 }
+# THE OPEN-WORK CAP'S QUICK STARTS (the owner, 2026-10-22). Over coordinator.openPrCap the
+# coordinator starts only what the size rules call quick, with DRIVER_CAP_BYPASS=1. One the
+# driver then sizes bigger — at size, or when the quick step moves it up — stops before
+# plan: the record and the quick attempt (refs/driver/quick/<n>) are kept, the ticket goes
+# back on the queue, and a slip on its body keeps the coordinator from starting it over the
+# cap again. The next run, under the cap, resumes it from plan.
+. "$DRIVER_HOME/size-rules.sh" || exit 1
+driver_cap_bypassed() { [ "${DRIVER_CAP_BYPASS:-}" = 1 ] && [ "$(driver_state_get "$TICKET" mode)" != repair ]; }
+driver_cap_slip() { # <why>
+  local why="waits behind the open-work cap: it started over the cap as quick, then sized $(driver_state_get "$TICKET" size) — $1"
+  driver_size_slip_put "$TICKET" "$(driver_state_get "$TICKET" size_body_hash)" "$1" \
+    || driver_say "   cap: the slip for #$TICKET could not be written ($(driver_size_cache_dir)) — the coordinator may start it as quick again"
+  driver_state_set "$TICKET" cap_slip "$(swarm_stamp) $1"
+  driver_requeue "$TICKET" "$why"
+  exit "$DRIVER_E_REQUEUE"
+}
+# driver_cap_after_size — once size is finished (or skipped as finished): a cap-bypass run
+# whose route is not quick stops here, before plan.
+driver_cap_after_size() {
+  driver_cap_bypassed || return 0
+  [ "$(driver_state_get "$TICKET" route)" != quick ] || return 0
+  driver_cap_slip "$(driver_state_get "$TICKET" size_reason | cut -c1-200)"
+}
 # The claim to the open PR, timed: the start step takes the claim, ship opens the PR.
 _driver_mins() { printf '%dm%02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
 
@@ -518,7 +541,7 @@ while [ "$i" -lt "$N" ]; do
 
   if driver_state_is_done "$TICKET" "$step" && ! always "$step"; then
     skipped=$((skipped+1)); i=$((i+1))
-    [ "$step" != size ] || driver_take_route
+    [ "$step" != size ] || { driver_take_route; driver_cap_after_size; }
     continue
   fi
 
@@ -626,7 +649,7 @@ while [ "$i" -lt "$N" ]; do
       [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.requeue = 0'
       [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
-      [ "$step" != size ] || driver_take_route
+      [ "$step" != size ] || { driver_take_route; driver_cap_after_size; }
       ;;
 
     "$DRIVER_E_UPSIZE")
@@ -743,6 +766,7 @@ while [ "$i" -lt "$N" ]; do
 
   # BIGGER THAN ITS SIZE: on along the full route from plan, with the work kept (quick.sh).
   if [ "$upsize" -eq 1 ]; then
+    ! driver_cap_bypassed || driver_cap_slip "$(driver_state_get "$TICKET" quick_fallback | cut -c1-200)"
     if case " $FULL_ORDER " in *" plan "*) true ;; *) false ;; esac; then
       driver_to_full plan "$(driver_state_get "$TICKET" quick_fallback)"
       continue

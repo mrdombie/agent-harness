@@ -23,8 +23,9 @@
 #                    no more than this host's share of the five-hour window
 #                    (coord_pace: every host's builders burn the one account);
 #                    while more than coordinator.openPrCap PRs are open (drafts
-#                    too), no new ticket starts: only repairs, approved merges and
-#                    process fixes; at or under it the queue's priority order decides
+#                    too), no new ticket starts but the quick-sized ones (the
+#                    driver's own size rules, cap-quick.sh; coordinator.openPrCapQuick)
+#                    after the repairs, approved merges and process fixes; at or under it the queue's priority order decides
 #                    across repairs and new work, a repair first at one priority
 #                    (owner call 2026-10-22). With the cap 0:
 #                    healing (repair, approved-merge) fills ceil(ceiling x
@@ -77,6 +78,8 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/base-wait.sh" || exit 1
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
 . "$SELF_DIR/shared-install-hold.sh" || exit 1
+. "$SELF_DIR/cap-quick.sh" || exit 1
+QUICK_OK=""; QUICK_STARTED=0
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
 SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
@@ -604,8 +607,8 @@ fi
 CANDS=""
 candidates() {
   local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
-  local rel_out="" rel_held=0
-  CANDS=""
+  local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
+  CANDS=""; QUICK_OK=""
   # The backstop to the seed: new work outside coordinator.releaseScopeOnly never starts,
   # read off this tick's labels and milestones. A ticket the read missed is spawn_block's.
   if coord_release_on; then
@@ -636,7 +639,14 @@ candidates() {
     tool=0; { [ "$proc" = 1 ] || ticket_tooling "$t"; } && tool=1
     if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
     # Over the open-work cap only finishing starts: repairs, approved merges, process fixes.
-    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then capped=$((capped+1)); continue; fi
+    # Quick-sized new work starts anyway (the owner, 2026-10-22; cap-quick.sh): held here,
+    # sized after the loop by the driver's own rules. Polish rides along, never alone.
+    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then
+      if [ "$cls" = new ] && [ "$pol" != 1 ] && [ "$pl" != 1 ] && coord_cap_quick_on; then
+        qwait="$qwait$i"$'\t'"$t"$'\t'"$tool"$'\t'"$note"$'\n'
+      fi
+      capped=$((capped+1)); continue
+    fi
     # A list with nothing free on it is never work, however idle the factory: every
     # item is ticked, reserved by a PR, or taken by another run. Its own takes count.
     if [ "$cls" = new ] && [ "$pl" = 1 ]; then
@@ -658,6 +668,29 @@ candidates() {
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
+  # Over the cap: the quick ones of the new work it held, in queue order, up to the free places.
+  if [ -n "$qwait" ]; then
+    # shellcheck disable=SC2046  # a list of numbers, split on purpose
+    # Sized in queue order, and no further than the free places need.
+    qsizes=$(COORD_QUICK_WANT=$(( SLOTS + 2 )) coord_quick_sizes $(printf '%s' "$qwait" | cut -f2))
+    qsized=$(printf '%s\n' "$qsizes" | awk -F'\t' 'NF && $2 != "unread"' | grep -c .)
+    qquick=$(printf '%s\n' "$qsizes" | awk -F'\t' '$2 == "quick"' | grep -c .)
+    # The places healing and process fixes leave: those take theirs first.
+    qroom=$(( SLOTS - $(printf '%s' "$rows" | grep -c .) )); [ "$qroom" -ge 0 ] || qroom=0
+    while IFS=$'\t' read -r i t tool note; do
+      [ -n "${t:-}" ] || continue
+      [ "$qn" -lt "$qroom" ] || break
+      sz=$(printf '%s\n' "$qsizes" | awk -F'\t' -v t="$t" '$1 == t { print $2; exit }')
+      [ "$sz" = quick ] || continue
+      if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
+      if why=$(spawn_block "$t" new); then say "skip #$t (new, quick): $why"; continue; fi
+      qn=$((qn+1)); capped=$((capped-1)); other=1
+      [ "$tool" = 0 ] || tool_left=$((tool_left-1))
+      QUICK_OK="$QUICK_OK $t"
+      rows="$rows$i"$'\t'"$t"$'\t'new$'\t'0$'\t'0$'\t'"$note"$'\n'
+    done <<< "$qwait"
+    say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — of $(printf '%s' "$qwait" | grep -c .) new ticket(s) held, $qsized sized: $qquick quick, $qn of them startable now"
+  fi
   if [ -n "$held" ]; then
     while IFS=$'\t' read -r i t cls pl cnt tool note; do
       [ -n "${t:-}" ] || continue
@@ -796,7 +829,7 @@ elif [ "$SLOTS" -le 0 ]; then
   held_view
 else
   candidates
-  started=0
+  started=0; QUICK_STARTED=0
   # The room is re-read before each start after the first; near the floor that stops at one.
   RAMP=$SLOTS; RAMP_WHY=""
   if [ -n "$COORD_RAMP_MAX" ] && [ "$RAMP" -gt "$COORD_RAMP_MAX" ]; then RAMP=$COORD_RAMP_MAX; RAMP_WHY="coordinator.rampMax is $COORD_RAMP_MAX"; fi
@@ -810,7 +843,10 @@ else
       # The cap decides, then priority: under it the first candidate in queue order,
       # repair or new (a red ranks at its ticket's priority, ahead at the same one);
       # over it healing only (no new is a candidate then either).
-      if [ -n "$OVER_PR_CAP" ]; then pick="$heal"
+      if [ -n "$OVER_PR_CAP" ]; then
+        pick="$heal"
+        # Then the quick new work the cap lets through (cap-quick.sh), in queue order.
+        [ -n "$pick" ] || [ -z "${QUICK_OK// /}" ] || pick=$(awk -F'\t' -v q=" $QUICK_OK " 'NF && index(q, " " $1 " ") { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS")
       else pick=$(awk -F'\t' 'NF { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS"); fi
     elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
     elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
@@ -845,13 +881,17 @@ else
         LIVE_HEAL=$((LIVE_HEAL+1)); ticket_polish "$t" && LIVE_HEAL_POLISH=$((LIVE_HEAL_POLISH+1))
       else LIVE_NEW=$((LIVE_NEW+1)); fi
     }
-    coord_act_log spawn "$t" "$cls${note:+ — $note}"
+    bypass=""
+    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
+      bypass=1; lent="${lent:-over the open-work cap: sized quick}"; QUICK_STARTED=$((QUICK_STARTED+1))
+    fi
+    coord_act_log spawn "$t" "$cls${bypass:+ (quick, over the cap)}${note:+ — $note}"
     if coord_shadow; then
       say "would spawn #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; count_live
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
-      spawn_out=$(CLAIM_CLASS="$cls" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
+      spawn_out=$(CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live
@@ -862,6 +902,7 @@ else
         # Its place goes to the next entry this tick. Counted as taken, one refused
         # entry at the head of the queue would hold its class shut on every tick.
         started=$((started-1)); HEAL_FREE=$heal_free_was; NEW_FREE=$new_free_was
+        [ -z "$bypass" ] || QUICK_STARTED=$((QUICK_STARTED-1))
         # A refusal names its reason (driver mode cannot carry a brief, say);
         # raised so it is seen, not only buried in the coordinator's log.
         why=$(printf '%s\n' "$spawn_out" | sed '/^[[:space:]]*$/d' | tail -1 | cut -c1-240)
@@ -876,6 +917,7 @@ else
   if [ "$started" -eq 0 ] && [ -z "$CANDS" ]; then
     say "spawn: $SLOTS slot(s), nothing spawnable in the queue"
   fi
+  [ -z "$OVER_PR_CAP" ] || [ "$QUICK_STARTED" -eq 0 ] || say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — $QUICK_STARTED quick ticket(s) started anyway"
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
   reds_waiting

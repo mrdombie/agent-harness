@@ -46,6 +46,10 @@
 #                                                           split and heal-all: under it priority decides
 #                                                           across repairs and new work, a repair first at
 #                                                           one priority. 0: off, and the split runs again
+#   coordinator.openPrCapQuick COORDINATOR_OPEN_PR_CAP_QUICK on  over the cap, new tickets the driver's size
+#                                                           rules call quick start anyway, after healing
+#                                                           (scripts/cap-quick.sh); false: none does
+#   coordinator.openPrCapQuickScan COORDINATOR_OPEN_PR_CAP_QUICK_SCAN 40  bodies read a tick to pre-size
 #   coordinator.toolingLabels COORDINATOR_TOOLING_LABELS (below) labels that make a ticket our own
 #                                                           build tooling: it runs after product
 #                                                           work of the same priority and class
