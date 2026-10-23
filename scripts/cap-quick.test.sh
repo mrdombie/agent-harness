@@ -106,8 +106,9 @@ want "once its body changes it is sized again" "706" "$(spawned)"
 
 echo "--- quick starts fill only the free places, after healing ---"
 fresh; open_prs 22; repairs 601 602 603 604 605; ticket 707 "status:ready" "$CONFIG_BODY"; ticket 708 "status:ready" "$CONFIG_BODY"
-tick >/dev/null
+out=$(tick)
 want "five repairs and one quick start fill the six places" "601 602 603 604 605 707" "$(spawned)"
+want_in "only the place healing left is offered" 'of 2 new ticket\(s\) held, 2 sized: 2 quick, 1 of them startable now' "$out"
 
 echo "--- release scope still applies first ---"
 fresh; open_prs 22; ticket 709 "status:ready,P2" "$CONFIG_BODY"; ticket 710 "status:ready,P0" "$CONFIG_BODY"

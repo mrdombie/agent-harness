@@ -26,16 +26,15 @@
 # driver_quick_exceeds <ticket> <tree> <trunk> — prints why the branch's real diff is
 # bigger than a quick change and returns 0; 1 when it fits.
 driver_quick_exceeds() {
-  local t="$1" wt="$2" trunk="$3" files n max never tier why base
+  local t="$1" wt="$2" trunk="$3" files n max never tier why
   files=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null | sed '/^$/d')
   n=$(printf '%s' "$files" | grep -c .)
   max=$(driver_quick_max_files)
   if [ "$n" -gt "$max" ]; then
     printf 'the change touches %s files, more than a quick change (%s): %s' "$n" "$max" "$(printf '%s' "$files" | head -5 | paste -sd, - | sed 's/,/, /g')"; return 0
   fi
-  # Existing or new is read against the branch's own base: a screen file it adds is a new screen.
-  base=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null)
-  never=$(printf '%s\n' "$files" | DRIVER_SIZE_REPO="$wt" DRIVER_SIZE_REV="${base:-$trunk}" driver_quick_never | head -1)
+  # A screen file the branch adds is not on the trunk, so it reads as a new screen.
+  never=$(printf '%s\n' "$files" | driver_quick_never | head -1)
   if [ -n "$never" ]; then printf 'the change touches %s — %s' "${never%%	*}" "${never#*	}"; return 0; fi
   IFS=$'\t' read -r tier why <<<"$(driver_change_tier "$t" "$wt" "$trunk")"
   # An existing screen on the baseline route stays quick: CI diffs it against its last approved shots.

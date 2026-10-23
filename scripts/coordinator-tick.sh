@@ -607,7 +607,7 @@ fi
 CANDS=""
 candidates() {
   local t cls pri pol pl ex proc note why pr nn=0 i=0 held="" rows="" other=0 lists bodies="{}" cnt waits=0 wide capped=0 tool_left=$TOOLING_ROOM tool_wait=0 tool
-  local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 sz
+  local rel_out="" rel_held=0 qwait="" qsizes="" qn=0 qsized=0 qquick=0 qroom=0 sz
   CANDS=""; QUICK_OK=""
   # The backstop to the seed: new work outside coordinator.releaseScopeOnly never starts,
   # read off this tick's labels and milestones. A ticket the read missed is spawn_block's.
@@ -675,9 +675,11 @@ candidates() {
     qsizes=$(COORD_QUICK_WANT=$(( SLOTS + 2 )) coord_quick_sizes $(printf '%s' "$qwait" | cut -f2))
     qsized=$(printf '%s\n' "$qsizes" | awk -F'\t' 'NF && $2 != "unread"' | grep -c .)
     qquick=$(printf '%s\n' "$qsizes" | awk -F'\t' '$2 == "quick"' | grep -c .)
+    # The places healing and process fixes leave: those take theirs first.
+    qroom=$(( SLOTS - $(printf '%s' "$rows" | grep -c .) )); [ "$qroom" -ge 0 ] || qroom=0
     while IFS=$'\t' read -r i t tool note; do
       [ -n "${t:-}" ] || continue
-      [ "$qn" -lt "$SLOTS" ] || break
+      [ "$qn" -lt "$qroom" ] || break
       sz=$(printf '%s\n' "$qsizes" | awk -F'\t' -v t="$t" '$1 == t { print $2; exit }')
       [ "$sz" = quick ] || continue
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi

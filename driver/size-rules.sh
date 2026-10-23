@@ -10,7 +10,7 @@
 # driver then calls bigger.
 #
 # Needs HARNESS_CFG, KIT_ROOT and, for the existing-screen test, MAIN_REPO and
-# INTEGRATION_BRANCH (or DRIVER_SIZE_REPO / DRIVER_SIZE_REV).
+# INTEGRATION_BRANCH.
 [ -z "${_DRIVER_SIZE_RULES:-}" ] || return 0
 _DRIVER_SIZE_RULES=1
 
@@ -54,17 +54,14 @@ driver_baseline_route_on() {
 }
 driver_picture_labels() { jq -r '(.design.baselineRoute.pictureLabels // ["screen:new", "screen:redesign"])[]' "$HARNESS_CFG" 2>/dev/null; }
 
-# _driver_size_exists <path> — 0 when the path is on the trunk already: an existing
-# screen or route, not a new one. DRIVER_SIZE_REPO / DRIVER_SIZE_REV point it at a
-# branch's own base; by default the main checkout's origin/<integration branch>.
+# _driver_size_exists <path> — 0 when the path is on the trunk already (the main
+# checkout's origin/<integration branch>): an existing screen or route, not a new one.
 _driver_size_exists() {
-  local repo="${DRIVER_SIZE_REPO:-${MAIN_REPO:-}}" rev="${DRIVER_SIZE_REV:-}" r
+  local repo="${MAIN_REPO:-}" rev="" r
   [ -n "$repo" ] && [ -d "$repo" ] || return 1
-  if [ -z "$rev" ]; then
-    for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}" HEAD; do
-      git -C "$repo" rev-parse --verify -q "$r^{commit}" >/dev/null 2>&1 && { rev="$r"; break; }
-    done
-  fi
+  for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}"; do
+    git -C "$repo" rev-parse --verify -q "$r^{commit}" >/dev/null 2>&1 && { rev="$r"; break; }
+  done
   [ -n "$rev" ] && git -C "$repo" cat-file -e "$rev:$1" 2>/dev/null
 }
 
