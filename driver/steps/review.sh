@@ -339,12 +339,20 @@ _driver_review_priority_skipped() {
 # _driver_review_silent <ticket> <rc> — 0, printing how, when the review call came back
 # without its reviewer having reported: a question saying a subagent had not reported
 # (still running, timed out), no answer at all, or an answer carrying no verdict.
+# AN UNFINISHED REVIEW IS NEVER A PERSON'S DECISION. A P0 parked to the owner on 2026-10-23
+# asking "Should the review step be run again so the reviewer can finish before a verdict
+# is recorded? (yes/no)" — the answer is always yes, so the step asks itself. A question
+# that asks to run the review again, or names a verdict not yet reached, reads as silent.
+_driver_review_rerun_question() { # <question>
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | grep -Eq \
+    "(re-?run|run)[^.?!]*review[^.?!]*(again|once more|a second time)|review( step)? (be )?(re-?run|run again|run once more)|reviewer[^.?!]*(finish|complete|report)[^.?!]*(before|so)|(before|until) (a|the|its) verdict|verdict (is|was|has)( not| n.t)? (yet )?(been )?(recorded|reached|returned)|no verdict (yet|was|is)"
+}
 _driver_review_silent() {
   local t="$1" rc="$2" f q
   f="$(driver_state_dir "$t")/steps/review.json"
   if [ "$rc" -eq "$DRIVER_E_QUESTION" ]; then
     q=$(jq -r '(.question // .park // "")' "$f" 2>/dev/null)
-    driver_question_silent_agent "$q" || return 1
+    driver_question_silent_agent "$q" || _driver_review_rerun_question "$q" || return 1
     printf 'it said: %s' "$(printf '%s' "$q" | cut -c1-160)"; return 0
   fi
   if [ "$rc" -eq "$DRIVER_E_SCHEMA" ]; then
