@@ -3,7 +3,6 @@
   "skills": {
     "superpowers:writing-plans": "turns an approved spec into a decomposition with no placeholders",
     "superpowers:systematic-debugging": "the first step on a bug: reproduce, isolate, prove red",
-    "superpowers:subagent-driven-development": "builds a plan one task at a time, a fresh helper per task and a review between them",
     "superpowers:test-driven-development": "red before green, inside every task",
     "superpowers:verification-before-completion": "observation before any claim of done",
     "superpowers:requesting-code-review": "an independent reviewer on the finished change",
@@ -33,7 +32,7 @@
     "build": {
       "brief": "build.md",
       "schema": "schemas/build.json",
-      "skills": ["superpowers:subagent-driven-development", "superpowers:test-driven-development"],
+      "skills": ["superpowers:test-driven-development"],
       "facts": {
         "PLAN_TASK": "one task from the plan step's answer: its title, files, tests and risks",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: gate commands, changelog convention, the component kit",

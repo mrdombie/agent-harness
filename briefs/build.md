@@ -6,10 +6,9 @@ You are building **one** task from the plan. Not the next one, not the ticket.
 
 ## Invoke the skill — do not work from this file
 
-Run **`superpowers:subagent-driven-development`** to execute the task, with
-**`superpowers:test-driven-development`** inside it. Those two own how the work
-is split and how the cycle runs; this brief owns this project's facts and what the
-driver needs back.
+Run **`superpowers:test-driven-development`** to build the task. It owns the
+cycle; this brief owns this project's facts and what the driver needs back. Start
+no helper agents: each task already has its own session.
 
 The driver runs your new test itself, before your change and after it, and
 refuses to continue unless it failed first. It then runs this project's

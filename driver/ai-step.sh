@@ -78,10 +78,24 @@ driver_record_usage() {
 # The skills briefs/facts.json declares for a step: the machine-readable list the
 # briefs own and the driver never read. Empty when there is no facts.json, which is
 # normal for a fixture pointing DRIVER_BRIEFS at a directory of its own.
-driver_declared_skills() { # <step>
-  local f="$DRIVER_BRIEFS/facts.json"
+#
+# A PLAN DEBUGS ONLY A BUG. systematic-debugging is a plan skill on a bug ticket alone
+# (driver_ticket_is_bug); on any other ticket it is not declared, so a feature plan is
+# neither told to load it nor counted as having run its skills by loading it.
+driver_declared_skills() { # <step> [ticket]
+  local f="$DRIVER_BRIEFS/facts.json" drop=""
   [ -f "$f" ] || return 0
-  jq -r --arg s "$1" '(.steps[$s].skills // [])[]' "$f" 2>/dev/null
+  if [ "$1" = plan ] && [ -n "${2:-}" ] && ! driver_ticket_is_bug "$2"; then drop="superpowers:systematic-debugging"; fi
+  jq -r --arg s "$1" --arg drop "$drop" '(.steps[$s].skills // [])[] | select(. != $drop)' "$f" 2>/dev/null
+}
+
+# driver_ticket_is_bug <ticket> — 0 when the ticket carries a bug label (labels.bug,
+# default "bug type:bug"); also 0 when its labels cannot be read, the side that parks nothing.
+driver_ticket_is_bug() {
+  local ls want
+  ls=$(driver_gh_read swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name] | join("\n")' 2>/dev/null) || return 0
+  want=$(driver_opt labels.bug "bug type:bug" 2>/dev/null)
+  printf '%s\n' "$ls" | grep -qxF -f <(printf '%s\n' ${want:-bug type:bug})
 }
 
 # THE SKILLS THAT ARE NEVER A TOOL CALL, and therefore can never appear in a
@@ -227,6 +241,9 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   fi
   # The brief's sign-off lines are the off case; merge first replaces them for every step.
   if driver_merge_first; then printf '\n---\n%s\n' "$DRIVER_MERGE_FIRST_SIGNOFF" >> "$prompt"; fi
+  if [ "$step" = plan ] && ! driver_ticket_is_bug "$t"; then
+    printf '\n---\nThis ticket carries no bug label: do not run superpowers:systematic-debugging.\n' >> "$prompt"
+  fi
 
   # The contract, relaxed, so the model is BOUND to the answer's shape rather than
   # asked for it in prose. Derived from the contract by prompt-schema.jq — never a
@@ -490,7 +507,7 @@ _driver_ai_judge() {
   # is an answer to read them from.
   skill_saw=$(driver_log_skills "$log")
   skill_want=$(driver_brief_skill "$brief")
-  want=$(printf '%s\n%s\n' "$skill_want" "$(driver_declared_skills "$step")" | grep -v '^$' | sort -u)
+  want=$(printf '%s\n%s\n' "$skill_want" "$(driver_declared_skills "$step" "$t")" | grep -v '^$' | sort -u)
   if [ -n "$want" ]; then
     local hit=0 k
     while IFS= read -r k; do
