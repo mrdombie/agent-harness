@@ -102,6 +102,7 @@ export GH_CALLER=coordinator-tick
 TICK_T0=$(swarm_now)
 
 say "tick: $(coord_mode) mode, cap ${COORD_CAP:-none}, config from ${HARNESS_CFG_FROM:-?}"
+say "config: from ${HARNESS_CFG_FROM:-?} · COORDINATOR_CAP $([ -n "${COORDINATOR_CAP+x}" ] && echo "set to '${COORDINATOR_CAP}' in the env" || echo "not set in the env")"
 # A live view that is up but answers nothing is never restarted by launchd: probe it.
 LV_WATCHDOG="${COORDINATOR_LIVE_VIEW_WATCHDOG:-$SELF_DIR/live-view-watchdog.sh}"
 [ "$LV_WATCHDOG" = off ] || { . "$LV_WATCHDOG" && live_view_watchdog; }
@@ -412,6 +413,15 @@ if [ "$SHEET_ROLE" = reader ]; then
   else
     SHEET_HOLD="$SHEET_WHY"
     say "sheet: $SHEET_WHY"
+  fi
+  # The owner's per-host cap wins over a larger one, or none, here: env and a local config never lift it.
+  # A cap of 0 is never published: it stops one machine, not the fleet.
+  if [ -n "${SHEET_HOST_CAP:-}" ] && { [ -z "$COORD_CAP" ] || [ "$COORD_CAP" -gt "$SHEET_HOST_CAP" ]; }; then
+    say "host cap: $SHEET_HOST_CAP per host (from the sheet; this machine's own was ${COORD_CAP:-none})"
+    COORD_CAP=$SHEET_HOST_CAP
+  else
+    hc_sheet=""; [ -z "${SHEET_HOST_CAP:-}" ] || hc_sheet="; the sheet's is $SHEET_HOST_CAP"
+    say "host cap: ${COORD_CAP:-none} per host (this machine's own$hc_sheet)"
   fi
 elif [ -s "$COORD_QUEUE" ] && [ "${COORDINATOR_REFRESH:-1}" = 1 ]; then
   if until=$(gh_backoff_active); then
@@ -890,9 +900,10 @@ if [ "$SHEET_ROLE" = owner ]; then
     say "sheet: the claim list could not be read — not written"
   else
     if entries=$(coord_sheet_entries "$SHEET_WIDE" "$ISSUES" "$CLAIM_ROWS" "$SHEET_STARTED") && [ -n "$entries" ] \
-       && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" --arg pace "$(coord_pace_fresh)" \
+       && entries=$(jq -c --argjson f "$FLEET" --arg floor "$SHEET_FLOOR" --arg pace "$(coord_pace_fresh)" --arg hcap "$COORD_CAP" \
                       --argjson plugins "$(harness_plugins_published)" \
                       '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
+                       + (if ($hcap | tonumber? // 0) > 0 then {hostCap: {perHost: ($hcap | tonumber)}} else {} end)
                        + (if ($plugins | length) == 0 then {} else {plugins: $plugins} end)
                        + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, sevenDay, maxBuildsFleet, shares, settings})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")

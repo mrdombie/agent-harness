@@ -199,7 +199,7 @@ coord_sheet_render() {
        else (.order | to_entries[] | .key as $i | .value
              | "\($i + 1). #\(.n) · \(.prin | pri) · \(kind) · \(.title | cut) — \(if (.host // "") != "" then "building on " + .host else "ready" end)") end),
       (if (.fleet // []) | length > 0 then
-        "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)",
+        "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)\(if .hostCap then " · at most \(.hostCap.perHost) building on each" else "" end)",
         (.fleet[] | "- \(.host) · harness \(.version // "?")\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)"
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
@@ -219,6 +219,7 @@ coord_sheet_render() {
       (.order | map({n, class, prin} + (if .process then {process} else {} end) + (if (.host // "") != "" then {host} else {} end)) | tojson),
       "```",
       (if (.minHarness // "") != "" then "<!-- sheet:floor minHarness=\(.minHarness) -->" else empty end),
+      (if .hostCap then "<!-- sheet:cap \(.hostCap | tojson) -->" else empty end),
       (if (.plugins // []) | length > 0 then "<!-- sheet:plugins \(.plugins | tojson) -->" else empty end),
       (if (.fleet // []) | length > 0 then "<!-- sheet:fleet \(.fleet | tojson) -->" else empty end),
       (if .pace then "<!-- sheet:pace \(.pace | tojson) -->" else empty end)' <<<"$e"
@@ -281,7 +282,7 @@ coord_sheet_parse() {
 # be worked from: unreadable with no fresh copy, or older than staleMin.
 coord_sheet_read() {
   local n raw body parsed from=github age
-  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"; SHEET_PACE=""; SHEET_PLUGINS=""
+  SHEET_ORDER=""; SHEET_AT=""; SHEET_AGE_MIN=""; SHEET_WHY=""; SHEET_FROM=""; SHEET_MIN_HARNESS=""; SHEET_FLEET="[]"; SHEET_PACE=""; SHEET_PLUGINS=""; SHEET_HOST_CAP=""
   body=""
   local try
   for try in 1 2; do
@@ -305,6 +306,9 @@ coord_sheet_read() {
   SHEET_FLEET=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:fleet (\[.*\]) -->$/\1/p' | tail -1 | jq -c 'if type == "array" then . else [] end' 2>/dev/null)
   [ -n "$SHEET_FLEET" ] || SHEET_FLEET="[]"
   SHEET_PACE=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:pace (\{.*\}) -->$/\1/p' | tail -1 | jq -c 'if type == "object" then . else empty end' 2>/dev/null)
+  # The fleet's per-host cap: one host's config is the only place it is set, so every reader takes it here.
+  SHEET_HOST_CAP=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:cap (\{.*\}) -->$/\1/p' | tail -1 \
+                   | jq -r '.perHost | select(type == "number" and . >= 0 and . == floor)' 2>/dev/null)
   SHEET_PLUGINS=$(printf '%s\n' "$body" | tr -d '\r' | sed -nE 's/^<!-- sheet:plugins (\[.*\]) -->$/\1/p' | tail -1 | harness_plugins_normalise)
   [ "$SHEET_PLUGINS" != "[]" ] || SHEET_PLUGINS=""
   parsed=$(coord_sheet_parse "$body") || { SHEET_WHY="the sheet holds no order this coordinator can read"; return 1; }
@@ -369,7 +373,7 @@ coord_tick_why() {
     | ([$l[] | select(test("^skip #[0-9]+ \\("))]) as $sk
     | {pace: ($l | last("^pace: ")), ceiling: ($l | last("^ceiling: ")), spawn: ($l | last("^spawn: ")),
        openChanges: ($l | last("^open changes .* / cap ")), sheet: ($l | last("^sheet: working .*'"'"'s order")),
-       cap: ($l | last("^cap: ")), tooling: ($l | last("^tooling: [0-9]+ tooling ticket")),
+       cap: ($l | last("^cap: ")), hostCap: ($l | last("^host cap: ")), config: ($l | last("^config: ")), tooling: ($l | last("^tooling: [0-9]+ tooling ticket")),
        install: ($l | last("^shared install: ⚠")),
        skips: ($sk[0:5] | map(c)),
        skipsBy: ($sk | map(sub("^skip #[0-9]+ \\([^)]*\\): "; "") | gsub("#[0-9]+"; "#N") | c)
