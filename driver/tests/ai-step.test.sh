@@ -199,6 +199,29 @@ want_in "and the PM answer"                      'show the date in UK format' "$
 want_not_in "and nothing that is not an answer"  'Thanks, looking at it' "$(cat "$P101")"
 want "newest last"                               "yes" "$(awk '/keep Published from/{a=NR} /UK format/{b=NR} END{print (a && b && a < b) ? "yes" : "no"}' "$P101")"
 
+echo "--- the answers are read by the same rules person-stop clears by ---"
+# 2026-10-23: a "Cleared:" and a bare "PM answer:" were a person's call to person-stop's
+# reader's eyes only in part; both readers now take scripts/person-words.sh.
+jq -n '[
+  {created_at:"2026-10-23T04:28:03Z", html_url:"c1", body:"Cleared: the Critical is fixed in 31a7685c64. Ship."},
+  {created_at:"2026-10-21T10:37:40Z", html_url:"c2", body:"PM answer: **fix the Critical in this PR.**"},
+  {created_at:"2026-10-23T02:46:31Z", html_url:"c3", body:"**PM (merge-first until the release):** Only a Critical blocks."}]' > "$C101"
+fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
+rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
+want "the step runs"                             "0" "$rc"
+want_in "a Cleared is a binding answer"          'Cleared: the Critical is fixed in 31a7685c64' "$(cat "$P101")"
+want_in "and so is a PM answer with no heading"  'fix the Critical in this PR' "$(cat "$P101")"
+want_not_in "a note that is neither is not"      'merge-first until the release' "$(cat "$P101")"
+printf '{"message":"Bad credentials","documentation_url":"https://docs.github.com"}\n' > "$C101"
+fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "an unreadable ticket does not stop the step" "0" "$rc"
+want_in "but it says the answers are missing"    "comments could not be read, so a person's answers on it are not in this brief" "$out"
+want_not_in "and the brief claims none"          'Answers already given on this ticket' "$(cat "$P101")"
+jq -n '[
+  {created_at:"2026-10-22T09:00:00Z", html_url:"u2", body:"## PM answer (2026-10-22)\nThe newer call: show the date in UK format."},
+  {created_at:"2026-10-21T09:00:00Z", html_url:"u1", body:"**The owner answered** (`decision:101:driver-park-4`): keep Published from"}]' > "$C101"
+
 echo "--- a question the ticket already answers does not park: it is asked once more ---"
 fix_ai compare '{"question":"which date field should the card show?"}' superpowers:requesting-code-review
 jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\"differences\":[]}", structured_output:{differences:[]}}' > "$FIX/ai/compare.then.jsonl"

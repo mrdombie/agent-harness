@@ -45,6 +45,7 @@
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/facts.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/person-words.sh" || exit 1
 
 # The Skill a brief names in its own front matter, when it has one. Kept because a
 # brief MAY pin one, and the fixtures that write it are testing a real feature —
@@ -153,19 +154,21 @@ driver_usage_wall() {
 }
 
 # driver_ticket_answers <ticket> <out> — the answers a person already gave on the ticket
-# ("**The owner answered**" and "## PM answer" comments), oldest first and newest last,
-# as Markdown in <out>; <out> is left empty when there are none or none could be read.
+# ("**The owner answered**" relays, and comments opening "PM answer" or "Cleared:" read
+# by scripts/person-words.sh, the rules person-stop.sh clears by), oldest first and
+# newest last, as Markdown in <out>; <out> is left empty when there are none. A ticket
+# whose comments cannot be read returns 1 with <out> empty: unknown, never "none".
 # A PERSON'S WORD WINS: a run that never saw an answer asks the same question again
 # (three tickets re-asked an answered question on 2026-10-22).
 driver_ticket_answers() { # <ticket> <out>
   local j
   : > "$2"
-  j=$(swarm_gh api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" 2>/dev/null) || return 0
-  printf '%s' "$j" | jq -rs '
+  j=$(gh_read "the answers on #$1" api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -rs "$PERSON_WORDS_JQ"'
     [.[] | if type == "array" then .[] else empty end
-     | select((.body // "") | test("^\\s*(\\*\\*The owner answered\\*\\*|#+\\s*PM answer)"))]
+     | select((.body // "") | (owner_answered or person_opener))]
     | sort_by(.created_at // "") | .[]
-    | "### \(.created_at // "undated")\(if (.html_url // "") != "" then " — " + .html_url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || : > "$2"
+    | "### \(.created_at // "undated")\(if (.html_url // "") != "" then " — " + .html_url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || { : > "$2"; return 1; }
 }
 
 driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
@@ -216,7 +219,8 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   fi
   # THE ANSWERS ALREADY GIVEN, to every step: binding, newest last.
   local answers="$d/steps/$slot.answers.md"
-  driver_ticket_answers "$t" "$answers"
+  driver_ticket_answers "$t" "$answers" \
+    || driver_say "⚠ $step: the ticket's comments could not be read, so a person's answers on it are not in this brief"
   if [ -s "$answers" ]; then
     { printf '\n---\n## Answers already given on this ticket — BINDING\n\nA person answered these questions on the ticket, oldest first, newest last; where two disagree the newest wins. Build on them. Never ask a question one of them answers.\n\n'; cat "$answers"; } >> "$prompt"
   fi
