@@ -41,12 +41,24 @@ esac
 NAME=$(basename "$tok")
 HEAD_LINE="**Picture for any machine**"
 [ -n "$REPO" ] || die 1 "no repo: harness.json names none, so #$T's comments cannot be read"
-comments=$(gh issue view "$T" --repo "$REPO" --json comments 2>/dev/null) \
+comments=$(gh issue view "$T" --repo "$REPO" --json comments,body 2>/dev/null) \
   && jq -e '.comments | type == "array"' >/dev/null 2>&1 <<<"$comments" \
   || die 1 "the picture $tok is not on this machine, and #$T's comments could not be read to find its published copy"
-body=$(jq -r --arg h "$HEAD_LINE" --arg f "file=$NAME " '
-  [.comments[] | .body // "" | select(startswith($h) and contains($f))] | last // empty' <<<"$comments")
-[ -n "$body" ] || die 3 "the picture $tok is not on this machine and #$T has no \"Picture for any machine\" comment naming $NAME (scripts/picture-approve.sh publishes one)"
+# The approval is a COMMENT, never a body: text in a ticket's body proves nothing.
+approval() { jq -r --arg h "$HEAD_LINE" --arg f "file=$NAME " '[.comments[] | .body // "" | select(startswith($h) and contains($f))] | last // empty' <<<"$1"; }
+body=$(approval "$comments"); FROM="$T"
+# A PART OF A SPLIT IS BOUND BY ITS PARENT'S APPROVAL, by link: its body says "split from
+# #<parent>", and the parent's own comment is read and checked exactly as on the parent.
+if [ -z "$body" ]; then
+  parent=$(jq -r '.body // ""' <<<"$comments" | grep -oiE 'split from #[0-9]+' | head -1 | grep -oE '[0-9]+')
+  if [ -n "$parent" ] && [ "$parent" != "$T" ]; then
+    pc=$(gh issue view "$parent" --repo "$REPO" --json comments 2>/dev/null) \
+      && jq -e '.comments | type == "array"' >/dev/null 2>&1 <<<"$pc" \
+      || die 1 "the picture $tok is not on this machine, and the comments of #$parent (#$T was split from it) could not be read"
+    body=$(approval "$pc"); [ -z "$body" ] || FROM="$parent"
+  fi
+fi
+[ -n "$body" ] || die 3 "the picture $tok is not on this machine and #$T has no \"Picture for any machine\" comment naming $NAME${parent:+, nor has #$parent it was split from} (scripts/picture-approve.sh publishes one)"
 
 sha=$(printf '%s\n' "$body" | sed -n 's/.*picture-approve: sha256=\([0-9a-f]\{64\}\) .*/\1/p' | head -1)
 gid=$(printf '%s\n' "$body" | sed -n 's/.*picture-approve: .* gist=\([0-9A-Za-z]*\).*/\1/p' | head -1)
@@ -69,5 +81,5 @@ case "$path" in
   *)  dest="$path" ;;
 esac
 mkdir -p "$TREE/$(dirname "$dest")" && cp "$out" "$TREE/$dest" || die 3 "could not write $dest in $TREE"
-echo "picture-fetch: $tok is not on this machine — fetched #$T's published copy (sha256 ${sha:0:12}) to $dest" >&2
+echo "picture-fetch: $tok is not on this machine — fetched #$FROM's published copy (sha256 ${sha:0:12})$([ "$FROM" = "$T" ] || echo ", the approval of #$FROM it was split from,") to $dest" >&2
 printf '%s' "$dest"
