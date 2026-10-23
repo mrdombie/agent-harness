@@ -58,6 +58,10 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   # which the PM answers and clears; the owner's hold stays for his own calls.
   local cause="${4:-person}"
   case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
+  # OFF UNTIL THE RELEASE, the design critic is nobody's question (#12704 parked on one).
+  if [ "$cause" = person ] && release_critic_paused && printf '%s %s' "$reason" "$question" | grep -qi 'critic'; then
+    cause=driver; driver_say "   park: $RELEASE_CRITIC_OFF — a question about it goes to nobody"
+  fi
   local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
   local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note="" park_ref="" strand_note="" host
   export DRIVER_TICKET="$t"
@@ -202,10 +206,12 @@ BRIEF
   # and the answer comes back on the queue as a brief the driver carries. The hold
   # label is the owner's pixel sign-off, which the answer does not remove, so it is
   # only the fallback when the question could not be asked.
-  local asked=0
-  if [ "$cause" = "person" ] && [ -f "$oq" ] \
-     && bash "$oq" ask "$t" "driver-park" "${question:-the driver parked: $reason} (parked: $reason)" >/dev/null 2>&1; then
-    asked=1
+  local asked=0 oqrc=0
+  if [ "$cause" = "person" ] && [ -f "$oq" ]; then
+    bash "$oq" ask "$t" "driver-park" "${question:-the driver parked: $reason} (parked: $reason)" >/dev/null 2>&1 || oqrc=$?
+    [ "$oqrc" -eq 0 ] && asked=1
+    # The owner channel refused it as a critic question (exit 5): no hold goes on either.
+    [ "$oqrc" -ne 5 ] || cause=driver
   fi
   if [ "$cause" = "person" ] && [ "$asked" -eq 1 ]; then
     # Its status is needs-human, which its answer lifts with the owner's label; not

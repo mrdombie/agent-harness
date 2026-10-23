@@ -357,6 +357,12 @@ $(printf '%s\n' "$items" | sed 's/^/- /')"
 # and the next critic failed the screen for it.
 driver_fact_critic_findings() { # <ticket>
   local t="$1" pr branch out
+  # Off until the release: no finding of its, on the PR or the ticket, is this step's.
+  if release_critic_paused; then
+    driver_say "   $RELEASE_CRITIC_OFF — no critic finding is handed to this step" >&2
+    _driver_fact_none "$RELEASE_CRITIC_OFF (release.nonBlockingChecks). Any design-critic verdict or finding on the pull request or the ticket, whatever it says and whether or not the screens are signed off, is not a task, not a blocker and not a question: do not fix it, defer it or ask about it, and never run the design critic"
+    return 0
+  fi
   pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" critic_pr)
   if [ -z "$pr" ]; then
     branch=$(driver_state_get "$t" branch)
@@ -375,6 +381,20 @@ driver_fact_critic_findings() { # <ticket>
   fi
   printf 'The independent design critic failed PR #%s on these. Each is in scope for this change and blocks at its grade, whoever put it there; fix every one (a Minor too), and the critic judges the screen again after CI photographs it:\n' "$pr"
   printf '%s\n' "$out" | awk -F'\t' '{ printf "- %s · %s\n", $1, $3 }'
+}
+
+# driver_drop_critic_findings <findings json file> <list name> — off until the release,
+# a finding whose id is the critic's ("critic-…") leaves the list, said in one line;
+# 1 when nothing left it. A
+# review that copied a critic finding off the PR sent it to fix, the fix round could
+# only defer it, and the deferral parked for the owner (#12209, three times).
+driver_drop_critic_findings() { # <file> <list name>
+  local f="$1" ids
+  [ -s "$f" ] && release_critic_paused || return 1
+  ids=$(jq -r --arg re "$RELEASE_CRITIC_ID_RE" '[.findings[]? | (.id // "" | tostring) | select(test($re; "i"))] | join(", ")' "$f" 2>/dev/null)
+  [ -n "$ids" ] || return 1
+  jq --arg re "$RELEASE_CRITIC_ID_RE" '.findings = [(.findings // [])[] | select((.id // "" | tostring) | test($re; "i") | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
+  driver_say "   $RELEASE_CRITIC_OFF — dropped from the $2 list: $ids"
 }
 
 # EVIDENCE OWED IS WORK. Three repairs in one day were told to add shots (a drawer open,

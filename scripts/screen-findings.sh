@@ -89,6 +89,8 @@ case "${1:-}" in
     # can be written by anyone on the token. Present only while its latest verdict failed.
     f="${CRITIC_JUDGE_DIR:-$STATE_DIR/swarm/critic-judge}/findings-$2.txt"
     [ -f "$f" ] || exit 0
+    # Off until the release: an earlier verdict's findings are nobody's task now.
+    if release_critic_paused; then echo "screen-findings: $RELEASE_CRITIC_OFF — PR #$2's open critic findings are not handed on" >&2; exit 0; fi
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       g=$(grade_of "$line"); txt="${g#*$'\t'}"; txt="${txt#changed · }"

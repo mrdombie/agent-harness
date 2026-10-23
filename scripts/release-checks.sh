@@ -90,6 +90,27 @@ release_merge_first() {
   jq -e '(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true' "$cfg" >/dev/null 2>&1
 }
 
+# THE DESIGN CRITIC IS OFF UNTIL THE RELEASE (the owner, 2026-10-22: "anything after
+# release … turn it off"). While its check (review.judge.context) is listed here and the
+# release is not done, nothing calls the critic model, files its findings, hands them
+# to a step or asks about them: the sweep, a judge run, the driver's facts, fix and
+# review lists, the healing brief and the owner channel all ask this one predicate,
+# read live (_release_cfg). review.judge.duringRelease true keeps it running.
+#   release_critic_paused  → 0 while it is off
+#   RELEASE_CRITIC_ID_RE   → a finding id that is the critic's ("critic-…"), any case
+RELEASE_CRITIC_OFF="design critic: off until the release"
+RELEASE_CRITIC_ID_RE='^critic[-_:]'
+release_critic_paused() {
+  local cfg ctx f
+  cfg=$(_release_cfg)
+  for f in "$cfg" "${HARNESS_CFG:-}"; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    [ "$(jq -r '.review.judge.duringRelease // false' "$f" 2>/dev/null)" = true ] && return 1
+  done
+  ctx=$(jq -r '.review.judge.context // empty' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+  release_check_nonblocking "${ctx:-Design critic}"
+}
+
 release_check_nonblocking() { # <check name>
   [ -n "${1:-}" ] || return 1
   jq -e -n --argjson nb "$(release_nonblocking_json)" --arg n "$1" 'any($nb[]; . == ($n | ascii_downcase))' >/dev/null 2>&1

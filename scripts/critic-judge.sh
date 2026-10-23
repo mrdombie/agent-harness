@@ -316,6 +316,9 @@ run() { # <pr>
   [ -z "${HARNESS_DRIVER_RUN:-}" ] || die "a build run ($HARNESS_DRIVER_RUN) cannot judge screens: the verdict comes from a critic the build did not start"
   [ "${CRITIC_JUDGE_LAUNCHER:-}" = coordinator ] || [ "${CRITIC_JUDGE_MANUAL:-}" = 1 ] \
     || die "the independent critic is started by the coordinator (or by a person with CRITIC_JUDGE_MANUAL=1), never by a build"
+  # Off until the release for every caller, not the sweep alone: a launch that got past
+  # a paused sweep still paid the model and posted SLOP on a signed-off PR.
+  if [ "${CRITIC_JUDGE_MANUAL:-}" != 1 ] && release_paused; then say "PR #$pr: $PAUSED_WHY — not judged"; return 0; fi
   j=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,isDraft,state,headRefName,body,labels 2>/dev/null) || die "could not read PR #$pr"
   head=$(jq -r .headRefOid <<<"$j"); draft=$(jq -r .isDraft <<<"$j")
   t=$(branch_ticket "$(jq -r '.headRefName // ""' <<<"$j")" 2>/dev/null)
@@ -631,10 +634,7 @@ by_last_start() {
 }
 
 # release_paused — 0 while the verdict only reports until the release and no override.
-release_paused() {
-  [ "$(jq -r '.review.judge.duringRelease // false' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)" = true ] && return 1
-  release_check_nonblocking "$CONTEXT"
-}
+release_paused() { release_critic_paused; }
 
 sweep() { # [--dry-run]
   local dry=0 pr head slots cap r live_now
