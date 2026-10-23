@@ -164,7 +164,7 @@ unset ISSUES
 
 echo "--- at one priority, product work goes ahead of our own tooling (owner call 2026-10-19) ---"
 printf '%s\n' \
-  "630	P1	OPS			Harness gate feature	P1,type:feature,repo:agent-harness,project:widgets" \
+  "630	P1	OPS			Harness gate feature	P1,type:feature,project:harness-kit,project:widgets" \
   "631	P1	OPS			Inbox drops a reply	P1,type:bug,project:widgets" \
   "632	P2	OPS			Calendar loses an event	P2,type:bug,project:widgets" \
   "633	P1	OPS			feat(gates): a faster pre-push	P1,type:feature,project:widgets" \
@@ -256,6 +256,26 @@ want "the file holds the same rows"        "3" "$(jq '.tickets | length' "$QF")"
 rm -f "$FIX/gh/issue-667.json"
 bash "$Q" refresh >/dev/null
 want "a pinned row that could not be read is kept" "665:repair 667:new 660:new" "$(order)"
+
+echo "--- a repo:<other> ticket is that repo's: never seeded here (this repo is acme/widgets) ---"
+printf '%s\n' \
+  "670	P1	OPS			ours	P1,status:ready,project:widgets" \
+  "671	P1	OPS			the harness's	P1,status:ready,effort:M,repo:agent-harness,project:widgets" \
+  "672	P1	OPS			named for us	P1,status:ready,repo:widgets,project:widgets" \
+  "673	P1	OPS		[FINISH PR]	the harness's red	P1,status:in-review,repo:acme/agent-harness,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; out=$(bash "$Q" seed widgets 2>&1)
+want "only this repo's rows are seeded"      "672:new 670:new" "$(order)"
+want_in "each skip says whose it is"         'skip #671: belongs to agent-harness' "$out"
+want_in "an owner/name label too"            'skip #673: belongs to agent-harness' "$out"
+fix_issue 674 OPEN "P1,status:ready,repo:agent-harness,project:widgets"
+bash "$Q" add 674 --note "pinned" >/dev/null
+out=$(bash "$Q" refresh 2>&1)
+want "a pinned one is dropped at refresh too" "672:new 670:new" "$(order)"
+jq '.sisterRepos = ["widgets-support"]' "$HARNESS_CFG_PATH" > "$FIX/h-sister.json"
+printf '%s\n' "675	P1	OPS			the sister's	P1,status:ready,repo:widgets-support,project:widgets" \
+  "676	P1	OPS			the harness's	P1,status:ready,repo:agent-harness,project:widgets" > "$FIX/claimable.tsv"
+rm -f "$QF"; HARNESS_CFG_PATH="$FIX/h-sister.json" bash "$Q" seed widgets >/dev/null 2>&1
+want "a sister repo's ticket is seeded; another repo's is not" "675:new" "$(order)"
 
 echo "--- a label gh is still writing about is found (grep -q under pipefail) ---"
 mv "$BIN/gh" "$BIN/gh.fixture"

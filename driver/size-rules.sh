@@ -18,6 +18,7 @@ DRIVER_QUICK_NEVER_DEFAULT='["*migrations/*", "*migration/*", "*.sql", "*.prisma
 DRIVER_SIZE_SCHEMA_RE='(^|[^a-z])(schema change|data model|migration|migrate|prisma|alter table|create table|drop table|drop column|new (db |database )?(table|column)|add (a )?(db |database )?column)([^a-z]|$)'
 DRIVER_SIZE_SCREEN_RE='(^|[^a-z])(new (screen|page|surface|route)|redesign)([^a-z]|$)'
 DRIVER_SIZE_EXT='json|jsonc|md|mdx|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|sh|bash|py|rb|go|rs|css|scss|html|txt|sql|prisma|lock|lockb|env|ini|cfg|conf|swift|kt|java'
+DRIVER_QUICK_NEVER_EFFORT_DEFAULT='["effort:M", "effort:L", "effort:XL"]'
 DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^|/)\.env(\.[a-z]+)?$'
 
 # `== false`, not `// true`: jq's alternative treats false as absent, so `// true` reads it as on.
@@ -29,6 +30,43 @@ driver_quick_max_files() {
 _driver_size_small_max() {
   local n; n=$(jq -r '.driver.quick.smallMaxFiles // 8' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*|0) n=8 ;; esac; printf '%s' "$n"
+}
+
+# driver_quick_never_effort — the effort labels never quick, one a line:
+# driver.quick.neverEffort, or effort:M, effort:L and effort:XL.
+driver_quick_never_effort() {
+  jq -r --argjson d "$DRIVER_QUICK_NEVER_EFFORT_DEFAULT" \
+    '(.driver.quick.neverEffort // $d) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
+    "$HARNESS_CFG" 2>/dev/null || jq -r '.[]' <<<"$DRIVER_QUICK_NEVER_EFFORT_DEFAULT"
+}
+
+# driver_repo_self — this project's repo name, lower case, owner dropped: the config's
+# `repo`, else REPO_SLUG. Empty when neither is set.
+driver_repo_self() {
+  local r; r=$(jq -r '.repo // empty' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+  [ -n "$r" ] || r="${REPO_SLUG:-}"
+  r="${r##*/}"; printf '%s' "$r" | tr '[:upper:]' '[:lower:]'
+}
+# driver_repo_own — the repos this project builds, lower case, one a line: its own and
+# each of `sisterRepos` (a sister's tickets ship to its clone beside this one).
+driver_repo_own() {
+  local s; s=$(driver_repo_self); [ -n "$s" ] || return 0
+  { printf '%s\n' "$s"
+    jq -r '(.sisterRepos // []) | if type == "array" then .[] else empty end | select(type == "string")' "${HARNESS_CFG:-/dev/null}" 2>/dev/null \
+      | sed -E 's#.*/##' | tr '[:upper:]' '[:lower:]'; } | sed '/^$/d' | awk '!s[$0]++'
+}
+
+# driver_repo_foreign <labels-csv> — prints the repo a repo:<name> label names and
+# returns 0 when the ticket belongs to another repo: it carries a repo: label and none
+# of them names a repo this project builds. Never sized, seeded or started here.
+driver_repo_foreign() {
+  local own want
+  own=$(driver_repo_own); [ -n "$own" ] || return 1
+  want=$(printf '%s' "$1" | tr ',' '\n' | sed -nE 's/^[[:space:]]*[Rr][Ee][Pp][Oo]:[[:space:]]*//p' \
+    | sed -E 's#.*/##; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]' | sed '/^$/d')
+  [ -n "$want" ] || return 1
+  printf '%s\n' "$want" | grep -qxF -f <(printf '%s\n' "$own") && return 1
+  printf '%s' "$(printf '%s\n' "$want" | head -1)"
 }
 
 # _driver_size_globs — the never-quick globs as a JSON list: the defaults plus
@@ -121,11 +159,23 @@ _driver_size_stated() {
 # driver_size_read <ticket> <title> <labels-csv> <body> — the mechanical read, as
 # "<size|undecided>\t<why>\t<files, comma-separated>".
 driver_size_read() {
-  local t="$1" title="$2" labels="$3" body="$4" text low l paths n never cfg max smax
+  local t="$1" title="$2" labels="$3" body="$4" text low l paths n never cfg max smax have gone note=""
   text="$title
 $body"
   low=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')
   max=$(driver_quick_max_files); smax=$(_driver_size_small_max)
+  if l=$(driver_repo_foreign "$labels"); then
+    printf 'project\tit belongs to %s, not this project: it is never built here\t\n' "$l"; return 0
+  fi
+  # What the ticket is outranks what it mentions: an effort label is its owner's size.
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case ",$labels," in *",$l,"*)
+      case "$l" in *:M|*:m) printf 'small\tit carries %s: an effort that size is never quick\t\n' "$l" ;;
+        *) printf 'project\tit carries %s: an effort that size is never quick\t\n' "$l" ;; esac
+      return 0 ;;
+    esac
+  done <<<"$(driver_quick_never_effort)"
   for l in needs:design screen:new screen:redesign $(jq -r '(.design.baselineRoute.pictureLabels // [])[]' "$HARNESS_CFG" 2>/dev/null); do
     case ",$labels," in *",$l,"*) printf 'project\tit carries %s, which is screen work\t\n' "$l"; return 0 ;; esac
   done
@@ -153,12 +203,22 @@ $body"
     else printf 'project\tit names %s files\t%s\n' "$n" "$(printf '%s' "$paths" | paste -sd, -)"; fi
     return 0
   fi
+  # Only a named file on the trunk counts toward quick: a file mentioned from elsewhere
+  # (a scratchpad, another repo) says nothing of what the change touches here.
+  have=$(printf '%s\n' "$paths" | while IFS= read -r l; do [ -z "$l" ] || ! _driver_size_exists "$l" || printf '%s\n' "$l"; done)
+  if [ -z "$have" ]; then
+    printf 'undecided\tnone of the files it names is on %s (%s), so they say nothing of its size\t%s\n' \
+      "${INTEGRATION_BRANCH:-develop}" "$(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')" "$(printf '%s' "$paths" | paste -sd, -)"; return 0
+  fi
+  gone=$(printf '%s\n' "$paths" | grep -vxF -f <(printf '%s\n' "$have") | sed '/^$/d')
+  [ -z "$gone" ] || note="; not on ${INTEGRATION_BRANCH:-develop}, so not counted: $(printf '%s' "$gone" | paste -sd, - | sed 's/,/, /g')"
+  paths="$have"; n=$(printf '%s' "$paths" | grep -c .)
   cfg=$(printf '%s\n' "$paths" | grep -cvE "$DRIVER_SIZE_CONFIG_RE")
   if [ "$cfg" -eq 0 ]; then
-    printf 'quick\tit names %s config or docs file(s): %s\t%s\n' "$n" "$(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')" "$(printf '%s' "$paths" | paste -sd, -)"; return 0
+    printf 'quick\tit names %s config or docs file(s): %s%s\t%s\n' "$n" "$(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')" "$note" "$(printf '%s' "$paths" | paste -sd, -)"; return 0
   fi
   if _driver_size_stated "$text"; then
-    printf 'quick\tit names %s file(s) and states the change: %s\t%s\n' "$n" "$(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')" "$(printf '%s' "$paths" | paste -sd, -)"; return 0
+    printf 'quick\tit names %s file(s) and states the change: %s%s\t%s\n' "$n" "$(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')" "$note" "$(printf '%s' "$paths" | paste -sd, -)"; return 0
   fi
   printf 'undecided\tit names %s code file(s) and does not state the change\t%s\n' "$n" "$(printf '%s' "$paths" | paste -sd, -)"
 }

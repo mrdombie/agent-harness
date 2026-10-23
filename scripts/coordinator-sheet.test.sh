@@ -199,6 +199,15 @@ want "after-launch, owner decision, held, claimed, parked, unready, in review, b
   "610:repair 501:new" "$(sheet_json | jq -r '.[] | "\(.n):\(.class)"' | tr '\n' ' ' | sed 's/ $//')"
 want_in "the repair reads as one"                   '#610 · High · Red PR to fix' "$(cat "$SH/body")"
 
+echo "--- another repo's ticket is never on the sheet (this repo is acme/widgets) ---"
+world
+fix_issue 611 OPEN "status:ready,P1,effort:M,repo:agent-harness"
+fix_issue 612 OPEN "status:ready,P1,repo:widgets"
+queue_on mac 611 612
+tick_on mac 0 >/dev/null
+want "the order leaves the repo:agent-harness ticket out; one labelled for this repo stays" \
+  "612:new" "$(sheet_json | jq -r '.[] | "\(.n):\(.class)"' | tr '\n' ' ' | sed 's/ $//')"
+
 echo "--- the sheet's label changes: the cached issue is looked up again, never kept ---"
 # Live 2026-10-20: the label went build-sheet-paused and back to build-sheet; the owner kept
 # writing the paused sheet (#13630) while every reader looked up build-sheet (#13619).
