@@ -111,10 +111,12 @@ live() { SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
 tickworld 0.49; out=$(live)
 want "ahead: nothing new starts"             "0" "$(grep -c . "$SPAWNS")"
 want_in "the tick log says pacing ahead, with u and the target" 'pacing: ahead — 5h window 49% against a target of 3[23]%' "$(cat "$C/tick.log")"
-want_in "and names who waits"                'skip #601 #602 #603: pacing ahead of the five-hour line — no new builder starts but P0' "$out"
+want_in "and names who waits"                'skip #601 #602 #603: pacing ahead of the five-hour line — no new builder starts but P0 and process fixes' "$out"
 want "the live view's capacity carries it"   "ahead true" "$(jq -r '"\(.pace.pacing) \(.pace.fiveHour.ahead)"' "$C/capacity.json")"
 tickworld 0.49 604; out=$(live)
 want "ahead: a P0 still starts, alone"       "604" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
+tickworld 0.49; fix_issue 605 OPEN "status:ready,P2,process"; bash "$Q" add 605 >/dev/null; out=$(live)
+want "ahead: a process fix still starts, alone, though it is P2" "605" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
 tickworld 0.49; out=$(COORDINATOR_PACE_EXEMPT="" live)
 want "with nothing exempt, not even P0 waits — none queued, none start" "0" "$(grep -c . "$SPAWNS")"
 tickworld 0.20; out=$(live)
