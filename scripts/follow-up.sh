@@ -238,12 +238,19 @@ parent_state() {
   printf '%s' "$s"
 }
 
-# rebuilt <ticket> <old pr> — the ticket's next PR that merged, or nothing yet. 1 unreadable.
+# rebuilt <ticket> <old pr> — the ticket's next PR: one naming it that merged after the old PR
+# closed, or nothing yet. 1 unreadable. (A PR for the ticket that merged earlier is not its rebuild.)
 rebuilt() {
-  local n
+  local n at
   n=$(cached "t$1"); [ -z "$n" ] || { printf '%s' "$n"; return 0; }
+  at=$(cached "c$2")
+  if [ -z "$at" ]; then
+    at=$(SWARM_GH="$GH" gh_read "when PR #$2 closed" api "repos/$REPO_SLUG/pulls/$2" -q '.closed_at // empty') || return 1
+    [ -n "$at" ] || return 1
+    printf 'c%s %s\n' "$2" "$at" >> "$PARENTS"
+  fi
   n=$(SWARM_GH="$GH" gh_read "ticket #$1's merged PRs" api -X GET search/issues \
-        -f q="repo:$REPO_SLUG is:pr is:merged $1 in:title,body" \
+        -f q="repo:$REPO_SLUG is:pr is:merged merged:>$at $1 in:title,body" \
         -q '[.items[] | select(.number != '"$2"')
              | select(((.title // "") + " " + (.body // "")) | test("#'"$1"'([^0-9]|$)")) | .number] | max // empty') || return 1
   [ -z "$n" ] || printf 't%s %s\n' "$1" "$n" >> "$PARENTS"
@@ -251,10 +258,34 @@ rebuilt() {
 }
 
 # 1. The held findings. Their PRs: this host's state, and every PR wearing the held label.
+# ONE REQUEST READS BOTH LISTS: the PRs wearing the held label and the open follow-ups, two
+# searches in one GraphQL query; past 100 follow-ups a page more asks only for them.
+LISTS=$(mktemp "${TMPDIR:-/tmp}/follow-up-lists.XXXXXX") || { echo "follow-up: no temp file — nothing settled this pass"; exit 1; }
+trap 'rm -f "$LISTS"' EXIT
+KIDS_Q="repo:$REPO_SLUG is:issue is:open label:\"$FU_LABEL\""
+KID_FIELDS='pageInfo{hasNextPage endCursor} nodes{... on Issue{number body labels(first:50){nodes{name}}}}'
+lists_ok=1; forge=""; after=""; page=0
+while :; do
+  page=$((page + 1))
+  if [ "$page" -eq 1 ]; then
+    body=$(SWARM_GH="$GH" gh_read "the held PRs and the open follow-ups" api graphql \
+             -f query='query($held:String!,$kids:String!){held:search(query:$held,type:ISSUE,first:100){nodes{... on PullRequest{number}}} kids:search(query:$kids,type:ISSUE,first:100){'"$KID_FIELDS"'}}' \
+             -f held="repo:$REPO_SLUG is:pr label:\"$HELD_LABEL\"" -f kids="$KIDS_Q") || { lists_ok=0; break; }
+    forge=$(jq -r '.data.held.nodes[]?.number // empty' <<<"$body" 2>/dev/null)
+  else
+    body=$(SWARM_GH="$GH" gh_read "the open follow-ups, page $page" api graphql \
+             -f query='query($kids:String!,$after:String!){kids:search(query:$kids,type:ISSUE,first:100,after:$after){'"$KID_FIELDS"'}}' \
+             -f kids="$KIDS_Q" -f after="$after") || { lists_ok=0; break; }
+  fi
+  jq -c '.data.kids.nodes[]? | select(.number != null) | {number, body, labels: [.labels.nodes[]?]}' <<<"$body" >> "$LISTS" 2>/dev/null \
+    || { lists_ok=0; break; }
+  jq -e '.data.kids.pageInfo.hasNextPage == true' >/dev/null 2>&1 <<<"$body" || break
+  after=$(jq -r '.data.kids.pageInfo.endCursor // empty' <<<"$body")
+  [ -n "$after" ] && [ "$page" -lt 20 ] || { lists_ok=0; break; }
+done
+
 held=$(cd "$HELD_DIR" 2>/dev/null && ls -- *.jsonl 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)\.jsonl$/\1/p')
-if forge=$(SWARM_GH="$GH" gh_read "the PRs holding follow-ups" api --paginate \
-             "repos/$REPO_SLUG/issues?state=all&labels=$(uri "$HELD_LABEL")&per_page=100" \
-             -q '.[] | select(.pull_request) | .number'); then
+if [ "$lists_ok" = 1 ]; then
   held=$(printf '%s\n%s\n' "$held" "$forge")
 else
   echo "the PRs labelled $HELD_LABEL could not be read; only this host's held findings are settled"; rc=1
@@ -315,13 +346,11 @@ said_blocked_on() { # <ticket> <pr> [parent ticket] — a comment says it is blo
         -q '.[] | .body // "" | select(test("(block|wait)[^\\n]{0,40}'"$re"'([^0-9]|$)"; "i")) | "y"' 2>/dev/null) || return 2
   [ -n "$c" ]
 }
-kids=$(SWARM_GH="$GH" gh_read "the open follow-up tickets" api --paginate \
-         "repos/$REPO_SLUG/issues?state=open&labels=$(uri "$FU_LABEL")&per_page=100" \
-         -q '.[] | select(.pull_request | not)
-             | [(.number | tostring), ([.labels[].name] | join(",")),
+[ "$lists_ok" = 1 ] || { echo "the open $FU_LABEL tickets could not be read; none is blocked or unblocked this pass"; exit 1; }
+kids=$(jq -r '[(.number | tostring), ([.labels[].name] | join(",")),
                 ((.body // "") | ((capture("follow-up: pr=(?<p>[0-9]+)") | .p) // (capture("PR #(?<p>[0-9]+)") | .p) // "-")),
-                ((.body // "") | ((capture("\\(ticket #(?<t>[0-9]+)\\)") | .t) // "-"))] | @tsv') \
-  || { echo "the open $FU_LABEL tickets could not be read; none is blocked or unblocked this pass"; exit 1; }
+                ((.body // "") | ((capture("\\(ticket #(?<t>[0-9]+)\\)") | .t) // "-"))] | @tsv' "$LISTS") \
+  || { echo "the open $FU_LABEL tickets could not be parsed; none is blocked or unblocked this pass"; exit 1; }
 while IFS=$'\t' read -r n labels p pt; do
   # A follow-up that names no parent PR (filed by hand, naming a ticket) is not this pass's.
   case "$n" in ''|*[!0-9]*) continue ;; esac
