@@ -565,7 +565,15 @@ EOS
         driver_say "✋ repair: merging $trunk failed with nothing conflicted — $(tail -3 "$d/steps/repair-merge.out" | tr '\n' ' ')"
         return "$DRIVER_E_REFUSED"
       fi
-      driver_say "   repair: merging $trunk conflicted in $(printf '%s' "$conflicted" | tr '\n' ' ')— handed to the model"
+      # A clash only on generated tally files is recounted on the merged tree: no model call.
+      if driver_regenerate "$wt" repair; then
+        merged=1; conflicted=""
+        driver_say "   repair: merged $trunk into $branch at $(git -C "$wt" rev-parse --short HEAD), its generated files recounted"
+        driver_refresh_install "$MAIN_REPO" "$wt" || driver_say "   repair: relinking the install after the merge failed — self-check tries again."
+      else
+        conflicted=$(git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null)
+        driver_say "   repair: merging $trunk conflicted in $(printf '%s' "$conflicted" | tr '\n' ' ')— handed to the model"
+      fi
     fi
   fi
   # A DELETION ON THE TRUNK IS TAKEN BY THE DRIVER, never left to the model: its

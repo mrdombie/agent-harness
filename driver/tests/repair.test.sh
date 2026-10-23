@@ -963,6 +963,21 @@ out=$(driver_git_actions 13610 "$WT" "$FIX/ga.json" repair 2>&1); rc=$?
 want "once the cause is gone it commits"        "0" "$rc"
 want "  and the failure is forgotten"           "" "$(driver_state_get 13610 commit_merge_fail)"
 
+echo "--- a clash only on a generated tally file is recounted, with no model call ---"
+# develop's most-edited files were generated baselines; each clash on one was a builder run.
+setup 13620
+printf 'branch\n' > "$WT/tally.txt"; git -C "$WT" add tally.txt; git -C "$WT" commit -qm "feat: branch tally"
+driver_state_set 13620 repair_base "$(git -C "$WT" rev-parse HEAD)"
+trunk_moves tally.txt "trunk"; prs 13620 DIRTY
+jq '.merge.regenerate = [{path: "tally.txt", command: "ls value*.txt | wc -l | tr -d \" \" > tally.txt"}]' "$HARNESS_CFG" > "$FIX/cfg-regen.json"
+: > "$CLAUDE_LOG"
+out=$(HARNESS_CFG="$FIX/cfg-regen.json" driver_step_repair 13620 2>&1); rc=$?
+want "it finishes"                               "0" "$rc"
+want_in "  the tally is recounted"               'tally.txt — regenerated from the merged tree' "$out"
+want "  no model call"                           "" "$(cat "$CLAUDE_LOG")"
+want "  the merge is finished, the trunk in it"  "yes" "$([ ! -f "$(git -C "$WT" rev-parse --git-path MERGE_HEAD)" ] && git -C "$WT" merge-base --is-ancestor origin/develop HEAD && echo yes)"
+want "  the tally is the merged tree's count"    "$(git -C "$WT" ls-files 'value*.txt' | grep -c .)" "$(git -C "$WT" show HEAD:tally.txt)"
+
 echo "--- the model's own edit to a cleanly merged file goes into the merge (#13365) ---"
 # The clean side of the merge doubled a key in package.json; the model fixed it,
 # named it in its answer, and only the conflicted file was staged.
