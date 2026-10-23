@@ -58,7 +58,7 @@ ticket() { # <n> <labels-csv> <body>
     '{number:$n, state:"OPEN", title:"Ticket \($n)", body:$b, labels:($l|split(",")|map(select(length>0)|{name:.}))}' > "$FIX/gh/issue-$1.json"
   bash "$Q" add "$1" >/dev/null
 }
-repairs() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; done; }
+repairs() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done; }
 open_prs() {
   jq -n --argjson n "$1" '[range(0; $n) | {number: (9000 + .), headRefName: "tkt-\(9000 + .)-open", headRefOid: "h\(.)",
     isDraft: false, mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"

@@ -502,8 +502,8 @@ if [ -n "$OPEN_PRS" ]; then
   say "$OPEN_PR_SAID"
 fi
 
-spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
-  local t="$1" cls="$2" meta st lab l
+spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blocked
+  local t="$1" cls="$2" note="${3:-}" meta st lab l
   grep -qx "$t" <<<"$CLAIMED" && { echo "claimed"; return 0; }
   swarm_ticket_live "$t" && { echo "already running"; return 0; }
   meta=$(coord_issue_meta "$t")
@@ -520,6 +520,14 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
     { [ "$l" = "$LBL_PARKED" ] || [ "$l" = "$HOLD_LABEL" ]; } && [ "$cls" != new ] && case "$FINISH_CLASH" in *" $t "*) true ;; *) false ;; esac && continue
     case ",$lab," in *",$l,"*) echo "$l"; return 0 ;; esac
   done <<< "$(stop_labels)"
+  # NO RUN WITHOUT A CHANGE TO MAKE: a new build the queue seeded starts only on a ready
+  # (or half-built) ticket; an entry with a note (a resume, an owner's answer) carries on
+  # whatever its status. A repair starts only on an open PR (repair_pr_red).
+  if [ "$cls" = new ] && [ -z "$note" ] && [ -n "$LBL_READY" ] \
+     && case ",$lab," in *",$LBL_READY,"*|*",${LBL_PARTIAL:-$LBL_READY},"*) false ;; *) true ;; esac; then
+    l=$(printf '%s' "$lab" | tr ',' '\n' | grep "^$STATUS_PREFIX" | head -1)
+    echo "not $LBL_READY (${l:-no status})"; return 0
+  fi
   # Respawned before the human moves, it ends on the same wait again. A clash repair is no such wait.
   if ! { [ "$cls" != new ] && case "$FINISH_CLASH" in *" $t "*) true ;; *) false ;; esac; }; then
     coord_wait_holds "$t" "$lab" && return 0
@@ -532,9 +540,14 @@ spawn_block() { # <ticket> <class> — echoes why not, returns 0 when blocked
 }
 # The base branch's required checks, read from its live rules once per tick (pr-red.sh).
 PR_RED_REQ_FILE="$COORD_DIR/required-checks.$(coord_mode)"; : > "$PR_RED_REQ_FILE" 2>/dev/null; export PR_RED_REQ_FILE
-repair_pr_red() { # <ticket> — 0 when its open PR is really red (or it has none); else echoes why not
+repair_pr_red() { # <ticket> — 0 when its open PR is really red; else echoes why not
   local pj v
-  pj=$(open_pr_json "$1"); [ -n "$pj" ] || return 0
+  pj=$(open_pr_json "$1")
+  if [ -z "$pj" ]; then
+    # Only a fresh read can say there is none: a snapshot or no read at all decides nothing.
+    if [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ]; then echo "has no open PR — nothing to repair"; return 1; fi
+    return 0
+  fi
   v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json)") && return 0
   echo "PR #$(jq -r .number <<<"$pj") is not red (${v%%$'\t'*}: ${v#*$'\t'}) — no repair"
   return 1
@@ -810,7 +823,7 @@ candidates() {
       held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$tool"$'\t'"$note"$'\n'; continue
     fi
     [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }; }
-    if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): ${why:-waits on a person (coordinator-waits.sh)}"; continue; fi
+    if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): ${why:-waits on a person (coordinator-waits.sh)}"; continue; fi
     [ "$proc" = 1 ] || coord_healing_class "$cls" || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
@@ -838,7 +851,7 @@ candidates() {
       esac
       [ "$qn" -lt "$qroom" ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
-      if why=$(spawn_block "$t" new); then say "skip #$t (new, quick): $why"; continue; fi
+      if why=$(spawn_block "$t" new "$note"); then say "skip #$t (new, quick): $why"; continue; fi
       qn=$((qn+1)); capped=$((capped-1)); other=1
       [ "$tool" = 0 ] || tool_left=$((tool_left-1))
       QUICK_OK="$QUICK_OK $t"
@@ -856,7 +869,7 @@ candidates() {
       fi
       [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }
       if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); continue; fi
-      if why=$(spawn_block "$t" "$cls"); then say "skip #$t ($cls): $why"; continue; fi
+      if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): $why"; continue; fi
       nn=$((nn+1)); [ "$tool" = 0 ] || tool_left=$((tool_left-1))
       rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'1$'\t'0$'\t'"$note"$'\n'
     done <<< "$held"

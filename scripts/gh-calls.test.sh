@@ -66,7 +66,7 @@ want_not_in "no ticket is read on its own"         '^issue view' "$(cat "$GH_LOG
 
 echo "--- the batched read still decides: a gated ticket is skipped, an open one spawns ---"
 fresh; fix_issue 501 OPEN "status:in-review,needs:human-approval"; bash "$Q" add 501 --class repair >/dev/null
-fix_issue 502 OPEN "status:in-review"; bash "$Q" add 502 --class repair >/dev/null
+fix_issue 502 OPEN "status:in-review"; bash "$Q" add 502 --class repair >/dev/null; fix_pr_for 502
 fix_issue 503 CLOSED "status:in-review"; bash "$Q" add 503 --class repair >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
 want_in "the held ticket is skipped, named"        'skip #501 \(repair\): needs:human-approval' "$out"
