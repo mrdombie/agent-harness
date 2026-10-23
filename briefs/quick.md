@@ -60,13 +60,20 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `changelog.skipped`: string
 - `question`: string
 - `questionFor`: one of "owner", "pm"
+- `screenChecklist`: list of object
+- `screenChecklist[].state` (required): string
+- `screenChecklist[].loading` (required): string
+- `screenChecklist[].failed` (required): string
+- `screenChecklist[].retry` (required): string
+- `screenChecklist[].empty` (required): string
+- `screenChecklist[].phone` (required): string
 
 Conditional:
 - when `status` is "edited": requires `summary`, `changed`, `checked`, `changelog`
 - otherwise: requires `question`
 <!-- fields:end -->
 
-`changed` lists every file your commits change. `changelog` carries exactly one
+A change to a screen fills `screenChecklist`. `changed` lists every file your commits change. `changelog` carries exactly one
 key: the entry file you wrote, or the reason this change has none.
 
 A question names who answers it in `questionFor`: `owner` for pixels, a product or

@@ -31,6 +31,13 @@ driver_step_plan() { # <ticket>
   [ "$rc" -eq 0 ] || return "$rc"
   ans="$(driver_state_dir "$t")/steps/plan.json"
 
+  # A SCREEN CHANGE WRITES ITS CHECKLIST UP FRONT: per screen state it touches, how it
+  # handles loading, failure, a retry in flight, empty and phone width. Sent back once;
+  # the review holds the build to it. ~38 of 64 Majors since 22 Oct were these states.
+  rc=0; _driver_screen_checklist_due "$t" plan "$ans" \
+    "$(jq -r '[.tasks[]?.files[]?.path] | .[]' "$ans")" "$(jq -r '.screenChange // ""' "$ans")" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+
   # THE KEYS ARE THE CONTRACT'S KEYS. This read four names briefs/schemas/plan.json
   # does not have — `.schema_change`, `.data_model_spec`, `.tests` and `.files` — and
   # the contract is `additionalProperties: false`, so an answer carrying them was

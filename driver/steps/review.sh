@@ -162,6 +162,13 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 
 [POLISH ITEMS THE BUILDER SAYS IT FIXED — confirm each one against the change. One that is not really fixed is a finding at its grade (an item that names no grade is a Minor), with the item's words as its summary:
 $(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n", $2, $1 }')]"
+  # THE BUILD IS HELD TO ITS SCREEN CHECKLIST, written up front by the plan or quick step.
+  local scl; scl=$(driver_state_get "$t" screen_checklist)
+  if [ -n "$scl" ] && [ "$scl" != "[]" ]; then diff="${diff}
+
+[SCREEN CHECKLIST the plan committed to — check the shipped code against each line. A line it does not meet is a finding; a person misled or stuck is Major:
+$(printf '%s' "$scl" | jq -r '.[]? | "- \(.state): loading — \(.loading); failed — \(.failed); retry in flight — \(.retry); empty — \(.empty); phone — \(.phone)"' 2>/dev/null)]"
+  fi
   # A PERSON'S STOP IS READ BY THE REVIEW TOO: a Critical a person named since the last
   # hand-off is an open blocking finding, not history. Ship refuses on it regardless.
   local pstop pstoprc=0

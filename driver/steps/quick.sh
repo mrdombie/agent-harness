@@ -114,6 +114,9 @@ driver_step_quick() { # <ticket>
   if why=$(driver_quick_exceeds "$t" "$wt" "$trunk"); then
     _driver_quick_upsize "$t" "$wt" "$trunk" "$why"; return $?
   fi
+  # A quick change to an existing screen writes the same checklist a plan does.
+  rc=0; _driver_screen_checklist_due "$t" quick "$ans" "$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
 
   # The build answer of this run: self-check's changelog line and the review read it there.
   jq -c . "$ans" > "$(driver_state_dir "$t")/steps/build.all.json"
