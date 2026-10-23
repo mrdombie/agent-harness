@@ -6,6 +6,8 @@
 #       0  nothing stops it
 #       1  stopped: one sentence per stop on stdout, each naming who, when and what
 #       2  could not be read: the caller holds, as for a stop
+#   person-stop.sh drafted <pr>
+#       0  a person put it back to draft (one sentence on stdout) · 1 not · 2 unread
 #
 # THREE STOPS, and mergeFirst relaxes none of them:
 #   do-not-merge   the PR carries labels.doNotMerge ("do-not-merge").
@@ -38,7 +40,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/person-words.sh" || exit 2
 REPO="${GH_REPO:-$REPO_SLUG}"
 
-usage() { sed -n '5,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 # The machine marker gh_call puts in the comments the harness posts.
 PERSON_STOP_MARK='<!-- harness:machine -->'
@@ -120,7 +122,25 @@ check() {
   return 1
 }
 
+# drafted <pr> — only the draft stop, from the timeline alone: one read, for a caller
+# that asks of every open draft (the coordinator's open-work count, repair-watch).
+drafted() {
+  local pr="${1:-}" drivers tl
+  case "$pr" in ''|*[!0-9]*) usage ;; esac
+  drivers=$(jq -c '.driver.accounts // [] | if type == "array" then map(tostring) else [] end' "$HARNESS_CFG" 2>/dev/null) || drivers='[]'
+  tl=$(ps_read "repos/$REPO/issues/$pr/timeline?per_page=100") || { echo "could not read the timeline of #$pr"; return 2; }
+  local out
+  out=$(jq -r --argjson drivers "$drivers" --arg mark "$PERSON_STOP_MARK" --arg pr "$pr" "$PS_JQ"'
+    ([ .[] | select(.event == "convert_to_draft") ] | last) as $c
+    | if $c != null and ($c.actor | human)
+      then "a person (\($c.actor.login)) put PR #\($pr) back to draft on \($c.created_at | .[0:10])" else empty end' <<<"$tl" 2>/dev/null) \
+    || { echo "could not read the timeline of #$pr as JSON"; return 2; }
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
 case "${1:-}" in
   check) shift; check "$@" ;;
+  drafted) shift; drafted "$@" ;;
   *) usage ;;
 esac

@@ -32,6 +32,8 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-env.sh" || exit 1
 
 . "$KIT_ROOT/scripts/base-wait.sh" || exit 1
+. "$KIT_ROOT/scripts/branch-ticket.sh" || exit 1
+. "$KIT_ROOT/scripts/open-work.sh" || exit 1
 
 LOG="$SWARM_LOGS/repair-watch.log"
 TRIED="$SWARM_DIR/repair-attempts.tsv"          # ticket \t sha \t kind \t epoch
@@ -73,10 +75,12 @@ paused_labels() {
   printf '%s\n' "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" "$LBL_PARKED" "$LBL_NEEDS_HUMAN" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
-paused() { # <label-csv>
+# A clash is mechanical: a park does not hold its repair (the coordinator's open-work rule).
+paused() { # <label-csv> [kind]
   local l
   while read -r l; do
     [ -n "$l" ] || continue
+    [ "${2:-}" = conflict ] && [ "$l" = "$LBL_PARKED" ] && continue
     case ",$1," in *",$l,"*) return 0 ;; esac
   done <<EOS
 $(paused_labels)
@@ -178,9 +182,12 @@ integration_red() {
   printf '%s' "$keep"
 }
 
-# repair_kind <mergeState> <pending> <fails> — "conflict" or "ci"; 1 when nothing to repair.
+# repair_kind <mergeState> <pending> <fails> [draft 0|1] — "conflict", "ci" or "draft"; 1 when
+# nothing to repair. A draft is the driver's park: repaired when it clashes, or once its
+# park is cleared (section_repair reads the labels); its CI mid-build is no red.
 repair_kind() {
   if [ "$1" = "DIRTY" ]; then printf conflict
+  elif [ "${4:-0}" = 1 ]; then printf draft
   elif [ "${2:-0}" = "0" ] && [ -n "$3" ]; then printf ci
   else return 1; fi
 }
@@ -192,22 +199,28 @@ section_repair() {
   rows=$(open_prs)
   section_release_warn
   # The tickets this pass may still act on, read in one request before the loop.
-  while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
+  while IFS=$'\t' read -r PR T SHA MSTATE PEND DRAFT DNM UPD FAILS; do
     [ -n "${PR:-}" ] || continue
-    kind=$(repair_kind "$MSTATE" "$PEND" "$FAILS") || continue
+    kind=$(repair_kind "$MSTATE" "$PEND" "$FAILS" "$DRAFT") || continue
     [ "$kind" = ci ] && [ -n "$trunk_red" ] && continue
     grep -q "^$T	$SHA	$kind" "$TRIED" && continue
     want="$want $T"
   done <<< "$rows"
   labels_prefetch $want
-  while IFS=$'\t' read -r PR T SHA MSTATE PEND FAILS; do
+  while IFS=$'\t' read -r PR T SHA MSTATE PEND DRAFT DNM UPD FAILS; do
     [ -n "${PR:-}" ] || continue
     [ "$launched" -lt "$MAX_PER_PASS" ] || break
 
     reason=""
-    if [ "$MSTATE" = "DIRTY" ]; then reason="it clashes with $INTEGRATION_BRANCH"; kind=conflict
-    elif [ "${PEND:-0}" = "0" ] && [ -n "$FAILS" ]; then reason="CI went red on: $FAILS"; kind=ci
-    else continue; fi
+    kind=$(repair_kind "$MSTATE" "$PEND" "$FAILS" "$DRAFT") || continue
+    case "$kind" in
+      conflict) reason="it clashes with $INTEGRATION_BRANCH" ;;
+      ci)       reason="CI went red on: $FAILS" ;;
+      draft)    reason="it is a parked draft whose park has cleared" ;;
+    esac
+    # A person's stop wins: their do-not-merge, or a draft they made.
+    [ "${DNM:-0}" = 0 ] || continue
+    if [ "${DRAFT:-0}" = 1 ]; then open_work_person_drafted "$PR" "${UPD#-}" >/dev/null; [ $? = 1 ] || continue; fi
     if [ "$kind" = ci ] && [ -n "$trunk_red" ]; then
       [ "$DRY" = 1 ] && echo "HOLD #$PR ($T): $INTEGRATION_BRANCH is red, not this PR"
       continue
@@ -216,7 +229,7 @@ section_repair() {
     # A clash with the integration branch does not move the PR's head, so the
     # kind is part of the key: one attempt per head commit PER KIND.
     grep -q "^$T	$SHA	$kind" "$TRIED" && continue
-    if swarm_heal_parked_out "$T" "$SHA"; then
+    if [ "$kind" != conflict ] && swarm_heal_parked_out "$T" "$SHA"; then
       say "skip #$PR ($T): parked past its cap on this head — a person looks first"; continue
     fi
     if [ "$kind" = ci ] && base_wait_holds "$T" "$SHA"; then
@@ -226,7 +239,11 @@ section_repair() {
     labs=$(labels_of "$T")
     [ -n "$labs" ] || continue
     case "$labs" in CLOSED,*) continue ;; esac
-    paused "$labs" && continue
+    paused "$labs" "$kind" && continue
+    # A draft still parked, or still being built, is no repair's yet.
+    if [ "$kind" = draft ]; then
+      case ",$labs," in *",$LBL_PARKED,"*|*",$LBL_CLAIMED,"*) continue ;; esac
+    fi
 
     if [ "$(attempts_today "$T")" -ge 3 ]; then
       stop_sticky "$PR" "$T" "$reason"
@@ -253,8 +270,12 @@ section_repair() {
   [ "$launched" -eq 0 ] || say "repaired $launched pull request(s) this pass"
 }
 
-# Every open, non-draft PR on a ticket branch, as
-# pr \t ticket \t sha \t mergeState \t pendingChecks \t failedCheckNames
+# Every open PR on a ticket branch (branch_ticket: a bare-number branch too), drafts
+# included, as pr \t ticket \t sha \t mergeState \t pendingChecks \t draft 0|1 \t do-not-merge 0|1
+#   \t updatedAt \t failedCheckNames — last, as it may be empty (a tab IFS folds an empty
+#   field in the middle); a draft's checks are never its red.
+# Drafts were left out, and every parked draft sat clashing with nothing to repair it
+# (23 Oct: 11 of 17 clashing PRs, the open-work cap full, 0 builds).
 # A commit status has a state and no status/conclusion: a failed one is red, and a
 # pending one never holds a red PR back, since no CI job is still running for it.
 # The sign-off hold's own check is red BY the hold: never a red to repair.
@@ -262,15 +283,16 @@ section_repair() {
 HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval 2>/dev/null || echo approval)}"
 # A check in release.nonBlockingChecks is a warning until the release: never a red here.
 open_prs() {
-  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$(release_nonblocking_json)" "$RELEASE_NB_JQ"" [.[] | select(.headRefName|startswith(\"$BRANCH_PREFIX\")) | select(.isDraft|not)
-           | [.number,
-              (.headRefName | ltrimstr(\"$BRANCH_PREFIX\") | split(\"/\")[0]),
-              .headRefOid, .mergeStateStatus,
-              ([.statusCheckRollup | newest_runs | .[] | select((.status // \"COMPLETED\") != \"COMPLETED\")] | length),
-              ([.statusCheckRollup | newest_runs | .[] | select(.conclusion == \"FAILURE\" or ((.state // \"\") | test(\"FAILURE|ERROR\")))
-                | select(release_nb(\$nb) | not)
-                | select(((.name // .context // \"\") | ascii_downcase) | contains(\"$HOLD_CHECK\" | ascii_downcase) | not) | (.name // .context)] | join(\";\"))]]
-           | .[] | @tsv" 2>/dev/null
+  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --arg pre "$BRANCH_PREFIX" --arg dnm "${LBL_DO_NOT_MERGE:-do-not-merge}" \
+      --argjson nb "$(release_nonblocking_json)" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"' [.[] | (.headRefName | branch_ticket($pre)) as $t | select($t != "")
+           | [.number, $t, .headRefOid, .mergeStateStatus,
+              ([.statusCheckRollup | newest_runs | .[] | select((.status // "COMPLETED") != "COMPLETED")] | length),
+              (if .isDraft then 1 else 0 end), (if any(.labels[]?; .name == $dnm) then 1 else 0 end), (.updatedAt // "-"),
+              (if .isDraft then "" else
+                ([.statusCheckRollup | newest_runs | .[] | select(.conclusion == "FAILURE" or ((.state // "") | test("FAILURE|ERROR")))
+                | select(release_nb($nb) | not)
+                | select(((.name // .context // "") | ascii_downcase) | contains("'"$HOLD_CHECK"'" | ascii_downcase) | not) | (.name // .context)] | join(";")) end)]]
+           | .[] | @tsv' 2>/dev/null
 }
 
 # warn_prs — pr \t head \t listed reds, for every open PR on a ticket branch whose checks
@@ -372,7 +394,7 @@ work_waiting() {
   { swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$LBL_READY" --limit 300 \
       --json labels -q "[.[].labels[].name | select(startswith(\"$SWARM_PROGRAMME_PREFIX\"))] | .[]" 2>/dev/null \
       | sed "s/^$SWARM_PROGRAMME_PREFIX//"
-    open_prs | awk -F'\t' '$4=="DIRTY" || ($5=="0" && $6!="") {print $2}' \
+    open_prs | awk -F'\t' '$4=="DIRTY" || ($5=="0" && $9!="") {print $2}' \
       | while read -r t; do [ -n "$t" ] && swarm_programme_of "$t"; done
   } | awk 'NF && !seen[$0]++'
 }

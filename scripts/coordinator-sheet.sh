@@ -377,6 +377,7 @@ coord_tick_why() {
        openChanges: ($l | last("^open changes .* / cap ")), sheet: ($l | last("^sheet: working .*'"'"'s order")),
        cap: ($l | last("^cap: ")), hostCap: ($l | last("^host cap: ")), config: ($l | last("^config: ")), tooling: ($l | last("^tooling: [0-9]+ tooling ticket")),
        install: ($l | last("^shared install: ⚠")),
+       stall: ($l | last("^⚠ stall: ")), finish: ($l | last("^finish: [0-9]+ of [0-9]+ open PR")),
        skips: ($sk[0:5] | map(c)),
        skipsBy: ($sk | map(sub("^skip #[0-9]+ \\([^)]*\\): "; "") | gsub("#[0-9]+"; "#N") | c)
                  | group_by(.) | map({key: .[0], value: length}) | from_entries)}

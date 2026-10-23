@@ -73,6 +73,48 @@ want_in "and the hold names the idle"  'hold #11 \(101\).*machine busy \(cpu idl
 want "no attempt was recorded"         "0" "$(grep -c . "$TRIED")"
 fix_at "$T0"
 
+echo "--- a parked draft the driver made is repaired when it clashes, or once its park clears ---"
+# 23 Oct: 11 of 17 clashing PRs were parked drafts; drafts were never read here.
+cat > "$BIN/pstop" <<'SH'
+#!/usr/bin/env bash
+case "$2" in 17) echo "a person (pm) put PR #17 back to draft on 2026-10-22"; exit 0 ;; esac
+exit 1
+SH
+chmod +x "$BIN/pstop"; export OPEN_WORK_PERSON_STOP="$BIN/pstop" OPEN_WORK_DRAFTED_CACHE="$FIX/pdrafted.tsv"
+as_draft() { jq --argjson n "$1" 'map(if .number == $n then .isDraft = true | .updatedAt = "2026-10-23T08:00:00Z" else . end)' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"; }
+fix_issue 103 OPEN "status:parked,project:widgets"
+fix_issue 104 OPEN "status:in-review,project:widgets"
+fix_issue 105 OPEN "status:parked,project:widgets"
+fix_issue 106 OPEN "status:in-review,project:widgets"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+fix_prs "15 103 a15a15a15a1 DIRTY 0 -"; as_draft 15
+out=$(w --only repair)
+want_in "a parked driver draft that clashes gets its repair" '^103' "$(cat "$SPAWNS")"
+want_in "and says it clashes"           'spawned repair for #15 \(103\).*clashes with develop' "$out"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+fix_prs "16 105 a16a16a16a1 CLEAN 0 typecheck"; as_draft 16
+w --only repair >/dev/null
+want "a draft still parked, not clashing, waits for its park" "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+fix_prs "18 104 a18a18a18a1 CLEAN 0 -"; as_draft 18
+out=$(w --only repair)
+want_in "a driver draft whose park cleared gets its repair" '^104' "$(cat "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+fix_prs "17 106 a17a17a17a1 DIRTY 0 -"; as_draft 17
+w --only repair >/dev/null
+want "a draft a person made is never repaired, clash or not" "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+fix_prs "19 106 a19a19a19a1 DIRTY 0 -"
+jq 'map(.labels = [{name: "do-not-merge"}])' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+w --only repair >/dev/null
+want "nor one carrying do-not-merge"     "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+fix_prs "20 106 a20a20a20a1 DIRTY 0 -"
+jq 'map(.headRefName = "106/fill-gaps")' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+out=$(w --only repair)
+want_in "a bare-number branch is its ticket's PR too" '^106' "$(cat "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"; rm -f "$STATE/swarm/prs.json"
+
 echo "--- a red trunk holds CI repairs, and spends no attempt ---"
 : > "$SPAWNS"; : > "$TRIED"
 fix_trunk red
