@@ -65,6 +65,9 @@ jobs:
         # A step that added its status and removed only the one it expected left
         # tickets wearing ready, claimed, in-review and partial at once.
         run: bash scripts/check-status-label-writes.sh
+      - name: A failed GitHub read is never an empty one
+        # A refused call read as no rows listed 1 open ticket, then 0, while 17 and 18 were open.
+        run: bash scripts/check-gh-read.sh
       - name: No unattended build runs the prose claim
         # A prose fallback left wired in after the driver could take the case sent drafts and pick-next to prose.
         run: bash scripts/check-driver-only-spawn.sh

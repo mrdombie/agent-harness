@@ -47,6 +47,7 @@ perl - "$@" <<'PL'
       # Quoted jq and nested $( ) that hold no gh call are not this statement's pipes;
       # quotes go first, so a "#" inside one is not read as a comment.
       (my $code = $stmt) =~ s/\x27[^\x27]*\x27/\x27\x27/g;
+      $code =~ s/("(?:[^"\\]|\\.)*")/index($1, "\$(") >= 0 ? $1 : "\"\""/ge;
       $code =~ s/(^|\s)#[^\n]*//g;
       1 while $code =~ s/\$\((?![^()]*api\s)[^()]*\)/X/;
       # A write is not a read.

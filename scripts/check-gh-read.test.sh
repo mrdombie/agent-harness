@@ -27,6 +27,7 @@ n=$("$GH" api -X GET search/issues -f q="repo:$REPO_SLUG \"x\"" -q '.items[0].nu
 raw=$(gh_call api "repos/$REPO_SLUG/issues/$n" 2>/dev/null) || raw=""
 for c in $(ghr_api "repos/{repo}/pulls/$pr/commits?per_page=100" --paginate 2>/dev/null | jq -r '.[].sha'); do :; done
 v=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n" &>/dev/null)
+pj=$(gh_call api "repos/$REPO/pulls/$pr" 2>/dev/null) || echo "could not read pull request #$pr"
 X
 cat > "$T/good.sh" <<'X'
 n=$(gh_read "the open tickets" api "repos/$R/issues?labels=$l" -q 'length') || return "$GH_READ_UNKNOWN"
@@ -43,6 +44,8 @@ v=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n")
 # gh-read-ok: unreadable reads mergeable unknown below
 v=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n" 2>/dev/null)
 x=$(gh api user --jq .login 2>/dev/null || whoami)   # gh-read-ok: a login for a label
+pj=$(gh_call api "repos/$REPO/pulls/$pr" 2>/dev/null) && jq -e '.number' >/dev/null 2>&1 <<<"$pj" \
+  || { echo "could not read pull request #$pr"; return 2; }
 # n=$(gh api "repos/x/issues" 2>/dev/null | jq length)   (a comment)
 X
 out=$(bash "$C" "$T/bad.sh"); rc=$?
