@@ -172,6 +172,26 @@ world "[$HANDOFF"',{"created_at":"2026-10-22T18:00:00Z","user":'"$PERSON"',"body
 run "$T"
 want "a Critical on the ticket stops it"        "1" "$rc"
 
+echo "--- drafted: the draft stop alone, from one timeline read ---"
+dr() { out=$(bash "$P" drafted "$@" 2>&1); rc=$?; }
+api "repos/$R/issues/$N/timeline?per_page=100" '[{"event":"convert_to_draft","created_at":"2026-10-22T17:32:10Z","actor":'"$PERSON"'}]'
+: > "$GH_LOG"; dr "$N"
+want "a person's conversion is a person's draft" "0" "$rc"
+want_in "naming who and when"                   'a person \(pm\) put PR #50 back to draft on 2026-10-22' "$out"
+want "one read, the timeline"                   "1" "$(grep -c . "$GH_LOG")"
+api "repos/$R/issues/$N/timeline?per_page=100" '[{"event":"convert_to_draft","created_at":"2026-10-22T17:32:10Z","actor":'"$BOT"'}]'
+dr "$N"
+want "the bot's conversion is not"              "1" "$rc"
+api "repos/$R/issues/$N/timeline?per_page=100" '[{"event":"convert_to_draft","created_at":"2026-10-22T10:00:00Z","actor":'"$PERSON"'},{"event":"ready_for_review","created_at":"2026-10-22T11:00:00Z","actor":'"$PERSON"'},{"event":"convert_to_draft","created_at":"2026-10-22T12:00:00Z","actor":'"$BOT"'}]'
+dr "$N"
+want "the last conversion decides"              "1" "$rc"
+api "repos/$R/issues/$N/timeline?per_page=100" '[]'
+dr "$N"
+want "a draft never converted (opened as one) is the machine's" "1" "$rc"
+rm -f "$FIX/gh/api-repos_acme_widgets_issues_50_timeline_per_page_100.json"
+dr "$N"
+want "an unread timeline is unread, never clear" "2" "$rc"
+
 echo "--- every comment the harness posts carries the machine marker ---"
 : > "$GH_LOG"
 ( . "$HERE/toolkit-env.sh" && . "$HERE/gh-batch.sh" && gh_call issue comment 5 --repo "$R" --body "Critical: the driver's own words" ) >/dev/null 2>&1

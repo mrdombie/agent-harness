@@ -395,6 +395,74 @@ fresh; open_prs 12; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "
 SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
 want "over the cap the P0 new ticket still waits; the P2 repair starts" "601" "$(spawned)"
 
+echo "--- the cap waits only on work something is finishing (23 Oct: 19 open, 17 clashing, 0 builds) ---"
+# A person's draft, read off a stand-in person-stop: PR 8005 and 8105 are a person's.
+cat > "$BIN/pstop" <<'SH'
+#!/usr/bin/env bash
+echo "$2" >> "$FIX/pstop.log"
+case "$2" in 8005|8105) echo "a person (pm) put PR #$2 back to draft on 2026-10-22"; exit 0 ;; esac
+exit 1
+SH
+chmod +x "$BIN/pstop"; export OPEN_WORK_PERSON_STOP="$BIN/pstop" OPEN_WORK_DRAFTED_CACHE="$FIX/pdrafted.tsv"
+# prs_of <first> <dirty> <green> [draft-every] — <dirty> clashing PRs then <green> green ones,
+# numbered from <first>; every <draft-every>th one a draft (0: none). Ticket N for PR N.
+prs_of() {
+  jq -n --argjson f "$1" --argjson d "$2" --argjson g "$3" --argjson e "${4:-0}" '[range(0; $d + $g) | . as $i
+    | {number: ($f + $i), headRefName: "tkt-\($f + $i)-x", headRefOid: "h\($f + $i)", updatedAt: "2026-10-23T08:00:00Z",
+       isDraft: ($e > 0 and ($i % $e) == 0), mergeStateStatus: (if $i < $d then "DIRTY" else "CLEAN" end),
+       labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
+}
+tickets_of() { local l="$1" n; shift; for n in "$@"; do fix_issue "$n" OPEN "$l"; done; }
+in_queue() { jq -r '[.tickets[] | select(.class == "repair") | .n] | sort | map(tostring) | join(" ")' "$C/queue.json" 2>/dev/null; }
+
+fresh; rm -f "$FIX/pdrafted.tsv"; prs_of 8000 17 2 3
+tickets_of "P1,status:in-review" $(seq 8000 8018); fix_issue 8003 OPEN "P1,status:parked"
+queue 701
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want "19 open, 17 clashing, none queued: one tick queues all 17, and the green draft nothing builds" "18" "$(grep -c '^[0-9:]* finish: queued #' <<<"$out")"
+want_in "the draft is queued as one"        'queued #8018 as a repair at the front of its priority — PR #8018: it is a draft nothing is building' "$out"
+want "and spawns repairs into the free places, oldest first" "8000 8001 8002 8003" "$(spawned)"
+want "every start a repair"                 "repair repair repair repair" "$(classes)"
+want "the other 14 wait on the queue as repairs" "$(seq 8004 8016 | tr '\n' ' ')8018" "$(in_queue)"
+want_in "a parked ticket's clash is still repaired" 'queued #8003 as a repair' "$out"
+want_in "the two green ones are counted: all 19 are being finished" 'open changes 19 / cap 10: finishing before starting' "$out"
+want_not_in "and nothing new starts over the cap" '701' "$(spawned)"
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want "the next tick queues none twice"      "0" "$(grep -c '^[0-9:]* finish: queued #' <<<"$out")"
+want "and reads no unchanged draft's timeline twice" "$(sort -u "$FIX/pstop.log" | grep -c .)" "$(grep -c . "$FIX/pstop.log")"
+
+echo "--- a PR a person drafted, or labelled do-not-merge, is neither counted nor queued ---"
+fresh; rm -f "$FIX/pdrafted.tsv"; prs_of 8100 6 6 0
+jq 'map(if .number == 8105 then .isDraft = true elif .number == 8104 then .labels = [{name: "do-not-merge"}] else . end)' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+tickets_of "P1,status:in-review" $(seq 8100 8111)
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 COORDINATOR_OPEN_PR_CAP=11 ticks 1)
+want_not_in "the person's draft is not queued"  'queued #8105' "$out"
+want_not_in "nor the do-not-merge one"          'queued #8104' "$out"
+want_in "neither counts: 10 of 12"               'open changes 10 / cap 11: new work may start' "$out"
+want_in "and the tick names why"                 'finish: 2 of 12 open PR\(s\) not counted.*#8104 carries do-not-merge.*#8105 a person drafted it' "$out"
+fresh; prs_of 8200 0 1 0; jq '.[0].isDraft = true | .[0].number = 8005 | .[0].headRefName = "tkt-8005-x"' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+fix_issue 8005 OPEN "P1"; out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 COORDINATOR_OPEN_PR_CAP=11 ticks 1)
+want "a person's draft is never spawned"        "" "$(spawned)"
+
+echo "--- the stall guard: at the cap, no build anywhere, nothing spawnable for 2 ticks ---"
+# 11 green PRs waiting on a merge (counted) and one clash a repair left as it was (not counted, repairable).
+fresh; prs_of 8300 1 11 0; tickets_of "P1,status:in-review" $(seq 8300 8311); queue 701
+mkdir -p "$C"; printf '8300\th8300\tconflict\t1\n' > "$C/finish-queued.did"
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want "tick 1: nothing starts"                   "" "$(spawned)"
+want_in "it counts the idle tick"               'stall: cap reached, 0 builds on any host and nothing spawnable — 1 of 2' "$out"
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want_in "tick 2: the stall is said"             '⚠ stall: cap reached with nothing finishing' "$out"
+want "and the oldest repairable PR starts anyway, as a repair" "8300 repair" "$(cut -f1,2 "$SPAWNS" | tr '\t' ' ')"
+want_in "the heartbeat's why carries it"        'cap reached with nothing finishing' "$(jq -r '.hosts[0].why.stall // empty' "$C/fleet.json" 2>/dev/null)"
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want_not_in "a build running is no stall"       '⚠ stall' "$out"
+fresh; prs_of 8300 1 11 0; tickets_of "P1,status:in-review" $(seq 8300 8311); queue 701
+mkdir -p "$C"; printf '8300\th8300\tconflict\t1\n' > "$C/finish-queued.did"
+printf '8300\tother-host\tbuild\n' > "$FIX/claims.txt"
+out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 2)
+want_not_in "a build on another host is no stall either" 'stall: cap reached' "$out"
+
 echo "--- a polish list never ships alone while other work can start, full or not ---"
 # list_issue <n> <items> — an open polish list holding that many unticked items
 list_issue() {
@@ -538,7 +606,6 @@ want "the swarm hold stops every spawn"    "" "$(spawned)"
 want_in "and names the hold"               'held — owner said stop' "$out"
 
 echo "--- process fixes trump everything: priority, kind, polish, heal-all and the split ---"
-proc_q() { local l="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$l"; bash "$Q" add "$t" >/dev/null; done; }
 fresh; proc_q "P0,status:ready" 701; proc_q "P3,process,status:ready" 702
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1)
 want "a P3 process fix starts before a P0 that is not one" "702" "$(spawned)"
