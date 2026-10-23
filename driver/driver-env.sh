@@ -339,6 +339,20 @@ driver_gates_reads_local() {
   jq -e '((.gates.changed // null) | type) != "array" and ((.gates.local // null) | type) == "array" and (.gates.local | length) > 0' "$HARNESS_CFG" >/dev/null 2>&1
 }
 
+# driver_cmd_ci_only <command> — 0 under `gates.localOnly` when <command> is one of
+# `gates.changed` that `gates.local` leaves out (a test:changed, a whole suite): CI's to
+# run once, and no step here runs it or hands it on. #13044 (2026-10-23): a fix round was
+# handed a test:changed red the local set never runs, re-ran it, and parked on a test red
+# on develop itself.
+driver_cmd_ci_only() {
+  driver_gates_local_only || return 1
+  jq -e --arg c "$1" '
+    def t: if type == "string" then gsub("^\\s+|\\s+$"; "") else "" end;
+    ($c | t) as $c
+    | ([(.gates.local // [])[]? | t] | index($c)) == null
+      and any((.gates.changed // [])[]? | t; . as $g | $g != "" and ($c == $g or ($c | startswith($g + " "))))' "$HARNESS_CFG" >/dev/null 2>&1
+}
+
 # driver_local_gates_head <ticket> <tree> — the tree's head when self-check's local set
 # passed on it, or on a head with the same files (a verdict trailer is an empty commit);
 # nothing otherwise. The push hands it to the project's pre-push as

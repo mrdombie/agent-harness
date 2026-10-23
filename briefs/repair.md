@@ -47,7 +47,7 @@ conflicted.
    A failure you could not reproduce is a question, not a guess. Merging the
    integration branch in is never a question: when the branch is behind it, merge it first.
 4. **The same failure on the integration branch itself is not this PR's to
-   fix.** Park and say so.
+   fix.** Never park on it.
 5. **Evidence owed:** commit the plan edit each task names.
 6. **A red lesson check:** {{LESSON}}
 7. **Fix only what failed.**

@@ -54,6 +54,7 @@ pushed past a red one. A red gate you believe this change did not cause goes in
 
 A gate killed, or red only on a test outside this change, is load, never a
 question: re-run it; green, answer it in `gateFixes` with the head commit.
+Red on the trunk too is never a question: proof limits.
 
 A ratchet whose baseline sits ABOVE actual, or names entries that no longer
 exist, means the change made things better: run the lowering command it prints,

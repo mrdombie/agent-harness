@@ -356,7 +356,8 @@ jq 'del(.review) | del(.gates.prePushOwed)' "$REPO/.claude/harness.json" > "$FIX
 echo "--- a red gate first: the pre-push waits, and is not run ---"
 printf '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/pre-push.ran"\nexit 1\n' > "$PP/.git/hooks/pre-push"
 rm -f "$PP/.git/pre-push.ran"
-jq '.gates = {"changed": ["exit 1"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
+# Red on the branch only: the trunk commit it merged is checked out detached, and is green.
+jq '.gates = {"changed": ["git symbolic-ref -q HEAD >/dev/null && exit 1; exit 0"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 driver_state_init 410 --worktree "$PP"
 out=$(driver_step_self_check 410 2>&1); rc=$?
 want "the red gate goes to fix"                  "30" "$rc"

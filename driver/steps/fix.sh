@@ -32,21 +32,93 @@
 # driver_prove_red_green lives with the build step: one proof, read by both, so a
 # second copy cannot start disagreeing with it about what red means.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
+command -v driver_branch_files >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 # The review's own defer: what a round does not block goes on the polish list one way.
 command -v _driver_review_defer >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review.sh" || exit 1
 
 # _driver_fix_gates <ticket> — the fix round for gates self-check found red. Every gate
 # finding is answered in `gateFixes` with a commit on the branch; a gate is not
 # deferrable, because self-check refuses while it is red anyway.
+# A SHARED BASE'S RED IS NEVER A FIX ROUND'S. #13044 (2026-10-23): a repair's fix round was
+# handed a `test:changed` red from an earlier run, re-ran it, found the test red on clean
+# develop too, and parked asking "wait or fix here". So before the model sees a gate red:
+#   - one self-check recorded at another head is another run's, never handed on;
+#   - under gates.localOnly, a command the local set leaves out is CI's, never handed on;
+#   - one red on the trunk commit the branch merged too (driver/base-red.sh, cached per
+#     check and commit) is base-red: noted for the one develop-red ticket, not handed on.
+# What is left is the branch's own, and blocks as before.
+# _driver_fix_gate_reds <ticket> <tree> <findings> — rewrites <findings> to what is left;
+# 1 when nothing is.
+_driver_fix_gate_reds() {
+  local t="$1" wt="$2" f="$3" head now keep="" i n row id cmd of bred
+  head=$(cat "$f.head" 2>/dev/null); now=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
+  if [ -n "$head" ] && [ "$head" != "$now" ]; then
+    driver_say "   fix: the self-check reds on file are of $(printf '%s' "$head" | cut -c1-10), not this head $(printf '%s' "$now" | cut -c1-10) — another run's, so none is handed on; self-check runs every gate next"
+    rm -f "$f" "$f.head"; return 1
+  fi
+  n=$(jq -r 'length' "$f" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    row=$(jq -c --argjson i "$i" '.[$i]' "$f"); i=$((i+1))
+    id=$(jq -r '.id // ""' <<<"$row"); cmd=$(jq -r '.command // ""' <<<"$row"); of=$(jq -r '.outFile // ""' <<<"$row")
+    if driver_cmd_ci_only "$cmd"; then
+      driver_say "   fix: $id (\`$cmd\`) is not in gates.local, and gates.localOnly keeps it for CI — not run here, not handed on"
+      continue
+    fi
+    if [ -n "$of" ] && [ -f "$of" ] && bred=$(driver_base_red_gate "$wt" "$cmd" "$of"); then
+      DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
+      driver_base_red_say "$t" fix "$id" "$bred"
+      continue
+    fi
+    keep="$keep$row"$'\n'
+  done
+  if [ -z "$keep" ]; then rm -f "$f" "$f.head"; return 1; fi
+  printf '%s' "$keep" | jq -s . > "$f.t" && mv "$f.t" "$f"
+  return 0
+}
+
+# _driver_fix_question_base_red <ticket> <tree> — 0, printing the files, when the step's
+# question names test files and every one is red, alone, on the trunk commit the branch
+# merged and none is a file the branch changed: "wait or fix here" about a base-red.
+_driver_fix_question_base_red() {
+  local t="$1" wt="$2" q files f branch sha red=""
+  q=$(jq -r '.question // ""' "$(driver_state_dir "$t")/steps/fix.json" 2>/dev/null)
+  files=$(printf '%s\n' "$q" | grep -oE '[A-Za-z0-9_@.+/-]+\.(test|spec)\.[A-Za-z]+' | sed 's#^\./##' | awk '!seen[$0]++')
+  [ -n "$files" ] || return 1
+  sha=$(driver_base_red_sha "$wt") || return 1
+  branch=$(driver_branch_files "$wt" 2>/dev/null)
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "$branch" | grep -qxF -- "$f" && return 1
+    [ "$(driver_base_check "$wt" "$sha" "$f" test)" = red ] || return 1
+    red="$red${red:+,}$f"
+  done <<<"$files"
+  printf '%s' "$red"
+}
+
+# The note a re-asked step reads, in the words the step answers to.
+_driver_fix_base_red_note() { # <files>
+  printf -- '- you asked: %s\n  BASE-RED: %s is red on %s itself, at the commit this branch merged, run alone there. This check is red on %s itself; the develop-red ticket owns it; carry on. Never ask about it, never fix it here, never defer for it: answer the findings above and leave it.' \
+    "$(jq -r '.question // ""' "$(driver_state_dir "$DRIVER_TICKET")/steps/fix.json" 2>/dev/null | tr '\n' ' ' | cut -c1-600)" \
+    "${1//,/, }" "$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"
+}
+
 _driver_fix_gates() { # <ticket>
-  local t="$1" d f wt n round rc ans ids bid unanswered="" c bad=0
+  local t="$1" d f wt n round rc ans ids bid unanswered="" c bad=0 bred
   d=$(driver_state_dir "$t"); f="$d/steps/self-check.findings.json"
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  if ! _driver_fix_gate_reds "$t" "$wt" "$f"; then
+    driver_say "   fix: no self-check red is this branch's to repair here; self-check runs every gate next"
+    return "$DRIVER_OK"
+  fi
   n=$(jq -r 'length' "$f" 2>/dev/null)
   round=$(driver_state_count "$t" fix)
   driver_fact_put "$t" fix BLOCKERS "$(jq -r '
     [.[] | "- id \(.id) · gate · `\(.command)` exited \(.exit)\n  This is a self-check gate, not a review finding: answer it in gateFixes.\n  output (last lines):\n\(.output | split("\n") | map("    " + .) | join("\n"))"]
-    | join("\n")' "$f")"
+    | join("\n")' "$f")${DRIVER_FIX_GATE_NOTE:+
+
+$DRIVER_FIX_GATE_NOTE}"
   driver_fact_put "$t" fix DIFF "$(_driver_fix_diff "$wt")"
   driver_fact_put "$t" fix ROUND "$((round + 1))"
   _driver_fix_pm_answers "$t" "$d/steps/pm-answers.json"
@@ -54,6 +126,13 @@ _driver_fix_gates() { # <ticket>
 
   driver_say "   fix round $((round + 1)): $n red gate(s) from self-check to repair"
   rc=0; driver_ai_step "$t" fix || rc=$?
+  if [ "$rc" -eq "$DRIVER_E_QUESTION" ] && [ -z "${DRIVER_FIX_GATE_NOTE:-}" ] \
+     && bred=$(_driver_fix_question_base_red "$t" "$wt"); then
+    DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
+    driver_base_red_say "$t" fix "the question" "$bred"
+    rc=0; DRIVER_FIX_GATE_NOTE=$(_driver_fix_base_red_note "$bred") _driver_fix_gates "$t" || rc=$?
+    return "$rc"
+  fi
   [ "$rc" -eq 0 ] || return "$rc"
   driver_git_actions "$t" "$wt" "$d/steps/fix.json" fix || return "$DRIVER_E_REFUSED"
   driver_format_changed "$t" "$wt" fix || true
@@ -89,7 +168,7 @@ _driver_fix_gates() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
   # Answered once. Self-check re-runs every gate next and is the proof.
-  mv "$f" "$d/steps/self-check.findings.answered.json"
+  mv "$f" "$d/steps/self-check.findings.answered.json"; rm -f "$f.head"
   driver_say "   fix: $n red gate(s) repaired — self-check re-runs every gate next"
   return "$DRIVER_OK"
 }
@@ -422,6 +501,10 @@ driver_step_fix() { # <ticket>
 
 THE LAST FIX ROUND'S PROOF FAILED, so answer again. For each cleared finding: commit the test alone first (testCommit) so it FAILS at that commit, then commit the fix (implCommit) so it passes, and make sure the change type-checks. The test file is run whole, in the version implCommit holds, at implCommit's parent (it must fail) and at implCommit (it must pass): so implCommit is the commit where every case in that file passes, and each finding's case goes in its own test commit, straight before its own fix, so no other finding's case is red at its change. What failed:
 $proofnote"
+  local basenote; basenote=$(driver_state_get "$t" fix_base_note)
+  [ -z "$basenote" ] || blockers="$blockers
+
+$basenote"
   driver_fact_put "$t" fix BLOCKERS "$blockers"
   local pa="$d/steps/pm-answers.json"
   _driver_fix_pm_answers "$t" "$pa"
@@ -443,6 +526,18 @@ $proofnote"
     driver_say "↩ fix: asked whether a docs/comment/wording/test-only fix can be accepted without a red-then-green pair — the driver checks that itself; asking the fix step once more, pointed at autoProofs"
     rc=0; driver_step_fix "$t" || rc=$?
     driver_state_set "$t" fix_proof_note ""
+    return "$rc"
+  fi
+  # "WAIT OR FIX HERE" ABOUT A TEST RED ON THE TRUNK ITSELF is not a question: read on the
+  # trunk commit, noted for the develop-red ticket, and the step asked once more to carry on.
+  local qbred
+  if [ "$rc" -eq "$DRIVER_E_QUESTION" ] && [ -z "$basenote" ] \
+     && qbred=$(_driver_fix_question_base_red "$t" "$wt"); then
+    DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
+    driver_base_red_say "$t" fix "the question" "$qbred"
+    driver_state_set "$t" fix_base_note "$(_driver_fix_base_red_note "$qbred")"
+    rc=0; driver_step_fix "$t" || rc=$?
+    driver_state_set "$t" fix_base_note ""
     return "$rc"
   fi
   [ "$rc" -eq 0 ] || return "$rc"

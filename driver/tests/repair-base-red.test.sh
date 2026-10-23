@@ -114,6 +114,7 @@ want "the red check is named on the record"    "unit" "$(driver_state_get 801 ba
 want "with the head it was read on"            "$HEAD_SHA" "$(driver_state_get 801 base_wait_head)"
 want "and its test"                            "src/legacy.test.ts" "$(driver_state_get 801 base_red_tests)"
 want "no park note asks anything"              "" "$(driver_state_get 801 park_note)"
+want "and the trunk's red is noted for its one develop-red ticket" "src/legacy.test.ts	801" "$(cut -f2-3 "$STATE/swarm/develop-red.tsv" 2>/dev/null | tail -1)"
 want_in "it says it waits for the base"        "waiting for develop's fix, never repaired in the PR" "$out"
 
 echo "--- the same test red only on the PR (it passes on the base): repaired as before ---"
