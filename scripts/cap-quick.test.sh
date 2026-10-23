@@ -67,7 +67,7 @@ fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD" "$STATE/size-cache"
   : > "$SPAWNS"; : > "$FIX/claims.txt"; printf '[]\n' > "$FIX/gh/prs-all.json"; rm -f "$STATE/swarm/prs.json"
 }
-tick() { SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 SWARM_IDLE=90 COORDINATOR_CAP=6 bash "$T" 2>&1; }
+tick() { SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 SWARM_IDLE=90 SWARM_CORES=10 COORDINATOR_CAP=6 bash "$T" 2>&1; }
 spawned() { cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
 bypassed() { awk -F'\t' '$3 == 1 { print $1 }' "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
 
