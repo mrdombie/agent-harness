@@ -181,6 +181,41 @@ rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
 want "a question parks at once"                  "20" "$rc"
 want "asked once"                                "1" "$(( $(calls) - before ))"
 
+echo "--- a person's answers on the ticket go in every brief, BINDING, newest last ---"
+# 2026-10-22: three repairs re-asked a question the PM had already answered on the ticket.
+# The ticket's comments, over REST, as GitHub pages them.
+C101="$FIX/gh/api-repos_acme_widgets_issues_101_comments_per_page_100.json"
+jq -n '[
+  {created_at:"2026-10-22T09:00:00Z", html_url:"u2", body:"## PM answer (2026-10-22)\nThe newer call: show the date in UK format."},
+  {created_at:"2026-10-21T09:00:00Z", html_url:"u1", body:"**The owner answered** (`decision:101:driver-park-4`): keep Published from"},
+  {created_at:"2026-10-21T10:00:00Z", html_url:"u3", body:"Thanks, looking at it."}]' > "$C101"
+fix_ai compare '{"differences":[]}' superpowers:requesting-code-review
+rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
+P101="$(driver_state_dir 101)/steps/compare.prompt"
+want "the step runs"                             "0" "$rc"
+want_in "the brief carries the answers, BINDING" 'Answers already given on this ticket — BINDING' "$(cat "$P101")"
+want_in "the owner's answer is in it"            'keep Published from' "$(cat "$P101")"
+want_in "and the PM answer"                      'show the date in UK format' "$(cat "$P101")"
+want_not_in "and nothing that is not an answer"  'Thanks, looking at it' "$(cat "$P101")"
+want "newest last"                               "yes" "$(awk '/keep Published from/{a=NR} /UK format/{b=NR} END{print (a && b && a < b) ? "yes" : "no"}' "$P101")"
+
+echo "--- a question the ticket already answers does not park: it is asked once more ---"
+fix_ai compare '{"question":"which date field should the card show?"}' superpowers:requesting-code-review
+jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\"differences\":[]}", structured_output:{differences:[]}}' > "$FIX/ai/compare.then.jsonl"
+before=$(calls)
+out=$(driver_ai_step 101 compare 2>&1); rc=$?
+want "answered from the ticket, it does not park" "0" "$rc"
+want "the model was asked exactly twice"         "2" "$(( $(calls) - before ))"
+want_in "the re-ask names the question"          'which date field should the card show' "$(cat "$FIX/claude-stdin-compare.txt")"
+want_in "and points at the answer"               'keep Published from' "$(cat "$FIX/claude-stdin-compare.txt")"
+fix_ai compare '{"question":"none of them says which colour"}' superpowers:requesting-code-review
+cp "$FIX/ai/compare.jsonl" "$FIX/ai/compare.then.jsonl"
+before=$(calls)
+rc=0; driver_ai_step 101 compare >/dev/null 2>&1 || rc=$?
+want "asked again, it is a real question: it parks" "20" "$rc"
+want "after exactly one re-ask"                  "2" "$(( $(calls) - before ))"
+rm -f "$FIX/ai/compare.then.jsonl" "$C101"
+
 echo "--- a schema file that does not parse disables nothing ---"
 # Present-and-unmatched is a refusal, and so is present-and-unreadable. A broken
 # schema used to make its step the one step with no validation at all, and said so

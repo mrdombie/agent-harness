@@ -152,6 +152,22 @@ driver_usage_wall() {
   return 0
 }
 
+# driver_ticket_answers <ticket> <out> — the answers a person already gave on the ticket
+# ("**The owner answered**" and "## PM answer" comments), oldest first and newest last,
+# as Markdown in <out>; <out> is left empty when there are none or none could be read.
+# A PERSON'S WORD WINS: a run that never saw an answer asks the same question again
+# (three tickets re-asked an answered question on 2026-10-22).
+driver_ticket_answers() { # <ticket> <out>
+  local j
+  : > "$2"
+  j=$(swarm_gh api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" 2>/dev/null) || return 0
+  printf '%s' "$j" | jq -rs '
+    [.[] | if type == "array" then .[] else empty end
+     | select((.body // "") | test("^\\s*(\\*\\*The owner answered\\*\\*|#+\\s*PM answer)"))]
+    | sort_by(.created_at // "") | .[]
+    | "### \(.created_at // "undated")\(if (.html_url // "") != "" then " — " + .html_url else "" end)\n\(.body)\n"' > "$2" 2>/dev/null || : > "$2"
+}
+
 driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   local t="${1:?driver_ai_step: need a ticket}" step="${2:?driver_ai_step: need a step}"; shift 2
   local slot="$step"
@@ -197,6 +213,12 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   fi
   if [ -n "$rb" ] && [ -s "$rb" ]; then
     { printf '\n---\nA brief came with this run, from whoever started it. %s Read it before anything else, and act on it where it bears on this step:\n\n' "$DRIVER_BRIEF_PREFACE"; cat "$rb"; } >> "$prompt"
+  fi
+  # THE ANSWERS ALREADY GIVEN, to every step: binding, newest last.
+  local answers="$d/steps/$slot.answers.md"
+  driver_ticket_answers "$t" "$answers"
+  if [ -s "$answers" ]; then
+    { printf '\n---\n## Answers already given on this ticket — BINDING\n\nA person answered these questions on the ticket, oldest first, newest last; where two disagree the newest wins. Build on them. Never ask a question one of them answers.\n\n'; cat "$answers"; } >> "$prompt"
   fi
   # The brief's sign-off lines are the off case; merge first replaces them for every step.
   if driver_merge_first; then printf '\n---\n%s\n' "$DRIVER_MERGE_FIRST_SIGNOFF" >> "$prompt"; fi
@@ -309,6 +331,22 @@ SHIM
     # and nor does one that asked a question: the stale "not JSON" note outranks the
     # question at the park, which is how an API error reached the owner as his question.
     [ "$jrc" -ne 0 ] && [ "$jrc" -ne "$DRIVER_E_QUESTION" ] || driver_state_set "$t" park_note "$note_was"
+  fi
+  # A QUESTION THE TICKET ALREADY ANSWERS IS NOT A PARK: asked once more, pointed at the
+  # answers. Asked again after that, it is a question none of them answers, and parks.
+  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && [ -s "$answers" ] && [ "${DRIVER_ANSWER_REASKS:-1}" -gt 0 ]; then
+    local q1 areask="$d/steps/$slot.answered.prompt" asid
+    q1=$(jq -r '(.question // .park // "")' "$ans" 2>/dev/null)
+    asid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+    if [ -n "$asid" ]; then : > "$areask"; else cp "$prompt" "$areask"; fi
+    { printf '\n---\nYou asked: %s\n\nThe ticket already carries a person'"'"'s answers, and they are BINDING (newest last):\n\n' "$q1"; cat "$answers"
+      printf '\nIf one of them answers your question, act on it and give the step'"'"'s answer — do not ask it again. Ask only if none of them answers it, and then say in the question why none does.\n'; } >> "$areask"
+    driver_say "↩ $step: it asked a question the ticket may already answer — asking once more, pointed at the answers: $(printf '%s' "$q1" | cut -c1-160)"
+    [ ! -f "$ans" ] || cp "$ans" "$d/steps/$slot.asked.json"
+    crc=0; _driver_ai_call "$areask" "$log.answered" "$asid" || crc=$?
+    cat "$log.answered" >> "$log" 2>/dev/null
+    [ "$crc" -eq 0 ] || return "$crc"
+    jrc=0; _driver_ai_judge || jrc=$?
   fi
   return "$jrc"
 }
