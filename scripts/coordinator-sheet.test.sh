@@ -170,6 +170,16 @@ out=$(SWARM_NOW=$(( $(date +%s) + 20 * 60 )) tick_on box 2)
 want "GitHub refusing and the copy old: nothing more starts" "501" "$(by box)"
 rm -f "$SH/down"
 
+echo "--- the owner cannot read whether a sheet exists: it makes no second one ---"
+world; echo 777 > "$SH/number"; queue_on mac 501
+touch "$SH/down"
+out=$(tick_on mac 1)
+want "no sheet is created while the lookup fails"   "" "$(grep -E 'create|patch' "$SH/writes.log")"
+want_in "it logs unknown"                           "unknown — the sheet's issue could not be read" "$out"
+rm -f "$SH/down"
+out=$(tick_on mac 1)
+want "read again, the sheet it found is written"    "patch" "$(tr '\n' ' ' < "$SH/writes.log" | sed 's/ $//')"
+
 echo "--- only startable work is on the sheet; a repair is ---"
 world
 fix_issue 601 OPEN "status:ready,P1,after-launch"

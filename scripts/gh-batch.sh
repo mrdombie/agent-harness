@@ -27,6 +27,14 @@
 #                                   _low holds below GH_ALLOWANCE_LOW_PCT (10)
 #   gh_limit_why                    the rate limit and its reset, as a sentence
 #   gh_calls_tally <since> [caller] who spent it, from gh-calls.log
+#   gh_read <what> <gh args…>       a read whose answer decides something: the body on
+#                                   success; on any failure (exit, error body, GraphQL
+#                                   errors with no data) nothing on stdout, one line
+#                                   "unknown — <what> could not be read (<why>)" on
+#                                   stderr, and exit GH_READ_UNKNOWN (69). Never empty.
+#                                   A 404 is an answer, not a failure: exit
+#                                   GH_READ_MISSING (68), silently, for a caller
+#                                   asking whether a thing exists.
 #
 # Why: on 2026-10-16 a coordinator tick made 101 gh calls (59 of them one
 # `gh issue view` per queued ticket) and its housekeeping 89 more, all on the
@@ -111,9 +119,11 @@ GH_ALLOWANCE_LOW_PCT="${GH_ALLOWANCE_LOW_PCT:-10}"
 # gh_allowance_read — writes and prints <resource> \t <remaining> \t <limit> \t <reset-epoch>, one row each.
 gh_allowance_read() {
   local g c rows="" f
+  # gh-read-ok: rows are kept only when they parse; none at all is exit 1
   g=$("$(gh_batch_bin)" api graphql -i -f query='query{rateLimit{remaining}}' 2>/dev/null \
       | tr -d '\r' | awk -F': *' 'tolower($1) == "x-ratelimit-remaining" { r = $2 } tolower($1) == "x-ratelimit-limit" { l = $2 }
                                  tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "" && l != "" && t != "") printf "graphql\t%s\t%s\t%s", r, l, t }')
+  # gh-read-ok: rows are kept only when they parse; none at all is exit 1
   c=$("$(gh_batch_bin)" api rate_limit --jq '.resources.core | "core\t\(.remaining)\t\(.limit)\t\(.reset)"' 2>/dev/null)
   for r in "$g" "$c"; do
     printf '%s' "$r" | grep -qE '^[a-z]+	[0-9]+	[0-9]+	[0-9]+$' && rows="$rows$r"$'\n'
@@ -353,6 +363,7 @@ _gh_batch_repo() { # sets _o and _r from REPO_SLUG / GH_REPO
 # error beside them and a non-zero exit, so the body decides, not the exit.
 _gh_graphql() {
   local body
+  # gh-read-ok: the body decides: no data is exit 1
   body=$(gh_call api graphql -f query="$1" 2>/dev/null)
   printf '%s' "$body" | jq -e '.data.repository | type == "object"' >/dev/null 2>&1 || return 1
   printf '%s' "$body"
@@ -383,6 +394,7 @@ gh_issues_batch() {
         fail=0
         for one in $nums; do
           # REST, not `gh issue view`: that is GraphQL, the allowance that is spent.
+          # gh-read-ok: a refused ticket sets fail=1, and the batch exits 1
           part=$(gh_call api "repos/$_o/$_r/issues/$one" 2>/dev/null) || { fail=1; continue; }
           part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
                   | $acc + {($n): ({number: ($n|tonumber), state: (.state | ascii_upcase), title: (.title // ""),
@@ -466,3 +478,46 @@ gh_prs_by_head_batch() {
   printf '%s\n' "$out"
   return "$fail"
 }
+
+# ---- a read that decides something -------------------------------------------
+# A FAILED READ IS UNKNOWN, NEVER EMPTY. On 2026-10-22 a watcher's issue list with
+# stderr discarded said 1 open, then 0, while 17 and 18 were open: a refused call
+# read as no rows. A caller of gh_read acts on nothing for that pass when it fails.
+GH_READ_UNKNOWN=69
+GH_READ_MISSING=68
+gh_read() { # <what> <gh args…>
+  local what="${1:?gh_read: say what is read}" e body rc=0 why="" a filter="" next=""
+  local -a args=()
+  shift
+  # A --jq filter is applied here, after the body is checked: an error body run through
+  # the caller's filter can come out as plausible rows.
+  for a in "$@"; do
+    if [ "$next" = 1 ]; then filter="$a"; next=""; continue; fi
+    case "$a" in -q|--jq) next=1 ;; --jq=*) filter="${a#--jq=}" ;; *) args+=("$a") ;; esac
+  done
+  e=$(mktemp "${TMPDIR:-/tmp}/ghread.XXXXXX") || { echo "unknown — $what could not be read (no temp file)" >&2; return "$GH_READ_UNKNOWN"; }
+  body=$(gh_call "${args[@]}" 2>"$e") || rc=$?
+  if [ "$rc" -eq 0 ] && _gh_read_error_body "$body"; then rc=1; why="GitHub answered with an error: $(_gh_read_message "$body")"; fi
+  if [ "$rc" -ne 0 ] && [ -z "${why:-}" ] && grep -q 'HTTP 404' "$e"; then rm -f "$e"; return "$GH_READ_MISSING"; fi
+  if [ "$rc" -ne 0 ]; then
+    [ -n "${why:-}" ] || why=$(grep -v '^[[:space:]]*$' "$e" | head -1 | sed 's/^gh: //' | cut -c1-160)
+    rm -f "$e"
+    echo "unknown — $what could not be read (${why:-gh exited $rc})" >&2
+    return "$GH_READ_UNKNOWN"
+  fi
+  rm -f "$e"
+  if [ -n "$filter" ]; then
+    jq -r "$filter" <<<"$body" 2>/dev/null || { echo "unknown — $what could not be read (its answer did not fit the filter)" >&2; return "$GH_READ_UNKNOWN"; }
+    return 0
+  fi
+  printf '%s\n' "$body"
+}
+# _gh_read_error_body <body> — 0 when a body that came with exit 0 is GitHub's error
+# (a REST {message, documentation_url[, status]} object, or GraphQL errors and no data).
+_gh_read_error_body() {
+  case "$1" in *'"message"'*|*'"errors"'*) ;; *) return 1 ;; esac
+  printf '%s' "$1" | jq -se 'any(.[]; type == "object" and (
+      ((has("message") and (has("documentation_url") or has("status"))) and ((keys - ["message","documentation_url","status","errors"]) | length) == 0)
+      or ((.errors | type) == "array" and (.errors | length) > 0 and (.data == null))))' >/dev/null 2>&1
+}
+_gh_read_message() { printf '%s' "$1" | jq -rs 'map(.message // (.errors[0].message?) // empty) | first // "no message"' 2>/dev/null | head -1 | cut -c1-160; }

@@ -46,6 +46,7 @@ base_red_tests_in_log() {
 
 # _base_runs <ref> — that commit's check runs as rollup entries, every run of each check.
 _base_runs() {
+  # gh-read-ok: unreadable runs make the red the PR's own (the standing call in the header)
   _base_gh api "repos/${REPO_SLUG:?}/commits/$1/check-runs?per_page=100&filter=all" 2>/dev/null \
     | jq -c '[.check_runs[]? | {name, id, status: ((.status // "") | ascii_upcase),
               conclusion: ((.conclusion // "") | ascii_upcase), completedAt: (.completed_at // ""),
@@ -63,6 +64,7 @@ _base_newest_done() {
 _base_latest_done() {
   local base="$1" n="$2" c="$3" shas sha runs hit
   if [ ! -f "$c/base-shas" ]; then
+    # gh-read-ok: unreadable base commits make the red the PR's own (the standing call in the header)
     _base_gh api "repos/${REPO_SLUG:?}/commits?sha=$base&per_page=$BASE_RED_DEPTH" 2>/dev/null \
       | jq -r '.[]?.sha // empty' > "$c/base-shas" 2>/dev/null || : > "$c/base-shas"
   fi

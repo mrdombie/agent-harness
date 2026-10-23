@@ -48,12 +48,13 @@ if [ "$1" = api ]; then
     *"commits/"*"/statuses"*) printf '%s\n' "$*" >> "$D/status-reads"
                         if [ -f "$D/head-statuses.json" ]; then cat "$D/head-statuses.json"
                         else echo '[{"context":"Design critic","state":"success","description":"Independent critic: SHIP","creator":{"login":"github-actions[bot]"}}]'; fi; exit 0 ;;
-    *pulls/7/files*)    cat "$D/files.json"; exit 0 ;;
+    *pulls/7/files*)    [ -f "$D/files.fail" ] && { echo 'gh: HTTP 502: Bad Gateway' >&2; exit 1; }; cat "$D/files.json"; exit 0 ;;
     *pulls/7/commits*)  cat "$D/commits.json"; exit 0 ;;
     *issues/7/comments*) jq -s '[.[] ]' "$D"/posted-*.json 2>/dev/null || echo '[]'; exit 0 ;;
-    *issues/12599/comments*) cat "$D/ticket-comments.json" 2>/dev/null || echo '[]'; exit 0 ;;
+    *issues/12599/comments*) [ -f "$D/comments.fail" ] && { echo 'gh: HTTP 502: Bad Gateway' >&2; exit 1; }; cat "$D/ticket-comments.json" 2>/dev/null || echo '[]'; exit 0 ;;
     *contents/.design/voice-mock.html*) cat "$D/mock.html"; exit 0 ;;
-    *"commits?path="*)  if [ -s "$D/pic-date" ]; then printf '[{"commit":{"committer":{"date":"%sT09:00:00Z"}}}]' "$(cat "$D/pic-date")"; else echo '[]'; fi; exit 0 ;;
+    *"commits?path="*)  [ -f "$D/history.fail" ] && { echo '{"message":"API rate limit exceeded","documentation_url":"https://docs.github.com/rest"}'; exit 0; }
+                        if [ -s "$D/pic-date" ]; then printf '[{"commit":{"committer":{"date":"%sT09:00:00Z"}}}]' "$(cat "$D/pic-date")"; else echo '[]'; fi; exit 0 ;;
   esac
 fi
 exit 0
@@ -548,6 +549,20 @@ plant "the ticket's labels are not read"    '. + {ticketLabels: $tl}' '.' case_n
 jq '.design.baselineRoute = {enabled: false}' "$FIX/cfg.keep" > "$CFGF"
 [ "$(case_base)" = red ] && ok "baseline route off: the marker alone skips nothing" || bad "the marker skipped a judge with the route off"
 cp "$FIX/cfg.keep" "$CFGF"
+
+# U A read that decides the verdict and fails is unknown: no verdict is sent, no model runs.
+for what in files comments history; do
+  reset; answer SHIP; rm -f "$D/dispatches"; : > "$D/$what.fail"
+  out=$(bash "$J" run 7 2>&1); rc=$?
+  rm -f "$D/$what.fail"
+  [ $rc -ne 0 ] && [ ! -s "$D/statuses" ] && [ ! -s "$D/dispatches" ] && [ ! -f "$D/prompt-seen" ] \
+    && printf '%s' "$out" | grep -q 'unknown — ' \
+    && ok "an unreadable $what is unknown: no verdict, no model call, and it says so" || bad "unreadable $what: rc=$rc status=$(status_line) out=$(printf '%s' "$out" | tail -3)"
+done
+# A real empty answer is still an answer: no history and no comments leave the picture undated, and it is judged.
+reset; answer SHIP; : > "$D/pic-date"; echo '[]' > "$D/ticket-comments.json"
+bash "$J" run 7 >/dev/null 2>&1
+printf '%s' "$(status_line)" | grep -q 'state=success' && ok "empty history and comments read as empty, and the PR is judged" || bad "empty refused: $(status_line)"
 
 # Whatever the plants did, the judge as shipped never posted a raw status in any case above.
 grep -v '^$' "$FIX/raw-ever" 2>/dev/null | grep -q . && bad "a raw status POST was sent: $(head -1 "$FIX/raw-ever")" || ok "no case sent a raw status POST"

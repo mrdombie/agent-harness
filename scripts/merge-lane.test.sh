@@ -299,6 +299,7 @@ want "and spawns nothing"                  "" "$(spawned)"
 echo "--- a red required check leaves the lane, named; an unrequired red does not ---"
 fresh; fix_issue 801 OPEN "status:in-review"
 pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"   # read, and none: a real red
 out=$(live)
 want "nothing merged"                      "" "$(merges)"
 want_in "the PR is told which check"       "^pr comment 80 .*build" "$(cat "$GH_LOG")"
@@ -332,6 +333,21 @@ pr 91 s91 - 1 build:FAILURE:3 lint:SUCCESS; compare develop s91 0
 printf '[{"message":"The runner has received a shutdown signal."}]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_83_annotations.json"
 live >/dev/null
 want_in "a lost runner is a flake, re-run" '^run rerun 73 ' "$(cat "$GH_LOG")"
+
+echo "--- annotations that could not be read are unknown: the PR stays, nothing is done ---"
+for how in exit 403; do
+  fresh; fix_issue 801 OPEN "status:in-review"
+  pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0
+  # exit: no fixture, the stub exits 1. 403: a rate-limit body that came back with exit 0.
+  [ "$how" = exit ] || printf '{"message":"API rate limit exceeded","documentation_url":"https://docs.github.com/rest"}\n' \
+    > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
+  out=$(live)
+  want_in "($how) it logs unknown"               'unknown — whether build on #80 is a flake could not be read' "$out"
+  want "($how) no fixer is queued"               "" "$(fixers)"
+  want_not_in "($how) it is not taken out"       '^pr comment 80|^pr edit 80 .*--remove-label' "$(cat "$GH_LOG")"
+  want "($how) nothing merged"                   "" "$(merges)"
+  want_in "($how) the lane says it waits"        'unknown: its annotations could not be read' "$(cat "$C/lane.status")"
+done
 
 echo "--- a hold comes off only after a develop-only update that left the screens alone ---"
 hold_setup() { # the lane updated aaaa600 -> bbbb600; the gate put the hold back on bbbb600

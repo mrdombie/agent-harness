@@ -247,6 +247,7 @@ toolkit_login() {
     l="${CLAIM_AGENT:-}"
     l="${l%%@*}"
     [ -n "$l" ] && [ "$l" != "${CLAIM_AGENT:-}" ] || l=$(gh config get -h github.com user 2>/dev/null || true)
+    # gh-read-ok: a login for a label; "unknown" stands in
     [ -n "$l" ] || l=$(gh api user --jq .login 2>/dev/null || true)
     [ -n "$l" ] || { echo unknown; return; }
     HARNESS_LOGIN="$l"; export HARNESS_LOGIN

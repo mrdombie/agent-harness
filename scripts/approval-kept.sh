@@ -278,12 +278,16 @@ check() { # <approved> <head> [--screens cmd]
 # the PR cannot be read.
 signoffs() {
   local pr="$1" place="${2:-}" comments reviews events commits
+  # gh-read-ok: pipefail: a failed read empties it, and the PR is reported unreadable below
   comments=$(gh_call api "repos/$REPO/issues/$pr/comments?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || comments=""
+  # gh-read-ok: pipefail: a failed read empties it, and the PR is reported unreadable below
   reviews=$(gh_call api "repos/$REPO/pulls/$pr/reviews?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || reviews=""
+  # gh-read-ok: pipefail: a failed read empties it, and the PR is reported unreadable below
   events=$(gh_call api "repos/$REPO/issues/$pr/events?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') || events=""
   [ -n "$comments" ] && [ -n "$reviews" ] && [ -n "$events" ] || { echo "could not read PR #$pr's sign-offs" >&2; return 2; }
   commits='[]'
   if [ "$place" = place ] && jq -e --arg hold "$HOLD_LABEL" 'any(.[]; .event == "unlabeled" and .label.name == $hold)' >/dev/null 2>&1 <<<"$events"; then
+    # gh-read-ok: pipefail: a failed read returns 2 on the next line
     commits=$(gh_call api "repos/$REPO/pulls/$pr/commits?per_page=100" --paginate 2>/dev/null | jq -cs 'add // []') \
       || { echo "could not read PR #$pr's commits" >&2; return 2; }
   fi

@@ -88,6 +88,10 @@ pr 9 "$(h 9)" false "$body_routes- [hand](https://github.com/o/r/blob/$A/docs/ev
 pr 10 "$(h 10)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 10)" ahead 2 apps/web/x.tsx
 prfiles() { local n="$1"; shift; jq -n --args '[$ARGS.positional[] | {filename:.}]' "$@" > "$SB/fx/repos_o_r_pulls_${n}_files_per_page_100"; }
 prfiles 10 apps/web/page.tsx docs/evidence/7/dashboard.png
+printf "export default function Page() { return null }\n" > "$SB/fx/repos_o_r_contents_apps_web_page.tsx_ref_$(h 10)"
+# 25 as 10, but the screen's source cannot be read: unknown, so a fresh capture, never "nothing changed"
+pr 25 "$(h 25)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 25)" ahead 2 apps/web/x.tsx
+prfiles 25 apps/web/page.tsx docs/evidence/7/dashboard.png
 # 16 the merge changed a file this PR's screen imports through an alias
 pr 16 "$(h 16)" false "$(printf "$(blockfor "$A" dashboard)")"; compare "$A" "$(h 16)" ahead 2 apps/web/src/components/band.tsx
 prfiles 16 apps/web/page.tsx
@@ -218,6 +222,9 @@ core() { # <script> → failed cases, one per line
   o=$(st "$s" 9); [ "$o" = pending ] || echo "a hand-pinned link outside the block read $o"
   runs "$(h 10)" completed/skipped completed/success
   o=$(st "$s" 10); [ "$o" = pinned ] || echo "a skipped capture over earlier pins read $o"
+  runs "$(h 25)" completed/skipped completed/success
+  o=$(st "$s" 25); [ "$o" = stale ] || echo "a screen whose source could not be read read $o, not stale"
+  rm -f "$SB/fx/repos_o_r_commits_$(h 25)_check-runs_per_page_100"
   rm -f "$SB/fx/repos_o_r_commits_$(h 10)_check-runs_per_page_100"
   runs "$(h 11)" completed/skipped completed/success
   o=$(st "$s" 11); [ "$o" = stale ] || echo "a skipped capture after a merge that edited this PR's screen read $o"
@@ -323,7 +330,7 @@ echo "ci-evidence"
 r=$(all "$S"); [ -z "$r" ] && ok "every state, wait exit, fetch, verdict and routes case reads right" || { bad "cases failed:"; printf '         %s\n' "$r"; }
 
 plant() { # <desc> <old> <new> <the case that must go red>
-  cp "$S" "$SB/p.sh"
+  cp "$S" "$SB/p.sh"; cp "$(dirname "$S")/gh-batch.sh" "$SB/gh-batch.sh"
   python3 - "$SB/p.sh" "$2" "$3" <<'PY' || { bad "plant did not land: $1"; return; }
 import sys
 p, a, b = sys.argv[1:]

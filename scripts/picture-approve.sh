@@ -58,6 +58,7 @@ out=$(gh gist create --desc "$PROJECT #$T approved picture: $NAME" "$F" 2>&1) \
 url=$(printf '%s\n' "$out" | grep -oE 'https://gist\.github\.com/[^ ]+' | tail -1)
 [ -n "$url" ] || die 1 "gh made no gist URL: $(printf '%s' "$out" | tail -1)"
 id=${url##*/}
+# gh-read-ok: unreadable falls back to the raw URL built from the gist URL
 raw=$(gh api "gists/$id" --jq '[.files[] | .raw_url] | first // empty' 2>/dev/null) || raw=""
 case "$raw" in
   https://*) ;;
