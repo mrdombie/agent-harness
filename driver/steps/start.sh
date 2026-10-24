@@ -303,7 +303,9 @@ driver_step_start() { # <ticket>
     local cut="$sha" obase=""
     git -C "$repo" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null \
       && obase="refs/remotes/origin/$branch"
-    if driver_stranded_restore "$t" "$repo" "$obase"; then
+    if [ "${DRIVER_FRESH:-}" = 1 ]; then
+      driver_say "   start: a rebuild — #$t starts from $INTEGRATION_BRANCH, no stranded work restored"
+    elif driver_stranded_restore "$t" "$repo" "$obase"; then
       if [ -n "$DRIVER_STRANDED_SHA" ]; then
         cut="$DRIVER_STRANDED_SHA"
         driver_say "   start: #$t has stranded work on origin as $DRIVER_STRANDED_FROM — the branch starts from it"

@@ -192,6 +192,40 @@ elif [ -n "$RUN_BRIEF" ]; then
   unset _prs
 fi
 
+# ---- "Rebuild:" means fresh, on every host --------------------------------------
+# A queue note starting "Rebuild:" (rebuild_fresh's, or the PM's by hand) is a build from
+# the trunk, whatever this host kept: #13048 was rebuilt by hand and the next host resumed
+# its own local worktree with the old commit, and parked on it again. So before start can
+# resume anything, this host's worktree for the ticket is set aside (its commits kept on
+# origin at refs/stale/<t>/local-<host>-<epoch>, else as a bundle beside the state, never
+# deleted unkept), its driver state is moved aside, and start cuts a new tree from the trunk
+# with no stranded work restored (DRIVER_FRESH).
+driver_rebuild_set_aside() { # <ticket>
+  local t="$1" d wt br stamp ref kept="" host
+  d=$(driver_state_dir "$t"); [ -d "$d" ] || { export DRIVER_FRESH=1; return 0; }
+  stamp=$(date +%s); host=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9\n-' '-' || echo host)
+  wt=$(driver_state_get "$t" worktree); br=$(driver_state_get "$t" branch)
+  if [ -n "$wt" ] && [ -d "$wt" ]; then
+    ref="refs/stale/$t/local-$host-$stamp"
+    if git -C "$wt" push -q origin "HEAD:$ref" >/dev/null 2>&1; then kept="origin $ref"
+    elif git -C "$wt" bundle create "$d.local-$stamp.bundle" HEAD >/dev/null 2>&1; then kept="$d.local-$stamp.bundle"
+    else
+      driver_say "✋ rebuild: #$t's local worktree $wt could not be kept (no push, no bundle), so it is left as it is and the run stops"
+      return 1
+    fi
+    git -C "$MAIN_REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    [ -z "$br" ] || git -C "$MAIN_REPO" branch -D "$br" >/dev/null 2>&1 || true
+  fi
+  mv "$d" "$d.set-aside-$stamp" 2>/dev/null || { driver_say "✋ rebuild: #$t's driver state could not be moved aside"; return 1; }
+  export DRIVER_FRESH=1
+  driver_say "↻ rebuild: #$t builds fresh from $INTEGRATION_BRANCH — this host's state moved to $d.set-aside-$stamp${kept:+, the old worktree commits kept at $kept}"
+}
+if [ -n "$RUN_BRIEF" ] && [ -s "$RUN_BRIEF" ] && grep -qE '^(Coordinator note \([^)]*\): )?Rebuild:' "$RUN_BRIEF"; then
+  # The brief may live inside the state about to be moved: keep a copy outside it first.
+  _rb_copy="$DRIVER_DIR/.rebuild-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
+  driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+fi
+
 # ---- a repair: the PR that exists, not a fresh build --------------------------
 # `--repair <brief>` is how a red or clashing pull request comes back to the driver.
 # A different order, entered through `reenter` (the PR's own branch, at origin's
