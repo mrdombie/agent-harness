@@ -68,6 +68,8 @@ done
 [ -n "$TICKET" ] || die "need a ticket number"
 case "$TICKET" in *[!0-9]*) die "'$TICKET' is not a ticket number" ;; esac
 export DRIVER_TICKET="$TICKET"
+# When this run started: a commit authored before it is an earlier run's (ship's verdict check).
+DRIVER_RUN_STARTED=$(date +%s); export DRIVER_RUN_STARTED
 # The run's reused proof trees go with the run (steps/build.sh driver_proof_trees_drop).
 trap 'declare -F driver_proof_trees_drop >/dev/null && DRIVER_TICKET="$TICKET" driver_proof_trees_drop' EXIT
 

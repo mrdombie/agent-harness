@@ -938,6 +938,38 @@ want "it refuses"                          "24" "$rc"
 want_in "naming the verdict commit"        'committed a design verdict' "$out"
 want "and nothing reached origin"          "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-196/work 2>/dev/null)"
 
+echo "--- an earlier run's verdict on a branch that never reached origin is dropped, not refused (#13048) ---"
+VKEY="Design-Critic"
+old_verdict() { # <ticket> — a verdict commit an earlier run made, then this run's real work
+  setup_wt "$1"
+  GIT_AUTHOR_DATE="2026-10-20T10:00:00Z" GIT_COMMITTER_DATE="2026-10-20T10:00:00Z" \
+    git -C "$FIX/wt$1" commit -q --allow-empty -m "chore: design-critic" -m "$VKEY: SHIP (agent) f9ad4e1a738d"
+  printf 'work %s\n' "$1" > "$FIX/wt$1/work-$1.txt"; git -C "$FIX/wt$1" add "work-$1.txt"; git -C "$FIX/wt$1" commit -q -m "feat: the work"
+  driver_state_put "$1" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$1" review
+  for st in start plan build self-check review record; do driver_state_done "$1" "$st"; done
+}
+: > "$GH_LOG"; old_verdict 471
+rc=0; out=$(DRIVER_RUN_STARTED=$(date +%s) driver_step_ship 471 2>&1) || rc=$?
+want "it ships"                            "0" "$rc"
+want_in "saying it dropped the old verdict" "dropped an earlier run's design verdict" "$out"
+want "the pushed branch carries no verdict" "0" "$(git -C "$FIX/origin" log --format=%B tkt-471/work 2>/dev/null | grep -c "^$VKEY:")"
+want "and keeps the work"                  "work 471" "$(git -C "$FIX/origin" show tkt-471/work:work-471.txt 2>/dev/null)"
+
+echo "--- one made this run is still refused, beside an old one ---"
+: > "$GH_LOG"; old_verdict 472
+git -C "$FIX/wt472" commit -q --allow-empty -m "chore: design-critic again" -m "$VKEY: SHIP (agent) 0000000000aa"
+rc=0; out=$(DRIVER_RUN_STARTED=$(( $(date +%s) - 60 )) driver_step_ship 472 2>&1) || rc=$?
+want "it refuses"                          "24" "$rc"
+want_in "naming this run's verdict"        'committed a design verdict \([0-9a-f]+ chore: design-critic again' "$out"
+want "and nothing reached origin"          "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-472/work 2>/dev/null)"
+
+echo "--- plant: the drop out, the old verdict refuses again ---"
+eval "$(declare -f _driver_ship_drop_old_verdicts | sed '1,2s/{/{ return 0;/')"
+: > "$GH_LOG"; old_verdict 473
+rc=0; out=$(DRIVER_RUN_STARTED=$(date +%s) driver_step_ship 473 2>&1) || rc=$?
+want "planted: the old verdict refuses the ship" "24" "$rc"
+. "$HERE/../steps/ship.sh"
+
 # earlier_run <ticket> <file> <content> — an earlier run of the same ticket pushed a
 # commit to the ticket's own branch on origin, from a clone this run never saw.
 earlier_run() {
