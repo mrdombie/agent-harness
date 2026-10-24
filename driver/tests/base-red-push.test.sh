@@ -117,6 +117,17 @@ printf '901' > "$FIX/fgh.found"; printf '<!-- develop-red: checks=chk-a sha=%s -
 file_red
 want "another host's ledger: the forge's marker stops a second" "1" "$(creates)"
 rm -f "$FIX/fgh.found"; cp "$FIX/ledger.keep" "$STATE/swarm/develop-red-filed.tsv"
+# The red set changed (one check fixed, one still red): the open ticket covers it, as a comment.
+# #14229 was filed and built in full beside the open #14215 on 2026-10-24.
+printf '%s\tchk-a,chk-z\t604\t\n' "$SHA" > "$PENDING"; : > "$FIX/fgh.log"
+printf '901' > "$FIX/fgh.found"; printf '<!-- develop-red: checks=chk-a sha=%s -->' "$S7" > "$FIX/fgh.found.body"
+file_red
+want "a changed red set files no second ticket" "1" "$(creates)"
+want_in "  it comments on the open one"        'repos/acme/widgets/issues/901/comments -X POST .*now on: chk-a, chk-z' "$(cat "$FIX/fgh.log")"
+want_in "  and says so"                        'is the open #901.s: added there as a comment' "$R_FILE"
+file_red
+want_not_in "  once: a second pass does not comment again" 'comments -X POST.*comments -X POST' "$(tr '\n' ' ' < "$FIX/fgh.log")"
+rm -f "$FIX/fgh.found"; cp "$FIX/ledger.keep" "$STATE/swarm/develop-red-filed.tsv"
 
 echo "--- a check red only on the branch still blocks ---"
 trunk_set; : > "$PENDING"
