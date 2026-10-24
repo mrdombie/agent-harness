@@ -29,7 +29,7 @@
 # parent is told and closed as split. 0 when every part was filed; 2 when the ticket is itself a
 # part of a split (it builds: a part is never split again). Nothing has been built yet.
 _driver_plan_split() {
-  local t="$1" ans="$2" max="$3" meta title inherit n i url c kids="" task body l args
+  local t="$1" ans="$2" max="$3" meta title inherit n i url c kids="" task body l args prev="" st
   meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
   title=$(jq -r '.title // ""' <<<"$meta")
   if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
@@ -68,15 +68,18 @@ _driver_plan_split() {
 **Tests:** %s
 
 Refs #%s
-' \
+%s' \
       "$((i+1))" "$n" "$t" "${4:-its plan had $n build tasks, over \`driver.split.maxTasks\` ($max)}" "$carried" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
       "$(jq -r '[.files[]? | (.path // .) | tostring] | join(", ") | if . == "" then "(none named)" else . end' <<<"$task")" \
-      "$(jq -r '[.tests[]? | (.file // .name // .behaviour // .) | tostring] | join("; ") | if . == "" then "(none named)" else . end' <<<"$task")" "$t")
-    args=(issue create --repo "$REPO_SLUG" --title "$title — part $((i+1)) of $n: $(jq -r '.title // ""' <<<"$task" | cut -c1-80)" --body "$body" --label "$LBL_READY")
+      "$(jq -r '[.tests[]? | (.file // .name // .behaviour // .) | tostring] | join("; ") | if . == "" then "(none named)" else . end' <<<"$task")" "$t" "$([ -z "$prev" ] || printf '\nBlocked until #%s merges: the parts build in order, and the unblocker (scripts/unblock-waiting.sh) sets this one ready when it has.' "$prev")")
+    # CHAINED: only part 1 is ready; part k waits, gated, on part k-1 (owner's PM, 2026-10-24:
+    # three parts parked within 3 minutes asking "should I wait for part N?").
+    st="$LBL_READY"; [ -z "$prev" ] || st="${LBL_GATED:-$LBL_READY}"
+    args=(issue create --repo "$REPO_SLUG" --title "$title — part $((i+1)) of $n: $(jq -r '.title // ""' <<<"$task" | cut -c1-80)" --body "$body" --label "$st")
     while IFS= read -r l; do [ -n "$l" ] && args+=(--label "$l"); done <<<"$inherit"
     url=$(swarm_gh "${args[@]}" 2>/dev/null) || { driver_state_set "$t" park_note "split needed: filing part $((i+1)) of $n failed after ${kids:-none} were filed"; return 1; }
     c=${url##*/}; case "$c" in ''|*[!0-9]*) driver_state_set "$t" park_note "split needed: part $((i+1)) came back as '$url'"; return 1 ;; esac
-    kids="${kids:+$kids }#$c"
+    kids="${kids:+$kids }#$c"; prev="$c"
     i=$((i+1))
   done
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "**Split** into $kids — one change each, in this order. Its plan had $n build tasks, over \`driver.split.maxTasks\` ($max), so nothing was built here. Closed as split." >/dev/null 2>&1 || true

@@ -29,6 +29,12 @@ echo "wtsweep $*" >> "$FIX/house.log"
 SH
 chmod +x "$BIN/wtsweep"
 export COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep"
+cat > "$BIN/unblock" <<'SH'
+#!/usr/bin/env bash
+echo "unblock $*" >> "$FIX/house.log"
+SH
+chmod +x "$BIN/unblock"
+export COORDINATOR_UNBLOCK="$BIN/unblock"
 cat > "$BIN/claude" <<'SH'
 #!/usr/bin/env bash
 { printf 'ARGV'; printf ' [%s]' "$@"; printf '\n'
@@ -113,12 +119,14 @@ want_in "reconcile runs dry"               'reconcile --dry-run' "$(cat "$FIX/ho
 want_in "the server sweep runs dry"        'sweep --sweep --dry-run' "$(cat "$FIX/house.log")"
 want_in "the stray sweep runs dry"         '^sweep --strays --dry-run$' "$(cat "$FIX/house.log")"
 want_in "the polish-list sweep runs dry"   '^polish sweep --dry-run$' "$(cat "$FIX/house.log")"
+want_in "the unblocker runs dry"           '^unblock --dry-run$' "$(cat "$FIX/house.log")"
 
 echo "--- live spawns, and a set cap is a hard ceiling ---"
 fresh; queue 501 502 503 504 505 506; live_run 900
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 tick)
 want "room under the cap: it fills to the cap, in queue order" "501 502 503" "$(spawned)"
 want_in "live housekeeping is not dry"     '^reconcile --quiet' "$(cat "$FIX/house.log")"
+want_in "the unblocker runs live"          '^unblock $' "$(cat "$FIX/house.log")"
 want_in "the stray sweep reaps for real"   '^sweep --strays$' "$(cat "$FIX/house.log")"
 want_in "the polish-list sweep runs: merged items ticked, lists closed" '^polish sweep$' "$(cat "$FIX/house.log")"
 fresh; queue 501 502; live_run 900; live_run 901

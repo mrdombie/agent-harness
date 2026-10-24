@@ -43,6 +43,10 @@ QDATA="The import needs to remember which calendar a row came from, and the data
 QCRIT="1 blocking finding(s) from the review to clear: critical apps/api/src/lib/org.ts:40 another workspace's rows are returned to this one. Fix it here, or defer it as a follow-up?"
 QCOPY="the fix round deferred a blocking finding: R1-09: Minor. The novelty-collision copy differs from the approved copy. Changing approved user-facing words is the owner's call, not the fix step's, so the current copy stays until the owner confirms."
 QODD="The ticket says the button sits on the left; the screen has nowhere on the left. Which side?"
+# Three parts that parked within 3 minutes on 2026-10-24, asking whether to wait for a part not built yet.
+Q14276="This part posts the new 'One question' card, but the part that adds that card (part 2, #14273) hasn't been built or claimed yet. Should this part wait until part 2 merges? (yes / no)"
+Q14277="Hold this part until parts 2 to 5 (#14273–#14276) merge? Every piece it wires together is missing on develop: the factQuestion/factSaved cards (#14273), the private-life filter (#14274), recordOwnFact (#14275)."
+Q13573="This ticket needs the context loader from part 2 of the programme, and none of it has been built. That part (#13572) was closed as split into #14268, #14269, #14270 and #14271, and all four are still open with no pull request. Should this ticket wait for them?"
 
 N=600
 cls() { # <text> [pr] — the class a fresh ticket's question gets, or park
@@ -60,6 +64,14 @@ want "#13997 wait or fold in: (b), waits for its parent"      "b parent-wait" "$
 N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; SA_PARENT=""; driver_standard_answer "$N" plan "$Q13997" >/dev/null 2>&1
 want "and the parent is the PR the text names"                "13772"         "$SA_PARENT"
 want "#13454 deferred Minors: (c), carry on"                  "c carry"       "$(cls "$Q13454" 77)"
+want "#14276 wait for part 2: (f), waits for the dependency"  "f dependency-wait" "$(cls "$Q14276")"
+want "#14277 hold until parts 2 to 5: (f)"                    "f dependency-wait" "$(cls "$Q14277")"
+want "#13573 wait for the split parts: (f)"                   "f dependency-wait" "$(cls "$Q13573")"
+deps() { N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; SA_PARENT=""; driver_standard_answer "${2:-$N}" plan "$1" >/dev/null 2>&1; printf '%s' "$SA_PARENT"; }
+want "  #14276 waits for #14273"                              "14273" "$(deps "$Q14276" 14276)"
+want "  #14277's range is each ticket in it"                  "14273 14274 14275 14276" "$(deps "$Q14277" 14277)"
+want "  #13573 waits for the parts, and the split parent named" "13572 14268 14269 14270 14271" "$(deps "$Q13573" 13573)"
+want "a wait that names no ticket parks"                      "park" "$(cls "Should this part wait until part 2 merges? (yes / no)")"
 want "#10637 a Major on another screen: (c)"                  "c carry"       "$(cls "$Q10637" 77)"
 want "#12209 the critic's toast: (d), ignore"                 "d carry"       "$(cls "$Q12209C" 77)"
 want "#12209 the critic deferred again: (d)"                  "d carry"       "$(cls "$Q12209D" 77)"
@@ -157,7 +169,14 @@ want "the run ends clean"                  "0" "$(walk_rc 704 plan 20 question "
 want "nothing parked"                      "" "$(cat "$FIX/park.log")"
 want "nothing after plan ran"              "start size plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "the ticket is blocked"            'issue edit 704 .*--add-label status:blocked' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "on its parent, in words the merge pass reads" 'issue comment 704 .*Blocked on #13772: this ticket waits for #13772 to merge' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "on its parent, in words the unblocker reads" 'issue comment 704 .*Blocked until #13772 merges' "$(tr '\n' ' ' < "$GH_LOG")"
+
+echo "--- on: a plan that finds a dependency not built yet gates on it, never parks ---"
+want "the run ends clean"                  "0" "$(walk_rc 707 plan 20 question "$Q14276")"
+want "nothing parked"                      "" "$(cat "$FIX/park.log")"
+want "nothing after plan ran"              "start size plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_in "the ticket is gated"              'issue edit 707 .*--add-label status:gated' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "on what it needs, in words the unblocker reads" 'issue comment 707 .*Blocked until #14273 merge' "$(tr '\n' ' ' < "$GH_LOG")"
 
 echo "--- on: a data-model question and a Critical still park ---"
 want "the data-model question parks"       "20" "$(walk_rc 705 plan 20 question "$QDATA")"

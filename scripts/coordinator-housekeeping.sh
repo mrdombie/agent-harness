@@ -78,6 +78,12 @@ if [ "$FOLLOW_UP" = off ]; then :
 elif [ -n "$GH_WAIT" ]; then say "follow-ups: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$FOLLOW_UP" settle --dry-run >> "$COORD_LOG" 2>&1 || say "follow-up settle (dry) exited $?"
 else bash "$FOLLOW_UP" settle >> "$COORD_LOG" 2>&1 || say "follow-up settle exited $?"; fi
+# A ticket waiting on others ("Blocked until #…", gated or blocked) is ready once they landed.
+UNBLOCK="${COORDINATOR_UNBLOCK:-$SELF_DIR/unblock-waiting.sh}"
+if [ "$UNBLOCK" = off ]; then :
+elif [ -n "$GH_WAIT" ]; then say "unblock: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$UNBLOCK" --dry-run >> "$COORD_LOG" 2>&1 || say "unblock (dry) exited $?"
+else bash "$UNBLOCK" >> "$COORD_LOG" 2>&1 || say "unblock exited $?"; fi
 if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
 else bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"; fi

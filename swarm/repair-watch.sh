@@ -337,30 +337,14 @@ stop_sticky() { # <pr> <ticket> <reason>
 }
 
 # ---- 2. unblock --------------------------------------------------------------
-# A ticket held behind others names them in a "Blocked until #12, #13" comment.
-# One list read carries every held ticket's comments, and one batched read every parent's state.
+# A ticket held behind others is released by the one unblocker (scripts/unblock-waiting.sh),
+# which the coordinator's housekeeping runs every pass; here only while no coordinator is live.
 section_unblock() {
-  local B parents p open held all states
-  held=$(swarm_gh issue list --repo "$REPO_SLUG" --label "$LBL_BLOCKED" --state open --limit 200 --json number,comments \
-    -q '.[] | "\(.number)\t\([.comments[]?.body | select(startswith("Blocked until"))] | last // "" | [scan("#[0-9]+")] | join(" "))"' 2>/dev/null)
-  all=$(printf '%s\n' "$held" | cut -f2 | tr -d '#' | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u)
-  states='{}'
-  [ -z "$all" ] || states=$(gh_issues_batch $all 2>/dev/null)
-  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$states" || states='{}'
-  while IFS=$'\t' read -r B parents; do
-    [ -n "${B:-}" ] || continue
-    parents=$(printf '%s' "$parents" | tr -d '#')
-    [ -n "$parents" ] || continue
-    open=0
-    for p in $parents; do
-      [ "$(jq -r --arg p "$p" '.[$p].state // empty' <<<"$states")" = CLOSED ] || open=1
-    done
-    [ "$open" = 0 ] || continue
-    if [ "$DRY" = 1 ]; then echo "WOULD unblock #$B (every parent closed)"; continue; fi
-    issue_status_set "$B" "$LBL_READY" >/dev/null 2>&1 &&
-    swarm_gh issue comment "$B" --repo "$REPO_SLUG" --body "Unblocked: every parent has merged. Back in the queue." >/dev/null 2>&1
-    say "unblocked #$B"
-  done <<< "$held"
+  if declare -F coord_live_recently >/dev/null && coord_live_recently; then
+    [ "$DRY" = 1 ] && echo "unblock: the coordinator's housekeeping runs it"; return 0
+  fi
+  local l
+  while IFS= read -r l; do [ -n "$l" ] && say "$l"; done < <(bash "$KIT_ROOT/scripts/unblock-waiting.sh" $([ "$DRY" = 1 ] && echo --dry-run) 2>&1)
 }
 
 # ---- 3. restart after an infrastructure error --------------------------------

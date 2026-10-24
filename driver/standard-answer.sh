@@ -4,7 +4,7 @@
 # instead of asking"). Sourced by ai-step.sh, so build-ticket and every step have it.
 #
 #   driver_standard_answer <ticket> <step> <text>   0 when a standard answer applies;
-#       sets SA_CLASS (a–e), SA_NAME, SA_ANSWER, SA_ACTION (carry|base-wait|parent-wait),
+#       sets SA_CLASS (a–f), SA_NAME, SA_ANSWER, SA_ACTION (carry|base-wait|parent-wait|dependency-wait),
 #       SA_PARENT (b's pull request) and SA_HOW (mechanical|model). 1: it parks as before.
 #   driver_standard_answer_note <ticket> <step> <text>   logs "standard answer: <which>"
 #       and writes it on the pull request, or the ticket while there is none.
@@ -53,13 +53,13 @@ _driver_sa_model() {
   model=$(jq -r '.classifier.model // "opus"' <<<"$s"); secs=$(jq -r '.classifier.timeoutSec // 90' <<<"$s")
   p="$(driver_state_dir "$t")/steps/standard-answer.prompt"; mkdir -p "$(dirname "$p")"
   {
-    printf 'A build step stopped to ask a person this. Until the release a standing merge-first rule answers some questions. Reply with ONE token and nothing else: a, b, c, d, e or park.\n\n'
+    printf 'A build step stopped to ask a person this. Until the release a standing merge-first rule answers some questions. Reply with ONE token and nothing else: a, b, c, d, e, f or park.\n\n'
     jq -r '.classes | to_entries[] | "\(.key): \(.value.name) — \(.value.answer)"' <<<"$s"
     printf 'park: anything else, or a product, design, data-model, secrets or Critical question, or when unsure.\n\nThe question:\n%s\n' "$q"
   } > "$p"
   out=$(driver_bounded_argv "$secs" "$p" "${DRIVER_SA_CLAUDE:-$DRIVER_CLAUDE}" -p --model "$model" --max-turns 1 \
           --output-format text --name standard-answer 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-  case "$out" in a|b|c|d|e) [ "$(jq -r --arg k "$out" '.classes[$k] // empty | .action' <<<"$s")" != "" ] && echo "$out" || echo park ;; *) echo park ;; esac
+  case "$out" in a|b|c|d|e|f) [ "$(jq -r --arg k "$out" '.classes[$k] // empty | .action' <<<"$s")" != "" ] && echo "$out" || echo park ;; *) echo park ;; esac
 }
 
 driver_standard_answer() { # <ticket> <step> <text>
@@ -89,15 +89,23 @@ driver_standard_answer() { # <ticket> <step> <text>
       mkdir -p "$d/steps"; printf '%s\t%s\n' "$key" "$cls" >> "$cache"
     else how=model; fi
   fi
-  case "$cls" in a|b|c|d|e) : ;; *) driver_say "   standard answer: none — $([ "$cls" = park ] && echo "a question still for a person" || echo "undecided"), so it parks"; return 1 ;; esac
+  case "$cls" in a|b|c|d|e|f) : ;; *) driver_say "   standard answer: none — $([ "$cls" = park ] && echo "a question still for a person" || echo "undecided"), so it parks"; return 1 ;; esac
   SA_CLASS="$cls"; SA_HOW="$how"
   SA_NAME=$(jq -r --arg k "$cls" '.classes[$k].name // ""' <<<"$s")
   SA_ANSWER=$(jq -r --arg k "$cls" '.classes[$k].answer // ""' <<<"$s")
   SA_ACTION=$(jq -r --arg k "$cls" '.classes[$k].action // ""' <<<"$s")
-  case "$SA_ACTION" in carry|base-wait|parent-wait) : ;; *) SA_CLASS=""; return 1 ;; esac
+  case "$SA_ACTION" in carry|base-wait|parent-wait|dependency-wait) : ;; *) SA_CLASS=""; return 1 ;; esac
   # No pull request yet: nothing to hold, so the base's red is left to the base and the step carries on.
   if [ "$SA_ACTION" = base-wait ] && [ -z "$(driver_state_get "$t" pr)" ]; then
     SA_ACTION=carry; SA_ANSWER="$SA_ANSWER There is no pull request to hold yet, so carry on with this change and leave the base's red alone; CI is the gate."
+  fi
+  # (f) every ticket the question names is what this one waits for; a range "#a–#b" is each.
+  if [ "$SA_ACTION" = dependency-wait ]; then
+    SA_PARENT=$(jq -rn --arg q "$q" --arg t "$t" '
+      ([$q | scan("#([0-9]+)\\s*[–—-]\\s*#?([0-9]+)") | (.[0] | tonumber) as $a | (.[1] | tonumber) as $b
+         | select($b >= $a and $b - $a <= 10) | range($a; $b + 1) | tostring]
+       + [$q | scan("#([0-9]+)") | .[0]]) | map(select(. != $t)) | unique | join(" ")' 2>/dev/null)
+    [ -n "$SA_PARENT" ] || { driver_say "   standard answer: (f) reads as a wait on a dependency, and the question names no ticket — it parks"; SA_CLASS=""; return 1; }
   fi
   if [ "$SA_ACTION" = parent-wait ]; then
     SA_PARENT=$(jq -rn --arg q "$q" --arg t "$t" '

@@ -19,7 +19,14 @@
     "approved (copy|words|wording)",
     "user-facing (copy|words|text|wording)"
   ],
-  "order": ["a", "b", "e", "c", "d"],
+  "order": [
+    "a",
+    "b",
+    "e",
+    "c",
+    "d",
+    "f"
+  ],
   "classes": {
     "a": {
       "name": "base red: wait",
@@ -52,20 +59,46 @@
       "name": "signed off: ship",
       "answer": "Ship as signed off. Under merge first nothing is re-captured or re-signed before the merge; the owner looks on UAT.",
       "action": "carry",
-      "all": ["signed[- ]off", "(ship|re-?capture|re-?shoot|re-?sign)"]
+      "all": [
+        "signed[- ]off",
+        "(ship|re-?capture|re-?shoot|re-?sign)"
+      ]
     },
     "c": {
       "name": "Minor or Major finding: defer",
       "answer": "Defer it as fix-after-merge and ship. Until the release only a Critical blocks; a Major or Minor finding is its own follow-up ticket (a Minor waits until after launch).",
       "action": "carry",
-      "all": ["\\b(minor|major)\\b", "(defer|fix (it |this |them )?now|follow-?up|fix-after-merge|after (the )?merge|later|this (pr|change)|its own (ticket|change))"],
+      "all": [
+        "\\b(minor|major)\\b",
+        "(defer|fix (it |this |them )?now|follow-?up|fix-after-merge|after (the )?merge|later|this (pr|change)|its own (ticket|change))"
+      ],
       "context": "deferredGrades"
     },
     "d": {
       "name": "critic, evidence or pictures: ignore",
       "answer": "Ignore it and ship. Until the release the design critic, the evidence, the screenshots and the picture hold nothing; the owner looks on UAT.",
       "action": "carry",
-      "any": ["\\bcritic", "evidence", "screen ?shots?", "\\bshots?\\b", "picture", "re-?capture", "parity", "\\bslop\\b"]
+      "any": [
+        "\\bcritic",
+        "evidence",
+        "screen ?shots?",
+        "\\bshots?\\b",
+        "picture",
+        "re-?capture",
+        "parity",
+        "\\bslop\\b"
+      ]
+    },
+    "f": {
+      "name": "a dependency not built yet: wait for it",
+      "answer": "Wait. A ticket whose dependency has not merged waits for it: it is gated on the tickets it needs and goes back to ready when they have merged (scripts/unblock-waiting.sh). Nothing is built ahead of them.",
+      "action": "dependency-wait",
+      "any": [
+        "(should|shall) (this|it|the) [^?]*\\b(wait|hold)\\b",
+        "\\bhold (this|it)[^?]* until\\b",
+        "\\bwait (until|for) [^?]*\\b(merge[sd]?|lands?|is built|are built)\\b",
+        "(hasn[’']?t|has not|haven[’']?t|have not) been built"
+      ]
     }
   },
   "classifier": {
