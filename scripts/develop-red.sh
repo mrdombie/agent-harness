@@ -43,11 +43,22 @@ while IFS=$'\t' read -r sha checks who prs; do
   s7=$(printf '%s' "$sha" | cut -c1-7)
   n=$(awk -F'\t' -v s="$sha" -v c="$checks" '$1 == s && $2 == c { print $3; exit }' "$LEDGER" 2>/dev/null)
   [ -z "$n" ] || continue
-  # Searched by the check set alone: an open ticket for an older commit of the same red covers this one.
-  if ! found=$(SWARM_GH="$GH" gh_read "whether the $TRUNK red on $checks was filed" api -X GET search/issues \
-         -f q="repo:$REPO_SLUG is:issue is:open in:body \"develop-red: checks=$checks\"" \
-         -q "[.items[]? | select((.body // \"\") | contains(\"develop-red: checks=$checks sha=\"))][0].number // empty"); then
+  # ANY OPEN develop-red TICKET COVERS THIS ONE: a red set that grew or shrank (one check fixed,
+  # another broke) is the same red trunk. A second ticket was built in full beside the first
+  # (#14229 beside #14215, 2026-10-24). The new set goes on the open one as a comment.
+  if ! found=$(SWARM_GH="$GH" gh_read "whether an open $TRUNK red was filed" api -X GET search/issues \
+         -f q="repo:$REPO_SLUG is:issue is:open in:body \"develop-red: checks=\"" \
+         -q "[.items[]? | select((.body // \"\") | contains(\"develop-red: checks=\"))][0] | if . == null then empty else \"\\(.number)\\t\\((.body // \"\") | contains(\"develop-red: checks=$checks sha=\"))\" end"); then
     echo "unknown — whether the $TRUNK red on $checks was filed could not be read; not filed this pass"; failed=1; continue
+  fi
+  same=${found#*$'\t'}; found=${found%%$'\t'*}
+  if [ -n "$found" ] && [ "$same" = false ]; then
+    if [ -n "$DRY" ]; then echo "would add the $TRUNK red on ${checks//,/, } at $s7 to the open #$found"; continue; fi
+    "$GH" api "repos/$REPO_SLUG/issues/$found/comments" -X POST \
+      -f body="$TRUNK is still red at \`$sha\`, now on: ${checks//,/, }. Builders that hit it: ${who//,/, }. This ticket covers it; no second one is filed." >/dev/null 2>&1 \
+      || { echo "the $TRUNK red on ${checks//,/, } at $s7 could not be added to #$found"; failed=1; continue; }
+    printf '%s\t%s\t%s\n' "$sha" "$checks" "$found" >> "$LEDGER"
+    echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$found's: added there as a comment"; continue
   fi
   if [ -z "$found" ] && ! found=$(SWARM_GH="$GH" gh_read "whether the $TRUNK red on $checks at $s7 was filed" api -X GET search/issues \
          -f q="repo:$REPO_SLUG is:issue in:body \"develop-red: checks=$checks sha=$s7\"" \
