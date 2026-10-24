@@ -303,6 +303,52 @@ _driver_ship_deferred() {
     | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(if (.list // "") == "" then "no screen resolved, kept here" elif .list == "follow-up" then "\(.grade // "") — a follow-up ticket at the front of the queue" elif .list == "dropped" then "\(.grade // "") — not filed: this ticket is itself a fix-after-merge follow-up, and only a Critical is filed from one" else "on the polish list of " + .list end))"' "$f" 2>/dev/null
 }
 
+# _driver_ship_drop_old_verdicts <ticket> <tree> <trunk> <key> <not-refs…> — every design
+# verdict commit on the branch authored before this run started is taken out: rebased away
+# when no merge follows it, else its changes reverted and its sha recorded as excluded
+# (ship_verdict_excluded). Neither clean: the head is kept at refs/stale/<t>/run-<epoch> and
+# the ticket is rebuilt fresh from the trunk (DRIVER_E_REQUEUE), never parked. 0 done.
+_driver_ship_drop_old_verdicts() {
+  local t="$1" wt="$2" trunk="$3" key="$4" c at subj ex ref note n=0
+  shift 4
+  # Read again after each one: a rebase gives every later commit a new sha.
+  while [ "$n" -lt 20 ]; do
+    n=$((n + 1)); ex=" $(driver_state_get "$t" ship_verdict_excluded) "
+    read -r c at < <(git -C "$wt" log --reverse --format='%H %at' -i --grep="^$key:" HEAD --not "$@" 2>/dev/null \
+      | while read -r c at; do
+          [ "$at" -lt "$DRIVER_RUN_STARTED" ] 2>/dev/null || continue
+          printf '%s' "$ex" | grep -qF " $(git -C "$wt" rev-parse --short "$c") " && continue
+          printf '%s %s\n' "$c" "$at"; break
+        done)
+    [ -n "${c:-}" ] || return 0
+    subj=$(git -C "$wt" log -1 --format='%h %s' "$c")
+    if [ -z "$(git -C "$wt" rev-list --merges "$c..HEAD" 2>/dev/null)" ] \
+       && git -C "$wt" rebase -q --onto "$c^" "$c" >/dev/null 2>&1; then
+      driver_say "   ship: dropped an earlier run's design verdict ($subj) — rebased the branch past it"
+      continue
+    fi
+    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+    if git -C "$wt" revert --no-edit "$c" >/dev/null 2>&1; then
+      ex=$(driver_state_get "$t" ship_verdict_excluded)
+      driver_state_set "$t" ship_verdict_excluded "${ex:+$ex }$(git -C "$wt" rev-parse --short "$c")"
+      driver_say "   ship: reverted an earlier run's design verdict ($subj) and left it out of the check"
+      continue
+    fi
+    git -C "$wt" revert --abort >/dev/null 2>&1 || true
+    ref="refs/stale/$t/run-$(date +%s)"
+    git -C "$wt" push -q origin "HEAD:$ref" >/dev/null 2>&1 || git -C "$wt" update-ref "$ref" HEAD
+    note="$(driver_state_dir "$t")/rebuild-brief.md"
+    printf 'Rebuild: build fresh from %s. An earlier run left a design verdict commit (%s) the branch could not be cleaned of; the old head is at %s for reference only.\n' \
+      "$INTEGRATION_BRANCH" "$subj" "$ref" > "$note"
+    driver_state_set "$t" run_brief "$note"
+    git -C "$wt" reset -q --hard "$trunk" >/dev/null 2>&1 || true
+    driver_state_reopen "$t" $DRIVER_STEPS
+    driver_say "↻ ship: an earlier run's design verdict ($subj) could not be taken out cleanly — the head is kept at $ref and #$t builds fresh from $INTEGRATION_BRANCH"
+    return "$DRIVER_E_REQUEUE"
+  done
+  return 0
+}
+
 # _driver_ship_hook_retry <ticket> <tree> <branch> — MERGE FIRST: a push the project's
 # pre-push hook refused, on a head gates.local passed on, is no finding and no question:
 # CI is the gate. It is pushed once more; 0 when that lands. Refused again, it sets
@@ -686,6 +732,16 @@ driver_step_ship() { # <ticket>
     driver_say "✋ ship: could not read this run's commits for a design verdict ($(printf '%s' "$selfv" | tail -1 | cut -c1-200)). Nothing is pushed."
     driver_state_set "$t" park_note "could not read this run's commits for a '$vkey:' verdict: $(printf '%s' "$selfv" | tail -1 | cut -c1-200)"
     return "$DRIVER_E_REFUSED"
+  fi
+  # A VERDICT AN EARLIER RUN COMMITTED IS NOT THIS RUN'S. A branch that never reached origin
+  # carried one forever (#13048: refused at ship on every resume for a day). One authored
+  # before this run started (DRIVER_RUN_STARTED, build-ticket) is dropped, and the check reads again.
+  if [ -n "$selfv" ] && [ -n "${DRIVER_RUN_STARTED:-}" ]; then
+    local vrc=0; _driver_ship_drop_old_verdicts "$t" "$wt" "$trunk" "$vkey" "${vnot[@]}" || vrc=$?
+    [ "$vrc" -eq 0 ] || return "$vrc"
+    selfv=$(git -C "$wt" log --format='%h %s' -i --grep="^$vkey:" HEAD --not "${vnot[@]}" 2>/dev/null)
+    local vx; vx=$(driver_state_get "$t" ship_verdict_excluded)
+    [ -z "$vx" ] || selfv=$(printf '%s\n' "$selfv" | awk -v x=" $vx " 'NF && index(x, " " $1) == 0')
   fi
   if [ -n "$selfv" ]; then
     driver_say "✋ ship: this run committed a design verdict ($(printf '%s' "$selfv" | tr '\n' ';')) — only the independent critic sets that status. Nothing is pushed."
