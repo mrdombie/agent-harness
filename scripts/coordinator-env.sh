@@ -528,11 +528,13 @@ COORD_TICKET_JQ='
       or (($screens.pictures != false) and ($n != null) and (($pics | index($n | tonumber)) != null)));
   # Last in the release: the label, never on a P0.
   def coord_last($ls; $prin): ($screens.on == true) and $prin != 0 and (($ls | index($screens.lastLabel // "release:last")) != null);
-  # The tier screensFirst orders by, ahead of everything but process: 0 off or a process
-  # fix, 1 a P0 that is not screen work, 2 screen work at any priority, 3 the rest,
-  # 4 last in the release.
+  # The tier screensFirst orders by (owner call 2026-10-24, "screen changes at the top"): 0 off,
+  # or a process fix (develop-red and harness fixes); 1 screen work at P0 or P1; 2 everything
+  # else, in priority order (a P0 that is not screen work first, then the rest, screen work at
+  # P2 and below among it at its priority); 3 last in the release. Screen work is read off the
+  # queue entry (coord_screen: its labels, title and approved picture), not the files it names.
   def coord_tier($screen; $prin; $proc; $last):
-    if ($screens.on != true) or $proc then 0 elif $last then 4 elif $screen then 2 elif $prin == 0 then 1 else 3 end;
+    if ($screens.on != true) or $proc then 0 elif $last then 3 elif $screen and $prin <= 1 then 1 else 2 end;
   def coord_release_held($ls; $title; $milestone; $class):
     ($release.on == true) and (($class // "new") == "new") and (coord_process($ls) | not)
     and (($ls | any(. as $l | ($release.excludeLabels // []) | any(. == $l)))
@@ -603,7 +605,7 @@ coord_queue_ordered() {
        else sort_by(if .proc then 0 else 1 end, .tier, if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
-     | if $wide == 2 then [range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t")
+     | if $wide == 2 then [range(0; 4) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t")
        else .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
                            (if .top or .front or .kind == "half-built" or .proc or .screen then "1" else "0" end),

@@ -25,8 +25,9 @@
 # priority (prin), kind and polish flag. An entry the PM put there with `add --front`
 # stays first overall across re-seeds; `add --first` (a resume, an owner's answer, a
 # requeue) is first only within its own priority, so it never jumps higher-priority
-# work. With coordinator.screensFirst on, the tier comes right after process: P0s that
-# are not screen work, then all screen work at any priority, then the rest, then the
+# work. With coordinator.screensFirst on, the tier comes right after process: screen work at
+# P0 or P1 first, then everything else by priority (a non-screen P0 first, screen work at P2
+# and below at its priority), then
 # release:last tickets (coordinator.lastInReleaseLabel; never a P0) (coord_tier).
 # A `new` entry whose note is a REPAIR brief is class repair. With
 # coordinator.releaseScopeOnly on, a new ticket outside it is not seeded (the count
