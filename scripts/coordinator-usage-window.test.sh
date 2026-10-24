@@ -108,4 +108,23 @@ P=$(plant observed observed) && {
   printf '%s\n' "$out" | grep -q '^bad pace-keeps-observed' && ok "planted → pace.json loses the observed time → red" || bad "planted → stayed green"
 }
 
+echo "--- held with no fresh reading, the host reads the account again (swarm_usage_probe) ---"
+# 2026-10-24: a login change left both hosts held on the old account's 95% week; held builders log nothing.
+clean; log7 claim-old.log 0.95 "$A" $(( NOWE - 3600 ))
+cat > "$FIX/probe" <<SH
+#!/usr/bin/env bash
+echo "\$PWD" >> "$FIX/probe.log"
+jq -nc --argjson r "$B" --argjson f "$FIVE" '{type:"rate_limit_event", rate_limit_info:{status:"allowed",
+  unifiedWindows:{five_hour:{utilization:0.01, resetsAt:\$f}, seven_day:{utilization:0, resetsAt:\$r}}}}'
+SH
+chmod +x "$FIX/probe"; : > "$FIX/probe.log"
+probe() { ( export SWARM_NOW="$NOWE" SWARM_USAGE_PROBE_CMD="$FIX/probe"; . "$KIT/swarm/swarm-env.sh" >/dev/null 2>&1 || exit 9; swarm_usage_probe ) && echo probed || echo skipped; }
+want_in "held on the old week before"           'seven_day	95' "$(stephold "$KIT")"
+want "an hour with no reading: it probes"        "probed" "$(probe)"
+want "  one call"                                "1" "$(grep -c . "$FIX/probe.log")"
+want "  the new reading clears the hold"         "" "$(stephold "$KIT")"
+want "a second time within 15 min: no call"      "skipped 1" "$(probe) $(grep -c . "$FIX/probe.log")"
+clean; log7 claim-new.log 0.95 "$A" $(( NOWE - 60 )); : > "$FIX/probe.log"
+want "a reading a minute old: no call"           "skipped 0" "$(probe) $(grep -c . "$FIX/probe.log")"
+
 suite_end "$FAILED"
