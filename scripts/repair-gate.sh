@@ -11,7 +11,7 @@
 #     coordinator.rebuildAfterRepairs times (then it is rebuilt fresh, and that is said)
 #   repair_record <ticket>           note a repair spawn, for the rebuild count
 #
-# Seen 2026-10-23: repair-watch spawned a repair on Maktura #5989 whose only red was
+# Seen 2026-10-23: repair-watch spawned a repair on the origin project's #5989 whose only red was
 # "Capture and pin the evidence", a check develop does not require, and it parked to the
 # owner. The coordinator's pick refused it; the watcher had a gate of its own.
 # PRS (the open PRs, as gh_open_prs gives them) and PRS_STALE are read when no pr-json is given.
@@ -85,7 +85,9 @@ repair_record() { coord_record_class "$1" repair; }
 
 repair_gate() { # <ticket> [pr-json]
   local t="$1" pj="${2:-}" st reps
-  st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null) || { echo "#$t could not be read"; return 1; }
+  # The tick's batched read first (coord_issue_meta: its snapshot holds while the token is refused).
+  if declare -F coord_issue_meta >/dev/null && st=$(coord_issue_meta "$t") && [ -n "$st" ]; then st=${st%% *}
+  else st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null) || { echo "#$t could not be read"; return 1; }; fi
   [ "$st" = OPEN ] || { echo "#$t is $st"; return 1; }
   repair_pr_red "$t" "$pj" || return 1
   if [ "$COORD_REBUILD_AFTER" -gt 0 ] && reps=$(repairs_since_fresh "$t") && [ "$reps" -ge "$COORD_REBUILD_AFTER" ]; then

@@ -345,7 +345,7 @@ want "but spawns nothing"              "0" "$(grep -c . "$SPAWNS")"
 want "and records no attempt"          "0" "$(grep -c . "$TRIED")"
 
 echo "--- repair-watch goes through the one repair gate (repair-gate.sh) ---"
-# Seen 2026-10-23: a repair on Maktura #5989 whose only red was a check develop does not require.
+# Seen 2026-10-23: a repair on the origin project's #5989 whose only red was a check develop does not require.
 : > "$SPAWNS"; : > "$TRIED"
 fix_prs "61 101 e61e61e61e1 CLEAN 0 Capture-evidence"; fix_required typecheck
 out=$(w --only repair)
