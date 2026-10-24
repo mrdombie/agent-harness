@@ -326,6 +326,32 @@ swarm_usage_freshest_at() {
   printf '%s' "$best"
 }
 
+# swarm_usage_probe — a host on a usage hold with no reading newer than swarm.usageProbeMin (15)
+# makes one tiny call and logs it where the readers look, at most once a probe interval. Held
+# builders log nothing, so a hold read under an account since switched, or a window since reset,
+# never cleared (2026-10-24: both hosts held on the old account's 95% week after a login change).
+# 0 when it probed; 1 when it did not need to or could not.
+swarm_usage_probe() {
+  local min every now newest m stamp last log dir
+  min="${SWARM_USAGE_PROBE_MIN:-$(swarm_opt swarm.usageProbeMin 15 2>/dev/null || echo 15)}"
+  case "$min" in ''|*[!0-9]*) min=15 ;; esac
+  [ "$min" -gt 0 ] || return 1
+  every=$(( min * 60 )); now=$(swarm_now)
+  # shellcheck disable=SC2012  # names we wrote
+  newest=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -1)
+  if [ -n "$newest" ]; then
+    m=$(swarm_mtime "$newest"); [ $(( now - ${m:-0} )) -ge "$every" ] || return 1
+  fi
+  stamp="$SWARM_LOGS/.usage-probe.at"; last=$(cat "$stamp" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $(( now - last )) -ge "$every" ] || return 1
+  mkdir -p "$SWARM_LOGS" 2>/dev/null; printf '%s' "$now" > "$stamp"
+  log="$SWARM_LOGS/claim-usage-probe-$(date -u +%Y%m%dT%H%M%SZ)-0.log"
+  dir=$(mktemp -d 2>/dev/null) || return 1
+  ( cd "$dir" && ${SWARM_USAGE_PROBE_CMD:-claude -p "Reply with the single word ok." --model haiku --output-format stream-json --verbose} ) > "$log" 2>&1 < /dev/null
+  rm -rf "$dir"
+  grep -q '"type":"rate_limit_event"' "$log" 2>/dev/null
+}
+
 # swarm_usage_freshest <window> [readings json] — "<utilization>\t<reset epoch>": the
 # reading swarm_usage_freshest_at picks, without when it was observed.
 swarm_usage_freshest() {

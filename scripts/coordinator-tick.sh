@@ -728,6 +728,11 @@ say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS mor
 PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
 # Either window at swarm.usageStepHold: the running builders hold before their next step.
 STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
+# HELD WITH NO FRESH READING, read the account again: nothing held logs one (swarm_usage_probe).
+if [ -n "$STEP_HOLD" ] && ! coord_shadow && swarm_usage_probe; then
+  STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
+  say "usage: held with no reading in ${SWARM_USAGE_PROBE_MIN:-15} min — one probe call read the account again: $([ -n "$STEP_HOLD" ] && echo "still held" || echo "the hold cleared")"
+fi
 # A hold for process fixes holds everything else: only those are candidates.
 PROCESS_ONLY=""
 if held=$(swarm_held) && swarm_hold_lets_process; then
