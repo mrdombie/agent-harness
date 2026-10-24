@@ -119,7 +119,7 @@ seed_queue
 out=$(CAP=3 tick)
 want "three places: the process fix, the P1 screen ticket, the P0" "907 906 903" "$(spawned)"
 want_in "one line on the order, with every tier counted" \
-  'order: screens first — 1 P0/P1 screen tickets ahead of 5 others · tiers: process 1 · screens P0/P1 1 · rest by priority 5 · last in the release 0' "$out"
+  'order: screens first — tiers: process 1 · focus areas P0/P1 0 · screens P0/P1 1 · rest by priority 5 · last in the release 0' "$out"
 
 echo "--- on: screenMatch replaces the defaults ---"
 export COORDINATOR_SCREENS_FIRST='{"on":true,"screenMatch":{"labels":["surface:*"],"titlePatterns":[],"pictures":false}}'
@@ -144,8 +144,31 @@ for t in 921 922 923 924; do COORDINATOR_LAST_IN_RELEASE_LABEL=release:later bas
 want "with the label set to another name, release:last is plain work" "921 924 923 922" "$(order)"
 fresh; for t in 921 922 923 924; do bash "$Q" add "$t" >/dev/null; done
 out=$(CAP=1 tick)
-want_in "the order line counts the last tier" 'tiers: process 0 · screens P0/P1 1 · rest by priority 2 · last in the release 1' "$out"
+want_in "the order line counts the last tier" 'tiers: process 0 · focus areas P0/P1 0 · screens P0/P1 1 · rest by priority 2 · last in the release 1' "$out"
 unset COORDINATOR_SCREENS_FIRST
+
+echo "--- coordinator.focusAreas: P0/P1 work in a focus area ranks above other P0/P1 screen work ---"
+# Owner, 2026-10-24: the focus areas, in their order, then other screen work, then the rest.
+export COORDINATOR_SCREENS_FIRST=true
+export COORDINATOR_FOCUS_AREAS='[{"name":"Voices","labels":["area:VOICES","screen:voices"]},{"name":"One Desk","labels":["project:one-desk","screen:one-desk-*"]}]'
+fresh
+ticket 941 "status:ready,P0"                    "fix(api): the publish double-posts"
+ticket 942 "status:ready,P0,screen:feed"        "Feed: the empty state"
+ticket 943 "status:ready,P1,area:VOICES"        "Voices: the interview's API"
+ticket 944 "status:ready,P1,screen:one-desk-rail" "One Desk: the rail"
+ticket 945 "status:ready,P2,area:VOICES"        "Voices: a later pass"
+ticket 946 "status:ready,P1,screen:voices"      "Voices: the setup screen"
+ticket 947 "status:ready,P0,process"            "develop is red: the schema check"
+got=$(order)
+want "process; Voices (its screen first), One Desk; other screen work; the rest by priority" "947 946 943 944 942 941 945" "$got"
+want "a P1 Voices ticket ranks above a P0 non-focus screen, which ranks above a P0 non-screen" "yes" \
+  "$([ "$(pos 943)" -lt "$(pos 942)" ] && [ "$(pos 942)" -lt "$(pos 941)" ] && echo yes)"
+want "One Desk ranks after Voices"            "yes" "$([ "$(pos 944)" -gt "$(pos 943)" ] && echo yes)"
+want "a glob matches screen:one-desk-rail"    "yes" "$([ "$(pos 944)" -lt "$(pos 942)" ] && echo yes)"
+want "a P2 Voices ticket is not in the focus tier: it ranks among the rest" "7" "$(pos 945)"
+out=$(CAP=1 tick)
+want_in "the order line names the focus areas' counts" 'tiers: process 1 · focus areas P0/P1 3 \(Voices 2, One Desk 1\) · screens P0/P1 1 · rest by priority 2' "$out"
+unset COORDINATOR_FOCUS_AREAS COORDINATOR_SCREENS_FIRST
 
 echo "--- #13818: over the cap, a P0 sized big starts anyway (capExemptPriorities) ---"
 export COORDINATOR_RELEASE_SCOPE_ONLY=true

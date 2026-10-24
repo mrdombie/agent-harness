@@ -750,9 +750,9 @@ candidates() {
   fi
   wide=$(coord_queue_ordered --wide)
   if coord_screens_first_on; then
-    local tp ts tr tl
-    IFS=$'\t' read -r tp ts tr tl <<<"$(coord_queue_ordered --tiers)"
-    say "order: screens first — ${ts:-0} P0/P1 screen tickets ahead of ${tr:-0} others · tiers: process ${tp:-0} · screens P0/P1 ${ts:-0} · rest by priority ${tr:-0} · last in the release ${tl:-0}"
+    local tp tf ts tr tl tfa
+    IFS=$'\t' read -r tp tf ts tr tl tfa <<<"$(coord_queue_ordered --tiers)"
+    say "order: screens first — tiers: process ${tp:-0} · focus areas P0/P1 ${tf:-0}${tfa:+ ($tfa)} · screens P0/P1 ${ts:-0} · rest by priority ${tr:-0} · last in the release ${tl:-0}"
   fi
   # A full list goes in its place in the order, ahead of lower-priority work, so the
   # lists' bodies are read first: one batched request, only when a list is queued.
