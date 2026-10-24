@@ -534,18 +534,14 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  # PAST THE SIZE CAP NOTHING IS PUSHED: the change is split instead (size-rules.sh).
-  local smax snum
+  # PAST THE SIZE CAP A FINISHED BUILD STILL SHIPS (owner, 2026-10-24): the limit is the plan
+  # step's, before anything is built; here it is only said, in the run and on the PR.
+  local smax snum snote
   smax=$(driver_split_max)
-  if [ "$smax" -gt 0 ] && snum=$(driver_split_count "$wt" "$trunk") && [ "$snum" -gt "$smax" ] \
-     && driver_split_exempt "$wt" "$trunk"; then
-    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax), but was started before the cap (driver.split.since): it ships as before"
-  elif [ "$smax" -gt 0 ] && [ -n "${snum:-}" ] && [ "$snum" -gt "$smax" ]; then
-    driver_say "✋ ship: split needed — $branch changes $snum files against $trunk, over driver.split.maxFiles ($smax; lockfiles not counted). Nothing is pushed and no pull request is opened."
-    driver_state_set "$t" park_note "split needed: $snum files changed against $INTEGRATION_BRANCH, over driver.split.maxFiles ($smax). Split the ticket into changes of at most $smax files each; this branch's work is kept on a stranded ref for them to take from."
-    driver_state_set "$t" park_cause pm
-    driver_state_set "$t" park_split 1
-    return "$DRIVER_E_REFUSED"
+  driver_state_set "$t" size_note ""
+  if [ "$smax" -gt 0 ] && snum=$(driver_split_count "$wt" "$trunk") && [ "$snum" -gt "$smax" ]; then
+    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax; lockfiles not counted) — it ships; the plan step splits before building, never here"
+    driver_state_set "$t" size_note "This change is $snum files, over the $smax-file size limit (driver.split.maxFiles). It shipped because it was already built; the limit splits plans before they build."
   fi
 
   # ORIGIN'S COPY OF THIS BRANCH FIRST. An earlier run of the same ticket may have
@@ -663,6 +659,8 @@ driver_step_ship() { # <ticket>
     # THE TICKET IS NAMED IN THE BODY, whoever wrote it: every reader that finds a
     # ticket's PR by its body or its closing references misses one that does not.
     newbody=$(printf '%s\n' "$newbody" | pr_closes_ensure "$t" "$(_driver_ship_closes "$t")")
+    snote=$(driver_state_get "$t" size_note)
+    if [ -n "$snote" ] && ! printf '%s' "$newbody" | grep -q '^## Size$'; then newbody=$(printf '%s\n\n## Size\n%s\n' "$newbody" "$snote"); fi
     newbody=${newbody%$'\n'}
     if [ "$newbody" != "$rbody" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --body "$newbody" >/dev/null 2>&1; then
       driver_say "✋ ship: the '## Deleted tests' lines or the plan's evidence routes could not be added to PR #$open_pr's body, so CI would refuse the push. Nothing is pushed."
@@ -804,6 +802,7 @@ PRBODY
 )
   # Written above as the first line; held here so no later section drops it.
   body=$(printf '%s\n' "$body" | pr_closes_ensure "$t" "$closes")
+  snote=$(driver_state_get "$t" size_note); [ -z "$snote" ] || body=$(printf '%s\n\n## Size\n%s\n' "$body" "$snote")
   # `|| true` on the create alone is right: a park may already have opened the draft,
   # and a resume finds it there. What is NOT right is taking the create's silence as a
   # pull request existing — so the next line asks.

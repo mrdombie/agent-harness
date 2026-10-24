@@ -21,9 +21,10 @@ DRIVER_SIZE_EXT='json|jsonc|md|mdx|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|sh|bash|py|r
 DRIVER_QUICK_NEVER_EFFORT_DEFAULT='["effort:M", "effort:L", "effort:XL"]'
 DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^|/)\.env(\.[a-z]+)?$'
 
-# THE SIZE CAP ON A CHANGE (owner call 2026-10-23, "small changes merged fast"). A branch past
-# driver.split.maxFiles (20) changed files, counted two-dot against its merge base with the
-# trunk, never pushes or opens a PR: it parks for the PM with "split needed". Lockfiles are
+# THE SIZE CAP ON A CHANGE (owner calls 2026-10-23 "small changes merged fast", 2026-10-24 "a
+# finished build is never stranded for size"). A plan whose tasks name more than
+# driver.split.maxFiles (20) files is split at plan time; at ship a branch past it, counted
+# two-dot against its merge base, ships with its size said on the PR. Lockfiles are
 # not counted (driver.split.exclude replaces the list: globs, matched on the path or the
 # file name). 0 turns the cap off. Seen: a "Batch … 2 fixes" PR at 200 files after 5 hours.
 DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "go.sum", "composer.lock"]'
@@ -38,19 +39,12 @@ driver_split_max() {
   local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"
 }
-# Branches started before the cap landed ship as before (PM call 2026-10-23: builds in flight
-# at 40-95 files would have parked hours of work). driver.split.since: epoch seconds, default
-# the cap's own landing; a branch whose first commit past its merge base is older is exempt.
-DRIVER_SPLIT_SINCE_DEFAULT=1792789535
-# driver_split_exempt <tree> <trunk ref> — 0 when the branch predates driver.split.since.
-driver_split_exempt() {
-  local wt="$1" trunk="$2" since mb first
-  since=$(jq -r --argjson d "$DRIVER_SPLIT_SINCE_DEFAULT" '.driver.split.since // $d' "$HARNESS_CFG" 2>/dev/null)
-  case "$since" in ''|*[!0-9]*) since=$DRIVER_SPLIT_SINCE_DEFAULT ;; esac
-  mb=$(git -C "$wt" merge-base "$trunk" HEAD 2>/dev/null) || return 1
-  first=$(git -C "$wt" log --reverse --format=%at "$mb..HEAD" 2>/dev/null | head -1)
-  case "$first" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$first" -lt "$since" ]
+# driver_plan_file_count <plan.json> — the distinct files its tasks name, less the excluded.
+driver_plan_file_count() {
+  local pats
+  pats=$(jq -c --argjson d "$DRIVER_SPLIT_EXCLUDE_DEFAULT" '(.driver.split.exclude // $d) | if type == "array" then [.[] | strings] else $d end' "$HARNESS_CFG" 2>/dev/null) || pats="$DRIVER_SPLIT_EXCLUDE_DEFAULT"
+  jq -r --argjson x "${pats:-[]}" '[.tasks[]?.files[]?.path // empty | strings] | unique
+    | map(select(. as $f | ($f | split("/") | last) as $b | ($x | index($f)) == null and ($x | index($b)) == null)) | length' "$1" 2>/dev/null || printf 0
 }
 # driver_split_count <tree> <trunk ref> — the files the branch changes, less the excluded; 1 unread.
 driver_split_count() {

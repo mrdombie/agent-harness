@@ -81,6 +81,30 @@ fix_ai plan "$(plan_of 6)" superpowers:writing-plans
 : > "$GH_LOG"; out=$(HARNESS_CFG="$FIX/cfg-t0.json" driver_step_plan 154 2>&1); rc=$?
 want "maxTasks 0 turns it off"                    "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
 
+echo "--- more than driver.split.maxFiles files across its tasks: split before it builds, never at ship ---"
+# #12273 finished at 37 files and parked "split needed" at ship (2026-10-23): the limit moved here.
+plan_wide() { # <tasks> <files per task> [lockfile] — a valid plan naming that many distinct files
+  jq -nc --argjson n "$1" --argjson k "$2" --arg lock "${3:-}" '{step:"plan",skills:["superpowers:writing-plans"],status:"planned",designSource:"ticket-body",
+    premise:{verdict:"still-true",evidence:"a.sh:1"},
+    tasks:[range($n) as $i | {title:"task \($i + 1)",
+      files:([range($k) | {path:"w\($i)-\(.).sh",action:"modify"}] + (if $lock == "" then [] else [{path:"package-lock.json",action:"modify"}] end)),
+      tests:[{file:"w\($i).test.sh",behaviour:"b",redWhen:"r"}]}]}'
+}
+fix_issue 161 OPEN "status:claimed,P1"; driver_state_init 161 --worktree "$REPO"
+fix_ai plan "$(plan_wide 2 11)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 161 2>&1); rc=$?
+want "2 tasks naming 22 files: split, nothing built" "$DRIVER_E_NOOP" "$rc"
+want "  one ticket a task"                        "2" "$(grep -c '^issue create' "$GH_LOG")"
+want_in "  each part says why"                    'its plan named 22 files across 2 tasks, over `driver.split.maxFiles` \(20\)' "$(tr '\n' ' ' < "$GH_LOG")"
+fix_issue 162 OPEN "status:claimed"; driver_state_init 162 --worktree "$REPO"
+fix_ai plan "$(plan_wide 2 10 lock)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 162 2>&1); rc=$?
+want "20 files and a lockfile: it builds"         "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+fix_issue 163 OPEN "status:claimed"; driver_state_init 163 --worktree "$REPO"
+fix_ai plan "$(plan_wide 1 25)" superpowers:writing-plans
+: > "$GH_LOG"; out=$(driver_step_plan 163 2>&1); rc=$?
+want "one task of 25 files cannot be split by task: it builds" "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+
 echo "--- a schema change with no approved data model is refused ---"
 : > "$GH_LOG"
 fix_ai plan '{"step":"plan","skills":["superpowers:writing-plans"],"status":"planned","designSource":"ticket-body","premise":{"verdict":"still-true","evidence":"a.sh:1 still does the old thing"},"tasks":[{"title":"t","files":[{"path":"a.sh","action":"modify"}],"tests":[{"file":"a.test.sh","behaviour":"it does the thing","redWhen":"the fix is deleted"}]}],"schemaChange":true}' superpowers:writing-plans

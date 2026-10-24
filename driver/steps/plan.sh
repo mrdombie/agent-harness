@@ -58,7 +58,7 @@ _driver_plan_split() {
   i=0
   while [ "$i" -lt "$n" ]; do
     task=$(jq -c --argjson i "$i" '.tasks[$i]' "$ans")
-    body=$(printf 'Part %s of %s, split from #%s before it was built: its plan had %s build tasks, over `driver.split.maxTasks` (%s). One change, merged on its own.
+    body=$(printf 'Part %s of %s, split from #%s before it was built: %s. One change, merged on its own.
 %s
 
 **This part:** %s
@@ -69,7 +69,7 @@ _driver_plan_split() {
 
 Refs #%s
 ' \
-      "$((i+1))" "$n" "$t" "$n" "$max" "$carried" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
+      "$((i+1))" "$n" "$t" "${4:-its plan had $n build tasks, over \`driver.split.maxTasks\` ($max)}" "$carried" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
       "$(jq -r '[.files[]? | (.path // .) | tostring] | join(", ") | if . == "" then "(none named)" else . end' <<<"$task")" \
       "$(jq -r '[.tests[]? | (.file // .name // .behaviour // .) | tostring] | join("; ") | if . == "" then "(none named)" else . end' <<<"$task")" "$t")
     args=(issue create --repo "$REPO_SLUG" --title "$title — part $((i+1)) of $n: $(jq -r '.title // ""' <<<"$task" | cut -c1-80)" --body "$body" --label "$LBL_READY")
@@ -125,12 +125,20 @@ driver_step_plan() { # <ticket>
 
   # MORE THAN driver.split.maxTasks BUILD TASKS: split before anything is built. A repair, a
   # resume past build, or a part of an earlier split never is.
-  local ntasks tmax
+  # OR MORE THAN driver.split.maxFiles FILES across its tasks: the size limit lives here, before
+  # the build, never at ship — a finished build is never stranded for its size (owner, 2026-10-24).
+  local ntasks tmax nfiles fmax swhy=""
   ntasks=$(jq '[.tasks[]?] | length' "$ans" 2>/dev/null); tmax=$(driver_split_max_tasks)
   case "$ntasks" in ''|*[!0-9]*) ntasks=0 ;; esac
-  if [ "$tmax" -gt 0 ] && [ "$ntasks" -gt "$tmax" ] && [ "$(driver_state_get "$t" mode)" != repair ] \
+  nfiles=$(driver_plan_file_count "$ans"); fmax=$(driver_split_max)
+  if [ "$tmax" -gt 0 ] && [ "$ntasks" -gt "$tmax" ]; then
+    swhy="its plan had $ntasks build tasks, over \`driver.split.maxTasks\` ($tmax)"
+  elif [ "$fmax" -gt 0 ] && [ "${nfiles:-0}" -gt "$fmax" ] && [ "$ntasks" -gt 1 ]; then
+    swhy="its plan named $nfiles files across $ntasks tasks, over \`driver.split.maxFiles\` ($fmax)"
+  fi
+  if [ -n "$swhy" ] && [ "$(driver_state_get "$t" mode)" != repair ] \
      && [ -z "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
-    local src=0; _driver_plan_split "$t" "$ans" "$tmax" || src=$?
+    local src=0; _driver_plan_split "$t" "$ans" "$tmax" "$swhy" || src=$?
     case "$src" in
       0) return "$DRIVER_E_NOOP" ;;
       2) ;;

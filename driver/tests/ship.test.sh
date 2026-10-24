@@ -62,8 +62,9 @@ echo "--- it does NOT wait for CI: a watcher brings an agent back ---"
 want_not_in "no run watch" 'run watch'   "$(cat "$GH_LOG")"
 want_not_in "no check wait" 'pr checks.*--watch' "$(cat "$GH_LOG")"
 
-echo "--- past the size cap nothing is pushed: split needed ---"
-# A "Batch … 2 fixes" PR reached 200 files after 5 hours of repairs.
+echo "--- past the size cap a finished build still ships, and says its size ---"
+# The limit splits plans before they build; a finished build is never stranded for size
+# (#12273 finished at 37 files and parked "split needed", 2026-10-23).
 wide_wt() { # <ticket> <files> [lockfile] — a branch changing that many files
   local t=$1 n=$2 wt i
   wt="$FIX/wt$t"
@@ -75,38 +76,26 @@ wide_wt() { # <ticket> <files> [lockfile] — a branch changing that many files
   driver_state_set "$t" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
   fix_issue "$t" OPEN "status:claimed"
 }
+create_body() { tr '\n' ' ' < "$GH_LOG"; }
 : > "$GH_LOG"; wide_wt 761 21
 out=$(driver_step_ship 761 2>&1); rc=$?
-want "21 files: refused"                  "24" "$rc"
-want_in "  and says split needed"         'split needed — tkt-761/work changes 21 files .* over driver.split.maxFiles \(20' "$out"
-want "  nothing reached origin"           "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-761/work 2>/dev/null)"
-want_not_in "  no pull request opened"    'pr create' "$(cat "$GH_LOG")"
-want_in "  the park note says split needed" '^split needed: 21 files changed' "$(driver_state_get 761 park_note)"
-want "  it parks for the PM"              "pm 1" "$(driver_state_get 761 park_cause) $(driver_state_get 761 park_split)"
+want_not_in "21 files: no split needed"      'split needed' "$out"
+want_in "  it says its size and ships"    'tkt-761/work changes 21 files, over driver.split.maxFiles \(20.* it ships' "$out"
+want_in "  the draft is opened"           'pr create.*--draft' "$(cat "$GH_LOG")"
+want_in "  and the PR says its size"      '## Size.*This change is 21 files, over the 20-file size limit' "$(create_body)"
+want "  nothing parks it for size"        "" "$(driver_state_get 761 park_split)"
 : > "$GH_LOG"; wide_wt 762 20 lock
 out=$(driver_step_ship 762 2>&1); rc=$?
-want_not_in "20 files and a lockfile: not over the cap" 'split needed' "$out"
-want_in "  the draft is opened as before"  'pr create.*--draft' "$(cat "$GH_LOG")"
+want_not_in "20 files and a lockfile: not over the cap" 'over driver.split.maxFiles' "$out"
+want_not_in "  and no Size section"       '## Size' "$(create_body)"
 : > "$GH_LOG"; wide_wt 763 25
 jq '.driver.split.maxFiles = 0' "$HARNESS_CFG" > "$FIX/cfg0.json"
 out=$(HARNESS_CFG="$FIX/cfg0.json" driver_step_ship 763 2>&1); rc=$?
-want_not_in "maxFiles 0 turns the cap off"  'split needed' "$out"
+want_not_in "maxFiles 0 says nothing of size"  'over driver.split.maxFiles' "$out"
 : > "$GH_LOG"; wide_wt 764 6
 jq '.driver.split.maxFiles = 5' "$HARNESS_CFG" > "$FIX/cfg5.json"
 out=$(HARNESS_CFG="$FIX/cfg5.json" driver_step_ship 764 2>&1); rc=$?
-want_in "the cap is a setting: 6 over 5"   'split needed — tkt-764/work changes 6 files' "$out"
-# A branch begun before the cap landed ships as before: builds in flight were at 40-95 files.
-: > "$GH_LOG"; wide_wt 765 30
-git -C "$FIX/wt765" commit -q --amend --no-edit --date=@1792700000
-out=$(driver_step_ship 765 2>&1); rc=$?
-want_not_in "a branch from before the cap: no split" 'split needed' "$out"
-want_in "  it says why it ships"            'started before the cap' "$out"
-want_in "  the draft is opened as before"  'pr create.*--draft' "$(cat "$GH_LOG")"
-: > "$GH_LOG"; wide_wt 766 30
-git -C "$FIX/wt766" commit -q --amend --no-edit --date=@1792700000
-jq '.driver.split.since = 1792600000' "$HARNESS_CFG" > "$FIX/cfgsince.json"
-out=$(HARNESS_CFG="$FIX/cfgsince.json" driver_step_ship 766 2>&1); rc=$?
-want_in "the cut-off is a setting: older than the branch, it caps" 'split needed — tkt-766/work changes 30 files' "$out"
+want_in "the cap is a setting: 6 over 5"   'tkt-764/work changes 6 files, over driver.split.maxFiles \(5' "$out"
 
 echo "--- an unreviewed ticket opens the draft and stops there ---"
 : > "$GH_LOG"
