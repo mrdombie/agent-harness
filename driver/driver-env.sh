@@ -444,6 +444,22 @@ driver_push() {
   [ "$slot" = park ] || [ "${DRIVER_PUSH_BASE_RED:-0}" != 1 ] || lg=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
   [ -z "$lg" ] || penv+=("HARNESS_LOCAL_GATES_HEAD=$lg")
   [ -z "$lg" ] || ! th=$(_driver_trunk_prepush "$wt") || penv+=("HARNESS_PREPUSH_SCRIPT=$th")
+  # ORIGIN ALREADY AT THIS HEAD IS A PUSH WITH NOTHING IN IT. git hands such a push's hook
+  # no refs, so a hook that skips "a head gates.local passed" saw none to name and ran its
+  # whole suite, refusing a push that would change nothing (#14529, 2026-10-24: parked
+  # twice on code gates develop does not require, its branch already on origin). Not pushed.
+  local here there
+  here=$(git -C "$wt" rev-parse -q --verify "refs/heads/$branch" 2>/dev/null)
+  there=$(GIT_TERMINAL_PROMPT=0 git -C "$wt" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  if [ -n "$here" ] && [ "$here" = "$there" ]; then
+    printf 'origin already has refs/heads/%s at %s: nothing to push, so the pre-push was not run\n' "$branch" "$here" > "$f"
+    DRIVER_PUSH_OUT="$f"; DRIVER_PUSH_WHY=""
+    git -C "$wt" update-ref "refs/remotes/origin/$branch" "$here" >/dev/null 2>&1 \
+      && git -C "$wt" branch -q --set-upstream-to "origin/$branch" "$branch" >/dev/null 2>&1 || true
+    driver_say "   $slot: origin already has $branch at $(printf '%s' "$here" | cut -c1-10) — nothing to push"
+    driver_state_set "$t" pushed_head "$here"
+    return 0
+  fi
   "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""

@@ -772,6 +772,11 @@ driver_step_ship() { # <ticket>
       && _driver_ratchet_tighten "$t" "$wt" "$DRIVER_PUSH_OUT" "ship: pre-push" \
       && driver_push "$t" "$wt" "$branch" ship; } || _driver_ship_hook_retry "$t" "$wt" "$branch" \
     || _driver_ship_base_red "$t" "$wt" "$branch" || {
+    # The change's own red, refused twice on a head gates.local passed on: fix clears it.
+    if [ "${DRIVER_SHIP_HOOK_FAULT:-0}" = 1 ] && _driver_ship_push_to_fix "$t"; then
+      driver_state_set "$t" park_note ""
+      return "$DRIVER_E_REWORK"
+    fi
     if [ "${DRIVER_SHIP_HOOK_FAULT:-0}" = 1 ]; then
       driver_say "✋ ship: machine fault pre-push-after-local-gates — the project's pre-push refused twice a head gates.local passed on: $DRIVER_PUSH_WHY. Parked as the machine's, not a question."
       driver_state_set "$t" machine_fault "the pre-push hook refused a head gates.local passed on: $DRIVER_PUSH_WHY"
