@@ -66,6 +66,10 @@ want "after the release the required list is whole" '["Code gates","Design criti
 
 echo "--- repair-watch: red only on Lesson and Design critic ---"
 W="$HERE/../swarm/repair-watch.sh"
+# Each case repairs ticket 101 again: the rebuild after two repairs (repair-gate.sh) has its own cases.
+export COORDINATOR_REBUILD_AFTER_REPAIRS=0
+# The PR's checks are develop's required ones (repair-gate.sh reads the live rules).
+fix_required "Every fix ships a lesson" "Code gates" "Design critic"
 TRIED="$STATE/swarm/repair-attempts.tsv"
 fix_issue 101 OPEN "status:in-review,project:widgets"
 fix_issue 102 OPEN "status:in-review,project:widgets"
