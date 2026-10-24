@@ -193,16 +193,20 @@ coord_release_on() { jq -e '.on == true' >/dev/null 2>&1 <<<"$COORD_RELEASE_SCOP
 # or not (owner, 2026-10-23: a P0 Critical stays at the top). true, or {"on": true, "screenMatch": {labels, titlePrefixes,
 # titlePatterns, pictures}}; screenMatch keys replace the defaults. Off unless set.
 coord_screens_first_json() {
-  local raw="${COORDINATOR_SCREENS_FIRST-}" last="${COORDINATOR_LAST_IN_RELEASE_LABEL-}"
+  local raw="${COORDINATOR_SCREENS_FIRST-}" last="${COORDINATOR_LAST_IN_RELEASE_LABEL-}" focus="${COORDINATOR_FOCUS_AREAS-}"
+  # coordinator.focusAreas: [{name, labels: [label or prefix*]}], in the order they rank.
+  [ -n "$focus" ] || { [ -n "${HARNESS_CFG:-}" ] && focus=$(jq -c '.coordinator.focusAreas // []' "$HARNESS_CFG" 2>/dev/null); }
   [ -n "$raw" ] || { [ -n "${HARNESS_CFG:-}" ] && raw=$(jq -c '.coordinator.screensFirst // false' "$HARNESS_CFG" 2>/dev/null); }
   [ -n "$last" ] || { [ -n "${HARNESS_CFG:-}" ] && last=$(jq -r '.coordinator.lastInReleaseLabel // empty' "$HARNESS_CFG" 2>/dev/null); }
-  jq -nc --arg raw "${raw:-false}" --arg sp "${LBL_SCREEN_PREFIX:-screen:}" --arg last "${last:-release:last}" '
+  jq -nc --arg raw "${raw:-false}" --arg sp "${LBL_SCREEN_PREFIX:-screen:}" --arg last "${last:-release:last}" --arg focus "${focus:-[]}" '
     ($raw | try fromjson catch $raw) as $v
     | {labels: [$sp + "*"], titlePrefixes: ["Polish list:"], titlePatterns: ["\\bcard\\b"], pictures: true} as $d
     | (if $v == true or $v == 1 or $v == "1" or $v == "true" or $v == "on" then {on: true} + $d
        elif ($v | type) == "object" then {on: (if $v | has("on") then $v.on == true else true end)} + $d + ($v.screenMatch // {})
        else {on: false} end)
     | .lastLabel = $last
+    | .focus = [($focus | try fromjson catch [])[]? | objects | select((.labels | type) == "array")
+                | {name: (.name // "?" | tostring), labels: [.labels[] | strings | select(length > 0)]}]
     | .titlePatterns = [(.titlePatterns // [])[]? | strings | . as $re | select(try ("" | test($re; "i") | true) catch false)]' 2>/dev/null \
     || printf '{"on":false}'
 }
@@ -528,11 +532,21 @@ COORD_TICKET_JQ='
       or (($screens.pictures != false) and ($n != null) and (($pics | index($n | tonumber)) != null)));
   # Last in the release: the label, never on a P0.
   def coord_last($ls; $prin): ($screens.on == true) and $prin != 0 and (($ls | index($screens.lastLabel // "release:last")) != null);
-  # The tier screensFirst orders by, ahead of everything but process: 0 off or a process
-  # fix, 1 a P0 that is not screen work, 2 screen work at any priority, 3 the rest,
-  # 4 last in the release.
-  def coord_tier($screen; $prin; $proc; $last):
-    if ($screens.on != true) or $proc then 0 elif $last then 4 elif $screen then 2 elif $prin == 0 then 1 else 3 end;
+  # The tier screensFirst orders by (owner call 2026-10-24, "screen changes at the top"): 0 off,
+  # or a process fix (develop-red and harness fixes); 1 screen work at P0 or P1; 2 everything
+  # else, in priority order (a P0 that is not screen work first, then the rest, screen work at
+  # P2 and below among it at its priority); 3 last in the release. Screen work is read off the
+  # queue entry (coord_screen: its labels, title and approved picture), not the files it names.
+  # FOCUS AREAS (coordinator.focusAreas, owner call 2026-10-24): P0/P1 work in an area ranks
+  # above other P0/P1 screen work, in the order of the areas; a ticket in several takes the earliest.
+  def coord_focus($ls):
+    (($screens.focus // []) | to_entries | map(select(.value.labels | any(. as $p | $ls | any(. as $l
+        | if ($p | endswith("*")) then ($l | startswith($p[:-1])) else $l == $p end)))) | first | .key) // null;
+  def coord_tier($screen; $prin; $proc; $last; $focus):
+    if ($screens.on != true) or $proc then 0 elif $last then 4 elif $focus != null and $prin <= 1 then 1
+    elif $screen and $prin <= 1 then 2 else 3 end;
+  # Inside the focus tier: the order of the areas, then screen work first within each.
+  def coord_tier_keys($tier; $focus; $screen): if $tier == 1 then [$focus, (if $screen then 0 else 1 end)] else [0, 0] end;
   def coord_release_held($ls; $title; $milestone; $class):
     ($release.on == true) and (($class // "new") == "new") and (coord_process($ls) | not)
     and (($ls | any(. as $l | ($release.excludeLabels // []) | any(. == $l)))
@@ -592,18 +606,20 @@ coord_queue_ordered() {
                  tool: (if $ls then coord_tooling($ls; $i.title) else ($t.tooling // false) end),
                  proc: (if $ls then coord_process($ls) else ($t.process // false) end),
                  screen: (if $ls then coord_screen($ls; $i.title; $t.n) else ($t.screen // false) end),
+                 focus: (if $ls then coord_focus($ls) else ($t.focus // null) end),
                  class: coord_class($t.class; $t.note)}
          | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
          | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
-         | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3), tier: coord_tier(.screen; .prin; .proc; .last)})
+         | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3), tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # .top (the PM putting it on top with add --front) is first overall; .front (a resume, an answer,
      # a requeue) is first only among its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
-       else sort_by(if .proc then 0 else 1 end, .tier, if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+       else sort_by(if .proc then 0 else 1 end, .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
-     | if $wide == 2 then [range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t")
+     | if $wide == 2 then ([range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t"))
+                          + "\t" + ([.[] | select(.tier == 1) | .focus] | group_by(.) | map("\($screens.focus[.[0]].name) \(length)") | join(", "))
        else .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
                            (if .top or .front or .kind == "half-built" or .proc or .screen then "1" else "0" end),

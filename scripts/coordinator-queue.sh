@@ -25,8 +25,9 @@
 # priority (prin), kind and polish flag. An entry the PM put there with `add --front`
 # stays first overall across re-seeds; `add --first` (a resume, an owner's answer, a
 # requeue) is first only within its own priority, so it never jumps higher-priority
-# work. With coordinator.screensFirst on, the tier comes right after process: P0s that
-# are not screen work, then all screen work at any priority, then the rest, then the
+# work. With coordinator.screensFirst on, the tier comes right after process: screen work at
+# P0 or P1 first, then everything else by priority (a non-screen P0 first, screen work at P2
+# and below at its priority), then
 # release:last tickets (coordinator.lastInReleaseLabel; never a P0) (coord_tier).
 # A `new` entry whose note is a REPAIR brief is class repair. With
 # coordinator.releaseScopeOnly on, a new ticket outside it is not seeded (the count
@@ -152,8 +153,9 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
         | .tooling = coord_tooling(.ls; .title)
         | .process = coord_process(.ls)
         | .screen = coord_screen(.ls; .title; .n)
+        | .focus = coord_focus(.ls)
         | .last = coord_last(.ls; .prin)
-        | {n, class, kind, prin, polish, plist, tooling, process, screen, last, ls, title, ms})) as $fresh
+        | {n, class, kind, prin, polish, plist, tooling, process, screen, focus, last, ls, title, ms})) as $fresh
     | ($fresh | map(($byn[(.n|tostring)] // {}) as $o
                      | . + {note: ($o.note // "")}
                      | if $o.pinned then .class = $o.class | .pinned = true else . end
@@ -183,7 +185,8 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
     # repair and approved-merge keep the claimable order.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
-        | [(if $t.process then 0 else 1 end), coord_tier($t.screen // false; $t.prin // 9; $t.process // false; $t.last // false)] +
+        | coord_tier($t.screen // false; $t.prin // 9; $t.process // false; $t.last // false; $t.focus // null) as $tier
+        | [(if $t.process then 0 else 1 end), $tier] + coord_tier_keys($tier; $t.focus // null; $t.screen // false) +
         (if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0, 0]
           else [1, 0, ($t.prin // 9),
                 (if $t.front then 0 else 1 end), (if $t.front then ($oldpos[($t.n|tostring)] // $i) else 0 end),
@@ -244,7 +247,7 @@ add() {
     | coord_jq -c "$COORD_TICKET_JQ"'[.labels[]?.name] as $ls
         | {prin: coord_prin($ls; null), kind: coord_kind($ls; ""; null; .title), polish: coord_polish($ls; null; .title),
            plist: (($ls | index($plist)) != null), tooling: coord_tooling($ls; .title), process: coord_process($ls),
-           screen: coord_screen($ls; .title; .number), last: coord_last($ls; coord_prin($ls; null))}' 2>/dev/null)
+           screen: coord_screen($ls; .title; .number), focus: coord_focus($ls), last: coord_last($ls; coord_prin($ls; null))}' 2>/dev/null)
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
   cls=$(coord_jq -rn --arg c "$cls" --arg note "$note" "$COORD_TICKET_JQ"'coord_class($c; $note)')
   # Fresh work is never started on a ticket whose PR is open: queued as new it waits forever.
