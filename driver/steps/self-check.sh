@@ -252,6 +252,36 @@ EOF
   return 0
 }
 
+# A DATABASE TIMEOUT IN A TEST THE CHANGE DID NOT TOUCH IS THE DATABASE'S LOAD, NOT A RED.
+# 2026-10-24: a calendar change was refused at self-check twice, and the retry gave up, on
+# two agent test files it never touched, each "Transaction API error: timed out"; the same
+# two files failed the same way for four other unrelated tickets that day. So when the
+# output carries a database or transaction timeout and every failing test file is outside
+# the change, each one is run once more, alone; all green, the red was the load's.
+DRIVER_DB_TIMEOUT_RE="${DRIVER_DB_TIMEOUT_RE:-Transaction API error|Transaction already closed|Unable to start a transaction|timed out fetching a new connection|Timed out fetching a new connection|Can.t reach database server|canceling statement due to statement timeout|deadlock detected|Connection terminated unexpectedly|P1001|P2024|P2028}"
+# _driver_gate_db_flake <tree> <output> <secs> — 0 when that holds and every file passed alone
+# (DRIVER_FLAKE_FILES names them); 1 otherwise, and the red is read as before.
+_driver_gate_db_flake() {
+  local wt="$1" out="$2" secs="$3" failing branch f cmd
+  DRIVER_FLAKE_FILES=""
+  [ -f "$out" ] || return 1
+  perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$out" 2>/dev/null | grep -Eq -- "$DRIVER_DB_TIMEOUT_RE" || return 1
+  failing=$(_driver_base_failing_tests "$out"); [ -n "$failing" ] || return 1
+  branch=$(driver_branch_files "$wt" 2>/dev/null) || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "$branch" | awk -v f="$f" '$0 == f || (length($0) > length(f) && substr($0, length($0) - length(f)) == "/" f) { h = 1 } END { exit !h }' && return 1
+  done <<<"$failing"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    cmd=$(_driver_base_test_cmd "$wt" "$f") || return 1
+    ( cd "$wt" && driver_run_project "$secs" "$cmd" ) > "$out.alone" 2>&1 || { rm -f "$out.alone"; return 1; }
+  done <<<"$failing"
+  rm -f "$out.alone"
+  DRIVER_FLAKE_FILES=$(printf '%s' "$failing" | tr '\n' ' ' | sed 's/ $//')
+  return 0
+}
+
 # The compiler's or runner's own error lines when it printed any, else the tail.
 _driver_gate_lines() { # <file>
   local l
@@ -735,6 +765,10 @@ driver_step_self_check() { # <ticket>
       driver_say "   self-check: $name ok"
     elif bred=$(_driver_gate_base_only "$t" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
       driver_say "   self-check: $name red only on $bred — outside this PR and red on the base too, so it waits for the base and does not count here"
+    elif [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] \
+         && _driver_gate_db_flake "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out" "$gsecs"; then
+      driver_say "↷ self-check: $name — a database timeout in $DRIVER_FLAKE_FILES, outside this change; each passed run again alone, so the red was the database's load. Not counted against this branch, never parked."
+      driver_state_set "$t" db_flake "$DRIVER_FLAKE_FILES"
     elif [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] \
          && bred=$(driver_base_red_gate "$wt" "$cmd" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
       DRIVER_BASE_RED_SHA=$(driver_base_red_sha "$wt")
