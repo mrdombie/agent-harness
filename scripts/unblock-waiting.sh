@@ -31,12 +31,17 @@ DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
 GH="${SWARM_GH:-gh}"
 QUEUE="${UNBLOCK_QUEUE:-$SELF_DIR/coordinator-queue.sh}"
 
+# Every ticket a line names: "#A–#B", "#A-#B" and "#A–B" are each number between (an en dash read as
+# two ends released #14315 with two blockers open, 2026-10-24); a range over 50 is read as its ends.
+TICKETS_JQ='def tickets: [scan("#([0-9]+)(?:[ ]*[–—-][ ]*#?([0-9]+))?")
+    | (.[0] | tonumber) as $a | (if .[1] == null then $a else (.[1] | tonumber) end) as $z
+    | if $z > $a and $z - $a <= 50 then range($a; $z + 1) else $a, $z end | tostring] | unique;'
 # The waiting tickets, each as "<n>\t<blockers…>" from its newest "Blocked until" line.
 read_waiting() { # <label>
   "$GH" issue list --repo "$REPO_SLUG" --label "$1" --state open --limit 200 --json number,body,comments 2>/dev/null \
-  | jq -r '.[]? | .number as $n
+  | jq -r "$TICKETS_JQ"'.[]? | .number as $n
       | ([(.body // ""), ((.comments // [])[]? | .body // "")] | map(split("\n")[] | select(test("blocked until"; "i"))) | last // "") as $l
-      | ($l | sub("(?i).*blocked until"; "") | [scan("#([0-9]+)")[0]] | map(select(. != ($n | tostring))) | unique | join(" ")) as $b
+      | ($l | sub("(?i).*blocked until"; "") | tickets | map(select(. != ($n | tostring))) | join(" ")) as $b
       | select($b != "") | "\($n)\t\($b)"'
 }
 held=""
@@ -57,8 +62,8 @@ parts_of() { # <n>
   local hit c
   hit=$(awk -F'\t' -v n="$1" '$1 == n { print $2; f = 1; exit } END { exit !f }' <<<"$SPLITS") && { [ "$hit" = - ] || printf '%s' "$hit"; return 0; }
   c=$("$GH" issue view "$1" --repo "$REPO_SLUG" --json comments 2>/dev/null) || return 1
-  hit=$(jq -r '[.comments[]?.body // "" | split("\n")[] | select(test("split[^#]* into #"; "i"))] | last // ""
-               | sub("(?i)^.*?split[^#]* into"; "") | [scan("#([0-9]+)")[0]] | join(" ")' <<<"$c" 2>/dev/null)
+  hit=$(jq -r "$TICKETS_JQ"'[.comments[]?.body // "" | split("\n")[] | select(test("split[^#]* into #"; "i"))] | last // ""
+               | sub("(?i)^.*?split[^#]* into"; "") | tickets | join(" ")' <<<"$c" 2>/dev/null)
   SPLITS="$SPLITS$1"$'\t'"${hit:--}"$'\n'
   printf '%s' "$hit"
 }
