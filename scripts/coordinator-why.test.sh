@@ -111,7 +111,7 @@ cp "$SH/comments.json" "$FIX/comments.first.json"
 world 0.80; sheet
 out=$(vm_tick)
 want "80% at 44% of the window: only the process fixes start" "13621 13788" "$(spawned)"
-want_in "and the tick says why"                       'pacing ahead of the five-hour line — no new builder starts but P0' "$out"
+want_in "and the tick says why"                       'pacing ahead of the five-hour line — no new builder starts but process fixes and the focus areas' "$out"
 cp "$FIX/comments.first.json" "$SH/comments.json"
 
 echo "--- the heartbeat says why, from this tick's own lines ---"

@@ -759,12 +759,14 @@ candidates() {
   lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $5 == 1 { print $1 }' | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
-  while IFS=$'\t' read -r t cls pri pol pl ex proc note; do
+  while IFS=$'\t' read -r t cls pri pol pl ex proc tier note; do  # tier before note: an empty last field is safe, an empty middle one is not
     [ -n "${t:-}" ] || continue
     i=$((i+1)); exm=""
     if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then sk_proc="$sk_proc #$t"; continue; fi
-    # A process fix is never paced: harness fixes go ahead of everything (owner, 2026-10-20); the tooling cap still bounds it.
-    if [ -n "$PACE_AHEAD" ] && [ "$proc" != 1 ] && case "$PACE_EXEMPT" in *" $pri "*) false ;; *) true ;; esac; then sk_pace="$sk_pace #$t"; continue; fi
+    # AHEAD OF PACE THE ORDER'S OWN TOP STILL STARTS: process fixes (owner, 2026-10-20) and the focus-area
+    # tier, P0/P1 in coordinator.focusAreas (owner, 2026-10-24: "I don't see the priority order happening",
+    # with non-focus P0s starting and Voices P1s skipped). A non-focus P0 waits like the rest.
+    if [ -n "$PACE_AHEAD" ] && [ "$proc" != 1 ] && [ "${tier:-0}" != 1 ] && case "$PACE_EXEMPT" in *" $pri "*) false ;; *) true ;; esac; then sk_pace="$sk_pace #$t"; continue; fi
     # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
     # skipped as new it sat at the head of the queue on every tick doing nothing.
     if [ "$cls" = new ] && pr=$(ticket_open_pr "$t"); then
@@ -862,7 +864,7 @@ candidates() {
   # NO QUEUED TICKET IS PASSED OVER UNSAID: a reason one ticket has gets its own line
   # above; a reason many share gets one line naming each of them.
   [ -z "$sk_proc" ] || say "skip${sk_proc}: the hold lets only process fixes start"
-  [ -z "$sk_pace" ] || say "skip${sk_pace}: pacing ahead of the five-hour line — no new builder starts but ${PACE_EXEMPT_SAID:+$PACE_EXEMPT_SAID and }process fixes"
+  [ -z "$sk_pace" ] || say "skip${sk_pace}: pacing ahead of the five-hour line — no new builder starts but process fixes and the focus areas${PACE_EXEMPT_SAID:+ and $PACE_EXEMPT_SAID}"
   [ -z "$sk_rel" ] || say "skip${sk_rel}: outside the release scope (coordinator.releaseScopeOnly)"
   [ -z "$sk_capped" ] || say "skip${sk_capped}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) — only finishing, and quick new work, starts over it"
   [ -z "$sk_unsized" ] || say "skip${sk_unsized}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP), not sized this tick; only quick work starts over it"

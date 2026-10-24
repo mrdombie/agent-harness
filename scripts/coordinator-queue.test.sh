@@ -158,7 +158,7 @@ want "and keeps them on the entry"         "0 half-built false" "$(jq -r '.ticke
 . "$HERE/coordinator-env.sh"
 ISSUES='{"625":{"number":625,"state":"OPEN","title":"x","labels":["P0","status:in-review"]}}'
 want "with the tick's read, it ranks by its own ticket's priority" \
-  "625	approved-merge	0	0	0	1	0	|621	new	0	0	0	0	0	|622	repair	1	0	0	0	0	" \
+  "625	approved-merge	0	0	0	1	0	0	|621	new	0	0	0	0	0	0	|622	repair	1	0	0	0	0	0	" \
   "$(COORD_QUEUE="$QF" coord_queue_ordered --wide | head -3 | tr '\n' '|' | sed 's/|$//')"
 unset ISSUES
 

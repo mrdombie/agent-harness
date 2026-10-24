@@ -36,7 +36,7 @@ clean; win 0.49 $((NOWE + 11700)) > "$STATE/logs/claim-1-a.log"
 out=$(pace 2 "")
 want "49% at 35% of the window is ahead"     "1" "${out%%$'\t'*}"
 want_in "and the line says so, with u and the target" 'pacing: ahead — 5h window 49% against a target of 33% \(35% of the window gone x 0.95' "$out"
-want_in "and that only the exempt start"     'no new builder starts but P0; the running ones carry on' "$out"
+want_in "and that only the exempt start"     'no new builder starts but process fixes and the focus areas; the running ones carry on' "$out"
 want "pace.json says ahead"                  "ahead true 0.3325" "$(jq -r '"\(.pacing) \(.fiveHour.ahead) \(.fiveHour.line)"' "$C/pace.json")"
 want "and keeps the sample"                  "$NOWE	0.49	$((NOWE + 11700))	2" "$(cat "$C/pace.tsv")"
 clean; win 0.30 $((NOWE + 11700)) > "$STATE/logs/claim-1-a.log"
@@ -111,10 +111,16 @@ live() { SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
 tickworld 0.49; out=$(live)
 want "ahead: nothing new starts"             "0" "$(grep -c . "$SPAWNS")"
 want_in "the tick log says pacing ahead, with u and the target" 'pacing: ahead — 5h window 49% against a target of 3[23]%' "$(cat "$C/tick.log")"
-want_in "and names who waits"                'skip #601 #602 #603: pacing ahead of the five-hour line — no new builder starts but P0 and process fixes' "$out"
+want_in "and names who waits"                'skip #601 #602 #603: pacing ahead of the five-hour line — no new builder starts but process fixes and the focus areas' "$out"
 want "the live view's capacity carries it"   "ahead true" "$(jq -r '"\(.pace.pacing) \(.pace.fiveHour.ahead)"' "$C/capacity.json")"
-tickworld 0.49 604; out=$(live)
-want "ahead: a P0 still starts, alone"       "604" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
+# Ahead, the order's own top starts, not the P0 label: a Voices P1 ran behind non-focus P0s (2026-10-24).
+FOCUS='[{"name":"Voices","labels":["area:VOICES"]}]'
+tickworld 0.49 604; fix_issue 606 OPEN "status:ready,P1,area:VOICES"; bash "$Q" add 606 >/dev/null
+out=$(COORDINATOR_SCREENS_FIRST=true COORDINATOR_FOCUS_AREAS="$FOCUS" live)
+want "ahead: a P1 in a focus area starts, a non-focus P0 does not" "606" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
+want_in "  and the P0 is named as waiting"     'skip [#0-9 ]*#604[#0-9 ]*: pacing ahead' "$out"
+tickworld 0.49 604; out=$(COORDINATOR_PACE_EXEMPT=P0 live)
+want "a priority in paceToWindow.exempt still starts" "604" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
 tickworld 0.49; fix_issue 605 OPEN "status:ready,P2,process"; bash "$Q" add 605 >/dev/null; out=$(live)
 want "ahead: a process fix still starts, alone, though it is P2" "605" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
 tickworld 0.49; out=$(COORDINATOR_PACE_EXEMPT="" live)
