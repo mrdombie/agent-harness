@@ -4,7 +4,7 @@
 # instead of asking"). Sourced by ai-step.sh, so build-ticket and every step have it.
 #
 #   driver_standard_answer <ticket> <step> <text>   0 when a standard answer applies;
-#       sets SA_CLASS (a–g), SA_NAME, SA_ANSWER, SA_ACTION (carry|base-wait|parent-wait|dependency-wait),
+#       sets SA_CLASS (a–h), SA_NAME, SA_ANSWER, SA_ACTION (carry|base-wait|parent-wait|dependency-wait),
 #       SA_PARENT (b's pull request) and SA_HOW (mechanical|model). 1: it parks as before.
 #   driver_standard_answer_note <ticket> <step> <text>   logs "standard answer: <which>"
 #       and writes it on the pull request, or the ticket while there is none.
@@ -53,13 +53,34 @@ _driver_sa_model() {
   model=$(jq -r '.classifier.model // "opus"' <<<"$s"); secs=$(jq -r '.classifier.timeoutSec // 90' <<<"$s")
   p="$(driver_state_dir "$t")/steps/standard-answer.prompt"; mkdir -p "$(dirname "$p")"
   {
-    printf 'A build step stopped to ask a person this. Until the release a standing merge-first rule answers some questions. Reply with ONE token and nothing else: a, b, c, d, e, f, g or park.\n\n'
+    printf 'A build step stopped to ask a person this. Until the release a standing merge-first rule answers some questions. Reply with ONE token and nothing else: a, b, c, d, e, f, g, h or park.\n\n'
     jq -r '.classes | to_entries[] | "\(.key): \(.value.name) — \(.value.answer)"' <<<"$s"
     printf 'park: anything else, or a product, design, data-model, secrets or Critical question, or when unsure.\n\nThe question:\n%s\n' "$q"
   } > "$p"
   out=$(driver_bounded_argv "$secs" "$p" "${DRIVER_SA_CLAUDE:-$DRIVER_CLAUDE}" -p --model "$model" --max-turns 1 \
           --output-format text --name standard-answer 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-  case "$out" in a|b|c|d|e|f|g) [ "$(jq -r --arg k "$out" '.classes[$k] // empty | .action' <<<"$s")" != "" ] && echo "$out" || echo park ;; *) echo park ;; esac
+  case "$out" in a|b|c|d|e|f|g|h) [ "$(jq -r --arg k "$out" '.classes[$k] // empty | .action' <<<"$s")" != "" ] && echo "$out" || echo park ;; *) echo park ;; esac
+}
+
+# _driver_sa_already_done <ticket> <text> — "pr <n>" or "commit <sha>" for the first piece of
+# evidence the text names that verifies: a pull request GitHub says merged, or a commit that is
+# an ancestor of origin/<integration branch>. Nothing when none does, or the text hedges.
+_driver_sa_already_done() {
+  local t="$1" q="$2" n sha wt merged
+  printf '%s' "$q" | grep -qiE '\b(probably|seems?|appears?|might|may have|likely|i think|not sure)\b' && return 0
+  for n in $(printf '%s' "$q" | grep -oE '#[0-9]+' | tr -d '#' | awk -v t="$t" '$0 != t && !s[$0]++'); do
+    # gh-read-ok: an unread or missing PR verifies nothing, so the question is asked, as before
+    merged=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n" -q '.merged' 2>/dev/null) || continue
+    [ "$merged" = true ] && { printf 'pr %s' "$n"; return 0; }
+  done
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || wt="$MAIN_REPO"
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+    git -C "$wt" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null || true  # unbounded-ok: bounded by the connect and low-speed limits, as release-checks.sh does
+  for sha in $(printf '%s' "$q" | grep -oE '\b[0-9a-f]{7,40}\b' | awk '!s[$0]++'); do
+    git -C "$wt" cat-file -e "$sha^{commit}" 2>/dev/null || continue
+    git -C "$wt" merge-base --is-ancestor "$sha" "origin/$INTEGRATION_BRANCH" 2>/dev/null && { printf 'commit %s' "$(git -C "$wt" rev-parse --short "$sha")"; return 0; }
+  done
+  return 0
 }
 
 driver_standard_answer() { # <ticket> <step> <text>
@@ -89,12 +110,12 @@ driver_standard_answer() { # <ticket> <step> <text>
       mkdir -p "$d/steps"; printf '%s\t%s\n' "$key" "$cls" >> "$cache"
     else how=model; fi
   fi
-  case "$cls" in a|b|c|d|e|f|g) : ;; *) driver_say "   standard answer: none — $([ "$cls" = park ] && echo "a question still for a person" || echo "undecided"), so it parks"; return 1 ;; esac
+  case "$cls" in a|b|c|d|e|f|g|h) : ;; *) driver_say "   standard answer: none — $([ "$cls" = park ] && echo "a question still for a person" || echo "undecided"), so it parks"; return 1 ;; esac
   SA_CLASS="$cls"; SA_HOW="$how"
   SA_NAME=$(jq -r --arg k "$cls" '.classes[$k].name // ""' <<<"$s")
   SA_ANSWER=$(jq -r --arg k "$cls" '.classes[$k].answer // ""' <<<"$s")
   SA_ACTION=$(jq -r --arg k "$cls" '.classes[$k].action // ""' <<<"$s")
-  case "$SA_ACTION" in carry|base-wait|parent-wait|dependency-wait) : ;; *) SA_CLASS=""; return 1 ;; esac
+  case "$SA_ACTION" in carry|base-wait|parent-wait|dependency-wait|already-done) : ;; *) SA_CLASS=""; return 1 ;; esac
   # No pull request yet: nothing to hold, so the base's red is left to the base and the step carries on.
   if [ "$SA_ACTION" = base-wait ] && [ -z "$(driver_state_get "$t" pr)" ]; then
     SA_ACTION=carry; SA_ANSWER="$SA_ANSWER There is no pull request to hold yet, so carry on with this change and leave the base's red alone; CI is the gate."
@@ -113,6 +134,13 @@ driver_standard_answer() { # <ticket> <step> <text>
     gates=$(printf '%s' "$q" | grep -oE '\b(gate-[A-Za-z0-9_-]+|check:[A-Za-z0-9:_-]+)' | sort -u | paste -sd, - | sed 's/,/, /g')
     sha=$(printf '%s' "$q" | grep -oiE 'merge[- ]base[^0-9a-f]{0,12}[0-9a-f]{7,40}' | grep -oE '[0-9a-f]{7,40}$' | head -1)
     driver_say "   base-red: ${gates:-the checks it names} at ${sha:-the merge base} — discounted, the step carries on"
+  fi
+  # (h) ALREADY DONE, VERIFIED OR NOT AT ALL: the question names a merged pull request or a
+  # commit on the integration branch, and the driver checks it. A hedge ("probably", "seems")
+  # or nothing that verifies is no answer: it asks, as before.
+  if [ "$SA_ACTION" = already-done ]; then
+    SA_PARENT=$(_driver_sa_already_done "$t" "$q")
+    [ -n "$SA_PARENT" ] || { driver_say "   standard answer: (h) reads as already done, and no merged pull request or commit on $INTEGRATION_BRANCH it names verifies — it asks"; SA_CLASS=""; return 1; }
   fi
   if [ "$SA_ACTION" = parent-wait ]; then
     SA_PARENT=$(jq -rn --arg q "$q" --arg t "$t" '

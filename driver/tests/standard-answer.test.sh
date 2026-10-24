@@ -43,6 +43,9 @@ QDATA="The import needs to remember which calendar a row came from, and the data
 QCRIT="1 blocking finding(s) from the review to clear: critical apps/api/src/lib/org.ts:40 another workspace's rows are returned to this one. Fix it here, or defer it as a follow-up?"
 QCOPY="the fix round deferred a blocking finding: R1-09: Minor. The novelty-collision copy differs from the approved copy. Changing approved user-facing words is the owner's call, not the fix step's, so the current copy stays until the owner confirms."
 QODD="The ticket says the button sits on the left; the screen has nowhere on the left. Which side?"
+# Four parks on 2026-10-24 asked "already fixed by #N, close it?"
+Q14109="PR #14101 already merged this finding's fix: MarkupToolbar is portalled to the body, and a DOM test covers it and passes. Close #14109 as already fixed and release the claim? (yes/no)"
+Q14363="This check is already green on develop: #14362 (COMMIT) fixed it on top of 98a861a. Close #14363 as fixed by #14362, with no build?"
 # Two fix runs parked on 2026-10-24 asking whether to go ahead past a red the base has too.
 Q14311="gate-changed-3 is red only on tests this branch does not touch: the same 15 fail at merge-base c967f3e548 with the change removed. May this branch go ahead while the develop-red ticket owns them? (yes/no)"
 QOWN="gate-changed-3 is red on src/voice.test.ts, which this branch changed; it passes at merge-base c967f3e548. Fix it here, or defer it?"
@@ -166,6 +169,38 @@ want "  nothing parked"                       "" "$(cat "$FIX/park.log")"
 want_in "  the run says base-red, the checks and the base" 'base-red: gate-changed-3 at c967f3e548' "$(cat "$FIX/walk.out")"
 want "a branch-only red still stops the run"  "20" "$(walk_rc 709 fix 24 note "$QOWN" 88)"
 want_in "  as a park"                         'PARK' "$(cat "$FIX/park.log")"
+
+echo "--- on: already done on develop, verified, closes; anything short of that still asks ---"
+pr_merged() { printf '{"merged":%s}\n' "$2" > "$FIX/gh/api-repos_acme_widgets_pulls_$1.json"; }
+done_of() { N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; SA_PARENT=""
+  if driver_standard_answer "${2:-$N}" plan "$1" >/dev/null 2>&1; then printf '%s %s' "$SA_CLASS" "$SA_PARENT"; else printf park; fi; }
+pr_merged 14101 true
+want "#14109: PR #14101 merged — (h), closes"         "h pr 14101" "$(done_of "$Q14109" 14109)"
+pr_merged 14101 false
+want "  the PR it names is open: it asks"             "park" "$(done_of "$Q14109" 14109)"
+rm -f "$FIX/gh/api-repos_acme_widgets_pulls_14101.json"
+want "  no PR or commit verifies: it asks"            "park" "$(done_of "Close #14109 as already fixed? (yes/no)" 14109)"
+pr_merged 14101 true
+want "  a hedge is no evidence: it asks"              "park" "$(done_of "PR #14101 probably fixed this already. Close #14109 as already fixed? (yes/no)" 14109)"
+git -C "$REPO" update-ref refs/remotes/origin/develop develop
+ON=$(git -C "$REPO" rev-parse --short develop)
+git -C "$REPO" checkout -q -b side-14363 develop; git -C "$REPO" commit -q --allow-empty -m "side"; OFF=$(git -C "$REPO" rev-parse --short HEAD); git -C "$REPO" checkout -q develop
+want "#14363: its commit is on develop — (h), closes" "h commit $ON" "$(done_of "${Q14363//COMMIT/$ON}" 14363)"
+want "  a commit not on develop: it asks"             "park" "$(done_of "${Q14363//COMMIT/$OFF}" 14363)"
+rm -f "$FIX/gh/api-repos_acme_widgets_pulls_14101.json"
+
+echo "--- on: a plan that finds its ticket already done closes it, never parks ---"
+pr_merged 14101 true
+want "the run ends clean"                  "0" "$(walk_rc 710 plan 20 question "$Q14109" 88)"
+want "  nothing parked"                    "" "$(cat "$FIX/park.log")"
+want "  nothing after plan ran"            "start size plan" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want_in "  the ticket is closed as completed" 'issue close 710 .*--reason completed' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  with the evidence and its link" 'issue comment 710 .*Already done:\*\* PR #14101 \(https://github.com/acme/widgets/pull/14101\) is merged' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  its own draft PR is closed"     'pr close 88 ' "$(tr '\n' ' ' < "$GH_LOG")"
+pr_merged 14101 false
+want "the PR it names is open: it parks as before" "20" "$(walk_rc 719 plan 20 question "$Q14109" 88)"
+want_not_in "  and nothing is closed"      'issue close 719' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh/api-repos_acme_widgets_pulls_14101.json"
 
 echo "--- on: a Minor deferral (c) carries on too ---"
 want "#13454's deferred Minors: finishes"  "0" "$(walk_rc 702 fix 24 note "$Q13454" 88)"
