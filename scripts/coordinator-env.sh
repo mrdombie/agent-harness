@@ -402,6 +402,8 @@ coord_record_class() { # <ticket> <class> — after a spawn returns
   rec=$(ls -t "$RUNS_DIR"/claim-"$1"-*.json 2>/dev/null | head -1)
   [ -n "$rec" ] && rid=$(basename "$rec" .json)
   printf '%s\t%s\t%s\t%s\n' "$rid" "$1" "$2" "$(date +%s)" >> "$COORD_RUN_CLASSES"
+  # A repair is marked on its PR too, so the rebuild count is every host's (repair-gate.sh).
+  [ "$2" != repair ] || ! declare -F repair_mark_pr >/dev/null || repair_mark_pr "$1" "${REPAIR_MARK_PJ:-}"
   tail -500 "$COORD_RUN_CLASSES" > "$COORD_RUN_CLASSES.$$" 2>/dev/null && mv -f "$COORD_RUN_CLASSES.$$" "$COORD_RUN_CLASSES"
 }
 coord_run_class() { # <runs/claim-*.json> — the class on record, or nothing

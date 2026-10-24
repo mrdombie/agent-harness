@@ -26,15 +26,39 @@ open_pr_json() { # <ticket> — its open PR as this tick read it, or nothing
 }
 
 # REBUILD AFTER N REPAIRS. The 12 most-repaired PRs (14-18 Oct, each repaired 5-11 times)
-# were 48% of three days' repair usage. A PR this host has repaired coordinator.rebuildAfterRepairs
+# were 48% of three days' repair usage. A PR repaired coordinator.rebuildAfterRepairs
 # (2) times since its ticket last started fresh is not patched again: its head is kept at
 # refs/stale/<ticket>/pr-<n>, the PR is closed with "closed to rebuild fresh" (follow-up.sh
 # holds its findings for the next PR), its branch deleted, and the ticket queued at the
 # front as a fresh build from the integration branch. 0 turns it off.
 COORD_REBUILD_AFTER="${COORDINATOR_REBUILD_AFTER_REPAIRS:-$(swarm_opt coordinator.rebuildAfterRepairs 2)}"
 case "$COORD_REBUILD_AFTER" in ''|*[!0-9]*) COORD_REBUILD_AFTER=2 ;; esac
-repairs_since_fresh() { # <ticket> — repair spawns on record since its last rebuild or new build
-  awk -F'\t' -v t="$1" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0
+# COUNTED ON THE PR, SO EVERY HOST AGREES. Each repair spawn leaves REPAIR_MARK in a comment
+# on the ticket's open PR (repair_mark_pr, from coord_record_class), and the count is the marks
+# on that PR: a rebuild closes it and a new build opens another, so the count starts again. A
+# host's own run-classes file counted only its own spawns, and #13304 reached three repairs
+# across two hosts, each seeing fewer than two. The local count stays as the fallback, and the
+# higher of the two is used.
+REPAIR_MARK='<!-- harness:repair-spawn -->'
+repairs_since_fresh() { # <ticket> [pr-json] — repair spawns since its last rebuild or new build
+  local t="$1" pj="${2:-}" here there="" pr
+  here=$(awk -F'\t' -v t="$t" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0)
+  [ -n "$pj" ] || pj=$(open_pr_json "$t")
+  pr=$(jq -r '.number // empty' <<<"${pj:-null}" 2>/dev/null)
+  # gh-read-ok: a failed read counts 0 here, so the host's own count stands, as before this read
+  [ -z "$pr" ] || there=$(swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" --paginate \
+      -q "[.[] | select((.body // \"\") | contains(\"$REPAIR_MARK\"))] | length" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+  case "$there" in ''|*[!0-9]*) there=0 ;; esac
+  case "$here" in ''|*[!0-9]*) here=0 ;; esac
+  [ "$there" -gt "$here" ] && echo "$there" || echo "$here"
+}
+repair_mark_pr() { # <ticket> [pr-json] — the spawn marked on its open PR, for every host's count
+  local t="$1" pj="${2:-}" pr
+  coord_shadow 2>/dev/null && return 0
+  [ -n "$pj" ] || pj=$(open_pr_json "$t")
+  pr=$(jq -r '.number // empty' <<<"${pj:-null}" 2>/dev/null); [ -n "$pr" ] || return 0
+  swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" -X POST -f body="Repair started on $(hostname -s 2>/dev/null || echo this host) for #$t.
+$REPAIR_MARK" >/dev/null 2>&1 || true
 }
 rebuild_fresh() { # <ticket> <repairs> [pr-json] — 0 when the PR was closed and the ticket queued fresh; says what it did
   local t="$1" n="$2" pj="${3:-}" pr sha ref note
@@ -81,7 +105,7 @@ repair_pr_red() { # <ticket> [pr-json] — 0 when its open PR is really red; els
   return 1
 }
 
-repair_record() { coord_record_class "$1" repair; }
+repair_record() { REPAIR_MARK_PJ="${2:-}" coord_record_class "$1" repair; }   # [pr-json]; coord_record_class marks the PR
 
 repair_gate() { # <ticket> [pr-json]
   local t="$1" pj="${2:-}" st reps
@@ -90,7 +114,7 @@ repair_gate() { # <ticket> [pr-json]
   else st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null) || { echo "#$t could not be read"; return 1; }; fi
   [ "$st" = OPEN ] || { echo "#$t is $st"; return 1; }
   repair_pr_red "$t" "$pj" || return 1
-  if [ "$COORD_REBUILD_AFTER" -gt 0 ] && reps=$(repairs_since_fresh "$t") && [ "$reps" -ge "$COORD_REBUILD_AFTER" ]; then
+  if [ "$COORD_REBUILD_AFTER" -gt 0 ] && reps=$(repairs_since_fresh "$t" "$pj") && [ "$reps" -ge "$COORD_REBUILD_AFTER" ]; then
     rebuild_fresh "$t" "$reps" "$pj" >&2 || true
     echo "repaired $reps times since it last started fresh — rebuilt from $INTEGRATION_BRANCH instead (coordinator.rebuildAfterRepairs)"; return 1
   fi

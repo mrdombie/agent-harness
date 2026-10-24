@@ -250,8 +250,12 @@ section_repair() {
       case ",$labs," in *",$LBL_PARKED,"*|*",$LBL_CLAIMED,"*) continue ;; esac
     fi
 
+    # THREE IN A DAY IS A REBUILD, NEVER A PERSON. The old breaker set needs-human here, and a
+    # P0 (#13304) waited on a label for a count; the PR is closed to rebuild fresh instead.
     if [ "$(attempts_today "$T")" -ge 3 ]; then
-      stop_sticky "$PR" "$T" "$reason"
+      if [ "$DRY" = 1 ]; then echo "WOULD rebuild #$T fresh: PR #$PR repaired $(attempts_today "$T") times in 24h and still $reason"
+      else rebuild_fresh "$T" "$(attempts_today "$T")" "$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$PR" '[.[] | select(.number == $n)] | first // empty')" \
+        || say "rebuild: #$T could not be rebuilt this pass — no repair is sent"; fi
       continue
     fi
     already_going "$T" && continue
@@ -260,8 +264,9 @@ section_repair() {
     if ! why=$(room_for "$prog"); then
       say "hold #$PR ($T): $reason — machine busy ($why)"; continue
     fi
-    local gwhy
-    if ! gwhy=$(repair_gate "$T" "$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$PR" '[.[] | select(.number == $n)] | first // empty')"); then
+    local gwhy gpj
+    gpj=$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$PR" '[.[] | select(.number == $n)] | first // empty')
+    if ! gwhy=$(repair_gate "$T" "$gpj"); then
       say "skip #$PR ($T): $gwhy"; continue
     fi
     if [ "$DRY" = 1 ]; then echo "WOULD repair #$PR ($T) at ${SHA:0:9}: $reason"; launched=$((launched+1)); continue; fi
@@ -272,7 +277,7 @@ section_repair() {
     mkdir -p "$(dirname "$brief")"
     repair_brief "$PR" "$SHA" "$reason" > "$brief" || { say "no repair for #$PR ($T): its brief could not be written"; continue; }
     printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
-    swarm_spawn "$T" "$brief" >/dev/null 2>&1 && repair_record "$T"
+    swarm_spawn "$T" "$brief" >/dev/null 2>&1 && repair_record "$T" "$gpj"
     say "spawned repair for #$PR ($T) at ${SHA:0:9}: $reason"
     launched=$((launched+1))
   done <<< "$rows"
@@ -323,17 +328,6 @@ section_release_warn() {
     [ -n "${pr:-}" ] || continue
     RELEASE_WARN_DRY=$DRY release_warn_pr "$pr" "$sha" "$names" say
   done <<< "$(warn_prs)"
-}
-
-# Three repairs in a day and still red: hand it to a person, and make the hand-
-# over STICK. One comment per ticket per day, so a stall does not spam.
-stop_sticky() { # <pr> <ticket> <reason>
-  grep -q "STOP #$1 " <<< "$(grep "^$(swarm_day)" "$LOG" 2>/dev/null)" && return 0
-  if [ "$DRY" = 1 ]; then echo "WOULD STOP #$1 ($2): 3 repairs in 24h and still $3"; return 0; fi
-  issue_status_set "$2" "$LBL_NEEDS_HUMAN" >/dev/null 2>&1
-  swarm_gh issue comment "$2" --repo "$REPO_SLUG" --body \
-    "**Stopped after 3 repairs in 24 hours** and still: $3. Labelled \`$LBL_NEEDS_HUMAN\`, so no agent is sent again until a person looks and removes the label." >/dev/null 2>&1
-  say "STOP #$1 ($2): 3 repairs in 24h and still $3 — labelled $LBL_NEEDS_HUMAN"
 }
 
 # ---- 2. unblock --------------------------------------------------------------
