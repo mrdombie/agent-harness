@@ -349,14 +349,20 @@ want "the P0 red takes the one healing place" "603" "$(spawned)"
 unset COORDINATOR_OPEN_PR_CAP
 
 echo "--- coordinator.openPrCap: over the cap nothing new starts; every place finishes ---"
-# open_prs <count> — that many open PRs, drafts among them, none for a queued ticket
+# Hermetic: whether a person drafted a PR is read through a stand-in (no PR here is a person's),
+# never the real forge. Without it these cases read GitHub on a laptop and failed on CI.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/pstop-none"; chmod +x "$BIN/pstop-none"
+export OPEN_WORK_PERSON_STOP="$BIN/pstop-none" OPEN_WORK_DRAFTED_CACHE="$FIX/pdrafted-none.tsv"
+# open_prs <count> — that many open PRs, none a draft and none for a queued ticket (a draft
+# nothing builds is not in flight, so drafts here would not count)
 open_prs() {
   jq -n --argjson n "$1" '[range(0; $n) | {number: (9000 + .), headRefName: "tkt-\(9000 + .)-open", headRefOid: "h\(.)",
-    isDraft: (. % 3 == 0), mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
+    isDraft: false, mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
 }
 proc_q() { local l="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$l"; bash "$Q" add "$t" >/dev/null; done; }
-cap_tick() { # <open PRs> — three repairs 601.., three new 701.., room for 6
-  fresh; open_prs "$1"; queue_as repair 601 602 603; queue 701 702 703
+cap_tick() { # <counted open PRs> — three repairs 601.. (their PRs become drafts nothing builds yet,
+  # so they are 3 more, uncounted), three new 701.., room for 6
+  fresh; open_prs $(( $1 + 3 )); queue_as repair 601 602 603; queue 701 702 703
   SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1
 }
 out=$(cap_tick 12)
@@ -374,16 +380,20 @@ want "exactly at the cap is not over it"    "601 602 603 701 702 703" "$(spawned
 # A draft nothing is building is not in flight (2026-10-24: 10 of 13 open PRs were parked drafts
 # and the cap held every start after the reset).
 fresh; open_prs 12; jq 'map(.isDraft = true)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
+for n in $(seq 9000 9011); do fix_issue "$n" OPEN "P1,status:in-review"; done
 queue 701; out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
-want "12 drafts nothing is building do not count: new work starts" "701" "$(spawned)"
+want_in "12 drafts nothing is building do not count: under the cap" 'open changes 0 / cap 10: new work may start' "$out"
 want_in "  and the tick says why"           'not counted.*#9000 is a draft nothing is building' "$out"
 fresh; open_prs 11; jq 'map(if .number == 9001 then .isDraft = false else .isDraft = true end)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
+for n in $(seq 9000 9010); do fix_issue "$n" OPEN "P1,status:in-review"; done
 queue 701; out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_OPEN_PR_CAP=1 ticks 1)
-want "10 parked drafts and 1 live PR, cap 1: room to start" "701" "$(spawned)"
+want_not_in "10 parked drafts and 1 live PR, cap 1: not over" 'finishing before starting' "$out"
 want_in "  only the live PR counts"         'open changes 1 / cap 1: new work may start' "$out"
 fresh; open_prs 12; jq 'map(.isDraft = true)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
-seq 9000 9010 > "$FIX/claims.txt"; queue 701; SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
-want "11 drafts a run holds still count: over the cap, nothing new" "" "$(spawned)"
+for n in $(seq 9000 9011); do fix_issue "$n" OPEN "P1,status:in-review"; done
+seq 9000 9010 > "$FIX/claims.txt"; queue 701; out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want_in "11 drafts a run holds still count: over the cap" 'open changes 11 / cap 10: finishing before starting' "$out"
+want_not_in "  and nothing new starts"           '701' "$(spawned)"
 fresh; open_prs 12; queue_as approved-merge 604; queue 701
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
 want "an approved merge still starts over the cap" "604" "$(spawned)"
@@ -445,7 +455,7 @@ want "and spawns repairs into the free places, oldest first" "8000 8001 8002 800
 want "every start a repair"                 "repair repair repair repair" "$(classes)"
 want "the other 14 wait on the queue as repairs" "$(seq 8004 8016 | tr '\n' ' ')8018" "$(in_queue)"
 want_in "a parked ticket's clash is still repaired" 'queued #8003 as a repair' "$out"
-want_in "the two green ones are counted: all 19 are being finished" 'open changes 19 / cap 10: finishing before starting' "$out"
+want_in "the 12 non-drafts count; the 7 drafts nothing builds do not: still over" 'open changes 12 / cap 10: finishing before starting' "$out"
 want_not_in "and nothing new starts over the cap" '701' "$(spawned)"
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
 want "the next tick queues none twice"      "0" "$(grep -c '^[0-9:]* finish: queued #' <<<"$out")"
