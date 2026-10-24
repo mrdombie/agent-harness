@@ -1217,7 +1217,7 @@ if [ "$SHEET_ROLE" = owner ]; then
                       '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
                        + (if ($hcap | tonumber? // 0) > 0 then {hostCap: {perHost: ($hcap | tonumber)}} else {} end)
                        + (if ($plugins | length) == 0 then {} else {plugins: $plugins} end)
-                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, usage, fiveHour, pacing, settings})} end)' <<<"$entries"); then
+                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, account, usage, fiveHour, pacing, settings})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
     else
