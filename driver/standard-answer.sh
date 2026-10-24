@@ -73,7 +73,8 @@ _driver_sa_already_done() {
     [ "$merged" = true ] && { printf 'pr %s' "$n"; return 0; }
   done
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || wt="$MAIN_REPO"
-  git -C "$wt" fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null || true
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \
+    git -C "$wt" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" 2>/dev/null || true  # unbounded-ok: bounded by the connect and low-speed limits, as release-checks.sh does
   for sha in $(printf '%s' "$q" | grep -oE '\b[0-9a-f]{7,40}\b' | awk '!s[$0]++'); do
     git -C "$wt" cat-file -e "$sha^{commit}" 2>/dev/null || continue
     git -C "$wt" merge-base --is-ancestor "$sha" "origin/$INTEGRATION_BRANCH" 2>/dev/null && { printf 'commit %s' "$(git -C "$wt" rev-parse --short "$sha")"; return 0; }
