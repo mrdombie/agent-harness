@@ -94,7 +94,8 @@ while IFS=$'\t' read -r n bl; do
   if [ -n "$unmerged" ]; then
     echo "waits: #$n — closed unmerged, not as split:$unmerged (the PM decides)"
     # One note for the PM, not one a pass: the marker is looked for on the ticket first.
-    if [ "$DRY" = 0 ] && ! "$GH" issue view "$n" --repo "$REPO_SLUG" --json comments -q '.comments[].body' 2>/dev/null | grep -qF "<!-- unblock: unmerged$unmerged -->"; then
+    said=$([ "$DRY" = 1 ] || "$GH" issue view "$n" --repo "$REPO_SLUG" --json comments -q '.comments[].body' 2>/dev/null)
+    if [ "$DRY" = 0 ] && ! grep -qF "<!-- unblock: unmerged$unmerged -->" <<<"$said"; then
       "$GH" issue comment "$n" --repo "$REPO_SLUG" --body "**Still waiting:**$unmerged closed without merging and not as a split, so this ticket stays waiting. The PM decides whether it still needs it.
 <!-- unblock: unmerged$unmerged -->" >/dev/null 2>&1 || true
     fi
