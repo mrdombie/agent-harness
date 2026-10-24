@@ -69,6 +69,7 @@ _driver_sa_already_done() {
   local t="$1" q="$2" n sha wt merged
   printf '%s' "$q" | grep -qiE '\b(probably|seems?|appears?|might|may have|likely|i think|not sure)\b' && return 0
   for n in $(printf '%s' "$q" | grep -oE '#[0-9]+' | tr -d '#' | awk -v t="$t" '$0 != t && !s[$0]++'); do
+    # gh-read-ok: an unread or missing PR verifies nothing, so the question is asked, as before
     merged=$(swarm_gh api "repos/$REPO_SLUG/pulls/$n" -q '.merged' 2>/dev/null) || continue
     [ "$merged" = true ] && { printf 'pr %s' "$n"; return 0; }
   done
