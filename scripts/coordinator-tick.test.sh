@@ -371,10 +371,19 @@ want_in "the tick log says new may start"  'open changes 9 / cap 10: new work ma
 want "the live view's file: under"         "9 10 false" "$(jq -r '"\(.openPrs.count) \(.openPrs.cap) \(.openPrs.over)"' "$C/capacity.json")"
 out=$(cap_tick 10)
 want "exactly at the cap is not over it"    "601 602 603 701 702 703" "$(spawned)"
-# Drafts count: 12 PRs, all drafts.
+# A draft nothing is building is not in flight (2026-10-24: 10 of 13 open PRs were parked drafts
+# and the cap held every start after the reset).
 fresh; open_prs 12; jq 'map(.isDraft = true)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
-queue 701; SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
-want "12 drafts are 12 open changes: nothing new" "" "$(spawned)"
+queue 701; out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
+want "12 drafts nothing is building do not count: new work starts" "701" "$(spawned)"
+want_in "  and the tick says why"           'not counted.*#9000 is a draft nothing is building' "$out"
+fresh; open_prs 11; jq 'map(if .number == 9001 then .isDraft = false else .isDraft = true end)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
+queue 701; out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_OPEN_PR_CAP=1 ticks 1)
+want "10 parked drafts and 1 live PR, cap 1: room to start" "701" "$(spawned)"
+want_in "  only the live PR counts"         'open changes 1 / cap 1: new work may start' "$out"
+fresh; open_prs 12; jq 'map(.isDraft = true)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
+seq 9000 9010 > "$FIX/claims.txt"; queue 701; SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
+want "11 drafts a run holds still count: over the cap, nothing new" "" "$(spawned)"
 fresh; open_prs 12; queue_as approved-merge 604; queue 701
 SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
 want "an approved merge still starts over the cap" "604" "$(spawned)"
