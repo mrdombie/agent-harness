@@ -331,11 +331,13 @@ coord_pace_others() {
 coord_pace_reading() {
   local w="${1:-five_hour}" now best extra
   now=$(swarm_now)
+  # Each reading carries the account it was read under: another account's never paces this host.
   extra=$(coord_pace_others | jq -c --arg w "$w" --arg sp "${SHEET_PACE:-}" \
-            '[.[]? | .usage? | .[$w]? // empty] + [($sp | fromjson? // {}) | .usage? | .[$w]? // empty]' 2>/dev/null) || extra="[]"
+            '[.[]? | (.account // "") as $a | .usage? | .[$w]? // empty | objects | . + {account: $a}]
+             + [($sp | fromjson? // {}) | (.account // "") as $a | .usage? | .[$w]? // empty | objects | . + {account: $a}]' 2>/dev/null) || extra="[]"
   best=$(swarm_usage_freshest_at "$w" "${extra:-[]}") || best=""
   if [ -z "$best" ] && [ "$w" = five_hour ] && [ -s "$COORD_PACE_SAMPLES" ]; then
-    best=$(awk -F'\t' -v now="$now" '$3 + 0 > now + 0 { u = $2; r = $3; a = $1 } END { if (r) printf "%s\t%s\t%s", u, r, a }' "$COORD_PACE_SAMPLES")
+    best=$(awk -F'\t' -v now="$now" -v since="$(swarm_account_since)" '$3 + 0 > now + 0 && $1 + 0 >= since + 0 { u = $2; r = $3; a = $1 } END { if (r) printf "%s\t%s\t%s", u, r, a }' "$COORD_PACE_SAMPLES")
   fi
   [ -n "$best" ] || return 1
   printf '%s' "$best"
@@ -378,8 +380,8 @@ coord_pace() {
   ex=$(coord_pace_exempt | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
   jq -cn --argjson at "$now" --arg host "$host" --argjson u "$u" --argjson r "$r" --argjson a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" \
      --argjson e "$e" --argjson t "$t" --argjson ahead "$([ "$ahead" = 1 ] && echo true || echo false)" --argjson f "$f" --arg ex "$ex" \
-     --argjson running "$total" --argjson other "$other" '
-    {at: $at, host: $host,
+     --argjson running "$total" --argjson other "$other" --arg acct "$(swarm_account)" '
+    {at: $at, host: $host, account: $acct,
      usage: ({five_hour: {u: $u, reset: $r, at: $a}} + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end)),
      fiveHour: {u: $u, reset: $r, elapsed: $e, line: $t, ahead: $ahead},
      pacing: (if $ahead then "ahead" else "behind" end),
