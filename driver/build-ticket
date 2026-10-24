@@ -789,6 +789,24 @@ while [ "$i" -lt "$N" ]; do
         bash "$CL" release "$TICKET" >/dev/null 2>&1 || true
         driver_say "⏸ #$TICKET waits for PR #$SA_PARENT to merge — standard answer (b); nothing for a person"
         exit "$DRIVER_OK"
+      elif [ "$SA_ACTION" = already-done ]; then
+        # ALREADY DONE, AND VERIFIED: closed as completed with the evidence, never asked.
+        driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
+        _ev_kind=${SA_PARENT%% *}; _ev=${SA_PARENT#* }
+        if [ "$_ev_kind" = pr ]; then _ev_line="PR #$_ev (https://github.com/$REPO_SLUG/pull/$_ev) is merged"
+        else _ev_line="commit $_ev (https://github.com/$REPO_SLUG/commit/$_ev) is on $INTEGRATION_BRANCH"; fi
+        swarm_gh issue comment "$TICKET" --repo "$REPO_SLUG" --body "**Already done:** $_ev_line, and the $step step found the ask already holds there:
+
+> $(printf '%s' "$_sa_q" | tr '\n' ' ' | cut -c1-600)
+
+Closed as completed, with nothing to build (standard answer (h), release.mergeFirst)." >/dev/null 2>&1 || true
+        swarm_gh issue close "$TICKET" --repo "$REPO_SLUG" --reason completed >/dev/null 2>&1 || driver_say "   standard answer: #$TICKET could not be closed"
+        _own=$(driver_state_get "$TICKET" pr)
+        [ -n "$_own" ] || { _br=$(driver_state_get "$TICKET" branch); [ -z "$_br" ] || _own=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$_br" --state open --json number -q '.[0].number // empty' 2>/dev/null); }
+        [ -z "$_own" ] || swarm_gh pr close "$_own" --repo "$REPO_SLUG" --delete-branch --comment "Closed: #$TICKET was already done ($_ev_line), so this branch has nothing to ship." >/dev/null 2>&1 || true
+        bash "$CL" release "$TICKET" >/dev/null 2>&1 || true
+        driver_say "✓ #$TICKET was already done — $_ev_line; closed as completed, nothing built (standard answer (h))"
+        exit "$DRIVER_OK"
       elif [ "$SA_ACTION" = dependency-wait ]; then
         # GATED ON WHAT IT NEEDS, never a question: the unblocker sets it ready once they merged.
         driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
