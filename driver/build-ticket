@@ -784,10 +784,19 @@ while [ "$i" -lt "$N" ]; do
         base_wait=1; park_reason=""
       elif [ "$SA_ACTION" = parent-wait ]; then
         driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
-        swarm_gh issue comment "$TICKET" --repo "$REPO_SLUG" --body "Blocked on #$SA_PARENT: this ticket waits for #$SA_PARENT to merge, then builds on $INTEGRATION_BRANCH (standard answer (b), release.mergeFirst)." >/dev/null 2>&1 || true
+        swarm_gh issue comment "$TICKET" --repo "$REPO_SLUG" --body "Blocked until #$SA_PARENT merges: this ticket waits for it, then builds on $INTEGRATION_BRANCH (standard answer (b), release.mergeFirst)." >/dev/null 2>&1 || true
         issue_status_set "$TICKET" "$LBL_BLOCKED" >/dev/null 2>&1 || driver_say "   standard answer: #$TICKET could not be set ${LBL_BLOCKED}"
         bash "$CL" release "$TICKET" >/dev/null 2>&1 || true
         driver_say "⏸ #$TICKET waits for PR #$SA_PARENT to merge — standard answer (b); nothing for a person"
+        exit "$DRIVER_OK"
+      elif [ "$SA_ACTION" = dependency-wait ]; then
+        # GATED ON WHAT IT NEEDS, never a question: the unblocker sets it ready once they merged.
+        driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
+        _deps="#${SA_PARENT// /, #}"
+        swarm_gh issue comment "$TICKET" --repo "$REPO_SLUG" --body "Blocked until $_deps merge: the $step step found this ticket needs them first, so it waits and goes back to ready when they have (standard answer (f), release.mergeFirst)." >/dev/null 2>&1 || true
+        issue_status_set "$TICKET" "${LBL_GATED:-$LBL_BLOCKED}" >/dev/null 2>&1 || driver_say "   standard answer: #$TICKET could not be set ${LBL_GATED:-$LBL_BLOCKED}"
+        bash "$CL" release "$TICKET" >/dev/null 2>&1 || true
+        driver_say "⏸ #$TICKET waits for $_deps to merge — standard answer (f); nothing for a person"
         exit "$DRIVER_OK"
       fi
     fi
