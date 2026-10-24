@@ -42,6 +42,9 @@
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
+. "$SELF_DIR/pr-red.sh" || exit 1
+declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
+. "$SELF_DIR/repair-gate.sh" || exit 1
 
 LANE_SHADOW="${MERGE_LANE_SHADOW:-1}"
 lane_shadow() { [ "$LANE_SHADOW" != 0 ]; }
@@ -251,6 +254,11 @@ fixer() { # <pr> <why>
     return 0
   fi
   note="Merge lane: PR #$pr left the lane — $why. Fix it on the PR's own branch and push; then re-arm auto-merge so it rejoins. Never merge it yourself: the lane merges."
+  # The one repair gate (repair-gate.sh): nothing a repair can fix is never sent one.
+  local gwhy
+  if ! gwhy=$(repair_gate "$t" "$(jq -c --argjson n "$pr" '[.[] | select(.number == $n)] | first // empty' <<<"$PRS")"); then
+    say "lane: no fixer for #$t (PR #$pr): $gwhy"; return 0
+  fi
   if lane_shadow; then say "would send a fixer to #$t"; return 0; fi
   if swarm_ticket_live "$t"; then say "lane: #$t already has an agent running — no second fixer"; return 0; fi
   # A live coordinator that ticked lately owns every start; without one a queued fixer never starts.
