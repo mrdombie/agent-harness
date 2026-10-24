@@ -27,7 +27,7 @@ list() { jq -s . > "$FIX/gh/issue-list-status:parked.json"; }
 run() { : > "$FIX/queue.log"; : > "$GH_LOG"; OUT=$(bash "$S" "$@" 2>&1); }
 
 echo "--- a machine park over 30 minutes old is retried, once ---"
-{ ticket 12988 "status:parked,P0" "$(park 'start refused: could not create a worktree at /Users/x/maktura-wt/sh-12988-ab12cd' 2026-10-21T09:00:00Z)"
+{ ticket 12988 "status:parked,P0" "$(park 'start refused: could not create a worktree at /Users/x/proj-wt/sh-12988-ab12cd' 2026-10-21T09:00:00Z)"
   ticket 501 "status:parked,P1" "$(park 'start refused: could not create a worktree' 2026-10-24T11:50:00Z)"
   ticket 502 "status:parked,P1,status:pm-decision" "$(park 'the PM must say which repo' 2026-10-24T09:00:00Z '**Needs (PM):** which repo')"
   ticket 503 "status:parked,P1,needs:human-approval" "$(park 'a person must choose' 2026-10-24T09:00:00Z '**Needs:** a person to choose')"
@@ -43,18 +43,18 @@ for n in 502 503 504; do want_not_in "#$n (a PM's or a person's park) is never t
 
 echo "--- retried and not parked since: it waits for the run ---"
 marker=$(grep -o 'machine-park-retry: [^>]*-->' "$GH_LOG" | head -1 | sed 's/ -->$//')
-{ ticket 12988 "status:ready,P0" "$(park 'start refused: could not create a worktree at /Users/x/maktura-wt/sh-12988-ab12cd' 2026-10-21T09:00:00Z)" "$(note "**Retried:** x
+{ ticket 12988 "status:ready,P0" "$(park 'start refused: could not create a worktree at /Users/x/proj-wt/sh-12988-ab12cd' 2026-10-21T09:00:00Z)" "$(note "**Retried:** x
 <!-- $marker -->" 2026-10-24T11:00:00Z)"; } | list
 run
 want "nothing is done again"                   "" "$OUT"
 
 echo "--- parked again the same way: the PM, with both failures, and no retry ---"
-{ ticket 12988 "status:parked,P0" "$(park 'start refused: could not create a worktree at /Users/x/maktura-wt/sh-12988-ab12cd' 2026-10-21T09:00:00Z)" "$(note "**Retried:** x
-<!-- $marker -->" 2026-10-24T11:00:00Z)" "$(park 'start refused: could not create a worktree at /Users/y/maktura-wt/sh-12988-ef34ab' 2026-10-24T11:10:00Z)"; } | list
+{ ticket 12988 "status:parked,P0" "$(park 'start refused: could not create a worktree at /Users/x/proj-wt/sh-12988-ab12cd' 2026-10-21T09:00:00Z)" "$(note "**Retried:** x
+<!-- $marker -->" 2026-10-24T11:00:00Z)" "$(park 'start refused: could not create a worktree at /Users/y/proj-wt/sh-12988-ef34ab' 2026-10-24T11:10:00Z)"; } | list
 run
 want_in "reported to the PM"                   '^reported #12988 to the PM — parked twice' "$OUT"
 want_in "  with the PM-decision status"         'issue edit 12988 .*--add-label status:pm-decision' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "  naming both failures"                'failed twice the same way.*/Users/x/maktura-wt.*parked again on: start refused: could not create a worktree at /Users/y' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  naming both failures"                'failed twice the same way.*/Users/x/proj-wt.*parked again on: start refused: could not create a worktree at /Users/y' "$(tr '\n' ' ' < "$GH_LOG")"
 want "  and never queued again"                "" "$(cat "$FIX/queue.log")"
 
 echo "--- parked again on another cause: that cause gets its own one retry ---"
