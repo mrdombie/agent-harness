@@ -43,6 +43,9 @@ QDATA="The import needs to remember which calendar a row came from, and the data
 QCRIT="1 blocking finding(s) from the review to clear: critical apps/api/src/lib/org.ts:40 another workspace's rows are returned to this one. Fix it here, or defer it as a follow-up?"
 QCOPY="the fix round deferred a blocking finding: R1-09: Minor. The novelty-collision copy differs from the approved copy. Changing approved user-facing words is the owner's call, not the fix step's, so the current copy stays until the owner confirms."
 QODD="The ticket says the button sits on the left; the screen has nowhere on the left. Which side?"
+# Two fix runs parked on 2026-10-24 asking whether to go ahead past a red the base has too.
+Q14311="gate-changed-3 is red only on tests this branch does not touch: the same 15 fail at merge-base c967f3e548 with the change removed. May this branch go ahead while the develop-red ticket owns them? (yes/no)"
+QOWN="gate-changed-3 is red on src/voice.test.ts, which this branch changed; it passes at merge-base c967f3e548. Fix it here, or defer it?"
 # Three parts that parked within 3 minutes on 2026-10-24, asking whether to wait for a part not built yet.
 Q14276="This part posts the new 'One question' card, but the part that adds that card (part 2, #14273) hasn't been built or claimed yet. Should this part wait until part 2 merges? (yes / no)"
 Q14277="Hold this part until parts 2 to 5 (#14273–#14276) merge? Every piece it wires together is missing on develop: the factQuestion/factSaved cards (#14273), the private-life filter (#14274), recordOwnFact (#14275)."
@@ -64,6 +67,9 @@ want "#13997 wait or fold in: (b), waits for its parent"      "b parent-wait" "$
 N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; SA_PARENT=""; driver_standard_answer "$N" plan "$Q13997" >/dev/null 2>&1
 want "and the parent is the PR the text names"                "13772"         "$SA_PARENT"
 want "#13454 deferred Minors: (c), carry on"                  "c carry"       "$(cls "$Q13454" 77)"
+want "#14311 fails at the merge base too: (g), carry on"      "g carry"       "$(cls "$Q14311" 77)"
+want "  a branch-only red is no (g)"                          "park"          "$(cls "$QOWN" 77)"
+: > "$FIX/sa-calls"   # that text is the classifier's (it answers park here); the rest are mechanical
 want "#14276 wait for part 2: (f), waits for the dependency"  "f dependency-wait" "$(cls "$Q14276")"
 want "#14277 hold until parts 2 to 5: (f)"                    "f dependency-wait" "$(cls "$Q14277")"
 want "#13573 wait for the split parts: (f)"                   "f dependency-wait" "$(cls "$Q13573")"
@@ -153,6 +159,13 @@ want "and every step after fix ran"                    "start size plan build fi
 want_in "the run log says which standard answer"      'standard answer: \(d\)' "$(cat "$FIX/walk.out")"
 want_in "and it is written on the PR"                  'pr comment 88 .*standard answer: \(d\)' "$(tr '\n' ' ' < "$GH_LOG")"
 want_not_in "no owner label"                           'needs:owner-decision' "$(cat "$GH_LOG")"
+
+echo "--- on: a fix step's red that fails at the merge base too carries on, never parks ---"
+want "#14311's base-red at fix: the run finishes" "0" "$(walk_rc 708 fix 24 note "$Q14311" 88)"
+want "  nothing parked"                       "" "$(cat "$FIX/park.log")"
+want_in "  the run says base-red, the checks and the base" 'base-red: gate-changed-3 at c967f3e548' "$(cat "$FIX/walk.out")"
+want "a branch-only red still stops the run"  "20" "$(walk_rc 709 fix 24 note "$QOWN" 88)"
+want_in "  as a park"                         'PARK' "$(cat "$FIX/park.log")"
 
 echo "--- on: a Minor deferral (c) carries on too ---"
 want "#13454's deferred Minors: finishes"  "0" "$(walk_rc 702 fix 24 note "$Q13454" 88)"

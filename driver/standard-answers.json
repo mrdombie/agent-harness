@@ -20,6 +20,7 @@
     "user-facing (copy|words|text|wording)"
   ],
   "order": [
+    "g",
     "a",
     "b",
     "e",
@@ -98,6 +99,15 @@
         "\\bhold (this|it)[^?]* until\\b",
         "\\bwait (until|for) [^?]*\\b(merge[sd]?|lands?|is built|are built)\\b",
         "(hasn[’']?t|has not|haven[’']?t|have not) been built"
+      ]
+    },
+    "g": {
+      "name": "base red, already proved: carry on",
+      "answer": "Carry on. The same checks fail at the merge base with this change removed, so they are the base's (base-red): they are discounted here, the develop-red ticket owns them, and this change goes ahead. Nothing of the base is fixed in this branch.",
+      "action": "carry",
+      "any": [
+        "\\b(fail|fails|failing)\\b[^.?;]{0,60}\\bat (the )?merge[- ]base\\b",
+        "\\b(develop|base)[- ]red ticket owns\\b"
       ]
     }
   },
