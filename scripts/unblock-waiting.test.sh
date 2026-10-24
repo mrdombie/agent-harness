@@ -68,6 +68,27 @@ closed 14263; closed 14264; opened 14265; opened 14266
 want_in "its parts still open: it waits"          '^waits: #13581 — still open: #13578$' "$(run)"
 closed 14265; closed 14266
 want_in "every part landed: released"             '^unblocked #13581$' "$(run)"
+echo "--- a range is every ticket in it, en dash or hyphen ---"
+# #14315 was released at 06:17Z with #14311 and #14312 open: "#14310–#14314" was read as its two ends.
+printf '[]\n' > "$FIX/gh/issue-list-status:blocked.json"
+waiting 14315 status:gated "spec" "**PM answer:** Yes, it waits. Blocked until #14310–#14314 merge."
+listing status:gated 14315
+closed 14310; opened 14311; opened 14312; closed 14313; closed 14314
+want_in "the middle of an en-dash range still open: it waits" '^waits: #14315 — still open: #14311 #14312$' "$(run)"
+closed 14311; closed 14312
+want_in "  every one landed: released"            '^unblocked #14315$' "$(run)"
+waiting 14316 status:gated "spec" "Blocked until #14310-14312 merge."
+listing status:gated 14316
+opened 14311
+want_in "a hyphen range with a bare end counts its middle" '^waits: #14316 — still open: #14311$' "$(run)"
+closed 14311
+jq -n '{number:13579, state:"CLOSED", stateReason:"NOT_PLANNED", title:"t", labels:[],
+  comments:[{body:"**Split** into #14280–#14282 — one change each. Closed as split."}]}' > "$FIX/gh/issue-13579.json"
+waiting 14317 status:gated "spec" "Blocked until #13579 merges."
+listing status:gated 14317
+closed 14280; opened 14281; closed 14282
+want_in "a split comment's range counts its middle too" '^waits: #14317 — still open: #13579$' "$(run)"
+
 echo "--- a blocker closed unmerged, not as split: it waits, with one note for the PM ---"
 waiting 13590 status:gated "spec" "Blocked until #13589 merges."
 listing status:gated 13590
