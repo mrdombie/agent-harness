@@ -70,7 +70,7 @@
 #   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
 #                                                           tick may start work from
 #   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
-#   coordinator.paceToWindow  {on, factor, exempt}  true / 0.95 / ["P0"]: the five-hour line (the usage pacer, below)
+#   coordinator.paceToWindow  {on, factor, exempt}  true / 0.95 / []: the five-hour line (the usage pacer, below)
 #   coordinator.releaseScopeOnly COORDINATOR_RELEASE_SCOPE_ONLY off  true, or {on, priorities, excludeLabels,
 #                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes, titlePatterns}}:
 #                                                           no NEW ticket outside it is seeded or started.
@@ -281,7 +281,7 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 # (the freshest on any host: coord_pace_reading) and draws a straight line to
 # factor x 100% at the reset:
 #     elapsed = 1 - (reset - now) / 5h        target = elapsed x factor
-#   - u > target (ahead): no new builder starts, but a priority in `exempt` (P0);
+#   - u > target (ahead): no new builder starts but process fixes, the focus-area tier and any priority in `exempt`;
 #     the running ones carry on, and swarm.usageStepHold stays the backstop at the wall;
 #   - u <= target (behind): places fill as they would unpaced, to the machine and the cap;
 #   - no reading (or the window already reset): nothing to pace on, places fill (fail open).
@@ -292,7 +292,8 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 #
 #   coordinator.paceToWindow.on      COORDINATOR_PACE          true   false: no pacing, the machine alone decides
 #   coordinator.paceToWindow.factor  COORDINATOR_PACE_FACTOR   0.95   the share of the window the line ends at
-#   coordinator.paceToWindow.exempt  COORDINATOR_PACE_EXEMPT   ["P0"] priorities that start while ahead
+#   coordinator.paceToWindow.exempt  COORDINATOR_PACE_EXEMPT   []     priorities that also start while ahead
+#     (process fixes and the focus-area tier always do: the order's own top, owner 2026-10-24)
 COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on true)}"
 case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
 COORD_PACE_FACTOR="${COORDINATOR_PACE_FACTOR:-$(swarm_opt coordinator.paceToWindow.factor 0.95)}"
@@ -302,8 +303,8 @@ coord_pace_exempt() {
   local v
   if [ -n "${COORDINATOR_PACE_EXEMPT+x}" ]; then v="$COORDINATOR_PACE_EXEMPT"
   elif [ -r "${HARNESS_CFG:-}" ]; then
-    v=$(jq -r '(.coordinator.paceToWindow.exempt // ["P0"]) | if type == "array" then join(" ") else tostring end' "$HARNESS_CFG" 2>/dev/null) || v=P0
-  else v=P0; fi
+    v=$(jq -r '(.coordinator.paceToWindow.exempt // []) | if type == "array" then join(" ") else tostring end' "$HARNESS_CFG" 2>/dev/null) || v=""
+  else v=""; fi
   printf '%s\n' "$v" | tr -s ', ' '\n' | sed -n 's/^[Pp]\([0-9]\)$/\1/p' | tr '\n' ' '
 }
 # Samples: <epoch> \t <utilization> \t <window reset epoch> \t <builders on every host>
@@ -389,7 +390,7 @@ coord_pace() {
   awk -v u="$u" -v t="$t" -v e="$e" -v f="$f" -v at="$(swarm_iso "$r" | cut -c12-16)" -v ahead="$ahead" -v ex="$ex" 'BEGIN {
     printf "pacing: %s — 5h window %d%% against a target of %d%% (%d%% of the window gone x %.2f, resets %sZ)",
       (ahead ? "ahead" : "behind"), u * 100 + 0.5, t * 100 + 0.5, e * 100 + 0.5, f, at
-    if (ahead) printf ": no new builder starts%s; the running ones carry on", (ex == "" ? "" : " but " ex)
+    if (ahead) printf ": no new builder starts but process fixes and the focus areas%s; the running ones carry on", (ex == "" ? "" : " and " ex)
     else printf ": places fill" }'
 }
 
@@ -625,7 +626,7 @@ coord_queue_ordered() {
        else .[]
      | if $wide == 1 then [(.n|tostring), .class, (.prin|tostring), (if .polish then "1" else "0" end), (if .plist then "1" else "0" end),
                            (if .top or .front or .kind == "half-built" or .proc or .screen then "1" else "0" end),
-                           (if .proc then "1" else "0" end), (.note // "")]
+                           (if .proc then "1" else "0" end), (.tier // 0 | tostring), (.note // "")]
        else [(.n|tostring), .class, (.note // "")] end | @tsv end' "$COORD_QUEUE" 2>/dev/null
 }
 
