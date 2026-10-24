@@ -45,6 +45,7 @@ repairs_since_fresh() { # <ticket> [pr-json] — repair spawns since its last re
   here=$(awk -F'\t' -v t="$t" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0)
   [ -n "$pj" ] || pj=$(open_pr_json "$t")
   pr=$(jq -r '.number // empty' <<<"${pj:-null}" 2>/dev/null)
+  # gh-read-ok: a failed read counts 0 here, so the host's own count stands, as before this read
   [ -z "$pr" ] || there=$(swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" --paginate \
       -q "[.[] | select((.body // \"\") | contains(\"$REPAIR_MARK\"))] | length" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
   case "$there" in ''|*[!0-9]*) there=0 ;; esac
