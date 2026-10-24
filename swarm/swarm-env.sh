@@ -289,6 +289,35 @@ swarm_mtime() {
   printf '%s' "$m"
 }
 
+# THE ACCOUNT A READING WAS TAKEN UNDER. Usage is the plan's, and the plan is the login's:
+# on 2026-10-24 the login changed and both hosts held on the old account's 95% week. So the
+# account (orgId, else email, from `claude auth status --json`) is read at most once a minute
+# and kept in swarm/.account as "<id>\t<changed-at>\t<checked-at>". A log names no account,
+# so a log observed before the last change is dropped; a heartbeat or a published reading
+# carries its account and counts only when it is this host's. Unread, the last known stands;
+# never known, readings count as they did before (no account on either side).
+SWARM_ACCOUNT_FILE="${SWARM_ACCOUNT_FILE:-$SWARM_DIR/.account}"
+swarm_account() {
+  local f="$SWARM_ACCOUNT_FILE" now id was="" ch=0 ck=0
+  now=$(swarm_now)
+  [ -s "$f" ] && IFS=$'\t' read -r was ch ck < "$f"
+  case "$ch" in ''|*[!0-9]*) ch=0 ;; esac; case "$ck" in ''|*[!0-9]*) ck=0 ;; esac
+  if [ -z "${SWARM_ACCOUNT:-}" ] && [ -n "$was" ] && [ $(( now - ck )) -lt 60 ]; then printf '%s' "$was"; return 0; fi
+  id="${SWARM_ACCOUNT:-}"
+  [ -n "$id" ] || id=$("${SWARM_CLAUDE_BIN:-claude}" auth status --json 2>/dev/null | jq -r '.orgId // .email // empty' 2>/dev/null)
+  if [ -z "$id" ]; then printf '%s' "$was"; return 0; fi
+  [ "$id" = "$was" ] || ch=$now
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  printf '%s\t%s\t%s\n' "$id" "$ch" "$now" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  printf '%s' "$id"
+}
+# swarm_account_since — when the current account took over (0: never changed, or never known).
+swarm_account_since() {
+  local s; swarm_account >/dev/null
+  s=$(awk -F'\t' 'NR == 1 { print $2 + 0 }' "$SWARM_ACCOUNT_FILE" 2>/dev/null)
+  case "$s" in ''|*[!0-9]*) s=0 ;; esac; printf '%s' "$s"
+}
+
 # swarm_usage_freshest_at <window> [readings json] — "<utilization>\t<reset epoch>\t<observed epoch>"
 # for that window (five_hour, seven_day) while it is open, from the newest builder logs
 # here (prose claim logs, driver step logs; observed = the log's mtime), every host's
@@ -300,18 +329,20 @@ swarm_mtime() {
 # of its readings wins. Resets within 10 min are one window. A reading with no `at`
 # (an older harness's heartbeat) is the oldest.
 swarm_usage_freshest_at() {
-  local w="${1:-five_hour}" extra="${2:-[]}" now files f m best
-  now=$(swarm_now)
+  local w="${1:-five_hour}" extra="${2:-[]}" now files f m best acct since
+  now=$(swarm_now); acct=$(swarm_account); since=$(swarm_account_since)
   # shellcheck disable=SC2012  # names we wrote, no newlines
   files=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -8)
   best=$( { while IFS= read -r f; do
               [ -n "$f" ] || continue
               m=$(swarm_mtime "$f")
+              # A log names no account: one observed before the account changed is another account's.
+              [ "$m" -ge "$since" ] || continue
               swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" -v m="$m" '$2 == "window" && $4 == w { print $5 "\t" $3 "\t" m }'
             done <<< "$files"
-            jq -r --arg w "$w" '.hosts[]? | .usage? | .[$w]? // empty | select((.u | type) == "number" and (.reset | type) == "number")
+            jq -r --arg w "$w" --arg a "$acct" '.hosts[]? | select((.account // "") == $a) | .usage? | .[$w]? // empty | select((.u | type) == "number" and (.reset | type) == "number")
                                 | "\(.u)\t\(.reset)\t\((.at // 0) | tonumber? // 0)"' "${COORDINATOR_DIR:-$STATE_DIR/coordinator}/fleet.json" 2>/dev/null
-            printf '%s' "$extra" | jq -r '.[]? | select(type == "object" and (.u | type) == "number" and (.reset | type) == "number")
+            printf '%s' "$extra" | jq -r --arg a "$acct" '.[]? | select(type == "object" and (.account // "") == $a and (.u | type) == "number" and (.reset | type) == "number")
                                           | "\(.u)\t\(.reset)\t\((.at // 0) | tonumber? // 0)"' 2>/dev/null
           } | awk -F'\t' -v now="$now" '
             $2 + 0 > now + 0 {
