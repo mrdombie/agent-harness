@@ -118,7 +118,9 @@
       "any": [
         "\\bclose #?[0-9]* ?as (already )?(fixed|done|completed)\\b",
         "\\balready (fixed|merged|done|green)\\b[^?]*\\bclose\\b",
-        "\\bclose\\b[^?]*\\b(already|nothing (left )?to build)\\b"
+        "\\bclose\\b[^?]*\\b(already|nothing (left )?to build)\\b",
+        "\\bclosed? (it |#?[0-9]+ )?as (a |the )?duplicate\\b",
+        "\\bnothing (left )?to (change|build|do)\\b[^?]*\\bclose"
       ]
     }
   },
