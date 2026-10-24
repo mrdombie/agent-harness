@@ -45,6 +45,8 @@ QCOPY="the fix round deferred a blocking finding: R1-09: Minor. The novelty-coll
 QODD="The ticket says the button sits on the left; the screen has nowhere on the left. Which side?"
 # Four parks on 2026-10-24 asked "already fixed by #N, close it?"
 Q14109="PR #14101 already merged this finding's fix: MarkupToolbar is portalled to the body, and a DOM test covers it and passes. Close #14109 as already fixed and release the claim? (yes/no)"
+# #13904 parked at the QUICK step on this, word for word; COMMIT stands for b6b367a0d8.
+Q13904="There is nothing left to change: #13909 (COMMIT, already on develop) made exactly the fix this ticket asks for. Can #13904 be closed as a duplicate of #13909?"
 Q14363="This check is already green on develop: #14362 (COMMIT) fixed it on top of 98a861a. Close #14363 as fixed by #14362, with no build?"
 # Two fix runs parked on 2026-10-24 asking whether to go ahead past a red the base has too.
 Q14311="gate-changed-3 is red only on tests this branch does not touch: the same 15 fail at merge-base c967f3e548 with the change removed. May this branch go ahead while the develop-red ticket owns them? (yes/no)"
@@ -150,7 +152,7 @@ walk() { # <ticket> <step> <rc> <how: note|question> <text> [pr]
   rm -rf "$STATE/driver/$1"; driver_state_init "$1" >/dev/null
   [ -z "${6:-}" ] || driver_state_set "$1" pr "$6"
   fix_issue "$1" OPEN "status:claimed"
-  DRIVER_STEPS_DIR="$FAKE" bash "$BT" "$1" > "$FIX/walk.out" 2>&1
+  DRIVER_STEPS_DIR="$FAKE" bash "$BT" "$1" ${WALK_STEPS:+--steps "$WALK_STEPS"} > "$FIX/walk.out" 2>&1
 }
 walk_rc() { walk "$@"; echo $?; }
 
@@ -173,7 +175,7 @@ want_in "  as a park"                         'PARK' "$(cat "$FIX/park.log")"
 echo "--- on: already done on develop, verified, closes; anything short of that still asks ---"
 pr_merged() { printf '{"merged":%s}\n' "$2" > "$FIX/gh/api-repos_acme_widgets_pulls_$1.json"; }
 done_of() { N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; SA_PARENT=""
-  if driver_standard_answer "${2:-$N}" plan "$1" >/dev/null 2>&1; then printf '%s %s' "$SA_CLASS" "$SA_PARENT"; else printf park; fi; }
+  if driver_standard_answer "${2:-$N}" "${3:-plan}" "$1" >/dev/null 2>&1; then printf '%s %s' "$SA_CLASS" "$SA_PARENT"; else printf park; fi; }
 pr_merged 14101 true
 want "#14109: PR #14101 merged — (h), closes"         "h pr 14101" "$(done_of "$Q14109" 14109)"
 pr_merged 14101 false
@@ -187,6 +189,14 @@ ON=$(git -C "$REPO" rev-parse --short develop)
 git -C "$REPO" checkout -q -b side-14363 develop; git -C "$REPO" commit -q --allow-empty -m "side"; OFF=$(git -C "$REPO" rev-parse --short HEAD); git -C "$REPO" checkout -q develop
 want "#14363: its commit is on develop — (h), closes" "h commit $ON" "$(done_of "${Q14363//COMMIT/$ON}" 14363)"
 want "  a commit not on develop: it asks"             "park" "$(done_of "${Q14363//COMMIT/$OFF}" 14363)"
+want "#13904 at quick: a duplicate whose fix is on develop — (h)" "h commit $ON" "$(done_of "${Q13904//COMMIT/$ON}" 13904 quick)"
+want "  its commit not on develop: it asks"           "park" "$(done_of "${Q13904//COMMIT/$OFF}" 13904 quick)"
+# Planted: the kit's answers without the duplicate wording — #13904 asks again, as it did.
+jq --slurpfile k "$HERE/../standard-answers.json" '.release = {mergeFirst: true, done: false,
+  standardAnswers: ($k[0] | .classes.h.any |= map(select(test("duplicate|nothing \\(left") | not)))}' "$FIX/cfg.base" > "$CFGF"
+want "  planted (no duplicate wording): the cut landed" "0" "$(jq '[.release.standardAnswers.classes.h.any[] | select(test("duplicate"))] | length' "$CFGF")"
+want "  planted (no duplicate wording): #13904 asks again" "park" "$(done_of "${Q13904//COMMIT/$ON}" 13904 quick)"
+mf_on
 rm -f "$FIX/gh/api-repos_acme_widgets_pulls_14101.json"
 
 echo "--- on: a plan that finds its ticket already done closes it, never parks ---"
@@ -201,6 +211,12 @@ pr_merged 14101 false
 want "the PR it names is open: it parks as before" "20" "$(walk_rc 719 plan 20 question "$Q14109" 88)"
 want_not_in "  and nothing is closed"      'issue close 719' "$(cat "$GH_LOG")"
 rm -f "$FIX/gh/api-repos_acme_widgets_pulls_14101.json"
+
+echo "--- on: the quick step's duplicate question closes it too ---"
+want "#13904 at quick: the run ends clean" "0" "$(WALK_STEPS="start size quick" walk_rc 13904 quick 20 question "${Q13904//COMMIT/$ON}" 88)"
+want "  nothing parked"                    "" "$(cat "$FIX/park.log")"
+want_in "  closed as completed"            'issue close 13904 .*--reason completed' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  with the commit as evidence"    "Already done:\*\* commit $ON" "$(tr '\n' ' ' < "$GH_LOG")"
 
 echo "--- on: a Minor deferral (c) carries on too ---"
 want "#13454's deferred Minors: finishes"  "0" "$(walk_rc 702 fix 24 note "$Q13454" 88)"
