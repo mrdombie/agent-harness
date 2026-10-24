@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # repair-watch.test.sh — the watcher's job is to send exactly one agent to a
 # broken pull request and then to STOP. So what this asserts is the stopping:
-# one attempt per head commit, three attempts a day, and a stop that survives
-# the window rolling because it is a label rather than a count.
+# one attempt per head commit, and three attempts a day rebuilds the PR fresh
+# rather than handing it to a person; a person's own label still holds.
 #
 # The alarm is asserted the same way: it fires on a machine with work and no
 # agents, it says which programme, and it closes itself when they run again.
@@ -186,15 +186,18 @@ w --only repair >/dev/null
 want "a failure being re-run waits for the re-run" "0" "$(grep -c . "$SPAWNS")"
 : > "$SPAWNS"; : > "$TRIED"
 
-echo "--- three repairs in a day: the stop is a LABEL, not a count ---"
-: > "$SPAWNS"
+echo "--- three repairs in a day: rebuilt fresh, never handed to a person (the old breaker is retired) ---"
+: > "$SPAWNS"; : > "$GH_LOG"
 for s in s1 s2 s3; do printf '101\t%s\tci\t%s\n' "$s" "$T0" >> "$TRIED"; done
+printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"
 fix_prs "11 101 eeeeeeeee1 CLEAN 0 typecheck"
-out=$(w --only repair)
+out=$(COORDINATOR_SHADOW=0 w --only repair)
 want "no fourth agent"                 "0" "$(grep -c . "$SPAWNS")"
-want_in "it is handed to a person"     'issue edit 101 .*--add-label status:needs-human' "$(cat "$GH_LOG")"
-want_in "with a comment saying why"    'Stopped after 3 repairs in 24 hours' "$(cat "$GH_LOG")"
-want_in "and the stop is logged"       'STOP #11 \(101\)' "$out"
+want_in "the PR is closed to rebuild fresh" 'pr close 11 .*--delete-branch .*Closed to rebuild fresh' "$(tr '\n' ' ' < "$GH_LOG")"
+want_not_in "never needs-human for a repair count" 'status:needs-human' "$(cat "$GH_LOG")"
+want_not_in "and no stop"              'Stopped after 3 repairs' "$(cat "$GH_LOG")"
+want_in "and it says so"               'rebuild: closed PR #11 after 3 repairs' "$out"
+rm -f "$FIX/gh/api-repos_acme_widgets_git_refs.json"
 
 echo "--- and the stop STICKS once the 24h window has rolled ---"
 # The window is what used to expire; the label is what must not. Clear every
@@ -368,6 +371,37 @@ fix_prs "64 101 e64e64e64e1 CLEAN 0 typecheck"
 out=$(COORDINATOR_REBUILD_AFTER_REPAIRS=2 COORDINATOR_SHADOW=0 w --only repair)
 want "repaired twice: rebuilt, not repaired a third time" "0" "$(grep -c . "$SPAWNS")"
 want_in "  and it says so"                     'skip #64 \(101\): repaired 2 times since it last started fresh — rebuilt' "$out"
+
+echo "--- the count is every host's: two repairs marked on the PR, none in this host's file ---"
+: > "$SPAWNS"; : > "$TRIED"; : > "$STATE/coordinator/run-classes.tsv"; : > "$GH_LOG"
+jq -n '[{body: "Repair started on mac for #101.\n<!-- harness:repair-spawn -->"}, {body: "a person"}, {body: "Repair started on yomato for #101.\n<!-- harness:repair-spawn -->"}]' > "$FIX/gh/api-repos_acme_widgets_issues_65_comments.json"
+fix_prs "65 101 e65e65e65e1 CLEAN 0 typecheck"
+out=$(COORDINATOR_REBUILD_AFTER_REPAIRS=2 COORDINATOR_SHADOW=0 w --only repair)
+want "repaired once on each host: the third attempt is a rebuild" "0" "$(grep -c . "$SPAWNS")"
+want_in "  counted off the PR"                 'skip #65 \(101\): repaired 2 times since it last started fresh — rebuilt' "$out"
+: > "$SPAWNS"; : > "$TRIED"; : > "$GH_LOG"
+jq -n '[{body: "Repair started on mac for #101.\n<!-- harness:repair-spawn -->"}]' > "$FIX/gh/api-repos_acme_widgets_issues_66_comments.json"
+fix_prs "66 101 e66e66e66e1 CLEAN 0 typecheck"
+out=$(COORDINATOR_REBUILD_AFTER_REPAIRS=2 COORDINATOR_SHADOW=0 w --only repair)
+want "repaired once: repaired again"           "1" "$(grep -c . "$SPAWNS")"
+want_in "  and the spawn is marked on the PR"  'api repos/acme/widgets/issues/66/comments -X POST -f body=Repair started on .* for #101' "$(tr '\n' ' ' < "$GH_LOG")"
 rm -f "$STATE/coordinator/run-classes.tsv"; fix_issue 103 OPEN "status:in-review,project:widgets"
+
+echo "--- plants: each line out of a copy of the kit, its case fails ---"
+K="$FIX/kit"
+kplant() { # <label> <file> <text> <replacement>
+  rm -rf "$K"; mkdir -p "$K"; cp -R "$HERE/../../scripts" "$HERE/../../swarm" "$HERE/../../shared" "$K/" 2>/dev/null; cp -R "$HERE/../../driver" "$K/" 2>/dev/null
+  python3 -I -c 'import sys; p,a,b=sys.argv[1:4]; s=open(p).read(); n=s.count(a); open(p,"w").write(s.replace(a,b,1)); sys.exit(0 if n==1 else 1)' "$K/$2" "$3" "$4" \
+    || { want "plant landed: $1" landed missed; return 1; }
+}
+case_hosts() { : > "$SPAWNS"; : > "$TRIED"; : > "$STATE/coordinator/run-classes.tsv"
+  COORDINATOR_REBUILD_AFTER_REPAIRS=2 COORDINATOR_SHADOW=0 bash "$K/swarm/repair-watch.sh" --only repair >/dev/null 2>&1; R="spawns=$(grep -c . "$SPAWNS")"; }
+case_day() { : > "$SPAWNS"; : > "$GH_LOG"; : > "$TRIED"; for x in s1 s2 s3; do printf '101\t%s\tci\t%s\n' "$x" "$T0" >> "$TRIED"; done
+  printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"; fix_prs "11 101 eeeeeeeee1 CLEAN 0 typecheck"
+  COORDINATOR_SHADOW=0 bash "$K/swarm/repair-watch.sh" --only repair >/dev/null 2>&1; R="rebuilt=$(grep -c 'pr close 11' "$GH_LOG")"; rm -f "$FIX/gh/api-repos_acme_widgets_git_refs.json"; }
+fix_prs "65 101 e65e65e65e1 CLEAN 0 typecheck"
+kplant "the count read off the PR" scripts/repair-gate.sh '  case "$there" in '"''"'|*[!0-9]*) there=0 ;; esac' '  there=0' && { case_hosts; want "planted (the count read off the PR): a third repair is sent" "spawns=1" "$R"; }
+kplant "three in a day rebuilds" swarm/repair-watch.sh '      else rebuild_fresh "$T"' '      else false "$T"' && { case_day; want "planted (three in a day rebuilds): nothing is rebuilt" "rebuilt=0" "$R"; }
+rm -f "$STATE/coordinator/run-classes.tsv"
 
 suite_end "$FAILED"
