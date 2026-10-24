@@ -331,6 +331,11 @@ want "claimed_at stays the trunk"          "$(git -C "$REPO" rev-parse develop)"
 fix_issue 141 OPEN "status:ready,type:feature"
 rc=0; driver_step_start 141 >/dev/null 2>&1 || rc=$?
 want "a ticket with no stranded ref is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 141 worktree)" rev-parse HEAD)"
+fix_issue 142 OPEN "status:ready,type:feature"
+git -C "$FIX/elsewhere" push -q origin "HEAD:refs/stranded/142/other-box-20261017T182734Z"
+rc=0; out=$(DRIVER_FRESH=1 driver_step_start 142 2>&1) || rc=$?
+want "a rebuild (DRIVER_FRESH) is cut from the trunk, stranded work or not" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 142 worktree)" rev-parse HEAD)"
+want_in "  and says so"                    'a rebuild — #142 starts from develop, no stranded work restored' "$out"
 
 echo "--- a swept tree's branch left behind: start cuts again, never 'could not create' (#13392) ---"
 # The tree was deleted and its registration pruned, but the branch stayed in the clone

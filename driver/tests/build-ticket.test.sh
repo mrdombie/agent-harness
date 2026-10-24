@@ -1096,4 +1096,30 @@ want_in "and it is the driver's"             'cause=driver' "$(cat "$FIX/park.lo
 want_not_in "no owner or PM label goes on"   'needs:owner|pm-decision|human-approval' "$(cat "$GH_LOG")"
 want_in "and the log line names the fault"   'machine fault agent-silent' "$out"
 
+echo "--- a \"Rebuild:\" note starts fresh on any host: the local tree and state are set aside (#13048) ---"
+leftover() { # <ticket> — this host's own earlier run: a worktree with an unpushed commit, and its state
+  git -C "$REPO" worktree add -q "$FIX/left$1" -b "tkt-$1/old" develop
+  printf 'old\n' > "$FIX/left$1/old.txt"; git -C "$FIX/left$1" add old.txt; git -C "$FIX/left$1" commit -qm "chore: an old run's commit"
+  OLDSHA=$(git -C "$FIX/left$1" rev-parse HEAD)
+  driver_state_init "$1" --worktree "$FIX/left$1" --branch "tkt-$1/old"; driver_state_done "$1" start
+}
+# start records whether it was told to start fresh, and with what record.
+fresh_start() { { echo '#!/usr/bin/env bash'
+  echo 'driver_step_start() { printf "start fresh=%s worktree=%s\n" "${DRIVER_FRESH:-}" "$(driver_state_get "$1" worktree)" >> "$RAN"; return 0; }'; } > "$FAKE/start.sh"; }
+reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; leftover 440
+printf 'Coordinator note (new): Rebuild: build the ticket fresh from develop; the old head is at refs/stale/440/pr-1.\n' > "$FIX/brief-rb.md"
+out=$(bt 440 --brief "$FIX/brief-rb.md"); rc=$?
+want "it runs"                               "0" "$rc"
+want "start ran, told to start fresh, with no old worktree" "start fresh=1 worktree=" "$(grep '^start' "$RAN")"
+want "the old worktree is gone"              "no" "$([ -d "$FIX/left440" ] && echo yes || echo no)"
+want "its commit is kept on origin"          "$OLDSHA" "$(git -C "$REPO" ls-remote origin 'refs/stale/440/local-*' | cut -f1)"
+want "the old state is set aside"            "1" "$(ls -d "$STATE/driver/440.set-aside-"* 2>/dev/null | grep -c .)"
+want_in "and the run says so"                'rebuild: #440 builds fresh from develop' "$out"
+reset_fakes; fresh_start; leftover 441
+printf 'The owner answered q2: keep the old copy.\n' > "$FIX/brief-nr.md"
+out=$(bt 441 --brief "$FIX/brief-nr.md"); rc=$?
+want "without the note, the tree stays"      "yes" "$([ -d "$FIX/left441" ] && echo yes || echo no)"
+want "and the record is resumed"             "$FIX/left441" "$(driver_state_get 441 worktree)"
+want "nothing is set aside"                  "0" "$(ls -d "$STATE/driver/441.set-aside-"* 2>/dev/null | grep -c .)"
+
 suite_end "$FAILED"
