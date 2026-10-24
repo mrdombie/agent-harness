@@ -84,6 +84,12 @@ if [ "$UNBLOCK" = off ]; then :
 elif [ -n "$GH_WAIT" ]; then say "unblock: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$UNBLOCK" --dry-run >> "$COORD_LOG" 2>&1 || say "unblock (dry) exited $?"
 else bash "$UNBLOCK" >> "$COORD_LOG" 2>&1 || say "unblock exited $?"; fi
+# A park the machine caused is tried again once, fresh, on any host; twice the same is the PM's.
+MACHINE_PARKS="${COORDINATOR_MACHINE_PARKS:-$SELF_DIR/retry-machine-parks.sh}"
+if [ "$MACHINE_PARKS" = off ]; then :
+elif [ -n "$GH_WAIT" ]; then say "machine parks: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$MACHINE_PARKS" --dry-run >> "$COORD_LOG" 2>&1 || say "machine parks (dry) exited $?"
+else bash "$MACHINE_PARKS" >> "$COORD_LOG" 2>&1 || say "machine parks exited $?"; fi
 if [ -n "$GH_WAIT" ]; then say "reconcile: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$RECONCILE" --dry-run --quiet >> "$COORD_LOG" 2>&1 || say "reconcile (dry) exited $?"
 else bash "$RECONCILE" --quiet >> "$COORD_LOG" 2>&1 || say "reconcile exited $?"; fi
