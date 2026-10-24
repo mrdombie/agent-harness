@@ -34,6 +34,11 @@ set -uo pipefail
 . "$KIT_ROOT/scripts/base-wait.sh" || exit 1
 . "$KIT_ROOT/scripts/branch-ticket.sh" || exit 1
 . "$KIT_ROOT/scripts/open-work.sh" || exit 1
+# The one repair gate every repair start goes through (scripts/repair-gate.sh).
+. "$KIT_ROOT/scripts/coordinator-env.sh" || exit 1
+. "$KIT_ROOT/scripts/pr-red.sh" || exit 1
+declare -F issue_status_set >/dev/null || . "$KIT_ROOT/scripts/issue-status.sh" || exit 1
+. "$KIT_ROOT/scripts/repair-gate.sh" || exit 1
 
 LOG="$SWARM_LOGS/repair-watch.log"
 TRIED="$SWARM_DIR/repair-attempts.tsv"          # ticket \t sha \t kind \t epoch
@@ -255,6 +260,10 @@ section_repair() {
     if ! why=$(room_for "$prog"); then
       say "hold #$PR ($T): $reason — machine busy ($why)"; continue
     fi
+    local gwhy
+    if ! gwhy=$(repair_gate "$T" "$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$PR" '[.[] | select(.number == $n)] | first // empty')"); then
+      say "skip #$PR ($T): $gwhy"; continue
+    fi
     if [ "$DRY" = 1 ]; then echo "WOULD repair #$PR ($T) at ${SHA:0:9}: $reason"; launched=$((launched+1)); continue; fi
 
     # A hold placed mid-pass: checked again right before the attempt is spent.
@@ -263,7 +272,7 @@ section_repair() {
     mkdir -p "$(dirname "$brief")"
     repair_brief "$PR" "$SHA" "$reason" > "$brief" || { say "no repair for #$PR ($T): its brief could not be written"; continue; }
     printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
-    swarm_spawn "$T" "$brief" >/dev/null 2>&1
+    swarm_spawn "$T" "$brief" >/dev/null 2>&1 && repair_record "$T"
     say "spawned repair for #$PR ($T) at ${SHA:0:9}: $reason"
     launched=$((launched+1))
   done <<< "$rows"

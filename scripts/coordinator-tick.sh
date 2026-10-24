@@ -81,6 +81,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/cap-quick.sh" || exit 1
 . "$SELF_DIR/pr-red.sh" || exit 1
 declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
+. "$SELF_DIR/repair-gate.sh" || exit 1
 QUICK_OK=""; QUICK_STARTED=0; CAP_EXEMPT_OK=""
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
@@ -304,10 +305,6 @@ fi
 has_open_pr() { # <ticket>
   printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$1" \
     "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1
-}
-open_pr_json() { # <ticket> — its open PR as this tick read it, or nothing
-  printf '%s' "${PRS:-[]}" | jq -c --arg pre "$BRANCH_PREFIX" --arg t "$1" \
-    "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t))] | sort_by(.number) | last // empty' 2>/dev/null
 }
 requeue_cut() { # <ticket> <run-id> <log> <why> — 0 once settled, 1 to try again next tick
   local t="$1" rid="$2" log="$3" why="$4" st cls wt sid note old
@@ -539,62 +536,6 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   if [ "$cls" = repair ] && ! repair_pr_red "$t"; then return 0; fi
   return 1
 }
-# REBUILD AFTER N REPAIRS. The 12 most-repaired PRs (14-18 Oct, each repaired 5-11 times)
-# were 48% of three days' repair usage. A PR this host has repaired coordinator.rebuildAfterRepairs
-# (2) times since its ticket last started fresh is not patched again: its head is kept at
-# refs/stale/<ticket>/pr-<n>, the PR is closed with "closed to rebuild fresh" (follow-up.sh
-# holds its findings for the next PR), its branch deleted, and the ticket queued at the
-# front as a fresh build from the integration branch. 0 turns it off.
-COORD_REBUILD_AFTER="${COORDINATOR_REBUILD_AFTER_REPAIRS:-$(swarm_opt coordinator.rebuildAfterRepairs 2)}"
-case "$COORD_REBUILD_AFTER" in ''|*[!0-9]*) COORD_REBUILD_AFTER=2 ;; esac
-repairs_since_fresh() { # <ticket> — repair spawns on record since its last rebuild or new build
-  awk -F'\t' -v t="$1" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0
-}
-rebuild_fresh() { # <ticket> <repairs> — 0 when the PR was closed and the ticket queued fresh; says what it did
-  local t="$1" n="$2" pj pr sha ref note
-  pj=$(open_pr_json "$t"); [ -n "$pj" ] || { say "rebuild: #$t has no open PR this tick — left as a repair"; return 1; }
-  pr=$(jq -r .number <<<"$pj"); sha=$(jq -r '.headRefOid // ""' <<<"$pj"); ref="refs/stale/$t/pr-$pr"
-  coord_act_log rebuild "$t" "PR #$pr repaired $n times"
-  if coord_shadow; then say "rebuild: would close PR #$pr (repaired $n times) and build #$t fresh from $INTEGRATION_BRANCH"; return 0; fi
-  [ -n "$sha" ] && swarm_gh api "repos/$REPO_SLUG/git/refs" -f ref="$ref" -f sha="$sha" >/dev/null 2>&1 \
-    || swarm_gh api "repos/$REPO_SLUG/git/refs/${ref#refs/}" -X PATCH -f sha="$sha" -F force=true >/dev/null 2>&1 \
-    || { say "rebuild: #$t — PR #$pr's head could not be kept at $ref; left as a repair"; return 1; }
-  note="Closed to rebuild fresh: this PR was repaired $n times and is still not mergeable, so ticket #$t builds again from $INTEGRATION_BRANCH (coordinator.rebuildAfterRepairs). Its work is kept at \`$ref\` ($sha)."
-  swarm_gh pr close "$pr" --repo "$REPO_SLUG" --delete-branch --comment "$note" >/dev/null 2>&1 \
-    || { say "rebuild: #$t — PR #$pr could not be closed; left as a repair"; return 1; }
-  issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY"
-  bash "$QUEUE" add "$t" --class new --first --note "Rebuild: PR #$pr was closed after $n repairs. Build the ticket fresh from $INTEGRATION_BRANCH; the old head is at $ref for reference only." >/dev/null 2>&1 \
-    || say "rebuild: #$t could not be queued — the next seed finds it ready"
-  bash "$QUEUE" set-class "$t" new >/dev/null 2>&1 || true
-  coord_record_class "$t" rebuild
-  say "rebuild: closed PR #$pr after $n repairs (head kept at $ref) — #$t is queued to build fresh from $INTEGRATION_BRANCH"
-}
-# A cancelled, timed-out or runner-less required check is re-run this many times a head.
-COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
-case "$COORD_RERUN_MAX" in ''|*[!0-9]*) COORD_RERUN_MAX=2 ;; esac
-# The base branch's required checks, read from its live rules once per tick (pr-red.sh).
-PR_RED_REQ_FILE="$COORD_DIR/required-checks.$(coord_mode)"; : > "$PR_RED_REQ_FILE" 2>/dev/null; export PR_RED_REQ_FILE
-repair_pr_red() { # <ticket> — 0 when its open PR is really red; else echoes why not
-  local pj v
-  pj=$(open_pr_json "$1")
-  if [ -z "$pj" ]; then
-    # Only a fresh read can say there is none: a snapshot or no read at all decides nothing.
-    if [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ]; then echo "has no open PR — nothing to repair"; return 1; fi
-    return 0
-  fi
-  v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json)") && return 0
-  local n kind why ids did
-  n=$(jq -r .number <<<"$pj"); IFS=$'\t' read -r kind why ids <<<"$v"
-  # A cancelled required check is re-run, never repaired (coordinator.rerunCancelled, 2 a head).
-  if [ "$kind" = rerun ]; then
-    if coord_shadow; then did="would re-run ${ids:-nothing named}"
-    else did=$(pr_red_rerun "$n" "$(jq -r '.headRefOid // ""' <<<"$pj")" "$ids" "$COORD_DIR/reruns.tsv" "$COORD_RERUN_MAX"); fi
-    echo "PR #$n is not red ($why) — $did; no repair"; return 1
-  fi
-  echo "PR #$n is not red ($kind: $why) — no repair"
-  return 1
-}
-
 # Answers given anywhere free their tickets before anything is picked.
 OWNERQ="$SELF_DIR/owner-question.sh"
 if ! coord_shadow; then bash "$OWNERQ" sync 2>&1 | while IFS= read -r l; do say "owner: $l"; done; fi
@@ -1126,9 +1067,10 @@ else
     elif [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
       bypass=1; lent="${lent:-over the open-work cap: sized quick}"; QUICK_STARTED=$((QUICK_STARTED+1))
     fi
-    # Repaired enough: rebuilt fresh instead of patched again; its place goes to the next one.
-    if [ "$cls" = repair ] && [ "$COORD_REBUILD_AFTER" -gt 0 ] && reps=$(repairs_since_fresh "$t") && [ "$reps" -ge "$COORD_REBUILD_AFTER" ]; then
-      rebuild_fresh "$t" "$reps" || true
+    # THE ONE REPAIR GATE (repair-gate.sh): open ticket, open PR, really red, and rebuilt fresh
+    # past rebuildAfterRepairs. Refused, its place goes to the next one.
+    if [ "$cls" = repair ] && ! gwhy=$(repair_gate "$t"); then
+      say "skip #$t (repair): $gwhy"
       started=$((started-1)); HEAL_FREE=$heal_free_was; NEW_FREE=$new_free_was; continue
     fi
     coord_act_log spawn "$t" "$cls${bypass:+ (quick, over the cap)}${note:+ — $note}"
@@ -1197,7 +1139,7 @@ if [ -n "$OVER_PR_CAP" ] && [ "$FLEET_LIVE" -eq 0 ] && [ -n "${SPAWN_RAN:-}" ] &
       grep -qxF "$pr:$sha" "$STALL_SPAWNED" 2>/dev/null && continue
       grep -qx "$t" <<<"$CLAIMED" && continue
       swarm_ticket_live "$t" && continue
-      if why=$(repair_pr_red "$t"); then :; else say "stall: skip #$t: $why"; continue; fi
+      if why=$(repair_gate "$t"); then :; else say "stall: skip #$t: $why"; continue; fi
       pick="$pr"$'\t'"$t"$'\t'"$sha"; break
     done <<< "$FINISH_STALL"
     if [ -z "$pick" ]; then

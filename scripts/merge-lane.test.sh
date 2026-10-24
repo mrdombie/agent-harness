@@ -95,6 +95,8 @@ pr() {
            labels:(if $lab == "-" then [] else ($lab | split(",") | map({name:.})) end),
            autoMergeRequest:(if $auto == 1 then {mergeMethod:"SQUASH"} else null end),
            statusCheckRollup:$c}]' "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"
+  # Its checks are develop's required ones, unless a case says otherwise (repair-gate.sh reads them).
+  _fix_require_add $(printf '%s\n' "$@" | cut -d: -f1)
 }
 set_pr() { jq --argjson n "$1" "map(if .number == \$n then $2 else . end)" "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"; }
 drop_pr() { jq --argjson n "$1" 'map(select(.number != $n))' "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"; }
@@ -254,6 +256,7 @@ echo "--- a real conflict leaves the lane and gets a fixer; the lane never resol
 fresh; fix_issue 701 OPEN "status:in-review"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
 printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+set_pr 70 '.mergeStateStatus = "DIRTY" | .mergeable = "CONFLICTING"'   # as GitHub reads a real conflict
 out=$(live)
 want "nothing merged"                      "" "$(merges)"
 want_in "it leaves the lane"               '^pr edit 70 .*--remove-label queue:merge' "$(cat "$GH_LOG")"
@@ -271,6 +274,7 @@ want "and not merged"                      "" "$(merges)"
 fresh; fix_issue 701 OPEN "status:in-review"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
 printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+set_pr 70 '.mergeStateStatus = "DIRTY" | .mergeable = "CONFLICTING"'   # as GitHub reads a real conflict
 printf '{"run_id":"claim-9-x","ticket":"9","child_pid":%s}\n' "$$" > "$STATE/runs/claim-9-x.json"
 live >/dev/null
 want "with a run already live, still no direct spawn" "" "$(spawned)"
@@ -280,6 +284,7 @@ echo "--- with no live coordinator, the lane starts its own fixer when the machi
 fresh; fix_issue 701 OPEN "status:in-review"; rm -f "$C/capacity.json"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
 printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+set_pr 70 '.mergeStateStatus = "DIRTY" | .mergeable = "CONFLICTING"'   # as GitHub reads a real conflict
 out=$(SWARM_FREE_MEM_GB=16 live)
 want "no coordinator tick on record: it spawns the fixer" "701" "$(spawned)"
 want "and queues nothing"                  "" "$(fixers)"
@@ -287,11 +292,13 @@ want "the coordinator's record has its class" "repair" "$(cut -f3 "$C/run-classe
 fresh; fix_issue 701 OPEN "status:in-review"; coordinator_ticked would
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
 printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+set_pr 70 '.mergeStateStatus = "DIRTY" | .mergeable = "CONFLICTING"'   # as GitHub reads a real conflict
 SWARM_FREE_MEM_GB=16 live >/dev/null
 want "a coordinator in shadow does not own it either" "701" "$(spawned)"
 fresh; fix_issue 701 OPEN "status:in-review"; rm -f "$C/capacity.json"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3
 printf 'gh: merge conflict between base and head (HTTP 422)\n' > "$FIX/gh/update-70.fail"
+set_pr 70 '.mergeStateStatus = "DIRTY" | .mergeable = "CONFLICTING"'   # as GitHub reads a real conflict
 out=$(SWARM_FREE_MEM_GB=2 live)
 want "no room: it queues instead"          "701" "$(fixers)"
 want "and spawns nothing"                  "" "$(spawned)"
@@ -305,6 +312,24 @@ want "nothing merged"                      "" "$(merges)"
 want_in "the PR is told which check"       "^pr comment 80 .*build" "$(cat "$GH_LOG")"
 want "a fixer is queued"                   "801" "$(fixers)"
 want_in "and told which check"             'build' "$(fixer_notes)"
+echo "--- the lane's fixer goes through the one repair gate (repair-gate.sh) ---"
+# A red the lane's own list names, but develop's live rules do not require: no fixer.
+fresh; fix_issue 801 OPEN "status:in-review"
+pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0; fix_required lint
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
+out=$(live)
+want "only a non-required check red: no fixer" "" "$(fixers)$(spawned)"
+want_in "  and the lane says why"           'lane: no fixer for #801 \(PR #80\): PR #80 is not red \(green: no required check failed' "$out"
+fresh; fix_issue 801 OPEN "status:in-review"; rm -f "$C/capacity.json"
+pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
+SWARM_FREE_MEM_GB=16 live >/dev/null
+want "a required red, no coordinator: the fixer spawns" "801" "$(spawned)"
+fresh; fix_issue 801 CLOSED "status:in-review"
+pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
+out=$(live)
+want "a closed ticket: no fixer"            "" "$(fixers)$(spawned)"
 want_not_in "a real failure is not re-run" '^run rerun' "$(cat "$GH_LOG")"
 fresh
 pr 81 s81 - 1 build:SUCCESS lint:SUCCESS deploy-preview:FAILURE; compare develop s81 0
@@ -325,9 +350,10 @@ want "and not taken out"                   "" "$(fixers)"
 : > "$GH_LOG"; live >/dev/null
 want_not_in "the stale result is not a second failure" '^run rerun|^pr edit 90 .*--remove-label' "$(cat "$GH_LOG")"
 set_pr 90 '.statusCheckRollup[0].detailsUrl = "https://github.com/acme/widgets/actions/runs/71/job/82"'
-: > "$GH_LOG"; live >/dev/null
-want_not_in "never a second re-run"        '^run rerun' "$(cat "$GH_LOG")"
-want "a second flake leaves the lane"      "901" "$(fixers)"
+: > "$GH_LOG"; out=$(live)
+want_in "a second flake leaves the lane"   '^pr edit 90 .*--remove-label' "$(cat "$GH_LOG")"
+want "  but a timed-out check is never a fixer's: the repair gate re-runs it" "" "$(fixers)"
+want_in "  and says so"                    'lane: no fixer for #901 \(PR #90\): .*a re-run, not a repair' "$out"
 fresh
 pr 91 s91 - 1 build:FAILURE:3 lint:SUCCESS; compare develop s91 0
 printf '[{"message":"The runner has received a shutdown signal."}]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_83_annotations.json"

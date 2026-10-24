@@ -13,6 +13,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 W="$HERE/../repair-watch.sh"
+# Each case repairs the same tickets again: the rebuild after two repairs (repair-gate.sh) has its own cases.
+export COORDINATOR_REBUILD_AFTER_REPAIRS=0
 w() { bash "$W" "$@" 2>&1; }
 T0=$(date -u +%s)
 TRIED="$STATE/swarm/repair-attempts.tsv"
@@ -153,6 +155,7 @@ want "a failed status is red"              "1" "$(grep -c . "$SPAWNS")"
 want_in "and names the status"             'CI went red on: Design critic' "$(cat "$SPAWNS")"
 : > "$SPAWNS"; : > "$TRIED"
 fix_prs "14 102 c14c14c14c1 CLEAN 0 typecheck"; fix_pr_status 14 "Design critic" PENDING
+fix_required typecheck   # the design status is not one develop requires
 w --only repair >/dev/null
 want "a pending status does not hold a real red back" "1" "$(grep -c . "$SPAWNS")"
 want_in "and only the real failure is named"  'CI went red on: typecheck[^;]' "$(cat "$SPAWNS")"
@@ -340,5 +343,30 @@ out=$(w --only repair --explain)
 want_in "it says what it would do"     'WOULD repair #11' "$out"
 want "but spawns nothing"              "0" "$(grep -c . "$SPAWNS")"
 want "and records no attempt"          "0" "$(grep -c . "$TRIED")"
+
+echo "--- repair-watch goes through the one repair gate (repair-gate.sh) ---"
+# Seen 2026-10-23: a repair on Maktura #5989 whose only red was a check develop does not require.
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "61 101 e61e61e61e1 CLEAN 0 Capture-evidence"; fix_required typecheck
+out=$(w --only repair)
+want "only a non-required check red: no repair" "0" "$(grep -c . "$SPAWNS")"
+want_in "  and it says why"                    'skip #61 \(101\): PR #61 is not red \(green: no required check failed' "$out"
+: > "$SPAWNS"; : > "$TRIED"
+fix_prs "62 101 e62e62e62e1 CLEAN 0 typecheck"
+w --only repair >/dev/null
+want "a required red still gets its repair"     "1" "$(grep -c . "$SPAWNS")"
+want "  and the spawn is on record for the rebuild count" "repair" "$(cut -f3 "$STATE/coordinator/run-classes.tsv" 2>/dev/null | tail -1)"
+: > "$SPAWNS"; : > "$TRIED"; fix_issue 103 CLOSED "status:in-review"
+fix_prs "63 103 e63e63e63e1 CLEAN 0 typecheck"
+out=$(w --only repair)
+want "a closed ticket: no repair"               "0" "$(grep -c . "$SPAWNS")"
+: > "$SPAWNS"; : > "$TRIED"; mkdir -p "$STATE/coordinator"
+printf 'r1\t101\trepair\t1\nr2\t101\trepair\t2\n' > "$STATE/coordinator/run-classes.tsv"
+printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"
+fix_prs "64 101 e64e64e64e1 CLEAN 0 typecheck"
+out=$(COORDINATOR_REBUILD_AFTER_REPAIRS=2 COORDINATOR_SHADOW=0 w --only repair)
+want "repaired twice: rebuilt, not repaired a third time" "0" "$(grep -c . "$SPAWNS")"
+want_in "  and it says so"                     'skip #64 \(101\): repaired 2 times since it last started fresh — rebuilt' "$out"
+rm -f "$STATE/coordinator/run-classes.tsv"; fix_issue 103 OPEN "status:in-review,project:widgets"
 
 suite_end "$FAILED"

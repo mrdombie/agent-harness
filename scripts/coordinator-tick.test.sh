@@ -466,6 +466,24 @@ printf '8300\tother-host\tbuild\n' > "$FIX/claims.txt"
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 2)
 want_not_in "a build on another host is no stall either" 'stall: cap reached' "$out"
 
+echo "--- the stall guard's repair goes through the one repair gate (repair-gate.sh) ---"
+# stall_red <check> — the stall world, its oldest repairable PR red only on <check>, settled.
+stall_red() {
+  fresh; prs_of 8300 1 11 0; tickets_of "P1,status:in-review" $(seq 8300 8311); queue 701
+  jq --arg c "$1" 'map(if .number == 8300 then .mergeStateStatus = "CLEAN" | .statusCheckRollup = [{name:"Typecheck", status:"COMPLETED", conclusion:"SUCCESS"}, {name:$c, status:"COMPLETED", conclusion:"FAILURE"}] else . end)' \
+    "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"
+  mkdir -p "$C"; printf '8300\th8300\tci\t1\n' > "$C/finish-queued.did"
+  fix_required "Typecheck"
+}
+stall_red "Capture and pin the evidence"
+SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null; out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want "only a non-required check red: the stall guard starts nothing" "" "$(spawned)"
+want_in "  and says why"                         'stall: skip #8300: PR #8300 is not red \(green: no required check failed' "$out"
+stall_red "Typecheck"
+SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null; out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
+want "a required red: the stall guard still starts it" "8300 repair" "$(cut -f1,2 "$SPAWNS" | tr '\t' ' ')"
+fix_required
+
 echo "--- a polish list never ships alone while other work can start, full or not ---"
 # list_issue <n> <items> — an open polish list holding that many unticked items
 list_issue() {
