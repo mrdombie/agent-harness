@@ -34,7 +34,7 @@ cat > "$BIN/unblock" <<'SH'
 echo "unblock $*" >> "$FIX/house.log"
 SH
 chmod +x "$BIN/unblock"
-export COORDINATOR_UNBLOCK="$BIN/unblock"
+export COORDINATOR_UNBLOCK="$BIN/unblock" COORDINATOR_MACHINE_PARKS=off
 cat > "$BIN/claude" <<'SH'
 #!/usr/bin/env bash
 { printf 'ARGV'; printf ' [%s]' "$@"; printf '\n'
