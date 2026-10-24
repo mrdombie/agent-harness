@@ -384,7 +384,7 @@ ticket_open_pr() { # <ticket> — echoes the number of its open PR, draft or not
 # not counted. Read from the tick's PR read, plus one batched ticket read.
 . "$SELF_DIR/open-work.sh" || exit 1
 FINISH_TRIED="$COORD_DIR/finish-queued.$(coord_mode)"   # ticket \t head \t kind \t epoch
-FINISH_CLASH=" "; FINISH_STALL=""; FINISH_OUT=""; FINISH_KEYS=""
+FINISH_CLASH=" "; FINISH_STALL=""; FINISH_OUT=""; FINISH_KEYS=""; FINISH_UNCOUNTED=" "
 # A repair that starts is one try at its PR's head: recorded at the start, so an entry a
 # re-seed drops before it starts is queued again, never written off untried.
 finish_started() { # <ticket>
@@ -436,7 +436,14 @@ finish_open_work() {
       counted=$((counted+1)); continue
     fi
     if [ "$draft" = 0 ] && { [ "$st" = green ] || [ "$st" = pending ]; }; then counted=$((counted+1)); continue; fi
-    if [ "$st" = red ] && base_wait_holds "$t" "$sha"; then counted=$((counted+1)); continue; fi
+    # A DRAFT NOTHING IS BUILDING IS NOT IN FLIGHT (owner, 2026-10-24): after the 14:20Z reset 10
+    # of 13 open PRs were parked drafts no run held, and the cap stopped every start, Voices too.
+    # It is still queued to be finished below; it only stops counting.
+    [ "$draft" = 0 ] || FINISH_UNCOUNTED="$FINISH_UNCOUNTED $pr "
+    if [ "$st" = red ] && base_wait_holds "$t" "$sha"; then
+      case "$FINISH_UNCOUNTED" in *" $pr "*) not_counted "$pr" "is a draft nothing is building (waits on the base)" ;; *) counted=$((counted+1)) ;; esac
+      continue
+    fi
     if [ "$st" = DIRTY ]; then kind=conflict
     elif [ "$st" = red ]; then kind=ci
     else kind=draft; fi
@@ -462,7 +469,10 @@ finish_open_work() {
     [ -z "$stop" ] || { not_counted "$pr" "waits on a person ($stop)"; continue; }
     if stop=$(driver_repo_foreign "$lab"); then not_counted "$pr" "belongs to $stop"; continue; fi
     FINISH_STALL="$FINISH_STALL$pr"$'\t'"$t"$'\t'"$sha"$'\n'
-    if [ "$kind" = queued ]; then counted=$((counted+1)); continue; fi
+    if [ "$kind" = queued ]; then
+      case "$FINISH_UNCOUNTED" in *" $pr "*) not_counted "$pr" "is a draft nothing is building (queued)" ;; *) counted=$((counted+1)) ;; esac
+      continue
+    fi
     why="it clashes with $INTEGRATION_BRANCH"
     [ "$kind" != ci ] || why="its checks settled red"
     [ "$kind" != draft ] || why="it is a draft nothing is building"
@@ -476,7 +486,7 @@ finish_open_work() {
     if grep -q "^$t	$sha	$kind	" "$FINISH_TRIED" 2>/dev/null; then
       not_counted "$pr" "a repair left it as it was at ${sha:0:9}: a person looks next"; continue
     fi
-    counted=$((counted+1))
+    case "$FINISH_UNCOUNTED" in *" $pr "*) not_counted "$pr" "is a draft nothing is building" ;; *) counted=$((counted+1)) ;; esac
     if [ "$PRS_STALE" = 1 ]; then say "finish: #$t (PR #$pr) not queued — the open PRs are a snapshot this tick"; continue; fi
     coord_act_log finish "$t" "repair — PR #$pr: $why"
     if coord_shadow; then say "finish: would queue #$t as a repair at the front of its priority — PR #$pr: $why"; continue; fi
