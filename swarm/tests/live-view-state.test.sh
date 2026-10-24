@@ -223,7 +223,8 @@ echo "--- another machine's run is coloured from its heartbeat; grey only when t
 want "fresh activity, quiet about 30s"        "true" "$(printf '%s' "$s" | jq '.elsewhere[] | select(.ticket=="2301") | .quietSec >= 30 and .quietSec < 90')"
 want_in "a busy remote run is green, with its last line" '<div class="row build remote"><span class="dot ok"[^>]*></span><div class="main"> <div class="title">Ticket 2301.*<div class="line">build: task 3 of 5</div>' "$r"
 want_in "one quiet 20 min is stuck"           '<span class="dot stuck"[^>]*></span><div class="main"> <div class="title">Ticket 2302' "$r"
-want_in "a stale heartbeat is the grey ring, saying since when" "<span class=\"dot away\"[^>]*></span><div class=\"main\"> <div class=\"title\">Ticket 2303.*old-vm not reporting since $(hhmm "$STALE_S")" "$r"
+# Past midnight the clock carries its day ("Fri 23 Oct 23:54", clockOf), so the day is optional here.
+want_in "a stale heartbeat is the grey ring, saying since when" "<span class=\"dot away\"[^>]*></span><div class=\"main\"> <div class=\"title\">Ticket 2303.*old-vm not reporting since ([A-Z][a-z]{2} [0-9]{1,2} [A-Z][a-z]{2} )?$(hhmm "$STALE_S")" "$r"
 
 printf '{"at":%s,"hosts":[{"host":"studio-mac","tick":%s,"builds":2}]}\n' "$NOW_S" "$(( NOW_S - 60 ))" > "$STATE/coordinator/fleet.json"
 r=$(page_render "$LV" "$(snap)")
