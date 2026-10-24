@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# No suite reads the real login: the account is unknown, and readings count as they did (swarm_account).
+export SWARM_CLAUDE_BIN=false
 # fixture.sh — the world every swarm test runs against: a throwaway repo with a
 # harness.json, a throwaway state dir, and recorders standing in for gh, curl and
 # the spawner.
