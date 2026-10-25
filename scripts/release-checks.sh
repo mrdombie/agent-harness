@@ -92,6 +92,28 @@ release_merge_first() {
   jq -e '(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true' "$cfg" >/dev/null 2>&1
 }
 
+# EVIDENCE IS NEVER A PARK UNDER MERGE FIRST. #14601 (2026-10-25) went to the owner over the
+# Evidence workflow's push failing ("Repository not found") on a check develop does not
+# require. While release_merge_first holds and the capture check (evidence.captureCheck) is
+# not in the integration branch's LIVE required set, its red is a note on the PR, never a
+# question: the PR ships on its required checks. Unreadable rules: not waived.
+#   release_evidence_check   → the capture check's name
+#   release_evidence_waived  → 0 while its red holds nothing
+release_evidence_check() {
+  local cfg v=""; cfg=$(_release_cfg)
+  [ -n "$cfg" ] && [ -f "$cfg" ] && v=$(jq -r '.evidence.captureCheck // empty' "$cfg" 2>/dev/null)
+  printf '%s' "${v:-Capture and pin the evidence}"
+}
+release_evidence_waived() {
+  local req c
+  release_merge_first || return 1
+  declare -F pr_red_required >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-red.sh" || return 1
+  req=$(pr_red_required 2>/dev/null) || return 1
+  c=$(release_evidence_check | tr '[:upper:]' '[:lower:]')
+  jq -e --arg c "$c" 'type == "array" and (index([$c]) | not)' >/dev/null 2>&1 <<<"$req"
+}
+RELEASE_EVIDENCE_NOTE="shots follow when the workflow recovers"
+
 # release_review_priorities — under merge first the driver's review model runs only for a
 # ticket at one of these priorities; any other ships on CI. Read live, like the switch. A
 # value that is not a list of strings is the default.

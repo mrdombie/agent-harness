@@ -24,6 +24,8 @@ start=$(date +%s)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-checks.sh" || exit 1
 HARNESS_CFG="${HARNESS_CFG:-$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json}"
 NB=$(release_nonblocking_json)
+# Merge first: an Evidence capture develop does not require wakes nobody (release_evidence_waived).
+if REPO_SLUG="${REPO_SLUG:-$REPO}" release_evidence_waived; then NB=$(jq -c --arg c "$(release_evidence_check | tr '[:upper:]' '[:lower:]')" '. + [$c]' <<<"$NB"); fi
 
 state() { # <pr> → one event word, or nothing while it is still pending
   gh pr view "$1" ${REPO:+--repo "$REPO"} --json state,mergeable,statusCheckRollup 2>/dev/null | jq -r --argjson nb "$NB" "$RELEASE_NB_JQ"'
