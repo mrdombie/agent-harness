@@ -108,6 +108,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `tasks[].tests[].redWhen`: string
 - `tasks[].risks`: list of string
 - `question`: string
+- `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"
 - `notes`: string
 - `pmAfterMerge`: list of string
@@ -151,9 +152,9 @@ picture was approved throws the comparison away. Picture missing locally: name i
 the spec was settled in the ticket thread, and **debugged** when the plan follows
 a reproduction.
 
-A question names who answers it in `questionFor`: `owner` for pixels, a picture,
-a product or commercial call, or the data model; `pm` for the ticket's shape —
-repo, split, order, acceptance wording. Unsure is `owner`.
+A question names who answers it in `questionFor` (`owner`: pixels, product, data
+model; `pm`: repo, split, order, acceptance; unsure is `owner`)
+and its kind in `questionKind`. Never ask for UAT data: measure on the local seed.
 
 A repo-settings change (ruleset, branch protection, required check, secrets) is
 never a task: put it in `pmAfterMerge` with its exact command, for the PM after merge.

@@ -277,4 +277,64 @@ jq '.release = {mergeFirst: false, done: false} | .review.judge.duringRelease = 
 want "off: the question stands"            "$DRIVER_E_QUESTION" "$(ask 722)"
 want "and no second ask was made"          "absent" "$([ -f "$(driver_state_dir 722)/steps/probe.standard.prompt" ] && echo present || echo absent)"
 
+
+# ---- the question's own kind, and the four parks of 2026-10-25 ------------------
+echo "--- on: the four parks of 2026-10-25 take their standard answers, word for word ---"
+mf_on
+Q14882="gate-changed-3 is red identically on develop at merge base ca83aa2723 (12 failures, none from this branch's prompt change): ship #14882 past it under the develop-red ticket — yes/no?"
+Q14903="gate-changed-3 fails the same 51 tests at develop's merge base 0bb14bfad4 as on this branch, and the schema will not take a gateFixes entry with no change. Should I hand this gate to the develop-red ticket and carry on? (yes/no)"
+Q14919="The fix passes all 20 tests and the typecheck, but isn't committed. Re-run this step so it can commit the fix as the implementation commit and answer built?"
+Q14896="May the build run one read-only SELECT (BEGIN READ ONLY) of PersonaSamplePost style embeddings from the project's Railway Postgres (the UAT database) to measure John's spread and a single-writer voice's, so MIN_STYLE_AGREEMENT is set from data? Yes / no."
+kcls() { # <text> <kind> — the class a fresh ticket's question of that kind gets, or park
+  N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; driver_state_set "$N" pr 77
+  if driver_standard_answer "$N" fix "$1" "$2" >/dev/null 2>&1; then printf '%s %s' "$SA_CLASS" "$SA_ACTION"; else printf park; fi; }
+sa_cases() { # every case, one "name=result" a line
+  echo "14882=$(cls "$Q14882" 77)"; echo "14903=$(cls "$Q14903" 77)"; echo "14919=$(cls "$Q14919" 77)"; echo "14896=$(cls "$Q14896" 77)"
+  echo "kind-base-red=$(kcls "Can I go ahead with this?" base-red)"; echo "kind-uat=$(kcls "Can I go ahead with this?" uat-data)"
+  echo "kind-uncommitted=$(kcls "Can I go ahead with this?" uncommitted-fix)"; echo "kind-other=$(kcls "Can I go ahead with this?" other)"
+  echo "kind-critical=$(kcls "A Critical finding is open: can I go ahead?" base-red)"; }
+out=$(sa_cases)
+want_in "#14882 red at the merge base: (g), carry on"            "14882=g carry" "$out"
+want_in "#14903 the same tests at the merge base, 'schema' and all: (g)" "14903=g carry" "$out"
+want_in "#14919 a passing fix not committed: (j), the driver commits" "14919=j commit-carry" "$out"
+want_in "#14896 a read of the UAT database: (i), never read it"   "14896=i carry" "$out"
+want_in "a question of kind base-red is (g) whatever its words"    "kind-base-red=g carry" "$out"
+want_in "kind uat-data is (i)"                                    "kind-uat=i carry" "$out"
+want_in "kind uncommitted-fix is (j)"                             "kind-uncommitted=j commit-carry" "$out"
+want_in "kind other falls back to the words: none here, it parks" "kind-other=park" "$out"
+want_in "a Critical parks, whatever the kind"                       "kind-critical=park" "$out"
+# plants: the kit's answers with one rule cut, read through release.standardAnswers.
+sa_plant() { # <jq edit> — the setting with that rule cut
+  jq --slurpfile k "$HERE/../standard-answers.json" '.release = {mergeFirst: true, done: false, standardAnswers: ($k[0] | '"$1"')}' "$FIX/cfg.base" > "$CFGF"; }
+sa_plant 'del(.classes.g.kind)'; out=$(sa_cases)
+want_in "planted (no kind on g): a base-red question in other words parks" "kind-base-red=park" "$out"
+sa_plant '.classes.g.beforePark = false'; out=$(sa_cases)
+want_in "planted (g after the park list): #14903 parks on 'schema' again" "14903=park" "$out"
+sa_plant 'del(.classes.i)'; out=$(sa_cases)
+want_in "planted (no UAT answer): #14896 parks again"            "14896=park" "$out"
+sa_plant 'del(.classes.j)'; out=$(sa_cases)
+want_in "planted (no uncommitted answer): #14919 parks again"     "14919=park" "$out"
+mf_on
+
+echo "--- on: #14919's uncommitted fix is committed by the driver, and the step answers ---"
+fix_brief probe "" "Probe the screens."
+commit_ask() { # <ticket> <kit> — probe asks #14919's question with its change uncommitted, then answers
+  local wt="$FIX/wt$1"; rm -rf "$wt"; git -C "$REPO" worktree add -q --detach "$wt" develop
+  printf 'the fix\n' > "$wt/fixed.txt"
+  rm -f "$FIX/ai/probe.then.jsonl"
+  fix_ai probe "$(jq -nc --arg q "$Q14919" '{step:"probe", status:"park", question:$q, questionKind:"uncommitted-fix"}')"
+  printf '%s\n' "$(jq -nc '{type:"result", subtype:"success", is_error:false, result:"{\"step\":\"probe\",\"status\":\"ok\"}", structured_output:{step:"probe",status:"ok"}}')" > "$FIX/ai/probe.then.jsonl"
+  driver_state_init "$1" --worktree "$wt" >/dev/null; driver_state_set "$1" pr 88; : > "$GH_LOG"
+  rc=0; bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT; . "$1/driver/driver-env.sh" && . "$1/driver/ai-step.sh" && driver_ai_step "$2" probe' _ "$2" "$1" > "$FIX/commit-ask.out" 2>&1 || rc=$?
+  R="rc=$rc committed=$(git -C "$wt" log -1 --format=%s | grep -c 'standard answer (j)') clean=$([ -z "$(git -C "$wt" status --porcelain)" ] && echo yes || echo no)"
+}
+jq '.release = {mergeFirst: true, done: false} | .review.judge.duringRelease = true' "$FIX/cfg.base" > "$CFGF"
+commit_ask 731 "$HERE/../.."
+want "the step finishes, its change committed by the driver" "rc=0 committed=1 clean=yes" "$R"
+want_in "the run says so"                    'standard answer: \(j\) committed the probe step' "$(cat "$FIX/commit-ask.out")"
+JK="$FIX/jkit"; rm -rf "$JK"; mkdir -p "$JK"; cp -R "$HERE/../../driver" "$HERE/../../scripts" "$HERE/../../swarm" "$HERE/../../shared" "$HERE/../../briefs" "$JK/"
+python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = " || _driver_sa_commit \"$t\" \"$step\""; n = s.count(o); open(p, "w").write(s.replace(o, "")); sys.exit(0 if n == 1 else 1)' "$JK/driver/ai-step.sh" \
+  && { commit_ask 732 "$JK"; want "planted (no driver commit): the question stands, the change uncommitted" "rc=$DRIVER_E_QUESTION committed=0 clean=no" "$R"; } || bad "plant: the commit did not land"
+mf_on
+
 suite_end "$FAILED"

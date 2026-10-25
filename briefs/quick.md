@@ -59,6 +59,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `changelog.file`: string
 - `changelog.skipped`: string
 - `question`: string
+- `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"
 - `screenChecklist`: list of object
 - `screenChecklist[].state` (required): string
@@ -76,8 +77,9 @@ Conditional:
 A change to a screen fills `screenChecklist`. `changed` lists every file your commits change. `changelog` carries exactly one
 key: the entry file you wrote, or the reason this change has none.
 
-A question names who answers it in `questionFor`: `owner` for pixels, a product or
-commercial call, or the data model; `pm` for the ticket's shape. Unsure is `owner`.
+A question names who answers it in `questionFor` (`owner`: pixels, product, data
+model; `pm`: repo, split, order, acceptance; unsure is `owner`)
+and its kind in `questionKind`. Never ask for UAT data: measure on the local seed.
 
 `skills` lists every skill you invoked; one claimed here and absent from the run
 log fails the step.

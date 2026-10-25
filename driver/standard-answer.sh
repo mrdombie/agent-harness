@@ -3,8 +3,8 @@
 # put to a person (the owner, 23 Oct: "builders take the standard merge-first answer
 # instead of asking"). Sourced by ai-step.sh, so build-ticket and every step have it.
 #
-#   driver_standard_answer <ticket> <step> <text>   0 when a standard answer applies;
-#       sets SA_CLASS (a–h), SA_NAME, SA_ANSWER, SA_ACTION (carry|base-wait|parent-wait|dependency-wait),
+#   driver_standard_answer <ticket> <step> <text> [kind]   0 when a standard answer applies;
+#       sets SA_CLASS (a–j), SA_NAME, SA_ANSWER, SA_ACTION (carry|commit-carry|base-wait|parent-wait|dependency-wait|already-done),
 #       SA_PARENT (b's pull request) and SA_HOW (mechanical|model). 1: it parks as before.
 #   driver_standard_answer_note <ticket> <step> <text>   logs "standard answer: <which>"
 #       and writes it on the pull request, or the ticket while there is none.
@@ -31,19 +31,28 @@ _driver_sa_cfg() { # prints the setting as JSON, or nothing when it is off
   esac
 }
 
-# _driver_sa_match <setting> <text> <ctx-json> — the mechanical verdict: a class, park, or nothing.
+# _driver_sa_match <setting> <text> <ctx-json> [kind] — the mechanical verdict: a class, park, or
+# nothing. THE STEP'S OWN KIND FIRST: wording matching kept missing (four parks in an hour on
+# 2026-10-25), so a step names its question's kind (questionKind in its schema) and the class
+# declaring that kind answers it. Then the classes marked beforePark, then the park list, then
+# the rest in order. A class read after the park list yields to it; a Critical parks always.
 _driver_sa_match() {
-  jq -rn --argjson s "$1" --arg q "$2" --argjson ctx "$3" '
+  jq -rn --argjson s "$1" --arg q "$2" --argjson ctx "$3" --arg kind "${4:-}" '
     def m($p): $q | test($p; "i");
-    if any(($s.park // [])[]; m(.)) then "park"
-    else first(($s.order // ($s.classes | keys))[] as $k | $s.classes[$k] as $c
-           | select($c != null)
-           | select(
-               ((($c.any // []) | length) > 0 and any($c.any[]; m(.)))
+    def hit($c): ((($c.any // []) | length) > 0 and any($c.any[]; m(.)))
                or ((($c.all // []) | length) > 0 and all($c.all[]; m(.)))
                or ($c.context == "baseRed" and $ctx.baseRed and m("\\b(wait|fix)"))
-               or ($c.context == "deferredGrades" and $ctx.deferredMinorMajor))
-           | $k) // "" end' 2>/dev/null
+               or ($c.context == "deferredGrades" and $ctx.deferredMinorMajor);
+    ($s.order // ($s.classes | keys)) as $order
+    | ([$order[] as $k | select(($s.classes[$k].kind // "") == $kind and $kind != "" and $kind != "other") | $k] | first) as $bykind
+    | (any(($s.park // [])[]; m(.))) as $park
+    # A Critical parks, whatever the kind or class, before anything else.
+    | if m("\\bcritical\\b") then "park"
+      elif $bykind != null and (($s.classes[$bykind].beforePark // false) or ($park | not)) then $bykind
+      else (first($order[] as $k | $s.classes[$k] as $c | select($c != null and ($c.beforePark // false)) | select(hit($c)) | $k) // null) as $early
+      | if $early != null then $early
+        elif $park then "park"
+        else first($order[] as $k | $s.classes[$k] as $c | select($c != null) | select(hit($c)) | $k) // "" end end' 2>/dev/null
 }
 
 # _driver_sa_model <ticket> <text> <setting> — one short classification call; prints a class or park.
@@ -53,13 +62,13 @@ _driver_sa_model() {
   model=$(jq -r '.classifier.model // "opus"' <<<"$s"); secs=$(jq -r '.classifier.timeoutSec // 90' <<<"$s")
   p="$(driver_state_dir "$t")/steps/standard-answer.prompt"; mkdir -p "$(dirname "$p")"
   {
-    printf 'A build step stopped to ask a person this. Until the release a standing merge-first rule answers some questions. Reply with ONE token and nothing else: a, b, c, d, e, f, g, h or park.\n\n'
+    printf 'A build step stopped to ask a person this. Until the release a standing merge-first rule answers some questions. Reply with ONE token and nothing else: %s or park.\n\n' "$(jq -r '.classes | keys | join(", ")' <<<"$s")"
     jq -r '.classes | to_entries[] | "\(.key): \(.value.name) — \(.value.answer)"' <<<"$s"
     printf 'park: anything else, or a product, design, data-model, secrets or Critical question, or when unsure.\n\nThe question:\n%s\n' "$q"
   } > "$p"
   out=$(driver_bounded_argv "$secs" "$p" "${DRIVER_SA_CLAUDE:-$DRIVER_CLAUDE}" -p --model "$model" --max-turns 1 \
           --output-format text --name standard-answer 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
-  case "$out" in a|b|c|d|e|f|g|h) [ "$(jq -r --arg k "$out" '.classes[$k] // empty | .action' <<<"$s")" != "" ] && echo "$out" || echo park ;; *) echo park ;; esac
+  case "$out" in [a-z]) [ "$(jq -r --arg k "$out" '.classes[$k] // empty | .action' <<<"$s")" != "" ] && echo "$out" || echo park ;; *) echo park ;; esac
 }
 
 # _driver_sa_already_done <ticket> <text> — "pr <n>" or "commit <sha>" for the first piece of
@@ -83,8 +92,8 @@ _driver_sa_already_done() {
   return 0
 }
 
-driver_standard_answer() { # <ticket> <step> <text>
-  local t="$1" step="$2" q="$3" s ctx cls how=mechanical d review ans br
+driver_standard_answer() { # <ticket> <step> <text> [kind]
+  local t="$1" step="$2" q="$3" kind="${4:-}" s ctx cls how=mechanical d review ans br
   SA_CLASS=""; SA_NAME=""; SA_ANSWER=""; SA_ACTION=""; SA_PARENT=""; SA_HOW=""
   driver_merge_first || return 1
   [ -n "$q" ] || return 1
@@ -99,7 +108,8 @@ driver_standard_answer() { # <ticket> <step> <text>
     | {baseRed: $br,
        deferredMinorMajor: (($ids | length) > 0 and all($ids[]; ($g[.] // "") | test("^(minor|major)$")))}' 2>/dev/null)
   [ -n "$ctx" ] || ctx='{"baseRed":false,"deferredMinorMajor":false}'
-  cls=$(_driver_sa_match "$s" "$q" "$ctx")
+  cls=$(_driver_sa_match "$s" "$q" "$ctx" "$kind")
+  [ -z "$cls" ] || [ -z "$kind" ] || [ "$(jq -r --arg k "$cls" '.classes[$k].kind // ""' <<<"$s")" != "$kind" ] || how="kind $kind"
   if [ -z "$cls" ]; then
     # One call per question: a resumed step asking the same thing reads the first verdict.
     local key cache="$d/steps/standard-answer.cache"
@@ -110,12 +120,12 @@ driver_standard_answer() { # <ticket> <step> <text>
       mkdir -p "$d/steps"; printf '%s\t%s\n' "$key" "$cls" >> "$cache"
     else how=model; fi
   fi
-  case "$cls" in a|b|c|d|e|f|g|h) : ;; *) driver_say "   standard answer: none — $([ "$cls" = park ] && echo "a question still for a person" || echo "undecided"), so it parks"; return 1 ;; esac
+  case "$cls" in [a-z]) : ;; *) driver_say "   standard answer: none — $([ "$cls" = park ] && echo "a question still for a person" || echo "undecided"), so it parks"; return 1 ;; esac
   SA_CLASS="$cls"; SA_HOW="$how"
   SA_NAME=$(jq -r --arg k "$cls" '.classes[$k].name // ""' <<<"$s")
   SA_ANSWER=$(jq -r --arg k "$cls" '.classes[$k].answer // ""' <<<"$s")
   SA_ACTION=$(jq -r --arg k "$cls" '.classes[$k].action // ""' <<<"$s")
-  case "$SA_ACTION" in carry|base-wait|parent-wait|dependency-wait|already-done) : ;; *) SA_CLASS=""; return 1 ;; esac
+  case "$SA_ACTION" in carry|commit-carry|base-wait|parent-wait|dependency-wait|already-done) : ;; *) SA_CLASS=""; return 1 ;; esac
   # No pull request yet: nothing to hold, so the base's red is left to the base and the step carries on.
   if [ "$SA_ACTION" = base-wait ] && [ -z "$(driver_state_get "$t" pr)" ]; then
     SA_ACTION=carry; SA_ANSWER="$SA_ANSWER There is no pull request to hold yet, so carry on with this change and leave the base's red alone; CI is the gate."

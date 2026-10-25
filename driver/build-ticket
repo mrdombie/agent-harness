@@ -808,7 +808,7 @@ while [ "$i" -lt "$N" ]; do
   if [ -n "$park_reason" ] && [ "$machine" -eq 0 ]; then
     _sa_cause="$park_cause"; [ -z "$step_cause" ] || _sa_cause="$step_cause"
     _sa_q="$park_question"; [ -z "$note" ] || _sa_q="$note"
-    if [ "$_sa_cause" != driver ] && driver_standard_answer "$TICKET" "$step" "$park_reason: $_sa_q"; then
+    if [ "$_sa_cause" != driver ] && driver_standard_answer "$TICKET" "$step" "$park_reason: $_sa_q" "$(jq -r '.questionKind // "" | strings' "$(driver_state_dir "$TICKET")/steps/$step.json" 2>/dev/null)"; then
       if [ "$SA_ACTION" = carry ] && [ "$rc" != "$DRIVER_E_QUESTION" ]; then
         driver_standard_answer_note "$TICKET" "$step" "$_sa_q"
         driver_state_done "$TICKET" "$step"; i=$((i+1)); continue
