@@ -284,7 +284,7 @@ mf_on
 Q14882="gate-changed-3 is red identically on develop at merge base ca83aa2723 (12 failures, none from this branch's prompt change): ship #14882 past it under the develop-red ticket — yes/no?"
 Q14903="gate-changed-3 fails the same 51 tests at develop's merge base 0bb14bfad4 as on this branch, and the schema will not take a gateFixes entry with no change. Should I hand this gate to the develop-red ticket and carry on? (yes/no)"
 Q14919="The fix passes all 20 tests and the typecheck, but isn't committed. Re-run this step so it can commit the fix as the implementation commit and answer built?"
-Q14896="May the build run one read-only SELECT (BEGIN READ ONLY) of PersonaSamplePost style embeddings from the socialhub Railway Postgres (the UAT database) to measure John's spread and a single-writer voice's, so MIN_STYLE_AGREEMENT is set from data? Yes / no."
+Q14896="May the build run one read-only SELECT (BEGIN READ ONLY) of PersonaSamplePost style embeddings from the project's Railway Postgres (the UAT database) to measure John's spread and a single-writer voice's, so MIN_STYLE_AGREEMENT is set from data? Yes / no."
 kcls() { # <text> <kind> — the class a fresh ticket's question of that kind gets, or park
   N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; driver_state_set "$N" pr 77
   if driver_standard_answer "$N" fix "$1" "$2" >/dev/null 2>&1; then printf '%s %s' "$SA_CLASS" "$SA_ACTION"; else printf park; fi; }
