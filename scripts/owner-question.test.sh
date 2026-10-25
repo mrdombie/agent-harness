@@ -121,4 +121,28 @@ want_in "the step is there"                'owner-question\.sh" ask' "$step"
 want_in "it parks without the hold"        'never add `\$HOLD_LABEL`' "$step"
 want_not_in "it never tells the builder to add the hold" 'add-label "\$HOLD_LABEL"' "$step"
 
+echo "--- merge first: an Evidence capture develop does not require is nobody's question (#14601) ---"
+cp "$HARNESS_CFG_PATH" "$FIX/h.bak"
+jq '.release = {mergeFirst: true, done: false}' "$FIX/h.bak" > "$HARNESS_CFG_PATH"
+Q14601="Evidence capture can't push: the EVIDENCE_DEPLOY_KEY push gets 'Repository not found' (PR #14722). Re-add the deploy key with write access, or say how evidence should be pinned instead?"
+ev_ask() { # <kit> — R: exit and the label
+  fresh; fix_issue 51 OPEN "status:in-review"
+  bash "$1/scripts/owner-question.sh" ask 51 evidence-key "$Q14601" >/dev/null 2>&1; R="rc=$? labels=$(labels_of 51)"
+}
+fix_required "Typecheck + Unit tests"
+ev_ask "$HERE/.."
+want "not required: refused, nothing labelled" "rc=5 labels=status:in-review" "$R"
+want "and nothing reaches the owner"         "" "$(cat "$C/needs-you.md" 2>/dev/null)"
+fix_required "Typecheck + Unit tests" "Capture and pin the evidence"
+ev_ask "$HERE/.."
+want "required: it is asked, as before"      "rc=0 labels=needs:owner-decision,status:in-review" "$R"
+fix_required "Typecheck + Unit tests"
+EVK="$FIX/evkit"; rm -rf "$EVK"; mkdir -p "$EVK"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$HERE/../shared" "$EVK/" 2>/dev/null
+python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = "&& release_evidence_waived; then"; n = s.count(o); open(p, "w").write(s.replace(o, "&& false; then")); sys.exit(0 if n == 1 else 1)' "$EVK/scripts/owner-question.sh" \
+  && { ev_ask "$EVK"; want "planted (no waiver): #14601's question reaches the owner again" "rc=0 labels=needs:owner-decision,status:in-review" "$R"; } || bad "plant: the waiver did not land"
+jq '.release = {mergeFirst: false, done: false}' "$FIX/h.bak" > "$HARNESS_CFG_PATH"
+ev_ask "$HERE/.."
+want "merge first off: it is asked, as before" "rc=0 labels=needs:owner-decision,status:in-review" "$R"
+cp "$FIX/h.bak" "$HARNESS_CFG_PATH"
+
 suite_end "$FAILED"

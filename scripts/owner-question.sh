@@ -47,6 +47,11 @@ ask() { # <ticket> <slug> <question>
     echo "owner-question: not asked — $RELEASE_CRITIC_OFF. Its verdicts and findings are no question for the owner: carry on without them, and do not ask again." >&2
     return 5
   fi
+  # Under merge first, Evidence capture is nobody's question while develop does not require it.
+  if printf '%s %s' "$slug" "$q" | grep -qiE 'evidence|EVIDENCE_DEPLOY_KEY|capture and pin' && release_evidence_waived; then
+    echo "owner-question: not asked — merge first: $(release_evidence_check) is not a check $INTEGRATION_BRANCH requires, so the PR ships on its required checks and a failed capture is a note on the PR ($RELEASE_EVIDENCE_NOTE). Do not ask again." >&2
+    return 5
+  fi
   key="decision:$t:$slug"
   # A key answered once is never written again, so a second question takes a fresh one.
   local seen="$COORD_DIR/notified.did.keys" i=1

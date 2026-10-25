@@ -259,12 +259,27 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   # A CHECK THAT WARNS UNTIL THE RELEASE IS NOT A RED (release.nonBlockingChecks): it
   # sends no healing run and never counts toward heal-all. repair-watch notes it on the PR.
   NB_CHECKS=$(release_nonblocking_json)
-  # argv-bounded: the few check names release.nonBlockingChecks lists.
-  printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson nb "$NB_CHECKS" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
+  # evidence_note <pr> <sha> — once per head: the PR says its shots were not captured and it ships.
+  evidence_note() {
+    local f="$COORD_DIR/evidence-noted.tsv"
+    grep -qxF "$1	$2" "$f" 2>/dev/null && return 0
+    coord_shadow && { say "PR #$1: would note Evidence not captured"; return 0; }
+    swarm_gh pr comment "$1" --repo "$REPO_SLUG" --body "Evidence: not captured ($EV_CHECK failed on $(printf '%s' "$2" | cut -c1-7), a check $INTEGRATION_BRANCH does not require); $RELEASE_EVIDENCE_NOTE. Merge first: this PR ships on its required checks." >/dev/null 2>&1 \
+      && printf '%s\t%s\n' "$1" "$2" >> "$f" && say "PR #$1: Evidence not captured — noted on the PR, it ships on its required checks"
+  }
+  # MERGE FIRST: ONLY WHAT THE LIVE RULES REQUIRE IS A RED. A red on a check develop does
+  # not require (the Evidence capture, #14601) is a warning: no judge, no owner question.
+  REQ_LIVE=null
+  if release_merge_first; then REQ_LIVE=$(pr_red_required 2>/dev/null) || REQ_LIVE=null; fi
+  jq -e 'type == "array"' >/dev/null 2>&1 <<<"$REQ_LIVE" || REQ_LIVE=null
+  EV_CHECK=$(release_evidence_check)
+  # argv-bounded: the few check names release.nonBlockingChecks lists, and the live required set.
+  printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson nb "$NB_CHECKS" --argjson req "$REQ_LIVE" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
+    def needed: if $req == null then true else ((.name // .context // "") | ascii_downcase) as $n | ($req | index([$n])) != null end;
     .[] | select(.isDraft | not) | select((.headRefName | branch_ticket($pre)) != "")
     | ((.statusCheckRollup // []) | newest_runs | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))) as $all
-    | ($all | map(select(release_nb($nb) | not))) as $c
-    | ($all | map(select(release_nb($nb)) | select(release_red) | (.name // .context // "?")) | unique | join(", ")) as $warn
+    | ($all | map(select(release_nb($nb) | not) | select(needed))) as $c
+    | ($all | map(select(release_nb($nb) or (needed | not)) | select(release_red) | (.name // .context // "?")) | unique | join(", ")) as $warn
     # Settled = no CHECK RUN still running. A pending commit status is a wait on something
     # outside CI (such as a design-critic verdict), so it never holds a real red back.
     | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $pending
@@ -284,7 +299,8 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
           elif base_wait_holds "$t" "$sha"; then say "PR #$pr: $why — #$t waits for $INTEGRATION_BRANCH's fix on this head (base-waits.tsv), not healed"
           elif swarm_heal_parked_out "$t" "$sha"; then say "PR #$pr: $why — #$t parked past its cap on this head, so it waits for a person (a new head heals it again)"
           else event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true; fi ;;
-        warn) say "PR #$pr: red only on $why — a warning until the release (release.nonBlockingChecks), not a red" ;;
+        warn) say "PR #$pr: red only on $why — a warning until the release (release.nonBlockingChecks, or a check $INTEGRATION_BRANCH does not require), not a red"
+              case ", $why, " in *", $EV_CHECK, "*) evidence_note "$pr" "$sha" ;; esac ;;
       esac
     done
   # Sign-offs reach the owner in batches, the moment a batch fills: one entry per

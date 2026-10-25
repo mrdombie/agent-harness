@@ -1100,6 +1100,27 @@ cp "$FIX/cfg.release.bak" "$HARNESS_CFG_PATH"
 fresh; release_prs
 tick >/dev/null
 want "with no release key it is red, as before" "1" "$(grep -c '"id":"red-pr:61:sha61a' "$C/events.would.jsonl")"
+
+echo "--- merge first: a red only on the Evidence capture develop does not require is a note, never judged ---"
+evid() { jq '.statusCheckRollup += [{__typename:"CheckRun", name:"Capture and pin the evidence", status:"COMPLETED", conclusion:"FAILURE"}]'; }
+ev_prs() { jq -s . <(pr 71 631 - SUCCESS | evid) <(pr 72 632 - FAILURE | evid) > "$FIX/gh/prs-all.json"; }
+ev_case() { # <kit> — R: whether #71 (Evidence alone) and #72 (a required red too) were judged, and #71's note
+  fresh; ev_prs; fix_required "ci"; : > "$GH_LOG"
+  out=$(COORDINATOR_SHADOW=0 bash "$1/scripts/coordinator-tick.sh" 2>&1)
+  R="71=$(grep -c '"id":"red-pr:71:' "$C/events."*.jsonl 2>/dev/null | awk -F: '{ s += $NF } END { print s + 0 }') 72=$(grep -c '"id":"red-pr:72:' "$C/events."*.jsonl 2>/dev/null | awk -F: '{ s += $NF } END { print s + 0 }') note=$(grep -c 'pr comment 71 .*Evidence: not captured' "$GH_LOG")"
+}
+jq '.release = {mergeFirst: true, done: false, nonBlockingChecks: []}' "$FIX/cfg.release.bak" > "$HARNESS_CFG_PATH"
+ev_case "$HERE/.."
+want "Evidence alone: not judged, noted once; a required red still judged" "71=0 72=1 note=1" "$R"
+want_in "the note says it ships on its required checks" 'Evidence: not captured \(Capture and pin the evidence failed on sha71ab, a check develop does not require\); shots follow when the workflow recovers' "$(cat "$GH_LOG")"
+COORDINATOR_SHADOW=0 bash "$T" >/dev/null 2>&1; want "a second tick on the same head notes nothing more" "1" "$(grep -c 'pr comment 71 .*Evidence: not captured' "$GH_LOG")"
+EVKIT="$FIX/evkit"; rm -rf "$EVKIT"; mkdir -p "$EVKIT"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$HERE/../shared" "$EVKIT/" 2>/dev/null
+python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = " | select(needed))) as $c"; n = s.count(o); open(p, "w").write(s.replace(o, ")) as $c")); sys.exit(0 if n == 1 else 1)' "$EVKIT/scripts/coordinator-tick.sh" \
+  && { ev_case "$EVKIT"; want "planted (every check a red): the Evidence-only PR is judged again" "71=1 72=1 note=0" "$R"; } || bad "plant: the required-only filter did not land"
+jq '.release = {mergeFirst: false, done: false, nonBlockingChecks: []}' "$FIX/cfg.release.bak" > "$HARNESS_CFG_PATH"
+ev_case "$HERE/.."
+want "merge first off: the Evidence red is judged, as before" "71=1 72=1 note=0" "$R"
+cp "$FIX/cfg.release.bak" "$HARNESS_CFG_PATH"
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
 printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
