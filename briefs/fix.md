@@ -113,6 +113,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `deferred[].reason` (required): string
 - `deferred[].followUp` (required): string
 - `question`: string
+- `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"
 - `notes`: string
 - `replacedTests`: list of object
@@ -170,8 +171,8 @@ A finding you are not clearing goes in `deferred` with its reason and where it
 went. A deferral with no follow-up is a finding dropped — and a Critical or a
 Major is not deferrable: the ship step refuses while one is open.
 
-A question names who answers it in `questionFor`: `owner` for pixels, a picture,
-a product or commercial call, or the data model; `pm` for the ticket's shape —
-repo, split, order, acceptance wording. Unsure is `owner`.
+A question names who answers it in `questionFor` (`owner`: pixels, product, data
+model; `pm`: repo, split, order, acceptance; unsure is `owner`)
+and its kind in `questionKind`. Never ask for UAT data: measure on the local seed.
 
 `skills` lists every skill you invoked; the driver checks it against the run log.

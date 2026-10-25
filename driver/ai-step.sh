@@ -392,7 +392,8 @@ SHIM
   if [ "$jrc" -eq "$DRIVER_E_QUESTION" ]; then
     local sq sreask="$d/steps/$slot.standard.prompt" ssid
     sq=$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)
-    if driver_standard_answer "$t" "$step" "$sq" && [ "$SA_ACTION" = carry ]; then
+    local sk; sk=$(jq -r '.questionKind // "" | strings' "$ans" 2>/dev/null)
+    if driver_standard_answer "$t" "$step" "$sq" "$sk" && { [ "$SA_ACTION" = carry ] || _driver_sa_commit "$t" "$step"; }; then
       driver_standard_answer_note "$t" "$step" "$sq"
       ssid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
       if [ -n "$ssid" ]; then : > "$sreask"; else cp "$prompt" "$sreask"; fi
@@ -406,6 +407,23 @@ SHIM
     fi
   fi
   return "$jrc"
+}
+
+# _driver_sa_commit <ticket> <step> — standard answer (j): a change the step left uncommitted is
+# committed by the driver, and the step is asked once more from it. 0 when it committed; 1 (the
+# question stands) when it is not that answer, there is nothing to commit, or the commit failed.
+_driver_sa_commit() {
+  local t="$1" step="$2" wt sha
+  [ "$SA_ACTION" = commit-carry ] || return 1
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  [ -n "$(git -C "$wt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ] || { driver_say "   standard answer: (j) reads as an uncommitted change, and $wt has none — it asks"; return 1; }
+  git -C "$wt" add -A -- . ':!node_modules' >/dev/null 2>&1 \
+    && git -C "$wt" commit -q -m "fix(#$t): the $step step's change, committed by the driver (standard answer (j))" >/dev/null 2>&1 \
+    || { driver_say "   standard answer: (j) the driver could not commit the change in $wt — it asks"; return 1; }
+  sha=$(git -C "$wt" rev-parse --short HEAD 2>/dev/null)
+  driver_say "   standard answer: (j) committed the $step step's change at $sha"
+  SA_ANSWER="$SA_ANSWER It is commit $sha."
+  return 0
 }
 
 # driver_api_error <log> — 0, printing what failed, when the call never answered at the

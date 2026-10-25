@@ -97,6 +97,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `changelog.file`: string
 - `changelog.skipped`: string
 - `question`: string
+- `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"
 - `notes`: string
 - `testOnly`: object
@@ -152,9 +153,9 @@ The driver refuses an answer whose title belongs to a DIFFERENT task in the plan
 `surfaces` lists every other place that shows the state you changed, and what you
 changed there.
 
-A question names who answers it in `questionFor`: `owner` for pixels, a picture,
-a product or commercial call, or the data model; `pm` for the ticket's shape —
-repo, split, order, acceptance wording. Unsure is `owner`.
+A question names who answers it in `questionFor` (`owner`: pixels, product, data
+model; `pm`: repo, split, order, acceptance; unsure is `owner`)
+and its kind in `questionKind`. Never ask for UAT data: measure on the local seed.
 
 `skills` lists every skill you invoked; one claimed here and absent from the run
 log fails the step.

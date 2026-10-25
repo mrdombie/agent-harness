@@ -114,6 +114,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `fixes[].implCommit`: string
 - `fixes[].noTestBecause`: string
 - `question`: string
+- `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `notes`: string
 - `replacedTests`: list of object
 - `replacedTests[].file` (required): string
@@ -140,9 +141,8 @@ Conditional:
 - `status: "unchanged"` carries the `reason` in a line, and only when the brief
   is already met: nothing red, nothing clashing, and nothing committed. The
   driver puts it to a person as a question rather than shipping on it.
-- `status: "park"` carries the `question` a person can answer in a line — for
-  example, a failure that is the trunk's, a check you could not reproduce, or a
-  conflict whose two sides cannot both be kept.
+- `status: "park"` carries the `question` a person can answer in a line, and
+  its `questionKind`. Never ask for UAT data: measure on the local seed.
 
 `skills` lists every skill you invoked; one claimed here and absent from the run
 log fails the step.

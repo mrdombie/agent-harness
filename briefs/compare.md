@@ -57,6 +57,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `differences[].fixed` (required): boolean
 - `differences[].reason`: string
 - `question`: string
+- `questionKind`: one of "base-red", "uncommitted-fix", "already-fixed", "uat-data", "other"
 - `questionFor`: one of "owner", "pm"
 - `notes`: string
 
@@ -69,9 +70,9 @@ Every difference is either `fixed: true`, or carries the `reason` it stands. A
 difference with neither is refused — that gap is the drift this step exists to
 catch.
 
-A question names who answers it in `questionFor`: `owner` for pixels, a picture,
-a product or commercial call, or the data model; `pm` for the ticket's shape —
-repo, split, order, acceptance wording. Unsure is `owner`.
+A question names who answers it in `questionFor` (`owner`: pixels, product, data
+model; `pm`: repo, split, order, acceptance; unsure is `owner`)
+and its kind in `questionKind`. Never ask for UAT data: measure on the local seed.
 
 `skills` lists every skill you invoked. The driver reads the run log too, so a
 skill claimed here and absent there fails the step.

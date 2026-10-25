@@ -101,6 +101,16 @@
       "type": "string",
       "minLength": 1
     },
+    "questionKind": {
+      "description": "What kind of question it is. `base-red`: a red that fails the same way at the merge base. `uncommitted-fix`: the change passes but is not committed. `already-fixed`: the ask already holds on the integration branch. `uat-data`: it wants UAT or production data. `other`: anything else. Never ask for UAT or production data: measure on the local seed or the fixtures, and say so in the pull request.",
+      "enum": [
+        "base-red",
+        "uncommitted-fix",
+        "already-fixed",
+        "uat-data",
+        "other"
+      ]
+    },
     "questionFor": {
       "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape \u2014 which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
       "enum": [

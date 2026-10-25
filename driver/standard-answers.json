@@ -1,5 +1,5 @@
 {
-  "_": "Standard merge-first answers (driver/standard-answer.sh). Read only while release.mergeFirst is on; release.standardAnswers in harness.json replaces this file, false turns it off. Patterns are jq regexes, case-insensitive, over the step's question and its park reason. park is read first and always wins; then the classes in order, first match taken.",
+  "_": "Standard merge-first answers (driver/standard-answer.sh). Read only while release.mergeFirst is on; release.standardAnswers in harness.json replaces this file, false turns it off. Patterns are jq regexes, case-insensitive, over the step's question and its park reason. park is read first and always wins; then the classes in order, first match taken. A class with `kind` is taken first when the step's answer names that questionKind; a class with `beforePark` is read before the park list.",
   "park": [
     "\\bcritical\\b",
     "data[- ]?model",
@@ -20,6 +20,8 @@
     "user-facing (copy|words|text|wording)"
   ],
   "order": [
+    "i",
+    "j",
     "g",
     "a",
     "b",
@@ -108,8 +110,12 @@
       "action": "carry",
       "any": [
         "\\b(fail|fails|failing)\\b[^.?;]{0,60}\\bat (the )?merge[- ]base\\b",
-        "\\b(develop|base)[- ]red ticket owns\\b"
-      ]
+        "\\b(develop|base)[- ]red ticket owns\\b",
+        "\\b(red|fails?|failing)\\b[^?;]{0,80}\\bat (the |develop['’]?s |the base['’]?s )?merge[- ]base\\b",
+        "\\b(to|under|with) the (develop|base)[- ]red ticket\\b"
+      ],
+      "kind": "base-red",
+      "beforePark": true
     },
     "h": {
       "name": "already done on develop: close it",
@@ -121,6 +127,30 @@
         "\\bclose\\b[^?]*\\b(already|nothing (left )?to build)\\b",
         "\\bclosed? (it |#?[0-9]+ )?as (a |the )?duplicate\\b",
         "\\bnothing (left )?to (change|build|do)\\b[^?]*\\bclose"
+      ],
+      "kind": "already-fixed"
+    },
+    "i": {
+      "name": "UAT or production data: never read it",
+      "answer": "No. A builder never reads UAT or production data: no Railway database, no SELECT, read-only or not. Measure on the local seed or the test fixtures instead, and say in the pull request that the number comes from there.",
+      "action": "carry",
+      "kind": "uat-data",
+      "beforePark": true,
+      "any": [
+        "\\b(uat|production|prod|railway)\\b[^?]{0,80}\\b(database|db|postgres|data|select|query|rows?)\\b",
+        "\\b(select|query|read)\\b[^?]{0,80}\\b(uat|railway|production)\\b"
+      ]
+    },
+    "j": {
+      "name": "a passing change not committed: the driver commits it",
+      "answer": "The driver committed the change in the worktree, so it is this step's commit now: carry on from it and answer as if you had committed it.",
+      "action": "commit-carry",
+      "kind": "uncommitted-fix",
+      "beforePark": true,
+      "any": [
+        "\\b(isn['’]?t|is not|not|wasn['’]?t|was not|never been)( yet)? committed\\b",
+        "\\buncommitted\\b",
+        "\\bso (it|i) can commit\\b"
       ]
     }
   },
