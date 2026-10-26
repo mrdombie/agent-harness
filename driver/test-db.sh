@@ -27,6 +27,11 @@
 # the call returns 125 with the command never run. With --soft (an agent step, which
 # can still do its other work) the command runs anyway, with DATABASE_URL unset so it
 # reaches no database it was not given.
+#
+# With --for <test-file> (a proof), a test that needs no database runs without one
+# when none can be made: a unit test fails only on itself, never on the host. A test
+# needs one when its name matches tests.db.match (default `\.db\.test\.`) or it
+# reads DATABASE_URL.
 
 DRIVER_TEST_DB_PREFIX="hp_"
 _DRIVER_TEST_DB_MINE=""
@@ -107,9 +112,33 @@ driver_test_db_drop() {
   _DRIVER_TEST_DB_MINE="${_DRIVER_TEST_DB_MINE// $name /}"
 }
 
+# driver_test_needs_db <tree> <test-file> — 0 when the test needs a database.
+driver_test_needs_db() {
+  local tree="$1" f="$2" pat
+  pat=$(driver_test_db_cfg match); [ -n "$pat" ] || pat='\.db\.test\.'
+  printf '%s' "$f" | grep -qE -- "$pat" && return 0
+  [ -f "$tree/$f" ] && grep -q 'DATABASE_URL' "$tree/$f" && return 0
+  return 1
+}
+
+# driver_test_db_tools_missing — the client tools a configured test database needs and
+# this host lacks, space-separated; nothing when it has them or none is configured.
+driver_test_db_tools_missing() {
+  driver_test_db_on || return 0
+  local t miss=""
+  for t in createdb dropdb; do command -v "$t" >/dev/null 2>&1 || miss="$miss $t"; done
+  printf '%s' "${miss# }"
+}
+
 driver_with_test_db() {
-  local soft=0
-  [ "${1:-}" = --soft ] && { soft=1; shift; }
+  local soft=0 tfile=""
+  while :; do
+    case "${1:-}" in
+      --soft) soft=1; shift ;;
+      --for)  tfile="${2:-}"; shift 2 ;;
+      *) break ;;
+    esac
+  done
   local whyf="$1" tree="$2"; shift 2
   driver_test_db_on || { "$@"; return $?; }
   (
@@ -117,6 +146,10 @@ driver_with_test_db() {
     trap 'driver_test_db_drop "$name" >/dev/null 2>&1' EXIT
     trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     if ! driver_test_db_create "$name" "$tree"; then
+      if [ -n "$tfile" ] && ! driver_test_needs_db "$tree" "$tfile"; then
+        unset DATABASE_URL
+        "$@"; exit $?
+      fi
       printf '%s\n' "$DRIVER_TEST_DB_WHY" > "$whyf"
       [ "$soft" -eq 1 ] || exit 125
       unset DATABASE_URL

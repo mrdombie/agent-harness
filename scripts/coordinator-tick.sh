@@ -175,8 +175,15 @@ for ended in "$RUNS_DIR"/*.ended; do
     # Every red is in tests outside the PR that fail on the base too: base-waits.tsv holds it.
     say "base wait: run $rid left #${ticket:-?} waiting for $INTEGRATION_BRANCH's fix — queued again when that check goes green or in $BASE_WAIT_HOURS h"
   elif [ "$code" = "${DRIVER_E_MACHINE:-33}" ]; then
-    # A model call failed at the API twice: parked as the machine's, left ready, picked again.
-    say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again"
+    # The machine's, never the ticket's: an API error twice, or a host missing a tool. Left ready.
+    case "$last" in
+      *"machine fault: this host has no"*)
+        if event "host-tools:$(swarm_day)" host-tools false "" "" "${last#*machine fault: }"; then
+          bash "$NOTIFY" --class owner "host-tools:$(swarm_day)" "A build host is missing tools the builds need: ${last#*machine fault: }"
+        fi
+        say "machine: run $rid did not start #${ticket:-?} — ${last#*machine fault: }" ;;
+      *) say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again" ;;
+    esac
   elif [ "$code" = 26 ]; then
     # The driver's DRIVER_E_UNREAD: GitHub could not be read, nothing parked, the ticket is picked again.
     say "unread: run $rid left #${ticket:-?} as it was — GitHub could not be read; the next tick tries again"
