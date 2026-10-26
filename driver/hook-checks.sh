@@ -12,11 +12,12 @@
 #       hook red and the driver read whose it is; sets HOOK_BR_VERDICT base|own,
 #       HOOK_BR_CHECKS and HOOK_BR_FILES (comma-joined) and HOOK_BR_WHY. 1: no verdict.
 #
-# A HOOK RED ON FILES THE TRUNK BROUGHT is the trunk's (base): the question names a hook,
-# a check and a file; no file it names is one this ticket changed, committed or not; at
-# least one is on the trunk commit the branch merged; and every check it names, run there
-# alone, is red. One named file of the ticket's own, or one check green there, is its own
-# and blocks. Anything unread (no merge base, a check that could not run) is no verdict.
+# A HOOK RED ON FILES THE TRUNK BROUGHT is the trunk's (base): the question names a hook
+# and a check; every check it names, run alone on the trunk commit the branch merged, is
+# red there; and run in the ticket's tree, its output names no file this ticket changed,
+# committed, staged or new. One check green on the trunk, or an output naming a file of the
+# ticket's, is its own and blocks. Anything unread (no merge base, a check that could not
+# run) is no verdict. The words are never the evidence: a check is run, both places.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 declare -F driver_branch_files >/dev/null || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/format.sh" || exit 1
 declare -F driver_base_check >/dev/null || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/base-red.sh" || exit 1
@@ -85,7 +86,7 @@ _driver_hook_in() {
 }
 
 driver_hook_base_red() {
-  local t="$1" wt="$2" q="$3" scripts known c checks="" files="" f own base sha s7 v red="" onbase=0
+  local t="$1" wt="$2" q="$3" scripts known c checks="" files="" f own base sha s7 v red="" cmd out rc
   HOOK_BR_VERDICT=""; HOOK_BR_CHECKS=""; HOOK_BR_FILES=""; HOOK_BR_WHY=""
   [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$q" ] || return 1
   printf '%s' "$q" | grep -qiE 'pre-?commit|pre-?push|hook|lint-staged|husky' || return 1
@@ -101,25 +102,34 @@ driver_hook_base_red() {
   s7=$(printf '%s' "$sha" | cut -c1-7)
   own=$(_driver_hook_own_files "$wt")
   base=$(git -C "$wt" ls-tree -r --name-only "$sha" 2>/dev/null)
+  # The files the words name, for the record only: whose red it is comes from the run below.
   for f in $(printf '%s' "$q" | grep -oE '[A-Za-z0-9_@+./-]*[A-Za-z0-9_@+-]\.[A-Za-z0-9]{1,8}' | sed 's#^\./##' | awk '!seen[$0]++'); do
-    if _driver_hook_in "$own" "$f"; then
-      HOOK_BR_VERDICT=own; HOOK_BR_CHECKS="$checks"; HOOK_BR_FILES="$f"
-      HOOK_BR_WHY="$f is a file this ticket changed"; return 0
-    fi
-    _driver_hook_in "$base" "$f" || continue
-    onbase=1; files="$files${files:+,}$f"
+    _driver_hook_in "$own" "$f" || ! _driver_hook_in "$base" "$f" || files="$files${files:+,}$f"
   done
-  [ "$onbase" = 1 ] || return 1
   for c in ${checks//,/ }; do
     v=$(driver_base_check "$wt" "$sha" "$c")
     case "$v" in
-      red) red="$red${red:+,}$c" ;;
+      red) : ;;
       green) HOOK_BR_VERDICT=own; HOOK_BR_CHECKS="$checks"; HOOK_BR_FILES="$files"
              HOOK_BR_WHY="$c is green on $INTEGRATION_BRANCH@$s7, so this ticket's own"; return 0 ;;
       *) HOOK_BR_WHY="$c could not be run on $INTEGRATION_BRANCH@$s7"; return 1 ;;
     esac
+    # Red on the trunk too, and run here: a red line naming a file of this ticket's is its own.
+    cmd=$(_driver_base_check_cmd "$wt" "$c") || { HOOK_BR_WHY="$c could not be run here"; return 1; }
+    out="$(dirname "$BASE_CHECKS")/hook-check-$t-$$.out"; mkdir -p "$(dirname "$out")" 2>/dev/null; rc=0
+    ( cd "$wt" && driver_run_project "${DRIVER_CMD_TIMEOUT:-900}" "$cmd" ) > "$out" 2>&1 || rc=$?
+    case "$rc" in 124|126|127) rm -f "$out"; HOOK_BR_WHY="$c could not be run here (exit $rc)"; return 1 ;; esac
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if grep -qF -- "$f" "$out" 2>/dev/null; then
+        rm -f "$out"; HOOK_BR_VERDICT=own; HOOK_BR_CHECKS="$checks"; HOOK_BR_FILES="$f"
+        HOOK_BR_WHY="$c names $f, a file this ticket changed"; return 0
+      fi
+    done <<<"$own"
+    rm -f "$out"
+    red="$red${red:+,}$c"
   done
   HOOK_BR_VERDICT=base; HOOK_BR_CHECKS="$red"; HOOK_BR_FILES="$files"; DRIVER_BASE_RED_SHA="$sha"
-  HOOK_BR_WHY="${red//,/, } red on $INTEGRATION_BRANCH@$s7 itself, on ${files//,/, }, none of them this ticket's"
+  HOOK_BR_WHY="${red//,/, } red on $INTEGRATION_BRANCH@$s7 itself${files:+, on ${files//,/, }}, and on no file of this ticket's"
   return 0
 }

@@ -5,10 +5,11 @@
 # sweep runs every check the hooks run on the trunk head and notes the red for ONE
 # develop-red ticket before any builder meets it; a suite's red is named by the checks its
 # "N of M failed" line names. A step that asks about that hook red is read, not taken at
-# its word: on files the trunk brought, red there too, it takes standard answer (g) and is
-# never put to a person; on a file of the ticket's own, or a check green on the trunk, it
-# parks, whatever kind the step gave. With the classifying line deleted, the base-red case
-# parks again (planted below).
+# its word: red on the trunk too, and naming no file of the ticket's when run in its tree,
+# it takes standard answer (g) and is never put to a person; naming a file of the
+# ticket's, or green on the trunk, it parks, whatever kind the step gave or files the words
+# name. Planted below: the classifying line deleted, the base-red case parks again; the
+# own-file read deleted, the ticket's own red passes as the trunk's.
 # Run: bash "$0"   ·   SUT_KIT=<another kit checkout> bash "$0" runs the cases against it.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -84,6 +85,7 @@ reset() { : > "$PENDING"; rm -f "$STATE/swarm/base-checks.tsv" "$STATE/swarm/dev
 # What builders asked, in their words: the hook named, the check named, the file named.
 QBASE="The pre-commit hook (lint-staged) refused the commit: check:drift says ✗ ui/Leads.tsx has no catalog entry. This ticket never touched ui/Leads.tsx. Commit with --no-verify, or wait?"
 QOWN="The pre-commit hook (lint-staged) refused the commit: check:drift says ✗ ui/Own.tsx has no catalog entry. Commit with --no-verify, or wait?"
+QBOTH="I staged ui/Card.tsx and its catalog line; the pre-commit hook's check:drift refused the commit on ui/Leads.tsx, which this ticket never touched. Wait, or --no-verify?"
 
 echo "--- the hooks' checks are read from the project, or from gates.hookChecks ---"
 got=$(bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT; . "$1/driver/driver-env.sh" && . "$1/driver/hook-checks.sh" && driver_hook_checks "$2" "$3"' _ "$KIT" "$REPO" develop 2>/dev/null | sort | paste -sd, -)
@@ -128,6 +130,7 @@ ticket 801 Card.tsx Card
 want "the hook's red on ui/Leads.tsx, red on the trunk too: (g)"   "g carry" "$(cls 801 "$QBASE" other)"
 want "noted for the develop-red ticket"     "$SHA	check:drift	801" "$(cut -f1-3 "$PENDING" 2>/dev/null)"
 want "and with no kind given, the same"     "g carry" "$(cls 801 "$QBASE")"
+want "naming the ticket's own staged file beside it, the same" "g carry" "$(cls 801 "$QBOTH" other)"
 
 echo "--- a hook red on the ticket's own file still blocks, even while the trunk is red too ---"
 reset; trunk -
@@ -135,6 +138,8 @@ ticket 802 Own.tsx -
 want "ui/Own.tsx is this ticket's: it parks"            "park" "$(cls 802 "$QOWN" other)"
 want "even when the step calls it base-red"             "park" "$(cls 802 "$QOWN" base-red)"
 want "nothing noted for the develop-red ticket"         "0" "$(awk 'NF' "$PENDING" | wc -l | tr -d ' ')"
+want "and when the words name only the trunk's file, the run still finds the ticket's" \
+     "park" "$(cls 802 "$QBASE" base-red)"
 
 echo "--- a check green on the trunk is the ticket's, whatever file it names ---"
 reset; trunk Leads
@@ -150,6 +155,13 @@ if [ -z "${SUT_KIT:-}" ]; then
   reset; trunk -
   want "planted (no hook verdict): the base-red question parks" "park" "$(cls 801 "$QBASE" other "$PL")"
   want "planted (no hook verdict): the own file asked as base-red is taken as (g)" "g carry" "$(cls 802 "$QOWN" base-red "$PL")"
+  # The other half: the run in the ticket's tree no longer reads the ticket's files.
+  cp "$ROOT/driver/standard-answer.sh" "$PL/driver/standard-answer.sh"
+  before=$(grep -c 'if grep -qF -- "\$f" "\$out"' "$PL/driver/hook-checks.sh")
+  sed -i.bak 's/if grep -qF -- "\$f" "\$out"/if false/' "$PL/driver/hook-checks.sh"
+  want "the second plant removed the own-file read" "1 0" "$before $(grep -c 'if grep -qF -- "\$f" "\$out"' "$PL/driver/hook-checks.sh")"
+  reset; trunk -
+  want "planted (no own-file read): the ticket's own red is taken as the trunk's" "g carry" "$(cls 802 "$QBASE" other "$PL")"
 fi
 
 suite_end "$FAILED"
