@@ -29,7 +29,7 @@ for n in reconcile sweep wtsweep judge lane; do cp "$BIN/noop" "$BIN/$n"; done
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep" COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep"
 export COORDINATOR_JUDGE="$BIN/judge" COORDINATOR_LANE="$BIN/lane" COORDINATOR_NOTIFY_CMD="$BIN/noop"
 # The unblocker's reads are its own (unblock-waiting.test.sh): this counts the tick's.
-export COORDINATOR_UNBLOCK="$BIN/noop" COORDINATOR_MACHINE_PARKS="$BIN/noop"
+export COORDINATOR_UNBLOCK="$BIN/noop" COORDINATOR_MACHINE_PARKS="$BIN/noop" COORDINATOR_RELEASE_BATCH="$BIN/noop"
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
 export COORDINATOR_FIX_LOCK="$BIN/fixlock"

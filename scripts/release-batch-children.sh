@@ -12,8 +12,8 @@
 # told why, and queued first at its priority. close-merged.sh releases on a partial
 # merge only; this catches every other route, every pass.
 #
-# Seen 2026-10-26: 82 of 186 batched Maktura tickets belonged to batches already
-# closed (Voices #13468, One Desk #13141, Pulse #13139), 48 of them P0/P1.
+# Seen 2026-10-26: 82 of 186 batched tickets in the origin project belonged to batches
+# already closed, 48 of them P0/P1.
 #
 # --check lists the stranded children and exits 1 when there is one: the guard.
 # Exit: 0 done · 1 a read failed (nothing is released then) or --check found one.
