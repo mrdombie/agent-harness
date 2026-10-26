@@ -8,8 +8,12 @@
 # its word: red on the trunk too, and naming no file of the ticket's when run in its tree,
 # it takes standard answer (g) and is never put to a person; naming a file of the
 # ticket's, or green on the trunk, it parks, whatever kind the step gave or files the words
-# name. Planted below: the classifying line deleted, the base-red case parks again; the
-# own-file read deleted, the ticket's own red passes as the trunk's.
+# name. A change the hook refused on that proven red is committed by the driver past that
+# check only (the owner, 26 Oct): every other hook check still runs and can still refuse
+# it; the ticket's own red is still refused; a proof from an earlier tree or parent covers
+# nothing (in the driver, and in the project's copy of templates/hook-skip.sh). Planted
+# below: the classifying line, the own-file read, the driver's commit, its stale-proof
+# check and the wrapper's tree check, each deleted, and the case it guards goes wrong.
 # Run: bash "$0"   ·   SUT_KIT=<another kit checkout> bash "$0" runs the cases against it.
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -51,6 +55,13 @@ rc=0; for f in ui/*.tsx; do [ -e "$f" ] || continue; n=$(basename "$f" .tsx)
 SH
 printf '[ -f roles-red ] && { echo "✗ roles"; exit 1; }; exit 0\n' > "$REPO/scripts/roles.sh"
 printf 'sh scripts/roles.sh >/dev/null 2>&1 || { echo "✗ push — 1 of 2 failed: check:roles"; exit 1; }; exit 0\n' > "$REPO/scripts/push.sh"
+# The project's copy of the kit's wrapper, and a second commit-hook check that always runs:
+# it logs each run and refuses a staged file carrying BADSTYLE.
+cp "$KIT/templates/hook-skip.sh" "$REPO/scripts/hook-skip.sh" 2>/dev/null
+cat > "$REPO/scripts/style.sh" <<'SH'
+echo ran >> "$(git rev-parse --path-format=absolute --git-common-dir)/style.log"
+for f in $(git diff --cached --name-only); do grep -q BADSTYLE "$f" 2>/dev/null && { echo "✗ style: $f"; exit 1; }; done; exit 0
+SH
 printf 'export const Leads = 1\n' > "$REPO/ui/Leads.tsx"; : > "$REPO/catalog.txt"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "chore: the project"
 git init -q --bare "$FIX/origin"; git -C "$REPO" remote add origin "$FIX/origin"; git -C "$REPO" push -q origin develop
@@ -127,10 +138,10 @@ want "and is swept green"                   "green" "$(awk -F'\t' -v s="$SHA" '$
 echo "--- a hook red on a file the trunk brought: base-red, standard answer (g), never a question ---"
 reset; trunk -
 ticket 801 Card.tsx Card
-want "the hook's red on ui/Leads.tsx, red on the trunk too: (g)"   "g carry" "$(cls 801 "$QBASE" other)"
+want "the hook's red on ui/Leads.tsx, red on the trunk too: (g)"   "g commit-carry" "$(cls 801 "$QBASE" other)"
 want "noted for the develop-red ticket"     "$SHA	check:drift	801" "$(cut -f1-3 "$PENDING" 2>/dev/null)"
-want "and with no kind given, the same"     "g carry" "$(cls 801 "$QBASE")"
-want "naming the ticket's own staged file beside it, the same" "g carry" "$(cls 801 "$QBOTH" other)"
+want "and with no kind given, the same"     "g commit-carry" "$(cls 801 "$QBASE")"
+want "naming the ticket's own staged file beside it, the same" "g commit-carry" "$(cls 801 "$QBOTH" other)"
 
 echo "--- a hook red on the ticket's own file still blocks, even while the trunk is red too ---"
 reset; trunk -
@@ -145,6 +156,55 @@ echo "--- a check green on the trunk is the ticket's, whatever file it names ---
 reset; trunk Leads
 ticket 803 Card.tsx Card
 want "check:drift is green on the trunk: it parks"      "park" "$(cls 803 "$QBASE" base-red)"
+
+echo "--- the commit hook: past a proven base-red check only, every other check run, never on another tree ---"
+HOOKF="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-commit"
+STYLE_LOG="$(dirname "$HOOKF")/../style.log"
+hook_with() { # <wrapper path> — the project's commit hook: drift through the wrapper, then style
+  printf '#!/bin/sh\nsh %s check:drift sh scripts/drift.sh || exit 1\nsh scripts/style.sh || exit 1\n' "$1" > "$HOOKF"; chmod +x "$HOOKF"
+}
+# commit_as <ticket> <question> [kit] [between] — the standard answer, then the driver's commit
+# from it; <between> runs in the tree after the proof and before the commit. Prints
+# "<class> <action> rc=<commit rc>".
+commit_as() {
+  bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT
+    . "$1/driver/driver-env.sh" && . "$1/driver/ai-step.sh" || exit 9
+    driver_standard_answer "$2" build "$3" other >/dev/null 2>&1 || { printf park; exit 0; }
+    [ -z "$4" ] || ( cd "$(driver_state_get "$2" worktree)" && eval "$4" )
+    rc=0; _driver_sa_commit "$2" build >/dev/null 2>&1 || rc=$?
+    printf "%s %s rc=%s" "$SA_CLASS" "$SA_ACTION" "$rc"' _ "${3:-$KIT}" "$1" "$2" "${4:-}" 2>/dev/null
+}
+heads() { git -C "$FIX/t$1" rev-parse HEAD; }
+reset; trunk -; hook_with scripts/hook-skip.sh; : > "$STYLE_LOG"
+want "the hook refuses a plain commit on the trunk's red" "1" "$( (cd "$REPO" && git commit -q --allow-empty -m probe >/dev/null 2>&1); echo $? )"
+ticket 811 Card.tsx Card; h0=$(heads 811)
+want "a proven base-red: the driver commits past it"  "g commit-carry rc=0" "$(commit_as 811 "$QBASE")"
+want "the commit landed"                              "moved" "$([ "$(heads 811)" != "$h0" ] && echo moved || echo same)"
+want_in "saying what it went past"                    "past base-red check:drift" "$(git -C "$FIX/t811" log -1 --format=%s)"
+want "and the other hook check still ran"             "1" "$(grep -c ran "$STYLE_LOG" 2>/dev/null)"
+want "nothing left uncommitted"                       "" "$(git -C "$FIX/t811" status --porcelain -- . ':!node_modules')"
+ticket 812 Card.tsx Card; printf 'BADSTYLE\n' > "$FIX/t812/notes.txt"; git -C "$FIX/t812" add notes.txt; h0=$(heads 812)
+want "the other check red: still refused"             "g commit-carry rc=1" "$(commit_as 812 "$QBASE")"
+want "nothing committed"                              "same" "$([ "$(heads 812)" != "$h0" ] && echo moved || echo same)"
+ticket 813 Own.tsx -; h0=$(heads 813)
+want "the ticket's own red: no answer, no commit"     "park" "$(commit_as 813 "$QOWN")"
+want "and its own commit is still refused"            "1 same" "$( (cd "$FIX/t813" && git commit -q -m own >/dev/null 2>&1); echo "$? $([ "$(heads 813)" != "$h0" ] && echo moved || echo same)" )"
+ticket 814 Card.tsx Card; h0=$(heads 814)
+want "a proof from an earlier tree: refused"          "g commit-carry rc=1" "$(commit_as 814 "$QBASE" "" 'printf "later\n" > later.txt')"
+want "nothing committed on the stale proof"           "same" "$([ "$(heads 814)" != "$h0" ] && echo moved || echo same)"
+# The hook's own half: the skip names a tree, a parent and checks, and holds for nothing else.
+ticket 815 Card.tsx Card; T815=$(git -C "$FIX/t815" write-tree); H815=$(heads 815)
+skip_commit() { # <checks> <tree> <head> — a commit of 815's tree under that skip; its exit
+  (cd "$FIX/t815" && HARNESS_HOOK_SKIP_CHECKS="$1" HARNESS_HOOK_SKIP_TREE="$2" HARNESS_HOOK_SKIP_HEAD="$3" git commit -q -m skip >/dev/null 2>&1); echo $?
+}
+printf 'later\n' > "$FIX/t815/later.txt"; git -C "$FIX/t815" add later.txt
+want "the hook: a skip for an earlier tree is refused" "1" "$(skip_commit check:drift "$T815" "$H815")"
+T815=$(git -C "$FIX/t815" write-tree)
+want "the hook: a skip naming another check is refused" "1" "$(skip_commit check:other "$T815" "$H815")"
+want "the hook: a skip on another parent is refused"  "1" "$(skip_commit check:drift "$T815" "$(git -C "$REPO" rev-parse develop~1)")"
+want "the hook: the exact tree, parent and check go through" "0" "$(skip_commit check:drift "$T815" "$H815")"
+want "the hook: the next commit carries no skip"      "1" "$(printf 'x\n' > "$FIX/t815/next.txt"; git -C "$FIX/t815" add next.txt; skip_commit check:drift "$T815" "$H815")"
+rm -f "$HOOKF"
 
 echo "--- planted: the classifying line deleted, the base-red case parks again ---"
 if [ -z "${SUT_KIT:-}" ]; then
@@ -161,7 +221,37 @@ if [ -z "${SUT_KIT:-}" ]; then
   sed -i.bak 's/if grep -qF -- "\$f" "\$out"/if false/' "$PL/driver/hook-checks.sh"
   want "the second plant removed the own-file read" "1 0" "$before $(grep -c 'if grep -qF -- "\$f" "\$out"' "$PL/driver/hook-checks.sh")"
   reset; trunk -
-  want "planted (no own-file read): the ticket's own red is taken as the trunk's" "g carry" "$(cls 802 "$QBASE" other "$PL")"
+  want "planted (no own-file read): the ticket's own red is taken as the trunk's" "g commit-carry" "$(cls 802 "$QBASE" other "$PL")"
+  cp "$ROOT/driver/hook-checks.sh" "$PL/driver/hook-checks.sh"
+
+  # The commit past a base-red, planted out three ways.
+  reset; trunk -; hook_with scripts/hook-skip.sh
+  before=$(grep -c 'SA_ACTION=commit-carry; SA_HOOK_SKIP=' "$PL/driver/standard-answer.sh")
+  sed -i.bak '/SA_ACTION=commit-carry; SA_HOOK_SKIP=/d' "$PL/driver/standard-answer.sh"
+  want "the third plant removed the driver's commit" "1 0" "$before $(grep -c 'SA_ACTION=commit-carry; SA_HOOK_SKIP=' "$PL/driver/standard-answer.sh")"
+  ticket 821 Card.tsx Card; h0=$(heads 821)
+  commit_as 821 "$QBASE" "$PL" >/dev/null
+  want "planted (no driver commit): the proven base-red change stays uncommitted" "same" "$([ "$(heads 821)" != "$h0" ] && echo moved || echo same)"
+  cp "$ROOT/driver/standard-answer.sh" "$PL/driver/standard-answer.sh"
+
+  before=$(grep -c '\[ "\$tree" != "\$ptree" \] || \[ "\$head" != "\$phead" \]' "$PL/driver/hook-checks.sh")
+  sed -i.bak 's/\[ "\$tree" != "\$ptree" \] || \[ "\$head" != "\$phead" \]/false/' "$PL/driver/hook-checks.sh"
+  want "the fourth plant removed the driver's stale-proof check" "1 0" "$before $(grep -c '\[ "\$tree" != "\$ptree" \] || \[ "\$head" != "\$phead" \]' "$PL/driver/hook-checks.sh")"
+  ticket 822 Card.tsx Card; h0=$(heads 822)
+  commit_as 822 "$QBASE" "$PL" 'printf "later\n" > later.txt' >/dev/null
+  want "planted (no stale-proof check): a later tree is committed on an earlier proof" "moved" "$([ "$(heads 822)" != "$h0" ] && echo moved || echo same)"
+  cp "$ROOT/driver/hook-checks.sh" "$PL/driver/hook-checks.sh"
+
+  cp "$ROOT/templates/hook-skip.sh" "$FIX/planted-skip.sh"
+  before=$(grep -c '\[ "\$tree" = "\$HARNESS_HOOK_SKIP_TREE" \] && ' "$FIX/planted-skip.sh")
+  sed -i.bak 's/\[ "\$tree" = "\$HARNESS_HOOK_SKIP_TREE" \] && //' "$FIX/planted-skip.sh"
+  want "the fifth plant removed the hook's tree check" "1 0" "$before $(grep -c '\[ "\$tree" = "\$HARNESS_HOOK_SKIP_TREE" \] && ' "$FIX/planted-skip.sh")"
+  hook_with "$FIX/planted-skip.sh"
+  ticket 823 Card.tsx Card; T823=$(git -C "$FIX/t823" write-tree); H823=$(heads 823)
+  printf 'later\n' > "$FIX/t823/later.txt"; git -C "$FIX/t823" add later.txt
+  want "planted (no tree check in the hook): a skip for an earlier tree goes through" "0" \
+       "$( (cd "$FIX/t823" && HARNESS_HOOK_SKIP_CHECKS=check:drift HARNESS_HOOK_SKIP_TREE="$T823" HARNESS_HOOK_SKIP_HEAD="$H823" git commit -q -m skip >/dev/null 2>&1); echo $? )"
+  rm -f "$HOOKF"
 fi
 
 suite_end "$FAILED"

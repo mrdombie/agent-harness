@@ -417,6 +417,16 @@ _driver_sa_commit() {
   [ "$SA_ACTION" = commit-carry ] || return 1
   wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || return 1
   [ -n "$(git -C "$wt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ] || { driver_say "   standard answer: (j) reads as an uncommitted change, and $wt has none — it asks"; return 1; }
+  # (g) on a commit hook's base-red: committed past those checks only, on the tree they were proved on.
+  if [ -n "${SA_HOOK_SKIP:-}" ]; then
+    driver_hook_commit "$wt" "$SA_HOOK_SKIP" "$HOOK_BR_TREE" "$HOOK_BR_HEAD" \
+      "fix(#$t): the $step step's change, committed by the driver past base-red ${SA_HOOK_SKIP//,/, } (standard answer (g))" \
+      || { driver_say "   standard answer: (g) the driver could not commit past ${SA_HOOK_SKIP//,/, } — $DRIVER_HOOK_COMMIT_WHY — it asks"; return 1; }
+    sha=$(git -C "$wt" rev-parse --short HEAD 2>/dev/null)
+    driver_say "   standard answer: (g) committed the $step step's change at $sha, past base-red ${SA_HOOK_SKIP//,/, } only; every other hook check ran"
+    SA_ANSWER="$SA_ANSWER The driver committed your change at $sha past ${SA_HOOK_SKIP//,/, } only; carry on from it."
+    return 0
+  fi
   git -C "$wt" add -A -- . ':!node_modules' >/dev/null 2>&1 \
     && git -C "$wt" commit -q -m "fix(#$t): the $step step's change, committed by the driver (standard answer (j))" >/dev/null 2>&1 \
     || { driver_say "   standard answer: (j) the driver could not commit the change in $wt — it asks"; return 1; }

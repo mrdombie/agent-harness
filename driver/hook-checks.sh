@@ -10,7 +10,10 @@
 #       <rev>, the project's files are read from that commit instead of the tree.
 #   driver_hook_base_red <ticket> <tree> <question>   0 when a step's question is about a
 #       hook red and the driver read whose it is; sets HOOK_BR_VERDICT base|own,
-#       HOOK_BR_CHECKS and HOOK_BR_FILES (comma-joined) and HOOK_BR_WHY. 1: no verdict.
+#       HOOK_BR_CHECKS and HOOK_BR_FILES (comma-joined) and HOOK_BR_WHY, and for base the
+#       tree and HEAD it was proved on (HOOK_BR_TREE, HOOK_BR_HEAD). 1: no verdict.
+#   driver_hook_commit <tree> <checks> <proof-tree> <proof-head> <message>   the commit past
+#       those checks only, with every other hook check run; never on another tree or HEAD.
 #
 # A HOOK RED ON FILES THE TRUNK BROUGHT is the trunk's (base): the question names a hook
 # and a check; every check it names, run alone on the trunk commit the branch merged, is
@@ -86,8 +89,8 @@ _driver_hook_in() {
 }
 
 driver_hook_base_red() {
-  local t="$1" wt="$2" q="$3" scripts known c checks="" files="" f own base sha s7 v red="" cmd out rc
-  HOOK_BR_VERDICT=""; HOOK_BR_CHECKS=""; HOOK_BR_FILES=""; HOOK_BR_WHY=""
+  local t="$1" wt="$2" q="$3" scripts known c checks="" files="" f own base sha s7 v red="" cmd out rc ptree phead
+  HOOK_BR_VERDICT=""; HOOK_BR_CHECKS=""; HOOK_BR_FILES=""; HOOK_BR_WHY=""; HOOK_BR_TREE=""; HOOK_BR_HEAD=""
   [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$q" ] || return 1
   printf '%s' "$q" | grep -qiE 'pre-?commit|pre-?push|hook|lint-staged|husky' || return 1
   # A check is a hook's own, or a package script with a namespace (check:x): a bare `test`
@@ -101,6 +104,9 @@ driver_hook_base_red() {
   sha=$(driver_base_red_sha "$wt") || return 1
   s7=$(printf '%s' "$sha" | cut -c1-7)
   own=$(_driver_hook_own_files "$wt")
+  # The tree the proof is about: a commit of any other tree is not covered by it.
+  ptree=$(driver_hook_tree "$wt") || return 1
+  phead=$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null) || return 1
   base=$(git -C "$wt" ls-tree -r --name-only "$sha" 2>/dev/null)
   # The files the words name, for the record only: whose red it is comes from the run below.
   for f in $(printf '%s' "$q" | grep -oE '[A-Za-z0-9_@+./-]*[A-Za-z0-9_@+-]\.[A-Za-z0-9]{1,8}' | sed 's#^\./##' | awk '!seen[$0]++'); do
@@ -130,6 +136,40 @@ driver_hook_base_red() {
     red="$red${red:+,}$c"
   done
   HOOK_BR_VERDICT=base; HOOK_BR_CHECKS="$red"; HOOK_BR_FILES="$files"; DRIVER_BASE_RED_SHA="$sha"
+  HOOK_BR_TREE="$ptree"; HOOK_BR_HEAD="$phead"
   HOOK_BR_WHY="${red//,/, } red on $INTEGRATION_BRANCH@$s7 itself${files:+, on ${files//,/, }}, and on no file of this ticket's"
+  return 0
+}
+
+# driver_hook_tree <tree> — the tree id of everything in the working tree, as `git add -A`
+# would stage it, read through a scratch copy of the index so the real one is untouched.
+driver_hook_tree() {
+  local wt="$1" idx tmp id
+  idx=$(git -C "$wt" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/hook-tree.XXXXXX") || return 1
+  { [ ! -f "$idx" ] || cp "$idx" "$tmp"; } \
+    && GIT_INDEX_FILE="$tmp" git -C "$wt" add -A -- . ':!node_modules' >/dev/null 2>&1 \
+    && id=$(GIT_INDEX_FILE="$tmp" git -C "$wt" write-tree 2>/dev/null)
+  rm -f "$tmp"
+  [ -n "${id:-}" ] && printf '%s' "$id"
+}
+
+# driver_hook_commit <tree> <checks> <proof-tree> <proof-head> <message> — commit everything
+# in the tree with the project's hooks running, past <checks> only (templates/hook-skip.sh
+# reads HARNESS_HOOK_SKIP_*). Refused when the tree or HEAD is no longer the one proved:
+# a proof covers the commit it was made for, never the next. 1 sets DRIVER_HOOK_COMMIT_WHY.
+driver_hook_commit() {
+  local wt="$1" checks="$2" ptree="$3" phead="$4" msg="$5" tree head out
+  DRIVER_HOOK_COMMIT_WHY=""
+  [ -n "$checks" ] && [ -n "$ptree" ] && [ -n "$phead" ] || { DRIVER_HOOK_COMMIT_WHY="no proof to commit past"; return 1; }
+  git -C "$wt" add -A -- . ':!node_modules' >/dev/null 2>&1 || { DRIVER_HOOK_COMMIT_WHY="the change could not be staged"; return 1; }
+  tree=$(git -C "$wt" write-tree 2>/dev/null); head=$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null)
+  if [ "$tree" != "$ptree" ] || [ "$head" != "$phead" ]; then
+    DRIVER_HOOK_COMMIT_WHY="the tree changed since ${checks//,/, } was proved red on the trunk, so the proof is stale"; return 1
+  fi
+  if ! out=$(HARNESS_HOOK_SKIP_CHECKS="$checks" HARNESS_HOOK_SKIP_TREE="$tree" HARNESS_HOOK_SKIP_HEAD="$head" \
+               git -C "$wt" commit -q -m "$msg" 2>&1); then
+    DRIVER_HOOK_COMMIT_WHY="the commit hook still refused it: $(printf '%s' "$out" | grep -v '^[[:space:]]*$' | tail -3 | tr '\n' ' ' | cut -c1-300)"; return 1
+  fi
   return 0
 }

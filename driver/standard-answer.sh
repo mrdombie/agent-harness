@@ -5,7 +5,7 @@
 #
 #   driver_standard_answer <ticket> <step> <text> [kind]   0 when a standard answer applies;
 #       sets SA_CLASS (a–j), SA_NAME, SA_ANSWER, SA_ACTION (carry|commit-carry|base-wait|parent-wait|dependency-wait|already-done),
-#       SA_PARENT (b's pull request) and SA_HOW (mechanical|model). 1: it parks as before.
+#       SA_PARENT (b's pull request), SA_HOW (mechanical|model) and SA_HOOK_SKIP (g past a hook). 1: it parks.
 #   driver_standard_answer_note <ticket> <step> <text>   logs "standard answer: <which>"
 #       and writes it on the pull request, or the ticket while there is none.
 #
@@ -103,7 +103,7 @@ _driver_sa_already_done() {
 
 driver_standard_answer() { # <ticket> <step> <text> [kind]
   local t="$1" step="$2" q="$3" kind="${4:-}" s ctx cls how=mechanical d review ans br
-  SA_CLASS=""; SA_NAME=""; SA_ANSWER=""; SA_ACTION=""; SA_PARENT=""; SA_HOW=""
+  SA_CLASS=""; SA_NAME=""; SA_ANSWER=""; SA_ACTION=""; SA_PARENT=""; SA_HOW=""; SA_HOOK_SKIP=""
   driver_merge_first || return 1
   [ -n "$q" ] || return 1
   s=$(_driver_sa_cfg); [ -n "$s" ] || return 1
@@ -157,6 +157,11 @@ driver_standard_answer() { # <ticket> <step> <text> [kind]
   if [ "$SA_CLASS" = g ] && [ "$hk" = base ]; then
     driver_say "   base-red: the hook's $HOOK_BR_WHY — discounted, the step carries on"
     driver_base_red_note "$t" "$DRIVER_BASE_RED_SHA" "$HOOK_BR_CHECKS" "$(driver_state_get "$t" pr 2>/dev/null)"
+    # A change the hook refused is committed by the driver past those checks only (the owner, 26 Oct).
+    local hwt; hwt=$(driver_state_get "$t" worktree)
+    if [ -n "$hwt" ] && [ -n "$(git -C "$hwt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ]; then
+      SA_ACTION=commit-carry; SA_HOOK_SKIP="$HOOK_BR_CHECKS"
+    fi
   elif [ "$SA_CLASS" = g ]; then
     local gates sha
     gates=$(printf '%s' "$q" | grep -oE '\b(gate-[A-Za-z0-9_-]+|check:[A-Za-z0-9:_-]+)' | sort -u | paste -sd, - | sed 's/,/, /g')
