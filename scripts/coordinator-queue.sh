@@ -12,6 +12,7 @@
 #
 # A scope resolves the way /agent-harness:work resolves one: a bare number is
 # that ticket; a label that exists is that label; otherwise `project:<scope>`.
+# `all` is every claimable ticket, whatever its labels.
 # A comma list is the union of its scopes. If any one resolves to no label the
 # whole seed is refused, naming it, never widened.
 #
@@ -54,7 +55,9 @@ label_exists() { # <name>
   grep -qxF -- "$1" <<<"$names"
 }
 
-resolve() { # <scope> — echoes the label, or "ticket <n>"
+resolve() { # <scope> — echoes the label, "ticket <n>", or "all"
+  # `all` is every claimable ticket: a list of area labels drops any ticket filed without one.
+  [ "$1" = all ] && { printf 'all'; return 0; }
   case "$1" in
     ''|*[!0-9]*) ;;
     *) printf 'ticket %s' "$1"; return 0 ;;
@@ -102,6 +105,7 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
   if printf '%s\n' "$claimable" | awk -F'\t' 'NF && $1 != "" && NF < 7 { bad = 1 } END { exit !bad }'; then
     while IFS= read -r label; do
       case "$label" in
+        all) continue ;;
         "ticket "*) m="${label#ticket }" ;;
         *) m=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$label" --limit 1000 \
                  --json number -q '.[].number' 2>/dev/null) || die "could not list $label — queue left as it was" ;;
@@ -113,10 +117,10 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
   # Through the environment: BSD awk refuses a -v value with a newline in it.
   rows=$(printf '%s\n' "$claimable" | Q_SCOPES="$match" Q_MEMBERS="$members" awk -F'\t' '
            BEGIN { n = split(ENVIRON["Q_SCOPES"], s, "\n"); for (i = 1; i <= n; i++) if (s[i] != "") {
-                     if (s[i] ~ /^ticket /) tk[substr(s[i], 8)] = 1; else lb[s[i]] = 1 }
+                     if (s[i] == "all") every = 1; else if (s[i] ~ /^ticket /) tk[substr(s[i], 8)] = 1; else lb[s[i]] = 1 }
                    n = split(ENVIRON["Q_MEMBERS"], mm, ","); for (i = 1; i <= n; i++) tk[mm[i]] = 1 }
            NF >= 1 && $1 != "" {
-             inside = ($1 in tk)
+             inside = every || ($1 in tk)
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
              if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6 "\t" ($8 == "-" ? "" : $8)
            }')
@@ -216,7 +220,7 @@ in_scope() { # <n> — 0 under any scope, 1 outside every one, 2 unreadable
   case "${1:-}" in ''|*[!0-9]*) die "in-scope needs a ticket number" ;; esac
   local ls have l
   ls=$(scope_labels); [ -n "$ls" ] || die "no scope recorded — run 'seed <scope>' first"
-  grep -qxF "ticket $1" <<<"$ls" && return 0
+  grep -qxF -e "ticket $1" -e all <<<"$ls" && return 0
   ls=$(with_lists "$ls")
   have=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) \
     || { echo "coordinator-queue: #$1 could not be read" >&2; return 2; }

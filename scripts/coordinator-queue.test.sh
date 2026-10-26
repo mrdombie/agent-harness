@@ -39,6 +39,12 @@ bash "$Q" seed 501 >/dev/null
 want "one ticket"                          "501:new" "$(order)"
 want "and the scope says so"               "ticket 501" "$(jq -r .label "$QF")"
 
+echo "--- 'all' is every claimable ticket, labelled or not ---"
+out=$(bash "$Q" seed all 2>&1)
+want_in "it says what it seeded"           'seeded 4 ticket\(s\) for all' "$out"
+want "every ticket, the unlabelled one included" "900:new 502:repair 501:new 503:new" "$(order)"
+want "a ticket carrying no scope label is in scope" "0" "$(bash "$Q" in-scope 900 >/dev/null 2>&1; echo $?)"
+
 echo "--- a scope that resolves to nothing is refused, never widened ---"
 before=$(cat "$QF")
 out=$(bash "$Q" seed nonsense 2>&1); rc=$?
