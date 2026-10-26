@@ -106,6 +106,7 @@ _driver_base_test_cmd() {
 
 # driver_base_check <tree> <sha> <check> [kind] — kind `test`: <check> is a test file, run
 # alone; `cmd`: <check> is the command itself; else a package script or gates.checkCommand.
+# BASE_CHECK_OUT=<file> keeps what a run printed there (nothing when read from the cache).
 # The cache key carries the kind, so a file and a script of one name never share a row.
 driver_base_check() {
   local wt="$1" sha="$2" c="$3" kind="${4:-}" v dir cmd rc=0 out
@@ -134,6 +135,7 @@ driver_base_check() {
       124|126|127) v=unknown ;;
       *) v=red ;;
     esac
+    [ -z "${BASE_CHECK_OUT:-}" ] || cp "$out" "$BASE_CHECK_OUT" 2>/dev/null
     rm -f "$out"
     [ "$v" = unknown ] || printf '%s\t%s\t%s\t%s\t%s\n' "$sha" "$c" "$v" "$(date +%s)" "$rc" >> "$BASE_CHECKS"
   fi
