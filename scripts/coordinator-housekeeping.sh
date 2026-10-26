@@ -84,6 +84,12 @@ if [ "$UNBLOCK" = off ]; then :
 elif [ -n "$GH_WAIT" ]; then say "unblock: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$UNBLOCK" --dry-run >> "$COORD_LOG" 2>&1 || say "unblock (dry) exited $?"
 else bash "$UNBLOCK" >> "$COORD_LOG" 2>&1 || say "unblock exited $?"; fi
+# A batch's held child goes back to ready once its batch is closed by any route (release-batch-children.sh).
+RELEASE_BATCH="${COORDINATOR_RELEASE_BATCH:-$SELF_DIR/release-batch-children.sh}"
+if [ "$RELEASE_BATCH" = off ]; then :
+elif [ -n "$GH_WAIT" ]; then say "batch children: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$RELEASE_BATCH" --dry-run >> "$COORD_LOG" 2>&1 || say "batch children (dry) exited $?"
+else bash "$RELEASE_BATCH" >> "$COORD_LOG" 2>&1 || say "batch children exited $?"; fi
 # A park the machine caused is tried again once, fresh, on any host; twice the same is the PM's.
 MACHINE_PARKS="${COORDINATOR_MACHINE_PARKS:-$SELF_DIR/retry-machine-parks.sh}"
 if [ "$MACHINE_PARKS" = off ]; then :
