@@ -175,12 +175,21 @@ for t in bash git jq sed grep cat; do ln -sf "$(command -v $t)" "$NOPG/$t"; done
 want "without them, both are named" "createdb dropdb" "$(PATH="$NOPG" driver_test_db_tools_missing)"
 # The real run, on a PATH with every createdb taken out: it stops before any claim
 # or step, as the machine's fault — never a ticket parked on a question.
+# One directory of links to every command on PATH but createdb and dropdb: on Linux they
+# share /usr/bin with bash, so dropping a directory would drop bash too.
 mv "$BIN/createdb" "$FIX/createdb.off"
-NOPATH=$(printf '%s' "$PATH" | tr ':' '\n' | while read -r d; do [ -x "$d/createdb" ] || printf '%s:' "$d"; done)
-: > "$FIX/steps-ran"; mkdir -p "$FIX/nosteps"
-out=$(PATH="${NOPATH%:}" DRIVER_STEPS_DIR="$FIX/nosteps" bash "$HERE/../build-ticket" 7999 2>&1); rc=$?
+NOPGALL="$FIX/nopg-all"; mkdir -p "$NOPGALL"
+IFS=: read -r -a _dirs <<< "$PATH"
+for d in "${_dirs[@]}"; do
+  for f in "$d"/*; do
+    b=${f##*/}; case "$b" in createdb|dropdb) continue ;; esac
+    [ -x "$f" ] && [ ! -e "$NOPGALL/$b" ] && ln -s "$f" "$NOPGALL/$b"
+  done
+done
+mkdir -p "$FIX/nosteps"
+out=$(PATH="$NOPGALL" DRIVER_STEPS_DIR="$FIX/nosteps" "$NOPGALL/bash" "$HERE/../build-ticket" 7999 2>&1); rc=$?
 want "the run exits as a machine fault" "${DRIVER_E_MACHINE:-33}" "$rc"
-want_in "naming the tool and the fix" 'machine fault: this host has no createdb, and tests.db needs them \(install the PostgreSQL client\)' "$out"
+want_in "naming the tool and the fix" 'machine fault: this host has no createdb or dropdb, and tests.db needs them \(install the PostgreSQL client\)' "$out"
 want "and nothing but the log line was written for the ticket" "log" "$(ls "$STATE/driver/7999" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 mv "$FIX/createdb.off" "$BIN/createdb"
 

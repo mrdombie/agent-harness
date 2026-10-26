@@ -73,7 +73,7 @@ export DRIVER_TICKET="$TICKET"
 # Found at the start, before a claim or a step, so no ticket parks asking about it.
 _db_miss=$(driver_test_db_tools_missing)
 if [ -n "$_db_miss" ]; then
-  driver_say "✋ machine fault: this host has no $_db_miss, and tests.db needs them (install the PostgreSQL client). #$TICKET was not started."
+  driver_say "✋ machine fault: this host has no ${_db_miss// / or }, and tests.db needs them (install the PostgreSQL client). #$TICKET was not started."
   exit "$DRIVER_E_MACHINE"
 fi
 # When this run started: a commit authored before it is an earlier run's (ship's verdict check).
