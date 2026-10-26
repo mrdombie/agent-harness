@@ -4,7 +4,7 @@
 #
 #   develop-red.sh file [dry]
 #     reads develop-red.tsv (driver/base-red.sh driver_base_red_note: a push that went out
-#     base-red) and files ONE "<trunk> is red: <checks> (<trunk>@<sha7>)" ticket per check
+#     base-red, or develop-hook-red.sh's sweep of the hooks' checks) and files ONE "<trunk> is red: <checks> (<trunk>@<sha7>)" ticket per check
 #     set and trunk commit, at the integration priority's top (labels.priority.critical, P0)
 #     with the process label (coordinator.processLabel, default process), status ready and
 #     at the front of the coordinator queue. `dry` files nothing and says what it would.
@@ -55,7 +55,7 @@ while IFS=$'\t' read -r sha checks who prs; do
   if [ -n "$found" ] && [ "$same" = false ]; then
     if [ -n "$DRY" ]; then echo "would add the $TRUNK red on ${checks//,/, } at $s7 to the open #$found"; continue; fi
     "$GH" api "repos/$REPO_SLUG/issues/$found/comments" -X POST \
-      -f body="$TRUNK is still red at \`$sha\`, now on: ${checks//,/, }. Builders that hit it: ${who//,/, }. This ticket covers it; no second one is filed." >/dev/null 2>&1 \
+      -f body="$TRUNK is still red at \`$sha\`, now on: ${checks//,/, }.${who:+ Builders that hit it: ${who//,/, }.} This ticket covers it; no second one is filed." >/dev/null 2>&1 \
       || { echo "the $TRUNK red on ${checks//,/, } at $s7 could not be added to #$found"; failed=1; continue; }
     printf '%s\t%s\t%s\n' "$sha" "$checks" "$found" >> "$LEDGER"
     echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$found's: added there as a comment"; continue
@@ -73,13 +73,24 @@ while IFS=$'\t' read -r sha checks who prs; do
   if [ -n "$DRY" ]; then echo "would file \"$title\" ($PRI, $PROC), ready and first in the queue"; continue; fi
   marker="<!-- develop-red: checks=$checks sha=$s7 -->"
   cmds=$(printf '%s\n' "${checks//,/$'\n'}" | sed 's/^/- `/; s/$/`/')
-  body="The pre-push check(s) below fail on $TRUNK itself, at \`$sha\`, the commit the branch(es) of ${who//,/, } merged. Each was run on that commit by itself and failed there, so every branch built on it was refused the same way. Those pushes went out as base-red, and nobody parked. This ticket is the one fix: make these checks green on $TRUNK.
+  # No builder on the row: the coordinator's sweep of the hooks' checks found it first.
+  if [ -n "$who" ]; then
+    body="The pre-push check(s) below fail on $TRUNK itself, at \`$sha\`, the commit the branch(es) of ${who//,/, } merged. Each was run on that commit by itself and failed there, so every branch built on it was refused the same way. Those pushes went out as base-red, and nobody parked. This ticket is the one fix: make these checks green on $TRUNK.
 
 $cmds
 
 Builders that hit it: ${who//,/, }${prs:+ (PRs ${prs//,/, })}.
 
 $marker"
+  else
+    body="The check(s) below, which the commit or push hooks run, fail on $TRUNK itself, at \`$sha\`. The coordinator ran each on that commit by itself (scripts/develop-hook-red.sh) and it failed there, so every builder whose hook runs it will be refused the same way. This ticket is the one fix: make these checks green on $TRUNK.
+
+$cmds
+
+No builder has hit it yet.
+
+$marker"
+  fi
   if ! n=$("$GH" api "repos/$REPO_SLUG/issues" -X POST -f title="$title" -f body="$body" \
              -f "labels[]=$PRI" -f "labels[]=$PROC" -q .number 2>/dev/null) || [ -z "$n" ]; then
     echo "the $TRUNK red on ${checks//,/, } at $s7 could not be filed"; failed=1; continue

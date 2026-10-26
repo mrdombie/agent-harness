@@ -5,7 +5,7 @@
 #
 #   driver_standard_answer <ticket> <step> <text> [kind]   0 when a standard answer applies;
 #       sets SA_CLASS (a–j), SA_NAME, SA_ANSWER, SA_ACTION (carry|commit-carry|base-wait|parent-wait|dependency-wait|already-done),
-#       SA_PARENT (b's pull request) and SA_HOW (mechanical|model). 1: it parks as before.
+#       SA_PARENT (b's pull request), SA_HOW (mechanical|model) and SA_HOOK_SKIP (g past a hook). 1: it parks.
 #   driver_standard_answer_note <ticket> <step> <text>   logs "standard answer: <which>"
 #       and writes it on the pull request, or the ticket while there is none.
 #
@@ -18,6 +18,10 @@
 # question text and the step's record (a base-red cache for a, the deferred findings'
 # grades for c). Only text no pattern decides goes to one short model call, which must
 # answer one of a b c d e park; anything else parks. b with no parent PR in the text parks.
+# A commit or push hook's red the question names is read first (hook-checks.sh): on files
+# the trunk brought and red on the merge base too, the class with context hookBaseRed (g)
+# answers it; on a file of the ticket's own it parks, whatever kind the step gave.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hook-checks.sh" || exit 1
 _driver_sa_cfg() { # prints the setting as JSON, or nothing when it is off
   local cfg v kit
   kit="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/standard-answers.json"
@@ -42,12 +46,17 @@ _driver_sa_match() {
     def hit($c): ((($c.any // []) | length) > 0 and any($c.any[]; m(.)))
                or ((($c.all // []) | length) > 0 and all($c.all[]; m(.)))
                or ($c.context == "baseRed" and $ctx.baseRed and m("\\b(wait|fix)"))
-               or ($c.context == "deferredGrades" and $ctx.deferredMinorMajor);
+               or ($c.context == "deferredGrades" and $ctx.deferredMinorMajor)
+               or ($c.context == "hookBaseRed" and ($ctx.hookBaseRed // false));
     ($s.order // ($s.classes | keys)) as $order
     | ([$order[] as $k | select(($s.classes[$k].kind // "") == $kind and $kind != "" and $kind != "other") | $k] | first) as $bykind
     | (any(($s.park // [])[]; m(.))) as $park
-    # A Critical parks, whatever the kind or class, before anything else.
+    | ([$order[] as $k | select(($s.classes[$k].context // "") == "hookBaseRed") | $k] | first) as $hookcls
+    # A Critical parks, whatever the kind or class, before anything else. Then a hook red the
+    # driver read: on files of this ticket it blocks; on files the trunk brought, the base is red.
     | if m("\\bcritical\\b") then "park"
+      elif ($ctx.hookOwn // false) then "park"
+      elif ($ctx.hookBaseRed // false) and $hookcls != null then $hookcls
       elif $bykind != null and (($s.classes[$bykind].beforePark // false) or ($park | not)) then $bykind
       else (first($order[] as $k | $s.classes[$k] as $c | select($c != null and ($c.beforePark // false)) | select(hit($c)) | $k) // null) as $early
       | if $early != null then $early
@@ -94,7 +103,7 @@ _driver_sa_already_done() {
 
 driver_standard_answer() { # <ticket> <step> <text> [kind]
   local t="$1" step="$2" q="$3" kind="${4:-}" s ctx cls how=mechanical d review ans br
-  SA_CLASS=""; SA_NAME=""; SA_ANSWER=""; SA_ACTION=""; SA_PARENT=""; SA_HOW=""
+  SA_CLASS=""; SA_NAME=""; SA_ANSWER=""; SA_ACTION=""; SA_PARENT=""; SA_HOW=""; SA_HOOK_SKIP=""
   driver_merge_first || return 1
   [ -n "$q" ] || return 1
   s=$(_driver_sa_cfg); [ -n "$s" ] || return 1
@@ -108,6 +117,12 @@ driver_standard_answer() { # <ticket> <step> <text> [kind]
     | {baseRed: $br,
        deferredMinorMajor: (($ids | length) > 0 and all($ids[]; ($g[.] // "") | test("^(minor|major)$")))}' 2>/dev/null)
   [ -n "$ctx" ] || ctx='{"baseRed":false,"deferredMinorMajor":false}'
+  # A HOOK RED IS READ, NEVER TAKEN FROM THE WORDS: whose files, and red on the trunk commit too.
+  local hk=""
+  driver_hook_base_red "$t" "$(driver_state_get "$t" worktree)" "$q" && hk="$HOOK_BR_VERDICT"
+  ctx=$(jq -c --arg hk "$hk" '. + {hookBaseRed: ($hk == "base"), hookOwn: ($hk == "own")}' <<<"$ctx" 2>/dev/null) \
+    || ctx='{"baseRed":false,"deferredMinorMajor":false}'
+  [ "$hk" != own ] || driver_say "   hook red: $HOOK_BR_WHY — this ticket's to fix, never the base's"
   cls=$(_driver_sa_match "$s" "$q" "$ctx" "$kind")
   [ -z "$cls" ] || [ -z "$kind" ] || [ "$(jq -r --arg k "$cls" '.classes[$k].kind // ""' <<<"$s")" != "$kind" ] || how="kind $kind"
   if [ -z "$cls" ]; then
@@ -139,7 +154,15 @@ driver_standard_answer() { # <ticket> <step> <text> [kind]
     [ -n "$SA_PARENT" ] || { driver_say "   standard answer: (f) reads as a wait on a dependency, and the question names no ticket — it parks"; SA_CLASS=""; return 1; }
   fi
   # (g) a red the step proved fails at the merge base too: the base's, discounted and said.
-  if [ "$SA_CLASS" = g ]; then
+  if [ "$SA_CLASS" = g ] && [ "$hk" = base ]; then
+    driver_say "   base-red: the hook's $HOOK_BR_WHY — discounted, the step carries on"
+    driver_base_red_note "$t" "$DRIVER_BASE_RED_SHA" "$HOOK_BR_CHECKS" "$(driver_state_get "$t" pr 2>/dev/null)"
+    # A change the hook refused is committed by the driver past those checks only (the owner, 26 Oct).
+    local hwt; hwt=$(driver_state_get "$t" worktree)
+    if [ -n "$hwt" ] && [ -n "$(git -C "$hwt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ]; then
+      SA_ACTION=commit-carry; SA_HOOK_SKIP="$HOOK_BR_CHECKS"
+    fi
+  elif [ "$SA_CLASS" = g ]; then
     local gates sha
     gates=$(printf '%s' "$q" | grep -oE '\b(gate-[A-Za-z0-9_-]+|check:[A-Za-z0-9:_-]+)' | sort -u | paste -sd, - | sed 's/,/, /g')
     sha=$(printf '%s' "$q" | grep -oiE 'merge[- ]base[^0-9a-f]{0,12}[0-9a-f]{7,40}' | grep -oE '[0-9a-f]{7,40}$' | head -1)

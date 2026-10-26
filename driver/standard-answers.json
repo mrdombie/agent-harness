@@ -115,6 +115,7 @@
         "\\b(to|under|with) the (develop|base)[- ]red ticket\\b"
       ],
       "kind": "base-red",
+      "context": "hookBaseRed",
       "beforePark": true
     },
     "h": {

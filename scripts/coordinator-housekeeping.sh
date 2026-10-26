@@ -113,6 +113,10 @@ else env "${STRAY_ENV[@]}" bash "$SWEEP" --strays >> "$COORD_LOG" 2>&1 || say "s
 for own in "${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}" "${COORDINATOR_STRANDED_SWEEP:-$SELF_DIR/stranded-sweep.sh}"; do
   [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"
 done
+# Every check the commit and push hooks run, on the trunk's head: a red there goes to
+# develop-red.tsv before a builder's hook meets it. It runs in the background.
+HOOK_SWEEP="${COORDINATOR_DEVELOP_HOOKS:-$SELF_DIR/develop-hook-red.sh}"
+[ "$HOOK_SWEEP" = off ] || bash "$HOOK_SWEEP" start $(coord_shadow && echo dry) 2>&1 | while IFS= read -r l; do say "develop hooks: $l"; done
 # An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.
 WT_SWEEP="${COORDINATOR_WORKTREE_SWEEP:-$SELF_DIR/sweep-orphan-worktrees.sh}"
 WT_STAMP="$COORD_DIR/worktree-sweep.stamp"
