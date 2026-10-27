@@ -93,7 +93,7 @@ driver_declared_skills() { # <step> [ticket]
 # default "bug type:bug"); also 0 when its labels cannot be read, the side that parks nothing.
 driver_ticket_is_bug() {
   local ls want
-  ls=$(driver_gh_read swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name] | join("\n")' 2>/dev/null) || return 0
+  ls=$(driver_gh_read driver_ticket_view "$1" labels '[.labels[]?.name] | join("\n")' 2>/dev/null) || return 0
   want=$(driver_opt labels.bug "bug type:bug" 2>/dev/null)
   printf '%s\n' "$ls" | grep -qxF -f <(printf '%s\n' ${want:-bug type:bug})
 }
@@ -480,6 +480,8 @@ _driver_ai_run() {
   # The steps that run the project's tests get the throwaway database the proof gets.
   case "$step" in build|fix|repair) dbw=(driver_with_test_db --soft "$out.db" "$wt") ;; esac
   rm -f "$out.db"
+  # The model can change the ticket: every read from here on goes to GitHub.
+  driver_ticket_snap_drop "${DRIVER_TICKET:-$t}"
   (
     cd "$wt" || exit 1
     export PATH="$shim:$PATH"

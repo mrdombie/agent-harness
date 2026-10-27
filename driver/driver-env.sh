@@ -159,6 +159,50 @@ driver_gh_read() {
   done
 }
 
+# THE TICKET, READ ONCE PER RUN UNTIL A MODEL STEP RUNS. One token serves every builder,
+# and a start read its own ticket 7 times over (2026-10-27). build-ticket opens a copy
+# for its run (driver_ticket_snap_open); the first read fills it with every field below,
+# and start, the claim, size and the first step's facts read that. A model step with
+# tools can change the ticket, so its call drops the copy and later reads go to GitHub.
+DRIVER_TICKET_FIELDS=number,title,body,labels,state,closedByPullRequestsReferences
+driver_ticket_snap_file() { printf '%s/%s/ticket-snap.json' "$DRIVER_DIR" "$1"; }
+driver_ticket_snap_open() { # <ticket> — only for a process that exported DRIVER_TICKET_SNAP_RUN
+  local f; f=$(driver_ticket_snap_file "$1")
+  [ -n "${DRIVER_TICKET_SNAP_RUN:-}" ] || return 0
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  rm -f "$f"; printf '%s\n' "$DRIVER_TICKET_SNAP_RUN" > "$f.open" 2>/dev/null || true
+}
+driver_ticket_snap_drop() { local f; f=$(driver_ticket_snap_file "$1"); rm -f "$f" "$f.open"; }
+# The copy, when this run has one open: a marker left by another run is not ours.
+_driver_ticket_snap_live() {
+  [ -n "${DRIVER_TICKET_SNAP_RUN:-}" ] && [ "$(cat "$1.open" 2>/dev/null)" = "$DRIVER_TICKET_SNAP_RUN" ]
+}
+# driver_ticket_view <ticket> <fields> [jq] — what `gh issue view <ticket> --json <fields>
+# [-q <jq>]` answers, from the run's copy while one is open. Non-zero when unreadable.
+driver_ticket_view() {
+  local t="$1" fields="$2" q="${3:-}" f j
+  f=$(driver_ticket_snap_file "$t")
+  if ! _driver_ticket_snap_live "$f"; then
+    if [ -n "$q" ]; then swarm_gh issue view "$t" --repo "$REPO_SLUG" --json "$fields" -q "$q"
+    else swarm_gh issue view "$t" --repo "$REPO_SLUG" --json "$fields"; fi
+    return
+  fi
+  if [ ! -s "$f" ]; then
+    j=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json "$DRIVER_TICKET_FIELDS") || return 1
+    printf '%s' "$j" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
+    printf '%s\n' "$j" > "$f.tmp" && mv "$f.tmp" "$f" || return 1
+  fi
+  if [ -n "$q" ]; then jq -r "$q" "$f"
+  else jq -c --arg k "$fields" '($k | split(",")) as $w | with_entries(select(.key as $x | $w | index($x)))' "$f"; fi
+}
+# driver_ticket_snap_labels <ticket> <labels, one a line> — the copy after this run's own label write.
+driver_ticket_snap_labels() {
+  local f; f=$(driver_ticket_snap_file "$1")
+  _driver_ticket_snap_live "$f" && [ -s "$f" ] || return 0
+  jq --arg l "$2" '.labels = [$l | split("\n")[] | select(length > 0) | {name: .}]' "$f" > "$f.tmp" \
+    && mv "$f.tmp" "$f" || rm -f "$f" "$f.tmp"
+}
+
 # driver_say <message…> — one line on stdout and one in the ticket's own log, so
 # a run that scrolled past is still readable afterwards.
 driver_say() {

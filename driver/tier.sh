@@ -151,7 +151,7 @@ driver_screen_route() {
   if ! driver_baseline_route_on; then
     printf 'picture\tthis project has no baseline route, so every screen build takes the picture route\n'; return 0
   fi
-  if ! labels=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[].name] | join(",")' 2>/dev/null); then
+  if ! labels=$(driver_gh_read driver_ticket_view "$t" labels '[.labels[].name] | join(",")' 2>/dev/null); then
     route=picture; why="#$t's labels could not be read, so the picture route applies"
   else
     route=baseline

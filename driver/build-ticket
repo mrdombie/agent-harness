@@ -79,7 +79,12 @@ fi
 # When this run started: a commit authored before it is an earlier run's (ship's verdict check).
 DRIVER_RUN_STARTED=$(date +%s); export DRIVER_RUN_STARTED
 # The run's reused proof trees go with the run (steps/build.sh driver_proof_trees_drop).
-trap 'declare -F driver_proof_trees_drop >/dev/null && DRIVER_TICKET="$TICKET" driver_proof_trees_drop' EXIT
+trap 'declare -F driver_proof_trees_drop >/dev/null && DRIVER_TICKET="$TICKET" driver_proof_trees_drop; driver_ticket_snap_drop "$TICKET"' EXIT
+# Every GitHub call this run and its children make is logged as the builder's.
+export GH_CALLER=build-ticket
+# One read of the ticket serves every step up to the first model step (driver_ticket_view).
+DRIVER_TICKET_SNAP_RUN="$DRIVER_RUN_STARTED-$$-$RANDOM"; export DRIVER_TICKET_SNAP_RUN
+driver_ticket_snap_open "$TICKET"
 
 # driver_keep_brief <src> <dst> — the brief onto the record, capped. Every AI step is
 # handed it, so a brief of any size is paid for on every call; past the cap the steps
@@ -458,7 +463,7 @@ always() { case " $DRIVER_ALWAYS_STEPS " in *" $1 "*) return 0 ;; *) return 1 ;;
 # the hash, compares as unchanged: there is nothing to compare.
 ticket_body_hash() { # <ticket> — empty when the body cannot be read
   local b
-  b=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json body -q '.body // ""' 2>/dev/null) || return 0
+  b=$(driver_ticket_view "$1" body '.body // ""' 2>/dev/null) || return 0
   printf '%s' "$b" | git hash-object --stdin 2>/dev/null
 }
 PLAN_AT=-1; i=0

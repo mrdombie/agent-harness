@@ -66,8 +66,8 @@ driver_step_reenter() { # <ticket>
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
-  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
-           -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
+  meta=$(driver_gh_read driver_ticket_view "$t" state,labels,title \
+           '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
   if [ -z "$meta" ]; then
     driver_say "✋ reenter: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries."
     driver_state_set "$t" park_note "reenter could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
