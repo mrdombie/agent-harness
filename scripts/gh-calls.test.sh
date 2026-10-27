@@ -322,4 +322,22 @@ want "the query string is dropped"                 "api PATCH repos/o/r/issues/9
 want "flag values are not taken for the endpoint"  "api repos/o/r/pulls" "$(sed -n 3p "$STATE/swarm/gh-calls.log" | cut -f3)"
 want "other subcommands log as before"             "issue view" "$(sed -n 4p "$STATE/swarm/gh-calls.log" | cut -f3)"
 
+echo "--- the polish-list sweep: 15 lists cost the calls 2 do ---"
+# 2026-10-27: the sweep read every list's body again, one by one (11 back to back).
+pl_sweep_calls() { # <lists> — calls one sweep makes when no item on any list has settled
+  local n arr="[]" b; fresh; rm -f "$FIX/gh"/issue-*.json "$FIX/gh"/issue-list*.json "$FIX/gh/allowance" "$STATE/swarm/gh-allowance"
+  for n in $(seq 1001 $((1000 + $1))); do
+    b=$(printf '## Items\n- [ ] item on %s (in PR #%s)\n' "$n" "$((n + 1000))")
+    jq -n --argjson n "$n" --arg b "$b" '{number:$n, state:"OPEN", title:"x", body:$b, labels:[{name:"polish-list"}]}' > "$FIX/gh/issue-$n.json"
+    fix_issue "$((n + 1000))" OPEN ""
+    arr=$(jq -c --slurpfile i "$FIX/gh/issue-$n.json" '. + $i' <<<"$arr")
+  done
+  fix_issue_list "polish-list" "$arr"
+  : > "$GH_LOG"; bash "$HERE/polish-list.sh" sweep > "$FIX/pl.out" 2>&1
+  calls
+}
+small=$(pl_sweep_calls 2); big=$(pl_sweep_calls 15)
+want "15 polish lists cost what 2 do"              "$small" "$big"
+want_not_in "no list is read on its own"           '^issue view' "$(cat "$GH_LOG")"
+
 suite_end "$FAILED"
