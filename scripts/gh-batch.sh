@@ -6,7 +6,10 @@
 #
 #   gh_call <gh args…>              gh, refused at once while the backoff holds;
 #                                   a rate-limit refusal starts (or lengthens) it
-#   gh_backoff_active               0, printing the epoch it ends, while it holds
+#   gh_backoff_active               0, printing the epoch it ends, while it holds; a
+#                                   search-only backoff is not one (gh_backoff_search_active)
+#   gh_backoff_search_active        the same for the search bucket alone: only search
+#                                   calls (_gh_is_search) wait on it
 #   gh_backoff_reason               "<kind>: <GitHub's refusal text>" of the one that holds
 #   gh_backoff_wait [max-sec]       sleeps out a backoff ending within max-sec (300);
 #                                   1 at once when one holds longer
@@ -82,19 +85,64 @@ gh_backoff_wait() {
   sleep $(( left + 1 ))
 }
 
-# _gh_primary_healthy — 0 when `gh api rate_limit` (free, answers while refused) shows
-# REST and GraphQL both over GH_ALLOWANCE_LOW_PCT and no host's reading is under it.
-_gh_primary_healthy() {
+# The search bucket (30 a minute) is GitHub's own, apart from REST and GraphQL: a host
+# spending it stops search calls only. Its backoff sits in a file of its own, so
+# gh_backoff_active — what every other call, a start's read and the spawn hold ask —
+# never sees it. On 2026-10-27 search read 0/30 every minute with REST at 4925/5000,
+# and one shared backoff for it held every caller and every spawn.
+gh_backoff_search_file() { printf '%s' "$(gh_backoff_file).search"; }
+gh_backoff_search_active() {
+  local f until
+  f=$(gh_backoff_search_file); [ -s "$f" ] || return 1
+  until=$(cut -f1 "$f" 2>/dev/null)
+  case "$until" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$until" -gt "$(gh_batch_now)" ] || return 1
+  printf '%s' "$until"
+}
+# _gh_is_search <gh args…> — 0 when the call spends the search bucket: `gh search …`,
+# `gh api search/…`, `gh issue|pr list --search|-S …`.
+_gh_is_search() {
+  local a
+  case "${1:-}" in
+    search) return 0 ;;
+    api) for a in "${@:2}"; do case "$a" in search/*|/search/*) return 0 ;; esac; done ;;
+    issue|pr) [ "${2:-}" = list ] || return 1
+              for a in "${@:3}"; do case "$a" in --search|--search=*|-S) return 0 ;; esac; done ;;
+  esac
+  return 1
+}
+
+# _gh_rate_limit — `gh api rate_limit` (free, answers while refused); 1 when unreadable.
+_gh_rate_limit() {
   local j
   j=$("$(gh_batch_bin)" api rate_limit 2>/dev/null) || return 1
-  jq -e --argjson p "${GH_ALLOWANCE_LOW_PCT:-10}" '[.resources.core, .resources.graphql]
-      | all(type == "object" and (.limit | type) == "number" and .limit > 0
-            and (.remaining | type) == "number" and .remaining * 100 >= .limit * $p)' >/dev/null 2>&1 <<<"$j" || return 1
+  jq -e '.resources | type == "object"' >/dev/null 2>&1 <<<"$j" || return 1
+  printf '%s' "$j"
+}
+# _gh_bucket_ok <rate_limit json> <resource…> — 0 when each is over GH_ALLOWANCE_LOW_PCT.
+_gh_bucket_ok() { _gh_bucket_is "$1" '>=' "${@:2}"; }
+# _gh_bucket_spent <rate_limit json> <resource> — 0 when it reads under the low mark; a
+# missing or malformed reading is not spent.
+_gh_bucket_spent() { _gh_bucket_is "$1" '<' "$2"; }
+_gh_bucket_is() { # <json> <'>=' | '<'> <resource…>
+  local j="$1" op="$2"; shift 2
+  jq -e --argjson p "${GH_ALLOWANCE_LOW_PCT:-10}" --arg op "$op" --args '[$ARGS.positional[] as $r | .resources[$r]]
+      | length > 0 and all(type == "object" and (.limit | type) == "number" and .limit > 0
+            and (.remaining | type) == "number"
+            and (if $op == "<" then .remaining * 100 < .limit * $p else .remaining * 100 >= .limit * $p end))' "$@" >/dev/null 2>&1 <<<"$j"
+}
+# _gh_primary_healthy <rate_limit json> — REST and GraphQL both over the low mark, and no
+# host's reading under it.
+_gh_primary_healthy() {
+  [ -n "${1:-}" ] && _gh_bucket_ok "$1" core graphql || return 1
   ! gh_allowance_low >/dev/null 2>&1
 }
 
-# gh_backoff_note <stderr text> — starts a backoff when the text is a rate-limit
-# refusal, and returns 0 when it was one. The file is
+# gh_backoff_note <stderr text> [gh args…] — starts a backoff when the text is a rate-limit
+# refusal, and returns 0 when it was one. A search call refused while the search bucket
+# is spent and REST and GraphQL are healthy holds search alone, until the bucket's reset
+# (at most GH_BACKOFF_SEARCH_MAX, 120s): <until> \t search \t <refusal text>, in
+# gh_backoff_search_file. Anything else goes in the shared file:
 # <until> \t <level> \t <last primary refusal> \t <primary|secondary> \t <refusal text>.
 #   primary   — the hourly allowance is spent, or `gh api rate_limit` cannot say it is
 #               not: 4 minutes, doubled for each within 30 minutes of the last, capped at 32.
@@ -106,7 +154,7 @@ _gh_primary_healthy() {
 # and every build started inside it died at its first read.
 gh_backoff_note() {
   printf '%s' "$1" | grep -qiE -- "$GH_RATE_LIMIT_RE" || return 1
-  local f now lvl=0 last=0 old=0 until kind secs text
+  local f now lvl=0 last=0 old=0 until kind secs text rl
   f=$(gh_backoff_file); now=$(gh_batch_now)
   mkdir -p "$(dirname "$f")" 2>/dev/null
   if [ -s "$f" ]; then
@@ -116,7 +164,17 @@ gh_backoff_note() {
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
   fi
   text=$(printf '%s' "$1" | tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ //; s/ $//' | cut -c1-300)
-  if _gh_primary_healthy; then
+  rl=$(_gh_rate_limit) || rl=""
+  if [ $# -gt 1 ] && _gh_is_search "${@:2}" && [ -n "$rl" ] && _gh_bucket_spent "$rl" search && _gh_primary_healthy "$rl"; then
+    until=$(jq -r '.resources.search.reset // empty' <<<"$rl" 2>/dev/null)
+    case "$until" in ''|*[!0-9]*) until=$(( now + 60 )) ;; esac
+    [ "$until" -gt "$now" ] || until=$(( now + 1 ))
+    [ "$until" -le $(( now + ${GH_BACKOFF_SEARCH_MAX:-120} )) ] || until=$(( now + ${GH_BACKOFF_SEARCH_MAX:-120} ))
+    f=$(gh_backoff_search_file)
+    printf '%s\tsearch\t%s\n' "$until" "$text" > "$f.$$" && mv -f "$f.$$" "$f"
+    return 0
+  fi
+  if _gh_primary_healthy "$rl"; then
     kind=secondary
     secs=$(printf '%s' "$1" | grep -oiE 'retry[- ]after[^0-9]{0,4}[0-9]+' | grep -oE '[0-9]+$' | head -1)
     case "$secs" in ''|*[!0-9]*) secs=${GH_BACKOFF_SECONDARY_SEC:-60} ;; esac
@@ -395,13 +453,17 @@ gh_call() {
     echo "gh: GitHub is rate-limiting this token — backing off until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null)" >&2
     return 75
   fi
+  if _gh_is_search "$@" && until=$(gh_backoff_search_active); then
+    echo "gh: GitHub's search limit is spent — search calls wait until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null)" >&2
+    return 75
+  fi
   gh_calls_note "$@"
   local -a _GH_MARKED=() _GH_MARK_TMP=()
   case "${1:-} ${2:-}" in "issue comment"|"pr comment"|api\ *) _gh_mark_args "$@"; set -- "${_GH_MARKED[@]}" ;; esac
   e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { "$(gh_batch_bin)" "$@"; rc=$?; [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"; return "$rc"; }
   "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
   [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"
-  if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" || true; fi
+  if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" "$@" || true; fi
   cat "$e" >&2; rm -f "$e"
   return "$rc"
 }
