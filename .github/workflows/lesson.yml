@@ -49,7 +49,7 @@ on:
       runs-on:
         description: JSON for runs-on — a label string or a list of labels
         type: string
-        default: '"ubuntu-latest"'
+        default: '"ubuntu-24.04"'
     secrets:
       harness_token:
         description: a token that can read harness-repo, when it is private and not this repo
