@@ -132,7 +132,7 @@ recon_calls() { # <count> — that many tickets in review, each with a branch on
   for t in $(seq 801 $((800 + $1))); do
     fix_issue "$t" OPEN "status:in-review"
     git -C "$REPO" push -q "$ORIGIN" "HEAD:refs/heads/tkt-$t/work" 2>/dev/null
-    nums=$(jq -c --argjson t "$t" '. + [{number: $t}]' <<<"$nums")
+    nums=$(jq -c --argjson t "$t" '. + [{number: $t, labels: [{name: "status:in-review"}]}]' <<<"$nums")
   done
   fix_issue_list "status:in-review" "$nums"
   : > "$GH_LOG"
@@ -143,6 +143,30 @@ small=$(recon_calls 3); big=$(recon_calls 30)
 want "30 claimed tickets cost what 3 do"           "$small" "$big"
 want_in "and the branches' PRs were asked for, in one batch" 'pullRequests\(headRefName:"tkt-830/work"' "$(cat "$GH_LOG")"
 want_not_in "no PR is read one branch at a time"     '^pr list .*--head' "$(cat "$GH_LOG")"
+
+echo "--- a real reconcile pass does not re-read the labels of a ticket already where it belongs ---"
+# 2026-10-27: every in-review ticket with an open PR cost a label read a pass,
+# to learn it was already in review: 22 calls a run, 192 in two hours.
+recon_live_calls() { # <count> — that many in-review tickets, each with an open PR on its branch
+  local nums="[]" t
+  rm -f "$FIX/gh"/issue-*.json "$FIX/gh"/prs-tkt-*.json
+  for t in $(seq 851 $((850 + $1))); do
+    fix_issue "$t" OPEN "status:in-review,P1"
+    git -C "$REPO" push -q "$ORIGIN" "HEAD:refs/heads/tkt-$t/work" 2>/dev/null
+    printf '[{"number":%s,"state":"OPEN"}]\n' $((t + 5000)) > "$FIX/gh/prs-tkt-${t}_work.json"
+    nums=$(jq -c --argjson t "$t" '. + [{number: $t, labels: [{name: "status:in-review"}, {name: "P1"}]}]' <<<"$nums")
+  done
+  fix_issue_list "status:in-review" "$nums"
+  : > "$GH_LOG"
+  CLAIM_REMOTE="$ORIGIN" NOTIFY=0 bash "$HERE/reconcile-claims.sh" > "$FIX/recon.out" 2>&1
+  grep -vc '^api repos/acme/widgets' "$GH_LOG" | tr -d ' '
+}
+small=$(recon_live_calls 2); big=$(recon_live_calls 20)
+echo "  calls: 2 claimed → $small, 20 claimed → $big"
+want "20 tickets in review cost what 2 do"          "$small" "$big"
+want_not_in "no ticket's labels are read on their own" '^issue view' "$(cat "$GH_LOG")"
+want "every one is still judged in review"          "20" "$(grep -c 'IN-REVIEW  #' "$FIX/recon.out" | tr -d ' ')"
+want_not_in "and none is edited or commented"       '^issue (edit|comment)' "$(cat "$GH_LOG")"
 
 echo "--- a refused token: back off, and work from the last good read ---"
 fresh; queue_n repair 2
