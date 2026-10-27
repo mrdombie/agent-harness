@@ -311,6 +311,12 @@ relabel() {
   local n="$1" want="$2" body="$3"
   [ "$DRY_RUN" -eq 1 ] && return 0
   [ "$gh_ok" -eq 1 ] || return 0
+  # The pass's read already shows it wearing $want alone: nothing to set, no fresh read.
+  if [ -n "$LABEL_CACHE" ] && jq -e --arg n "$n" 'has($n)' >/dev/null 2>&1 <<<"$LABEL_CACHE" \
+     && [ "$(labels_of "$n" | while IFS= read -r l; do issue_status_is_lifecycle "$l" && printf '%s\n' "$l"; done)" = "$want" ]; then
+    say "  (already $want — no comment)"
+    return 0
+  fi
   issue_status_set "$n" "$want" --repo "$GH_REPO" >/dev/null 2>&1 || return 0
   if [ "${ISSUE_STATUS_ADDED:-0}" -eq 0 ]; then
     say "  (already $want — no comment)"
@@ -326,7 +332,7 @@ relabel() {
 # claim behind it holds a ticket out of the queue forever.
 CLAIM_REF_ROWS=$(git -C "$REPO" ls-remote "$CLAIM_REMOTE" "$NS/*" 2>/dev/null)
 claimed_refs=$(printf '%s\n' "$CLAIM_REF_ROWS" | sed -n 's|.*'"$NS"'/||p' | sort -u)
-labelled=""
+labelled=""; LIST_LABELS="{}"
 if [ "$gh_ok" -eq 1 ]; then
   # status:in-review and status:partial are gathered too, and that is the whole
   # point of this list. Parking a ticket at either strips its claim ref, its
@@ -334,10 +340,14 @@ if [ "$gh_ok" -eq 1 ]; then
   # of the three sources and was never looked at again. Its PR could merge, or
   # close, and the ticket stayed open wearing a label nothing removes: held by
   # no one, offered to no one. 24 accumulated this way by 2026-08-11.
+  # Labels come with each list, so a listed ticket is never asked about again.
   for lbl in "$LBL_CLAIMED" "$LBL_IN_REVIEW" "$LBL_PARTIAL"; do
+    rows=$(gh issue list --repo "$GH_REPO" --label "$lbl" --state open \
+      --json number,labels --limit 300 2>/dev/null) || rows=""
+    LIST_LABELS=$(jq -c --argjson acc "$LIST_LABELS" '$acc + ([.[]? | select(.number != null and (.labels | type == "array"))
+      | {key: (.number | tostring), value: {number, labels: [.labels[].name]}}] | from_entries)' <<<"${rows:-[]}" 2>/dev/null) || LIST_LABELS="{}"
     labelled="$labelled
-$(gh issue list --repo "$GH_REPO" --label "$lbl" --state open \
-      --json number -q '.[].number' --limit 300 2>/dev/null)"
+$(jq -r '.[]?.number' <<<"${rows:-[]}" 2>/dev/null)"
   done
   labelled=$(printf '%s\n' "$labelled" | sed '/^$/d' | sort -u)
 fi
@@ -354,8 +364,14 @@ tickets=$(printf '%s\n%s\n%s\n' "$claimed_refs" "$labelled" "$legacy" | sed '/^$
 # never taken as "no PR".
 LABEL_CACHE=""; PR_CACHE=""
 if [ "$gh_ok" -eq 1 ] && [ -n "$tickets" ]; then
+  # Only the tickets no list held (a claim ref or a lock with no label) are batched.
+  unlisted=$(for n in $tickets; do jq -e --arg n "$n" 'has($n)' >/dev/null 2>&1 <<<"$LIST_LABELS" || echo "$n"; done)
+  LABEL_CACHE="$LIST_LABELS"
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
-  LABEL_CACHE=$(gh_issues_batch $tickets 2>/dev/null) || true
+  if [ -n "$unlisted" ] && batch=$(gh_issues_batch $unlisted 2>/dev/null; true) && [ -n "$batch" ]; then
+    LABEL_CACHE=$(jq -c --argjson l "$LIST_LABELS" '. + $l' <<<"$batch" 2>/dev/null) || LABEL_CACHE="$LIST_LABELS"
+  fi
+  [ "$LABEL_CACHE" != "{}" ] || LABEL_CACHE=""
   branches=$(for n in $tickets; do branch_for "$n"; done | awk 'NF && !seen[$0]++')
   # shellcheck disable=SC2086  # branch names carry no whitespace
   [ -z "$branches" ] || PR_CACHE=$(gh_prs_by_head_batch $branches 2>/dev/null) || true
