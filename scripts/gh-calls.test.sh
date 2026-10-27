@@ -259,4 +259,26 @@ want_in "and so does the owner's alarm"            "allowance is spent: GraphQL 
 want_not_in "not the old guess"                    'gh auth or network' "$(cat "$FIX/house.log")"
 rm -f "$FIX/gh/ratelimit" "$FIX/gh/allowance"
 
+echo "--- develop-red: 22 pending rows cost the searches 1 does ---"
+# 2026-10-27: 22 rows sat in develop-red.tsv and each pass searched once or twice a row,
+# 44 searches a tick against GitHub's 30 a minute; refused, no row ever left the file.
+cat > "$BIN/drgh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIX/drgh.log"
+case "$*" in *"-X GET search/issues"*) echo '{"total_count":0,"items":[]}' ;; esac
+exit 0
+SH
+chmod +x "$BIN/drgh"
+dr_searches() { # <rows> — search calls one dry develop-red pass makes for that many pending rows
+  local i; fresh; : > "$FIX/drgh.log"; : > "$STATE/swarm/develop-red-filed.tsv"; : > "$STATE/swarm/develop-red.tsv"
+  for i in $(seq 1 "$1"); do printf '%040d\tchk-a\t%s\t\t1\n' "$i" "$i" >> "$STATE/swarm/develop-red.tsv"; done
+  DEVELOP_RED_GH="$BIN/drgh" SWARM_GH="$BIN/drgh" DEVELOP_RED_QUEUE=off bash "$HERE/develop-red.sh" file dry > "$FIX/dr.out" 2>&1
+  grep -c 'search/issues' "$FIX/drgh.log" | tr -d ' '
+}
+small=$(dr_searches 1); big=$(dr_searches 22)
+echo "  searches: 1 row → $small, 22 rows → $big"
+want "22 pending rows cost the searches 1 does"    "$small" "$big"
+want_in "and two at most"                          '^[0-2]$' "$big"
+want "every row still answered"                    "22" "$(grep -c '^would' "$FIX/dr.out" | tr -d ' ')"
+
 suite_end "$FAILED"

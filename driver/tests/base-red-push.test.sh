@@ -69,6 +69,8 @@ cat > "$FIX/fgh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/fgh.log"
 case "$*" in
+  # The open-ticket search sees a found ticket unless it is closed; the all-markers search sees it either way.
+  *"-X GET search/issues"*"is:open"*) if [ -f "$FIX/fgh.found" ] && [ ! -f "$FIX/fgh.closed" ]; then printf '{"total_count":1,"items":[{"number":%s,"body":"%s"}]}\n' "$(cat "$FIX/fgh.found")" "$(cat "$FIX/fgh.found.body")"; else echo '{"total_count":0,"items":[]}'; fi; exit 0 ;;
   *"-X GET search/issues"*) if [ -f "$FIX/fgh.found" ]; then printf '{"total_count":1,"items":[{"number":%s,"body":"%s"}]}\n' "$(cat "$FIX/fgh.found")" "$(cat "$FIX/fgh.found.body")"; else echo '{"total_count":0,"items":[]}'; fi; exit 0 ;;
   *"repos/acme/widgets/issues -X POST"*) n=$(( $(cat "$FIX/fgh.next" 2>/dev/null || echo 900) + 1 )); echo "$n" > "$FIX/fgh.next"; printf '%s\0' "$@" > "$FIX/fgh.create.$n"; echo "$n"; exit 0 ;;
 esac
@@ -116,6 +118,12 @@ mv "$STATE/swarm/develop-red-filed.tsv" "$FIX/ledger.keep"
 printf '901' > "$FIX/fgh.found"; printf '<!-- develop-red: checks=chk-a sha=%s -->' "$S7" > "$FIX/fgh.found.body"
 file_red
 want "another host's ledger: the forge's marker stops a second" "1" "$(creates)"
+printf '%s\tchk-a\t605\t\n' "$SHA" > "$PENDING"; rm -f "$STATE/swarm/develop-red-filed.tsv"; touch "$FIX/fgh.closed"
+file_red
+want "  closed, its marker still stops a second" "1" "$(creates)"
+want_in "  and says whose it is"               "is #901.s, already filed" "$R_FILE"
+want "  and the row leaves the pending file"    "" "$(cat "$PENDING")"
+rm -f "$FIX/fgh.closed"
 rm -f "$FIX/fgh.found"; cp "$FIX/ledger.keep" "$STATE/swarm/develop-red-filed.tsv"
 # The red set changed (one check fixed, one still red): the open ticket covers it, as a comment.
 # #14229 was filed and built in full beside the open #14215 on 2026-10-24.
@@ -189,7 +197,7 @@ plant "the shared cache" driver/base-red.sh '    [ "$v" = unknown ] || printf '"
 plant "the branch's own red blocks" driver/steps/ship.sh '  if [ -n "$own$unk" ]; then' \
   && { python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = "    return 1\n  fi\n  list=$(printf"; assert s.count(o) == 1; open(p, "w").write(s.replace(o, "  list=$(printf", 1))' "$KIT/driver/steps/ship.sh" \
        && { case_own; want "planted (the branch's own red blocks): it pushes" "pushed" "$R"; }; }
-plant "the ledger" scripts/develop-red.sh '  [ -z "$n" ] || continue
+plant "the ledger" scripts/develop-red.sh '  ledger "$sha" "$checks" "$n"
 ' && { case_file; want "planted (the ledger): a second ticket" "creates=2" "$R"; }
 plant "the trunk's hook" scripts/ensure-hooks.sh '  s=$HARNESS_PREPUSH_SCRIPT
 ' && { SUT_KIT="$KIT" old_hook; want "planted (the trunk's hook): the stale hook refuses it" "refused" "$R"; }
