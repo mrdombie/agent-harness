@@ -356,7 +356,7 @@ _driver_prove_red_green_once() {
   git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null && vsha="$isha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
-  ( cd "$tmp/before" && driver_with_test_db "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
+  ( cd "$tmp/before" && driver_with_test_db --for "$tfile" "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
   prc=0
@@ -376,7 +376,7 @@ _driver_prove_red_green_once() {
   # one measures a different test in each half. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/after/$tfile"
-  ( cd "$tmp/after" && driver_with_test_db "$tmp/after.db" "$tmp/after" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
+  ( cd "$tmp/after" && driver_with_test_db --for "$tfile" "$tmp/after.db" "$tmp/after" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
   # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
   # test whose calls do not type-check passed this proof and then failed self-check's
@@ -496,10 +496,10 @@ _driver_prove_by_break_once() {
     printf 'the break text is not in %s at %s — nothing was broken, so nothing would be measured\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
     return 3
   fi
-  ( cd "$tmp/tree" && driver_with_test_db "$tmp/red.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
+  ( cd "$tmp/tree" && driver_with_test_db --for "$tfile" "$tmp/red.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
   rc_red=$?
   cp "$tmp/original" "$tmp/tree/$bfile"
-  ( cd "$tmp/tree" && driver_with_test_db "$tmp/green.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
+  ( cd "$tmp/tree" && driver_with_test_db --for "$tfile" "$tmp/green.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
   rc_green=$?
   # The same compile check as the red/green proof, on the restored tree.
   local tc_rc=0 tc_out="" tc

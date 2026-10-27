@@ -135,6 +135,64 @@ want "the test never ran" "" "$(cat "$FIX/seen.log")"
 want "nothing was dropped — nothing was made" "" "$(dropped)"
 rm -f "$FIX/createdb-fails"
 
+echo "--- a unit test needs no database: on a host that cannot make one, its proof still runs ---"
+# Yomato had no createdb, and every proof exited 125 before its test ran — a pure
+# unit test included.
+printf 'no\n' > "$REPO/unit.txt"; git -C "$REPO" add unit.txt; c "$REPO" "unit base" >/dev/null
+cat > "$REPO/unit.test.sh" <<SH
+#!/usr/bin/env bash
+printf 'ran\n' >> "$FIX/seen.log"
+grep -q yes unit.txt || { echo " FAIL  unit > is yes"; exit 1; }
+SH
+git -C "$REPO" add unit.test.sh; UTS=$(c "$REPO" "test: unit")
+printf 'yes\n' > "$REPO/unit.txt"; git -C "$REPO" add unit.txt; UIS=$(c "$REPO" "feat: unit")
+reset_logs; touch "$FIX/createdb-fails"
+out=$(driver_prove_red_green "$REPO" unit.test.sh "$UTS" "$UIS" "bash unit.test.sh" 2>&1); rc=$?
+want "the unit test proves red then green" "0" "$rc"
+want "it ran in both halves" "2" "$(grep -c ran "$FIX/seen.log")"
+out=$(driver_prove_by_break "$REPO" unit.test.sh "$UIS" unit.txt "yes" "no" "bash unit.test.sh" 2>&1); rc=$?
+want "and the planted-break proof runs too" "0" "$rc"
+
+echo "--- a test that reads DATABASE_URL still needs one, whatever its name ---"
+cat > "$REPO/env.test.sh" <<SH
+#!/usr/bin/env bash
+printf 'env\n' >> "$FIX/seen.log"
+[ -n "\${DATABASE_URL:-}" ] || exit 0
+grep -q yes env.txt
+SH
+printf 'no\n' > "$REPO/env.txt"; git -C "$REPO" add env.txt env.test.sh; ETS=$(c "$REPO" "test: env")
+printf 'yes\n' > "$REPO/env.txt"; git -C "$REPO" add env.txt; EIS=$(c "$REPO" "feat: env")
+reset_logs
+out=$(driver_prove_red_green "$REPO" env.test.sh "$ETS" "$EIS" "bash env.test.sh" 2>&1); rc=$?
+want "it is exit 5, not a green" "5" "$rc"
+want "and never ran" "" "$(cat "$FIX/seen.log")"
+rm -f "$FIX/createdb-fails"
+
+echo "--- a host without createdb or dropdb is named before anything starts ---"
+want "a host with both is fine" "" "$(driver_test_db_tools_missing)"
+NOPG="$FIX/nopg"; mkdir -p "$NOPG"
+for t in bash git jq sed grep cat; do ln -sf "$(command -v $t)" "$NOPG/$t"; done
+want "without them, both are named" "createdb dropdb" "$(PATH="$NOPG" driver_test_db_tools_missing)"
+# The real run, on a PATH with every createdb taken out: it stops before any claim
+# or step, as the machine's fault — never a ticket parked on a question.
+# One directory of links to every command on PATH but createdb and dropdb: on Linux they
+# share /usr/bin with bash, so dropping a directory would drop bash too.
+mv "$BIN/createdb" "$FIX/createdb.off"
+NOPGALL="$FIX/nopg-all"; mkdir -p "$NOPGALL"
+IFS=: read -r -a _dirs <<< "$PATH"
+for d in "${_dirs[@]}"; do
+  for f in "$d"/*; do
+    b=${f##*/}; case "$b" in createdb|dropdb) continue ;; esac
+    [ -x "$f" ] && [ ! -e "$NOPGALL/$b" ] && ln -s "$f" "$NOPGALL/$b"
+  done
+done
+mkdir -p "$FIX/nosteps"
+out=$(PATH="$NOPGALL" DRIVER_STEPS_DIR="$FIX/nosteps" "$NOPGALL/bash" "$HERE/../build-ticket" 7999 2>&1); rc=$?
+want "the run exits as a machine fault" "${DRIVER_E_MACHINE:-33}" "$rc"
+want_in "naming the tool and the fix" 'machine fault: this host has no createdb or dropdb, and tests.db needs them \(install the PostgreSQL client\)' "$out"
+want "and nothing but the log line was written for the ticket" "log" "$(ls "$STATE/driver/7999" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+mv "$FIX/createdb.off" "$BIN/createdb"
+
 echo "--- it never touches a database it did not make ---"
 reset_logs
 : > "$DBS/appdb"; : > "$DBS/hp_someone_else_1"

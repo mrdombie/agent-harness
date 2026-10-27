@@ -68,6 +68,14 @@ done
 [ -n "$TICKET" ] || die "need a ticket number"
 case "$TICKET" in *[!0-9]*) die "'$TICKET' is not a ticket number" ;; esac
 export DRIVER_TICKET="$TICKET"
+
+# A HOST WITHOUT THE TEST DATABASE'S TOOLS IS THE MACHINE'S FAULT, NEVER THE TICKET'S.
+# Found at the start, before a claim or a step, so no ticket parks asking about it.
+_db_miss=$(driver_test_db_tools_missing)
+if [ -n "$_db_miss" ]; then
+  driver_say "✋ machine fault: this host has no ${_db_miss// / or }, and tests.db needs them (install the PostgreSQL client). #$TICKET was not started."
+  exit "$DRIVER_E_MACHINE"
+fi
 # When this run started: a commit authored before it is an earlier run's (ship's verdict check).
 DRIVER_RUN_STARTED=$(date +%s); export DRIVER_RUN_STARTED
 # The run's reused proof trees go with the run (steps/build.sh driver_proof_trees_drop).
