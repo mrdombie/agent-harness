@@ -151,8 +151,10 @@ rm -f "$STATE/runs"/*; : > "$SPAWNS"; touch "$FIX/gh/ratelimit"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
 want_not_in "it is not blind"                      'could not be read — spawning nothing' "$out"
 want_in "it says it works from the snapshot"       'working from the snapshot taken' "$out"
-want_in "and still starts work"                    '^501' "$(cat "$SPAWNS")"
 want_in "the refusal starts a backoff"             '^[0-9]+' "$(cat "$STATE/swarm/gh-backoff" 2>/dev/null)"
+# A build started inside the backoff dies at its first read (2026-10-27: 36 of 124).
+want "but starts nothing while it holds"           "" "$(cat "$SPAWNS")"
+want_in "and says why, with GitHub's words"        'spawn: holding — GitHub is refusing this token until .* \(primary: GraphQL: API rate limit already exceeded' "$out"
 n=$(calls); : > "$GH_LOG"
 out=$(bash "$T" 2>&1)
 want "while it holds, nothing asks GitHub"         "0" "$(calls)"
@@ -163,6 +165,10 @@ want_in "the server sweep still runs (no GitHub)"  '^sweep' "$(cat "$FIX/house.l
 export SWARM_NOW=$(( $(date +%s) + 3600 )); : > "$GH_LOG"
 bash "$T" >/dev/null 2>&1
 want_in "once it ends, the tick asks again"        'OpenPullRequests' "$(cat "$GH_LOG")"
+rm -f "$FIX/gh/ratelimit" "$STATE/runs"/*; : > "$SPAWNS"; fix_pr_for 501
+export SWARM_NOW=$(( SWARM_NOW + 3600 ))   # past the backoff that last refused tick set
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" >/dev/null 2>&1
+want_in "and, answered, starts work again"         '^501' "$(cat "$SPAWNS")"
 unset SWARM_NOW
 
 echo "--- a refusal doubles the backoff, up to a cap ---"

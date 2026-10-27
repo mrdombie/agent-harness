@@ -1025,6 +1025,11 @@ elif [ "$CLAIMS_OK" = 0 ] || [ -z "$PRS" ]; then
 elif until=$(swarm_usage_hold); then
   say "spawn: usage limit — holding until $until — from $(swarm_usage_hold_source)"
   event "usage-hold:$until" usage-limit false "" "" "the plan's usage limit holds until $until" || true
+elif BACKOFF_UNTIL=$(gh_backoff_active); then
+  # A build started inside the backoff dies at its first read (2026-10-27: 36 of 124).
+  say "spawn: holding — GitHub is refusing this token until $(swarm_iso "$BACKOFF_UNTIL")$(r=$(gh_backoff_reason) && printf ' (%s)' "$r"); starts resume once it is over"
+  coord_act_log gh-backoff-hold - "$(gh_backoff_reason || echo backoff)"
+  held_view
 elif [ -n "$GH_LOW" ]; then
   say "spawn: holding — $(gh_limit_why). A build spends the token every machine shares; starts resume once it is over ${GH_ALLOWANCE_LOW_PCT}% again"
   held_view
