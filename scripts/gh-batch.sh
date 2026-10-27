@@ -7,6 +7,9 @@
 #   gh_call <gh args…>              gh, refused at once while the backoff holds;
 #                                   a rate-limit refusal starts (or lengthens) it
 #   gh_backoff_active               0, printing the epoch it ends, while it holds
+#   gh_backoff_reason               "<kind>: <GitHub's refusal text>" of the one that holds
+#   gh_backoff_wait [max-sec]       sleeps out a backoff ending within max-sec (300);
+#                                   1 at once when one holds longer
 #   gh_issues_batch <n…>            {"<n>": {number,state,title,updatedAt,labels:[name…]}}
 #                                   plus milestone (its title) when it has one,
 #                                   for every number GitHub resolved, in one
@@ -63,23 +66,71 @@ gh_backoff_active() {
   printf '%s' "$until"
 }
 
+# gh_backoff_reason — "<kind>: <refusal text>" of the backoff that holds; 1 when none does.
+gh_backoff_reason() {
+  gh_backoff_active >/dev/null || return 1
+  awk -F'\t' 'NR == 1 && $4 != "" { printf "%s: %s", $4, $5; f = 1 } END { exit !f }' "$(gh_backoff_file)" 2>/dev/null
+}
+
+# gh_backoff_wait [max-sec] — sleeps until a backoff ending within max-sec is over: 0
+# when none holds or it waited, 1 at once when the one that holds runs longer.
+gh_backoff_wait() {
+  local until left
+  until=$(gh_backoff_active) || return 0
+  left=$(( until - $(gh_batch_now) ))
+  [ "$left" -le "${1:-${GH_BACKOFF_WAIT_MAX_SEC:-300}}" ] || return 1
+  sleep $(( left + 1 ))
+}
+
+# _gh_primary_healthy — 0 when `gh api rate_limit` (free, answers while refused) shows
+# REST and GraphQL both over GH_ALLOWANCE_LOW_PCT and no host's reading is under it.
+_gh_primary_healthy() {
+  local j
+  j=$("$(gh_batch_bin)" api rate_limit 2>/dev/null) || return 1
+  jq -e --argjson p "${GH_ALLOWANCE_LOW_PCT:-10}" '[.resources.core, .resources.graphql]
+      | all(type == "object" and (.limit | type) == "number" and .limit > 0
+            and (.remaining | type) == "number" and .remaining * 100 >= .limit * $p)' >/dev/null 2>&1 <<<"$j" || return 1
+  ! gh_allowance_low >/dev/null 2>&1
+}
+
 # gh_backoff_note <stderr text> — starts a backoff when the text is a rate-limit
-# refusal: 4 minutes, doubled for each refusal within 30 minutes of the last
-# one, capped at 32. Returns 0 when it was one.
+# refusal, and returns 0 when it was one. The file is
+# <until> \t <level> \t <last primary refusal> \t <primary|secondary> \t <refusal text>.
+#   primary   — the hourly allowance is spent, or `gh api rate_limit` cannot say it is
+#               not: 4 minutes, doubled for each within 30 minutes of the last, capped at 32.
+#   secondary — a refusal with the allowance healthy (GitHub's per-minute limits):
+#               Retry-After seconds when the text carries them (capped at
+#               GH_BACKOFF_RETRY_AFTER_MAX, 300), else GH_BACKOFF_SECONDARY_SEC (60),
+#               GitHub's own advice; it never lengthens the primary level.
+# On 2026-10-27 one refusal held every host for 16 minutes with GraphQL at 4759/5000,
+# and every build started inside it died at its first read.
 gh_backoff_note() {
   printf '%s' "$1" | grep -qiE -- "$GH_RATE_LIMIT_RE" || return 1
-  local f now lvl=0 last=0 mins
+  local f now lvl=0 last=0 old=0 until kind secs text
   f=$(gh_backoff_file); now=$(gh_batch_now)
   mkdir -p "$(dirname "$f")" 2>/dev/null
   if [ -s "$f" ]; then
-    lvl=$(cut -f2 "$f" 2>/dev/null); last=$(cut -f3 "$f" 2>/dev/null)
+    old=$(cut -f1 "$f" 2>/dev/null); lvl=$(cut -f2 "$f" 2>/dev/null); last=$(cut -f3 "$f" 2>/dev/null)
+    case "$old" in ''|*[!0-9]*) old=0 ;; esac
     case "$lvl" in ''|*[!0-9]*) lvl=0 ;; esac
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
-    if [ $(( now - last )) -lt 1800 ]; then lvl=$(( lvl + 1 )); else lvl=0; fi
   fi
-  [ "$lvl" -le 3 ] || lvl=3
-  mins=$(( 4 << lvl ))
-  printf '%s\t%s\t%s\n' "$(( now + mins * 60 ))" "$lvl" "$now" > "$f.$$" && mv -f "$f.$$" "$f"
+  text=$(printf '%s' "$1" | tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ //; s/ $//' | cut -c1-300)
+  if _gh_primary_healthy; then
+    kind=secondary
+    secs=$(printf '%s' "$1" | grep -oiE 'retry[- ]after[^0-9]{0,4}[0-9]+' | grep -oE '[0-9]+$' | head -1)
+    case "$secs" in ''|*[!0-9]*) secs=${GH_BACKOFF_SECONDARY_SEC:-60} ;; esac
+    [ "$secs" -ge 1 ] || secs=1
+    [ "$secs" -le "${GH_BACKOFF_RETRY_AFTER_MAX:-300}" ] || secs=${GH_BACKOFF_RETRY_AFTER_MAX:-300}
+    until=$(( now + secs ))
+    [ "$old" -le "$until" ] || until=$old   # a longer one another caller set still stands
+  else
+    kind=primary
+    if [ "$last" -gt 0 ] && [ $(( now - last )) -lt 1800 ]; then lvl=$(( lvl + 1 )); else lvl=0; fi
+    [ "$lvl" -le 3 ] || lvl=3
+    until=$(( now + (4 << lvl) * 60 )); last=$now
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$until" "$lvl" "$last" "$kind" "$text" > "$f.$$" && mv -f "$f.$$" "$f"
   return 0
 }
 
@@ -178,7 +229,8 @@ gh_limit_why() {
     return 0
   fi
   if until=$(gh_backoff_active); then
-    printf 'GitHub is rate-limiting this token until %s' "$(gh_batch_clock "$until")"; return 0
+    printf 'GitHub is rate-limiting this token until %s%s' "$(gh_batch_clock "$until")" \
+      "$(r=$(gh_backoff_reason) && printf ' (%s)' "$r")"; return 0
   fi
   return 1
 }

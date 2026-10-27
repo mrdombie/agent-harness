@@ -142,11 +142,18 @@ DRIVER_E_UPSIZE=35    # the quick change is bigger than its size: the run goes o
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
 # growing pause. One failed read parked a ticket for good on 2026-10-18.
+# A shared backoff ending within DRIVER_BACKOFF_WAIT_MAX_SEC (120) is slept out and
+# costs no try, up to DRIVER_BACKOFF_WAITS (5) times: three 5-second tries inside a
+# 60-second backoff all fail at once, and that ended 36 of 124 builds at start.
 driver_gh_read() {
-  local n=0 out
+  local n=0 waits=0 out
   while :; do
-    n=$((n+1))
     if out=$("$@"); then printf '%s' "$out"; return 0; fi
+    if [ "$waits" -lt "${DRIVER_BACKOFF_WAITS:-5}" ] && gh_backoff_active >/dev/null \
+       && gh_backoff_wait "${DRIVER_BACKOFF_WAIT_MAX_SEC:-120}"; then
+      waits=$((waits+1)); continue
+    fi
+    n=$((n+1))
     [ "$n" -lt "${DRIVER_LOOKUP_TRIES:-3}" ] || return 1
     sleep $(( ${DRIVER_LOOKUP_RETRY_SEC:-5} * n ))
   done
