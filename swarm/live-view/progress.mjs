@@ -70,6 +70,28 @@ export function allowanceLow(now = Date.now() / 1000) {
   return null
 }
 
+// The backoff every caller shares once GitHub refuses the token (scripts/gh-batch.sh):
+// gh-backoff holds every call, gh-backoff.search the search bucket alone. Each file's
+// first field is the epoch it ends; 0 when none holds.
+const backoffFile = () => env.SWARM_GH_BACKOFF
+  || (env.SWARM_GH_ALLOWANCE ? path.join(path.dirname(env.SWARM_GH_ALLOWANCE), 'gh-backoff') : '')
+function backoffUntil(f, now) {
+  if (!f) return 0
+  try { const u = Number(fs.readFileSync(f, 'utf8').split('\t')[0]); return u > now ? u : 0 } catch { return 0 }
+}
+export const ghBackoff = (now = Date.now() / 1000) => backoffUntil(backoffFile(), now)
+export const searchBackoff = (now = Date.now() / 1000) => { const f = backoffFile(); return f ? backoffUntil(`${f}.search`, now) : 0 }
+// The calls that spend the search bucket, as gh-batch.sh's _gh_is_search reads them.
+export function isSearch(args) {
+  const [a, b, ...rest] = args || []
+  if (a === 'search') return true
+  if (a === 'api') return [b, ...rest].some((x) => /^\/?search\//.test(String(x)))
+  if ((a === 'issue' || a === 'pr') && b === 'list') return rest.some((x) => x === '--search' || x === '-S' || String(x).startsWith('--search='))
+  return false
+}
+// True while a backoff that covers this call holds: it is not made, the last read stands.
+export const ghHeld = (args, now = Date.now() / 1000) => ghBackoff(now) > 0 || (isSearch(args) && searchBackoff(now) > 0)
+
 // The open PRs the tick last read, while they are young enough to stand in for a call.
 function sharedPrs(maxAge = Number(env.SWARM_PRS_MAX_AGE || 300)) {
   const f = env.SWARM_PRS_FILE
@@ -106,7 +128,7 @@ function saveMemo(m, now = Date.now() / 1000) {
 }
 
 function sh(cmd, args, opts = {}) {
-  if (cmd === GH()) noteGh(args)
+  if (cmd === GH()) { if (ghHeld(args)) return null; noteGh(args) }
   try {
     return execFileSync(cmd, args, { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'], ...opts })
   } catch { return null }

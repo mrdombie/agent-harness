@@ -16,7 +16,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { gather as gatherProgress, plansOf, progressOf, shortTitle, allowanceLow, noteGh } from './progress.mjs'
+import { gather as gatherProgress, plansOf, progressOf, shortTitle, allowanceLow, noteGh, ghHeld } from './progress.mjs'
 
 const RUNS = process.env.SWARM_RUNS_DIR || path.join(os.homedir(), '.swarm/runs')
 const PORT = Number(process.env.SWARM_PORT || 4777)
@@ -115,7 +115,7 @@ let gathering = false
 function refreshProgress(tickets, ids, now) {
   if (gathering || now - progressAt < PROGRESS_MS) return
   progressAt = now
-  if (allowanceLow()) return
+  if (allowanceLow() || ghHeld(['api'])) return
   const args = { tickets, ids, repo: REPO, queueRepo: QUEUE_REPO, driverDir: DRIVER_DIR, prefix: PREFIX }
   const keep = (next) => {
     if (!next || typeof next !== 'object' || !next.tickets || !next.plans) return
@@ -247,7 +247,7 @@ const pending = new Set()
 // restart does not re-ask for every ticket at once. A failure is not retried in
 // the same process: the card falls back to "Ticket 1234", which is honest.
 function fetchTitle(ticket) {
-  if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4 || allowanceLow()) return
+  if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4 || allowanceLow() || ghHeld(['issue', 'view'])) return
   pending.add(ticket)
   noteGh(['issue', 'view'])
   runChild('title', GH, ['issue', 'view', String(ticket), '--repo', REPO, '--json', 'title,labels'],
@@ -632,8 +632,8 @@ function refreshPrStates(now) {
   const since = dayStart(now)
   try { if (now - fs.statSync(PR_STATES_FILE).mtimeMs < PR_STATES_MS && (readJsonCached(PR_STATES_FILE) || {}).since === since) return } catch {}
   prStatesTried = now
-  if (allowanceLow()) return
   const calls = prStateArgs(REPO, since)
+  if (allowanceLow() || calls.some((a) => ghHeld(a))) return
   const keep = (outs) => {
     const v = prStatesFrom(outs, since, iso(now))
     if (!v) return
@@ -714,9 +714,9 @@ function boardFresh(now) {
 function refreshBoard(now) {
   if (!REPO || boardBusy || now - boardTried < BOARD_MS || boardFresh(now)) return
   boardTried = now
-  if (allowanceLow()) return
   const since = dayStart(now)
   const args = boardArgs(REPO, since)
+  if (allowanceLow() || ghHeld(args)) return
   const keep = (out, claims) => {
     let pages
     try { pages = JSON.parse(out) } catch { return }
@@ -794,8 +794,8 @@ function refreshTrend(now) {
   if (!REPO || trendBusy || now - trendTried < TREND_MS) return
   try { if (now - fs.statSync(TREND_FILE).mtimeMs < TREND_MS && sameScope(TREND_FILE)) return } catch {}
   trendTried = now
-  if (allowanceLow()) return
   const args = trendArgs(REPO, now)
+  if (allowanceLow() || ghHeld(args)) return
   const keep = (out) => {
     let t = null
     try { t = trendFromData(JSON.parse(out), now) } catch {}
@@ -872,8 +872,8 @@ function refreshWrappers(now) {
   if (!REPO || wrappersBusy || now - wrappersTried < TREND_MS) return
   try { if (now - fs.statSync(WRAPPERS_FILE).mtimeMs < TREND_MS && sameScope(WRAPPERS_FILE, rowsKey())) return } catch {}
   wrappersTried = now
-  if (allowanceLow()) return
   const calls = wrapperSearches(REPO)
+  if (allowanceLow() || calls.some((a) => ghHeld(a))) return
   const keep = (outs) => {
     let w = null
     try { w = wrappersFromPages(outs.map((o) => JSON.parse(o)), iso(now)) } catch {}
@@ -968,8 +968,8 @@ function refreshRequired(now) {
   if (!REPO || requiredBusy || now - requiredTried < REQUIRED_MS) return
   try { if (now - fs.statSync(REQUIRED_FILE).mtimeMs < REQUIRED_MS) return } catch {}
   requiredTried = now
-  if (allowanceLow()) return
   const a = requiredArgs(REPO)
+  if (allowanceLow() || ghHeld(a)) return
   const keep = (out) => {
     let c
     try { c = JSON.parse(out) } catch { return }
