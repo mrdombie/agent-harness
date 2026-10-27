@@ -281,4 +281,17 @@ want "22 pending rows cost the searches 1 does"    "$small" "$big"
 want_in "and two at most"                          '^[0-2]$' "$big"
 want "every row still answered"                    "22" "$(grep -c '^would' "$FIX/dr.out" | tr -d ' ')"
 
+echo "--- the call log names each api call's method and endpoint ---"
+# 2026-10-27: every \`api -X …\` logged as a bare "api -X" hid 574 of a tick's 1,014 calls.
+fresh; rm -f "$STATE/swarm/gh-calls.log"
+( . "$HERE/gh-batch.sh"
+  GH_CALLER=probe gh_call api -X GET search/issues -f q=x >/dev/null 2>&1
+  GH_CALLER=probe gh_call api --method PATCH '/repos/o/r/issues/9?per_page=1' -f state=closed >/dev/null 2>&1
+  GH_CALLER=probe gh_call api -H 'Accept: x' --jq .x repos/o/r/pulls >/dev/null 2>&1
+  GH_CALLER=probe gh_call issue view 5 --json state >/dev/null 2>&1 )
+want "a search names its method and endpoint"      "api GET search/issues" "$(sed -n 1p "$STATE/swarm/gh-calls.log" | cut -f3)"
+want "the query string is dropped"                 "api PATCH repos/o/r/issues/9" "$(sed -n 2p "$STATE/swarm/gh-calls.log" | cut -f3)"
+want "flag values are not taken for the endpoint"  "api repos/o/r/pulls" "$(sed -n 3p "$STATE/swarm/gh-calls.log" | cut -f3)"
+want "other subcommands log as before"             "issue view" "$(sed -n 4p "$STATE/swarm/gh-calls.log" | cut -f3)"
+
 suite_end "$FAILED"

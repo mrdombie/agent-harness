@@ -198,9 +198,27 @@ gh_backoff_note() {
 # else the script's own name.
 gh_calls_file() { printf '%s' "${GH_CALLS_FILE:-$(dirname "$(gh_backoff_file)")/gh-calls.log}"; }
 gh_calls_note() { # <args…>
-  local f; f=$(gh_calls_file)
+  local f verb; f=$(gh_calls_file)
   mkdir -p "$(dirname "$f")" 2>/dev/null
-  printf '%s\t%s\t%s %s\n' "$(gh_batch_now)" "${GH_CALLER:-$(basename "${0:-?}" .sh)}" "${1:-}" "${2:-}" >> "$f" 2>/dev/null || true
+  if [ "${1:-}" = api ]; then verb=$(_gh_api_verb "${@:2}"); else verb="${1:-} ${2:-}"; fi
+  printf '%s\t%s\t%s\n' "$(gh_batch_now)" "${GH_CALLER:-$(basename "${0:-?}" .sh)}" "$verb" >> "$f" 2>/dev/null || true
+}
+# _gh_api_verb <gh api args…> — "api [METHOD] <endpoint>": the first positional, query and leading / dropped.
+_gh_api_verb() {
+  local a m="" ep="" skip=""
+  for a in "$@"; do
+    if [ -n "$skip" ]; then [ "$skip" = m ] && m="$a"; skip=""; continue; fi
+    case "$a" in
+      -X|--method) skip=m ;;
+      -X*) m="${a#-X}" ;;
+      --method=*) m="${a#--method=}" ;;
+      -f|-F|-H|-q|-p|-t|--raw-field|--field|--header|--jq|--input|--hostname|--cache|--preview|--template) skip=v ;;
+      -*) ;;
+      *) [ -z "$ep" ] && ep="$a" ;;
+    esac
+  done
+  ep="${ep%%\?*}"; ep="${ep#/}"
+  printf 'api%s%s' "${m:+ $m}" "${ep:+ $ep}"
 }
 # gh_calls_tally <since-epoch> [caller] — "caller N, caller N" (most first), or the count for one caller.
 gh_calls_tally() {
