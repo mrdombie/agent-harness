@@ -342,14 +342,37 @@ take_stalled() {
   printf 'has no live run and no change in %sh' "$TAKE_STALE_H"
 }
 
+# settle <n> <body> <states> — sets new, changed, left, done_n and said (the lines a
+# sweep prints) for one list's body.
+settle() {
+  local n="$1" body="$2" states="$3" st mark text state why
+  new="$body"; changed=0; said=""
+  while IFS=$'\t' read -r st mark text; do
+    [ "$st" = " " ] && [ -n "$mark" ] || continue
+    state=$(jq -r --arg p "${mark#t}" '.[$p].state // empty' <<<"$states")
+    case "$mark:$state" in
+      t*:CLOSED|t*:MERGED)
+        new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && said+="#$n: ${w}free again — #${mark#t} closed without a PR for it: $text"$'\n' ;;
+      t*:OPEN)
+        why=$(take_stalled "${mark#t}" "$states") || continue
+        new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && said+="#$n: ${w}free again — #${mark#t} $why: $text"$'\n' ;;
+      *:MERGED) new=$(printf '%s\n' "$new" | set_item "$text" x "$mark") && changed=1 && said+="#$n: ${w}ticked — PR #$mark merged: $text"$'\n' ;;
+      *:CLOSED) new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && said+="#$n: ${w}free again — PR #$mark closed unmerged: $text"$'\n' ;;
+    esac
+  done <<<"$(printf '%s\n' "$body" | all_items)"
+  left=$(printf '%s\n' "$new" | all_items | awk -F'\t' '$1 == " "' | grep -c .)
+  done_n=$(printf '%s\n' "$new" | all_items | awk -F'\t' '$1 == "x"' | grep -c .)
+}
+
 # sweep — settles every reservation on every open list from its PR's state, in one
-# read of the lists and one batched read of the PRs they name.
+# read of the lists and one batched read of the PRs they name: the calls do not grow
+# with the lists. Only a list it will write or close is read again first.
 sweep() {
-  local dry=0 w="" lists nums states n body new mark st text left done_n changed state why
+  local dry=0 w="" lists nums states n body new changed left done_n said
   [ "${1:-}" = --dry-run ] && { dry=1; w="would be "; }
   lock
-  lists=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$LBL_POLISH_LIST" --limit 200 \
-            --json number,body 2>/dev/null) || die "the open polish lists could not be read"
+  lists=$(swarm_gh issue list --repo "$REPO_SLUG" --state open --label "$LBL_POLISH_LIST" --limit 1000 \
+            --json number,body,labels 2>/dev/null) || die "the open polish lists could not be read"
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$lists" || die "the open polish lists could not be read"
   # Every PR and every taking ticket named on any list, in one batched read.
   nums=$(jq -r '.[].body // ""' <<<"$lists" | all_items | awk -F'\t' '$1 == " " && $2 != "" { sub(/^t/, "", $2); print $2 }' | sort -un | tr '\n' ' ')
@@ -357,24 +380,13 @@ sweep() {
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   if [ -n "${nums// /}" ]; then states=$(gh_issues_batch $nums 2>/dev/null) || states="{}"; fi
   for n in $(jq -r '.[].number' <<<"$lists"); do
-    # Read again just before the write: the list read above is the one that found it.
+    body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$lists")
+    settle "$n" "$body" "$states"
+    [ "$changed" = 1 ] || { [ "$left" -eq 0 ] && [ "$done_n" -gt 0 ]; } || continue
+    # Read again just before the write: an edit since the list read is kept.
     body=$(body_of "$n") || { echo "#$n could not be read — next pass" >&2; continue; }
-    new="$body"; changed=0
-    while IFS=$'\t' read -r st mark text; do
-      [ "$st" = " " ] && [ -n "$mark" ] || continue
-      state=$(jq -r --arg p "${mark#t}" '.[$p].state // empty' <<<"$states")
-      case "$mark:$state" in
-        t*:CLOSED|t*:MERGED)
-          new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — #${mark#t} closed without a PR for it: $text" ;;
-        t*:OPEN)
-          why=$(take_stalled "${mark#t}" "$states") || continue
-          new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — #${mark#t} $why: $text" ;;
-        *:MERGED) new=$(printf '%s\n' "$new" | set_item "$text" x "$mark") && changed=1 && echo "#$n: ${w}ticked — PR #$mark merged: $text" ;;
-        *:CLOSED) new=$(printf '%s\n' "$new" | set_item "$text" " " "") && changed=1 && echo "#$n: ${w}free again — PR #$mark closed unmerged: $text" ;;
-      esac
-    done <<<"$(printf '%s\n' "$body" | all_items)"
-    left=$(printf '%s\n' "$new" | all_items | awk -F'\t' '$1 == " "' | grep -c .)
-    done_n=$(printf '%s\n' "$new" | all_items | awk -F'\t' '$1 == "x"' | grep -c .)
+    settle "$n" "$body" "$states"
+    printf '%s' "$said"
     [ "$dry" = 1 ] && { [ "$left" -gt 0 ] || [ "$done_n" -eq 0 ] || echo "#$n: would be closed — every item is done"; continue; }
     if [ "$changed" = 1 ]; then printf '%s\n' "$new" | write_body "$n" || { echo "#$n could not be written" >&2; continue; }; fi
     if [ "$left" -eq 0 ] && [ "$done_n" -gt 0 ]; then
