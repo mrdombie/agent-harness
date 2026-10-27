@@ -58,6 +58,8 @@ fi
 # has non-fatal probes that would otherwise end this script at the first one.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-proc.sh" || exit 1
+# Every GitHub call goes through the shared backoff and the calls log.
+declare -F gh_call >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" || exit 1
 
 set -euo pipefail
 
@@ -184,18 +186,23 @@ session_pid() { claim_session_pid; }
 poke_board() {
   local repo="${HARNESS_STATUS_REPO:-}"
   [ -n "$repo" ] || return 0
-  gh api "repos/$repo/dispatches" -f event_type=claim-changed >/dev/null 2>&1 || true
+  gh_call api "repos/$repo/dispatches" -f event_type=claim-changed >/dev/null 2>&1 || true
 }
 
 # The open PR that already closes this issue, or nothing. A PR on `skip_branch` is
 # the claimer's own (resuming a parked ticket), so it does not count. Silent when gh
 # cannot answer: a guard that cannot see is no reason to block a claim.
+# CLAIM_CLOSING_PRS, when set, is the caller's own read of those PR numbers.
 open_pr_closing() {
-  local issue="$1" skip_branch="${2:-}" n head
+  local issue="$1" skip_branch="${2:-}" n head closing
   command -v gh >/dev/null 2>&1 || return 0
-  for n in $(gh issue view "$issue" --repo "$REPO_SLUG" --json closedByPullRequestsReferences \
-               --jq '.closedByPullRequestsReferences[].number' 2>/dev/null); do
-    head=$(gh pr view "$n" --repo "$REPO_SLUG" --json state,headRefName \
+  if [ -n "${CLAIM_CLOSING_PRS+x}" ]; then closing="$CLAIM_CLOSING_PRS"
+  else
+    closing=$(gh_call issue view "$issue" --repo "$REPO_SLUG" --json closedByPullRequestsReferences \
+                --jq '.closedByPullRequestsReferences[].number' 2>/dev/null) || closing=""
+  fi
+  for n in $closing; do
+    head=$(gh_call pr view "$n" --repo "$REPO_SLUG" --json state,headRefName \
              --jq 'select(.state=="OPEN") | .headRefName' 2>/dev/null) || continue
     [ -n "$head" ] && [ "$head" != "$skip_branch" ] && { printf '%s\n' "$n"; return 0; }
   done
@@ -311,7 +318,7 @@ cmd_release() {
   # second agent work that is already built and waiting on a person.
   if command -v gh >/dev/null 2>&1; then
     local _st _labels _both
-    _both=$(gh issue view "$issue" --repo "$REPO_SLUG" --json state,labels \
+    _both=$(gh_call issue view "$issue" --repo "$REPO_SLUG" --json state,labels \
               --jq '"\(.state)|\([.labels[].name]|join(","))"' 2>/dev/null || true)
     _st=${_both%%|*}
     _labels=${_both#*|}
@@ -332,7 +339,7 @@ cmd_release() {
           #
           # A merged PR naming the ticket is the discriminator: abandoned claims
           # do not have one.
-          if gh pr list --repo "$REPO_SLUG" --state merged --limit 20 \
+          if gh_call pr list --repo "$REPO_SLUG" --state merged --limit 20 \
                --search "$issue in:title" --json number --jq 'length' 2>/dev/null \
                | grep -qv '^0$'; then
             printf '  #%s has a merged PR — shipped, not abandoned; leaving the label alone\n' "$issue"

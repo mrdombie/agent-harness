@@ -85,7 +85,7 @@ driver_step_size() { # <ticket>
     driver_say "   size: route=full size=$(driver_state_get "$t" size) — already planned on the full route"
     return "$DRIVER_OK"
   fi
-  if ! j=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,body 2>/dev/null) || [ -z "$j" ]; then
+  if ! j=$(driver_gh_read driver_ticket_view "$t" title,labels,body 2>/dev/null) || [ -z "$j" ]; then
     size=project; why="the ticket could not be read, so its size is unknown"; files=""
   else
     title=$(printf '%s' "$j" | jq -r '.title // ""')

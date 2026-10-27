@@ -89,7 +89,7 @@ _driver_fact_none() { printf '(none — %s)' "$1"; }
 # question are all read off this, so it goes in whole rather than summarised.
 driver_fact_ticket() { # <ticket>
   local j
-  j=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json title,body,labels 2>/dev/null) || j=""
+  j=$(driver_ticket_view "$1" title,body,labels 2>/dev/null) || j=""
   if [ -z "$j" ]; then _driver_fact_none "#$1 could not be read from $REPO_SLUG"; return 0; fi
   # --arg, not shell-quoted interpolation. Built the other way the closing quote of
   # the jq program was eaten by the shell, jq exited 3 on a compile error, and the
@@ -154,7 +154,7 @@ _driver_programmes_dir() { # [ticket]
 
 driver_fact_programme() { # <ticket>
   local labels p dir name brief=""
-  labels=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '[.labels[].name] | join(" ")' 2>/dev/null) || labels=""
+  labels=$(driver_ticket_view "$1" labels '[.labels[].name] | join(" ")' 2>/dev/null) || labels=""
   p=""
   for l in $labels; do
     case "$l" in "${SWARM_PROGRAMME_PREFIX:-project:}"*) p="$l"; break ;; esac
@@ -212,7 +212,7 @@ driver_fact_premise() { # <ticket>
   trunk="HEAD"
   git -C "$wt" rev-parse --verify -q "origin/$INTEGRATION_BRANCH" >/dev/null 2>&1 \
     && trunk="origin/$INTEGRATION_BRANCH"
-  body=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json body -q '.body // ""' 2>/dev/null) || body=""
+  body=$(driver_ticket_view "$1" body '.body // ""' 2>/dev/null) || body=""
   cited=$(printf '%s\n' "$body" \
     | grep -oE '[A-Za-z0-9._/-]+/[A-Za-z0-9._/-]+\.[a-z]{2,4}' | sort -u | head -8)
   if [ -z "$cited" ]; then
@@ -309,7 +309,7 @@ driver_fact_polish_list() { # <ticket>
   local t="$1" cached labels slugs slug n items out="" kept="" pl lists="" rc why alone=""
   cached=$(driver_state_get "$t" polish_fact)
   [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
-  labels=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) || {
+  labels=$(driver_ticket_view "$t" labels '.labels[].name' 2>/dev/null) || {
     _driver_fact_none "#$t's labels could not be read, so no polish list was looked for"; return 0; }
   pl="$KIT_ROOT/scripts/polish-list.sh"
   if printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST"; then

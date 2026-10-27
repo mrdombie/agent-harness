@@ -110,14 +110,25 @@ _driver_start_cut() {
   return 1
 }
 
+# _driver_start_acquire <ticket> <branch> — the claim's compare-and-swap, handed the PRs
+# that close the ticket from the run's copy of it rather than a read of its own.
+_driver_start_acquire() {
+  local closing
+  if closing=$(driver_ticket_view "$1" closedByPullRequestsReferences '[.closedByPullRequestsReferences[]?.number] | join(" ")' 2>/dev/null); then
+    CLAIM_CLOSING_PRS="$closing" bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>&1
+  else
+    bash "$CL" acquire "$1" --branch "$2" >/dev/null 2>&1
+  fi
+}
+
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
   local meta st labels repo slug branch wt sha l hrc cw cb ow ob
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 
-  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state,labels,title \
-           -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
+  meta=$(driver_gh_read driver_ticket_view "$t" state,labels,title \
+           '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null)
   if [ -z "$meta" ]; then
     driver_say "✋ start: #$t could not be read from GitHub after ${DRIVER_LOOKUP_TRIES:-3} tries. Note that a pull request resolves here too — check you were given an issue."
     driver_state_set "$t" park_note "start could not read #$t from GitHub (${DRIVER_LOOKUP_TRIES:-3} tries)"
@@ -260,7 +271,7 @@ driver_step_start() { # <ticket>
         || { [ -z "$cw" ] && [ -n "$ob" ] && [ "$cb" = "$ob" ]; }; then
           driver_say "   start: #$t is already ours — resuming"
         elif driver_claim_dead_here "$t" && bash "$CL" release "$t" --force >/dev/null 2>&1 \
-             && bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
+             && _driver_start_acquire "$t" "$branch"; then
           driver_say "   start: the claim on #$t was a dead run's on this host — released and taken"
         else
           driver_say "✋ start: another run on this host holds the claim on #$t (its branch is ${cb:-unnamed}, its worktree ${cw:-none}, and ours is ${ow:-none}). The lock's identity is this machine, not this run, so a match there is not ownership."
@@ -272,7 +283,7 @@ driver_step_start() { # <ticket>
         return "$DRIVER_E_BUSY" ;;
     *)  # Free, as far as the cache can see. `acquire` is the compare-and-swap that
         # settles it, and losing it means a peer won between the two calls.
-        if ! bash "$CL" acquire "$t" --branch "$branch" >/dev/null 2>&1; then
+        if ! _driver_start_acquire "$t" "$branch"; then
           driver_say "✋ start: a peer took the claim on #$t first. Never adopt a live claim — two agents on one branch is what the ref exists to stop."
           driver_state_set "$t" park_note "a peer took the claim on #$t first"
           return "$DRIVER_E_BUSY"
@@ -365,6 +376,13 @@ driver_step_start() { # <ticket>
     ${CLAIM_RUN_ID:+run_id="$CLAIM_RUN_ID"} ${CLAIM_RUN_LOG:+run_log="$CLAIM_RUN_LOG"} >/dev/null 2>&1 || true
   # Every other status comes off: a resumed park that kept status:parked read as
   # stopped, and a kept status:in-review as waiting, while an agent built it.
-  issue_status_set "$t" "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  # The labels start read are the ones the status is set from: nothing between wrote any.
+  local cur
+  if cur=$(driver_ticket_view "$t" labels '.labels[].name' 2>/dev/null); then
+    ISSUE_STATUS_CURRENT="$cur" issue_status_set "$t" "$LBL_CLAIMED" >/dev/null 2>&1 \
+      && driver_ticket_snap_labels "$t" "$ISSUE_STATUS_LABELS"
+  else
+    issue_status_set "$t" "$LBL_CLAIMED" >/dev/null 2>&1 || true
+  fi
   return "$DRIVER_OK"
 }

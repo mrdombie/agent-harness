@@ -19,7 +19,9 @@
 #
 # --also adds a marker or a non-status label (the owner's hold) in the same call;
 # --drop removes any label in the same call. Every other label family is untouched.
-# After `set`, ISSUE_STATUS_ADDED is 1 when <status> was not already on the ticket.
+# After `set`, ISSUE_STATUS_ADDED is 1 when <status> was not already on the ticket, and
+# ISSUE_STATUS_LABELS holds the labels it now wears, one a line. ISSUE_STATUS_CURRENT,
+# when set, is the caller's own read of the labels this moment, and `set` reads none.
 # Exit: 0 done (or nothing to do), 1 the labels could not be read or the edit failed,
 # 2 a usage error (a marker given to `set`, a lifecycle status given to --also/`mark`).
 
@@ -52,7 +54,7 @@ issue_status_is_lifecycle() {
 }
 
 issue_status_set() {
-  ISSUE_STATUS_ADDED=0
+  ISSUE_STATUS_ADDED=0; ISSUE_STATUS_LABELS=""
   local n="${1:-}" want="${2:-}" repo="${REPO_SLUG:-}" also="" dropx="" l current
   n="${n#\#}"
   case "$n" in ''|*[!0-9]*) echo "issue-status: set needs a ticket number, got '${1:-}'" >&2; return 2 ;; esac
@@ -70,31 +72,37 @@ issue_status_set() {
     esac
   done
   [ -n "$repo" ] || { echo "issue-status: no repo (REPO_SLUG or --repo)" >&2; return 2; }
-  current=$(issue_status_gh issue view "$n" --repo "$repo" --json labels -q '.labels[].name' 2>/dev/null) \
-    || { echo "issue-status: could not read #$n's labels — status not changed" >&2; return 1; }
+  if [ -n "${ISSUE_STATUS_CURRENT+x}" ]; then current="$ISSUE_STATUS_CURRENT"
+  else
+    current=$(issue_status_gh issue view "$n" --repo "$repo" --json labels -q '.labels[].name' 2>/dev/null) \
+      || { echo "issue-status: could not read #$n's labels — status not changed" >&2; return 1; }
+  fi
 
   # Flat strings, not arrays: macOS bash 3.2 errors expanding an empty array under set -u.
-  local args="" add=0 rm_any=0
+  local args="" add=0 rm_any=0 kept=""
   while IFS= read -r l; do
     [ -n "$l" ] || continue
     if issue_status_is_lifecycle "$l" && [ "$l" != "$want" ]; then
       args="$args"$'\n'"--remove-label"$'\n'"$l"; rm_any=1
     elif printf '%s' "$dropx" | grep -qxF -- "$l"; then
       args="$args"$'\n'"--remove-label"$'\n'"$l"; rm_any=1
+    else
+      kept="$kept$l"$'\n'
     fi
   done <<<"$current"
   printf '%s\n' "$current" | grep -qxF -- "$want" \
-    || { args="$args"$'\n'"--add-label"$'\n'"$want"; add=1; ISSUE_STATUS_ADDED=1; }
+    || { args="$args"$'\n'"--add-label"$'\n'"$want"; add=1; ISSUE_STATUS_ADDED=1; kept="$kept$want"$'\n'; }
   while IFS= read -r l; do
     [ -n "$l" ] || continue
-    printf '%s\n' "$current" | grep -qxF -- "$l" || { args="$args"$'\n'"--add-label"$'\n'"$l"; add=1; }
+    printf '%s\n' "$current" | grep -qxF -- "$l" || { args="$args"$'\n'"--add-label"$'\n'"$l"; add=1; kept="$kept$l"$'\n'; }
   done <<<"$also"
-  [ "$add$rm_any" != 00 ] || return 0
+  [ "$add$rm_any" != 00 ] || { ISSUE_STATUS_LABELS="$kept"; return 0; }
 
   local IFS=$'\n'
   # shellcheck disable=SC2086  # $args is a newline-separated flag list, split on newlines only
   issue_status_gh issue edit "$n" --repo "$repo" ${args#$'\n'} >/dev/null 2>&1 \
     || { echo "issue-status: the edit of #$n to $want failed" >&2; return 1; }
+  ISSUE_STATUS_LABELS="$kept"
 }
 
 issue_status_mark() {
