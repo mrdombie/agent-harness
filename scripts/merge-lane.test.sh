@@ -252,6 +252,43 @@ want "a running lane blocks a second one"  "" "$(writes)"
 want_in "and says so"                      'another lane \(pid [0-9]+\) is running' "$out"
 rm -rf "$C/lane.lock"
 
+echo "--- up to date not required (merge.updateBehind bot): behind is no reason to wait ---"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"; cfg '.merge.updateBehind = "bot"'
+fresh; pr 15 s15 - 1 build:SUCCESS lint:SUCCESS; compare develop s15 3
+live >/dev/null
+want "a green head 3 behind merges in that pass" "15" "$(merges)"
+want "with no update-branch call"          "" "$(updates)"
+fresh; pr 15 s15 - 1 build:SUCCESS lint:SUCCESS; compare develop s15 3; set_pr 15 '.mergeStateStatus = "BEHIND"'
+live >/dev/null
+want "GitHub calling it BEHIND (a strict rule): it is still updated" "15" "$(updates)"
+want "  and not merged past the rule"     "" "$(merges)"
+fresh; fix_issue 701 OPEN "status:in-review"
+pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3; set_pr 70 '.mergeStateStatus = "DIRTY" | .mergeable = "CONFLICTING"'
+live >/dev/null
+want "a conflict still goes out to the fixer" "701" "$(fixers)"
+want "  and is not merged"                 "" "$(merges)"
+cp "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
+
+echo "--- a head stuck on anything but its own checks gives up its place after one pass ---"
+fresh
+pr 16 s16 - 1 build:SUCCESS lint:SUCCESS; compare develop s16 0
+pr 17 s17 - 1 build:SUCCESS lint:SUCCESS; compare develop s17 0
+printf 'GraphQL: Pull request is not mergeable (mergePullRequest)\n' > "$FIX/gh/merge-16.fail"
+live >/dev/null
+want "a refused merge: it waits one pass as head" "16" "$(jq -r '.head.pr' "$C/lane.did.json")"
+live >/dev/null
+want "a second refusal: it gives up its place" "none" "$(jq -r '.head.pr // "none"' "$C/lane.did.json")"
+live >/dev/null
+want "the next PR merges"                  "16 16 17" "$(merges)"
+want "and the stuck one is behind the rest" "17 16" "$(jq -r '.order | map(tostring) | join(" ")' "$C/lane.did.json")"
+want_in "the yield is logged"              'did	yield	16' "$(cat "$C/actions.log")"
+fresh
+pr 18 s18 - 1 build:PENDING lint:SUCCESS; compare develop s18 0
+pr 19 s19 - 1 build:SUCCESS lint:SUCCESS; compare develop s19 0
+live >/dev/null; live >/dev/null; live >/dev/null
+want "a head waiting on its own checks keeps its place" "18" "$(jq -r '.head.pr' "$C/lane.did.json")"
+want "  and nothing merges past it"        "" "$(merges)"
+
 echo "--- a real conflict leaves the lane and gets a fixer; the lane never resolves it ---"
 fresh; fix_issue 701 OPEN "status:in-review"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3

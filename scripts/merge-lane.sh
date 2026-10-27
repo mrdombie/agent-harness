@@ -27,15 +27,22 @@
 #                                 update touched none of its screen files; else the
 #                                 owner is told
 #                  conflicting, or the update hits a conflict → out, fixer
-#                  behind the trunk                      → update-branch, wait
+#                  behind the trunk                      → update-branch, wait —
+#                                 unless merge.updateBehind is bot and GitHub does
+#                                 not call it BEHIND (up to date is not required):
+#                                 then behind is no reason to wait
 #                  a required check pending or missing   → wait
 #                  a required check red: a flake         → re-run once
 #                                        anything else   → out, check named, fixer
 #                  every required check green            → merge, end of pass
+#                  a wait on anything but its own checks a second pass running
+#                                 (unreadable, refused) → it gives up its place
+#                                 and goes behind every other member
 #
 # Project facts, refused by key name when missing: merge.method, gates.requiredChecks.
 # Optional: mergeLane.label (queue:merge), mergeLane.firstLabel (P0),
-# mergeLane.flakePattern, design.surfacePaths (which files are screens).
+# mergeLane.flakePattern, design.surfacePaths (which files are screens),
+# merge.updateBehind (agent; bot = the trunk does not require up to date).
 #
 # Shadow (the default): every act is written to actions.log as "would …"; nothing
 # is merged, updated, labelled, re-run, spawned or notified.
@@ -60,6 +67,7 @@ REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and le
 # A check that warns until the release (release.nonBlockingChecks) is not waited on.
 REQUIRED=$(release_blocking_required "$REQUIRED")
 LANE_LABEL=$(swarm_opt mergeLane.label "queue:merge")
+UPDATE_BEHIND=$(swarm_opt merge.updateBehind agent)
 FIRST_LABEL=$(swarm_opt mergeLane.firstLabel "P0")
 FLAKE_RE=$(swarm_opt mergeLane.flakePattern 'shutdown signal|lost communication with the server|runner .*(lost|did not respond|offline)|exit code 137|exit code 143|The operation was canceled|exceeded the maximum execution time')
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
@@ -210,8 +218,9 @@ ORDER=$(jq_slurp c "$CANDS" prs "$PRS" tk "$TICKETS" -- coord_jq -c --arg first 
          p: (if any($pl[]; . == $first) then 0 else 1 end),
          pri: coord_prin($ls; null),
          tool: (if coord_tooling($ls; ($p.title // $t.title // "")) then 1 else 0 end),
+         y: (($m[($n|tostring)].yielded // {}) as $y | if $y.sha != null and $y.sha == $p.headRefOid then $y.at else 0 end),
          s: ($m[($n|tostring)].seen // 0)} ]
-  | sort_by(.h, .p, .pri, .tool, .s, .n) | map(.n)' <<<"$ST")
+  | sort_by(.h, .y, .p, .pri, .tool, .s, .n) | map(.n)' <<<"$ST")
 ST=$(jq_slurp o "$ORDER" -- jq -c '.order = $o[0]' <<<"$ST")
 
 drop() { # <pr> — gone from the lane's books
@@ -242,6 +251,22 @@ if [ -z "$HEAD_PR" ]; then
 fi
 SHA=$(pr_field "$HEAD_PR" .headRefOid)
 head_status() { status "$WAITING in line${QUEUE_LINE:+ ($QUEUE_LINE)} · head #$HEAD_PR — $*"; }
+
+# A head waiting on its own checks keeps its place; a head stuck on anything else
+# (a read that failed, a refusal) waits one pass, then gives it up and goes behind
+# every other member until its head moves, so one PR never holds up the rest.
+progress() { st '.head.stalls = 0'; }
+stall() { # <why> — ends the pass
+  local n
+  n=$(jq -r '(.head.stalls // 0) + 1' <<<"$ST")
+  if [ "$n" -le 1 ]; then
+    st '.head.stalls = 1'; head_status "$1"; exit 0
+  fi
+  say "lane: #$HEAD_PR gives up its place — $1, a second pass running"
+  act yield "$HEAD_PR" "$SHA" "$1"
+  st --arg p "$HEAD_PR" --arg s "$SHA" --argjson now "$NOW" '.members[$p].yielded = {sha: $s, at: $now} | .head = null'
+  status "$WAITING in line · #$HEAD_PR gave up its place: $1"; exit 0
+}
 
 # ---- fixers and leaving --------------------------------------------------------
 ticket_of() { pr_field "$1" .headRefName | branch_tickets | cut -f1; }
@@ -315,7 +340,7 @@ if has_label "$HEAD_PR" "$HOLD_LABEL"; then
       if lane_shadow; then say "would clear the hold on #$HEAD_PR: $reason"
       elif bash "$CLEAR_HOLD" "$HEAD_PR" --reason "$reason" --sha "$SHA" >> "$LANE_LOG" 2>&1; then say "lane: hold re-cleared on #$HEAD_PR — $reason"
       else say "lane: clear-hold on #$HEAD_PR failed — trying again next pass"; fi
-      head_status "approval carried through a develop-only update" ;;
+      progress; head_status "approval carried through a develop-only update" ;;
     1)
       say "lane: #$HEAD_PR changed after its update — $CHANGE_WHY; the hold stays"
       act held "$HEAD_PR" "$SHA" "$CHANGE_WHY"
@@ -323,7 +348,7 @@ if has_label "$HEAD_PR" "$HOLD_LABEL"; then
       drop "$HEAD_PR"; status "$WAITING in line · #$HEAD_PR back to the owner: $CHANGE_WHY" ;;
     *)
       say "lane: #$HEAD_PR is held and its update could not be compared — waiting"
-      head_status "cannot compare its update with the approved head" ;;
+      stall "cannot compare its update with the approved head" ;;
   esac
   exit 0
 fi
@@ -332,11 +357,18 @@ fi
 if [ "$(pr_field "$HEAD_PR" .mergeable)" = CONFLICTING ]; then
   take_out "it conflicts with $INTEGRATION_BRANCH"; exit 0
 fi
-# gh-read-ok: a non-number waits, below
-BEHIND=$(swarm_gh api "repos/$REPO_SLUG/compare/$INTEGRATION_BRANCH...$SHA" --jq .behind_by 2>/dev/null)
-case "$BEHIND" in
-  ''|*[!0-9]*) say "lane: cannot read how far #$HEAD_PR is behind — waiting"; head_status "cannot read how far behind it is"; exit 0 ;;
-esac
+# Behind matters only where the trunk requires up to date: with merge.updateBehind
+# bot an update is never needed unless GitHub itself reads the PR as BEHIND (a strict
+# rule). Updating anyway chased the trunk: PRs merging around the lane moved it on
+# before the new CI finished, and every PR behind the head waited.
+BEHIND=0
+if [ "$UPDATE_BEHIND" != bot ] || [ "$(pr_field "$HEAD_PR" .mergeStateStatus)" = BEHIND ]; then
+  # gh-read-ok: a non-number waits, below
+  BEHIND=$(swarm_gh api "repos/$REPO_SLUG/compare/$INTEGRATION_BRANCH...$SHA" --jq .behind_by 2>/dev/null)
+  case "$BEHIND" in
+    ''|*[!0-9]*) say "lane: cannot read how far #$HEAD_PR is behind — waiting"; stall "cannot read how far behind it is" ;;
+  esac
+fi
 if [ "$BEHIND" -gt 0 ]; then
   act update "$HEAD_PR" "$SHA" "$BEHIND behind $INTEGRATION_BRANCH"
   if lane_shadow; then
@@ -345,11 +377,12 @@ if [ "$BEHIND" -gt 0 ]; then
     err=$(swarm_gh api -X PUT "repos/$REPO_SLUG/pulls/$HEAD_PR/update-branch" -f "expected_head_sha=$SHA" 2>&1 >/dev/null)
     if [ $? -eq 0 ]; then
       say "lane: updated #$HEAD_PR with $INTEGRATION_BRANCH"
-      st --arg p "$HEAD_PR" '.members[$p].updated = true'
+      st --arg p "$HEAD_PR" '.members[$p].updated = true'; progress
     elif printf '%s' "$err" | grep -qi conflict; then
       take_out "updating it with $INTEGRATION_BRANCH hit a merge conflict"; exit 0
     else
       say "lane: update of #$HEAD_PR refused — $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-200)"
+      stall "its update with $INTEGRATION_BRANCH was refused"
     fi
   fi
   head_status "updating with $INTEGRATION_BRANCH"; exit 0
@@ -375,7 +408,7 @@ flaky() { # <conclusion> <job-id> — 0 a flake, 1 a real red, GH_READ_UNKNOWN w
   grep -iE -- "$FLAKE_RE" >/dev/null <<<"$notes"
 }
 
-waiting=""
+waiting=""; unread=""
 while IFS=$'\t' read -r name verdict concl url; do
   [ -n "${name:-}" ] || continue
   case "$verdict" in
@@ -392,7 +425,7 @@ while IFS=$'\t' read -r name verdict concl url; do
       fl=1; [ "$rec" = null ] && [ -n "$run" ] && { flaky "$concl" "$job"; fl=$?; }
       if [ "$fl" = "$GH_READ_UNKNOWN" ]; then
         say "lane: unknown — whether $name on #$HEAD_PR is a flake could not be read; nothing done this pass"
-        waiting="$waiting${waiting:+, }$name (unknown: its annotations could not be read)"; continue
+        waiting="$waiting${waiting:+, }$name (unknown: its annotations could not be read)"; unread=1; continue
       fi
       if [ "$fl" = 0 ]; then
         act rerun "$HEAD_PR" "$SHA:$name" "$name $concl — an infrastructure flake, re-run once"
@@ -411,7 +444,8 @@ while IFS=$'\t' read -r name verdict concl url; do
 done <<< "$CHECKS"
 
 if [ -n "$waiting" ]; then
-  head_status "waiting for checks: $waiting"; exit 0
+  [ -z "$unread" ] || stall "waiting for checks: $waiting"
+  progress; head_status "waiting for checks: $waiting"; exit 0
 fi
 
 # ---- 4d. merge: one per pass ---------------------------------------------------
@@ -426,5 +460,5 @@ if err=$(swarm_gh pr merge "$HEAD_PR" --repo "$REPO_SLUG" "--$METHOD" --match-he
   status "$((WAITING - 1)) in line · merged #$HEAD_PR"
 else
   say "lane: merge of #$HEAD_PR refused — $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-200)"
-  head_status "merge refused; trying again next pass"
+  stall "merge refused"
 fi
