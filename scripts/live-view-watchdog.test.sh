@@ -109,6 +109,64 @@ fresh; start hung
 t0=$(date +%s); LIVE_VIEW_PROBE_SEC= bash -c 'unset LIVE_VIEW_PROBE_SEC; bash "$0"' "$WD" >/dev/null 2>&1; t1=$(date +%s)
 s=$((t1 - t0)); { [ "$s" -ge 4 ] && [ "$s" -le 9 ]; } && ok "one probe took ${s}s" || bad "one probe took ${s}s, wanted about 5"
 
+echo "--- a healthy live view on an older kit is restarted onto the installed one ---"
+CUR=$(jq -r .version "$HERE/../.claude-plugin/plugin.json")
+# start_kit <version> — a healthy server whose command line is that kit's server.mjs.
+start_kit() {
+  local f="$FIX/cache/agent-harness/$1/swarm/live-view/server.mjs" pf="$FIX/port-$RANDOM"
+  mkdir -p "$(dirname "$f")"
+  cat > "$f" <<'JS'
+import http from 'node:http'
+import fs from 'node:fs'
+const s = http.createServer((req, res) => res.end('{}'))
+s.listen(0, '127.0.0.1', () => fs.writeFileSync(process.env.PORT_FILE, String(s.address().port)))
+setTimeout(() => process.exit(0), 60000)
+JS
+  PORT_FILE="$pf" node "$f" &
+  SRV_PID=$!; disown "$SRV_PID" 2>/dev/null; echo "$SRV_PID" >> "$SERVERS"
+  local i; for i in $(seq 1 50); do [ -s "$pf" ] && break; sleep 0.1; done
+  export SWARM_LIVE_URL="http://127.0.0.1:$(cat "$pf")/api/agents"
+  echo "$SRV_PID" > "$STATE/swarm/live-view.pid"; echo "$SRV_PID" > "$FIX/hung.pid"
+}
+export SWARM_UNAME=Darwin; unset LIVE_VIEW_START
+fresh; : > "$HOME/Library/LaunchAgents/$LABEL.plist"; rm -f "$STATE/coordinator/actions.log"
+start_kit 0.0.1
+out=$(tick)
+want "one probe kickstarts it" "kickstart -k gui/$(id -u)/$LABEL" "$(cat "$FIX/launchctl.log" 2>/dev/null)"
+want_in "naming both kits" "running 0.0.1, installed $CUR — restarted $LABEL" "$out"
+want_in "as an action" "restart-live-view.*running 0.0.1" "$(cat "$STATE/coordinator/actions.log" 2>/dev/null)"
+fresh; : > "$HOME/Library/LaunchAgents/$LABEL.plist"
+start_kit "$CUR"; tick >/dev/null; tick >/dev/null
+want "on the installed kit, never" "" "$(cat "$FIX/launchctl.log" 2>/dev/null)"
+fresh; : > "$HOME/Library/LaunchAgents/$LABEL.plist"
+start_kit 0.0.1; out=$(COORDINATOR_SHADOW=1 tick)
+want "shadow restarts nothing" "" "$(cat "$FIX/launchctl.log" 2>/dev/null)"
+want_in "and says it would" "running 0.0.1, installed $CUR — would restart" "$out"
+# Off launchd a supervisor restarts it from the supervisor's own kit: bouncing it would loop.
+fresh; export SWARM_UNAME=Linux LIVE_VIEW_START="echo started >> '$FIX/started'"; echo "$$" > "$STATE/swarm/supervisor.pid"
+start_kit 0.0.1; tick >/dev/null; sleep 0.3
+kill -0 "$SRV_PID" 2>/dev/null && ok "under a supervisor it is left alone" || bad "under a supervisor it was killed"
+rm -f "$STATE/swarm/supervisor.pid"
+fresh; start_kit 0.0.1; tick >/dev/null; sleep 0.5
+kill -0 "$SRV_PID" 2>/dev/null && bad "off launchd with no supervisor the old kit stayed up" || ok "off launchd with no supervisor the old kit is killed"
+want "and started again on this kit" "started" "$(cat "$FIX/started" 2>/dev/null)"
+
+echo "--- planted: the kit check deleted, the old kit is never restarted ---"
+P="$FIX/wd-stale-plant.sh"; cp "$WD" "$P"
+python3 - "$P" <<'PY' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = 'rm -f "$LV_FAILS_FILE"; live_view_stale; return 0'
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, 'rm -f "$LV_FAILS_FILE"; return 0'))
+PY
+export SWARM_UNAME=Darwin; unset LIVE_VIEW_START
+fresh; : > "$HOME/Library/LaunchAgents/$LABEL.plist"; start_kit 0.0.1
+bash -c '. "$1/coordinator-env.sh" && . "$2" && live_view_watchdog' _ "$HERE" "$P" >/dev/null 2>&1
+[ -z "$(cat "$FIX/launchctl.log" 2>/dev/null)" ] && ok "planted: no kit check → no restart → red" \
+  || bad "planted: the kit check removed and it was still restarted → the test cannot see it"
+export SWARM_UNAME=Linux LIVE_VIEW_START="echo started >> '$FIX/started'"
+
 echo "--- planted: the restart deleted, the hung server is never restarted ---"
 P="$FIX/wd-plant.sh"; cp "$WD" "$P"
 python3 - "$P" <<'PY' || bad "plant did not land"

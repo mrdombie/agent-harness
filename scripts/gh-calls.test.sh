@@ -239,6 +239,10 @@ fix_running 501
 want "below it, a live-view pass asks GitHub nothing" "0" "$(view_calls)"
 printf 'graphql\t%s\t5000\t%s\n' 4000 $(( $(date +%s) + 1800 )) > "$STATE/swarm/gh-allowance"
 want_in "above it, the same pass asks"             '^[1-9]' "$(view_calls)"
+printf '%s\t1\t%s\tprimary\trate limit\n' $(( $(date +%s) + 600 )) "$(date +%s)" > "$STATE/swarm/gh-backoff"
+rm -f "$STATE/swarm"/{board,trend,wrappers,pr-states,required-checks}.json
+want "under the shared backoff, the same pass asks nothing" "0" "$(view_calls)"
+rm -f "$STATE/swarm/gh-backoff"
 rm -f "$STATE/runs/claim-501-t.json"
 printf 'graphql\t%s\t5000\t%s\n' 300 $(( $(date +%s) + 1800 )) > "$STATE/swarm/gh-allowance"
 touch -t 202601010000 "$STATE/swarm/prs.json"; : > "$GH_LOG"

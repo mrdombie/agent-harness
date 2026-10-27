@@ -16,6 +16,12 @@
 #            starts it again, and otherwise this starts it
 # Shadow logs "would restart" and does nothing. Every restart is an action line.
 #
+# A live view that answers but runs an older kit than this tick is restarted too: it
+# is one long process, and nothing else moves it onto a plugin update (measured
+# 2026-10-27: 0.7.284 still serving 12 hours after 0.7.287 was installed). Its kit is
+# read off the recorded pid's command line; under a supervisor that is not launchd
+# it is left alone, since the supervisor restarts it from its own kit.
+#
 # Settings (env): LIVE_VIEW_PROBE_SEC (5), LIVE_VIEW_WATCHDOG_FAILS (2),
 # LIVE_VIEW_LAUNCHCTL (launchctl), LIVE_VIEW_START (how to start it off launchd).
 
@@ -54,10 +60,36 @@ lv_restart() { # <why> — 0 once a restart was asked for
   return 0
 }
 
+# lv_kit_of <pid> — the kit version a live-view process runs, off its command line.
+lv_kit_of() {
+  ps -o command= -p "$1" 2>/dev/null | sed -nE 's|.*/([0-9]+(\.[0-9]+)+)/swarm/live-view/server\.mjs.*|\1|p' | head -1
+}
+lv_ver_lt() { # <a> <b> — 0 when version a is below b
+  awk -v a="$1" -v b="$2" 'BEGIN { na = split(a, x, "."); nb = split(b, y, "."); n = (na > nb ? na : nb)
+    for (i = 1; i <= n; i++) { p = x[i] + 0; q = y[i] + 0; if (p < q) exit 0; if (p > q) exit 1 }; exit 1 }'
+}
+# live_view_stale — restarts an answering live view whose kit is older than this one.
+live_view_stale() {
+  local pid run cur sup why
+  pid=$(cat "${LIVE_VIEW_PID_FILE:-$SWARM_DIR/live-view.pid}" 2>/dev/null)
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  run=$(lv_kit_of "$pid"); [ -n "$run" ] || return 0
+  cur=$(jq -r '.version // empty' "$KIT_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
+  [ -n "$cur" ] && lv_ver_lt "$run" "$cur" || return 0
+  if ! lv_on_launchd; then
+    sup=$(cat "$SWARM_DIR/supervisor.pid" 2>/dev/null)
+    [ -n "$sup" ] && kill -0 "$sup" 2>/dev/null && return 0
+  fi
+  why="running $run, installed $cur"
+  if [ "${COORD_SHADOW:-1}" != 0 ]; then lv_say "live-view: $why — would restart (shadow)"; return 0; fi
+  lv_restart "$why" && coord_act_log restart-live-view - "$why" 2>/dev/null
+  return 0
+}
+
 live_view_watchdog() {
   local n need="${LIVE_VIEW_WATCHDOG_FAILS:-2}" LV_FAILS_FILE="${LIVE_VIEW_FAILS_FILE:-$SWARM_DIR/live-view.fails}"
   if swarm_curl -sf -m "${LIVE_VIEW_PROBE_SEC:-5}" -o /dev/null "$SWARM_LIVE_URL" 2>/dev/null; then
-    rm -f "$LV_FAILS_FILE"; return 0
+    rm -f "$LV_FAILS_FILE"; live_view_stale; return 0
   fi
   n=$(cat "$LV_FAILS_FILE" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
   n=$((n + 1))
