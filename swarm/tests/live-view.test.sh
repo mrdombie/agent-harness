@@ -642,6 +642,25 @@ want_in "a PR row says what it waits on and links the PR" '^needs=.*Pick the pla
 want_in "an issue row links the issue"                    '^needs=.*Later bare.*Your input · <a href="https://github.com/acme/widgets/issues/1103"' "$r"
 want_in "the machine line names the hosts, not a stale claim here" '^machine=.*Building on: laptop \(1\), studio-mac \(1\)' "$r"
 want_not_in "the finished rows start folded"              '<details class="fold" id="donefold" open' "$(cat "$LV/index.html")"
+# Dom, 2026-10-28: building first, then the queue of what starts next.
+s0="$s"
+s=$(printf '%s' "$s0" | jq '.queue = {tickets: [
+  {ticket:"9001",class:"new",note:"",process:true,title:"Switch the pacer off"},
+  {ticket:"9002",class:"repair",note:"",process:false,title:"Mend the campaign card"},
+  {ticket:"9003",class:"new",note:"",process:false,title:"Voices learning tab"}]}
+  | .live = (.live | map(.ticket = "9002"))')
+r=$(page_render "$LV")
+want_in "the queue heading counts what waits, not what builds" '^nexthead=Coming up next · 2$' "$r"
+want_in "the queue keeps the coordinator's order"   '^next=.*>1</span>.*Switch the pacer off.*Process fix.*>2</span>.*Voices learning tab' "$r"
+want_not_in "a ticket building now is not also next" '^next=.*Mend the campaign card' "$r"
+page_one=$(tr -d '\n' < "$LV/index.html")
+case "$page_one" in *'id="buildinghead"'*'id="nexthead"'*'id="headline"'*) ok "building comes first, the queue under it, then the rest" ;; *) bad "the page does not open on building then the queue" ;; esac
+P3="$FIX/lv-next"; mkdir -p "$P3"; cp "$LV"/*.mjs "$LV"/index.html "$P3/"
+sed -i.bak "s/  document.getElementById('next').innerHTML = nx.html/  document.getElementById('next').innerHTML = ''/" "$P3/index.html"
+grep -q "getElementById('next').innerHTML = ''" "$P3/index.html" || bad "the queue plant did not land"
+[ "$(page_render "$P3" | grep -c '^next=.*Voices learning tab')" = 0 ] \
+  && ok "planted: the queue left undrawn → red" || bad "planted: the queue left undrawn and the test cannot see it"
+s="$s0"
 jq '.open |= map(.labels -= ["needs:owner-decision", "needs:human-approval", "status:needs-human", "needs:data-model"])' "$BOARD" > "$BOARD.t" && mv "$BOARD.t" "$BOARD"
 rm -f "$STATE/swarm/prs.json"
 s=$(BRANCH_PREFIX=tkt- snap)
@@ -1083,6 +1102,6 @@ plant server.mjs "    const g = toolingOf(labels, i.raw ?? i.title) ? '__tooling
   "    const g = (sections.find((s) => labels.includes(s.label)) || { label: '__other' }).label"
 got=$(areas "$P2/server.mjs")
 [ "$got" != "Pulse=6b,1r,3l;One Desk=2s;Tooling=4o;Other=5r" ] && ok "planted: tooling not split out → $got → red" || bad "planted: the tooling split deleted and the test cannot see it"
-want_in "the page has the By area block"                  'id="areas"' "$(cat "$LV/index.html")"
+want_not_in "the page no longer has the By area block"   'id="areas"' "$(cat "$LV/index.html")"
 
 suite_end "$FAILED"
