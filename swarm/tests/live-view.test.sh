@@ -647,12 +647,19 @@ s0="$s"
 s=$(printf '%s' "$s0" | jq '.queue = {tickets: [
   {ticket:"9001",class:"new",note:"",process:true,title:"Switch the pacer off"},
   {ticket:"9002",class:"repair",note:"",process:false,title:"Mend the campaign card"},
-  {ticket:"9003",class:"new",note:"",process:false,title:"Voices learning tab"}]}
+  {ticket:"9003",class:"new",note:"",process:false,title:"Voices learning tab",tag:"Holly"}]}
   | .live = (.live | map(.ticket = "9002"))')
 r=$(page_render "$LV")
 want_in "the queue heading counts what waits, not what builds" '^nexthead=Coming up next · 2$' "$r"
 want_in "the queue keeps the coordinator's order"   '^next=.*>1</span>.*Switch the pacer off.*Process fix.*>2</span>.*Voices learning tab' "$r"
 want_not_in "a ticket building now is not also next" '^next=.*Mend the campaign card' "$r"
+# Dom, 2026-10-28: "i dont see it in the list" — the title scope names the work on the row.
+want_in "a queued row shows its work's name before the title" '^next=.*<span class="tag">Holly</span> Voices learning tab' "$r"
+want_not_in "a row with no scope shows no empty tag"   '^next=.*<span class="tag"></span>' "$r"
+tags=$(SERVER_MJS="$SERVER_URLPATH" node --input-type=module -e 'import { pathToFileURL } from "node:url"
+  const { scopeTag } = await import(pathToFileURL(process.env.SERVER_MJS).href)
+  console.log([scopeTag("feat(holly): the kit"), scopeTag("fix(one-desk): x"), scopeTag("EPIC: Holly") || "-"].join("|")); process.exit(0)' 2>/dev/null)
+want "the tag is the title's scope, in plain words"   "Holly|One Desk|-" "$tags"
 page_one=$(tr -d '\n' < "$LV/index.html")
 case "$page_one" in *'id="buildinghead"'*'id="nexthead"'*'id="headline"'*) ok "building comes first, the queue under it, then the rest" ;; *) bad "the page does not open on building then the queue" ;; esac
 P3="$FIX/lv-next"; mkdir -p "$P3"; cp "$LV"/*.mjs "$LV"/index.html "$P3/"
