@@ -69,6 +69,7 @@ tr:first-child td{border-top:0}
 .rows{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
 .row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--rule);min-width:0}
 .row:first-child{border-top:0}
+.row .pos{min-width:22px;color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums;padding-top:1px}
 .row .main{min-width:0;flex:1}
 .row .title{font-size:14px;overflow-wrap:anywhere}
 .row .line{color:var(--ink3);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -77,20 +78,11 @@ tr:first-child td{border-top:0}
 .allclear{background:color-mix(in srgb,var(--good) 12%,var(--card));border:1px solid color-mix(in srgb,var(--good) 40%,transparent);color:var(--good);border-radius:10px;padding:12px 14px;font-weight:600}
 details.fold>summary{cursor:pointer;list-style:none;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin:22px 0 8px;font-weight:600}
 details.fold>summary::-webkit-details-marker{display:none}
-.area>summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;padding:10px 14px}
-.area>summary::-webkit-details-marker{display:none}
-.area>summary .aname{font-weight:600;font-size:15px;min-width:110px}
-.area>summary .aname::before{content:'▸ ';color:var(--ink3)}
-.area[open]>summary .aname::before{content:'▾ '}
-.area{border-top:1px solid var(--rule)} .area:first-child{border-top:0}
-.area .alist{border-top:1px solid var(--rule);background:var(--sunk)}
-.area .arow{display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:10px;padding:6px 14px;border-top:1px solid var(--rule);font-size:13px;align-items:baseline}
-.area .arow:first-child{border-top:0}
 .arow .ap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--ink3)}
 .arow .ap.Urgent{color:var(--bad)} .arow .ap.High{color:var(--warn)}
 .arow a{color:inherit;text-decoration:none;overflow-wrap:anywhere} .arow a:hover{text-decoration:underline}
 button.chip{cursor:pointer;font:inherit} button.chip[aria-pressed="true"]{background:var(--ink);color:var(--ground);border-color:var(--ink)}
-button.chip:focus-visible,.area>summary:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
+button.chip:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
 details.fold>summary::before{content:'▸ ';}
 details.fold[open]>summary::before{content:'▾ ';}
 details.fold>summary span{text-transform:none;letter-spacing:0;font-weight:500}
@@ -123,16 +115,15 @@ a{color:inherit}
   <header><h1>Release, live</h1><span class="meta" id="meta">loading…</span></header>
   <div class="banner" id="hold" role="status" hidden></div>
   <p class="sub" id="processfirst" hidden></p>
+  <h2 id="buildinghead">Building now</h2>
+  <div id="building"></div>
+  <h2 id="nexthead">Coming up next</h2>
+  <div id="next"></div>
   <section class="headline" id="headline"><div class="ptitle">Release progress</div><div class="big">Release: counting…</div></section>
   <h2>Today</h2>
   <div class="today" id="today"><span class="empty">Not read yet.</span></div>
   <h2 id="mergedhead">Merged today</h2>
   <div id="merged"></div>
-  <h2 id="buildinghead">Building now</h2>
-  <div id="building"></div>
-  <h2 id="areashead">By area</h2>
-  <div class="chips" id="areafilter"></div>
-  <div class="rows" id="areas"><div class="row"><span class="empty">Not read yet.</span></div></div>
   <h2 id="needshead">Needs you</h2>
   <div id="needs"></div>
   <details class="fold" id="donefold"><summary id="donehead">Finished recently</summary>
@@ -378,42 +369,18 @@ function mergedList(m){
   return `<div class="rows">${m.items.map(row).join('')}</div>${more}`
 }
 
-// By area: one row per section, its counts as chips; open a row for its tickets.
-const AREA_BUCKETS = ['building','review','ready','pm','owner','stuck','batched','other','last','parked','later','container','post']
-const AREA_TONE = { building:'ok', review:'ok', ready:'', pm:'warn', owner:'warn', stuck:'bad' }
-const PRIOS = ['Urgent','High','Normal','Polish']
-let areaPick = new Set(), areaOpen = new Set()
-function areaFilter(){
-  const el = document.getElementById('areafilter')
-  if (el.dataset.ready) return
-  el.dataset.ready = '1'
-  el.innerHTML = `<button class="chip" type="button" data-p="__all" aria-pressed="true">All priorities</button>` +
-    PRIOS.map((p) => `<button class="chip" type="button" data-p="${p}" aria-pressed="false">${p}</button>`).join('')
-  el.addEventListener('click', (e) => { const b = e.target.closest('button.chip'); if (!b) return
-    const p = b.dataset.p
-    if (p === '__all') areaPick.clear(); else areaPick.has(p) ? areaPick.delete(p) : areaPick.add(p)
-    el.querySelectorAll('button.chip').forEach((x) => x.setAttribute('aria-pressed', x.dataset.p === '__all' ? String(!areaPick.size) : String(areaPick.has(x.dataset.p))))
-    if (lastSnap) areasBlock(lastSnap.areas) })
-}
-function areasBlock(a){
-  areaFilter()
-  const el = document.getElementById('areas')
-  if (!a || !a.groups) { el.innerHTML = '<div class="row"><span class="empty">No areas set for this project (liveView.sections).</span></div>'; return }
-  document.querySelectorAll('#areas details.area').forEach((d) => d.open ? areaOpen.add(d.dataset.k) : areaOpen.delete(d.dataset.k))
-  const keep = (r) => !areaPick.size || areaPick.has(r.priority)
-  el.innerHTML = a.groups.map((g) => {
-    const rows = g.rows.filter(keep)
-    const counts = {}
-    for (const r of rows) counts[r.bucket] = (counts[r.bucket] || 0) + 1
-    const chips = AREA_BUCKETS.filter((b) => counts[b]).map((b) =>
-      `<span class="pill ${AREA_TONE[b] || 'neutral'}">${counts[b]} ${esc((a.labels[b] || b).toLowerCase())}</span>`).join(' ')
-    const list = rows.map((r) => `<div class="arow"><span class="ap ${r.priority}">${r.priority}</span>
-      <a href="https://github.com/${esc(repo)}/issues/${esc(r.number)}" target="_blank" rel="noopener">${esc(r.title)}</a>
-      <span class="pill ${AREA_TONE[r.bucket] || 'neutral'}">${esc(a.labels[r.bucket] || r.bucket)}</span></div>`).join('')
-    return `<details class="area" data-k="${esc(g.key)}"${areaOpen.has(g.key) ? ' open' : ''}>
-      <summary><span class="aname">${esc(g.name)}</span><span class="num">${rows.filter((r) => !(a.outside || []).includes(r.bucket)).length} in the release · ${rows.length} open</span> ${chips}</summary>
-      <div class="alist">${list || '<div class="arow"><span></span><span class="empty">None at this priority.</span><span></span></div>'}</div></details>`
-  }).join('')
+// Coming up next: the coordinator's queue in the order it starts them, minus what is building now.
+const NEXT_SHOW = 12
+const NEXT_KIND = { repair: 'Fix a red change', 'approved-merge': 'Merge', new: 'New' }
+function nextList(q, building){
+  const busy = new Set(building.map((a) => String(a.ticket)))
+  const rows = ((q && q.tickets) || []).filter((r) => !busy.has(String(r.ticket)))
+  if (!rows.length) return { n: 0, html: '<p class="empty">Nothing is waiting to start.</p>' }
+  const row = (r, i) => `<div class="row next"><span class="pos">${i + 1}</span><div class="main">
+    <div class="title">${esc(r.title || `Ticket ${r.ticket}`)} <span class="sub">${ticketLink(r.ticket)}</span></div>
+    <div class="step">${r.process ? '<b>Process fix</b> · ' : ''}${esc(NEXT_KIND[r.class] || r.class)}${r.note ? ` · ${esc(r.note)}` : ''}</div></div></div>`
+  const more = rows.length > NEXT_SHOW ? `<p class="sub">${num(rows.length - NEXT_SHOW)} more after these</p>` : ''
+  return { n: rows.length, html: `<div class="rows">${rows.slice(0, NEXT_SHOW).map(row).join('')}</div>${more}` }
 }
 let lastSnap = null
 function render(s){
@@ -434,7 +401,9 @@ function render(s){
   document.getElementById('buildinghead').textContent = building.length ? `Building now · ${building.length}` : 'Building now'
   document.getElementById('building').innerHTML = building.length
     ? `<div class="rows">${building.map(buildRow).join('')}</div>` : '<p class="empty">Nothing is being built.</p>'
-  try { areasBlock(s.areas) } catch (e) { console.warn('areas', e) }
+  const nx = nextList(s.queue, building)
+  document.getElementById('nexthead').textContent = nx.n ? `Coming up next · ${nx.n}` : 'Coming up next'
+  document.getElementById('next').innerHTML = nx.html
   document.getElementById('needshead').textContent = s.board?.needsYou?.length ? `Needs you · ${s.board.needsYou.length}` : 'Needs you'
   document.getElementById('needs').innerHTML = needsList(s.board)
   // Collapsed to its counts: the rows are there for whoever opens it.
