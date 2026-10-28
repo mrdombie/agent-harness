@@ -247,7 +247,8 @@ const pending = new Set()
 // restart does not re-ask for every ticket at once. A failure is not retried in
 // the same process: the card falls back to "Ticket 1234", which is honest.
 function fetchTitle(ticket) {
-  if (!REPO || titles[ticket] || pending.has(ticket) || pending.size >= 4 || allowanceLow() || ghHeld(['issue', 'view'])) return
+  // A cached title from before the tag was kept is read once more, so its row can show it.
+  if (!REPO || (titles[ticket] && 'tag' in titles[ticket]) || pending.has(ticket) || pending.size >= 4 || allowanceLow() || ghHeld(['issue', 'view'])) return
   pending.add(ticket)
   noteGh(['issue', 'view'])
   runChild('title', GH, ['issue', 'view', String(ticket), '--repo', REPO, '--json', 'title,labels'],
@@ -257,7 +258,7 @@ function fetchTitle(ticket) {
       try {
         const j = JSON.parse(out)
         const programme = (j.labels || []).map((l) => l.name).find((n) => n.startsWith(PREFIX)) || ''
-        titles[ticket] = { title: plainTitle(j.title), project: programme.slice(PREFIX.length) }
+        titles[ticket] = { title: plainTitle(j.title), project: programme.slice(PREFIX.length), tag: scopeTag(j.title) }
         fs.writeFileSync(TITLES, JSON.stringify(titles))
       } catch (e) { warn('title cache', e) }
     })
@@ -267,6 +268,12 @@ function fetchTitle(ticket) {
 const plainName = (id) => String(id ?? '').split(/[-_ ]+/).filter(Boolean)
   .map((w) => (/^(ai|api|ci|ui|uat|ux)$/i.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)))
   .join(' ')
+
+// "fix(holly): the strip" → "Holly": the scope plainTitle drops, kept to name the work on a row.
+export function scopeTag(t) {
+  const m = /^[a-z]+\(([^)]+)\):/i.exec(String(t ?? ''))
+  return m ? plainName(m[1]) : ''
+}
 
 // "fix(desk): the strip drops its last item" → "The strip drops its last item"
 function plainTitle(t) {
@@ -1364,6 +1371,7 @@ export function snapshot(now = Date.now()) {
       title: t.title || `Ticket ${run.ticket}`,
       short: shortTitle(t.title || `Ticket ${run.ticket}`, plainTitles[String(run.ticket)], t.project, plainName),
       project: t.project || '',
+      tag: t.tag || '',
       progress: prog,
       // Which record names its step: the driver's own state where it is on this machine,
       // else the claim's step field, else the facts read from git and the forge.
@@ -1436,6 +1444,7 @@ export function snapshot(now = Date.now()) {
     guard('title', () => fetchTitle(r.ticket))
     const t = titleOf(r.ticket)
     r.title = t.title || `Ticket ${r.ticket}`
+    r.tag = t.tag || ''
   }
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.

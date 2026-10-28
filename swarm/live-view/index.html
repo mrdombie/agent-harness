@@ -69,6 +69,7 @@ tr:first-child td{border-top:0}
 .rows{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
 .row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--rule);min-width:0}
 .row:first-child{border-top:0}
+.tag{display:inline-block;font-size:12px;font-weight:600;color:var(--ember);margin-right:2px}
 .row .pos{min-width:22px;color:var(--ink3);font-size:13px;font-variant-numeric:tabular-nums;padding-top:1px}
 .row .main{min-width:0;flex:1}
 .row .title{font-size:14px;overflow-wrap:anywhere}
@@ -168,6 +169,8 @@ function stepText(a){
   const name = (p.steps || [])[p.step - 1]?.name || ''
   return `${p.repair ? 'Repair · ' : ''}${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
 }
+// The work's name from its title scope ("Holly"), in front of the title on building and next rows.
+const tagOf = (r) => r && r.tag ? `<span class="tag">${esc(r.tag)}</span> ` : ''
 const ticketLink = (n, kind = 'issues') => repo
   ? `<a href="https://github.com/${esc(repo)}/${kind}/${esc(n)}" target="_blank" rel="noopener">#${esc(n)}</a>` : `#${esc(n)}`
 // The machine a row runs on, in plain words. thisHost comes from the snapshot.
@@ -195,7 +198,7 @@ function remoteRow(a){
     : last ? esc(last) : 'No activity reported yet'
   const tip = cls === 'away' ? 'no activity reported from its machine' : `last active ${ago(a.quietSec)}`
   return `<div class="row build remote"><span class="dot ${cls}" title="${esc(tip)}"></span><div class="main">
-    <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
+    <div class="title">${tagOf(a)}${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
     <div class="step">${[machineOf(a.host), step, time].filter(Boolean).join(' · ')}</div>
     <div class="line">${line}</div></div></div>`
 }
@@ -206,7 +209,7 @@ function buildRow(a){
   const cls = quietCls(a.quietSec ?? 99999)
   const last = a.steps?.length ? a.steps[a.steps.length - 1].text : 'No activity yet'
   return `<div class="row build"><span class="dot ${cls}" title="last active ${esc(ago(a.quietSec))}"></span><div class="main">
-    <div class="title">${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
+    <div class="title">${tagOf(a)}${esc(a.short || a.title)} <span class="sub">${ticketLink(a.ticket)}</span></div>
     <div class="step">${machineOf(a.host)} · ${routeText(a)}${stepText(a)} · ${esc(dur(a.startedAgoMin))} running</div>
     <div class="line" title="${esc(last)}">${esc(last)}</div></div></div>`
 }
@@ -377,7 +380,7 @@ function nextList(q, building){
   const rows = ((q && q.tickets) || []).filter((r) => !busy.has(String(r.ticket)))
   if (!rows.length) return { n: 0, html: '<p class="empty">Nothing is waiting to start.</p>' }
   const row = (r, i) => `<div class="row next"><span class="pos">${i + 1}</span><div class="main">
-    <div class="title">${esc(r.title || `Ticket ${r.ticket}`)} <span class="sub">${ticketLink(r.ticket)}</span></div>
+    <div class="title">${tagOf(r)}${esc(r.title || `Ticket ${r.ticket}`)} <span class="sub">${ticketLink(r.ticket)}</span></div>
     <div class="step">${r.process ? '<b>Process fix</b> · ' : ''}${esc(NEXT_KIND[r.class] || r.class)}${r.note ? ` · ${esc(r.note)}` : ''}</div></div></div>`
   const more = rows.length > NEXT_SHOW ? `<p class="sub">${num(rows.length - NEXT_SHOW)} more after these</p>` : ''
   return { n: rows.length, html: `<div class="rows">${rows.slice(0, NEXT_SHOW).map(row).join('')}</div>${more}` }
