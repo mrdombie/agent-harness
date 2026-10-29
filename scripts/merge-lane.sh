@@ -64,6 +64,15 @@ esac
 # Names may hold spaces, so they stay JSON rather than a space-joined toolkit_cfg list.
 REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and length > 0)' "$HARNESS_CFG" 2>/dev/null)
 [ -n "$REQUIRED" ] || { echo "merge-lane: harness.json has no 'gates.requiredChecks' — without them green cannot be told from unchecked." >&2; exit 1; }
+# Only a check the trunk's live rules also require (pr_red_required, what the repair gate reads)
+# is waited on: a check the config names but the trunk does not require is never a reason to
+# leave the lane, since nothing repairs it. The config list stands alone only when the rules
+# cannot be read or require none of it. Names compare in lower case.
+LIVE_REQUIRED=$(pr_red_required "$INTEGRATION_BRANCH" 2>/dev/null) || LIVE_REQUIRED=""
+BOTH=$(jq -c --argjson live "${LIVE_REQUIRED:-[]}" 'map(select(type == "string" and ((ascii_downcase) as $r | any($live[]; ascii_downcase == $r))))' <<<"$REQUIRED" 2>/dev/null) || BOTH=""
+if [ -n "$BOTH" ] && jq -e 'length > 0' >/dev/null 2>&1 <<<"$BOTH"; then
+  REQUIRED="$BOTH"
+fi
 # A check that warns until the release (release.nonBlockingChecks) is not waited on.
 REQUIRED=$(release_blocking_required "$REQUIRED")
 LANE_LABEL=$(swarm_opt mergeLane.label "queue:merge")
@@ -393,7 +402,9 @@ fi
 CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" "$CHECK_NEWEST_JQ"'
   (.[] | select(.number == $n) | .statusCheckRollup // [] | newest_runs) as $c
   | $req[] as $r
-  | ([ $c[] | select(.name == $r or .context == $r or (((.workflowName // "") + " / " + (.name // "")) == $r)) ] | last) as $x
+  | ($r | ascii_downcase) as $rl
+  | ([ $c[] | select(((.name // "") | ascii_downcase) == $rl or ((.context // "") | ascii_downcase) == $rl
+                     or ((((.workflowName // "") + " / " + (.name // "")) | ascii_downcase) == $rl)) ] | last) as $x
   | if $x == null then [$r, "missing", "", ""]
     elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then [$r, "pending", "", ""]
     elif (($x.conclusion // $x.state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$")) then [$r, "green", "", ""]

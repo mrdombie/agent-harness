@@ -350,13 +350,29 @@ want_in "the PR is told which check"       "^pr comment 80 .*build" "$(cat "$GH_
 want "a fixer is queued"                   "801" "$(fixers)"
 want_in "and told which check"             'build' "$(fixer_notes)"
 echo "--- the lane's fixer goes through the one repair gate (repair-gate.sh) ---"
-# A red the lane's own list names, but develop's live rules do not require: no fixer.
+# A red the lane's own list names, but develop's live rules do not require: it merges.
+# 2026-10-29: the lane threw out 11 green PRs on a check develop does not require, and the
+# repair gate (live rules) saw nothing to fix, so nothing merged them for 15 hours.
 fresh; fix_issue 801 OPEN "status:in-review"
 pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0; fix_required lint
 printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
 out=$(live)
-want "only a non-required check red: no fixer" "" "$(fixers)$(spawned)"
-want_in "  and the lane says why"           'lane: no fixer for #801 \(PR #80\): PR #80 is not red \(green: no required check failed' "$out"
+want "a red develop does not require: merged, not thrown out" "80" "$(merges)"
+want "  and no fixer for it"                "" "$(fixers)$(spawned)"
+want_not_in "  and no 'left the lane' comment" '^pr comment 80 .*Left the merge lane' "$(cat "$GH_LOG")"
+fresh; pr 80 s80 - 1 build:SUCCESS lint:FAILURE; compare develop s80 0; fix_required LINT
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
+live >/dev/null
+want "a live rule names the check in other case: still required" "" "$(merges)"
+cp "$L" "$FIX/lane.bak"
+sed 's/^  REQUIRED="\$BOTH"$/  :/' "$FIX/lane.bak" > "$L"
+grep -q '^  :$' "$L" || bad "the live-rules plant did not land"
+fresh; pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0; fix_required lint
+printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
+live >/dev/null
+[ -z "$(merges)" ] && ok "planted: the lane ignores the live rules → thrown out → red" || bad "planted: the lane ignores the live rules and the test cannot see it"
+cp "$FIX/lane.bak" "$L"
+grep -q '^  REQUIRED="\$BOTH"$' "$L" || bad "the lane was not restored after the plant"
 fresh; fix_issue 801 OPEN "status:in-review"; rm -f "$C/capacity.json"
 pr 80 s80 - 1 build:FAILURE lint:SUCCESS; compare develop s80 0
 printf '[]\n' > "$FIX/gh/api-repos_acme_widgets_check-runs_80_annotations.json"
