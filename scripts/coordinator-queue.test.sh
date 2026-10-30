@@ -139,11 +139,11 @@ echo "--- an entry put at the front keeps the front across a refresh ---"
 bash "$Q" add 608 --front >/dev/null
 bash "$Q" add 700 --front --note "outside the claimable list" >/dev/null
 bash "$Q" refresh >/dev/null
-want "fronts first overall, the last one put there first, the rest re-sorted" \
-  "700:new 608:new 606:new 607:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
+want "the P0s, then fronts (the last one put there first), the rest re-sorted" \
+  "606:new 607:new 700:new 608:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
 bash "$Q" refresh >/dev/null
-want "and still there after a second refresh" \
-  "700:new 608:new 606:new 607:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
+want "and still so after a second refresh" \
+  "606:new 607:new 700:new 608:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
 
 echo "--- priority decides across classes (owner call 2026-10-19) ---"
 printf '%s\n' \
@@ -230,7 +230,7 @@ want "and the same after a refresh"        "651:new 650:new 652:new 653:new" "$(
 fix_issue 654 OPEN "P3,status:ready,project:widgets"
 bash "$Q" add 654 --front --note "PM: this first" >/dev/null
 bash "$Q" refresh >/dev/null
-want "the PM's --front is still first overall" "654:new 651:new 650:new 652:new 653:new" "$(order)"
+want "the PM's --front leads after the P0s (owner, 2026-10-30: urgent first)" "651:new 650:new 654:new 652:new 653:new" "$(order)"
 
 echo "--- a new entry carrying a REPAIR brief is a repair ---"
 fix_issue 655 OPEN "P2,status:in-review,project:widgets"
