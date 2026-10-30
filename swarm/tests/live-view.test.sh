@@ -133,9 +133,30 @@ cat > "$STATE/coordinator/queue.json" <<'JSON'
  {"n":717,"class":"new","prin":3,"top":true,"note":""}]}
 JSON
 s=$(snap)
-want "priority first across classes; a resume leads only its own priority; the PM's top leads all" \
-  "717 715 714 713 712 716 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "a P0 first; then the PM's top; priority across classes; a resume leads only its own priority" \
+  "715 717 714 713 712 716 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
 
+echo "--- urgent first, then focus areas and screens, as the coordinator starts them ---"
+# Owner, 2026-10-30: 10 P0s sat at 36-45 behind focus-area and pinned work, and the page put
+# pinned P2s third because it ignored the tiers.
+cat > "$STATE/coordinator/queue.json" <<'JSON'
+{"scope":"widgets","label":"project:widgets","tickets":[
+ {"n":741,"class":"new","prin":2,"top":true,"note":""},
+ {"n":742,"class":"new","prin":1,"screen":true,"note":""},
+ {"n":743,"class":"new","prin":1,"focus":1,"note":""},
+ {"n":744,"class":"new","prin":1,"focus":0,"note":""},
+ {"n":745,"class":"new","prin":0,"note":""},
+ {"n":746,"class":"new","prin":1,"note":""},
+ {"n":747,"class":"new","prin":2,"focus":0,"note":""}]}
+JSON
+mkdir -p "$STATE/coordinator/snapshot"
+cat > "$STATE/coordinator/snapshot/issues.json" <<'JSON'
+{"746":{"number":746,"state":"OPEN","labels":["status:ready","P0"]}}
+JSON
+s=$(snap)
+want "P0s first (a live P0 label beats the stored P1), focus areas in order, screens, then the rest" \
+  "745 746 744 743 742 741 747" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+rm -f "$STATE/coordinator/snapshot/issues.json"
 echo "--- the queue lists and counts only rows somebody can start ---"
 cat > "$STATE/coordinator/queue.json" <<'JSON'
 {"scope":"widgets","label":"project:widgets","tickets":[

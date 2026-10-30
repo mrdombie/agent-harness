@@ -168,11 +168,24 @@ export function startable(cls, issue) {
   const stop = cls === 'new' ? STOP_NEW : STOP_ALL
   return !(issue.labels || []).some((l) => stop.includes(l))
 }
-// The queue in the order the coordinator runs it: a process fix first of all, then an entry the PM put on top,
-// then priority (none last), and within one priority a front entry (a resume, an
-// answer) first, then class, product before tooling, then kind for new work, then
-// position — the same order as coord_queue_ordered. An unknown class sorts last.
+// The queue in the order the coordinator runs it (coord_queue_ordered): a process fix first, then every
+// P0, then the tiers (focus areas P0/P1 in their order, screens P0/P1, the rest, last in the release),
+// then an entry the PM put on top, priority, a front entry, class, product before tooling, kind, position.
+// Priority is read off the ticket's live labels when the tick's read has them.
 // Only rows somebody can start are listed, so the count is the work there is.
+// P0..P3 from the ticket's labels, else the queue row's stored figure, else 9 (none).
+export function prinOf(issue, row) {
+  const m = ((issue && issue.labels) || []).map((l) => /^P([0-3])$/.exec(l)).find(Boolean)
+  if (m) return Number(m[1])
+  return Number.isInteger(row && row.prin) ? row.prin : 9
+}
+// coord_tier: focus areas P0/P1 (1), screens P0/P1 (2), the rest (3), last in the release (4).
+export function tierOf(prin, last, focus, screen) {
+  if (last) return 4
+  if (focus != null && prin <= 1) return 1
+  if (screen && prin <= 1) return 2
+  return 3
+}
 export function queueOf(file = COORD_QUEUE, issues = issuesByTicket()) {
   let q
   try { q = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return { scopes: [], tickets: [], processFirst: 0 } }
@@ -181,10 +194,14 @@ export function queueOf(file = COORD_QUEUE, issues = issuesByTicket()) {
     .filter((t) => t && t.n != null)
     .map((t) => ({ ...t, class: classOf(t) }))
     .filter((t) => startable(t.class, issues[String(t.n)]))
-    .map((t, pos) => ({ t, pos, proc: (issues[String(t.n)] ? (issues[String(t.n)].labels || []).includes(PROCESS) : !!t.process) ? 0 : 1,
-                        top: t.top ? 0 : 1, front: t.front ? 0 : 1, prin: Number.isInteger(t.prin) ? t.prin : 9,
-                        rank: RANK[t.class] ?? 3, tool: t.tooling ? 1 : 0, kind: t.class === 'new' ? (KIND[t.kind] ?? 2) : 0 }))
-    .sort((a, b) => a.proc - b.proc || a.top - b.top || (a.top === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
+    .map((t, pos) => { const prin = prinOf(issues[String(t.n)], t), last = !!t.last && prin !== 0
+      return { t, pos, proc: (issues[String(t.n)] ? (issues[String(t.n)].labels || []).includes(PROCESS) : !!t.process) ? 0 : 1,
+                        p0: prin === 0 ? 0 : 1, tier: tierOf(prin, last, t.focus, !!t.screen),
+                        fk: Number.isInteger(t.focus) ? t.focus : 0, scr: t.screen ? 0 : 1,
+                        top: t.top ? 0 : 1, front: t.front ? 0 : 1, prin,
+                        rank: RANK[t.class] ?? 3, tool: t.tooling ? 1 : 0, kind: t.class === 'new' ? (KIND[t.kind] ?? 2) : 0 } })
+    .sort((a, b) => a.proc - b.proc || a.p0 - b.p0 || a.tier - b.tier
+                    || (a.tier === 1 ? a.fk - b.fk || a.scr - b.scr : 0) || a.top - b.top || (a.top === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
                     || a.front - b.front || (a.front === 0 ? a.pos - b.pos : 0)
                     || a.rank - b.rank || a.tool - b.tool || a.kind - b.kind || a.pos - b.pos)
     .map(({ t, proc }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),

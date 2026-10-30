@@ -617,10 +617,10 @@ coord_queue_ordered() {
          | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
          | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3), tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
-     # .top (the PM putting it on top with add --front) is first overall; .front (a resume, an answer,
-     # a requeue) is first only among its own priority.
+     # Every P0 first (owner, 2026-10-30: urgent first), then the tiers. .top (the PM putting it on top
+     # with add --front) leads its tier; .front (a resume, an answer, a requeue) leads its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
-       else sort_by(if .proc then 0 else 1 end, .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+       else sort_by(if .proc then 0 else 1 end, (if .prin == 0 then 0 else 1 end), .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | if $wide == 2 then ([range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t"))

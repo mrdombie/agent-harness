@@ -3,8 +3,8 @@
 # every ticket it passes over.
 #
 # Owner call 2026-10-23: until the release every screen reaches its final form first.
-# With the setting on, the order is process fixes, then P0s that are not screen work,
-# then all screen work at any priority, then the rest by priority.
+# With the setting on, the order is process fixes, then every P0 (owner, 2026-10-30:
+# urgent first), then focus-area and screen work at P1, then the rest by priority.
 #
 # A live P0 data-model ticket (#13818 below) sat in the queue from 22 Oct 20:17Z
 # and never started, and tick.log never named it: over the open-work cap only quick work
@@ -94,10 +94,11 @@ echo "--- on: process, the non-screen P0, every screen ticket by priority, then 
 export COORDINATOR_SCREENS_FIRST=true
 seed_queue
 got=$(order)
-want "the screens-first order" "907 906 903 901 902 905 904" "$got"
+want "the screens-first order: the P0 first, then screens" "907 903 906 901 902 905 904" "$got"
 pos() { printf '%s\n' $got | grep -nx "$1" | cut -d: -f1; }
-# Owner, 2026-10-24: the voices screens' first parts sat at 108-134 behind non-screen P0s.
-want "a P1 screen ticket ranks above a P0 non-screen one" "yes" "$([ "$(pos 906)" -lt "$(pos 903)" ] && echo yes)"
+# Owner, 2026-10-30: urgent first, then focus areas and screens within each priority
+# (10 P0s sat at 36-45 behind focus-area and pinned P1/P2 work).
+want "a P0 non-screen ticket ranks above a P1 screen one" "yes" "$([ "$(pos 903)" -lt "$(pos 906)" ] && echo yes)"
 want "a process fix stays above both"                     "yes" "$([ "$(pos 907)" -lt "$(pos 906)" ] && echo yes)"
 want "a P2 screen ticket ranks among the rest by priority: after the P1, before the P3" "yes" \
   "$([ "$(pos 902)" -gt "$(pos 901)" ] && [ "$(pos 902)" -lt "$(pos 904)" ] && echo yes)"
@@ -106,18 +107,18 @@ fresh
 ticket 931 "status:ready,P0"                 "fix(api): the publish double-posts"
 ticket 932 "status:ready,P1,screen:voices"   "Voices: the setup interview, part 1"
 ticket 933 "status:ready,P0,process"         "develop is red: scripts/check-schema-design"
-want "develop-red (a P0 process fix) above a P1 screen ticket above a P0 non-screen one" "933 932 931" "$(order)"
+want "develop-red (a P0 process fix) above a P0 non-screen one above a P1 screen ticket" "933 931 932" "$(order)"
 
 echo "--- on: an entry the PM put on top stays inside its tier ---"
 seed_queue; bash "$Q" add 901 --front >/dev/null
-want "a non-screen P1 put on top leads its tier, below the P0/P1 screens" "907 906 901 903 902 905 904" "$(order)"
+want "a non-screen P1 put on top leads its tier, below the P0 and the P1 screens" "907 903 906 901 902 905 904" "$(order)"
 bash "$Q" add 905 --front >/dev/null
-want "a P2 screen ticket put on top leads that tier too, still below the P0/P1 screens" "907 906 905 901 903 902 904" "$(order)"
+want "a P2 screen ticket put on top leads that tier too, still below the P0 and the P1 screens" "907 903 906 905 901 902 904" "$(order)"
 
 echo "--- on: the tick works the same order, and says so ---"
 seed_queue
 out=$(CAP=3 tick)
-want "three places: the process fix, the P1 screen ticket, the P0" "907 906 903" "$(spawned)"
+want "three places: the process fix, the P0, the P1 screen ticket" "907 903 906" "$(spawned)"
 want_in "one line on the order, with every tier counted" \
   'order: screens first — tiers: process 1 · focus areas P0/P1 0 · screens P0/P1 1 · rest by priority 5 · last in the release 0' "$out"
 
@@ -139,9 +140,9 @@ ticket 921 "status:ready,P1,screen:pulse,release:last" "Pulse: the archive view"
 ticket 922 "status:ready,P2"                           "fix(api): the export names the file"
 ticket 923 "status:ready,P0,release:last"              "fix(api): the publish double-posts"
 ticket 924 "status:ready,P1,screen:feed"               "Feed: the header"
-want "P1 screen work, the P0, the rest, then release:last" "924 923 922 921" "$(order)"
+want "the P0, P1 screen work, the rest, then release:last" "923 924 922 921" "$(order)"
 for t in 921 922 923 924; do COORDINATOR_LAST_IN_RELEASE_LABEL=release:later bash "$Q" add "$t" >/dev/null; done
-want "with the label set to another name, release:last is plain work" "921 924 923 922" "$(order)"
+want "with the label set to another name, release:last is plain work" "923 921 924 922" "$(order)"
 fresh; for t in 921 922 923 924; do bash "$Q" add "$t" >/dev/null; done
 out=$(CAP=1 tick)
 want_in "the order line counts the last tier" 'tiers: process 0 · focus areas P0/P1 0 · screens P0/P1 1 · rest by priority 2 · last in the release 1' "$out"
@@ -159,15 +160,19 @@ ticket 944 "status:ready,P1,screen:one-desk-rail" "One Desk: the rail"
 ticket 945 "status:ready,P2,area:VOICES"        "Voices: a later pass"
 ticket 946 "status:ready,P1,screen:voices"      "Voices: the setup screen"
 ticket 947 "status:ready,P0,process"            "develop is red: the schema check"
+ticket 948 "status:ready,P1,screen:feed"        "Feed: the header"
 got=$(order)
-want "process; Voices (its screen first), One Desk; other screen work; the rest by priority" "947 946 943 944 942 941 945" "$got"
-want "a P1 Voices ticket ranks above a P0 non-focus screen, which ranks above a P0 non-screen" "yes" \
-  "$([ "$(pos 943)" -lt "$(pos 942)" ] && [ "$(pos 942)" -lt "$(pos 941)" ] && echo yes)"
+want "process; the P0s (screen first); Voices (its screen first), One Desk; the rest by priority" "947 942 941 946 943 944 948 945" "$got"
+want "a P0 non-focus screen ranks above a P0 non-screen, which ranks above a P1 Voices ticket" "yes" \
+  "$([ "$(pos 942)" -lt "$(pos 941)" ] && [ "$(pos 941)" -lt "$(pos 943)" ] && echo yes)"
 want "One Desk ranks after Voices"            "yes" "$([ "$(pos 944)" -gt "$(pos 943)" ] && echo yes)"
-want "a glob matches screen:one-desk-rail"    "yes" "$([ "$(pos 944)" -lt "$(pos 942)" ] && echo yes)"
-want "a P2 Voices ticket is not in the focus tier: it ranks among the rest" "7" "$(pos 945)"
+want "a glob matches screen:one-desk-rail"    "yes" "$([ "$(pos 944)" -lt "$(pos 948)" ] && echo yes)"
+want "a P2 Voices ticket is not in the focus tier: it ranks among the rest" "8" "$(pos 945)"
 out=$(CAP=1 tick)
-want_in "the order line names the focus areas' counts" 'tiers: process 1 · focus areas P0/P1 3 \(Voices 2, One Desk 1\) · screens P0/P1 1 · rest by priority 2' "$out"
+want_in "the order line names the focus areas' counts" 'tiers: process 1 · focus areas P0/P1 3 \(Voices 2, One Desk 1\) · screens P0/P1 2 · rest by priority 2' "$out"
+fresh; for t in 941 942 943 944 945 946 947 948; do bash "$Q" add "$t" >/dev/null; done
+CAP=3 tick >/dev/null
+want "the tick starts the process fix, then the P0s, before any focus-area P1" "947 942 941" "$(spawned)"
 unset COORDINATOR_FOCUS_AREAS COORDINATOR_SCREENS_FIRST
 
 echo "--- #13818: over the cap, a P0 sized big starts anyway (capExemptPriorities) ---"
