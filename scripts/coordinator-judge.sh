@@ -6,6 +6,11 @@
 #
 #   coordinator-judge.sh           launch judges for waiting events, up to coordinator.judges
 #
+# The tick runs this every tick (never behind housekeeping's lock: a slow sweep
+# held every judgement for half an hour). One launcher at a time, under its own
+# mkdir lock, so no two launchers ever start the same event. A builder's question
+# (a stand-down parked on the PM or a person) is judged before red PRs and frozen runs.
+#
 # In shadow (the default) it logs "would judge" and launches nothing.
 # COORDINATOR_CLAUDE replaces the claude binary (tests record its argv and env).
 set -uo pipefail
@@ -77,6 +82,30 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
 
 if [ "${1:-}" = "--run" ]; then run_one "${2:?--run needs an event id}"; fi
 
+# One launcher at a time: the check-then-append on $JUDGED is not atomic on its own.
+LOCK="$COORD_DIR/judge.lock"
+coord_lock "$LOCK" "judge launcher" || { echo "judge: $COORD_LOCK_WHY — next tick"; exit 0; }
+trap 'rm -rf "$LOCK"' EXIT
+
+# Waiting = a judge:true event not yet judged, question parks first, then oldest first.
+waiting() {
+  jq -sc --rawfile judged "$JUDGED" '
+    ($judged | split("\n") | map(select(. != "")) | map({key: ., value: true}) | from_entries) as $d
+    | map(select(.judge == true and ($d[.id // ""] | not)))
+    | to_entries
+    | sort_by([(if .value.kind == "stood-down" and ((.value.detail // "") | test("parked \\((pm|person)\\)"; "i")) then 0 else 1 end), .key])
+    | .[].value' "$COORD_EVENTS" 2>/dev/null
+}
+WAIT=$(waiting)
+n_wait=$(printf '%s' "$WAIT" | grep -c . || true)
+if [ "${n_wait:-0}" -gt 0 ]; then
+  oldest=$(printf '%s\n' "$WAIT" | jq -rs --argjson now "$(swarm_now)" \
+    '[.[].at | select(. != null) | fromdateiso8601] | if length == 0 then 0 else (($now - min) / 60 | floor) end' 2>/dev/null)
+  echo "judge: $n_wait waiting, oldest ${oldest:-0} min"
+else
+  echo "judge: 0 waiting"
+fi
+
 slots=$(( COORD_JUDGES - $(running) ))
 while IFS= read -r ev; do
   [ -n "$ev" ] || continue
@@ -95,5 +124,5 @@ while IFS= read -r ev; do
   launch "$id" "$ev"
   slots=$((slots-1))
   echo "judging $id"
-done < <(jq -c 'select(.judge == true)' "$COORD_EVENTS" 2>/dev/null)
+done <<< "$WAIT"
 exit 0

@@ -464,7 +464,11 @@ How the driver treats a brief:
 
 Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
-window — never the session history. State lives in `$STATE_DIR/coordinator/`.
+window — never the session history. The tick launches judges every tick, never
+behind housekeeping's lock, up to `coordinator.judges` (default 2) at once, under a
+launcher lock of its own so no event is judged twice; a builder's question (a
+stand-down parked on the PM or a person) goes before red PRs and frozen runs, and
+the tick logs `judge: N waiting, oldest M min`. State lives in `$STATE_DIR/coordinator/`.
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
 it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
 hook when any window hits the plan's limit) says the limit holds, nor while the

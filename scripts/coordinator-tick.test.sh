@@ -1339,6 +1339,38 @@ COORDINATOR_SHADOW=0 tick >/dev/null
 sleep 0.3
 want "an event is judged once"             "1" "$(grep -c ^ARGV "$FIX/claude.log")"
 
+echo "--- the judge launches from the tick every tick, never behind housekeeping's lock ---"
+fresh; mkdir -p "$C"
+# A housekeeping run held alive by a slow sweep, as a 20-30 min worktree sweep holds it.
+cat > "$BIN/slowsweep" <<'SH'
+#!/usr/bin/env bash
+touch "$FIX/sweep.started"; sleep 60
+SH
+chmod +x "$BIN/slowsweep"; rm -f "$FIX/sweep.started"
+COORDINATOR_SHADOW=0 COORDINATOR_SWEEP="$BIN/slowsweep" bash "$HERE/coordinator-housekeeping.sh" > /dev/null 2>&1 &
+HK=$!
+for _ in $(seq 1 100); do [ -f "$FIX/sweep.started" ] && break; sleep 0.1; done
+want "the slow housekeeping holds its lock"  "yes" "$([ -d "$C/housekeeping.lock" ] && kill -0 "$HK" 2>/dev/null && echo yes)"
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+at12=$(iso $(( $(date +%s) - 12 * 60 )))
+jq -cn --arg at "$at12" '{id:"red-pr:91:sha91", at:$at, kind:"red-pr", judge:true, ticket:"691", pr:"91", detail:"ci red"}' >> "$C/events.did.jsonl"
+jq -cn --arg at "$(iso "$(date +%s)")" '{id:"stood-down:claim-692-q", at:$at, kind:"stood-down", judge:true, ticket:"692", pr:"", detail:"run claim-692-q ended exit 0: ⏸ #692 parked (pm): which repo — a or b?"}' >> "$C/events.did.jsonl"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_JUDGES=1 tick)
+for _ in $(seq 1 50); do grep -q ^ARGV "$FIX/claude.log" 2>/dev/null && break; sleep 0.1; done
+want "a judge launches while housekeeping is still running" "1" "$(grep -c ^ARGV "$FIX/claude.log")"
+want_in "the question park is judged before the older red PR" 'stood-down:claim-692-q' "$(cat "$FIX/claude.log")"
+want_in "the tick says how many wait and how old the oldest is" 'judge: 2 waiting, oldest 1[23] min' "$out"
+want_in "the red PR waits for a slot"        'judge: no slot for red-pr:91:sha91' "$out"
+pkill -P "$HK" 2>/dev/null; kill "$HK" 2>/dev/null; wait "$HK" 2>/dev/null; rm -rf "$C/housekeeping.lock"
+# Two launchers at once (a tick and a leftover one): the second is refused, never doubles an event.
+fresh; mkdir -p "$C/judge.lock"
+jq -cn --arg at "$(iso "$(date +%s)")" '{id:"red-pr:93:sha93", at:$at, kind:"red-pr", judge:true, ticket:"693", pr:"93", detail:"ci red"}' >> "$C/events.did.jsonl"
+out=$(COORDINATOR_SHADOW=0 bash "$HERE/coordinator-judge.sh" 2>&1); sleep 0.3
+want "a launcher that loses the lock starts nothing" "0" "$(grep -c "red-pr:93" "$C/judged.did.ids" 2>/dev/null || true)"
+want_in "and says why"                       'judge: another judge launcher is taking the lock' "$out"
+rm -rf "$C/judge.lock"
+want "the default is two judges at once"      "2" "$(env -u COORDINATOR_JUDGES bash -c '. "$1/coordinator-env.sh" && echo "$COORD_JUDGES"' _ "$HERE")"
+
 
 echo "--- a list of scopes: the tick works a ticket under any one of them ---"
 fresh
