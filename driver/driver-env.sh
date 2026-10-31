@@ -894,6 +894,19 @@ driver_claim_dead_here() {
   ! claim_pid_alive "$pid"
 }
 
+# driver_merged_pr_for <ticket> — "#<n> merged at <when>" for a merged pull request that is
+# the ticket's (its branch, or a Closes #<ticket> in its body), else nothing. 1 when GitHub
+# could not be asked: unreadable is not "none".
+driver_merged_pr_for() {
+  local t="${1:?driver_merged_pr_for: need a ticket}" j
+  j=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --state merged --search "$t" --limit 30 \
+        --json number,headRefName,body,mergedAt 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --arg kw "$PR_CLOSES_JQ" '
+      [.[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)") or test("^" + $t + "/"))
+        or ((.body // "") | test($kw + $t + "([^0-9]|$)"; "i")))]
+      | first // empty | "#\(.number) merged at \(.mergedAt)"' 2>/dev/null
+}
+
 # driver_open_prs_for_patient <ticket> — driver_open_prs_for, asked DRIVER_LOOKUP_TRIES
 # (3) times DRIVER_LOOKUP_RETRY_SEC (5) apart: a GitHub timeout is usually gone by then.
 driver_open_prs_for_patient() {

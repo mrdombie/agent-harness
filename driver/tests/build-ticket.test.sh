@@ -321,10 +321,14 @@ echo "--- an already-finished ticket is a no-op that says so ---"
 # start still re-runs, because it is the re-entry check and re-checking a finished
 # ticket's claim and labels costs nothing. Nothing else does, and the run says so
 # rather than reporting a second ship.
+# Finished means its pull request is open (or merged): one with neither is a fresh build.
 reset_fakes
 bt 110 >/dev/null
 : > "$RAN"
+cp "$FIX/gh/prs.json" "$FIX/prs.keep" 2>/dev/null || printf '[]\n' > "$FIX/prs.keep"
+jq -n '[{number:70, headRefName:"tkt-110/ticket-110", headRefOid:"h", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
 out=$(bt 110); rc=$?
+cp "$FIX/prs.keep" "$FIX/gh/prs.json"
 want "it finishes"                  "0" "$rc"
 want "only the re-entry check ran"  "start" "$(tr -d '\n' < "$RAN")"
 # Anchored on `nothing left` alone: `already` also appears in "N step(s) were already
@@ -1121,5 +1125,37 @@ out=$(bt 441 --brief "$FIX/brief-nr.md"); rc=$?
 want "without the note, the tree stays"      "yes" "$([ -d "$FIX/left441" ] && echo yes || echo no)"
 want "and the record is resumed"             "$FIX/left441" "$(driver_state_get 441 worktree)"
 want "nothing is set aside"                  "0" "$(ls -d "$STATE/driver/441.set-aside-"* 2>/dev/null | grep -c .)"
+
+echo "--- a record that says it shipped, with no open PR and none merged, is a fresh build, never a success ---"
+# 15735 (2026-10-31): its PR was closed to rebuild fresh, its record kept every step done,
+# and each run said "nothing left to do" and exited 0 in a minute — 22 times in a day.
+shipped_record() { # <ticket> — a whole order finished on this host, its worktree kept
+  leftover "$1"
+  for s in size plan build fix compare self-check review record ship; do driver_state_done "$1" "$s"; done
+}
+reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; printf '[]\n' > "$FIX/gh/prs-merged.json"; shipped_record 450
+out=$(bt 450); rc=$?
+want_not_in "it never says there is nothing left to do" 'nothing left to do' "$out"
+want "the whole order runs again, from a fresh start" "start fresh=1 worktree= size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "the old record is set aside"             "1" "$(ls -d "$STATE/driver/450.set-aside-"* 2>/dev/null | grep -c .)"
+want "  and the old tree's commit is kept on origin" "$OLDSHA" "$(git -C "$REPO" ls-remote origin 'refs/stale/450/local-*' | cut -f1)"
+want_in "and the run says why"                 'no open pull request and none merged' "$out"
+
+echo "--- the same record with its PR merged is finished: nothing runs ---"
+reset_fakes; fresh_start; printf '[]\n' > "$FIX/gh/prs.json"; shipped_record 451
+jq -n '[{number:91, headRefName:"tkt-451/old", body:"", mergedAt:"2026-10-31T06:00:00Z"}]' > "$FIX/gh/prs-merged.json"
+out=$(bt 451); rc=$?
+want "it exits 0"                              "0" "$rc"
+want_in "and says there is nothing left to do" 'nothing left to do' "$out"
+want "nothing is set aside"                    "0" "$(ls -d "$STATE/driver/451.set-aside-"* 2>/dev/null | grep -c .)"
+printf '[]\n' > "$FIX/gh/prs-merged.json"
+
+echo "--- and with its PR open it is in review: nothing runs ---"
+reset_fakes; fresh_start; shipped_record 452
+jq -n '[{number:92, headRefName:"tkt-452/old", headRefOid:"abc", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+out=$(bt 452); rc=$?
+want "it exits 0"                              "0" "$rc"
+want "nothing is set aside"                    "0" "$(ls -d "$STATE/driver/452.set-aside-"* 2>/dev/null | grep -c .)"
+printf '[]\n' > "$FIX/gh/prs.json"
 
 suite_end "$FAILED"

@@ -150,7 +150,18 @@ nobody has to answer them and a later run clears them:
   owner. That run's claim is left alone.
 
 The last two park, with the step's own reason, after `DRIVER_MAX_REQUEUES` (3)
-requeues in a row, so a ticket that does not exist cannot loop.
+requeues in a row, so a ticket that does not exist cannot loop. "In a row" means no step
+newly finished in between: `start` re-running on every pass is not progress.
+
+- **The approved picture is not readable on this machine** (plan, run exit 28). The
+  first miss requeues; `driver.maxPictureMisses` (2) in a row park it for the PM,
+  naming the file. A run after a miss looks for the picture before it plans.
+
+A record that says `ship` finished while the ticket has no open pull request and none
+merged (one closed to rebuild fresh, or by hand) is a fresh build: it is set aside as a
+`Rebuild:` note's is, never read as "nothing left to do". And the coordinator parks for
+the PM any ticket whose last `coordinator.noProgressRuns` (3) runs each ended inside
+`coordinator.noProgressSec` (300) with the same exit and result line.
 
 A requeue adds no label, opens no pull request and asks no question. The record and
 the worktree are kept, so the next run resumes at the step that stopped. The reason

@@ -115,6 +115,31 @@ want_not_in "no question or draft PR either" 'pr create|issue comment' "$(cat "$
 want_in "the reason is on the record" 'Picture for any machine' "$(driver_state_get 703 requeued)"
 want "plan is not marked done, so the next run fetches again" "" "$(driver_state_get 703 'done|join(",")')"
 
+echo "--- the second miss in a row parks for the PM, naming the file, and spends no plan on it ---"
+# 17008 (2026-10-31): requeued at the front 43 times in 4 hours, re-planning every time,
+# over a picture that existed only on the machine it was drawn on.
+want "the first miss is counted"                "1" "$(driver_state_count 703 picture_miss)"
+want "and the file it missed is on the record"  "$GONE" "$(driver_state_get 703 picture_miss_ref)"
+: > "$GH_LOG"; : > "$CLAUDE_LOG"; rm -f "$FIX/queue.log"
+out=$(bash "$BT" 703 --steps plan 2>&1); rc=$?
+want "the second run parks, never a requeue"    "20" "$rc"
+want "no plan was paid for: the picture is looked for first" "" "$(cat "$CLAUDE_LOG")"
+want_not_in "it is not put back on the queue"   '^add 703' "$(cat "$FIX/queue.log" 2>/dev/null)"
+want_in "the hold is the PM's"                  'add-label status:parked.*add-label status:pm-decision|add-label status:pm-decision.*add-label status:parked' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "the park names the missing file"       "issue comment 703 .*desk-mock.html" "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "and the run says it parked for the PM" 'parked for the PM' "$out"
+
+echo "--- a picture published between the misses resets the count ---"
+wt=$(fresh_tree 706); issue_with 706 "nothing about pictures"
+driver_state_init 706 --worktree "$wt"; plan_answer "$GONE"
+rc=0; driver_step_plan 706 >/dev/null 2>&1 || rc=$?
+want "the first miss requeues"                  "28" "$rc"
+issue_with 706 "$(published "$SHA")"
+rc=0; driver_step_plan 706 >/dev/null 2>&1 || rc=$?
+want "once published, the plan goes ahead"     "0" "$rc"
+want "and the misses are forgotten"             "0" "$(driver_state_count 706 picture_miss)"
+want "  with no file left on the record"        "" "$(driver_state_get 706 picture_miss_ref)"
+
 echo "--- a picture that is on this machine is used where it is ---"
 wt=$(fresh_tree 704)
 mkdir -p "$wt/.design" && printf 'here\n' > "$wt/.design/here-mock.html"

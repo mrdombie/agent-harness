@@ -829,7 +829,12 @@ rebuild_world() { # <repair spawns on record> [a rebuild after them: 1]
 }
 NOWE=$(date +%s)
 rebuild_world 2
+mkdir -p "$STATE/driver/501/steps"; printf '{"step":"plan"}\n' > "$STATE/driver/501/steps/plan.json"
+jq -n '{ticket:"501", mode:"repair", step:"ship", done:["reenter","repair","fix","self-check","review","record","ship"], counters:{}}' > "$STATE/driver/501/state.json"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "  this host's driver record forgets every step (15735)" "0" "$(jq '.done | length' "$STATE/driver/501/state.json")"
+want "  its answers are archived, not left to be resumed" "1" "$(ls "$STATE/driver/501/steps/archive/"*/plan.json 2>/dev/null | grep -c .)"
+rm -rf "$STATE/driver/501"
 want "two repairs on record: no third repair"   "" "$(spawned)"
 want "  the head is kept on a stale ref"        "1" "$(grep -c '^api repos/acme/widgets/git/refs -f ref=refs/stale/501/pr-5501 -f sha=f501' "$GH_LOG")"
 want "  the PR is closed, its branch deleted"   "1" "$(grep -c '^pr close 5501 .*--delete-branch .*Closed to rebuild fresh' "$GH_LOG")"
@@ -981,6 +986,56 @@ want "a quoted limit in a clean run raises nothing" "0" "$(grep -c 'claim-804-x'
 tick >/dev/null
 want "each ended run is read once"         "4" "$(grep -c 'ended' "$C/runs.log")"
 rm -f "$STATE/logs/claim-803-x.log" "$STATE/logs/claim-804-x.log"
+
+echo "--- a ticket whose last 3 runs ended fast with the same result is parked for the PM, not spawned again ---"
+# 15735 (2026-10-31): "nothing left to do", exit 0, in a minute, 22 times in a day; 17008:
+# requeued at the front over a missing picture 43 times in 4 hours.
+short_run() { # <ticket> <i> <exit> <result> [secs] — a run that ended that long after it started
+  local t="$1" i="$2" st="2026-10-31T06:2${2}:00Z" en
+  en=$(jq -nr --arg s "$st" --argjson d "${5:-60}" '$s | fromdateiso8601 + $d | todate')
+  printf '{"run_id":"claim-%s-r%s","ticket":"%s","log":"%s","started_at":"%s"}\n' "$t" "$i" "$t" "$STATE/logs/claim-$t-r$i.log" "$st" > "$STATE/runs/claim-$t-r$i.json"
+  printf '%s\n' "$4" > "$STATE/logs/claim-$t-r$i.log"
+  printf '{"run_id":"claim-%s-r%s","exit_code":%s,"ended_at":"%s"}\n' "$t" "$i" "$3" "$en" > "$STATE/runs/claim-$t-r$i.ended"
+}
+NOTHING="✓ #860 has nothing left to do — all 9 step(s) were already finished."
+fresh; queue 860; : > "$GH_LOG"
+short_run 860 1 0 "$NOTHING"; short_run 860 2 0 "$NOTHING"; short_run 860 3 0 "$NOTHING"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "it is not spawned a fourth time"          "" "$(spawned)"
+want_in "it is parked with the PM's hold"       'issue edit 860 .*--add-label status:parked.*--add-label status:pm-decision|issue edit 860 .*--add-label status:pm-decision.*--add-label status:parked' "$(cat "$GH_LOG")"
+want_in "the park says what kept repeating"     'issue comment 860 .*Parked — no progress' "$(tr '\n' ' ' < "$GH_LOG")"
+want "it leaves the queue"                      "0" "$(jq '[.tickets[]? | select(.n == 860)] | length' "$C/queue.json" 2>/dev/null || echo 0)"
+want_in "and it is reported"                    '"kind":"no-progress".*"ticket":"860"' "$(cat "$C/events.did.jsonl" 2>/dev/null)"
+
+echo "--- the same three, one of them a real run of minutes: nothing parks ---"
+fresh; queue 861; : > "$GH_LOG"
+short_run 861 1 0 "$NOTHING"; short_run 861 2 0 "$NOTHING" 900; short_run 861 3 0 "$NOTHING"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "a long run between is progress: it spawns" "861" "$(spawned)"
+want_not_in "nothing is parked"                  'issue edit 861 .*status:parked' "$(cat "$GH_LOG")"
+
+echo "--- three fast runs with different results, or only two: nothing parks ---"
+fresh; queue 862 863; : > "$GH_LOG"
+short_run 862 1 28 "↻ #862 requeued for the next tick: a"; short_run 862 2 28 "↻ #862 requeued for the next tick: b"; short_run 862 3 28 "↻ #862 requeued for the next tick: a"
+short_run 863 1 28 "↻ #863 requeued for the next tick: a"; short_run 863 2 28 "↻ #863 requeued for the next tick: a"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "both spawn"                                "862 863" "$(spawned)"
+want_not_in "nothing is parked"                  'status:parked' "$(cat "$GH_LOG")"
+
+echo "--- a stop that is the machine's is never the ticket's loop ---"
+fresh; queue 864; : > "$GH_LOG"
+short_run 864 1 33 "machine fault: x"; short_run 864 2 33 "machine fault: x"; short_run 864 3 33 "machine fault: x"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want_not_in "an API fault three times parks nothing" 'issue edit 864 .*status:parked' "$(cat "$GH_LOG")"
+
+echo "--- once a parked loop is put back, its count starts again ---"
+fresh; queue 865
+short_run 865 1 0 "$NOTHING"; short_run 865 2 0 "$NOTHING"; short_run 865 3 0 "$NOTHING"
+COORDINATOR_SHADOW=0 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick >/dev/null
+fix_issue 865 OPEN "status:ready"; bash "$Q" add 865 >/dev/null; : > "$GH_LOG"; : > "$SPAWNS"
+short_run 865 4 0 "$NOTHING"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "one more fast run after the PM's answer spawns again" "865" "$(spawned)"
 
 echo "--- a run the wall cut off goes back to the front of the queue, judged by no model ---"
 # claim-12987's shape (2026-10-15): cut at the session limit 11 minutes in, its
