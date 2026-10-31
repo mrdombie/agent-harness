@@ -286,6 +286,23 @@ swarm_usage_near_hold() {
   printf '%s (%s window at %s%%)' "$(swarm_iso "$(printf '%s' "$pick" | cut -f1)")" \
     "$(printf '%s' "$pick" | cut -f2)" "$(printf '%s' "$pick" | cut -f3)"
 }
+# swarm_log_began <log> — when a log began, as digits: the UTC stamp in a
+# claim-<ticket>-<YYYYmmddTHHMMSSZ>-<pid>.log name, the file's birth time, or its mtime,
+# whichever is earliest. Not its mtime alone: a held builder appends a wait line every
+# 5 min, which moves the mtime of a log whose readings were all taken earlier.
+swarm_log_began() {
+  local f="$1" b m t n
+  m=$(swarm_mtime "$f"); b=$m
+  n=$(basename "$f" | sed -n 's/^claim-.*-\([0-9]\{8\}T[0-9]\{6\}Z\)-[0-9]*\.log$/\1/p')
+  if [ -n "$n" ]; then
+    t=$(date -u -j -f '%Y%m%dT%H%M%SZ' "$n" +%s 2>/dev/null \
+        || date -u -d "$(printf '%s' "$n" | sed 's/^\(....\)\(..\)\(..\)T\(..\)\(..\)\(..\)Z$/\1-\2-\3 \4:\5:\6/')" +%s 2>/dev/null)
+    case "$t" in ''|*[!0-9]*) ;; *) [ "$t" -lt "$b" ] && b=$t ;; esac
+  fi
+  t=$(stat -f %B "$f" 2>/dev/null); case "$t" in ''|*[!0-9]*) t=$(stat -c %W "$f" 2>/dev/null) ;; esac
+  case "$t" in ''|*[!0-9]*|0) ;; *) [ "$t" -lt "$b" ] && b=$t ;; esac
+  printf '%s' "$b"
+}
 # A file's mtime, on either stat, always as digits (0 when unreadable).
 swarm_mtime() {
   local m
@@ -341,8 +358,9 @@ swarm_usage_freshest_at() {
   best=$( { while IFS= read -r f; do
               [ -n "$f" ] || continue
               m=$(swarm_mtime "$f")
-              # A log names no account: one observed before the account changed is another account's.
-              [ "$m" -ge "$since" ] || continue
+              # A log names no account: one that began before the account changed is another
+              # account's, however recently a wait line was appended to it.
+              [ "$since" -eq 0 ] || [ "$(swarm_log_began "$f")" -ge "$since" ] || continue
               swarm_usage_cli_events "$f" | awk -F'\t' -v w="$w" -v m="$m" '$2 == "window" && $4 == w { print $5 "\t" $3 "\t" m }'
             done <<< "$files"
             jq -r --arg w "$w" --arg a "$acct" '.hosts[]? | select((.account // "") == $a) | .usage? | .[$w]? // empty | select((.u | type) == "number" and (.reset | type) == "number")
@@ -367,19 +385,20 @@ swarm_usage_freshest_at() {
 # builders log nothing, so a hold read under an account since switched, or a window since reset,
 # never cleared (2026-10-24: both hosts held on the old account's 95% week after a login change).
 # 0 when it probed; 1 when it did not need to or could not.
-swarm_usage_probe() {
-  local min every now newest m stamp last log dir
+swarm_usage_probe() { # [--now]: skip the interval gates (the account changed; read the new one)
+  local min every now newest m stamp last log dir force=""
+  [ "${1:-}" = --now ] && force=1
   min="${SWARM_USAGE_PROBE_MIN:-$(swarm_opt swarm.usageProbeMin 15 2>/dev/null || echo 15)}"
   case "$min" in ''|*[!0-9]*) min=15 ;; esac
   [ "$min" -gt 0 ] || return 1
   every=$(( min * 60 )); now=$(swarm_now)
   # shellcheck disable=SC2012  # names we wrote
   newest=$(ls -t "$SWARM_LOGS"/claim-*.log "${DRIVER_DIR:-$STATE_DIR/driver}"/*/steps/*.log 2>/dev/null | head -1)
-  if [ -n "$newest" ]; then
+  if [ -n "$newest" ] && [ -z "$force" ]; then
     m=$(swarm_mtime "$newest"); [ $(( now - ${m:-0} )) -ge "$every" ] || return 1
   fi
   stamp="$SWARM_LOGS/.usage-probe.at"; last=$(cat "$stamp" 2>/dev/null); case "$last" in ''|*[!0-9]*) last=0 ;; esac
-  [ $(( now - last )) -ge "$every" ] || return 1
+  [ -n "$force" ] || [ $(( now - last )) -ge "$every" ] || return 1
   mkdir -p "$SWARM_LOGS" 2>/dev/null; printf '%s' "$now" > "$stamp"
   log="$SWARM_LOGS/claim-usage-probe-$(date -u +%Y%m%dT%H%M%SZ)-0.log"
   dir=$(mktemp -d 2>/dev/null) || return 1
