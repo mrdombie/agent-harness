@@ -450,16 +450,26 @@ coord_act_log() { # <verb> <subject> [detail]
   printf '%s\t%s\t%s\t%s\t%s\n' "$(swarm_stamp)" "$(coord_mode)" "$1" "$2" "${3:-}" >> "$COORD_ACTIONS"
 }
 
-# coord_lock <dir> <noun> — one holder at a time. Fails, with COORD_LOCK_WHY set, when
+# coord_lock <dir> <noun> [max-sec] — one holder at a time. Fails, with COORD_LOCK_WHY set, when
 # another live process holds it. A reused pid is not the holder: the lock
-# carries the holder's start time too.
+# carries the holder's start time too. With max-sec, a holder that has held it longer is
+# hung: it and everything under it are killed, the lock is taken, and COORD_LOCK_STOPPED
+# says so (2026-10-31: a tick hung 1 h 57 min on one call and no tick ran behind it).
 # GNU stat -f reads %m as a file name and prints to stdout, so ask GNU first.
 coord_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 # Locale and zone pinned: cron's C and a shell's en_GB print the same start differently.
 coord_started_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
-coord_lock() { # <dir> <noun>
-  local lock="$1" who="${2:-run}" holder
-  COORD_LOCK_WHY=""
+# coord_kill_tree <pid> — the process and every descendant, children first, with SIGKILL:
+# a hung holder's own EXIT trap must not remove the lock its successor has just taken.
+coord_kill_tree() {
+  local c
+  for c in $(ps -A -o pid=,ppid= 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do coord_kill_tree "$c"; done
+  kill -KILL "$1" 2>/dev/null
+}
+coord_lock() { # <dir> <noun> [max-sec]
+  local lock="$1" who="${2:-run}" max="${3:-}" holder age i
+  COORD_LOCK_WHY=""; COORD_LOCK_STOPPED=""
+  case "$max" in ''|*[!0-9]*|0) max="" ;; esac
   if ! mkdir "$lock" 2>/dev/null; then
     holder=$(cat "$lock/pid" 2>/dev/null)
     if [ -z "$holder" ] && [ $(( $(date +%s) - $(coord_mtime "$lock") )) -lt 60 ]; then
@@ -467,7 +477,13 @@ coord_lock() { # <dir> <noun>
     fi
     if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null \
        && [ "$(coord_started_of "$holder")" = "$(cat "$lock/started" 2>/dev/null)" ]; then
-      COORD_LOCK_WHY="another $who (pid $holder) is running"; return 1
+      age=$(( $(date +%s) - $(coord_mtime "$lock/pid") ))
+      if [ -z "$max" ] || [ "$age" -lt "$max" ]; then
+        COORD_LOCK_WHY="another $who (pid $holder) is running"; return 1
+      fi
+      coord_kill_tree "$holder"
+      i=0; while kill -0 "$holder" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$(( i + 1 )); done
+      COORD_LOCK_STOPPED="the last $who (pid $holder) ran $(( age / 60 )) min, over its limit of $(( max / 60 )) min — stopped it"
     fi
     rm -rf "$lock"
     mkdir "$lock" 2>/dev/null || { COORD_LOCK_WHY="lost the lock race"; return 1; }

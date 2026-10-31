@@ -487,6 +487,14 @@ approval, or it says it has no question tool) is not picked again until the
 wait moves: a label on the ticket or its PR, a new commit, a comment, or a red
 check. The tick log says `skip #N: waiting on a human since run …` until then.
 
+No outside call stops the loop. The account check (`claude auth status`, 20 s)
+and the usage probe (`claude -p`, 120 s) run under `swarm_bounded`, which kills
+the call's whole process group at its limit; a check that timed out is not asked
+again for a minute, and the last known account stands. A tick still running past
+`coordinator.tickMaxMin` (default 15; the longest healthy one measured 7 min) is
+hung on something else: the next tick kills it and everything under it, says
+`tick: the last tick (pid N) ran … — stopped it`, and runs.
+
 The coordinator shares one GitHub token with every builder, so it reads the
 forge once a pass, never once a ticket: one open-PR read, the queue's tickets in
 batched GraphQL requests of 50 (`scripts/gh-batch.sh`), the queue re-seeded every
