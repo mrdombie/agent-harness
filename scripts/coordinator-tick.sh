@@ -61,9 +61,10 @@
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
 #                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
 #   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
-#   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh)
+#   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh),
+#                    every tick, question parks first — never behind housekeeping's lock
 #
-# 5b-8 run in coordinator-housekeeping.sh, under a lock of their own, in the
+# 5b-7 run in coordinator-housekeeping.sh, under a lock of their own, in the
 # background after the starts and at most every coordinator.housekeepingEveryMin
 # (default 5): a tick is the starts, so it can run every 2 minutes.
 # A run whose last word is a wait on a human is not re-picked until the wait moves
@@ -1341,8 +1342,18 @@ printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s nex
 gh_calls_trim
 say "gh: $(gh_calls_tally "$TICK_T0" coordinator-tick) call(s) this tick · last hour: $(gh_calls_tally $(( $(swarm_now) - 3600 )) | sed 's/^$/none counted/') · left: $(printf '%s' "$ALLOWANCE" | awk -F'\t' 'NF == 4 { printf "%s%s %s/%s", (n++ ? ", " : ""), ($1 == "graphql" ? "GraphQL" : "REST"), $2, $3 } END { if (!n) printf "unread" }')"
 
-# ---- 5b-8. housekeeping, off the start path ------------------------------------
-# The merge lane, reconcile, the sweeps, the disk pass and the judge took 2.9 of a
+# ---- 8. judgement, every tick ---------------------------------------------------
+# Never behind housekeeping: its lock is held for as long as a worktree sweep takes
+# (20-30 min), and a builder's question waited that long for its judge. The launcher
+# takes a lock of its own and returns at once (each judge is detached).
+if [ -n "$GH_LOW" ]; then say "judge: waits until the allowance resets — $(gh_limit_why)"
+elif until=$(gh_backoff_active); then say "judge: GitHub is rate-limiting this token until $(swarm_iso "$until") — next tick"
+else
+  while IFS= read -r line; do [ -n "$line" ] && say "$line"; done < <(bash "$JUDGE" 2>&1)
+fi
+
+# ---- 5b-7. housekeeping, off the start path ------------------------------------
+# The merge lane, reconcile, the sweeps and the disk pass took 2.9 of a
 # 4.4-minute median tick, and launchd starts no tick while one runs: starts waited
 # on them. They run in coordinator-housekeeping.sh under a lock of their own, at most
 # every coordinator.housekeepingEveryMin, in the background once the starts are made.
@@ -1350,7 +1361,7 @@ HOUSE="${COORDINATOR_HOUSEKEEPING_CMD:-$SELF_DIR/coordinator-housekeeping.sh}"
 HOUSE_STAMP="$COORD_DIR/housekeeping.stamp"
 COORD_HOUSE_EVERY_MIN="${COORDINATOR_HOUSEKEEPING_EVERY_MIN:-$(swarm_opt coordinator.housekeepingEveryMin 5)}"
 case "$COORD_HOUSE_EVERY_MIN" in ""|*[!0-9]*) COORD_HOUSE_EVERY_MIN=5 ;; esac
-# With the shared GitHub allowance under its mark, the sweeps and the judge's resends wait for the reset.
+# With the shared GitHub allowance under its mark, the sweeps wait for the reset.
 if [ -n "$GH_LOW" ]; then
   say "housekeeping: skipped until the allowance resets — $(gh_limit_why)"
 elif [ $(( $(date +%s) - $(coord_mtime "$HOUSE_STAMP") )) -lt $(( COORD_HOUSE_EVERY_MIN * 60 )) ]; then

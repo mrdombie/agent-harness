@@ -82,7 +82,7 @@
 #                                                           milestones below, alsoIn the screen labels and
 #                                                           "Batch:" / "Polish list:" titles; an object's missing
 #                                                           keys take those defaults
-#   coordinator.judges       COORDINATOR_JUDGES         1    judges at once
+#   coordinator.judges       COORDINATOR_JUDGES         2    judges at once
 #   coordinator.judge.turns  COORDINATOR_JUDGE_TURNS   40
 #   coordinator.judge.budgetUsd   COORDINATOR_JUDGE_BUDGET_USD   5
 #   coordinator.judge.compactWindow  COORDINATOR_JUDGE_COMPACT  150000
@@ -158,7 +158,7 @@ case "$COORD_STRAY_MAX_AGE_MIN" in ""|*[!0-9]*) COORD_STRAY_MAX_AGE_MIN=180 ;; e
 COORD_STRAY_GRACE_SEC="${COORDINATOR_STRAY_GRACE_SEC:-$(swarm_opt coordinator.strayGraceSec 10)}"
 case "$COORD_STRAY_GRACE_SEC" in ""|*[!0-9]*) COORD_STRAY_GRACE_SEC=10 ;; esac
 COORD_FROZEN_MIN="${COORDINATOR_FROZEN_MIN:-$(swarm_opt coordinator.frozenMin 20)}"
-COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 1)}"
+COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 2)}"
 COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turns 40)}"
 COORD_JUDGE_BUDGET="${COORDINATOR_JUDGE_BUDGET_USD:-$(swarm_opt coordinator.judge.budgetUsd 5)}"
 COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.compactWindow 150000)}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # coordinator-housekeeping.sh — the slow half of a coordinator tick: the merge
-# lane, reconcile, the sweeps, the disk pass, the judge, and the host's own shared
+# lane, reconcile, the sweeps, the disk pass, and the host's own shared
 # state (its shared install, its stranded worktrees). coordinator-tick.sh
 # starts it in the background once its starts are made, so none of it delays a
 # start. One at a time: a housekeeping still running means this one exits.
@@ -12,7 +12,6 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
 SWEEP="${COORDINATOR_SWEEP:-$SELF_DIR/stop-dev-servers.sh}"
-JUDGE="${COORDINATOR_JUDGE:-$SELF_DIR/coordinator-judge.sh}"
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
 touch "$COORD_EVENTS" "$COORD_ACTIONS"
 
@@ -155,7 +154,6 @@ if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then
   fi
 fi
 
-# ---- 8. judgement ------------------------------------------------------------
-if [ -n "$GH_WAIT" ]; then say "judge: $GH_WAIT — next pass"
-else bash "$JUDGE" >> "$COORD_LOG" 2>&1 || say "judge exited $?"; fi
+# The judge is launched by the tick, every tick (coordinator-tick.sh step 8): never here,
+# where a 20-30 min sweep held every judgement behind this run's lock.
 say "housekeeping: done"
