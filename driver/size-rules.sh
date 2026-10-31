@@ -103,9 +103,62 @@ driver_repo_own() {
       | sed -E 's#.*/##' | tr '[:upper:]' '[:lower:]'; } | sed '/^$/d' | awk '!s[$0]++'
 }
 
+# A REPO WITH A CLONE HERE IS BUILT HERE, IN THAT CLONE. The places kept for harness fixes
+# stayed empty while every harness ticket, which names the harness repo, was refused as
+# another repo's work. A repo:<name> ticket is this host's to build when a clone of <name>
+# sits beside this project's own (or HARNESS_REPO_CLONES="<name>=<path> …" names one), its
+# origin is that repo, and its trunk carries .claude/harness.json: the run is spawned in
+# that clone and reads that config. With no such clone it is still another repo's.
+# driver_repo_clone <name> — the clone's path, or fails.
+driver_repo_clone() {
+  local want dir="" pair url ref main="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}"
+  want=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'); [ -n "$want" ] || return 1
+  [ "$want" != "$(driver_repo_self)" ] || return 1
+  for pair in ${HARNESS_REPO_CLONES:-}; do
+    [ "$(printf '%s' "${pair%%=*}" | tr '[:upper:]' '[:lower:]')" = "$want" ] && dir="${pair#*=}"
+  done
+  if [ -z "$dir" ]; then [ -n "$main" ] || return 1; dir="$(dirname "$main")/$1"; fi
+  dir="${dir/#\~/$HOME}"
+  [ -d "$dir" ] || return 1
+  url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
+  url="${url%/}"; url="${url%.git}"
+  [ "$(printf '%s' "${url##*/}" | tr '[:upper:]' '[:lower:]')" = "$want" ] || return 1
+  for ref in origin/HEAD origin/main origin/develop origin/master; do
+    git -C "$dir" cat-file -e "$ref:.claude/harness.json" 2>/dev/null && { printf '%s' "$dir"; return 0; }
+  done
+  return 1
+}
+# driver_repo_clone_for <labels-csv> — the clone a ticket's repo:<name> label sends its
+# run to; fails when its labels name none (no repo: label, or only this project's own).
+driver_repo_clone_for() {
+  local n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    driver_repo_clone "$n" && return 0
+  done <<<"$(printf '%s' "${1:-}" | tr ',' '\n' | sed -nE 's/^[[:space:]]*[Rr][Ee][Pp][Oo]:[[:space:]]*//p' | sed -E 's#.*/##; s/[[:space:]]+$//')"
+  return 1
+}
+# driver_repo_own_here — driver_repo_own, and each repo with a clone on this host
+# (driver_repo_clone): those HARNESS_REPO_CLONES names and those beside this project's.
+driver_repo_own_here() {
+  local main="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}" d n p u
+  { driver_repo_own
+    { for p in ${HARNESS_REPO_CLONES:-}; do printf '%s\n' "${p%%=*}"; done
+      # Only a directory whose origin carries its own name is asked further.
+      [ -z "$main" ] || for d in "$(dirname "$main")"/*/; do
+        [ -e "${d}.git" ] || [ -f "${d}HEAD" ] || continue
+        d="${d%/}"; u=$(git -C "$d" config --get remote.origin.url 2>/dev/null) || continue
+        u="${u%/}"; u="${u%.git}"; [ "${u##*/}" = "${d##*/}" ] || continue
+        printf '%s\n' "${d##*/}"
+      done; } | awk 'NF && !s[$0]++' | while IFS= read -r n; do
+        driver_repo_clone "$n" >/dev/null && printf '%s\n' "$n" | tr '[:upper:]' '[:lower:]'
+      done; } | sed '/^$/d' | awk '!s[$0]++'
+}
+
 # driver_repo_foreign <labels-csv> — prints the repo a repo:<name> label names and
 # returns 0 when the ticket belongs to another repo: it carries a repo: label and none
-# of them names a repo this project builds. Never sized, seeded or started here.
+# of them names a repo this project builds or has a clone of here (driver_repo_clone).
+# Never sized, seeded or started here.
 driver_repo_foreign() {
   local own want
   own=$(driver_repo_own); [ -n "$own" ] || return 1
@@ -113,6 +166,7 @@ driver_repo_foreign() {
     | sed -E 's#.*/##; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]' | sed '/^$/d')
   [ -n "$want" ] || return 1
   printf '%s\n' "$want" | grep -qxF -f <(printf '%s\n' "$own") && return 1
+  driver_repo_clone_for "$1" >/dev/null && return 1
   printf '%s' "$(printf '%s\n' "$want" | head -1)"
 }
 

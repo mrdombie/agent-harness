@@ -828,7 +828,7 @@ driver_step_ship() { # <ticket>
   deferred=$(_driver_ship_deferred "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
-$closes #$t
+$closes ${ISSUE_REF:-}#$t
 
 Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 

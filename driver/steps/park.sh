@@ -156,7 +156,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
       --title "#$t: parked — $reason" \
       --body "Parked mid-run. See the resume brief on #$t.
 
-$([ "$(driver_state_get "$t" polish_self)" = 1 ] && printf Refs || printf Closes) #$t" >/dev/null 2>&1 || true
+$([ "$(driver_state_get "$t" polish_self)" = 1 ] && printf Refs || printf Closes) ${ISSUE_REF:-}#$t" >/dev/null 2>&1 || true
   fi
 
   # A PARKED RUN'S PULL REQUEST NEVER LANDS BY ITSELF. An earlier ship may have readied

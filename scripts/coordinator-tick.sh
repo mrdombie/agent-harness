@@ -1197,7 +1197,10 @@ else
     else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
-      spawn_out=$(CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
+      # A repo:<name> ticket with a clone of <name> here runs in that clone (driver_repo_clone_for).
+      in_repo=$(driver_repo_clone_for "$(coord_issue_labels "$t" 2>/dev/null)") || in_repo=""
+      [ -z "$in_repo" ] || say "#$t runs in $in_repo, the clone its repo label names"
+      spawn_out=$(SWARM_SPAWN_REPO="$in_repo" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live; ! coord_healing_class "$cls" || finish_started "$t"
