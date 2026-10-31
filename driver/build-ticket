@@ -239,6 +239,28 @@ if [ -n "$RUN_BRIEF" ] && [ -s "$RUN_BRIEF" ] && grep -qE '^(Coordinator note \(
   driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
 fi
 
+# ---- finished on the record, with nothing to show for it, is a fresh build ------
+# A record with ship done says the work went out. With no open pull request and none
+# merged, it went nowhere: a PR closed to rebuild fresh (repair-gate.sh) or by hand. Read
+# as finished, every run said "nothing left to do" and exited 0 in a minute, and the
+# reconciler put the ticket back to ready: 15735 did that 22 times in a day. So it is set
+# aside like a "Rebuild:" note's, and the run builds from the trunk; never a success.
+if [ -z "$REPAIR_BRIEF" ] && [ "$RESTART" -eq 0 ] && driver_state_is_done "$TICKET" ship \
+   && case " $DRIVER_STEPS " in *" ship "*) true ;; *) false ;; esac; then
+  if ! _live=$(driver_open_prs_for_patient "$TICKET") || ! _landed=$(driver_merged_pr_for "$TICKET"); then
+    driver_say "⏳ #$TICKET's record says it shipped, and GitHub could not be asked whether its pull request is open or merged — nothing is decided; the next tick tries again"
+    exit "$DRIVER_E_UNREAD"
+  fi
+  if [ -z "$_live" ] && [ -z "$_landed" ]; then
+    driver_say "↻ #$TICKET's record says every step finished, but it has no open pull request and none merged — a fresh build, not a success"
+    if [ -n "$RUN_BRIEF" ] && [ -s "$RUN_BRIEF" ]; then
+      _rb_copy="$DRIVER_DIR/.rebuild-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
+    fi
+    driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+  fi
+  unset _live _landed
+fi
+
 # ---- a repair: the PR that exists, not a fresh build --------------------------
 # `--repair <brief>` is how a red or clashing pull request comes back to the driver.
 # A different order, entered through `reenter` (the PR's own branch, at origin's
@@ -697,7 +719,10 @@ while [ "$i" -lt "$N" ]; do
       if [ "$step" = ship ] && _ce=$(driver_state_get "$TICKET" claim_epoch) && [ -n "$_ce" ]; then
         driver_state_set "$TICKET" claim_to_pr_secs "$(( $(date +%s) - _ce ))"
       fi
-      [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.requeue = 0'
+      # Only a step that newly finished is progress. start re-runs on every pass, so
+      # resetting on it reset the count every run and the requeue cap never tripped:
+      # 17008 was requeued 43 times in 4 hours under a cap of 3.
+      [ "$was_done" -eq 1 ] || [ "$(driver_state_get "$TICKET" '.counters.requeue // 0')" = 0 ] || _driver_state_edit "$TICKET" '.counters.requeue = 0'
       [ "$step" != "plan" ] || driver_state_set "$TICKET" plan_body_hash "$plan_hash"
       i=$((i+1))
       [ "$step" != size ] || { driver_take_route; driver_cap_after_size; }

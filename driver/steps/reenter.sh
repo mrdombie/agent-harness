@@ -94,12 +94,7 @@ driver_step_reenter() { # <ticket>
   if [ "$n" -eq 0 ]; then
     # NOT OPEN MAY BE MERGED: the repair was sent, then automerge landed the PR.
     local landed
-    landed=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --state merged --search "$t" --limit 30 \
-               --json number,headRefName,body,mergedAt 2>/dev/null \
-             | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$t" --arg kw "$PR_CLOSES_JQ" '
-                 [.[] | select((.headRefName | test("^" + $pre + $t + "([^0-9]|$)") or test("^" + $t + "/"))
-                   or ((.body // "") | test($kw + $t + "([^0-9]|$)"; "i")))]
-                 | first // empty | "#\(.number) merged at \(.mergedAt)"' 2>/dev/null)
+    landed=$(driver_merged_pr_for "$t")
     if [ -n "$landed" ]; then
       [ -z "${CL:-}" ] || bash "$CL" release "$t" >/dev/null 2>&1 || true
       driver_state_set "$t" noop_note "PR $landed before the repair re-entered it; nothing left to do"

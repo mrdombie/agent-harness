@@ -88,10 +88,50 @@ Refs #%s
   driver_say "✂ plan: $n build tasks, over driver.split.maxTasks ($max) — split into $kids, the parent closed as split"
 }
 
+# _driver_plan_picture_miss <ticket> <ref> <why> — the approved picture is not readable here.
+# The first miss goes back on the queue; driver.maxPictureMisses (2) in a row parks it for
+# the PM, naming the file: 17008 was requeued at the front 43 times in 4 hours, each run
+# re-planning, over a picture that existed only on the machine it was drawn on.
+_driver_plan_picture_miss() {
+  local t="$1" ref="$2" why="$3" n max
+  max="${DRIVER_MAX_PICTURE_MISSES:-$(driver_opt driver.maxPictureMisses 2)}"
+  case "$max" in ''|*[!0-9]*|0) max=2 ;; esac
+  driver_state_bump "$t" picture_miss
+  driver_state_set "$t" picture_miss_ref "$ref"
+  n=$(driver_state_count "$t" picture_miss)
+  if [ "${n:-0}" -ge "$max" ]; then
+    driver_say "✋ plan: the approved picture ($ref) was not readable on this machine $n runs in a row — parked for the PM, not requeued again: $why"
+    driver_state_set "$t" park_cause pm
+    driver_state_set "$t" park_note "The approved picture is not readable on this machine, $n runs in a row: $ref ($why). Post it on this ticket as a \"Picture for any machine\" comment (scripts/picture-approve.sh) or commit it as the surface's mock, then clear \`$DRIVER_PM_LABEL\`."
+    return "$DRIVER_E_QUESTION"
+  fi
+  driver_say "⏳ plan: the approved picture could not be read on this machine — $why. Back on the queue until it is published ($n of $max misses before it parks for the PM)."
+  driver_state_set "$t" park_note "the approved picture is not readable on this machine: $why"
+  return "$DRIVER_E_REQUEUE"
+}
+_driver_plan_picture_found() { # <ticket> — the misses were not in a row
+  [ -z "$(driver_state_get "$1" picture_miss_ref)" ] && [ "$(driver_state_count "$1" picture_miss)" = 0 ] && return 0
+  _driver_state_edit "$1" '.counters.picture_miss = 0 | .picture_miss_ref = ""'
+}
+
 driver_step_plan() { # <ticket>
   local t="${1:?driver_step_plan: need a ticket}"
   local rc ans schema spec ntests
   export DRIVER_TICKET="$t"
+
+  # THE PICTURE THE LAST RUN MISSED IS LOOKED FOR BEFORE THE PLAN IS PAID FOR. A run that
+  # would plan again only to miss it again costs a plan and a slot each time.
+  local pref pwt perr prc=0
+  pref=$(driver_state_get "$t" picture_miss_ref); pwt=$(driver_state_get "$t" worktree)
+  if [ -n "$pref" ] && [ -n "$pwt" ] && [ -d "$pwt" ]; then
+    perr="$(driver_state_dir "$t")/steps/picture-fetch.err"; mkdir -p "$(dirname "$perr")"
+    bash "$KIT_ROOT/scripts/picture-fetch.sh" "$t" "$pref" "$pwt" >/dev/null 2>"$perr" || prc=$?
+    if [ "$prc" -eq 3 ]; then
+      _driver_plan_picture_miss "$t" "$pref" "$(tail -1 "$perr" 2>/dev/null | sed 's/^picture-fetch: //') (checked before planning; nothing spent)"
+      return $?
+    fi
+    [ "$prc" -ne 0 ] || driver_say "   plan: the approved picture the last run missed is readable now — planning"
+  fi
 
   rc=0; driver_ai_step "$t" plan || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
@@ -169,8 +209,11 @@ driver_step_plan() { # <ticket>
   if [ -n "$(printf '%s' "$dref" | tr -d '[:space:]')" ] && [ -n "$dwt" ] && [ -d "$dwt" ]; then
     derr="$(driver_state_dir "$t")/steps/picture-fetch.err"
     dout=$(bash "$KIT_ROOT/scripts/picture-fetch.sh" "$t" "$dref" "$dwt" 2>"$derr") || drc=$?
-    if [ "$drc" -ne 0 ]; then
-      driver_say "⏳ plan: the approved picture could not be read on this machine — $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //'). Back on the queue until it is published, not parked."
+    if [ "$drc" -eq 3 ]; then
+      _driver_plan_picture_miss "$t" "$dref" "$(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //')"
+      return $?
+    elif [ "$drc" -ne 0 ]; then
+      driver_say "⏳ plan: the approved picture could not be read on this machine — $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //'). Back on the queue, not parked."
       driver_state_set "$t" park_note "the approved picture is not readable on this machine: $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //')"
       return "$DRIVER_E_REQUEUE"
     fi
@@ -184,6 +227,8 @@ driver_step_plan() { # <ticket>
       jq --arg r "$dout" '.designRef = $r' "$ans" > "$ans.tmp" && mv "$ans.tmp" "$ans"
     fi
   fi
+
+  _driver_plan_picture_found "$t"
 
   # Where the design goes. On the ticket, not into the repo: the comment outlives
   # the worktree and is what the next reader — or the next agent — opens.

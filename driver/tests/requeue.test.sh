@@ -107,6 +107,20 @@ DRIVER_MAX_REQUEUES=1 bash "$BT" 605 --steps "start" >/dev/null 2>&1; rc=$?
 want "the second in a row with a ceiling of 1 parks" "20" "$rc"
 want_in "naming the requeues" 'start could not go on for 1 requeued runs in a row' "$(cat "$STATE/driver/605/log")"
 
+echo "--- start re-running on every pass is not progress: the requeue cap still trips ---"
+# 17008 (2026-10-31): plan requeued it 43 times in 4 hours under a cap of 3, because the
+# always-run start step finished OK on each pass and reset the count.
+FAKE="$FIX/fake-steps"; mkdir -p "$FAKE"
+printf '%s\n' '#!/usr/bin/env bash' 'driver_step_start() { return 0; }' > "$FAKE/start.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'driver_step_plan() { driver_state_set "$1" park_note "the picture is not here"; return "$DRIVER_E_REQUEUE"; }' > "$FAKE/plan.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'driver_park() { printf "PARK %s\n" "$2" >> "$FIX/park.log"; return 20; }' > "$FAKE/park.sh"
+reset_case 607; : > "$FIX/park.log"
+DRIVER_STEPS_DIR="$FAKE" DRIVER_MAX_REQUEUES=1 bash "$BT" 607 --steps "start plan" >/dev/null 2>&1; rc=$?
+want "the first pass requeues"                  "28" "$rc"
+DRIVER_STEPS_DIR="$FAKE" DRIVER_MAX_REQUEUES=1 bash "$BT" 607 --steps "start plan" >/dev/null 2>&1; rc=$?
+want "the second in a row, past a ceiling of 1, parks" "20" "$rc"
+want_in "naming the step that kept requeueing"  'plan could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
+
 echo "--- a refusal that set no note parks with the step's own words ---"
 reset_case 606
 fix_issue 606 CLOSED "status:ready"

@@ -60,6 +60,25 @@ repair_mark_pr() { # <ticket> [pr-json] — the spawn marked on its open PR, for
   swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" -X POST -f body="Repair started on $(hostname -s 2>/dev/null || echo this host) for #$t.
 $REPAIR_MARK" >/dev/null 2>&1 || true
 }
+# rebuild_archive_state <ticket> — this host's driver record of it forgets every step, the
+# way a new repair brief does: the answers move to steps/archive/, the finished list empties.
+# Left done, each rebuild run said "nothing left to do" and exited 0 (15735: 22 times a day).
+# Another host's record is caught by the driver itself: shipped, with no PR open or merged,
+# is a fresh build there too.
+rebuild_archive_state() {
+  local t="$1" d f arch s
+  d="${DRIVER_DIR:-$STATE_DIR/driver}/$t"; f="$d/state.json"
+  [ -f "$f" ] || return 0
+  arch="$d/steps/archive/$(date -u +%Y%m%dT%H%M%SZ)-rebuild"
+  mkdir -p "$arch" 2>/dev/null
+  for s in "$d"/steps/*; do
+    case "$(basename "$s")" in archive|replaced.jsonl) continue ;; esac
+    [ -e "$s" ] && mv "$s" "$arch/" 2>/dev/null
+  done
+  rmdir "$arch" 2>/dev/null || true
+  jq --arg at "$(swarm_stamp)" '.done = [] | .step = "" | .mode = "build" | .rebuilt_at = $at | .updated_at = $at' "$f" > "$f.tmp.$$" 2>/dev/null \
+    && mv "$f.tmp.$$" "$f" || { rm -f "$f.tmp.$$"; say "rebuild: #$t's driver record could not be reset — the driver resets it when it finds no PR"; }
+}
 rebuild_fresh() { # <ticket> <repairs> [pr-json] — 0 when the PR was closed and the ticket queued fresh; says what it did
   local t="$1" n="$2" pj="${3:-}" pr sha ref note
   [ -n "$pj" ] || pj=$(open_pr_json "$t"); [ -n "$pj" ] || { say "rebuild: #$t has no open PR this tick — left as a repair"; return 1; }
@@ -72,6 +91,7 @@ rebuild_fresh() { # <ticket> <repairs> [pr-json] — 0 when the PR was closed an
   note="Closed to rebuild fresh: this PR was repaired $n times and is still not mergeable, so ticket #$t builds again from $INTEGRATION_BRANCH (coordinator.rebuildAfterRepairs). Its work is kept at \`$ref\` ($sha)."
   swarm_gh pr close "$pr" --repo "$REPO_SLUG" --delete-branch --comment "$note" >/dev/null 2>&1 \
     || { say "rebuild: #$t — PR #$pr could not be closed; left as a repair"; return 1; }
+  rebuild_archive_state "$t"
   issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY"
   bash "$QUEUE" add "$t" --class new --first --note "Rebuild: PR #$pr was closed after $n repairs. Build the ticket fresh from $INTEGRATION_BRANCH; the old head is at $ref for reference only." >/dev/null 2>&1 \
     || say "rebuild: #$t could not be queued — the next seed finds it ready"

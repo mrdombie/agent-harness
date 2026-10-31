@@ -135,6 +135,52 @@ limit_hit() { swarm_usage_log_limited "$1"; }
 # Runs the wall cut off mid-work, waiting to go back on the queue: <ticket> \t <run-id> \t <log> \t <why>
 CUT_PENDING="$COORD_DIR/cut.$(coord_mode)"
 cut_off() { [ -n "$1" ] && printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$CUT_PENDING"; }
+# NO PROGRESS, NO RESPAWN. A ticket whose last coordinator.noProgressRuns (3) runs each
+# ended inside coordinator.noProgressSec (300) with the same exit and result line would
+# end that way again: it is parked for the PM and reported, never spawned a fourth time.
+# 15735 exited 0 "nothing left to do" 22 times in a day; 17008 was requeued at the front
+# over a missing picture 43 times in 4 hours. A stop that is the machine's (a usage
+# limit, a lost login, an API fault, GitHub unread, a base wait) is not the ticket's.
+NOPROG_LEDGER="$COORD_DIR/run-lengths.tsv"
+COORD_NOPROG_RUNS="${COORDINATOR_NO_PROGRESS_RUNS:-$(swarm_opt coordinator.noProgressRuns 3)}"
+case "$COORD_NOPROG_RUNS" in ''|*[!0-9]*) COORD_NOPROG_RUNS=3 ;; esac
+COORD_NOPROG_SEC="${COORDINATOR_NO_PROGRESS_SEC:-$(swarm_opt coordinator.noProgressSec 300)}"
+case "$COORD_NOPROG_SEC" in ''|*[!0-9]*) COORD_NOPROG_SEC=300 ;; esac
+run_secs() { # <record> <ended> — the run's length in seconds, or nothing when its start is unknown
+  local s e
+  s=$(jq -r '.started_at // empty | fromdateiso8601' "$1" 2>/dev/null)
+  e=$(jq -r '.ended_at // empty | fromdateiso8601' "$2" 2>/dev/null)
+  [ -n "$e" ] || e=$(coord_mtime "$2")
+  case "$s" in ''|*[!0-9]*) return 0 ;; esac
+  case "$e" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$e" -ge "$s" ] && echo $(( e - s ))
+}
+no_progress() { # <ticket> <run-id> <exit> <result line> <secs> — notes the run; parks a loop
+  local t="$1" rid="$2" code="$3" last="$4" secs="$5" rows n same q
+  [ "$COORD_NOPROG_RUNS" -gt 0 ] && [ -n "$t" ] && [ -n "$secs" ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$t" "$secs" "$code" "$(printf '%s' "$last" | tr '\t' ' ')" >> "$NOPROG_LEDGER"
+  # Its runs since it was last parked for this, newest last.
+  rows=$(awk -F'\t' -v t="$t" '$1 == t { if ($2 == "parked") n = 0; else r[++n] = $0 } END { for (i = 1; i <= n; i++) print r[i] }' "$NOPROG_LEDGER" | tail -n "$COORD_NOPROG_RUNS")
+  n=$(printf '%s\n' "$rows" | grep -c .)
+  [ "$n" -ge "$COORD_NOPROG_RUNS" ] || return 0
+  printf '%s\n' "$rows" | awk -F'\t' -v max="$COORD_NOPROG_SEC" '$2 + 0 >= max { bad = 1 } END { exit bad }' || return 0
+  same=$(printf '%s\n' "$rows" | cut -f3- | sort -u | grep -c .)
+  [ "$same" -eq 1 ] || return 0
+  printf '%s\tparked\t%s\t%s\n' "$t" "$code" "$rid" >> "$NOPROG_LEDGER"
+  q="its last $n runs each ended in under $(( COORD_NOPROG_SEC / 60 )) min with the same result (exit $code): ${last:-no result line}"
+  event "no-progress:$t:$rid" no-progress false "$t" "" "$q — parked, not spawned again"
+  coord_act_log no-progress "$t" "$q"
+  bash "$NOTIFY" "no-progress:$t:$rid" "#$t is parked for the PM: $q" >/dev/null 2>&1 || true
+  if coord_shadow; then say "no progress: would park #$t for the PM — $q"; return 0; fi
+  bash "$QUEUE" remove "$t" >/dev/null 2>&1 || true
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "**Parked — no progress.** Its last $n runs each ended in under $(( COORD_NOPROG_SEC / 60 )) min with the same result, so a fourth would end the same way and is not started:
+
+> exit $code: ${last:-no result line}
+
+**Needs (PM):** what has to change before it builds (a missing file, a stale record, a ticket that is already done)? Fix that, then clear \`$LBL_PM_DECISION\` and set it \`$LBL_READY\`." >/dev/null 2>&1 || say "no progress: the park note on #$t could not be posted"
+  issue_status_set "$t" "$LBL_PARKED" --also "$LBL_PM_DECISION" >/dev/null 2>&1 || say "no progress: #$t could not be labelled $LBL_PARKED"
+  say "no progress: #$t parked for the PM — $q"
+}
 for ended in "$RUNS_DIR"/*.ended; do
   [ -f "$ended" ] || continue
   rid=$(basename "$ended" .ended)
@@ -152,6 +198,10 @@ for ended in "$RUNS_DIR"/*.ended; do
       else "\troute=\(.route) size=\(.size // "?")\(if .claim_to_pr_secs then " claim_to_pr=\(.claim_to_pr_secs)s" else "" end) why=\((.size_reason // "") | gsub("[\t\n]"; " ") | .[0:160])" end' "$drec" 2>/dev/null)
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
+  case "$code" in
+    "${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_BASE_WAIT:-34}") ;;
+    *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
+  esac
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
   if [ -n "$ticket" ]; then
     if [ "$code" = 0 ] && why=$(coord_wait_reason "$log"); then
