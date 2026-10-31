@@ -77,7 +77,8 @@ hold_lock() {
   local i=0; while [ ! -s "$FIX/child.pid" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$(( i + 1 )); done
   CHILD=$(cat "$FIX/child.pid"); rm -f "$FIX/child.pid"
   mkdir -p "$C/tick.lock"; started_of "$HOLDER" > "$C/tick.lock/started"; echo "$HOLDER" > "$C/tick.lock/pid"
-  touch -t "$(date -r $(( $(date +%s) - $1 * 60 )) +%Y%m%d%H%M.%S)" "$C/tick.lock/pid" "$C/tick.lock"
+  # perl, not touch -t with date -r: GNU date -r reads a file, not an epoch.
+  perl -e '$t = time - shift() * 60; utime $t, $t, @ARGV or exit 1' "$1" "$C/tick.lock/pid" "$C/tick.lock" || bad "could not age the lock"
 }
 
 echo "--- a tick that ran past coordinator.tickMaxMin is stopped, and this one takes the lock ---"
