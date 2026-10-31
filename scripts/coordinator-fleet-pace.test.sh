@@ -16,6 +16,11 @@ Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
 NOWE=$(date +%s)
 unset COORDINATOR_PACE COORDINATOR_PACE_FACTOR COORDINATOR_PACE_EXEMPT
+# The pacer is off by default since Claude dropped the five-hour limit (2026-10-31);
+# these cases test the pacer itself, so they switch it on.
+COORDINATOR_PACE=true; export COORDINATOR_PACE
+# Its hold cases read a five-hour reading, so the five-hour window holds here too.
+SWARM_USAGE_WINDOWS="five_hour seven_day"; export SWARM_USAGE_WINDOWS
 
 # <5h use> <5h reset> [7d use] [7d reset] — one stream-json limit event, as the CLI writes it.
 win() {

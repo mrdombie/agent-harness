@@ -15,6 +15,9 @@ Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
 NOWE=$(date +%s)
 unset COORDINATOR_PACE COORDINATOR_PACE_FACTOR COORDINATOR_PACE_EXEMPT
+# The pacer is off by default since Claude dropped the five-hour limit (2026-10-31);
+# these cases test the pacer itself, so they switch it on.
+COORDINATOR_PACE=true; export COORDINATOR_PACE
 
 # <5h use> <5h reset> [7d use] — one stream-json limit event, as the CLI writes it.
 win() {
@@ -65,6 +68,7 @@ want_in "no logs and no samples"             'pacing: no five-hour reading — p
 want "and no verdict is left for the tick"   "absent" "$([ -f "$C/pace.json" ] && echo present || echo absent)"
 clean; win 0.50 $((NOWE + 3600)) > "$STATE/logs/claim-1-a.log"
 want_in "switched off, it paces nothing"     'pacing: off .* rc=1' "$(COORDINATOR_PACE=false pace 0 "")"
+want_in "unset, it is off (no five-hour limit to pace to)" 'pacing: off .* rc=1' "$(unset COORDINATOR_PACE; pace 0 "")"
 
 echo "--- a reset rolls the line over ---"
 clean; win 0.99 $((NOWE - 60)) > "$STATE/logs/claim-1-a.log"

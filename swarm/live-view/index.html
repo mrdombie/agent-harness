@@ -291,7 +291,7 @@ function needsList(b){
     ? `<details><summary>${rest.length} more</summary><div class="rows" style="margin-top:6px">${rest.map(row).join('')}</div></details>` : '')
 }
 function machineLine(s){
-  const c = s.capacity, u = s.usage, parts = []
+  const c = s.capacity, parts = []
   const bs = (n) => `${n} builder${n === 1 ? '' : 's'}`
   parts.push(c && c.ceiling != null ? `${s.live.length} of ${bs(c.ceiling)} running` : `${bs(s.live.length)} running`)
   const r = String(c?.reading || '')
@@ -305,7 +305,7 @@ function machineLine(s){
       : d.held ? `<span class="diskheld">${fr} — starts resume at ${esc(d.resumeAtGb)} GB</span>`
       : fr)
   } else if (d) parts.push('disk free not read')
-  parts.push(u ? `5-hour usage ${esc(u.pct)}%, resets ${esc(when(u.resets))}` : '5-hour usage not read yet')
+  // No five-hour line: Claude dropped that limit (2026-10-31). A pacer reading still shows below.
   const p = c && c.pace
   // Pacing to the five-hour window (coordinator.paceToWindow): ahead of the line, nothing new starts.
   if (p && p.fiveHour) {

@@ -705,14 +705,15 @@ want_in "over the floor but still held: amber, with the resume mark" '^machine=.
 rm -f "$FIX/disk-hold"
 s=$(SWARM_FREE_DISK_GB=80 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
 r=$(page_render "$LV")
-want_in "plenty free: the plain figure"                   '^machine=.* · 80 GB disk free · ' "$r"
+want_in "plenty free: the plain figure"                   '^machine=.* · 80 GB disk free' "$r"
+want_not_in "no five-hour usage line: Claude dropped that limit" '5-hour usage' "$r"
 want_not_in "and never red"                               'disklow|diskheld' "$r"
 s=$(SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
 want_in "unplanted, the real volume is read"              '^[0-9]+$' "$(printf '%s' "$s" | jq -r '.disk.freeGb')"
 echo "--- WSL: the machine line shows the lower of Linux and the Windows drive, and which ---"
 s=$(SWARM_FREE_DISK_GB=831 SWARM_DISK_HOST_PATH=/mnt/c SWARM_HOST_FREE_DISK_GB=37 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
 want "the snapshot takes the host's 37, not Linux's 831"  "37" "$(printf '%s' "$s" | jq -r '.disk.freeGb')"
-want_in "and the line says where"                         '^machine=.* · 37 GB disk free on the Windows host \(Linux shows 831\) · ' "$(page_render "$LV")"
+want_in "and the line says where"                         '^machine=.* · 37 GB disk free on the Windows host \(Linux shows 831\)' "$(page_render "$LV")"
 s=$(SWARM_FREE_DISK_GB=831 SWARM_DISK_HOST_PATH=/mnt/c SWARM_HOST_FREE_DISK_GB=12 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)
 want_in "12 on the host: red, though Linux shows 831"     '<span class="disklow">12 GB disk free on the Windows host \(Linux shows 831\) — under 30 GB' "$(page_render "$LV")"
 s=$(SWARM_FREE_DISK_GB=80 SWARM_DISK_HOST_PATH= SWARM_HOST_FREE_DISK_GB=12 SWARM_DISK_HOLD_FILE="$FIX/disk-hold" BRANCH_PREFIX=tkt- snap)

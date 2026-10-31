@@ -17,6 +17,9 @@ NOWE=$(date +%s)
 A=$(( NOWE + 400000 ))
 FIVE=$(( NOWE + 14000 ))
 unset SWARM_USAGE_STEP_HOLD COORDINATOR_PACE_BURN SWARM_ACCOUNT
+# The pacer (and its pace.json) is off by default since Claude dropped the five-hour
+# limit (2026-10-31); these cases read pace.json, so they switch it on.
+COORDINATOR_PACE=true; export COORDINATOR_PACE
 # The probe call is stubbed: nothing here may reach the model.
 export SWARM_USAGE_PROBE_CMD=false
 export SWARM_ACCOUNT_FILE="$C/account"

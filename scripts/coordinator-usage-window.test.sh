@@ -20,6 +20,9 @@ A=$(( NOWE + 400000 ))        # the old account's week resets here
 B=$(( A - 3600 ))             # the new account's, an hour earlier
 FIVE=$(( NOWE + 14000 ))
 unset SWARM_USAGE_STEP_HOLD COORDINATOR_PACE_BURN
+# The pacer (and its pace.json) is off by default since Claude dropped the five-hour
+# limit (2026-10-31); these cases read pace.json, so they switch it on.
+COORDINATOR_PACE=true; export COORDINATOR_PACE
 
 # <log> <7d use> <7d reset> <observed epoch> — one builder log, its mtime the observation.
 log7() {
