@@ -23,6 +23,9 @@ SH
 export DRIVER_QUEUE="$FIX/queue-stub.sh"
 export SWARM_USAGE_HOLD_FILE="$FIX/usage-hold"
 export SWARM_NOW=1792347200
+# The wait mechanics below run on the five-hour window, so this suite opts it back in;
+# the default (seven_day only) is the case after them.
+export SWARM_USAGE_WINDOWS="five_hour seven_day"
 RESET=1792356000
 fix_brief plan superpowers:writing-plans
 
@@ -93,5 +96,17 @@ jq -nc --argjson r "$(( SWARM_NOW + 86400 ))" '{type:"rate_limit_event", rate_li
   unifiedWindows:{five_hour:{utilization:0.2, resetsAt:1792356000}, seven_day:{utilization:0.95, resetsAt:$r}}}}' > "$STATE/logs/claim-900-other.log"
 out=$(bash "$BT" 704 --steps "plan" 2>&1)
 want_in "a week at 95% holds the step" '⏸ plan: usage hold — the seven_day window is at 95%' "$out"
+
+echo "--- by default a five-hour reading holds nothing: Claude dropped that limit ---"
+reset_case 706; reading 0.99
+out=$(env -u SWARM_USAGE_WINDOWS WAIT_CLEARS=0 bash "$BT" 706 --steps "plan" 2>&1)
+want "a 99% five-hour reading: no wait" "0" "$(grep -c . "$FIX/waits.log" 2>/dev/null || echo 0)"
+want_not_in "and no hold said" 'usage hold' "$out"
+want "the step ran" "1" "$( [ -s "$CLAUDE_LOG" ] && echo 1 || echo 0)"
+reset_case 707
+jq -nc --argjson r "$(( SWARM_NOW + 86400 ))" '{type:"rate_limit_event", rate_limit_info:{status:"allowed_warning",
+  unifiedWindows:{five_hour:{utilization:0.2, resetsAt:1792356000}, seven_day:{utilization:0.96, resetsAt:$r}}}}' > "$STATE/logs/claim-900-other.log"
+out=$(env -u SWARM_USAGE_WINDOWS WAIT_CLEARS=0 DRIVER_USAGE_WAIT_MAX_SEC=60 bash "$BT" 707 --steps "plan" 2>&1)
+want_in "by default the week still holds" '⏸ plan: usage hold — the seven_day window is at 96%' "$out"
 
 suite_end "$FAILED"

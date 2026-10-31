@@ -70,7 +70,7 @@
 #   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
 #                                                           tick may start work from
 #   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
-#   coordinator.paceToWindow  {on, factor, exempt}  true / 0.95 / []: the five-hour line (the usage pacer, below)
+#   coordinator.paceToWindow  {on, factor, exempt}  false / 0.95 / []: the five-hour line (the usage pacer, below)
 #   coordinator.releaseScopeOnly COORDINATOR_RELEASE_SCOPE_ONLY off  true, or {on, priorities, excludeLabels,
 #                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes, titlePatterns}}:
 #                                                           no NEW ticket outside it is seeded or started.
@@ -290,11 +290,11 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 # Replaces the budget pacer of 2026-10-20/21 (coordinator.pace.*: target, headroom, the
 # weekly line, the measured burn, the owner's split and the product floor), retired here.
 #
-#   coordinator.paceToWindow.on      COORDINATOR_PACE          true   false: no pacing, the machine alone decides
+#   coordinator.paceToWindow.on      COORDINATOR_PACE          false  true: pace to the five-hour line (off since Claude dropped that limit, 2026-10-31)
 #   coordinator.paceToWindow.factor  COORDINATOR_PACE_FACTOR   0.95   the share of the window the line ends at
 #   coordinator.paceToWindow.exempt  COORDINATOR_PACE_EXEMPT   []     priorities that also start while ahead
 #     (process fixes and the focus-area tier always do: the order's own top, owner 2026-10-24)
-COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on true)}"
+COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on false)}"
 case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
 COORD_PACE_FACTOR="${COORDINATOR_PACE_FACTOR:-$(swarm_opt coordinator.paceToWindow.factor 0.95)}"
 awk -v t="$COORD_PACE_FACTOR" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_FACTOR=0.95

@@ -87,6 +87,11 @@ SWARM_BUDGET_USD="${SWARM_BUDGET_USD:-$(swarm_opt swarm.budgetUsd 150)}"
 SWARM_USAGE_CEILING="${SWARM_USAGE_CEILING:-$(swarm_opt swarm.usageCeiling 0.95)}"
 # At this share of either window a builder holds before its next step: the step it is
 # on finishes, and nothing is killed or parked (swarm_usage_step_hold).
+# The usage windows that can hold builders before a wall (swarm.usageWindows). Claude dropped
+# its five-hour limit on 2026-10-31, so only the weekly window holds by default; a wall the
+# API actually refuses on (a rejected event, the hook's hold file) holds whatever its window.
+SWARM_USAGE_WINDOWS="${SWARM_USAGE_WINDOWS:-$(swarm_opt swarm.usageWindows seven_day)}"
+SWARM_USAGE_WINDOWS=$(printf '%s' "$SWARM_USAGE_WINDOWS" | tr -d '[]"' | tr ',' ' ')
 SWARM_USAGE_STEP_HOLD="${SWARM_USAGE_STEP_HOLD:-$(swarm_opt swarm.usageStepHold 0.95)}"
 awk -v t="$SWARM_USAGE_STEP_HOLD" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || SWARM_USAGE_STEP_HOLD=0.95
 SWARM_GH="${SWARM_GH:-gh}"
@@ -270,8 +275,8 @@ swarm_usage_near_hold() {
   [ -n "$rows" ] || return 1
   last=$(printf '%s\n' "$rows" | tail -1 | cut -f1)
   now=$(swarm_now)
-  pick=$(printf '%s\n' "$rows" | awk -F'\t' -v l="$last" -v c="$SWARM_USAGE_CEILING" -v now="$now" '
-    $1 == l && $5 + 0 >= c + 0 && $3 + 0 > now + 0 && $3 + 0 > best + 0 { best = $3; w = $4; u = $5 }
+  pick=$(printf '%s\n' "$rows" | awk -F'\t' -v l="$last" -v c="$SWARM_USAGE_CEILING" -v now="$now" -v ws=" $SWARM_USAGE_WINDOWS " '
+    $1 == l && index(ws, " " $4 " ") && $5 + 0 >= c + 0 && $3 + 0 > now + 0 && $3 + 0 > best + 0 { best = $3; w = $4; u = $5 }
     END { if (best) printf "%s\t%s\t%d", best, w, u * 100 + 0.5 }')
   [ -n "$pick" ] || return 1
   if [ "${SWARM_USAGE_WHY:-0}" = 1 ]; then
@@ -391,12 +396,12 @@ swarm_usage_freshest() {
   printf '%s' "${r%$'\t'*}"
 }
 
-# swarm_usage_step_hold — "<reset epoch>\t<window>\t<percent>" while either window is at
+# swarm_usage_step_hold — "<reset epoch>\t<window>\t<percent>" while a holding window is at
 # or over swarm.usageStepHold: a step started now would likely meet the wall, so a
 # running builder waits before its next step. 1 when neither is.
 swarm_usage_step_hold() {
   local w r u
-  for w in five_hour seven_day; do
+  for w in $SWARM_USAGE_WINDOWS; do
     r=$(swarm_usage_freshest "$w") || continue
     u=${r%%$'\t'*}
     awk -v u="$u" -v c="$SWARM_USAGE_STEP_HOLD" 'BEGIN{exit !(u + 0 >= c + 0)}' || continue
