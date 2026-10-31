@@ -800,8 +800,25 @@ REDS_WAITING=0; REDS_WAITING_POLISH=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
+# THE LOGIN CHANGED since the last usage verdict here: read the new account once, now, before
+# holding or starting. Held builders keep their logs young, so the interval probe below never
+# fires for them, and the old account's reading held the new one (2026-10-28, 2026-10-30).
+USAGE_ACCT=$(swarm_account); USAGE_ACCT_WAS=$(cat "$COORD_DIR/usage.account" 2>/dev/null)
+USAGE_ACCT_READ=1
+if [ -n "$USAGE_ACCT" ] && [ -n "$USAGE_ACCT_WAS" ] && [ "$USAGE_ACCT" != "$USAGE_ACCT_WAS" ] && ! coord_shadow; then
+  if swarm_usage_probe --now; then
+    say "usage: the account changed since the last reading — one probe call read the new account"
+  else
+    USAGE_ACCT_READ=""
+    say "usage: the account changed since the last reading — the probe call to read the new account failed; it tries again next tick"
+  fi
+fi
 # Either window at swarm.usageStepHold: the running builders hold before their next step.
 STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
+# A failed re-read retries next tick only while something holds; otherwise nothing waits on it.
+if [ -n "$USAGE_ACCT" ] && { [ -n "$USAGE_ACCT_READ" ] || [ -z "$STEP_HOLD" ]; }; then
+  mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\n' "$USAGE_ACCT" > "$COORD_DIR/usage.account" 2>/dev/null
+fi
 # HELD WITH NO FRESH READING, read the account again: nothing held logs one (swarm_usage_probe).
 if [ -n "$STEP_HOLD" ] && ! coord_shadow && swarm_usage_probe; then
   STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
