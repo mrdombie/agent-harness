@@ -95,6 +95,13 @@ COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 # driver_repo_self / driver_repo_foreign: a repo:<other> ticket is never seeded, ordered or started here.
 . "$(cd "$(dirname "$_coord_self")/../driver" && pwd)/size-rules.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
+# The repos whose tickets start here, read once a tick and handed to every script it runs:
+# its own, its sisters, each with a clone here. Kept only while it was read for this config.
+_coord_own_for="${HARNESS_CFG:-}|${MAIN_REPO:-}|${HARNESS_REPO_CLONES:-}"
+if [ -z "${COORD_OWN_REPOS_JSON:-}" ] || [ "${COORD_OWN_REPOS_FOR:-}" != "$_coord_own_for" ]; then
+  COORD_OWN_REPOS_JSON=$(driver_repo_own_here | jq -R . | jq -sc .); COORD_OWN_REPOS_FOR="$_coord_own_for"
+fi
+export COORD_OWN_REPOS_JSON COORD_OWN_REPOS_FOR; unset _coord_own_for
 
 COORD_DIR="${COORDINATOR_DIR:-$STATE_DIR/coordinator}"
 mkdir -p "$COORD_DIR/judges" 2>/dev/null || true
@@ -526,7 +533,7 @@ COORD_TICKET_JQ='
     (($state // "OPEN") != "OPEN")
     or ($ls | any(. as $l | (if $class == "new" then $stopnew else $stopall end) | index($l) != null));
   # The other repo a repo:<name> label names, or null: a ticket with repo: labels, none
-  # of them a repo this project builds ($ownrepos, driver_repo_own), belongs to that repo.
+  # of them a repo this project builds ($ownrepos, driver_repo_own_here), belongs to that repo.
   def coord_foreign($ls):
     ([$ls[]? | select(type == "string" and test("^repo:"; "i")) | sub("^repo:\\s*"; ""; "i")
       | split("/") | last | ascii_downcase | select(length > 0)]) as $r
@@ -587,7 +594,7 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
      --argjson tooling "$(printf '%s' "$COORD_TOOLING_LABELS" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0))')" \
      --argjson toolscopes "$(printf '%s' "$COORD_TOOLING_SCOPES" | tr ', ' '\n\n' | jq -R . | jq -sc 'map(select(length > 0) | ascii_downcase)')" \
      --arg inreview "${LBL_IN_REVIEW:-status:in-review}" --argjson release "${COORD_RELEASE_SCOPE:-null}" \
-     --argjson ownrepos "${COORD_OWN_REPOS_JSON:-$(driver_repo_own | jq -R . | jq -sc .)}" \
+     --argjson ownrepos "${COORD_OWN_REPOS_JSON:-$(driver_repo_own_here | jq -R . | jq -sc .)}" \
      --argjson stopall "$(coord_stop_json all)" --argjson stopnew "$(coord_stop_json new)" \
      --argjson screens "${COORD_SCREENS_FIRST:-null}" --argjson pics "${COORD_SCREEN_PICS:-[]}" \
      --arg fulabel "${COORD_FU_LABEL:-fix-after-merge}" "$@"

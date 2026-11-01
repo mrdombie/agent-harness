@@ -475,6 +475,18 @@ gh_call() {
     echo "gh: GitHub's search limit is spent — search calls wait until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null)" >&2
     return 75
   fi
+  # Tickets filed in another repo's queue (issueRepo, toolkit-env.sh): a `gh issue` aimed at
+  # this repo, or at none (the checkout's), goes to that queue. PRs stay this repo's.
+  if [ "${1:-}" = issue ] && [ -n "${ISSUE_REF:-}" ]; then
+    local -a _GH_IA=(); local _a _p="" _named=""
+    for _a in "$@"; do
+      case "$_p" in --repo|-R) _named=1; [ "$_a" != "${REPO_SLUG:-}" ] || _a="$ISSUE_REF" ;; esac
+      case "$_a" in --repo=*) _named=1; [ "$_a" != "--repo=${REPO_SLUG:-}" ] || _a="--repo=$ISSUE_REF" ;; esac
+      _GH_IA+=("$_a"); _p="$_a"
+    done
+    [ -n "$_named" ] || _GH_IA+=(--repo "$ISSUE_REF")
+    set -- "${_GH_IA[@]}"
+  fi
   gh_calls_note "$@"
   local -a _GH_MARKED=() _GH_MARK_TMP=()
   case "${1:-} ${2:-}" in "issue comment"|"pr comment"|api\ *) _gh_mark_args "$@"; set -- "${_GH_MARKED[@]}" ;; esac

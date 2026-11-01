@@ -63,7 +63,7 @@ echo "--- every PR body the kit writes names its ticket ---"
 # The sibling: the park's draft and /claim's park wrote a body naming no ticket, and
 # /finish's template wrote "Closes ticket \$TICKET", which GitHub links to nothing.
 want "/finish never writes 'Closes ticket'" "" "$(grep -rnE '^[[:space:]]*Closes ticket' "$HERE/../skills" 2>/dev/null)"
-want_in "the park's draft names it"    'Closes\) #\$t' "$(grep -A5 'pr create' "$HERE/../driver/steps/park.sh")"
+want_in "the park's draft names it"    'Closes\) \$\{ISSUE_REF:-\}#\$t' "$(grep -A5 'pr create' "$HERE/../driver/steps/park.sh")"
 want_in "/claim's park names it"       'Closes #\$TICKET_KEY' "$(grep -A3 'gh pr create --draft' "$HERE/../skills/claim/SKILL.md")"
 want_in "/finish ensures it after create" 'pr-closes.sh" ensure "\$PR_NUMBER" "\$TICKET_KEY"' "$(cat "$HERE/../skills/finish/SKILL.md")"
 

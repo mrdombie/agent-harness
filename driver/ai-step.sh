@@ -178,7 +178,7 @@ driver_usage_wall() {
 driver_ticket_answers() { # <ticket> <out>
   local j
   : > "$2"
-  j=$(gh_read "the answers on #$1" api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" 2>/dev/null) || return 1
+  j=$(gh_read "the answers on #$1" api --paginate "repos/${ISSUE_SLUG:-$REPO_SLUG}/issues/$1/comments?per_page=100" 2>/dev/null) || return 1
   printf '%s' "$j" | jq -rs "$PERSON_WORDS_JQ"'
     [.[] | if type == "array" then .[] else empty end
      | select((.body // "") | (owner_answered or person_opener))]

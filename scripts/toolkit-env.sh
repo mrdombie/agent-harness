@@ -179,6 +179,7 @@ _toolkit_facts=$(jq -r '
     need("LBL_BLOCKED"; "labels.blocked"), need("LBL_EXTERNAL_BLOCKED"; "labels.externalBlocked"), need("LBL_PARKED"; "labels.parked"),
     need("HOLD_LABEL"; "labels.hold"), need("DECISION_LABELS"; "labels.decision"),
     "LBL_DO_NOT_MERGE=\(.labels.doNotMerge // "do-not-merge" | @sh)",
+    "ISSUE_SLUG=\(.issueRepo // .repo | @sh)",
     "DESIGN_KIT=\(.design.kit // "" | @sh)", "CFG_STATE_DIR=\(.stateDir // "" | @sh)" ] | .[]
 ' "$HARNESS_CFG" 2>/dev/null) || {
   if [ -z "$HARNESS_CFG" ]; then
@@ -194,6 +195,11 @@ esac
 eval "$_toolkit_facts"; unset _toolkit_facts
 # The status-label namespace ("status:" here), for jq filters that pick the status column.
 STATUS_PREFIX="${LBL_READY%%:*}:"
+# ISSUES LIVE IN issueRepo (optional, default repo): a repo whose tickets are filed in another
+# project's queue reads and writes them there (gh_call routes `gh issue`), and its pull
+# requests name them as <issueRepo>#<n>. ISSUE_REF is that prefix: empty when they are one repo.
+ISSUE_REF=""; [ "$ISSUE_SLUG" = "$REPO_SLUG" ] || ISSUE_REF="$ISSUE_SLUG"
+export ISSUE_SLUG ISSUE_REF
 [ -n "$STATE_DIR" ] || STATE_DIR="${CFG_STATE_DIR/#\~/$HOME}"
 [ -n "$STATE_DIR" ] || { echo "toolkit-env: no state dir — set HARNESS_STATE_DIR or 'stateDir' in harness.json." >&2; return 1 2>/dev/null || exit 1; }
 unset CFG_STATE_DIR

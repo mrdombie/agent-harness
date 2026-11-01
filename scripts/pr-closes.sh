@@ -16,11 +16,11 @@
 # non-default base even when the body says "Closes". A repair parked "no open pull
 # request" beside one because of it.
 PR_CLOSES_KEYWORDS='close[sd]?|fix(e[sd])?|resolve[sd]?'
-PR_CLOSES_JQ='(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[ \t]+#'
+PR_CLOSES_JQ='(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[ \t]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#'
 
 pr_closes_names() { # <ticket>
   local t="${1#\#}"
-  grep -qiE "(^|[^A-Za-z0-9_])(${PR_CLOSES_KEYWORDS}|refs|part of):?[[:space:]]+#${t}([^0-9]|\$)"
+  grep -qiE "(^|[^A-Za-z0-9_])(${PR_CLOSES_KEYWORDS}|refs|part of):?[[:space:]]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${t}([^0-9]|\$)"
 }
 
 pr_closes_ensure() { # <ticket> <word>
@@ -28,7 +28,7 @@ pr_closes_ensure() { # <ticket> <word>
   body=$(cat; printf x); body=${body%x}
   if printf '%s' "$body" | pr_closes_names "$t"; then printf '%s' "$body"; return 0; fi
   body=${body%$'\n'}
-  if [ -n "$body" ]; then printf '%s\n\n%s #%s\n' "$body" "$w" "$t"; else printf '%s #%s\n' "$w" "$t"; fi
+  if [ -n "$body" ]; then printf '%s\n\n%s %s#%s\n' "$body" "$w" "${ISSUE_REF:-}" "$t"; else printf '%s %s#%s\n' "$w" "${ISSUE_REF:-}" "$t"; fi
 }
 
 # The CLI: read the PR's body and the ticket's labels, and write the line if it is
@@ -42,7 +42,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   body=$(gh pr view "$pr" --repo "$REPO_SLUG" --json body -q .body 2>/dev/null) \
     || { echo "pr-closes: could not read PR #$pr's body — nothing written; run it again" >&2; exit 1; }
   word=Closes
-  labels=$(gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) \
+  labels=$(gh issue view "$t" --repo "$ISSUE_SLUG" --json labels -q '.labels[].name' 2>/dev/null) \
     || { echo "pr-closes: could not read #$t's labels — nothing written; run it again" >&2; exit 1; }
   printf '%s\n' "$labels" | grep -qxF -- "${LBL_POLISH_LIST:-polish-list}" && word=Refs
   new=$(printf '%s' "$body" | pr_closes_ensure "$t" "$word")
