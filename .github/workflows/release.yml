@@ -13,8 +13,9 @@ jobs:
   bump:
     runs-on: ubuntu-24.04
     steps:
+      # main requires checks before a merge; the rule lets only this deploy key push past them.
       - uses: actions/checkout@v4
-        with: { fetch-depth: 2 }
+        with: { fetch-depth: 2, ssh-key: "${{ secrets.RELEASE_DEPLOY_KEY }}" }
       - name: Raise the patch version unless this push already did
         run: |
           set -euo pipefail
