@@ -107,7 +107,7 @@ cat > "$BIN/gh-rest" <<'SH'
 case "$1 $2" in "api repos/"*/issues/[0-9]*)
   n=${2##*/}; printf 'api %s\n' "$2" >> "$GH_LOG"
   [ -f "$FIX/gh/issue-$n.json" ] || exit 1
-  jq '{number, state: (.state | ascii_downcase), title, updated_at: .updatedAt, labels}' "$FIX/gh/issue-$n.json"; exit 0 ;;
+  jq '{number, state: (.state | ascii_downcase), title, updated_at: .updatedAt, labels} + (if .pull_request then {pull_request} else {} end)' "$FIX/gh/issue-$n.json"; exit 0 ;;
 esac
 exec "$BIN/gh" "$@"
 SH
@@ -120,6 +120,11 @@ want "both tickets read, in the batch's own shape" "611 OPEN status:ready|612 CL
   "$(jq -r '[.[] | "\(.number) \(.state) \(.labels | join(","))"] | join("|")' <<<"$out")"
 want "through REST, one read a ticket" "2" "$(grep -c '^api repos/acme/widgets/issues/61[12]$' "$GH_LOG")"
 want "and no GraphQL request" "0" "$(grep -c '^api graphql' "$GH_LOG")"
+# REST calls a merged pull request closed; the unblocker reads a reasonless CLOSED as never merged.
+jq -n '{number:611, state:"CLOSED", title:"PR", labels:[], pull_request:{merged_at:"2026-10-30T20:45:49Z"}}' > "$FIX/gh/issue-611.json"
+jq -n '{number:612, state:"CLOSED", title:"PR", labels:[], pull_request:{merged_at:null}}' > "$FIX/gh/issue-612.json"
+want "  a merged pull request reads MERGED, one closed unmerged CLOSED" "611 MERGED|612 CLOSED" \
+  "$(batch | jq -r '[.[] | "\(.number) \(.state)"] | join("|")')"
 clean; mkdir -p "$STATE/swarm"; gh_here 4000; ghfleet 4000; : > "$GH_LOG"
 batch >/dev/null
 want "with GraphQL to spare, one batched GraphQL request as before" "1" "$(grep -c '^api graphql' "$GH_LOG")"
