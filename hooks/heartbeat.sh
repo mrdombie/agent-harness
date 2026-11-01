@@ -79,8 +79,9 @@ case "$HAS" in
       ROW=$LINE
     fi
     ROW=$(printf '%s' "$ROW" | tr '[:upper:]' '[:lower:]')
-    if printf '%s' "$ROW" | grep -qE '\b(checks?|ci|watcher|merg(e|es|ing)|sign-?off|approval|reviewers?|reviews?)\b' &&
-      ! printf '%s' "$ROW" | grep -qE "$WORK|$OTHERS|$NOTHING"; then
+    # Here-strings: under pipefail an early match on long text read as "no match".
+    if grep -qE '\b(checks?|ci|watcher|merg(e|es|ing)|sign-?off|approval|reviewers?|reviews?)\b' <<<"$ROW" &&
+      ! grep -qE "$WORK|$OTHERS|$NOTHING" <<<"$ROW"; then
       SID=$(printf '%s' "$IN" | jq -r '.session_id // "nosession"')
       mkdir -p "$NDIR" && printf '%s\n' "$ADVICE" > "$NDIR/$SID"
       say "exit0 has-heartbeat-$HAS idle-advice-queued $SID"; exit 0
@@ -93,7 +94,7 @@ TP=$(printf '%s' "$IN" | jq -r '.transcript_path // ""')
 [ -n "$TP" ] && [ -r "$TP" ] || { say "exit0 no-transcript"; exit 0; }
 WAKE=$(grep -F '"name":"ScheduleWakeup"' "$TP" 2>/dev/null | tail -1)
 [ -n "$WAKE" ] || { say "exit0 no-loop"; exit 0; }
-printf '%s' "$WAKE" | grep -qE '"stop"[[:space:]]*:[[:space:]]*true' && {
+grep -qE '"stop"[[:space:]]*:[[:space:]]*true' <<<"$WAKE" && {
   say "exit0 loop-stopped"; exit 0; }
 
 say "exit2 missing-heartbeat"

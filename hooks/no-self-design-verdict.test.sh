@@ -27,6 +27,20 @@ t deny "gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f 'cont
 t deny 'gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f context="Design critic" -f description=x'
 t deny 'gh api -X POST repos/acme/widgets/statuses/abc -F state=success --raw-field context="Design critic"'
 t deny 'gh api -X POST repos/acme/widgets/statuses/abc --input /tmp/status.json'
+# A long command is judged whole: a pipe into grep -q under pipefail read an early
+# match as "no match" once grep quit and the writer took SIGPIPE.
+long=$(i=0; while [ "$i" -lt 2000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
+[ "${#long}" -gt 80000 ] && [ "${#long}" -lt 131072 ] || { echo "MISMATCH padding is ${#long} bytes, wanted 80 KB..128 KiB"; fail=1; }
+t deny "scripts/record-verdict.sh design-critic --sha abc < /tmp/v.txt
+$long"
+t deny "bash scripts/critic-judge.sh run 12965
+$long"
+t deny "gh api repos/acme/widgets/dispatches --input /tmp/verdict.json
+$long"
+t deny "gh api -X POST repos/acme/widgets/statuses/abc -f state=success -f 'context=Design critic'
+$long"
+t deny "git commit -m x -m 'Design-Critic: SHIP (agent) f9ad4e1a738d'
+$long"
 echo "--- must allow ---"
 t allow 'scripts/record-verdict.sh ui-gate --sha abc < /tmp/v.txt'
 t allow 'git commit -m "chore: ui-gate" -m "UI-Gate: SHIP (agent) 4a76d62de082"'

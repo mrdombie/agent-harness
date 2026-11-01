@@ -15,7 +15,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/command-words.sh"
 
 _rsw_settings_path() { # <normalised api path>
-  printf '%s' "$1" | grep -qE '^orgs/|^repos/[^/]+/[^/]+/?$|^repos/[^/]+/[^/]+/(rulesets|rules|branches/.+/protection|actions/permissions|actions/secrets|actions/variables|dependabot/secrets|collaborators|hooks|environments|keys|teams|topics|pages|transfer|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting)(/|$)'
+  grep -qE '^orgs/|^repos/[^/]+/[^/]+/?$|^repos/[^/]+/[^/]+/(rulesets|rules|branches/.+/protection|actions/permissions|actions/secrets|actions/variables|dependabot/secrets|collaborators|hooks|environments|keys|teams|topics|pages|transfer|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting)(/|$)' <<<"$1"
 }
 
 # repo_settings_write <command text> — 0 when it writes repository settings.
@@ -24,7 +24,7 @@ repo_settings_write() {
   # The command word must be gh itself, after any VAR=value settings or env wrapper
   # (lib/command-words.sh): the same words quoted inside an echo or a brief are not a call.
   s=$(command_text "$s") || return 1
-  printf '%s' "$s" | grep -qE '^([^[:space:]]*/)?gh[[:space:]]' || return 1
+  grep -qE '^([^[:space:]]*/)?gh[[:space:]]' <<<"$s" || return 1
   read -r -a toks <<<"$(printf '%s' "$s" | tr -d "\"'")"
   n=${#toks[@]}
   sub2="${toks[1]:-} ${toks[2]:-}"
@@ -51,8 +51,8 @@ repo_settings_write() {
   [ -n "$method" ] || { [ "$fields" = 1 ] && method=POST || method=GET; }
   path=$(printf '%s' "$path" | sed -E 's#^https?://[^/]+/##; s#^/+##; s#\?.*$##')
   if [ "$path" = graphql ]; then
-    printf '%s' "$1" | grep -qE 'mutation' \
-      && printf '%s' "$1" | grep -qiE '(create|update|delete)(BranchProtectionRule|RepositoryRuleset)|updateRepository|archiveRepository|transferRepository|(add|remove|update)(Collaborator|Webhook)' \
+    grep -qE 'mutation' <<<"$1" \
+      && grep -qiE '(create|update|delete)(BranchProtectionRule|RepositoryRuleset)|updateRepository|archiveRepository|transferRepository|(add|remove|update)(Collaborator|Webhook)' <<<"$1" \
       && return 0
     return 1
   fi

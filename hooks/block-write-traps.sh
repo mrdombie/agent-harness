@@ -70,7 +70,8 @@ esac
 case "$f" in
   */memory/*.md)
     content=$(printf '%s' "$payload" | jq -r '.tool_input.content // .tool_input.new_string // ""' 2>/dev/null || echo "")
-    if printf '%s' "$content" | grep -qE 'sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abp]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{30,}|sk-[A-Za-z0-9]{32,}'; then
+    # A here-string: under pipefail an early match on long content read as "no match".
+    if grep -qE 'sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abp]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{30,}|sk-[A-Za-z0-9]{32,}' <<<"$content"; then
       deny "That looks like a credential. Never store a key, token or secret in memory: treat it as compromised and point to the project's secret store instead."
     fi ;;
 esac
