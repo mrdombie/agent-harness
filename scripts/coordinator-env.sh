@@ -96,9 +96,12 @@ COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../driver" && pwd)/size-rules.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
 # The repos whose tickets start here, read once a tick and handed to every script it runs:
-# its own, its sisters, each with a clone here.
-COORD_OWN_REPOS_JSON="${COORD_OWN_REPOS_JSON:-$(driver_repo_own_here | jq -R . | jq -sc .)}"
-export COORD_OWN_REPOS_JSON
+# its own, its sisters, each with a clone here. Kept only while it was read for this config.
+_coord_own_for="${HARNESS_CFG:-}|${MAIN_REPO:-}|${HARNESS_REPO_CLONES:-}"
+if [ -z "${COORD_OWN_REPOS_JSON:-}" ] || [ "${COORD_OWN_REPOS_FOR:-}" != "$_coord_own_for" ]; then
+  COORD_OWN_REPOS_JSON=$(driver_repo_own_here | jq -R . | jq -sc .); COORD_OWN_REPOS_FOR="$_coord_own_for"
+fi
+export COORD_OWN_REPOS_JSON COORD_OWN_REPOS_FOR; unset _coord_own_for
 
 COORD_DIR="${COORDINATOR_DIR:-$STATE_DIR/coordinator}"
 mkdir -p "$COORD_DIR/judges" 2>/dev/null || true
