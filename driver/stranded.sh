@@ -15,14 +15,19 @@
 # are on the ticket's branch.
 STRANDED_NS=refs/stranded
 
-# driver_stranded_push <ticket> <tree> [rev] — sets DRIVER_STRANDED_REF; on a refusal
-# sets DRIVER_STRANDED_WHY and returns 1.
+# driver_stranded_push <ticket> <tree> [rev] [leaf] — sets DRIVER_STRANDED_REF; on a
+# refusal sets DRIVER_STRANDED_WHY and returns 1. <leaf> names the ref in place of
+# <host>-<utc> (driver_stranded_archive's archive-<sha7>).
 driver_stranded_push() {
-  local t="$1" wt="$2" rev="${3:-HEAD}" ref out h
+  local t="$1" wt="$2" rev="${3:-HEAD}" leaf="${4:-}" ref out h
   DRIVER_STRANDED_REF=""; DRIVER_STRANDED_WHY=""
   case "$t" in ''|*[!0-9]*) DRIVER_STRANDED_WHY="ticket '$t' is not a number, so no stranded ref"; return 1 ;; esac
-  h=$(hostname -s 2>/dev/null || hostname 2>/dev/null); h=$(printf '%s' "$h" | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//'); [ -n "$h" ] || h=host
-  ref="$STRANDED_NS/$t/$h-$(date -u +%Y%m%dT%H%M%SZ)"
+  case "$leaf" in */*|.*) DRIVER_STRANDED_WHY="'$leaf' is not one ref name"; return 1 ;; esac
+  if [ -z "$leaf" ]; then
+    h=$(hostname -s 2>/dev/null || hostname 2>/dev/null); h=$(printf '%s' "$h" | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//'); [ -n "$h" ] || h=host
+    leaf="$h-$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+  ref="$STRANDED_NS/$t/$leaf"
   # Skipping the pre-push reaches nothing outside this namespace.
   case "$ref" in "$STRANDED_NS"/[0-9]*/?*) ;; *) DRIVER_STRANDED_WHY="'$ref' is outside $STRANDED_NS/"; return 1 ;; esac
   # TRIED THREE TIMES. GitHub answered one with "! [remote rejected] … (failed)" and
@@ -40,9 +45,20 @@ driver_stranded_push() {
 
 # driver_stranded_list <ticket> <repo> — "<sha> <ref>" per stranded ref on origin,
 # oldest first by the stamp after the host (the host may itself hold dashes).
+# An archive-* ref is a dead branch tip set aside, never a line to resume: its last
+# field is a sha, which sorted after every stamp and was restored as the newest.
 driver_stranded_list() {
   git -C "$2" ls-remote origin "$STRANDED_NS/$1/*" 2>/dev/null \
-    | awk '{n=split($2, p, "-"); print p[n], $1, $2}' | sort | awk '{print $2, $3}'
+    | awk '$2 !~ /\/archive-[^\/]*$/ {n=split($2, p, "-"); print p[n], $1, $2}' | sort | awk '{print $2, $3}'
+}
+
+# driver_stranded_archive <ticket> <tree> <sha> — keep a dead branch tip on origin as
+# refs/stranded/<ticket>/archive-<sha7> before the branch is replaced. Same result
+# variables as driver_stranded_push.
+driver_stranded_archive() {
+  DRIVER_STRANDED_REF=""; DRIVER_STRANDED_WHY=""
+  case "${3:-}" in ''|*[!0-9a-f]*) DRIVER_STRANDED_WHY="'${3:-}' is not a commit sha"; return 1 ;; esac
+  driver_stranded_push "$1" "$2" "$3" "archive-$(printf '%s' "$3" | cut -c1-7)"
 }
 
 # driver_stranded_restore <ticket> <repo> <base> — fetch the newest stranded ref and,

@@ -521,10 +521,15 @@ driver_push() {
     driver_state_set "$t" pushed_head "$here"
     return 0
   fi
-  "${penv[@]}" git -C "$wt" push -u origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
+  # A DEAD TIP SHIP ARCHIVED is replaced on a lease naming that exact tip, never a bare force.
+  local lease=()
+  [ -z "${DRIVER_PUSH_LEASE_SHA:-}" ] || [ "${DRIVER_PUSH_LEASE_BRANCH:-}" != "$branch" ] \
+    || lease=("--force-with-lease=$branch:$DRIVER_PUSH_LEASE_SHA")
+  "${penv[@]}" git -C "$wt" push -u ${lease[@]+"${lease[@]}"} origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
   DRIVER_PUSH_OUT="$f"
   DRIVER_PUSH_WHY=""
   [ "$rc" -ne 0 ] || driver_state_set "$t" pushed_head "$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+  [ "$rc" -ne 0 ] || [ "${#lease[@]}" -eq 0 ] || { DRIVER_PUSH_LEASE_SHA=""; DRIVER_PUSH_LEASE_BRANCH=""; }
   if [ "$rc" -ne 0 ]; then
     DRIVER_PUSH_WHY=$(grep -E '✗|^error:|^fatal:|^remote: error' "$f" 2>/dev/null | sed 's/^[[:space:]]*//' | head -5 | tr '\n' ' ' | cut -c1-400)
     [ -n "$DRIVER_PUSH_WHY" ] || DRIVER_PUSH_WHY=$(grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -3 | tr '\n' ' ' | cut -c1-400)
