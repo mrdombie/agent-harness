@@ -75,7 +75,7 @@ prs "[$(pr_json 31 tkt-201/work DIRTY)]"
 : > "$FIX/cl-updates.log"
 out=$(CLAIM_RUN_ID=claim-201-r CLAIM_RUN_LOG=/x/201.log driver_step_reenter 201 2>&1); rc=$?
 want "it finishes"                    "0" "$rc"
-WT=$(driver_state_get 201 worktree)
+WT=$(driver_state_get 201 worktree); fixture_path WT "$FIX"
 want "a worktree exists"              "1" "$([ -d "$WT" ] && echo 1)"
 want "on the PR's own branch"         "tkt-201/work" "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 want "at origin's head"               "$(git -C "$FIX/origin" rev-parse tkt-201/work)" "$(git -C "$WT" rev-parse HEAD 2>/dev/null)"
@@ -221,7 +221,7 @@ rm -f "$FIX/gh-fail"
 echo "--- a recorded tree with OUR merge of the trunk in progress is resumed, not refused ---"
 pr_branch 208; fix_issue 208 OPEN "status:in-review"; prs "[$(pr_json 38 tkt-208/work DIRTY)]"
 rc=0; driver_step_reenter 208 >/dev/null 2>&1 || rc=$?
-WT8=$(driver_state_get 208 worktree)
+WT8=$(driver_state_get 208 worktree); fixture_path WT8 "$FIX"
 printf 'pr 208 changed\n' > "$WT8/pr208.txt"; git -C "$WT8" commit -qam "feat: ours" ; git -C "$WT8" push -q origin tkt-208/work
 git -C "$REPO" checkout -q develop 2>/dev/null; printf 'trunk 208\n' > "$REPO/pr208.txt"; git -C "$REPO" add pr208.txt; git -C "$REPO" commit -qm "trunk 208"; git -C "$REPO" push -q origin develop
 git -C "$WT8" fetch -q origin; git -C "$WT8" merge -q origin/develop >/dev/null 2>&1

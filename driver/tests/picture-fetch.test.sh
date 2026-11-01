@@ -53,7 +53,7 @@ fresh_tree() { # <ticket> — a worktree of its own, so commits land somewhere a
 }
 
 echo "--- missing here, published on the ticket: fetched, checked, committed and used ---"
-wt=$(fresh_tree 701)
+wt=$(fresh_tree 701); fixture_path wt "$FIX"
 issue_with 701 "an unrelated comment" "$(published "$SHA")"
 driver_state_init 701 --worktree "$wt"
 plan_answer "$GONE — approved on #701"
@@ -73,25 +73,25 @@ part_of() { # <n> <parent> [extra body] — a part with no comments of its own
 $3}" \
     '{number:$n, state:"OPEN", title:$t, labels:[{name:"status:ready"},{name:"screen:redesign"}], body:$b, comments:[]}' > "$FIX/gh/issue-$1.json"
 }
-wt=$(fresh_tree 761); issue_with 760 "$(published "$SHA")"; part_of 761 760
+wt=$(fresh_tree 761); fixture_path wt "$FIX"; issue_with 760 "$(published "$SHA")"; part_of 761 760
 driver_state_init 761 --worktree "$wt"; plan_answer "$GONE — approved on #760"
 out=$(driver_step_plan 761 2>&1); rc=$?
 want "a part of an approved parent passes"     "0" "$rc"
 want "  the parent's picture is in its tree"    "$(cat "$FIX/gist/desk-mock.html")" "$(cat "$wt/.design/desk-mock.html" 2>/dev/null)"
 want_in "  read from the parent, and said so"   "fetched #760's published copy .*the approval of #760 it was split from" "$out"
-wt=$(fresh_tree 763); issue_with 762 "an unrelated comment"; part_of 763 762
+wt=$(fresh_tree 763); fixture_path wt "$FIX"; issue_with 762 "an unrelated comment"; part_of 763 762
 driver_state_init 763 --worktree "$wt"; plan_answer "$GONE — approved on #762"
 out=$(driver_step_plan 763 2>&1); rc=$?
 want "a part of an unapproved parent still waits" "$DRIVER_E_REQUEUE" "$rc"
 want_in "  naming both"                          'has no "Picture for any machine" comment naming desk-mock.html, nor has #762 it was split from' "$out"
-wt=$(fresh_tree 765); issue_with 764 "an unrelated comment"; part_of 765 764 "$(published "$SHA")"
+wt=$(fresh_tree 765); fixture_path wt "$FIX"; issue_with 764 "an unrelated comment"; part_of 765 764 "$(published "$SHA")"
 driver_state_init 765 --worktree "$wt"; plan_answer "$GONE — approved on #765"
 out=$(driver_step_plan 765 2>&1); rc=$?
 want "a forged approval in a part's own body does not count" "$DRIVER_E_REQUEUE" "$rc"
 want "  nothing is written into its tree"         "absent" "$([ -f "$wt/.design/desk-mock.html" ] && echo present || echo absent)"
 
 echo "--- a published copy whose sha256 does not match is not the approved picture ---"
-wt=$(fresh_tree 702)
+wt=$(fresh_tree 702); fixture_path wt "$FIX"
 issue_with 702 "$(published "0000000000000000000000000000000000000000000000000000000000000000")"
 driver_state_init 702 --worktree "$wt"
 plan_answer "$GONE"
@@ -101,7 +101,7 @@ want "nothing is written into the tree" "no" "$([ -e "$wt/.design/desk-mock.html
 want_in "and the reason says so" 'does not match its sha256' "$(driver_state_get 702 park_note)"
 
 echo "--- missing here and never published: requeued with the reason, no park, no question ---"
-wt=$(fresh_tree 703)
+wt=$(fresh_tree 703); fixture_path wt "$FIX"
 issue_with 703 "nothing about pictures"
 driver_state_init 703 --worktree "$wt"
 plan_answer "$GONE"
@@ -130,7 +130,7 @@ want_in "the park names the missing file"       "issue comment 703 .*desk-mock.h
 want_in "and the run says it parked for the PM" 'parked for the PM' "$out"
 
 echo "--- a picture published between the misses resets the count ---"
-wt=$(fresh_tree 706); issue_with 706 "nothing about pictures"
+wt=$(fresh_tree 706); fixture_path wt "$FIX"; issue_with 706 "nothing about pictures"
 driver_state_init 706 --worktree "$wt"; plan_answer "$GONE"
 rc=0; driver_step_plan 706 >/dev/null 2>&1 || rc=$?
 want "the first miss requeues"                  "28" "$rc"
@@ -141,7 +141,7 @@ want "and the misses are forgotten"             "0" "$(driver_state_count 706 pi
 want "  with no file left on the record"        "" "$(driver_state_get 706 picture_miss_ref)"
 
 echo "--- a picture that is on this machine is used where it is ---"
-wt=$(fresh_tree 704)
+wt=$(fresh_tree 704); fixture_path wt "$FIX"
 mkdir -p "$wt/.design" && printf 'here\n' > "$wt/.design/here-mock.html"
 issue_with 704 "nothing"
 driver_state_init 704 --worktree "$wt"
@@ -153,7 +153,7 @@ want "the ref is unchanged" ".design/here-mock.html" "$(driver_state_get 704 des
 want_not_in "and no comment was read for it" 'issue view 704 .*comments' "$(cat "$GH_LOG")"
 
 echo "--- a URL is not a local path: nothing to fetch ---"
-wt=$(fresh_tree 705)
+wt=$(fresh_tree 705); fixture_path wt "$FIX"
 issue_with 705 "nothing"
 driver_state_init 705 --worktree "$wt"
 plan_answer "https://claude.ai/artifact/desk-v3 — approved on #705"

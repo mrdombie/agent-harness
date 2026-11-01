@@ -707,7 +707,7 @@ chmod +x "$BIN/claude-hands"
 rm -f "$FIX/ai/repair.jsonl" "$FIX/hands-resolve"   # pass 1: the model call dies with no answer
 printf 'REPAIR on PR #63: it clashes with develop\n' > "$FIX/brief-212.md"
 out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
-WT212=$(driver_state_get 212 worktree)
+WT212=$(driver_state_get 212 worktree); fixture_path WT212 "$FIX"
 # A call that dies with no transcript is the machine, retried once and then parked as such.
 want "pass 1 parks, as the machine"          "33" "$rc"
 want "the park committed nothing"            "$PR_HEAD" "$(git -C "$WT212" rev-parse HEAD)"

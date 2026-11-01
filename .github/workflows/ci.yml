@@ -45,6 +45,9 @@ jobs:
         # a crash into 0. Each suite cleans up through on_exit_keep_status and ends on
         # suite_end, whose summary line .github/ci/run-suite.sh requires.
         run: bash scripts/check-suite-ending.sh
+      - name: A suite holds a read-back path to its fixture before git sees it
+        # `git -C ""` is the directory the suite runs from: an empty worktree path committed into the operator's clone.
+        run: bash scripts/check-fixture-paths.sh
       - name: Signals are read from their source
         # A phrase matched in a whole log matches every quote of it too.
         run: bash scripts/check-signal-source.sh

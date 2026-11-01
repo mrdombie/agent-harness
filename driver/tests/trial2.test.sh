@@ -255,14 +255,14 @@ rm -rf "$STATE/driver/407"; fix_issue 407 OPEN "status:ready"
 driver_state_init 407
 rc=0; driver_step_start 407 >/dev/null 2>&1 || rc=$?
 want "start finishes" "0" "$rc"
-NEW_WT=$(driver_state_get 407 worktree)
+NEW_WT=$(driver_state_get 407 worktree); fixture_path NEW_WT "$FIX"
 want_in "and the tree is under the project's worktreeRoot" "^$FIX/trees/" "$NEW_WT"
 
 echo "--- a park whose push is refused still leaves the work durable ---"
 # The push IS the handover, and this project's own pre-push can refuse one — on
 # 2026-09-28 the UI attestation gate did, and 9 commits stayed in a worktree the
 # system prunes.
-PWT=$(driver_state_get 407 worktree)
+PWT=$(driver_state_get 407 worktree); fixture_path PWT "$FIX"
 printf 'nine commits worth\n' > "$PWT/w.txt"
 git -C "$PWT" add -A
 git -C "$PWT" -c user.email=t@e.invalid -c user.name=T commit -qm "feat: the work"

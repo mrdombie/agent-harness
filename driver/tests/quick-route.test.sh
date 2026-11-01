@@ -144,7 +144,7 @@ want_in "it says why it moved up" 'src/screens/home.tsx — a screen file' "$out
 want_in "plan runs after quick: the full route, from plan" '^quick plan' "$(tr '\n' ' ' < "$CLAUDE_LOG")"
 want "the record says route=full" full "$(driver_state_get 802 route)"
 want "and the size went up to project" project "$(driver_state_get 802 size)"
-WT802=$(driver_state_get 802 worktree)
+WT802=$(driver_state_get 802 worktree); fixture_path WT802 "$FIX"
 want "the quick attempt is kept at its ref" "export const Home = () => 1" "$(git -C "$WT802" show refs/driver/quick/802:src/screens/home.tsx 2>/dev/null)"
 want "and the branch is back at its cut, for the proof" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$WT802" rev-parse HEAD)"
 want_in "the full route is told where the attempt is" 'refs/driver/quick/802' "$(cat "$(driver_state_get 802 run_brief)" 2>/dev/null)"

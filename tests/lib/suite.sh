@@ -11,6 +11,10 @@
 #                                  exits 1 on any failure. `exit $count` wraps at 256.
 #   suite_skip <why>               an early, deliberate exit 0 that still prints a
 #                                  summary line, so CI tells a skip from a stop.
+#   fixture_path <var> <root>      refuse to go on unless the path held in <var> is
+#                                  non-empty and inside <root>: `git -C ""` is the
+#                                  directory the suite was started from, the operator's
+#                                  own clone. Call it in the suite's shell, never in $( ).
 
 __SUITE_CLEANUP=
 
@@ -35,4 +39,23 @@ suite_end() { # <failures: a count or 0/1 flag>
 suite_skip() { # <why>
   echo "SUITE-END $(__suite_name): SKIP (${1:-no reason given})"
   exit 0
+}
+
+fixture_path() { # <var-name> <root>
+  local name="${1-}" root="${2-}" val real_root real_val
+  val=${!name-}
+  if [ -z "$root" ]; then
+    echo "  FAIL — fixture_path $name: no root to hold it to"
+  elif [ -z "$val" ]; then
+    echo "  FAIL — refused: \$$name is empty, and git -C \"\" would act on $(pwd -P)"
+  else
+    case "$val" in "$root"/*) return 0 ;; esac
+    real_root=$(cd "$root" 2>/dev/null && pwd -P)
+    real_val=$(cd "$val" 2>/dev/null && pwd -P)
+    if [ -n "$real_root" ] && [ -n "$real_val" ]; then
+      case "$real_val" in "$real_root"/*) return 0 ;; esac
+    fi
+    echo "  FAIL — refused: \$$name is $val, outside $root"
+  fi
+  suite_end 1
 }
