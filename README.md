@@ -465,7 +465,11 @@ How the driver treats a brief:
 
 Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
-window — never the session history. The tick launches judges every tick, never
+window — never the session history. A red PR or stand-down a rule can settle starts
+no model (`scripts/coordinator-judge-moot.sh`, one batched read a tick): the PR merged,
+closed or moved to a new head, the ticket closed, queued or running. It is logged as
+`moot by rule` in `judgements.log`, and a read that fails settles nothing. A judge runs
+with `HARNESS_HEADLESS` set, so the kit's Stop hooks stand down. The tick launches judges every tick, never
 behind housekeeping's lock, up to `coordinator.judges` (default 2) at once, under a
 launcher lock of its own so no event is judged twice; a builder's question (a
 stand-down parked on the PM or a person) goes before red PRs and frozen runs, and

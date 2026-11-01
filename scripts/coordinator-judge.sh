@@ -17,6 +17,7 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/builder-mcp.sh" || exit 1
+. "$SELF_DIR/coordinator-judge-moot.sh" || exit 1
 
 CLAUDE_BIN="${COORDINATOR_CLAUDE:-claude}"
 RULES="$KIT_ROOT/shared/coordinator-judge.md"
@@ -60,7 +61,8 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
   # A judge reads the forge through gh: no MCP server of its own (builder-mcp.sh).
   local mcp=() a
   while IFS= read -r a; do [ -n "$a" ] && mcp+=("$a"); done <<< "$(builder_mcp_args 2>/dev/null)"
-  CLAUDE_CODE_AUTO_COMPACT_WINDOW="$COORD_JUDGE_COMPACT" KIT_ROOT="$KIT_ROOT" COORD_DIR="$COORD_DIR" \
+  # Nobody reads a judge's turn: the kit's Stop hooks stand down on HARNESS_HEADLESS.
+  HARNESS_HEADLESS="judge:$id" CLAUDE_CODE_AUTO_COMPACT_WINDOW="$COORD_JUDGE_COMPACT" KIT_ROOT="$KIT_ROOT" COORD_DIR="$COORD_DIR" \
     "$CLAUDE_BIN" -p "$(cat "$JDIR/$safe.brief")" \
       --max-turns "$COORD_JUDGE_TURNS" \
       --max-budget-usd "$COORD_JUDGE_BUDGET" \
@@ -107,6 +109,11 @@ else
 fi
 
 slots=$(( COORD_JUDGES - $(running) ))
+# Settled by rule first, from one read: a failed read settles nothing and launches nothing.
+MOOT_READ=1
+if ! coord_shadow && [ "${n_wait:-0}" -gt 0 ]; then
+  judge_moot_read <<<"$WAIT" || MOOT_READ=0
+fi
 while IFS= read -r ev; do
   [ -n "$ev" ] || continue
   id=$(printf '%s' "$ev" | jq -r '.id')
@@ -115,6 +122,14 @@ while IFS= read -r ev; do
     coord_act_log judge "$id" "$(printf '%s' "$ev" | jq -r '.kind + ": " + .detail')"
     printf '%s\n' "$id" >> "$JUDGED"
     echo "would judge $id"
+    continue
+  fi
+  [ "$MOOT_READ" = 1 ] || { echo "judge: GitHub could not be read, so nothing is settled or judged — $id waits"; break; }
+  if why=$(judge_moot "$ev"); then
+    printf '%s\n' "$id" >> "$JUDGED"
+    printf '%s\t%s\tmoot by rule: %s\tnothing; no judge started\n' "$(swarm_stamp)" "$id" "$why" >> "$COORD_DIR/judgements.log"
+    coord_act_log judge-moot "$id" "$why"
+    echo "settled $id by rule: $why"
     continue
   fi
   [ "$slots" -gt 0 ] || { echo "judge: no slot for $id — next tick"; break; }

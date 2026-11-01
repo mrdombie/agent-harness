@@ -35,6 +35,7 @@ say() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
 #    operator's terminal; there is no operator here, and nothing to keep track of
 #    that the run record does not already hold.
 [ -n "${HARNESS_DRIVER_RUN:-}" ] && { say "exit0 driver-run ${HARNESS_DRIVER_RUN}"; exit 0; }
+[ -n "${HARNESS_HEADLESS:-}" ] && { say "exit0 headless ${HARNESS_HEADLESS}"; exit 0; }
 
 # 1. The documented escape hatch — we already blocked once this turn.
 [ "$(printf '%s' "$IN" | jq -r '.stop_hook_active // false')" = "true" ] && {

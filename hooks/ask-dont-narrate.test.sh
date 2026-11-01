@@ -75,6 +75,9 @@ rm -rf "$MDIR"; t nag   'the control: this input does nag'   'Your call.' false 
 rm -rf "$MDIR"
 HARNESS_DRIVER_RUN=10867:review \
   t quiet 'and stands down for a driver step' 'Your call.' false d1 "$NOASK"
+rm -rf "$MDIR"
+HARNESS_HEADLESS=judge:red-pr:41:sha41 \
+  t quiet 'and for a headless judge' 'Your call.' false d2 "$NOASK"
 
 # --- 2026-10-20 "Why are there two status every time too": replies that were
 #     refused, and so posted their status block a second time.
