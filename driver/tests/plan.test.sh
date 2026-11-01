@@ -35,6 +35,7 @@ plan_of() { # <tasks> — a valid plan answer with that many build tasks
     premise:{verdict:"still-true",evidence:"a.sh:1"},
     tasks:[range($n) | {title:"task \(. + 1)",files:[{path:"f\(. + 1).sh",action:"modify"}],tests:[{file:"f\(. + 1).test.sh",behaviour:"b",redWhen:"r"}]}]}'
 }
+printf '#!/usr/bin/env bash\necho "$*" >> "$FIX/repoint.log"\n' > "$BIN/repoint"; chmod +x "$BIN/repoint"; export DRIVER_REPOINT="$BIN/repoint"
 fix_issue 151 OPEN "status:claimed,P1,area:inbox,screen:inbox,needs:human-approval"; driver_state_init 151 --worktree "$REPO"
 fix_ai plan "$(plan_of 4)" superpowers:writing-plans
 : > "$GH_LOG"; out=$(driver_step_plan 151 2>&1); rc=$?
@@ -48,6 +49,7 @@ want "  only part 1 is filed ready"               "1" "$(tr '\n' ' ' < "$GH_LOG"
 want "  parts 2 to 4 are filed gated"             "3" "$(tr '\n' ' ' < "$GH_LOG" | grep -o -- '--label status:gated --label P1' | grep -c .)"
 want "  each on the part before it, as the unblocker reads it" "3" "$(grep -c '^Blocked until #999 merges' "$GH_LOG")"
 want_in "  and closed as split"                    'issue close 151' "$(cat "$GH_LOG")"
+want "  the waits naming it are re-pointed at its parts" "--repoint 151 999 999 999 999" "$(cat "$FIX/repoint.log" 2>/dev/null)"
 want_in "  the run says why"                       'split into .* the parent closed as split' "$out"
 echo "--- a part carries the parent's approved picture and its answers, by link ---"
 jq -n '{number:156, state:"OPEN", title:"Ticket 156", labels:[{name:"status:claimed"},{name:"screen:redesign"}], body:"spec",

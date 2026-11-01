@@ -84,6 +84,10 @@ Refs #%s
   done
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "**Split** into $kids — one change each, in this order. Its plan had $n build tasks, over \`driver.split.maxTasks\` ($max), so nothing was built here. Closed as split." >/dev/null 2>&1 || true
   swarm_gh issue close "$t" --repo "$REPO_SLUG" --reason "not planned" >/dev/null 2>&1 || true
+  # A ticket waiting on the parent now names its parts: the parent itself never merges.
+  # shellcheck disable=SC2086  # the part numbers, split on purpose
+  bash "${DRIVER_REPOINT:-$KIT_ROOT/scripts/unblock-waiting.sh}" --repoint "$t" ${kids//#/} >/dev/null 2>&1 \
+    || driver_say "   plan: the waits naming #$t were not re-pointed at its parts; the unblocker still reads them through the split"
   driver_state_set "$t" noop_note "was split into $kids before it built: its plan had $n build tasks, over driver.split.maxTasks ($max)"
   driver_say "✂ plan: $n build tasks, over driver.split.maxTasks ($max) — split into $kids, the parent closed as split"
 }

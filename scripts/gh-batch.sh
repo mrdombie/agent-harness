@@ -556,7 +556,9 @@ gh_issues_batch() {
           # gh-read-ok: a refused ticket sets fail=1, and the batch exits 1
           part=$(gh_call api "repos/$_o/$_r/issues/$one" 2>/dev/null) || { fail=1; continue; }
           part=$(_gh_jq_acc "$out" 'select(type == "object" and .state != null)
-                  | $acc + {($n): ({number: ($n|tonumber), state: (.state | ascii_upcase), title: (.title // ""),
+                  | $acc + {($n): ({number: ($n|tonumber), title: (.title // ""),
+                                    # a pull request merged reads MERGED, as GraphQL says it: REST says closed
+                                    state: (if (.pull_request.merged_at? // null) != null then "MERGED" else (.state | ascii_upcase) end),
                                     updatedAt: (.updated_at // .updatedAt // null), labels: [.labels[]? | if type == "object" then .name else . end]}
                                    + (if $b != "" then {body: (.body // "")} else {} end)
                                    + (if (.state_reason // "") != "" then {stateReason: (.state_reason | ascii_upcase)} else {} end)

@@ -65,7 +65,7 @@ listing status:gated 13581
 jq -n '{number:13578, state:"CLOSED", stateReason:"NOT_PLANNED", title:"t", labels:[],
   comments:[{body:"**Split** into #14263 #14264 #14265 #14266 — one change each, in this order. Closed as split."}]}' > "$FIX/gh/issue-13578.json"
 closed 14263; closed 14264; opened 14265; opened 14266
-want_in "its parts still open: it waits"          '^waits: #13581 — still open: #13578$' "$(run)"
+want_in "its parts still open: it waits"          '^waits: #13581 — still open: #13578 \(its parts #14265 #14266\)$' "$(run)"
 closed 14265; closed 14266
 want_in "every part landed: released"             '^unblocked #13581$' "$(run)"
 echo "--- a range is every ticket in it, en dash or hyphen ---"
@@ -87,7 +87,7 @@ jq -n '{number:13579, state:"CLOSED", stateReason:"NOT_PLANNED", title:"t", labe
 waiting 14317 status:gated "spec" "Blocked until #13579 merges."
 listing status:gated 14317
 closed 14280; opened 14281; closed 14282
-want_in "a split comment's range counts its middle too" '^waits: #14317 — still open: #13579$' "$(run)"
+want_in "a split comment's range counts its middle too" '^waits: #14317 — still open: #13579 \(its part #14281\)$' "$(run)"
 
 echo "--- a blocker closed unmerged, not as split: it waits, with one note for the PM ---"
 waiting 13590 status:gated "spec" "Blocked until #13589 merges."
@@ -103,5 +103,102 @@ out=$(run --dry-run)
 want_in "  says what it would do"                '^would unblock #702' "$out"
 want "  writes nothing"                          "0" "$(grep -c -E '^issue (edit|comment)' "$GH_LOG")"
 want "  queues nothing"                          "" "$(cat "$FIX/queue.log")"
+
+# A wait no pass can ever release must be said, never held in silence. 2026-10-29: the
+# Holly 2.0 chain stood still ~12 hours: #16130 waited on #16140 (split), whose last part
+# #16152 waited on #16130; 11 tickets waited behind them, and every pass said "still open".
+cat > "$BIN/notify" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$FIX/notify.log"
+SH
+chmod +x "$BIN/notify"; export UNBLOCK_NOTIFY="$BIN/notify"
+fresh() { printf '[]\n' > "$FIX/gh/issue-list-status:blocked.json"; printf '[]\n' > "$FIX/gh/issue-list-status:gated.json"; : > "$FIX/notify.log"; }
+split_as() { # <n> <part…> — closed as not planned, with the driver's split comment
+  local n="$1"; shift
+  jq -n --argjson n "$n" --arg k "$(printf '#%s ' "$@")" '{number:$n, state:"CLOSED", stateReason:"NOT_PLANNED", title:"t", labels:[],
+    comments:[{body:"**Split** into \($k)— one change each, in this order. Closed as split."}]}' > "$FIX/gh/issue-$n.json"
+}
+
+echo "--- A split into A1 and A2: B waits while A2 is open, and goes once both are done ---"
+fresh; split_as 900 901 902
+waiting 903 status:gated "spec" "Blocked until #900 merge."
+listing status:gated 903
+closed 901; opened 902
+out=$(run)
+want_in "A2 open: B waits, naming the part it waits on" '^waits: #903 — still open: #900 \(its part #902\)$' "$out"
+closed 902
+want_in "both parts done: B is released"           '^unblocked #903$' "$(run)"
+
+echo "--- two tickets that each wait on the other: a deadlock, said once on each ---"
+fresh
+waiting 910 status:gated "spec" "Blocked until #911 merges."
+waiting 911 status:gated "spec" "Blocked until #910 merges."
+listing status:gated 910 911
+out=$(run)
+want_in "the deadlock is reported"                 '^deadlock: #910 #911 — each waits on another, so none can start \(the PM breaks it\)$' "$out"
+want_in "  on each ticket in it"                   'issue comment 910 .*Deadlocked.*unblock: deadlock #910 #911' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  both of them"                           'issue comment 911 .*Deadlocked' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  and to the PM's channel"                '^--class agent wait-deadlock:910,911 ' "$(cat "$FIX/notify.log")"
+waiting 910 status:gated "spec" "Blocked until #911 merges." "**Deadlocked:** … <!-- unblock: deadlock #910 #911 -->"
+listing status:gated 910 911
+run >/dev/null
+want "  a second pass writes no second note on #910" "0" "$(grep -c '^issue comment 910' "$GH_LOG")"
+want_not_in "  nobody is released"                 'unblocked' "$out"
+
+echo "--- a deadlock through a split: the Holly 2.0 shape ---"
+fresh; split_as 921 922 923
+waiting 920 status:gated "spec" "Blocked until #921 merges."
+waiting 923 status:gated "Part 2 of 2, split from #921.
+Blocked until #922 merges." "Blocked until #920 merges."
+listing status:gated 920 923
+opened 922
+out=$(run)
+want_in "the part waiting on the waiter is found"  '^deadlock: #920 #923 — each waits on another' "$out"
+
+echo "--- a closed pull request that never merged has not landed ---"
+fresh
+waiting 940 status:blocked "spec" "Blocked until #941 merges."
+listing status:blocked 940
+jq -n '{number:941, state:"CLOSED", title:"PR", labels:[]}' > "$FIX/gh/issue-941.json"
+out=$(run)
+want_in "a PR closed unmerged: it waits, the PM's" '^waits: #940 — closed unmerged, not as split: #941 \(the PM decides\)$' "$out"
+want_in "  said on the PM's channel too"           '^--class agent wait-unmerged:940:941 ' "$(cat "$FIX/notify.log")"
+
+echo "--- a blocked ticket names its wait as the machine and the PM wrote it before ---"
+fresh
+waiting 930 status:blocked "spec" "Blocked on #931: this ticket waits for #931 to merge, then builds on develop (standard answer (b), release.mergeFirst)."
+waiting 932 status:blocked "spec" "PM answer: this ticket is blocked by #16009 (the loop work) and resumes from its draft PR #934 once #933 merges." "Blocked by #933"
+waiting 935 status:gated "spec" "Blocked on #936 (partner approval). Separation: #937."
+listing status:blocked 930 932; listing status:gated 935
+closed 931; opened 933; closed 936; opened 934
+out=$(run)
+want_in "\"Blocked on #N\" on a blocked ticket is read" '^unblocked #930$' "$out"
+want_in "\"Blocked by #N\", the newest line, is read" '^waits: #932 — still open: #933$' "$out"
+want_not_in "a gated ticket reads \"Blocked until\" alone" '#935' "$out"
+
+echo "--- a blocked ticket with no line naming its wait is said, not held in silence ---"
+fresh
+waiting 950 status:blocked "spec" "Blocked for now."
+waiting 951 status:blocked "spec" "Blocked: waits for #952 to merge. The merge pass sets it back to ready when #952 merges."
+listing status:blocked 950 951
+out=$(run)
+want_in "no wait named: said"                      '^waits: #950 — blocked, but no "Blocked until #…" line names what on \(the PM decides\)$' "$out"
+want_in "  on the PM's channel"                    '^--class agent wait-unnamed:950 ' "$(cat "$FIX/notify.log")"
+want_not_in "  a follow-up's wait is follow-up.sh's" '#951' "$out"
+
+echo "--- at the split, every wait naming the parent is re-pointed at its parts ---"
+fresh; split_as 960 961 962
+waiting 963 status:gated "spec" "Blocked until #960, #964 merge."
+waiting 965 status:blocked "spec" "Blocked until #964 merges."
+listing status:gated 963; listing status:blocked 965
+: > "$GH_LOG"
+out=$(bash "$U" --repoint 960 961 962 2>&1)
+want_in "the waiter is re-pointed"                 'issue comment 963 .*Blocked until #961, #962, #964 merge' "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "  and says so"                            '^repointed #963 — #960 is now #961 #962$' "$out"
+want "  one waiting on something else is left"     "0" "$(grep -c '^issue comment 965' "$GH_LOG")"
+: > "$GH_LOG"
+out=$(bash "$U" --repoint 960 961 962 --dry-run 2>&1)
+want_in "  dry: says it"                           '^would repoint #963' "$out"
+want "  dry: writes nothing"                       "0" "$(grep -c '^issue comment' "$GH_LOG")"
 
 suite_end "$FAILED"
