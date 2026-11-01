@@ -39,10 +39,10 @@ owner_sites() {
           v = tok; gsub(/[${}]/, "", v); sub(/[^A-Za-z0-9_].*$/, "", v)
           for (i = NR - 1; i > 0 && i >= NR - 40; i--) {
             s = line[i]
-            if (match(s, v "=\"?[a-z][a-z-]*:")) { k = substr(s, RSTART, RLENGTH); sub(/^[^=]*="?/, "", k); sub(/:$/, "", k); kind = k; break }
-            if (match(s, "case \"\\$\\{?" v "\\}?\" in [a-z][a-z-]*:")) { k = substr(s, RSTART, RLENGTH); sub(/^.* in /, "", k); sub(/:$/, "", k); kind = k; break }
+            if (match(s, v "=\"?[a-z][a-z0-9-]*:")) { k = substr(s, RSTART, RLENGTH); sub(/^[^=]*="?/, "", k); sub(/:$/, "", k); kind = k; break }
+            if (match(s, "case \"\\$\\{?" v "\\}?\" in [a-z][a-z0-9-]*:")) { k = substr(s, RSTART, RLENGTH); sub(/^.* in /, "", k); sub(/:$/, "", k); kind = k; break }
           }
-        } else if (match(tok, /^[a-z][a-z-]*:/)) {
+        } else if (match(tok, /^[a-z][a-z0-9-]*:/)) {
           kind = substr(tok, 1, RLENGTH - 1)
         }
         printf "%s:%d\t%s\n", f, NR, kind
