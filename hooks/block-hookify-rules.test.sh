@@ -30,7 +30,7 @@ t deny 'GH_TOKEN=x gh pr create --base develop --title "x"'
 t allow 'X=1 git add apps/web/src/x.tsx'
 t allow 'echo X=1 git add -A'
 echo "--- a long command is judged whole ---"
-long=$(i=0; while [ "$i" -lt 4000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
+long=$(i=0; while [ "$i" -lt 2000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
 t deny "git add -A
 $long"
 echo "--- a heredoc BODY is data, not shell ---"

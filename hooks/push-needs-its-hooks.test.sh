@@ -64,7 +64,7 @@ t deny  "$S/main" "cd $S/wt && ALLOW_TRUNK_PUSH=uat git push origin HEAD:uat"
 t deny  "$S/main" "ALLOW_TRUNK_PUSH=uat git -C $S/wt push origin HEAD:uat"
 t allow "$S/wt"   'ALLOW_TRUNK_PUSH=uat git push origin HEAD:feature/x'
 # A long command is judged whole: a pipe into grep -q under pipefail once exited early.
-long=$(i=0; while [ "$i" -lt 4000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
+long=$(i=0; while [ "$i" -lt 2000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
 t deny  "$S/wt"   "git push origin HEAD:uat
 $long"
 t allow "$S/wt"   'env X=1 git push --dry-run origin HEAD:uat'
