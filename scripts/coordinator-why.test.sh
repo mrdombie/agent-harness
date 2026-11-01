@@ -128,6 +128,7 @@ want_in "the comment says it in plain words"          '^why: .*pace|^why: .*new 
 
 echo "--- an idle tick: the spawn line and the skips by reason ---"
 world; for t in 13450 13451 13452; do fix_issue "$t" OPEN "status:in-review,P2"; done
+fix_pr_for 13450 13451 13452   # a queued repair has its open PR; with none it is new work again
 EXTRA=',{"n":13450,"class":"repair","prin":2},{"n":13451,"class":"repair","prin":2},{"n":13452,"class":"repair","prin":2}' sheet
 # The claims landed after the owner wrote the order: six repairs claimed, one with a stop label.
 printf '%s\tmac\tbuild\n' 13625 13044 13447 13450 13451 >> "$FIX/claims.tsv"

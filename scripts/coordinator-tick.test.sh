@@ -786,6 +786,9 @@ want "a row the tick cannot start yet is rewritten as new" "new" "$(jq -r '.tick
 want "  its dead-PR note cleared, so no re-seed reads it as a repair again" "" "$(jq -r '.tickets[] | select(.n == 501) | .note' "$C/queue.json")"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want_not_in "  and the next tick says nothing more of it" 'back to new work' "$out"
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null; echo 501 > "$FIX/claims.txt"
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a claimed one is being worked: left a repair" "repair" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
 fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class approved-merge >/dev/null
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
 want "an approved merge whose PR is gone is new work too" "501	new" "$(cat "$SPAWNS")"
