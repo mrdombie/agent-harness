@@ -366,6 +366,37 @@ _driver_ship_hook_retry() {
   return 1
 }
 
+# _driver_ship_retire_dead <ticket> <tree> <branch> — origin's copy of the branch
+# conflicts with this run (driver_take_origin refused). A branch no open pull request
+# uses is history, not work: its tip is archived as refs/stranded/<t>/archive-<sha7>
+# and the push below replaces the branch on a lease naming that tip. 0 = retired;
+# 1 = an open PR uses it, or the archive was refused (DRIVER_RETIRE_WHY); 2 = GitHub
+# could not say whether a PR is open (park note set).
+_driver_ship_retire_dead() {
+  local t="$1" wt="$2" branch="$3" rows n tip
+  DRIVER_RETIRE_WHY=""
+  tip=$(git -C "$wt" rev-parse -q --verify "refs/remotes/origin/$branch" 2>/dev/null) \
+    || { DRIVER_RETIRE_WHY="origin's tip could not be read"; return 1; }
+  rows=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number,headRefName 2>/dev/null) || {
+    driver_say "✋ ship: origin's $branch conflicts with this run, and GitHub could not say whether a pull request is open on it (${DRIVER_LOOKUP_TRIES:-3} tries). Nothing is pushed."
+    driver_state_set "$t" park_note "origin's $branch conflicts with this run in $DRIVER_TAKE_WHY, and the open pull requests for it could not be listed (${DRIVER_LOOKUP_TRIES:-3} tries)"
+    return 2; }
+  n=$(printf '%s' "$rows" | jq --arg b "$branch" '[.[]? | select(.headRefName == $b)] | length' 2>/dev/null)
+  case "$n" in ''|*[!0-9]*)
+    driver_say "✋ ship: the open pull requests for $branch could not be read. Nothing is pushed."
+    driver_state_set "$t" park_note "origin's $branch conflicts with this run in $DRIVER_TAKE_WHY, and GitHub's answer on its open pull requests could not be read"
+    return 2 ;;
+  esac
+  if [ "$n" -gt 0 ]; then DRIVER_RETIRE_WHY="an open pull request uses it"; return 1; fi
+  if ! driver_stranded_archive "$t" "$wt" "$tip"; then
+    DRIVER_RETIRE_WHY="no open pull request uses it, but its tip could not be archived: $DRIVER_STRANDED_WHY"; return 1
+  fi
+  DRIVER_PUSH_LEASE_BRANCH="$branch"; DRIVER_PUSH_LEASE_SHA="$tip"
+  driver_state_set "$t" archived_ref "$DRIVER_STRANDED_REF"
+  driver_say "↷ ship: origin's $branch is an earlier run's tip ($(printf '%s' "$tip" | cut -c1-10)) that conflicts in $DRIVER_TAKE_WHY and no open pull request uses it — kept as $DRIVER_STRANDED_REF, and the branch is replaced on a lease naming that tip"
+  return 0
+}
+
 # _driver_ship_base_red <ticket> <tree> <branch> — 0 when a push the pre-push refused went
 # out as BASE-RED: every check it named is red on the trunk commit the branch merged too
 # (driver/base-red.sh, run once per check and commit on the host). That red is the
@@ -594,10 +625,17 @@ driver_step_ship() { # <ticket>
   # pushed to it; without its commits the push is "rejected (fetch first)" on every
   # run. Merged here, before the verdicts are matched to HEAD, so a merge that moved
   # HEAD is re-recorded like any other commit — and the gates run again on it.
+  DRIVER_PUSH_LEASE_SHA=""; DRIVER_PUSH_LEASE_BRANCH=""; driver_state_set "$t" archived_ref ""
   if ! driver_take_origin "$t" "$wt" "$branch" "$trunk"; then
-    driver_say "✋ ship: origin's $branch has commits from an earlier run that conflict with this run outside the files this run changed: $DRIVER_TAKE_WHY. Nothing is pushed."
-    driver_state_set "$t" park_note "origin's $branch has an earlier run's commits that conflict in files this run did not change: $DRIVER_TAKE_WHY"
-    return "$DRIVER_E_REFUSED"
+    local drc=0; _driver_ship_retire_dead "$t" "$wt" "$branch" || drc=$?
+    case "$drc" in
+      0) ;;
+      2) return "$DRIVER_E_UNREAD" ;;
+      *)
+        driver_say "✋ ship: origin's $branch has commits from an earlier run that conflict with this run outside the files this run changed: $DRIVER_TAKE_WHY. Nothing is pushed."
+        driver_state_set "$t" park_note "origin's $branch has an earlier run's commits that conflict in files this run did not change: $DRIVER_TAKE_WHY${DRIVER_RETIRE_WHY:+ ($DRIVER_RETIRE_WHY)}"
+        return "$DRIVER_E_REFUSED" ;;
+    esac
   fi
   if [ "$DRIVER_TAKE_MERGED" = 1 ]; then
     driver_say "   ship: merged $DRIVER_TAKE_COUNT commit(s) an earlier run pushed to $branch — self-check runs again on the merged tree."
@@ -864,6 +902,8 @@ PRBODY
   # Written above as the first line; held here so no later section drops it.
   body=$(printf '%s\n' "$body" | pr_closes_ensure "$t" "$closes")
   snote=$(driver_state_get "$t" size_note); [ -z "$snote" ] || body=$(printf '%s\n\n## Size\n%s\n' "$body" "$snote")
+  snote=$(driver_state_get "$t" archived_ref)
+  [ -z "$snote" ] || body=$(printf "%s\n\n## Earlier branch\nOrigin's %s was an earlier run's tip that no open pull request used, and it conflicted with this run. It is kept as \`%s\` (\`git fetch origin %s\`); the branch now holds this run's line.\n" "$body" "$branch" "$snote" "$snote")
   # `|| true` on the create alone is right: a park may already have opened the draft,
   # and a resume finds it there. What is NOT right is taking the create's silence as a
   # pull request existing — so the next line asks.

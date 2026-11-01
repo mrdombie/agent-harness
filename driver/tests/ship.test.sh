@@ -1010,9 +1010,11 @@ want "it ships"                          "0" "$rc"
 want "with this run's version"           "change for 191" "$(git -C "$FIX/origin" show tkt-191/work:f191.txt 2>/dev/null)"
 want "and no conflict marker"            "" "$(git -C "$FIX/origin" show tkt-191/work:f191.txt 2>/dev/null | grep -E '^(<<<<<<<|>>>>>>>)')"
 
-echo "--- a conflict in a file this run did not change: stop, name it, push nothing ---"
+echo "--- a conflict in a file this run did not change, on a branch an open PR uses: stop, name it, push nothing ---"
+# With no open PR the branch is a dead tip and is archived instead (ship-dead-branch.test.sh).
 : > "$GH_LOG"
 setup_wt 192
+printf '[{"number":192,"isDraft":true,"headRefName":"tkt-192/work"}]\n' > "$FIX/gh/prs.json"
 early=$(earlier_run 192 shared192.txt "the earlier run's shared file")
 printf 'the trunk moved\n' > "$REPO/shared192.txt"
 git -C "$REPO" add shared192.txt; git -C "$REPO" commit -qm "feat: trunk change"; git -C "$REPO" push -q origin develop
@@ -1026,6 +1028,7 @@ want_in "naming the conflicting file"    'shared192.txt' "$out"
 want "origin's branch is untouched"      "$early" "$(git -C "$FIX/origin" rev-parse tkt-192/work)"
 want "and the tree is left clean"        "" "$(git -C "$FIX/wt192" status --porcelain)"
 want "with no merge half-done"           "" "$(test -f "$(git -C "$FIX/wt192" rev-parse --git-path MERGE_HEAD)" && echo merging)"
+printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a trunk merge's squash commits carry their own critic's verdict: not this run's ---"
 # Another PR's squash lands on origin's develop with its real critic trailer, this run

@@ -207,6 +207,7 @@ $(if [ "$pushed" -ne 1 ] && [ -n "$park_ref" ]; then
     [ -z "$strand_note" ] || printf ' The backup to origin never landed: %s' "$strand_note"
   fi)
 $(if [ -n "$draft_note" ] && [ "$draft_rc" -ne 0 ]; then printf '⚠ %s' "$draft_note"; elif [ -n "$draft_note" ]; then printf '🔒 %s, so it cannot land until the driver resumes and finishes it.' "$draft_note"; fi)
+$(a=$(driver_state_get "$t" archived_ref); [ -z "$a" ] || printf '🗄 Origin'"'"'s earlier tip of `%s` (no open pull request used it) is kept as `%s`: `git fetch origin %s`.' "$branch" "$a" "$a")
 ${staged:+Staged into the parked commit: $staged}
 ${commit_note:+⚠ $commit_note}
 ${merge_note:+⚠ The merge: $merge_note}
