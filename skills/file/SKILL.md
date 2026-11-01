@@ -77,6 +77,8 @@ gh issue create --repo "$REPO_SLUG" \
    critic grade against. Say the grade in the issue body too, so the label can be
    checked against the reasoning rather than taken on trust.
 
+4b. **A ticket that replaces something carries the replacement contract** (standing rules, "Replacing something retires the old one"): an **Inventory** of what the old thing handled, mapped to the new one or to a drop; a **Retire** step (delete, or register as retired so the guard refuses it), part of done; a counted **Fallback** with an end, if any; **Absence tests** that the old output never appears; and **Real traffic** before it is called done. Split into parts, one part owns the inventory and the retire step for all of them. A replacement ticket without these sections is not ready.
+
 5. **`$LBL_DRAFTING` (drafting) first.** Moving to `$LBL_READY` (ready) is a separate,
    deliberate act — it is the moment an agent may pick the ticket up. Don't
    combine the two.

@@ -165,6 +165,20 @@ nothing starts heavy work around it — the scheduler's own load check covers on
 the agents it spawns, and on 2026-10-15 sessions starting agents by hand put the
 load at 77 on 10 cores.
 
+## Replacing something retires the old one
+
+Any replacement (a screen or component, an API version, a data model, a vendor, a job runner, a pipeline) follows the same contract (the owner, 2026-11-01, after a rebuilt screen shipped still drawing the old one's cards and loaders beside its own: "it's the general concept … it could be upgrading a completely different type of system").
+
+**The failure it prevents.** The new thing is built for the cases in mind, and the old thing stays as a silent fallback for the rest. No single change owns removing it, so real traffic finds the gaps and the system runs a mix of both. The signs: **two of anything** (two loaders, two writers to one table, two schedulers for one send), a fallback nobody counts, "done" counted from merged tickets, tests that only prove the new path, and demo data that never reaches the rare cases.
+
+**The contract.** A ticket that replaces something carries, in its body:
+- **Inventory:** everything the old thing handled (inputs, events, endpoints, block or message kinds, jobs, config), each mapped to the new thing or to an explicit drop. In code, the mapping is exhaustive where the language allows it (a typed switch with a never case), so an unmapped kind fails the build.
+- **Retire step:** the old thing is deleted, or registered as retired so the write-time guard and CI refuse any new import or call of it from the new surface. Deleting it is part of done, never a follow-up.
+- **Fallback, counted:** if a fallback must exist for a while, it is logged and counted, has a named end, and is never silent.
+- **Absence tests:** besides "the new path works", tests assert the old output never appears (no old card, no second writer, no call to the old endpoint), proven by planting the old piece back.
+- **Real traffic:** before it is called done, the change is exercised with real-shaped data that reaches the rare cases, and someone looks at the running system. A replacement is never reported finished from closed tickets.
+- **One owner of the cut-over:** when the build is split into parts, one ticket owns the inventory and the retire step for the whole.
+
 ## Evidence before assertion
 
 - **A conclusion without a number is the tell.** Run the command before the
