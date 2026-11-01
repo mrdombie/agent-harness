@@ -10,6 +10,9 @@
 #     required check being re-run instead · it has not already been repaired
 #     coordinator.rebuildAfterRepairs times (then it is rebuilt fresh, and that is said)
 #   repair_record <ticket>           note a repair spawn, for the rebuild count
+#   repair_base_red <ticket> <pr-json> [hold] [nb] [crit]   0 when the PR's red is its own; else
+#     echoes why it waits: every failing required check failed on the base's newest completed
+#     run too (base-red), or the base went green and the failed jobs are re-run first
 #
 # Seen 2026-10-23: repair-watch spawned a repair on the origin project's #5989 whose only red was
 # "Capture and pin the evidence", a check develop does not require, and it parked to the
@@ -40,14 +43,17 @@ case "$COORD_REBUILD_AFTER" in ''|*[!0-9]*) COORD_REBUILD_AFTER=2 ;; esac
 # across two hosts, each seeing fewer than two. The local count stays as the fallback, and the
 # higher of the two is used.
 REPAIR_MARK='<!-- harness:repair-spawn -->'
+# A PR seen base-red starts its count again: the repairs before were sent at a red no PR can fix.
+BASE_RED_MARK='<!-- harness:base-red -->'
 repairs_since_fresh() { # <ticket> [pr-json] — repair spawns since its last rebuild or new build
   local t="$1" pj="${2:-}" here there="" pr
-  here=$(awk -F'\t' -v t="$t" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0)
+  here=$(awk -F'\t' -v t="$t" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new" || $3 == "base-red") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0)
   [ -n "$pj" ] || pj=$(open_pr_json "$t")
   pr=$(jq -r '.number // empty' <<<"${pj:-null}" 2>/dev/null)
   # gh-read-ok: a failed read counts 0 here, so the host's own count stands, as before this read
   [ -z "$pr" ] || there=$(swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" --paginate \
-      -q "[.[] | select((.body // \"\") | contains(\"$REPAIR_MARK\"))] | length" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
+      -q ".[] | (.body // \"\") | if contains(\"$REPAIR_MARK\") then \"r\" elif contains(\"$BASE_RED_MARK\") then \"b\" else empty end" 2>/dev/null \
+      | awk '$0 == "r" { n++ } $0 == "b" { n = 0 } END { print n + 0 }')
   case "$there" in ''|*[!0-9]*) there=0 ;; esac
   case "$here" in ''|*[!0-9]*) here=0 ;; esac
   [ "$there" -gt "$here" ] && echo "$there" || echo "$here"
@@ -104,6 +110,55 @@ COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCan
 case "$COORD_RERUN_MAX" in ''|*[!0-9]*) COORD_RERUN_MAX=2 ;; esac
 # The base branch's required checks, read from its live rules once per tick (pr-red.sh).
 PR_RED_REQ_FILE="$COORD_DIR/required-checks.$(coord_mode)"; : > "$PR_RED_REQ_FILE" 2>/dev/null; export PR_RED_REQ_FILE
+
+# A RED THE BASE HAS TOO WAITS FOR THE BASE. A PR cannot fix a check that fails on the base
+# branch itself, so a repair sent at one fails, and two of them rebuild the PR from scratch.
+# Measured 31 Oct - 1 Nov: 32 of 61 repair spawns were on PRs whose only red required check
+# had failed on develop's newest completed push run too, and 13 of 17 rebuilds were of such
+# PRs. Read per check, never assumed (base-wait.sh _base_latest_done): every failing required
+# check's newest completed run on the base concluded failure. One check the base passes and
+# the red is the PR's own; one the base cannot be read for decides nothing (a repair, as before).
+# A head seen base-red is noted once (base-red.<mode>.tsv, and BASE_RED_MARK on the PR, which
+# starts its rebuild count again). When the base passes again, the PR's failed jobs are re-run
+# once on that head (free) before any repair.
+declare -F _base_latest_done >/dev/null || . "$KIT_ROOT/scripts/base-wait.sh" || return 1
+REPAIR_BASE_RED="$COORD_DIR/base-red.$(coord_mode).tsv"           # pr \t head \t checks \t epoch
+REPAIR_BASE_RERUNS="$COORD_DIR/base-red-reruns.$(coord_mode).tsv"  # pr_red_rerun's ledger, one a head
+REPAIR_BASE_CACHE="$COORD_DIR/base-red-cache.$(coord_mode)"        # the base's runs, read once a tick
+rm -rf "$REPAIR_BASE_CACHE" 2>/dev/null; mkdir -p "$REPAIR_BASE_CACHE" 2>/dev/null
+repair_base_red() { # <ticket> <pr-json> [hold] [nb-json] [also-required-json]
+  local t="$1" pj="$2" n head base fails name rid c r notred="" unread="" names="" rids="" did
+  n=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null); head=$(jq -r '.headRefOid // empty' <<<"$pj" 2>/dev/null)
+  base=$(jq -r '.baseRefName // empty' <<<"$pj" 2>/dev/null); base="${base:-$INTEGRATION_BRANCH}"
+  [ -n "$n" ] && [ -n "$head" ] || return 0
+  fails=$(pr_red_failed "$pj" "${3-approval}" "${4:-[]}" "${5:-[]}") && [ -n "$fails" ] || return 0
+  c="$REPAIR_BASE_CACHE/$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '_')"; mkdir -p "$c" 2>/dev/null || return 0
+  while IFS=$'\t' read -r name rid; do
+    [ -n "$name" ] || continue
+    names="$names${names:+, }$name"; [ -z "$rid" ] || case " $rids " in *" $rid "*) ;; *) rids="$rids${rids:+ }$rid" ;; esac
+    r=$(_base_latest_done "$base" "$name" "$c") && [ -n "$r" ] || { unread=1; continue; }
+    jq -r '.conclusion // ""' <<<"$r" 2>/dev/null | grep -qE '^(FAILURE|ERROR|TIMED_OUT)$' || notred="$notred${notred:+, }$name"
+  done <<<"$fails"
+  if [ -z "$notred" ] && [ -z "$unread" ]; then
+    if ! awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REPAIR_BASE_RED" 2>/dev/null; then
+      printf '%s\t%s\t%s\t%s\n' "$n" "$head" "$names" "$(date +%s)" >> "$REPAIR_BASE_RED"
+      if ! coord_shadow; then
+        printf '%s\t%s\t%s\t%s\n' - "$t" base-red "$(date +%s)" >> "$COORD_RUN_CLASSES"
+        swarm_gh api "repos/$REPO_SLUG/issues/$n/comments" -X POST -f body="Not repaired: $names failed on $base's newest completed run too, so no change here can turn it green. It waits for $base to go green; the repairs before this do not count toward a rebuild.
+$BASE_RED_MARK" >/dev/null 2>&1 || true
+      fi
+    fi
+    echo "base-red on $names — waits for $base to go green"; return 1
+  fi
+  [ -n "$notred" ] || return 0
+  # The base passes again: a head that waited on it is re-run once before it is repaired.
+  awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REPAIR_BASE_RED" 2>/dev/null || return 0
+  [ -n "$rids" ] || return 0
+  if coord_shadow; then echo "PR #$n waited on $base, which passes $notred now — would re-run its failed jobs ($rids) before any repair; no repair"; return 1; fi
+  did=$(pr_red_rerun "$n" "$head" "$rids" "$REPAIR_BASE_RERUNS" 1) || return 0
+  echo "PR #$n waited on $base, which passes $notred now — $did, its failed jobs before any repair; no repair"; return 1
+}
+
 repair_pr_red() { # <ticket> [pr-json] — 0 when its open PR is really red; else echoes why not
   local pj="${2:-}" v
   [ -n "$pj" ] || pj=$(open_pr_json "$1")
@@ -116,7 +171,12 @@ repair_pr_red() { # <ticket> [pr-json] — 0 when its open PR is really red; els
   n=$(jq -r .number <<<"$pj")
   # A ticket that keeps the critic through the release: a red verdict is a red to repair.
   cl=$(release_labels_of "$n" "$1")
-  v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json "$cl")" "$(release_critic_required "$cl")") && return 0
+  local hold nbj crit
+  hold="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"; nbj=$(release_nonblocking_json "$cl"); crit=$(release_critic_required "$cl")
+  if v=$(pr_red_verdict "$pj" "$hold" "$nbj" "$crit"); then
+    [ "${v%%$'\t'*}" = red ] || return 0
+    repair_base_red "$1" "$pj" "$hold" "$nbj" "$crit"; return
+  fi
   IFS=$'\t' read -r kind why ids <<<"$v"
   # A cancelled required check is re-run, never repaired (coordinator.rerunCancelled, 2 a head).
   if [ "$kind" = rerun ]; then

@@ -54,23 +54,42 @@ pr_red_required() { # [branch]
   printf '%s\n' "$out"
 }
 
+# _PR_RED_CHECKS_JQ — `required_checks`: the rollup of $p cut to the checks $r requires, less
+# the hold check and $nb, each by its newest run: {name, run, at, rid, state}.
+_PR_RED_CHECKS_JQ='
+    def stamp: [.completedAt, .startedAt, .createdAt] | map(select(type == "string" and . != "")) | first // "";
+    def running: ((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("^(PENDING|EXPECTED|QUEUED|IN_PROGRESS)$"));
+    def required_checks:
+      [ ($p.statusCheckRollup // [])[] | select(type == "object")
+        | {name: (.name // .context // ""), run: (if running then 1 else 0 end), at: stamp,
+           rid: ([(.detailsUrl // .targetUrl // "") | capture("/actions/runs/(?<r>[0-9]+)")? | .r] | first // ""),
+           state: (if running then "IN_PROGRESS" else (.conclusion // .state // "") end)} ]
+      | group_by(.name) | map(max_by([.run, .at]))
+      | map(select((.name | ascii_downcase) as $n
+                   | any($r[]; . == $n)
+                     and (($hold != "" and ($n | contains($hold | ascii_downcase))) or any($nb[]; . == $n) | not)));'
+
+# pr_red_failed <pr-json> [hold] [nb-json] [also-required-json] — the required checks that
+# concluded FAILURE or ERROR, by their newest run: one "name \t run-id" line each (the run id
+# may be empty). 1 when the PR or its base's rules could not be read.
+pr_red_failed() {
+  local base req more
+  base=$(jq -r '.baseRefName // empty' <<<"$1" 2>/dev/null)
+  req=$(pr_red_required "$base") || return 1
+  [ -z "${4:-}" ] || [ "$4" = "[]" ] || { more=$(jq -c --argjson a "$4" '. + ($a | map(strings | ascii_downcase)) | unique' <<<"$req" 2>/dev/null) && req="$more"; }
+  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$1" || return 1
+  jq -rn --argjson p "$1" --argjson r "$req" --arg hold "${2-approval}" --argjson nb "$(jq -c 'if type == "array" then . else [] end' <<<"${3:-[]}" 2>/dev/null || echo '[]')" \
+    "$_PR_RED_CHECKS_JQ"'required_checks | map(select(.state | test("^(FAILURE|ERROR)$")))[] | "\(.name)\t\(.rid)"' 2>/dev/null
+}
+
 pr_red_classify() { # <pr-json> <required-json> [hold] [nb-json]
   local pr="$1" req="$2" hold="${3-approval}" nb="${4:-[]}" out
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$pr" || { printf 'unread\tthe PR could not be read\n'; return 1; }
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$req" || { printf 'unread\tthe required checks could not be read\n'; return 1; }
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$nb" || nb='[]'
-  out=$(jq -rn --argjson p "$pr" --argjson r "$req" --arg hold "$hold" --argjson nb "$nb" '
+  out=$(jq -rn --argjson p "$pr" --argjson r "$req" --arg hold "$hold" --argjson nb "$nb" "$_PR_RED_CHECKS_JQ"'
     def names: map(.name) | unique | join(", ");
-    def stamp: [.completedAt, .startedAt, .createdAt] | map(select(type == "string" and . != "")) | first // "";
-    def running: ((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("^(PENDING|EXPECTED|QUEUED|IN_PROGRESS)$"));
-    [ ($p.statusCheckRollup // [])[] | select(type == "object")
-      | {name: (.name // .context // ""), run: (if running then 1 else 0 end), at: stamp,
-         rid: ([(.detailsUrl // .targetUrl // "") | capture("/actions/runs/(?<r>[0-9]+)")? | .r] | first // ""),
-         state: (if running then "IN_PROGRESS" else (.conclusion // .state // "") end)} ]
-    | group_by(.name) | map(max_by([.run, .at]))
-    | map(select((.name | ascii_downcase) as $n
-                 | any($r[]; . == $n)
-                   and (($hold != "" and ($n | contains($hold | ascii_downcase))) or any($nb[]; . == $n) | not))) as $c
+    required_checks as $c
     | ($c | map(select(.state | test("^(FAILURE|ERROR)$")))) as $failed
     | ($c | map(select(.state == "IN_PROGRESS"))) as $running
     | ($c | map(select(.state | test("^(CANCELLED|TIMED_OUT|STARTUP_FAILURE|STALE)$")))) as $cancelled
