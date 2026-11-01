@@ -52,6 +52,24 @@ t allow "$S/wt"   'git push --dry-run origin HEAD:uat'
 t allow "$S/main" 'git push origin HEAD:uat'
 t allow "$S/main" "cd $S/wt && git status && cd $S/main && git push origin HEAD:uat"
 t allow "$S/wt"   'git status'
+
+# The command the shell runs, not the first word typed: leading VAR=value settings,
+# an `env` wrapper and a path to git are the same push.
+t deny  "$S/wt"   'ALLOW_TRUNK_PUSH=uat git push origin HEAD:refs/heads/uat'
+t deny  "$S/wt"   'A=1 B="two words" git push origin HEAD:develop'
+t deny  "$S/wt"   'env ALLOW_TRUNK_PUSH=uat git push origin HEAD:uat'
+t deny  "$S/wt"   'env -u GIT_DIR X=1 git push origin HEAD:main'
+t deny  "$S/wt"   'command /usr/bin/git push origin HEAD:uat'
+t deny  "$S/main" "cd $S/wt && ALLOW_TRUNK_PUSH=uat git push origin HEAD:uat"
+t deny  "$S/main" "ALLOW_TRUNK_PUSH=uat git -C $S/wt push origin HEAD:uat"
+t allow "$S/wt"   'ALLOW_TRUNK_PUSH=uat git push origin HEAD:feature/x'
+# A long command is judged whole: a pipe into grep -q under pipefail once exited early.
+long=$(i=0; while [ "$i" -lt 2000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
+t deny  "$S/wt"   "git push origin HEAD:uat
+$long"
+t allow "$S/wt"   'env X=1 git push --dry-run origin HEAD:uat'
+t allow "$S/wt"   'X=1 echo git push origin HEAD:uat'
+t allow "$S/wt"   'echo "X=1 git push origin HEAD:uat"'
 t allow "$S/wt"   'echo "git push origin HEAD:uat"'
 
 # A worktree on a protected branch pushing with no refspec pushes that branch.

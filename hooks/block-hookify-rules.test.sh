@@ -21,6 +21,18 @@ t deny 'git add .'
 t deny 'npm install lodash'
 t deny 'gh pr create --base develop --title "x"'
 t deny "git worktree add /tmp/${BRANCH_PREFIX}9999-x -b ${BRANCH_PREFIX}9999/x origin/develop"
+echo "--- leading VAR=value settings and an env wrapper are the same command ---"
+t deny 'GIT_TRACE=1 git add -A'
+t deny 'cd /tmp/x && X=1 git -C /x reset --hard'
+t deny 'env X=1 git commit --no-verify -m x'
+t deny 'A="two words" git commit -am x'
+t deny 'GH_TOKEN=x gh pr create --base develop --title "x"'
+t allow 'X=1 git add apps/web/src/x.tsx'
+t allow 'echo X=1 git add -A'
+echo "--- a long command is judged whole ---"
+long=$(i=0; while [ "$i" -lt 2000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
+t deny "git add -A
+$long"
 echo "--- a heredoc BODY is data, not shell ---"
 # Writing this ticket's own PR body was DENIED, because a markdown table row
 # opens with a literal pipe and the separator class reads one as a command

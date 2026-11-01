@@ -12,6 +12,8 @@
 # org. Reads stay allowed. Shared by the PreToolUse hook (prose runs) and the driver
 # step's gh shim, so the two cannot disagree.
 
+. "$(dirname "${BASH_SOURCE[0]}")/command-words.sh"
+
 _rsw_settings_path() { # <normalised api path>
   printf '%s' "$1" | grep -qE '^orgs/|^repos/[^/]+/[^/]+/?$|^repos/[^/]+/[^/]+/(rulesets|rules|branches/.+/protection|actions/permissions|actions/secrets|actions/variables|dependabot/secrets|collaborators|hooks|environments|keys|teams|topics|pages|transfer|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting)(/|$)'
 }
@@ -19,9 +21,9 @@ _rsw_settings_path() { # <normalised api path>
 # repo_settings_write <command text> — 0 when it writes repository settings.
 repo_settings_write() {
   local s="$1" toks t i n method="" path="" fields=0 sub2
-  # The command word must be gh itself (after any VAR=x prefixes): the same words
-  # quoted inside an echo or a brief are not a call.
-  s=$(printf '%s' "$s" | sed -E 's/^[[:space:]]*(\(|\$\(|`)?[[:space:]]*//; s/^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//; s/^(command|exec|env)[[:space:]]+//')
+  # The command word must be gh itself, after any VAR=value settings or env wrapper
+  # (lib/command-words.sh): the same words quoted inside an echo or a brief are not a call.
+  s=$(command_text "$s") || return 1
   printf '%s' "$s" | grep -qE '^([^[:space:]]*/)?gh[[:space:]]' || return 1
   read -r -a toks <<<"$(printf '%s' "$s" | tr -d "\"'")"
   n=${#toks[@]}
