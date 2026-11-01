@@ -7,7 +7,8 @@
 #   coordinator-queue.sh list              the queue in the order it runs
 #   coordinator-queue.sh in-scope <n>      exit 0 when ticket n is under any recorded scope
 #   coordinator-queue.sh add <n> [--class repair|approved-merge|new] [--note TEXT] [--front|--first]
-#   coordinator-queue.sh set-class <n> repair|approved-merge|new   rewrite one entry's class, all else kept
+#   coordinator-queue.sh set-class <n> repair|approved-merge|new [--note TEXT]   rewrite one entry's class
+#                                          (and, with --note, its note; "" clears it), all else kept
 #   coordinator-queue.sh remove <n>
 #
 # A scope resolves the way /agent-harness:work resolves one: a bare number is
@@ -274,11 +275,14 @@ add() {
   echo "queued #$n as $cls"
 }
 
-set_class() { # <n> <class>
+set_class() { # <n> <class> [--note TEXT]
   case "${1:-}" in ''|*[!0-9]*) die "set-class needs a ticket number" ;; esac
   case "${2:-}" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
+  local setnote=false note=""
+  case "${3:-}" in '') ;; --note) [ $# -ge 4 ] || die "--note needs a value"; setnote=true; note="$4" ;; *) die "unknown flag $3" ;; esac
   current | jq -e --argjson n "$1" 'any(.tickets[]?; .n == $n)' >/dev/null 2>&1 || die "#$1 is not queued"
-  current | jq --argjson n "$1" --arg c "$2" '.tickets = ((.tickets // []) | map(if .n == $n then .class = $c else . end))' | write
+  current | jq --argjson n "$1" --arg c "$2" --argjson sn "$setnote" --arg note "$note" \
+    '.tickets = ((.tickets // []) | map(if .n == $n then .class = $c | (if $sn then .note = $note else . end) else . end))' | write
   echo "#$1 is now $2"
 }
 

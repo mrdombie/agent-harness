@@ -317,6 +317,18 @@ want "an unknown class is refused"         "2" "$rc"
 bash "$Q" remove 777 >/dev/null
 want "removed"                             "" "$(jq -r '.tickets[] | select(.n==777) | .n' "$QF")"
 
+echo "--- set-class rewrites the class, and with --note the note; nothing else ---"
+bash "$Q" add 778 --class repair --first --note "REPAIR on PR #9: fix it." >/dev/null
+bash "$Q" set-class 778 approved-merge >/dev/null
+want "the class is rewritten"              "approved-merge" "$(jq -r '.tickets[] | select(.n==778) | .class' "$QF")"
+want "  the note kept without --note"      "REPAIR on PR #9: fix it." "$(jq -r '.tickets[] | select(.n==778) | .note' "$QF")"
+bash "$Q" set-class 778 new --note "" >/dev/null
+want "--note \"\" clears it"                "new:" "$(jq -r '.tickets[] | select(.n==778) | "\(.class):\(.note)"' "$QF")"
+want "  and the rest is kept"              "true:true" "$(jq -r '.tickets[] | select(.n==778) | "\(.pinned):\(.front)"' "$QF")"
+out=$(bash "$Q" set-class 778 new --bogus 2>&1); rc=$?
+want "an unknown flag is refused"          "2" "$rc"
+bash "$Q" remove 778 >/dev/null
+
 echo "--- a follow-up ranks by its priority, after every other ticket there, never on top (owner call 2026-10-23) ---"
 rm -f "$QF"
 fix_issue 801 OPEN "P0,type:feature,status:ready"

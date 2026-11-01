@@ -125,6 +125,31 @@ repair_pr_red() { # <ticket> [pr-json] — 0 when its open PR is really red; els
   return 1
 }
 
+# A HEALING ROW WHOSE PR IS GONE IS NEW WORK AGAIN. repair and approved-merge are set when a
+# PR exists, by many hands (the finish pass, the merge lane, keep-fresh, base-wait, the judge,
+# the PM), and nothing cleared them: 30 ready tickets sat queued as repair with no open PR,
+# skipped "nothing to repair" on every tick, one 822 times in two days. Only a fresh read can
+# say the PR is gone. The dead PR's note goes with it: a REPAIR brief re-seeds as a repair.
+heal_pr_gone() { # <ticket> <class> — 0 when the row is new work now (in shadow, would be); says so
+  local t="$1" cls="$2" st
+  coord_healing_class "$cls" || return 1
+  [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ] || return 1
+  [ -z "$(open_pr_json "$t")" ] || return 1
+  if declare -F coord_issue_meta >/dev/null && st=$(coord_issue_meta "$t") && [ -n "$st" ]; then st=${st%% *}
+  else st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null) || return 1; fi
+  if [ "$st" != OPEN ]; then
+    [ -n "$st" ] || return 1
+    coord_shadow && { say "#$t ($cls): $st with no open PR — would leave the queue"; return 1; }
+    bash "$QUEUE" remove "$t" >/dev/null 2>&1 && say "#$t ($cls): $st with no open PR — left the queue"
+    return 1
+  fi
+  coord_act_log reclass "$t" "$cls -> new: no open PR"
+  if coord_shadow; then say "#$t ($cls): has no open PR — would go back to new work"; return 0; fi
+  bash "$QUEUE" set-class "$t" new --note "" >/dev/null 2>&1 \
+    || { say "#$t ($cls): has no open PR, and its queue entry could not be rewritten as new"; return 1; }
+  say "#$t ($cls): has no open PR — back to new work"
+}
+
 repair_record() { REPAIR_MARK_PJ="${2:-}" coord_record_class "$1" repair; }   # [pr-json]; coord_record_class marks the PR
 
 repair_gate() { # <ticket> [pr-json]
