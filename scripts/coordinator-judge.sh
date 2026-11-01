@@ -34,7 +34,7 @@ running() {
   printf '%s' "$n"
 }
 
-brief() { # <event json>
+brief() { # <event json> <event id>
   cat "$RULES"
   printf '\n## The event\n\n```json\n%s\n```\n' "$1"
   printf '\n## The queue (run order: ticket, class, note)\n\n```\n'
@@ -42,6 +42,7 @@ brief() { # <event json>
   printf '```\n\nScope (a ticket under any one of these is in scope): %s\n' \
     "$(jq -r 'if (.labels | type) == "array" and (.labels | length) > 0 then .labels | join(", ") else (.label // "none") end' "$COORD_QUEUE" 2>/dev/null || echo none)"
   printf '\nState directory: %s\nKIT_ROOT: %s\nRepo: %s\n' "$COORD_DIR" "$KIT_ROOT" "$REPO_SLUG"
+  printf 'PM answer file: %s\n' "$JDIR/$(safe_id "$2").pm-answer.json"
 }
 
 safe_id() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
@@ -49,9 +50,25 @@ safe_id() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 # Detached, so the judge outlives a tick that launchd reaps when it exits.
 launch() { # <id> <event json>
   local safe; safe=$(safe_id "$1")
-  brief "$2" > "$JDIR/$safe.brief"
+  brief "$2" "$1" > "$JDIR/$safe.brief"
   bash "$KIT_ROOT/swarm/detach.sh" bash "$SELF_DIR/coordinator-judge.sh" --run "$1" > /dev/null 2>&1 &
   printf '%s\n' "$!" > "$JDIR/$safe.pid"
+}
+
+# A PM ANSWER THE JUDGE REACHED IS CARRIED OUT HERE, never left as a log line for the PM to
+# do by hand (2026-11-01: a park waited 15 minutes on a split the judge had already decided).
+pm_answer() { # <id> <safe>
+  local f="$JDIR/$2.pm-answer.json" t out rc
+  [ -f "$f" ] || return 0
+  t=$(jq -r --arg id "$1" 'select(.id == $id) | .ticket // ""' "$COORD_EVENTS" 2>/dev/null | tail -n 1)
+  out=$(bash "$SELF_DIR/pm-answer.sh" "$f" --event-ticket "${t:-none}" 2>&1); rc=$?
+  out=$(printf '%s' "$out" | tr '\n\t' '  ')
+  case $rc in
+    0) printf '%s\t%s\tPM answer carried out\t%s\n' "$(swarm_stamp)" "$1" "$out" ;;
+    3) printf '%s\t%s\tPM answer refused, nothing touched\t%s\n' "$(swarm_stamp)" "$1" "$out" ;;
+    *) printf '%s\t%s\tPM answer not carried out\t%s\n' "$(swarm_stamp)" "$1" "$out" ;;
+  esac >> "$COORD_DIR/judgements.log"
+  coord_act_log pm-answer "$1" "exit $rc: $out"
 }
 
 run_one() { # <id> — the judge itself, in the foreground of its own session
@@ -76,6 +93,8 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
   # A judge the wall stopped decided nothing: its event waits for the next tick after the reset.
   if swarm_usage_log_limited "$JDIR/$safe.log" || swarm_login_log_lost "$JDIR/$safe.log"; then
     grep -vxF -- "$id" "$JUDGED" > "$JUDGED.$$" 2>/dev/null; mv -f "$JUDGED.$$" "$JUDGED"
+  else
+    pm_answer "$id" "$safe"
   fi
   printf '{"id":"%s","exit_code":%d,"ended_at":"%s"}\n' "$id" "$code" "$(swarm_stamp)" > "$JDIR/$safe.ended"
   rm -f "$JDIR/$safe.pid"
