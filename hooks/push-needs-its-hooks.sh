@@ -12,12 +12,17 @@
 # The repo is the one the push runs in: `git -C <dir>`, else the last `cd <dir>`
 # earlier in the same command, else the tool call's cwd.
 #
+# The push is found the way the shell runs it (hooks/lib/command-words.sh): leading
+# VAR=value settings and an env/command wrapper do not hide it.
+#
 # NOT refused: a feature-branch push, --dry-run, and any repo with no core.hooksPath.
 set -uo pipefail
+. "$(dirname "$0")/lib/command-words.sh"
 payload=$(cat)
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -z "$cmd" ] && exit 0
-printf '%s' "$cmd" | grep -qE '(^|[[:space:]])push([[:space:]]|$)' || exit 0
+# A here-string, not a pipe: under pipefail `printf | grep -q` fails on a long command.
+grep -qE '(^|[[:space:]])push([[:space:]]|$)' <<<"$cmd" || exit 0
 base=$(printf '%s' "$payload" | jq -r '.cwd // ""' 2>/dev/null)
 [ -n "$base" ] && [ -d "$base" ] || base=$PWD
 
@@ -36,13 +41,14 @@ deny() { # <repo dir> <branch> <hooks dir>
 
 dir=$base
 while IFS= read -r seg; do
-  read -ra w <<<"$seg" || continue
-  [ "${#w[@]}" -gt 0 ] || continue
+  case "$seg" in *git* | *cd*) ;; *) continue ;; esac
+  command_words "$seg" || continue
+  w=("${CMD_WORDS[@]}")
   if [ "${w[0]}" = cd ] && [ -n "${w[1]:-}" ]; then
     case "${w[1]}" in /*) dir=${w[1]} ;; "~"*) dir="$HOME${w[1]#\~}" ;; *) dir="$dir/${w[1]}" ;; esac
     continue
   fi
-  [ "${w[0]}" = git ] || continue
+  command_is git || continue
   # git's own options before the subcommand; -C moves the repo.
   repo=$dir; i=1
   while [ "$i" -lt "${#w[@]}" ]; do
@@ -86,5 +92,5 @@ while IFS= read -r seg; do
   for d in "${dests[@]}"; do
     case " $PROTECTED " in *" $d "*) [ -n "$d" ] && deny "$repo" "$d" "$hooks" ;; esac
   done
-done < <(printf '%s\n' "$cmd" | sed -E 's/(&&|\|\||;|\|)/\n/g')
+done < <(cmd_segments "$cmd")
 exit 0

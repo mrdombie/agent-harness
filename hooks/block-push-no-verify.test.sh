@@ -12,4 +12,13 @@ t allow 'git commit --no-verify -m x; git push'
 t allow 'git push -n origin x'
 t allow 'git push origin x'
 t allow 'echo "never git push --no-verify" > notes.md'
+# Leading VAR=value settings and an `env` wrapper are the same push.
+t deny  'ALLOW_TRUNK_PUSH=uat git push --no-verify origin HEAD:uat'
+t deny  'A="two words" git push --no-verify'
+t deny  'env X=1 git -C /tmp/x push --no-verify'
+t deny  'env -u GIT_DIR git push --no-verify'
+t deny  'cd /tmp && X=1 command git push --no-verify'
+t allow 'X=1 git commit --no-verify -m x; X=1 git push'
+t allow 'X=1 echo git push --no-verify'
+t allow 'git log --grep="git push --no-verify"'
 suite_end "$fail"

@@ -73,8 +73,10 @@ strip_heredocs() {
   '
 }
 cmd_code=$(printf '%s\n' "$cmd" | strip_heredocs)
-has(){ printf '%s' "$cmd_code" | grep -qE "$1"; }
-hasF(){ printf '%s' "$cmd" | grep -qF -- "$1"; }
+# Here-strings, not pipes: under pipefail `printf | grep -q` on a long command fails
+# when grep matches early and stops reading, and a match read as "no match" allowed it.
+has(){ grep -qE "$1" <<<"$cmd_code"; }
+hasF(){ grep -qF -- "$1" <<<"$cmd"; }
 deny(){ jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 S='[[:space:]]'
 # End of a command word: whitespace, end of text, or the quote that CLOSES a
@@ -84,7 +86,10 @@ EOW="($S|\$|['\"])"
 # A command starts at the text's start, after a separator — OR inside a shell
 # wrapper. `bash -c "git reset --hard"` put the command where a start-of-line
 # anchor could not see it, and it was allowed by every copy of this hook.
-START="(^|[;&|]$S*|&&$S*|(ba|z|da)?sh$S+-c$S*['\"]?)"
+# Then any VAR=value settings or env/command wrapper before the command word
+# (lib/command-words.sh): `X=1 git add -A` runs git, and was allowed by every rule here.
+. "$(dirname "$0")/lib/command-words.sh"
+START="(^|[;&|]$S*|&&$S*|(ba|z|da)?sh$S+-c$S*['\"]?)$CMD_PREFIX_ERE"
 # `git` plus its GLOBAL OPTIONS, so a rule can anchor on the SUBCOMMAND. Every
 # destructive rule below required the subcommand to sit immediately after `git `,
 # and `git -C <dir>` is the house style in this estate — so, measured with fake

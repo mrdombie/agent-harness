@@ -18,16 +18,28 @@ payload=$(cat)
 cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -z "$cmd" ] && exit 0
 
-# Only care about a push. Handles `git -C <dir> push`, `git push origin main`, etc.
+# Only care about a push. Handles `git -C <dir> push`, `git push origin main`, and
+# a push behind VAR=value settings or an env wrapper (hooks/lib/command-words.sh).
 # Judged PER COMMAND SEGMENT (split on ; && || |): on 2026-09-02 a
 # `git merge --no-verify … && git push` line was denied because the flag sat on
 # the merge and the push sat later in the same text. The flag has to be on the
-# push itself.
+# push itself, and git has to be the command (not words inside an echo).
+. "$(dirname "$0")/lib/command-words.sh"
 hit=0
 while IFS= read -r seg; do
-  printf '%s' "$seg" | grep -qE '(^|\s)git(\s+-[A-Za-z-]+(\s+\S+)?)*\s+push(\s|$)' || continue
-  printf '%s' "$seg" | grep -qE '(^|\s)--no-verify(\s|$)' && { hit=1; break; }
-done < <(printf '%s\n' "$cmd" | sed -E 's/(&&|\|\||;|\|)/\n/g')
+  case "$seg" in *git*push*--no-verify*) ;; *) continue ;; esac
+  command_words "$seg" && command_is git || continue
+  i=1; n=${#CMD_WORDS[@]}
+  while [ "$i" -lt "$n" ]; do
+    case "${CMD_WORDS[$i]}" in
+      -C | -c | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
+      -*) i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  [ "${CMD_WORDS[$i]:-}" = push ] || continue
+  for a in "${CMD_WORDS[@]:$((i + 1))}"; do [ "$a" = --no-verify ] && { hit=1; break 2; }; done
+done < <(cmd_segments "$cmd")
 [ "$hit" = "1" ] || exit 0
 
 jq -nc '{
