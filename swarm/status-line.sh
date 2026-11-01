@@ -200,7 +200,7 @@ coordinator_line() {
   iv=$(num "${SWARM_EVERY_COORDINATOR:-}" 300)
   limit=$(num "$limit" $(( iv * 6 )))
   pid=$(cat "$d/tick.lock/pid" 2>/dev/null)
-  case "$pid" in ''|*[!0-9]*) ;; *) kill -0 "$pid" 2>/dev/null && alive=1 ;; esac
+  case "$pid" in ''|*[!0-9]*) ;; *) pid_file_alive "$d/tick.lock/pid" "$pid" && alive=1 ;; esac
   [ $(( $(now) - last_at )) -le "$limit" ] && alive=1
   if [ "$alive" = 0 ]; then printf 'coordinator silent since %s' "$(hm "$last_at")"; return 0; fi
   case "$n" in ''|*[!0-9]*) printf 'last check %s · next %s' "$(hm "$at")" "$(hm $(( at + iv )))" ;;

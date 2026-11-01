@@ -45,7 +45,7 @@ ONCE=0; [ "${1:-}" = "--once" ] && ONCE=1
 # two live views would fight over one port.
 if [ "$ONCE" -eq 0 ] && [ -s "$PIDFILE" ]; then
   old=$(cat "$PIDFILE")
-  if [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null; then
+  if [ "$old" != "$$" ] && pid_file_alive "$PIDFILE" "$old"; then
     swarm_log "$LOG" "another supervisor ($old) is running — exiting"
     exit 0
   fi

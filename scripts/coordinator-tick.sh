@@ -205,7 +205,7 @@ for ended in "$RUNS_DIR"/*.ended; do
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
   case "$code" in
-    "${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_BASE_WAIT:-34}") ;;
+    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_BASE_WAIT:-34}") ;;
     *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
   esac
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
@@ -215,7 +215,10 @@ for ended in "$RUNS_DIR"/*.ended; do
       say "wait: #$ticket ended waiting on a human ($why) — not re-picked until that changes"
     else coord_wait_clear "$ticket"; fi
   fi
-  if limit_hit "$log"; then
+  if [ "$code" = ghost ]; then
+    # The tick ended it below: its process was long gone and its pid now names another.
+    :
+  elif limit_hit "$log"; then
     event "usage-limit:$rid" usage-limit false "$ticket" "" "run $rid stopped on the plan's usage limit"
     cut_off "$ticket" "$rid" "$log" "the plan's usage limit"
   elif swarm_login_log_lost "$log"; then
@@ -272,6 +275,14 @@ NOW=$(swarm_now)
 LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""; RUN_BEATS=""
 for rec in "$RUNS_DIR"/claim-*.json; do
   [ -f "$rec" ] || continue
+  # A run whose pid now answers for another process (macOS reuses pids) is over:
+  # it gets its .ended, so nothing still asking a bare `kill -0` counts it.
+  if swarm_record_ghost "$rec"; then
+    rid=$(basename "$rec" .json); gp=$(jq -r '.child_pid // .pid // "?"' "$rec" 2>/dev/null)
+    if coord_shadow; then say "ghost: would end $rid — its pid $gp now belongs to another process"
+    else swarm_mark_ghost "$rec"; say "ghost: ended $rid — its pid $gp now belongs to another process ($(ps -o comm= -p "$gp" 2>/dev/null | sed 's#.*/##'))"; fi
+    continue
+  fi
   swarm_record_alive "$rec" || continue
   LIVE=$((LIVE+1)); LIVE_RECS="$LIVE_RECS$rec"$'\n'
   rid=$(basename "$rec" .json)

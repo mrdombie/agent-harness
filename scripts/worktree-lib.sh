@@ -2,6 +2,8 @@
 # worktree-lib.sh — sourced by the worktree sweeper and the cache pass.
 #   wt_real <path> · wt_cwds_load [--exclude-self] · wt_occupant <real-wt> · wt_occupants <real-wt> · wt_run_holder <real-wt> · wt_live_runs · wt_can_see_processes · wt_cfg <cfg> <jq-path>
 
+type pid_is_run >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claim-proc.sh"
+
 wt_real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
 
 wt_can_see_processes() { command -v lsof >/dev/null 2>&1; }
@@ -36,7 +38,7 @@ wt_occupants() { # <real-wt> — every pid whose cwd is in it, one a line (the c
 
 # wt_run_holder <real-wt> — the id of a live run whose record names this tree (its
 # claim's worktree or the checkout it was spawned in); 1 when none does. Live: no
-# .ended beside the record and its pid answers. A run record is the one holder lsof
+# .ended beside the record and its pid is still the run's (pid_is_run). A run record is the one holder lsof
 # cannot see between two commands, and the one a branch name never carries.
 wt_run_holder() {
   local runs="${RUNS_DIR:-${STATE_DIR:+$STATE_DIR/runs}}" f id pid w
@@ -46,7 +48,7 @@ wt_run_holder() {
     id=${f##*/}; id=${id%.json}
     [ -e "$runs/$id.ended" ] && continue
     pid=$(jq -r '.pid // .child_pid // empty' "$f" 2>/dev/null)
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    [ -n "$pid" ] && pid_is_run "$pid" "$(jq -r '.started_at // empty' "$f" 2>/dev/null)" || continue
     while IFS= read -r w; do
       [ -n "$w" ] || continue
       case "$(wt_real "$w")/" in "$1"/*) printf '%s' "$id"; return 0 ;; esac
@@ -59,14 +61,14 @@ EOS
 }
 
 # wt_live_runs — the record of every live run on this host, one path a line: the
-# same liveness wt_run_holder reads (no .ended beside it, its pid answers).
+# same liveness wt_run_holder reads (no .ended beside it, its pid is still the run's).
 wt_live_runs() {
   local runs="${RUNS_DIR:-${STATE_DIR:+$STATE_DIR/runs}}" f pid
   [ -n "$runs" ] && [ -d "$runs" ] || return 0
   for f in "$runs"/*.json; do
     [ -f "$f" ] && [ ! -e "${f%.json}.ended" ] || continue
     pid=$(jq -r '.pid // .child_pid // empty' "$f" 2>/dev/null)
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$f"
+    [ -n "$pid" ] && pid_is_run "$pid" "$(jq -r '.started_at // empty' "$f" 2>/dev/null)" && printf '%s\n' "$f"
   done
   return 0
 }

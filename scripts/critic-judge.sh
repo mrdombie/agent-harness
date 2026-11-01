@@ -599,7 +599,9 @@ due() {
 # A place: <pr>.pid holds "pid head started-epoch". The run leads its own session
 # (detach.sh), so stopping its group stops the critic it started too.
 pid_of() { local p h e; read -r p h e < "$1" 2>/dev/null; printf '%s' "$p"; }
-live() { local n=0 p; for p in "$JDIR"/*.pid; do [ -f "$p" ] || continue; if kill -0 "$(pid_of "$p")" 2>/dev/null; then n=$((n+1)); else rm -f "$p"; fi; done; echo "$n"; }
+# place_alive <pr.pid> — its run answers and is the run the place recorded (claim-proc.sh, pid_born_by).
+place_alive() { local p h e; read -r p h e < "$1" 2>/dev/null; case "$e" in ''|*[!0-9]*) pid_file_alive "$1" "$p" ;; *) pid_born_by "$p" "$e" ;; esac; }
+live() { local n=0 p; for p in "$JDIR"/*.pid; do [ -f "$p" ] || continue; if place_alive "$p"; then n=$((n+1)); else rm -f "$p"; fi; done; echo "$n"; }
 
 # reap — a run past TIMEOUT_MIN is stopped and its place given back; the try counts,
 # so a PR that never finishes is left for a person after TRIES, not retried for ever.
@@ -608,7 +610,7 @@ reap() {
   for f in "$JDIR"/*.pid; do
     [ -f "$f" ] || continue
     p=""; h=""; e=""; read -r p h e < "$f" 2>/dev/null
-    kill -0 "$p" 2>/dev/null || continue
+    place_alive "$f" || continue
     # A place written before it carried its start: its file's age.
     case "$e" in ''|*[!0-9]*) e=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) ;; esac
     case "$e" in ''|*[!0-9]*) continue ;; esac
@@ -648,7 +650,7 @@ sweep() { # [--dry-run]
   slots=$(( cap - live_now ))
   while IFS=$'\t' read -r pr head; do
     [ -n "${pr:-}" ] || continue
-    [ -f "$JDIR/$pr.pid" ] && kill -0 "$(pid_of "$JDIR/$pr.pid")" 2>/dev/null && continue
+    [ -f "$JDIR/$pr.pid" ] && place_alive "$JDIR/$pr.pid" && continue
     [ "$(tried "$pr" "$head")" -lt "$TRIES" ] || { say "PR #$pr: $TRIES tries at ${head:0:9} gave no usable verdict — left for a person"; continue; }
     [ "$slots" -gt 0 ] || { say "PR #$pr owed a judgement; $live_now of $cap judge place(s) in use (most $MAXLIVE, machine room for $r more)"; continue; }
     if [ "$dry" = 1 ]; then say "would judge PR #$pr at ${head:0:9}"; slots=$((slots - 1)); continue; fi

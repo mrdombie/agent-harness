@@ -172,27 +172,10 @@ claim_record() {
   git -C "$REPO" log -1 --format=%B "$sha" 2>/dev/null | sed '/^$/d' | tail -1
 }
 
-# A pid is the run's process only if that process is no younger than the run:
-# macOS reissues pids from a wrapping counter, so a bare `kill -0` on a long-dead
-# run's pid can answer for an unrelated process started since. Judged by elapsed
-# time, not the recorded start string — `ps -o lstart` follows the locale, so the
-# same process prints differently under launchd and a terminal. Anything
-# unreadable counts as the run: alive is the safe direction.
-pid_is() { # <pid> <run started_at>
-  claim_pid_alive "${1:-}" || return 1
-  local et d=0 h=0 m=0 s=0 born ran
-  et=$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')
-  ran=$(swarm_epoch "${2:-}" 2>/dev/null) || return 0
-  case "$et" in
-    *-*:*:*) d=${et%%-*}; et=${et#*-}; h=${et%%:*}; et=${et#*:}; m=${et%%:*}; s=${et#*:} ;;
-    *:*:*)   h=${et%%:*}; et=${et#*:}; m=${et%%:*}; s=${et#*:} ;;
-    *:*)     m=${et%%:*}; s=${et#*:} ;;
-    *) return 0 ;;
-  esac
-  case "$d$h$m$s$ran" in *[!0-9]*) return 0 ;; esac
-  born=$(( $(date +%s) - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s ))
-  [ "$born" -le $(( ran + 120 )) ]
-}
+# A pid is the run's process only if that process is no younger than the run
+# (claim-proc.sh, pid_is_run): macOS reuses pids, so a bare `kill -0` on a
+# long-dead run's pid can answer for an unrelated process started since.
+pid_is() { pid_is_run "$@"; } # <pid> <run started_at>
 
 # The spawned run that holds this claim: the run_id the record names, or else the
 # newest run for the ticket that started by the claim's time and had not ended
@@ -239,6 +222,8 @@ holder_alive() {
   # The post-exit reconcile runs inside the wrapper that IS the recorded session,
   # so that pid is alive while being judged; spawn-claim names it as exited.
   [ -n "${CLAIM_EXITED_PID:-}" ] && [ "$2" = "$CLAIM_EXITED_PID" ] && return 1
+  # Bare on purpose: an adopted claim (claim-lock.sh --claimed-at) keeps its first
+  # claimed_at under a newer pid, so claimed_at is no bound on when the pid started.
   claim_pid_alive "$2"
 }
 

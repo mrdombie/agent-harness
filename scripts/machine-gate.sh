@@ -42,6 +42,7 @@
 
 _mg_self="${BASH_SOURCE[0]}"
 . "$(cd "$(dirname "$_mg_self")/../swarm" && pwd)/load.sh" || return 1 2>/dev/null || exit 1
+type pid_file_alive >/dev/null 2>&1 || . "$(cd "$(dirname "$_mg_self")" && pwd)/claim-proc.sh" || return 1 2>/dev/null || exit 1
 unset _mg_self
 
 MG_BUSY=75
@@ -79,7 +80,7 @@ machine_gate_init() {
 # driver) is the same $$, so the slot dies with it either way.
 _mg_owner() { printf '%s' "${MACHINE_GATE_OWNER_PID:-$$}"; }
 
-_mg_alive() { [ -n "${1:-}" ] && [ "$1" -gt 0 ] 2>/dev/null && kill -0 "$1" 2>/dev/null; }
+_mg_alive() { [ -n "${1:-}" ] && [ "$1" -gt 0 ] 2>/dev/null && pid_file_alive "$2" "$1"; } # <pid> <its pid file>
 
 # _mg_waited <start-epoch> <max> — 0 while there is still time to wait.
 _mg_time_left() { [ "${2:-0}" -le 0 ] && return 0; [ $(( $(date +%s) - $1 )) -lt "$2" ]; }
@@ -134,7 +135,7 @@ _mg_age() { echo $(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || stat -f %m "
 # (mkdir and the pid write are two steps; a slot seconds old is mid-take).
 _mg_slot_dead() { # <slot-dir>
   local pid; pid=$(cat "$1/pid" 2>/dev/null)
-  if [ -z "$pid" ]; then [ "$(_mg_age "$1")" -gt 10 ]; else ! _mg_alive "$pid"; fi
+  if [ -z "$pid" ]; then [ "$(_mg_age "$1")" -gt 10 ]; else ! _mg_alive "$pid" "$1/pid"; fi
 }
 
 # Take one of the machine's gate slots. Sets MG_SLOT. 0 when held, 75 when --max ran out, 76 when moot.

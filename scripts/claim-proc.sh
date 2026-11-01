@@ -32,6 +32,55 @@ claim_pid_alive() { # <pid>
   ps -W 2>/dev/null | awk -v p="$1" 'NR > 1 && $4 == p { f = 1 } END { exit !f }'
 }
 
+# ---- is this pid still the process that was recorded? ------------------------
+# A pid is identity only together with when its process started. macOS hands
+# pids out from a wrapping counter, so a record whose process died long ago can
+# name a stranger, and `kill -0` answers for it: a run closed 18 days earlier
+# held a build place because its pid had become siriactionsd. A reused pid always
+# belongs to a process YOUNGER than the record, so the test is one-sided: the
+# process must have started no later than the record's moment + PID_BORN_SLACK.
+# The start is read from `ps -o etime=` (the same on BSD and procps, and free of
+# the locale `lstart` prints in). Anything unreadable counts as the process:
+# alive is the safe direction for every caller (a place counted, a lock held).
+_CLAIM_PROC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
+
+proc_born() { # <pid> — the epoch its process started; 1 when unreadable
+  local et d=0 h=0 m=0 s=0
+  et=$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')
+  case "$et" in
+    *-*:*:*) d=${et%%-*}; et=${et#*-}; h=${et%%:*}; et=${et#*:}; m=${et%%:*}; s=${et#*:} ;;
+    *:*:*)   h=${et%%:*}; et=${et#*:}; m=${et%%:*}; s=${et#*:} ;;
+    *:*)     m=${et%%:*}; s=${et#*:} ;;
+    *) return 1 ;;
+  esac
+  case "$d$h$m$s" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' $(( $(date +%s) - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s ))
+}
+
+pid_born_by() { # <pid> <epoch> — it answers, and its process started by <epoch> (+ slack)
+  claim_pid_alive "${1:-}" || return 1
+  local ref="${2:-}" born
+  case "$ref" in ''|*[!0-9]*|0) return 0 ;; esac
+  born=$(proc_born "$1") || return 0
+  [ "$born" -le $(( ref + ${PID_BORN_SLACK:-120} )) ]
+}
+
+pid_is_run() { # <pid> <ISO time the record was made, e.g. a run's started_at>
+  local ref=""
+  if [ -n "${2:-}" ]; then
+    type swarm_epoch >/dev/null 2>&1 || . "$_CLAIM_PROC_DIR/../swarm/time.sh" 2>/dev/null
+    type swarm_epoch >/dev/null 2>&1 && ref=$(swarm_epoch "$2")
+  fi
+  pid_born_by "${1:-}" "$ref"
+}
+
+pid_file_alive() { # <pid-file> [pid] — the pid it holds (its first word) answers and started by the file's writing
+  local p="${2:-}" ref
+  [ -n "$p" ] || { read -r p _ < "$1"; } 2>/dev/null
+  ref=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)
+  pid_born_by "$p" "$ref"
+}
+
 # One row of MSYS `ps -p <pid>`: "<pid> <ppid> <pgid> <winpid> …", after the
 # status letter MSYS sometimes prints in front of it.
 _claim_msys_ps_field() { # <pid> <field#>

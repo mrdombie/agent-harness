@@ -274,7 +274,7 @@ win_write_wrapper() {
 
 win_supervisor_pid() {
   local p; p=$(cat "$SWARM_DIR/supervisor.pid" 2>/dev/null)
-  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && printf '%s' "$p"
+  [ -n "$p" ] && pid_file_alive "$SWARM_DIR/supervisor.pid" "$p" && printf '%s' "$p"
 }
 
 # Stops the supervisor and its live view — never the task, whose end would take

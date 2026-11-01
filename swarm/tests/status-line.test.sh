@@ -452,11 +452,11 @@ python3 - "$K4/swarm/status-line.sh" <<'PY4' || bad "plant did not land"
 import sys
 p = sys.argv[1]; s = open(p).read()
 lines = s.split("\n")
-keep = [l for l in lines if 'kill -0 "$pid"' not in l]
+keep = [l for l in lines if 'pid_file_alive "$d/tick.lock/pid"' not in l]
 if len(keep) != len(lines) - 1: sys.exit(1)
 open(p, "w").write("\n".join(keep))
 PY4
-grep -q 'kill -0 "$pid"' "$K4/swarm/status-line.sh" && bad "plant: the lock read is still in the copy"
+grep -q 'pid_file_alive "$d/tick.lock/pid"' "$K4/swarm/status-line.sh" && bad "plant: the lock read is still in the copy"
 history 2500; mkdir -p "$LOCK"; printf '%s\n' "$$" > "$LOCK/pid"
 out=$(down_print "$K4/swarm/status-line.sh")
 want_in "planted: the lock ignored → a running tick reads silent → red" "^coordinator silent since" "$out"

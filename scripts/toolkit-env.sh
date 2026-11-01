@@ -350,7 +350,7 @@ toolkit_tools() {
 # it started with. REFUSES rather than handing back a tree it cannot vouch for; a
 # silent fallback to the invoking tree IS the defect.
 # _kit_spawn_held <dir> <cwds> — 0 when a process's cwd (one per line in <cwds>) is
-# inside <dir>, or a live run's record (no .ended, its pid answering) names it.
+# inside <dir>, or a live run's record (no .ended, its pid still the run's) names it.
 _kit_spawn_held() {
   local real runs f id pid
   [ -z "${ZSH_VERSION:-}" ] || setopt localoptions nullglob
@@ -363,7 +363,8 @@ _kit_spawn_held() {
     id=${f##*/}; id=${id%.json}
     [ -e "$runs/$id.ended" ] && continue
     pid=$(jq -r '.pid // .child_pid // empty' "$f" 2>/dev/null)
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    type pid_is_run >/dev/null 2>&1 || . "$KIT_ROOT/scripts/claim-proc.sh" || return 0
+    [ -n "$pid" ] && pid_is_run "$pid" "$(jq -r '.started_at // empty' "$f" 2>/dev/null)" || continue
     case "$(jq -r '.spawn_root // empty' "$f" 2>/dev/null)" in "$1"|"$real") return 0 ;; esac
   done
   return 1

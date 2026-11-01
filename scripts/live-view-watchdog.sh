@@ -41,13 +41,13 @@ lv_restart() { # <why> — 0 once a restart was asked for
   fi
   pid=$(cat "$LV_PID_FILE" 2>/dev/null)
   case "$pid" in ''|*[!0-9]*) lv_say "live-view: $why — no pid recorded in $LV_PID_FILE, nothing to restart"; return 1 ;; esac
-  if kill -0 "$pid" 2>/dev/null; then
+  if pid_file_alive "$LV_PID_FILE" "$pid"; then
     kill "$pid" 2>/dev/null
     for i in 1 2 3 4 5 6; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
   fi
   local sup; sup=$(cat "$SWARM_DIR/supervisor.pid" 2>/dev/null)
-  if [ -n "$sup" ] && kill -0 "$sup" 2>/dev/null; then
+  if [ -n "$sup" ] && pid_file_alive "$SWARM_DIR/supervisor.pid" "$sup"; then
     lv_say "live-view: $why — killed $pid; the supervisor ($sup) starts it again"
     return 0
   fi
@@ -78,7 +78,7 @@ live_view_stale() {
   [ -n "$cur" ] && lv_ver_lt "$run" "$cur" || return 0
   if ! lv_on_launchd; then
     sup=$(cat "$SWARM_DIR/supervisor.pid" 2>/dev/null)
-    [ -n "$sup" ] && kill -0 "$sup" 2>/dev/null && return 0
+    [ -n "$sup" ] && pid_file_alive "$SWARM_DIR/supervisor.pid" "$sup" && return 0
   fi
   why="running $run, installed $cur"
   if [ "${COORD_SHADOW:-1}" != 0 ]; then lv_say "live-view: $why — would restart (shadow)"; return 0; fi

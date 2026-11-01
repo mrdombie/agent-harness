@@ -28,7 +28,7 @@ running() {
   local n=0 p
   for p in "$JDIR"/*.pid; do
     [ -f "$p" ] || continue
-    if kill -0 "$(cat "$p")" 2>/dev/null; then n=$((n+1)); else rm -f "$p"; fi
+    if pid_file_alive "$p"; then n=$((n+1)); else rm -f "$p"; fi
   done
   printf '%s' "$n"
 }

@@ -34,6 +34,7 @@
 _swarm_self="${BASH_SOURCE[0]}"
 . "$(cd "$(dirname "$_swarm_self")/../scripts" && pwd)/toolkit-env.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_swarm_self")" && pwd)/time.sh" || return 1 2>/dev/null || exit 1
+. "$(cd "$(dirname "$_swarm_self")/../scripts" && pwd)/claim-proc.sh" || return 1 2>/dev/null || exit 1
 unset _swarm_self
 
 # gh keeps its token in the macOS keychain, which a launchd job cannot read: the
@@ -557,15 +558,44 @@ swarm_live_count() { # <programme>
 }
 
 # ---- run records -------------------------------------------------------------
-# A run is live when it has no .ended marker AND its agent's pid still exists.
-# The marker alone is not enough: five August records had no marker and a dead
-# pid, because the wrapper was killed before it could write one, and counting
-# those as running made the launcher report eight running with three alive.
+# A run is live when it has no .ended marker AND its agent's pid is still its
+# agent: the pid answers and its process started by the record's started_at
+# (pid_is_run). The marker alone is not enough: five August records had no marker
+# and a dead pid, because the wrapper was killed before it could write one. The pid
+# alone is not enough either: macOS reuses pids, and a run closed 18 days earlier
+# held a build place because its pid had become siriactionsd.
 swarm_record_alive() { # <runs/xxx.json>
   [ -f "${1%.json}.ended" ] && return 1
   local pid
   pid=$(jq -r '.child_pid // .pid // 0' "$1" 2>/dev/null)
-  [ "${pid:-0}" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null
+  [ "${pid:-0}" -gt 0 ] 2>/dev/null || return 1
+  pid_is_run "$pid" "$(jq -r '.started_at // empty' "$1" 2>/dev/null)"
+}
+
+# swarm_record_ghost <runs/xxx.json> — 0 when a run with no .ended is gone but its
+# agent's pid answers for another process, and its wrapper is not the run either:
+# the record would otherwise look half-alive to anything still asking `kill -0`.
+swarm_record_ghost() {
+  [ -f "${1%.json}.ended" ] && return 1
+  local pid wrap at
+  pid=$(jq -r '.child_pid // .pid // 0' "$1" 2>/dev/null)
+  [ "${pid:-0}" -gt 0 ] 2>/dev/null || return 1
+  claim_pid_alive "$pid" || return 1
+  at=$(jq -r '.started_at // empty' "$1" 2>/dev/null)
+  pid_is_run "$pid" "$at" && return 1
+  wrap=$(jq -r '.pid // 0' "$1" 2>/dev/null)
+  if [ "${wrap:-0}" -gt 0 ] 2>/dev/null && [ "$wrap" != "$pid" ]; then pid_is_run "$wrap" "$at" && return 1; fi
+  return 0
+}
+
+# swarm_mark_ghost <runs/xxx.json> — ends a ghost run: .ended with exit_code "ghost".
+swarm_mark_ghost() {
+  local id pid
+  id=$(basename "$1" .json)
+  pid=$(jq -r '.child_pid // .pid // 0' "$1" 2>/dev/null)
+  case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+  printf '{"run_id":"%s","exit_code":"ghost","ended_at":"%s","ghost_pid":%s}\n' \
+    "$id" "$(swarm_iso "$(date +%s)")" "$pid" > "${1%.json}.ended"
 }
 
 swarm_ticket_live() { # <ticket> — 0 when an agent is running for it
