@@ -452,7 +452,7 @@ _driver_fix_drop_nonblocking() {
   # handed this round nothing (driver_fact_critic_findings), so it is no blocker either.
   local warn=""
   command -v release_check_nonblocking >/dev/null 2>&1 \
-    && release_check_nonblocking "$(driver_opt review.judge.context "Design critic")" && warn=1
+    && release_check_nonblocking "$(driver_opt review.judge.context "Design critic")" "$(driver_critic_labels "$t")" && warn=1
   dropped=$(jq -c --argjson g "$graded" --arg late "$late" --arg warn "$warn" '[.deferred[]? | .blockerId as $b
       | ([$g[] | select(.id == $b)] | first) as $f
       | if $f == null then (select($warn != "") | . + {grade: "a check that warns until the release"})
@@ -484,7 +484,7 @@ driver_step_fix() { # <ticket>
     driver_say "   fix: no review has run yet, so there is nothing to fix."
     return "$DRIVER_OK"
   fi
-  driver_drop_critic_findings "$review" fix || true
+  driver_drop_critic_findings "$review" fix "$t" || true
 
   # WHAT BLOCKS IS THE ROUND'S, HERE AS IN THE REVIEW. Read off the review round the
   # driver counted and the grade the review recorded, never the fixer's wording: from

@@ -43,7 +43,7 @@ ask() { # <ticket> <slug> <question>
   [ -n "$slug" ] || slug=question
   # Off until the release, the design critic is nobody's question: #12704 parked on a
   # critic-after-signoff ask the owner had already ruled out ("turn it off").
-  if release_critic_paused && printf '%s %s' "$slug" "$q" | grep -qi 'critic'; then
+  if release_critic_paused "$(release_labels_of "$t")" && printf '%s %s' "$slug" "$q" | grep -qi 'critic'; then
     echo "owner-question: not asked — $RELEASE_CRITIC_OFF. Its verdicts and findings are no question for the owner: carry on without them, and do not ask again." >&2
     return 5
   fi

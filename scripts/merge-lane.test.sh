@@ -572,6 +572,43 @@ set_pr 53 '.labels += [{name:"do-not-merge"}] | .statusCheckRollup |= map(.statu
 want "it never merges"                            "" "$(merges)"
 want_in "and leaves, saying why"                  'head #53 carries do-not-merge' "$out"
 
+echo "--- a ticket that keeps the critic through the release: its red holds the merge ---"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.keep"
+cfg '.release = {nonBlockingChecks: ["Design critic"], done: false} | .review.judge.duringReleaseLabels = ["project:keep"]'
+critic() { set_pr "$1" ".statusCheckRollup += [{__typename:\"StatusContext\", context:\"Design critic\", state:\"$2\", createdAt:\"2026-10-21T10:00:00Z\"}]"; }
+labels_are() { # <pr> <ticket> <ticket's labels-csv> — what the batched label read answers
+  jq -n --arg p "$1" --arg t "$2" --arg l "$3" '{data: {repository: {
+    ("i" + $p): {number: ($p | tonumber), state: "OPEN", title: "", labels: {nodes: []}},
+    ("i" + $t): {number: ($t | tonumber), state: "OPEN", title: "", labels: {nodes: ($l | split(",") | map({name: .}))}}}}}' > "$FIX/gh/api-graphql.json"
+}
+keep_pr() { # <critic state|-> — PR 80 on ticket 801, green on build and lint
+  fresh; fix_issue 801 OPEN "status:in-review"
+  pr 80 s80 - 1 build:SUCCESS lint:SUCCESS; compare develop s80 0
+  [ "$1" = - ] || critic 80 "$1"
+}
+keep_pr FAILURE; labels_are 80 801 project:keep
+live >/dev/null
+want "its critic red: nothing merged"              "" "$(merges)"
+want "  and a fixer is queued"                     "801" "$(fixers)"
+keep_pr PENDING; labels_are 80 801 project:keep
+live >/dev/null
+want "its verdict owed: nothing merged"            "" "$(merges)"
+want_in "  it waits for the critic by name"        'waiting for checks: Design critic' "$(cat "$C/lane.status")"
+keep_pr -; labels_are 80 801 project:keep
+live >/dev/null
+want "no critic status on the head: merged (nothing would judge it)" "80" "$(merges)"
+keep_pr FAILURE; rm -f "$FIX/gh/api-graphql.json"
+live >/dev/null
+want "its labels unreadable: nothing merged"       "" "$(merges)"
+keep_pr FAILURE; labels_are 80 801 screen:new
+live >/dev/null
+want "another ticket: its critic red merges"       "80" "$(merges)"
+cfg 'del(.review.judge.duringReleaseLabels)'
+keep_pr FAILURE; labels_are 80 801 project:keep
+live >/dev/null
+want "the key absent: merged, as today"            "80" "$(merges)"
+rm -f "$FIX/gh/api-graphql.json"; cp "$FIX/cfg.keep" "$HARNESS_CFG_PATH"
+
 echo "--- a swarm hold stops the lane acting ---"
 fresh; pr 21 s21 - 1 build:SUCCESS lint:SUCCESS; compare develop s21 0
 printf 'owner said stop\n' > "$STATE/swarm/HOLD"

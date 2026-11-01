@@ -372,7 +372,7 @@ SHIM
   fi
   # A QUESTION ABOUT THE DESIGN CRITIC WHILE IT IS OFF has one answer: carry on without
   # it. Asked once more, told so; asked again, the owner channel refuses it (exit 5).
-  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused \
+  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused "$(driver_critic_labels "$t")" \
      && jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null | grep -qi 'critic'; then
     local cq creask="$d/steps/$slot.critic-off.prompt" csid
     cq=$(jq -r '(.question // .park // "") | tostring' "$ans" 2>/dev/null)

@@ -195,6 +195,16 @@ driver_ticket_view() {
   if [ -n "$q" ]; then jq -r "$q" "$f"
   else jq -c --arg k "$fields" '($k | split(",")) as $w | with_entries(select(.key as $x | $w | index($x)))' "$f"; fi
 }
+# driver_critic_labels [ticket] — its labels, ","-joined, for the release critic switch
+# (release_critic_paused and friends); DRIVER_TICKET when none is named. Nothing, and no
+# read, unless review.judge.duringReleaseLabels lists any; a failed read keeps the critic.
+driver_critic_labels() {
+  local t="${1:-${DRIVER_TICKET:-}}" l
+  [ -n "$t" ] && declare -F release_critic_scoped >/dev/null 2>&1 && release_critic_scoped || return 0
+  l=$(driver_gh_read driver_ticket_view "$t" labels '[.labels[]?.name] | join(",")' 2>/dev/null) || l="$RELEASE_LABELS_UNREAD"
+  printf '%s' "$l"
+}
+
 # driver_ticket_snap_labels <ticket> <labels, one a line> — the copy after this run's own label write.
 driver_ticket_snap_labels() {
   local f; f=$(driver_ticket_snap_file "$1")
@@ -663,7 +673,7 @@ driver_lean_args() {
   tools=$(driver_step_tools "$step")
   # Off until the release: no step can start the design critic as a subagent either.
   local deny="" ja
-  if command -v release_critic_paused >/dev/null 2>&1 && release_critic_paused; then
+  if command -v release_critic_paused >/dev/null 2>&1 && release_critic_paused "$(driver_critic_labels)"; then
     ja=$(driver_opt review.judge.agent "agent-harness:design-critic")
     deny="Agent($ja) Task($ja)"
   fi
