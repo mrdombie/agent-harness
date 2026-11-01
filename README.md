@@ -236,6 +236,7 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | SessionStart | `standing-rules.sh` | puts `rules/standing-rules.md` in front of the session |
 | SessionStart | `precedence.sh` | one line per kit skill this repo overrides |
 | PreToolUse (Bash) | `block-push-no-verify.sh` | refuses `git push --no-verify` |
+| PreToolUse (Bash) | `push-needs-its-hooks.sh` | refuses a push to develop, uat, main, master or live when the repo's hooks dir is missing (a fresh worktree runs no pre-push) |
 | PreToolUse (Bash) | `block-hookify-rules.sh` | the git-safety rules: hand-released claims, `commit -a`, `commit --no-verify`, `reset --hard`, `git add -A`, `npm install` in a worktree, hand-rolled PRs, hand-rolled ticket branches |
 | PreToolUse (Bash) | `no-repo-wide-format.sh` | refuses a formatter over a whole folder, and a whole-app check from an unattended run |
 | PreToolUse (Bash) | `no-broad-kill.sh` | refuses a `pkill`/`killall` pattern that would hit a peer agent |
