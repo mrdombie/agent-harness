@@ -289,6 +289,58 @@ live >/dev/null; live >/dev/null; live >/dev/null
 want "a head waiting on its own checks keeps its place" "18" "$(jq -r '.head.pr' "$C/lane.did.json")"
 want "  and nothing merges past it"        "" "$(merges)"
 
+echo "--- up to date not required: a green member merges past a head waiting on its own checks ---"
+cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"; cfg '.merge.updateBehind = "bot"'
+past_setup() { # 18 head, pending on its own checks; then 19 and 20
+  fresh
+  pr 18 s18 - 1 build:PENDING lint:SUCCESS; compare develop s18 0
+  pr 19 s19 - 1 build:SUCCESS lint:SUCCESS; compare develop s19 0
+  pr 20 s20 - 1 build:SUCCESS lint:SUCCESS; compare develop s20 0
+}
+past_setup; out=$(live)
+want "bot: the first green member merges, one per pass" "19" "$(merges)"
+want "  on the head it judged"             1 "$(grep -cE '^pr merge 19 .*--squash.*--match-head-commit s19' "$GH_LOG")"
+want "  and the head keeps its place"      "18" "$(jq -r '.head.pr' "$C/lane.did.json")"
+want_in "  the log says who merged in whose place, and why" 'merged #19 in place of head #18 .*waiting for checks \(build\).*every required check green' "$out"
+want_in "  the act is logged"              'did	merge	19	squash at s19 in place of head #18' "$(cat "$C/actions.log")"
+want_in "  and the status line says so"    'head #18 — waiting for checks: build · merged #19 in its place' "$(cat "$C/lane.status")"
+drop_pr 19; : > "$GH_LOG"; live >/dev/null
+want "the next pass merges the next green one" "20" "$(merges)"
+want "  the head still keeps its place"    "18" "$(jq -r '.head.pr' "$C/lane.did.json")"
+past_setup; set_pr 19 '.mergeStateStatus = "BEHIND"'; set_pr 20 '.mergeStateStatus = "BEHIND"'
+live >/dev/null
+want "a BEHIND member does not merge"      "" "$(merges)"
+want "  and is not updated"                "" "$(updates)"
+past_setup; set_pr 19 '.labels = [{name:"needs:human-approval"}]'; set_pr 20 '.labels = [{name:"needs:human-approval"}]'
+live >/dev/null
+want "a held member does not merge"        "" "$(merges)"
+past_setup; set_pr 19 '.mergeable = "UNKNOWN"'; set_pr 20 '.mergeable = "CONFLICTING"'
+live >/dev/null
+want "a member not MERGEABLE does not merge" "" "$(merges)"
+past_setup; set_pr 19 '.statusCheckRollup[1] = {__typename:"CheckRun", name:"lint", status:"IN_PROGRESS", conclusion:null}'
+set_pr 20 '.statusCheckRollup = [{__typename:"CheckRun", name:"build", status:"COMPLETED", conclusion:"SUCCESS"}]'
+live >/dev/null
+want "a member pending or missing a required check does not merge" "" "$(merges)"
+past_setup; fix_issue 191 OPEN "status:in-review"; set_pr 19 '.statusCheckRollup[0].conclusion = "FAILURE"'
+live >/dev/null
+want "a red member is skipped; the next green one merges" "20" "$(merges)"
+want "  and the red one is left for its own turn as head" "" "$(fixers)"
+past_setup; out=$(lane)
+want "shadow writes nothing"               "" "$(writes)"
+want_in "  and says it would merge in the head's place" 'would merge #19 in place of head #18' "$out"
+cp "$L" "$FIX/lane.bak"
+sed 's/^  merge_past_head "\$waiting" || true$/  :/' "$FIX/lane.bak" > "$L"
+grep -q '^  :$' "$L" || bad "the merge-past-head plant did not land"
+past_setup; live >/dev/null
+[ -z "$(merges)" ] && ok "planted: no merge past the head → nothing merges → red" || bad "planted: no merge past the head and the test cannot see it"
+cp "$FIX/lane.bak" "$L"
+grep -q '^  merge_past_head "\$waiting" || true$' "$L" || bad "the lane was not restored after the plant"
+cp "$FIX/cfg.bak" "$HARNESS_CFG_PATH"; cfg '.merge.updateBehind = "agent"'
+past_setup; live >/dev/null
+want "updateBehind not bot: nothing merges past a pending head" "" "$(merges)"
+want "  and the head keeps its place"      "18" "$(jq -r '.head.pr' "$C/lane.did.json")"
+cp "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
+
 echo "--- a real conflict leaves the lane and gets a fixer; the lane never resolves it ---"
 fresh; fix_issue 701 OPEN "status:in-review"
 pr 70 s70 - 1 build:SUCCESS lint:SUCCESS; compare develop s70 3

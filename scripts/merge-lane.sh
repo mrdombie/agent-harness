@@ -31,7 +31,9 @@
 #                                 unless merge.updateBehind is bot and GitHub does
 #                                 not call it BEHIND (up to date is not required):
 #                                 then behind is no reason to wait
-#                  a required check pending or missing   → wait
+#                  a required check pending or missing   → wait; with merge.updateBehind
+#                                 bot the first other member that is MERGEABLE, not
+#                                 BEHIND, not held and green merges in its place
 #                  a required check red: a flake         → re-run once
 #                                        anything else   → out, check named, fixer
 #                  every required check green            → merge, end of pass
@@ -399,7 +401,8 @@ fi
 
 # ---- 4c. the required checks on this head --------------------------------------
 # One row per required check: name, green|pending|missing|failed, conclusion, url.
-CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" "$CHECK_NEWEST_JQ"'
+checks_of() { # <pr>
+  jq -r --argjson n "$1" --argjson req "$REQUIRED" "$CHECK_NEWEST_JQ"'
   (.[] | select(.number == $n) | .statusCheckRollup // [] | newest_runs) as $c
   | $req[] as $r
   | ($r | ascii_downcase) as $rl
@@ -409,7 +412,9 @@ CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" "$CHECK_NEWEST_J
     elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then [$r, "pending", "", ""]
     elif (($x.conclusion // $x.state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$")) then [$r, "green", "", ""]
     else [$r, "failed", ($x.conclusion // $x.state // ""), ($x.detailsUrl // $x.targetUrl // "")] end
-  | @tsv' <<<"$PRS")
+  | @tsv' <<<"$PRS"
+}
+CHECKS=$(checks_of "$HEAD_PR")
 
 flaky() { # <conclusion> <job-id> — 0 a flake, 1 a real red, GH_READ_UNKNOWN when its annotations could not be read
   local notes
@@ -454,9 +459,43 @@ while IFS=$'\t' read -r name verdict concl url; do
   esac
 done <<< "$CHECKS"
 
+# Up to date not required: a head re-running its checks must not hold up a green member behind it.
+merge_past_head() { # <why the head waits> — 0 when a member merged (or would) in its place
+  local n nsha why v
+  [ "$UPDATE_BEHIND" = bot ] || return 1
+  for n in $(jq -r --argjson h "$HEAD_PR" '.[] | select(. != $h)' <<<"$ORDER"); do
+    [ "$(pr_field "$n" .mergeable)" = MERGEABLE ] || continue
+    [ "$(pr_field "$n" .mergeStateStatus)" != BEHIND ] || continue
+    has_label "$n" "$HOLD_LABEL" && continue
+    has_label "$n" "$DNM_LABEL" && continue
+    v=$(checks_of "$n" | cut -f2)
+    [ -n "$v" ] || continue
+    grep -qvx green <<<"$v" && continue
+    nsha=$(pr_field "$n" .headRefOid)
+    why="head #$HEAD_PR is waiting for checks ($1); #$n is mergeable, not behind, not held, every required check green, and $INTEGRATION_BRANCH does not require up to date"
+    act merge "$n" "$nsha" "$METHOD at $nsha in place of head #$HEAD_PR: $why"
+    if lane_shadow; then
+      say "would merge #$n in place of head #$HEAD_PR ($METHOD, head $nsha) — $why"
+      PAST="would merge #$n in its place"; return 0
+    fi
+    if err=$(swarm_gh pr merge "$n" --repo "$REPO_SLUG" "--$METHOD" --match-head-commit "$nsha" 2>&1); then
+      say "lane: merged #$n in place of head #$HEAD_PR ($METHOD, head $nsha) — $why"
+      drop "$n"; WAITING=$((WAITING - 1)); PAST="merged #$n in its place"
+      QUEUE_LINE=$(jq -r --argjson m "$n" 'map(select(. != $m) | "#\(.)") | join(" → ")' <<<"$ORDER")
+    else
+      say "lane: merge of #$n in place of head #$HEAD_PR refused — $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-200)"
+      PAST="merge of #$n in its place refused"
+    fi
+    return 0
+  done
+  return 1
+}
+
 if [ -n "$waiting" ]; then
   [ -z "$unread" ] || stall "waiting for checks: $waiting"
-  progress; head_status "waiting for checks: $waiting"; exit 0
+  progress; PAST=""
+  merge_past_head "$waiting" || true
+  head_status "waiting for checks: $waiting${PAST:+ · $PAST}"; exit 0
 fi
 
 # ---- 4d. merge: one per pass ---------------------------------------------------
