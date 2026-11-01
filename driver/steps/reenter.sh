@@ -285,7 +285,10 @@ driver_step_reenter() { # <ticket>
 
   bash "$CL" update "$t" worktree="$wt" branch="$branch" \
     ${CLAIM_RUN_ID:+run_id="$CLAIM_RUN_ID"} ${CLAIM_RUN_LOG:+run_log="$CLAIM_RUN_LOG"} >/dev/null 2>&1 || true
-  swarm_gh issue edit "$t" --repo "$REPO_SLUG" --remove-label "$LBL_PARKED" >/dev/null 2>&1 || true
+  # A park lifted with no status on is refused at the next start: the repair wears in-review.
+  case ",$(driver_gh_read driver_ticket_view "$t" labels '[.labels[].name]|join(",")' 2>/dev/null)," in
+    *",$LBL_PARKED,"*) issue_status_set "$t" "$LBL_IN_REVIEW" >/dev/null 2>&1 || true ;;
+  esac
   driver_say "   reenter: #$t, PR #$pr on $branch at $(git -C "$wt" rev-parse --short HEAD) (merge state ${mstate:-unknown})"
   return "$DRIVER_OK"
 }
