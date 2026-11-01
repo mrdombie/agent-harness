@@ -160,6 +160,7 @@ fresh
 waiting 940 status:blocked "spec" "Blocked until #941 merges."
 listing status:blocked 940
 jq -n '{number:941, state:"CLOSED", title:"PR", labels:[]}' > "$FIX/gh/issue-941.json"
+printf '{"merged_at":null}\n' > "$FIX/gh/api-repos_acme_widgets_pulls_941.json"
 out=$(run)
 want_in "a PR closed unmerged: it waits, the PM's" '^waits: #940 — closed unmerged, not as split: #941 \(the PM decides\)$' "$out"
 want_in "  said on the PM's channel too"           '^--class agent wait-unmerged:940:941 ' "$(cat "$FIX/notify.log")"

@@ -152,7 +152,9 @@ landed() {
         [ "$r" -eq 0 ] || { [ "$r" -gt "$worst" ] && worst=$r; [ "$worst" -lt 1 ] && worst=1; }
       done
       return "$worst" ;;
-    CLOSED:) return 2 ;;   # a pull request closed without merging carries no reason
+    CLOSED:)   # no reason: a pull request, read as merged only if it was (an issue always has one)
+      [ "$("$GH" api "repos/$REPO_SLUG/pulls/$b" -q '.merged_at // "unmerged"' 2>/dev/null)" = unmerged ] && return 2
+      return 0 ;;
     CLOSED:*) return 0 ;;
     *) LEAVES="$LEAVES $b"; return 1 ;;
   esac
