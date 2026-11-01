@@ -22,6 +22,7 @@
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
+declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
 QUEUE="$SELF_DIR/coordinator-queue.sh"
 WATCH="$SELF_DIR/needsme-watch.sh"
@@ -34,6 +35,7 @@ ticket_of() { local t=${1#decision:}; printf '%s' "${t%%:*}"; }
 
 # The ticket's state and labels, "OPEN label,label"; nothing when it could not be read.
 meta() { swarm_gh issue view "$1" --repo "$REPO_SLUG" --json state,labels -q '.state+" "+([.labels[].name]|join(","))' 2>/dev/null; }
+has_status() { local l; for l in $(printf '%s' "${1#* }" | tr ',' ' '); do issue_status_is_lifecycle "$l" && return 0; done; return 1; }
 wears() { case ",${1#* }," in *",$LBL_OWNER_DECISION,"*) return 0 ;; esac; return 1; }
 
 ask() { # <ticket> <slug> <question>
@@ -77,15 +79,21 @@ The question is in the owner's channel. No agent takes this ticket while it wear
 # A driver park's question: its status (needs-human, or status:parked from an older
 # park) blocks every spawn, so its answer lifts that too.
 park_ask() { case "${1#decision:*:}" in driver-park*) return 0 ;; esac; return 1; }
+# A park's status lifted with none put on is refused by the driver's start step.
+park_resume() { # <ticket> [<also-drop>] — the park's status swapped for the requeue's
+  local st="$LBL_READY"
+  [ "$(requeue_class "$1")" = repair ] && st="$LBL_IN_REVIEW"
+  issue_status_set "$1" "$st" --drop "$LBL_PARKED" --drop "$LBL_NEEDS_HUMAN" ${2:+--drop "$2"}
+}
 unlabel() { # <ticket> <key>
   if park_ask "$2"; then
-    swarm_gh issue edit "$1" --repo "$REPO_SLUG" --remove-label "$LBL_OWNER_DECISION" --remove-label "$LBL_PARKED" --remove-label "$LBL_NEEDS_HUMAN"
+    park_resume "$1" "$LBL_OWNER_DECISION"
   else
     swarm_gh issue edit "$1" --repo "$REPO_SLUG" --remove-label "$LBL_OWNER_DECISION"
   fi
 }
 
-requeue() { # <ticket> <note> — echoes the class
+requeue_class() { # <ticket> — repair or new
   local t="$1" cls=new n rec
   n=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --search "head:$BRANCH_PREFIX$t" --json number -q length 2>/dev/null)
   [ "${n:-0}" -gt 0 ] 2>/dev/null && cls=repair
@@ -96,6 +104,12 @@ requeue() { # <ticket> <note> — echoes the class
   if [ "$cls" = repair ] && [ -f "$rec" ] && jq -e '(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' "$rec" >/dev/null 2>&1; then
     cls=new
   fi
+  printf '%s' "$cls"
+}
+
+requeue() { # <ticket> <note> — echoes the class
+  local t="$1" cls
+  cls=$(requeue_class "$t")
   bash "$QUEUE" add "$t" --class "$cls" --note "$2" --first >/dev/null 2>&1 || return 1
   printf '%s' "$cls"
 }
@@ -151,11 +165,10 @@ sync() {
     wears "$m" && continue
     # The label came off somewhere else (a reply on the ticket, by hand): answered.
     if [ "${m%% *}" = OPEN ]; then
-      case ",${m#* }," in *",$LBL_PARKED,"*|*",$LBL_NEEDS_HUMAN,"*)
-        if park_ask "$key"; then
-          swarm_gh issue edit "$t" --repo "$REPO_SLUG" --remove-label "$LBL_PARKED" --remove-label "$LBL_NEEDS_HUMAN" >/dev/null 2>&1 || { rc=1; continue; }
-        fi ;;
-      esac
+      # A status the owner chose by hand stays; a park's, or none at all, is swapped.
+      if park_ask "$key" && { case ",${m#* }," in *",$LBL_PARKED,"*|*",$LBL_NEEDS_HUMAN,"*) true ;; *) ! has_status "$m" ;; esac; }; then
+        park_resume "$t" >/dev/null 2>&1 || { rc=1; continue; }
+      fi
       cls=$(requeue "$t" "The owner answered $key on the ticket itself: read its newest comments, build on that answer, and do not ask it again.") || { rc=1; continue; }
       echo "answered elsewhere: $key — #$t back on the queue ($cls)"
     fi
