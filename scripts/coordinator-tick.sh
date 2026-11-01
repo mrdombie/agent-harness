@@ -929,6 +929,10 @@ candidates() {
       coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
         || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
     fi
+    # And back: a repair or approved merge whose PR is gone is new work, judged as new this tick.
+    # A claimed or running one is being worked, its PR maybe mid-reopen: left as it is.
+    if coord_healing_class "$cls" && ! grep -qx "$t" <<<"$CLAIMED" && ! swarm_ticket_live "$t" \
+       && heal_pr_gone "$t" "$cls"; then cls=new; note=""; fi
     if [ "$cls" = new ] && [ "$proc" != 1 ] && grep -qx "$t" <<<"$rel_out"; then rel_held=$((rel_held+1)); sk_rel="$sk_rel #$t"; continue; fi
     # Tooling (a process fix or a harness ticket) is capped on every host together: over
     # the cap it waits, and the places go to product work. Process-first holds inside it.

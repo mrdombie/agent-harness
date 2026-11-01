@@ -91,7 +91,7 @@ fresh() {
   unset SWARM_NOW
 }
 queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
-queue_as() { local c="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$c" >/dev/null; [ "$c" != repair ] || fix_pr_for "$t"; done; }
+queue_as() { local c="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$c" >/dev/null; [ "$c" = new ] || fix_pr_for "$t"; done; }
 tick() { bash "$T" 2>&1; }
 live_run() { # <ticket> [log-age-from-now-in-min]
   local log="$STATE/logs/claim-$1-live.log"
@@ -756,7 +756,8 @@ echo "--- no run without a change to make ---"
 fresh; fix_issue 501 OPEN "status:in-review"; bash "$Q" add 501 --class repair >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a repair with no open PR: nothing spawned" "" "$(spawned)"
-want_in "  and says why"                     'skip #501 \(repair\): has no open PR — nothing to repair' "$out"
+want_in "  and says why: back to new work, which waits for ready" '#501 \(repair\): has no open PR — back to new work' "$out"
+want_in "  and the new build is not started on a ticket in review" 'skip #501 \(new\): ' "$out"
 fresh; fix_issue 501 OPEN "status:drafting"; bash "$Q" add 501 >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a build of a ticket not ready: nothing spawned" "" "$(spawned)"
@@ -767,6 +768,45 @@ want "a resume carries on whatever its status" "501" "$(spawned)"
 fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a closed ticket: nothing spawned"      "" "$(spawned)"
+
+echo "--- a queued repair whose PR is gone goes back to new work ---"
+# 30 ready tickets (15 P0) sat queued as repair with no open PR, skipped "nothing to repair"
+# on every tick and never started: one 822 times in two days. A healing class is set when a PR
+# exists; when a fresh read finds none, the row is new again in the same tick.
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair --first --note "Finish PR #9: a required check failed. Bring it back to green and mergeable; do not start over." >/dev/null
+out=$(COORDINATOR_SHADOW=0 tick)
+want "a ready ticket queued as repair, PR gone: started in the same tick" "501" "$(spawned)"
+want "  as a new build"                        "new" "$(awk -F'\t' '$3 == "spawn" && $4 == 501 { print $5 }' "$C/actions.log")"
+want_in "  and said once"                      '#501 \(repair\): has no open PR — back to new work' "$out"
+want_not_in "  never skipped as nothing to repair" 'nothing to repair' "$out"
+want_not_in "  and its brief is not the dead PR's" 'Finish PR #9' "$(cat "$SPAWNS")"
+fresh; fix_issue 501 OPEN "status:in-review"; bash "$Q" add 501 --class repair --note "REPAIR on PR #9: fix it." >/dev/null
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a row the tick cannot start yet is rewritten as new" "new" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
+want "  its dead-PR note cleared, so no re-seed reads it as a repair again" "" "$(jq -r '.tickets[] | select(.n == 501) | .note' "$C/queue.json")"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want_not_in "  and the next tick says nothing more of it" 'back to new work' "$out"
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null; echo 501 > "$FIX/claims.txt"
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a claimed one is being worked: left a repair" "repair" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class approved-merge >/dev/null
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "an approved merge whose PR is gone is new work too" "501	new" "$(cat "$SPAWNS")"
+fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 --class repair >/dev/null
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a closed ticket queued as repair leaves the queue" "" "$(jq -r '.tickets[] | select(.n == 501) | .n' "$C/queue.json")"
+want "  and nothing spawned"                   "" "$(spawned)"
+# Only a fresh read can say the PR is gone: a snapshot decides nothing.
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null
+mkdir -p "$C/snapshot"; printf '[]\n' > "$C/snapshot/prs.json"
+printf '#!/usr/bin/env bash\ncase "$*" in *OpenPullRequests*) exit 1 ;; esac\nexec "%s" "$@"\n' "$BIN/gh" > "$FIX/gh-nopr"; chmod +x "$FIX/gh-nopr"
+out=$(SWARM_GH="$FIX/gh-nopr" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "on a snapshot it stays a repair (the repair gate's own rule: a snapshot decides nothing)" "501	repair" "$(cat "$SPAWNS")"
+want_not_in "  and is never sent back to new work" 'back to new work' "$out"
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null
+out=$(COORDINATOR_SHADOW=1 tick)
+want "in shadow the row is not rewritten"     "repair" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
+want_in "  but it says what it would do"       '#501 \(repair\): has no open PR — would go back to new work' "$out"
 
 echo "--- a repair starts only on a PR that is really red ---"
 # Repairs started while CI still ran, and on a red develop does not require: each parked.
