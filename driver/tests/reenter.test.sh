@@ -68,6 +68,14 @@ pr_json() { # <n> <branch> [mergeState]
   jq -nc --argjson n "$1" --arg b "$2" --arg m "${3:-CLEAN}" '{number:$n, headRefName:$b, headRefOid:"x", isDraft:false, mergeStateStatus:$m}'
 }
 
+echo "--- a parked ticket re-entered for repair goes to in-review, never to no status ---"
+pr_branch 290; fix_issue 290 OPEN "P0,status:parked"; prs "[$(pr_json 90 tkt-290/work)]"; : > "$GH_LOG"
+driver_step_reenter 290 >/dev/null 2>&1
+want_in "the park is swapped for in-review in one edit" '^issue edit 290 .*--remove-label status:parked.*--add-label status:in-review|^issue edit 290 .*--add-label status:in-review.*--remove-label status:parked' "$(cat "$GH_LOG")"
+pr_branch 291; fix_issue 291 OPEN "status:in-review"; prs "[$(pr_json 91 tkt-291/work)]"; : > "$GH_LOG"
+driver_step_reenter 291 >/dev/null 2>&1
+want_not_in "a ticket already in review is not edited" '^issue edit 291 ' "$(cat "$GH_LOG")"
+
 echo "--- a ticket with one open pull request is re-entered on that PR's branch ---"
 pr_branch 201
 fix_issue 201 OPEN "status:in-review"

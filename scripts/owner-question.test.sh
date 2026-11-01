@@ -114,6 +114,45 @@ fix_issue 47 OPEN ""
 want "the watcher's board pass runs the sync first" "" "$(bash "$W" pending | cut -f1 | grep -x 'decision:47:pick')"
 want "and the line is ticked"              "1" "$(grep -c '^- \[x\] .*key:decision:47:pick' "$C/needs-you.md")"
 
+echo "--- a driver park's answer leaves the ticket a status the driver starts from ---"
+# The driver's own start step, on a ticket wearing <labels>: prints its refusal, if any.
+start_probe() { # <labels>
+  HERE="$HERE" L="$1" bash -c '
+    . "$HERE/../driver/tests/fixture.sh"; driver_fixture >/dev/null 2>&1
+    printf "#!/usr/bin/env bash\ncase \"\$1\" in acquire) echo acquired ;; holds) exit 0 ;; show) echo {} ;; esac\n" > "$BIN/claim-lock"
+    chmod +x "$BIN/claim-lock"; export CL="$BIN/claim-lock"
+    . "$HERE/../driver/steps/start.sh" || exit 1
+    fix_issue 9 OPEN "$L"; driver_step_start 9 2>&1 | grep -o "is not status:ready"; rm -rf "$FIX"' 2>/dev/null
+}
+want "the probe sees the driver refuse a ticket with no status" "is not status:ready" "$(start_probe "P0,screen:pulse")"
+fresh; fix_issue 61 OPEN "P0,status:needs-human"; bash "$OQ" ask 61 driver-park "Keep A or B?" >/dev/null
+bash "$OQ" answer decision:61:driver-park "B" >/dev/null
+want "a park answered with no PR ends ready, no needs label" "P0,status:ready" "$(labels_of 61)"
+want "and is queued"                       "61 new" "$(jq -r '.tickets[] | select(.n == 61) | "\(.n) \(.class)"' "$C/queue.json")"
+want "and the driver's start takes it"     "" "$(start_probe "$(labels_of 61)")"
+fresh; fix_issue 62 OPEN "status:parked"; bash "$OQ" ask 62 driver-park-2 "Keep A or B?" >/dev/null
+printf '[{"number":12}]\n' > "$FIX/gh/prs-tkt-62.json"
+bash "$OQ" answer decision:62:driver-park-2 "A" >/dev/null
+want "a park answered with an open PR ends in review" "status:in-review" "$(labels_of 62)"
+want "and is queued as a repair"           "repair" "$(jq -r '.tickets[] | select(.n == 62) | .class' "$C/queue.json")"
+fresh; fix_issue 63 OPEN "status:needs-human"; bash "$OQ" ask 63 driver-park "Keep A or B?" >/dev/null
+fix_issue 63 OPEN "status:needs-human"; bash "$OQ" sync >/dev/null
+want "answered on the ticket: the sync sets ready" "status:ready" "$(labels_of 63)"
+fresh; fix_issue 64 OPEN ""; bash "$OQ" ask 64 driver-park "Keep A or B?" >/dev/null
+fix_issue 64 OPEN "P0"; bash "$OQ" sync >/dev/null
+want "a park left with no status at all: the sync sets ready" "P0,status:ready" "$(labels_of 64)"
+want "and the driver's start takes it"     "" "$(start_probe "$(labels_of 64)")"
+fresh; fix_issue 65 OPEN "status:parked"; bash "$OQ" ask 65 driver-park "Keep A or B?" >/dev/null
+printf '[{"number":13}]\n' > "$FIX/gh/prs-tkt-65.json"
+fix_issue 65 OPEN "status:parked"; bash "$OQ" sync >/dev/null
+want "answered on the ticket with an open PR: in review" "status:in-review" "$(labels_of 65)"
+fresh; fix_issue 66 OPEN ""; bash "$OQ" ask 66 driver-park "Keep A or B?" >/dev/null
+fix_issue 66 OPEN "status:gated"; bash "$OQ" sync >/dev/null
+want "a status chosen by hand on the ticket stays" "status:gated" "$(labels_of 66)"
+fresh; fix_issue 67 OPEN "status:claimed"; bash "$OQ" ask 67 scope "Narrow it?" >/dev/null
+bash "$OQ" answer decision:67:scope "yes" >/dev/null
+want "a question that is not a park keeps its status" "status:claimed" "$(labels_of 67)"
+
 echo "--- the claim skill: a question never carries the sign-off hold ---"
 SKILL="$HERE/../skills/claim/SKILL.md"
 step=$(awk '/^\*\*Ask the owner — from a spawned run\.\*\*/{f=1} f&&/^## /{exit} f' "$SKILL" | sed -n '1,/^3\. End with/p')
