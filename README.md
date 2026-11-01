@@ -532,11 +532,9 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `rampFreeMemGb` | 8 | Free memory (GB) needed to start more than one builder in a tick, read again before each start after the first; under it, one start a tick |
 | `rampMax` | unset | The most starts in one tick. Unset, the room decides |
 | `agentMemGb` | 1.5 | Memory (GB) each builder started this tick is charged before the next start (builder trees measure 0.6–1.3 GB) |
-| `healingShare` | 0.25 | Share of the ceiling kept for healing (`repair` + `approved-merge`), rounded up: 1 of 4, 2 of 5–8 |
-| `healAllAt` | unset | Reds left at which every place heals, counting those waiting and those being healed; once fewer are left, `healingShare` returns. Polish reds (P3, a polish kind, or a polish list) never count. Unset, or not a whole number over 0, is off |
 | `processLabel` | `process` | The label of a process fix: it starts first of all, and a hold "for process fixes" still lets it through |
 | `polishListFull` | 8 | Most items of one polish list that ride along with one change. A list never starts on its own while other work can, however full |
-| `openPrCap` | 10 | Open PRs (drafts too) over which no new ticket starts but the quick-sized ones: every place repairs or finishes first, and only repairs, approved merges, `process` fixes, quick tickets and `capExemptPriorities` (P0) tickets start. While on, it replaces `healingShare` and `healAllAt` (under it, priority decides across repairs and new work; at one priority a repair goes first). 0 turns it off and the split runs again |
+| `openPrCap` | 10 | Open PRs (drafts too) over which no new ticket starts but the quick-sized ones: every place repairs or finishes first, and only repairs, approved merges, `process` fixes, quick tickets and `capExemptPriorities` (P0) tickets start. Under it, priority decides across repairs and new work; at one priority a repair goes first. No share of the places is kept for either class (the 3/4 build, 1/4 heal split was removed 2026-10-24). 0 turns the cap off |
 | `paceToWindow` | `{on: false, factor: 0.95, exempt: ["P0"]}` | Off by default since Claude dropped its five-hour limit (2026-10-31). Pacing to the five-hour window, every host on one line. Each tick reads the freshest five-hour utilization `u` on any host and its reset; `elapsed = 1 − (reset − now)/5h`, target `elapsed × factor`. Ahead (`u` over the target): no new builder starts but an `exempt` priority, and the running ones carry on (`swarm.usageStepHold` stays the backstop). Behind, or no reading: places fill to the machine and the cap. The seven-day window is never paced on. A sheet reader paces by the owner's `factor`. The tick log, the sheet and the live view say "pacing: ahead/behind" with `u` and the target. Replaces `coordinator.pace.*` and `coordinator.productFloor`, retired 2026-10-23 |
 | `noProgressRuns` · `noProgressSec` | 3 · 300 | A ticket whose last `noProgressRuns` runs each ended in under `noProgressSec` seconds with the same exit and result line is parked for the PM (`status:parked` + the PM label, a comment naming the line) and reported, never spawned again. A machine stop (usage limit, lost login, API fault, GitHub unread, base wait) does not count. 0 runs: off |
 | `rebuildAfterRepairs` | 2 | A PR this host has repaired this many times since its ticket last started fresh is rebuilt, not patched again: its head is kept at `refs/stale/<ticket>/pr-<n>`, the PR is closed with "closed to rebuild fresh" and its branch deleted (follow-up.sh holds its findings for the next PR), and the ticket is queued at the front as a fresh build from the integration branch. Counted from `run-classes.tsv`. 0: off |
@@ -645,16 +643,9 @@ given a runner has its workflow run's failed jobs re-run (`gh run rerun --failed
 `coordinator.rerunCancelled` (2) times a PR head, counted in `<coordinator>/reruns.tsv`;
 past that the skip says a person looks. At or
 under the cap, priority decides across repairs and new work (a red ranks at its
-ticket's priority), and at one priority a repair goes first. With
-`openPrCap` 0 the split below runs instead. Of that ceiling, healing gets `ceil(ceiling × healingShare)`
-places and new work the rest. While both classes have spawnable work each keeps
-its share, so a run of red PRs waits its turn instead of stopping new work; a
-class with nothing spawnable lends its places to the other, in both directions.
-With `healAllAt` set, a tick that counts that many reds left or more (spawnable
-reds waiting plus live healing runs, since a red being healed is still left) gives
-the whole ceiling to healing, and the split line and `capacity.json` (`healAll`)
-say so; once fewer are left the share returns. Polish reds never count toward it:
-they are healed in their turn, at their priority, and never stop new building.
+ticket's priority), and at one priority a repair goes first. No share of the
+places is kept for either class; with `openPrCap` 0 there is no cap and priority
+alone decides.
 
 **Merge first, fix after, until the release** (owner's ruling 2026-10-22).
 `"release": {"mergeFirst": true}` in harness.json is one switch for every gate that
@@ -722,7 +713,7 @@ polish list or a follow-up as before; a Critical blocks as before.
 in harness.json lists check names (a run's name, a status context, or
 `<workflow> / <job>`, ignoring case); while `release.done` is not true, a red in one
 of them is a warning: repair-watch logs it and comments once per head on the pull
-request, and nothing repairs it, counts it red or toward heal-all, parks or
+request, and nothing repairs it, counts it red, parks or
 fix-rounds on it (the driver's repair, the critic's findings), or waits on it (the
 sign-off batch, the merge lane, `pr-watch.sh`). Every check still runs and reports.
 `release.done: true`, an empty list or no key is exactly as before. The one switch
@@ -745,7 +736,7 @@ cannot be read keep the critic. No key, or an empty list, is exactly as before.
 
 **Process fixes trump everything** (owner call 2026-10-20). A ticket wearing
 `coordinator.processLabel` (default `process`) starts first, in any free place:
-ahead of priority, kind order, heal-all, the healing / new split, polish and even an
+ahead of priority, kind order, polish and even an
 entry put at the front. The queue, the shared sheet ("Process fixes first: N", each
 row "Process fix") and the live view list them at the top. A swarm hold whose
 reason says it is "for process fixes" (`install.sh hold "quiet night, for process
@@ -760,8 +751,8 @@ before our own build tooling (`coordinator.toolingLabels`, default
 `repo:agent-harness code-health project:ci-throughput project:harness-kit area:OPS
 area:HYGIENE area:OPS-CONSOLE`, or a title scope in `coordinator.toolingScopes`,
 default `gates ci harness ops pre-push dev`); then new work half-built, feature,
-other, polish. An entry put at the front stays first. The healing share still holds;
-which red heals first follows priority.
+other, polish. An entry put at the front stays first; which red heals first
+follows priority.
 
 **Polish rides along.** A Minor finding goes on its screen's one polish list
 (`scripts/polish-list.sh add <screen-slug> "<text>"`), never a ticket of its own.

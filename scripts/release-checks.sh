@@ -5,7 +5,7 @@
 #   harness.json:  "release": { "nonBlockingChecks": ["Design critic", "..."], "done": false }
 #
 # While release.done is not true, a red in a listed check is a WARNING: noted in the log
-# and once per head on the pull request, never a repair, a park, a fix round, a heal-all
+# and once per head on the pull request, never a repair, a park, a fix round
 # count or a wait. The check still runs and reports. release.done true, an empty list or
 # no key: every check is what it was. A name matches a rollup entry's name, its context
 # (a commit status), or "<workflow> / <job>", ignoring case.

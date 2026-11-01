@@ -29,23 +29,15 @@
 #   coordinator.rampMax      COORDINATOR_RAMP_MAX     unset  most starts in one tick; unset, the room decides
 #   coordinator.agentMemGb   COORDINATOR_AGENT_MEM_GB 1.5   memory one new builder is charged before it
 #                                                           has used any (trees measure 0.6-1.3 GB)
-#   coordinator.healingShare COORDINATOR_HEALING_SHARE 0.25 share of the ceiling kept for healing
-#                                                           (repair + approved-merge), rounded up
-#   coordinator.healAllAt    COORDINATOR_HEAL_ALL_AT   unset reds left (waiting + live healing runs)
-#                                                           at which every place heals;
-#                                                           under it the healingShare split returns.
-#                                                           Polish reds never count toward it.
-#                                                           Unset, empty or not a whole number >0: off
 #   coordinator.polishListFull COORDINATOR_POLISH_LIST_FULL 8 most items of one polish list that ride
 #                                                           along with one change; a list never starts
 #                                                           on its own while other work can, full or not
 #   coordinator.openPrCap    COORDINATOR_OPEN_PR_CAP   10    open PRs (drafts too) over which no new ticket
 #                                                           starts: every place repairs or finishes, and
 #                                                           only repairs, approved merges and process fixes
-#                                                           start. While on it replaces the healingShare
-#                                                           split and heal-all: under it priority decides
-#                                                           across repairs and new work, a repair first at
-#                                                           one priority. 0: off, and the split runs again
+#                                                           start. Under it priority decides across repairs
+#                                                           and new work, a repair first at one priority.
+#                                                           0: off, no cap
 #   coordinator.openPrCapQuick COORDINATOR_OPEN_PR_CAP_QUICK on  over the cap, new tickets the driver's size
 #                                                           rules call quick start anyway, after healing
 #                                                           (scripts/cap-quick.sh); false: none does
@@ -137,10 +129,6 @@ COORD_AGENT_MEM_GB="${COORDINATOR_AGENT_MEM_GB:-$(swarm_opt coordinator.agentMem
 awk -v a="$COORD_AGENT_MEM_GB" 'BEGIN{exit !(a ~ /^[0-9]*\.?[0-9]+$/)}' || COORD_AGENT_MEM_GB=1.5
 COORD_RAMP_MAX="${COORDINATOR_RAMP_MAX:-$(swarm_opt coordinator.rampMax "")}"
 case "$COORD_RAMP_MAX" in ""|0|*[!0-9]*) COORD_RAMP_MAX="" ;; esac
-COORD_HEAL_SHARE="${COORDINATOR_HEALING_SHARE:-$(swarm_opt coordinator.healingShare 0.25)}"
-awk -v s="$COORD_HEAL_SHARE" 'BEGIN{exit !(s ~ /^(0|1|0?\.[0-9]+|1\.0*)$/)}' || COORD_HEAL_SHARE=0.25
-COORD_HEAL_ALL_AT="${COORDINATOR_HEAL_ALL_AT:-$(swarm_opt coordinator.healAllAt "")}"
-case "$COORD_HEAL_ALL_AT" in ""|*[!0-9]*) COORD_HEAL_ALL_AT="" ;; *) [ "$COORD_HEAL_ALL_AT" -gt 0 ] || COORD_HEAL_ALL_AT="" ;; esac
 COORD_POLISH_LIST_FULL="${COORDINATOR_POLISH_LIST_FULL:-$(swarm_opt coordinator.polishListFull 8)}"
 case "$COORD_POLISH_LIST_FULL" in ""|0|*[!0-9]*) COORD_POLISH_LIST_FULL=8 ;; esac
 # Owner call 2026-10-22: no new ticket starts while more than this many changes are open.
@@ -437,14 +425,6 @@ coord_live_recently() {
   [ "$m" = did ] && [ $(( $(date +%s) - ${e:-0} )) -lt 900 ] 2>/dev/null
 }
 
-# coord_heal_all <reds-left> — 0 when that many reds left (waiting + healing) put every place on healing.
-coord_heal_all() { [ -n "$COORD_HEAL_ALL_AT" ] && [ "${1:-0}" -ge "$COORD_HEAL_ALL_AT" ]; }
-# coord_healing_slots <ceiling> [reds-left] — the whole ceiling under heal-all,
-# else ceil(ceiling x healingShare).
-coord_healing_slots() {
-  if coord_heal_all "${2:-0}"; then printf '%s\n' "$1"; return 0; fi
-  awk -v c="$1" -v s="$COORD_HEAL_SHARE" 'BEGIN{ h = c * s; n = int(h); if (n < h) n++; print n }'
-}
 coord_healing_class() { case "$1" in repair|approved-merge) return 0 ;; *) return 1 ;; esac; }
 
 coord_shadow() { [ "$COORD_SHADOW" != 0 ]; }
