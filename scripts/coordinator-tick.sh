@@ -101,8 +101,13 @@ say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; swarm_log "$COORD_LOG" "$*"; 
 
 # ---- 1. lock ----------------------------------------------------------------
 LOCK="$COORD_DIR/tick.lock"
-coord_lock "$LOCK" tick || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
+# A tick past coordinator.tickMaxMin (15; the longest healthy one measured 7 min) is hung on
+# something: this one stops it and runs, so one hung call costs a tick, never the loop.
+TICK_MAX_MIN="${COORDINATOR_TICK_MAX_MIN:-$(swarm_opt coordinator.tickMaxMin 15)}"
+case "$TICK_MAX_MIN" in ''|*[!0-9]*) TICK_MAX_MIN=15 ;; esac
+coord_lock "$LOCK" tick $(( TICK_MAX_MIN * 60 )) || { say "tick: $COORD_LOCK_WHY — exiting"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
+[ -z "$COORD_LOCK_STOPPED" ] || say "tick: $COORD_LOCK_STOPPED"
 : > "$TICK_SAY" 2>/dev/null
 # Every gh call this tick and what it runs is counted against the tick.
 export GH_CALLER=coordinator-tick

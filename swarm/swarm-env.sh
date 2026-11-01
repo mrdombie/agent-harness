@@ -319,14 +319,32 @@ swarm_mtime() {
 # carries its account and counts only when it is this host's. Unread, the last known stands;
 # never known, readings count as they did before (no account on either side).
 SWARM_ACCOUNT_FILE="${SWARM_ACCOUNT_FILE:-$SWARM_DIR/.account}"
+# swarm_bounded <seconds> <cmd…> — runs it in its own process group and kills the group at the
+# limit (exit 124). Stock macOS has no `timeout`, and an alarm on the command alone leaves its
+# children holding the pipe open. Every outside call a scheduled loop makes goes through a limit.
+swarm_bounded() {
+  perl -e '$t = shift; $p = fork; die "fork" unless defined $p;
+    if ($p == 0) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    $SIG{ALRM} = sub { kill "TERM", -$p; sleep 2; kill "KILL", -$p; exit 124 };
+    alarm $t; waitpid($p, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$@"
+}
 swarm_account() {
-  local f="$SWARM_ACCOUNT_FILE" now id was="" ch=0 ck=0
+  local f="$SWARM_ACCOUNT_FILE" now id was="" ch=0 ck=0 out rc hung
   now=$(swarm_now)
   [ -s "$f" ] && IFS=$'\t' read -r was ch ck < "$f"
   case "$ch" in ''|*[!0-9]*) ch=0 ;; esac; case "$ck" in ''|*[!0-9]*) ck=0 ;; esac
   if [ -z "${SWARM_ACCOUNT:-}" ] && [ -n "$was" ] && [ $(( now - ck )) -lt 60 ]; then printf '%s' "$was"; return 0; fi
   id="${SWARM_ACCOUNT:-}"
-  [ -n "$id" ] || id=$("${SWARM_CLAUDE_BIN:-claude}" auth status --json 2>/dev/null | jq -r '.orgId // .email // empty' 2>/dev/null)
+  if [ -z "$id" ]; then
+    # Unanswered inside the limit, the last known stands, and for a minute nothing asks again:
+    # a tick reads the account several times (2026-10-31: one call hung for 1 h 57 min).
+    hung=$(cat "$f.hung" 2>/dev/null); case "$hung" in ''|*[!0-9]*) hung=0 ;; esac
+    if [ $(( now - hung )) -lt 60 ]; then printf '%s' "$was"; return 0; fi
+    out=$(swarm_bounded "${SWARM_ACCOUNT_TIMEOUT:-20}" "${SWARM_CLAUDE_BIN:-claude}" auth status --json 2>/dev/null < /dev/null); rc=$?
+    if [ "$rc" = 124 ]; then mkdir -p "$(dirname "$f")" 2>/dev/null; printf '%s\n' "$now" > "$f.hung" 2>/dev/null
+    else rm -f "$f.hung"; fi
+    id=$(printf '%s' "$out" | jq -r '.orgId // .email // empty' 2>/dev/null)
+  fi
   if [ -z "$id" ]; then printf '%s' "$was"; return 0; fi
   [ "$id" = "$was" ] || ch=$now
   mkdir -p "$(dirname "$f")" 2>/dev/null
@@ -402,7 +420,7 @@ swarm_usage_probe() { # [--now]: skip the interval gates (the account changed; r
   mkdir -p "$SWARM_LOGS" 2>/dev/null; printf '%s' "$now" > "$stamp"
   log="$SWARM_LOGS/claim-usage-probe-$(date -u +%Y%m%dT%H%M%SZ)-0.log"
   dir=$(mktemp -d 2>/dev/null) || return 1
-  ( cd "$dir" && ${SWARM_USAGE_PROBE_CMD:-claude -p "Reply with the single word ok." --model haiku --output-format stream-json --verbose} ) > "$log" 2>&1 < /dev/null
+  ( cd "$dir" && swarm_bounded "${SWARM_USAGE_PROBE_TIMEOUT:-120}" ${SWARM_USAGE_PROBE_CMD:-claude -p "Reply with the single word ok." --model haiku --output-format stream-json --verbose} ) > "$log" 2>&1 < /dev/null
   rm -rf "$dir"
   grep -q '"type":"rate_limit_event"' "$log" 2>/dev/null
 }
