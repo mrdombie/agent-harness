@@ -67,7 +67,7 @@ want "a fresh run lets go of an earlier run's polish take" "" "$(ls "$TK/101.tsv
 want "a fresh branch starts with an empty reworded-tests ledger (#11222)" "" "$(cat "$(driver_state_dir 101)/steps/replaced.jsonl")"
 want "it finishes"            "0" "$rc"
 want "the claim was taken"    "101" "$(claimed_tickets)"
-WT=$(driver_state_get 101 worktree)
+WT=$(driver_state_get 101 worktree); fixture_path WT "$FIX"
 want "a worktree exists"      "1" "$([ -d "$WT" ] && echo 1)"
 want "on its own branch"      "tkt-101/ticket-101" "$(git -C "$WT" rev-parse --abbrev-ref HEAD)"
 want "cut from the trunk"     "$(git -C "$REPO" rev-parse develop)" "$(git -C "$WT" rev-parse HEAD)"
@@ -231,7 +231,7 @@ git -C "$REPO" rev-parse -q --verify origin/develop >/dev/null 2>&1 \
 fix_issue 112 OPEN "status:ready"
 out=$(driver_step_start 112 2>&1); rc=$?
 want "it finishes"                      "0" "$rc"
-WT112=$(driver_state_get 112 worktree)
+WT112=$(driver_state_get 112 worktree); fixture_path WT112 "$FIX"
 want "no shims were copied in"          "0" "$([ -d "$WT112/.husky/_" ] && echo 1 || echo 0)"
 rm -f "$FIX/hook-ran"
 git -C "$WT112" hook run pre-push -- origin x </dev/null >/dev/null 2>&1; rc=$?
@@ -383,7 +383,7 @@ want_in "naming who uses it"     'process' "$(driver_state_get 153 park_note)"
 echo "--- a stray directory at the target path is moved aside, never deleted ---"
 fix_issue 154 OPEN "status:ready,type:feature"
 printf '#!/bin/sh\necho abc154\n' > "$BIN/openssl"; chmod +x "$BIN/openssl"
-stray="$(driver_worktree_root)/${BRANCH_PREFIX}154-abc154"; mkdir -p "$stray"; printf 'keep\n' > "$stray/keep.txt"
+stray="$(driver_worktree_root)/${BRANCH_PREFIX}154-abc154"; fixture_path stray "$FIX"; mkdir -p "$stray"; printf 'keep\n' > "$stray/keep.txt"
 rc=0; out=$(driver_step_start 154 2>&1) || rc=$?
 rm -f "$BIN/openssl"
 want "a stray dir does not stop start"   "0" "$rc"

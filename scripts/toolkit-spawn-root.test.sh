@@ -36,7 +36,7 @@ G clone -q "$UP" "$SB/a"; G clone -q "$UP" "$SB/b"
 
 echo "--- two clones of one repo at one commit get two spawn checkouts ---"
 MAIN_REPO="$SB/a"; ra=$(toolkit_spawn_root 2>"$SB/err.a"); rca=$?
-MAIN_REPO="$SB/b"; rb=$(toolkit_spawn_root 2>"$SB/err.b"); rcb=$?
+MAIN_REPO="$SB/b"; rb=$(toolkit_spawn_root 2>"$SB/err.b"); rcb=$?; fixture_path rb "$SB"
 [ "$rca" -eq 0 ] && [ "$rcb" -eq 0 ] && ok "both spawn" || fail "spawn failed: a=$rca b=$rcb $(cat "$SB/err.a" "$SB/err.b")"
 [ -n "$ra" ] && [ "$ra" != "$rb" ] && ok "they are different checkouts" || fail "clone B reused clone A's checkout: $ra"
 cb=$(git -C "$rb" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
@@ -47,7 +47,7 @@ MAIN_REPO="$SB/a"; ra2=$(toolkit_spawn_root 2>/dev/null)
 echo "--- a checkout of the right name that belongs to another clone is rebuilt ---"
 MAIN_REPO="$SB/b"
 rm -rf "$rb"; git -C "$SB/b" worktree prune; git -C "$SB/a" worktree add -q --detach "$rb" HEAD; : > "$rb.ready"
-rb2=$(toolkit_spawn_root 2>/dev/null)
+rb2=$(toolkit_spawn_root 2>/dev/null); fixture_path rb2 "$SB"
 cb=$(git -C "$rb2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 [ "$(cd "$cb" && pwd -P)" = "$SB/b/.git" ] && ok "rebuilt from clone B" || fail "handed back clone A's checkout ($cb)"
 

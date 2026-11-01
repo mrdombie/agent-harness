@@ -30,6 +30,7 @@ KIT="$(cd "$HERE/../.." && pwd)"
 
 PROJECT="${HARNESS_E2E_REPO:-${HARNESS_MAIN_REPO:-}}"
 [ -n "$PROJECT" ] || PROJECT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null)"
+[ -n "$PROJECT" ] || suite_skip "no project to run against, and git -C \"\" would read the directory this was started from"
 GATE_FILES="scripts/lib/ui-diff-fingerprint.ts
 scripts/check-ui-gate-attested/index.ts
 scripts/check-design-critic-attested/index.ts

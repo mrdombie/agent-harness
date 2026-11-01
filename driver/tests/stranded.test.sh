@@ -68,7 +68,7 @@ git -C "$FIX/wt140" config --unset core.hooksPath
 echo "--- a second machine resumes from it ---"
 fix_issue 140 OPEN "status:ready,type:feature"
 out=$(on_b driver_step_start 140 2>&1); rc=$?
-WTB=$(jq -r '.worktree // ""' "$FIX/state-b/driver/140/state.json" 2>/dev/null)
+WTB=$(jq -r '.worktree // ""' "$FIX/state-b/driver/140/state.json" 2>/dev/null); fixture_path WTB "$FIX"
 want "machine B's start finishes"            "0" "$rc"
 want "its tree is machine B's own"           "1" "$([[ "$WTB" == "$FIX/trees-b/"* ]] && echo 1)"
 want "its branch starts at the stranded work" "$(git -C "$FIX/wt140" rev-parse HEAD)" "$(git -C "$WTB" rev-parse HEAD 2>/dev/null)"
@@ -82,7 +82,6 @@ git -C "$FIX/wt140" push -q --no-verify origin HEAD:refs/heads/tkt-140/ticket-14
 rm -rf "$FIX/state-b/driver/140" "$FIX/claims-b"
 git -C "$M2" worktree remove --force "$WTB"; git -C "$M2" branch -q -D tkt-140/ticket-140
 out=$(on_b driver_step_start 140 2>&1)
-WTB=$(jq -r '.worktree // ""' "$FIX/state-b/driver/140/state.json" 2>/dev/null)
 want_not_in "it does not start from it"      'stranded work on origin' "$out"
 want "the stranded ref is younger than 14 days, so it stays" "$ref" "$(stranded 140)"
 
@@ -126,7 +125,7 @@ pr_json() { jq -nc --argjson n "$1" --arg b "$2" '[{number:$n, headRefName:$b, h
 pr_json 91 tkt-150/work > "$FIX/gh/prs.json"
 fix_issue 150 OPEN "status:in-review"
 out=$(on_b driver_step_reenter 150 2>&1); rc=$?
-WTB=$(jq -r '.worktree // ""' "$FIX/state-b/driver/150/state.json" 2>/dev/null)
+WTB=$(jq -r '.worktree // ""' "$FIX/state-b/driver/150/state.json" 2>/dev/null); fixture_path WTB "$FIX"
 want "machine B's reenter finishes"          "0" "$rc"
 want "its tree holds the stranded repair"    "$(git -C "$FIX/wt150" rev-parse HEAD)" "$(git -C "$WTB" rev-parse HEAD 2>/dev/null)"
 want "and still nothing was pushed to the PR" "$prhead" "$(git -C "$FIX/origin" rev-parse refs/heads/tkt-150/work)"

@@ -27,7 +27,7 @@ task() { # <n> [schema line] — one task: a test commit, then the change it pro
 }
 prove() { OUT=$(driver_prove_red_green "$REPO" "f$1.test.sh" "$TS" "$IS" "bash f$1.test.sh" 2>&1); RC=$?; }
 preps() { grep -c . "$FIX/prepare.log"; }
-D=$(_driver_proof_reuse_dir)
+D=$(_driver_proof_reuse_dir); fixture_path D "${TMPDIR:-/tmp}"
 
 echo "--- the first task makes the two trees and prepares each ---"
 task 1; prove 1
