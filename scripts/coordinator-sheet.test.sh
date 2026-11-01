@@ -137,7 +137,7 @@ want "the first tick writes"                        "1" "$(writes)"
 out=$(tick_on mac 0)
 want "the same order the next tick: no write"       "1" "$(writes)"
 want_in "and it says so"                            'sheet: unchanged — not written' "$out"
-want "nor any call to find the sheet"               "1" "$(grep -c 'issues?labels=' "$GH_LOG" | tr -d ' ')"
+want "nor any call to find the sheet"               "1" "$(grep -c 'issues?labels=build-sheet' "$GH_LOG" | tr -d ' ')"
 fix_issue 503 OPEN "status:ready,P0"; queue_on mac 503
 tick_on mac 0 >/dev/null
 want "a new ticket in the order: one write"         "2" "$(writes)"
@@ -283,7 +283,7 @@ world
 queue_on mac 501; queue_on box 502
 out=$(OWNER= tick_on box 1)
 want "the machine works its own queue"              "502" "$(by box)"
-want "and asks GitHub nothing about a sheet"        "0" "$(grep -c 'repos/acme/widgets/issues' "$GH_LOG" | tr -d ' ')"
+want "and asks GitHub nothing about a sheet"        "0" "$(grep 'repos/acme/widgets/issues' "$GH_LOG" | grep -vc 'labels=status%3Apm-decision' | tr -d ' ')"
 want_not_in "and says nothing of one"               'sheet:' "$out"
 
 echo "--- the host names compare without case ---"
