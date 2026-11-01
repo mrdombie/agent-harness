@@ -34,6 +34,10 @@ MAIN=""
 
 # 3. credential in memory
 deny  "$TMP/real/memory/x.md" "a secret" "token: ghp_$(printf 'a%.0s' $(seq 32))"
+# Long content is read whole: a pipe into grep -q under pipefail read an early secret as none.
+long=$(i=0; while [ "$i" -lt 2000 ]; do echo "padding-padding-padding-padding-padding-$i"; i=$((i + 1)); done)
+deny  "$TMP/real/memory/x.md" "a secret at the top of ~85 KB" "token: ghp_$(printf 'a%.0s' $(seq 32))
+$long"
 mkdir -p "$TMP/real/memory"
 allow "$TMP/real/memory/x.md" "ordinary memory content" "Dom prefers short replies."
 

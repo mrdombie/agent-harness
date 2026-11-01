@@ -9,6 +9,8 @@
 # Prints <file>:<line>: <text> for each `| grep -q` whose pipeline starts with
 # anything but printf or echo (a builtin writing a short string finishes before grep
 # can quit). Exit 1 when it printed any.
+# Hooks are held stricter by check-hook-pipe-grep.sh: there the string is a command,
+# file or message of any length, and printf writing it does not finish first.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ $# -eq 0 ]; then

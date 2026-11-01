@@ -92,7 +92,8 @@ fi
 
 # 5. The common path — the flow already complied.
 LAST=$(printf '%s' "$IN" | jq -r '.last_assistant_message // ""')
-printf '%s' "$LAST" | grep -qF '🏷️ Working on:' && { say "exit0 banner-present $SCOPE"; exit 0; }
+# A here-string: under pipefail an early match on a long message read as "no match".
+grep -qF '🏷️ Working on:' <<<"$LAST" && { say "exit0 banner-present $SCOPE"; exit 0; }
 
 # Nag. Once.
 touch "$MARK"

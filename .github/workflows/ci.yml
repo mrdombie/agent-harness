@@ -48,6 +48,9 @@ jobs:
       - name: A suite holds a read-back path to its fixture before git sees it
         # `git -C ""` is the directory the suite runs from: an empty worktree path committed into the operator's clone.
         run: bash scripts/check-fixture-paths.sh
+      - name: No hook pipes text into a grep that stops at its first match
+        # Under pipefail grep quitting early gives the writer SIGPIPE, and a long command's match read as "no match".
+        run: bash scripts/check-hook-pipe-grep.sh
       - name: Signals are read from their source
         # A phrase matched in a whole log matches every quote of it too.
         run: bash scripts/check-signal-source.sh

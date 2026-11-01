@@ -25,19 +25,22 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null)
 [ -n "$cmd" ] || exit 0
 deny() { jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 S='[[:space:]]'
+# Here-strings, not pipes: under pipefail `printf | grep -q` on a long command fails
+# when grep matches early and stops reading, and the match read as "no match".
+has() { grep -qE -- "$1" <<<"$cmd"; }
 WHY="Only the independent critic sets the design status, on CI's pinned shots after the push (scripts/critic-judge.sh, started by the coordinator). A verdict a build writes is the build clearing its own sign-off, and it counts for nothing. Push the change; read the critic's comment on the PR for what to fix."
-printf '%s' "$cmd" | grep -qE "record-verdict(\.sh)?[\"']?$S+[\"']?design-critic" \
+has "record-verdict(\.sh)?[\"']?$S+[\"']?design-critic" \
   && deny "Recording a design-critic verdict from a session. $WHY"
-printf '%s' "$cmd" | grep -qE "critic-judge\.sh[\"']?$S+(run|sweep)" \
+has "critic-judge\.sh[\"']?$S+(run|sweep)" \
   && deny "The independent critic is started by the coordinator, never from a session that builds. $WHY"
-printf '%s' "$cmd" | grep -qE "repos/[^/[:space:]\"']+/[^/[:space:]\"']+/dispatches" \
+has "repos/[^/[:space:]\"']+/[^/[:space:]\"']+/dispatches" \
   && deny "A repository dispatch from a session: that is how the independent critic's verdict reaches the design status. $WHY"
-if printf '%s' "$cmd" | grep -qE "statuses/[0-9a-fA-F\$]" \
-   && { printf '%s' "$cmd" | grep -qE "context=[\"']?$CONTEXT" || printf '%s' "$cmd" | grep -qE -- "--input"; }; then
+if has "statuses/[0-9a-fA-F\$]" \
+   && { has "context=[\"']?$CONTEXT" || has "--input"; }; then
   deny "Posting the '$CONTEXT' status by hand. $WHY"
 fi
-if printf '%s' "$cmd" | grep -qE "(^|[^A-Za-z0-9_-])git($S+-[^[:space:]]+($S+[^-[:space:]][^[:space:]]*)?)*$S+commit" \
-   && printf '%s' "$cmd" | grep -qiE "(^|[^A-Za-z0-9-])$TRAILER:"; then
+if has "(^|[^A-Za-z0-9_-])git($S+-[^[:space:]]+($S+[^-[:space:]][^[:space:]]*)?)*$S+commit" \
+   && grep -qiE -- "(^|[^A-Za-z0-9-])$TRAILER:" <<<"$cmd"; then
   deny "A commit carrying a '$TRAILER:' trailer. $WHY"
 fi
 exit 0

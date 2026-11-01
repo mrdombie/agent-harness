@@ -70,10 +70,13 @@ LISTED='^[[:space:]]*([-*][[:space:]]*)?\**(option|choice)[[:space:]]+[a-c1-3]\b
 # Lowercased first: BSD sed has no case-insensitive s///.
 REST=$(printf '%s' "$LAST" | tr '[:upper:]' '[:lower:]' | sed -E "s/($DONE)//g")
 HIT=""
-printf '%s' "$REST" | grep -qiE "$OPEN" && HIT=tell
+# Here-strings, not pipes into grep -q: under pipefail an early match on a long
+# message took SIGPIPE and read as "no match".
+grep -qiE "$OPEN" <<<"$REST" && HIT=tell
 # A question to the operator: a sentence ending "?" that says "you". The "?" must
 # end the sentence, so a URL's query string is not one.
-printf '%s\n' "$REST" | grep -oE '[^.!?]*\?([[:space:]"'"'"')*_]|$)' | grep -qE '(^|[^a-z])your?([^a-z]|$)' && HIT=${HIT:-question}
+ASKED=$(grep -oE '[^.!?]*\?([[:space:]"'"'"')*_]|$)' <<<"$REST")
+grep -qE '(^|[^a-z])your?([^a-z]|$)' <<<"$ASKED" && HIT=${HIT:-question}
 [ "$(printf '%s\n' "$REST" | grep -ciE "$LISTED")" -ge 2 ] && HIT=${HIT:-options}
 
 [ -n "$HIT" ] || { say "exit0 no-decision-tell"; exit 0; }
