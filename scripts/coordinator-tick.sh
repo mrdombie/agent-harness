@@ -347,6 +347,25 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   if release_merge_first; then REQ_LIVE=$(pr_red_required 2>/dev/null) || REQ_LIVE=null; fi
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$REQ_LIVE" || REQ_LIVE=null
   EV_CHECK=$(release_evidence_check)
+  # A PR RED TOO LONG WITH NOTHING FIXING IT IS THE OWNER'S (coordinator.redReportMin,
+  # 120). red-since.<mode>.tsv holds <pr> \t <head> \t <epoch first seen red>: a new
+  # head starts the clock again, and a PR no longer red leaves the file this tick.
+  RED_SINCE="$COORD_DIR/red-since.$(coord_mode).tsv"; RED_NOW=$(mktemp)
+  COORD_RED_REPORT_MIN="${COORDINATOR_RED_REPORT_MIN:-$(swarm_opt coordinator.redReportMin 120)}"
+  case "$COORD_RED_REPORT_MIN" in ''|*[!0-9]*) COORD_RED_REPORT_MIN=120 ;; esac
+  red_age_min() { # <pr> <sha> — minutes since this head was first seen red
+    local since now; now=$(swarm_now)
+    since=$(awk -F'\t' -v p="$1" -v h="$2" '$1 == p && $2 == h { print $3; exit }' "$RED_SINCE" 2>/dev/null)
+    case "$since" in ''|*[!0-9]*) since=$now; printf '%s\t%s\t%s\n' "$1" "$2" "$now" >> "$RED_SINCE" ;; esac
+    printf '%s\t%s\n' "$1" "$2" >> "$RED_NOW"
+    echo $(( (now - since) / 60 ))
+  }
+  red_report() { # <pr> <sha> <ticket> <age-min> <title> <failing> <why>
+    local key="red-2h:$1:$2" on
+    if [ "$6" = "-" ]; then on="$7"; else on="failing $6"; fi
+    event "$key" red-2h false "$3" "$1" "red for $4 min with nothing fixing it: $on" || return 0
+    bash "$NOTIFY" --class owner "$key" "PR #$1 ($5) has been red for $(( $4 / 60 ))h $(( $4 % 60 ))m with nothing fixing it: $on"
+  }
   # argv-bounded: the few check names release.nonBlockingChecks lists, and the live required set.
   printf '%s' "$PRS" | jq -r --arg pre "$BRANCH_PREFIX" --arg hold "$HOLD_LABEL" --arg gate "$HOLD_CHECK" --argjson nb "$NB_CHECKS" --argjson req "$REQ_LIVE" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
     def needed: if $req == null then true else ((.name // .context // "") | ascii_downcase) as $n | ($req | index([$n])) != null end;
@@ -360,29 +379,42 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
     | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $failed
     | ([.labels[]?.name] | index($hold)) as $held
     | (.headRefName | branch_ticket($pre)) as $t
-    | if .mergeStateStatus == "DIRTY" then [ "red", .number, .headRefOid, $t, "clashes with the integration branch" ]
-      elif $pending == 0 and $failed > 0 then [ "red", .number, .headRefOid, $t, "checks settled red" ]
-      elif $pending == 0 and $warn != "" then [ "warn", .number, .headRefOid, $t, $warn ]
+    | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED")) | (.name // .context // "?")) | unique | join(", ") | if . == "" then "-" else . end) as $fails
+    | ((.title // "") | gsub("[\t\n\r]"; " ") | if . == "" then "untitled" else . end) as $title
+    | if .mergeStateStatus == "DIRTY" then [ "red", .number, .headRefOid, $t, "-", $title, "clashes with the integration branch" ]
+      elif $pending == 0 and $failed > 0 then [ "red", .number, .headRefOid, $t, $fails, $title, "checks settled red" ]
+      elif $pending == 0 and $warn != "" then [ "warn", .number, .headRefOid, $t, "-", $title, $warn ]
       else empty end
     | @tsv' 2>/dev/null \
-  | while IFS=$'\t' read -r kind pr sha t why; do
+  | while IFS=$'\t' read -r kind pr sha t fails title why; do
       case "$kind" in
         red)
+          age=$(red_age_min "$pr" "$sha")
           fixer=$(awk -F'\t' -v p="$pr" '$1 == p { print $2; exit }' <<<"$FIXING")
           if [ -n "$fixer" ]; then say "PR #$pr: $why — being fixed by $fixer, not judged"
           elif base_wait_holds "$t" "$sha"; then say "PR #$pr: $why — #$t waits for $INTEGRATION_BRANCH's fix on this head (base-waits.tsv), not healed"
           elif swarm_heal_parked_out "$t" "$sha"; then say "PR #$pr: $why — #$t parked past its cap on this head, so it waits for a person (a new head heals it again)"
-          else event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true; fi ;;
+          else
+            event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true
+            # A live run on its ticket is the fix; a lock, a base wait or a park says its own reason above.
+            if [ "$COORD_RED_REPORT_MIN" -gt 0 ] && [ "$age" -ge "$COORD_RED_REPORT_MIN" ] && ! swarm_ticket_live "$t"; then
+              red_report "$pr" "$sha" "$t" "$age" "$title" "$fails" "$why"
+            fi
+          fi ;;
         warn) say "PR #$pr: red only on $why — a warning until the release (release.nonBlockingChecks, or a check $INTEGRATION_BRANCH does not require), not a red"
               case ", $why, " in *", $EV_CHECK, "*) evidence_note "$pr" "$sha" ;; esac ;;
       esac
     done
+  # Only the heads red this tick keep their clock.
+  awk -F'\t' 'NR == FNR { now[$1 "\t" $2] = 1; next } ($1 "\t" $2) in now' "$RED_NOW" "$RED_SINCE" > "$RED_SINCE.$$" 2>/dev/null \
+    && mv -f "$RED_SINCE.$$" "$RED_SINCE"
+  rm -f "$RED_NOW" "$RED_SINCE.$$"
   # Sign-offs reach the owner in batches, the moment a batch fills: one entry per
   # full set of green held PRs not already sent, keyed on that set.
   BATCHED="$COORD_DIR/signoff-batched.$(coord_mode)"
   printf '%s' "$PRS" | bash "$SIGNOFF" batches "$BATCHED" 2>/dev/null \
   | while IFS=$'\t' read -r key prs; do
-      [ -n "${key:-}" ] || continue
+      case "$key" in signoff-batch:*) ;; *) continue ;; esac
       if event "$key" signoff false "" "${prs// /,}" "a batch of screens is green and waiting on sign-off"; then
         bash "$NOTIFY" --class owner "$key" "$(printf '%s' "$prs" | wc -w | tr -d ' ') screens are ready for your sign-off: PR #${prs// /, #}"
       fi
