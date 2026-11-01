@@ -437,7 +437,8 @@ case_reap() {
   perl -e 'use POSIX qw(setsid); setsid(); sleep 300' & local young=$!
   printf '%s %s %s\n' "$old" "$HEAD" "$(( $(date +%s) - 1300 ))" > "$FIX/judge/31.pid"
   printf '%s %s %s\n' "$young" "$HEAD" "$(date +%s)" > "$FIX/judge/32.pid"
-  CRITIC_JUDGE_ROOM=0 bash "$J" sweep >/dev/null 2>&1; sleep 1
+  # The "old" judge started now under a place stamped 1300 s ago: the slack lets it pass as that place's run.
+  PID_BORN_SLACK=999999999 CRITIC_JUDGE_ROOM=0 bash "$J" sweep >/dev/null 2>&1; sleep 1
   local r=green
   kill -0 "$old" 2>/dev/null && r=red
   [ -f "$FIX/judge/31.pid" ] && r=red

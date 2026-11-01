@@ -28,7 +28,7 @@ LOG="${DEVELOP_HOOK_LOG:-$STATE_DIR/swarm/develop-hook-sweep.log}"
 mkdir -p "$(dirname "$SWEPT")" 2>/dev/null; touch "$SWEPT" 2>/dev/null
 
 swept() { awk -F'\t' -v s="$1" '$1 == s { h = 1 } END { exit !h }' "$SWEPT" 2>/dev/null; }
-holder_alive() { local p; p=$(cat "$LOCK/pid" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+holder_alive() { pid_file_alive "$LOCK/pid"; }
 
 head_sha() {
   GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5}" \

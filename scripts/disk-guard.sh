@@ -135,7 +135,7 @@ LOCK="$HOLD_FILE.clean.lock"
 mkdir -p "$(dirname "$LOCK")" 2>/dev/null
 if ! mkdir "$LOCK" 2>/dev/null; then
   owner=$(cat "$LOCK/pid" 2>/dev/null)
-  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then say "a clean is already running (pid $owner)"; exit 0; fi
+  if [ -n "$owner" ] && pid_file_alive "$LOCK/pid" "$owner"; then say "a clean is already running (pid $owner)"; exit 0; fi
   rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || { say "could not take the lock $LOCK"; exit 0; }
 fi
 echo $$ > "$LOCK/pid"

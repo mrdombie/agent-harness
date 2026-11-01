@@ -82,7 +82,7 @@ adopt() { # <id> [cwd]
 lock() { # mkdir is atomic; a lock whose pid is gone is a crash, not a run
   if mkdir "$KEEP_LOCK" 2>/dev/null; then echo $$ > "$KEEP_LOCK/pid"; return 0; fi
   local p; p=$(cat "$KEEP_LOCK/pid" 2>/dev/null)
-  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 1; fi
+  if [ -n "$p" ] && pid_file_alive "$KEEP_LOCK/pid" "$p"; then return 1; fi
   rm -rf "$KEEP_LOCK"; mkdir "$KEEP_LOCK" 2>/dev/null && echo $$ > "$KEEP_LOCK/pid"
 }
 
