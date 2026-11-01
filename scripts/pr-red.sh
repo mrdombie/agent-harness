@@ -4,7 +4,7 @@
 #   . scripts/pr-red.sh
 #   pr_red_required [branch]       the checks the branch's LIVE rules require, as a JSON
 #                                  array of lower-cased names; read once per process
-#   pr_red_verdict <pr-json> [hold-check] [nonblocking-json]
+#   pr_red_verdict <pr-json> [hold-check] [nonblocking-json] [also-required-json]
 #   pr_red_classify <pr-json> <required-json> [hold-check] [nonblocking-json]
 #
 # <pr-json> is the PR as the open-PR read has it (number, baseRefName, isDraft,
@@ -29,6 +29,7 @@
 # REQUIRED MEANS THE LIVE RULES, NEVER A LIST IN CONFIG: the branch's rulesets
 # (rules/branches/<b>) plus classic branch protection, which answers 404 when it
 # requires nothing. The hold check and release.nonBlockingChecks are never a red.
+# [also-required-json] adds names for this PR alone (release_critic_required).
 
 _pr_red_gh() { if declare -F swarm_gh >/dev/null 2>&1; then swarm_gh "$@"; else gh "$@"; fi; }
 
@@ -111,9 +112,11 @@ pr_red_rerun() {
   [ -n "$did" ]
 }
 
-pr_red_verdict() { # <pr-json> [hold] [nb-json]
+pr_red_verdict() { # <pr-json> [hold] [nb-json] [also-required-json]
   local base req
   base=$(jq -r '.baseRefName // empty' <<<"$1" 2>/dev/null)
   req=$(pr_red_required "$base") || { printf 'unread\tthe rules of %s could not be read\n' "${base:-${INTEGRATION_BRANCH:-develop}}"; return 1; }
+  local more
+  [ -z "${4:-}" ] || [ "$4" = "[]" ] || { more=$(jq -c --argjson a "$4" '. + ($a | map(strings | ascii_downcase)) | unique' <<<"$req" 2>/dev/null) && req="$more"; }
   pr_red_classify "$1" "$req" "${2-approval}" "${3:-[]}"
 }

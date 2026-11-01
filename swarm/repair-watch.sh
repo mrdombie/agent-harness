@@ -133,14 +133,14 @@ room_for() { # <programme> — echoes why not, returns 1
 }
 
 # ---- 1. repair ---------------------------------------------------------------
-repair_brief() { # <pr> <sha> <reason>
+repair_brief() { # <pr> <sha> <reason> [ticket]
   local rule; rule=$(head -1 "$KIT_ROOT/shared/signoff-last.md" 2>/dev/null)
   [ -n "$rule" ] || { echo "repair-watch: $KIT_ROOT/shared/signoff-last.md is missing" >&2; return 1; }
   local critic="A red design status is fixed by fixing every finding in the critic's
 comment on the PR, a Minor too, whoever put it there — unless the PR's screens are
 signed off: then those findings are the PM's call, and you change no pixel."
   # Off until the release: its comments on the PR are no task and no question.
-  release_critic_paused && critic="The design critic is off until the release: ignore each of its verdicts and
+  release_critic_paused "$(release_labels_of "$1" "${4:-}")" && critic="The design critic is off until the release: ignore each of its verdicts and
 findings on the PR, signed off or not — no fix, no deferral, no question, and never
 run the critic."
   cat <<BRIEF
@@ -275,7 +275,7 @@ section_repair() {
     if swarm_held >/dev/null; then say "held mid-pass — not repairing #$PR ($T)"; break; fi
     local brief; brief="$SWARM_DIR/briefs/repair-$T.md"
     mkdir -p "$(dirname "$brief")"
-    repair_brief "$PR" "$SHA" "$reason" > "$brief" || { say "no repair for #$PR ($T): its brief could not be written"; continue; }
+    repair_brief "$PR" "$SHA" "$reason" "$T" > "$brief" || { say "no repair for #$PR ($T): its brief could not be written"; continue; }
     printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
     swarm_spawn "$T" "$brief" >/dev/null 2>&1 && repair_record "$T" "$gpj"
     say "spawned repair for #$PR ($T) at ${SHA:0:9}: $reason"
@@ -309,23 +309,29 @@ open_prs() {
            | .[] | @tsv' 2>/dev/null
 }
 
-# warn_prs — pr \t head \t listed reds, for every open PR on a ticket branch whose checks
+# warn_prs — pr \t head \t listed reds \t ticket, for every open PR on a ticket branch whose checks
 # have settled with a release.nonBlockingChecks check red. Nothing while the list is off.
 warn_prs() {
   local nb; nb=$(release_nonblocking_json)
   [ "$nb" != "[]" ] || return 0
   # The same PRs open_prs reads, chosen the same way.
-  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --argjson nb "$nb" "$RELEASE_NB_JQ"'
+  gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -r --arg pre "$BRANCH_PREFIX" --argjson nb "$nb" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
     .[] | select(.headRefName | startswith("'"$BRANCH_PREFIX"'")) | select(.isDraft | not)
     | select([.statusCheckRollup | newest_runs | .[] | select((.status // "COMPLETED") != "COMPLETED")] | length == 0)
     | ([.statusCheckRollup | newest_runs | .[] | select(release_nb($nb)) | select(release_red) | (.name // .context)] | unique | join(", ")) as $w
-    | select($w != "") | [.number, .headRefOid, $w] | @tsv' 2>/dev/null
+    | select($w != "") | [.number, .headRefOid, $w, (.headRefName | branch_ticket($pre))] | @tsv' 2>/dev/null
 }
 
 section_release_warn() {
-  local pr sha names
-  while IFS=$'\t' read -r pr sha names; do
+  local pr sha names t
+  while IFS=$'\t' read -r pr sha names t; do
     [ -n "${pr:-}" ] || continue
+    # A PR that keeps the critic is never told its red does not block.
+    if release_critic_scoped; then
+      names=$(release_warn_reds "$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$pr" '[.[] | select(.number == $n)] | first | .statusCheckRollup // []')" \
+        "$(release_labels_of "$pr" "$t")")
+      [ -n "$names" ] || continue
+    fi
     RELEASE_WARN_DRY=$DRY release_warn_pr "$pr" "$sha" "$names" say
   done <<< "$(warn_prs)"
 }

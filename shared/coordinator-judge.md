@@ -24,7 +24,8 @@ the forge and the state directory are the state.
 - **The design critic is off until the release** while its check is listed in
   `release.nonBlockingChecks` and `release.done` is not true: its verdicts and
   findings on a PR, signed off or not, are nobody's question and no agent's work.
-  `owner-question.sh` refuses such a question (exit 5).
+  `owner-question.sh` refuses such a question (exit 5). A ticket carrying a label in
+  `review.judge.duringReleaseLabels` keeps the critic: its findings are work.
 - **Stay in scope.** Act only on tickets in the queue's scope, plus a red PR
   anywhere (finish before start). The scope may be several labels: a ticket
   under any one of them is in scope. Check with

@@ -191,28 +191,28 @@ PY
 one() { plant "$1" "$2" "$3" "$3" "$4" "$5"; }
 SQ="'"
 one "the review drops no critic finding" driver/steps/review.sh \
-  '  driver_drop_critic_findings "$ans_file" review && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1' \
+  '  driver_drop_critic_findings "$ans_file" review "$t" && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1' \
   case_review "owner=yes"
 one "the fix round drops no critic finding" driver/steps/fix.sh \
-  '  driver_drop_critic_findings "$review" fix || true' case_fix "model=1"
+  '  driver_drop_critic_findings "$review" fix "$t" || true' case_fix "model=1"
 plant "the facts hand the critic's findings on" driver/facts.sh \
-  '  if release_critic_paused; then' '  fi' case_facts "no open finding"
+  '  if release_critic_paused "$cl"; then' '  fi' case_facts "no open finding"
 one "screen-findings reads the critic's findings" scripts/screen-findings.sh \
-  "    if release_critic_paused; then echo \"screen-findings: \$RELEASE_CRITIC_OFF — PR #\$2${SQ}s open critic findings are not handed on\" >&2; exit 0; fi" \
+  "    if release_critic_paused \"\${3:-\$(release_labels_of \"\$2\")}\"; then echo \"screen-findings: \$RELEASE_CRITIC_OFF — PR #\$2${SQ}s open critic findings are not handed on\" >&2; exit 0; fi" \
   case_sf "2"
 one "steps may start the critic" driver/driver-env.sh '    deny="Agent($ja) Task($ja)"' case_lean "0"
 plant "the owner channel takes a critic question" scripts/owner-question.sh \
-  "  if release_critic_paused && printf ${SQ}%s %s${SQ} \"\$slug\" \"\$q\" | grep -qi ${SQ}critic${SQ}; then" '  fi' case_ask "labelled=1"
+  "  if release_critic_paused \"\$(release_labels_of \"\$t\")\" && printf ${SQ}%s %s${SQ} \"\$slug\" \"\$q\" | grep -qi ${SQ}critic${SQ}; then" '  fi' case_ask "labelled=1"
 plant "a park's critic question goes to a person" driver/steps/park.sh \
-  "  if [ \"\$cause\" = person ] && release_critic_paused && printf '%s %s' \"\$reason\" \"\$question\" | grep -qi 'critic'; then" \
+  "  if [ \"\$cause\" = person ] && release_critic_paused \"\$(driver_critic_labels \"\$t\")\" && printf '%s %s' \"\$reason\" \"\$question\" | grep -qi 'critic'; then" \
   '  fi' case_park "hold=1"
 plant "a step's critic question is not re-asked" driver/ai-step.sh \
-  '  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused \' '  fi' case_ask_step "calls=1"
+  '  if [ "$jrc" -eq "$DRIVER_E_QUESTION" ] && release_critic_paused "$(driver_critic_labels "$t")" \' '  fi' case_ask_step "calls=1"
 plant "the healing brief keeps the critic's rule" swarm/repair-watch.sh \
-  '  release_critic_paused && critic="The design critic is off until the release: ignore each of its verdicts and' \
+  '  release_critic_paused "$(release_labels_of "$1" "${4:-}")" && critic="The design critic is off until the release: ignore each of its verdicts and' \
   'run the critic."' case_brief "PM's call"
 one "a judge run is not paused" scripts/critic-judge.sh \
-  '  if [ "${CRITIC_JUDGE_MANUAL:-}" != 1 ] && release_paused; then say "PR #$pr: $PAUSED_WHY — not judged"; return 0; fi' \
+  '  if [ "${CRITIC_JUDGE_MANUAL:-}" != 1 ] && release_paused && ! release_critic_scoped; then say "PR #$pr: $PAUSED_WHY — not judged"; return 0; fi' \
   case_judge "pr-read=1"
 
 suite_end "$FAILED"

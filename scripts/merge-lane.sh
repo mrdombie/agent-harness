@@ -399,13 +399,19 @@ fi
 
 # ---- 4c. the required checks on this head --------------------------------------
 # One row per required check: name, green|pending|missing|failed, conclusion, url.
-CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$REQUIRED" "$CHECK_NEWEST_JQ"'
+# A ticket that keeps the critic through the release waits on its status too, once posted:
+# nothing judges a head that carries none, so a missing one would hold it for ever.
+HEAD_CL=$(release_labels_of "$HEAD_PR" "$(ticket_of "$HEAD_PR")")
+HEAD_KEPT=$(release_critic_required "$HEAD_CL")
+HEAD_REQ=$(jq -c --argjson k "$HEAD_KEPT" '. + [$k[] as $c | select(map(ascii_downcase) | index([$c | ascii_downcase]) | not) | $c]' <<<"$REQUIRED" 2>/dev/null) || HEAD_REQ="$REQUIRED"
+CHECKS=$(jq -r --argjson n "$HEAD_PR" --argjson req "$HEAD_REQ" --argjson kept "$HEAD_KEPT" "$CHECK_NEWEST_JQ"'
   (.[] | select(.number == $n) | .statusCheckRollup // [] | newest_runs) as $c
   | $req[] as $r
   | ($r | ascii_downcase) as $rl
   | ([ $c[] | select(((.name // "") | ascii_downcase) == $rl or ((.context // "") | ascii_downcase) == $rl
                      or ((((.workflowName // "") + " / " + (.name // "")) | ascii_downcase) == $rl)) ] | last) as $x
-  | if $x == null then [$r, "missing", "", ""]
+  | if $x == null and ($kept | map(ascii_downcase) | index([$rl])) then empty
+    elif $x == null then [$r, "missing", "", ""]
     elif (($x.status // "COMPLETED") != "COMPLETED") or (($x.state // "") | test("PENDING|EXPECTED")) then [$r, "pending", "", ""]
     elif (($x.conclusion // $x.state // "") | test("^(SUCCESS|NEUTRAL|SKIPPED)$")) then [$r, "green", "", ""]
     else [$r, "failed", ($x.conclusion // $x.state // ""), ($x.detailsUrl // $x.targetUrl // "")] end

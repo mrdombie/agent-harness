@@ -8,7 +8,8 @@
 #                                        coordinator.critic.maxLive at once (default 3) while the
 #                                        machine has room; a run past its time is stopped
 #   critic-judge.sh paused               exit 0, saying why, while the sweep is paused for the
-#                                        release (below); exit 1 when it runs
+#                                        release (below); exit 1 when it runs, for every PR or
+#                                        only those review.judge.duringReleaseLabels keeps
 #   critic-judge.sh shotset <dir>        the id of the shots in <dir> (12 hex)
 #   critic-judge.sh self-verdicts <pr>   the commits on the PR that carry a design verdict a
 #                                        builder wrote (sha \t subject); exit 1 when there are any
@@ -318,10 +319,12 @@ run() { # <pr>
     || die "the independent critic is started by the coordinator (or by a person with CRITIC_JUDGE_MANUAL=1), never by a build"
   # Off until the release for every caller, not the sweep alone: a launch that got past
   # a paused sweep still paid the model and posted SLOP on a signed-off PR.
-  if [ "${CRITIC_JUDGE_MANUAL:-}" != 1 ] && release_paused; then say "PR #$pr: $PAUSED_WHY — not judged"; return 0; fi
+  if [ "${CRITIC_JUDGE_MANUAL:-}" != 1 ] && release_paused && ! release_critic_scoped; then say "PR #$pr: $PAUSED_WHY — not judged"; return 0; fi
   j=$(swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json headRefOid,isDraft,state,headRefName,body,labels 2>/dev/null) || die "could not read PR #$pr"
   head=$(jq -r .headRefOid <<<"$j"); draft=$(jq -r .isDraft <<<"$j")
   t=$(branch_ticket "$(jq -r '.headRefName // ""' <<<"$j")" 2>/dev/null)
+  local cl; cl=$(release_labels_of "$pr" "$t")
+  if [ "${CRITIC_JUDGE_MANUAL:-}" != 1 ] && release_paused "$cl"; then say "PR #$pr: $PAUSED_WHY — not judged"; return 0; fi
   if [ "$BASELINE_ON" = true ]; then
     local tl='[]'
     [ -z "$t" ] || tl=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[].name]' 2>/dev/null) || tl='["(unreadable)"]'
@@ -566,7 +569,7 @@ run() { # <pr>
   # A red verdict on a signed-off screen is the PM's to call: the ticket is held for it,
   # which every repairer reads as "do not send an agent".
   # Listed in release.nonBlockingChecks, the verdict warns and holds nothing until the release.
-  [ "$signed" = 0 ] || release_check_nonblocking "$CONTEXT" || issue_status_mark "$t" "$LBL_PM_DECISION" >/dev/null 2>&1 || true
+  [ "$signed" = 0 ] || release_check_nonblocking "$CONTEXT" "$cl" || issue_status_mark "$t" "$LBL_PM_DECISION" >/dev/null 2>&1 || true
   say "PR #$pr: $verdict at ${head:0:9} on shots $set ($n)${ignored:+; $(printf '%s\n' "$ignored" | grep -c .) builder-written verdict(s) ignored}"
   rm -rf "$W"
   [ "$pass" = success ]
@@ -635,12 +638,20 @@ by_last_start() {
     NF >= 2 { printf "%s\t%s\t%d\t%d\n", $1, $2, (($1 in last) ? last[$1] : 0), NR }' | sort -t"$(printf '\t')" -k3,3n -k4,4n | cut -f1,2
 }
 
-# release_paused — 0 while the verdict only reports until the release and no override.
-release_paused() { release_critic_paused; }
+# release_paused [labels-csv] — 0 while the verdict only reports until the release and no override.
+release_paused() { release_critic_paused "${1:-}"; }
+# pr_ticket <pr> — the ticket its branch names, off the shared copy of the open PRs.
+pr_ticket() {
+  branch_ticket "$(gh_open_prs "${CRITIC_JUDGE_PRS_MAX_AGE:-300}" 2>/dev/null \
+    | jq -r --argjson n "$1" '[.[]? | select(.number == $n) | .headRefName // ""] | first // ""' 2>/dev/null)" 2>/dev/null
+}
 
 sweep() { # [--dry-run]
-  local dry=0 pr head slots cap r live_now
-  if release_paused; then say "$PAUSED_WHY"; return 0; fi
+  local dry=0 pr head slots cap r live_now paused=0
+  if release_paused; then
+    release_critic_scoped || { say "$PAUSED_WHY"; return 0; }
+    paused=1
+  fi
   [ "${1:-}" = --dry-run ] && dry=1
   [ "$dry" = 1 ] || reap
   live_now=$(live)
@@ -650,6 +661,8 @@ sweep() { # [--dry-run]
   slots=$(( cap - live_now ))
   while IFS=$'\t' read -r pr head; do
     [ -n "${pr:-}" ] || continue
+    # Paused for all but review.judge.duringReleaseLabels: only a PR whose labels keep it.
+    [ "$paused" = 0 ] || ! release_paused "$(release_labels_of "$pr" "$(pr_ticket "$pr")")" || continue
     [ -f "$JDIR/$pr.pid" ] && place_alive "$JDIR/$pr.pid" && continue
     [ "$(tried "$pr" "$head")" -lt "$TRIES" ] || { say "PR #$pr: $TRIES tries at ${head:0:9} gave no usable verdict — left for a person"; continue; }
     [ "$slots" -gt 0 ] || { say "PR #$pr owed a judgement; $live_now of $cap judge place(s) in use (most $MAXLIVE, machine room for $r more)"; continue; }
@@ -667,7 +680,7 @@ case "${1:-}" in
   run)     [ -n "${2:-}" ] || die "usage: run <pr>"; run "$2" ;;
   due)     due ;;
   sweep)   sweep "${2:-}" ;;
-  paused)  release_paused && { echo "$PAUSED_WHY"; exit 0; }; exit 1 ;;
+  paused)  release_paused && ! release_critic_scoped && { echo "$PAUSED_WHY"; exit 0; }; exit 1 ;;
   shotset) [ -d "${2:-}" ] || die "usage: shotset <dir>"; shotset "$2" ;;
   self-verdicts) [ -n "${2:-}" ] || die "usage: self-verdicts <pr>"; out=$(self_verdicts "$2"); [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; } ;;
   *) die "usage: critic-judge.sh run|due|sweep|paused|shotset|self-verdicts …" ;;

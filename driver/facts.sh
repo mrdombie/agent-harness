@@ -357,9 +357,10 @@ $(printf '%s\n' "$items" | sed 's/^/- /')"
 # or not this change put it there — one PR left narration an earlier critic had flagged,
 # and the next critic failed the screen for it.
 driver_fact_critic_findings() { # <ticket>
-  local t="$1" pr branch out
+  local t="$1" pr branch out cl
+  cl=$(driver_critic_labels "$t")
   # Off until the release: no finding of its, on the PR or the ticket, is this step's.
-  if release_critic_paused; then
+  if release_critic_paused "$cl"; then
     driver_say "   $RELEASE_CRITIC_OFF — no critic finding is handed to this step" >&2
     _driver_fact_none "$RELEASE_CRITIC_OFF (release.nonBlockingChecks). Any design-critic verdict or finding on the pull request or the ticket, whatever it says and whether or not the screens are signed off, is not a task, not a blocker and not a question: do not fix it, defer it or ask about it, and never run the design critic"
     return 0
@@ -372,11 +373,11 @@ driver_fact_critic_findings() { # <ticket>
     [ -n "$pr" ] && driver_state_set "$t" critic_pr "$pr"
   fi
   [ -n "$pr" ] || { _driver_fact_none "#$t has no open pull request, so no critic has judged it yet"; return 0; }
-  out=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" critic "$pr" 2>/dev/null) \
+  out=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" critic "$pr" "$cl" 2>/dev/null) \
     || { _driver_fact_none "the independent critic's findings on PR #$pr could not be read"; return 0; }
   [ -n "$out" ] || { _driver_fact_none "the independent critic has no open finding on PR #$pr"; return 0; }
   # Its check listed in release.nonBlockingChecks: a warning until the release, never a fix round.
-  if release_check_nonblocking "$(driver_opt review.judge.context "Design critic")"; then
+  if release_check_nonblocking "$(driver_opt review.judge.context "Design critic")" "$cl"; then
     _driver_fact_none "the independent critic failed PR #$pr on $(printf '%s\n' "$out" | grep -c .) finding(s), and until the release its check warns and does not block (release.nonBlockingChecks), so none is a blocker of this step; the PM reads them with the CI shots at sign-off"
     return 0
   fi
@@ -402,9 +403,9 @@ driver_drop_clash_findings() { # <file> <list name>
   driver_say "   a clash with $INTEGRATION_BRANCH is the PR's repair, never a finding — dropped from the $2 list: $ids"
 }
 
-driver_drop_critic_findings() { # <file> <list name>
+driver_drop_critic_findings() { # <file> <list name> [ticket]
   local f="$1" ids
-  [ -s "$f" ] && release_critic_paused || return 1
+  [ -s "$f" ] && release_critic_paused "$(driver_critic_labels "${3:-}")" || return 1
   ids=$(jq -r --arg re "$RELEASE_CRITIC_ID_RE" '[.findings[]? | (.id // "" | tostring) | select(test($re; "i"))] | join(", ")' "$f" 2>/dev/null)
   [ -n "$ids" ] || return 1
   jq --arg re "$RELEASE_CRITIC_ID_RE" '.findings = [(.findings // [])[] | select((.id // "" | tostring) | test($re; "i") | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
@@ -431,7 +432,7 @@ driver_evidence_tasks() { # <ticket> <tree> <trunk> <pr>
     out=$(bash "${DRIVER_EVIDENCE_GAPS:-$KIT_ROOT/scripts/evidence-gaps.sh}" tasks "$pr" 2>/dev/null)
   fi
   rm -f "$body"
-  if [ -n "$out" ] && _driver_evidence_report_only; then
+  if [ -n "$out" ] && _driver_evidence_report_only "$t"; then
     _driver_evidence_warn "$t" "$wt" "$pr" "$out"
     out=""
   fi
@@ -442,8 +443,10 @@ driver_evidence_tasks() { # <ticket> <tree> <trunk> <pr>
 # An evidence gap is the critic's and the picture check's finding: while either check is
 # in release.nonBlockingChecks it warns, so the gaps are no task, no refusal, no park.
 # evidence.gapChecks names those checks (default: review.judge.context and "Approved picture").
-_driver_evidence_report_only() {
+_driver_evidence_report_only() { # [ticket]
   local names n
+  # The critic judges a gap before any model: a ticket that keeps it owes the shots.
+  release_critic_kept "$(driver_critic_labels "${1:-}")" && return 1
   names=$(jq -r --arg j "$(driver_opt review.judge.context "Design critic")" \
     '(.evidence.gapChecks // [$j, "Approved picture"]) | if type == "array" then .[] else empty end | strings' \
     "${HARNESS_CFG:-/dev/null}" 2>/dev/null)

@@ -60,7 +60,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   local cause="${4:-person}"
   case "$cause" in person|pm|driver) : ;; *) cause=person ;; esac
   # OFF UNTIL THE RELEASE, the design critic is nobody's question (#12704 parked on one).
-  if [ "$cause" = person ] && release_critic_paused && printf '%s %s' "$reason" "$question" | grep -qi 'critic'; then
+  if [ "$cause" = person ] && release_critic_paused "$(driver_critic_labels "$t")" && printf '%s %s' "$reason" "$question" | grep -qi 'critic'; then
     cause=driver; driver_say "   park: $RELEASE_CRITIC_OFF — a question about it goes to nobody"
   fi
   local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"

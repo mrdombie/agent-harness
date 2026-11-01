@@ -729,6 +729,16 @@ evidence gaps (`evidence.gapChecks`, default `review.judge.context` and
 the pull request once per head as report-only until the release, and are no repair
 or fix task, so no repair is refused (exit 24) over them.
 
+**Kept for listed work.** `review.judge.duringReleaseLabels` (a list of label names,
+default none) keeps the design critic, run and blocking, for a ticket or PR carrying
+any of them while the release pause holds: the sweep judges only those PRs, the
+driver hands their critic findings on as blockers and their evidence gaps as tasks,
+the merge lane waits on their `review.judge.context` status once one is posted and
+takes them out on its red, and the repair gate counts that red as required. Every
+other item stays paused. A caller that knows its item asks with that item's labels
+(`release_labels_of`, one batched read, only when the list is set); labels that
+cannot be read keep the critic. No key, or an empty list, is exactly as before.
+
 **Process fixes trump everything** (owner call 2026-10-20). A ticket wearing
 `coordinator.processLabel` (default `process`) starts first, in any free place:
 ahead of priority, kind order, heal-all, the healing / new split, polish and even an

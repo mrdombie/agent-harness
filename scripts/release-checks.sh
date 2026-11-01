@@ -10,13 +10,15 @@
 # no key: every check is what it was. A name matches a rollup entry's name, its context
 # (a commit status), or "<workflow> / <job>", ignoring case.
 #
-#   release_nonblocking_json          → JSON array of the listed names, lowercased; [] when off
-#   release_check_nonblocking <name>  → 0 when that check is listed and the switch is on
+#   release_nonblocking_json [labels] → JSON array of the listed names, lowercased; [] when off
+#   release_check_nonblocking <name> [labels] → 0 when that check is listed and the switch is on
 #   CHECK_NEWEST_JQ                   → jq def `newest_runs`: each check's newest run only
 #   RELEASE_NB_JQ                     → CHECK_NEWEST_JQ, and jq defs: `release_nb($nb)` on a rollup entry is true
 #                                       when it is listed; `release_red` when it settled red
-#   release_blocking_required <json>  → gates.requiredChecks less the listed checks
-#   release_warn_reds <rollup-json>   → the listed checks whose newest run is red, ", "-joined
+#   release_blocking_required <json> [labels] → gates.requiredChecks less the listed checks
+#   release_warn_reds <rollup-json> [labels] → the listed checks whose newest run is red, ", "-joined
+#   [labels] is one ticket's or PR's labels, ","-joined (release_labels_of): an item that keeps
+#   the critic (review.judge.duringReleaseLabels, below) finds the critic's check not listed.
 #   release_warn_pr <pr> <head> <names> <log-fn> — the warning, logged and commented once per head
 #   release_merge_first               → 0 while release.mergeFirst is true and release.done is not
 #   release_review_priorities         → JSON array of the priorities the driver's review model runs
@@ -70,7 +72,7 @@ _release_cfg() {
   printf '%s' "${HARNESS_CFG:-}"
 }
 
-release_nonblocking_json() {
+release_nonblocking_json() { # [labels-csv]
   local cfg out; cfg=$(_release_cfg)
   if [ -z "$cfg" ] || [ ! -f "$cfg" ]; then printf '[]'; return 0; fi
   # Merge first adds the design checks: the critic's status and the picture check warn.
@@ -81,7 +83,11 @@ release_nonblocking_json() {
                        else empty end)
                     | strings | ascii_downcase | select(. != "")]
                   | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end) end' "$cfg" 2>/dev/null)
-  printf '%s' "${out:-[]}"
+  out="${out:-[]}"
+  if [ -n "${1:-}" ] && [ "$out" != "[]" ] && _release_critic_kept_in "$1" "$out"; then
+    local less; less=$(jq -c --arg c "$(_release_critic_ctx | tr '[:upper:]' '[:lower:]')" 'map(select(. != $c))' <<<"$out" 2>/dev/null) && out="$less"
+  fi
+  printf '%s' "$out"
 }
 
 # release_merge_first — 0 while harness.json says release.mergeFirst true and the release
@@ -130,35 +136,88 @@ release_review_priorities() {
 # to a step or asks about them: the sweep, a judge run, the driver's facts, fix and
 # review lists, the healing brief and the owner channel all ask this one predicate,
 # read live (_release_cfg). review.judge.duringRelease true keeps it running.
-#   release_critic_paused  → 0 while it is off
+#   release_critic_paused [labels] → 0 while it is off (for the item with those labels)
 #   RELEASE_CRITIC_ID_RE   → a finding id that is the critic's ("critic-…"), any case
+#
+# KEPT FOR LISTED WORK. review.judge.duringReleaseLabels (["label", …], default none): while
+# the pause holds, a ticket or PR carrying one of them keeps the critic, run and blocking.
+# A caller that knows its item passes that item's labels; one with no item (a sweep, the
+# trunk) keeps the global answer.
+#   release_critic_scoped             → 0 when duringReleaseLabels lists any label
+#   release_labels_of <n…>            → the labels of those issues and PRs, ","-joined, in one
+#                                       batched read; nothing when none is listed (no read);
+#                                       RELEASE_LABELS_UNREAD when the read failed
+#   release_critic_kept <labels>      → 0 when that item keeps the critic while it is paused;
+#                                       an unreadable item keeps it
+#   release_critic_required <labels>  → ["<critic check>"] when kept, else []: a
+#                                       check the merge gate counts as required for that item
 RELEASE_CRITIC_OFF="design critic: off until the release"
 RELEASE_CRITIC_ID_RE='^critic[-_:]'
-release_critic_paused() {
-  local cfg ctx f
+RELEASE_LABELS_UNREAD='(unreadable)'
+_release_critic_ctx() {
+  local ctx; ctx=$(jq -r '.review.judge.context // empty' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
+  printf '%s' "${ctx:-Design critic}"
+}
+release_critic_labels() {
+  local f v out="[]"
+  for f in "$(_release_cfg)" "${HARNESS_CFG:-}"; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    v=$(jq -c '(.review.judge.duringReleaseLabels // null) | if type == "array" then map(strings | select(. != "")) else empty end' "$f" 2>/dev/null)
+    if [ -n "$v" ] && [ "$v" != "[]" ]; then out="$v"; break; fi
+  done
+  printf '%s' "$out"
+}
+release_critic_scoped() { [ "$(release_critic_labels)" != "[]" ]; }
+release_labels_of() { # <issue-or-pr number…>
+  local n j out; local -a nums=()
+  for n in "$@"; do case "$n" in ''|*[!0-9]*) ;; *) nums+=("$n") ;; esac; done
+  [ "${#nums[@]}" -gt 0 ] && release_critic_scoped || return 0
+  declare -F gh_issues_batch >/dev/null 2>&1 \
+    || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-batch.sh" >/dev/null 2>&1 \
+    || { printf '%s' "$RELEASE_LABELS_UNREAD"; return 0; }
+  # A ticket or PR missing from the answer is unread, never "no labels": that fails open.
+  j=$(gh_issues_batch "${nums[@]}" 2>/dev/null) && [ -n "$j" ] || { printf '%s' "$RELEASE_LABELS_UNREAD"; return 0; }
+  out=$(jq -r '. as $o | $ARGS.positional as $n
+          | if type == "object" and all($n[]; ($o[.] | type) == "object")
+            then [$n[] | $o[.].labels[]?] | unique | join(",") else error("unread") end' --args "${nums[@]}" <<<"$j" 2>/dev/null) \
+    || out="$RELEASE_LABELS_UNREAD"
+  printf '%s' "$out"
+}
+_release_critic_kept_in() { # <labels-csv> <nonblocking json>
+  local want; want=$(release_critic_labels)
+  [ -n "${1:-}" ] && [ "$want" != "[]" ] || return 1
+  jq -e -n --argjson w "$want" --argjson nb "${2:-[]}" --arg c "$(_release_critic_ctx)" --arg l "$1" --arg u "$RELEASE_LABELS_UNREAD" \
+    'any($nb[]; . == ($c | ascii_downcase))
+     and (($l | split(",")) as $have | any($have[]; . == $u) or any($w[]; . as $x | $have | index([$x])))' >/dev/null 2>&1
+}
+release_critic_kept() { _release_critic_kept_in "${1:-}" "$(release_nonblocking_json)"; }
+release_critic_required() { # <labels-csv>
+  if release_critic_kept "${1:-}"; then jq -cn --arg c "$(_release_critic_ctx)" '[$c]'; else printf '[]'; fi
+}
+release_critic_paused() { # [labels-csv]
+  local cfg f
   cfg=$(_release_cfg)
   for f in "$cfg" "${HARNESS_CFG:-}"; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     [ "$(jq -r '.review.judge.duringRelease // false' "$f" 2>/dev/null)" = true ] && return 1
   done
-  ctx=$(jq -r '.review.judge.context // empty' "${HARNESS_CFG:-/dev/null}" 2>/dev/null)
-  release_check_nonblocking "${ctx:-Design critic}"
+  release_check_nonblocking "$(_release_critic_ctx)" "${1:-}"
 }
 
-release_check_nonblocking() { # <check name>
+release_check_nonblocking() { # <check name> [labels-csv]
   [ -n "${1:-}" ] || return 1
-  jq -e -n --argjson nb "$(release_nonblocking_json)" --arg n "$1" 'any($nb[]; . == ($n | ascii_downcase))' >/dev/null 2>&1
+  jq -e -n --argjson nb "$(release_nonblocking_json "${2:-}")" --arg n "$1" 'any($nb[]; . == ($n | ascii_downcase))' >/dev/null 2>&1
 }
 
-# release_blocking_required <required-checks json array> — the list less the listed checks.
+# release_blocking_required <required-checks json array> [labels-csv] — the list less the listed checks.
 release_blocking_required() {
-  printf '%s' "${1:-[]}" | jq -c --argjson nb "$(release_nonblocking_json)" \
+  printf '%s' "${1:-[]}" | jq -c --argjson nb "$(release_nonblocking_json "${2:-}")" \
     'if type == "array" then map(select(type != "string" or ((ascii_downcase) as $r | any($nb[]; . == $r) | not))) else . end' 2>/dev/null \
     || printf '%s' "${1:-[]}"
 }
 
-release_warn_reds() { # <rollup json array>
-  printf '%s' "${1:-[]}" | jq -r --argjson nb "$(release_nonblocking_json)" "$RELEASE_NB_JQ"'
+release_warn_reds() { # <rollup json array> [labels-csv]
+  printf '%s' "${1:-[]}" | jq -r --argjson nb "$(release_nonblocking_json "${2:-}")" "$RELEASE_NB_JQ"'
     [ newest_runs | .[]
       | select(release_nb($nb)) | select(release_red) | (.name // .context // "?") ] | unique | join(", ")' 2>/dev/null
 }

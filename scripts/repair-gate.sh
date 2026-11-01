@@ -112,9 +112,12 @@ repair_pr_red() { # <ticket> [pr-json] — 0 when its open PR is really red; els
     if [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ]; then echo "has no open PR — nothing to repair"; return 1; fi
     return 0
   fi
-  v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json)") && return 0
-  local n kind why ids did
-  n=$(jq -r .number <<<"$pj"); IFS=$'\t' read -r kind why ids <<<"$v"
+  local n kind why ids did cl
+  n=$(jq -r .number <<<"$pj")
+  # A ticket that keeps the critic through the release: a red verdict is a red to repair.
+  cl=$(release_labels_of "$n" "$1")
+  v=$(pr_red_verdict "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "$(release_nonblocking_json "$cl")" "$(release_critic_required "$cl")") && return 0
+  IFS=$'\t' read -r kind why ids <<<"$v"
   # A cancelled required check is re-run, never repaired (coordinator.rerunCancelled, 2 a head).
   if [ "$kind" = rerun ]; then
     if coord_shadow; then did="would re-run ${ids:-nothing named}"
