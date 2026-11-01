@@ -27,12 +27,7 @@
 #                    driver's own size rules, cap-quick.sh; coordinator.openPrCapQuick)
 #                    after the repairs, approved merges and process fixes; at or under it the queue's priority order decides
 #                    across repairs and new work, a repair first at one priority
-#                    (owner call 2026-10-22). With the cap 0:
-#                    healing (repair, approved-merge) fills ceil(ceiling x
-#                    healingShare) of the places and new work the rest, and every
-#                    place while coordinator.healAllAt or more reds are left
-#                    (waiting plus being healed, polish reds not counted); a class
-#                    with nothing spawnable lends its places to the other. The
+#                    (owner call 2026-10-22; the cap 0 is no cap). The
 #                    queue runs by priority across classes (coord_queue_ordered);
 #                    polish new work starts only when nothing else can; a polish
 #                    list never starts alone while other work can, however full. The
@@ -41,7 +36,7 @@
 #                    that is claimed, gated, on hold or wearing the owner-decision
 #                    label (owner-question.sh), and nothing while the machine is busy.
 #                    A process fix (coordinator.processLabel) starts first, ahead of
-#                    priority, kind, heal-all, the split and polish, in any free
+#                    priority, kind and polish, in any free
 #                    place; a swarm HOLD "for process fixes" (or with an
 #                    `allow: process` line) starts only those (owner call 2026-10-20)
 #   4c. self-update  at most every coordinator.selfUpdate.everyMin, the marketplace's
@@ -331,7 +326,7 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   # respawned 15 minutes later on that check alone, and parked on it.
   HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"
   # A CHECK THAT WARNS UNTIL THE RELEASE IS NOT A RED (release.nonBlockingChecks): it
-  # sends no healing run and never counts toward heal-all. repair-watch notes it on the PR.
+  # sends no healing run. repair-watch notes it on the PR.
   NB_CHECKS=$(release_nonblocking_json)
   # evidence_note <pr> <sha> — once per head: the PR says its shots were not captured and it ships.
   evidence_note() {
@@ -730,8 +725,7 @@ say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
 # What a refused read misses comes from the last good snapshot while it is fresh.
 ISSUES=""; ISSUES_OK=1
-# The live runs' tickets too: a polish red being healed never counts toward heal-all.
-# And the runs that ended inside the live view's window: its finished list says
+# The live runs' tickets too, and the runs that ended inside the live view's window: its finished list says
 # where each of those tickets stands now from this read, not from a call per row.
 ENDED_TICKETS=$(find "$RUNS_DIR" -maxdepth 1 -name 'claim-*.ended' -mmin -"$(( ${SWARM_DONE_HOURS:-6} * 60 ))" 2>/dev/null \
   | while IFS= read -r e; do jq -r '.ticket // empty' "${e%.ended}.json" 2>/dev/null; done)
@@ -766,11 +760,6 @@ live_class() { # <record>
   fi
   coord_healing_class "${c:-new}" && echo healing || echo new
 }
-# polish: P3, a polish kind or a polish list, read off the batched labels (coord_polish).
-ticket_polish() { # <ticket> — 0 when the tick's read holds it as polish
-  [ -n "${ISSUES:-}" ] && coord_jq -e --arg n "$1" "$COORD_TICKET_JQ"'
-    .[$n] // null | if . == null then false else coord_polish(.labels // []; null; .title) end' >/dev/null 2>&1 <<<"$ISSUES"
-}
 # tooling: a process fix or a toolingCapLabels ticket, read off the batched labels.
 ticket_tooling() { # <ticket> — 0 when the tick's read holds it as tooling under the cap
   [ -n "${ISSUES:-}" ] && jq -e --arg n "$1" --arg p "$SWARM_PROCESS_LABEL" --arg tl "$COORD_TOOLING_CAP_LABELS" '
@@ -785,12 +774,10 @@ while IFS= read -r t; do
 done < <( { printf '%s\n' $LIVE_TICKETS
             printf '%s\n' "$CLAIM_ROWS" | awk -F'\t' -v h="$COORD_HOST" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { print $1 }'; } \
           | grep -E '^[0-9]+$' | sort -un)
-LIVE_HEAL=0; LIVE_NEW=0; LIVE_HEAL_POLISH=0
+LIVE_HEAL=0; LIVE_NEW=0
 while IFS= read -r rec; do
   [ -n "$rec" ] || continue
-  if [ "$(live_class "$rec")" = healing ]; then
-    LIVE_HEAL=$((LIVE_HEAL+1))
-    ticket_polish "$(jq -r '.ticket // empty' "$rec" 2>/dev/null)" && LIVE_HEAL_POLISH=$((LIVE_HEAL_POLISH+1))
+  if [ "$(live_class "$rec")" = healing ]; then LIVE_HEAL=$((LIVE_HEAL+1))
   else LIVE_NEW=$((LIVE_NEW+1)); fi
 done <<< "$LIVE_RECS"
 
@@ -825,26 +812,12 @@ TOOLING_ROOM=$(( COORD_TOOLING_CAP - TOOLING_LIVE )); [ "$TOOLING_ROOM" -ge 0 ] 
 say "tooling: $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP on every host${TOOLING_LIVE_TICKETS:+ (${TOOLING_LIVE_TICKETS# })}"
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
-# The split needs the reds left — waiting plus being healed — so candidates()
-# redoes it once the waiting ones are counted. Polish reds are healed in their
-# turn but never count toward heal-all: on 2026-10-19 34 of 79 open changes were
-# polish, and counting them let a backlog of spacing fixes stop all new building.
+# No share of the places is kept for either class (owner call 2026-10-24): healing may
+# take every place, and new work every place only while under the open-work cap.
 split_places() {
-  REDS_LEFT=$(( REDS_WAITING - REDS_WAITING_POLISH + LIVE_HEAL - LIVE_HEAL_POLISH ))
-  # The open-work cap decides in place of the split: healing may take every place,
-  # and new work every place only while under the cap.
-  if [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
-    HEAL_ALL=""; HEAL_SLOTS=$CEILING; NEW_SLOTS=$CEILING; [ -z "$OVER_PR_CAP" ] || NEW_SLOTS=0
-    HEAL_FREE=$(( CEILING - LIVE_HEAL - LIVE_NEW )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
-    NEW_FREE=$HEAL_FREE; [ -z "$OVER_PR_CAP" ] || NEW_FREE=0
-    return 0
-  fi
-  HEAL_ALL=""; coord_heal_all "$REDS_LEFT" && HEAL_ALL=1
-  HEAL_SLOTS=$(coord_healing_slots "$CEILING" "$REDS_LEFT"); NEW_SLOTS=$(( CEILING - HEAL_SLOTS ))
-  HEAL_FREE=$(( HEAL_SLOTS - LIVE_HEAL )); [ "$HEAL_FREE" -ge 0 ] || HEAL_FREE=0
-  NEW_FREE=$(( NEW_SLOTS - LIVE_NEW ));   [ "$NEW_FREE" -ge 0 ] || NEW_FREE=0
+  HEAL_SLOTS=$CEILING; NEW_SLOTS=$CEILING; [ -z "$OVER_PR_CAP" ] || NEW_SLOTS=0
 }
-REDS_WAITING=0; REDS_WAITING_POLISH=0; split_places
+REDS_WAITING=0; split_places
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
@@ -1037,7 +1010,6 @@ candidates() {
 }
 reds_waiting() {
   REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
-  REDS_WAITING_POLISH=$(printf '%s' "$CANDS" | awk -F'\t' '($2 == "repair" || $2 == "approved-merge") && $3 == 1' | grep -c .)
 }
 cap_exempt_pri() { # <ticket> — its priority ("P0") when the cap let it through as exempt
   local e; for e in $CAP_EXEMPT_OK; do [ "${e%%:*}" != "$1" ] || { printf '%s' "${e#*:}"; return 0; }; done; return 1
@@ -1177,26 +1149,18 @@ else
   RAMP=$SLOTS; RAMP_WHY=""
   if [ -n "$COORD_RAMP_MAX" ] && [ "$RAMP" -gt "$COORD_RAMP_MAX" ]; then RAMP=$COORD_RAMP_MAX; RAMP_WHY="coordinator.rampMax is $COORD_RAMP_MAX"; fi
   while [ "$started" -lt "$RAMP" ]; do
-    heal=$(first_of healing); new=$(first_of new); proc=$(first_of process)
-    # A process fix takes any free place first, whatever the split. Then each class
-    # fills its own share; a class with nothing spawnable lends its places to the other.
+    proc=$(first_of process)
+    # A process fix takes any free place first. Then the open-work cap decides, then
+    # priority: under it the first candidate in queue order, repair or new (a red ranks
+    # at its ticket's priority, ahead at the same one); over it healing only.
     pick=""; lent=""
     if   [ -n "$proc" ]; then pick="$proc"; lent="any free place, a process fix first"
-    elif [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
-      # The cap decides, then priority: under it the first candidate in queue order,
-      # repair or new (a red ranks at its ticket's priority, ahead at the same one);
-      # over it healing only (no new is a candidate then either).
-      if [ -n "$OVER_PR_CAP" ]; then
-        # Healing and the cap-exempt (P0) new work, in queue order.
-        pick=$(over_cap_first)
-        # Then the quick new work the cap lets through (cap-quick.sh), in queue order.
-        [ -n "$pick" ] || [ -z "${QUICK_OK// /}" ] || pick=$(awk -F'\t' -v q=" $QUICK_OK " 'NF && index(q, " " $1 " ") { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS")
-      else pick=$(awk -F'\t' 'NF { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS"); fi
-    elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$heal" ]; then pick="$heal"
-    elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$new" ];  then pick="$new"
-    elif [ "$HEAL_FREE" -gt 0 ] && [ -n "$new" ];  then pick="$new"; lent="a healing place"
-    elif [ "$NEW_FREE" -gt 0 ]  && [ -n "$heal" ]; then pick="$heal"; lent="a new place"
-    fi
+    elif [ -n "$OVER_PR_CAP" ]; then
+      # Healing and the cap-exempt (P0) new work, in queue order.
+      pick=$(over_cap_first)
+      # Then the quick new work the cap lets through (cap-quick.sh), in queue order.
+      [ -n "$pick" ] || [ -z "${QUICK_OK// /}" ] || pick=$(awk -F'\t' -v q=" $QUICK_OK " 'NF && index(q, " " $1 " ") { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS")
+    else pick=$(awk -F'\t' 'NF { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS"); fi
     [ -n "$pick" ] || break
     if [ "$started" -gt 0 ]; then
       if ! again=$(coord_room fresh); then say "spawn: $started started, then no room: $again"; RAMP_WHY=""; break; fi
@@ -1213,16 +1177,10 @@ else
     # Taken out of the candidates so the next pass picks the next one.
     CANDS=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$t" 'NF && $1 != p'); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
     PLAN="${PLAN:+$PLAN,}$t"; TOOK="$cls"
-    heal_free_was=$HEAL_FREE; new_free_was=$NEW_FREE
-    if coord_healing_class "$cls"; then
-      if [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); elif [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); fi
-    else
-      if [ "$NEW_FREE" -gt 0 ]; then NEW_FREE=$((NEW_FREE-1)); elif [ "$HEAL_FREE" -gt 0 ]; then HEAL_FREE=$((HEAL_FREE-1)); fi
-    fi
     # Counted live only once it is (or, in shadow, would be) running.
     count_live() {
       if coord_healing_class "$cls"; then
-        LIVE_HEAL=$((LIVE_HEAL+1)); ticket_polish "$t" && LIVE_HEAL_POLISH=$((LIVE_HEAL_POLISH+1))
+        LIVE_HEAL=$((LIVE_HEAL+1))
       else LIVE_NEW=$((LIVE_NEW+1)); fi
     }
     bypass=""
@@ -1236,7 +1194,7 @@ else
     # past rebuildAfterRepairs. Refused, its place goes to the next one.
     if [ "$cls" = repair ] && ! gwhy=$(repair_gate "$t"); then
       say "skip #$t (repair): $gwhy"
-      started=$((started-1)); HEAL_FREE=$heal_free_was; NEW_FREE=$new_free_was; continue
+      started=$((started-1)); continue
     fi
     coord_act_log spawn "$t" "$cls${bypass:+ (quick, over the cap)}${note:+ — $note}"
     if coord_shadow; then
@@ -1257,7 +1215,7 @@ else
         say "spawn of #$t failed"
         # Its place goes to the next entry this tick. Counted as taken, one refused
         # entry at the head of the queue would hold its class shut on every tick.
-        started=$((started-1)); HEAL_FREE=$heal_free_was; NEW_FREE=$new_free_was
+        started=$((started-1))
         [ -z "$bypass" ] || QUICK_STARTED=$((QUICK_STARTED-1))
         # A refusal names its reason (driver mode cannot carry a brief, say);
         # raised so it is seen, not only buried in the coordinator's log.
@@ -1278,9 +1236,6 @@ else
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
   reds_waiting
-  if [ "$COORD_OPEN_PR_CAP" -eq 0 ] && [ "$REDS_WAITING" -gt 0 ] && ! coord_healing_class "${TOOK:-new}"; then
-    say "spawn: healing has its $HEAL_SLOTS place(s) — $REDS_WAITING red(s) wait their turn"
-  fi
 fi
 # ---- 5d. the stall guard ----------------------------------------------------------
 # The cap reached, no build on any host, and nothing spawnable for
@@ -1377,18 +1332,14 @@ if [ "$SHEET_ROLE" = owner ]; then
   fi
 fi
 
-if [ "$COORD_OPEN_PR_CAP" -gt 0 ]; then
-  say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING, by priority) · ${OPEN_PR_SAID:-open changes unread / cap $COORD_OPEN_PR_CAP}"
-else
-say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING: $NEW_SLOTS new, $HEAL_SLOTS healing)${HEAL_ALL:+ · heal-all: $REDS_LEFT reds left (waiting + healing), at least $COORD_HEAL_ALL_AT, so every place heals}$( [ $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) -eq 0 ] || echo " · $(( REDS_WAITING_POLISH + LIVE_HEAL_POLISH )) polish red(s) not counted toward heal-all")"
-fi
+OPEN_PR_PART=""; [ "$COORD_OPEN_PR_CAP" -eq 0 ] || OPEN_PR_PART=" · ${OPEN_PR_SAID:-open changes unread / cap $COORD_OPEN_PR_CAP}"
+say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING, by priority)$OPEN_PR_PART"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \
    --argjson room "$([ -n "$ROOM" ] && echo true || echo false)" --arg reading "$READING" --arg cap "$COORD_CAP" \
    --argjson hs "$HEAL_SLOTS" --argjson hl "$LIVE_HEAL" --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" \
    --argjson waiting "$REDS_WAITING" --arg took "$TOOK" \
-   --arg healAllAt "$COORD_HEAL_ALL_AT" --argjson healAll "$([ -n "$HEAL_ALL" ] && echo true || echo false)" \
    --arg diskFree "$DISK_FREE" --arg diskStop "${DISK_STOP_GB:-}" --arg diskResume "${DISK_RESUME_GB:-}" \
    --argjson diskHeld "$([ -n "$DISK_HOLD" ] && echo true || echo false)" \
    --arg pace "$(coord_pace_fresh)" --arg stepHold "${STEP_HOLD:-}" \
@@ -1397,7 +1348,7 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
      healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
-     healAll:{at:(if $healAllAt == "" then null else ($healAllAt|tonumber) end), inForce:$healAll}, started:(if $took == "" then null else $took end),
+     started:(if $took == "" then null else $took end),
      disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
            resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld},

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # coordinator-tick.test.sh — the guards the tick exists to hold: one tick at a
-# time, the machine-derived ceiling and its healing share, an optional hard cap,
+# time, the machine-derived ceiling, an optional hard cap,
 # never a claimed / gated / held ticket, shadow does nothing,
 # a frozen run is noticed. Plus the events, the owner channel and the judge.
 # Run: bash "$0"
@@ -62,7 +62,7 @@ export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 # Housekeeping in line and every tick, so each case reads what it did when the tick returns.
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
-unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_HEALING_SHARE COORDINATOR_HEAL_ALL_AT COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
+unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
 # The disk guard has its own suite (disk-guard.test.sh); here it never holds and never cleans
 # this machine's real temp dir, whatever free space a case plants for the housekeeping pass.
@@ -238,113 +238,34 @@ out=$(COORDINATOR_SHADOW=0 tick)
 want "7 running and room: an 8th starts"   "501" "$(spawned)"
 want "the live view's file has no cap"     "null" "$(jq -r '.cap' "$C/capacity.json")"
 
-echo "--- of the ceiling, a quarter heals and the rest builds new ---"
-# The split and heal-all are what coordinator.openPrCap replaces; a cap of 0 runs them.
+echo "--- no share of the places is kept for either class: priority alone decides ---"
+# The 3/4 build, 1/4 heal split is gone (owner call 2026-10-24); a cap of 0 is no cap.
 export COORDINATOR_OPEN_PR_CAP=0
 # One agent's room per tick (23% idle keeping 15%, 8% each), so a ramp is visible.
 export SWARM_IDLE=23 SWARM_CORES=10
 fresh; queue_as repair 601 602 603 604 605; queue 701 702 703 704 705
-out=$(COORDINATOR_CAP=4 ticks 1)
-want "the first tick takes the one healing place" "601" "$(spawned)"
 out=$(COORDINATOR_CAP=4 ticks 4)
-want "5 repairs + 5 new, ceiling 4: 1 repair and 3 new" "601 701 702 703" "$(spawned)"
-want "by class"                            "repair new new new" "$(classes)"
-want_in "the tick log shows the split"     'split: 3 new · 1 healing · 4 reds waiting' "$out"
-want "the live view's file shows it too"   "1/1 3/3 4" "$(jq -r '"\(.healing.live)/\(.healing.slots) \(.new.live)/\(.new.slots) \(.redsWaiting)"' "$C/capacity.json")"
+want "5 repairs + 5 new, ceiling 4, one priority: the repairs go first" "601 602 603 604" "$(spawned)"
+want_in "the tick log shows the split by priority" 'split: 0 new · 4 healing · 1 reds waiting \(of 4, by priority\)' "$out"
+want_not_in "and names no cap"             'open changes' "$out"
+want "the live view's file shows it too"   "4/4 0/4 1" "$(jq -r '"\(.healing.live)/\(.healing.slots) \(.new.live)/\(.new.slots) \(.redsWaiting)"' "$C/capacity.json")"
+want "and carries no removed split field" "false" "$(jq -r 'has("healAll")' "$C/capacity.json")"
 fresh; queue 701 702 703 704 705
 COORDINATOR_CAP=4 ticks 4 >/dev/null
 want "no repairs queued: all 4 places take new work" "701 702 703 704" "$(spawned)"
-fresh; queue_as repair 604; queue 701; live_as 601 repair; live_as 602 repair; live_as 603 repair
-COORDINATOR_CAP=4 ticks 1 >/dev/null
-want "3 repairs live, 1 place free: it takes new work" "701" "$(spawned)"
-fresh; queue_as repair 604; queue 701; live_as 601 -; live_as 602 -; live_as 603 -
-printf '[{"number":61,"headRefName":"tkt-601-a","isDraft":false,"labels":[]},{"number":62,"headRefName":"tkt-602-a","isDraft":false,"labels":[]},{"number":63,"headRefName":"tkt-603-a","isDraft":false,"labels":[]}]\n' > "$FIX/gh/prs-all.json"
-COORDINATOR_CAP=4 ticks 1 >/dev/null
-want "runs from before classes, with open PRs, count as healing" "701" "$(spawned)"
-fresh; queue_as repair 602 603; queue 701; live_as 601 repair
-out=$(COORDINATOR_CAP=4 ticks 1)
-want "with new work queued, a new place never takes healing" "701" "$(spawned)"
-want_in "and the reds wait their turn"     'healing has its 1 place\(s\) — 2 red\(s\) wait their turn' "$out"
-fresh; queue_as repair 601 602 603 604 605 606
-ticks 4 >/dev/null
-want "6 repairs, no new work, an idle Mac: healing ramps past 1" "601 602 603 604" "$(spawned)"
-fresh; queue_as repair 601 602 603 604 605 606
-out=$(ticks 2)
-want_in "it says the place was lent"       'spawned #602 \(repair\) in a new place, nothing else spawnable' "$out"
 fresh; queue_as repair 601 602 603; queue 701; echo 602 > "$FIX/claims.txt"
 out=$(COORDINATOR_CAP=4 ticks 1)
 want "only spawnable reds count as waiting" "1" "$(jq -r .redsWaiting "$C/capacity.json")"
 want "next names the next spawnable entry, of either class" "603" "$(awk -F'\t' '$2=="plan"{n=$5; sub(/.*next=/,"",n); print n}' "$C/actions.log" | tail -1)"
-fresh; queue_as repair 601 602 603; queue 701 702 703
-COORDINATOR_CAP=4 COORDINATOR_HEALING_SHARE=0.5 ticks 4 >/dev/null
-want "healingShare 0.5 of 4: 2 heal, 2 new" "2 2" "$(classes | tr ' ' '\n' | awk '/repair/{h++} /new/{n++} END{print h+0, n+0}')"
-fresh; queue_as repair 601 602 603; queue 701 702 703 704 705 706
-for t in 801 802 803 804; do live_as $t new; done
-out=$(ticks 1)
-want "ceiling 5 keeps 2 healing places"    "601" "$(spawned)"
-want_in "the split is of whatever the ceiling is" 'of 5: 3 new, 2 healing' "$out"
-
-echo "--- coordinator.healAllAt: that many reds left and every place heals ---"
-# Room for 6 in one tick, so the split alone decides who starts.
-heal_all_tick() { # <reds> [healAllAt] — reds 601.., six new 701..706, ceiling 6, share 0.25
-  fresh; queue_as repair $(seq 601 $((600 + $1))); queue 701 702 703 704 705 706
-  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT="${2:-}" ticks 1
-}
-heal_new() { classes | tr ' ' '\n' | awk '/repair/{h++} /new/{n++} END{print h+0, n+0}'; }
-slots_view() { jq -r '"\(.healing.slots) \(.new.slots) \(.healAll.at) \(.healAll.inForce)"' "$C/capacity.json"; }
-out=$(heal_all_tick 12 10)
-want "12 reds, healAllAt 10, ceiling 6: 6 healing places"  "6 0 10 true" "$(slots_view)"
-want "and all six starts heal"             "6 0" "$(heal_new)"
-want_in "the split line says heal-all is in force" 'of 6: 0 new, 6 healing\) · heal-all: 12 reds left \(waiting \+ healing\), at least 10, so every place heals' "$out"
-out=$(heal_all_tick 10 10)
-want "exactly healAllAt reds is heal-all"  "6 0" "$(heal_new)"
-out=$(heal_all_tick 9 10)
-want "9 reds, under healAllAt: the share returns, 2 healing" "2 4 10 false" "$(slots_view)"
-want "2 heal and 4 build new"              "2 4" "$(heal_new)"
-want_not_in "and the split line does not claim heal-all" 'heal-all' "$out"
-out=$(heal_all_tick 12)
-want "healAllAt absent: 12 reds keep today's 2 healing places" "2 4 null false" "$(slots_view)"
-want "2 heal and 4 build new"              "2 4" "$(heal_new)"
-out=$(heal_all_tick 12 ten)
-want "healAllAt not a number is off, not heal-all" "2 4 null false" "$(slots_view)"
-# A red being healed is still left: live healing runs count toward healAllAt.
-live_heal_tick() { # <waiting> — reds 601.. waiting, six repairs live 801..806, ceiling 6
-  fresh; queue_as repair $(seq 601 $((600 + $1))); queue 701
-  for t in 801 802 803 804 805 806; do live_as $t repair; done
-  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1
-}
-out=$(live_heal_tick 6)
-want "6 waiting + 6 healing, healAllAt 10: still 6 healing places" "6 0 10 true" "$(slots_view)"
-want_in "the split line counts the live ones as left" 'heal-all: 12 reds left' "$out"
-out=$(live_heal_tick 3)
-want "3 waiting + 6 healing, under healAllAt: 2 healing places" "2 4 10 false" "$(slots_view)"
-
-echo "--- polish never stops the factory: polish reds never count toward heal-all ---"
 # reds_as <priority> <tickets…> — repairs whose tickets carry that priority
 reds_as() { local p="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$p,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done; }
-pri_heal_tick() { # <priority> <reds> — reds 601.., six new 701..706, ceiling 6, share 0.25, healAllAt 10
-  fresh; reds_as "$1" $(seq 601 $((600 + $2))); queue 701 702 703 704 705 706
-  SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1
-}
-out=$(pri_heal_tick P1 10)
-want "10 P1 reds, healAllAt 10: every place heals" "6 0 10 true" "$(slots_view)"
-out=$(pri_heal_tick P3 10)
-want "10 polish reds, healAllAt 10: the share holds, 2 healing" "2 4 10 false" "$(slots_view)"
-want "2 heal and 4 build new"              "2 4" "$(heal_new)"
-want_in "the split line says why"          '10 polish red\(s\) not counted toward heal-all' "$out"
-fresh; for t in 601 602 603 604 605 606 607 608 609 610; do fix_issue "$t" OPEN "polish-list,screen:inbox,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done
-queue 701 702 703 704 705 706
-SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
-want "10 polish-list reds with no priority label: no heal-all either" "2 4 10 false" "$(slots_view)"
-# Live healing runs on polish tickets are not reds left either.
-fresh; reds_as P1 601 602 603 604 605 606; queue 701
-for t in 801 802 803 804 805 806; do fix_issue "$t" OPEN "P3,status:in-review"; live_as $t repair; done
-SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
-want "6 P1 waiting + 6 polish being healed: under healAllAt" "2 4 10 false" "$(slots_view)"
+fresh; reds_as P2 601 602 603 604 605 606; fix_issue 701 OPEN "P1,status:ready"; bash "$Q" add 701 >/dev/null
+SWARM_IDLE=90 COORDINATOR_CAP=2 ticks 1 >/dev/null
+want "6 P2 reds wait, one P1 new ticket: it starts first, no share holds it" "701 601" "$(spawned)"
 echo "--- which red heals first follows priority ---"
 fresh; reds_as P3 601; reds_as P1 602; reds_as P0 603; queue 701
 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "the P0 red takes the one healing place" "603" "$(spawned)"
+want "the P0 red takes the one place" "603" "$(spawned)"
 
 unset COORDINATOR_OPEN_PR_CAP
 
@@ -620,15 +541,15 @@ printf '{"run_id":"claim-%s-old","ticket":"%s","child_pid":%s,"log":"/dev/null"}
 SH
 chmod +x "$FIX/oldspawn/spawn-claim.sh"
 # One agent of room a tick, so the second tick reads the class the first recorded.
-# The split (openPrCap 0) is what tells a healing run from a new one here.
+# The live view's healing count is what tells a healing run from a new one here.
 oldspawn() { COORDINATOR_OPEN_PR_CAP=0 SWARM_SPAWN="$FIX/oldspawn/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
-fresh; queue_as repair 601 602; queue 701 702
+fresh; queue_as repair 601; queue 701 702
 oldspawn >/dev/null
 want "the older spawner ran"               "601	no-class" "$(head -1 "$SPAWNS")"
 want "its record carries no class"         "" "$(jq -r '.class // empty' "$STATE/runs/claim-601-old.json")"
 want "the coordinator recorded it"         "repair" "$(awk -F'\t' '$1=="claim-601-old"{print $3}' "$C/run-classes.tsv")"
 oldspawn >/dev/null
-want "so the next tick counts it as healing and builds new" "601 701" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
+want "so the next tick builds new and counts it as healing" "601 701" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
 want "the live view agrees"                "1 1" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
 rm -rf "$FIX/oldspawn"
 
@@ -653,17 +574,17 @@ out=$(COORDINATOR_SHADOW=0 tick)
 want "the swarm hold stops every spawn"    "" "$(spawned)"
 want_in "and names the hold"               'held — owner said stop' "$out"
 
-echo "--- process fixes trump everything: priority, kind, polish, heal-all and the split ---"
+echo "--- process fixes trump everything: priority, kind and polish ---"
 fresh; proc_q "P0,status:ready" 701; proc_q "P3,process,status:ready" 702
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1)
 want "a P3 process fix starts before a P0 that is not one" "702" "$(spawned)"
 want_in "and the log says why"             'spawned #702 \(new\) in any free place, a process fix first' "$out"
 fresh; queue_as repair $(seq 601 612); proc_q "P3,process,status:ready" 702
-SWARM_IDLE=90 COORDINATOR_CAP=1 COORDINATOR_HEALING_SHARE=0.25 COORDINATOR_HEAL_ALL_AT=10 ticks 1 >/dev/null
-want "12 reds and heal-all in force: the process fix still takes the one place" "702" "$(spawned)"
+SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
+want "12 reds waiting: the process fix still takes the one place" "702" "$(spawned)"
 fresh; queue_as repair 601; proc_q "P2,status:ready" 701; proc_q "process,status:ready" 702 703
-SWARM_IDLE=90 COORDINATOR_CAP=2 COORDINATOR_HEALING_SHARE=0.5 ticks 1 >/dev/null
-want "both places go to process fixes, ahead of the split's red" "702 703" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+SWARM_IDLE=90 COORDINATOR_CAP=2 ticks 1 >/dev/null
+want "both places go to process fixes, ahead of the red" "702 703" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 fresh; proc_q "P1,status:ready" 701; proc_q "P2,status:ready" 702
 fix_issue 703 OPEN "P3,process,status:ready"; bash "$Q" add 703 >/dev/null
 fix_issue 704 OPEN "P0,status:ready"; bash "$Q" add 704 --front >/dev/null
