@@ -1203,6 +1203,59 @@ want_not_in "and raises no stand-down"      '"kind":"stood-down".*"ticket":"601"
 want_in "past the hours it would be queued" 'base wait: would queue #601 as a repair: 6 hours passed' "$out"
 rm -f "$STATE/swarm/base-waits.tsv"
 
+echo "--- a PR red two hours with nothing fixing it reaches the owner, once (coordinator.redReportMin) ---"
+red_at() { mkdir -p "$C"; printf '%s\t%s\t%s\n' "$2" "$3" "$(( $(date +%s) - $4 * 60 ))" >> "$C/red-since.$1.tsv"; } # <mode> <pr> <sha> <min-ago>
+red2h_would() { grep -c "\"id\":\"red-2h:$1:" "$C/events.would.jsonl" 2>/dev/null; }
+fresh
+jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - FAILURE) > "$FIX/gh/prs-all.json"
+tick >/dev/null
+want "a PR first seen red has its head's clock started" "41 43 44" "$(cut -f1 "$C/red-since.would.tsv" | sort | tr '\n' ' ' | sed 's/ $//')"
+want "and is not reported on its first tick" "0" "$(grep -c '"id":"red-2h:' "$C/events.would.jsonl")"
+fresh
+jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - FAILURE) > "$FIX/gh/prs-all.json"
+red_at would 41 sha41abcdef 125; red_at would 43 sha43abcdef 130; red_at would 44 sha44abcdef 119
+tick >/dev/null
+want "red 125 min with nothing fixing it is reported" "1" "$(red2h_would 41)"
+want "a clash red 130 min is reported too"  "1" "$(red2h_would 43)"
+want "119 min is not yet"                   "0" "$(red2h_would 44)"
+want_in "it goes to the owner's channel, not agent work" $'would\tnotify\tred-2h:41:sha41abcdef' "$(cat "$C/actions.log")"
+tick >/dev/null
+want "a second tick on the same head reports nothing more" "1" "$(red2h_would 41)"
+fresh
+jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
+red_at would 41 sha41old 300
+tick >/dev/null
+want "a new head starts the clock again"    "0" "$(red2h_would 41)"
+want "and the old head's row is dropped"    "sha41abcdef" "$(cut -f2 "$C/red-since.would.tsv" | tr '\n' ' ' | sed 's/ $//')"
+fresh
+jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - FAILURE) <(pr 44 604 - FAILURE) > "$FIX/gh/prs-all.json"
+red_at would 41 sha41abcdef 200; red_at would 43 sha43abcdef 200; red_at would 44 sha44abcdef 200
+printf '[{"pr":41,"window":"mac:4242","expired":false}]\n' > "$FIX/fixing.json"
+live_run 603
+printf '604\t44\tsha44abcdef\tdevelop\tci\tsrc/legacy.test.ts\t%s\t\n' "$(date +%s)" > "$STATE/swarm/base-waits.tsv"
+tick >/dev/null
+want "a fix lock is something fixing it"    "0" "$(red2h_would 41)"
+want "a live run on its ticket is too"      "0" "$(red2h_would 43)"
+want "a base wait says its own reason, not red-2h" "0" "$(red2h_would 44)"
+rm -f "$STATE/swarm/base-waits.tsv"
+fresh
+jq -s . <(pr 41 601 - SUCCESS) > "$FIX/gh/prs-all.json"
+red_at would 41 sha41abcdef 300
+tick >/dev/null
+want "a PR green again leaves the clock file" "" "$(cat "$C/red-since.would.tsv")"
+fresh
+jq -s . <(pr 41 601 - FAILURE | jq '.title = "Feed: keep the scroll place"') > "$FIX/gh/prs-all.json"
+red_at did 41 sha41abcdef 150
+COORDINATOR_SHADOW=0 tick >/dev/null
+want "live, the owner is pinged with the PR's title and failing check" \
+  "PR #41 (Feed: keep the scroll place) has been red for 2h 30m with nothing fixing it: failing ci" "$(grep '^PR #41 (' "$FIX/notify.log")"
+want_in "and it is in needs-you.md"         '<!-- key:red-2h:41:sha41abcdef -->' "$(cat "$C/needs-you.md" 2>/dev/null)"
+fresh
+jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
+red_at would 41 sha41abcdef 50
+COORDINATOR_RED_REPORT_MIN=45 tick >/dev/null
+want "coordinator.redReportMin sets the bar" "1" "$(red2h_would 41)"
+
 echo "--- sign-off batches: five green held PRs, the moment the fifth goes green ---"
 fresh
 jq -s . <(held 51 52 53 54) <(pr 55 615 needs:human-approval SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
