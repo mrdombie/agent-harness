@@ -49,6 +49,8 @@ fi
 
 # 0. A driver step has no operator to read a status block.
 [ -n "${HARNESS_DRIVER_RUN:-}" ] && { say "exit0 driver-run"; exit 0; }
+# A headless run (a coordinator judge) has no operator either.
+[ -n "${HARNESS_HEADLESS:-}" ] && { say "exit0 headless ${HARNESS_HEADLESS}"; exit 0; }
 
 # 1. Already sent back once this turn.
 [ "$(printf '%s' "$IN" | jq -r '.stop_hook_active // false')" = "true" ] && {

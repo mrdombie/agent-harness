@@ -144,5 +144,6 @@ ok 'hooks.json runs heartbeat.sh on UserPromptSubmit' sh -c 'jq -e "[.hooks.User
 ok 'hooks.json still runs heartbeat.sh on Stop' sh -c 'jq -e "[.hooks.Stop[]?.hooks[]?.command] | any(test(\"hooks/heartbeat.sh\"))" "$1" >/dev/null' _ "$HJ"
 
 HARNESS_DRIVER_RUN=1 t quiet 'a driver step'             'No change.'                                    false "$LIVE"
+HARNESS_HEADLESS=judge:red-pr:41:sha41 t quiet 'a headless judge'  'No change.'                                false "$LIVE"
 
 suite_end "$fail"
