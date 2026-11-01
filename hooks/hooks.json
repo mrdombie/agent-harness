@@ -29,6 +29,12 @@
           },
           {
             "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/push-needs-its-hooks.sh",
+            "timeout": 10,
+            "if": "Bash(git *)"
+          },
+          {
+            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/block-hookify-rules.sh",
             "timeout": 10
           },
