@@ -89,6 +89,44 @@ LOCK="$COORD_DIR/judge.lock"
 coord_lock "$LOCK" "judge launcher" || { echo "judge: $COORD_LOCK_WHY — next tick"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 
+# THE FORGE, NOT THIS HOST'S LOG: a PM park is an event only where its build ran, so the
+# owner (or a host with no fleet) lists the label's open tickets, one REST read a tick, and
+# judges each park no event here covers, once while the label stays.
+PM_SEEN="$COORD_DIR/pm-sweep.$(coord_mode).seen"   # <ticket> \t <event id, or own:>
+PM_OWN_MIN="${COORDINATOR_PM_SWEEP_OWN_MIN:-60}"
+judge_pm_sweep() {
+  [ -n "${LBL_PM_DECISION:-}" ] || return 0
+  . "$SELF_DIR/coordinator-sheet.sh" || return 0
+  case "$(coord_sheet_role)" in owner|off) ;; *) return 0 ;; esac
+  local repo="${ISSUE_REF:-$REPO_SLUG}" q got n now seen tmp id
+  q=$(jq -rn --arg l "$LBL_PM_DECISION" '$l | @uri')
+  got=$(gh_read "the open tickets waiting on the PM" api "repos/$repo/issues?labels=$q&state=open&per_page=100" \
+        --jq '.[] | select(.pull_request | not) | .number' 2>&1) \
+    || { echo "judge: ${got:-the PM questions could not be read} — swept next tick"; return 0; }
+  got=$(printf '%s\n' "$got" | grep -E '^[0-9]+$' | sort -un)
+  now=$(swarm_now); touch "$PM_SEEN"
+  tmp=$(mktemp "$PM_SEEN.XXXXXX") || return 0
+  for n in $got; do
+    seen=$(awk -F'\t' -v n="$n" '$1 == n { print; exit }' "$PM_SEEN")
+    if [ -n "$seen" ]; then printf '%s\n' "$seen" >> "$tmp"; continue; fi
+    # This host's own event for the park (its run ended here) is the one judged.
+    if jq -e -s --arg t "$n" --argjson since $(( now - PM_OWN_MIN * 60 )) \
+         'any(.[]; .judge == true and .ticket == $t and ((.id // "") | startswith("pm-question:") | not) and ((.at // "") | (try fromdateiso8601 catch 0)) >= $since)' \
+         "$COORD_EVENTS" >/dev/null 2>&1; then
+      printf '%s\town:\n' "$n" >> "$tmp"; continue
+    fi
+    id="pm-question:$n:$now"
+    jq -cn --arg id "$id" --arg t "$n" --arg at "$(swarm_stamp)" --arg l "$LBL_PM_DECISION" \
+      '{id:$id, at:$at, kind:"stood-down", judge:true, ticket:$t, pr:"",
+        detail:("parked (pm): #" + $t + " wears " + $l + " and no event on this host covers it — a build on another host or route asked")}' \
+      >> "$COORD_EVENTS"
+    printf '%s\t%s\n' "$n" "$id" >> "$tmp"
+    echo "judge: #$n waits on the PM and no event here covers it — judged as a question"
+  done
+  mv -f "$tmp" "$PM_SEEN"
+}
+judge_pm_sweep
+
 # Waiting = a judge:true event not yet judged, question parks first, then oldest first.
 waiting() {
   jq -sc --rawfile judged "$JUDGED" '
