@@ -128,6 +128,11 @@
               "unverified"
             ]
           },
+          "verifier": {
+            "description": "The description of the verifier agent that judged this finding, copied exactly as it was started (e.g. \"Verify: avg empty list NaN\"). The driver reads that agent's own verdict off the transcript; `verified` is only the fallback.",
+            "type": "string",
+            "minLength": 1
+          },
           "votes": {
             "description": "The tally of agents that judged this finding: of = how many judged it, agree = how many held it real. With `verified` the driver derives it and ignores what is typed here. The driver keeps only a finding a majority agree on, and at least review.quorum (default 2).",
             "type": "object",

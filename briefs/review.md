@@ -24,8 +24,10 @@ tagged and handed back. Post nothing and fix nothing.
 Return every finding `code-review` reports that its verifier did not refute, and
 copy the verifier's own word into `verified`: `confirmed`, `plausible`, or
 `unverified` when no verifier judged it (a gap-sweep addition). Return a PLAUSIBLE
-or unverified one too, and never upgrade a word. Count nothing: the driver derives
-the tally from that word and keeps only what a majority of agents agreed on.
+or unverified one too, and never upgrade a word. Name the verifier agent that judged
+it in `verifier`, its description copied exactly, and keep the file and line it was
+given. Count nothing: the driver reads each verdict off the transcript and keeps only
+what a majority of agents agreed on.
 
 Then tag every finding:
 
@@ -102,6 +104,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
 - `findings[].verified`: one of "confirmed", "plausible", "unverified"
+- `findings[].verifier`: string
 - `findings[].votes`: object
 - `findings[].votes.agree` (required): integer
 - `findings[].votes.of` (required): integer

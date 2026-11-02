@@ -325,9 +325,12 @@ _driver_review_panel() {
   case "$q" in
     ''|*[!0-9]*|0) driver_say "⚠ review: harness.json's review.quorum is '${q}', which is not a count of votes, so 2 is used."; q=2 ;;
   esac
+  # THE VERIFIER'S WORD IS READ OFF THE TRANSCRIPT, never taken from the model: handed six
+  # CONFIRMED, a model marked every finding unverified (2026-11-02, the shipped brief end to end).
+  _driver_review_verifier_words "$t" "$f" || return 1
   # THE TALLY IS DERIVED FROM THE VERIFIER'S OWN WORD, never the model's arithmetic: a model
   # handed CONFIRMED wrote 1 of 1 on every finding (2026-11-02), which the quorum drops.
-  jq '.findings = [(.findings // [])[] | if .verified then .votes = ({confirmed: {agree: 2, of: 2}, plausible: {agree: 1, of: 2}, unverified: {agree: 1, of: 1}}[.verified]) else . end]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+  jq '.findings = [(.findings // [])[] | if .verified then .votes = ({confirmed: {agree: 2, of: 2}, plausible: {agree: 1, of: 2}, unverified: {agree: 1, of: 1}, refuted: {agree: 0, of: 2}}[.verified]) else . end]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
   # ONLY WHAT THE PANEL AGREED ON: at least the quorum, and more than half of those who judged it.
   n=$(jq --argjson q "$q" '[.findings[]? | select(.votes != null and ((.votes.agree >= $q and .votes.agree * 2 > .votes.of) | not))] | length' "$f" 2>/dev/null)
   if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
@@ -368,6 +371,52 @@ _driver_review_panel() {
   cp "$f" "$f.panel" 2>/dev/null || true
   # A BLOCKED the panel emptied is read off what is left; one that named nothing stays as given.
   [ "$dropped" -eq 0 ] || _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$round")" 1
+}
+
+# _driver_review_verifier_words <ticket> <review.json> — each finding's `verified` set from its
+# verifier's own verdict in the step's transcript: code-review's verifier is an Agent whose
+# prompt names its CANDIDATE (file, line, summary) and whose result, a tool result or the
+# background task's notification, opens on CONFIRMED, PLAUSIBLE or REFUTED. A finding is
+# matched to the verifier on its file, then the closest wording, then the nearest line; one
+# no verifier judged is unverified. An answer that names no panel is left as it is.
+_driver_review_verifier_words() {
+  local t="$1" f="$2" log words res
+  jq -e '.panel' "$f" >/dev/null 2>&1 || return 0
+  log="$(driver_state_dir "$t")/steps/review.log"
+  words=$(driver_log_events "$log" 2>/dev/null | jq -sc '
+    # The verdict field when the result is JSON, else the word it opens on: a quoted scale
+    # ("CONFIRMED|PLAUSIBLE|REFUTED") elsewhere in it is never the verdict.
+    def word: tostring | ascii_upcase
+      | ((capture("VERDICT.\\s*:\\s*.(?<w>CONFIRMED|PLAUSIBLE|REFUTED)") // capture("^\\s*[^A-Z]{0,3}(?<w>CONFIRMED|PLAUSIBLE|REFUTED)\\b") // null) | if . then .w else null end);
+    ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Agent")
+      | {id, desc: (.input.description // "" | tostring), p: (.input.prompt // "" | tostring)}]) as $asks
+    | ([.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result")
+        | {id: .tool_use_id, w: (.content | if type == "array" then [.[]? | .text? // ""] | join(" ") else tostring end | word)}]
+       + [.[] | select(.type == "system" and .subtype == "task_notification") | {id: .tool_use_id, w: ((.summary // "") | word)}]
+       | map(select(.w != null))) as $ws
+    | [$asks[] | . as $a | ([$ws[] | select(.id == $a.id) | .w] | first) as $w | select($w != null)
+       # Both shapes a verifier prompt took: "CANDIDATE\nfile: X, line N" and "CANDIDATE (X line N, ...)".
+       | ($a.p | capture("CANDIDATE[^\\n]*?(\\n\\s*file:)?\\s*\\(?(?<file>[A-Za-z0-9_./-]+\\.[A-Za-z0-9]+)[,:]?\\s*(lines?\\s*)?(?<line>[0-9]+)") // {file: "", line: "0"}) as $c
+       | {desc: $a.desc, file: ($c.file | sub("^\\./"; "")), line: ($c.line | tonumber),
+          summary: (($a.p | capture("\\n[Ss]ummary:\\s*(?<s>[^\\n]*)") // {s: ""}).s), word: ($w | ascii_downcase)}]' 2>/dev/null)
+  [ -n "$words" ] || words="[]"
+  res=$(jq --argjson v "$words" '
+    def ws: ascii_downcase | [scan("[a-z0-9]+") | select(length >= 4)] | unique;
+    def overlap($a; $b): ($a | ws) as $x | ($b | ws) as $y
+      | if ($x | length) == 0 or ($y | length) == 0 then 0
+        else ([$x[] | . as $w | select($y | index($w))] | length) / ([($x | length), ($y | length)] | min) end;
+    def samefile($a; $b): ($a | sub("^\\./"; "")) as $x | ($b | sub("^\\./"; "")) as $y
+      | $x == $y or ($x | endswith("/" + $y)) or ($y | endswith("/" + $x));
+    def key: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    .findings = [(.findings // [])[] | . as $f
+      | ([$v[] | select((.desc | key) == (($f.verifier // "") | tostring | key) and .desc != "")] | first) as $named
+      | (if $named then $named else ([$v | to_entries[] | .value + {k: .key} | select(samefile(.file; ($f.file // "" | tostring)))
+          | . + {o: overlap(.summary; ($f.summary // "")), d: ((.line - ($f.line // 0)) | if . < 0 then -. else . end)}
+          | select(.file != "" and .o >= 0.3)] | sort_by(.d, -.o) | first) end) as $m
+      | .verified = (if $m then $m.word else "unverified" end)]
+    | . as $r | {r: $r, c: ([$r.findings[].verified] | group_by(.) | map({key: .[0], value: length}) | from_entries)}' "$f" 2>/dev/null) || return 1
+  printf '%s' "$res" | jq '.r' > "$f.t" && mv "$f.t" "$f" || return 1
+  driver_say "   review: $(printf '%s' "$res" | jq -r '"\(.c.confirmed // 0) confirmed, \(.c.plausible // 0) plausible, \(.c.refuted // 0) refuted by their verifiers; \(.c.unverified // 0) no verifier judged"') — read off the transcript ($(printf '%s' "$words" | jq length) verifier verdict(s) in it)"
 }
 
 # _driver_review_posted <ticket> <review.json> <round> — every finding this review handed
