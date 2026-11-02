@@ -92,19 +92,32 @@ build can still prove its test red first. The plan step is told where the attemp
 is. A review that blocks a quick change goes to the full route's `fix` step. A record
 that was already planned keeps the full route.
 
-**Past the size cap, split before building.** The plan step splits a plan of more than
-`driver.split.maxTasks` (3) build tasks, or whose tasks name more than `driver.split.maxFiles`
-(20) distinct files (lockfiles not counted; `driver.split.exclude` replaces that list), into
-one ticket a task, before anything is built. A finished build is never stranded for its size:
-ship counts the branch two-dot against its merge base and, over the cap, says so in the run
-and in a "## Size" section on the PR, and ships. `0` turns either limit off.
+**Split by behaviour, before building** (owner, 2026-11-02, after Anthropic's
+long-running harness; replaces the `driver.split.maxTasks` (3) / plan-time
+`driver.split.maxFiles` (20) trigger). The plan writes a feature list for every ticket
+that changes what a person sees or does: `F<n>: <behaviour>` items, each with test steps
+run as a fast component or logic test in the required test run (never a browser check),
+all failing. `driver/feature-list.sh` checks how the plan builds it (every task names its
+item; each item's test is written by its own tasks; a foundation names its reason), sends
+the plan back once with what is wrong, then refuses. The list is kept in the run record
+(`<ticket>/features.json`); a later plan that edits or removes an item or its steps is
+refused, and only `passes` ever changes. A ticket wearing one of `driver.split.featureLabels`
+(default `type:feature`) with no list is sent back once, then refused.
 
-**A plan past the task cap, split before it builds.** A plan with more than
-`driver.split.maxTasks` (3) build tasks files one ticket per task, in the plan's order,
-each ready and carrying the parent's priority, area, screen, project, repo and effort
-labels (never a person's hold), and closes the parent as split; the run ends clean
-with nothing built. A repair, a branch that already has commits, and a part of an
-earlier split (" — part N of M: " in its title) build as before. `0` turns it off.
+Two or more items split the ticket: one part per item, each carrying its behaviour, its
+test steps and a `<!-- harness:feature-item parent=… id=F<n> test=… -->` marker, all
+ready at once. A foundation (`expand-contract`, `refactor` or `hidden-backend`) goes first,
+and only the items with `needsFoundation` wait for it; a clean-up part goes last, gated on
+every item part. The list, with its parts, is posted on the parent, which closes as split.
+`scripts/feature-close.sh` (a coordinator housekeeping pass) marks an item passing once
+its part closed as completed with its test file on the integration branch, and the
+feature done (closed as completed) once every item passes and the clean-up part merged.
+A mechanical change (`units`, 5-30) fans out like Claude Code's /batch: one part a unit,
+all ready, no list. One item builds in place. A repair, a branch that already has commits,
+and a part of an earlier split (" — part N of M: " in its title) build as before; a
+part's plan must run its item's test file. A finished build is still never stranded for
+its size: ship counts the branch two-dot and, over `driver.split.maxFiles`, says so in a
+"## Size" section on the PR, and ships.
 
 `driver.quick.enabled: false` turns the route off (sizes are still read and logged).
 The run's last line, the coordinator's `runs.log` line (`route= size= claim_to_pr=`)

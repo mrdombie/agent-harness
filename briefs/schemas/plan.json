@@ -143,6 +143,11 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "item": {
+            "description": "Which part of a split builds this task: the feature list item it delivers (`F<n>`), the shared `foundation` that goes first, or the `cleanup` that goes last. Required on every task when the plan has `features`, so each item becomes one part and no part is a layer.",
+            "type": "string",
+            "pattern": "^(F[1-9][0-9]*|foundation|cleanup)$"
           }
         }
       }
@@ -257,6 +262,157 @@
           "phone": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      }
+    },
+    "features": {
+      "description": "The feature list (Anthropic's long-running harness): one user-visible behaviour per item, each with the test steps that prove it, all failing. Write it for every ticket that adds or changes something a person can see or do. Kept in the driver state and on the parent; only `passes` ever changes, and editing or removing an item's steps is refused. Two or more items split the ticket: one part per item, built side by side.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "behaviour",
+          "steps",
+          "test",
+          "passes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^F[1-9][0-9]*$"
+          },
+          "behaviour": {
+            "description": "One behaviour a person sees or does, in their words. Never a layer (a table, an endpoint, a component).",
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "description": "The test steps, in order, that pass only once the behaviour works.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "test": {
+            "description": "The test file that runs the steps: a fast component or logic test in the required test run, never a browser check.",
+            "type": "string",
+            "minLength": 1
+          },
+          "passes": {
+            "description": "Every item starts failing. Only the driver sets it, when the item's part has merged with its steps passing.",
+            "const": false
+          },
+          "needsFoundation": {
+            "description": "True when this item builds on the foundation part and so waits for it. False or absent, it is built side by side with the others from the start.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "foundation": {
+      "description": "A shared foundation that goes first, before the items that need it. Allowed only with a named reason: `expand-contract` (the new shape added beside the old; a clean-up part removes the old), `refactor` (a change in structure with no change in behaviour), or `hidden-backend` (backend shipped dark, switched on by a later item's screen). Its tasks carry `item: foundation`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "why"
+      ],
+      "properties": {
+        "reason": {
+          "enum": [
+            "expand-contract",
+            "refactor",
+            "hidden-backend"
+          ]
+        },
+        "why": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "units": {
+      "description": "A mechanical change (a rename, every X moved to Y) fanned out like Claude Code's /batch: 5 to 30 independent units, one change each, all built at once, with no feature list. `tasks` is then the recipe each unit follows.",
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "files",
+          "tests"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "action"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "action": {
+                  "enum": [
+                    "create",
+                    "modify",
+                    "delete"
+                  ]
+                }
+              }
+            }
+          },
+          "tests": {
+            "description": "The tests this task writes first. A task with no test cannot be built test-first, so the contract has no shape for one.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "behaviour"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "behaviour": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "redWhen": {
+                  "description": "The production change that makes this test fail. A test whose author cannot name one is measuring the shape of the code.",
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }

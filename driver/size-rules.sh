@@ -22,30 +22,23 @@ DRIVER_QUICK_NEVER_EFFORT_DEFAULT='["effort:M", "effort:L", "effort:XL"]'
 DRIVER_QUICK_NEVER_LABELS_DEFAULT='["type:feature"]'
 DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^|/)\.env(\.[a-z]+)?$'
 
-# THE SIZE CAP ON A CHANGE (owner calls 2026-10-23 "small changes merged fast", 2026-10-24 "a
-# finished build is never stranded for size"). A plan whose tasks name more than
-# driver.split.maxFiles (20) files is split at plan time; at ship a branch past it, counted
-# two-dot against its merge base, ships with its size said on the PR. Lockfiles are
+# THE SIZE ON A CHANGE (owner calls 2026-10-23 "small changes merged fast", 2026-10-24 "a
+# finished build is never stranded for size"). At ship a branch past driver.split.maxFiles
+# (20), counted two-dot against its merge base, ships with its size said on the PR. Lockfiles are
 # not counted (driver.split.exclude replaces the list: globs, matched on the path or the
 # file name). 0 turns the cap off. Seen: a "Batch … 2 fixes" PR at 200 files after 5 hours.
 DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "go.sum", "composer.lock"]'
-# A PLAN PAST driver.split.maxTasks (3) BUILD TASKS IS SPLIT before it builds (owner call
-# 2026-10-23, "no batch tickets; split unstarted batches"): plans of 6-8 tasks built for about
-# two hours a ticket. 0 turns it off.
-driver_split_max_tasks() {
-  local n; n=$(jq -r '.driver.split.maxTasks // 3' "$HARNESS_CFG" 2>/dev/null)
-  case "$n" in ''|*[!0-9]*) n=3 ;; esac; printf '%s' "$n"
+# A FEATURE TICKET WRITES A FEATURE LIST (owner, 2026-11-02): a ticket wearing one of
+# driver.split.featureLabels (default type:feature) whose plan has none is sent back once,
+# then refused. The plan splits by behaviour, never by task or file count: driver.split.maxTasks
+# and the plan-time driver.split.maxFiles trigger are gone (maxFiles still names the size at ship).
+driver_split_feature_labels() {
+  jq -r '(.driver.split.featureLabels // ["type:feature"]) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
+    "$HARNESS_CFG" 2>/dev/null || printf 'type:feature\n'
 }
 driver_split_max() {
   local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"
-}
-# driver_plan_file_count <plan.json> — the distinct files its tasks name, less the excluded.
-driver_plan_file_count() {
-  local pats
-  pats=$(jq -c --argjson d "$DRIVER_SPLIT_EXCLUDE_DEFAULT" '(.driver.split.exclude // $d) | if type == "array" then [.[] | strings] else $d end' "$HARNESS_CFG" 2>/dev/null) || pats="$DRIVER_SPLIT_EXCLUDE_DEFAULT"
-  jq -r --argjson x "${pats:-[]}" '[.tasks[]?.files[]?.path // empty | strings] | unique
-    | map(select(. as $f | ($f | split("/") | last) as $b | ($x | index($f)) == null and ($x | index($b)) == null)) | length' "$1" 2>/dev/null || printf 0
 }
 # driver_split_count <tree> <trunk ref> — the files the branch changes, less the excluded; 1 unread.
 driver_split_count() {

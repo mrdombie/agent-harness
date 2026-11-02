@@ -24,72 +24,263 @@
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/size-rules.sh" || exit 1
 
-# _driver_plan_split <ticket> <plan.json> <max> — one ticket per build task, each inheriting the
-# parent's priority, area, screen, project and repo labels, filed ready in the plan's order; the
-# parent is told and closed as split. 0 when every part was filed; 2 when the ticket is itself a
-# part of a split (it builds: a part is never split again). Nothing has been built yet.
-_driver_plan_split() {
-  local t="$1" ans="$2" max="$3" meta title inherit n i url c kids="" task body l args prev="" st
-  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
-  title=$(jq -r '.title // ""' <<<"$meta")
-  if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
-    driver_say "   plan: $(jq '[.tasks[]?] | length' "$ans") build tasks, but #$t is itself a part of a split — it builds"; return 2
-  fi
-  inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
-  n=$(jq '[.tasks[]?] | length' "$ans")
-  # WHAT THE PARENT ALREADY HAS, CARRIED BY LINK, NEVER BY COPY. An approved picture lives in
-  # the parent's own comment; a part that re-posted it would be an agent approving its own
-  # picture. So the part names it, and picture-fetch.sh follows "split from #<parent>" to that
-  # comment, checked there as on the parent. The parent's PM and owner answers ride quoted.
-  local carried
-  carried=$(jq -r '
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/feature-list.sh" || exit 1
+
+# SPLIT BY BEHAVIOUR, NEVER BY COUNT (owner, 2026-11-02, after Anthropic's long-running
+# harness). It was ">3 tasks or >20 files, then chain": ~15 of 25 sampled parts were a layer
+# or a chore, 86 parts sat waiting on a predecessor, and a feature took a median 14.6 h from
+# first part filed to last merged. Now a plan writes a feature list, one behaviour a person
+# sees or does per item, each with its test steps, all failing. Two or more items: one part
+# per item, built side by side. A shared foundation goes first only with its reason, and only
+# the items that need it wait for it; a clean-up part goes last. A mechanical change fans out
+# like Claude Code's /batch: 5-30 independent units, no list.
+
+# _driver_plan_carried <ticket> <meta> — what a part carries from the parent, by link, never by
+# copy. An approved picture lives in the parent's own comment; a part that re-posted it would
+# be an agent approving its own picture. So the part names it, and picture-fetch.sh follows
+# "split from #<parent>" to that comment. The parent's PM and owner answers ride quoted.
+_driver_plan_carried() {
+  jq -r '
     def link: (.url // "") | if . == "" then "" else " (" + . + ")" end;
     [(.comments // [])[] | select((.body // "") | startswith("**Picture for any machine**"))] as $pics
     | [(.comments // [])[] | select((.body // "") | test("^\\*\\*(The owner answered|PM answer|The PM answered)"; "i"))] as $ans
     | (if ($pics | length) > 0 then
-         "\n**Approved picture — the parent'"'"'s, by link:** the approval is #'"$t"''"'"'s comment" + ($pics | last | link)
+         "\n**Approved picture — the parent'"'"'s, by link:** the approval is #'"$1"''"'"'s comment" + ($pics | last | link)
          + ((($pics | last | .body) | capture("picture-approve: sha256=(?<s>[0-9a-f]{64}) file=(?<f>[^ ]+)")?) // {} | if .s then ", `" + .f + "`, sha256 `" + .s[0:12] + "…`" else "" end)
          + ". This part is bound by it; the picture step reads it there.\n"
        else "" end)
     + (if ($ans | length) > 0 then
-         "\n**Answers already given on #'"$t"'** (quoted, not asked again):\n"
+         "\n**Answers already given on #'"$1"'** (quoted, not asked again):\n"
          + ($ans | map("> " + ((.body // "") | split("\n") | join("\n> ")) + "\n> — " + (.url // "")) | join("\n\n")) + "\n"
-       else "" end)' <<<"$meta" 2>/dev/null)
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    task=$(jq -c --argjson i "$i" '.tasks[$i]' "$ans")
-    body=$(printf 'Part %s of %s, split from #%s before it was built: %s. One change, merged on its own.
-%s
+       else "" end)' <<<"$2" 2>/dev/null
+}
 
-**This part:** %s
+# _driver_plan_files_tests <tasks JSON array> — the "**Files:** … **Tests:** …" lines of a part.
+_driver_plan_files_tests() {
+  jq -r '"**Files:** " + ([.[].files[]? | (.path // .) | tostring] | unique | join(", ") | if . == "" then "(none named)" else . end)
+    + "\n\n**Tests:** " + ([.[].tests[]? | (.file // .name // .behaviour // .) | tostring] | unique | join("; ") | if . == "" then "(none named)" else . end)' <<<"$1"
+}
 
-**Files:** %s
+# _driver_plan_file_part <title> <body> <status> <inherit> — files one part; prints its number.
+_driver_plan_file_part() {
+  local args url c l
+  args=(issue create --repo "$REPO_SLUG" --title "$1" --body "$2" --label "$3")
+  while IFS= read -r l; do [ -n "$l" ] && args+=(--label "$l"); done <<<"$4"
+  url=$(swarm_gh "${args[@]}" 2>/dev/null) || return 1
+  c=${url##*/}; case "$c" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$c"
+}
 
-**Tests:** %s
-
-Refs #%s
-%s' \
-      "$((i+1))" "$n" "$t" "${4:-its plan had $n build tasks, over \`driver.split.maxTasks\` ($max)}" "$carried" "$(jq -r '.title // "(untitled)"' <<<"$task")" \
-      "$(jq -r '[.files[]? | (.path // .) | tostring] | join(", ") | if . == "" then "(none named)" else . end' <<<"$task")" \
-      "$(jq -r '[.tests[]? | (.file // .name // .behaviour // .) | tostring] | join("; ") | if . == "" then "(none named)" else . end' <<<"$task")" "$t" "$([ -z "$prev" ] || printf '\nBlocked until #%s merges: the parts build in order, and the unblocker (scripts/unblock-waiting.sh) sets this one ready when it has.' "$prev")")
-    # CHAINED: only part 1 is ready; part k waits, gated, on part k-1 (owner's PM, 2026-10-24:
-    # three parts parked within 3 minutes asking "should I wait for part N?").
-    st="$LBL_READY"; [ -z "$prev" ] || st="${LBL_GATED:-$LBL_READY}"
-    args=(issue create --repo "$REPO_SLUG" --title "$title — part $((i+1)) of $n: $(jq -r '.title // ""' <<<"$task" | cut -c1-80)" --body "$body" --label "$st")
-    while IFS= read -r l; do [ -n "$l" ] && args+=(--label "$l"); done <<<"$inherit"
-    url=$(swarm_gh "${args[@]}" 2>/dev/null) || { driver_state_set "$t" park_note "split needed: filing part $((i+1)) of $n failed after ${kids:-none} were filed"; return 1; }
-    c=${url##*/}; case "$c" in ''|*[!0-9]*) driver_state_set "$t" park_note "split needed: part $((i+1)) came back as '$url'"; return 1 ;; esac
-    kids="${kids:+$kids }#$c"; prev="$c"
-    i=$((i+1))
-  done
-  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "**Split** into $kids — one change each, in this order. Its plan had $n build tasks, over \`driver.split.maxTasks\` ($max), so nothing was built here. Closed as split." >/dev/null 2>&1 || true
+# _driver_plan_close_split <ticket> <kids> <comment> <why> — the parent is told, closed as split
+# (so nothing claims it again), and the waits naming it are re-pointed at its parts.
+_driver_plan_close_split() {
+  local t="$1" kids="$2"
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$3" >/dev/null 2>&1 || true
   swarm_gh issue close "$t" --repo "$REPO_SLUG" --reason "not planned" >/dev/null 2>&1 || true
-  # A ticket waiting on the parent now names its parts: the parent itself never merges.
   # shellcheck disable=SC2086  # the part numbers, split on purpose
   bash "${DRIVER_REPOINT:-$KIT_ROOT/scripts/unblock-waiting.sh}" --repoint "$t" ${kids//#/} >/dev/null 2>&1 \
     || driver_say "   plan: the waits naming #$t were not re-pointed at its parts; the unblocker still reads them through the split"
-  driver_state_set "$t" noop_note "was split into $kids before it built: its plan had $n build tasks, over driver.split.maxTasks ($max)"
-  driver_say "✂ plan: $n build tasks, over driver.split.maxTasks ($max) — split into $kids, the parent closed as split"
+  driver_state_set "$t" noop_note "was split into $kids before it built: $4"
+}
+
+# _driver_plan_split_features <ticket> <plan.json> — one part per feature list item, built side
+# by side; the foundation first when the plan names one, the clean-up last. The list, its parts
+# named, is kept in the driver state and posted on the parent. 0 filed · 1 a filing failed.
+_driver_plan_split_features() {
+  local t="$1" ans="$2" meta title inherit carried n nf ni nc k=0 found="" kids="" items="" c body st wait
+  local list i id beh test reason why tasks steps
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
+  title=$(jq -r '.title // ""' <<<"$meta")
+  inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
+  carried=$(_driver_plan_carried "$t" "$meta")
+  nf=$(jq '[.tasks[]? | select(.item == "foundation")] | length | if . > 0 then 1 else 0 end' "$ans")
+  ni=$(jq '.features | length' "$ans")
+  nc=$(jq '[.tasks[]? | select(.item == "cleanup")] | length | if . > 0 then 1 else 0 end' "$ans")
+  n=$((nf + ni + nc))
+  list="$(driver_state_dir "$t")/features.json"
+  reason=$(jq -r '.foundation.reason // ""' "$ans"); why=$(jq -r '.foundation.why // ""' "$ans")
+  if [ "$nf" = 1 ]; then
+    k=1; tasks=$(jq -c '[.tasks[] | select(.item == "foundation")]' "$ans")
+    body=$(printf 'Part %s of %s, split from #%s before it was built: the shared foundation its behaviours build on. It goes first only because it names its reason, **%s**: %s. It changes nothing a person sees. One change, merged on its own.
+%s
+**This part:** foundation — %s
+
+%s
+
+Refs #%s' "$k" "$n" "$t" "$reason" "$why" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks")" "$t")
+    c=$(_driver_plan_file_part "$title — part $k of $n: foundation ($reason): $(jq -r '.[0].title' <<<"$tasks" | cut -c1-60)" "$body" "$LBL_READY" "$inherit") \
+      || { driver_state_set "$t" park_note "split needed: filing the foundation part failed"; return 1; }
+    found="$c"; kids="#$c"
+  fi
+  i=0
+  while [ "$i" -lt "$ni" ]; do
+    k=$((k+1))
+    id=$(jq -r --argjson i "$i" '.features[$i].id' "$ans"); beh=$(jq -r --argjson i "$i" '.features[$i].behaviour' "$ans")
+    test=$(jq -r --argjson i "$i" '.features[$i].test' "$ans")
+    steps=$(jq -r --argjson i "$i" '.features[$i].steps | to_entries | map("\(.key + 1). \(.value)") | join("\n")' "$ans")
+    tasks=$(jq -c --arg id "$id" '[.tasks[] | select(.item == $id)]' "$ans")
+    st="$LBL_READY"; wait=""
+    if [ -n "$found" ] && [ "$(jq -r --argjson i "$i" '.features[$i].needsFoundation // false' "$ans")" = true ]; then
+      st="${LBL_GATED:-$LBL_READY}"
+      wait=$(printf '\nBlocked until #%s merges: this behaviour builds on the foundation (%s), and the unblocker (scripts/unblock-waiting.sh) sets it ready when that has merged.' "$found" "$reason")
+    fi
+    body=$(printf 'Part %s of %s, split from #%s before it was built: one behaviour of the feature list of #%s. One change, merged on its own, built side by side with the other parts.
+%s
+**This part:** %s: %s
+
+**Test steps** — they run in `%s`, a fast component or logic test in the required test run, and %s passes only when they do. They are fixed: never edit or remove them.
+%s
+
+%s
+
+Refs #%s
+<!-- harness:feature-item parent=%s id=%s test=%s -->%s' "$k" "$n" "$t" "$t" "$carried" "$id" "$beh" "$test" "$id" "$steps" "$(_driver_plan_files_tests "$tasks")" "$t" "$t" "$id" "$test" "$wait")
+    c=$(_driver_plan_file_part "$title — part $k of $n: $id $(printf '%s' "$beh" | cut -c1-70)" "$body" "$st" "$inherit") \
+      || { driver_state_set "$t" park_note "split needed: filing part $k of $n ($id) failed after ${kids:-none} were filed"; return 1; }
+    kids="${kids:+$kids }#$c"; items="${items:+$items, }#$c"
+    jq --arg id "$id" --argjson p "$c" '.items |= map(if .id == $id then .part = $p else . end)' "$list" > "$list.tmp" && mv "$list.tmp" "$list"
+    i=$((i+1))
+  done
+  if [ "$nc" = 1 ]; then
+    k=$((k+1)); tasks=$(jq -c '[.tasks[] | select(.item == "cleanup")]' "$ans")
+    body=$(printf 'Part %s of %s, split from #%s before it was built: the clean-up (the switch removed, the old path deleted, the contract step). The feature of #%s is done only when every item of its list passes and this has merged. One change, merged on its own.
+%s
+**This part:** clean-up — %s
+
+%s
+
+Refs #%s
+Blocked until %s merge: the clean-up goes last, once every behaviour has landed; the unblocker (scripts/unblock-waiting.sh) sets it ready then.' "$k" "$n" "$t" "$t" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks")" "$t" "$items")
+    c=$(_driver_plan_file_part "$title — part $k of $n: clean-up: $(jq -r '.[0].title' <<<"$tasks" | cut -c1-60)" "$body" "${LBL_GATED:-$LBL_READY}" "$inherit") \
+      || { driver_state_set "$t" park_note "split needed: filing the clean-up part failed after $kids were filed"; return 1; }
+    kids="$kids #$c"
+    jq --argjson p "$c" '.cleanup.part = $p' "$list" > "$list.tmp" && mv "$list.tmp" "$list"
+  fi
+  [ -z "$found" ] || { jq --argjson p "$found" '.foundation.part = $p' "$list" > "$list.tmp" && mv "$list.tmp" "$list"; }
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$list")" >/dev/null 2>&1 || true
+  _driver_plan_close_split "$t" "$kids" "**Split by behaviour** into $kids — one part per item of its feature list, built side by side$([ -z "$found" ] || printf '; the foundation #%s goes first (%s), and only the items that build on it wait for it' "$found" "$reason")$([ "$nc" = 0 ] || printf '; the clean-up %s goes last' "${kids##* }"). Nothing was built here. Closed as split; the feature is done when every item passes and its clean-up part $([ "$nc" = 0 ] && printf '(none: nothing to remove)' || printf '%s' "${kids##* }") has merged (scripts/feature-close.sh marks it so)." \
+    "its feature list has $ni behaviours, one part each"
+  driver_say "✂ plan: $ni behaviours — split by behaviour into $n parts ($kids), side by side; the parent closed as split"
+}
+
+# _driver_plan_fan_out <ticket> <plan.json> — a mechanical change, one part per unit, every one
+# ready at once (Claude Code's /batch): the units are independent, so none waits on another.
+_driver_plan_fan_out() {
+  local t="$1" ans="$2" meta title inherit carried n i unit body c kids="" recipe
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
+  title=$(jq -r '.title // ""' <<<"$meta")
+  inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
+  carried=$(_driver_plan_carried "$t" "$meta")
+  recipe=$(jq -r '[.tasks[]? | .title + (if (.tests // []) != [] then " (proved by " + ([.tests[].behaviour] | join("; ")) + ")" else "" end)] | join("; ")' "$ans")
+  n=$(jq '.units | length' "$ans"); i=0
+  while [ "$i" -lt "$n" ]; do
+    unit=$(jq -c --argjson i "$i" '[.units[$i]]' "$ans")
+    body=$(printf 'Part %s of %s, split from #%s before it was built: one unit of a mechanical change, fanned out like Claude Code'"'"'s /batch. Independent of the other units: they are built at once, one change each, with no feature list.
+%s
+**The change, which every unit follows:** %s
+
+**This unit:** %s
+
+%s
+
+Refs #%s' "$((i+1))" "$n" "$t" "$carried" "$recipe" "$(jq -r '.[0].title' <<<"$unit")" "$(_driver_plan_files_tests "$unit")" "$t")
+    c=$(_driver_plan_file_part "$title — part $((i+1)) of $n: $(jq -r '.[0].title' <<<"$unit" | cut -c1-80)" "$body" "$LBL_READY" "$inherit") \
+      || { driver_state_set "$t" park_note "split needed: filing unit $((i+1)) of $n failed after ${kids:-none} were filed"; return 1; }
+    kids="${kids:+$kids }#$c"; i=$((i+1))
+  done
+  _driver_plan_close_split "$t" "$kids" "**Split, fanned out like /batch,** into $kids — a mechanical change of $n independent units, one change each, all ready at once, with no feature list. Nothing was built here. Closed as split." \
+    "a mechanical change of $n independent units"
+  driver_say "✂ plan: a mechanical change — fanned out into $n units ($kids), all ready at once; the parent closed as split"
+}
+
+# _driver_plan_resend <ticket> <why> <problems> — the plan answered once more with what is wrong.
+_driver_plan_resend() {
+  local note; note="$(driver_state_dir "$1")/steps/plan.split-note.md"
+  printf 'SENT BACK ONCE: %s\n\n%s\n\nGive the same answer again with these fixed. A feature list item is one behaviour a person sees or does, `F<n>`, with test steps run as a fast component or logic test in the required test run, and every task names the item it builds (`item`): F<n>, foundation or cleanup. Never split by layer.\n' \
+    "$2" "$(printf '%s\n' "$3" | sed 's/^/- /')" > "$note"
+  driver_say "↩ plan: $2 — asked once more"
+  driver_ai_step "$1" plan "$note"
+}
+
+# _driver_plan_list_problems <ticket> <plan.json> <labels-csv> <title> <body> — what is wrong
+# with how the plan splits, one a line. A part of a split checks only that its plan runs its
+# item's steps; any other plan checks its list, and a feature ticket must have one.
+_driver_plan_list_problems() {
+  local t="$1" ans="$2" labels="$3" title="$4" body="$5" item id test l
+  if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
+    item=$(printf '%s' "$body" | sed -nE 's/.*<!-- harness:feature-item parent=[0-9]+ id=(F[0-9]+) test=([^ ]+) -->.*/\1 \2/p' | tail -1)
+    [ -n "$item" ] || return 0
+    id=${item%% *}; test=${item#* }
+    jq -e --arg f "$test" '[.tasks[]?.tests[]?.file] | any(. == $f)' "$ans" >/dev/null 2>&1 \
+      || printf '%s\n' "this part builds $id of its parent's feature list, whose steps run in $test, and no task of this plan runs it: $id passes only when those steps pass"
+    return 0
+  fi
+  feature_list_problems "$ans"
+  [ "$(jq '((.features // []) | length) + ((.units // []) | length)' "$ans")" = 0 ] || return 0
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case ",$labels," in *",$l,"*)
+      printf '%s\n' "#$t is a feature ticket ($l) and the plan has no feature list: write \`features\`, one behaviour a person sees or does per item, each with its test steps"; return 0 ;;
+    esac
+  done <<<"$(driver_split_feature_labels)"
+}
+
+# _driver_plan_shape <ticket> <plan.json> — the list is checked (sent back once, then refused)
+# and kept in the driver state, where a later plan may not edit or remove an item's steps.
+_driver_plan_shape() {
+  local t="$1" ans="$2" meta title labels body probs rc tmp why
+  meta=$(driver_gh_read driver_ticket_view "$t" title,labels,body 2>/dev/null) || {
+    driver_say "⏳ plan: #$t could not be read to tell a feature, a part of one or a mechanical change apart — back on the queue"
+    return "$DRIVER_E_UNREAD"; }
+  title=$(jq -r '.title // ""' <<<"$meta"); body=$(jq -r '.body // ""' <<<"$meta")
+  labels=$(jq -r '[.labels[]?.name] | join(",")' <<<"$meta")
+  probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
+  if [ -n "$probs" ]; then
+    rc=0; _driver_plan_resend "$t" "the plan does not split by behaviour" "$probs" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
+    if [ -n "$probs" ]; then
+      driver_say "✋ plan: asked once and it still does not split by behaviour — $(printf '%s' "$probs" | paste -sd';' - | sed 's/;/; /g')"
+      driver_state_set "$t" park_note "the plan does not split by behaviour: $(printf '%s' "$probs" | paste -sd';' -)"
+      return "$DRIVER_E_REFUSED"
+    fi
+  fi
+  [ "$(jq '(.features // []) | length' "$ans")" -gt 0 ] || return 0
+  printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: ' && return 0
+  tmp="$(driver_state_dir "$t")/steps/features.new.json"
+  feature_list_of "$ans" "$t" > "$tmp" || return "$DRIVER_E_REFUSED"
+  if ! why=$(feature_list_store "$t" "$tmp"); then
+    driver_say "✋ plan: the feature list kept for #$t would change — $(printf '%s' "$why" | paste -sd';' -). Editing or removing an item's steps is refused: only passes changes."
+    driver_state_set "$t" park_note "the plan edits the feature list kept for #$t: $(printf '%s' "$why" | paste -sd';' -)"
+    return "$DRIVER_E_REFUSED"
+  fi
+  return 0
+}
+
+# _driver_plan_split_by_shape <ticket> <plan.json> — 0 builds here; DRIVER_E_NOOP split, nothing
+# built; DRIVER_E_REFUSED a filing failed. A repair, a branch that already has commits and a part
+# of an earlier split always build here: parts already in flight finish as they are.
+_driver_plan_split_by_shape() {
+  local t="$1" ans="$2" nf nu src=0 title
+  nf=$(jq '(.features // []) | length' "$ans"); nu=$(jq '(.units // []) | length' "$ans")
+  title=$(driver_gh_read driver_ticket_view "$t" title '.title' 2>/dev/null) || title=""
+  if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
+    [ "$nf" -le 1 ] && [ "$nu" -eq 0 ] || driver_say "   plan: #$t is itself a part of a split — it builds"
+    return 0
+  fi
+  if [ "$nf" -le 1 ] && [ "$nu" -eq 0 ]; then
+    [ "$nf" -eq 0 ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$(driver_state_dir "$t")/features.json")" >/dev/null 2>&1 || true
+    return 0
+  fi
+  if [ "$(driver_state_get "$t" mode)" = repair ] \
+     || [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
+    driver_say "   plan: already in flight — it builds here as planned, not split"
+    return 0
+  fi
+  if [ "$nu" -gt 0 ]; then _driver_plan_fan_out "$t" "$ans" || src=$?
+  else _driver_plan_split_features "$t" "$ans" || src=$?; fi
+  [ "$src" -eq 0 ] && return "$DRIVER_E_NOOP"
+  driver_state_set "$t" park_cause pm; return "$DRIVER_E_REFUSED"
 }
 
 # _driver_plan_picture_miss <ticket> <ref> <why> — the approved picture is not readable here.
@@ -148,6 +339,10 @@ driver_step_plan() { # <ticket>
     "$(jq -r '[.tasks[]?.files[]?.path] | .[]' "$ans")" "$(jq -r '.screenChange // ""' "$ans")" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
 
+  # THE FEATURE LIST: checked against how the plan builds it, and kept.
+  rc=0; _driver_plan_shape "$t" "$ans" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+
   # THE KEYS ARE THE CONTRACT'S KEYS. This read four names briefs/schemas/plan.json
   # does not have — `.schema_change`, `.data_model_spec`, `.tests` and `.files` — and
   # the contract is `additionalProperties: false`, so an answer carrying them was
@@ -170,28 +365,9 @@ driver_step_plan() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  # MORE THAN driver.split.maxTasks BUILD TASKS: split before anything is built. A repair, a
-  # resume past build, or a part of an earlier split never is.
-  # OR MORE THAN driver.split.maxFiles FILES across its tasks: the size limit lives here, before
-  # the build, never at ship — a finished build is never stranded for its size (owner, 2026-10-24).
-  local ntasks tmax nfiles fmax swhy=""
-  ntasks=$(jq '[.tasks[]?] | length' "$ans" 2>/dev/null); tmax=$(driver_split_max_tasks)
-  case "$ntasks" in ''|*[!0-9]*) ntasks=0 ;; esac
-  nfiles=$(driver_plan_file_count "$ans"); fmax=$(driver_split_max)
-  if [ "$tmax" -gt 0 ] && [ "$ntasks" -gt "$tmax" ]; then
-    swhy="its plan had $ntasks build tasks, over \`driver.split.maxTasks\` ($tmax)"
-  elif [ "$fmax" -gt 0 ] && [ "${nfiles:-0}" -gt "$fmax" ] && [ "$ntasks" -gt 1 ]; then
-    swhy="its plan named $nfiles files across $ntasks tasks, over \`driver.split.maxFiles\` ($fmax)"
-  fi
-  if [ -n "$swhy" ] && [ "$(driver_state_get "$t" mode)" != repair ] \
-     && [ -z "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
-    local src=0; _driver_plan_split "$t" "$ans" "$tmax" "$swhy" || src=$?
-    case "$src" in
-      0) return "$DRIVER_E_NOOP" ;;
-      2) ;;
-      *) driver_state_set "$t" park_cause pm; return "$DRIVER_E_REFUSED" ;;
-    esac
-  fi
+  # SPLIT BY BEHAVIOUR (above): one part per item of the feature list, or a mechanical fan-out.
+  rc=0; _driver_plan_split_by_shape "$t" "$ans" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
 
   # THE BINDING PICTURE IS READ ON THIS MACHINE, or the run goes back on the queue.
   # A designRef that is a path where the picture was drawn finds nothing on any other
