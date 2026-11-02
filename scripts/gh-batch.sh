@@ -5,7 +5,8 @@
 #   . "$KIT_ROOT/scripts/gh-batch.sh"
 #
 #   gh_call <gh args…>              gh, refused at once while the backoff holds;
-#                                   a rate-limit refusal starts (or lengthens) it
+#                                   a rate-limit refusal starts (or lengthens) it;
+#                                   GH_CALL_TIMEOUT=<sec> cuts a call that runs longer (exit 142)
 #   gh_backoff_active               0, printing the epoch it ends, while it holds; a
 #                                   search-only backoff is not one (gh_backoff_search_active)
 #   gh_backoff_search_active        the same for the search bucket alone: only search
@@ -465,6 +466,18 @@ _gh_mark_args() { # <gh args…> — sets _GH_MARKED to them, each comment body 
   done
 }
 
+# _gh_timed <cmd…> — the command under GH_CALL_TIMEOUT seconds when that is set (perl:
+# stock macOS has no timeout); a call cut there exits 142. Unset, no limit. The command
+# runs in its own process group and the whole group is killed: a child still holding
+# the pipe keeps a $( ) waiting after its parent is gone.
+_gh_timed() {
+  case "${GH_CALL_TIMEOUT:-}" in ''|0|*[!0-9]*) "$@"; return ;; esac
+  perl -e '$t = shift @ARGV; $p = fork; defined $p or exit 127;
+    if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    $SIG{ALRM} = sub { kill "KILL", -$p; waitpid($p, 0); exit 142 }; alarm $t;
+    waitpid($p, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$GH_CALL_TIMEOUT" "$@"
+}
+
 gh_call() {
   local until e rc
   if until=$(gh_backoff_active); then
@@ -490,8 +503,9 @@ gh_call() {
   gh_calls_note "$@"
   local -a _GH_MARKED=() _GH_MARK_TMP=()
   case "${1:-} ${2:-}" in "issue comment"|"pr comment"|api\ *) _gh_mark_args "$@"; set -- "${_GH_MARKED[@]}" ;; esac
-  e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { "$(gh_batch_bin)" "$@"; rc=$?; [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"; return "$rc"; }
-  "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
+  e=$(mktemp "${TMPDIR:-/tmp}/ghcall.XXXXXX") || { _gh_timed "$(gh_batch_bin)" "$@"; rc=$?; [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"; return "$rc"; }
+  _gh_timed "$(gh_batch_bin)" "$@" 2>"$e"; rc=$?
+  [ "$rc" -ne 142 ] || echo "gh: no answer in ${GH_CALL_TIMEOUT}s — the call was cut at its time limit" >>"$e"
   [ "${#_GH_MARK_TMP[@]}" -eq 0 ] || rm -f "${_GH_MARK_TMP[@]}"
   if [ "$rc" -ne 0 ] && [ -s "$e" ]; then gh_backoff_note "$(cat "$e")" "$@" || true; fi
   cat "$e" >&2; rm -f "$e"

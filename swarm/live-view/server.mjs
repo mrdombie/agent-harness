@@ -1181,6 +1181,38 @@ export function areasOf(board, ctx, sections = SECTIONS) {
 }
 
 // The newest five-hour reading the coordinator took whose window is still open.
+// ---- how the build is doing: the newest row of scripts/build-measures.sh ----
+// One JSON line per day, each figure carrying the proxy it counts. The page shows the
+// newest row beside the frozen baseline; the script is run here, off the request path,
+// once an hour at most (it is ~20 searches), never while the allowance is low or held.
+const MEASURES_FILE = process.env.SWARM_MEASURES_FILE || path.join(path.dirname(BOARD_FILE), 'measures.jsonl')
+const MEASURES_BASELINE = process.env.SWARM_MEASURES_BASELINE || path.join(path.dirname(MEASURES_FILE), 'measures-baseline.jsonl')
+const MEASURES_MS = Math.max(900_000, Number(process.env.SWARM_MEASURES_MS || 3_600_000))
+const MEASURES_SCRIPT = process.env.SWARM_MEASURES_SCRIPT || fileURLToPath(new URL('../../scripts/build-measures.sh', import.meta.url))
+export function lastRowOf(file) {
+  let rows
+  try { rows = fs.readFileSync(file, 'utf8').trim().split('\n') } catch { return null }
+  for (let i = rows.length - 1; i >= 0; i--) {
+    try { const r = JSON.parse(rows[i]); if (r && typeof r === 'object' && typeof r.day === 'string') return r } catch {}
+  }
+  return null
+}
+export function measuresOf(file = MEASURES_FILE, base = MEASURES_BASELINE) {
+  const latest = lastRowOf(file)
+  return latest ? { latest, baseline: lastRowOf(base) } : null
+}
+let measuresTried = 0, measuring = false
+function refreshMeasures(now) {
+  if (!REPO || measuring || now - measuresTried < MEASURES_MS) return
+  // A test's snapshot never runs the real script unless it names one.
+  if (process.env.SWARM_PROGRESS_SYNC && !process.env.SWARM_MEASURES_SCRIPT) return
+  measuresTried = now
+  try { if (now - fs.statSync(MEASURES_FILE).mtimeMs < MEASURES_MS) return } catch {}
+  if (allowanceLow() || ghHeld(['api', 'graphql'])) return
+  measuring = true
+  runChild('measures', BASH, [MEASURES_SCRIPT, '--days', '2'], { timeout: 600_000 }, () => { measuring = false })
+}
+
 export function usageOf(file = PACE_FILE, now = Date.now()) {
   let rows
   try { rows = fs.readFileSync(file, 'utf8').trim().split('\n') } catch { return null }
@@ -1443,6 +1475,7 @@ export function snapshot(now = Date.now()) {
   guard('board', () => refreshBoard(now))
   guard('trend', () => refreshTrend(now))
   guard('wrappers', () => refreshWrappers(now))
+  guard('measures', () => refreshMeasures(now))
   ctx.wrappers = readJsonCached(WRAPPERS_FILE)
   const boardFile = readJsonCached(BOARD_FILE)
   const claims = claimsNow(now) || (boardFile && boardFile.claims) || null
@@ -1468,7 +1501,7 @@ export function snapshot(now = Date.now()) {
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
            plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
            hold, queue, capacity: capacityOf(), fleet,
-           mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, areas, launch, usage: usageOf(PACE_FILE, now),
+           mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, areas, launch, usage: usageOf(PACE_FILE, now), measures: measuresOf(),
            hosts: hostsOf(live, claims),
            rules: { priorities: RELEASE_PRIORITIES, postLaunchMilestones: POST_LAUNCH_MILESTONES, afterLaunchLabel: AFTER_LAUNCH,
                     toolingLabels: TOOLING_LABELS, toolingScopes: TOOLING_SCOPES, ownerLabels: OWNER_ASK } }
