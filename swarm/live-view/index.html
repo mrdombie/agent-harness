@@ -64,6 +64,12 @@ tr:first-child td{border-top:0}
 .chip.muted b{color:var(--ink3)}
 .today{display:flex;flex-wrap:wrap;gap:8px 22px;align-items:baseline;font-size:15px}
 .today b{font-size:20px;font-variant-numeric:tabular-nums}
+.measures{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px 22px}
+.measures .fig{min-width:0}
+.measures .k{display:block;color:var(--ink3);font-size:12px}
+.measures b{font-size:18px;font-variant-numeric:tabular-nums}
+.measures .base{display:block;color:var(--ink3);font-size:12px}
+.proxies{margin:6px 0 0;padding-left:18px;color:var(--ink2);font-size:13px}
 .delta{font-weight:600;font-size:14px}
 .delta.ok{color:var(--good)} .delta.bad{color:var(--bad)} .delta.neutral{color:var(--ink3)}
 .rows{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
@@ -123,6 +129,8 @@ a{color:inherit}
   <section class="headline" id="headline"><div class="ptitle">Release progress</div><div class="big">Release: counting…</div></section>
   <h2>Today</h2>
   <div class="today" id="today"><span class="empty">Not read yet.</span></div>
+  <h2 id="measureshead">How the build is doing</h2>
+  <div id="measures"><p class="empty">Not measured yet.</p></div>
   <h2 id="mergedhead">Merged today</h2>
   <div id="merged"></div>
   <h2 id="needshead">Needs you</h2>
@@ -279,6 +287,31 @@ function todayLine(t){
     : d < 0 ? `<span class="delta bad">List growing by ${num(-d)}</span>` : '<span class="delta neutral">List holding steady</span>'
   return `<span><b>${v(t.merged)}</b> merged</span><span><b>${v(t.done)}</b> done</span><span><b>${v(t.made)}</b> new</span>${delta}`
 }
+// The figures the build is judged by (scripts/build-measures.sh): the newest day beside the
+// frozen baseline, and under them what each figure actually counts.
+const MEASURE_FIGS = [
+  ['merged', 'Merged', (r) => fig(r.merged?.n)],
+  ['reverted', 'Reverted', (r) => share(r.reverted?.share)],
+  ['reviewsToPass', 'Reviews to pass', (r) => `${fig(r.reviewsToPass?.mean)} <small>· 5+ ${share(r.reviewsToPass?.fivePlusShare)}</small>`],
+  ['waitHours', 'Open to merge', (r) => `${fig(r.waitHours?.median, 'h')} <small>· p75 ${fig(r.waitHours?.p75, 'h')}</small>`],
+  ['featureLeadHours', 'Feature lead time', (r) => `${fig(r.featureLeadHours?.median, 'h')} <small>· p75 ${fig(r.featureLeadHours?.p75, 'h')}</small>`],
+  ['findingTickets', 'Finding tickets filed', (r) => fig(r.findingTickets?.n)],
+  ['findingsPerRun', 'Findings sent back per run', (r) => fig(r.findingsPerRun?.mean)],
+  ['approvalsPerPr', 'Approvals per PR', (r) => fig(r.approvalsPerPr?.mean)],
+  ['incidents', 'Incidents', (r) => r.incidents?.n == null ? 'not measured' : fig(r.incidents.n)],
+]
+const fig = (x, unit = '') => x == null ? '—' : `${num(x)}${unit}`
+const share = (x) => x == null ? '—' : `${Math.round(x * 1000) / 10}%`
+function measuresBlock(m){
+  if (!m || !m.latest) return '<p class="empty">Not measured yet: the first row lands within the hour.</p>'
+  const r = m.latest, b = m.baseline && m.baseline.day !== r.day ? m.baseline : null
+  const figs = MEASURE_FIGS.map(([k, label, show]) => `<div class="fig" title="${esc(r[k]?.proxy || '')}"><span class="k">${esc(label)}</span><b>${show(r)}</b>${
+    b ? `<span class="base">baseline ${show(b).replace(/<[^>]+>/g, '')}</span>` : ''}</div>`).join('')
+  const proxies = MEASURE_FIGS.filter(([k]) => r[k]?.proxy).map(([k, label]) => `<li><b>${esc(label)}</b> counts ${esc(r[k].proxy)}</li>`).join('')
+  return `<p class="sub">${esc(dateName(r.day))}${r.complete ? '' : ', so far'}${b ? ` · baseline ${esc(dateName(b.day))}` : ''}</p>
+    <div class="measures">${figs}</div>
+    <details class="fold"><summary>What each figure counts</summary><ul class="proxies">${proxies}</ul></details>`
+}
 const NEEDS_SHOWN = 8
 function needsList(b){
   if (!b) return '<p class="empty">Not read yet.</p>'
@@ -399,6 +432,7 @@ function render(s){
   document.getElementById('today').innerHTML = todayLine(tl && s.mergedToday ? { ...tl, merged: s.mergedToday.total } : tl)
   document.getElementById('mergedhead').textContent = s.mergedToday ? `Merged today · ${s.mergedToday.total}` : 'Merged today'
   document.getElementById('merged').innerHTML = mergedList(s.mergedToday)
+  document.getElementById('measures').innerHTML = measuresBlock(s.measures)
   thisHost = s.thisHost || ''
   const building = [...s.live, ...(s.elsewhere || [])]
   document.getElementById('buildinghead').textContent = building.length ? `Building now · ${building.length}` : 'Building now'
