@@ -187,7 +187,7 @@ gh_read "the open sweep tickets" issue list --repo "$ISSUE_SLUG" --state open --
   --limit 500 --json number,title,body > "$RUN/sweep-open.json" || die "nothing filed tonight"
 gh_read "the sweep tickets closed" issue list --repo "$ISSUE_SLUG" --state closed --label "$LABEL" \
   --limit 500 --json number,body,stateReason > "$RUN/sweep-closed.json" || die "nothing filed tonight"
-gh_read "the open tickets" issue list --repo "$ISSUE_SLUG" --state open --limit 2000 \
+gh_read "the open tickets" issue list --repo "$ISSUE_SLUG" --state open --limit 5000 \
   --json number,title > "$RUN/all-open.json" || die "nothing filed tonight"
 MARK_RE='<!-- sweep-class: (?<k>[a-z0-9-]+) -->'
 jq -r --arg re "$MARK_RE" '.[] | ((.body // "") | capture($re)? | .k) as $k | select($k) | [$k, .number, .title] | @tsv' \
@@ -276,6 +276,23 @@ body() { # <class json> → the ticket body
   jq -r --arg area "$AREA" --arg day "$TODAY" '
     "## Why\n\(.why // "")\n\n## The class\n\(.count) places in the repo repeat this (found sweeping `\($area)`). One ticket for the whole class: fix it once at the source, never place by place.\n\n## Fix at the source\n\(.sourceFix)\n\n## Stop the next copy\n\(.guard // "Name the lint rule, hook or check that refuses a new copy.")\n\n## Instances (\(.instances | length) of \(.count))\n" + ([.instances[:50][] | "- `\(.)`"] | join("\n")) + "\n\nFiled by the nightly code sweep, \($day).\n\n<!-- sweep-class: \(.key) -->"' <<<"$1"
 }
+# The agent's `existing` can miss an open ticket (a live run missed the very ticket this
+# sweep was modelled on). So a title sharing at least 4 distinctive words, and 40% of
+# the class title's, with an open ticket's is left to it: a missed filing waits for the
+# PM, a duplicate floods the tracker.
+looks_covered() { # <class title> → the open ticket it reads as, or nothing
+  awk -F'\t' -v t="$1" '
+    function words(s, out,   n, a, i, w) {
+      s = tolower(s); gsub(/[^a-z0-9]+/, " ", s); n = split(s, a, " ")
+      for (i = 1; i <= n; i++) { w = a[i]; if (length(w) < 4 || w ~ /^[0-9]+$/ || w in stop) continue
+        sub(/(ies|es|s)$/, "", w); out[w] = 1 }
+    }
+    BEGIN { split("that this with from into have when what were they them their then than there every same each only once never more also does done must should would could where which while", x, " "); for (i in x) stop[x[i]] = 1
+      words(t, mine); for (w in mine) m++ }
+    { delete theirs; words($2, theirs); s = 0; for (w in mine) if (w in theirs) s++
+      if (s >= 4 && s >= 0.4 * m && s > best) { best = s; num = $1 } }
+    END { if (num != "") print num }' "$RUN/open-tickets.tsv"
+}
 COUNTS="$SD/counts.tsv"; touch "$COUNTS"
 filed=0 held_over="" failed=0
 while IFS= read -r c; do
@@ -295,6 +312,8 @@ while IFS= read -r c; do
   fi
   if grep -qxF "$key" "$RUN/closed-keys.txt" 2>/dev/null; then say "$key: closed as not planned; left"; continue; fi
   if [ -n "$existing" ] && grep -q "^$existing	" "$RUN/open-tickets.tsv"; then say "$key: open ticket #$existing already covers it; left"; continue; fi
+  like=$(looks_covered "$title") || { say "$key: could not compare it with the open tickets; left"; continue; }
+  if [ -n "$like" ]; then say "$key: reads as open ticket #$like ($(awk -F'\t' -v n="$like" '$1 == n { print $2; exit }' "$RUN/open-tickets.tsv" | cut -c1-80)); left"; continue; fi
   if [ "$filed" -ge "$CAP" ]; then held_over="$held_over $key"; continue; fi
   body "$c" > "$RUN/body-$key.md"
   if [ "$FILE" = 1 ]; then

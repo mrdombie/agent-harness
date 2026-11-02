@@ -207,6 +207,15 @@ want "nothing filed" 0 "$(creates)"
 want_in "it names the ticket" '#17807' "$(cat "$FIX/out")"
 want_in "the agent saw the open tickets" '17807' "$(cat "$SD"/run/open-tickets.tsv 2>/dev/null || last_call)"
 
+echo "--- a class whose title reads as an open ticket is left, even when the agent missed it ---"
+# The titles a live run produced: the agent named no existing ticket for this one.
+jq -n '{classes: [{key: "hand-copied-session-membership-check", title: "API routes hand-copy the sign-in + workspace check, and the copies already disagree on what they tell the user", why: "w", sourceFix: "One gate.", guard: "A hook.", count: 388, instances: ["a:1","a:2","a:3"], existing: null},
+  {key: "nan-unsafe-query-number-clamp", title: "List routes clamp page/limit with a bare parseInt, so a non-numeric value reaches the query as NaN", why: "w", sourceFix: "One parser.", guard: "A rule.", count: 12, instances: ["a:1","a:2","a:3"], existing: null}]}' > "$FIX/answer"
+reset; run --file --force >/dev/null
+want "only the class no ticket covers is filed" 1 "$(creates)"
+want_in "it is that one" 'nan-unsafe' "$(cat "$FIX"/bodies/*.args)"
+want_in "the other names the ticket it reads as" 'hand-copied-session-membership-check: reads as open ticket #17807' "$(cat "$FIX/out")"
+
 echo "--- one key twice in one answer is one ticket ---"
 answer "[$(cls twice 4),$(cls twice 5)]"; reset; run --file --force >/dev/null
 want "one create" 1 "$(creates)"
