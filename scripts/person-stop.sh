@@ -109,9 +109,12 @@ check() {
     rv=$(ps_read "repos/$REPO/pulls/$pr/reviews?per_page=100") || { echo "could not read the reviews on #$pr"; return 2; }
     tl=$(ps_read "repos/$REPO/issues/$pr/timeline?per_page=100") || { echo "could not read the timeline of #$pr"; return 2; }
   fi
-  local f; f=$(mktemp "${TMPDIR:-/tmp}/person-stop.XXXXXX") || return 2
-  jq -n --argjson tc "$tc" --argjson pc "$pc" --argjson rv "$rv" --argjson tl "$tl" --argjson pj "$pj" \
-    '{tc: $tc, pc: $pc, rv: $rv, tl: $tl, pj: $pj}' > "$f" 2>/dev/null || { rm -f "$f"; echo "could not read what GitHub answered"; return 2; }
+  # Through files, never argv: a long history is over the OS argument limit (1 MB on macOS).
+  local f d; d=$(mktemp -d "${TMPDIR:-/tmp}/person-stop.XXXXXX") || return 2; f="$d/all.json"
+  printf '%s' "$tc" > "$d/tc"; printf '%s' "$pc" > "$d/pc"; printf '%s' "$rv" > "$d/rv"; printf '%s' "$tl" > "$d/tl"; printf '%s' "$pj" > "$d/pj"
+  jq -n --slurpfile tc "$d/tc" --slurpfile pc "$d/pc" --slurpfile rv "$d/rv" --slurpfile tl "$d/tl" --slurpfile pj "$d/pj" \
+    'if ([$tc, $pc, $rv, $tl, $pj] | all(length == 1)) then {tc: $tc[0], pc: $pc[0], rv: $rv[0], tl: $tl[0], pj: $pj[0]} else error("not one value each") end' > "$f" 2>/dev/null \
+    || { rm -rf "$d"; echo "could not read what GitHub answered"; return 2; }
   local out rc=0
   out=$(jq -r --arg t "$t" --arg pr "$pr" --arg since "$since" --arg dnm "$dnm" --arg mark "$PERSON_STOP_MARK" \
           --argjson near "$PS_NEAR" --argjson quiet "$PS_QUIET" \
@@ -142,7 +145,7 @@ check() {
           | select(([ $new[$i + 1:][] | select(.body | person_opener) ] | length) == 0)
           | "\($c.user.login) named a blocking finding on \($c.where) on \($c.at | day): \($line | oneline)" )
       ] | .[]' "$f" 2>/dev/null) || rc=$?
-  rm -f "$f"
+  rm -rf "$d"
   [ "$rc" -eq 0 ] || { echo "could not read the comments and the timeline as JSON"; return 2; }
   [ -n "$out" ] || return 0
   printf '%s\n' "$out"
