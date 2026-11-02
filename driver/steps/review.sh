@@ -501,13 +501,15 @@ _driver_review_tally() {
 # _driver_review_spawns <transcript> — how many subagents a reviewer started of its own: an
 # Agent or Task tool call at any depth, or a started task no Skill call opened. code-review
 # itself runs in the one context its Skill call forks (measured 2026-11-02 at high: one task,
-# spawn depth 1, opened by the Skill call, and no Agent call anywhere).
+# spawn depth 1, opened by the Skill call, and no Agent call anywhere). A command the review
+# runs is a task too (task_type local_bash), never an agent: counting it parked 6 changes.
 _driver_review_spawns() {
   driver_log_events "$1" 2>/dev/null | jq -s '
     ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")]) as $uses
     | ([$uses[] | select(.name == "Skill") | .id // empty]) as $skills
     | ([$uses[] | select(.name == "Agent" or .name == "Task") | (.id // "agent")]
        + [.[] | select(.type == "system" and .subtype == "task_started")
+          | select((.task_type // "local_agent") | test("agent"))
           | select(((.tool_use_id // "") as $i | $skills | index($i)) == null or (.spawn_depth // 1) > 1)
           | (.tool_use_id // .task_id // "task")])
     | unique | length' 2>/dev/null || echo 0

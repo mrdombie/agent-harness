@@ -139,6 +139,11 @@ votes "${MIXED[@]}"
 transcript "$FIX/ai/review.v1.jsonl" "${MIXED[0]}" '{"type":"system","subtype":"task_started","task_id":"b2","tool_use_id":"toolu_other","spawn_depth":2}'
 rc=0; on driver_step_review 707 >/dev/null 2>&1 || rc=$?
 want "a task no Skill call opened fails it too"    "24" "$rc"
+rp_tree 790
+votes "${MIXED[@]}"
+transcript "$FIX/ai/review.v1.jsonl" "${MIXED[0]}" '{"type":"system","subtype":"task_started","task_id":"bu1","tool_use_id":"toolu_bash","parent_task_id":"a1","owned_by_subagent":true,"task_type":"local_bash","description":"Run loop tests"}'
+rc=0; on driver_step_review 790 >/dev/null 2>&1 || rc=$?
+want "a command the review runs is not a subagent" "30" "$rc"
 rp_tree 708
 same "$(answer 1 BLOCKED "[$F_B]")"
 transcript "$FIX/ai/review.jsonl" "$(answer 1 BLOCKED "[$F_B]")" "$AGENT"
@@ -223,6 +228,11 @@ case_capped() { # voter 2 starts a finder agent inside the skill
   N=$((N + 1)); rp_tree "$N"; votes "${MIXED[@]}"; transcript "$FIX/ai/review.v2.jsonl" "${MIXED[1]}" "$AGENT"
   R="rc=$(in_kit "$N")"
 }
+case_bash() { # voter 1's review runs a test command, a local_bash task inside its fork
+  N=$((N + 1)); rp_tree "$N"; votes "${MIXED[@]}"
+  transcript "$FIX/ai/review.v1.jsonl" "${MIXED[0]}" '{"type":"system","subtype":"task_started","task_id":"bu1","tool_use_id":"toolu_bash","parent_task_id":"a1","owned_by_subagent":true,"task_type":"local_bash"}'
+  R="rc=$(in_kit "$N")"
+}
 case_tools() { # the tools a voter session was started with
   N=$((N + 1)); rp_tree "$N"; votes "${MIXED[@]}"; in_kit "$N" >/dev/null
   R="tools=$(awk 'p { if ($0 ~ /^--/) exit; print } $0 == "--tools" { p = 1 }' "$FIX/claude-args-review.txt" | tr '\n' ' ' | sed 's/ $//')"
@@ -235,6 +245,7 @@ kit_copy
 case_mixed;  want "the unplanted kit: the vote"          "rc=30 kept=a1 swept=1 calls=3 effort=high" "$R"
 case_capped; want "the unplanted kit: the cap"           "rc=24" "$R"
 case_tools;  want "the unplanted kit: no Agent tool"     "tools=Bash Read Grep Glob Skill" "$R"
+case_bash;   want "the unplanted kit: a command is no agent" "rc=30" "$R"
 case_tie;    want "the unplanted kit: a tie goes lower"  "grade=minor" "$R"
 # plant <label> <file under the kit> <exact text> <replacement> <case> <the result the line prevents>
 plant() {
@@ -246,6 +257,8 @@ plant() {
 # 0.7.334's behaviour, one piece at a time: the panel at max, no cap, every tool.
 plant "the cap is deleted" driver/steps/review.sh \
   '  for i in $(seq 1 "$n"); do _driver_review_capped "$t" "review-v$i" "voter $i" || return "$DRIVER_E_REFUSED"; done' '' case_capped "rc=30"
+plant "commands count as subagents again" driver/steps/review.sh \
+  '          | select((.task_type // "local_agent") | test("agent"))' '' case_bash "rc=24"
 plant "the effort defaults to max again" driver/steps/review.sh \
   'effort=$(driver_opt review.effort high)' 'effort=$(driver_opt review.effort max)' case_mixed "rc=30 kept=a1 swept=1 calls=3 effort=max"
 plant "the voters are deleted (one reviewer)" driver/steps/review.sh \
