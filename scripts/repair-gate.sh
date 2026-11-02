@@ -45,15 +45,22 @@ case "$COORD_REBUILD_AFTER" in ''|*[!0-9]*) COORD_REBUILD_AFTER=2 ;; esac
 REPAIR_MARK='<!-- harness:repair-spawn -->'
 # A PR seen base-red starts its count again: the repairs before were sent at a red no PR can fix.
 BASE_RED_MARK='<!-- harness:base-red -->'
+# A REPAIR THAT RAN NO MODEL STEP IS NOT A REPAIR. A repair spawn is counted when it starts,
+# but a run that ends before any step called the model (GitHub unread at ship, a peer's
+# claim, a usage wait, a start refused) repaired nothing. 31 Oct - 2 Nov: 15 of 36 rebuilds
+# counted at least one such run, and one P0 ticket closed two green, mergeable PRs and
+# built fresh three times on runs that only re-read a stop GitHub could not answer. Such a
+# run's spawn is voided: locally (repair-void in run-classes) and on the PR (REPAIR_VOID_MARK).
+REPAIR_VOID_MARK='<!-- harness:repair-void -->'
 repairs_since_fresh() { # <ticket> [pr-json] — repair spawns since its last rebuild or new build
   local t="$1" pj="${2:-}" here there="" pr
-  here=$(awk -F'\t' -v t="$t" '$2 == t { if ($3 == "repair") n++; else if ($3 == "rebuild" || $3 == "new" || $3 == "base-red") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0)
+  here=$(awk -F'\t' -v t="$t" '$2 == t { if ($3 == "repair") n++; else if ($3 == "repair-void") { if (n > 0) n-- } else if ($3 == "rebuild" || $3 == "new" || $3 == "base-red") n = 0 } END { print n + 0 }' "$COORD_RUN_CLASSES" 2>/dev/null || echo 0)
   [ -n "$pj" ] || pj=$(open_pr_json "$t")
   pr=$(jq -r '.number // empty' <<<"${pj:-null}" 2>/dev/null)
   # gh-read-ok: a failed read counts 0 here, so the host's own count stands, as before this read
   [ -z "$pr" ] || there=$(swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" --paginate \
-      -q ".[] | (.body // \"\") | if contains(\"$REPAIR_MARK\") then \"r\" elif contains(\"$BASE_RED_MARK\") then \"b\" else empty end" 2>/dev/null \
-      | awk '$0 == "r" { n++ } $0 == "b" { n = 0 } END { print n + 0 }')
+      -q ".[] | (.body // \"\") | if contains(\"$REPAIR_MARK\") then \"r\" elif contains(\"$REPAIR_VOID_MARK\") then \"v\" elif contains(\"$BASE_RED_MARK\") then \"b\" else empty end" 2>/dev/null \
+      | awk '$0 == "r" { n++ } $0 == "v" && n > 0 { n-- } $0 == "b" { n = 0 } END { print n + 0 }')
   case "$there" in ''|*[!0-9]*) there=0 ;; esac
   case "$here" in ''|*[!0-9]*) here=0 ;; esac
   [ "$there" -gt "$here" ] && echo "$there" || echo "$here"
@@ -213,6 +220,37 @@ heal_pr_gone() { # <ticket> <class> — 0 when the row is new work now (in shado
   say "#$t ($cls): has no open PR — back to new work"
 }
 
+# repair_ran_no_step <run log> <exit> <result line> — 0 when the run stopped before any model
+# call: it ended on a known pre-model stop (DRIVER_E_UNREAD 26 GitHub unread, DRIVER_E_REQUEUE
+# 28 a peer's claim or a wait, or "start refused") AND its log has no "<step>: $<cost> ·
+# context" line (driver/ai-step.sh driver_record_usage). Both, never one: a run killed mid-step
+# (a usage limit, a stop-all, an OOM, a timeout) also leaves no cost line but did spend, and
+# still counts, or a ticket that keeps dying that way would be repaired for ever. A missing
+# log is unknown, and counts.
+repair_ran_no_step() {
+  [ -s "${1:-}" ] || return 1
+  case "${2:-}" in
+    "${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_REQUEUE:-28}") ;;
+    *) case "${3:-}" in *"start refused"*) ;; *) return 1 ;; esac ;;
+  esac
+  ! grep -qE ': \$[0-9][0-9.]* · context ' "$1"
+}
+REPAIR_VOIDS=""   # tickets whose PR is told of a voided repair once this tick has read the PRs
+repair_void() { # <ticket> <run-id> — the spawn no longer counts toward a rebuild
+  printf '%s\t%s\trepair-void\t%s\n' "$2" "$1" "$(date +%s)" >> "$COORD_RUN_CLASSES"
+  case " $REPAIR_VOIDS " in *" $1 "*) ;; *) REPAIR_VOIDS="$REPAIR_VOIDS${REPAIR_VOIDS:+ }$1" ;; esac
+  say "repair: run $2 on #$1 ran no model step, so it is not counted as a repair (coordinator.rebuildAfterRepairs)"
+}
+repair_void_marks() { # — after PRS is read: each voided repair is marked on its open PR, for every host's count
+  local t pj pr
+  coord_shadow 2>/dev/null && return 0
+  for t in $REPAIR_VOIDS; do
+    pj=$(open_pr_json "$t"); pr=$(jq -r '.number // empty' <<<"${pj:-null}" 2>/dev/null); [ -n "$pr" ] || continue
+    swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" -X POST -f body="A repair run on $(hostname -s 2>/dev/null || echo this host) for #$t ran no model step, so it is not counted toward a rebuild.
+$REPAIR_VOID_MARK" >/dev/null 2>&1 || true
+  done
+  REPAIR_VOIDS=""
+}
 repair_record() { REPAIR_MARK_PJ="${2:-}" coord_record_class "$1" repair; }   # [pr-json]; coord_record_class marks the PR
 
 repair_gate() { # <ticket> [pr-json]
