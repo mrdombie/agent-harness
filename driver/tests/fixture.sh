@@ -171,6 +171,8 @@ printf '%s\n' "$@" > "$FIX/claude-args-$step.txt"
 perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
   > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
 f="$FIX/ai/$step.jsonl"
+# A review voter (DRIVER_REVIEW_VOTER=N) answers from <step>.vN.jsonl when the test wrote one.
+[ -z "${DRIVER_REVIEW_VOTER:-}" ] || [ ! -f "$FIX/ai/$step.v$DRIVER_REVIEW_VOTER.jsonl" ] || f="$FIX/ai/$step.v$DRIVER_REVIEW_VOTER.jsonl"
 [ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
 cat "$f"
 # A second answer the test queued (<step>.then.jsonl) is what the NEXT call returns.
@@ -194,6 +196,9 @@ SH
   # The machine's gate slots are shared by every session on it; a suite takes its own.
   export HARNESS_GATE_SLOT_DIR="$FIX/gate-slots" MACHINE_GATE_POLL=1
   export DRIVER_CLAUDE="$BIN/claude"
+  # ONE REVIEWER IN THE FIXTURE, so a suite counts one review call per round as it always
+  # has; the shipped default is a 3-voter vote, which review-panel.test.sh runs unset.
+  export DRIVER_REVIEW_VOTERS=1
   export DRIVER_BRIEFS="$FIX/briefs"
   mkdir -p "$DRIVER_BRIEFS/schemas"
   # A person's stop (scripts/person-stop.sh) answers from $FIX/person-stop.{rc,out}:

@@ -314,7 +314,9 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   #   - git and gh on the step's PATH refuse push, pr ready, pr merge and pr create;
   #   - origin's head for the branch is read before and after the step, and a step
   #     it moved under refuses, whatever path it used to get there.
+  # One shim per slot: the review's voters write theirs at the same moment.
   local shim="$d/steps/.driver-shim" real_git real_gh pbranch before="" after="" brc=1 arc=1
+  [ "$slot" = "$step" ] || shim="$shim-$slot"
   real_git=$(command -v git); real_gh=$(command -v gh 2>/dev/null || true)
   mkdir -p "$shim"
   cat > "$shim/git" <<SHIM

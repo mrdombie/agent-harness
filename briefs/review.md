@@ -7,10 +7,17 @@ tagged. You edit nothing in this step.
 
 ## Run the reviewer — do not review from this file
 
+You are one of several voters reviewing this change in separate sessions; a finding
+stays only when at least 2 of you report it.
+
 Invoke **`code-review`** through the Skill tool, with args `{{EFFORT}} {{TARGET}}`.
-Its finder agents hunt in parallel, then a verifier agent votes on each candidate.
 It owns how the review is conducted; this brief owns how its findings are graded,
 tagged and handed back. Post nothing and fix nothing.
+
+**Start no subagents.** Never call the Agent or Task tool, and never ask
+`code-review` for a multi-agent pass. A review step's agent count is bounded and
+configured, never left to a skill's top level: a voter whose transcript shows a
+subagent of its own fails the step.
 
 ## What you are given
 
@@ -19,15 +26,11 @@ tagged and handed back. Post nothing and fix nothing.
 - The round: {{ROUND}}
 - This project: {{PROJECT_FACTS}}
 
-## Keep only what the panel agreed on
+## Report every finding; the vote decides what stays
 
-Return every finding `code-review` reports that its verifier did not refute, and
-copy the verifier's own word into `verified`: `confirmed`, `plausible`, or
-`unverified` when no verifier judged it (a gap-sweep addition). Return a PLAUSIBLE
-or unverified one too, and never upgrade a word. Name the verifier agent that judged
-it in `verifier`, its description copied exactly, and keep the file and line it was
-given. Count nothing: the driver reads each verdict off the transcript and keeps only
-what a majority of agents agreed on.
+Return every finding `code-review` reports, with its file and line. Add no `votes`:
+the driver matches the voters' findings by file, nearby line and summary, keeps one
+a majority reported, and gives it their most common grade (a tie goes lower).
 
 Then tag every finding:
 
@@ -67,7 +70,7 @@ verdict; they mean nothing already tested broke, not that the change is correct.
 
 ## The findings that keep reaching the trunk
 
-Hand these to the finders as extra angles:
+Hold the change to these as extra angles:
 
 - **A test that cannot fail**: one that reads a source file or asserts a string is
   in a file measures shape, not behaviour.
@@ -95,16 +98,14 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `panel`: object
 - `panel.skill` (required): string
 - `panel.effort` (required): one of "low", "medium", "high", "xhigh", "max"
-- `panel.hunters`: integer
-- `panel.verifiers`: integer
+- `panel.voters`: integer
+- `panel.answered`: integer
 - `findings` (required): list of object
 - `findings[].id` (required): string
 - `findings[].file` (required): string
 - `findings[].line` (required): integer
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
-- `findings[].verified`: one of "confirmed", "plausible", "unverified"
-- `findings[].verifier`: string
 - `findings[].votes`: object
 - `findings[].votes.agree` (required): integer
 - `findings[].votes.of` (required): integer
@@ -127,10 +128,10 @@ Conditional:
 The verdict is read off the grades, never typed beside them: `SHIP` with a Critical
 or a Major that is not `pre-existing`, and `BLOCKED` with none, are both refused.
 Every finding carries its file, its line (0 when it is on no line of a file, such as
-the pull request's body), its grade, its `tag`, its `verified` word, the one-line `reason`
-in a user's words, and the fix; a class adds `class` and `instances`. `panel` names
-the reviewer you ran: `{"skill": "code-review", "effort": "{{EFFORT}}"}`, with the
-number of finder and verifier agents it started in `hunters` and `verifiers`.
+the pull request's body), its grade, its `tag`, the one-line `reason` in a user's
+words, and the fix; a class adds `class` and `instances`. `panel` names the reviewer
+you ran: `{"skill": "code-review", "effort": "{{EFFORT}}"}`; the driver adds the
+number of voters.
 
 A question names who answers it in `questionFor` (`owner`: pixels, product, data
 model; `pm`: repo, split, order, acceptance; unsure is `owner`)

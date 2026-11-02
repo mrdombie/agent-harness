@@ -98,17 +98,20 @@ for step in $steps; do
   done
 done
 
-# --- the review runs Claude Code's own multi-agent reviewer --------------------
-# The review is `code-review` (finders in parallel, a verifier vote on each), not a single
-# reviewer; its Return asks for the panel, a tag and the votes on every finding.
+# --- the review is a voter running Claude Code's own reviewer, with no agents ----
+# The review is `code-review`, run by each of the driver's voters with no subagents of its
+# own; its Return asks for the panel and a tag on every finding, and never for a tally.
 want "the review step declares code-review" "code-review" "$(jq -r '.steps.review.skills | join(" ")' "$FACTS")"
 rret=$(awk '/^## Return[[:space:]]*$/ {inr=1; next} /^## / {inr=0} inr' "$BRIEFS/review.md")
-for w in '`panel`' '`tag`' '`verified`' 'pre-existing' '`class`'; do
+for w in '`panel`' '`tag`' 'pre-existing' '`class`'; do
   printf '%s' "$rret" | grep -qF -- "$w" && ok "review.md's Return asks for $w" \
     || bad "review.md's Return never asks for $w"
 done
 grep -qF '{{EFFORT}}' "$BRIEFS/review.md" && ok "review.md runs code-review at the driver's effort" \
   || bad "review.md does not take the effort from the driver ({{EFFORT}})"
+grep -qF 'Start no subagents' "$BRIEFS/review.md" && grep -qF 'Agent or Task tool' "$BRIEFS/review.md" \
+  && ok "review.md tells each voter to start no subagents" || bad "review.md never bars a voter's own subagents"
+want "the review step is given no Agent tool" "" "$(jq -r '.steps.review.tools // ["(unset: every tool)"] | map(select(. == "Agent" or . == "Task" or . == "(unset: every tool)")) | join(" ")' "$FACTS")"
 
 # --- the copy probe ------------------------------------------------------------
 # A real measurement of copying: the longest run of words a brief shares with a

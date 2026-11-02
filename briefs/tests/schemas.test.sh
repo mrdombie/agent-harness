@@ -103,7 +103,7 @@ for ex in valid-panel valid-ship-beside-pre-existing; do
   if [ -f "$f" ]; then "$V" review "$f" >/dev/null 2>&1; rc=$?; want "review accepts $ex" 0 "$rc"
   else bad "review has no examples/review.$ex.json"; fi
 done
-for ex in panel-finding-without-tag panel-finding-without-verified tag-off-the-list nit-tag-on-blocking-grade \
+for ex in panel-finding-without-tag tag-off-the-list nit-tag-on-blocking-grade \
           blocked-only-pre-existing ship-beside-important-major panel-without-effort; do
   f="$BRIEFS/examples/review.invalid-$ex.json"
   if [ -f "$f" ]; then "$V" review "$f" >/dev/null 2>&1; rc=$?; want "review refuses $ex" 1 "$rc"
