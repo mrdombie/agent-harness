@@ -8,9 +8,7 @@
   "verdict": "BLOCKED",
   "panel": {
     "skill": "code-review",
-    "effort": "max",
-    "hunters": 10,
-    "verifiers": 3
+    "effort": "high"
   },
   "findings": [
     {
@@ -30,8 +28,7 @@
       ],
       "summary": "the failed state renders the empty copy, here and in the rail",
       "reason": "someone whose queue failed to load is told there is nothing in it, and stops looking",
-      "fix": "branch on state === 'failed' in both and render the retry row",
-      "verified": "confirmed"
+      "fix": "branch on state === 'failed' in both and render the retry row"
     }
   ]
 }

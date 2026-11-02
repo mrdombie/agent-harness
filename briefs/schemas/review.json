@@ -43,7 +43,7 @@
       ]
     },
     "panel": {
-      "description": "How the review was run: the reviewer skill, its effort, how many finder agents hunted and how many verifier agents voted. Present, every finding must carry its tag and its verifier's word.",
+      "description": "How the review was run: the reviewer skill and its effort; the driver adds how many voters it ran (`voters`) and how many answered (`answered`). Present, every finding must carry its tag.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -64,11 +64,12 @@
             "max"
           ]
         },
-        "hunters": {
+        "voters": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 1,
+          "maximum": 5
         },
-        "verifiers": {
+        "answered": {
           "type": "integer",
           "minimum": 0
         }
@@ -120,21 +121,8 @@
               "pre-existing"
             ]
           },
-          "verified": {
-            "description": "The verifier agent's own word on this finding, copied, never worked out: confirmed, plausible, or unverified when no verifier judged it (a gap-sweep addition). A refuted one is not returned. The driver derives the tally from it: confirmed is its finder and its verifier agreeing (2 of 2), plausible 1 of 2, unverified 1 of 1.",
-            "enum": [
-              "confirmed",
-              "plausible",
-              "unverified"
-            ]
-          },
-          "verifier": {
-            "description": "The description of the verifier agent that judged this finding, copied exactly as it was started (e.g. \"Verify: avg empty list NaN\"). The driver reads that agent's own verdict off the transcript; `verified` is only the fallback.",
-            "type": "string",
-            "minLength": 1
-          },
           "votes": {
-            "description": "The tally of agents that judged this finding: of = how many judged it, agree = how many held it real. With `verified` the driver derives it and ignores what is typed here. The driver keeps only a finding a majority agree on, and at least review.quorum (default 2).",
+            "description": "The driver's own tally of its review voters, never typed by a reviewer: of = how many voters answered, agree = how many reported this finding. The driver keeps only a finding a majority agree on, and at least review.quorum (default 2).",
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -332,8 +320,7 @@
             "items": {
               "type": "object",
               "required": [
-                "tag",
-                "verified"
+                "tag"
               ]
             }
           }

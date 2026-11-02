@@ -5,7 +5,7 @@
     "superpowers:systematic-debugging": "the first step on a bug: reproduce, isolate, prove red",
     "superpowers:test-driven-development": "red before green, inside every task",
     "superpowers:verification-before-completion": "observation before any claim of done",
-    "code-review": "Claude Code's own reviewer on the finished change: finder agents in parallel, then one verifier vote on each candidate",
+    "code-review": "Claude Code's own reviewer on the finished change, run by each of the review step's voters in one context with no subagents; the driver keeps what 2 of 3 voters report",
     "superpowers:receiving-code-review": "acting on findings with rigour rather than agreement"
   },
   "notInvoked": {
@@ -57,8 +57,9 @@
       "brief": "review.md",
       "schema": "schemas/review.json",
       "skills": ["code-review"],
+      "tools": ["Bash", "Read", "Grep", "Glob", "Skill"],
       "facts": {
-        "EFFORT": "the effort code-review runs at (review.effort, default max: the level that runs its finders and verifiers as separate agents)",
+        "EFFORT": "the effort code-review runs at (review.effort, default high: one context, no finder or verifier agents; max only when configured)",
         "TARGET": "the ref code-review diffs against: the trunk for a build, the repair's own base commit for a repair",
         "DIFF": "the change under review, against the trunk it will merge into",
         "RENDERS": "the renders of every screen the change touches, both themes — empty when it touches none",

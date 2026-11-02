@@ -51,10 +51,20 @@ _driver_state_edit() {
   local f tmp; f=$(_driver_state_file "$t")
   [ -f "$f" ] || { mkdir -p "$(dirname "$f")"; jq -n --arg t "$t" --arg at "$(swarm_stamp)" \
       '{ticket:$t, branch:"", worktree:"", repo:"", step:"", done:[], counters:{}, started_at:$at, updated_at:$at}' > "$f"; }
-  tmp="$f.tmp.$$"
+  # ONE WRITER AT A TIME, ITS OWN TEMP FILE: the review's voters run in parallel subshells,
+  # where `$$` is the parent's pid, so two edits shared one temp file and one lost its write.
+  local lock="$f.lock" n=0 rc
+  while ! mkdir "$lock" 2>/dev/null; do
+    n=$((n + 1)); [ "$n" -lt 400 ] || { rm -rf "$lock"; n=0; }
+    sleep 0.025
+  done
+  tmp=$(mktemp "$f.tmp.XXXXXX") || { rmdir "$lock" 2>/dev/null; return 1; }
   jq --arg _now "$(swarm_stamp)" "$@" "$f" > "$tmp" 2>/dev/null \
     && jq '.updated_at = $_now' --arg _now "$(swarm_stamp)" "$tmp" > "$tmp.2" 2>/dev/null \
-    && mv "$tmp.2" "$f" && rm -f "$tmp"
+    && mv "$tmp.2" "$f"
+  rc=$?
+  rm -f "$tmp" "$tmp.2"; rmdir "$lock" 2>/dev/null
+  return "$rc"
 }
 
 # driver_state_get <ticket> <key-or-jq-expression> — empty for a ticket nobody

@@ -8,9 +8,7 @@
   "verdict": "BLOCKED",
   "panel": {
     "skill": "code-review",
-    "effort": "max",
-    "hunters": 10,
-    "verifiers": 3
+    "effort": "high"
   },
   "findings": [
     {
@@ -25,8 +23,7 @@
       },
       "summary": "the reader drops a 500 as an empty page, in code this change did not touch",
       "reason": "a person whose list failed to load sees no rows and no error",
-      "fix": "return the failed state",
-      "verified": "confirmed"
+      "fix": "return the failed state"
     }
   ]
 }
