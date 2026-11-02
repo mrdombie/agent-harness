@@ -680,8 +680,9 @@ EOC
   fi
   if [ -f "$DRIVER_SCHEMAS/$step.json" ]; then
     # Harmless variance is settled before the contract reads it: a null optional field
-    # is an absent one, and a SHIP beside a blocking finding is a BLOCKED.
-    jq 'del(..|nulls) | if (.verdict? == "SHIP") and ([.findings[]? | select((.grade // "") | IN("critical","major","minor"))] | length > 0) then .verdict = "BLOCKED" else . end' \
+    # is an absent one, and a SHIP beside a blocking finding is a BLOCKED. A pre-existing
+    # one never blocks (the contract exempts it), so it never turns a SHIP.
+    jq 'del(..|nulls) | if (.verdict? == "SHIP") and ([.findings[]? | select((.tag // "") != "pre-existing") | select((.grade // "") | IN("critical","major","minor"))] | length > 0) then .verdict = "BLOCKED" else . end' \
       "$ans" > "$ans.norm" 2>/dev/null && [ -s "$ans.norm" ] && mv "$ans.norm" "$ans" || rm -f "$ans.norm"
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash

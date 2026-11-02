@@ -197,9 +197,9 @@ fix_ai compare "$(jq -nc \
     differences:[]}')" \
   superpowers:verification-before-completion
 fix_ai review "$(jq -nc \
-  '{step:"review", skills:["superpowers:requesting-code-review"], status:"reviewed",
+  '{step:"review", skills:["code-review"], status:"reviewed",
     round:1, verdict:"SHIP", findings:[]}')" \
-  superpowers:requesting-code-review
+  code-review
 
 export HARNESS_STATE_DIR="$STATE"
 . "$HERE/../state.sh" || exit 1

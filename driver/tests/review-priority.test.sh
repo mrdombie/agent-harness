@@ -49,7 +49,7 @@ fix_ai quick "$(jq -c . "$DRIVER_BRIEFS/examples/quick.valid.json")" superpowers
 REVIEW_SHIP=$(jq -c . "$DRIVER_BRIEFS/examples/review.valid-ship-clean.json")
 
 run() { # <ticket> — a whole run; sets rc, out
-  fix_ai review "$REVIEW_SHIP" superpowers:requesting-code-review
+  fix_ai review "$REVIEW_SHIP" code-review
   : > "$CLAUDE_LOG"; : > "$GH_LOG"
   rc=0; out=$(bash "$BT" "$1" 2>&1) || rc=$?
 }
@@ -103,7 +103,7 @@ step() { # <ticket> <ticket labels> [pr labels] — one review step on a fresh r
     driver_state_set "$1" pr "7$1"; : > "$FIX/pr-created-7$1"
     jq -n --arg l "$3" '{number:1, isDraft:false, labels:($l|split(",")|map(select(length>0)|{name:.}))}' > "$FIX/gh/pr-view.json"
   fi
-  fix_ai review "$REVIEW_SHIP" superpowers:requesting-code-review
+  fix_ai review "$REVIEW_SHIP" code-review
   : > "$CLAUDE_LOG"; rc=0; out=$(driver_step_review "$1" 2>&1) || rc=$?
 }
 mf_on
@@ -120,7 +120,7 @@ cfg '.release = {mergeFirst: true, done: true}'
 step 308 "P2"; want "a done release reviews" "review" "$(calls)"
 mf_on; rm -f "$FIX/gh/issue-309.json"
 driver_state_init 309 --worktree "$FIX/wt300" --branch tkt-300/x
-fix_ai review "$REVIEW_SHIP" superpowers:requesting-code-review
+fix_ai review "$REVIEW_SHIP" code-review
 : > "$CLAUDE_LOG"; DRIVER_LOOKUP_TRIES=1 driver_step_review 309 >/dev/null 2>&1
 want "labels that cannot be read: it reviews" "review" "$(calls)"
 

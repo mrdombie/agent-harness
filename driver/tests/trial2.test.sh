@@ -756,7 +756,7 @@ git -C "$REPO" worktree add -q "$FIX/wt413" -b "tkt-413/work" develop
 git -C "$FIX/wt413" config user.email t@e.invalid
 git -C "$FIX/wt413" config user.name T
 driver_state_init 413 --worktree "$FIX/wt413" --branch "tkt-413/work"
-fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"nit","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' superpowers:requesting-code-review
+fix_ai review '{"step":"review","skills":["code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"nit","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' code-review
 printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
 jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
    '.review = {"attest":{"ui-gate":{"owed":$o,"review":$r,"record":($w + " --sha {{SHA}}")}}}' \

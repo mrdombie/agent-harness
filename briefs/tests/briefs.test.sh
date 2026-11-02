@@ -49,9 +49,13 @@ for step in $steps; do
   else bad "$step.md is $words words — over the $CEILING ceiling, which is what absorbing a skill's content looks like"; fi
 
   # --- the skill it invokes ---------------------------------------------------
-  named=$(grep -oE 'superpowers:[a-z][a-z-]*' "$brief" | sort -u)
+  # A skill outside Superpowers (Claude Code's own `code-review`) is named in backticks,
+  # and counts only when the allowlist carries it.
+  named=$( { grep -oE 'superpowers:[a-z][a-z-]*' "$brief"
+             for k in $allow; do [ "${k#*:}" != "$k" ] || ! grep -qF -- "\`$k\`" "$brief" || echo "$k"; done
+           } | sort -u)
   declared=$(jq -r --arg s "$step" '.steps[$s].skills[]' "$FACTS" | sort -u)
-  [ -n "$named" ] && ok "$step.md names a skill" || bad "$step.md names no superpowers skill"
+  [ -n "$named" ] && ok "$step.md names a skill" || bad "$step.md names no skill"
   want "$step.md names exactly its declared skills" "$declared" "$named"
   for k in $named; do
     printf '%s\n' "$allow" | grep -qx "$k" \
@@ -93,6 +97,18 @@ for step in $steps; do
       || bad "  facts.json declares $p for $step and the brief never uses it"
   done
 done
+
+# --- the review runs Claude Code's own multi-agent reviewer --------------------
+# The review is `code-review` (finders in parallel, a verifier vote on each), not a single
+# reviewer; its Return asks for the panel, a tag and the votes on every finding.
+want "the review step declares code-review" "code-review" "$(jq -r '.steps.review.skills | join(" ")' "$FACTS")"
+rret=$(awk '/^## Return[[:space:]]*$/ {inr=1; next} /^## / {inr=0} inr' "$BRIEFS/review.md")
+for w in '`panel`' '`tag`' '`verified`' 'pre-existing' '`class`'; do
+  printf '%s' "$rret" | grep -qF -- "$w" && ok "review.md's Return asks for $w" \
+    || bad "review.md's Return never asks for $w"
+done
+grep -qF '{{EFFORT}}' "$BRIEFS/review.md" && ok "review.md runs code-review at the driver's effort" \
+  || bad "review.md does not take the effort from the driver ({{EFFORT}})"
 
 # --- the copy probe ------------------------------------------------------------
 # A real measurement of copying: the longest run of words a brief shares with a

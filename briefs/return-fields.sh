@@ -41,7 +41,8 @@ render() { # <step>
                  (if .anyOf then "at least one of " + ([.anyOf[].required[]?] | names) else empty end) ]
                | if length > 0 then join("; ")
                  else "a further rule on " + (($n.properties // {}) | keys | names) + " (see the schema)" end;
-    def cond: [ (.properties // {}) | to_entries[] | select(.value | has("const")) | "`\(.key)` is \(.value.const | tojson)" ] | join(" and ");
+    def cond: . as $n0 | [ (.properties // {}) | to_entries[] | select(.value | has("const")) | "`\(.key)` is \(.value.const | tojson)" ] | join(" and ")
+              | if . == "" then "\(($n0.required // []) | map("`\(.)`") | join(" and ")) is present" else . end;
     def rules($lead):
       if has("if") then
         "- \($lead)when \(.if | cond): \(.then | parts)",
