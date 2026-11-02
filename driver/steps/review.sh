@@ -457,7 +457,7 @@ _driver_review_vote() {
 # applies the quorum.
 _driver_review_tally() {
   local effort="$1" n="$2"; shift 2
-  jq -s --arg e "$effort" --argjson n "$n" '
+  jq -s --arg e "$effort" --argjson n "$n" --arg blk "$(driver_blocking_grades 1)" '
     def ws: ascii_downcase | [scan("[a-z0-9]+") | select(length >= 4)] | unique;
     def overlap($a; $b): ($a | ws) as $x | ($b | ws) as $y
       | if ($x | length) == 0 or ($y | length) == 0 then 0
@@ -493,7 +493,7 @@ _driver_review_tally() {
         | .id = (if ([$fs[0:$i][] | (.id // "f" | tostring)] | index($id)) == null then $id else "\($id)-\($i + 1)" end)] as $fs
     | {step: "review", skills: ([$answers[].skills[]?] | unique), status: "reviewed",
        round: ($answers[0].round // 1),
-       verdict: (if any($fs[]; (.grade == "critical" or .grade == "major" or .grade == "minor") and .tag != "pre-existing" and .tag != "nit") then "BLOCKED" else "SHIP" end),
+       verdict: (if any($fs[]; (.grade as $g | $blk | split(" ") | index($g)) != null and .tag != "pre-existing" and .tag != "nit") then "BLOCKED" else "SHIP" end),
        panel: {skill: "code-review", effort: $e, voters: $n, answered: $of},
        findings: $fs}' "$@"
 }
