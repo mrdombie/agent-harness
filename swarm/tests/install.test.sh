@@ -140,6 +140,26 @@ if command -v plutil >/dev/null 2>&1; then
   if plutil -lint "$FIX/merge-lane.plist" >/dev/null 2>&1; then ok "merge-lane: the system parses it"; else bad "merge-lane: plutil refused it"; fi
 fi
 
+echo "--- the code sweep: opt-in, wakes in the night hours, shadow unless told otherwise ---"
+want_not_in "not one of the default jobs" 'code-sweep' "$(i --jobs)"
+cs=$(i --print code-sweep)
+want_in "it runs the sweep through the launcher" '<string>scripts/code-sweep.sh</string>' "$cs"
+want_in "at set times of day"             '<key>StartCalendarInterval</key>' "$cs"
+want "each night hour, 1 to 5, at :17"    "1:17 2:17 3:17 4:17 5:17" \
+  "$(printf '%s' "$cs" | sed -n 's|.*<key>Hour</key><integer>\([0-9]*\)</integer><key>Minute</key><integer>\([0-9]*\)</integer>.*|\1:\2|p' | tr '\n' ' ' | sed 's/ $//')"
+want_not_in "never on an interval"        'StartInterval<' "$cs"
+want_not_in "and never kept alive"        'KeepAlive' "$cs"
+want_in "shadow by default"               '<key>CODE_SWEEP_SHADOW</key><string>1</string>' "$cs"
+want_in "filing only when the installer says so" '<key>CODE_SWEEP_SHADOW</key><string>0</string>' \
+  "$(CODE_SWEEP_SHADOW=0 bash "$I" --print code-sweep 2>&1)"
+want "the hours can be moved"             "2:5 3:5" \
+  "$(SWARM_SWEEP_HOURS="2 3 junk 99" SWARM_SWEEP_MINUTE=5 bash "$I" --print code-sweep 2>&1 | sed -n 's|.*<key>Hour</key><integer>\([0-9]*\)</integer><key>Minute</key><integer>\([0-9]*\)</integer>.*|\1:\2|p' | tr '\n' ' ' | sed 's/ $//')"
+want_not_in "no other job carries its mode" 'CODE_SWEEP_SHADOW' "$(i --print scheduler)"
+if command -v plutil >/dev/null 2>&1; then
+  printf '%s' "$cs" > "$FIX/code-sweep.plist"
+  if plutil -lint "$FIX/code-sweep.plist" >/dev/null 2>&1; then ok "code-sweep: the system parses it"; else bad "code-sweep: plutil refused it"; fi
+fi
+
 echo "--- off macOS it is one crontab line, installed and removed idempotently ---"
 cat > "$BIN/crontab" <<'SH'
 #!/usr/bin/env bash
@@ -199,6 +219,15 @@ want "re-installed from the new version: one line per job" "1 1" \
   "$(grep -c 'coordinator-tick.sh' "$FIX/crontab") $(grep -c 'merge-lane.sh' "$FIX/crontab")"
 want "and the owner's own line is still there" "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
 cr uninstall coordinator >/dev/null; cr uninstall merge-lane >/dev/null
+
+echo "--- off macOS the code sweep is one crontab line at the night hours ---"
+cr code-sweep >/dev/null; cr code-sweep >/dev/null
+want "installed twice is one line"        "1" "$(grep -c 'code-sweep.sh' "$FIX/crontab")"
+want_in "at :17 of hours 1 to 5, in shadow" '^17 1,2,3,4,5 \* \* \* .*CODE_SWEEP_SHADOW=1 ' "$(grep code-sweep.sh "$FIX/crontab")"
+want_in "through the launcher"            " /bin/bash $STATE/swarm/run-current.sh scripts/code-sweep.sh " "$(grep code-sweep.sh "$FIX/crontab")"
+cr uninstall code-sweep >/dev/null
+want "and uninstalls"                     "0" "$(grep -c 'code-sweep.sh' "$FIX/crontab")"
+want "the owner's own line survives"      "1" "$(grep -c '/usr/bin/backup' "$FIX/crontab")"
 
 echo "--- the timer commands printed off macOS go through the launcher too ---"
 out=$(KIT_ROOT="$CC/1.0.0" SWARM_UNAME=Linux bash "$I" 2>&1)
