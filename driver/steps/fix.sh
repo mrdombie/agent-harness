@@ -525,7 +525,7 @@ driver_step_fix() { # <ticket>
   # forbids — the exact defect that made the plan step refuse its own valid example.
   blockers=$(jq -r '
     [.findings[]? | '"$bsel"'
-     | "- id \(.id) · \(.grade) · \(.file):\(.line)\n  \(.summary)\n  why: \(.reason)\n  proposed: \(.fix)"]
+     | "- id \(.id) · \(.grade) · \(.file):\(.line)\n  \(.summary)\n  why: \(.reason)\n  proposed: \(.fix)\(if .class then "\n  class: \(.class) — fix every instance, not only this line: \((.instances // []) | join(", "))" else "" end)"]
     | join("\n")' "$review" 2>/dev/null)
 
   round=$(driver_state_count "$t" fix)

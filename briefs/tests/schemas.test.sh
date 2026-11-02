@@ -96,6 +96,20 @@ for step in $steps; do
   fi
 done
 
+# THE REVIEW PANEL'S CONTRACT, by name: a pre-existing defect never blocks, a tag is on
+# the list, a nit tag is a nit grade, and a panel answer tags and votes every finding.
+for ex in valid-panel valid-ship-beside-pre-existing; do
+  f="$BRIEFS/examples/review.$ex.json"
+  if [ -f "$f" ]; then "$V" review "$f" >/dev/null 2>&1; rc=$?; want "review accepts $ex" 0 "$rc"
+  else bad "review has no examples/review.$ex.json"; fi
+done
+for ex in panel-finding-without-tag panel-finding-without-votes tag-off-the-list nit-tag-on-blocking-grade \
+          blocked-only-pre-existing ship-beside-important-major panel-without-effort; do
+  f="$BRIEFS/examples/review.invalid-$ex.json"
+  if [ -f "$f" ]; then "$V" review "$f" >/dev/null 2>&1; rc=$?; want "review refuses $ex" 1 "$rc"
+  else bad "review has no examples/review.invalid-$ex.json"; fi
+done
+
 # --- the refusals. Exit 2, distinct from 1, so the driver can tell "this answer
 # is wrong" from "I could not check the answer at all". A validator that answers
 # 0 when it validated nothing is worse than no validator.

@@ -120,7 +120,7 @@ echo "--- a config-only ticket: claim to an open PR on one session and one revie
 issue 801 "status:ready" "Make lint strict" "$CONFIG_BODY"
 fix_ai quick "$QUICK_OK" superpowers:verification-before-completion
 do_step quick 'printf "{ \"lint\": \"strict\" }\n" > config/app.json; git add config/app.json; git commit -qm "chore(config): lint strict (#801)"'
-fix_ai review "$REVIEW_SHIP" superpowers:requesting-code-review
+fix_ai review "$REVIEW_SHIP" code-review
 : > "$CLAUDE_LOG"; : > "$GH_LOG"
 t0=$(date +%s)
 rc=0; out=$(bash "$BT" 801 2>&1) || rc=$?
@@ -236,13 +236,13 @@ git -C "$REPO" worktree add -q "$FIX/wt805" -b tkt-805/x develop
 printf '{ "lint": "strict" }\n' > "$FIX/wt805/config/app.json"; git -C "$FIX/wt805" commit -qam "config"
 driver_state_init 805 --worktree "$FIX/wt805" --branch tkt-805/x
 driver_state_set 805 route quick
-fix_ai review "$(jq -c '.findings = [.findings[] | select(.grade == "minor")]' "$DRIVER_BRIEFS/examples/review.valid-blocked.json")" superpowers:requesting-code-review
+fix_ai review "$(jq -c '.findings = [.findings[] | select(.grade == "minor")]' "$DRIVER_BRIEFS/examples/review.valid-blocked.json")" code-review
 . "$HERE/../steps/review.sh" || exit 1
 rc=0; out=$(driver_step_review 805 2>&1) || rc=$?
 want "a quick change with only a Minor is not sent back" 0 "$rc"
 want "its verdict is SHIP" SHIP "$(jq -r .verdict "$(driver_state_dir 805)/steps/review.json")"
 driver_state_set 806 route quick 2>/dev/null; driver_state_init 806 --worktree "$FIX/wt805" --branch tkt-805/x; driver_state_set 806 route quick
-fix_ai review "$(jq -c . "$DRIVER_BRIEFS/examples/review.valid-blocked.json")" superpowers:requesting-code-review
+fix_ai review "$(jq -c . "$DRIVER_BRIEFS/examples/review.valid-blocked.json")" code-review
 rc=0; out=$(driver_step_review 806 2>&1) || rc=$?
 want "a Major sends it back" "$DRIVER_E_REWORK" "$rc"
 

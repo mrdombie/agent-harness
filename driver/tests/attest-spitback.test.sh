@@ -56,7 +56,7 @@ jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
    "$HARNESS_CFG_PATH" > "$FIX/cfg.tmp" && cat "$FIX/cfg.tmp" > "$HARNESS_CFG_PATH"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm "a project whose pre-push wants a ui-gate verdict"
 
-SHIP_REVIEW='{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[]}'
+SHIP_REVIEW='{"step":"review","skills":["code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[]}'
 MAJOR='VERDICT: SPIT-BACK — the Save button calls nothing.
 
 **Critical (0):** none.
@@ -103,7 +103,7 @@ calls() { wc -l < "$FIX/reviewer.calls" | tr -d ' '; }
 echo "--- round 1: a SPIT-BACK with one Major goes to fix, then the gate's SHIP is recorded ---"
 tkt 501
 printf '%s\n' "$MAJOR" > "$FIX/answer"
-fix_ai review "$SHIP_REVIEW" superpowers:requesting-code-review
+fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 501 2>&1) || rc=$?
 want "the SPIT-BACK sends it back to fix" "$DRIVER_E_REWORK" "$rc"
 want "its Major is on the review record at its grade, with its file and line" "major screens/Inbox.tsx 42" \
@@ -116,7 +116,7 @@ want_in "the gate was told round 1 blocks on Critical, Major and Minor" '^1 crit
 # The fix round: a commit, and the gate passes it.
 printf 'wired\n' >> "$FIX/wt501/screens/Inbox.tsx"; git -C "$FIX/wt501" commit -qam "fix: wire Save"
 printf '%s\n' "$SHIP" > "$FIX/answer"
-fix_ai review "$SHIP_REVIEW" superpowers:requesting-code-review
+fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 501 2>&1) || rc=$?
 want "after the fix the review passes" "0" "$rc"
 want "and the gate's own SHIP is recorded on the head" "1" "$(trailer 501)"
@@ -124,7 +124,7 @@ want "and the gate's own SHIP is recorded on the head" "1" "$(trailer 501)"
 echo "--- round 2: a SPIT-BACK on a Minor alone defers it, and the gate's SHIP is recorded ---"
 tkt 502; driver_state_bump 502 review
 printf '%s\n' "$MINOR" > "$FIX/answer"; printf '%s\n' "$SHIP" > "$FIX/answer.deferred"
-fix_ai review "$SHIP_REVIEW" superpowers:requesting-code-review
+fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 502 2>&1) || rc=$?
 want "it does not park or go back" "0" "$rc"
 want_in "the gate was told round 2 blocks on Critical and Major" '^2 critical major$' "$(head -1 "$FIX/reviewer.env")"
@@ -137,7 +137,7 @@ want_in "the deferral is said" 'nothing that blocks in review round 2' "$out"
 echo "--- round 2: a gate that insists on SPIT-BACK over a deferred Minor is never recorded ---"
 tkt 503; driver_state_bump 503 review
 printf '%s\n' "$MINOR" > "$FIX/answer"
-fix_ai review "$SHIP_REVIEW" superpowers:requesting-code-review
+fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 503 2>&1) || rc=$?
 want "it refuses" "$DRIVER_E_REFUSED" "$rc"
 want "after one run again, not a loop" "2" "$(calls)"
@@ -147,7 +147,7 @@ want "and nothing was recorded" "0" "$(trailer 503)"
 echo "--- past the round limit, a blocking SPIT-BACK parks as before ---"
 tkt 504; driver_state_bump 504 review; driver_state_bump 504 review
 printf '%s\n' "$MAJOR" > "$FIX/answer"
-fix_ai review "$SHIP_REVIEW" superpowers:requesting-code-review
+fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 504 2>&1) || rc=$?
 want "it parks" "$DRIVER_E_REFUSED" "$rc"
 want_in "saying the rounds are spent" 'review round\(s\) are spent' "$out"

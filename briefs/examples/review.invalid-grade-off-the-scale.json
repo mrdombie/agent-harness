@@ -1,7 +1,7 @@
 {
   "step": "review",
   "skills": [
-    "superpowers:requesting-code-review"
+    "code-review"
   ],
   "status": "reviewed",
   "round": 1,

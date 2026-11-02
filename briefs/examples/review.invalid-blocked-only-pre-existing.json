@@ -1,0 +1,31 @@
+{
+  "step": "review",
+  "skills": [
+    "code-review"
+  ],
+  "status": "reviewed",
+  "round": 1,
+  "verdict": "BLOCKED",
+  "panel": {
+    "skill": "code-review",
+    "effort": "max",
+    "hunters": 10,
+    "verifiers": 3
+  },
+  "findings": [
+    {
+      "id": "f2",
+      "file": "src/queue/reader.ts",
+      "line": 30,
+      "grade": "major",
+      "tag": "pre-existing",
+      "votes": {
+        "agree": 2,
+        "of": 2
+      },
+      "summary": "the reader drops a 500 as an empty page, in code this change did not touch",
+      "reason": "a person whose list failed to load sees no rows and no error",
+      "fix": "return the failed state"
+    }
+  ]
+}

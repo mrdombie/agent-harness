@@ -2,13 +2,15 @@
 
 # Step 5 · Review
 
-You are reviewing a finished change and returning a verdict with every finding
-behind it, each graded. You do not edit anything in this step.
+Return a verdict on a finished change, with every finding behind it graded and
+tagged. You edit nothing in this step.
 
-## Invoke the skill — do not work from this file
+## Run the reviewer — do not review from this file
 
-Run **`superpowers:requesting-code-review`**. It owns how a review is conducted.
-This brief owns only how a finding is graded here and what the driver needs back.
+Invoke **`code-review`** through the Skill tool, with args `{{EFFORT}} {{TARGET}}`.
+Its finder agents hunt in parallel, then a verifier agent votes on each candidate.
+It owns how the review is conducted; this brief owns how its findings are graded,
+tagged and handed back. Post nothing and fix nothing.
 
 ## What you are given
 
@@ -17,11 +19,34 @@ This brief owns only how a finding is graded here and what the driver needs back
 - The round: {{ROUND}}
 - This project: {{PROJECT_FACTS}}
 
+## Keep only what the panel agreed on
+
+Turn each finding `code-review` reports into one entry with its vote in `votes`
+(`of`: agents that judged it; `agree`: those that held it real). One its verifier CONFIRMED is `{"agree": 2, "of": 2}`;
+one the verifier called PLAUSIBLE is `{"agree": 1, "of": 2}`; one nothing verified
+(a gap-sweep addition) is `{"agree": 1, "of": 1}`. A REFUTED one is not returned.
+Never raise a vote above what the reviewer reported: the driver keeps only what a
+majority agreed on.
+
+Then tag every finding:
+
+- `important`: a defect this change introduces or re-exposes.
+- `nit`: style, naming, reuse, simplification, efficiency, altitude or any other
+  cleanup. Grade it `nit`; it is dropped.
+- `pre-existing`: a real defect in code this change did not introduce and does
+  not re-expose. Grade it honestly; it never blocks and never goes back to the
+  builder. The driver sends it to the nightly sweep.
+
+**A class is flagged as a class.** When several findings are one mistake made in
+several places, return ONE finding naming the mistake in `class` and every place in
+`instances` (`file:line`), so the fix covers each one, not only the line you saw.
+
+**Never raise a finding twice.** The change may list findings already raised on it;
+do not return any of them again, reworded or not.
+
 ## Grade every finding
 
-Every finding carries a **grade**, and the grade and the round decide its effect.
-In round 1 three of the four send work back; from round 2 only Critical and Major
-do. A Nit never does.
+The grade and the round decide each finding's effect.
 
 | Grade | What it means | What happens to it |
 |---|---|---|
@@ -33,39 +58,26 @@ do. A Nit never does.
 **A Critical or a Major names who is harmed and how, in the `reason`, in a user's
 words.** "The button is not wired" is a claim about the code; "the person clicks
 Save, sees it succeed, and the draft is gone" is the harm. A finding whose harm you
-cannot write in one line is a Minor — grade it Minor and move on. This is the whole
-point of the scale: the step-runner went four rounds, eleven findings then seven
-then six, and about a quarter of them were spacing and wording. Each of those cost
-a round a real defect needed.
+cannot write in one line is a Minor.
 
-Grading down is not being generous. A Minor in round 1 still blocks: it is fixed
-in this change. From round 2 the driver puts it on its screen's polish list, so
-grade it honestly and still return `BLOCKED` when one is all there is — the driver,
-not you, decides it no longer blocks. Minors filed as follow-ups made every passing
-review open new tickets, 110 of 339 bugs in one week.
-
-Green checks are not a verdict. They mean nothing already tested broke; they do
-not mean the change is correct. Where a gate proved the evidence can be opened,
-that is all it proved — not that the evidence is of this change.
+Grade honestly and return `BLOCKED` when a Minor is all there is: the driver, not
+you, decides from the round whether it still blocks. Green checks are not a
+verdict; they mean nothing already tested broke, not that the change is correct.
 
 ## The findings that keep reaching the trunk
 
-- **A test that cannot fail.** Ask what production change would make it red. One
-  that reads a source file, counts classes or asserts a string is in a file is
-  measuring shape, not behaviour.
-- **The same fact said twice, in two wordings**, across the masthead, a band, a
-  chip, a toast or a rail. Copy never narrates a control; the control is the
-  instruction.
+Hand these to the finders as extra angles:
+
+- **A test that cannot fail**: one that reads a source file or asserts a string is
+  in a file measures shape, not behaviour.
+- **The same fact said twice, in two wordings**, across a masthead, band, chip,
+  toast or rail. Copy never narrates a control.
 - **A state changed on one surface of three.**
 - **A failed read that looks empty, loading or finished.**
-- **Contrast below AA on the rendered pixels**, in either theme: 4.5:1 for body
-  text, 3:1 for large text and for a control's visible boundary. A pressed,
-  selected or held state that differs from rest by a hairline is a finding.
-- **The decision the screen asks for, buried.** Whatever blocks the primary
-  action sits above the fold and is marked — not under an optional field or a
-  large preview.
-- **A coloured edge rail** down the side of a card or row. Banned in this project,
-  and shipped three times regardless.
+- **Contrast below AA on the rendered pixels**, in either theme: 4.5:1 body text,
+  3:1 large text and a control's boundary.
+- **The decision the screen asks for, buried** below the fold or a large preview.
+- **A coloured edge rail** down the side of a card or row: banned here.
 
 ## Return
 
@@ -79,11 +91,22 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `status` (required): one of "reviewed", "park"
 - `round` (required): integer
 - `verdict` (required): one of "SHIP", "BLOCKED"
+- `panel`: object
+- `panel.skill` (required): string
+- `panel.effort` (required): one of "low", "medium", "high", "xhigh", "max"
+- `panel.hunters`: integer
+- `panel.verifiers`: integer
 - `findings` (required): list of object
 - `findings[].id` (required): string
 - `findings[].file` (required): string
 - `findings[].line` (required): integer
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
+- `findings[].tag`: one of "important", "nit", "pre-existing"
+- `findings[].votes`: object
+- `findings[].votes.agree` (required): integer
+- `findings[].votes.of` (required): integer
+- `findings[].class`: string
+- `findings[].instances`: list of string
 - `findings[].summary` (required): string
 - `findings[].reason` (required): string
 - `findings[].fix` (required): string
@@ -95,15 +118,16 @@ Every field the contract has; `additionalProperties` is false, so no other.
 Conditional:
 - when `verdict` is "SHIP": a further rule on `findings` (see the schema)
 - when `verdict` is "BLOCKED": a further rule on `findings` (see the schema)
+- when `panel` is present: a further rule on `findings` (see the schema)
 <!-- fields:end -->
 
 The verdict is read off the grades, never typed beside them: `SHIP` with a Critical
-or a Major, and `BLOCKED` with neither, are both refused. Every finding carries its
-file, its line (0 when it is on no line of a file, such as the pull request's
-body), its grade, the one-line `reason` in a user's words, and the fix.
-
-There is ONE list. The grade already says what each finding costs, so a second list
-is a second place for the two to disagree.
+or a Major that is not `pre-existing`, and `BLOCKED` with none, are both refused.
+Every finding carries its file, its line (0 when it is on no line of a file, such as
+the pull request's body), its grade, its `tag`, its `votes`, the one-line `reason`
+in a user's words, and the fix; a class adds `class` and `instances`. `panel` names
+the reviewer you ran: `{"skill": "code-review", "effort": "{{EFFORT}}"}`, with the
+number of finder and verifier agents it started in `hunters` and `verifiers`.
 
 A question names who answers it in `questionFor` (`owner`: pixels, product, data
 model; `pm`: repo, split, order, acceptance; unsure is `owner`)

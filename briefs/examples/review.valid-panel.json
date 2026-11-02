@@ -1,0 +1,64 @@
+{
+  "step": "review",
+  "skills": [
+    "code-review"
+  ],
+  "status": "reviewed",
+  "round": 1,
+  "verdict": "BLOCKED",
+  "panel": {
+    "skill": "code-review",
+    "effort": "max",
+    "hunters": 10,
+    "verifiers": 3
+  },
+  "findings": [
+    {
+      "id": "f1",
+      "file": "src/queue/panel.tsx",
+      "line": 142,
+      "grade": "major",
+      "tag": "important",
+      "votes": {
+        "agree": 2,
+        "of": 2
+      },
+      "class": "a failed read shown as empty",
+      "instances": [
+        "src/queue/panel.tsx:142",
+        "src/queue/rail.tsx:61"
+      ],
+      "summary": "the failed state renders the empty copy, here and in the rail",
+      "reason": "someone whose queue failed to load is told there is nothing in it, and stops looking",
+      "fix": "branch on state === 'failed' in both and render the retry row"
+    },
+    {
+      "id": "f2",
+      "file": "src/queue/reader.ts",
+      "line": 30,
+      "grade": "major",
+      "tag": "pre-existing",
+      "votes": {
+        "agree": 2,
+        "of": 2
+      },
+      "summary": "the reader drops a 500 as an empty page, in code this change did not touch",
+      "reason": "a person whose list failed to load sees no rows and no error",
+      "fix": "return the failed state"
+    },
+    {
+      "id": "f3",
+      "file": "src/queue/panel.tsx",
+      "line": 12,
+      "grade": "nit",
+      "tag": "nit",
+      "votes": {
+        "agree": 2,
+        "of": 2
+      },
+      "summary": "the loop could be a for...of",
+      "reason": "cleanup",
+      "fix": "leave it"
+    }
+  ]
+}

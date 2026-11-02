@@ -52,10 +52,15 @@
 # the model reviews only a ticket at release.reviewPriorities (default P0 P1). Any other
 # ships on CI with no model call; a person's stop and the push's own reviewers still run.
 #
-# ONE CALL, NOT SEVERAL AGENTS. The driver runs one review brief per round. What
-# that brief does inside itself — how many reviewers it asks, in what order — is
-# Superpowers' business. Inside a ticket, splitting the work belongs to the
-# skill; the driver never starts several agents on one ticket.
+# ONE CALL, A PANEL INSIDE IT. The driver runs one review brief per round; the brief runs
+# Claude Code's own `code-review` (review.effort, default max), whose finder agents hunt in
+# parallel and whose verifier agent votes on each candidate. The driver never starts the
+# agents itself. What it does with the answer (_driver_review_panel): it keeps only a
+# finding a majority of the agents that judged it agreed on (review.quorum, default 2, is
+# the fewest agreeing votes); it drops a nit (style, cleanup); a pre-existing defect leaves
+# the change for the nightly sweep's queue (scripts/sweep-queue.sh), never the builder and
+# never a ticket; and a finding already raised on this change (steps/review.posted.jsonl,
+# keyed by scripts/finding-key.jq) is not raised again. The grades then act as above.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
@@ -177,8 +182,27 @@ $(printf '%s' "$scl" | jq -r '.[]? | "- \(.state): loading — \(.loading); fail
 
 [A PERSON HAS STOPPED THIS — each line is an open blocking finding of theirs. Report each as a Critical finding unless this change visibly fixes it, and say which. Ship will not land it while their stop stands, whatever your verdict:
 $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
+  # NEVER RAISED TWICE: the next review is told what this change was already handed.
+  local posted; posted="$(driver_state_dir "$t")/steps/review.posted.jsonl"
+  [ ! -s "$posted" ] || diff="${diff}
+
+[ALREADY RAISED ON THIS CHANGE — never return any of these again, reworded or not:
+$(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   driver_fact_put "$t" review DIFF \
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
+  # THE REVIEWER IS CLAUDE CODE'S OWN code-review, at review.effort (default max: the level
+  # that runs its finders and its verifiers as separate agents), against the base this
+  # change is judged on: the repair's own base, else the trunk.
+  local effort; effort=$(driver_opt review.effort max)
+  case "$effort" in
+    low|medium|high|xhigh|max) : ;;
+    *) driver_say "⚠ review: harness.json's review.effort is '${effort}', which is not low, medium, high, xhigh or max, so max is used."
+       effort=max ;;
+  esac
+  driver_fact_put "$t" review EFFORT "$effort"
+  local target="$trunk"
+  [ "$(driver_state_get "$t" mode)" != repair ] || [ -z "$rbase" ] || driver_adopted "$t" || target="$rbase"
+  driver_fact_put "$t" review TARGET "${target:-HEAD~1}"
   # RENDERS is a fact about a screen, and the driver takes none. Saying so is the
   # point: the reviewer is told there are no renders rather than shown the word
   # {{RENDERS}} and left to guess whether that meant a clean screen.
@@ -236,6 +260,9 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
     return "$DRIVER_E_REFUSED"
   fi
 
+  # THE PANEL'S VOTE, THE TAG AND NEVER TWICE, before any grade has an effect.
+  _driver_review_panel "$t" "$ans_file" "$round" || return "$DRIVER_E_REFUSED"
+
   # Off until the release: a critic finding the reviewer copied off the PR is no finding.
   driver_drop_critic_findings "$ans_file" review "$t" && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
   # A finding that only says the branch clashes is the PR's repair, never a block or a ticket.
@@ -259,6 +286,7 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
   if [ "$verdict" = "BLOCKED" ] && [ "${nsend:-0}" -gt 0 ] && [ "$round" -le "$maxr" ]; then
     driver_say "✋ review round $round of $maxr: $nsend blocking ($(driver_blocking_grades "$ground")) finding(s) — $(_driver_join "$(_driver_findings "$ans_file" blocking)")"
     _driver_review_seen "$t" "$wt" "$seen_head" "${dargs[@]}"
+    _driver_review_posted "$t" "$ans_file" "$round"
     return "$DRIVER_E_REWORK"
   fi
 
@@ -275,6 +303,7 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
 
   rc=0; driver_push_requires "$t" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
+  _driver_review_posted "$t" "$ans_file" "$round"
 
   # Past the last rework round, every blocking finding stays with this ticket and
   # the ship step refuses, naming it. Nothing is filed from here.
@@ -285,6 +314,64 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
   [ "${nnit:-0}" -gt 0 ] && driver_say "   review: $nnit nit(s) dropped — taste, and taste never blocks"
   driver_say "   review: $verdict after $round round(s)"
   return "$DRIVER_OK"
+}
+
+# _driver_review_panel <ticket> <review.json> <round> — what the panel's answer keeps.
+# An answer with no votes on a finding (an older reviewer) keeps it, graded as before.
+_driver_review_panel() {
+  local t="$1" f="$2" round="$3" q keydef ledger n pre npre sq
+  keydef=$(cat "$KIT_ROOT/scripts/finding-key.jq" 2>/dev/null) || { driver_say "✋ review: $KIT_ROOT/scripts/finding-key.jq is missing"; return 1; }
+  q=$(driver_opt review.quorum 2)
+  case "$q" in
+    ''|*[!0-9]*|0) driver_say "⚠ review: harness.json's review.quorum is '${q}', which is not a count of votes, so 2 is used."; q=2 ;;
+  esac
+  # ONLY WHAT THE PANEL AGREED ON: at least the quorum, and more than half of those who judged it.
+  n=$(jq --argjson q "$q" '[.findings[]? | select(.votes != null and ((.votes.agree >= $q and .votes.agree * 2 > .votes.of) | not))] | length' "$f" 2>/dev/null)
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+    jq --argjson q "$q" '.findings = [(.findings // [])[] | select(.votes == null or (.votes.agree >= $q and .votes.agree * 2 > .votes.of))]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    driver_say "   review: $n finding(s) the panel did not agree on are dropped (a majority and at least $q agreeing vote(s) keep one)"
+  fi
+  # STYLE AND CLEANUP NEVER BLOCK, and the drop is said.
+  n=$(jq '[.findings[]? | select(.tag == "nit")] | length' "$f" 2>/dev/null)
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+    jq '.findings = [(.findings // [])[] | select(.tag != "nit")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    driver_say "   review: $n nit(s) dropped — style and cleanup never block"
+  fi
+  # A PRE-EXISTING DEFECT IS THE SWEEP'S: never back to the builder, never a ticket.
+  pre=$(jq -c '[.findings[]? | select(.tag == "pre-existing")]' "$f" 2>/dev/null)
+  npre=$(printf '%s' "$pre" | jq 'length' 2>/dev/null)
+  if [ "${npre:-0}" -gt 0 ] 2>/dev/null; then
+    sq="${DRIVER_SWEEP_QUEUE:-$KIT_ROOT/scripts/sweep-queue.sh}"
+    [ -n "${SWEEP_QUEUE:-}" ] || [ -z "${STATE_DIR:-}" ] || export SWEEP_QUEUE="$STATE_DIR/swarm/sweep/pre-existing.jsonl"
+    printf '%s' "$pre" | bash "$sq" add "$t" "$round" >/dev/null 2>&1 || driver_say "⚠ review: the sweep queue could not take $npre pre-existing finding(s) — they are dropped from this change all the same"
+    jq '.findings = [(.findings // [])[] | select(.tag != "pre-existing")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    driver_say "   review: $npre pre-existing finding(s) to the nightly sweep — not this change's, and never a ticket"
+  fi
+  # NEVER RAISED TWICE: a finding this change was already handed is not handed again.
+  ledger="$(driver_state_dir "$t")/steps/review.posted.jsonl"
+  if [ -s "$ledger" ]; then
+    n=$(jq --slurpfile p "$ledger" "$keydef"' ([$p[].key]) as $seen | [.findings[]? | select(finding_key as $k | $seen | index($k))] | length' "$f" 2>/dev/null)
+    if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+      jq --slurpfile p "$ledger" "$keydef"' ([$p[].key]) as $seen | .findings = [(.findings // [])[] | select(finding_key as $k | $seen | index($k) | not)]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+      driver_say "   review: $n finding(s) already raised on this change are not raised again"
+    fi
+  fi
+  cp "$f" "$f.panel" 2>/dev/null || true
+  _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$round")" 1
+}
+
+# _driver_review_posted <ticket> <review.json> <round> — every finding this review handed
+# on (to fix, a polish list or a follow-up), on the never-twice ledger. Written only once
+# the step acts on them: a refused answer posted nothing, and its re-run must not lose them.
+_driver_review_posted() {
+  local t="$1" f="$2" round="$3" src keydef ledger
+  src="$f.panel"; [ -f "$src" ] || src="$f"
+  keydef=$(cat "$KIT_ROOT/scripts/finding-key.jq" 2>/dev/null) || return 0
+  ledger="$(driver_state_dir "$t")/steps/review.posted.jsonl"
+  jq -c --argjson r "$round" "$keydef"' .findings[]? | select((.grade // "") != "nit")
+      | select((.id // "" | tostring | startswith("polish-")) | not)
+      | {key: finding_key, id, file, line, grade, summary, round: $r} + (if .class then {class} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
+  rm -f "$f.panel"
 }
 
 # _driver_review_priority_skip <ticket> — prints the priority and returns 0 when merge first
