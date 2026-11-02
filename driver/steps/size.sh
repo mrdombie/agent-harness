@@ -31,6 +31,7 @@
 #   maxFiles    the most files a quick change touches (3); only a named file on the
 #               integration branch counts, and a ticket naming only missing ones is undecided
 #   neverEffort the effort labels never quick (effort:M, effort:L, effort:XL)
+#   neverLabels the ticket labels never quick (type:feature)
 #   smallMaxFiles  the most named files a small one touches (8)
 #   neverGlobs  more globs never quick, beside the defaults: schema and migration
 #               files, lockfiles. A NEW screen file or page (design.surfacePaths,
