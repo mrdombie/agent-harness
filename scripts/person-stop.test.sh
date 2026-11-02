@@ -265,7 +265,7 @@ $CONV")"
 dr "$N"
 want "nor does a park comment from an hour before" "0" "$rc"
 
-echo "--- a ticket with a long history is read, not refused (maktura#14079: 598 comments, 2.7 MB) ---"
+echo "--- a ticket with a long history is read, not refused (a real ticket: 598 comments, 2.7 MB) ---"
 # Passed to jq as argv, a history over the OS argument limit (1 MB on macOS) failed as
 # "could not read what GitHub answered": ship held, the run requeued as a repair, and the
 # PR was closed and rebuilt fresh three times with nothing wrong with it.
