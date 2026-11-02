@@ -292,4 +292,23 @@ queue_on mac 501
 out=$(OWNER=MAC tick_on mac 0)
 want_in "MAC owns it on mac"                        'sheet: wrote' "$out"
 
+echo "--- the sheet's re-seed keeps a pinned entry in its place, under the queue lock ---"
+SQ="$FIX/seed-q"; mkdir -p "$SQ"
+printf '%s' '{"tickets":[{"n":602,"class":"new","top":true,"pinned":true},{"n":601,"class":"repair","note":"keep me","pinned":true},{"n":604,"class":"new","pinned":true}]}' > "$SQ/queue.json"
+seed_q() { ( . "$HERE/coordinator-env.sh"; . "$HERE/coordinator-sheet.sh"
+             COORD_DIR="$SQ" COORD_QUEUE="$SQ/queue.json" COORDINATOR_QUEUE_LOCK_WAIT_SEC=1 coord_sheet_seed_queue "$1" ); }
+seed_q '[{"n":603,"class":"new"},{"n":601,"class":"new"},{"n":604,"class":"new","host":"mac"}]'; rc=$?
+want "the re-seed succeeds"                         "0" "$rc"
+want "a pinned add survives a sheet re-seed"        "repair|keep me" "$(jq -r '.tickets[] | select(.n==601) | "\(.class)|\(.note)"' "$SQ/queue.json")"
+want "in its place: the top entry, it, then the sheet's" "602 601 603" "$(jq -r '[.tickets[].n | tostring] | join(" ")' "$SQ/queue.json")"
+want "a pinned entry another host holds is that host's" "" "$(jq -r '.tickets[] | select(.n==604) | .n' "$SQ/queue.json")"
+want "and the lock is let go"                       "" "$(ls -d "$SQ/.queue.lock" 2>/dev/null)"
+sleep 30 & holder=$!
+mkdir "$SQ/.queue.lock"; echo "$holder" > "$SQ/.queue.lock/pid"
+LC_ALL=C TZ=UTC ps -o lstart= -p "$holder" | tr -s ' ' | sed 's/^ *//;s/ *$//' > "$SQ/.queue.lock/started"
+before=$(cat "$SQ/queue.json")
+seed_q '[{"n":605,"class":"new"}]' 2>/dev/null; rc=$?
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$SQ/.queue.lock"
+want "a held queue lock: the re-seed waits, then changes nothing" "2|same" "$rc|$([ "$before" = "$(cat "$SQ/queue.json")" ] && echo same)"
+
 suite_end "$FAILED"

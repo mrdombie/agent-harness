@@ -479,6 +479,26 @@ coord_lock() { # <dir> <noun> [max-sec]
   echo "$$" > "$lock/pid"
 }
 
+# coord_queue_locked <cmd…> — runs it holding the queue lock, so a writer that read the
+# queue cannot write back over an entry another writer added since. Waits up to
+# COORDINATOR_QUEUE_LOCK_WAIT_SEC (30), then returns 2 having changed nothing. Never
+# hold it across a GitHub read. A subshell: bash 3.2 has no BASHPID, so the lock
+# records $$, alive for the hold, and the subshell's EXIT trap lets it go.
+coord_queue_locked() {
+  local lock="$COORD_DIR/.queue.lock" wait="${COORDINATOR_QUEUE_LOCK_WAIT_SEC:-30}" tries
+  case "$wait" in ''|*[!0-9]*) wait=30 ;; esac
+  tries=$(( wait * 10 ))
+  until coord_lock "$lock" "queue writer"; do
+    tries=$(( tries - 1 ))
+    if [ "$tries" -le 0 ]; then
+      echo "coordinator-queue: the queue is locked ($COORD_LOCK_WHY) — nothing changed" >&2
+      return 2
+    fi
+    sleep 0.1
+  done
+  ( trap 'rm -rf "$lock"' EXIT; "$@" )
+}
+
 # What a ticket is, read off its labels, title and claimable mode. The queue's seed
 # and the tick's order both use these, so the two never disagree on a ticket.
 #   coord_prin   P0..P9 as 0..9; no priority label is 9, after P3

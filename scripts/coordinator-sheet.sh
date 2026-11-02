@@ -325,19 +325,25 @@ coord_sheet_read() {
 }
 
 # coord_sheet_seed_queue <order json> — this machine's queue becomes the sheet's
-# order: every entry no host holds, in the sheet's order. A resume this machine
-# put at the front (a run of its own the wall cut off) stays first: its worktree is here.
-coord_sheet_seed_queue() {
-  local cur; cur=$( [ -s "$COORD_QUEUE" ] && cat "$COORD_QUEUE" || echo '{}')
-  jq -c --argjson o "$1" --arg at "$(swarm_stamp)" '
-    ((.tickets // []) | map(select(.front or .top))) as $front
+# order: every entry no host holds, in the sheet's order. An entry this machine put
+# there (pinned by `add`: a resume, a requeue, an owner's answer) stays, in its place,
+# with its class and note, unless the sheet has another host holding it. Under the queue lock,
+# read when the lock is held: an `add` that landed meanwhile is kept, not written over.
+coord_sheet_seed_queue() { coord_queue_locked _coord_sheet_seed_queue "$@"; }
+_coord_sheet_seed_queue() {
+  local cur out; cur=$( [ -s "$COORD_QUEUE" ] && cat "$COORD_QUEUE" || echo '{}')
+  out=$(jq -c --argjson o "$1" --arg at "$(swarm_stamp)" '
+    ([$o[] | select((.host // "") != "") | .n]) as $held
+    # A pinned entry another host holds on the sheet belongs to that host: kept, two hosts build it.
+    | ((.tickets // []) | map(select(.front or .top or (.pinned and (.n as $n | $held | index($n) | not))))) as $front
     | ($front | map(.n)) as $fn
     | .source = "sheet" | .sheet_at = $at
     | .scope = (.scope // "sheet") | .label = (.label // "the shared sheet")
     | .tickets = ($front + [$o[] | select((.host // "") == "") | select(.n as $n | $fn | index($n) | not)
                            | {n, class: (.class // "new"), prin: (.prin // 9), note: ""}
-                             + (if .process then {process: true} else {} end)])' <<<"$cur" \
-    > "$COORD_QUEUE.$$" && mv -f "$COORD_QUEUE.$$" "$COORD_QUEUE"
+                             + (if .process then {process: true} else {} end)])' <<<"$cur") || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out" > "$COORD_QUEUE.$$" && mv -f "$COORD_QUEUE.$$" "$COORD_QUEUE"
 }
 
 # ---- the fleet -------------------------------------------------------------------

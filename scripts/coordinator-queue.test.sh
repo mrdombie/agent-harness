@@ -65,6 +65,74 @@ bash "$Q" add 888 --class repair --note "red checks, outside the scope" >/dev/nu
 bash "$Q" refresh >/dev/null
 want "a pinned repair outside the claimable list is kept" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
 
+echo "--- a re-seed that read the queue before an add does not write over it ---"
+# The merge's jq is held open, so both adds land between the re-seed's read and its write.
+REAL_JQ=$(command -v jq)
+cat > "$BIN/jq" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" --arg scope "*) touch "$FIX/in-merge"; while [ ! -e "$FIX/release" ]; do sleep 0.05; done ;; esac
+exec "$REAL_JQ" "\$@"
+STUB
+chmod +x "$BIN/jq"
+rm -f "$FIX/in-merge" "$FIX/release"
+bash "$Q" refresh >/dev/null 2>&1 & rp=$!
+i=0; while [ ! -e "$FIX/in-merge" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+bash "$Q" add 506 --class repair --front --note "use the quieter paper colour" >/dev/null 2>&1 & ap=$!
+bash "$Q" add 778 --class approved-merge >/dev/null 2>&1 & bp=$!
+# Unlocked, both adds finish at once; locked, they wait behind the re-seed.
+i=0; while { kill -0 "$ap" || kill -0 "$bp"; } 2>/dev/null && [ $i -lt 30 ]; do sleep 0.05; i=$((i+1)); done
+touch "$FIX/release"; wait "$rp"; wait "$ap"; arc=$?; wait "$bp"; brc=$?
+rm -f "$BIN/jq" "$FIX/in-merge" "$FIX/release"
+want "both adds exit 0"                    "0 0" "$arc $brc"
+want "the --front add is first after the re-seed" "506:repair" "$(order | cut -d' ' -f1)"
+want "with its note"                       "use the quieter paper colour" "$(jq -r '.tickets[] | select(.n==506) | .note' "$QF")"
+want "the plain add survives"              "approved-merge" "$(jq -r '.tickets[] | select(.n==778) | .class' "$QF")"
+want "and the lock is let go"              "" "$(ls -d "$STATE/coordinator/.queue.lock" 2>/dev/null)"
+bash "$Q" remove 506 >/dev/null; bash "$Q" remove 778 >/dev/null
+
+echo "--- a lock left by a dead writer is taken over ---"
+QL="$STATE/coordinator/.queue.lock"
+mkdir "$QL"; echo 999999 > "$QL/pid"; echo "Thu Jan  1 00:00:00 2020" > "$QL/started"; touch -t 202001010000 "$QL" "$QL/pid"
+bash "$Q" add 779 >/dev/null 2>&1; rc=$?
+want "the add exits 0"                     "0" "$rc"
+want "and is queued"                       "779" "$(jq -r '.tickets[] | select(.n==779) | .n' "$QF")"
+want "and the lock is let go"              "" "$(ls -d "$QL" 2>/dev/null)"
+bash "$Q" remove 779 >/dev/null
+
+echo "--- a lock held by a live writer refuses after the wait, changing nothing ---"
+sleep 30 & holder=$!
+mkdir "$QL"; echo "$holder" > "$QL/pid"
+LC_ALL=C TZ=UTC ps -o lstart= -p "$holder" | tr -s ' ' | sed 's/^ *//;s/ *$//' > "$QL/started"
+before=$(cat "$QF")
+out=$(COORDINATOR_QUEUE_LOCK_WAIT_SEC=1 bash "$Q" add 780 2>&1); rc=$?
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$QL"
+want "refused"                             "2" "$rc"
+want_in "and says why"                     'the queue is locked' "$out"
+want "the queue is byte-identical"         "$before" "$(cat "$QF")"
+
+echo "--- a merge whose jq fails leaves the queue as it was ---"
+cat > "$BIN/jq" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" --arg scope "*) exit 5 ;; esac
+exec "$REAL_JQ" "\$@"
+STUB
+chmod +x "$BIN/jq"
+before=$(cat "$QF")
+out=$(bash "$Q" refresh 2>&1); rc=$?
+rm -f "$BIN/jq"
+want "refused"                             "2" "$rc"
+want "the queue is byte-identical"         "$before" "$(cat "$QF")"
+
+echo "--- add says when this host will drop the ticket as another repo's work ---"
+fix_issue 790 OPEN "P1,status:ready,repo:elsewhere"
+fix_issue 791 OPEN "P1,status:ready"
+out=$(bash "$Q" add 790 2>&1); rc=$?
+want "the add still happens"               "0|790" "$rc|$(jq -r '.tickets[] | select(.n==790) | .n' "$QF")"
+want_in "and names the repo it belongs to" 'warning: #790 belongs to elsewhere' "$out"
+out=$(bash "$Q" add 791 2>&1)
+want "no repo label, no warning"           "" "$(grep 'belongs to' <<<"$out")"
+bash "$Q" remove 790 >/dev/null; bash "$Q" remove 791 >/dev/null
+
 echo "--- a seed whose reads fail changes nothing ---"
 before=$(cat "$QF")
 out=$(COORDINATOR_CLAIMABLE=false bash "$Q" refresh 2>&1); rc=$?
@@ -274,7 +342,7 @@ want "only this repo's rows are seeded"      "672:new 670:new" "$(order)"
 want_in "each skip says whose it is"         'skip #671: belongs to agent-harness' "$out"
 want_in "an owner/name label too"            'skip #673: belongs to agent-harness' "$out"
 fix_issue 674 OPEN "P1,status:ready,repo:agent-harness,project:widgets"
-bash "$Q" add 674 --note "pinned" >/dev/null
+bash "$Q" add 674 --note "pinned" >/dev/null 2>&1
 out=$(bash "$Q" refresh 2>&1)
 want "a pinned one is dropped at refresh too" "672:new 670:new" "$(order)"
 jq '.sisterRepos = ["widgets-support"]' "$HARNESS_CFG_PATH" > "$FIX/h-sister.json"
