@@ -31,6 +31,11 @@
 #   keeper        every 15 minutes: swarm/keeper.sh, which resumes the session
 #                 `keeper.sh adopt <id>` named once it goes quiet. Opt-in the
 #                 same way. Stop it: install.sh uninstall keeper.
+#   code-sweep    each hour of the night (sweep.hours, default 1-5, at :17):
+#                 scripts/code-sweep.sh, the nightly sweep of landed code. The
+#                 first wake on an idle machine sweeps one area; the rest find
+#                 the night done. Opt-in the same way, and in shadow (it files
+#                 nothing) unless CODE_SWEEP_SHADOW=0 is set at install.
 #
 # Installing the coordinator also opens swarm/coordinator-feed.sh once in a
 # terminal window: a line per check, build, red PR and sign-off batch.
@@ -66,6 +71,7 @@ script_for() { # <job> — the command line under the kit, one argument per line
     coordinator)  printf 'scripts/coordinator-tick.sh\n' ;;
     merge-lane)   printf 'scripts/merge-lane.sh\n' ;;
     keeper)       printf 'swarm/keeper.sh\n' ;;
+    code-sweep)   printf 'scripts/code-sweep.sh\n' ;;
     *) return 1 ;;
   esac
 }
@@ -80,7 +86,23 @@ interval_for() {
     coordinator) printf '%s' "${SWARM_EVERY_COORDINATOR:-120}" ;;
     merge-lane) printf '%s' "${SWARM_EVERY_MERGE_LANE:-180}" ;;
     keeper) printf '%s' "${SWARM_EVERY_KEEPER:-900}" ;;
+    code-sweep) printf '' ;;
   esac
+}
+# A job that wakes at set times of day instead: the hours it wakes, at one minute.
+# The sweep reads a night's code while the builders sleep, never on an interval.
+calendar_for() { # <job> — "<minute> <hour> <hour>…", or nothing
+  case "$1" in
+    code-sweep) printf '%s %s' "${SWARM_SWEEP_MINUTE:-17}" "$(sweep_hours)" ;;
+  esac
+}
+sweep_hours() {
+  local h out=""
+  for h in $(printf '%s' "${SWARM_SWEEP_HOURS:-$(swarm_opt sweep.hours "1 2 3 4 5")}" | tr -d '[],"'); do
+    case "$h" in ''|*[!0-9]*) continue ;; esac
+    [ "$h" -le 23 ] && out="$out $h"
+  done
+  printf '%s' "${out# }"
 }
 
 # The environment a launchd job does NOT inherit. It has no login shell, no
@@ -90,12 +112,14 @@ interval_for() {
 # Shadow unless the installer says otherwise, so a first install acts on nothing.
 coordinator_shadow() { [ "${COORDINATOR_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
 lane_shadow() { [ "${MERGE_LANE_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
+sweep_shadow() { [ "${CODE_SWEEP_SHADOW:-1}" = 0 ] && echo 0 || echo 1; }
 # The mode variables a job carries, one NAME=value per line.
 shadow_vars() { # <job>
   case "$1" in
     keeper)      printf 'SWARM_USAGE_CEILING=%s\n' "$SWARM_USAGE_CEILING" ;;
     coordinator) printf 'COORDINATOR_SHADOW=%s\nMERGE_LANE_SHADOW=%s\n' "$(coordinator_shadow)" "$(lane_shadow)" ;;
     merge-lane)  printf 'MERGE_LANE_SHADOW=%s\n' "$(lane_shadow)" ;;
+    code-sweep)  printf 'CODE_SWEEP_SHADOW=%s\n' "$(sweep_shadow)" ;;
   esac
 }
 coordinator_env() { # <job>
@@ -113,9 +137,15 @@ install_runner() {
   mkdir -p "$(dirname "$RUNNER")" || return 1
   cp "$SWARM_ROOT/run-current.sh" "$RUNNER.tmp.$$" && chmod +x "$RUNNER.tmp.$$" && mv -f "$RUNNER.tmp.$$" "$RUNNER"
 }
+calendar_plist() { # <minute> <hour>… — one StartCalendarInterval entry per hour
+  local m="$1" h; shift
+  printf '  <key>StartCalendarInterval</key>\n  <array>\n'
+  for h in "$@"; do printf '    <dict><key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict>\n' "$h" "$m"; done
+  printf '  </array>'
+}
 print_plist() { # <job>
-  local job="$1" arg iv
-  iv=$(interval_for "$job")
+  local job="$1" arg iv cal
+  iv=$(interval_for "$job"); cal=$(calendar_for "$job")
   cat <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -137,7 +167,8 @@ $(runner_args "$job" | xml_escape | sed 's|.*|    <string>&</string>|')
 $(coordinator_env "$job")
   </dict>
 $([ "$job" = coordinator ] && printf '  <key>AbandonProcessGroup</key><true/>')
-$(if [ -n "$iv" ]; then printf '  <key>StartInterval</key><integer>%s</integer>' "$iv"
+$(if [ -n "$cal" ]; then calendar_plist $cal
+  elif [ -n "$iv" ]; then printf '  <key>StartInterval</key><integer>%s</integer>' "$iv"
   else printf '  <key>KeepAlive</key><true/>\n  <key>RunAtLoad</key><true/>'; fi)
   <key>StandardOutPath</key><string>$(printf '%s/%s.out.log' "$SWARM_LOGS" "$job" | xml_escape)</string>
   <key>StandardErrorPath</key><string>$(printf '%s/%s.err.log' "$SWARM_LOGS" "$job" | xml_escape)</string>
@@ -177,15 +208,23 @@ need_launchd() {
 # ---- elsewhere: the coordinator and the merge lane as one crontab line each,
 # marked so a line is replaced, never doubled
 SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
-cron_jobs() { printf 'coordinator\nmerge-lane\nkeeper\n'; }
+cron_jobs() { printf 'coordinator\nmerge-lane\nkeeper\ncode-sweep\n'; }
 cron_mark() { printf '# %s' "$(label "$1")"; }
 cron_line() { # <job>
-  local m=$(( $(interval_for "$1") / 60 )); [ "$m" -ge 1 ] || m=1
-  printf '*/%s * * * * %s >> %q 2>&1 %s\n' "$m" "$(job_cmd "$1")" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
+  local cal when m
+  cal=$(calendar_for "$1")
+  if [ -n "$cal" ]; then
+    set -- "$1" $cal
+    when="$2 $(shift 2; printf '%s' "$*" | tr ' ' ',') * * *"
+  else
+    m=$(( $(interval_for "$1") / 60 )); [ "$m" -ge 1 ] || m=1
+    when="*/$m * * * *"
+  fi
+  printf '%s %s >> %q 2>&1 %s\n' "$when" "$(job_cmd "$1")" "$SWARM_LOGS/$1.out.log" "$(cron_mark "$1")"
 }
 cron_rest() { "$SWARM_CRONTAB" -l 2>/dev/null | grep -vF -- "$(cron_mark "$1")"; }
 cron_install() { # <job>
-  command -v "$SWARM_CRONTAB" >/dev/null 2>&1 || { echo "install: no launchd and no crontab — run this every $(( $(interval_for "$1") / 60 )) minutes yourself:" >&2; cron_line "$1" >&2; return 1; }
+  command -v "$SWARM_CRONTAB" >/dev/null 2>&1 || { echo "install: no launchd and no crontab — run this on the schedule its first five fields give, yourself:" >&2; cron_line "$1" >&2; return 1; }
   mkdir -p "$SWARM_LOGS"
   install_runner || { echo "install: could not write $RUNNER" >&2; return 1; }
   local rest; rest=$(cron_rest "$1")   # read in full before the write replaces it
@@ -373,6 +412,7 @@ case "${1:-}" in
     # A shadow coordinator or lane acts on nothing, so a hold does not stop installing one.
     [ "${1:-}" = coordinator ] && [ "$(coordinator_shadow)" = 1 ] && is_action=0
     [ "${1:-}" = merge-lane ] && [ "$(lane_shadow)" = 1 ] && is_action=0
+    [ "${1:-}" = code-sweep ] && [ "$(sweep_shadow)" = 1 ] && is_action=0
     if [ "$is_action" = 1 ] && held=$(swarm_held); then
       audit refused-held "${1:-install}"
       echo "install: the swarm is held — $held. Run 'install.sh release' first, on purpose." >&2
@@ -409,14 +449,14 @@ case "${1:-}" in
   --jobs)   jobs_for_project; exit 0 ;;
   status)
     need_launchd || exit 1
-    for j in $(jobs_for_project) $(for o in coordinator merge-lane keeper; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
+    for j in $(jobs_for_project) $(for o in coordinator merge-lane keeper code-sweep; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
       line=$(launchctl list 2>/dev/null | awk -v l="$(label "$j")" '$3==l{print "pid "$1", last exit "$2}')
       printf '%-14s %s\n' "$j" "${line:-not loaded}"
     done; hold_status; exit 0 ;;
   restart)  need_launchd || exit 1; do_install "${2:?restart needs a job}"; exit $? ;;
   uninstall)
     need_launchd || exit 1
-    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane keeper; do do_uninstall "$j"; done; fi
+    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane keeper code-sweep; do do_uninstall "$j"; done; fi
     exit 0 ;;
   -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;

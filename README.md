@@ -198,7 +198,7 @@ Env overrides always win over the config: `HARNESS_STATE_DIR`, `HARNESS_REPO_ROO
 skills/    file claim finish release release-stale queue needsme standup
            work auto bug ui-gate cheatsheet claim-status sweep-worktrees project
            panel (+ its five screen reviewers)
-agents/    gate-runner frontend-gate design-critic
+agents/    gate-runner frontend-gate design-critic code-sweeper
 hooks/     hooks.json + the scripts it runs, each with a .test.sh beside it
 scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            overlap-check.sh · spawn-claim.sh · claimable-issues.sh · clear-hold.sh
@@ -211,6 +211,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            coordinator-notify.sh · coordinator-compare.sh (the coordinator — see below)
            coordinator-sheet.sh (one shared build order across machines — see below)
            merge-lane.sh (the serial merge lane — see below)
+           code-sweep.sh (the nightly sweep of landed code — see below)
            signoff-batch.sh (held PRs green apart from the hold, every reviewer's
            recorded verdict on the head, in batches of five)
            needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
@@ -835,6 +836,42 @@ its mode in both. **Shadow is the default**: it writes "would …" lines to
 | `label` | `queue:merge` | Membership that survives auto-merge being turned off. Every pass checks the repo has it; live creates it when missing, shadow logs "would create the lane label" |
 | `firstLabel` | `P0` | Owner-flagged PRs that go to the front |
 | `flakePattern` | runner-loss wording | Annotation text that makes a failure a flake |
+
+### The nightly code sweep — one ticket per class, fixed at the source
+
+Review agents also read code that has already landed. `scripts/code-sweep.sh` sweeps
+one area of the repo a night, rotating through all of it, with the read-only
+`code-sweeper` agent in a detached tree of the trunk. Each class of copied defect it
+proves (at least `minInstances` copies: a hand-written guard in hundreds of handlers,
+divergent copies of one helper) becomes ONE ticket carrying the fix at the source and
+what stops the next copy, never one ticket per instance. An open ticket owns its class
+by the body marker `<!-- sweep-class: <key> -->` and gets a recount comment when the
+count moves; a class closed as not planned is never refiled; a class another open
+ticket covers is left to it. At most `maxTickets` new tickets a night; the rest are
+found again on a later night. It also reads the reviewer's pre-existing queue,
+`$STATE_DIR/review/pre-existing.jsonl` (one JSON finding a line), from where the last
+filing night stopped; no file is an empty queue.
+
+It runs on this machine's own timer, not a CI runner: the queue it reads lives in the
+state dir here, and a timer follows plugin updates with nothing pinned. Enable it with
+`swarm/install.sh code-sweep` (shadow: it prints what it would file) and
+`CODE_SWEEP_SHADOW=0 swarm/install.sh code-sweep` to file. It wakes at :17 of each
+`hours` hour; the first wake on an idle machine (`minCpuIdle`) with no hold sweeps, the
+rest find the night done. Every gh call and the agent run under a time limit. By hand:
+`code-sweep.sh [--file] [--force] [--area <path>] [--areas]`.
+
+| Key (under `sweep`) | Default | What it is |
+|---|---|---|
+| `areas` | derived | The areas in rotation. Unset: each top folder of the trunk, split while it holds more than `maxAreaFiles` code files (`<dir>/*` is a split folder's own files, `*` the root's) |
+| `maxAreaFiles` | `300` | When a derived area is split |
+| `extensions` | common source types | What counts as a code file when deriving |
+| `minInstances` | `3` | Fewer copies is not a class |
+| `maxTickets` | `3` | New tickets a night, at most |
+| `labels` | `["sweep:class"]` | Put on every ticket; the first one is how its open and closed tickets are read, so the repo must have it |
+| `hours` | `[1,2,3,4,5]` | The hours it wakes, at :17 (read at install) |
+| `minCpuIdle` | `50` | Below this CPU idle the wake is skipped |
+| `turns` · `timeoutMin` · `budgetUsd` | `80` · `45` · none | The agent's turn cap, time limit and optional spend cap |
+| `maxQueue` | `40` | Queued pre-existing findings read a night |
 
 ## What it costs
 
