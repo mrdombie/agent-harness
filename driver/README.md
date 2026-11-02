@@ -46,7 +46,7 @@ thinking inside one step.
 | 6 | `compare` | model | this run's renders held beside the approved design |
 | 7 | `review` | model | `SHIP`, or findings with a file, a line and a grade. Once per change: a later pass calls the model only when the fix round touched a file the first review never saw, graded Critical and Major only, and never past `review.maxRounds` |
 | 8 | `record` | driver | the verdict, off the reviewer's own file |
-| 9 | `ship` | driver | push, draft pull request, ready, auto-merge, hand off |
+| 9 | `ship` | driver | push, draft pull request carrying its proof, ready, auto-merge, hand off |
 
 The kit ships one gate a project can list in `gates.local` as it is:
 `bash "$KIT_ROOT/scripts/check-changed-shell.sh"`. It reads only the shell scripts
@@ -284,6 +284,15 @@ even when inherited. A push still refused falls back to a bundle under
   project's typecheck (`driver.proofTypecheck`, else the typecheck among its
   `gates`), because a runner that strips types passes a test the compiler rejects.
   A test that does not compile goes back to `build`, and the retry is told why.
+- **Every pull request carries its proof** (`scripts/pr-proof.sh`). Each red/green
+  proof keeps its command and the tail of what each half printed on the task's
+  `.proved` record, and self-check keeps each green gate's command and output
+  (`self-check.gates.jsonl`). Ship writes them under `## Proof`, with a `Screens:` line
+  for a screen change, and two lines: `How it was tested:` and `How to undo it:` (a
+  migration the branch adds is named there, since a revert leaves it applied). A body
+  that lacks any of them is never opened, rewritten or pushed onto; a repaired PR keeps
+  its words and gets the section added. The review step is sent the ticket as filed
+  and the approved picture beside the diff, in its own session, before the PR opens.
 - **The named Skill actually ran.** Each brief's front matter names one Skill.
   The driver reads the run's transcript and parks the ticket when that Skill call
   is absent. Inside a ticket Superpowers does the work; the driver never starts

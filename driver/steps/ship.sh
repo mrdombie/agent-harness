@@ -515,6 +515,13 @@ _driver_ship_gone_merged() {
   return 0
 }
 
+# _driver_ship_proof_check <tier> — a body on stdin carries its proof (scripts/pr-proof.sh check);
+# prints what it lacks.
+_driver_ship_proof_check() {
+  local -a ta=(); [ "$1" != screen ] || ta=(--tier screen)
+  bash "${DRIVER_PR_PROOF:-$KIT_ROOT/scripts/pr-proof.sh}" check ${ta[@]+"${ta[@]}"} --body-file -
+}
+
 # _driver_ship_person_stop <ticket> <branch> [<pr>] — 0 when no person has stopped it.
 # A PERSON'S STOP WINS OVER THE MACHINE: a do-not-merge label, a draft a person made, or
 # a Critical a person named since the last hand-off parks the run for that person —
@@ -799,6 +806,40 @@ driver_step_ship() { # <ticket>
     [ "$lgrc" -eq 0 ] || return "$lgrc"
   fi
 
+  # THE PROOF GOES ON THE PULL REQUEST, and none is opened, rewritten or pushed onto
+  # without it (scripts/pr-proof.sh): the commands the driver ran with what they printed,
+  # how it was tested, how to undo it. A run with no record of its gates runs them now.
+  local psd proof pmiss pcrc=0
+  psd="$(driver_state_dir "$t")/steps"
+  if [ ! -e "$psd/self-check.gates.jsonl" ]; then
+    driver_say "   ship: no record of the gates this run ran, so the pull request would carry no proof — self-check runs them now"
+    local gkrc=0; driver_step_self_check "$t" || gkrc=$?
+    [ "$gkrc" -eq 0 ] || return "$gkrc"
+  fi
+  local -a pafter=(); [ -z "$(driver_state_get "$t" pm_after_merge)" ] || pafter=(--after-merge)
+  proof=$(bash "${DRIVER_PR_PROOF:-$KIT_ROOT/scripts/pr-proof.sh}" compose --steps "$psd" --tier "$tier" \
+            --repo "$wt" --base "$trunk" ${pafter[@]+"${pafter[@]}"})
+  if [ "$mode" = repair ] && printf '%s\n' "$REPAIR_BODY" | _driver_ship_proof_check "$tier" >/dev/null; then
+    proof=""   # the repaired PR already carries its proof: its words are left alone
+  else
+    [ "$mode" != repair ] || proof=$(printf '%s\n\n%s' "$REPAIR_BODY" "$proof")
+    pmiss=$(printf '%s\n' "$proof" | _driver_ship_proof_check "$tier") || pcrc=$?
+    if [ "$pcrc" -ne 0 ]; then
+      driver_say "✋ ship: the pull request would carry no proof — $(printf '%s' "$pmiss" | tr '\n' ';'). Nothing is pushed or opened."
+      driver_state_set "$t" park_note "the pull request body would lack its proof ($(printf '%s' "$pmiss" | tr '\n' ';')): the run kept no command it ran with its output"
+      return "$DRIVER_E_REFUSED"
+    fi
+    if [ "$mode" = repair ]; then
+      # ADDED, NEVER REWRITTEN: the PR's own words stay, the proof goes under them.
+      if ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --body "$proof" >/dev/null 2>&1; then
+        driver_say "✋ ship: the proof could not be added to PR #$open_pr's body, and on this PR the push is the merge. Nothing is pushed."
+        driver_state_set "$t" park_note "could not add the proof section to #$open_pr"
+        return "$DRIVER_E_REFUSED"
+      fi
+      REPAIR_BODY="$proof"; proof=""
+    fi
+  fi
+
   if ! driver_ensure_hooks "$MAIN_REPO" "$wt"; then
     driver_state_set "$t" park_note "git hooks could not be set up in $wt, so nothing was pushed"
     return "$DRIVER_E_REFUSED"
@@ -904,6 +945,7 @@ PRBODY
   snote=$(driver_state_get "$t" size_note); [ -z "$snote" ] || body=$(printf '%s\n\n## Size\n%s\n' "$body" "$snote")
   snote=$(driver_state_get "$t" archived_ref)
   [ -z "$snote" ] || body=$(printf "%s\n\n## Earlier branch\nOrigin's %s was an earlier run's tip that no open pull request used, and it conflicted with this run. It is kept as \`%s\` (\`git fetch origin %s\`); the branch now holds this run's line.\n" "$body" "$branch" "$snote" "$snote")
+  [ -z "$proof" ] || body=$(printf '%s\n\n%s\n' "$body" "$proof")
   # `|| true` on the create alone is right: a park may already have opened the draft,
   # and a resume finds it there. What is NOT right is taking the create's silence as a
   # pull request existing — so the next line asks.
@@ -921,6 +963,12 @@ PRBODY
     driver_say "✋ ship: could not ask GitHub whether $branch already has a pull request (${DRIVER_LOOKUP_TRIES:-3} tries), so its title and body cannot be made right."
     driver_state_set "$t" park_note "could not list the open pull requests for $branch at ship (${DRIVER_LOOKUP_TRIES:-3} tries)"
     return "$DRIVER_E_UNREAD"; }
+  # The body that is sent is the body judged: the proof is checked on it, not on a copy.
+  if ! pmiss=$(printf '%s\n' "$body" | _driver_ship_proof_check "$tier"); then
+    driver_say "✋ ship: the pull request body lacks its proof — $(printf '%s' "$pmiss" | tr '\n' ';'). It is neither opened nor rewritten."
+    driver_state_set "$t" park_note "the pull request body lacks its proof: $(printf '%s' "$pmiss" | tr '\n' ';')"
+    return "$DRIVER_E_REFUSED"
+  fi
   if [ -n "$open_pr" ] && ! swarm_gh pr edit "$open_pr" --repo "$REPO_SLUG" --title "#$t: $title" --body "$body" >/dev/null 2>&1; then
     # READ BY ITS EXIT CODE, like ready and merge: a PR left with the park's title and
     # body ships "parked" as its squash subject, without the section the gate judged.

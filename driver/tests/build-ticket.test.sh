@@ -638,7 +638,9 @@ want "the fix reached the PR's own branch on origin" "fixed" "$(git -C "$FIX/ori
 want "as a fast-forward of the PR's head"  "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor "$PR_HEAD" tkt-210/work && echo yes)"
 want_not_in "no new branch was cut"        'tkt-210/ticket-210' "$(git -C "$FIX/origin" branch --list 'tkt-210*')"
 want_not_in "no new pull request"          'pr create' "$(cat "$GH_LOG")"
-want_not_in "the PR's own words are kept"  'pr edit' "$(cat "$GH_LOG")"
+# Its words stay: only the proof it lacked is added under them, and the title is never touched.
+want_not_in "the PR's own words are kept"  'pr edit .*--title' "$(cat "$GH_LOG")"
+want "  any edit starts with them"         "0" "$(grep '^pr edit' "$GH_LOG" | grep -vc -- '--body The PR as its author wrote it\.' || true)"
 want_in "the repair is said on the PR"     'pr comment 61 .*state.txt was never set' "$(tr '\n' ' ' < "$GH_LOG")"
 want_in "and it is handed off"             'pr merge tkt-210/work .*--auto' "$(cat "$GH_LOG")"
 want "the trunk point it forked from is on the record" "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 210 claimed_at_sha)"

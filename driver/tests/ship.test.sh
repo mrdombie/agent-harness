@@ -24,7 +24,7 @@ setup_wt() { # <ticket>
   git -C "$REPO" worktree add -q "$wt" -b "tkt-$t/work" develop
   printf 'change for %s\n' "$t" > "$wt/f$t.txt"
   git -C "$wt" add "f$t.txt"; git -C "$wt" commit -qm "feat: thing $t"
-  driver_state_init "$t" --worktree "$wt" --branch "tkt-$t/work"
+  driver_state_init "$t" --worktree "$wt" --branch "tkt-$t/work"; fix_gates_kept "$t"
   driver_state_set "$t" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
   fix_issue "$t" OPEN "status:claimed"
 }
@@ -72,7 +72,7 @@ wide_wt() { # <ticket> <files> [lockfile] — a branch changing that many files
   i=0; while [ "$i" -lt "$n" ]; do i=$((i+1)); printf 'f %s\n' "$i" > "$wt/w$t-$i.txt"; done
   [ -z "${3:-}" ] || printf '{}\n' > "$wt/package-lock.json"
   git -C "$wt" add -A; git -C "$wt" commit -qm "feat: wide $t"
-  driver_state_init "$t" --worktree "$wt" --branch "tkt-$t/work"
+  driver_state_init "$t" --worktree "$wt" --branch "tkt-$t/work"; fix_gates_kept "$t"
   driver_state_set "$t" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
   fix_issue "$t" OPEN "status:claimed"
 }
@@ -289,7 +289,7 @@ git -C "$REPO" push -q origin develop
 git -C "$REPO" worktree add -q "$FIX/wt112" -b tkt-112/work develop
 git -C "$FIX/wt112" rm -q pinned.test.ts
 git -C "$FIX/wt112" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: rebuild"
-driver_state_init 112 --worktree "$FIX/wt112" --branch tkt-112/work
+driver_state_init 112 --worktree "$FIX/wt112" --branch tkt-112/work; fix_gates_kept 112
 driver_state_put 112 review '{"verdict":"SHIP","findings":[]}'
 fix_issue 112 OPEN "status:claimed"
 out=$(driver_step_ship 112 2>&1); rc=$?
@@ -532,7 +532,9 @@ printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\n## Less
 out=$(driver_step_ship 140 2>&1); rc=$?
 want "it ships"                              "0" "$rc"
 want "the branch is pushed to the same name" "$(git -C "$FIX/wt140" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-140/work 2>/dev/null)"
-want_not_in "the PR's title and body are not rewritten" 'pr edit' "$(cat "$GH_LOG")"
+# Its words stay: only the proof it lacked is added under them (ship-proof.test.sh).
+want_not_in "the PR's title is not rewritten" 'pr edit .*--title' "$(cat "$GH_LOG")"
+want "  and any edit keeps its body"         "0" "$(grep '^pr edit' "$GH_LOG" | grep -vc -- '--body A body a person wrote\.' || true)"
 want_not_in "no second PR is opened"         'pr create' "$(cat "$GH_LOG")"
 want_in "the deleted-tests check reads the PR's own body" 'pr view 88 .*--json body' "$(cat "$GH_LOG")"
 want_in "it is ready"                        'pr ready' "$(cat "$GH_LOG")"
