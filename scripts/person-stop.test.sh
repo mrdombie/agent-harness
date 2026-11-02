@@ -265,6 +265,19 @@ $CONV")"
 dr "$N"
 want "nor does a park comment from an hour before" "0" "$rc"
 
+echo "--- a ticket with a long history is read, not refused (maktura#14079: 598 comments, 2.7 MB) ---"
+# Passed to jq as argv, a history over the OS argument limit (1 MB on macOS) failed as
+# "could not read what GitHub answered": ship held, the run requeued as a repair, and the
+# PR was closed and rebuilt fresh three times with nothing wrong with it.
+big=$(python3 -c 'import json; print(json.dumps([{"created_at":"2026-10-2%dT0%d:00:00Z" % (i%9, i%9),"user":{"login":"github-actions[bot]","type":"Bot"},"body":"## Nightly full suite is red\n"+"x"*4000} for i in range(400)]))')
+world "$big" '[]' '[]' "$READY"
+run "$T" "$N"
+want "a 1.6 MB history is read: nothing stops it"  "0" "$rc"
+want_not_in "and it is not an unread"            'could not read' "$out"
+world "$big" '[{"created_at":"2026-10-30T10:00:00Z","user":'"$PERSON"',"body":"Critical: the key is shared across members."}]' '[]' "$READY"
+run "$T" "$N"
+want "a person's Critical behind it still stops it" "1" "$rc"
+
 echo "--- every comment the harness posts carries the machine marker ---"
 : > "$GH_LOG"
 ( . "$HERE/toolkit-env.sh" && . "$HERE/gh-batch.sh" && gh_call issue comment 5 --repo "$R" --body "Critical: the driver's own words" ) >/dev/null 2>&1
