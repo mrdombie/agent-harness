@@ -823,6 +823,26 @@ want "the head could not be kept: nothing closed" "0" "$(grep -c '^pr close' "$G
 want "  and no third repair either"             "" "$(spawned)"
 want_in "  the tick says so"                    "rebuild: #501 — PR #5501's head could not be kept" "$out"
 
+echo "--- a repair run that called no model is not a repair (a P0 ticket, 1 Nov) ---"
+# Two "repairs" that only re-read a stop GitHub could not answer closed a green PR.
+hollow_end() { # <run n> <exit> <log line> — run claim-501-<n> of the two on record ends
+  printf '{"run_id":"claim-501-%s","ticket":"501","log":"%s","runner":"driver"}\n' "$1" "$STATE/logs/claim-501-$1.log" > "$STATE/runs/claim-501-$1.json"
+  { echo '--- builder: driver (a repair run: the driver repairs its open PR) ---'; echo "$3"
+    jq -cn --arg r "$3" '{type:"result",result:$r}'; } > "$STATE/logs/claim-501-$1.log"
+  printf '{"run_id":"claim-501-%s","exit_code":%s}\n' "$1" "$2" > "$STATE/runs/claim-501-$1.ended"
+}
+rebuild_world 2
+hollow_end 2 26 '↻ #501 requeued for the next tick, at the front of its priority as new, not parked: could not read whether a person stopped #501 / PR #5501'
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a repair that ran no step leaves one on record: repaired again" "501" "$(spawned)"
+want "  and nothing is closed"                  "0" "$(grep -c '^pr close' "$GH_LOG")"
+want_in "  the tick says why"                   'run claim-501-2 on #501 ran no model step, so it is not counted' "$out"
+want_in "  and the PR carries the void, for the other host's count" 'harness:repair-void' "$(cat "$GH_LOG")"
+rebuild_world 2
+hollow_end 2 20 '   review: $0.43 · context 47195→51838 tokens · 4961 words given'
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a repair whose step called the model still counts: rebuilt" "1" "$(grep -c '^pr close 5501' "$GH_LOG")"
+
 echo "--- a frozen run is noticed; a busy one is not ---"
 fresh; live_run 700
 tick >/dev/null
