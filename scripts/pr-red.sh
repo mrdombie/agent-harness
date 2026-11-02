@@ -62,6 +62,7 @@ _PR_RED_CHECKS_JQ='
     def required_checks:
       [ ($p.statusCheckRollup // [])[] | select(type == "object")
         | {name: (.name // .context // ""), run: (if running then 1 else 0 end), at: stamp,
+           job: (if has("status") or .__typename == "CheckRun" then 1 else 0 end),
            rid: ([(.detailsUrl // .targetUrl // "") | capture("/actions/runs/(?<r>[0-9]+)")? | .r] | first // ""),
            state: (if running then "IN_PROGRESS" else (.conclusion // .state // "") end)} ]
       | group_by(.name) | map(max_by([.run, .at]))
@@ -94,8 +95,9 @@ pr_red_classify() { # <pr-json> <required-json> [hold] [nb-json]
     | ($c | map(select(.state == "IN_PROGRESS"))) as $running
     | ($c | map(select(.state | test("^(CANCELLED|TIMED_OUT|STARTUP_FAILURE|STALE)$")))) as $cancelled
     | if ($p.mergeable // "") == "CONFLICTING" or ($p.mergeStateStatus // "") == "DIRTY" then "clash\tit conflicts with its base branch"
-      elif ($running | length) > 0 then "pending\trequired \($running | names) still running"
+      elif ($running | map(select(.job == 1)) | length) > 0 then "pending\trequired \($running | names) still running"
       elif ($failed | length) > 0 then "red\trequired check(s) failed: \($failed | names)"
+      elif ($running | length) > 0 then "pending\trequired \($running | names) still running"
       elif ($cancelled | length) > 0 then "rerun\trequired \($cancelled | names) cancelled or never ran — a re-run, not a repair\t\($cancelled | map(.rid) | map(select(. != "")) | unique | join(" "))"
       elif ($p.isDraft // false) then "finish\ta draft with its required checks settled"
       else "green\tno required check failed and nothing clashes" end' 2>/dev/null)
