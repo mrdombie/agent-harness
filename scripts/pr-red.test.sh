@@ -44,6 +44,20 @@ want "  starts nothing"                    1   "$(rc "$p")"
 p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:QUEUED:-")
 want "a required check queued, no runner"  pending "$(verdict "$p")"
 
+echo "--- a pending commit status never holds a settled red back (5 PRs, 2 Nov) ---"
+# The design critic waits on CI's shots, which a failed CI never takes: read as a wait,
+# a red PR sat with no repair for hours while the critic waited on it.
+st() { jq -c --arg n "$2" --arg s "$3" '.statusCheckRollup += [{__typename: "StatusContext", context: $n, state: $s}]' <<<"$1"; }
+REQ='["typecheck + unit tests","schema drift","design critic"]'
+p=$(st "$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:FAILURE")" "Design critic" PENDING)
+want "a failed check beside a pending critic status" red "$(verdict "$p")"
+want "  and a repair may start"            0   "$(rc "$p")"
+p=$(st "$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:SUCCESS")" "Design critic" PENDING)
+want "a pending critic status alone is a wait" pending "$(verdict "$p")"
+p=$(st "$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:IN_PROGRESS:-" "Schema drift:COMPLETED:FAILURE")" "Design critic" PENDING)
+want "a check run still running is still a wait beside a red" pending "$(verdict "$p")"
+REQ='["typecheck + unit tests","schema drift"]'
+
 echo "--- a red the base does not require starts nothing ---"
 p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:SUCCESS" "Capture and pin the evidence:COMPLETED:FAILURE")
 want "only a non-required check is red"    green "$(verdict "$p")"
