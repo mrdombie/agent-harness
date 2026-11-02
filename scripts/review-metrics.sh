@@ -40,14 +40,20 @@ while [ $# -gt 0 ]; do
 done
 isday() { printf '%s' "$1" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; }
 isday "$SPLIT" || die "--split <YYYY-MM-DD> is required"
-day_add() { # <day> <n> — the day n days later (negative: earlier), UTC
+day_add() { # <day> <n> — the day n days later (negative: earlier), UTC. Signed always:
+  # BSD date's -v1d SETS the day of the month to 1, it does not add one.
+  local n="$2"; case "$n" in -*|+*) : ;; *) n="+$n" ;; esac
   if date -u -j -f %Y-%m-%d "$1" +%s >/dev/null 2>&1; then
-    date -u -j -v"${2}"d -f %Y-%m-%d "$1" +%Y-%m-%d
-  else date -u -d "$1 $2 days" +%Y-%m-%d; fi
+    date -u -j -v"${n}"d -f %Y-%m-%d "$1" +%Y-%m-%d
+  else date -u -d "$1 $n days" +%Y-%m-%d; fi
 }
 [ -n "$FROM" ] || FROM=$(day_add "$SPLIT" -14)
 [ -n "$TO" ] || TO=$(date -u +%Y-%m-%d)
 isday "$FROM" && isday "$TO" || die "--from and --to are YYYY-MM-DD"
+span=$(jq -n --arg a "$FROM" --arg b "$TO" '((($b + "T00:00:00Z") | fromdate) - (($a + "T00:00:00Z") | fromdate)) / 86400') || die "the window $FROM to $TO could not be read"
+[ "${span%.*}" -ge 0 ] 2>/dev/null || die "--from $FROM is after --to $TO"
+[ "${span%.*}" -le 400 ] || die "the window $FROM to $TO is over 400 days; give a shorter one"
+GH="${REVIEW_METRICS_GH:-gh}"
 
 if [ -z "$DD" ]; then
   sd=$( . "$SELF_DIR/toolkit-env.sh" >/dev/null 2>&1 && printf '%s' "${STATE_DIR:-}")
@@ -68,12 +74,14 @@ else
   # (measured 2026-11-02: ten days summing to exactly 1000, the first five days missing).
   printf '[]' > "$TK"; day="$FROM"
   while [ "$day" \< "$TO" ] || [ "$day" = "$TO" ]; do
-    gh issue list --repo "$REPO" --label "$LABEL" --state all --limit 1000 \
+    "$GH" issue list --repo "$REPO" --label "$LABEL" --state all --limit 1000 \
              --search "created:$day" --json createdAt > "$WORK/page.json" 2>/dev/null || die "the finding tickets of $REPO on $day could not be read"
     jq -e 'type == "array"' "$WORK/page.json" >/dev/null 2>&1 || die "the finding tickets of $REPO on $day could not be read"
     [ "$(jq length "$WORK/page.json")" -lt 1000 ] || die "$day alone has 1000 finding tickets, GitHub's search ceiling, so the count would be cut short"
     jq -c --slurpfile p "$WORK/page.json" '. + $p[0]' "$TK" > "$WORK/t2.json" && mv "$WORK/t2.json" "$TK"
-    day=$(day_add "$day" 1)
+    next=$(day_add "$day" 1)
+    [ "$next" \> "$day" ] || die "the day after $day came out as $next, so the count stops here"
+    day="$next"
   done
 fi
 

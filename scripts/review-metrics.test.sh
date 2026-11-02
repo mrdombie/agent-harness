@@ -65,6 +65,27 @@ printf '%s' "$txt" | grep -q 'findings per PR' && echo "OK       names findings 
 printf '%s' "$txt" | grep -q 'rounds to pass' && echo "OK       names rounds to pass" || { echo "MISMATCH no rounds line"; FAILED=1; }
 printf '%s' "$txt" | grep -q 'finding tickets filed per day' && echo "OK       names tickets per day" || { echo "MISMATCH no tickets line"; FAILED=1; }
 
+echo "--- from GitHub: one search a day, each day once, ending on the last day ---"
+# Measured 2026-11-02: BSD date's -v1d SETS the day of the month to 1, so "the next day"
+# went back to the 1st and the loop searched one day forever, into the rate limit.
+cat > "$SB/gh" <<'SH'
+#!/usr/bin/env bash
+d=""; for a; do case "$a" in created:*) d=${a#created:} ;; esac; done
+echo "$d" >> "$GH_CALLS"
+[ "$(grep -c . "$GH_CALLS")" -le 50 ] || { echo "runaway" >&2; exit 1; }
+case "$d" in 2026-11-02) echo '[{"createdAt":"2026-11-02T01:00:00Z"},{"createdAt":"2026-11-02T02:00:00Z"}]' ;; *) echo '[]' ;; esac
+SH
+chmod +x "$SB/gh"; export GH_CALLS="$SB/gh.calls"; : > "$GH_CALLS"
+out=$(REVIEW_METRICS_GH="$SB/gh" bash "$SUT" --driver-dir "$D" --split 2026-11-03 --repo o/r --from 2026-10-31 --to 2026-11-04 --json 2>&1); rc=$?
+want "exits 0"                                  0 "$rc"
+want "each day searched once, in order"         "2026-10-31 2026-11-01 2026-11-02 2026-11-03 2026-11-04" "$(tr '\n' ' ' < "$GH_CALLS" | sed 's/ $//')"
+want "the tickets it found are counted"         2 "$(j .before.findingTickets)"
+: > "$GH_CALLS"
+REVIEW_METRICS_GH="$SB/gh" bash "$SUT" --driver-dir "$D" --split 2026-03-01 --repo o/r --from 2026-02-27 --to 2026-03-01 --json >/dev/null 2>&1
+want "a month end is crossed"                   "2026-02-27 2026-02-28 2026-03-01" "$(tr '\n' ' ' < "$GH_CALLS" | sed 's/ $//')"
+rc=0; REVIEW_METRICS_GH="$SB/gh" bash "$SUT" --driver-dir "$D" --split 2026-03-01 --repo o/r --from 2024-01-01 --to 2026-03-01 >/dev/null 2>&1 || rc=$?
+want "a window over 400 days is refused before any search" 2 "$rc"
+
 echo "--- refusals ---"
 rc=0; bash "$SUT" --driver-dir "$SB/none" --split 2026-11-03 --tickets-json "$SB/tickets.json" >/dev/null 2>&1 || rc=$?
 want "a driver dir that is not there is a 2, never a row of zeros" 2 "$rc"
