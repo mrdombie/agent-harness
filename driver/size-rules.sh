@@ -19,6 +19,7 @@ DRIVER_SIZE_SCHEMA_RE='(^|[^a-z])(schema change|data model|migration|migrate|pri
 DRIVER_SIZE_SCREEN_RE='(^|[^a-z])(new (screen|page|surface|route)|redesign)([^a-z]|$)'
 DRIVER_SIZE_EXT='json|jsonc|md|mdx|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|sh|bash|py|rb|go|rs|css|scss|html|txt|sql|prisma|lock|lockb|env|ini|cfg|conf|swift|kt|java'
 DRIVER_QUICK_NEVER_EFFORT_DEFAULT='["effort:M", "effort:L", "effort:XL"]'
+DRIVER_QUICK_NEVER_LABELS_DEFAULT='["type:feature"]'
 DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^|/)\.env(\.[a-z]+)?$'
 
 # THE SIZE CAP ON A CHANGE (owner calls 2026-10-23 "small changes merged fast", 2026-10-24 "a
@@ -85,6 +86,14 @@ driver_quick_never_effort() {
   jq -r --argjson d "$DRIVER_QUICK_NEVER_EFFORT_DEFAULT" \
     '(.driver.quick.neverEffort // $d) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
     "$HARNESS_CFG" 2>/dev/null || jq -r '.[]' <<<"$DRIVER_QUICK_NEVER_EFFORT_DEFAULT"
+}
+
+# driver_quick_never_labels — the ticket labels never quick, one a line:
+# driver.quick.neverLabels, or type:feature.
+driver_quick_never_labels() {
+  jq -r --argjson d "$DRIVER_QUICK_NEVER_LABELS_DEFAULT" \
+    '(.driver.quick.neverLabels // $d) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
+    "$HARNESS_CFG" 2>/dev/null || jq -r '.[]' <<<"$DRIVER_QUICK_NEVER_LABELS_DEFAULT"
 }
 
 # driver_repo_self — this project's repo name, lower case, owner dropped: the config's
@@ -277,6 +286,13 @@ $body"
       return 0 ;;
     esac
   done <<<"$(driver_quick_never_effort)"
+  # A feature's spec doc is often the only file it names, which reads as a docs edit.
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case ",$labels," in *",$l,"*)
+      printf 'small\tit carries %s: a ticket labelled so is never quick\t\n' "$l"; return 0 ;;
+    esac
+  done <<<"$(driver_quick_never_labels)"
   for l in needs:design screen:new screen:redesign $(jq -r '(.design.baselineRoute.pictureLabels // [])[]' "$HARNESS_CFG" 2>/dev/null); do
     case ",$labels," in *",$l,"*) printf 'project\tit carries %s, which is screen work\t\n' "$l"; return 0 ;; esac
   done
