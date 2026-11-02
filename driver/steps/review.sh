@@ -319,22 +319,27 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
 # _driver_review_panel <ticket> <review.json> <round> — what the panel's answer keeps.
 # An answer with no votes on a finding (an older reviewer) keeps it, graded as before.
 _driver_review_panel() {
-  local t="$1" f="$2" round="$3" q keydef ledger n pre npre sq
+  local t="$1" f="$2" round="$3" q keydef ledger n pre npre sq fixes dropped=0
   keydef=$(cat "$KIT_ROOT/scripts/finding-key.jq" 2>/dev/null) || { driver_say "✋ review: $KIT_ROOT/scripts/finding-key.jq is missing"; return 1; }
   q=$(driver_opt review.quorum 2)
   case "$q" in
     ''|*[!0-9]*|0) driver_say "⚠ review: harness.json's review.quorum is '${q}', which is not a count of votes, so 2 is used."; q=2 ;;
   esac
+  # THE TALLY IS DERIVED FROM THE VERIFIER'S OWN WORD, never the model's arithmetic: a model
+  # handed CONFIRMED wrote 1 of 1 on every finding (2026-11-02), which the quorum drops.
+  jq '.findings = [(.findings // [])[] | if .verified then .votes = ({confirmed: {agree: 2, of: 2}, plausible: {agree: 1, of: 2}, unverified: {agree: 1, of: 1}}[.verified]) else . end]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
   # ONLY WHAT THE PANEL AGREED ON: at least the quorum, and more than half of those who judged it.
   n=$(jq --argjson q "$q" '[.findings[]? | select(.votes != null and ((.votes.agree >= $q and .votes.agree * 2 > .votes.of) | not))] | length' "$f" 2>/dev/null)
   if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
     jq --argjson q "$q" '.findings = [(.findings // [])[] | select(.votes == null or (.votes.agree >= $q and .votes.agree * 2 > .votes.of))]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    dropped=$((dropped + n))
     driver_say "   review: $n finding(s) the panel did not agree on are dropped (a majority and at least $q agreeing vote(s) keep one)"
   fi
   # STYLE AND CLEANUP NEVER BLOCK, and the drop is said.
   n=$(jq '[.findings[]? | select(.tag == "nit")] | length' "$f" 2>/dev/null)
   if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
     jq '.findings = [(.findings // [])[] | select(.tag != "nit")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    dropped=$((dropped + n))
     driver_say "   review: $n nit(s) dropped — style and cleanup never block"
   fi
   # A PRE-EXISTING DEFECT IS THE SWEEP'S: never back to the builder, never a ticket.
@@ -345,32 +350,38 @@ _driver_review_panel() {
     [ -n "${SWEEP_QUEUE:-}" ] || [ -z "${STATE_DIR:-}" ] || export SWEEP_QUEUE="$STATE_DIR/swarm/sweep/pre-existing.jsonl"
     printf '%s' "$pre" | bash "$sq" add "$t" "$round" >/dev/null 2>&1 || driver_say "⚠ review: the sweep queue could not take $npre pre-existing finding(s) — they are dropped from this change all the same"
     jq '.findings = [(.findings // [])[] | select(.tag != "pre-existing")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    dropped=$((dropped + npre))
     driver_say "   review: $npre pre-existing finding(s) to the nightly sweep — not this change's, and never a ticket"
   fi
-  # NEVER RAISED TWICE: a finding this change was already handed is not handed again.
+  # NEVER RAISED TWICE: a finding this change was already handed, and a fix round has answered
+  # since, is not handed again. With no fix round since, a re-raise is the finding still standing.
+  fixes=$(driver_state_count "$t" fix)
   ledger="$(driver_state_dir "$t")/steps/review.posted.jsonl"
   if [ -s "$ledger" ]; then
-    n=$(jq --slurpfile p "$ledger" "$keydef"' ([$p[].key]) as $seen | [.findings[]? | select(finding_key as $k | $seen | index($k))] | length' "$f" 2>/dev/null)
+    n=$(jq --slurpfile p "$ledger" --argjson fx "${fixes:-0}" "$keydef"' ([$p[] | select((.fix // 0) < $fx) | .key]) as $seen | [.findings[]? | select(finding_key as $k | $seen | index($k))] | length' "$f" 2>/dev/null)
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
-      jq --slurpfile p "$ledger" "$keydef"' ([$p[].key]) as $seen | .findings = [(.findings // [])[] | select(finding_key as $k | $seen | index($k) | not)]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+      jq --slurpfile p "$ledger" --argjson fx "${fixes:-0}" "$keydef"' ([$p[] | select((.fix // 0) < $fx) | .key]) as $seen | .findings = [(.findings // [])[] | select(finding_key as $k | $seen | index($k) | not)]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+      dropped=$((dropped + n))
       driver_say "   review: $n finding(s) already raised on this change are not raised again"
     fi
   fi
   cp "$f" "$f.panel" 2>/dev/null || true
-  _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$round")" 1
+  # A BLOCKED the panel emptied is read off what is left; one that named nothing stays as given.
+  [ "$dropped" -eq 0 ] || _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$round")" 1
 }
 
 # _driver_review_posted <ticket> <review.json> <round> — every finding this review handed
 # on (to fix, a polish list or a follow-up), on the never-twice ledger. Written only once
 # the step acts on them: a refused answer posted nothing, and its re-run must not lose them.
 _driver_review_posted() {
-  local t="$1" f="$2" round="$3" src keydef ledger
+  local t="$1" f="$2" round="$3" src keydef ledger fx
   src="$f.panel"; [ -f "$src" ] || src="$f"
   keydef=$(cat "$KIT_ROOT/scripts/finding-key.jq" 2>/dev/null) || return 0
   ledger="$(driver_state_dir "$t")/steps/review.posted.jsonl"
-  jq -c --argjson r "$round" "$keydef"' .findings[]? | select((.grade // "") != "nit")
+  fx=$(driver_state_count "$t" fix)
+  jq -c --argjson r "$round" --argjson fx "${fx:-0}" "$keydef"' .findings[]? | select((.grade // "") != "nit")
       | select((.id // "" | tostring | startswith("polish-")) | not)
-      | {key: finding_key, id, file, line, grade, summary, round: $r} + (if .class then {class} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
+      | {key: finding_key, id, file, line, grade, summary, round: $r, fix: $fx} + (if .class then {class} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
   rm -f "$f.panel"
 }
 

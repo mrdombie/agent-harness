@@ -25,7 +25,8 @@
       },
       "summary": "the reader drops a 500 as an empty page, in code this change did not touch",
       "reason": "a person whose list failed to load sees no rows and no error",
-      "fix": "return the failed state"
+      "fix": "return the failed state",
+      "verified": "confirmed"
     }
   ]
 }

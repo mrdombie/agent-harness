@@ -21,12 +21,11 @@ tagged and handed back. Post nothing and fix nothing.
 
 ## Keep only what the panel agreed on
 
-Turn each finding `code-review` reports into one entry with its vote in `votes`
-(`of`: agents that judged it; `agree`: those that held it real). One its verifier CONFIRMED is `{"agree": 2, "of": 2}`;
-one the verifier called PLAUSIBLE is `{"agree": 1, "of": 2}`; one nothing verified
-(a gap-sweep addition) is `{"agree": 1, "of": 1}`. A REFUTED one is not returned.
-Never raise a vote above what the reviewer reported: the driver keeps only what a
-majority agreed on.
+Return every finding `code-review` reports that its verifier did not refute, and
+copy the verifier's own word into `verified`: `confirmed`, `plausible`, or
+`unverified` when no verifier judged it (a gap-sweep addition). Return a PLAUSIBLE
+or unverified one too, and never upgrade a word. Count nothing: the driver derives
+the tally from that word and keeps only what a majority of agents agreed on.
 
 Then tag every finding:
 
@@ -102,6 +101,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `findings[].line` (required): integer
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
+- `findings[].verified`: one of "confirmed", "plausible", "unverified"
 - `findings[].votes`: object
 - `findings[].votes.agree` (required): integer
 - `findings[].votes.of` (required): integer
@@ -124,7 +124,7 @@ Conditional:
 The verdict is read off the grades, never typed beside them: `SHIP` with a Critical
 or a Major that is not `pre-existing`, and `BLOCKED` with none, are both refused.
 Every finding carries its file, its line (0 when it is on no line of a file, such as
-the pull request's body), its grade, its `tag`, its `votes`, the one-line `reason`
+the pull request's body), its grade, its `tag`, its `verified` word, the one-line `reason`
 in a user's words, and the fix; a class adds `class` and `instances`. `panel` names
 the reviewer you ran: `{"skill": "code-review", "effort": "{{EFFORT}}"}`, with the
 number of finder and verifier agents it started in `hunters` and `verifiers`.

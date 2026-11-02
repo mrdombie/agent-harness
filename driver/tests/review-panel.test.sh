@@ -37,12 +37,12 @@ answer() {
     '{step: "review", skills: ["code-review"], status: "reviewed", round: $r, verdict: $v,
       panel: {skill: "code-review", effort: "max", hunters: 10, verifiers: ($f | length)}, findings: $f}'
 }
-F_AGREED='{"id":"f1","file":"a.sh","line":1,"grade":"major","tag":"important","votes":{"agree":2,"of":2},"summary":"the save is dropped on retry","reason":"a person sees saved and loses the draft","fix":"keep it"}'
-F_PLAUS='{"id":"f2","file":"a.sh","line":2,"grade":"major","tag":"important","votes":{"agree":1,"of":2},"summary":"the retry may race the timer","reason":"r","fix":"f"}'
-F_SWEPT='{"id":"f3","file":"a.sh","line":3,"grade":"major","tag":"important","votes":{"agree":1,"of":1},"summary":"a gap sweep thought of this","reason":"r","fix":"f"}'
-F_NIT='{"id":"f4","file":"a.sh","line":4,"grade":"nit","tag":"nit","votes":{"agree":2,"of":2},"summary":"the loop could be a for-of","reason":"cleanup","fix":"f"}'
-F_PRE='{"id":"f5","file":"lib/old.sh","line":9,"grade":"major","tag":"pre-existing","votes":{"agree":2,"of":2},"summary":"the old reader drops a 500 as an empty page","reason":"r","fix":"f"}'
-F_MINOR='{"id":"f6","file":"lib/other.sh","line":2,"grade":"minor","tag":"important","votes":{"agree":2,"of":2},"summary":"the label is vague","reason":"r","fix":"f"}'
+F_AGREED='{"id":"f1","file":"a.sh","line":1,"grade":"major","tag":"important","verified":"confirmed","summary":"the save is dropped on retry","reason":"a person sees saved and loses the draft","fix":"keep it"}'
+F_PLAUS='{"id":"f2","file":"a.sh","line":2,"grade":"major","tag":"important","verified":"plausible","summary":"the retry may race the timer","reason":"r","fix":"f"}'
+F_SWEPT='{"id":"f3","file":"a.sh","line":3,"grade":"major","tag":"important","verified":"unverified","summary":"a gap sweep thought of this","reason":"r","fix":"f"}'
+F_NIT='{"id":"f4","file":"a.sh","line":4,"grade":"nit","tag":"nit","verified":"confirmed","summary":"the loop could be a for-of","reason":"cleanup","fix":"f"}'
+F_PRE='{"id":"f5","file":"lib/old.sh","line":9,"grade":"major","tag":"pre-existing","verified":"confirmed","summary":"the old reader drops a 500 as an empty page","reason":"r","fix":"f"}'
+F_MINOR='{"id":"f6","file":"lib/other.sh","line":2,"grade":"minor","tag":"important","verified":"confirmed","summary":"the label is vague","reason":"r","fix":"f"}'
 ALL="[$F_AGREED,$F_PLAUS,$F_SWEPT,$F_NIT,$F_PRE]"
 
 echo "--- the review runs code-review, at the configured effort, against the trunk ---"
@@ -78,8 +78,8 @@ fix_ai review "$(answer 1 BLOCKED "[$F_AGREED]")" code-review
 on driver_step_review 703 >/dev/null 2>&1
 want "the posted ledger holds it"                  "a.sh|the save is dropped on retry" "$(jq -r .key "$(driver_state_dir 703)/steps/review.posted.jsonl")"
 printf 'z\n' > "$FIX/rp703/z.sh"; git -C "$FIX/rp703" add -A; git -C "$FIX/rp703" commit -qm "fix: z"; driver_state_bump 703 fix
-again='{"id":"g1","file":"./a.sh","line":7,"grade":"major","tag":"important","votes":{"agree":2,"of":2},"summary":"The save is dropped on RETRY.","reason":"r","fix":"f"}'
-fresh='{"id":"g2","file":"z.sh","line":1,"grade":"major","tag":"important","votes":{"agree":2,"of":2},"summary":"the new helper swallows the error","reason":"r","fix":"f"}'
+again='{"id":"g1","file":"./a.sh","line":7,"grade":"major","tag":"important","verified":"confirmed","summary":"The save is dropped on RETRY.","reason":"r","fix":"f"}'
+fresh='{"id":"g2","file":"z.sh","line":1,"grade":"major","tag":"important","verified":"confirmed","summary":"the new helper swallows the error","reason":"r","fix":"f"}'
 fix_ai review "$(answer 2 BLOCKED "[$again,$fresh]")" code-review
 rc=0; out=$(on driver_step_review 703 2>&1) || rc=$?
 want "round 2 still blocks on the fresh one"       "30" "$rc"
@@ -87,13 +87,22 @@ want "the repeat is gone"                          "g2" "$(ids 703)"
 want_in "and said"                                 "1 finding.s. already raised on this change" "$out"
 want_in "round 2 is told what was already raised"  "the save is dropped on retry" "$(fact 703 DIFF)"
 
+echo "--- a re-raise with no fix round since is the finding still standing, not a repeat ---"
+rp_tree 710
+fix_ai review "$(answer 1 BLOCKED "[$F_AGREED]")" code-review
+on driver_step_review 710 >/dev/null 2>&1
+fix_ai review "$(answer 2 BLOCKED "[$F_AGREED]")" code-review
+rc=0; on driver_step_review 710 >/dev/null 2>&1 || rc=$?
+want "it still blocks"                             "30" "$rc"
+want "and is still on the answer"                  "f1" "$(ids 710)"
+
 echo "--- a class is one finding; a later instance of the same class is not raised again ---"
 rp_tree 704
-cls='{"id":"c1","file":"a.sh","line":1,"grade":"major","tag":"important","votes":{"agree":2,"of":2},"class":"a failed read shown as empty","instances":["a.sh:1","b.sh:4"],"summary":"the queue shows empty on a failed read","reason":"r","fix":"f"}'
+cls='{"id":"c1","file":"a.sh","line":1,"grade":"major","tag":"important","verified":"confirmed","class":"a failed read shown as empty","instances":["a.sh:1","b.sh:4"],"summary":"the queue shows empty on a failed read","reason":"r","fix":"f"}'
 fix_ai review "$(answer 1 BLOCKED "[$cls]")" code-review
 on driver_step_review 704 >/dev/null 2>&1
 printf 'z\n' > "$FIX/rp704/z.sh"; git -C "$FIX/rp704" add -A; git -C "$FIX/rp704" commit -qm "fix: z"; driver_state_bump 704 fix
-cls2='{"id":"c2","file":"z.sh","line":3,"grade":"major","tag":"important","votes":{"agree":2,"of":2},"class":"A failed read shown as empty","summary":"the rail shows empty on a failed read","reason":"r","fix":"f"}'
+cls2='{"id":"c2","file":"z.sh","line":3,"grade":"major","tag":"important","verified":"confirmed","class":"A failed read shown as empty","summary":"the rail shows empty on a failed read","reason":"r","fix":"f"}'
 fix_ai review "$(answer 2 BLOCKED "[$cls2]")" code-review
 rc=0; on driver_step_review 704 >/dev/null 2>&1 || rc=$?
 want "the class already raised does not block again" "0" "$rc"
@@ -116,6 +125,19 @@ fix_ai review "$(answer 1 BLOCKED "[$F_PLAUS]")" code-review
 rp_tree 707
 rc=0; HARNESS_CFG="$FIX/q1.json" HARNESS_CFG_PATH="$FIX/q1.json" driver_step_review 707 >/dev/null 2>&1 || rc=$?
 want "but one of two is still no majority"         "0" "$rc"
+
+echo "--- the tally comes from the verifier's own word, never the model's arithmetic ---"
+# Measured 2026-11-02, the shipped brief end to end: the verifiers said CONFIRMED and the
+# model wrote 1 of 1 on every finding, which the quorum would have dropped, a crash with it.
+rp_tree 709
+V_CONF='{"id":"v1","file":"a.sh","line":1,"grade":"critical","tag":"important","verified":"confirmed","votes":{"agree":1,"of":1},"summary":"the loop reads past the end","reason":"every call throws","fix":"use <"}'
+V_PLAUS='{"id":"v2","file":"a.sh","line":2,"grade":"major","tag":"important","verified":"plausible","votes":{"agree":2,"of":2},"summary":"a missing qty is NaN","reason":"r","fix":"f"}'
+V_NONE='{"id":"v3","file":"a.sh","line":3,"grade":"major","tag":"important","verified":"unverified","summary":"a sweep idea","reason":"r","fix":"f"}'
+fix_ai review "$(answer 1 BLOCKED "[$V_CONF,$V_PLAUS,$V_NONE]")" code-review
+rc=0; on driver_step_review 709 >/dev/null 2>&1 || rc=$?
+want "a confirmed finding blocks whatever tally was typed" "30" "$rc"
+want "only the confirmed one is kept"                      "v1" "$(ids 709)"
+want "its tally is the panel's: finder and verifier"       "2/2" "$(jq -r '.findings[0].votes | "\(.agree)/\(.of)"' "$(rj 709)")"
 
 echo "--- an answer with no panel (an older reviewer) is graded exactly as before ---"
 rp_tree 708
@@ -143,6 +165,9 @@ plant "the review runs the panel filter" driver/steps/review.sh \
   '  _driver_review_panel "$t" "$ans_file" "$round" || return "$DRIVER_E_REFUSED"' "rc=30 kept=f1 f2 f3 f4 swept=0 filed=f5"
 plant "the quorum drops the unagreed" driver/steps/review.sh \
   ' | select(.votes == null or (.votes.agree >= $q and .votes.agree * 2 > .votes.of))' "rc=30 kept=f1 f2 f3 swept=1 filed="
+plant "the tally is derived from the verifier's word" driver/steps/review.sh \
+  "  jq '.findings = [(.findings // [])[] | if .verified then .votes = ({confirmed: {agree: 2, of: 2}, plausible: {agree: 1, of: 2}, unverified: {agree: 1, of: 1}}[.verified]) else . end]' \"\$f\" > \"\$f.t\" && mv \"\$f.t\" \"\$f\" || return 1" \
+  "rc=30 kept=f1 f2 f3 swept=1 filed="
 plant "a pre-existing finding is swept" driver/steps/review.sh \
   '    printf '"'"'%s'"'"' "$pre" | bash "$sq" add "$t" "$round" >/dev/null 2>&1 || driver_say "⚠ review: the sweep queue could not take $npre pre-existing finding(s) — they are dropped from this change all the same"' "rc=30 kept=f1 swept=0 filed="
 case_pre_ship() { # a SHIP whose only blocking-grade finding is pre-existing

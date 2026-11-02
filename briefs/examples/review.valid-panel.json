@@ -30,7 +30,8 @@
       ],
       "summary": "the failed state renders the empty copy, here and in the rail",
       "reason": "someone whose queue failed to load is told there is nothing in it, and stops looking",
-      "fix": "branch on state === 'failed' in both and render the retry row"
+      "fix": "branch on state === 'failed' in both and render the retry row",
+      "verified": "confirmed"
     },
     {
       "id": "f2",
@@ -44,7 +45,8 @@
       },
       "summary": "the reader drops a 500 as an empty page, in code this change did not touch",
       "reason": "a person whose list failed to load sees no rows and no error",
-      "fix": "return the failed state"
+      "fix": "return the failed state",
+      "verified": "confirmed"
     },
     {
       "id": "f3",
@@ -58,7 +60,8 @@
       },
       "summary": "the loop could be a for...of",
       "reason": "cleanup",
-      "fix": "leave it"
+      "fix": "leave it",
+      "verified": "confirmed"
     }
   ]
 }

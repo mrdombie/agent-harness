@@ -103,7 +103,7 @@ done
 # reviewer; its Return asks for the panel, a tag and the votes on every finding.
 want "the review step declares code-review" "code-review" "$(jq -r '.steps.review.skills | join(" ")' "$FACTS")"
 rret=$(awk '/^## Return[[:space:]]*$/ {inr=1; next} /^## / {inr=0} inr' "$BRIEFS/review.md")
-for w in '`panel`' '`tag`' '`votes`' 'pre-existing' '`class`'; do
+for w in '`panel`' '`tag`' '`verified`' 'pre-existing' '`class`'; do
   printf '%s' "$rret" | grep -qF -- "$w" && ok "review.md's Return asks for $w" \
     || bad "review.md's Return never asks for $w"
 done
