@@ -27,7 +27,19 @@ SAME='{
   "repo": "x/z",
   "preApprovedWrites": { "environments": ["Staging"], "decided": "op, 2026-10-14" }
 }'
-printf '%s\n' "$BASE" > "$C"; g add .claude && g commit -qm base
+printf '%s\n' "$BASE" > "$C"
+# A repo test that writes a scratch harness.json in its own temp fixture, the shape of driver/tests/*.test.sh.
+mkdir -p "$R/tests"
+SCRATCH_TEST='#!/usr/bin/env bash
+F=$(mktemp -d); mkdir -p "$F/.claude"; printf "{}\n" > "$F/.claude/harness.json"
+jq ".preApprovedWrites = {\"environments\": [\"Production\"]}" "$F/.claude/harness.json" > "$F/h.json" && mv "$F/h.json" "$F/.claude/harness.json"
+rm -rf "$F"'
+WIDEN_TEST='#!/usr/bin/env bash
+sed -i "" "s/\"Staging\"]/\"Staging\", \"Production\"]/" .claude/harness.json'
+printf '%s\n' "$SCRATCH_TEST" > "$R/tests/scratch.test.sh"
+printf '%s\n' "$SCRATCH_TEST" > "$R/tests/edited.test.sh"
+chmod +x "$R/tests/scratch.test.sh"
+g add .claude tests && g commit -qm base
 g checkout -qb wide; printf '%s\n' "$WIDE" > "$C"; g commit -qam wide
 g checkout -q -; g checkout -qb same; printf '%s\n' "$SAME" > "$C"; g commit -qam same
 g checkout -q -
@@ -35,6 +47,11 @@ g diff HEAD wide > "$TDIR/wide.patch"; g diff HEAD same > "$TDIR/same.patch"
 # A real bare origin: the push judge asks the remote, never a local ref.
 git init -q --bare "$TDIR/origin.git"; git -C "$TDIR/origin.git" symbolic-ref HEAD refs/heads/develop
 g remote add origin "$TDIR/origin.git"; g push -q origin HEAD:refs/heads/develop; g fetch -q origin
+# Agent-made tests that widen the real file: one modified from the merged copy, one untracked,
+# one committed locally but never merged to origin's integration branch.
+printf '%s\n' "$WIDEN_TEST" > "$R/tests/edited.test.sh"
+printf '%s\n' "$WIDEN_TEST" > "$R/tests/evil.test.sh"
+printf '%s\n' "$WIDEN_TEST" > "$R/tests/local.test.sh"; g add tests/local.test.sh && g commit -qm local
 ln "$C" "$TDIR/hardlink"                         # the same file under another name
 mkdir -p "$TDIR/stage"; printf '%s\n' "$WIDE" > "$TDIR/stage/harness.json"
 printf '%s\n' "$WIDE" > "$TDIR/wide.json"; printf '%s\n' "$SAME" > "$TDIR/same.json"
@@ -156,6 +173,16 @@ PY")"
 add shell  block "$(bashp "bash -c 'sed -i \"\" s/Staging/Production/ .claude/harness.json'")"
 add shell  block "$(bashp "bash widen.sh")"
 add exec   block "$(bashp "./widen.sh")"
+add -      allow "$(bashp "bash tests/scratch.test.sh")"
+add -      allow "$(bashp "./tests/scratch.test.sh 2>&1 | tail -5")"
+add -      allow "$(bashp "cd tests && bash scratch.test.sh")"
+add copy   block "$(bashp "bash tests/scratch.test.sh && cp $TDIR/wide.json .claude/harness.json")"
+add redirect block "$(bashp "bash tests/scratch.test.sh > .claude/harness.json")"
+add trusted block "$(bashp "bash tests/edited.test.sh")"
+add trusted block "$(bashp "bash tests/evil.test.sh")"
+add trusted block "$(bashp "bash tests/local.test.sh")"
+add trustarg block "$(bashp "HARNESS_CFG=.claude/harness.json bash tests/scratch.test.sh")"
+add trustarg block "$(bashp "bash tests/scratch.test.sh .claude/harness.json")"
 add checkout block "$(bashp "git checkout wide -- .claude/harness.json")"
 add checkout block "$(bashp "cd / && git -C $R checkout wide -- .claude")"
 add -      allow "$(bashp "git checkout HEAD -- .claude/harness.json")"
@@ -341,6 +368,14 @@ plant gitprot  "    if is_gitprot(path):
         gitprot_refuse(path)" "    pass"
 plant gitprotsh "def gitprot_refuse(path):" "def gitprot_refuse(path):
     return"
+plant trusted  "    return bool(merged and disk) and merged.strip() == disk.strip()" "    return True"
+plant trustarg "    return len(args) == 1 + (os.path.basename(args[0]) in SHELLS) and not names_cfg(list(assigns.values()), cwd)" "    return True"
+# The other way: trust off, the merged test is judged line by line and refused again.
+pd=$(plant_dir notrust "    if not TEST_SCRIPT.search(os.path.basename(p)) or not os.path.isfile(p):" "    if True:")
+[ -n "$pd" ] || bad "plant notrust did not land"
+[ "$(judge "$pd" "$(bashp 'bash tests/scratch.test.sh')")" -eq 2 ] &&
+  ok "plant: merged-test trust off, the scratch-fixture test is refused, so the trust is what lets it run" ||
+  bad "plant: merged-test trust off, yet the test still runs: the allow case proves nothing"
 printf '%s\n' "$WIDE" > "$C"
 plant commitwt "        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)', shared)" "        pass" "$WT"
 printf '%s\n' "$BASE" > "$C"
