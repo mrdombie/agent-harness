@@ -81,6 +81,11 @@ want "a schema label is never quick"                     project "$(sz 'Config' 
 want "a design label is never quick"                     project "$(sz 'Config' "$CONFIG_BODY" 'needs:design')"
 want "four named files is small"                         small   "$(sz 'Four' 'Set a to b in a.json, b.json, c.json and d.json.')"
 want "a URL is not a file"                               project "$(sz 'Docs' 'See https://example.com/guide.md for why.')"
+want "a feature naming only its spec doc is not quick"   small   "$(sz 'Voices' 'Build the voices feature per docs/guide.md.' 'P0,type:feature')"
+want_in "and says why" 'it carries type:feature: a ticket labelled so is never quick' "$(driver_size_read 1 'Voices' 'P0,type:feature' 'Build the voices feature per docs/guide.md.')"
+want "the same docs ticket without the label is quick"   quick   "$(sz 'Voices' 'Build the voices feature per docs/guide.md.' 'P0,type:bug')"
+jq '.driver.quick.neverLabels = []' "$HARNESS_CFG" > "$FIX/h-nl.json"
+want "driver.quick.neverLabels [] turns it off"          quick   "$(HARNESS_CFG="$FIX/h-nl.json" driver_size_read 1 'Voices' 'type:feature' 'Build the voices feature per docs/guide.md.' | cut -f1)"
 
 echo "--- the size step: rules first, one short call only when undecided ---"
 issue 701 "status:ready" "Make lint strict" "$CONFIG_BODY"
