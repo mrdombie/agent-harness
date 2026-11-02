@@ -1,0 +1,17 @@
+{
+  "step": "plan",
+  "skills": ["superpowers:writing-plans"],
+  "status": "planned",
+  "designSource": "ticket-body",
+  "premise": { "verdict": "still-true", "evidence": "rg -l oldLog src/ lists 6 modules" },
+  "tasks": [
+    { "title": "Replace oldLog(...) with log.info(...) in one module", "files": [{ "path": "src/lib/log.ts", "action": "modify" }], "tests": [{ "file": "src/lib/log.test.ts", "behaviour": "log.info writes what oldLog wrote" }] }
+  ],
+  "units": [
+    { "title": "inbox", "files": [{ "path": "src/inbox/index.ts", "action": "modify" }], "tests": [{ "file": "src/inbox/index.test.ts", "behaviour": "no oldLog call is left" }] },
+    { "title": "posts", "files": [{ "path": "src/posts/index.ts", "action": "modify" }], "tests": [{ "file": "src/posts/index.test.ts", "behaviour": "no oldLog call is left" }] },
+    { "title": "people", "files": [{ "path": "src/people/index.ts", "action": "modify" }], "tests": [{ "file": "src/people/index.test.ts", "behaviour": "no oldLog call is left" }] },
+    { "title": "billing", "files": [{ "path": "src/billing/index.ts", "action": "modify" }], "tests": [{ "file": "src/billing/index.test.ts", "behaviour": "no oldLog call is left" }] },
+    { "title": "settings", "files": [{ "path": "src/settings/index.ts", "action": "modify" }], "tests": [{ "file": "src/settings/index.test.ts", "behaviour": "no oldLog call is left" }] }
+  ]
+}

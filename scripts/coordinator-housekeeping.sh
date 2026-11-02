@@ -83,6 +83,13 @@ if [ "$UNBLOCK" = off ]; then :
 elif [ -n "$GH_WAIT" ]; then say "unblock: $GH_WAIT — next pass"
 elif coord_shadow; then bash "$UNBLOCK" --dry-run >> "$COORD_LOG" 2>&1 || say "unblock (dry) exited $?"
 else bash "$UNBLOCK" >> "$COORD_LOG" 2>&1 || say "unblock exited $?"; fi
+# A split feature's items pass as their parts merge with their test steps on the trunk, and the
+# feature is done once every item passes and its clean-up part has merged (feature-close.sh).
+FEATURE_CLOSE="${COORDINATOR_FEATURE_CLOSE:-$SELF_DIR/feature-close.sh}"
+if [ "$FEATURE_CLOSE" = off ]; then :
+elif [ -n "$GH_WAIT" ]; then say "feature lists: $GH_WAIT — next pass"
+elif coord_shadow; then bash "$FEATURE_CLOSE" sweep --dry-run >> "$COORD_LOG" 2>&1 || say "feature lists (dry) exited $?"
+else bash "$FEATURE_CLOSE" sweep >> "$COORD_LOG" 2>&1 || say "feature lists exited $?"; fi
 # A batch's held child goes back to ready once its batch is closed by any route (release-batch-children.sh).
 RELEASE_BATCH="${COORDINATOR_RELEASE_BATCH:-$SELF_DIR/release-batch-children.sh}"
 if [ "$RELEASE_BATCH" = off ]; then :
