@@ -842,6 +842,16 @@ rebuild_world 2
 hollow_end 2 20 '   review: $0.43 · context 47195→51838 tokens · 4961 words given'
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
 want "a repair whose step called the model still counts: rebuilt" "1" "$(grep -c '^pr close 5501' "$GH_LOG")"
+for c in 1 137; do
+  rebuild_world 2
+  hollow_end 2 "$c" 'build-ticket: killed mid-step'
+  SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+  want "a repair killed mid-step (exit $c, no cost line) still counts: rebuilt" "1" "$(grep -c '^pr close 5501' "$GH_LOG")"
+done
+rebuild_world 2
+hollow_end 2 20 '⏸ #501 parked (driver): start refused (exit 24) — start: #501 is not status:ready (labels: status:in-review)'
+SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
+want "a repair whose start was refused is not counted" "0" "$(grep -c '^pr close 5501' "$GH_LOG")"
 
 echo "--- a frozen run is noticed; a busy one is not ---"
 fresh; live_run 700

@@ -220,10 +220,21 @@ heal_pr_gone() { # <ticket> <class> — 0 when the row is new work now (in shado
   say "#$t ($cls): has no open PR — back to new work"
 }
 
-# repair_ran_no_step <run log> — 0 when the run's log shows no step called the model. Every
-# model step leaves "<step>: $<cost> · context" (driver/ai-step.sh driver_record_usage). A
-# missing log is unknown, and counts as a repair, as before.
-repair_ran_no_step() { [ -s "${1:-}" ] && ! grep -qE ': \$[0-9][0-9.]* · context ' "$1"; }
+# repair_ran_no_step <run log> <exit> <result line> — 0 when the run stopped before any model
+# call: it ended on a known pre-model stop (DRIVER_E_UNREAD 26 GitHub unread, DRIVER_E_REQUEUE
+# 28 a peer's claim or a wait, or "start refused") AND its log has no "<step>: $<cost> ·
+# context" line (driver/ai-step.sh driver_record_usage). Both, never one: a run killed mid-step
+# (a usage limit, a stop-all, an OOM, a timeout) also leaves no cost line but did spend, and
+# still counts, or a ticket that keeps dying that way would be repaired for ever. A missing
+# log is unknown, and counts.
+repair_ran_no_step() {
+  [ -s "${1:-}" ] || return 1
+  case "${2:-}" in
+    "${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_REQUEUE:-28}") ;;
+    *) case "${3:-}" in *"start refused"*) ;; *) return 1 ;; esac ;;
+  esac
+  ! grep -qE ': \$[0-9][0-9.]* · context ' "$1"
+}
 REPAIR_VOIDS=""   # tickets whose PR is told of a voided repair once this tick has read the PRs
 repair_void() { # <ticket> <run-id> — the spawn no longer counts toward a rebuild
   printf '%s\t%s\trepair-void\t%s\n' "$2" "$1" "$(date +%s)" >> "$COORD_RUN_CLASSES"

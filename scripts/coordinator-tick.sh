@@ -199,7 +199,7 @@ for ended in "$RUNS_DIR"/*.ended; do
       else "\troute=\(.route) size=\(.size // "?")\(if .claim_to_pr_secs then " claim_to_pr=\(.claim_to_pr_secs)s" else "" end) why=\((.size_reason // "") | gsub("[\t\n]"; " ") | .[0:160])" end' "$drec" 2>/dev/null)
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
-  [ -z "$ticket" ] || [ "$(coord_run_class "$rec")" != repair ] || ! repair_ran_no_step "$log" || repair_void "$ticket" "$rid"
+  [ -z "$ticket" ] || [ "$(coord_run_class "$rec")" != repair ] || ! repair_ran_no_step "$log" "$code" "$last" || repair_void "$ticket" "$rid"
   case "$code" in
     ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_BASE_WAIT:-34}") ;;
     *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
