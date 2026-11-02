@@ -44,6 +44,16 @@ want "  starts nothing"                    1   "$(rc "$p")"
 p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:QUEUED:-")
 want "a required check queued, no runner"  pending "$(verdict "$p")"
 
+echo "--- a pending status no job is behind does not hide a settled red ---"
+REQ_C='["typecheck + unit tests","design critic"]'
+ctx() { jq -c --arg s "$2" '.statusCheckRollup += [{__typename: "StatusContext", context: "Design critic", state: $s, createdAt: "2026-10-23T10:00:00Z"}]' <<<"$1"; }
+p=$(ctx "$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:FAILURE")" PENDING)
+want "a failed job beside a waiting status"  red "$(pr_red_classify "$p" "$REQ_C" approval '[]' | cut -f1)"
+p=$(ctx "$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:SUCCESS")" PENDING)
+want "a waiting status alone is a wait"      pending "$(pr_red_classify "$p" "$REQ_C" approval '[]' | cut -f1)"
+p=$(ctx "$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:IN_PROGRESS:-")" FAILURE)
+want "a failed status beside a running job"  pending "$(pr_red_classify "$p" "$REQ_C" approval '[]' | cut -f1)"
+
 echo "--- a red the base does not require starts nothing ---"
 p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:SUCCESS" "Capture and pin the evidence:COMPLETED:FAILURE")
 want "only a non-required check is red"    green "$(verdict "$p")"
