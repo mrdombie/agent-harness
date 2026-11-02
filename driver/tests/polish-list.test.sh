@@ -144,7 +144,8 @@ printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\nCloses 
 driver_step_ship 507 >/dev/null 2>&1
 want "the repair's take is reserved for its PR" "- [ ] Header weight (in PR #88)" "$(jq -r .body "$FIX/gh/issue-900.json" | grep 'Header weight')"
 want_in "named in the repair comment"      'Header weight \(#900\)' "$(grep -A20 '^pr comment 88' "$GH_LOG")"
-want_not_in "and the PR's own words are not rewritten" '^pr edit 88' "$(cat "$GH_LOG")"
+want_not_in "and the PR's own words are not rewritten" '^pr edit 88 .*--title' "$(cat "$GH_LOG")"
+want "  any edit starts with them"         "0" "$(grep '^pr edit 88' "$GH_LOG" | grep -vc -- '--body A body a person wrote\.' || true)"
 
 
 echo "--- a full list rides along with another ticket, at most polishListFull items ---"

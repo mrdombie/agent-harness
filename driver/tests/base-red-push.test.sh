@@ -50,7 +50,7 @@ ship_ready() { # <ticket> [marker] — a reviewed branch off the trunk, every st
   git -C "$REPO" worktree add -q "$FIX/t$1" -b "tkt-$1/work" develop
   printf 'a\n' > "$FIX/t$1/a$1.sh"; [ -z "${2:-}" ] || : > "$FIX/t$1/$2"
   git -C "$FIX/t$1" add -A; git -C "$FIX/t$1" commit -qm "feat: a"
-  driver_state_init "$1" --worktree "$FIX/t$1" --branch "tkt-$1/work"
+  driver_state_init "$1" --worktree "$FIX/t$1" --branch "tkt-$1/work"; fix_gates_kept "$1"
   fix_issue "$1" OPEN "status:claimed"
   driver_state_put "$1" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$1" review
   driver_state_set "$1" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"

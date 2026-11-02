@@ -75,6 +75,31 @@ driver_record_usage() {
   driver_say "   $2: \$$(jq -r '.cost' <<<"$u") · context $(jq -r '"\(.ctxFirst)→\(.ctxMax)"' <<<"$u") tokens · ${words:-?} words given"
 }
 
+# _driver_review_asked <ticket> <slot> — the ticket as filed and the approved picture,
+# for the review to hold the diff against. Handed the diff alone a reviewer judges the
+# code, never whether it is the change that was asked for.
+_driver_review_asked() {
+  local t="$1" slot="$2" ref src wt cj
+  ref=$(driver_state_get "$t" design_ref | tr -d '[:space:]'); src=$(driver_state_get "$t" design_source)
+  wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] || wt="$MAIN_REPO"
+  printf '\n---\n## What this change was asked to do — judge the diff against it\n\n'
+  printf 'The ticket, as filed:\n\n%s\n\n' "$(cat "$(driver_fact_dir "$t" "$slot")/TICKET" 2>/dev/null || driver_fact_ticket "$t")"
+  if [ -n "$ref" ]; then
+    printf 'Approved picture: %s (designSource=%s)' "$ref" "${src:-unknown}"
+    [ ! -f "$wt/$ref" ] || printf ' — open it at %s' "$wt/$ref"
+    printf '\n'
+    cj="$(driver_state_dir "$t")/steps/compare.json"
+    if [ -s "$cj" ]; then
+      printf 'The compare step held %s render(s) beside it. Its differences: %s\n' \
+        "$(jq -r '[.renders[]?] | length' "$cj" 2>/dev/null)" \
+        "$(jq -r '[.differences[]? | "\(.what) (\(if .fixed then "fixed" else "stands" end): \(.reason // ""))"] | if length == 0 then "none" else join("; ") end' "$cj" 2>/dev/null)"
+    fi
+  else
+    printf 'No approved picture (designSource=%s): the ticket body stands in for the design.\n' "${src:-none}"
+  fi
+  printf '\nA part of the ticket the diff does not do is a finding, and so is a screen that departs from the approved picture: a person misled or stuck is Major.\n'
+}
+
 # The skills briefs/facts.json declares for a step: the machine-readable list the
 # briefs own and the driver never read. Empty when there is no facts.json, which is
 # normal for a fixture pointing DRIVER_BRIEFS at a directory of its own.
@@ -241,6 +266,8 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   fi
   # The brief's sign-off lines are the off case; merge first replaces them for every step.
   if driver_merge_first; then printf '\n---\n%s\n' "$DRIVER_MERGE_FIRST_SIGNOFF" >> "$prompt"; fi
+  # THE REVIEW JUDGES THE DIFF AGAINST WHAT WAS ASKED, in its own session before the PR opens.
+  [ "$step" != review ] || _driver_review_asked "$t" "$slot" >> "$prompt"
   if [ "$step" = plan ] && ! driver_ticket_is_bug "$t"; then
     printf '\n---\nThis ticket carries no bug label: do not run superpowers:systematic-debugging.\n' >> "$prompt"
   fi

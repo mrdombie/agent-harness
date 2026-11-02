@@ -318,3 +318,12 @@ want_in() {
 want_not_in() {
   if printf '%s' "$3" | grep -qE -- "$2"; then bad "$1 — found /$2/ in: $(printf '%s' "$3" | tr '\n' '|')"; else ok "$1"; fi
 }
+
+# fix_gates_kept <ticket> — the record a green self-check leaves (steps/self-check.gates.jsonl),
+# for a case that marks self-check done without running it. Without one ship runs the gates
+# itself to have a proof for the pull request.
+fix_gates_kept() {
+  mkdir -p "$(driver_state_dir "$1")/steps"
+  printf '%s\n' '{"gate":"lint","command":"echo lint-ok","exit":0,"output":"lint-ok"}' \
+    > "$(driver_state_dir "$1")/steps/self-check.gates.jsonl"
+}

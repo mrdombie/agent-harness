@@ -183,6 +183,19 @@ _driver_fail_lines() { # <file>
   printf '%s' "$l" | tr '\n' ' ' | cut -c1-600
 }
 
+# _driver_proof_keep <command> <test-file> <red-rc> <red-out> <red-at> <green-rc> <green-out> <green-at>
+# THE PROOF'S OWN OUTPUT OUTLIVES ITS TREES. The pull request carries the command the
+# driver ran and what each half printed; the trees are gone by ship, so the tail of each
+# half is written to $DRIVER_PROOF_KEEP when a caller names one. Bounded: last 40 lines, 2000 bytes.
+_driver_proof_keep() {
+  [ -n "${DRIVER_PROOF_KEEP:-}" ] || return 0
+  jq -n --arg cmd "$1" --arg tf "$2" --argjson rr "$3" --arg ro "$(_driver_proof_tail "$4")" --arg ra "$5" \
+        --argjson gr "$6" --arg go "$(_driver_proof_tail "$7")" --arg ga "$8" \
+    '{command: $cmd, testFile: $tf, red: {exit: $rr, at: $ra, output: $ro}, green: {exit: $gr, at: $ga, output: $go}}' \
+    > "$DRIVER_PROOF_KEEP" 2>/dev/null || rm -f "$DRIVER_PROOF_KEEP"
+}
+_driver_proof_tail() { tail -40 "$1" 2>/dev/null | LC_ALL=C tail -c 2000; }
+
 # NO APP SERVER RUNS IN A PROOF TREE. A Playwright spec named as a proof died on
 # `page.goto: net::ERR_CONNECTION_REFUSED` in both halves, and the second was read as
 # "still fails with the change" about a change nothing had measured. Unless the project
@@ -404,6 +417,8 @@ _driver_prove_red_green_once() {
   [ -z "$uwhy" ] || { _driver_proof_rmtmp; printf '%s' "$uwhy"; return 9; }
   red_out=$(_driver_fail_lines "$tmp/before.out")
   after_out=$(_driver_fail_lines "$tmp/after.out")
+  _driver_proof_keep "$cmd" "$tfile" "$rc_red" "$tmp/before.out" "$(printf '%s' "$base" | cut -c1-8)" \
+    "$rc_green" "$tmp/after.out" "$(printf '%s' "$isha" | cut -c1-8)"
   _driver_proof_rmtmp
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
@@ -517,6 +532,8 @@ _driver_prove_by_break_once() {
   elif _driver_proof_unreachable "$rc_green" "$tmp/green.out"; then uwhy=$(_driver_proof_unreachable_why "$tfile" "$tmp/green.out"); fi
   red_out=$(_driver_fail_lines "$tmp/red.out")
   green_out=$(_driver_fail_lines "$tmp/green.out")
+  _driver_proof_keep "$cmd" "$tfile" "$rc_red" "$tmp/red.out" "$(printf '%s' "$tsha" | cut -c1-8) with $bfile broken" \
+    "$rc_green" "$tmp/green.out" "$(printf '%s' "$tsha" | cut -c1-8) with it restored"
   _driver_break_done
   [ -z "$uwhy" ] || { printf '%s' "$uwhy"; return 9; }
   if [ -n "$dbwhy" ]; then
@@ -694,8 +711,8 @@ driver_step_build() { # <ticket>
       seen_pairs="$seen_pairs $pair"
       seen_titles="$seen_titles$pair	${got_task:-$want_task}
 "
-      why=""; prc=0
-      why=$(driver_prove_by_break "$repo" "$tfile" "$tsha" "$bfile" "$(jq -r '.testOnly.break.find' "$ans")" "$(jq -r '.testOnly.break.replace' "$ans")" "$tcmd") || prc=$?
+      why=""; prc=0; rm -f "$proved.proof"
+      why=$(DRIVER_PROOF_KEEP="$proved.proof" driver_prove_by_break "$repo" "$tfile" "$tsha" "$bfile" "$(jq -r '.testOnly.break.find' "$ans")" "$(jq -r '.testOnly.break.replace' "$ans")" "$tcmd") || prc=$?
     else
     tfile=$(jq -r '.testFirst.test.file // ""' "$ans")
     tcmd=$(jq -r  '.testFirst.command // ""'   "$ans")
@@ -723,12 +740,13 @@ driver_step_build() { # <ticket>
     seen_pairs="$seen_pairs $pair"
     seen_titles="$seen_titles$pair	${got_task:-$want_task}
 "
-    why=""; prc=0
-    why=$(driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
+    why=""; prc=0; rm -f "$proved.proof"
+    why=$(DRIVER_PROOF_KEEP="$proved.proof" driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     fi
     if [ "$prc" -eq 0 ]; then
       rm -f "$(driver_state_dir "$t")/steps/$slot.refused"
-      _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" false "$tsha" $isha
+      DRIVER_PROOF_LINE="$why" _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" false "$tsha" $isha
+      rm -f "$proved.proof"
     else
       printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
     fi
@@ -781,10 +799,12 @@ _driver_build_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 # — what a later pass needs to keep this task without building it again: the plan
 # entry it was proved against, the answer, and the commits that have to stay on the branch.
 _driver_build_mark_proved() {
-  local m="$1" task="$2" ans="$3" pair="$4" title="$5" merged="$6"; shift 6
+  local m="$1" task="$2" ans="$3" pair="$4" title="$5" merged="$6" proof="null"; shift 6
+  # The command the driver ran and what each half printed (_driver_proof_keep), for ship.
+  [ ! -s "$m.proof" ] || proof=$(jq -c --arg l "${DRIVER_PROOF_LINE:-}" '. + {line: $l}' "$m.proof" 2>/dev/null) || proof="null"
   jq -n --argjson task "$task" --slurpfile a "$ans" --arg pair "$pair" --arg title "$title" \
-    --argjson merged "$merged" --args \
-    '{task: $task, answer: $a[0], pair: $pair, title: $title, merged: $merged,
+    --argjson merged "$merged" --argjson proof "${proof:-null}" --args \
+    '{task: $task, answer: $a[0], pair: $pair, title: $title, merged: $merged, proof: $proof,
       commits: [$ARGS.positional[] | select(. != "")]}' "$@" > "$m" 2>/dev/null || rm -f "$m"
 }
 

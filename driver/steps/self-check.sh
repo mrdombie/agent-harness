@@ -687,6 +687,9 @@ driver_step_self_check() { # <ticket>
   # command the driver can run, never a finding to send to fix.
   driver_format_changed "$t" "$wt" self-check || true
 
+  # EACH GREEN GATE'S COMMAND AND OUTPUT, for the pull request's proof (scripts/pr-proof.sh).
+  local gates_kept; gates_kept="$(driver_state_dir "$t")/steps/self-check.gates.jsonl"
+  : > "$gates_kept"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     name=${row%%	*}; cmd=${row#*	}
@@ -763,6 +766,9 @@ driver_step_self_check() { # <ticket>
       return "$trc"
     elif [ "$rc" -eq 0 ]; then
       driver_say "   self-check: $name ok"
+      jq -cn --arg name "$name" --arg cmd "$cmd" \
+        --arg out "$(tail -40 "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>/dev/null | LC_ALL=C tail -c 2000)" \
+        '{gate: $name, command: $cmd, exit: 0, output: $out}' >> "$gates_kept" 2>/dev/null || true
     elif bred=$(_driver_gate_base_only "$t" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
       driver_say "   self-check: $name red only on $bred — outside this PR and red on the base too, so it waits for the base and does not count here"
     elif [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] \
