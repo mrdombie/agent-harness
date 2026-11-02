@@ -10,7 +10,8 @@
 # <pr-json> is the PR as the open-PR read has it (number, baseRefName, isDraft,
 # mergeable, mergeStateStatus, statusCheckRollup). Both print one line,
 # "<verdict>\t<reason>", and return 0 only for a verdict a repair may start on:
-#   red      a REQUIRED check concluded FAILURE or ERROR, with no required check still running
+#   red      a REQUIRED check concluded FAILURE or ERROR, with no required check RUN still running
+#            (a pending commit status, such as the design critic, never holds a red back)
 #   clash    GitHub says the branch conflicts (mergeable CONFLICTING / mergeStateStatus DIRTY)
 #   finish   a draft with every required check settled and none failed: finishing it is the repair
 # and 1 for every other:
@@ -62,6 +63,7 @@ _PR_RED_CHECKS_JQ='
     def required_checks:
       [ ($p.statusCheckRollup // [])[] | select(type == "object")
         | {name: (.name // .context // ""), run: (if running then 1 else 0 end), at: stamp,
+           status: (.__typename == "StatusContext" or (.name == null and .context != null)),
            rid: ([(.detailsUrl // .targetUrl // "") | capture("/actions/runs/(?<r>[0-9]+)")? | .r] | first // ""),
            state: (if running then "IN_PROGRESS" else (.conclusion // .state // "") end)} ]
       | group_by(.name) | map(max_by([.run, .at]))
@@ -92,10 +94,12 @@ pr_red_classify() { # <pr-json> <required-json> [hold] [nb-json]
     required_checks as $c
     | ($c | map(select(.state | test("^(FAILURE|ERROR)$")))) as $failed
     | ($c | map(select(.state == "IN_PROGRESS"))) as $running
+    | ($running | map(select(.status | not))) as $runs
     | ($c | map(select(.state | test("^(CANCELLED|TIMED_OUT|STARTUP_FAILURE|STALE)$")))) as $cancelled
     | if ($p.mergeable // "") == "CONFLICTING" or ($p.mergeStateStatus // "") == "DIRTY" then "clash\tit conflicts with its base branch"
-      elif ($running | length) > 0 then "pending\trequired \($running | names) still running"
+      elif ($runs | length) > 0 then "pending\trequired \($runs | names) still running"
       elif ($failed | length) > 0 then "red\trequired check(s) failed: \($failed | names)"
+      elif ($running | length) > 0 then "pending\trequired \($running | names) still running"
       elif ($cancelled | length) > 0 then "rerun\trequired \($cancelled | names) cancelled or never ran — a re-run, not a repair\t\($cancelled | map(.rid) | map(select(. != "")) | unique | join(" "))"
       elif ($p.isDraft // false) then "finish\ta draft with its required checks settled"
       else "green\tno required check failed and nothing clashes" end' 2>/dev/null)
