@@ -368,6 +368,14 @@ plant gitprot  "    if is_gitprot(path):
         gitprot_refuse(path)" "    pass"
 plant gitprotsh "def gitprot_refuse(path):" "def gitprot_refuse(path):
     return"
+plant trusted  "    return bool(merged and disk) and merged.strip() == disk.strip()" "    return True"
+plant trustarg "    return len(args) == 1 + (os.path.basename(args[0]) in SHELLS) and not names_cfg(list(assigns.values()), cwd)" "    return True"
+# The other way: trust off, the merged test is judged line by line and refused again.
+pd=$(plant_dir notrust "    if not TEST_SCRIPT.search(os.path.basename(p)) or not os.path.isfile(p):" "    if True:")
+[ -n "$pd" ] || bad "plant notrust did not land"
+[ "$(judge "$pd" "$(bashp 'bash tests/scratch.test.sh')")" -eq 2 ] &&
+  ok "plant: merged-test trust off, the scratch-fixture test is refused, so the trust is what lets it run" ||
+  bad "plant: merged-test trust off, yet the test still runs: the allow case proves nothing"
 printf '%s\n' "$WIDE" > "$C"
 plant commitwt "        judge(vh, read(cfg), cfg + ' (in the working tree, which this commit can take)', shared)" "        pass" "$WT"
 printf '%s\n' "$BASE" > "$C"

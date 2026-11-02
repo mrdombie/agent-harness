@@ -20,6 +20,9 @@ import glob, hashlib, json, os, re, shlex, subprocess, sys, tempfile
 # Not seen, by construction: a write that never names the file (a variable, a
 # script behind npm/make, git plumbing). The injector covers those: it honours
 # only the value on origin's integration branch, which takes a push and a merge.
+#
+# Not judged: a plain `bash x.test.sh` whose bytes match origin's integration branch.
+# Repo tests build scratch harness.json fixtures; an edited or unmerged one is judged.
 
 KEYS = ('preApprovedWrites', 'integrationBranch')
 MAX_SCRIPT = 256 * 1024
@@ -400,6 +403,8 @@ def judge_bash(cmd, cwd, depth=0):
                 k = args.index('-c')
                 inner = args[k + 1] if k + 1 < len(args) else None
             elif len(args) > 1 and not args[1].startswith('-'):
+                if name in SHELLS and plain_run(args, assigns, cwd) and trusted_test(expand(args[1], cwd)[0]):
+                    continue
                 inner = read(expand(args[1], cwd)[0])
             elif here is not None:
                 inner = here
@@ -436,6 +441,8 @@ def judge_bash(cmd, cwd, depth=0):
                 refuse('this writes harness.json on the remote through the GitHub API, where the guard cannot see the value.')
             continue
         if INTERPRETERS.match(name) or os.path.isfile(expand(args[0], cwd)[0]):
+            if not INTERPRETERS.match(name) and plain_run(args, assigns, cwd) and trusted_test(expand(args[0], cwd)[0]):
+                continue
             judge_script(name, args, cwd, here, depth)
             continue
         if name == 'find' and names_cfg(args[1:], cwd):
@@ -451,6 +458,38 @@ def judge_bash(cmd, cwd, depth=0):
             refuse('`%s` names git\'s own config, refs or hooks, and the guard cannot see what it does to them.' % name)
         if name not in READERS and (names_cfg(args[1:], cwd) or (here and 'harness.json' in here)):
             refuse('`%s` names harness.json, and the guard cannot see what it does to it.' % name)
+
+
+TEST_SCRIPT = re.compile(r'\.test\.sh$')
+
+
+def trust_ref(top):
+    ref = anchor(top)
+    if ref:
+        return ref
+    for cand in ('origin/HEAD', 'origin/develop', 'origin/main'):
+        if git(top, 'rev-parse', '--verify', '-q', cand + '^{commit}'):
+            return cand
+    return None
+
+
+def trusted_test(path):
+    """A *.test.sh byte-identical to origin's integration branch; an agent-made or edited one is judged as written."""
+    p = os.path.realpath(path)
+    if not TEST_SCRIPT.search(os.path.basename(p)) or not os.path.isfile(p):
+        return False
+    top = toplevel(os.path.dirname(p))
+    ref = trust_ref(top) if top else None
+    if not ref:
+        return False
+    merged = git(top, 'rev-parse', '--verify', '-q', ref + ':' + os.path.relpath(p, os.path.realpath(top)))
+    disk = git(top, 'hash-object', '--no-filters', p)
+    return bool(merged and disk) and merged.strip() == disk.strip()
+
+
+def plain_run(args, assigns, cwd):
+    # Only `<shell> <script>` or `<script>` alone: an argument or variable could aim it at the real file.
+    return len(args) == 1 + (os.path.basename(args[0]) in SHELLS) and not names_cfg(list(assigns.values()), cwd)
 
 
 def judge_script(name, args, cwd, here, depth):
