@@ -88,10 +88,11 @@ SWARM_BUDGET_USD="${SWARM_BUDGET_USD:-$(swarm_opt swarm.budgetUsd 150)}"
 SWARM_USAGE_CEILING="${SWARM_USAGE_CEILING:-$(swarm_opt swarm.usageCeiling 0.95)}"
 # At this share of either window a builder holds before its next step: the step it is
 # on finishes, and nothing is killed or parked (swarm_usage_step_hold).
-# The usage windows that can hold builders before a wall (swarm.usageWindows). Claude dropped
-# its five-hour limit on 2026-10-31, so only the weekly window holds by default; a wall the
-# API actually refuses on (a rejected event, the hook's hold file) holds whatever its window.
-SWARM_USAGE_WINDOWS="${SWARM_USAGE_WINDOWS:-$(swarm_opt swarm.usageWindows seven_day)}"
+# The usage windows that can hold builders before a wall (swarm.usageWindows). Both by
+# default: only some plans dropped the five-hour limit (2026-10-31), and a window an account
+# never reports has no reading, so it holds nothing there. A wall the API actually refuses
+# on (a rejected event, the hook's hold file) holds whatever its window.
+SWARM_USAGE_WINDOWS="${SWARM_USAGE_WINDOWS:-$(swarm_opt swarm.usageWindows "five_hour seven_day")}"
 SWARM_USAGE_WINDOWS=$(printf '%s' "$SWARM_USAGE_WINDOWS" | tr -d '[]"' | tr ',' ' ')
 SWARM_USAGE_STEP_HOLD="${SWARM_USAGE_STEP_HOLD:-$(swarm_opt swarm.usageStepHold 0.95)}"
 awk -v t="$SWARM_USAGE_STEP_HOLD" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || SWARM_USAGE_STEP_HOLD=0.95

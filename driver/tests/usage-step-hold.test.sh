@@ -97,12 +97,14 @@ jq -nc --argjson r "$(( SWARM_NOW + 86400 ))" '{type:"rate_limit_event", rate_li
 out=$(bash "$BT" 704 --steps "plan" 2>&1)
 want_in "a week at 95% holds the step" '⏸ plan: usage hold — the seven_day window is at 95%' "$out"
 
-echo "--- by default a five-hour reading holds nothing: Claude dropped that limit ---"
+echo "--- by default a five-hour reading holds: not every plan dropped that limit ---"
 reset_case 706; reading 0.99
-out=$(env -u SWARM_USAGE_WINDOWS WAIT_CLEARS=0 bash "$BT" 706 --steps "plan" 2>&1)
-want "a 99% five-hour reading: no wait" "0" "$(grep -c . "$FIX/waits.log" 2>/dev/null || echo 0)"
-want_not_in "and no hold said" 'usage hold' "$out"
-want "the step ran" "1" "$( [ -s "$CLAUDE_LOG" ] && echo 1 || echo 0)"
+out=$(env -u SWARM_USAGE_WINDOWS WAIT_CLEARS=0 DRIVER_USAGE_WAIT_MAX_SEC=60 bash "$BT" 706 --steps "plan" 2>&1)
+want_in "a 99% five-hour reading holds the step" '⏸ plan: usage hold — the five_hour window is at 99%' "$out"
+reset_case 708; rm -f "$STATE"/logs/claim-*.log
+out=$(env -u SWARM_USAGE_WINDOWS WAIT_CLEARS=0 bash "$BT" 708 --steps "plan" 2>&1)
+want_not_in "an account that reports no five-hour window is never held on it" 'usage hold' "$out"
+want "and the step ran" "1" "$( [ -s "$CLAUDE_LOG" ] && echo 1 || echo 0)"
 reset_case 707
 jq -nc --argjson r "$(( SWARM_NOW + 86400 ))" '{type:"rate_limit_event", rate_limit_info:{status:"allowed_warning",
   unifiedWindows:{five_hour:{utilization:0.2, resetsAt:1792356000}, seven_day:{utilization:0.96, resetsAt:$r}}}}' > "$STATE/logs/claim-900-other.log"
