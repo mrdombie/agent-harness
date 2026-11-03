@@ -110,6 +110,10 @@ driver_keep_brief() {
 # moved on from (another branch, a PR made ready, a head with commits the record never
 # saw) is stale: it moves aside, and the run is a fresh repair round from origin.
 UNSHIPPED_BUILD=0
+# Exported, and set here whatever the caller's environment held: start reads it to
+# tell this run's own status:in-review (the repair spawn's label on its draft) from a
+# person's.
+DRIVER_UNSHIPPED_BUILD=0; export DRIVER_UNSHIPPED_BUILD
 _unshipped='(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)'
 if { [ -n "$REPAIR_CLASS" ] || [ -n "$REPAIR_BRIEF" ] || [ -n "$RUN_BRIEF" ] || [ "$ADOPT" -eq 1 ]; } \
    && jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1 \
@@ -124,7 +128,7 @@ if { [ -n "$REPAIR_CLASS" ] || [ -n "$REPAIR_BRIEF" ] || [ -n "$RUN_BRIEF" ] || 
 fi
 unset _live
 if jq -e "$_unshipped" "$DRIVER_DIR/$TICKET/state.json" >/dev/null 2>&1; then
-  UNSHIPPED_BUILD=1
+  UNSHIPPED_BUILD=1; DRIVER_UNSHIPPED_BUILD=1
   if [ -n "$REPAIR_CLASS" ]; then
     echo "build-ticket: #$TICKET has an unshipped build on its record — resuming the build, not a $REPAIR_CLASS repair" >&2
     REPAIR_CLASS=""

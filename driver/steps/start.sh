@@ -167,8 +167,29 @@ driver_step_start() { # <ticket>
   # back into a parked ticket is a person editing a label. The hold label is
   # checked above and is the thing that actually stops a resume, which is the
   # separation T2-7 is about: a park nobody has to answer carries only the status.
+  # AND IN REVIEW IS OURS WHEN THE BUILD IS. A build that parked keeps its work on a
+  # draft PR; the coordinator then spawns it as a repair, marking it in review, and
+  # build-ticket resumes the build. Refused here, it parked back to ready and was
+  # spawned again, for ever. Only that resume, with its draft on the record's branch.
+  local own=""
   case ",$labels," in
-    *",$LBL_READY,"*|*",$LBL_CLAIMED,"*|*",$LBL_PARKED,"*) : ;;
+    *",$LBL_READY,"*|*",$LBL_CLAIMED,"*|*",$LBL_PARKED,"*) own=1 ;;
+    *",$LBL_IN_REVIEW,"*)
+      if [ "${DRIVER_UNSHIPPED_BUILD:-0}" = 1 ]; then
+        local rbr rprs
+        rbr=$(driver_state_get "$t" branch)
+        if ! rprs=$(driver_open_prs_for_patient "$t"); then
+          driver_say "⏳ start: could not ask GitHub whether #$t's own draft is open, so its $LBL_IN_REVIEW cannot be read as this build's. Left as it was for the next tick."
+          return "$DRIVER_E_UNREAD"
+        fi
+        if [ -n "$rbr" ] && printf '%s\n' "$rprs" | awk -F'\t' -v b="$rbr" '$2 == b { f = 1 } END { exit !f }'; then
+          own=1
+          driver_say "   start: #$t is $LBL_IN_REVIEW on its own draft on $rbr — resuming that build"
+        fi
+      fi ;;
+  esac
+  case "$own" in
+    1) : ;;
     *)
       driver_say "✋ start: #$t is not $LBL_READY (labels: ${labels:-none}). A status that is not ready is a status somebody chose."
       return "$DRIVER_E_REFUSED" ;;
