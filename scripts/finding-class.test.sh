@@ -92,6 +92,22 @@ want_in "never a test on the next change" 'Not a test on the next change' "$nl"
 echo "--- seen three times: still one ---"
 want "three sightings, still one notice" "1" "$(case_thrice "$SUT")"
 
+echo "--- review.classNoticeAt sets the count: at 3, two sightings tell no one and three tell the PM once ---"
+CFG="$REPO/.claude/harness.json"; cp "$CFG" "$FIX/cfg.base"
+cfg_review() { jq --argjson r "$1" '.review = $r' "$FIX/cfg.base" > "$CFG"; }
+case_at3() { # <sut> — notices after two sightings, then after three, with the setting at 3
+  cfg_review '{"classNoticeAt": 3}'
+  fresh; rec "$1" 101 501 src/a.tsx:12; rec "$1" 102 502 src/b.ts:40; printf '%s ' "$(n_of)"
+  rec "$1" 103 503 src/c.ts:7; n_of
+  cp "$FIX/cfg.base" "$CFG"
+}
+want "at 3: none at two sightings, one at three" "0 1" "$(case_at3 "$SUT")"
+cfg_review '{"classNoticeAt": "lots"}'
+fresh; rec "$SUT" 101 501 src/a.tsx:12; rec "$SUT" 102 502 src/b.ts:40
+want "a value that is not a count falls back to 2" "1" "$(n_of)"
+want_in "and says so" "review.classNoticeAt is 'lots'" "$R"
+cp "$FIX/cfg.base" "$CFG"
+
 echo "--- the same finding still standing in a later round is one sighting, not a repeat ---"
 fresh; rec "$SUT" 101 501 src/a.tsx:12; rec "$SUT" 101 501 src/a.tsx:14
 want "one sighting" "1" "$(grep -c . "$FINDING_CLASS_LEDGER")"
@@ -155,7 +171,7 @@ want "none, anywhere the builder reads" "" "$(lesson_asks "$KIT")"
 want "and the lesson check is gone" "gone" "$( [ -e "$KIT/scripts/check-lesson.sh" ] || [ -e "$KIT/templates/pull-request-lesson.md" ] || [ -e "$KIT/.github/workflows/lesson.yml" ] || [ -e "$KIT/.github/workflows/kit-lesson.yml" ] || echo gone)"
 
 echo "--- plants: each rule broken, its case catches it ---"
-if p=$(plant once-notifies 's/select\(length >= 2\)/select(length >= 1)/'); then
+if p=$(plant once-notifies 's/select\(length >= \$at\)/select(length >= 1)/'); then
   [ "$(case_once "$p")" != 0 ] && ok "planted: a notice on the first sighting → the once case goes red" || bad "planted: a first-sighting notice, and the once case did not see it"
 fi
 if p=$(plant no-notice 's/if ! bash "\$NOTIFY" --class agent "finding-class:\$k" "\$line" >\/dev\/null 2>&1; then/if false; then/'); then
@@ -173,6 +189,9 @@ if p=$(plant no-weekly-rows 's/for \(i = 1; i <= n; i\+\+\) \{\n        k = keys
 fi
 if p=$(plant no-not-falling 's/st = "fixed " fd ": NOT FALLING/st = "fixed " fd ": falling/'); then
   printf '%s\n' "$(case_weekly "$p")" | grep -q 'NOT FALLING' && bad "planted: not falling never said, and the weekly case did not see it" || ok "planted: not falling never said → the weekly case goes red"
+fi
+if p=$(plant notice-at-fixed 's/NOTICE_AT=\$\(swarm_opt review.classNoticeAt 2\)/NOTICE_AT=2/'); then
+  [ "$(case_at3 "$p")" != "0 1" ] && ok "planted: the setting ignored, 2 hard-coded → the classNoticeAt case goes red" || bad "planted: the setting ignored, and the classNoticeAt case did not see it"
 fi
 mkdir -p "$FIX/plant-kit/briefs" && printf 'Every fix ships a lesson: add a guard test.\n' > "$FIX/plant-kit/briefs/build.md"
 [ -n "$(lesson_asks "$FIX/plant-kit")" ] && ok "planted: a brief asking for a lesson → the grep case goes red" || bad "planted: a brief asks for a lesson, and the grep case did not see it"

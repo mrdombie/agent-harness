@@ -26,6 +26,9 @@
 # back to finding_key, its file and the first twelve words of its summary. Both are fields
 # the review already returns: no model call here, ever.
 #
+# HOW MANY is review.classNoticeAt in harness.json (default 2, read through swarm_opt): the
+# count of sightings at which the PM is told.
+#
 # A SIGHTING is one finding on one change: ticket, key and file. The same finding still
 # standing in a later round is the same sighting, not a repeat.
 #
@@ -65,6 +68,8 @@ if ! . "$SELF_DIR/toolkit-env.sh" >/dev/null 2>&1; then
   REPO_SLUG=""
 fi
 declare -F toolkit_cfg >/dev/null 2>&1 || toolkit_cfg() { return 1; }
+# swarm-env.sh's own reader, without the rest of swarm-env: the setting, else its default.
+declare -F swarm_opt >/dev/null 2>&1 || swarm_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
 declare -F gh_read >/dev/null 2>&1 || . "$SELF_DIR/gh-batch.sh" || exit 2
 export GH_CALL_TIMEOUT="${GH_CALL_TIMEOUT:-30}"
 
@@ -76,6 +81,14 @@ NOTIFY="${FINDING_CLASS_NOTIFY:-$SELF_DIR/coordinator-notify.sh}"
 HOST="${FINDING_CLASS_HOST:-${COORDINATOR_HOST:-$(hostname -s 2>/dev/null || echo host)}}"
 LABEL=$(toolkit_cfg findingClasses.label 2>/dev/null); LABEL="${LABEL:-finding-classes}"
 WINDOW_WEEKS=8 MAX_PUBLISHED=150
+# HOW MANY SIGHTINGS TELL THE PM: review.classNoticeAt (default 2). Anthropic's practice names
+# no count ("when the reviewer keeps flagging the same thing"), so it is a setting.
+NOTICE_AT=$(swarm_opt review.classNoticeAt 2)
+case "$NOTICE_AT" in
+  ''|*[!0-9]*|0|1)
+    [ "$CMD" != record ] || echo "finding-class: review.classNoticeAt is '$NOTICE_AT', not a count of 2 or more, so 2 is used" >&2
+    NOTICE_AT=2 ;;
+esac
 
 fc_now() { printf '%s' "${FINDING_CLASS_NOW:-$(date +%s)}"; }
 fc_week() { date -u -r "$1" +%G-W%V 2>/dev/null || date -u -d "@$1" +%G-W%V; }
@@ -190,9 +203,9 @@ fc_record() {
     fi
   fi
   all=$( { cat "$LEDGER"; [ "$share" = 1 ] && printf '%s\n' "$tally" | jq -c 'select(.s) | .s'; } | jq -s -c 'unique_by(.id)')
-  keys=$(jq -r --rawfile seen "$NOTICED" --arg shared "$( [ "$share" = 1 ] && printf '%s\n' "$tally" | jq -r 'select(.n) | .n')" '
+  keys=$(jq -r --argjson at "$NOTICE_AT" --rawfile seen "$NOTICED" --arg shared "$( [ "$share" = 1 ] && printf '%s\n' "$tally" | jq -r 'select(.n) | .n')" '
       (($seen + "\n" + $shared) | split("\n") | map(select(length > 0))) as $told
-      | group_by(.key)[] | select(length >= 2) | .[0].key | select(. as $k | $told | index($k) | not)' <<<"$all")
+      | group_by(.key)[] | select(length >= $at) | .[0].key | select(. as $k | $told | index($k) | not)' <<<"$all")
   while IFS= read -r k; do
     [ -n "$k" ] || continue
     line=$(fc_notice_line "$k" "$(jq -c --arg k "$k" '[.[] | select(.key == $k)] | sort_by(.at)' <<<"$all")")
