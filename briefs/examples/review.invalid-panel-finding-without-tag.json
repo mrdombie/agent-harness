@@ -16,10 +16,6 @@
       "file": "src/queue/panel.tsx",
       "line": 142,
       "grade": "major",
-      "votes": {
-        "agree": 2,
-        "of": 2
-      },
       "class": "a failed read shown as empty",
       "instances": [
         "src/queue/panel.tsx:142",

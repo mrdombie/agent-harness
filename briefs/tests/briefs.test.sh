@@ -55,7 +55,10 @@ for step in $steps; do
              for k in $allow; do [ "${k#*:}" != "$k" ] || ! grep -qF -- "\`$k\`" "$brief" || echo "$k"; done
            } | sort -u)
   declared=$(jq -r --arg s "$step" '.steps[$s].skills[]' "$FACTS" | sort -u)
-  [ -n "$named" ] && ok "$step.md names a skill" || bad "$step.md names no skill"
+  # A step that declares no skill (the review's check) names none; any other names one.
+  if [ -n "$named" ]; then ok "$step.md names a skill"
+  elif [ -z "$declared" ]; then ok "$step.md names no skill, and declares none"
+  else bad "$step.md names no skill"; fi
   want "$step.md names exactly its declared skills" "$declared" "$named"
   for k in $named; do
     printf '%s\n' "$allow" | grep -qx "$k" \
@@ -98,9 +101,9 @@ for step in $steps; do
   done
 done
 
-# --- the review is a voter running Claude Code's own reviewer, with no agents ----
-# The review is `code-review`, run by each of the driver's voters with no subagents of its
-# own; its Return asks for the panel and a tag on every finding, and never for a tally.
+# --- the review is a hunter running Claude Code's own reviewer, with no agents ----
+# The review is `code-review`, run by the driver's one hunter with no subagents of its
+# own; its Return asks for the panel and a tag on every finding.
 want "the review step declares code-review" "code-review" "$(jq -r '.steps.review.skills | join(" ")' "$FACTS")"
 rret=$(awk '/^## Return[[:space:]]*$/ {inr=1; next} /^## / {inr=0} inr' "$BRIEFS/review.md")
 for w in '`panel`' '`tag`' 'pre-existing' '`class`'; do
@@ -110,8 +113,11 @@ done
 grep -qF '{{EFFORT}}' "$BRIEFS/review.md" && ok "review.md runs code-review at the driver's effort" \
   || bad "review.md does not take the effort from the driver ({{EFFORT}})"
 grep -qF 'Start no subagents' "$BRIEFS/review.md" && grep -qF 'Agent or Task tool' "$BRIEFS/review.md" \
-  && ok "review.md tells each voter to start no subagents" || bad "review.md never bars a voter's own subagents"
+  && ok "review.md tells the hunter to start no subagents" || bad "review.md never bars the hunter's own subagents"
 want "the review step is given no Agent tool" "" "$(jq -r '.steps.review.tools // ["(unset: every tool)"] | map(select(. == "Agent" or . == "Task" or . == "(unset: every tool)")) | join(" ")' "$FACTS")"
+# The check reads and judges; it runs nothing and starts nothing.
+want "the review check is given Read, Grep and Glob only" "Read Grep Glob" "$(jq -r '.steps["review-check"].tools // ["(unset: every tool)"] | join(" ")' "$FACTS")"
+want "the review check declares no skill" "" "$(jq -r '.steps["review-check"].skills | join(" ")' "$FACTS")"
 
 # --- the copy probe ------------------------------------------------------------
 # A real measurement of copying: the longest run of words a brief shares with a

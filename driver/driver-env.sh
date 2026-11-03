@@ -675,6 +675,8 @@ driver_lean_args() {
   DRIVER_LEAN_ARGS=(--strict-mcp-config --mcp-config '{"mcpServers":{}}')
   # Off unless a spawner sets it: a runaway stop per step, never a measurement.
   [ -z "${DRIVER_STEP_BUDGET_USD:-}" ] || DRIVER_LEAN_ARGS+=(--max-budget-usd "$DRIVER_STEP_BUDGET_USD")
+  # A caller's effort for this one call (the review check runs at review.checkEffort).
+  [ -z "${DRIVER_STEP_EFFORT:-}" ] || DRIVER_LEAN_ARGS+=(--effort "$DRIVER_STEP_EFFORT")
   tools=$(driver_step_tools "$step")
   # Off until the release: no step can start the design critic as a subagent either.
   local deny="" ja

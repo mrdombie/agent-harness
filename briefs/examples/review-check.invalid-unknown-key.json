@@ -1,0 +1,17 @@
+{
+  "step": "review-check",
+  "skills": [],
+  "judgements": [
+    {
+      "id": "a1",
+      "real": true,
+      "reason": "line 12 drops the save when retry fires before the write resolves"
+    },
+    {
+      "id": "b1",
+      "real": false,
+      "reason": "line 40 cancels the timer before retry starts, so the race cannot happen"
+    }
+  ],
+  "verdict": "SHIP"
+}

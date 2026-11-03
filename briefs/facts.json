@@ -5,7 +5,7 @@
     "superpowers:systematic-debugging": "the first step on a bug: reproduce, isolate, prove red",
     "superpowers:test-driven-development": "red before green, inside every task",
     "superpowers:verification-before-completion": "observation before any claim of done",
-    "code-review": "Claude Code's own reviewer on the finished change, run by each of the review step's voters in one context with no subagents; the driver keeps what 2 of 3 voters report",
+    "code-review": "Claude Code's own reviewer on the finished change, run by the review step's one hunter in one context with no subagents; a separate check then judges each finding it raised",
     "superpowers:receiving-code-review": "acting on findings with rigour rather than agreement"
   },
   "notInvoked": {
@@ -65,6 +65,16 @@
         "RENDERS": "the renders of every screen the change touches, both themes — empty when it touches none",
         "ROUND": "which review round this is: 1 or 2",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: the design law, the component kit, the gate commands"
+      }
+    },
+    "review-check": {
+      "brief": "review-check.md",
+      "schema": "schemas/review-check.json",
+      "skills": [],
+      "tools": ["Read", "Grep", "Glob"],
+      "facts": {
+        "FINDINGS": "each finding the review's hunter raised that is not a nit: its id, file, line and one-line claim, and the numbered code around its line from the change's worktree — never the hunter's reasoning, grade or review text",
+        "DIFF": "the change under review, against the trunk it will merge into — the same diff the hunter was given"
       }
     },
     "fix": {

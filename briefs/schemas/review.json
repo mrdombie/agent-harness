@@ -43,7 +43,7 @@
       ]
     },
     "panel": {
-      "description": "How the review was run: the reviewer skill and its effort; the driver adds how many voters it ran (`voters`) and how many answered (`answered`). Present, every finding must carry its tag.",
+      "description": "How the review was run: the reviewer skill and its effort; the driver adds how many findings its check judged (`checked`) and how many it kept (`kept`). Present, every finding must carry its tag.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -64,19 +64,18 @@
             "max"
           ]
         },
-        "voters": {
+        "checked": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 5
+          "minimum": 0
         },
-        "answered": {
+        "kept": {
           "type": "integer",
           "minimum": 0
         }
       }
     },
     "findings": {
-      "description": "Everything this review raised, at every grade. One list, because the grade already says what each one costs \u2014 a second list saying the same thing is a second place for the two to disagree.",
+      "description": "Everything this review raised, at every grade. One list, because the grade already says what each one costs — a second list saying the same thing is a second place for the two to disagree.",
       "type": "array",
       "items": {
         "type": "object",
@@ -105,7 +104,7 @@
             "minimum": 0
           },
           "grade": {
-            "description": "critical: wrong data, a security hole, lost work, something published unapproved. major: a person is misled or stuck \u2014 an untrue screen, a dead control, a failure shown as success. minor: polish \u2014 spacing, wording, a small visual slip. nit: taste.",
+            "description": "critical: wrong data, a security hole, lost work, something published unapproved. major: a person is misled or stuck — an untrue screen, a dead control, a failure shown as success. minor: polish — spacing, wording, a small visual slip. nit: taste.",
             "enum": [
               "critical",
               "major",
@@ -120,25 +119,6 @@
               "nit",
               "pre-existing"
             ]
-          },
-          "votes": {
-            "description": "The driver's own tally of its review voters, never typed by a reviewer: of = how many voters answered, agree = how many reported this finding. The driver keeps only a finding a majority agree on, and at least review.quorum (default 2).",
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "agree",
-              "of"
-            ],
-            "properties": {
-              "agree": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "of": {
-                "type": "integer",
-                "minimum": 1
-              }
-            }
           },
           "class": {
             "description": "When the finding is a class of mistake rather than one slip, the class in a few words. The fix step fixes every instance, not only this line.",
@@ -206,7 +186,7 @@
       ]
     },
     "questionFor": {
-      "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape \u2014 which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
+      "description": "Who answers the question. `owner`: pixels, a picture, a product or commercial call, or the data model. `pm`: the ticket's shape — which repo, how it splits, the order, the wording of its acceptance. Unsure is `owner`; the driver treats anything but `pm` as the owner's.",
       "enum": [
         "owner",
         "pm"
