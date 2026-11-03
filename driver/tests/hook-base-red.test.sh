@@ -121,6 +121,7 @@ want "start finds nothing left to start"    "" "$(bash "$KIT/scripts/develop-hoo
 cat > "$FIX/fgh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
+  *"rules/branches/develop"*) echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"check:drift"},{"context":"check:roles"}]}}]'; exit 0 ;;  # develop requires these checks
   *"-X GET search/issues"*) echo '{"total_count":0,"items":[]}'; exit 0 ;;
   *"repos/acme/widgets/issues -X POST"*) printf '%s\0' "$@" > "$FIX/fgh.create"; echo 931; exit 0 ;;
 esac
