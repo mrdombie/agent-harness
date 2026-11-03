@@ -2,32 +2,34 @@
 
 # Step 5b · Check the review's findings
 
-A hunter reviewed this change and raised the findings below. Judge each one: is
-it real? You edit nothing, run nothing and start nothing in this step.
+A hunter reviewed this change and made the claims below. Judge each one: is it
+real? You edit nothing, run nothing and start nothing in this step.
 
 ## What you are given
 
-- The findings, each with the numbered code around its line: {{FINDINGS}}
+- Each claim, where it points, and the numbered code around that line: {{FINDINGS}}
 - The change: {{DIFF}}
 
-## Judge only the listed findings
+You are given the claim, not the hunter's argument for it. Judge it from the code.
 
-Read the code shown with each finding first. Open the file it names with Read,
+## Try to disprove each listed claim
+
+Read the code shown with each claim first. Open the file it names with Read,
 Grep or Glob only when that code is not enough to decide. Read nothing else: no
 search across the repository, no review of your own, no new findings.
 
-A finding is **real** when the defect it describes is in the code as it stands:
-the line does what the finding says, and the harm in its reason can happen.
+For each claim, look for the code that shows it is wrong. A claim is **real**
+when that search fails: the defect it describes is in the code as it stands.
 
 It is **not real** only on evidence in the code:
 
 - the case it names is already handled, here or where this code is called;
-- the line does not exist, or says something other than the finding claims;
-- the finding misreads what the code does;
-- the harm it names cannot happen.
+- the line does not exist, or says something other than the claim says;
+- the claim misreads what the code does;
+- the failure it describes cannot happen.
 
-When the code fits the finding and you cannot rule it out, it is real. Do not
-regrade, reword or merge findings: real or not real is the whole answer.
+When the code fits the claim and you cannot disprove it, it is real. Do not
+regrade, reword or merge claims: real or not real is the whole answer.
 
 ## Return
 
@@ -44,6 +46,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `judgements[].reason` (required): string
 <!-- fields:end -->
 
-One judgement per listed finding, by its `id` exactly as listed: `real` true or
-false, and a one-line `reason` naming what in the code decided it. `skills` is
-empty: this step runs no skill.
+One judgement per listed claim, by its `id` exactly as listed. Verdict first:
+`real` true or false, then a one-line `reason` that quotes the exact code that
+shows the claim is real or not real, with its line number. Write no reasoning
+before the verdict. `skills` is empty: this step runs no skill.

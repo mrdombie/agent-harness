@@ -73,7 +73,7 @@
       "skills": [],
       "tools": ["Read", "Grep", "Glob"],
       "facts": {
-        "FINDINGS": "each finding the review's hunter raised that is not a nit: its id, file, line, grade, summary and reason, and the numbered code around its line from the change's worktree",
+        "FINDINGS": "each finding the review's hunter raised that is not a nit: its id, file, line and one-line claim, and the numbered code around its line from the change's worktree — never the hunter's reasoning, grade or review text",
         "DIFF": "the change under review, against the trunk it will merge into — the same diff the hunter was given"
       }
     },

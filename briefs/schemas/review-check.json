@@ -39,11 +39,11 @@
             "minLength": 1
           },
           "real": {
-            "description": "true when the defect the finding describes is in the code as it stands; false only on evidence that it is not.",
+            "description": "The verdict, given first: true when the defect the finding describes is in the code as it stands; false only on evidence that it is not.",
             "type": "boolean"
           },
           "reason": {
-            "description": "One line naming what in the code decided it.",
+            "description": "After the verdict, one line quoting the exact code, with its line number, that shows the finding is real or not real.",
             "type": "string",
             "minLength": 1
           }

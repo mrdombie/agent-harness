@@ -95,7 +95,9 @@ want "the check runs at medium by default"             "medium" "$(effortof revi
 want "the hunter runs at no session effort of its own" "" "$(effortof review)"
 want "the check is handed the hunter's diff"           "$(fact 701 DIFF review)" "$(fact 701 DIFF review-check)"
 want_in "it is handed the code around each line"       "     1  a" "$(fact 701 FINDINGS review-check)"
-want_in "with the finding's reason"                    "a person sees saved and loses the draft" "$(fact 701 FINDINGS review-check)"
+want_in "with the finding's claim"                     "claim: the save is dropped on retry" "$(fact 701 FINDINGS review-check)"
+want_not_in "never the hunter's reasoning"             "a person sees saved and loses the draft" "$(fact 701 FINDINGS review-check)"
+want_not_in "nor its grade"                            "major" "$(fact 701 FINDINGS review-check)"
 want_not_in "a nit is never sent to the check"         "### n1" "$(fact 701 FINDINGS review-check)"
 want "kept: only what the check judged real"           "a1" "$(ids 701)"
 want_in "one line says what the check did"             "review: hunter found 3, check kept 2 \\(dropped 1\\)" "$out"
@@ -249,6 +251,10 @@ case_check() { # the hunter's mixed findings, the check drops b1: exit, kept, sw
   local rc; rc=$(in_kit "$N")
   R="rc=$rc kept=$(ids "$N") swept=$(grep -c . "$SWEEP_QUEUE") calls=$(calls | tr ' ' ,) check-tools=$(toolsof review-check | tr ' ' ,) effort=$(fact "$N" EFFORT review)"
 }
+case_blind() { # what the check is handed: the claim, never the hunter's reasoning
+  N=$((N + 1)); rp_tree "$N"; fresh; hunt "$MIXED"; check_says "$J_MIXED"; in_kit "$N" >/dev/null
+  R="reasoning=$(fact "$N" FINDINGS review-check | grep -c 'a person sees saved and loses the draft')"
+}
 case_none() { # the hunter finds nothing
   N=$((N + 1)); rp_tree "$N"; fresh; hunt "$(answer 1 SHIP '[]')"; check_says "$J_MIXED"
   local rc; rc=$(in_kit "$N")
@@ -280,6 +286,7 @@ kit_copy
 GOOD="rc=30 kept=a1 swept=1 calls=review,review-check check-tools=Read,Grep,Glob effort=high"
 case_check;    want "the unplanted kit: hunter then check"      "$GOOD" "$R"
 case_none;     want "the unplanted kit: no findings, no check"  "rc=0 calls=review" "$R"
+case_blind;    want "the unplanted kit: the check is blind to the reasoning" "reasoning=0" "$R"
 case_silent;   want "the unplanted kit: a silent check keeps"   "rc=30 kept=a1 b1" "$R"
 case_capped;   want "the unplanted kit: the cap"                "rc=24" "$R"
 case_tools;    want "the unplanted kit: no Agent tool"          "tools=Bash Read Grep Glob Skill" "$R"
@@ -304,6 +311,8 @@ plant "a finding judged not real is kept" driver/steps/review.sh \
   case_check "rc=30 kept=a1 b1 swept=1 calls=review,review-check check-tools=Read,Grep,Glob effort=high"
 plant "the check runs with zero findings" driver/steps/review.sh \
   '  if [ "$n" -eq 0 ]; then' '  if false; then' case_none "rc=0 calls=review,review-check"
+plant "the hunter's reasoning is handed to the check" driver/steps/review.sh \
+  '\n- claim: \(.summary // "")"' '\n- claim: \(.summary // "")\n- reason: \(.reason // "")"' case_blind "reasoning=1"
 plant "a silent check is read as an answer" driver/steps/review.sh \
   'if [ "${usable:-0}" -gt 0 ] 2>/dev/null; then' 'if true; then' case_silent "rc=24 kept=a1 b1"
 # The hunter's bounds, carried over from the vote it replaced.

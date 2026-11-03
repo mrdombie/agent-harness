@@ -61,8 +61,10 @@
 # finder or verifier agents of its own) with no Agent tool; a hunter whose transcript shows a
 # subagent of its own fails the step (_driver_review_capped). Its findings are candidates.
 # Only when one is not a nit, the CHECK (_driver_review_check) is ONE more session, Read,
-# Grep and Glob only, at review.checkEffort (default medium), handed each candidate with the
-# code around its line and the diff; it answers real or not real per finding, and only a
+# Grep and Glob only, at review.checkEffort (default medium), handed each candidate's claim
+# and place with the code around its line and the diff — never the hunter's reasoning, so it
+# does not inherit the argument. It tries to disprove each finding and answers its verdict
+# first, then one line quoting the code that decided it; only a
 # finding judged not real is dropped. A check that answers nothing usable keeps every
 # candidate (fail safe), and says so. review.check false counts the hunter's findings as they
 # are. What the step then does with the answer (_driver_review_panel): it drops a nit (style,
@@ -433,7 +435,8 @@ _driver_review_check() {
     for i in $(seq 0 $((n - 1))); do
       fl=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].file // "" | tostring')
       ln=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].line // 0 | tostring')
-      block="${block}$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i] | "### \(.id)\n- file: \(.file // "?"), line \(.line // 0)\n- grade: \(.grade // "?")\n- summary: \(.summary // "")\n- reason: \(.reason // "")"')
+      # The claim and where it is, never the hunter's reasoning: a check handed the argument inherits it.
+      block="${block}$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i] | "### \(.id)\n- file: \(.file // "?"), line \(.line // 0)\n- claim: \(.summary // "")"')
 - the code around it:
 \`\`\`
 $(_driver_review_context "$wt" "$fl" "$ln")
