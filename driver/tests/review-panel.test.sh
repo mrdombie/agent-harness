@@ -255,10 +255,10 @@ case_blind() { # what the check is handed: the claim, never the hunter's reasoni
   N=$((N + 1)); rp_tree "$N"; fresh; hunt "$MIXED"; check_says "$J_MIXED"; in_kit "$N" >/dev/null
   R="reasoning=$(fact "$N" FINDINGS review-check | grep -c 'a person sees saved and loses the draft')"
 }
-case_none() { # the hunter finds nothing
+case_none() { # the hunter finds nothing: whether the check step was so much as started
   N=$((N + 1)); rp_tree "$N"; fresh; hunt "$(answer 1 SHIP '[]')"; check_says "$J_MIXED"
   local rc; rc=$(in_kit "$N")
-  R="rc=$rc calls=$(calls | tr ' ' ,)"
+  R="rc=$rc check-started=$([ -d "$(driver_state_dir "$N")/steps/review-check.facts" ] && echo yes || echo no)"
 }
 case_silent() { # the check answers nothing usable
   N=$((N + 1)); rp_tree "$N"; fresh; hunt "$(answer 1 BLOCKED "[$F_A1,$F_B]")"; check_silent
@@ -285,7 +285,7 @@ case_pre_ship() { # a SHIP whose only blocking-grade finding is pre-existing
 kit_copy
 GOOD="rc=30 kept=a1 swept=1 calls=review,review-check check-tools=Read,Grep,Glob effort=high"
 case_check;    want "the unplanted kit: hunter then check"      "$GOOD" "$R"
-case_none;     want "the unplanted kit: no findings, no check"  "rc=0 calls=review" "$R"
+case_none;     want "the unplanted kit: no findings, no check"  "rc=0 check-started=no" "$R"
 case_blind;    want "the unplanted kit: the check is blind to the reasoning" "reasoning=0" "$R"
 case_silent;   want "the unplanted kit: a silent check keeps"   "rc=30 kept=a1 b1" "$R"
 case_capped;   want "the unplanted kit: the cap"                "rc=24" "$R"
@@ -310,7 +310,7 @@ plant "a finding judged not real is kept" driver/steps/review.sh \
   'select(type == "object" and .real == false)' 'select(type == "object" and .real == null)' \
   case_check "rc=30 kept=a1 b1 swept=1 calls=review,review-check check-tools=Read,Grep,Glob effort=high"
 plant "the check runs with zero findings" driver/steps/review.sh \
-  '  if [ "$n" -eq 0 ]; then' '  if false; then' case_none "rc=0 calls=review,review-check"
+  '  if [ "$n" -eq 0 ]; then' '  if false; then' case_none "rc=0 check-started=yes"
 plant "the hunter's reasoning is handed to the check" driver/steps/review.sh \
   '\n- claim: \(.summary // "")"' '\n- claim: \(.summary // "")\n- reason: \(.reason // "")"' case_blind "reasoning=1"
 plant "a silent check is read as an answer" driver/steps/review.sh \

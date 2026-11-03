@@ -432,7 +432,8 @@ _driver_review_check() {
     wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || wt="$MAIN_REPO"
     ceffort=$(_driver_review_check_effort)
     local i fl ln block=""
-    for i in $(seq 0 $((n - 1))); do
+    # Counted, not seq: `seq 0 -1` is empty on GNU and counts down on BSD.
+    for ((i = 0; i < n; i++)); do
       fl=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].file // "" | tostring')
       ln=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].line // 0 | tostring')
       # The claim and where it is, never the hunter's reasoning: a check handed the argument inherits it.
