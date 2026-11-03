@@ -183,10 +183,12 @@ driver_log_result() {
 # as every other refusal — on 2026-10-18 seven runs parked as "answered in a shape
 # the driver cannot read" or "did not run the Skill", and a park is never retried.
 driver_usage_wall() {
-  local hold epoch why
+  local hold epoch why win
   hold=$(swarm_usage_log_reset "$3") || return 1
   epoch=$(printf '%s' "$hold" | cut -f1); why=$(printf '%s' "$hold" | cut -f2-)
-  swarm_usage_hold_write "$epoch" "$why (#$1 $2)" \
+  # The window the CLI rejected on, so a newer reading of that window alone can clear the hold.
+  win=$(swarm_usage_cli_events "$3" | awk -F'\t' '$2 == "rejected" { w = $4 } END { printf "%s", w }')
+  swarm_usage_hold_write "$epoch" "$why (#$1 $2)" "$win" \
     || driver_say "   $2: the usage hold could not be written to ${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}"
   driver_say "✋ $2: stopped by the plan's usage limit — spawning holds until $(swarm_iso "$epoch"): $why"
   driver_state_set "$1" park_note "the $2 step stopped on the plan's usage limit ($why); held until $(swarm_iso "$epoch")"

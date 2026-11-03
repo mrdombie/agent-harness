@@ -9,6 +9,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SB=$(mktemp -d "${TMPDIR:-/tmp}/usage-limit-XXXXXX"); on_exit_keep_status 'rm -rf "$SB"'
 unset HARNESS_CFG_PATH CLAUDE_PROJECT_DIR
 export HARNESS_STATE_DIR="$SB/state"
+# The account the hook stamps: never the runner's own login.
+export SWARM_ACCOUNT=org-a SWARM_CLAUDE_BIN=false
 fail=0
 ok()  { echo "  ok   — $1"; }
 bad() { echo "  FAIL — $1"; fail=1; }
@@ -37,6 +39,9 @@ rm -rf "$HARNESS_STATE_DIR"; fire "$H" authentication_failed "bad token"
 rm -rf "$HARNESS_STATE_DIR"
 fire "$H" rate_limit 'weekly "resetsAt":1792500000'; fire "$H" rate_limit 'session "resetsAt":1792060000'
 [ "$(cut -f1 "$HARNESS_STATE_DIR/usage-hold")" = 1792500000 ] && ok "the later of two walls is kept" || bad "a nearer wall replaced the later one"
+[ "$(cut -f3 "$HARNESS_STATE_DIR/usage-hold")" = org-a ] && ok "the hold names the account it was hit under" || bad "the hold names no account: $(cat "$HARNESS_STATE_DIR/usage-hold")"
+SWARM_ACCOUNT=org-b fire "$H" rate_limit 'session "resetsAt":1792060000'
+[ "$(cut -f1,3 "$HARNESS_STATE_DIR/usage-hold")" = "1792060000	org-b" ] && ok "another account's later wall is replaced" || bad "another account's wall was kept: $(cat "$HARNESS_STATE_DIR/usage-hold")"
 
 echo "only the failure's own words"
 QUOTE="CI says the critic's account is out: You've hit your weekly limit · resets Oct 20 at 9pm (Europe/London)"
@@ -59,9 +64,9 @@ d="$SB/kit"; mkdir -p "$d"; cp -R "$HERE" "$d/hooks"
 python3 - "$d/hooks/usage-limit.sh" <<'PY' || bad "plant did not land"
 import sys
 p = sys.argv[1]; s = open(p).read()
-a = '''  printf '%s\\t%s\\n' "$E"'''
+a = '''  printf '%s\\t%s\\t%s\\t\\n' "$E"'''
 if s.count(a) != 1: sys.exit(1)
-open(p, "w").write(s.replace(a, '''  : printf '%s\\t%s\\n' "$E"'''))
+open(p, "w").write(s.replace(a, '''  : printf '%s\\t%s\\t%s\\t\\n' "$E"'''))
 PY
 rec_case "$d/hooks/usage-limit.sh" && bad "planted: the hold is never written → still green" || ok "planted: the hold is never written → red"
 d2="$SB/kit2"; mkdir -p "$d2"; cp -R "$HERE" "$d2/hooks"
@@ -74,4 +79,17 @@ open(p, "w").write(s.replace(a, '''TEXT="$TEXT $LAST"'''))
 PY
 grep -q 'NOTICE ]]' "$d2/hooks/usage-limit.sh" && bad "plant: the exclusion is still in the copy"
 quote_case "$d2/hooks/usage-limit.sh" && bad "planted: the exclusion deleted → still green" || ok "planted: the exclusion deleted → the quote is read → red"
+d3="$SB/kit3"; mkdir -p "$d3"; cp -R "$HERE" "$d3/hooks"
+python3 - "$d3/hooks/usage-limit.sh" <<'PY' || bad "plant did not land"
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = ''' = "$ACCT" ] || CUR=0'''
+if s.count(a) != 1: sys.exit(1)
+open(p, "w").write(s.replace(a, ''' = "$ACCT" ] || :'''))
+PY
+acct_case() { rm -rf "$HARNESS_STATE_DIR"; fire "$1" rate_limit 'weekly "resetsAt":1792500000'
+  SWARM_ACCOUNT=org-b fire "$1" rate_limit 'session "resetsAt":1792060000'
+  [ "$(cut -f1,3 "$HARNESS_STATE_DIR/usage-hold")" = "1792060000	org-b" ]; }
+acct_case "$H" || bad "the account case is red on the real hook"
+acct_case "$d3/hooks/usage-limit.sh" && bad "planted: another account's wall kept → still green" || ok "planted: another account's later wall is kept → red"
 suite_end "$fail"

@@ -476,33 +476,77 @@ swarm_api_error_log() { # <log>
 }
 # ---- cli-signal reader: end ------------------------------------------------
 
-# A window that hit the wall: hooks/usage-limit.sh (StopFailure) writes
-# $STATE_DIR/usage-hold as `<epoch>\t<text>`. The limit is the account's, so a
-# wall an interactive window hit holds the timers too. A reset already passed
-# holds nothing.
+# A window that hit the wall: hooks/usage-limit.sh (StopFailure) and the driver write
+# $STATE_DIR/usage-hold as `<epoch>\t<text>\t<account>\t<window>` (an older hold has the
+# first two only). The limit is the account's, so a wall an interactive window hit holds
+# the timers too. A reset already passed holds nothing, and neither does a stale hold
+# (swarm_usage_file_hold_stale), which is moved aside to logs/ with one line on stderr.
 swarm_usage_file_hold() {
-  local e
-  e=$(cut -f1 "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" 2>/dev/null | head -1)
+  local e f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" why to
+  e=$(cut -f1 "$f" 2>/dev/null | head -1)
   case "$e" in ''|*[!0-9]*) return 1 ;; esac
   [ "$e" -gt "$(swarm_now)" ] || return 1
+  if why=$(swarm_usage_file_hold_stale "$f"); then
+    to=$(swarm_usage_hold_field "$f" 3); to=$(printf '%s' "${to:-unknown}" | tr -c 'A-Za-z0-9@._-' '_' | cut -c1-80)
+    to="$SWARM_LOGS/usage-hold.stale-$to-$(date -u +%Y%m%dT%H%M%SZ)"
+    if mkdir -p "$SWARM_LOGS" 2>/dev/null && mv -f "$f" "$to" 2>/dev/null; then
+      printf 'usage: the usage hold until %s no longer applies — %s; moved aside to %s\n' "$(swarm_iso "$e")" "$why" "$to" >&2
+    fi
+    return 1
+  fi
   if [ "${SWARM_USAGE_WHY:-0}" = 1 ]; then
-    printf 'file %s: %s' "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" \
-      "$(cut -f2- "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" 2>/dev/null | head -1 | cut -c1-120)"
+    printf 'file %s: %s' "$f" "$(swarm_usage_hold_field "$f" 2 | cut -c1-120)"
     return 0
   fi
   printf '%s (recorded by a window)' "$(swarm_iso "$e")"
 }
+# swarm_usage_hold_field <file> <n> — field n of the hold's line; empty when it has no such field.
+swarm_usage_hold_field() { head -1 "$1" 2>/dev/null | awk -F'\t' -v n="$2" '{ printf "%s", $n }'; }
 
-# swarm_usage_hold_write <epoch> <text> — record a wall in the hold file the file
-# reader above answers from, keeping the LATER of two walls (a weekly wall outlasts
-# the session wall that hit first). The same format hooks/usage-limit.sh writes.
+# swarm_usage_file_hold_stale <file> — 0, printing why, when the hold no longer binds:
+#  (a) it names an account and the current account is known and another one: the owner
+#      switched logins, and the old account's wall held the new one for days (2026-11-02
+#      on the Mac, 2026-11-03 on Yomato); or
+#  (b) a reading observed after the hold was written puts every window it holds on under
+#      swarm.usageCeiling: the named window, or every swarm.usageWindows window for a hold
+#      that names none. A window with no newer reading keeps the hold.
+# Nothing readable: 1, and the hold stands.
+swarm_usage_file_hold_stale() {
+  local f="$1" acct cur at w ws r u o
+  acct=$(swarm_usage_hold_field "$f" 3)
+  if [ -n "$acct" ]; then
+    cur=$(swarm_account)
+    if [ -n "$cur" ] && [ "$cur" != "$acct" ]; then
+      printf 'it was written under account %s and this machine is now on %s' "$acct" "$cur"; return 0
+    fi
+  fi
+  at=$(swarm_mtime "$f"); [ "${at:-0}" -gt 0 ] || return 1
+  ws=$(swarm_usage_hold_field "$f" 4); [ -n "$ws" ] || ws="$SWARM_USAGE_WINDOWS"
+  local said=""
+  for w in $ws; do
+    r=$(swarm_usage_freshest_at "$w") || return 1
+    IFS=$'\t' read -r u _ o <<<"$r"
+    [ "${o:-0}" -gt "$at" ] 2>/dev/null || return 1
+    awk -v u="$u" -v c="$SWARM_USAGE_CEILING" 'BEGIN{exit !(u + 0 < c + 0)}' || return 1
+    said="$said${said:+, }$w at $(awk -v u="$u" 'BEGIN{printf "%d", u * 100 + 0.5}')%"
+  done
+  [ -n "$said" ] || return 1
+  printf 'a reading taken after it shows %s, under the %s ceiling' "$said" "$SWARM_USAGE_CEILING"
+}
+
+# swarm_usage_hold_write <epoch> <text> [window] — record a wall in the hold file the file
+# reader above answers from, with the account it was hit under. On the same account the
+# LATER of two walls is kept (a weekly wall outlasts the session wall that hit first); a
+# hold from another account is replaced. The same format hooks/usage-limit.sh writes.
 swarm_usage_hold_write() {
-  local f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" cur
+  local f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" cur acct
   case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
-  cur=$(cut -f1 "$f" 2>/dev/null | head -1); case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+  acct=$(swarm_account)
+  cur=$(swarm_usage_hold_field "$f" 1); case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+  [ "$(swarm_usage_hold_field "$f" 3)" = "$acct" ] || cur=0
   [ "$1" -gt "$cur" ] || return 0
-  printf '%s\t%s\n' "$1" "$(printf '%s' "${2:-}" | tr '\n\t' '  ' | cut -c1-200)" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$(printf '%s' "${2:-}" | tr '\n\t' '  ' | cut -c1-200)" "$acct" "${3:-}" > "$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
 }
 
 swarm_usage_hold() { swarm_usage_file_hold || swarm_usage_event_hold || swarm_usage_near_hold || swarm_usage_text_hold; }

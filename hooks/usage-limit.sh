@@ -7,7 +7,7 @@
 # StopFailure INSTEAD of Stop when an API error ended the turn — fire-and-forget,
 # output and exit code ignored — so a hook is the only thing still running.
 #
-# It records the reset in $STATE_DIR/usage-hold (`<epoch>\t<text>`). The limit is
+# It records the reset in $STATE_DIR/usage-hold (`<epoch>\t<text>\t<account>\t`). The limit is
 # account-wide, so the coordinator tick and the scheduler read the same file
 # (swarm_usage_hold in swarm/swarm-env.sh) and spawn nothing until it passes.
 #
@@ -88,10 +88,22 @@ case "$LAST" in *$'\n'*) LAST="" ;; esac
 # ---- cli-signal reader: end ------------------------------------------------
 E=$(reset_epoch "$TEXT") || { say "error=$ERR no reset in text"; exit 0; }
 HOLD_F="$SD/usage-hold"
-# Keep the LATER of two walls: a weekly wall outlasts the session wall that hit first.
-CUR=$(cut -f1 "$HOLD_F" 2>/dev/null); case "$CUR" in ''|*[!0-9]*) CUR=0 ;; esac
+# The account the wall belongs to, the way swarm_account names it (orgId, else email), so a
+# login switch clears it (swarm_usage_file_hold_stale). Asked live, bounded; else the last
+# account the swarm recorded; else none, and only a newer reading can clear the hold.
+ACCT="${SWARM_ACCOUNT:-}"
+if [ -z "$ACCT" ]; then
+  ACCT=$(perl -e 'alarm shift; exec @ARGV' 10 "${SWARM_CLAUDE_BIN:-claude}" auth status --json 2>/dev/null < /dev/null \
+         | jq -r '.orgId // .email // empty' 2>/dev/null)
+fi
+[ -n "$ACCT" ] || ACCT=$(head -1 "${SWARM_ACCOUNT_FILE:-$SD/swarm/.account}" 2>/dev/null | cut -f1)
+ACCT=$(printf '%s' "$ACCT" | tr -d '\t\n')
+# On the same account keep the LATER of two walls: a weekly wall outlasts the session wall
+# that hit first. Another account's hold is replaced.
+CUR=$(head -1 "$HOLD_F" 2>/dev/null | cut -f1); case "$CUR" in ''|*[!0-9]*) CUR=0 ;; esac
+[ "$(head -1 "$HOLD_F" 2>/dev/null | awk -F'\t' '{ printf "%s", $3 }')" = "$ACCT" ] || CUR=0
 if [ "$E" -gt "$CUR" ]; then
-  printf '%s\t%s\n' "$E" "$(printf '%s' "$TEXT" | tr '\n\t' '  ' | cut -c1-200)" > "$HOLD_F"
+  printf '%s\t%s\t%s\t\n' "$E" "$(printf '%s' "$TEXT" | tr '\n\t' '  ' | cut -c1-200)" "$ACCT" > "$HOLD_F"
 fi
 say "error=$ERR hold $(cut -f1 "$HOLD_F" 2>/dev/null) in $HOLD_F"
 exit 0

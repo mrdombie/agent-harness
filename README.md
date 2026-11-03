@@ -483,7 +483,10 @@ the tick logs `judge: N waiting, oldest M min`. State lives in `$STATE_DIR/coord
 It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
 it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
 hook when any window hits the plan's limit) says the limit holds, nor while the
-newest run's usage reading puts a window at `swarm.usageCeiling` or over.
+newest run's usage reading puts a window at `swarm.usageCeiling` or over. The hold
+names the account it was hit under: once the machine is on another account, or a
+reading taken after the hold puts its windows under the ceiling, the hold is moved
+aside to `logs/usage-hold.stale-<account>-<time>` and spawning resumes.
 `spawn-claim.sh` itself refuses (exit 75) under the same hold, so no other
 spawner can start a run into the wall either, and no judge starts during it. A
 run the limit or a lost login cut off goes back to the front of the queue with
