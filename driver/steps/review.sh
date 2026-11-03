@@ -31,7 +31,7 @@
 # SAID, because dropped silently reads exactly like never raised.
 #
 # NOTHING LEAVES A REVIEW AS A TICKET OR A LIST (the owner, 2026-11-02: finding tickets
-# and polish lists switched off, the vote replaces them). A finding in a file this change
+# and polish lists switched off; since 2026-11-03 the check filters instead). A finding in a file this change
 # touched is fixed in this change (_driver_review_same_change); one in a file it did not
 # touch is pre-existing and goes to the nightly sweep's queue; anything else that does not
 # block is dropped, noted in the PR. No follow-up ticket, no polish list.
@@ -52,18 +52,20 @@
 # the model reviews only a ticket at release.reviewPriorities (default P0 P1). Any other
 # ships on CI with no model call; a person's stop and the push's own reviewers still run.
 #
-# A CHEAP VOTE, ITS AGENT COUNT BOUNDED (the owner, 2026-11-02: four reviews at code-review's
-# max, about 11 agents each, used ~74% of a plan account in under two hours). A review step's
-# agent count is bounded and configured, never left to a skill's top level. The driver runs
-# review.voters (default 3) independent reviews of the same change in parallel, each one
-# `claude -p` session running `code-review` at review.effort (default high: one forked
-# context, no finder or verifier agents of its own) with no Agent tool, and a voter whose
-# transcript shows a subagent of its own fails the step (_driver_review_capped). The tally
-# (_driver_review_tally) groups the voters' findings by file, a line within 5 and a similar
-# summary; a group takes its most common grade and tag, a tie going to the lower. 1 voter
-# is a single reviewer whose findings count without a vote. What the step then does with
-# the answer (_driver_review_panel): it keeps only a finding a majority of the voters
-# reported (review.quorum, default 2, is the fewest agreeing votes); it drops a nit (style,
+# ONE HUNTER, THEN A CHECK ON EACH FINDING (the owner, 2026-11-03; Anthropic's own shape for
+# code review: agents hunt, then a separate pass judges each finding). Three full voters kept
+# a finding only when two reported it: 65% of build usage, and a real bug one voter found was
+# thrown away. A review step's agent count is bounded and configured, never left to a skill's
+# top level (the owner, 2026-11-02). The HUNTER (_driver_review_hunt) is one `claude -p`
+# session running `code-review` at review.effort (default high: one forked context, no
+# finder or verifier agents of its own) with no Agent tool; a hunter whose transcript shows a
+# subagent of its own fails the step (_driver_review_capped). Its findings are candidates.
+# Only when one is not a nit, the CHECK (_driver_review_check) is ONE more session, Read,
+# Grep and Glob only, at review.checkEffort (default medium), handed each candidate with the
+# code around its line and the diff; it answers real or not real per finding, and only a
+# finding judged not real is dropped. A check that answers nothing usable keeps every
+# candidate (fail safe), and says so. review.check false counts the hunter's findings as they
+# are. What the step then does with the answer (_driver_review_panel): it drops a nit (style,
 # cleanup); a pre-existing defect leaves
 # the change for the nightly sweep's queue (scripts/sweep-queue.sh), never the builder and
 # never a ticket; and a finding already raised on this change (steps/review.posted.jsonl,
@@ -214,14 +216,14 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   local built="$(driver_state_dir "$t")/steps/build.all.json"
   [ -s "$built" ] || built="$(driver_state_dir "$t")/steps/build.json"
   local seen_head; seen_head=$(git -C "$wt" rev-parse HEAD 2>/dev/null)
-  rc=0; _driver_review_vote "$t" "$built" "$effort" || rc=$?
+  rc=0; _driver_review_hunt "$t" "$built" "$effort" || rc=$?
   # A REVIEWER THAT HAD NOT REPORTED IS RUN AGAIN, NOT ASKED ABOUT: the answer is always
   # yes. Once, by itself, and not a round (nothing is counted until a verdict is read).
   local silent
   if silent=$(_driver_review_silent "$t" "$rc"); then
     driver_say "↻ review: the reviewer had not reported ($silent) — running the review once more; this is not a second round"
     driver_state_set "$t" park_note ""
-    rc=0; _driver_review_vote "$t" "$built" "$effort" || rc=$?
+    rc=0; _driver_review_hunt "$t" "$built" "$effort" || rc=$?
     if silent=$(_driver_review_silent "$t" "$rc"); then
       driver_say "✋ review: machine fault reviewer-silent — the reviewer had not reported twice ($silent). Parked as the machine's, not a question; the next run reviews again."
       driver_state_set "$t" machine_fault "the review step's reviewer had not reported, twice"
@@ -260,7 +262,7 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
     return "$DRIVER_E_REFUSED"
   fi
 
-  # THE PANEL'S VOTE, THE TAG AND NEVER TWICE, before any grade has an effect.
+  # THE CHECK, THE TAG AND NEVER TWICE, before any grade has an effect.
   _driver_review_panel "$t" "$ans_file" "$round" || return "$DRIVER_E_REFUSED"
 
   # Off until the release: a critic finding the reviewer copied off the PR is no finding.
@@ -314,24 +316,15 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   return "$DRIVER_OK"
 }
 
-# _driver_review_panel <ticket> <review.json> <round> — what the panel's answer keeps.
-# An answer with no votes on a finding (an older reviewer) keeps it, graded as before.
+# _driver_review_panel <ticket> <review.json> <round> — what the hunter's answer keeps.
 _driver_review_panel() {
-  local t="$1" f="$2" round="$3" q keydef ledger n pre npre sq fixes dropped=0
+  local t="$1" f="$2" round="$3" keydef ledger n m pre npre fixes dropped=0
   keydef=$(cat "$KIT_ROOT/scripts/finding-key.jq" 2>/dev/null) || { driver_say "✋ review: $KIT_ROOT/scripts/finding-key.jq is missing"; return 1; }
-  q=$(driver_opt review.quorum 2)
-  case "$q" in
-    ''|*[!0-9]*|0) driver_say "⚠ review: harness.json's review.quorum is '${q}', which is not a count of votes, so 2 is used."; q=2 ;;
-  esac
-  # The votes are the driver's own tally of its voters (_driver_review_tally), never typed by
-  # a model; one reviewer's findings carry none and count without a vote.
-  # ONLY WHAT THE PANEL AGREED ON: at least the quorum, and more than half of those who judged it.
-  n=$(jq --argjson q "$q" '[.findings[]? | select(.votes != null and ((.votes.agree >= $q and .votes.agree * 2 > .votes.of) | not))] | length' "$f" 2>/dev/null)
-  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
-    jq --argjson q "$q" '.findings = [(.findings // [])[] | select(.votes == null or (.votes.agree >= $q and .votes.agree * 2 > .votes.of))]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
-    dropped=$((dropped + n))
-    driver_say "   review: $n finding(s) the voters did not agree on are dropped (a majority and at least $q agreeing vote(s) keep one)"
-  fi
+  # ONLY WHAT THE CHECK JUDGED REAL, before anything else reads the findings.
+  n=$(jq '(.findings // []) | length' "$f" 2>/dev/null)
+  _driver_review_check "$t" "$f" || return 1
+  m=$(jq '(.findings // []) | length' "$f" 2>/dev/null)
+  dropped=$((dropped + ${n:-0} - ${m:-0}))
   # STYLE AND CLEANUP NEVER BLOCK, and the drop is said.
   n=$(jq '[.findings[]? | select(.tag == "nit")] | length' "$f" 2>/dev/null)
   if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
@@ -365,126 +358,120 @@ _driver_review_panel() {
   [ "$dropped" -eq 0 ] || _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$round")" 1
 }
 
-# _driver_review_voters — review.voters (default 3), bounded at 5: each voter is a whole
-# session. DRIVER_REVIEW_VOTERS, when set, outranks it (a suite's one reviewer).
-_driver_review_voters() {
-  local n; n=${DRIVER_REVIEW_VOTERS:-$(driver_opt review.voters 3)}
-  case "$n" in
-    ''|*[!0-9]*|0) driver_say "⚠ review: review.voters is '${n}', which is not a count of reviewers, so 3 is used." >&2; n=3 ;;
-  esac
-  [ "$n" -le 5 ] || { driver_say "⚠ review: review.voters is $n; each voter is a whole session, so 5 is used." >&2; n=5; }
-  printf '%s' "$n"
-}
-
-# _driver_review_vote <ticket> <build answers> <effort> — the review: review.voters
-# independent reviews of the same change, in parallel. Each is the review brief in its own
-# session (slot review-vN), sharing the facts this step gathered. 0 with steps/review.json
-# the tally; else the code of a voter that failed, its answer in review's place so the
-# caller reads it as it read one reviewer's. A voter that failed while enough others
-# answered is said and left out of the vote.
-_driver_review_vote() {
-  local t="$1" built="$2" effort="$3" n q d i rc got=0 bad="" pids=() ok=()
-  n=$(_driver_review_voters)
+# _driver_review_hunt <ticket> <build answers> <effort> — the hunter: ONE session running
+# the review brief (`code-review` at <effort>, no Agent tool) in its own slot, review-hunter,
+# sharing the facts this step gathered. 0 with steps/review.json its answer; else the call's
+# code, with whatever it answered in review's place, as one reviewer's always was.
+_driver_review_hunt() {
+  local t="$1" built="$2" effort="$3" d rc
   d="$(driver_state_dir "$t")/steps"
-  if [ "$n" -le 1 ]; then
-    rc=0; driver_ai_step "$t" review "$built" || rc=$?
-    _driver_review_capped "$t" review || return "$DRIVER_E_REFUSED"
-    [ "$rc" -eq 0 ] || return "$rc"
-    # One reviewer counts without a vote: a tally it typed itself is not one.
-    jq --arg e "$effort" '.findings = [(.findings // [])[] | del(.votes)]
-        | if .panel then .panel = (.panel + {voters: 1, answered: 1, effort: $e}) else . end' \
-      "$d/review.json" > "$d/review.json.t" && mv "$d/review.json.t" "$d/review.json"
-    return 0
-  fi
-  q=$(driver_opt review.quorum 2); case "$q" in ''|*[!0-9]*|0) q=2 ;; esac
-  [ "$q" -le "$n" ] || q="$n"
-  local note_was; note_was=$(driver_state_get "$t" park_note)
-  driver_say "   review: $n voters, each one code-review at $effort in its own session, no subagents"
-  for i in $(seq 1 "$n"); do
-    rm -rf "$d/review-v$i.facts"; cp -R "$d/review.facts" "$d/review-v$i.facts"
-    rm -f "$d/review-v$i.json" "$d/review-v$i.rc"
-    ( export DRIVER_REVIEW_VOTER="$i"; rc=0
-      driver_ai_step "$t" review --as "review-v$i" "$built" > "$d/review-v$i.say" 2>&1 || rc=$?
-      printf '%s\n' "$rc" > "$d/review-v$i.rc" ) &
-    pids+=($!)
-  done
-  for i in "${pids[@]}"; do wait "$i" 2>/dev/null; done
-  : > "$d/review.log"
-  for i in $(seq 1 "$n"); do
-    sed "s/^/   voter $i: /" "$d/review-v$i.say" 2>/dev/null
-    cat "$d/review-v$i.log" >> "$d/review.log" 2>/dev/null
-  done
-  # THE CAP, CHECKED ON EVERY VOTER whatever it answered: a voter that started agents of its
-  # own is the cost this vote replaced, and it never passes quietly.
-  for i in $(seq 1 "$n"); do _driver_review_capped "$t" "review-v$i" "voter $i" || return "$DRIVER_E_REFUSED"; done
-  for i in $(seq 1 "$n"); do
-    rc=$(cat "$d/review-v$i.rc" 2>/dev/null); rc=${rc:-1}
-    if [ "$rc" -eq 0 ] && [ -n "$(jq -r '.verdict // "" | tostring' "$d/review-v$i.json" 2>/dev/null)" ]; then
-      ok+=("$d/review-v$i.json"); got=$((got + 1))
-    else
-      [ -n "$bad" ] || bad="$i"
-      driver_say "   review: voter $i gave no verdict (exit $rc) — left out of the vote"
-    fi
-  done
-  if [ "$got" -lt "$q" ]; then
-    driver_say "   review: $got of $n voters answered, fewer than the $q a finding needs — read as voter $bad's answer"
-    cp "$d/review-v$bad.json" "$d/review.json" 2>/dev/null || rm -f "$d/review.json"
-    rc=$(cat "$d/review-v$bad.rc" 2>/dev/null); return "${rc:-1}"
-  fi
-  # A voter left out of a vote that stood leaves no park note behind for a later step.
-  [ "$got" -eq "$n" ] || driver_state_set "$t" park_note "$note_was"
-  _driver_review_tally "$effort" "$n" "${ok[@]}" > "$d/review.json.t" && mv "$d/review.json.t" "$d/review.json" || return "$DRIVER_E_REFUSED"
-  driver_say "   review: $got of $n voters answered — $(jq -r --argjson q "$q" '[.findings[] | .votes.agree] | "\(length) distinct finding(s), \([.[] | select(. >= $q)] | length) reported by \($q) or more"' "$d/review.json")"
+  rm -rf "$d/review-hunter.facts"; cp -R "$d/review.facts" "$d/review-hunter.facts"
+  rm -f "$d/review-hunter.json" "$d/review-hunter.log"
+  driver_say "   review: one hunter, code-review at $effort in its own session, no subagents"
+  rc=0; driver_ai_step "$t" review --as review-hunter "$built" || rc=$?
+  cp "$d/review-hunter.log" "$d/review.log" 2>/dev/null || true
+  _driver_review_capped "$t" review-hunter "the hunter" || return "$DRIVER_E_REFUSED"
+  [ "$rc" -eq 0 ] || return "$rc"
+  # One id per finding: the check's judgements are matched to findings by it.
+  jq '.findings = ((.findings // []) as $fs | [range(0; $fs | length) as $i | $fs[$i]
+        | (.id // "f" | tostring) as $id
+        | .id = (if ([$fs[0:$i][] | (.id // "f" | tostring)] | index($id)) == null then $id else "\($id)-\($i + 1)" end)])' \
+    "$d/review.json" > "$d/review.json.t" && mv "$d/review.json.t" "$d/review.json"
 }
 
-# _driver_review_tally <effort> <voters> <answer…> — one answer from the voters' answers.
-# Two findings are one when they name the same class, or the same file, lines within 5 and
-# a similar summary (at least 30% of the shorter one's words). Each keeps the voters that
-# reported it (votes: agree of answered), its most common grade and tag (a tie goes to the
-# lower: a split vote never blocks harder than its softer half), and the wording of a voter
-# that gave that grade. The verdict is read off the grades; _driver_review_panel then
-# applies the quorum.
-_driver_review_tally() {
-  local effort="$1" n="$2"; shift 2
-  jq -s --arg e "$effort" --argjson n "$n" --arg blk "$(driver_blocking_grades 1)" '
-    def ws: ascii_downcase | [scan("[a-z0-9]+") | select(length >= 4)] | unique;
-    def overlap($a; $b): ($a | ws) as $x | ($b | ws) as $y
-      | if ($x | length) == 0 or ($y | length) == 0 then 0
-        else ([$x[] | . as $w | select($y | index($w))] | length) / ([($x | length), ($y | length)] | min) end;
-    def samefile($a; $b): ($a | sub("^\\./"; "")) as $x | ($b | sub("^\\./"; "")) as $y
-      | $x == $y or ($x | endswith("/" + $y)) or ($y | endswith("/" + $x));
-    def ckey: tostring | ascii_downcase | [scan("[a-z0-9]+")] | join(" ");
-    def same($a; $b):
-      ((($a.class // "") | ckey) as $ca | (($b.class // "") | ckey) as $cb | $ca != "" and $ca == $cb)
-      or (samefile($a.file // "" | tostring; $b.file // "" | tostring)
-          and ((($a.line // 0) - ($b.line // 0)) | if . < 0 then -. else . end) <= 5
-          and overlap($a.summary // "" | tostring; $b.summary // "" | tostring) >= 0.3);
-    def grank: {nit: 0, minor: 1, major: 2, critical: 3}[.] // 0;
-    def trank: {nit: 0, "pre-existing": 1, important: 2}[.] // 2;
-    def most(r): group_by(.) | map({v: .[0], c: length}) | sort_by([-.c, (.v | r)]) | .[0].v;
-    . as $answers | ($answers | length) as $of
-    | (reduce range(0; $of) as $v ([];
-        reduce (($answers[$v].findings // [])[] | select(type == "object")) as $f (.;
-          (. as $cl | [range(0; $cl | length) | . as $k
-             | select(($cl[$k].voters | index($v)) == null and any($cl[$k].members[]; same(.; $f)))] | first) as $k
-          | if $k == null then . + [{voters: [$v], members: [$f]}]
-            else .[$k].voters += [$v] | .[$k].members += [$f] end))) as $groups
-    | [$groups[] | . as $g
-        | ([$g.members[] | (.grade // "nit")] | most(grank)) as $grade
-        | ([$g.members[] | (.tag // "important")] | most(trank)) as $tag
-        | ([$g.members[] | select((.grade // "nit") == $grade)] | first) as $base
-        | ([$g.members[] | .instances[]?] | unique) as $inst
-        | $base + {grade: $grade, tag: $tag, votes: {agree: ($g.voters | length), of: $of}}
-          + (if ($inst | length) > 0 then {instances: $inst} else {} end)
-        | del(.verified, .verifier)] as $fs
-    | [range(0; $fs | length) as $i | $fs[$i]
-        | (.id // "f" | tostring) as $id
-        | .id = (if ([$fs[0:$i][] | (.id // "f" | tostring)] | index($id)) == null then $id else "\($id)-\($i + 1)" end)] as $fs
-    | {step: "review", skills: ([$answers[].skills[]?] | unique), status: "reviewed",
-       round: ($answers[0].round // 1),
-       verdict: (if any($fs[]; (.grade as $g | $blk | split(" ") | index($g)) != null and .tag != "pre-existing" and .tag != "nit") then "BLOCKED" else "SHIP" end),
-       panel: {skill: "code-review", effort: $e, voters: $n, answered: $of},
-       findings: $fs}' "$@"
+# _driver_review_check_on — review.check (default true); DRIVER_REVIEW_CHECK outranks it.
+_driver_review_check_on() {
+  case "${DRIVER_REVIEW_CHECK:-$(driver_opt review.check true)}" in
+    false|0|no|off) return 1 ;;
+  esac
+  return 0
+}
+
+# _driver_review_check_effort — review.checkEffort (default medium), said when it is not a level.
+_driver_review_check_effort() {
+  local e; e=$(driver_opt review.checkEffort medium)
+  case "$e" in
+    low|medium|high|xhigh|max) : ;;
+    *) driver_say "⚠ review: review.checkEffort is '${e}', which is not low, medium, high, xhigh or max, so medium is used." >&2
+       e=medium ;;
+  esac
+  printf '%s' "$e"
+}
+
+# _driver_review_context <tree> <file> <line> — the code around a finding's line, numbered:
+# 12 lines either side, or the file's first 25 when it names no line.
+_driver_review_context() {
+  local wt="$1" p="$2" l="${3:-0}" from to
+  p=$(printf '%s' "$p" | sed -e 's#^\./##' -e 's/:[0-9]*$//')
+  [ -n "$p" ] && [ -f "$wt/$p" ] || { printf "(no such file in the change's tree: %s)" "${p:-none}"; return 0; }
+  case "$l" in ''|*[!0-9]*) l=0 ;; esac
+  if [ "$l" -gt 0 ]; then from=$((l > 12 ? l - 12 : 1)); to=$((l + 12)); else from=1; to=25; fi
+  awk -v a="$from" -v b="$to" 'NR >= a && NR <= b { printf "%6d  %s\n", NR, $0 } NR > b { exit }' "$wt/$p"
+}
+
+# _driver_review_check <ticket> <review.json> — the check: ONE session (step review-check,
+# Read Grep Glob only, at review.checkEffort) judges each candidate the hunter raised that is
+# not a nit, and a finding it judges not real leaves the answer. Not run when there is no
+# such candidate or review.check is false. A check that fails, or judges none of the
+# candidates, keeps them all (fail safe); a candidate it does not judge is kept. Records
+# panel.checked (candidates judged) and panel.kept, and says one line either way.
+_driver_review_check() {
+  local t="$1" f="$2" d wt cand n effort ceffort rc note_was ans usable judged k drop why=""
+  d="$(driver_state_dir "$t")/steps"
+  effort=$(head -1 "$d/review.facts/EFFORT" 2>/dev/null); effort=${effort:-high}
+  cand=$(jq -c '[.findings[]? | select((.grade // "") != "nit" and (.tag // "") != "nit")]' "$f" 2>/dev/null) || cand='[]'
+  n=$(printf '%s' "$cand" | jq 'length' 2>/dev/null); n=${n:-0}
+  judged=0; k=$n
+  if [ "$n" -eq 0 ]; then
+    driver_say "   review: hunter found 0, check kept 0 (dropped 0) — nothing to check, so no check ran"
+  elif ! _driver_review_check_on; then
+    driver_say "   review: hunter found $n, check kept $n (dropped 0) — review.check is off, so the hunter's findings count as they are"
+  else
+    wt=$(driver_state_get "$t" worktree); [ -n "$wt" ] && [ -d "$wt" ] || wt="$MAIN_REPO"
+    ceffort=$(_driver_review_check_effort)
+    local i fl ln block=""
+    for i in $(seq 0 $((n - 1))); do
+      fl=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].file // "" | tostring')
+      ln=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].line // 0 | tostring')
+      block="${block}$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i] | "### \(.id)\n- file: \(.file // "?"), line \(.line // 0)\n- grade: \(.grade // "?")\n- summary: \(.summary // "")\n- reason: \(.reason // "")"')
+- the code around it:
+\`\`\`
+$(_driver_review_context "$wt" "$fl" "$ln")
+\`\`\`
+
+"
+    done
+    rm -rf "$d/review-check.facts"; rm -f "$d/review-check.json"
+    driver_fact_put "$t" review-check FINDINGS "$block"
+    driver_fact_put "$t" review-check DIFF "$(cat "$d/review.facts/DIFF" 2>/dev/null)"
+    note_was=$(driver_state_get "$t" park_note)
+    rc=0; DRIVER_STEP_EFFORT="$ceffort" driver_ai_step "$t" review-check || rc=$?
+    ans="$d/review-check.json"
+    usable=0
+    if [ "$rc" -eq 0 ] && [ -s "$ans" ]; then
+      usable=$(jq --argjson c "$cand" '[.judgements[]? | select(type == "object" and (.real | type) == "boolean") | .id | tostring] as $ids
+          | [$c[] | select((.id | tostring) as $x | $ids | index($x))] | length' "$ans" 2>/dev/null) || usable=0
+    fi
+    if [ "${usable:-0}" -gt 0 ] 2>/dev/null; then
+      judged=$usable
+      drop=$(jq -c --argjson c "$cand" '[$c[].id | tostring] as $cids
+          | [.judgements[]? | select(type == "object" and .real == false) | {id: (.id | tostring), reason: (.reason // "")}]
+          | map(select(.id as $x | $cids | index($x))) | unique_by(.id)' "$ans")
+      jq --argjson drop "$drop" '.findings = [(.findings // [])[] | select((.id | tostring) as $x | [$drop[].id] | index($x) | not)]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+      k=$((n - $(printf '%s' "$drop" | jq length)))
+      [ "$judged" -eq "$n" ] || why=" — $((n - judged)) the check did not judge are kept"
+      driver_say "   review: hunter found $n, check kept $k (dropped $((n - k)))$why"
+      local line
+      while IFS= read -r line; do [ -z "$line" ] || driver_say "   review: check dropped $line"; done < <(printf '%s' "$drop" \
+        | jq -r --argjson c "$cand" '.[] | . as $x | ([$c[] | select((.id | tostring) == $x.id)] | first) as $f
+            | "\($x.id) \($f.file // "?"):\($f.line // "?") — \($x.reason | tostring | gsub("\n"; " "))"')
+    else
+      driver_state_set "$t" park_note "$note_was"
+      driver_say "   review: hunter found $n, check kept $n (dropped 0) — the check answered nothing usable (exit $rc), so the hunter's findings stand (fail safe)"
+    fi
+  fi
+  jq --arg e "$effort" --argjson c "$judged" --argjson k "$k" \
+    '.panel = ((.panel // {skill: "code-review"}) + {effort: $e, checked: $c, kept: $k})' "$f" > "$f.t" && mv "$f.t" "$f"
 }
 
 # _driver_review_spawns <transcript> — how many subagents a reviewer started of its own: an
@@ -513,8 +500,8 @@ _driver_review_capped() {
   [ -s "$log" ] || return 0
   k=$(_driver_review_spawns "$log")
   [ "${k:-0}" -gt 0 ] 2>/dev/null || return 0
-  driver_say "✋ review: $who started $k subagent(s) of its own. A review step's agent count is bounded and configured (review.voters), never left to a skill's top level — the step fails rather than pay for an unbounded panel."
-  driver_state_set "$t" park_note "the review step's $who started $k subagent(s) of its own, past the cap of none (review.voters bounds the agents). Fix the reviewer's tools or review.effort, then run again."
+  driver_say "✋ review: $who started $k subagent(s) of its own. A review step's agent count is bounded and configured (one hunter, one check), never left to a skill's top level — the step fails rather than pay for an unbounded panel."
+  driver_state_set "$t" park_note "the review step's $who started $k subagent(s) of its own, past the cap of none (the review runs one hunter and one check, no agents of their own). Fix the reviewer's tools or review.effort, then run again."
   driver_state_set "$t" park_cause driver
   return 1
 }

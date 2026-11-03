@@ -1,0 +1,15 @@
+{
+  "step": "review-check",
+  "skills": [],
+  "judgements": [
+    {
+      "id": "a1",
+      "real": true
+    },
+    {
+      "id": "b1",
+      "real": false,
+      "reason": "line 40 cancels the timer before retry starts, so the race cannot happen"
+    }
+  ]
+}

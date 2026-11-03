@@ -24,7 +24,7 @@ steps=$(jq -r '.steps | keys[]' briefs/facts.json 2>/dev/null)
 [ -n "$steps" ] || bad "briefs/facts.json lists no steps"
 for st in $steps; do
   b="briefs/$st.md"; first=$(head -1 "$b" 2>/dev/null)
-  if [ "$st" = review ]; then
+  if [ "$st" = review ] || [ "$st" = review-check ]; then
     case "$first" in "**Sign-off comes last:**"*follow-up*pixel-change-after-signoff:*) ok "$b leads with the reviewer's form" ;;
       *) bad "$b leads with: $(printf '%s' "$first" | cut -c1-80)" ;; esac
   else

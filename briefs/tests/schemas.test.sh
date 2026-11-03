@@ -97,7 +97,7 @@ for step in $steps; do
 done
 
 # THE REVIEW PANEL'S CONTRACT, by name: a pre-existing defect never blocks, a tag is on
-# the list, a nit tag is a nit grade, and a panel answer tags and votes every finding.
+# the list, a nit tag is a nit grade, and a panel answer tags every finding.
 for ex in valid-panel valid-ship-beside-pre-existing; do
   f="$BRIEFS/examples/review.$ex.json"
   if [ -f "$f" ]; then "$V" review "$f" >/dev/null 2>&1; rc=$?; want "review accepts $ex" 0 "$rc"
@@ -108,6 +108,13 @@ for ex in panel-finding-without-tag tag-off-the-list nit-tag-on-blocking-grade \
   f="$BRIEFS/examples/review.invalid-$ex.json"
   if [ -f "$f" ]; then "$V" review "$f" >/dev/null 2>&1; rc=$?; want "review refuses $ex" 1 "$rc"
   else bad "review has no examples/review.invalid-$ex.json"; fi
+done
+# THE REVIEW CHECK'S CONTRACT, by name: a judgement is a yes or no with its reason, and the
+# check runs no skill.
+for ex in real-not-boolean no-reason runs-a-skill; do
+  f="$BRIEFS/examples/review-check.invalid-$ex.json"
+  if [ -f "$f" ]; then "$V" review-check "$f" >/dev/null 2>&1; rc=$?; want "review-check refuses $ex" 1 "$rc"
+  else bad "review-check has no examples/review-check.invalid-$ex.json"; fi
 done
 
 # --- the refusals. Exit 2, distinct from 1, so the driver can tell "this answer

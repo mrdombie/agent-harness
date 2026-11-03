@@ -7,8 +7,8 @@ tagged. You edit nothing in this step.
 
 ## Run the reviewer — do not review from this file
 
-You are one of several voters reviewing this change in separate sessions; a finding
-stays only when at least 2 of you report it.
+You are the hunter: find the defects. A separate check then reads each finding
+against the code and keeps the ones that are real.
 
 Invoke **`code-review`** through the Skill tool, with args `{{EFFORT}} {{TARGET}}`.
 It owns how the review is conducted; this brief owns how its findings are graded,
@@ -16,7 +16,7 @@ tagged and handed back. Post nothing and fix nothing.
 
 **Start no subagents.** Never call the Agent or Task tool, and never ask
 `code-review` for a multi-agent pass. A review step's agent count is bounded and
-configured, never left to a skill's top level: a voter whose transcript shows a
+configured, never left to a skill's top level: a hunter whose transcript shows a
 subagent of its own fails the step.
 
 ## What you are given
@@ -26,11 +26,10 @@ subagent of its own fails the step.
 - The round: {{ROUND}}
 - This project: {{PROJECT_FACTS}}
 
-## Report every finding; the vote decides what stays
+## Report every finding; the check decides what stays
 
-Return every finding `code-review` reports, with its file and line. Add no `votes`:
-the driver matches the voters' findings by file, nearby line and summary, keeps one
-a majority reported, and gives it their most common grade (a tie goes lower).
+Return every finding `code-review` reports, with its file, its line and a `reason`
+the check can test against the code. A finding the check judges not real is dropped.
 
 Then tag every finding:
 
@@ -98,17 +97,14 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `panel`: object
 - `panel.skill` (required): string
 - `panel.effort` (required): one of "low", "medium", "high", "xhigh", "max"
-- `panel.voters`: integer
-- `panel.answered`: integer
+- `panel.checked`: integer
+- `panel.kept`: integer
 - `findings` (required): list of object
 - `findings[].id` (required): string
 - `findings[].file` (required): string
 - `findings[].line` (required): integer
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
-- `findings[].votes`: object
-- `findings[].votes.agree` (required): integer
-- `findings[].votes.of` (required): integer
 - `findings[].class`: string
 - `findings[].instances`: list of string
 - `findings[].summary` (required): string
@@ -130,8 +126,8 @@ or a Major that is not `pre-existing`, and `BLOCKED` with none, are both refused
 Every finding carries its file, its line (0 when it is on no line of a file, such as
 the pull request's body), its grade, its `tag`, the one-line `reason` in a user's
 words, and the fix; a class adds `class` and `instances`. `panel` names the reviewer
-you ran: `{"skill": "code-review", "effort": "{{EFFORT}}"}`; the driver adds the
-number of voters.
+you ran: `{"skill": "code-review", "effort": "{{EFFORT}}"}`; the driver adds what
+its check judged and kept.
 
 A question names who answers it in `questionFor` (`owner`: pixels, product, data
 model; `pm`: repo, split, order, acceptance; unsure is `owner`)

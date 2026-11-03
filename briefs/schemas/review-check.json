@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "review check answer",
+  "description": "One judgement per finding the review's hunter raised: real or not real, and the one line of code evidence that decided it. The driver drops only a finding judged not real; a finding with no judgement is kept, and an answer it cannot read keeps them all.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "step",
+    "skills",
+    "judgements"
+  ],
+  "properties": {
+    "step": {
+      "const": "review-check"
+    },
+    "skills": {
+      "description": "Every skill invoked in this step: none, so always empty. The driver cross-checks it against the Skill calls in the run log.",
+      "type": "array",
+      "maxItems": 0,
+      "items": {
+        "type": "string"
+      }
+    },
+    "judgements": {
+      "description": "One per listed finding, by its id.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "real",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "description": "The finding's id, exactly as listed.",
+            "type": "string",
+            "minLength": 1
+          },
+          "real": {
+            "description": "true when the defect the finding describes is in the code as it stands; false only on evidence that it is not.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "One line naming what in the code decided it.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
