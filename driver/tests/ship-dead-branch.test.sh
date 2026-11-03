@@ -3,7 +3,7 @@
 # not work. Origin's copy of the ticket's branch sat at an earlier run's tip whose
 # four PRs were closed; every later run conflicted with it at ship and parked
 # "ship refused (exit 24)", four times over two days. With no open PR on the branch
-# ship archives that tip under refs/stranded/<ticket>/archive-<sha7>, replaces the
+# ship archives that tip under refs/stale/<ticket>/archive-<sha7>, replaces the
 # branch with a lease on that exact tip, and ships. An open PR still parks.
 # Run: bash "$0"
 set -uo pipefail
@@ -47,7 +47,7 @@ dead_tip() {
   git -C "$FIX/wt$t" merge -q --no-edit origin/develop
   git -C "$c" rev-parse HEAD
 }
-archive_of() { git -C "$FIX/origin" rev-parse -q --verify "refs/stranded/$1/archive-$(printf '%s' "$2" | cut -c1-7)" 2>/dev/null; }
+archive_of() { git -C "$FIX/origin" rev-parse -q --verify "refs/stale/$1/archive-$(printf '%s' "$2" | cut -c1-7)" 2>/dev/null; }
 
 echo "--- origin's branch is a dead tip and no PR is open on it: archived, leased over, shipped ---"
 : > "$GH_LOG"; printf '[]\n' > "$FIX/gh/prs.json"
@@ -59,23 +59,15 @@ want "the dead tip is archived on origin"       "$dead" "$(archive_of 501 "$dead
 want "the branch is this run's line now"        "$(git -C "$FIX/wt501" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-501/work)"
 want "with none of the dead run's commits"      "no" "$(git -C "$FIX/origin" merge-base --is-ancestor "$dead" tkt-501/work && echo yes || echo no)"
 want "and this run's work on it"                "change for 501" "$(git -C "$FIX/origin" show tkt-501/work:f501.txt 2>/dev/null)"
-want_in "the run says where the old tip went"   "refs/stranded/501/archive-$(printf '%s' "$dead" | cut -c1-7)" "$out"
-want_in "and the pull request does"             "refs/stranded/501/archive-$(printf '%s' "$dead" | cut -c1-7)" "$(tr '\n' ' ' < "$GH_LOG")"
+want_in "the run says where the old tip went"   "refs/stale/501/archive-$(printf '%s' "$dead" | cut -c1-7)" "$out"
+want_in "and the pull request does"             "refs/stale/501/archive-$(printf '%s' "$dead" | cut -c1-7)" "$(tr '\n' ' ' < "$GH_LOG")"
 want_in "the PR is opened"                      'pr create' "$(cat "$GH_LOG")"
 
 echo "--- a park after the archive names it too ---"
 . "$HERE/../steps/park.sh" || exit 1
 : > "$GH_LOG"
 driver_park 501 "ship refused (exit 24)" "a later refusal" driver >/dev/null 2>&1
-want_in "the park comment names the archive"    "refs/stranded/501/archive-$(printf '%s' "$dead" | cut -c1-7)" "$(tr '\n' ' ' < "$GH_LOG")"
-
-echo "--- an archive is never the line a run resumes from ---"
-# The PM's hand-made archive on #13304 sorted after every stamp ("56738df" > "2026…").
-git -C "$FIX/wt501" push -q origin "HEAD~1:refs/stranded/501/archive-27oct-56738df"
-git -C "$FIX/wt501" push -q origin "HEAD:refs/stranded/501/host-20261101T000000Z"
-want_not_in "the stranded list leaves archives out" 'archive-' "$(driver_stranded_list 501 "$REPO")"
-driver_stranded_restore 501 "$REPO" ""
-want "restore picks the run's own stranded ref" "refs/stranded/501/host-20261101T000000Z" "$DRIVER_STRANDED_FROM"
+want_in "the park comment names the archive"    "refs/stale/501/archive-$(printf '%s' "$dead" | cut -c1-7)" "$(tr '\n' ' ' < "$GH_LOG")"
 
 echo "--- an open PR uses the branch: unchanged, it parks and pushes nothing ---"
 : > "$GH_LOG"

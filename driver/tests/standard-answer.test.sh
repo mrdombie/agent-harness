@@ -65,9 +65,9 @@ cls() { # <text> [pr] — the class a fresh ticket's question gets, or park
 
 echo "--- on: each real text takes its standard answer ---"
 mf_on
-want "#13044 wait or fix-here: (a), waits for the base"       "a base-wait"   "$(cls "$Q13044" 77)"
-want "#12209 develop itself fails: (a)"                       "a base-wait"   "$(cls "$Q12209A" 77)"
-want "#12209 red on pristine develop: (a)"                    "a base-wait"   "$(cls "$Q12209B" 77)"
+want "#13044 wait or fix-here: (a), carries on past the base's red" "a carry"   "$(cls "$Q13044" 77)"
+want "#12209 develop itself fails: (a)"                       "a carry"   "$(cls "$Q12209A" 77)"
+want "#12209 red on pristine develop: (a)"                    "a carry"   "$(cls "$Q12209B" 77)"
 want "#13997 wait or fold in: (b), waits for its parent"      "b parent-wait" "$(cls "$Q13997")"
 N=$(( $(cat "$FIX/n") + 1 )); echo "$N" > "$FIX/n"; driver_state_init "$N" >/dev/null; SA_PARENT=""; driver_standard_answer "$N" plan "$Q13997" >/dev/null 2>&1
 want "and the parent is the PR the text names"                "13772"         "$SA_PARENT"
@@ -137,7 +137,7 @@ walk() { # <ticket> <step> <rc> <how: note|question> <text> [pr]
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; : > "$FIX/park.log"; : > "$GH_LOG"
   printf '#!/usr/bin/env bash\ndriver_park() { printf "PARK %%s | %%s | cause=%%s\\n" "$2" "${3:-}" "${4:-}" >> "$FIX/park.log"; return 20; }\n' > "$FAKE/park.sh"
   local s
-  for s in start size plan build fix compare self-check review record ship reenter repair quick; do
+  for s in start size plan build fix compare self-check review record ship quick; do
     printf '#!/usr/bin/env bash\ndriver_step_%s() { printf "%%s\\n" %s >> "$RAN"; return 0; }\n' "${s//-/_}" "$s" > "$FAKE/$s.sh"
   done
   jq -n --arg q "$5" '$q' > "$FIX/walk-q.json"
@@ -222,10 +222,9 @@ echo "--- on: a Minor deferral (c) carries on too ---"
 want "#13454's deferred Minors: finishes"  "0" "$(walk_rc 702 fix 24 note "$Q13454" 88)"
 want "nothing parked"                      "" "$(cat "$FIX/park.log")"
 
-echo "--- on: #13044's wait or fix-here waits for the base, no park ---"
-want "the run ends as a base wait"         "$DRIVER_E_BASE_WAIT" "$(walk_rc 703 fix 20 question "$Q13044" 88)"
+echo "--- on: #13044's wait or fix-here, as a step's refusal, carries on past the base's red, no park ---"
+want "the run carries on and finishes"     "0" "$(walk_rc 703 fix 24 note "$Q13044" 88)"
 want "nothing parked"                      "" "$(cat "$FIX/park.log")"
-want_in "it is on the base-wait ledger"    '^703	88	' "$(cat "$STATE/swarm/base-waits.tsv" 2>/dev/null)"
 want_in "the PR says why"                  'pr comment 88 .*standard answer: \(a\)' "$(tr '\n' ' ' < "$GH_LOG")"
 
 echo "--- on: #13997's wait or fold in is blocked on its parent, no park ---"

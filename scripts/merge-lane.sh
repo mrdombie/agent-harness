@@ -26,7 +26,7 @@
 #                                 every commit since approval is a merge and the
 #                                 update touched none of its screen files; else the
 #                                 owner is told
-#                  conflicting, or the update hits a conflict → out, fixer
+#                  conflicting, or the update hits a conflict → out
 #                  behind the trunk                      → update-branch, wait —
 #                                 unless merge.updateBehind is bot and GitHub does
 #                                 not call it BEHIND (up to date is not required):
@@ -35,7 +35,9 @@
 #                                 bot the first other member that is MERGEABLE, not
 #                                 BEHIND, not held and green merges in its place
 #                  a required check red: a flake         → re-run once
-#                                        anything else   → out, check named, fixer
+#                                        anything else   → out, check named
+#                  (a PR out of the lane gets no fixer: it stays on the rebuild clock,
+#                  which closes it and builds its ticket fresh once it cannot merge)
 #                  every required check green            → merge, end of pass
 #                  a wait on anything but its own checks a second pass running
 #                                 (unreadable, refused) → it gives up its place
@@ -53,7 +55,6 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/pr-red.sh" || exit 1
 declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
-. "$SELF_DIR/repair-gate.sh" || exit 1
 
 LANE_SHADOW="${MERGE_LANE_SHADOW:-1}"
 lane_shadow() { [ "$LANE_SHADOW" != 0 ]; }
@@ -66,9 +67,9 @@ esac
 # Names may hold spaces, so they stay JSON rather than a space-joined toolkit_cfg list.
 REQUIRED=$(jq -c '.gates.requiredChecks // empty | select(type == "array" and length > 0)' "$HARNESS_CFG" 2>/dev/null)
 [ -n "$REQUIRED" ] || { echo "merge-lane: harness.json has no 'gates.requiredChecks' — without them green cannot be told from unchecked." >&2; exit 1; }
-# Only a check the trunk's live rules also require (pr_red_required, what the repair gate reads)
+# Only a check the trunk's live rules also require (pr_red_required, what the rebuild pass reads)
 # is waited on: a check the config names but the trunk does not require is never a reason to
-# leave the lane, since nothing repairs it. The config list stands alone only when the rules
+# leave the lane, since nothing makes it pass. The config list stands alone only when the rules
 # cannot be read or require none of it. Names compare in lower case.
 LIVE_REQUIRED=$(pr_red_required "$INTEGRATION_BRANCH" 2>/dev/null) || LIVE_REQUIRED=""
 BOTH=$(jq -c --argjson live "${LIVE_REQUIRED:-[]}" 'map(select(type == "string" and ((ascii_downcase) as $r | any($live[]; ascii_downcase == $r))))' <<<"$REQUIRED" 2>/dev/null) || BOTH=""
@@ -82,7 +83,6 @@ UPDATE_BEHIND=$(swarm_opt merge.updateBehind agent)
 FIRST_LABEL=$(swarm_opt mergeLane.firstLabel "P0")
 FLAKE_RE=$(swarm_opt mergeLane.flakePattern 'shutdown signal|lost communication with the server|runner .*(lost|did not respond|offline)|exit code 137|exit code 143|The operation was canceled|exceeded the maximum execution time')
 NOTIFY="$SELF_DIR/coordinator-notify.sh"
-QUEUE="$SELF_DIR/coordinator-queue.sh"
 CLEAR_HOLD="$SELF_DIR/clear-hold.sh"
 KEPT="$SELF_DIR/approval-kept.sh"
 
@@ -279,40 +279,10 @@ stall() { # <why> — ends the pass
   status "$WAITING in line · #$HEAD_PR gave up its place: $1"; exit 0
 }
 
-# ---- fixers and leaving --------------------------------------------------------
+# ---- leaving --------------------------------------------------------------------
 ticket_of() { pr_field "$1" .headRefName | branch_tickets | cut -f1; }
 
-fixer() { # <pr> <why>
-  local pr="$1" why="$2" t note brief room
-  t=$(ticket_of "$pr")
-  if [ -z "$t" ]; then
-    owner "lane-noticket:$pr:$SHA" "PR #$pr left the merge lane ($why) and its branch names no ticket to send a fixer to"
-    return 0
-  fi
-  note="Merge lane: PR #$pr left the lane — $why. Fix it on the PR's own branch and push; then re-arm auto-merge so it rejoins. Never merge it yourself: the lane merges."
-  # The one repair gate (repair-gate.sh): nothing a repair can fix is never sent one.
-  local gwhy
-  if ! gwhy=$(repair_gate "$t" "$(jq -c --argjson n "$pr" '[.[] | select(.number == $n)] | first // empty' <<<"$PRS")"); then
-    say "lane: no fixer for #$t (PR #$pr): $gwhy"; return 0
-  fi
-  if lane_shadow; then say "would send a fixer to #$t"; return 0; fi
-  if swarm_ticket_live "$t"; then say "lane: #$t already has an agent running — no second fixer"; return 0; fi
-  # A live coordinator that ticked lately owns every start; without one a queued fixer never starts.
-  if ! coord_live_recently && room=$(coord_room) && room=${room#*$'\t'} \
-     && { [ -z "$COORD_CAP$COORD_CAP_BAD" ] || { [ -n "$COORD_CAP" ] && [ "$(swarm_running_total)" -lt "$COORD_CAP" ]; }; }; then
-    brief=$(mktemp); printf '%s\n' "$note" > "$brief"
-    if CLAIM_CLASS=repair swarm_spawn "$t" "$brief" >> "$LANE_LOG" 2>&1; then
-      coord_record_class "$t" repair; say "lane: no live coordinator — spawned a fixer for #$t ($room)"
-    else say "lane: the fixer for #$t did not spawn"; fi
-    rm -f "$brief"
-    return 0
-  fi
-  bash "$QUEUE" add "$t" --class repair --note "$note" >/dev/null 2>&1 \
-    && say "lane: #$t queued as a repair${room:+ — no room ($room)}" \
-    || say "lane: could not queue #$t as a repair"
-}
-
-take_out() { # <why> — the head leaves the lane on this SHA and gets a fixer
+take_out() { # <why> — the head leaves the lane on this SHA; the rebuild clock has it
   local why="$1"
   act out "$HEAD_PR" "$SHA" "$why"
   if lane_shadow; then
@@ -321,9 +291,8 @@ take_out() { # <why> — the head leaves the lane on this SHA and gets a fixer
     say "lane: #$HEAD_PR out — $why"
     swarm_gh pr edit "$HEAD_PR" --repo "$REPO_SLUG" --remove-label "$LANE_LABEL" >/dev/null 2>&1 || true
     swarm_gh pr comment "$HEAD_PR" --repo "$REPO_SLUG" \
-      --body "Left the merge lane: $why. Re-arm auto-merge on a new head to rejoin." >/dev/null 2>&1 || true
+      --body "Left the merge lane: $why. Re-arm auto-merge on a new head to rejoin; one that cannot merge within coordinator.rebuildAfterMin is closed and its ticket built fresh." >/dev/null 2>&1 || true
   fi
-  fixer "$HEAD_PR" "$why"
   drop "$HEAD_PR"
   st --arg p "$HEAD_PR" --arg s "$SHA" '.out[$p] = $s'
   status "$WAITING in line · #$HEAD_PR left: $why"

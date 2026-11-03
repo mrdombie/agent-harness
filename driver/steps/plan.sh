@@ -258,7 +258,7 @@ _driver_plan_shape() {
 }
 
 # _driver_plan_split_by_shape <ticket> <plan.json> — 0 builds here; DRIVER_E_NOOP split, nothing
-# built; DRIVER_E_REFUSED a filing failed. A repair, a branch that already has commits and a part
+# built; DRIVER_E_REFUSED a filing failed. A branch that already has commits and a part
 # of an earlier split always build here: parts already in flight finish as they are.
 _driver_plan_split_by_shape() {
   local t="$1" ans="$2" nf nu src=0 title
@@ -272,8 +272,7 @@ _driver_plan_split_by_shape() {
     [ "$nf" -eq 0 ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$(driver_state_dir "$t")/features.json")" >/dev/null 2>&1 || true
     return 0
   fi
-  if [ "$(driver_state_get "$t" mode)" = repair ] \
-     || [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
+  if [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
     driver_say "   plan: already in flight — it builds here as planned, not split"
     return 0
   fi

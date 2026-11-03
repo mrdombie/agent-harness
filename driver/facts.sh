@@ -375,7 +375,7 @@ driver_fact_critic_findings() { # <ticket>
 # review that copied a critic finding off the PR sent it to fix, the fix round could
 # only defer it, and the deferral parked for the owner (#12209, three times).
 # driver_drop_clash_findings <file> <list name> — a finding that only says the branch clashes
-# with or is behind its base is no finding (clash-finding.sh): the clash is the PR's repair.
+# with or is behind its base is no finding (clash-finding.sh): a clash the coordinator's rebuild pass settles.
 # 0 when it dropped one.
 driver_drop_clash_findings() { # <file> <list name>
   local f="$1" ids
@@ -384,7 +384,7 @@ driver_drop_clash_findings() { # <file> <list name>
   ids=$(jq -r "$CLASH_FINDING_JQ"' [.findings[]? | select(clash_only) | (.id // "?" | tostring)] | join(", ")' "$f" 2>/dev/null)
   [ -n "$ids" ] || return 1
   jq "$CLASH_FINDING_JQ"' .findings = [(.findings // [])[] | select(clash_only | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
-  driver_say "   a clash with $INTEGRATION_BRANCH is the PR's repair, never a finding — dropped from the $2 list: $ids"
+  driver_say "   a clash with $INTEGRATION_BRANCH is the rebuild pass's, never a finding — dropped from the $2 list: $ids"
 }
 
 driver_drop_critic_findings() { # <file> <list name> [ticket]
@@ -396,7 +396,7 @@ driver_drop_critic_findings() { # <file> <list name> [ticket]
   driver_say "   $RELEASE_CRITIC_OFF — dropped from the $2 list: $ids"
 }
 
-# EVIDENCE OWED IS WORK. Three repairs in one day were told to add shots (a drawer open,
+# EVIDENCE OWED IS WORK. Three runs in one day were told to add shots (a drawer open,
 # dark, 390 wide) and pushed without touching the capture plan or `## Evidence routes`:
 # they read their job as "turn red checks green", and nothing red said the evidence was
 # short. driver_evidence_tasks lists what is owed — the judge's evidence-class findings on
@@ -445,7 +445,7 @@ _driver_evidence_report_only() { # [ticket]
 _driver_evidence_warn() {
   local t="$1" wt="$2" pr="$3" tasks="$4" head key ledger body
   driver_state_set "$t" evidence_warnings "$tasks"
-  driver_say "   evidence: warning, not blocking — $(printf '%s\n' "$tasks" | grep -c .) evidence gap(s) on PR #$pr are report-only until the release (release.nonBlockingChecks), so no repair task:" >&2
+  driver_say "   evidence: warning, not blocking — $(printf '%s\n' "$tasks" | grep -c .) evidence gap(s) on PR #$pr are report-only until the release (release.nonBlockingChecks), so no fix task:" >&2
   printf '%s\n' "$tasks" | sed 's/^/     /' >&2
   head=$(git -C "$wt" rev-parse HEAD 2>/dev/null | cut -c1-9)
   key="$pr	${head:-?}	$(printf '%s' "$tasks" | cksum | cut -d' ' -f1)"
@@ -454,7 +454,7 @@ _driver_evidence_warn() {
   body="**Warning, not blocking — report-only until the release.** The evidence this pull request is missing, at \`${head:-?}\`:
 $tasks
 
-Until the release, the checks that find evidence gaps report but do not block (\`release.nonBlockingChecks\` in harness.json), so no repair is sent for them. The PM reads them with the CI shots at sign-off.
+Until the release, the checks that find evidence gaps report but do not block (\`release.nonBlockingChecks\` in harness.json), so no fix is asked for them. The PM reads them with the CI shots at sign-off.
 
 <!-- harness:machine -->"
   if swarm_gh api "repos/$REPO_SLUG/issues/$pr/comments" -X POST -f body="$body" >/dev/null 2>&1; then
@@ -468,7 +468,7 @@ Until the release, the checks that find evidence gaps report but do not block (\
 driver_fact_evidence_tasks() { # <ticket>
   local t="$1" tasks plan pr wt trunk
   tasks=$(driver_state_get "$t" evidence_tasks)
-  if [ -z "$tasks" ] && [ "$(driver_state_get "$t" mode)" != repair ]; then
+  if [ -z "$tasks" ]; then
     pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" critic_pr)
     wt=$(driver_state_get "$t" worktree)
     if [ -n "$pr" ] && [ -n "$wt" ] && [ -d "$wt" ]; then
@@ -481,7 +481,7 @@ driver_fact_evidence_tasks() { # <ticket>
   fi
   [ -n "$tasks" ] || { _driver_fact_none "no evidence is owed: the critic names no missing shot and every changed screen file is on an evidence route"; return 0; }
   plan=$(driver_evidence_plan "$t")
-  printf 'This pull request owes evidence. Each line below is a task, and its answer is an edit to the capture plan `%s` — a fix that only changes code leaves it open, and the driver refuses a repair that leaves it open:
+  printf 'This pull request owes evidence. Each line below is a task, and its answer is an edit to the capture plan `%s` — a fix that only changes code leaves it open, and the driver refuses a fix that leaves it open:
 %s
 
 ' "$plan" "$tasks"
@@ -505,8 +505,8 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
   driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
   driver_fact_put "$t" "$s" CRITIC_FINDINGS "$(driver_fact_critic_findings "$t")"
-  case "$s" in repair|fix) driver_fact_put "$t" "$s" EVIDENCE_TASKS "$(driver_fact_evidence_tasks "$t")" ;; esac
-  case "$s" in build*|fix|repair) driver_fact_put "$t" "$s" PROOF_LIMITS "$(driver_fact_proof_limits)" ;; esac
+  case "$s" in fix) driver_fact_put "$t" "$s" EVIDENCE_TASKS "$(driver_fact_evidence_tasks "$t")" ;; esac
+  case "$s" in build*|fix) driver_fact_put "$t" "$s" PROOF_LIMITS "$(driver_fact_proof_limits)" ;; esac
 }
 
 # driver_fact_proof_limits — what cannot prove a change here. A proof tree runs no app
@@ -552,11 +552,11 @@ _driver_fact_local_only_limits() {
     "$(jq -r '[(.gates.ratchets // [])[]? | select(type == "object") | .check // empty | strings] | if length > 0 then " (" + join(", ") + ")" else "" end' "$HARNESS_CFG" 2>/dev/null)"
 }
 
-# driver_handover_diff <tree> <range> [focus file…] — the change as a fix or repair step is
+# driver_handover_diff <tree> <range> [focus file…] — the change as a fix step is
 # handed it, bounded: the files it touches (--stat), then the diff of the focus files (every
 # file when none is named), cut at driver.handoverDiffBytes (default 8000) and the cut said.
 # Nothing when the range carries no change, so a caller's own "(none …)" still shows. Handed
-# whole, a repair's diff ran to 92 KB and a fix's to 1 MB: the step reads the rest itself.
+# whole, one step's diff ran to 92 KB and a fix's to 1 MB: the step reads the rest itself.
 driver_handover_diff() {
   local wt="$1" range="$2" cap stat d bytes
   shift 2

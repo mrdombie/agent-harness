@@ -12,8 +12,6 @@
 0	driver/tests/push-gates.e2e.test.sh
 20	driver/tests/real-briefs.test.sh
 0	driver/tests/record.test.sh
-5	driver/tests/reenter.test.sh
-59	driver/tests/repair.test.sh
 5	driver/tests/requeue.test.sh
 19	driver/tests/review.test.sh
 23	driver/tests/self-check.test.sh
@@ -69,7 +67,6 @@
 419	scripts/coordinator-tick.test.sh
 2	scripts/ensure-hooks.test.sh
 4	scripts/evidence-gaps.test.sh
-4	scripts/fix-lock.test.sh
 89	scripts/gh-calls.test.sh
 2	scripts/gh-open-prs-paged.test.sh
 0	scripts/harness-update.test.sh
@@ -115,3 +112,4 @@
 10	swarm/tests/live-view-hang.test.sh
 45	driver/tests/base-red-steps.test.sh
 220	driver/tests/review-eval.test.sh
+200	swarm/tests/rebuild.test.sh

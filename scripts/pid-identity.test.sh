@@ -72,13 +72,12 @@ want "a pid file written after its process started is live"         live "$(pf "
 
 echo "--- the tick ends a ghost run, once, without a stood-down event ---"
 for s in reconcile sweep wtsweep claude notify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
-printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
 printf '#!/usr/bin/env bash\ncase "$1" in tick) printf "500\\tdisk: 500 GB free\\n" ;; limits) echo "30 50" ;; free) echo 500 ;; esac\n' > "$BIN/diskguard"; chmod +x "$BIN/diskguard"
 printf '%s\n' 'live_view_watchdog() { :; }' > "$FIX/watchdog-stub.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/spawn-none"; chmod +x "$BIN/spawn-none"
 : > "$FIX/claims.txt"
 export COORDINATOR_DISK_GUARD="$BIN/diskguard" COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock" COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt" SWARM_FREE_MEM_GB=16

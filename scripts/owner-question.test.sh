@@ -71,9 +71,8 @@ want_in "asked again after an answer: a fresh key" 'key:decision:41:pick-2 -->' 
 fresh; fix_issue 43 OPEN ""; bash "$OQ" ask 43 pick "Q?" >/dev/null
 printf '[{"number":9}]\n' > "$FIX/gh/prs-tkt-43.json"
 bash "$OQ" answer decision:43:pick "yes" >/dev/null
-want "a ticket with an open PR goes back as repair" "repair" "$(jq -r '.tickets[] | select(.n == 43) | .class' "$C/queue.json")"
-# A draft PR a build PARKED with is not a repair: the driver's own record says the build
-# is unfinished, and a repair would skip its remaining steps and ship it.
+want "a ticket with an open PR goes back as new: there is no repair" "new" "$(jq -r '.tickets[] | select(.n == 43) | .class' "$C/queue.json")"
+# A draft PR a build PARKED with resumes that build: the driver's own record says it is unfinished.
 fresh; fix_issue 91 OPEN ""; bash "$OQ" ask 91 pick "Q?" >/dev/null
 printf '[{"number":10}]\n' > "$FIX/gh/prs-tkt-91.json"
 mkdir -p "$STATE/driver/91"; printf '{"ticket":"91","mode":"build","done":["start","plan","build","fix"]}\n' > "$STATE/driver/91/state.json"
@@ -83,7 +82,7 @@ fresh; fix_issue 92 OPEN ""; bash "$OQ" ask 92 pick "Q?" >/dev/null
 printf '[{"number":11}]\n' > "$FIX/gh/prs-tkt-92.json"
 mkdir -p "$STATE/driver/92"; printf '{"ticket":"92","mode":"build","done":["start","plan","build","fix","compare","self-check","review","record","ship"]}\n' > "$STATE/driver/92/state.json"
 bash "$OQ" answer decision:92:pick "yes" >/dev/null
-want "a SHIPPED build with an open PR still goes back as repair" "repair" "$(jq -r '.tickets[] | select(.n == 92) | .class' "$C/queue.json")"
+want "a SHIPPED build with an open PR goes back as new too" "new" "$(jq -r '.tickets[] | select(.n == 92) | .class' "$C/queue.json")"
 want "a key that is not a decision is refused" "2" "$(bash "$OQ" answer blind:x "y" >/dev/null 2>&1; echo $?)"
 
 echo "--- a failed answer stays pending, and the next sync lands it ---"
@@ -134,7 +133,12 @@ fresh; fix_issue 62 OPEN "status:parked"; bash "$OQ" ask 62 driver-park-2 "Keep 
 printf '[{"number":12}]\n' > "$FIX/gh/prs-tkt-62.json"
 bash "$OQ" answer decision:62:driver-park-2 "A" >/dev/null
 want "a park answered with an open PR ends in review" "status:in-review" "$(labels_of 62)"
-want "and is queued as a repair"           "repair" "$(jq -r '.tickets[] | select(.n == 62) | .class' "$C/queue.json")"
+want "and is queued as new"                "new" "$(jq -r '.tickets[] | select(.n == 62) | .class' "$C/queue.json")"
+fresh; fix_issue 67 OPEN "status:parked"; bash "$OQ" ask 67 driver-park "Keep A or B?" >/dev/null
+printf '[{"number":14}]\n' > "$FIX/gh/prs-tkt-67.json"
+mkdir -p "$STATE/driver/67"; printf '{"ticket":"67","mode":"build","done":["start","plan","build"]}\n' > "$STATE/driver/67/state.json"
+bash "$OQ" answer decision:67:driver-park "A" >/dev/null
+want "a park answered with its own unshipped build here ends ready: that build resumes" "status:ready" "$(labels_of 67)"
 fresh; fix_issue 63 OPEN "status:needs-human"; bash "$OQ" ask 63 driver-park "Keep A or B?" >/dev/null
 fix_issue 63 OPEN "status:needs-human"; bash "$OQ" sync >/dev/null
 want "answered on the ticket: the sync sets ready" "status:ready" "$(labels_of 63)"

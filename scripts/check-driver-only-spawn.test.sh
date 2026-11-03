@@ -30,11 +30,11 @@ out=$(bash "$C" "$T/kit"); rc=$?
 
 # 2. A prose fallback put back in an unattended branch of the spawner.
 copy
-perl -0pi -e 's/(  DRIVER_MODE=adopt\n)/  BUILDER=prose; DRIVER_MODE=build\n/' "$T/kit/scripts/spawn-claim.sh"
+perl -0pi -e 's/    DRIVER_MODE=brief; BUILDER_WHY=/  BUILDER=prose; DRIVER_MODE=build\n    BUILDER_WHY=/' "$T/kit/scripts/spawn-claim.sh"
 grep -q '^  BUILDER=prose; DRIVER_MODE=build$' "$T/kit/scripts/spawn-claim.sh" || bad "plant 2 did not land"
 out=$(bash "$C" "$T/kit"); rc=$?
 [ "$rc" = 1 ] && printf '%s' "$out" | grep -q 'sets BUILDER=prose without' \
-  && ok "a prose fallback for the draft branch is named" || bad "the prose fallback passed (rc=$rc): $out"
+  && ok "a prose fallback for the briefed branch is named" || bad "the prose fallback passed (rc=$rc): $out"
 
 # 3. The marker on the --fg default deleted: the plant of absence.
 copy

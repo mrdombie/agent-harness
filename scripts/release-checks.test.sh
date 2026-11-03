@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # release-checks.test.sh — until a project's release, a check it lists in
-# release.nonBlockingChecks warns and never blocks: no repair is sent for it, it does
-# not count a PR red, the driver's repair does not answer it, the critic's findings
-# are no step's blockers, and the sign-off batch does not wait on it. release.done
+# release.nonBlockingChecks warns and never blocks: repair-watch notes it on the PR, it
+# does not count a PR red to the rebuild pass, the critic's findings are no step's
+# blockers, and the sign-off batch does not wait on it. release.done
 # true, or no key, is exactly as before; a red on a check not listed is red either way.
 # Run: bash "$0"
 set -uo pipefail
@@ -64,69 +64,43 @@ want "the required list loses the listed checks" '["Code gates"]' \
 cfg_done
 want "after the release the required list is whole" '["Code gates","Design critic"]' "$(lib release_blocking_required '["Code gates","Design critic"]')"
 
-echo "--- repair-watch: red only on Lesson and Design critic ---"
+echo "--- repair-watch's warning: red only on Lesson and Design critic ---"
 W="$HERE/../swarm/repair-watch.sh"
-# Each case repairs ticket 101 again: the rebuild after two repairs (repair-gate.sh) has its own cases.
-export COORDINATOR_REBUILD_AFTER_REPAIRS=0
-# The PR's checks are develop's required ones (repair-gate.sh reads the live rules).
+# The PR's checks are develop's required ones (pr-red.sh reads the live rules).
 fix_required "Every fix ships a lesson" "Code gates" "Design critic"
-TRIED="$STATE/swarm/repair-attempts.tsv"
 fix_issue 101 OPEN "status:in-review,project:widgets"
 fix_issue 102 OPEN "status:in-review,project:widgets"
 fix_live widgets 0; fix_at "$(date -u +%s)"
 printf '{"id":1}\n' > "$FIX/gh/api-repos_acme_widgets_issues_11_comments.json"
-pass() { : > "$SPAWNS"; : > "$GH_LOG"; : > "$TRIED"; rm -f "$STATE/swarm/release-warnings.tsv"; bash "$W" --only repair 2>&1; }
+pass() { : > "$SPAWNS"; : > "$GH_LOG"; rm -f "$STATE/swarm/release-warnings.tsv"; bash "$W" --only warn 2>&1; }
 cfg_on
 jq -s . <(red_pr 11 101 aaaaaaaaa1 Lesson "Design critic") > "$FIX/gh/prs-all.json"
 out=$(pass)
-want "no repair is sent"                    "0" "$(grep -c . "$SPAWNS")"
+want "nothing is sent to it"                "0" "$(grep -c . "$SPAWNS")"
 want_in "a warning is noted in the log"     'warning, not blocking: PR #11 is red on Design critic, Every fix ships a lesson' "$out"
 want "and on the pull request, once"        "1" "$(grep -c 'api repos/acme/widgets/issues/11/comments -X POST' "$GH_LOG")"
-: > "$GH_LOG"; out=$(bash "$W" --only repair 2>&1)
+: > "$GH_LOG"; out=$(bash "$W" --only warn 2>&1)
 want "not again on the same head"           "0" "$(grep -c 'issues/11/comments' "$GH_LOG")"
 cfg_done
 out=$(pass)
-want "release done: the same PR is repaired, as before" "1" "$(grep -c '^101' "$SPAWNS")"
-want_not_in "and nothing is called a warning" 'warning, not blocking' "$out"
+want_not_in "release done: nothing is called a warning" 'warning, not blocking' "$out"
 want "and nothing is posted as one"         "0" "$(grep -c 'issues/11/comments' "$GH_LOG")"
-cfg_off
-out=$(pass)
-want "no release key: repaired, as before"  "1" "$(grep -c '^101' "$SPAWNS")"
+
+echo "--- the rebuild pass: a red only on listed checks is not red ---"
+# rebuild_pr_state on the fixture PR: green, stuck or base-red, as the rebuild clock reads it.
+state_of() {
+  (cd "$REPO" && PJ="$(jq -c '.[0]' "$FIX/gh/prs-all.json")" COORDINATOR_SHADOW=1 bash -c '
+    . "$1/coordinator-env.sh" || exit 9; . "$1/pr-red.sh" || exit 9; . "$1/issue-status.sh" || exit 9; . "$1/rebuild.sh" || exit 9
+    rebuild_pr_state 101 "$PJ" | cut -f1' _ "$HERE" 2>&1)
+}
+cfg_on; fix_trunk green
+jq -s . <(red_pr 11 101 aaaaaaaaa1 "Design critic") > "$FIX/gh/prs-all.json"
+want "red only on a listed check: green to the rebuild clock" "green" "$(state_of)"
+cfg_done
+want "release done: the same reds are stuck, as before" "stuck" "$(state_of)"
 cfg_on
 jq -s . <(red_pr 12 102 bbbbbbbbb1 Lesson "Code gates") > "$FIX/gh/prs-all.json"
-out=$(pass)
-want "red on Code gates as well: repaired, as before" "1" "$(grep -c '^102' "$SPAWNS")"
-want_in "on the check that blocks alone"    'CI went red on: Code gates$' "$(grep -o 'CI went red on: [^.]*' "$STATE/swarm/briefs/repair-102.md" | head -1)"
-TRUNK="$FIX/gh/api-repos_acme_widgets_commits_develop_check-runs_per_page_100.json"
-printf '{"check_runs":[{"name":"Approved picture","conclusion":"failure"},{"name":"build","conclusion":"success"}]}\n' > "$TRUNK"
-out=$(pass)
-want "a trunk red only on a listed check holds no repair" "1" "$(grep -c '^102' "$SPAWNS")"
-cfg_done
-out=$(pass)
-want "release done: that trunk red holds CI repairs, as before" "0" "$(grep -c '^102' "$SPAWNS")"
-cfg_on; fix_trunk green
-
-echo "--- the driver's repair: what it answers, and what it calls owed ---"
-cfg_on
-owed() { # → the repair's "nothing owed" verdict on the fixture PR, at a tree whose head is the PR's
-  local wt="$FIX/wt"; rm -rf "$wt"; git init -q "$wt"
-  git -C "$wt" -c user.name=f -c user.email=f@x commit -q --allow-empty -m base
-  git -C "$wt" branch -q -f develop HEAD
-  local h; h=$(git -C "$wt" rev-parse HEAD)
-  jq --arg h "$h" '.[0] | .headRefOid = $h' "$FIX/gh/prs-all.json" > "$FIX/gh/pr-view.json"
-  KIT="$HERE/.." FIX="$FIX" WT="$wt" bash -c '
-    . "$KIT/driver/driver-env.sh" >/dev/null 2>&1 || exit 9
-    . "$KIT/driver/steps/repair.sh" || exit 9
-    swarm_gh() { cat "$FIX/gh/pr-view.json"; }
-    _driver_repair_nothing_owed "$WT" develop 11 && echo "nothing owed"' 2>&1
-}
-jq -s . <(red_pr 11 101 aaaaaaaaa1 Lesson "Design critic") > "$FIX/gh/prs-all.json"
-want "red only on listed checks: nothing is owed" "nothing owed" "$(owed)"
-cfg_done
-want_in "release done: the same reds are owed, as before" 'red on the head: .*Design critic' "$(owed)"
-cfg_on
-jq -s . <(red_pr 11 101 aaaaaaaaa1 "Code gates" "Design critic") > "$FIX/gh/prs-all.json"
-want "red on Code gates: owed, on Code gates alone" "red on the head: Code gates" "$(owed)"
+want "red on Code gates as well: stuck, as before" "stuck" "$(state_of)"
 
 echo "--- the critic's findings are no step's blockers while its check warns ---"
 cat > "$FIX/findings.sh" <<'SH'

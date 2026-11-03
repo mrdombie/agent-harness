@@ -55,7 +55,7 @@ reset_fakes() { # <exit-code-plan…>  — plan is "step:codes" pairs
   : > "$RAN"; : > "$FIX/park.log"; rm -f "$FIX"/n.*
   fake_park
   local s
-  for s in start size plan build fix compare self-check review record ship reenter repair quick; do fake_step "$s" 0; done
+  for s in start size plan build fix compare self-check review record ship quick; do fake_step "$s" 0; done
   local pair
   for pair in "$@"; do fake_step "${pair%%:*}" "${pair#*:}"; done
 }
@@ -543,256 +543,31 @@ want "the first half of the command runs plan again" "plan" "$(tr '\n' ' ' < "$R
 out=$(bt 130); rc=$?
 want "and the second carries on from compare" "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 
-echo "--- --repair: the repair order, on the PR, with the brief on the record ---"
-REPAIR_ORDER="reenter repair fix self-check review record ship"
-reset_fakes
-printf 'REPAIR on PR #9: CI went red on: unit\n' > "$FIX/brief-a.md"
-out=$(bt 401 --repair "$FIX/brief-a.md"); rc=$?
-want "it finishes"                         "0" "$rc"
-want "the repair order ran, and nothing of the build's" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "the record is in repair mode"        "repair" "$(driver_state_get 401 mode)"
-want "the brief is kept on the record, verbatim" "REPAIR on PR #9: CI went red on: unit" "$(cat "$(driver_state_get 401 repair_brief)" 2>/dev/null)"
-rm -f "$FIX/brief-a.md"
-want "and outlives the spawner's file"     "REPAIR on PR #9: CI went red on: unit" "$(cat "$(driver_state_get 401 repair_brief)" 2>/dev/null)"
-
-echo "--- --repair refuses a brief it cannot read ---"
-reset_fakes
-out=$(bt 402 --repair "$FIX/no-such-brief.md"); rc=$?
-want "a missing brief is a config refusal" "2" "$rc"
-want_in "naming the file"                  'no-such-brief.md' "$out"
-want "and nothing ran"                     "" "$(cat "$RAN")"
-: > "$FIX/empty-brief.md"
-out=$(bt 402 --repair "$FIX/empty-brief.md"); rc=$?
-want "an empty one too"                    "2" "$rc"
-
-echo "--- the same brief resumes; a new brief is a new repair round ---"
-reset_fakes "repair:24 0"
-printf 'REPAIR on PR #9: it clashes with develop\n' > "$FIX/brief-b.md"
-bt 403 --repair "$FIX/brief-b.md" >/dev/null; rc=$?
-want "the first pass parks at repair"      "20" "$rc"
-: > "$RAN"
-bt 403 --repair "$FIX/brief-b.md" >/dev/null; rc=$?
-want "the same brief resumes and finishes" "0" "$rc"
-want "reenter re-checks, then it carries on from repair" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-# A finished repair leaves a review answer and counters behind. The next repair must
-# get its own review rounds and must not read the last one's findings.
-mkdir -p "$(driver_state_dir 403)/steps"; printf '{"verdict":"SHIP","findings":[]}\n' > "$(driver_state_dir 403)/steps/review.json"
-driver_state_bump 403 review; driver_state_bump 403 review; driver_state_set 403 repair_base deadbeef
-: > "$RAN"
-printf 'REPAIR on PR #9: CI went red on: e2e\n' > "$FIX/brief-c.md"
-bt 403 --repair "$FIX/brief-c.md" >/dev/null; rc=$?
-want "a new brief runs the whole repair order again" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "the last repair's review answer is archived, not read" "no" "$([ -f "$(driver_state_dir 403)/steps/review.json" ] && echo yes || echo no)"
-want "it is kept under steps/archive"      "1" "$(ls "$(driver_state_dir 403)"/steps/archive/*/review.json 2>/dev/null | grep -c .)"
-want "the review rounds start again"       "0" "$(driver_state_count 403 review)"
-want "the repair's starting head is cleared for reenter" "" "$(driver_state_get 403 repair_base)"
-want "the record carries the new brief"    "REPAIR on PR #9: CI went red on: e2e" "$(cat "$(driver_state_get 403 repair_brief)")"
-
-echo "--- a plain run is not in repair mode ---"
-reset_fakes
-bt 404 >/dev/null
-want "the record says build"               "build" "$(driver_state_get 404 mode)"
-
-echo "--- a rework in the repair order goes back to fix, not to a build step it lacks ---"
-reset_fakes "review:30 0"
-printf 'REPAIR on PR #9: red\n' > "$FIX/brief-d.md"
-out=$(bt 405 --repair "$FIX/brief-d.md"); rc=$?
-want "it finishes after the rework"        "0" "$rc"
-want "fix, self-check and review ran again" "reenter repair fix self-check review fix self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-
-echo "--- the real repair order, one whole pass: a red PR fixed onto its own branch ---"
-# The recorders above prove the order; this proves the wiring. The steps that ship,
-# a real origin, the real claim lock, a PR branch that is red, and transcripts
-# standing in only for the model. The agent's hands commit the fix in the tree
-# reenter cut, so nothing in this case knows that tree's path in advance.
-rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"; : > "$GH_LOG"; : > "$CLAUDE_LOG"
-SRC="$FIX/src210"; git clone -q -b develop "$FIX/origin" "$SRC"
-git -C "$SRC" checkout -q -b tkt-210/work
-printf '#!/usr/bin/env bash\ngrep -qx fixed "$(dirname "$0")/state.txt"\n' > "$SRC/check.sh"; printf 'broken\n' > "$SRC/state.txt"
-git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 210"
-git -C "$SRC" push -q origin tkt-210/work
-PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
-fix_issue 210 OPEN "status:in-review"
-jq -n '[{number:61, headRefName:"tkt-210/work", headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
-         statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-61"; printf '{"number":61,"isDraft":false,"body":"The PR as its author wrote it.\\n\\nCloses #210"}\n' > "$FIX/gh/pr-view.json"
-fix_brief repair superpowers:systematic-debugging
-cat > "$BIN/claude-hands" <<'SH'
-#!/usr/bin/env bash
-case " $* " in *" --name repair "*)
-  printf 'fixed\n' > state.txt; git add state.txt
-  git -c user.email=t@example.invalid -c user.name=T commit -qm "fix: the state" >/dev/null 2>&1 ;;
-esac
-exec "$BIN/claude" "$@"
-SH
-chmod +x "$BIN/claude-hands"
-fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"state.txt was never set","fixes":[{"what":"set it","proof":"gate","change":[{"path":"state.txt","action":"modify"}],"command":"bash check.sh","noTestBecause":"the fixture check is the test"}]}' \
-  superpowers:systematic-debugging
-printf 'REPAIR on PR #61 at %s: CI went red on: unit\n' "$PR_HEAD" > "$FIX/brief-210.md"
-out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 210 --repair "$FIX/brief-210.md" 2>&1); rc=$?
-printf '%s\n' "$out" | sed 's/^/    /'
-want "the real repair order finishes"      "0" "$rc"
-want "every repair step is recorded"       "reenter,repair,fix,self-check,review,record,ship" "$(driver_state_get 210 'done|join(",")')"
-want "the model ran for repair and review only" "repair review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
-want "the fix reached the PR's own branch on origin" "fixed" "$(git -C "$FIX/origin" show tkt-210/work:state.txt 2>/dev/null)"
-want "as a fast-forward of the PR's head"  "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor "$PR_HEAD" tkt-210/work && echo yes)"
-want_not_in "no new branch was cut"        'tkt-210/ticket-210' "$(git -C "$FIX/origin" branch --list 'tkt-210*')"
-want_not_in "no new pull request"          'pr create' "$(cat "$GH_LOG")"
-# Its words stay: only the proof it lacked is added under them, and the title is never touched.
-want_not_in "the PR's own words are kept"  'pr edit .*--title' "$(cat "$GH_LOG")"
-want "  any edit starts with them"         "0" "$(grep '^pr edit' "$GH_LOG" | grep -vc -- '--body The PR as its author wrote it\.' || true)"
-want_in "the repair is said on the PR"     'pr comment 61 .*state.txt was never set' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "and it is handed off"             'pr merge tkt-210/work .*--auto' "$(cat "$GH_LOG")"
-want "the trunk point it forked from is on the record" "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 210 claimed_at_sha)"
-rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a repeated brief after a shipped repair is a NEW round, not a silent no-op ---"
-# The empty-note brief and the merge lane's notes repeat word for word. Keyed on the
-# brief alone, the next clash on a repaired PR ran reenter, said "nothing left to
-# do", exited 0, left the queue, and the PR stayed red.
-reset_fakes
-pr_head() { jq -n --arg h "$1" '[{number:61, headRefName:"tkt-410/work", headRefOid:$h, isDraft:false, mergeStateStatus:"DIRTY"}]' > "$FIX/gh/prs.json"; }
-pr_head h1
-printf 'Merge lane: PR #61 left the lane — it clashes. Fix it on the PR branch.\n' > "$FIX/brief-e.md"
-bt 410 --repair "$FIX/brief-e.md" >/dev/null; rc=$?
-want "the first repair ships"                "0" "$rc"
-: > "$RAN"; pr_head h2
-out=$(bt 410 --repair "$FIX/brief-e.md"); rc=$?
-want "the same words after a ship run the whole order again" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want_not_in "and never claim there is nothing to do" 'nothing left to do' "$out"
-: > "$RAN"
-bt 410 --repair "$FIX/brief-e.md" >/dev/null
-want "even with the head unchanged, a shipped round is never resumed as done" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-
-echo "--- a parked repair whose PR head moved is a new round; an unmoved one resumes ---"
-reset_fakes "repair:24 0"
-jq -n '[{number:62, headRefName:"tkt-411/work", headRefOid:"p1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-printf 'REPAIR on PR #62: red\n' > "$FIX/brief-f.md"
-bt 411 --repair "$FIX/brief-f.md" >/dev/null
-: > "$RAN"; rm -f "$FIX"/n.*; fake_step repair 24 0
-bt 411 --repair "$FIX/brief-f.md" >/dev/null
-want "unmoved: it resumes at repair"         "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-: > "$RAN"
-printf '{"step":"repair","status":"park","question":"stale"}\n' > "$(driver_state_dir 411)/steps/repair.json"
-jq -n '[{number:62, headRefName:"tkt-411/work", headRefOid:"p2", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-bt 411 --repair "$FIX/brief-f.md" >/dev/null
-want "moved: a new round, the whole order"   "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "and the parked round's answers are archived" "no" "$([ -f "$(driver_state_dir 411)/steps/repair.json" ] && echo yes || echo no)"
-printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- end to end: a repair interrupted mid-conflict never ships its markers ---"
-# The chain review round 2 traced: the model call dies with the merge in progress,
-# the park commits it markers and all, the next pass sees no merge and the trunk
-# already in, calls nothing and ships the markers. Each link is closed; this walks
-# the whole chain with the real steps.
-rm -rf "$STATE/driver"; mkdir -p "$STATE/driver"; : > "$GH_LOG"; : > "$CLAUDE_LOG"
-SRC="$FIX/src212"; git clone -q -b develop "$FIX/origin" "$SRC"
-git -C "$SRC" checkout -q -b tkt-212/work
-printf 'ours\n' > "$SRC/clash212.txt"; git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: 212"
-git -C "$SRC" push -q origin tkt-212/work; PR_HEAD=$(git -C "$SRC" rev-parse HEAD)
-git -C "$SRC" checkout -q develop; printf 'theirs\n' > "$SRC/clash212.txt"; git -C "$SRC" add . && git -C "$SRC" -c user.email=t@example.invalid -c user.name=T commit -qm "trunk 212"
-git -C "$SRC" push -q origin develop
-fix_issue 212 OPEN "status:in-review"
-jq -n --arg h "$PR_HEAD" '[{number:63, headRefName:"tkt-212/work", headRefOid:$h, isDraft:false, mergeStateStatus:"DIRTY", statusCheckRollup:[]}]' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-63"; printf '{"number":63,"isDraft":false,"body":"As written."}\n' > "$FIX/gh/pr-view.json"
-cat > "$BIN/claude-hands" <<'SH'
-#!/usr/bin/env bash
-case " $* " in *" --name repair "*)
-  if [ -f "$FIX/hands-resolve" ]; then
-    printf 'theirs\nours\n' > clash212.txt; git add clash212.txt
-    git -c user.email=t@example.invalid -c user.name=T commit -q --no-edit >/dev/null 2>&1
-  fi ;;
-esac
-exec "$BIN/claude" "$@"
-SH
-chmod +x "$BIN/claude-hands"
-rm -f "$FIX/ai/repair.jsonl" "$FIX/hands-resolve"   # pass 1: the model call dies with no answer
-printf 'REPAIR on PR #63: it clashes with develop\n' > "$FIX/brief-212.md"
-out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
-WT212=$(driver_state_get 212 worktree); fixture_path WT212 "$FIX"
-# A call that dies with no transcript is the machine, retried once and then parked as such.
-want "pass 1 parks, as the machine"          "33" "$rc"
-want "the park committed nothing"            "$PR_HEAD" "$(git -C "$WT212" rev-parse HEAD)"
-want "the merge is left in progress"         "yes" "$([ -f "$(git -C "$WT212" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"
-want "origin still has the PR's head"        "$PR_HEAD" "$(git -C "$FIX/origin" rev-parse tkt-212/work)"
-: > "$FIX/hands-resolve"
-fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"develop and the PR both wrote clash212.txt","conflicts":[{"file":"clash212.txt","resolution":"both lines kept"}],"fixes":[{"what":"resolved the merge","proof":"gate","change":[{"path":"clash212.txt","action":"modify"}],"command":"true","noTestBecause":"a merge resolution that only needed both lines"}]}' \
-  superpowers:systematic-debugging
-: > "$CLAUDE_LOG"
-out=$(DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "$BT" 212 --repair "$FIX/brief-212.md" 2>&1); rc=$?
-printf '%s\n' "$out" | sed 's/^/    /'
-want "pass 2 resumes the merge and ships"    "0" "$rc"
-want "the model was handed the merge again"  "repair review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
-want "what reached origin is resolved"       "theirs ours" "$(git -C "$FIX/origin" show tkt-212/work:clash212.txt 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
-want_not_in "and carries no marker"          '<<<<<<<|>>>>>>>' "$(git -C "$FIX/origin" show tkt-212/work:clash212.txt 2>/dev/null)"
-want "the trunk is in the PR's branch"       "yes" "$(git -C "$FIX/origin" merge-base --is-ancestor develop tkt-212/work && echo yes)"
-rm -f "$FIX/gh/pr-view.json" "$FIX/hands-resolve"; printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- --repair-class: a healing run with no note still repairs, never rebuilds ---"
-reset_fakes
-bt 420 --repair-class approved-merge >/dev/null; rc=$?
-want "it finishes"                           "0" "$rc"
-want "the repair order ran"                  "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want_in "its brief names the class"          'approved-merge' "$(cat "$(driver_state_get 420 repair_brief)" 2>/dev/null)"
-want "and says it came from no caller"       "class" "$(driver_state_get 420 repair_brief_source)"
-out=$(bt 421 --repair-class nonsense); rc=$?
-want "an unknown class refuses"              "2" "$rc"
-
-echo "--- --brief: a repair when the ticket has an open PR, a build with the note when not ---"
-reset_fakes
-jq -n '[{number:64, headRefName:"tkt-422/work", headRefOid:"b1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-printf 'The owner answered q2: keep the old copy.\n' > "$FIX/brief-g.md"
-bt 422 --brief "$FIX/brief-g.md" >/dev/null; rc=$?
-want "with an open PR it finishes"           "0" "$rc"
-want "as a repair"                           "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "the brief is the caller's"             "caller" "$(driver_state_get 422 repair_brief_source)"
-want "verbatim"                              "The owner answered q2: keep the old copy." "$(cat "$(driver_state_get 422 repair_brief)")"
+echo "--- --brief: a build with the note, PR or no PR; there is no repair route ---"
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
+printf 'The owner answered q2: keep the old copy.\n' > "$FIX/brief-g.md"
 bt 423 --brief "$FIX/brief-g.md" >/dev/null; rc=$?
 want "with no PR it finishes"                "0" "$rc"
 want "as a build, every step of it"          "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want "the record says build"                 "build" "$(driver_state_get 423 mode)"
 want "and keeps the note for every step"     "The owner answered q2: keep the old copy." "$(cat "$(driver_state_get 423 run_brief)" 2>/dev/null)"
-reset_fakes; echo "open-prs" > "$FIX/gh-fail"
-out=$(bt 424 --brief "$FIX/brief-g.md"); rc=$?
-rm -f "$FIX/gh-fail"
-want "an unreadable PR list refuses"         "2" "$rc"
-want_in "naming why"                         'could not ask' "$out"
-want "and nothing ran"                       "" "$(cat "$RAN")"
 reset_fakes
-bt 425 --repair "$FIX/brief-g.md" >/dev/null
-want "a --repair brief is the caller's"      "caller" "$(driver_state_get 425 repair_brief_source)"
+jq -n '[{number:64, headRefName:"tkt-422/work", headRefOid:"b1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
+bt 422 --brief "$FIX/brief-g.md" >/dev/null; rc=$?
+want "with an open PR it is still the build order (start finds the PR)" "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+printf '[]\n' > "$FIX/gh/prs.json"
+for f in --repair --repair-class --adopt; do
+  rc=0; bt 425 "$f" "$FIX/brief-g.md" >/dev/null || rc=$?
+  want "$f is no flag any more"              "2" "$rc"
+done
 
-echo "--- a run's brief expires: a new repair round does not inherit a build's ---"
-reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
-printf 'The owner answered q6: no.\n' > "$FIX/brief-h.md"
-bt 426 --brief "$FIX/brief-h.md" >/dev/null
-printf 'REPAIR on PR #65: red\n' > "$FIX/brief-i.md"
-bt 426 --repair "$FIX/brief-i.md" >/dev/null
-want "the new repair round cleared it"      "" "$(driver_state_get 426 run_brief)"
-
-echo "--- a --brief whose lookup keeps failing is retried, then put back on the queue with its note ---"
-# The coordinator took the queue entry off when it spawned; an exit 2 here with the
-# brief gone would lose an owner's answer.
-reset_fakes; echo "open-prs" > "$FIX/gh-fail"; : > "$GH_LOG"
-printf 'The owner answered q7: two columns.\n' > "$FIX/brief-j.md"
-out=$(DRIVER_LOOKUP_RETRY_SEC=0 bt 427 --brief "$FIX/brief-j.md"); rc=$?
-rm -f "$FIX/gh-fail"
-want "it still refuses"                      "2" "$rc"
-want "after asking three times"              "3" "$(grep -c 'OpenPullRequests' "$GH_LOG")"
-want "the ticket is back on the queue"       "427" "$(jq -r '.tickets[]? | select(.n == 427) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
-want "with its note"                         "The owner answered q7: two columns." "$(jq -r '.tickets[]? | select(.n == 427) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
-want_in "and it says so"                     'back on the queue' "$out"
-reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
-echo "open-prs" > "$FIX/gh-once"
-cat > "$BIN/gh-flaky" <<'SH'
-#!/usr/bin/env bash
-if [ -f "$FIX/gh-once" ] && case "$*" in *OpenPullRequests*) true ;; *) false ;; esac; then rm -f "$FIX/gh-once"; echo "flake" >&2; exit 1; fi
-exec "$BIN/gh" "$@"
-SH
-chmod +x "$BIN/gh-flaky"
-SWARM_GH="$BIN/gh-flaky" DRIVER_LOOKUP_RETRY_SEC=0 bt 428 --brief "$FIX/brief-j.md" >/dev/null; rc=$?
-want "one failed lookup, then an answer: it runs" "0" "$rc"
+echo "--- start finding an open PR ends the run: exit 31, no park, no requeue, nothing after it ---"
+reset_fakes "start:31"; rm -rf "$STATE/coordinator"
+out=$(bt 426 --brief "$FIX/brief-g.md"); rc=$?
+want "it exits has-a-PR"                     "31" "$rc"
+want "only start ran"                        "start" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "nothing parks"                         "" "$(cat "$FIX/park.log")"
+want "nothing went back on the queue"        "" "$(jq -r '.tickets[]? | select(.n == 426) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
 echo "--- a brief over 4 KB is cut, says so, and keeps the whole of it beside ---"
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
@@ -803,11 +578,11 @@ want "what the steps read is capped"         "yes" "$([ "$(wc -c < "$RB")" -lt 4
 want_in "with a notice a reader sees"        'brief was 6000 bytes' "$(cat "$RB")"
 want "and the whole brief is kept"           "6000" "$(wc -c < "${RB%.md}.full.md" 2>/dev/null | tr -d ' ')"
 
-echo "--- an answered BUILD park resumes the build, PR or no PR — never a repair ---"
+echo "--- an answered BUILD park resumes the build, PR or no PR (agent-harness#675) ---"
 # A person-cause park during a build opens a draft PR. The answer comes back with a
-# brief (or as a repair class, when the requeue saw the PR). Routed on the PR it ran
-# reenter·repair·…·ship and skipped compare (only a person sanctions a deviation) and
-# the build's own proof, then readied and armed the PR. The record decides.
+# brief. Routed on the PR it once ran a repair order and skipped compare (only a person
+# sanctions a deviation) and the build's own proof, then readied and armed the PR. The
+# record decides.
 BUILD_TAIL="start compare self-check review record ship"
 park_at_compare() { # <ticket> — a build parked at compare, with the draft PR its park opened
   reset_fakes "compare:20 0"
@@ -821,16 +596,11 @@ want "fixture: the build parked at compare"  "start,size,plan,build,fix" "$(driv
 out=$(bt 501 --brief "$FIX/brief-k.md"); rc=$?
 want "--brief: it finishes"                  "0" "$rc"
 want "--brief: the build resumes at compare, ship only after it" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want_not_in "--brief: no reenter, no repair" 'reenter|repair' "$(cat "$RAN")"
 want "--brief: the record stays a build"     "build" "$(driver_state_get 501 mode)"
 want "--brief: with the answer for every step" "The owner answered q8: the deviation is approved." "$(cat "$(driver_state_get 501 run_brief)" 2>/dev/null)"
 park_at_compare 502
-bt 502 --repair-class repair >/dev/null
-want "--repair-class: the build resumes at compare" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-park_at_compare 503
-bt 503 --repair "$FIX/brief-k.md" >/dev/null
-want "--repair: the build resumes at compare" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "--repair: the brief becomes the build's" "The owner answered q8: the deviation is approved." "$(cat "$(driver_state_get 503 run_brief)" 2>/dev/null)"
+bt 502 >/dev/null
+want "no brief: the build resumes at compare" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 reset_fakes "compare:20"
 bt 504 >/dev/null
 jq -n '[{number:71, headRefName:"tkt-504/work", headRefOid:"d2", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"; : > "$RAN"
@@ -838,102 +608,34 @@ bt 504 --brief "$FIX/brief-k.md" >/dev/null; rc=$?
 want "compare still refusing: it parks again" "20" "$rc"
 want_not_in "and ship never runs"            'ship' "$(cat "$RAN")"
 
-echo "--- a SHIPPED build's PR still goes to repair ---"
-reset_fakes; bt 505 >/dev/null
-jq -n '[{number:72, headRefName:"tkt-505/work", headRefOid:"s1", isDraft:false, mergeStateStatus:"DIRTY"}]' > "$FIX/gh/prs.json"; : > "$RAN"
-bt 505 --brief "$FIX/brief-k.md" >/dev/null
-want "a shipped build with a PR: the repair order" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a stale record does not outrank the live PR: a fresh repair round from origin ---"
+echo "--- a stale record does not outrank the live PR: it is set aside and the old build is not resumed ---"
 # The record outranks the PR only while it is that PR's: the same branch, still the
 # draft its park opened, its head inside the record's work. A person or /claim moved
 # on, and resuming the old build would rebuild over their work.
 park_at_compare 511
 jq -n '[{number:73, headRefName:"tkt-511/work", headRefOid:"d1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-out=$(bt 511 --repair-class repair); rc=$?
-want "a PR made ready since: the repair order" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+out=$(bt 511 --brief "$FIX/brief-k.md"); rc=$?
+want "a PR made ready since: a fresh walk, not the old build's tail" "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_in "and it says the record is stale"      'record is stale.*ready' "$out"
 want "the old record is kept aside"            "1" "$(ls -d "$STATE/driver/511.stale-"* 2>/dev/null | wc -l | tr -d ' ')"
 park_at_compare 512
 driver_state_set 512 branch tkt-512/work
 jq -n '[{number:74, headRefName:"tkt-512-other", headRefOid:"d1", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-out=$(bt 512 --repair-class repair); rc=$?
+out=$(bt 512 --brief "$FIX/brief-k.md"); rc=$?
 want_in "a PR on another branch: stale"        'record is stale.*tkt-512/work.*tkt-512-other' "$out"
 park_at_compare 513
 git -C "$REPO" commit -q --allow-empty -m "somebody else's commit"
 moved=$(git -C "$REPO" rev-parse HEAD); git -C "$REPO" reset -q --hard HEAD~1
 driver_state_set 513 worktree "$REPO"
 jq -n --arg h "$moved" '[{number:75, headRefName:"tkt-513/work", headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-out=$(bt 513 --repair-class repair); rc=$?
+out=$(bt 513 --brief "$FIX/brief-k.md"); rc=$?
 want_in "a PR head the record never saw: stale" 'record is stale.*moved since' "$out"
 park_at_compare 514
 driver_state_set 514 worktree "$REPO"
 jq -n --arg h "$(git -C "$REPO" rev-parse HEAD)" '[{number:76, headRefName:"tkt-514/work", headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-out=$(bt 514 --repair-class repair); rc=$?
+out=$(bt 514 --brief "$FIX/brief-k.md"); rc=$?
 want "the record's own draft at its own head: the build resumes" "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
 want_not_in "and is not called stale"          'stale' "$out"
-
-echo "--- a draft PR the driver never built is adopted, never repaired and never sent to prose ---"
-reset_fakes; rm -rf "$STATE/coordinator"
-jq -n '[{number:77, headRefName:"tkt-515-x", headRefOid:"p1", isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-printf 'Coordinator note (repair): REPAIR on PR #77: red\n' > "$FIX/brief-m.md"
-out=$(bt 515 --repair "$FIX/brief-m.md"); rc=$?
-want "a repair sent to it finishes as an adoption" "0" "$rc"
-want "the adoption walks the repair order, gates and review before ship" "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want_in "and says it adopts"                   'adopting it' "$out"
-want "the record is marked adopted"            "0" "$(driver_adopted 515; echo $?)"
-want "its brief source is adopt"               "adopt" "$(driver_state_get 515 repair_brief_source)"
-want_in "the adoption brief names the draft"   '^Adopted: #515 .*draft the driver did not build' "$(cat "$(driver_state_get 515 repair_brief)")"
-want_in "and carries the coordinator's note, unwrapped" 'REPAIR on PR #77: red' "$(cat "$(driver_state_get 515 repair_brief)")"
-want "nothing went back on the queue for prose" "" "$(jq -r '.tickets[]? | select(.n == 515) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
-reset_fakes; rm -rf "$STATE/coordinator"
-out=$(bt 515 --repair-class repair); rc=$?
-want "a class run on it is adopted too"        "0" "$rc"
-want "on the repair order"                     "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "and marked adopted"                      "0" "$(driver_adopted 515; echo $?)"
-reset_fakes
-out=$(bt 515 --adopt); rc=$?
-want "--adopt with no brief finishes"          "0" "$rc"
-want "and walks the repair order"              "$REPAIR_ORDER" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-_ab1=$(cat "$(driver_state_get 515 repair_brief)")
-: > "$RAN"; out=$(bt 515 --adopt); rc=$?
-want "a second --adopt on the same draft resumes on the same brief" "$_ab1" "$(cat "$(driver_state_get 515 repair_brief)")"
-echo "--- an adoption is per run: a later repair of the PR it shipped is a plain repair ---"
-reset_fakes
-jq -n '[{number:77, headRefName:"tkt-515-x", headRefOid:"p2", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-bt 515 --adopt >/dev/null
-printf 'REPAIR on PR #77: red again\n' > "$FIX/brief-m2.md"
-bt 515 --repair "$FIX/brief-m2.md" >/dev/null
-want "the record is no longer adopted"         "1" "$(driver_adopted 515; echo $?)"
-want "the brief is the caller's"               "caller" "$(driver_state_get 515 repair_brief_source)"
-echo "--- --adopt on a ticket whose record holds the driver's own unshipped build resumes that build ---"
-park_at_compare 516
-driver_state_set 516 worktree "$REPO"
-jq -n --arg h "$(git -C "$REPO" rev-parse HEAD)" '[{number:78, headRefName:"tkt-516/work", headRefOid:$h, isDraft:true, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-out=$(bt 516 --adopt); rc=$?
-want "the build resumes, not an adoption"      "$BUILD_TAIL" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "and the record is not adopted"           "1" "$(driver_adopted 516; echo $?)"
-printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a new repair round starts its red counters at zero ---"
-reset_fakes
-jq -n '[{number:79, headRefName:"tkt-518/work", headRefOid:"r1", isDraft:false, mergeStateStatus:"CLEAN"}]' > "$FIX/gh/prs.json"
-printf 'REPAIR on PR #79: red\n' > "$FIX/brief-o.md"
-bt 518 --repair "$FIX/brief-o.md" >/dev/null
-driver_state_bump 518 selfcheck_red; driver_state_bump 518 push_red
-printf 'REPAIR on PR #79: red again\n' > "$FIX/brief-p.md"
-bt 518 --repair "$FIX/brief-p.md" >/dev/null
-want "the self-check red count is the round's" "0" "$(driver_state_count 518 selfcheck_red)"
-want "and so is the refused-push count"        "0" "$(driver_state_count 518 push_red)"
-printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a brief put back on the queue is not wrapped twice ---"
-reset_fakes; rm -rf "$STATE/coordinator"; echo "open-prs" > "$FIX/gh-fail"
-printf 'Coordinator note (new): The owner answered q9: yes.\n' > "$FIX/brief-n.md"
-DRIVER_LOOKUP_RETRY_SEC=0 bt 516 --brief "$FIX/brief-n.md" >/dev/null
-rm -f "$FIX/gh-fail"
-want "the note is the caller's words alone"    "The owner answered q9: yes." "$(jq -r '.tickets[]? | select(.n == 516) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
 echo "--- the open PRs come from the shared copy while it is young ---"
 reset_fakes; jq -n '[{number:78, headRefName:"tkt-517-x", isDraft:false}]' > "$FIX/gh/prs.json"; : > "$GH_LOG"; rm -f "$STATE/swarm/prs.json"
@@ -995,29 +697,29 @@ want "it stops as unread"                      "26" "$rc"
 want_not_in "and nothing is labelled parked"   'status:parked' "$(cat "$GH_LOG")"
 want_not_in "or opened as a draft"             '^pr create' "$(cat "$GH_LOG")"
 want_in "and it says the next tick tries again" 'next tick' "$out"
-reset_fakes "reenter:26"; rm -rf "$STATE/coordinator"
-printf 'REPAIR on PR #80: red\n' > "$FIX/brief-u.md"
-bt 151 --repair "$FIX/brief-u.md" >/dev/null; rc=$?
-want "a repair that cannot read its PR stops as unread" "26" "$rc"
+reset_fakes "start:26"; rm -rf "$STATE/coordinator"
+printf 'Resume: PR #80 is red\n' > "$FIX/brief-u.md"
+bt 151 --brief "$FIX/brief-u.md" >/dev/null; rc=$?
+want "a run that cannot read GitHub at start stops as unread" "26" "$rc"
 want "without parking"                         "" "$(cat "$FIX/park.log")"
-want "and its brief is back on the queue"      "REPAIR on PR #80: red" "$(jq -r '.tickets[]? | select(.n == 151) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "and its brief is back on the queue"      "Resume: PR #80 is red" "$(jq -r '.tickets[]? | select(.n == 151) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
 echo "--- a claim another run holds is busy: requeued, never parked, and left alone ---"
-# #13139 and #13146 (2026-10-19) parked as "reenter left no reason on the record":
+# #13139 and #13146 (2026-10-19) parked as "the first step left no reason on the record":
 # another run on this host held the claim. That clears when the holder ends.
-reset_fakes "reenter:29"; rm -rf "$STATE/coordinator"
+reset_fakes "start:29"; rm -rf "$STATE/coordinator"
 CLK="$HERE/../../scripts/claim-lock.sh"
 bash "$CLK" acquire 152 --branch tkt-152/theirs --worktree "$FIX/theirs-152" >/dev/null 2>&1
-printf 'REPAIR on PR #81: red\n' > "$FIX/brief-v.md"
-out=$(bt 152 --repair "$FIX/brief-v.md"); rc=$?
+printf 'Resume: PR #81 is red\n' > "$FIX/brief-v.md"
+out=$(bt 152 --brief "$FIX/brief-v.md"); rc=$?
 want "it ends as a requeue"                    "28" "$rc"
 want "without parking"                         "" "$(cat "$FIX/park.log")"
 want_in "saying it is not parked"              'requeued.*not parked' "$out"
-want "and its brief is back on the queue"      "REPAIR on PR #81: red" "$(jq -r '.tickets[]? | select(.n == 152) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
+want "and its brief is back on the queue"      "Resume: PR #81 is red" "$(jq -r '.tickets[]? | select(.n == 152) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 want "the holder's claim is not released"      "$FIX/theirs-152" "$(bash "$CLK" show 152 2>/dev/null | jq -r '.worktree // ""')"
-DRIVER_MAX_BUSY_REQUEUES=1 bt 152 --repair "$FIX/brief-v.md" >/dev/null; rc=$?
+DRIVER_MAX_BUSY_REQUEUES=1 bt 152 --brief "$FIX/brief-v.md" >/dev/null; rc=$?
 want "past its cap it parks"                   "20" "$rc"
-want_in "saying how many runs it waited"       'reenter could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
+want_in "saying how many runs it waited"       'start could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
 bash "$CLK" release 152 --force >/dev/null 2>&1
 
 echo "--- a question about a claim another run holds is a requeue, not a PM park (#319) ---"
@@ -1046,47 +748,6 @@ claim_q_case 154 "which repo does this belong in?" pm
 bt 154 >/dev/null; rc=$?
 want "a real PM question still parks"              "20" "$rc"
 want_in "as the PM's"                              'asked a question rather than guessing \| which repo does this belong in\? \| cause=pm' "$(cat "$FIX/park.log")"
-
-echo "--- a repair that meets another run's claim is requeued with that claim kept (#319) ---"
-reset_fakes; rm -rf "$STATE/coordinator"
-{ echo '#!/usr/bin/env bash'
-  echo 'driver_step_repair() { printf "%s\n" repair >> "$RAN"; driver_state_set "$1" claim_elsewhere 1; driver_state_set "$1" park_note "another run on this host holds the claim on #$1"; return "$DRIVER_E_BUSY"; }'
-} > "$FAKE/repair.sh"
-bash "$CLK" acquire 155 --branch tkt-155/theirs --worktree "$FIX/theirs-155" --pid $$ >/dev/null 2>&1
-printf 'REPAIR on PR #82: red\n' > "$FIX/brief-w.md"
-out=$(bt 155 --repair "$FIX/brief-w.md"); rc=$?
-want "it ends as a requeue"                        "28" "$rc"
-want "without parking"                             "" "$(cat "$FIX/park.log")"
-want "the holder's claim is not released"          "$FIX/theirs-155" "$(bash "$CLK" show 155 2>/dev/null | jq -r '.worktree // ""')"
-want "the keep-claim note is read once and cleared" "" "$(driver_state_get 155 claim_elsewhere)"
-bash "$CLK" release 155 --force >/dev/null 2>&1
-
-echo "--- a repair with nothing to repair ends the run clean: no park, no later step (#358) ---"
-# The repair step returns 32 only when it has read the PR afresh and found it up to date,
-# mergeable, with nothing red and auto-merge armed. Nothing after it has work to do.
-reset_fakes "repair:32"; rm -rf "$STATE/coordinator"; : > "$GH_LOG"
-printf 'REPAIR on PR #83: the clash\n' > "$FIX/brief-x.md"
-out=$(bt 156 --repair "$FIX/brief-x.md"); rc=$?
-want "it exits 0"                                  "0" "$rc"
-want "no step after the repair runs"               "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "nothing parks"                               "" "$(cat "$FIX/park.log")"
-want_not_in "no owner or PM label goes on"         'owner-decision|pm-decision|status:parked|needs:human' "$(cat "$GH_LOG")"
-want_in "it says there was nothing to repair"      'nothing to repair' "$out"
-: > "$RAN"
-out=$(bt 156 --repair "$FIX/brief-x.md"); rc=$?
-want "the same brief again is a fresh round, read afresh, never a resumed ship" "0" "$rc"
-want "so the repair checks again and nothing else runs" "reenter repair" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
-want "and still nothing parks"                     "" "$(cat "$FIX/park.log")"
-
-echo "--- a repair whose PR merged under it ends clean at ship, saying so ---"
-reset_fakes "ship:32"; rm -rf "$STATE/coordinator"; : > "$GH_LOG"
-driver_state_init 157; driver_state_set 157 noop_note "PR #84 merged at 2026-10-21T07:14:34Z while it was being repaired; nothing left to do"
-printf 'REPAIR on PR #84: red\n' > "$FIX/brief-y.md"
-out=$(bt 157 --repair "$FIX/brief-y.md"); rc=$?
-want "it exits 0"                                  "0" "$rc"
-want "nothing parks"                               "" "$(cat "$FIX/park.log")"
-want_in "it says the PR merged"                    'merged at 2026-10-21T07:14:34Z while it was being repaired' "$out"
-want_not_in "not that the ticket stays in review"  'stays in review' "$out"
 
 echo "--- a step asking whether to re-run a subagent that had not reported is the machine's park ---"
 # The sibling of review's own retry: any step's "the subagent had not reported, run again?"

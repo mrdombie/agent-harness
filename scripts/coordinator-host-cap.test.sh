@@ -18,8 +18,7 @@ swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 
 for s in reconcile sweep notify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
-printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock" COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_NOTIFY_CMD="$BIN/notify" COORDINATOR_HOUSEKEEPING_CMD="$BIN/sweep" COORDINATOR_HOUSEKEEPING=inline
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 SWARM_FREE_MEM_GB=64 SWARM_IDLE=90 SWARM_CORES=32 TEST_PID=$$
 # The stand-in builds began on 2026-10-01 under this shell's pid, which started today:
@@ -70,7 +69,7 @@ NOWE=$(date +%s)
 M="$FIX/m-vm"
 sheet() { # [perHost]
   { printf 'The order every machine builds in.\n\n<!-- sheet:v1 updated=%s owner=mac -->\n```json\n' "$NOWE"
-    printf '%s\n' '[{"n":13621,"class":"new","prin":1,"process":true},{"n":13788,"class":"new","prin":2,"process":true},{"n":13625,"class":"repair","prin":1},{"n":13044,"class":"repair","prin":2},{"n":13447,"class":"repair","prin":2}]'
+    printf '%s\n' '[{"n":13621,"class":"new","prin":1,"process":true},{"n":13788,"class":"new","prin":2,"process":true},{"n":13625,"class":"new","prin":1},{"n":13044,"class":"new","prin":2},{"n":13447,"class":"new","prin":2}]'
     printf '```\n'
     [ -z "${1:-}" ] || printf '<!-- sheet:cap {"perHost":%s} -->\n' "$1"; } > "$SH/body"
 }
@@ -85,9 +84,8 @@ world() { # <builds already live on this host>
     fix_issue $((14000+i)) OPEN "status:in-progress,P2"
   done
   fix_issue 13621 OPEN "status:ready,P1,process"; fix_issue 13788 OPEN "status:ready,P2,process"
-  fix_issue 13625 OPEN "status:in-review,P1"; fix_issue 13044 OPEN "status:in-review,P2"; fix_issue 13447 OPEN "status:in-review,P2"
-  jq -n '[13625, 13044, 13447 | {number: (. + 100000), headRefName: "tkt-\(.)-fix", headRefOid: "r\(.)", isDraft: false,
-          mergeStateStatus: "DIRTY", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
+  fix_issue 13625 OPEN "status:ready,P1"; fix_issue 13044 OPEN "status:ready,P2"; fix_issue 13447 OPEN "status:ready,P2"
+  printf '[]\n' > "$FIX/gh/prs-all.json"
 }
 vm_tick() { # one live tick on the VM, a reader of mac's sheet, its env saying COORDINATOR_CAP=16
   HARNESS_STATE_DIR="$M" COORDINATOR_HOST=Yomato COORDINATOR_SHEET_OWNER=mac COORDINATOR_PACE=0 \

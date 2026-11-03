@@ -29,10 +29,9 @@ EVERY_REPORT="${SWARM_EVERY_REPORT:-60}"
 TICK="${SWARM_SUPERVISOR_TICK:-15}"
 # A second machine joining a swarm another machine already runs takes a SHARE of
 # it, not all of it. The cap is enforced per machine, so two schedulers on one
-# programme run six agents; and repair-watch's once-per-head-commit record is per
-# machine, so two watchers repair one red PR twice.
+# programme run six agents.
 #   SWARM_PROGRAMMES   space-separated programmes this machine schedules (default: every one)
-#   SWARM_REPAIR_ONLY  one repair-watch section (repair|unblock|infra|alarm); `infra`
+#   SWARM_REPAIR_ONLY  one repair-watch section (warn|unblock|infra|alarm); `infra`
 #                      restarts only this machine's own dead runs
 PROGRAMMES="${SWARM_PROGRAMMES:-}"
 REPAIR_ONLY="${SWARM_REPAIR_ONLY:-}"

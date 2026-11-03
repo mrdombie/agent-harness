@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # resume-in-review.test.sh — a build of the driver's own that parked keeps its work on a
-# draft PR. The coordinator spawns it as a repair, which marks the ticket in review, and
+# draft PR. The answer that resumes it marks the ticket in review, and
 # build-ticket resumes the build. start then refused "not status:ready", parked, the label
 # went back to ready, and the coordinator spawned it again — for ever (#13580, #17907 on
 # 2026-11-03). start reads that in-review as the build's own only on that resume, with its
@@ -36,7 +36,7 @@ chmod +x "$BIN/claim-lock"; export CL="$BIN/claim-lock" CLAIMS
 
 # parked_build <ticket> [pr-branch] — the record a build parked at review leaves: its tree
 # and branch, start..fix done and no ship; its draft PR open (on its own branch unless
-# told otherwise); the ticket in review, as the coordinator's repair spawn marks it.
+# told otherwise); the ticket in review, as a resume marks it.
 parked_build() {
   local t="$1" b="tkt-$1/work"
   git -C "$REPO" worktree add -q "$FIX/wt$t" -b "$b" develop
@@ -81,23 +81,23 @@ kit_copy() { rm -rf "$KIT"; mkdir -p "$KIT"; cp -R "$ROOT/driver" "$ROOT/scripts
 fakes() {
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; : > "$FIX/park.log"
   local s
-  for s in size plan build fix compare self-check review record ship reenter repair quick; do
+  for s in size plan build fix compare self-check review record ship quick; do
     printf '#!/usr/bin/env bash\ndriver_step_%s() { printf "%%s\\n" %s >> "$RAN"; return 0; }\n' "${s//-/_}" "$s" > "$FAKE/$s.sh"
   done
   printf '#!/usr/bin/env bash\n. "%s/driver/steps/start.sh"\nCL="%s"\n' "$KIT" "$BIN/claim-lock" > "$FAKE/start.sh"
   printf '#!/usr/bin/env bash\ndriver_park() { printf "PARK %%s | %%s\\n" "$2" "${3:-}" >> "$FIX/park.log"; return 20; }\n' > "$FAKE/park.sh"
 }
 N=310
-case_loop() { # the coordinator's repair spawn on a build parked at review
+case_loop() { # the coordinator's resume of a build parked at review, with a brief
   N=$((N + 1)); fakes; parked_build "$N"
   printf 'Finish PR #90: it is a draft nothing is building.\n' > "$FIX/brief-$N.md"
   local rc=0
-  DRIVER_STEPS_DIR="$FAKE" bash "$KIT/driver/build-ticket" "$N" --repair "$FIX/brief-$N.md" >"$FIX/out-$N" 2>&1 || rc=$?
+  DRIVER_STEPS_DIR="$FAKE" bash "$KIT/driver/build-ticket" "$N" --brief "$FIX/brief-$N.md" >"$FIX/out-$N" 2>&1 || rc=$?
   R="rc=$rc ran=$(tr '\n' ' ' < "$RAN" | sed 's/ $//') park=$(grep -c 'not status:ready' "$FIX/park.log")"
 }
 kit_copy
 case_loop; want "the unplanted kit: the build resumes past start to ship" "rc=0 ran=review record ship park=0" "$R"
-want_in "  and says it resumes the build, not a repair" 'resuming the build with this brief' "$(cat "$FIX/out-$N")"
+want_in "  and says it resumes the build" 'resuming the build with this brief' "$(cat "$FIX/out-$N")"
 M=330
 case_inherited() { # a record with nothing done (no unshipped build), the variable set from outside
   M=$((M + 1)); fakes; parked_build "$M"

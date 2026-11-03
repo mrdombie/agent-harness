@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check-driver-only-spawn.sh — no unattended build runs the prose claim. Every build,
-# repairs included, goes step by step through driver/build-ticket (the owner,
+# briefed runs included, goes step by step through driver/build-ticket (the owner,
 # 2026-10-22); the prose claim survives only for a person at a terminal (--fg) and for
 # a project that sets swarm.builder "prose" on purpose.
 #

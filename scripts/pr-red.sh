@@ -61,14 +61,15 @@ _PR_RED_CHECKS_JQ='
     def running: ((.status // "COMPLETED") != "COMPLETED") or ((.state // "") | test("^(PENDING|EXPECTED|QUEUED|IN_PROGRESS)$"));
     def required_checks:
       [ ($p.statusCheckRollup // [])[] | select(type == "object")
-        | {name: (.name // .context // ""), run: (if running then 1 else 0 end), at: stamp,
+        | {name: (.name // .context // ""), wf: (((.workflowName // "") + " / " + (.name // "")) | ascii_downcase),
+           run: (if running then 1 else 0 end), at: stamp,
            job: (if has("status") or .__typename == "CheckRun" then 1 else 0 end),
            rid: ([(.detailsUrl // .targetUrl // "") | capture("/actions/runs/(?<r>[0-9]+)")? | .r] | first // ""),
            state: (if running then "IN_PROGRESS" else (.conclusion // .state // "") end)} ]
       | group_by(.name) | map(max_by([.run, .at]))
-      | map(select((.name | ascii_downcase) as $n
+      | map(select((.name | ascii_downcase) as $n | .wf as $w
                    | any($r[]; . == $n)
-                     and (($hold != "" and ($n | contains($hold | ascii_downcase))) or any($nb[]; . == $n) | not)));'
+                     and (($hold != "" and ($n | contains($hold | ascii_downcase))) or any($nb[]; . == $n or . == $w) | not)));'
 
 # pr_red_failed <pr-json> [hold] [nb-json] [also-required-json] — the required checks that
 # concluded FAILURE or ERROR, by their newest run: one "name \t run-id" line each (the run id

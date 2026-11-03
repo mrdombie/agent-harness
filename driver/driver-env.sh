@@ -134,11 +134,10 @@ DRIVER_E_USAGE=27     # a model step hit the plan's usage limit
 DRIVER_E_REQUEUE=28   # build-ticket's own exit: back on the queue, no label, no park
 DRIVER_E_BUSY=29      # another run on this host holds the ticket's claim
 DRIVER_E_REWORK=30
-DRIVER_E_TO_REPAIR=31 # start found the ticket's open PR: this run becomes a repair of it
-DRIVER_E_NOOP=32      # the step read the PR afresh and nothing is owed: the run ends clean, exit 0
+DRIVER_E_HAS_PR=31    # start found an open PR this run did not build: nothing is built beside it, no park (34 is retired)
+DRIVER_E_NOOP=32      # a step found nothing owed (a ticket split before it built): the run ends clean, exit 0
 DRIVER_E_MACHINE=33   # a model call failed with an API error, twice: the machine, never a question
-DRIVER_E_BASE_WAIT=34 # every red is in tests outside the PR that fail on the base too: waits for the base
-DRIVER_E_UPSIZE=35    # the quick change is bigger than its size: the run goes on along the full route, from plan
+DRIVER_E_UPSIZE=35   # the quick change is bigger than its size: the run goes on along the full route, from plan
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
 # growing pause. One failed read parked a ticket for good on 2026-10-18.
@@ -831,7 +830,7 @@ driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "
 
 # driver_evidence_plan <ticket> — the capture plan's path in the tree, where CI reads it:
 # <evidence.dir>/<key>/plan.json, the key by CI's own rule (scripts/evidence-plan.sh). Ship,
-# repair and the facts all ask here; a path built from the ticket alone missed CI on every
+# review and the facts all ask here; a path built from the ticket alone missed CI on every
 # branch not named <prefix>NNNN/… (four PRs, 2026-10-20).
 . "$KIT_ROOT/scripts/evidence-plan.sh"
 driver_evidence_plan() { # <ticket>
@@ -967,19 +966,6 @@ driver_record_diverged() {
     || printf 'the PR head %s is not in the record'"'"'s work (%s): it moved since' "$(printf '%s' "$ph" | cut -c1-8)" "$(printf '%s' "$rh" | cut -c1-8)"
 }
 
-# driver_built <ticket> — 0 when this ticket's record holds a build the driver ran.
-# Only a build runs `start`; a repair round reopens its own steps and never that one.
-driver_built() {
-  jq -e '(.done // []) | index("start") != null' "$DRIVER_DIR/$1/state.json" >/dev/null 2>&1
-}
-
-# driver_adopted <ticket> — 0 when this run adopted a draft the driver did not build
-# (build-ticket --adopt): a repair-mode walk whose review reads the whole PR, and the
-# only way such a draft is ever readied — after the driver's own gates and review pass.
-driver_adopted() {
-  jq -e '(.mode // "") == "repair" and ((.adopted // "") != "")' "$DRIVER_DIR/$1/state.json" >/dev/null 2>&1
-}
-
 # THE GRADE SCALE, and the one place it is named. Every reviewer and every agent
 # that files work grades what it raises, and the grade — not the list it arrived
 # in — decides the effect: a Critical, a Major or a Minor sends work back and is
@@ -1038,4 +1024,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRI
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_TO_REPAIR DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_BASE_WAIT DRIVER_E_UPSIZE DRIVER_QUICK_STEPS
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_HAS_PR DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_UPSIZE DRIVER_QUICK_STEPS

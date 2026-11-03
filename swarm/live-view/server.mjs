@@ -40,7 +40,7 @@ const PLAIN = process.env.SWARM_PLAIN_TITLES || path.join(RUNS, '..', 'plain-tit
 // state file read as it stands; the hold is asked of hold-status.sh, which runs
 // the same functions the coordinator decides with.
 const COORD_QUEUE = process.env.SWARM_COORD_QUEUE || path.join(RUNS, '..', 'coordinator', 'queue.json')
-// The last tick's ceiling, the reading behind it and the healing / new split.
+// The last tick's ceiling, the reading behind it and the live builds.
 const COORD_CAPACITY = path.join(path.dirname(COORD_QUEUE), 'capacity.json')
 // Every machine's heartbeat and the sheet's version floor, as the last tick knew them.
 const COORD_FLEET = path.join(path.dirname(COORD_QUEUE), 'fleet.json')
@@ -148,19 +148,18 @@ function refreshHold(now) {
   runChild('hold', BASH, [HOLD_SCRIPT], { timeout: 20_000 }, (err, out) => { holding = false; if (!err) take(out) })
 }
 
-const RANK = { repair: 0, 'approved-merge': 1, new: 2 }
 // A process fix runs first of all (coord_process, owner call 2026-10-20).
 const PROCESS = process.env.SWARM_PROCESS_LABEL || 'process'
 const KIND = { 'half-built': 0, feature: 1, other: 2, polish: 3 }
-// The labels that mean nobody can start a row (coord_stopped): a repair is stopped
-// only by those that park the ticket; a hold or a question stops new work too.
+// The labels that mean nobody can start a row (coord_stopped): every row is new work.
 const STOP_ALL = [LBL('LBL_BATCHED', 'status:batched'), LBL('LBL_PARKED', 'status:parked'), LBL('LBL_BLOCKED', 'status:blocked'),
   LBL('LBL_EXTERNAL_BLOCKED', 'status:external-blocked'), LBL('LBL_GATED', 'status:gated'), LBL('LBL_DRAFTING', 'status:drafting'),
   LBL('LBL_PM_DECISION', 'status:pm-decision'), LBL('LBL_PM_TRACK', 'status:pm-track')]
 const STOP_NEW = [...STOP_ALL, LBL('HOLD_LABEL', 'needs:human-approval'), LBL('LBL_NEEDS_HUMAN', 'status:needs-human'),
   LBL('LBL_OWNER_DECISION', 'needs:owner-decision')]
-const REPAIR_NOTE = /(^|\n)REPAIR on PR #[0-9]/
-export const classOf = (t) => (String(t.class || 'new') === 'new' && REPAIR_NOTE.test(String(t.note || '')) ? 'repair' : String(t.class || 'new'))
+// There is no repair class: a row an older version wrote as repair or approved-merge is new
+// work (coord_class). A PR that cannot merge is closed and its ticket rebuilt (rebuild.sh).
+export const classOf = () => 'new'
 // A row somebody can start: its ticket open and wearing no stop label. Unread, it counts.
 export function startable(cls, issue) {
   if (!issue) return true
@@ -170,7 +169,7 @@ export function startable(cls, issue) {
 }
 // The queue in the order the coordinator runs it (coord_queue_ordered): a process fix first, then every
 // P0, then the tiers (focus areas P0/P1 in their order, screens P0/P1, the rest, last in the release),
-// then an entry the PM put on top, priority, a front entry, class, product before tooling, kind, position.
+// then an entry the PM put on top, priority, a front entry, product before tooling, kind, position.
 // Priority is read off the ticket's live labels when the tick's read has them.
 // Only rows somebody can start are listed, so the count is the work there is.
 // P0..P3 from the ticket's labels, else the queue row's stored figure, else 9 (none).
@@ -199,11 +198,11 @@ export function queueOf(file = COORD_QUEUE, issues = issuesByTicket()) {
                         p0: prin === 0 ? 0 : 1, tier: tierOf(prin, last, t.focus, !!t.screen),
                         fk: Number.isInteger(t.focus) ? t.focus : 0, scr: t.screen ? 0 : 1,
                         top: t.top ? 0 : 1, front: t.front ? 0 : 1, prin,
-                        rank: RANK[t.class] ?? 3, tool: t.tooling ? 1 : 0, kind: t.class === 'new' ? (KIND[t.kind] ?? 2) : 0 } })
+                        tool: t.tooling ? 1 : 0, kind: KIND[t.kind] ?? 2 } })
     .sort((a, b) => a.proc - b.proc || a.p0 - b.p0 || a.tier - b.tier
                     || (a.tier === 1 ? a.fk - b.fk || a.scr - b.scr : 0) || a.top - b.top || (a.top === 0 ? a.pos - b.pos : 0) || a.prin - b.prin
                     || a.front - b.front || (a.front === 0 ? a.pos - b.pos : 0)
-                    || a.rank - b.rank || a.tool - b.tool || a.kind - b.kind || a.pos - b.pos)
+                    || a.tool - b.tool || a.kind - b.kind || a.pos - b.pos)
     .map(({ t, proc }) => ({ ticket: String(t.n), class: String(t.class || 'new'), note: String(t.note || ''),
                        scope: String(t.scope || fallback), pinned: !!t.pinned, process: proc === 0 }))
   const scopes = Array.isArray(q.scopes) ? q.scopes.map((s) => String(s.label || s.scope || s))
@@ -1073,7 +1072,7 @@ const STUCK_LABELS = [LBL('LBL_BLOCKED', 'status:blocked'), LBL('LBL_EXTERNAL_BL
   LBL('LBL_GATED', 'status:gated'), LBL('LBL_DRAFTING', 'status:drafting'), LBL('LBL_PARKED', 'status:parked')]
 
 // Where one open ticket stands, first match wins. Owner waits come before review
-// only while its pull request is clean: a red or clashing one is healing work first.
+// only while its pull request is clean: a red or clashing one is on the rebuild clock first.
 // Building is a live run, never the claimed label: a label outlives the run that set it.
 export function bucketOf(labels, pr, building) {
   const has = (l) => labels.includes(l)
@@ -1313,7 +1312,7 @@ const EXIT_WHY = {
   24: ['a gate refused the change', 'PM'], 25: ['a step ran out of time', 'machine fault'],
   26: ['GitHub could not be read', 'the queue'], 27: ['the usage limit was reached', 'the queue, after the usage resets'],
   28: ['it was put back on the queue', 'the queue'], 29: ['another run holds the ticket', 'the queue'],
-  31: ['it found an open pull request to repair', 'the queue'], 33: ['the model service failed twice', 'machine fault'],
+  31: ['its ticket already has an open pull request: it merges, or is rebuilt fresh', 'the rebuild clock'], 33: ['the model service failed twice', 'machine fault'],
   143: ['it was stopped', 'the queue'], 137: ['it was killed', 'the queue'],
 }
 // Until launch the PM takes the owner's calls (the project config's signoff.untilLaunchPm,

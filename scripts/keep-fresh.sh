@@ -6,24 +6,23 @@
 #
 # Most clashes with the integration branch are mechanical: a deploy stamp, a line added
 # to package.json's scripts on both sides, a ratchet baseline both sides lowered, a
-# changelog fragment. Sent to a builder, each costs a model run for what a rule settles.
+# changelog fragment. Left to the rebuild clock, each would cost a whole fresh build for
+# what a rule settles.
 #
 # A pass, for each open, non-draft PR on the integration branch that GitHub reads as
 # conflicting (REST: mergeable false and mergeable_state "dirty" — GitHub is the
 # authority, never a local trial merge), up to merge.keepFreshPerTick (5) — tickets on
 # the coordinator queue first, in its order (priority first), then the rest oldest first:
-#   claimed       its ticket has a claim (claim-lock.sh list), a live run, or a session
-#                 holds the PR (fix-lock.sh) → skipped: the run owns its branch
+#   claimed       its ticket has a claim (claim-lock.sh list) or a live run
+#                 → skipped: the run owns its branch
 #   tried         a real conflict was already found on this head → skipped until it moves
 #   merge         a scratch worktree at the PR's head merges origin/<integration branch>
 #     every conflicted file matches a merge.mechanical rule (keep-fresh-resolve.py)
 #                 → resolved, committed as the merge, the sign-off push guard run on
-#                   it as the pre-push would, pushed, and one comment naming file and rule;
-#                   a repair entry queued for that clash alone (no note, or a note keep-fresh
-#                   or the merge lane wrote for a conflict) is removed — a person's note stays
-#     any other   → aborted; the branch is untouched and its ticket queued as a repair,
-#                   unless a repair is already queued for it: that entry is left as it is
-# A queued repair is tried like any other: a builder costs a model run for a clash a rule settles.
+#                   it as the pre-push would, pushed, and one comment naming file and rule
+#     any other   → aborted; the branch is untouched. Nothing is sent to it: a clash no
+#                   rule settles stays on the rebuild clock (rebuild.sh), which closes the
+#                   PR and builds its ticket fresh once it cannot merge.
 #
 # A PR that is merely behind and clean is never read past its state: merging the trunk
 # into it only queues another CI run (merge.updateBehind: bot).
@@ -31,7 +30,7 @@
 # SIGN-OFFS. The push is a merge commit and its resolution touches only rule files, so
 # approval-kept.sh check — the one develop-merge rule the project's gate and the merge
 # lane share — keeps a sign-off through it. The sign-off push guard runs first with the
-# push's own ref line; a push it refuses is not made, and the PR goes to a builder.
+# push's own ref line; a push it refuses is not made, and the PR stays on the rebuild clock.
 #
 # Project facts: merge.keepFresh (true turns this on), merge.keepFreshPerTick (5),
 # merge.mechanical (the rules; empty, every conflict is real). README.md has the shapes.
@@ -53,7 +52,6 @@ case "$PER_TICK" in ''|*[!0-9]*) PER_TICK=5 ;; esac
 QUEUE="$SELF_DIR/coordinator-queue.sh"
 RESOLVE="$SELF_DIR/keep-fresh-resolve.py"
 GUARD="${KEEP_FRESH_PUSH_GUARD:-$SELF_DIR/signoff-push-guard.sh}"
-FIXLOCK="${COORDINATOR_FIX_LOCK:-$SELF_DIR/fix-lock.sh}"
 STATE_FILE="$COORD_DIR/keep-fresh.$(coord_mode).json"
 touch "$COORD_ACTIONS"
 
@@ -84,35 +82,12 @@ act() { printf '%s\t%s\t%s\t%s\t%s\n' "$(swarm_stamp)" "$(coord_mode)" "$1" "$2"
 CLAIMS=$(if [ -n "${COORDINATOR_CLAIMS_CMD:-}" ]; then $COORDINATOR_CLAIMS_CMD; else bash "$CL" list --json 2>/dev/null; fi)
 jq -e 'type == "array"' >/dev/null 2>&1 <<<"$CLAIMS" \
   || { say "keep-fresh: the claim list could not be read — touching nothing"; exit 0; }
-FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list --json 2>/dev/null \
-  | jq -r '.[]? | select(.expired | not) | .pr | tostring' 2>/dev/null)
 # The queue in the order it runs: <ticket> <class> <note>, priority first.
 QROWS=$(coord_queue_ordered 2>/dev/null)
-REPAIRS=$(awk -F'\t' '$2 == "repair" { print $1 }' <<<"$QROWS")
-cleared_n=0
-# A note nobody but a script wrote for a clash: removing the entry loses nothing a person said.
-clash_only_note() { # <note>
-  case "$1" in
-    ''|'Keep fresh: '*) return 0 ;;
-    'Merge lane: PR #'*' left the lane — it conflicts with '*) return 0 ;;
-  esac
-  return 1
-}
-clear_repair() { # <ticket> <pr> — the clash is settled: a repair queued for it alone goes
-  local note
-  [ -n "$1" ] && grep -qxF -- "$1" <<<"$REPAIRS" || return 0
-  note=$(awk -F'\t' -v t="$1" '$1 == t && $2 == "repair" { print $3; exit }' <<<"$QROWS")
-  if ! clash_only_note "$note"; then say "keep-fresh: #$2 settled; #$1's repair entry carries a person's note — left queued"; return 0; fi
-  if coord_shadow; then say "would remove #$1's repair entry — its clash is settled"; return 0; fi
-  bash "$QUEUE" remove "$1" >/dev/null 2>&1 \
-    && { say "keep-fresh: #$1's repair entry removed — #$2's clash is settled"; cleared_n=$((cleared_n + 1)); } \
-    || say "keep-fresh: #$1's repair entry could not be removed"
-}
 claimed() { # <ticket> <branch> <pr> — prints who, 0 when held
   if [ -n "$1" ] && jq -e --arg t "$1" 'any(.[]; (.issue | tostring) == $t)' >/dev/null <<<"$CLAIMS"; then echo "a claim on #$1"; return 0; fi
   if jq -e --arg b "$2" 'any(.[]; (.branch // "") == $b)' >/dev/null <<<"$CLAIMS"; then echo "a claim on $2"; return 0; fi
   if [ -n "$1" ] && swarm_ticket_live "$1"; then echo "a live run for #$1"; return 0; fi
-  if grep -qxF -- "$3" <<<"$FIXING"; then echo "a session fixing it (fix-lock)"; return 0; fi
   return 1
 }
 
@@ -143,20 +118,11 @@ ROWS=$(while IFS=$'\t' read -r n br head; do
          printf '%s\t%s\t%s\t%s\t%s\n' "$([ -n "$pos" ] && echo 0 || echo 1)" "${pos:-0}" "$n" "$br" "$head"
        done <<<"$ROWS" | sort -t$'\t' -k1,1n -k2,2n -k3,3n | cut -f3-)
 
-queue_repair() { # <ticket> <pr> <why>
-  local note="Keep fresh: PR #$2 clashes with $INTEGRATION_BRANCH and a rule cannot settle it — $3. Merge $INTEGRATION_BRANCH into its branch, resolve, and push."
-  [ -n "$1" ] || { say "keep-fresh: #$2's branch names no ticket — no repair to queue"; return 0; }
-  if grep -qxF -- "$1" <<<"$REPAIRS"; then say "keep-fresh: #$1 is already queued for repair — its entry is left as it is"; return 0; fi
-  if coord_shadow; then say "would queue #$1 as a repair — $3"; return 0; fi
-  bash "$QUEUE" add "$1" --class repair --note "$note" >/dev/null 2>&1 \
-    && say "keep-fresh: #$1 queued as a repair — $3" || say "keep-fresh: could not queue #$1 as a repair"
-}
-
 comment_body() { # <resolved tsv> <trunk> <new sha>
   printf 'Kept fresh: merged `%s` (%s) into this branch as `%s`. Every conflict was mechanical and was settled by a `merge.mechanical` rule:\n\n' \
     "$INTEGRATION_BRANCH" "${2:0:7}" "${3:0:7}"
   while IFS=$'\t' read -r f r; do [ -n "$f" ] && printf -- '- `%s` — %s\n' "$f" "$r"; done <<<"$1"
-  printf '\nNo other file changed. A real conflict would have been left for a builder.\n'
+  printf '\nNo other file changed. A real conflict would have been left as it is, for the rebuild clock.\n'
 }
 
 # One PR: 0 done (pushed, queued or nothing to do), 1 not attempted this pass.
@@ -220,7 +186,6 @@ fresh_one() { # <pr> <branch> <head>
     say "keep-fresh: #$n has a real conflict — $why; its branch is untouched"
     act real-conflict "$n" "$why"
     st --arg p "$n" --arg h "$head" '.tried[$p] = {head: $h, outcome: "real"}'
-    queue_repair "$t" "$n" "$why"
     cleanup_scratch; return 0
   fi
   if ! g commit -q --no-edit --no-verify >/dev/null 2>&1; then
@@ -233,7 +198,6 @@ fresh_one() { # <pr> <branch> <head>
     say "would push #$n: $INTEGRATION_BRANCH merged, $rules_line"
     act would-push "$n" "$rules_line"
     st --arg p "$n" --arg h "$head" '.tried[$p] = {head: $h, outcome: "would-push"}'
-    clear_repair "$t" "$n"
     cleanup_scratch; return 0
   fi
   # The pre-push contract, as `git push` would hand it to the project's own hook.
@@ -242,7 +206,7 @@ fresh_one() { # <pr> <branch> <head>
     why="the sign-off push guard refused it: $(tr '\n' ' ' < "$SCRATCH/guard.out" | cut -c1-200)"
     say "keep-fresh: #$n — $why; nothing pushed"
     st --arg p "$n" --arg h "$head" '.tried[$p] = {head: $h, outcome: "real"}'
-    queue_repair "$t" "$n" "$why"; cleanup_scratch; return 0
+    cleanup_scratch; return 0
   fi
   # A plain push: a branch that moved since it was read is refused, never overwritten.
   if ! out=$(g push -q --no-verify origin "$new:refs/heads/$br" 2>&1); then
@@ -253,7 +217,6 @@ fresh_one() { # <pr> <branch> <head>
   act pushed "$n" "$new: $rules_line"
   swarm_gh api -X POST "repos/$REPO_SLUG/issues/$n/comments" -f body="$(comment_body "$resolved" "$TRUNK" "$new")" >/dev/null 2>&1 \
     || say "keep-fresh: #$n pushed; its comment could not be posted"
-  clear_repair "$t" "$n"
   cleanup_scratch; return 0
 }
 cleanup_scratch() {
@@ -271,4 +234,4 @@ while IFS=$'\t' read -r n br head <&3; do
   [ "$done_n" -lt "$PER_TICK" ] || { say "keep-fresh: $PER_TICK this pass — the rest next pass"; break; }
   if fresh_one "$n" "$br" "$head"; then done_n=$((done_n + 1)); fi
 done 3<<<"$ROWS"
-say "keep-fresh: $done_n settled or sent on this pass, $cleared_n repair entries cleared ($(coord_mode))"
+say "keep-fresh: $done_n settled on this pass ($(coord_mode))"

@@ -106,21 +106,8 @@ driver_step_review() { # <ticket>
   for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
     git -C "$wt" rev-parse --verify -q "$r" >/dev/null 2>&1 && { trunk="$r"; break; }
   done
-  # A REPAIR IS REVIEWED ON ITS OWN CHANGE. The PR was reviewed (and maybe signed off)
-  # before; re-reviewing all of it sent fixes, screens among them, after the sign-off.
-  # Its own change: every commit since the repair began, and of a trunk merge only the
-  # files whose resolution differs from both sides.
-  local -a dargs=(); local rbase own_paths="" p
-  rbase=$(driver_state_get "$t" repair_base)
-  # AN ADOPTED DRAFT IS REVIEWED WHOLE: the driver never reviewed any of it.
-  if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$rbase" ] && ! driver_adopted "$t"; then
-    # --first-parent: a merge's second side is the trunk's commits, never the repair's.
-    own_paths=$(git -C "$wt" log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
-    dargs=("$rbase"..HEAD --)
-    while IFS= read -r p; do [ -n "$p" ] && dargs+=("$p"); done <<<"$own_paths"
-    if [ -n "$own_paths" ]; then diff=$(git -C "$wt" diff "${dargs[@]}" 2>/dev/null); else diff=""; fi
-    driver_say "   review: the repair's own change since $(printf '%s' "$rbase" | cut -c1-8), $(printf '%s' "$own_paths" | grep -c .) file(s)"
-  elif [ -n "$trunk" ]; then
+  local -a dargs=()
+  if [ -n "$trunk" ]; then
     dargs=("$trunk"...HEAD)
     diff=$(git -C "$wt" diff "${dargs[@]}" 2>/dev/null)
   else
@@ -151,8 +138,6 @@ driver_step_review() { # <ticket>
 $(git -C "$wt" diff --stat "${dargs[@]}" 2>/dev/null)
 Read the rest in the worktree — do NOT review the part above as if it were the whole change.]"
   fi
-  [ -n "$diff" ] || [ -z "$own_paths$rbase" ] || [ "$(driver_state_get "$t" mode)" != repair ] || driver_adopted "$t" \
-    || diff="(none — this repair made no change of its own: a clean merge of $INTEGRATION_BRANCH, or nothing at all. The PR was reviewed before it; judge only this.)"
   # A LATER PASS ASKS FIRST WHETHER THERE IS ANYTHING NEW TO REVIEW.
   local tier maxr="$DRIVER_MAX_REVIEW_ROUNDS" again
   tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
@@ -196,7 +181,7 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
     "${diff:-(none — nothing to diff: no $INTEGRATION_BRANCH resolves in $wt, or the branch carries no change)}"
   # THE REVIEWER IS CLAUDE CODE'S OWN code-review, at review.effort (default high: one
   # forked context, no agents of its own; max only when configured), against the base this
-  # change is judged on: the repair's own base, else the trunk.
+  # change is judged on: the trunk.
   local effort; effort=$(driver_opt review.effort high)
   case "$effort" in
     low|medium|high|xhigh|max) : ;;
@@ -205,7 +190,6 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   esac
   driver_fact_put "$t" review EFFORT "$effort"
   local target="$trunk"
-  [ "$(driver_state_get "$t" mode)" != repair ] || [ -z "$rbase" ] || driver_adopted "$t" || target="$rbase"
   driver_fact_put "$t" review TARGET "${target:-HEAD~1}"
   # RENDERS is a fact about a screen, and the driver takes none. Saying so is the
   # point: the reviewer is told there are no renders rather than shown the word
@@ -241,7 +225,7 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   driver_state_set "$t" reviewed_head ""
   round=$((round + 1))
   ans_file="$(driver_state_dir "$t")/steps/review.json"
-  # A new review cycle (a build, or a repair) starts its deferred list empty.
+  # A new review cycle starts its deferred list empty.
   [ "$round" -gt 1 ] || rm -f "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
 
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
@@ -269,7 +253,7 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
 
   # Off until the release: a critic finding the reviewer copied off the PR is no finding.
   driver_drop_critic_findings "$ans_file" review "$t" && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
-  # A finding that only says the branch clashes is the PR's repair, never a block or a ticket.
+  # A finding that only says the branch clashes is the rebuild pass's, never a block or a ticket.
   driver_drop_clash_findings "$ans_file" review && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
@@ -278,9 +262,6 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   _driver_review_same_change "$t" "$ans_file" "$ground" "$wt" "${dargs[@]}"
   _driver_review_defer "$t" "$ans_file" "$ground"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
-
-  rc=0; _driver_review_hold_signed "$t" "$ans_file" || rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
 
   nsend=$(_driver_count "$ans_file" blocking)
   # `-le`, not `-lt`: every model round's blockers go to fix, and the pass after the
@@ -538,7 +519,7 @@ _driver_review_priority_skip() {
   il=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name]' 2>/dev/null) || return 1
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$il" || return 1
   pl='[]'
-  pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" repair_pr)
+  pr=$(driver_state_get "$t" pr)
   if [ -n "$pr" ]; then
     pl=$(driver_gh_read swarm_gh pr view "$pr" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name]' 2>/dev/null) || return 1
     jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pl" || return 1
@@ -749,48 +730,6 @@ _driver_review_verdict_off_grades() {
       | if (.verdict // "" | ascii_upcase) == "BLOCKED" and (((.findings // []) | length) > 0 or $had != "")
            and ([(.findings // [])[] | select(((.grade // "") as $g | $L | index($g)) or (.sameChange // false) == true)] | length) == 0
         then .verdict = "SHIP" else . end' "$1" > "$1.t" && mv "$1.t" "$1"
-}
-
-# _driver_review_hold_signed <ticket> <review.json> — on a repair of a PR the owner
-# signed off, a Critical or Major on a screen file is the owner's call: a fix there
-# changes pixels after the sign-off. It parks for the owner, naming them, and the
-# verdict is left as the reviewer gave it. A Minor there is polish, never a "cannot
-# merge without": it is dropped (_driver_review_defer), and the repair
-# carries on with no park and no pixel change (the owner's rule; #13339 parked on one). Signed is approval-kept's signed-head (a
-# hold removed on GitHub counts); unreadable counts as signed, the cautious side.
-# Screens are #234's one screen set (approval-kept.sh screens: surfacePaths plus
-# extraScreens), never "every file" while surfacePaths is set.
-_driver_review_hold_signed() {
-  local t="$1" f="$2" pr ak arc files screens held
-  [ "$(driver_state_get "$t" mode)" = repair ] || return 0
-  # Merge first: the owner reviews on UAT after the merge, so no sign-off holds a fix.
-  driver_merge_first && return 0
-  pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || return 0
-  [ "$(_driver_count "$f" blocking)" -gt 0 ] 2>/dev/null || return 0
-  files=$(jq -r "[.findings[]? | $(_driver_class blocking) | .file // empty] | unique | .[]" "$f" 2>/dev/null)
-  ak="${DRIVER_APPROVAL_KEPT:-$KIT_ROOT/scripts/approval-kept.sh}"
-  screens=$(printf '%s\n' "$files" | bash "$ak" screens 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
-  [ "${screens:-[]}" != "[]" ] || return 0
-  arc=0; bash "$ak" signed-head "$pr" >/dev/null 2>&1 || arc=$?
-  [ "$arc" -eq 1 ] && return 0
-  local must polish minors
-  must=$(driver_blocking_grades 2)
-  polish=$(driver_blocking_grades "$(driver_state_count "$t" review)" | tr ' ' '\n' | grep -vxF -f <(printf '%s\n' $must) | tr '\n' ' ' | sed 's/ $//')
-  minors=$(jq -c --argjson s "$screens" --arg p "$polish" '[.findings[]? | select((.grade // "") as $g | ($p | split(" ")) | index($g)) | select((.file // "") as $x | $s | index($x))]' "$f")
-  if [ -n "$polish" ] && [ "$(printf '%s' "$minors" | jq length)" -gt 0 ]; then
-    printf '%s' "$minors" | jq '{verdict: "BLOCKED", findings: [.[] | del(.sameChange)]}' > "$f.signed"
-    _driver_review_defer "$t" "$f.signed" "$(driver_state_count "$t" review)" "$must" "found on PR #$pr after its sign-off"
-    rm -f "$f.signed"
-    jq --argjson s "$screens" --arg p "$polish" '.findings = [(.findings // [])[] | select(((.grade // "") as $g | ($p | split(" ")) | index($g)) and ((.file // "") as $x | $s | index($x)) | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
-    _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$(driver_state_count "$t" review)")" 1
-    driver_say "   review: PR #$pr is signed off — its screens' polish is dropped, not put into this repair"
-  fi
-  held=$(jq -r --argjson s "$screens" "[.findings[]? | $(_driver_class blocking) | select((.file // \"\") as \$x | \$s | index(\$x)) | \"\\(.grade) \\(.file):\\(.line // \"?\") \\(.summary // \"\")\"] | join(\"; \")" "$f")
-  [ -n "$held" ] || return 0
-  driver_say "✋ review: PR #$pr $([ "$arc" -eq 2 ] && echo 'may be signed off (its sign-offs could not be read)' || echo 'is signed off'), and the review graded its screens: $held — a fix would change pixels after the sign-off, so it parks for the owner."
-  driver_state_set "$t" park_note "Needs the owner: PR #$pr's screens were signed off$([ "$arc" -eq 2 ] && echo ' (or its sign-offs could not be read)'), and the review of this repair found on them: $held. Either each is dropped, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
-  driver_state_set "$t" park_cause person
-  return "$DRIVER_E_REFUSED"
 }
 
 # _driver_class <blocking|nit> — the jq selector for that class, in the ONE

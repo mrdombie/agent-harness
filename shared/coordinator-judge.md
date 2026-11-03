@@ -9,7 +9,7 @@ the forge and the state directory are the state.
 
 - **One event.** Decide it, act on it, log it, exit. Do not look for other work.
 - **Never ask a question.** Nobody is watching this process.
-- **The owner channel is for the owner's decisions only.** A red PR, a red
+- **The owner channel is for the owner's decisions only.** A red
   integration branch, a spec to fix, a frozen or stood-down run: an agent clears
   each, so it goes to the queue (below) or the agent log, never to the owner:
   `bash "$KIT_ROOT/scripts/coordinator-notify.sh" --class agent "<event id>" "<one plain line>"`
@@ -26,16 +26,18 @@ the forge and the state directory are the state.
   findings on a PR, signed off or not, are nobody's question and no agent's work.
   `owner-question.sh` refuses such a question (exit 5). A ticket carrying a label in
   `review.judge.duringReleaseLabels` keeps the critic: its findings are work.
-- **Stay in scope.** Act only on tickets in the queue's scope, plus a red PR
-  anywhere (finish before start). The scope may be several labels: a ticket
+- **Stay in scope.** Act only on tickets in the queue's scope. The scope may be several labels: a ticket
   under any one of them is in scope. Check with
   `bash "$KIT_ROOT/scripts/coordinator-queue.sh" in-scope <n>` (exit 0 in
   scope, 1 outside, 2 unreadable). Never widen the scope.
 - **Never self-approve.** Never remove the hold label, never add a design
   exemption, never approve a PR. A pixel PR waiting on sign-off is the owner's.
 - **Prefer the existing tools.** A ticket needs an agent: add it to the queue
-  (`bash "$KIT_ROOT/scripts/coordinator-queue.sh" add <n> --class repair|approved-merge|new --note "<why>"`)
+  (`bash "$KIT_ROOT/scripts/coordinator-queue.sh" add <n> --note "<why>"`)
   and let the next tick spawn it under the cap. Do not spawn agents yourself.
+- **A red or clashing PR is never yours.** Rebuild, don't repair: the tick's rebuild
+  pass closes one that cannot merge within `coordinator.rebuildAfterMin` and queues its
+  ticket fresh. Never queue a ticket to repair its PR.
 - **Frozen run.** Read the end of its log. A run waiting on nothing is stuck:
   re-queue it with a note, or log it as agent work. Kill nothing you did not start.
 - **Stood-down run.** Read its last result line and the ticket's newest

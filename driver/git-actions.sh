@@ -138,3 +138,38 @@ driver_git_actions() { # <ticket> <tree> <answer.json> <where>
   done
   return 0
 }
+
+# KEPT, NEVER RESUMED: refs/stale/<ticket>/<leaf> on origin. Work a push could not hand
+# over (a park the pre-push refused, a branch tip left on this machine, a dead branch tip
+# set aside at ship) goes there so it is never only on one machine's disk. Not a branch
+# or a tag: no workflow, branch protection or auto-merge reacts to it, and no PR head
+# moves. Nothing restores from it: a red or clashing PR is rebuilt fresh from the trunk
+# (scripts/rebuild.sh), and the rebuild keeps the old PR head in the same namespace.
+DRIVER_KEPT_NS=refs/stale
+
+# driver_keep_ref <ticket> <tree> [rev] [leaf] — sets DRIVER_KEPT_REF; on a refusal sets
+# DRIVER_KEPT_WHY and returns 1. <leaf> defaults to <host>-<utc>.
+driver_keep_ref() {
+  local t="$1" wt="$2" rev="${3:-HEAD}" leaf="${4:-}" ref out h
+  DRIVER_KEPT_REF=""; DRIVER_KEPT_WHY=""
+  case "$t" in ''|*[!0-9]*) DRIVER_KEPT_WHY="ticket '$t' is not a number, so no kept ref"; return 1 ;; esac
+  case "$leaf" in */*|.*) DRIVER_KEPT_WHY="'$leaf' is not one ref name"; return 1 ;; esac
+  if [ -z "$leaf" ]; then
+    h=$(hostname -s 2>/dev/null || hostname 2>/dev/null); h=$(printf '%s' "$h" | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//'); [ -n "$h" ] || h=host
+    leaf="$h-$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+  ref="$DRIVER_KEPT_NS/$t/$leaf"
+  # A backup ref, so like a bundle it skips the local pre-push; that reaches nothing outside this namespace.
+  case "$ref" in "$DRIVER_KEPT_NS"/[0-9]*/?*) ;; *) DRIVER_KEPT_WHY="'$ref' is outside $DRIVER_KEPT_NS/"; return 1 ;; esac
+  # TRIED THREE TIMES. GitHub answered one with "! [remote rejected] … (failed)" and
+  # took the same push a moment later; one refusal left the work on one machine.
+  local n=0 tries="${DRIVER_KEPT_TRIES:-3}" wait="${DRIVER_KEPT_RETRY_SEC:-5}"
+  until out=$(env -u PARK_PUSH git -C "$wt" push --no-verify origin "$rev:$ref" 2>&1); do
+    n=$((n+1))
+    if [ "$n" -ge "$tries" ]; then
+      DRIVER_KEPT_WHY="the push to $ref was refused $n time(s): $(printf '%s' "$out" | tail -2 | tr '\n' ' ' | cut -c1-200)"; return 1
+    fi
+    sleep $((wait * n))
+  done
+  DRIVER_KEPT_REF="$ref"
+}

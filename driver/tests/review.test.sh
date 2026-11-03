@@ -20,13 +20,13 @@ out=$(driver_step_review 101 2>&1); rc=$?
 want "it finishes"        "0" "$rc"
 want "round 1 is counted" "1" "$(driver_state_count 101 review)"
 
-echo "--- a finding that only says the branch clashes is no finding: the PR's repair ---"
+echo "--- a finding that only says the branch clashes is no finding: the rebuild pass's ---"
 driver_state_init 171 --worktree "$REPO"
 fix_issue 171 OPEN "status:claimed,project:widgets"
 fix_ai review '{"verdict":"BLOCKED","findings":[{"id":"R1-2","file":"a.sh","line":7,"grade":"major","summary":"The branch conflicts with develop. #14086 landed with its own hookState.","reason":"it cannot merge as it is"}]}' superpowers:requesting-code-review
 out=$(driver_step_review 171 2>&1); rc=$?
 want "a clash alone does not send it back"      "0" "$rc"
-want_in "  it says the clash is the PR's repair" "a clash with develop is the PR's repair, never a finding — dropped from the review list: R1-2" "$out"
+want_in "  it says the clash is the rebuild pass's" "a clash with develop is the rebuild pass's, never a finding — dropped from the review list: R1-2" "$out"
 want "  the verdict is read off what is left"   "SHIP 0" "$(jq -r '"\(.verdict) \(.findings | length)"' "$(driver_state_dir 171)/steps/review.json")"
 driver_state_init 172 --worktree "$REPO"
 fix_issue 172 OPEN "status:claimed,project:widgets"
@@ -159,102 +159,6 @@ out=$(driver_step_review 104 2>&1); rc=$?
 want "an unknown grade refuses" "24" "$rc"
 want_in "and quotes it"         'severe' "$out"
 
-echo "--- a repair is reviewed on its own change, not the whole PR again ---"
-# Re-reviewing the whole PR on every repair sent fixes, screens among them, after the
-# owner had signed it off. The PR was reviewed before; the repair is what is new.
-git -C "$REPO" worktree add -q "$FIX/wtr" -b tkt-120/work develop
-mkdir -p "$FIX/wtr/screens" "$FIX/wtr/lib"; printf 'the PR change\n' > "$FIX/wtr/screens/Home.tsx"; printf 'a\n' > "$FIX/wtr/lib/a.ts"
-git -C "$FIX/wtr" add . && git -C "$FIX/wtr" commit -qm "feat: the PR"
-RB=$(git -C "$FIX/wtr" rev-parse HEAD)
-# The trunk moves on, and the repair merges it in: its commits are the trunk's, not the repair's.
-git -C "$REPO" checkout -q develop; printf 'trunk work\n' > "$REPO/develop-only.txt"
-git -C "$REPO" add develop-only.txt && git -C "$REPO" commit -qm "trunk: another ticket"
-git -C "$FIX/wtr" merge -q --no-edit develop
-printf 'the repair\n' > "$FIX/wtr/repair-fix.txt"; git -C "$FIX/wtr" add . && git -C "$FIX/wtr" commit -qm "fix: the repair"
-repair_rec() { # <ticket>
-  driver_state_init "$1" --worktree "$FIX/wtr" --branch tkt-120/work
-  driver_state_set "$1" mode repair; driver_state_set "$1" pr 88; driver_state_set "$1" repair_base "$RB"
-  fix_issue "$1" OPEN "status:in-review"
-}
-repair_rec 120
-fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
-out=$(driver_step_review 120 2>&1); rc=$?
-want "it finishes"                         "0" "$rc"
-want_in "the repair's own file is reviewed" 'repair-fix.txt' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
-want_not_in "the PR's earlier change is not" 'screens/Home.tsx' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
-want_not_in "nor the trunk's commits a merge brought in" 'develop-only.txt' "$(cat "$(driver_fact_dir 120 review)/DIFF")"
-
-echo "--- an adopted draft is reviewed whole: the driver never reviewed any of it ---"
-repair_rec 1190; driver_state_set 1190 adopted "2026-10-22T00:00:00Z"
-fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
-out=$(driver_step_review 1190 2>&1); rc=$?
-want "it finishes"                         "0" "$rc"
-want_in "the draft's earlier change is reviewed" 'screens/Home.tsx' "$(cat "$(driver_fact_dir 1190 review)/DIFF")"
-want_in "and so is the newest commit"      'repair-fix.txt' "$(cat "$(driver_fact_dir 1190 review)/DIFF")"
-want_not_in "the trunk's commits still are not" 'develop-only.txt' "$(cat "$(driver_fact_dir 1190 review)/DIFF")"
-
-echo "--- on a signed-off PR, a blocking finding on a screen parks for the owner; the verdict is never flipped ---"
-# A fix there changes pixels after the sign-off: the owner's call. A Critical anywhere
-# else is still fixed: filed away and shipped as SHIP, it landed a repair's own defect.
-jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-# The sign-off record is stubbed; the screen set is the real approval-kept.sh's.
-cat > "$BIN/approval-kept" <<SH
-#!/usr/bin/env bash
-case "\$1" in
-  signed-head) echo "\$*" >> "$FIX/ak.log"; [ "\${AK_RC:-0}" = 0 ] && echo 1111111111111111111111111111111111111111; exit "\${AK_RC:-0}" ;;
-  screens) exec bash "$HERE/../../scripts/approval-kept.sh" screens ;;
-  *) exit 9 ;;
-esac
-SH
-chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
-both='{"verdict":"BLOCKED","findings":[
-  {"file":"screens/Home.tsx","line":4,"grade":"major","summary":"the card spacing is off the scale","reason":"it reads cramped"},
-  {"file":"lib/a.ts","line":9,"grade":"major","summary":"the error branch is dropped","reason":"a failure shows as success"}]}'
-code='{"verdict":"BLOCKED","findings":[{"file":"lib/a.ts","line":9,"grade":"critical","summary":"the repair returns another workspace data","reason":"wrong data"}]}'
-screen='{"verdict":"BLOCKED","findings":[{"file":"screens/Home.tsx","line":4,"grade":"major","summary":"x","reason":"y"}]}'
-: > "$GH_LOG"; AK_RC=0; export AK_RC; repair_rec 121
-fix_ai review "$both" superpowers:requesting-code-review
-out=$(driver_step_review 121 2>&1); rc=$?
-want "a screen finding on a signed PR parks"   "24" "$rc"
-want_in "for the owner, naming it"             '^Needs the owner: PR #88.*screens/Home.tsx' "$(driver_state_get 121 park_note)"
-want "as a person's question"                  "person" "$(driver_state_get 121 park_cause)"
-want "the verdict is the reviewer's"           "BLOCKED" "$(jq -r '.verdict' "$(driver_state_dir 121)/steps/review.json")"
-want_not_in "and nothing is filed away"        'issue create' "$(cat "$GH_LOG")"
-repair_rec 122
-fix_ai review "$code" superpowers:requesting-code-review
-out=$(driver_step_review 122 2>&1); rc=$?
-want "a Critical off the screens is fixed, never shipped" "30" "$rc"
-want "the verdict stays BLOCKED"               "BLOCKED" "$(jq -r '.verdict' "$(driver_state_dir 122)/steps/review.json")"
-for c in "2 unreadable" "3 a-hold-removed-on-GitHub"; do
-  set -- $c; AK_RC=$1; repair_rec 12$1
-  fix_ai review "$screen" superpowers:requesting-code-review
-  rc=0; driver_step_review 12$1 >/dev/null 2>&1 || rc=$?
-  want "signed-head exit $1 ($2) counts as signed: it parks" "24" "$rc"
-done
-AK_RC=1; repair_rec 124
-fix_ai review "$screen" superpowers:requesting-code-review
-rc=0; driver_step_review 124 >/dev/null 2>&1 || rc=$?
-want "never signed: a screen finding is fixed as any other" "30" "$rc"
-want_in "asked with signed-head"               'signed-head 88' "$(cat "$FIX/ak.log")"
-AK_RC=0; repair_rec 125
-fix_ai review '{"verdict":"BLOCKED","findings":[{"file":"screens/Home.test.tsx","line":4,"grade":"major","summary":"x","reason":"y"}]}' superpowers:requesting-code-review
-rc=0; driver_step_review 125 >/dev/null 2>&1 || rc=$?
-want "a test under the screen globs is not a screen: it is fixed" "30" "$rc"
-jq '.design.extraScreens = ["lib/a.ts"]' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-repair_rec 127
-fix_ai review "$code" superpowers:requesting-code-review
-rc=0; driver_step_review 127 >/dev/null 2>&1 || rc=$?
-want "a file named in extraScreens is a screen: it parks" "24" "$rc"
-jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-: > "$FIX/ak.log"
-driver_state_init 126 --worktree "$REPO"; fix_issue 126 OPEN "status:claimed"
-fix_ai review "$screen" superpowers:requesting-code-review
-rc=0; driver_step_review 126 >/dev/null 2>&1 || rc=$?
-want "a build (not a repair) is not held" "30" "$rc"
-want "and asks for no sign-off record"    "" "$(cat "$FIX/ak.log")"
-jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-unset DRIVER_APPROVAL_KEPT AK_RC
-
 echo "--- from round 2 a Minor does not block: it goes to the sweep or is dropped, never on a polish list ---"
 # The owner, 2026-10-20: round 1 fixes Critical, Major and Minor; from round 2 only
 # Critical and Major block. 86 of 117 latest findings were Minor, and the 4-5 hour
@@ -356,67 +260,6 @@ driver_state_bump 143 review; driver_state_bump 143 review
 fix_ai review '{"verdict":"BLOCKED","findings":[]}' superpowers:requesting-code-review
 rc=0; driver_step_review 143 >/dev/null 2>&1 || rc=$?
 want "a BLOCKED that names nothing stays BLOCKED"   "BLOCKED" "$(jq -r .verdict "$(driver_state_dir 143)/steps/review.json")"
-
-echo "--- a repair counts its own rounds the same way ---"
-cat > "$BIN/approval-kept" <<'SH'
-#!/usr/bin/env bash
-case "$1" in signed-head) exit 1 ;; screens) cat ;; esac
-SH
-chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
-: > "$FIX/pl.adds"
-repair_rec 134
-fix_ai review "$minor" superpowers:requesting-code-review
-rc=0; driver_step_review 134 >/dev/null 2>&1 || rc=$?
-want "repair round 1: the Minor blocks"          "30" "$rc"
-rc=0; driver_step_review 134 >/dev/null 2>&1 || rc=$?
-want "repair round 2: it does not"               "0" "$rc"
-want "and lands on no polish list"               "" "$(cat "$FIX/pl.adds")"
-fix_ai review "$majmin" superpowers:requesting-code-review
-repair_rec 135; driver_state_bump 135 review
-rc=0; driver_step_review 135 >/dev/null 2>&1 || rc=$?
-want "repair round 2: a Major still blocks"      "30" "$rc"
-
-echo "--- on a signed-off PR, a Minor on its screens is deferred, never a list: no park, no fix round ---"
-# The owner's rule: after sign-off a screen's review note is polish, never a call for
-# the owner. #13339 parked on one Minor (a HelpTip bubble off a 375px phone).
-jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-cat > "$BIN/approval-kept" <<SH
-#!/usr/bin/env bash
-case "\$1" in
-  signed-head) echo 1111111111111111111111111111111111111111 ;;
-  screens) exec bash "$HERE/../../scripts/approval-kept.sh" screens ;;
-esac
-SH
-chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
-: > "$FIX/pl.adds"; : > "$GH_LOG"
-repair_rec 150
-fix_ai review "$minor" superpowers:requesting-code-review
-out=$(driver_step_review 150 2>&1); rc=$?
-want "repair round 1, one Minor on a signed screen: it carries on" "0" "$rc"
-want "and parks for nobody"                      "" "$(driver_state_get 150 park_note)"
-want "the Minor goes on no polish list"          "" "$(cat "$FIX/pl.adds")"
-want "it leaves the findings, so no fix round touches the screen" "0" "$(jq '.findings | length' "$(driver_state_dir 150)/steps/review.json")"
-want "and the verdict ships"                     "SHIP" "$(jq -r .verdict "$(driver_state_dir 150)/steps/review.json")"
-want "recorded as deferred"                      "sweep" "$(jq -r .list "$(driver_state_dir 150)/steps/review.deferred.jsonl")"
-want_not_in "and nothing is filed"               'issue create' "$(cat "$GH_LOG")"
-: > "$FIX/pl.adds"
-repair_rec 151
-fix_ai review '{"verdict":"BLOCKED","findings":[
-  {"file":"screens/Settings.tsx","line":12,"grade":"minor","summary":"the save row sits 4px off the scale","reason":"it looks misaligned"},
-  {"file":"lib/b.ts","line":3,"grade":"minor","summary":"the toast wording is stiff","reason":"reads oddly"}]}' superpowers:requesting-code-review
-rc=0; driver_step_review 151 >/dev/null 2>&1 || rc=$?
-want "a Minor off the screens is still fixed in round 1" "30" "$rc"
-want "no Minor went on a list"                   "0" "$(grep -c . "$FIX/pl.adds")"
-want "the code Minor is what is left to fix"     "lib/b.ts" "$(jq -r '[.findings[].file] | join(" ")' "$(driver_state_dir 151)/steps/review.json")"
-: > "$FIX/pl.adds"
-repair_rec 152
-fix_ai review "$screen" superpowers:requesting-code-review
-out=$(driver_step_review 152 2>&1); rc=$?
-want "a Major on a signed screen still parks for the owner" "24" "$rc"
-want_in "naming it"                              '^Needs the owner: PR #88.*major screens/Home.tsx' "$(driver_state_get 152 park_note)"
-want "and nothing goes on a list"                "" "$(cat "$FIX/pl.adds")"
-jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
-unset DRIVER_APPROVAL_KEPT DRIVER_SCREEN_FINDINGS DRIVER_POLISH_LIST
 
 echo "--- a reviewer that had not reported is run again once, by the driver, and is not a round ---"
 # #13679 (2026-10-22) parked for the owner on "The review subagent had not reported when

@@ -51,9 +51,13 @@ pr() { # <ticket> <sha> [labels,…] [branch] [merge state] [conclusion] — its
        labels:($l|split(",")|map(select(length>0)|{name:.})), mergeStateStatus:$m,
        statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:$c}]}]' > "$FIX/gh/prs-all.json"
 }
-fix_required "Typecheck"   # a repair starts only on a required red (pr-red.sh)
+fix_required "Typecheck"   # only a required red is red (pr-red.sh)
 queue() { local t; for t in "$@"; do bash "$Q" add "$t" >/dev/null; done; }
-queue_repair() { local t; for t in "$@"; do bash "$Q" add "$t" --class repair >/dev/null; done; }
+# queue_resume <ticket…> — queued with this host's unshipped build of it on the driver record: the
+# one case a ticket with an open PR starts (its parked build resumes), so its wait is what holds it.
+queue_resume() { local t; for t in "$@"; do mkdir -p "$STATE/driver/$t"
+  printf '{"ticket":"%s","mode":"build","done":["start","plan","build"]}\n' "$t" > "$STATE/driver/$t/state.json"
+  bash "$Q" add "$t" >/dev/null; done; }
 live() { SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
 spawned() { cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
 STATUS() { printf '## Status\n\n| | |\n|---|---|\n| **Running** | Nothing |\n| Waiting for | %s |\n| Next check | None |\n' "$1"; }
@@ -116,24 +120,24 @@ live >/dev/null; queue 609
 issue 609 "status:ready"; live >/dev/null
 want "reconcile flipping claimed to ready moves nothing" "" "$(spawned)"
 
-fresh; issue 610 "status:in-review"; pr 610 sha-a "needs:human-approval" "" CLEAN FAILURE
+fresh; issue 610 "status:ready"; pr 610 sha-a "needs:human-approval" "" CLEAN FAILURE
 ended 610 claim-610-a "$(STATUS 'Your screen sign-off on the PR')"
-live >/dev/null; queue_repair 610
-pr 610 sha-a "" "" CLEAN FAILURE; issue 610 "status:in-review"; live >/dev/null
-want "the hold taken off the PR: the repair is picked" "610" "$(spawned)"
-fresh; issue 611 "status:in-review"; pr 611 sha-a "" "" CLEAN FAILURE
+live >/dev/null; queue_resume 610
+pr 610 sha-a "" "" CLEAN FAILURE; issue 610 "status:ready"; live >/dev/null
+want "the hold taken off the PR: the resumed build is picked" "610" "$(spawned)"
+fresh; issue 611 "status:ready"; pr 611 sha-a "" "" CLEAN FAILURE
 ended 611 claim-611-a "$(STATUS 'Your sign-off, then CI')"
-live >/dev/null; queue_repair 611; live >/dev/null
+live >/dev/null; queue_resume 611; live >/dev/null
 want "same head, same labels: held"        "" "$(spawned)"
 pr 611 sha-b "" "" CLEAN FAILURE; live >/dev/null
 want "a new commit on the PR: picked"      "611" "$(spawned)"
 # A branch named for the ticket alone, without the prefix, is still its PR.
-fresh; issue 614 "status:in-review"; pr 614 sha-a "" "614/ask-files"
+fresh; issue 614 "status:ready"; pr 614 sha-a "" "614/ask-files"
 ended 614 claim-614-a "$(STATUS 'Your sign-off on the PR')"
-live >/dev/null; queue_repair 614; live >/dev/null
+live >/dev/null; queue_resume 614; live >/dev/null
 want "held while its unprefixed PR has not moved" "" "$(spawned)"
 pr 614 sha-a "" "614/ask-files" DIRTY; live >/dev/null
-want "that PR clashing frees it for the repair" "614" "$(spawned)"
+want "that PR clashing frees it for the resumed build" "614" "$(spawned)"
 
 echo "--- housekeeping is off the start path ---"
 cat > "$BIN/slowhouse" <<'SH'

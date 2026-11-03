@@ -182,7 +182,7 @@ coord_sheet_render() {
   local e="$1" at="$2"
   jq -r --arg when "$(_sheet_when "$at")" --arg owner "$COORD_HOST" --arg at "$at" "$COORD_WHY_JQ"'
     def pri: {"0":"Urgent","1":"High","2":"Normal","3":"Polish"}[tostring] // "No priority";
-    def kind: if .process then "Process fix" elif .class == "repair" then "Red PR to fix" elif .class == "approved-merge" then "Approved, to merge"
+    def kind: if .process then "Process fix"
               else {"half-built":"Half-built","feature":"Feature","polish":"Polish"}[.kind // ""] // "Fix" end;
     def cut: if length > 90 then .[0:89] + "…" else . end;
     (.order | length) as $n

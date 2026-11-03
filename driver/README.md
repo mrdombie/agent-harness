@@ -11,9 +11,8 @@ driver/
 ├── state.sh        the run record — what has to survive the process that wrote it
 ├── ai-step.sh      the one place control is handed to a model, and checked after
 ├── push-requires.sh  the reviews this project's own pre-push insists on
-├── stranded.sh     work a push could not hand over, kept on origin under refs/stranded/
+├── git-actions.sh  the git steps a model may not run, and driver_keep_ref (work kept under refs/stale/)
 ├── steps/          start · plan · build · fix · self-check · compare · review · record · ship · park
-│                   reenter · repair (the repair order)
 └── tests/          every step and every refusal
 ```
 
@@ -113,7 +112,7 @@ every item part. The list, with its parts, is posted on the parent, which closes
 its part closed as completed with its test file on the integration branch, and the
 feature done (closed as completed) once every item passes and the clean-up part merged.
 A mechanical change (`units`, 5-30) fans out like Claude Code's /batch: one part a unit,
-all ready, no list. One item builds in place. A repair, a branch that already has commits,
+all ready, no list. One item builds in place. A branch that already has commits,
 and a part of an earlier split (" — part N of M: " in its title) build as before; a
 part's plan must run its item's test file. A finished build is still never stranded for
 its size: ship counts the branch two-dot and, over `driver.split.maxFiles`, says so in a
@@ -154,11 +153,10 @@ nobody has to answer them and a later run clears them:
 - **The plan's usage limit** (step exit 27, run exit 28). A step's transcript carries
   the CLI's rejection. The reset goes into `$STATE_DIR/usage-hold`, and the
   coordinator spawns nothing until then.
-- **A GitHub read that failed in `start`, `reenter` or `ship`** (exit 26). It is
+- **A GitHub read that failed in `start` or `ship`** (exit 26). It is
   retried `DRIVER_LOOKUP_TRIES` times first.
 - **A claim another run on this host holds** (step exit 29, run exit 28), met by
-  `start` or `reenter`, or by `repair` before it touches the tree and again before
-  it hands over to the model. A step's question that names a claim a peer or
+  `start`, or by a step before it hands over to the model. A step's question that names a claim a peer or
   another run holds is read the same way, never as a question for the PM or the
   owner. That run's claim is left alone.
 
@@ -180,104 +178,41 @@ A requeue adds no label, opens no pull request and asks no question. The record 
 the worktree are kept, so the next run resumes at the step that stopped. The reason
 goes on the run log and the record.
 
-## A repair: `build-ticket <ticket> --repair <brief>`
+## A red or clashing PR is rebuilt, never repaired
 
-A pull request that was built, pushed and handed off can go red or start to
-clash with the integration branch. When that happens a watcher sends it back
-with a brief. The repair is done on that PR's branch. The ticket is not built
-again, so a repair has its own order (`DRIVER_REPAIR_STEPS`):
+There is no repair route. A pull request that goes red on a required check or clashes
+with the integration branch and cannot merge within `coordinator.rebuildAfterMin`
+(default 60) is closed by the coordinator (`scripts/rebuild.sh`), its head kept at
+`refs/stale/<ticket>/pr-<n>`, and its ticket queued at the front as a new build from the
+trunk, with the reviewed plan and what the last build learned as its brief. A red only
+the trunk has too waits for the trunk, and a PR a person holds is never closed.
 
-| # | Step | Who | What it produces |
-|---|---|---|---|
-| 1 | `reenter` | driver | the ticket's one open PR, on its own branch at origin's head, under a claim |
-| 2 | `repair` | driver, then model | the trunk merged in for a clash, the red checks read, one model call when there is something to fix, and each fix proved |
-| 3–7 | `fix` · `self-check` · `review` · `record` · `ship` | as above | the same gates, the same two review rounds, the same verdict |
-
-- **`reenter` replaces `start` and is the always step.** It refuses by name in
-  these cases:
-  - the ticket is closed or held
-  - it has no open PR on a `<prefix><ticket>` branch
-  - it has more than one
-  - a peer holds the claim
-  - the local branch has diverged from origin
-  - the PR list could not be read
-- **`start` never cuts a branch for a ticket that has an open PR.** It refuses
-  by name and points at `--repair`. Building a second branch beside the PR's
-  own is duplicate work and a push the PR never sees.
-- **The brief is never dropped.** It is copied onto the record. A missing or
-  empty brief is a refusal (exit 2). A healing run with no note is
-  `--repair-class <class>`, which writes a brief naming the class.
-  `--brief <file>` is a repair when the ticket has an open PR, and otherwise a
-  build with the brief handed to every AI step (`run_brief` on the record).
-- **The record outranks the PR.** If the ticket's record is an unshipped build,
-  then `--brief`, `--repair` and `--repair-class` all resume that build from the
-  step that parked, with the brief as `run_brief`. A build that parks on a
-  question opens a draft PR, so its answer comes back looking like a repair.
-  Treated as one, it would skip the design compare and the build's own proof,
-  then ship. `owner-question.sh` requeues such a ticket as `new` for the same
-  reason. Only a shipped ticket, or one with no driver record, is repaired on its
-  PR.
-- **A draft the driver did not build is adopted: `build-ticket <ticket> --adopt
-  [--brief <file>]`.** A person's or an earlier prose claim's draft is never
-  readied as a repair and never handed back to the prose claim (the owner,
-  2026-10-22: every build runs on the driver). It walks the repair order on the
-  draft's own branch with an adoption brief (`repair_brief_source` `adopt`) that
-  the repair step's model always reads, the review reads the whole PR rather
-  than the repair's own change, and ship readies it and arms auto-merge only on
-  the review's SHIP after self-check. `--repair`, `--repair-class` and `start`
-  turn into an adoption by themselves when they meet such a draft; the spawner
-  passes `--adopt` outright. `adopted` on the record lasts one run: a later
-  repair of the PR it shipped is a plain repair.
-- **A round is the brief, the PR head and whether it shipped.** The same brief on
-  an unmoved PR resumes. A new round starts when any of these holds:
-  - the brief changed
-  - the round already shipped
-  - the PR's head moved since the round began
-
-  A new round moves the last round's step answers to `steps/archive/` and starts
-  the review and fix counters again.
-- **A clash is merged, never rebased.** A clean merge needs no model. A
-  conflicted one is handed over, and must come back resolved: no unmerged path,
-  no merge in progress, no conflict marker, and the trunk an ancestor of the
-  head.
-- **Every fix carries its proof.** A behaviour fix brings a test, re-run red
-  then green on two of this repair's own commits, by the same proof as `build`
-  and `fix`. A fix no test can pin (a lint rule, a type error, a lockfile) names
-  the gate command that was red. The driver runs that command at the head and
-  reads its exit code, and `self-check` runs every gate after it.
-- **The model is called for a conflict, a red check, an unreadable rollup, or
-  a caller's brief.** For example, an owner's answer on a ticket that has a PR is
-  read even when the PR is green. It may answer `unchanged`, with a reason, but
-  only when nothing is red, nothing clashes, and it committed nothing.
-  `unchanged` parks with a question for a person, never a ship, and it asks once
-  per PR head: the answer, coming back as a new brief at the same head, is acted
-  on. A note-less healing run on a green, clean PR makes no model call. The gates
-  and the review still run, so an approved merge sent here is judged like any
-  other.
-- **A caller's brief reaches every step.** In repair mode the brief goes to fix,
-  self-check and review as well as repair, so the reviewer can judge whether it
-  was met. In a build it goes to every AI step as `run_brief`, and it ends when
-  the ticket ships or a repair round starts.
+- **`--brief <file>` is a build with the brief handed to every AI step** (`run_brief` on
+  the record). A missing or empty brief is a refusal (exit 2).
+- **The record outranks the PR** (agent-harness#675). If the ticket's record is an
+  unshipped build, a run with a brief resumes that build from the step that parked. A
+  build that parks on a question opens a draft PR, so its answer comes back as a brief on
+  a ticket with a PR; the design compare and the build's own proof still run before ship.
+  A record a person or `/claim` moved on from (another branch, the PR made ready, a head
+  the record never saw) is moved aside, and the run does not build over the live PR.
+- **`start` never cuts a branch for a ticket that has an open PR it did not build.** It
+  ends the run with exit 31: no park, no requeue, nothing built. The PR merges, or the
+  coordinator rebuilds it. Its own parked draft whose tree was swept is cut again from
+  origin's copy of its branch and the build resumes. Several open PRs are a person's call.
+- **A "Rebuild:" note starts fresh on any host.** This host's worktree for the ticket is
+  set aside (its commits kept at `refs/stale/<t>/local-<host>-<epoch>`), its driver state
+  is moved aside, and `start` cuts a new tree from the trunk (`DRIVER_FRESH`). A record
+  that says it shipped with no PR open or merged is a fresh build the same way.
+- **Nothing resumes from `refs/stale/`.** Work a push could not hand over (a park's refused
+  push, a branch tip left on this machine, a dead branch tip at ship) is kept there by
+  `driver_keep_ref` so it is never only on one disk, for a person to read.
 - **A step never pushes.** Origin's head for the branch is read before and after
   every AI step, and a step it moved under refuses and parks. That is the
   guarantee. Inside steps, `git push` and `gh pr ready`/`merge`/`create` are also
   refused (a PATH shim), and every brief carries a preface saying a brief's
   push, ready, arm or hand-off instruction is void.
 - **No conflict marker survives an interruption.** A park never commits a merge
-  in progress. `reenter` resumes a recorded tree whose merge of the trunk is
-  unfinished. `repair` and `ship` refuse markers read from the branch's own diff,
-  on every pass.
-- **`ship` lands on the same PR and leaves its words alone.** It does not open a
-  PR or rewrite a title or body. It reports the repair in a comment. The
-  verdict is read before the push, because the PR usually has auto-merge armed,
-  and on it the push is the merge. For the same reason a park in repair mode
-  commits locally and bundles, and does not push.
-
-What a repair does not do:
-- force-push
-- re-run a flaky job
-- repair a PR that does not exist. `--repair` and `--repair-class` refuse by
-  name; a `--brief` on a ticket with no PR builds it instead.
+  in progress, and `ship` refuses markers read from the branch's own diff.
 
 The park's push carries the project's park escape (`PARK_PUSH=1`, or the name in
 `driver.parkPushEnv`) so a pre-push that honours it lets a draft through checks
@@ -303,8 +238,7 @@ even when inherited. A push still refused falls back to a bundle under
   (`self-check.gates.jsonl`). Ship writes them under `## Proof`, with a `Screens:` line
   for a screen change, and two lines: `How it was tested:` and `How to undo it:` (a
   migration the branch adds is named there, since a revert leaves it applied). A body
-  that lacks any of them is never opened, rewritten or pushed onto; a repaired PR keeps
-  its words and gets the section added. The review step is sent the ticket as filed
+  that lacks any of them is never opened, rewritten or pushed onto. The review step is sent the ticket as filed
   and the approved picture beside the diff, in its own session, before the PR opens.
 - **The named Skill actually ran.** Each brief's front matter names one Skill.
   The driver reads the run's transcript and parks the ticket when that Skill call
@@ -314,7 +248,7 @@ even when inherited. A push still refused falls back to a bundle under
   never batched — a gate batched with anything else reports on the shell reaching
   that line. Nothing configured is a refusal, not a pass. Gates and proofs run as
   CI runs them, with the kit's `HARNESS_*` pins stripped from their environment.
-- **A red gate gets one repair round.** The first red self-check on a run goes back
+- **A red gate gets one fix round.** The first red self-check on a run goes back
   to `fix` with each red gate's output as the finding, inside the two-round fix
   ceiling; the fixer answers it in `gateFixes`, and self-check re-running every gate
   is the proof. A second red, a gate that could not run at all (126/127), or no fix
@@ -427,11 +361,10 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 23 | there is no brief for this step |
 | 24 | a refusal gate said no |
 | 25 | a command outran its time limit — a hang is not a failure to retry |
-| 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first repair round, goes back to `fix` |
-| 31 | start found the ticket's one open pull request: the run becomes a repair of it (`build-ticket --repair`), or an adoption when it is a draft the driver did not build, once per run |
-| 32 | the repair read its pull request afresh and nothing is owed (its head holds the trunk, GitHub reads it MERGEABLE, no check on it is red, auto-merge is armed): the round is closed and the run exits 0, still in review, with no park |
+| 30 | rework: the build step's own retry goes back to `build`; a review's Critical or Major, or a red self-check's first fix round, goes back to `fix` |
+| 31 | start found an open pull request for the ticket that this run did not build: nothing is built beside it, no park, no requeue — it merges, or the coordinator rebuilds it fresh (`scripts/rebuild.sh`) |
+| 32 | a step found nothing owed (a ticket split before it built): the run exits 0, with no park |
 | 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
-| 34 | waiting for the base: every red check on the repair's PR fails only in tests outside its diff that fail on the base branch's latest completed run too (`scripts/base-wait.sh`). No label, no park, no question; the ticket goes on `base-waits.tsv` and the coordinator queues the repair again when that check goes green on the base or after `coordinator.baseWaitHours` (6) |
 | 35 | the quick change is bigger than its size (more files than `driver.quick.maxFiles`, a never-quick file, or red gates): the run goes on along the full route from `plan`, with the quick commits kept at `refs/driver/quick/<ticket>`. Never a run's exit; `build-ticket` handles it |
 
 A gate that outruns its limit (25) is tried once more after the machine quietens, its
@@ -439,7 +372,7 @@ limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a sec
 timeout on a loaded machine goes back on the queue (29), on a quiet one it parks.
 
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
-when the call or the configuration was wrong (an unreadable `--repair` brief
+when the call or the configuration was wrong (an unreadable `--brief` brief
 included).
 
 ## Seams
@@ -458,12 +391,11 @@ layer's are: eight scripts that shelled out inline could not be tested at all.
 | `DRIVER_CMD_TIMEOUT` | how long a gate or test command may run |
 | `DRIVER_PERMISSION_MODE` | the `--permission-mode` every step runs with (default `auto`; `driver.permissionMode`) |
 | `DRIVER_DISALLOWED_TOOLS` | tools left out of every step (`driver.disallowedTools`; default: the ask/plan/schedule/notify tools a headless step never calls). Every step also runs with no connectors (`--strict-mcp-config`). Each step's cost, turns, context size and brief length are recorded under `.usage` in `state.json`, and `.spend` is their sum — measured, not capped |
-| `DRIVER_STEP_BUDGET_USD` | unset by default. When set, every step runs with `--max-budget-usd` at that figure — a runaway stop per step. `scripts/spawn-claim.sh` sets it to the run's `CLAIM_BUDGET_USD`, since it starts this driver for every named-ticket build and repair |
+| `DRIVER_STEP_BUDGET_USD` | unset by default. When set, every step runs with `--max-budget-usd` at that figure — a runaway stop per step. `scripts/spawn-claim.sh` sets it to the run's `CLAIM_BUDGET_USD`, since it starts this driver for every named-ticket build |
 | `DRIVER_TOOLS` | the tools a step loads, as an allowlist (`driver.tools`; default: `Bash Read Edit Write Grep Glob Skill Agent`, the eight any step of trial 3 called; a step may narrow it with `steps.<step>.tools` in `briefs/facts.json`; `default` loads Claude Code's whole set and falls back to the block list above). Every schema loaded is re-sent on every call — ~14k tokens a call measured (#11172) |
 | `DRIVER_PROJECT_INSTRUCTIONS` | `on-demand` (default): the tree's CLAUDE.md / AGENTS.md are excluded by path (`claudeMdExcludes`) and named in the system prompt rather than preloaded; every setting source still loads, so the project's skills, agents and hooks are unchanged — ~17k tokens a call on the origin project. `preload` restores auto-loading (`driver.projectInstructions`) |
 | `DRIVER_USER_MEMORY` | `skip` (default): the operator's user-level CLAUDE.md (`$CLAUDE_CONFIG_DIR` or `~/.claude`) is excluded by path (`claudeMdExcludes`) from every step and the size call, also under `preload`; user settings still load, so the user-scope plugin, its SessionStart rules and its guard hooks are unchanged — 19,526 → 8,502 starting tokens measured. `load` restores it (`driver.userMemory`) |
-| `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check; `reenter` under `--repair`) |
-| `DRIVER_REPAIR_STEPS` | the order under `--repair` (default `reenter repair fix self-check review record ship`) |
+| `DRIVER_ALWAYS_STEPS` | steps that re-run on every pass (`start`, the re-entry check) |
 | `HARNESS_DRIVER_RUN` | exported per step; the kit's Stop hooks stand down on it |
 | `SWARM_GH` · `SWARM_NOW` | inherited: the GitHub CLI and the clock |
 

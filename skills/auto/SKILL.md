@@ -288,12 +288,14 @@ Then **take the top row and do the work.** Do not ask. Do not present options.
 1. **Your own in-flight work** — a live claim ref on *this* machine with a
    worktree and no PR. Finish that before anything else; it is the cheapest
    thing on the board and the likeliest to rot.
-2. **Open PR, red checks, no live claim.** First ask whether the checks *ran*
-   (step count). Then take the fix lock — `"${CLAUDE_PLUGIN_ROOT}/scripts/fix-lock.sh" acquire <pr>`.
-   Exit 10 means another session is already fixing it: skip the row. Then: merge `develop` in,
-   re-gate, `/agent-harness:finish`, and `fix-lock.sh release <pr>` once the fix is pushed. The
-   coordinator tick does not judge a red PR while a live lock is held on it. Rebuilding it from
-   scratch is the exact failure the resume path exists to prevent.
+2. **Open PR, red checks, no live claim.** Not yours to patch: rebuild, don't repair. While a
+   coordinator runs, its rebuild pass (`scripts/rebuild.sh`) closes a PR still red on a required
+   check, or still clashing, after `coordinator.rebuildAfterMin` (60) and queues its ticket fresh
+   from `develop` with the reviewed plan as its brief. A red only `develop` has too waits for
+   `develop`. With no coordinator running, do the same by hand: keep the head
+   (`git push origin <sha>:refs/stale/<ticket>/pr-<n>`), close the PR saying why, and build the
+   ticket fresh with `/agent-harness:claim <ticket>`. First ask whether the checks *ran* (step count):
+   a red that never ran is the runner row, not the PR's.
    - **A green PR that is merely behind is not stranded on a repo with an update bot**
      (`merge.updateBehind: bot`). Read that PR's own state — `gh pr view <n> --json
      mergeStateStatus,mergeable`; the list scan above reports UNKNOWN — and pass it to

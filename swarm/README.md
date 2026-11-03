@@ -14,8 +14,8 @@ hand, and 58 launchers written into `/tmp` — none of which had a test.
 | `time.sh` | The two clock conversions, on either `date`. Shared with the test fixture. |
 | `queue.sh` | One queue. `add` · `list` · `next` · `remove` · `clear` · `drain`. |
 | `scheduler.sh` | One pass: top each programme's queue up, drain it to the cap. |
-| `repair-watch.sh` | Repair a red or clashing pull request · unblock · restart after an outage · raise the alarm. |
-| `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. It also shows the coordinator's queue (`$STATE_DIR/coordinator/queue.json`, in run order, with notes) and a banner while spawns are held. It leads with the release: "Release: N tickets", done · left · %, the left split into product and our own tooling (the coordinator's `coordinator.toolingLabels` / `toolingScopes`, handed over by `live-view.sh`), and a muted line of what is outside it (lower priority, post-launch, wrappers, parked). The release is the open tickets at `swarm.releasePriorities`, less `swarm.afterLaunchLabel`, the `swarm.postLaunchMilestones`, parked work and the wrappers; done, added and the pace count the same population (one batched read of every open ticket, kept in `$SWARM_DIR/board.json` at most once in five minutes; one call of search counts kept fifteen minutes; the wrappers and post-launch milestone rows the search cannot leave out, read beside it and taken off). Then today's counts; how the build is doing — the newest row of `scripts/build-measures.sh` (merged per day, reverted share, reviews to pass, open-to-merge time, finding tickets, feature lead time, each naming what it counts) beside the frozen baseline in `measures-baseline.jsonl`, the script run from here at most hourly; one row per builder (a repair run shows its own step), Needs you — every open issue and pull request carrying one of `swarm.ownerLabels` — and the machine. |
+| `repair-watch.sh` | Warn on a PR red only on a check that warns until the release · unblock · restart after an outage · raise the alarm. It sends no agent to a red or clashing PR: the coordinator rebuilds one that cannot merge (`scripts/rebuild.sh`). |
+| `live-view.sh` + `live-view/` | The page and the snapshot every other part reads. It also shows the coordinator's queue (`$STATE_DIR/coordinator/queue.json`, in run order, with notes) and a banner while spawns are held. It leads with the release: "Release: N tickets", done · left · %, the left split into product and our own tooling (the coordinator's `coordinator.toolingLabels` / `toolingScopes`, handed over by `live-view.sh`), and a muted line of what is outside it (lower priority, post-launch, wrappers, parked). The release is the open tickets at `swarm.releasePriorities`, less `swarm.afterLaunchLabel`, the `swarm.postLaunchMilestones`, parked work and the wrappers; done, added and the pace count the same population (one batched read of every open ticket, kept in `$SWARM_DIR/board.json` at most once in five minutes; one call of search counts kept fifteen minutes; the wrappers and post-launch milestone rows the search cannot leave out, read beside it and taken off). Then today's counts; how the build is doing — the newest row of `scripts/build-measures.sh` (merged per day, reverted share, reviews to pass, open-to-merge time, finding tickets, feature lead time, each naming what it counts) beside the frozen baseline in `measures-baseline.jsonl`, the script run from here at most hourly; one row per builder, Needs you — every open issue and pull request carrying one of `swarm.ownerLabels` — and the machine. |
 | `hold-status.sh` | Whether the owner's pause or the plan's usage limit holds spawns, why and until when, as JSON — the same functions the coordinator decides with. |
 | `report.sh` | One screen, one JSON, one push. |
 | `status-line.sh` | The line at the bottom of every Claude Code window. `--install` wires it up. When the live view does not answer it shows the coordinator's last check (`last check 10:52 · 3 building · next 10:57`), or `coordinator silent since 10:40` past ten minutes. |
@@ -166,8 +166,9 @@ the thing.
   read as zero agents, so the scheduler filled every slot on a full machine.
   A snapshot older than two minutes is discarded and takes the same path. The
   status line answers the same way, in words: `swarm view not answering`.
-- **A stop after three repairs is a label, not a count.** The count expired when
-  the 24-hour window rolled and sent a fourth agent.
+- **No agent is sent to a red pull request.** A repair re-entered a stale branch and
+  guessed; one that cannot merge within `coordinator.rebuildAfterMin` is closed and
+  its ticket built fresh by the coordinator instead.
 - **Nothing leaves the machine that a person has not seen.** The reporter sends
   step labels; a step whose text is a bare command becomes "Running a command in
   its workspace", and anything token-shaped is replaced behind that.
@@ -201,7 +202,6 @@ environment variable of the same name in capitals. The defaults name no project.
 | `swarm.progressSec` | 60 | How often the step and plan facts are re-read |
 | `swarm.quietSec` | 1200 | An agent silent this long is stuck |
 | `swarm.idleMin` | 20 | Nothing running this long, with work waiting, is a stall |
-| `swarm.repairsPerPass` | 2 | Repairs started in one pass |
 | `swarm.budgetUsd` | 150 | The runaway guard on a spawn |
 | `swarm.alarmLabel` | `swarm:stalled` | The label the one alarm issue carries |
 | `swarm.alarmMention` | — | Who the alarm mentions |

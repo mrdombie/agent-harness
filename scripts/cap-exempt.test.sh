@@ -2,7 +2,7 @@
 # cap-exempt.test.sh — over the open-work cap, a P0 starts anyway, whatever its size.
 #
 # The owner, 2026-10-23: urgent tickets always start, even over coordinator.openPrCap,
-# like process fixes, repairs and quick work (coordinator.capExemptPriorities, default
+# like process fixes and quick work (coordinator.capExemptPriorities, default
 # ["P0"]). The live #13818, a P0 sized project, waited all night behind the cap while
 # quick tickets started past it. The host cap, the tooling cap, release scope and the
 # machine's room still apply. These cases run the real tick on the real size rules:
@@ -20,7 +20,6 @@ C="$STATE/coordinator"
 
 # The housekeeping, the judge and the disk guard are other suites' cases: here each is a no-op.
 for s in reconcile sweep wtsweep claude notify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
-printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
 cat > "$BIN/diskguard" <<'SH'
 #!/usr/bin/env bash
 case "$1" in tick) printf '500\tdisk: 500 GB free\n' ;; limits) echo "30 50" ;; free) echo 500 ;; esac
@@ -28,7 +27,7 @@ SH
 chmod +x "$BIN/diskguard"
 printf '%s\n' 'live_view_watchdog() { :; }' > "$FIX/watchdog-stub.sh"
 export COORDINATOR_DISK_GUARD="$BIN/diskguard" COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock" COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
@@ -79,11 +78,11 @@ want_in "the tick says the P0 went past the cap"   'cap: over \(12/10\) — P0 #
 want_in "the P1 keeps its skip line"               'skip #802 \(new\): over the open-work cap \(12/10\) and sized project' "$out"
 want_not_in "the P0 has no skip line"              'skip #801' "$out"
 
-echo "--- over the cap: a P0 ranks with healing by priority; quick work comes after ---"
-fresh; open_prs 12; fix_issue 803 OPEN "status:in-review,P1"; bash "$Q" add 803 --class repair >/dev/null; fix_pr_for 803
+echo "--- over the cap: a P0 first, then quick work; a ticket whose PR is open waits ---"
+fresh; open_prs 12; fix_issue 803 OPEN "status:in-review,P1"; bash "$Q" add 803 --class repair >/dev/null 2>&1; fix_pr_for 803
 ticket 804 "status:ready,P2" "$CONFIG_BODY"; ticket 805 "status:ready,P0" "$SCHEMA"
 out=$(tick)
-want "the P0 first, then the P1 repair, then the quick one" "805 803 804" "$(spawned)"
+want "the P0 first, then the quick one; the P1 with an open PR does not start" "805 804" "$(spawned)"
 want "only the quick one is a quick start"                  "804" "$(bypassed)"
 
 echo "--- the host cap still limits P0 starts ---"

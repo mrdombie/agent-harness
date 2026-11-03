@@ -17,9 +17,9 @@
 # and several it can't; the launchd sweep is the backstop for the rest.
 #
 # Who builds: every unattended run is the step driver (driver/build-ticket; the owner,
-# 2026-10-22) — a new build, a repair or approved-merge run (build-ticket --repair, on
-# the open PR), a run a caller hands a brief (build-ticket --brief), and a draft PR the
-# driver did not build (build-ticket --adopt). The prose flow (/agent-harness:claim)
+# 2026-10-22) — a new build, and a run a caller hands a brief (build-ticket --brief: a
+# resume, an owner's answer, a rebuild note). No run repairs an open PR: one that cannot
+# merge is closed and rebuilt fresh by the coordinator (scripts/rebuild.sh). The prose flow (/agent-harness:claim)
 # runs only for `--fg` pick-next, where a person is watching, and when harness.json
 # sets `swarm.builder: "prose"` — which an unattended spawn warns about, loudly.
 #
@@ -137,38 +137,12 @@ if [ -n "$TICKET" ]; then
     prose)  BUILDER_WHY="swarm.builder is prose" ;;
     *) echo "spawn-claim: swarm.builder is '$BUILDER' — want driver or prose" >&2; exit 2 ;;
   esac
-  # A HEALING RUN OR A BRIEFED RUN STAYS ON THE DRIVER, and takes its brief with it.
-  # A repair or approved-merge run works the ticket's open PR: build-ticket --repair
-  # re-enters that PR's own branch, never a fresh build. Any other run a caller hands
-  # a brief (a repair watcher's brief, an owner's answer, a resume after a cut) is
-  # build-ticket --brief: a repair when the ticket has an open PR, otherwise a build
-  # with the brief in front of every step. No unattended run falls back to prose.
-  if [ "$BUILDER" = driver ]; then
-    case "$CLASS" in
-      repair|approved-merge)
-        DRIVER_MODE=repair; BUILDER_WHY="a $CLASS run: the driver repairs its open PR" ;;
-      *)
-        if [ "$CALLER_BRIEF" = 1 ]; then
-          DRIVER_MODE=brief; BUILDER_WHY="the caller sent a brief: the driver carries it (a repair when the ticket has an open PR)"
-        fi ;;
-    esac
+  # A BRIEFED RUN STAYS ON THE DRIVER, and takes its brief with it (build-ticket --brief):
+  # an owner's answer, a resume after a cut, a rebuild note. No unattended run falls back to prose.
+  if [ "$BUILDER" = driver ] && [ "$CALLER_BRIEF" = 1 ]; then
+    DRIVER_MODE=brief; BUILDER_WHY="the caller sent a brief: the driver carries it"
   fi
 fi
-# A DRAFT PR THE DRIVER NEVER BUILT IS NOT A REPAIR: readied and armed as one, it would
-# land work its author left unfinished. The driver ADOPTS it (build-ticket --adopt): it
-# finishes it on the draft's branch, reviews the whole PR, and readies it only when its
-# own gates pass. A draft the driver's own build left (a park) resumes that build.
-if [ "$BUILDER" = driver ] \
-   && ! jq -e '(.done // []) | index("start") != null' "${DRIVER_DIR:-$STATE_DIR/driver}/$TICKET/state.json" >/dev/null 2>&1 \
-   && [ -f "$SCRIPT_DIR/gh-batch.sh" ] && . "$SCRIPT_DIR/branch-ticket.sh" \
-   && _draft=$(bash -c '. "$1" || exit 1; gh_open_prs "$2"' _ "$SCRIPT_DIR/gh-batch.sh" "${SWARM_PRS_MAX_AGE:-300}" 2>/dev/null \
-        | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$TICKET" \
-            "$BRANCH_TICKET_JQ"'[.[] | select((.headRefName | branch_is_ticket($pre; $t)) and .isDraft == true) | .number] | first // empty' 2>/dev/null) \
-   && [ -n "$_draft" ]; then
-  DRIVER_MODE=adopt
-  BUILDER_WHY="its open PR #$_draft is a draft the driver did not build: the driver adopts it (build-ticket --adopt), never a repair"
-fi
-unset _draft
 # A prose builder for an unattended run comes only from the config, and says so loudly.
 PROSE_WARN=""
 if [ "$BUILDER" = prose ] && [ "$FG" -eq 0 ]; then
@@ -186,17 +160,8 @@ fi
 driver_args() {
   DRIVER_ARGS=("$TICKET")
   case "$DRIVER_MODE" in
-    repair)
-      if [ -n "$CALLER_TEXT" ]; then
-        printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--repair "$1")
-      else
-        DRIVER_ARGS+=(--repair-class "$CLASS")
-      fi ;;
     brief)
       printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--brief "$1") ;;
-    adopt)
-      DRIVER_ARGS+=(--adopt)
-      if [ -n "$CALLER_TEXT" ]; then printf '%s\n' "$CALLER_TEXT" > "$1"; DRIVER_ARGS+=(--brief "$1"); fi ;;
   esac
 }
 

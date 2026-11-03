@@ -47,7 +47,7 @@
 # visible to the person reading it.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 
 driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
   local t="${1:?driver_park: need a ticket}" reason="${2:-a refusal}" question="${3:-}"
@@ -64,7 +64,7 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
     cause=driver; driver_say "   park: $RELEASE_CRITIC_OFF — a question about it goes to nobody"
   fi
   local oq="${DRIVER_OWNER_QUESTION:-$KIT_ROOT/scripts/owner-question.sh}"
-  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" repair_note="" merge_note="" park_ref="" strand_note="" host
+  local wt branch done_list pushed=0 staged="" ctype cout crc=0 commit_note="" bundle_note="" push_note="" merge_note="" park_ref="" keep_note="" host
   export DRIVER_TICKET="$t"
   wt=$(driver_state_get "$t" worktree)
   branch=$(driver_state_get "$t" branch)
@@ -99,42 +99,19 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
     # An earlier run's commits on origin's copy of the branch refuse the push below
     # ("fetch first"), so they are merged in first, as ship does. A conflict leaves
     # the tree as it was: the push is refused and the bundle keeps the work.
-    if [ -z "$merge_note" ] && [ "$(driver_state_get "$t" mode)" != repair ] \
+    if [ -z "$merge_note" ] \
        && ! driver_take_origin "$t" "$wt" "$branch" "origin/$INTEGRATION_BRANCH"; then
       driver_say "   park: origin's $branch has an earlier run's commits that conflict in $DRIVER_TAKE_WHY — not merged"
     fi
-    local held_pushed=0
-    if [ "$(driver_state_get "$t" mode)" = repair ] && _driver_park_held "$(driver_state_get "$t" pr)"; then
-      # A HELD PR CANNOT MERGE ON A PUSH: the hold label keeps its required approval
-      # check red whatever is armed, so the repair is pushed for CI and the critic.
-      if driver_push "$t" "$wt" "$branch" park; then
-        pushed=1; held_pushed=1
-        repair_note="This repair was pushed: pull request #$(driver_state_get "$t" pr) carries \`${HOLD_LABEL:-needs:human-approval}\`, so its approval check stays red and the push cannot merge it. CI and the critic re-run on it."
-        driver_say "   park: the repair is pushed — PR #$(driver_state_get "$t" pr) carries ${HOLD_LABEL:-needs:human-approval}, so a push cannot merge it"
-      else
-        driver_say "   park: the branch could not be pushed: $DRIVER_PUSH_WHY"
-        bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
-        [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
-        _driver_park_strand "$t" "$wt" "$branch"
-      fi
-    elif [ "$(driver_state_get "$t" park_split)" = 1 ]; then
+    if [ "$(driver_state_get "$t" park_split)" = 1 ]; then
       # SPLIT NEEDED: the branch is over the size cap, so it is neither pushed nor opened
-      # as a pull request. The work is kept on a stranded ref and in a bundle.
+      # as a pull request. The work is kept on a refs/stale/ ref and in a bundle.
       driver_state_set "$t" park_split ""
-      repair_note="This change was NOT pushed: it is over driver.split.maxFiles, so it is split instead. The work is committed in $wt and kept on a stranded ref."
+      push_note="This change was NOT pushed: it is over driver.split.maxFiles, so it is split instead. The work is committed in $wt and kept on a refs/stale/ ref for reference."
       driver_say "   park: split needed — the branch is not pushed and no pull request is opened"
       bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
       [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
-      _driver_park_strand "$t" "$wt" "$branch"
-    elif [ "$(driver_state_get "$t" mode)" = repair ]; then
-      # A REPAIR'S PARK IS NOT PUSHED. Its pull request is usually ready with
-      # auto-merge armed, so a push there is a merge — of the work the park exists
-      # to stop. It stays committed in the tree, and bundled beside it.
-      repair_note="This repair was NOT pushed: pull request #$(driver_state_get "$t" pr) may have auto-merge armed, so a push would merge it. The work is committed in $wt."
-      driver_say "   park: a repair is not pushed — its pull request may have auto-merge armed"
-      bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
-      [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
-      _driver_park_strand "$t" "$wt" "$branch"
+      _driver_park_keep "$t" "$wt" "$branch"
     elif driver_push "$t" "$wt" "$branch" park; then
       pushed=1
     else
@@ -146,11 +123,11 @@ driver_park() { # <ticket> <reason> [question] [cause: person|pm|driver]
       # commits, restorable with `git fetch <file> <branch>`, and it costs a second.
       bundle_note=$(_driver_park_bundle "$t" "$wt" "$branch")
       [ -z "$bundle_note" ] || driver_say "   park: $bundle_note"
-      _driver_park_strand "$t" "$wt" "$branch"
+      _driver_park_keep "$t" "$wt" "$branch"
     fi
   fi
 
-  if [ "$pushed" -eq 1 ] && [ "${held_pushed:-0}" -eq 0 ]; then
+  if [ "$pushed" -eq 1 ]; then
     swarm_gh pr create --repo "$REPO_SLUG" --draft \
       --base "$INTEGRATION_BRANCH" --head "$branch" \
       --title "#$t: parked — $reason" \
@@ -199,12 +176,12 @@ $(if [ "$cause" = "person" ] && [ -f "$oq" ]; then
       "${question:-see the step output on the run log}"
   fi)
 
-${repair_note:-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}}
+${push_note:-${branch:+Branch \`$branch\`$([ "$pushed" -eq 1 ] && echo " is pushed; a draft pull request is open." || echo " could NOT be pushed. The pre-push said: ${DRIVER_PUSH_WHY:-nothing it kept}")}}
 $(if [ "$pushed" -ne 1 ] && [ -n "$park_ref" ]; then
-    printf '📌 The work is on origin as `%s` — a backup ref, not a branch: no workflow, auto-merge or pull request sees it, and `%s` did not move. The next run on any machine resumes from it; by hand: `git fetch origin %s && git checkout -B %s FETCH_HEAD`.' "$park_ref" "$branch" "$park_ref" "$branch"
+    printf '📌 The work is on origin as `%s` — a backup ref, not a branch: no workflow, auto-merge or pull request sees it, and `%s` did not move. Nothing resumes from it; to take it by hand: `git fetch origin %s && git checkout -B %s FETCH_HEAD`.' "$park_ref" "$branch" "$park_ref" "$branch"
   elif [ "$pushed" -ne 1 ] && [ -n "$branch" ]; then
     printf '📌 The work is only on machine `%s`, in `%s`.' "$host" "$wt"
-    [ -z "$strand_note" ] || printf ' The backup to origin never landed: %s' "$strand_note"
+    [ -z "$keep_note" ] || printf ' The backup to origin never landed: %s' "$keep_note"
   fi)
 $(if [ -n "$draft_note" ] && [ "$draft_rc" -ne 0 ]; then printf '⚠ %s' "$draft_note"; elif [ -n "$draft_note" ]; then printf '🔒 %s, so it cannot land until the driver resumes and finishes it.' "$draft_note"; fi)
 $(a=$(driver_state_get "$t" archived_ref); [ -z "$a" ] || printf '🗄 Origin'"'"'s earlier tip of `%s` (no open pull request used it) is kept as `%s`: `git fetch origin %s`.' "$branch" "$a" "$a")
@@ -303,28 +280,20 @@ _driver_park_bundle() { # <ticket> <tree> <branch>
   fi
 }
 
-# _driver_park_strand <ticket> <tree> <branch> — the commits the push could not hand
-# over, to refs/stranded/ on origin (stranded.sh). A bundle is on this machine's disk
-# only. Sets park_ref for the brief.
-# _driver_park_held <pr> — 0 when a fresh read shows the PR carries the hold label, whose
-# required approval check stays red until a person clears it; 1 otherwise or unreadable.
-_driver_park_held() {
-  [ -n "$1" ] || return 1
-  swarm_gh pr view "$1" --repo "$REPO_SLUG" --json labels 2>/dev/null \
-    | jq -e --arg h "${HOLD_LABEL:-needs:human-approval}" 'any(.labels[]?; .name == $h)' >/dev/null 2>&1
-}
-
-_driver_park_strand() {
+# _driver_park_keep <ticket> <tree> <branch> — the commits the push could not hand
+# over, kept on origin under refs/stale/ (driver_keep_ref, git-actions.sh) for reference:
+# a bundle is on this machine's disk only. Nothing resumes from it. Sets park_ref for the brief.
+_driver_park_keep() {
   local n
   n=$(git -C "$2" rev-list --count "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)
   [ "${n:-1}" != 0 ] || return 0
   ! git -C "$2" merge-base --is-ancestor HEAD "origin/$3" 2>/dev/null || return 0   # origin's branch has it
-  if driver_stranded_push "$1" "$2"; then
-    park_ref="$DRIVER_STRANDED_REF"
+  if driver_keep_ref "$1" "$2"; then
+    park_ref="$DRIVER_KEPT_REF"
     driver_state_set "$1" park_ref "$park_ref"
-    driver_say "   park: the work is on origin as $park_ref — the next run on any machine resumes from it"
+    driver_say "   park: the work is kept on origin as $park_ref, for reference"
   else
-    strand_note="${DRIVER_STRANDED_WHY:-no stranded ref was made}"
-    driver_say "   park: $strand_note — the work stays on $host in $2"
+    keep_note="${DRIVER_KEPT_WHY:-no kept ref was made}"
+    driver_say "   park: $keep_note — the work stays on $host in $2"
   fi
 }

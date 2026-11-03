@@ -141,8 +141,9 @@ driver_standard_answer() { # <ticket> <step> <text> [kind]
   SA_ANSWER=$(jq -r --arg k "$cls" '.classes[$k].answer // ""' <<<"$s")
   SA_ACTION=$(jq -r --arg k "$cls" '.classes[$k].action // ""' <<<"$s")
   case "$SA_ACTION" in carry|commit-carry|base-wait|parent-wait|dependency-wait|already-done) : ;; *) SA_CLASS=""; return 1 ;; esac
-  # No pull request yet: nothing to hold, so the base's red is left to the base and the step carries on.
-  if [ "$SA_ACTION" = base-wait ] && [ -z "$(driver_state_get "$t" pr)" ]; then
+  # The base's red is left to the base and the step carries on: a PR CI then finds red only
+  # where the base is red waits in the coordinator's rebuild pass (scripts/rebuild.sh).
+  if [ "$SA_ACTION" = base-wait ]; then
     SA_ACTION=carry; SA_ANSWER="$SA_ANSWER There is no pull request to hold yet, so carry on with this change and leave the base's red alone; CI is the gate."
   fi
   # (f) every ticket the question names is what this one waits for; a range "#a–#b" is each.

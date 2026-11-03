@@ -117,11 +117,12 @@ cat > "$STATE/coordinator/queue.json" <<'JSON'
 JSON
 s=$(snap)
 want "four queued"              "4" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
-want "repair first, then merge, then new in place" "702 703 701 704" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
-want "the pinned note travels"  "resume the worktree" "$(printf '%s' "$s" | jq -r '.queue.tickets[0].note')"
+want "an older repair or approved-merge row is new: all in place" "701 702 703 704" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "  and shown as new"       "new new new new" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].class] | join(" ")')"
+want "the pinned note travels"  "resume the worktree" "$(printf '%s' "$s" | jq -r '.queue.tickets[1].note')"
 want "an entry without a scope takes the queue's" "project:widgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].scope')"
 want "an entry's own scope wins" "project:gadgets" "$(printf '%s' "$s" | jq -r '.queue.tickets[3].scope')"
-want "it carries a title"       "Ticket 701" "$(printf '%s' "$s" | jq -r '.queue.tickets[2].title')"
+want "it carries a title"       "Ticket 701" "$(printf '%s' "$s" | jq -r '.queue.tickets[0].title')"
 cat > "$STATE/coordinator/queue.json" <<'JSON'
 {"scope":"widgets","label":"project:widgets","tickets":[
  {"n":711,"class":"repair","prin":3,"note":""},
@@ -133,8 +134,8 @@ cat > "$STATE/coordinator/queue.json" <<'JSON'
  {"n":717,"class":"new","prin":3,"top":true,"note":""}]}
 JSON
 s=$(snap)
-want "a P0 first; then the PM's top; priority across classes; a resume leads only its own priority" \
-  "715 717 714 713 712 716 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "a P0 first; then the PM's top; then priority and kind, whatever class an older row wrote; a resume leads only its own priority" \
+  "715 717 713 714 712 716 711" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
 
 echo "--- urgent first, then focus areas and screens, as the coordinator starts them ---"
 # Owner, 2026-10-30: 10 P0s sat at 36-45 behind focus-area and pinned work, and the page put
@@ -178,10 +179,9 @@ cat > "$STATE/coordinator/snapshot/issues.json" <<'JSON'
  "725":{"number":725,"state":"OPEN","labels":["status:in-review","needs:human-approval"]}}
 JSON
 s=$(snap)
-want "closed, batched and held new rows are not listed; a held PR's repair and an unread row are" \
-  "724 725 720 726" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
-want "the count is the rows that can start" "4" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
-want "a new row with a REPAIR brief is shown as a repair" "repair" "$(printf '%s' "$s" | jq -r '.queue.tickets[] | select(.ticket=="725") | .class')"
+want "closed, batched and held rows are not listed, an older repair row too; an unread row is" \
+  "720 726" "$(printf '%s' "$s" | jq -r '[.queue.tickets[].ticket] | join(" ")')"
+want "the count is the rows that can start" "2" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
 rm -f "$STATE/coordinator/snapshot/issues.json"
 echo "--- process fixes are listed first and counted ---"
 cat > "$STATE/coordinator/queue.json" <<'JSON'
@@ -204,13 +204,13 @@ rm -f "$STATE/coordinator/queue.json"
 s=$(snap)
 want "no queue file: an empty queue, not an error" "0" "$(printf '%s' "$s" | jq '.queue.tickets | length')"
 
-echo "--- the coordinator's ceiling and its healing / new split are served ---"
+echo "--- the coordinator's ceiling and its live builds are served ---"
 want "no capacity file: null, not an error" "null" "$(printf '%s' "$s" | jq '.capacity')"
-printf '{"live":7,"ceiling":8,"room":true,"reading":"cpu idle 31%%, 9 GB free","cap":null,"healing":{"slots":2,"live":1},"new":{"slots":6,"live":6},"redsWaiting":2}\n' \
+printf '{"live":7,"ceiling":8,"room":true,"reading":"cpu idle 31%%, 9 GB free","cap":null,"new":{"slots":6,"live":6}}\n' \
   > "$STATE/coordinator/capacity.json"
 s=$(snap)
 want "the ceiling and the reading" "8 cpu idle 31%, 9 GB free" "$(printf '%s' "$s" | jq -r '"\(.capacity.ceiling) \(.capacity.reading)"')"
-want "the split"                   "6 1 2" "$(printf '%s' "$s" | jq -r '"\(.capacity.new.live) \(.capacity.healing.live) \(.capacity.redsWaiting)"')"
+want "the live builds"             "6 6" "$(printf '%s' "$s" | jq -r '"\(.capacity.new.live) \(.capacity.new.slots)"')"
 rm -f "$STATE/coordinator/capacity.json"
 
 echo "--- a hold on spawns is shown, with why and until when ---"
@@ -988,9 +988,7 @@ s=$(psnap)
   && ok "planted: the split not served → the page shows none → red" || bad "planted: the split not served and the test cannot see it"
 rm -f "$BOARD" "$TREND" "$WRAPPERS" "$STATE/swarm/prs.json" "$STATE"/runs/claim-1113-a.json
 
-echo "--- a repair run shows its own step, not the earlier build's last one ---"
-# Measured 2026-10-20 18:40Z: a repair of a green PR read "step 7 of 7 · Merged"
-# while it was in self-check — the bar was read from the build and the PR.
+echo "--- a finished build waiting to merge is at its last step ---"
 rm -f "$STATE"/runs/claim-* "$STATE"/logs/claim-*
 run 1301 "$$"
 pcache() { # <driver record> — what the progress refresh last read for 1301
@@ -1000,18 +998,6 @@ rsnap() { SWARM_PROGRESS_MS=999999999999999 BRANCH_PREFIX=tkt- snap; }
 pcache '{"mode":"build","done":["start","plan","build","self-check","review","ship"]}'
 want "a finished build waiting to merge is at its last step" "7 Merged" \
   "$(rsnap | jq -r '.live[] | select(.ticket=="1301") | .progress | "\(.step) \(.steps[.step - 1].name)"')"
-pcache '{"mode":"repair","done":["start","plan","build","reenter","repair","fix"]}'
-s=$(rsnap)
-want "a repair after that build, in self-check, is at its check" "4 of 7 Check true" \
-  "$(printf '%s' "$s" | jq -r '.live[] | select(.ticket=="1301") | .progress | "\(.step) of \(.of) \(.steps[.step - 1].name) \(.repair)"')"
-want_in "and the page says so"                            '^building=.*Repair · 4 of 7 · <b>Checking</b>' "$(page_render "$LV")"
-pcache '{"done":["start","plan","build","reenter"]}'
-want "a reenter with no mode on record is a repair too"    "2 Repair" \
-  "$(rsnap | jq -r '.live[] | select(.ticket=="1301") | .progress | "\(.step) \(.steps[.step - 1].name)"')"
-pcache '{"mode":"repair","done":["start","plan","build","reenter","repair","fix"]}'
-plant progress.mjs "  if (!(driver && (driver.mode === 'repair' || done.includes('reenter')))) return p" "  return p"
-got=$(SWARM_PROGRESS_MS=999999999999999 psnap | jq -r '.live[] | select(.ticket=="1301") | .progress.step')
-[ "$got" != "4" ] && ok "planted: the repair read from the build → step $got → red" || bad "planted: the repair's own step dropped and the test cannot see it"
 rm -f "$STATE/swarm/progress.json" "$STATE"/runs/claim-1301-a.json
 
 echo "--- another machine's builds show beside this one's, each with its machine ---"

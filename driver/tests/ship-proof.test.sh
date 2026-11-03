@@ -2,7 +2,7 @@
 # ship-proof.test.sh — ship puts the run's proof on the pull request, and refuses one without it.
 # The body carries the commands the driver ran with their output, and two lines: how it
 # was tested, how to undo it. A body without them is never
-# opened, rewritten or pushed onto; a repair's PR keeps its words and gets them added.
+# opened, rewritten or pushed onto.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -73,32 +73,5 @@ out=$(driver_step_ship 204 2>&1); rc=$?
 want "it ships"                               "0" "$rc"
 want_in "the rewrite carries the proof"       'pr edit 77 .*--body .*## Proof.*How it was tested:.*How to undo it:' "$(log)"
 rm -f "$FIX/gh/prs.json"
-
-echo "--- a repair keeps the PR's words and adds the proof it lacks ---"
-setup_wt 205; proved 205
-driver_state_set 205 mode repair; driver_state_set 205 pr 88
-for st in reenter repair fix self-check review record; do driver_state_done 205 "$st"; done
-printf '[{"number":88}]\n' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-88"; : > "$FIX/pr-created-tkt-205_work"
-printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\nCloses #205"}\n' > "$FIX/gh/pr-view.json"
-: > "$GH_LOG"
-out=$(driver_step_ship 205 2>&1); rc=$?
-want "it ships"                               "0" "$rc"
-want_in "the person's words are kept, the proof added" 'pr edit 88 .*--body A body a person wrote\..*## Proof.*How to undo it:' "$(log)"
-want_not_in "its title is left alone"         'pr edit 88 .*--title' "$(log)"
-
-echo "--- a repair's PR that already carries its proof is left alone ---"
-# The fixture does not tier its builds, so every build is a screen one and owes a Screens line.
-setup_wt 206; proved 206
-driver_state_set 206 mode repair; driver_state_set 206 pr 89
-for st in reenter repair fix self-check review record; do driver_state_done 206 "$st"; done
-printf '[{"number":89}]\n' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-89"; : > "$FIX/pr-created-tkt-206_work"
-printf '{"number":89,"isDraft":false,"body":"Closes #206\\n\\n## Proof\\n- `npm test`: exit 0\\nScreens: CI shots of this head\\n\\nHow it was tested: npm test\\nHow to undo it: revert it"}\n' > "$FIX/gh/pr-view.json"
-: > "$GH_LOG"
-out=$(driver_step_ship 206 2>&1); rc=$?
-want "it ships"                               "0" "$rc"
-want_not_in "the body is not edited"          'pr edit 89' "$(log)"
-rm -f "$FIX/gh/pr-view.json" "$FIX/gh/prs.json"
 
 suite_end "$FAILED"

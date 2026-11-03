@@ -264,28 +264,28 @@ want "it finishes"                         "0" "$rc"
 want_in "the claim is tagged with the run" 'run_id=claim-114-run' "$(cat "$FIX/cl-updates.log")"
 want_in "and the run's log"                "run_log=$FIX/run-114.log" "$(cat "$FIX/cl-updates.log")"
 
-echo "--- a ticket with an open pull request is never cut a second branch: it is repaired ---"
-# A healing row that reached the plain build used to park, come back as parked, and
-# cut a fresh branch from the trunk beside the open PR's own. Then it parked on the PR
-# instead (#12649); now the run becomes a repair of it.
+echo "--- a ticket with an open pull request is never cut a second branch, and never repaired ---"
+# A run that reached the plain build used to park, come back as parked, and cut a fresh
+# branch from the trunk beside the open PR's own. Then it parked on the PR (#12649), then
+# it became a repair of it. Now it builds nothing: the PR merges, or the coordinator
+# rebuilds it fresh once it cannot merge (scripts/rebuild.sh).
 fix_issue 115 OPEN "status:parked"
 printf '[{"number":77,"headRefName":"tkt-115/the-real-one","headRefOid":"abc","isDraft":false,"mergeStateStatus":"DIRTY"}]\n' > "$FIX/gh/prs.json"
 out=$(driver_step_start 115 2>&1); rc=$?
-want "it hands the run to a repair"        "31" "$rc"
-want_in "naming the pull request and its branch" '#77.*tkt-115/the-real-one' "$out"
-want_in "and that it repairs it"           'repairs it' "$out"
-want "the PR is on the record"             "77" "$(driver_state_get 115 repair_pr)"
+want "it ends the run as has-a-PR"         "31" "$rc"
+want_in "naming the pull request and its branch" '#77 on tkt-115/the-real-one' "$out"
+want_in "and that the coordinator rebuilds it" 'rebuilds it fresh once it cannot merge' "$out"
+want_not_in "never a repair"               'repair' "$out"
 want "no worktree was cut"                 "" "$(driver_state_get 115 worktree)"
 want "no claim was taken"                  "" "$(awk '$1==115' "$CLAIMS")"
 printf '[{"number":79,"headRefName":"tkt-115/someone-elses-draft","headRefOid":"abc","isDraft":true,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
 out=$(driver_step_start 115 2>&1); rc=$?
-want "a draft on another branch goes to the repair path, which adopts it (never a prose claim)" "31" "$rc"
-want "its PR is on the record"             "79" "$(driver_state_get 115 repair_pr)"
+want "a draft on another branch ends the run the same way (never adopted)" "31" "$rc"
 want "and no worktree was cut beside it"   "" "$(driver_state_get 115 worktree)"
 printf '[{"number":79,"headRefName":"tkt-115/a","headRefOid":"abc","isDraft":true},{"number":80,"headRefName":"tkt-115/b","headRefOid":"abd","isDraft":false}]\n' > "$FIX/gh/prs.json"
 out=$(driver_step_start 115 2>&1); rc=$?
 want "two open PRs are still a person's call: it refuses" "24" "$rc"
-want_in "and the way in that does fit"     '--repair' "$out"
+want_in "and says so"                      "a person's call" "$out"
 printf '[{"number":78,"headRefName":"tkt-1150/other","headRefOid":"abc","isDraft":false,"mergeStateStatus":"CLEAN"}]\n' > "$FIX/gh/prs.json"
 rc=0; driver_step_start 115 >/dev/null 2>&1 || rc=$?
 want "another ticket's PR whose number merely starts the same does not count" "0" "$rc"
@@ -314,28 +314,24 @@ rc=0; GIT_AUTHOR_NAME=f GIT_AUTHOR_EMAIL=f@x GIT_COMMITTER_NAME=f GIT_COMMITTER_
 want "it finishes"                         "0" "$rc"
 want "runs/<run>.worktrees names the driver's tree" "$(driver_state_get 117 worktree)" "$(cat "$STATE/runs/claim-117-e2e.worktrees" 2>/dev/null)"
 
-echo "--- work a park left on origin, from another machine, is where the branch starts ---"
+echo "--- work kept on origin under refs/stale/ is reference only: the branch starts from the trunk ---"
 git init -q --bare "$FIX/origin-park"
 git -C "$REPO" remote add origin "$FIX/origin-park" 2>/dev/null || git -C "$REPO" remote set-url origin "$FIX/origin-park"
 git -C "$REPO" push -q origin develop
 git -C "$REPO" worktree add -q "$FIX/elsewhere" -b scratch-140 develop
 printf 'parked\n' > "$FIX/elsewhere/parked.txt"; git -C "$FIX/elsewhere" add parked.txt; git -C "$FIX/elsewhere" commit -qm "chore(#140): parked"
-git -C "$FIX/elsewhere" push -q origin "HEAD:refs/stranded/140/other-box-20261017T182734Z"
+git -C "$FIX/elsewhere" push -q origin "HEAD:refs/stale/140/other-box-20261017T182734Z"
 fix_issue 140 OPEN "status:ready,type:feature"
 rc=0; out=$(driver_step_start 140 2>&1) || rc=$?
 want "it finishes"                         "0" "$rc"
-want "the branch starts at the parked commit" "$(git -C "$FIX/elsewhere" rev-parse HEAD)" "$(git -C "$(driver_state_get 140 worktree)" rev-parse HEAD)"
-want "on the ticket's own branch, not the stranded ref" "tkt-140/ticket-140" "$(git -C "$(driver_state_get 140 worktree)" rev-parse --abbrev-ref HEAD)"
-want_in "and it says so"                   'refs/stranded/140/other-box-20261017T182734Z' "$out"
+want "the branch starts at the trunk, not the kept commit" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 140 worktree)" rev-parse HEAD)"
+want "on the ticket's own branch"          "tkt-140/ticket-140" "$(git -C "$(driver_state_get 140 worktree)" rev-parse --abbrev-ref HEAD)"
+want_not_in "and it restores nothing"      'refs/stale/140' "$out"
 want "claimed_at stays the trunk"          "$(git -C "$REPO" rev-parse develop)" "$(driver_state_get 140 claimed_at_sha)"
-fix_issue 141 OPEN "status:ready,type:feature"
-rc=0; driver_step_start 141 >/dev/null 2>&1 || rc=$?
-want "a ticket with no stranded ref is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 141 worktree)" rev-parse HEAD)"
 fix_issue 142 OPEN "status:ready,type:feature"
-git -C "$FIX/elsewhere" push -q origin "HEAD:refs/stranded/142/other-box-20261017T182734Z"
 rc=0; out=$(DRIVER_FRESH=1 driver_step_start 142 2>&1) || rc=$?
-want "a rebuild (DRIVER_FRESH) is cut from the trunk, stranded work or not" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 142 worktree)" rev-parse HEAD)"
-want_in "  and says so"                    'a rebuild — #142 starts from develop, no stranded work restored' "$out"
+want "a rebuild (DRIVER_FRESH) is cut from the trunk" "$(git -C "$REPO" rev-parse develop)" "$(git -C "$(driver_state_get 142 worktree)" rev-parse HEAD)"
+want_in "  and says so"                    'a rebuild — #142 starts from develop' "$out"
 
 echo "--- a swept tree's branch left behind: start cuts again, never 'could not create' (#13392) ---"
 # The tree was deleted and its registration pruned, but the branch stayed in the clone
@@ -349,7 +345,7 @@ rm -rf "$FIX/swept-150"; git -C "$REPO" worktree prune
 rc=0; out=$(driver_step_start 150 2>&1) || rc=$?
 want "a branch left in the clone does not stop start" "0" "$rc"
 want "the tree is on the ticket's branch"             "tkt-150/ticket-150" "$(git -C "$(driver_state_get 150 worktree)" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-want "the left-behind commit is kept on origin first" "1" "$(git -C "$REPO" ls-remote origin 'refs/stranded/150/*' | grep -c "^$lone")"
+want "the left-behind commit is kept on origin first" "1" "$(git -C "$REPO" ls-remote origin 'refs/stale/150/*' | grep -c "^$lone")"
 
 echo "--- the branch checked out in an orphan tree: that tree is freed, start succeeds ---"
 fix_issue 151 OPEN "status:ready,type:feature"

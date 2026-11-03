@@ -32,8 +32,6 @@ export COORDINATOR_JUDGE="$BIN/judge" COORDINATOR_LANE="$BIN/lane" COORDINATOR_N
 export COORDINATOR_UNBLOCK="$BIN/noop" COORDINATOR_MACHINE_PARKS="$BIN/noop" COORDINATOR_RELEASE_BATCH="$BIN/noop" COORDINATOR_FEATURE_CLOSE="$BIN/noop"
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock"
-printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
 unset COORDINATOR_SHADOW COORDINATOR_CAP
 export SWARM_FREE_MEM_GB=16 SWARM_IDLE=90 SWARM_CORES=10 TEST_PID=$$
 cat > "$BIN/spawn-live" <<'SH'
@@ -52,31 +50,31 @@ fresh() {
 }
 # Calls that spend the allowance: reading what is left of it is free.
 calls() { grep -vE '^api rate_limit|rateLimit\{' "$GH_LOG" | grep -c . | tr -d ' '; }
-queue_n() { # <class> <count> — that many tickets queued, from 501 up
-  local t; for t in $(seq 501 $((500 + $2))); do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$1" >/dev/null; done
+queue_n() { # <class> <count> — that many ready tickets queued, from 501 up
+  local t; for t in $(seq 501 $((500 + $2))); do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" --class "$1" >/dev/null; done
 }
 tick_calls() { : > "$GH_LOG"; bash "$T" >/dev/null 2>&1; calls; }
 
 echo "--- a tick's reads do not grow with the queue ---"
-fresh; queue_n repair 5;  small=$(tick_calls)
-fresh; queue_n repair 45; big=$(tick_calls)
+fresh; queue_n new 5;  small=$(tick_calls)
+fresh; queue_n new 45; big=$(tick_calls)
 want "45 queued tickets cost what 5 do"            "$small" "$big"
 want_in "and a handful at that"                    '^[1-5]$' "$big"
-fresh; queue_n repair 120
+fresh; queue_n new 120
 want "120 cost one request more per 50"            "$((small + 2))" "$(tick_calls)"
 want_not_in "no ticket is read on its own"         '^issue view' "$(cat "$GH_LOG")"
 
 echo "--- the batched read still decides: a gated ticket is skipped, an open one spawns ---"
-fresh; fix_issue 501 OPEN "status:in-review,needs:human-approval"; bash "$Q" add 501 --class repair >/dev/null; fix_pr_for 501
-fix_issue 502 OPEN "status:in-review"; bash "$Q" add 502 --class repair >/dev/null; fix_pr_for 502
-fix_issue 503 CLOSED "status:in-review"; bash "$Q" add 503 --class repair >/dev/null
+fresh; fix_issue 501 OPEN "status:ready,needs:human-approval"; bash "$Q" add 501 >/dev/null
+fix_issue 502 OPEN "status:ready"; bash "$Q" add 502 >/dev/null
+fix_issue 503 CLOSED "status:ready"; bash "$Q" add 503 >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
-want_in "the held ticket is skipped, named"        'skip #501 \(repair\): needs:human-approval' "$out"
-want_in "the closed one too"                       'skip #503 \(repair\): CLOSED' "$out"
+want_in "the held ticket is skipped, named"        'skip #501 \(new\): needs:human-approval' "$out"
+want_in "the closed one too"                       'skip #503 \(new\): CLOSED' "$out"
 want "and only the open one spawns"                "502" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
-fresh; bash "$Q" add 777 --class repair >/dev/null
+fresh; bash "$Q" add 777 >/dev/null
 out=$(bash "$T" 2>&1)
-want_in "a ticket the batch does not hold is unreadable, not spawnable" 'skip #777 \(repair\): could not be read' "$out"
+want_in "a ticket the batch does not hold is unreadable, not spawnable" 'skip #777 \(new\): could not be read' "$out"
 
 echo "--- a waiting ticket nobody has touched is not asked for its comments ---"
 waits_calls() { # <updatedAt> — calls coord_wait_new_comments makes for 20 waits ended at 21:00
@@ -169,7 +167,7 @@ want "every one is still judged in review"          "20" "$(grep -c 'IN-REVIEW  
 want_not_in "and none is edited or commented"       '^issue (edit|comment)' "$(cat "$GH_LOG")"
 
 echo "--- a refused token: back off, and work from the last good read ---"
-fresh; queue_n repair 2
+fresh; queue_n new 2
 bash "$T" >/dev/null 2>&1   # a good tick, in shadow so the queue stays: the snapshot
 rm -f "$STATE/runs"/*; : > "$SPAWNS"; touch "$FIX/gh/ratelimit"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)
@@ -189,7 +187,7 @@ want_in "the server sweep still runs (no GitHub)"  '^sweep' "$(cat "$FIX/house.l
 export SWARM_NOW=$(( $(date +%s) + 3600 )); : > "$GH_LOG"
 bash "$T" >/dev/null 2>&1
 want_in "once it ends, the tick asks again"        'OpenPullRequests' "$(cat "$GH_LOG")"
-rm -f "$FIX/gh/ratelimit" "$STATE/runs"/*; : > "$SPAWNS"; fix_pr_for 501
+rm -f "$FIX/gh/ratelimit" "$STATE/runs"/*; : > "$SPAWNS"
 export SWARM_NOW=$(( SWARM_NOW + 3600 ))   # past the backoff that last refused tick set
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" >/dev/null 2>&1
 want_in "and, answered, starts work again"         '^501' "$(cat "$SPAWNS")"
@@ -207,7 +205,7 @@ want "4 min, then 8, capped at 32"                 "4 8 32" "$(sed -n 1p "$FIX/b
 want "an ordinary failure is not a rate limit"     "404 ignored" "$(sed -n 2p "$FIX/backoff.out")"
 
 echo "--- no snapshot fresh enough: still blind, never a guess ---"
-fresh; queue_n repair 2
+fresh; queue_n new 2
 bash "$T" >/dev/null 2>&1
 touch "$FIX/gh/ratelimit"
 touch -t 202601010000 "$C/snapshot/prs.json"
@@ -232,7 +230,7 @@ budget_pass() { # every reader once, after one tick: the open-PR reads they made
   bash "$T" >/dev/null 2>&1
   bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
   bash "$HERE/../swarm/status-line.sh" --print >/dev/null 2>&1
-  bash "$HERE/../swarm/repair-watch.sh" --explain --only repair >/dev/null 2>&1
+  bash "$HERE/../swarm/repair-watch.sh" --explain --only warn >/dev/null 2>&1
   SWARM_CLAIM_LOCK="$BIN/claim-show" SWARM_GIT=false SWARM_PRS_FILE="$STATE/swarm/prs.json" SWARM_GH_CALLS="$STATE/swarm/gh-calls.log" \
     node "$HERE/../swarm/live-view/progress.mjs" --gather '{"tickets":["501","502"],"ids":[],"repo":"acme/widgets"}' > "$FIX/gather.out" 2>/dev/null
   grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' '
@@ -278,7 +276,7 @@ bash "$HERE/needsme-watch.sh" pending >/dev/null 2>&1
 want "above it, an old copy is read again"         "1" "$(grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' ')"
 
 echo "--- blind on a spent allowance: the alarm names the rate limit and its reset ---"
-fresh; queue_n repair 1
+fresh; queue_n new 1
 printf '0 5000 %s\n' $(( $(date +%s) + 1800 )) > "$FIX/gh/allowance"; touch "$FIX/gh/ratelimit"
 rm -f "$C/snapshot/prs.json"; : > "$FIX/house.log"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1)

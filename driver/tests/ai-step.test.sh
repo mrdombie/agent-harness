@@ -182,7 +182,7 @@ want "a question parks at once"                  "20" "$rc"
 want "asked once"                                "1" "$(( $(calls) - before ))"
 
 echo "--- a person's answers on the ticket go in every brief, BINDING, newest last ---"
-# 2026-10-22: three repairs re-asked a question the PM had already answered on the ticket.
+# 2026-10-22: three runs re-asked a question the PM had already answered on the ticket.
 # The ticket's comments, over REST, as GitHub pages them.
 C101="$FIX/gh/api-repos_acme_widgets_issues_101_comments_per_page_100.json"
 jq -n '[
@@ -356,21 +356,14 @@ driver_state_init 272
 DRIVER_TICKET=272 driver_ai_step 272 plan >/dev/null 2>&1
 want_not_in "a run with no brief carries none"  'owner answered q3' "$(cat "$FIX/claude-stdin-plan.txt")"
 
-echo "--- in repair mode a caller's brief reaches every step, not only repair ---"
-driver_state_init 273; driver_state_set 273 mode repair; driver_state_set 273 repair_brief_source caller
-printf 'The owner answered q5: rename it Archive.\n' > "$FIX/repair-brief-273.md"; driver_state_set 273 repair_brief "$FIX/repair-brief-273.md"
+echo "--- a run's brief reaches every step, the review too ---"
+driver_state_init 273
+printf 'The owner answered q5: rename it Archive.\n' > "$FIX/run-brief-273.md"; driver_state_set 273 run_brief "$FIX/run-brief-273.md"
 fix_brief review superpowers:requesting-code-review
 fix_ai review '{"verdict":"SHIP","findings":[]}' superpowers:requesting-code-review
 DRIVER_TICKET=273 driver_ai_step 273 review >/dev/null 2>&1
 want_in "the reviewer sees the brief it must judge" 'The owner answered q5: rename it Archive.' "$(cat "$FIX/claude-stdin-review.txt")"
 want_in "under the preface"                 'void' "$(cat "$FIX/claude-stdin-review.txt")"
-driver_state_set 273 repair_brief_source class
-DRIVER_TICKET=273 driver_ai_step 273 review >/dev/null 2>&1
-want_not_in "a note-less healing run's class line is not passed around" 'q5' "$(cat "$FIX/claude-stdin-review.txt")"
-driver_state_init 274; driver_state_set 274 mode repair
-printf 'old build brief\n' > "$FIX/run-brief-274.md"; driver_state_set 274 run_brief "$FIX/run-brief-274.md"
-DRIVER_TICKET=274 driver_ai_step 274 review >/dev/null 2>&1
-want_not_in "a build's brief is not read in repair mode" 'old build brief' "$(cat "$FIX/claude-stdin-review.txt")"
 
 echo "--- an API error is not an answer: one retry, then a machine fault (#13642) ---"
 # The review reply on #13642 was a false safeguards flag. Read as an answer it was

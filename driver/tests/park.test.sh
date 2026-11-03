@@ -60,7 +60,7 @@ out=$(driver_park 131 "split needed" "" pm 2>&1); rc=$?
 want "it parks"                              "20" "$rc"
 want "the branch is not on origin"           "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-131/work 2>/dev/null)"
 want_not_in "no pull request is opened"      'pr create' "$(cat "$GH_LOG")"
-want_in "the work is on a stranded ref"      'refs/stranded/131/' "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' refs/stranded/131/)"
+want_in "the work is on a refs/stale/ ref"      'refs/stale/131/' "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' refs/stale/131/)"
 want_in "and it says why"                    'split needed — the branch is not pushed' "$out"
 want "the flag is used once"                 "" "$(driver_state_get 131 park_split)"
 : > "$ORDER"; : > "$RELEASES"
@@ -188,40 +188,40 @@ want "the branch is not on origin"            "" "$(on_origin tkt-307/work)"
 want_in "the park says the push failed"       'could not be pushed' "$out"
 want "and the commits are bundled"            "1" "$(bundles)"
 want_not_in "no draft pr for a branch that is not there" 'pr create.*tkt-307/work' "$(cat "$GH_LOG")"
-echo "--- a refused park push lands on a stranded ref the next run on any machine can find ---"
+echo "--- a refused park push is kept on a refs/stale/ ref on origin, never only on this machine ---"
 : > "$GH_LOG"; rm -rf "$FIX/trees/backups"
 park_tree 308 tkt-308/work develop
 park_hook "$FIX/hooks308" -; git -C "$FIX/wt308" config core.hooksPath "$FIX/hooks308"
 out=$(driver_park 308 "build answered in a shape the driver cannot read" "" driver 2>&1); rc=$?
-pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/stranded/308/' | head -1)
+pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/stale/308/' | head -1)
 want "park reports parked"                    "20" "$rc"
 want "the ticket's own branch is still refused" "" "$(on_origin tkt-308/work)"
-want_in "the work is on a stranded ref"       'refs/stranded/308/' "$pref"
+want_in "the work is on a refs/stale/ ref"       'refs/stale/308/' "$pref"
 want "at the worktree's head"                 "$(git -C "$FIX/wt308" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse --verify -q "$pref" 2>/dev/null)"
 want "the run's record names it"              "$pref" "$(driver_state_get 308 park_ref)"
 want_in "the ticket says where it is"         "$pref" "$(cat "$GH_LOG")"
 want "no branch on origin moved for it"       "" "$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/heads/' | grep -v -e '^refs/heads/develop$' -e '^refs/heads/tkt-30[3-6]/work$' -e '^refs/heads/tkt-101/work$' | tr '\n' ' ')"
 
-echo "--- origin refuses the stranded ref too: the ticket records the machine and the exact worktree ---"
+echo "--- origin refuses the kept ref too: the ticket records the machine and the exact worktree ---"
 : > "$GH_LOG"
-printf '#!/usr/bin/env sh\nwhile read o n r; do case "$r" in refs/stranded/309/*) echo "denied"; exit 1 ;; esac; done\n' > "$FIX/origin/hooks/pre-receive"
+printf '#!/usr/bin/env sh\nwhile read o n r; do case "$r" in refs/stale/309/*) echo "denied"; exit 1 ;; esac; done\n' > "$FIX/origin/hooks/pre-receive"
 chmod +x "$FIX/origin/hooks/pre-receive"
 park_tree 309 tkt-309/work develop
 park_hook "$FIX/hooks309" -; git -C "$FIX/wt309" config core.hooksPath "$FIX/hooks309"
 out=$(driver_park 309 "the gate stopped it" "" driver 2>&1); rc=$?
 rm -f "$FIX/origin/hooks/pre-receive"
-want "no stranded ref"                        "" "$(git -C "$FIX/origin" for-each-ref 'refs/stranded/309/')"
+want "no kept ref"                        "" "$(git -C "$FIX/origin" for-each-ref 'refs/stale/309/')"
 want_in "the ticket names the worktree"       "\`$FIX/wt309\`" "$(cat "$GH_LOG")"
 want_in "and the machine it is on"            "machine \`$(hostname -s 2>/dev/null || hostname)\`" "$(cat "$GH_LOG")"
 want_in "and the park says why there is no ref" 'refused 3 time' "$out"
 want_in "and the ticket says the backup never landed" 'backup to origin never landed' "$(cat "$GH_LOG")"
 
-echo "--- origin rejects the stranded ref ONCE: the backup lands on the retry ---"
+echo "--- origin rejects the kept ref ONCE: the backup lands on the retry ---"
 # GitHub answered "! [remote rejected] … (failed)" once and took the same push a moment
 # later (2026-10-21); one refusal left the work on one machine.
 : > "$GH_LOG"; rm -f "$FIX/rejected-once"
 printf '#!/usr/bin/env sh
-while read o n r; do case "$r" in refs/stranded/311/*) [ -f "%s" ] && exit 0; : > "%s"; echo "failed"; exit 1 ;; esac; done
+while read o n r; do case "$r" in refs/stale/311/*) [ -f "%s" ] && exit 0; : > "%s"; echo "failed"; exit 1 ;; esac; done
 ' \
   "$FIX/rejected-once" "$FIX/rejected-once" > "$FIX/origin/hooks/pre-receive"
 chmod +x "$FIX/origin/hooks/pre-receive"
@@ -229,9 +229,9 @@ park_tree 311 tkt-311/work develop
 park_hook "$FIX/hooks311" -; git -C "$FIX/wt311" config core.hooksPath "$FIX/hooks311"
 out=$(driver_park 311 "the gate stopped it" "" driver 2>&1); rc=$?
 rm -f "$FIX/origin/hooks/pre-receive"
-pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/stranded/311/' | head -1)
+pref=$(git -C "$FIX/origin" for-each-ref --format='%(refname)' 'refs/stale/311/' | head -1)
 want "origin did reject the first push"       "1" "$([ -f "$FIX/rejected-once" ] && echo 1)"
-want_in "the backup landed on the retry"      'refs/stranded/311/' "$pref"
+want_in "the backup landed on the retry"      'refs/stale/311/' "$pref"
 want "at the worktree's head"                 "$(git -C "$FIX/wt311" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse --verify -q "$pref" 2>/dev/null)"
 want_not_in "and the ticket does not say it never landed" 'never landed' "$(cat "$GH_LOG")"
 git -C "$FIX/wt311" config --unset core.hooksPath
@@ -267,53 +267,6 @@ want_not_in "no PR for a branchless park" 'pr create' "$(cat "$GH_LOG")"
 echo "--- the reason reaches the brief ---"
 want_in "the reason is in the comment" 'start refused' "$(cat "$GH_LOG")"
 
-echo "--- a repair parks WITHOUT pushing: its PR may have auto-merge armed ---"
-git -C "$REPO" worktree add -q "$FIX/wt150" -b tkt-150/work develop
-git -C "$FIX/wt150" push -q origin tkt-150/work; ORIG=$(git -C "$FIX/wt150" rev-parse HEAD)
-printf 'half a repair\n' > "$FIX/wt150/r.txt"
-driver_state_init 150 --worktree "$FIX/wt150" --branch tkt-150/work
-driver_state_set 150 mode repair; driver_state_set 150 pr 91
-fix_issue 150 OPEN "status:in-review"; : > "$ORDER"
-out=$(driver_park 150 "the review blocked the repair" "is the reviewer right?" 2>&1); rc=$?
-want "park reports parked"                 "20" "$rc"
-want "origin keeps the PR's head"          "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-150/work)"
-want "nothing was pushed but the stranded backup" "" "$(grep '^git push' "$ORDER" | grep -v ':refs/stranded/150/' || true)"
-want_in "and the backup was pushed"         '^git push HEAD:refs/stranded/150/' "$(cat "$ORDER")"
-want_not_in "no draft PR is opened"        'pr create' "$(cat "$ORDER")"
-want "the work is committed locally"       "" "$(git -C "$FIX/wt150" status --porcelain)"
-want_in "the brief says where the repair is, and why it was not pushed" 'auto-merge' "$(cat "$GH_LOG")"
-want_in "and the claim is still released"  'release 150' "$(cat "$ORDER")"
-
-echo "--- a repair on a PR held by the approval label IS pushed: the hold keeps it from merging (#13365) ---"
-cat > "$BIN/gh-labels" <<'SH'
-#!/usr/bin/env bash
-if [ "$1 $2" = "pr view" ] && [ -f "$FIX/gh/labels-$3.json" ]; then
-  printf 'gh %s\n' "$*" >> "$ORDER"; cat "$FIX/gh/labels-$3.json"; exit 0
-fi
-exec "$BIN/gh-order" "$@"
-SH
-chmod +x "$BIN/gh-labels"; SWARM_GH_WAS="$SWARM_GH"; export SWARM_GH="$BIN/gh-labels"
-held_case() { # <ticket> <pr> <labels-json>
-  git -C "$REPO" worktree add -q "$FIX/wt$1" -b "tkt-$1/work" develop
-  git -C "$FIX/wt$1" push -q origin "tkt-$1/work"; ORIG=$(git -C "$FIX/wt$1" rev-parse HEAD)
-  printf 'repair %s\n' "$1" > "$FIX/wt$1/r.txt"
-  driver_state_init "$1" --worktree "$FIX/wt$1" --branch "tkt-$1/work"
-  driver_state_set "$1" mode repair; driver_state_set "$1" pr "$2"
-  printf '{"labels":%s,"autoMergeRequest":{"mergeMethod":"SQUASH"}}\n' "$3" > "$FIX/gh/labels-$2.json"
-  fix_issue "$1" OPEN "status:in-review"; : > "$ORDER"; : > "$GH_LOG"
-  out=$(driver_park "$1" "the repair asked whether to push" "push it?" 2>&1); rc=$?
-}
-held_case 154 97 '[{"name":"needs:human-approval"},{"name":"status:in-review"}]'
-want "park reports parked"                 "20" "$rc"
-want "the armed, held PR's branch moved"   "$(git -C "$FIX/wt154" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-154/work)"
-want_not_in "no draft PR is opened beside it" 'pr create' "$(cat "$ORDER")"
-want_in "the step says why it pushed"      'carries needs:human-approval, so a push cannot merge it' "$out"
-want_in "and the brief says so"            'This repair was pushed' "$(cat "$GH_LOG")"
-held_case 155 98 '[{"name":"status:in-review"}]'
-want "an armed PR with no hold is not pushed" "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-155/work)"
-want_in "and says auto-merge is why"       'may have auto-merge armed' "$out"
-export SWARM_GH="$SWARM_GH_WAS"
-
 echo "--- a park never commits a merge in progress: that would commit its conflict markers ---"
 git -C "$REPO" worktree add -q "$FIX/wt151" -b tkt-151/work develop
 printf 'branch\n' > "$FIX/wt151/clash.txt"; git -C "$FIX/wt151" add clash.txt; git -C "$FIX/wt151" commit -qm "feat: ours"
@@ -323,9 +276,9 @@ SIDE=$(git -C "$FIX/wt151" rev-parse HEAD); git -C "$FIX/wt151" checkout -q tkt-
 git -C "$FIX/wt151" merge -q "$SIDE" >/dev/null 2>&1
 BEFORE=$(git -C "$FIX/wt151" rev-parse HEAD)
 driver_state_init 151 --worktree "$FIX/wt151" --branch tkt-151/work
-driver_state_set 151 mode repair; driver_state_set 151 pr 94
+driver_state_set 151 pr 94
 fix_issue 151 OPEN "status:in-review"
-out=$(driver_park 151 "the repair step produced no answer" "" driver 2>&1); rc=$?
+out=$(driver_park 151 "the fix step produced no answer" "" driver 2>&1); rc=$?
 want "park reports parked"                 "20" "$rc"
 want "no commit was made"                  "$BEFORE" "$(git -C "$FIX/wt151" rev-parse HEAD)"
 want "the merge is still in progress"      "yes" "$([ -f "$(git -C "$FIX/wt151" rev-parse --git-path MERGE_HEAD)" ] && echo yes || echo no)"

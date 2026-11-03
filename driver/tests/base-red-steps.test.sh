@@ -179,10 +179,9 @@ want "the one test file is a proof"            "accepted" "$R"
 want_in "the proof limits every model step reads say so" 'never npm run test:changed' "$(in_kit driver_fact_proof_limits)"
 want_not_in "and without localOnly they do not" 'never npm run test:changed' "$(HARNESS_CFG="$FIX/cfg.json" HARNESS_CFG_PATH="$FIX/cfg.json" bash -c '. "$1/driver/driver-env.sh" && . "$1/driver/ai-step.sh" && driver_fact_proof_limits' _ "$ROOT")"
 want_in "the proof limits say a trunk red is carried on past" 'This check is red on develop itself; the develop-red ticket owns it; carry on' "$(in_kit driver_fact_proof_limits)"
-for b in build fix repair; do
+for b in build fix; do
   want_in "briefs/$b.md carries the proof limits" '{{PROOF_LIMITS}}' "$(cat "$ROOT/briefs/$b.md")"
 done
-want_not_in "briefs/repair.md no longer says park on it" 'itself is not this PR.s to fix.\*\* Park and say so' "$(tr '\n' ' ' < "$ROOT/briefs/repair.md" | tr -s ' ')"
 
 echo "--- plants: each line out of a copy of the kit, its case fails ---"
 KIT="$FIX/kit"
