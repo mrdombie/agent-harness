@@ -83,10 +83,4 @@ echo "--- usage ---"
 out=$(run "Every fix ships a lesson" --)
 want_in "no command is a usage error"        '^rc=2' "$out"
 
-echo "--- the lesson seat goes through it ---"
-seat=$(sed -n '/A fix names its guard/,$p' "$HERE/../.github/workflows/lesson.yml")
-want_in "lesson.yml takes the kit's release-report-only.sh" '^ *report=kit/scripts/release-report-only\.sh$' "$seat"
-want_in "lesson.yml runs the judge through it" 'bash "\$report" "\$cfg" "Every fix ships a lesson" -- ' "$seat"
-want_in "lesson.yml reads the config at the base"  'show "HEAD\^1:\.claude/harness\.json"' "$seat"
-
 suite_end "$FAILED"

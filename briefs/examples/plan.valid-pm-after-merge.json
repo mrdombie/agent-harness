@@ -35,6 +35,6 @@
     }
   ],
   "pmAfterMerge": [
-    "add Lesson as a required check on the develop ruleset: gh api -X PUT repos/OWNER/REPO/rulesets/ID --input ruleset.json"
+    "add Deleted tests as a required check on the develop ruleset: gh api -X PUT repos/OWNER/REPO/rulesets/ID --input ruleset.json"
   ]
 }

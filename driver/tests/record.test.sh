@@ -43,4 +43,19 @@ want "it refuses"      "24" "$rc"
 want_in "and says why" 'no review' "$out"
 want "nothing was written" "" "$(cat "$CLAIMS")"
 
+echo "--- the posted findings go on the class ledger, and the step still finishes ---"
+: > "$CLAIMS"
+export FINDING_CLASS_LEDGER="$FIX/finding-classes.jsonl" FINDING_CLASS_SHARE=off FINDING_CLASS_NOTIFY="$FIX/notify"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$FIX/notices"\n' > "$FIX/notify"; chmod +x "$FIX/notify"
+driver_state_put 101 review '{"verdict":"SHIP","findings":[]}'
+driver_state_set 101 pr 4242
+printf '%s\n' '{"key":"k","id":"F1","file":"src/a.ts","line":9,"grade":"major","summary":"a failed read shows as empty","class":"failure shown as empty"}' \
+  > "$(driver_state_dir 101)/steps/review.posted.jsonl"
+out=$(driver_step_record 101 2>&1); rc=$?
+want "it finishes"                         "0" "$rc"
+want "one sighting, keyed by its class, with its PR" "failure-shown-as-empty|4242|src/a.ts" \
+  "$(jq -r '"\(.key)|\(.pr)|\(.file)"' "$FINDING_CLASS_LEDGER")"
+want_in "and the step says so"             'record: #101: 1 new sighting' "$out"
+want "one sighting is no notice"           "" "$(cat "$FIX/notices" 2>/dev/null)"
+
 suite_end "$FAILED"

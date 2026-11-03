@@ -46,7 +46,6 @@
 0	scripts/branch-ticket.test.sh
 6	scripts/check-deleted-tests.test.sh
 0	scripts/check-first-look.test.sh
-6	scripts/check-lesson.test.sh
 0	scripts/check-picture-mode.test.sh
 0	scripts/check-plugin-self-sufficient.test.sh
 0	scripts/check-project-agnostic.test.sh
