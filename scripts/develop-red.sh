@@ -8,7 +8,17 @@
 #     set and trunk commit, at the integration priority's top (labels.priority.critical, P0)
 #     with the process label (coordinator.processLabel, default process), status ready and
 #     at the front of the coordinator queue. `dry` files nothing and says what it would.
+#   develop-red.sh count [<week>]
+#     the weekly count per check class (default this ISO week, e.g. 2026-W45): "<n> \t <check>",
+#     most first, from check-class-count.tsv.
 #   exit 0 every row filed or already filed · 1 one or more could not be · 2 usage
+#
+# ONLY A CHECK THE TRUNK REQUIRES FILES A TICKET. 201 tickets in 11 days, nearly all for
+# checks that block no merge, each built, then undone by the next merge. A check is required
+# when the trunk's LIVE rules name it (pr_red_required), or coordinator.requiredRuns maps a
+# required check to a glob of names it runs ({"<required check>": ["typecheck", "*.test.ts"]}).
+# Any other red adds one line per check to check-class-count.tsv and is ledgered: no ticket,
+# no build. Unreadable rules are unknown: the rows wait for the next pass.
 #
 # FILED ONCE, the follow-up.sh way: a ledger on this host (develop-red-filed.tsv) and a
 # marker in the body, searched on the forge, so another builder, a resumed tick or another
@@ -24,13 +34,20 @@
 # holds is pruned from develop-red.tsv.
 #
 #   develop-red.tsv        <sha> \t <checks> \t <ticket> \t <pr> \t <epoch>   (pending, appended by builders)
-#   develop-red-filed.tsv  <sha> \t <checks> \t <issue>
+#   develop-red-filed.tsv  <sha> \t <checks> \t <issue, or - when counted, not filed>
+#   check-class-count.tsv  <iso week> \t <check> \t <sha7>
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/toolkit-env.sh" || exit 1
 
 die() { echo "develop-red: $*" >&2; exit 2; }
-[ "${1:-}" = file ] || die "usage: develop-red.sh file [dry]"
+COUNT="${DEVELOP_RED_COUNT:-$STATE_DIR/swarm/check-class-count.tsv}"
+if [ "${1:-}" = count ]; then
+  [ -s "$COUNT" ] || exit 0
+  awk -F'\t' -v w="${2:-$(date -u +%G-W%V)}" '$1 == w { n[$2]++ } END { for (k in n) print n[k] "\t" k }' "$COUNT" | sort -t$'\t' -k1,1rn -k2
+  exit 0
+fi
+[ "${1:-}" = file ] || die "usage: develop-red.sh file [dry] | count [<week>]"
 DRY=""; [ "${2:-}" = dry ] && DRY=1
 GH="${DEVELOP_RED_GH:-gh}"
 declare -F gh_read >/dev/null 2>&1 || . "$SELF_DIR/gh-batch.sh" || exit 1
@@ -67,6 +84,53 @@ prune
 TODO=$(rows | while IFS=$'\t' read -r sha checks who prs; do [ -n "$(ledgered "$sha" "$checks")" ] || printf '%s\t%s\t%s\t%s\n' "$sha" "$checks" "$who" "$prs"; done)
 [ -n "$TODO" ] || exit 0
 pending_n=$(printf '%s\n' "$TODO" | grep -c .)
+
+# Required or counted: each row cut to its required checks (the 3rd field keeps the row's own
+# set, the ledger's key; tab is IFS whitespace, so the empty who and prs stay last); a row with none is counted for the week and ledgered here.
+. "$SELF_DIR/pr-red.sh" || exit 1
+_pr_red_gh() { "$GH" "$@"; }
+if ! REQ=$(pr_red_required "$TRUNK"); then
+  echo "unknown — the checks $TRUNK requires could not be read — $pending_n row(s) not filed this pass"; exit 1
+fi
+RUN_GLOBS=$(jq -r --argjson req "$REQ" '(.coordinator.requiredRuns // {}) | if type == "object" then to_entries[] else empty end
+  | select((.key | ascii_downcase) as $k | any($req[]; . == $k)) | .value | if type == "array" then .[] else . end | strings' "$HARNESS_CFG" 2>/dev/null)
+required_check() { # <check name>
+  local lc g
+  lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  jq -e --arg n "$lc" 'any(.[]; . == $n)' >/dev/null 2>&1 <<<"$REQ" && return 0
+  while IFS= read -r g; do
+    # shellcheck disable=SC2254  # the glob is the point
+    [ -n "$g" ] && case "$1" in $g) return 0 ;; esac
+  done <<<"$RUN_GLOBS"
+  return 1
+}
+WEEK=$(date -u +%G-W%V)
+KEEP=""
+while IFS=$'\t' read -r sha checks who prs; do
+  [ -n "$sha" ] && [ -n "$checks" ] || continue
+  s7=$(printf '%s' "$sha" | cut -c1-7); req=""; other=""
+  IFS=, read -ra names <<<"$checks"
+  for c in "${names[@]}"; do
+    [ -n "$c" ] || continue
+    if required_check "$c"; then req="$req${req:+,}$c"; else other="$other${other:+,}$c"; fi
+  done
+  if [ -n "$other" ]; then
+    if [ -n "$DRY" ]; then echo "would count ${other//,/, } at $s7 for $WEEK: not required on $TRUNK, no ticket"
+    else
+      IFS=, read -ra names <<<"$other"
+      for c in "${names[@]}"; do
+        line="$WEEK"$'\t'"$c"$'\t'"$s7"
+        grep -qFx -- "$line" "$COUNT" 2>/dev/null || printf '%s\n' "$line" >> "$COUNT"
+      done
+      echo "the $TRUNK red on ${other//,/, } at $s7 is not a check $TRUNK requires: counted for $WEEK, no ticket"
+    fi
+  fi
+  if [ -z "$req" ]; then ledger "$sha" "$checks" "-"; continue; fi
+  KEEP="$KEEP$sha"$'\t'"$req"$'\t'"$checks"$'\t'"$who"$'\t'"$prs"$'\n'
+done <<<"$TODO"
+TODO="$KEEP"
+[ -n "$TODO" ] || { prune; exit 0; }
+pending_n=$(printf '%s' "$TODO" | grep -c .)
 if until=$(gh_backoff_search_active); then
   echo "GitHub's search limit is spent until $(date -u -r "$until" +%H:%M:%SZ 2>/dev/null || date -u -d "@$until" +%H:%M:%SZ 2>/dev/null) — the $pending_n pending $TRUNK red row(s) wait for a pass after it; nothing searched"
   exit 1
@@ -93,23 +157,23 @@ if [ -z "$OPEN_N" ] && ! MARKERS=$(SWARM_GH="$GH" gh_read "which $TRUNK reds wer
 fi
 
 failed=0
-while IFS=$'\t' read -r sha checks who prs; do
+while IFS=$'\t' read -r sha checks own who prs; do
   [ -n "$sha" ] && [ -n "$checks" ] || continue
   s7=$(printf '%s' "$sha" | cut -c1-7)
   if [ -n "$OPEN_N" ]; then
     case "$OPEN_SETS" in
-      *" $checks "*) ledger "$sha" "$checks" "$OPEN_N"; echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's, already filed"; continue ;;
+      *" $checks "*) ledger "$sha" "$own" "$OPEN_N"; echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's, already filed"; continue ;;
     esac
     if [ -n "$DRY" ]; then echo "would add the $TRUNK red on ${checks//,/, } at $s7 to the open #$OPEN_N"; continue; fi
     "$GH" api "repos/$REPO_SLUG/issues/$OPEN_N/comments" -X POST \
       -f body="$TRUNK is still red at \`$sha\`, now on: ${checks//,/, }.${who:+ Builders that hit it: ${who//,/, }.} This ticket covers it; no second one is filed." >/dev/null 2>&1 \
       || { echo "the $TRUNK red on ${checks//,/, } at $s7 could not be added to #$OPEN_N"; failed=1; continue; }
-    ledger "$sha" "$checks" "$OPEN_N"; OPEN_SETS="$OPEN_SETS$checks "
+    ledger "$sha" "$own" "$OPEN_N"; OPEN_SETS="$OPEN_SETS$checks "
     echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's: added there as a comment"; continue
   fi
   found=$(printf '%s\n' "$MARKERS" | awk -F'\t' -v c="$checks" -v s="$s7" '$2 == c && $3 == s { print $1; exit }')
   if [ -n "$found" ]; then
-    ledger "$sha" "$checks" "$found"
+    ledger "$sha" "$own" "$found"
     echo "the $TRUNK red on ${checks//,/, } at $s7 is #$found's, already filed"; continue
   fi
   title="$TRUNK is red: ${checks//,/, } ($TRUNK@$s7)"
@@ -138,7 +202,7 @@ $marker"
              -f "labels[]=$PRI" -f "labels[]=$PROC" -q .number 2>/dev/null) || [ -z "$n" ]; then
     echo "the $TRUNK red on ${checks//,/, } at $s7 could not be filed"; failed=1; continue
   fi
-  ledger "$sha" "$checks" "$n"
+  ledger "$sha" "$own" "$n"
   # Filed this pass, it is the open ticket for every row after this one: the search index
   # would not show it yet.
   OPEN_N=$n; OPEN_SETS=" $checks "

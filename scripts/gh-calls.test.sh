@@ -293,7 +293,10 @@ echo "--- develop-red: 22 pending rows cost the searches 1 does ---"
 cat > "$BIN/drgh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/drgh.log"
-case "$*" in *"-X GET search/issues"*) echo '{"total_count":0,"items":[]}' ;; esac
+case "$*" in
+  *"rules/branches/develop"*) echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"chk-a"}]}}]' ;;  # develop requires these checks
+  *"-X GET search/issues"*) echo '{"total_count":0,"items":[]}' ;;
+esac
 exit 0
 SH
 chmod +x "$BIN/drgh"

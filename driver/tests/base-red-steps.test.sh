@@ -81,6 +81,7 @@ reset() { : > "$PENDING"; : > "$CLAUDE_LOG"; : > "$FIX/npm.log"; rm -f "$STATE/s
 cat > "$FIX/fgh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
+  *"rules/branches/develop"*) echo '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"t/legacy.test.sh"}]}}]'; exit 0 ;;  # develop requires these checks
   *"-X GET search/issues"*) echo '{"total_count":0,"items":[]}'; exit 0 ;;
   *"repos/acme/widgets/issues -X POST"*) n=$(( $(cat "$FIX/fgh.next" 2>/dev/null || echo 900) + 1 )); echo "$n" > "$FIX/fgh.next"; printf '%s\0' "$@" > "$FIX/fgh.create.$n"; echo "$n"; exit 0 ;;
 esac
