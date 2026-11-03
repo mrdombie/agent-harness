@@ -380,7 +380,9 @@ re_cmd_noise() {
       done
       for t in "$dd"/*/steps/review.posted.jsonl; do
         [ -s "$t" ] || continue
-        mt=$(stat -f %m "$t" 2>/dev/null || stat -c %Y "$t" 2>/dev/null)
+        # GNU first: on Linux `stat -f` is the filesystem's status, and exits 0.
+        mt=$(stat -c %Y "$t" 2>/dev/null || stat -f %m "$t" 2>/dev/null)
+        case "$mt" in ''|*[!0-9]*) mt=$(date +%s) ;; esac
         jq -r --slurpfile fx <(cat "$(dirname "$t")/fix.json" 2>/dev/null || echo '{}') --arg mt "${mt:-0}" '
           . as $p | ($fx[0] // {}) as $f | ($mt | tonumber | strftime("%Y-%m-%dT%H:%M:%SZ")) as $at
           | if ([$f.cleared[]?.blockerId] | index($p.id)) != null then "\($at) fixed 1"
