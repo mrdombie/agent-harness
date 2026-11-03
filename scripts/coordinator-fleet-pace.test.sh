@@ -70,7 +70,13 @@ want "and its capacity" "6" "$(jq -r '.capacity' <<<"$hb")"
 echo "--- the sheet carries the reading and the factor to the readers ---"
 entries='{"order":[],"building":[],"pace":{"at":1,"usage":{"five_hour":{"u":0.4,"reset":2}},"fiveHour":{"line":0.33},"pacing":"ahead","settings":{"factor":0.95,"exempt":["P0"]}}}'
 body=$( . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . "$HERE/coordinator-sheet.sh" >/dev/null 2>&1; coord_sheet_render "$entries" "$NOWE" )
-want_in "a person reads it" 'Pacing ahead: five-hour window 40% against a target of 33% · no new builder starts on any machine but P0' "$body"
+want_in "a person reads it" 'Pacing ahead: five-hour window 40% against a target of 33% · no new builder starts on any machine but process fixes and P0' "$body"
+entries='{"order":[],"building":[],"pace":{"at":1,"usage":{},"fiveHour":{"u":0.1,"line":0.33,"ahead":false},"week":{"u":0.62,"line":0.55,"ahead":true},"window":"week","pacing":"ahead","settings":{"factor":0.95,"weekFactor":0.95,"exempt":[]}}}'
+body=$( . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . "$HERE/coordinator-sheet.sh" >/dev/null 2>&1; coord_sheet_render "$entries" "$NOWE" )
+want_in "the week ahead leads the sheet's pacing line" 'Pacing ahead: week 62% against a target of 55%; five-hour window 10% against a target of 33% · no new builder starts on any machine but process fixes$' "$(printf '%s\n' "$body" | grep '^Pacing')"
+entries='{"order":[],"building":[],"pace":{"at":1,"usage":{},"week":{"u":0.30,"line":0.55,"ahead":false},"pacing":"behind","settings":{"factor":0.95}}}'
+body=$( . "$HERE/coordinator-env.sh" >/dev/null 2>&1; . "$HERE/coordinator-sheet.sh" >/dev/null 2>&1; coord_sheet_render "$entries" "$NOWE" )
+want_in "with only a week read, the sheet says the week" 'Pacing behind: week 30% against a target of 55% · places fill' "$body"
 want "and a reader parses the factor back" '0.95' \
   "$(printf '%s\n' "$body" | sed -nE 's/^<!-- sheet:pace (\{.*\}) -->$/\1/p' | jq -c '.settings.factor')"
 

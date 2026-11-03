@@ -211,8 +211,11 @@ coord_sheet_render() {
        else empty end),
       (if .pace then
         "", "### Usage pacing",
-        "Pacing \(.pace.pacing // "?"): five-hour window \(.pace.usage.five_hour.u * 100 | round)% against a target of \(.pace.fiveHour.line * 100 | round)%"
-        + (if .pace.pacing == "ahead" then " · no new builder starts on any machine\(((.pace.settings.exempt // []) | join("/")) as $x | if $x == "" then "" else " but " + $x end)" else " · places fill" end)
+        "Pacing \(.pace.pacing // "?"): "
+        + ([(if .pace.fiveHour then {o: (if .pace.fiveHour.ahead then 0 else 1 end), s: "five-hour window \((.pace.fiveHour.u // .pace.usage.five_hour.u) * 100 | round)% against a target of \(.pace.fiveHour.line * 100 | round)%"} else empty end),
+            (if .pace.week then {o: (if .pace.week.ahead and (.pace.fiveHour.ahead | not) then -1 elif .pace.week.ahead then 0 else 2 end), s: "week \(.pace.week.u * 100 | round)% against a target of \(.pace.week.line * 100 | round)%"} else empty end)]
+           | sort_by(.o) | map(.s) | join("; "))
+        + (if .pace.pacing == "ahead" then " · no new builder starts on any machine but process fixes\(((.pace.settings.exempt // []) | join("/")) as $x | if $x == "" then "" else " and " + $x end)" else " · places fill" end)
        else empty end),
       "",
       "<!-- sheet:v1 updated=\($at) owner=\($owner) -->",
