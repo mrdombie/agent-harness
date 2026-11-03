@@ -12,9 +12,9 @@
       "file": "PR #61 body",
       "line": 0,
       "grade": "major",
-      "summary": "the pull request body has no Lesson section, so its required check stays red",
+      "summary": "the pull request body has no Deleted tests section for the test it removes, so its required check stays red",
       "reason": "the fix cannot merge, so the person keeps seeing the broken screen",
-      "fix": "add the Lesson section to the body"
+      "fix": "add the Deleted tests section to the body"
     }
   ]
 }

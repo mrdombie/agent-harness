@@ -2,10 +2,12 @@
 # pull request's BASE commit when the kit judges itself, so harness-ref is not used
 # here and a pull request cannot loosen its own judge. The default guard patterns
 # already cover the kit's *.test.sh suites and check-* scripts.
+#
+# Switched off (the owner, 2026-11-02: the driver's 3-voter review replaces the lesson
+# check). It runs only by hand; no pull request triggers it.
 name: Kit lesson
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  workflow_dispatch:
 jobs:
   lesson:
     permissions:

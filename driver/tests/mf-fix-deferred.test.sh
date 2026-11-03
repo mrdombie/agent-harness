@@ -42,12 +42,12 @@ setup() { # <labels> <deferred grade> — a fix round that clears F1 and defers 
   T=$t
 }
 
-echo "--- a deferred Major is a follow-up, and the round passes ---"
+echo "--- a deferred Major is dropped, never filed (finding tickets switched off), and the round passes ---"
 setup "status:claimed,P1" major
-want "filed, not parked"                       "rc=0 fu=D1 park=no" "$R"
+want "dropped, not filed or parked"            "rc=0 fu= park=no" "$R"
 want "it leaves the review's findings"         "F1" "$(jq -r '[.findings[].id] | join(" ")' "$(driver_state_dir "$T")/steps/review.json")"
-want_in "and the run says it ships"            'D1 \(major\) could not be fixed here — merge first: filed as a follow-up' "$OUT"
-want "it is noted for the PR"                  "follow-up" "$(jq -r 'select(.id == "D1") | .list' "$(driver_state_dir "$T")/steps/review.deferred.jsonl")"
+want_in "and the run says it ships"            'D1 \(major\) could not be fixed here — merge first: dropped, noted in the PR' "$OUT"
+want "it is noted for the PR"                  "dropped" "$(jq -r 'select(.id == "D1") | .list' "$(driver_state_dir "$T")/steps/review.deferred.jsonl")"
 
 echo "--- on a ticket that is itself a follow-up it is dropped, with a note ---"
 setup "status:claimed,P1,fix-after-merge" major

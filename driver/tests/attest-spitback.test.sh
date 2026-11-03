@@ -128,7 +128,8 @@ fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 502 2>&1) || rc=$?
 want "it does not park or go back" "0" "$rc"
 want_in "the gate was told round 2 blocks on Critical and Major" '^2 critical major$' "$(head -1 "$FIX/reviewer.env")"
-want_in "the Minor goes on the screen's polish list" '^add inbox \[Minor\] ui-gate: the footer link stays hidden once every library is added — screens/Inbox.tsx:77' "$(cat "$FIX/pl.adds")"
+want "the Minor goes on no polish list (switched off, 2026-11-02)" "" "$(cat "$FIX/pl.adds")"
+want "it is dropped, noted for the PR" "dropped" "$(jq -r 'select(.grade == "minor") | .list' "$(driver_state_dir 502)/steps/review.deferred.jsonl" | head -1)"
 want "and leaves the findings" "0" "$(jq '[.findings[] | select(.grade == "minor")] | length' "$(driver_state_dir 502)/steps/review.json")"
 want "the gate ran again with the deferral stated" "2" "$(calls)"
 want "and its SHIP is recorded" "1" "$(trailer 502)"
@@ -141,7 +142,7 @@ fix_ai review "$SHIP_REVIEW" code-review
 rc=0; out=$(driver_step_review 503 2>&1) || rc=$?
 want "it refuses" "$DRIVER_E_REFUSED" "$rc"
 want "after one run again, not a loop" "2" "$(calls)"
-want "the Minor went on the list once" "1" "$(grep -c '^add inbox' "$FIX/pl.adds")"
+want "the Minor was deferred once" "1" "$(grep -c '"grade":"minor"' "$(driver_state_dir 503)/steps/review.deferred.jsonl")"
 want "and nothing was recorded" "0" "$(trailer 503)"
 
 echo "--- past the round limit, a blocking SPIT-BACK parks as before ---"

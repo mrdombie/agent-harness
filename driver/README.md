@@ -79,7 +79,7 @@ A **quick** ticket walks `DRIVER_QUICK_STEPS`. The `quick` step is one agent ses
 (`briefs/quick.md`): it edits and commits, and cannot push. The driver then reads the
 real diff and runs the same gates `self-check` runs (`gates.local` under
 `gates.localOnly`, else the changed list, plus the changelog skip line). `review`
-runs once: only Critical and Major block, and a Minor goes on the polish list. Then
+runs once: only Critical and Major block, and a Minor is dropped. Then
 the unchanged `ship` step pushes, opens the PR, readies it and arms auto-merge. No
 plan, build, fix, compare, separate self-check or record step runs.
 

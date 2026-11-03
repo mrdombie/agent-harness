@@ -255,7 +255,7 @@ want "and asks for no sign-off record"    "" "$(cat "$FIX/ak.log")"
 jq 'del(.design)' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
 unset DRIVER_APPROVAL_KEPT AK_RC
 
-echo "--- from round 2 a Minor does not block: it goes on its screen's polish list ---"
+echo "--- from round 2 a Minor does not block: it goes to the sweep or is dropped, never on a polish list ---"
 # The owner, 2026-10-20: round 1 fixes Critical, Major and Minor; from round 2 only
 # Critical and Major block. 86 of 117 latest findings were Minor, and the 4-5 hour
 # loops were mostly Minor churn.
@@ -273,7 +273,7 @@ case "\$1" in add) printf '%s\n' "\$*" >> "$FIX/pl.adds"; exit "\${PL_RC:-0}" ;;
 exit 0
 SH
 chmod +x "$FIX/sf" "$FIX/pl"; : > "$FIX/pl.adds"
-export DRIVER_SCREEN_FINDINGS="$FIX/sf" DRIVER_POLISH_LIST="$FIX/pl"
+export DRIVER_SCREEN_FINDINGS="$FIX/sf" DRIVER_POLISH_LIST="$FIX/pl" SWEEP_QUEUE="$FIX/sweep.jsonl"
 minor='{"verdict":"BLOCKED","findings":[{"file":"screens/Settings.tsx","line":12,"grade":"minor","summary":"the save row sits 4px off the scale","reason":"it looks misaligned"}]}'
 majmin='{"verdict":"BLOCKED","findings":[
   {"file":"lib/a.ts","line":9,"grade":"major","summary":"the error branch is dropped","reason":"a failure shows as success"},
@@ -285,10 +285,11 @@ want "round 1: the Minor blocks"                 "30" "$rc"
 want "and nothing goes on a list"                "" "$(cat "$FIX/pl.adds")"
 out=$(driver_step_review 130 2>&1); rc=$?
 want "round 2: the same Minor does not block"    "0" "$rc"
-want_in "it lands on the polish list of the screen its file is on" '^add settings \[Minor\] the save row sits 4px off the scale — screens/Settings.tsx:12' "$(cat "$FIX/pl.adds")"
+want "it goes on no polish list (switched off, 2026-11-02)" "" "$(cat "$FIX/pl.adds")"
+want_in "outside the change, it is on the sweep's queue" 'the save row sits 4px off the scale' "$(cat "$SWEEP_QUEUE")"
 want "it leaves the findings"                    "0" "$(jq '[.findings[] | select(.grade == "minor")] | length' "$(driver_state_dir 130)/steps/review.json")"
 want "and the verdict ships"                     "SHIP" "$(jq -r .verdict "$(driver_state_dir 130)/steps/review.json")"
-want "recorded as deferred, with its list"       "settings" "$(jq -r .list "$(driver_state_dir 130)/steps/review.deferred.jsonl")"
+want "recorded as deferred, with where it went"   "sweep" "$(jq -r .list "$(driver_state_dir 130)/steps/review.deferred.jsonl")"
 want_in "and the deferral is said"               'do not block' "$out"
 
 echo "--- round 2: a Major still blocks, the Minor beside it does not ---"
@@ -299,7 +300,7 @@ out=$(driver_step_review 131 2>&1); rc=$?
 want "the Major sends it back"                   "30" "$rc"
 want_in "named as what blocks"                   'error branch is dropped' "$out"
 want_not_in "and the Minor is not among it"      'blocking.*toast wording' "$out"
-want_in "the Minor goes on the ticket's screen's list" '^add inbox \[Minor\] the toast wording is stiff' "$(cat "$FIX/pl.adds")"
+want "the Minor goes on no list"                 "" "$(cat "$FIX/pl.adds")"
 want "only the Major is left to fix"             "major" "$(jq -r "[.findings[] | $(driver_blocking_select) | .grade] | join(\" \")" "$(driver_state_dir 131)/steps/review.json")"
 
 echo "--- round 2 with no screen: the Minor is a note in the PR, still not blocking ---"
@@ -312,13 +313,13 @@ want "no list is written"                        "" "$(cat "$FIX/pl.adds")"
 . "$HERE/../steps/ship.sh" || exit 1
 sec=$(_driver_ship_deferred 132)
 want_in "the PR body says Minor, deferred"       '^## Minor, deferred' "$sec"
-want_in "with the finding, its file and line"    'screens/Settings.tsx:12 — the save row sits 4px off the scale.*no screen resolved' "$sec"
+want_in "with the finding, its file and line"    'screens/Settings.tsx:12 — the save row sits 4px off the scale.*to the nightly sweep' "$sec"
 want "a run with nothing deferred says nothing"  "" "$(driver_state_init 136 --worktree "$REPO"; _driver_ship_deferred 136)"
 driver_state_init 133 --worktree "$REPO"; fix_issue 133 OPEN "status:claimed,screen:inbox"; driver_state_bump 133 review
 fix_ai review "$minor" superpowers:requesting-code-review
 rc=0; PL_RC=1 driver_step_review 133 >/dev/null 2>&1 || rc=$?
-want "a list that cannot be written: still not blocking" "0" "$rc"
-want_in "and kept for the PR"                    'no screen resolved' "$(_driver_ship_deferred 133)"
+want "no list is consulted: still not blocking"  "0" "$rc"
+want_in "and noted for the PR"                   'to the nightly sweep' "$(_driver_ship_deferred 133)"
 
 echo "--- past the round limit, with the first round's set configured as Critical and Major ---"
 # #13621: round 3 of 2, two Minors and a Nit, DRIVER_BLOCKING_GRADES="critical major".
@@ -335,7 +336,7 @@ fix_ai review "$late" superpowers:requesting-code-review
 rc=0; DRIVER_BLOCKING_GRADES="critical major" driver_step_review 140 >/dev/null 2>&1 || rc=$?
 want "round 3, Minors and a Nit only: it finishes"  "0" "$rc"
 want "and the verdict is not BLOCKED"               "SHIP" "$(jq -r .verdict "$(driver_state_dir 140)/steps/review.json")"
-want "both Minors go on a polish list"              "2" "$(grep -c '\[Minor\]' "$FIX/pl.adds")"
+want "no Minor goes on a polish list"               "0" "$(grep -c '\[Minor\]' "$FIX/pl.adds")"
 want "and the Nit does not"                         "0" "$(grep -c 'stack trace' "$FIX/pl.adds")"
 want "the Minors are recorded as deferred"          "2" "$(grep -c . "$(driver_state_dir 140)/steps/review.deferred.jsonl" 2>/dev/null)"
 : > "$FIX/pl.adds"
@@ -369,13 +370,13 @@ rc=0; driver_step_review 134 >/dev/null 2>&1 || rc=$?
 want "repair round 1: the Minor blocks"          "30" "$rc"
 rc=0; driver_step_review 134 >/dev/null 2>&1 || rc=$?
 want "repair round 2: it does not"               "0" "$rc"
-want_in "and lands on the polish list"           '^add settings \[Minor\]' "$(cat "$FIX/pl.adds")"
+want "and lands on no polish list"               "" "$(cat "$FIX/pl.adds")"
 fix_ai review "$majmin" superpowers:requesting-code-review
 repair_rec 135; driver_state_bump 135 review
 rc=0; driver_step_review 135 >/dev/null 2>&1 || rc=$?
 want "repair round 2: a Major still blocks"      "30" "$rc"
 
-echo "--- on a signed-off PR, a Minor on its screens goes on the polish list: no park, no fix round ---"
+echo "--- on a signed-off PR, a Minor on its screens is deferred, never a list: no park, no fix round ---"
 # The owner's rule: after sign-off a screen's review note is polish, never a call for
 # the owner. #13339 parked on one Minor (a HelpTip bubble off a 375px phone).
 jq '.design = {"surfacePaths": ["screens/**"]}' "$REPO/.claude/harness.json" > "$FIX/h" && mv "$FIX/h" "$REPO/.claude/harness.json"
@@ -393,10 +394,10 @@ fix_ai review "$minor" superpowers:requesting-code-review
 out=$(driver_step_review 150 2>&1); rc=$?
 want "repair round 1, one Minor on a signed screen: it carries on" "0" "$rc"
 want "and parks for nobody"                      "" "$(driver_state_get 150 park_note)"
-want_in "the Minor is on its screen's polish list, citing the PR" '^add settings \[Minor\] the save row sits 4px off the scale — screens/Settings.tsx:12 .*PR #88' "$(cat "$FIX/pl.adds")"
+want "the Minor goes on no polish list"          "" "$(cat "$FIX/pl.adds")"
 want "it leaves the findings, so no fix round touches the screen" "0" "$(jq '.findings | length' "$(driver_state_dir 150)/steps/review.json")"
 want "and the verdict ships"                     "SHIP" "$(jq -r .verdict "$(driver_state_dir 150)/steps/review.json")"
-want "recorded as deferred"                      "settings" "$(jq -r .list "$(driver_state_dir 150)/steps/review.deferred.jsonl")"
+want "recorded as deferred"                      "sweep" "$(jq -r .list "$(driver_state_dir 150)/steps/review.deferred.jsonl")"
 want_not_in "and nothing is filed"               'issue create' "$(cat "$GH_LOG")"
 : > "$FIX/pl.adds"
 repair_rec 151
@@ -405,7 +406,7 @@ fix_ai review '{"verdict":"BLOCKED","findings":[
   {"file":"lib/b.ts","line":3,"grade":"minor","summary":"the toast wording is stiff","reason":"reads oddly"}]}' superpowers:requesting-code-review
 rc=0; driver_step_review 151 >/dev/null 2>&1 || rc=$?
 want "a Minor off the screens is still fixed in round 1" "30" "$rc"
-want "only the screen's Minor went on a list"    "1" "$(grep -c . "$FIX/pl.adds")"
+want "no Minor went on a list"                   "0" "$(grep -c . "$FIX/pl.adds")"
 want "the code Minor is what is left to fix"     "lib/b.ts" "$(jq -r '[.findings[].file] | join(" ")' "$(driver_state_dir 151)/steps/review.json")"
 : > "$FIX/pl.adds"
 repair_rec 152

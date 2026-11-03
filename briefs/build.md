@@ -25,7 +25,7 @@ passing test can still get wrong.
 - The standard a change is held to: {{STANDARDS}}
 - The screen rules, when this task touches a screen: {{SURFACE_RULES}}
 - Why the last try at this task was sent back: {{LAST_TRY}}
-- The screen's polish list: {{POLISH_LIST}}
+- Its own polish list, if any: {{POLISH_LIST}}
 - Proof limits: {{PROOF_LIMITS}}
 
 Read {{STANDARDS}} once for the ticket, not once per file.
@@ -51,7 +51,7 @@ Read {{STANDARDS}} once for the ticket, not once per file.
   visible outcomes: loading, failed — which says so and offers a retry — and
   loaded. "Nothing here" is only ever loaded-and-empty.
 
-## The screen's polish list rides along
+## A polish list's own items
 
 Fix the items {{POLISH_LIST}} names in this change and record each fixed one with
 its command, the item as written. Never tick one: it is ticked when the PR merges.

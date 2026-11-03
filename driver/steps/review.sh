@@ -26,18 +26,18 @@
 #   nit       taste
 #
 # In round 1 Critical, Major and Minor go back to the build step; from round 2 only
-# Critical and Major do, and a Minor goes on its screen's polish list
-# (_driver_review_defer). What blocks, past the rounds, stays with this ticket: the
-# ship step refuses and names it. Nothing leaves a review
-# as a follow-up ticket: filing Minors made every passing review open new work,
-# 110 of the 339 bugs filed in one week. Nits are dropped — and the count is SAID,
-# because dropped silently reads exactly like never raised.
+# Critical and Major do (_driver_review_defer). What blocks, past the rounds, stays with
+# this ticket: the ship step refuses and names it. Nits are dropped — and the count is
+# SAID, because dropped silently reads exactly like never raised.
 #
-# MERGE FIRST (release.mergeFirst, the owner, 2026-10-22): until the release a Critical
-# alone blocks and is fixed in place. Every Major becomes a follow-up ticket at the front of
-# the queue (_driver_review_follow_up, filed by the ship step once the PR has a number),
-# unless the ticket is itself a follow-up: then it is dropped with a note on the PR. A Minor
-# on a screen file goes on that screen's polish list; any other Minor is a follow-up too.
+# NOTHING LEAVES A REVIEW AS A TICKET OR A LIST (the owner, 2026-11-02: finding tickets
+# and polish lists switched off, the vote replaces them). A finding in a file this change
+# touched is fixed in this change (_driver_review_same_change); one in a file it did not
+# touch is pre-existing and goes to the nightly sweep's queue; anything else that does not
+# block is dropped, noted in the PR. No follow-up ticket, no polish list.
+#
+# MERGE FIRST (release.mergeFirst, the owner, 2026-10-22): until the release a Critical,
+# and a finding in this change's own files, block and are fixed in place.
 #
 # REVIEW ONCE (the owner, 2026-10-22: review was 26% of driver usage). The model reviews
 # a change once. A later pass calls it again only when the fix round touched a file the
@@ -154,7 +154,7 @@ Read the rest in the worktree — do NOT review the part above as if it were the
   tier=$(driver_change_tier "$t" "$wt" "$trunk" | cut -f1)
   [ "$tier" != tooling ] || maxr=1
   # A QUICK CHANGE (steps/size.sh) is graded as tooling is: Critical and Major block, a
-  # Minor goes on the polish list. One that blocks takes the ticket to the full route's
+  # Minor does not. One that blocks takes the ticket to the full route's
   # fix step (build-ticket), so a quick change is never reviewed twice on its own route.
   local quick=""; [ "$(driver_state_get "$t" route)" = quick ] && quick=1
   if [ "$round" -ge 1 ]; then
@@ -167,13 +167,6 @@ Read the rest in the worktree — do NOT review the part above as if it were the
 
 [ROUND $((round + 1)): only $(driver_blocking_grades 2) block. ${again#run }]"
   fi
-  # THE REVIEWER CONFIRMS A POLISH ITEM IS FIXED, not the builder's own record of it.
-  local claimed=""
-  [ "$(driver_state_get "$t" mode)" = repair ] || claimed=$(bash "${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" taken "$t" 2>/dev/null)
-  [ -z "$claimed" ] || diff="${diff}
-
-[POLISH ITEMS THE BUILDER SAYS IT FIXED — confirm each one against the change. One that is not really fixed is a finding at its grade (an item that names no grade is a Minor), with the item's words as its summary:
-$(printf '%s\n' "$claimed" | awk -F'\t' 'NF { printf "- %s (polish list #%s)\n", $2, $1 }')]"
   # THE BUILD IS HELD TO ITS SCREEN CHECKLIST, written up front by the plan or quick step.
   local scl; scl=$(driver_state_get "$t" screen_checklist)
   if [ -n "$scl" ] && [ "$scl" != "[]" ]; then diff="${diff}
@@ -274,8 +267,6 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   driver_drop_critic_findings "$ans_file" review "$t" && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
   # A finding that only says the branch clashes is the PR's repair, never a block or a ticket.
   driver_drop_clash_findings "$ans_file" review && _driver_review_verdict_off_grades "$ans_file" "$(driver_blocking_grades "$round")" 1
-  # Merge first: the screen's polish list stays a list, never this review's findings.
-  driver_merge_first || _driver_review_touched "$t" "$ans_file" "$wt" "$trunk"
   verdict=$(jq -r '.verdict // ""' "$ans_file" | tr '[:lower:]' '[:upper:]')
   # A TOOLING BUILD GETS ONE ROUND, graded as a later round: only Critical and Major block.
   local ground="$round"
@@ -352,9 +343,7 @@ _driver_review_panel() {
   pre=$(jq -c '[.findings[]? | select(.tag == "pre-existing")]' "$f" 2>/dev/null)
   npre=$(printf '%s' "$pre" | jq 'length' 2>/dev/null)
   if [ "${npre:-0}" -gt 0 ] 2>/dev/null; then
-    sq="${DRIVER_SWEEP_QUEUE:-$KIT_ROOT/scripts/sweep-queue.sh}"
-    [ -n "${SWEEP_QUEUE:-}" ] || [ -z "${STATE_DIR:-}" ] || export SWEEP_QUEUE="$STATE_DIR/swarm/sweep/pre-existing.jsonl"
-    printf '%s' "$pre" | bash "$sq" add "$t" "$round" >/dev/null 2>&1 || driver_say "⚠ review: the sweep queue could not take $npre pre-existing finding(s) — they are dropped from this change all the same"
+    _driver_review_to_sweep "$t" "$pre" "$round"
     jq '.findings = [(.findings // [])[] | select(.tag != "pre-existing")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
     dropped=$((dropped + npre))
     driver_say "   review: $npre pre-existing finding(s) to the nightly sweep — not this change's, and never a ticket"
@@ -531,7 +520,7 @@ _driver_review_capped() {
 }
 
 # _driver_review_posted <ticket> <review.json> <round> — every finding this review handed
-# on (to fix, a polish list or a follow-up), on the never-twice ledger. Written only once
+# on (to fix, the sweep or dropped), on the never-twice ledger. Written only once
 # the step acts on them: a refused answer posted nothing, and its re-run must not lose them.
 _driver_review_posted() {
   local t="$1" f="$2" round="$3" src keydef ledger fx
@@ -694,74 +683,15 @@ _driver_review_no_call() {
   return "$DRIVER_OK"
 }
 
-# _driver_review_touched <ticket> <review.json> <tree> <trunk> — FIX WHAT YOU TOUCH (the
-# owner, 2026-10-20). Every free item on the polish list of a screen this change touches
-# — the ticket's screen labels, and design.screenOf over the files it changes — is a
-# finding of this review at the grade it carries (none named: Minor). Critical, Major and
-# Minor block, so it comes back to fix like any other; it is cleared by fixing it and
-# recording it on its list (polish-list.sh take), never by leaving it because this change
-# did not add it. One PR left narration an earlier critic had flagged on its screen, and
-# the next critic failed the screen for it. A repair is judged on its own change and
-# takes none on; a list that cannot be read is said, not guessed.
-#
-# TWO KINDS STAY ON THE LIST, NOT BLOCKING (the PM's call, 2026-10-20): an item that is
-# the owner's call, and one that needs a new picture — anything beyond the approved
-# picture's pixels. The list marks them ("owner's call", "needs:owner", "[picture]",
-# "needs a picture"). A taken item is cleared only because the review step was shown
-# it and raised nothing: the builder's record alone is a claim, the reviewer the check.
-_driver_review_touched() {
-  local t="$1" f="$2" wt="$3" trunk="$4" files items taken add pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}"
-  [ "$(driver_state_get "$t" mode)" = repair ] && return 0
-  files="$(driver_state_dir "$t")/steps/touched-files.txt"
-  git -C "$wt" diff --name-only "$trunk"...HEAD > "$files" 2>/dev/null || : > "$files"
-  if ! items=$(bash "${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}" polish "$t" "$files" 2>&1); then
-    driver_say "   review: the polish lists of the screens this change touches could not be read — $(printf '%s' "$items" | head -1)"
-    return 0
-  fi
-  [ -n "$items" ] || return 0
-  taken=$(bash "$pl" taken "$t" 2>/dev/null)
-  local held; held=$(printf '%s\n' "$items" | cut -f3 | grep -ciE "owner'?s call|needs:owner|\[picture\]|needs a (new )?picture")
-  [ "${held:-0}" -eq 0 ] || driver_say "   review: $held item(s) on the screen's polish list are the owner's call or need a new picture — left on the list, not blocking"
-  # A BOUNDED RIDE-ALONG, OLDEST FIRST: the lowest list number, then list order. 55
-  # items on one change starved its three real findings of a fix round. The rest stay
-  # free on their lists for the next change, or for the list to ship alone when full.
-  local cap; cap="${DRIVER_POLISH_RIDE_ALONG:-$(driver_opt review.polishRideAlong 8)}"
-  case "$cap" in ''|*[!0-9]*) cap=8 ;; esac
-  add=$(printf '%s\n' "$items" | sort -s -t$'\t' -k2,2n | while IFS=$'\t' read -r g n it; do
-          [ -n "$it" ] || continue
-          printf '%s\n' "$it" | grep -qiE "owner'?s call|needs:owner|\[picture\]|needs a (new )?picture" && continue
-          printf '%s\n' "$taken" | grep -qxF -- "$n	$it" && continue
-          jq -nc --arg g "$g" --arg n "$n" --arg it "$it" --arg t "$t" --arg pl "$pl" '{
-            id: ("polish-" + $n + "-" + ($it | @base64 | gsub("[^A-Za-z0-9]"; "") | .[0:10])),
-            file: ("(polish list #" + $n + ")"), line: 0, grade: $g, summary: $it,
-            reason: "already known on a screen this change touches: what you touch, you fix",
-            fix: ("fix it in this change, then record it: bash " + $pl + " take " + $n + " " + $t + " \"" + $it + "\"")}'
-        done | jq -sc '.')
-  local nall; nall=$(printf '%s' "$add" | jq 'length' 2>/dev/null)
-  [ "${nall:-0}" -gt 0 ] 2>/dev/null || return 0
-  if [ "$nall" -gt "$cap" ]; then
-    add=$(printf '%s' "$add" | jq -c --argjson c "$cap" '.[0:$c]')
-    driver_say "   review: $cap of $nall free polish item(s) on the screens this change touches ride along, oldest first; $((nall - cap)) stay on their lists"
-  fi
-  [ "$(printf '%s' "$add" | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null || return 0
-  jq --argjson add "$add" '.findings = ((.findings // []) + $add)
-      | if ([$add[] | select(.grade != "nit")] | length) > 0 then .verdict = "BLOCKED" else . end' "$f" > "$f.t" && mv "$f.t" "$f"
-  driver_say "   review: $(printf '%s' "$add" | jq 'length') item(s) already on the polish list of a screen this change touches are findings of this review"
-}
-
-# _driver_review_defer <ticket> <review.json> <round> — FROM ROUND 2 A MINOR DOES NOT
-# BLOCK (the owner, 2026-10-20). Round 1 fixes every Critical, Major and Minor; a grade
-# that blocks in round 1 and not in this round leaves the findings and goes on the
-# polish list of the screen it is on (polish-list.sh add), fixed by the next change
-# there. No screen resolves, or the list cannot be written: it is kept as a note under
-# "Minor, deferred" in the PR, still not blocking. Either way it is recorded in
-# steps/review.deferred.jsonl. Builds and repairs count their own rounds the same way.
-# [late] replaces the round's blocking set and [cite] is added to each list entry: the
-# signed-off hold defers a screen's Minors with both.
+# _driver_review_defer <ticket> <review.json> <round> [late] — WHAT DOES NOT BLOCK THIS
+# ROUND LEAVES THE FINDINGS, AND NOTHING IS FILED (the owner, 2026-11-02). Round 1 fixes
+# every Critical, Major and Minor; a grade that blocks in round 1 and not in this round
+# leaves. One in a file this change never touched (not inChange) is pre-existing and goes
+# to the nightly sweep's queue; any other is dropped. Either way it is recorded in
+# steps/review.deferred.jsonl, which the ship step notes in the PR. Never a follow-up
+# ticket, never a polish list. [late] replaces the round's blocking set.
 _driver_review_defer() {
-  local t="$1" f="$2" round="$3" late defer d tmp i n x slug labels text list put=0 kept=0 filed=0 dropped=0 fam="" cite="${5:-}" mf=""
-  driver_merge_first && mf=1
-  local pl="${DRIVER_POLISH_LIST:-$KIT_ROOT/scripts/polish-list.sh}" sf="${DRIVER_SCREEN_FINDINGS:-$KIT_ROOT/scripts/screen-findings.sh}"
+  local t="$1" f="$2" round="$3" late defer n sweep nsweep d
   late="${4:-$(driver_blocking_grades "$round")}"
   # What does not block this round and is not a Nit is deferred — read off this round's
   # set alone. Comparing it with round 1's set skipped the whole step when an operator
@@ -770,47 +700,26 @@ _driver_review_defer() {
       | select((.grade // "") as $g | $g != "nit" and (($late | split(" ")) | index($g)) == null)]' "$f" 2>/dev/null)
   n=$(printf '%s' "$defer" | jq 'length' 2>/dev/null)
   [ "${n:-0}" -gt 0 ] || { _driver_review_verdict_off_grades "$f" "$late"; return 0; }
-  d="$(driver_state_dir "$t")/steps"; tmp="$d/defer-file.txt"
-  labels=$(bash "$sf" screens "$t" 2>/dev/null)
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    x=$(printf '%s' "$defer" | jq -c ".[$i]"); i=$((i + 1))
-    list=""
-    case "$(printf '%s' "$x" | jq -r '.id // ""')" in
-      polish-*) list=$(printf '%s' "$x" | jq -r '.file // ""' | sed -n 's/.*#\([0-9][0-9]*\).*/\1/p'); list="#${list:-?}" ;;
-      *)
-        printf '%s\n' "$(printf '%s' "$x" | jq -r '.file // ""')" > "$tmp"
-        # The screen the finding's own file maps to, before the ticket's own screen labels.
-        slug=$(bash "$sf" screens "$t" "$tmp" 2>/dev/null | L="$labels" awk 'BEGIN { n = split(ENVIRON["L"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") s[a[i]] = 1 } NF && !($0 in s) { print; exit }')
-        [ -n "$slug" ] || slug=$(printf '%s\n' "$labels" | sed '/^$/d' | head -1)
-        text=$(printf '%s' "$x" | jq -r --arg r "$round" --arg t "$t" --arg c "${cite:+, $cite}" '"[\(.grade | ascii_downcase | (.[0:1] | ascii_upcase) + .[1:])] \(.summary // "") — \(.file // "?"):\(.line // "?") (review round \($r) of #\($t)\($c))"')
-        # MERGE FIRST: a Major is never polish — it is a follow-up ticket, unless this ticket
-        # is itself a follow-up (then it is dropped, noted on the PR: chains ran 4 deep). A
-        # Minor on a screen file goes on that screen's polish list; any other Minor (tests,
-        # docs, tooling, backend) is a follow-up ticket, as is one no list takes.
-        if [ -n "$mf" ] && [ "$(printf '%s' "$x" | jq -r '.grade // ""')" = major ]; then
-          [ -n "$fam" ] || fam=$(_driver_review_is_follow_up "$t")
-          if [ "$fam" = yes ]; then list="dropped"; dropped=$((dropped + 1))
-          else _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }; fi
-        else
-          if [ -z "$mf" ] || driver_is_screen_file "$(driver_state_get "$t" worktree)" "$(printf '%s' "$x" | jq -r '.file // ""')"; then
-            [ -n "$slug" ] && bash "$pl" add "$slug" "$text" >/dev/null 2>&1 && list="$slug"
-          fi
-          if [ -n "$mf" ] && [ -z "$list" ]; then
-            _driver_review_follow_up "$t" "$x" "$round" && { list="follow-up"; filed=$((filed + 1)); }
-          fi
-        fi ;;
-    esac
-    if [ "$list" = follow-up ] || [ "$list" = dropped ]; then :
-    elif [ -n "$list" ]; then put=$((put + 1)); else kept=$((kept + 1)); fi
-    printf '%s' "$x" | jq -c --arg l "$list" --argjson r "$round" '{id, grade, file, line, summary, round: $r, list: $l}' >> "$d/review.deferred.jsonl"
-  done
-  rm -f "$tmp"
+  d="$(driver_state_dir "$t")/steps"
+  sweep=$(printf '%s' "$defer" | jq -c '[.[] | select((.inChange // false) != true)]')
+  nsweep=$(printf '%s' "$sweep" | jq 'length')
+  [ "${nsweep:-0}" -eq 0 ] || _driver_review_to_sweep "$t" "$sweep" "$round"
+  printf '%s' "$defer" | jq -c --argjson r "$round" '.[] | {id, grade, file, line, summary, round: $r,
+      list: (if (.inChange // false) == true then "dropped" else "sweep" end)}' >> "$d/review.deferred.jsonl"
   jq --arg late "$late" '
       ($late | split(" ")) as $L
       | .findings = [(.findings // [])[] | select((.sameChange // false) == true or ((.grade // "") as $g | ($g != "nit" and ($L | index($g)) == null) | not))]' "$f" > "$f.t" && mv "$f.t" "$f"
   _driver_review_verdict_off_grades "$f" "$late" 1
-  driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $put on a screen's polish list,${mf:+ $filed filed as follow-up tickets when the PR is open (merge first), $dropped Major(s) dropped because this ticket is itself a follow-up,} $kept noted in the PR under \"Minor, deferred\""
+  driver_say "   review round $round: $n finding(s) graded outside this round's blocking set ($late) do not block — $nsweep outside this change's files to the nightly sweep, $((n - nsweep)) dropped; none filed as a ticket"
+}
+
+# _driver_review_to_sweep <ticket> <findings json array> <round> — pre-existing defects to
+# the nightly sweep's queue (scripts/sweep-queue.sh): never the builder's, never a ticket.
+_driver_review_to_sweep() {
+  local sq="${DRIVER_SWEEP_QUEUE:-$KIT_ROOT/scripts/sweep-queue.sh}"
+  [ -n "${SWEEP_QUEUE:-}" ] || [ -z "${STATE_DIR:-}" ] || export SWEEP_QUEUE="$STATE_DIR/swarm/sweep/pre-existing.jsonl"
+  printf '%s' "$2" | bash "$sq" add "$1" "$3" >/dev/null 2>&1 \
+    || driver_say "⚠ review: the sweep queue could not take $(printf '%s' "$2" | jq length) finding(s) — they are dropped from this change all the same"
 }
 
 # _driver_review_same_change <ticket> <review.json> <graded round> <tree> <diff args…> — SAME FILE,
@@ -819,8 +728,9 @@ _driver_review_defer() {
 # spawned 24 findings over 8 follow-up PRs, all in the same four files. Such a finding is
 # marked sameChange, which driver_blocking_select blocks in any round and under merge first.
 # Graded as a later round (a second review, a tooling or a quick change: only Critical
-# and Major block there) a Major alone is marked. A finding in a file
-# the change did not touch is graded as before: a polish list, or a follow-up.
+# and Major block there) a Major alone is marked. Every finding in a file this change
+# touched is marked inChange: one that does not block is dropped, never sent to the sweep
+# (_driver_review_defer), which takes only what lies outside the change.
 _driver_review_same_change() {
   local t="$1" f="$2" round="$3" wt="$4" own grades n
   shift 4
@@ -829,33 +739,14 @@ _driver_review_same_change() {
   if [ "$round" -le 1 ]; then grades="major minor"; else grades="major"; fi
   jq --argjson own "$own" --arg gs "$grades" '.findings = [(.findings // [])[]
       | (.grade // "") as $g | ((.file // "") | tostring | sub("^\\./"; "") | sub(":[0-9]+$"; "")) as $p
-      | if (($gs | split(" ")) | index($g)) != null and ($own | index($p)) != null then . + {sameChange: true} else . end]' "$f" > "$f.t" \
+      | if ($own | index($p)) == null then .
+        elif (($gs | split(" ")) | index($g)) != null then . + {inChange: true, sameChange: true}
+        else . + {inChange: true} end]' "$f" > "$f.t" \
     && mv "$f.t" "$f" || return 0
   n=$(jq '[.findings[]? | select(.sameChange == true)] | length' "$f" 2>/dev/null)
   [ "${n:-0}" -gt 0 ] 2>/dev/null || return 0
   jq '.verdict = "BLOCKED"' "$f" > "$f.t" && mv "$f.t" "$f"
-  driver_say "   review: $n finding(s) ($grades) are in files this change touched — fixed in this change's fix round, never filed as follow-ups (same file, same change)"
-}
-
-# _driver_review_is_follow_up <ticket> — "yes" when the ticket wears release.followUpLabel
-# (default fix-after-merge), else "no"; labels that cannot be read are "no", as before.
-_driver_review_is_follow_up() {
-  local ls lbl; lbl=$(driver_opt release.followUpLabel fix-after-merge)
-  ls=$(driver_gh_read swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '[.labels[]?.name] | join("\n")' 2>/dev/null) || { echo no; return 0; }
-  if printf '%s\n' "$ls" | grep -qxF -- "$lbl"; then echo yes; else echo no; fi
-}
-
-# _driver_review_follow_up <ticket> <finding json> <round> — MERGE FIRST: the finding goes
-# on steps/review.followups.jsonl, one line per finding id; the ship step hands them to
-# scripts/follow-up.sh, which files each as a ticket once the pull request merges, and the PR ships.
-_driver_review_follow_up() {
-  local t="$1" x="$2" round="$3" f id
-  f="$(driver_state_dir "$t")/steps/review.followups.jsonl"
-  id=$(printf '%s' "$x" | jq -r '.id // "" | tostring')
-  [ -n "$id" ] && [ "$id" != null ] || id="r$round-$(printf '%s' "$x" | jq -r '"\(.file // "")|\(.line // "")|\(.summary // "")"' | cksum | cut -d' ' -f1)"
-  [ -f "$f" ] && jq -e --arg i "$id" 'select(.id == $i)' "$f" >/dev/null 2>&1 && return 0
-  printf '%s' "$x" | jq -c --arg i "$id" --argjson r "$round" --arg t "$t" \
-    '{id: $i, grade, file, line, summary, reason, fix, round: $r, ticket: $t}' >> "$f"
+  driver_say "   review: $n finding(s) ($grades) are in files this change touched — fixed in this change's fix round (same file, same change)"
 }
 
 # _driver_review_verdict_off_grades <review.json> <blocking grades> [had-findings] — a
@@ -873,7 +764,7 @@ _driver_review_verdict_off_grades() {
 # signed off, a Critical or Major on a screen file is the owner's call: a fix there
 # changes pixels after the sign-off. It parks for the owner, naming them, and the
 # verdict is left as the reviewer gave it. A Minor there is polish, never a "cannot
-# merge without": it goes on its screen's polish list citing the PR, and the repair
+# merge without": it is dropped (_driver_review_defer), and the repair
 # carries on with no park and no pixel change (the owner's rule; #13339 parked on one). Signed is approval-kept's signed-head (a
 # hold removed on GitHub counts); unreadable counts as signed, the cautious side.
 # Screens are #234's one screen set (approval-kept.sh screens: surfacePaths plus
@@ -901,12 +792,12 @@ _driver_review_hold_signed() {
     rm -f "$f.signed"
     jq --argjson s "$screens" --arg p "$polish" '.findings = [(.findings // [])[] | select(((.grade // "") as $g | ($p | split(" ")) | index($g)) and ((.file // "") as $x | $s | index($x)) | not)]' "$f" > "$f.t" && mv "$f.t" "$f"
     _driver_review_verdict_off_grades "$f" "$(driver_blocking_grades "$(driver_state_count "$t" review)")" 1
-    driver_say "   review: PR #$pr is signed off — its screens' polish goes on their lists, not into this repair"
+    driver_say "   review: PR #$pr is signed off — its screens' polish is dropped, not put into this repair"
   fi
   held=$(jq -r --argjson s "$screens" "[.findings[]? | $(_driver_class blocking) | select((.file // \"\") as \$x | \$s | index(\$x)) | \"\\(.grade) \\(.file):\\(.line // \"?\") \\(.summary // \"\")\"] | join(\"; \")" "$f")
   [ -n "$held" ] || return 0
   driver_say "✋ review: PR #$pr $([ "$arc" -eq 2 ] && echo 'may be signed off (its sign-offs could not be read)' || echo 'is signed off'), and the review graded its screens: $held — a fix would change pixels after the sign-off, so it parks for the owner."
-  driver_state_set "$t" park_note "Needs the owner: PR #$pr's screens were signed off$([ "$arc" -eq 2 ] && echo ' (or its sign-offs could not be read)'), and the review of this repair found on them: $held. Either each becomes a follow-up ticket, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
+  driver_state_set "$t" park_note "Needs the owner: PR #$pr's screens were signed off$([ "$arc" -eq 2 ] && echo ' (or its sign-offs could not be read)'), and the review of this repair found on them: $held. Either each is dropped, or it is a fix the PR cannot merge without and its commit says pixel-change-after-signoff: <why>, which puts the hold back on for the owner to sign again."
   driver_state_set "$t" park_cause person
   return "$DRIVER_E_REFUSED"
 }

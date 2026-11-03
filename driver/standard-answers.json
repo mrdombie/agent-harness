@@ -70,7 +70,7 @@
     },
     "c": {
       "name": "Minor or Major finding: defer",
-      "answer": "Defer it as fix-after-merge and ship. Until the release only a Critical blocks; a Major or Minor finding is its own follow-up ticket (a Minor waits until after launch).",
+      "answer": "Fix it in this change when it is in a file this change touched; otherwise drop it and ship. Until the release only a Critical blocks; a Major or Minor finding is never filed as a ticket.",
       "action": "carry",
       "all": [
         "\\b(minor|major)\\b",

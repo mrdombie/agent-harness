@@ -5,7 +5,8 @@
 #             and puts the hold on BEFORE marking it ready
 #   Gate 2    with no evidence in the body and local capture off, refuses and
 #             names CI's state, and takes nothing locally
-#   Gate 5    accepts a verdict under CI's evidence commit, refuses one under code
+#
+# Gate 5 (the ui-gate verdict's head) is gone with the frontend gate (the owner, 2026-11-02).
 #
 # Each block is cut from skills/finish/SKILL.md and executed. Then each guard is
 # planted dead in a copy of the skill, and the case it guards must go red.
@@ -56,27 +57,12 @@ cut_gate2() { # <skill> → the CI branch of Gate 2, wrapped so it runs alone
   awk '/^  elif .*ci-evidence\.sh" local/{s=1} s && /^  else$/{exit} s' "$1"
   printf 'fi\necho FELL-THROUGH\n'
 }
-cut_gate5() { # <skill> → Gate 5's head check
-  awk '/# A verdict still covers the head when everything after it is CI/{s=1} s{print} s && /echo "✓ \$AT_HEAD"/{e=1; next} e && /^  fi$/{exit}' "$1"
-}
-
 run54() { # <skill> <pr> → exit code; log in $CIE_LOG
   : > "$CIE_LOG"
   (cd "$SB" && KIT_ROOT="$KIT" PR_NUMBER="$2" REPO_SLUG=o/r HOLD_LABEL=hold TICKET_KEY=7 PERSON_STOP="$SB/person-stop" \
      bash -c "toolkit_cfg() { echo squash; }; $(cut_step54 "$1")" >/dev/null 2>&1)
 }
 
-# A scratch repo: code, CI's evidence commit, an empty trailer; and a code commit.
-R="$SB/repo"; git init -q "$R"
-git -C "$R" config user.email t@t; git -C "$R" config user.name t
-echo a > "$R/page.tsx"; git -C "$R" add .; git -C "$R" commit -qm code; V=$(git -C "$R" rev-parse HEAD)
-mkdir -p "$R/docs/evidence/7"; echo p > "$R/docs/evidence/7/x.png"; git -C "$R" add .
-git -C "$R" commit -qm "chore(evidence): screenshots"; E=$(git -C "$R" rev-parse HEAD)
-echo b > "$R/page.tsx"; git -C "$R" commit -qam "fix: more"; X=$(git -C "$R" rev-parse HEAD)
-run5() { # <skill> <verdict> <head> → exit code
-  (cd "$R" && KIT_ROOT="$KIT" UI_GATE_SHA="$2" HEAD_SHA="$3" BRANCH=none \
-     bash -c "$(cut_gate5 "$1")" >/dev/null 2>&1)
-}
 run2() { # <skill> <pr> → output (stderr and stdout)
   (cd "$SB" && KIT_ROOT="$KIT" PR_NUMBER="$2" bash -c "$(cut_gate2 "$1")" 2>&1)
 }
@@ -100,14 +86,11 @@ cases() { # <skill> → failed cases, one per line
   grep -q 'FELL-THROUGH' <<<"$o" && echo "Gate 2 fell through to local capture with the flag off"
   o=$(HARNESS_LOCAL_EVIDENCE=1 run2 "$s" 3)
   grep -q 'FELL-THROUGH' <<<"$o" || echo "Gate 2 did not reach the local fallback with the flag on"
-  run5 "$s" "$V" "$E" || echo "Gate 5 refused a verdict under CI's evidence commit"
-  run5 "$s" "$V" "$X" && echo "Gate 5 passed a verdict with code after it"
-  run5 "$s" "$X" "$X" || echo "Gate 5 refused a verdict at the head"
   return 0
 }
 
 echo "ci-evidence call sites (finish)"
-r=$(cases "$SKILL"); [ -z "$r" ] && ok "Step 5.4, Gate 2 and Gate 5 behave as written" || { bad "cases failed:"; printf '         %s\n' "$r"; }
+r=$(cases "$SKILL"); [ -z "$r" ] && ok "Step 5.4 and Gate 2 behave as written" || { bad "cases failed:"; printf '         %s\n' "$r"; }
 
 plant() { # <desc> <old> <new> <the case that must go red>
   cp "$SKILL" "$SB/SKILL.md"
@@ -132,6 +115,4 @@ plant "Step 5.4 never waits"            'bash "$EV" wait "$PR_NUMBER"; echo "wai
 plant "Gate 2 ignores the local flag"   '  elif ! bash "$KIT_ROOT/scripts/ci-evidence.sh" local; then' '  elif ! bash "$KIT_ROOT/scripts/ci-evidence.sh" local || true; then' 'did not reach the local fallback'
 plant "Gate 2 refuses but carries on"   '    echo "   Do not capture locally. Re-run this step when wait exits 0." >&2
     exit 1' '    echo "   Do not capture locally. Re-run this step when wait exits 0." >&2' 'fell through to local capture with the flag off'
-plant "Gate 5 strict equality again"    'if ! AT_HEAD=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" at-head "$UI_GATE_SHA" "$HEAD_SHA"); then' 'if ! AT_HEAD=$(false); then' "refused a verdict under CI's evidence commit"
-plant "Gate 5 waves everything through" 'if ! AT_HEAD=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" at-head "$UI_GATE_SHA" "$HEAD_SHA"); then' 'if ! AT_HEAD=$(true); then' 'passed a verdict with code after it'
 suite_end "$fail"

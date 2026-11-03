@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# polish-list.test.sh — a ticket for a screen carries that screen's polish list into
-# its plan and build ({{POLISH_LIST}}). The builder records what it fixed (take);
+# polish-list.test.sh — polish lists no longer ride along (the owner, 2026-11-02): a
+# ticket for a screen gets none of its list's items ({{POLISH_LIST}} says so), and a list
+# still open is worked only as its own ticket. The builder records what it fixed (take);
 # ship reserves those items for its PR and names them — nothing is ticked before the
-# PR merges. A polish list's own PR says "Refs", never "Closes". A ticket with no
-# screen gets a sentence saying so, never an empty fact.
+# PR merges. A polish list's own PR says "Refs", never "Closes". The fact is a sentence,
+# never empty.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -46,15 +47,12 @@ list_body() { # <n> <body>
 list_body 900 $'Small fixes.\n\n## Items\n- [ ] Row gap is 12px, kit says 16px\n- [x] Already fixed\n- [ ] Send label wraps on a phone\n'
 jq -s '.' "$FIX/gh/issue-900.json" > "$FIX/gh/issue-list.json"
 
-echo "--- a ticket for the screen gets the list's unticked items ---"
+echo "--- a ticket for the screen gets none of the list's items: lists no longer ride along ---"
 fix_issue 501 OPEN "status:claimed,screen:inbox"; driver_state_init 501
 fact=$(driver_fact_polish_list 501)
-want_in "it names the list"                'Polish list #900 — fix these' "$fact"
-want_in "and each unticked item"           '^- Row gap is 12px, kit says 16px$' "$fact"
-want_in "both of them"                     '^- Send label wraps on a phone$' "$fact"
-want_not_in "never a ticked one"           'Already fixed' "$fact"
-want_in "and how to record a fixed one, for this run" 'polish-list.sh take 900 501' "$fact"
-want_in "never ticked by the builder"      'ticked when the pull request merges, never by you' "$fact"
+want_in "it says lists no longer ride along" '^\(none — #501 is not itself a polish list, and polish lists no longer ride along' "$fact"
+want_not_in "and hands over no item"       'Row gap|Send label' "$fact"
+want "and reads no list for the screen"    "0" "$(grep -c 'issue list' "$GH_LOG" 2>/dev/null || true)"
 driver_facts_common 501 build
 want "it reaches the build step's facts"   "$fact" "$(cat "$(driver_fact_dir 501 build)/POLISH_LIST")"
 
@@ -64,12 +62,9 @@ want "the second read is the first"        "$fact" "$(driver_fact_polish_list 50
 
 echo "--- no screen, or no list: a sentence, never empty ---"
 fix_issue 502 OPEN "status:claimed"; driver_state_init 502
-want_in "no screen label"                  '^\(none — #502 carries no screen:<slug> label' "$(driver_fact_polish_list 502)"
+want_in "no screen label"                  '^\(none — #502 is not itself a polish list' "$(driver_fact_polish_list 502)"
 fix_issue 504 OPEN "status:claimed,screen:calendar"; driver_state_init 504
-want_in "a screen with no list"            'no open polish list for screen:calendar' "$(driver_fact_polish_list 504)"
-fix_issue 505 OPEN "status:claimed,screen:inbox"; driver_state_init 505
-list_body 900 $'## Items\n- [x] all done\n- [ ] taken (in PR #9)\n'
-want_in "a list with nothing free"         'no open polish list for this ticket holds a free item' "$(driver_fact_polish_list 505)"
+want_in "a screen with no list"            '^\(none — #504 is not itself a polish list' "$(driver_fact_polish_list 504)"
 
 echo "--- a polish list's own ticket works its own items ---"
 list_body 503 $'## Items\n- [ ] Own item\n'
@@ -93,7 +88,7 @@ want "ship reserves it for the PR, unticked" "- [ ] Row gap is 12px, kit says 16
 sec=$(_driver_ship_polish 501)
 want_in "a section of its own"             '^## Polish list$' "$sec"
 want "the reserved one under fixed"        "- Row gap is 12px, kit says 16px (#900)" "$(printf '%s\n' "$sec" | sed -n '/^Fixed here/,/^$/p' | sed -n 2p)"
-want "the one it did not take under left"  "- Send label wraps on a phone (#900)" "$(printf '%s\n' "$sec" | sed -n '/^Left on/,$p' | sed -n 2p)"
+want "nothing is named as left: the list did not ride along" "" "$(printf '%s\n' "$sec" | sed -n '/^Left on/,$p' | sed -n 2p)"
 want_not_in "it never says ticked by this run" 'Fixed here and ticked' "$sec"
 want "once reserved, it leaves the run's record" "" "$(bash "$KIT/scripts/polish-list.sh" taken 501)"
 # PR #42 closes unmerged; the sweep frees the item. A later ship of the same ticket
@@ -148,12 +143,11 @@ want_not_in "and the PR's own words are not rewritten" '^pr edit 88 .*--title' "
 want "  any edit starts with them"         "0" "$(grep '^pr edit 88' "$GH_LOG" | grep -vc -- '--body A body a person wrote\.' || true)"
 
 
-echo "--- a full list rides along with another ticket, at most polishListFull items ---"
+echo "--- a full list lends nothing to another ticket; its own run gets all of it ---"
 list_body 900 "$(printf '## Items\n'; for i in 1 2 3 4 5 6 7 8 9 10; do printf -- '- [ ] full item %s\n' "$i"; done)"
 fix_issue 508 OPEN "status:claimed,screen:inbox"; driver_state_init 508
 fact=$(driver_fact_polish_list 508)
-want_in "a full list lends its items"      'full item 8' "$fact"
-want_not_in "but no more than 8 to one change" 'full item 9' "$fact"
+want_not_in "a full list lends no item"      'full item' "$fact"
 jq '.labels += [{name:"status:claimed"}]' "$FIX/gh/issue-900.json" > "$FIX/gh/c.json" && mv "$FIX/gh/c.json" "$FIX/gh/issue-900.json"
 driver_state_init 900
 fact=$(driver_fact_polish_list 900)

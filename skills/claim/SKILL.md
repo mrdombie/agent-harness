@@ -124,7 +124,7 @@ question only in the last message: nothing reads either, and the ticket is
 respawned to ask it again. In an interactive session, ask with `AskUserQuestion`
 as usual.
 
-What a spawned agent still handles alone: the `/agent-harness:ui-gate` frontend review at `/agent-harness:finish` — that is an agent, not a person — and attaching the branch and route to the PR so evidence waits for the PM rather than blocking on them.
+What a spawned agent still handles alone: attaching the branch and route to the PR so evidence waits for the PM rather than blocking on them.
 
 **Never spawn `/design` itself.** Invoked directly, it is an interactive two-phase flow and needs a human present from the start.
 
@@ -947,11 +947,6 @@ The label flip + claim comment happened in Step 3, immediately after the local l
 
 5-10 bullets to the user: problem, build, key files, AC, expected effort.
 
-**On a fix** (a bug, a repair, a review finding), one of the bullets is the
-**principle**: one sentence naming the class of mistake, and the guard that will
-enforce it. Write it into the PR body's `## Lesson` section as you build; the
-`Every fix ships a lesson` CI check refuses a fix PR without it.
-
 Mention worktree path: *"Working in `$WORKTREE` on branch `$BRANCH`."*
 
 **Record the scope**, so `/agent-harness:standup` and the sign-off banner can name the area. Resolve the
@@ -1001,15 +996,14 @@ KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
 jq -r '(.claim.planRules // [])[] | "- " + .' "$HARNESS_CFG" 2>/dev/null
 ```
 
-**Review is one step, and it runs early.** The design critic and the frontend
-gate run **together on the first version that renders**, not one after the
+**Review is one step, and it runs early.** The design critic and the code
+review run **together on the first version that renders**, not one after the
 other once everything is built: they judge different things and neither
 subsumes the other, so running them apart means building on work the other is
 about to reject. Their findings are one batched fix list. The cap is
 `review.rounds` from `.claude/harness.json` (2 when unset): after the last
-round, anything still raised that is not a blocker goes on its screen's polish
-list (`scripts/polish-list.sh add <screen-slug> "<finding>"`), linked on the PR,
-and the PR ships. A blocker is a dead control, a broken flow,
+round, anything still raised that is not a blocker is dropped — never a ticket,
+never a polish list — and the PR ships. A blocker is a dead control, a broken flow,
 or a data-honesty failure; those still block.
 
 **Ship in PRs of about six fixes.** A ticket may be as big as it needs to be;

@@ -56,7 +56,7 @@ The grade and the round decide each finding's effect.
 |---|---|---|
 | `critical` | wrong data, a security hole, lost work, something published unapproved | goes back to the build step; fixed in this ticket |
 | `major` | a person is misled or stuck: an untrue screen, a dead control, a failure shown as success | goes back to the build step; fixed in this ticket |
-| `minor` | polish: spacing, wording, a small visual slip | round 1: goes back to the build step, fixed in this change. From round 2: goes on the screen's polish list for the next change there. Never filed as a ticket |
+| `minor` | polish: spacing, wording, a small visual slip | round 1: goes back to the build step, fixed in this change. From round 2: dropped, or sent to the nightly sweep when it is outside the files this change touched. Never filed as a ticket |
 | `nit` | taste | dropped |
 
 **A Critical or a Major names who is harmed and how, in the `reason`, in a user's
