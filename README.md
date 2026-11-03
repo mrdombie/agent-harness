@@ -183,7 +183,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `tests.db` is optional: a throwaway, migrated database for the driver's proofs and for the build, fix and repair steps' own test runs, e.g. `{"urlTemplate": "postgresql://u:p@localhost:5432/{name}", "admin": "postgresql://u:p@localhost:5432/postgres", "setup": "npx prisma migrate deploy"}`. Each proof half and each such step gets its own database named `hp_<ticket>_<pid>_<n>`, created through `admin` with `createdb`, `setup` run in that tree with `DATABASE_URL` at it, the command run with `DATABASE_URL` exported, and the database dropped with `dropdb` on the way out, a failure, timeout or signal included. `urlTemplate` must hold `{name}`. The driver drops only a database it created in that run and refuses any name outside `hp_`. A database that cannot be created or set up is "the tree could not be prepared" (exit 5), never a red; a step then runs with `DATABASE_URL` unset. Absent, nothing changes.
 - `tests.e2eProofs` is optional, default `false`: a proof tree runs no app server, so an e2e browser spec (`e2e/**/*.spec.ts`, or a `playwright test` command) named as a red-then-green proof is turned back before a tree is built, and a proof half whose output shows the app could not be reached (`net::ERR_CONNECTION_REFUSED`, `page.goto: net::ERR_`, `ECONNREFUSED` to localhost) is "never run there" (exit 9), never "still fails". Build, fix and repair are sent back once, told to prove with a unit or DOM test; the e2e spec can still ship as extra coverage. Set it `true` only when the project's own e2e harness brings the app up.
 - `proof.autoAccept` is optional, default on for all four kinds: a fix-round finding no red/green pair can show, fixed by a commit that is only `docs-only`, `comment-only`, `wording-only` (string literals and JSX text) or `test-only`, is answered in the fix answer's `autoProofs` and accepted on a check the driver runs itself (`scripts/proof-class.py`, off the commit's diff), with no PM answer and no park; a `test-only` one also names a mutation in non-test code that the driver plants in a scratch tree — the test must fail, then pass once the code is restored. A claim the diff does not bear out is refused with the reason. `false` turns it off, a list names the kinds on, or an object takes `kinds`, `docsGlobs` (added to md/mdx/markdown/txt/rst) and `testGlobs` (added to `*.test.*`, `*.spec.*`, `__tests__/`, `__mocks__/` and `tests.patterns`); a glob starting `!` excludes.
-- `lesson` is optional, and `scripts/check-lesson.sh` reads it: `fixLabels` (default `["bug", "type:bug"]` — a PR, or an issue it closes or references, carrying one is a fix), `fixIssueTypes` (default `["Bug"]`), `fixClasses` (default `["repair", "approved-merge"]`, matched as a `<classLabelPrefix><class>` label on the PR), `classLabelPrefix` (default `class:`), `guardPatterns` (default: test, lint and gate globs such as `**/*.test.*`, `**/eslint-rules/**`, `**/*.semgrep.yml`, `**/check-*.*`, `**/gates/**`, plus `tests.patterns`; set, it replaces both) and `guardExclude` (default `*.md`, `*.mdx`, `*.txt`, `*.rst`, `docs/**` and the like). A pattern with no `/` matches the file name anywhere; one with a `/` is anchored at the repo root; `*` stays inside a directory and `**` crosses. It is read at the base commit. `HARNESS_GUARD_PATTERNS` (space-separated) can only narrow the guard set. A value that is not a list is a refusal. The driver's repair step also reads `lesson.check` (default `lesson`): a red check whose name contains it is the lesson check, answered by writing `## Lesson` into the PR body.
+- `review.classNoticeAt` (default `2`) is how many sightings of one review-finding class tell the PM (`scripts/finding-class.sh`). `findingClasses` is optional: `share` (default `true`: each host publishes its review-finding classes on one shared tally issue, so a repeat on another machine counts) and `label` (default `finding-classes`, the tally issue's label). `scripts/finding-class.sh` reads both. The repair step still reads `lesson.check` (default `lesson`): a red check of that name, a consuming repo's old lesson check, is never owed.
 - `preApprovedWrites` is optional: environments whose writes (a back-fill, a one-off script, a data fix) the operator has approved in advance. `decided` is required and names who made the call and when. The standing rules say a general policy is not a yes; this is the one exception, and `hooks/standing-rules.sh` appends it to every session as its own section. It never covers an outward-facing action in any environment (publishing to a real account, sending email or messages), any environment not listed, or a command refused at a prompt, and the section says so. Only the operator adds or widens it. Two things hold that line. Only the committed value counts: a working-tree value that differs from `HEAD`'s grants nothing until it is committed. And `hooks/guard-pre-approved-writes.sh` refuses an agent's change to the parsed value (Write, Edit, and the Bash routes that name the file, plus `git commit`, `checkout`, `restore` and `apply`) and tells it to ask the operator. Removing the key stays allowed, since that grants nothing. Both values are pasted into the rules, so they are held to plain tokens: a name is letters, digits and `. _ -` with no spaces, up to 32 characters, and never a word for every environment (`all`, `any`, `every…`, `*`); `decided` is exactly `<name>, YYYY-MM-DD`. Anything else, a `harness.json` that is not one JSON object, or one that names the key twice, grants nothing, and the session is told so.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
@@ -346,55 +346,33 @@ It runs in three places, so skipping a skill does not skip it:
 - **The driver's ship step** — its body carries no such section, so a branch that
   deletes a test stays a draft and parks with the files named.
 
-## Every fix ships a lesson
+## Finding classes: a repeat is fixed at the source
 
-**Switched off** (the owner, 2026-11-02: the driver's 3-voter review replaces it). No
-builder is asked for a lesson, the repair step treats a red lesson check as not owed,
-and the kit's own seat (`kit-lesson.yml`) runs only by hand. The check and its reusable
-workflow stay for a project that calls it; the rest of this section describes it.
+Every finding the review step hands on gets a class key, a class seen a second time is
+told to the PM once, and one command counts each class a week
+(`scripts/finding-class.sh`). It replaced the lesson check (2026-11-03), which asked each
+builder for one more test on its own change: every lesson became another check that turned
+the next change red, none changed what builders read or build with, and nobody counted
+whether the mistake came back.
 
-Healing a build is pointless if the same class of mistake comes back. A fix is
-known by what it is, not by one tag: a fix label, a `class:repair` or
-`class:approved-merge` label, a `fix:` / `fix(scope):` title, a `fix/` or `fix-`
-branch, or a bug-typed or bug-labelled issue it closes **or** references
-(`Refs #N`, `Part of #N`). A fix pull request fails until its body carries:
-
-```markdown
-## Lesson
-- Principle: A missing reading never counts as safe to go.
-- Guard: `scripts/machine-gate.test.sh`
-- Before/after: the new case fails on the old sampler and passes on the fix.
-- Reach: it covers the memory and load readers too.
-```
-
-The Guard must be an executable test, lint or gate file that the diff (two dots,
-base..head) **changes in substance**: naming an old test the fix never touched is
-refused, and so are a whitespace-only edit, a pure rename, docs and prose (`*.md`,
-`docs/**`) and workflow files. Or, instead of a Guard, one line of at least eight
-words, `Not automatable because <reason>`, which passes and prints
-`lesson: not-automatable` so a weekly report can count it. HTML comments, fenced
-and indented code never count (an unclosed one runs to the end of the body), so the
-template's placeholder is not an answer. The block to paste into a PR template is
-`templates/pull-request-lesson.md`.
-
-**Everything it judges by comes from the base.** The config is read at the base
-commit, the `guard-patterns` input can only narrow the guard set, and when the kit
-judges its own pull request the script is taken from the base commit. One gap
-GitHub leaves open: on `pull_request`, the calling workflow file is the pull
-request's own copy, so protect `.github/workflows/` with CODEOWNERS or a ruleset.
-Relabelling a linked issue does not re-run the check; a push, a body edit or a
-label change does.
-
-**Rolling it out.** Measured on one consuming repo, 58 of its last 100 merged pull
-requests would have failed, 56 of them only for the missing section. Add the
-workflow as a check that is not required first, so builders see it and start
-writing the section, and make it required once fix pull requests carry it.
-
-The enforcement is CI, not an agent's instructions: `.github/workflows/lesson.yml`
-is a reusable workflow the consuming repo calls on `pull_request` (with `edited`,
-`labeled` and `unlabeled`, so fixing the body or a label re-runs it) and makes
-`Every fix ships a lesson` a required check. Config is read from the base commit,
-so a pull request cannot loosen the check that judges it.
+- **The key** is the review's own `class` as a slug, the shape the code sweep keys its
+  classes in; a finding with no class falls back to its file and the first twelve words
+  of its summary (`class_key` in `scripts/finding-key.jq`). No model call: both are fields
+  the review already returns.
+- **The record step** puts each finding on `steps/review.posted.jsonl` onto the class ledger
+  (`<stateDir>/swarm/finding-classes.jsonl`), one sighting per change, key and file.
+- **A second sighting** (`review.classNoticeAt`, default 2), on any change or machine, is told to the PM once, through
+  `coordinator-notify.sh --class agent` (`finding-class:<key>`), with its instances (PR,
+  file:line) and a proposed source fix: a kit component, a lint rule, or a line in the
+  brief or REVIEW.md. The builder never gets it back as a test.
+- **Any machine**: each host keeps one comment on a shared tally issue (label
+  `findingClasses.label`, default `finding-classes`), edited in place, and a record reads
+  the others' there; a notice is posted there too, so no host tells the PM twice.
+  `findingClasses.share: false` keeps it to one host.
+- **The count**: `finding-class.sh weekly [--weeks N]` prints review classes and red checks
+  (`develop-red.sh count`) in one table by ISO week. `finding-class.sh fixed <key> "<what>"`
+  records a source fix; from then on a class whose count has not fallen reads
+  `NOT FALLING`, and the fix is reworked.
 
 ## Building one ticket
 

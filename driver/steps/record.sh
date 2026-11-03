@@ -41,5 +41,17 @@ driver_step_record() { # <ticket> [anything else — ignored]
     "design_ref=$(driver_state_get "$t" design_ref)" >/dev/null 2>&1 || true
 
   driver_say "   record: $verdict after $rounds round(s), claimed at ${sha:-unknown}"
+
+  # EVERY FINDING HAS A CLASS (scripts/finding-class.sh): each one this change was handed
+  # goes on the class ledger, and a class seen a second time anywhere is the PM's, once.
+  # No model call, nothing back to the builder, and it never fails the step.
+  local posted pr out l
+  posted="$(driver_state_dir "$t")/steps/review.posted.jsonl"
+  if [ -s "$posted" ]; then
+    pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" repair_pr)
+    out=$(bash "${DRIVER_FINDING_CLASS:-$KIT_ROOT/scripts/finding-class.sh}" record "$t" "$posted" "$pr" 2>&1) \
+      || driver_say "⚠ record: the finding classes could not be recorded (it does not stop the ship)"
+    while IFS= read -r l; do [ -z "$l" ] || driver_say "   record: ${l#finding-class: }"; done <<<"$out"
+  fi
   return "$DRIVER_OK"
 }
