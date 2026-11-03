@@ -2,6 +2,10 @@
 # follow-up.sh — merge first, fix after: a review finding that does not hold the change
 # becomes its own ticket once the change has MERGED, ready and first in the queue.
 #
+# SWITCHED OFF (the owner, 2026-11-02: the review's 3-voter vote replaces finding tickets).
+# `file` and `settle` file nothing: a finding is dropped, and a held one is dropped when its
+# PR merges. `settle` still lets an already-filed follow-up go once its parent merges.
+#
 #   follow-up.sh file <ticket> <pr> <findings.jsonl>
 #     one JSON object a line: {id, grade, file, line, summary, reason, fix, round}
 #   follow-up.sh settle [--dry-run]     the merge pass (coordinator housekeeping)
@@ -57,28 +61,11 @@ HELD_DIR="${FOLLOW_UP_HELD_DIR:-$STATE_DIR/swarm/follow-up-held}"
 BLOCKED_LEDGER="${FOLLOW_UP_BLOCKED_LEDGER:-$STATE_DIR/swarm/follow-up-blocked.tsv}"
 PARENTS="${FOLLOW_UP_PARENTS:-$STATE_DIR/swarm/follow-up-parents.tsv}"
 mkdir -p "$(dirname "$LEDGER")" "$HELD_DIR" "$(dirname "$BLOCKED_LEDGER")" "$(dirname "$PARENTS")" 2>/dev/null
-P_MAJOR=$(toolkit_cfg labels.priority.major 2>/dev/null); P_MAJOR="${P_MAJOR:-P1}"
-P_MINOR=$(toolkit_cfg labels.priority.minor 2>/dev/null); P_MINOR="${P_MINOR:-P3}"
 # Every follow-up wears one label, so the clean-up after the release is one list.
 FU_LABEL=$(toolkit_cfg release.followUpLabel 2>/dev/null); FU_LABEL="${FU_LABEL:-fix-after-merge}"
 HELD_LABEL=$(toolkit_cfg release.followUpHeldLabel 2>/dev/null); HELD_LABEL="${HELD_LABEL:-follow-ups-held}"
-# A Minor waits until after the launch (the owner, 23 Oct): its follow-up wears that label too.
-AFTER_LAUNCH=$(toolkit_cfg swarm.afterLaunchLabel 2>/dev/null); AFTER_LAUNCH="${AFTER_LAUNCH:-after-launch}"
 FU_VIA=""
-MARK="${GH_MACHINE_MARK:-<!-- harness:machine -->}"
 uri() { jq -rn --arg l "$1" '$l | @uri'; }
-labels_made=""
-ensure_label() { # <name> <color> <description> — created once if the repo lacks it; a failed create is said
-  case " $labels_made " in *" $1 "*) return 0 ;; esac
-  labels_made="$labels_made $1"
-  # gh-read-ok: unreadable only tries to create the label, which GitHub refuses if it exists
-  "$GH" api "repos/$REPO_SLUG/labels/$(uri "$1")" -q .name >/dev/null 2>&1 && return 0
-  "$GH" api "repos/$REPO_SLUG/labels" -X POST -f name="$1" -f color="$2" -f description="$3" >/dev/null 2>&1 \
-    || echo "the label $1 could not be created"
-}
-ensure_fu_label() {
-  ensure_label "$FU_LABEL" d4c5f9 "A review finding filed so its change could merge first; fixed after the merge"
-}
 queue() { # <args…> — the coordinator's queue, unless switched off
   [ "${FOLLOW_UP_QUEUE:-on}" != off ] || return 0
   bash "${FOLLOW_UP_QUEUE_CMD:-$SELF_DIR/coordinator-queue.sh}" "$@" >/dev/null 2>&1
@@ -88,102 +75,6 @@ queue() { # <args…> — the coordinator's queue, unless switched off
 pr_state() {
   SWARM_GH="$GH" gh_read "whether PR #$1 merged" api "repos/$REPO_SLUG/pulls/$1" \
     -q '[(if .merged_at then "merged" elif .state == "open" then "open" else "closed" end), (.head.sha // "?")] | @tsv'
-}
-
-failed=0; filed=0; had=0
-# file_findings <ticket> <pr> <findings.jsonl> — each Major and Minor filed once, as before.
-file_findings() {
-  local T="$1" PR="$2" F="$3" carry x id key n marker grade pri where summary title body l
-  local -a args
-  # The parent's screen and area labels ride along, so the follow-up sorts with its screen.
-  # gh-read-ok: the screen labels sort the follow-up; it is filed either way
-  local all; all=$("$GH" api "repos/$REPO_SLUG/issues/$T" -q '.labels[].name' 2>/dev/null)
-  carry=$(printf '%s\n' "$all" | grep -E "^(${LBL_SCREEN_PREFIX:-screen:}|area:|repo:)" || true)
-  # A Major found on a follow-up's own PR is not filed: chains of fixes of fixes ran 4 deep.
-  local parent_fu=""; printf '%s\n' "$all" | grep -qxF -- "$FU_LABEL" && parent_fu=1
-  while IFS= read -r x; do
-    [ -n "$x" ] || continue
-    id=$(jq -r '.id // empty | tostring' <<<"$x" 2>/dev/null)
-    [ -n "$id" ] || { echo "a finding with no id was not filed: $(cut -c1-160 <<<"$x")"; failed=1; continue; }
-    key="$PR	$id"
-    if n=$(awk -F'\t' -v p="$PR" -v i="$id" '$1 == p && $2 == i { print $3; exit }' "$LEDGER" 2>/dev/null) && [ -n "$n" ]; then
-      had=$((had + 1)); continue
-    fi
-    marker="<!-- follow-up: pr=$PR finding=$id -->"
-    # An unreadable search is unknown, not "never filed": filing then would make a second ticket.
-    if ! n=$(SWARM_GH="$GH" gh_read "whether finding $id on PR #$PR was filed" api -X GET search/issues \
-               -f q="repo:$REPO_SLUG is:issue in:body \"follow-up: pr=$PR finding=$id\"" -q '.items[0].number // empty'); then
-      echo "unknown — whether finding $id was filed could not be read; it is not filed this pass"; failed=1; continue
-    fi
-    if [ -n "$n" ]; then printf '%s\t%s\n' "$key" "$n" >> "$LEDGER"; had=$((had + 1)); continue; fi
-    grade=$(jq -r '.grade // "" | ascii_downcase' <<<"$x")
-    case "$grade" in
-      major) [ -z "${parent_fu:-}" ] || { echo "finding $id is a Major on a follow-up's own PR, which files only a Critical: dropped"; continue; }
-             pri="$P_MAJOR" ;;
-      minor) pri="$P_MINOR" ;;
-      # A Critical holds the change and is fixed in it; a Nit is dropped. Neither is filed.
-      *) echo "finding $id is graded '${grade:-none}', which is never filed as a follow-up"; continue ;;
-    esac
-    where=$(jq -r '"\(.file // "?"):\(.line // "?")"' <<<"$x")
-    summary=$(jq -r '.summary // "" | gsub("[\r\n]+"; " ")' <<<"$x")
-    title="$(printf '%s' "$summary" | cut -c1-110) ($where, from PR #$PR)"
-    body=$(jq -r --arg pr "$PR" --arg t "$T" --arg w "$where" --arg m "$marker" --arg g "$grade" --arg via "$FU_VIA" '
-      "A review finding on PR #\($pr) (ticket #\($t)), filed once the change merged first (release.mergeFirst).\n\n" +
-      "**\($g | (.[0:1] | ascii_upcase) + .[1:])** at `\($w)`: \(.summary // "")\n\n" +
-      (if (.reason // "") != "" then "Why it matters: \(.reason)\n\n" else "" end) +
-      (if (.fix // "") != "" then "The fix the reviewer proposed: \(.fix)\n\n" else "" end) +
-      "Fix it on the trunk as its own change. " +
-      (if $via != "" then "PR #\($pr) was closed to rebuild fresh, and its rebuild, PR #\($via), merged without it." else "PR #\($pr) has merged without it." end) +
-      "\n\n\($m)"' <<<"$x")
-    ensure_fu_label
-    args=(-f title="$title" -f body="$body" -f "labels[]=$pri" -f "labels[]=$FU_LABEL")
-    if [ "$grade" = minor ]; then
-      ensure_label "$AFTER_LAUNCH" c5def5 "Outside the release: done after the launch"
-      args+=(-f "labels[]=$AFTER_LAUNCH")
-    fi
-    while IFS= read -r l; do [ -n "$l" ] && args+=(-f "labels[]=$l"); done <<<"$carry"
-    if ! n=$("$GH" api "repos/$REPO_SLUG/issues" -X POST "${args[@]}" -q .number 2>/dev/null) || [ -z "$n" ]; then
-      echo "finding $id ($grade, $where) could not be filed as a ticket"; failed=1; continue
-    fi
-    printf '%s\t%s\n' "$key" "$n" >> "$LEDGER"
-    issue_status_set "$n" "$LBL_READY" >/dev/null 2>&1 || { echo "follow-up #$n is filed but could not be marked ${LBL_READY}"; failed=1; }
-    queue add "$n" --note "follow-up of PR #$PR: $grade at $where" \
-      || echo "follow-up #$n is filed and ready, and could not be put on the coordinator queue"
-    filed=$((filed + 1))
-    echo "filed #$n ($pri) for the $grade at $where on PR #$PR, ready and queued at its priority"
-  done < "$F"
-  [ "$had" -eq 0 ] || echo "$had finding(s) on PR #$PR were already filed as follow-ups"
-}
-
-# hold_findings <ticket> <pr> <head> <findings.jsonl> — on the PR's fix list until it merges.
-hold_findings() {
-  local T="$1" PR="$2" head="$3" F="$4" hf="$HELD_DIR/$2.jsonl" x id grade new=0 list data
-  while IFS= read -r x; do
-    [ -n "$x" ] || continue
-    id=$(jq -r '.id // empty | tostring' <<<"$x" 2>/dev/null)
-    [ -n "$id" ] || { echo "a finding with no id was not held: $(cut -c1-160 <<<"$x")"; failed=1; continue; }
-    grade=$(jq -r '.grade // "" | ascii_downcase' <<<"$x")
-    case "$grade" in major|minor) ;; *) echo "finding $id is graded '${grade:-none}', which is never filed as a follow-up"; continue ;; esac
-    [ -f "$hf" ] && jq -e --arg i "$id" 'select((.id | tostring) == $i)' "$hf" >/dev/null 2>&1 && continue
-    jq -c --arg t "$T" --arg p "$PR" --arg h "$head" '. + {ticket: $t, pr: $p, head: $h}' <<<"$x" >> "$hf" \
-      || { echo "finding $id could not be held"; failed=1; continue; }
-    new=$((new + 1))
-  done < "$F"
-  [ -s "$hf" ] || return 0
-  echo "PR #$PR has not merged: $new finding(s) held on its fix list ($(grep -c . "$hf") in all), filed as follow-ups when it merges and dropped if it closes unmerged"
-  [ "$new" -gt 0 ] || return 0
-  ensure_label "$HELD_LABEL" ededed "Review findings held until this PR merges, then filed as fix-after-merge tickets"
-  "$GH" api "repos/$REPO_SLUG/issues/$PR/labels" -X POST -f "labels[]=$HELD_LABEL" >/dev/null 2>&1 \
-    || echo "PR #$PR could not be labelled $HELD_LABEL; this host's merge pass still files them"
-  list=$(jq -r '"- **\(.grade // "" | (.[0:1] | ascii_upcase) + .[1:])** at `\(.file // "?"):\(.line // "?")`: \(.summary // "" | gsub("[\r\n]+"; " "))"' "$hf")
-  data=$(base64 < "$hf" | tr -d '\n')
-  "$GH" api "repos/$REPO_SLUG/issues/$PR/comments" -X POST -f body="**Fix list — held until this PR merges (merge first, fix after).** These review findings are on code in this pull request, which has not merged, so none is filed as a ticket yet. Fix them here, or they are filed as fix-after-merge tickets when this PR merges; if it closes unmerged, they are dropped.
-
-$list
-
-$MARK
-<!-- follow-up-held: pr=$PR head=$head data=$data -->" >/dev/null 2>&1 \
-    || echo "the held findings could not be listed on PR #$PR; they are held on this host"
 }
 
 # is_rebuild <pr> <ticket> — 0 when the PR was closed to rebuild fresh: the ticket's work is kept
@@ -198,30 +89,8 @@ is_rebuild() {
 }
 
 if [ "$CMD" = file ]; then
-  # A CLASH IS NEVER A TICKET: a finding that only says the branch conflicts with or is
-  # behind its base is its PR's repair (clash-finding.sh), so it is dropped here.
-  . "$SELF_DIR/clash-finding.sh" || exit 1
-  CF=$(mktemp); clashed=$(clash_finding_filter "$F" "$CF")
-  [ -z "$clashed" ] || echo "dropped $clashed: only says the branch clashes with or is behind $INTEGRATION_BRANCH — its PR's repair, never a ticket"
-  F="$CF"
-  [ -s "$F" ] || { [ -z "$clashed" ] || echo "nothing left to file"; exit 0; }
-  if ! row=$(pr_state "$PR" 2>/dev/null); then
-    echo "unknown — whether PR #$PR merged could not be read, so its findings are held, not filed"
-    row="unknown	?"
-  fi
-  IFS=$'\t' read -r st head <<<"$row"
-  if [ "$st" = closed ]; then
-    is_rebuild "$PR" "$T"; r=$?
-    # Closed to rebuild fresh: the work comes back in the ticket's next PR, so the findings wait for it.
-    if [ "$r" -ne 1 ]; then st=rebuild; echo "PR #$PR was closed to rebuild fresh (or that could not be read): its findings wait for ticket #$T's next PR"; fi
-  fi
-  case "$st" in
-    merged) ;;
-    closed) echo "PR #$PR closed without merging: its $(grep -c . "$F") finding(s) are dropped, not filed"; exit 0 ;;
-    *) hold_findings "$T" "$PR" "$head" "$F"; exit "$failed" ;;
-  esac
-  file_findings "$T" "$PR" "$F"
-  exit "$failed"
+  echo "$(grep -c . "$F") finding(s) of PR #$PR dropped, not filed: finding tickets are switched off"
+  exit 0
 fi
 
 # ---- settle: the merge pass ---------------------------------------------------
@@ -332,10 +201,8 @@ for pr in $(printf '%s\n' "$held" | grep -E '^[0-9]+$' | sort -un); do
   case "$st" in
     merged|rebuild)
       if [ -s "$hf" ]; then
-        say_do "file $(grep -c . "$hf") held finding(s) of PR #$pr, which merged${FU_VIA:+ as its rebuild #$FU_VIA}" || continue
-        failed=0; had=0
-        file_findings "$ticket" "$pr" "$hf"
-        [ "$failed" -eq 0 ] || { rc=1; continue; }
+        say_do "drop $(grep -c . "$hf") held finding(s) of PR #$pr, which merged${FU_VIA:+ as its rebuild #$FU_VIA}" || continue
+        echo "PR #$pr merged: its held findings are dropped, not filed — finding tickets are switched off"
       else
         say_do "take $HELD_LABEL off PR #$pr" || continue
       fi

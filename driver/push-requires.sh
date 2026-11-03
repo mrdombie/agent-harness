@@ -102,10 +102,10 @@ _driver_attest_agent() {
     printf 'Your whole answer is handed, verbatim, to this project'"'"'s recorder. Lead with exactly one line, `VERDICT: SHIP` or `VERDICT: SPIT-BACK`, then your findings, each graded Critical, Major, Minor or Nit with a file and line.\n\n'
     # THE ROUND'S RULE, the one the review step applies: a reviewer that blocks on a Minor
     # the round defers parks a run the review step would have shipped (#13044).
-    printf '## What blocks in this round\n\nThis is review round %s. In it, only %s findings block: say SPIT-BACK when at least one of those is open, and SHIP otherwise. Still list every lower-graded finding under its grade; the driver puts it on the screen'"'"'s polish list, and a Nit is dropped.\n\n' \
+    printf '## What blocks in this round\n\nThis is review round %s. In it, only %s findings block: say SPIT-BACK when at least one of those is open, and SHIP otherwise. Still list every lower-graded finding under its grade; the driver drops it (or sends it to the nightly sweep when it is outside the change), and a Nit is dropped.\n\n' \
       "${DRIVER_ATTEST_ROUND:-1}" "$(driver_blocking_grades "${DRIVER_ATTEST_GROUND:-1}" | sed 's/ /, /g')"
     if [ -s "$(_driver_attest_deferred_file "$t" "$name")" ]; then
-      printf '## Already deferred this round\n\nYour last answer said SPIT-BACK on these alone, and none blocks in this round. They are on the polish list; do not count them toward the verdict:\n\n%s\n\n' "$(cat "$(_driver_attest_deferred_file "$t" "$name")")"
+      printf '## Already deferred this round\n\nYour last answer said SPIT-BACK on these alone, and none blocks in this round. They were dropped; do not count them toward the verdict:\n\n%s\n\n' "$(cat "$(_driver_attest_deferred_file "$t" "$name")")"
     fi
     printf '## Renders of the screens it touches\n\n%s\n\n' "${renders:-(none were taken)}"
     printf '## The diff\n\n```diff\n%s\n```\n' "$diff"
@@ -178,8 +178,8 @@ _driver_attest_graded() {
 
 # _driver_spitback_to_fix <ticket> <name> <reviewer-output> — what a SPIT-BACK costs is
 # its GRADES, read as the review step reads its own (the owner, 2026-10-20): round 1
-# blocks on Critical, Major and Minor; later rounds on Critical and Major, a Minor goes
-# on its screen's polish list, a Nit is dropped. Returns
+# blocks on Critical, Major and Minor; later rounds on Critical and Major, a Minor is
+# dropped, a Nit is dropped. Returns
 #   0                 not a SPIT-BACK the fix step can take: the caller parks as before
 #   DRIVER_E_REWORK   a blocking finding is on the review record for fix, round left
 #   99                nothing in it blocks this round: the rest was deferred, run the
@@ -212,7 +212,7 @@ _driver_spitback_to_fix() {
   jq --argjson add "$(printf '%s' "$blocking $defer" | jq -sc 'add')" --arg name "$name" --arg r "$round" \
      --arg fb "$fallback" --arg body "$(head -c 12000 "$out")" \
      '.findings = ((.findings // []) + [$add | to_entries[] | .value as $x | {
-        id: ("attest-\($name)-\($r)-\(.key)"), file: ($x.file // $fb), line: ($x.line // 0), grade: $x.grade,
+        id: ("attest-\($name)-\($r)-\(.key)"), file: ($x.file // $fb), line: ($x.line // 0), grade: $x.grade, inChange: true,
         summary: ("\($name): " + ($x.summary // "said SPIT-BACK")),
         reason: ("this project'"'"'s pre-push refuses the push until the \($name) reviewer passes the change"),
         fix: ("Clear this finding as the reviewer proposes. Its whole answer:\n" + $body)}])' \
@@ -430,9 +430,9 @@ driver_push_requires() { # <ticket>
       # review record at their grades, and the walk loops review -> fix -> re-review in the
       # round limit. It parks only past the limit with a blocking finding left.
       local srv; srv=0; _driver_spitback_to_fix "$t" "$name" "$out" || srv=$?
-      # MERGE FIRST: nothing Critical, so its findings are follow-ups and the change ships unrecorded.
+      # MERGE FIRST: nothing Critical, so its findings are dropped and the change ships unrecorded.
       if [ "$srv" -eq 99 ] && driver_merge_first; then
-        driver_say "   push-requires: '$name' said SPIT-BACK on nothing Critical — merge first: its findings are follow-up tickets, no verdict is recorded and the push goes ahead"
+        driver_say "   push-requires: '$name' said SPIT-BACK on nothing Critical — merge first: its findings are dropped, never filed, no verdict is recorded and the push goes ahead"
         continue 2
       fi
       if [ "$srv" -eq 99 ] && [ "$again" -eq 0 ]; then again=1; continue; fi

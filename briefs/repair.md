@@ -50,9 +50,8 @@ conflicted.
 4. **The same failure on the integration branch itself is not this PR's to
    fix.** Never park on it.
 5. **Evidence owed:** commit the plan edit each task names.
-6. **A red lesson check:** {{LESSON}}
-7. **Fix only what failed.**
-8. **The owner's sign-off comes last.** If the PR was signed off, change no
+6. **Fix only what failed.**
+7. **The owner's sign-off comes last.** If the PR was signed off, change no
    screen file unless the failure cannot be fixed any other way. A change to a
    screen voids the sign-off and sends the PR back to the owner. If the only
    fix changes what a screen shows, park and ask.
@@ -121,17 +120,12 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `replacedTests[].coveredBy`: string
 - `replacedTests[].removedBecause`: string
 - `reason`: string
-- `lesson`: object
-- `lesson.principle` (required): string
-- `lesson.guard` (required): string
-- `lesson.beforeAfter` (required): string
-- `lesson.reach` (required): string
 - `gitActions`: list of object
 - `gitActions[].action` (required): one of "commitMerge", "resetTo", "dropLocalCommits"
 - `gitActions[].sha`: string
 
 Conditional:
-- when `status` is "repaired": requires `cause`; at least one of `fixes`, `lesson`
+- when `status` is "repaired": requires `cause`, `fixes`
 - otherwise, when `status` is "unchanged": requires `reason`
 - otherwise: requires `question`
 <!-- fields:end -->

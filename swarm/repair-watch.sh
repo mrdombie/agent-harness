@@ -158,9 +158,8 @@ the push. $critic
 
 Your own code review counts its rounds from this repair: round 1 fixes every
 Critical, Major and Minor; from round 2 only Critical and Major block, and each
-Minor goes on its screen's polish list (scripts/polish-list.sh add <screen>
-"[Minor] <finding> — <file>:<line>"), or, with no screen, under "Minor, deferred"
-in your PR comment. Nits are dropped.
+Minor is noted under "Minor, deferred" in your PR comment — never a ticket, never a
+polish list. Nits are dropped.
 
 A clash: merge the integration branch keeping both sides' intent. If the same
 failure also happens on the integration branch itself, say so on the PR and

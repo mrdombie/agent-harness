@@ -128,7 +128,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 
   A row with `owed` alone is advisory to the driver and enforced by `/agent-harness:finish`. A row with `review` and `record` is what lets the driver push at all on a project whose pre-push demands a trailer — measured on 2026-09-28, a ticket built test-first with two proved tasks lost 9 commits to exactly that. Absent entirely, the reviewers are advisory and nothing fails when one is skipped — which is the state that let 46 pixel-changing tickets ship with zero verdicts.
 - `owns.skills` / `owns.agents` — kit names this project deliberately shadows. Everything else under its `.claude/` that the kit also ships is a duplicate and fails the gate.
-- `review.rounds` — how many review rounds before non-blocking findings become follow-up tickets. Two.
+- `review.rounds` — how many review rounds before non-blocking findings are dropped. Two.
 - `review.maxRounds` (default 2) and `review.secondOnlyOnNewFiles` (default true) — the driver reviews a change ONCE. A later pass calls the reviewer again only when the fix round touched a file the first review never saw (files changed since the reviewed head, held against the reviewed diff's file list), and that review is graded as round 2: only Critical and Major block. Never past `maxRounds`. A pass that calls no reviewer takes the fix step's red-then-green proofs as the answer to the findings it was given. `secondOnlyOnNewFiles: false` re-reviews every pass up to the ceiling. Measured 2026-10-22: review was 26% of three days of driver usage.
 - `review.voters` (default 3), `review.effort` (default `high`) and `review.quorum` (default 2) — the review step is a cheap vote. A review step's agent count is bounded and configured, never left to a skill's top level: at `max`, `code-review` starts about 10 finder agents and a verifier per candidate, and four such reviews used about 74% of a plan account in under two hours (2026-11-02). So the driver runs `voters` independent reviews of the same change in parallel, each one `claude -p` session running Claude Code's own `code-review` skill (`briefs/review.md`) at `effort`, given no Agent tool (`briefs/facts.json` `steps.review.tools`); at `high` the skill runs in the one context its Skill call forks, with no agents of its own (measured 2026-11-02). A voter whose transcript shows an Agent or Task call, or a task no Skill call opened, fails the step and parks it as the driver's. The driver groups the voters' findings by class, or by file, a line within 5 and a similar summary, and keeps one only when at least `quorum` voters and a majority of those that answered reported it; it takes their most common grade and tag, a tie going to the lower. `voters` 1 is a single reviewer whose findings count without a vote; it is capped at 5. `max` is used only when configured, and still with no Agent tool. A `nit` tag (style, cleanup) is dropped. A `pre-existing` finding, a defect in code the change did not introduce, never blocks, never goes back to the builder and is never filed: it goes to the nightly sweep's queue, `scripts/sweep-queue.sh` (`<stateDir>/swarm/sweep/pre-existing.jsonl`, each defect once). A finding that names a `class` lists its `instances`, and the fix step is told to fix every one. Every finding handed on is kept in `steps/review.posted.jsonl`, keyed by `scripts/finding-key.jq`: the next review is shown the list, and a finding already raised on the change, and answered by a fix round since, is not raised again. The grades and the round cap then act exactly as before. `scripts/review-metrics.sh --split <day>` prints findings per PR, rounds to pass and finding tickets filed per day, before and after that day.
 - `claim.preflight` is optional: commands `/agent-harness:claim` runs at Step 0 in the project's checkout, with `$TOOLS` naming a copy of its `scripts/` as on the integration branch (`bash "$TOOLS/scripts/<check>.sh"`), such as a check that the machine's installed jobs match the ones the repo describes. They report and never block.
@@ -159,7 +159,7 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `review.judge` is optional: the independent design critic (`scripts/critic-judge.sh`). **Only it sets the design status** (the owner, 2026-10-20). The coordinator's housekeeping starts it (`CRITIC_JUDGE_LAUNCHER=coordinator`); it refuses anything else, a build run (`HARNESS_DRIVER_RUN`) above all, and `hooks/no-self-design-verdict.sh` denies any session running the design recorder, committing a design-verdict trailer or starting the judge. It fetches only shots CI's own evidence commit wrote, behind a capture run that passed; stale shots hold the PR pending; the approved picture (the PR's own, or the plan's designRef) must pass `picture-evidence.py lint` and have every region shot, or the PR fails before any model runs. A picture with no region markers (approved before them) has its regions derived — its frames, else the PR's `## Evidence routes` at laptop/phone x light/dark — and the status description names the derivation; `scripts/picture-label.py` writes the markers in for good, attributes only. Real data and both widths are owed only by a picture approved on or after `coordinator.critic.realDataFrom` (2026-10-20; the picture's `data-picture-approved`, else its first commit or the ticket's "Picture approved" comment; no date known means exempt). The critic's answer must quote the shot set, name every shot it judged and end in a `FINDINGS … END FINDINGS` block of live findings only; it passes on SHIP, no DRIFT and an empty block. Verdicts live in a ledger only the judge writes (`<stateDir>/swarm/critic-judge/verdicts.tsv`), keyed on the shot set: the same pixels at a new head get the same verdict with no model call, and a PR comment or status description is never read back as one. A red verdict on a signed-off PR adds `labels.pmDecision` to its ticket instead of sending a repair. The judge never posts the status itself: it sends a `repository_dispatch` (payload `sha`, `pr`, `state`, `context`, `description`, `target_url`), and the project's own workflow re-posts it with the Actions token after checking the sender is the owner and the sha is the PR's open head. A ruleset that takes the check from GitHub Actions never counts a status a user token posts, and GitHub reads only the newest one, so a project using the judge must ship that relay. A verdict the ledger holds but never sent (`relayed.tsv`) is sent again from the ledger, with no model call. Keys and defaults: `context` (`Design critic`), `trailer` (`Design-Critic`), `agent` (`agent-harness:design-critic`), `mockGlob` (`.design/*-mock.html`), `turns` (40), `dispatch` (`design-critic-verdict`, the event type the relay listens for). Places, under `coordinator.critic`: `maxLive` (3; `review.judge.maxLive` is read when unset) judges at once — one place is always open, each above it only while the coordinator's room test fits another agent — and `timeoutMin` (20): a run past it is stopped, its place given back and the try counted. PRs owed a judgement start least recently started first. The project's own CI must stop writing that status from a trailer, or the two race.
 - **An approved picture is readable from any machine** (`scripts/picture-approve.sh <ticket> <picture.html>`): the moment a picture is approved, the file goes into a secret gist (described `<projectName> #<ticket> approved picture: <file>`; `projectName` in harness.json, else the repo's name) and the ticket gets a comment starting **Picture for any machine** with the gist URL, the raw URL and the file's sha256. Rerun on the same file it does nothing; a new version publishes again. `/agent-harness:needsme`, `/agent-harness:auto` and `/agent-harness:bug` run it where they record an approval.
 - **Evidence follows the approved picture** (`shared/picture-rules.md`, `scripts/picture-evidence.py`): every frame of the picture is a named region (`data-evidence-shot`, route, viewport, theme, optional setup); the ship step writes each into `<evidence.dir>/<key>/plan.json` (the key as CI files it, `scripts/evidence-plan.sh`: a `<branchPrefix>NNNN/` branch's ticket, else the PR number) (a shot the builder already planned keeps its setup) and lists them under `## Required evidence`; the independent critic fails the PR while any has no pinned shot. `picture-evidence.py lint` refuses a picture with no regions, without a laptop and a phone frame, or without the real-data cases (`duplicate-names`, `longest-names`, `empty`, `scrolled`) drawn or excused.
-- `design.screenOf` is optional: a command that reads paths on stdin and prints the screen slug of each it knows. With it, a change takes on the polish list of every screen it touches, not only the screens its ticket is labelled with: each free item is a finding of the review at its grade (none named: Minor), and Critical, Major and Minor block (`scripts/screen-findings.sh`). The independent critic's open findings on the ticket's PR reach plan, fix and repair as `{{CRITIC_FINDINGS}}`.
+- `design.screenOf` is optional: a command that reads paths on stdin and prints the screen slug of each it knows. With it, the critic and the screen lookups (`scripts/screen-findings.sh`) know the screens a change touches, not only the screens its ticket is labelled with (polish lists no longer ride along, the owner, 2026-11-02). The independent critic's open findings on the ticket's PR reach plan, fix and repair as `{{CRITIC_FINDINGS}}`.
 - **Evidence owed is work** (`scripts/evidence-gaps.sh`, `scripts/evidence-gaps.py`): a changed UI file that no evidence route or capture-plan shot renders (a page, a layout above it, or anything they import — relative, `@/`/`~/` and workspace-package imports followed), or a drawer, dialog, menu or sheet with no plan shot whose `setup` opens it, is an evidence gap. A plan the PR adds or edits replaces the routes, as CI reads it. The independent critic fails the PR on a gap before any model runs, as an `evidence gap:` finding; the repair and fix steps are handed every evidence-class finding (`{{EVIDENCE_TASKS}}`) as a task answered by an edit to `<evidence.dir>/<key>/plan.json`, and the repair step calls the model for one even when nothing is red, then refuses a repair that leaves the plan unchanged or a gap open. Ship copies the plan's routes into `## Evidence routes` (a repair adds routes only, rewriting nothing). With no picture binding the ticket, ship plans the routes the changed screens render on (fewest that show every changed file, no dynamic segment) at laptop 1440 / phone 390 x light / dark, keeping any shot the plan already has for a route, width and theme. `evidence.coverage.ignoreRoutes` (default `/dev`) names route prefixes whose pages are a component catalogue, not screens.
 - **Only CI's shots are evidence**: `ci-evidence.sh` counts a shot only when it is linked at the sha the block names, that commit's subject starts `evidence.commitSubject` (`chore(evidence):`), the commit wrote the file, and CI's capture check passed on its parent. A builder's PNG inside the block is refused by name. A shot CI re-captured byte-identical is in the tree but not in that commit's diff; it still counts when its name is one CI's capture produces for this head (the folder's `plan.json` shot names, else the slugs of `## Evidence routes`) and its blob is one an earlier CI evidence commit on the PR wrote at that path.
 - `ci-evidence.sh status` reads `stale` (exit 6 from `wait`) when CI kept shots pinned before a merge that changed one of the PR's own screen files, or a file one of them imports by a relative path; `ci-evidence.sh moved <pr> <from> <head>` is that test, for a project's CI to call before it carries pinned shots forward.
@@ -347,6 +347,11 @@ It runs in three places, so skipping a skill does not skip it:
 
 ## Every fix ships a lesson
 
+**Switched off** (the owner, 2026-11-02: the driver's 3-voter review replaces it). No
+builder is asked for a lesson, the repair step treats a red lesson check as not owed,
+and the kit's own seat (`kit-lesson.yml`) runs only by hand. The check and its reusable
+workflow stay for a project that calls it; the rest of this section describes it.
+
 Healing a build is pointless if the same class of mistake comes back. A fix is
 known by what it is, not by one tag: a fix label, a `class:repair` or
 `class:approved-merge` label, a `fix:` / `fix(scope):` title, a `fix/` or `fix-`
@@ -388,10 +393,7 @@ The enforcement is CI, not an agent's instructions: `.github/workflows/lesson.ym
 is a reusable workflow the consuming repo calls on `pull_request` (with `edited`,
 `labeled` and `unlabeled`, so fixing the body or a label re-runs it) and makes
 `Every fix ships a lesson` a required check. Config is read from the base commit,
-so a pull request cannot loosen the check that judges it. `/agent-harness:claim`,
-`/agent-harness:bug` and `/agent-harness:finish` tell builders to write the lesson
-as they go; that is guidance only. The kit runs it on itself through
-`kit-lesson.yml`.
+so a pull request cannot loosen the check that judges it.
 
 ## Building one ticket
 
@@ -657,22 +659,20 @@ held a change for a person or a picture; `release.done: true` or removing the ke
 turns it all back. While it is on (`release_merge_first`, `scripts/release-checks.sh`):
 the driver and `/agent-harness:finish` never add the hold label and never wait for
 CI's shots or picture parity (compare is a no-op); the sign-off push guard lets every
-push through; the review runs once and only a **Critical** blocks, fixed in place.
-Every Major becomes a P1 follow-up ticket and every Minor goes on its screen's polish
-list, or becomes a P3 follow-up when no screen takes it: `scripts/follow-up.sh`, one
-ticket per PR and finding, filed only once the PR merges (until then the findings are
-held on the PR's fix list, labelled `follow-ups-held`; a PR closed unmerged drops them,
-and a follow-up already filed for an open PR is blocked until it merges), naming the PR, the file:line and the finding, status
-ready, labelled `fix-after-merge` (`release.followUpLabel`, created if missing) so the
-clean-up after the release is one list, `coordinator-queue.sh add --front`. Then the PR ships. A ui-gate SPIT-BACK with
-no Critical is not recorded and does not refuse. The design critic and the picture
+push through; the review runs once and only a **Critical**, or a finding in a file the
+change touched, blocks, fixed in place. **Nothing is filed as a ticket and nothing goes on
+a polish list** (the owner, 2026-11-02: the 3-voter review replaces finding tickets and
+polish lists): a finding outside the change's files goes to the nightly sweep's queue
+(`scripts/sweep-queue.sh`), any other is dropped and noted in the PR. `scripts/follow-up.sh`
+files nothing: `settle` drops findings held from before, and still lets a follow-up filed
+earlier go once its parent PR merges. Then the PR ships. The design critic and the picture
 check join the warn-only checks below, and only a `screen:new` or `screen:redesign`
 ticket still waits for an approved picture (the baseline route is on for every other
 screen). Typecheck, lint and the fast local gates still block. The release block is
 read from the trunk's harness.json as origin has it now (fetched at most every 2 min),
 not from the copy a run took when it started or a coordinator's pinned copy, so a
 repair already running when the switch lands follows it: a non-Critical finding on a
-signed-off PR's screens is a follow-up and the push goes through. Every driver step's
+signed-off PR's screens is dropped and the push goes through. Every driver step's
 prompt says the brief's sign-off lines do not hold.
 
 **Standard answers under merge first** (owner call 2026-10-23). While `release.mergeFirst`
@@ -680,8 +680,8 @@ is on, a driver step that would park with a question a standing rule answers tak
 answer instead (`driver/standard-answer.sh`): (a) the base is red too, wait or fix here:
 the ticket waits for the base (the base-wait ledger; with no PR yet it carries on);
 (b) a follow-up of a PR that has not merged, fold in or wait: `status:blocked` with
-"Blocked on #N: waits for #N to merge"; (c) a Minor or Major, fix now or defer: deferred
-as fix-after-merge, and the run goes on; (d) anything about the critic, evidence,
+"Blocked on #N: waits for #N to merge"; (c) a Minor or Major, fix now or defer: fixed here
+when it is in a file the change touched, else dropped (never filed), and the run goes on; (d) anything about the critic, evidence,
 screenshots or the picture: ignored; (e) signed off, ship or re-capture: ship. A model's
 question is asked once more with the answer; a step's own refusal is marked done and the
 walk goes on. Each logs `standard answer: (<class>)` and is written on the PR (the ticket
@@ -710,8 +710,8 @@ file the change itself touched (its reviewed diff: a repair's own change) is fix
 change, in its one fix round, never filed: merge first included. `_driver_review_same_change`
 marks it `sameChange`, which `driver_blocking_select` blocks in any round, and the fix step may
 not defer it. Where only Critical and Major block (a second review after the fix round touched
-new code, a tooling or a quick change) a Major alone is held there. A finding in a file the change did not touch goes to a
-polish list or a follow-up as before; a Critical blocks as before.
+new code, a tooling or a quick change) a Major alone is held there. A finding in a file the change did not touch goes to the
+nightly sweep's queue, never a ticket; a Critical blocks as before.
 
 **Checks that warn until the release** (owner call 2026-10-21). `release.nonBlockingChecks`
 in harness.json lists check names (a run's name, a status context, or
@@ -758,11 +758,9 @@ default `gates ci harness ops pre-push dev`); then new work half-built, feature,
 other, polish. An entry put at the front stays first; which red heals first
 follows priority.
 
-**Polish rides along.** A Minor finding goes on its screen's one polish list
-(`scripts/polish-list.sh add <screen-slug> "<text>"`), never a ticket of its own.
-A ticket labelled `screen:<slug>` carries that list's unticked items into its plan
-and build (`{{POLISH_LIST}}`); the builder fixes them, ticks them, and the PR names
-them, at most `polishListFull` (8) of one list a change. Polish new work (P3, a
+**Polish lists are switched off** (the owner, 2026-11-02). The review adds nothing to
+them and a list no longer rides along with other tickets for its screen; a list still
+open is worked only as its own ticket (`{{POLISH_LIST}}` names its items). Polish new work (P3, a
 polish kind, a polish list) starts only when nothing else can; a full list is never
 started as a batch of its own (owner call 2026-10-22: one ticket, one PR). Sign-off batches are
 ordered by priority too, so polish screens come last.

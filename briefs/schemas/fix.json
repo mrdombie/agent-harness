@@ -411,7 +411,7 @@
       }
     },
     "bodyProofs": {
-      "description": "A blocking finding about the PR description, or a check that reads it (an approved picture, a ## Lesson section, evidence routes), cleared by editing the description rather than by a commit. Name the repo's own check: the driver fetches the description from GitHub itself, runs `command` in the worktree with BODY_FILE set to the description and LABELS to the PR's labels, the branch's changed paths on stdin, and requires it to exit 0 on the description now and to fail on the description as it stood when the review judged it. Your own run of it is not evidence.",
+      "description": "A blocking finding about the PR description, or a check that reads it (an approved picture, evidence routes), cleared by editing the description rather than by a commit. Name the repo's own check: the driver fetches the description from GitHub itself, runs `command` in the worktree with BODY_FILE set to the description and LABELS to the PR's labels, the branch's changed paths on stdin, and requires it to exit 0 on the description now and to fail on the description as it stood when the review judged it. Your own run of it is not evidence.",
       "type": "array",
       "items": {
         "type": "object",

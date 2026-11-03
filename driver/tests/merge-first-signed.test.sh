@@ -3,8 +3,8 @@
 # repair already running. A run reads its config when it starts (and a coordinator pins
 # a copy), so a repair begun before the switch landed on the trunk still parked a Major
 # on a signed-off PR's screens for the owner, and withheld the push. The release block is
-# read from the trunk as origin has it now. On: a Major there is a follow-up and the
-# review ships (the push guard lets it through); a Critical still blocks and is fixed in
+# read from the trunk as origin has it now. On: a Major there is never held or filed
+# (it goes to the nightly sweep, 2026-11-02) and the review ships (the push guard lets it through); a Critical still blocks and is fixed in
 # place. Off: today's behaviour — it parks for the owner.
 # Run: bash "$0"
 set -uo pipefail
@@ -55,7 +55,7 @@ SH
 chmod +x "$BIN/approval-kept"; export DRIVER_APPROVAL_KEPT="$BIN/approval-kept"
 printf '#!/usr/bin/env bash\ncase "$1" in add) printf "%%s\\n" "$*" >> "$FIX/pl.adds" ;; esac\nexit 0\n' > "$FIX/pl"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIX/sf"; chmod +x "$FIX/pl" "$FIX/sf"
-export DRIVER_POLISH_LIST="$FIX/pl" DRIVER_SCREEN_FINDINGS="$FIX/sf"
+export DRIVER_POLISH_LIST="$FIX/pl" DRIVER_SCREEN_FINDINGS="$FIX/sf" SWEEP_QUEUE="$FIX/sweep.jsonl"
 
 # On a signed screen the repair did not touch: one in a file it did is fixed in place (same file, same change).
 major='{"verdict":"BLOCKED","findings":[{"id":"m1","file":"screens/Card.tsx","line":448,"grade":"major","summary":"the notice stays up after reset","reason":"a person is misled","fix":"clear it"}]}'
@@ -87,8 +87,8 @@ case_prompt() { case_major; R=$(grep -c 'MERGE FIRST UNTIL THE RELEASE (release.
 echo "--- the switch lands on the trunk after the run took its config ---"
 trunk_switch true
 case_major
-want "on: a Major on signed-off screens is a follow-up and the review ships" "rc=0 fu=m1 owner=no" "$R"
-want_in "and the run says it is filed, not held"  'filed as follow-up tickets' "$(cat "$FIX/out-$N")"
+want "on: a Major on signed-off screens is not held or filed, and the review ships" "rc=0 fu= owner=no" "$R"
+want_in "and the run says nothing is filed"  'none filed as a ticket' "$(cat "$FIX/out-$N")"
 want_not_in "it is never parked for the owner"    'parks for the owner' "$(cat "$FIX/out-$N")"
 case_critical
 want "on: a Critical on signed-off screens still blocks, fixed in place" "rc=30 fu= owner=no" "$R"
@@ -128,7 +128,7 @@ plant() { # <label> <file under the kit> <exact text to delete> <case> <the resu
   SUT_KIT="$KIT" "$4"; want "planted ($1): the case now fails" "$5" "$R"
 }
 kit_copy
-SUT_KIT="$KIT" case_major; want "the unplanted kit: on, a Major ships as a follow-up" "rc=0 fu=m1 owner=no" "$R"
+SUT_KIT="$KIT" case_major; want "the unplanted kit: on, a Major ships, filed nowhere" "rc=0 fu= owner=no" "$R"
 plant "the release block is read from the trunk" scripts/release-checks.sh \
   '    blob=$(git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$br:.claude/harness.json" 2>/dev/null)' case_major "rc=24 fu= owner=yes"
 plant "the trunk ref is fetched" scripts/release-checks.sh \

@@ -298,15 +298,15 @@ driver_fact_screen_steps() { # <ticket>
   if [ -f "$wt/$v" ]; then head -c 16000 "$wt/$v"; else printf '%s' "$v"; fi
 }
 
-# THE SCREEN'S POLISH LIST, WHEN ITS TICKET IS FOR A SCREEN THAT HAS ONE — or the
-# list itself, when the ticket IS a polish list. Minor findings go on one list per
-# screen (scripts/polish-list.sh), never a ticket each, and ride along with the next
-# ticket for that screen. The builder records each item it fixed (take); ship
+# THE POLISH LIST ITSELF, WHEN THE TICKET IS ONE. Lists no longer ride along with
+# other tickets for their screen and nothing is added to them (the owner, 2026-11-02:
+# the review's vote fixes what matters in the change); a list still open is worked
+# only as its own ticket. The builder records each item it fixed (take); ship
 # reserves those for its PR, and the item is ticked only when that PR merges. Read
 # once per run and kept, so every step sees the list as the plan saw it.
 #   state: polish_fact · polish_items (<list> \t <item>, one a line) · polish_self (1: the ticket is a list)
 driver_fact_polish_list() { # <ticket>
-  local t="$1" cached labels slugs slug n items out="" kept="" pl lists="" rc why alone=""
+  local t="$1" cached labels n items out="" kept="" pl lists=""
   cached=$(driver_state_get "$t" polish_fact)
   [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
   labels=$(driver_ticket_view "$t" labels '.labels[].name' 2>/dev/null) || {
@@ -315,34 +315,18 @@ driver_fact_polish_list() { # <ticket>
   if printf '%s\n' "$labels" | grep -qxF -- "$LBL_POLISH_LIST"; then
     driver_state_set "$t" polish_self 1; lists="$t"
   fi
-  slugs=$(printf '%s\n' "$labels" | awk -v p="$LBL_SCREEN_PREFIX" 'p != "" && index($0, p) == 1 && length($0) > length(p) { print substr($0, length(p) + 1) }')
-  while IFS= read -r slug; do
-    [ -n "$slug" ] || continue
-    n=$(bash "$pl" for-screen "$slug" 2>/dev/null) || { _driver_fact_none "the polish list for ${LBL_SCREEN_PREFIX}$slug could not be read"; return 0; }
-    [ -n "$n" ] && [ "$n" != "$t" ] || continue
-    # A list its own run holds lends none (polish-list.sh lends).
-    why=$(bash "$pl" lends "$n" "$t" 2>/dev/null); rc=$?
-    [ "$rc" -eq 1 ] && { alone="${alone:+$alone; }$why"; continue; }
-    [ "$rc" -eq 0 ] || { _driver_fact_none "polish list #$n could not be read"; return 0; }
-    lists="$lists $n"
-  done <<EOS
-$slugs
-EOS
-  if [ -z "${lists// /}" ]; then
-    if [ -n "$alone" ]; then out=$(_driver_fact_none "$alone, so it lends this ticket none")
-    elif [ -z "$slugs" ]; then out=$(_driver_fact_none "#$t carries no ${LBL_SCREEN_PREFIX}<slug> label, so no screen's polish list rides along")
-    else out=$(_driver_fact_none "no open polish list for $(printf '%s\n' "$slugs" | awk -v p="$LBL_SCREEN_PREFIX" 'NF { printf "%s%s%s", (n++ ? ", " : ""), p, $0 }')"); fi
+  if [ -z "$lists" ]; then
+    out=$(_driver_fact_none "#$t is not itself a polish list, and polish lists no longer ride along with other tickets")
     driver_state_set "$t" polish_fact "$out"; printf '%s' "$out"; return 0
   fi
   for n in $lists; do
-    # Another screen ticket takes at most coordinator.polishListFull of a list's items (--lend).
-    items=$(bash "$pl" items "$n" $([ "$n" = "$t" ] || echo --lend) 2>/dev/null) || { _driver_fact_none "polish list #$n could not be read"; return 0; }
+    items=$(bash "$pl" items "$n" 2>/dev/null) || { _driver_fact_none "polish list #$n could not be read"; return 0; }
     [ -n "$items" ] || continue
     kept="$kept$(printf '%s\n' "$items" | awk -v n="$n" 'NF { print n "\t" $0 }')"$'\n'
     out="${out:+$out
 
-}Polish list #$n$([ "$n" = "$t" ] && echo " (this ticket)") — fix these in this change. Record each one you fixed with
-\`bash $pl take $n $t \"<the item, exactly as written>\"\`; it is ticked when the pull request merges, never by you. Each blocks at its grade (none named: Minor) whoever put it there — the review adds every one not recorded as a finding:
+}Polish list #$n (this ticket) — fix these in this change. Record each one you fixed with
+\`bash $pl take $n $t \"<the item, exactly as written>\"\`; it is ticked when the pull request merges, never by you.:
 $(printf '%s\n' "$items" | sed 's/^/- /')"
   done
   [ -n "$out" ] || out=$(_driver_fact_none "no open polish list for this ticket holds a free item")

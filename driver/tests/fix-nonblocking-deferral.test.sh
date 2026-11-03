@@ -39,7 +39,7 @@ cat > "$FIX/sf" <<'SH'
 [ "$1" = screens ] && echo create; exit 0
 SH
 chmod +x "$FIX/pl" "$FIX/sf"
-export DRIVER_POLISH_LIST="$FIX/pl" DRIVER_SCREEN_FINDINGS="$FIX/sf"
+export DRIVER_POLISH_LIST="$FIX/pl" DRIVER_SCREEN_FINDINGS="$FIX/sf" SWEEP_QUEUE="$FIX/sweep.jsonl"
 
 S="$(driver_state_dir 901)/steps"
 F1='{"id":"F1","file":"mode.txt","line":1,"grade":"major","summary":"the mode is still old","reason":"a person sees the old mode","fix":"make it new"}'
@@ -63,13 +63,14 @@ run() { # <answer>
   rc=0; out=$(driver_step_fix 901 2>&1) || rc=$?
 }
 
-echo "--- round 2, a deferred Minor: no refusal, and a polish entry ---"
+echo "--- round 2, a deferred Minor: no refusal, and no polish entry (switched off) ---"
 review 2 "$(printf "$R2" minor)"
 run "$(answer "Minor; on the polish list per the brief.")"
 want "the round passes" "0" "$rc"
 want "nothing is parked" "" "$(driver_state_get 901 park_note)"
-want_in "the Minor went on the screen's polish list" 'add create \[Minor\] the bubble may start off-screen' "$(cat "$FIX/pl.calls" 2>/dev/null)"
-want "and is recorded for the PR's Minor, deferred" "R2 minor create" "$(jq -r '"\(.id) \(.grade) \(.list)"' "$S/review.deferred.jsonl" 2>/dev/null)"
+want "the Minor goes on no polish list" "" "$(cat "$FIX/pl.calls" 2>/dev/null)"
+want "and is recorded for the PR's Minor, deferred: outside the change, so to the sweep" "R2 minor sweep" "$(jq -r '"\(.id) \(.grade) \(.list)"' "$S/review.deferred.jsonl" 2>/dev/null)"
+want_in "and the nightly sweep's queue holds it" 'the bubble may start off-screen' "$(cat "$FIX/sweep.jsonl" 2>/dev/null)"
 handed=$(cat "$(driver_fact_dir 901 fix)/BLOCKERS" 2>/dev/null)
 want_in "the fixer was handed the Major" 'id F1' "$handed"
 want_not_in "and not the Minor, as a blocker" 'id R2' "$handed"

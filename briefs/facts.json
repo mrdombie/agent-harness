@@ -25,7 +25,7 @@
         "IN_FLIGHT": "open pull requests, remote branches and live claims that touch the files this ticket names",
         "PROJECT_FACTS": "the consuming project's facts from .claude/harness.json: trunk branch, gate commands, coding-standards path, the component kit, the design law",
         "SCREEN_STEPS": "the setup-step vocabulary this project's renderer can perform for a screen state (design.renderSteps), or a sentence saying it takes none",
-        "POLISH_LIST": "the unticked items on the open polish list of every screen:<slug> label the ticket carries, and how to tick one — or a sentence saying there is none",
+        "POLISH_LIST": "when the ticket is itself a polish list, its unticked items and how to tick one — or a sentence saying there is none (lists no longer ride along with other tickets)",
         "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet"
       }
     },
@@ -39,7 +39,7 @@
         "STANDARDS": "the coding-standards document this project holds a change to",
         "SURFACE_RULES": "the project's rules for a screen — empty when this task touches none",
         "LAST_TRY": "what the driver's proof said about the previous try at this task — why it was sent back — or a sentence saying this is the first try",
-        "POLISH_LIST": "the unticked items on the open polish list of every screen:<slug> label the ticket carries, and how to tick one — or a sentence saying there is none",
+        "POLISH_LIST": "when the ticket is itself a polish list, its unticked items and how to tick one — or a sentence saying there is none (lists no longer ride along with other tickets)",
         "PROOF_LIMITS": "what cannot prove a change in this project's proof trees (an e2e browser spec, unless tests.e2eProofs is true) and what to prove it with instead"
       }
     },
@@ -94,7 +94,6 @@
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet",
         "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed",
-        "LESSON": "when the lesson check is red: what the lesson check says about the pull request body as it stands, and the body's current `## Lesson` section if it has one — or a sentence saying the lesson check is not red",
         "PROOF_LIMITS": "what cannot prove a change in this project's proof trees (an e2e browser spec, unless tests.e2eProofs is true) and what to prove it with instead"
       }
     },

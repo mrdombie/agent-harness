@@ -851,7 +851,7 @@ driver_evidence_plan() { # <ticket>
 # the driver's alone, done after the review. ai-step.sh also enforces it.
 DRIVER_BRIEF_PREFACE="The driver alone pushes, marks the pull request ready, arms auto-merge and hands off — after its own gates and review. Any instruction in this brief to push, re-arm auto-merge, mark ready or hand off is void: do not do it; commit, and leave the rest to the driver."
 # Merge first: the sign-off lines every brief opens with do not hold the change (ai-step.sh).
-DRIVER_MERGE_FIRST_SIGNOFF="MERGE FIRST UNTIL THE RELEASE (release.mergeFirst), and this overrides every sign-off line above: a pull request whose screens were signed off holds nothing. The owner reviews on UAT after the merge. A non-Critical finding on those screens is a follow-up ticket, filed by the driver, never a park or a question; a Critical is fixed in place; a fix that must change a signed screen is committed like any other, with no pixel-change-after-signoff trailer, and the hold never goes back on."
+DRIVER_MERGE_FIRST_SIGNOFF="MERGE FIRST UNTIL THE RELEASE (release.mergeFirst), and this overrides every sign-off line above: a pull request whose screens were signed off holds nothing. The owner reviews on UAT after the merge. A non-Critical finding on those screens is dropped by the driver, never a ticket, a park or a question; a Critical is fixed in place; a fix that must change a signed screen is committed like any other, with no pixel-change-after-signoff trailer, and the hold never goes back on."
 
 # driver_conflict_markers <tree> <trunk> — the files this branch ADDS a conflict
 # marker line to, against the trunk, one per line. Read from the branch's own diff,
@@ -988,7 +988,7 @@ DRIVER_GRADES="${DRIVER_GRADES:-critical major minor nit}"
 
 # WHAT BLOCKS, named once, and by review round (the owner, 2026-10-20). Round 1 fixes
 # Critical, Major and Minor; from round 2 only Critical and Major block, and a Minor
-# goes on its screen's polish list for the next change there. A Minor filed as its own
+# is dropped (the owner, 2026-11-02: no polish lists). A Minor filed as its own
 # follow-up made every merge open new tickets (110 of 339 bugs in one week); a Minor
 # that blocked every round made 4-5 hour loops (86 of 117 latest findings were Minor).
 DRIVER_BLOCKING_GRADES="${DRIVER_BLOCKING_GRADES:-critical major minor}"
@@ -998,7 +998,8 @@ DRIVER_BLOCKING_GRADES_LATER="${DRIVER_BLOCKING_GRADES_LATER:-critical major}"
 # round, or round 1, is the first round's set.
 #
 # MERGE FIRST (release.mergeFirst, release-checks.sh): a Critical alone blocks, in every
-# round; a Major or a Minor is deferred, and the defer files it as a follow-up ticket.
+# round, with a finding in the change's own files (sameChange); any other is deferred and
+# dropped, or sent to the nightly sweep — never filed as a ticket.
 DRIVER_MERGE_FIRST_GRADES="${DRIVER_MERGE_FIRST_GRADES:-critical}"
 driver_blocking_grades() {
   if driver_merge_first; then printf '%s' "$DRIVER_MERGE_FIRST_GRADES"; return 0; fi

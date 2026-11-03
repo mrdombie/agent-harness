@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# follow-up.test.sh — merge first, fix after: each review finding that does not hold the
-# change is one ticket, naming the PR, the file:line and the finding; a Major at P1, a
-# Minor at P3; status ready and queued at its priority, never on top; filed once per PR and
-# finding, whether this host or the forge remembers it; a Critical or a Nit never.
+# follow-up.test.sh — finding tickets are switched off (the owner, 2026-11-02: the 3-voter
+# review replaces them). `file` files nothing and holds nothing; `settle` drops findings held
+# from before, whether their PR merged, closed or was rebuilt, and files none. A follow-up
+# filed earlier still waits for an open parent and goes back to ready when it merges.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -85,102 +85,57 @@ kid() { # <n> <labels csv> <parent pr> [parent ticket] — one open follow-up ti
   jq -n --argjson n "$1" --arg l "$2" --arg p "$3" --arg t "${4:-701}" '{number: $n, labels: ($l | split(",") | map({name: .})),
     body: "A review finding on PR #\($p) (ticket #\($t)).\n\n<!-- follow-up: pr=\($p) finding=m1 -->"}'; }
 
-echo "--- a Major and a Minor are filed; a Critical and a Nit are not ---"
-reset; case_file
-want "it exits clean"                          "0" "$RC"
-want "two tickets"                             "created=2" "$R"
-want_in "the Major at P1"                      '^labels\[\]=P1$' "$(args_of 777)"
-want_in "the Minor at P3"                      '^labels\[\]=P3$' "$(args_of 778)"
-want_in "the Minor waits until after the launch" '^labels\[\]=after-launch$' "$(args_of 778)"
-want_not_in "the Major does not"               '^labels\[\]=after-launch$' "$(args_of 777)"
-want_in "every follow-up wears fix-after-merge" '^labels\[\]=fix-after-merge$' "$(args_of 777)"
-want_in "the Minor too"                        '^labels\[\]=fix-after-merge$' "$(args_of 778)"
-want "the label was missing, so it was created once" "1" "$(grep -c 'labels -X POST -f name=fix-after-merge' "$FIX/fgh.log")"
-want_in "the parent's screen rides along"      '^labels\[\]=screen:home$' "$(args_of 777)"
-want_not_in "the parent's priority does not"   '^labels\[\]=P2$' "$(args_of 777)"
-want_in "the body names the PR"                'A review finding on PR #42 \(ticket #701\)' "$(args_of 777)"
-want_in "the file:line"                        'apps/web/a.tsx:3' "$(args_of 777)"
-want_in "the finding"                          'the save is dropped' "$(args_of 777)"
-want_in "and carries its dedupe key"           'follow-up: pr=42 finding=m1' "$(args_of 777)"
-want_in "it is made ready"                     'issue edit 777 .*--add-label.status:ready' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "and queued at its priority, never on top" '^add 777 --note follow-up of PR #42: major at apps/web/a.tsx:3$' "$(cat "$FIX/queue.log")"
-want_not_in "no follow-up is added --front or --first" '--front|--first' "$(cat "$FIX/queue.log")"
-want_in "a Critical is never filed"            "c3 is graded 'critical', which is never filed" "$OUT"
+hold() { # <pr> <ticket> — findings held on a PR before finding tickets were switched off
+  mkdir -p "$FIX/held"
+  jq -c --arg p "$1" --arg t "$2" 'select(.grade == "major" or .grade == "minor") | . + {ticket: $t, pr: $p, head: "abc123def"}' "$F" > "$FIX/held/$1.jsonl"
+}
 
-echo "--- filed once: a second ship files nothing ---"
-case_file
-want "nothing new"                             "created=2" "$R"
-want_in "and says they were filed"             '2 finding\(s\) on PR #42 were already filed' "$OUT"
+echo "--- file files nothing and holds nothing, merged, open or closed ---"
+for st in merged open closed; do
+  reset; echo "$st" > "$FIX/fgh.pr.42"; case_file
+  want "$st: it exits clean"                   "0" "$RC"
+  want "$st: no ticket"                        "created=0" "$R"
+  want "$st: nothing held"                     "0" "$(held_n)"
+  want_in "$st: and it says so"                '4 finding\(s\) of PR #42 dropped, not filed: finding tickets are switched off' "$OUT"
+done
+want "no label is made or put on"              "0" "$(grep -c 'labels' "$FIX/fgh.log")"
+want "and nothing is queued"                   "" "$(cat "$FIX/queue.log")"
 
-echo "--- filed once even when this host forgot: the forge's marker is found ---"
-reset; echo 900 > "$FIX/fgh.found"; case_file
-want "nothing created"                         "created=0" "$R"
-want_in "the key is searched for"              'follow-up: pr=42 finding=m1' "$(cat "$FIX/fgh.log")"
-
-echo "--- a search that fails is unknown: nothing is filed, and it says so ---"
-reset; : > "$FIX/fgh.search-fails"; case_file
-want "nothing created on the failed search"    "created=1" "$R"
-want_in "it logs unknown"                      'unknown — whether finding .* was filed could not be read' "$OUT"
-want "and exits non-zero"                      "1" "$RC"
-
-echo "--- a clash is never a ticket: it is its PR's repair ---"
-# Seen 2026-10-23: a Minor whose whole finding was the branch conflicting with develop was filed.
-FC="$FIX/clash.jsonl"
-cat > "$FC" <<'J'
-{"id":"R1-2","grade":"minor","file":"apps/web/src/app/dashboard/settings/voice/page.dom.test.tsx","line":7,"summary":"The branch conflicts with develop. #14086 landed with its own `hookState`, and `git merge-tree origin/develop HEAD` reports a content conflict in this file.","fix":"Rebase onto develop.","round":1}
-{"id":"m1","grade":"major","file":"apps/web/a.tsx","line":3,"summary":"the save is dropped","round":1}
-{"id":"k5","grade":"minor","file":"lib/k.ts","line":4,"summary":"conflict markers left in lib/k.ts","round":1}
-J
-reset; OUT=$(bash "$SUT" file 701 42 "$FC" 2>&1); RC=$?
-want "the clash is not filed; the Major and the marker Minor are" "2" "$(created)"
-want_in "  and it says why"                    'dropped R1-2: only says the branch clashes with or is behind develop' "$OUT"
-want_not_in "  no ticket names it"             'finding=R1-2' "$(cat "$FIX"/fgh.create.* 2>/dev/null | tr '\0' '\n')"
-head -1 "$FC" > "$FIX/clash-only.jsonl"
-reset; : > "$GH_LOG"; OUT=$(bash "$SUT" file 701 42 "$FIX/clash-only.jsonl" 2>&1); RC=$?
-want "a clash alone files nothing"             "0 0" "$(created) $RC"
-want_in "  and says there was nothing left"    'nothing left to file' "$OUT"
-reset; echo open > "$FIX/fgh.pr.42"; OUT=$(bash "$SUT" file 701 42 "$FC" 2>&1)
-want "on an open PR the clash is not held either" "0" "$(cat "$FIX/held/42.jsonl" 2>/dev/null | grep -c '"R1-2"')"
-
-echo "--- a review on an open PR files no ticket: the findings are held on its fix list ---"
-reset; echo open > "$FIX/fgh.pr.42"; case_file
-want "it exits clean"                          "0" "$RC"
-want "no ticket is filed"                      "created=0" "$R"
-want "the Major and the Minor are held"        "2" "$(held_n)"
-want_in "keyed by PR and head"                 '"pr":"42","head":"abc123def"' "$(head -1 "$FIX/held/42.jsonl")"
-want_in "the PR wears the held label"          'issues/42/labels -X POST -f labels\[\]=follow-ups-held' "$(cat "$FIX/fgh.log")"
-want_in "its fix list names the finding"       'the save is dropped' "$(comment_of 42)"
-want_in "and the comment is the harness's"     '<!-- harness:machine -->' "$(comment_of 42)"
-want_in "it says they wait for the merge"      'PR #42 has not merged: 2 finding\(s\) held' "$OUT"
-case_file
-want "a second review holds nothing twice"     "2" "$(held_n)"
-
-echo "--- the merge files them, each with the fix-after-merge label ---"
-echo merged > "$FIX/fgh.pr.42"; case_settle
+echo "--- findings held from before are dropped when their PR merges, never filed ---"
+reset; hold 42 701; echo merged > "$FIX/fgh.pr.42"; case_settle
 want "settle exits clean"                      "0" "$RC"
-want "two tickets on the merge"                "created=2" "$R"
-want_in "the Major wears fix-after-merge"      '^labels\[\]=fix-after-merge$' "$(args_of 777)"
-want_in "the Minor too"                        '^labels\[\]=fix-after-merge$' "$(args_of 778)"
-want_in "the ticket names the PR"              'A review finding on PR #42 \(ticket #701\)' "$(args_of 777)"
+want "no ticket on the merge"                  "created=0" "$R"
 want "nothing is held any more"                "0" "$(held_n)"
-case_settle
-want "a second pass files nothing"             "created=2" "$R"
+want_in "and it says they were dropped"        'PR #42 merged: its held findings are dropped, not filed' "$OUT"
 
-echo "--- a PR closed unmerged files none: its held findings are dropped ---"
-reset; echo open > "$FIX/fgh.pr.42"; case_file
-echo closed > "$FIX/fgh.pr.42"; case_settle
+echo "--- a PR closed unmerged: its held findings are dropped ---"
+reset; hold 42 701; echo closed > "$FIX/fgh.pr.42"; case_settle
 want "no ticket for a closed PR"               "created=0" "$R"
 want "nothing is held"                         "0" "$(held_n)"
 want_in "and it says they were dropped"        'PR #42 closed without merging: its held findings are dropped' "$OUT"
-reset; echo closed > "$FIX/fgh.pr.42"; case_file
-want "a review of a closed PR files none"      "created=0" "$R"
 
-echo "--- held on another host: the merge pass reads them off the PR's fix list ---"
-reset; echo open > "$FIX/fgh.pr.42"; case_file
-jq -n --arg b "$(comment_of 42 | sed -n '/^body=/,$p' | sed '1s/^body=//')" '[{body: "a person"}, {body: $b}]' > "$FIX/fgh.comments.42"
-rm -rf "$FIX/held"; echo '[{"number":42,"pull_request":{}}]' > "$FIX/fgh.heldprs"; echo merged > "$FIX/fgh.pr.42"; case_settle
-want "both filed from the comment's data"      "created=2" "$R"
+echo "--- an open PR's held findings wait, and are dropped once it merges ---"
+reset; hold 42 701; echo open > "$FIX/fgh.pr.42"; case_settle
+want "still open: still held"                  "2" "$(held_n)"
+echo merged > "$FIX/fgh.pr.42"; case_settle
+want "merged: dropped, none filed"             "created=0 0" "$R $(held_n)"
+
+echo "--- held on another host: read off the PR's fix list, dropped, and the label comes off ---"
+reset; hold 42 701
+data=$(base64 < "$FIX/held/42.jsonl" | tr -d '\n'); rm -rf "$FIX/held"
+jq -n --arg d "$data" '[{body: "a person"}, {body: ("held\n<!-- follow-up-held: pr=42 head=abc123def data=" + $d + " -->")}]' > "$FIX/fgh.comments.42"
+echo '[{"number":42,"pull_request":{}}]' > "$FIX/fgh.heldprs"; echo merged > "$FIX/fgh.pr.42"; case_settle
+want "none filed from the comment's data"      "created=0" "$R"
+want_in "they are dropped"                     'PR #42 merged: its held findings are dropped' "$OUT"
 want_in "and the label comes off"              'issues/42/labels/follow-ups-held -X DELETE' "$(cat "$FIX/fgh.log")"
+
+echo "--- closed to rebuild fresh: they wait for the ticket's next PR, and are dropped when it merges ---"
+reset; hold 42 701; echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"; case_settle
+want "nothing filed while the rebuild is unmerged" "created=0" "$R"
+want "and nothing is dropped yet"              "2" "$(held_n)"
+echo '{"total_count":2,"items":[{"number":42,"title":"#701: old"},{"number":61,"title":"#701: the rebuild","body":"Closes #701"}]}' > "$FIX/fgh.merged"; case_settle
+want "the rebuild's merge files none"          "created=0" "$R"
+want "and nothing is held"                     "0" "$(held_n)"
 
 echo "--- a ticket already filed for an open parent is blocked, then unblocked on merge ---"
 reset; fix_issue 950 OPEN "status:ready,fix-after-merge"
@@ -208,20 +163,6 @@ echo merged > "$FIX/fgh.pr.56"; case_settle
 want_in "the PM's block on the parent lifts"   'issue edit 951 .*--add-label status:ready' "$(tr '\n' ' ' < "$GH_LOG")"
 want_not_in "another block stays"              'issue edit 952' "$(cat "$GH_LOG")"
 
-echo "--- closed to rebuild fresh: the findings wait for the ticket's next PR, and file when it merges ---"
-reset; echo open > "$FIX/fgh.pr.42"; case_file
-echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"; case_settle
-want "nothing filed while the rebuild is unmerged" "created=0" "$R"
-want "and nothing is dropped"                  "2" "$(held_n)"
-echo '{"total_count":2,"items":[{"number":42,"title":"#701: old"},{"number":61,"title":"#701: the rebuild","body":"Closes #701"}]}' > "$FIX/fgh.merged"; case_settle
-want "the rebuild's merge files them"          "created=2" "$R"
-want_in "the ticket names the rebuild"         'its rebuild, PR #61, merged without it' "$(args_of 777)"
-want "and nothing is held"                     "0" "$(held_n)"
-want_in "a rebuild merged after the old PR closed" 'is:merged merged:>2026-10-23T10:00:00Z 701' "$(cat "$FIX/fgh.log")"
-reset; echo closed > "$FIX/fgh.pr.42"
-echo '[{"body":"Closed to rebuild fresh on the trunk."}]' > "$FIX/fgh.comments.42"; case_file
-want "a review of a PR closed to rebuild is held" "2" "$(held_n)"
-
 echo "--- a child of a PR closed to rebuild is blocked on the ticket, then unblocked by its rebuild ---"
 reset; fix_issue 960 OPEN "status:ready,fix-after-merge"
 jq -n --argjson k "$(kid 960 status:ready,fix-after-merge 73 706)" '[$k]' > "$FIX/fgh.kids"; echo closed > "$FIX/fgh.pr.73"; : > "$FIX/fgh.stale.706"; case_settle
@@ -245,13 +186,6 @@ echo '[{"number":55}]' > "$FIX/prs.json"; case_settle
 want_not_in "PR #55 is not read on its own"    'pulls/55' "$(cat "$FIX/fgh.log")"
 want_in "and the child is blocked all the same" 'issue edit 950 .*--add-label status:blocked' "$(tr '\n' ' ' < "$GH_LOG")"
 
-echo "--- a follow-up's own PR files no Major; its Minor (no screen took it) is filed as before ---"
-reset; printf 'fix-after-merge\nP1\n' > "$FIX/fgh.parent"; OUT=$(bash "$SUT" file 701 42 "$F" 2>&1)
-want "only the Minor is filed"                 "1" "$(created)"
-want_in "it is the Minor, at P3"               '^labels\[\]=P3$' "$(args_of 777)"
-want_in "and the Major is said dropped"        "m1 is a Major on a follow-up's own PR, which files only a Critical: dropped" "$OUT"
-rm -f "$FIX/fgh.parent"
-
 echo "--- plants: each guard out, its case fails ---"
 KIT="$FIX/kit"
 plant() { # <label> <exact text to delete> <setup> <the result the guard prevents> [case]
@@ -260,20 +194,8 @@ plant() { # <label> <exact text to delete> <setup> <the result the guard prevent
     || { want "plant landed: $1" "landed" "missed"; return; }
   reset; eval "$3"; SUT="$KIT/scripts/follow-up.sh" "${5:-case_file}"; want "planted ($1): the case now fails" "$4" "$R"
 }
-plant "the ledger" '    if n=$(awk -F'"'"'\t'"'"' -v p="$PR" -v i="$id" '"'"'$1 == p && $2 == i { print $3; exit }'"'"' "$LEDGER" 2>/dev/null) && [ -n "$n" ]; then
-      had=$((had + 1)); continue
-    fi' 'SUT="$KIT/scripts/follow-up.sh" case_file' "created=4"
-plant "the forge search" '  if [ -n "$n" ]; then printf '"'"'%s\t%s\n'"'"' "$key" "$n" >> "$LEDGER"; had=$((had + 1)); continue; fi' 'echo 900 > "$FIX/fgh.found"' "created=2"
-plant "the grade map" '      minor) pri="$P_MINOR" ;;' ':' "created=1"
-plant "the follow-up label" ' -f "labels[]=$FU_LABEL"' 'case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="label=$(args_of 777 | grep -c "^labels\[\]=fix-after-merge$")"; }' "label=0"
-plant "the label's creation" '  ensure_fu_label
-' 'rm -f "$FIX/fgh.label"; case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); RC=$?; R="made=$(grep -c "labels -X POST -f name=fix-after-merge" "$FIX/fgh.log")"; }' "made=0"
-std_cases
-plant "the hold on an open PR" '    *) hold_findings "$T" "$PR" "$head" "$F"; exit "$failed" ;;' 'echo open > "$FIX/fgh.pr.42"' "created=2"
-plant "the filing on merge" '        file_findings "$ticket" "$pr" "$hf"' \
-  'echo open > "$FIX/fgh.pr.42"; case_file; echo merged > "$FIX/fgh.pr.42"' "created=0" case_settle
-plant "the drop on a closed PR" '  rm -f "$hf"
-' 'echo open > "$FIX/fgh.pr.42"; case_file; echo closed > "$FIX/fgh.pr.42"; case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="held=$(held_n)"; }' "held=2" case_settle
+plant "the drop of held findings" '  rm -f "$hf"
+' 'hold 42 701; echo merged > "$FIX/fgh.pr.42"; case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="held=$(held_n)"; }' "held=2" case_settle
 plant "the block of a child" '      issue_status_set "$n" "$LBL_BLOCKED" >/dev/null 2>&1 || { echo "#$n could not be set $LBL_BLOCKED"; rc=1; continue; }' \
   'fix_issue 950 OPEN "status:ready,fix-after-merge"; jq -n --argjson k "$(kid 950 status:ready,fix-after-merge 55)" "[\$k]" > "$FIX/fgh.kids"; echo open > "$FIX/fgh.pr.55"
    case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="blocked=$(grep -c "issue edit 950 .*status:blocked" "$GH_LOG")"; }' "blocked=0" case_settle
@@ -281,21 +203,9 @@ plant "the unblock on merge" '      issue_status_set "$n" "$LBL_READY" >/dev/nul
   'fix_issue 950 OPEN "status:blocked,fix-after-merge"; jq -n --argjson k "$(kid 950 status:blocked,fix-after-merge 55)" "[\$k]" > "$FIX/fgh.kids"; echo "950 55" > "$FIX/blocked.tsv"; echo merged > "$FIX/fgh.pr.55"
    case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="ready=$(grep -c "issue edit 950 .*status:ready" "$GH_LOG")"; }' "ready=0" case_settle
 
-std_cases
-plant "the wait for a rebuild" '    [ -n "$FU_VIA" ] || continue
-' 'echo open > "$FIX/fgh.pr.42"; case_file; echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"' "created=2" case_settle
-plant "the rebuild check" '    [ "$r" -ne 0 ] || s=rebuild
-' 'echo open > "$FIX/fgh.pr.42"; case_file; echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"; case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="held=$(held_n)"; }' "held=0" case_settle
 plant "the empty-parent skip" '  case "$p" in '"''"'|*[!0-9]*) continue ;; esac
 ' 'echo "[{\"number\":970,\"labels\":[],\"body\":\"Follow-up from the review of #13048.\"}]" > "$FIX/fgh.kids"; case_settle() { OUT=$(bash "$SUT" settle 2>&1); R="unknown=$(printf "%s" "$OUT" | grep -c unknown)"; }' "unknown=1" case_settle
 plant "the shared open-PR copy" '  if [ "$OPEN_KNOWN" = 1 ] && printf '"'"'%s\n'"'"' "$open_prs" | grep -qx "$1"; then printf open; return 0; fi
 ' 'fix_issue 950 OPEN "status:ready,fix-after-merge"; jq -n --argjson k "$(kid 950 status:ready,fix-after-merge 55)" "[\$k]" > "$FIX/fgh.kids"; echo "[{\"number\":55}]" > "$FIX/prs.json"; echo open > "$FIX/fgh.pr.55"; case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="reads=$(grep -c "pulls/55" "$FIX/fgh.log")"; }' "reads=1" case_settle
-plant "the merged-after-close rule" ' merged:>$at' 'echo open > "$FIX/fgh.pr.42"; case_file; echo closed > "$FIX/fgh.pr.42"; : > "$FIX/fgh.stale.701"; echo "{\"items\":[{\"number\":61,\"title\":\"#701: x\"}]}" > "$FIX/fgh.merged"; case_settle() { bash "$SUT" settle >/dev/null 2>&1; R="after=$(grep -c "merged:>" "$FIX/fgh.log")"; }' "after=0" case_settle
-plant "the after-launch label" '      args+=(-f "labels[]=$AFTER_LAUNCH")
-' 'case_file() { OUT=$(bash "$SUT" file 701 42 "$F" 2>&1); R="al=$(args_of 778 | grep -c "^labels\[\]=after-launch$")"; }' "al=0"
-std_cases
-plant "a follow-up's own PR files no Major" '  local parent_fu=""; printf '"'"'%s\n'"'"' "$all" | grep -qxF -- "$FU_LABEL" && parent_fu=1' \
-  'printf "fix-after-merge\nP1\n" > "$FIX/fgh.parent"' "created=2"
-rm -f "$FIX/fgh.parent"
 
 suite_end "$FAILED"

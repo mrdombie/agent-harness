@@ -6,7 +6,7 @@ description: "Take a bug from the operator's outline to merged, in one motion: r
 You are running `/agent-harness:bug`. The operator describes a bug; you take it all the way to merged on
 `develop` and report back. This command is the **chain** — it owns no logic of its
 own, it sequences `systematic-debugging` → `/agent-harness:file` → `/agent-harness:claim` → `/design` (only if
-pixels move) → `/agent-harness:ui-gate` → `/agent-harness:finish` and refuses to skip a link.
+pixels move) → code review → `/agent-harness:finish` and refuses to skip a link.
 
 **One bug at a time.** Do not start, offer, or triage other work while a `/agent-harness:bug` run
 is open. The whole point is that the operator points at one thing and it goes away.
@@ -44,7 +44,7 @@ that closes the ticket without fixing the bug.
 Three failure modes to check for by name before you accept a diagnosis:
 
 - **Fix the matrix, not the reported cell.** A "UI says X, engine says Y" bug is
-  never one string. #9160 bounced three times off `/agent-harness:ui-gate`, each blocker the same
+  never one string. #9160 bounced three times off its UI review, each blocker the same
   defect one enum further out. Enumerate the full matrix and fix all of it.
 - **Wired ≠ running.** Query UAT before you diagnose a surface. A module with a
   green unit suite may not be reachable from the app at all.
@@ -55,17 +55,9 @@ Come out of this step with: the reproduction, the root cause, and the file:line.
 
 ## Step 2 — File the ticket
 
-**Grade it first** (the table in `/agent-harness:file`). Critical or Major: file a
-ticket as below. **Minor** (polish — spacing, wording, a small visual slip): do not
-file a ticket. Put it on its screen's polish list and stop the chain there; the next
-ticket for that screen fixes it in its own change:
-
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" add <screen-slug> "<what is wrong, the reproduction in one line>"
-```
-
-The slug is the screen's `screen:<slug>` label. Tell the operator the list's number
-and that it rides along. A Nit is dropped.
+**Grade it first** (the table in `/agent-harness:file`). A Nit is dropped. Anything
+else is filed as below and fixed in this run: there is no polish list to park a
+Minor on (the owner, 2026-11-02).
 
 Now run **`superpowers:brainstorming`** over the *fix*, not the fault. Step 1 settled
 what is broken; brainstorming settles how far the fix reaches — scope, edge cases,
@@ -139,36 +131,21 @@ backend fix.
   needs that the kit lacks gets built **into** `packages/ui`.
 - Write the failing test first wherever the bug is testable — a bug you can reproduce
   in code is a bug you can pin with a test, and that test is what stops the regression.
-- **Name the principle before the code**: one sentence for the class of mistake, not
-  the instance. The guard you write enforces that sentence and catches a sibling; it
-  goes in the PR body's `## Lesson` section (Principle, Guard, Before/after, Reach),
-  which the `Every fix ships a lesson` CI check requires on every fix.
 - Fix the whole matrix Step 1 identified, not the one cell the operator happened to see.
 - Do not leave a confident comment explaining a fix you are unsure of. Code gets
   re-derived on review; prose gets believed.
 
 ## Step 6 — Gate
 
-Run both, they are not substitutes:
+Run `superpowers:requesting-code-review` on the change; the design status is set
+by the independent critic on CI's shots after the push — never by you (finish Step
+5.4). The critic judges the shots CI pins on the PR after the push, never a local
+render: evidence comes from CI (the owner's call, 2026-10-16). The frontend gate
+(`/agent-harness:ui-gate`) is switched off (the owner, 2026-11-02): `/agent-harness:finish`
+no longer asks for its verdict.
 
-```
-/agent-harness:ui-gate          # functional honesty — dead controls, fake-live data, parity
-design status          # set by the independent critic on CI's shots after the push — never by you (finish Step 5.4)
-```
-
-The critic judges the shots CI pins on the PR after the push, never a local
-render: evidence comes from CI (the owner's call, 2026-10-16).
-
-`/agent-harness:ui-gate` is already wired into `/agent-harness:finish` as Gate 4/5, and `/agent-harness:finish` refuses the
-merge on a UI-touching PR without a **SHIP** verdict tied to the exact SHA. Export it:
-
-```bash
-export UI_GATE_VERDICT=SHIP
-export UI_GATE_SHA=$(git rev-parse HEAD)
-```
-
-**SPIT-BACK halts the motion.** Fix the blockers, re-gate, re-export the new SHA. Do
-not carry a stale verdict past a new commit.
+**A blocking review finding halts the motion.** Fix it and review again; do not carry
+a stale review past a new commit.
 
 **Never batch a gate with a push in one shell line.** `gate && git push` pushes on the
 shell's exit status, not the gate's verdict.

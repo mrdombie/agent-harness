@@ -197,12 +197,13 @@ same "$(answer 2 BLOCKED "[$cls2]")"
 rc=0; on driver_step_review 712 >/dev/null 2>&1 || rc=$?
 want "the class already raised does not block again" "0" "$rc"
 
-echo "--- grade effects stand: under merge first a kept Minor elsewhere is a follow-up ---"
+echo "--- grade effects stand: under merge first a kept Minor elsewhere goes to the sweep, never a ticket ---"
 rp_tree 713
 same "$(answer 1 BLOCKED "[$F_MINOR]")"
 rc=0; on driver_step_review 713 >/dev/null 2>&1 || rc=$?
 want "a Minor in a file the change did not touch ships" "0" "$rc"
-want "and is filed as before"                      "m1" "$(fu 713)"
+want "and is filed nowhere"                        "" "$(fu 713)"
+want "it is sent to the sweep"                     "m1=sweep" "$(jq -r '"\(.id)=\(.list)"' "$(driver_state_dir 713)/steps/review.deferred.jsonl")"
 
 echo "--- an answer with no panel (an older reviewer) is graded exactly as before ---"
 rp_tree 714
@@ -270,9 +271,9 @@ plant "the quorum is deleted" driver/steps/review.sh \
 plant "a tie no longer goes lower" driver/steps/review.sh \
   'sort_by([-.c, (.v | r)])' 'sort_by([-.c])' case_tie "grade=major"
 plant "the review runs the panel filter" driver/steps/review.sh \
-  '  _driver_review_panel "$t" "$ans_file" "$round" || return "$DRIVER_E_REFUSED"' '' case_mixed "rc=30 kept=a1 n1 b1 swept=0 calls=3 effort=high"
+  '  _driver_review_panel "$t" "$ans_file" "$round" || return "$DRIVER_E_REFUSED"' '' case_mixed "rc=30 kept=a1 n1 b1 swept=1 calls=3 effort=high"
 plant "a pre-existing finding is swept" driver/steps/review.sh \
-  '    printf '"'"'%s'"'"' "$pre" | bash "$sq" add "$t" "$round" >/dev/null 2>&1 || driver_say "⚠ review: the sweep queue could not take $npre pre-existing finding(s) — they are dropped from this change all the same"' '' case_mixed "rc=30 kept=a1 swept=0 calls=3 effort=high"
+  '    _driver_review_to_sweep "$t" "$pre" "$round"' '' case_mixed "rc=30 kept=a1 swept=0 calls=3 effort=high"
 case_pre_ship() { # a SHIP whose only blocking-grade finding is pre-existing
   N=$((N + 1)); rp_tree "$N"; : > "$SWEEP_QUEUE"; same "$(answer 1 SHIP "[$F_PRE]")"
   R="rc=$(in_kit "$N")"

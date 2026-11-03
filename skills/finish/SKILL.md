@@ -312,24 +312,17 @@ review raising one point per round, having cleared the design reviewer hours
 earlier: *"apply all those rules, not just the two."*
 
 **Two rounds, then the PR ships.** Run the set, fix the batch, run the set
-again. After the second round anything still raised that is **not a blocker** goes
-on its screen's polish list, linked on the PR, and the PR merges. A blocker is a
-Critical or Major finding — wrong data, a security hole, lost work, an
-unapproved publish, a dead control, a broken flow, a user misled or stuck.
-Everything else — a spacing call, a copy preference, a nice-to-have — is a
-follow-up. `rules/standing-rules.md` has the grade table.
+again. After the second round anything still raised that is **not a blocker** is
+dropped, and the PR merges. A blocker is a Critical or Major finding — wrong data,
+a security hole, lost work, an unapproved publish, a dead control, a broken flow,
+a user misled or stuck. A finding in a file this change did not touch is
+pre-existing and goes to the nightly sweep. Nothing is filed as a ticket and
+nothing goes on a polish list (the owner, 2026-11-02). `rules/standing-rules.md`
+has the grade table.
 
 The cap is **recorded, not promised**: the PR body carries `Review rounds: N of
 2`, so a reader can see the rule was applied rather than take the agent's word
-for it. A polish-list item carries the reviewer's finding **verbatim** and the
-evidence it was raised against — never a ticket of its own:
-
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/polish-list.sh" add <screen-slug> "<finding, verbatim> — raised on #<PR>"
-```
-
-The slug is the screen's `screen:<slug>` label (`labels.screenPrefix`); the next
-ticket for that screen fixes the list in its own change.
+for it.
 
 **Which reviewers, and what proves one ran.** Both come from the config, because
 which reviewers a project runs and how it attests them are project facts:
@@ -368,7 +361,7 @@ the fingerprint matches the diff, not that anybody read it. Writing a trailer to
 unblock a push is the failure this step exists to catch.
 
 **On a diff that changes what a user sees, the picture reviewers wait for CI.**
-The code reviewer (`/agent-harness:ui-gate`) runs here, as above. The design
+The code review runs here, as above. The design
 critic and the parity check judge rendered screens, and those pictures come from
 CI after the push — Step 5.4 — never from a dev server or a capture script on
 this machine. Do not start one to get a picture for this step. And their verdict
@@ -419,12 +412,6 @@ $STATE_DIR/<spec-file>
 
 ## Evidence routes
 - /<each route this change shows, one per line — only on a diff that changes what a user sees>
-
-## Lesson
-- Principle: <one sentence naming the class of mistake — only on a fix; delete otherwise>
-- Guard: `<the test, lint or gate file this PR adds or changes>`
-- Before/after: <how the guard failed on the pre-fix code and passes now>
-- Reach: <the sibling it also catches, or the search that found none>
 EOF
 printf '\nCloses #%s\n' "$TICKET_KEY"
 )"
@@ -513,11 +500,10 @@ bash "$EV" wait "$PR_NUMBER"; echo "wait exit: $?"
 **Merge first, fix after** (the owner, 2026-10-22; `release.mergeFirst` in harness.json,
 read by `release_merge_first`). While it is on, run this INSTEAD of the block above: a
 pixel PR ships like any other, with no hold label, no wait for CI's shots and no picture
-parity, ready and armed at once. The review still runs once and only a Critical blocks;
-every Major and Minor is a follow-up (`scripts/follow-up.sh file <ticket> <pr>
-<findings.jsonl>`: one ticket per finding, P1 for a Major, P3 for a Minor no screen's
-polish list takes, status ready, at the front of the queue), and the PR ships. The
-owner reviews the screen on UAT.
+parity, ready and armed at once. The review still runs once; a Critical, and a Major
+or Minor in a file this change touched, are fixed in the change. Nothing is filed as a
+ticket: a finding outside the change's files goes to the nightly sweep, any other is
+dropped, and the PR ships. The owner reviews the screen on UAT.
 
 ```bash
 KIT_ROOT="${CLAUDE_PLUGIN_ROOT}"; . "$KIT_ROOT/scripts/toolkit-env.sh" || exit 1
@@ -798,65 +784,8 @@ if [ "$PR_TOUCHES_UI" = "yes" ]; then
   fi
 fi
 
-# Gates 4 + 5 (#8671) — the merge must hold what review found.
-#
-# `packages/ui` counts for these two even though Gates 1-3 ignore it: a
-# kit change is exactly the kind that renders differently from what the
-# diff suggests.
-PR_TOUCHES_UI_OR_KIT="$PR_TOUCHES_UI"
-if echo "$PR_FILES" | grep -qE '^packages/ui/'; then PR_TOUCHES_UI_OR_KIT="yes"; fi
-
-# Gate 4 — the UI review ran, and PASSED. /agent-harness:ui-gate is the review that
-# catches dead controls, fake-live data and orphan features. Until this
-# gate existed nothing forced it: ui-gate.md said "run it by hand before
-# every UI /agent-harness:finish" and /agent-harness:finish never asked. Neither gate touches CI —
-# /agent-harness:ui-gate spawns the frontend-gate subagent locally and the SHA check is
-# one `gh` read — so a runner outage cannot wedge shipping.
-UI_GATE_VERDICT="${UI_GATE_VERDICT:-missing}"
-UI_GATE_SHA="${UI_GATE_SHA:-missing}"
-if [ "$PR_TOUCHES_UI_OR_KIT" = "yes" ]; then
-  # Merge first (release.mergeFirst): a SPIT-BACK with no Critical ships. Set UI_GATE_CRITICAL
-  # to the count of its Criticals, and file every Major and Minor first:
-  #   bash "$KIT_ROOT/scripts/follow-up.sh" file <ticket> "$PR_NUMBER" <findings.jsonl>
-  if [ "$UI_GATE_VERDICT" = "SPIT-BACK" ] && release_merge_first && [ "${UI_GATE_CRITICAL:-unknown}" = 0 ]; then
-    echo "✓ Gate 4: merge first — the ui-gate's findings are follow-up tickets, none is Critical."
-    UI_GATE_VERDICT=SHIP
-  fi
-  if [ "$UI_GATE_VERDICT" != "SHIP" ]; then
-    echo "❌ /agent-harness:finish REFUSED: this PR touches UI and has no SHIP verdict from /agent-harness:ui-gate." >&2
-    echo "   Recorded verdict: $UI_GATE_VERDICT" >&2
-    echo "   Action: run /agent-harness:ui-gate on this branch. On SHIP, re-run /agent-harness:finish." >&2
-    echo "   A SPIT-BACK is the gate doing its job — fix the Critical, Major and Minor findings, then re-review." >&2
-    echo "   Only Nits are dropped; nothing is filed as a follow-up." >&2
-    exit 1
-  fi
-
-  # Gate 5 — the head has not moved since that review. A verdict is only
-  # about the commit it was taken against. On 2026-08-06 PR #8405 merged
-  # while /agent-harness:ui-gate findings were still being fixed: develop took the first
-  # commit and none of the four after it, and eight defects went live.
-  HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json headRefOid -q .headRefOid)
-  if [ "$UI_GATE_SHA" = "missing" ] || [ -z "$UI_GATE_SHA" ]; then
-    echo "❌ /agent-harness:finish REFUSED: a SHIP verdict was recorded without the SHA it was taken against." >&2
-    echo "   Action: re-run /agent-harness:ui-gate so the verdict is pinned to a commit." >&2
-    exit 1
-  fi
-  # A verdict still covers the head when everything after it is CI's evidence
-  # commit or an empty review trailer — the shape Step 5.4 leaves. Anything else
-  # (a fix, a merge) is code nobody reviewed.
-  git fetch -q origin "$BRANCH" 2>/dev/null || true
-  if [ "$UI_GATE_SHA" != "$HEAD_SHA" ]; then
-    if ! AT_HEAD=$(bash "$KIT_ROOT/scripts/ci-evidence.sh" at-head "$UI_GATE_SHA" "$HEAD_SHA"); then
-      echo "❌ /agent-harness:finish REFUSED: head moved since review (reviewed ${UI_GATE_SHA:0:9}, now ${HEAD_SHA:0:9})." >&2
-      echo "   $AT_HEAD" >&2
-      echo "   Action: re-run /agent-harness:ui-gate against the current head." >&2
-      exit 1
-    fi
-    echo "✓ $AT_HEAD"
-  fi
-else
-  echo "ℹ️  Gates 4+5 skipped — no UI or kit files in this diff."
-fi
+# Gates 4 + 5 (the ui-gate verdict and its head) are switched off (the owner,
+# 2026-11-02): the driver's 3-voter review replaces the frontend gate.
 
 # Lockfile attestation cross-check. If the claim was made post-#2485,
 # `meta.json` will include `mockup_viewed` + `backend_contract_acknowledged`.
@@ -990,28 +919,6 @@ called from the consuming repo), so a merge that skips this skill meets it anywa
 Do not satisfy it with a line that is not true: "covered by" a test that does not
 pin the same behaviour is the failure this step exists to catch.
 
-### Step 5.7 — A fix ships its lesson
-
-A fix (a bug label, a repair or approved-merge spawn, a `fix:` title or `fix/`
-branch, or a PR that closes or references a bug) carries the `## Lesson` section
-from Step 5's body: the **principle** (the class of mistake, not the instance), the
-**guard** (an executable test, lint or gate file this PR changes in substance), **before/after** (the guard failed on the pre-fix code — plant the
-death, per the standing rules) and **reach** (the sibling it also catches). Or one
-line: `Not automatable because <reason>`, with the principle added to the
-project's rules file.
-
-The enforcement is the `Every fix ships a lesson` CI check
-(`.github/workflows/lesson.yml`), not this step; running the same script here
-only tells you sooner:
-
-```bash
-bash "$KIT_ROOT/scripts/check-lesson.sh" --base "origin/$INTEGRATION_BRANCH" --head HEAD \
-  --pr "$PR_NUMBER" --slug "$REPO_SLUG" || echo "fix the Lesson section (gh pr edit $PR_NUMBER --body-file ...)"
-```
-
-A guard that fits only the one instance, or reads as an odd rule, is a Major
-review finding: aim it at the principle.
-
 ### Step 6 — Merge the PR to develop
 
 The user has authorised dev agents to merge directly after gates pass.
@@ -1075,10 +982,8 @@ caught (a "has HEAD moved" guard that a *peer's* commit disarms, re-creating the
 PR existed to fix). The agent had done everything in the right order; nothing held the
 merge. The blocker landed on develop and needed a second PR (#9138) to undo.
 
-- Step 5.5's Gates 4 + 5 already enforce this for **UI** tickets — `/agent-harness:ui-gate` must have
-  run and passed on the current head. **There is no equivalent for a non-UI diff**, and
-  #9137 was a shell script. On any ticket Step 5.5 does not gate, completing the review
-  is yours, and it happens *before* this step.
+- **Nothing in Step 5.5 gates the review**, and #9137 was a shell script. Completing
+  the review is yours, and it happens *before* this step.
 - **⚠️ Not arming `--auto` is NOT sufficient, and this is the part that matters.** The
   repo runs an `automerge-develop` workflow that merges **any** PR which is mergeable,
   not draft, based on `develop`, and green — **whether or not anyone armed anything**.

@@ -25,7 +25,7 @@ person anything; when you need to, return a question and the driver parks it.
 - Already in flight: {{IN_FLIGHT}}
 - This project: {{PROJECT_FACTS}}
 - Screen steps the renderer performs: {{SCREEN_STEPS}}
-- In scope, blocking at their grade (what you touch, you fix): {{POLISH_LIST}} {{CRITIC_FINDINGS}}
+- In scope, blocking at their grade: {{POLISH_LIST}} {{CRITIC_FINDINGS}}
 
 ## The premise verdict is yours
 

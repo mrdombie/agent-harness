@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # merge-first.test.sh — release.mergeFirst, the one switch (the owner, 2026-10-22: merge
 # first, fix after, until the release). On: a Critical still blocks and is fixed in
-# place; a Major becomes a P1 follow-up at the front of the queue and the change ships; a
-# Minor goes on its screen's polish list, or is a P3 follow-up when no screen takes it;
+# place; a Major or Minor outside the change goes to the nightly sweep and the change
+# ships — nothing is filed as a ticket and nothing goes on a polish list (2026-11-02);
 # the critic's findings refuse nothing; no hold label and no picture parity before the
 # merge; a screen ticket with no picture starts, a screen:new one still waits for one.
 # Off: every gate is what it was.
@@ -28,7 +28,7 @@ SH
 printf '#!/usr/bin/env bash\ncase "$1" in add) printf "%%s\\n" "$*" >> "$FIX/pl.adds" ;; esac\nexit 0\n' > "$FIX/pl"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$FIX/fu.calls"\nexit 0\n' > "$FIX/fu"
 chmod +x "$FIX/sf" "$FIX/pl" "$FIX/fu"; : > "$FIX/pl.adds"; : > "$FIX/fu.calls"
-export DRIVER_SCREEN_FINDINGS="$FIX/sf" DRIVER_POLISH_LIST="$FIX/pl"
+export DRIVER_SCREEN_FINDINGS="$FIX/sf" DRIVER_POLISH_LIST="$FIX/pl" SWEEP_QUEUE="$FIX/sweep.jsonl"
 
 BASE="$HARNESS_CFG_PATH"
 jq '.release = {mergeFirst: true, done: false}' "$BASE" > "$FIX/mf-on.json"
@@ -63,15 +63,16 @@ want_in "on: the critic's check warns like a listed one" '"design critic"' "$(on
 want_in "and the picture check"      '"approved picture"' "$(on release_nonblocking_json)"
 want "off: neither is added"         "[]" "$(off release_nonblocking_json)"
 
-echo "--- on: a Major is a follow-up and the review ships ---"
+echo "--- on: a Major outside the change goes to the sweep, never a ticket, and the review ships ---"
 mf_tree 701
 fix_ai review "$major" superpowers:requesting-code-review
 rc=0; out=$(on driver_step_review 701 2>&1) || rc=$?
 want "the review finishes"          "0" "$rc"
 want "the verdict ships"            "SHIP" "$(jq -r .verdict "$(rj 701)")"
 want "nothing blocks"               "0" "$(on _driver_count "$(rj 701)" blocking)"
-want "the Major waits to be filed"  "m1 major lib/other.sh:3" "$(jq -r '"\(.id) \(.grade) \(.file):\(.line)"' "$(fu 701)")"
-want_in "and the run says so"       'filed as follow-up tickets when the PR is open' "$out"
+want "nothing waits to be filed"    "" "$(cat "$(fu 701)" 2>/dev/null)"
+want "the Major is sent to the sweep" "m1 major sweep" "$(jq -r '"\(.id) \(.grade) \(.list)"' "$(driver_state_dir 701)/steps/review.deferred.jsonl")"
+want_in "and the run says so"       'to the nightly sweep, 0 dropped; none filed as a ticket' "$out"
 
 echo "--- on: a Critical still blocks, and is fixed in place ---"
 mf_tree 702
@@ -81,13 +82,13 @@ want "it goes to fix"               "30" "$rc"
 want "the Critical blocks"          "1" "$(on _driver_count "$(rj 702)" blocking)"
 want "and is never a follow-up"     "" "$(cat "$(fu 702)" 2>/dev/null)"
 
-echo "--- on: a Minor on a screen goes on its polish list; one no screen takes is a follow-up ---"
+echo "--- on: no Minor goes on a polish list or is filed ---"
 mf_tree 703; : > "$FIX/pl.adds"
 fix_ai review "$minors" superpowers:requesting-code-review
 rc=0; on driver_step_review 703 >/dev/null 2>&1 || rc=$?
 want "the review finishes"          "0" "$rc"
-want_in "the screen's Minor is on its polish list" '^add home \[Minor\] the gap is 12 not 16' "$(cat "$FIX/pl.adds")"
-want "the other is a follow-up"     "n2" "$(jq -r .id "$(fu 703)")"
+want "no polish list is written"    "" "$(cat "$FIX/pl.adds")"
+want "nothing waits to be filed"    "" "$(cat "$(fu 703)" 2>/dev/null)"
 
 echo "--- off: today's behaviour — a Major blocks and nothing is a follow-up ---"
 mf_tree 704
@@ -108,19 +109,19 @@ want "on: an existing screen takes the baseline route" "baseline" "$(on driver_s
 want "on: screen:new keeps the picture route"          "picture"  "$(on driver_screen_route 706 | cut -f1)"
 want "off: every screen takes the picture route"       "picture"  "$(off driver_screen_route 705 | cut -f1)"
 
-echo "--- on: ship files the follow-ups with the PR's number, adds no hold, and arms auto-merge ---"
+echo "--- on: ship files nothing, adds no hold, and arms auto-merge ---"
 git init -q --bare "$FIX/origin"; git -C "$REPO" remote add origin "$FIX/origin"; git -C "$REPO" push -q origin develop
 driver_state_set 701 claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
 for st in start plan build self-check review record; do driver_state_done 701 "$st"; done
 : > "$GH_LOG"; : > "$FIX/fu.calls"
 rc=0; out=$(DRIVER_FOLLOW_UP="$FIX/fu" on driver_step_ship 701 2>&1) || rc=$?
 want "it ships"                     "0" "$rc"
-want "the follow-ups are filed against the PR" "file 701 42 $(fu 701)" "$(cat "$FIX/fu.calls")"
+want "follow-up.sh is never called"  "" "$(cat "$FIX/fu.calls")"
 want_not_in "no hold label goes on"  'add-label needs:human-approval' "$(cat "$GH_LOG")"
 want_in "ready"                     'pr ready' "$(cat "$GH_LOG")"
 want_in "auto-merge armed"          'pr merge.*--auto' "$(cat "$GH_LOG")"
 want_in "the body says merge first" 'Merge first until the release' "$(cat "$GH_LOG")"
-want_in "and lists the Major as a follow-up" 'the save is dropped .*a follow-up ticket' "$(cat "$GH_LOG")"
+want_in "and notes the Major as sent to the sweep" 'the save is dropped .*to the nightly sweep' "$(cat "$GH_LOG")"
 
 echo "--- on: a Critical stops the ship ---"
 mf_tree 707
@@ -209,10 +210,10 @@ case_ship() { # a reviewed ticket with one follow-up waiting: what the ship hand
   R="calls=$(grep -c '^file ' "$FIX/fu.calls")"
 }
 kit_copy
-case_major_on;  want "the unplanted kit: on, a Major ships as a follow-up" "rc=0 fu=m1" "$R"
+case_major_on;  want "the unplanted kit: on, a Major ships, filed nowhere" "rc=0 fu=" "$R"
 case_major_off; want "the unplanted kit: off, a Major blocks"              "rc=30 fu=" "$R"
 case_route;     want "the unplanted kit: on, an existing screen is baseline" "baseline" "$R"
-case_ship;      want "the unplanted kit: on, the ship files the follow-up"  "calls=1" "$R"
+case_ship;      want "the unplanted kit: on, the ship files nothing, even from an old record" "calls=0" "$R"
 plant() { # <label> <file under the kit> <exact text to delete> <case> <the result the line prevents>
   kit_copy
   python3 -I -c 'import sys; p, l = sys.argv[1], sys.argv[2]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, "", 1)); sys.exit(0 if n == 1 else 1)' "$KIT/$2" "$3" \
@@ -221,13 +222,9 @@ plant() { # <label> <file under the kit> <exact text to delete> <case> <the resu
 }
 plant "only a Critical blocks" driver/driver-env.sh \
   '  if driver_merge_first; then printf '"'"'%s'"'"' "$DRIVER_MERGE_FIRST_GRADES"; return 0; fi' case_major_on "rc=30 fu="
-plant "the follow-up record"  driver/steps/review.sh \
-  'else _driver_review_follow_up "$t" "$x" "$round" && ' case_major_on "rc=0 fu="
 plant "the switch reads the config" scripts/release-checks.sh \
-  '  jq -e '"'"'(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true'"'"' "$cfg" >/dev/null 2>&1' case_major_off "rc=0 fu=m1"
+  '  jq -e '"'"'(.release // {}) | type == "object" and .mergeFirst == true and (.done // false) != true'"'"' "$cfg" >/dev/null 2>&1' case_major_off "rc=0 fu="
 plant "the baseline route"    driver/size-rules.sh '  { command -v release_merge_first >/dev/null 2>&1 && release_merge_first; } && return 0' case_route "picture"
-plant "the ship files them"   driver/steps/ship.sh \
-  '  if [ "$mode" = repair ]; then _driver_ship_follow_ups "$t" "$open_pr"; else _driver_ship_follow_ups "$t" "$pr_n"; fi' case_ship "calls=0"
 # Under localOnly every push names its head, so the case also reads that gates.local ran on it.
 case_lg_kit() { SUT_KIT="$KIT" case_lg "$FIX/lg-off.json"; unset SUT_KIT
   R="$R local=$([ "$(driver_state_get "$N" local_gates_head)" = "$(git -C "$FIX/mf$N" rev-parse HEAD)" ] && echo yes || echo no)"; }
