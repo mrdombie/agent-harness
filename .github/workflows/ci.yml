@@ -79,6 +79,11 @@ jobs:
       - name: No unattended build runs the prose claim
         # A prose fallback left wired in after the driver could take the case sent drafts and pick-next to prose.
         run: bash scripts/check-driver-only-spawn.sh
+      - name: A change to the review step carries its eval score
+        # The comparison runs where the plan's login is (scripts/review-eval.sh compare, ~$36,
+        # a side already scored is reused); CI only refuses a review change without its line.
+        # No model call here.
+        run: bash scripts/review-eval.sh guard --base "origin/${{ github.base_ref || 'main' }}"
       - name: Changed shell scripts pass shellcheck and bound their network calls
         # The same fast check a project lists in gates.local; the runner image carries shellcheck.
         run: |

@@ -36,6 +36,11 @@
 #                 first wake on an idle machine sweeps one area; the rest find
 #                 the night done. Opt-in the same way, and in shadow (it files
 #                 nothing) unless CODE_SWEEP_SHADOW=0 is set at install.
+#   review-eval   once a week (review.eval.weekday, default 0 = Sunday, at
+#                 review.eval.hour, default 6, :41): scripts/review-eval.sh weekly,
+#                 the review step scored against the project's past breakages
+#                 (~$36 a run). Never more often than weekly, and the run itself
+#                 skips when a full run finished in the last 6 days. Opt-in.
 #
 # Installing the coordinator also opens swarm/coordinator-feed.sh once in a
 # terminal window: a line per check, build, red PR and sign-off batch.
@@ -72,6 +77,7 @@ script_for() { # <job> — the command line under the kit, one argument per line
     merge-lane)   printf 'scripts/merge-lane.sh\n' ;;
     keeper)       printf 'swarm/keeper.sh\n' ;;
     code-sweep)   printf 'scripts/code-sweep.sh\n' ;;
+    review-eval)  printf 'scripts/review-eval.sh\nweekly\n' ;;
     *) return 1 ;;
   esac
 }
@@ -87,6 +93,7 @@ interval_for() {
     merge-lane) printf '%s' "${SWARM_EVERY_MERGE_LANE:-180}" ;;
     keeper) printf '%s' "${SWARM_EVERY_KEEPER:-900}" ;;
     code-sweep) printf '' ;;
+    review-eval) printf '' ;;
   esac
 }
 # A job that wakes at set times of day instead: the hours it wakes, at one minute.
@@ -94,7 +101,25 @@ interval_for() {
 calendar_for() { # <job> — "<minute> <hour> <hour>…", or nothing
   case "$1" in
     code-sweep) printf '%s %s' "${SWARM_SWEEP_MINUTE:-17}" "$(sweep_hours)" ;;
+    review-eval) printf '%s %s' "${SWARM_EVAL_MINUTE:-41}" "$(eval_hour)" ;;
   esac
+}
+# A job that wakes on one day of the week only (0 Sunday … 6 Saturday), or nothing.
+# A weekly job is ONE wake: one hour, one weekday — never a daily run (the PM, 2026-11-03).
+weekday_for() { # <job>
+  case "$1" in
+    review-eval) eval_weekday ;;
+  esac
+}
+eval_weekday() {
+  local d; d="${SWARM_EVAL_WEEKDAY:-$(swarm_opt review.eval.weekday 0)}"
+  case "$d" in [0-6]) printf '%s' "$d" ;; *) printf '0' ;; esac
+}
+eval_hour() {
+  local h; h="${SWARM_EVAL_HOUR:-$(swarm_opt review.eval.hour 6)}"
+  case "$h" in ''|*[!0-9]*) h=6 ;; esac
+  [ "$h" -le 23 ] || h=6
+  printf '%s' "$h"
 }
 sweep_hours() {
   local h out=""
@@ -137,10 +162,11 @@ install_runner() {
   mkdir -p "$(dirname "$RUNNER")" || return 1
   cp "$SWARM_ROOT/run-current.sh" "$RUNNER.tmp.$$" && chmod +x "$RUNNER.tmp.$$" && mv -f "$RUNNER.tmp.$$" "$RUNNER"
 }
-calendar_plist() { # <minute> <hour>… — one StartCalendarInterval entry per hour
-  local m="$1" h; shift
+calendar_plist() { # <weekday or -> <minute> <hour>… — one StartCalendarInterval entry per hour
+  local wd="$1" m="$2" h w=""; shift 2
+  [ "$wd" = - ] || w="<key>Weekday</key><integer>$wd</integer>"
   printf '  <key>StartCalendarInterval</key>\n  <array>\n'
-  for h in "$@"; do printf '    <dict><key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict>\n' "$h" "$m"; done
+  for h in "$@"; do printf '    <dict>%s<key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict>\n' "$w" "$h" "$m"; done
   printf '  </array>'
 }
 print_plist() { # <job>
@@ -167,7 +193,7 @@ $(runner_args "$job" | xml_escape | sed 's|.*|    <string>&</string>|')
 $(coordinator_env "$job")
   </dict>
 $([ "$job" = coordinator ] && printf '  <key>AbandonProcessGroup</key><true/>')
-$(if [ -n "$cal" ]; then calendar_plist $cal
+$(if [ -n "$cal" ]; then calendar_plist "$(weekday_for "$job" | grep . || echo -)" $cal
   elif [ -n "$iv" ]; then printf '  <key>StartInterval</key><integer>%s</integer>' "$iv"
   else printf '  <key>KeepAlive</key><true/>\n  <key>RunAtLoad</key><true/>'; fi)
   <key>StandardOutPath</key><string>$(printf '%s/%s.out.log' "$SWARM_LOGS" "$job" | xml_escape)</string>
@@ -208,14 +234,14 @@ need_launchd() {
 # ---- elsewhere: the coordinator and the merge lane as one crontab line each,
 # marked so a line is replaced, never doubled
 SWARM_CRONTAB="${SWARM_CRONTAB:-crontab}"
-cron_jobs() { printf 'coordinator\nmerge-lane\nkeeper\ncode-sweep\n'; }
+cron_jobs() { printf 'coordinator\nmerge-lane\nkeeper\ncode-sweep\nreview-eval\n'; }
 cron_mark() { printf '# %s' "$(label "$1")"; }
 cron_line() { # <job>
-  local cal when m
-  cal=$(calendar_for "$1")
+  local cal when m wd
+  cal=$(calendar_for "$1"); wd=$(weekday_for "$1")
   if [ -n "$cal" ]; then
     set -- "$1" $cal
-    when="$2 $(shift 2; printf '%s' "$*" | tr ' ' ',') * * *"
+    when="$2 $(shift 2; printf '%s' "$*" | tr ' ' ',') * * ${wd:-*}"
   else
     m=$(( $(interval_for "$1") / 60 )); [ "$m" -ge 1 ] || m=1
     when="*/$m * * * *"
@@ -449,14 +475,14 @@ case "${1:-}" in
   --jobs)   jobs_for_project; exit 0 ;;
   status)
     need_launchd || exit 1
-    for j in $(jobs_for_project) $(for o in coordinator merge-lane keeper code-sweep; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
+    for j in $(jobs_for_project) $(for o in coordinator merge-lane keeper code-sweep review-eval; do [ -f "$(plist "$o")" ] && echo "$o"; done); do
       line=$(launchctl list 2>/dev/null | awk -v l="$(label "$j")" '$3==l{print "pid "$1", last exit "$2}')
       printf '%-14s %s\n' "$j" "${line:-not loaded}"
     done; hold_status; exit 0 ;;
   restart)  need_launchd || exit 1; do_install "${2:?restart needs a job}"; exit $? ;;
   uninstall)
     need_launchd || exit 1
-    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane keeper code-sweep; do do_uninstall "$j"; done; fi
+    if [ -n "${2:-}" ]; then do_uninstall "$2"; else for j in live-view scheduler repair-watch report coordinator merge-lane keeper code-sweep review-eval; do do_uninstall "$j"; done; fi
     exit 0 ;;
   -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
   "")       need_launchd || exit 1; rc=0; for j in $(jobs_for_project); do do_install "$j" || rc=1; done; exit $rc ;;
