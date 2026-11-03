@@ -285,11 +285,11 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 # Replaces the budget pacer of 2026-10-20/21 (coordinator.pace.*: target, headroom, the
 # weekly line, the measured burn, the owner's split and the product floor), retired here.
 #
-#   coordinator.paceToWindow.on      COORDINATOR_PACE          false  true: pace to the five-hour line (off since Claude dropped that limit, 2026-10-31)
+#   coordinator.paceToWindow.on      COORDINATOR_PACE          true   pace to the five-hour line; an account with no five-hour reading is never paced
 #   coordinator.paceToWindow.factor  COORDINATOR_PACE_FACTOR   0.95   the share of the window the line ends at
 #   coordinator.paceToWindow.exempt  COORDINATOR_PACE_EXEMPT   []     priorities that also start while ahead
 #     (process fixes and the focus-area tier always do: the order's own top, owner 2026-10-24)
-COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on false)}"
+COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on true)}"
 case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
 COORD_PACE_FACTOR="${COORDINATOR_PACE_FACTOR:-$(swarm_opt coordinator.paceToWindow.factor 0.95)}"
 awk -v t="$COORD_PACE_FACTOR" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_FACTOR=0.95
