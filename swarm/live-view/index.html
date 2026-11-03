@@ -340,11 +340,15 @@ function machineLine(s){
   } else if (d) parts.push('disk free not read')
   // No five-hour line: Claude dropped that limit (2026-10-31). A pacer reading still shows below.
   const p = c && c.pace
-  // Pacing to the five-hour window (coordinator.paceToWindow): ahead of the line, nothing new starts.
-  if (p && p.fiveHour) {
-    const said = `pacing: ${p.fiveHour.ahead ? 'ahead' : 'behind'} — ${esc(Math.round(p.fiveHour.u * 100))}% used against a target of ${esc(Math.round(p.fiveHour.line * 100))}%`
+  // Pacing to the five-hour and weekly windows (coordinator.paceToWindow): ahead of either line, only process fixes start.
+  if (p && (p.fiveHour || p.week)) {
+    const ws = [p.fiveHour && ['5h', p.fiveHour], p.week && ['week', p.week]].filter(Boolean)
+      .sort((a, b) => (b[1].ahead ? 1 : 0) - (a[1].ahead ? 1 : 0))
+      .map(([n, w]) => `${n} ${esc(Math.round(w.u * 100))}% used against a target of ${esc(Math.round(w.line * 100))}%`)
+    const ahead = p.pacing === 'ahead'
+    const said = `pacing: ${ahead ? 'ahead' : 'behind'} — ${ws.join('; ')}`
     const ex = (p.settings && p.settings.exempt || []).join('/')
-    parts.push(p.fiveHour.ahead ? `<span class="diskheld">${said}: no new builder starts${ex ? ' but ' + esc(ex) : ''}</span>` : `${said}: places fill`)
+    parts.push(ahead ? `<span class="diskheld">${said}: no new builder starts but process fixes${ex ? ' and ' + esc(ex) : ''}</span>` : `${said}: places fill`)
   }
   // The tooling cap (coordinator.toolingCap): harness and process runs on every machine together.
   const tl = c && c.tooling

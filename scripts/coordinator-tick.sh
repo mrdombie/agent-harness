@@ -801,8 +801,9 @@ if READING=$(coord_room); then
 fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 MACHINE_CEILING=$CEILING
-# The five-hour window is the account's, one line for every host (coord_pace): ahead of
-# it, only the exempt priorities start; behind it, or with no reading, places fill.
+# The five-hour and seven-day windows are the account's, one line each for every host
+# (coord_pace): ahead of either, only process fixes and the exempt priorities start;
+# behind both, or with no reading, places fill.
 PACE_AHEAD=""; PACE_EXEMPT=" $(coord_pace_exempt)"
 PACE_EXEMPT_SAID=$(printf '%s' "$PACE_EXEMPT" | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
 if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST"); then
@@ -888,14 +889,13 @@ candidates() {
   lists=$(printf '%s\n' "$wide" | awk -F'\t' '$2 == "new" && $5 == 1 { print $1 }' | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   [ -z "${lists// /}" ] || bodies=$(GH_BATCH_BODY=1 gh_issues_batch $lists 2>/dev/null) || bodies="{}"
-  while IFS=$'\t' read -r t cls pri pol pl ex proc tier note; do  # tier before note: an empty last field is safe, an empty middle one is not
+  while IFS=$'\t' read -r t cls pri pol pl ex proc _tier note; do  # _tier before note: an empty last field is safe, an empty middle one is not
     [ -n "${t:-}" ] || continue
     i=$((i+1)); exm=""
     if [ -n "$PROCESS_ONLY" ] && [ "$proc" != 1 ]; then sk_proc="$sk_proc #$t"; continue; fi
-    # AHEAD OF PACE THE ORDER'S OWN TOP STILL STARTS: process fixes (owner, 2026-10-20) and the focus-area
-    # tier, P0/P1 in coordinator.focusAreas (owner, 2026-10-24: "I don't see the priority order happening",
-    # with non-focus P0s starting and Voices P1s skipped). A non-focus P0 waits like the rest.
-    if [ -n "$PACE_AHEAD" ] && [ "$proc" != 1 ] && [ "${tier:-0}" != 1 ] && case "$PACE_EXEMPT" in *" $pri "*) false ;; *) true ;; esac; then sk_pace="$sk_pace #$t"; continue; fi
+    # AHEAD OF PACE ONLY PROCESS FIXES (owner, 2026-10-20) AND paceToWindow.exempt START. The focus-area
+    # tier waits like the rest (owner, 2026-11-03): it is where the work is, so exempting it paced nothing.
+    if [ -n "$PACE_AHEAD" ] && [ "$proc" != 1 ] && case "$PACE_EXEMPT" in *" $pri "*) false ;; *) true ;; esac; then sk_pace="$sk_pace #$t"; continue; fi
     # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
     # skipped as new it sat at the head of the queue on every tick doing nothing.
     if [ "$cls" = new ] && pr=$(ticket_open_pr "$t"); then
@@ -997,7 +997,7 @@ candidates() {
   # NO QUEUED TICKET IS PASSED OVER UNSAID: a reason one ticket has gets its own line
   # above; a reason many share gets one line naming each of them.
   [ -z "$sk_proc" ] || say "skip${sk_proc}: the hold lets only process fixes start"
-  [ -z "$sk_pace" ] || say "skip${sk_pace}: pacing ahead of the five-hour line — no new builder starts but process fixes and the focus areas${PACE_EXEMPT_SAID:+ and $PACE_EXEMPT_SAID}"
+  [ -z "$sk_pace" ] || say "skip${sk_pace}: pacing ahead of $(coord_pace_window_said || true) — no new builder starts but process fixes${PACE_EXEMPT_SAID:+ and $PACE_EXEMPT_SAID}"
   [ -z "$sk_rel" ] || say "skip${sk_rel}: outside the release scope (coordinator.releaseScopeOnly)"
   [ -z "$sk_capped" ] || say "skip${sk_capped}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP) — only finishing, and quick new work, starts over it"
   [ -z "$sk_unsized" ] || say "skip${sk_unsized}: over the open-work cap ($OPEN_PRS/$COORD_OPEN_PR_CAP), not sized this tick; only quick work starts over it"
@@ -1325,7 +1325,7 @@ if [ "$SHEET_ROLE" = owner ]; then
                       '. + {fleet: $f} + (if $floor == "" then {} else {minHarness: $floor} end)
                        + (if ($hcap | tonumber? // 0) > 0 then {hostCap: {perHost: ($hcap | tonumber)}} else {} end)
                        + (if ($plugins | length) == 0 then {} else {plugins: $plugins} end)
-                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, account, usage, fiveHour, pacing, settings})} end)' <<<"$entries"); then
+                       + (if $pace == "" then {} else {pace: ($pace | fromjson | {at, account, usage, fiveHour, week, window, pacing, settings})} end)' <<<"$entries"); then
       said=$(coord_sheet_publish "$entries")
       say "sheet: $said · $(jq '.order | length' <<<"$entries") in the order, $(jq '.building | length' <<<"$entries") building"
     else
@@ -1354,7 +1354,7 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
      disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
            resumeAtGb:(if $diskResume == "" then null else ($diskResume|tonumber) end), held:$diskHeld},
-     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, pacing, settings}) end),
+     pace:(if $pace == "" then null else ($pace | fromjson | {fiveHour, week, window, pacing, settings}) end),
      tooling:{cap:$toolCap, live:$toolLive, waiting:$toolWait},
      openPrs:(if $openPrs == "" then null else {count:($openPrs|tonumber), cap:($openPrCap|tonumber), over:$overPrCap} end),
      usageHold:(if $stepHold == "" then null else ($stepHold | split("\t") | {until: (.[0] | tonumber), window: .[1], pct: (.[2] | tonumber)}) end)}' \
