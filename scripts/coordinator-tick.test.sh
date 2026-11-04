@@ -865,6 +865,21 @@ want_in "the park says what kept repeating"     'issue comment 860 .*Parked — 
 want "it leaves the queue"                      "0" "$(jq '[.tickets[]? | select(.n == 860)] | length' "$C/queue.json" 2>/dev/null || echo 0)"
 want_in "and it is reported"                    '"kind":"no-progress".*"ticket":"860"' "$(cat "$C/events.did.jsonl" 2>/dev/null)"
 
+echo "--- three claims lost to another machine (exit 28, a peer took it) park nothing ---"
+RACE="↻ #862 requeued for the next tick, at the front of its priority as new, not parked: a peer took the claim on #862 first"
+fresh; queue 862; : > "$GH_LOG"
+short_run 862 1 28 "$RACE"; short_run 862 2 28 "$RACE"; short_run 862 3 28 "$RACE"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want_not_in "a lost race is not parked"         'issue edit 862 .*status:pm-decision' "$(cat "$GH_LOG")"
+want_not_in "nor called no progress"            'no progress' "$out"
+
+echo "--- three other requeues (exit 28, no race) still park ---"
+REQ="↻ #863 requeued for the next tick, at the front of its priority as new, not parked: no approved picture yet"
+fresh; queue 863; : > "$GH_LOG"
+short_run 863 1 28 "$REQ"; short_run 863 2 28 "$REQ"; short_run 863 3 28 "$REQ"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want_in "a repeating requeue is parked"         'issue edit 863 .*status:pm-decision' "$(cat "$GH_LOG")"
+
 echo "--- the same three, one of them a real run of minutes: nothing parks ---"
 fresh; queue 861; : > "$GH_LOG"
 short_run 861 1 0 "$NOTHING"; short_run 861 2 0 "$NOTHING" 900; short_run 861 3 0 "$NOTHING"
