@@ -63,7 +63,7 @@
 #   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
 #                                                           tick may start work from
 #   coordinator.refreshEveryMin COORDINATOR_REFRESH_EVERY_MIN 5  queue re-seed interval
-#   coordinator.paceToWindow  {on, factor, weekFactor, exempt}  true / 0.95 / 0.95 / []: the five-hour and weekly lines (the usage pacer, below)
+#   coordinator.paceToWindow  {on, factor, week, weekFactor, exempt}  true / 0.95 / false / 0.95 / []: the five-hour line, the weekly one opt-in (the usage pacer, below)
 #   coordinator.releaseScopeOnly COORDINATOR_RELEASE_SCOPE_ONLY off  true, or {on, priorities, excludeLabels,
 #                                                           excludeMilestones (regexes), alsoIn: {labels, titlePrefixes, titlePatterns}}:
 #                                                           no NEW ticket outside it is seeded or started.
@@ -271,26 +271,29 @@ coord_room() { # [fresh] — fresh: a new sample, and the lower of it and the me
 }
 
 # ---- the usage pacer ----------------------------------------------------------
-# PACE TO BOTH ALLOWANCES (owner call 2026-11-03: "It needs the usage logic back again so we
-# dont burn through it"). Every host on the account burns one five-hour window and one
-# seven-day window. Each tick reads each window's utilization u and reset (the freshest on
-# any host: coord_pace_reading) and draws a straight line per window to factor x 100% at
-# its reset:
+# PACE TO THE FIVE-HOUR WINDOW (owner, 2026-11-04: "usage is only important if i have the 5
+# hour session and when I say usage I mean waste usage"). Every host on the account burns
+# one five-hour window. Each tick reads its utilization u and reset (the freshest on any
+# host: coord_pace_reading) and draws a straight line to factor x 100% at the reset:
 #     elapsed = 1 - (reset - now) / length        target = elapsed x factor
-#     five-hour: length 5h, coordinator.paceToWindow.factor      week: length 7d, .weekFactor
-#   - u > target in EITHER window (ahead): no new builder starts but process fixes and any
-#     priority in `exempt`; the focus-area tier waits like the rest (owner, 2026-11-03: the
-#     pacer has to stop the work that burns the allowance). The running ones carry on, and
+#     five-hour: length 5h, coordinator.paceToWindow.factor
+#     week (only with coordinator.paceToWindow.week): length 7d, .weekFactor
+#   - u > target (ahead): no new builder starts but process fixes and any priority in
+#     `exempt`; the focus-area tier waits like the rest. The running ones carry on, and
 #     swarm.usageStepHold stays the backstop at the wall;
-#   - u <= target in every window read (behind): places fill, to the machine and the cap;
-#   - a window with no reading (or already reset) is not paced on; with neither, places
-#     fill (fail open).
-# Every host draws the same lines from the same freshest readings, a sheet reader with the
-# owner's factors, so the fleet follows one rule. Replaces the five-hour-only pacer of
-# 2026-10-23, whose focus-tier exemption (2026-10-24) let the work that mattered skip it.
+#   - u <= target in every window paced (behind): places fill, to the machine and the cap;
+#   - a window with no reading (or already reset) is not paced on; with none, places fill
+#     (fail open: an account with no five-hour limit is never paced) — except on a sheet
+#     reader, which then obeys the owner's fresh published verdict (2026-11-04: Yomato, a
+#     reader on the owner's account with no reading of its own, started 6 builds while the
+#     owner was ahead). A reader with a five-hour reading of its own draws the line itself:
+#     its reading is the freshest of every host's, the owner's included, on the owner's factor.
+# The week stays read and published (the wall backstop reads it) but paces nothing unless
+# coordinator.paceToWindow.week is true (the 2026-11-03 weekly line, now opt-in).
 #
 #   coordinator.paceToWindow.on          COORDINATOR_PACE              true   pace to the lines; an account with no reading is never paced
 #   coordinator.paceToWindow.factor      COORDINATOR_PACE_FACTOR       0.95   the share of the five-hour window its line ends at
+#   coordinator.paceToWindow.week        COORDINATOR_PACE_WEEK         false  also pace to the seven-day line
 #   coordinator.paceToWindow.weekFactor  COORDINATOR_PACE_WEEK_FACTOR  0.95   the share of the seven-day window its line ends at
 #   coordinator.paceToWindow.exempt      COORDINATOR_PACE_EXEMPT       []     priorities that also start while ahead
 #     (process fixes always do: the order's own top, owner 2026-10-20)
@@ -298,6 +301,8 @@ COORD_PACE="${COORDINATOR_PACE:-$(swarm_opt coordinator.paceToWindow.on true)}"
 case "$COORD_PACE" in 0|false|off) COORD_PACE=0 ;; *) COORD_PACE=1 ;; esac
 COORD_PACE_FACTOR="${COORDINATOR_PACE_FACTOR:-$(swarm_opt coordinator.paceToWindow.factor 0.95)}"
 awk -v t="$COORD_PACE_FACTOR" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_FACTOR=0.95
+COORD_PACE_WEEK="${COORDINATOR_PACE_WEEK:-$(swarm_opt coordinator.paceToWindow.week false)}"
+case "$COORD_PACE_WEEK" in 1|true|on|yes) COORD_PACE_WEEK=1 ;; *) COORD_PACE_WEEK=0 ;; esac
 COORD_PACE_WEEK_FACTOR="${COORDINATOR_PACE_WEEK_FACTOR:-$(swarm_opt coordinator.paceToWindow.weekFactor 0.95)}"
 awk -v t="$COORD_PACE_WEEK_FACTOR" 'BEGIN{exit !(t ~ /^[0-9]*\.?[0-9]+$/ && t+0 > 0 && t+0 <= 1)}' || COORD_PACE_WEEK_FACTOR=0.95
 # coord_pace_exempt — the exempt priorities as digits, space-separated ("0").
@@ -358,11 +363,20 @@ coord_pace_line() {
     t = e * f; printf "%d\t%.4f\t%.4f", (u + 0 > t + 1e-9), e, t }'
 }
 
+# coord_pace_owner_verdict — the owner's published pace (the sheet a reader read) when it
+# carries a verdict and was drawn in the last 15 minutes, else 1.
+coord_pace_owner_verdict() {
+  [ -n "${SHEET_PACE:-}" ] || return 1
+  jq -ce --argjson now "$(swarm_now)" \
+    'select(type == "object" and (.pacing == "ahead" or .pacing == "behind") and (((.at // 0) | tonumber? // 0) > $now - 900))' \
+    <<<"$SHEET_PACE" 2>/dev/null
+}
+
 # coord_pace <builders here> <claim rows> <this host> — "<ahead 1|0>\t<line>", 1 with the
-# reason when there is nothing to pace on (off, or neither window read: places fill).
+# reason when there is nothing to pace on (off, or no paced window read: places fill).
 # Claim rows are <ticket> \t <host> \t <step>; a row naming another host is a builder
 # there, counted into the sample. Writes pace.json; a sheet reader paces by the factors
-# the owner published, so every host draws the same lines.
+# the owner published, and with no paced reading of its own obeys the owner's verdict.
 coord_pace() {
   local here="${1:-0}" rows="${2:-}" host="${3:-}" w5 w7 u="" r="" a="" u7="" r7="" a7="" other total now
   local f="$COORD_PACE_FACTOR" fw="$COORD_PACE_WEEK_FACTOR" role
@@ -376,20 +390,54 @@ coord_pace() {
     fw=$(jq -r --arg d "$fw" '(.settings.weekFactor // null) | if type == "number" and . > 0 and . <= 1 then tostring else $d end' <<<"$SHEET_PACE" 2>/dev/null) || fw="$COORD_PACE_WEEK_FACTOR"
     [ -n "$fw" ] || fw="$COORD_PACE_WEEK_FACTOR"
   fi
-  # A window with no reading is not paced on; with neither, nothing is (fail open).
+  # A window with no reading is not paced on; the week is read either way (the heartbeat
+  # publishes it for the wall backstop) but paces only with coordinator.paceToWindow.week.
   if w5=$(coord_pace_reading five_hour); then IFS=$'\t' read -r u r a <<<"$w5"; case "$a" in ''|*[!0-9]*) a=0 ;; esac; fi
   if w7=$(coord_pace_reading seven_day); then IFS=$'\t' read -r u7 r7 a7 <<<"$w7"; case "$a7" in ''|*[!0-9]*) a7=0 ;; esac; fi
-  [ -n "$u" ] || [ -n "$u7" ] || { printf 'pacing: no usage reading (five-hour or week) — places fill, the machine alone decides'; return 1; }
   now=$(swarm_now)
   other=$(printf '%s\n' "$rows" | awk -F'\t' -v h="$host" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { n++ } END { print n + 0 }')
   total=$(( here + other ))
+  local usage
+  usage=$(jq -cn --arg u "$u" --arg r "$r" --arg a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" '
+    (if $u == "" then {} else {five_hour: {u: ($u | tonumber), reset: ($r | tonumber), at: ($a | tonumber)}} end)
+    + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end)')
+  if [ -z "$u" ] && { [ "$COORD_PACE_WEEK" != 1 ] || [ -z "$u7" ]; }; then
+    # No paced line of its own. A reader obeys the owner's fresh verdict; else nothing is paced (fail open).
+    local op ow said
+    if [ "$role" = reader ] && op=$(coord_pace_owner_verdict); then
+      jq -cn --argjson at "$now" --arg host "$host" --arg acct "$(swarm_account)" --argjson usage "$usage" --argjson op "$op" \
+         --arg owner "$COORD_SHEET_OWNER" --argjson running "$total" --argjson other "$other" '
+        {at: $at, host: $host, account: $acct, usage: $usage}
+        + ($op | {fiveHour, week, window} | with_entries(select(.value != null)))
+        + {pacing: $op.pacing, from: {owner: $owner, at: $op.at}, running: $running, otherHosts: $other, settings: ($op.settings // {})}' \
+         > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
+      ow=$(jq -r '.pacing' <<<"$op")
+      said=$(jq -r '[(.fiveHour | select(.) | "5h window \(.u * 100 | round)% against a target of \(.line * 100 | round)%"),
+                     (.week | select(.) | "week \(.u * 100 | round)% against a target of \(.line * 100 | round)%")] | join("; ")' <<<"$op" 2>/dev/null)
+      ex=$(coord_pace_exempt | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
+      printf '%s\tpacing: %s — no reading here, so the owner %s'"'"'s verdict of %s min ago%s' "$([ "$ow" = ahead ] && echo 1 || echo 0)" "$ow" \
+        "$COORD_SHEET_OWNER" "$(( (now - $(jq -r '(.at // 0) | floor' <<<"$op")) / 60 ))" "${said:+ ($said)}"
+      if [ "$ow" = ahead ]; then printf ': no new builder starts but process fixes%s; the running ones carry on' "${ex:+ and $ex}"
+      else printf ': places fill'; fi
+      return 0
+    fi
+    if [ -n "$u7" ]; then
+      jq -cn --argjson at "$now" --arg host "$host" --arg acct "$(swarm_account)" --argjson usage "$usage" \
+         --argjson running "$total" --argjson other "$other" \
+         '{at: $at, host: $host, account: $acct, usage: $usage, running: $running, otherHosts: $other}' \
+         > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
+    fi
+    if [ "$COORD_PACE_WEEK" = 1 ]; then printf 'pacing: no usage reading (five-hour or week) — places fill, the machine alone decides'
+    else printf 'pacing: no five-hour usage reading — places fill, the machine alone decides (the week is not paced: coordinator.paceToWindow.week)'; fi
+    return 1
+  fi
   if [ -n "$u" ]; then
     mkdir -p "$(dirname "$COORD_PACE_SAMPLES")" 2>/dev/null
     printf '%s\t%s\t%s\t%s\n' "$now" "$u" "$r" "$total" >> "$COORD_PACE_SAMPLES"
     tail -"$COORD_PACE_KEEP" "$COORD_PACE_SAMPLES" > "$COORD_PACE_SAMPLES.$$" 2>/dev/null && mv -f "$COORD_PACE_SAMPLES.$$" "$COORD_PACE_SAMPLES"
     IFS=$'\t' read -r ah5 e5 t5 <<<"$(coord_pace_line "$u" "$r" "$now" "$f" "$COORD_PACE_FIVE_SEC")"
   fi
-  [ -z "$u7" ] || IFS=$'\t' read -r ah7 e7 t7 <<<"$(coord_pace_line "$u7" "$r7" "$now" "$fw" "$COORD_PACE_WEEK_SEC")"
+  [ "$COORD_PACE_WEEK" != 1 ] || [ -z "$u7" ] || IFS=$'\t' read -r ah7 e7 t7 <<<"$(coord_pace_line "$u7" "$r7" "$now" "$fw" "$COORD_PACE_WEEK_SEC")"
   if [ "$ah5" = 1 ] && [ "$ah7" = 1 ]; then window=both
   elif [ "$ah5" = 1 ]; then window=five_hour
   elif [ "$ah7" = 1 ]; then window=week; fi
@@ -398,23 +446,21 @@ coord_pace() {
   jq -cn --argjson at "$now" --arg host "$host" --arg u "$u" --arg r "$r" --arg a "$a" --arg u7 "$u7" --arg r7 "$r7" --arg a7 "$a7" \
      --argjson e5 "$e5" --argjson t5 "$t5" --argjson ah5 "$ah5" --argjson e7 "$e7" --argjson t7 "$t7" --argjson ah7 "$ah7" \
      --argjson ahead "$ahead" --arg window "$window" --argjson f "$f" --argjson fw "$fw" --arg ex "$ex" \
-     --argjson running "$total" --argjson other "$other" --arg acct "$(swarm_account)" '
-    {at: $at, host: $host, account: $acct,
-     usage: ((if $u == "" then {} else {five_hour: {u: ($u | tonumber), reset: ($r | tonumber), at: ($a | tonumber)}} end)
-             + (if $u7 == "" then {} else {seven_day: {u: ($u7 | tonumber), reset: ($r7 | tonumber), at: ($a7 | tonumber)}} end))}
+     --argjson running "$total" --argjson other "$other" --arg acct "$(swarm_account)" --argjson usage "$usage" --argjson pw "$COORD_PACE_WEEK" '
+    {at: $at, host: $host, account: $acct, usage: $usage}
     + (if $u == "" then {} else {fiveHour: {u: ($u | tonumber), reset: ($r | tonumber), elapsed: $e5, line: $t5, ahead: ($ah5 == 1)}} end)
-    + (if $u7 == "" then {} else {week: {u: ($u7 | tonumber), reset: ($r7 | tonumber), elapsed: $e7, line: $t7, ahead: ($ah7 == 1)}} end)
+    + (if $u7 == "" or $pw != 1 then {} else {week: {u: ($u7 | tonumber), reset: ($r7 | tonumber), elapsed: $e7, line: $t7, ahead: ($ah7 == 1)}} end)
     + {pacing: (if $ahead == 1 then "ahead" else "behind" end),
        window: (if $window == "" then null else $window end),
        running: $running, otherHosts: $other,
-       settings: {factor: $f, weekFactor: $fw, exempt: ($ex | split("/") | map(select(. != "")))}}' \
+       settings: {factor: $f, week: ($pw == 1), weekFactor: $fw, exempt: ($ex | split("/") | map(select(. != "")))}}' \
      > "$COORD_PACE_STATE.$$" 2>/dev/null && mv -f "$COORD_PACE_STATE.$$" "$COORD_PACE_STATE"
   printf '%s\t' "$ahead"
   # One clause per window read, the ahead one first (the five hours first on a tie).
   local s5="" s7=""
   [ -z "$u" ] || s5=$(awk -v u="$u" -v t="$t5" -v e="$e5" -v f="$f" -v at="$(swarm_iso "$r" | cut -c12-16)" 'BEGIN {
     printf "5h window %d%% against a target of %d%% (%d%% of the window gone x %.2f, resets %sZ)", u * 100 + 0.5, t * 100 + 0.5, e * 100 + 0.5, f, at }')
-  [ -z "$u7" ] || s7=$(awk -v u="$u7" -v t="$t7" -v e="$e7" -v f="$fw" -v at="$(swarm_iso "$r7" | cut -c6-16 | tr T ' ')" 'BEGIN {
+  [ "$COORD_PACE_WEEK" != 1 ] || [ -z "$u7" ] || s7=$(awk -v u="$u7" -v t="$t7" -v e="$e7" -v f="$fw" -v at="$(swarm_iso "$r7" | cut -c6-16 | tr T ' ')" 'BEGIN {
     printf "week %d%% against a target of %d%% (%d%% of the week gone x %.2f, resets %sZ)", u * 100 + 0.5, t * 100 + 0.5, e * 100 + 0.5, f, at }')
   if [ "$ah7" = 1 ] && [ "$ah5" != 1 ]; then local sw="$s5"; s5="$s7"; s7="$sw"; fi
   printf 'pacing: %s — %s%s' "$([ "$ahead" = 1 ] && echo ahead || echo behind)" "${s5:-$s7}" "${s5:+${s7:+; $s7}}"

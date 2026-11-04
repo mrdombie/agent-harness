@@ -113,6 +113,23 @@ want "80% at 44% of the window: only the process fixes start" "13621 13788" "$(s
 want_in "and the tick says why"                       'pacing ahead of the five-hour line — no new builder starts but process fixes' "$out"
 cp "$FIX/comments.first.json" "$SH/comments.json"
 
+echo "--- no reading of its own, the owner ahead: the reader obeys the owner's verdict ---"
+# 2026-11-04: Yomato, a reader on the owner's account with no reading, started 6 builds
+# while the owner paced ahead, and its why never said pacing.
+# Under the open-work cap, so only the pacer can hold the new tickets.
+world; rm -f "$M/logs/claim-1-a.log"; printf '[]\n' > "$FIX/gh/prs-all.json"
+sheet '{"at":'"$(date +%s)"',"pacing":"ahead","window":"five_hour","fiveHour":{"u":0.80,"line":0.41,"ahead":true},"settings":{"factor":0.95}}'
+out=$(vm_tick)
+want "only the process fixes start"                   "13621 13788" "$(spawned)"
+want_in "the tick says it follows the owner"          "pacing: ahead — no reading here, so the owner mac's verdict of 0 min ago \\(5h window 80% against a target of 41%\\)" "$out"
+want_in "and the skip names the five-hour line"       'pacing ahead of the five-hour line — no new builder starts but process fixes' "$out"
+want_in "the heartbeat's why says pacing"             '^why: .*pacing ahead: no new builder starts but process fixes' "$(jq -r '.[0].body' "$SH/comments.json")"
+world; rm -f "$M/logs/claim-1-a.log"; printf '[]\n' > "$FIX/gh/prs-all.json"; sheet
+out=$(vm_tick)
+want_in "no reading and no owner verdict: fails open" 'pacing: no five-hour usage reading — places fill' "$out"
+want_in "  and the new tickets start"                 '13900 13901' "$(spawned)"
+cp "$FIX/comments.first.json" "$SH/comments.json"
+
 echo "--- the heartbeat says why, from this tick's own lines ---"
 hb=$(hb_json)
 want "the heartbeat carries a why"                    "object" "$(jq -r '.why | type' <<<"$hb")"

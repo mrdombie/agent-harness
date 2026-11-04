@@ -209,7 +209,7 @@ coord_sheet_render() {
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
                     + (why_words | if . == null then "" else "\n  - " + . end))
        else empty end),
-      (if .pace then
+      (if .pace.pacing then
         "", "### Usage pacing",
         "Pacing \(.pace.pacing // "?"): "
         + ([(if .pace.fiveHour then {o: (if .pace.fiveHour.ahead then 0 else 1 end), s: "five-hour window \((.pace.fiveHour.u // .pace.usage.five_hour.u) * 100 | round)% against a target of \(.pace.fiveHour.line * 100 | round)%"} else empty end),
@@ -442,7 +442,7 @@ COORD_WHY_JQ='def why_words: (.why // {}) as $w
   | def bare: sub("^[a-z ]+: "; "");
     if ($w | length) == 0 then null
     else "why: " + ([($w.spawn // "spawn: no start decision this tick" | bare),
-                     (($w.pace // "") | capture("→ (?<n>[0-9]+) here") | "pace allows \(.n) here"),
+                     (($w.pace // "") | select(startswith("pacing: ahead")) | "pacing ahead: no new builder starts but process fixes"),
                      (($w.cap // $w.openChanges // empty) | bare), (($w.tooling // empty) | bare),
                      (if ($w.skipsBy // {}) | length > 0 then "skipped " + ($w.skipsBy | to_entries | map("\(.value) \(.key)") | join(", ")) else empty end)]
                     | join(" · ")) | .[0:400] end;'

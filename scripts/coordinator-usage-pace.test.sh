@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# coordinator-usage-pace.test.sh — pacing to the five-hour and seven-day windows (coord_pace):
-# every host burns the same two windows, so each tick draws a straight line per window to
-# factor x 100% at its reset (owner, 2026-11-03). Ahead of either (u > elapsed x factor)
-# no new builder starts but process fixes and an exempt priority — the focus tier waits too;
-# behind both, or with no reading, places fill. A window with no reading is not paced on.
+# coordinator-usage-pace.test.sh — pacing to the five-hour window (coord_pace): every host
+# burns the same window, so each tick draws a straight line to factor x 100% at its reset.
+# Ahead (u > elapsed x factor) no new builder starts but process fixes and an exempt
+# priority — the focus tier waits too; behind, or with no reading, places fill. The weekly
+# line paces only with coordinator.paceToWindow.week (owner, 2026-11-04: "usage is only
+# important if i have the 5 hour session"). A window with no reading is not paced on.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -15,7 +16,7 @@ T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
 NOWE=$(date +%s)
-unset COORDINATOR_PACE COORDINATOR_PACE_FACTOR COORDINATOR_PACE_WEEK_FACTOR COORDINATOR_PACE_EXEMPT
+unset COORDINATOR_PACE COORDINATOR_PACE_FACTOR COORDINATOR_PACE_WEEK COORDINATOR_PACE_WEEK_FACTOR COORDINATOR_PACE_EXEMPT
 # The pacer is off by default since Claude dropped the five-hour limit (2026-10-31);
 # these cases test the pacer itself, so they switch it on.
 COORDINATOR_PACE=true; export COORDINATOR_PACE
@@ -64,7 +65,23 @@ want "34% against 0.95's 33%: ahead"         "1" "$(pace 0 "" | cut -f1)"
 want "a factor of 1 draws the line at 35%: behind" "0" "$(COORDINATOR_PACE_FACTOR=1 pace 0 "" | cut -f1)"
 want "a factor out of range falls back to 0.95: ahead" "1" "$(COORDINATOR_PACE_FACTOR=7 pace 0 "" | cut -f1)"
 
-echo "--- the seven-day window paces on the same line (owner, 2026-11-03) ---"
+echo "--- the week paces nothing by default: only the five-hour window (owner, 2026-11-04) ---"
+clean; win 0.10 $((NOWE + 11700)) 0.62 "$WEEK58" > "$STATE/logs/claim-1-a.log"
+out=$(pace 0 "")
+want "the week ahead, the five hours behind, week unset: behind" "0" "${out%%$'\t'*}"
+want_in "  and the line names only the five hours" '^0	pacing: behind — 5h window 10% against a target of 33%[^;]*: places fill rc=0' "$out"
+want "  pace.json carries no week verdict, but keeps the week's reading" "behind null 0.62 false" \
+  "$(jq -r '"\(.pacing) \(.week) \(.usage.seven_day.u) \(.settings.week)"' "$C/pace.json")"
+want "week=false says the same" "0" "$(COORDINATOR_PACE_WEEK=false pace 0 "" | cut -f1)"
+clean; win 0.49 $((NOWE + 11700)) 0.10 "$WEEK58" > "$STATE/logs/claim-1-a.log"
+want "the five hours ahead, week unset: ahead, as before" "1" "$(pace 0 "" | cut -f1)"
+clean; win7 0.62 "$WEEK58" > "$STATE/logs/claim-1-a.log"
+out=$(pace 0 "")
+want_in "no five-hour reading, the week ahead, week unset: places fill (fail open)" 'pacing: no five-hour usage reading — places fill.* rc=1' "$out"
+want "  and the week's reading still rides in pace.json, with no verdict" "0.62 null" "$(jq -r '"\(.usage.seven_day.u) \(.pacing)"' "$C/pace.json")"
+
+echo "--- with paceToWindow.week the seven-day window paces on the same line ---"
+COORDINATOR_PACE_WEEK=true; export COORDINATOR_PACE_WEEK
 clean; win 0.10 $((NOWE + 11700)) 0.62 "$WEEK58" > "$STATE/logs/claim-1-a.log"
 out=$(pace 0 "")
 want "the week ahead, the five hours behind: ahead" "1" "${out%%$'\t'*}"
@@ -85,11 +102,20 @@ clean; win7 0.62 "$WEEK58" > "$STATE/logs/claim-1-a.log"
 out=$(pace 0 "")
 want_in "no five-hour reading: the week alone paces" 'pacing: ahead — week 62% against a target of 55%.* rc=0' "$out"
 want "  with no five-hour verdict written" "null" "$(jq -c '.fiveHour' "$C/pace.json")"
+clean; win 0.99 $((NOWE - 60)) 0.10 "$WEEK58" > "$STATE/logs/claim-1-a.log"
+out=$(pace 0 "")
+want_in "the five hours reset: not paced on, the week alone (behind)" '^0	pacing: behind — week 10% against a target of 55%[^;]*: places fill rc=0' "$out"
+clean; win 0.05 $((NOWE + 11700)) 0.50 "$WEEK58" > "$STATE/logs/claim-1-a.log"
+out=$( export COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato SHEET_PACE='{"settings":{"factor":0.95,"weekFactor":0.8}}'; pace 0 "" )
+want "the reader paces the week by the owner's weekFactor: 50% over 58% x 0.8" "1" "${out%%$'\t'*}"
+clean
+want_in "no reading at all, week on: the old words" 'pacing: no usage reading \(five-hour or week\) — places fill.* rc=1' "$(pace 0 "")"
+unset COORDINATOR_PACE_WEEK
 
 echo "--- no reading fails open: places fill ---"
 clean
 out=$(pace 0 "")
-want_in "no logs and no samples"             'pacing: no usage reading \(five-hour or week\) — places fill.* rc=1' "$out"
+want_in "no logs and no samples"             'pacing: no five-hour usage reading — places fill.* rc=1' "$out"
 want "and no verdict is left for the tick"   "absent" "$([ -f "$C/pace.json" ] && echo present || echo absent)"
 clean; win 0.50 $((NOWE + 3600)) > "$STATE/logs/claim-1-a.log"
 want_in "switched off, it paces nothing"     'pacing: off .* rc=1' "$(COORDINATOR_PACE=false pace 0 "")"
@@ -97,10 +123,7 @@ want_in "unset, it is on (not every plan dropped the five-hour limit)" 'pacing: 
 
 echo "--- a reset rolls the line over ---"
 clean; win 0.99 $((NOWE - 60)) 0.99 $((NOWE - 30)) > "$STATE/logs/claim-1-a.log"
-want_in "both windows already reset are no reading: fail open" 'no usage reading .* rc=1' "$(pace 0 "")"
-clean; win 0.99 $((NOWE - 60)) 0.10 "$WEEK58" > "$STATE/logs/claim-1-a.log"
-out=$(pace 0 "")
-want_in "the five hours reset: not paced on, the week alone (behind)" '^0	pacing: behind — week 10% against a target of 55%[^;]*: places fill rc=0' "$out"
+want_in "both windows already reset are no reading: fail open" 'no five-hour usage reading .* rc=1' "$(pace 0 "")"
 clean; { win 0.99 $((NOWE - 60)); win 0.03 $((NOWE + 17400)); } > "$STATE/logs/claim-1-a.log"
 out=$(pace 0 "")
 want_in "the new window's reading is the one read" '5h window 3% against a target of 3% \(3% of the window gone' "$out"
@@ -126,9 +149,6 @@ want "and is ahead by the same rule"         "1" "${out%%$'\t'*}"
 clean; win 0.30 $((NOWE + 11700)) > "$STATE/logs/claim-1-a.log"
 out=$( export COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato SHEET_PACE='{"settings":{"factor":0.5}}'; pace 0 "" )
 want "the reader paces by the owner's factor: 30% over 35% x 0.5" "1" "${out%%$'\t'*}"
-clean; win 0.05 $((NOWE + 11700)) 0.50 "$WEEK58" > "$STATE/logs/claim-1-a.log"
-out=$( export COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato SHEET_PACE='{"settings":{"factor":0.95,"weekFactor":0.8}}'; pace 0 "" )
-want "the reader paces the week by the owner's weekFactor: 50% over 58% x 0.8" "1" "${out%%$'\t'*}"
 
 echo "--- the tick: ahead of either window holds, behind both fills, process fixes start ---"
 printf '#!/usr/bin/env bash\n:\n' > "$BIN/judge"; chmod +x "$BIN/judge"
@@ -164,12 +184,15 @@ out=$(COORDINATOR_SCREENS_FIRST=true COORDINATOR_FOCUS_AREAS="$FOCUS" live)
 want "ahead: neither a focus-area P1 nor a non-focus P0 starts" "" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
 want_in "  and both are named as waiting"      'skip [#0-9 ]*#60[46][#0-9 ]*#60[46][#0-9 ]*: pacing ahead' "$out"
 TW_WEEK=0.62 tickworld 0.10; out=$(live)
-want "the week ahead, the five hours behind: nothing new starts" "0" "$(grep -c . "$SPAWNS")"
+want "the week ahead, the five hours behind, week unset: places fill, all three" "3" "$(grep -c . "$SPAWNS")"
+want "  and the live view says behind" "behind" "$(jq -r '.pace.pacing' "$C/capacity.json")"
+TW_WEEK=0.62 tickworld 0.10; out=$(COORDINATOR_PACE_WEEK=true live)
+want "the same with week=true: nothing new starts" "0" "$(grep -c . "$SPAWNS")"
 want_in "  and the skip names the weekly line" 'skip #601 #602 #603: pacing ahead of the weekly line — no new builder starts but process fixes' "$out"
 want "  and the live view carries the week" "ahead week true" "$(jq -r '"\(.pace.pacing) \(.pace.window) \(.pace.week.ahead)"' "$C/capacity.json")"
-TW_WEEK=0.62 tickworld 0.10; fix_issue 605 OPEN "status:ready,P2,process"; bash "$Q" add 605 >/dev/null; out=$(live)
+TW_WEEK=0.62 tickworld 0.10; fix_issue 605 OPEN "status:ready,P2,process"; bash "$Q" add 605 >/dev/null; out=$(COORDINATOR_PACE_WEEK=true live)
 want "the week ahead: a process fix still starts, alone" "605" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
-TW_WEEK=0.50 tickworld 0.10; out=$(live)
+TW_WEEK=0.50 tickworld 0.10; out=$(COORDINATOR_PACE_WEEK=true live)
 want "both behind: places fill, all three" "3" "$(grep -c . "$SPAWNS")"
 tickworld 0.49 604; out=$(COORDINATOR_PACE_EXEMPT=P0 live)
 want "a priority in paceToWindow.exempt still starts" "604" "$(tr '\n' ' ' < "$SPAWNS" | sed 's/ $//')"
@@ -182,7 +205,7 @@ want "behind: places fill, all three"        "3" "$(grep -c . "$SPAWNS")"
 want "the live view says behind"             "behind" "$(jq -r '.pace.pacing' "$C/capacity.json")"
 tickworld -; out=$(live)
 want "no usage reading: fail open, all three" "3" "$(grep -c . "$SPAWNS")"
-want_in "and says why"                       'pacing: no usage reading \(five-hour or week\) — places fill' "$out"
+want_in "and says why"                       'pacing: no five-hour usage reading — places fill' "$out"
 tickworld 0.49; out=$(COORDINATOR_PACE=0 live)
 want "pacing off: the machine fills all three" "3" "$(grep -c . "$SPAWNS")"
 

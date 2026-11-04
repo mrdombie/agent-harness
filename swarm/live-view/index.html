@@ -340,7 +340,7 @@ function machineLine(s){
   } else if (d) parts.push('disk free not read')
   // No five-hour line: Claude dropped that limit (2026-10-31). A pacer reading still shows below.
   const p = c && c.pace
-  // Pacing to the five-hour and weekly windows (coordinator.paceToWindow): ahead of either line, only process fixes start.
+  // Pacing to the five-hour window, the week only with coordinator.paceToWindow.week: ahead, only process fixes start.
   if (p && (p.fiveHour || p.week)) {
     const ws = [p.fiveHour && ['5h', p.fiveHour], p.week && ['week', p.week]].filter(Boolean)
       .sort((a, b) => (b[1].ahead ? 1 : 0) - (a[1].ahead ? 1 : 0))

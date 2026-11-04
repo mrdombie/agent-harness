@@ -15,7 +15,7 @@ T="$HERE/coordinator-tick.sh"
 Q="$HERE/coordinator-queue.sh"
 C="$STATE/coordinator"
 NOWE=$(date +%s)
-unset COORDINATOR_PACE COORDINATOR_PACE_FACTOR COORDINATOR_PACE_EXEMPT
+unset COORDINATOR_PACE COORDINATOR_PACE_FACTOR COORDINATOR_PACE_WEEK COORDINATOR_PACE_EXEMPT
 # The pacer is off by default since Claude dropped the five-hour limit (2026-10-31);
 # these cases test the pacer itself, so they switch it on.
 COORDINATOR_PACE=true; export COORDINATOR_PACE
@@ -57,6 +57,39 @@ want_in "the owner reads the reader's heartbeat in the fleet file" '5h window 50
 clean; fleet 14 "$NOWE" 0.50
 want_in "a heartbeat alone is a reading: no log here at all" '5h window 50%' \
   "$(COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=here pace 0 "" 10)"
+
+echo "--- a reader obeys the owner's pacing verdict (owner, 2026-11-04) ---"
+# Yomato, a reader on the owner's account with no reading of its own, started 6 builds
+# while the owner was ahead. A reader with no five-hour reading follows the owner's fresh
+# verdict on the sheet; with its own fresh reading it draws the line itself.
+OWNER_AHEAD='{"at":'"$NOWE"',"pacing":"ahead","window":"five_hour","fiveHour":{"u":0.49,"line":0.33,"ahead":true},"settings":{"factor":0.95}}'
+OWNER_BEHIND='{"at":'"$NOWE"',"pacing":"behind","fiveHour":{"u":0.10,"line":0.33,"ahead":false},"settings":{"factor":0.95}}'
+OWNER_STALE='{"at":'"$((NOWE - 1800))"',"pacing":"ahead","fiveHour":{"u":0.49,"line":0.33,"ahead":true},"settings":{"factor":0.95}}'
+rpace() { ( export COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=yomato SHEET_PACE="$1"; pace 0 "" ); }
+clean
+out=$(rpace "$OWNER_AHEAD")
+want "no reading here, the owner ahead: held" "1" "${out%%$'\t'*}"
+want_in "  and says it follows the owner" "^1	pacing: ahead — no reading here, so the owner here's verdict of 0 min ago \(5h window 49% against a target of 33%\): no new builder starts but process fixes; the running ones carry on rc=0" "$out"
+want "  pace.json carries the owner's verdict for the skip line and the live view" "ahead five_hour here" "$(jq -r '"\(.pacing) \(.window) \(.from.owner)"' "$C/pace.json")"
+clean
+out=$(rpace "$OWNER_BEHIND")
+want "no reading here, the owner behind: fills" "0" "${out%%$'\t'*}"
+clean
+out=$(rpace "")
+want_in "no reading here, no owner verdict: fails open" '^pacing: no five-hour usage reading — places fill.* rc=1' "$out"
+clean
+out=$(rpace "$OWNER_STALE")
+want_in "no reading here, the owner's verdict 30 min old: fails open" '^pacing: no five-hour usage reading — places fill.* rc=1' "$out"
+clean; jq -nc --argjson r7 $((NOWE + 254016)) '{type:"rate_limit_event", rate_limit_info:{status:"allowed", unifiedWindows:{seven_day:{utilization:0.10, resetsAt:$r7}}}}' > "$STATE/logs/claim-1-a.log"
+want "a week reading alone is no five-hour reading: the owner ahead holds" "1" "$(rpace "$OWNER_AHEAD" | cut -f1)"
+# Its own reading is the freshest of every host's, the owner's included, drawn on the
+# owner's factor: a fresher reading behind means the owner's verdict is the older one.
+clean; win 0.20 $((NOWE + 11700)) > "$STATE/logs/claim-1-a.log"
+out=$(rpace "$OWNER_AHEAD")
+want "its own fresh reading behind, the owner ahead: its own line, behind" "0" "${out%%$'\t'*}"
+want_in "  drawn from its own 20%" 'pacing: behind — 5h window 20% against a target of 33%' "$out"
+want "the owner is never paced by a reader's verdict" "absent" \
+  "$(clean; out=$( export COORDINATOR_SHEET_OWNER=here COORDINATOR_HOST=here SHEET_PACE="$OWNER_AHEAD"; pace 0 "" ); [ "${out%%$'\t'*}" = 1 ] && echo held || echo absent)"
 
 echo "--- the heartbeat publishes the reading and the capacity ---"
 clean; win 0.33 "$EARLY" 0.20 > "$STATE/logs/claim-1-a.log"
