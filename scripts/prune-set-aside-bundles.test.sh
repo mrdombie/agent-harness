@@ -53,6 +53,6 @@ want "says nothing"                      "" "$out"
 
 echo "--- the coordinator's housekeeping runs it, dry under shadow ---"
 want "housekeeping calls it" "1" "$(grep -c 'PRUNE_BUNDLES="${COORDINATOR_PRUNE_BUNDLES:-$SELF_DIR/prune-set-aside-bundles.sh}"' "$HERE/coordinator-housekeeping.sh")"
-want_in "and dry under shadow" 'coord_shadow.*"\$PRUNE_BUNDLES" .*--dry-run' "$(cat "$HERE/coordinator-housekeeping.sh")"
+want "and dry under shadow" "1" "$(grep -cE 'coord_shadow.*"\$PRUNE_BUNDLES" --dry-run' "$HERE/coordinator-housekeeping.sh")"
 
 suite_end "$FAILED"

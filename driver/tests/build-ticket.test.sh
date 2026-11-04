@@ -790,7 +790,7 @@ want "and the record is resumed"             "$FIX/left441" "$(driver_state_get 
 want "nothing is set aside"                  "0" "$(ls -d "$STATE/driver/441.set-aside-"* 2>/dev/null | grep -c .)"
 
 echo "--- the set-aside push skips the project's pre-push: a red tree is still kept on origin (#18257) ---"
-# Maktura's pre-push ran its whole push suite on the tree being rebuilt, red by definition,
+# The project's pre-push ran its whole push suite on the tree being rebuilt, red by definition,
 # so the push was refused and every set-aside fell to a bundle: 149 on one Mac.
 PREPUSH="$(git -C "$REPO" rev-parse --path-format=absolute --git-path hooks)/pre-push"
 printf '#!/bin/sh\necho "the push suite is red" >&2\nexit 1\n' > "$PREPUSH"; chmod +x "$PREPUSH"
