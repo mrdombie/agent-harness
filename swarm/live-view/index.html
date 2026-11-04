@@ -175,7 +175,7 @@ function stepText(a){
   if (a.stepFrom === 'claim' || (!a.stepFrom && a.claimStep)) return `<b>${esc(CLAIM_WORD[a.claimStep] || a.claimStep)}</b>`
   if (!a.stepFrom || !p || !p.of) return (a.startedAgoMin ?? 0) < 5 ? '<b>Starting</b>' : '<b>Step not reported yet</b>'
   const name = (p.steps || [])[p.step - 1]?.name || ''
-  return `${p.repair ? 'Repair · ' : ''}${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
+  return `${esc(p.step)} of ${esc(p.of)} · <b>${esc(STEP_WORD[name] || name)}</b>`
 }
 // The work's name from its title scope ("Holly"), in front of the title on building and next rows.
 const tagOf = (r) => r && r.tag ? `<span class="tag">${esc(r.tag)}</span> ` : ''
@@ -188,7 +188,7 @@ const machineOf = (h) => !h ? 'Machine not recorded' : h === thisHost ? `This ma
 // stay in logs on that machine, so they are left out, never invented.
 const CLAIM_WORD = { start: 'Setting up', plan: 'Planning', build: 'Building', 'self-check': 'Checking', review: 'Being reviewed',
   size: 'Sizing the change', quick: 'Making the quick change',
-  ship: 'Opening the pull request', reenter: 'Going back to the pull request', repair: 'Repairing', fix: 'Fixing', push: 'Pushing the fix',
+  ship: 'Opening the pull request', fix: 'Fixing', push: 'Pushing the fix',
   'usage-hold': 'Waiting for usage to reset' }
 // Another machine's run, from its heartbeat: coloured like a local row while the
 // heartbeat is fresh; the grey ring only when the machine itself has stopped reporting.
@@ -411,7 +411,7 @@ function mergedList(m){
 
 // Coming up next: the coordinator's queue in the order it starts them, minus what is building now.
 const NEXT_SHOW = 12
-const NEXT_KIND = { repair: 'Fix a red change', 'approved-merge': 'Merge', new: 'New' }
+const NEXT_KIND = { new: 'New' }
 function nextList(q, building){
   const busy = new Set(building.map((a) => String(a.ticket)))
   const rows = ((q && q.tickets) || []).filter((r) => !busy.has(String(r.ticket)))

@@ -2,7 +2,7 @@
 # proof-unreachable.test.sh — a proof whose test could not reach the app was never
 # run, and is never read as "still fails with the change".
 #
-# Measured: four fixes and repairs named a Playwright e2e spec as their proof. The
+# Measured: four fix and repair steps named a Playwright e2e spec as their proof. The
 # proof trees run no app server, so `page.goto: net::ERR_CONNECTION_REFUSED` came
 # back on both sides and the change was refused as not doing the job.
 #
@@ -15,7 +15,6 @@ driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../ai-step.sh" || exit 1
 . "$HERE/../steps/fix.sh" || exit 1
-. "$HERE/../steps/repair.sh" || exit 1
 . "$HERE/../facts.sh" || exit 1
 
 c() { git -C "$1" -c user.email=t@e.invalid -c user.name=T commit -qm "$2"; git -C "$1" rev-parse HEAD; }
@@ -68,7 +67,7 @@ want "and a refused connection is the test's own failure" "2" "$rc"
 e2e_off
 
 echo "--- the briefs carry the rule, and the opt-out changes it ---"
-for s in build fix repair; do
+for s in build fix; do
   want_in "$s.md has the place it goes" '{{PROOF_LIMITS}}' "$(cat "$HERE/../../briefs/$s.md")"
   want "facts.json declares it for $s" "true" "$(jq --arg s "$s" '.steps[$s].facts | has("PROOF_LIMITS")' "$HERE/../../briefs/facts.json")"
 done
@@ -110,51 +109,5 @@ want "the fix step ran twice" "2" "$(grep -cx fix "$CLAUDE_LOG")"
 want_in "the retry is told why" "F9: .*could not reach the app" "$(cat "$FIX/claude-stdin-fix.txt")"
 want_not_in "never 'still fails'" 'still fails' "$out"
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
-
-# ---- the repair step: sent back once, with no proof run ---------------------
-cat > "$BIN/claude-hands" <<'SH'
-#!/usr/bin/env bash
-exec "$BIN/claude" "$@"
-SH
-chmod +x "$BIN/claude-hands"; export DRIVER_CLAUDE="$BIN/claude-hands"
-SK='superpowers:systematic-debugging superpowers:test-driven-development'
-git init -q --bare "$FIX/origin"; git -C "$REPO" remote add origin "$FIX/origin"
-git -C "$REPO" push -q origin develop
-rsetup() { # <ticket> — a red PR whose repair commits are already made, test first
-  local t=$1; WT="$FIX/wt$t"
-  git -C "$REPO" worktree add -q "$WT" -b "tkt-$t/work" develop
-  printf 'value=bad\n' > "$WT/v$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "feat: $t"
-  git -C "$WT" push -q -u origin "tkt-$t/work"
-  driver_state_init "$t" --worktree "$WT" --branch "tkt-$t/work"
-  driver_state_set "$t" pr "$t"; driver_state_set "$t" repair_base "$(git -C "$WT" rev-parse HEAD)"
-  printf 'REPAIR on PR #%s: CI went red on: unit\n' "$t" > "$(driver_state_dir "$t")/repair-brief.md"
-  driver_state_set "$t" repair_brief "$(driver_state_dir "$t")/repair-brief.md"
-  fix_issue "$t" OPEN "status:in-review"
-  jq -n --argjson n "$t" --arg b "tkt-$t/work" '[{number:$n, headRefName:$b, headRefOid:"x", isDraft:false,
-     mergeStateStatus:"CLEAN", statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
-  rm -f "$FIX/ai/repair.jsonl" "$FIX/ai/repair.then.jsonl"; : > "$CLAUDE_LOG"
-  mkdir -p "$WT/e2e"
-  printf '#!/usr/bin/env bash\ngrep -q good v%s.txt\n' "$t" > "$WT/v$t.test.sh"
-  printf '#!/usr/bin/env bash\necho "page.goto: net::ERR_CONNECTION_REFUSED"\nexit 1\n' > "$WT/e2e/v$t.spec.ts"
-  git -C "$WT" add . && git -C "$WT" commit -qm "test: v"; RTS=$(git -C "$WT" rev-parse HEAD)
-  printf 'value=good\n' > "$WT/v$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: v"; RIS=$(git -C "$WT" rev-parse HEAD)
-}
-ranswer() { # <test-file> <command>
-  jq -nc --arg ts "$RTS" --arg is "$RIS" --arg f "$1" --arg c "$2" \
-    '{step:"repair", skills:["superpowers:systematic-debugging","superpowers:test-driven-development"], status:"repaired", cause:"the value",
-      fixes:[{what:"the value was wrong", proof:"test", change:[{path:"v.txt", action:"modify"}],
-        test:{file:$f, behaviour:"the value is good", redWhen:"the value is put back"},
-        command:$c, failedBefore:true, passedAfter:true, testCommit:$ts, implCommit:$is}]}'; }
-
-echo "--- repair: an e2e spec is asked once more, told why, then proved by a unit test ---"
-rsetup 602
-fix_ai repair "$(ranswer e2e/v602.spec.ts 'bash e2e/v602.spec.ts')" "$SK"
-then_answer repair "$SK" "$(ranswer v602.test.sh 'bash v602.test.sh')"
-rc=0; out=$(driver_step_repair 602 2>&1) || rc=$?
-want "it finishes once a unit test proves it" "0" "$rc"
-want "the model was asked twice" "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
-want_in "the second ask says why" "e2e browser spec cannot prove a change here" "$(cat "$FIX/claude-stdin-repair.txt")"
-want_in "and the fix is proved" 'red .* then green' "$out"
-want_not_in "never 'still fails'" 'still fails' "$out"
 
 suite_end "$FAILED"

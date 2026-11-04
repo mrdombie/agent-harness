@@ -163,10 +163,6 @@ fix_ai plan "$(plan_feats 2 | jq -c '.tasks[0].tests[0].file = "other.test.sh" |
 fresh; out=$(driver_step_plan 159 2>&1); rc=$?
 want "a part whose plan drops its item's test, twice: refused" "$DRIVER_E_REFUSED" "$rc"
 want_in "  naming the test its steps run in"       'F1 .*f1.test.sh' "$out"
-fix_issue 160 OPEN "status:claimed"; driver_state_init 160 --worktree "$REPO"; driver_state_set 160 mode repair
-fix_ai plan "$(plan_feats 3)" superpowers:writing-plans
-fresh; out=$(driver_step_plan 160 2>&1); rc=$?
-want "a repair is never split"                    "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
 
 echo "--- a part carries the parent's approved picture and its answers, by link ---"
 jq -n '{number:156, state:"OPEN", title:"Ticket 156", labels:[{name:"status:claimed"},{name:"screen:redesign"}], body:"spec",

@@ -54,8 +54,8 @@ SITES=$(owner_sites)
 echo "--- the owner call sites, as read from the source ---"
 printf '%s\n' "$SITES"
 n=$(printf '%s\n' "$SITES" | grep -c .)
-want "the reader finds the known owner call sites, not none" "1" "$([ "$n" -ge 8 ] && echo 1 || echo "$n")"
-for k in stall disk-low login-lost blind decision signoff-batch host-tools; do
+want "the reader finds the known owner call sites, not none" "1" "$([ "$n" -ge 7 ] && echo 1 || echo "$n")"
+for k in red-2h disk-low login-lost blind decision signoff-batch host-tools; do
   want_in "a call site sending $k is read" $'\t'"$k"'$' "$SITES"
 done
 
@@ -75,6 +75,6 @@ done <<<"$SITES"
 echo "--- agent work still never reaches the owner ---"
 rm -rf "$C"; : > "$FIX/ping.log"
 COORDINATOR_SHADOW=0 bash "$N" --class owner "red-pr:41:abc" "PR #41 is red"
-want "a red PR the coordinator is healing is not the owner's" "" "$(cat "$C/needs-you.md" 2>/dev/null)"
+want "a red PR on the rebuild clock is not the owner's" "" "$(cat "$C/needs-you.md" 2>/dev/null)"
 
 suite_end "$FAILED"

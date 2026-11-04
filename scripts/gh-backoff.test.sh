@@ -137,7 +137,6 @@ SH
   export COORDINATOR_UNBLOCK="$BIN/noop" COORDINATOR_MACHINE_PARKS="$BIN/noop" COORDINATOR_RELEASE_BATCH="$BIN/noop" COORDINATOR_FEATURE_CLOSE="$BIN/noop"
   export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
   export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
-  printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"; export COORDINATOR_FIX_LOCK="$BIN/fixlock"
   unset COORDINATOR_SHADOW COORDINATOR_CAP SWARM_NOW GH_BACKOFF_FILE GH_ALLOWANCE_FILE GH_FLEET_FILE
   export SWARM_FREE_MEM_GB=16 SWARM_IDLE=90 SWARM_CORES=10 TEST_PID=$$
   cat > "$BIN/spawn-live" <<'SH'
@@ -147,7 +146,7 @@ printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$1" "$1" "$T
 SH
   chmod +x "$BIN/spawn-live"
   : > "$FIX/claims.txt"; : > "$SPAWNS"; printf '[]\n' > "$FIX/gh/prs-all.json"
-  fix_issue 501 OPEN "status:in-review"; bash "$HERE/coordinator-queue.sh" add 501 --class repair >/dev/null; fix_pr_for 501
+  fix_issue 501 OPEN "status:ready"; bash "$HERE/coordinator-queue.sh" add 501 >/dev/null
   out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$HERE/coordinator-tick.sh" 2>&1)
   want_in "the coordinator spawns"                    '^501' "$(cat "$SPAWNS")"
   want_not_in "and does not hold for it"              'spawn: holding' "$out"

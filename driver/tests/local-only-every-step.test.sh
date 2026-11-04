@@ -2,8 +2,8 @@
 # local-only-every-step.test.sh — under `gates.localOnly` every driver step runs only
 # gates.local and the one named proof file (the owner, 2026-10-22: CI is the one gate).
 # A project whose gates.changed holds test:changed and a full typecheck, and whose
-# gates.ratchets names a ratchet, is walked through a whole build (start → ship) and a
-# whole repair, with every npm call recorded: neither the changed list's extras nor the
+# gates.ratchets names a ratchet, is walked through a whole build (start → ship),
+# with every npm call recorded: neither the changed list's extras nor the
 # ratchet nor the hook's verify:push ever runs; the proof file does; every push names
 # its head, so the hook skips. On 2026-10-23 builders parked seven times on checks CI
 # runs (clone-ratchet, test:changed, composition, ui-tests-interact) that a step ran here.
@@ -47,7 +47,6 @@ chmod +x "$HOOKS/pre-push"; : > "$FIX/lo-hook.log"
 fix_brief plan   superpowers:writing-plans
 fix_brief build  superpowers:subagent-driven-development
 fix_brief review superpowers:requesting-code-review
-fix_brief repair superpowers:systematic-debugging
 fix_ai review '{"step":"review","skills":["superpowers:requesting-code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[]}' \
   superpowers:requesting-code-review
 
@@ -83,34 +82,6 @@ case_build() { # a whole build, start → ship: R is "<rc> <leaks> proof=<n> hoo
   R="$rc leaks=[$(grep -E "$LEAK" "$RAN" | tr '\n' ',')] proof=$(grep -c '^PROOF$' "$RAN") hook=$(tail -1 "$FIX/lo-hook.log")"
 }
 
-case_repair() { # a whole repair whose fix names a ratchet as its gate: R is "<rc> <leaks>"
-  N=$((N + 1)); local t=$N src="$FIX/src$N" head
-  : > "$RAN"; : > "$FIX/lo-hook.log"; rm -rf "$STATE/driver/$t"; : > "$GH_LOG"
-  git clone -q -b develop "$FIX/origin" "$src"
-  git -C "$src" checkout -q -b "tkt-$t/work"
-  printf 'broken\n' > "$src/state.txt"; git -C "$src" add .; git -C "$src" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: $t"
-  git -C "$src" push -q origin "tkt-$t/work"; head=$(git -C "$src" rev-parse HEAD)
-  fix_issue "$t" OPEN "status:in-review"
-  jq -n --arg b "tkt-$t/work" '[{number:61, headRefName:$b, headRefOid:"x", isDraft:false, mergeStateStatus:"CLEAN",
-         statusCheckRollup:[{name:"Code gates", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
-  : > "$FIX/pr-created-61"; printf '{"number":61,"isDraft":false,"body":"Closes #%s"}\n' "$t" > "$FIX/gh/pr-view.json"
-  cat > "$BIN/claude-hands" <<'SH'
-#!/usr/bin/env bash
-case " $* " in *" --name repair "*)
-  printf 'fixed\n' > state.txt; git add state.txt
-  git -c user.email=t@example.invalid -c user.name=T commit -qm "fix: the baseline" >/dev/null 2>&1 ;;
-esac
-exec "$BIN/claude" "$@"
-SH
-  chmod +x "$BIN/claude-hands"
-  fix_ai repair '{"step":"repair","skills":["superpowers:systematic-debugging"],"status":"repaired","cause":"the clone baseline clashed","fixes":[{"what":"re-measured the clone baseline","proof":"gate","change":[{"path":"state.txt","action":"modify"}],"command":"npm run check:clone-ratchet","noTestBecause":"a ratchet baseline"}]}' \
-    superpowers:systematic-debugging
-  printf 'REPAIR on PR #61 at %s: CI went red on: Code gates\n' "$head" > "$FIX/brief-$t.md"
-  local rc=0; DRIVER_CLAUDE="$BIN/claude-hands" HARNESS_STATE_DIR="$STATE" bash "${SUT_KIT:-$ROOT}/driver/build-ticket" "$t" --repair "$FIX/brief-$t.md" > "$FIX/repair-$t.out" 2>&1 || rc=$?
-  rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
-  R="$rc leaks=[$(grep -E "$LEAK" "$RAN" | tr '\n' ',')]"
-}
-
 case_park() { # a park push, with no local head on the record: R is the hook's word
   N=$((N + 1)); local t=$N wt="$FIX/wt$N"
   : > "$RAN"; : > "$FIX/lo-hook.log"
@@ -141,10 +112,6 @@ want "it ships, runs nothing CI keeps, proves its file, and the hook skips" "0 l
 want_in "the local set ran"                       '^npm run lint:changed$' "$(ran)"
 want_in "the proof's typecheck is the local one"  '^npm run typecheck:changed$' "$(ran)"
 
-echo "--- a whole repair whose fix names a ratchet ---"
-case_repair
-want "it ships and the ratchet never runs here"   "0 leaks=[]" "$R"
-want_in "and says CI runs it"                     'not in gates.local, so it is not run here' "$(cat "$FIX/repair-$N.out")"
 
 echo "--- a park push names its head too ---"
 case_park
@@ -158,9 +125,9 @@ echo "--- every model step is told the same ---"
 case_facts
 want "proof limits and the project facts say it"  "proof=1 project=1" "$R"
 has() { grep -cF -- "$2" "$ROOT/briefs/$1.md" | sed 's/^[1-9][0-9]*$/yes/'; }
-for b in build fix repair; do want "the $b brief carries the proof limits" yes "$(has "$b" '{{PROOF_LIMITS}}')"; done
+for b in build fix; do want "the $b brief carries the proof limits" yes "$(has "$b" '{{PROOF_LIMITS}}')"; done
 want "the quick brief carries the project facts" yes "$(has quick '{{PROJECT_FACTS}}')"
-for b in fix repair quick; do want "the $b brief says the fast local checks only" yes "$(has "$b" 'gates.localOnly')"; done
+for b in fix quick; do want "the $b brief says the fast local checks only" yes "$(has "$b" 'gates.localOnly')"; done
 
 echo "--- plants: each line out of a copy of the kit, its case fails ---"
 KIT="$FIX/kit"
@@ -179,11 +146,6 @@ plant "no ratchet lowered here" driver/steps/self-check.sh '  if driver_gates_lo
     return 1
   fi
 ' && { case_tighten; want_in "planted (no ratchet lowered here): the ratchet runs" 'clone-ratchet -- --update' "$R"; }
-plant "a repair gate is gates.local" driver/steps/repair.sh '    elif driver_gates_local_only && ! driver_cmd_local "$tcmd"; then
-      # A ratchet, a check script or a test run named as the gate is CI'"'"'s under localOnly.
-      own_fixes=$((own_fixes+1))
-      driver_say "   repair '"'"'$bid'"'"' — $tcmd is not in gates.local, so it is not run here (gates.localOnly): CI runs it on the push"
-' && { case_repair; want "planted (a repair gate is gates.local): the ratchet runs" "0 leaks=[npm run check:clone-ratchet,]" "$R"; }
 plant "the proof typecheck is gates.local" driver/steps/build.sh '    elif .gates.localOnly == true then
       # Under gates.localOnly every other list is for CI: only gates.local names the check.
       ([(.gates.local // []) | if type == "array" then .[] | select(tc) else empty end] | first // "")

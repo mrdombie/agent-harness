@@ -2,7 +2,7 @@
 # proof-command.test.sh — a proof command that cannot run as given is sent back,
 # told why, with no proof run; it is never read as "still fails with the change".
 #
-# Measured: a repair answered `DATABASE_URL=<throwaway postgres …> npx vitest run …`,
+# Measured: a step answered `DATABASE_URL=<throwaway postgres …> npx vitest run …`,
 # bash died on `<throwaway` as a redirect in both halves, and the change was refused
 # as not doing the job. Two more proofs carried a literal `<kit at a9ad6222e>`.
 #
@@ -15,7 +15,6 @@ driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 fix_real_briefs
 . "$HERE/../ai-step.sh" || exit 1
 . "$HERE/../steps/fix.sh" || exit 1
-. "$HERE/../steps/repair.sh" || exit 1
 
 c() { git -C "$1" -c user.email=t@e.invalid -c user.name=T commit -qm "$2"; git -C "$1" rev-parse HEAD; }
 
@@ -89,66 +88,5 @@ want "the fix step ran twice" "2" "$(grep -cx fix "$CLAUDE_LOG")"
 want_in "the retry is told why" "F9: .*first word 'throwaway' is not a program" "$(cat "$FIX/claude-stdin-fix.txt")"
 want_not_in "never 'still fails'" 'still fails' "$out"
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
-
-# ---- the repair step: sent back once, with no proof run ---------------------
-cat > "$BIN/claude-hands" <<'SH'
-#!/usr/bin/env bash
-exec "$BIN/claude" "$@"
-SH
-chmod +x "$BIN/claude-hands"; export DRIVER_CLAUDE="$BIN/claude-hands"
-SK='superpowers:systematic-debugging superpowers:test-driven-development'
-git init -q --bare "$FIX/origin"; git -C "$REPO" remote add origin "$FIX/origin"
-git -C "$REPO" push -q origin develop
-rsetup() { # <ticket> — a red PR whose repair commits are already made, test first
-  local t=$1; WT="$FIX/wt$t"
-  git -C "$REPO" worktree add -q "$WT" -b "tkt-$t/work" develop
-  printf 'value=bad\n' > "$WT/v$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "feat: $t"
-  git -C "$WT" push -q -u origin "tkt-$t/work"
-  driver_state_init "$t" --worktree "$WT" --branch "tkt-$t/work"
-  driver_state_set "$t" pr "$t"; driver_state_set "$t" repair_base "$(git -C "$WT" rev-parse HEAD)"
-  printf 'REPAIR on PR #%s: CI went red on: unit\n' "$t" > "$(driver_state_dir "$t")/repair-brief.md"
-  driver_state_set "$t" repair_brief "$(driver_state_dir "$t")/repair-brief.md"
-  fix_issue "$t" OPEN "status:in-review"
-  jq -n --argjson n "$t" --arg b "tkt-$t/work" '[{number:$n, headRefName:$b, headRefOid:"x", isDraft:false,
-     mergeStateStatus:"CLEAN", statusCheckRollup:[{name:"unit", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs.json"
-  rm -f "$FIX/ai/repair.jsonl" "$FIX/ai/repair.then.jsonl"; : > "$CLAUDE_LOG"
-  printf '#!/usr/bin/env bash\ngrep -q good v%s.txt\n' "$t" > "$WT/v$t.test.sh"
-  git -C "$WT" add . && git -C "$WT" commit -qm "test: v"; RTS=$(git -C "$WT" rev-parse HEAD)
-  printf 'value=%s\n' "${2:-good}" > "$WT/v$t.txt"; git -C "$WT" add . && git -C "$WT" commit -qm "fix: v"; RIS=$(git -C "$WT" rev-parse HEAD)
-}
-ranswer() { # <ticket> <command>
-  jq -nc --arg ts "$RTS" --arg is "$RIS" --arg f "v$1.test.sh" --arg c "$2" \
-    '{step:"repair", skills:["superpowers:systematic-debugging","superpowers:test-driven-development"], status:"repaired", cause:"the value",
-      fixes:[{what:"the value was wrong", proof:"test", change:[{path:"v.txt", action:"modify"}],
-        test:{file:$f, behaviour:"the value is good", redWhen:"the value is put back"},
-        command:$c, failedBefore:true, passedAfter:true, testCommit:$ts, implCommit:$is}]}'; }
-
-echo "--- repair: a placeholder command is asked once more, told why, then proved ---"
-rsetup 602
-fix_ai repair "$(ranswer 602 '<kit at abc> npm test')" "$SK"
-then_answer repair "$SK" "$(ranswer 602 'bash v602.test.sh')"
-rc=0; out=$(driver_step_repair 602 2>&1) || rc=$?
-want "it finishes once the command is real" "0" "$rc"
-want "the model was asked twice" "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
-want_in "the second ask says why" "placeholder '<kit at abc>' and is run verbatim" "$(cat "$FIX/claude-stdin-repair.txt")"
-want_in "and the fix is proved" 'red .* then green' "$out"
-want_not_in "never 'still fails'" 'still fails' "$out"
-
-echo "--- repair: still a placeholder after the retry is refused as unrunnable, not as failing ---"
-rsetup 603
-fix_ai repair "$(ranswer 603 'throwaway npx vitest run x.test.ts')" "$SK"
-rc=0; out=$(driver_step_repair 603 2>&1) || rc=$?
-want "it refuses" "24" "$rc"
-want "after one retry" "repair repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
-want_in "naming the word" "first word 'throwaway' is not a program" "$(driver_state_get 603 park_note)"
-want_not_in "never 'still fails'" 'still fails' "$(driver_state_get 603 park_note)"
-
-echo "--- repair: a valid command that fails is refused as now, with no retry ---"
-rsetup 604 worse
-fix_ai repair "$(ranswer 604 'bash v604.test.sh')" "$SK"
-rc=0; out=$(driver_step_repair 604 2>&1) || rc=$?
-want "it refuses" "24" "$rc"
-want "asked once" "repair" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
-want_in "as still failing" 'still fails with the change' "$out"
 
 suite_end "$FAILED"

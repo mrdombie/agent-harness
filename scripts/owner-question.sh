@@ -82,7 +82,7 @@ park_ask() { case "${1#decision:*:}" in driver-park*) return 0 ;; esac; return 1
 # A park's status lifted with none put on is refused by the driver's start step.
 park_resume() { # <ticket> [<also-drop>] — the park's status swapped for the requeue's
   local st="$LBL_READY"
-  [ "$(requeue_class "$1")" = repair ] && st="$LBL_IN_REVIEW"
+  ! pr_is_the_work "$1" || st="$LBL_IN_REVIEW"
   issue_status_set "$1" "$st" --drop "$LBL_PARKED" --drop "$LBL_NEEDS_HUMAN" ${2:+--drop "$2"}
 }
 unlabel() { # <ticket> <key>
@@ -93,25 +93,21 @@ unlabel() { # <ticket> <key>
   fi
 }
 
-requeue_class() { # <ticket> — repair or new
-  local t="$1" cls=new n rec
+# pr_is_the_work <ticket> — 0 when the ticket has an open PR and no unshipped build of it on
+# this host's driver record: the answer lands on that PR's ticket, which stays in review and
+# waits for it to merge or be rebuilt. A build that parked on a question opened a draft PR to
+# keep its work; THE DRIVER'S RECORD OUTRANKS THE PR, so that build resumes (ready).
+pr_is_the_work() {
+  local t="$1" n rec
   n=$(swarm_gh pr list --repo "$REPO_SLUG" --state open --search "head:$BRANCH_PREFIX$t" --json number -q length 2>/dev/null)
-  [ "${n:-0}" -gt 0 ] 2>/dev/null && cls=repair
-  # THE DRIVER'S RECORD OUTRANKS THE PR. A build that parked on a question opened a
-  # draft PR to keep its work; answered as a repair, the rest of the build (the
-  # design compare, the red-then-green proof) would be skipped and the PR shipped.
+  [ "${n:-0}" -gt 0 ] 2>/dev/null || return 1
   rec="${DRIVER_DIR:-$STATE_DIR/driver}/$t/state.json"
-  if [ "$cls" = repair ] && [ -f "$rec" ] && jq -e '(.mode // "build") != "repair" and ((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' "$rec" >/dev/null 2>&1; then
-    cls=new
-  fi
-  printf '%s' "$cls"
+  ! jq -e '((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' "$rec" >/dev/null 2>&1
 }
 
-requeue() { # <ticket> <note> — echoes the class
-  local t="$1" cls
-  cls=$(requeue_class "$t")
-  bash "$QUEUE" add "$t" --class "$cls" --note "$2" --first >/dev/null 2>&1 || return 1
-  printf '%s' "$cls"
+requeue() { # <ticket> <note> — echoes the class: always new, there is no repair
+  bash "$QUEUE" add "$1" --class new --note "$2" --first >/dev/null 2>&1 || return 1
+  printf 'new'
 }
 
 # Every step of an answer; 0 only when all of them landed.

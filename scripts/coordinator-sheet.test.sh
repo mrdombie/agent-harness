@@ -180,7 +180,7 @@ rm -f "$SH/down"
 out=$(tick_on mac 1)
 want "read again, the sheet it found is written"    "patch" "$(tr '\n' ' ' < "$SH/writes.log" | sed 's/ $//')"
 
-echo "--- only startable work is on the sheet; a repair is ---"
+echo "--- only startable work is on the sheet ---"
 world
 fix_issue 601 OPEN "status:ready,P1,after-launch"
 fix_issue 602 OPEN "status:ready,P1,needs:owner-decision"
@@ -192,12 +192,9 @@ fix_issue 607 OPEN "status:in-review,P1"
 fix_issue 608 OPEN "status:ready,status:batched"
 fix_issue 609 CLOSED "status:ready,P1"
 queue_on mac 501 601 602 603 604 605 606 607 608 609
-on mac bash "$Q" add 610 --class repair >/dev/null; fix_issue 610 OPEN "status:in-review,P1"
-on mac bash "$Q" add 610 --class repair >/dev/null
 tick_on mac 0 >/dev/null
 want "after-launch, owner decision, held, claimed, parked, unready, in review, batched and closed stay off" \
-  "610:repair 501:new" "$(sheet_json | jq -r '.[] | "\(.n):\(.class)"' | tr '\n' ' ' | sed 's/ $//')"
-want_in "the repair reads as one"                   '#610 · High · Red PR to fix' "$(cat "$SH/body")"
+  "501:new" "$(sheet_json | jq -r '.[] | "\(.n):\(.class)"' | tr '\n' ' ' | sed 's/ $//')"
 
 echo "--- another repo's ticket is never on the sheet (this repo is acme/widgets) ---"
 world

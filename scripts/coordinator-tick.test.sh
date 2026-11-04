@@ -56,13 +56,7 @@ case "$1" in sweep) echo "polish $*" >> "$FIX/house.log" ;; *) exec bash "$REAL_
 SH
 chmod +x "$BIN/polish"
 export REAL_POLISH="$HERE/polish-list.sh" COORDINATOR_POLISH_LIST="$BIN/polish"
-# fix-lock.sh list --json, read from a planted file.
-cat > "$BIN/fixlock" <<'SH'
-#!/usr/bin/env bash
-cat "$FIX/fixing.json"
-SH
-chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify" "$BIN/fixlock"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock"
+chmod +x "$BIN/reconcile" "$BIN/sweep" "$BIN/claude" "$BIN/notify"
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 # Housekeeping in line and every tick, so each case reads what it did when the tick returns.
@@ -93,11 +87,10 @@ export COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
 fresh() {
   rm -rf "$C" "$STATE/runs"/* "$STATE/swarm/HOLD"
   : > "$SPAWNS"; : > "$FIX/house.log"; : > "$FIX/claude.log"; : > "$FIX/notify.log"; : > "$FIX/claims.txt"
-  printf '[]\n' > "$FIX/gh/prs-all.json"; printf '[]\n' > "$FIX/fixing.json"; rm -f "$STATE/swarm/prs.json"
+  printf '[]\n' > "$FIX/gh/prs-all.json"; rm -f "$STATE/swarm/prs.json"
   unset SWARM_NOW
 }
 queue() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:ready"; bash "$Q" add "$t" >/dev/null; done; }
-queue_as() { local c="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class "$c" >/dev/null; [ "$c" = new ] || fix_pr_for "$t"; done; }
 tick() { bash "$T" 2>&1; }
 live_run() { # <ticket> [log-age-from-now-in-min]
   local log="$STATE/logs/claim-$1-live.log"
@@ -234,7 +227,7 @@ echo "--- a start that fails is not counted as running ---"
 fresh; queue 501 502
 out=$(COORDINATOR_SHADOW=0 SWARM_SPAWN=/usr/bin/false SWARM_IDLE=40 SWARM_CORES=10 tick)
 want_in "it says the start failed"         'spawn of #501 failed' "$out"
-want "the live view counts nothing running" "0 0" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
+want "the live view counts nothing running" "0" "$(jq -r '.new.live' "$C/capacity.json")"
 
 echo "--- no fixed cap: with coordinator.cap unset, the machine alone decides ---"
 fresh; queue 501; for t in 900 901 902 903; do live_run $t; done
@@ -246,38 +239,35 @@ out=$(COORDINATOR_SHADOW=0 tick)
 want "7 running and room: an 8th starts"   "501" "$(spawned)"
 want "the live view's file has no cap"     "null" "$(jq -r '.cap' "$C/capacity.json")"
 
-echo "--- no share of the places is kept for either class: priority alone decides ---"
+echo "--- priority alone decides: there is no repair class and no healing place ---"
 # The 3/4 build, 1/4 heal split is gone (owner call 2026-10-24); a cap of 0 is no cap.
 export COORDINATOR_OPEN_PR_CAP=0
 # One agent's room per tick (23% idle keeping 15%, 8% each), so a ramp is visible.
 export SWARM_IDLE=23 SWARM_CORES=10
-fresh; queue_as repair 601 602 603 604 605; queue 701 702 703 704 705
-out=$(COORDINATOR_CAP=4 ticks 4)
-want "5 repairs + 5 new, ceiling 4, one priority: the repairs go first" "601 602 603 604" "$(spawned)"
-want_in "the tick log shows the split by priority" 'split: 0 new · 4 healing · 1 reds waiting \(of 4, by priority\)' "$out"
-want_not_in "and names no cap"             'open changes' "$out"
-want "the live view's file shows it too"   "4/4 0/4 1" "$(jq -r '"\(.healing.live)/\(.healing.slots) \(.new.live)/\(.new.slots) \(.redsWaiting)"' "$C/capacity.json")"
-want "and carries no removed split field" "false" "$(jq -r 'has("healAll")' "$C/capacity.json")"
 fresh; queue 701 702 703 704 705
-COORDINATOR_CAP=4 ticks 4 >/dev/null
-want "no repairs queued: all 4 places take new work" "701 702 703 704" "$(spawned)"
-fresh; queue_as repair 601 602 603; queue 701; echo 602 > "$FIX/claims.txt"
+out=$(COORDINATOR_CAP=4 ticks 4)
+want "5 new, ceiling 4: all 4 places take new work, in queue order" "701 702 703 704" "$(spawned)"
+want_in "the tick log shows the live count by priority" 'split: 4 live \(of 4, by priority\)' "$out"
+want_not_in "and names no cap"             'open changes' "$out"
+want "the live view's file shows it too"   "4/4" "$(jq -r '"\(.new.live)/\(.new.slots)"' "$C/capacity.json")"
+want "and carries no removed split field" "false false false" "$(jq -r '"\(has("healAll")) \(has("healing")) \(has("redsWaiting"))"' "$C/capacity.json")"
+fresh; queue 701 702 703; echo 702 > "$FIX/claims.txt"
 out=$(COORDINATOR_CAP=4 ticks 1)
-want "only spawnable reds count as waiting" "1" "$(jq -r .redsWaiting "$C/capacity.json")"
-want "next names the next spawnable entry, of either class" "603" "$(awk -F'\t' '$2=="plan"{n=$5; sub(/.*next=/,"",n); print n}' "$C/actions.log" | tail -1)"
-# reds_as <priority> <tickets…> — repairs whose tickets carry that priority
-reds_as() { local p="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$p,status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done; }
-fresh; reds_as P2 601 602 603 604 605 606; fix_issue 701 OPEN "P1,status:ready"; bash "$Q" add 701 >/dev/null
+want "next names the next spawnable entry" "703" "$(awk -F'\t' '$2=="plan"{n=$5; sub(/.*next=/,"",n); print n}' "$C/actions.log" | tail -1)"
+want_in "  and the plan line has no healing field" 'new=1/[0-9]+ next=703' "$(awk -F'\t' '$2=="plan"' "$C/actions.log" | tail -1)"
+# ready_as <priority> <tickets…> — new work whose tickets carry that priority
+ready_as() { local p="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$p,status:ready"; bash "$Q" add "$t" >/dev/null; done; }
+fresh; ready_as P2 601 602 603 604 605 606; fix_issue 701 OPEN "P1,status:ready"; bash "$Q" add 701 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=2 ticks 1 >/dev/null
-want "6 P2 reds wait, one P1 new ticket: it starts first, no share holds it" "701 601" "$(spawned)"
-echo "--- which red heals first follows priority ---"
-fresh; reds_as P3 601; reds_as P1 602; reds_as P0 603; queue 701
+want "6 P2 tickets wait, one P1 ticket: it starts first" "701 601" "$(spawned)"
+echo "--- which ticket starts first follows priority ---"
+fresh; ready_as P3 601; ready_as P1 602; ready_as P0 603; queue 701
 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "the P0 red takes the one place" "603" "$(spawned)"
+want "the P0 takes the one place" "603" "$(spawned)"
 
 unset COORDINATOR_OPEN_PR_CAP
 
-echo "--- coordinator.openPrCap: over the cap nothing new starts; every place finishes ---"
+echo "--- coordinator.openPrCap: over the cap nothing new starts ---"
 # Hermetic: whether a person drafted a PR is read through a stand-in (no PR here is a person's),
 # never the real forge. Without it these cases read GitHub on a laptop and failed on CI.
 printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/pstop-none"; chmod +x "$BIN/pstop-none"
@@ -289,23 +279,21 @@ open_prs() {
     isDraft: false, mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
 }
 proc_q() { local l="$1" t; shift; for t in "$@"; do fix_issue "$t" OPEN "$l"; bash "$Q" add "$t" >/dev/null; done; }
-cap_tick() { # <counted open PRs> — three repairs 601.. (their PRs become drafts nothing builds yet,
-  # so they are 3 more, uncounted), three new 701.., room for 6
-  fresh; open_prs $(( $1 + 3 )); queue_as repair 601 602 603; queue 701 702 703
+cap_tick() { # <counted open PRs> — three new 701.., room for 6
+  fresh; open_prs "$1"; queue 701 702 703
   SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1
 }
 out=$(cap_tick 12)
-want "12 open, cap 10: the repairs start and nothing new" "repair repair repair" "$(classes)"
-want "the three repairs"                   "601 602 603" "$(spawned)"
+want "12 open, cap 10: nothing new starts" "" "$(spawned)"
 want_in "the tick log shows the cap"       'open changes 12 / cap 10: finishing before starting' "$out"
 want_in "and names what waits"             '3 new ticket\(s\) wait' "$out"
 want "the live view's file carries it"     "12 10 true" "$(jq -r '"\(.openPrs.count) \(.openPrs.cap) \(.openPrs.over)"' "$C/capacity.json")"
 out=$(cap_tick 9)
-want "9 open, cap 10: new work starts too"  "601 602 603 701 702 703" "$(spawned)"
+want "9 open, cap 10: new work starts"     "701 702 703" "$(spawned)"
 want_in "the tick log says new may start"  'open changes 9 / cap 10: new work may start' "$out"
 want "the live view's file: under"         "9 10 false" "$(jq -r '"\(.openPrs.count) \(.openPrs.cap) \(.openPrs.over)"' "$C/capacity.json")"
 out=$(cap_tick 10)
-want "exactly at the cap is not over it"    "601 602 603 701 702 703" "$(spawned)"
+want "exactly at the cap is not over it"    "701 702 703" "$(spawned)"
 # A draft nothing is building is not in flight (2026-10-24: 10 of 13 open PRs were parked drafts
 # and the cap held every start after the reset).
 fresh; open_prs 12; jq 'map(.isDraft = true)' "$FIX/gh/prs-all.json" > "$FIX/drafts.json" && mv "$FIX/drafts.json" "$FIX/gh/prs-all.json"
@@ -323,9 +311,6 @@ for n in $(seq 9000 9011); do fix_issue "$n" OPEN "P1,status:in-review"; done
 seq 9000 9010 > "$FIX/claims.txt"; queue 701; out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
 want_in "11 drafts a run holds still count: over the cap" 'open changes 11 / cap 10: finishing before starting' "$out"
 want_not_in "  and nothing new starts"           '701' "$(spawned)"
-fresh; open_prs 12; queue_as approved-merge 604; queue 701
-SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1 >/dev/null
-want "an approved merge still starts over the cap" "604" "$(spawned)"
 fresh; open_prs 12; proc_q "P3,process,status:ready" 702; queue 701
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
 want "a process fix still starts over the cap" "702" "$(spawned)"
@@ -336,25 +321,17 @@ fresh; open_prs 30; queue 701
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 COORDINATOR_OPEN_PR_CAP=0 ticks 1)
 want "a cap of 0 is off"                   "701" "$(spawned)"
 want_not_in "and says nothing of a cap"     'open changes' "$out"
-# Under the cap the split is gone: priority decides across repairs and new work, and at
-# one priority a repair goes first (a red ranks at its ticket's priority).
-fresh; open_prs 3; queue_as repair 601 602 603 604; queue 701 702 703 704
-SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
-want "under the cap, one priority, 4 places, 4 reds: all four heal (the split gave 1)" "repair repair repair repair" "$(classes)"
-fresh; open_prs 3; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
+fresh; open_prs 3; ready_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "under the cap, one place: a P0 new ticket starts before a P2 repair" "701" "$(spawned)"
-fresh; open_prs 3; reds_as P1 601; fix_issue 701 OPEN "P1,status:ready"; bash "$Q" add 701 >/dev/null
+want "under the cap, one place: a P0 ticket starts before a P2 one" "701" "$(spawned)"
+fresh; open_prs 12; ready_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
 SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "at one priority the repair goes first" "601" "$(spawned)"
-fresh; open_prs 12; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
-SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "over the cap a P0 new ticket still starts, ahead of a P2 repair (capExemptPriorities)" "701" "$(spawned)"
-fresh; open_prs 12; reds_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
+want "over the cap a P0 ticket still starts (capExemptPriorities); the P2 one waits" "701" "$(spawned)"
+fresh; open_prs 12; ready_as P2 601; fix_issue 701 OPEN "P0,status:ready"; bash "$Q" add 701 >/dev/null
 COORDINATOR_CAP_EXEMPT_PRIORITIES="" SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "with no exempt priority the P0 waits over the cap; the P2 repair starts" "601" "$(spawned)"
+want "with no exempt priority the P0 waits over the cap too" "" "$(spawned)"
 
-echo "--- the cap waits only on work something is finishing (23 Oct: 19 open, 17 clashing, 0 builds) ---"
+echo "--- the cap waits only on work something is finishing; nothing is queued to repair (23 Oct: 19 open, 17 clashing, 0 builds) ---"
 # A person's draft, read off a stand-in person-stop: PR 8005 and 8105 are a person's.
 cat > "$BIN/pstop" <<'SH'
 #!/usr/bin/env bash
@@ -372,73 +349,32 @@ prs_of() {
        labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
 }
 tickets_of() { local l="$1" n; shift; for n in "$@"; do fix_issue "$n" OPEN "$l"; done; }
-in_queue() { jq -r '[.tickets[] | select(.class == "repair") | .n] | sort | map(tostring) | join(" ")' "$C/queue.json" 2>/dev/null; }
 
-fresh; rm -f "$FIX/pdrafted.tsv"; prs_of 8000 17 2 3
+fresh; rm -f "$FIX/pdrafted.tsv"; : > "$FIX/pstop.log"; prs_of 8000 17 2 3
 tickets_of "P1,status:in-review" $(seq 8000 8018); fix_issue 8003 OPEN "P1,status:parked"
 queue 701
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want "19 open, 17 clashing, none queued: one tick queues all 17, and the green draft nothing builds" "18" "$(grep -c '^[0-9:]* finish: queued #' <<<"$out")"
-want_in "the draft is queued as one"        'queued #8018 as a repair at the front of its priority — PR #8018: it is a draft nothing is building' "$out"
-want "and spawns repairs into the free places, oldest first" "8000 8001 8002 8003" "$(spawned)"
-want "every start a repair"                 "repair repair repair repair" "$(classes)"
-want "the other 14 wait on the queue as repairs" "$(seq 8004 8016 | tr '\n' ' ')8018" "$(in_queue)"
-want_in "a parked ticket's clash is still repaired" 'queued #8003 as a repair' "$out"
+want "19 open, 17 clashing: nothing is queued to repair them" "0" "$(grep -c 'finish: queued #' <<<"$out")"
+want "  and nothing is spawned for them"      "" "$(spawned)"
+want_in "  each clash is on its rebuild clock instead" 'rebuild: PR #8001 is stuck \(it conflicts with its base branch\) — 0 of 60 min' "$out"
+want_in "  a parked ticket's clash is left as it is" 'rebuild: PR #8003 left as it is — #8003 waits on a person \(status:parked\)' "$out"
 want_in "the 12 non-drafts count; the 7 drafts nothing builds do not: still over" 'open changes 12 / cap 10: finishing before starting' "$out"
 want_not_in "and nothing new starts over the cap" '701' "$(spawned)"
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want "the next tick queues none twice"      "0" "$(grep -c '^[0-9:]* finish: queued #' <<<"$out")"
-want "and reads no unchanged draft's timeline twice" "$(sort -u "$FIX/pstop.log" | grep -c .)" "$(grep -c . "$FIX/pstop.log")"
+want "the next tick reads no unchanged draft's timeline twice" "$(sort -u "$FIX/pstop.log" | grep -c .)" "$(grep -c . "$FIX/pstop.log")"
 
 echo "--- a PR a person drafted, or labelled do-not-merge, is neither counted nor queued ---"
 fresh; rm -f "$FIX/pdrafted.tsv"; prs_of 8100 6 6 0
 jq 'map(if .number == 8105 then .isDraft = true elif .number == 8104 then .labels = [{name: "do-not-merge"}] else . end)' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
 tickets_of "P1,status:in-review" $(seq 8100 8111)
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 COORDINATOR_OPEN_PR_CAP=11 ticks 1)
-want_not_in "the person's draft is not queued"  'queued #8105' "$out"
-want_not_in "nor the do-not-merge one"          'queued #8104' "$out"
+want_in "the person's draft is left as it is"  'rebuild: PR #8105 left as it is — a person put it back to draft' "$out"
+want_in "nor the do-not-merge one"              'rebuild: PR #8104 left as it is — the PR carries do-not-merge' "$out"
 want_in "neither counts: 10 of 12"               'open changes 10 / cap 11: new work may start' "$out"
-want_in "and the tick names why"                 'finish: 2 of 12 open PR\(s\) not counted.*#8104 carries do-not-merge.*#8105 a person drafted it' "$out"
+want_in "and the tick names why"                 'finish: 2 of 12 open PR\(s\) not counted.*#8104 carries do-not-merge.*#8105 is a draft nothing is building' "$out"
 fresh; prs_of 8200 0 1 0; jq '.[0].isDraft = true | .[0].number = 8005 | .[0].headRefName = "tkt-8005-x"' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
 fix_issue 8005 OPEN "P1"; out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 COORDINATOR_OPEN_PR_CAP=11 ticks 1)
 want "a person's draft is never spawned"        "" "$(spawned)"
-
-echo "--- the stall guard: at the cap, no build anywhere, nothing spawnable for 2 ticks ---"
-# 11 green PRs waiting on a merge (counted) and one clash a repair left as it was (not counted, repairable).
-fresh; prs_of 8300 1 11 0; tickets_of "P1,status:in-review" $(seq 8300 8311); queue 701
-mkdir -p "$C"; printf '8300\th8300\tconflict\t1\n' > "$C/finish-queued.did"
-out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want "tick 1: nothing starts"                   "" "$(spawned)"
-want_in "it counts the idle tick"               'stall: cap reached, 0 builds on any host and nothing spawnable — 1 of 2' "$out"
-out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want_in "tick 2: the stall is said"             '⚠ stall: cap reached with nothing finishing' "$out"
-want "and the oldest repairable PR starts anyway, as a repair" "8300 repair" "$(cut -f1,2 "$SPAWNS" | tr '\t' ' ')"
-want_in "the heartbeat's why carries it"        'cap reached with nothing finishing' "$(jq -r '.hosts[0].why.stall // empty' "$C/fleet.json" 2>/dev/null)"
-out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want_not_in "a build running is no stall"       '⚠ stall' "$out"
-fresh; prs_of 8300 1 11 0; tickets_of "P1,status:in-review" $(seq 8300 8311); queue 701
-mkdir -p "$C"; printf '8300\th8300\tconflict\t1\n' > "$C/finish-queued.did"
-printf '8300\tother-host\tbuild\n' > "$FIX/claims.txt"
-out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 2)
-want_not_in "a build on another host is no stall either" 'stall: cap reached' "$out"
-
-echo "--- the stall guard's repair goes through the one repair gate (repair-gate.sh) ---"
-# stall_red <check> — the stall world, its oldest repairable PR red only on <check>, settled.
-stall_red() {
-  fresh; prs_of 8300 1 11 0; tickets_of "P1,status:in-review" $(seq 8300 8311); queue 701
-  jq --arg c "$1" 'map(if .number == 8300 then .mergeStateStatus = "CLEAN" | .statusCheckRollup = [{name:"Typecheck", status:"COMPLETED", conclusion:"SUCCESS"}, {name:$c, status:"COMPLETED", conclusion:"FAILURE"}] else . end)' \
-    "$FIX/gh/prs-all.json" > "$FIX/gh/p.json" && mv "$FIX/gh/p.json" "$FIX/gh/prs-all.json"
-  mkdir -p "$C"; printf '8300\th8300\tci\t1\n' > "$C/finish-queued.did"
-  fix_required "Typecheck"
-}
-stall_red "Capture and pin the evidence"
-SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null; out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want "only a non-required check red: the stall guard starts nothing" "" "$(spawned)"
-want_in "  and says why"                         'stall: skip #8300: PR #8300 is not red \(green: no required check failed' "$out"
-stall_red "Typecheck"
-SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null; out=$(SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1)
-want "a required red: the stall guard still starts it" "8300 repair" "$(cut -f1,2 "$SPAWNS" | tr '\t' ' ')"
-fix_required
 
 echo "--- a polish list never ships alone while other work can start, full or not ---"
 # list_issue <n> <items> — an open polish list holding that many unticked items
@@ -468,9 +404,6 @@ fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; fix_i
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=6 ticks 1)
 want "a P3 ticket waits while a P2 can start" "701" "$(spawned)"
 want_in "named once"                       'polish: 1 polish ticket\(s\) wait while other work can start' "$out"
-fresh; fix_issue 701 OPEN "P2,status:ready"; bash "$Q" add 701 >/dev/null; reds_as P3 601
-SWARM_IDLE=90 COORDINATOR_CAP=4 ticks 1 >/dev/null
-want "a polish red still takes its healing place" "601 701" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 echo "--- a polish list with nothing free on it is never work, even on an idle factory ---"
 # list_body_issue <n> <body> — an open polish list with exactly that body
 list_body_issue() {
@@ -549,16 +482,15 @@ printf '{"run_id":"claim-%s-old","ticket":"%s","child_pid":%s,"log":"/dev/null"}
 SH
 chmod +x "$FIX/oldspawn/spawn-claim.sh"
 # One agent of room a tick, so the second tick reads the class the first recorded.
-# The live view's healing count is what tells a healing run from a new one here.
 oldspawn() { COORDINATOR_OPEN_PR_CAP=0 SWARM_SPAWN="$FIX/oldspawn/spawn-claim.sh" SWARM_IDLE=23 SWARM_CORES=10 COORDINATOR_SHADOW=0 COORDINATOR_CAP=4 bash "$T" 2>&1; }
-fresh; queue_as repair 601; queue 701 702
+fresh; queue 701 702
 oldspawn >/dev/null
-want "the older spawner ran"               "601	no-class" "$(head -1 "$SPAWNS")"
-want "its record carries no class"         "" "$(jq -r '.class // empty' "$STATE/runs/claim-601-old.json")"
-want "the coordinator recorded it"         "repair" "$(awk -F'\t' '$1=="claim-601-old"{print $3}' "$C/run-classes.tsv")"
+want "the older spawner ran"               "701	no-class" "$(head -1 "$SPAWNS")"
+want "its record carries no class"         "" "$(jq -r '.class // empty' "$STATE/runs/claim-701-old.json")"
+want "the coordinator recorded it"         "new" "$(awk -F'\t' '$1=="claim-701-old"{print $3}' "$C/run-classes.tsv")"
 oldspawn >/dev/null
-want "so the next tick builds new and counts it as healing" "601 701" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
-want "the live view agrees"                "1 1" "$(jq -r '"\(.healing.live) \(.new.live)"' "$C/capacity.json")"
+want "so the next tick builds the next one" "701 702" "$(cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//')"
+want "the live view counts both"           "2" "$(jq -r '.new.live' "$C/capacity.json")"
 rm -rf "$FIX/oldspawn"
 
 echo "--- never a claimed, gated or held ticket ---"
@@ -587,12 +519,12 @@ fresh; proc_q "P0,status:ready" 701; proc_q "P3,process,status:ready" 702
 out=$(SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1)
 want "a P3 process fix starts before a P0 that is not one" "702" "$(spawned)"
 want_in "and the log says why"             'spawned #702 \(new\) in any free place, a process fix first' "$out"
-fresh; queue_as repair $(seq 601 612); proc_q "P3,process,status:ready" 702
+fresh; proc_q "P0,status:ready" $(seq 601 612); proc_q "P3,process,status:ready" 702
 SWARM_IDLE=90 COORDINATOR_CAP=1 ticks 1 >/dev/null
-want "12 reds waiting: the process fix still takes the one place" "702" "$(spawned)"
-fresh; queue_as repair 601; proc_q "P2,status:ready" 701; proc_q "process,status:ready" 702 703
+want "12 P0 tickets waiting: the process fix still takes the one place" "702" "$(spawned)"
+fresh; proc_q "P0,status:ready" 601; proc_q "P2,status:ready" 701; proc_q "process,status:ready" 702 703
 SWARM_IDLE=90 COORDINATOR_CAP=2 ticks 1 >/dev/null
-want "both places go to process fixes, ahead of the red" "702 703" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+want "both places go to process fixes, ahead of the P0" "702 703" "$(spawned | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 fresh; proc_q "P1,status:ready" 701; proc_q "P2,status:ready" 702
 fix_issue 703 OPEN "P3,process,status:ready"; bash "$Q" add 703 >/dev/null
 fix_issue 704 OPEN "P0,status:ready"; bash "$Q" add 704 --front >/dev/null
@@ -666,27 +598,33 @@ out=$(COORDINATOR_SHADOW=0 SWARM_GH="$FIX/gh-nopr" tick)
 want "unreadable pull requests spawn nothing" "" "$(spawned)"
 want_in "and says so"                      'pull requests could not be read' "$out"
 
-echo "--- a new entry whose ticket has an open PR is that PR's repair, never a silent skip ---"
+echo "--- one ticket, one change: a queued ticket with an open PR waits, never built beside it ---"
 fresh; queue 501 502
 jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want "the open draft PR's ticket is spawned as a repair" "501	repair" "$(grep '^501	' "$SPAWNS")"
-want "and the other new ticket as new"     "502	new" "$(grep '^502	' "$SPAWNS")"
-want_in "and named"                        '#501 \(new\): has an open PR #9 — taken as its repair' "$out"
-want_not_in "never skipped for its PR"     'skip #501 .*has an open PR' "$out"
-want "the spawned tickets left the queue"  "" "$(jq -r '.tickets[].n' "$C/queue.json" | tr '\n' ' ' | sed 's/ $//')"
+want "the open draft PR's ticket is not spawned" "" "$(grep '^501	' "$SPAWNS")"
+want "and the other new ticket is"         "502	new" "$(grep '^502	' "$SPAWNS")"
+want_in "and the skip says why"            'skip #501 \(new\): has an open PR #9 — it merges, or is rebuilt fresh' "$out"
+want "it stays queued for when the PR is gone" "501" "$(jq -r '.tickets[].n' "$C/queue.json" | tr '\n' ' ' | sed 's/ $//')"
 fresh; queue 501; fix_required "Typecheck"
 jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[], statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs-all.json"
+out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "a ready red PR's ticket waits too" "" "$(spawned)"
+want_in "  its PR is on the rebuild clock"  'rebuild: PR #9 is stuck \(required check\(s\) failed: Typecheck\)' "$out"
+fix_required
+fresh; queue 501
+jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
+mkdir -p "$STATE/driver/501"; jq -n '{ticket:"501", mode:"build", done:["start","size","plan"]}' > "$STATE/driver/501/state.json"
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a ready red PR's ticket is a repair too" "501	repair" "$(grep '^501	' "$SPAWNS")"
+want "this host's own unshipped build of it resumes on its draft" "501	new" "$(grep '^501	' "$SPAWNS")"
+rm -rf "$STATE/driver/501"
 
 echo "--- no run without a change to make ---"
 # About 16 runs in 3 days: repairs with no open PR, closed tickets, builds of tickets not ready.
-fresh; fix_issue 501 OPEN "status:in-review"; bash "$Q" add 501 --class repair >/dev/null
+fresh; fix_issue 501 OPEN "status:in-review"; bash "$Q" add 501 --class repair >/dev/null 2>&1
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want "a repair with no open PR: nothing spawned" "" "$(spawned)"
-want_in "  and says why: back to new work, which waits for ready" '#501 \(repair\): has no open PR — back to new work' "$out"
-want_in "  and the new build is not started on a ticket in review" 'skip #501 \(new\): ' "$out"
+want "an older repair row with no open PR, ticket in review: nothing spawned" "" "$(spawned)"
+want_in "  it is new work, which waits while in review" 'skip #501 \(new\): status:in-review' "$out"
 fresh; fix_issue 501 OPEN "status:drafting"; bash "$Q" add 501 >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a build of a ticket not ready: nothing spawned" "" "$(spawned)"
@@ -698,168 +636,89 @@ fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 >/dev/null
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a closed ticket: nothing spawned"      "" "$(spawned)"
 
-echo "--- a queued repair whose PR is gone goes back to new work ---"
-# 30 ready tickets (15 P0) sat queued as repair with no open PR, skipped "nothing to repair"
-# on every tick and never started: one 822 times in two days. A healing class is set when a PR
-# exists; when a fresh read finds none, the row is new again in the same tick.
-fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair --first --note "Finish PR #9: a required check failed. Bring it back to green and mergeable; do not start over." >/dev/null
-out=$(COORDINATOR_SHADOW=0 tick)
-want "a ready ticket queued as repair, PR gone: started in the same tick" "501" "$(spawned)"
-want "  as a new build"                        "new" "$(awk -F'\t' '$3 == "spawn" && $4 == 501 { print $5 }' "$C/actions.log")"
-want_in "  and said once"                      '#501 \(repair\): has no open PR — back to new work' "$out"
-want_not_in "  never skipped as nothing to repair" 'nothing to repair' "$out"
-want_not_in "  and its brief is not the dead PR's" 'Finish PR #9' "$(cat "$SPAWNS")"
-fresh; fix_issue 501 OPEN "status:in-review"; bash "$Q" add 501 --class repair --note "REPAIR on PR #9: fix it." >/dev/null
+echo "--- a row an older version queued as repair or approved-merge is new work ---"
+fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair --first --note "Finish PR #9: a required check failed." >/dev/null 2>&1
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a row the tick cannot start yet is rewritten as new" "new" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
-want "  its dead-PR note cleared, so no re-seed reads it as a repair again" "" "$(jq -r '.tickets[] | select(.n == 501) | .note' "$C/queue.json")"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want_not_in "  and the next tick says nothing more of it" 'back to new work' "$out"
-fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null; echo 501 > "$FIX/claims.txt"
+want "a ready ticket queued as repair, no PR: started as new" "501	new" "$(cat "$SPAWNS")"
+fresh; mkdir -p "$C"; fix_issue 501 OPEN "status:ready"
+printf '{"scope":"x","tickets":[{"n":501,"class":"approved-merge","note":"","pinned":true}]}\n' > "$C/queue.json"
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a claimed one is being worked: left a repair" "repair" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
-fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class approved-merge >/dev/null
+want "an approved-merge row written by an older version is new work too" "501	new" "$(cat "$SPAWNS")"
+fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 --class repair >/dev/null 2>&1
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "an approved merge whose PR is gone is new work too" "501	new" "$(cat "$SPAWNS")"
-fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 --class repair >/dev/null
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a closed ticket queued as repair leaves the queue" "" "$(jq -r '.tickets[] | select(.n == 501) | .n' "$C/queue.json")"
-want "  and nothing spawned"                   "" "$(spawned)"
-# Only a fresh read can say the PR is gone: a snapshot decides nothing.
-fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null
-mkdir -p "$C/snapshot"; printf '[]\n' > "$C/snapshot/prs.json"
-printf '#!/usr/bin/env bash\ncase "$*" in *OpenPullRequests*) exit 1 ;; esac\nexec "%s" "$@"\n' "$BIN/gh" > "$FIX/gh-nopr"; chmod +x "$FIX/gh-nopr"
-out=$(SWARM_GH="$FIX/gh-nopr" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want "on a snapshot it stays a repair (the repair gate's own rule: a snapshot decides nothing)" "501	repair" "$(cat "$SPAWNS")"
-want_not_in "  and is never sent back to new work" 'back to new work' "$out"
-fresh; fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 --class repair >/dev/null
-out=$(COORDINATOR_SHADOW=1 tick)
-want "in shadow the row is not rewritten"     "repair" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
-want_in "  but it says what it would do"       '#501 \(repair\): has no open PR — would go back to new work' "$out"
+want "a closed ticket: nothing spawned"     "" "$(spawned)"
 
-echo "--- a repair starts only on a PR that is really red ---"
-# Repairs started while CI still ran, and on a red develop does not require: each parked.
-for case in "IN_PROGRESS:-:Typecheck:still running" "COMPLETED:SUCCESS:Typecheck:no required check failed" \
-            "COMPLETED:FAILURE:Capture evidence:no required check failed" "COMPLETED:CANCELLED:Typecheck:a re-run, not a repair"; do
-  IFS=: read -r st co nm why <<<"$case"
-  fresh; queue_as repair 501; fix_required "Typecheck"
-  jq -n --arg st "$st" --arg co "$co" --arg nm "$nm" '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[],
-    statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"SUCCESS"}, {name:$nm, status:$st, conclusion:(if $co == "-" then null else $co end)}]}]' > "$FIX/gh/prs-all.json"
-  out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-  want "$nm $st/$co: no repair spawned" "" "$(spawned)"
-  want_in "  the skip says why" "skip #501 \(repair\): PR #9 is not red .*$why.*no repair" "$out"
-done
-echo "--- a cancelled required check is re-run, never repaired ---"
-# Two required checks cancelled twice on one PR with no runner; each went to a repair builder.
-rerun_world() { fresh; queue_as repair 501; fix_required "Typecheck"
+echo "--- a cancelled required check is re-run, never stuck ---"
+# Two required checks cancelled twice on one PR with no runner; each went to a builder.
+rerun_world() { fresh; mkdir -p "$C"; fix_issue 501 OPEN "status:in-review"; fix_required "Typecheck"
   jq -n --arg h "$1" '[{number:9, headRefName:"tkt-501-x", headRefOid:$h, isDraft:false, mergeStateStatus:"BLOCKED", labels:[],
     statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"CANCELLED", detailsUrl:"https://github.com/acme/widgets/actions/runs/777/job/1"}]}]' > "$FIX/gh/prs-all.json"; }
 rerun_world s; : > "$GH_LOG"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want "cancelled: no repair spawned"         "" "$(spawned)"
+want "cancelled: nothing spawned, nothing closed" "0" "$(grep -c '^pr close' "$GH_LOG")"
 want "  the run is re-run, its failed jobs" "1" "$(grep -c '^run rerun 777 --failed' "$GH_LOG")"
-want_in "  and said"                        'skip #501 \(repair\): PR #9 is not red .*cancelled.* — re-ran 777 \(1 of 2\); no repair' "$out"
+want "  and no rebuild clock starts"         "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 # fresh() clears the coordinator's dir, so the ledger is carried across it by hand.
 cp "$C/reruns.tsv" "$FIX/reruns.keep"
 rerun_world s; cp "$FIX/reruns.keep" "$C/reruns.tsv"; SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
 cp "$C/reruns.tsv" "$FIX/reruns.keep"; rerun_world s; cp "$FIX/reruns.keep" "$C/reruns.tsv"; : > "$GH_LOG"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "a third cancel on the head: no re-run" "0" "$(grep -c '^run rerun' "$GH_LOG")"
-want "  and still no repair"                "" "$(spawned)"
-want_in "  a person looks"                  're-run 2 times already: a person looks' "$out"
 rerun_world s; : > "$GH_LOG"
 out=$(SWARM_SPAWN="$BIN/spawn-live" tick)
 want "shadow: nothing re-run"               "0" "$(grep -c '^run rerun' "$GH_LOG")"
-fresh; queue_as repair 501; fix_required "Typecheck"
-jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"DIRTY", mergeable:"CONFLICTING", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a clash is repaired"                 "501" "$(spawned)"
-fresh; queue_as repair 501
-printf 'nope\n' > "$FIX/gh/api-repos_acme_widgets_rules_branches_develop.json"
-jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:false, mergeStateStatus:"BLOCKED", labels:[], statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs-all.json"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want "develop's rules unreadable: no repair" "" "$(spawned)"
-want_in "  and said"                       'rules of develop could not be read' "$out"
 fix_required
-fresh; queue 501; echo 501 > "$FIX/claims.txt"
-jq -n '[{number:9, headRefName:"tkt-501-x", headRefOid:"s", isDraft:true, mergeStateStatus:"CLEAN", labels:[], statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
-out=$(COORDINATOR_SHADOW=0 tick)
-want "a PR claimed by a live run elsewhere is skipped" "" "$(spawned)"
-want_in "and named as claimed"             'skip #501 \(repair\): claimed' "$out"
-want "and its queue entry now reads repair" "repair" "$(jq -r '.tickets[] | select(.n==501) | .class' "$C/queue.json")"
 
-echo "--- repaired twice: rebuilt fresh from the trunk, never patched a third time ---"
-# The 12 most-repaired PRs (each 5-11 times) were 48% of three days' repair usage.
-rebuild_world() { # <repair spawns on record> [a rebuild after them: 1]
-  fresh; queue_as repair 501; printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"; mkdir -p "$C"
-  local i=0; while [ "$i" -lt "$1" ]; do i=$((i+1)); printf 'claim-501-%s\t501\trepair\t%s\n' "$i" "$((NOWE - 9000 + i))" >> "$C/run-classes.tsv"; done
-  [ -z "${2:-}" ] || printf 'claim-501-r\t501\trebuild\t%s\n' "$NOWE" >> "$C/run-classes.tsv"
+echo "--- rebuild, don't repair: a PR red past coordinator.rebuildAfterMin is closed and its ticket built fresh ---"
+rb_world() { # <labels> — ticket 501's one open PR red on a required check, its plan on this host's record
+  fresh; fix_issue 501 OPEN "${1:-P1,status:in-review}"; fix_required "Typecheck"; mkdir -p "$C"
+  printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"
+  printf '[{"sha":"dev1"}]\n' > "$FIX/gh/api-repos_acme_widgets_commits_sha_develop_per_page_5.json"
+  printf '{"check_runs":[{"name":"Typecheck","id":1,"status":"completed","conclusion":"success","completed_at":"2026-11-01T09:00:00Z"}]}\n' \
+    > "$FIX/gh/api-repos_acme_widgets_commits_dev1_check-runs_per_page_100_filter_all.json"
+  jq -n '[{number:5501, headRefName:"tkt-501-x", headRefOid:"f501", baseRefName:"develop", isDraft:false, mergeStateStatus:"BLOCKED", labels:[],
+    statusCheckRollup:[{name:"Typecheck", status:"COMPLETED", conclusion:"FAILURE"}]}]' > "$FIX/gh/prs-all.json"
+  mkdir -p "$STATE/driver/501/steps"
+  printf '{"step":"plan","tasks":[{"title":"Keep the scroll place","files":["src/feed.ts"]}]}\n' > "$STATE/driver/501/steps/plan.json"
+  jq -n '{ticket:"501", mode:"build", step:"ship", done:["start","plan","build","self-check","review","record","ship"], counters:{}}' > "$STATE/driver/501/state.json"
   : > "$GH_LOG"
 }
-NOWE=$(date +%s)
-rebuild_world 2
-mkdir -p "$STATE/driver/501/steps"; printf '{"step":"plan"}\n' > "$STATE/driver/501/steps/plan.json"
-jq -n '{ticket:"501", mode:"repair", step:"ship", done:["reenter","repair","fix","self-check","review","record","ship"], counters:{}}' > "$STATE/driver/501/state.json"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+T0=$(date +%s)
+rb_world
+out=$(SWARM_NOW=$T0 COORDINATOR_REBUILD_AFTER_MIN=30 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "first tick red: not closed"               "0" "$(grep -c '^pr close' "$GH_LOG")"
+want_in "  its clock starts"                    'rebuild: PR #5501 is stuck \(required check\(s\) failed: Typecheck\) — 0 of 30 min' "$out"
+want "  and no agent is sent to it"             "" "$(spawned)"
+out=$(SWARM_NOW=$(( T0 + 31 * 60 )) COORDINATOR_REBUILD_AFTER_MIN=30 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+want "31 minutes on: the head is kept on a stale ref" "1" "$(grep -c '^api repos/acme/widgets/git/refs -f ref=refs/stale/501/pr-5501 -f sha=f501' "$GH_LOG")"
+want "  the PR is closed, its branch deleted"   "1" "$(grep -c '^pr close 5501 .*--delete-branch .*Closed to rebuild fresh' "$GH_LOG")"
 want "  this host's driver record forgets every step (15735)" "0" "$(jq '.done | length' "$STATE/driver/501/state.json")"
 want "  its answers are archived, not left to be resumed" "1" "$(ls "$STATE/driver/501/steps/archive/"*/plan.json 2>/dev/null | grep -c .)"
+want_in "  the ticket is queued fresh with a Rebuild: brief" '^Rebuild: PR #5501 could not merge within 30 min' "$(jq -r '.tickets[]? | select(.n == 501) | .note' "$C/queue.json" 2>/dev/null; grep '^501' "$SPAWNS")"
+want_in "  the brief carries the reviewed plan" 'Keep the scroll place \(src/feed.ts\)' "$(jq -r '.tickets[]? | select(.n == 501) | .note' "$C/queue.json" 2>/dev/null; grep '^501' "$SPAWNS")"
+want_in "  and the tick says it"                'rebuild: closed PR #5501 .*head kept at refs/stale/501/pr-5501.* — #501 is queued to build fresh' "$out"
+want "  the rebuild is on record"               "rebuild" "$(awk -F'\t' '$2 == 501 && $3 == "rebuild"' "$C/run-classes.tsv" | cut -f3 | tail -1)"
 rm -rf "$STATE/driver/501"
-want "two repairs on record: no third repair"   "" "$(spawned)"
-want "  the head is kept on a stale ref"        "1" "$(grep -c '^api repos/acme/widgets/git/refs -f ref=refs/stale/501/pr-5501 -f sha=f501' "$GH_LOG")"
-want "  the PR is closed, its branch deleted"   "1" "$(grep -c '^pr close 5501 .*--delete-branch .*Closed to rebuild fresh' "$GH_LOG")"
-want "  the ticket is queued fresh, at the front" "new" "$(jq -r '.tickets[] | select(.n == 501) | .class' "$C/queue.json")"
-want_in "  with a note that says so"            '^Rebuild: PR #5501 was closed after 2 repairs' "$(jq -r '.tickets[] | select(.n == 501) | .note' "$C/queue.json")"
-want_in "  and the tick says it"                'rebuild: closed PR #5501 after 2 repairs \(head kept at refs/stale/501/pr-5501\)' "$out"
-want "  the rebuild is on record"               "rebuild" "$(tail -1 "$C/run-classes.tsv" | cut -f3)"
-rebuild_world 1
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "one repair on record: repaired again"     "501" "$(spawned)"
-want "  and nothing is closed"                  "0" "$(grep -c '^pr close' "$GH_LOG")"
-rebuild_world 2 1
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "repairs before the last rebuild do not count" "501" "$(spawned)"
-rebuild_world 2
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_REBUILD_AFTER_REPAIRS=0 tick >/dev/null
-want "0 turns it off"                           "501" "$(spawned)"
-rebuild_world 3
-out=$(SWARM_SPAWN="$BIN/spawn-live" tick)
-want_in "shadow says it would rebuild"          'rebuild: would close PR #5501 \(repaired 3 times\)' "$out"
+rb_world "P1,status:in-review,needs:owner-decision"
+SWARM_NOW=$T0 COORDINATOR_REBUILD_AFTER_MIN=30 COORDINATOR_SHADOW=0 tick >/dev/null
+SWARM_NOW=$(( T0 + 300 * 60 )) COORDINATOR_REBUILD_AFTER_MIN=30 COORDINATOR_SHADOW=0 tick >/dev/null
+want "a ticket waiting on the owner: never closed" "0" "$(grep -c '^pr close' "$GH_LOG")"
+rb_world
+SWARM_NOW=$T0 COORDINATOR_REBUILD_AFTER_MIN=30 tick >/dev/null
+out=$(SWARM_NOW=$(( T0 + 31 * 60 )) COORDINATOR_REBUILD_AFTER_MIN=30 tick)
+want_in "shadow says it would rebuild"          'rebuild: would close PR #5501' "$out"
 want "  and closes nothing"                     "0" "$(grep -c '^pr close' "$GH_LOG")"
-rebuild_world 2; rm -f "$FIX/gh/api-repos_acme_widgets_git_refs.json"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
+rb_world; rm -f "$FIX/gh/api-repos_acme_widgets_git_refs.json"
+SWARM_NOW=$T0 COORDINATOR_REBUILD_AFTER_MIN=30 COORDINATOR_SHADOW=0 tick >/dev/null
+out=$(SWARM_NOW=$(( T0 + 31 * 60 )) COORDINATOR_REBUILD_AFTER_MIN=30 COORDINATOR_SHADOW=0 tick)
 want "the head could not be kept: nothing closed" "0" "$(grep -c '^pr close' "$GH_LOG")"
-want "  and no third repair either"             "" "$(spawned)"
 want_in "  the tick says so"                    "rebuild: #501 — PR #5501's head could not be kept" "$out"
-
-echo "--- a repair run that called no model is not a repair (a P0 ticket, 1 Nov) ---"
-# Two "repairs" that only re-read a stop GitHub could not answer closed a green PR.
-hollow_end() { # <run n> <exit> <log line> — run claim-501-<n> of the two on record ends
-  printf '{"run_id":"claim-501-%s","ticket":"501","log":"%s","runner":"driver"}\n' "$1" "$STATE/logs/claim-501-$1.log" > "$STATE/runs/claim-501-$1.json"
-  { echo '--- builder: driver (a repair run: the driver repairs its open PR) ---'; echo "$3"
-    jq -cn --arg r "$3" '{type:"result",result:$r}'; } > "$STATE/logs/claim-501-$1.log"
-  printf '{"run_id":"claim-501-%s","exit_code":%s}\n' "$1" "$2" > "$STATE/runs/claim-501-$1.ended"
-}
-rebuild_world 2
-hollow_end 2 26 '↻ #501 requeued for the next tick, at the front of its priority as new, not parked: could not read whether a person stopped #501 / PR #5501'
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
-want "a repair that ran no step leaves one on record: repaired again" "501" "$(spawned)"
-want "  and nothing is closed"                  "0" "$(grep -c '^pr close' "$GH_LOG")"
-want_in "  the tick says why"                   'run claim-501-2 on #501 ran no model step, so it is not counted' "$out"
-want_in "  and the PR carries the void, for the other host's count" 'harness:repair-void' "$(cat "$GH_LOG")"
-rebuild_world 2
-hollow_end 2 20 '   review: $0.43 · context 47195→51838 tokens · 4961 words given'
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a repair whose step called the model still counts: rebuilt" "1" "$(grep -c '^pr close 5501' "$GH_LOG")"
-for c in 1 137; do
-  rebuild_world 2
-  hollow_end 2 "$c" 'build-ticket: killed mid-step'
-  SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-  want "a repair killed mid-step (exit $c, no cost line) still counts: rebuilt" "1" "$(grep -c '^pr close 5501' "$GH_LOG")"
-done
-rebuild_world 2
-hollow_end 2 20 '⏸ #501 parked (driver): start refused (exit 24) — start: #501 is not status:ready (labels: status:in-review)'
-SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
-want "a repair whose start was refused is not counted" "0" "$(grep -c '^pr close 5501' "$GH_LOG")"
+rb_world; echo "garbage" > "$FIX/claims.txt"
+COORDINATOR_CLAIMS_CMD=false SWARM_NOW=$T0 COORDINATOR_REBUILD_AFTER_MIN=0 COORDINATOR_SHADOW=0 tick >/dev/null
+out=$(COORDINATOR_CLAIMS_CMD=false SWARM_NOW=$(( T0 + 600 * 60 )) COORDINATOR_REBUILD_AFTER_MIN=1 COORDINATOR_SHADOW=0 tick)
+want "an unreadable claim list rebuilds nothing" "0" "$(grep -c '^pr close' "$GH_LOG")"
+want_in "  and says so"                         'rebuild: the claim list could not be read' "$out"
+rm -rf "$STATE/driver/501"; fix_required
 
 echo "--- a frozen run is noticed; a busy one is not ---"
 fresh; live_run 700
@@ -955,10 +814,10 @@ echo "--- a note on any class spawns: spawn-claim carries it to the driver ---"
 fresh; fix_issue 742 OPEN "status:ready"; bash "$Q" add 742 --note "The owner answered q1: yes." >/dev/null
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
 want "a noted new entry spawns"            "742" "$(spawned)"
-fresh; queue_as repair 744
-bash "$Q" add 744 --class repair --note "clashes" >/dev/null
+fresh; fix_issue 744 OPEN "status:ready"
+bash "$Q" add 744 --class repair --note "clashes" >/dev/null 2>&1
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=1 SWARM_SPAWN="$BIN/spawn-some" SWARM_IDLE=90 SWARM_CORES=10 tick)
-want "a noted repair spawns"               "744" "$(spawned)"
+want "a noted row an older caller queued as repair spawns, as new" "744" "$(spawned)"
 
 echo "--- ended runs: recorded once, the failures raised ---"
 fresh
@@ -1070,7 +929,8 @@ fix_issue 806 OPEN "status:in-review"
 jq -n '[{number:61, headRefName:"tkt-806-x", headRefOid:"sha61", isDraft:true, labels:[], mergeStateStatus:"CLEAN", statusCheckRollup:[]}]' > "$FIX/gh/prs-all.json"
 cut_run 806 "$wall" "$said"
 COORDINATOR_SHADOW=0 tick >/dev/null
-want_in "a cut run with an open PR comes back as a repair" "Coordinator note \(repair\): Resume: run claim-806-cut" "$(grep '^806' "$SPAWNS")"
+want_in "a cut run with an open PR comes back as new, its note kept" "Resume: run claim-806-cut" "$(jq -r '.tickets[]? | select(.n==806) | .class + " " + .note' "$C/queue.json" 2>/dev/null; grep '^806' "$SPAWNS")"
+want_not_in "  never as a repair"            'repair' "$(jq -r '.tickets[]? | select(.n==806) | .class' "$C/queue.json" 2>/dev/null; cut -f2 "$SPAWNS")"
 
 fresh
 fix_issue 807 CLOSED "status:done"
@@ -1105,7 +965,10 @@ want_in "shadow says what it would re-queue" 'would re-queue #810 \(new\) at the
 want "and queues nothing"                  "" "$(jq -r '.tickets[]? | select(.n==810) | .n' "$C/queue.json" 2>/dev/null)"
 rm -f "$STATE"/logs/claim-80?-cut.log "$STATE"/logs/claim-810-cut.log
 
-echo "--- pull requests: red is judged, green pixels go to the owner in batches ---"
+echo "--- pull requests: red is on the red clock, never judged; green pixels go to the owner in batches ---"
+# reds <mode> — the PRs this tick saw red (red-since.<mode>.tsv), sorted
+reds() { cut -f1 "$C/red-since.$1.tsv" 2>/dev/null | sort -n | tr '\n' ' ' | sed 's/ $//'; }
+is_red() { case " $(reds "${2:-would}") " in *" $1 "*) echo 1 ;; *) echo 0 ;; esac; }
 pr() { # <n> <ticket> <label-or-> <conclusion> [mergeState] — the hold's own gate is red while held
   jq -n --argjson n "$1" --arg b "tkt-$2-x" --arg l "$3" --arg c "$4" --arg m "${5:-CLEAN}" \
     '{number:$n, headRefName:$b, headRefOid:("sha" + ($n|tostring) + "abcdef"), isDraft:false, mergeStateStatus:$m,
@@ -1118,8 +981,9 @@ held() { local n; for n in "$@"; do pr "$n" "$((n+560))" needs:human-approval SU
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(held 42) <(pr 43 603 - SUCCESS DIRTY) <(pr 44 604 - SUCCESS) > "$FIX/gh/prs-all.json"
 tick >/dev/null
-want "a settled red PR is judged"          "1" "$(grep -c '"id":"red-pr:41:sha41a' "$C/events.would.jsonl")"
-want "a clash is judged"                   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
+want "a settled red PR is red"             "1" "$(is_red 41)"
+want "a clash is red"                      "1" "$(is_red 43)"
+want "no red PR raises a judge event"      "0" "$(grep -c '"kind":"red-pr"' "$C/events.would.jsonl")"
 want "a healthy PR raises nothing"         "0" "$(grep -c '"id":"[a-z-]*:44:' "$C/events.would.jsonl")"
 want "one green held PR is not a batch"    "0" "$(grep -c '"kind":"signoff"' "$C/events.would.jsonl")"
 fresh
@@ -1127,9 +991,9 @@ fresh
 withstatus() { jq --arg s "$1" '.statusCheckRollup += [{__typename:"StatusContext", context:"Design critic", state:$s}]'; }
 jq -s . <(pr 46 606 - FAILURE | withstatus PENDING) <(pr 47 607 - SUCCESS | withstatus PENDING) <(pr 48 608 - SUCCESS | withstatus FAILURE) > "$FIX/gh/prs-all.json"
 tick >/dev/null
-want "a red PR waiting on a status is still judged" "1" "$(grep -c '"id":"red-pr:46:sha46a' "$C/events.would.jsonl")"
-want "a pending status alone is not red"   "0" "$(grep -c '"id":"red-pr:47:' "$C/events.would.jsonl")"
-want "a failed status is red"              "1" "$(grep -c '"id":"red-pr:48:sha48a' "$C/events.would.jsonl")"
+want "a red PR waiting on a status is still red" "1" "$(is_red 46)"
+want "a pending status alone is not red"   "0" "$(is_red 47)"
+want "a failed status is red"              "1" "$(is_red 48)"
 
 echo "--- a check that warns until the release is not a red (release.nonBlockingChecks) ---"
 cp "$HARNESS_CFG_PATH" "$FIX/cfg.release.bak"
@@ -1142,65 +1006,49 @@ jq '.release = {nonBlockingChecks: ["Lesson / Every fix ships a lesson", "Design
   "$FIX/cfg.release.bak" > "$HARNESS_CFG_PATH"
 fresh; release_prs
 out=$(tick)
-want "red only on Lesson and Design critic is not judged red" "0" "$(grep -c '"id":"red-pr:61:' "$C/events.would.jsonl")"
+want "red only on Lesson and Design critic is not red" "0" "$(is_red 61)"
 want_in "a warning is noted instead"       'PR #61: red only on .*Design critic.*a warning until the release' "$out"
-want "red on Code gates as well is still red" "1" "$(grep -c '"id":"red-pr:62:sha62a' "$C/events.would.jsonl")"
+want "red on Code gates as well is still red" "1" "$(is_red 62)"
 jq '.release.done = true' "$HARNESS_CFG_PATH" > "$FIX/cfg.release.t" && cp "$FIX/cfg.release.t" "$HARNESS_CFG_PATH"
 fresh; release_prs
 out=$(tick)
-want "after the release the same PR is red again" "1" "$(grep -c '"id":"red-pr:61:sha61a' "$C/events.would.jsonl")"
+want "after the release the same PR is red again" "1" "$(is_red 61)"
 want_not_in "and no warning is noted"      'a warning until the release' "$out"
 cp "$FIX/cfg.release.bak" "$HARNESS_CFG_PATH"
 fresh; release_prs
 tick >/dev/null
-want "with no release key it is red, as before" "1" "$(grep -c '"id":"red-pr:61:sha61a' "$C/events.would.jsonl")"
+want "with no release key it is red, as before" "1" "$(is_red 61)"
 
-echo "--- merge first: a red only on the Evidence capture develop does not require is a note, never judged ---"
+echo "--- merge first: a red only on the Evidence capture develop does not require is a note, never red ---"
 evid() { jq '.statusCheckRollup += [{__typename:"CheckRun", name:"Capture and pin the evidence", status:"COMPLETED", conclusion:"FAILURE"}]'; }
 ev_prs() { jq -s . <(pr 71 631 - SUCCESS | evid) <(pr 72 632 - FAILURE | evid) > "$FIX/gh/prs-all.json"; }
-ev_case() { # <kit> — R: whether #71 (Evidence alone) and #72 (a required red too) were judged, and #71's note
+ev_case() { # <kit> — R: whether #71 (Evidence alone) and #72 (a required red too) were read red, and #71's note
   fresh; ev_prs; fix_required "ci"; : > "$GH_LOG"
   out=$(COORDINATOR_SHADOW=0 bash "$1/scripts/coordinator-tick.sh" 2>&1)
-  R="71=$(grep -c '"id":"red-pr:71:' "$C/events."*.jsonl 2>/dev/null | awk -F: '{ s += $NF } END { print s + 0 }') 72=$(grep -c '"id":"red-pr:72:' "$C/events."*.jsonl 2>/dev/null | awk -F: '{ s += $NF } END { print s + 0 }') note=$(grep -c 'pr comment 71 .*Evidence: not captured' "$GH_LOG")"
+  R="71=$(is_red 71 did) 72=$(is_red 72 did) note=$(grep -c 'pr comment 71 .*Evidence: not captured' "$GH_LOG")"
 }
 jq '.release = {mergeFirst: true, done: false, nonBlockingChecks: []}' "$FIX/cfg.release.bak" > "$HARNESS_CFG_PATH"
 ev_case "$HERE/.."
-want "Evidence alone: not judged, noted once; a required red still judged" "71=0 72=1 note=1" "$R"
+want "Evidence alone: not red, noted once; a required red still red" "71=0 72=1 note=1" "$R"
 want_in "the note says it ships on its required checks" 'Evidence: not captured \(Capture and pin the evidence failed on sha71ab, a check develop does not require\); shots follow when the workflow recovers' "$(cat "$GH_LOG")"
 COORDINATOR_SHADOW=0 bash "$T" >/dev/null 2>&1; want "a second tick on the same head notes nothing more" "1" "$(grep -c 'pr comment 71 .*Evidence: not captured' "$GH_LOG")"
 EVKIT="$FIX/evkit"; rm -rf "$EVKIT"; mkdir -p "$EVKIT"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$HERE/../shared" "$EVKIT/" 2>/dev/null
 python3 -I -c 'import sys; p = sys.argv[1]; s = open(p).read(); o = " | select(needed))) as $c"; n = s.count(o); open(p, "w").write(s.replace(o, ")) as $c")); sys.exit(0 if n == 1 else 1)' "$EVKIT/scripts/coordinator-tick.sh" \
-  && { ev_case "$EVKIT"; want "planted (every check a red): the Evidence-only PR is judged again" "71=1 72=1 note=0" "$R"; } || bad "plant: the required-only filter did not land"
+  && { ev_case "$EVKIT"; want "planted (every check a red): the Evidence-only PR is red again" "71=1 72=1 note=0" "$R"; } || bad "plant: the required-only filter did not land"
 jq '.release = {mergeFirst: false, done: false, nonBlockingChecks: []}' "$FIX/cfg.release.bak" > "$HARNESS_CFG_PATH"
 ev_case "$HERE/.."
-want "merge first off: the Evidence red is judged, as before" "71=1 72=1 note=0" "$R"
+want "merge first off: the Evidence red is red, as before" "71=1 72=1 note=0" "$R"
 cp "$FIX/cfg.release.bak" "$HARNESS_CFG_PATH"
-fresh
-jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - SUCCESS DIRTY) > "$FIX/gh/prs-all.json"
-printf '[{"pr":41,"window":"mac:4242","expired":false},{"pr":43,"window":"mac:77","expired":true}]\n' > "$FIX/fixing.json"
-out=$(tick)
-want "a red PR a session is fixing is not judged" "0" "$(grep -c '"id":"[a-z-]*:41:' "$C/events.would.jsonl")"
-want_in "and the tick says who has it"     'PR #41: .*being fixed by mac:4242' "$out"
-want "an expired fix lock fixes nothing"   "1" "$(grep -c '"id":"red-pr:43:sha43a' "$C/events.would.jsonl")"
 
-echo "--- a repair waiting for develop's fix: not judged red on that head, said when it ends, queued again when due ---"
+echo "--- a run that found its ticket's open PR (exit 31) is no stand-down ---"
 fresh
-jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
-printf '601\t41\tsha41abcdef\tdevelop\tci\tsrc/legacy.test.ts\t%s\t\n' "$(date +%s)" > "$STATE/swarm/base-waits.tsv"
+printf '{"run_id":"claim-601-pr","ticket":"601","log":"%s","runner":"driver"}\n' "$STATE/logs/claim-601-pr.log" > "$STATE/runs/claim-601-pr.json"
+jq -cn '{type:"result",result:"#601 already has an open pull request #41 on tkt-601-x — it merges, or the coordinator rebuilds it fresh once it cannot merge (coordinator.rebuildAfterMin); this run builds nothing"}' > "$STATE/logs/claim-601-pr.log"
+printf '{"run_id":"claim-601-pr","exit_code":31}\n' > "$STATE/runs/claim-601-pr.ended"
 out=$(tick)
-want "the waiting PR is not judged"         "0" "$(grep -c '"id":"red-pr:41:' "$C/events.would.jsonl" 2>/dev/null)"
-want_in "and the tick says what it waits on" "PR #41: .*#601 waits for develop.s fix on this head" "$out"
-want_not_in "nothing is due an hour in"     'base wait: would queue #601' "$out"
-fresh
-printf '601\t41\tsha41abcdef\tdevelop\tci\tsrc/legacy.test.ts\t%s\t\n' "$(( $(date +%s) - 7 * 3600 ))" > "$STATE/swarm/base-waits.tsv"
-printf '{"run_id":"claim-601-bw","ticket":"601","log":"%s","runner":"driver"}\n' "$STATE/logs/claim-601-bw.log" > "$STATE/runs/claim-601-bw.json"
-jq -cn '{type:"result",result:"⏸ #601 waiting for develop, not parked: ci"}' > "$STATE/logs/claim-601-bw.log"
-printf '{"run_id":"claim-601-bw","exit_code":34}\n' > "$STATE/runs/claim-601-bw.ended"
-out=$(tick)
-want_in "the ended wait is said"            'base wait: run claim-601-bw left #601 waiting' "$out"
+want_in "the ended run is said"             'has a PR: run claim-601-pr found #601.s open pull request and built nothing' "$out"
 want_not_in "and raises no stand-down"      '"kind":"stood-down".*"ticket":"601"' "$(cat "$C/events.would.jsonl" 2>/dev/null)"
-want_in "past the hours it would be queued" 'base wait: would queue #601 as a repair: 6 hours passed' "$out"
-rm -f "$STATE/swarm/base-waits.tsv"
+want_not_in "nor a no-progress park"        'no progress' "$out"
 
 echo "--- a PR red two hours with nothing fixing it reaches the owner, once (coordinator.redReportMin) ---"
 red_at() { mkdir -p "$C"; printf '%s\t%s\t%s\n' "$2" "$3" "$(( $(date +%s) - $4 * 60 ))" >> "$C/red-since.$1.tsv"; } # <mode> <pr> <sha> <min-ago>
@@ -1229,14 +1077,10 @@ want "and the old head's row is dropped"    "sha41abcdef" "$(cut -f2 "$C/red-sin
 fresh
 jq -s . <(pr 41 601 - FAILURE) <(pr 43 603 - FAILURE) <(pr 44 604 - FAILURE) > "$FIX/gh/prs-all.json"
 red_at would 41 sha41abcdef 200; red_at would 43 sha43abcdef 200; red_at would 44 sha44abcdef 200
-printf '[{"pr":41,"window":"mac:4242","expired":false}]\n' > "$FIX/fixing.json"
 live_run 603
-printf '604\t44\tsha44abcdef\tdevelop\tci\tsrc/legacy.test.ts\t%s\t\n' "$(date +%s)" > "$STATE/swarm/base-waits.tsv"
 tick >/dev/null
-want "a fix lock is something fixing it"    "0" "$(red2h_would 41)"
-want "a live run on its ticket is too"      "0" "$(red2h_would 43)"
-want "a base wait says its own reason, not red-2h" "0" "$(red2h_would 44)"
-rm -f "$STATE/swarm/base-waits.tsv"
+want "a live run on its ticket is something fixing it" "0" "$(red2h_would 43)"
+want "with nothing working it, it is reported" "1" "$(red2h_would 41)"
 fresh
 jq -s . <(pr 41 601 - SUCCESS) > "$FIX/gh/prs-all.json"
 red_at would 41 sha41abcdef 300
@@ -1371,11 +1215,18 @@ printf '{"run_id":"claim-802-y","exit_code":0}\n' > "$STATE/runs/claim-802-y.end
 tick >/dev/null
 COORDINATOR_SHADOW=0 tick >/dev/null; sleep 0.5
 want "going live does not replay the shadow night's events" "" "$(cat "$FIX/claude.log")"
+# stood_down <ticket> <id> — a run that ended parked: the event a judge takes
+stood_down() {
+  printf '{"run_id":"claim-%s-%s","ticket":"%s","log":"%s"}\n' "$1" "$2" "$1" "$STATE/logs/claim-$1-$2.log" > "$STATE/runs/claim-$1-$2.json"
+  printf '{"type":"result","result":"Parked: the spec contradicts itself"}\n' > "$STATE/logs/claim-$1-$2.log"
+  printf '{"run_id":"claim-%s-%s","exit_code":0}\n' "$1" "$2" > "$STATE/runs/claim-$1-$2.ended"
+}
 fresh
-jq -s . <(pr 41 601 - FAILURE) > "$FIX/gh/prs-all.json"
+stood_down 601 j
 tick >/dev/null
 want "shadow starts no judge"              "" "$(cat "$FIX/claude.log")"
-want_in "shadow logs the judgement it would start" 'would	judge	red-pr:41:sha41' "$(cat "$C/actions.log")"
+want_in "shadow logs the judgement it would start" 'would	judge	stood-down:claim-601-j' "$(cat "$C/actions.log")"
+rm -f "$STATE/runs/claim-601-j.ended"; rm -f "$C/ended.seen"; stood_down 601 k
 COORDINATOR_SHADOW=0 tick >/dev/null
 for _ in $(seq 1 50); do ls "$C"/judges/*.ended >/dev/null 2>&1 && break; sleep 0.1; done
 argv=$(cat "$FIX/claude.log")
@@ -1385,7 +1236,7 @@ want_in "it has a budget"                  '\[--max-budget-usd\] \[5\]' "$argv"
 want "its compact window is bounded"       "COMPACT=150000" "$(grep ^COMPACT "$FIX/claude.log")"
 want_in "it loads only the builder's MCP servers" '\[--strict-mcp-config\] \[--mcp-config\] \[[^]]*builder-mcp\.json\]' "$argv"
 want "and the builder list is empty unless set" "" "$(jq -r '.mcpServers | keys | join(",")' "$STATE/swarm/builder-mcp.json" 2>&1)"
-want_in "the brief carries the one event"  'red-pr:41:sha41' "$argv"
+want_in "the brief carries the one event"  'stood-down:claim-601-k' "$argv"
 want_not_in "it never resumes a session"   '\[--(resume|continue)\]|\[-c\]|\[-r\]' "$argv"
 COORDINATOR_SHADOW=0 tick >/dev/null
 sleep 0.3
@@ -1440,8 +1291,7 @@ echo 701 > "$FIX/claims.txt"
 out=$(COORDINATOR_CLAIMABLE="$BIN/claimable" COORDINATOR_REFRESH=1 COORDINATOR_SHADOW=0 tick)
 want "the refresh keeps both scopes, and the second scope's ticket spawns" "702" "$(spawned)"
 want "a ticket under neither scope is not queued" "" "$(jq -r '.tickets[] | select(.n==799) | .n' "$C/queue.json")"
-jq -s . <(pr 44 702 - FAILURE) > "$FIX/gh/prs-all.json"
-tick >/dev/null
+stood_down 702 s
 COORDINATOR_SHADOW=0 tick >/dev/null
 for _ in $(seq 1 50); do ls "$C"/judges/*.brief >/dev/null 2>&1 && break; sleep 0.1; done
 want_in "the judge's brief names every scope" 'Scope \(a ticket under any one of these is in scope\): project:alpha, area:BETA' "$(cat "$C"/judges/*.brief)"

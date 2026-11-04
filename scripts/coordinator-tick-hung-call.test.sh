@@ -20,7 +20,6 @@ for s in reconcile sweep wtsweep unblock notify; do printf '#!/usr/bin/env bash\
 export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep" COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep"
 export COORDINATOR_UNBLOCK="$BIN/unblock" COORDINATOR_NOTIFY_CMD="$BIN/notify" COORDINATOR_MACHINE_PARKS=off
 export COORDINATOR_HOUSEKEEPING=off COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 SWARM_FREE_MEM_GB=16
-printf '#!/usr/bin/env bash\nprintf "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"; export COORDINATOR_FIX_LOCK="$BIN/fixlock"
 printf '#!/usr/bin/env bash\ncase "$1" in tick) printf "500\\tdisk: 500 GB free\\n" ;; limits) echo "30 50" ;; free) echo 500 ;; esac\n' > "$BIN/diskguard"
 chmod +x "$BIN/diskguard"; export COORDINATOR_DISK_GUARD="$BIN/diskguard"
 printf '%s\n' 'live_view_watchdog() { :; }' > "$FIX/watchdog-stub.sh"; export COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"

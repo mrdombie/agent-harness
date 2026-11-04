@@ -40,7 +40,7 @@ command -v _driver_review_defer >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SO
 # _driver_fix_gates <ticket> — the fix round for gates self-check found red. Every gate
 # finding is answered in `gateFixes` with a commit on the branch; a gate is not
 # deferrable, because self-check refuses while it is red anyway.
-# A SHARED BASE'S RED IS NEVER A FIX ROUND'S. #13044 (2026-10-23): a repair's fix round was
+# A SHARED BASE'S RED IS NEVER A FIX ROUND'S. #13044 (2026-10-23): a fix round was
 # handed a `test:changed` red from an earlier run, re-ran it, found the test red on clean
 # develop too, and parked asking "wait or fix here". So before the model sees a gate red:
 #   - one self-check recorded at another head is another run's, never handed on;

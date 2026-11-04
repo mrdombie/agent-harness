@@ -32,14 +32,15 @@
 #   coordinator.polishListFull COORDINATOR_POLISH_LIST_FULL 8 most items of one polish list that ride
 #                                                           along with one change; a list never starts
 #                                                           on its own while other work can, full or not
-#   coordinator.openPrCap    COORDINATOR_OPEN_PR_CAP   10    open PRs (drafts too) over which no new ticket
-#                                                           starts: every place repairs or finishes, and
-#                                                           only repairs, approved merges and process fixes
-#                                                           start. Under it priority decides across repairs
-#                                                           and new work, a repair first at one priority.
-#                                                           0: off, no cap
+#   coordinator.openPrCap    COORDINATOR_OPEN_PR_CAP   10    open PRs being finished over which no new ticket
+#                                                           starts but process fixes, the cap-exempt
+#                                                           priorities and quick work. Under it priority
+#                                                           decides. 0: off, no cap
+#   coordinator.rebuildAfterMin COORDINATOR_REBUILD_AFTER_MIN 60  a PR stuck this long (a required check red,
+#                                                           a clash, a draft nothing builds) is closed and
+#                                                           its ticket rebuilt fresh (rebuild.sh); 0: off
 #   coordinator.openPrCapQuick COORDINATOR_OPEN_PR_CAP_QUICK on  over the cap, new tickets the driver's size
-#                                                           rules call quick start anyway, after healing
+#                                                           rules call quick start anyway, after process fixes
 #                                                           (scripts/cap-quick.sh); false: none does
 #   coordinator.openPrCapQuickScan COORDINATOR_OPEN_PR_CAP_QUICK_SCAN 40  bodies read a tick to pre-size
 #   coordinator.capExemptPriorities COORDINATOR_CAP_EXEMPT_PRIORITIES ["P0"]  priorities the open-work cap
@@ -69,8 +70,7 @@
 #                                                           In: a listed priority, or an alsoIn label ("x:*" is a
 #                                                           prefix), title prefix or title regex (case-insensitive,
 #                                                           e.g. "\\bcard\\b"); an excluded label or milestone
-#                                                           wins over both. Repairs, approved merges and process
-#                                                           fixes are never held. true: P0 P1, after-launch, the
+#                                                           wins over both. Process fixes are never held. true: P0 P1, after-launch, the
 #                                                           milestones below, alsoIn the screen labels and
 #                                                           "Batch:" / "Polish list:" titles; an object's missing
 #                                                           keys take those defaults
@@ -438,8 +438,6 @@ coord_record_class() { # <ticket> <class> — after a spawn returns
   rec=$(ls -t "$RUNS_DIR"/claim-"$1"-*.json 2>/dev/null | head -1)
   [ -n "$rec" ] && rid=$(basename "$rec" .json)
   printf '%s\t%s\t%s\t%s\n' "$rid" "$1" "$2" "$(date +%s)" >> "$COORD_RUN_CLASSES"
-  # A repair is marked on its PR too, so the rebuild count is every host's (repair-gate.sh).
-  [ "$2" != repair ] || ! declare -F repair_mark_pr >/dev/null || repair_mark_pr "$1" "${REPAIR_MARK_PJ:-}"
   tail -500 "$COORD_RUN_CLASSES" > "$COORD_RUN_CLASSES.$$" 2>/dev/null && mv -f "$COORD_RUN_CLASSES.$$" "$COORD_RUN_CLASSES"
 }
 coord_run_class() { # <runs/claim-*.json> — the class on record, or nothing
@@ -462,8 +460,6 @@ coord_live_recently() {
   m=$(jq -r '.mode // empty' "$f" 2>/dev/null); e=$(jq -r '.epoch // 0' "$f" 2>/dev/null)
   [ "$m" = did ] && [ $(( $(date +%s) - ${e:-0} )) -lt 900 ] 2>/dev/null
 }
-
-coord_healing_class() { case "$1" in repair|approved-merge) return 0 ;; *) return 1 ;; esac; }
 
 coord_shadow() { [ "$COORD_SHADOW" != 0 ]; }
 coord_mode()   { if coord_shadow; then printf would; else printf did; fi; }
@@ -548,7 +544,7 @@ coord_queue_locked() {
 #   coord_process a process fix (coordinator.processLabel, default process): first of
 #                all, whatever its priority, class or kind (owner call 2026-10-20)
 #   coord_release_held new work outside coordinator.releaseScopeOnly: never seeded,
-#                never started. Repairs, approved merges and process fixes never are.
+#                never started. Process fixes never are.
 COORD_TICKET_JQ='
   def coord_process($ls): ($ls | index($process)) != null;
   def coord_pri($ls; $pri): ([$ls[]? | select(test("^P[0-9]$"))] | first) // $pri // "";
@@ -564,9 +560,7 @@ COORD_TICKET_JQ='
     elif ($ls | index("type:feature")) then "feature"
     elif coord_polish($ls; $pri; $title) then "polish"
     else "other" end;
-  # Nobody can start it: closed, or a stop label. A repair or approved-merge row is
-  # stopped only by the labels that park the ticket; a hold or a question to a person
-  # stops new work but never a red or clashing PR.
+  # Nobody can start it: closed, or a stop label.
   def coord_stopped($ls; $class; $state):
     (($state // "OPEN") != "OPEN")
     or ($ls | any(. as $l | (if $class == "new" then $stopnew else $stopall end) | index($l) != null));
@@ -577,8 +571,9 @@ COORD_TICKET_JQ='
       | split("/") | last | ascii_downcase | select(length > 0)]) as $r
     | if ($ownrepos | length) == 0 or ($r | length) == 0 or ($r | any(. as $x | $ownrepos | index($x) != null))
       then null else $r[0] end;
-  def coord_repair_note($note): (($note // "") | test("(^|\n)REPAIR on PR #[0-9]"));
-  def coord_class($c; $note): if ($c // "new") == "new" and coord_repair_note($note) then "repair" else ($c // "new") end;
+  # Every entry is new work: there is no repair class. A row an older version wrote as repair or
+  # approved-merge is read as new (its PR merges, or the rebuild pass closes it and queues it fresh).
+  def coord_class($c; $note): "new";
   def coord_release_also($ls; $title):
     ($ls | any(. as $l | ($release.alsoIn.labels // []) | any(. as $p
         | if ($p | endswith("*")) then ($l | startswith($p[:-1])) else $l == $p end)))
@@ -647,10 +642,8 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
 # < none); within one priority every non-follow-up ticket before a fix-after-merge one
 # (release.followUpLabel, or a queue note "follow-up of PR #": owner call 2026-10-23, after
-# 187 were filed in a day, each put at the front), then repair, approved-merge, then new; within one class
-# product work before our own tooling (coord_tooling); then new by kind; then the
-# queue's own position. A repair of any priority used to outrank every new
-# ticket, so a P3 red held a P0 build back. An entry put at the front stays first
+# 187 were filed in a day, each put at the front); then product work before our own
+# tooling (coord_tooling); then by kind; then the queue's own position. An entry put at the front stays first
 # overall. A queue seeded from the shared sheet (coordinator-sheet.sh) runs in the
 # sheet's order: its owner already ordered it. The tick's batched read ($ISSUES) is fresher than the seed: when it
 # holds a ticket, its labels decide that ticket's priority and kind.
@@ -676,13 +669,13 @@ coord_queue_ordered() {
                  class: coord_class($t.class; $t.note)}
          | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
          | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
-         | . + {rank: ({"repair":0,"approved-merge":1,"new":2}[.class] // 3), tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
+         | . + {tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # Every P0 first (owner, 2026-10-30: urgent first), then the tiers. .top (the PM putting it on top
      # with add --front) leads its tier; .front (a resume, an answer, a requeue) leads its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
        else sort_by(if .proc then 0 else 1 end, (if .prin == 0 then 0 else 1 end), .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
-               (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), .rank, (if .tool then 1 else 0 end),
+               (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | if $wide == 2 then ([range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t"))
                           + "\t" + ([.[] | select(.tier == 1) | .focus] | group_by(.) | map("\($screens.focus[.[0]].name) \(length)") | join(", "))

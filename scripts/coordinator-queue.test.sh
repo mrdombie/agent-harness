@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # coordinator-queue.test.sh — a scope resolves the way /work resolves one, a
-# scope that resolves to nothing is refused, and the order is class first.
+# scope that resolves to nothing is refused, and the order is priority first. Every entry
+# is new work: there is no repair class.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -27,7 +28,7 @@ order() { bash "$Q" list | sed -n 's/^ *[0-9]*\. #\([0-9]*\) *\([a-z-]*\).*/\1:\
 echo "--- a programme subject resolves to its project: label ---"
 out=$(bash "$Q" seed widgets 2>&1)
 want_in "it says what it seeded"           'seeded 3 ticket\(s\) for project:widgets' "$out"
-want "repair first, then the rest in claimable order" "502:repair 501:new 503:new" "$(order)"
+want "every row new, a [FINISH PR] row too; by priority, newest first" "502:new 501:new 503:new" "$(order)"
 want "a ticket outside the scope is not queued" "" "$(jq -r '.tickets[] | select(.n==900) | .n' "$QF")"
 
 echo "--- a label that exists is that label ---"
@@ -42,7 +43,7 @@ want "and the scope says so"               "ticket 501" "$(jq -r .label "$QF")"
 echo "--- 'all' is every claimable ticket, labelled or not ---"
 out=$(bash "$Q" seed all 2>&1)
 want_in "it says what it seeded"           'seeded 4 ticket\(s\) for all' "$out"
-want "every ticket, the unlabelled one included" "900:new 502:repair 501:new 503:new" "$(order)"
+want "every ticket, the unlabelled one included" "900:new 502:new 501:new 503:new" "$(order)"
 want "a ticket carrying no scope label is in scope" "0" "$(bash "$Q" in-scope 900 >/dev/null 2>&1; echo $?)"
 
 echo "--- a scope that resolves to nothing is refused, never widened ---"
@@ -52,18 +53,18 @@ want "refused"                             "2" "$rc"
 want_in "and names what it tried"          'project:nonsense' "$out"
 want "the queue is untouched"              "$before" "$(cat "$QF")"
 
-echo "--- approved-merge and notes survive a refresh ---"
+echo "--- an older caller's approved-merge is queued as new, and notes survive a refresh ---"
 bash "$Q" seed widgets >/dev/null
 bash "$Q" add 501 --class approved-merge --note "owner approved the render" >/dev/null
 bash "$Q" add 777 --class approved-merge >/dev/null
 bash "$Q" refresh >/dev/null
-want "approved-merge sorts after repair, before new of its priority; no priority runs last" "502:repair 501:approved-merge 503:new 777:approved-merge" "$(order)"
+want "approved-merge is new; by priority, no priority last" "502:new 501:new 503:new 777:new" "$(order)"
 want "the note is kept"                    "owner approved the render" "$(jq -r '.tickets[] | select(.n==501) | .note' "$QF")"
 
 echo "--- a judge's re-queue survives the next tick's refresh ---"
 bash "$Q" add 888 --class repair --note "red checks, outside the scope" >/dev/null
 bash "$Q" refresh >/dev/null
-want "a pinned repair outside the claimable list is kept" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
+want "a pinned entry outside the claimable list is kept, as new" "new" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
 
 echo "--- a re-seed that read the queue before an add does not write over it ---"
 # The merge's jq is held open, so both adds land between the re-seed's read and its write.
@@ -84,9 +85,9 @@ i=0; while { kill -0 "$ap" || kill -0 "$bp"; } 2>/dev/null && [ $i -lt 30 ]; do 
 touch "$FIX/release"; wait "$rp"; wait "$ap"; arc=$?; wait "$bp"; brc=$?
 rm -f "$BIN/jq" "$FIX/in-merge" "$FIX/release"
 want "both adds exit 0"                    "0 0" "$arc $brc"
-want "the --front add is first after the re-seed" "506:repair" "$(order | cut -d' ' -f1)"
+want "the --front add is first after the re-seed" "506:new" "$(order | cut -d' ' -f1)"
 want "with its note"                       "use the quieter paper colour" "$(jq -r '.tickets[] | select(.n==506) | .note' "$QF")"
-want "the plain add survives"              "approved-merge" "$(jq -r '.tickets[] | select(.n==778) | .class' "$QF")"
+want "the plain add survives"              "new" "$(jq -r '.tickets[] | select(.n==778) | .class' "$QF")"
 want "and the lock is let go"              "" "$(ls -d "$STATE/coordinator/.queue.lock" 2>/dev/null)"
 bash "$Q" remove 506 >/dev/null; bash "$Q" remove 778 >/dev/null
 
@@ -148,10 +149,10 @@ fix_issue_list "area:GADGETS" '[{"number":503},{"number":504}]'
 rm -f "$QF"; bash "$Q" add 888 --class repair --note "pinned before the list" >/dev/null
 out=$(bash "$Q" seed "widgets, area:GADGETS,flow-gap,widgets" 2>&1)
 want_in "it names every label it seeded"   'for project:widgets, area:GADGETS, flow-gap$' "$out"
-want "the union, de-duplicated, by priority, repair first within one, newest first; no priority last" "502:repair 501:new 504:new 503:new 888:repair" "$(order)"
+want "the union, de-duplicated, by priority, newest first; no priority last" "502:new 501:new 504:new 503:new 888:new" "$(order)"
 want "a ticket under two scopes is queued once" "1" "$(jq '[.tickets[] | select(.n==503)] | length' "$QF")"
 want "the labels are recorded"             'project:widgets|area:GADGETS|flow-gap' "$(jq -r '.labels | join("|")' "$QF")"
-want "the pinned repair survives the seed" "repair" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
+want "the pinned entry survives the seed, as new" "new" "$(jq -r '.tickets[] | select(.n==888) | .class' "$QF")"
 
 echo "--- refresh re-seeds every scope in the list ---"
 fix_issue_list "area:GADGETS" '[{"number":503},{"number":504},{"number":900}]'
@@ -182,7 +183,7 @@ bash "$Q" in-scope 501; want "a ticket scope matches its own number" "0" "$?"
 jq '.labels = null | .label = "area:GADGETS"' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
 bash "$Q" in-scope 504; want "a queue from before lists still reads its one label" "0" "$?"
 
-echo "--- priority first; within one: repair, half-built, features, bugs, polish; newest first ---"
+echo "--- priority first; within one: half-built, features, bugs, polish; newest first ---"
 # Claimable order is oldest first; the queue must not keep it.
 printf '%s\n' \
   "601	P1	OPS			polish(inbox): tighten the row gap	type:bug,project:widgets" \
@@ -197,8 +198,8 @@ printf '%s\n' \
   "610	P1	OPS		[FINISH PR]	clashing PR	type:bug,project:widgets" \
   "611	P1	OPS		[FINISH PR]	another clash	type:feature,project:widgets" > "$FIX/claimable.tsv"
 rm -f "$QF"; bash "$Q" seed widgets >/dev/null
-want "P0 before P1 whatever the class; repairs keep claimable order; new by kind, newest" \
-  "606:new 607:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new 608:new" "$(order)"
+want "P0 before P1; then by kind, newest first, a [FINISH PR] row as any other" \
+  "606:new 607:new 609:new 604:new 611:new 603:new 610:new 605:new 602:new 601:new 608:new" "$(order)"
 want "each entry keeps its priority"       "0 1 3" "$(jq -r '[.tickets[] | select(.n==606 or .n==610 or .n==608) | .prin] | sort | join(" ")' "$QF")"
 want "and whether it is polish"            "true false" "$(jq -r '[(.tickets[] | select(.n==608)), (.tickets[] | select(.n==606))] | map(.polish) | join(" ")' "$QF")"
 want "the kind is recorded"                "feature" "$(jq -r '.tickets[] | select(.n==606) | .kind' "$QF")"
@@ -208,12 +209,12 @@ bash "$Q" add 608 --front >/dev/null
 bash "$Q" add 700 --front --note "outside the claimable list" >/dev/null
 bash "$Q" refresh >/dev/null
 want "the P0s, then fronts (the last one put there first), the rest re-sorted" \
-  "606:new 607:new 700:new 608:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
+  "606:new 607:new 700:new 608:new 609:new 604:new 611:new 603:new 610:new 605:new 602:new 601:new" "$(order)"
 bash "$Q" refresh >/dev/null
 want "and still so after a second refresh" \
-  "606:new 607:new 700:new 608:new 610:repair 611:repair 609:new 604:new 603:new 605:new 602:new 601:new" "$(order)"
+  "606:new 607:new 700:new 608:new 609:new 604:new 611:new 603:new 610:new 605:new 602:new 601:new" "$(order)"
 
-echo "--- priority decides across classes (owner call 2026-10-19) ---"
+echo "--- priority decides (owner call 2026-10-19) ---"
 printf '%s\n' \
   "620	P3	OPS		[FINISH PR]	a clash on a rough edge	P3,type:bug,project:widgets" \
   "621	P0	OPS			Login drops the session	P0,type:bug,project:widgets" \
@@ -221,18 +222,18 @@ printf '%s\n' \
   "623	P1	OPS			Inbox drops a reply	P1,type:bug,project:widgets" \
   "624	P1	OPS			Saved views screen	P1,type:feature,project:widgets" > "$FIX/claimable.tsv"
 rm -f "$QF"; bash "$Q" seed widgets >/dev/null
-want "a P0 new ticket outranks a P3 repair; a P1 repair outranks a P1 new ticket" \
-  "621:new 622:repair 624:new 623:new 620:repair" "$(order)"
+want "a P0 first; a P1 clash ranks by its kind like any P1; a P3 last" \
+  "621:new 624:new 623:new 622:new 620:new" "$(order)"
 bash "$Q" add 626 --class approved-merge >/dev/null
-want "an entry whose ticket cannot be read at add ranks as no priority" "626:approved-merge" "$(order | awk '{print $NF}')"
+want "an entry whose ticket cannot be read at add ranks as no priority" "626:new" "$(order | awk '{print $NF}')"
 fix_issue 625 OPEN "P0,status:in-review"
 bash "$Q" add 625 --class approved-merge >/dev/null
-want "add reads the ticket's labels, so list ranks it as the tick will" "625:approved-merge 621:new" "$(order | cut -d' ' -f1-2)"
+want "add reads the ticket's labels, so list ranks it as the tick will" "625:new 621:new" "$(order | cut -d' ' -f1-2)"
 want "and keeps them on the entry"         "0 half-built false" "$(jq -r '.tickets[] | select(.n==625) | "\(.prin) \(.kind) \(.tooling)"' "$QF")"
 . "$HERE/coordinator-env.sh"
 ISSUES='{"625":{"number":625,"state":"OPEN","title":"x","labels":["P0","status:in-review"]}}'
 want "with the tick's read, it ranks by its own ticket's priority" \
-  "625	approved-merge	0	0	0	1	0	0	|621	new	0	0	0	0	0	0	|622	repair	1	0	0	0	0	0	" \
+  "625	new	0	0	0	1	0	0	|621	new	0	0	0	0	0	0	|624	new	1	0	0	0	0	0	" \
   "$(COORD_QUEUE="$QF" coord_queue_ordered --wide | head -3 | tr '\n' '|' | sed 's/|$//')"
 unset ISSUES
 
@@ -246,12 +247,12 @@ printf '%s\n' \
   "635	P1	OPS		[FINISH PR]	a clash on the inbox	P1,type:bug,project:widgets" > "$FIX/claimable.tsv"
 rm -f "$QF"; bash "$Q" seed widgets >/dev/null
 want "a P1 product bug outranks a P1 tooling feature; a P1 tooling ticket outranks a P2 product ticket" \
-  "635:repair 634:repair 631:new 633:new 630:new 632:new" "$(order)"
+  "635:new 631:new 633:new 630:new 634:new 632:new" "$(order)"
 want "tooling by label or by title scope is recorded" "true true false" \
   "$(jq -r '[(.tickets[] | select(.n==630)), (.tickets[] | select(.n==633)), (.tickets[] | select(.n==631))] | map(.tooling) | join(" ")' "$QF")"
 rm -f "$QF"; COORDINATOR_TOOLING_LABELS="code-health" bash "$Q" seed widgets >/dev/null
 want "coordinator.toolingLabels decides which labels are tooling" \
-  "634:repair 635:repair 630:new 631:new 633:new 632:new" "$(order)"
+  "630:new 635:new 634:new 631:new 633:new 632:new" "$(order)"
 
 echo "--- a process fix is seeded first of all, whatever its priority or class ---"
 printf '%s\n' \
@@ -259,7 +260,7 @@ printf '%s\n' \
   "637	P0	OPS			a P0 feature	P0,type:feature,project:widgets" \
   "638	P3	OPS			the claim flow skips a step	P3,process,project:widgets" > "$FIX/claimable.tsv"
 rm -f "$QF"; bash "$Q" seed widgets >/dev/null
-want "the P3 process fix heads a P0 repair and a P0 feature" "638:new 636:repair 637:new" "$(order)"
+want "the P3 process fix heads a P0 feature and a P0 clash" "638:new 637:new 636:new" "$(order)"
 want "the queue file holds it first too"   "638" "$(jq -r '.tickets[0].n' "$QF")"
 want "and the entry says it is one"        "true false" \
   "$(jq -r '[(.tickets[] | select(.n==638)), (.tickets[] | select(.n==637))] | map(.process) | join(" ")' "$QF")"
@@ -300,14 +301,14 @@ bash "$Q" add 654 --front --note "PM: this first" >/dev/null
 bash "$Q" refresh >/dev/null
 want "the PM's --front leads after the P0s (owner, 2026-10-30: urgent first)" "651:new 650:new 654:new 652:new 653:new" "$(order)"
 
-echo "--- a new entry carrying a REPAIR brief is a repair ---"
+echo "--- a REPAIR note does not make a class: every entry is new ---"
 fix_issue 655 OPEN "P2,status:in-review,project:widgets"
 bash "$Q" add 655 --first --note "$(printf 'Sign-off comes last.\n\nREPAIR on PR #9 at abc: it clashes with develop.')" >/dev/null
-want "added as new with a REPAIR note, it is queued as repair" "repair" "$(jq -r '.tickets[] | select(.n==655) | .class' "$QF")"
-jq '.tickets += [{n: 656, class: "new", pinned: true, note: "REPAIR on PR #10: CI went red", prin: 2}]' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
+want "added with a REPAIR note, it is new" "new" "$(jq -r '.tickets[] | select(.n==655) | .class' "$QF")"
+jq '.tickets += [{n: 656, class: "repair", pinned: true, note: "REPAIR on PR #10: CI went red", prin: 2}]' "$QF" > "$QF.t" && mv "$QF.t" "$QF"
 fix_issue 656 OPEN "P2,status:in-review,project:widgets"
 bash "$Q" refresh >/dev/null
-want "one already queued as new comes out of a refresh as repair" "repair" "$(jq -r '.tickets[] | select(.n==656) | .class' "$QF")"
+want "a row an older version wrote as repair comes out of a refresh as new" "new" "$(jq -r '.tickets[] | select(.n==656) | .class' "$QF")"
 want "a Resume note stays new"             "new" "$(jq -r '.tickets[] | select(.n==653) | .class' "$QF")"
 
 echo "--- the queue holds only rows somebody can start ---"
@@ -324,12 +325,12 @@ fix_issue 667 OPEN "P1,status:ready,project:widgets"
 fix_issue 668 OPEN "P1,status:batched,project:widgets"
 for t in 666 667 668; do bash "$Q" add "$t" --note "pinned" >/dev/null; done
 out=$(bash "$Q" refresh 2>&1)
-want "only the rows that can start: a ready one, a held PR's repair, an open pinned one" "665:repair 667:new 660:new" "$(order)"
-want_in "and the count says so"            'seeded 3 ticket' "$out"
-want "the file holds the same rows"        "3" "$(jq '.tickets | length' "$QF")"
+want "only the rows that can start: a ready one and an open pinned one (a held PR's row is held too)" "667:new 660:new" "$(order)"
+want_in "and the count says so"            'seeded 2 ticket' "$out"
+want "the file holds the same rows"        "2" "$(jq '.tickets | length' "$QF")"
 rm -f "$FIX/gh/issue-667.json"
 bash "$Q" refresh >/dev/null
-want "a pinned row that could not be read is kept" "665:repair 667:new 660:new" "$(order)"
+want "a pinned row that could not be read is kept" "667:new 660:new" "$(order)"
 
 echo "--- a repo:<other> ticket is that repo's: never seeded here (this repo is acme/widgets) ---"
 printf '%s\n' \
@@ -366,12 +367,12 @@ out=$(bash "$Q" seed area:create 2>&1); rc=$?
 want "the label is found while gh is still writing" "0" "$rc"
 mv -f "$BIN/gh.fixture" "$BIN/gh"
 
-echo "--- add --class new on a ticket with an open PR stores a repair, and warns ---"
+echo "--- add on a ticket with an open PR stores new work, and warns it waits ---"
 rm -f "$STATE/swarm/prs.json"
 printf '[{"number":41,"headRefName":"tkt-690-x","isDraft":true}]\n' > "$FIX/gh/prs-all.json"
 out=$(bash "$Q" add 690 --class new 2>&1)
-want "stored as repair"                    "repair" "$(jq -r '.tickets[] | select(.n==690) | .class' "$QF")"
-want_in "with a warning naming the PR"     'warning: #690 has an open PR #41 — queued as repair, not new' "$out"
+want "stored as new"                       "new" "$(jq -r '.tickets[] | select(.n==690) | .class' "$QF")"
+want_in "with a warning naming the PR"     'warning: #690 has an open PR #41 — it waits until that PR merges, or is rebuilt fresh once it cannot' "$out"
 out=$(bash "$Q" add 691 2>&1)
 want "a ticket with no open PR stays new"  "new" "$(jq -r '.tickets[] | select(.n==691) | .class' "$QF")"
 want_not_in "and no warning"               'warning' "$out"
@@ -388,7 +389,7 @@ want "removed"                             "" "$(jq -r '.tickets[] | select(.n==
 echo "--- set-class rewrites the class, and with --note the note; nothing else ---"
 bash "$Q" add 778 --class repair --first --note "REPAIR on PR #9: fix it." >/dev/null
 bash "$Q" set-class 778 approved-merge >/dev/null
-want "the class is rewritten"              "approved-merge" "$(jq -r '.tickets[] | select(.n==778) | .class' "$QF")"
+want "an older class is rewritten as new"  "new" "$(jq -r '.tickets[] | select(.n==778) | .class' "$QF")"
 want "  the note kept without --note"      "REPAIR on PR #9: fix it." "$(jq -r '.tickets[] | select(.n==778) | .note' "$QF")"
 bash "$Q" set-class 778 new --note "" >/dev/null
 want "--note \"\" clears it"                "new:" "$(jq -r '.tickets[] | select(.n==778) | "\(.class):\(.note)"' "$QF")"

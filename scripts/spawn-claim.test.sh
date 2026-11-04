@@ -317,8 +317,8 @@ printf '%s' "$extra" | grep -q 'Resume brief: carry on.' \
 # The two paths cd separately; testing only --fg would leave the one the swarm
 # actually uses uncovered.
 rm -f "$OUT/seen"
-# The prose prompt is what this case reads; a repair runs on the driver unless the project says prose.
-CFG="$SB/cfg-prose.json" CLAIM_CLASS=repair run 4247
+# The prose prompt is what this case reads; every run is on the driver unless the project says prose.
+CFG="$SB/cfg-prose.json" CLAIM_CLASS=new run 4247
 for _ in $(seq 1 60); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
 if [ -f "$OUT/seen" ]; then
   [ "$(seen claude.md)" = "CURRENT BRANCH" ] \
@@ -333,7 +333,7 @@ if [ -f "$OUT/seen" ]; then
     || bad "the detached prompt does not route an owner question to $SUT/owner-question.sh"
   [ "$(grep -c 'Owner questions:' "$OUT/seen")" = 1 ] && ok "the rule is in the prompt once" \
     || bad "the owner rule is in the prompt $(grep -c 'Owner questions:' "$OUT/seen") times, want 1"
-  # Sign-off comes last: the repair brief's first line, before anything else it reads.
+  # Sign-off comes last: the prompt's first line, before anything else it reads.
   [ "$(seen args)" = "-p $(head -1 "$SUT_DIR/../shared/signoff-last.md")" ] \
     && ok "the detached prompt's first line is the sign-off-comes-last rule" \
     || bad "the detached prompt starts '$(seen args | cut -c1-80)', not the sign-off rule"
@@ -343,8 +343,8 @@ fi
 
 # The coordinator counts live runs by class, so the record carries the one it was spawned for.
 cls=$(jq -r '.class // empty' "$STATE"/runs/claim-4247-*.json 2>/dev/null | head -1)
-[ "$cls" = repair ] && ok "the run record carries the class it was spawned for" \
-                    || bad "the run record's class was '${cls:-absent}', want repair"
+[ "$cls" = new ] && ok "the run record carries the class it was spawned for" \
+                    || bad "the run record's class was '${cls:-absent}', want new"
 
 # --- 6b. The detached agent keeps the machine awake for its own life ---------
 # An idle Mac slept under a running agent and cost one repair four hours.
@@ -515,7 +515,7 @@ rm -f "$OUT/seen"; run 4967 >"$OUT/driver.log"; wait_seen
 grep -q 'prose by config' "$OUT/driver.log" && bad "a driver spawn warned about prose" || ok "a driver spawn carries no prose warning"
 
 # No unattended run falls back to prose (the operator, 2026-10-17): a briefed run and
-# a healing run stay on the driver, and take their brief with them.
+# a run with an older class stay on the driver, and the brief goes with them.
 CLAIM_EXTRA="Merge lane: PR #9 left the lane — fix it on its branch." builder_case 4962 4962
 case "$BARGS" in
   "build-ticket 4962 --brief "*) ok "a run with a caller's brief runs build-ticket --brief, not prose" ;;
@@ -524,8 +524,8 @@ esac
 
 CLAIM_CLASS=approved-merge builder_case 4963 4963
 case "$BARGS" in
-  "build-ticket 4963 --repair-class approved-merge"*) ok "an approved-merge run works its open PR on the driver (--repair-class)" ;;
-  *) bad "an approved-merge run did not go to build-ticket --repair-class: '${BARGS:-never started}'" ;;
+  "build-ticket 4963"|"build-ticket 4963 ") ok "an older approved-merge class with no brief is a plain driver build — no repair route" ;;
+  *) bad "an approved-merge run did not go to a plain build-ticket: '${BARGS:-never started}'" ;;
 esac
 
 rm -f "$OUT/seen"
@@ -546,11 +546,11 @@ mv "$SB/driver/build-ticket.away" "$SB/driver/build-ticket"
 # The coordinator reads four things off a spawn: the run record, the .child pid,
 # the .ended exit code, and the log's last result line. A driver run that skips any
 # of them reads as something it is not. And every brief reaches the driver verbatim:
-# dropped, a red PR's repair would rebuild the ticket; refused, it would never run.
+# dropped, an owner's answer or a rebuild's plan is lost; refused, it would never run.
 cat > "$SB/bin/build-ticket-stub" <<'STUB'
 #!/usr/bin/env bash
 b=""; prev=""
-for a in "$@"; do case "$prev" in --repair|--brief) b=$(tr '\n' '|' < "$a" | sed 's/|$//') ;; esac; prev="$a"; done
+for a in "$@"; do case "$prev" in --brief) b=$(tr '\n' '|' < "$a" | sed 's/|$//') ;; esac; prev="$a"; done
 printf 'cwd=%s\nargs=%s\nclaude.md=%s\nrun=%s\nbrief=%s\n' "$PWD" "$*" "$(cat CLAUDE.md 2>/dev/null)" "${CLAIM_RUN_ID:-}" "$b" > "$SPAWN_TEST_DRIVER_SEEN"
 echo "build-ticket: walking #$1"
 echo "  step build: green"
@@ -599,7 +599,7 @@ CFG="$SB/cfg-prose.json" dcase 4979 4979
 [ "$(jq -r 'has("progress_paths") or has("driver_mode")' "$(rec_of 4979)" 2>/dev/null)" = false ] \
   && ok "a prose run's record carries no driver fields" || bad "a prose run's record carries driver fields"
 
-# 11b. a caller's brief, no healing class: --brief, verbatim, without the prose-only owner rule.
+# 11b. a caller's brief: --brief, verbatim, without the prose-only owner rule.
 CLAIM_EXTRA="The owner answered q1: ship the narrow version." dcase 4971 4971
 case "$(dseen args)" in "4971 --brief "*) ok "a briefed run is build-ticket --brief" ;; *) bad "a briefed run ran build-ticket '$(dseen args)'" ;; esac
 [ "$(dseen brief)" = "The owner answered q1: ship the narrow version." ] && ok "the brief is the caller's words, verbatim" \
@@ -611,19 +611,19 @@ HARNESS_OWNER_RULE="RULE-Z" CLAIM_EXTRA="$(printf 'Fix the clash.\n\nRULE-Z')" d
 [ "$(dseen brief)" = "Fix the clash." ] && ok "re-exec'd with the rule already appended, the brief is still the caller's alone" \
   || bad "a re-exec'd copy handed the driver '$(dseen brief)'"
 
-# 11c. healing classes: --repair with the note, or --repair-class with none.
-CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #7 at abc: CI went red on: unit" dcase 4972 4972
-case "$(dseen args)" in "4972 --repair "*) ok "a noted repair is build-ticket --repair" ;; *) bad "a noted repair ran build-ticket '$(dseen args)'" ;; esac
-[ "$(dseen brief)" = "REPAIR on PR #7 at abc: CI went red on: unit" ] && ok "with its note verbatim" || bad "the repair brief was '$(dseen brief)'"
+# 11c. no repair route: an older repair class is a build — --brief with its note, plain with none.
+CLAIM_CLASS=repair CLAIM_EXTRA="Rebuild: PR #7 could not merge within 60 min (unit)." dcase 4972 4972
+case "$(dseen args)" in "4972 --brief "*) ok "a noted run of an older repair class is build-ticket --brief" ;; *) bad "a noted run of an older repair class ran build-ticket '$(dseen args)'" ;; esac
+[ "$(dseen brief)" = "Rebuild: PR #7 could not merge within 60 min (unit)." ] && ok "with its note verbatim" || bad "the brief was '$(dseen brief)'"
 CLAIM_CLASS=repair dcase 4973 4973
-[ "$(dseen args)" = "4973 --repair-class repair" ] && ok "a repair with no note is --repair-class repair — never a fresh build" \
-  || bad "a note-less repair ran build-ticket '$(dseen args)'"
+[ "$(dseen args)" = "4973" ] && ok "with no note it is a plain build — never --repair-class" \
+  || bad "a note-less run of an older repair class ran build-ticket '$(dseen args)'"
 CLAIM_CLASS=new dcase 4975 4975
 [ "$(dseen args)" = 4975 ] && ok "a new-class run with no brief is a plain build" || bad "a new-class run ran build-ticket '$(dseen args)'"
 
-# 11f. a draft PR the driver never built is not a repair: the driver ADOPTS it
-# (build-ticket --adopt). Readied by a repair, auto-merge would land work its author
-# left unfinished; handed to the prose claim, nobody's gates would run (the owner, 2026-10-22).
+# 11f. an open draft PR the driver never built changes nothing here: no --adopt. A run is a
+# build (--brief with a note); the driver's start finds the PR and builds nothing (exit 31),
+# and the coordinator's rebuild pass closes a draft nothing builds (rebuild.sh).
 cat > "$SB/bin/gh-prs" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in "api graphql "*OpenPullRequests*) exec bash "$GH_OPEN_PRS_PAGE" "$SPAWN_TEST_PRS" "$@" ;; esac
@@ -631,26 +631,11 @@ exit 1
 STUB
 chmod +x "$SB/bin/gh-prs"
 export SWARM_GH="$SB/bin/gh-prs" SWARM_PRS_MAX_AGE=0 SPAWN_TEST_PRS="$OUT/prs.json" GH_OPEN_PRS_PAGE="$SUT_DIR/fixtures/gh-open-prs-page.sh"
-echo '[{"number":81,"headRefName":"tk-4981-x","isDraft":true},{"number":82,"headRefName":"tk-4982-x","isDraft":false},{"number":83,"headRefName":"tk-4983-x","isDraft":true}]' > "$OUT/prs.json"
-CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #81: red" dcase 4981 4981
-case "$(dseen args)" in
-  "4981 --adopt --brief "*) [ ! -f "$OUT/seen" ] && ok "a noted repair of a draft the driver never built is build-ticket --adopt, not prose" \
-                              || bad "an adopt run also ran the prose claim" ;;
-  *) bad "a repair of an unbuilt draft ran '$(dseen args)' (prose ran: $([ -f "$OUT/seen" ] && echo yes || echo no))" ;;
-esac
-[ "$(dseen brief)" = "REPAIR on PR #81: red" ] && ok "and carries the coordinator's note verbatim" || bad "the adopt brief was '$(dseen brief)'"
-grep -q 'the driver adopts it' "$STATE"/logs/claim-4981-*.log && ok "and the run log says why" || bad "the run log does not say it adopts"
-CLAIM_CLASS=repair dcase 4981 4981
-[ "$(dseen args)" = "4981 --adopt" ] && ok "a note-less repair of that draft is --adopt alone" || bad "a note-less repair of an unbuilt draft ran '$(dseen args)'"
+echo '[{"number":83,"headRefName":"tk-4983-x","isDraft":true}]' > "$OUT/prs.json"
 CLAIM_EXTRA="The owner answered: B" dcase 4983 4983
-case "$(dseen args)" in "4983 --adopt --brief "*) ok "a briefed run on an unbuilt draft is adopted too" ;; *) bad "a briefed run on an unbuilt draft ran '$(dseen args)'" ;; esac
+case "$(dseen args)" in "4983 --brief "*) ok "a briefed run beside an unbuilt draft is --brief, never --adopt" ;; *) bad "a briefed run on an unbuilt draft ran '$(dseen args)'" ;; esac
 CLAIM_CLASS=new dcase 4983 4983
-[ "$(dseen args)" = "4983 --adopt" ] && ok "a plain build of a ticket with an unbuilt draft adopts the draft" || bad "a plain build beside an unbuilt draft ran '$(dseen args)'"
-CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #82: red" dcase 4982 4982
-case "$(dseen args)" in "4982 --repair "*) ok "a ready PR is still the driver's repair" ;; *) bad "a ready PR's repair ran '$(dseen args)'" ;; esac
-mkdir -p "$STATE/driver/4983"; echo '{"mode":"build","done":["start","plan"]}' > "$STATE/driver/4983/state.json"
-CLAIM_EXTRA="The owner answered: B" dcase 4983 4983
-case "$(dseen args)" in "4983 --brief "*) ok "a draft the driver's own build left stays on the driver" ;; *) bad "the driver's own draft ran '$(dseen args)'" ;; esac
+[ "$(dseen args)" = "4983" ] && ok "a plain build beside an unbuilt draft is a plain build" || bad "a plain build beside an unbuilt draft ran '$(dseen args)'"
 unset SWARM_GH SWARM_PRS_MAX_AGE SPAWN_TEST_PRS
 
 # 11e. --fg with a ticket runs the step driver in this terminal (the operator, 2026-10-17);
@@ -661,20 +646,20 @@ SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4990 >"$OUT/fg.out"
   || bad "--fg 4990 did not run the driver: $(cat "$OUT/fg.out" | head -3)"
 grep -q 'parked' "$OUT/fg.out" && ok "and its output is the terminal's" || bad "the foreground driver's output did not reach the terminal"
 rm -f "$OUT/driver-seen"
-CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #3: red" SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4991 >/dev/null
-case "$(dseen args)" in "4991 --repair "*) ok "--fg carries a repair's brief the same way" ;; *) bad "--fg repair ran build-ticket '$(dseen args)'" ;; esac
-[ "$(dseen brief)" = "REPAIR on PR #3: red" ] && ok "verbatim" || bad "--fg repair brief was '$(dseen brief)'"
+CLAIM_EXTRA="The owner answered: ship it" SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg 4991 >/dev/null
+case "$(dseen args)" in "4991 --brief "*) ok "--fg carries a brief the same way" ;; *) bad "--fg briefed run ran build-ticket '$(dseen args)'" ;; esac
+[ "$(dseen brief)" = "The owner answered: ship it" ] && ok "verbatim" || bad "--fg brief was '$(dseen brief)'"
 rm -f "$OUT/seen" "$OUT/driver-seen"
 SPAWN_CLAIM_DRIVER="$SB/bin/build-ticket-stub" run --fg >/dev/null
 [ ! -f "$OUT/driver-seen" ] && [ -f "$OUT/seen" ] && ok "--fg with no ticket stays the interactive prose claim" \
   || bad "--fg pick-next did not run the prose claim"
 
-# 11d. swarm.builder = prose is the escape hatch: everything, brief and repair alike, on prose.
-CFG="$SB/cfg-prose.json" CLAIM_CLASS=repair CLAIM_EXTRA="REPAIR on PR #8: red" dcase 4976 4976
+# 11d. swarm.builder = prose is the escape hatch: everything, briefed or not, on prose.
+CFG="$SB/cfg-prose.json" CLAIM_EXTRA="REPAIR on PR #8: red" dcase 4976 4976
 for _ in $(seq 1 20); do [ -f "$OUT/seen" ] && break; sleep 0.5; done
 [ ! -f "$OUT/driver-seen" ] && grep -q '/agent-harness:claim 4976' "$OUT/seen" 2>/dev/null && grep -q 'REPAIR on PR #8: red' "$OUT/seen" 2>/dev/null \
-  && ok "swarm.builder=prose: a noted repair runs the prose claim, brief in its prompt" \
-  || bad "swarm.builder=prose did not send the repair to prose: $(cat "$OUT/seen" 2>/dev/null | head -3)"
+  && ok "swarm.builder=prose: a briefed run runs the prose claim, brief in its prompt" \
+  || bad "swarm.builder=prose did not send the briefed run to prose: $(cat "$OUT/seen" 2>/dev/null | head -3)"
 
 echo
 [ "$fail" -eq 0 ] && echo "spawn-claim: all cases pass" || echo "spawn-claim: FAILURES above"

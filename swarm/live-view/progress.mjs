@@ -35,10 +35,6 @@ export const STEPS = ['Set up', 'Plan', 'Build', 'Check', 'Review', 'PR', 'Merge
 // size is part of Set up; a quick run's one session (quick) edits and runs the gates, so
 // it stands for Plan, Build and Check together and is read as Check done.
 const DRIVER_STEP = { start: 0, size: 0, plan: 1, build: 2, quick: 3, 'self-check': 3, review: 4, ship: 5 }
-// A repair walks its own order (build-ticket's DRIVER_REPAIR_STEPS), entered by reenter
-// on the PR's branch. Its record keeps the earlier build's finished steps beside it.
-const REPAIR_ORDER = ['reenter', 'repair', 'fix', 'self-check', 'review', 'record', 'ship']
-const REPAIR_NAME = { reenter: 'Back on the PR', repair: 'Repair', fix: 'Fix', 'self-check': 'Check', review: 'Review', record: 'Record', ship: 'Push' }
 // Which steps a LATER step being done proves, in order: Set up and Review are
 // about what somebody did and nothing downstream proves them. See progressOf.
 const ENTAILED = [false, true, true, true, false, true, true]
@@ -136,22 +132,9 @@ function sh(cmd, args, opts = {}) {
 
 // ---- the derivation, pure ---------------------------------------------------
 
-// A repair or reenter run is at the first step of the repair order its record has
-// not finished. Read from the build's steps or the PR, it drew "7 of 7 · Merged"
-// over a run that was in self-check (measured 2026-10-20 on a repair of a green PR).
+// Every run walks the build order: there is no repair route (a PR that cannot merge is
+// rebuilt fresh, scripts/rebuild.sh).
 export function progressOf(f, driver) {
-  const p = buildProgressOf(f, driver)
-  const done = driver && Array.isArray(driver.done) ? driver.done : []
-  if (!(driver && (driver.mode === 'repair' || done.includes('reenter')))) return p
-  const fin = new Set(done)
-  const at = REPAIR_ORDER.findIndex((s) => !fin.has(s))
-  const now = at < 0 ? REPAIR_ORDER.length - 1 : at
-  const steps = REPAIR_ORDER.map((s, i) => ({ name: REPAIR_NAME[s],
-    state: fin.has(s) ? 'done' : i === now ? 'now' : 'todo' }))
-  return { ...p, repair: true, step: now + 1, of: REPAIR_ORDER.length, steps, unreadable: [] }
-}
-
-function buildProgressOf(f, driver) {
   const has = (v) => v !== null && v !== undefined
   const pr = f && f.pr
   const merged = pr ? pr.state === 'MERGED' : null

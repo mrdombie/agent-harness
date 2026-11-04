@@ -48,7 +48,7 @@ driver_step_record() { # <ticket> [anything else — ignored]
   local posted pr out l
   posted="$(driver_state_dir "$t")/steps/review.posted.jsonl"
   if [ -s "$posted" ]; then
-    pr=$(driver_state_get "$t" pr); [ -n "$pr" ] || pr=$(driver_state_get "$t" repair_pr)
+    pr=$(driver_state_get "$t" pr)
     out=$(bash "${DRIVER_FINDING_CLASS:-$KIT_ROOT/scripts/finding-class.sh}" record "$t" "$posted" "$pr" 2>&1) \
       || driver_say "⚠ record: the finding classes could not be recorded (it does not stop the ship)"
     while IFS= read -r l; do [ -z "$l" ] || driver_say "   record: ${l#finding-class: }"; done <<<"$out"

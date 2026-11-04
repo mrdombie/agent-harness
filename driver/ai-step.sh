@@ -246,16 +246,7 @@ driver_ai_step() { # <ticket> <step> [--as <slot>] [context-file…]
   # THE RUN'S BRIEF, when a caller handed one (an owner's answer, a resume after a
   # cut). Every step is given it verbatim, because a step that never saw it builds as
   # if it had never been sent.
-  # In repair mode it is the caller's repair brief, to every step but repair (which
-  # has it as its BRIEF), so fix, self-check and review see what the PR was sent back
-  # for and the reviewer can judge whether it was met. A note-less healing run's
-  # class line is not a brief. A build's brief is never read in repair mode.
-  local rb=""
-  if [ "$(driver_state_get "$t" mode)" = repair ]; then
-    case "$(driver_state_get "$t" repair_brief_source)" in caller|adopt) [ "$step" != repair ] && rb=$(driver_state_get "$t" repair_brief) ;; esac
-  else
-    rb=$(driver_state_get "$t" run_brief)
-  fi
+  local rb; rb=$(driver_state_get "$t" run_brief)
   if [ -n "$rb" ] && [ -s "$rb" ]; then
     { printf '\n---\nA brief came with this run, from whoever started it. %s Read it before anything else, and act on it where it bears on this step:\n\n' "$DRIVER_BRIEF_PREFACE"; cat "$rb"; } >> "$prompt"
   fi
@@ -509,7 +500,7 @@ _driver_ai_run() {
   local resume=() dbw=()
   [ -z "$sid" ] || resume=(--resume "$sid")
   # The steps that run the project's tests get the throwaway database the proof gets.
-  case "$step" in build|fix|repair) dbw=(driver_with_test_db --soft "$out.db" "$wt") ;; esac
+  case "$step" in build|fix) dbw=(driver_with_test_db --soft "$out.db" "$wt") ;; esac
   rm -f "$out.db"
   # The model can change the ticket: every read from here on goes to GitHub.
   driver_ticket_snap_drop "${DRIVER_TICKET:-$t}"

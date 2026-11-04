@@ -19,7 +19,6 @@ C="$STATE/coordinator"
 
 # The housekeeping, the judge and the disk guard are other suites' cases: here each is a no-op.
 for s in reconcile sweep wtsweep claude notify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
-printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
 cat > "$BIN/diskguard" <<'SH'
 #!/usr/bin/env bash
 case "$1" in tick) printf '500\tdisk: 500 GB free\n' ;; limits) echo "30 50" ;; free) echo 500 ;; esac
@@ -27,7 +26,7 @@ SH
 chmod +x "$BIN/diskguard"
 printf '%s\n' 'live_view_watchdog() { :; }' > "$FIX/watchdog-stub.sh"
 export COORDINATOR_DISK_GUARD="$BIN/diskguard" COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock" COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
@@ -58,7 +57,8 @@ ticket() { # <n> <labels-csv> <body>
     '{number:$n, state:"OPEN", title:"Ticket \($n)", body:$b, labels:($l|split(",")|map(select(length>0)|{name:.}))}' > "$FIX/gh/issue-$1.json"
   bash "$Q" add "$1" >/dev/null
 }
-repairs() { local t; for t in "$@"; do fix_issue "$t" OPEN "status:in-review"; bash "$Q" add "$t" --class repair >/dev/null; fix_pr_for "$t"; done; }
+# live <ticket…> — a run of this host already on each: it takes a place.
+live() { local t; for t in "$@"; do printf '{"run_id":"claim-%s-live","ticket":"%s","child_pid":%s}\n' "$t" "$t" "$TEST_PID" > "$STATE/runs/claim-$t-live.json"; done; }
 open_prs() {
   jq -n --argjson n "$1" '[range(0; $n) | {number: (9000 + .), headRefName: "tkt-\(9000 + .)-open", headRefOid: "h\(.)",
     isDraft: false, mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' > "$FIX/gh/prs-all.json"
@@ -72,9 +72,9 @@ spawned() { cut -f1 "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
 bypassed() { awk -F'\t' '$3 == 1 { print $1 }' "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
 
 echo "--- over the cap: a quick config ticket starts, a full-size feature does not ---"
-fresh; open_prs 12; repairs 601 602; ticket 701 "status:ready" "$CONFIG_BODY"; ticket 702 "status:ready" "$FEATURE"
+fresh; open_prs 12; ticket 701 "status:ready" "$CONFIG_BODY"; ticket 702 "status:ready" "$FEATURE"
 out=$(tick)
-want "the repairs first, then the quick one; the feature waits" "601 602 701" "$(spawned)"
+want "the quick one starts; the feature waits" "701" "$(spawned)"
 want "only the quick one is started as over the cap"            "701" "$(bypassed)"
 want_in "the cap still says so"           'open changes 12 / cap 10: finishing before starting' "$out"
 want_in "the tick says what it let through" 'cap: over \(12/10\) — 1 quick ticket\(s\) started anyway' "$out"
@@ -104,11 +104,11 @@ mkdir -p "$STATE/size-cache"; printf '%s\tsized bigger\n' "$(printf '%s' "$CONFI
 tick >/dev/null
 want "once its body changes it is sized again" "706" "$(spawned)"
 
-echo "--- quick starts fill only the free places, after healing ---"
-fresh; open_prs 22; repairs 601 602 603 604 605; ticket 707 "status:ready" "$CONFIG_BODY"; ticket 708 "status:ready" "$CONFIG_BODY"
+echo "--- quick starts fill only the free places ---"
+fresh; open_prs 22; live 601 602 603 604 605; ticket 707 "status:ready" "$CONFIG_BODY"; ticket 708 "status:ready" "$CONFIG_BODY"
 out=$(tick)
-want "five repairs and one quick start fill the six places" "601 602 603 604 605 707" "$(spawned)"
-want_in "only the place healing left is offered" 'of 2 new ticket\(s\) held, 2 sized: 2 quick, 1 of them startable now' "$out"
+want "five running and one quick start fill the six places" "707" "$(spawned)"
+want_in "only the one free place is offered" 'of 2 new ticket\(s\) held, 2 sized: 2 quick, 1 of them startable now' "$out"
 
 echo "--- release scope still applies first ---"
 fresh; open_prs 22; ticket 709 "status:ready,P2" "$CONFIG_BODY"; ticket 710 "status:ready,P0" "$CONFIG_BODY"

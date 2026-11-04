@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # keep-fresh.test.sh — a mechanical clash is settled by its rule and pushed as a merge;
-# anything else leaves the branch exactly as it was and queues a repair; a PR that is
+# anything else leaves the branch exactly as it was and queues nothing (the rebuild
+# clock has it); a PR that is
 # only behind, a claimed PR, a shadow pass and a project that has not turned it on push
 # nothing. Real git: an origin, a clone, and branches that truly conflict.
 # Run: bash "$0"
@@ -51,7 +52,6 @@ exit 0
 GH
 chmod +x "$BIN/gh"
 export COORDINATOR_CLAIMS_CMD="cat $FIX/claims.json"
-export COORDINATOR_FIX_LOCK="$BIN/no-fix-lock"
 printf '#!/usr/bin/env bash\necho "[]"\n' > "$BIN/no-fix-lock"; chmod +x "$BIN/no-fix-lock"
 unset COORDINATOR_SHADOW KEEP_FRESH_PUSH_GUARD
 
@@ -93,7 +93,7 @@ remote_head() { git --git-dir="$ORIGIN" rev-parse "refs/heads/tkt-$1-work"; }
 at_head() { git --git-dir="$ORIGIN" show "refs/heads/tkt-$1-work:$2" 2>/dev/null; }
 pushed_for() { git -C "$W" rev-parse "refs/heads/tkt-$1-work"; }
 live() { COORDINATOR_SHADOW=0 bash "$K" 2>&1; }
-repairs() { jq -r '[.tickets[]? | select(.class == "repair") | .n] | join(" ")' "$C/queue.json" 2>/dev/null; }
+queued() { jq -r '[.tickets[]?.n] | join(" ")' "$C/queue.json" 2>/dev/null; }
 
 echo "--- .deploy-trigger takes the integration branch's side, and the merge is pushed ---"
 fresh; branch 11 'printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 11 false dirty
@@ -105,7 +105,7 @@ want "its first parent is the PR's old head"     "$before" "$(git --git-dir="$OR
 want "its second parent is develop"              "$(git --git-dir="$ORIGIN" rev-parse refs/heads/develop)" "$(git --git-dir="$ORIGIN" rev-parse "refs/heads/tkt-11-work^2")"
 want "one comment"                               1 "$(grep -c '^Kept fresh' "$FIX/comments.log" 2>/dev/null)"
 want_in "the comment names the file and rule"    '`.deploy-trigger` — integration' "$(cat "$FIX/comments.log" 2>/dev/null)"
-want "no repair queued"                          "" "$(repairs)"
+want "nothing queued"                            "" "$(queued)"
 want_in "it says what it pushed"                 '#11 pushed' "$out"
 
 echo "--- develop deleting .deploy-trigger wins too ---"
@@ -149,7 +149,7 @@ branch 16 'jq --indent 2 ".dependencies[\"left-pad\"] = \"1.1.0\"" package.json 
           'jq --indent 2 ".dependencies[\"left-pad\"] = \"1.2.0\"" package.json > p && mv p package.json'
 reads 16 false dirty; before=$(pushed_for 16); out=$(live)
 want "the branch is untouched"                   "$before" "$(remote_head 16)"
-want "a repair is queued for its ticket"         16 "$(repairs)"
+want "nothing is queued: the rebuild clock has it" "" "$(queued)"
 want_in "it names the clash"                     'outside "scripts"' "$out"
 want "no comment"                                "" "$(cat "$FIX/comments.log" 2>/dev/null)"
 
@@ -159,8 +159,8 @@ branch 17 'printf "export const a = 2;\n" > src/app.ts; printf "pr\n" > .deploy-
           'printf "export const a = 3;\n" > src/app.ts; printf "dev\n" > .deploy-trigger'
 reads 17 false dirty; before=$(pushed_for 17); out=$(live)
 want "the branch is untouched"                   "$before" "$(remote_head 17)"
-want "a repair is queued"                        17 "$(repairs)"
-want_in "the repair note names the file"         'src/app.ts' "$(jq -r '.tickets[]?.note' "$C/queue.json" 2>/dev/null)"
+want "nothing is queued"                         "" "$(queued)"
+want_in "the log names the file"                 'real conflict — src/app.ts' "$out"
 want "nothing left in the clone's worktrees"     1 "$(git -C "$REPO" worktree list | wc -l | tr -d ' ')"
 out=$(live)
 want "the same head is not tried twice"          "" "$(grep -c 'real conflict' <<<"$out" | grep -v '^0$')"
@@ -169,7 +169,7 @@ echo "--- a PR that is only behind and clean is untouched ---"
 fresh; branch 18 'printf "b\n" > src/other.ts' 'printf "dev\n" > .deploy-trigger'; reads 18 true behind
 before=$(pushed_for 18); out=$(live)
 want "the branch is untouched"                   "$before" "$(remote_head 18)"
-want "no repair"                                 "" "$(repairs)"
+want "nothing queued"                            "" "$(queued)"
 want "no merge was tried"                        "" "$(grep -E 'pushed|conflict|merges cleanly' <<<"$out")"
 out=$(live)
 want "its state is not read again on the same heads" 1 "$(grep -c 'pulls/18$' "$GH_LOG")"
@@ -193,7 +193,7 @@ jq 'map(if .number == 23 then .labels = [{name: "do-not-merge"}] else . end)' "$
 before=$(pushed_for 23); out=$(live)
 want "the branch is untouched"                   "$before" "$(remote_head 23)"
 want "no comment"                                "" "$(cat "$FIX/comments.log" 2>/dev/null)"
-want "and no repair queued for it"               "" "$(repairs)"
+want "and nothing queued for it"                 "" "$(queued)"
 
 echo "--- shadow is the default, and pushes nothing ---"
 fresh; branch 20 'printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 20 false dirty
@@ -210,7 +210,7 @@ want "nothing pushed"                            "$before" "$(remote_head 21)"
 want_in "it says it is off"                      'off' "$out"
 cfg '.merge.keepFresh = true | .merge.mechanical = []'; out=$(live)
 want "no rules: every conflict is real"          "$before" "$(remote_head 21)"
-want "and goes to a builder"                     21 "$(repairs)"
+want "and nothing is queued for it"              "" "$(queued)"
 mv "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
 
 echo "--- the per-pass limit ---"
@@ -230,7 +230,7 @@ printf '#!/usr/bin/env bash\ncat > "%s/guard.in"; echo "refused: screens"; exit 
 before=$(pushed_for 22); out=$(KEEP_FRESH_PUSH_GUARD="$BIN/guard" live)
 want_in "the guard read the push's ref line"     "refs/heads/tkt-22-work $before" "$(cat "$FIX/guard.in" 2>/dev/null)"
 want "nothing pushed"                            "$before" "$(remote_head 22)"
-want "it goes to a builder"                      22 "$(repairs)"
+want "and nothing is queued for it"              "" "$(queued)"
 
 echo "--- a sign-off survives: the merge leaves the PR's own screens as they were ---"
 fresh; branch 23 'printf "pr page\n" > apps/web/page.tsx; printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 23 false dirty
@@ -243,39 +243,29 @@ want "approval-kept: the PR's own screen change is the same at both heads" "" "$
 printf 'HEAD %s refs/heads/tkt-23-work %s\n' "$after" "$before" | (cd "$REPO" && SIGNOFF_GUARD_DRYRUN=1 HARNESS_CFG_PATH="$HARNESS_CFG_PATH" bash "$HERE/signoff-push-guard.sh" origin >/dev/null 2>&1)
 want "the sign-off guard passes the same push"   0 "$?"
 
-echo "--- a queued repair whose clash is mechanical is settled, pushed, and its repair entry removed ---"
+echo "--- a queued ticket is settled first, and the queue is left as it was ---"
 fresh
 for n in 51 52; do branch "$n" "printf 'pr$n\n' > .deploy-trigger" ''; done
 (cd "$W" && printf 'dev\n' > .deploy-trigger && git add -A && git commit -qm dev && git push -q origin develop)
 for n in 51 52; do reads "$n" false dirty; done
-mkdir -p "$C"; printf '{"tickets":[{"n":7,"class":"new","note":""},{"n":52,"class":"repair","note":"Keep fresh: PR #52 clashes with develop and a rule cannot settle it — x"}]}\n' > "$C/queue.json"
+mkdir -p "$C"; printf '{"tickets":[{"n":7,"class":"new","note":""},{"n":52,"class":"new","note":"PM: fix the Major too, then ship"}]}\n' > "$C/queue.json"
+q_before=$(jq -c . "$C/queue.json")
 cp "$HARNESS_CFG_PATH" "$FIX/cfg.bak"; cfg '.merge.keepFreshPerTick = 1'
 b51=$(pushed_for 51); out=$(live)
 want "the queued one is settled first, ahead of an older one" dev "$(at_head 52 .deploy-trigger)"
 want "the older unqueued one waits for the next pass"  "$b51" "$(remote_head 51)"
-want "its repair entry is removed"               "" "$(repairs)"
-want "the rest of the queue is kept"             7 "$(jq -r '[.tickets[].n] | join(" ")' "$C/queue.json" 2>/dev/null)"
-want_in "it says it cleared the entry"           '#52'"'"'s repair entry removed' "$out"
-want_in "and counts it"                          '1 settled or sent on this pass, 1 repair entries cleared' "$out"
+want "the queue is exactly as it was"            "$q_before" "$(jq -c . "$C/queue.json" 2>/dev/null)"
+want_in "and counts it"                          '1 settled on this pass' "$out"
 mv "$FIX/cfg.bak" "$HARNESS_CFG_PATH"
 
-echo "--- a queued repair carrying a person's note is settled, and its entry stays ---"
-fresh; branch 53 'printf "pr\n" > .deploy-trigger' 'printf "dev\n" > .deploy-trigger'; reads 53 false dirty
-mkdir -p "$C"; printf '{"tickets":[{"n":53,"class":"repair","note":"PM: fix the Major too, then ship"}]}\n' > "$C/queue.json"
-out=$(live)
-want "the branch is settled"                     dev "$(at_head 53 .deploy-trigger)"
-want "the entry stays"                           53 "$(repairs)"
-want "its note is unchanged"                     'PM: fix the Major too, then ship' "$(jq -r '.tickets[0].note' "$C/queue.json" 2>/dev/null)"
-
-echo "--- a queued repair with a real clash is left queued as it was, with no duplicate ---"
+echo "--- a real clash on a queued ticket leaves the queue as it was ---"
 fresh
 branch 54 'printf "export const a = 2;\n" > src/app.ts' 'printf "export const a = 3;\n" > src/app.ts'; reads 54 false dirty
-mkdir -p "$C"; printf '{"tickets":[{"n":54,"class":"repair","note":"Merge lane: PR #54 left the lane — it conflicts with develop."}]}\n' > "$C/queue.json"
+mkdir -p "$C"; printf '{"tickets":[{"n":54,"class":"new","note":"PM: keep the old copy"}]}\n' > "$C/queue.json"
 q_before=$(jq -c . "$C/queue.json"); before=$(pushed_for 54); out=$(live)
 want "the branch is untouched"                   "$before" "$(remote_head 54)"
 want_in "it was tried"                           '#54 has a real conflict' "$out"
 want "the entry is exactly as it was"            "$q_before" "$(jq -c . "$C/queue.json" 2>/dev/null)"
-want_in "it says so"                             '#54 is already queued for repair — its entry is left as it is' "$out"
 out=$(live)
 want "the same head is not tried again"          "" "$(grep 'real conflict' <<<"$out")"
 

@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# repair-watch.sh — the other half of "hand off after the push".
+# repair-watch.sh — the watcher beside the builds: warn · unblock · restart · alarm.
 #
-#   repair-watch.sh                 one pass: repair · unblock · restart · alarm
-#   repair-watch.sh --only repair   one section (repair|unblock|infra|alarm)
+#   repair-watch.sh                 one pass
+#   repair-watch.sh --only warn     one section (warn|unblock|infra|alarm)
 #   repair-watch.sh --explain       say what it would do, change nothing
 #
-# An agent pushes, arms auto-merge and ends; nobody sits in a CI wait. This is
-# what brings one back. Run it on a timer (swarm/install.sh sets that up).
+# Run it on a timer (swarm/install.sh sets that up). It sends no agent to a red or
+# clashing pull request: there is no repair. One that cannot merge within
+# coordinator.rebuildAfterMin is closed and its ticket built fresh by the
+# coordinator's rebuild pass (scripts/rebuild.sh).
 #
 # Four things happen in a pass:
 #
-#   REPAIR   a pull request whose checks have SETTLED red, or which now clashes
-#            with the integration branch, gets one agent — ONE per head commit
-#            per kind, so a fix that does not hold is never retried in a loop.
+#   WARN     a PR red only on a check that warns until the release
+#            (release.nonBlockingChecks) is told so on the PR, once per head.
 #   UNBLOCK  a ticket held behind parents ("Blocked until #12, #13") goes back
 #            to ready the moment every parent has closed.
 #   RESTART  a run that ENDED on a connection or service error is not a failed
@@ -23,29 +24,17 @@
 #            stopped and why — updated while the stall lasts, closed when the
 #            agents run again. Dom, 2026-09-25: "why am I not notified when
 #            things stop running?"
-#
-# THE STOP AFTER THREE IS STICKY. A ticket repaired three times in 24 hours and
-# still red gets the needs-human label and a comment, which stops this watcher
-# AND the scheduler — both read that label. Without the label the stop expired
-# when the 24-hour window rolled, and #10685 got a fourth agent (2026-09-26).
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/swarm-env.sh" || exit 1
 
-. "$KIT_ROOT/scripts/base-wait.sh" || exit 1
 . "$KIT_ROOT/scripts/branch-ticket.sh" || exit 1
-. "$KIT_ROOT/scripts/open-work.sh" || exit 1
-# The one repair gate every repair start goes through (scripts/repair-gate.sh).
 . "$KIT_ROOT/scripts/coordinator-env.sh" || exit 1
-. "$KIT_ROOT/scripts/pr-red.sh" || exit 1
-declare -F issue_status_set >/dev/null || . "$KIT_ROOT/scripts/issue-status.sh" || exit 1
-. "$KIT_ROOT/scripts/repair-gate.sh" || exit 1
 
 LOG="$SWARM_LOGS/repair-watch.log"
 TRIED="$SWARM_DIR/repair-attempts.tsv"          # ticket \t sha \t kind \t epoch
 touch "$TRIED"
 
 DRY=0; ONLY=""
-MAX_PER_PASS="${SWARM_REPAIRS_PER_PASS:-$(swarm_opt swarm.repairsPerPass 2)}"
 QUIET_SEC="${SWARM_QUIET_SEC:-$(swarm_opt swarm.quietSec 1200)}"
 IDLE_MIN="${SWARM_IDLE_MIN:-$(swarm_opt swarm.idleMin 20)}"
 ALARM_LABEL="${SWARM_ALARM_LABEL:-$(swarm_opt swarm.alarmLabel "swarm:stalled")}"
@@ -59,7 +48,7 @@ ALARM_PRIORITY="${SWARM_ALARM_PRIORITY:-$(swarm_opt labels.priority.critical P0)
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --only)    ONLY="${2:?--only needs repair|unblock|infra|alarm}"; shift 2 ;;
+    --only)    ONLY="${2:?--only needs warn|unblock|infra|alarm}"; shift 2 ;;
     --explain|--dry) DRY=1; shift ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "repair-watch: unknown argument '$1'" >&2; exit 2 ;;
@@ -68,24 +57,16 @@ done
 say() { echo "$*"; [ "$DRY" = 1 ] || swarm_log "$LOG" "$*"; }
 runs() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
 
-# A ticket nobody may send an agent to.
-#
-# This list is DELIBERATELY SHORTER than the scheduler's. The scheduler will not
-# start fresh work on a ticket that is in review — a person owns it. Repair is
-# the opposite case: a ticket whose pull request is open is in review BY
-# DEFINITION, so holding on that label would mean the watcher repaired nothing
-# at all. What stops a repair is a deliberate pause: blocked, parked, handed to
-# a person, or waiting on a decision.
+# A ticket nobody may send an agent to: a deliberate pause — blocked, parked,
+# handed to a person, or waiting on a decision.
 paused_labels() {
   printf '%s\n' "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" "$LBL_PARKED" "$LBL_NEEDS_HUMAN" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
-# A clash is mechanical: a park does not hold its repair (the coordinator's open-work rule).
-paused() { # <label-csv> [kind]
+paused() { # <label-csv>
   local l
   while read -r l; do
     [ -n "$l" ] || continue
-    [ "${2:-}" = conflict ] && [ "$l" = "$LBL_PARKED" ] && continue
     case ",$1," in *",$l,"*) return 0 ;; esac
   done <<EOS
 $(paused_labels)
@@ -93,18 +74,7 @@ EOS
   return 1
 }
 
-# A pass asks about many tickets; one batched read answers them all (gh-batch.sh),
-# and only a ticket that read missed is asked on its own.
-_LABELS='{}'
-labels_prefetch() { # <ticket…>
-  [ $# -gt 0 ] || return 0
-  _LABELS=$(gh_issues_batch "$@" 2>/dev/null)
-  jq -e 'type == "object"' >/dev/null 2>&1 <<<"$_LABELS" || _LABELS='{}'
-}
 labels_of() { # <ticket> — "OPEN,label,label"
-  local hit
-  hit=$(jq -r --arg t "$1" '.[$t] // empty | .state + "," + (.labels | join(","))' <<<"$_LABELS" 2>/dev/null)
-  if [ -n "$hit" ]; then printf '%s' "$hit"; return 0; fi
   swarm_gh issue view "$1" --repo "$REPO_SLUG" --json state,labels \
     -q '.state + "," + ([.labels[].name] | join(","))' 2>/dev/null
 }
@@ -123,175 +93,13 @@ attempts_today() { # <ticket> [kind]
     '$1==t && $4>=d && (k=="" || $3==k)' "$TRIED" | grep -c . | tr -d ' '
 }
 
-# Is the machine able to take another agent for this programme right now?
-room_for() { # <programme> — echoes why not, returns 1
-  local live busy
-  live=$(swarm_live_count "$1")
-  if [ "$live" -ge "$SWARM_CAP" ]; then printf 'agents %s, cap %s' "$live" "$SWARM_CAP"; return 1; fi
-  if busy=$(swarm_machine_busy); then printf '%s' "$busy"; return 1; fi
-  return 0
-}
-
-# ---- 1. repair ---------------------------------------------------------------
-repair_brief() { # <pr> <sha> <reason> [ticket]
-  local rule; rule=$(head -1 "$KIT_ROOT/shared/signoff-last.md" 2>/dev/null)
-  [ -n "$rule" ] || { echo "repair-watch: $KIT_ROOT/shared/signoff-last.md is missing" >&2; return 1; }
-  local critic="A red design status is fixed by fixing every finding in the critic's
-comment on the PR, a Minor too, whoever put it there — unless the PR's screens are
-signed off: then those findings are the PM's call, and you change no pixel."
-  # Off until the release: its comments on the PR are no task and no question.
-  release_critic_paused "$(release_labels_of "$1" "${4:-}")" && critic="The design critic is off until the release: ignore each of its verdicts and
-findings on the PR, signed off or not — no fix, no deferral, no question, and never
-run the critic."
-  cat <<BRIEF
-$rule
-
-REPAIR on PR #$1 at ${2:0:9}: $3.
-
-Read the LATEST comment on the ticket and on the PR first — it may carry a
-ruling you must apply. Then fix ONLY that: pull the PR branch (the merge robot
-may have added commits), read the failing job logs (gh run view <id>
---log-failed), fix, re-run the local gates, re-stamp the code-review trailer only
-if the fingerprint moved, push, keep auto-merge armed, hand off. Never write a
-design verdict: the independent critic sets the design status on CI's shots after
-the push. $critic
-
-Your own code review counts its rounds from this repair: round 1 fixes every
-Critical, Major and Minor; from round 2 only Critical and Major block, and each
-Minor is noted under "Minor, deferred" in your PR comment — never a ticket, never a
-polish list. Nits are dropped.
-
-A clash: merge the integration branch keeping both sides' intent. If the same
-failure also happens on the integration branch itself, say so on the PR and
-stop.
-BRIEF
-}
-
-# What is failing on the integration branch's newest commit, ";"-joined; empty
-# when nothing is. "unknown" when it cannot be read, which holds like red.
-#
-# While the trunk itself is red every PR's CI is red for a reason no PR repair
-# can fix. A repair spent then is recorded as tried at that head commit and never
-# retried, so the PR sits unrepaired after the trunk is fixed — eight did, for
-# nine hours, on the estate this came from. So CI repairs wait for a green trunk
-# without recording an attempt. A clash is still repaired: it is the PR's own.
-integration_red() {
-  local out
-  out=$(swarm_gh api "repos/$REPO_SLUG/commits/$INTEGRATION_BRANCH/check-runs?per_page=100" \
-    -q '[.check_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out") | .name] | join(";")' \
-    2>/dev/null) || { printf 'unknown'; return; }
-  # A check that warns until the release does not hold the trunk red either.
-  local n keep="" IFS=';'
-  for n in $out; do release_check_nonblocking "$n" || keep="$keep${keep:+;}$n"; done
-  printf '%s' "$keep"
-}
-
-# repair_kind <mergeState> <pending> <fails> [draft 0|1] — "conflict", "ci" or "draft"; 1 when
-# nothing to repair. A draft is the driver's park: repaired when it clashes, or once its
-# park is cleared (section_repair reads the labels); its CI mid-build is no red.
-repair_kind() {
-  if [ "$1" = "DIRTY" ]; then printf conflict
-  elif [ "${4:-0}" = 1 ]; then printf draft
-  elif [ "${2:-0}" = "0" ] && [ -n "$3" ]; then printf ci
-  else return 1; fi
-}
-
-section_repair() {
-  local launched=0 row PR T SHA MSTATE PEND FAILS labs reason kind prog why trunk_red rows want=""
-  trunk_red=$(integration_red)
-  [ -z "$trunk_red" ] || say "$INTEGRATION_BRANCH is red ($trunk_red) — CI repairs wait until it is green"
-  rows=$(open_prs)
-  section_release_warn
-  # The tickets this pass may still act on, read in one request before the loop.
-  while IFS=$'\t' read -r PR T SHA MSTATE PEND DRAFT DNM UPD FAILS; do
-    [ -n "${PR:-}" ] || continue
-    kind=$(repair_kind "$MSTATE" "$PEND" "$FAILS" "$DRAFT") || continue
-    [ "$kind" = ci ] && [ -n "$trunk_red" ] && continue
-    grep -q "^$T	$SHA	$kind" "$TRIED" && continue
-    want="$want $T"
-  done <<< "$rows"
-  labels_prefetch $want
-  while IFS=$'\t' read -r PR T SHA MSTATE PEND DRAFT DNM UPD FAILS; do
-    [ -n "${PR:-}" ] || continue
-    [ "$launched" -lt "$MAX_PER_PASS" ] || break
-
-    reason=""
-    kind=$(repair_kind "$MSTATE" "$PEND" "$FAILS" "$DRAFT") || continue
-    case "$kind" in
-      conflict) reason="it clashes with $INTEGRATION_BRANCH" ;;
-      ci)       reason="CI went red on: $FAILS" ;;
-      draft)    reason="it is a parked draft whose park has cleared" ;;
-    esac
-    # A person's stop wins: their do-not-merge, or a draft they made.
-    [ "${DNM:-0}" = 0 ] || continue
-    if [ "${DRAFT:-0}" = 1 ]; then open_work_person_drafted "$PR" "${UPD#-}" >/dev/null; [ $? = 1 ] || continue; fi
-    if [ "$kind" = ci ] && [ -n "$trunk_red" ]; then
-      [ "$DRY" = 1 ] && echo "HOLD #$PR ($T): $INTEGRATION_BRANCH is red, not this PR"
-      continue
-    fi
-
-    # A clash with the integration branch does not move the PR's head, so the
-    # kind is part of the key: one attempt per head commit PER KIND.
-    grep -q "^$T	$SHA	$kind" "$TRIED" && continue
-    if [ "$kind" != conflict ] && swarm_heal_parked_out "$T" "$SHA"; then
-      say "skip #$PR ($T): parked past its cap on this head — a person looks first"; continue
-    fi
-    if [ "$kind" = ci ] && base_wait_holds "$T" "$SHA"; then
-      say "skip #$PR ($T): its reds fail on $INTEGRATION_BRANCH too — waiting for that fix (base-waits.tsv)"; continue
-    fi
-
-    labs=$(labels_of "$T")
-    [ -n "$labs" ] || continue
-    case "$labs" in CLOSED,*) continue ;; esac
-    paused "$labs" "$kind" && continue
-    # A draft still parked, or still being built, is no repair's yet.
-    if [ "$kind" = draft ]; then
-      case ",$labs," in *",$LBL_PARKED,"*|*",$LBL_CLAIMED,"*) continue ;; esac
-    fi
-
-    # THREE IN A DAY IS A REBUILD, NEVER A PERSON. The old breaker set needs-human here, and a
-    # P0 (#13304) waited on a label for a count; the PR is closed to rebuild fresh instead.
-    if [ "$(attempts_today "$T")" -ge 3 ]; then
-      if [ "$DRY" = 1 ]; then echo "WOULD rebuild #$T fresh: PR #$PR repaired $(attempts_today "$T") times in 24h and still $reason"
-      else rebuild_fresh "$T" "$(attempts_today "$T")" "$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$PR" '[.[] | select(.number == $n)] | first // empty')" \
-        || say "rebuild: #$T could not be rebuilt this pass — no repair is sent"; fi
-      continue
-    fi
-    already_going "$T" && continue
-
-    prog=$(swarm_programme_of "$T")
-    if ! why=$(room_for "$prog"); then
-      say "hold #$PR ($T): $reason — machine busy ($why)"; continue
-    fi
-    local gwhy gpj
-    gpj=$(gh_open_prs "${SWARM_PRS_MAX_AGE:-300}" | jq -c --argjson n "$PR" '[.[] | select(.number == $n)] | first // empty')
-    if ! gwhy=$(repair_gate "$T" "$gpj"); then
-      say "skip #$PR ($T): $gwhy"; continue
-    fi
-    if [ "$DRY" = 1 ]; then echo "WOULD repair #$PR ($T) at ${SHA:0:9}: $reason"; launched=$((launched+1)); continue; fi
-
-    # A hold placed mid-pass: checked again right before the attempt is spent.
-    if swarm_held >/dev/null; then say "held mid-pass — not repairing #$PR ($T)"; break; fi
-    local brief; brief="$SWARM_DIR/briefs/repair-$T.md"
-    mkdir -p "$(dirname "$brief")"
-    repair_brief "$PR" "$SHA" "$reason" "$T" > "$brief" || { say "no repair for #$PR ($T): its brief could not be written"; continue; }
-    printf '%s\t%s\t%s\t%s\n' "$T" "$SHA" "$kind" "$(swarm_now)" >> "$TRIED"
-    swarm_spawn "$T" "$brief" >/dev/null 2>&1 && repair_record "$T" "$gpj"
-    say "spawned repair for #$PR ($T) at ${SHA:0:9}: $reason"
-    launched=$((launched+1))
-  done <<< "$rows"
-  [ "$launched" -eq 0 ] || say "repaired $launched pull request(s) this pass"
-}
-
 # Every open PR on a ticket branch (branch_ticket: a bare-number branch too), drafts
 # included, as pr \t ticket \t sha \t mergeState \t pendingChecks \t draft 0|1 \t do-not-merge 0|1
 #   \t updatedAt \t failedCheckNames — last, as it may be empty (a tab IFS folds an empty
-#   field in the middle); a draft's checks are never its red.
-# Drafts were left out, and every parked draft sat clashing with nothing to repair it
-# (23 Oct: 11 of 17 clashing PRs, the open-work cap full, 0 builds).
+#   field in the middle); a draft's checks are never its red. The alarm reads it.
 # A commit status has a state and no status/conclusion: a failed one is red, and a
 # pending one never holds a red PR back, since no CI job is still running for it.
-# The sign-off hold's own check is red BY the hold: never a red to repair.
+# The sign-off hold's own check is red BY the hold: never a red.
 # Each check counts by its newest run (newest_runs): a red cleared by a re-run is not red.
 HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval 2>/dev/null || echo approval)}"
 # A check in release.nonBlockingChecks is a warning until the release: never a red here.
@@ -426,10 +234,6 @@ section_alarm() {
   [ -n "$stuck" ] && reasons="$reasons
 - **Agent silent $((QUIET_SEC/60))+ min:** $stuck"
 
-  stops=$(grep "^$(swarm_day)" "$LOG" 2>/dev/null | grep -oE "STOP #[0-9]+" | sort -u | grep -c . | tr -d ' ')
-  [ "${stops:-0}" -gt 0 ] && reasons="$reasons
-- **Stopped after 3 repairs today:** $stops fix(es) — no more agents will be sent until a person looks."
-
   tail -1 "$SWARM_LOGS/scheduler.log" 2>/dev/null | grep 'usage limit' >/dev/null && \
     reasons="$reasons
 - **The swarm is holding on the plan's usage limit.**"
@@ -465,15 +269,12 @@ $reasons"
   fi
 }
 
-# Held (#42): the two sections that spawn stand down BEFORE they record an
-# attempt. Recording one and then being refused by swarm_spawn would spend the
-# ticket's repair budget on nothing and mark a red PR "tried" at its SHA for good.
-# Unblock and alarm spawn nothing, so they still run.
+# Held (#42): the section that spawns stands down BEFORE it records an attempt.
+# Warn, unblock and alarm spawn nothing, so they still run.
 if held=$(swarm_held); then
-  say "held — not repairing or restarting: $held"
-else
-  runs repair && section_repair
+  say "held — not restarting: $held"
 fi
+runs warn && section_release_warn
 runs unblock && section_unblock
 if ! swarm_held >/dev/null; then runs infra && section_infra; fi
 runs alarm   && section_alarm

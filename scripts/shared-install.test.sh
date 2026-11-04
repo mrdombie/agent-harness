@@ -349,8 +349,8 @@ reset_install ""; rm -rf "$REPO/node_modules"; OUT=$(run)
 want "nothing ran"                            "0" "$(npm_runs)"
 want_in "it says why"                         "no node_modules" "$OUT"
 
-echo "--- housekeeping runs both passes every time ---"
-for s in reconcile sweep wtsweep polish critic judge cache own-install own-stranded; do
+echo "--- housekeeping runs the shared install every time ---"
+for s in reconcile sweep wtsweep polish critic judge cache own-install; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "$FIX/house.log"\n' "$s" > "$BIN/$s"; chmod +x "$BIN/$s"
 done
 house() {
@@ -358,14 +358,14 @@ house() {
   (cd "$FIX" && COORDINATOR_SHADOW=0 COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep" \
     COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" COORDINATOR_POLISH_LIST="$BIN/polish" COORDINATOR_CRITIC_JUDGE="$BIN/critic" \
     COORDINATOR_JUDGE="$BIN/judge" COORDINATOR_CACHE="$BIN/cache" COORDINATOR_FREE_GB=500 \
-    COORDINATOR_SHARED_INSTALL="$BIN/own-install" COORDINATOR_STRANDED_SWEEP="$BIN/own-stranded" \
+    COORDINATOR_SHARED_INSTALL="$BIN/own-install" \
     bash "${HOUSE_SUT:-$HERE/coordinator-housekeeping.sh}" >/dev/null 2>&1)
-  R="$(grep -c '^own-install' "$FIX/house.log") $(grep -c '^own-stranded' "$FIX/house.log")"
+  R="$(grep -c '^own-install' "$FIX/house.log")"
 }
 house
-want "the shared install and the stranded sweep each ran once" "1 1" "$R"
-order=$(grep -nE '^(own-stranded|wtsweep)' "$FIX/house.log" | cut -d' ' -f1 | tr '\n' ' ')
-want_in "the stranded backup runs before the worktree sweep" '^[0-9]+:own-stranded [0-9]+:wtsweep $' "$order"
+want "the shared install ran once" "1" "$R"
+order=$(grep -nE '^(own-install|wtsweep)' "$FIX/house.log" | cut -d' ' -f1 | tr '\n' ' ')
+want_in "it runs before the worktree sweep" '^[0-9]+:own-install [0-9]+:wtsweep $' "$order"
 
 echo "--- plants: each guard out, its case fails ---"
 KIT="$FIX/kit"; mkdir -p "$KIT"; cp -R "$HERE/../scripts" "$HERE/../swarm" "$HERE/../driver" "$KIT/"
@@ -410,7 +410,7 @@ plant "the unchanged re-verify" shared-install.sh '  [ "$REVERIFY" -gt 0 ] && [ 
 ' case_reverify "npm=0 rec=$V10 hold=free"
 plant "the adopt verify" shared-install.sh ' \
    && si_adoptable; then' case_adopt_broken "npm=0 rec=$V10" '; then'
-plant "the call"         coordinator-housekeeping.sh '  [ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0 0"
+plant "the call"         coordinator-housekeeping.sh '[ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"' house "0"
 for f in shared-install.sh shared-install-hold.sh coordinator-housekeeping.sh; do
   diff -q "$HERE/$f" "$KIT/scripts/$f" >/dev/null && ok "the planted $f is restored" || bad "the planted $f was not restored"
 done

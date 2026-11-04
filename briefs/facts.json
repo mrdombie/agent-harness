@@ -60,7 +60,7 @@
       "tools": ["Bash", "Read", "Grep", "Glob", "Skill"],
       "facts": {
         "EFFORT": "the effort code-review runs at (review.effort, default high: one context, no finder or verifier agents; max only when configured)",
-        "TARGET": "the ref code-review diffs against: the trunk for a build, the repair's own base commit for a repair",
+        "TARGET": "the ref code-review diffs against: the trunk the change will merge into",
         "DIFF": "the change under review, against the trunk it will merge into",
         "RENDERS": "the renders of every screen the change touches, both themes — empty when it touches none",
         "ROUND": "which review round this is: 1 or 2",
@@ -86,22 +86,6 @@
         "DIFF": "the change as it stands, against the trunk it will merge into",
         "ROUND": "which fix round this is: 1 or 2",
         "PM_ANSWERS": "the ticket's comments headed \"## PM answer\", each with the ref a pmProofs entry cites — or a sentence saying there are none",
-        "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet",
-        "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed",
-        "PROOF_LIMITS": "what cannot prove a change in this project's proof trees (an e2e browser spec, unless tests.e2eProofs is true) and what to prove it with instead"
-      }
-    },
-    "repair": {
-      "brief": "repair.md",
-      "schema": "schemas/repair.json",
-      "skills": ["superpowers:systematic-debugging", "superpowers:test-driven-development"],
-      "facts": {
-        "TICKET": "the ticket body, verbatim, including its acceptance criteria and its type labels",
-        "BRIEF": "why this repair was sent, verbatim: the repair watcher's, the merge lane's or the coordinator's brief, or a line naming the healing class when none came",
-        "PR": "the pull request's number, its branch, the head it was repaired from, and its merge state",
-        "FAILING": "the names of the checks that settled red on the pull request's head, or a sentence saying none did or that they could not be read",
-        "CONFLICTS": "what merging the integration branch did: not needed, merged clean, or the files left conflicted for this step",
-        "DIFF": "the change as it stands, against the trunk it will merge into",
         "CRITIC_FINDINGS": "the independent design critic's graded findings from its latest verdict on this ticket's open pull request when that verdict did not pass, each in scope for this change and blocking at its grade — or a sentence saying there are none, or no pull request yet",
         "EVIDENCE_TASKS": "the evidence the pull request still owes — the independent critic's evidence-class findings (a region, theme or width with no shot) and the changed UI files no evidence route or capture-plan step renders — each a task answered by an edit to the capture plan, with the plan's format; or a sentence saying none is owed",
         "PROOF_LIMITS": "what cannot prove a change in this project's proof trees (an e2e browser spec, unless tests.e2eProofs is true) and what to prove it with instead"

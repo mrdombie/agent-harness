@@ -9,7 +9,7 @@
 #     the comment and the sheet's machine list;
 #   - a reader paces by the same five-hour line as the owner, from its own reading when
 #     the sheet carries none. The sheet's order over the open-work cap starts its
-#     process fixes and repairs while behind the line, and nothing new while ahead.
+#     process fixes while behind the line, and nothing new while ahead.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -20,8 +20,7 @@ swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 T="$HERE/coordinator-tick.sh"
 
 for s in reconcile sweep notify; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$s"; chmod +x "$BIN/$s"; done
-printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "$BIN/fixlock"; chmod +x "$BIN/fixlock"
-export COORDINATOR_FIX_LOCK="$BIN/fixlock" COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_NOTIFY_CMD="$BIN/notify" COORDINATOR_HOUSEKEEPING_CMD="$BIN/sweep" COORDINATOR_HOUSEKEEPING=inline
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 SWARM_FREE_MEM_GB=64 SWARM_IDLE=90 SWARM_CORES=32 TEST_PID=$$
 export COORDINATOR_CLAIMS_CMD="cat $FIX/claims.tsv" COORDINATOR_LIVE_VIEW_WATCHDOG=off
@@ -65,8 +64,8 @@ chmod +x "$BIN/spawn-host"
 
 NOWE=$(date +%s)
 M="$FIX/m-vm"
-# The sheet as the owner wrote it on 22 Oct: process fixes first, then reds to fix, then new
-# tickets. Optionally with a budget (`<!-- sheet:pace … -->`), as an owner that paces writes it.
+# The sheet as the owner wrote it on 22 Oct: process fixes first, then three tickets whose
+# PRs clash (once queued as repairs, read as new now), then new tickets. Optionally with a budget (`<!-- sheet:pace … -->`), as an owner that paces writes it.
 sheet() { # [pace json]
   { printf 'The order every machine builds in.\n\n<!-- sheet:v1 updated=%s owner=mac -->\n```json\n' "$NOWE"
     printf '%s' '[{"n":13621,"class":"new","prin":1,"process":true},{"n":13788,"class":"new","prin":2,"process":true},{"n":13625,"class":"repair","prin":1},{"n":13044,"class":"repair","prin":2},{"n":13447,"class":"repair","prin":2},{"n":13900,"class":"new","prin":1},{"n":13901,"class":"new","prin":2}'"${EXTRA:-}"']'
@@ -82,7 +81,7 @@ world() { # [five-hour use]
   fix_issue 13621 OPEN "status:ready,P1,process"; fix_issue 13788 OPEN "status:ready,P2,process"
   fix_issue 13625 OPEN "status:in-review,P1"; fix_issue 13044 OPEN "status:in-review,P2"; fix_issue 13447 OPEN "status:in-review,P2"
   fix_issue 13900 OPEN "status:ready,P1"; fix_issue 13901 OPEN "status:ready,P2"
-  # 87 open changes, over the cap of 10: the three repairs' PRs among them.
+  # 87 open changes, over the cap of 10: the three clashing PRs among them.
   jq -n '[range(0; 84) | {number: (20000 + .), headRefName: "tkt-\(20000 + .)-open", headRefOid: "h\(.)", isDraft: false,
           mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]
          + [13625, 13044, 13447 | {number: (. + 100000), headRefName: "tkt-\(.)-fix", headRefOid: "r\(.)", isDraft: false,
@@ -99,10 +98,10 @@ vm_tick() { # one live tick on the VM, a reader of mac's sheet, pacing on as its
 spawned() { sort -n "$SPAWNS" | tr '\n' ' ' | sed 's/ $//'; }
 hb_json() { jq -r '.[0].body' "$SH/comments.json" | sed -nE 's/^<!-- sheet:heartbeat-json (\{.*\}) -->$/\1/p'; }
 
-echo "--- a reader over the cap, the sheet with no budget: it starts its process fixes and repairs ---"
+echo "--- a reader over the cap, the sheet with no budget: it starts its process fixes, nothing new ---"
 world; sheet
 out=$(vm_tick)
-want "the two process fixes and the three repairs start; no new ticket" "13044 13447 13621 13625 13788" "$(spawned)"
+want "the two process fixes start; no new ticket, and no clashing PR's ticket" "13621 13788" "$(spawned)"
 want_in "the tick says the cap holds new work" 'open changes 87 / cap 10: finishing before starting' "$out"
 want_in "and that it paces behind the line, from its own reading" 'pacing: behind — 5h window 39% against a target of 41%' "$out"
 
@@ -121,18 +120,19 @@ want_in "its pacing line"                             '^pacing: behind' "$(jq -r
 want_in "its ceiling line"                            '^ceiling: 0 running · room for [0-9]+ more' "$(jq -r '.why.ceiling' <<<"$hb")"
 want_in "its open-changes line"                       '^open changes 87 / cap 10: finishing before starting$' "$(jq -r '.why.openChanges' <<<"$hb")"
 want_in "its sheet line"                              "^sheet: working mac's order, 0 min old — 7 on it$" "$(jq -r '.why.sheet' <<<"$hb")"
-want_in "the cap line names what waits"               '^cap: 2 new ticket\(s\) wait' "$(jq -r '.why.cap' <<<"$hb")"
+want_in "the cap line names what waits"               '^cap: 5 new ticket\(s\) wait' "$(jq -r '.why.cap' <<<"$hb")"
 want "no skips this tick"                             "0 0" "$(jq -r '"\(.why.skips | length) \(.why.skipsBy | length)"' <<<"$hb")"
 want "every line at most 200 characters"              "true" "$(jq '[.why | .. | strings | length <= 200] | all' <<<"$hb")"
 want_in "the comment says it in plain words"          '^why: .*pace|^why: .*new ticket\(s\) wait' "$(jq -r '.[0].body' "$SH/comments.json")"
 
 echo "--- an idle tick: the spawn line and the skips by reason ---"
-world; for t in 13450 13451 13452; do fix_issue "$t" OPEN "status:in-review,P2"; done
-fix_pr_for 13450 13451 13452   # a queued repair has its open PR; with none it is new work again
-EXTRA=',{"n":13450,"class":"repair","prin":2},{"n":13451,"class":"repair","prin":2},{"n":13452,"class":"repair","prin":2}' sheet
-# The claims landed after the owner wrote the order: six repairs claimed, one with a stop label.
+world; for t in 13625 13044 13447 13450 13451; do fix_issue "$t" OPEN "status:ready,P0"; done
+fix_pr_for 13450 13451 13452
+# P0s, which the open-work cap never holds, so each reaches the claim and label checks.
+EXTRA=',{"n":13450,"class":"new","prin":0},{"n":13451,"class":"new","prin":0},{"n":13452,"class":"new","prin":0}' sheet
+# The claims landed after the owner wrote the order: five claimed, one with a stop label.
 printf '%s\tmac\tbuild\n' 13625 13044 13447 13450 13451 >> "$FIX/claims.tsv"
-fix_issue 13452 OPEN "status:in-review,P2,status:blocked"
+fix_issue 13452 OPEN "status:ready,P0,status:blocked"
 # Both process fixes are claimed on mac too: the tooling cap is full, and says so.
 printf '%s\tmac\tbuild\n' 13621 13788 >> "$FIX/claims.tsv"
 out=$(vm_tick)

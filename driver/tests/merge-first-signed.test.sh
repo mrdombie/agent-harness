@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# merge-first-signed.test.sh — release.mergeFirst reaches the signed-off-screens rule of a
-# repair already running. A run reads its config when it starts (and a coordinator pins
-# a copy), so a repair begun before the switch landed on the trunk still parked a Major
-# on a signed-off PR's screens for the owner, and withheld the push. The release block is
-# read from the trunk as origin has it now. On: a Major there is never held or filed
-# (it goes to the nightly sweep, 2026-11-02) and the review ships (the push guard lets it through); a Critical still blocks and is fixed in
-# place. Off: today's behaviour — it parks for the owner.
+# merge-first-signed.test.sh — release.mergeFirst reaches a build already running. A run
+# reads its config when it starts (and a coordinator pins a copy), so a run begun before
+# the switch landed on the trunk still blocked a Major on a signed-off PR's screens, and
+# the push guard withheld the push. The release block is read from the trunk as origin
+# has it now. On: a Major on a screen outside the change is never held or filed (it goes
+# to the nightly sweep, 2026-11-02) and the review ships (the push guard lets it
+# through); a Critical still blocks and is fixed in place. Off: the Major blocks.
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -37,12 +37,13 @@ JSON
   git -C "$FIX/up" commit -qam "release.mergeFirst $1" && git -C "$FIX/up" push -q origin develop
 }
 
-# A repair of PR #88: the PR's screen, and the repair's own commit.
+# A build on PR #88: the card screen is the trunk's already; the change is the home screen.
+mkdir -p "$FIX/up/screens"; printf 'the trunk card\n' > "$FIX/up/screens/Card.tsx"
+git -C "$FIX/up" add screens/Card.tsx && git -C "$FIX/up" commit -qm "the card" && git -C "$FIX/up" push -q origin develop
+git -C "$REPO" pull -q --ff-only origin develop
 git -C "$REPO" worktree add -q "$FIX/wtr" -b tkt-120/work develop
-mkdir -p "$FIX/wtr/screens"; printf 'the PR change\n' > "$FIX/wtr/screens/Home.tsx"; printf 'the PR card\n' > "$FIX/wtr/screens/Card.tsx"
+mkdir -p "$FIX/wtr/screens"; printf 'the PR change\n' > "$FIX/wtr/screens/Home.tsx"
 git -C "$FIX/wtr" add . && git -C "$FIX/wtr" commit -qm "feat: the PR"
-RB=$(git -C "$FIX/wtr" rev-parse HEAD)
-printf 'the repair\n' >> "$FIX/wtr/screens/Home.tsx"; git -C "$FIX/wtr" commit -qam "fix: the repair"
 # The owner signed PR #88's screens.
 cat > "$BIN/approval-kept" <<SH
 #!/usr/bin/env bash
@@ -57,15 +58,15 @@ printf '#!/usr/bin/env bash\ncase "$1" in add) printf "%%s\\n" "$*" >> "$FIX/pl.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FIX/sf"; chmod +x "$FIX/pl" "$FIX/sf"
 export DRIVER_POLISH_LIST="$FIX/pl" DRIVER_SCREEN_FINDINGS="$FIX/sf" SWEEP_QUEUE="$FIX/sweep.jsonl"
 
-# On a signed screen the repair did not touch: one in a file it did is fixed in place (same file, same change).
+# On a signed screen the change did not touch: one in a file it did is fixed in place (same file, same change).
 major='{"verdict":"BLOCKED","findings":[{"id":"m1","file":"screens/Card.tsx","line":448,"grade":"major","summary":"the notice stays up after reset","reason":"a person is misled","fix":"clear it"}]}'
 critical='{"verdict":"BLOCKED","findings":[{"id":"c1","file":"screens/Home.tsx","line":4,"grade":"critical","summary":"another workspace sees the rows","reason":"wrong data","fix":"scope it"}]}'
 
 N=900
-case_signed() { # <kit> <answer> — a repair of the signed PR under the stale snapshot: R is the outcome
+case_signed() { # <kit> <answer> — a build on the signed PR under the stale snapshot: R is the outcome
   N=$((N + 1))
   driver_state_init "$N" --worktree "$FIX/wtr" --branch tkt-120/work
-  driver_state_set "$N" mode repair; driver_state_set "$N" pr 88; driver_state_set "$N" repair_base "$RB"
+  driver_state_set "$N" pr 88
   fix_issue "$N" OPEN "status:in-review"
   fix_ai review "$2" superpowers:requesting-code-review
   local rc=0
@@ -93,16 +94,16 @@ want_not_in "it is never parked for the owner"    'parks for the owner' "$(cat "
 case_critical
 want "on: a Critical on signed-off screens still blocks, fixed in place" "rc=30 fu= owner=no" "$R"
 case_own
-want "on: a Major in the file the repair touched is fixed in place, never held" "rc=30 fu= owner=no" "$R"
+want "on: a Major in the file the change touched is fixed in place, never held" "rc=30 fu= owner=no" "$R"
 case_guard
 want "on: the push guard sees the switch, so the push is not withheld" "on" "$R"
 case_prompt
 want "on: the step is told the sign-off lines do not hold" "1" "$R"
 
-echo "--- off: today's behaviour ---"
+echo "--- off: the Major blocks ---"
 trunk_switch false
 case_major
-want "off: a Major on signed-off screens parks for the owner" "rc=24 fu= owner=yes" "$R"
+want "off: a Major on signed-off screens blocks: back to fix" "rc=30 fu= owner=no" "$R"
 case_guard
 want "off: the push guard holds"                  "off" "$R"
 case_prompt
@@ -130,9 +131,9 @@ plant() { # <label> <file under the kit> <exact text to delete> <case> <the resu
 kit_copy
 SUT_KIT="$KIT" case_major; want "the unplanted kit: on, a Major ships, filed nowhere" "rc=0 fu= owner=no" "$R"
 plant "the release block is read from the trunk" scripts/release-checks.sh \
-  '    blob=$(git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$br:.claude/harness.json" 2>/dev/null)' case_major "rc=24 fu= owner=yes"
+  '    blob=$(git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$br:.claude/harness.json" 2>/dev/null)' case_major "rc=30 fu= owner=no"
 plant "the trunk ref is fetched" scripts/release-checks.sh \
-  '        git -C "$repo" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br" >/dev/null 2>&1 || true' case_flip "rc=24 fu= owner=yes"
+  '        git -C "$repo" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br" >/dev/null 2>&1 || true' case_flip "rc=30 fu= owner=no"
 plant "only a Critical blocks, signed-off screens too" driver/driver-env.sh \
   '  if driver_merge_first; then printf '"'"'%s'"'"' "$DRIVER_MERGE_FIRST_GRADES"; return 0; fi' case_major "rc=30 fu= owner=no"
 plant "the guard reads the trunk" scripts/release-checks.sh \

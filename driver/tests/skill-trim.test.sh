@@ -28,7 +28,6 @@ want "a feature plan declares writing-plans alone"      "superpowers:writing-pla
 want "a type:bug plan still declares systematic-debugging" "superpowers:systematic-debugging superpowers:writing-plans" "$(sk plan 402)"
 want "and so does a bug-labelled one"                   "superpowers:systematic-debugging superpowers:writing-plans" "$(sk plan 403)"
 want "unreadable labels keep it, the side that parks nothing" "superpowers:systematic-debugging superpowers:writing-plans" "$(sk plan 499)"
-want_in "repair keeps systematic-debugging"             'superpowers:systematic-debugging' "$(sk repair 401)"
 
 echo "--- the claim check follows the condition: a feature plan that only debugged has not run ---"
 driver_state_init 401 --worktree "$MAIN_REPO" --branch "tkt-401/work"

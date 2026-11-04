@@ -58,7 +58,7 @@ want_in "the step list is in the body"  'start .*plan .*build' "$(cat "$GH_LOG")
 want_in "and the title names the ticket's own subject" 'Ticket 101' "$(cat "$GH_LOG")"
 want_not_in "not the number twice"      '#101: 101' "$(cat "$GH_LOG")"
 
-echo "--- it does NOT wait for CI: a watcher brings an agent back ---"
+echo "--- it does NOT wait for CI: a red or clashing PR is rebuilt by the coordinator ---"
 want_not_in "no run watch" 'run watch'   "$(cat "$GH_LOG")"
 want_not_in "no check wait" 'pr checks.*--watch' "$(cat "$GH_LOG")"
 
@@ -517,162 +517,6 @@ want_in "with the script's own reason"     'planted refusal' "$out"
 want "the branch never reached origin"     "0" \
   "$(git -C "$FIX/origin" rev-parse --verify tkt-130/work >/dev/null 2>&1 && echo 1 || echo 0)"
 
-echo "--- a repair ships onto the PR it repaired, and leaves that PR's words alone ---"
-# The PR may be a person's, or /claim's, with a Lesson section and a body a reviewer
-# already read. A repair says what it did in a comment and rewrites none of it.
-setup_wt 140
-driver_state_set 140 mode repair; driver_state_set 140 pr 88
-driver_state_put 140 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 140 review
-driver_state_put 140 repair '{"step":"repair","cause":"the reader dropped its error branch"}'
-for st in reenter repair fix self-check review record; do driver_state_done 140 "$st"; done
-printf '[{"number":88}]\n' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-88"; : > "$FIX/pr-created-tkt-140_work"
-printf '{"number":88,"isDraft":false,"body":"A body a person wrote.\\n\\n## Lesson\\n- Principle: kept.\\n\\nCloses #140"}\n' > "$FIX/gh/pr-view.json"
-: > "$GH_LOG"
-out=$(driver_step_ship 140 2>&1); rc=$?
-want "it ships"                              "0" "$rc"
-want "the branch is pushed to the same name" "$(git -C "$FIX/wt140" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-140/work 2>/dev/null)"
-# Its words stay: only the proof it lacked is added under them (ship-proof.test.sh).
-want_not_in "the PR's title is not rewritten" 'pr edit .*--title' "$(cat "$GH_LOG")"
-want "  and any edit keeps its body"         "0" "$(grep '^pr edit' "$GH_LOG" | grep -vc -- '--body A body a person wrote\.' || true)"
-want_not_in "no second PR is opened"         'pr create' "$(cat "$GH_LOG")"
-want_in "the deleted-tests check reads the PR's own body" 'pr view 88 .*--json body' "$(cat "$GH_LOG")"
-want_in "it is ready"                        'pr ready' "$(cat "$GH_LOG")"
-want_in "auto-merge is armed"                'pr merge.*--auto' "$(cat "$GH_LOG")"
-want_in "and the repair is said on the PR"   'pr comment 88 .*Repaired by the driver' "$(tr '\n' ' ' < "$GH_LOG")"
-want_in "with its cause"                     'the reader dropped its error branch' "$(cat "$GH_LOG")"
-rm -f "$FIX/gh/pr-view.json"
-
-echo "--- a repair puts back the closing line a PR's body lacks, and keeps every word ---"
-# #5654: a body without "Closes #n" on a branch without the prefix — every reader that
-# finds a ticket's PR missed it, and its repair parked "no open pull request".
-setup_wt 150
-driver_state_set 150 mode repair; driver_state_set 150 pr 99
-driver_state_put 150 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 150 review
-for st in reenter repair fix self-check review record; do driver_state_done 150 "$st"; done
-printf '[{"number":99}]\n' > "$FIX/gh/prs.json"
-: > "$FIX/pr-created-99"; : > "$FIX/pr-created-tkt-150_work"
-printf '{"number":99,"isDraft":false,"body":"Closes ticket 150.\\n\\n## Lesson\\n- Principle: kept."}\n' > "$FIX/gh/pr-view.json"
-: > "$GH_LOG"
-out=$(driver_step_ship 150 2>&1); rc=$?
-want "it ships"                              "0" "$rc"
-want_in "the body gets the line, its words kept" 'pr edit 99 .*--body Closes ticket 150\.  ## Lesson - Principle: kept\.  Closes #150' "$(tr '\n' ' ' < "$GH_LOG")"
-want_not_in "the title is left alone"        'pr edit 99 .*--title' "$(tr '\n' ' ' < "$GH_LOG")"
-rm -f "$FIX/gh/pr-view.json"
-
-echo "--- a repair whose PR has gone refuses rather than opening a new one ---"
-setup_wt 141
-driver_state_set 141 mode repair; driver_state_set 141 pr 89
-driver_state_put 141 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 141 review
-printf '[]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
-# Read afresh it is CLOSED, never merged: the park stands.
-: > "$FIX/pr-created-89"; printf '{"number":89,"state":"CLOSED","mergedAt":null,"headRefOid":""}\n' > "$FIX/gh/pr-view.json"
-out=$(driver_step_ship 141 2>&1); rc=$?
-want "it refuses"                            "24" "$rc"
-want_in "saying the PR is no longer open"    'no longer open' "$out"
-want_in "after reading whether it merged"    'pr view 89 .*state,mergedAt' "$(cat "$GH_LOG")"
-want_in "and the park says it closed"        'closed while it was being repaired' "$(driver_state_get 141 park_note)"
-rm -f "$FIX/gh/pr-view.json"
-want_not_in "and opens none"                 'pr create' "$(cat "$GH_LOG")"
-
-echo "--- a repair whose PR MERGED mid-run ends clean: no park, its extra commit backed up ---"
-# #13676 parked "closed while it was being repaired" on a PR automerge had landed.
-setup_wt 371
-driver_state_set 371 mode repair; driver_state_set 371 pr 191
-git -C "$FIX/wt371" push -q origin tkt-371/work; MERGED_HEAD=$(git -C "$FIX/wt371" rev-parse HEAD)
-driver_state_set 371 repair_base "$MERGED_HEAD"
-printf 'late\n' > "$FIX/wt371/r371.txt"; git -C "$FIX/wt371" add r371.txt; git -C "$FIX/wt371" commit -qm "fix: late repair 371"
-LATE=$(git -C "$FIX/wt371" rev-parse HEAD)
-driver_state_put 371 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 371 review
-printf '[]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
-: > "$FIX/pr-created-191"; printf '{"number":191,"state":"MERGED","mergedAt":"2026-10-21T07:14:34Z","headRefOid":"%s"}\n' "$MERGED_HEAD" > "$FIX/gh/pr-view.json"
-RELS="$FIX/rel371"; : > "$RELS"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$RELS" > "$BIN/claim-lock-371"; chmod +x "$BIN/claim-lock-371"
-out=$(CL="$BIN/claim-lock-371" driver_step_ship 371 2>&1); rc=$?
-want "it ends as nothing owed (exit 0 through the run)" "$DRIVER_E_NOOP" "$rc"
-want_in "saying it merged while repairing"   'merged at 2026-10-21T07:14:34Z while repairing' "$out"
-want "no park note is left"                  "" "$(driver_state_get 371 park_note)"
-want_in "the extra commit is named"          'fix: late repair 371' "$out"
-want "and backed up on a stranded ref"       "$LATE" "$(git -C "$FIX/origin" for-each-ref --format='%(objectname)' 'refs/stranded/371/' | head -1)"
-want "the merged branch is not pushed to"    "$MERGED_HEAD" "$(git -C "$FIX/origin" rev-parse tkt-371/work)"
-want_in "the claim is released"              'release 371' "$(cat "$RELS")"
-want_not_in "no PR is opened"                'pr create' "$(cat "$GH_LOG")"
-
-echo "--- a repair whose PR merged with nothing past its head backs nothing up ---"
-setup_wt 372
-driver_state_set 372 mode repair; driver_state_set 372 pr 192
-git -C "$FIX/wt372" push -q origin tkt-372/work
-driver_state_put 372 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 372 review
-: > "$FIX/pr-created-192"; printf '{"number":192,"state":"MERGED","mergedAt":"2026-10-21T07:14:34Z","headRefOid":"%s"}\n' "$(git -C "$FIX/wt372" rev-parse HEAD)" > "$FIX/gh/pr-view.json"
-out=$(driver_step_ship 372 2>&1); rc=$?
-want "it ends clean"                         "$DRIVER_E_NOOP" "$rc"
-want "no stranded ref"                       "" "$(git -C "$FIX/origin" for-each-ref 'refs/stranded/372/')"
-rm -f "$FIX/gh/pr-view.json"
-
-echo "--- a repair the review did not pass is not pushed: on an armed PR the push is the merge ---"
-setup_wt 142
-driver_state_set 142 mode repair; driver_state_set 142 pr 90
-git -C "$FIX/wt142" push -q origin tkt-142/work; ORIG=$(git -C "$FIX/wt142" rev-parse HEAD)
-printf 'repair\n' > "$FIX/wt142/r142.txt"; git -C "$FIX/wt142" add r142.txt; git -C "$FIX/wt142" commit -qm "fix: repair"
-driver_state_put 142 review '{"verdict":"BLOCKED","findings":[{"grade":"major","summary":"x"}]}'; driver_state_bump 142 review
-printf '[{"number":90}]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
-out=$(driver_step_ship 142 2>&1); rc=$?
-want "with rounds left it goes back to fix"  "30" "$rc"
-want "pushing nothing"                       "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
-driver_state_bump 142 ship_rework
-out=$(driver_step_ship 142 2>&1); rc=$?
-want "it refuses"                            "24" "$rc"
-want "origin still has the PR's old head"    "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-142/work)"
-want_in "and it says why"                    'nothing is pushed' "$out"
-printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a repair that deletes a test is accounted for BEFORE the push: on an armed PR the push is the merge ---"
-repair_wt() { # <ticket> <pr> — a repair-mode record on a pushed PR branch, reviewed SHIP
-  local t=$1 pr=$2
-  git -C "$REPO" worktree add -q "$FIX/wt$t" -b "tkt-$t/work" develop
-  printf 'x\n' > "$FIX/wt$t/f$t.txt"; git -C "$FIX/wt$t" add "f$t.txt"
-  git -C "$FIX/wt$t" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: $t"
-  git -C "$FIX/wt$t" push -q origin "tkt-$t/work"
-  driver_state_init "$t" --worktree "$FIX/wt$t" --branch "tkt-$t/work"
-  driver_state_set "$t" mode repair; driver_state_set "$t" pr "$pr"
-  driver_state_put "$t" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$t" review
-  fix_issue "$t" OPEN "status:in-review"
-  printf '[{"number":%s}]\n' "$pr" > "$FIX/gh/prs.json"
-  : > "$FIX/pr-created-$pr"; : > "$FIX/pr-created-tkt-${t}_work"
-  printf '{"number":%s,"isDraft":false,"body":"Its author wrote this."}\n' "$pr" > "$FIX/gh/pr-view.json"
-}
-repair_wt 143 92; ORIG=$(git -C "$FIX/wt143" rev-parse HEAD)
-git -C "$FIX/wt143" rm -q pinned.test.ts
-git -C "$FIX/wt143" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: drop it"
-: > "$GH_LOG"
-out=$(driver_step_ship 143 2>&1); rc=$?
-want "an unaccounted deletion refuses"       "24" "$rc"
-want "and nothing reached origin"            "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-143/work)"
-want_in "naming the file"                    'pinned.test.ts' "$out"
-
-repair_wt 144 93
-git -C "$FIX/wt144" rm -q pinned.test.ts
-git -C "$FIX/wt144" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: retire it"
-printf '%s\n' '{"file":"pinned.test.ts","removedBecause":"the screen it pinned is retired"}' > "$(driver_state_dir 144)/steps/replaced.jsonl"
-: > "$GH_LOG"
-out=$(driver_step_ship 144 2>&1); rc=$?
-want "an accounted deletion ships"           "0" "$rc"
-want "the repair reached origin"             "$(git -C "$FIX/wt144" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-144/work 2>/dev/null)"
-want_in "the section is added to the PR body, where CI reads it" 'pr edit 93 .*--body Its author wrote this\..*## Deleted tests.*pinned.test.ts. → removed on purpose: the screen it pinned is retired' "$(tr '\n' ' ' < "$GH_LOG")"
-want_not_in "and the title is left alone"   'pr edit 93 .*--title' "$(tr '\n' ' ' < "$GH_LOG")"
-want "before the push, so CI's first run of the new head reads it" "pr edit" "$(grep -m1 -oE '^pr (edit|ready)' "$GH_LOG")"
-rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a repair carrying conflict markers is never pushed ---"
-repair_wt 145 95; ORIG=$(git -C "$FIX/wt145" rev-parse HEAD)
-printf '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/develop\n' > "$FIX/wt145/m.txt"
-git -C "$FIX/wt145" add m.txt; git -C "$FIX/wt145" -c user.email=t@example.invalid -c user.name=T commit -qm "merge"
-out=$(driver_step_ship 145 2>&1); rc=$?
-want "it refuses"                          "24" "$rc"
-want "nothing reached origin"              "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-145/work)"
-want_in "naming the file"                  'm.txt' "$out"
-rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
-
 echo "--- a branch that tracks the trunk still pushes to itself ---"
 # A worktree cut from origin/develop tracks develop, and under push.default=upstream
 # a push naming only the branch lands on develop.
@@ -700,56 +544,6 @@ for st in start plan build self-check review record; do driver_state_done 146 "$
 rc=0; driver_step_ship 146 >/dev/null 2>&1 || rc=$?
 want "it ships"                              "0" "$rc"
 want "and the brief is cleared"              "" "$(driver_state_get 146 run_brief)"
-
-echo "--- a repair that changed nothing says so on the PR, not 'Repaired' ---"
-repair_wt 147 96
-: > "$GH_LOG"
-rc=0; driver_step_ship 147 >/dev/null 2>&1 || rc=$?
-want "it ships"                              "0" "$rc"
-want_in "the comment says it re-checked, and changed nothing" 'pr comment 96 .*Re-checked by the driver.*nothing was red or clashing' "$(tr '\n' ' ' < "$GH_LOG")"
-want_not_in "and does not claim a repair"    'pr comment 96 .*Repaired by the driver' "$(tr '\n' ' ' < "$GH_LOG")"
-repair_wt 148 97
-driver_state_put 148 repair '{"step":"repair","status":"unchanged","reason":"the PR already keeps the old label"}'
-: > "$GH_LOG"
-rc=0; driver_step_ship 148 >/dev/null 2>&1 || rc=$?
-want_in "an unchanged answer is named as one" 'pr comment 97 .*Re-checked by the driver.*unchanged: the PR already keeps the old label' "$(tr '\n' ' ' < "$GH_LOG")"
-rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- a repair never readies a draft the driver did not build ---"
-# 27 open drafts had no driver record; a repair readied and armed them, landing work
-# their authors had left unfinished.
-repair_wt 149 98; ORIG=$(git -C "$FIX/wt149" rev-parse HEAD)
-printf 'fix\n' > "$FIX/wt149/r149.txt"; git -C "$FIX/wt149" add r149.txt
-git -C "$FIX/wt149" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: repair"
-printf '[{"number":98,"isDraft":true}]\n' > "$FIX/gh/prs.json"; : > "$GH_LOG"
-out=$(driver_step_ship 149 2>&1); rc=$?
-want "a draft with no build on the record refuses" "24" "$rc"
-want "nothing reached origin"                "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-149/work)"
-want_not_in "never readied, never armed"     'pr ready|pr merge' "$(cat "$GH_LOG")"
-want_in "the park note says why"             'draft the driver did not build' "$(driver_state_get 149 park_note)"
-want_in "and sends it to the adoption"       'build-ticket 149 --adopt' "$(driver_state_get 149 park_note)"
-driver_state_done 149 start
-rc=0; driver_step_ship 149 >/dev/null 2>&1 || rc=$?
-want "the driver's own draft (a build ran start) ships" "0" "$rc"
-rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
-
-echo "--- an adopted draft is readied only on the review's SHIP ---"
-repair_wt 150 99; ORIG=$(git -C "$FIX/wt150" rev-parse HEAD)
-printf 'done\n' > "$FIX/wt150/r150.txt"; git -C "$FIX/wt150" add r150.txt
-git -C "$FIX/wt150" -c user.email=t@example.invalid -c user.name=T commit -qm "feat: finish the draft"
-printf '[{"number":99,"isDraft":true}]\n' > "$FIX/gh/prs.json"
-driver_state_set 150 adopted "2026-10-22T00:00:00Z"
-driver_state_put 150 review '{"verdict":"SPIT-BACK","findings":[{"grade":"major","summary":"half the acceptance is missing"}]}'
-: > "$GH_LOG"; rc=0; driver_step_ship 150 >/dev/null 2>&1 || rc=$?
-[ "$rc" -ne 0 ] && ok "an adopted draft the review sent back is not shipped (rc $rc)" || bad "an adopted draft shipped on a SPIT-BACK"
-want "nothing reached origin"                "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-150/work)"
-want_not_in "and it is never readied"        'pr ready|pr merge' "$(cat "$GH_LOG")"
-driver_state_put 150 review '{"verdict":"SHIP","findings":[]}'
-: > "$GH_LOG"; rc=0; driver_step_ship 150 >/dev/null 2>&1 || rc=$?
-want "an adopted draft the review passed ships" "0" "$rc"
-want_in "readied, then armed"                'pr ready.*pr merge' "$(tr '\n' ' ' < "$GH_LOG")"
-want "and its work reached origin"           "$(git -C "$FIX/wt150" rev-parse HEAD)" "$(git -C "$FIX/origin" rev-parse tkt-150/work 2>/dev/null)"
-rm -f "$FIX/gh/pr-view.json"; printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a plan the run wrote into a TRACKED scratch folder is committed, not refused ---"
 # A project that keeps docs/superpowers in git: the sweep leaves the folder alone
@@ -1073,24 +867,19 @@ want_not_in "and only that one"                'another PR' "$out"
 want "and nothing reached origin"              "" "$(git -C "$FIX/origin" rev-parse --verify -q tkt-182/work 2>/dev/null)"
 
 echo "--- a person's stop wins over the machine: a draft a person made is never readied ---"
-# 22 Oct: a PM named a Critical and put the PR back to draft; a driver re-check
-# ("unchanged … meets every acceptance item") readied it, armed it, and it merged.
-repair_wt 731 734; ORIG=$(git -C "$FIX/wt731" rev-parse HEAD)
-printf 'fix\n' > "$FIX/wt731/r731.txt"; git -C "$FIX/wt731" add r731.txt
-git -C "$FIX/wt731" -c user.email=t@example.invalid -c user.name=T commit -qm "fix: repair"
-driver_state_done 731 start
-driver_state_put 731 repair '{"step":"repair","status":"unchanged","reason":"meets every acceptance item"}'
-printf '[{"number":734,"isDraft":true}]\n' > "$FIX/gh/prs.json"
+# 22 Oct: a PM named a Critical and put the PR back to draft; a driver run readied it,
+# armed it, and it merged.
+setup_wt 731
+driver_state_put 731 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 731 review
+for st in start plan build self-check review record; do driver_state_done 731 "$st"; done
 printf 'a person (pm) put this back to draft on 2026-10-22: Back to draft: must not merge until the COLLEAGUE key (Critical, lost data) is fixed\n' > "$FIX/person-stop.out"
 printf '1\n' > "$FIX/person-stop.rc"; : > "$FIX/person-stop.log"; : > "$GH_LOG"
 out=$(driver_step_ship 731 2>&1); rc=$?
 want "a draft a person made refuses"              "24" "$rc"
 want_not_in "never readied, never armed"          'pr ready|pr merge' "$(cat "$GH_LOG")"
-want "nothing reached origin"                     "$ORIG" "$(git -C "$FIX/origin" rev-parse tkt-731/work)"
-want_in "the stop was read for the ticket and its PR" '^check 731 734$' "$(cat "$FIX/person-stop.log")"
+want_in "the stop was read for the ticket"        '^check 731 ' "$(cat "$FIX/person-stop.log")"
 want_in "the park names the person and their words" 'put this back to draft on 2026-10-22: Back to draft' "$(driver_state_get 731 park_note)"
 want "and parks for the person, not the machine"  "pm" "$(driver_state_get 731 park_cause)"
-want_not_in "no re-check comment claims it unchanged" 'Re-checked by the driver' "$(cat "$GH_LOG")"
 rm -f "$FIX/person-stop.out" "$FIX/person-stop.rc"; printf '[]\n' > "$FIX/gh/prs.json"
 
 echo "--- a person's Critical newer than the review makes ship refuse at the hand-off ---"

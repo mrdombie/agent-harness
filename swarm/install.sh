@@ -18,7 +18,8 @@
 #                 counts as busy. Another job already on its port is named and
 #                 refused; SWARM_REPLACE_PORT=1 unloads it and sets it aside.
 #   scheduler     every 5 minutes: top up each programme's queue and drain it.
-#   repair-watch  every 10 minutes: repair, unblock, restart, alarm.
+#   repair-watch  every 10 minutes: warn, unblock, restart, alarm (no repair: the
+#                 coordinator rebuilds a PR that cannot merge, scripts/rebuild.sh).
 #   report        every minute, ONLY when the project sets swarm.reportUrl.
 #   coordinator   every 2 minutes: scripts/coordinator-tick.sh. Opt-in — only
 #                 `install.sh coordinator` installs it — and in shadow unless

@@ -38,7 +38,7 @@
 # discovering it after the whole build.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state.sh" || exit 1
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/stranded.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/worktree-lib.sh" || exit 1
 
 # _driver_start_clear_way <ticket> <repo> <tree> <branch> <cut> — make room for
@@ -83,14 +83,14 @@ _driver_start_clear_way() {
   tip=$(git -C "$repo" rev-parse -q --verify "refs/heads/$b" 2>/dev/null) || return 0
   git -C "$repo" merge-base --is-ancestor "$tip" "$cut" 2>/dev/null && return 0
   if [ -n "$(git -C "$repo" for-each-ref --contains "$tip" --format=x refs/remotes/origin/ 2>/dev/null)" ] \
-     || driver_stranded_list "$t" "$repo" | cut -d' ' -f1 | grep -qxF "$tip"; then
+     || git -C "$repo" ls-remote origin "$DRIVER_KEPT_NS/$t/*" 2>/dev/null | cut -f1 | grep -qxF "$tip"; then
     driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10), already on origin — the branch is reset to the cut"
     return 0
   fi
-  if driver_stranded_push "$t" "$repo" "$tip"; then
-    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10) with commits nowhere else — kept on origin as $DRIVER_STRANDED_REF before the branch is reset"
+  if driver_keep_ref "$t" "$repo" "$tip"; then
+    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10) with commits nowhere else — kept on origin as $DRIVER_KEPT_REF before the branch is reset"
   elif git -C "$repo" update-ref "refs/driver-kept/$t/$stamp" "$tip" 2>/dev/null; then
-    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10) with commits nowhere else, and origin refused them ($DRIVER_STRANDED_WHY) — kept as refs/driver-kept/$t/$stamp before the branch is reset"
+    driver_say "   start: $b was left here at $(printf '%s' "$tip" | cut -c1-10) with commits nowhere else, and origin refused them ($DRIVER_KEPT_WHY) — kept as refs/driver-kept/$t/$stamp before the branch is reset"
   else
     DRIVER_START_WHY="$b holds commits at $(printf '%s' "$tip" | cut -c1-10) that are nowhere else and could not be kept"; return 1
   fi
@@ -168,8 +168,7 @@ driver_step_start() { # <ticket>
   # checked above and is the thing that actually stops a resume, which is the
   # separation T2-7 is about: a park nobody has to answer carries only the status.
   # AND IN REVIEW IS OURS WHEN THE BUILD IS. A build that parked keeps its work on a
-  # draft PR; the coordinator then spawns it as a repair, marking it in review, and
-  # build-ticket resumes the build. Refused here, it parked back to ready and was
+  # draft PR, marked in review, and build-ticket resumes the build on its record. Refused here, it parked back to ready and was
   # spawned again, for ever. Only that resume, with its draft on the record's branch.
   local own=""
   case ",$labels," in
@@ -195,10 +194,9 @@ driver_step_start() { # <ticket>
       return "$DRIVER_E_REFUSED" ;;
   esac
 
-  # A TICKET WITH AN OPEN PULL REQUEST IS REPAIRED, NEVER REBUILT. Without a tree of
-  # its own on the record, everything below would cut a fresh branch from the trunk
-  # beside the PR's own — duplicate work, a push the PR never sees. A healing row that
-  # reached this step parked, came back as parked, and did exactly that.
+  # A TICKET WITH AN OPEN PULL REQUEST IS NEVER BUILT TWICE. Without a tree of its own
+  # on the record, everything below would cut a fresh branch from the trunk beside the
+  # PR's own — duplicate work, a push the PR never sees.
   local owt prs
   owt=$(driver_state_get "$t" worktree)
   if [ -z "$owt" ] || [ ! -d "$owt" ]; then
@@ -224,18 +222,17 @@ driver_step_start() { # <ticket>
         prs=""
       fi
     fi
-    # ONE OPEN PR IS REPAIRED, NOT PARKED. #12649 parked on "start will not cut a second
-    # branch" with its PR right there to work on. A ready PR, or a draft on this record's
-    # own branch, becomes a repair of it (build-ticket re-enters it). A draft on another
-    # branch is adopted (build-ticket turns the repair into --adopt), never readied as a
-    # repair. Several PRs are a person's call.
+    # ONE OPEN PR IS NOT PARKED ON, AND NOT BUILT BESIDE. #12649 parked on "start will
+    # not cut a second branch" with its PR right there. There is no repair route: the PR
+    # merges, or the coordinator closes it and builds the ticket fresh once it cannot
+    # merge (scripts/rebuild.sh). This run ends without a park (DRIVER_E_HAS_PR).
+    # Several PRs are a person's call.
     if [ -n "$prs" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ]; then
-      driver_say "↪ start: #$t already has an open pull request — #$(printf '%s' "$prs" | cut -f1) on $(printf '%s' "$prs" | cut -f2) — so this run repairs it rather than cut a second branch."
-      driver_state_set "$t" repair_pr "$(printf '%s' "$prs" | cut -f1)"
-      return "$DRIVER_E_TO_REPAIR"
+      driver_say "↪ start: #$t already has an open pull request #$(printf '%s' "$prs" | cut -f1) on $(printf '%s' "$prs" | cut -f2) — it merges, or the coordinator rebuilds it fresh once it cannot merge (coordinator.rebuildAfterMin); this run builds nothing."
+      return "$DRIVER_E_HAS_PR"
     fi
     if [ -n "$prs" ]; then
-      driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. A repair re-enters it: build-ticket $t --repair <brief>."
+      driver_say "✋ start: #$t already has an open pull request — $(printf '%s\n' "$prs" | awk -F'\t' '{printf "#%s on %s ", $1, $2}')— so start will not cut a second branch. Which one is the ticket's is a person's call."
       return "$DRIVER_E_REFUSED"
     fi
   fi
@@ -330,23 +327,10 @@ driver_step_start() { # <ticket>
       driver_say "✋ start: no $INTEGRATION_BRANCH in $repo to cut from."
       return "$DRIVER_E_REFUSED"
     fi
-    # Work an earlier park stranded on origin, from any machine, is where this branch
-    # starts — unless origin's own branch already has it.
-    local cut="$sha" obase=""
-    git -C "$repo" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null \
-      && obase="refs/remotes/origin/$branch"
-    if [ "${DRIVER_FRESH:-}" = 1 ]; then
-      driver_say "   start: a rebuild — #$t starts from $INTEGRATION_BRANCH, no stranded work restored"
-    elif driver_stranded_restore "$t" "$repo" "$obase"; then
-      if [ -n "$DRIVER_STRANDED_SHA" ]; then
-        cut="$DRIVER_STRANDED_SHA"
-        driver_say "   start: #$t has stranded work on origin as $DRIVER_STRANDED_FROM — the branch starts from it"
-        driver_state_set "$t" resumed_from "$DRIVER_STRANDED_FROM"
-      fi
-    else
-      driver_say "   start: #$t has stranded work on origin as ${DRIVER_STRANDED_FROM:-a ref} and it could not be fetched — cutting from $INTEGRATION_BRANCH"
-    fi
-    [ -z "$obase" ] || driver_stranded_expire "$t" "$repo" "$branch"
+    # A build starts from the trunk. Work kept on refs/stale/ (a park's refused push,
+    # an old PR head a rebuild closed) is reference only and never restored.
+    local cut="$sha"
+    [ "${DRIVER_FRESH:-}" != 1 ] || driver_say "   start: a rebuild — #$t starts from $INTEGRATION_BRANCH"
     # UNDER THE PROJECT'S OWN WORKTREE ROOT, not $TMPDIR. On macOS $TMPDIR is a
     # /var/folders directory the system prunes, and between the build and the push
     # the tree is the only copy of the work — the 2026-09-28 trial ended with 9

@@ -109,6 +109,10 @@ p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:SUCCESS" "appro
 want "the hold check"                      green "$(pr_red_classify "$p" "$REQ" approval '[]' | cut -f1)"
 p=$(pr BLOCKED MERGEABLE false "Typecheck + Unit tests:COMPLETED:SUCCESS" "Lesson:COMPLETED:FAILURE")
 want "a non-blocking check"                green "$(pr_red_classify "$p" "$REQ" approval '["lesson"]' | cut -f1)"
+p=$(jq -c '.statusCheckRollup |= map(if .name == "Lesson" then . + {workflowName: "Lesson", name: "Every fix ships a lesson"} else . end)' <<<"$p")
+REQ='["typecheck + unit tests","approval","every fix ships a lesson"]'
+want "one listed as <workflow> / <name>"   green "$(pr_red_classify "$p" "$REQ" approval '["lesson / every fix ships a lesson"]' | cut -f1)"
+REQ='["typecheck + unit tests","approval","lesson"]'
 REQ='["typecheck + unit tests","schema drift"]'
 
 echo "--- a draft with its checks settled is one to finish; green is nothing ---"

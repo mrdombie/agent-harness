@@ -34,10 +34,10 @@ LINE=$(printf '%s' "$LINE" | tr '\n\t' '  ')
 # The owner's decisions: a batch of screens to sign off, the forge unreadable (only
 # the owner can log in), the disk still low after the cache pass, a judgement that
 # names a choice only the owner can make, a build host missing tools only the owner
-# can install, nothing building because every open PR waits on a person, and a PR
-# red past coordinator.redReportMin with nothing fixing it.
+# can install, and a PR red past coordinator.redReportMin with nothing working it (a
+# person holds it, or its base is red: the rebuild pass leaves it).
 # A kind a `--class owner` caller sends must be here (owner-kinds.test.sh).
-OWNER_KINDS="signoff-batch blind disk-low login-lost decision host-tools stall red-2h"
+OWNER_KINDS="signoff-batch blind disk-low login-lost decision host-tools red-2h"
 KIND="${KEY%%:*}"
 case " $OWNER_KINDS " in *" $KIND "*) ;; *) CLASS=agent ;; esac
 AGENT_WORK="$COORD_DIR/agent-work.log"

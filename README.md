@@ -33,7 +33,7 @@ The repo is its own marketplace. In the consuming repo's `.claude/settings.json`
 
 Or per machine: `claude plugin marketplace add mrdombie/agent-harness && claude plugin install agent-harness@agent-harness`.
 
-**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging` (a plan on a bug ticket, and repair), `test-driven-development`, `verification-before-completion`, `receiving-code-review`; the review step runs Claude Code's own built-in `code-review` skill. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list — and it is the list the driver READS, not prose. The driver parks the ticket when a step's transcript shows none of the skills that file declares for it, and again when the answer claims a skill the transcript never shows.
+**Depends on [superpowers](https://github.com/obra/superpowers)** — `writing-plans`, `systematic-debugging` (a plan on a bug ticket), `test-driven-development`, `verification-before-completion`, `receiving-code-review`; the review step runs Claude Code's own built-in `code-review` skill. The kit's build chain invokes them by name and does not vendor them; [`briefs/facts.json`](briefs/facts.json) is the machine-readable list — and it is the list the driver READS, not prose. The driver parks the ticket when a step's transcript shows none of the skills that file declares for it, and again when the answer claims a skill the transcript never shows.
 
 `brainstorming` is deliberately NOT in that list. It waits on a person, so an unattended step cannot invoke it — the approved spec stands in for it, and `briefs/facts.json` records that under `notInvoked`.
 
@@ -109,8 +109,8 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `gates.prePush` — optional: the command that verifies a push, which the driver's self-check runs as its last gate so the push itself is a formality. Absent, it runs the worktree's own `pre-push` hook as `git push` does; `false` turns it off. `gates.prePushOwed`, optional, is the same checks without a review verdict, run in its place while that verdict is still owed (left out, the check waits for the push). The trial runs with `SIGNOFF_GUARD_DRYRUN=1`, so the sign-off guard refuses without side effects, and its refusal parks for the owner instead of going to fix. Measured 2026-10-17: self-check ran 3 changed-only gates, the pre-push ran 77 checks, and 5 driver runs parked on a check only the push ran (#236).
 - `merge.updateBehind` — optional, `agent` (default) or `bot`. Set `bot` when the repo requires PRs to be up to date and runs a bot that brings behind PRs up to date one at a time. Agents then leave a PR that is merely behind to the bot instead of merging the integration branch in themselves, which queued a full extra CI run and landed their PR ahead of the one the bot was landing, restarting it (#79). A conflict is still the agent's. `scripts/behind-pr-action.sh` makes the call. The merge lane (`scripts/merge-lane.sh`) reads it too: with `bot` it never updates a head that is merely behind unless GitHub reads it as `BEHIND` (a strict rule), and merges it once its required checks are green.
 - `merge.method` — optional, `squash`, `merge` or `rebase`: how the merge lane merges. The lane refuses by name without it, and the coordinator tick only runs the lane where it is set.
-- `merge.regenerate` — optional, a list of `{path, command, seed}`: generated tally files (ratchet baselines, suppression counts) that a harness merge recounts instead of handing to a model. When a local merge (the repair step, the driver's merge of an earlier run's commits, keep-fresh) stops on a conflict in a file whose glob is listed, `scripts/merge-regenerate.sh` runs its `command` at the tree's root on the merged tree and stages the result when it exits 0 and leaves no marker; with nothing else unmerged the merge is committed and no repair is spawned. `seed: "max"` first writes the file as the key-wise maximum of both sides' JSON, so a ratchet's own `--update`, which reads its baseline and refuses a rise, can run. A command that fails keeps git's own conflict. No git merge driver is used: git runs one before the merged tree is on disk, and GitHub never runs one. Measured 2026-10-23: of develop's 181 merges in two days, the most-edited files were four generated tallies.
-- `merge.keepFresh` — optional, `true` turns on keeping branches fresh (`scripts/keep-fresh.sh`, run by coordinator housekeeping ahead of the merge lane, in the coordinator's shadow mode). Each pass, for each open, non-draft PR that GitHub reads as conflicting (REST `mergeable: false`, `mergeable_state: dirty`) and that no claim, live run or fix-lock holds, up to `merge.keepFreshPerTick` (default 5), oldest first: a scratch worktree merges the integration branch into the PR's head. When every conflicted file matches a `merge.mechanical` rule, the merge is committed, the sign-off push guard is run on it as the pre-push would, it is pushed, and the PR gets one comment naming each file and rule. Any other conflict is aborted, the branch is left exactly as it was, and its ticket is queued as a repair; that head is not tried again until it moves. A PR that is merely behind and clean is never merged into (`merge.updateBehind: bot`). A sign-off survives the push the way it survives any develop-only merge (`approval-kept.sh check`): the push is a merge commit whose resolution touches only rule files. Measured 2026-10-22: of 47 open PRs, 30 clashed, most of them mechanically, and each clash was a builder run.
+- `merge.regenerate` — optional, a list of `{path, command, seed}`: generated tally files (ratchet baselines, suppression counts) that a harness merge recounts instead of handing to a model. When a local merge (the driver's merge of an earlier run's commits, keep-fresh) stops on a conflict in a file whose glob is listed, `scripts/merge-regenerate.sh` runs its `command` at the tree's root on the merged tree and stages the result when it exits 0 and leaves no marker; with nothing else unmerged the merge is committed and no model is called. `seed: "max"` first writes the file as the key-wise maximum of both sides' JSON, so a ratchet's own `--update`, which reads its baseline and refuses a rise, can run. A command that fails keeps git's own conflict. No git merge driver is used: git runs one before the merged tree is on disk, and GitHub never runs one. Measured 2026-10-23: of develop's 181 merges in two days, the most-edited files were four generated tallies.
+- `merge.keepFresh` — optional, `true` turns on keeping branches fresh (`scripts/keep-fresh.sh`, run by coordinator housekeeping ahead of the merge lane, in the coordinator's shadow mode). Each pass, for each open, non-draft PR that GitHub reads as conflicting (REST `mergeable: false`, `mergeable_state: dirty`) and that no claim, live run or fix-lock holds, up to `merge.keepFreshPerTick` (default 5), oldest first: a scratch worktree merges the integration branch into the PR's head. When every conflicted file matches a `merge.mechanical` rule, the merge is committed, the sign-off push guard is run on it as the pre-push would, it is pushed, and the PR gets one comment naming each file and rule. Any other conflict is aborted and the branch is left exactly as it was: nothing is sent to it, and it stays on the rebuild clock; that head is not tried again until it moves. A PR that is merely behind and clean is never merged into (`merge.updateBehind: bot`). A sign-off survives the push the way it survives any develop-only merge (`approval-kept.sh check`): the push is a merge commit whose resolution touches only rule files. Measured 2026-10-22: of 47 open PRs, 30 clashed, most of them mechanically, and each clash was a builder run.
 - `merge.mechanical` — the rules `merge.keepFresh` resolves by; default `[]`, so every conflict is real. A list of `{"rule": <rule>, "paths": [<glob>…]}`, first match wins, globs as git pathspecs (`**` crosses directories). `integration`: the integration branch's side wins, a deletion included. `union`: the lines of both sides. `stricter-json`: a 3-way JSON merge where a value both sides changed takes the lower number, a list takes the entries either side added less those either side removed, and a key one side removed stays removed. `package-scripts`: package.json, only when the one thing both sides changed is keys added under `scripts`; any other clash in the file is real. A JSON rule only rewrites a file it can write back byte for byte at its own indent. An example, for a repo with a deploy stamp, changelog fragments and ratchet baselines:
 
   ```json
@@ -144,10 +144,10 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `legacyEnvPrefix` — if your fixtures already pin env vars under an older prefix (`FOO_STATE_DIR`), declare `"FOO"` and the kit reads `HARNESS_X`, then `FOO_X`. The kit itself names no prefix.
 - `gates.local` is the list of LOCAL gate commands, and it is the only part of `gates` anything runs. **CI is the one gate:** with `"localOnly": true` under `gates`, a non-empty `gates.local` is THE local set whatever `gates.changed` holds, so a project can keep its test command in `gates.changed` (which `/agent-harness:finish`, `/agent-harness:claim` and the format hook read) and still run no test locally; `localOnly` with no non-empty `gates.local` is refused rather than falling back to `gates.changed`, and the build briefs' project facts tell the model to run only `gates.local` and its one test file. Without the setting, when `gates.local` holds every `gates.changed` command (or there is no `gates.changed`), it is THE local set — the fast checks — and the driver's self-check runs it and nothing else, with no trial of the project's whole pre-push. The driver's push then carries `HARNESS_LOCAL_GATES_HEAD=<sha>` when the set passed on that head (or on one with the same files), so a pre-push hook that honours it runs nothing twice; the full suite and the slow gates run once, in CI. A `gates.local` that leaves the changed list out is the older whole-app form, and self-check runs `gates.changed` and the pre-push trial as before. `group` names a gate group inside your own runner and `requiredChecks` names the CI checks a pull request waits on — neither is a shell line, and the driver never treats them as one. A flat `{ "<name>": "<command>" }` map is read too; a key whose value is not a string counts as an empty command, so it is named in the "nothing ran" refusal rather than dropped in silence.
 - **A pre-push check red on the trunk itself never parks a branch.** When the project's pre-push refuses a ship push, the driver runs each check it named once on the trunk commit the branch merged (its merge-base), in a scratch tree, and caches the verdict per check and commit in `<stateDir>/swarm/base-checks.tsv` for every builder on the host. When every refused check is red there too, the push goes out base-red with the same bypass a head gates.local passed on carries (`HARNESS_LOCAL_GATES_HEAD`), the run log and the PR say `base-red: <checks> on <trunk>@<sha>`, and the coordinator files ONE `<trunk> is red: <checks> (<trunk>@<sha7>)` ticket for the checks among them the trunk's live rules require (`coordinator.requiredRuns`; any other is only counted for the week) (`labels.priority.critical`, `coordinator.processLabel`) at the front of the queue — deduped per check set and commit, and while one is open for the same checks. One check green on the base, or not runnable there, is the branch's own red and blocks as before. `gates.checkCommand` (`{check}` is the name the hook printed) says how to run one check; without it, the trunk tree's package script of that name runs. And when a branch's own `.husky/pre-push` predates the `HARNESS_LOCAL_GATES_HEAD` skip but the trunk's has it, a push on a head gates.local passed runs the trunk's hook, so a stale copy cannot run the old full suite.
-- **The same at every step that checks, not only the push.** A self-check gate red, a fix-step gate finding, and a fix step's "wait or fix here" question about a named test are read on the merged trunk commit the same way, through the same cache: a gate whose output names failing test files is base-red when each one, run alone there, fails too and none is a file the branch changed (`tests.fileCommand`, `{file}` filled in, says how to run one file; without it a `.sh` runs under bash, else the tree's vitest or jest); a gate naming no test file is base-red when its own command fails there. Base-red is not counted against the branch, never parks or asks, and is noted for the one develop-red ticket; the model is told "this check is red on develop itself; the develop-red ticket owns it; carry on". A changed-only gate sees no change on the trunk commit, so it is the branch's, as before. A repair whose every red is base-red still waits for the trunk, and now notes it for the same ticket.
+- **The same at every step that checks, not only the push.** A self-check gate red, a fix-step gate finding, and a fix step's "wait or fix here" question about a named test are read on the merged trunk commit the same way, through the same cache: a gate whose output names failing test files is base-red when each one, run alone there, fails too and none is a file the branch changed (`tests.fileCommand`, `{file}` filled in, says how to run one file; without it a `.sh` runs under bash, else the tree's vitest or jest); a gate naming no test file is base-red when its own command fails there. Base-red is not counted against the branch, never parks or asks, and is noted for the one develop-red ticket; the model is told "this check is red on develop itself; the develop-red ticket owns it; carry on". A changed-only gate sees no change on the trunk commit, so it is the branch's, as before. A PR whose every red is base-red waits for the trunk in the coordinator's rebuild pass.
 - **Whatever the hooks enforce, the trunk is checked for.** The commit and push hooks often run more than the trunk is required to pass (a lint-staged check, a push suite), so the trunk can go red where only builders see it. `gates.hookChecks` lists the checks the hooks run (package scripts or `gates.checkCommand` names; `false` for none); without it the kit reads them from the project: the pre-commit and pre-push hooks' `npm|pnpm|yarn run <script>` lines, and for a hook that runs lint-staged, each lint-staged command that is, or runs, a package script. Housekeeping runs every one on the trunk's head in the background (`scripts/develop-hook-red.sh`, once per commit, at most every `coordinator.hookSweepGapMinutes`, default 15; `COORDINATOR_DEVELOP_HOOKS=off` turns it off), through the same per-commit cache, and a red one goes to the develop-red ticket before any builder meets it. And a step's question about a hook red is read, never taken from its words: each check it names is run on the merged trunk commit and in the ticket's tree, and when it is red on the trunk and its output in the tree names no file of the ticket's (committed, staged or new), it is base-red and takes standard answer (g), noted for the develop-red ticket; an output naming a file of the ticket's, or a check green on the trunk, parks it, whatever kind the step gave. With (g) on a commit hook's red and a change left uncommitted, the driver commits it past those checks only (the owner, 26 Oct), never with `--no-verify`: the commit carries `HARNESS_HOOK_SKIP_CHECKS`, `HARNESS_HOOK_SKIP_TREE` (the tree being committed) and `HARNESS_HOOK_SKIP_HEAD`, and the project's hook honours them by wrapping each check in its copy of `templates/hook-skip.sh <check> <command…>`, which skips that check only when it is named and the index and HEAD are exactly those. Every other hook check runs; a tree or HEAD that moved since the proof is refused by the driver and by the wrapper, so a proof never reaches the next commit; a project whose hook does not wrap the check simply still refuses, and the step asks as before.
 - **Under `gates.localOnly`, nothing the local set leaves out runs locally.** The fix step never hands on a red of a `gates.changed` command `gates.local` omits (a `test:changed`), nor a self-check red recorded at another head; a proof command may not be one of those commands and must name its test file; and every model step's proof limits say so.
-- **Under `gates.localOnly`, every step runs `gates.local` and the one proof file, nothing else.** Every driver push names its head (`HARNESS_LOCAL_GATES_HEAD`, a park's push too), so the project's pre-push skips its suite, and a branch whose own hook predates the skip runs the trunk's; no ratchet's lowering command runs; a repair's gate proof that is not a `gates.local` command is CI's and is not run; the proof's typecheck comes from `gates.local`; and every model step is told "run only the fast local checks; CI is the one gate", never a test suite, a ratchet, `verify:push` or the hook (`driver/tests/local-only-every-step.test.sh` walks a whole build and a whole repair and records every command).
+- **Under `gates.localOnly`, every step runs `gates.local` and the one proof file, nothing else.** Every driver push names its head (`HARNESS_LOCAL_GATES_HEAD`, a park's push too), so the project's pre-push skips its suite, and a branch whose own hook predates the skip runs the trunk's; no ratchet's lowering command runs; the proof's typecheck comes from `gates.local`; and every model step is told "run only the fast local checks; CI is the one gate", never a test suite, a ratchet, `verify:push` or the hook (`driver/tests/local-only-every-step.test.sh` walks a whole build and records every command).
 - `standards` is the coding-standards document a change is held to, handed to the build step as its own fact. It has **no fallback**: without it the build agent is told there is none, and is told so in a sentence. It used to fall back to `law`, which meant a project with a design philosophy and no `standards` key had its build step told the design philosophy IS the coding standard — a wrong document, which cannot be seen from inside a prompt, where an absence can.
 - `worktreeRoot` is optional (default `~/.harness-worktrees/<repo>`): where `/agent-harness:claim` and the driver cut ticket worktrees. `~` is expanded. Never a temp dir — on macOS `$TMPDIR` is a `/var/folders` directory the system prunes file by file, and `/agent-harness:claim` refuses one.
 - `worktree.scratch` is optional: extra paths a step's own tooling writes into the worktree that are NOT the change. The driver moves them out into the run record after every model step, so neither the park's `git add -A` nor the ship step's clean-tree check ever sees them. `docs/superpowers` is always swept; a path git TRACKS is never touched, because there it is the change.
@@ -157,11 +157,11 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `changelog.branchTrailer` is optional: the commit-message line this project's changelog gate accepts ONCE for a whole branch as a reasoned skip (e.g. `no-changelog-branch`). When every build answer reported `changelog: {skipped}` and no commit on the branch carries the line, self-check adds one empty commit with `<trailer>: <reason>` — no history is rewritten.
 - `design.surfacePaths` is optional: the globs this project calls a screen. The compare step matches the branch diff against them to decide whether there is a screen to render at all; without it that step says so and compares nothing. Entries are git pathspecs, so `":(exclude)**/*.test.ts"` takes test files out; a list of only excludes is refused, because git reads it as every other file. With a renderer but no approved picture for the change, compare takes the renders for review and makes no parity check.
 - `evidence` is optional: the shape the project's CI leaves when it photographs a pull request, read by `scripts/ci-evidence.sh`. **Evidence comes from CI, not from the agent's machine** (2026-10-16): an agent pushes, opens the pull request held with an `## Evidence routes` list, waits on `ci-evidence.sh wait <pr>` (a shell that costs nothing while CI works), fetches CI's pinned shots with `ci-evidence.sh fetch` and has the design critic judge them (`/agent-harness:finish` Step 5.4). Keys and defaults: `dir` (`docs/evidence` — a commit after a verdict that touches only this folder, or nothing, carries the verdict forward), `begin` / `end` (`<!-- ci-evidence:begin -->` / `<!-- ci-evidence:end -->`, the body block CI writes; links outside it are not CI's evidence), `headMarker` (`ci-evidence-head:`, the commit CI photographed), `captureCheck` (`Capture and pin the evidence`), `decideCheck` (`Does this diff need pixels?`), `routesHeading` (`Evidence routes`). Local capture is a fallback a person switches on with `HARNESS_LOCAL_EVIDENCE=1` when CI evidence is down; the kit never sets it.
-- `review.judge` is optional: the independent design critic (`scripts/critic-judge.sh`). **Only it sets the design status** (the owner, 2026-10-20). The coordinator's housekeeping starts it (`CRITIC_JUDGE_LAUNCHER=coordinator`); it refuses anything else, a build run (`HARNESS_DRIVER_RUN`) above all, and `hooks/no-self-design-verdict.sh` denies any session running the design recorder, committing a design-verdict trailer or starting the judge. It fetches only shots CI's own evidence commit wrote, behind a capture run that passed; stale shots hold the PR pending; the approved picture (the PR's own, or the plan's designRef) must pass `picture-evidence.py lint` and have every region shot, or the PR fails before any model runs. A picture with no region markers (approved before them) has its regions derived — its frames, else the PR's `## Evidence routes` at laptop/phone x light/dark — and the status description names the derivation; `scripts/picture-label.py` writes the markers in for good, attributes only. Real data and both widths are owed only by a picture approved on or after `coordinator.critic.realDataFrom` (2026-10-20; the picture's `data-picture-approved`, else its first commit or the ticket's "Picture approved" comment; no date known means exempt). The critic's answer must quote the shot set, name every shot it judged and end in a `FINDINGS … END FINDINGS` block of live findings only; it passes on SHIP, no DRIFT and an empty block. Verdicts live in a ledger only the judge writes (`<stateDir>/swarm/critic-judge/verdicts.tsv`), keyed on the shot set: the same pixels at a new head get the same verdict with no model call, and a PR comment or status description is never read back as one. A red verdict on a signed-off PR adds `labels.pmDecision` to its ticket instead of sending a repair. The judge never posts the status itself: it sends a `repository_dispatch` (payload `sha`, `pr`, `state`, `context`, `description`, `target_url`), and the project's own workflow re-posts it with the Actions token after checking the sender is the owner and the sha is the PR's open head. A ruleset that takes the check from GitHub Actions never counts a status a user token posts, and GitHub reads only the newest one, so a project using the judge must ship that relay. A verdict the ledger holds but never sent (`relayed.tsv`) is sent again from the ledger, with no model call. Keys and defaults: `context` (`Design critic`), `trailer` (`Design-Critic`), `agent` (`agent-harness:design-critic`), `mockGlob` (`.design/*-mock.html`), `turns` (40), `dispatch` (`design-critic-verdict`, the event type the relay listens for). Places, under `coordinator.critic`: `maxLive` (3; `review.judge.maxLive` is read when unset) judges at once — one place is always open, each above it only while the coordinator's room test fits another agent — and `timeoutMin` (20): a run past it is stopped, its place given back and the try counted. PRs owed a judgement start least recently started first. The project's own CI must stop writing that status from a trailer, or the two race.
+- `review.judge` is optional: the independent design critic (`scripts/critic-judge.sh`). **Only it sets the design status** (the owner, 2026-10-20). The coordinator's housekeeping starts it (`CRITIC_JUDGE_LAUNCHER=coordinator`); it refuses anything else, a build run (`HARNESS_DRIVER_RUN`) above all, and `hooks/no-self-design-verdict.sh` denies any session running the design recorder, committing a design-verdict trailer or starting the judge. It fetches only shots CI's own evidence commit wrote, behind a capture run that passed; stale shots hold the PR pending; the approved picture (the PR's own, or the plan's designRef) must pass `picture-evidence.py lint` and have every region shot, or the PR fails before any model runs. A picture with no region markers (approved before them) has its regions derived — its frames, else the PR's `## Evidence routes` at laptop/phone x light/dark — and the status description names the derivation; `scripts/picture-label.py` writes the markers in for good, attributes only. Real data and both widths are owed only by a picture approved on or after `coordinator.critic.realDataFrom` (2026-10-20; the picture's `data-picture-approved`, else its first commit or the ticket's "Picture approved" comment; no date known means exempt). The critic's answer must quote the shot set, name every shot it judged and end in a `FINDINGS … END FINDINGS` block of live findings only; it passes on SHIP, no DRIFT and an empty block. Verdicts live in a ledger only the judge writes (`<stateDir>/swarm/critic-judge/verdicts.tsv`), keyed on the shot set: the same pixels at a new head get the same verdict with no model call, and a PR comment or status description is never read back as one. A red verdict on a signed-off PR adds `labels.pmDecision` to its ticket. The judge never posts the status itself: it sends a `repository_dispatch` (payload `sha`, `pr`, `state`, `context`, `description`, `target_url`), and the project's own workflow re-posts it with the Actions token after checking the sender is the owner and the sha is the PR's open head. A ruleset that takes the check from GitHub Actions never counts a status a user token posts, and GitHub reads only the newest one, so a project using the judge must ship that relay. A verdict the ledger holds but never sent (`relayed.tsv`) is sent again from the ledger, with no model call. Keys and defaults: `context` (`Design critic`), `trailer` (`Design-Critic`), `agent` (`agent-harness:design-critic`), `mockGlob` (`.design/*-mock.html`), `turns` (40), `dispatch` (`design-critic-verdict`, the event type the relay listens for). Places, under `coordinator.critic`: `maxLive` (3; `review.judge.maxLive` is read when unset) judges at once — one place is always open, each above it only while the coordinator's room test fits another agent — and `timeoutMin` (20): a run past it is stopped, its place given back and the try counted. PRs owed a judgement start least recently started first. The project's own CI must stop writing that status from a trailer, or the two race.
 - **An approved picture is readable from any machine** (`scripts/picture-approve.sh <ticket> <picture.html>`): the moment a picture is approved, the file goes into a secret gist (described `<projectName> #<ticket> approved picture: <file>`; `projectName` in harness.json, else the repo's name) and the ticket gets a comment starting **Picture for any machine** with the gist URL, the raw URL and the file's sha256. Rerun on the same file it does nothing; a new version publishes again. `/agent-harness:needsme`, `/agent-harness:auto` and `/agent-harness:bug` run it where they record an approval.
 - **Evidence follows the approved picture** (`shared/picture-rules.md`, `scripts/picture-evidence.py`): every frame of the picture is a named region (`data-evidence-shot`, route, viewport, theme, optional setup); the ship step writes each into `<evidence.dir>/<key>/plan.json` (the key as CI files it, `scripts/evidence-plan.sh`: a `<branchPrefix>NNNN/` branch's ticket, else the PR number) (a shot the builder already planned keeps its setup) and lists them under `## Required evidence`; the independent critic fails the PR while any has no pinned shot. `picture-evidence.py lint` refuses a picture with no regions, without a laptop and a phone frame, or without the real-data cases (`duplicate-names`, `longest-names`, `empty`, `scrolled`) drawn or excused.
 - `design.screenOf` is optional: a command that reads paths on stdin and prints the screen slug of each it knows. With it, the critic and the screen lookups (`scripts/screen-findings.sh`) know the screens a change touches, not only the screens its ticket is labelled with (polish lists no longer ride along, the owner, 2026-11-02). The independent critic's open findings on the ticket's PR reach plan, fix and repair as `{{CRITIC_FINDINGS}}`.
-- **Evidence owed is work** (`scripts/evidence-gaps.sh`, `scripts/evidence-gaps.py`): a changed UI file that no evidence route or capture-plan shot renders (a page, a layout above it, or anything they import — relative, `@/`/`~/` and workspace-package imports followed), or a drawer, dialog, menu or sheet with no plan shot whose `setup` opens it, is an evidence gap. A plan the PR adds or edits replaces the routes, as CI reads it. The independent critic fails the PR on a gap before any model runs, as an `evidence gap:` finding; the repair and fix steps are handed every evidence-class finding (`{{EVIDENCE_TASKS}}`) as a task answered by an edit to `<evidence.dir>/<key>/plan.json`, and the repair step calls the model for one even when nothing is red, then refuses a repair that leaves the plan unchanged or a gap open. Ship copies the plan's routes into `## Evidence routes` (a repair adds routes only, rewriting nothing). With no picture binding the ticket, ship plans the routes the changed screens render on (fewest that show every changed file, no dynamic segment) at laptop 1440 / phone 390 x light / dark, keeping any shot the plan already has for a route, width and theme. `evidence.coverage.ignoreRoutes` (default `/dev`) names route prefixes whose pages are a component catalogue, not screens.
+- **Evidence owed is work** (`scripts/evidence-gaps.sh`, `scripts/evidence-gaps.py`): a changed UI file that no evidence route or capture-plan shot renders (a page, a layout above it, or anything they import — relative, `@/`/`~/` and workspace-package imports followed), or a drawer, dialog, menu or sheet with no plan shot whose `setup` opens it, is an evidence gap. A plan the PR adds or edits replaces the routes, as CI reads it. The independent critic fails the PR on a gap before any model runs, as an `evidence gap:` finding; the fix step is handed every evidence-class finding (`{{EVIDENCE_TASKS}}`) as a task answered by an edit to `<evidence.dir>/<key>/plan.json`. Ship copies the plan's routes into `## Evidence routes`. With no picture binding the ticket, ship plans the routes the changed screens render on (fewest that show every changed file, no dynamic segment) at laptop 1440 / phone 390 x light / dark, keeping any shot the plan already has for a route, width and theme. `evidence.coverage.ignoreRoutes` (default `/dev`) names route prefixes whose pages are a component catalogue, not screens.
 - **Only CI's shots are evidence**: `ci-evidence.sh` counts a shot only when it is linked at the sha the block names, that commit's subject starts `evidence.commitSubject` (`chore(evidence):`), the commit wrote the file, and CI's capture check passed on its parent. A builder's PNG inside the block is refused by name. A shot CI re-captured byte-identical is in the tree but not in that commit's diff; it still counts when its name is one CI's capture produces for this head (the folder's `plan.json` shot names, else the slugs of `## Evidence routes`) and its blob is one an earlier CI evidence commit on the PR wrote at that path.
 - `ci-evidence.sh status` reads `stale` (exit 6 from `wait`) when CI kept shots pinned before a merge that changed one of the PR's own screen files, or a file one of them imports by a relative path; `ci-evidence.sh moved <pr> <from> <head>` is that test, for a project's CI to call before it carries pinned shots forward.
 - `design.reference` — a path, or a list of paths, to the approved reference picture(s) that define this project's kit look (HTML or PNG). The `design-critic` agent's picture mode holds every proposed picture against it before the operator sees it, and returns `KIT: MATCH | KIT: DRIFT`; with no reference declared it returns `KIT: DRIFT`, so a project that draws pictures needs one. `scripts/check-picture-mode.sh` refuses a skill that hands the operator a picture without naming picture mode.
@@ -176,14 +176,14 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
 - `labels.pmDecision` (default `status:pm-decision`) is also the label the driver's park puts on a ticket whose question is about its shape — which repo, how it splits, the order, the wording of its acceptance. The PM answers and clears it; the owner's hold label goes only on a question about pixels, a picture, a product or commercial call, or the data model, and on any question the step did not classify.
 - `commit.parkType` is optional (default `chore`): the conventional-commit type the driver's park uses for its work-in-progress commit. Your commitlint enum decides; `wip` is not in most of them, and a park whose commit is refused is a park that loses the work.
 - `driver.parkPushEnv` is optional (default `PARK_PUSH`): the environment variable the driver's park sets to `1` on its push of a draft branch, so the project's pre-push can let a park through quality checks that work in progress fails by definition. Without it a red check refuses the park's push and the work survives only as a local bundle. Only a park sets it, never on a branch listed in `trunks`; every other push, including the ship, strips it even when the caller's shell has it. A project whose pre-push does not honour it loses nothing: the push is refused and the park bundles the commits as before. A value that is not a variable name sets nothing and the park says so.
-- Work a park could not push (the pre-push refused it, or a repair's push is withheld because its PR may have auto-merge armed) also goes to `refs/stranded/<ticket>/<host>-<utc>` on origin, beside the local bundle. Not a branch or tag, so no workflow, branch protection or auto-merge reacts to it, and no PR head moves; like the bundle it skips the pre-push. The next `start` or `reenter` for the ticket, on any machine, resumes from the newest one when origin's branch lacks its commits. One older than `driver.strandedKeepDays` (default 14) is deleted once its commits are on the ticket's branch. `driver.parkRefNoVerify` is no longer read.
-- At ship, when origin's copy of the ticket's branch conflicts with the run outside the files it changed and **no open pull request uses that branch**, the branch is a dead tip: it is kept as `refs/stranded/<ticket>/archive-<sha7>` and replaced with `--force-with-lease=<branch>:<that sha>`, and the PR body and any park name the archive. An open PR on the branch still parks. Archives are never resumed from.
-- Each coordinator housekeeping pass also keeps the host's own shared state current. `scripts/shared-install.sh` compares origin's `package-lock.json` on the integration branch with the lock the shared clone's install was made from (`node_modules/.harness-shared-install`); when they differ and no build on the host is past its first steps, it moves the shared clone's checkout to the trunk and runs `npm ci --no-audit --no-fund` under a lock and a time limit (`coordinator.sharedInstall.timeoutMin`, 30), putting the old install and checkout back on a failure (retried after `coordinator.sharedInstall.retryMin`, 60). An install that exits 0 is verified before its lock is recorded: every manifest the lockfile names is the commit's, `npm ls --all` lists no missing package that is not optional, and each load probe (`coordinator.sharedInstall.verify`) passes; a broken result installs once more, then records nothing and holds new starts with "⚠ shared install broken: N required missing". An unchanged lock is verified again every `coordinator.sharedInstall.reverifyEvery` (4) passes. `scripts/stranded-sweep.sh`, at most every `coordinator.strandedSweepEveryMin` (60), pushes any worktree under the worktree root whose commits are on no ref of origin to a stranded ref; never one a live run holds, and it deletes nothing.
+- Work a park could not push (the pre-push refused it) also goes to `refs/stale/<ticket>/<leaf>` on origin (`driver_keep_ref`), beside the local bundle. Not a branch or tag, so no workflow, branch protection or auto-merge reacts to it, and no PR head moves; like the bundle it skips the pre-push. It is kept for reference only: nothing restores from `refs/stale/`, and a build starts from its own record's branch or from the trunk. `driver.parkRefNoVerify` and `driver.strandedKeepDays` are no longer read.
+- At ship, when origin's copy of the ticket's branch conflicts with the run outside the files it changed and **no open pull request uses that branch**, the branch is a dead tip: it is kept as `refs/stale/<ticket>/archive-<sha7>` and replaced with `--force-with-lease=<branch>:<that sha>`, and the PR body and any park name the archive. An open PR on the branch still parks. Archives are never resumed from.
+- Each coordinator housekeeping pass also keeps the host's own shared state current. `scripts/shared-install.sh` compares origin's `package-lock.json` on the integration branch with the lock the shared clone's install was made from (`node_modules/.harness-shared-install`); when they differ and no build on the host is past its first steps, it moves the shared clone's checkout to the trunk and runs `npm ci --no-audit --no-fund` under a lock and a time limit (`coordinator.sharedInstall.timeoutMin`, 30), putting the old install and checkout back on a failure (retried after `coordinator.sharedInstall.retryMin`, 60). An install that exits 0 is verified before its lock is recorded: every manifest the lockfile names is the commit's, `npm ls --all` lists no missing package that is not optional, and each load probe (`coordinator.sharedInstall.verify`) passes; a broken result installs once more, then records nothing and holds new starts with "⚠ shared install broken: N required missing". An unchanged lock is verified again every `coordinator.sharedInstall.reverifyEvery` (4) passes. No tree's commits are backed up by housekeeping: nothing resumes old work, and the worktree sweep keeps every tree with unpushed commits.
 - `tests.patterns` is optional (default `["*.test.ts", "*.test.tsx", "*.spec.ts"]`): the globs, matched against the whole path, that name a test file for `scripts/check-deleted-tests.sh`. `HARNESS_TEST_PATTERNS` (space-separated) overrides it. A value that is not a list is a refusal, not the default.
-- `tests.db` is optional: a throwaway, migrated database for the driver's proofs and for the build, fix and repair steps' own test runs, e.g. `{"urlTemplate": "postgresql://u:p@localhost:5432/{name}", "admin": "postgresql://u:p@localhost:5432/postgres", "setup": "npx prisma migrate deploy"}`. Each proof half and each such step gets its own database named `hp_<ticket>_<pid>_<n>`, created through `admin` with `createdb`, `setup` run in that tree with `DATABASE_URL` at it, the command run with `DATABASE_URL` exported, and the database dropped with `dropdb` on the way out, a failure, timeout or signal included. `urlTemplate` must hold `{name}`. The driver drops only a database it created in that run and refuses any name outside `hp_`. A database that cannot be created or set up is "the tree could not be prepared" (exit 5), never a red; a step then runs with `DATABASE_URL` unset. Absent, nothing changes.
-- `tests.e2eProofs` is optional, default `false`: a proof tree runs no app server, so an e2e browser spec (`e2e/**/*.spec.ts`, or a `playwright test` command) named as a red-then-green proof is turned back before a tree is built, and a proof half whose output shows the app could not be reached (`net::ERR_CONNECTION_REFUSED`, `page.goto: net::ERR_`, `ECONNREFUSED` to localhost) is "never run there" (exit 9), never "still fails". Build, fix and repair are sent back once, told to prove with a unit or DOM test; the e2e spec can still ship as extra coverage. Set it `true` only when the project's own e2e harness brings the app up.
+- `tests.db` is optional: a throwaway, migrated database for the driver's proofs and for the build and fix steps' own test runs, e.g. `{"urlTemplate": "postgresql://u:p@localhost:5432/{name}", "admin": "postgresql://u:p@localhost:5432/postgres", "setup": "npx prisma migrate deploy"}`. Each proof half and each such step gets its own database named `hp_<ticket>_<pid>_<n>`, created through `admin` with `createdb`, `setup` run in that tree with `DATABASE_URL` at it, the command run with `DATABASE_URL` exported, and the database dropped with `dropdb` on the way out, a failure, timeout or signal included. `urlTemplate` must hold `{name}`. The driver drops only a database it created in that run and refuses any name outside `hp_`. A database that cannot be created or set up is "the tree could not be prepared" (exit 5), never a red; a step then runs with `DATABASE_URL` unset. Absent, nothing changes.
+- `tests.e2eProofs` is optional, default `false`: a proof tree runs no app server, so an e2e browser spec (`e2e/**/*.spec.ts`, or a `playwright test` command) named as a red-then-green proof is turned back before a tree is built, and a proof half whose output shows the app could not be reached (`net::ERR_CONNECTION_REFUSED`, `page.goto: net::ERR_`, `ECONNREFUSED` to localhost) is "never run there" (exit 9), never "still fails". Build and fix are sent back once, told to prove with a unit or DOM test; the e2e spec can still ship as extra coverage. Set it `true` only when the project's own e2e harness brings the app up.
 - `proof.autoAccept` is optional, default on for all four kinds: a fix-round finding no red/green pair can show, fixed by a commit that is only `docs-only`, `comment-only`, `wording-only` (string literals and JSX text) or `test-only`, is answered in the fix answer's `autoProofs` and accepted on a check the driver runs itself (`scripts/proof-class.py`, off the commit's diff), with no PM answer and no park; a `test-only` one also names a mutation in non-test code that the driver plants in a scratch tree — the test must fail, then pass once the code is restored. A claim the diff does not bear out is refused with the reason. `false` turns it off, a list names the kinds on, or an object takes `kinds`, `docsGlobs` (added to md/mdx/markdown/txt/rst) and `testGlobs` (added to `*.test.*`, `*.spec.*`, `__tests__/`, `__mocks__/` and `tests.patterns`); a glob starting `!` excludes.
-- `review.classNoticeAt` (default `2`) is how many sightings of one review-finding class tell the PM (`scripts/finding-class.sh`). `findingClasses` is optional: `share` (default `true`: each host publishes its review-finding classes on one shared tally issue, so a repeat on another machine counts) and `label` (default `finding-classes`, the tally issue's label). `scripts/finding-class.sh` reads both. The repair step still reads `lesson.check` (default `lesson`): a red check of that name, a consuming repo's old lesson check, is never owed.
+- `review.classNoticeAt` (default `2`) is how many sightings of one review-finding class tell the PM (`scripts/finding-class.sh`). `findingClasses` is optional: `share` (default `true`: each host publishes its review-finding classes on one shared tally issue, so a repeat on another machine counts) and `label` (default `finding-classes`, the tally issue's label). `scripts/finding-class.sh` reads both.
 - `preApprovedWrites` is optional: environments whose writes (a back-fill, a one-off script, a data fix) the operator has approved in advance. `decided` is required and names who made the call and when. The standing rules say a general policy is not a yes; this is the one exception, and `hooks/standing-rules.sh` appends it to every session as its own section. It never covers an outward-facing action in any environment (publishing to a real account, sending email or messages), any environment not listed, or a command refused at a prompt, and the section says so. Only the operator adds or widens it. Two things hold that line. Only the committed value counts: a working-tree value that differs from `HEAD`'s grants nothing until it is committed. And `hooks/guard-pre-approved-writes.sh` refuses an agent's change to the parsed value (Write, Edit, and the Bash routes that name the file, plus `git commit`, `checkout`, `restore` and `apply`) and tells it to ask the operator. Removing the key stays allowed, since that grants nothing. Both values are pasted into the rules, so they are held to plain tokens: a name is letters, digits and `. _ -` with no spaces, up to 32 characters, and never a word for every environment (`all`, `any`, `every…`, `*`); `decided` is exactly `<name>, YYYY-MM-DD`. Anything else, a `harness.json` that is not one JSON object, or one that names the key twice, grants nothing, and the session is told so.
 - `design` is optional: a backend-only project has none, and the design skills refuse on its absence rather than inventing one.
 - `panel` is optional and only `/agent-harness:panel` reads it: `dir` (where your rooms live, e.g. `.claude/panel`, required for the panel), `bar` (the gate, default 70), `browser` (a Playwright install for click-checks), `builderPrompts` (your spec-review prompts). The rooms — one file per product area, the people who'd use it — are yours and live in `dir`; the kit ships only the method and the five screen reviewers. Memory and runs stay per machine under `stateDir/panel`.
@@ -218,7 +218,7 @@ scripts/   toolkit-env.sh (the resolver) · claim-lock.sh · reconcile-claims.sh
            recorded verdict on the head, in batches of five)
            needsme-watch.sh (the shell half of /needsme --watch: asks once, idles free)
            loop-start.sh (a /work or /auto loop's marker for the keep-working hook)
-           fix-lock.sh (one fixer per red PR) · pr-watch.sh (waits on a PR in the shell)
+           rebuild.sh (a PR that cannot merge is rebuilt fresh) · pr-watch.sh (waits on a PR in the shell)
 driver/    build-ticket: one ticket, seven fixed steps, the model called only for
            the thinking · facts.sh fills the briefs' placeholders and refuses when
            one has no value · prompt-schema.jq derives the shape the model is
@@ -384,13 +384,12 @@ with its own hands, and parks the ticket with the question whenever a step asks
 one. Full description, the guarantees and every seam:
 [`driver/README.md`](driver/README.md).
 
-`driver/build-ticket <ticket> --repair <brief>` is the same walk for a pull
-request that went red, clashes, or came back with a brief after it was handed off.
-It re-enters the PR's own branch, never a fresh one, and merges the trunk in for a
-clash. It proves each fix, either as a test red then green or as a gate command
-green at the head, then runs the same gates, review and ship onto that same PR.
-`--brief <brief>` is a repair when the ticket has an open PR, and otherwise a build
-with the brief put in front of every step.
+**Rebuild, don't repair.** No run patches an open pull request. One that goes red
+or clashes and cannot merge within `coordinator.rebuildAfterMin` is closed and its
+ticket built fresh from the trunk, with the reviewed plan as its brief
+(`scripts/rebuild.sh`, below). `--brief <brief>` is a build with the brief put in
+front of every step. A build that finds its ticket's open PR builds nothing and
+exits 31: that PR merges, or is rebuilt.
 
 It is the replacement for the two hand-copied build commands, not an addition to
 them: `docs/design/claim-finish-inventory.md` maps all 178 of their rules to a
@@ -400,8 +399,8 @@ driver step, a brief, a hook, a required check, or a named retirement.
 
 `swarm/install.sh` puts four timers on the machine: the live view everything
 else reads, a scheduler topping each programme up to three agents, a watcher
-that brings one agent back to a broken pull request and stops after three, and
-a reporter. `swarm/queue.sh add <ticket> --brief <file>` is how a ticket joins
+that warns, unblocks, restarts runs that died on the service and raises the
+alarm, and a reporter. `swarm/queue.sh add <ticket> --brief <file>` is how a ticket joins
 the queue — it replaces writing a launcher by hand. Full description, the rules
 it holds to and every setting: [`swarm/README.md`](swarm/README.md).
 
@@ -417,13 +416,11 @@ dev-server sweep, checks the disk, and writes every event that needs judgement
 to a file. Every named ticket's builder is the step driver (Dom, 2026-10-17), with
 the run's budget capping each step:
 - a new build is `driver/build-ticket <n>`
-- a repair or approved-merge run is `build-ticket <n> --repair <brief>`, or
-  `--repair-class <class>` when the queue row had no note. It is a repair of the
-  ticket's open PR on its own branch, never a fresh build.
-- any other run a caller hands a brief (a repair watcher's brief, an owner's answer,
-  a resume after a cut) is `build-ticket <n> --brief <brief>`. That is a repair
-  when the ticket has an open PR, and otherwise a build with the brief in front of
-  every step.
+- a run a caller hands a brief (an owner's answer, a resume after a cut, a
+  rebuild note) is `build-ticket <n> --brief <brief>`: a build with the brief in
+  front of every step. An unshipped build on this host's record resumes as that
+  build, whatever brief came.
+- there is no repair run: `--repair`, `--repair-class` and `--adopt` are gone.
 
 No run with a ticket falls back to the prose claim. `--fg <n>` runs the same
 driver in the terminal, with the same brief channel. The prose claim
@@ -442,25 +439,23 @@ How the driver treats a brief:
   it is kept beside.
 - **A failed lookup loses nothing:** a `--brief` whose PR lookup still fails after
   three tries goes back on the queue with its brief as the note.
-- **Expiry:** a build's brief ends when the ticket ships, or when a repair round
-  starts.
+- **Expiry:** a build's brief ends when the ticket ships.
 - **Person-caused parks** are asked through `owner-question.sh` (the owner's label
   and channel). The answer comes back on the queue as a brief. The hold label is
   only the fallback when the question cannot be asked.
 
 Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
-window — never the session history. A red PR or stand-down a rule can settle starts
+window — never the session history. A red PR is no judgement event: the rebuild pass owns it. A stand-down a rule can settle starts
 no model (`scripts/coordinator-judge-moot.sh`, one batched read a tick): the PR merged,
 closed or moved to a new head, the ticket closed, queued or running. It is logged as
 `moot by rule` in `judgements.log`, and a read that fails settles nothing. A judge runs
 with `HARNESS_HEADLESS` set, so the kit's Stop hooks stand down. The tick launches judges every tick, never
 behind housekeeping's lock, up to `coordinator.judges` (default 2) at once, under a
 launcher lock of its own so no event is judged twice; a builder's question (a
-stand-down parked on the PM or a person) goes before red PRs and frozen runs, and
+stand-down parked on the PM or a person) goes before frozen runs, and
 the tick logs `judge: N waiting, oldest M min`. State lives in `$STATE_DIR/coordinator/`.
-It does not judge a red PR that a session holds through `scripts/fix-lock.sh`, and
-it spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
+It spawns nothing while `$STATE_DIR/usage-hold` (written by the `usage-limit.sh`
 hook when any window hits the plan's limit) says the limit holds, nor while the
 newest run's usage reading puts a window at `swarm.usageCeiling` or over. The hold
 names the account it was hit under: once the machine is on another account, or a
@@ -523,14 +518,13 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `processLabel` | `process` | The label of a process fix: it starts first of all, and a hold "for process fixes" still lets it through |
 | `requiredRuns` | `{}` | `{"<required check>": ["<name glob>", …]}`: the check, test-file and script names each required check runs (`*` crosses `/`). A trunk red files a develop-red ticket only for a check the trunk's live rules require, by its own name or through this map; every other red adds one line to `<stateDir>/swarm/check-class-count.tsv` (`scripts/develop-red.sh count [<week>]` prints the week's count per check) and files nothing |
 | `polishListFull` | 8 | Most items of one polish list that ride along with one change. A list never starts on its own while other work can, however full |
-| `openPrCap` | 10 | Open PRs (drafts too) over which no new ticket starts but the quick-sized ones: every place repairs or finishes first, and only repairs, approved merges, `process` fixes, quick tickets and `capExemptPriorities` (P0) tickets start. Under it, priority decides across repairs and new work; at one priority a repair goes first. No share of the places is kept for either class (the 3/4 build, 1/4 heal split was removed 2026-10-24). 0 turns the cap off |
+| `openPrCap` | 10 | Open PRs being finished (non-draft, not waiting on a person) over which no new ticket starts but `process` fixes, quick tickets and `capExemptPriorities` (P0) tickets. Under it, priority decides. 0 turns the cap off |
 | `paceToWindow` | `{on: true, factor: 0.95, weekFactor: 0.95, exempt: []}` | Pacing to both allowances, every host on one line per window (owner, 2026-11-03). Each tick reads the freshest five-hour and seven-day utilization `u` on any host and each reset; per window `elapsed = 1 − (reset − now)/length` (5h or 7d), target `elapsed × factor` (`weekFactor` for the week). Ahead of EITHER line (`u` over its target): no new builder starts but process fixes and an `exempt` priority (the focus-area tier waits too), and the running ones carry on (`swarm.usageStepHold` stays the backstop). Behind both: places fill to the machine and the cap. A window with no reading, or already reset, is not paced on; with neither, places fill. A sheet reader paces by the owner's `factor` and `weekFactor`. The tick log, the sheet and the live view say "pacing: ahead/behind" with each window's `u` and target, the ahead window first. Replaces `coordinator.pace.*` and `coordinator.productFloor`, retired 2026-10-23 |
-| `noProgressRuns` · `noProgressSec` | 3 · 300 | A ticket whose last `noProgressRuns` runs each ended in under `noProgressSec` seconds with the same exit and result line is parked for the PM (`status:parked` + the PM label, a comment naming the line) and reported, never spawned again. A machine stop (usage limit, lost login, API fault, GitHub unread, base wait) does not count. 0 runs: off |
-| `rebuildAfterRepairs` | 2 | A PR this host has repaired this many times since its ticket last started fresh is rebuilt, not patched again: its head is kept at `refs/stale/<ticket>/pr-<n>`, the PR is closed with "closed to rebuild fresh" and its branch deleted (follow-up.sh holds its findings for the next PR), and the ticket is queued at the front as a fresh build from the integration branch. Counted from `run-classes.tsv`. 0: off |
-| `redReportMin` | 120 | A non-draft PR red this many minutes on one head (a new head starts the clock again), with no fix lock and no live run on its ticket, reaches the owner once as `red-2h:<pr>:<head>`, naming its title and failing checks. A base wait or a park past its cap says its own reason instead. 0: off |
-| `stallTicks` | 2 | Over `openPrCap` with no build on any host and nothing spawnable for this many ticks in a row, the oldest repairable open PR starts anyway (the stall guard) |
-| `capExemptPriorities` | `["P0"]` | Priorities the open-work cap never holds: over `openPrCap` a new ticket at one of them starts whatever its size, ranked with healing by priority, and the tick says "cap: over (12/10) — P0 #N starts anyway". The host cap, the tooling cap, release scope and the machine's room still apply. `[]` turns it off |
-| `openPrCapQuick` | true | Over `openPrCap`, new tickets the driver's size rules call quick start anyway, after healing (`scripts/cap-quick.sh`); `openPrCapQuickScan` (40) bodies are read a tick to size them. false: none does |
+| `noProgressRuns` · `noProgressSec` | 3 · 300 | A ticket whose last `noProgressRuns` runs each ended in under `noProgressSec` seconds with the same exit and result line is parked for the PM (`status:parked` + the PM label, a comment naming the line) and reported, never spawned again. A machine stop (usage limit, lost login, API fault, GitHub unread) or a run that found the ticket's open PR (exit 31) does not count. 0 runs: off |
+| `rebuildAfterMin` | 60 | An open ticket PR stuck this long (a required check settled red, a clash, or a draft nothing builds) is rebuilt, never repaired (`scripts/rebuild.sh`): its head is kept at `refs/stale/<ticket>/pr-<n>`, the PR is closed with "Closed to rebuild fresh" and its branch deleted, and the ticket is set ready and queued at the front of its priority with a "Rebuild:" brief. 0: off |
+| `redReportMin` | 120 | A non-draft PR red this many minutes on one head (a new head starts the clock again), with no live run on its ticket, reaches the owner once as `red-2h:<pr>:<head>`, naming its title and failing checks: the rebuild pass could not take it (a person holds it, or its base is red). 0: off |
+| `capExemptPriorities` | `["P0"]` | Priorities the open-work cap never holds: over `openPrCap` a new ticket at one of them starts whatever its size, by priority, and the tick says "cap: over (12/10) — P0 #N starts anyway". The host cap, the tooling cap, release scope and the machine's room still apply. `[]` turns it off |
+| `openPrCapQuick` | true | Over `openPrCap`, new tickets the driver's size rules call quick start anyway, after process fixes (`scripts/cap-quick.sh`); `openPrCapQuickScan` (40) bodies are read a tick to size them. false: none does |
 | `minFreeGb` | 20 | Disk alarm floor |
 | `disk.stopBelowGb` · `disk.resumeAtGb` | 30 · 50 | Under `stopBelowGb` free, nothing new starts (a build, a red/green proof) and the auto-clean runs (`scripts/disk-guard.sh`): driver proofs, unused spawn checkouts, idle build folders' installs and caches, the orphan sweep, then stale scratchpad folders over 500 MB. A tree a claim on any host holds, a live process or run is in, or that changed in the last 30 minutes is never touched; when the claims cannot be read, nothing is removed. Starts resume only at `resumeAtGb` |
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
@@ -595,10 +589,10 @@ never stopped for load.
 
 **Open work is capped** (owner call 2026-10-22: 100 open PRs for ~5 builders, and 80%
 of the time spent repairing them as they went stale). While more than `openPrCap`
-PRs are open (default 10, drafts included, counted from the tick's one open-PR read),
-no new ticket starts: repairs, approved merges and `process` fixes still do. The tick
+open PRs are being finished (default 10, counted from the tick's one open-PR read),
+no new ticket starts but `process` fixes. The tick
 log and the live view say "open changes 23 / cap 10: finishing before starting". **Quick
-tickets start anyway** (owner call 2026-10-22): after healing, the places left go to new
+tickets start anyway** (owner call 2026-10-22): the places left go to new
 tickets the driver's own size rules (`driver/size-rules.sh`, no model call) call quick,
 in queue order, and the tick says "cap: over (22/10) — 2 quick ticket(s) started anyway".
 Each ticket is sized once per text (cached by its title, labels and body under
@@ -608,33 +602,46 @@ attempt kept at `refs/driver/quick/<n>`, and that body never starts over the cap
 `openPrCapQuick: false` turns it off. **Urgent tickets start anyway** (owner call
 2026-10-23): a new ticket at a `capExemptPriorities` priority (default P0) is never held
 by the cap, whatever its size; a P0 sized project waited a night behind it. **The cap waits only on work something is
-finishing** (23 Oct: 19 open, 17 clashing, none queued, 0 builds). Each tick, every open
-PR the cap counts is being finished (claimed on any host, live, queued, fixed in a session,
-or a ready PR waiting on CI or a merge), or, when it clashes, settled red, or is a draft
-nothing builds, its ticket is queued as a repair at the front of its priority
-("finish: queued #N as a repair"). A clash is repaired through a park or the sign-off
-hold. A PR nothing can finish without a person is not counted, and the tick names each:
-no ticket, `do-not-merge`, a draft a person made (`person-stop.sh drafted`, cached by the
-PR's updatedAt), a person's label (needs-human, owner decision, blocked, gated, batched),
-a park or hold still on it when it does not clash, parked past its cap, or a repair
-already started at this head that left it as it was. **The stall guard**: over the cap,
-no build on any host, and nothing spawnable for `stallTicks` (2) ticks in a row, the tick
-says "⚠ stall: cap reached with nothing finishing" (in the heartbeat's `why` too) and
-starts the oldest repairable PR anyway, once per head. **A repair starts only on a PR
-that is really red** (`scripts/pr-red.sh`), whoever queued it: a check the base branch's
-live rules require (its rulesets plus classic protection, read once per tick) concluded
-FAILURE or ERROR with none still running, or GitHub says it clashes, or it is a draft
-with its required checks settled. Anything else is skipped with its reason
-("skip #N (repair): PR #M is not red (pending: …) — no repair"): CI still running, a red
-on a check the base does not require, a cancelled or timed-out check (a re-run, not a
-repair), or rules that could not be read. A required check cancelled, timed out or never
-given a runner has its workflow run's failed jobs re-run (`gh run rerun --failed`), at most
-`coordinator.rerunCancelled` (2) times a PR head, counted in `<coordinator>/reruns.tsv`;
-past that the skip says a person looks. At or
-under the cap, priority decides across repairs and new work (a red ranks at its
-ticket's priority), and at one priority a repair goes first. No share of the
-places is kept for either class; with `openPrCap` 0 there is no cap and priority
-alone decides.
+finishing** (23 Oct: 19 open, 17 clashing, none queued, 0 builds). Each tick, an open
+PR counts when it is claimed on any host, live, or a non-draft PR waiting on CI, a merge
+or the rebuild clock. One nothing can finish without a person is not counted, and the tick
+names each: no ticket, `do-not-merge`, a draft nothing builds (its rebuild clock still runs),
+a person's label on the ticket (needs-human, owner decision, blocked, gated, batched).
+
+**Rebuild, don't repair** (`scripts/rebuild.sh`; measured 22 Oct: 80% of build time went
+to repairs of stale changes). No run patches an open PR, and there is no repair class on
+the queue: a row an older version wrote as `repair` or `approved-merge` is read as new.
+Each tick, after the claims are read, every open ticket PR is judged against its base's
+live rules (`scripts/pr-red.sh`: rulesets plus classic protection, read once per tick).
+One that is **stuck** — a required check concluded FAILURE or ERROR with none still
+running, GitHub says it clashes, or it is a draft nothing builds with its checks settled —
+starts a clock (`rebuild-clock.<mode>.tsv`). The clock runs through pending checks and a
+new head, and stops when the PR goes green or something works it. Past
+`coordinator.rebuildAfterMin` (60) the PR's head is kept at `refs/stale/<ticket>/pr-<n>`,
+the PR is closed with a note and its branch deleted, this host's driver record forgets its
+steps, the ticket is set ready, and it is queued new at the front of its priority with a
+`Rebuild:` brief: why it could not merge, the reviewed plan this host's record holds
+(else "plan again from the ticket"), and the last review's findings. The driver sets aside
+any local state for a brief that starts `Rebuild:`, on every host.
+- **Base-red waits.** When every failing required check also failed on the base's newest
+  completed run (read per check, up to five commits back; one that cannot be read decides
+  nothing), the PR waits for the base: no clock, told once on the PR. When the base passes
+  again its failed jobs are re-run once on that head before its clock starts again.
+- **Never touched:** a PR with the hold label or `do-not-merge`, a draft a person made
+  (`person-stop.sh drafted`), a ticket wearing needs-human, owner decision, PM decision,
+  parked, blocked, gated or batched, and a ticket claimed on any host or live here. Its
+  clock is stopped and the tick says why.
+- **Not red:** a check the base does not require, one in `release.nonBlockingChecks`, and
+  the sign-off hold's own check. A required check cancelled, timed out or never given a
+  runner has its workflow run's failed jobs re-run (`gh run rerun --failed`), at most
+  `coordinator.rerunCancelled` (2) times a PR head, counted in `<coordinator>/reruns.tsv`.
+- **One ticket, one change.** A queued ticket whose PR is open waits at the tick until that
+  PR merges or is rebuilt; only this host's own unshipped build of it (a park's draft,
+  answered) resumes on it. A build that finds the ticket's open PR builds nothing (exit 31).
+- No judge, fixer or stall guard is sent to a red PR. Keep-fresh still settles mechanical
+  clashes by rule, and the merge lane still tests the merged result.
+
+With `openPrCap` 0 there is no cap and priority alone decides.
 
 **Merge first, fix after, until the release** (owner's ruling 2026-10-22).
 `"release": {"mergeFirst": true}` in harness.json is one switch for every gate that
@@ -654,14 +661,14 @@ ticket still waits for an approved picture (the baseline route is on for every o
 screen). Typecheck, lint and the fast local gates still block. The release block is
 read from the trunk's harness.json as origin has it now (fetched at most every 2 min),
 not from the copy a run took when it started or a coordinator's pinned copy, so a
-repair already running when the switch lands follows it: a non-Critical finding on a
+run already going when the switch lands follows it: a non-Critical finding on a
 signed-off PR's screens is dropped and the push goes through. Every driver step's
 prompt says the brief's sign-off lines do not hold.
 
 **Standard answers under merge first** (owner call 2026-10-23). While `release.mergeFirst`
 is on, a driver step that would park with a question a standing rule answers takes that
 answer instead (`driver/standard-answer.sh`): (a) the base is red too, wait or fix here:
-the ticket waits for the base (the base-wait ledger; with no PR yet it carries on);
+carry on and leave the base's red alone, CI is the gate (a PR CI finds base-red waits in the rebuild pass);
 (b) a follow-up of a PR that has not merged, fold in or wait: `status:blocked` with
 "Blocked on #N: waits for #N to merge"; (c) a Minor or Major, fix now or defer: fixed here
 when it is in a file the change touched, else dropped (never filed), and the run goes on; (d) anything about the critic, evidence,
@@ -689,7 +696,7 @@ The push's own reviewers (`review.attest`) are not this review and still run. Of
 ticket is reviewed.
 
 **Same file, same change** (owner call 2026-10-23). A Major or a Minor the review finds in a
-file the change itself touched (its reviewed diff: a repair's own change) is fixed in that
+file the change itself touched (its reviewed diff) is fixed in that
 change, in its one fix round, never filed: merge first included. `_driver_review_same_change`
 marks it `sameChange`, which `driver_blocking_select` blocks in any round, and the fix step may
 not defer it. Where only Critical and Major block (a second review after the fix round touched
@@ -700,23 +707,23 @@ nightly sweep's queue, never a ticket; a Critical blocks as before.
 in harness.json lists check names (a run's name, a status context, or
 `<workflow> / <job>`, ignoring case); while `release.done` is not true, a red in one
 of them is a warning: repair-watch logs it and comments once per head on the pull
-request, and nothing repairs it, counts it red, parks or
-fix-rounds on it (the driver's repair, the critic's findings), or waits on it (the
+request, and nothing counts it red, starts a rebuild clock on it, parks or
+fix-rounds on it (the critic's findings), or waits on it (the
 sign-off batch, the merge lane, `pr-watch.sh`). Every check still runs and reports.
 `release.done: true`, an empty list or no key is exactly as before. The one switch
 is `scripts/release-checks.sh`; every reader of a red asks it. The driver's own
 evidence-gap tasks (`driver_evidence_tasks`) ask it too: while a check that finds
 evidence gaps (`evidence.gapChecks`, default `review.judge.context` and
 `Approved picture`) is listed, the gaps are printed in the run log and commented on
-the pull request once per head as report-only until the release, and are no repair
-or fix task, so no repair is refused (exit 24) over them.
+the pull request once per head as report-only until the release, and are no fix
+task, so no run is refused (exit 24) over them.
 
 **Kept for listed work.** `review.judge.duringReleaseLabels` (a list of label names,
 default none) keeps the design critic, run and blocking, for a ticket or PR carrying
 any of them while the release pause holds: the sweep judges only those PRs, the
 driver hands their critic findings on as blockers and their evidence gaps as tasks,
 the merge lane waits on their `review.judge.context` status once one is posted and
-takes them out on its red, and the repair gate counts that red as required. Every
+takes them out on its red, and the rebuild pass counts that red as required. Every
 other item stays paused. A caller that knows its item asks with that item's labels
 (`release_labels_of`, one batched read, only when the list is set); labels that
 cannot be read keep the critic. No key, or an empty list, is exactly as before.
@@ -731,15 +738,12 @@ fixes"`), or whose file carries an `allow: process` line, lets only those start;
 plain hold holds them too.
 
 **Priority decides, everywhere** (owner call 2026-10-19). The queue runs P0, P1,
-P2, P3, then tickets with no priority, across classes: a repair or an approved
-merge ranks by its own ticket's priority, read fresh each tick. Within one
-priority: repair, approved merge, then new work; within a class, product work
-before our own build tooling (`coordinator.toolingLabels`, default
+P2, P3, then tickets with no priority, read fresh each tick. Within one
+priority, product work before our own build tooling (`coordinator.toolingLabels`, default
 `repo:agent-harness code-health project:ci-throughput project:harness-kit area:OPS
 area:HYGIENE area:OPS-CONSOLE`, or a title scope in `coordinator.toolingScopes`,
 default `gates ci harness ops pre-push dev`); then new work half-built, feature,
-other, polish. An entry put at the front stays first; which red heals first
-follows priority.
+other, polish. An entry put at the front stays first.
 
 **Polish lists are switched off** (the owner, 2026-11-02). The review adds nothing to
 them and a list no longer rides along with other tickets for its screen; a list still
@@ -748,13 +752,11 @@ polish kind, a polish list) starts only when nothing else can; a full list is ne
 started as a batch of its own (owner call 2026-10-22: one ticket, one PR). Sign-off batches are
 ordered by priority too, so polish screens come last.
 A reading nobody could take (CPU idle, free memory, load, cores) is no room.
-The coordinator records each spawn's class in `run-classes.tsv` beside the queue,
-because a spawner (an older install of the kit, or a stand-in) need not
-write one; a run with no class anywhere counts as healing when its ticket has an
-open PR. The tick log shows
+The coordinator records each spawn's class (`new`, or `rebuild` for a PR it closed) in
+`run-classes.tsv` beside the queue. The tick log shows
 `ceiling: 7 running · room for 1 more: cpu idle 31%, 9 GB free` and
-`split: 3 new · 1 healing · 2 reds waiting`, and `capacity.json` beside the queue
-holds the same for the live view.
+`split: 4 live (of 8, by priority)`, and `capacity.json` beside the queue
+holds the same for the live view (`new: {slots, live}`).
 
 **Starts ramp to the headroom.** After the first start of a tick the room is read
 again before each next one: a new CPU sample, never the shared 5-second one, and
@@ -791,15 +793,13 @@ always exactly what was tested.
 |---|---|
 | Joins | open, not draft, no hold label, auto-merge armed or the lane label. Live, the label goes on and auto-merge comes off |
 | Order | the PR in flight stays head; then the first label (`P0`), then priority (the PR's own P label, else its ticket's; none last), then product before our own tooling, then the oldest approval, then the PR number |
-| Behind | `update-branch` against the head it read; a conflict takes it out of the lane with a fixer |
-| Checks | waits on pending or missing; a flake (timed out, cancelled, a lost runner) is re-run once; anything else takes it out with the check named and a fixer |
+| Behind | `update-branch` against the head it read; a conflict takes it out of the lane |
+| Checks | waits on pending or missing; a flake (timed out, cancelled, a lost runner) is re-run once; anything else takes it out with the check named |
 | Green | merged with `merge.method` and `--match-head-commit`; one merge per pass |
 | Hold back on | re-cleared through `clear-hold.sh --reason --sha` only when `approval-kept.sh check` keeps it: every commit of the PR's own since approval is a merge (the trunk commits a merge brings do not count) and no screen file in its own diff changed, or the PR's own change to it is the same at both heads; otherwise the owner is told |
 
-A fixer is a `repair` entry in the coordinator's queue, which the tick starts in
-a healing place. When no live coordinator has ticked in 15 minutes (it is in
-shadow, or not installed) the lane starts the fixer itself if the machine has
-room, so a queued fixer is never stranded. The status line is
+A PR out of the lane gets no fixer: it stays on the rebuild clock, which closes it
+and builds its ticket fresh once it cannot merge. The status line is
 `$STATE_DIR/coordinator/lane.status`; owner calls land in `needs-you.md`.
 
 ```sh

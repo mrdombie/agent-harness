@@ -6,9 +6,12 @@
 #   coordinator-queue.sh refresh           re-seed from the scopes already recorded
 #   coordinator-queue.sh list              the queue in the order it runs
 #   coordinator-queue.sh in-scope <n>      exit 0 when ticket n is under any recorded scope
-#   coordinator-queue.sh add <n> [--class repair|approved-merge|new] [--note TEXT] [--front|--first]
-#   coordinator-queue.sh set-class <n> repair|approved-merge|new [--note TEXT]   rewrite one entry's class
+#   coordinator-queue.sh add <n> [--class new] [--note TEXT] [--front|--first]
+#   coordinator-queue.sh set-class <n> new [--note TEXT]   rewrite one entry's class
 #                                          (and, with --note, its note; "" clears it), all else kept
+# Every entry is new work. There is no repair class: a PR that cannot merge is closed and
+# its ticket queued fresh (rebuild.sh). An older caller's repair or approved-merge is taken
+# as new, and said.
 #   coordinator-queue.sh remove <n>
 #
 # A scope resolves the way /agent-harness:work resolves one: a bare number is
@@ -18,12 +21,12 @@
 # whole seed is refused, naming it, never widened.
 #
 # The candidates and their order come from claimable-issues.sh, the one
-# definition of what may be picked up. A [FINISH PR] row is class repair, the rest
-# new. A process fix (coordinator.processLabel) goes first of all, ahead of every
+# definition of what may be picked up; every row is new (a [FINISH PR] row waits at the
+# tick while its PR is open). A process fix (coordinator.processLabel) goes first of all, ahead of every
 # rule below, even an entry put on top (owner call 2026-10-20). Priority orders the whole queue (P0 first, no priority last); within one
-# priority repair, approved-merge, then new; within a class product work before
-# our own tooling (coordinator.toolingLabels); then new work half-built, feature,
-# other, polish, newest first; repairs keep claimable order. Each entry keeps its
+# priority product work before
+# our own tooling (coordinator.toolingLabels); then half-built, feature,
+# other, polish, newest first. Each entry keeps its
 # priority (prin), kind and polish flag. An entry the PM put there with `add --front`
 # stays first overall across re-seeds; `add --first` (a resume, an owner's answer, a
 # requeue) is first only within its own priority, so it never jumps higher-priority
@@ -31,9 +34,9 @@
 # P0 or P1 first, then everything else by priority (a non-screen P0 first, screen work at P2
 # and below at its priority), then
 # release:last tickets (coordinator.lastInReleaseLabel; never a P0) (coord_tier).
-# A `new` entry whose note is a REPAIR brief is class repair. With
+# With
 # coordinator.releaseScopeOnly on, a new ticket outside it is not seeded (the count
-# kept as release_held); repairs, approved merges and process fixes always are. A row nobody can
+# kept as release_held); process fixes always are. A row nobody can
 # start (closed, batched, parked, blocked, held) is dropped. An entry put there with `add` is pinned: it and every
 # note survive a re-seed, because nothing on the forge can rebuild them. The
 # tick removes an entry once it has spawned it. A seed whose reads fail changes
@@ -130,7 +133,7 @@ fill() { # <scope> <resolved labels, one a line> — the members, the claimable 
            NF >= 1 && $1 != "" {
              inside = every || ($1 in tk)
              if (!inside && NF >= 7) { m = split($7, l, ","); for (j = 1; j <= m; j++) if (l[j] in lb) { inside = 1; break } }
-             if (inside) print $1 "\t" ($5 == "[FINISH PR]" ? "repair" : "new") "\t" $2 "\t" $5 "\t" $7 "\t" $6 "\t" ($8 == "-" ? "" : $8)
+             if (inside) print $1 "\t" "new" "\t" $2 "\t" $5 "\t" $7 "\t" $6 "\t" ($8 == "-" ? "" : $8)
            }')
   # A repo:<other> ticket belongs to that repo: said here, dropped by the write below.
   local fr fn fl
@@ -200,17 +203,14 @@ fill_merge() { # <scope> <labels> <rows> <pins>
     # Priority first, across classes (coord_queue_ordered sorts the same way): an
     # entry the PM put on top (.top) stays first in the order it was put; then
     # priority, and within one priority a front entry (.front) first;
-    # within one priority repair, approved-merge, then new; product before tooling;
-    # then new by kind, newest first;
-    # repair and approved-merge keep the claimable order.
+    # within one priority product before tooling; then by kind, newest first.
     | ($merged + $kept) | to_entries
     | sort_by(.value as $t | .key as $i
         | coord_tier($t.screen // false; $t.prin // 9; $t.process // false; $t.last // false; $t.focus // null) as $tier
         | [(if $t.process then 0 else 1 end), $tier] + coord_tier_keys($tier; $t.focus // null; $t.screen // false) +
-        (if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0, 0]
+        (if $t.top then [0, ($oldpos[($t.n|tostring)] // $i), 0, 0, 0, 0, 0, 0]
           else [1, 0, ($t.prin // 9),
                 (if $t.front then 0 else 1 end), (if $t.front then ($oldpos[($t.n|tostring)] // $i) else 0 end),
-                ({"repair":0,"approved-merge":1,"new":2}[$t.class] // 3),
                 (if $t.tooling then 1 else 0 end),
                 (if $t.class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[$t.kind // ""] // 9) else 0 end),
                 (if $t.class == "new" then -$t.n else $i end)] end))
@@ -259,7 +259,8 @@ add() {
     esac
   done
   case "$n" in ''|*[!0-9]*) die "add needs a ticket number" ;; esac
-  case "$cls" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
+  case "$cls" in new) ;; repair|approved-merge) echo "coordinator-queue: #$n: there is no $cls class — queued as new (a PR that cannot merge is rebuilt fresh)" >&2; cls=new ;;
+    *) die "class must be new" ;; esac
   # What the seed would know of it, read now: `list` and the live view rank it
   # the way the tick does. Unread, it ranks as no priority until the tick reads it.
   local meta view fr
@@ -275,16 +276,11 @@ add() {
            screen: coord_screen($ls; .title; .number), focus: coord_focus($ls), last: coord_last($ls; coord_prin($ls; null))}' 2>/dev/null)
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$meta" || meta='{}'
   cls=$(coord_jq -rn --arg c "$cls" --arg note "$note" "$COORD_TICKET_JQ"'coord_class($c; $note)')
-  # Fresh work is never started on a ticket whose PR is open: queued as new it waits forever.
+  # A ticket whose PR is open waits at the tick until that PR merges or is rebuilt: said now.
   local pr=""
-  if [ "$cls" = new ]; then
-    pr=$(gh_open_prs "${GH_PRS_MAX_AGE:-300}" 2>/dev/null | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$n" \
-      "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t)) | .number] | first // empty' 2>/dev/null)
-    if [ -n "$pr" ]; then
-      echo "coordinator-queue: warning: #$n has an open PR #$pr — queued as repair, not new" >&2
-      cls=repair
-    fi
-  fi
+  pr=$(gh_open_prs "${GH_PRS_MAX_AGE:-300}" 2>/dev/null | jq -r --arg pre "$BRANCH_PREFIX" --arg t "$n" \
+    "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t)) | .number] | first // empty' 2>/dev/null)
+  [ -z "$pr" ] || echo "coordinator-queue: warning: #$n has an open PR #$pr — it waits until that PR merges, or is rebuilt fresh once it cannot" >&2
   coord_queue_locked add_entry "$n" "$cls" "$note" "$front" "$top" "$meta" || die "the queue could not be written — #$n not queued"
   echo "queued #$n as $cls"
 }
@@ -302,7 +298,8 @@ add_entry() { # <n> <class> <note> <front> <top> <meta>
 
 set_class() { # <n> <class> [--note TEXT]
   case "${1:-}" in ''|*[!0-9]*) die "set-class needs a ticket number" ;; esac
-  case "${2:-}" in repair|approved-merge|new) ;; *) die "class must be repair, approved-merge or new" ;; esac
+  case "${2:-}" in new|repair|approved-merge) ;; *) die "class must be new" ;; esac
+  set -- "$1" new "${@:3}"
   local setnote=false note=""
   case "${3:-}" in '') ;; --note) [ $# -ge 4 ] || die "--note needs a value"; setnote=true; note="$4" ;; *) die "unknown flag $3" ;; esac
   current | jq -e --argjson n "$1" 'any(.tickets[]?; .n == $n)' >/dev/null 2>&1 || die "#$1 is not queued"

@@ -16,7 +16,9 @@
 #                    front of the queue (4b) with its worktree named, judged by no model
 #   3. frozen runs   a live run whose log has not grown for coordinator.frozenMin
 #                    (nor its record's progress_paths: a driver run's step logs)
-#   4. pull requests red (unless fix-lock.sh says a session is on it), and the
+#   4. pull requests one stuck past coordinator.rebuildAfterMin (red on a required check,
+#                    clashing, or a draft nothing builds) is closed and its ticket queued
+#                    fresh from the trunk (rebuild.sh) — never repaired; and the
 #                    held pixel PRs gone green, sent to the owner a full batch at a time
 #   5. spawn         as many starts as the spare CPU fits, while the machine has room
 #                    (coord_room) and under coordinator.cap when one is set, and
@@ -25,8 +27,7 @@
 #                    while more than coordinator.openPrCap PRs are open (drafts
 #                    too), no new ticket starts but the quick-sized ones (the
 #                    driver's own size rules, cap-quick.sh; coordinator.openPrCapQuick)
-#                    after the repairs, approved merges and process fixes; at or under it the queue's priority order decides
-#                    across repairs and new work, a repair first at one priority
+#                    after the process fixes; at or under it the queue's priority order decides
 #                    (owner call 2026-10-22; the cap 0 is no cap). The
 #                    queue runs by priority across classes (coord_queue_ordered);
 #                    polish new work starts only when nothing else can; a polish
@@ -71,13 +72,12 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/coordinator-waits.sh" || exit 1
-. "$SELF_DIR/base-wait.sh" || exit 1
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
 . "$SELF_DIR/shared-install-hold.sh" || exit 1
 . "$SELF_DIR/cap-quick.sh" || exit 1
 . "$SELF_DIR/pr-red.sh" || exit 1
 declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
-. "$SELF_DIR/repair-gate.sh" || exit 1
+. "$SELF_DIR/rebuild.sh" || exit 1
 QUICK_OK=""; QUICK_STARTED=0; CAP_EXEMPT_OK=""
 
 RECONCILE="${COORDINATOR_RECONCILE:-$SELF_DIR/reconcile-claims.sh}"
@@ -141,7 +141,8 @@ cut_off() { [ -n "$1" ] && printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$CU
 # end that way again: it is parked for the PM and reported, never spawned a fourth time.
 # 15735 exited 0 "nothing left to do" 22 times in a day; 17008 was requeued at the front
 # over a missing picture 43 times in 4 hours. A stop that is the machine's (a usage
-# limit, a lost login, an API fault, GitHub unread, a base wait) is not the ticket's.
+# limit, a lost login, an API fault, GitHub unread) is not the ticket's, and nor is a run
+# that found the ticket's open PR (it merges, or is rebuilt).
 NOPROG_LEDGER="$COORD_DIR/run-lengths.tsv"
 COORD_NOPROG_RUNS="${COORDINATOR_NO_PROGRESS_RUNS:-$(swarm_opt coordinator.noProgressRuns 3)}"
 case "$COORD_NOPROG_RUNS" in ''|*[!0-9]*) COORD_NOPROG_RUNS=3 ;; esac
@@ -199,9 +200,8 @@ for ended in "$RUNS_DIR"/*.ended; do
       else "\troute=\(.route) size=\(.size // "?")\(if .claim_to_pr_secs then " claim_to_pr=\(.claim_to_pr_secs)s" else "" end) why=\((.size_reason // "") | gsub("[\t\n]"; " ") | .[0:160])" end' "$drec" 2>/dev/null)
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
-  [ -z "$ticket" ] || [ "$(coord_run_class "$rec")" != repair ] || ! repair_ran_no_step "$log" "$code" "$last" || repair_void "$ticket" "$rid"
   case "$code" in
-    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_BASE_WAIT:-34}") ;;
+    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}") ;;
     *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
   esac
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
@@ -226,9 +226,9 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif [ "$code" = "${DRIVER_E_REQUEUE:-28}" ]; then
     # The driver put it back on the queue itself (a usage limit, a claim another run holds): nothing to judge.
     event "requeued:$rid" requeued false "$ticket" "" "run $rid requeued itself: ${last:-no result line}"
-  elif [ "$code" = "${DRIVER_E_BASE_WAIT:-34}" ]; then
-    # Every red is in tests outside the PR that fail on the base too: base-waits.tsv holds it.
-    say "base wait: run $rid left #${ticket:-?} waiting for $INTEGRATION_BRANCH's fix — queued again when that check goes green or in $BASE_WAIT_HOURS h"
+  elif [ "$code" = "${DRIVER_E_HAS_PR:-31}" ]; then
+    # The ticket already has an open PR: it merges, or the rebuild pass closes it and builds fresh.
+    say "has a PR: run $rid found #${ticket:-?}'s open pull request and built nothing — it merges, or is rebuilt once it cannot (coordinator.rebuildAfterMin)"
   elif [ "$code" = "${DRIVER_E_MACHINE:-33}" ]; then
     # The machine's, never the ticket's: an API error twice, or a host missing a tool. Left ready.
     case "$last" in
@@ -296,11 +296,6 @@ done
 say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
 
 # ---- 4. pull requests --------------------------------------------------------
-# A red PR a session already holds through fix-lock.sh is being fixed: judging it
-# would queue a second fixer onto the same branch. An expired lock fixes nothing.
-FIXLOCK="${COORDINATOR_FIX_LOCK:-$SELF_DIR/fix-lock.sh}"
-FIXING=$(FIX_LOCK_REPO="${FIX_LOCK_REPO:-${MAIN_REPO:-}}" bash "$FIXLOCK" list --json 2>/dev/null \
-  | jq -r '.[]? | select(.expired | not) | "\(.pr)\t\(.window)"' 2>/dev/null)
 # One read of the open PRs serves the whole tick and the queue refresh. A refused
 # read (GitHub rate-limiting the token every builder shares) falls back to the
 # last good one while it is fresh enough: the starts go on, and nothing judged or
@@ -319,16 +314,15 @@ elif PRS=$(coord_snap_load prs); then
   PRS_STALE=1
   say "open PRs: could not be read$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — working from the snapshot taken $(coord_snap_age prs) min ago"
 else PRS=""; fi
-[ -z "$PRS" ] || repair_void_marks
 # The open-work cap is counted in 4d, once the claims are read: only work being finished counts.
 OPEN_PRS=""; OVER_PR_CAP=""; OPEN_PR_SAID=""
 if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
   # THE SIGN-OFF HOLD'S OWN CHECK IS NOT A RED. It is red BY the hold and goes green
-  # when the owner signs; a healing run can do nothing for it. #12827 shipped, was
+  # when the owner signs; a rebuild can do nothing for it. #12827 shipped, was
   # respawned 15 minutes later on that check alone, and parked on it.
   HOLD_CHECK="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"
   # A CHECK THAT WARNS UNTIL THE RELEASE IS NOT A RED (release.nonBlockingChecks): it
-  # sends no healing run. repair-watch notes it on the PR.
+  # starts no rebuild clock. repair-watch notes it on the PR.
   NB_CHECKS=$(release_nonblocking_json)
   # evidence_note <pr> <sha> — once per head: the PR says its shots were not captured and it ships.
   evidence_note() {
@@ -387,16 +381,11 @@ if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then
       case "$kind" in
         red)
           age=$(red_age_min "$pr" "$sha")
-          fixer=$(awk -F'\t' -v p="$pr" '$1 == p { print $2; exit }' <<<"$FIXING")
-          if [ -n "$fixer" ]; then say "PR #$pr: $why — being fixed by $fixer, not judged"
-          elif base_wait_holds "$t" "$sha"; then say "PR #$pr: $why — #$t waits for $INTEGRATION_BRANCH's fix on this head (base-waits.tsv), not healed"
-          elif swarm_heal_parked_out "$t" "$sha"; then say "PR #$pr: $why — #$t parked past its cap on this head, so it waits for a person (a new head heals it again)"
-          else
-            event "red-pr:$pr:$sha" red-pr true "$t" "$pr" "$why" || true
-            # A live run on its ticket is the fix; a lock, a base wait or a park says its own reason above.
-            if [ "$COORD_RED_REPORT_MIN" -gt 0 ] && [ "$age" -ge "$COORD_RED_REPORT_MIN" ] && ! swarm_ticket_live "$t"; then
-              red_report "$pr" "$sha" "$t" "$age" "$title" "$fails" "$why"
-            fi
+          # No judge and no fixer: the rebuild pass below owns every red PR. Red this long
+          # with nothing working it means the pass could not take it (a person holds it, or
+          # its base is red): the owner is told.
+          if [ "$COORD_RED_REPORT_MIN" -gt 0 ] && [ "$age" -ge "$COORD_RED_REPORT_MIN" ] && ! swarm_ticket_live "$t"; then
+            red_report "$pr" "$sha" "$t" "$age" "$title" "$fails" "$why"
           fi ;;
         warn) say "PR #$pr: red only on $why — a warning until the release (release.nonBlockingChecks, or a check $INTEGRATION_BRANCH does not require), not a red"
               case ", $why, " in *", $EV_CHECK, "*) evidence_note "$pr" "$sha" ;; esac ;;
@@ -430,8 +419,7 @@ requeue_cut() { # <ticket> <run-id> <log> <why> — 0 once settled, 1 to try aga
   st=$(swarm_gh issue view "$t" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null)
   [ -n "$st" ] || { say "cut: #$t could not be read — trying again next tick"; return 1; }
   [ "$st" = OPEN ] || { say "cut: #$t is $st — not re-queued"; return 0; }
-  cls=$(coord_run_class "$RUNS_DIR/$rid.json"); [ -n "$cls" ] || cls=new
-  [ "$cls" = new ] && [ -n "${PRS:-}" ] && has_open_pr "$t" && cls=repair
+  cls=new
   wt=$(sed -n 1p "$RUNS_DIR/$rid.worktrees" 2>/dev/null)
   sid=$(grep -o '"session_id":"[^"]*"' "$log" 2>/dev/null | head -1 | cut -d'"' -f4)
   note="Resume: run $rid was cut off by $why before it handed off.${wt:+ Its worktree: $wt.} Carry on from its branch and commits; do not start over.${sid:+ Its session: $sid.}"
@@ -452,12 +440,6 @@ if [ -s "$CUT_PENDING" ]; then
     requeue_cut "$t" "$rid" "$log" "$why" || printf '%s\t%s\t%s\t%s\n' "$t" "$rid" "$log" "$why" >> "$CUT_PENDING.next"
   done < "$CUT_PENDING"
   mv -f "$CUT_PENDING.next" "$CUT_PENDING"
-fi
-
-# A repair waiting on the base goes back on the queue once the base's check is green,
-# or once coordinator.baseWaitHours have passed, whichever is first.
-if [ -s "$BASE_WAITS" ]; then
-  base_wait_release "$QUEUE" "$(coord_shadow && echo dry)" | while IFS= read -r l; do say "base wait: $l"; done
 fi
 
 # A pre-push check red on the trunk itself is ONE ticket at the front of the queue, filed
@@ -491,94 +473,60 @@ ticket_open_pr() { # <ticket> — echoes the number of its open PR, draft or not
     "$BRANCH_TICKET_JQ"'[.[] | select(.headRefName | branch_is_ticket($pre; $t)) | .number] | first // empty' 2>/dev/null)
   [ -n "$n" ] && printf '%s' "$n"
 }
-# ---- 4d. the open work: being finished, queued to be, or not counted -----------
+# ---- 4c. rebuild, don't repair -------------------------------------------------
+# Every open ticket PR that is stuck — a required check settled red, a clash, a draft
+# nothing builds — past coordinator.rebuildAfterMin is closed and its ticket queued fresh
+# (rebuild.sh). Never on a claim list nobody could read: a claimed ticket is being worked.
+if [ "$CLAIMS_OK" = 1 ]; then rebuild_pass
+else say "rebuild: the claim list could not be read — no PR is rebuilt this tick"; fi
+
+# ---- 4d. the open work: being finished, or not counted ------------------------
 # THE OPEN-WORK CAP (owner call 2026-10-22): new work started faster than finished work
 # could land left 100 open PRs for ~5 builders. Over coordinator.openPrCap open PRs no
 # new ticket starts. A CAP WAITS ONLY ON WORK SOMETHING IS FINISHING: on 23 Oct 19 open
-# PRs held every start, 17 clashing, none queued, claimed or healing (parked drafts no
-# watcher read), and 0 builds ran. So each open PR the cap counts is being finished
-# (claimed, live, queued, fixed in a session, or waiting on CI or a merge) or is queued
-# here as a repair at the front of its priority; one nothing can finish without a
-# person (a person's stop or wait, a repair that left it as it was at this head) is
-# not counted. Read from the tick's PR read, plus one batched ticket read.
+# PRs held every start, 17 clashing, none claimed, and 0 builds ran. So each open PR the
+# cap counts is being finished: claimed, live, waiting on CI or a merge, or stuck and on
+# the rebuild clock (which closes it once it cannot merge). One nothing can finish
+# without a person (a person's stop or wait, a draft nothing builds) is not counted.
+# Read from the tick's PR read, plus one batched ticket read.
 . "$SELF_DIR/open-work.sh" || exit 1
-FINISH_TRIED="$COORD_DIR/finish-queued.$(coord_mode)"   # ticket \t head \t kind \t epoch
-FINISH_CLASH=" "; FINISH_STALL=""; FINISH_OUT=""; FINISH_KEYS=""; FINISH_UNCOUNTED=" "
-# A repair that starts is one try at its PR's head: recorded at the start, so an entry a
-# re-seed drops before it starts is queued again, never written off untried.
-finish_started() { # <ticket>
-  awk -F'\t' -v t="$1" -v now="$(swarm_now)" -v OFS='\t' '$1 == t { print $1, $2, $3, now }' <<<"$FINISH_KEYS" >> "$FINISH_TRIED" 2>/dev/null
-}
-finish_pr_rows() { # pr \t ticket (- for none: a tab IFS folds an empty field) \t head \t draft 0|1 \t DIRTY|red|pending|green \t do-not-merge 0|1 \t updatedAt
-  local gate nb
-  gate="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"
-  nb=$(release_nonblocking_json)
-  printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg gate "$gate" --arg dnm "${LBL_DO_NOT_MERGE:-do-not-merge}" \
-      --argjson nb "$nb" "$BRANCH_TICKET_JQ$RELEASE_NB_JQ"'
+FINISH_OUT=""
+finish_pr_rows() { # pr \t ticket (- for none: a tab IFS folds an empty field) \t draft 0|1 \t do-not-merge 0|1 \t updatedAt
+  printf '%s' "${PRS:-[]}" | jq -r --arg pre "$BRANCH_PREFIX" --arg dnm "${LBL_DO_NOT_MERGE:-do-not-merge}" "$BRANCH_TICKET_JQ"'
     sort_by(.number) | .[]
-    | ((.statusCheckRollup // []) | newest_runs
-       | map(select(((.name // .context // "") | ascii_downcase) | contains($gate | ascii_downcase) | not))
-       | map(select(release_nb($nb) | not))) as $c
-    | ($c | map(select((.status // "COMPLETED") != "COMPLETED")) | length) as $pending
-    | ($c | map(select((.conclusion // .state // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $failed
-    | [ .number, (.headRefName | branch_ticket($pre) | if . == "" then "-" else . end), .headRefOid, (if .isDraft then 1 else 0 end),
-        (if .mergeStateStatus == "DIRTY" then "DIRTY" elif $pending == 0 and $failed > 0 then "red"
-         elif $pending > 0 then "pending" else "green" end),
+    | [ .number, (.headRefName | branch_ticket($pre) | if . == "" then "-" else . end), (if .isDraft then 1 else 0 end),
         (if any(.labels[]?; .name == $dnm) then 1 else 0 end), (.updatedAt // "") ] | @tsv' 2>/dev/null
 }
-# The labels that mean a person acts next: a repair started under one ends on the same wait.
+# The labels that mean a person acts next on the ticket. A park or the sign-off hold is not
+# one here: a PR waiting on either is still open work (rebuild.sh leaves it alone).
 finish_person_labels() {
   printf '%s\n' "$LBL_NEEDS_HUMAN" "$LBL_OWNER_DECISION" "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" "$LBL_GATED" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
 }
 finish_open_work() {
-  local pr t sha draft st dnm at rows need="" needt="" total=0 counted=0 kind why meta lab l q stop fl
+  local pr t draft dnm at rows need="" total=0 counted=0 meta lab l stop fl metas="{}"
   rows=$(finish_pr_rows)
-  q=$(jq -r '.tickets[]?.n' "$COORD_QUEUE" 2>/dev/null)
   fl=$(finish_person_labels)
   not_counted() { FINISH_OUT="$FINISH_OUT${FINISH_OUT:+; }#$1 $2"; }
-  while IFS=$'\t' read -r pr t sha draft st dnm at; do
+  while IFS=$'\t' read -r pr t draft dnm at; do
     [ -n "${pr:-}" ] || continue
     total=$((total+1))
     [ "$t" != - ] || { not_counted "$pr" "is no ticket's"; continue; }
     [ "$dnm" = 0 ] || { not_counted "$pr" "carries ${LBL_DO_NOT_MERGE:-do-not-merge}"; continue; }
-    if [ "$draft" = 1 ]; then
-      open_work_person_drafted "$pr" "$at" >/dev/null; case $? in
-        0) not_counted "$pr" "a person drafted it"; continue ;;
-        2) counted=$((counted+1)); say "finish: PR #$pr is a draft whose timeline could not be read — counted, not queued"; continue ;;
-      esac
-    fi
-    # A clash repair goes through a park or the sign-off hold: a clash is mechanical.
-    [ "$st" != DIRTY ] || FINISH_CLASH="$FINISH_CLASH$t "
-    if grep -qx "$t" <<<"$CLAIMED" || swarm_ticket_live "$t" \
-       || [ -n "$(awk -F'\t' -v p="$pr" '$1 == p { print; exit }' <<<"$FIXING")" ]; then
-      counted=$((counted+1)); continue
-    fi
-    if [ "$draft" = 0 ] && { [ "$st" = green ] || [ "$st" = pending ]; }; then counted=$((counted+1)); continue; fi
+    if grep -qx "$t" <<<"$CLAIMED" || swarm_ticket_live "$t"; then counted=$((counted+1)); continue; fi
     # A DRAFT NOTHING IS BUILDING IS NOT IN FLIGHT (owner, 2026-10-24): after the 14:20Z reset 10
     # of 13 open PRs were parked drafts no run held, and the cap stopped every start, Voices too.
-    # It is still queued to be finished below; it only stops counting.
-    [ "$draft" = 0 ] || FINISH_UNCOUNTED="$FINISH_UNCOUNTED $pr "
-    if [ "$st" = red ] && base_wait_holds "$t" "$sha"; then
-      case "$FINISH_UNCOUNTED" in *" $pr "*) not_counted "$pr" "is a draft nothing is building (waits on the base)" ;; *) counted=$((counted+1)) ;; esac
-      continue
-    fi
-    if [ "$st" = DIRTY ]; then kind=conflict
-    elif [ "$st" = red ]; then kind=ci
-    else kind=draft; fi
-    FINISH_KEYS="$FINISH_KEYS$t"$'\t'"$sha"$'\t'"$kind"$'\n'
-    ! grep -qx "$t" <<<"$q" || kind=queued
-    need="$need$pr"$'\t'"$t"$'\t'"$sha"$'\t'"$kind"$'\n'; needt="$needt $t"
+    # Its rebuild clock still runs (rebuild.sh); it only stops counting.
+    if [ "$draft" = 1 ]; then not_counted "$pr" "is a draft nothing is building"; continue; fi
+    need="$need$pr"$'\t'"$t"$'\n'
   done <<< "$rows"
-  local metas="{}"
-  # shellcheck disable=SC2086  # a list of numbers, split on purpose
-  [ -z "${needt// /}" ] || metas=$(gh_issues_batch $needt 2>/dev/null) || metas="{}"
+  # shellcheck disable=SC2046  # a list of numbers, split on purpose
+  [ -z "$need" ] || metas=$(gh_issues_batch $(printf '%s' "$need" | cut -f2 | sort -un) 2>/dev/null) || metas="{}"
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$metas" || metas="{}"
-  # Each new --first goes in front of the last: queued newest first, the oldest leads.
-  while IFS=$'\t' read -r pr t sha kind; do
+  while IFS=$'\t' read -r pr t; do
     [ -n "${pr:-}" ] || continue
     meta=$(jq -r --arg n "$t" '.[$n] // empty | (.state // "OPEN") + " " + ((.labels // []) | join(","))' <<<"$metas" 2>/dev/null)
-    if [ -z "$meta" ]; then counted=$((counted+1)); say "finish: #$t (PR #$pr) could not be read — counted, not queued"; continue; fi
+    if [ -z "$meta" ]; then counted=$((counted+1)); say "finish: #$t (PR #$pr) could not be read — counted"; continue; fi
     [ "${meta%% *}" = OPEN ] || { not_counted "$pr" "its ticket #$t is ${meta%% *}"; continue; }
     lab=${meta#* }; stop=""
     while read -r l; do
@@ -587,33 +535,8 @@ finish_open_work() {
     done <<< "$fl"
     [ -z "$stop" ] || { not_counted "$pr" "waits on a person ($stop)"; continue; }
     if stop=$(driver_repo_foreign "$lab"); then not_counted "$pr" "belongs to $stop"; continue; fi
-    FINISH_STALL="$FINISH_STALL$pr"$'\t'"$t"$'\t'"$sha"$'\n'
-    if [ "$kind" = queued ]; then
-      case "$FINISH_UNCOUNTED" in *" $pr "*) not_counted "$pr" "is a draft nothing is building (queued)" ;; *) counted=$((counted+1)) ;; esac
-      continue
-    fi
-    why="it clashes with $INTEGRATION_BRANCH"
-    [ "$kind" != ci ] || why="its checks settled red"
-    [ "$kind" != draft ] || why="it is a draft nothing is building"
-    if [ "$kind" != conflict ]; then
-      for l in "$LBL_PARKED" "$HOLD_LABEL"; do
-        case ",$lab," in *",$l,"*) stop="$l"; break ;; esac
-      done
-      [ -z "$stop" ] || { not_counted "$pr" "waits for its park to clear ($stop)"; continue; }
-      if swarm_heal_parked_out "$t" "$sha"; then not_counted "$pr" "parked past its cap on this head"; continue; fi
-    fi
-    if grep -q "^$t	$sha	$kind	" "$FINISH_TRIED" 2>/dev/null; then
-      not_counted "$pr" "a repair left it as it was at ${sha:0:9}: a person looks next"; continue
-    fi
-    case "$FINISH_UNCOUNTED" in *" $pr "*) not_counted "$pr" "is a draft nothing is building" ;; *) counted=$((counted+1)) ;; esac
-    if [ "$PRS_STALE" = 1 ]; then say "finish: #$t (PR #$pr) not queued — the open PRs are a snapshot this tick"; continue; fi
-    coord_act_log finish "$t" "repair — PR #$pr: $why"
-    if coord_shadow; then say "finish: would queue #$t as a repair at the front of its priority — PR #$pr: $why"; continue; fi
-    if bash "$QUEUE" add "$t" --class repair --first --note "Finish PR #$pr: $why. Bring it back to green and mergeable; do not start over." >/dev/null 2>&1; then
-      say "finish: queued #$t as a repair at the front of its priority — PR #$pr: $why"
-    else say "finish: #$t (PR #$pr) could not be queued — counted; the next tick tries again"; fi
-  done <<< "$(printf '%s' "$need" | sort -t$'\t' -k1,1nr)"
-  FINISH_STALL=$(printf '%s' "$FINISH_STALL" | sort -t$'\t' -k1,1n)
+    counted=$((counted+1))
+  done <<< "$need"
   OPEN_PRS=$counted
   [ -z "$FINISH_OUT" ] || say "finish: $((total - counted)) of $total open PR(s) not counted — nothing finishes them without a person: $FINISH_OUT"
 }
@@ -641,29 +564,30 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   if l=$(driver_repo_foreign "$lab"); then echo "belongs to $l"; return 0; fi
   while read -r l; do
     [ -n "$l" ] || continue
-    # A repair or an approved merge is in review by definition; only fresh work waits on it.
-    [ "$l" = "$LBL_IN_REVIEW" ] && [ "$cls" != new ] && continue
-    # A clash on its open PR is repaired through a park or the sign-off hold (4d).
-    { [ "$l" = "$LBL_PARKED" ] || [ "$l" = "$HOLD_LABEL" ]; } && [ "$cls" != new ] && case "$FINISH_CLASH" in *" $t "*) true ;; *) false ;; esac && continue
     case ",$lab," in *",$l,"*) echo "$l"; return 0 ;; esac
   done <<< "$(stop_labels)"
   # NO RUN WITHOUT A CHANGE TO MAKE: a new build the queue seeded starts only on a ready
   # (or half-built) ticket; an entry with a note (a resume, an owner's answer) carries on
-  # whatever its status. A repair starts only on an open PR (repair_pr_red).
+  # whatever its status.
   if [ "$cls" = new ] && [ -z "$note" ] && [ -n "$LBL_READY" ] \
      && case ",$lab," in *",$LBL_READY,"*|*",${LBL_PARTIAL:-$LBL_READY},"*) false ;; *) true ;; esac; then
     l=$(printf '%s' "$lab" | tr ',' '\n' | grep "^$STATUS_PREFIX" | head -1)
     echo "not $LBL_READY (${l:-no status})"; return 0
   fi
-  # Respawned before the human moves, it ends on the same wait again. A clash repair is no such wait.
-  if ! { [ "$cls" != new ] && case "$FINISH_CLASH" in *" $t "*) true ;; *) false ;; esac; }; then
-    coord_wait_holds "$t" "$lab" && return 0
+  # Respawned before the human moves, it ends on the same wait again.
+  coord_wait_holds "$t" "$lab" && return 0
+  # ONE TICKET, ONE CHANGE. A ticket with an open PR is never built again beside it: the PR
+  # merges, or the rebuild pass closes it once it cannot and queues the ticket fresh. Only
+  # this host's own unshipped build of it (a park's draft, answered) resumes on it.
+  local pr
+  if pr=$(ticket_open_pr "$t") && ! coord_unshipped_here "$t"; then
+    echo "has an open PR #$pr — it merges, or is rebuilt fresh once it cannot (coordinator.rebuildAfterMin)"; return 0
   fi
-  # A repair waiting on the base ends on the same wait until base_wait_release frees it.
-  if coord_healing_class "$cls" && base_wait_holds "$t"; then echo "waiting for $INTEGRATION_BRANCH's fix (base-waits.tsv)"; return 0; fi
-  # A repair starts only on a PR that is really red: a required check failed, or it clashes.
-  if [ "$cls" = repair ] && ! repair_pr_red "$t"; then return 0; fi
   return 1
+}
+# coord_unshipped_here <ticket> — 0 when this host's driver record holds a build of it not yet shipped.
+coord_unshipped_here() {
+  jq -e '((.done // []) | length > 0) and ((.done // []) | index("ship") == null)' "${DRIVER_DIR:-$STATE_DIR/driver}/$1/state.json" >/dev/null 2>&1
 }
 # Answers given anywhere free their tickets before anything is picked.
 OWNERQ="$SELF_DIR/owner-question.sh"
@@ -750,18 +674,6 @@ fi
 # The order the owner publishes: taken before the starts take their tickets off the queue.
 SHEET_WIDE=""; [ "$SHEET_ROLE" != owner ] || SHEET_WIDE=$(coord_queue_ordered --wide)
 
-# Each live run's class, as the coordinator recorded it at spawn. A run with none
-# on record (started outside the coordinator) heals when its ticket has an open PR.
-live_class() { # <record>
-  local c t
-  c=$(coord_run_class "$1")
-  if [ -z "$c" ]; then
-    t=$(jq -r '.ticket // empty' "$1" 2>/dev/null)
-    printf '%s' "${PRS:-[]}" | jq -e --arg pre "$BRANCH_PREFIX" --arg t "$t" \
-      "$BRANCH_TICKET_JQ"'any(.[]; .headRefName | branch_is_ticket($pre; $t))' >/dev/null 2>&1 && c=repair
-  fi
-  coord_healing_class "${c:-new}" && echo healing || echo new
-}
 # tooling: a process fix or a toolingCapLabels ticket, read off the batched labels.
 ticket_tooling() { # <ticket> — 0 when the tick's read holds it as tooling under the cap
   [ -n "${ISSUES:-}" ] && jq -e --arg n "$1" --arg p "$SWARM_PROCESS_LABEL" --arg tl "$COORD_TOOLING_CAP_LABELS" '
@@ -776,12 +688,7 @@ while IFS= read -r t; do
 done < <( { printf '%s\n' $LIVE_TICKETS
             printf '%s\n' "$CLAIM_ROWS" | awk -F'\t' -v h="$COORD_HOST" '$1 ~ /^[0-9]+$/ && $2 != "" && $2 != h { print $1 }'; } \
           | grep -E '^[0-9]+$' | sort -un)
-LIVE_HEAL=0; LIVE_NEW=0
-while IFS= read -r rec; do
-  [ -n "$rec" ] || continue
-  if [ "$(live_class "$rec")" = healing ]; then LIVE_HEAL=$((LIVE_HEAL+1))
-  else LIVE_NEW=$((LIVE_NEW+1)); fi
-done <<< "$LIVE_RECS"
+LIVE_NEW=$LIVE
 
 # The ceiling is what is running plus as many as the spare CPU fits (coord_room),
 # so an idle machine fills in one tick rather than one agent per tick.
@@ -815,12 +722,9 @@ TOOLING_ROOM=$(( COORD_TOOLING_CAP - TOOLING_LIVE )); [ "$TOOLING_ROOM" -ge 0 ] 
 say "tooling: $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP on every host${TOOLING_LIVE_TICKETS:+ (${TOOLING_LIVE_TICKETS# })}"
 [ "$CEILING" -ge "$LIVE" ] || CEILING=$LIVE
 SLOTS=$(( CEILING - LIVE )); [ "$SLOTS" -ge 0 ] || SLOTS=0
-# No share of the places is kept for either class (owner call 2026-10-24): healing may
-# take every place, and new work every place only while under the open-work cap.
-split_places() {
-  HEAL_SLOTS=$CEILING; NEW_SLOTS=$CEILING; [ -z "$OVER_PR_CAP" ] || NEW_SLOTS=0
-}
-REDS_WAITING=0; split_places
+# New work takes every place while under the open-work cap; over it only process fixes,
+# the cap-exempt priorities and quick work start.
+NEW_SLOTS=$CEILING; [ -z "$OVER_PR_CAP" ] || NEW_SLOTS=0
 say "ceiling: $LIVE running · $([ "$SLOTS" -gt 0 ] && echo "room for $SLOTS more" || echo "no room for more"): ${READING:-?}${COORD_CAP:+ · cap $COORD_CAP}"
 
 PLAN=""; NEXT=""; TOOK=""; SHEET_STARTED=""
@@ -853,8 +757,7 @@ PROCESS_ONLY=""
 if held=$(swarm_held) && swarm_hold_lets_process; then
   PROCESS_ONLY=1; say "spawn: held for everything but process fixes ($SWARM_PROCESS_LABEL) — $held"
 fi
-# The spawnable entries, in queue order: every healing one (so the reds waiting
-# are counted), and new work up to one past the free places (the next pick).
+# The spawnable entries, in queue order: new work up to one past the free places (the next pick).
 # CANDS rows: <ticket> \t <class> \t <polish 0|1> \t <process 0|1> \t <note>.
 # A process fix is never held as polish, never capped at one past the free places,
 # and under a hold that lets process fixes through it is the only kind listed.
@@ -896,31 +799,19 @@ candidates() {
     # AHEAD OF PACE ONLY PROCESS FIXES (owner, 2026-10-20) AND paceToWindow.exempt START. The focus-area
     # tier waits like the rest (owner, 2026-11-03): it is where the work is, so exempting it paced nothing.
     if [ -n "$PACE_AHEAD" ] && [ "$proc" != 1 ] && case "$PACE_EXEMPT" in *" $pri "*) false ;; *) true ;; esac; then sk_pace="$sk_pace #$t"; continue; fi
-    # A new entry whose ticket has an open PR, draft or not, is that PR's repair:
-    # skipped as new it sat at the head of the queue on every tick doing nothing.
-    if [ "$cls" = new ] && pr=$(ticket_open_pr "$t"); then
-      cls=repair
-      say "#$t (new): has an open PR #$pr — taken as its repair"
-      coord_shadow || bash "$QUEUE" set-class "$t" repair >/dev/null 2>&1 \
-        || say "#$t: the queue entry could not be rewritten as repair — taken as one this tick"
-    fi
-    # And back: a repair or approved merge whose PR is gone is new work, judged as new this tick.
-    # A claimed or running one is being worked, its PR maybe mid-reopen: left as it is.
-    if coord_healing_class "$cls" && ! grep -qx "$t" <<<"$CLAIMED" && ! swarm_ticket_live "$t" \
-       && heal_pr_gone "$t" "$cls"; then cls=new; note=""; fi
     if [ "$cls" = new ] && [ "$proc" != 1 ] && grep -qx "$t" <<<"$rel_out"; then rel_held=$((rel_held+1)); sk_rel="$sk_rel #$t"; continue; fi
     # Tooling (a process fix or a harness ticket) is capped on every host together: over
     # the cap it waits, and the places go to product work. Process-first holds inside it.
     tool=0; { [ "$proc" = 1 ] || ticket_tooling "$t"; } && tool=1
     if [ "$tool" = 1 ] && [ "$tool_left" -le 0 ]; then tool_wait=$((tool_wait+1)); say "skip #$t ($cls): the tooling cap — $TOOLING_LIVE live of $COORD_TOOLING_CAP"; continue; fi
-    # Over the open-work cap only finishing starts: repairs, approved merges, process fixes.
+    # Over the open-work cap only process fixes start.
     # Quick-sized new work starts anyway (the owner, 2026-10-22; cap-quick.sh): held here,
     # sized after the loop by the driver's own rules. Polish rides along, never alone.
     # A capExemptPriorities ticket (P0) is never held by it (the owner, 2026-10-23): it
     # goes on as under the cap, still behind the host cap, tooling cap, scope and room.
     if [ -n "$OVER_PR_CAP" ] && [ "$cls" = new ] && [ "$proc" != 1 ] && [ "$pl" != 1 ] \
        && case "$exempt" in *" $pri "*) true ;; *) false ;; esac; then exm=1
-    elif [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && [ "$proc" != 1 ]; then
+    elif [ -n "$OVER_PR_CAP" ] && [ "$proc" != 1 ]; then
       if [ "$cls" = new ] && [ "$pol" != 1 ] && [ "$pl" != 1 ] && coord_cap_quick_on; then
         qwait="$qwait$i"$'\t'"$t"$'\t'"$tool"$'\t'"$note"$'\n'
       else sk_capped="$sk_capped #$t"
@@ -937,13 +828,13 @@ candidates() {
     # Held: new polish work that is neither put at the front nor half-built. A full
     # polish list is held too: its items ride along with real changes on its screen,
     # never one batch PR of its own (owner call 2026-10-22).
-    if ! coord_healing_class "$cls" && [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
+    if [ "$pol" = 1 ] && [ "$ex" != 1 ]; then
       [ "$pl" = 1 ] || cnt=0
       held="$held$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pl"$'\t'"$cnt"$'\t'"$tool"$'\t'"$note"$'\n'; continue
     fi
-    [ "$proc" = 1 ] || coord_healing_class "$cls" || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }; }
+    [ "$proc" = 1 ] || { [ "$nn" -le "$SLOTS" ] || [ "$nn" -lt 2 ] || { sk_behind="$sk_behind #$t"; continue; }; }
     if why=$(spawn_block "$t" "$cls" "$note"); then say "skip #$t ($cls): ${why:-waits on a person (coordinator-waits.sh)}"; continue; fi
-    [ "$proc" = 1 ] || coord_healing_class "$cls" || nn=$((nn+1))
+    [ "$proc" = 1 ] || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
     [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:P$pri"
@@ -956,7 +847,7 @@ candidates() {
     qsizes=$(COORD_QUICK_WANT=$(( SLOTS + 2 )) coord_quick_sizes $(printf '%s' "$qwait" | cut -f2))
     qsized=$(printf '%s\n' "$qsizes" | awk -F'\t' 'NF && $2 != "unread"' | grep -c .)
     qquick=$(printf '%s\n' "$qsizes" | awk -F'\t' '$2 == "quick"' | grep -c .)
-    # The places healing and process fixes leave: those take theirs first.
+    # The places process fixes leave: those take theirs first.
     qroom=$(( SLOTS - $(printf '%s' "$rows" | grep -c .) )); [ "$qroom" -ge 0 ] || qroom=0
     while IFS=$'\t' read -r i t tool note; do
       [ -n "${t:-}" ] || continue
@@ -1008,28 +899,23 @@ candidates() {
   [ "$tool_wait" -eq 0 ] || say "tooling: $tool_wait tooling ticket(s) wait — $TOOLING_LIVE live of the cap of $COORD_TOOLING_CAP; the places go to product work"
   TOOLING_WAITING=$tool_wait
   CANDS=$(printf '%s' "$rows" | sort -t$'\t' -k1,1n | cut -f2-); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
-  reds_waiting; split_places
-}
-reds_waiting() {
-  REDS_WAITING=$(printf '%s' "$CANDS" | awk -F'\t' '$2 == "repair" || $2 == "approved-merge"' | grep -c .)
 }
 cap_exempt_pri() { # <ticket> — its priority ("P0") when the cap let it through as exempt
   local e; for e in $CAP_EXEMPT_OK; do [ "${e%%:*}" != "$1" ] || { printf '%s' "${e#*:}"; return 0; }; done; return 1
 }
-over_cap_first() { # over the open-work cap: the first healing or cap-exempt candidate, in queue order
+over_cap_first() { # over the open-work cap: the first cap-exempt candidate, in queue order
   local t cls pol proc note
   while IFS=$'\t' read -r t cls pol proc note; do
     [ -n "${t:-}" ] || continue
-    coord_healing_class "$cls" || cap_exempt_pri "$t" >/dev/null || continue
+    cap_exempt_pri "$t" >/dev/null || continue
     printf '%s\t%s\t%s' "$t" "$cls" "$note"; return 0
   done <<< "$CANDS"
 }
-first_of() { # <healing|new|process> — the first candidate of that kind: <ticket> \t <class> \t <note>
+first_of() { # <new|process> — the first candidate of that kind: <ticket> \t <class> \t <note>
   local t cls pol proc note
   while IFS=$'\t' read -r t cls pol proc note; do
     [ -n "${t:-}" ] || continue
-    if [ "$1" = process ]; then [ "$proc" = 1 ] || continue
-    elif coord_healing_class "$cls"; then [ "$1" = healing ] || continue; else [ "$1" = new ] || continue; fi
+    if [ "$1" = process ]; then [ "$proc" = 1 ] || continue; fi
     printf '%s\t%s\t%s' "$t" "$cls" "$note"; return 0
   done <<< "$CANDS"
   return 1
@@ -1153,12 +1039,11 @@ else
   while [ "$started" -lt "$RAMP" ]; do
     proc=$(first_of process)
     # A process fix takes any free place first. Then the open-work cap decides, then
-    # priority: under it the first candidate in queue order, repair or new (a red ranks
-    # at its ticket's priority, ahead at the same one); over it healing only.
+    # priority: under it the first candidate in queue order; over it the cap-exempt and quick.
     pick=""; lent=""
     if   [ -n "$proc" ]; then pick="$proc"; lent="any free place, a process fix first"
     elif [ -n "$OVER_PR_CAP" ]; then
-      # Healing and the cap-exempt (P0) new work, in queue order.
+      # The cap-exempt (P0) new work, in queue order.
       pick=$(over_cap_first)
       # Then the quick new work the cap lets through (cap-quick.sh), in queue order.
       [ -n "$pick" ] || [ -z "${QUICK_OK// /}" ] || pick=$(awk -F'\t' -v q=" $QUICK_OK " 'NF && index(q, " " $1 " ") { printf "%s\t%s\t%s", $1, $2, $5; exit }' <<<"$CANDS")
@@ -1180,23 +1065,13 @@ else
     CANDS=$(printf '%s' "$CANDS" | awk -F'\t' -v p="$t" 'NF && $1 != p'); [ -z "$CANDS" ] || CANDS="$CANDS"$'\n'
     PLAN="${PLAN:+$PLAN,}$t"; TOOK="$cls"
     # Counted live only once it is (or, in shadow, would be) running.
-    count_live() {
-      if coord_healing_class "$cls"; then
-        LIVE_HEAL=$((LIVE_HEAL+1))
-      else LIVE_NEW=$((LIVE_NEW+1)); fi
-    }
+    count_live() { LIVE_NEW=$((LIVE_NEW+1)); }
     bypass=""
-    if [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && exp=$(cap_exempt_pri "$t"); then
+    if [ -n "$OVER_PR_CAP" ] && exp=$(cap_exempt_pri "$t"); then
       lent="${lent:-over the open-work cap: $exp}"
       say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — $exp #$t $(coord_shadow && echo 'would start' || echo 'starts') anyway"
-    elif [ -n "$OVER_PR_CAP" ] && ! coord_healing_class "$cls" && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
+    elif [ -n "$OVER_PR_CAP" ] && case " $QUICK_OK " in *" $t "*) true ;; *) false ;; esac; then
       bypass=1; lent="${lent:-over the open-work cap: sized quick}"; QUICK_STARTED=$((QUICK_STARTED+1))
-    fi
-    # THE ONE REPAIR GATE (repair-gate.sh): open ticket, open PR, really red, and rebuilt fresh
-    # past rebuildAfterRepairs. Refused, its place goes to the next one.
-    if [ "$cls" = repair ] && ! gwhy=$(repair_gate "$t"); then
-      say "skip #$t (repair): $gwhy"
-      started=$((started-1)); continue
     fi
     coord_act_log spawn "$t" "$cls${bypass:+ (quick, over the cap)}${note:+ — $note}"
     if coord_shadow; then
@@ -1210,7 +1085,7 @@ else
       spawn_out=$(SWARM_SPAWN_REPO="$in_repo" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
-        coord_record_class "$t" "$cls"; count_live; ! coord_healing_class "$cls" || finish_started "$t"
+        coord_record_class "$t" "$cls"; count_live
         say "spawned #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
         SHEET_STARTED="${SHEET_STARTED:+$SHEET_STARTED,}$t"
       else
@@ -1237,70 +1112,12 @@ else
   [ -z "$OVER_PR_CAP" ] || [ "$QUICK_STARTED" -eq 0 ] || say "cap: over ($OPEN_PRS/$COORD_OPEN_PR_CAP) — $QUICK_STARTED quick ticket(s) started anyway"
   # The next pick is the first spawnable entry left, whatever its class.
   NEXT=$(printf '%s' "$CANDS" | awk -F'\t' 'NF { print $1; exit }')
-  reds_waiting
 fi
-# ---- 5d. the stall guard ----------------------------------------------------------
-# The cap reached, no build on any host, and nothing spawnable for
-# coordinator.stallTicks (2) ticks in a row: nothing will ever bring the count down,
-# so the oldest repairable open PR starts anyway, once per head. A deliberate hold
-# (disk, usage, a swarm HOLD, no room) is not a stall: the count starts again after it.
-STALL_FILE="$COORD_DIR/stall.$(coord_mode)"; STALL_SPAWNED="$COORD_DIR/stall-spawned.$(coord_mode)"
-COORD_STALL_TICKS="${COORDINATOR_STALL_TICKS:-$(swarm_opt coordinator.stallTicks 2)}"
-case "$COORD_STALL_TICKS" in ''|*[!0-9]*|0) COORD_STALL_TICKS=2 ;; esac
-# Every host's builds: this host's runs, and the claims no run here holds.
-FLEET_LIVE=$LIVE
-while IFS= read -r c; do
-  [ -n "$c" ] || continue
-  case " $LIVE_TICKETS " in *" $c "*) ;; *) FLEET_LIVE=$((FLEET_LIVE+1)) ;; esac
-done <<< "$(printf '%s\n' "$CLAIMED" | grep -E '^[0-9]+$' | sort -u)"
-if [ -n "$OVER_PR_CAP" ] && [ "$FLEET_LIVE" -eq 0 ] && [ -n "${SPAWN_RAN:-}" ] && [ "${started:-0}" -eq 0 ] && [ -z "$PACE_AHEAD" ]; then
-  STALLS=$(( $(cat "$STALL_FILE" 2>/dev/null | grep -E '^[0-9]+$' || echo 0) + 1 ))
-  printf '%s\n' "$STALLS" > "$STALL_FILE"
-  if [ "$STALLS" -ge "$COORD_STALL_TICKS" ]; then
-    say "⚠ stall: cap reached with nothing finishing — $OPEN_PR_SAID, 0 builds on any host, nothing spawnable for $STALLS ticks"
-    pick=""
-    while IFS=$'\t' read -r pr t sha; do
-      [ -n "${pr:-}" ] || continue
-      grep -qxF "$pr:$sha" "$STALL_SPAWNED" 2>/dev/null && continue
-      grep -qx "$t" <<<"$CLAIMED" && continue
-      swarm_ticket_live "$t" && continue
-      if why=$(repair_gate "$t"); then :; else say "stall: skip #$t: $why"; continue; fi
-      pick="$pr"$'\t'"$t"$'\t'"$sha"; break
-    done <<< "$FINISH_STALL"
-    if [ -z "$pick" ]; then
-      say "stall: no open PR left that a repair may take — every one waits on a person"
-      if event "stall:$(swarm_day)" stall false "" "" "the open-work cap is reached and nothing is finishing"; then
-        bash "$NOTIFY" --class owner "stall:$(swarm_day)" "Nothing is building: $OPEN_PR_SAID, and every open PR waits on a person"
-      fi
-    else
-      IFS=$'\t' read -r pr t sha <<<"$pick"
-      coord_act_log spawn "$t" "repair (stall guard) — PR #$pr, the oldest repairable"
-      if coord_shadow; then say "stall: would spawn #$t (repair) for PR #$pr, the oldest repairable, over the cap"
-      else
-        brief=$(mktemp); printf 'Coordinator note (repair): Stall guard — nothing was finishing the open work. Bring PR #%s back to green and mergeable; do not start over.\n' "$pr" > "$brief"
-        spawn_out=$(CLAIM_CLASS=repair swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
-        printf '%s\n' "$spawn_out" >> "$COORD_LOG"; rm -f "$brief"
-        printf '%s:%s\n' "$pr" "$sha" >> "$STALL_SPAWNED"
-        if [ "$spawn_rc" -eq 0 ]; then
-          coord_record_class "$t" repair; finish_started "$t"; LIVE_HEAL=$((LIVE_HEAL+1)); PLAN="${PLAN:+$PLAN,}$t"; TOOK=repair
-          bash "$QUEUE" remove "$t" >/dev/null 2>&1
-          say "stall: spawned #$t (repair) for PR #$pr, the oldest repairable, over the cap"
-        else say "stall: spawn of #$t for PR #$pr failed: $(printf '%s\n' "$spawn_out" | sed '/^[[:space:]]*$/d' | tail -1 | cut -c1-200)"; fi
-      fi
-      printf '0\n' > "$STALL_FILE"
-    fi
-  else
-    say "stall: cap reached, 0 builds on any host and nothing spawnable — $STALLS of $COORD_STALL_TICKS tick(s) before the stall guard starts the oldest repairable PR"
-  fi
-else
-  rm -f "$STALL_FILE"
-fi
-
 # ---- 5c. the shared sheet --------------------------------------------------------
 # The owner writes what is startable, in run order, and who is building what, once
 # the starts are made: its own starts show as building here before their claims land.
 # With it, the floor and every machine's heartbeat; a reader posts its own.
-HEARTBEAT=$(coord_heartbeat $(( LIVE_NEW + LIVE_HEAL )) "$DISK_FREE" "${MACHINE_CEILING:-}" \
+HEARTBEAT=$(coord_heartbeat "$LIVE_NEW" "$DISK_FREE" "${MACHINE_CEILING:-}" \
   "$(printf '%s' "$RUN_BEATS" | jq -sc '.' 2>/dev/null)" "$(coord_tick_why "$TICK_SAY")")
 SHEET_FLOOR=""; FLEET="[]"
 case "$SHEET_ROLE" in
@@ -1335,13 +1152,12 @@ if [ "$SHEET_ROLE" = owner ]; then
 fi
 
 OPEN_PR_PART=""; [ "$COORD_OPEN_PR_CAP" -eq 0 ] || OPEN_PR_PART=" · ${OPEN_PR_SAID:-open changes unread / cap $COORD_OPEN_PR_CAP}"
-say "split: $LIVE_NEW new · $LIVE_HEAL healing · $REDS_WAITING reds waiting (of $CEILING, by priority)$OPEN_PR_PART"
+say "split: $LIVE_NEW live (of $CEILING, by priority)$OPEN_PR_PART"
 # What the live view and the merge lane read: the ceiling, its reading, the split, the mode.
 jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coord_mode)" \
    --argjson live "$LIVE" --argjson ceiling "$CEILING" \
    --argjson room "$([ -n "$ROOM" ] && echo true || echo false)" --arg reading "$READING" --arg cap "$COORD_CAP" \
-   --argjson hs "$HEAL_SLOTS" --argjson hl "$LIVE_HEAL" --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" \
-   --argjson waiting "$REDS_WAITING" --arg took "$TOOK" \
+   --argjson ns "$NEW_SLOTS" --argjson nl "$LIVE_NEW" --arg took "$TOOK" \
    --arg diskFree "$DISK_FREE" --arg diskStop "${DISK_STOP_GB:-}" --arg diskResume "${DISK_RESUME_GB:-}" \
    --argjson diskHeld "$([ -n "$DISK_HOLD" ] && echo true || echo false)" \
    --arg pace "$(coord_pace_fresh)" --arg stepHold "${STEP_HOLD:-}" \
@@ -1349,7 +1165,7 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
    --argjson toolCap "$COORD_TOOLING_CAP" --argjson toolLive "$TOOLING_LIVE" --argjson toolWait "${TOOLING_WAITING:-0}" \
    '{at:$at, epoch:$epoch, mode:$mode, live:$live, ceiling:$ceiling, room:$room, reading:$reading,
      cap:(if $cap == "" then null else ($cap|tonumber) end),
-     healing:{slots:$hs, live:$hl}, new:{slots:$ns, live:$nl}, redsWaiting:$waiting,
+     new:{slots:$ns, live:$nl},
      started:(if $took == "" then null else $took end),
      disk:{freeGb:(if $diskFree == "" then null else ($diskFree|tonumber) end),
            stopBelowGb:(if $diskStop == "" then null else ($diskStop|tonumber) end),
@@ -1360,8 +1176,8 @@ jq -cn --arg at "$(swarm_stamp)" --argjson epoch "$(date +%s)" --arg mode "$(coo
      usageHold:(if $stepHold == "" then null else ($stepHold | split("\t") | {until: (.[0] | tonumber), window: .[1], pct: (.[2] | tonumber)}) end)}' \
    > "$COORD_DIR/capacity.json.$$" 2>/dev/null && mv -f "$COORD_DIR/capacity.json.$$" "$COORD_DIR/capacity.json"
 # The compare report reads what this tick saw and chose; next= stays last.
-printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s healing=%s/%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \
-  "$CEILING" "$LIVE_HEAL" "$HEAL_SLOTS" "$LIVE_NEW" "$NEW_SLOTS" "$NEXT" >> "$COORD_ACTIONS"
+printf '%s\tplan\t-\t%s\tlive=%s slots=%s ceiling=%s new=%s/%s next=%s\n' "$(swarm_stamp)" "$PLAN" "${LIVE_TICKETS% }" "$SLOTS" \
+  "$CEILING" "$LIVE_NEW" "$NEW_SLOTS" "$NEXT" >> "$COORD_ACTIONS"
 
 # Who spent the allowance: this tick, the last hour by caller, and what is left.
 gh_calls_trim
