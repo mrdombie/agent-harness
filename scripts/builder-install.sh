@@ -251,6 +251,12 @@ if [ "$mode" = behind ]; then
 fi
 
 [ -f "$TREE/package.json" ] || { say "$TREE has no package.json — nothing to install."; exit 0; }
+# No lockfile and no install the project names: nothing pins what to install, and an
+# unpinned install is not this tree's to invent.
+if [ ! -f "$TREE/package-lock.json" ] && [ -z "${BUILDER_INSTALL_CMD:-}" ] \
+   && [ -z "$(jq -r '.worktree.install // empty' "${HARNESS_CFG_PATH:-$TREE/.claude/harness.json}" 2>/dev/null)" ]; then
+  say "$TREE has no package-lock.json and the project names no worktree.install — nothing to install."; exit 0
+fi
 command -v node >/dev/null 2>&1 || { say "node is not on PATH"; exit 1; }
 KEY=$(fingerprint "$TREE")
 [ -n "$KEY" ] || { say "could not fingerprint $TREE"; exit 1; }
