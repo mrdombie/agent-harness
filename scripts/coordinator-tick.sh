@@ -704,9 +704,9 @@ if READING=$(coord_room); then
 fi
 [ -n "$COORD_CAP" ] && [ "$CEILING" -gt "$COORD_CAP" ] && CEILING=$COORD_CAP
 MACHINE_CEILING=$CEILING
-# The five-hour and seven-day windows are the account's, one line each for every host
-# (coord_pace): ahead of either, only process fixes and the exempt priorities start;
-# behind both, or with no reading, places fill.
+# The five-hour window is the account's, one line for every host (coord_pace; the week
+# only with paceToWindow.week): ahead, only process fixes and the exempt priorities start;
+# behind, or with no reading, places fill — a reader with none obeys the owner's verdict.
 PACE_AHEAD=""; PACE_EXEMPT=" $(coord_pace_exempt)"
 PACE_EXEMPT_SAID=$(printf '%s' "$PACE_EXEMPT" | awk '{ for (i = 1; i <= NF; i++) printf "%sP%s", (i > 1 ? "/" : ""), $i }')
 if PACE=$(coord_pace "$LIVE" "$CLAIM_ROWS" "$COORD_HOST"); then
