@@ -24,6 +24,8 @@ weighed and how the cycle runs; this brief owns what the driver needs back.
 - The round: {{ROUND}}
 - Proof limits: {{PROOF_LIMITS}}
 
+**A screen's app is already running** at `$HARNESS_DEV_URL` when the tree has one: the driver starts it for this step and stops it after. Never start, restart or kill a server yourself.
+
 ## Trace the failure path before you land a fix
 
 Ask what a person sees when this throws, nulls, or runs where the checks do not

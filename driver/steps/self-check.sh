@@ -271,7 +271,7 @@ _driver_gate_lines() { # <file>
 
 # A GATE THAT CANNOT FIND A PACKAGE THE BRANCH DECLARES IS A STALE INSTALL, NOT A RED.
 # #12858 (2026-10-20): develop added @axe-core/playwright, the branch merged develop, and
-# its node_modules — linked before the merge — never got the new entry, so self-check
+# its node_modules — built before the merge — never got the new entry, so self-check
 # failed on "Cannot find module '@axe-core/playwright'" and sent it to fix.
 # _driver_missing_dep <tree> <output> — prints the package a "Cannot find module/package"
 # line names, when the tree's root or a workspace package.json declares it. 1 otherwise.
@@ -606,16 +606,13 @@ driver_step_self_check() { # <ticket>
   { machine_gate_wait_load 0 && machine_gate_acquire 0 "self-check #$t"; } || mrc=$?
   if [ "$mrc" -ne 0 ]; then _driver_selfcheck_moot "$t"; return "$?"; fi
 
-  # MACHINE SETUP, NOT A FIX ROUND: the install is relinked when the branch's lockfile
-  # or package.json files moved since it was linked (a merge of the trunk).
+  # MACHINE SETUP, NOT A FIX ROUND: the tree's own install is rebuilt when the branch's
+  # lockfile or package.json files moved since it was built (a merge of the trunk). A run
+  # with no tree of its own reads the shared checkout, which is never installed into.
   local relinked=0 missing=""
   local rrc=0
-  [ "$wt" -ef "$MAIN_REPO" ] || driver_refresh_install "$MAIN_REPO" "$wt" || rrc=$?
-  case "$rrc" in
-    0) ;;
-    3) driver_say "   self-check: $wt has a private install behind its lockfile and something else holds the tree, so it was not replaced. The gates run on it as it is." ;;
-    *) driver_say "   self-check: relinking the install in $wt failed — the reason is above. The gates run on it as it is." ;;
-  esac
+  [ "$wt" -ef "$MAIN_REPO" ] || driver_refresh_install "$wt" || rrc=$?
+  [ "$rrc" -eq 0 ] || driver_say "   self-check: rebuilding the install in $wt failed — the reason is above. The gates run on it as it is."
 
   # The branch's files are formatted before any gate reads them: a format check is a
   # command the driver can run, never a finding to send to fix.
@@ -672,22 +669,22 @@ driver_step_self_check() { # <ticket>
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
     fi
-    # A package the branch declares that the install does not have: relinked once per
-    # run and the gate run again, before it counts as red.
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$relinked" -eq 0 ] && [ ! "$wt" -ef "$MAIN_REPO" ] \
+    # A package the branch declares that the install does not have: installed again once
+    # per run and the gate run again, before it counts as red.
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$relinked" -eq 0 ] \
        && missing=$(_driver_missing_dep "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out"); then
       relinked=1
-      driver_say "⏳ self-check: $name could not find $missing, which this branch's package.json declares — a stale install, not the change. Relinking it (machine setup, not a fix round) and running $name again."
-      driver_link_install "$MAIN_REPO" "$wt" || driver_say "   self-check: the relink failed — the reason is above."
+      driver_say "⏳ self-check: $name could not find $missing, which this branch's package.json declares — a stale install, not the change. Installing it again (machine setup, not a fix round) and running $name again."
+      driver_own_install "$wt" || driver_say "   self-check: the install failed — the reason is above."
       ( cd "$wt" && driver_run_project "$gsecs" "$cmd" ) > "$(driver_state_dir "$t")/steps/gate-$safe.out" 2>&1
       rc=$?
-      # Still missing, linked from the shared clone, and the shared clone has not got it:
-      # the shared install is behind its own lockfile. Installing it is an ops step.
-      if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ -f "$wt/node_modules/.linked-from-shared-install" ] \
+      # Still missing after the tree's own install from its own lockfile: the lockfile
+      # does not name it, or this host cannot fetch it. The machine's, never a fix round.
+      if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] \
          && missing=$(_driver_missing_dep "$wt" "$(driver_state_dir "$t")/steps/gate-$safe.out") \
-         && [ ! -e "$MAIN_REPO/node_modules/$missing" ]; then
-        driver_say "🛑 self-check: machine fault — the shared clone $MAIN_REPO has no node_modules/$missing, which this branch declares and links from it. Installing the shared clone is an ops step; a build does not install into it. Back on the queue, not sent to fix."
-        driver_state_set "$t" park_note "machine fault: the shared clone $MAIN_REPO has no node_modules/$missing, which the branch declares — run the install in the shared clone (an ops step), then requeue"
+         && [ ! -e "$wt/node_modules/$missing" ]; then
+        driver_say "🛑 self-check: machine fault — $wt has no node_modules/$missing after its own install, though this branch declares it. Back on the queue, not sent to fix."
+        driver_state_set "$t" park_note "machine fault: $wt has no node_modules/$missing after its own install, though the branch declares it — the lockfile may not name it, or this host could not fetch it; requeue once the install works"
         machine_gate_release
         return "$DRIVER_E_BUSY"
       fi
@@ -747,17 +744,16 @@ EOS
     return "$DRIVER_E_REFUSED"
   fi
   # AN INSTALL BEHIND ITS LOCKFILE IS THE MACHINE'S, NEVER A FINDING: a fixer may not
-  # install, so sent to fix it asked a person. Replaced once here, then back on the queue.
+  # install, so sent to fix it asked a person. Installed again here, then back on the queue.
   local behind
-  if [ "$failed" -gt 0 ] && [ ! "$wt" -ef "$MAIN_REPO" ] \
-     && behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$wt" 2>/dev/null); then
-    local lrc=0
-    driver_link_install "$MAIN_REPO" "$wt" || lrc=$?
-    if behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$wt" 2>/dev/null); then
-      driver_say "🛑 self-check: machine fault — $behind. The shared install lives in $MAIN_REPO/node_modules; installing there is an ops step, never a fix round or a question for a person. Back on the queue, not sent to fix."
-      driver_state_set "$t" park_note "machine fault: $behind — the tree was $([ "$lrc" = 3 ] && echo 'held by another run, so not relinked' || echo 'relinked'); the shared install is $MAIN_REPO/node_modules (run its install there, an ops step), then requeue"
+  if [ "$failed" -gt 0 ] \
+     && behind=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$wt" 2>/dev/null); then
+    driver_own_install "$wt" || true
+    if behind=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$wt" 2>/dev/null); then
+      driver_say "🛑 self-check: machine fault — $behind, even after the tree's own install ran again. Never a fix round or a question for a person. Back on the queue, not sent to fix."
+      driver_state_set "$t" park_note "machine fault: $behind, after the tree's own install ran again; requeue once the install works on this host"
     else
-      driver_say "⏳ self-check: the install in $wt was behind its lockfile and is now relinked to the shared one — machine setup, not the change. Back on the queue so every gate runs again on it."
+      driver_say "⏳ self-check: the install in $wt was behind its lockfile and is now installed again — machine setup, not the change. Back on the queue so every gate runs again on it."
       driver_state_set "$t" park_note ""
     fi
     rm -f "$findings.rows"

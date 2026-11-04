@@ -74,6 +74,7 @@ opens from any machine, not only the one this worktree lives on.
 
 "$CL" release "$TICKET_KEY"
 # The worktree stays until the sweeper takes it; its build output does not.
+bash "$KIT_ROOT/scripts/builder-dev.sh" stop "$WORKTREE" || true
 bash "$KIT_ROOT/scripts/stop-dev-servers.sh" --worktree "$WORKTREE" || true
 bash "$KIT_ROOT/scripts/worktree-cache.sh" clean "$WORKTREE" || true
 ```
@@ -857,18 +858,11 @@ REPO_FULL="${REPO_SLUG%/*}/$REPO_NAME"
 : "${REPO_PATH:?REPO_PATH unset — run Step 5 resolution block first}"
 # Sparse when the project sets worktree.sparseExclude (e.g. committed screenshots); a plain worktree add otherwise.
 bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$REPO_PATH" "$WORKTREE" -b "$BRANCH" origin/develop
-# The shared install, linked entry by entry into the worktree's OWN node_modules,
-# with each workspace package pointed at THIS worktree's copy. One symlink to the
-# whole shared node_modules carried the shared checkout's workspace links too, so
-# code at the root and the dev server ran the shared clone's stale packages (a
-# subpath the branch added could not be resolved; the login page 500'd) and a
-# dependency the install left inside one workspace's node_modules never resolved
-# here. Symlinks only.
-"$KIT_ROOT/scripts/link-node-modules.sh" "$REPO_PATH" "$WORKTREE" || { echo "🛑 the worktree's node_modules could not be linked" >&2; exit 1; }
-# Per-workspace links to the worktree's own siblings. With the root node_modules
-# above already pointing every workspace home this is belt and braces; it is
-# harmless with that layout and stays until it is retired deliberately.
-"$KIT_ROOT/scripts/link-workspaces.sh" "$REPO_PATH" "$WORKTREE"
+# The worktree's OWN install, never a link to a shared one: a copy-on-write clone of
+# the stored install for its lockfile (seconds, almost no disk), else an install that
+# is then stored. Nothing a peer runs can reach it, and its workspace packages are
+# this worktree's own source.
+bash "$KIT_ROOT/scripts/builder-install.sh" "$WORKTREE" || { echo "🛑 the worktree could not be given its own install" >&2; exit 1; }
 # Without this git finds no hook in a fresh worktree and pushes unchecked. A 🛑 here is a stop: do not continue past it.
 "$KIT_ROOT/scripts/ensure-hooks.sh" "$REPO_PATH" "$WORKTREE" || exit 1
 cd "$WORKTREE"
@@ -900,7 +894,7 @@ git -C "$REPO_PATH" branch -D "$BRANCH" 2>/dev/null
 bash "$KIT_ROOT/scripts/worktree-sparse.sh" add "$REPO_PATH" "$WORKTREE" -b "$BRANCH" origin/develop
 ```
 
-Then run the rest of the Step 6 block from `link-node-modules.sh` down. `ensure-hooks.sh` is not optional on this path either.
+Then run the rest of the Step 6 block from `builder-install.sh` down. `ensure-hooks.sh` is not optional on this path either.
 
 ### Step 7 — Record the attestations on the claim
 

@@ -23,7 +23,7 @@
 # trunk SHA it was cut at is frozen onto the record — so a required check that
 # lands mid-build is known not to apply to a ticket claimed before it existed.
 #
-# AND IT IS PREPARED, because a linked node_modules and a copy of the hook shims are
+# AND IT IS PREPARED, because its own node_modules and a copy of the hook shims are
 # not the whole of what a worktree needs. Measured on the 2026-09-27 trial: every
 # push from a driver worktree was refused —
 #
@@ -216,7 +216,7 @@ driver_step_start() { # <ticket>
       owt="$wroot/${BRANCH_PREFIX}${t}-$(openssl rand -hex 3 2>/dev/null || printf '%s' $$)"
       mkdir -p "$(dirname "$owt")" 2>/dev/null || true
       if _driver_start_cut "$t" "$MAIN_REPO" "$owt" "$rb" "origin/$rb" \
-         && driver_link_install "$MAIN_REPO" "$owt" && driver_prepare_worktree "$owt"; then
+         && driver_own_install "$owt" && driver_prepare_worktree "$owt"; then
         driver_state_set "$t" worktree "$owt"
         driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
         prs=""
@@ -351,12 +351,13 @@ driver_step_start() { # <ticket>
       driver_state_set "$t" park_note "start could not create a worktree at $wt on $branch — $DRIVER_START_WHY"
       return "$DRIVER_E_REFUSED"
     fi
-    # The shared install, never one per worktree. A missing one is not fatal:
-    # plenty of repos have nothing to link, and the linker says so and exits 0.
-    if ! driver_link_install "$repo" "$wt"; then
-      driver_say "✋ start: could not link the shared install into $wt."
+    # The tree's own install, never a link to a shared one (builder-install.sh): a clone
+    # of the stored install for its lockfile, else an install. A repo with no package.json
+    # has nothing to install, and the installer says so and exits 0.
+    if ! driver_own_install "$wt"; then
+      driver_say "✋ start: could not give $wt its own install."
       driver_state_set "$t" worktree "$wt"
-      driver_state_set "$t" park_note "the shared install could not be linked into $wt"
+      driver_state_set "$t" park_note "$wt could not be given its own install (this machine, not the ticket)"
       return "$DRIVER_E_REFUSED"
     fi
     if ! driver_ensure_hooks "$repo" "$wt"; then

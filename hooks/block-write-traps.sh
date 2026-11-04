@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# PreToolUse (Write|Edit): four write-time traps.
+# PreToolUse (Write|Edit): two write-time traps.
 #
-# 1. PHANTOM WORKTREE PATH — a retyped temp worktree path whose directory does
-#    not exist. Write would silently create a phantom tree (3 incidents). Deny
-#    unless the worktree root exists.
-# 2. MAIN-CLONE EDIT — the shared object store is a clone nobody works in, and
-#    its checkout runs behind. An Edit there lands on no branch. Deny edits to
-#    its source trees; the .claude/ tooling tree is left alone.
+# The phantom-worktree-path and main-clone-edit traps are gone: they stopped one builder
+# writing into a tree another used, and every builder now has a tree of its own, cut and
+# installed by the driver (scripts/builder-install.sh).
+#
 # 3. CREDENTIAL IN MEMORY — never store a pasted key/token/secret in a memory
 #    file. Deny when the written content matches a secret shape.
 # 4. NEW TOOLING OUTSIDE THE KIT — a brand-new command or skill written into a
@@ -16,9 +14,8 @@
 #    still has to be moved); creating one does not.
 #
 # The one project fact — where the shared clone lives — comes from the
-# environment or .claude/harness.json. Absent it, trap 2 stands down and the
-# other three keep firing; a guard that goes inert where it cannot read a config
-# is not a guard.
+# environment or the resolver's last-seen value; trap 4 reads it to tell a skill
+# inside the project from one in ~/.claude.
 #
 # Self-test: hooks/block-write-traps.test.sh
 set -euo pipefail
@@ -27,34 +24,8 @@ f=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // ""' 2>/dev/null || 
 [ -z "$f" ] && exit 0
 deny(){ jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'; exit 0; }
 
-# 1. phantom worktree path
-case "$f" in
-  */var/folders/*/T/*|/tmp/*|/private/tmp/*)
-    # The root is the FIRST component under the temp base. The old form
-    # anchored on '/T/' only, so every /tmp worktree path was matched by the
-    # case above and then missed by the regex — the guard was half dead.
-    root=$(printf '%s' "$f" | sed -nE 's#^((/private)?/tmp/[a-z]+-?[0-9]+[^/]*)/.*$#\1#p')
-    [ -n "$root" ] || root=$(printf '%s' "$f" | sed -nE 's#^(.*/T/[a-z]+-?[0-9]+[^/]*)/.*$#\1#p')
-    if [ -n "$root" ] && [ ! -d "$root" ]; then
-      deny "Worktree directory does not exist: $root — the path was retyped, not read from the recorded path file. Command-substitute it from the claim's recorded worktree path, never type the hash."
-    fi ;;
-esac
-
-# 2. main-clone edit. MAIN_REPO is whatever the kit resolved, else the config's
-#    own checkout. Only the source trees: .claude/ holds the tooling and is the
-#    one thing legitimately edited there.
-_cfg="${HARNESS_CFG_PATH:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}/.claude/harness.json}"
 _main="${HARNESS_MAIN_REPO:-}"
 [ -n "$_main" ] || _main=$(cat "$HOME/.claude/.harness-last-main-repo" 2>/dev/null || true)
-if [ -n "$_main" ]; then
-  case "$f" in
-    "$_main"/.claude/*) ;;
-    "$_main"/*)
-      # A worktree is NOT the main clone even though its files share a prefix
-      # nowhere — worktrees live elsewhere — so a plain prefix match is safe.
-      deny "This is the shared main clone (nobody's branch, checkout runs behind), not your worktree. An edit here lands on no branch and can land on a peer's. Edit the same path inside your claim worktree." ;;
-  esac
-fi
 
 # 4. new tooling outside the kit
 case "$f" in

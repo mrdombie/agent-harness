@@ -46,11 +46,8 @@
 #                    starts nothing new and updates at once; it resumes at the floor.
 #                    Then the companion plugins the sheet declares are put in line
 #                    (plugin-ensure.sh), on the same interval and lock
-#   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts and the
-#                    auto-clean runs (disk-guard.sh), until coordinator.disk.resumeAtGb is free
-#   5a. install      while shared-install.sh holds new starts (a moved lock waited past
-#                    coordinator.sharedInstall.drainAfterMin, or it is installing), nothing new starts;
-#                    each tick re-runs its check, and a hold not rewritten for .holdStaleMin holds nothing
+#   5a. disk         under coordinator.disk.stopBelowGb free, nothing new starts (disk-guard.sh),
+#                    until coordinator.disk.resumeAtGb is free
 #   5b. merge lane   merge-lane.sh, when harness.json names merge.method
 #   5c. sheet        the owner writes the order, the floor and every machine's heartbeat;
 #                    a reader posts its heartbeat on the sheet (coordinator-sheet.sh)
@@ -73,7 +70,6 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/coordinator-env.sh" || exit 1
 . "$SELF_DIR/coordinator-waits.sh" || exit 1
 . "$SELF_DIR/coordinator-sheet.sh" || exit 1
-. "$SELF_DIR/shared-install-hold.sh" || exit 1
 . "$SELF_DIR/cap-quick.sh" || exit 1
 . "$SELF_DIR/pr-red.sh" || exit 1
 declare -F issue_status_set >/dev/null || . "$SELF_DIR/issue-status.sh" || exit 1
@@ -931,8 +927,10 @@ cands_left() { # <why> — the candidates no start took, named
   [ -z "$left" ] || say "skip${left}: $1"
 }
 # ---- 5a. disk ---------------------------------------------------------------------
-# Owner call 2026-10-20: "Auto-clean and stop below 30 GB". Held from under stopBelowGb until
-# resumeAtGb is free, so one freed GB does not start a build that fills the disk again.
+# Owner call 2026-10-20: "stop below 30 GB". Held from under stopBelowGb until resumeAtGb is
+# free, so one freed GB does not start a build that fills the disk again. Nothing is cleaned
+# here: each run's exit removes its own tree's install and caches (spawn-claim.sh), and the
+# worktree sweep takes an idle tree's.
 DISK_GUARD="${COORDINATOR_DISK_GUARD:-$SELF_DIR/disk-guard.sh}"
 DISK_HOLD=""; DISK_FREE=""
 DISK_SAID=$(DISK_GUARD_HOLD_FILE="${DISK_GUARD_HOLD_FILE:-$COORD_DIR/disk-hold}" bash "$DISK_GUARD" tick 2>/dev/null) || DISK_HOLD=1
@@ -943,37 +941,6 @@ say "${DISK_SAID:-disk: the guard said nothing}"
 read -r DISK_STOP_GB DISK_RESUME_GB <<<"$(bash "$DISK_GUARD" limits 2>/dev/null)"
 if [ -n "$DISK_HOLD" ]; then
   event "disk-hold:$(swarm_day)" disk-low false "" "" "$DISK_HOLD" || true
-  DISK_CLEAN_LOG="$COORD_DIR/disk-clean.log"
-  clean_args=""; coord_shadow || clean_args="--apply"
-  if [ "${COORDINATOR_DISK_CLEAN:-background}" = inline ]; then
-    DISK_GUARD_HOLD_FILE="${DISK_GUARD_HOLD_FILE:-$COORD_DIR/disk-hold}" bash "$DISK_GUARD" clean $clean_args >> "$DISK_CLEAN_LOG" 2>&1
-    DISK_FREE=$(bash "$DISK_GUARD" free 2>/dev/null) || DISK_FREE=""
-    say "disk: the auto-clean ran$([ -n "$clean_args" ] || echo ' dry') — ${DISK_FREE:-?} GB free after it ($DISK_CLEAN_LOG)"
-  else
-    DISK_GUARD_HOLD_FILE="${DISK_GUARD_HOLD_FILE:-$COORD_DIR/disk-hold}" \
-      bash "$SELF_DIR/../swarm/detach.sh" bash "$DISK_GUARD" clean $clean_args >> "$DISK_CLEAN_LOG" 2>&1 < /dev/null &
-    say "disk: the auto-clean started$([ -n "$clean_args" ] || echo ' dry') in the background (pid $!, $DISK_CLEAN_LOG)"
-  fi
-fi
-
-# The shared install's hold is re-checked every tick it stands, not only by housekeeping:
-# a long housekeeping pass, and a start its lock refused, left it unread for 17 min.
-if [ -f "$(shared_install_hold_file)" ]; then
-  SI_CHECK="${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}"
-  if [ "$SI_CHECK" = off ]; then :
-  elif [ "${COORDINATOR_SHARED_INSTALL_RECHECK:-background}" = inline ]; then
-    bash "$SI_CHECK" >> "$COORD_DIR/shared-install.out" 2>&1 < /dev/null
-    say "shared install: its hold re-checked this tick"
-  else
-    bash "$SELF_DIR/../swarm/detach.sh" bash "$SI_CHECK" >> "$COORD_DIR/shared-install.out" 2>&1 < /dev/null &
-    say "shared install: its hold re-checked in the background (pid $!)"
-  fi
-  if SI_AGE=$(shared_install_hold_stale); then
-    say "shared install: its hold was last written $SI_AGE min ago, past coordinator.sharedInstall.holdStaleMin $(shared_install_hold_stale_min) — nothing is checking it, so it holds nothing"
-  fi
-fi
-if [ -f "$COORD_DIR/shared-install.drain-timeout" ]; then
-  say "shared install: ⚠ shared install drain timed out — new starts are no longer held for it; it installs once the builds on the old lock finish ($COORD_DIR/shared-install.log)"
 fi
 
 if [ -n "$COORD_CAP_BAD" ]; then
@@ -982,10 +949,6 @@ if [ -n "$COORD_CAP_BAD" ]; then
 elif [ -n "$DISK_HOLD" ]; then
   say "spawn: starting nothing new — $DISK_HOLD"
   coord_act_log disk-hold - "$DISK_HOLD"
-  held_view
-elif INSTALL_HOLD=$(shared_install_hold); then
-  say "spawn: starting nothing new — $INSTALL_HOLD"
-  coord_act_log install-hold - "$INSTALL_HOLD"
   held_view
 elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
   say "spawn: held — $held"

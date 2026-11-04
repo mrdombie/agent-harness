@@ -1508,16 +1508,14 @@ chmod +x "$BIN/dgsweep" "$BIN/dgdf" "$BIN/dgclaims" "$BIN/dgclaimrefs"
 export WT_CLAIM_LIST="$BIN/dgclaims" WT_CLAIM_REFS="$BIN/dgclaimrefs"
 dtick() { # <free GB>
   printf '%s\n' "$1" > "$FIX/dg/free"
-  COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" COORDINATOR_DISK_CLEAN=inline \
-  DISK_GUARD_TMP="$FIX/dg/tmp" DISK_GUARD_BUILD_ROOT="$FIX/dg/wt" DISK_GUARD_SCRATCH_ROOT="$FIX/dg/scratch" \
+  COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" \
   DISK_GUARD_SWEEP="$BIN/dgsweep" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick
 }
 fresh; queue 501 502; : > "$FIX/dg/sweep.log"
 out=$(dtick 29)
 want "29 GB free: nothing starts"          "" "$(spawned)"
 want_in "the hold names the disk"          'spawn: starting nothing new — disk low: 29 GB free, under 30 GB' "$out"
-want_in "the auto-clean ran, for real"     '^sweep --apply$' "$(cat "$FIX/dg/sweep.log")"
-want_in "and the tick says so"             'disk: the auto-clean ran — 29 GB free after it' "$out"
+want "the tick cleans nothing itself: each run's exit and the idle sweep do" "" "$(cat "$FIX/dg/sweep.log")"
 want "the live page's file says held, with the free space" "29 true 30 50" "$(jq -r '"\(.disk.freeGb) \(.disk.held) \(.disk.stopBelowGb) \(.disk.resumeAtGb)"' "$C/capacity.json")"
 want "the act is logged"                   "disk-hold" "$(awk -F'\t' '$3=="disk-hold"{print $3}' "$C/actions.log" | head -1)"
 out=$(dtick 31)
@@ -1532,14 +1530,10 @@ want "the live page's file says not held"  "50 false" "$(jq -r '"\(.disk.freeGb)
 fresh; queue 501; : > "$FIX/dg/sweep.log"
 out=$(dtick 40)
 want "40 GB with no hold before: starts" "501" "$(spawned)"
-want "and no auto-clean"                   "" "$(cat "$FIX/dg/sweep.log")"
 fresh; queue 501; : > "$FIX/dg/sweep.log"
 printf '29\n' > "$FIX/dg/free"
-out=$(COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" COORDINATOR_DISK_CLEAN=inline \
-  DISK_GUARD_TMP="$FIX/dg/tmp" DISK_GUARD_BUILD_ROOT="$FIX/dg/wt" DISK_GUARD_SCRATCH_ROOT="$FIX/dg/scratch" \
-  DISK_GUARD_SWEEP="$BIN/dgsweep" tick)
+out=$(COORDINATOR_DISK_GUARD="$HERE/disk-guard.sh" COORDINATOR_DF="$BIN/dgdf" DISK_GUARD_SWEEP="$BIN/dgsweep" tick)
 want_in "shadow: the hold is said"         'starting nothing new — disk low: 29 GB' "$out"
-want_in "and the auto-clean runs dry"      '^sweep $' "$(cat "$FIX/dg/sweep.log")"
 unset WT_CLAIM_LIST WT_CLAIM_REFS
 
 echo "--- every tick probes the live view ---"
@@ -1556,67 +1550,5 @@ bash "$K/scripts/coordinator-tick.sh" >/dev/null 2>&1
 want_in "planted: the copy's tick ran" 'tick: ' "$(cat "$C/tick.log" 2>/dev/null)"
 [ -s "$FIX/watchdog.log" ] && bad "planted: the hook removed and the tick still probed → the test cannot see it" \
   || ok "planted: the hook removed → no probe → red"
-
-echo "--- the shared install's drain hold: nothing new starts while it holds; a stale one holds nothing ---"
-fresh; queue 801 802; mkdir -p "$C"
-printf 'lock abc has waited 31 min; in use: claim-12827-x (#12827, past self-check)\n' > "$C/shared-install-hold"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
-want "held: nothing starts"                "" "$(spawned)"
-want_in "the tick names the hold"          'spawn: starting nothing new — the shared install waits on the builds running here: lock abc has waited 31 min' "$out"
-want "the act is logged"                   "install-hold" "$(awk -F'\t' '$3=="install-hold"{print $3}' "$C/actions.log" | head -1)"
-touch -t 202601010000 "$C/shared-install-hold"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
-want_in "a hold not rewritten for two hours holds nothing" '801' "$(spawned)"
-
-echo "--- a hold has an end: 16 min unwritten holds nothing, the tick re-runs its check, a timed-out drain is on the why ---"
-age_min() { touch -t "$(date -v-"$2"M +%Y%m%d%H%M.%S 2>/dev/null || date -d "-$2 min" +%Y%m%d%H%M.%S)" "$1"; }
-case_tick_stale() {
-  fresh; queue 801 802; mkdir -p "$C"
-  printf 'lock abc has waited 102 min; in use: claim-13447-x (#13447, past repair)\n' > "$C/shared-install-hold"; age_min "$C/shared-install-hold" 16
-  out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off bash "${TICK_SUT:-$T}" 2>&1)
-  R="spawned=$(spawned | cut -d' ' -f1)"
-}
-case_tick_stale
-want "a hold last written 16 min ago blocks no spawn" "spawned=801" "$R"
-want_in "and the tick says it ignored it" 'shared install: its hold was last written 16 min ago, past coordinator.sharedInstall.holdStaleMin 15 — nothing is checking it' "$out"
-# The check the hold waits on: what the real one does once its only run has ended.
-cat > "$BIN/si-check" <<'SH'
-#!/usr/bin/env bash
-echo checked >> "$FIX/si-check.log"; rm -f "$STATE/coordinator/shared-install-hold"
-SH
-chmod +x "$BIN/si-check"
-case_tick_recheck() { # housekeeping inside its interval; a fresh hold stands
-  fresh; queue 801 802; mkdir -p "$C"; : > "$FIX/si-check.log"; touch "$C/housekeeping.stamp"
-  printf 'lock abc has waited 102 min; in use: claim-13447-x (#13447, past repair)\n' > "$C/shared-install-hold"
-  out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL="$BIN/si-check" \
-        COORDINATOR_SHARED_INSTALL_RECHECK=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=60 bash "${TICK_SUT:-$T}" 2>&1)
-  R="checks=$(grep -c . "$FIX/si-check.log") hold=$([ -f "$C/shared-install-hold" ] && echo 1 || echo 0)"
-}
-case_tick_recheck
-want "housekeeping skipped, the tick still re-runs the drain check" "checks=1 hold=0" "$R"
-want_in "housekeeping was skipped this tick" 'housekeeping: ran under 60 min ago' "$out"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
-want_in "with the hold lifted, the next tick starts" '801' "$(spawned)"
-fresh; queue 801; mkdir -p "$C"; printf 'x 1 61\n' > "$C/shared-install.drain-timeout"
-out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 COORDINATOR_SHARED_INSTALL=off tick)
-want_in "a timed-out drain is said every tick" 'shared install: ⚠ shared install drain timed out' "$out"
-why=$(. "$HERE/coordinator-env.sh" && . "$HERE/coordinator-sheet.sh" && coord_tick_why "$C/tick.say" | jq -r "$COORD_WHY_JQ"' {why: .} | why_words')
-want_in "and it is on the sheet heartbeat's why" '^why: .* · ⚠ shared install drain timed out' "$why"
-
-# Plants: each new line out of a copy of the kit, and its case goes red.
-K507="$FIX/kit507"; rm -rf "$K507"; mkdir -p "$K507"; (cd "$HERE/.." && tar --exclude=.git -cf - .) | (cd "$K507" && tar -xf -)
-plant507() { # <label> <exact line> <case> <the result the guard prevents>
-  cp "$HERE/coordinator-tick.sh" "$K507/scripts/coordinator-tick.sh"
-  python3 -I -c 'import sys; p, l = sys.argv[1], sys.argv[2]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, "", 1)); sys.exit(0 if n == 1 else 1)' "$K507/scripts/coordinator-tick.sh" "$2" \
-    || { bad "plant did not land: $1"; return; }
-  TICK_SUT="$K507/scripts/coordinator-tick.sh" "$3"
-  want "planted ($1): the case now fails" "$4" "$R"
-}
-plant507 "the tick's re-check" '    bash "$SI_CHECK" >> "$COORD_DIR/shared-install.out" 2>&1 < /dev/null' case_tick_recheck "checks=0 hold=1"
-cp "$HERE/coordinator-tick.sh" "$K507/scripts/coordinator-tick.sh"
-python3 -I -c 'import sys; p, l = sys.argv[1], sys.argv[2]; s = open(p).read(); n = s.count(l); open(p, "w").write(s.replace(l, "", 1)); sys.exit(0 if n == 1 else 1)' \
-  "$K507/scripts/shared-install-hold.sh" '  ! shared_install_hold_stale >/dev/null || return 1' || bad "plant did not land: the stale limit"
-TICK_SUT="$K507/scripts/coordinator-tick.sh" case_tick_stale
-want "planted (the stale limit): the case now fails" "spawned=" "$R"
 
 suite_end "$FAILED"

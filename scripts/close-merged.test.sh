@@ -248,7 +248,7 @@ hk() { : > "$ORDER"
   COORDINATOR_SHADOW="$1" COORDINATOR_CLOSE_MERGED="$BIN/closemerged" COORDINATOR_RECONCILE="$BIN/reconcile" \
   COORDINATOR_SWEEP="$BIN/sweep" COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" COORDINATOR_JUDGE="$BIN/judge" \
   COORDINATOR_LANE="$BIN/lane" COORDINATOR_KEEP_FRESH="$BIN/keepfresh" COORDINATOR_POLISH_LIST="$BIN/polish" \
-  COORDINATOR_CRITIC_JUDGE="$BIN/critic" COORDINATOR_SHARED_INSTALL=off \
+  COORDINATOR_CRITIC_JUDGE="$BIN/critic" \
   COORDINATOR_NOTIFY_CMD=true COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 bash "$HK" >/dev/null 2>&1
   grep -E '^(closemerged|reconcile) ' "$ORDER" | tr '\n' '|'; }
 want "a live pass closes merged tickets, then reconciles" "closemerged |reconcile --quiet|" "$(hk 0)"

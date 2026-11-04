@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-test for block-write-traps.sh — all four traps.
+# Self-test for block-write-traps.sh — both traps.
 #
 # The old version tested trap 4 only, and ran against the copy in a machine's
 # ~/.claude rather than the one beside it. Both are fixed here: the subject is
@@ -14,16 +14,13 @@ run(){ printf '{"tool_input":{"file_path":%s,"content":%s}}' \
 deny(){ o=$(run "$1" "${3:-x}"); if printf '%s' "$o" | grep -q '"deny"'; then echo "ok   deny  $2"; else echo "FAIL deny  $2"; fail=1; fi; }
 allow(){ o=$(run "$1" "${3:-x}"); if [ -z "$o" ]; then echo "ok   allow $2"; else echo "FAIL allow $2"; fail=1; fi; }
 
-# 1. phantom worktree path
-deny  "/tmp/sh-99999-nope-abcdef/src/a.ts"          "a worktree path that does not exist"
-mkdir -p "$TMP/real"; allow "$TMP/real/a.ts"        "a path whose directory exists"
-
-# 2. main-clone edit — needs MAIN to be set, which is the point
+mkdir -p "$TMP/real"
+# Traps 1 and 2 are gone (each builder has its own tree): a path in a temp dir that does
+# not exist, and a source edit in the shared clone, are both ordinary writes now.
+allow "/tmp/sh-99999-nope-abcdef/src/a.ts"          "a temp path whose directory does not exist"
 MAIN="$TMP/clone"; mkdir -p "$MAIN/src" "$MAIN/.claude"
-deny  "$MAIN/src/a.ts"                              "a source edit in the shared clone"
-allow "$MAIN/.claude/skills/x/SKILL.md"             "the tooling tree in the shared clone"
+allow "$MAIN/src/a.ts"                              "a source edit in the shared clone"
 MAIN=""
-allow "$TMP/clone/src/a.ts"                         "no clone configured — trap 2 stands down"
 
 # 4. new tooling outside the kit
 deny  "$HOME/.claude/commands/brand-new-$$.md"      "a new personal command"

@@ -211,8 +211,8 @@ _last="$HOME/.claude/.harness-last-state-dir"
 unset _last
 
 # Same for the object store. block-write-traps.sh has to know which clone is the
-# shared one to refuse an edit in it, and it runs on every Write in every
-# session — including the ones started outside a checkout.
+# project's, to tell a skill inside it from one born in ~/.claude, and it runs on
+# every Write in every session — including the ones started outside a checkout.
 if [ -n "${MAIN_REPO:-}" ]; then
   _lastm="$HOME/.claude/.harness-last-main-repo"
   [ "$(cat "$_lastm" 2>/dev/null)" = "$MAIN_REPO" ] || { mkdir -p "$HOME/.claude" && printf '%s\n' "$MAIN_REPO" > "$_lastm" 2>/dev/null; }

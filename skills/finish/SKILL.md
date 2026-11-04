@@ -1046,9 +1046,9 @@ git merge origin/develop || { git merge --abort; echo "CONFLICTED — resolve de
 ```
 
 And after ANY drift-retry merge (clean or resolved): re-run the gates before
-pushing — the merged result is new code that has never been gated. Relink the
-install first, because develop can bring a package the worktree was never linked
-with: `bash "$KIT_ROOT/scripts/link-node-modules.sh" --if-stale "$MAIN_REPO" "$PWD"`
+pushing — the merged result is new code that has never been gated. Rebuild the
+worktree's own install first, because develop can bring a package it was never
+installed with: `bash "$KIT_ROOT/scripts/builder-install.sh" --if-stale "$PWD"`
 (a no-op when the lockfile and package.json files have not moved).
 
 (Note: `gh pr merge` will print a "failed to run git: 'develop' is already used by worktree" warning when run inside a worktree. The merge itself happens server-side and succeeds; the warning is gh attempting a local checkout it doesn't need. Verify with `gh pr view "$PR_NUMBER" --json state -q '.state'` — should be `MERGED`.)
@@ -1197,6 +1197,7 @@ The ticket is **shipped** once Steps 6–7d are done: merged to develop, issue c
 # #11167 — stop the dev servers this ticket started, BEFORE the worktree goes.
 # Nothing else ever did: on 2026-09-30 one Mac carried 16 of them, up to six
 # days old, and swap sat at 44 GB of 45. Only servers inside THIS worktree.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/builder-dev.sh" stop "$WORKTREE" || true
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/stop-dev-servers.sh" --worktree "$WORKTREE" || true
 cd "$REPO_PATH"
 # Build caches go first: if the remove below refuses, the worktree is kept and its ~4 GB of build output must not be.
