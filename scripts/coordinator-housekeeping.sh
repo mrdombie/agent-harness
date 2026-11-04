@@ -133,6 +133,13 @@ elif [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; t
   if coord_shadow; then bash "$WT_SWEEP" >> "$COORD_LOG" 2>&1 || say "worktree sweep (dry) exited $?"
   else bash "$WT_SWEEP" --apply >> "$COORD_LOG" 2>&1 || say "worktree sweep exited $?"; fi
 fi
+# A rebuild's set-aside bundles: the newest per open ticket, none once it closes. One GitHub
+# read, and only when a bundle exists; while GitHub waits, only the older copies go.
+PRUNE_BUNDLES="${COORDINATOR_PRUNE_BUNDLES:-$SELF_DIR/prune-set-aside-bundles.sh}"
+_pb=""; [ -z "$GH_WAIT" ] || _pb=--offline
+if [ "$PRUNE_BUNDLES" = off ]; then :
+elif coord_shadow; then bash "$PRUNE_BUNDLES" --dry-run $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles (dry) exited $?"
+else bash "$PRUNE_BUNDLES" $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles exited $?"; fi
 
 # ---- 7. disk -----------------------------------------------------------------
 CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"

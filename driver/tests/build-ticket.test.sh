@@ -789,6 +789,53 @@ want "without the note, the tree stays"      "yes" "$([ -d "$FIX/left441" ] && e
 want "and the record is resumed"             "$FIX/left441" "$(driver_state_get 441 worktree)"
 want "nothing is set aside"                  "0" "$(ls -d "$STATE/driver/441.set-aside-"* 2>/dev/null | grep -c .)"
 
+echo "--- the set-aside push skips the project's pre-push: a red tree is still kept on origin (#18257) ---"
+# The project's pre-push ran its whole push suite on the tree being rebuilt, red by definition,
+# so the push was refused and every set-aside fell to a bundle: 149 on one Mac.
+PREPUSH="$(git -C "$REPO" rev-parse --path-format=absolute --git-path hooks)/pre-push"
+printf '#!/bin/sh\necho "the push suite is red" >&2\nexit 1\n' > "$PREPUSH"; chmod +x "$PREPUSH"
+reset_fakes; fresh_start; leftover 443
+out=$(bt 443 --brief "$FIX/brief-rb.md"); rc=$?
+want "it runs"                               "0" "$rc"
+want "its commit is kept on origin"          "$OLDSHA" "$(git -C "$REPO" ls-remote origin 'refs/stale/443/local-*' | cut -f1)"
+want "and no bundle is written"              "0" "$(ls "$STATE/driver/443".local-*.bundle 2>/dev/null | grep -c .)"
+rm -f "$PREPUSH"
+
+echo "--- with origin out of reach the bundle holds only what $INTEGRATION_BRANCH lacks, and replaces the older ones (#18257) ---"
+# A trunk with weight in it: a whole-history bundle carries this blob, a range bundle does not.
+git -C "$REPO" checkout -q develop
+head -c 2000000 /dev/urandom > "$REPO/heavy.bin"; git -C "$REPO" add heavy.bin; git -C "$REPO" commit -qm "chore: a heavy trunk"
+git -C "$REPO" push -q origin develop
+reset_fakes; fresh_start; leftover 442
+printf 'old\n' > "$STATE/driver/442.local-1.bundle"; printf 'old\n' > "$STATE/driver/442.local-2.bundle"
+printf 'other\n' > "$STATE/driver/4420.local-1.bundle"
+git -C "$REPO" remote set-url origin "$FIX/nowhere"
+out=$(DRIVER_KEPT_TRIES=1 DRIVER_KEPT_RETRY_SEC=0 bt 442 --brief "$FIX/brief-rb.md"); rc=$?
+git -C "$REPO" remote set-url origin "$FIX/origin"
+want "it runs"                               "0" "$rc"
+B=$(ls "$STATE/driver/442".local-*.bundle 2>/dev/null)
+want "one bundle is left for the ticket"     "1" "$(printf '%s\n' "$B" | grep -c .)"
+want_not_in "and it is the new one"          'local-[12]\.bundle' "$B"
+want "another ticket's bundle is untouched"  "yes" "$([ -f "$STATE/driver/4420.local-1.bundle" ] && echo yes || echo no)"
+want_in "it needs the trunk, so it is a range" 'requires' "$(git -C "$REPO" bundle verify "$B" 2>&1)"
+BSIZE=$(wc -c < "$B" | tr -d ' ')
+want "it is small: under 100 kB (the trunk alone is 2 MB)" "yes" "$([ "$BSIZE" -lt 100000 ] && echo yes || echo no)"
+git clone -q "$FIX/origin" "$FIX/restore442"
+git -C "$FIX/restore442" fetch -q "$B" "HEAD:refs/heads/restored" 2>/dev/null
+want "a clone of the trunk restores the commit from it" "$OLDSHA" "$(git -C "$FIX/restore442" rev-parse -q --verify refs/heads/restored)"
+want_in "and the run says where it went"     'could not go to origin' "$out"
+
+echo "--- a tree with nothing the trunk lacks writes no bundle ---"
+reset_fakes; fresh_start
+git -C "$REPO" worktree add -q "$FIX/left444" -b "tkt-444/old" develop
+driver_state_init 444 --worktree "$FIX/left444" --branch "tkt-444/old"; driver_state_done 444 start
+git -C "$REPO" remote set-url origin "$FIX/nowhere"
+out=$(DRIVER_KEPT_TRIES=1 DRIVER_KEPT_RETRY_SEC=0 bt 444 --brief "$FIX/brief-rb.md"); rc=$?
+git -C "$REPO" remote set-url origin "$FIX/origin"
+want "it runs"                               "0" "$rc"
+want "no bundle"                             "0" "$(ls "$STATE/driver/444".local-*.bundle 2>/dev/null | grep -c .)"
+want "the state is set aside"                "1" "$(ls -d "$STATE/driver/444.set-aside-"* 2>/dev/null | grep -c .)"
+
 echo "--- a record that says it shipped, with no open PR and none merged, is a fresh build, never a success ---"
 # 15735 (2026-10-31): its PR was closed to rebuild fresh, its record kept every step done,
 # and each run said "nothing left to do" and exited 0 in a minute — 22 times in a day.

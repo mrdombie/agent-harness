@@ -42,6 +42,7 @@ set -uo pipefail
 DRIVER_HOME_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DRIVER_HOME_SELF/driver-env.sh" || exit 1
 . "$DRIVER_HOME_SELF/state.sh" || exit 1
+. "$DRIVER_HOME_SELF/git-actions.sh" || exit 1   # driver_keep_ref, for the rebuild set-aside
 # The order before any --steps: only a run walking it may switch to the quick order.
 DRIVER_DEFAULT_ORDER="$DRIVER_STEPS"
 
@@ -141,17 +142,42 @@ fi
 # origin at refs/stale/<t>/local-<host>-<epoch>, else as a bundle beside the state, never
 # deleted unkept), its driver state is moved aside, and start cuts a new tree from the trunk
 # with nothing restored (DRIVER_FRESH).
+#
+# THE PUSH SKIPS THE PROJECT'S PRE-PUSH (driver_keep_ref). A plain push ran the project's
+# whole push suite on a tree being rebuilt because it could not merge, which is red by
+# definition, so it was refused and every set-aside fell to a bundle: 149 on one Mac.
+# THE BUNDLE IS ONLY WHAT THE TRUNK LACKS. `bundle create … HEAD` carried the whole history,
+# about 1.7 GB each, 238 GB in all (2026-11-04); `<trunk>..HEAD` is kilobytes, restored with
+# `git fetch <file> HEAD:<branch>` from any clone with the trunk. A newer bundle replaces
+# the ticket's older ones.
+_driver_set_aside_bundle() { # <ticket> <tree> <file> — prints the file kept, or nothing when the trunk has every commit
+  local t="$1" wt="$2" f="$3" trunk="" r n old
+  for r in "origin/$INTEGRATION_BRANCH" "$INTEGRATION_BRANCH"; do
+    git -C "$wt" rev-parse --verify -q "$r^{commit}" >/dev/null 2>&1 && { trunk="$r"; break; }
+  done
+  if [ -n "$trunk" ]; then
+    n=$(git -C "$wt" rev-list --count "$trunk..HEAD" 2>/dev/null)
+    case "$n" in 0) return 0 ;; ''|*[!0-9]*) trunk="" ;; esac
+  fi
+  if [ -n "$trunk" ]; then git -C "$wt" bundle create "$f" "$trunk..HEAD" >/dev/null 2>&1 || { rm -f "$f"; return 1; }
+  else git -C "$wt" bundle create "$f" HEAD >/dev/null 2>&1 || { rm -f "$f"; return 1; }; fi   # no trunk to subtract
+  for old in "$DRIVER_DIR/$t".local-*.bundle; do
+    [ -f "$old" ] && [ "$old" != "$f" ] && rm -f "$old"
+  done
+  printf '%s' "$f"
+}
 driver_rebuild_set_aside() { # <ticket>
-  local t="$1" d wt br stamp ref kept="" host
+  local t="$1" d wt br stamp kept="" host f
   d=$(driver_state_dir "$t"); [ -d "$d" ] || { export DRIVER_FRESH=1; return 0; }
   stamp=$(date +%s); host=$(hostname -s 2>/dev/null | tr -c 'A-Za-z0-9\n-' '-' || echo host)
   wt=$(driver_state_get "$t" worktree); br=$(driver_state_get "$t" branch)
   if [ -n "$wt" ] && [ -d "$wt" ]; then
-    ref="refs/stale/$t/local-$host-$stamp"
-    if git -C "$wt" push -q origin "HEAD:$ref" >/dev/null 2>&1; then kept="origin $ref"
-    elif git -C "$wt" bundle create "$d.local-$stamp.bundle" HEAD >/dev/null 2>&1; then kept="$d.local-$stamp.bundle"
+    if driver_keep_ref "$t" "$wt" HEAD "local-$host-$stamp"; then kept="origin $DRIVER_KEPT_REF"
+    elif f=$(_driver_set_aside_bundle "$t" "$wt" "$d.local-$stamp.bundle"); then
+      kept="${f:-nothing: $INTEGRATION_BRANCH has every commit}"
+      driver_say "   rebuild: #$t's commits could not go to origin (${DRIVER_KEPT_WHY:-no reason given}), so they are kept at $kept"
     else
-      driver_say "✋ rebuild: #$t's local worktree $wt could not be kept (no push, no bundle), so it is left as it is and the run stops"
+      driver_say "✋ rebuild: #$t's local worktree $wt could not be kept (${DRIVER_KEPT_WHY:-no push}; no bundle), so it is left as it is and the run stops"
       return 1
     fi
     git -C "$MAIN_REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
