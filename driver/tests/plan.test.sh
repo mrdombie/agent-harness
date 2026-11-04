@@ -238,4 +238,32 @@ want_in "the change is posted on the ticket as a PM step" 'PM step after merge' 
 want_in "and kept for the PR body" 'required check' "$(driver_state_get 130 pm_after_merge)"
 want_in "and the run says so" 'handed to the PM' "$out"
 
+echo "--- an approved picture not byte-identical in .design/ refuses the plan by name, on the picture route only ---"
+CFG="$REPO/.claude/harness.json"
+jq '.design = ((.design // {}) + {"baselineRoute": {"enabled": true}})' "$CFG" > "$FIX/cfg.t" && mv "$FIX/cfg.t" "$CFG"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "the baseline route is on" >/dev/null
+HSHA=$(printf '<html>the holly live picture</html>\n' | shasum -a 256 | awk '{print $1}')
+holly_ticket() { # <n> <labels-csv> — an approval of holly-live-mock.html, and a tree holding only holly-mock.html
+  local labels; labels=$(jq -nc --arg l "status:claimed${2:+,$2}" '$l | split(",") | map({name:.})')
+  jq -n --argjson n "$1" --argjson l "$labels" --arg c "**Picture for any machine** — \`holly-live-mock.html\`, approved for #$1
+
+<!-- picture-approve: sha256=$HSHA file=holly-live-mock.html gist= -->" \
+    '{number:$n, state:"OPEN", title:"Ticket \($n)", labels:$l, body:"spec", comments:[{body:$c}]}' > "$FIX/gh/issue-$1.json"
+  git -C "$REPO" worktree add -q -b "tkt-$1" "$FIX/wt-$1" develop 2>/dev/null
+  mkdir -p "$FIX/wt-$1/.design"; printf 'an older holly\n' > "$FIX/wt-$1/.design/holly-mock.html"
+  git -C "$FIX/wt-$1" add .design && git -C "$FIX/wt-$1" commit -qm "an older holly" >/dev/null
+  driver_state_init "$1" --worktree "$FIX/wt-$1"
+  fix_ai plan "$(jq -nc '{step:"plan",skills:["superpowers:writing-plans"],status:"planned",designSource:"approved-picture",designRef:".design/holly-mock.html",premise:{verdict:"still-true",evidence:"a.sh:1"},tasks:[{title:"t",files:[{path:"a.sh",action:"modify"}],tests:[{file:"a.test.sh",behaviour:"b",redWhen:"r"}]}]}')" superpowers:writing-plans
+}
+holly_ticket 171 screen:redesign; : > "$GH_LOG"
+rc=0; out=$(driver_step_plan 171 2>&1) || rc=$?
+want "a redesign bound to a picture .design/ lacks is refused" "$DRIVER_E_REFUSED" "$rc"
+want_in "  by name"                                   "✋ plan: approved picture ${HSHA:0:12} is not in .design/" "$out"
+want_in "  the park note names the file"              'holly-live-mock.html' "$(driver_state_get 171 park_note)"
+want_not_in "  no plan is posted"                     'issue comment 171' "$(cat "$GH_LOG")"
+want_not_in "  and the same-named mock is not recorded" 'holly-mock' "$(driver_state_get 171 design_ref)"
+holly_ticket 172 ""
+rc=0; out=$(driver_step_plan 172 2>&1) || rc=$?
+want "an existing screen binds no picture, so it is not refused" "0" "$rc"
+
 suite_end "$FAILED"

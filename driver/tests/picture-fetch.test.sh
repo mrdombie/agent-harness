@@ -150,7 +150,8 @@ plan_answer ".design/here-mock.html"
 rc=0; driver_step_plan 704 >/dev/null 2>&1 || rc=$?
 want "it goes ahead" "0" "$rc"
 want "the ref is unchanged" ".design/here-mock.html" "$(driver_state_get 704 design_ref)"
-want_not_in "and no comment was read for it" 'issue view 704 .*comments' "$(cat "$GH_LOG")"
+want_not_in "and nothing is fetched for it" 'gist view' "$(cat "$GH_LOG")"
+want "  the tree file is left as it was" "here" "$(cat "$wt/.design/here-mock.html")"
 
 echo "--- a URL is not a local path: nothing to fetch ---"
 wt=$(fresh_tree 705); fixture_path wt "$FIX"
@@ -160,5 +161,96 @@ plan_answer "https://claude.ai/artifact/desk-v3 — approved on #705"
 rc=0; driver_step_plan 705 >/dev/null 2>&1 || rc=$?
 want "it goes ahead" "0" "$rc"
 want "the ref is unchanged" "https://claude.ai/artifact/desk-v3 — approved on #705" "$(driver_state_get 705 design_ref)"
+
+echo "--- an approval binds by its bytes: every approved picture must be byte-identical in .design/ ---"
+# Holly drifted: holly-live (329bcd0a9578…) was approved and never committed, while every
+# build read .design/holly-mock.html, a same-named mock with other bytes.
+PF="$KIT_ROOT/scripts/picture-fetch.sh"
+approved() { # <file> <sha> [ticket] — an approval with no copy any machine can fetch
+  printf '**Picture for any machine** — `%s`, approved for #%s\n\n- Raw: https://gist.githubusercontent.com/dom/none/raw/%s\n\n<!-- picture-approve: sha256=%s file=%s gist= -->\n' "$1" "${3:-0}" "nope-$1" "$2" "$1"
+}
+fetch_in() { # <ticket> <ref> <tree> — runs the fetcher, sets PRC, POUT and PERR
+  PERR=$(mktemp "$FIX/pf-err.XXXXXX"); PRC=0
+  POUT=$(bash "$PF" "$1" "$2" "$3" 2>"$PERR") || PRC=$?
+  PERR=$(cat "$PERR")
+}
+printf '<html>the holly live picture</html>\n' > "$FIX/holly-live.html"
+HSHA=$(shasum -a 256 "$FIX/holly-live.html" | awk '{print $1}')
+
+wt=$(fresh_tree 801); mkdir -p "$wt/.design"; printf 'an older holly\n' > "$wt/.design/holly-mock.html"
+issue_with 801 "$(approved holly-live-mock.html "$HSHA" 801)"
+fetch_in 801 ".design/holly-mock.html" "$wt"
+want "an approval never committed is refused, exit 4"  "4" "$PRC"
+want_in "  naming its sha"                              "approved picture ${HSHA:0:12} is not in .design/" "$PERR"
+want_in "  and the file, and how to fix it"             'holly-live-mock.html, approved on #801.*commit it byte-identical as .design/holly-live-mock.html' "$PERR"
+want "  nothing is written into the tree"               "holly-mock.html" "$(ls "$wt/.design")"
+
+wt=$(fresh_tree 802); mkdir -p "$wt/.design"; printf 'a same-named desk\n' > "$wt/.design/desk-mock.html"
+issue_with 802 "$(published "$SHA")"
+fetch_in 802 ".design/desk-mock.html" "$wt"
+want "a same-named file with other bytes is refused, exit 4" "4" "$PRC"
+want_in "  naming both shas"                           "approved picture ${SHA:0:12} is not in .design/ .*desk-mock.html is a different file \(sha $(printf 'a same-named desk\n' | shasum -a 256 | cut -c1-12)\)" "$PERR"
+want "  the tree file is left as it was"               "a same-named desk" "$(cat "$wt/.design/desk-mock.html")"
+
+wt=$(fresh_tree 803); mkdir -p "$wt/.design"; cp "$FIX/gist/desk-mock.html" "$wt/.design/desk-mock.html"
+issue_with 803 "$(published "$SHA")"
+fetch_in 803 ".design/desk-mock.html" "$wt"
+want "a byte-identical file passes"                    "0 .design/desk-mock.html" "$PRC $POUT"
+
+wt=$(fresh_tree 804); mkdir -p "$wt/.design"; printf 'whatever\n' > "$wt/.design/desk-mock.html"
+issue_with 804 "nothing about pictures"
+fetch_in 804 ".design/desk-mock.html" "$wt"
+want "no approval at all passes, ref unchanged"        "0 .design/desk-mock.html" "$PRC $POUT"
+
+wt=$(fresh_tree 805); mkdir -p "$wt/.design"; cp "$FIX/gist/desk-mock.html" "$wt/.design/x-mock.html"
+issue_with 805 "$(published "$SHA")"
+fetch_in 805 "https://gist.github.com/dom/abc123 — approved on #805" "$wt"
+want "a URL ref whose approval is in .design/ under any name passes" "0" "$PRC"
+rm "$wt/.design/x-mock.html"
+fetch_in 805 "https://gist.github.com/dom/abc123 — approved on #805" "$wt"
+want "  and with .design/ lacking it, exit 4"          "4" "$PRC"
+
+wt=$(fresh_tree 807); mkdir -p "$wt/.design"; printf 'an older holly\n' > "$wt/.design/holly-mock.html"; issue_with 806 "$(approved holly-live-mock.html "$HSHA" 806)"; part_of 807 806
+fetch_in 807 ".design/holly-mock.html" "$wt"
+want "a part is held to its parent's approval, exit 4" "4" "$PRC"
+want_in "  naming the parent it was read on"           "approved on #806" "$PERR"
+
+wt=$(fresh_tree 808); mkdir -p "$wt/.design"; cp "$FIX/holly-live.html" "$wt/.design/holly-live-mock.html"
+issue_with 808 "$(approved holly-live-mock.html "$SHA" 808)" "$(approved holly-live-mock.html "$HSHA" 808)"
+fetch_in 808 ".design/holly-live-mock.html" "$wt"
+want "only the newest approval per file binds"        "0" "$PRC"
+issue_with 808 "$(approved holly-live-mock.html "$HSHA" 808)" "$(approved holly-live-mock.html "$SHA" 808)"
+fetch_in 808 ".design/holly-live-mock.html" "$wt"
+want "  and a superseded picture in the tree is refused" "4" "$PRC"
+
+echo "--- the plan step refuses by name on exit 4, and spends nothing on a miss count ---"
+wt=$(fresh_tree 809); mkdir -p "$wt/.design"; printf 'an older holly\n' > "$wt/.design/holly-mock.html"
+git -C "$wt" add .design && git -C "$wt" commit -qm "an older holly" >/dev/null
+issue_with 809 "$(approved holly-live-mock.html "$HSHA" 809)"
+driver_state_init 809 --worktree "$wt"; plan_answer ".design/holly-mock.html"
+: > "$GH_LOG"
+rc=0; out=$(driver_step_plan 809 2>&1) || rc=$?
+want "it is refused"                                   "$DRIVER_E_REFUSED" "$rc"
+want_in "  by name"                                    "✋ plan: approved picture ${HSHA:0:12} is not in .design/" "$out"
+want_in "  the park note names the file and the sha"   "${HSHA:0:12}.*holly-live-mock.html" "$(driver_state_get 809 park_note)"
+want "  the hold is the PM's"                          "pm" "$(driver_state_get 809 park_cause)"
+want "  it is not a reachability miss"                 "0" "$(driver_state_count 809 picture_miss)"
+want_not_in "  no plan is posted"                      'issue comment 809' "$(cat "$GH_LOG")"
+cp "$FIX/holly-live.html" "$wt/.design/holly-live-mock.html"
+git -C "$wt" add .design && git -C "$wt" commit -qm "the approved holly" >/dev/null
+driver_state_set 809 park_cause ""
+rc=0; driver_step_plan 809 >/dev/null 2>&1 || rc=$?
+want "with the approved bytes committed, it goes ahead" "0" "$rc"
+want_in "  and the plan is posted"                     'issue comment 809' "$(cat "$GH_LOG")"
+
+echo "--- the check before planning refuses on exit 4 too, before a plan is paid for ---"
+wt=$(fresh_tree 810); mkdir -p "$wt/.design"; printf 'an older holly\n' > "$wt/.design/holly-mock.html"
+issue_with 810 "$(approved holly-live-mock.html "$HSHA" 810)"
+driver_state_init 810 --worktree "$wt"; driver_state_set 810 picture_miss_ref ".design/holly-mock.html"
+plan_answer ".design/holly-mock.html"; : > "$CLAUDE_LOG"
+rc=0; out=$(driver_step_plan 810 2>&1) || rc=$?
+want "it is refused before planning"                   "$DRIVER_E_REFUSED" "$rc"
+want "  no plan was paid for"                          "" "$(cat "$CLAUDE_LOG")"
+want_in "  and it says so"                             "approved picture ${HSHA:0:12} is not in .design/.*nothing spent" "$out"
 
 suite_end "$FAILED"

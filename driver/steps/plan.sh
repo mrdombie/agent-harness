@@ -303,6 +303,16 @@ _driver_plan_picture_miss() {
   driver_state_set "$t" park_note "the approved picture is not readable on this machine: $why"
   return "$DRIVER_E_REQUEUE"
 }
+# _driver_plan_picture_absent <ticket> <reason> — an approval binding the ticket has no
+# byte-identical file in .design/ (picture-fetch exit 4). Refused by name, never a miss:
+# builds read .design/, and a same-named mock that is not the approved picture drifted Holly.
+_driver_plan_picture_absent() {
+  local t="$1" why="$2"
+  driver_say "✋ plan: $why"
+  driver_state_set "$t" park_note "$why. Commit the approved file byte-identical under .design/ (or post it with scripts/picture-approve.sh and name it as designRef), then clear \`$DRIVER_PM_LABEL\`."
+  driver_state_set "$t" park_cause pm
+  return "$DRIVER_E_REFUSED"
+}
 _driver_plan_picture_found() { # <ticket> — the misses were not in a row
   [ -z "$(driver_state_get "$1" picture_miss_ref)" ] && [ "$(driver_state_count "$1" picture_miss)" = 0 ] && return 0
   _driver_state_edit "$1" '.counters.picture_miss = 0 | .picture_miss_ref = ""'
@@ -322,6 +332,9 @@ driver_step_plan() { # <ticket>
     bash "$KIT_ROOT/scripts/picture-fetch.sh" "$t" "$pref" "$pwt" >/dev/null 2>"$perr" || prc=$?
     if [ "$prc" -eq 3 ]; then
       _driver_plan_picture_miss "$t" "$pref" "$(tail -1 "$perr" 2>/dev/null | sed 's/^picture-fetch: //') (checked before planning; nothing spent)"
+      return $?
+    elif [ "$prc" -eq 4 ]; then
+      _driver_plan_picture_absent "$t" "$(tail -1 "$perr" 2>/dev/null | sed 's/^picture-fetch: //') (checked before planning; nothing spent)"
       return $?
     fi
     [ "$prc" -ne 0 ] || driver_say "   plan: the approved picture the last run missed is readable now — planning"
@@ -390,6 +403,9 @@ driver_step_plan() { # <ticket>
     dout=$(bash "$KIT_ROOT/scripts/picture-fetch.sh" "$t" "$dref" "$dwt" 2>"$derr") || drc=$?
     if [ "$drc" -eq 3 ]; then
       _driver_plan_picture_miss "$t" "$dref" "$(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //')"
+      return $?
+    elif [ "$drc" -eq 4 ]; then
+      _driver_plan_picture_absent "$t" "$(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //')"
       return $?
     elif [ "$drc" -ne 0 ]; then
       driver_say "⏳ plan: the approved picture could not be read on this machine — $(tail -1 "$derr" 2>/dev/null | sed 's/^picture-fetch: //'). Back on the queue, not parked."
