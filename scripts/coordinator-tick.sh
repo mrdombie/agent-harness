@@ -198,6 +198,8 @@ for ended in "$RUNS_DIR"/*.ended; do
   say "ended: $rid exit $code — ${last:-no result line}"
   case "$code" in
     ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}") ;;
+    # A claim lost to another machine's coordinator is the race's, not the ticket's.
+    "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
     *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
   esac
   # Its last word is the newest on the ticket: a wait it ends on replaces an older one.
