@@ -55,11 +55,6 @@
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/no-broad-kill.sh",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/no-repo-settings-write.sh",
             "timeout": 10
           },
@@ -131,18 +126,6 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/usage-limit.sh",
             "timeout": 15
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/hooks/one-preview-per-agent.sh",
-            "timeout": 10
           }
         ]
       }

@@ -117,7 +117,7 @@ G -C "$STORE" fetch -q origin develop
 
 # The spawner under test, with a reconcile stub beside it so the detached path
 # cannot reach the real one.
-cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-mcp.sh" \
+cp "$SUT_DIR/spawn-claim.sh" "$SUT_DIR/toolkit-env.sh" "$SUT_DIR/stop-dev-servers.sh" "$SUT_DIR/builder-dev.sh" "$SUT_DIR/builder-mcp.sh" \
    "$SUT_DIR/worktree-cache.sh" "$SUT_DIR/worktree-lib.sh" "$SUT_DIR/owner-question.sh" "$SUT_DIR/gh-batch.sh" "$SUT_DIR/branch-ticket.sh" "$SUT_DIR/issue-status.sh" "$SUT_DIR/release-checks.sh" "$SUT/"
 mkdir -p "$SB/shared"; cp "$SUT_DIR/../shared/signoff-last.md" "$SB/shared/"
 # A claim-lock stub: the claim list the post-exit stop falls back to.
@@ -383,6 +383,7 @@ export SPAWN_TEST_SRVPIDS="$OUT/srvpids" SPAWN_TEST_RUNID="$OUT/runid"
 printf '#!/usr/bin/env bash\necho "[]"\n' > "$SB/no-claims"; printf '#!/usr/bin/env bash\n:\n' > "$SB/no-claim-refs"
 chmod +x "$SB/no-claims" "$SB/no-claim-refs"
 export WT_CLAIM_LIST="$SB/no-claims" WT_CLAIM_REFS="$SB/no-claim-refs"
+export BUILDER_DEV_DIR="$SB/dev-servers" BUILDER_DEV_BASE_PORT=$(( 20000 + RANDOM % 20000 ))
 
 # 8a. the run's noted worktree: its server stops, a sibling worktree's does not.
 TKT=4801 SPAWN_TEST_SERVE="$SB/wt-801 $SB/wt-802" SPAWN_TEST_NOTE="$SB/wt-801" spawn_and_wait
@@ -408,6 +409,16 @@ mkdir -p "$SB/wt-801/apps/web/.next"; printf 'x\n' > "$SB/wt-801/apps/web/.next/
 TKT=4805 SPAWN_TEST_EXIT=3 SPAWN_TEST_NOTE="$SB/wt-801" spawn_and_wait
 [ ! -e "$SB/wt-801/apps/web/.next" ] && ok "an agent that crashed still has its build cache removed" \
   || bad "a crashed agent's worktree kept its build cache"
+
+# 8a''. the dev server the driver started in the run's tree goes with the run, group and all.
+if command -v node >/dev/null 2>&1; then
+  BUILDER_DEV_CMD='sleep 300 & exec sleep 300' bash "$SUT/builder-dev.sh" start "$SB/wt-801" >/dev/null 2>&1
+  g=$(bash "$SUT/builder-dev.sh" list 2>/dev/null | cut -f2)
+  TKT=4806 SPAWN_TEST_NOTE="$SB/wt-801" spawn_and_wait
+  if [ -z "$g" ]; then bad "fixture: the driver's dev server never started"
+  elif kill -0 -- "-$g" 2>/dev/null; then bad "the driver's dev server in the run's tree outlived the run"; kill -KILL -- "-$g" 2>/dev/null
+  else ok "the run's exit stops the driver's dev server in its tree, children included"; fi
+fi
 
 # 8b. nothing recorded: nothing stopped, and the log says why.
 TKT=4802 SPAWN_TEST_SERVE="$SB/wt-801" spawn_and_wait

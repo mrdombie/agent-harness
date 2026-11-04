@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The 7 hookify rules that BLOCK, re-implemented as a settings.json hook.
+# The hookify rules that BLOCK, re-implemented as a settings.json hook.
 #
 # WHY: hookify loads rules with a relative glob on .claude/hookify.*.local.md,
 # so every rule is inert unless the session started inside a checkout of the repo — no
@@ -9,9 +9,12 @@
 #
 # Mirrors: block-claim-tampering, block-commit-through-conflict (both halves —
 # `git commit --no-verify` is blocked as of 2026-09-27, because it skips the
-# secret scan and not just formatting), block-destructive-git,
-# block-git-add-all, block-npm-install-in-worktree, no-handrolled-pr,
-# no-handrolled-ticket-branch.
+# secret scan and not just formatting), no-handrolled-pr, no-handrolled-ticket-branch.
+#
+# block-destructive-git (reset --hard, stash pop, clean -f), block-git-add-all and
+# block-npm-install-in-worktree are gone: each guarded a resource builders shared — one
+# worktree, a node_modules symlink, one install — and every builder now has its own tree
+# and its own install (scripts/builder-install.sh).
 #
 # Every rule is anchored to command position (start of the text, or after
 # ; & |) so a rule name quoted inside a heredoc or a commit message does
@@ -20,7 +23,7 @@
 # Best effort, BEFORE set -e: this hook runs from ~/.claude/settings.json in
 # sessions that never enter a checkout, and going inert there is the exact bug
 # it was written to fix — so a missing resolver degrades the two rules that
-# need a project fact, and the other five keep firing.
+# need a project fact, and the others keep firing.
 # Two facts, one jq read, no resolver: sourcing toolkit-env.sh cost ~370 ms on
 # EVERY Bash tool call (review of PR #10362). Outside a checkout there is no
 # config, and that is the case this hook exists for — so the rules below carry a
@@ -106,7 +109,7 @@ GIT="git($S+$GITOPT)*$S+"
 claims_re='/claims/[0-9]+|\.lock'; [ -n "${STATE_DIR:-}" ] && claims_re="$(basename "$STATE_DIR")/claims|/claims/[0-9]+|\.lock"
 has "${START}rm$S+(-[a-zA-Z]+$S+)*[^;&|]*($claims_re)" && deny "Hand-releasing a claim. Use claim-lock.sh release <ticket>: it deletes refs/claims/<n> on origin and updates the labels."
 has "${START}${GIT}[^;&|]*push$S+[^;&|]*(--delete|:)$S*refs/claims" && deny "Deleting refs/claims/<n> by hand. Use claim-lock.sh release <ticket>."
-has "${START}${GIT}commit[^;&|]*$S(-[a-zA-Z]*a[a-zA-Z]*|--all)$EOW" && deny "git commit -a / --all stages everything, including conflict markers mid-merge and the node_modules symlink. Stage files by name."
+has "${START}${GIT}commit[^;&|]*$S(-[a-zA-Z]*a[a-zA-Z]*|--all)$EOW" && deny "git commit -a / --all stages everything, including conflict markers mid-merge. Stage files by name."
 # `git commit --no-verify` was allowed on the stated grounds that it "only skips
 # formatting". That was measured on 2026-09-27 and is false: against
 # .husky/pre-commit it skips the SECRET SCAN (gitleaks protect --staged), the
@@ -117,13 +120,6 @@ if has "${START}${GIT}commit[^;&|]*$S(--no-verify|-[a-zA-Z]*n[a-zA-Z]*)$EOW" \
    && ! hasF "no-verify-ok:" && ! hasF "# via /finish"; then
   deny "git commit --no-verify skips the SECRET SCAN (gitleaks protect --staged), the .deploy-trigger stamp and commitlint — not just formatting. Commit without it. If a commit genuinely must bypass them (a rendered-evidence commit that touches no source), append '# no-verify-ok: <reason>'."
 fi
-has "${START}${GIT}(reset$S+--hard|stash$S+pop|clean$S+-[a-zA-Z]*[fd])" && deny "reset --hard / stash pop / clean -f destroys a peer agent's uncommitted work in a shared worktree. Branch a backup first (git branch backup/<n>) and ask."
-has "${START}${GIT}add$S+(-A|--all|\.)$EOW" && deny "git add -A / . stages the node_modules symlink in a worktree. Add files by path."
-# --package-lock-only rewrites package-lock.json and never reads or writes
-# node_modules, so it cannot break a peer's linked install. It is the one way to
-# repair a dependency bot's PR whose lockfile it failed to refresh (2026-10-01:
-# two security updates sat red behind this rule with no other way through).
-if has "${START}(sudo$S+)?npm$S+(install|i|ci)($S|$)" && ! hasF "--dry-run" && ! hasF "--package-lock-only" && ! hasF "# in the main clone" && ! hasF "# main-clone install"; then deny "Worktrees share node_modules by symlink; npm install here breaks every other agent mid-build. Use --dry-run, or install at the MAIN CLONE with peers stopped and append '# main-clone install' (the same escape the hookify rule reads)."; fi
 # The finish flow owns PRs against THE CONFIGURED PROJECT, because that is where
 # its gates, trailer, changelog and claim release apply. A PR against a DIFFERENT
 # repo — this kit itself, a sister repo — has none of those, and blocking it

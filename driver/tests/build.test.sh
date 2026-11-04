@@ -92,20 +92,32 @@ out=$(driver_prove_red_green "$REPO" after.test.sh "$A_TEST" "$A_IMPL" "bash aft
 want "a test absent at the change is refused" "3" "$rc"
 want_in "and says it is not there"            'not in the change' "$out"
 
-echo "--- the proof trees carry the shared install, or every real project parks ---"
-# The ticket worktree gets the shared node_modules linked into it; these two get
-# nothing, so a command that resolves through it — `npx`, `./node_modules/.bin/x`,
-# `npm test` — fails with 127 in BOTH trees. 127 in the second reads as "the change
-# does not do the job", the rework burns all five tries, and the ticket parks. On a
-# JS project that is every ticket.
-mkdir -p "$REPO/node_modules/.bin"
-printf '#!/usr/bin/env bash\ngrep -q yes "$1"\n' > "$REPO/node_modules/.bin/runner"
-chmod +x "$REPO/node_modules/.bin/runner"
-out=$(driver_prove_red_green "$REPO" feature.test.sh "$TEST_SHA" "$IMPL_SHA" \
-        "./node_modules/.bin/runner feature.txt" 2>&1); rc=$?
+echo "--- each proof tree gets its own install, or every real project parks ---"
+# The ticket worktree has an install; the two proof trees are fresh checkouts with none,
+# so a command that resolves through it — `npx`, `./node_modules/.bin/x`, `npm test` —
+# fails with 127 in BOTH trees. 127 in the second reads as "the change does not do the
+# job", the rework burns all five tries, and the ticket parks. On a JS project that is
+# every ticket. Each tree's install is its own (builder-install.sh), never a link.
+printf '#!/usr/bin/env bash\ngrep -q yes "$1"\n' > "$FIX/runner"; chmod +x "$FIX/runner"
+printf '{"name":"fx","private":true}\n' > "$REPO/package.json"; printf 'no\n' > "$REPO/inst.txt"
+git -C "$REPO" add package.json inst.txt; git -C "$REPO" commit -qm "base: an npm project"
+printf '#!/usr/bin/env bash\n./node_modules/.bin/runner inst.txt\n' > "$REPO/inst.test.sh"
+git -C "$REPO" add inst.test.sh; git -C "$REPO" commit -qm "test: needs the install"
+I_TEST=$(git -C "$REPO" rev-parse HEAD)
+printf 'yes\n' > "$REPO/inst.txt"; git -C "$REPO" add inst.txt; git -C "$REPO" commit -qm "feat: inst"
+I_IMPL=$(git -C "$REPO" rev-parse HEAD)
+inst_cmd="mkdir -p node_modules/.bin && cp '$FIX/runner' node_modules/.bin/runner && pwd -P >> '$FIX/installed-in.log'"
+# The ticket tree's own install first, as start gives it one.
+BUILDER_INSTALL_CLONE=off BUILDER_INSTALL_CMD="mkdir -p node_modules/.bin && cp '$FIX/runner' node_modules/.bin/runner" \
+  bash "$KIT_ROOT/scripts/builder-install.sh" "$REPO" >/dev/null 2>&1
+out=$(BUILDER_INSTALL_CLONE=off BUILDER_INSTALL_CMD="$inst_cmd" driver_prove_red_green "$REPO" inst.test.sh "$I_TEST" "$I_IMPL" \
+        "./node_modules/.bin/runner inst.txt" 2>&1); rc=$?
 want "a command that needs the install still proves" "0" "$rc"
 # "exit 127", not a bare 127: a short sha in the verdict can hold those digits.
 want_not_in "and never reports it as not found" 'exit 127|No such file|command not found' "$out"
+want "each proof tree installed for itself" "2" "$(grep -c . "$FIX/installed-in.log" 2>/dev/null)"
+want_not_in "…and none of them is the ticket tree" "^$(cd "$REPO" && pwd -P)\$" "$(cat "$FIX/installed-in.log" 2>/dev/null)"
+git -C "$REPO" rm -q package.json inst.txt inst.test.sh && git -C "$REPO" commit -qm "fixture: back to no npm project"
 
 echo "--- both halves run the SAME version of the test, the reported one ---"
 # A test refined while the change was built is ordinary: a weak first version, the

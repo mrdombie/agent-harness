@@ -433,4 +433,26 @@ rc=0; DRIVER_TICKET=286 driver_ai_step 286 review >/dev/null 2>&1 || rc=$?
 want "the question parks as a question"            "20" "$rc"
 want "with no 'not JSON' note to stand in for it"  "" "$(driver_state_get 286 park_note)"
 
+echo "--- a screen's build step gets the tree's dev server, started and stopped by the driver ---"
+if command -v node >/dev/null 2>&1 && command -v perl >/dev/null 2>&1; then
+  driver_state_init 287
+  DW="$FIX/trees/tkt-287"; git -C "$REPO" worktree add -q --detach "$DW" HEAD
+  driver_state_set 287 worktree "$DW"; driver_state_set 287 tier screen
+  fix_brief build superpowers:subagent-driven-development
+  fix_ai    build '{"items":[]}' superpowers:subagent-driven-development
+  : > "$CLAUDE_ENV_LOG"
+  rc=0; BUILDER_DEV_CMD='sleep 300 & exec sleep 300' BUILDER_DEV_BASE_PORT=$(( 20000 + RANDOM % 20000 )) \
+    DRIVER_TICKET=287 driver_ai_step 287 build >/dev/null 2>&1 || rc=$?
+  want "the step finishes" "0" "$rc"
+  want_in "the step is handed the server's URL" '^http://localhost:[0-9]+$' "$(awk -F'\t' 'END{print $4}' "$CLAUDE_ENV_LOG")"
+  want_in "…and the prompt says the app is running there" 'The app is already running at http://localhost:[0-9]+' "$(cat "$FIX/claude-stdin-build.txt" 2>/dev/null)"
+  want "the server is gone once the step ends" "" "$(bash "$KIT_ROOT/scripts/builder-dev.sh" list 2>/dev/null)"
+  driver_state_set 287 tier tooling
+  : > "$CLAUDE_ENV_LOG"
+  BUILDER_DEV_CMD='exec sleep 300' DRIVER_TICKET=287 driver_ai_step 287 build >/dev/null 2>&1
+  want "a step that is not a screen's starts none" "" "$(awk -F'\t' 'END{print $4}' "$CLAUDE_ENV_LOG")"
+  want_not_in "…and its prompt says nothing of one" 'The app is already running' "$(cat "$FIX/claude-stdin-build.txt" 2>/dev/null)"
+  want "…and nothing is left running" "" "$(bash "$KIT_ROOT/scripts/builder-dev.sh" list 2>/dev/null)"
+fi
+
 suite_end "$FAILED"

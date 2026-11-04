@@ -121,7 +121,7 @@ driver_base_check() {
     _driver_base_unlock "$sha"; printf unknown; return 0
   fi
   v=unknown
-  if { [ ! -d "$MAIN_REPO/node_modules" ] || driver_link_install "$MAIN_REPO" "$dir" >/dev/null 2>&1; } \
+  if driver_own_install "$dir" >/dev/null 2>&1 \
      && driver_prepare_worktree "$dir" >/dev/null 2>&1 \
      && case "$kind" in
           test) cmd=$(_driver_base_test_cmd "$dir" "$3") ;;

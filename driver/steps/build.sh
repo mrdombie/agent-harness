@@ -35,7 +35,7 @@
 #   5  a proof tree could not be prepared — the measurement was never made
 #   6  red then green, and the tree with the change does not type-check
 #   7  the command cannot be run as given (a placeholder, no such program) — never run
-#   8  it failed on a missing module from an install behind its lockfile, relinked and
+#   8  it failed on a missing module from an install behind its lockfile, installed again and
 #      taken again, and the install is still behind — the machine's, never the change's
 #   9  a half could not reach the app (no server runs in a proof tree) — never run there
 #
@@ -60,7 +60,7 @@
 # commit is an ancestor of the change, the version that lands with the change is the
 # one run in both halves: red at the change's parent, green at the change.
 # The two proof trees need what the TICKET worktree was given, or a test command
-# that resolves through the shared install — `npx x`, `./node_modules/.bin/x`,
+# that resolves through the install — `npx x`, `./node_modules/.bin/x`,
 # `npm test` — fails with 127 in both of them. 127 in the second reads as "the
 # change does not do the job", the rework burns every try, and the ticket parks.
 # On a project with a gitignored install that is every ticket, so this is not a
@@ -74,10 +74,10 @@
 # the ticket parks blaming a change that works. The measurement was never made, and a
 # measurement that could not be made is not a red.
 _driver_proof_install() { # <repo> <tree>
-  # The proof trees link from <repo>: a source install behind its lockfile is relinked
-  # first, or every import of a package it lacks fails both halves as the change's fault.
-  [ -z "${MAIN_REPO:-}" ] || driver_relink_if_behind "$MAIN_REPO" "$1" || true
-  driver_link_install "$1" "$2" || { DRIVER_PREPARE_WHY="the shared install could not be linked into $2"; return 1; }
+  # Each proof tree gets its own install, cloned from the store for its lockfile: a
+  # link to the ticket tree's would resolve its workspace packages to the ticket tree's
+  # source, and the red half would run the change.
+  driver_own_install "$2" || { DRIVER_PREPARE_WHY="the proof tree $2 could not be given its own install"; return 1; }
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
   # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
   # Left on stdout, driver_prepare_worktree's own narration was captured into $why and
@@ -91,7 +91,7 @@ _driver_proof_install() { # <repo> <tree>
 # own `worktree.prepare` (prisma:ensure), were ~30% of proof time on the origin project
 # (21 proofs on 23 Oct: 1,672 of 5,676 s). Within one driver run (DRIVER_TICKET, this
 # process) the before/after trees stay: a later proof checks the tree out at its commit
-# (checkout -f, clean -fd: ignored installs and generated files stay), relinks only a
+# (checkout -f, clean -fd: ignored installs and generated files stay), rebuilds only a
 # stale install, and runs worktree.prepare again only when the prepare fingerprint at that
 # commit moved — worktree.prepareFingerprint (path regexes), default every prisma file plus
 # the lockfiles. driver.proofReuse false, or no ticket, builds fresh trees as before. The run's
@@ -116,7 +116,7 @@ _driver_proof_tree() {
   fp=$(_driver_proof_fingerprint "$repo" "$sha")
   if [ -e "$tree/.git" ] && git -C "$tree" checkout -q --detach -f "$sha" 2>/dev/null && git -C "$tree" clean -fdq 2>/dev/null; then
     old=$(cat "$tree.fp" 2>/dev/null)
-    driver_refresh_install "$repo" "$tree" || true
+    driver_refresh_install "$tree" || true
     if [ -n "$fp" ] && [ "$fp" = "$old" ]; then
       driver_say "   proof: reused $tree at $(printf '%s' "$sha" | cut -c1-8) — the prepare fingerprint is unchanged, so worktree.prepare is skipped" >&2
       return 0
@@ -276,9 +276,9 @@ driver_proof_cmd_check() {
 # A private install missing a declared package made every import of it "Cannot find
 # module", and the proof said the change does not type-check: a repair parked as not
 # proved on a tree whose code was right. So a failing verdict (1, 2 or 6) that names a
-# missing module, while the install the proof trees link from is behind its lockfile,
-# is relinked and taken once more. Still behind, or the shared install itself behind,
-# it is 8 — a machine fault, back on the queue, never "not proved".
+# missing module, while the tree's install is behind its lockfile, is installed again
+# and taken once more. Still behind, it is 8 — a machine fault, back on the queue,
+# never "not proved".
 DRIVER_PROOF_MISSING_RE="Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Failed to resolve import|Failed to load url"
 _driver_proof_machine() { # <proof fn> <repo> <args…>
   local fn="$1" repo="$2" out rc try=0 behind mod
@@ -287,15 +287,15 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
     rc=0; out=$("$fn" "$repo" "$@") || rc=$?
     case "$rc" in 1|2|6) ;; *) break ;; esac
     grep -qE -- "$DRIVER_PROOF_MISSING_RE" <<<"$out" || break
-    behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$repo" 2>/dev/null) || break
+    behind=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$repo" 2>/dev/null) || break
     mod=$(grep -oE -- "${DRIVER_PROOF_MISSING_RE}[^)]{0,80}" <<<"$out" | head -1)
-    if [ "$try" -ge 1 ] || [ "$repo" -ef "${MAIN_REPO:-/nonexistent}" ] || ! driver_relink_if_behind "$MAIN_REPO" "$repo"; then
-      printf 'machine fault, not the change: the proof failed on a missing module (%s) and the install it links from is behind its lockfile — %s\n' \
+    if [ "$try" -ge 1 ] || ! driver_reinstall_if_behind "$repo"; then
+      printf 'machine fault, not the change: the proof failed on a missing module (%s) and the tree'"'"'s install is behind its lockfile — %s\n' \
         "$mod" "${DRIVER_BEHIND_WHY:-$behind}"
       return 8
     fi
     try=1
-    driver_say "   proof: it failed on a missing module ($mod) from an install behind its lockfile — relinked, taken once more" >&2
+    driver_say "   proof: it failed on a missing module ($mod) from an install behind its lockfile — installed again, taken once more" >&2
   done
   printf '%s\n' "$out"
   return "$rc"

@@ -504,9 +504,29 @@ _driver_ai_run() {
   rm -f "$out.db"
   # The model can change the ticket: every read from here on goes to GitHub.
   driver_ticket_snap_drop "${DRIVER_TICKET:-$t}"
+  # A screen's build and fix steps get the tree's dev server, which the driver starts in a
+  # process group of its own and stops when the step ends (scripts/builder-dev.sh): the
+  # step never starts or kills one, so it cannot reach a peer's. Only in the ticket's own
+  # tree: a run with none runs in the shared checkout, and a server there is everyone's.
+  local devurl=""
+  case "$step" in
+    build|fix)
+      # The tier as driver_tier_of reads it (tier.sh): screen when none was decided.
+      local tier; tier=$(driver_state_get "$t" tier 2>/dev/null)
+      if [ "${tier:-screen}" = screen ] && [ -n "$(driver_state_get "$t" worktree)" ] && [ ! "$wt" -ef "$MAIN_REPO" ]; then
+        devurl=$(driver_dev_start "$wt") || devurl=""
+      fi ;;
+  esac
+  # The step is told, in the prompt it reads, only when a server runs: a brief line would
+  # cost every step's word budget for something most never have.
+  if [ -n "$devurl" ]; then
+    { cat "$in"; printf '\n\nThe app is already running at %s (also $HARNESS_DEV_URL): this tree'"'"'s dev server, started by the driver for this step and stopped when it ends. Never start, restart or kill a server yourself.\n' "$devurl"; } > "$in.dev"
+    in="$in.dev"
+  fi
   (
     cd "$wt" || exit 1
     export PATH="$shim:$PATH"
+    [ -z "$devurl" ] || export HARNESS_DEV_URL="$devurl"
     # The Stop hook stands down for a driver step: the sign-off banner is an
     # instruction to a person's terminal, and here it rewrites a machine's answer.
     export HARNESS_DRIVER_RUN="${DRIVER_TICKET:-$t}:$step"
@@ -523,6 +543,7 @@ _driver_ai_run() {
         --add-dir "$wt" < "$in" > "$out" 2>"$out.err"
     fi
   ) || true
+  [ -z "$devurl" ] || driver_dev_stop "$wt" >/dev/null 2>&1
   [ ! -s "$out.db" ] || driver_say "   $step: ran with no test database — $(cat "$out.db")"
 }
 

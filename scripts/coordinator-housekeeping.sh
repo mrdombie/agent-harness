@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # coordinator-housekeeping.sh — the slow half of a coordinator tick: the merge
-# lane, reconcile, the sweeps, the disk pass, and the host's own shared
-# state (its shared install). coordinator-tick.sh
+# lane, reconcile, the sweeps and the disk pass. coordinator-tick.sh
 # starts it in the background once its starts are made, so none of it delays a
 # start. One at a time: a housekeeping still running means this one exits.
 #
@@ -118,12 +117,9 @@ STRAY_ENV=(STOP_DEV_STRAY_MIN_AGE=$((COORD_STRAY_MIN_AGE_MIN * 60)) STOP_DEV_STR
 if coord_shadow; then env "${STRAY_ENV[@]}" bash "$SWEEP" --strays --dry-run >> "$COORD_LOG" 2>&1 || say "stray sweep (dry) exited $?"
 else env "${STRAY_ENV[@]}" bash "$SWEEP" --strays >> "$COORD_LOG" 2>&1 || say "stray sweep exited $?"; fi
 # ---- 6b. this host's own shared state -----------------------------------------
-# What only a person kept current: the shared clone's install at the trunk's lockfile
-# (shared-install.sh). Before the worktree sweep: that runs for most of an hour on a full
-# root. No tree's commits are backed up here: nothing resumes old work (a stuck PR is
-# rebuilt fresh, rebuild.sh), and the worktree sweep keeps every tree with unpushed commits.
-own="${COORDINATOR_SHARED_INSTALL:-$SELF_DIR/shared-install.sh}"
-[ "$own" = off ] || bash "$own" 2>&1 || say "${own##*/} exited $?"
+# No shared install is kept here: every builder's tree has its own (builder-install.sh).
+# No tree's commits are backed up here: nothing resumes old work (a stuck PR is rebuilt
+# fresh, rebuild.sh), and the worktree sweep keeps every tree with unpushed commits.
 # Every check the commit and push hooks run, on the trunk's head: a red there goes to
 # develop-red.tsv before a builder's hook meets it. It runs in the background.
 HOOK_SWEEP="${COORDINATOR_DEVELOP_HOOKS:-$SELF_DIR/develop-hook-red.sh}"

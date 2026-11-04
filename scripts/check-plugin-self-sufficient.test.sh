@@ -49,7 +49,7 @@ grep -q 'CLAUDE_PLUGIN_ROOT' "$KIT/hooks/hooks.json" && ok "every command is add
 
 # AND THE OTHER DIRECTION, which is the one that hides. A hook file that ships
 # but is registered nowhere never runs, and a hook that never runs is
-# indistinguishable from a hook that found nothing. Dropping no-broad-kill from
+# indistinguishable from a hook that found nothing. Dropping a guard from
 # hooks.json left every case above green until this was added.
 reg=$(jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
         "$KIT/hooks/hooks.json" | sort -u)
@@ -69,8 +69,6 @@ echo "--- the guards fire under a clean HOME ---"
 # the case above it, and it reported the guard as broken when it was correct.
 bash_rc(){ printf '{"tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')" \
              | HOME="$H" env -u CLAIM_RUN_LOG "${3:-IGNORE=1}" bash "$KIT/hooks/$2" >/dev/null 2>&1; echo $?; }
-[ "$(bash_rc "pkill -f 'next dev'" no-broad-kill.sh)" = 2 ] \
-  && ok "no-broad-kill refuses a pattern that would hit a peer" || bad "no-broad-kill did not fire"
 [ "$(bash_rc "npx prettier --write src/" no-repo-wide-format.sh)" = 2 ] \
   && ok "no-repo-wide-format refuses a whole folder" || bad "no-repo-wide-format did not fire"
 [ "$(bash_rc "npm run typecheck" no-repo-wide-format.sh CLAIM_RUN_LOG=/tmp/f)" = 2 ] \

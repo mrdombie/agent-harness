@@ -29,9 +29,7 @@
 2	hooks/keep-working.test.sh
 0	hooks/lib/claude-session.test.sh
 0	hooks/lib/python.test.sh
-1	hooks/no-broad-kill.test.sh
 0	hooks/no-repo-wide-format.test.sh
-13	hooks/one-preview-per-agent.test.sh
 3	hooks/pr-body-matches-branch.test.sh
 0	hooks/precedence.test.sh
 2	hooks/push-needs-its-hooks.test.sh
@@ -70,8 +68,6 @@
 89	scripts/gh-calls.test.sh
 2	scripts/gh-open-prs-paged.test.sh
 0	scripts/harness-update.test.sh
-1	scripts/link-node-modules.test.sh
-0	scripts/link-workspaces.test.sh
 0	scripts/loop-start.test.sh
 23	scripts/machine-gate.test.sh
 35	scripts/merge-lane.test.sh

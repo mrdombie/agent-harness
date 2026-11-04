@@ -15,23 +15,19 @@ t deny "rm -rf $HARNESS_STATE_DIR/claims/SH-9822.lock"
 t deny "rm -rf $HARNESS_STATE_DIR/claims/9822"
 t deny 'git push origin :refs/claims/9822'
 t deny 'git commit -am "fix"'
-t deny 'cd /tmp/x && git reset --hard origin/develop'
-t deny 'git add -A'
-t deny 'git add .'
-t deny 'npm install lodash'
 t deny 'gh pr create --base develop --title "x"'
 t deny "git worktree add /tmp/${BRANCH_PREFIX}9999-x -b ${BRANCH_PREFIX}9999/x origin/develop"
 echo "--- leading VAR=value settings and an env wrapper are the same command ---"
-t deny 'GIT_TRACE=1 git add -A'
-t deny 'cd /tmp/x && X=1 git -C /x reset --hard'
+t deny 'GIT_TRACE=1 git commit -am x'
+t deny 'cd /tmp/x && X=1 git -C /x commit --no-verify -m x'
 t deny 'env X=1 git commit --no-verify -m x'
 t deny 'A="two words" git commit -am x'
 t deny 'GH_TOKEN=x gh pr create --base develop --title "x"'
 t allow 'X=1 git add apps/web/src/x.tsx'
-t allow 'echo X=1 git add -A'
+t allow 'echo X=1 git commit -am x'
 echo "--- a long command is judged whole ---"
 long=$(i=0; while [ "$i" -lt 2000 ]; do echo "echo padding-padding-padding-padding-$i"; i=$((i + 1)); done)
-t deny "git add -A
+t deny "git commit -am x
 $long"
 echo "--- a heredoc BODY is data, not shell ---"
 # Writing this ticket's own PR body was DENIED, because a markdown table row
@@ -40,21 +36,21 @@ echo "--- a heredoc BODY is data, not shell ---"
 # this repo's docs, PR bodies and skill files, so a guard that reads data as
 # shell blocks the documentation of itself.
 t allow 'cat > /tmp/pr.md <<'"'"'MD'"'"'
-| `git -C /x reset --hard` | allow | deny |
+| `git -C /x commit -am x` | allow | deny |
 | `git commit --no-verify` | allow | deny |
 MD'
 t allow 'cat <<EOF > notes.md
-Never run git add -A, and never git -C <dir> reset --hard.
+Never run git commit -a, and never git -C <dir> commit --no-verify.
 EOF'
 t allow 'gh pr comment 1 --body "$(cat <<'"'"'B'"'"'
-git -C /x clean -fd was allowed before this fix.
+git -C /x commit -am x was allowed before this fix.
 B
 )"'
 # …and the body ending must not swallow a REAL command that follows it.
 t deny 'cat <<EOF > notes.md
 harmless text
 EOF
-git -C /x reset --hard'
+git -C /x commit -am x'
 
 echo "--- git commit --no-verify skips the SECRET SCAN, so it is blocked too ---"
 # It succeeded 130 times across 40 runs because only the push form was blocked,
@@ -79,19 +75,14 @@ echo "--- git's global options are not a way round the rule ---"
 # required its subcommand to sit immediately after `git `. Measured with fake
 # tool input on 2026-09-27: every one of these was ALLOWED by every copy of the
 # hook, while the same command without the option was denied.
-t deny 'git -C /x reset --hard'
-t deny 'git -C /x reset --hard origin/develop'
-t deny 'git --git-dir=/x/.git reset --hard'
-t deny 'git --work-tree=/x -C /x clean -fd'
-t deny 'git -C /x add -A'
-t deny 'git -C /x add .'
 t deny 'git -C /x commit -am "x"'
-t deny 'git -C /x stash pop'
-t deny 'git -c user.name=t -C /x reset --hard'
-t deny 'git --no-pager -C /x add --all'
+t deny 'git --git-dir=/x/.git commit -am x'
+t deny 'git --work-tree=/x -C /x commit --all -m x'
+t deny 'git -c user.name=t -C /x commit -am x'
+t deny 'git --no-pager -C /x commit --no-verify -m x'
 # A shell wrapper hides the command from a start-of-line anchor.
-t deny 'bash -c "git reset --hard"'
-t deny "sh -c 'git add -A'"
+t deny 'bash -c "git commit -am x"'
+t deny "sh -c 'git commit -am x'"
 # …and the options must not turn a SAFE command into a denied one.
 t allow 'git -C /x add apps/web/src/x.tsx'
 t allow 'git -C /x commit -m "x"'
@@ -103,16 +94,17 @@ echo "--- must allow ---"
 t allow 'git commit --amend --no-edit'
 t allow 'git commit -m "x" -m "y"'
 t allow 'git add apps/web/src/x.tsx'
-t allow 'npm install --dry-run'
-t allow 'npm install --package-lock-only --ignore-scripts'
-t deny 'npm ci --ignore-scripts'
-t deny 'npm install --package-lock lodash'
-t allow 'cd ~/main-clone && npm install --prefer-offline # in the main clone'
-t deny 'npm install lodash # in the worktree'
+echo "--- retired with the shared install and the shared worktree: each builder has its own ---"
+t allow 'npm install lodash'
+t allow 'npm ci --ignore-scripts'
+t allow 'git -C /x reset --hard origin/develop'
+t allow 'git -C /x add -A'
+t allow 'git stash pop'
+t allow 'git clean -fd'
 t allow 'gh pr create --base develop --title "x" # via /finish'
 t allow "git worktree add /tmp/${BRANCH_PREFIX}9999-x -b ${BRANCH_PREFIX}9999/x origin/develop # via /claim"
 t allow 'cat <<EOF > t.md
-Run gh pr create only through /agent-harness:finish; never git add -A
+Run gh pr create only through /agent-harness:finish; never git commit -a
 EOF'
 t allow 'git worktree add /tmp/flows-abc origin/develop'
 echo "--- outside any checkout: no config, no env — the generic shapes still fire ---"
@@ -120,7 +112,7 @@ u(){ want=$1; shift; out=$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{co
 u deny "git worktree add /tmp/x -b ${BRANCH_PREFIX}9999/x origin/develop"
 u deny 'git worktree add /tmp/x -b tkt-12/x origin/trunk'
 u deny 'rm -rf /some/state/claims/9822'
-u deny 'git add -A'
+u deny 'git commit -am x'
 u allow 'git worktree add /tmp/x -b feature/x origin/develop'
 echo "--- legacy env prefix: HARNESS_STATE_DIR unset, the config-declared prefix must still name the claims dir ---"
 # The state dir is read through the declared legacy prefix; the claims path here has

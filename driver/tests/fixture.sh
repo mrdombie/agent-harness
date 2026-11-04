@@ -157,7 +157,7 @@ printf '%s\n' "$step" >> "$CLAUDE_LOG"
 # were unreadable from outside and each one shipped a defect: which directory the
 # agent ran in (F8), whether the Stop hook was told to stand down (F1), and the
 # prompt it was actually sent (F4).
-printf '%s\t%s\t%s\n' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
+printf '%s\t%s\t%s\t%s\n' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" "${HARNESS_DEV_URL:-}" >> "$FIX/claude-env.log"
 printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
 printf '%s\n' "$@" > "$FIX/claude-args-$step.txt"
 # The prompt arrives on STDIN, not in argv — argv has a ceiling and a substituted
@@ -193,6 +193,8 @@ SH
   export DRIVER_PRS_MAX_AGE=0
   # The machine's gate slots are shared by every session on it; a suite takes its own.
   export HARNESS_GATE_SLOT_DIR="$FIX/gate-slots" MACHINE_GATE_POLL=1
+  # Every tree's own install and dev server are recorded inside the fixture, never in ~/.cache.
+  export BUILDER_INSTALL_STORE="$FIX/install-store" BUILDER_DEV_DIR="$FIX/dev-servers"
   export DRIVER_CLAUDE="$BIN/claude"
   # NO REVIEW CHECK IN THE FIXTURE, so a suite counts one review call per round as it always
   # has; the shipped default is a hunter then a check, which review-panel.test.sh runs unset.

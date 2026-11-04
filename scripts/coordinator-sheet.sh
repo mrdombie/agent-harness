@@ -384,7 +384,6 @@ coord_tick_why() {
     | {pace: ($l | last("^pacing: ")), ceiling: ($l | last("^ceiling: ")), spawn: ($l | last("^spawn: ")),
        openChanges: ($l | last("^open changes .* / cap ")), sheet: ($l | last("^sheet: working .*'"'"'s order")),
        cap: ($l | last("^cap: ")), hostCap: ($l | last("^host cap: ")), config: ($l | last("^config: ")), tooling: ($l | last("^tooling: [0-9]+ tooling ticket")),
-       install: ($l | last("^shared install: ⚠")),
        stall: ($l | last("^⚠ stall: ")), finish: ($l | last("^finish: [0-9]+ of [0-9]+ open PR")),
        skips: ($sk[0:5] | map(c)),
        skipsBy: ($sk | map(sub("^skip #[0-9]+ \\([^)]*\\): "; "") | gsub("#[0-9]+"; "#N") | c)
@@ -443,7 +442,6 @@ COORD_WHY_JQ='def why_words: (.why // {}) as $w
   | def bare: sub("^[a-z ]+: "; "");
     if ($w | length) == 0 then null
     else "why: " + ([($w.spawn // "spawn: no start decision this tick" | bare),
-                     (($w.install // empty) | bare),
                      (($w.pace // "") | capture("→ (?<n>[0-9]+) here") | "pace allows \(.n) here"),
                      (($w.cap // $w.openChanges // empty) | bare), (($w.tooling // empty) | bare),
                      (if ($w.skipsBy // {}) | length > 0 then "skipped " + ($w.skipsBy | to_entries | map("\(.value) \(.key)") | join(", ")) else empty end)]

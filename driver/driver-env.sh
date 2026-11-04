@@ -80,46 +80,47 @@ DRIVER_CLAUDE="${DRIVER_CLAUDE:-claude}"
 # hold. The project's labels.pmDecision, else status:pm-decision.
 DRIVER_PM_LABEL="${DRIVER_PM_LABEL:-${LBL_PM_DECISION:-status:pm-decision}}"
 
-# driver_link_install <repo> <tree> — the shared install, linked, never copied or
-# installed. The tree gets its own node_modules of links to the shared entries, with
-# the workspace packages pointed at the tree's own source; one link to the whole
-# shared node_modules ran the shared checkout's stale packages instead
-# (scripts/link-node-modules.sh says how). Its narration goes to stderr: callers
-# sit inside command substitutions. 0 linked, or nothing to link · 1 it failed.
-driver_link_install() {
-  bash "$KIT_ROOT/scripts/link-node-modules.sh" "$1" "$2" >&2
+# driver_own_install <tree> — the tree's own install, never a link to a shared one
+# (scripts/builder-install.sh says how: a copy-on-write clone of the stored install for
+# its lockfile, else an install). Its narration goes to stderr: callers sit inside
+# command substitutions. 0 installed, or nothing to install · 1 it failed.
+driver_own_install() {
+  bash "$KIT_ROOT/scripts/builder-install.sh" "$1" >&2
 }
 
-# driver_refresh_install <repo> <tree> — machine setup before anything reads the tree's
-# install: relinked only when the tree's lockfile or package.json files (or the shared
-# clone's lockfile) moved since it was linked. A merge of the trunk brings new packages,
-# and nothing else re-runs the linker. The shared clone itself is never relinked.
-# 0 up to date, relinked, or nothing to do · 1 the relink failed.
+# driver_refresh_install <tree> — machine setup before anything reads the tree's install:
+# rebuilt only when the tree's lockfile or package.json files moved since it was built.
+# A merge of the trunk brings new packages, and nothing else re-runs the install.
+# 0 up to date, rebuilt, or nothing to do · 1 the rebuild failed.
 driver_refresh_install() {
-  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -d "$2" ] || return 0
-  [ "$1" -ef "$2" ] && return 0
-  bash "$KIT_ROOT/scripts/link-node-modules.sh" --if-stale "$1" "$2" >&2
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 0
+  bash "$KIT_ROOT/scripts/builder-install.sh" --if-stale "$1" >&2
 }
 
-# driver_relink_if_behind <repo> <tree> — a tree whose install is missing a package its
-# lockfile declares, or holds one at another version, is relinked to the shared install
-# before anything reads it: the machine's setup, never the change's. Narration on stderr.
-# 0 not behind, or relinked and no longer behind · 1 still behind (DRIVER_BEHIND_WHY says how).
-driver_relink_if_behind() {
+# driver_reinstall_if_behind <tree> — a tree whose install is missing a package its
+# lockfile declares, or holds one at another version, is installed again before
+# anything reads it: the machine's setup, never the change's. Narration on stderr.
+# 0 not behind, or reinstalled and no longer behind · 1 still behind (DRIVER_BEHIND_WHY says how).
+driver_reinstall_if_behind() {
   DRIVER_BEHIND_WHY=""
-  [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -d "$2" ] || return 0
-  [ "$1" -ef "$2" ] && return 0
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 0
   local behind
-  behind=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$2" 2>/dev/null) || return 0
-  driver_say "   install: $behind — relinking it to the shared install before anything reads it (machine setup, not the change)" >&2
-  driver_link_install "$1" "$2" || true
-  if DRIVER_BEHIND_WHY=$(bash "$KIT_ROOT/scripts/link-node-modules.sh" --behind "$2" 2>/dev/null); then
-    driver_say "   install: still behind after the relink — $DRIVER_BEHIND_WHY" >&2
+  behind=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$1" 2>/dev/null) || return 0
+  driver_say "   install: $behind — installing it again before anything reads it (machine setup, not the change)" >&2
+  driver_own_install "$1" || true
+  if DRIVER_BEHIND_WHY=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$1" 2>/dev/null); then
+    driver_say "   install: still behind after installing again — $DRIVER_BEHIND_WHY" >&2
     return 1
   fi
   DRIVER_BEHIND_WHY=""
   return 0
 }
+
+# driver_dev_start <tree> — the tree's dev server, started by the driver in a process
+# group of its own (scripts/builder-dev.sh); prints its URL. 1 when the project has none.
+driver_dev_start() { bash "$KIT_ROOT/scripts/builder-dev.sh" start "$1" 2>/dev/null; }
+# driver_dev_stop <tree> — that server and everything it started; never a peer's.
+driver_dev_stop() { [ -n "${1:-}" ] && [ -d "$1" ] || return 0; bash "$KIT_ROOT/scripts/builder-dev.sh" stop "$1" >&2; }
 
 DRIVER_OK=0
 DRIVER_E_QUESTION=20
@@ -345,7 +346,7 @@ driver_run_project() { # <seconds> <command>
 # driver_prepare_worktree <tree> — this project's per-checkout setup, in a freshly
 # created tree. Sets DRIVER_PREPARE_WHY and returns 1 when a command fails.
 #
-# A linked node_modules and a copy of the hook shims are not the whole of what a
+# Its own node_modules and a copy of the hook shims are not the whole of what a
 # worktree needs. Measured on the 2026-09-27 trial, every push from a driver
 # worktree was refused:
 #

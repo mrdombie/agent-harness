@@ -65,8 +65,9 @@ done
 
 cache_pass() { # <worktree>...
   [ $# -gt 0 ] || return 0
-  if [ "$APPLY" = 1 ]; then bash "$HERE/worktree-cache.sh" clean --idle-min "$IDLE_MIN" "$@"
-  else bash "$HERE/worktree-cache.sh" clean --idle-min "$IDLE_MIN" --dry-run "$@"; fi
+  # --deep: an idle tree's own install goes too (each tree has one); its next run clones it back.
+  if [ "$APPLY" = 1 ]; then bash "$HERE/worktree-cache.sh" clean --deep --idle-min "$IDLE_MIN" "$@"
+  else bash "$HERE/worktree-cache.sh" clean --deep --idle-min "$IDLE_MIN" --dry-run "$@"; fi
 }
 
 if [ "$CACHES_ONLY" = 1 ]; then

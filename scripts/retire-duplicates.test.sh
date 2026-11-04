@@ -12,13 +12,13 @@ mkdir -p "$C/commands" "$C/agents" "$C/hooks/lib"
 : > "$C/commands/my-own-thing.md"          # it does not ship this
 : > "$C/agents/gate-runner.md"
 : > "$C/hooks/keep-working.sh"; : > "$C/hooks/keep-working.test.sh"
-: > "$C/hooks/no-broad-kill.sh"; : > "$C/hooks/no-broad-kill.py"; : > "$C/hooks/no-broad-kill.cases.tsv"
+: > "$C/hooks/no-repo-wide-format.sh"; : > "$C/hooks/no-repo-wide-format.py"
 : > "$C/hooks/lib/claude-session.sh"
 cat > "$C/settings.json" <<'S'
 {"model":"opus","hooks":{
   "Stop":[{"hooks":[{"type":"command","command":"$HOME/.claude/hooks/keep-working.sh"}]}],
   "PreToolUse":[{"matcher":"Bash","hooks":[
-     {"type":"command","command":"bash ~/.claude/hooks/no-broad-kill.sh"},
+     {"type":"command","command":"bash ~/.claude/hooks/no-repo-wide-format.sh"},
      {"type":"command","command":"bash ~/.claude/hooks/something-of-my-own.sh"}]}]}}
 S
 
@@ -38,7 +38,7 @@ out=$(bash "$D/retire-duplicates.sh" --check 2>&1); rc=$?
 [ -f "$C/commands/claim.md" ] && ok "--check moved nothing" || bad "--check moved a file"
 printf '%s' "$out" | grep -q 'my-own-thing.md' && ok "a command the kit does not ship is reported, not moved" \
   || bad "the unshipped command was not reported"
-printf '%s' "$out" | grep -q 'no-broad-kill.py' && ok "the python judge goes with its wrapper" \
+printf '%s' "$out" | grep -q 'no-repo-wide-format.py' && ok "the python judge goes with its wrapper" \
   || bad "the python judge was not listed"
 
 echo "--- apply ---"
@@ -46,7 +46,7 @@ bash "$D/retire-duplicates.sh" >/dev/null 2>&1
 A="$C/retired-$(date +%Y-%m-%d)"
 [ ! -e "$C/commands/claim.md" ] && [ -f "$A/commands/claim.md" ] && ok "the duplicate command was moved, not deleted" || bad "commands/claim.md"
 [ -f "$C/commands/my-own-thing.md" ] && ok "the unshipped command was left alone" || bad "an unshipped command was moved"
-[ -f "$A/hooks/no-broad-kill.cases.tsv" ] && ok "the case table went with it" || bad "cases.tsv left behind"
+[ -f "$A/hooks/no-repo-wide-format.py" ] && ok "the python judge went with its wrapper" || bad "the .py was left behind"
 [ -f "$A/hooks/lib/claude-session.sh" ] && ok "the shared lib went with it" || bad "hooks/lib left behind"
 
 echo "--- settings.json ---"

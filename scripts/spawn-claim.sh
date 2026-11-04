@@ -273,8 +273,10 @@ stop_run_servers() {
     [ -n "$top" ] && [ "$top" = "$real_wt" ] || { echo "skipping $wt — not the top level of a checkout"; continue; }
     case "$root/" in "$real_wt"/*) echo "skipping $wt — it holds the spawn checkout"; continue ;; esac
     found=1
+    bash "$SCRIPT_DIR/builder-dev.sh" stop "$wt"
     bash "$SCRIPT_DIR/stop-dev-servers.sh" --worktree "$wt"
-    bash "$SCRIPT_DIR/worktree-cache.sh" clean "$wt"
+    # --deep: the tree's own install goes too once nothing holds it; the next run clones it back.
+    bash "$SCRIPT_DIR/worktree-cache.sh" clean --deep "$wt"
   done <<<"$wts"
   [ "$found" = 1 ] || echo "no usable worktree for $RUN_ID — stopping no servers"
 }

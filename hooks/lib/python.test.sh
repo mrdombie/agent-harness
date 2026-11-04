@@ -26,7 +26,7 @@ hook(){ # <bin dir> <guard> <command> → prints "<exit code>|<stderr>"
 echo "--- only stubs: every guard refuses, none passes ---"
 ONLY="$TMP/only-stubs"; mkdir -p "$ONLY"
 for n in python3 python py; do stub "$ONLY" "$n"; done
-for g in no-repo-wide-format no-broad-kill; do
+for g in no-repo-wide-format; do
   r=$(hook "$ONLY" "$g" 'ls')
   if [ "${r%%|*}" = 2 ] && printf '%s' "$r" | grep -q "the $g guard cannot run"; then ok "$g refuses when no Python runs"
   else no "$g with only stubs gave '${r%%|*}' — ${r#*|}"; fi
@@ -44,10 +44,6 @@ else no "repo-wide format past the stub gave '${r%%|*}' — ${r#*|}"; fi
 r=$(hook "$BEHIND" no-repo-wide-format 'npx prettier --write src/one.ts')
 if [ "${r%%|*}" = 0 ]; then ok "one named file still allowed past the stub"
 else no "one named file past the stub gave '${r%%|*}' — ${r#*|}"; fi
-r=$(hook "$BEHIND" no-broad-kill "pkill -f node")
-# The judge's own words, not just exit 2: the refusal exits 2 as well.
-if [ "${r%%|*}" = 2 ] && printf '%s' "$r" | grep -q 'matches processes of every agent'; then ok "broad kill still blocked past the stub"
-else no "broad kill past the stub gave '${r%%|*}' — ${r#*|}"; fi
 
 [ "$fail" -eq 0 ] && echo "lib/python: all cases pass"
 suite_end "$fail"

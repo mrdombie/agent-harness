@@ -2,8 +2,8 @@
 # worktree-cache.sh — remove a worktree's build caches, never its files.
 #   worktree-cache.sh clean [--idle-min N] [--dry-run] [--deep] <worktree>...
 # Folders: `build.cacheDirs` (globs from the top level), else the usual framework output.
-# --deep adds node_modules and dist (top level, apps/*, packages/*): the disk guard's pass. The next
-# start relinks or reinstalls them (link-node-modules.sh) and the next build regenerates dist.
+# --deep adds node_modules and dist (top level, apps/*, packages/*): the run's exit and the idle sweep.
+# The next start gives the tree its install back (builder-install.sh) and the next build regenerates dist.
 # Kept: a worktree a process sits in, a live run's record names, a claim on any host holds (claims
 # unreadable: nothing is cleaned) or, with --idle-min N, whose files changed within N min; a folder
 # holding a tracked file, resolving outside, or changed within N min.
