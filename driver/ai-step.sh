@@ -517,6 +517,12 @@ _driver_ai_run() {
         devurl=$(driver_dev_start "$wt") || devurl=""
       fi ;;
   esac
+  # The step is told, in the prompt it reads, only when a server runs: a brief line would
+  # cost every step's word budget for something most never have.
+  if [ -n "$devurl" ]; then
+    { cat "$in"; printf '\n\nThe app is already running at %s (also $HARNESS_DEV_URL): this tree'"'"'s dev server, started by the driver for this step and stopped when it ends. Never start, restart or kill a server yourself.\n' "$devurl"; } > "$in.dev"
+    in="$in.dev"
+  fi
   (
     cd "$wt" || exit 1
     export PATH="$shim:$PATH"

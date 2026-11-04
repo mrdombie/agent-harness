@@ -41,10 +41,6 @@ Read {{STANDARDS}} once for the ticket, not once per file.
 
 ## When the task touches a screen
 
-- **The app is already running for you.** `$HARNESS_DEV_URL` is this tree's dev server,
-  started by the driver for this step and stopped when it ends. Never start, restart or
-  kill a server yourself: it is the driver's, and a kill by name reaches other builders'.
-
 - **Say each fact once, in one wording.** Look at the whole composed screen before
   adding a line of copy: if a masthead, a band, a chip, a toast or a rail already
   says it, do not say it again — and never say it differently. The most repeated
