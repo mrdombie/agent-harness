@@ -22,7 +22,8 @@ done
 D="${DRIVER_DIR:-$STATE_DIR/driver}"
 [ -d "$D" ] || exit 0
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# GNU first: on Linux `stat -f` is file-system status and "succeeds" with junk; BSD stat has no -c.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 # "<ticket>\t<mtime>\t<file>", newest first within a ticket.
 rows=""
 for f in "$D"/*.local-*.bundle; do
