@@ -58,7 +58,8 @@
 #   coordinator.toolingCapLabels COORDINATOR_TOOLING_CAP_LABELS project:harness-kit repo:agent-harness
 #   coordinator.minFreeGb    COORDINATOR_MIN_FREE_GB   20    disk alarm floor
 #   coordinator.disk.stopBelowGb / .resumeAtGb  30 / 50    read by scripts/disk-guard.sh, the one reader
-#   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval
+#   coordinator.sweepEveryMin COORDINATOR_SWEEP_EVERY_MIN 30  worktree sweep interval; under
+#                                                           coordinator.disk.stopBelowGb free it runs every pass
 #   coordinator.frozenMin    COORDINATOR_FROZEN_MIN    20    no log growth = frozen
 #   coordinator.snapshotMaxAgeMin COORDINATOR_SNAPSHOT_MAX_AGE_MIN 15  oldest forge read a refused
 #                                                           tick may start work from

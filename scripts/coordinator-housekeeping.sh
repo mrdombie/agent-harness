@@ -61,6 +61,11 @@ elif why=$(bash "$CRITIC" paused 2>/dev/null) && [ -n "$why" ]; then say "$why"
 elif coord_shadow; then bash "$CRITIC" sweep --dry-run >> "$COORD_LOG" 2>&1 || say "design critic sweep (dry) exited $?"
 else bash "$CRITIC" sweep >> "$COORD_LOG" 2>&1 || say "design critic sweep exited $?"; fi
 
+free_gb() {
+  if [ -n "${COORDINATOR_DF:-}" ]; then "$COORDINATOR_DF"
+  elif [ -n "${COORDINATOR_FREE_GB:-}" ]; then printf '%s\n' "$COORDINATOR_FREE_GB"
+  else STATE_DIR="$STATE_DIR" bash "$SELF_DIR/disk-guard.sh" free 2>/dev/null; fi   # WSL: the lower of Linux and the host
+}
 # ---- 6. housekeeping ---------------------------------------------------------
 # GitHub closes "Closes #N" only on the default branch; a merge into the integration
 # branch closes its tickets here. Ahead of reconcile, which reads a shipped ticket whose
@@ -124,14 +129,39 @@ else env "${STRAY_ENV[@]}" bash "$SWEEP" --strays >> "$COORD_LOG" 2>&1 || say "s
 # develop-red.tsv before a builder's hook meets it. It runs in the background.
 HOOK_SWEEP="${COORDINATOR_DEVELOP_HOOKS:-$SELF_DIR/develop-hook-red.sh}"
 [ "$HOOK_SWEEP" = off ] || bash "$HOOK_SWEEP" start $(coord_shadow && echo dry) 2>&1 | while IFS= read -r l; do say "develop hooks: $l"; done
-# An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs.
+# An agent that dies never reaches /finish's cleanup, so its worktree stays until this runs:
+# every coordinator.sweepEveryMin, and every pass while free disk is under the floor a build
+# start is refused at (disk-guard.sh's stopBelowGb), so the sweep frees the disk the hold waits on.
 WT_SWEEP="${COORDINATOR_WORKTREE_SWEEP:-$SELF_DIR/sweep-orphan-worktrees.sh}"
 WT_STAMP="$COORD_DIR/worktree-sweep.stamp"
-if [ -n "$GH_WAIT" ]; then :
-elif [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; then
+WT_OUT="$COORD_DIR/worktree-sweep.out"
+read -r WT_FLOOR_GB _ <<<"$(bash "${COORDINATOR_DISK_GUARD:-$SELF_DIR/disk-guard.sh}" limits 2>/dev/null)"
+case "${WT_FLOOR_GB:-}" in ''|*[!0-9]*) WT_FLOOR_GB="" ;; esac
+WT_FREE=$(free_gb); case "$WT_FREE" in ''|*[!0-9]*) WT_FREE="" ;; esac
+WT_WHY="" WT_ENV=()
+if [ -n "$WT_FREE" ] && [ -n "$WT_FLOOR_GB" ] && [ "$WT_FREE" -lt "$WT_FLOOR_GB" ]; then
+  WT_WHY="$WT_FREE GB free, under the $WT_FLOOR_GB GB build floor"
+  # No GitHub read while it refuses the token: only the age rule then.
+  [ -z "$GH_WAIT" ] || WT_ENV=(SWEEP_GH=false)
+elif [ -z "$GH_WAIT" ] && [ -z "$(find "$WT_STAMP" -mmin -"$COORD_SWEEP_EVERY_MIN" 2>/dev/null)" ]; then
+  WT_WHY="every $COORD_SWEEP_EVERY_MIN min"
+fi
+if [ -n "$WT_WHY" ]; then
   touch "$WT_STAMP"
-  if coord_shadow; then bash "$WT_SWEEP" >> "$COORD_LOG" 2>&1 || say "worktree sweep (dry) exited $?"
-  else bash "$WT_SWEEP" --apply >> "$COORD_LOG" 2>&1 || say "worktree sweep exited $?"; fi
+  wt_args=--apply; coord_shadow && wt_args=""
+  env ${WT_ENV[@]+"${WT_ENV[@]}"} bash "$WT_SWEEP" $wt_args > "$WT_OUT" 2>&1; wt_rc=$?
+  cat "$WT_OUT" >> "$COORD_LOG"
+  wt_after=$(free_gb); case "$wt_after" in ''|*[!0-9]*) wt_after="" ;; esac
+  wt_freed="?"; [ -n "$WT_FREE" ] && [ -n "$wt_after" ] && wt_freed=$(( wt_after > WT_FREE ? wt_after - WT_FREE : 0 ))
+  wt_sum=$(grep -E '^Sweep (complete|\(dry run\)):' "$WT_OUT" | tail -1)
+  wt_kept=$(printf '%s' "$wt_sum" | sed -n 's/.*kept=\([0-9]*\).*/\1/p')
+  wt_removed=$(printf '%s' "$wt_sum" | sed -nE 's/.*(would-remove|removed)=([0-9]+).*/\2/p')
+  wt_dry=""; [ -n "$wt_args" ] || wt_dry=" (dry: nothing removed)"
+  say "worktree sweep ($WT_WHY)$wt_dry: removed ${wt_removed:-0}, kept ${wt_kept:-0}, freed $wt_freed GB"
+  if grep -q '^Sweep: the claim list could not be read' "$WT_OUT"; then
+    say "worktree sweep: ⚠ the claim list could not be read, so nothing was removed — the next run reads it again ($WT_OUT)"
+  fi
+  [ "$wt_rc" = 0 ] || say "worktree sweep exited $wt_rc"
 fi
 # A rebuild's set-aside bundles: the newest per open ticket, none once it closes. One GitHub
 # read, and only when a bundle exists; while GitHub waits, only the older copies go.
@@ -143,11 +173,6 @@ else bash "$PRUNE_BUNDLES" $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles e
 
 # ---- 7. disk -----------------------------------------------------------------
 CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"
-free_gb() {
-  if [ -n "${COORDINATOR_DF:-}" ]; then "$COORDINATOR_DF"
-  elif [ -n "${COORDINATOR_FREE_GB:-}" ]; then printf '%s\n' "$COORDINATOR_FREE_GB"
-  else STATE_DIR="$STATE_DIR" bash "$SELF_DIR/disk-guard.sh" free 2>/dev/null; fi   # WSL: the lower of Linux and the host
-}
 FREE_GB=$(free_gb)
 case "$FREE_GB" in ''|*[!0-9]*) say "disk: free space could not be read"; FREE_GB="" ;; esac
 if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt "$COORD_MIN_FREE_GB" ]; then

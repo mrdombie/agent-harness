@@ -161,7 +161,8 @@ build_world
 G -C "$MAIN" remote set-url origin "$SB/no-such-origin.git"
 out=$(sweep --apply)
 there 12619-any-name && ok "with the claims unreadable, nothing is removed" || bad "it removed a worktree without reading the claims"
-printf '%s' "$out" | grep -q 'claims could not be read' && ok "and it says why" || bad "no reason given: $out"
+[ "$(printf '%s\n' "$out" | grep -c 'claim list could not be read')" = 1 ] && ok "and it says why, once" || bad "not said exactly once: $out"
+printf '%s' "$out" | grep -q 'Sweep complete: kept=[1-9][0-9]* removed=0' && ok "and the summary counts every tree kept" || bad "summary: $(printf '%s' "$out" | grep Sweep)"
 G -C "$MAIN" remote set-url origin "$ORIGIN"
 
 # --- 6. the main checkout is never a candidate, even under a root --------------
