@@ -153,6 +153,10 @@ cases_at() { # <commit> <path>
       $only ||= $on if substr($code, $p, 1) eq substr($src, $p, 1);
       for my $b (@blk) { next unless $b->[0] < $p && $p < $b->[1]; $off ||= $b->[2]; $on ||= $b->[3] }
       $t =~ s/\s+/ /g; push @case, [$off, $on, $t] }
+    # ESLint RuleTester makes its cases from valid/invalid arrays, so no it( is in the source.
+    if ($code =~ /\bRuleTester\b/) {
+      while ($src =~ /\.run\s*\(\s*(["\x27`])((?:\\.|(?!\1).)*?)\1/gs) {
+        my ($t, $p) = ($2, $-[0]); next if substr($code, $p, 1) ne substr($src, $p, 1); push @case, [0, 0, $t] } }
     for (@case) { my ($off, $on, $t) = @$_; print +($off || ($only && !$on) ? "off" : "run"), "\t$t\n" }'
 }
 runs() { grep -c '^run	'; }

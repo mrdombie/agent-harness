@@ -125,6 +125,23 @@ check '## Deleted tests
 expect_rc 1 "'covered by' a test file with no live case fails"
 expect_out 'no live it\(/test\( case' "and says why"
 
+# --- 6b. Covered by an ESLint RuleTester file, whose cases are its valid/invalid arrays --
+repo covered-ruletester
+git -C "$R" rm -q src/desk.test.ts
+printf "import { RuleTester } from 'eslint'\nnew RuleTester({}).run('no-thing', rule, { valid: ['a'], invalid: [] })\n" > "$R/src/one-desk.test.ts"
+commit
+check '## Deleted tests
+- `src/desk.test.ts` → covered by `src/one-desk.test.ts`'
+expect_rc 0 "'covered by' a RuleTester file passes"
+
+repo covered-ruletester-word
+git -C "$R" rm -q src/desk.test.ts
+printf "// RuleTester.run('no-thing') was retired\nconst notes = 'RuleTester';\n" > "$R/src/one-desk.test.ts"
+commit
+check '## Deleted tests
+- `src/desk.test.ts` → covered by `src/one-desk.test.ts`'
+expect_rc 1 "a file that only mentions RuleTester has no live case"
+
 # --- 7. Removed on purpose, with and without a reason -----------------------------
 repo purpose
 git -C "$R" rm -q src/desk.test.ts; commit
