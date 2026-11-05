@@ -509,10 +509,8 @@ _driver_ship_commit_baselines() {
   [ "${#files[@]}" -gt 0 ] || return 1
   git -C "$wt" add -- "${files[@]}" >/dev/null 2>&1 || return 1
   local msg=(-m "chore: tighten ratchet baselines" -m "no-changelog: ratchet bookkeeping")
-  # Hooks first. A parked tree with no install fails them on a file they have nothing to say about.
-  if ! git -C "$wt" commit -q "${msg[@]}" -- "${files[@]}" >/dev/null 2>&1; then
-    git -C "$wt" commit -q --no-verify "${msg[@]}" -- "${files[@]}" >/dev/null 2>&1 || return 1
-  fi
+  # The hooks always run: a tree whose hooks cannot run refuses at ship, as before.
+  git -C "$wt" commit -q "${msg[@]}" -- "${files[@]}" >/dev/null 2>&1 || return 1
   driver_say "   ship: committed the lowered ratchet baseline(s) left uncommitted: ${files[*]}"
 }
 
