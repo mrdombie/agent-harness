@@ -110,11 +110,13 @@ one session and one red-then-green proof each, and the session is given its item
 steps and test. The list is posted on the ticket. An item passes once every task of it is
 proved and one proved its test file; the same commits naming another item's test are proved
 again rather than merged. An item whose test never ran sends its last task back on the build's
-own tries. The list is posted again when every item passes. Because a foundation now merges
-with its behaviours, a removal that must wait until the new code is live is its own ticket.
+own tries. The list is posted again when every item passes. `refactor` and `hidden-backend`
+foundations ship in the same change as their behaviours.
 
-Only past `driver.split.planMaxFiles` (50; 0 never) distinct files named by the plan does it
-split (4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10): one part per
+It splits in two cases: past `driver.split.planMaxFiles` (50; 0 never) distinct files named by
+the plan (4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10), and, whatever
+its file count or that setting, with an `expand-contract` foundation of any list length, so the
+new shape deploys before the old one is removed. Then: one part per
 item, each carrying its behaviour, its test steps and a
 `<!-- harness:feature-item parent=… id=F<n> test=… -->` marker, all ready at once. A
 foundation (`expand-contract`, `refactor` or `hidden-backend`) goes first, and only the items

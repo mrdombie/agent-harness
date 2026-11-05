@@ -30,9 +30,10 @@
 # behaviour a person sees or does per item, each with its test steps, all failing, and the
 # ticket builds here as one change, working through the list in order. Splitting every list
 # of two or more (2026-11-02) cost a median 18 h to a PR against 2.9 h unsplit, and change size
-# did not shrink. It splits only past driver.split.planMaxFiles distinct files: then one part
-# per item, a foundation first, a clean-up last. A mechanical change still fans out like
-# Claude Code's /batch: 5-30 independent units, no list.
+# did not shrink. It splits only past driver.split.planMaxFiles distinct files, or with an
+# expand-contract foundation, whose new shape has to deploy before the old is removed: then one
+# part per item, the foundation first, the clean-up last. A mechanical change still fans out
+# like Claude Code's /batch: 5-30 independent units, no list.
 
 # _driver_plan_carried <ticket> <meta> — what a part carries from the parent, by link, never by
 # copy. An approved picture lives in the parent's own comment; a part that re-posted it would
@@ -271,14 +272,15 @@ _driver_plan_build_whole() {
 # built; DRIVER_E_REFUSED a filing failed. A branch that already has commits and a part
 # of an earlier split always build here: parts already in flight finish as they are.
 _driver_plan_split_by_shape() {
-  local t="$1" ans="$2" nf nu src=0 title nfiles max
+  local t="$1" ans="$2" nf nu src=0 title nfiles max contract=""
   nf=$(jq '(.features // []) | length' "$ans"); nu=$(jq '(.units // []) | length' "$ans")
   title=$(driver_gh_read driver_ticket_view "$t" title '.title' 2>/dev/null) || title=""
   if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
     [ "$nf" -le 1 ] && [ "$nu" -eq 0 ] || driver_say "   plan: #$t is itself a part of a split — it builds"
     return 0
   fi
-  if [ "$nf" -le 1 ] && [ "$nu" -eq 0 ]; then
+  [ "$nf" -eq 0 ] || [ "$(jq -r '.foundation.reason // ""' "$ans")" != expand-contract ] || contract=1
+  if [ "$nf" -le 1 ] && [ "$nu" -eq 0 ] && [ -z "$contract" ]; then
     [ "$nf" -eq 0 ] || _driver_plan_build_whole "$t" "$ans"
     return 0
   fi
@@ -290,12 +292,13 @@ _driver_plan_split_by_shape() {
   else
     nfiles=$(jq '[.tasks[]?.files[]? | (.path // .) | tostring] | unique | length' "$ans")
     max=$(driver_split_plan_max)
-    if [ "$max" -eq 0 ] || [ "$nfiles" -le "$max" ]; then
+    if [ -z "$contract" ] && { [ "$max" -eq 0 ] || [ "$nfiles" -le "$max" ]; }; then
       driver_say "   plan: $nf behaviours, $nfiles file(s) — it builds here as one change, in list order"
       _driver_plan_build_whole "$t" "$ans"
       return 0
     fi
-    driver_say "   plan: $nfiles files, over driver.split.planMaxFiles ($max)"
+    if [ -n "$contract" ]; then driver_say "   plan: an expand-contract foundation — the new shape deploys before the old is removed"
+    else driver_say "   plan: $nfiles files, over driver.split.planMaxFiles ($max)"; fi
     _driver_plan_split_features "$t" "$ans" || src=$?
   fi
   [ "$src" -eq 0 ] && return "$DRIVER_E_NOOP"
