@@ -39,6 +39,8 @@ want "a bare (failed) once: the second try lands"  "0 2 yes" "$RC $N $ON"
 want "and the head is on origin"                   "$HEAD_NOW" "$("$REAL_GIT" -C "$FIX/origin" rev-parse refs/heads/tkt-1/work 2>/dev/null)"
 try 2 failed
 want "(failed) twice: refused after one retry"     "1 2 no" "$([ "$RC" -ne 0 ] && echo 1 || echo 0) $N $ON"
+try 1 "fatal error in commit_refs_rules"
+want "GitHub's internal rules error once: the second try lands" "0 2 yes" "$RC $N $ON"
 try 1 "pre-receive hook declined"
 want "a stated reason is not sent twice"           "1 1 no" "$([ "$RC" -ne 0 ] && echo 1 || echo 0) $N $ON"
 suite_end "$FAILED"

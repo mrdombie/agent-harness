@@ -526,8 +526,8 @@ driver_push() {
   [ -z "${DRIVER_PUSH_LEASE_SHA:-}" ] || [ "${DRIVER_PUSH_LEASE_BRANCH:-}" != "$branch" ] \
     || lease=("--force-with-lease=$branch:$DRIVER_PUSH_LEASE_SHA")
   "${penv[@]}" git -C "$wt" push -u ${lease[@]+"${lease[@]}"} origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
-  # GitHub's bare "(failed)" names no reason and clears on its own: the next push of the same head went through.
-  if [ "$rc" -ne 0 ] && grep -qE '\[remote rejected\].*\(failed\)[[:space:]]*$' "$f" 2>/dev/null; then
+  # GitHub's bare "(failed)" and its internal rules error name no reason and clear on their own: the next push of the same head went through.
+  if [ "$rc" -ne 0 ] && grep -qE '\[remote rejected\].*\(failed\)[[:space:]]*$|fatal error in commit_refs_rules' "$f" 2>/dev/null; then
     driver_say "   $slot: GitHub refused the push with no reason; trying once more"
     sleep "${DRIVER_PUSH_RETRY_SECS:-10}"; rc=0
     "${penv[@]}" git -C "$wt" push -u ${lease[@]+"${lease[@]}"} origin "refs/heads/$branch:refs/heads/$branch" > "$f" 2>&1 || rc=$?
