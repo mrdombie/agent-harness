@@ -151,6 +151,13 @@ plant() { # <name> <file> <from> <to> <case> <green>
   [ "${n:-0}" -gt 0 ] || { bad "plant '$1' did not land"; return; }
   grep -qF -- "$3" "$f" && { bad "plant '$1' left the original in place"; return; }
   got=$(INST_SUT="$K/builder-install.sh" DEV_SUT="$K/builder-dev.sh" "$5")
+  # A plant that only loses a race can miss it on a loaded runner, so it gets more goes.
+  local try=1
+  while [ "$got" = "$6" ] && [ "$try" -lt "${PLANT_TRIES:-1}" ]; do
+    for r in "$T"/dev/*/pgid; do [ -f "$r" ] && kill -KILL -- "-$(cat "$r")" 2>/dev/null; done
+    rm -rf "${BUILDER_DEV_DIR:?}"/*
+    got=$(INST_SUT="$K/builder-install.sh" DEV_SUT="$K/builder-dev.sh" "$5"); try=$((try + 1))
+  done
   [ "$got" != "$6" ] && ok "plant '$1' turns its case red ($got)" || bad "plant '$1' survived: the case still reads $got"
   cp "$HERE/$2" "$f"
 }
@@ -163,7 +170,7 @@ plant "unverified stamp"           builder-install.sh '  verify "$TREE" || { say
 GREEN_DEV="ports-apart|sh-100-a|sh-1100-b|gone|gone|alive|alive|sh-1100-b"
 plant "no group of its own"        builder-dev.sh "exec perl -e 'setpgrp(0, 0); exec @ARGV or exit 127'" "exec perl -e 'exec @ARGV or exit 127'" case_servers_apart "$GREEN_DEV"
 plant "stop reaches a peer"        builder-dev.sh '  kill -TERM -- "-$g" 2>/dev/null' '  for x in "$DEV_DIR"/*/pgid; do kill -TERM -- "-$(cat "$x")" 2>/dev/null; done' case_servers_apart "$GREEN_DEV"
-plant "the port is not reserved"   builder-dev.sh '  mkdir "$DEV_DIR/$cand" 2>/dev/null || continue' '  mkdir -p "$DEV_DIR/$cand"' case_servers_apart "$GREEN_DEV"
+PLANT_TRIES=10 plant "the port is not reserved"   builder-dev.sh '  mkdir "$DEV_DIR/$cand" 2>/dev/null || continue' '  mkdir -p "$DEV_DIR/$cand"' case_servers_apart "$GREEN_DEV"
 for r in "$T"/dev/*/pgid; do [ -f "$r" ] && kill -KILL -- "-$(cat "$r")" 2>/dev/null; done
 rm -rf "${BUILDER_DEV_DIR:?}"/*
 
