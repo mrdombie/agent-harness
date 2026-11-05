@@ -489,6 +489,31 @@ _driver_ship_person_stop() {
   esac
 }
 
+# _driver_ship_commit_baselines <ticket> <tree> — a ratchet's lowered baseline left
+# uncommitted (its own commit failed in self-check) is committed here, not refused.
+# Only when every dirty path is a modified baseline (gates.ratchets[].baseline, or
+# scripts/**/baseline.json) and no number in any of them rose; anything else is left
+# for the uncommitted-changes refusal. 0 when it committed.
+_driver_ship_commit_baselines() {
+  local t="$1" wt="$2" line xy f allowed r
+  local -a files=()
+  allowed=$(jq -r '[(.gates.ratchets // [])[]? | select(type == "object") | (.baseline // empty) | if type == "array" then .[] else . end] | .[]' "$HARNESS_CFG" 2>/dev/null)
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    xy="${line:0:2}"; f="${line:3}"
+    case "$xy" in 'M '|' M'|MM) ;; *) return 1 ;; esac
+    case "$f" in scripts/*/baseline.json) ;; *) grep -qFx -- "$f" <<<"$allowed" || return 1 ;; esac
+    r=$(_driver_baseline_raised "$wt" "$f") && { driver_say "   ship: $r is uncommitted and ROSE, so it is not committed for the run"; return 1; }
+    files+=("$f")
+  done <<<"$(git -C "$wt" status --porcelain 2>/dev/null)"
+  [ "${#files[@]}" -gt 0 ] || return 1
+  git -C "$wt" add -- "${files[@]}" >/dev/null 2>&1 || return 1
+  local msg=(-m "chore: tighten ratchet baselines" -m "no-changelog: ratchet bookkeeping")
+  # The hooks always run: a tree whose hooks cannot run refuses at ship, as before.
+  git -C "$wt" commit -q "${msg[@]}" -- "${files[@]}" >/dev/null 2>&1 || return 1
+  driver_say "   ship: committed the lowered ratchet baseline(s) left uncommitted: ${files[*]}"
+}
+
 driver_step_ship() { # <ticket>
   local t="${1:?driver_step_ship: need a ticket}"
   local wt branch dirty ahead verdict rounds sha head body trunk r title nblock blist
@@ -502,6 +527,12 @@ driver_step_ship() { # <ticket>
   [ -n "$branch" ] || branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)
   if [ "$branch" = "$INTEGRATION_BRANCH" ] || [ "$branch" = "HEAD" ]; then
     driver_say "✋ ship: the worktree is on '$branch'. Nothing is ever pushed or merged straight to the trunk."
+    return "$DRIVER_E_REFUSED"
+  fi
+  # The branch on record only: a guessed one would push whatever HEAD holds.
+  if [ -n "$(driver_state_get "$t" branch)" ] && ! driver_heal_detached "$t" "$wt" "$branch"; then
+    driver_say "✋ ship: HEAD in $wt is detached and $branch cannot be fast-forwarded to it. Nothing is pushed."
+    driver_state_set "$t" park_note "HEAD in the worktree is detached at $(git -C "$wt" rev-parse --short HEAD 2>/dev/null) and $branch is not an ancestor of it, so ship could not put the branch back on it"
     return "$DRIVER_E_REFUSED"
   fi
 
@@ -530,6 +561,7 @@ driver_step_ship() { # <ticket>
   IFS=$'\t' read -r tier tierwhy <<<"$(driver_change_tier "$t" "$wt" "$ptrunk")"
   [ "$tier" != screen ] || _driver_ship_evidence_plan "$t" "$wt" "$ptrunk"
 
+  _driver_ship_commit_baselines "$t" "$wt" || true
   dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
   if [ -n "$dirty" ]; then
     driver_say "✋ ship: uncommitted changes — $(printf '%s' "$dirty" | awk '{print $NF}' | tr '\n' ' '). A change that is not committed is a change the gates never read."
