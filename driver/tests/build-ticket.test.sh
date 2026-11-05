@@ -717,9 +717,13 @@ want "without parking"                         "" "$(cat "$FIX/park.log")"
 want_in "saying it is not parked"              'requeued.*not parked' "$out"
 want "and its brief is back on the queue"      "Resume: PR #81 is red" "$(jq -r '.tickets[]? | select(.n == 152) | .note' "$STATE/coordinator/queue.json" 2>/dev/null)"
 want "the holder's claim is not released"      "$FIX/theirs-152" "$(bash "$CLK" show 152 2>/dev/null | jq -r '.worktree // ""')"
+# Two coordinators race for the same ticket and the loser lost 10 in a row: 12 tickets
+# parked for the PM on 2026-11-05 while the peer was building them. A dead holder is the
+# reconciler's to free, so a held claim is never counted toward a park.
 DRIVER_MAX_BUSY_REQUEUES=1 bt 152 --brief "$FIX/brief-v.md" >/dev/null; rc=$?
-want "past its cap it parks"                   "20" "$rc"
-want_in "saying how many runs it waited"       'start could not go on for 1 requeued runs in a row' "$(cat "$FIX/park.log")"
+DRIVER_MAX_BUSY_REQUEUES=1 bt 152 --brief "$FIX/brief-v.md" >/dev/null; rc=$?
+want "past the busy cap it is still a requeue" "28" "$rc"
+want "and still not parked"                    "" "$(cat "$FIX/park.log")"
 bash "$CLK" release 152 --force >/dev/null 2>&1
 
 echo "--- a question about a claim another run holds is a requeue, not a PM park (#319) ---"
