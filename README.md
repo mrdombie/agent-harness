@@ -373,6 +373,15 @@ whether the mistake came back.
   records a source fix; from then on a class whose count has not fallen reads
   `NOT FALLING`, and the fix is reworked.
 
+**Area guides.** A `REVIEW.md` in a folder tells the reviewer how to review the files
+under it: what to skip, the most nits it may raise, and the evidence it asks for. The
+review step hands the reviewer the nearest `REVIEW.md` above each changed file, the
+repo root's as the fallback, each guide once with the files it covers
+(`scripts/review-guide.sh`; at most `REVIEW_GUIDE_MAX` guides, default 8, each cut at
+`REVIEW_GUIDE_BYTES`, default 4000). No guide, nothing added. `templates/REVIEW.md` is
+the starting shape. A repeated review class whose fix is "the reviewer should not
+raise this here" lands as a line in that area's `REVIEW.md`.
+
 ## Building one ticket
 
 `driver/build-ticket <ticket>` walks a ticket through seven fixed steps —
