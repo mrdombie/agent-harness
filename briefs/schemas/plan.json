@@ -145,7 +145,7 @@
             }
           },
           "item": {
-            "description": "Which part of a split builds this task: the feature list item it delivers (`F<n>`), the shared `foundation` that goes first, or the `cleanup` that goes last. Required on every task when the plan has `features`, so each item becomes one part and no part is a layer.",
+            "description": "What this task builds: the feature list item it delivers (`F<n>`), the shared `foundation` that goes first, or the `cleanup` that goes last. Required on every task when the plan has `features`, so no task is a layer.",
             "type": "string",
             "pattern": "^(F[1-9][0-9]*|foundation|cleanup)$"
           }
@@ -267,7 +267,7 @@
       }
     },
     "features": {
-      "description": "The feature list (Anthropic's long-running harness): one user-visible behaviour per item, each with the test steps that prove it, all failing. Write it for every ticket that adds or changes something a person can see or do. Kept in the driver state and on the parent; only `passes` ever changes, and editing or removing an item's steps is refused. Two or more items split the ticket: one part per item, built side by side.",
+      "description": "The feature list (Anthropic's long-running harness): one user-visible behaviour per item, each with the test steps that prove it, all failing. Write it for every ticket that adds or changes something a person can see or do. Kept in the driver state and on the ticket; only `passes` ever changes, and editing or removing an item's steps is refused. The ticket builds the whole list as one change, in order; only a plan past driver.split.planMaxFiles files is split, one part per item.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -305,18 +305,18 @@
             "minLength": 1
           },
           "passes": {
-            "description": "Every item starts failing. Only the driver sets it, when the item's part has merged with its steps passing.",
+            "description": "Every item starts failing. Only the driver sets it, once the item's test steps are proved.",
             "const": false
           },
           "needsFoundation": {
-            "description": "True when this item builds on the foundation part and so waits for it. False or absent, it is built side by side with the others from the start.",
+            "description": "True when this item builds on the foundation. Built whole, the foundation simply goes first; if the plan is split, this item's part waits for the foundation part.",
             "type": "boolean"
           }
         }
       }
     },
     "foundation": {
-      "description": "A shared foundation that goes first, before the items that need it. Allowed only with a named reason: `expand-contract` (the new shape added beside the old; a clean-up part removes the old), `refactor` (a change in structure with no change in behaviour), or `hidden-backend` (backend shipped dark, switched on by a later item's screen). Its tasks carry `item: foundation`.",
+      "description": "A shared foundation that goes first, before the items that need it. Allowed only with a named reason: `expand-contract` (the new shape added beside the old; clean-up tasks remove the old), `refactor` (a change in structure with no change in behaviour), or `hidden-backend` (backend shipped dark, switched on by a later item's screen). Its tasks carry `item: foundation`.",
       "type": "object",
       "additionalProperties": false,
       "required": [

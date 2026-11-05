@@ -26,14 +26,13 @@
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/feature-list.sh" || exit 1
 
-# SPLIT BY BEHAVIOUR, NEVER BY COUNT (owner, 2026-11-02, after Anthropic's long-running
-# harness). It was ">3 tasks or >20 files, then chain": ~15 of 25 sampled parts were a layer
-# or a chore, 86 parts sat waiting on a predecessor, and a feature took a median 14.6 h from
-# first part filed to last merged. Now a plan writes a feature list, one behaviour a person
-# sees or does per item, each with its test steps, all failing. Two or more items: one part
-# per item, built side by side. A shared foundation goes first only with its reason, and only
-# the items that need it wait for it; a clean-up part goes last. A mechanical change fans out
-# like Claude Code's /batch: 5-30 independent units, no list.
+# BUILD WHOLE, SPLIT ONLY WHEN HUGE (owner, 2026-11-05). A plan writes a feature list, one
+# behaviour a person sees or does per item, each with its test steps, all failing, and the
+# ticket builds here as one change, working through the list in order. Splitting every list
+# of two or more (2026-11-02) cost a median 18 h to a PR against 2.9 h unsplit, and change size
+# did not shrink. It splits only past driver.split.planMaxFiles distinct files: then one part
+# per item, a foundation first, a clean-up last. A mechanical change still fans out like
+# Claude Code's /batch: 5-30 independent units, no list.
 
 # _driver_plan_carried <ticket> <meta> — what a part carries from the parent, by link, never by
 # copy. An approved picture lives in the parent's own comment; a part that re-posted it would
@@ -196,14 +195,14 @@ Refs #%s' "$((i+1))" "$n" "$t" "$carried" "$recipe" "$(jq -r '.[0].title' <<<"$u
 # _driver_plan_resend <ticket> <why> <problems> — the plan answered once more with what is wrong.
 _driver_plan_resend() {
   local note; note="$(driver_state_dir "$1")/steps/plan.split-note.md"
-  printf 'SENT BACK ONCE: %s\n\n%s\n\nGive the same answer again with these fixed. A feature list item is one behaviour a person sees or does, `F<n>`, with test steps run as a fast component or logic test in the required test run, and every task names the item it builds (`item`): F<n>, foundation or cleanup. Never split by layer.\n' \
+  printf 'SENT BACK ONCE: %s\n\n%s\n\nGive the same answer again with these fixed. A feature list item is one behaviour a person sees or does, `F<n>`, with test steps run as a fast component or logic test in the required test run, and every task names the item it builds (`item`): F<n>, foundation or cleanup, never a layer.\n' \
     "$2" "$(printf '%s\n' "$3" | sed 's/^/- /')" > "$note"
   driver_say "↩ plan: $2 — asked once more"
   driver_ai_step "$1" plan "$note"
 }
 
 # _driver_plan_list_problems <ticket> <plan.json> <labels-csv> <title> <body> — what is wrong
-# with how the plan splits, one a line. A part of a split checks only that its plan runs its
+# with how the plan builds its list, one a line. A part of a split checks only that its plan runs its
 # item's steps; any other plan checks its list, and a feature ticket must have one.
 _driver_plan_list_problems() {
   local t="$1" ans="$2" labels="$3" title="$4" body="$5" item id test l
@@ -236,12 +235,12 @@ _driver_plan_shape() {
   labels=$(jq -r '[.labels[]?.name] | join(",")' <<<"$meta")
   probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
   if [ -n "$probs" ]; then
-    rc=0; _driver_plan_resend "$t" "the plan does not split by behaviour" "$probs" || rc=$?
+    rc=0; _driver_plan_resend "$t" "the plan does not build its list by behaviour" "$probs" || rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
     probs=$(_driver_plan_list_problems "$t" "$ans" "$labels" "$title" "$body")
     if [ -n "$probs" ]; then
-      driver_say "✋ plan: asked once and it still does not split by behaviour — $(printf '%s' "$probs" | paste -sd';' - | sed 's/;/; /g')"
-      driver_state_set "$t" park_note "the plan does not split by behaviour: $(printf '%s' "$probs" | paste -sd';' -)"
+      driver_say "✋ plan: asked once and it still does not build its list by behaviour — $(printf '%s' "$probs" | paste -sd';' - | sed 's/;/; /g')"
+      driver_state_set "$t" park_note "the plan does not build its list by behaviour: $(printf '%s' "$probs" | paste -sd';' -)"
       return "$DRIVER_E_REFUSED"
     fi
   fi
@@ -257,11 +256,22 @@ _driver_plan_shape() {
   return 0
 }
 
+# _driver_plan_build_whole <ticket> <plan.json> — this ticket works through its list here, so
+# the build keeps `passes`; the tasks run foundation, F1, F2…, clean-up whatever order they came in.
+_driver_plan_build_whole() {
+  local t="$1" ans="$2"
+  driver_state_set "$t" build_whole 1
+  jq '.tasks |= sort_by((.item // "") as $i
+      | if $i == "foundation" then 0 elif $i == "cleanup" then 1e9
+        elif ($i | test("^F[0-9]+$")) then ($i[1:] | tonumber) else 1e8 end)' "$ans" > "$ans.tmp" && mv "$ans.tmp" "$ans"
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$(driver_state_dir "$t")/features.json")" >/dev/null 2>&1 || true
+}
+
 # _driver_plan_split_by_shape <ticket> <plan.json> — 0 builds here; DRIVER_E_NOOP split, nothing
 # built; DRIVER_E_REFUSED a filing failed. A branch that already has commits and a part
 # of an earlier split always build here: parts already in flight finish as they are.
 _driver_plan_split_by_shape() {
-  local t="$1" ans="$2" nf nu src=0 title
+  local t="$1" ans="$2" nf nu src=0 title nfiles max
   nf=$(jq '(.features // []) | length' "$ans"); nu=$(jq '(.units // []) | length' "$ans")
   title=$(driver_gh_read driver_ticket_view "$t" title '.title' 2>/dev/null) || title=""
   if printf '%s' "$title" | grep -qE ' — part [0-9]+ of [0-9]+: '; then
@@ -269,7 +279,7 @@ _driver_plan_split_by_shape() {
     return 0
   fi
   if [ "$nf" -le 1 ] && [ "$nu" -eq 0 ]; then
-    [ "$nf" -eq 0 ] || swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$(driver_state_dir "$t")/features.json")" >/dev/null 2>&1 || true
+    [ "$nf" -eq 0 ] || _driver_plan_build_whole "$t" "$ans"
     return 0
   fi
   if [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
@@ -277,7 +287,17 @@ _driver_plan_split_by_shape() {
     return 0
   fi
   if [ "$nu" -gt 0 ]; then _driver_plan_fan_out "$t" "$ans" || src=$?
-  else _driver_plan_split_features "$t" "$ans" || src=$?; fi
+  else
+    nfiles=$(jq '[.tasks[]?.files[]? | (.path // .) | tostring] | unique | length' "$ans")
+    max=$(driver_split_plan_max)
+    if [ "$max" -eq 0 ] || [ "$nfiles" -le "$max" ]; then
+      driver_say "   plan: $nf behaviours, $nfiles file(s) — it builds here as one change, in list order"
+      _driver_plan_build_whole "$t" "$ans"
+      return 0
+    fi
+    driver_say "   plan: $nfiles files, over driver.split.planMaxFiles ($max)"
+    _driver_plan_split_features "$t" "$ans" || src=$?
+  fi
   [ "$src" -eq 0 ] && return "$DRIVER_E_NOOP"
   driver_state_set "$t" park_cause pm; return "$DRIVER_E_REFUSED"
 }
@@ -377,7 +397,7 @@ driver_step_plan() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  # SPLIT BY BEHAVIOUR (above): one part per item of the feature list, or a mechanical fan-out.
+  # BUILD WHOLE (above), or past the file limit one part per item, or a mechanical fan-out.
   rc=0; _driver_plan_split_by_shape "$t" "$ans" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
 

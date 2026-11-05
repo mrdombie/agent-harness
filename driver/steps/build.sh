@@ -24,6 +24,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ai-step.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/feature-list.sh" || exit 1
 
 # driver_prove_red_green <repo> <test-file> <test-commit> <impl-commit> <command>
 #
@@ -569,8 +570,9 @@ _driver_prove_by_break_once() {
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole
   export DRIVER_TICKET="$t"
+  whole=$(driver_state_get "$t" build_whole)
   repo=$(driver_state_get "$t" worktree)
   [ -n "$repo" ] || repo="$MAIN_REPO"
 
@@ -639,7 +641,7 @@ driver_step_build() { # <ticket>
     rm -f "$proved"
 
     # The one task this call builds, as the brief's own placeholder.
-    driver_fact_put "$t" "$slot" PLAN_TASK "$(printf '%s' "$task" | jq .)"
+    driver_fact_put "$t" "$slot" PLAN_TASK "$(_driver_build_task_fact "$t" "$task" "$whole")"
     # What the driver said about the last try at this task, so a retry is not blind.
     if [ -s "$(driver_state_dir "$t")/steps/$slot.refused" ]; then
       driver_fact_put "$t" "$slot" LAST_TRY "$(cat "$(driver_state_dir "$t")/steps/$slot.refused")"
@@ -704,7 +706,7 @@ driver_step_build() { # <ticket>
         driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' is test-only and names no break to prove it (testOnly needs test.file, command, testCommit and break)."
         bad=1; continue
       fi
-      pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile"
+      pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):break:$bfile$(_driver_build_item_key "$task" "$tfile" "$whole")"
       if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
         driver_say "   build '$got_task' is proved by the same test commit and break as '$same' — one change, so the two are one task: merged, and proved once."
         _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha"
@@ -730,7 +732,7 @@ driver_step_build() { # <ticket>
     # KEYED ON THE RESOLVED COMMIT, not on the string the model typed. The contract asks
     # for seven characters or more, so `a1b2c3d` and its full sha are two keys for one
     # commit — and that is a third door to the same hole.
-    pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")"
+    pair="$(git -C "$repo" rev-parse --verify -q "$tsha^{commit}" 2>/dev/null || printf '%s' "$tsha"):$(git -C "$repo" rev-parse --verify -q "$isha^{commit}" 2>/dev/null || printf '%s' "$isha")$(_driver_build_item_key "$task" "$tfile" "$whole")"
     # TWO TASKS ONE CHANGE PROVES ARE ONE TASK. Refused, the model was asked five times
     # to split a change that was rightly one, and the ticket parked on a proof that held
     # (#13584). So the later task is merged into the earlier one, said, and not re-proved.
@@ -780,6 +782,8 @@ driver_step_build() { # <ticket>
     fi
   done
 
+  [ -z "$whole" ] || _driver_build_features "$t" || bad=1
+
   if [ "$bad" -eq 0 ]; then
     if [ "$kept" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
@@ -792,6 +796,66 @@ driver_step_build() { # <ticket>
   fi
   _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
   return "$DRIVER_E_REWORK"
+}
+
+# _driver_build_task_fact <ticket> <task> <whole> — the task as the brief reads it. A task of
+# a ticket building its whole list carries its item: the session sees no ticket and no list.
+_driver_build_task_fact() {
+  local list; list="$(driver_state_dir "$1")/features.json"
+  if [ -n "$3" ] && [ -s "$list" ] && jq -e --slurpfile l "$list" --argjson task "$2" -n \
+       '$l[0].items | any(.id == $task.item)' >/dev/null 2>&1; then
+    jq --slurpfile l "$list" '. + {feature: (.item as $i | $l[0].items[] | select(.id == $i) | {id, behaviour, steps, test, rule: "This item passes only when a task of it proves `test`: when this task'"'"'s tests name that file, it is your testFirst.test.file. Never edit its steps."})}' <<<"$2"
+  else
+    printf '%s' "$2" | jq .
+  fi
+}
+
+# _driver_build_item_key <task> <test-file> <whole> — what joins a list item's proof key. Two
+# tasks one change proves are merged as one, and proved once; that must not pass an item
+# whose own test never ran. So the same commits naming another test file are proved again.
+_driver_build_item_key() {
+  [ -n "$3" ] || return 0
+  case "$(jq -r '.item // ""' <<<"$1")" in F[0-9]*) printf ':%s' "$2" ;; esac
+}
+
+# _driver_build_features <ticket> — an item passes once every task of it is proved and one of
+# them proved the test file its steps run in. Re-derived on each pass, kept in the list, and
+# posted when the whole list first passes. 1 while any item fails: an item whose tasks are all
+# proved and whose test never ran sends its last task back, naming the file.
+_driver_build_features() {
+  local t="$1" d list id test i m last all hit pass fails=0 before total
+  d="$(driver_state_dir "$t")/steps"; list="$(driver_state_dir "$t")/features.json"
+  [ -s "$list" ] || return 0
+  before=$(jq -c '[.items[].passes]' "$list")
+  total=$(jq '.items | length' "$list")
+  for id in $(jq -r '.items[].id' "$list"); do
+    test=$(jq -r --arg id "$id" '.items[] | select(.id == $id) | .test' "$list")
+    last=""; all=1; hit=""
+    for i in $(jq -r --arg id "$id" '.tasks | to_entries[] | select(.value.item == $id) | .key + 1' "$d/plan.json"); do
+      last="$i"; m="$d/build-task-$i.proved"
+      if [ ! -s "$m" ]; then all=""; continue; fi
+      jq -e --arg f "$test" '((.answer.testFirst.test.file // .answer.testOnly.test.file // "") | ltrimstr("./")) == ($f | ltrimstr("./"))' "$m" >/dev/null 2>&1 && hit=1
+    done
+    pass=false
+    if [ -n "$last" ] && [ -n "$all" ]; then
+      if [ -n "$hit" ]; then pass=true
+      else
+        printf '%s passes only when its steps pass in %s, and no task of it proved that file: prove it in testFirst.test.file\n' "$id" "$test" > "$d/build-task-$last.refused"
+        rm -f "$d/build-task-$last.proved"
+        driver_say "✋ build: $(cat "$d/build-task-$last.refused")"
+      fi
+    fi
+    [ "$pass" = true ] || fails=$((fails+1))
+    feature_list_set_pass "$list" "$id" "$pass" > "$list.tmp" && mv "$list.tmp" "$list"
+  done
+  if [ "$fails" -gt 0 ]; then
+    driver_say "   build: $((total - fails)) of $total feature list item(s) pass"
+    return 1
+  fi
+  driver_say "   build: all $total feature list item(s) pass"
+  [ "$before" = "$(jq -c '[.items[].passes]' "$list")" ] || \
+    swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$list")" >/dev/null 2>&1 || true
+  return 0
 }
 
 # _driver_build_in <n> <list> — 0 when <n> is one of the space-separated <list>.

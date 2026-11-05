@@ -11,7 +11,7 @@
 #   feature_list_guard <old.json> <new.json> exit 0 when only passes changed (or a part was named once); 3 with why
 #   feature_list_store <ticket> <list.json>  keep it in the ticket's driver state; 3 when it edits the one kept
 #   feature_list_set_pass <list.json> <Fn> [false]  the list with that item passing (or not)
-#   feature_list_comment <list.json>         the comment that carries it on the parent
+#   feature_list_comment <list.json>         the comment that carries it on the ticket
 #   feature_list_from_comments < comments    every list in a ticket's comments ([{body}]), oldest first, one a line
 #
 # The steps run as fast component or logic tests in the project's required test run
@@ -36,7 +36,7 @@ feature_list_problems() { # <plan.json>
           elif (.item | startswith("F")) and (.item as $it | $ids | any(. == $it) | not) then "task \($k) (\(.title)) names \(.item), which the list does not have"
           else empty end),
       ($f[] | . as $i | [$t[] | select(.item == $i.id)] as $mine
-        | if ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own part"
+        | if ($mine | length) == 0 then "\($i.id) has no task: each item is built by its own tasks"
           elif ([$mine[].tests[]?.file] | any(. == $i.test) | not) then "\($i.id) runs its steps in \($i.test), and no task of \($i.id) writes it"
           else empty end),
       ($f[] | select(.test | test($br)) | "\(.id) runs its steps in \(.test), a browser check: the steps run as fast component or logic tests in the required test run"),
@@ -44,7 +44,7 @@ feature_list_problems() { # <plan.json>
       (if $nf == 0 and (.foundation != null) then "it names a `foundation` and no task builds it (no task has item foundation)" else empty end),
       ($f[] | select(.needsFoundation == true and $nf == 0) | "\(.id) needs a foundation and the plan has none"),
       (if (.foundation.reason // "") == "expand-contract" and ([$t[] | select(.item == "cleanup")] | length) == 0
-           then "an expand-contract foundation has no clean-up part: the contract step (the old path removed) is a task with item cleanup" else empty end),
+           then "an expand-contract foundation has no clean-up: the contract step (the old path removed) is a task with item cleanup" else empty end),
       (if (.units // []) != [] then "it has units and a feature list: a mechanical change fans out with no feature list" else empty end)
       end' "$1" 2>/dev/null) || { printf 'the plan could not be read as JSON\n'; return 1; }
   [ -z "$out" ] && return 0
@@ -94,7 +94,8 @@ feature_list_set_pass() { # <list.json> <Fn> [true|false]
 
 feature_list_comment() { # <list.json>
   jq -r --arg m "$FEATURE_LIST_MARK" '
-    "**Feature list** — one behaviour a part, each passing only when its test steps pass in the required test run. Only `passes` changes; an item'"'"'s steps are never edited or removed. The feature is done when every item passes and its clean-up part has merged.\n\n"
+    ([.items[].part, .cleanup.part?] | map(select(. != null)) | length > 0) as $parts
+    | "**Feature list** — " + (if $parts then "one behaviour a part" else "one behaviour an item, built here as one change" end) + ", each passing only when its test steps pass. Only `passes` changes; an item'"'"'s steps are never edited or removed. " + (if $parts then "The feature is done when every item passes and its clean-up part has merged." else "The feature is done when every item passes and this change has merged." end) + "\n\n"
     + ([.items[] | "- " + (if .passes then "✅" else "⬜" end) + " **" + .id + "** " + .behaviour
         + (if .part then " — #\(.part)" else "" end) + (if .passes then " (passes)" else " (failing)" end)] | join("\n"))
     + "\n\n```json\n" + (. | tojson) + "\n```\n" + $m' "$1"
