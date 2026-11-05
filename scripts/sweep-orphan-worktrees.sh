@@ -85,6 +85,10 @@ SEE=1; wt_can_see_processes && wt_cwds_load || SEE=0
 # One claim check for every deleter (worktree-lib.sh): origin's refs, the claim list, the lockfiles.
 CLAIMS_OK=1
 wt_claims_load "$MAIN_REPO" || CLAIMS_OK=0
+# Said once, not once a tree: every tree is kept, and the next run reads the list again.
+if [ "$CLAIMS_OK" = 0 ] && [ ${#WORKTREES[@]} -gt 0 ]; then
+  echo "Sweep: the claim list could not be read from $MAIN_REPO — nothing removed this run, ${#WORKTREES[@]} worktree(s) kept"
+fi
 
 ticket_of() { wt_ticket_of "$1"; }
 branch_of() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null; }
@@ -199,7 +203,7 @@ keep() { echo "keep    $(basename "$1") — $2"; KEPT+=("$1"); }
 
 for wt in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
   real=$(wt_real "$wt")
-  [ "$CLAIMS_OK" = 1 ] || { keep "$wt" "claims could not be read from origin"; continue; }
+  [ "$CLAIMS_OK" = 1 ] || { KEPT+=("$wt"); continue; }
   common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
     || { keep "$wt" "unreadable (no readable git dir)"; continue; }
   if [ "$common" != "$MAIN_COMMON" ] && [ "$(origin_of "$wt")" != "$MAIN_ORIGIN" ]; then
@@ -269,4 +273,5 @@ if [ ${#TOOLS[@]} -gt 0 ]; then
   else echo "tools snapshots (dry run): would-remove=$t_removed kept=$t_kept ($(( t_kb / 1024 ))MB)"; fi
 fi
 
-cache_pass ${KEPT[@]+"${KEPT[@]}"}
+# Without the claim list the cache pass could clean nothing either.
+if [ "$CLAIMS_OK" = 1 ]; then cache_pass ${KEPT[@]+"${KEPT[@]}"}; fi

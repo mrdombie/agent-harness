@@ -52,7 +52,8 @@
 #   5c. sheet        the owner writes the order, the floor and every machine's heartbeat;
 #                    a reader posts its heartbeat on the sheet (coordinator-sheet.sh)
 #   6. housekeeping  reconcile-claims.sh, stop-dev-servers.sh --sweep, then every
-#                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes)
+#                    coordinator.sweepEveryMin the worktree sweep (merged and closed work goes),
+#                    and every pass while free disk is under coordinator.disk.stopBelowGb
 #   7. disk          below coordinator.minFreeGb: the worktree cache pass, then an alarm if still below
 #   8. judgement     one fresh `claude -p` per judgement event (coordinator-judge.sh),
 #                    every tick, question parks first — never behind housekeeping's lock
