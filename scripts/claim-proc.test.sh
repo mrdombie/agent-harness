@@ -23,6 +23,22 @@ skip() { SKIP=$((SKIP+1)); echo "  SKIP — $1"; }
 
 echo "claim-proc: portable cases"
 
+# A process 1 hour old whose etime reads 5.5% short, as WSL's slow uptime clock does.
+( sleep 30 ) & _drift_pid=$!
+_drift_now=$(date +%s); _drift_ref=$(( _drift_now - 3600 ))
+_drift_case() { # <drift-pct or empty> <version-file>
+  ( proc_born() { printf '%s' $(( _drift_ref + 198 )); }
+    PID_BORN_DRIFT_PCT="$1" PROC_VERSION_FILE="$2" pid_born_by "$_drift_pid" "$_drift_ref" )
+}
+_drift_wsl=$(mktemp); echo 'Linux version 6.6 (microsoft-standard-WSL2)' > "$_drift_wsl"
+_drift_plain=$(mktemp); echo 'Linux version 6.6 (ubuntu)' > "$_drift_plain"
+_drift_case "" "$_drift_wsl" && ok "WSL: a live run an hour old, its clock 5.5% slow, is still the run" || fail "WSL: a drifted live run read as a stranger"
+_drift_case "" "$_drift_plain" && fail "elsewhere the same reading must still be a stranger" || ok "elsewhere the same reading is still a stranger"
+( proc_born() { printf '%s' $(( _drift_ref + 1800 )); }
+  PID_BORN_DRIFT_PCT="" PROC_VERSION_FILE="$_drift_wsl" pid_born_by "$_drift_pid" "$_drift_ref" ) \
+  && fail "WSL: a pid born half an hour after the record must still be a stranger" || ok "WSL: a pid born half an hour after the record is still a stranger"
+kill "$_drift_pid" 2>/dev/null; rm -f "$_drift_wsl" "$_drift_plain"
+
 h=$(claim_host)
 if [ -n "$h" ] && [ "${h#*.}" = "$h" ]; then ok "the host is non-empty and short ($h)"
 else fail "the host is '$h' — a claim with an empty host is owned by every other empty host"; fi

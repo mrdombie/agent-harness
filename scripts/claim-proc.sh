@@ -57,12 +57,21 @@ proc_born() { # <pid> — the epoch its process started; 1 when unreadable
   printf '%s' $(( $(date +%s) - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s ))
 }
 
+# WSL's uptime clock runs slow under load (measured 5.5%), so now minus etime slides later as
+# a process ages: every live run past ~35 min read as a stranger's pid and was ended as a ghost.
+_claim_born_drift_pct() {
+  if [ -n "${PID_BORN_DRIFT_PCT:-}" ]; then printf '%s' "$PID_BORN_DRIFT_PCT"
+  elif grep -qi microsoft "${PROC_VERSION_FILE:-/proc/version}" 2>/dev/null; then printf 12
+  else printf 0; fi
+}
+
 pid_born_by() { # <pid> <epoch> — it answers, and its process started by <epoch> (+ slack)
   claim_pid_alive "${1:-}" || return 1
   local ref="${2:-}" born
   case "$ref" in ''|*[!0-9]*|0) return 0 ;; esac
   born=$(proc_born "$1") || return 0
-  [ "$born" -le $(( ref + ${PID_BORN_SLACK:-120} )) ]
+  local now; now=$(date +%s)
+  [ "$born" -le $(( ref + ${PID_BORN_SLACK:-120} + (now > ref ? now - ref : 0) * $(_claim_born_drift_pct) / 100 )) ]
 }
 
 pid_is_run() { # <pid> <ISO time the record was made, e.g. a run's started_at>
