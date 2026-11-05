@@ -134,6 +134,7 @@ $DRIVER_FIX_GATE_NOTE}"
     return "$rc"
   fi
   [ "$rc" -eq 0 ] || return "$rc"
+  driver_heal_detached "$t" "$wt" "$(driver_state_get "$t" branch)" || true
   driver_git_actions "$t" "$wt" "$d/steps/fix.json" fix || return "$DRIVER_E_REFUSED"
   driver_format_changed "$t" "$wt" fix || true
   driver_state_bump "$t" fix
@@ -569,6 +570,7 @@ $basenote"
     return "$rc"
   fi
   [ "$rc" -eq 0 ] || return "$rc"
+  driver_heal_detached "$t" "$wt" "$(driver_state_get "$t" branch)" || true
   driver_git_actions "$t" "$wt" "$d/steps/fix.json" fix || return "$DRIVER_E_REFUSED"
   driver_format_changed "$t" "$wt" fix || true
   driver_state_bump "$t" fix

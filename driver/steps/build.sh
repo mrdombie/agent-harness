@@ -656,6 +656,8 @@ driver_step_build() { # <ticket>
       return "$rc"
     fi
     jq -c . "$ans" >> "$(driver_state_dir "$t")/steps/build.all.json"
+    # Before the proof reads the branch: a task that left HEAD detached put its commits there.
+    driver_heal_detached "$t" "$repo" "$(driver_state_get "$t" branch)" || true
     driver_git_actions "$t" "$repo" "$ans" "build $slot" || return "$DRIVER_E_REFUSED"
     # Formatted with the task, so a format check can never be the thing self-check
     # sends back. After the answer is read: the proof names its own two commits.

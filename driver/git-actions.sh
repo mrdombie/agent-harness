@@ -173,3 +173,30 @@ driver_keep_ref() {
   done
   DRIVER_KEPT_REF="$ref"
 }
+
+# THE BUILD'S COMMITS ON A DETACHED HEAD ARE THE BRANCH'S COMMITS. A run left the
+# ticket's tree detached 10 commits ahead of its branch, which still sat at the claim
+# commit; ship counted the branch, found nothing, and parked finished work.
+# driver_heal_detached <ticket> <tree> <branch> — 0 when HEAD is on a branch, or was
+# detached ahead of <branch> and <branch> now points at it with HEAD attached (said
+# once, with the reflog line that detached it). 1, changing nothing, with no branch on
+# record, no such branch, or a branch that is not an ancestor of HEAD.
+# The tree and index are never touched: update-ref + symbolic-ref keep dirty files.
+driver_heal_detached() {
+  local t="$1" wt="$2" b="${3:-}" head old n how
+  git -C "$wt" symbolic-ref -q HEAD >/dev/null 2>&1 && return 0
+  [ -n "$b" ] || { driver_say "✋ heal: HEAD in $wt is detached and no branch is on record for #$t, so nothing is moved"; return 1; }
+  head=$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null) || return 1
+  old=$(git -C "$wt" rev-parse -q --verify "refs/heads/$b" 2>/dev/null) \
+    || { driver_say "✋ heal: HEAD in $wt is detached and there is no branch $b to put it back on"; return 1; }
+  if ! git -C "$wt" merge-base --is-ancestor "$old" "$head" 2>/dev/null; then
+    driver_say "✋ heal: HEAD in $wt is detached at $(git -C "$wt" rev-parse --short "$head") and $b ($(git -C "$wt" rev-parse --short "$old")) is not an ancestor of it, so $b is not moved"
+    return 1
+  fi
+  n=$(git -C "$wt" rev-list --count "$old..$head" 2>/dev/null)
+  how=$(git -C "$wt" log -g --format='%gs' HEAD 2>/dev/null | grep -m1 -E '^checkout: moving from ' || true)
+  git -C "$wt" update-ref -m "driver: heal detached HEAD" "refs/heads/$b" "$head" "$old" 2>/dev/null || return 1
+  git -C "$wt" symbolic-ref -m "driver: heal detached HEAD" HEAD "refs/heads/$b" 2>/dev/null || return 1
+  driver_say "   heal: HEAD was detached ${n:-0} commit(s) ahead of $b; $b fast-forwarded to $(git -C "$wt" rev-parse --short "$head") and HEAD put back on it (detached by: ${how:-no reflog line})"
+  return 0
+}

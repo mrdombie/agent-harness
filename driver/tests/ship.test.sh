@@ -168,6 +168,91 @@ out=$(driver_step_ship 105 2>&1); rc=$?
 want "a detached worktree refuses"       "24" "$rc"
 want_not_in "and nothing was pushed"     'pr create' "$(cat "$GH_LOG")"
 
+echo "--- the build's commits on a detached HEAD ahead of the branch are shipped ---"
+# A run's build left the tree detached ahead of its branch, which sat at the claim
+# commit; ship counted the branch, said "no commits on it" and parked the work.
+: > "$GH_LOG"
+WT841="$FIX/wt841"
+git -C "$REPO" worktree add -q "$WT841" -b tkt-841/work develop
+driver_state_init 841 --worktree "$WT841" --branch "tkt-841/work"; fix_gates_kept 841
+driver_state_set 841 claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
+fix_issue 841 OPEN "status:claimed"
+git -C "$WT841" checkout -q --detach
+for f in d1 d2; do printf '%s\n' "$f" > "$WT841/$f.txt"; git -C "$WT841" add "$f.txt"; git -C "$WT841" commit -qm "feat: $f"; done
+DET841=$(git -C "$WT841" rev-parse HEAD)
+want "the case really has the branch behind a detached HEAD" "2" "$(git -C "$WT841" rev-list --count tkt-841/work..HEAD)"
+driver_state_put 841 review '{"verdict":"SHIP","findings":[]}'; driver_state_bump 841 review
+for st in start plan build self-check review record; do driver_state_done 841 "$st"; done
+out=$(driver_step_ship 841 2>&1); rc=$?
+want "it ships"                        "0" "$rc"
+want "origin's branch holds the detached commits" "$DET841" "$(git -C "$FIX/origin" rev-parse -q --verify tkt-841/work)"
+want_in "a pull request was opened"    'pr create' "$(cat "$GH_LOG")"
+want_in "and the heal is said"         'heal: HEAD was detached 2 commit' "$out"
+
+echo "--- a detached HEAD the branch is not an ancestor of still refuses ---"
+: > "$GH_LOG"
+setup_wt 842
+git -C "$FIX/wt842" checkout -q --detach develop
+printf 'diverged\n' > "$FIX/wt842/x.txt"; git -C "$FIX/wt842" add x.txt; git -C "$FIX/wt842" commit -qm "feat: diverged"
+B842=$(git -C "$FIX/wt842" rev-parse tkt-842/work)
+driver_state_put 842 review '{"verdict":"SHIP","findings":[]}'
+out=$(driver_step_ship 842 2>&1); rc=$?
+want "a diverged detached HEAD refuses" "24" "$rc"
+want_in "saying the branch is not its ancestor" 'not an ancestor' "$out"
+want "the branch is not moved"          "$B842" "$(git -C "$FIX/wt842" rev-parse tkt-842/work)"
+want_not_in "and nothing was pushed"    'pr create' "$(cat "$GH_LOG")"
+want "origin has no such branch"        "" "$(git -C "$FIX/origin" rev-parse -q --verify tkt-842/work)"
+
+echo "--- a lowered ratchet baseline left staged is committed, not refused ---"
+# Self-check's own ratchet commit failed and left scripts/check-env-reads/baseline.json
+# staged at 43 (from 45); ship refused "uncommitted changes" on a finished build.
+baseline_wt() { # <ticket> — a branch carrying a baseline of 45
+  local t=$1 wt="$FIX/wt$1"
+  git -C "$REPO" worktree add -q "$wt" -b "tkt-$t/work" develop
+  mkdir -p "$wt/scripts/check-env-reads"
+  printf '{"total":45}\n' > "$wt/scripts/check-env-reads/baseline.json"
+  printf 'change\n' > "$wt/f$t.txt"
+  git -C "$wt" add -A; git -C "$wt" commit -qm "feat: thing $t"
+  driver_state_init "$t" --worktree "$wt" --branch "tkt-$t/work"; fix_gates_kept "$t"
+  driver_state_set "$t" claimed_at_sha "$(git -C "$REPO" rev-parse develop)"
+  fix_issue "$t" OPEN "status:claimed"
+  driver_state_put "$t" review '{"verdict":"SHIP","findings":[]}'; driver_state_bump "$t" review
+  for st in start plan build self-check review record; do driver_state_done "$t" "$st"; done
+}
+: > "$GH_LOG"
+baseline_wt 843
+printf '{"total":43}\n' > "$FIX/wt843/scripts/check-env-reads/baseline.json"
+git -C "$FIX/wt843" add scripts/check-env-reads/baseline.json
+out=$(driver_step_ship 843 2>&1); rc=$?
+want "it ships"                          "0" "$rc"
+want "the pushed branch holds the lower baseline" '{"total":43}' \
+  "$(git -C "$FIX/origin" show tkt-843/work:scripts/check-env-reads/baseline.json 2>/dev/null)"
+want "committed under its own subject"   "chore: tighten ratchet baselines" "$(git -C "$FIX/wt843" log -1 --format=%s -- scripts/check-env-reads/baseline.json)"
+want_in "with the changelog exemption"   'no-changelog: ratchet bookkeeping' "$(git -C "$FIX/wt843" log -1 --format=%b -- scripts/check-env-reads/baseline.json)"
+want "the tree is clean"                 "" "$(git -C "$FIX/wt843" status --porcelain)"
+
+echo "--- a baseline that ROSE is not committed for the run ---"
+: > "$GH_LOG"
+baseline_wt 844
+printf '{"total":47}\n' > "$FIX/wt844/scripts/check-env-reads/baseline.json"
+H844=$(git -C "$FIX/wt844" rev-parse HEAD)
+out=$(driver_step_ship 844 2>&1); rc=$?
+want "a raised baseline refuses"         "24" "$rc"
+want_in "as uncommitted changes"         'uncommitted changes' "$out"
+want "and nothing was committed"         "$H844" "$(git -C "$FIX/wt844" rev-parse HEAD)"
+
+echo "--- a lowered baseline beside any other dirty file still refuses ---"
+: > "$GH_LOG"
+baseline_wt 845
+printf '{"total":43}\n' > "$FIX/wt845/scripts/check-env-reads/baseline.json"
+printf 'more\n' >> "$FIX/wt845/f845.txt"
+H845=$(git -C "$FIX/wt845" rev-parse HEAD)
+out=$(driver_step_ship 845 2>&1); rc=$?
+want "a mixed tree refuses"              "24" "$rc"
+want_in "naming the other file"          'f845.txt' "$out"
+want "and nothing was committed"         "$H845" "$(git -C "$FIX/wt845" rev-parse HEAD)"
+want_not_in "nothing pushed"             'pr create' "$(cat "$GH_LOG")"
+
 echo "--- GitHub refusing every write is not a completed hand-off ---"
 # Every gh call here is wrapped in `|| true`, so an expired token, a protected base or
 # a rate limit produced "pushed, pull request ready, auto-merge armed" with no pull
