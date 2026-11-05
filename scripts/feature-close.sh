@@ -5,8 +5,9 @@
 #   feature-close.sh <parent> [--dry-run]   check one feature
 #   feature-close.sh sweep [--dry-run]      the coordinator's pass: every feature an item part names
 #
-# The plan step split the feature by behaviour (driver/steps/plan.sh), posted its feature list on
-# the parent and closed the parent as split, so nothing claims it again. Each pass here:
+# Past driver.split.planMaxFiles the plan step split the feature by behaviour (driver/steps/plan.sh),
+# posted its feature list on the parent and closed the parent as split, so nothing claims it again.
+# A ticket that built whole has no parts and nothing to do here. Each pass here:
 #
 #   AN ITEM PASSES ONLY WHEN ITS TEST STEPS PASS. Its part closed as completed (merged, with the
 #   project's required test run green), and the test file its steps run in is on the integration
@@ -63,6 +64,10 @@ check() {
   if ! why=$(feature_list_guard "$first" "$newest"); then
     echo "feature #$p: its list was edited ($(printf '%s' "$why" | paste -sd';' -)); the first list stands"
     note_once "$p" "edited" "**Feature list edited:** $(printf '%s' "$why" | paste -sd';' - | sed 's/;/; /g'). Only \`passes\` may change; the first list on this ticket stands, and each item is read from its own part." "$comments"
+  fi
+  # A list with no parts built whole: its own pull request closes it, and the build kept `passes`.
+  if [ "$(jq '[.items[].part, .foundation.part?, .cleanup.part?] | map(select(. != null)) | length' "$first")" = 0 ]; then
+    echo "built whole: #$p has no parts to read"; return 0
   fi
   cp "$first" "$WORK/now.json"
   n=$(jq '.items | length' "$first")

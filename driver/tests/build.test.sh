@@ -196,44 +196,6 @@ fix_build() {
       changelog:{skipped:"a test-only change"}} + (if $ENV.FIX_REPLACED then {replacedTests:[{file:$ENV.FIX_REPLACED, coveredBy:$ENV.FIX_REPLACED}]} else {} end)'
 }
 
-# A per-call stub: the nth call answers with $FIX/ai/<step>.<n>.jsonl, so two calls
-# in one step can return two different answers. With one answer for both, the
-# two-task case below proved task 1 twice and task 2 never, and passed.
-nth_claude() {
-cat > "$BIN/claude" <<'SH'
-#!/usr/bin/env bash
-# Everything the fixture stub records, kept — a replacement that quietly drops
-# them makes the next assertion added below measure a different stub than the
-# ones above it. The one thing it adds is a per-step call counter.
-step=""; prev=""; schema=""
-for a in "$@"; do
-  case "$prev" in --name) step="$a" ;; --json-schema) schema="$a" ;; esac
-  prev="$a"
-done
-printf '%s
-' "$step" >> "$CLAUDE_LOG"
-printf '%s	%s	%s
-' "$step" "$PWD" "${HARNESS_DRIVER_RUN:-}" >> "$FIX/claude-env.log"
-printf '%s' "$schema" > "$FIX/claude-schema-$step.json"
-# BOUNDED, because an unredirected stdin BLOCKS. Dropping the driver's
-# `< "$prompt"` is the plant that proves the redirect is load-bearing — and with a
-# plain `cat` here that plant HUNG instead of going red, which reports the guard as
-# sound. perl is the same tool driver_bounded uses and is on every machine this kit
-# runs on; the real CLI bounds its own stdin wait the same way (measured: "no stdin
-# data received in 3s, proceeding without it").
-perl -e 'eval { local $SIG{ALRM} = sub { die }; alarm 5; print while <STDIN>; alarm 0 }' \
-  > "$FIX/claude-stdin-$step.txt" 2>/dev/null || true
-n=$(( $(cat "$FIX/nth.$step" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIX/nth.$step"
-if [ -f "$FIX/ai/$step.$n.jsonl" ]; then cat "$FIX/ai/$step.$n.jsonl"; exit 0; fi
-# The fixture stub's own refusal, kept: a missing transcript must not read as
-# "the agent produced no transcript".
-f="$FIX/ai/$step.jsonl"
-[ -f "$f" ] || { echo "no transcript for step '$step'" >&2; exit 3; }
-cat "$f"
-SH
-chmod +x "$BIN/claude"; rm -f "$FIX"/nth.*
-}
-
 echo "--- the build step: an item that proves itself is accepted ---"
 export DRIVER_TICKET=101
 driver_state_init 101 --worktree "$REPO" --repo "$REPO"

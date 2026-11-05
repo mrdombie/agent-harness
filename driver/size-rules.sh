@@ -30,8 +30,11 @@ DRIVER_SIZE_CONFIG_RE='\.(json|jsonc|md|mdx|ya?ml|toml|txt|ini|cfg|conf|env)$|(^
 DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "go.sum", "composer.lock"]'
 # A FEATURE TICKET WRITES A FEATURE LIST (owner, 2026-11-02): a ticket wearing one of
 # driver.split.featureLabels (default type:feature) whose plan has none is sent back once,
-# then refused. The plan splits by behaviour, never by task or file count: driver.split.maxTasks
-# and the plan-time driver.split.maxFiles trigger are gone (maxFiles still names the size at ship).
+# then refused. The ticket builds whole, working through its list (owner, 2026-11-05); the plan
+# splits past driver.split.planMaxFiles distinct files (50; 0 never), or with an expand-contract
+# foundation whatever its size (steps/plan.sh). Measured from our own
+# clashes: 4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10. A plan can
+# undercount (211 files once planned as 7), so maxFiles still names the real size at ship.
 driver_split_feature_labels() {
   jq -r '(.driver.split.featureLabels // ["type:feature"]) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
     "$HARNESS_CFG" 2>/dev/null || printf 'type:feature\n'
@@ -39,6 +42,10 @@ driver_split_feature_labels() {
 driver_split_max() {
   local n; n=$(jq -r '.driver.split.maxFiles // 20' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=20 ;; esac; printf '%s' "$n"
+}
+driver_split_plan_max() {
+  local n; n=$(jq -r '.driver.split.planMaxFiles // 50' "$HARNESS_CFG" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=50 ;; esac; printf '%s' "$n"
 }
 # driver_split_count <tree> <trunk ref> — the files the branch changes, less the excluded; 1 unread.
 driver_split_count() {

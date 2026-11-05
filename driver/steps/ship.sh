@@ -597,8 +597,8 @@ driver_step_ship() { # <ticket>
   smax=$(driver_split_max)
   driver_state_set "$t" size_note ""
   if [ "$smax" -gt 0 ] && snum=$(driver_split_count "$wt" "$trunk") && [ "$snum" -gt "$smax" ]; then
-    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax; lockfiles not counted) — it ships; the plan step splits before building, never here"
-    driver_state_set "$t" size_note "This change is $snum files, over the $smax-file size limit (driver.split.maxFiles). It shipped because it was already built; the limit splits plans before they build."
+    driver_say "   ship: $branch changes $snum files, over driver.split.maxFiles ($smax; lockfiles not counted) — it ships; only the plan step splits, past driver.split.planMaxFiles, never here"
+    driver_state_set "$t" size_note "This change is $snum files, over the $smax-file size limit (driver.split.maxFiles). It shipped because it was already built; a plan splits only past driver.split.planMaxFiles."
   fi
 
   # ORIGIN'S COPY OF THIS BRANCH FIRST. An earlier run of the same ticket may have

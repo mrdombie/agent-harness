@@ -78,16 +78,17 @@ Set `screenChange`: `visible` if a user will see the change, else `none`. A
 `setup` steps in the vocabulary above, what a reviewer should see in `shows`),
 and a change touching a screen fills `screenChecklist`.
 
-## Split by behaviour, never by layer
+## One change, worked through by behaviour
 
 A ticket that changes what a person sees or does gets `features`: one behaviour
-per item (`F1`, `F2`…), each with test steps and the test file running them, a
+per item (`F1`, `F2`…), each with test steps and their test file, a
 fast component or logic test, never a browser check. All start failing; the list
-is fixed once written. Every task names its `item`, and two or more items become
-one part each, built side by side. A `foundation` goes first only with its
-reason; only items with `needsFoundation` wait. A mechanical change has no list:
-the recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its
-ticket's test file.
+is then fixed. Every task names its `item`, never a layer. The list builds
+as one change: any `foundation`, F1, F2…, then `cleanup`. Never plan parts. A
+`foundation` is shared groundwork, with its reason. An `expand-contract`
+foundation always splits, so the new shape deploys first. A mechanical change has no list: the
+recipe in `tasks`, 5 to 30 `units`. A part of an earlier split runs its ticket's
+test file.
 
 ## Return
 

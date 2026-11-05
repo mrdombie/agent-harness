@@ -56,8 +56,12 @@ fix_ai plan "$(plan_of 6)" superpowers:writing-plans
 fresh; out=$(driver_step_plan 150 2>&1); rc=$?
 want "6 tasks over 36 files: it builds, nothing filed"  "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
 
-echo "--- a feature list of several behaviours: one part each, side by side ---"
+echo "--- past driver.split.planMaxFiles: one part each, side by side ---"
 EXF="$HERE/../../briefs/examples/plan.valid-feature-list.json"
+# The example names 4 files, the small lists below 2 or 3. Over this limit they split as they always did.
+BASE_CFG="$HARNESS_CFG_PATH"
+limit() { jq --argjson n "$1" '.driver.split.planMaxFiles = $n' "$BASE_CFG" > "$FIX/cfg-limit.json"; export HARNESS_CFG="$FIX/cfg-limit.json" HARNESS_CFG_PATH="$FIX/cfg-limit.json"; }
+limit 1
 fix_issue 151 OPEN "status:claimed,P1,area:inbox,screen:inbox,needs:human-approval"; driver_state_init 151 --worktree "$REPO"
 fix_ai plan "$(jq -c . "$EXF")" superpowers:writing-plans
 fresh; out=$(driver_step_plan 151 2>&1); rc=$?
@@ -94,9 +98,34 @@ plan_feats() { # <items> — a valid plan with that many behaviours, one task ea
 fix_issue 152 OPEN "status:claimed,P1"; driver_state_init 152 --worktree "$REPO"
 fix_ai plan "$(plan_feats 3)" superpowers:writing-plans
 fresh; out=$(driver_step_plan 152 2>&1); rc=$?
-want "three behaviours: three parts"               "$DRIVER_E_NOOP 3" "$rc $(grep -c '^issue create' "$GH_LOG")"
+want "three behaviours past the limit: three parts" "$DRIVER_E_NOOP 3" "$rc $(grep -c '^issue create' "$GH_LOG")"
 want "  all three ready"                           "3" "$(cat "$FIX"/created-*.txt | tr ' ' '\n' | grep -c -x 'status:ready')"
 want "  none waits on another"                     "0" "$(grep -c 'Blocked until' "$GH_LOG")"
+want_in "  the run says the limit"                 'over driver.split.planMaxFiles \(1\)' "$out"
+
+echo "--- the limit counts distinct files: at it builds here, one over it splits ---"
+plan_wide() { # <distinct files> — two behaviours, the first task naming them all and the second one again
+  plan_feats 2 | jq -c --argjson n "$1" '.tasks[0].files = [range($n) | {path:"w\(.).sh",action:"modify"}] | .tasks[1].files = [{path:"w0.sh",action:"modify"}]'
+}
+export HARNESS_CFG="$BASE_CFG" HARNESS_CFG_PATH="$BASE_CFG"
+fix_issue 170 OPEN "status:claimed"; driver_state_init 170 --worktree "$REPO"
+fix_ai plan "$(plan_wide 50)" superpowers:writing-plans
+fresh; out=$(driver_step_plan 170 2>&1); rc=$?
+want "50 files, the default limit: it builds, nothing filed" "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+fix_issue 171 OPEN "status:claimed"; driver_state_init 171 --worktree "$REPO"
+fix_ai plan "$(plan_wide 51)" superpowers:writing-plans
+fresh; out=$(driver_step_plan 171 2>&1); rc=$?
+want "51 files: it splits"                         "$DRIVER_E_NOOP 2" "$rc $(grep -c '^issue create' "$GH_LOG")"
+limit 0
+fix_issue 172 OPEN "status:claimed"; driver_state_init 172 --worktree "$REPO"
+fix_ai plan "$(plan_wide 51)" superpowers:writing-plans
+fresh; out=$(driver_step_plan 172 2>&1); rc=$?
+want "planMaxFiles 0 never splits"                 "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+limit 1
+
+echo "--- a limit that reads as nothing is the default ---"
+jq '.driver.split.planMaxFiles = "many"' "$BASE_CFG" > "$FIX/cfg-bad.json"
+want "not a number: 50"                            "50" "$(HARNESS_CFG="$FIX/cfg-bad.json" driver_split_plan_max)"
 
 echo "--- one behaviour: built here, its list kept and posted ---"
 fix_issue 153 OPEN "status:claimed,P1"; driver_state_init 153 --worktree "$REPO"
@@ -159,6 +188,8 @@ driver_state_init 159 --worktree "$REPO"
 fix_ai plan "$(plan_feats 3)" superpowers:writing-plans
 fresh; out=$(driver_step_plan 159 2>&1); rc=$?
 want "a part builds"                               "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+want "  as a part: it keeps no list of its own"    "no" "$([ -e "$(driver_state_dir 159)/features.json" ] && echo yes || echo no)"
+want "  and the build keeps no passes for it"      "" "$(driver_state_get 159 build_whole)"
 fix_ai plan "$(plan_feats 2 | jq -c '.tasks[0].tests[0].file = "other.test.sh" | del(.features) | .tasks |= map(del(.item))')" superpowers:writing-plans
 fresh; out=$(driver_step_plan 159 2>&1); rc=$?
 want "a part whose plan drops its item's test, twice: refused" "$DRIVER_E_REFUSED" "$rc"
@@ -180,6 +211,7 @@ want_in "  the owner's answer rides quoted, linked" '> \*\*The owner answered\*\
 want_not_in "  an unrelated comment does not"      'an unrelated note' "$log"
 want_not_in "  no approval is re-posted as a comment" '^issue comment [0-9]+ .*Picture for any machine' "$(grep '^issue comment' "$GH_LOG")"
 mv "$BIN/gh-base" "$BIN/gh"
+export HARNESS_CFG="$BASE_CFG" HARNESS_CFG_PATH="$BASE_CFG"
 
 echo "--- a schema change with no approved data model is refused ---"
 : > "$GH_LOG"
