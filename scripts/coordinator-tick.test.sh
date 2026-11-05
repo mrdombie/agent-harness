@@ -648,7 +648,7 @@ fresh; fix_issue 501 CLOSED "status:ready"; bash "$Q" add 501 --class repair >/d
 SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
 want "a closed ticket: nothing spawned"     "" "$(spawned)"
 
-echo "--- a cancelled required check is re-run, never stuck ---"
+echo "--- a cancelled required check is re-run, and its rebuild clock starts ---"
 # Two required checks cancelled twice on one PR with no runner; each went to a builder.
 rerun_world() { fresh; mkdir -p "$C"; fix_issue 501 OPEN "status:in-review"; fix_required "Typecheck"
   jq -n --arg h "$1" '[{number:9, headRefName:"tkt-501-x", headRefOid:$h, isDraft:false, mergeStateStatus:"BLOCKED", labels:[],
@@ -657,7 +657,7 @@ rerun_world s; : > "$GH_LOG"
 out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick)
 want "cancelled: nothing spawned, nothing closed" "0" "$(grep -c '^pr close' "$GH_LOG")"
 want "  the run is re-run, its failed jobs" "1" "$(grep -c '^run rerun 777 --failed' "$GH_LOG")"
-want "  and no rebuild clock starts"         "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
+want "  and its rebuild clock starts"        "9" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 # fresh() clears the coordinator's dir, so the ledger is carried across it by hand.
 cp "$C/reruns.tsv" "$FIX/reruns.keep"
 rerun_world s; cp "$FIX/reruns.keep" "$C/reruns.tsv"; SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick >/dev/null
