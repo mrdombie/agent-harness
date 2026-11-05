@@ -9,6 +9,7 @@
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
+for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -38,6 +39,7 @@ lib() {
     required)  perl -0pi -e 's/    pending\|green\) printf/    green) printf "stuck\\tplanted\\n" ;;\n    pending) printf/' "$p" ;;
     clash)     perl -0pi -e 's/    clash\)  printf .stuck/    clash)  printf '"'"'green/' "$p" ;;
     plan)      perl -0pi -e 's/\[ -s "\$d\/plan.json" \] && plan=/false \&\& plan=/' "$p" ;;
+    cancelled) perl -0pi -e 's/printf .stuck\\t%s\\n. "\$why" ;;\n    pending\|green\)/printf "pending\\t%s\\n" "\$why" ;;\n    pending|green)/' "$p" ;;
   esac
   cmp -s "$LIB" "$p" && { echo "plant $PLANT did not apply" >&2; exit 3; }
   printf '%s' "$p"
@@ -54,12 +56,14 @@ pass() {
     rebuild_pass' _ "$KIT" "$l" "$FIX/gh/prs-all.json" 2>&1)
 }
 # pr <n> <ticket> <head> <mergeState> [labels-json] [name:CONCLUSION:run-id…] — the one open PR.
+# CONCLUSION IN_PROGRESS is a check still running.
 pr() {
   local n="$1" t="$2" head="$3" ms="$4" labels="${5:-[]}" c rows="[]" name concl rid; shift 5 2>/dev/null || shift $#
   for c in "$@"; do
     IFS=: read -r name concl rid <<<"$c"
     rows=$(jq -c --arg n "$name" --arg c "$concl" --arg r "$rid" \
-      '. + [{name: $n, status: "COMPLETED", conclusion: $c, completedAt: "2026-11-01T10:00:00Z",
+      '. + [{name: $n, status: (if $c == "IN_PROGRESS" then $c else "COMPLETED" end),
+             conclusion: (if $c == "IN_PROGRESS" then null else $c end), completedAt: "2026-11-01T10:00:00Z",
              detailsUrl: "https://github.com/acme/widgets/actions/runs/\($r)/job/1"}]' <<<"$rows")
   done
   jq -n --argjson n "$n" --arg t "$t" --arg sha "$head" --arg ms "$ms" --argjson l "$labels" --argjson r "$rows" \
@@ -141,6 +145,31 @@ want "  still red: its clock starts now"         "73" "$(cut -f1 "$C/rebuild-clo
 age 280; pass
 want "  and an hour on it is rebuilt"            "1" "$(closes 73)"
 
+echo "--- a required check cancelled past the threshold: re-run, then rebuilt as for a red ---"
+fresh; base unit:success lint:success
+pr 79 101 head11 BLOCKED '[]' "unit:CANCELLED:7015" lint:SUCCESS:7016
+age 0; pass
+want "first seen cancelled: not rebuilt yet"     "0" "$(closes 79)"
+want "  its run is re-run"                       "1" "$(grep -c '^run rerun 7015 --failed' "$GH_LOG")"
+want_in "  its clock starts, naming the conclusion" 'rebuild: PR #79 is stuck \(required check\(s\) cancelled: unit\) — 0 of 60 min' "$OUT"
+age 61; pass
+want "61 minutes on, still cancelled: closed"    "1" "$(closes 79)"
+want_in "  with a note saying it was cancelled"  'Closed to rebuild fresh: this PR could not merge within 60 minutes \(required check\(s\) cancelled: unit\)' "$(cat "$GH_LOG")"
+for k in TIMED_OUT:"timed out" ACTION_REQUIRED:"action required" STARTUP_FAILURE:"startup failure"; do
+  fresh; base unit:success
+  pr 79 101 head11 BLOCKED '[]' "unit:${k%%:*}:7015"
+  age 0; pass; age 61; pass
+  want "required check ${k%%:*} past the threshold: closed" "1" "$(closes 79)"
+  want_in "  and the reason says so"             "required check\(s\) ${k#*:}: unit" "$(cat "$GH_LOG")"
+done
+
+echo "--- a required check still running is not stuck, however long ---"
+fresh; base unit:success
+pr 80 101 head12 BLOCKED '[]' unit:IN_PROGRESS:7017
+age 0; pass; age 300; pass
+want "300 minutes running: not closed"           "0" "$(closes 80)"
+want "  and no clock runs"                       "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
+
 echo "--- a red the base cannot be read for decides nothing: on the clock as the PR's own ---"
 fresh; rm -f "$FIX/gh/api-repos_acme_widgets_commits_sha_develop_per_page_5.json"
 pr 74 101 head4 BLOCKED '[]' unit:FAILURE:7007
@@ -195,7 +224,7 @@ want_in "  it says it would"                     'rebuild: would close PR #78' "
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan; do
+  for p in threshold base-red held required clash plan cancelled; do
     PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
     want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
   done

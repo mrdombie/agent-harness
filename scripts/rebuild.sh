@@ -14,12 +14,14 @@
 # trunk as it is, with the reviewed plan and what the last build learned as its brief.
 #
 # THE TRIGGER. Each open ticket PR is read every tick against the base's live rules
-# (pr-red.sh). One that is STUCK — a required check settled red, a clash with its base,
-# or a draft nothing is building — starts a clock (rebuild-clock.<mode>.tsv: pr \t epoch
-# first seen stuck \t why). The clock runs through a re-run's pending checks and a new
-# head (keep-fresh's merge), and stops when the PR goes green or something works it.
-# Past coordinator.rebuildAfterMin (60; 0 is off) it is rebuilt. Nothing else sends work
-# to an open PR: no repair, no fixer, no stall guard.
+# (pr-red.sh). One that is STUCK — a required check settled red or cancelled, timed out or
+# never run, a clash with its base, or a draft nothing is building — starts a clock
+# (rebuild-clock.<mode>.tsv: pr \t epoch first seen stuck \t why). The clock runs through a
+# re-run's pending checks and a new head (keep-fresh's merge), and stops when the PR goes
+# green or something works it. Past coordinator.rebuildAfterMin (60; 0 is off) it is rebuilt.
+# A cancelled check is also re-run (coordinator.rerunCancelled, 2 a head); left off the
+# clock, a cancel held an open-work place for 12 hours. Nothing else sends work to an open
+# PR: no repair, no fixer, no stall guard.
 #
 # WHAT IS NEVER REBUILT.
 #   - a person owns it: the hold label, do-not-merge, a person's own draft (person-stop.sh),
@@ -32,8 +34,6 @@
 #     its failed jobs are re-run once on that head (free) before the clock starts again.
 #   - a red only on a check the base does not require, or on release.nonBlockingChecks,
 #     or the sign-off hold's own check: that is not red (pr-red.sh).
-#   - a cancelled or runner-less required check: re-run (coordinator.rerunCancelled, 2 a
-#     head), never counted as red.
 #
 # THE REBUILD. The PR's head is kept at refs/stale/<ticket>/pr-<n>, the PR is closed with
 # a note and its branch deleted, this host's driver record is archived, the ticket goes
@@ -130,9 +130,10 @@ $BASE_RED_MARK" >/dev/null 2>&1 || true
 }
 
 # rebuild_pr_state <ticket> <pr-json> — one line "<state>\t<why>":
-#   stuck     a required check settled red (and the base passes it), a clash, or a settled draft
+#   stuck     a required check settled red (and the base passes it) or cancelled (re-run now too),
+#             a clash, or a settled draft
 #   base-red  its red is the base's, or its failed jobs were just re-run after the base went green
-#   pending   a required check still running, or a cancelled one re-run now
+#   pending   a required check still running
 #   green     nothing required failed and nothing clashes
 #   unread    the PR or its base's rules could not be read
 rebuild_pr_state() {
@@ -152,7 +153,8 @@ rebuild_pr_state() {
       local did
       if coord_shadow; then did="would re-run ${ids:-nothing named}"
       else did=$(pr_red_rerun "$n" "$(jq -r '.headRefOid // ""' <<<"$pj")" "$ids" "$COORD_DIR/reruns.tsv" "$COORD_RERUN_MAX"); fi
-      printf 'pending\t%s — %s\n' "$why" "$did" ;;
+      say "rebuild: PR #$n $why — $did" >&2
+      printf 'stuck\t%s\n' "$why" ;;
     pending|green) printf '%s\t%s\n' "$kind" "$why" ;;
     *) printf 'unread\t%s\n' "${why:-its checks could not be read}" ;;
   esac

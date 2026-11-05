@@ -15,7 +15,8 @@
 #   finish   a draft with every required check settled and none failed: finishing it is the repair
 # and 1 for every other:
 #   pending  a required check is still queued or running: its result is not in yet
-#   rerun    a required check was cancelled, timed out or never got a runner: a re-run, not a repair.
+#   rerun    a required check was cancelled, timed out, never got a runner or waits on an approval:
+#            a re-run, not a repair. The reason names each by its conclusion.
 #            A third field names the workflow runs to re-run, space-separated (pr_red_rerun).
 #   green    no required check failed and nothing clashes (a red that is not required included)
 #   unread   the PR or the branch's rules could not be read; the next tick asks again
@@ -94,12 +95,12 @@ pr_red_classify() { # <pr-json> <required-json> [hold] [nb-json]
     required_checks as $c
     | ($c | map(select(.state | test("^(FAILURE|ERROR)$")))) as $failed
     | ($c | map(select(.state == "IN_PROGRESS"))) as $running
-    | ($c | map(select(.state | test("^(CANCELLED|TIMED_OUT|STARTUP_FAILURE|STALE)$")))) as $cancelled
+    | ($c | map(select(.state | test("^(CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE)$")))) as $cancelled
     | if ($p.mergeable // "") == "CONFLICTING" or ($p.mergeStateStatus // "") == "DIRTY" then "clash\tit conflicts with its base branch"
       elif ($running | map(select(.job == 1)) | length) > 0 then "pending\trequired \($running | names) still running"
       elif ($failed | length) > 0 then "red\trequired check(s) failed: \($failed | names)"
       elif ($running | length) > 0 then "pending\trequired \($running | names) still running"
-      elif ($cancelled | length) > 0 then "rerun\trequired \($cancelled | names) cancelled or never ran — a re-run, not a repair\t\($cancelled | map(.rid) | map(select(. != "")) | unique | join(" "))"
+      elif ($cancelled | length) > 0 then "rerun\t\($cancelled | group_by(.state) | map("required check(s) \(.[0].state | ascii_downcase | gsub("_"; " ")): \(names)") | join("; "))\t\($cancelled | map(.rid) | map(select(. != "")) | unique | join(" "))"
       elif ($p.isDraft // false) then "finish\ta draft with its required checks settled"
       else "green\tno required check failed and nothing clashes" end' 2>/dev/null)
   [ -n "$out" ] || { printf 'unread\tits checks could not be read\n'; return 1; }
