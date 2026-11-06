@@ -171,6 +171,13 @@ if [ "$PRUNE_BUNDLES" = off ]; then :
 elif coord_shadow; then bash "$PRUNE_BUNDLES" --dry-run $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles (dry) exited $?"
 else bash "$PRUNE_BUNDLES" $_pb >> "$COORD_LOG" 2>&1 || say "set-aside bundles exited $?"; fi
 
+# Why changes get thrown away: the failed logs rebuild queued, capped a pass, then the classes
+# past their limit told to the PM. No model call; nothing to read when nothing is new.
+FINDING_CLASS="${COORDINATOR_FINDING_CLASS:-$SELF_DIR/finding-class.sh}"
+if [ "$FINDING_CLASS" = off ] || coord_shadow; then :
+elif [ -n "$GH_WAIT" ]; then say "finding classes: $GH_WAIT — next pass"
+else bash "$FINDING_CLASS" pass >> "$COORD_LOG" 2>&1 || say "finding classes exited $?"; fi
+
 # ---- 7. disk -----------------------------------------------------------------
 CACHE="${COORDINATOR_CACHE:-$SELF_DIR/sweep-orphan-worktrees.sh}"
 FREE_GB=$(free_gb)

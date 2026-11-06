@@ -150,13 +150,9 @@ driver_base_red_note() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$1" "${4:-}" "$(date +%s)" >> "$DEVELOP_RED"
 }
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/failing-tests.sh"
 # _driver_base_failing_tests <output> — test files a runner printed on a failure line.
-_driver_base_failing_tests() {
-  perl -ne 's/\e\[[0-9;]*[A-Za-z]//g;
-    next unless /(\bFAIL(ED)?\b|\bfailed\b|\bnot ok\b|\xe2\x9c\x97|\xc3\x97|\xe2\x9c\x95|\xe2\x9c\x98)/;
-    while (m{((?:[\w@.+-]+/)*[\w@+-][\w.@+-]*\.(?:test|spec)\.[A-Za-z]+)}g) {
-      my $p = $1; $p =~ s{^(\./)+}{}; print "$p\n" }' "$1" 2>/dev/null | awk '!seen[$0]++'
-}
+_driver_base_failing_tests() { failing_test_files "$1"; }
 
 driver_base_red_gate() {
   local wt="$1" cmd="$2" out="$3" mode="${4:-}" sha tests branch f c v red="" kind="" s7

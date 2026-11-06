@@ -22,6 +22,15 @@ fresh() { rm -rf "$C"; : > "$FIX/ping.log"; }
 needs() { cat "$C/needs-you.md" 2>/dev/null; }
 agent() { cut -f2,3 "$C/agent-work.log" 2>/dev/null; }
 
+echo "--- a finding-class line starts its log line, for the PM's watcher ---"
+fresh
+COORDINATOR_SHADOW=0 bash "$N" --class agent "finding-class:x@2026-W45" "finding-class:x seen 2 times"
+want "the line is verbatim" "finding-class:x seen 2 times" "$(cat "$C/agent-work.log")"
+COORDINATOR_SHADOW=0 bash "$N" --class agent "finding-class:x@2026-W45" "finding-class:x seen 3 times"
+want "a key is written once" "1" "$(grep -c . "$C/agent-work.log")"
+COORDINATOR_SHADOW=0 bash "$N" --class agent "red:9" "a red PR"
+want_in "any other line keeps its stamp and key" $'^[0-9T:Z-]+\tred:9\ta red PR$' "$(tail -1 "$C/agent-work.log")"
+
 echo "--- an owner decision reaches the owner, carrying its key ---"
 fresh
 COORDINATOR_SHADOW=0 bash "$N" --class owner "signoff-batch:1@a,2@b" "2 screens are ready"
