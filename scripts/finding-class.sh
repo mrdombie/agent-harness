@@ -290,7 +290,7 @@ fc_record() {
 # fc_sight <ticket> <pr> <key> <file> <summary> — one sighting a change, no network.
 fc_sight() {
   local at id; at=$(fc_now); id="$1|$3|pr$2"
-  jq -e --arg i "$id" 'select(.id == $i)' "$LEDGER" 2>/dev/null | grep -q . && return 0
+  [ -z "$(jq -r --arg i "$id" 'select(.id == $i) | .id' "$LEDGER" 2>/dev/null)" ] || return 0
   jq -nc --arg id "$id" --argjson at "$at" --arg wk "$(fc_week "$at")" --arg k "$3" --arg t "$1" --arg pr "$2" --arg f "$4" --arg s "$5" --arg host "$HOST" \
     '{id: $id, at: $at, week: $wk, key: $k, class: null, rule: null, ticket: $t, pr: $pr, file: $f, line: 0, grade: "", summary: $s, host: $host}' >> "$LEDGER"
 }
