@@ -521,7 +521,7 @@ _driver_review_posted() {
   fx=$(driver_state_count "$t" fix)
   jq -c --argjson r "$round" --argjson fx "${fx:-0}" "$keydef"' .findings[]? | select((.grade // "") != "nit")
       | select((.id // "" | tostring | startswith("polish-")) | not)
-      | {key: finding_key, id, file, line, grade, summary, round: $r, fix: $fx} + (if .class then {class} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
+      | {key: finding_key, id, file, line, grade, summary, round: $r, fix: $fx} + (if .class then {class} else {} end) + (if .rule then {rule} else {} end)' "$src" >> "$ledger" 2>/dev/null || true
   rm -f "$f.panel"
 }
 

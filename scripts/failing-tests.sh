@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # failing-tests.sh — failing_test_files <log>: the test files a runner printed on a failure
 # line, each once, in the order they appear. Sourced, and the only copy of this parse.
 failing_test_files() {

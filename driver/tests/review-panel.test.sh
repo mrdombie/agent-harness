@@ -72,11 +72,11 @@ check_says() {
 check_silent() { printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"I could not finish"}' > "$FIX/ai/review-check.jsonl"; }
 fresh() { : > "$CLAUDE_LOG"; : > "$SWEEP_QUEUE"; rm -f "$FIX"/claude-args-*.txt "$FIX/ai/review-check.jsonl"; }
 
-F_A1='{"id":"a1","file":"a.sh","line":1,"grade":"major","tag":"important","summary":"the save is dropped on retry","reason":"a person sees saved and loses the draft","fix":"keep it"}'
-F_B='{"id":"b1","file":"a.sh","line":30,"grade":"major","tag":"important","summary":"the timer may race the retry","reason":"r","fix":"f"}'
-F_NIT='{"id":"n1","file":"a.sh","line":9,"grade":"nit","tag":"nit","summary":"the loop could be a for-of","reason":"cleanup","fix":"f"}'
-F_PRE='{"id":"p1","file":"lib/old.sh","line":9,"grade":"major","tag":"pre-existing","summary":"the old reader drops a 500 as an empty page","reason":"r","fix":"f"}'
-F_MINOR='{"id":"m1","file":"lib/other.sh","line":2,"grade":"minor","tag":"important","summary":"the label is vague","reason":"r","fix":"f"}'
+F_A1='{"id":"a1","file":"a.sh","line":1,"grade":"major","tag":"important","rule":"other","summary":"the save is dropped on retry","reason":"a person sees saved and loses the draft","fix":"keep it"}'
+F_B='{"id":"b1","file":"a.sh","line":30,"grade":"major","tag":"important","rule":"other","summary":"the timer may race the retry","reason":"r","fix":"f"}'
+F_NIT='{"id":"n1","file":"a.sh","line":9,"grade":"nit","tag":"nit","rule":"other","summary":"the loop could be a for-of","reason":"cleanup","fix":"f"}'
+F_PRE='{"id":"p1","file":"lib/old.sh","line":9,"grade":"major","tag":"pre-existing","rule":"other","summary":"the old reader drops a 500 as an empty page","reason":"r","fix":"f"}'
+F_MINOR='{"id":"m1","file":"lib/other.sh","line":2,"grade":"minor","tag":"important","rule":"other","summary":"the label is vague","reason":"r","fix":"f"}'
 MIXED="$(answer 1 BLOCKED "[$F_A1,$F_NIT,$F_PRE,$F_B]")"
 # The check: a1 and p1 are real, b1 is not.
 J_MIXED='[{"id":"a1","real":true,"reason":"line 1 drops it"},{"id":"p1","real":true,"reason":"the reader returns []"},{"id":"b1","real":false,"reason":"the timer is cancelled before retry starts"}]'
@@ -187,14 +187,21 @@ transcript "$FIX/ai/review.jsonl" "$MIXED" '{"type":"system","subtype":"task_sta
 rc=0; on driver_step_review 722 >/dev/null 2>&1 || rc=$?
 want "a command the review runs is not a subagent"     "30" "$rc"
 
+echo "--- a finding's rule reaches the posted ledger, so the class ledger can key on it ---"
+rp_tree 797; fresh
+ruled=$(jq -c '. + {rule: "dead-or-unwired"}' <<<"$F_A1")
+hunt "$(answer 1 BLOCKED "[$ruled]")"
+off driver_step_review 797 >/dev/null 2>&1
+want "the rule is on the posted row"                   "dead-or-unwired" "$(jq -r .rule "$(driver_state_dir 797)/steps/review.posted.jsonl")"
+
 echo "--- no posted finding is raised twice ---"
 rp_tree 710; fresh
 hunt "$(answer 1 BLOCKED "[$F_A1]")"
 off driver_step_review 710 >/dev/null 2>&1
 want "the posted ledger holds it"                      "a.sh|the save is dropped on retry" "$(jq -r .key "$(driver_state_dir 710)/steps/review.posted.jsonl")"
 printf 'z\n' > "$FIX/rp710/z.sh"; git -C "$FIX/rp710" add -A; git -C "$FIX/rp710" commit -qm "fix: z"; driver_state_bump 710 fix
-again='{"id":"g1","file":"./a.sh","line":7,"grade":"major","tag":"important","summary":"The save is dropped on RETRY.","reason":"r","fix":"f"}'
-fresh_one='{"id":"g2","file":"z.sh","line":1,"grade":"major","tag":"important","summary":"the new helper swallows the error","reason":"r","fix":"f"}'
+again='{"id":"g1","file":"./a.sh","line":7,"grade":"major","tag":"important","rule":"other","summary":"The save is dropped on RETRY.","reason":"r","fix":"f"}'
+fresh_one='{"id":"g2","file":"z.sh","line":1,"grade":"major","tag":"important","rule":"other","summary":"the new helper swallows the error","reason":"r","fix":"f"}'
 hunt "$(answer 2 BLOCKED "[$again,$fresh_one]")"
 rc=0; out=$(off driver_step_review 710 2>&1) || rc=$?
 want "round 2 still blocks on the fresh one"           "30" "$rc"
@@ -213,11 +220,11 @@ want "and is still on the answer"                      "a1" "$(ids 711)"
 
 echo "--- a class already raised does not block again ---"
 rp_tree 712; fresh
-cls='{"id":"c1","file":"a.sh","line":1,"grade":"major","tag":"important","class":"a failed read shown as empty","instances":["a.sh:1","b.sh:4"],"summary":"the queue shows empty on a failed read","reason":"r","fix":"f"}'
+cls='{"id":"c1","file":"a.sh","line":1,"grade":"major","tag":"important","class":"a failed read shown as empty","instances":["a.sh:1","b.sh:4"],"rule":"other","summary":"the queue shows empty on a failed read","reason":"r","fix":"f"}'
 hunt "$(answer 1 BLOCKED "[$cls]")"
 off driver_step_review 712 >/dev/null 2>&1
 printf 'z\n' > "$FIX/rp712/z.sh"; git -C "$FIX/rp712" add -A; git -C "$FIX/rp712" commit -qm "fix: z"; driver_state_bump 712 fix
-cls2='{"id":"c2","file":"z.sh","line":3,"grade":"major","tag":"important","class":"A failed read shown as empty","summary":"the rail shows empty on a failed read","reason":"r","fix":"f"}'
+cls2='{"id":"c2","file":"z.sh","line":3,"grade":"major","tag":"important","class":"A failed read shown as empty","rule":"other","summary":"the rail shows empty on a failed read","reason":"r","fix":"f"}'
 hunt "$(answer 2 BLOCKED "[$cls2]")"
 rc=0; off driver_step_review 712 >/dev/null 2>&1 || rc=$?
 want "the class already raised does not block again"   "0" "$rc"
@@ -233,7 +240,7 @@ want "it is sent to the sweep"                         "m1=sweep" "$(jq -r '"\(.
 
 echo "--- an answer with no panel (an older reviewer) is graded exactly as before ---"
 rp_tree 714; fresh
-fix_ai review '{"step":"review","skills":["code-review"],"status":"reviewed","round":1,"verdict":"BLOCKED","findings":[{"id":"o1","file":"a.sh","line":1,"grade":"major","summary":"s","reason":"r","fix":"f"}]}' code-review
+fix_ai review '{"step":"review","skills":["code-review"],"status":"reviewed","round":1,"verdict":"BLOCKED","findings":[{"id":"o1","file":"a.sh","line":1,"grade":"major","rule":"other","summary":"s","reason":"r","fix":"f"}]}' code-review
 rc=0; off driver_step_review 714 >/dev/null 2>&1 || rc=$?
 want "its Major goes to fix"                           "30" "$rc"
 

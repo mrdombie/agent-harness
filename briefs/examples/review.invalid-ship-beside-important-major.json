@@ -24,7 +24,8 @@
       ],
       "summary": "the failed state renders the empty copy, here and in the rail",
       "reason": "someone whose queue failed to load is told there is nothing in it, and stops looking",
-      "fix": "branch on state === 'failed' in both and render the retry row"
+      "fix": "branch on state === 'failed' in both and render the retry row",
+      "rule": "failure-shown-as-success"
     }
   ]
 }

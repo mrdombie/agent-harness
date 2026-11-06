@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# finding-class.sh — what keeps going wrong, counted by what repeats: review findings by their
-# class, and thrown-away changes by the check and test that failed. A class past
+# finding-class.sh — what keeps going wrong, counted by what repeats: review findings by the
+# rule they break, and thrown-away changes by the check and test that failed. A class past
 # its limit is told to the PM once a week, with the source fix to make; one command counts
 # each class a week. It replaces the lesson check, which asked each builder for one more
 # test on its own change, never changed what builders read or build with, and never counted
@@ -28,10 +28,10 @@
 #       source fix reads "not falling".
 #   exit 0 done · 2 usage or unreadable input
 #
-# THE KEY is class_key (scripts/finding-key.jq): the review's own `class` as a slug, the shape
-# the code sweep keys its classes in; a finding with no class falls back to finding_key, its
-# file and the first twelve words of its summary. Stored keys are never rewritten, so old
-# rows read as they were. All fields the review already returns: no model call, ever.
+# THE KEY is class_key (scripts/finding-key.jq): the `rule` a finding names from the review's
+# fixed list; `other`, or a row from before rules, falls to its own `class` as a slug, then
+# to its file and the first twelve words of its summary. Stored keys are never rewritten, so
+# old rows read as they were. All fields the review already returns: no model call, ever.
 #
 # THE LIMIT counts this ISO week. A review class: review.classNoticeAt changes (default 2). A
 # check or test: review.checkClassNoticeAt sightings (default 5), develop's reds included.
@@ -53,8 +53,8 @@
 # brief: a repeat is a source fix for the PM (a kit component, a lint rule, a brief or
 # REVIEW.md line), never one more test on the next change.
 #
-#   finding-classes.jsonl      one sighting a line: {id, at, week, key, class, ticket, pr,
-#                              file, line, grade, summary, host}
+#   finding-classes.jsonl      one sighting a line: {id, at, week, key, class, rule, ticket,
+#                              pr, file, line, grade, summary, host}
 #   finding-classes.noticed    one <key>@<iso week> a line: told to the PM that week
 #   finding-classes.logs.tsv   ticket \t pr \t check \t job \t tries: logs to read
 #   finding-classes.published  ledger rows when last published on the tally
@@ -211,8 +211,7 @@ fc_notice_line() {
 
 # fc_red_counts <week> — develop's red checks this week, as {"check:<name>": n}.
 fc_red_counts() {
-  local raw; raw=$(bash "$SELF_DIR/develop-red.sh" count "$1" 2>/dev/null) || raw=""
-  printf '%s' "$raw" \
+  bash "$SELF_DIR/develop-red.sh" count "$1" 2>/dev/null \
     | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | select(length >= 2) | {key: ("check:" + (.[1] | gsub("\\s+"; "-"))), value: (.[0] | tonumber? // 0)}) | from_entries' 2>/dev/null \
     || echo '{}'
 }
@@ -277,7 +276,7 @@ fc_record() {
   new=$(jq -c --arg t "$t" --arg pr "$pr" --arg host "$HOST" --argjson at "$at" --arg wk "$wk" "$KEYDEF"'
       select(type == "object") | class_key as $k
       | ((.file // "") | tostring | sub("^\\./"; "") | sub(":[0-9]+$"; "")) as $file
-      | {id: "\($t)|\($k)|\($file)", at: $at, week: $wk, key: $k, class: (.class // null), ticket: $t, pr: $pr,
+      | {id: "\($t)|\($k)|\($file)", at: $at, week: $wk, key: $k, class: (.class // null), rule: (.rule // null), ticket: $t, pr: $pr,
          file: $file, line: (.line // 0), grade: (.grade // ""), summary: (.summary // ""), host: $host}' "$posted" 2>/dev/null) \
     || die "#$t: $posted is not one JSON finding a line"
   added=$(jq -c --slurpfile have "$LEDGER" '([$have[].id]) as $ids | select(.id as $i | $ids | index($i) | not)' <<<"$new" \
@@ -291,9 +290,9 @@ fc_record() {
 # fc_sight <ticket> <pr> <key> <file> <summary> — one sighting a change, no network.
 fc_sight() {
   local at id; at=$(fc_now); id="$1|$3|pr$2"
-  [ -z "$(jq -r --arg i "$id" 'select(.id == $i) | .id' "$LEDGER" 2>/dev/null)" ] || return 0
+  jq -e --arg i "$id" 'select(.id == $i)' "$LEDGER" 2>/dev/null | grep -q . && return 0
   jq -nc --arg id "$id" --argjson at "$at" --arg wk "$(fc_week "$at")" --arg k "$3" --arg t "$1" --arg pr "$2" --arg f "$4" --arg s "$5" --arg host "$HOST" \
-    '{id: $id, at: $at, week: $wk, key: $k, class: null, ticket: $t, pr: $pr, file: $f, line: 0, grade: "", summary: $s, host: $host}' >> "$LEDGER"
+    '{id: $id, at: $at, week: $wk, key: $k, class: null, rule: null, ticket: $t, pr: $pr, file: $f, line: 0, grade: "", summary: $s, host: $host}' >> "$LEDGER"
 }
 
 fc_check_failed() {

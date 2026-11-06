@@ -14,7 +14,8 @@
       "grade": "nit",
       "summary": "the retry row sits a step off the spacing scale",
       "reason": "the row reads as misaligned against the ones above it",
-      "fix": "use the scale step the sibling rows use"
+      "fix": "use the scale step the sibling rows use",
+      "rule": "failure-shown-as-success"
     }
   ],
   "notes": "one Nit left. It is dropped; it never held this round.",

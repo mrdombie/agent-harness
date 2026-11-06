@@ -44,6 +44,9 @@ Then tag every finding:
 several places, return ONE finding naming the mistake in `class` and every place in
 `instances` (`file:line`), so the fix covers each one, not only the line you saw.
 
+**Every finding names the rule it breaks** in `rule`, from its field's list, so one
+mistake counts once however it is worded. `other` only when none fits.
+
 **Never raise a finding twice.** The change may list findings already raised on it;
 do not return any of them again, reworded or not.
 
@@ -105,6 +108,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `findings[].line` (required): integer
 - `findings[].grade` (required): one of "critical", "major", "minor", "nit"
 - `findings[].tag`: one of "important", "nit", "pre-existing"
+- `findings[].rule` (required): one of "failure-shown-as-success", "wrong-source-of-truth", "one-path-of-several", "race-or-unlocked-write", "screen-out-of-step", "dead-or-unwired", "ticket-part-missing", "access-or-privacy", "data-lost-or-stranded", "edge-case-unhandled", "test-proves-nothing", "docs-out-of-step", "reimplements-existing", "off-design-kit", "unbounded-cost", "other"
 - `findings[].class`: string
 - `findings[].instances`: list of string
 - `findings[].summary` (required): string

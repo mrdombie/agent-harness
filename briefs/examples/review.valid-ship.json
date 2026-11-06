@@ -14,7 +14,8 @@
       "grade": "nit",
       "summary": "prefers a shorter variable name",
       "reason": "taste",
-      "fix": "rename if you like"
+      "fix": "rename if you like",
+      "rule": "failure-shown-as-success"
     }
   ],
   "notes": "one Nit left. It is dropped; it never held this round."
