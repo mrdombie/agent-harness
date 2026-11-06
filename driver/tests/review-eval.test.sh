@@ -36,10 +36,10 @@ jq -n --argjson a "$(item e1 src/a.ts 40 'the retry handler drops the saved draf
       --argjson b "$(item e2 src/b.ts 10 'the label reads the wrong count')" '{version: 1, items: [$a, $b]}' > "$SET"
 
 # ---- what the model "answers": the hunter's findings and the check's judgements -------
-F1='{"id":"f1","file":"src/a.ts","line":45,"grade":"major","tag":"important","rule":"other","summary":"The retry handler drops the saved draft on timeout","reason":"the person loses the draft","fix":"keep it"}'
-F2='{"id":"f2","file":"src/a.ts","line":2,"grade":"minor","tag":"important","rule":"other","summary":"The heading wording is vague","reason":"r","fix":"f"}'
-F3='{"id":"f3","file":"src/a.ts","line":9,"grade":"major","tag":"important","rule":"other","summary":"A timer races the save","reason":"r","fix":"f"}'
-FN='{"id":"n1","file":"src/a.ts","line":45,"grade":"nit","tag":"nit","rule":"other","summary":"retry handler drops saved draft","reason":"r","fix":"f"}'
+F1='{"id":"f1","file":"src/a.ts","line":45,"grade":"major","tag":"important","summary":"The retry handler drops the saved draft on timeout","reason":"the person loses the draft","fix":"keep it"}'
+F2='{"id":"f2","file":"src/a.ts","line":2,"grade":"minor","tag":"important","summary":"The heading wording is vague","reason":"r","fix":"f"}'
+F3='{"id":"f3","file":"src/a.ts","line":9,"grade":"major","tag":"important","summary":"A timer races the save","reason":"r","fix":"f"}'
+FN='{"id":"n1","file":"src/a.ts","line":45,"grade":"nit","tag":"nit","summary":"retry handler drops saved draft","reason":"r","fix":"f"}'
 answer() { jq -nc --argjson f "$1" '{step: "review", skills: ["code-review"], status: "reviewed", round: 1,
   verdict: (if any($f[]; .grade == "major" or .grade == "critical" or .grade == "minor") then "BLOCKED" else "SHIP" end),
   panel: {skill: "code-review", effort: "high"}, findings: $f}'; }
@@ -56,7 +56,7 @@ check_says() { # <judgements> <cost>
 }
 # f3 is judged not real; f1 and f2 stand. Each item: hunter $1.25 + check $0.50.
 hunt "$(answer "[$F1,$F2,$F3,$FN]")" 1.25
-check_says '[{"id":"f1","real":true,"reason":"line 45"},{"id":"f2","real":true,"reason":"r"},{"id":"f3","real":false,"reason":"cancelled first"}]' 0.5
+check_says '[{"id":"f1","real":true,"reason":"line 45","rule":"other"},{"id":"f2","real":true,"reason":"r","rule":"other"},{"id":"f3","real":false,"reason":"cancelled first","rule":"other"}]' 0.5
 calls() { local n; n=$(grep -c . "$CLAUDE_LOG" 2>/dev/null); printf '%s' "${n:-0}"; }
 
 kit_copy() { rm -rf "$KIT"; mkdir -p "$KIT"; cp -R "$ROOT/driver" "$ROOT/scripts" "$ROOT/swarm" "$ROOT/shared" "$ROOT/briefs" "$ROOT/.claude-plugin" "$KIT/"; }

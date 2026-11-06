@@ -28,10 +28,10 @@
 #       source fix reads "not falling".
 #   exit 0 done · 2 usage or unreadable input
 #
-# THE KEY is class_key (scripts/finding-key.jq): the `rule` a finding names from the review's
-# fixed list; `other`, or a row from before rules, falls to its own `class` as a slug, then
-# to its file and the first twelve words of its summary. Stored keys are never rewritten, so
-# old rows read as they were. All fields the review already returns: no model call, ever.
+# THE KEY is class_key (scripts/finding-key.jq): the `rule` the review's check step labelled a
+# finding with, from a fixed list; `other`, no check, or a row from before rules falls to its
+# own `class` as a slug, then to its file and the first twelve words of its summary. Stored
+# keys are never rewritten, so old rows read as they were. No model call here, ever.
 #
 # THE LIMIT counts this ISO week. A review class: review.classNoticeAt changes (default 2). A
 # check or test: review.checkClassNoticeAt sightings (default 5), develop's reds included.
@@ -211,7 +211,8 @@ fc_notice_line() {
 
 # fc_red_counts <week> — develop's red checks this week, as {"check:<name>": n}.
 fc_red_counts() {
-  bash "$SELF_DIR/develop-red.sh" count "$1" 2>/dev/null \
+  local raw; raw=$(bash "$SELF_DIR/develop-red.sh" count "$1" 2>/dev/null) || raw=""
+  printf '%s' "$raw" \
     | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | select(length >= 2) | {key: ("check:" + (.[1] | gsub("\\s+"; "-"))), value: (.[0] | tonumber? // 0)}) | from_entries' 2>/dev/null \
     || echo '{}'
 }
@@ -292,7 +293,7 @@ fc_sight() {
   local at id; at=$(fc_now); id="$1|$3|pr$2"
   [ -z "$(jq -r --arg i "$id" 'select(.id == $i) | .id' "$LEDGER" 2>/dev/null)" ] || return 0
   jq -nc --arg id "$id" --argjson at "$at" --arg wk "$(fc_week "$at")" --arg k "$3" --arg t "$1" --arg pr "$2" --arg f "$4" --arg s "$5" --arg host "$HOST" \
-    '{id: $id, at: $at, week: $wk, key: $k, class: null, rule: null, ticket: $t, pr: $pr, file: $f, line: 0, grade: "", summary: $s, host: $host}' >> "$LEDGER"
+    '{id: $id, at: $at, week: $wk, key: $k, class: null, ticket: $t, pr: $pr, file: $f, line: 0, grade: "", summary: $s, host: $host}' >> "$LEDGER"
 }
 
 fc_check_failed() {

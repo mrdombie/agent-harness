@@ -293,7 +293,7 @@ rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
 want "with no review it finishes"        "0" "$rc"
 want_in "saying there is nothing to fix" 'nothing to fix' "$out"
 want "and starts no agent"               "0" "$(grep -c . "$CLAUDE_LOG")"
-printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"F1","file":"a.ts","line":2,"grade":"nit","rule":"other","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' \
+printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"F1","file":"a.ts","line":2,"grade":"nit","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' \
   > "$(driver_state_dir 408)/steps/review.json"
 rc=0; out=$(driver_step_fix 408 2>&1) || rc=$?
 want "a review with only nits is nothing to fix either" "0" "$rc"
@@ -302,7 +302,7 @@ want "and still starts no agent" "0" "$(grep -c . "$CLAUDE_LOG")"
 echo "--- T2-3 · a rework round is SENT the findings ---"
 # briefs/fix.md carried {{BLOCKERS}} and nothing ever sent it anything:
 # `grep -rn BLOCKERS driver/` was empty outside the tests.
-printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"BLOCKED","findings":[{"id":"F9","file":"apps/web/save.tsx","line":41,"grade":"critical","rule":"other","summary":"the save button calls nothing","reason":"a person loses their work and is told it saved","fix":"wire onClick to the mutation"}]}' \
+printf '%s\n' '{"step":"review","skills":[],"status":"reviewed","round":1,"verdict":"BLOCKED","findings":[{"id":"F9","file":"apps/web/save.tsx","line":41,"grade":"critical","summary":"the save button calls nothing","reason":"a person loses their work and is told it saved","fix":"wire onClick to the mutation"}]}' \
   > "$(driver_state_dir 408)/steps/review.json"
 # The fix answer names two commits, the way the build step's does, so the driver
 # can re-run its test rather than take the claim.
@@ -756,7 +756,7 @@ git -C "$REPO" worktree add -q "$FIX/wt413" -b "tkt-413/work" develop
 git -C "$FIX/wt413" config user.email t@e.invalid
 git -C "$FIX/wt413" config user.name T
 driver_state_init 413 --worktree "$FIX/wt413" --branch "tkt-413/work"
-fix_ai review '{"step":"review","skills":["code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"nit","rule":"other","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' code-review
+fix_ai review '{"step":"review","skills":["code-review"],"status":"reviewed","round":1,"verdict":"SHIP","findings":[{"id":"m1","file":"a.ts","line":3,"grade":"nit","summary":"prefers a shorter name","reason":"taste","fix":"rename"}]}' code-review
 printf '#!/usr/bin/env sh\necho "VERDICT: SPIT-BACK"\n' > "$FIX/reviewer"; chmod +x "$FIX/reviewer"
 jq --arg r "$FIX/reviewer" --arg w "$FIX/recorder" --arg o "$FIX/owed" \
    '.review = {"attest":{"ui-gate":{"owed":$o,"review":$r,"record":($w + " --sha {{SHA}}")}}}' \

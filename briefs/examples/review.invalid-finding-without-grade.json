@@ -13,8 +13,7 @@
       "line": 142,
       "summary": "the failed state renders the empty copy",
       "reason": "someone whose queue failed to load is told there is nothing in it",
-      "fix": "branch on state === 'failed' and render the retry row",
-      "rule": "failure-shown-as-success"
+      "fix": "branch on state === 'failed' and render the retry row"
     }
   ]
 }

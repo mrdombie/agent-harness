@@ -10,7 +10,7 @@ def finding_key:
        + "|" + ((.summary // "") | tostring | _fk_words | .[0:12] | join(" "))
   end;
 # class_key — the class a finding belongs to across changes (scripts/finding-class.sh): the
-# `rule` it names from the review's fixed list, so different words for one mistake are one
+# `rule` the review's check step labelled it with, from a fixed list, so different words for one mistake are one
 # class. `other`, or an answer with no rule, falls to its `class` as a slug, the shape the
 # code sweep keys its classes in, then to finding_key. finding_key never reads `rule`: two
 # real findings under one rule must both still be raised.

@@ -124,7 +124,7 @@ want "the same defect in the same file on two changes is one notice" "1" "$(n_of
 want_in "proposing a lint rule for code" 'a lint rule or a write-time check' "$(cat "$FIX/notices")"
 
 echo "--- two wordings of one rule: one class, one notice ---"
-worded() { # <file> <path> <summary> <class> — a finding as the review returns it now
+worded() { # <file> <path> <summary> <class> — a posted finding the check labelled
   jq -nc --arg f "$2" --arg s "$3" --arg c "$4" '{key: "k", id: "F1", file: $f, line: 3, grade: "major", rule: "failure-shown-as-success", class: $c, summary: $s, fix: 0}' > "$1"
 }
 case_rule() { # <sut> — notices after two differently worded findings under one rule
@@ -137,16 +137,22 @@ case_rule() { # <sut> — notices after two differently worded findings under on
 }
 want "two wordings of one rule are one notice" "1" "$(case_rule "$SUT")"
 want "and one class on the ledger" "failure-shown-as-success" "$(jq -r .key "$FINDING_CLASS_LEDGER" | sort -u)"
-want "both on the ledger, each with its rule" "2" "$(jq -r 'select(.rule == "failure-shown-as-success") | .id' "$FINDING_CLASS_LEDGER" | grep -c .)"
 want "a rule is its own key" "dead-or-unwired" "$(echo '{"rule":"dead-or-unwired","class":"a dead save button","file":"a.ts"}' | bash "$SUT" key)"
 want "other falls to the class" "a-dead-save-button" "$(echo '{"rule":"other","class":"a dead save button","file":"a.ts"}' | bash "$SUT" key)"
-fresh; posted "$FIX/fc/p" src/a.ts:1 "" ; jq -c '. + {rule: "dead-or-unwired", id: "F1"}' "$FIX/fc/p" > "$FIX/fc/p2"; jq -c '. + {file: "src/b.ts", id: "F2"}' "$FIX/fc/p2" >> "$FIX/fc/p2"
-SWARM_GH="$BIN/fgh" bash "$SUT" record 203 "$FIX/fc/p2" 603 >/dev/null 2>&1
-want "one rule twice on one change tells no one: it counts changes" "0" "$(n_of)"
 want "the never-twice key ignores the rule, so a second real finding is still raised" "2" \
   "$(jq -n -r "$(cat "$HERE/finding-key.jq")"' [{rule: "dead-or-unwired", file: "a.ts", summary: "one"}, {rule: "dead-or-unwired", file: "b.ts", summary: "two"}] | map(finding_key) | unique | length')"
 
-echo "--- old rows read: no rule, no kind, a bare told key ---"
+echo "--- one class twice on one change tells no one: the review limit counts changes ---"
+fresh; posted "$FIX/fc/p" src/a.ts:1 "a dead control"; jq -c '. + {id: "F1"}' "$FIX/fc/p" > "$FIX/fc/p2"; jq -c '. + {file: "src/b.ts", id: "F2"}' "$FIX/fc/p" >> "$FIX/fc/p2"
+SWARM_GH="$BIN/fgh" bash "$SUT" record 203 "$FIX/fc/p2" 603 >/dev/null 2>&1
+want "two sightings on the ledger" "2" "$(lines "$FINDING_CLASS_LEDGER")"
+want "and no notice" "0" "$(n_of)"
+
+echo "--- review keys that never repeat raise nothing, however many there are ---"
+fresh; for i in 1 2 3 4 5 6 7 8; do printf '%s\n' "{\"file\":\"src/f$i.ts\",\"line\":1,\"summary\":\"a different thing $i is wrong\"}" > "$FIX/fc/u"; SWARM_GH="$BIN/fgh" bash "$SUT" record "60$i" "$FIX/fc/u" "90$i" >/dev/null 2>&1; done
+want "eight unique findings, no notice" "0" "$(n_of)"
+
+echo "--- old rows read: no kind, a bare told key ---"
 fresh
 printf '%s\n' '{"id":"9|old-slug|a.ts","at":1,"week":"2026-W40","key":"old-slug","class":"old slug","ticket":"9","pr":"","file":"a.ts","line":1,"grade":"major","summary":"s","host":"mac"}' \
   '{"id":"10|a.ts|two words","at":2,"week":"2026-W40","key":"a.ts|two words","class":null,"ticket":"10","pr":"","file":"a.ts","line":1,"grade":"minor","summary":"s","host":"mac"}' > "$FINDING_CLASS_LEDGER"
@@ -219,6 +225,10 @@ echo "--- develop's red checks cross the limit too ---"
 fresh; for i in 1 2 3 4 5 6; do printf '%s\tcheck:mock-drift\tsha%s\n' "$WK_NOW" "$i" >> "$DEVELOP_RED_COUNT"; done
 SWARM_GH="$BIN/fgh" bash "$SUT" pass >/dev/null 2>&1
 want_in "the red check tells the PM" 'finding-class:check:check:mock-drift seen 6 times' "$(cat "$FIX/notices")"
+
+echo "--- an unreadable red count costs its own count, never the other classes' notices ---"
+d="$FIX/plant-red"; rm -rf "$d"; mkdir -p "$d"; ln -s "$HERE"/* "$d"/; rm -f "$d/develop-red.sh"; printf '#!/usr/bin/env bash\nexit 1\n' > "$d/develop-red.sh"
+want "the review class is still told" "1" "$(case_twice "$d/finding-class.sh")"
 
 echo "--- in shadow nothing is told or marked, and the next live pass tells it ---"
 fresh; sights "$SUT" 431 435 typecheck

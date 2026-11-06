@@ -13,8 +13,7 @@
       "line": 142,
       "grade": "critical",
       "summary": "the failed state renders the empty copy",
-      "fix": "branch on state === 'failed' and render the retry row",
-      "rule": "failure-shown-as-success"
+      "fix": "branch on state === 'failed' and render the retry row"
     }
   ]
 }
