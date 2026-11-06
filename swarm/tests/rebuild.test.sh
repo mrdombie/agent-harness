@@ -38,6 +38,7 @@ lib() {
     held)      perl -0pi -e 's/if why=\$\(rebuild_held "\$t" "\$pj" "\$lab"\); then/if false; then/' "$p" ;;
     required)  perl -0pi -e 's/    pending\|green\) printf/    green) printf "stuck\\tplanted\\n" ;;\n    pending) printf/' "$p" ;;
     clash)     perl -0pi -e 's/    clash\)  printf .stuck/    clash)  printf '"'"'green/' "$p" ;;
+    counted)   perl -0pi -e 's/  rebuild_count_failures "\$t" "\$pr" "\$pj"\n//' "$p" ;;
     plan)      perl -0pi -e 's/\[ -s "\$d\/plan.json" \] && plan=/false \&\& plan=/' "$p" ;;
     cancelled) perl -0pi -e 's/printf .stuck\\t%s\\n. "\$why" ;;\n    pending\|green\)/printf "pending\\t%s\\n" "\$why" ;;\n    pending|green)/' "$p" ;;
   esac
@@ -215,6 +216,24 @@ want "green between: the clock started again, not rebuilt at 70" "0" "$(closes 7
 age 131; pass
 want "  an hour after it went red again: rebuilt" "1" "$(closes 77)"
 
+echo "--- a thrown-away change is counted: one sighting per failed required check, its log queued ---"
+LED="$STATE/swarm/finding-classes.jsonl"
+fresh; rm -f "$LED" "${LED%.jsonl}.logs.tsv"; base unit:success
+pr 79 101 head11 BLOCKED '[]' unit:FAILURE:7015
+age 0; pass; age 61; pass
+want "the PR was closed"                         "1" "$(closes 79)"
+want "one check sighting, on the ledger"         "check:unit|101|79" "$(jq -r '"\(.key)|\(.ticket)|\(.pr)"' "$LED" 2>/dev/null)"
+want "its job's log queued for housekeeping"     "101	79	unit	1	0" "$(cat "${LED%.jsonl}.logs.tsv" 2>/dev/null)"
+fresh; rm -f "$LED" "${LED%.jsonl}.logs.tsv"; base unit:success
+pr 80 101 head12 DIRTY '[]' unit:SUCCESS:7016
+age 0; pass; age 61; pass
+want "a clash has no failed check, so no sighting" "0" "$(cat "$LED" 2>/dev/null | grep -c .)"
+rm -f "$LED" "${LED%.jsonl}.logs.tsv"
+fresh; base unit:success
+pr 81 101 head13 BLOCKED '[]' unit:FAILURE:7017
+age 0; COORDINATOR_SHADOW=1 pass; age 61; COORDINATOR_SHADOW=1 pass
+want "shadow counts nothing"                     "0" "$(cat "$LED" 2>/dev/null | grep -c .)"
+
 echo "--- shadow: says what it would do, closes nothing ---"
 fresh; base unit:success
 pr 78 101 head10 DIRTY '[]' unit:SUCCESS:7014
@@ -224,7 +243,7 @@ want_in "  it says it would"                     'rebuild: would close PR #78' "
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled; do
+  for p in threshold base-red held required clash plan cancelled counted; do
     PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
     want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
   done

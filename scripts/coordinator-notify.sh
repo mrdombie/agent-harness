@@ -49,7 +49,11 @@ grep -qxF -- "$KEY" "$SEEN" && exit 0
 
 if [ "$CLASS" = agent ]; then
   coord_act_log notify-agent "$KEY" "$LINE"
-  coord_shadow || printf '%s\t%s\t%s\n' "$(swarm_stamp)" "$KEY" "$LINE" >> "$AGENT_WORK"
+  if ! coord_shadow; then
+    # A finding-class line starts the log line: the PM's watcher greps finding-class:[^ ]+.
+    if [ "$KIND" = finding-class ]; then printf '%s\n' "$LINE" >> "$AGENT_WORK"
+    else printf '%s\t%s\t%s\n' "$(swarm_stamp)" "$KEY" "$LINE" >> "$AGENT_WORK"; fi
+  fi
   printf '%s\n' "$KEY" >> "$SEEN"
   exit 0
 fi

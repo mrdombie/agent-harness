@@ -40,9 +40,12 @@
 # back to ready, and it is queued at the front of its priority as new work with a
 # "Rebuild:" brief (the driver sets aside any local state for a brief that starts so, on
 # every host): the reviewed plan, the last review's findings and why it could not merge.
+# Each required check it failed goes on the class ledger as check:<name>; housekeeping reads
+# those logs later for test:<file> (finding-class.sh), so no tick waits on a log.
 [ -z "${_REBUILD_SH:-}" ] || return 0
 _REBUILD_SH=1
 : "${QUEUE:=$KIT_ROOT/scripts/coordinator-queue.sh}"
+: "${FINDING_CLASS:=$KIT_ROOT/scripts/finding-class.sh}"
 declare -F say >/dev/null || say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work.sh" || return 1
 
@@ -239,6 +242,21 @@ rebuild_brief() {
   printf '\nWhy it could not merge: %s. Build so that does not happen again.\n' "$why"
 }
 
+# rebuild_count_failures <ticket> <pr> <pr-json> — one sighting per required check it failed.
+# Never stops a rebuild: a count it could not take is said.
+rebuild_count_failures() {
+  local t="$1" pr="$2" pj="$3" cl hold nbj crit fails name rid job
+  cl=$(release_labels_of "$pr" "$t")
+  hold="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"; nbj=$(release_nonblocking_json "$cl"); crit=$(release_critic_required "$cl")
+  fails=$(pr_red_failed "$pj" "$hold" "$nbj" "$crit") || { say "rebuild: PR #$pr's failed checks could not be read — not counted"; return 0; }
+  while IFS=$'\t' read -r name rid; do
+    [ -n "$name" ] || continue
+    job=$(jq -r --arg n "$name" '[(.statusCheckRollup // [])[] | select((.name // .context // "") == $n)] | max_by(.completedAt // "") | (.detailsUrl // .targetUrl // "") | capture("/job/(?<j>[0-9]+)").j? // ""' <<<"$pj" 2>/dev/null)
+    bash "$FINDING_CLASS" check-failed "$t" "$pr" "$name" "$job" >/dev/null 2>&1 \
+      || say "rebuild: PR #$pr's failed check $name could not be counted"
+  done <<<"$fails"
+}
+
 rebuild_fresh() { # <ticket> <why> [pr-json] — 0 when the PR was closed and the ticket queued fresh
   local t="$1" why="$2" pj="${3:-}" pr sha ref note brief
   [ -n "$pj" ] || pj=$(open_pr_json "$t"); [ -n "$pj" ] || { say "rebuild: #$t has no open PR this tick — nothing to close"; return 1; }
@@ -252,6 +270,7 @@ rebuild_fresh() { # <ticket> <why> [pr-json] — 0 when the PR was closed and th
   note="Closed to rebuild fresh: this PR could not merge within $REBUILD_AFTER_MIN minutes ($why), so ticket #$t builds again from $INTEGRATION_BRANCH (coordinator.rebuildAfterMin). Its work is kept at \`$ref\` ($sha)."
   swarm_gh pr close "$pr" --repo "$REPO_SLUG" --delete-branch --comment "$note" >/dev/null 2>&1 \
     || { say "rebuild: #$t — PR #$pr could not be closed; left as it is"; return 1; }
+  rebuild_count_failures "$t" "$pr" "$pj"
   rebuild_archive_state "$t"
   issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY"
   bash "$QUEUE" add "$t" --class new --first --note "$brief" >/dev/null 2>&1 \
