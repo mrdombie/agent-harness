@@ -211,6 +211,20 @@ if [ "$RESTART" -eq 0 ] && driver_state_is_done "$TICKET" ship \
       _rb_copy="$DRIVER_DIR/.rebuild-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
     fi
     driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+  elif [ -z "$_live" ]; then
+    # Merged and the ticket open again: the merged run's steps would skip ship for the new work.
+    if ! _tstate=$(driver_gh_read swarm_gh issue view "$TICKET" --repo "$REPO_SLUG" --json state -q .state 2>/dev/null); then
+      driver_say "⏳ #$TICKET's record says it shipped ($_landed), and GitHub could not be asked whether the ticket is open — nothing is decided; the next tick tries again"
+      exit "$DRIVER_E_UNREAD"
+    fi
+    if [ "$_tstate" = OPEN ]; then
+      driver_say "↻ #$TICKET is open again after $_landed — the merged run's record is set aside and the ticket builds and ships as new work"
+      if [ -n "$RUN_BRIEF" ] && [ -s "$RUN_BRIEF" ]; then
+        _rb_copy="$DRIVER_DIR/.rebuild-brief-$TICKET-$$.md"; cp "$RUN_BRIEF" "$_rb_copy" && RUN_BRIEF="$_rb_copy"
+      fi
+      driver_rebuild_set_aside "$TICKET" || exit "$DRIVER_E_REFUSED"
+    fi
+    unset _tstate
   fi
   unset _live _landed
 fi
@@ -478,6 +492,7 @@ driver_usage_step_wait() {
 
 skipped=0
 ran=0        # steps that did real work — start re-checking itself is not work
+ship_ran=0   # the ship step ran in this run, not only on the record
 # With a shared sheet, the claim carries the step, so every host's coordinator can say
 # what a build is on. Best effort: before start there is no claim, and nothing waits on it.
 SHARE_STEP=""; [ -z "$(driver_opt coordinator.sheet.owner "")" ] || SHARE_STEP=1
@@ -530,6 +545,7 @@ while [ "$i" -lt "$N" ]; do
     driver_say "↑ #$TICKET route=full: the review of the quick change found what blocks — on to the full route's fix step"
   fi
   if [ "$was_done" -eq 0 ]; then ran=$((ran+1)); fi
+  [ "$step" != ship ] || ship_ran=1
 
   # A note a step left behind. An exit code says which check said no; it cannot say
   # WHAT, and a step that knows — what a review graded critical, major or minor —
@@ -852,6 +868,24 @@ if [ -n "$(driver_state_get "$TICKET" route)" ]; then
   _c2p=$(driver_state_get "$TICKET" claim_to_pr_secs)
   [ -z "$_c2p" ] || _route_line="$_route_line claim→PR $(_driver_mins "$_c2p")"
   _route_line="$_route_line ($(driver_state_get "$TICKET" size_reason | cut -c1-160))"
+fi
+# Ship done on the record but skipped here: this run's head is shipped only if origin and an open PR carry it.
+if driver_state_is_done "$TICKET" ship && [ "$ship_ran" -eq 0 ]; then
+  _wt=$(driver_state_get "$TICKET" worktree); _br=$(driver_state_get "$TICKET" branch); _why=""
+  _head=$( [ -n "$_wt" ] && git -C "$_wt" rev-parse -q --verify HEAD 2>/dev/null )
+  if [ -z "$_head" ] || [ -z "$_br" ]; then _why="its worktree or branch is not on the record"
+  elif ! _rhead=$(git -C "$_wt" ls-remote origin "refs/heads/$_br" 2>/dev/null); then _why="origin could not be asked for $_br"
+  elif [ "$(printf '%s' "$_rhead" | cut -f1)" != "$_head" ]; then _why="its head ${_head:0:9} is not on origin's $_br"
+  elif ! _live=$(driver_open_prs_for "$TICKET"); then _why="the open pull requests could not be listed"
+  elif ! printf '%s\n' "$_live" | awk -F'\t' -v h="$_head" '$3 == h { f = 1 } END { exit !f }'; then _why="no open pull request carries its head ${_head:0:9}"
+  fi
+  if [ -n "$_why" ]; then
+    driver_state_reopen "$TICKET" ship record
+    driver_say "✋ #$TICKET not shipped: ship was on the record from an earlier run and $_why — ship and record are reopened for the next run"
+    driver_requeue "$TICKET" "not shipped: $_why"
+    exit "$DRIVER_E_REQUEUE"
+  fi
+  unset _wt _br _head _rhead _live _why
 fi
 if driver_state_is_done "$TICKET" ship; then
   driver_say "✓ #$TICKET shipped: $(driver_state_get "$TICKET" 'done|join(" · ")')$_route_line"
