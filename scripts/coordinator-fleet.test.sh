@@ -26,7 +26,7 @@ export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep"
 export COORDINATOR_NOTIFY_CMD="$BIN/notify" COORDINATOR_HOUSEKEEPING_CMD="$BIN/sweep" COORDINATOR_HOUSEKEEPING=inline
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 SWARM_FREE_MEM_GB=16 TEST_PID=$$
 export COORDINATOR_CLAIMS_CMD="cat $FIX/claims.tsv" COORDINATOR_LIVE_VIEW_WATCHDOG=off
-unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_SHEET_OWNER COORDINATOR_HOST COORDINATOR_MIN_HARNESS
+unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_SHEET_OWNER COORDINATOR_HOST COORDINATOR_MIN_HARNESS COORDINATOR_CLAUDE_CLI
 
 # ---- the stand-in GitHub: the sheet (#777) and its comments ------------------------
 SH="$FIX/sheet"
@@ -75,7 +75,7 @@ cat > "$BIN/claude-stub" <<'STUB'
 cc="$CLAUDE_CONFIG_DIR"; reg="$cc/plugins/installed_plugins.json"; cache="$cc/plugins/cache/agent-harness/agent-harness"
 printf '%s\n' "$*" >> "$cc/claude.log"
 case "$*" in
-  --version) echo "2.1.999 (Claude Code)" ;;
+  --version) cat "$cc/cli-version" 2>/dev/null || echo "2.1.999 (Claude Code)" ;;
   # The companion plugins (plugin-ensure.sh): a list in $cc/plist.json, marketplaces in $cc/mlist.json.
   "plugin list --json") cat "$cc/plist.json" 2>/dev/null || echo '[]' ;;
   "plugin marketplace list --json") cat "$cc/mlist.json" 2>/dev/null || echo '[]' ;;
@@ -171,7 +171,7 @@ want_in "it names the version this tick ran"          '"host":"box","version":"0
 
 echo "--- the owner reads the heartbeat: box shows behind on the sheet and the owner's live view ---"
 out=$(tick mac 2)
-want_in "the sheet lists box as behind"               '^- box · harness 0\.7\.10 — \*\*behind\*\*' "$(cat "$SH/body")"
+want_in "the sheet lists box as behind"               '^- box · harness 0\.7\.10 · Claude Code 2\.1\.999 — \*\*behind\*\*' "$(cat "$SH/body")"
 want "the owner's fleet file marks box behind"        "box:true mac:false" \
   "$(jq -r '[.hosts[] | "\(.host):\(.behind)"] | sort | join(" ")' "$FIX/m-mac/coordinator/fleet.json")"
 want "and carries the floor"                          "0.7.12" "$(jq -r .minHarness "$FIX/m-mac/coordinator/fleet.json")"
@@ -211,10 +211,77 @@ want_in "and installs the plugin for the user"         '^plugin install superpow
 want_in "the tick's line says so"                      'plugins: added marketplace superpowers-marketplace, installed superpowers@superpowers-marketplace' "$out"
 want_in "box's heartbeat reports the version"          '"plugins":\{"superpowers@superpowers-marketplace":\{"v":"7\.0\.1","on":true\}' "$(jq -r '.[0].body' "$SH/comments.json")"
 COORDINATOR_SHEET_PLUGINS="$PSET" tick mac 1 >/dev/null
-want_in "the owner's sheet shows box's plugin version" '^- box · harness 0\.7\.12 · superpowers@superpowers-marketplace 7\.0\.1 ·' "$(cat "$SH/body")"
+want_in "the owner's sheet shows box's plugin version" '^- box · harness 0\.7\.12 · Claude Code 2\.1\.999 · superpowers@superpowers-marketplace 7\.0\.1 ·' "$(cat "$SH/body")"
 : > "$FIX/cc-box/claude.log"
 COORDINATOR_PLUGINS_ENSURE=on tick box 1 >/dev/null
 want_not_in "box's next tick inside the interval changes nothing" '^plugin (install|update|disable|marketplace add)' "$(cat "$FIX/cc-box/claude.log")"
+
+# ---- a host whose builds cannot run their skill stops taking builds -------------------
+# driver/ai-step.sh writes one row per skill check to <state>/driver/skill-checks.tsv.
+checks_file() { printf '%s' "$FIX/m-$1/driver/skill-checks.tsv"; }
+check_rows() { # <host> <ok|none> <ticket>… — one row each, stamped now, on harness 0.7.12 and CLI 2.1.999
+  local h="$1" r="$2" t; shift 2; mkdir -p "$(dirname "$(checks_file "$h")")"
+  for t in "$@"; do printf '%s\t%s\tplan\t%s\t2.1.999\t0.7.12\tnot-loaded\tsuperpowers:writing-plans\n' "$(date +%s)" "$t" "$r" >> "$(checks_file "$h")"; done
+}
+breaker_world() {
+  world 0.7.12 0.7.12 0.7.12
+  queue_on mac 501 502 503
+  tick mac 1 >/dev/null
+  tick box 0 >/dev/null   # box first sees this CLI and harness; nothing older than that counts
+  : > "$SPAWNS"
+}
+
+echo "--- three skill checks on two tickets read none: box takes nothing and the sheet says why ---"
+breaker_world
+check_rows box none 601 602 603
+out=$(tick box 1)
+want "box spawns nothing"                             "" "$(by box)"
+want_in "the tick names the cause"                    'spawn: starting nothing new — the last 3 builds here could not run superpowers:writing-plans \(the session did not list superpowers:writing-plans, Claude Code 2\.1\.999\)' "$out"
+want_in "and raises it once"                          'event: skill-hold — box takes no builds' "$out"
+want_in "box's heartbeat carries its CLI and the hold" '"cli":"2\.1\.999","hold":"the last 3 builds here' "$(jq -r '.[0].body' "$SH/comments.json")"
+tick mac 1 >/dev/null
+want_in "the owner's sheet names it beside the versions" '^- box · harness 0\.7\.12 · Claude Code 2\.1\.999 — \*\*takes no builds\*\*: the last 3 builds here could not run superpowers:writing-plans' "$(cat "$SH/body")"
+want_in "and the owner's own line has its CLI"        '^- mac · harness 0\.7\.12 · Claude Code 2\.1\.999 · ' "$(cat "$SH/body")"
+
+echo "--- a new CLI re-arms it: the next build tests the change ---"
+echo "2.1.1000 (Claude Code)" > "$FIX/cc-box/cli-version"
+# The failures came before the change: inside one second the stamps would tie.
+awk -F'\t' -v OFS='\t' '{ $1 = $1 - 10; print }' "$(checks_file box)" > "$FIX/checks.tmp" && mv "$FIX/checks.tmp" "$(checks_file box)"
+tick box 1 >/dev/null
+want "box takes work again on a new CLI"              "502" "$(by box)"
+
+echo "--- below the trip: an ok among them, or one ticket three times, holds nothing ---"
+breaker_world
+check_rows box none 601 602; check_rows box ok 603
+tick box 1 >/dev/null
+want "an ok in the newest three holds nothing"        "502" "$(by box)"
+breaker_world
+check_rows box none 601 601 601
+tick box 1 >/dev/null
+want "one ticket three times is that ticket's, not the host's" "502" "$(by box)"
+breaker_world
+check_rows box none 601 602 603
+COORDINATOR_SKILL_BREAKER=0 tick box 1 >/dev/null
+want "skillBreaker 0 is off"                          "502" "$(by box)"
+
+echo "--- a Claude Code floor: under coordinator.minClaudeCli, nothing starts ---"
+breaker_world
+out=$(COORDINATOR_MIN_CLAUDE_CLI=2.1.1000 tick box 1)
+want "box under the CLI floor spawns nothing"         "" "$(by box)"
+want_in "and says why"                                'spawn: starting nothing new — this machine runs Claude Code 2\.1\.999, under coordinator\.minClaudeCli 2\.1\.1000' "$out"
+COORDINATOR_MIN_CLAUDE_CLI=2.1.999 tick box 1 >/dev/null
+want "at the floor it takes work"                     "502" "$(by box)"
+
+echo "--- plant the absence: the hold's gate deleted, the tripped host starts work ---"
+breaker_world
+check_rows box none 601 602 603
+PT="$FIX/cc-box/plugins/cache/agent-harness/agent-harness/0.7.12/scripts/coordinator-tick.sh"
+cp "$PT" "$FIX/tick.orig"
+sed -i.bak '/^elif \[ -n "\$SKILL_HOLD" \]; then$/,/^  event "skill-hold:/d' "$PT" && rm -f "$PT.bak"
+want "the plant removed the hold's gate"              "0" "$(grep -c 'SKILL_HOLD" \]; then' "$PT" | tr -d ' ')"
+tick box 1 >/dev/null
+want "planted: the tripped host starts work, which the gate above refuses" "502" "$(by box)"
+cp "$FIX/tick.orig" "$PT"
 
 # ---- the self-update on its own -----------------------------------------------------
 su() { # <host> <args…> — harness_self_update from that host's installed kit

@@ -41,6 +41,13 @@
 #                                                   `coordinator-sheet.sh plugins set` writes
 #   COORDINATOR_HOST                         this machine's name; default the one claims carry
 #
+# A HOST THAT CANNOT BUILD STOPS (coord_skill_hold). Under `coordinator`, not `.sheet`:
+#   skillBreaker COORDINATOR_SKILL_BREAKER  3      newest skill checks (driver/ai-step.sh's
+#                                                   record), on two tickets or more, that all
+#                                                   read no Skill call: this host takes no builds
+#                                                   until its Claude Code or harness changes. 0: off
+#   minClaudeCli COORDINATOR_MIN_CLAUDE_CLI unset  a Claude Code version floor: under it, no builds
+#
 # THE FLEET. Every host's heartbeat — {host, version, free disk, builds, last tick} —
 # rides on the sheet. A reader posts its own as ONE comment on the sheet issue,
 # edited in place (one PATCH when it changes or every third of staleMin; a git ref
@@ -203,7 +210,7 @@ coord_sheet_render() {
              | "\($i + 1). #\(.n) · \(.prin | pri) · \(kind) · \(.title | cut) — \(if (.host // "") != "" then "building on " + .host else "ready" end)") end),
       (if (.fleet // []) | length > 0 then
         "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)\(if .hostCap then " · at most \(.hostCap.perHost) building on each" else "" end)",
-        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)"
+        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end)"
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
@@ -237,7 +244,7 @@ coord_sheet_publish() {
   local e="$1" h old_h old_at now beat n body
   now=$(swarm_now)
   # A machine's tick time and disk move every tick; they ride on the heartbeat write, not their own.
-  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, behind, plugins}]}
+  h=$(_sheet_hash "$COORD_SHEET_LABEL $(jq -cS 'del(.fleet, .pace) + {fleet: [(.fleet // [])[] | {host, version, cli, hold, behind, plugins}]}
                                                 + (if .pace then {pace: (.pace | {pacing, settings})} else {} end)' <<<"$e")")
   old_h=$(cut -f1 "$COORD_SHEET_STATE" 2>/dev/null); old_at=$(cut -f2 "$COORD_SHEET_STATE" 2>/dev/null)
   case "$old_at" in ''|*[!0-9]*) old_at=0 ;; esac
@@ -409,7 +416,9 @@ coord_heartbeat() {
      --arg disk "${2:-}" --argjson builds "$b" --argjson tick "$(swarm_now)" --arg role "$(coord_sheet_role)" \
      --arg cap "$c" --arg usage "${usage:-}" --arg gh "${ghr:+[$ghr]}" --arg runs "${runs:-}" --arg why "${why:-}" \
      --argjson plugins "$(harness_plugins_state)" --arg acct "$(swarm_account)" \
+     --arg cli "${COORD_CLI_VERSION:-}" --arg hold "${SKILL_HOLD:-}" \
      '{host: $host, version: $v, installed: $inst, freeGb: ($disk | tonumber? // null), builds: $builds, tick: $tick, role: $role, account: $acct}
+      + (if $cli == "" then {} else {cli: $cli} end) + (if $hold == "" then {} else {hold: $hold} end)
       + (if $plugins == {} then {} else {plugins: $plugins} end)
       + (if $cap == "" then {} else {capacity: ($cap | tonumber)} end)
       + (if $usage == "" then {} else {usage: ($usage | fromjson)} end)
@@ -435,6 +444,43 @@ coord_fleet_write() {
   jq -cn --argjson f "${1:-[]}" --arg floor "${2:-}" --arg owner "$COORD_SHEET_OWNER" --argjson at "$(swarm_now)" \
      '{at: $at, owner: (if $owner == "" then null else $owner end), minHarness: (if $floor == "" then null else $floor end), hosts: $f}' \
      > "$COORD_FLEET.$$" 2>/dev/null && mv -f "$COORD_FLEET.$$" "$COORD_FLEET"
+}
+
+COORD_SKILL_BREAKER="${COORDINATOR_SKILL_BREAKER:-$(swarm_opt coordinator.skillBreaker 3)}"
+case "$COORD_SKILL_BREAKER" in ''|*[!0-9]*) COORD_SKILL_BREAKER=3 ;; esac
+COORD_MIN_CLAUDE_CLI="${COORDINATOR_MIN_CLAUDE_CLI:-$(swarm_opt coordinator.minClaudeCli "")}"
+
+# coord_skill_hold <cli version> <harness version> — prints why this host takes no builds, or
+# returns 1. Under coordinator.minClaudeCli; or when its newest skillBreaker skill checks, on
+# two tickets or more, all read no Skill call and neither the CLI nor the harness has changed
+# since the newest of them: a change re-arms it, and the next build tests the change.
+coord_skill_hold() {
+  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" sc="" sh="" since="" now
+  if [ -n "$COORD_MIN_CLAUDE_CLI" ] && [ -n "$cli" ] && harness_ver_lt "$cli" "$COORD_MIN_CLAUDE_CLI"; then
+    printf 'this machine runs Claude Code %s, under coordinator.minClaudeCli %s — it takes no builds until the CLI is updated' "$cli" "$COORD_MIN_CLAUDE_CLI"
+    return 0
+  fi
+  [ "$COORD_SKILL_BREAKER" -gt 0 ] || return 1
+  now=$(swarm_now)
+  [ ! -f "$seen" ] || IFS=$'\t' read -r sc sh since < "$seen" || true
+  case "$since" in ''|*[!0-9]*) since="" ;; esac
+  if [ "$sc" != "$cli" ] || [ "$sh" != "$hv" ] || [ -z "$since" ]; then
+    since=$now; mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\t%s\n' "$cli" "$hv" "$since" > "$seen" 2>/dev/null
+  fi
+  f="${HARNESS_SKILL_CHECKS:-${DRIVER_DIR:-$STATE_DIR/driver}/skill-checks.tsv}"
+  [ -s "$f" ] || return 1
+  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v f="$f" '
+    { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8; c = $5 }
+    END {
+      if (bad || rows < n || at < since) exit 1
+      k = 0; for (x in tk) k++; if (k < 2) exit 1
+      w = (want == "" ? "its skill" : want)
+      if (cause == "not-loaded") why = "the session did not list " w
+      else if (cause == "no-skill-tool") why = "the session had no Skill tool"
+      else if (cause == "loaded") why = "the session listed " w " and never called it"
+      else why = "no session start in the transcript"
+      printf "the last %d builds here could not run %s (%s, Claude Code %s) — it takes no builds until Claude Code or the harness changes, or %s is cleared", n, w, why, (c == "" ? "?" : c), f
+    }'
 }
 
 # The why in plain words, for the heartbeat comment and the sheet's machine list.
@@ -480,7 +526,7 @@ coord_heartbeat_post() {
   now=$(swarm_now); beat=$(( COORD_SHEET_STALE_MIN * 60 / 3 ))
   # Capacity and whole-percent usage too: the owner splits the fleet cap on them.
   # The allowance in tenths: a host going low reaches the others within a tick.
-  h=$(_sheet_hash "$(jq -cS '{version, installed, builds, role, capacity, plugins,
+  h=$(_sheet_hash "$(jq -cS '{version, installed, cli, hold, builds, role, capacity, plugins,
                               usage: ((.usage // {}) | map_values((.u * 100 | round))),
                               gh: [(.gh // [])[] | {resource, reset, tenth: (if .limit > 0 then (.remaining * 10 / .limit | floor) else 0 end)}]}' <<<"$hb")")
   IFS=$'\t' read -r id old_h old_at < "$COORD_HEARTBEAT_STATE" 2>/dev/null || { id=""; old_h=""; old_at=0; }
@@ -489,7 +535,7 @@ coord_heartbeat_post() {
   if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
-  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
+  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
                 + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)
                 + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                 + (why_words | if . == null then "" else "\n" + . end)' <<<"$hb")

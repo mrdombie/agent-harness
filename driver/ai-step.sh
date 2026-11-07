@@ -151,11 +151,45 @@ driver_never_invoked_skills() {
 # or the whole answer — after it reads as never having happened.
 driver_log_events() { jq -c -R 'fromjson? // empty' "$1" 2>/dev/null; }
 
+# Every shape the CLI has sent the name in: `skill` since 2.0.35, `command` before it,
+# `name` from hand-written fixtures; a slash or trailing arguments are not the name.
 driver_log_skills() {
   driver_log_events "$1" | jq -r 'select(.type=="assistant")
          | .message.content[]?
          | select(.type=="tool_use" and .name=="Skill")
-         | (.input.skill // .input.name // empty)' 2>/dev/null
+         | ([.input.skill, .input.name, .input.command] | map(select(type == "string" and length > 0)) | first // empty)
+         | sub("^\\s*/"; "") | sub("\\s.*$"; "") | select(length > 0)' 2>/dev/null
+}
+
+# driver_log_session <log> <skills, one per line> — what the session itself could do, from
+# its init event, as one TSV line: <CLI version> \t <cause>. The cause is "no-init",
+# "no-skill-tool", "not-loaded" (none of the skills is in the session's list) or
+# "loaded" (it was there and the model did not call it).
+driver_log_session() {
+  local want; want=$(printf '%s\n' "$2" | grep -v '^$' | jq -R . | jq -sc .)
+  driver_log_events "$1" | jq -r -s --argjson want "${want:-[]}" '
+    [.[] | select(.type == "system" and .subtype == "init")] | last
+    | if . == null then "\t" + "no-init"
+      else (.claude_code_version // "") + "\t"
+           + (if ((.tools // []) | index("Skill")) == null then "no-skill-tool"
+              elif ([(.skills // []), (.slash_commands // [])] | add | map(ltrimstr("/")) as $have
+                    | any($want[]; . as $w | $have | index($w) != null)) then "loaded"
+              else "not-loaded" end) end' 2>/dev/null
+}
+
+# The host's record of every step's skill check, newest last: <epoch> \t <ticket> \t <step>
+# \t ok|none \t <CLI version> \t <harness version> \t <cause> \t <skills wanted>. The coordinator stops this
+# host taking builds when the newest few all read none (coordinator-tick.sh).
+driver_skill_check_record() { # <ticket> <step> <ok|none> <cli> <cause> <skills wanted>
+  local f="${HARNESS_SKILL_CHECKS:-$DRIVER_DIR/skill-checks.tsv}" hv
+  hv=$(jq -r '.version // empty' "$KIT_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" "$4" "$hv" "$5" "$(printf '%s' "${6:-}" | tr '\t\n' '  ' | sed 's/ *$//')" >> "$f" 2>/dev/null || return 0
+  # Kept short: only the newest rows are ever read.
+  if [ "$(wc -l < "$f" 2>/dev/null | tr -d ' ')" -gt 200 ]; then
+    tail -100 "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  fi
+  return 0
 }
 
 # The model's final answer.
@@ -589,11 +623,22 @@ _driver_ai_judge() {
     done <<EOW
 $want
 EOW
+    local sess s_cli s_cause s_said
+    sess=$(driver_log_session "$log" "$want"); s_cli=${sess%%$'\t'*}; s_cause=${sess#*$'\t'}
     if [ "$hit" -eq 0 ]; then
-      driver_say "✋ $step: the brief's skills are $(printf '%s' "$want" | tr '\n' ' ')and the run log does not contain any of those Skill calls (saw: ${skill_saw:-none}). Inside a ticket Superpowers does the work; a step that skipped it has not run."
-      driver_state_set "$t" park_note "the $step step ran none of the skills briefs/facts.json declares for it ($(printf '%s' "$want" | tr '\n' ' ')); the transcript shows: ${skill_saw:-none}"
+      case "$s_cause" in
+        no-init)       s_said="the transcript has no session start to read the session from" ;;
+        no-skill-tool) s_said="the session (Claude Code ${s_cli:-?}) had no Skill tool" ;;
+        not-loaded)    s_said="the session (Claude Code ${s_cli:-?}) did not list the skill, so it could not be called on this host" ;;
+        loaded)        s_said="the session (Claude Code ${s_cli:-?}) listed the skill and the model did not call it" ;;
+        *)             s_said="the session could not be read" ;;
+      esac
+      driver_skill_check_record "${DRIVER_TICKET:-$t}" "$step" none "$s_cli" "${s_cause:-unread}" "$want"
+      driver_say "✋ $step: the brief's skills are $(printf '%s' "$want" | tr '\n' ' ')and the run log does not contain any of those Skill calls (saw: ${skill_saw:-none}); $s_said. Inside a ticket Superpowers does the work; a step that skipped it has not run."
+      driver_state_set "$t" park_note "the $step step ran none of the skills briefs/facts.json declares for it ($(printf '%s' "$want" | tr '\n' ' ')); the transcript shows: ${skill_saw:-none}; $s_said"
       return "$DRIVER_E_NO_SKILL"
     fi
+    driver_skill_check_record "${DRIVER_TICKET:-$t}" "$step" ok "$s_cli" "$s_cause" "$want"
     driver_say "   $step: $(printf '%s' "$skill_saw" | sort -u | tr '\n' ' ')ran"
   fi
 

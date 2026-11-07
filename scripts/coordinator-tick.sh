@@ -645,6 +645,9 @@ else
 fi
 # The companion plugins the builds lean on, to the set the sheet declares (plugin-ensure.sh).
 say "$(harness_plugins_tick "$SHEET_ROLE" "${SHEET_PLUGINS:-}")"
+# A host whose builds cannot run their step's skill takes none, and says why on the sheet.
+COORD_CLI_VERSION=$(harness_claude_cli_version)
+SKILL_HOLD=$(coord_skill_hold "$COORD_CLI_VERSION" "$HARNESS_RUNNING") || SKILL_HOLD=""
 
 # Every queued ticket's state and labels in one batched read (50 to a request),
 # in place of one `gh issue view` per ticket: 59 of a tick's 101 calls were those.
@@ -958,6 +961,10 @@ elif [ -z "$PROCESS_ONLY" ] && held=$(swarm_held); then
 elif [ -n "$FLOOR_HOLD" ]; then
   say "spawn: starting nothing new — $FLOOR_HOLD; it takes work again once it runs the floor"
   coord_act_log floor-hold - "$FLOOR_HOLD"
+elif [ -n "$SKILL_HOLD" ]; then
+  say "spawn: starting nothing new — $SKILL_HOLD"
+  coord_act_log skill-hold - "$SKILL_HOLD"
+  event "skill-hold:$COORD_HOST:${COORD_CLI_VERSION:-?}:$HARNESS_RUNNING" skill-hold false "" "" "$COORD_HOST takes no builds: $SKILL_HOLD" || true
 elif [ -n "$SHEET_HOLD" ]; then
   say "spawn: starting nothing new — $SHEET_HOLD. This machine never falls back to its own order"
   coord_act_log sheet-hold - "$SHEET_HOLD"
