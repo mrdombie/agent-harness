@@ -77,6 +77,11 @@ _su_max() { # <version>… — the highest
   printf '%s' "$best"
 }
 
+# The Claude Code CLI this host runs, bare ("2.1.316"); empty when it cannot be read.
+harness_claude_cli_version() {
+  "${COORDINATOR_CLAUDE_CLI:-$SU_CLAUDE}" --version 2>/dev/null | head -1 | grep -oE '^[0-9]+(\.[0-9]+)+' || true
+}
+
 # The version this process runs: the kit it was started from.
 harness_running_version() { jq -r '.version // empty' "$SU_KIT/.claude-plugin/plugin.json" 2>/dev/null; }
 
