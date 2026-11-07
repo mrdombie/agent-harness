@@ -10,6 +10,8 @@
 #   feature_list_of <plan.json> <ticket>     the list, every item failing, no part filed yet
 #   feature_list_guard <old.json> <new.json> exit 0 when only passes changed (or a part was named once); 3 with why
 #   feature_list_store <ticket> <list.json>  keep it in the ticket's driver state; 3 when it edits the one kept
+#                                            once an item passes or a part is filed (before that it replaces it,
+#                                            the old one kept as features.prev.json)
 #   feature_list_set_pass <list.json> <Fn> [false]  the list with that item passing (or not)
 #   feature_list_comment <list.json>         the comment that carries it on the ticket
 #   feature_list_from_comments < comments    every list in a ticket's comments ([{body}]), oldest first, one a line
@@ -80,7 +82,12 @@ feature_list_store() { # <ticket> <list.json>
   local f why; f="$(driver_state_dir "$1")/features.json"
   mkdir -p "$(dirname "$f")"
   if [ -s "$f" ]; then
-    why=$(feature_list_guard "$f" "$2") || { printf '%s\n' "$why"; return 3; }
+    # Nothing passed and no part filed: a fresh plan replaces it; an unreadable list stays guarded.
+    if [ "$(jq '[.. | objects | select(has("passes") or has("part")) | (.passes == true) or (.part != null)] | any' "$f" 2>/dev/null)" = false ]; then
+      cp "$f" "$(dirname "$f")/features.prev.json"
+    else
+      why=$(feature_list_guard "$f" "$2") || { printf '%s\n' "$why"; return 3; }
+    fi
   fi
   jq . "$2" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
 }

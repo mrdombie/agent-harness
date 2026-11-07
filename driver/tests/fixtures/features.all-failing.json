@@ -1,0 +1,71 @@
+{
+  "ticket": 18760,
+  "items": [
+    {
+      "id": "F1",
+      "behaviour": "Ask Holly to disconnect an account, change billing, export data, remove a person, hand over ownership or delete the workspace, and she names the exact page for it.",
+      "steps": [
+        "The owner's ownPageFor gives disconnect → Connections /dashboard/settings#connections-accounts",
+        "billing → Billing /dashboard/settings#account-billing",
+        "export → Privacy and export /dashboard/settings#privacy-export",
+        "remove_person and transfer_ownership → Access /dashboard/access",
+        "delete_workspace → Danger Zone /dashboard/settings#danger-zone",
+        "every href passes isAppPath",
+        "showOwnPageEntry.tier is 'free' and CATALOGUE offers show_own_page",
+        "the receipt reads 'That’s done on its own page.'"
+      ],
+      "test": "apps/api/src/lib/agent/verbs/own-page.test.ts",
+      "needsFoundation": false,
+      "passes": false,
+      "part": null
+    },
+    {
+      "id": "F2",
+      "behaviour": "If my role can't make the change, Holly's button goes to Access and says who does it. She never says she can't.",
+      "steps": [
+        "A member asking delete_workspace or transfer_ownership gets Access /dashboard/access and 'Your workspace owner does this.'",
+        "a member asking remove_person gets 'Your workspace owner or an admin does this.'",
+        "an admin asking transfer_ownership or delete_workspace gets 'Your workspace owner does this; Access shows who that is.'",
+        "an admin asking remove_person is permitted and gets /dashboard/access",
+        "a member asking billing, export or disconnect is permitted",
+        "no receipt matches /can['’]?t|cannot|unable|not allowed/i"
+      ],
+      "test": "apps/api/src/lib/agent/verbs/own-page.test.ts",
+      "needsFoundation": false,
+      "passes": false,
+      "part": null
+    },
+    {
+      "id": "F3",
+      "behaviour": "The page link is a real button and stays beside Holly's answer.",
+      "steps": [
+        "answered-turn keeps a receipt whose destination has asButton: true and still drops the same receipt without it",
+        "parseThreadBlock keeps asButton on a stored show_own_page receipt for all six asks",
+        "in an answered turn HollyThread draws the link Billing with href /dashboard/settings#account-billing as a HollyButton (class border-[1px])",
+        "an unflagged destination is still an underlined link"
+      ],
+      "test": "apps/web/src/app/dashboard/pulse/_components/holly/HollyThread.dom.test.tsx",
+      "needsFoundation": false,
+      "passes": false,
+      "part": null
+    },
+    {
+      "id": "F4",
+      "behaviour": "Each of the six asks gets a button, takes no action and refuses nothing, held by an eval.",
+      "steps": [
+        "OWN_PAGE_SET has six synthetic cases",
+        "each runs show_own_page then answer",
+        "keptButton(href) finds the flagged destination beside the answer",
+        "nothingRefused, noReceiptSaid(can't pattern), pressedNothing and endedWith('answered') all pass",
+        "the grader's own red cases fail: an unflagged destination fails keptButton, and 'I can't do that' fails noReceiptSaid",
+        "baseline.json own-page is 6/0/6"
+      ],
+      "test": "apps/api/src/lib/agent/evals/own-page-set.test.ts",
+      "needsFoundation": false,
+      "passes": false,
+      "part": null
+    }
+  ],
+  "foundation": null,
+  "cleanup": null
+}
