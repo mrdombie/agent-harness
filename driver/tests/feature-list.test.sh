@@ -75,9 +75,34 @@ want "  in the run record"                                "F1 F2" "$(jq -r '[.it
 rc=0; feature_list_store 501 "$FIX/list.json" || rc=$?
 want "the same list again: fine"                          "0" "$rc"
 jq '.items[0].steps = ["press Save"]' "$FIX/list.json" > "$FIX/edited.json"
+rc=0; feature_list_store 501 "$FIX/edited.json" >/dev/null 2>&1 || rc=$?
+want "nothing passed yet: a re-plan replaces the list"    "0" "$rc"
+want "  the new steps kept"                               "press Save" "$(jq -r '.items[0].steps | join(",")' "$(driver_state_dir 501)/features.json")"
+want "  the old list kept beside it"                      "3" "$(jq '.items[0].steps | length' "$(driver_state_dir 501)/features.prev.json")"
+feature_list_set_pass "$FIX/list.json" F1 > "$(driver_state_dir 501)/features.json"
 out=$(feature_list_store 501 "$FIX/edited.json" 2>&1); rc=$?
-want "a re-plan that edits a step is refused"             "3" "$rc"
+want "once an item passes, a re-plan that edits a step is refused" "3" "$rc"
 want "  and the stored list is untouched"                 "3" "$(jq '.items[0].steps | length' "$(driver_state_dir 501)/features.json")"
+jq '.items[0].part = 811' "$FIX/list.json" > "$(driver_state_dir 501)/features.json"
+rc=0; feature_list_store 501 "$FIX/edited.json" >/dev/null 2>&1 || rc=$?
+want "a part filed: a re-plan that edits it is refused"   "3" "$rc"
+printf '{not json' > "$(driver_state_dir 501)/features.json"
+rc=0; feature_list_store 501 "$FIX/edited.json" >/dev/null 2>&1 || rc=$?
+want "an unreadable kept list is refused, never replaced" "3" "$rc"
+
+echo "--- a real kept list (cleanup, foundation, items, ticket; every item failing) ---"
+REAL="$HERE/fixtures/features.all-failing.json"
+driver_state_init 502
+jq '.ticket = 502' "$REAL" > "$(driver_state_dir 502)/features.json"
+jq '.items |= map(.behaviour = "worded differently: \(.behaviour)")' "$REAL" > "$FIX/reworded.json"
+rc=0; feature_list_store 502 "$FIX/reworded.json" >/dev/null 2>&1 || rc=$?
+want "every item failing: the reworded plan replaces it"  "0" "$rc"
+want_in "  its wording kept"                              '^worded differently' "$(jq -r '.items[0].behaviour' "$(driver_state_dir 502)/features.json")"
+want "  the old list kept as features.prev.json"          "4" "$(jq '.items | length' "$(driver_state_dir 502)/features.prev.json")"
+jq '.ticket = 502 | .items[1].passes = true' "$REAL" > "$(driver_state_dir 502)/features.json"
+out=$(feature_list_store 502 "$FIX/reworded.json" 2>&1); rc=$?
+want "one item passing: the same plan is refused"         "3" "$rc"
+want_in "  saying it was edited"                          'F2 was edited' "$out"
 
 echo "--- an item passes; nothing else moves ---"
 feature_list_set_pass "$FIX/list.json" F2 > "$FIX/passed.json"; rc=$?

@@ -135,9 +135,15 @@ want "it builds, nothing filed"                    "0 0" "$rc $(grep -c '^issue 
 want "  its list is in the driver state"           "F1 false" "$(jq -r '.items[0] | "\(.id) \(.passes)"' "$(driver_state_dir 153)/features.json")"
 want_in "  and on the ticket"                      'issue comment 153 .*\*\*Feature list\*\*' "$(tr '\n' ' ' < "$GH_LOG")"
 
-echo "--- a re-plan may not edit or remove an item's steps ---"
+echo "--- a re-plan replaces a list with nothing passed; once an item passes it may not edit it ---"
 jq -c '.features[0].steps = ["something easier"]' <<<"$(plan_feats 1)" > "$FIX/edited.json"
 fix_ai plan "$(cat "$FIX/edited.json")" superpowers:writing-plans
+fresh; out=$(driver_step_plan 153 2>&1); rc=$?
+want "nothing passed: the re-plan moves past plan" "0" "$rc"
+want "  its steps are the list now"                "something easier" "$(jq -r '.items[0].steps[0]' "$(driver_state_dir 153)/features.json")"
+want "  the old one kept"                          "step 1" "$(jq -r '.items[0].steps[0]' "$(driver_state_dir 153)/features.prev.json")"
+jq '.items[0].passes = true' "$(driver_state_dir 153)/features.prev.json" > "$FIX/passed.json"
+cp "$FIX/passed.json" "$(driver_state_dir 153)/features.json"
 fresh; out=$(driver_step_plan 153 2>&1); rc=$?
 want "an edited step is refused"                   "$DRIVER_E_REFUSED" "$rc"
 want_in "  saying which item"                      'F1 was edited' "$out"
