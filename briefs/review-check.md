@@ -29,7 +29,7 @@ It is **not real** only on evidence in the code:
 - the failure it describes cannot happen.
 
 When the code fits the claim and you cannot disprove it, it is real. Do not
-regrade, reword or merge claims: real or not real is the whole answer.
+regrade, reword or merge claims: judge only the claims listed.
 
 ## Return
 
@@ -44,9 +44,11 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `judgements[].id` (required): string
 - `judgements[].real` (required): boolean
 - `judgements[].reason` (required): string
+- `judgements[].rule` (required): one of "failure-shown-as-success", "wrong-source-of-truth", "one-path-of-several", "race-or-unlocked-write", "screen-out-of-step", "dead-or-unwired", "ticket-part-missing", "access-or-privacy", "data-lost-or-stranded", "edge-case-unhandled", "test-proves-nothing", "docs-out-of-step", "reimplements-existing", "off-design-kit", "unbounded-cost", "other"
 <!-- fields:end -->
 
 One judgement per listed claim, by its `id` exactly as listed. Verdict first:
 `real` true or false, then a one-line `reason` that quotes the exact code that
 shows the claim is real or not real, with its line number. Write no reasoning
-before the verdict. `skills` is empty: this step runs no skill.
+before the verdict. Last, `rule`: the one rule on the field's list the claim breaks,
+`other` only when none fits; it labels the claim and never changes the verdict. `skills` is empty: this step runs no skill.

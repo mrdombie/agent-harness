@@ -355,10 +355,11 @@ builder for one more test on its own change: every lesson became another check t
 the next change red, none changed what builders read or build with, and nobody counted
 whether the mistake came back.
 
-- **The key** is the review's own `class` as a slug, the shape the code sweep keys its
-  classes in; a finding with no class falls back to its file and the first twelve words
-  of its summary (`class_key` in `scripts/finding-key.jq`). No model call: both are fields
-  the review already returns.
+- **The key** is the `rule` the review's check step labels a finding with, from a fixed list
+  (`briefs/schemas/review-check.json`), so two wordings of one mistake are one class. `other`,
+  no check, or an old row falls to its `class` as a slug, then its file and the first twelve
+  words of its summary (`class_key` in `scripts/finding-key.jq`). No new model call. The hunter
+  is not handed the list, so its brief and schema stay as they were.
 - **The record step** puts each finding on `steps/review.posted.jsonl` onto the class ledger
   (`<stateDir>/swarm/finding-classes.jsonl`), one sighting per change, key and file.
 - **A thrown-away change**: when `rebuild.sh` closes a PR, each required check it failed is a
