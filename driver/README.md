@@ -101,8 +101,9 @@ run as a fast component or logic test in the required test run (never a browser 
 all failing. `driver/feature-list.sh` checks how the plan builds it (every task names its
 item; each item's test is written by its own tasks; a foundation names its reason), sends
 the plan back once with what is wrong, then refuses. The list is kept in the run record
-(`<ticket>/features.json`); a later plan that edits or removes an item or its steps is
-refused, and only `passes` ever changes. A ticket wearing one of `driver.split.featureLabels`
+(`<ticket>/features.json`); once an item passes or a part is filed, a later plan that
+edits or removes an item or its steps is refused, and only `passes` ever changes. Before
+then a later plan replaces it, the old list kept as `features.prev.json`. A ticket wearing one of `driver.split.featureLabels`
 (default `type:feature`) with no list is sent back once, then refused.
 
 The ticket builds here as one change. The plan's tasks run foundation, F1, F2…, clean-up,
