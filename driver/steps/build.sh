@@ -78,14 +78,28 @@ _driver_proof_install() { # <repo> <tree>
   # Each proof tree gets its own install, cloned from the store for its lockfile: a
   # link to the ticket tree's would resolve its workspace packages to the ticket tree's
   # source, and the red half would run the change.
-  driver_own_install "$2" || { DRIVER_PREPARE_WHY="the proof tree $2 could not be given its own install"; return 1; }
+  driver_own_install "$2" || driver_own_install --fresh "$2" \
+    || { DRIVER_PREPARE_WHY="the proof tree $2 could not be given its own install, even installed fresh"; return 1; }
   [ -d "$1/.husky/_" ] && { mkdir -p "$2/.husky"; cp -R "$1/.husky/_" "$2/.husky/_"; }
+  _driver_proof_prepare "$2"
+}
+# _driver_proof_prepare <tree> — worktree.prepare, and once more on a fresh install when it
+# fails: a stored install that is not its own lockfile's (no prisma bin, another prisma) is
+# the machine's, and parking on it blamed a change the tree did not even hold.
+_driver_proof_prepare() {
   # >&2, because the caller is a command substitution: `why=$(driver_prove_red_green …)`.
   # Left on stdout, driver_prepare_worktree's own narration was captured into $why and
   # printed as part of the proof's verdict — and on the refusal path the park note was
   # the same sentence twice, naming a temp tree that had already been deleted.
-  driver_prepare_worktree "$2" >&2 || return 1
-  return 0
+  driver_prepare_worktree "$1" >&2 && return 0
+  local first="$DRIVER_PREPARE_WHY"
+  driver_say "   proof: $1 could not be prepared on its install — installing it fresh, once (the driver's setup, not the change)" >&2
+  if driver_own_install --fresh "$1" && driver_prepare_worktree "$1" >&2; then
+    driver_say "   proof: $1 prepared on a fresh install" >&2
+    return 0
+  fi
+  DRIVER_PREPARE_WHY="it failed again on a fresh install — ${DRIVER_PREPARE_WHY:-$first}"
+  return 1
 }
 
 # PROOF TREES ARE REUSED ACROSS A RUN'S TASKS. Two fresh trees per proof, each with its
@@ -117,13 +131,14 @@ _driver_proof_tree() {
   fp=$(_driver_proof_fingerprint "$repo" "$sha")
   if [ -e "$tree/.git" ] && git -C "$tree" checkout -q --detach -f "$sha" 2>/dev/null && git -C "$tree" clean -fdq 2>/dev/null; then
     old=$(cat "$tree.fp" 2>/dev/null)
-    driver_refresh_install "$tree" || true
+    # A failed rebuild leaves no install: prepare it, so the fresh retry gets its turn.
+    driver_refresh_install "$tree" || old=""
     if [ -n "$fp" ] && [ "$fp" = "$old" ]; then
       driver_say "   proof: reused $tree at $(printf '%s' "$sha" | cut -c1-8) — the prepare fingerprint is unchanged, so worktree.prepare is skipped" >&2
       return 0
     fi
     rm -f "$tree.fp"
-    driver_prepare_worktree "$tree" >&2 || return 2
+    _driver_proof_prepare "$tree" || return 2
     printf '%s' "$fp" > "$tree.fp"
     return 0
   fi
@@ -361,7 +376,8 @@ _driver_prove_red_green_once() {
   if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$base"; return 3; fi
   if [ "$prc" -ne 0 ]; then
     _driver_proof_done; _driver_proof_rmtmp
-    printf 'the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
+    # The base holds none of the change, so a tree of it that will not prepare is the driver's.
+    printf 'a driver fault, not the change: the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
   # The version run in both halves: the change's own when the test commit came first

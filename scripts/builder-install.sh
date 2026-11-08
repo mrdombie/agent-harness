@@ -3,6 +3,7 @@
 #
 #   builder-install.sh <tree>               the tree's own node_modules, built now
 #   builder-install.sh --if-stale <tree>    only when its manifests moved since it was built
+#   builder-install.sh --fresh <tree>       installed now, never from the store; its stored key dropped
 #   builder-install.sh --behind <tree>      exit 0, saying how, when npm's record of the install
 #                                           disagrees with the tree's lockfile; 1 when it agrees
 #   builder-install.sh --fingerprint <tree> the key the install is stored under
@@ -55,6 +56,29 @@ install_drift() {
     }
     process.stdout.write(String(n))
   ' "$1/node_modules/.package-lock.json" "$1/package-lock.json" 2>/dev/null || true
+}
+
+# install_holes <tree> — how many packages npm's record says are on disk and are not: no
+# package.json, or a bin it lists missing from .bin. A store copy cut short by a peer's prune
+# keeps its record whole, so the record alone passes it with prisma's bin gone.
+install_holes() {
+  [ -f "$1/node_modules/.package-lock.json" ] || return 0
+  node -e '
+    const fs = require("fs"), path = require("path")
+    const root = process.argv[1]
+    let a
+    try { a = JSON.parse(fs.readFileSync(path.join(root, "node_modules/.package-lock.json"), "utf8")).packages || {} } catch { process.exit(0) }
+    let n = 0
+    for (const [k, d] of Object.entries(a)) {
+      if (!k || !/(^|\/)node_modules\//.test(k) || !d || d.link || d.inBundle) continue
+      const dir = path.join(root, k)
+      if (!fs.existsSync(path.join(dir, "package.json"))) { n++; continue }
+      const bins = typeof d.bin === "string" ? { [k.split("/").pop()]: d.bin } : (d.bin || {})
+      const bindir = path.join(root, k.slice(0, k.lastIndexOf("node_modules/")), "node_modules", ".bin")
+      if (Object.keys(bins).some(b => !fs.existsSync(path.join(bindir, b)))) n++
+    }
+    process.stdout.write(String(n))
+  ' "$1" 2>/dev/null || true
 }
 
 # workspaces <tree> — "<package name>\t<dir>" for each workspace the root package.json declares.
@@ -174,6 +198,8 @@ verify() {
   [ -d "$1/node_modules" ] && [ ! -L "$1/node_modules" ] || { say "$1/node_modules is not a directory of its own"; return 1; }
   n=$(install_drift "$1"); n=${n:-0}
   [ "$n" -eq 0 ] 2>/dev/null || { say "$n package(s) $1/package-lock.json declares are missing from the install or at another version"; return 1; }
+  n=$(install_holes "$1"); n=${n:-0}
+  [ "$n" -eq 0 ] 2>/dev/null || { say "$n package(s) npm's record says are installed in $1 have no files or a missing bin"; return 1; }
   while IFS=$'\t' read -r name dir; do
     [ -n "$name" ] || continue
     if [ -e "$1/node_modules/$name" ] && ! [ "$1/node_modules/$name" -ef "$1/$dir" ]; then
@@ -206,6 +232,8 @@ store_put() {
 store_get() {
   local store="$1" tree="$2" key="$3" d
   [ -f "$store/$key/.complete" ] || return 1
+  # Newest-used before the clone, so a peer's prune does not take it mid-copy.
+  touch "$store/$key/.complete"
   while IFS= read -r d; do
     [ -n "$d" ] && [ -d "$store/$key/$d" ] || continue
     mkdir -p "$(dirname "$tree/$d")"
@@ -213,6 +241,14 @@ store_get() {
   done <<<"$(nm_dirs "$tree")"
   touch "$store/$key/.complete"
   return 0
+}
+
+# store_drop <store> <key> — a stored install that cloned into a broken tree, removed: kept,
+# it is cloned into every later tree on that lockfile, and store_put never replaces it.
+store_drop() { # <store> <key> <why>
+  [ -d "$1/$2" ] || return 0
+  say "store: dropping $2 — $3"
+  mv "$1/$2" "$1/.drop-$2-$$" 2>/dev/null && rm -rf "$1/.drop-$2-$$"
 }
 
 # store_prune <store> — keep the newest-used BUILDER_INSTALL_KEEP keys. Ages come from the
@@ -236,11 +272,12 @@ store_prune() {
 mode=build
 case "${1:-}" in
   --if-stale) mode=stale; shift ;;
+  --fresh) mode=fresh; shift ;;
   --behind) mode=behind; shift ;;
   --fingerprint) mode=fp; shift ;;
 esac
 TREE="${1:-}"
-[ -n "$TREE" ] && [ -d "$TREE" ] || { echo "usage: builder-install.sh [--if-stale|--behind|--fingerprint] <tree>" >&2; exit 1; }
+[ -n "$TREE" ] && [ -d "$TREE" ] || { echo "usage: builder-install.sh [--if-stale|--fresh|--behind|--fingerprint] <tree>" >&2; exit 1; }
 TREE=$(cd "$TREE" && pwd -P)
 
 if [ "$mode" = behind ]; then
@@ -271,9 +308,12 @@ STORE="${BUILDER_INSTALL_STORE:-$HOME/.cache/agent-harness/installs}"
 t0=$(date +%s)
 drop_install "$TREE"
 how=""
-if store_get "$STORE" "$TREE" "$KEY" && verify "$TREE"; then
-  how="cloned from the store"
-else
+if [ "$mode" = fresh ]; then
+  store_drop "$STORE" "$KEY" "a fresh install was asked for"
+elif store_get "$STORE" "$TREE" "$KEY"; then
+  if verify "$TREE"; then how="cloned from the store"; else store_drop "$STORE" "$KEY" "its copy did not match its own record"; fi
+fi
+if [ -z "$how" ]; then
   drop_install "$TREE"
   cmd=$(install_cmd "$TREE")
   say "installing $TREE's own dependencies: $cmd"
