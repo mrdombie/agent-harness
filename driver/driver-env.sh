@@ -83,9 +83,10 @@ DRIVER_PM_LABEL="${DRIVER_PM_LABEL:-${LBL_PM_DECISION:-status:pm-decision}}"
 # driver_own_install <tree> — the tree's own install, never a link to a shared one
 # (scripts/builder-install.sh says how: a copy-on-write clone of the stored install for
 # its lockfile, else an install). Its narration goes to stderr: callers sit inside
-# command substitutions. 0 installed, or nothing to install · 1 it failed.
+# command substitutions. --fresh installs and never clones the store. 0 installed, or
+# nothing to install · 1 it failed.
 driver_own_install() {
-  bash "$KIT_ROOT/scripts/builder-install.sh" "$1" >&2
+  bash "$KIT_ROOT/scripts/builder-install.sh" "$@" >&2
 }
 
 # driver_refresh_install <tree> — machine setup before anything reads the tree's install:
