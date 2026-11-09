@@ -925,7 +925,7 @@ $polish"
   fi
 
   driver_state_set "$t" run_brief ""   # shipped: the run's brief has been acted on
-  _driver_state_edit "$t" '.counters.machine_parks = 0' 2>/dev/null || true
+  _driver_state_edit "$t" '.counters.machine_parks = 0 | .counters.partial_resume = 0' 2>/dev/null || true
   driver_say "   ship: $branch pushed, pull request ready, auto-merge armed at $(printf '%s' "$head" | cut -c1-8). Handing off."
   return "$DRIVER_OK"
 }
