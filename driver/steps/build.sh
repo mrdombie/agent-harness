@@ -798,7 +798,9 @@ driver_step_build() { # <ticket>
     fi
   done
 
-  [ -z "$whole" ] || _driver_build_features "$t" || bad=1
+  # A list kept here is this ticket's to pass, whatever the record says of build_whole: a
+  # rebuild from before it was set left proved items false and parked asking a person.
+  if [ -n "$whole" ] || _driver_build_own_list "$t"; then _driver_build_features "$t" || bad=1; fi
 
   if [ "$bad" -eq 0 ]; then
     if [ "$kept" -gt 0 ]; then
@@ -832,6 +834,13 @@ _driver_build_task_fact() {
 _driver_build_item_key() {
   [ -n "$3" ] || return 0
   case "$(jq -r '.item // ""' <<<"$1")" in F[0-9]*) printf ':%s' "$2" ;; esac
+}
+
+# _driver_build_own_list <ticket> — 0 when the ticket keeps a feature list whose items are
+# built here (no item filed as a part of its own).
+_driver_build_own_list() {
+  local list; list="$(driver_state_dir "$1")/features.json"
+  [ -s "$list" ] && jq -e '(.items | length) > 0 and all(.items[]; .part == null)' "$list" >/dev/null 2>&1
 }
 
 # _driver_build_features <ticket> — an item passes once every task of it is proved and one of
