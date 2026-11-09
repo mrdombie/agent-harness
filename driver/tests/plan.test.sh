@@ -62,39 +62,69 @@ EXF="$HERE/../../briefs/examples/plan.valid-feature-list.json"
 BASE_CFG="$HARNESS_CFG_PATH"
 limit() { jq --argjson n "$1" '.driver.split.planMaxFiles = $n' "$BASE_CFG" > "$FIX/cfg-limit.json"; export HARNESS_CFG="$FIX/cfg-limit.json" HARNESS_CFG_PATH="$FIX/cfg-limit.json"; }
 limit 1
-fix_issue 151 OPEN "status:claimed,P1,area:inbox,screen:inbox,needs:human-approval"; driver_state_init 151 --worktree "$REPO"
-fix_ai plan "$(jq -c . "$EXF")" superpowers:writing-plans
-fresh; out=$(driver_step_plan 151 2>&1); rc=$?
-log=$(tr '\n' ' ' < "$GH_LOG")
-want "the run ends clean, nothing built"           "$DRIVER_E_NOOP" "$rc"
-want "  foundation, F1, F2 and the clean-up: four parts" "4" "$(grep -c '^issue create' "$GH_LOG")"
-c1=$(created 801); c2=$(created 802); c3=$(created 803); c4=$(created 804)
-want_in "  the foundation goes first, naming its reason" 'part 1 of 4: foundation .*expand-contract' "$c1"
-want_in "  and is ready"                           '--label status:ready --label P1 --label area:inbox --label screen:inbox' "$c1"
-want_in "  F1 builds on it, so it waits for it"    'part 2 of 4: F1 A person saves.*--label status:gated' "$c2"
-want_in "  on the foundation part, as the unblocker reads it" 'Blocked until #801 merges' "$c2"
-want_in "  F2 does not need it: ready from the start" 'part 3 of 4: F2 An empty filter list.*--label status:ready' "$c3"
-want_not_in "  and waits on nothing"                'Blocked until' "$c3"
-want_in "  each item part carries its steps and its test" 'Test steps.*1\. open the list with nothing saved.*src/inbox/filter-list.test.tsx' "$c3"
-want_in "  and says which item of which list it is" '<!-- harness:feature-item parent=151 id=F2 test=src/inbox/filter-list.test.tsx -->' "$c3"
-want_in "  only its own tasks' files, not the whole plan's" 'Files:\*\* src/inbox/FilterList.tsx' "$c3"
-want_in "  the clean-up goes last, once every behaviour has landed" 'part 4 of 4: clean-up.*Blocked until #802, #803 merge.*--label status:gated' "$c4"
-want_not_in "  a person's hold is not inherited"        'label needs:human-approval' "$log"
-want_in "  the parent carries the list, every item failing, each with its part" 'issue comment 151 .*\*\*Feature list\*\*.*F1\*\* .*#802 \(failing\).*F2\*\* .*#803 \(failing\)' "$log"
-want_in "  the parent is told how it was split"     'issue comment 151 .*Split by behaviour.* into #801 #802 #803 #804' "$log"
-want_in "  and why it stays not-done until the list passes" 'every item passes and its clean-up part #804 has merged' "$log"
-want_in "  closed as split, so nothing claims it again" 'issue close 151 --repo acme/widgets --reason not planned' "$log"
-want "  the waits naming it are re-pointed at its parts" "--repoint 151 801 802 803 804" "$(cat "$FIX/repoint.log")"
-want "  kept in the driver state with its parts"   "802 803 804" "$(jq -r '[.items[].part, .cleanup.part] | map(tostring) | join(" ")' "$(driver_state_dir 151)/features.json")"
-want_in "  the run says why"                       'split by behaviour into 4 parts' "$out"
-
-echo "--- no foundation: every item ready at once, none chained ---"
 plan_feats() { # <items> — a valid plan with that many behaviours, one task each
   jq -nc --argjson n "$1" '{step:"plan",skills:["superpowers:writing-plans"],status:"planned",designSource:"ticket-body",
     premise:{verdict:"still-true",evidence:"a.sh:1"},
     features:[range($n) | {id:"F\(. + 1)",behaviour:"behaviour \(. + 1)",steps:["step \(. + 1)"],test:"f\(. + 1).test.sh",passes:false}],
     tasks:[range($n) | {item:"F\(. + 1)",title:"task \(. + 1)",files:[{path:"f\(. + 1).sh",action:"modify"}],tests:[{file:"f\(. + 1).test.sh",behaviour:"b",redWhen:"r"}]}]}'
 }
+echo "    an expand-contract plan, merge-first off: the change, then its clean-up — two parts, never one per behaviour"
+release_merge_first() { return 1; }
+fix_issue 151 OPEN "status:claimed,P1,area:inbox,screen:inbox,needs:human-approval"; driver_state_init 151 --worktree "$REPO"
+fix_ai plan "$(jq -c '.tasks[1].files += [{path:"src/content/changelog/151.md",action:"create"}]' "$EXF")" superpowers:writing-plans
+fresh; out=$(driver_step_plan 151 2>&1); rc=$?
+log=$(tr '\n' ' ' < "$GH_LOG")
+want "the run ends clean, nothing built"           "$DRIVER_E_NOOP" "$rc"
+want "  the change and its clean-up: two parts"    "2" "$(grep -c '^issue create' "$GH_LOG")"
+c1=$(created 801); c2=$(created 802)
+want_in "  the change goes first, whole"           'part 1 of 2: the change' "$c1"
+want_in "  and is ready, labels inherited"         '--label status:ready --label P1 --label area:inbox --label screen:inbox' "$c1"
+want_in "  it names the foundation's reason"       'expand-contract' "$c1"
+want_in "  and every behaviour, in list order, with its steps" 'F1: A person saves.*apply two filters.*F2: An empty filter list.*open the list with nothing saved' "$c1"
+want_in "  and every task's files but the clean-up's" 'Files:\*\* src/inbox/FilterList.tsx, src/inbox/SaveFilter.tsx, src/inbox/filter-store.ts' "$c1"
+want_not_in "  not the parent's changelog: it is not the last part" 'changelog/151.md' "$c1"
+want_not_in "  nor the clean-up's files"                'query-filters.ts' "$c1"
+want_not_in "  no per-behaviour marker: it builds as one change" 'harness:feature-item' "$c1"
+want_in "  the clean-up goes last, once the change has landed" 'part 2 of 2: clean-up.*Blocked until #801 merges.*--label status:gated' "$c2"
+want_in "  it carries its own files and the parent's changelog" 'Files:\*\* src/content/changelog/151.md, src/inbox/query-filters.ts' "$c2"
+want_not_in "  a person's hold is not inherited"        'label needs:human-approval' "$log"
+want_in "  the parent carries the list, each item on the change part" 'issue comment 151 .*\*\*Feature list\*\*.*F1\*\* .*#801 \(failing\).*F2\*\* .*#801 \(failing\)' "$log"
+want_in "  the parent is told how it was split"     'issue comment 151 .*Split in two.* into #801 #802' "$log"
+want_in "  and why it stays not-done until the list passes" 'every item passes and its clean-up part #802 has merged' "$log"
+want_in "  closed as split, so nothing claims it again" 'issue close 151 --repo acme/widgets --reason not planned' "$log"
+want "  the waits naming it are re-pointed at its parts" "--repoint 151 801 802" "$(cat "$FIX/repoint.log")"
+want "  kept in the driver state with its parts"   "801 801 801 802" "$(jq -r '[.items[].part, .foundation.part, .cleanup.part] | map(tostring) | join(" ")' "$(driver_state_dir 151)/features.json")"
+want_in "  the run says why"                       'split in two' "$out"
+
+echo "    six behaviours and an expand-contract foundation: 1 change merge-first, 2 without, never 6"
+plan_contract() { # <items> — plan_feats with an expand-contract foundation and its clean-up
+  plan_feats "$1" | jq -c '.foundation = {reason:"expand-contract", why:"the new store deploys before the old is removed"}
+    | .tasks = [{item:"foundation",title:"new store",files:[{path:"store.sh",action:"create"}],tests:[{file:"store.test.sh",behaviour:"b",redWhen:"r"}]}] + .tasks
+      + [{item:"cleanup",title:"remove the old",files:[{path:"old.sh",action:"delete"}],tests:[{file:"store.test.sh",behaviour:"b",redWhen:"r"}]}]'
+}
+limit 1
+release_merge_first() { return 0; }
+fix_issue 181 OPEN "status:claimed,P1"; driver_state_init 181 --worktree "$REPO"
+fix_ai plan "$(plan_contract 6)" superpowers:writing-plans
+fresh; out=$(driver_step_plan 181 2>&1); rc=$?
+want "merge-first: it builds here as one change, nothing filed" "0 0" "$rc $(grep -c '^issue create' "$GH_LOG")"
+want "  built whole, in list order"                "1" "$(driver_state_get 181 build_whole)"
+want "  the clean-up task last, in the same change" "cleanup" "$(jq -r '.tasks[-1].item' "$(driver_state_dir 181)/steps/plan.json")"
+want_in "  the run says why"                       'merge-first.*same change' "$out"
+release_merge_first() { return 1; }
+fix_issue 182 OPEN "status:claimed,P1"; driver_state_init 182 --worktree "$REPO"
+fix_ai plan "$(plan_contract 6)" superpowers:writing-plans
+fresh; out=$(driver_step_plan 182 2>&1); rc=$?
+want "merge-first off: two parts, not six"         "$DRIVER_E_NOOP 2" "$rc $(grep -c '^issue create' "$GH_LOG")"
+export HARNESS_CFG="$BASE_CFG" HARNESS_CFG_PATH="$BASE_CFG"
+fix_issue 183 OPEN "status:claimed,P1"; driver_state_init 183 --worktree "$REPO"
+fix_ai plan "$(plan_contract 6)" superpowers:writing-plans
+fresh; out=$(driver_step_plan 183 2>&1); rc=$?
+want "  under the file limit too: still two parts"  "$DRIVER_E_NOOP 2" "$rc $(grep -c '^issue create' "$GH_LOG")"
+limit 1
+unset -f release_merge_first
+
+echo "--- no foundation: every item ready at once, none chained ---"
 fix_issue 152 OPEN "status:claimed,P1"; driver_state_init 152 --worktree "$REPO"
 fix_ai plan "$(plan_feats 3)" superpowers:writing-plans
 fresh; out=$(driver_step_plan 152 2>&1); rc=$?
@@ -102,6 +132,15 @@ want "three behaviours past the limit: three parts" "$DRIVER_E_NOOP 3" "$rc $(gr
 want "  all three ready"                           "3" "$(cat "$FIX"/created-*.txt | tr ' ' '\n' | grep -c -x 'status:ready')"
 want "  none waits on another"                     "0" "$(grep -c 'Blocked until' "$GH_LOG")"
 want_in "  the run says the limit"                 'over driver.split.planMaxFiles \(1\)' "$out"
+
+echo "--- a per-behaviour split keeps the parent's changelog for its last part only ---"
+fix_issue 184 OPEN "status:claimed,P1"; driver_state_init 184 --worktree "$REPO"
+fix_ai plan "$(plan_feats 3 | jq -c '.tasks[0].files += [{path:"changelog/184.md",action:"create"},{path:"changelog/1840.md",action:"create"}]')" superpowers:writing-plans
+fresh; out=$(driver_step_plan 184 2>&1); rc=$?
+want "three parts" "$DRIVER_E_NOOP 3" "$rc $(grep -c '^issue create' "$GH_LOG")"
+want_not_in "  part 1 leaves the parent's changelog out" 'changelog/184\.md' "$(created 801)"
+want_in "  another ticket's changelog is not the parent's" 'changelog/1840\.md' "$(created 801)"
+want_in "  the last part carries it" 'Files:\*\* changelog/184\.md, f3\.sh' "$(created 803)"
 
 echo "--- the limit counts distinct files: at it builds here, one over it splits ---"
 plan_wide() { # <distinct files> — two behaviours, the first task naming them all and the second one again

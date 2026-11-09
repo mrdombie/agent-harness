@@ -116,13 +116,16 @@ foundations ship in the same change as their behaviours.
 
 It splits in two cases: past `driver.split.planMaxFiles` (50; 0 never) distinct files named by
 the plan (4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10), and, whatever
-its file count or that setting, with an `expand-contract` foundation of any list length, so the
-new shape deploys before the old one is removed. Then: one part per
+its file count or that setting, with an `expand-contract` foundation, so the new shape deploys
+before the old one is removed. That split is always in two: the change, whole and in list
+order, then its clean-up, gated on it; with `release.mergeFirst` on, it builds here as one
+change with the clean-up last. Past the file limit: one part per
 item, each carrying its behaviour, its test steps and a
 `<!-- harness:feature-item parent=… id=F<n> test=… -->` marker, all ready at once. A
 foundation (`expand-contract`, `refactor` or `hidden-backend`) goes first, and only the items
 with `needsFoundation` wait for it; a clean-up part goes last, gated on every item part. The
-list, with its parts, is posted on the parent, which closes as split.
+list, with its parts, is posted on the parent, which closes as split. A part's file list leaves
+out the parent's own changelog entry unless it is the last part.
 `scripts/feature-close.sh` (a coordinator housekeeping pass) marks an item passing once
 its part closed as completed with its test file on the integration branch, and the
 feature done (closed as completed) once every item passes and the clean-up part merged.
