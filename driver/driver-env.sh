@@ -684,6 +684,8 @@ driver_lean_args() {
   [ -z "${DRIVER_STEP_BUDGET_USD:-}" ] || DRIVER_LEAN_ARGS+=(--max-budget-usd "$DRIVER_STEP_BUDGET_USD")
   # A caller's effort for this one call (the review check runs at review.checkEffort).
   [ -z "${DRIVER_STEP_EFFORT:-}" ] || DRIVER_LEAN_ARGS+=(--effort "$DRIVER_STEP_EFFORT")
+  # Always: with no --model, `claude -p` follows the machine's settings.json / ANTHROPIC_MODEL.
+  DRIVER_LEAN_ARGS+=(--model "$(driver_model_for "$step")")
   tools=$(driver_step_tools "$step")
   # Off until the release: no step can start the design critic as a subagent either.
   local deny="" ja
@@ -835,6 +837,19 @@ EOS
 # refuses a missing key by name, which is right for a fact the kit cannot invent;
 # these are tuning the kit can default without naming anyone's project.
 driver_opt() { local v; v=$(toolkit_cfg "$1" 2>/dev/null) || v=""; printf '%s' "${v:-$2}"; }
+
+# driver_model_for [step] — the model one step's call runs on, from harness.json's
+# `driver.model`: plan → .plan; review, review-check and attest → .review; every other
+# step → .default; each falls back to .default, then opus. Passed to --model untouched,
+# so an alias (opus, fable) or a full id both work. Leaf keys only: driver_opt on the
+# object itself prints its JSON.
+driver_model_for() {
+  local step="${1:-}" key=default dflt
+  case "$step" in plan) key=plan ;; review|review-check|attest) key=review ;; esac
+  dflt=$(driver_opt driver.model.default opus)
+  [ "$key" != default ] || { printf '%s' "$dflt"; return 0; }
+  driver_opt "driver.model.$key" "$dflt"
+}
 
 # driver_evidence_plan <ticket> — the capture plan's path in the tree, where CI reads it:
 # <evidence.dir>/<key>/plan.json, the key by CI's own rule (scripts/evidence-plan.sh). Ship,
