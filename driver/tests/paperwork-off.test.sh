@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# paperwork-off.test.sh — two retired steps stay retired: the PR body's Lesson section
-# (lessons off, owner 2026-11-02) and the UI-Gate trailer (the front-end gate off, the
-# same day). Nothing a builder runs or reads may write or require either again. The
+# paperwork-off.test.sh — three retired steps stay retired: the PR body's Lesson section
+# (lessons off, owner 2026-11-02), the UI-Gate trailer (the front-end gate off, the
+# same day) and the .deploy-trigger stamp (no project reads it; owner 2026-11-09). Nothing a builder runs or reads may write or require either again. The
 # driver's own ship body is checked on a real run in quick-route.test.sh; this reads
 # every live source, so a step brought back anywhere fails here by file and line.
 # Run: bash "$0"
@@ -33,12 +33,15 @@ asks() {
   done
 }
 UIGATE='UI-Gate:'
+DEPLOY='(check:deploy-trigger|bump-deploy-trigger|\.deploy-trigger)'
 LESSON='(^|[^a-z])(## Lesson|[Ll]esson:|ships a lesson|lesson section)'
 
 echo "--- nothing live writes or requires a UI-Gate trailer ---"
 want "no line outside a comment" "" "$(asks "$KIT" "$UIGATE")"
 echo "--- nothing live writes or requires a Lesson section ---"
 want "no line outside a comment" "" "$(asks "$KIT" "$LESSON")"
+echo "--- nothing live runs or writes the .deploy-trigger stamp ---"
+want "no line outside a comment" "" "$(asks "$KIT" "$DEPLOY")"
 want "the ship body names no Lesson heading" "0" "$(grep -c '## Lesson' "$KIT/driver/steps/ship.sh")"
 
 echo "--- plant the step back: each case goes red ---"
@@ -50,6 +53,10 @@ printf 'git commit --allow-empty -m "chore: ui-gate" -m "UI-Gate: SHIP (agent) <
 printf '#!/usr/bin/env bash\ngit log --format=%%B | grep -q "UI-Gate:" || exit 2\n' > "$TMP/kit/hooks/pre-push-gate.sh"
 want_n=$(asks "$TMP/kit" "$UIGATE" | grep -c 'hooks/pre-push-gate.sh')
 want "planted: a hook requiring the trailer → caught" "1" "$want_n"
+printf 'if ! npm run check:deploy-trigger; then\n  sh scripts/bump-deploy-trigger.sh\nfi\n' > "$TMP/kit/skills/finish/SKILL.md"
+[ -n "$(asks "$TMP/kit" "$DEPLOY")" ] && ok "planted: finish runs the deploy-trigger stamp → caught" || bad "planted: the deploy-trigger step in finish went unseen"
+printf 'git add .deploy-trigger\n' > "$TMP/kit/skills/finish/SKILL.md"
+[ -n "$(asks "$TMP/kit" "$DEPLOY")" ] && ok "planted: finish stages a .deploy-trigger file → caught" || bad "planted: staging .deploy-trigger went unseen"
 printf '#!/usr/bin/env bash\n# the UI-Gate: trailer was retired on 2026-11-02\n' > "$TMP/kit/hooks/history.sh"
 want "a comment naming the retired trailer is history, not a step" "0" "$(asks "$TMP/kit" "$UIGATE" | grep -c 'hooks/history.sh')"
 
