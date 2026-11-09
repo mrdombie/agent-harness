@@ -39,6 +39,7 @@ lib() {
     required)  perl -0pi -e 's/    pending\|green\) printf/    green) printf "stuck\\tplanted\\n" ;;\n    pending) printf/' "$p" ;;
     clash)     perl -0pi -e 's/    clash\)  printf .stuck/    clash)  printf '"'"'green/' "$p" ;;
     counted)   perl -0pi -e 's/  rebuild_count_failures "\$t" "\$pr" "\$pj"\n//' "$p" ;;
+    cap)       perl -0pi -e 's/\[ "\$n" -ge "\$REBUILD_MAX" \]/false/' "$p" ;;
     plan)      perl -0pi -e 's/\[ -s "\$d\/plan.json" \] && plan=/false \&\& plan=/' "$p" ;;
     cancelled) perl -0pi -e 's/printf .stuck\\t%s\\n. "\$why" ;;\n    pending\|green\)/printf "pending\\t%s\\n" "\$why" ;;\n    pending|green)/' "$p" ;;
   esac
@@ -234,6 +235,38 @@ pr 81 101 head13 BLOCKED '[]' unit:FAILURE:7017
 age 0; COORDINATOR_SHADOW=1 pass; age 61; COORDINATOR_SHADOW=1 pass
 want "shadow counts nothing"                     "0" "$(cat "$LED" 2>/dev/null | grep -c .)"
 
+echo "--- built twice already: parked for the PM, not built a third time ---"
+REFS="$FIX/gh/api-repos_acme_widgets_git_matching-refs_stale_101_.json"
+fresh; base unit:success lint:success
+printf '[{"ref":"refs/stale/101/pr-60"},{"ref":"refs/stale/101/pr-65"}]\n' > "$REFS"
+pr 82 101 head14 BLOCKED '[]' unit:FAILURE:7018 lint:SUCCESS:7019
+age 0; pass; age 61; pass
+want "the PR is closed"                          "1" "$(closes 82)"
+want_in "  with a note saying it parked"         'pr close 82 --repo acme/widgets --delete-branch --comment Parked for the PM: ticket #101 has been built 2 times and PR #82 still cannot merge' "$(cat "$GH_LOG")"
+want "  its head is kept"                        "1" "$(grep -c '^api repos/acme/widgets/git/refs -f ref=refs/stale/101/pr-82 -f sha=head14' "$GH_LOG")"
+want_in "  the ticket is parked"                 'issue edit 101 .*--add-label status:parked' "$(cat "$GH_LOG")"
+want_in "  for the PM"                           'issue edit 101 .*pm-decision' "$(cat "$GH_LOG")"
+want_in "  and told which check failed"          'issue comment 101 .*Failing checks on the last build:.*- unit' "$(tr '\n' ' ' < "$GH_LOG")"
+want "  it is not queued again"                  "0" "$(grep -c '^add 101' "$QLOG")"
+want_in "  it says so"                           'rebuild: parked #101 for the PM — built 2 times, PR #82 closed' "$OUT"
+
+echo "--- built once: rebuilt as before ---"
+fresh; base unit:success
+printf '[{"ref":"refs/stale/101/pr-60"}]\n' > "$REFS"
+pr 83 101 head15 BLOCKED '[]' unit:FAILURE:7020
+age 0; pass; age 61; pass
+want "closed"                                    "1" "$(closes 83)"
+want_in "  and queued fresh"                     '^add 101 --class new --first' "$(cat "$QLOG")"
+
+echo "--- coordinator.rebuildMax 0: no cap ---"
+fresh; base unit:success
+printf '[{"ref":"refs/stale/101/pr-60"},{"ref":"refs/stale/101/pr-65"},{"ref":"refs/stale/101/pr-70"}]\n' > "$REFS"
+pr 84 101 head16 BLOCKED '[]' unit:FAILURE:7021
+age 0; COORDINATOR_REBUILD_MAX=0 pass; age 61; COORDINATOR_REBUILD_MAX=0 pass
+want_in "built 3 times, no cap: queued fresh"    '^add 101 --class new --first' "$(cat "$QLOG")"
+rm -f "$REFS"
+fix_issue 101 OPEN "status:in-review,P1"
+
 echo "--- shadow: says what it would do, closes nothing ---"
 fresh; base unit:success
 pr 78 101 head10 DIRTY '[]' unit:SUCCESS:7014
@@ -243,7 +276,7 @@ want_in "  it says it would"                     'rebuild: would close PR #78' "
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled counted; do
+  for p in threshold base-red held required clash plan cancelled counted cap; do
     PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
     want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
   done

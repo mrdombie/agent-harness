@@ -7,6 +7,7 @@
 #   rebuild_fresh <ticket> <why> [pr-json]   close the PR, keep its head, queue the ticket fresh
 #   rebuild_pr_state <ticket> <pr-json>      "<state>\t<why>": stuck | base-red | pending | green | unread
 #   rebuild_held <ticket> <pr-json> <labels-csv>   0 when a person owns it; echoes why
+#   rebuild_park <ticket> <why> <pr-json> <builds>  past coordinator.rebuildMax: close, keep the head, park for the PM
 #
 # WHY. Measured 22 Oct: 80% of build time went to repairs of stale changes, and the 12
 # most-repaired PRs used 48% of three days' repair usage. A repair re-enters a stale
@@ -52,6 +53,12 @@ declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
 REBUILD_CLOCK="$COORD_DIR/rebuild-clock.$(coord_mode).tsv"   # pr \t epoch first seen stuck \t why
+# A ticket built this many times already parks for the PM instead of building again
+# (coordinator.rebuildMax; 0 is no cap). Measured 2026-11-09: one ticket rebuilt 12
+# times in a week, 568 PRs thrown away against 478 merged. Each build left a
+# refs/stale/<ticket>/pr-<n>, so those refs are the count.
+REBUILD_MAX="${COORDINATOR_REBUILD_MAX:-$(swarm_opt coordinator.rebuildMax 2)}"
+case "$REBUILD_MAX" in ''|*[!0-9]*) REBUILD_MAX=2 ;; esac
 # A cancelled, timed-out or runner-less required check is re-run this many times a head.
 COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
 case "$COORD_RERUN_MAX" in ''|*[!0-9]*) COORD_RERUN_MAX=2 ;; esac
@@ -280,10 +287,40 @@ rebuild_fresh() { # <ticket> <why> [pr-json] — 0 when the PR was closed and th
   say "rebuild: closed PR #$pr ($why; head kept at $ref) — #$t is queued to build fresh from $INTEGRATION_BRANCH"
 }
 
+# rebuild_prior <ticket> — how many times it was rebuilt already (its refs/stale/<t>/ refs),
+# or nothing when they could not be read: an unread count never parks a ticket.
+rebuild_prior() {
+  # gh-read-ok: an unread count leaves the rebuild as it was
+  swarm_gh api "repos/${REPO_SLUG:?}/git/matching-refs/stale/$1/" 2>/dev/null | jq -r 'if type == "array" then length else empty end' 2>/dev/null
+}
+
+rebuild_park() { # <ticket> <why> <pr-json> <builds> — 0 when the PR was closed and the ticket parked for the PM
+  local t="$1" why="$2" pj="$3" n="$4" pr sha ref fails note
+  pr=$(jq -r .number <<<"$pj"); sha=$(jq -r '.headRefOid // ""' <<<"$pj"); ref="refs/stale/$t/pr-$pr"
+  coord_act_log rebuild-park "$t" "PR #$pr: $why (built $n times)"
+  if coord_shadow; then say "rebuild: would park #$t for the PM — built $n times, PR #$pr still cannot merge ($why)"; return 0; fi
+  [ -n "$sha" ] && swarm_gh api "repos/$REPO_SLUG/git/refs" -f ref="$ref" -f sha="$sha" >/dev/null 2>&1 \
+    || swarm_gh api "repos/$REPO_SLUG/git/refs/${ref#refs/}" -X PATCH -f sha="$sha" -F force=true >/dev/null 2>&1 \
+    || { say "rebuild: #$t — PR #$pr's head could not be kept at $ref; the PR is left open"; return 1; }
+  fails=$(pr_red_failed "$pj" "${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}" "[]" "" 2>/dev/null | cut -f1 | grep -v '^$' | sed 's/^/- /')
+  note="Parked for the PM: ticket #$t has been built $n times and PR #$pr still cannot merge ($why), so it is not built again (coordinator.rebuildMax $REBUILD_MAX). Its work is kept at \`$ref\` ($sha)."
+  swarm_gh pr close "$pr" --repo "$REPO_SLUG" --delete-branch --comment "$note" >/dev/null 2>&1 \
+    || { say "rebuild: #$t — PR #$pr could not be closed; left as it is"; return 1; }
+  rebuild_count_failures "$t" "$pr" "$pj"
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$note${fails:+
+
+Failing checks on the last build:
+$fails}" >/dev/null 2>&1 || say "rebuild: #$t could not be told why it parked"
+  issue_status_set "$t" "$LBL_PARKED" --also "${LBL_PM_DECISION:-status:pm-decision}" >/dev/null 2>&1 \
+    || say "rebuild: #$t could not be parked; the next seed may build it again"
+  rebuild_clock_stop "$pr"
+  say "rebuild: parked #$t for the PM — built $n times, PR #$pr closed ($why; head kept at $ref)"
+}
+
 # rebuild_pass — every open ticket PR in this tick's read (PRS, fresh, PRS_STALE 0): its clock
 # moved or stopped, and a stuck one past coordinator.rebuildAfterMin rebuilt. Says what it did.
 rebuild_pass() {
-  local pj pr t st why since age lab metas rows tickets now
+  local pj pr t st why since age lab metas rows tickets now n
   [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ] || { say "rebuild: the open PRs are a snapshot this tick — no clock moves"; return 0; }
   rows=$(printf '%s' "$PRS" | jq -c --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
     sort_by(.number) | .[] | (.headRefName | branch_ticket($pre)) as $t | select($t != "") | {t: $t, pr: .}' 2>/dev/null)
@@ -319,6 +356,11 @@ rebuild_pass() {
     since=$(rebuild_clock_start "$pr" "$why"); age=$(( (now - since) / 60 ))
     if [ "$REBUILD_AFTER_MIN" -eq 0 ] || [ "$age" -lt "$REBUILD_AFTER_MIN" ]; then
       say "rebuild: PR #$pr is stuck ($why) — $age of $REBUILD_AFTER_MIN min$([ "$REBUILD_AFTER_MIN" -eq 0 ] && echo ' (coordinator.rebuildAfterMin 0: off)')"
+      continue
+    fi
+    n=$(rebuild_prior "$t")
+    if [ "$REBUILD_MAX" -gt 0 ] && [ -n "$n" ] && [ "$n" -ge "$REBUILD_MAX" ]; then
+      rebuild_park "$t" "$why" "$pj" "$n" || say "rebuild: #$t could not be parked this tick — tried again next tick"
       continue
     fi
     rebuild_fresh "$t" "$why" "$pj" || say "rebuild: #$t could not be rebuilt this tick — tried again next tick"
