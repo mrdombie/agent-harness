@@ -75,6 +75,35 @@ driver_quick_max_files() {
   local n; n=$(jq -r '.driver.quick.maxFiles // 3' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*|0) n=3 ;; esac; printf '%s' "$n"
 }
+# A FIX TAKES THE QUICK ROUTE (owner, 2026-11-09: the quick route is the default for small
+# fixes). Measured over 1,290 sized tickets, 23 Oct-9 Nov: 26 of 325 fix tickets went
+# quick, 136 sized small walked plan and three-plus build sessions (median 40 min to a PR,
+# 6.0 sessions) against the quick route's 9 min and 3.5. A fix is a ticket wearing one of
+# driver.quick.fixLabels (type:bug, bug) or whose title matches driver.quick.fixTitle;
+# sized small, it goes quick, its diff held to driver.quick.fixMaxFiles (5: 18 of 25
+# quick changes that moved up touched 4 or 5 files, the fix and its test). An effort
+# label, a feature label, a schema or a screen still keep it off.
+DRIVER_QUICK_FIX_LABELS_DEFAULT='["type:bug", "bug"]'
+DRIVER_QUICK_FIX_TITLE_DEFAULT='^(fix|bug|hotfix)([^a-z]|$)|(^|[^a-z])develop is red([^a-z]|$)'
+driver_quick_fix_max_files() {
+  local n; n=$(jq -r '.driver.quick.fixMaxFiles // 5' "$HARNESS_CFG" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*|0) n=5 ;; esac; printf '%s' "$n"
+}
+# driver_size_is_fix <labels-csv> <title> — 0 when the ticket is a fix.
+driver_size_is_fix() {
+  local l re
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case ",$1," in *",$l,"*) return 0 ;; esac
+  done <<<"$(jq -r --argjson d "$DRIVER_QUICK_FIX_LABELS_DEFAULT" \
+      '(.driver.quick.fixLabels // $d) | if type == "array" then .[] else empty end | select(type == "string" and length > 0)' \
+      "$HARNESS_CFG" 2>/dev/null || jq -r '.[]' <<<"$DRIVER_QUICK_FIX_LABELS_DEFAULT")"
+  re=$(jq -r --arg d "$DRIVER_QUICK_FIX_TITLE_DEFAULT" '.driver.quick.fixTitle // $d | strings' "$HARNESS_CFG" 2>/dev/null) || re="$DRIVER_QUICK_FIX_TITLE_DEFAULT"
+  [ -n "$re" ] && printf '%s\n' "$2" | tr '[:upper:]' '[:lower:]' | grep -qE -- "$re"
+}
+# driver_quick_max_for <kind> — the most files a quick change of that kind touches.
+driver_quick_max_for() { if [ "${1:-}" = fix ]; then driver_quick_fix_max_files; else driver_quick_max_files; fi; }
+
 _driver_size_small_max() {
   local n; n=$(jq -r '.driver.quick.smallMaxFiles // 8' "$HARNESS_CFG" 2>/dev/null)
   case "$n" in ''|*[!0-9]*|0) n=8 ;; esac; printf '%s' "$n"
@@ -267,8 +296,26 @@ _driver_size_stated() {
 }
 
 # driver_size_read <ticket> <title> <labels-csv> <body> — the mechanical read, as
-# "<size|undecided>\t<why>\t<files, comma-separated>".
+# "<size|undecided>\t<why>\t<files, comma-separated>". A fix the rules size small, naming
+# 1 to driver.quick.fixMaxFiles files, reads quick; one held small by a label stays small.
 driver_size_read() {
+  local rd size why files n
+  rd=$(_driver_size_read_rules "$@")
+  IFS=$'\t' read -r size why files <<<"$rd"
+  if [ "$size" = small ] && driver_size_is_fix "$3" "$2" && [ "${why#it carries }" = "$why" ]; then
+    n=$(printf '%s' "$files" | tr ',' '\n' | grep -c .)
+    if [ "$n" -ge 1 ] && [ "$n" -le "$(driver_quick_fix_max_files)" ]; then
+      printf 'quick\ta fix sized small takes the quick route (%s files at most): %s\t%s\n' "$(driver_quick_fix_max_files)" "$why" "$files"; return 0
+    fi
+  fi
+  # Code files on the trunk with no stated change: for a fix the size call answered small
+  # quick or small 37 times in 41, so it is not asked. Named files off the trunk, or none, still ask it.
+  if [ "$size" = undecided ] && [ "${why#it names }" != "$why" ] && driver_size_is_fix "$3" "$2"; then
+    printf 'quick\ta fix naming the code it touches takes the quick route: %s\t%s\n' "$why" "$files"; return 0
+  fi
+  printf '%s\n' "$rd"
+}
+_driver_size_read_rules() {
   local t="$1" title="$2" labels="$3" body="$4" text low l paths n never cfg max smax have gone note=""
   text="$title
 $body"

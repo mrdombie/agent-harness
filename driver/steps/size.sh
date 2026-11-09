@@ -11,7 +11,10 @@
 #
 #   quick    one to driver.quick.maxFiles (3) named files, and the change is config,
 #            copy or docs, or a small code edit the ticket states — on an existing
-#            screen too, while the baseline route is on (no new route or screen file)
+#            screen too, while the baseline route is on (no new route or screen file).
+#            A fix (driver.quick.fixLabels, driver.quick.fixTitle) sized small, by the
+#            rules or the size call, is quick too: one session fixes it and adds the
+#            test that fails without the fix, in up to driver.quick.fixMaxFiles (5) files
 #   small    a few named files, no schema, no new screen
 #   project  anything else: a schema or migration, a new screen, a design label, a
 #            never-quick file, more files than small, or a ticket naming no file
@@ -75,7 +78,7 @@ _driver_size_ask() {
 }
 
 driver_step_size() { # <ticket>
-  local t="${1:?driver_step_size: need a ticket}" j title labels body rd size why files by=rules route=full
+  local t="${1:?driver_step_size: need a ticket}" j title labels body rd size why files by=rules route=full kind=change
   export DRIVER_TICKET="$t"
   # A record that already planned or built this ticket keeps its route: switching a
   # half-walked full build to the quick order would drop the work it has done.
@@ -96,6 +99,7 @@ driver_step_size() { # <ticket>
     driver_state_set "$t" size_body_hash "$(driver_size_body_hash "$body")"
     rd=$(driver_size_read "$t" "$title" "$labels" "$body")
     IFS=$'\t' read -r size why files <<<"$rd"
+    ! driver_size_is_fix "$labels" "$title" || kind=fix
     if [ "$size" = undecided ]; then
       if ! driver_quick_on; then
         size=project; why="$why; the quick route is off, so no size call was made"
@@ -106,6 +110,8 @@ $body" "$files") || rc=$?
         if driver_usage_wall "$t" size "$(driver_state_dir "$t")/steps/size.log"; then return "$DRIVER_E_USAGE"; fi
         if [ "$rc" -eq 0 ]; then
           by=model; size=${asked%%	*}; why="$why; the size call: ${asked#*	}"
+          # The call never sees the fix rule: a fix it sizes small goes quick like one the rules size small.
+          if [ "$size" = small ] && [ "$kind" = fix ]; then size=quick; why="$why; a fix sized small takes the quick route"; fi
         else
           size=project; why="$why, and the size call gave no readable answer"
         fi
@@ -118,7 +124,8 @@ $body" "$files") || rc=$?
   driver_state_set "$t" size_reason "$why"
   driver_state_set "$t" size_by "$by"
   driver_state_set "$t" size_files "$files"
+  driver_state_set "$t" kind "$kind"
   driver_state_set "$t" route "$route"
-  driver_say "   size: route=$route size=$size ($by) — $why"
+  driver_say "   size: route=$route size=$size kind=$kind ($by) — $why"
   return "$DRIVER_OK"
 }

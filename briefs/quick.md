@@ -3,7 +3,8 @@
 # Quick change · one session
 
 This ticket was sized **quick**: a change to one or a few files, stated in the
-ticket, that is config, copy, docs or one small code edit. You make it in this one
+ticket, that is config, copy, docs or one small code edit — or a small fix (the
+`Kind:` line in the size verdict below says `fix`). You make it in this one
 session. There is no separate plan, build or proof step after you: the driver runs
 this project's fast local gates on your commits, one code review reads the diff,
 and the driver opens the pull request.
@@ -32,8 +33,18 @@ how a change is seen to work before anyone says it does.
    convention from the facts above. The driver alone pushes and opens the pull
    request; a push from here is refused.
 
+## When it is a fix
+
+When the size verdict says `Kind: fix`, the ticket may not state the change. Read it,
+find the cause, and make the smallest change that removes it. Commit a focused test
+that fails without the fix and passes with it (write it first and watch it fail), in
+this project's test layout. A fix that changes code with no test file in its commits
+is sent back once, then moves to the full route. Run that one test, and record the
+command and what it printed in `checked`.
+
 **If the change is bigger than its size, say so and stop editing.** It needs more
-files than it named, a test of its own, a screen, a schema or a migration: commit
+files than the size verdict allows, a screen, a schema or a migration, or (when it is
+not a fix) a test of its own: commit
 what you have and answer `edited` anyway. The driver reads the real diff and moves
 the ticket to the full route, with your work kept. Do not stretch a quick change to
 cover a full one.

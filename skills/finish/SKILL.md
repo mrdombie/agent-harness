@@ -286,7 +286,7 @@ sh scripts/prisma-generate-if-needed.sh >/dev/null  # #3570 — fingerprint-skip
 # That gate reads COMMITS (merge-base..HEAD), so it must run after Step 2's
 # clean-tree check, which is where we are. A PR sat 9 minutes with auto-merge
 # armed and Code gates red for exactly this. Stamp and commit only when it
-# fails. A sentinel bump does not move the UI-Gate fingerprint (verified).
+# fails.
 if ! npm run check:deploy-trigger; then
   sh scripts/bump-deploy-trigger.sh >/dev/null
   git add .deploy-trigger apps/web/.deploy-trigger apps/api/.deploy-trigger

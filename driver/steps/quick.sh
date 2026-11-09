@@ -29,7 +29,7 @@ driver_quick_exceeds() {
   local t="$1" wt="$2" trunk="$3" files n max never tier why
   files=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null | sed '/^$/d')
   n=$(printf '%s' "$files" | grep -c .)
-  max=$(driver_quick_max_files)
+  max=$(driver_quick_max_for "$(driver_state_get "$t" kind)")
   if [ "$n" -gt "$max" ]; then
     printf 'the change touches %s files, more than a quick change (%s): %s' "$n" "$max" "$(printf '%s' "$files" | head -5 | paste -sd, - | sed 's/,/, /g')"; return 0
   fi
@@ -42,6 +42,25 @@ driver_quick_exceeds() {
     printf 'the change is screen work: %s' "$why"; return 0
   fi
   return 1
+}
+
+# A FIX BRINGS ITS TEST. A quick fix whose diff changes code (anything but config and
+# docs) and no test file has not shown the fix works. The session is asked once more,
+# naming it; still none, the ticket moves up to the full route, whose build proves its
+# test red before the change. driver.quick.testPattern replaces the pattern below.
+DRIVER_QUICK_TEST_RE='(^|/)(__tests__|tests?|spec|e2e)/|\.(test|spec)\.[a-z0-9]+$|_test\.[a-z0-9]+$|(^|/)test_[^/]*\.py$'
+# driver_quick_fix_untested <tree> <trunk> — prints the code files of a diff with no test
+# file beside them and returns 0; 1 when it carries a test or changes no code.
+driver_quick_fix_untested() {
+  local wt="$1" trunk="$2" files re code
+  files=$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null | sed '/^$/d')
+  re=$(jq -r --arg d "$DRIVER_QUICK_TEST_RE" '.driver.quick.testPattern // $d | strings' "$HARNESS_CFG" 2>/dev/null) || re="$DRIVER_QUICK_TEST_RE"
+  [ -n "$re" ] || re="$DRIVER_QUICK_TEST_RE"
+  printf '%s\n' "$files" | grep -qE -- "$re" && return 1
+  code=$(printf '%s\n' "$files" | grep -vE "$DRIVER_SIZE_CONFIG_RE" | sed '/^$/d')
+  [ -n "$code" ] || return 1
+  printf '%s' "$code" | head -5 | paste -sd, - | sed 's/,/, /g'
+  return 0
 }
 
 # _driver_quick_upsize <ticket> <tree> <trunk> <why> — the work kept off the branch,
@@ -92,9 +111,12 @@ driver_step_quick() { # <ticket>
   done
   [ -n "$trunk" ] || { driver_say "✋ quick: no $INTEGRATION_BRANCH resolves in $wt."; return "$DRIVER_E_REFUSED"; }
 
-  driver_fact_put "$t" quick SIZE "$(printf 'Sized %s by %s: %s\nFiles it named: %s\nA quick change touches at most %s files.' \
+  local kind; kind=$(driver_state_get "$t" kind)
+  driver_fact_put "$t" quick SIZE "$(printf 'Sized %s by %s: %s\nFiles it named: %s\nKind: %s\nA quick change of this kind touches at most %s files.' \
     "$(driver_state_get "$t" size)" "$(driver_state_get "$t" size_by)" "$(driver_state_get "$t" size_reason)" \
-    "$(driver_state_get "$t" size_files | sed 's/,/, /g; s/^$/(none named)/')" "$(driver_quick_max_files)")"
+    "$(driver_state_get "$t" size_files | sed 's/,/, /g; s/^$/(none named)/')" \
+    "$( [ "$kind" = fix ] && echo 'fix — find the cause, make the smallest fix, and commit a test that fails without it' || echo change)" \
+    "$(driver_quick_max_for "$kind")")"
   rc=0; driver_ai_step "$t" quick || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   ans="$(driver_state_dir "$t")/steps/quick.json"
@@ -113,6 +135,17 @@ driver_step_quick() { # <ticket>
   fi
   if why=$(driver_quick_exceeds "$t" "$wt" "$trunk"); then
     _driver_quick_upsize "$t" "$wt" "$trunk" "$why"; return $?
+  fi
+  if [ "$kind" = fix ] && why=$(driver_quick_fix_untested "$wt" "$trunk"); then
+    local note; note="$(driver_state_dir "$t")/steps/quick.test-note.md"
+    printf 'SENT BACK ONCE: this is a fix and its commits change code (%s) with no test file. Add the test that fails without the fix and passes with it, commit it, and give the same answer again.\n' "$why" > "$note"
+    driver_say "↩ quick: a fix with no test ($why) — asked once more"
+    rc=0; driver_ai_step "$t" quick "$note" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    if why=$(driver_quick_exceeds "$t" "$wt" "$trunk"); then _driver_quick_upsize "$t" "$wt" "$trunk" "$why"; return $?; fi
+    if why=$(driver_quick_fix_untested "$wt" "$trunk"); then
+      _driver_quick_upsize "$t" "$wt" "$trunk" "a fix that changes code with no test ($why)"; return $?
+    fi
   fi
   # A quick change to an existing screen writes the same checklist a plan does.
   rc=0; _driver_screen_checklist_due "$t" quick "$ans" "$(git -C "$wt" diff --name-only "$trunk"...HEAD 2>/dev/null)" || rc=$?
