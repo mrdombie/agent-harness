@@ -833,7 +833,9 @@ PRBODY
     driver_state_set "$t" park_note "the existing pull request #$open_pr could not be rewritten at ship"
     return "$DRIVER_E_REFUSED"
   fi
-  swarm_gh pr create --repo "$REPO_SLUG" --draft \
+  # A branch whose pull request is open (a park's draft, a "Fix:" run's own PR) was
+  # rewritten above and takes the push: a second one is never asked for.
+  [ -n "$open_pr" ] || swarm_gh pr create --repo "$REPO_SLUG" --draft \
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true

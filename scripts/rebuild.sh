@@ -8,6 +8,8 @@
 #   rebuild_pr_state <ticket> <pr-json>      "<state>\t<why>": stuck | base-red | pending | green | unread
 #   rebuild_held <ticket> <pr-json> <labels-csv>   0 when a person owns it; echoes why
 #   rebuild_park <ticket> <why> <pr-json> <builds>  past coordinator.rebuildMax: close, keep the head, park for the PM
+#   rebuild_fix <ticket> <pr-json> <why> <kind>     a red or clashing PR goes back to its builder, on its own branch
+#   rebuild_park_open <ticket> <why> <pr-json> <rounds>  past coordinator.fixRounds: park for the PM, the PR left open
 #
 # WHY. Measured 22 Oct: 80% of build time went to repairs of stale changes, and the 12
 # most-repaired PRs used 48% of three days' repair usage. A repair re-enters a stale
@@ -21,8 +23,19 @@
 # re-run's pending checks and a new head (keep-fresh's merge), and stops when the PR goes
 # green or something works it. Past coordinator.rebuildAfterMin (60; 0 is off) it is rebuilt.
 # A cancelled check is also re-run (coordinator.rerunCancelled, 2 a head); left off the
-# clock, a cancel held an open-work place for 12 hours. Nothing else sends work to an open
-# PR: no repair, no fixer, no stall guard.
+# clock, a cancel held an open-work place for 12 hours.
+#
+# THE FIX ROUNDS (owner, 2026-11-09: "A broken PR goes back to its builder for 2 fix rounds,
+# then parks for the PM"). While a stuck PR waits, or with the rebuild off, one whose required
+# check settled red on its own code is queued for its builder with a "Fix:" brief: the PR's
+# branch, the failing checks and their job logs, nothing else. The driver continues that
+# branch and pushes to the same PR. One round per PR head (a round that ended without a
+# push spends the next on the same head), coordinator.fixRounds (2) per PR,
+# counted in fix-rounds.<mode>.tsv and never reset by a new head; past it the ticket parks
+# for the PM with the PR left open. A clash gets one update from its base first
+# (clash-updates.<mode>.tsv), then counts as a red. Never for a cancelled check (re-run
+# above), a base-red, a PR a person owns or a ticket something works. Nothing else sends
+# work to an open PR: no fixer, no stall guard.
 #
 # WHAT IS NEVER REBUILT.
 #   - a person owns it: the hold label, do-not-merge, a person's own draft (person-stop.sh),
@@ -59,6 +72,13 @@ REBUILD_CLOCK="$COORD_DIR/rebuild-clock.$(coord_mode).tsv"   # pr \t epoch first
 # refs/stale/<ticket>/pr-<n>, so those refs are the count.
 REBUILD_MAX="${COORDINATOR_REBUILD_MAX:-$(swarm_opt coordinator.rebuildMax 2)}"
 case "$REBUILD_MAX" in ''|*[!0-9]*) REBUILD_MAX=2 ;; esac
+# A PR red on its own code goes back to its builder this many times, then parks for the PM
+# with the PR left open (coordinator.fixRounds; 0 is off). A hard cap per PR: repairs were
+# deleted when the 12 most-repaired PRs used 48% of repair usage.
+FIX_ROUNDS="${COORDINATOR_FIX_ROUNDS:-$(swarm_opt coordinator.fixRounds 2)}"
+case "$FIX_ROUNDS" in ''|*[!0-9]*) FIX_ROUNDS=2 ;; esac
+FIX_LEDGER="$COORD_DIR/fix-rounds.$(coord_mode).tsv"        # pr \t rounds \t last head sent for a fix
+CLASH_UPDATES="$COORD_DIR/clash-updates.$(coord_mode).tsv"  # pr \t epoch: its one update from the base
 # A cancelled, timed-out or runner-less required check is re-run this many times a head.
 COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
 case "$COORD_RERUN_MAX" in ''|*[!0-9]*) COORD_RERUN_MAX=2 ;; esac
@@ -146,6 +166,7 @@ $BASE_RED_MARK" >/dev/null 2>&1 || true
 #   pending   a required check still running
 #   green     nothing required failed and nothing clashes
 #   unread    the PR or its base's rules could not be read
+# A stuck line carries a third field, red or clash, when a fix round may take it (rebuild_fix).
 rebuild_pr_state() {
   local t="$1" pj="$2" v kind why ids n cl hold nbj crit w
   n=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null)
@@ -155,9 +176,9 @@ rebuild_pr_state() {
   IFS=$'\t' read -r kind why ids <<<"$v"
   case "$kind" in
     red)
-      if w=$(rebuild_base_red "$t" "$pj" "$hold" "$nbj" "$crit"); then printf 'stuck\t%s\n' "$why"
+      if w=$(rebuild_base_red "$t" "$pj" "$hold" "$nbj" "$crit"); then printf 'stuck\t%s\tred\n' "$why"
       else printf 'base-red\t%s\n' "$w"; fi ;;
-    clash)  printf 'stuck\t%s\n' "$why" ;;
+    clash)  printf 'stuck\t%s\tclash\n' "$why" ;;
     finish) printf 'stuck\ta draft nothing is building, its checks settled\n' ;;
     rerun)
       local did
@@ -317,10 +338,136 @@ $fails}" >/dev/null 2>&1 || say "rebuild: #$t could not be told why it parked"
   say "rebuild: parked #$t for the PM — built $n times, PR #$pr closed ($why; head kept at $ref)"
 }
 
+# ---- the fix rounds ------------------------------------------------------------------
+# rebuild_fix_checks <ticket> <pr-json> — the required checks that failed on the PR's own
+# code: one "name \t job url" line each. 1 when they could not be read.
+rebuild_fix_checks() {
+  local t="$1" pj="$2" pr cl hold nbj crit fails name rid url
+  pr=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null)
+  cl=$(release_labels_of "$pr" "$t")
+  hold="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"; nbj=$(release_nonblocking_json "$cl"); crit=$(release_critic_required "$cl")
+  fails=$(pr_red_failed "$pj" "$hold" "$nbj" "$crit") || return 1
+  while IFS=$'\t' read -r name rid; do
+    [ -n "$name" ] || continue
+    url=$(jq -r --arg n "$name" '[(.statusCheckRollup // [])[] | select((.name // .context // "") == $n)] | max_by(.completedAt // "") | (.detailsUrl // .targetUrl // "")' <<<"$pj" 2>/dev/null)
+    printf '%s\t%s\n' "$name" "$url"
+  done <<<"$fails"
+}
+
+# rebuild_fix_brief <pr> <branch> <base> <why> <kind> <round> <checks> — the queue note a fix
+# run carries. Narrow on purpose: the branch, what failed and where its log is. No plan, no
+# review history. The driver reads its first line: "Fix: PR #<n>" continues that PR's branch.
+rebuild_fix_brief() {
+  local pr="$1" br="$2" base="$3" why="$4" kind="$5" round="$6" checks="$7"
+  printf 'Fix: PR #%s — %s\n' "$pr" "$why"
+  printf '\nFix round %s of %s. The pull request is open on %s and this run continues on that branch: cut no new branch and do not open a new pull request.\n' "$round" "$FIX_ROUNDS" "$br"
+  if [ "$kind" = clash ]; then
+    printf '\nIt conflicts with %s. Merge origin/%s into %s, resolve the conflicts, and change nothing else.\n' "$base" "$base" "$br"
+  else
+    printf '\nThe required checks that failed, each with its job log:\n'
+    printf '%s\n' "$checks" | awk -F'\t' 'NF { printf "- %s%s\n", $1, ($2 != "" ? ": " $2 : "") }'
+    printf '\nFix only what those checks report, and change nothing else.\n'
+  fi
+  printf 'The fix ships as a push to %s, which the open pull request picks up.\n' "$br"
+}
+
+# rebuild_fix_note_pr <queue note> — the PR a fix round's note names, or nothing.
+rebuild_fix_note_pr() { printf '%s\n' "${1:-}" | sed -n '1s/^Fix: PR #\([0-9][0-9]*\).*/\1/p'; }
+# rebuild_fix_queued <ticket> — 0 while the ticket is on the coordinator's queue (its own read).
+rebuild_fix_queued() {
+  local q; q=$(coord_queue_ordered 2>/dev/null)
+  awk -F'\t' -v t="$1" '$1 == t { f = 1 } END { exit !f }' <<<"$q"
+}
+# rebuild_fix_due <ticket> — 0 while the ticket's open PR is still red or clashing, so a
+# queued fix round has something to fix. A re-run that passed meanwhile sends no builder.
+rebuild_fix_due() {
+  local t="$1" pj n cl hold nbj crit v
+  pj=$(open_pr_json "$t"); [ -n "$pj" ] || return 1
+  n=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null)
+  cl=$(release_labels_of "$n" "$t")
+  hold="${COORDINATOR_HOLD_CHECK:-$(swarm_opt coordinator.holdCheck approval)}"; nbj=$(release_nonblocking_json "$cl"); crit=$(release_critic_required "$cl")
+  v=$(pr_red_verdict "$pj" "$hold" "$nbj" "$crit")
+  case "${v%%$'\t'*}" in red|clash) return 0 ;; *) return 1 ;; esac
+}
+
+# rebuild_park_open <ticket> <why> <pr-json> <rounds> — 0 when the ticket was parked for the
+# PM. The PR is left open, exactly as it is: its branch is the work the PM decides on.
+rebuild_park_open() {
+  local t="$1" why="$2" pj="$3" n="$4" pr fails
+  pr=$(jq -r .number <<<"$pj")
+  coord_act_log fix-park "$t" "PR #$pr: $why ($n fix rounds)"
+  if coord_shadow; then say "rebuild: would park #$t for the PM — $n fix round(s), PR #$pr still cannot merge ($why); the PR would stay open"; return 0; fi
+  # The label first: a park that could not be set is said again next tick, never twice on the ticket.
+  issue_status_set "$t" "$LBL_PARKED" --also "${LBL_PM_DECISION:-status:pm-decision}" >/dev/null 2>&1 \
+    || { say "rebuild: #$t could not be parked after its fix rounds — tried again next tick"; return 1; }
+  fails=$(rebuild_fix_checks "$t" "$pj" 2>/dev/null | awk -F'\t' 'NF { printf "- %s%s\n", $1, ($2 != "" ? ": " $2 : "") }')
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "Parked for the PM: PR #$pr had $n fix round(s) on its own branch and still cannot merge ($why), so no builder is sent to it again (coordinator.fixRounds $FIX_ROUNDS). The PR is left open.${fails:+
+
+Failing checks:
+$fails}" >/dev/null 2>&1 || say "rebuild: #$t could not be told why it parked"
+  rebuild_clock_stop "$pr"
+  say "rebuild: parked #$t for the PM — $n fix round(s), PR #$pr left open ($why)"
+}
+
+# rebuild_fix <ticket> <pr-json> <why> <kind> — 0 when the fix path took the PR this tick
+# (queued, waiting on its round, updated from its base, or parked); 1 when it is not the fix
+# path's: coordinator.fixRounds 0, or a stuck that is neither the PR's own red nor a clash.
+rebuild_fix() {
+  local t="$1" pj="$2" why="$3" kind="${4:-}" pr head br base rounds last checks="" brief
+  [ "$FIX_ROUNDS" -gt 0 ] || return 1
+  case "$kind" in red|clash) ;; *) return 1 ;; esac
+  # One ledger counts the rounds. Under a shared sheet only its owner sends a PR back:
+  # a reader's own ledger would spend the cap a second time on the same PR.
+  ! declare -F coord_sheet_role >/dev/null 2>&1 || [ "$(coord_sheet_role)" != reader ] || return 1
+  pr=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null); head=$(jq -r '.headRefOid // empty' <<<"$pj" 2>/dev/null)
+  br=$(jq -r '.headRefName // empty' <<<"$pj" 2>/dev/null)
+  base=$(jq -r '.baseRefName // empty' <<<"$pj" 2>/dev/null); base="${base:-$INTEGRATION_BRANCH}"
+  [ -n "$pr" ] && [ -n "$head" ] && [ -n "$br" ] || return 1
+  IFS=$'\t' read -r rounds last <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2; h = $3 } END { printf "%s\t%s\n", r + 0, h }' "$FIX_LEDGER" 2>/dev/null)"
+  case "$rounds" in ''|*[!0-9]*) rounds=0 ;; esac
+  # One round per head while its fix is still queued. Nothing claims or runs the ticket here
+  # (rebuild_pass), so off the queue too means that round ended without a push: the next
+  # round is spent on the same head, or the ticket parks at the cap. Never left red for ever.
+  if [ "$last" = "$head" ]; then
+    if rebuild_fix_queued "$t"; then
+      say "rebuild: PR #$pr is stuck ($why) — fix round $rounds of $FIX_ROUNDS was spent on this head; it waits for that run"
+      return 0
+    fi
+    say "rebuild: PR #$pr — fix round $rounds ended without a push"
+  fi
+  # A clash is updated from its base once per PR before any builder is sent.
+  if [ "$kind" = clash ] && ! awk -F'\t' -v p="$pr" '$1 == p { f = 1 } END { exit !f }' "$CLASH_UPDATES" 2>/dev/null; then
+    if coord_shadow; then say "rebuild: would update PR #$pr from $base once ($why) before any fix round"; return 0; fi
+    printf '%s\t%s\n' "$pr" "$(swarm_now)" >> "$CLASH_UPDATES"
+    if swarm_gh api "repos/$REPO_SLUG/pulls/$pr/update-branch" -X PUT >/dev/null 2>&1; then
+      say "rebuild: PR #$pr updated from $base ($why) — its one automatic update"
+      return 0
+    fi
+    say "rebuild: PR #$pr's update from $base was refused — the clash counts as a fix round"
+  fi
+  if [ "$rounds" -ge "$FIX_ROUNDS" ]; then
+    rebuild_park_open "$t" "$why" "$pj" "$rounds" || true
+    return 0
+  fi
+  if [ "$kind" = red ]; then
+    checks=$(rebuild_fix_checks "$t" "$pj") && [ -n "$checks" ] \
+      || { say "rebuild: PR #$pr's failed checks could not be read — no fix round this tick"; return 0; }
+  fi
+  coord_act_log fix "$t" "PR #$pr round $((rounds + 1)) of $FIX_ROUNDS: $why"
+  if coord_shadow; then say "rebuild: would send PR #$pr back to its builder — fix round $((rounds + 1)) of $FIX_ROUNDS ($why)"; return 0; fi
+  brief=$(rebuild_fix_brief "$pr" "$br" "$base" "$why" "$kind" "$((rounds + 1))" "$checks")
+  issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY"
+  bash "$QUEUE" add "$t" --class new --first --note "$brief" >/dev/null 2>&1 \
+    || { say "rebuild: #$t could not be queued for its fix — no round spent, tried again next tick"; return 0; }
+  awk -F'\t' -v p="$pr" '$1 != p' "$FIX_LEDGER" > "$FIX_LEDGER.$$" 2>/dev/null; mv -f "$FIX_LEDGER.$$" "$FIX_LEDGER" 2>/dev/null
+  printf '%s\t%s\t%s\n' "$pr" "$((rounds + 1))" "$head" >> "$FIX_LEDGER"
+  say "rebuild: PR #$pr goes back to its builder on $br — fix round $((rounds + 1)) of $FIX_ROUNDS ($why)"
+}
+
 # rebuild_pass — every open ticket PR in this tick's read (PRS, fresh, PRS_STALE 0): its clock
 # moved or stopped, and a stuck one past coordinator.rebuildAfterMin rebuilt. Says what it did.
 rebuild_pass() {
-  local pj pr t st why since age lab metas rows tickets now n
+  local pj pr t st why kind since age lab metas rows tickets now n
   [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ] || { say "rebuild: the open PRs are a snapshot this tick — no clock moves"; return 0; }
   rows=$(printf '%s' "$PRS" | jq -c --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
     sort_by(.number) | .[] | (.headRefName | branch_ticket($pre)) as $t | select($t != "") | {t: $t, pr: .}' 2>/dev/null)
@@ -344,7 +491,7 @@ rebuild_pass() {
     lab=${lab#* }
     if why=$(rebuild_held "$t" "$pj" "$lab"); then rebuild_clock_stop "$pr"; say "rebuild: PR #$pr left as it is — $why"; continue; fi
     if grep -qx "$t" <<<"${CLAIMED:-}" || swarm_ticket_live "$t"; then rebuild_clock_stop "$pr"; continue; fi
-    IFS=$'\t' read -r st why <<<"$(rebuild_pr_state "$t" "$pj")"
+    IFS=$'\t' read -r st why kind <<<"$(rebuild_pr_state "$t" "$pj")"
     case "$st" in
       green)    rebuild_clock_stop "$pr"; continue ;;
       base-red) rebuild_clock_stop "$pr"; say "rebuild: PR #$pr waits — $why"; continue ;;
@@ -355,6 +502,8 @@ rebuild_pass() {
     esac
     since=$(rebuild_clock_start "$pr" "$why"); age=$(( (now - since) / 60 ))
     if [ "$REBUILD_AFTER_MIN" -eq 0 ] || [ "$age" -lt "$REBUILD_AFTER_MIN" ]; then
+      # The fix path replaces the wait: the PR's own red, or a clash, goes back to its builder.
+      ! rebuild_fix "$t" "$pj" "$why" "$kind" || continue
       say "rebuild: PR #$pr is stuck ($why) — $age of $REBUILD_AFTER_MIN min$([ "$REBUILD_AFTER_MIN" -eq 0 ] && echo ' (coordinator.rebuildAfterMin 0: off)')"
       continue
     fi

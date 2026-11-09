@@ -569,6 +569,29 @@ want "only start ran"                        "start" "$(tr '\n' ' ' < "$RAN" | s
 want "nothing parks"                         "" "$(cat "$FIX/park.log")"
 want "nothing went back on the queue"        "" "$(jq -r '.tickets[]? | select(.n == 426) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
+echo "--- a Fix: brief on a shipped ticket walks the steps again; any other brief does not ---"
+# The coordinator's fix round sends a red PR back to its builder (scripts/rebuild.sh). This
+# host shipped it, so its record says every step finished: read as that, nothing would run.
+reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
+bt 427 >/dev/null
+jq -n '[{number:66, headRefName:"tkt-427/work", headRefOid:"c1", isDraft:false, mergeStateStatus:"BLOCKED"}]' > "$FIX/gh/prs.json"
+: > "$RAN"; bt 427 --brief "$FIX/brief-g.md" >/dev/null
+want "an ordinary brief on a shipped ticket: only start re-checks" "start" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+printf 'Coordinator note (new): Fix: PR #66 — required check(s) failed: unit\n\nFix only what those checks report.\n' > "$FIX/brief-fix.md"
+: > "$RAN"; out=$(bt 427 --brief "$FIX/brief-fix.md"); rc=$?
+want "a Fix: brief: it finishes"             "0" "$rc"
+want "  every step runs again"               "start size plan build fix compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "  the shipped record is kept aside"    "1" "$(ls -d "$STATE/driver"/427.set-aside-* 2>/dev/null | grep -c .)"
+want_in "  and it says so"                   "fix: #427's shipped record moved to" "$out"
+echo "  a fix run stopped part-way resumes its own record, never set aside"
+reset_fakes "compare:20 0"; printf '[]\n' > "$FIX/gh/prs.json"
+bt 428 --brief "$FIX/brief-fix.md" >/dev/null
+jq -n '[{number:66, headRefName:"tkt-428/work", headRefOid:"c1", isDraft:true, mergeStateStatus:"BLOCKED"}]' > "$FIX/gh/prs.json"
+: > "$RAN"; bt 428 --brief "$FIX/brief-fix.md" >/dev/null
+want "  it resumes where it stopped"         "start compare self-check review record ship" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "  nothing was set aside"               "0" "$(ls -d "$STATE/driver"/428.set-aside-* 2>/dev/null | grep -c .)"
+printf '[]\n' > "$FIX/gh/prs.json"
+
 echo "--- a brief over 4 KB is cut, says so, and keeps the whole of it beside ---"
 reset_fakes; printf '[]\n' > "$FIX/gh/prs.json"
 head -c 6000 /dev/zero | tr '\0' 'x' > "$FIX/brief-big.md"
