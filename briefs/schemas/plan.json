@@ -278,12 +278,21 @@
           "behaviour",
           "steps",
           "test",
-          "passes"
+          "passes",
+          "covers"
         ],
         "properties": {
           "id": {
             "type": "string",
             "pattern": "^F[1-9][0-9]*$"
+          },
+          "covers": {
+            "description": "The ticket's items this behaviour delivers, by the ids its items list gives them: `C<n>` a numbered change item, `A<n>` an acceptance item. Every item is covered by a list item or named in `outside`; self-check refuses the branch while any covered item's list item fails.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[CA][1-9][0-9]*$"
+            }
           },
           "behaviour": {
             "description": "One behaviour a person sees or does, in their words. Never a layer (a table, an endpoint, a component).",
@@ -311,6 +320,28 @@
           "needsFoundation": {
             "description": "True when this item builds on the foundation. Built whole, the foundation simply goes first; if the plan is split, this item's part waits for the foundation part.",
             "type": "boolean"
+          }
+        }
+      }
+    },
+    "outside": {
+      "description": "A ticket item no behaviour can carry (a run on the trunk, a shot in the pull request, a review verdict), each with why. Every other item is in some list item's `covers`.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "why"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "pattern": "^[CA][1-9][0-9]*$"
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1
           }
         }
       }

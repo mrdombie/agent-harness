@@ -7,6 +7,8 @@
 #
 #   . driver/feature-list.sh
 #   feature_list_problems <plan.json>        what is wrong with how the plan builds its list; exit 1 when any
+#   feature_list_uncovered <plan.json> <body> each ticket item (ticket-parts.sh) no list item covers and
+#                                            `outside` does not name, and each id covered that the ticket lacks
 #   feature_list_of <plan.json> <ticket>     the list, every item failing, no part filed yet
 #   feature_list_guard <old.json> <new.json> exit 0 when only passes changed (or a part was named once); 3 with why
 #   feature_list_store <ticket> <list.json>  keep it in the ticket's driver state; 3 when it edits the one kept
@@ -53,9 +55,27 @@ feature_list_problems() { # <plan.json>
   printf '%s\n' "$out"; return 1
 }
 
+# A list mapped against the ticket it builds: every numbered change item and acceptance item
+# is some item's, or named outside it with why.
+feature_list_uncovered() { # <plan.json> <body-file>
+  local items out
+  [ "$(jq '(.features // []) | length' "$1" 2>/dev/null)" -gt 0 ] 2>/dev/null || return 0
+  declare -F ticket_parts_items >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-parts.sh" || return 0
+  items=$(ticket_parts_items "$2" | jq -Rn '[inputs | split("\t") | {id: .[0], text: (.[1] // "")}]')
+  out=$(jq -r --argjson items "$items" '
+    ([(.features // [])[] | (.covers // [])[]] + [(.outside // [])[].item]) as $named
+    | ($items | map(.id)) as $ids
+    | ($items[] | select(.id as $i | $named | index($i) | not)
+        | "\(.id) (“\(.text[0:140])”) is in no item'"'"'s covers and not in outside: say which behaviour delivers it, or put it in outside with why"),
+      ([(.features // [])[] | . as $f | (.covers // [])[] | select(. as $c | $ids | index($c) | not) | "\($f.id) covers \(.), which the ticket does not have (its items: \(if $ids == [] then "none" else $ids | join(", ") end))"] | unique[])' "$1" 2>/dev/null) || return 0
+  [ -z "$out" ] && return 0
+  printf '%s\n' "$out"; return 1
+}
+
 feature_list_of() { # <plan.json> <ticket>
   jq --arg t "$2" '{ticket: ($t | tonumber? // $t),
-      items: [(.features // [])[] | {id, behaviour, steps, test, needsFoundation: (.needsFoundation // false), passes: false, part: null}],
+      items: [(.features // [])[] | {id, behaviour, steps, test, needsFoundation: (.needsFoundation // false), covers: (.covers // []), passes: false, part: null}],
+      outside: (.outside // []),
       foundation: (if .foundation then (.foundation + {part: null}) else null end),
       cleanup: (if ([(.tasks // [])[] | select(.item == "cleanup")] | length) > 0 then {part: null} else null end)}' "$1"
 }
@@ -69,6 +89,7 @@ feature_list_guard() { # <old.json> <new.json>
     ($o[0].items // []) as $a | ($n[0].items // []) as $b
     | ($a[] | . as $x | ([$b[] | select(.id == $x.id)] | first) as $y
        | if $y == null then "\($x.id) was removed: an item, once listed, stays until it passes"
+         elif ($x | has("covers")) and ($x.covers != $y.covers) then "\($x.id) was edited: the ticket items it covers are fixed once listed"
          elif ($x | fixed) != ($y | fixed) then "\($x.id) was edited: its behaviour, steps and test are fixed once listed; only passes may change"
          elif ($x.part != null) and ($y.part != $x.part) then "\($x.id) moved from part #\($x.part) to \($y.part // "none")"
          else empty end),

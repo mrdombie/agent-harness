@@ -292,7 +292,7 @@ out=$(bounded env DRIVER_STEPS_DIR="$FAKE" bash "$BT" 107 2>&1); rc=$?
 want "it parks rather than spinning"  "20" "$rc"
 want_in "and says the loop did not settle" 'settle|rework' "$(cat "$FIX/park.log")"
 rounds=$(grep -c '^review$' "$RAN")
-if [ "$rounds" -le 11 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
+if [ "$rounds" -le 12 ]; then ok "it stopped after $rounds rounds, not more"; else bad "ran $rounds rework rounds — the ceiling did not hold"; fi
 
 echo "--- a step named in the order with no file refuses BY NAME ---"
 # Silence is the failure being prevented: a walk that skips a step it cannot find

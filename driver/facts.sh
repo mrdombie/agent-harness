@@ -25,6 +25,7 @@
 # an argument list.
 [ -n "${DRIVER_DIR:-}" ] || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/driver-env.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-parts.sh" || exit 1
 
 driver_fact_dir() { printf '%s' "$(driver_state_dir "$1")/steps/$2.facts"; }
 
@@ -96,6 +97,17 @@ driver_fact_ticket() { # <ticket>
   # brief went out with an empty ticket — which is the very defect this file is for.
   printf '%s\n' "$j" | jq -r --arg n "$1" \
     '"#\($n) \(.title)\n\nLabels: \([.labels[].name] | join(", "))\n\n\(.body // "(the ticket has no body)")"'
+}
+
+# The ticket's numbered change items and acceptance items, by the ids a feature list's
+# `covers` names them with (ticket-parts.sh), so the plan and self-check count alike.
+driver_fact_ticket_items() { # <ticket>
+  local b f out
+  b=$(driver_ticket_view "$1" body '.body // ""' 2>/dev/null) || { _driver_fact_none "#$1 could not be read"; return 0; }
+  f=$(mktemp "${TMPDIR:-/tmp}/ticket-items.XXXXXX") || return 0
+  printf '%s\n' "$b" > "$f"; out=$(ticket_parts_items "$f" | awk -F'\t' '{ print "- " $1 ": " $2 }'); rm -f "$f"
+  [ -n "$out" ] || { _driver_fact_none "the ticket numbers no change item and ticks no acceptance box, so each feature's \`covers\` is empty"; return 0; }
+  printf 'Each id below is in some feature'"'"'s `covers` (the behaviour that delivers it), or in `outside` with why when no behaviour can carry it:\n%s' "$out"
 }
 
 # The project's own facts file. It IS the answer to "this project": the kit names
@@ -505,6 +517,7 @@ driver_facts_common() { # <ticket> <slot>
   driver_fact_put "$t" "$s" SCREEN_STEPS    "$(driver_fact_screen_steps "$t")"
   driver_fact_put "$t" "$s" POLISH_LIST     "$(driver_fact_polish_list "$t")"
   driver_fact_put "$t" "$s" CRITIC_FINDINGS "$(driver_fact_critic_findings "$t")"
+  driver_fact_put "$t" "$s" TICKET_ITEMS    "$(driver_fact_ticket_items "$t")"
   case "$s" in fix) driver_fact_put "$t" "$s" EVIDENCE_TASKS "$(driver_fact_evidence_tasks "$t")" ;; esac
   case "$s" in build*|fix) driver_fact_put "$t" "$s" PROOF_LIMITS "$(driver_fact_proof_limits)" ;; esac
 }

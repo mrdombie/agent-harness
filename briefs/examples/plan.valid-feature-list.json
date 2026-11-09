@@ -6,8 +6,8 @@
   "premise": { "verdict": "still-true", "evidence": "src/inbox/filters.ts:40 has no saved filters at all" },
   "foundation": { "reason": "expand-contract", "why": "saved filters get their own store beside the old query-string filters, which the clean-up removes" },
   "features": [
-    { "id": "F1", "behaviour": "A person saves the filter they are looking at and sees it in their list", "steps": ["apply two filters", "press Save and name it", "the list shows the new name"], "test": "src/inbox/saved-filters.test.tsx", "passes": false, "needsFoundation": true },
-    { "id": "F2", "behaviour": "An empty filter list says how to save one", "steps": ["open the list with nothing saved", "it reads 'Save a filter to see it here'"], "test": "src/inbox/filter-list.test.tsx", "passes": false }
+    { "id": "F1", "behaviour": "A person saves the filter they are looking at and sees it in their list", "steps": ["apply two filters", "press Save and name it", "the list shows the new name"], "test": "src/inbox/saved-filters.test.tsx", "passes": false, "covers": [], "needsFoundation": true },
+    { "id": "F2", "behaviour": "An empty filter list says how to save one", "steps": ["open the list with nothing saved", "it reads 'Save a filter to see it here'"], "test": "src/inbox/filter-list.test.tsx", "passes": false, "covers": [] }
   ],
   "tasks": [
     { "item": "foundation", "title": "A saved-filter store beside the query-string filters", "files": [{ "path": "src/inbox/filter-store.ts", "action": "create" }], "tests": [{ "file": "src/inbox/filter-store.test.ts", "behaviour": "a saved filter reads back as saved", "redWhen": "the write is dropped" }] },

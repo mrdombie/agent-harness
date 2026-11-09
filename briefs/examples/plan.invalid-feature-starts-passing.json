@@ -23,7 +23,7 @@
         "the list shows the new name"
       ],
       "test": "src/inbox/saved-filters.test.tsx",
-      "passes": true,
+      "passes": true, "covers": [],
       "needsFoundation": true
     },
     {
@@ -34,7 +34,7 @@
         "it reads 'Save a filter to see it here'"
       ],
       "test": "src/inbox/filter-list.test.tsx",
-      "passes": false
+      "passes": false, "covers": []
     }
   ],
   "tasks": [
