@@ -289,6 +289,8 @@ _driver_plan_split_by_shape() {
   fi
   if [ -n "$(git -C "$(driver_state_get "$t" worktree)" log --oneline -1 "origin/$INTEGRATION_BRANCH..HEAD" 2>/dev/null)" ]; then
     driver_say "   plan: already in flight — it builds here as planned, not split"
+    # Built here, so the build keeps its list's passes, as a fresh plan's does.
+    [ "$nf" -eq 0 ] || _driver_plan_build_whole "$t" "$ans"
     return 0
   fi
   if [ "$nu" -gt 0 ]; then _driver_plan_fan_out "$t" "$ans" || src=$?

@@ -134,13 +134,13 @@ want "the next pass builds that task alone"      "0 1" "$RC $(grep -c . "$CLAUDE
 want_in "  told why"                             'F1 passes only when its steps pass in f1.test.sh' "$(cat "$FIX/claude-stdin-build.txt")"
 want "  and every item passes"                   "true true" "$(passes 204)"
 
-echo "--- a branch already in flight carries on as it did: no list posted, no passes kept ---"
+echo "--- a branch already in flight builds here, and keeps its list's passes as a fresh plan does ---"
 git -C "$REPO" update-ref refs/remotes/origin/develop "$(git -C "$REPO" rev-parse HEAD~1)"
 start 205 "$(feats 3)"
 want "it builds here"                            "0 0" "$RC $(grep -c '^issue create' "$GH_LOG")"
 want_in "  saying so"                            'already in flight' "$OUT"
-want "  no list comment"                         "0" "$(grep -c 'issue comment 205 .*Feature list' "$GH_LOG")"
-want "  the build keeps no passes"               "" "$(driver_state_get 205 build_whole)"
+want "  the build keeps passes"                  "1" "$(driver_state_get 205 build_whole)"
+want "  and the list goes on the ticket"         "1" "$(grep -c 'issue comment 205 .*Feature list' "$GH_LOG")"
 start 211 "$(contract 2)"
 want "  an expand-contract branch in flight is not split either" "0 0" "$RC $(grep -c '^issue create' "$GH_LOG")"
 git -C "$REPO" update-ref -d refs/remotes/origin/develop
@@ -158,5 +158,19 @@ commits m.test.sh; answer 1 "the part" m.test.sh "$TS" "$IS"
 want "it builds"                                 "0" "$RC"
 want "  with no list of its own"                 "no" "$([ -e "$(list 206)" ] && echo yes || echo no)"
 want "  and nothing posted about one"            "0" "$(grep -c 'Feature list' "$GH_LOG")"
+
+echo "--- after build, a proved item passes even on a record with no build_whole ---"
+start 212 "$(feats 2)"
+driver_state_set 212 build_whole ""
+for n in 1 2; do commits "g$n.test.sh"; done
+jq '.features |= map(.test = ("g" + (.id[1:]) + ".test.sh")) | .tasks |= map(.tests[0].file = ("g" + (.item[1:]) + ".test.sh"))' \
+  "$(driver_state_dir 212)/steps/plan.json" > "$FIX/p212" && mv "$FIX/p212" "$(driver_state_dir 212)/steps/plan.json"
+jq '.items |= map(.test = ("g" + (.id[1:]) + ".test.sh"))' "$(list 212)" > "$FIX/l212" && mv "$FIX/l212" "$(list 212)"
+TS1=$(git -C "$REPO" log --format=%H -n1 --grep '^test: g1'); IS1=$(git -C "$REPO" log --format=%H -n1 --grep '^feat: g1')
+TS2=$(git -C "$REPO" log --format=%H -n1 --grep '^test: g2'); IS2=$(git -C "$REPO" log --format=%H -n1 --grep '^feat: g2')
+answer 1 "task F1" g1.test.sh "$TS1" "$IS1"; answer 2 "task F2" g2.test.sh "$TS2" "$IS2"
+build 212
+want "the build finishes"                        "0" "$RC"
+want "each proved item reads passes: true"       "true true" "$(passes 212)"
 
 suite_end "$FAILED"
