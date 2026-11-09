@@ -29,6 +29,16 @@ MAIN="$TMP/clone"; mkdir -p "$HOME/.claude/commands"
 allow "$MAIN/.claude/skills/x/SKILL.md"             "a skill inside the configured repo"
 MAIN=""
 
+# 5. a new check script starts as a lint rule
+mkdir -p "$TMP/repo/scripts/check-old"; : > "$TMP/repo/scripts/check-old/index.ts"
+deny  "$TMP/repo/scripts/check-new-$$/index.ts"     "a new check script with no reason"
+deny  "$TMP/repo/scripts/check-new-$$.sh"           "a new shell check with no reason"
+deny  "$TMP/repo/scripts/check-new-$$/index.ts"     "an empty reason" "// needs-outside-data:"
+allow "$TMP/repo/scripts/check-new-$$/index.ts"     "a new check that names its outside data" "// needs-outside-data: Railway variables"
+allow "$TMP/repo/scripts/check-old/index.ts"        "an edit to an existing check"
+allow "$TMP/repo/scripts/check-new-$$/index.test.ts" "a checker's test"
+allow "$TMP/repo/scripts/build-thing.ts"            "a script that is not a check"
+
 # 3. credential in memory
 deny  "$TMP/real/memory/x.md" "a secret" "token: ghp_$(printf 'a%.0s' $(seq 32))"
 # Long content is read whole: a pipe into grep -q under pipefail read an early secret as none.
