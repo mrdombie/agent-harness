@@ -202,6 +202,10 @@ newly finished in between: `start` re-running on every pass is not progress.
 - **The approved picture is not readable on this machine** (plan, run exit 28). The
   first miss requeues; `driver.maxPictureMisses` (2) in a row park it for the PM,
   naming the file. A run after a miss looks for the picture before it plans.
+- **A half-built ticket** (`labels.partial`: a run ended and left a branch with no pull
+  request). `start` takes it like a ready one and cuts its tree from that branch on
+  origin, not the trunk. `driver.maxPartialResumes` (3) resumes in a row, each ending
+  stranded again with no ship between, park it for the PM, naming the branch.
 
 A record that says `ship` finished while the ticket has no open pull request and none
 merged (one closed to rebuild fresh, or by hand) is a fresh build: it is set aside as a
