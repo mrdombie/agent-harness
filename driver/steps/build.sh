@@ -319,7 +319,28 @@ _driver_proof_machine() { # <proof fn> <repo> <args…>
 driver_prove_red_green() { _driver_proof_machine _driver_prove_red_green_once "$@"; }
 driver_prove_by_break()  { _driver_proof_machine _driver_prove_by_break_once "$@"; }
 
+# A FIX COMMITTED AFTER THE CHANGE COUNTS. A rework keeps reporting its first pair, so a
+# green or typecheck failure at the change is proved once more at the latest branch commit
+# touching the test's or the change's files; the red half stays at the change's parent.
 _driver_prove_red_green_once() {
+  local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5" out rc=0 lsha ffile
+  local -a ffiles=()
+  out=$(_driver_prove_red_green_at "$@") || rc=$?
+  case "$rc" in 2|6) ;; *) printf '%s\n' "$out"; return "$rc" ;; esac
+  if git -C "$repo" merge-base --is-ancestor "$isha" HEAD 2>/dev/null; then
+    while IFS= read -r ffile; do [ -n "$ffile" ] && ffiles+=("$ffile"); done < <(
+      { git -C "$repo" diff-tree --root --no-commit-id --name-only -r "$tsha"
+        git -C "$repo" diff-tree --root --no-commit-id --name-only -r "$isha"; } 2>/dev/null | sort -u)
+    [ "${#ffiles[@]}" -eq 0 ] \
+      || lsha=$(git -C "$repo" log -1 --format=%H "$isha..HEAD" -- "${ffiles[@]}" 2>/dev/null)
+  fi
+  [ -n "${lsha:-}" ] || { printf '%s\n' "$out"; return "$rc"; }
+  driver_say "   proof: green failed at $(printf '%s' "$isha" | cut -c1-8) — taken again at $(printf '%s' "$lsha" | cut -c1-8), the latest commit on the feature's files" >&2
+  _driver_prove_red_green_at "$repo" "$tfile" "$tsha" "$isha" "$cmd" "$lsha"
+}
+
+# _driver_prove_red_green_at <repo> <test-file> <test-commit> <change-commit> <command> [green-commit]
+_driver_prove_red_green_at() {
   local repo="$1" tfile="$2" tsha="$3" isha="$4" cmd="$5"
   local base tmp rc_red rc_green
 
@@ -380,22 +401,24 @@ _driver_prove_red_green_once() {
     printf 'a driver fault, not the change: the tree without the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
     return 5
   fi
-  # The version run in both halves: the change's own when the test commit came first
-  # (the change may edit the test it names), else the reported one.
+  local asha="${6:-$isha}"
+  # The version run in both halves: the green tree's own when the test commit came first
+  # (later commits may edit the test it names), else the reported one.
   local vsha="$tsha"
-  git -C "$repo" merge-base --is-ancestor "$tsha" "$isha" 2>/dev/null && vsha="$isha"
+  git -C "$repo" merge-base --is-ancestor "$tsha" "$asha" 2>/dev/null \
+    && git -C "$repo" cat-file -e "$asha:$tfile" 2>/dev/null && vsha="$asha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
   ( cd "$tmp/before" && driver_with_test_db --for "$tfile" "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
 
   prc=0
-  if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/after" "$isha" || prc=$?
+  if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/after" "$asha" || prc=$?
   else
-    git -C "$repo" worktree add -q --detach "$tmp/after" "$isha" 2>/dev/null || prc=1
+    git -C "$repo" worktree add -q --detach "$tmp/after" "$asha" 2>/dev/null || prc=1
     [ "$prc" -ne 0 ] || _driver_proof_install "$repo" "$tmp/after" || prc=2
   fi
-  if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$isha"; return 3; fi
+  if [ "$prc" -eq 1 ]; then _driver_proof_done; _driver_proof_rmtmp; printf 'could not check out %s\n' "$asha"; return 3; fi
   if [ "$prc" -ne 0 ]; then
     _driver_proof_done; _driver_proof_rmtmp
     printf 'the tree with the change could not be prepared, so the test was never run there: %s\n' "$DRIVER_PREPARE_WHY"
@@ -435,7 +458,7 @@ _driver_prove_red_green_once() {
   red_out=$(_driver_fail_lines "$tmp/before.out")
   after_out=$(_driver_fail_lines "$tmp/after.out")
   _driver_proof_keep "$cmd" "$tfile" "$rc_red" "$tmp/before.out" "$(printf '%s' "$base" | cut -c1-8)" \
-    "$rc_green" "$tmp/after.out" "$(printf '%s' "$isha" | cut -c1-8)"
+    "$rc_green" "$tmp/after.out" "$(printf '%s' "$asha" | cut -c1-8)"
   _driver_proof_rmtmp
   if [ "$tc_rc" -eq 124 ]; then
     printf 'the typecheck (%s) ran out of time (over %ss) in the tree with the change\n' "$tc" "$DRIVER_CMD_TIMEOUT"
@@ -464,7 +487,7 @@ _driver_prove_red_green_once() {
     return 2
   fi
   printf '%s: red (exit %s) at %s, then green at %s\n' \
-    "$tfile" "$rc_red" "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$isha" | cut -c1-8)"
+    "$tfile" "$rc_red" "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$asha" | cut -c1-8)"
   return 0
 }
 
