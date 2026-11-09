@@ -87,6 +87,51 @@ want "the same docs ticket without the label is quick"   quick   "$(sz 'Voices' 
 jq '.driver.quick.neverLabels = []' "$HARNESS_CFG" > "$FIX/h-nl.json"
 want "driver.quick.neverLabels [] turns it off"          quick   "$(HARNESS_CFG="$FIX/h-nl.json" driver_size_read 1 'Voices' 'type:feature' 'Build the voices feature per docs/guide.md.' | cut -f1)"
 
+echo "--- a fix sized small takes the quick route (owner, 2026-11-09) ---"
+FIVE='src/lib/util.ts, src/lib/a.ts, src/lib/b.ts and src/lib/c.ts all throw on a bad date.'
+want "a fix naming four code files is quick"             quick   "$(sz 'Dates throw' "$FIVE" 'type:bug')"
+want_in "and says it is the fix rule" 'a fix sized small takes the quick route' "$(driver_size_read 1 'Dates throw' 'type:bug' "$FIVE")"
+want "the same ticket without a fix label is small"      small   "$(sz 'Dates throw' "$FIVE" 'P1')"
+want "a bare bug label is a fix too"                     quick   "$(sz 'Dates throw' "$FIVE" 'bug')"
+want "a 'develop is red' title is a fix"                 quick   "$(sz 'develop is red: util.test.ts' "$FIVE" 'P0,process')"
+want "a 'fix:' title is a fix"                           quick   "$(sz 'fix: dates throw' "$FIVE" '')"
+want "a title that only mentions fixing is not"          small   "$(sz 'Prefix the dates' "$FIVE" '')"
+want "a fix naming six files is still small"             small   "$(sz 'Dates' 'a.ts b.ts c.ts d.ts e.ts f.ts throw.' 'type:bug')"
+want "a fix held small by effort:M stays small"          small   "$(sz 'Dates throw' "$FIVE" 'type:bug,effort:M')"
+want "a fix that is also a feature stays small"          small   "$(sz 'Dates throw' "$FIVE" 'type:bug,type:feature')"
+want "a fix with a schema change is still project"       project "$(sz 'Dates' 'Add a column for the date with a migration; src/lib/util.ts throws.' 'type:bug')"
+want "a fix naming a screen is still project"            project "$(sz 'Copy' 'In src/screens/home.tsx the date throws.' 'type:bug')"
+want "a fix naming code on the trunk is quick, no call"  quick   "$(sz 'Dates throw' 'src/lib/util.ts throws on an invalid date.' 'type:bug')"
+want "the same without a fix label is undecided"         undecided "$(sz 'Dates throw' 'src/lib/util.ts throws on an invalid date.' 'P1')"
+want "a fix naming files off the trunk still asks"       undecided "$(sz 'Dates throw' 'nowhere/gone.ts throws.' 'type:bug')"
+jq '.driver.quick.fixMaxFiles = 3' "$HARNESS_CFG" > "$FIX/h-fm.json"
+want "driver.quick.fixMaxFiles narrows it"               small   "$(HARNESS_CFG="$FIX/h-fm.json" driver_size_read 1 'Dates' 'type:bug' "$FIVE" | cut -f1)"
+jq '.driver.quick.fixLabels = [] | .driver.quick.fixTitle = ""' "$HARNESS_CFG" > "$FIX/h-fl.json"
+want "no fix labels and no fix title turns it off"       small   "$(HARNESS_CFG="$FIX/h-fl.json" driver_size_read 1 'fix: dates' 'type:bug' "$FIVE" | cut -f1)"
+issue 711 "status:ready,type:bug" "Dates throw" "src/lib/util.ts throws on an invalid date."
+driver_state_init 711; : > "$CLAUDE_LOG"
+driver_step_size 711 >/dev/null 2>&1
+want "the size step routes the fix quick" quick "$(driver_state_get 711 route)"
+want "and records its kind" fix "$(driver_state_get 711 kind)"
+want "with no size call" "" "$(cat "$CLAUDE_LOG")"
+issue 712 "status:ready,type:bug" "Dates throw" "nowhere/gone.ts throws on an invalid date."
+driver_state_init 712; : > "$CLAUDE_LOG"
+fix_ai size '{"size":"small","reason":"a fix and its test"}'
+driver_step_size 712 >/dev/null 2>&1
+want "a fix the size call sizes small asks once" "size" "$(cat "$CLAUDE_LOG")"
+want "and goes quick" quick "$(driver_state_get 712 route)"
+issue 713 "status:ready,type:bug" "Dates throw" "nowhere/gone.ts throws on an invalid date."
+driver_state_init 713
+fix_ai size '{"size":"project","reason":"touches the whole date layer"}'
+driver_step_size 713 >/dev/null 2>&1
+want "a fix the size call sizes project stays full" full "$(driver_state_get 713 route)"
+issue 714 "status:ready" "Tidy util" "src/lib/util.ts is hard to read."
+driver_state_init 714
+fix_ai size '{"size":"small","reason":"a few files"}'
+driver_step_size 714 >/dev/null 2>&1
+want "a change (not a fix) the call sizes small stays full" full "$(driver_state_get 714 route)"
+want "and its kind is change" change "$(driver_state_get 714 kind)"
+
 echo "--- the size step: rules first, one short call only when undecided ---"
 issue 701 "status:ready" "Make lint strict" "$CONFIG_BODY"
 driver_state_init 701; : > "$CLAUDE_LOG"
@@ -139,6 +184,61 @@ want_in "and on the run's last line" 'shipped: .* route=quick size=quick claim�
 want_in "the gates ran on it" 'self-check: .*gate\(s\) green' "$out"
 echo "    (claim→PR on stubs: ${secs}s)"
 want_in "inside 5 minutes" '^([0-9]|[0-9][0-9]|[12][0-9][0-9])$' "$secs"
+
+want_not_in "the PR body carries no Lesson section (lessons off, 2026-11-02)" '## Lesson' "$(cat "$GH_LOG")"
+want_not_in "and no commit on the branch carries a UI-Gate trailer (front-end gate off)" 'UI-Gate:' \
+  "$(git -C "$FIX/origin" log --format=%B develop.."$(driver_state_get 801 branch)" 2>/dev/null)"
+
+echo "--- a small fix: one session fixes it with its test, one review, an open PR ---"
+FIX_BODY='src/lib/util.ts throws on an invalid date; it should return an empty string.'
+issue 811 "status:ready,type:bug" "Dates throw" "$FIX_BODY"
+fix_ai quick "$(jq -c '.summary = "an invalid date formats as empty" | .changed = ["src/lib/util.ts", "src/lib/util.test.ts"] | .changelog = {"skipped": "internal helper"}' <<<"$QUICK_OK")" superpowers:verification-before-completion
+do_step quick 'printf "export const fmt = (d: Date) => isNaN(+d) ? \"\" : d.toISOString()\n" > src/lib/util.ts; printf "test(\"bad date\", () => expect(fmt(new Date(\"x\"))).toBe(\"\"))\n" > src/lib/util.test.ts; git add -A; git commit -qm "fix(util): an invalid date formats as empty (#811)"'
+fix_ai review "$REVIEW_SHIP" code-review
+: > "$CLAUDE_LOG"; : > "$GH_LOG"
+rc=0; out=$(bash "$BT" 811 2>&1) || rc=$?
+want "the fix run finishes" 0 "$rc"
+want "it walks the quick order" "start,size,quick,review,ship" "$(driver_state_get 811 'done|join(",")')"
+want "one fix session and one review: no plan, no build tasks, no size call" "quick review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+want_in "the session was told it is a fix" 'Kind: fix' "$(cat "$(driver_state_dir 811)/steps/quick.prompt" 2>/dev/null; cat "$(driver_state_dir 811)"/facts/* 2>/dev/null)"
+want_in "a PR is opened with auto-merge" 'pr merge .*--auto' "$(cat "$GH_LOG")"
+want_not_in "its body carries no Lesson section" '## Lesson' "$(cat "$GH_LOG")"
+
+echo "--- a fix with no test is sent back once, then moves up ---"
+issue 812 "status:ready,type:bug" "Dates throw" "$FIX_BODY"
+fix_ai quick "$QUICK_OK" superpowers:verification-before-completion
+do_step quick 'n=$(( $(cat "$FIX/n812" 2>/dev/null || echo 0) + 1 )); echo $n > "$FIX/n812"
+if [ "$n" = 1 ]; then printf "export const fmt = (d: Date) => \"\"\n" > src/lib/util.ts; git add -A; git commit -qm "fix(util): no throw (#812)"
+else printf "test(\"bad date\", () => {})\n" > src/lib/util.test.ts; git add -A; git commit -qm "test(util): bad date (#812)"; fi'
+: > "$CLAUDE_LOG"
+rc=0; out=$(bash "$BT" 812 2>&1) || rc=$?
+want_in "it says the fix has no test" 'a fix with no test \(src/lib/util.ts\) — asked once more' "$out"
+want "the second answer added the test, so it stays quick" "start,size,quick,review,ship" "$(driver_state_get 812 'done|join(",")')"
+want "two quick sessions and one review" "quick quick review" "$(tr '\n' ' ' < "$CLAUDE_LOG" | sed 's/ $//')"
+issue 813 "status:ready,type:bug" "Dates throw" "$FIX_BODY"
+do_step quick 'printf "export const fmt = (d: Date) => \"x\"\n" > src/lib/util.ts; git add -A; git commit -qm "fix(util): no throw (#813)" || true'
+: > "$CLAUDE_LOG"
+rc=0; out=$(bash "$BT" 813 2>&1) || rc=$?
+want_in "still no test: up to the full route, saying why" 'a fix that changes code with no test' "$out"
+want "the record says route=full" full "$(driver_state_get 813 route)"
+want_in "plan runs after the two quick sessions" '^quick quick plan' "$(tr '\n' ' ' < "$CLAUDE_LOG")"
+git -C "$REPO" worktree add -q "$FIX/wt814" -b tkt-814/x develop
+for f in a b c d; do printf 'export const %s = 1\n' "$f" > "$FIX/wt814/src/lib/$f.ts"; done
+git -C "$FIX/wt814" add -A; git -C "$FIX/wt814" commit -qm "four code files"
+driver_state_init 814 --worktree "$FIX/wt814" --branch tkt-814/x
+driver_state_set 814 kind fix
+rc=0; driver_quick_exceeds 814 "$FIX/wt814" develop >/dev/null || rc=$?
+want "a fix may touch four files" 1 "$rc"
+driver_state_set 814 kind change
+rc=0; driver_quick_exceeds 814 "$FIX/wt814" develop >/dev/null || rc=$?
+want "a change may not" 0 "$rc"
+rc=0; driver_quick_fix_untested "$FIX/wt814" develop >/dev/null || rc=$?
+want "code with no test file reads as untested" 0 "$rc"
+printf 'x\n' > "$FIX/wt814/src/lib/a.test.ts"; git -C "$FIX/wt814" add -A; git -C "$FIX/wt814" commit -qm "a test"
+rc=0; driver_quick_fix_untested "$FIX/wt814" develop >/dev/null || rc=$?
+want "a test file beside it reads as tested" 1 "$rc"
+rc=0; driver_quick_fix_untested "$FIX/wt903" develop >/dev/null || rc=$?
+want "a config-only fix owes no test" 1 "$rc"
 
 echo "--- a quick change that touches a screen goes to the full route, keeping the work ---"
 issue 802 "status:ready" "Make lint strict" "$CONFIG_BODY"

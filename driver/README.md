@@ -61,7 +61,16 @@ body, the file paths it names, and whether it states the change (a fenced snippe
 diff, a "set/change/rename … to …" line).
 
 - **quick**: 1 to `driver.quick.maxFiles` (3) named files, and the change is config,
-  copy or docs, or a small code edit the ticket states.
+  copy or docs, or a small code edit the ticket states. **A fix sized small is quick
+  too** (owner, 2026-11-09: the quick route is the default for small fixes). A fix is
+  a ticket wearing one of `driver.quick.fixLabels` (`type:bug`, `bug`) or whose title
+  matches `driver.quick.fixTitle` (`fix…`, `bug…`, `hotfix…`, `develop is red`). One
+  naming 1 to `driver.quick.fixMaxFiles` (5) files, or naming code on the trunk without
+  stating the change (no size call: the call answered quick or small for 37 of 41 such
+  fixes), goes quick; a size call that answers small for a fix goes quick too. An effort
+  label, `type:feature`, a schema or a screen still keep it off. Measured 23 Oct-9 Nov:
+  26 of 325 fix tickets went quick and 136 sized small walked plan and build (median
+  40 min claim to PR, 6.0 sessions) against the quick route's 9 min and 3.5.
 - **small**: a few named files (up to `driver.quick.smallMaxFiles`, 8), no schema, no
   new screen.
 - **project**: anything else. That means a schema, data-model or migration change
@@ -76,11 +85,18 @@ route=… size=…`).
 
 A **quick** ticket walks `DRIVER_QUICK_STEPS`. The `quick` step is one agent session
 (`briefs/quick.md`): it edits and commits, and cannot push. The driver then reads the
-real diff and runs the same gates `self-check` runs (`gates.local` under
+real diff (a fix may touch `driver.quick.fixMaxFiles`, 5) and runs the same gates `self-check` runs (`gates.local` under
 `gates.localOnly`, else the changed list, plus the changelog skip line). `review`
 runs once: only Critical and Major block, and a Minor is dropped. Then
 the unchanged `ship` step pushes, opens the PR, readies it and arms auto-merge. No
 plan, build, fix, compare, separate self-check or record step runs.
+
+**A fix brings its test.** The session finds the cause, makes the smallest fix and
+commits a test that fails without it. A fix whose diff changes code (anything but
+config and docs) with no test file (`driver.quick.testPattern`: `*.test.*`, `*.spec.*`,
+`test/`, `tests/`, `__tests__/`, `e2e/`, `*_test.*`, `test_*.py`) is sent back to the
+session once, naming it; still none, it moves up to the full route, whose build proves
+its test red first.
 
 **Bigger than its size moves up.** A real diff over `maxFiles`, or touching a
 never-quick file, moves the ticket up to the full route from `plan`. Never-quick files
@@ -139,7 +155,8 @@ build is never stranded for its size: ship counts the branch two-dot and, over
 `driver.quick.enabled: false` turns the route off (sizes are still read and logged).
 The run's last line, the coordinator's `runs.log` line (`route= size= claim_to_pr=`)
 and the live view's run row ("Quick change" / "Full build") all say the route. Only
-quick changes the route today; small and project both walk the full order.
+quick changes the route; small and project both walk the full order (a fix sized
+small reads quick).
 
 `fix` and `compare` are in the order on every pass and are no-ops with nothing to
 do — `fix` when no review has found anything, `compare` when the change touches no

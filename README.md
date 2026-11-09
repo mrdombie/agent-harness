@@ -79,10 +79,10 @@ Also needed on the machine: `gh` (authenticated), `jq`, `node`, `python3` (hook 
   "review": {
     "rounds": 2,
     "attest": {
-      "ui-gate": {
-        "owed":   "npm run check:ui-gate-attested --silent -- --base origin/develop --head HEAD",
+      "<reviewer>": {
+        "owed":   "<a command that prints the fingerprint this reviewer's verdict must carry, or that none is owed>",
         "review": "<a command that runs your reviewer and prints its verdict>",
-        "record": "scripts/record-verdict.sh ui-gate --sha {{SHA}} --base {{BASE}}"
+        "record": "<a command that reads that verdict on stdin and writes its trailer>"
       }
     }
   },
