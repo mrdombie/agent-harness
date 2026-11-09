@@ -216,6 +216,9 @@ _driver_plan_list_problems() {
     return 0
   fi
   feature_list_problems "$ans"
+  # Mapped here, where a miss costs one more answer, not a build and a park.
+  local bf; bf=$(mktemp "${TMPDIR:-/tmp}/plan-body.XXXXXX") && {
+    printf '%s\n' "$body" > "$bf"; feature_list_uncovered "$ans" "$bf"; rm -f "$bf"; }
   [ "$(jq '((.features // []) | length) + ((.units // []) | length)' "$ans")" = 0 ] || return 0
   while IFS= read -r l; do
     [ -n "$l" ] || continue

@@ -39,6 +39,44 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/format.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ticket-parts.sh" || exit 1
+
+# _driver_ticket_parts <ticket> <tree> <findings> — what the ticket names as its own, held to
+# the branch with no model: each file it names as created or changed is on the branch or in
+# its diff, and each numbered change item and acceptance item maps to a feature list item
+# that passes. The first miss goes to fix named; a second parks named.
+_driver_ticket_parts() {
+  local t="$1" wt="$2" findings="$3" bf out rc=0 misses
+  bf="$(driver_state_dir "$t")/steps/self-check.ticket-body.md"
+  if ! driver_ticket_view "$t" body '.body // ""' > "$bf" 2>/dev/null; then
+    driver_say "   self-check: #$t could not be read, so the files and items it names were not held to the branch"
+    return "$DRIVER_OK"
+  fi
+  out=$(ticket_parts_check "$wt" "$bf" "$t" "$(driver_state_dir "$t")/features.json") || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    driver_say "   self-check: every file and item #$t names is on the branch"
+    return "$DRIVER_OK"
+  fi
+  misses=$(printf '%s\n' "$out" | cut -f3 | paste -sd';' - | sed 's/;/; /g')
+  driver_say "✋ self-check: the branch misses what #$t names — $misses"
+  if [ "$(driver_state_count "$t" ticket_miss)" -ge 1 ]; then
+    driver_state_set "$t" park_note "the branch still misses what #$t names, after one round back: $misses"
+    return "$DRIVER_E_REFUSED"
+  fi
+  if ! _driver_order_has fix; then
+    driver_state_set "$t" park_note "the branch misses what #$t names, and this run has no fix step: $misses"
+    return "$DRIVER_E_REFUSED"
+  fi
+  driver_state_bump "$t" ticket_miss
+  printf '%s\n' "$out" | jq -R -s --arg t "$t" '
+    [split("\n")[] | select(length > 0) | split("\t") as $r
+     | {id: ("ticket-" + $r[0] + "-" + ($r[1] | gsub("[^A-Za-z0-9._-]"; "-"))), gate: "ticket",
+        command: ("#" + $t + " names " + $r[1]), exit: 1,
+        output: ($r[2] + ". Deliver it in this change, as the ticket says.")}]' > "$findings" || return "$DRIVER_E_REFUSED"
+  git -C "$wt" rev-parse HEAD > "$findings.head" 2>/dev/null
+  driver_say "↩ self-check: back once with what is missing named"
+  return "$DRIVER_E_REWORK"
+}
 
 # _driver_note_changelog_skip <ticket> <tree> — the build steps answered `changelog:
 # {skipped: <reason>}`, and their commits did not carry the project's skip line: the
@@ -543,6 +581,10 @@ driver_step_self_check() { # <ticket>
 
   # The build's own changelog claim, written where the project's gate reads it.
   local trc=0; _driver_note_changelog_skip "$t" "$wt" || trc=$?
+  [ "$trc" -eq 0 ] || return "$trc"
+
+  # What the ticket names, before a gate is paid for.
+  trc=0; _driver_ticket_parts "$t" "$wt" "$findings" || trc=$?
   [ "$trc" -eq 0 ] || return "$trc"
 
   # The SHAPE first. `gates` written as a list reads as no names at all, and the

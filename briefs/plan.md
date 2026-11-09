@@ -26,6 +26,7 @@ person anything; when you need to, return a question and the driver parks it.
 - This project: {{PROJECT_FACTS}}
 - Screen steps the renderer performs: {{SCREEN_STEPS}}
 - In scope, blocking at their grade: {{POLISH_LIST}} {{CRITIC_FINDINGS}}
+- Ticket items: {{TICKET_ITEMS}}
 
 ## The premise verdict is yours
 
@@ -137,11 +138,15 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `screenChecklist[].phone` (required): string
 - `features`: list of object
 - `features[].id` (required): string
+- `features[].covers` (required): list of string
 - `features[].behaviour` (required): string
 - `features[].steps` (required): list of string
 - `features[].test` (required): string
 - `features[].passes` (required): false
 - `features[].needsFoundation`: boolean
+- `outside`: list of object
+- `outside[].item` (required): string
+- `outside[].why` (required): string
 - `foundation`: object
 - `foundation.reason` (required): one of "expand-contract", "refactor", "hidden-backend"
 - `foundation.why` (required): string
