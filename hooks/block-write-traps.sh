@@ -13,6 +13,12 @@
 #    silently disagreeing. Editing an EXISTING file stays allowed (the backlog
 #    still has to be moved); creating one does not.
 #
+# 5. NEW CHECK SCRIPT — a check is a lint rule, an import rule or knip config unless it
+#    needs data no linter can see. A brand-new scripts/check-* file is refused unless it
+#    says so on a `needs-outside-data:` line. On the estate this came from, 128 check
+#    scripts were added one bug at a time, 8 were lint rules, and their repo-scanning
+#    tests cost ~150 s on every change (2026-11-09). Editing an existing check is allowed.
+#
 # The one project fact — where the shared clone lives — comes from the
 # environment or the resolver's last-seen value; trap 4 reads it to tell a skill
 # inside the project from one in ~/.claude.
@@ -35,6 +41,19 @@ case "$f" in
     if [ "$_inrepo" -eq 0 ] && [ ! -e "$f" ]; then
       deny "New commands and skills are not born in ~/.claude — a copy there lives on one machine and nowhere else. Add it to the harness repo (skills/<name>/SKILL.md, reading project facts from .claude/harness.json), open a PR, merge, then update the plugin. If it is one project's own, put it in that repo's .claude/skills through a ticket."
     fi ;;
+esac
+
+# 5. new check script
+case "$f" in
+  */scripts/check-*/index.ts|*/scripts/check-*/index.mjs|*/scripts/check-*/index.js|*/scripts/check-*/index.sh|*/scripts/check-*.sh|*/scripts/check-*.ts|*/scripts/check-*.mjs)
+    case "$f" in *.test.*) ;; *)
+      if [ ! -e "$f" ]; then
+        content=$(printf '%s' "$payload" | jq -r '.tool_input.content // ""' 2>/dev/null || echo "")
+        if ! grep -qE 'needs-outside-data:[[:space:]]*[^[:space:]]' <<<"$content"; then
+          deny "A new check starts as a lint rule, not a script: an ESLint rule (the editor flags it as it is written), an import rule (no-restricted-imports or dependency-cruiser) for 'only one home for X', or knip config for dead code and orphans. Its test runs on small fixture files, never the real repo. Write a check script only when it needs data no linter can see (a hosting provider's variables, the database, a build's output), and say what on a line: needs-outside-data: <what it reads>."
+        fi
+      fi ;;
+    esac ;;
 esac
 
 # 3. credential written into memory
