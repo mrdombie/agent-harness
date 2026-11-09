@@ -118,7 +118,7 @@ has "${START}${GIT}commit[^;&|]*$S(-[a-zA-Z]*a[a-zA-Z]*|--all)$EOW" && deny "git
 # commit; on a push it means --dry-run, which is why this rule names `commit`.
 if has "${START}${GIT}commit[^;&|]*$S(--no-verify|-[a-zA-Z]*n[a-zA-Z]*)$EOW" \
    && ! hasF "no-verify-ok:" && ! hasF "# via /finish"; then
-  deny "git commit --no-verify skips the SECRET SCAN (gitleaks protect --staged), the .deploy-trigger stamp and commitlint — not just formatting. Commit without it. If a commit genuinely must bypass them (a rendered-evidence commit that touches no source), append '# no-verify-ok: <reason>'."
+  deny "git commit --no-verify skips the SECRET SCAN (gitleaks protect --staged), and commitlint — not just formatting. Commit without it. If a commit genuinely must bypass them (a rendered-evidence commit that touches no source), append '# no-verify-ok: <reason>'."
 fi
 # The finish flow owns PRs against THE CONFIGURED PROJECT, because that is where
 # its gates, trailer, changelog and claim release apply. A PR against a DIFFERENT
@@ -143,7 +143,7 @@ pr_targets_elsewhere() {
   target=$(printf '%s' "$cmd" | grep -oE -- '--repo[= ]+[A-Za-z0-9._-]+/[A-Za-z0-9._-]+' | head -1 | sed -E 's/--repo[= ]+//')
   [ -n "$target" ] && [ -n "$REPO_SLUG" ] && [ "$target" != "$REPO_SLUG" ]
 }
-if has "${START}gh$S+pr$S+create" && ! hasF "# via /finish" && ! pr_targets_elsewhere; then deny "Opening a PR against ${REPO_SLUG:-the configured project} is /agent-harness:finish's job (gates, UI-Gate trailer, .deploy-trigger, changelog, claim release). Run /agent-harness:finish. If you ARE /agent-harness:finish, append '# via /finish' to the command. A PR against another repo needs an explicit --repo <owner>/<name>."; fi
+if has "${START}gh$S+pr$S+create" && ! hasF "# via /finish" && ! pr_targets_elsewhere; then deny "Opening a PR against ${REPO_SLUG:-the configured project} is /agent-harness:finish's job (gates, changelog, claim release). Run /agent-harness:finish. If you ARE /agent-harness:finish, append '# via /finish' to the command. A PR against another repo needs an explicit --repo <owner>/<name>."; fi
 branch_re='[A-Za-z]{1,12}-[0-9]+/'; [ -n "${BRANCH_PREFIX:-}" ] && branch_re="${BRANCH_PREFIX}[0-9]+/|$branch_re"
 if has "${START}git$S+worktree$S+add[^|;&]*-b$S+($branch_re)" && ! hasF "# via /claim"; then deny "Ticket branches are /agent-harness:claim's job (claim ref, spec gate, anti-orphan gates, husky shims). Run /agent-harness:claim <n>. If you ARE /agent-harness:claim, append '# via /claim'."; fi
 exit 0

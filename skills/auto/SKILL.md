@@ -304,9 +304,6 @@ Then **take the top row and do the work.** Do not ask. Do not present options.
      is landing (#79). `merge` → a real conflict, work it. `none` → not behind.
    - Merging develop drags **prettier churn** in — commit the merge with
      `--no-verify`.
-   - `.deploy-trigger` is the **root** file and it is **appended** (`>>`), never
-     overwritten; `apps/.deploy-trigger` is a tracked decoy the gate never reads.
-     Confirm with `npm run check:deploy-trigger`.
    - **If the premise no longer holds against develop** — after 80–170 commits
      some of these describe code that no longer exists — say so on the ticket,
      skip it, and move on. Do not force a resume.
