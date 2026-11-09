@@ -129,13 +129,13 @@ _driver_start_acquire() {
 # none. 1 when origin could not be read: unread is not "none".
 _driver_start_stranded() {
   local t="$1" b="$2" heads
-  heads=$(git -C "$MAIN_REPO" ls-remote --heads origin 2>/dev/null) || return 1
+  heads=$(git -C "$MAIN_REPO" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 ls-remote --heads origin 2>/dev/null) || return 1
   heads=$(printf '%s\n' "$heads" | awk '{ sub("^refs/heads/", "", $2); print $2 }')
   # The record's branch is kept: only a ticket with none on the record takes origin's.
   if [ -n "$b" ]; then b=$(printf '%s\n' "$heads" | grep -xF -- "$b" | head -1)
   else b=$(printf '%s\n' "$heads" | branch_tickets | awk -F'\t' -v n="$t" '$1 == n { print $2; exit }'); fi
   [ -n "$b" ] || return 0
-  git -C "$MAIN_REPO" fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b" 2>/dev/null || return 1
+  git -C "$MAIN_REPO" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch -q origin "+refs/heads/$b:refs/remotes/origin/$b" 2>/dev/null || return 1
   printf '%s' "$b"
 }
 
