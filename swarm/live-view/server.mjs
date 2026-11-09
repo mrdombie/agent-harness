@@ -413,6 +413,13 @@ export function branchTicket(b, pre = BRANCH_PREFIX) {
   return ''
 }
 
+// An open pull request's state. A copy read on an older head says nothing about the
+// newest push: no clash, no red from it.
+function headStatus(p, heads) {
+  return heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
+    ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p)
+}
+
 // ticket -> its newest open pull request, by closing reference or by branch:
 // its number, whether it is red, and whether it waits on the owner's sign-off.
 export function prRowsByTicket(file = PRS_FILE, heads = (readJsonCached(PR_STATES_FILE) || {}).heads || null) {
@@ -425,9 +432,7 @@ export function prRowsByTicket(file = PRS_FILE, heads = (readJsonCached(PR_STATE
     const ts = new Set((p.closingIssuesReferences || []).map((r) => String(r && r.number)).filter((n) => n !== 'undefined'))
     const bt = branchTicket(p.headRefName)
     if (bt) ts.add(bt)
-    // A copy read on an older head says nothing about the newest push: no clash, no red from it.
-    const status = heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
-      ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p)
+    const status = headStatus(p, heads)
     const row = { number: p.number, red: ['clash', 'failed'].includes(status.state),
                   held: (p.labels || []).some((l) => (typeof l === 'string' ? l : l && l.name) === hold), status }
     for (const t of ts) if (!(t in by) || p.number > by[t].number) by[t] = row
@@ -1410,8 +1415,7 @@ export function directOf(prList, prStates, shown, now = Date.now(), opts = {}) {
     if (!p || p.number == null || p.baseRefName !== trunk || shownPrs.has(String(p.number)) || byBuilder(p.headRefName)) continue
     const tickets = closes(p.body, p.closingIssuesReferences)
     if (!tickets.length) continue
-    const status = heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
-      ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p)
+    const status = headStatus(p, heads)
     add(p, tickets, { state: status.state, text: status.text, tone: NOW_STATES[status.state].tone, pr: p.number,
                       ...(status.notes ? { notes: status.notes } : {}) }, p.updatedAt)
   }
