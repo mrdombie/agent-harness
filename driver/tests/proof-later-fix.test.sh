@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # proof-later-fix.test.sh — a fix committed after a feature's change commit counts.
-# A rework keeps reporting its first test/change pair; the proof's green half and its
-# typecheck run at the latest branch commit touching the test's or the change's files,
-# so a later commit that clears a compile error is seen. The red half stays at the
+# A rework keeps reporting its first test/change pair; when green or the typecheck fails
+# at the change, the proof is taken again at the latest branch commit touching the test's
+# or the change's files, so a later commit that clears a compile error is seen. The red half stays at the
 # change's parent, and a later commit on other files does not move green.
 # Run: bash "$0"
 set -uo pipefail
