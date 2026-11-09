@@ -390,7 +390,18 @@ function ranOut(d){
   if (d.exit === 0) return 'Last run ended'
   return `Last run ended (exit ${esc(d.exit)})`
 }
+const ticketA = (t) => repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(t)}" target="_blank" rel="noopener">#${esc(t)}</a>` : `#${esc(t)}`
+// A pull request opened by hand, no builder behind it: its tickets, never a run's report.
+function directRow(d){
+  const ts = d.tickets || [d.ticket], shown = ts.slice(0, 4).map(ticketA).join(', ')
+  const more = ts.length > 4 ? ` and ${ts.length - 4} more` : ''
+  return `<tr><td>${nowPill(d)}</td>
+      <td><b>${esc(d.title)}</b> <span class="sub">${shown}${more}</span><div class="ran">Direct change, no builder</div></td>
+      <td class="num">—</td>
+      <td class="num">${d.finishedAt ? `${d.now && d.now.state === 'merged' ? 'merged' : 'updated'} ${esc(when(d.finishedAt))}` : '—'}</td></tr>`
+}
 function doneRow(d){
+  if (d.direct) return directRow(d)
   const link = repo ? `<a href="https://github.com/${esc(repo)}/issues/${esc(d.ticket)}" target="_blank" rel="noopener">#${esc(d.ticket)}</a>` : `#${esc(d.ticket)}`
   const fin = d.finishedAt ? `finished ${esc(when(d.finishedAt))}` : ago(d.endedAgoMin*60)
   return `<tr>

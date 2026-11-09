@@ -1384,6 +1384,50 @@ export function doneSummary(rows) {
   return parts.length ? `Finished: ${parts.join(' · ')}` : 'Finished'
 }
 
+// Work no builder ran: a pull request into the trunk, open or merged today, whose body
+// closes a ticket that no run row already shows. Read from the two copies already kept
+// (prs.json for the open ones, pr-states.json for today's merges); no call of its own.
+// A builder's own branch is never direct, even after its run row has aged out.
+const DIRECT_MAX = 30
+export function directOf(prList, prStates, shown, now = Date.now(), opts = {}) {
+  const trunk = opts.trunk || TRUNK, pre = opts.prefix ?? BRANCH_PREFIX, repo = opts.repo ?? REPO
+  const shownTickets = (shown && shown.tickets) || new Set(), shownPrs = (shown && shown.prs) || new Set()
+  const closes = (body, refs) => {
+    const ts = new Set([...String(body || '').matchAll(CLOSES_RE)].map((m) => m[1]))
+    for (const r of refs || []) if (r && r.number != null) ts.add(String(r.number))
+    return [...ts].filter((t) => !shownTickets.has(t)).sort((a, b) => Number(a) - Number(b))
+  }
+  const byBuilder = (head) => !!pre && String(head || '').startsWith(pre)
+  const heads = (prStates && prStates.heads) || null
+  const rows = [], seen = new Set()
+  const add = (p, tickets, n, at) => {
+    seen.add(String(p.number))
+    const pr = String(p.number)
+    rows.push({ ticket: tickets[0], tickets, title: plainTitle(p.title) || `Pull request ${pr}`, direct: true,
+                pr, prUrl: repo ? `https://github.com/${repo}/pull/${pr}` : '', finishedAt: at || null, at: at || null, now: n })
+  }
+  for (const p of Array.isArray(prList) ? prList : []) {
+    if (!p || p.number == null || p.baseRefName !== trunk || shownPrs.has(String(p.number)) || byBuilder(p.headRefName)) continue
+    const tickets = closes(p.body, p.closingIssuesReferences)
+    if (!tickets.length) continue
+    const status = heads && heads[String(p.number)] && p.headRefOid && heads[String(p.number)] !== p.headRefOid
+      ? { state: 'checks', text: 'Waiting for checks on the newest push' } : openPrState(p)
+    add(p, tickets, { state: status.state, text: status.text, tone: NOW_STATES[status.state].tone, pr: p.number,
+                      ...(status.notes ? { notes: status.notes } : {}) }, p.updatedAt)
+  }
+  // Merged today into the trunk: the merge search is the base filter, the closed list has the body.
+  const today = prStates && prStates.since === dayStart(now) && prStates.merged && Array.isArray(prStates.merged.items)
+    ? new Set(prStates.merged.items.map((i) => String(i && i.number))) : new Set()
+  for (const p of (prStates && Array.isArray(prStates.closed) ? prStates.closed : [])) {
+    if (!p || p.number == null || !p.mergedAt || !today.has(String(p.number)) || seen.has(String(p.number))) continue
+    if (shownPrs.has(String(p.number)) || byBuilder(p.head)) continue
+    const tickets = closes(p.body, null)
+    if (!tickets.length) continue
+    add(p, tickets, { state: 'merged', text: `Merged ${clockOf(p.mergedAt, now)}`, tone: NOW_STATES.merged.tone, pr: p.number, at: p.mergedAt }, p.mergedAt)
+  }
+  return rows.sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, DIRECT_MAX)
+}
+
 // A run is live when it has no .ended marker AND its agent's process still
 // exists. The marker alone is not enough — a wrapper killed before it could
 // write one leaves a record that looks like a running agent forever, which is
@@ -1487,6 +1531,14 @@ export function snapshot(now = Date.now()) {
     const x = titleOf(t)
     return x.title ? { ...x, short: shortTitle(x.title, plainTitles[t], x.project, plainName) } : {}
   }, fleet)
+  // Work no builder ran, beside the runs: a ticket a run row already shows is not repeated.
+  let direct = []
+  guard('direct', () => {
+    const tickets = new Set([...live, ...elsewhere, ...doneRows].map((r) => String(r.ticket)))
+    const prs = new Set(doneRows.map((r) => r.pr).filter(Boolean))
+    direct = directOf(ctx.prList, prStates, { tickets, prs }, now)
+  })
+  const finished = [...doneRows, ...direct].sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
   const launch = launchOf(board, readJsonCached(TREND_FILE), ctx.wrappers, now)
   const queue = queued
   for (const r of queue.tickets) {
@@ -1498,7 +1550,7 @@ export function snapshot(now = Date.now()) {
   // `at` is the whole staleness contract: every reader discards an answer older
   // than its own ceiling rather than believing a machine that has moved on.
   return { at: new Date(now).toISOString(), repo: REPO, load: os.loadavg()[0],
-           plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: doneRows, doneSummary: doneSummary(doneRows),
+           plans: plansOf(live, progress.plans, plainName), live, elsewhere, thisHost: THIS_HOST, done: finished, doneSummary: doneSummary(finished),
            hold, queue, capacity: capacityOf(), fleet,
            mergedToday: mergedTodayOf(readJsonCached(PR_STATES_FILE), now), disk: diskOf(), board, areas, launch, usage: usageOf(PACE_FILE, now), measures: measuresOf(),
            hosts: hostsOf(live, claims),
