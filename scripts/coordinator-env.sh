@@ -158,6 +158,8 @@ COORD_JUDGES="${COORDINATOR_JUDGES:-$(swarm_opt coordinator.judges 2)}"
 COORD_JUDGE_TURNS="${COORDINATOR_JUDGE_TURNS:-$(swarm_opt coordinator.judge.turns 40)}"
 COORD_JUDGE_BUDGET="${COORDINATOR_JUDGE_BUDGET_USD:-$(swarm_opt coordinator.judge.budgetUsd 5)}"
 COORD_JUDGE_COMPACT="${COORDINATOR_JUDGE_COMPACT:-$(swarm_opt coordinator.judge.compactWindow 150000)}"
+# Pinned: the machine's /model default must never decide what a judge runs on.
+COORD_JUDGE_MODEL="${COORDINATOR_JUDGE_MODEL:-$(swarm_opt coordinator.judge.model opus)}"
 
 # The release scope, as one JSON object coord_jq hands to coord_release_held. Off unless
 # set; a regex that does not compile is dropped, so one typo never fails every read.

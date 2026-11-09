@@ -450,7 +450,7 @@ How the driver treats a brief:
 
 Each judgement event gets one fresh `claude -p` with a short brief
 (`scripts/coordinator-judge.sh`), a turn cap, a budget and a bounded compact
-window — never the session history. A red PR is no judgement event: the rebuild pass owns it. A stand-down a rule can settle starts
+window, on `coordinator.judge.model` (default `opus`) passed as `--model`, whatever the machine's default model — never the session history. A red PR is no judgement event: the rebuild pass owns it. A stand-down a rule can settle starts
 no model (`scripts/coordinator-judge-moot.sh`, one batched read a tick): the PR merged,
 closed or moved to a new head, the ticket closed, queued or running. It is logged as
 `moot by rule` in `judgements.log`, and a read that fails settles nothing. A judge runs
@@ -535,6 +535,7 @@ desktop ping (or `COORDINATOR_NOTIFY_CMD`) and a line in `needs-you.md`, which
 | `frozenMin` | 20 | A live run whose log has not grown this long is frozen. A driver run's step logs count as growth too (the run record's `progress_paths`) |
 | `judges` | 1 | Judgement processes at once |
 | `judge.turns` · `judge.budgetUsd` · `judge.compactWindow` | 40 · 5 · 150000 | Each judge's limits |
+| `judge.model` | `opus` | The model each judge's `claude -p` runs on, passed as `--model`: the machine's own default model never decides |
 | `sheet.owner` | unset | The machine (`hostname -s`, compared without case) that keeps the one build order every coordinator works. Unset, no sheet: each machine seeds its own queue as before |
 | `sheet.staleMin` | 15 | A sheet older than this starts nothing new on any other machine |
 | `sheet.label` · `sheet.title` | `build-sheet` · `Build queue — the shared sheet` | The pinned issue the order is written to |

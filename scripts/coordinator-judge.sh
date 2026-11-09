@@ -81,6 +81,7 @@ run_one() { # <id> — the judge itself, in the foreground of its own session
   # Nobody reads a judge's turn: the kit's Stop hooks stand down on HARNESS_HEADLESS.
   HARNESS_HEADLESS="judge:$id" CLAUDE_CODE_AUTO_COMPACT_WINDOW="$COORD_JUDGE_COMPACT" KIT_ROOT="$KIT_ROOT" COORD_DIR="$COORD_DIR" \
     "$CLAUDE_BIN" -p "$(cat "$JDIR/$safe.brief")" \
+      --model "$COORD_JUDGE_MODEL" \
       --max-turns "$COORD_JUDGE_TURNS" \
       --max-budget-usd "$COORD_JUDGE_BUDGET" \
       --permission-mode "${COORDINATOR_PERMISSION_MODE:-auto}" \
