@@ -91,21 +91,30 @@ _ticket_parts_on_branch() {
 }
 
 ticket_parts_check() { # <tree> <body-file> <ticket> [features.json]
-  local wt="$1" body="$2" t="$3" list="${4:-}" touched base r p id text miss=0 cov parent
+  local wt="$1" body="$2" t="$3" list="${4:-}" touched base r p id text miss=0 cov parent own
   touched=$(mktemp "${TMPDIR:-/tmp}/ticket-parts.XXXXXX") || return 2
   for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}"; do
     base=$(git -C "$wt" merge-base "$r" HEAD 2>/dev/null) && [ -n "$base" ] && break
   done
   [ -z "${base:-}" ] || git -C "$wt" diff --name-only "$base" HEAD > "$touched" 2>/dev/null
-  # A split part's files were listed under its parent's number; a path keyed by that number is
-  # the part's own under its number.
+  # A split part's files were listed under its parent's number; any path keyed by that number
+  # (a folder, a changelog fragment, an evidence plan) is the part's own under its number.
   parent=$(sed -nE 's/.*<!-- harness:feature-item parent=([0-9]+) .*/\1/p' "$body" | tail -1)
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     _ticket_parts_on_branch "$wt" "$p" "$touched" && continue
-    case "/$p" in */"$parent"/*)
-      [ -n "$parent" ] && [ -n "$t" ] && _ticket_parts_on_branch "$wt" "$(printf '%s' "/$p" | sed "s#/$parent/#/$t/#; s#^/##")" "$touched" && continue ;;
-    esac
+    if [ -n "$parent" ] && [ -n "$t" ] && [ "$parent" != "$t" ]; then
+      own=$(printf '%s' "$p" | awk -v a="$parent" -v b="$t" '{
+        o = ""; s = $0
+        while ((i = index(s, a)) > 0) {
+          pre = substr(s, i - 1, 1); post = substr(s, i + length(a), 1)
+          if ((i == 1 || pre !~ /[0-9]/) && post !~ /[0-9]/) { o = o substr(s, 1, i - 1) b }
+          else { o = o substr(s, 1, i - 1 + length(a)) }
+          s = substr(s, i + length(a))
+        }
+        print o s }')
+      [ "$own" != "$p" ] && _ticket_parts_on_branch "$wt" "$own" "$touched" && continue
+    fi
     printf 'path\t%s\tthe ticket names `%s`, and it is neither on the branch nor touched by its diff\n' "$p" "$p"
     miss=1
   done <<EOF

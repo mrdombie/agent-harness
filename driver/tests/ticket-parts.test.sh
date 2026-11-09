@@ -66,6 +66,28 @@ want_in "and says so" 'every file and item #301 names' "$out"
 out=$(driver_step_self_check 302 2>&1); rc=$?
 want "another number's path is not this part's" "$DRIVER_E_REWORK" "$rc"
 
+echo "--- a part's changelog fragment, named under its parent's number, is its own under its number ---"
+# The real case: part 19252 of 19004 lists the parent's fragment and writes its own.
+driver_state_init 19252 --worktree "$REPO"
+body 19252 "**Files:** apps/web/src/content/changelog/19004.md
+<!-- harness:feature-item parent=19004 id=F8 test=src/a.test.ts -->"
+out=$(driver_step_self_check 19252 2>&1); rc=$?
+want "with neither fragment it goes back" "$DRIVER_E_REWORK" "$rc"
+want_in "naming the path the ticket names" 'changelog/19004.md' "$out"
+mkdir -p "$REPO/apps/web/src/content/changelog"; : > "$REPO/apps/web/src/content/changelog/19252.md"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm fragment
+driver_state_init 19253 --worktree "$REPO"; cp "$FIX/gh/issue-19252.json" "$FIX/gh/issue-19253.json"
+rc=0; driver_step_self_check 19252 >/dev/null 2>&1 || rc=$?
+want "its own fragment delivers it" "0" "$rc"
+rc=0; driver_step_self_check 19253 >/dev/null 2>&1 || rc=$?
+want "another part's fragment does not" "$DRIVER_E_REWORK" "$rc"
+body 19254 "**Files:** apps/web/src/content/changelog/190041.md
+<!-- harness:feature-item parent=19004 id=F8 test=src/a.test.ts -->"
+: > "$REPO/apps/web/src/content/changelog/192541.md"; git -C "$REPO" add -A; git -C "$REPO" commit -qm longer
+driver_state_init 19254 --worktree "$REPO"
+rc=0; driver_step_self_check 19254 >/dev/null 2>&1 || rc=$?
+want "a longer number holding the parent's is not rewritten" "$DRIVER_E_REWORK" "$rc"
+
 echo "--- a file the diff deletes counts as touched ---"
 git -C "$REPO" checkout -q -b tkt-303
 git -C "$REPO" rm -q src/Page.tsx; git -C "$REPO" commit -qm gone
