@@ -62,6 +62,8 @@ export COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify"
 # Housekeeping in line and every tick, so each case reads what it did when the tick returns.
 export COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0
 export COORDINATOR_REFRESH=0 COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt"
+# The fix rounds have their own cases (fix_tick, and swarm/tests/rebuild.test.sh); off for the rest.
+export COORDINATOR_FIX_ROUNDS=0
 unset COORDINATOR_SHADOW COORDINATOR_CAP COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
 export SWARM_FREE_MEM_GB=16 TEST_PID=$$
 # The disk guard has its own suite (disk-guard.test.sh); here it never holds and never cleans
@@ -718,6 +720,66 @@ COORDINATOR_CLAIMS_CMD=false SWARM_NOW=$T0 COORDINATOR_REBUILD_AFTER_MIN=0 COORD
 out=$(COORDINATOR_CLAIMS_CMD=false SWARM_NOW=$(( T0 + 600 * 60 )) COORDINATOR_REBUILD_AFTER_MIN=1 COORDINATOR_SHADOW=0 tick)
 want "an unreadable claim list rebuilds nothing" "0" "$(grep -c '^pr close' "$GH_LOG")"
 want_in "  and says so"                         'rebuild: the claim list could not be read' "$out"
+rm -rf "$STATE/driver/501"; fix_required
+
+echo "--- the fix rounds: a red PR's ticket goes back to its builder, on the PR it has ---"
+# fix_tick — one live tick with the rebuild off and coordinator.fixRounds at its default (2).
+# Label edits stick (gh-labels): the pass sets the ticket ready, and the next tick reads that.
+fix_tick() { env -u COORDINATOR_FIX_ROUNDS COORDINATOR_REBUILD_AFTER_MIN=0 SWARM_IDLE=90 COORDINATOR_CAP=6 SWARM_GH="$BIN/gh-labels" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
+note_of() { jq -r --argjson n "$1" '.tickets[]? | select(.n == $n) | .note' "$C/queue.json" 2>/dev/null; }
+rb_world
+out=$(fix_tick)
+want "the PR is not closed"                     "0" "$(grep -c '^pr close' "$GH_LOG")"
+want_in "  the pass says it goes back to its builder" 'rebuild: PR #5501 goes back to its builder on tkt-501-x — fix round 1 of 2' "$out"
+want_in "  the ticket is set ready"             'status:ready' "$(jq -r '[.labels[].name] | join(",")' "$FIX/gh/issue-501.json")"
+out="$out
+$(fix_tick)"
+want "  its ticket is spawned, open PR and all" "501" "$(spawned)"
+want "  one round spent, however many ticks saw the head" "1" "$(cut -f2 "$C/fix-rounds.did.tsv" 2>/dev/null)"
+want_in "  with the Fix: brief on the act log"  'spawn	501	new — Fix: PR #5501 — required check\(s\) failed: Typecheck' "$(cat "$C/actions.log" 2>/dev/null)"
+want_not_in "  never skipped for its open PR"   'skip #501' "$out"
+echo "  a machine reading another's sheet sends no PR back: one ledger counts the rounds"
+rb_world
+out=$(COORDINATOR_SHEET_OWNER=some-other-host fix_tick)
+want "  nothing is queued for a fix"            "" "$(note_of 501)"
+want "  no round is spent here"                 "" "$(cat "$C"/fix-rounds.* 2>/dev/null)"
+want "  the ticket's status is not touched"     "0" "$(grep -c '^issue edit 501' "$GH_LOG")"
+want_in "  the PR waits as before"              'rebuild: PR #5501 is stuck \(required check\(s\) failed: Typecheck\)' "$out"
+echo "  over the open-work cap a fix round still starts: it finishes a PR the cap counts"
+rb_world
+jq '. + [range(0; 12) | {number: (9000 + .), headRefName: "tkt-\(9000 + .)-open", headRefOid: "h\(.)", baseRefName: "develop", isDraft: false, mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' \
+  "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+for n in $(seq 9000 9011); do fix_issue "$n" OPEN "P1,status:in-review"; done
+queue 701
+out="$(fix_tick)
+$(fix_tick)"
+want_in "  the cap is over"                     'open changes 13 / cap 10: finishing before starting' "$out"
+want "  the fix round starts, the new ticket waits" "501" "$(spawned)"
+want_in "  and the tick says why"               'cap: over \(13/10\) — fix-round #501 starts anyway' "$out"
+echo "  a queued fix round whose PR is no longer red sends no builder"
+rb_world "P1,status:ready"; bash "$Q" add 501 --first --note "Fix: PR #5501 — required check(s) failed: Typecheck" >/dev/null 2>&1
+jq '.[0].statusCheckRollup[0].conclusion = "SUCCESS" | .[0].mergeStateStatus = "CLEAN"' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+out=$(fix_tick)
+want "  nothing is spawned"                     "" "$(spawned)"
+want_in "  and the skip says why"               'skip #501 \(new\): its fix round waits — PR #5501 is not red or clashing now' "$out"
+echo "  a queued fix round whose PR is gone is taken off the queue, never built from the trunk"
+rb_world "P1,status:ready"; bash "$Q" add 501 --first --note "Fix: PR #5501 — required check(s) failed: Typecheck" >/dev/null 2>&1
+printf '[]\n' > "$FIX/gh/prs-all.json"
+out=$(fix_tick)
+want "  nothing is spawned"                     "" "$(spawned)"
+want "  and it is off the queue"                "" "$(note_of 501)"
+want_in "  the skip says why"                   'skip #501 \(new\): its fix round was for PR #5501, which is not open any more' "$out"
+echo "  a ticket parked for the PM after its rounds: its open PR is left, and not counted as open work"
+rb_world "P1,status:parked,status:pm-decision"
+jq '. + [range(0; 10) | {number: (9000 + .), headRefName: "tkt-\(9000 + .)-open", headRefOid: "h\(.)", baseRefName: "develop", isDraft: false, mergeStateStatus: "CLEAN", labels: [], statusCheckRollup: []}]' \
+  "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+for n in $(seq 9000 9009); do fix_issue "$n" OPEN "P1,status:in-review"; done
+queue 701
+out=$(fix_tick)
+want_in "  it is left as it is"                 'rebuild: PR #5501 left as it is — #501 waits on a person' "$out"
+want_in "  10 of 11 count: new work may start"  'open changes 10 / cap 10: new work may start' "$out"
+want_in "  the tick names why"                  '#5501 waits on a person \(status:pm-decision\)' "$out"
+want "  the new ticket starts"                  "701" "$(spawned)"
 rm -rf "$STATE/driver/501"; fix_required
 
 echo "--- a frozen run is noticed; a busy one is not ---"

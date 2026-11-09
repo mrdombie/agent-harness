@@ -243,7 +243,16 @@ driver_step_start() { # <ticket>
     fi
     # OUR OWN PARKED DRAFT, ITS TREE SWEPT: the PR is on the record's branch, so the
     # tree is cut again from origin's head of it and the build resumes.
-    local rb; rb=$(driver_state_get "$t" branch)
+    # A "Fix:" RUN CONTINUES THE ONE OPEN PR ITS BRIEF NAMES (the coordinator's fix round,
+    # scripts/rebuild.sh): that PR's branch is this run's, whichever host built it, and
+    # its tree is cut from origin's head of it exactly as a swept one is. Any other open
+    # PR still ends the run below.
+    local rb fixpr; rb=$(driver_state_get "$t" branch)
+    fixpr=$(driver_fix_brief_pr "$(driver_state_get "$t" run_brief)")
+    if [ -n "$fixpr" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ] \
+       && [ "$(printf '%s' "$prs" | cut -f1)" = "$fixpr" ]; then
+      rb=$(printf '%s' "$prs" | cut -f2)
+    else fixpr=""; fi
     if [ -n "$prs" ] && [ -n "$rb" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ] \
        && [ "$(printf '%s' "$prs" | cut -f2)" = "$rb" ] \
        && git -C "$MAIN_REPO" fetch -q origin "+refs/heads/$rb:refs/remotes/origin/$rb" 2>/dev/null; then
@@ -253,14 +262,20 @@ driver_step_start() { # <ticket>
       if _driver_start_cut "$t" "$MAIN_REPO" "$owt" "$rb" "origin/$rb" \
          && driver_own_install "$owt" && driver_prepare_worktree "$owt"; then
         driver_state_set "$t" worktree "$owt"
-        driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
+        if [ -n "$fixpr" ]; then
+          driver_state_set "$t" branch "$rb"
+          driver_say "   start: a fix of open PR #$fixpr — #$t continues on $rb, cut from origin/$rb"
+        else
+          driver_say "   start: #$t's own draft PR is on $rb and its tree was gone — cut again from origin/$rb"
+        fi
         prs=""
       fi
     fi
     # ONE OPEN PR IS NOT PARKED ON, AND NOT BUILT BESIDE. #12649 parked on "start will
     # not cut a second branch" with its PR right there. There is no repair route: the PR
     # merges, or the coordinator closes it and builds the ticket fresh once it cannot
-    # merge (scripts/rebuild.sh). This run ends without a park (DRIVER_E_HAS_PR).
+    # merge (scripts/rebuild.sh). This run ends without a park (DRIVER_E_HAS_PR). Only a
+    # run whose brief is the coordinator's "Fix:" of that PR continues it (above).
     # Several PRs are a person's call.
     if [ -n "$prs" ] && [ "$(printf '%s\n' "$prs" | grep -c .)" -eq 1 ]; then
       driver_say "↪ start: #$t already has an open pull request #$(printf '%s' "$prs" | cut -f1) on $(printf '%s' "$prs" | cut -f2) — it merges, or the coordinator rebuilds it fresh once it cannot merge (coordinator.rebuildAfterMin); this run builds nothing."

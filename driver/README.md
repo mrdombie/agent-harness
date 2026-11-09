@@ -242,6 +242,11 @@ the trunk has too waits for the trunk, and a PR a person holds is never closed.
   set aside (its commits kept at `refs/stale/<t>/local-<host>-<epoch>`), its driver state
   is moved aside, and `start` cuts a new tree from the trunk (`DRIVER_FRESH`). A record
   that says it shipped with no PR open or merged is a fresh build the same way.
+- **A "Fix: PR #<n>" note continues that open PR.** It is the coordinator's fix round
+  (`coordinator.fixRounds`, `scripts/rebuild.sh`) for a PR red on its own code. A shipped
+  record of the ticket on this host is moved aside, `start` cuts the tree from origin's
+  head of the PR's branch instead of ending with exit 31, and `ship` pushes to that branch
+  and rewrites the PR it has: no second PR is opened. Any other brief still ends with 31.
 - **Nothing resumes from `refs/stale/`.** Work a push could not hand over (a park's refused
   push, a branch tip left on this machine, a dead branch tip at ship) is kept there by
   `driver_keep_ref` so it is never only on one disk, for a person to read.

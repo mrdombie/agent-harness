@@ -954,6 +954,13 @@ driver_open_prs() {
 # own "Coordinator note (<class>): " wrapper, which the next spawn adds again.
 driver_brief_note() { sed '1s/^Coordinator note ([a-z-]*): //' "$1"; }
 
+# driver_fix_brief_pr <brief-file> — the pull request a "Fix: PR #<n>" brief names (the
+# coordinator's fix round, scripts/rebuild.sh), or nothing for any other brief.
+driver_fix_brief_pr() {
+  [ -n "${1:-}" ] && [ -s "$1" ] || return 0
+  sed -n '1s/^\(Coordinator note ([^)]*): \)\{0,1\}Fix: PR #\([0-9][0-9]*\).*/\2/p' "$1" 2>/dev/null
+}
+
 # driver_record_diverged <ticket> <open-pr row> — why the record is not this PR's,
 # or nothing when it is: the same branch, still a draft, and the PR's head inside the
 # record's work (its tree's head, else the head it last pushed, when it has either).

@@ -475,7 +475,9 @@ ticket_open_pr() { # <ticket> — echoes the number of its open PR, draft or not
 # ---- 4c. rebuild, don't repair -------------------------------------------------
 # Every open ticket PR that is stuck — a required check settled red, a clash, a draft
 # nothing builds — past coordinator.rebuildAfterMin is closed and its ticket queued fresh
-# (rebuild.sh). Never on a claim list nobody could read: a claimed ticket is being worked.
+# (rebuild.sh). Before that, or with the rebuild off, one red on its own code goes back to
+# its builder for coordinator.fixRounds fix rounds on its own branch, then parks for the PM.
+# Never on a claim list nobody could read: a claimed ticket is being worked.
 if [ "$CLAIMS_OK" = 1 ]; then rebuild_pass
 else say "rebuild: the claim list could not be read — no PR is rebuilt this tick"; fi
 
@@ -498,6 +500,8 @@ finish_pr_rows() { # pr \t ticket (- for none: a tab IFS folds an empty field) \
 }
 # The labels that mean a person acts next on the ticket. A park or the sign-off hold is not
 # one here: a PR waiting on either is still open work (rebuild.sh leaves it alone).
+# A PR parked for the PM after its fix rounds stays open (rebuild_park_open) and is not
+# counted while labels.decision names the PM's label, as the kit's config does.
 finish_person_labels() {
   printf '%s\n' "$LBL_NEEDS_HUMAN" "$LBL_OWNER_DECISION" "$LBL_BLOCKED" "$LBL_EXTERNAL_BLOCKED" "$LBL_GATED" "$LBL_BATCHED" $DECISION_LABELS \
     | awk 'NF && !seen[$0]++'
@@ -577,10 +581,20 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   coord_wait_holds "$t" "$lab" && return 0
   # ONE TICKET, ONE CHANGE. A ticket with an open PR is never built again beside it: the PR
   # merges, or the rebuild pass closes it once it cannot and queues the ticket fresh. Only
-  # this host's own unshipped build of it (a park's draft, answered) resumes on it.
-  local pr
+  # this host's own unshipped build of it (a park's draft, answered) resumes on it, and a
+  # fix round of that PR (a "Fix: PR #<n>" note, rebuild.sh) continues its branch while
+  # the PR is still red or clashing.
+  local pr="" fpr
+  fpr=$(rebuild_fix_note_pr "$note")
   if pr=$(ticket_open_pr "$t") && ! coord_unshipped_here "$t"; then
-    echo "has an open PR #$pr — it merges, or is rebuilt fresh once it cannot (coordinator.rebuildAfterMin)"; return 0
+    if [ "$fpr" != "$pr" ]; then
+      echo "has an open PR #$pr — it merges, or is rebuilt fresh once it cannot (coordinator.rebuildAfterMin)"; return 0
+    fi
+    rebuild_fix_due "$t" || { echo "its fix round waits — PR #$pr is not red or clashing now"; return 0; }
+  elif [ -n "$fpr" ] && [ -z "$pr" ]; then
+    # The PR the round was for is gone: its brief would send a build to a branch nobody has.
+    coord_shadow || bash "$QUEUE" remove "$t" >/dev/null 2>&1 || true
+    echo "its fix round was for PR #$fpr, which is not open any more — taken off the queue"; return 0
   fi
   return 1
 }
@@ -813,6 +827,8 @@ candidates() {
     # goes on as under the cap, still behind the host cap, tooling cap, scope and room.
     if [ -n "$OVER_PR_CAP" ] && [ "$cls" = new ] && [ "$proc" != 1 ] && [ "$pl" != 1 ] \
        && case "$exempt" in *" $pri "*) true ;; *) false ;; esac; then exm=1
+    # A fix round finishes an open PR the cap is counting: held by it, the cap never clears.
+    elif [ -n "$OVER_PR_CAP" ] && [ "$proc" != 1 ] && [ -n "$(rebuild_fix_note_pr "$note")" ]; then exm=fix
     elif [ -n "$OVER_PR_CAP" ] && [ "$proc" != 1 ]; then
       if [ "$cls" = new ] && [ "$pol" != 1 ] && [ "$pl" != 1 ] && coord_cap_quick_on; then
         qwait="$qwait$i"$'\t'"$t"$'\t'"$tool"$'\t'"$note"$'\n'
@@ -839,7 +855,7 @@ candidates() {
     [ "$proc" = 1 ] || nn=$((nn+1))
     [ "$pol" = 1 ] || other=1
     [ "$tool" = 0 ] || tool_left=$((tool_left-1))
-    [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:P$pri"
+    [ -z "$exm" ] || CAP_EXEMPT_OK="$CAP_EXEMPT_OK $t:$([ "$exm" = fix ] && printf 'fix-round' || printf 'P%s' "$pri")"
     rows="$rows$i"$'\t'"$t"$'\t'"$cls"$'\t'"$pol"$'\t'"${proc:-0}"$'\t'"$note"$'\n'
   done <<< "$wide"
   # Over the cap: the quick ones of the new work it held, in queue order, up to the free places.
