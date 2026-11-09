@@ -54,7 +54,7 @@ tip() { git -C "$FIX/origin" rev-parse "refs/heads/$1" 2>/dev/null; }
 echo "--- start: a partial ticket starts, on the branch its last run left ---"
 partial_ticket 401; stranded 401
 rc=0; out=$(driver_step_start 401 2>&1) || rc=$?
-wt=$(driver_state_get 401 worktree)
+wt=$(driver_state_get 401 worktree); fixture_path wt "$FIX"
 want "it starts"                              "0" "$rc"
 want "on the stranded branch"                 "tkt-401/half-built" "$(driver_state_get 401 branch)"
 want "with the half-built work in its tree"   "half of 401" "$(cat "$wt/half-401.txt" 2>/dev/null)"
