@@ -192,6 +192,29 @@ driver_skill_check_record() { # <ticket> <step> <ok|none> <cli> <cause> <skills 
   return 0
 }
 
+# driver_log_model <log> — the model the session ran on, from the newest init event's
+# `model` (the full id, claude-opus-5-5); `none` when the transcript has no init event.
+driver_log_model() {
+  local m
+  m=$(driver_log_events "$1" | jq -r -s '[.[] | select(.type == "system" and .subtype == "init")] | last | .model // empty' 2>/dev/null)
+  printf '%s' "${m:-none}"
+}
+
+# The host's record of the model each step asked for and ran on, newest last: <epoch>
+# \t <ticket> \t <step> \t <wanted: driver.model's value> \t <ran: the init event's id>. The
+# fleet sheet reads the newest row to say when a host's last step ran off the named model.
+# Never fails the step.
+driver_model_run_record() { # <ticket> <step> <wanted> <ran>
+  local f="${HARNESS_MODEL_RUNS:-$DRIVER_DIR/model-runs.tsv}"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" "$4" >> "$f" 2>/dev/null || return 0
+  # Kept short: only the newest rows are ever read.
+  if [ "$(wc -l < "$f" 2>/dev/null | tr -d ' ')" -gt 200 ]; then
+    tail -100 "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  fi
+  return 0
+}
+
 # The model's final answer.
 #
 # `structured_output` FIRST. It is the validated tool output the `--json-schema`
@@ -603,6 +626,10 @@ _driver_ai_judge() {
   if [ -n "$(driver_state_get "$t" worktree)" ]; then
     driver_sweep_scratch "$t" "$wt"
   fi
+
+  # Wanted beside ran, before any check can send the step back: a run with no
+  # transcript or no init event still leaves a row, its ran reading none.
+  driver_model_run_record "${DRIVER_TICKET:-$t}" "$step" "$(driver_model_for "$step")" "$(driver_log_model "$log")"
 
   if [ ! -s "$log" ]; then
     driver_say "✋ $step: the agent produced no transcript — $(head -3 "$log.err" 2>/dev/null | tr '\n' ' ')"
