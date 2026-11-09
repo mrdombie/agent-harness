@@ -30,9 +30,9 @@
 # behaviour a person sees or does per item, each with its test steps, all failing, and the
 # ticket builds here as one change, working through the list in order. Splitting every list
 # of two or more (2026-11-02) cost a median 18 h to a PR against 2.9 h unsplit, and change size
-# did not shrink. It splits only past driver.split.planMaxFiles distinct files, or with an
-# expand-contract foundation, whose new shape has to deploy before the old is removed: then one
-# part per item, the foundation first, the clean-up last. A mechanical change still fans out
+# did not shrink. It splits one part per item only past driver.split.planMaxFiles distinct files.
+# An expand-contract foundation builds as at most two changes: the change, whole and in list
+# order, then its clean-up; merge-first puts the clean-up in the same change. A mechanical change still fans out
 # like Claude Code's /batch: 5-30 independent units, no list.
 
 # _driver_plan_carried <ticket> <meta> — what a part carries from the parent, by link, never by
@@ -55,9 +55,15 @@ _driver_plan_carried() {
        else "" end)' <<<"$2" 2>/dev/null
 }
 
-# _driver_plan_files_tests <tasks JSON array> — the "**Files:** … **Tests:** …" lines of a part.
+# _driver_plan_files_tests <tasks JSON array> [<parent> <all tasks JSON> <last 0|1>] — the
+# "**Files:** … **Tests:** …" lines of a part. Given the parent, its own changelog entry stays
+# off every part but the last, which carries it whichever task named it.
 _driver_plan_files_tests() {
-  jq -r '"**Files:** " + ([.[].files[]? | (.path // .) | tostring] | unique | join(", ") | if . == "" then "(none named)" else . end)
+  jq -r --arg p "${2:-}" --argjson all "${3:-[]}" --arg last "${4:-0}" '
+    def own_cl: ($p != "") and test("(^|/)changelog/([^/]*[^0-9/])?" + $p + "([^0-9/][^/]*)?$");
+    ([.[].files[]? | (.path // .) | tostring | select(own_cl | not)]
+      + (if $last == "1" then [$all[].files[]? | (.path // .) | tostring | select(own_cl)] else [] end)) as $files
+    | "**Files:** " + ($files | unique | join(", ") | if . == "" then "(none named)" else . end)
     + "\n\n**Tests:** " + ([.[].tests[]? | (.file // .name // .behaviour // .) | tostring] | unique | join("; ") | if . == "" then "(none named)" else . end)' <<<"$1"
 }
 
@@ -88,7 +94,7 @@ _driver_plan_close_split() {
 # named, is kept in the driver state and posted on the parent. 0 filed · 1 a filing failed.
 _driver_plan_split_features() {
   local t="$1" ans="$2" meta title inherit carried n nf ni nc k=0 found="" kids="" items="" c body st wait
-  local list i id beh test reason why tasks steps
+  local list i id beh test reason why tasks steps all last
   meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
   title=$(jq -r '.title // ""' <<<"$meta")
   inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
@@ -99,6 +105,7 @@ _driver_plan_split_features() {
   n=$((nf + ni + nc))
   list="$(driver_state_dir "$t")/features.json"
   reason=$(jq -r '.foundation.reason // ""' "$ans"); why=$(jq -r '.foundation.why // ""' "$ans")
+  all=$(jq -c '.tasks // []' "$ans")
   if [ "$nf" = 1 ]; then
     k=1; tasks=$(jq -c '[.tasks[] | select(.item == "foundation")]' "$ans")
     body=$(printf 'Part %s of %s, split from #%s before it was built: the shared foundation its behaviours build on. It goes first only because it names its reason, **%s**: %s. It changes nothing a person sees. One change, merged on its own.
@@ -107,7 +114,7 @@ _driver_plan_split_features() {
 
 %s
 
-Refs #%s' "$k" "$n" "$t" "$reason" "$why" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks")" "$t")
+Refs #%s' "$k" "$n" "$t" "$reason" "$why" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks" "$t" "$all" 0)" "$t")
     c=$(_driver_plan_file_part "$title — part $k of $n: foundation ($reason): $(jq -r '.[0].title' <<<"$tasks" | cut -c1-60)" "$body" "$LBL_READY" "$inherit") \
       || { driver_state_set "$t" park_note "split needed: filing the foundation part failed"; return 1; }
     found="$c"; kids="#$c"
@@ -119,7 +126,8 @@ Refs #%s' "$k" "$n" "$t" "$reason" "$why" "$carried" "$(jq -r '[.[].title] | joi
     test=$(jq -r --argjson i "$i" '.features[$i].test' "$ans")
     steps=$(jq -r --argjson i "$i" '.features[$i].steps | to_entries | map("\(.key + 1). \(.value)") | join("\n")' "$ans")
     tasks=$(jq -c --arg id "$id" '[.tasks[] | select(.item == $id)]' "$ans")
-    st="$LBL_READY"; wait=""
+    st="$LBL_READY"; wait=""; last=0
+    [ "$nc" = 1 ] || [ "$i" -lt $((ni - 1)) ] || last=1
     if [ -n "$found" ] && [ "$(jq -r --argjson i "$i" '.features[$i].needsFoundation // false' "$ans")" = true ]; then
       st="${LBL_GATED:-$LBL_READY}"
       wait=$(printf '\nBlocked until #%s merges: this behaviour builds on the foundation (%s), and the unblocker (scripts/unblock-waiting.sh) sets it ready when that has merged.' "$found" "$reason")
@@ -134,7 +142,7 @@ Refs #%s' "$k" "$n" "$t" "$reason" "$why" "$carried" "$(jq -r '[.[].title] | joi
 %s
 
 Refs #%s
-<!-- harness:feature-item parent=%s id=%s test=%s -->%s' "$k" "$n" "$t" "$t" "$carried" "$id" "$beh" "$test" "$id" "$steps" "$(_driver_plan_files_tests "$tasks")" "$t" "$t" "$id" "$test" "$wait")
+<!-- harness:feature-item parent=%s id=%s test=%s -->%s' "$k" "$n" "$t" "$t" "$carried" "$id" "$beh" "$test" "$id" "$steps" "$(_driver_plan_files_tests "$tasks" "$t" "$all" "$last")" "$t" "$t" "$id" "$test" "$wait")
     c=$(_driver_plan_file_part "$title — part $k of $n: $id $(printf '%s' "$beh" | cut -c1-70)" "$body" "$st" "$inherit") \
       || { driver_state_set "$t" park_note "split needed: filing part $k of $n ($id) failed after ${kids:-none} were filed"; return 1; }
     kids="${kids:+$kids }#$c"; items="${items:+$items, }#$c"
@@ -150,7 +158,7 @@ Refs #%s
 %s
 
 Refs #%s
-Blocked until %s merge: the clean-up goes last, once every behaviour has landed; the unblocker (scripts/unblock-waiting.sh) sets it ready then.' "$k" "$n" "$t" "$t" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks")" "$t" "$items")
+Blocked until %s merge: the clean-up goes last, once every behaviour has landed; the unblocker (scripts/unblock-waiting.sh) sets it ready then.' "$k" "$n" "$t" "$t" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks" "$t" "$all" 1)" "$t" "$items")
     c=$(_driver_plan_file_part "$title — part $k of $n: clean-up: $(jq -r '.[0].title' <<<"$tasks" | cut -c1-60)" "$body" "${LBL_GATED:-$LBL_READY}" "$inherit") \
       || { driver_state_set "$t" park_note "split needed: filing the clean-up part failed after $kids were filed"; return 1; }
     kids="$kids #$c"
@@ -161,6 +169,52 @@ Blocked until %s merge: the clean-up goes last, once every behaviour has landed;
   _driver_plan_close_split "$t" "$kids" "**Split by behaviour** into $kids — one part per item of its feature list, built side by side$([ -z "$found" ] || printf '; the foundation #%s goes first (%s), and only the items that build on it wait for it' "$found" "$reason")$([ "$nc" = 0 ] || printf '; the clean-up %s goes last' "${kids##* }"). Nothing was built here. Closed as split; the feature is done when every item passes and its clean-up part $([ "$nc" = 0 ] && printf '(none: nothing to remove)' || printf '%s' "${kids##* }") has merged (scripts/feature-close.sh marks it so)." \
     "its feature list has $ni behaviours, one part each"
   driver_say "✂ plan: $ni behaviours — split by behaviour into $n parts ($kids), side by side; the parent closed as split"
+}
+
+# _driver_plan_split_contract <ticket> <plan.json> — an expand-contract plan in two changes, never
+# one per behaviour: the change itself (the foundation and every behaviour, whole, in list
+# order), then the clean-up once it has merged. 0 filed · 1 a filing failed.
+_driver_plan_split_contract() {
+  local t="$1" ans="$2" meta title inherit carried reason why all tasks c1 c2 body ni behs list
+  meta=$(driver_gh_read swarm_gh issue view "$t" --repo "$REPO_SLUG" --json title,labels,comments 2>/dev/null) || return 1
+  title=$(jq -r '.title // ""' <<<"$meta")
+  inherit=$(jq -r '[.labels[]?.name | select(test("^P[0-9]$|^(area|screen|project|repo|effort):"))] | .[]' <<<"$meta")
+  carried=$(_driver_plan_carried "$t" "$meta")
+  reason=$(jq -r '.foundation.reason // ""' "$ans"); why=$(jq -r '.foundation.why // ""' "$ans")
+  ni=$(jq '.features | length' "$ans")
+  all=$(jq -c '.tasks // []' "$ans")
+  tasks=$(jq -c '[.tasks[] | select(.item != "cleanup")]' "$ans")
+  behs=$(jq -r '.features | map("- **\(.id): \(.behaviour)** — test steps in `\(.test)`, fixed: never edit or remove them.\n" + (.steps | to_entries | map("  \(.key + 1). \(.value)") | join("\n"))) | join("\n")' "$ans")
+  body=$(printf 'Part 1 of 2, split from #%s before it was built: the change itself, whole: its foundation and every behaviour of its feature list, built in list order as one change. Its foundation names its reason, **%s**: %s. So the clean-up waits in part 2 until this has merged.
+%s
+**This part:** the change — %s
+
+**Feature list**, in order:
+%s
+
+%s
+
+Refs #%s
+<!-- harness:split-part parent=%s part=change -->' "$t" "$reason" "$why" "$carried" "$(jq -r '[.[].title] | join("; ")' <<<"$tasks")" "$behs" "$(_driver_plan_files_tests "$tasks" "$t" "$all" 0)" "$t" "$t")
+  c1=$(_driver_plan_file_part "$title — part 1 of 2: the change: $(jq -r '.features[0].behaviour // ""' "$ans" | cut -c1-60)" "$body" "$LBL_READY" "$inherit") \
+    || { driver_state_set "$t" park_note "split needed: filing the change part failed"; return 1; }
+  tasks=$(jq -c '[.tasks[] | select(.item == "cleanup")]' "$ans")
+  body=$(printf 'Part 2 of 2, split from #%s before it was built: the clean-up (the switch removed, the old path deleted, the contract step). The feature of #%s is done only when every item of its list passes and this has merged. One change, merged on its own.
+%s
+**This part:** clean-up — %s
+
+%s
+
+Refs #%s
+Blocked until #%s merges: the clean-up goes last, once the change has landed; the unblocker (scripts/unblock-waiting.sh) sets it ready then.' "$t" "$t" "$carried" "$(jq -r '[.[].title] | join("; ") | if . == "" then "(none named)" else . end' <<<"$tasks")" "$(_driver_plan_files_tests "$tasks" "$t" "$all" 1)" "$t" "$c1")
+  c2=$(_driver_plan_file_part "$title — part 2 of 2: clean-up: $(jq -r '.[0].title // ""' <<<"$tasks" | cut -c1-60)" "$body" "${LBL_GATED:-$LBL_READY}" "$inherit") \
+    || { driver_state_set "$t" park_note "split needed: filing the clean-up part failed after #$c1 was filed"; return 1; }
+  list="$(driver_state_dir "$t")/features.json"
+  jq --argjson a "$c1" --argjson b "$c2" '.items |= map(.part = $a) | (if .foundation then .foundation.part = $a else . end) | .cleanup.part = $b' "$list" > "$list.tmp" && mv "$list.tmp" "$list"
+  swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "$(feature_list_comment "$list")" >/dev/null 2>&1 || true
+  _driver_plan_close_split "$t" "#$c1 #$c2" "**Split in two** into #$c1 #$c2 — the change itself, whole ($ni behaviours in list order, its foundation first), then its clean-up once that has merged ($reason). Nothing was built here. Closed as split; the feature is done when every item passes and its clean-up part #$c2 has merged (scripts/feature-close.sh marks it so)." \
+    "an expand-contract change: the change, then its clean-up"
+  driver_say "✂ plan: $ni behaviours — split in two (#$c1 the change, #$c2 its clean-up); the parent closed as split"
 }
 
 # _driver_plan_fan_out <ticket> <plan.json> — a mechanical change, one part per unit, every one
@@ -283,6 +337,11 @@ _driver_plan_split_by_shape() {
     return 0
   fi
   [ "$nf" -eq 0 ] || [ "$(jq -r '.foundation.reason // ""' "$ans")" != expand-contract ] || contract=1
+  if [ -n "$contract" ] && driver_merge_first; then
+    driver_say "   plan: an expand-contract foundation, merge-first — it builds here as one change, the clean-up in the same change"
+    _driver_plan_build_whole "$t" "$ans"
+    return 0
+  fi
   if [ "$nf" -le 1 ] && [ "$nu" -eq 0 ] && [ -z "$contract" ]; then
     [ "$nf" -eq 0 ] || _driver_plan_build_whole "$t" "$ans"
     return 0
@@ -302,9 +361,13 @@ _driver_plan_split_by_shape() {
       _driver_plan_build_whole "$t" "$ans"
       return 0
     fi
-    if [ -n "$contract" ]; then driver_say "   plan: an expand-contract foundation — the new shape deploys before the old is removed"
-    else driver_say "   plan: $nfiles files, over driver.split.planMaxFiles ($max)"; fi
-    _driver_plan_split_features "$t" "$ans" || src=$?
+    if [ -n "$contract" ]; then
+      driver_say "   plan: an expand-contract foundation — the new shape deploys before the old is removed, so the clean-up is its own change"
+      _driver_plan_split_contract "$t" "$ans" || src=$?
+    else
+      driver_say "   plan: $nfiles files, over driver.split.planMaxFiles ($max)"
+      _driver_plan_split_features "$t" "$ans" || src=$?
+    fi
   fi
   [ "$src" -eq 0 ] && return "$DRIVER_E_NOOP"
   driver_state_set "$t" park_cause pm; return "$DRIVER_E_REFUSED"

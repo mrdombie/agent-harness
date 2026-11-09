@@ -87,24 +87,24 @@ echo "--- a refactor foundation stays in one change too ---"
 start 207 "$(printf '%s' "$plan_fc" | jq -c '.foundation.reason = "refactor"')"
 want "it builds here"                            "0 0" "$RC $(grep -c '^issue create' "$GH_LOG")"
 
-echo "--- an expand-contract foundation always splits: the new shape deploys before the old goes ---"
+echo "--- an expand-contract foundation splits in two, merge-first off: the change, then its clean-up ---"
 contract() { # <items> — small, an expand-contract foundation and its clean-up
   feats "$1" | jq -c '.foundation = {reason:"expand-contract", why:"the new store sits beside the old"}
     | .tasks = [{item:"foundation",title:"the store",files:[{path:"store.txt",action:"create"}],tests:[{file:"fd.test.sh",behaviour:"b",redWhen:"r"}]}] + .tasks
              + [{item:"cleanup",title:"remove the old path",files:[{path:"old.txt",action:"delete"}],tests:[{file:"cl.test.sh",behaviour:"b",redWhen:"r"}]}]'
 }
 start 208 "$(contract 2)"
-want "4 files, far under the limit: it splits"   "$DRIVER_E_NOOP 4" "$RC $(grep -c '^issue create' "$GH_LOG")"
-want_in "  the foundation first"                 'part 1 of 4: foundation \(expand-contract\)' "$(grep '^issue create' "$GH_LOG" | head -1)"
-want_in "  the clean-up last"                    'part 4 of 4: clean-up' "$(grep '^issue create' "$GH_LOG" | tail -1)"
+want "4 files, far under the limit: it splits"   "$DRIVER_E_NOOP 2" "$RC $(grep -c '^issue create' "$GH_LOG")"
+want_in "  the foundation first"                 'part 1 of 2: the change' "$(grep '^issue create' "$GH_LOG" | head -1)"
+want_in "  the clean-up last"                    'part 2 of 2: clean-up' "$(grep '^issue create' "$GH_LOG" | tail -1)"
 want_in "  and it says why"                      'new shape deploys before the old is removed' "$OUT"
 want "  the build keeps no passes here"          "" "$(driver_state_get 208 build_whole)"
 start 209 "$(contract 1)"
-want "one behaviour: it splits as well"          "$DRIVER_E_NOOP 3" "$RC $(grep -c '^issue create' "$GH_LOG")"
+want "one behaviour: it splits as well"          "$DRIVER_E_NOOP 2" "$RC $(grep -c '^issue create' "$GH_LOG")"
 BASE_CFG="$HARNESS_CFG_PATH"
 jq '.driver.split.planMaxFiles = 0' "$BASE_CFG" > "$FIX/cfg-never.json"; export HARNESS_CFG="$FIX/cfg-never.json" HARNESS_CFG_PATH="$FIX/cfg-never.json"
 start 210 "$(contract 2)"
-want "planMaxFiles 0 does not turn it off"       "$DRIVER_E_NOOP 4" "$RC $(grep -c '^issue create' "$GH_LOG")"
+want "planMaxFiles 0 does not turn it off"       "$DRIVER_E_NOOP 2" "$RC $(grep -c '^issue create' "$GH_LOG")"
 export HARNESS_CFG="$BASE_CFG" HARNESS_CFG_PATH="$BASE_CFG"
 
 echo "--- one change proving two items runs each item's own test, never merges them away ---"

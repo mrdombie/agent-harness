@@ -31,8 +31,8 @@ DRIVER_SPLIT_EXCLUDE_DEFAULT='["package-lock.json", "pnpm-lock.yaml", "yarn.lock
 # A FEATURE TICKET WRITES A FEATURE LIST (owner, 2026-11-02): a ticket wearing one of
 # driver.split.featureLabels (default type:feature) whose plan has none is sent back once,
 # then refused. The ticket builds whole, working through its list (owner, 2026-11-05); the plan
-# splits past driver.split.planMaxFiles distinct files (50; 0 never), or with an expand-contract
-# foundation whatever its size (steps/plan.sh). Measured from our own
+# splits past driver.split.planMaxFiles distinct files (50; 0 never); an expand-contract
+# foundation builds as the change then its clean-up, one change under merge-first (steps/plan.sh). Measured from our own
 # clashes: 4 of 5 changes over 100 files clashed, about 20% at 20-100, 6% under 10. A plan can
 # undercount (211 files once planned as 7), so maxFiles still names the real size at ship.
 driver_split_feature_labels() {
