@@ -10,8 +10,8 @@
 #   catch, so the pull request has to account for it in words a reviewer can check.
 #
 # WHAT IT CHECKS
-#   The diff base..head — TWO dots, read from the two commits, never the working
-#   tree — for:
+#   The diff merge-base..head — what the branch itself changed, read from the two
+#   commits, never the working tree — for:
 #     1. a test file that is DELETED (or renamed to a path that is no longer a
 #        test file), and
 #     2. a test file that stays but LOSES `it(` / `test(` cases. A case turned off
@@ -31,11 +31,13 @@
 #   from a file with nothing like it in the file it went to, still fails. Measured on the origin project before this: 74 of 85 files
 #   it flagged kept or grew their case count.
 #
-#   Something only on BASE is not this pull request's deletion. A test the trunk
-#   added after the branch was cut is absent at head too, and two dots alone would
-#   call it deleted; anything absent at the merge-base is excluded. In CI, run on
-#   the pull request's merge commit (head = HEAD, base = HEAD^1) the two are the
-#   same commit and nothing is excluded.
+#   Something only on BASE is not this pull request's change. A test the trunk
+#   added or renamed after the branch was cut is absent at head too, and a diff
+#   from base would call it deleted, or pair it with a file the branch added and
+#   read it at a merge-base that never had it. So the diff runs from the
+#   merge-base, and a file the trunk has deleted since is not the branch's
+#   deletion either. In CI, run on the pull request's merge commit (head = HEAD,
+#   base = HEAD^1) base is the merge-base and the two diffs are the same.
 #
 #   Every file found must have ONE line in a `## Deleted tests` section of the
 #   pull request body:
@@ -91,6 +93,15 @@ H=$(g rev-parse --verify --quiet "$HEAD_REF^{commit}" 2>/dev/null) \
   || refuse "head '$HEAD_REF' does not resolve to a commit"
 # No merge-base fails safe: a test the trunk added since then reads as deleted, a red.
 MB=$(g merge-base "$B" "$H" 2>/dev/null || true)
+FROM="${MB:-$B}"
+# Absent is not unreadable: only a tree git could not read refuses.
+in_tree() { # <commit> <path>
+  local t w=base
+  [ "$1" = "$MB" ] && w="the merge-base"
+  t=$(g ls-tree --full-tree --name-only "$1" -- "$2" 2>/dev/null) \
+    || refuse "could not read the tree at $w $1"
+  [ -n "$t" ]
+}
 
 # ---- the patterns --------------------------------------------------------------
 CFG="${HARNESS_CFG_PATH:-$REPO/.claude/harness.json}"
@@ -200,7 +211,8 @@ CASES_BASE=0; CASES_HEAD=0
 diff_cases() { # <owner> <base-path|""> <head-path|""> [merge-base-path]  appends owner<TAB>title to LOSTF / GAINF / OFFF
   local a b m mp="${4:-$2}"
   a=$(mktemp); b=$(mktemp); m=$(mktemp)
-  if [ -n "$2" ]; then cases_at "$B" "$2" > "$a" || refuse "could not read $2 at $B"; fi
+  # Gone from base: the trunk deleted it after the cut, so base holds none of its cases.
+  if [ -n "$2" ] && in_tree "$B" "$2"; then cases_at "$B" "$2" > "$a" || refuse "could not read $2 at $B"; fi
   if [ -n "$3" ]; then cases_at "$H" "$3" > "$b" || refuse "could not read $3 at $H"; fi
   # The trunk may have added the path after the cut: absent at the merge-base is zero cases.
   if [ -n "$mp" ] && [ -n "$MB" ]; then cases_if_there "$MB" "$mp" > "$m" || refuse "could not read $mp at $MB"
@@ -235,21 +247,25 @@ diff_cases() { # <owner> <base-path|""> <head-path|""> [merge-base-path]  append
   rm -f "$a" "$b" "$m"
 }
 
+# Listed before any file is read from it: a base tree git cannot list is refused here.
+files_at_base=$(g ls-tree -r --name-only "$B" 2>/dev/null) \
+  || refuse "could not list the files at base $B for the control count"
+
 # LABEL: owner <TAB> what happened to the file, for the files that may owe a line.
 LABEL=""; seen_tests=0
 label() { LABEL="${LABEL}$1	$2
 "; }
 # Read to a file, not a process substitution: its exit status is never seen, and a
 # diff git could not make would read as a diff that touches nothing.
-g -c diff.renameLimit=100000 diff -z --name-status -M --diff-filter=ADMRTC "$B" "$H" > "$DIFFF" 2>/dev/null \
-  || refuse "could not read the diff $B..$H"
+g -c diff.renameLimit=100000 diff -z --name-status -M --diff-filter=ADMRTC "$FROM" "$H" > "$DIFFF" 2>/dev/null \
+  || refuse "could not read the diff $FROM..$H"
 while IFS= read -r -d '' st; do
   old=""; new=""
   case "$st" in
     R*|C*) IFS= read -r -d '' old && IFS= read -r -d '' new ;;
     A|D|M|T) IFS= read -r -d '' old; new="$old" ;;
   esac
-  [ -n "$old" ] && [ -n "$new" ] || refuse "could not parse the diff $B..$H at the record '$st'"
+  [ -n "$old" ] && [ -n "$new" ] || refuse "could not parse the diff $FROM..$H at the record '$st'"
   if ! is_test "$old"; then
     # A test file that is new at head, under any name, is where moved cases land.
     case "$st" in A|R*|C*) is_test "$new" && { seen_tests=$((seen_tests + 1)); diff_cases "$new" "" "$new"; } ;; esac
@@ -260,12 +276,8 @@ while IFS= read -r -d '' st; do
     A)  diff_cases "$new" "" "$new" ;;
     C*) is_test "$new" && diff_cases "$new" "" "$new" ;;   # a copy leaves the original where it was
     D)
-      # Only on base, never at the merge-base: the trunk added it after the cut.
-      if [ -n "$MB" ]; then
-        inmb=$(g ls-tree --full-tree --name-only "$MB" -- "$old" 2>/dev/null) \
-          || refuse "could not read the tree at the merge-base $MB"
-        [ -n "$inmb" ] || continue
-      fi
+      # Gone from base too: the trunk deleted it as well.
+      in_tree "$B" "$old" || continue
       label "$old" "deleted"; diff_cases "$old" "$old" "" ;;
     R*)
       # Old path only on base, never at the merge-base: the trunk made the rename after
@@ -283,6 +295,7 @@ while IFS= read -r -d '' st; do
         continue
       fi
       if ! is_test "$new"; then
+        in_tree "$B" "$old" || continue
         label "$old" "renamed to $new, which is not a test file"; diff_cases "$old" "$old" ""
       else
         label "$old" "renamed to $new and"; diff_cases "$old" "$old" "$new"
@@ -360,8 +373,6 @@ EOF
 
 # Control: prove the probe can see test files at all before its silence means
 # anything. A zero from a strictness probe is clean, suppressed, or never ran.
-files_at_base=$(g ls-tree -r --name-only "$B" 2>/dev/null) \
-  || refuse "could not list the files at base $B for the control count"
 tests_at_base=0
 while IFS= read -r p; do is_test "$p" && tests_at_base=$((tests_at_base + 1)); done <<EOF
 $files_at_base
