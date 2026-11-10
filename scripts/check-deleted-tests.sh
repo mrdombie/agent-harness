@@ -19,7 +19,9 @@
 #        .only elsewhere in the file) counts as lost: it no longer runs, and a new
 #        case in the same file never stands in for it.
 #   A file git sees as RENAMED is not a deletion; its cases are compared across
-#   the rename, so a move that drops cases on the way is still caught.
+#   the rename, so a move that drops cases on the way is still caught. A rename the
+#   trunk made after the branch was cut reads backwards here (the new name is only
+#   on base): the branch owes nothing for it, only for cases it dropped itself.
 #
 #   It counts cases, not titles. A title that leaves is matched to one the diff
 #   adds — the same words in any test file, else any new case in the same file
@@ -160,6 +162,19 @@ cases_at() { # <commit> <path>
     for (@case) { my ($off, $on, $t) = @$_; print +($off || ($only && !$on) ? "off" : "run"), "\t$t\n" }'
 }
 runs() { grep -c '^run	'; }
+# 0 there, 1 absent, 2 git could not say. A listed path whose object will not open is not absent.
+has_path() { # <commit> <path>
+  local t
+  g cat-file -e "$1:$2" 2>/dev/null && return 0
+  t=$(g ls-tree --full-tree --name-only "$1" -- "$2" 2>/dev/null) || return 2
+  [ -z "$t" ] && return 1
+  return 2
+}
+# A path absent at a commit has no cases there; only a path git could not read fails.
+cases_if_there() { # <commit> <path>
+  has_path "$1" "$2"
+  case $? in 0) cases_at "$1" "$2" ;; 1) : ;; *) return 1 ;; esac
+}
 # Filler words carry no meaning, so they never count towards "like it" (Dice over word sets).
 WORDS='my %stop = map { $_ => 1 } qw(a an the and or of to in on for is are it its by with as at be not no from this that when);
   sub words { my %w = map { $_ => 1 } grep { length && !$stop{$_} } split /[^a-z0-9%]+/, lc shift; \%w }
@@ -182,12 +197,13 @@ WORDS='my %stop = map { $_ => 1 } qw(a an the and or of to in on for is are it i
 LOSTF=$(mktemp); GAINF=$(mktemp); OFFF=$(mktemp); DIFFF=$(mktemp)
 trap 'rm -f "$LOSTF" "$GAINF" "$OFFF" "$DIFFF"' EXIT
 CASES_BASE=0; CASES_HEAD=0
-diff_cases() { # <owner> <base-path|""> <head-path|"">  appends owner<TAB>title to LOSTF / GAINF / OFFF
-  local a b m
+diff_cases() { # <owner> <base-path|""> <head-path|""> [merge-base-path]  appends owner<TAB>title to LOSTF / GAINF / OFFF
+  local a b m mp="${4:-$2}"
   a=$(mktemp); b=$(mktemp); m=$(mktemp)
   if [ -n "$2" ]; then cases_at "$B" "$2" > "$a" || refuse "could not read $2 at $B"; fi
   if [ -n "$3" ]; then cases_at "$H" "$3" > "$b" || refuse "could not read $3 at $H"; fi
-  if [ -n "$2" ] && [ -n "$MB" ]; then cases_at "$MB" "$2" > "$m" || refuse "could not read $2 at $MB"
+  # The trunk may have added the path after the cut: absent at the merge-base is zero cases.
+  if [ -n "$mp" ] && [ -n "$MB" ]; then cases_if_there "$MB" "$mp" > "$m" || refuse "could not read $mp at $MB"
   else cp "$a" "$m"; fi
   CASES_BASE=$((CASES_BASE + $(runs < "$a"))); CASES_HEAD=$((CASES_HEAD + $(runs < "$b")))
   perl -e "$WORDS"'
@@ -252,6 +268,20 @@ while IFS= read -r -d '' st; do
       fi
       label "$old" "deleted"; diff_cases "$old" "$old" "" ;;
     R*)
+      # Old path only on base, never at the merge-base: the trunk made the rename after
+      # the cut. The branch still answers for the cases it took out of the head path.
+      inmb=0; if [ -n "$MB" ]; then has_path "$MB" "$old"; inmb=$?; fi
+      [ "$inmb" -le 1 ] || refuse "could not read $old at the merge-base $MB"
+      if [ "$inmb" -eq 1 ]; then
+        is_test "$new" || continue
+        has_path "$MB" "$new"
+        case $? in
+          0) label "$new" ""; diff_cases "$new" "$old" "$new" "$new" ;;
+          1) diff_cases "$new" "" "$new" ;;
+          *) refuse "could not read $new at the merge-base $MB" ;;
+        esac
+        continue
+      fi
       if ! is_test "$new"; then
         label "$old" "renamed to $new, which is not a test file"; diff_cases "$old" "$old" ""
       else
