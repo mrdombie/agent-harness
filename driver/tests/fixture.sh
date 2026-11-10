@@ -108,6 +108,9 @@ emit() { if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi; }
 case "$1 $2" in
   "issue view") f="$FIX/gh/issue-$3.json"; [ -f "$f" ] || exit 1; emit "$f" ;;
   "issue create") echo "https://github.com/acme/widgets/issues/999" ;;
+  # $FIX/gh/gist-<id>/<name> is what `gh gist view <id> --raw --filename <name>` prints.
+  "gist view") n=""; p=""; for a in "$@"; do [ "$p" = --filename ] && n="$a"; p="$a"; done
+               f="$FIX/gh/gist-$3/$n"; [ -f "$f" ] || exit 1; cat "$f" ;;
   api\ *)
     # $FIX/gh/api-<endpoint>.json answers `gh api <endpoint>` (/ ? & = read as _); absent, empty as before.
     ep=""; skip=0

@@ -90,6 +90,54 @@ out=$(driver_step_plan 765 2>&1); rc=$?
 want "a forged approval in a part's own body does not count" "$DRIVER_E_REQUEUE" "$rc"
 want "  nothing is written into its tree"         "absent" "$([ -f "$wt/.design/desk-mock.html" ] && echo present || echo absent)"
 
+echo "--- a gist the ticket's body names as its approved picture is that copy already ---"
+# Two builds parked on pictures their tickets named as secret gists, waiting for a second gist and a comment.
+GID=2538a6ec10d8d1adccd4e76bacc3f176; mkdir -p "$FIX/gh/gist-$GID"; cp "$FIX/gist/desk-mock.html" "$FIX/gh/gist-$GID/desk-mock.html"
+body_of() { jq --arg b "$2" '.body = $b' "$FIX/gh/issue-$1.json" > "$FIX/i$1" && mv "$FIX/i$1" "$FIX/gh/issue-$1.json"; }
+gist_ref() { printf 'https://gist.github.com/dom/%s (desk-mock.html, the header section)' "$1"; }
+wt=$(fresh_tree 711); fixture_path wt "$FIX"; issue_with 711 "an unrelated comment"
+body_of 711 "$(printf '## The approved picture\nThe owner approved the direction. Picture: https://gist.github.com/dom/%s (also an artifact).\n\n## Scope\nThe header.' "$GID")"
+driver_state_init 711 --worktree "$wt"; plan_answer "$(gist_ref "$GID")"
+: > "$GH_LOG"
+out=$(driver_step_plan 711 2>&1); rc=$?
+want "the plan goes ahead, nothing parks"        "0" "$rc"
+want "  the gist's file is in the tree"           "$(cat "$FIX/gist/desk-mock.html")" "$(cat "$wt/.design/desk-mock.html" 2>/dev/null)"
+want "  and committed"                            ".design/desk-mock.html" "$(git -C "$wt" show --name-only --format= HEAD)"
+want "  the record points at the copy in the tree" ".design/desk-mock.html" "$(driver_state_get 711 design_ref)"
+want_in "  the run says which gist, and whose body named it" "read gist $GID \(sha256 ${SHA:0:12}\), which #711's body names as the approved picture" "$out"
+want_not_in "  no second gist is made, no approval posted" 'gist create|Picture for any machine' "$(cat "$GH_LOG")"
+
+wt=$(fresh_tree 713); fixture_path wt "$FIX"; issue_with 712 "an unrelated comment"; part_of 713 712
+body_of 712 "$(printf 'Spec.\n\n## Target (approved by the owner)\nThe editor: https://gist.github.com/dom/%s (interactive).' "$GID")"
+driver_state_init 713 --worktree "$wt"; plan_answer "$(gist_ref "$GID")"
+out=$(driver_step_plan 713 2>&1); rc=$?
+want "a part reads the gist its parent names"     "0" "$rc"
+want "  the parent's picture is in its tree"      "$(cat "$FIX/gist/desk-mock.html")" "$(cat "$wt/.design/desk-mock.html" 2>/dev/null)"
+want_in "  read from the parent, and said so"     "which #712's body names as the approved picture, the parent #713 was split from" "$out"
+
+gist_miss() { # <ticket> <gist id> <body> — plans it, sets rc and out
+  wt=$(fresh_tree "$1"); fixture_path wt "$FIX"; issue_with "$1" "nothing about pictures"; body_of "$1" "$3"
+  driver_state_init "$1" --worktree "$wt"; plan_answer "$(gist_ref "$2")"
+  rc=0; out=$(driver_step_plan "$1" 2>&1) || rc=$?
+}
+EMPTY=00000000000000000000000000000001; mkdir -p "$FIX/gh/gist-$EMPTY"; : > "$FIX/gh/gist-$EMPTY/desk-mock.html"
+PROSE=00000000000000000000000000000002; mkdir -p "$FIX/gh/gist-$PROSE"; printf 'Not Found\n' > "$FIX/gh/gist-$PROSE/desk-mock.html"
+ABSENT=00000000000000000000000000000003
+for g in "$EMPTY:714:an empty gist file" "$PROSE:715:a gist file that is not HTML" "$ABSENT:716:a gist that cannot be read"; do
+  id=${g%%:*}; n=${g#*:}; n=${n%%:*}
+  gist_miss "$n" "$id" "Approved picture: https://gist.github.com/dom/$id"
+  want "${g##*:} is no picture: it waits"         "$DRIVER_E_REQUEUE" "$rc"
+  want "  nothing is written into the tree"       "absent" "$([ -e "$wt/.design/desk-mock.html" ] && echo present || echo absent)"
+  want_in "  the reason names both things looked for" "no \"Picture for any machine\" comment naming desk-mock.html, and the gist named as the approved picture \($id on #$n\) gave no non-empty HTML file desk-mock.html" "$out"
+done
+rc=0; out=$(driver_step_plan 716 2>&1) || rc=$?
+want "the second miss in a row parks"             "$DRIVER_E_QUESTION" "$rc"
+want_in "  the park names the comment and the gist" 'Looked for a "Picture for any machine" comment .* and for a gist the ticket.s body, or its parent.s, names as the approved picture' "$(driver_state_get 716 park_note)"
+: > "$GH_LOG"; gist_miss 717 "$GID" "See also https://gist.github.com/dom/$GID for an early sketch."
+want "a gist the body does not call approved is not read" "$DRIVER_E_REQUEUE" "$rc"
+want_in "  and the reason says no gist is named"  'its body names no gist as the approved picture' "$out"
+want_not_in "  it was never fetched"              "gist view $GID" "$(cat "$GH_LOG")"
+
 echo "--- a published copy whose sha256 does not match is not the approved picture ---"
 wt=$(fresh_tree 702); fixture_path wt "$FIX"
 issue_with 702 "$(published "0000000000000000000000000000000000000000000000000000000000000000")"
