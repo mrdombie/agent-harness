@@ -387,7 +387,7 @@ _driver_plan_picture_miss() {
   if [ "${n:-0}" -ge "$max" ]; then
     driver_say "✋ plan: the approved picture ($ref) was not readable on this machine $n runs in a row — parked for the PM, not requeued again: $why"
     driver_state_set "$t" park_cause pm
-    driver_state_set "$t" park_note "The approved picture is not readable on this machine, $n runs in a row: $ref ($why). Post it on this ticket as a \"Picture for any machine\" comment (scripts/picture-approve.sh) or commit it as the surface's mock, then clear \`$DRIVER_PM_LABEL\`."
+    driver_state_set "$t" park_note "The approved picture is not readable on this machine, $n runs in a row: $ref ($why). Looked for a \"Picture for any machine\" comment (scripts/picture-approve.sh posts one) and for a gist the ticket's body, or its parent's, names as the approved picture. Give it either, or commit the picture as the surface's mock, then clear \`$DRIVER_PM_LABEL\`."
     return "$DRIVER_E_QUESTION"
   fi
   driver_say "⏳ plan: the approved picture could not be read on this machine — $why. Back on the queue until it is published ($n of $max misses before it parks for the PM)."
@@ -475,7 +475,8 @@ driver_step_plan() { # <ticket>
   # THE BINDING PICTURE IS READ ON THIS MACHINE, or the run goes back on the queue.
   # A designRef that is a path where the picture was drawn finds nothing on any other
   # machine; the ticket's "Picture for any machine" comment carries the file, which is
-  # fetched, checked against its sha256 and committed into the tree. None reachable is
+  # fetched, checked against its sha256 and committed into the tree. With no such comment,
+  # a gist the ticket's body (or its parent's) names as the approved picture is read. None reachable is
   # nobody's question: requeued with the reason, never parked, never asked.
   local dref dwt dout drc=0 derr route rwhy
   dref=$(jq -r '.designRef // ""' "$ans")

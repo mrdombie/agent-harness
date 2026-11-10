@@ -10,6 +10,11 @@
 # pictures (the directory of review.judge.mockGlob, default .design/, as
 # <stem>-mock.html). A ref that is already a path in the tree keeps that path.
 #
+# With no such comment, a gist the ticket's body (or its parent's) names as the approved
+# picture is that copy already: its file of the ref's name is read with gh, checked to be
+# non-empty HTML, and used the same way. This reads a picture the ticket names as
+# approved; it approves nothing.
+#
 # Prints the ref to record on stdout: unchanged when there is nothing to fetch (a
 # URL, a file that exists here, no picture path at all), else the tree-relative
 # path written. The caller commits it.
@@ -22,7 +27,8 @@
 # the ref's file is here.
 #
 # Exit: 0 resolved or nothing to do · 3 the file is missing and no published copy
-# could be used (none posted, unreachable, or its sha256 does not match) · 4 an
+# could be used (none posted and no readable gist named, unreachable, or its sha256
+# does not match) · 4 an
 # approval binding the ticket has no byte-identical file in the approved-pictures dir ·
 # 1 the ticket's comments could not be read · 2 bad arguments. The reason is on stderr.
 #   PICTURE_FETCH_CURL  the downloader (default curl), for tests
@@ -40,15 +46,22 @@ REPO="${GH_REPO:-$REPO_SLUG}"
 tok=$(printf '%s\n' "$REF" | tr -s ' \t' '\n\n' | sed -e 's/^[`"(<]*//' -e 's/[`")>,;.:]*$//' \
   | grep -viE '^[a-z]+://' | grep -iE '\.(html?|png|jpe?g|svg|webp)$' | head -1)
 fetch=0; path=""
+g=$(toolkit_cfg review.judge.mockGlob 2>/dev/null) || g=""; [ -n "$g" ] || g=".design/*-mock.html"
+dir=$(dirname "$g")
 if [ -n "$tok" ]; then
-  case "$tok" in "~/"*) path="$HOME/${tok#\~/}" ;; *) path="$tok" ;; esac
+  # A bare file name is a picture's name, not a place: it lives where approved pictures do.
+  case "$tok" in
+    "~/"*) path="$HOME/${tok#\~/}" ;;
+    */*) path="$tok" ;;
+    *-mock.html) path="$dir/$tok" ;;
+    *.html|*.htm) path="$dir/${tok%.*}-mock.html" ;;
+    *) path="$dir/$tok" ;;
+  esac
   case "$path" in
     /*) [ -f "$path" ] || fetch=1 ;;
     *)  [ -f "$TREE/$path" ] || fetch=1 ;;
   esac
 fi
-g=$(toolkit_cfg review.judge.mockGlob 2>/dev/null) || g=""; [ -n "$g" ] || g=".design/*-mock.html"
-dir=$(dirname "$g")
 sha_of() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1" 2>/dev/null; } | awk 'NR == 1 { print $1 }'; }
 
 NAME=$(basename "${tok:-none}")
@@ -72,7 +85,7 @@ parent=$(jq -r '.body // ""' <<<"$comments" | grep -oiE 'split from #[0-9]+' | h
 pc=""
 read_parent() { # <why> — the parent's comments, read once
   [ -z "$pc" ] || return 0
-  pc=$(gh issue view "$parent" --repo "$REPO" --json comments 2>/dev/null) \
+  pc=$(gh issue view "$parent" --repo "$REPO" --json comments,body 2>/dev/null) \
     && jq -e '.comments | type == "array"' >/dev/null 2>&1 <<<"$pc" \
     || die 1 "$1, and the comments of #$parent (#$T was split from it) could not be read"
 }
@@ -102,21 +115,54 @@ if [ -z "$body" ] && [ -n "$parent" ]; then
   read_parent "the picture $tok is not on this machine"
   body=$(approval "$pc"); [ -z "$body" ] || FROM="$parent"
 fi
-[ -n "$body" ] || die 3 "the picture $tok is not on this machine and #$T has no \"Picture for any machine\" comment naming $NAME${parent:+, nor has #$parent it was split from} (scripts/picture-approve.sh publishes one)"
+out=$(mktemp "${TMPDIR:-/tmp}/picture-fetch.XXXXXX") || die 3 "no temp file"
+trap 'rm -f "$out"' EXIT
+
+# gists_named <issue json> — the gist ids a body names as its approved picture: a gist link
+# on a line that says "approved", or under a heading that does. Any other gist link is not one.
+gists_named() {
+  jq -r '.body // ""' <<<"$1" | awk '
+    { l = tolower($0) }
+    /^[[:space:]]*#+[[:space:]]/ { head = (l ~ /approved/) }
+    head || l ~ /approved/ { print }' \
+    | grep -oE 'https://gist\.github\.com/([A-Za-z0-9_-]+/)?[0-9a-f]{20,}' | sed 's|.*/||' | awk '!seen[$0]++'
+}
+# gist_read <id> — that gist's file named $NAME into $out: non-empty and HTML, or it is no picture.
+gist_read() {
+  perl -e 'alarm shift; exec @ARGV' 60 gh gist view "$1" --raw --filename "$NAME" > "$out" 2>/dev/null \
+    && [ -s "$out" ] && grep -qiE '<(!doctype|html|head|title|body|style|meta|div)[ >]' "$out"
+}
+via=""
+if [ -z "$body" ]; then
+  miss="the picture $tok is not on this machine and #$T has no \"Picture for any machine\" comment naming $NAME${parent:+, nor has #$parent it was split from}"
+  tried=""
+  for src in "$T" $parent; do
+    if [ "$src" = "$T" ]; then j="$comments"; else j="$pc"; fi
+    for id in $(gists_named "$j"); do
+      if gist_read "$id"; then via="$id"; FROM="$src"; break 2; fi
+      tried="$tried${tried:+, }$id on #$src"
+    done
+  done
+  if [ -z "$via" ]; then
+    : > "$out"
+    [ -z "$tried" ] || die 3 "$miss, and the gist named as the approved picture ($tried) gave no non-empty HTML file $NAME"
+    die 3 "$miss, and ${parent:+neither body names}${parent:-its body names no} gist as the approved picture (scripts/picture-approve.sh publishes one)"
+  fi
+  have=$(sha_of "$out"); sha="$have"
+else
 
 sha=$(printf '%s\n' "$body" | sed -n 's/.*picture-approve: sha256=\([0-9a-f]\{64\}\) .*/\1/p' | head -1)
 gid=$(printf '%s\n' "$body" | sed -n 's/.*picture-approve: .* gist=\([0-9A-Za-z]*\).*/\1/p' | head -1)
 raw=$(printf '%s\n' "$body" | sed -n 's/^- Raw: \(https:[^ ]*\).*/\1/p' | head -1)
 [ -n "$sha" ] || die 3 "#$T's \"Picture for any machine\" comment for $NAME carries no sha256, so a fetched copy could not be checked"
 
-out=$(mktemp "${TMPDIR:-/tmp}/picture-fetch.XXXXXX") || die 3 "no temp file"
-trap 'rm -f "$out"' EXIT
 got=0
 if [ -n "$raw" ] && "${PICTURE_FETCH_CURL:-curl}" -fsSL --max-time 60 "$raw" > "$out" 2>/dev/null && [ -s "$out" ]; then got=1; fi
 if [ "$got" -eq 0 ] && [ -n "$gid" ] && gh gist view "$gid" --raw --filename "$NAME" > "$out" 2>/dev/null && [ -s "$out" ]; then got=1; fi
 [ "$got" -eq 1 ] || die 3 "#$T's published copy of $NAME could not be fetched (raw ${raw:-none}, gist ${gid:-none})"
 have=$(sha_of "$out")
 [ "$have" = "$sha" ] || die 3 "#$T's published copy of $NAME does not match its sha256 (wanted ${sha:0:12}, fetched ${have:0:12}) — not the picture that was approved"
+fi
 
 case "$path" in
   /*) case "$NAME" in *-mock.html) dest="$dir/$NAME" ;; *.html|*.htm) dest="$dir/${NAME%.*}-mock.html" ;; *) dest="$dir/$NAME" ;; esac ;;
@@ -125,5 +171,9 @@ esac
 # Checked before anything is written, counting the copy about to land in dir.
 if [ "$(dirname "$dest")" = "$dir" ]; then check_present "$have"; else check_present; fi
 mkdir -p "$TREE/$(dirname "$dest")" && cp "$out" "$TREE/$dest" || die 3 "could not write $dest in $TREE"
+if [ -n "$via" ]; then
+  echo "picture-fetch: $tok is not on this machine — read gist $via (sha256 ${sha:0:12}), which #$FROM's body names as the approved picture$([ "$FROM" = "$T" ] || echo ", the parent #$T was split from"), to $dest" >&2
+  printf '%s' "$dest"; exit 0
+fi
 echo "picture-fetch: $tok is not on this machine — fetched #$FROM's published copy (sha256 ${sha:0:12})$([ "$FROM" = "$T" ] || echo ", the approval of #$FROM it was split from,") to $dest" >&2
 printf '%s' "$dest"
