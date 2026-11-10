@@ -208,11 +208,21 @@ WORDS='my %stop = map { $_ => 1 } qw(a an the and or of to in on for is are it i
 LOSTF=$(mktemp); GAINF=$(mktemp); OFFF=$(mktemp); DIFFF=$(mktemp)
 trap 'rm -f "$LOSTF" "$GAINF" "$OFFF" "$DIFFF"' EXIT
 CASES_BASE=0; CASES_HEAD=0
+# trunk_moved_to <path> — where the trunk renamed that merge-base path to since the cut, or nothing.
+trunk_moved_to() {
+  [ -n "$MB" ] || return 0
+  local out
+  out=$(g -c diff.renameLimit=100000 diff --name-status -M --diff-filter=R "$MB" "$B" 2>/dev/null) || return 1
+  awk -F'\t' -v p="$1" '$2 == p { print $3; exit }' <<<"$out"
+}
 diff_cases() { # <owner> <base-path|""> <head-path|""> [merge-base-path]  appends owner<TAB>title to LOSTF / GAINF / OFFF
   local a b m mp="${4:-$2}"
   a=$(mktemp); b=$(mktemp); m=$(mktemp)
   # Gone from base: the trunk deleted it after the cut, so base holds none of its cases.
-  if [ -n "$2" ] && in_tree "$B" "$2"; then cases_at "$B" "$2" > "$a" || refuse "could not read $2 at $B"; fi
+  # Moved by the trunk is not deleted: its cases are read where the trunk put them.
+  local bp="$2"
+  if [ -n "$bp" ] && ! in_tree "$B" "$bp"; then bp=$(trunk_moved_to "$bp") || refuse "could not read the trunk's renames $MB..$B"; fi
+  if [ -n "$bp" ]; then cases_at "$B" "$bp" > "$a" || refuse "could not read $bp at $B"; fi
   if [ -n "$3" ]; then cases_at "$H" "$3" > "$b" || refuse "could not read $3 at $H"; fi
   # The trunk may have added the path after the cut: absent at the merge-base is zero cases.
   if [ -n "$mp" ] && [ -n "$MB" ]; then cases_if_there "$MB" "$mp" > "$m" || refuse "could not read $mp at $MB"
