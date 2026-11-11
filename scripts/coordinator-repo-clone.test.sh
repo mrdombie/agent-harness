@@ -103,7 +103,7 @@ chmod +x "$BIN/gh-args"
 gh_in_clone() { # <gh args…> — as a run in the clone calls it: its repo acme/kit, its tickets acme/widgets
   : > "$FIX/gh-args.log"
   ( . "$HERE/gh-batch.sh"; REPO_SLUG=acme/kit ISSUE_REF=acme/widgets SWARM_GH="$BIN/gh-args" GH_BACKOFF_FILE="$FIX/no-backoff" gh_call "$@" )
-  cat "$FIX/gh-args.log"
+  grep -v '^api rate_limit$' "$FIX/gh-args.log"   # the free allowance reading is not the call under test
 }
 want "an issue read aimed at the clone's repo goes to the queue's" "issue view 17 --repo acme/widgets --json labels" "$(gh_in_clone issue view 17 --repo acme/kit --json labels)"
 want "so does -R" "issue close 17 -R acme/widgets" "$(gh_in_clone issue close 17 -R acme/kit)"
