@@ -59,6 +59,14 @@ echo "--- what compose writes passes check ---"
 rc=0; printf '%s\n' "$body" | bash "$SUT" check --body-file - >/dev/null 2>&1 || rc=$?
 want "check passes it"                      "0" "$rc"
 
+echo "--- a task that changed no code carries the run the driver read ---"
+jq -n '{title: "re-run the failed job", merged: false, proof: null, commits: ["cccccccc11111111"],
+        answer: {noCode: {reason: "a runner fault", run: "https://github.com/acme/widgets/actions/runs/555"}}}' > "$S/build-task-3.proved"
+nbody=$(bash "$SUT" compose --steps "$S" --repo "$R" --base main 2>&1)
+rm -f "$S/build-task-3.proved"
+want_in "its run and the commit it was green on" 're-run the failed job.*no code changed \(a runner fault\): CI run https://github.com/acme/widgets/actions/runs/555 concluded success on cccccccc,' "$nbody"
+want_in "and it is not counted as a test"   '^How it was tested: 1 test ' "$nbody"
+
 echo "--- a migration is named in the undo line ---"
 mkdir -p "$R/prisma/migrations/20261102_x"; echo "ALTER TABLE t ADD c int;" > "$R/prisma/migrations/20261102_x/migration.sql"
 git -C "$R" add -A; git -C "$R" commit -qm "migration"

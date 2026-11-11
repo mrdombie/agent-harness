@@ -1,0 +1,15 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "Re-run the failed CI job",
+  "noCode": {
+    "reason": "the job failed on a runner fault; the task is to re-run it, and no file changes"
+  },
+  "changed": [],
+  "changelog": {
+    "skipped": "no code changed"
+  }
+}
