@@ -239,6 +239,27 @@
         }
       }
     },
+    "noCode": {
+      "description": "A task that changes no code and commits nothing (re-run a failed CI job). The driver requires no diff since the task started and reads `run` itself: a workflow run of this repo that concluded success on the branch's current head. A diff, or a run that is missing, not green or on another commit, is refused. Use this instead of testFirst or testOnly only when the task leaves the tree unchanged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "run"
+      ],
+      "properties": {
+        "reason": {
+          "description": "Why this task has no code to change.",
+          "type": "string",
+          "minLength": 1
+        },
+        "run": {
+          "description": "The CI run that is this task's evidence: its URL (https://github.com/<owner>/<repo>/actions/runs/<id>) or its numeric id.",
+          "type": "string",
+          "pattern": "^([0-9]+|https://github\\.com/[^/]+/[^/]+/actions/runs/[0-9]+(/.*)?)$"
+        }
+      }
+    },
     "replacedTests": {
       "description": "Every test file in which this step removed, reworded or skipped an it()/test() case. `file` is the repo-relative path exactly as git shows it. Give exactly one of `coveredBy` — a bare repo-relative path, nothing else, to the test file at head that now pins the same behaviour (the same file, for a reworded case) — or `removedBecause`, one line on why the behaviour is gone. The ship step writes these into the pull request's `## Deleted tests` section, and the deleted-tests gate checks each line. Empty when no case was removed, reworded or skipped.",
       "type": "array",
@@ -320,6 +341,11 @@
       {
         "required": [
           "testOnly"
+        ]
+      },
+      {
+        "required": [
+          "noCode"
         ]
       }
     ]

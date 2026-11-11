@@ -45,6 +45,12 @@ compose() {
   echo "The commands this run ran, and what they printed. The driver ran each one itself and read its exit code; none of this is the builder's own report."
   for f in "$steps"/build-task-*.proved; do
     [ -s "$f" ] || continue
+    # A task that changed no code has no command: the run the driver read is its record.
+    if jq -e '.answer.noCode | type == "object"' "$f" >/dev/null 2>&1; then
+      echo
+      echo "**$(jq -r '.title // "a task"' "$f" | tr '\n' ' ')** — no code changed ($(jq -r '.answer.noCode.reason | gsub("\\s+"; " ")' "$f")): CI run $(jq -r '.answer.noCode.run' "$f") concluded success on $(jq -r '.commits[0] // "?"' "$f" | cut -c1-8), read by the driver"
+      continue
+    fi
     jq -e '.proof | type == "object"' "$f" >/dev/null 2>&1 || continue
     ntests=$((ntests + 1))
     tfiles="$tfiles${tfiles:+, }$(jq -r '.proof.testFile // "?"' "$f")"

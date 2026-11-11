@@ -606,10 +606,57 @@ _driver_prove_by_break_once() {
   return 0
 }
 
+# driver_prove_no_code <repo> <head-before-the-task> <run url or id>
+#
+# THE PROOF FOR A TASK THAT CHANGES NO CODE (re-run a failed CI job). No commit, so no
+# pair to run: the tree must be as the task found it, and the run it names is read
+# here, never taken from the answer.
+#
+# 0 no diff, and the run concluded success on the branch's head · 1 the task changed
+# the tree · 2 the run is missing, not green, or on another commit · 3 the claim
+# cannot be checked
+driver_prove_no_code() {
+  local repo="$1" before="$2" run="$3" head id="" slug="" j rc=0 st con sha
+  head=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null) || { printf 'the branch head could not be read\n'; return 3; }
+  [ -n "$before" ] || { printf 'the head before this task was not recorded, so no diff could be measured\n'; return 3; }
+  # Working tree against the head the task started from: committed or not, it is a diff.
+  if ! git -C "$repo" diff --quiet "$before" -- 2>/dev/null; then
+    printf 'the task is declared noCode and changed the tree since %s (%s) — a task with a diff proves it with testFirst or testOnly\n' \
+      "$(printf '%s' "$before" | cut -c1-8)" "$(git -C "$repo" diff --name-only "$before" -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 1
+  fi
+  case "$run" in
+    ''|*[!0-9]*)
+      slug=$(printf '%s' "$run" | sed -nE 's#^https://github\.com/([^/]+/[^/]+)/actions/runs/[0-9]+(/.*)?$#\1#p')
+      id=$(printf '%s' "$run" | sed -nE 's#^https://github\.com/[^/]+/[^/]+/actions/runs/([0-9]+)(/.*)?$#\1#p') ;;
+    *) id="$run" ;;
+  esac
+  [ -n "$id" ] || { printf "noCode.run '%s' is not a CI run URL or id\n" "$run"; return 3; }
+  if [ -n "$slug" ] && [ "$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')" ]; then
+    printf 'CI run %s is a run of %s, not of this repo (%s)\n' "$id" "$slug" "$REPO_SLUG"; return 2
+  fi
+  j=$(GH_CALL_TIMEOUT="${GH_CALL_TIMEOUT:-30}" gh_read "CI run $id" api "repos/$REPO_SLUG/actions/runs/$id" 2>/dev/null) || rc=$?
+  sha=$(jq -r '.head_sha // ""' <<<"$j" 2>/dev/null)
+  if [ "$rc" -ne 0 ] || [ -z "$sha" ]; then
+    printf 'CI run %s could not be read in %s — no such run there, or GitHub gave no answer\n' "$id" "$REPO_SLUG"; return 2
+  fi
+  st=$(jq -r '.status // "?"' <<<"$j"); con=$(jq -r '.conclusion // "none"' <<<"$j")
+  if [ "$st" != completed ] || [ "$con" != success ]; then
+    printf 'CI run %s is not green: status %s, conclusion %s\n' "$id" "$st" "$con"; return 2
+  fi
+  if [ "$sha" != "$head" ]; then
+    printf "CI run %s concluded success on %s, not on the branch's head %s\n" "$id" "$(printf '%s' "$sha" | cut -c1-8)" "$(printf '%s' "$head" | cut -c1-8)"
+    return 2
+  fi
+  printf 'no code changed since %s; CI run %s concluded success on the head %s\n' \
+    "$(printf '%s' "$before" | cut -c1-8)" "$id" "$(printf '%s' "$head" | cut -c1-8)"
+  return 0
+}
+
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before nocode=0
   export DRIVER_TICKET="$t"
   whole=$(driver_state_get "$t" build_whole)
   repo=$(driver_state_get "$t" worktree)
@@ -687,6 +734,8 @@ driver_step_build() { # <ticket>
     else
       driver_fact_put "$t" "$slot" LAST_TRY "$(_driver_fact_none "this is the first try at this task, or the last one was proved")"
     fi
+    # The head this task starts from: what a noCode answer is measured against.
+    before=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
     rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # A question, a skipped Skill or a broken answer is not a rework loop: those
@@ -731,6 +780,23 @@ driver_step_build() { # <ticket>
         bad=1; continue
       fi
       driver_say "   build: the answer calls this task '$got_task'; the plan calls it '$want_task'"
+    fi
+    # A TASK THAT CHANGES NO CODE has no commit to prove: no diff, and a green run on the head.
+    if jq -e '.noCode | type == "object"' "$ans" >/dev/null 2>&1; then
+      why=""; prc=0
+      why=$(driver_prove_no_code "$repo" "$before" "$(jq -r '.noCode.run // ""' "$ans")") || prc=$?
+      if [ "$prc" -eq 0 ]; then
+        tsha=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
+        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof"
+        _driver_build_mark_proved "$proved" "$task" "$ans" "nocode:$tsha" "${got_task:-$want_task}" false "$tsha"
+        nocode=$((nocode+1))
+        driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+      else
+        printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
+        driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+        bad=1
+      fi
+      continue
     fi
     # A TASK WHOSE DELIVERABLE IS THE TEST is proved by a planted break, because the
     # code it covers is already there and nothing can be red before it. Dom's rule,
@@ -826,6 +892,7 @@ driver_step_build() { # <ticket>
   if [ -n "$whole" ] || _driver_build_own_list "$t"; then _driver_build_features "$t" || bad=1; fi
 
   if [ "$bad" -eq 0 ]; then
+    [ "$nocode" -eq 0 ] || driver_say "   build: $nocode of $ntasks task(s) changed no code — accepted on a green CI run of the head, not a test pair"
     if [ "$kept" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
     elif [ "$merged" -gt 0 ]; then

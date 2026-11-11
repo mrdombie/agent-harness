@@ -110,6 +110,9 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `testOnly.break.file` (required): string
 - `testOnly.break.find` (required): string
 - `testOnly.break.replace` (required): string
+- `noCode`: object
+- `noCode.reason` (required): string
+- `noCode.run` (required): string
 - `replacedTests`: list of object
 - `replacedTests[].file` (required): string
 - `replacedTests[].coveredBy`: string
@@ -119,14 +122,13 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `gitActions[].sha`: string
 
 Conditional:
-- when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`
+- when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`, `noCode`
 - otherwise: requires `question`
 <!-- fields:end -->
 
-`testFirst` carries the command, the red output and the green output. Both
-`failedBefore` and `passedAfter` are fixed at true in that contract: there is no
-shape in it for a change whose test did not fail first, so a task that cannot
-produce a red run is a question, not a build.
+`testFirst` carries the command and both outputs. `failedBefore` and
+`passedAfter` are fixed at true: a code change that cannot produce a red run is
+a question, not a build.
 
 `testCommit` and `implCommit` must be two commits: the driver runs `command`
 verbatim from the worktree root at the change's parent and at the change, and one
@@ -140,8 +142,11 @@ without the change for such a test to be red at, so the driver proves it by
 breaking the code: `break` is a literal `find`/`replace` in the production file
 the test covers that deletes the behaviour under test (never the test file, never
 a typo). The driver applies it to a copy of `testCommit`, requires the test to
-fail, removes it, and requires the test to pass. One of `testFirst` or `testOnly`,
-never both.
+fail, removes it, and requires the test to pass.
+
+**When the task changes no code** (a CI re-run), commit nothing and return
+`noCode` with its `reason` and CI `run`. The driver refuses a diff, or a run not
+green on the head.
 
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both
