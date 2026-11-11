@@ -914,10 +914,22 @@ $polish"
     driver_say "✋ ship: the pull request for $branch could not be marked ready, so it is still a draft and cannot land. The work is pushed and reviewed; the hand-off is not done."
     return "$DRIVER_E_REFUSED"
   fi
-  if ! swarm_gh pr merge "$branch" --repo "$REPO_SLUG" --auto --squash >/dev/null 2>&1; then
-    driver_say "✋ ship: auto-merge would not arm on the pull request for $branch. It is ready and reviewed, and nothing will land it — so this says so rather than handing off."
-    return "$DRIVER_E_REFUSED"
-  fi
+  # A PR READIED A MOMENT AGO CAN STILL READ AS A DRAFT: a park's draft was readied, the
+  # arm refused 3 s later and the run parked on a finished change. Tried again after a
+  # pause, readied again each time, and GitHub's own reason is kept for the refusal.
+  local armerr="" armtry=0
+  while ! armerr=$(swarm_gh pr merge "$branch" --repo "$REPO_SLUG" --auto --squash 2>&1 >/dev/null); do
+    armtry=$((armtry+1))
+    armerr=$(printf '%s' "$armerr" | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-200)
+    if [ "$armtry" -ge "${DRIVER_ARM_TRIES:-3}" ]; then
+      driver_say "✋ ship: auto-merge would not arm on the pull request for $branch, in $armtry tries. GitHub said: ${armerr:-nothing}. It is reviewed, and nothing will land it — so this says so rather than handing off."
+      driver_state_set "$t" park_note "auto-merge would not arm on the pull request for $branch in $armtry tries. GitHub said: ${armerr:-nothing}"
+      return "$DRIVER_E_REFUSED"
+    fi
+    driver_say "   ship: auto-merge did not arm on try $armtry (${armerr:-no reason given}) — readying the pull request again and trying once more"
+    sleep $(( ${DRIVER_ARM_RETRY_SEC:-5} * armtry ))
+    swarm_gh pr ready "$branch" --repo "$REPO_SLUG" >/dev/null 2>&1 || true
+  done
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" \
     --body "Handed off at $head — pull request ready, auto-merge armed. Not waiting for CI: a change that goes red or clashes and cannot merge within the hour is rebuilt fresh from the trunk." >/dev/null 2>&1 || true
   # A CLEAN ENDING FREES ITS OWN CLAIM, in review first: a claim left held reads to the
