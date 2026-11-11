@@ -653,15 +653,15 @@ driver_prove_no_code() {
   return 0
 }
 
-# driver_prove_trunk_merge <repo> <head-before-the-task> <head-after-it> <merge-commit>
+# driver_prove_trunk_merge <repo> <head-the-task-started-from> <head-after-it> <merge-commit>
 #
 # THE PROOF FOR A TASK THAT ONLY MERGES THE TRUNK INTO THE BRANCH. The trunk's commits
 # were proved where they landed, so there is no red to show: what is checked is that
 # the commit is that merge and nothing more.
 #
-# 0 a clean trunk merge, and the task's only commit · 1 not a merge of the trunk, or
-# its tree is not the clean merge result · 2 the task changed something besides it ·
-# 3 the claim cannot be checked
+# 0 a clean trunk merge, made by this task and its only commit · 1 not a merge of the
+# trunk, or its tree is not the clean merge result · 2 the merge predates the task, or
+# the task changed something besides it · 3 the claim cannot be checked
 driver_prove_trunk_merge() {
   local repo="$1" before="$2" after="$3" m="$4" sha p1 p2 r ontrunk="" tree mrc=0 got s8
   sha=$(git -C "$repo" rev-parse --verify -q "$m^{commit}" 2>/dev/null) || { printf "trunkMerge.commit '%s' is not a commit here\n" "$m"; return 3; }
@@ -690,11 +690,14 @@ driver_prove_trunk_merge() {
       "$s8" "$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 1
   fi
-  # And it is all the task did: its one commit, or one already on the branch and no commit.
-  if [ "$before" = "$after" ]; then
-    git -C "$repo" merge-base --is-ancestor "$sha" "$before" 2>/dev/null \
-      || { printf '%s is not on this branch\n' "$s8"; return 3; }
-  elif [ "$after" != "$sha" ] || [ "$p1" != "$before" ]; then
+  # The task made it: a merge already on the branch when the task started proves nothing done.
+  if git -C "$repo" merge-base --is-ancestor "$sha" "$before" 2>/dev/null; then
+    printf '%s was on the branch before this task started (at %s) — a task is proved by the merge it makes, never one it finds\n' \
+      "$s8" "$(printf '%s' "$before" | cut -c1-8)"
+    return 2
+  fi
+  # And it is all the task did.
+  if [ "$after" != "$sha" ] || [ "$p1" != "$before" ]; then
     printf 'the task committed more than the trunk merge %s (%s) — a change is proved with testFirst or testOnly\n' \
       "$s8" "$(git -C "$repo" log --first-parent --no-merges --format=%h "$before..$after" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
     return 2
@@ -706,6 +709,18 @@ driver_prove_trunk_merge() {
   fi
   printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
   return 0
+}
+
+# _driver_build_task_start <file> <plan-task> <repo> — the head this task first started
+# from, kept across its tries and a resume until it is proved. A retry measured from its
+# own start would not see what an earlier try of the same task committed.
+_driver_build_task_start() {
+  local f="$1" task="$2" repo="$3" h
+  h=$(jq -r --argjson task "$task" 'select(.task == $task) | .head // empty' "$f" 2>/dev/null)
+  if [ -n "$h" ] && git -C "$repo" merge-base --is-ancestor "$h" HEAD 2>/dev/null; then printf '%s' "$h"; return 0; fi
+  h=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null) || return 1
+  jq -n --argjson task "$task" --arg h "$h" '{task: $task, head: $h}' > "$f" 2>/dev/null
+  printf '%s' "$h"
 }
 
 driver_step_build() { # <ticket>
@@ -789,8 +804,8 @@ driver_step_build() { # <ticket>
     else
       driver_fact_put "$t" "$slot" LAST_TRY "$(_driver_fact_none "this is the first try at this task, or the last one was proved")"
     fi
-    # The head this task starts from: what a noCode answer is measured against.
-    before=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
+    # The head this task started from: what a noCode or trunkMerge answer is measured against.
+    before=$(_driver_build_task_start "$(driver_state_dir "$t")/steps/$slot.started" "$task" "$repo")
     rc=0; driver_ai_step "$t" build --as "$slot" || rc=$?
     if [ "$rc" -ne 0 ]; then
       # A question, a skipped Skill or a broken answer is not a rework loop: those
@@ -844,7 +859,7 @@ driver_step_build() { # <ticket>
       why=$(driver_prove_no_code "$repo" "$before" "$(jq -r '.noCode.run // ""' "$ans")") || prc=$?
       if [ "$prc" -eq 0 ]; then
         tsha=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
-        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof"
+        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
         _driver_build_mark_proved "$proved" "$task" "$ans" "nocode:$tsha" "${got_task:-$want_task}" false "$tsha"
         nocode=$((nocode+1))
         driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
@@ -861,7 +876,7 @@ driver_step_build() { # <ticket>
       why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")") || prc=$?
       if [ "$prc" -eq 0 ]; then
         tsha=$(git -C "$repo" rev-parse --verify -q "$(jq -r '.trunkMerge.commit' "$ans")^{commit}" 2>/dev/null)
-        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof"
+        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof" "$(driver_state_dir "$t")/steps/$slot.started"
         _driver_build_mark_proved "$proved" "$task" "$ans" "merge:$tsha" "${got_task:-$want_task}" false "$tsha"
         nmerge=$((nmerge+1))
         driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
@@ -889,7 +904,7 @@ driver_step_build() { # <ticket>
       if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
         driver_say "   build '$got_task' is proved by the same test commit and break as '$same' — one change, so the two are one task: merged, and proved once."
         _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha"
-        merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
+        merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$(driver_state_dir "$t")/steps/$slot.started"; continue
       fi
       seen_pairs="$seen_pairs $pair"
       seen_titles="$seen_titles$pair	${got_task:-$want_task}
@@ -918,7 +933,7 @@ driver_step_build() { # <ticket>
     if same=$(_driver_build_same_proof "$pair" "$seen_titles"); then
       driver_say "   build '$got_task' is proved by the same two commits as '$same' ($(printf '%s' "$tsha" | cut -c1-8) then $(printf '%s' "$isha" | cut -c1-8)) — one change, so the two are one task: merged, and proved once."
       _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" true "$tsha" "$isha"
-      merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused"; continue
+      merged=$((merged+1)); rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$(driver_state_dir "$t")/steps/$slot.started"; continue
     fi
     seen_pairs="$seen_pairs $pair"
     seen_titles="$seen_titles$pair	${got_task:-$want_task}
@@ -927,7 +942,7 @@ driver_step_build() { # <ticket>
     why=$(DRIVER_PROOF_KEEP="$proved.proof" driver_prove_red_green "$repo" "$tfile" "$tsha" "$isha" "$tcmd") || prc=$?
     fi
     if [ "$prc" -eq 0 ]; then
-      rm -f "$(driver_state_dir "$t")/steps/$slot.refused"
+      rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$(driver_state_dir "$t")/steps/$slot.started"
       DRIVER_PROOF_LINE="$why" _driver_build_mark_proved "$proved" "$task" "$ans" "$pair" "${got_task:-$want_task}" false "$tsha" $isha
       rm -f "$proved.proof"
     else
