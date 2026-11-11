@@ -653,10 +653,65 @@ driver_prove_no_code() {
   return 0
 }
 
+# driver_prove_trunk_merge <repo> <head-before-the-task> <head-after-it> <merge-commit>
+#
+# THE PROOF FOR A TASK THAT ONLY MERGES THE TRUNK INTO THE BRANCH. The trunk's commits
+# were proved where they landed, so there is no red to show: what is checked is that
+# the commit is that merge and nothing more.
+#
+# 0 a clean trunk merge, and the task's only commit · 1 not a merge of the trunk, or
+# its tree is not the clean merge result · 2 the task changed something besides it ·
+# 3 the claim cannot be checked
+driver_prove_trunk_merge() {
+  local repo="$1" before="$2" after="$3" m="$4" sha p1 p2 r ontrunk="" tree mrc=0 got s8
+  sha=$(git -C "$repo" rev-parse --verify -q "$m^{commit}" 2>/dev/null) || { printf "trunkMerge.commit '%s' is not a commit here\n" "$m"; return 3; }
+  s8=$(printf '%s' "$sha" | cut -c1-8)
+  [ -n "$before" ] && [ -n "$after" ] || { printf 'the head around this task was not recorded, so its commits could not be measured\n'; return 3; }
+  p1=$(git -C "$repo" rev-parse --verify -q "$sha^1" 2>/dev/null); p2=$(git -C "$repo" rev-parse --verify -q "$sha^2" 2>/dev/null)
+  if [ -z "$p2" ] || git -C "$repo" rev-parse --verify -q "$sha^3" >/dev/null 2>&1; then
+    printf '%s is not a merge of two commits — a change is proved with testFirst or testOnly\n' "$s8"; return 1
+  fi
+  for r in "origin/${INTEGRATION_BRANCH:-develop}" "${INTEGRATION_BRANCH:-develop}"; do
+    git -C "$repo" merge-base --is-ancestor "$p2" "$r" 2>/dev/null && { ontrunk=1; break; }
+  done
+  [ -n "$ontrunk" ] || { printf "%s merges %s, which is not on the trunk (%s)\n" "$s8" "$(printf '%s' "$p2" | cut -c1-8)" "${INTEGRATION_BRANCH:-develop}"; return 1; }
+  # The merge git makes by itself, with no hand: a conflict or any other tree is an edit.
+  tree=$(git -C "$repo" merge-tree --write-tree "$p1" "$p2" 2>/dev/null) || mrc=$?
+  tree=$(printf '%s\n' "$tree" | head -1)
+  if [ "$mrc" -eq 1 ]; then
+    printf '%s merged the trunk with conflicts, so its resolution is a change by hand — prove it with testFirst or testOnly\n' "$s8"; return 1
+  fi
+  if [ "$mrc" -ne 0 ] || ! git -C "$repo" cat-file -e "$tree^{tree}" 2>/dev/null; then
+    printf 'the clean merge of %s could not be computed here (git merge-tree exit %s)\n' "$s8" "$mrc"; return 3
+  fi
+  got=$(git -C "$repo" rev-parse --verify -q "$sha^{tree}" 2>/dev/null)
+  if [ "$got" != "$tree" ]; then
+    printf '%s is a trunk merge that carries edits beyond the clean merge (%s) — prove them with testFirst or testOnly\n' \
+      "$s8" "$(git -C "$repo" diff --name-only "$tree" "$got" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 1
+  fi
+  # And it is all the task did: its one commit, or one already on the branch and no commit.
+  if [ "$before" = "$after" ]; then
+    git -C "$repo" merge-base --is-ancestor "$sha" "$before" 2>/dev/null \
+      || { printf '%s is not on this branch\n' "$s8"; return 3; }
+  elif [ "$after" != "$sha" ] || [ "$p1" != "$before" ]; then
+    printf 'the task committed more than the trunk merge %s (%s) — a change is proved with testFirst or testOnly\n' \
+      "$s8" "$(git -C "$repo" log --first-parent --no-merges --format=%h "$before..$after" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 2
+  fi
+  if ! git -C "$repo" diff --quiet HEAD -- 2>/dev/null; then
+    printf 'the task left uncommitted edits beside the trunk merge %s (%s)\n' "$s8" \
+      "$(git -C "$repo" diff --name-only HEAD -- 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/ $//')"
+    return 2
+  fi
+  printf 'a trunk merge and nothing more: %s merges %s cleanly\n' "$s8" "$(printf '%s' "$p2" | cut -c1-8)"
+  return 0
+}
+
 driver_step_build() { # <ticket>
   local t="${1:?driver_step_build: need a ticket}"
   local repo tries rc ntasks bad task slot ans tfile tcmd tsha isha bfile why prc
-  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before nocode=0
+  local want_task got_task pair seen_pairs="" seen_titles="" same merged=0 whole before after nocode=0 nmerge=0
   export DRIVER_TICKET="$t"
   whole=$(driver_state_get "$t" build_whole)
   repo=$(driver_state_get "$t" worktree)
@@ -749,6 +804,8 @@ driver_step_build() { # <ticket>
     # Before the proof reads the branch: a task that left HEAD detached put its commits there.
     driver_heal_detached "$t" "$repo" "$(driver_state_get "$t" branch)" || true
     driver_git_actions "$t" "$repo" "$ans" "build $slot" || return "$DRIVER_E_REFUSED"
+    # The task's own last commit, before the driver's formatting adds one.
+    after=$(git -C "$repo" rev-parse --verify -q HEAD 2>/dev/null)
     # Formatted with the task, so a format check can never be the thing self-check
     # sends back. After the answer is read: the proof names its own two commits.
     driver_format_changed "$t" "$repo" "build $slot" || true
@@ -790,6 +847,23 @@ driver_step_build() { # <ticket>
         rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof"
         _driver_build_mark_proved "$proved" "$task" "$ans" "nocode:$tsha" "${got_task:-$want_task}" false "$tsha"
         nocode=$((nocode+1))
+        driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
+      else
+        printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
+        driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+        bad=1
+      fi
+      continue
+    fi
+    # A TASK THAT ONLY MERGES THE TRUNK changes nothing of its own: the commit is checked, not a test.
+    if jq -e '.trunkMerge | type == "object"' "$ans" >/dev/null 2>&1; then
+      why=""; prc=0
+      why=$(driver_prove_trunk_merge "$repo" "$before" "$after" "$(jq -r '.trunkMerge.commit // ""' "$ans")") || prc=$?
+      if [ "$prc" -eq 0 ]; then
+        tsha=$(git -C "$repo" rev-parse --verify -q "$(jq -r '.trunkMerge.commit' "$ans")^{commit}" 2>/dev/null)
+        rm -f "$(driver_state_dir "$t")/steps/$slot.refused" "$proved.proof"
+        _driver_build_mark_proved "$proved" "$task" "$ans" "merge:$tsha" "${got_task:-$want_task}" false "$tsha"
+        nmerge=$((nmerge+1))
         driver_say "   build $(jq -r '.task // "?"' "$ans") — $why"
       else
         printf '%s\n' "$why" > "$(driver_state_dir "$t")/steps/$slot.refused"
@@ -893,6 +967,7 @@ driver_step_build() { # <ticket>
 
   if [ "$bad" -eq 0 ]; then
     [ "$nocode" -eq 0 ] || driver_say "   build: $nocode of $ntasks task(s) changed no code — accepted on a green CI run of the head, not a test pair"
+    [ "$nmerge" -eq 0 ] || driver_say "   build: $nmerge of $ntasks task(s) only merged the trunk — accepted as a clean merge, not a test pair"
     if [ "$kept" -gt 0 ]; then
       driver_say "   build: all $ntasks task(s) proved red before green — $kept kept from an earlier pass, $((ntasks - kept)) built on this one"
     elif [ "$merged" -gt 0 ]; then

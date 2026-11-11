@@ -1,0 +1,15 @@
+{
+  "step": "build",
+  "skills": [
+    "superpowers:test-driven-development"
+  ],
+  "status": "built",
+  "task": "Merge the trunk into the branch",
+  "changed": [],
+  "changelog": {
+    "skipped": "a trunk merge"
+  },
+  "trunkMerge": {
+    "commit": "068dc10540"
+  }
+}

@@ -113,6 +113,8 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `noCode`: object
 - `noCode.reason` (required): string
 - `noCode.run` (required): string
+- `trunkMerge`: object
+- `trunkMerge.commit` (required): string
 - `replacedTests`: list of object
 - `replacedTests[].file` (required): string
 - `replacedTests[].coveredBy`: string
@@ -122,7 +124,7 @@ Every field the contract has; `additionalProperties` is false, so no other.
 - `gitActions[].sha`: string
 
 Conditional:
-- when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`, `noCode`
+- when `status` is "built": requires `changed`, `changelog`; exactly one of `testFirst`, `testOnly`, `noCode`, `trunkMerge`
 - otherwise: requires `question`
 <!-- fields:end -->
 
@@ -137,16 +139,18 @@ placeholders: where the project has a test database, `DATABASE_URL` is already s
 to a fresh migrated one, here and in the proof.
 
 **When the task IS the test** — the code it covers already exists and you change
-no production code — return `testOnly` instead of `testFirst`. There is no tree
-without the change for such a test to be red at, so the driver proves it by
-breaking the code: `break` is a literal `find`/`replace` in the production file
+no production code — return `testOnly`. The driver proves it by breaking the
+code: `break` is a literal `find`/`replace` in the production file
 the test covers that deletes the behaviour under test (never the test file, never
 a typo). The driver applies it to a copy of `testCommit`, requires the test to
 fail, removes it, and requires the test to pass.
 
 **When the task changes no code** (a CI re-run), commit nothing and return
-`noCode` with its `reason` and CI `run`. The driver refuses a diff, or a run not
-green on the head.
+`noCode` with its `reason` and CI `run`. A diff, or a run not green on the head,
+is refused.
+
+**When the task only merges the trunk**, return `trunkMerge` with its `commit`.
+Any edit beyond the clean merge is refused.
 
 `changelog` carries exactly one key — the entry file you wrote, or the reason
 this change has none. {{PROJECT_FACTS}} names this project's convention. Both
