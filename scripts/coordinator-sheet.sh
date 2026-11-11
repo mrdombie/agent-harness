@@ -214,7 +214,13 @@ coord_sheet_render() {
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
-                    + (why_words | if . == null then "" else "\n  - " + . end))
+                    + (why_words | if . == null then "" else "\n  - " + . end)),
+        # One token, every machine: the newest hourly window any heartbeat read, and the
+        # most spent reading inside it. A window already over is left out, not shown stale.
+        ([.fleet[] | (.gh // [])[] | select((.limit // 0) > 0 and (.reset // 0) > ($at | tonumber))]
+         | group_by(.resource) | map(sort_by([.reset, -.remaining]) | last)
+         | map("\(if .resource == "core" then "REST" elif .resource == "graphql" then "GraphQL" else .resource end) \(.limit - .remaining) of \(.limit)")
+         | if length == 0 then empty else "", "GitHub requests used this hour, on the token every machine shares: " + join(", ") end)
        else empty end),
       (if .pace.pacing then
         "", "### Usage pacing",
