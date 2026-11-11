@@ -28,8 +28,25 @@ printf 'createdb %s\n' "\$*" >> "$FIX/pg.log"
 n="\${@: -1}"
 [ ! -e "$DBS/\$n" ] || { echo "createdb: error: database \"\$n\" already exists" >&2; exit 1; }
 [ ! -f "$FIX/createdb-fails" ] || { echo "createdb: error: connection refused" >&2; exit 1; }
+# createdb-flaky holds how many more calls fail, and createdb-msg what they say.
+left=\$(cat "$FIX/createdb-flaky" 2>/dev/null || echo 0)
+if [ "\$left" -gt 0 ]; then echo \$((left - 1)) > "$FIX/createdb-flaky"; cat "$FIX/createdb-msg" >&2; exit 1; fi
 : > "$DBS/\$n"
 SH
+# The host's own pg_isready would ask a real server: this one answers from a file.
+cat > "$BIN/pg_isready" <<SH
+#!/usr/bin/env bash
+printf 'pg_isready %s\n' "\$*" >> "$FIX/pg.log"
+exit "\$(cat "$FIX/pg-isready-rc" 2>/dev/null || echo 0)"
+SH
+# A setup that fails setup-flaky more times with setup-msg, then passes; one line a call.
+cat > "$BIN/flaky-setup" <<SH
+#!/usr/bin/env bash
+echo call >> "$FIX/setup.calls"
+left=\$(cat "$FIX/setup-flaky" 2>/dev/null || echo 0)
+if [ "\$left" -gt 0 ]; then echo \$((left - 1)) > "$FIX/setup-flaky"; cat "$FIX/setup-msg" >&2; exit 1; fi
+SH
+chmod +x "$BIN/pg_isready" "$BIN/flaky-setup"
 cat > "$BIN/dropdb" <<SH
 #!/usr/bin/env bash
 printf 'dropdb %s\n' "\$*" >> "$FIX/pg.log"
@@ -44,10 +61,13 @@ cfg_db() { # <json-or-null> — set tests.db in the fixture's harness.json
 }
 SETUP="bash -c 'printf \"%s\\n\" \"\$DATABASE_URL\" >> $FIX/setup.log'"
 cfg_db "$(jq -nc --arg s "$SETUP" '{urlTemplate:"postgresql://u:p@localhost:5432/{name}?schema=public", admin:"postgresql://u:p@localhost:5432/postgres", setup:$s}')"
-reset_logs() { : > "$FIX/pg.log"; : > "$FIX/setup.log"; : > "$FIX/seen.log"; }
+reset_logs() { : > "$FIX/pg.log"; : > "$FIX/setup.log"; : > "$FIX/seen.log"; : > "$FIX/setup.calls"; : > "$TLOG"; }
 created() { sed -n 's/^createdb .* \(hp_[a-z0-9_]*\)$/\1/p' "$FIX/pg.log"; }
 dropped() { sed -n 's/^dropdb .* \(hp_[a-z0-9_]*\)$/\1/p' "$FIX/pg.log"; }
 left()    { ls "$DBS" | tr '\n' ' ' | sed 's/ $//'; }
+TLOG="$STATE/driver/701/log"; mkdir -p "$STATE/driver/701"; : > "$TLOG"; : > "$FIX/setup.calls"
+waits() { grep -c 'the test database did not answer' "$TLOG"; }
+calls() { wc -l < "$FIX/setup.calls" | tr -d ' '; }
 
 c() { git -C "$1" -c user.email=t@e.invalid -c user.name=T commit -qm "$2"; git -C "$1" rev-parse HEAD; }
 
@@ -248,6 +268,96 @@ fix_brief plan ""; fix_ai plan '{"ok":true}'
 DRIVER_CLAUDE="$FIX/claude-db" driver_ai_step 701 plan >/dev/null 2>&1 || true
 want "a step that runs no tests gets none" "" "$(cat "$FIX/seen.log")"
 want "and creates none" "" "$(cat "$FIX/pg.log")"
+
+echo "--- a database that does not answer in time is waited for, not refused ---"
+# Load 42 and 59 on 10 cores: the setup's connect timed out with the server up, and
+# a finished build was parked on it.
+FLAKY=$(jq -nc --arg s "bash $BIN/flaky-setup" '{urlTemplate:"postgresql://u:p@localhost:5432/{name}", admin:"postgresql://u:p@localhost:5432/postgres", setup:$s}')
+cfg_db "$FLAKY"
+export DRIVER_TEST_DB_RETRY_DELAY=0
+P1001="Error: P1001: Can't reach database server at \`localhost:5432\`"
+reset_logs; echo 2 > "$FIX/setup-flaky"; printf '%s\n' "$P1001" > "$FIX/setup-msg"
+out=$(driver_prove_red_green "$REPO" feat.db.test.sh "$TS" "$IS" "bash feat.db.test.sh" 2>&1); rc=$?
+want "the proof waits and passes" "0" "$rc"
+want "the setup ran three times for the first half, once for the second" "4" "$(calls)"
+want "the log says it waited, twice" "2" "$(waits)"
+want_in "with the load and the wait" 'the test database did not answer \(load [0-9a-z]+\); trying again in 0s \(1 of 3\)' "$(cat "$TLOG")"
+want "on the same database: two were created, not four" "2" "$(created | wc -l | tr -d ' ')"
+want "the test saw a database in both halves" "2" "$(grep -c '^postgresql://' "$FIX/seen.log")"
+want "both dropped" "$(created)" "$(dropped)"
+want "none is left" "" "$(left)"
+
+echo "--- every message a connect timeout comes in is waited for ---"
+for msg in "Error: P1001" "Can't reach database server at localhost:5432" "timeout exceeded when trying to connect" \
+           "Connection terminated due to connection timeout" "psql: error: could not connect to server: Operation timed out"; do
+  reset_logs; echo 1 > "$FIX/setup-flaky"; printf '%s\n' "$msg" > "$FIX/setup-msg"
+  rc=0; driver_test_db_create hp_701_1_1 "$REPO" 2>/dev/null || rc=$?
+  want "'$msg' is tried again and passes" "0 2 1" "$rc $(calls) $(waits)"
+  driver_test_db_drop hp_701_1_1 >/dev/null 2>&1
+done
+
+echo "--- one that never answers stops at the cap, and says it was a timeout ---"
+reset_logs; echo 99 > "$FIX/setup-flaky"; printf '%s\n' "$P1001" > "$FIX/setup-msg"
+out=$(driver_prove_red_green "$REPO" feat.db.test.sh "$TS" "$IS" "bash feat.db.test.sh" 2>&1); rc=$?
+want "it is exit 5, a tree not prepared" "5" "$rc"
+want "the setup ran once and three more times, in each half" "8" "$(calls)"
+want "it waited three times in each" "6" "$(waits)"
+want_in "in the same words as any failed setup" "setup \(bash .*flaky-setup\) failed with exit 1: Error: P1001: Can't reach database server" "$out"
+want_in "naming the timeout" 'a connect timeout, not a refusal: the test database did not answer in 4 tries \(load [0-9a-z]+\)' "$out"
+want "the test never ran" "" "$(cat "$FIX/seen.log")"
+want "the half-made database was dropped" "$(created)" "$(dropped)"
+want "none is left" "" "$(left)"
+
+echo "--- the wait doubles, and the number of tries is the project's to set ---"
+reset_logs; echo 99 > "$FIX/setup-flaky"
+rc=0; DRIVER_TEST_DB_RETRY_DELAY=1 DRIVER_TEST_DB_RETRIES=2 driver_test_db_create hp_701_1_2 "$REPO" 2>/dev/null || rc=$?
+want "it fails after two more tries" "1 3" "$rc $(calls)"
+want "waiting 1s then 2s" "trying again in 1s (1 of 2)|trying again in 2s (2 of 2)" "$(sed -n 's/.*\(trying again in .*\)$/\1/p' "$TLOG" | tr '\n' '|' | sed 's/|$//')"
+want_in "and says 3 tries" 'did not answer in 3 tries' "$DRIVER_TEST_DB_WHY"
+reset_logs
+rc=0; DRIVER_TEST_DB_RETRIES=0 driver_test_db_create hp_701_1_3 "$REPO" 2>/dev/null || rc=$?
+want "with no more tries it fails on the first, unwaited" "1 1 0" "$rc $(calls) $(waits)"
+
+echo "--- a migration that fails is not a timeout: it fails at once ---"
+reset_logs; echo 99 > "$FIX/setup-flaky"; echo 'Error: P3018: A migration failed to apply. Migration name: 42_add_col' > "$FIX/setup-msg"
+out=$(driver_prove_red_green "$REPO" feat.db.test.sh "$TS" "$IS" "bash feat.db.test.sh" 2>&1); rc=$?
+want "it is exit 5" "5" "$rc"
+want "the setup ran once in each half" "2 2" "$(calls) $(created | wc -l | tr -d ' ')"
+want "nothing was waited for" "0" "$(waits)"
+want_in "in the words it always had" 'setup \(bash .*flaky-setup\) failed with exit 1: Error: P3018: A migration failed to apply. Migration name: 42_add_col *, so the test was never run' "$out"
+want_not_in "and no word of a timeout" 'connect timeout|did not answer' "$out"
+want "dropped" "$(created)" "$(dropped)"
+
+echo "--- a server that is down is not waited for ---"
+reset_logs; echo 99 > "$FIX/setup-flaky"; printf '%s\n' "$P1001" > "$FIX/setup-msg"; echo 2 > "$FIX/pg-isready-rc"
+rc=0; driver_test_db_create hp_701_1_4 "$REPO" 2>/dev/null || rc=$?
+want "it fails on the first try" "1 1 0" "$rc $(calls) $(waits)"
+want_in "saying the server is not answering" 'failed with exit 1: Error: P1001.*the database server is not answering at all \(pg_isready\)' "$DRIVER_TEST_DB_WHY"
+want_in "asked through the admin URL" '^pg_isready .*-d postgresql://u:p@localhost:5432/postgres' "$(grep '^pg_isready' "$FIX/pg.log" | head -1)"
+want "and the half-made database was dropped" "" "$(left)"
+echo 0 > "$FIX/pg-isready-rc"; echo 0 > "$FIX/setup-flaky"
+
+echo "--- createdb that times out is waited for too ---"
+reset_logs; echo 2 > "$FIX/createdb-flaky"; echo 'createdb: error: could not connect to server: Operation timed out' > "$FIX/createdb-msg"
+out=$(driver_prove_red_green "$REPO" feat.db.test.sh "$TS" "$IS" "bash feat.db.test.sh" 2>&1); rc=$?
+want "the proof waits and passes" "0" "$rc"
+want "it waited twice" "2" "$(waits)"
+want "createdb ran three times for the first half, once for the second" "4" "$(grep -c '^createdb ' "$FIX/pg.log")"
+want "both dropped, none left" "$(created | sort -u)|" "$(dropped | sort)|$(left)"
+reset_logs; echo 99 > "$FIX/createdb-flaky"
+rc=0; driver_test_db_create hp_701_1_5 "$REPO" 2>/dev/null || rc=$?
+want "one that never answers stops at the cap" "1 4 3" "$rc $(grep -c '^createdb ' "$FIX/pg.log") $(waits)"
+want_in "in createdb's words, naming the timeout" 'could not be created \(createdb exit 1\): createdb: error: could not connect to server.*a connect timeout, not a refusal: the test database did not answer in 4 tries' "$DRIVER_TEST_DB_WHY"
+want "nothing was dropped — nothing was made" "" "$(dropped)"
+
+echo "--- a refused connection is a refusal, as it always was ---"
+reset_logs; echo 99 > "$FIX/createdb-flaky"
+echo 'createdb: error: connection to server at "localhost" (::1), port 5432 failed: Connection refused' > "$FIX/createdb-msg"
+rc=0; driver_test_db_create hp_701_1_6 "$REPO" 2>/dev/null || rc=$?
+want "it fails at once" "1 1 0" "$rc $(grep -c '^createdb ' "$FIX/pg.log") $(waits)"
+want_not_in "in the words it always had, no timeout named" 'connect timeout|not answering' "$DRIVER_TEST_DB_WHY"
+echo 0 > "$FIX/createdb-flaky"
+unset DRIVER_TEST_DB_RETRY_DELAY
 
 echo "--- with no tests.db, nothing changes ---"
 reset_logs
