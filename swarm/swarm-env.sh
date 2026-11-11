@@ -478,6 +478,25 @@ swarm_api_error_log() { # <log>
   [ -n "$r" ] || return 1
   printf '%s' "$r"
 }
+
+# swarm_api_refusal_log <log> — 0 when the API refused the session outright, so the model
+# never ran: the last result is an error carrying an api_error_status, or ended on
+# terminal_reason api_error. Prints "<status> <code>: <the CLI's words, 200 chars>". Read
+# from the CLI's own result line only; an answer that quotes one is never the signal.
+swarm_api_refusal_log() { # <log>
+  local r
+  [ -s "$1" ] || return 1
+  r=$(grep -F '"type":"result"' "$1" 2>/dev/null | jq -r -s '
+    ([.[] | select(.type == "result")] | last) as $r
+    | if $r == null or ($r.structured_output? // null) != null or ($r.is_error // false) != true then empty
+      elif ($r.api_error_status? // null) == null and ($r.terminal_reason? // "") != "api_error" then empty
+      else ([$r.api_error_status?, $r.api_error_code?] | map(select(. != null) | tostring) | join(" ")) as $h
+        | (($r.result // "") | tostring | gsub("\\s+"; " ") | .[0:200]) as $x
+        | (if $h == "" then "api_error" else $h end) + (if $x == "" then "" else ": " + $x end)
+      end' 2>/dev/null)
+  [ -n "$r" ] || return 1
+  printf '%s' "$r"
+}
 # ---- cli-signal reader: end ------------------------------------------------
 
 # A window that hit the wall: hooks/usage-limit.sh (StopFailure) and the driver write

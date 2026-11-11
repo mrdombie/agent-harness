@@ -182,12 +182,20 @@ A question only a person can answer goes through `scripts/owner-question.sh`
 the queue as a brief the driver carries. The hold label goes on only when the
 question could not be asked. A driver-caused park asks nobody.
 
-**A requeue is not a park.** Three stops go back on the queue instead, because
+**A requeue is not a park.** Four stops go back on the queue instead, because
 nobody has to answer them and a later run clears them:
 
 - **The plan's usage limit** (step exit 27, run exit 28). A step's transcript carries
   the CLI's rejection. The reset goes into `$STATE_DIR/usage-hold`, and the
   coordinator spawns nothing until then.
+- **A session the API refused** (a result with `is_error` and an `api_error_status`, or
+  `terminal_reason: api_error`): the model never ran, so it is never read as a skipped
+  Skill and never reaches the skill check's record. The call is made again
+  `DRIVER_API_REFUSAL_TRIES` (4) times, after 1, 3, 5 and 7 times
+  `DRIVER_API_REFUSAL_BASE_SEC` (60). A 401 or 403 that outlasts them is the account's:
+  it goes into the same hold file for `DRIVER_API_REFUSAL_HOLD_SEC` (3600), naming the
+  status and code, the hold's own re-check clears it early, and the ticket requeues
+  (step exit 27, run exit 28). Any other status parks as a machine fault (exit 33).
 - **A GitHub read that failed in `start` or `ship`** (exit 26). It is
   retried `DRIVER_LOOKUP_TRIES` times first.
 - **A claim another run on this host holds** (step exit 29, run exit 28), met by
