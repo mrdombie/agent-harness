@@ -86,6 +86,25 @@ want "a committed change is refused"   "1" "$rc"
 out=$(driver_prove_no_code "$REPO" "$NC_NEXT" 556 2>&1); rc=$?
 want "and from the new head, with its own green run, nothing changed" "0" "$rc"
 
+echo "--- a change an earlier try of the task committed is still its diff on the next try ---"
+# Try 1 commits a change and says noCode; try 2 says it again, with a green run on the
+# new head. Measured from the try's own start there would be no diff left to see.
+cp "$BIN/claude" "$FIX/claude.keep"
+printf '#!/usr/bin/env bash\nprintf "sneaked\\n" >> "$REPO/feature.txt"; git -C "$REPO" commit -qam "feat: sneaked"\ncp "$FIX/claude.keep" "$BIN/claude"\nexec "$FIX/claude.keep" "$@"\n' > "$BIN/claude"; chmod +x "$BIN/claude"
+R_START=$(git -C "$REPO" rev-parse HEAD)
+driver_state_init 146 --worktree "$REPO" --repo "$REPO"
+fix_plan 146
+fix_ai build "$(fix_no_code 560)" superpowers:subagent-driven-development
+rc=0; DRIVER_TICKET=146 driver_step_build 146 >/dev/null 2>&1 || rc=$?
+want "try 1 is sent back"              "30" "$rc"
+want "having committed"                "$R_START" "$(git -C "$REPO" rev-parse "HEAD^")"
+fix_run 560 success "$(git -C "$REPO" rev-parse HEAD)"
+rc=0; out=$(DRIVER_TICKET=146 driver_step_build 146 2>&1) || rc=$?
+want "try 2, green on the new head, is sent back too" "30" "$rc"
+want_in "measured from where the task started" "changed the tree since $(printf '%s' "$R_START" | cut -c1-8) \(feature\.txt\)" "$out"
+NC_NEXT=$(git -C "$REPO" rev-parse HEAD)
+fix_run 556 success "$NC_NEXT"
+
 echo "--- a noCode claim whose run is not green on the head is refused ---"
 fix_run 557 failure "$NC_NEXT"
 driver_state_init 144 --worktree "$REPO" --repo "$REPO"

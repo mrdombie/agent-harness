@@ -3,7 +3,9 @@
 # not a change the task makes, and has no red to show: the build used to park asking
 # whether it could go through. The driver now checks the commit itself: a merge whose
 # second parent is on the trunk, whose tree is exactly the conflict-free merge, and
-# which is all the task committed. A "merge" carrying anything else is still a change.
+# which this task made and is all it committed. A "merge" carrying anything else is
+# still a change, and a merge that was on the branch before the task started proves
+# nothing was done.
 #
 # Real git throughout: the proof is made of parents and trees.
 # Run: bash "$0"
@@ -34,27 +36,76 @@ branch() {
 }
 
 printf 'one\n' > "$REPO/shared.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm base
-for b in clean edited conflict side more notmerge; do branch "$b"; done
+for b in clean edited conflict side more notmerge asked single found; do branch "$b"; done
 # The conflict branch and the trunk both change the same line.
 printf 'branch\n' > "$FIX/conflict/shared.txt"; git -C "$FIX/conflict" commit -qam "feat: the branch's line"
 printf 'trunk\n' > "$REPO/shared.txt"; printf 'new\n' > "$REPO/trunk.txt"
 git -C "$REPO" add -A; git -C "$REPO" commit -qm "feat: the trunk moved"
 
-echo "--- a clean trunk merge already on the branch is accepted without a question ---"
+# session <tree> — the next build session merges the trunk into <tree> before it answers.
+cp "$BIN/claude" "$FIX/claude.keep"
+session() {
+  printf '#!/usr/bin/env bash\ngit -C "%s" merge -q --no-edit develop >/dev/null 2>&1\ncp "$FIX/claude.keep" "$BIN/claude"\nexec "$FIX/claude.keep" "$@"\n' "$1" > "$BIN/claude"
+  chmod +x "$BIN/claude"
+}
+started() { jq -r '.head // ""' "$(driver_state_dir "$1")/steps/build-task-1.started" 2>/dev/null; }
+
+echo "--- a task that makes the trunk merge itself passes without a question ---"
+WT="$FIX/single"
+G_P1=$(git -C "$WT" rev-parse HEAD)
+driver_state_init 150 --worktree "$WT" --repo "$REPO"
+fix_plan 150
+fix_ai build "$(fix_merge refs/heads/tkt-single)" superpowers:subagent-driven-development
+session "$WT"
+out=$(DRIVER_TICKET=150 driver_step_build 150 2>&1); rc=$?
+G_M=$(git -C "$WT" rev-parse HEAD)
+want "the session made a merge commit"  "2 $G_P1" "$(git -C "$WT" rev-list --parents -n1 HEAD | awk '{print NF - 1, $2}')"
+want "the step finishes"               "0" "$rc"
+want_in "saying what it checked"       "a trunk merge and nothing more: $(printf '%s' "$G_M" | cut -c1-8) merges" "$out"
+want "it is recorded as proved, on the merge" "$G_M" "$(jq -r '.commits[0]' "$(driver_state_dir 150)/steps/build-task-1.proved" 2>/dev/null)"
+want "and its start is spent"          "" "$(started 150)"
+
+echo "--- a merge the task made, then asked about, is still its own when the run resumes ---"
+# The measured case: the session merged, parked on a question, and the next run answered.
+WT="$FIX/asked"
+A_P1=$(git -C "$WT" rev-parse HEAD)
+driver_state_init 151 --worktree "$WT" --repo "$REPO"
+fix_plan 151
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"park","task":"task 1","question":"Can the merge go through without a proof?","questionFor":"pm"}' superpowers:subagent-driven-development
+session "$WT"
+rc=0; DRIVER_TICKET=151 driver_step_build 151 >/dev/null 2>&1 || rc=$?
+A_M=$(git -C "$WT" rev-parse HEAD)
+want "the first run stops on its question" "20" "$rc"
+want "having merged"                   "$A_P1" "$(git -C "$WT" rev-parse "HEAD^1")"
+want "the task's start is kept"        "$A_P1" "$(started 151)"
+fix_ai build "$(fix_merge "$(printf '%s' "$A_M" | cut -c1-10)")" superpowers:subagent-driven-development
+out=$(DRIVER_TICKET=151 driver_step_build 151 2>&1); rc=$?
+want "the next run finishes"           "0" "$rc"
+want_in "on the merge the task made"   "a trunk merge and nothing more: $(printf '%s' "$A_M" | cut -c1-8) merges" "$out"
+
+echo "--- a trunk merge made before the task started is refused ---"
+WT="$FIX/found"
+git -C "$WT" merge -q --no-edit develop
+F_M=$(git -C "$WT" rev-parse HEAD)
+driver_state_init 153 --worktree "$WT" --repo "$REPO"
+fix_plan 153
+fix_ai build "$(fix_merge "$F_M")" superpowers:subagent-driven-development
+rc=0; out=$(DRIVER_TICKET=153 driver_step_build 153 2>&1) || rc=$?
+want "it asks for rework"              "30" "$rc"
+want_in "naming the commit and the start" "$(printf '%s' "$F_M" | cut -c1-8) was on the branch before this task started \(at $(printf '%s' "$F_M" | cut -c1-8)\)" "$out"
+want_in "the next try is told why"     'before this task started' "$(cat "$(driver_state_dir 153)/steps/build-task-1.refused" 2>/dev/null)"
+want "and nothing is recorded as proved" "no" "$([ -e "$(driver_state_dir 153)/steps/build-task-1.proved" ] && echo yes || echo no)"
+rc=0; DRIVER_TICKET=153 driver_step_build 153 >/dev/null 2>&1 || rc=$?
+want "and a second try naming it is refused the same" "30" "$rc"
+
 WT="$FIX/clean"
 C_P1=$(git -C "$WT" rev-parse HEAD)
 git -C "$WT" merge -q --no-edit develop
 C_M=$(git -C "$WT" rev-parse HEAD)
-want "it is a merge commit" "2" "$(git -C "$WT" rev-list --parents -n1 HEAD | awk '{print NF - 1}')"
-driver_state_init 151 --worktree "$WT" --repo "$REPO"
-fix_plan 151
-fix_ai build "$(fix_merge "$(printf '%s' "$C_M" | cut -c1-10)")" superpowers:subagent-driven-development
-out=$(DRIVER_TICKET=151 driver_step_build 151 2>&1); rc=$?
-want "the step finishes"               "0" "$rc"
-want_in "saying what it checked"       "a trunk merge and nothing more: $(printf '%s' "$C_M" | cut -c1-8) merges" "$out"
-want "it is recorded as proved, on the merge" "$C_M" "$(jq -r '.commits[0]' "$(driver_state_dir 151)/steps/build-task-1.proved" 2>/dev/null)"
 out=$(driver_prove_trunk_merge "$WT" "$C_P1" "$C_M" "$C_M" 2>&1); rc=$?
-want "and as the task's own one commit" "0" "$rc"
+want "measured directly: the task's own one commit" "0" "$rc"
+out=$(driver_prove_trunk_merge "$WT" "$C_M" "$C_M" "$C_M" 2>&1); rc=$?
+want "and the same merge, found by a later task" "2" "$rc"
 
 echo "--- a merge commit that carries extra edits is refused ---"
 WT="$FIX/edited"
@@ -62,7 +113,9 @@ git -C "$WT" merge -q --no-commit --no-ff develop >/dev/null 2>&1
 printf 'slipped in\n' >> "$WT/own-edited.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "Merge branch 'develop'"
 E_M=$(git -C "$WT" rev-parse HEAD)
 want "it is a merge commit too" "2" "$(git -C "$WT" rev-list --parents -n1 HEAD | awk '{print NF - 1}')"
+E_P1=$(git -C "$WT" rev-parse "HEAD^1")
 driver_state_init 152 --worktree "$WT" --repo "$REPO"
+jq -n --arg h "$E_P1" '{task: {title:"task 1", files:[], tests:[]}, head: $h}' > "$(driver_state_dir 152)/steps/build-task-1.started"
 fix_plan 152
 fix_ai build "$(fix_merge "$E_M")" superpowers:subagent-driven-development
 rc=0; out=$(DRIVER_TICKET=152 driver_step_build 152 2>&1) || rc=$?
@@ -107,11 +160,12 @@ M_M=$(git -C "$WT" rev-parse HEAD)
 out=$(driver_prove_trunk_merge "$WT" "$M_BEFORE" "$M_M" "$M_M" 2>&1); rc=$?
 want "it is refused"                   "2" "$rc"
 want_in "naming the other commit"      "committed more than the trunk merge .*\($(git -C "$WT" rev-parse --short "$M_M^1")\)" "$out"
-printf 'loose\n' >> "$WT/code.txt"
-out=$(driver_prove_trunk_merge "$WT" "$M_M" "$M_M" "$M_M" 2>&1); rc=$?
+WT="$FIX/clean"
+printf 'loose\n' >> "$WT/own-clean.txt"
+out=$(driver_prove_trunk_merge "$WT" "$C_P1" "$C_M" "$C_M" 2>&1); rc=$?
 want "uncommitted edits beside it are refused" "2" "$rc"
-want_in "naming the file"              'uncommitted edits beside the trunk merge .*\(code\.txt\)' "$out"
-out=$(driver_prove_trunk_merge "$WT" "$M_M" "$M_M" "$C_M" 2>&1); rc=$?
-want "another branch's merge cannot be checked here" "3" "$rc"
+want_in "naming the file"              'uncommitted edits beside the trunk merge .*\(own-clean\.txt\)' "$out"
+out=$(driver_prove_trunk_merge "$FIX/more" "$M_BEFORE" "$M_M" "$C_M" 2>&1); rc=$?
+want "another branch's merge is not this task's" "2" "$rc"
 
 suite_end "$FAILED"
