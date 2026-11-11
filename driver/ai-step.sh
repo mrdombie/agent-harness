@@ -652,6 +652,7 @@ _driver_ai_judge() {
   # sweeping there moves another agent's untracked files out from under them.
   if [ -n "$(driver_state_get "$t" worktree)" ]; then
     driver_sweep_scratch "$t" "$wt"
+    driver_commit_scratch "$t" "$wt" "$step"
   fi
 
   if [ ! -s "$log" ]; then

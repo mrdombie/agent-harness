@@ -536,22 +536,10 @@ driver_step_ship() { # <ticket>
     return "$DRIVER_E_REFUSED"
   fi
 
-  # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. driver_sweep_scratch moves
-  # tooling leavings out of the worktree, but leaves a scratch path the project keeps
-  # in git alone (there it is the change). The plan this run wrote into it was then
-  # neither moved nor committed, and every such ticket stopped here after its build
-  # (five on 2026-10-18). Commit those new files, as park already does.
-  local sp newp
-  while IFS= read -r sp; do
-    [ -n "$sp" ] && [ -n "$(git -C "$wt" ls-files -- "$sp" 2>/dev/null | head -1)" ] || continue
-    newp=$(git -C "$wt" ls-files --others --exclude-standard -- "$sp" 2>/dev/null)
-    [ -n "$newp" ] || continue
-    local -a newf=(); while IFS= read -r f; do [ -n "$f" ] && newf+=("$f"); done <<< "$newp"
-    driver_format_files "$wt" "${newf[@]}" || true
-    printf '%s\n' "$newp" | while IFS= read -r f; do git -C "$wt" add -- "$f"; done
-    git -C "$wt" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" >/dev/null 2>&1 \
-      && driver_say "   ship: committed the run's own plan under $sp"
-  done <<< "$(driver_scratch_paths)"
+  # THE RUN'S OWN PLAN, IN A FOLDER THE PROJECT TRACKS. Each step commits its own as it
+  # ends (driver_commit_scratch); this is the same commit for a tree an older run or a
+  # resume left with one, so a finished build never stops here on it.
+  driver_commit_scratch "$t" "$wt" ship
 
   # The trunk is resolved again below, and measured; here it only finds the pictures.
   local ptrunk="origin/$INTEGRATION_BRANCH"

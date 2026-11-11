@@ -831,6 +831,48 @@ EOS
   return 0
 }
 
+# driver_commit_scratch <ticket> <tree> <who> — where THE PROJECT'S HISTORY keeps a
+# scratch path, the sweep leaves it alone, so a document a step's tooling left there
+# is committed BY NAME as that step ends and the tree is clean before the next one.
+#
+# NEW, STAGED OR EDITED, all three. A step's own `git add` and commit can be refused
+# by the project's commit hook, which leaves the document staged: no longer
+# untracked, and still not committed. Reading untracked files only missed it, and
+# the finished build stopped at ship's clean-tree check.
+#
+# NOTHING ELSE IS TOUCHED: no file outside a scratch path, and no deletion. Those
+# are still ship's to refuse.
+driver_commit_scratch() { # <ticket> <tree> <who>
+  local t="${1:-}" tree="${2:-}" who="${3:-step}" p f list mh sflag
+  [ -n "$tree" ] && [ -d "$tree" ] || return 0
+  # A merge in progress takes no partial commit.
+  mh=$(git -C "$tree" rev-parse --git-path MERGE_HEAD 2>/dev/null) || return 0
+  case "$mh" in /*) : ;; *) mh="$tree/$mh" ;; esac
+  [ ! -f "$mh" ] || return 0
+  sflag=$(bash "$KIT_ROOT/scripts/worktree-sparse.sh" add-flag "$tree" 2>/dev/null)
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -n "$(git -C "$tree" ls-tree -r --name-only HEAD -- "$p" 2>/dev/null | head -1)" ] || continue
+    list=$({ git -C "$tree" -c core.quotePath=false ls-files --others --exclude-standard -- "$p"
+             git -C "$tree" -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM HEAD -- "$p"
+           } 2>/dev/null | sort -u)
+    [ -n "$list" ] || continue
+    local -a files=()
+    while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done <<< "$list"
+    ! command -v driver_format_files >/dev/null 2>&1 || driver_format_files "$tree" "${files[@]}" || true
+    # The project's commit hook is what refused the step's own commit of it.
+    if git -C "$tree" add $sflag -- "${files[@]}" >/dev/null 2>&1 \
+       && git -C "$tree" commit -q --no-verify -m "docs(plan): the plan this run followed (#$t)" -- "${files[@]}" >/dev/null 2>&1; then
+      driver_say "   $who: committed the document its own tooling wrote under $p — $(printf '%s' "$list" | tr '\n' ' ')"
+    else
+      driver_say "   $who: could not commit the document its own tooling wrote under $p — $(printf '%s' "$list" | tr '\n' ' ')"
+    fi
+  done <<EOS
+$(driver_scratch_paths)
+EOS
+  return 0
+}
+
 # driver_opt <dotted.key> <default> — an OPTIONAL project fact. toolkit_cfg
 # refuses a missing key by name, which is right for a fact the kit cannot invent;
 # these are tuning the kit can default without naming anyone's project.
