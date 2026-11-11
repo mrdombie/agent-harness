@@ -109,6 +109,10 @@ _rebuild_base_runs() {
 # the base: at its head, else the commit before, up to REBUILD_BASE_DEPTH back. Nothing when none.
 _rebuild_base_latest_done() {
   local base="$1" n="$2" c="$3" sha runs hit
+  # The caller reads this through `IFS=<tab> read <<<"$(…)"`, and bash 3.2 hands that IFS to
+  # the substitution: unset here, five shas were one word and one request for a commit
+  # named by all five (2026-11-11), so the base's runs were never read on macOS.
+  local IFS=$' \t\n'
   if [ ! -f "$c/base-shas" ]; then
     # gh-read-ok: unreadable base commits decide nothing — the red stays the PR's own
     swarm_gh api "repos/${REPO_SLUG:?}/commits?sha=$base&per_page=$REBUILD_BASE_DEPTH" 2>/dev/null \

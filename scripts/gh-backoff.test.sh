@@ -44,8 +44,8 @@ reset=$(( $(date +%s) + 3000 ))
 healthy() { printf '{"resources":{"core":{"limit":5000,"remaining":4800,"reset":%s},"graphql":{"limit":5000,"remaining":4759,"reset":%s}}}\n' "$reset" "$reset" > "$FIX/rl.json"; }
 spent()   { printf '{"resources":{"core":{"limit":5000,"remaining":4800,"reset":%s},"graphql":{"limit":5000,"remaining":0,"reset":%s}}}\n' "$reset" "$reset" > "$FIX/rl.json"; }
 fresh() { rm -f "$BO" "$BO.search" "$FIX/rl.json" "$FIX/allowance" "$FIX/search-spent"; echo 0 > "$FIX/refuse"; : > "$GH_LOG"; unset SWARM_NOW; }
-start_read() { # the start step's own read (driver/steps/start.sh)
-  driver_gh_read swarm_gh issue view 7 --repo acme/widgets --json state,labels,title \
+start_read() { # the start step's own read (driver/steps/start.sh), which waits out no spent allowance
+  DRIVER_BUDGET_WAITS=0 driver_gh_read swarm_gh issue view 7 --repo acme/widgets --json state,labels,title \
     -q '.state + "\u0001" + ([.labels[].name]|join(",")) + "\u0001" + .title' 2>/dev/null
 }
 field() { cut -f"$1" "$BO" 2>/dev/null; }

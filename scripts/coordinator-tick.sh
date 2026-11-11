@@ -306,13 +306,16 @@ ALLOWANCE=$(gh_allowance_read) || ALLOWANCE=""
 # The GitHub allowance under its low mark on any host: the token is the fleet's.
 # Read once, here: the fleet file is rewritten later in the tick.
 GH_LOW=$(gh_allowance_low) || GH_LOW=""
-PRS=$(gh_open_prs 0)
+PRS=$(gh_open_prs 0); PRS_RC=$?
 if [ -n "$PRS" ] && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PRS"; then
   coord_snap_save prs "$PRS"
 elif PRS=$(coord_snap_load prs); then
   PRS_STALE=1
-  say "open PRs: could not be read$(gh_backoff_active >/dev/null && echo ' (GitHub is rate-limiting this token)') — working from the snapshot taken $(coord_snap_age prs) min ago"
-else PRS=""; fi
+  say "open PRs: could not be read$({ [ "$PRS_RC" -eq "$GH_WAIT" ] || gh_backoff_active >/dev/null; } && echo " (GitHub's rate limit — a wait, not an empty list)") — working from the snapshot taken $(coord_snap_age prs) min ago"
+else
+  PRS=""
+  [ "$PRS_RC" -ne "$GH_WAIT" ] || say "open PRs: not read — GitHub's rate limit refused it and there is no snapshot; this tick decides nothing about pull requests"
+fi
 # The open-work cap is counted in 4d, once the claims are read: only work being finished counts.
 OPEN_PRS=""; OVER_PR_CAP=""; OPEN_PR_SAID=""
 if [ -n "$PRS" ] && [ "$PRS_STALE" = 0 ]; then

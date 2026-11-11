@@ -22,6 +22,7 @@ LOCK="$COORD_DIR/housekeeping.lock"
 coord_lock "$LOCK" housekeeping || { rm -f "$COORD_DIR/housekeeping.stamp"; say "housekeeping: $COORD_LOCK_WHY — not started again"; exit 0; }
 trap 'rm -rf "$LOCK"' EXIT
 export GH_CALLER=coordinator-housekeeping
+unset GH_ESSENTIAL   # housekeeping's reads wait for the reset; only the tick's go through
 
 # Writes an event once; the id is what makes it once.
 event() { # <id> <kind> <judge:true|false> <ticket> <pr> <detail>
