@@ -163,6 +163,18 @@ if [ -n "$WT_WHY" ]; then
   fi
   [ "$wt_rc" = 0 ] || say "worktree sweep exited $wt_rc"
 fi
+# Runs that ended over swarm.archiveDays ago leave logs/ and runs/ (state-archive.sh), once a
+# day. It only counts until swarm.archiveApply is true: the first move is the operator's call.
+STATE_ARCHIVE="${COORDINATOR_STATE_ARCHIVE:-$SELF_DIR/state-archive.sh}"
+SA_STAMP="$COORD_DIR/state-archive.stamp"
+if [ "$STATE_ARCHIVE" != off ] && [ -z "$(find "$SA_STAMP" -mmin -1440 2>/dev/null)" ]; then
+  touch "$SA_STAMP"
+  sa_args=""
+  [ "${COORDINATOR_STATE_ARCHIVE_APPLY:-$(swarm_opt swarm.archiveApply false)}" = true ] && ! coord_shadow && sa_args=--apply
+  sa_out=$(bash "$STATE_ARCHIVE" $sa_args 2>&1); sa_rc=$?
+  say "${sa_out:-state-archive said nothing}"
+  [ "$sa_rc" = 0 ] || say "state-archive exited $sa_rc"
+fi
 # A rebuild's set-aside bundles: the newest per open ticket, none once it closes. One GitHub
 # read, and only when a bundle exists; while GitHub waits, only the older copies go.
 PRUNE_BUNDLES="${COORDINATOR_PRUNE_BUNDLES:-$SELF_DIR/prune-set-aside-bundles.sh}"

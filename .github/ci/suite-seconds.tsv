@@ -110,3 +110,4 @@
 220	driver/tests/review-eval.test.sh
 200	swarm/tests/rebuild.test.sh
 100	scripts/coordinator-usage-hold-recheck.test.sh
+45	scripts/state-archive.test.sh

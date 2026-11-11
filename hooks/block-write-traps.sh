@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse (Write|Edit): two write-time traps.
+# PreToolUse (Write|Edit): the write-time traps.
 #
 # The phantom-worktree-path and main-clone-edit traps are gone: they stopped one builder
 # writing into a tree another used, and every builder now has a tree of its own, cut and
@@ -18,6 +18,11 @@
 #    says so on a `needs-outside-data:` line. On the estate this came from, 128 check
 #    scripts were added one bug at a time, 8 were lint rules, and their repo-scanning
 #    tests cost ~150 s on every change (2026-11-09). Editing an existing check is allowed.
+#
+# 6. A GLOB OVER A STATE DIRECTORY AS ARGUMENTS — `ls -t "$SWARM_LOGS"/claim-*.log` is not
+#    run at all once the names pass ARG_MAX, and with its error discarded the reader sees
+#    nothing (2026-11-11: every usage reader, for hours). Refused as it is written into a
+#    shell script; scripts/check-argv-json.sh --globs is the rule, and CI runs the same.
 #
 # The one project fact — where the shared clone lives — comes from the
 # environment or the resolver's last-seen value; trap 4 reads it to tell a skill
@@ -54,6 +59,20 @@ case "$f" in
         fi
       fi ;;
     esac ;;
+esac
+
+# 6. a glob over a state directory as arguments
+case "$f" in
+  *.test.sh|*/tests/*|*/fixtures/*) ;;
+  */scripts/*.sh|*/swarm/*.sh|*/driver/*.sh|*/hooks/*.sh|*/driver/build-ticket)
+    content=$(printf '%s' "$payload" | jq -r '.tool_input.content // .tool_input.new_string // ""' 2>/dev/null || echo "")
+    _chk="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/scripts/check-argv-json.sh"
+    if [ -n "$content" ] && [ -f "$_chk" ] && grep -q '\*' <<<"$content"; then
+      _t=$(mktemp) && printf '%s\n' "$content" > "$_t"
+      _hits=$(bash "$_chk" --globs "$_t" 2>/dev/null | sed "s|^$_t:|line |" | cut -c1-300 | head -5) || true
+      rm -f "$_t"
+      [ -z "$_hits" ] || deny "A glob over a state directory is being passed to a command as arguments. Past ARG_MAX the command is never run and the reader sees nothing (2026-11-11: 13,616 logs, every usage reader blind). List through swarm_newest_logs, loop with 'for f in <glob>', or use find; a list that is truly bounded says so with '# argv-bounded: <why>' on its line. $_hits"
+    fi ;;
 esac
 
 # 3. credential written into memory
