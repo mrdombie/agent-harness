@@ -65,11 +65,57 @@ driver_test_db_url() {
   printf '%s' "${tpl//\{name\}/$1}"
 }
 
+# A SERVER THAT DID NOT ANSWER IN TIME IS A WAIT, NOT A REFUSAL. At load 42 and 59 on
+# 10 cores the setup's connect timed out (P1001) with the server up and 6 of 100
+# connections in use, and a finished build was parked on it. A failure whose output
+# reads as a connect timeout is tried again, DRIVER_TEST_DB_RETRIES more times (3),
+# after DRIVER_TEST_DB_RETRY_DELAY seconds (15), doubling: 15, 30, 60. A server that
+# pg_isready finds down is not waited for, and any other failure fails at once.
+_DRIVER_TEST_DB_TIMEOUT_RE="P1001|Can't reach database server|timeout exceeded when trying to connect|Connection terminated due to connection timeout|could not connect to server"
+DRIVER_TEST_DB_TIMED_OUT=""
+
+# _driver_test_db_up <admin> — 1 only when pg_isready is here and gets no answer.
+_driver_test_db_up() {
+  command -v pg_isready >/dev/null 2>&1 || return 0
+  # A down server refuses at once; a loaded one answers late, so the wait is long.
+  pg_isready -q -t 30 -d "$1" >/dev/null 2>&1
+  [ $? -ne 2 ]
+}
+
+# _driver_test_db_is_timeout <log> — 0 when the output reads as a connect timeout.
+_driver_test_db_is_timeout() { grep -qE -- "$_DRIVER_TEST_DB_TIMEOUT_RE" "$1" 2>/dev/null; }
+
+# _driver_test_db_wait <log> <admin> <tries-so-far> — 0 after waiting, to try again;
+# 1 when the failure is no timeout, the server is down, or the tries are spent.
+# Sets DRIVER_TEST_DB_TIMED_OUT to the words for a failure that was one.
+_driver_test_db_wait() {
+  local log="$1" admin="$2" n="$3" max="${DRIVER_TEST_DB_RETRIES:-3}" base="${DRIVER_TEST_DB_RETRY_DELAY:-15}" load="" secs i
+  DRIVER_TEST_DB_TIMED_OUT=""
+  case "$max" in ''|*[!0-9]*) max=3 ;; esac
+  case "$base" in ''|*[!0-9]*) base=15 ;; esac
+  _driver_test_db_is_timeout "$log" || return 1
+  type swarm_load >/dev/null 2>&1 && load=$(swarm_load 2>/dev/null)
+  load="${load:-unread}"
+  if ! _driver_test_db_up "$admin"; then
+    DRIVER_TEST_DB_TIMED_OUT=" — the database server is not answering at all (pg_isready), so it was not tried again"
+    return 1
+  fi
+  if [ "$n" -ge "$max" ]; then
+    DRIVER_TEST_DB_TIMED_OUT=" — a connect timeout, not a refusal: the test database did not answer in $((n + 1)) tries (load $load)"
+    return 1
+  fi
+  secs=$base; i=0
+  while [ "$i" -lt "$n" ]; do secs=$((secs * 2)); i=$((i + 1)); done
+  driver_say "   the test database did not answer (load $load); trying again in ${secs}s ($((n + 1)) of $max)" >&2
+  /bin/sleep "$secs"
+  return 0
+}
+
 # driver_test_db_create <name> <tree> — create, then set up in <tree>. Sets
 # DRIVER_TEST_DB_WHY and returns 1 when either fails; a half-made one is dropped.
 DRIVER_TEST_DB_WHY=""
 driver_test_db_create() {
-  local name="$1" tree="$2" admin setup url log rc
+  local name="$1" tree="$2" admin setup url log rc n
   DRIVER_TEST_DB_WHY=""
   if ! driver_test_db_name_ok "$name"; then
     DRIVER_TEST_DB_WHY="refused to create '$name': a test database is always named ${DRIVER_TEST_DB_PREFIX}<ticket>_<pid>_<n>"; return 1
@@ -79,19 +125,26 @@ driver_test_db_create() {
   url=$(driver_test_db_url "$name") || {
     DRIVER_TEST_DB_WHY="tests.db.urlTemplate has no {name}, so it would point the test at a database the driver did not create"; return 1; }
   log=$(mktemp "${TMPDIR:-/tmp}/driver-testdb-XXXXXX")
-  createdb --maintenance-db="$admin" "$name" >"$log" 2>&1; rc=$?
-  if [ "$rc" -ne 0 ]; then
-    DRIVER_TEST_DB_WHY="the test database $name could not be created (createdb exit $rc): $(tail -3 "$log" | tr '\n' ' ' | cut -c1-300)"
+  n=0
+  while :; do
+    createdb --maintenance-db="$admin" "$name" >"$log" 2>&1; rc=$?
+    [ "$rc" -ne 0 ] || break
+    _driver_test_db_wait "$log" "$admin" "$n" && { n=$((n + 1)); continue; }
+    DRIVER_TEST_DB_WHY="the test database $name could not be created (createdb exit $rc): $(tail -3 "$log" | tr '\n' ' ' | cut -c1-300)$DRIVER_TEST_DB_TIMED_OUT"
     rm -f "$log"; return 1
-  fi
+  done
   _DRIVER_TEST_DB_MINE="$_DRIVER_TEST_DB_MINE $name "
   setup=$(driver_test_db_cfg setup)
   if [ -n "$setup" ]; then
-    ( cd "$tree" && DATABASE_URL="$url" driver_run_project "${DRIVER_CMD_TIMEOUT:-900}" "$setup" ) >"$log" 2>&1; rc=$?
-    if [ "$rc" -ne 0 ]; then
-      DRIVER_TEST_DB_WHY="the test database's setup ($setup) failed with exit $rc: $(tail -3 "$log" | tr '\n' ' ' | cut -c1-300)"
+    n=0
+    while :; do
+      ( cd "$tree" && DATABASE_URL="$url" driver_run_project "${DRIVER_CMD_TIMEOUT:-900}" "$setup" ) >"$log" 2>&1; rc=$?
+      [ "$rc" -ne 0 ] || break
+      # The setup is run again on the same database: a migration run is safe to repeat.
+      _driver_test_db_wait "$log" "$admin" "$n" && { n=$((n + 1)); continue; }
+      DRIVER_TEST_DB_WHY="the test database's setup ($setup) failed with exit $rc: $(tail -3 "$log" | tr '\n' ' ' | cut -c1-300)$DRIVER_TEST_DB_TIMED_OUT"
       rm -f "$log"; driver_test_db_drop "$name" >/dev/null 2>&1; return 1
-    fi
+    done
   fi
   rm -f "$log"
   return 0
