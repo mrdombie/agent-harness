@@ -84,6 +84,7 @@ DRIVER_RUN_STARTED=$(date +%s); export DRIVER_RUN_STARTED
 trap 'declare -F driver_proof_trees_drop >/dev/null && DRIVER_TICKET="$TICKET" driver_proof_trees_drop; driver_dev_stop "$(driver_state_get "$TICKET" worktree 2>/dev/null)" >/dev/null 2>&1; driver_ticket_snap_drop "$TICKET"' EXIT
 # Every GitHub call this run and its children make is logged as the builder's.
 export GH_CALLER=build-ticket
+unset GH_ESSENTIAL   # the coordinator's reads are essential; a build's wait for the reset
 # One read of the ticket serves every step up to the first model step (driver_ticket_view).
 DRIVER_TICKET_SNAP_RUN="$DRIVER_RUN_STARTED-$$-$RANDOM"; export DRIVER_TICKET_SNAP_RUN
 driver_ticket_snap_open "$TICKET"

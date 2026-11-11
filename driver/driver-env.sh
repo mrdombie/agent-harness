@@ -146,13 +146,20 @@ DRIVER_E_UPSIZE=35   # the quick change is bigger than its size: the run goes on
 # A shared backoff ending within DRIVER_BACKOFF_WAIT_MAX_SEC (120) is slept out and
 # costs no try, up to DRIVER_BACKOFF_WAITS (5) times: three 5-second tries inside a
 # 60-second backoff all fail at once, and that ended 36 of 124 builds at start.
+# A read held for the hourly allowance (gh_call's GH_WAIT with the budget low) is
+# waited out the same way, to the reset, up to DRIVER_BUDGET_WAITS (8) sleeps of
+# GH_BUDGET_WAIT_MAX_SEC: a spent allowance is never "no pull request" and never a park.
 driver_gh_read() {
-  local n=0 waits=0 out
+  local n=0 waits=0 bwaits=0 out rc
   while :; do
-    if out=$("$@"); then printf '%s' "$out"; return 0; fi
+    out=$("$@"); rc=$?
+    if [ "$rc" -eq 0 ]; then printf '%s' "$out"; return 0; fi
     if [ "$waits" -lt "${DRIVER_BACKOFF_WAITS:-5}" ] && gh_backoff_active >/dev/null \
        && gh_backoff_wait "${DRIVER_BACKOFF_WAIT_MAX_SEC:-120}"; then
       waits=$((waits+1)); continue
+    fi
+    if [ "$rc" -eq "${GH_WAIT:-75}" ] && [ "$bwaits" -lt "${DRIVER_BUDGET_WAITS:-8}" ] && gh_budget_wait; then
+      bwaits=$((bwaits+1)); continue
     fi
     n=$((n+1))
     [ "$n" -lt "${DRIVER_LOOKUP_TRIES:-3}" ] || return 1

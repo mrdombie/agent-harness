@@ -745,7 +745,7 @@ driver_step_ship() { # <ticket>
   replaced=$(_driver_ship_replaced "$t")
   local polish="" closes pr_n; closes=$(_driver_ship_closes "$t")
   # A PR already open has its number now: its items are reserved before the body says so.
-  pr_n=$(swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
+  pr_n=$(driver_gh_read swarm_gh pr list --repo "$REPO_SLUG" --head "$branch" --state open --json number -q '.[0].number // empty' 2>/dev/null) || pr_n=""
   if [ -n "$pr_n" ]; then _driver_ship_reserve "$t" "$pr_n"; polish=$(_driver_ship_polish "$t"); fi
 
   local routes="" required="" deferred tierline
@@ -827,7 +827,7 @@ PRBODY
     --base "$INTEGRATION_BRANCH" --head "$branch" \
     --title "#$t: $title" \
     --body "$body" >/dev/null 2>&1 || true
-  if ! pr_n=$(swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null); then
+  if ! pr_n=$(driver_gh_read swarm_gh pr view "$branch" --repo "$REPO_SLUG" --json number -q .number 2>/dev/null); then
     driver_say "✋ ship: $branch is pushed and there is no pull request for it. An expired token, a protected base or a rate limit all look like this, and every write here is wrapped — so this asks rather than announcing a hand-off that does not exist."
     return "$DRIVER_E_REFUSED"
   fi

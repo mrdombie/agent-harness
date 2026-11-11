@@ -362,8 +362,21 @@ SHIM
   local rsw="$KIT_ROOT/hooks/lib/repo-settings-write.sh"
   # Built outside the heredoc: inside \${x:+…} the quotes are removed, and the shim ran
   # `exec gh $@` — every argument with a space in it split (a -q filter, a --body).
+  # Through gh_call: a step's own gh calls spend the token every machine shares, and
+  # outside the wrapper they were neither counted nor held when the allowance ran low.
+  # The wait is short here: a step's shell command has a time limit of its own.
   local gh_exec='echo "gh: not installed" >&2; exit 127'
-  [ -z "$real_gh" ] || gh_exec="exec $(printf '%q' "$real_gh") \"\$@\""
+  if [ -n "$real_gh" ]; then
+    gh_exec="exec $(printf '%q' "$real_gh") \"\$@\""
+    if [ -f "$KIT_ROOT/scripts/gh-batch.sh" ]; then
+      gh_exec="if . $(printf '%q' "$KIT_ROOT/scripts/gh-batch.sh") 2>/dev/null; then
+  export SWARM_GH=$(printf '%q' "$real_gh") GH_BACKOFF_FILE=$(printf '%q' "$(gh_backoff_file)") GH_CALLER=builder-step
+  GH_BUDGET_WAIT_MAX_SEC=\"\${GH_BUDGET_WAIT_MAX_SEC_STEP:-60}\"; unset GH_ESSENTIAL
+  gh_call \"\$@\"; exit \$?
+fi
+$gh_exec"
+    fi
+  fi
   cat > "$shim/gh" <<SHIM
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in "pr ready"|"pr merge"|"pr create")
