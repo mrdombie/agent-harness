@@ -482,7 +482,7 @@ coord_pace_window_said() {
 COORD_RUN_CLASSES="$COORD_DIR/run-classes.tsv"
 coord_record_class() { # <ticket> <class> — after a spawn returns
   local rec rid="-"
-  rec=$(ls -t "$RUNS_DIR"/claim-"$1"-*.json 2>/dev/null | head -1)
+  rec=$(swarm_newest_logs 1 "$RUNS_DIR"/claim-"$1"-*.json)
   [ -n "$rec" ] && rid=$(basename "$rec" .json)
   printf '%s\t%s\t%s\t%s\n' "$rid" "$1" "$2" "$(date +%s)" >> "$COORD_RUN_CLASSES"
   tail -500 "$COORD_RUN_CLASSES" > "$COORD_RUN_CLASSES.$$" 2>/dev/null && mv -f "$COORD_RUN_CLASSES.$$" "$COORD_RUN_CLASSES"

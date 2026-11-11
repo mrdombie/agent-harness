@@ -121,7 +121,7 @@ swarm_log() { # <logfile> <message…>
 
 # swarm_newest_logs <n> <file…> — the n newest of those files, newest first. Never
 # `ls -t <glob>`: past ARG_MAX ls is not run, the error is discarded, and every reader
-# below sees no log at all (2026-11-11: 17,267 logs, 1.11 MB of names against 1.05 MB).
+# below sees no log at all (2026-11-11: 13,616 logs, 1.11 MB of names against 1.05 MB).
 swarm_newest_logs() {
   local n="$1"; shift
   printf '%s\0' "$@" | perl -0 -e 'my $n = shift;

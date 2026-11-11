@@ -128,7 +128,7 @@ s=$(SWARM_ACCOUNT=org-a bash "$KIT/swarm/hold-status.sh")
 want "a re-check older than the hold is not shown" "null" "$(jq -r '.rechecked' <<<"$s")"
 
 echo "--- more logs than one command line holds ---"
-# 2026-11-11: 17,267 logs. `ls -t <glob>` is not even run past ARG_MAX, and reads as no logs.
+# 2026-11-11: 13,616 logs. `ls -t <glob>` is not even run past ARG_MAX, and reads as no logs.
 # flood — 16,000 old step logs under long names: more bytes of names than ARG_MAX here.
 flood() {
   python3 - "$STATE/driver" $(( NOWE - 9000 )) <<'PY'
