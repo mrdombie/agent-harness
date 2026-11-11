@@ -180,6 +180,15 @@ want "the read goes through"                          "0" "$rc"
 want "nothing slept"                                  "0" "$(slept)"
 want "and the allowance was asked once, not per call" "1" "$(asked)"
 
+echo "--- another reading of the fleet's does not hold this token's readers ---"
+fresh; rl 4000 4000
+printf 'graphql\t300\t5000\t%s\n' $(( NOW + 1800 )) > "$GH_ALLOWANCE_FILE"
+gh_call pr view 7 --json number >/dev/null 2>&1; rc=$?
+want "this token is healthy, so the read goes through" "0:0" "$rc:$(slept)"
+rm -f "$FIX/rl.json" "$FIX/state"/gh-budget.*
+gh_call pr view 7 --json number >/dev/null 2>&1; rc=$?
+want "and so does one whose own reading cannot be had" "0:0" "$rc:$(slept)"
+
 echo "--- the calls log keeps one row a call ---"
 fresh; rl 4000 4000
 gh_call api "repos/acme/widgets/commits/aaa

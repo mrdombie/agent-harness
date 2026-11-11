@@ -142,6 +142,10 @@ _driver_start_stranded() {
 driver_step_start() { # <ticket>
   local t="${1:?driver_step_start: need a ticket}"
   local meta st labels repo slug branch wt sha l hrc cw cb ow ob
+  # A start has built nothing yet: on a spent allowance it gives up in seconds and the
+  # ticket goes back on the queue (DRIVER_E_UNREAD), rather than hold a builder's place
+  # asleep until the reset. Only the later steps wait a spent allowance out.
+  local DRIVER_BUDGET_WAITS=0
   export DRIVER_TICKET="$t"
   driver_state_init "$t"
 

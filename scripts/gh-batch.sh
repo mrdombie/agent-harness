@@ -380,16 +380,16 @@ gh_budget_read() {
 }
 
 # gh_budget_low — 0, printing the shortest row, while REST or GraphQL is under
-# GH_ALLOWANCE_LOW_PCT on this token with its reset still ahead; failing that, while any
-# host's reading is (gh_allowance_low). A reading GitHub could not give is not low.
+# GH_ALLOWANCE_LOW_PCT on this token with its reset still ahead. This token's own reading
+# alone decides: the fleet's readings (gh_allowance_low) are not kept per token, and one
+# read on another token must not hold this one's readers. A reading GitHub could not
+# give is not low.
 gh_budget_low() {
   local rows
-  if rows=$(gh_budget_read 2>/dev/null); then
-    printf '%s\n' "$rows" | awk -F'\t' -v p="${GH_ALLOWANCE_LOW_PCT:-10}" -v now="$(gh_batch_now)" '
-      $3 + 0 > 0 && $4 + 0 > now + 0 && $2 * 100 < $3 * p { if (!found || $2 / $3 < best) { best = $2 / $3; row = $0; found = 1 } }
-      END { if (found) { print row; exit 0 } exit 1 }' && return 0
-  fi
-  gh_allowance_low
+  rows=$(gh_budget_read 2>/dev/null) || return 1
+  printf '%s\n' "$rows" | awk -F'\t' -v p="${GH_ALLOWANCE_LOW_PCT:-10}" -v now="$(gh_batch_now)" '
+    $3 + 0 > 0 && $4 + 0 > now + 0 && $2 * 100 < $3 * p { if (!found || $2 / $3 < best) { best = $2 / $3; row = $0; found = 1 } }
+    END { if (found) { print row; exit 0 } exit 1 }'
 }
 
 # _gh_is_read <gh args…> — 0 for a call that only reads. Anything unsure is a write, and

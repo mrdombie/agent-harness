@@ -98,12 +98,12 @@ clash_calls() { # <count>
   done
   printf '%s\n' "$out" > "$FIX/gh/prs-all.json"
   : > "$GH_LOG"; bash "$HERE/claimable-issues.sh" > "$FIX/claimable.out" 2>/dev/null
-  # The open-PR list itself is paged, a request per 25 PRs; what must not grow is the rest.
+  # The open-PR list itself is paged, a request per 50 PRs; what must not grow is the rest.
   echo "$(( $(calls) - $(grep -c 'OpenPullRequests' "$GH_LOG") ))"
 }
 small=$(clash_calls 3); big=$(clash_calls 40)
 want "40 clashing PRs cost what 3 do"              "$small" "$big"
-want "beside the open PRs, read in two pages"      "2" "$(grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' ')"
+want "beside the open PRs, read in one page"       "1" "$(grep -c 'OpenPullRequests' "$GH_LOG" | tr -d ' ')"
 want "and every one is still offered to finish"    "40" "$(grep -c 'FINISH PR' "$FIX/claimable.out" | tr -d ' ')"
 : > "$GH_LOG"; CLAIMABLE_PRS_FILE="$FIX/gh/prs-all.json" bash "$HERE/claimable-issues.sh" >/dev/null 2>&1
 want_not_in "a caller's PR read is reused, not asked again" 'OpenPullRequests' "$(cat "$GH_LOG")"
