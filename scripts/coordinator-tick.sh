@@ -757,6 +757,9 @@ if [ -n "$USAGE_ACCT" ] && [ -n "$USAGE_ACCT_WAS" ] && [ "$USAGE_ACCT" != "$USAG
     say "usage: the account changed since the last reading — the probe call to read the new account failed; it tries again next tick"
   fi
 fi
+# A WALL ON FILE is asked again, or it stands until its reset whatever the account now reads
+# (2026-11-11: 4 h idle on a week that read 56%). One probe call at most per probe interval.
+if ! coord_shadow && RECHECK=$(swarm_usage_hold_recheck); then say "$RECHECK"; fi
 # Either window at swarm.usageStepHold: the running builders hold before their next step.
 STEP_HOLD=$(swarm_usage_step_hold) || STEP_HOLD=""
 # A failed re-read retries next tick only while something holds; otherwise nothing waits on it.

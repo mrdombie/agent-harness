@@ -159,7 +159,9 @@ function holdBanner(h){
     : h.allows === 'process' ? `Not starting new work except process fixes: paused by the owner`
     : `Not starting new work: paused by the owner`
   const sub = h.kind === 'usage'
-    ? (h.until ? `Starts again ${esc(when(h.until))}. Work already running carries on.` : 'Work already running carries on.')
+    ? (h.until ? `Starts again ${esc(when(h.until))}. ` : '')
+      + (h.rechecked ? `Last re-checked ${esc(when(h.rechecked))}: ${esc(h.recheck || 'still at the limit')}. ` : '')
+      + 'Work already running carries on.'
     : `${esc(h.reason || '')}${h.reason ? '. ' : ''}Work already running carries on.`
   el.innerHTML = `<span class="dot"></span><div><b>${head}</b><span>${sub}</span></div>`
   el.hidden = false
