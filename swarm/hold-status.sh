@@ -21,18 +21,27 @@ window_name() { # <rateLimitType> — plain words for the limit's window
     *) printf '' ;;
   esac
 }
-usage() { # <until> [window]
-  jq -cn --arg u "$1" --arg w "${2:-}" \
+usage() { # <until> [window] [re-checked at, ISO] [what the re-check read]
+  jq -cn --arg u "$1" --arg w "${2:-}" --arg r "${3:-}" --arg s "${4:-}" \
     '{held: true, kind: "usage", until: $u,
-      reason: ("the plan'"'"'s " + (if $w == "" then "" else $w + " " end) + "usage limit was reached")}'
+      reason: ("the plan'"'"'s " + (if $w == "" then "" else $w + " " end) + "usage limit was reached")}
+     + (if $r == "" then {} else {rechecked: $r, recheck: $s} end)'
 }
 
 if h=$(swarm_held); then
   a=""; swarm_hold_lets_process && a=process
   jq -cn --arg r "$h" --arg a "$a" '{held: true, kind: "paused", reason: $r, until: null} + (if $a == "" then {} else {allows: $a} end)'
 elif swarm_usage_file_hold >/dev/null; then
-  e=$(cut -f1 "${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}" | head -1)
-  usage "$(swarm_iso "$e")"
+  f="${SWARM_USAGE_HOLD_FILE:-$STATE_DIR/usage-hold}"
+  e=$(cut -f1 "$f" | head -1)
+  # Only a re-check of THIS hold: one older than the file was another wall's.
+  IFS=$'\t' read -r rc_at rc_kind rc_said 2>/dev/null < "$SWARM_LOGS/.usage-hold-recheck" || rc_at=""
+  case "$rc_at" in ''|*[!0-9]*) rc_at="" ;; esac
+  if [ -n "$rc_at" ] && [ "$rc_kind" = held ] && [ "$rc_at" -gt "$(swarm_mtime "$f")" ]; then
+    usage "$(swarm_iso "$e")" "$(window_name "$(swarm_usage_hold_field "$f" 4)")" "$(swarm_iso "$rc_at")" "$rc_said"
+  else
+    usage "$(swarm_iso "$e")" "$(window_name "$(swarm_usage_hold_field "$f" 4)")"
+  fi
 elif u=$(swarm_usage_event_hold); then
   # "2026-10-20T19:00:00Z (seven_day window)"
   w=$(printf '%s' "$u" | sed -nE 's/.*\(([a-z_]+) window\).*/\1/p')
