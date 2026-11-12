@@ -420,4 +420,14 @@ unset ISSUES
 want "a follow-up's note alone ranks it so, with no labels read" "1" \
   "$(COORD_QUEUE="$QF" ISSUES='' coord_queue_ordered | cut -f1 | tr '\n' ' ' | grep -c '802 803')"
 
+echo "--- a fix round of an open PR goes ahead of every new build, behind only a process fix ---"
+bash "$Q" add 804 --first --note "Fix: PR #42 — required check(s) failed: unit" >/dev/null 2>&1
+want "the P3's fix round leads the P0 and everything put at the front" \
+  "804:new 801:new 805:new 802:new 803:new" "$(order)"
+want "with the tick's read too" "804" "$(COORD_QUEUE="$QF" ISSUES='{"801":{"number":801,"state":"OPEN","title":"x","labels":["P0"]},"804":{"number":804,"state":"OPEN","title":"y","labels":["P3"]}}' coord_queue_ordered | head -1 | cut -f1)"
+fix_issue 806 OPEN "P3,process,status:ready"; bash "$Q" add 806 >/dev/null
+want "a process fix still goes first of all" "806:new 804:new 801:new" "$(order | cut -d' ' -f1-3)"
+bash "$Q" add 804 --first --note "Resume: run r1 was cut off" >/dev/null 2>&1
+want "the same ticket without a Fix: note is back at its priority" "806:new 801:new" "$(order | cut -d' ' -f1-2)"
+
 suite_end "$FAILED"

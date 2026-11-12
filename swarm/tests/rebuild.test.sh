@@ -7,6 +7,7 @@
 # PR under the threshold is left on its clock.
 # The fix rounds (coordinator.fixRounds): a PR red on its own code goes back to its builder
 # on its own branch, one round a head, two a PR, then parks for the PM with the PR left open.
+# A round is spent only once its run started, and one whose run is gone is released.
 # PLANT=<name> turns one rule off in a copy of rebuild.sh, so the case that pins it must fail.
 # Run: bash "$0"
 set -uo pipefail
@@ -47,7 +48,11 @@ lib() {
     cancelled) perl -0pi -e 's/printf .stuck\\t%s\\n. "\$why" ;;\n    pending\|green\)/printf "pending\\t%s\\n" "\$why" ;;\n    pending|green)/' "$p" ;;
     fix-cap)      perl -0pi -e 's/\[ "\$rounds" -ge "\$FIX_ROUNDS" \]/false/' "$p" ;;
     fix-base-red) perl -0pi -e 's/else printf .base-red\\t%s\\n. "\$w"; fi/else printf "stuck\\t%s\\tred\\n" "\$why"; fi/' "$p" ;;
-    fix-queued)   perl -0pi -e 's/if rebuild_fix_queued "\$t"; then/if true; then/' "$p" ;;
+    fix-queued)   perl -0pi -e 's/if \[ "\$state" = queued \] && \[ -n "\$onq" \]; then/if false; then/' "$p" ;;
+    fix-started)  perl -0pi -e 's/then rounds=\$\(\(rounds - 1\)\); else state=started; fi/then :; else state=started; fi/' "$p" ;;
+    fix-released) perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/[ "\$state" = started ]; then/' "$p" ;;
+    fix-alive)    perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/false; then/' "$p" ;;
+    fix-mark)     perl -0pi -e 's/\$4 = "started"/\$4 = \$4/' "$p" ;;
     fix-head)     perl -0pi -e 's/if \[ "\$last" = "\$head" \]; then/if false; then/' "$p" ;;
   esac
   cmp -s "$LIB" "$p" && { echo "plant $PLANT did not apply" >&2; exit 3; }
@@ -108,11 +113,25 @@ fixpass() {
   pass
   export COORDINATOR_FIX_ROUNDS="$keep" COORDINATOR_REBUILD_AFTER_MIN="$min"
 }
-# queued <ticket> — the ticket is on the coordinator's queue (the recorder above writes none); unqueued empties it.
-queued() { jq -n --argjson n "$1" '{scope: "all", label: "all", tickets: [{n: $n, class: "new", note: "Fix: queued", pinned: true, front: true}]}' > "$C/queue.json"; }
+# queued <ticket> <pr> — that PR's fix round is on the coordinator's queue (the recorder above writes none); unqueued empties it.
+queued() { jq -n --argjson n "$1" --arg pr "$2" '{scope: "all", label: "all", tickets: [{n: $n, class: "new", note: "Fix: PR #\($pr) — red\n\nFix round 1 of 2.", pinned: true, front: true}]}' > "$C/queue.json"; }
 unqueued() { rm -f "$C/queue.json"; }
+# ran <pr> — the tick started that PR's queued fix round, as its spawn does: spent, and off the queue.
+ran() {
+  local l; l=$(lib) || exit 3
+  (cd "$REPO" && bash -c '. "$1/scripts/coordinator-env.sh" && . "$1/scripts/pr-red.sh" && . "$1/scripts/issue-status.sh" && . "$2" && rebuild_fix_started "$3"' _ "$KIT" "$l" "Fix: PR #$1 — red") >/dev/null 2>&1
+  unqueued
+}
+# fixcall <ticket> — rebuild_fix on the one open PR, called as the pass calls it but past its claimed-or-live guard.
+fixcall() {
+  local l; l=$(lib) || exit 3
+  OUT=$(cd "$REPO" && env -u COORDINATOR_FIX_ROUNDS COORDINATOR_REBUILD_AFTER_MIN=0 CLAIMED="${CLAIMED:-}" bash -c '
+    . "$1/scripts/coordinator-env.sh" && . "$1/scripts/pr-red.sh" && . "$1/scripts/issue-status.sh" && . "$2" || exit 1
+    rebuild_fix "$4" "$(jq -c ".[0]" "$3")" "required check(s) failed: unit" red' _ "$KIT" "$l" "$FIX/gh/prs-all.json" "$1" 2>&1)
+}
 adds() { grep -c "^add $1 " "$QLOG"; }
 rounds() { awk -F'\t' -v p="$1" '$1 == p { print $2 "/" $3 }' "$C/fix-rounds.did.tsv" 2>/dev/null; }
+state() { awk -F'\t' -v p="$1" '$1 == p { print $4 }' "$C/fix-rounds.did.tsv" 2>/dev/null; }
 updates() { grep -c "^api repos/acme/widgets/pulls/$1/update-branch -X PUT" "$GH_LOG"; }
 
 fix_required unit lint
@@ -311,16 +330,20 @@ want_in "  the ticket goes back to ready"        'issue edit 101 .*--add-label s
 want "  the round is on the ledger, with its head" "1/head20" "$(rounds 90)"
 want "  the PR is not closed"                    "0" "$(closes 90)"
 want_in "  it says so"                           'rebuild: PR #90 goes back to its builder on tkt-101/work — fix round 1 of 2' "$OUT"
-queued 101; age 5; fixpass; age 10; fixpass
+want "  queued, not spent: its run has not started" "queued" "$(state 90)"
+queued 101 90; age 5; fixpass; age 10; fixpass
 want "the same head seen again, its fix still queued: one round, one queue entry" "1" "$(adds 101)"
 want "  the ledger still says one"               "1/head20" "$(rounds 90)"
-want_in "  it says the head waits for that run"  'rebuild: PR #90 is stuck .* — fix round 1 of 2 was spent on this head' "$OUT"
-unqueued
+want_in "  it says the round has not started"    'rebuild: PR #90 is stuck .* — fix round 1 of 2 is queued for this head and has not started' "$OUT"
+want_not_in "  never that it was spent"          'was spent on this head' "$OUT"
+ran 90
+want "its run starts: the round is spent"        "started" "$(state 90)"
 echo "  a new head, red again: round 2"
 pr 90 101 head21 BLOCKED '[]' unit:FAILURE:7103 lint:SUCCESS:7104
 age 30; fixpass
 want "  queued a second time"                    "2" "$(adds 101)"
 want "  the ledger counts the PR, not the head"  "2/head21" "$(rounds 90)"
+ran 90
 want_in "  with the new head's job log"          '^- unit: https://github.com/acme/widgets/actions/runs/7103/job/1$' "$(cat "$QLOG")"
 echo "  a third red head: parked for the PM, the PR left open"
 pr 90 101 head22 BLOCKED '[]' unit:FAILURE:7105 lint:SUCCESS:7106
@@ -337,21 +360,71 @@ want_in "  it says so"                           'rebuild: parked #101 for the P
 echo "--- a fix round that ended without a push: the next round on the same head, then the park ---"
 fresh; base unit:success
 pr 99 101 head40 BLOCKED '[]' unit:FAILURE:7120
-age 0; fixpass; queued 101; age 5; fixpass
+age 0; fixpass; queued 101 99; age 5; fixpass
 want "queued and waiting: no second entry"       "1" "$(adds 101)"
-want "  no round spent"                          "1/head40" "$(rounds 99)"
-unqueued; age 10; fixpass
-want "off the queue, nothing running, same head: round 2 is queued" "2" "$(adds 101)"
-want "  on the same head"                        "2/head40" "$(rounds 99)"
+want "  no round spent"                          "1/head40 queued" "$(rounds 99) $(state 99)"
+ran 99; age 10; fixpass
+want "its run started and is gone, same head: round 2 is queued" "2" "$(adds 101)"
+want "  on the same head"                        "2/head40 queued" "$(rounds 99) $(state 99)"
 want_in "  it says the round ended without a push" 'rebuild: PR #99 — fix round 1 ended without a push' "$OUT"
-queued 101; age 15; fixpass
+queued 101 99; age 15; fixpass
 want "round 2 queued and waiting: nothing more"  "2" "$(adds 101)"
-unqueued; : > "$GH_LOG"; age 20; fixpass
+ran 99; : > "$GH_LOG"; age 20; fixpass
 want "2 of 2 ended without a push: never a third run" "2" "$(adds 101)"
 want_in "  the ticket is parked for the PM"      'issue edit 101 .*--add-label status:parked' "$(cat "$GH_LOG")"
 want "  the PR is left open"                     "0" "$(closes 99)"
 want "  the cap held"                            "2/head40" "$(rounds 99)"
 want_in "  it says so"                           'rebuild: parked #101 for the PM — 2 fix round\(s\), PR #99 left open' "$OUT"
+
+echo "--- a round is spent only once its run has started ---"
+fresh; base unit:success
+pr 88 101 head50 BLOCKED '[]' unit:FAILURE:7130
+age 0; fixpass; queued 101 88; age 5; fixpass
+unqueued; : > "$GH_LOG"; age 10; fixpass
+want "queued, then off the queue with no run started: queued again" "2" "$(adds 101)"
+want "  still round 1: nothing was spent"        "1/head50 queued" "$(rounds 88) $(state 88)"
+want_in "  it says so"                           'rebuild: PR #88 — fix round 1 left the queue without starting; no round spent' "$OUT"
+want_in "  the brief is round 1 again"           'Fix round 1 of 2\.' "$(cat "$QLOG")"
+want "  never round 2"                           "0" "$(grep -c 'Fix round 2 of 2' "$QLOG")"
+unqueued; age 15; fixpass; unqueued; age 20; fixpass
+want "  however often: never parked for rounds no run spent" "0" "$(grep -c 'status:parked' "$GH_LOG")"
+echo "  a row an older version wrote at queue time, its round still queued: not spent either"
+fresh; base unit:success
+pr 88 101 head50 BLOCKED '[]' unit:FAILURE:7130
+printf '88\t2\thead50\n' > "$C/fix-rounds.did.tsv"; queued 101 88
+age 0; fixpass
+want_in "  round 2 of 2 waits for its start"     'rebuild: PR #88 is stuck .* — fix round 2 of 2 is queued for this head and has not started' "$OUT"
+want "  not parked"                              "0" "$(grep -c 'status:parked' "$GH_LOG")"
+ran 88
+want "  started, the same row is the spent one"  "2/head50 started" "$(rounds 88) $(state 88)"
+echo "  a start with no row to mark is counted from its brief"
+rm -f "$C"/fix-rounds.*; ran 88
+want "  one round, started"                      "1/- started" "$(rounds 88) $(state 88)"
+
+echo "--- a started round whose run is gone is released, whatever the queue holds ---"
+fresh; base unit:success
+pr 89 101 head60 BLOCKED '[]' unit:FAILURE:7140
+printf '89\t1\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; queued 101 89
+age 0; fixpass
+want "no claim, no live run, its ticket still queued: round 2 starts" "1" "$(adds 101)"
+want "  on the same head"                        "2/head60 queued" "$(rounds 89) $(state 89)"
+want_in "  it says the round is released"        'rebuild: PR #89 — fix round 1 ended without a push; its run is gone, so it is released' "$OUT"
+want_not_in "  the PR is not left waiting on it" 'it waits for that run' "$OUT"
+printf '89\t2\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; : > "$QLOG"; : > "$GH_LOG"; age 5; fixpass
+want "its rounds spent and the last run gone: parked for the PM" "1" "$(grep -c 'issue edit 101 .*--add-label status:parked' "$GH_LOG")"
+want "  no third round"                          "0" "$(adds 101)"
+echo "  while its run is alive the round is not released"
+printf '89\t1\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; unqueued; : > "$QLOG"
+CLAIMED=101 fixcall 101
+want "a claim on the ticket: nothing queued"     "0" "$(adds 101)"
+want_in "  it waits for that run"                'rebuild: PR #89 is stuck .* — fix round 1 of 2 was spent on this head; it waits for that run' "$OUT"
+mkdir -p "$STATE/runs"; printf '{"run_id":"claim-101-live","ticket":"101","child_pid":%s}\n' "$$" > "$STATE/runs/claim-101-live.json"
+CLAIMED="" fixcall 101
+want "a live run here, no claim: nothing queued" "0" "$(adds 101)"
+want_in "  it waits for that run"                'it waits for that run' "$OUT"
+rm -f "$STATE/runs/claim-101-live.json"
+CLAIMED="" fixcall 101
+want "the run gone: the next round"              "1" "$(adds 101)"
 
 echo "--- under the rebuild threshold the fix round replaces the wait too ---"
 fresh; base unit:success
@@ -402,7 +475,7 @@ want "still clashing: no second update"          "1" "$(updates 95)"
 want "  it goes back to its builder instead"     "1" "$(adds 101)"
 want_in "  with a brief naming the clash"        '^add 101 --class new --first --note Fix: PR #95 — it conflicts with its base branch$' "$(cat "$QLOG")"
 want_in "  and what to merge"                    'Merge origin/develop into tkt-101/work, resolve the conflicts' "$(cat "$QLOG")"
-want "  a round is spent"                        "1/head27" "$(rounds 95)"
+want "  a round is queued"                       "1/head27" "$(rounds 95)"
 fresh; base unit:success; rm -f "$UPD"
 pr 95 101 head28 DIRTY '[]' unit:SUCCESS:7113
 age 0; fixpass
@@ -448,7 +521,7 @@ rm -f "$C"/fix-rounds.*
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued; do
+  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark; do
     PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
     want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
   done
