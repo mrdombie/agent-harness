@@ -140,17 +140,20 @@ coord_sheet_stop_labels() {
 }
 
 # coord_sheet_entries <wide order> <issues json> <claims tsv> <started here, comma list>
-# — the sheet's content as JSON: {order: [...], building: [...]}. The order keeps
+# — the sheet's content as JSON: {order: [...], building: [...]}, and {elsewhere: [...]}
+# when the seed left out ready tickets of a repo this host has no clone of. The order keeps
 # the queue's run order; an entry a host holds stays in its place, named. Process
 # fixes (coordinator.processLabel) are listed first, whatever order the rows came in.
 #   wide order  coord_queue_ordered --wide rows
 #   claims tsv  <ticket> \t <host> \t <step>, every live claim on every host
 coord_sheet_entries() {
-  local wide="$1" issues="${2:-}" claims="$3" plan="${4:-}"
+  local wide="$1" issues="${2:-}" claims="$3" plan="${4:-}" elsewhere
   [ -n "$issues" ] || issues='{}'
+  elsewhere=$(jq -c '[(.elsewhere // [])[] | select((.n | type) == "number" and (.repo | type) == "string") | {n, repo}]' "$COORD_QUEUE" 2>/dev/null) || elsewhere='[]'
+  [ -n "$elsewhere" ] || elsewhere='[]'
   jq_slurp raw:wide "$wide" raw:claims "$claims" -- coord_jq -c --arg plan "$plan" --arg host "$COORD_HOST" \
      --arg ready "$LBL_READY" --arg inreview_l "${LBL_IN_REVIEW:-status:in-review}" \
-     --argjson stops "$(coord_sheet_stop_labels)" "$COORD_TICKET_JQ"'
+     --argjson stops "$(coord_sheet_stop_labels)" --argjson elsewhere "$elsewhere" "$COORD_TICKET_JQ"'
     . as $iss
     | ($claims | split("\n") | map(select(length > 0) | split("\t") | {n: (.[0] | tonumber? // null), host: (.[1] // ""), step: (.[2] // "")})
         | map(select(.n != null))) as $claimed
@@ -174,7 +177,9 @@ coord_sheet_entries() {
           + (if coord_process($ls) then {process: true} else {} end)
           + (if $h != "" then {host: $h} else {} end)]
         | sort_by(if .process then 0 else 1 end)),
-     building: [$held[] | . + {title: ($iss[(.n | tostring)].title // "")}] | sort_by(.n)}' <<<"$issues"
+     building: [$held[] | . + {title: ($iss[(.n | tostring)].title // "")}] | sort_by(.n)}
+    + (($elsewhere | map(select(.n as $n | ($held | map(.n) | index($n)) == null))) as $el
+       | if ($el | length) > 0 then {elsewhere: $el} else {} end)' <<<"$issues"
 }
 
 _sheet_when() { # <epoch> — the owner's local wall clock, as a person reads it
@@ -208,6 +213,11 @@ coord_sheet_render() {
       (if $n == 0 then "Nothing is ready to start."
        else (.order | to_entries[] | .key as $i | .value
              | "\($i + 1). #\(.n) · \(.prin | pri) · \(kind) · \(.title | cut) — \(if (.host // "") != "" then "building on " + .host else "ready" end)") end),
+      (if (.elsewhere // []) | length > 0 then
+        "", "### Ready, and nothing starts them",
+        (.elsewhere | group_by(.repo)[]
+          | "- \(map("#\(.n)") | join(" ")) — for the \(.[0].repo) repo, and \($owner) has no clone of it: a directory named \(.[0].repo) beside this project, with that repo as its origin")
+       else empty end),
       (if (.fleet // []) | length > 0 then
         "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)\(if .hostCap then " · at most \(.hostCap.perHost) building on each" else "" end)",
         (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end)"

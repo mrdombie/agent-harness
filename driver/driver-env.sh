@@ -139,6 +139,7 @@ DRIVER_E_REWORK=30
 DRIVER_E_HAS_PR=31    # start found an open PR this run did not build: nothing is built beside it, no park (34 is retired)
 DRIVER_E_NOOP=32      # a step found nothing owed (a ticket split before it built): the run ends clean, exit 0
 DRIVER_E_MACHINE=33   # a model call failed with an API error, twice: the machine, never a question
+DRIVER_E_ELSEWHERE=36 # start read a repo:<name> label for a repo this project does not build: nothing is claimed or cut here, no park
 DRIVER_E_UPSIZE=35   # the quick change is bigger than its size: the run goes on along the full route, from plan
 
 # driver_gh_read <command…> — a GitHub read, tried DRIVER_LOOKUP_TRIES times with a
@@ -1088,4 +1089,4 @@ export DRIVER_MAX_BUILD_TRIES DRIVER_MAX_REVIEW_ROUNDS DRIVER_MAX_GATE_FIXES DRI
 export DRIVER_GRADES DRIVER_BLOCKING_GRADES DRIVER_BLOCKING_GRADES_LATER DRIVER_LABEL_CRITICAL DRIVER_LABEL_MAJOR DRIVER_LABEL_MINOR
 export DRIVER_PREPARE_WHY
 export DRIVER_OK DRIVER_E_QUESTION DRIVER_E_NO_SKILL DRIVER_E_SCHEMA
-export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_HAS_PR DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_UPSIZE DRIVER_QUICK_STEPS
+export DRIVER_E_NO_BRIEF DRIVER_E_REFUSED DRIVER_E_TIMEOUT DRIVER_E_UNREAD DRIVER_E_USAGE DRIVER_E_REQUEUE DRIVER_E_BUSY DRIVER_E_REWORK DRIVER_E_HAS_PR DRIVER_E_ELSEWHERE DRIVER_E_NOOP DRIVER_E_MACHINE DRIVER_E_UPSIZE DRIVER_QUICK_STEPS

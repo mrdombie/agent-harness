@@ -418,6 +418,7 @@ They are the whole control flow, so they are named once, in `driver-env.sh`:
 | 32 | a step found nothing owed (a ticket split before it built): the run exits 0, with no park |
 | 33 | machine fault: a model call failed at the API (an API Error, overloaded, rate-limited, a safeguards flag, a 5xx, an empty transcript) and failed again on the one retry — a driver park, never a question, left ready for the coordinator |
 | 35 | the quick change is bigger than its size (more files than `driver.quick.maxFiles`, a never-quick file, or red gates): the run goes on along the full route from `plan`, with the quick commits kept at `refs/driver/quick/<ticket>`. Never a run's exit; `build-ticket` handles it |
+| 36 | start read a `repo:<name>` label naming a repo this project does not build: nothing is claimed, no worktree is cut, no model is called, no park, no requeue — the ticket stays ready, and the coordinator starts it in a clone of `<name>` when this host has one |
 
 A gate that outruns its limit (25) is tried once more after the machine quietens, its
 limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second

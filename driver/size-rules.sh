@@ -145,11 +145,13 @@ driver_repo_own() {
 # stayed empty while every harness ticket, which names the harness repo, was refused as
 # another repo's work. A repo:<name> ticket is this host's to build when a clone of <name>
 # sits beside this project's own (or HARNESS_REPO_CLONES="<name>=<path> …" names one), its
-# origin is that repo, and its trunk carries .claude/harness.json: the run is spawned in
-# that clone and reads that config. With no such clone it is still another repo's.
+# origin is that repo, and origin's trunk is known: the run is spawned in that clone. A
+# clone whose trunk carries .claude/harness.json is read by that config; one that carries
+# none is built on the queue's facts and its own git facts (driver_repo_clone_config).
+# With no such clone it is still another repo's.
 # driver_repo_clone <name> — the clone's path, or fails.
 driver_repo_clone() {
-  local want dir="" pair url ref main="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}"
+  local want dir="" pair url main="${MAIN_REPO:-${HARNESS_MAIN_REPO:-}}"
   want=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'); [ -n "$want" ] || return 1
   [ "$want" != "$(driver_repo_self)" ] || return 1
   for pair in ${HARNESS_REPO_CLONES:-}; do
@@ -161,10 +163,48 @@ driver_repo_clone() {
   url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
   url="${url%/}"; url="${url%.git}"
   [ "$(printf '%s' "${url##*/}" | tr '[:upper:]' '[:lower:]')" = "$want" ] || return 1
-  for ref in origin/HEAD origin/main origin/develop origin/master; do
-    git -C "$dir" cat-file -e "$ref:.claude/harness.json" 2>/dev/null && { printf '%s' "$dir"; return 0; }
+  driver_repo_clone_trunk "$dir" >/dev/null || return 1
+  printf '%s' "$dir"
+}
+# driver_repo_clone_trunk <clone> — the branch its pull requests go to: origin's default
+# branch, else the first of main, develop, master that origin has. Fails when it has none.
+driver_repo_clone_trunk() {
+  local dir="$1" b
+  b=$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) || b=""
+  b="${b#origin/}"
+  if [ -n "$b" ] && git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$b^{commit}" >/dev/null 2>&1; then
+    printf '%s' "$b"; return 0
+  fi
+  for b in main develop master; do
+    git -C "$dir" rev-parse -q --verify "refs/remotes/origin/$b^{commit}" >/dev/null 2>&1 && { printf '%s' "$b"; return 0; }
   done
   return 1
+}
+# driver_repo_clone_config <clone> — the config a run in that clone is handed. Prints
+# nothing when the clone's trunk carries its own .claude/harness.json: the run reads that.
+# Otherwise writes one under the state dir and prints its path: the queue's facts from
+# this project's config (where the tickets live, the labels, the branch prefix, the state
+# dir) and the clone's own git facts (its repo, its trunk). It names no local gate: the
+# required checks on the clone's pull request are its gate. Fails when it cannot be written.
+driver_repo_clone_config() {
+  local dir="${1:?driver_repo_clone_config: need a clone}" trunk ref url slug out
+  trunk=$(driver_repo_clone_trunk "$dir") || return 1
+  for ref in "origin/$trunk" origin/HEAD origin/main origin/develop origin/master; do
+    git -C "$dir" cat-file -e "$ref:.claude/harness.json" 2>/dev/null && return 0
+  done
+  [ -n "${HARNESS_CFG:-}" ] && [ -f "$HARNESS_CFG" ] && [ -n "${STATE_DIR:-}" ] || return 1
+  url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
+  url="${url%/}"; url="${url%.git}"
+  slug=$(printf '%s' "$url" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')
+  case "$slug" in */*) ;; *) return 1 ;; esac
+  out="$STATE_DIR/clone-config/$(printf '%s' "${slug##*/}" | tr '[:upper:]' '[:lower:]').json"
+  mkdir -p "$(dirname "$out")" 2>/dev/null || return 1
+  jq --arg repo "$slug" --arg trunk "$trunk" --arg state "$STATE_DIR" '
+    { repo: $repo, issueRepo: (.issueRepo // .repo), integrationBranch: $trunk, trunks: [$trunk],
+      branchPrefix, stateDir: $state, labels, gates: { prePush: false } }
+    + (if (.legacyEnvPrefix // "") != "" then { legacyEnvPrefix } else {} end)' "$HARNESS_CFG" > "$out.$$" 2>/dev/null \
+    && mv -f "$out.$$" "$out" || { rm -f "$out.$$"; return 1; }
+  printf '%s' "$out"
 }
 # driver_repo_clone_for <labels-csv> — the clone a ticket's repo:<name> label sends its
 # run to; fails when its labels name none (no repo: label, or only this project's own).
@@ -193,19 +233,27 @@ driver_repo_own_here() {
       done; } | sed '/^$/d' | awk '!s[$0]++'
 }
 
-# driver_repo_foreign <labels-csv> — prints the repo a repo:<name> label names and
-# returns 0 when the ticket belongs to another repo: it carries a repo: label and none
-# of them names a repo this project builds or has a clone of here (driver_repo_clone).
-# Never sized, seeded or started here.
-driver_repo_foreign() {
+# driver_repo_elsewhere <labels-csv> — returns 0 when the ticket carries a repo: label and
+# none of them names a repo this project builds (driver_repo_own): it is never built in
+# this project's own repo. Prints "<repo> \t <its clone on this host, or nothing>".
+driver_repo_elsewhere() {
   local own want
   own=$(driver_repo_own); [ -n "$own" ] || return 1
   want=$(printf '%s' "$1" | tr ',' '\n' | sed -nE 's/^[[:space:]]*[Rr][Ee][Pp][Oo]:[[:space:]]*//p' \
     | sed -E 's#.*/##; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]' | sed '/^$/d')
   [ -n "$want" ] || return 1
   printf '%s\n' "$want" | grep -qxF -f <(printf '%s\n' "$own") && return 1
-  driver_repo_clone_for "$1" >/dev/null && return 1
-  printf '%s' "$(printf '%s\n' "$want" | head -1)"
+  printf '%s\t%s' "$(printf '%s\n' "$want" | head -1)" "$(driver_repo_clone_for "$1" 2>/dev/null)"
+}
+# driver_repo_foreign <labels-csv> — prints the repo a repo:<name> label names and
+# returns 0 when the ticket belongs to another repo: it is built elsewhere
+# (driver_repo_elsewhere) and this host has no clone of that repo (driver_repo_clone).
+# Never sized, seeded or started on this host.
+driver_repo_foreign() {
+  local e
+  e=$(driver_repo_elsewhere "$1") || return 1
+  [ -z "${e#*$'\t'}" ] || return 1
+  printf '%s' "${e%%$'\t'*}"
 }
 
 # _driver_size_globs — the never-quick globs as a JSON list: the defaults plus

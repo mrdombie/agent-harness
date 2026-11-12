@@ -11,6 +11,9 @@
 #   closed            there is nothing to build
 #   the hold label    a person owns it; an agent taking it is a slot nobody can use
 #   gated             the PM flips that label, never the driver
+#   another repo's    a repo:<name> label names a repo this project does not build: its
+#                     files are not in this repo's worktrees. Nothing is claimed or cut
+#                     (DRIVER_E_ELSEWHERE); the coordinator starts it in a clone of <name>
 #   not ready         a status that is not ready is a status somebody chose
 #                     (partial is the machine's: resumed from the branch a dead run
 #                     left, driver.maxPartialResumes (3) times in a row, then the PM's)
@@ -43,6 +46,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/worktree-lib.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/branch-ticket.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/size-rules.sh" || exit 1
 
 # _driver_start_clear_way <ticket> <repo> <tree> <branch> <cut> — make room for
 # `worktree add` at <tree> on <branch>. 1, with DRIVER_START_WHY, when it must not.
@@ -166,6 +170,20 @@ driver_step_start() { # <ticket>
   if [ "$st" != "OPEN" ]; then
     driver_say "✋ start: #$t is $st. There is nothing to build."
     return "$DRIVER_E_REFUSED"
+  fi
+  # ANOTHER REPO'S TICKET IS NEVER BUILT IN THIS ONE. A repo:<name> ticket started here
+  # got a worktree of this repo, where none of its files exist: the plan and the first
+  # build task were paid for before the model asked where the files were. Read off the
+  # labels, before the claim and the worktree, with no model call. A run the coordinator
+  # spawned in a clone of <name> reads that clone's config, so the label names its own repo.
+  local elsewhere
+  if elsewhere=$(driver_repo_elsewhere "$labels"); then
+    if [ -n "${elsewhere#*$'\t'}" ]; then
+      driver_say "✋ start: #$t is labelled for ${elsewhere%%$'\t'*}, which this repo ($(driver_repo_self)) does not build. Its run starts in the clone at ${elsewhere#*$'\t'} (the coordinator starts it there), never in a worktree of this repo. Nothing was claimed or cut."
+    else
+      driver_say "✋ start: #$t is labelled for ${elsewhere%%$'\t'*}, which this repo ($(driver_repo_self)) does not build, and this host has no clone of it (a directory of that name beside this repo's clone with that repo as its origin, or HARNESS_REPO_CLONES). Nothing was claimed or cut; it stays ready."
+    fi
+    return "$DRIVER_E_ELSEWHERE"
   fi
   case ",$labels," in
     *",$HOLD_LABEL,"*)

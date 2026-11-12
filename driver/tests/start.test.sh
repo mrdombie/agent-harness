@@ -119,6 +119,38 @@ out=$(driver_step_start 105 2>&1); rc=$?
 want "drafting refuses" "24" "$rc"
 want_in "naming the status it wanted" 'status:ready' "$out"
 
+echo "--- a ticket labelled for another repo is never claimed or cut in this one ---"
+# Three harness tickets were claimed into worktrees of the project's repo, where none of
+# their files exist: the plan and a build task were paid for before the model asked.
+trees_for() { ls -d "$FIX/trees"/*"$1"* 2>/dev/null | grep -c .; }
+calls_before=$(wc -l < "$CLAUDE_LOG" | tr -d ' ')
+fix_issue 9140 OPEN "status:ready,repo:other"
+out=$(driver_step_start 9140 2>&1); rc=$?
+want "it ends the run as another repo's"   "36" "$rc"
+want_in "naming the repo the label names"  'labelled for other, which this repo \(widgets\) does not build' "$out"
+want_in "and that no clone of it is here"  'this host has no clone of it' "$out"
+want "no claim was taken"                  "" "$(awk '$1==9140' "$CLAIMS")"
+want "no worktree is on the record"        "" "$(driver_state_get 9140 worktree)"
+want "no worktree was cut"                 "0" "$(trees_for 9140)"
+want "no branch was made"                  "" "$(git -C "$REPO" for-each-ref --format='%(refname:short)' 'refs/heads/tkt-9140*')"
+# A clone of the label's repo beside this one: its run belongs in that clone, still never here.
+git init -q -b main "$FIX/kit"
+git -C "$FIX/kit" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m root
+git -C "$FIX/kit" remote add origin https://github.com/acme/kit.git
+git -C "$FIX/kit" update-ref refs/remotes/origin/main HEAD
+fix_issue 9141 OPEN "status:ready,repo:acme/kit"
+out=$(driver_step_start 9141 2>&1); rc=$?
+want "with a clone of that repo here it still ends the run here" "36" "$rc"
+want_in "and names the clone its run starts in" "starts in the clone at $FIX/kit" "$out"
+want "no claim was taken"                  "" "$(awk '$1==9141' "$CLAIMS")"
+want "no worktree was cut"                 "0" "$(trees_for 9141)"
+want "and no model was called for either"  "$calls_before" "$(wc -l < "$CLAUDE_LOG" | tr -d ' ')"
+fix_issue 9142 OPEN "status:ready,repo:widgets"
+rc=0; driver_step_start 9142 >/dev/null 2>&1 || rc=$?
+want "a ticket labelled for this repo starts" "0" "$rc"
+want "in a worktree of this repo"          "1" "$(trees_for 9142)"
+bash "$CL" release 9142
+
 echo "--- a peer already holds the claim ---"
 fix_issue 106 OPEN "status:ready"
 claim_row 106 somebody@else tkt-106/theirs "$FIX/theirs"
