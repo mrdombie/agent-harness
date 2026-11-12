@@ -106,6 +106,12 @@ ship_ready 602; ship 602
 want "it pushes too"                     "pushed" "$(pushed 602)"
 want "the check did not run again"       "1" "$(base_runs chk-a)"
 
+echo "--- a pre-push log with a check summary and vitest host-path FAIL lines names the check ---"
+printf ' FAIL  /Users/x/maktura-wt/sh-1-abc/apps/api/src/a602.test.ts > a\n✗ verify:push — 1 of 3 failed: test:api\nerror: failed to push some refs\n' > "$FIX/o3"
+printf '%s\ttest:api\tred\t1\t1\n' "$SHA" > "$FIX/br3.tsv"
+want "it names the check script, not the file" "test:api" \
+  "$(BASE_CHECKS="$FIX/br3.tsv"; driver_base_red_gate "$FIX/t602" "" "$FIX/o3" prepush)"
+
 echo "--- the coordinator files ONE develop-red ticket for both ---"
 file_red
 want "one ticket"                        "1" "$(creates)"
