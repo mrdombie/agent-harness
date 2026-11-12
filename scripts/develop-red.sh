@@ -20,6 +20,10 @@
 # Any other red adds one line per check to check-class-count.tsv and is ledgered: no ticket,
 # no build. Unreadable rules are unknown: the rows wait for the next pass.
 #
+# NO HOST PATH LEAVES THIS HOST: each check is named from the repo root before it reaches a
+# title, body, marker, comment or the week's count (develop_red_clean); a path no tracked file
+# ends with is dropped. The ledger keeps the row's own set, so prune still clears the row.
+#
 # FILED ONCE, the follow-up.sh way: a ledger on this host (develop-red-filed.tsv) and a
 # marker in the body, searched on the forge, so another builder, a resumed tick or another
 # host files nothing twice. While a ticket for the same check set is still open, a newer
@@ -104,6 +108,20 @@ required_check() { # <check name>
   done <<<"$RUN_GLOBS"
   return 1
 }
+# develop_red_clean <check> — the name a ticket may carry. A path is named from the repo root:
+# a builder's worktree path becomes the tracked file it ends with (the longest), and one no
+# tracked file ends with is unplaceable (status 1), never sent. Anything else is kept.
+TRACKED=""; TRACKED_READ=""
+develop_red_clean() {
+  case "$1" in */*) ;; *) printf '%s' "$1"; return 0 ;; esac
+  [ -n "$TRACKED_READ" ] || { TRACKED=$(git -C "${REPO_ROOT:-.}" ls-files 2>/dev/null) || return 2; TRACKED_READ=1; }
+  local p="${1#/}"
+  while :; do
+    p="${p#./}"
+    grep -qFx -- "$p" <<<"$TRACKED" && { printf '%s' "$p"; return 0; }
+    case "$p" in */*) p="${p#*/}" ;; *) return 1 ;; esac
+  done
+}
 WEEK=$(date -u +%G-W%V)
 KEEP=""
 while IFS=$'\t' read -r sha checks who prs; do
@@ -112,6 +130,12 @@ while IFS=$'\t' read -r sha checks who prs; do
   IFS=, read -ra names <<<"$checks"
   for c in "${names[@]}"; do
     [ -n "$c" ] || continue
+    rc=0; c=$(develop_red_clean "$c") || rc=$?
+    if [ "$rc" = 2 ]; then
+      echo "unknown — the files $REPO_ROOT tracks could not be read — $pending_n row(s) not filed this pass"; exit 1
+    fi
+    if [ "$rc" != 0 ]; then echo "the $TRUNK red at $s7 names a path no tracked file ends with: not filed"; continue; fi
+    case ",$req,$other," in *",$c,"*) continue ;; esac
     if required_check "$c"; then req="$req${req:+,}$c"; else other="$other${other:+,}$c"; fi
   done
   if [ -n "$other" ]; then
