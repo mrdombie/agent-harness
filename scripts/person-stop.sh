@@ -45,6 +45,8 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SELF_DIR/person-words.sh" || exit 2
 . "$SELF_DIR/driver-draft.sh" || exit 2
 REPO="${GH_REPO:-$REPO_SLUG}"
+# The ticket lives in the queue's repo when that is another (issueRepo); the pull request never does.
+TICKET_REPO="${ISSUE_REF:-$REPO}"
 
 usage() { sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
@@ -101,7 +103,7 @@ check() {
   local dnm drivers tc="[]" pc="[]" rv="[]" tl="[]" pj="{}"
   dnm="${LBL_DO_NOT_MERGE:-do-not-merge}"
   drivers=$(jq -c '.driver.accounts // [] | if type == "array" then map(tostring) else [] end' "$HARNESS_CFG" 2>/dev/null) || drivers='[]'
-  tc=$(ps_read "repos/$REPO/issues/$t/comments?per_page=100") || { echo "could not read the comments on #$t"; return 2; }
+  tc=$(ps_read "repos/$TICKET_REPO/issues/$t/comments?per_page=100") || { echo "could not read the comments on #$t"; return 2; }
   if [ -n "$pr" ]; then
     pj=$(gh_read "pull request #$pr" api "repos/$REPO/pulls/$pr" 2>/dev/null) && jq -e '.number' >/dev/null 2>&1 <<<"$pj" \
       || { echo "could not read pull request #$pr"; return 2; }
