@@ -75,6 +75,17 @@ out="$(run "$d")"; rc=$?
 [ $rc -eq 1 ] && printf '%s' "$out" | grep -q 'picture-rules.md is missing' && ok "the picture rules removed is refused" || bad "no picture rules passed: $out"
 rm -rf "$d"
 
+# The flow audit: each sender loses the skill name, then the gate call.
+for s in auto bug needsme; do
+  for want in 'agent-harness:flows' 'flow-audit.sh gate'; do
+    d="$(fresh)"; f="$d/skills/$s/SKILL.md"
+    grep -vF "$want" "$f" > "$f.new" && mv "$f.new" "$f"
+    out="$(run "$d")"; rc=$?
+    [ $rc -eq 1 ] && printf '%s' "$out" | grep -q "skills/$s/SKILL.md.*$want" && ok "$s without '$want' is refused, named" || bad "$s without '$want' passed: $out"
+    rm -rf "$d"
+  done
+done
+
 # The standing rule is deleted.
 d="$(fresh)"; r="$d/rules/standing-rules.md"
 grep -vi 'picture mode' "$r" > "$r.new" && mv "$r.new" "$r"
