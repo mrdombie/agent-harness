@@ -102,7 +102,7 @@ plan_on_record() {
   printf '{"step":"plan","status":"planned","tasks":[{"title":"Add the export button","files":["src/export.ts"]},{"title":"Test the empty state","files":["src/export.test.ts"]}]}\n' > "$d/steps/plan.json"
   printf '{"step":"review","verdict":"pass","findings":[{"grade":"minor","summary":"the empty state reads as an error","file":"src/export.tsx"}]}\n' > "$d/steps/review.json"
 }
-fresh() { : > "$GH_LOG"; : > "$QLOG"; rm -f "$C"/rebuild-clock.* "$C"/base-red.* "$C"/base-red-reruns.* "$C"/reruns.tsv "$C"/run-classes.tsv "$C"/fix-rounds.* "$C"/clash-updates.* "$C"/queue.json; rm -rf "$STATE/driver"; CLAIMED=""; }
+fresh() { : > "$GH_LOG"; : > "$QLOG"; rm -f "$C"/rebuild-clock.* "$C"/base-red.* "$C"/base-red-reruns.* "$C"/reruns.tsv "$C"/run-classes.tsv "$C"/fix-rounds.* "$C"/clash-updates.* "$C"/stale-updates.* "$C"/fix-parks.* "$C"/draft-resumes.* "$C"/queue.json; rm -rf "$STATE/driver"; CLAIMED=""; }
 closes() { grep -c "^pr close $1 " "$GH_LOG"; }
 age() { fix_at $(( T0 + $1 * 60 )); }   # minutes since the first pass
 # fixpass — one pass with the rebuild off and the fix rounds at their default (2), or FR's.
@@ -414,7 +414,7 @@ printf '89\t2\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; : > "$QLOG"; : > "$
 want "its rounds spent and the last run gone: parked for the PM" "1" "$(grep -c 'issue edit 101 .*--add-label status:parked' "$GH_LOG")"
 want "  no third round"                          "0" "$(adds 101)"
 echo "  while its run is alive the round is not released"
-printf '89\t1\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; unqueued; : > "$QLOG"
+printf '89\t1\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; rm -f "$C"/fix-parks.*; unqueued; : > "$QLOG"
 CLAIMED=101 fixcall 101
 want "a claim on the ticket: nothing queued"     "0" "$(adds 101)"
 want_in "  it waits for that run"                'rebuild: PR #89 is stuck .* — fix round 1 of 2 was spent on this head; it waits for that run' "$OUT"
