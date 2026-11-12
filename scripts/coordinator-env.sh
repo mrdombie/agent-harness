@@ -686,6 +686,8 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # (a resume, an owner's answer), half-built work or a process fix — the polish hold
 # never parks any of them. A process fix (coord_process) runs first of all, ahead of
 # even an entry the PM put on top, in the sheet's order as in this machine's own.
+# A fix round of an open PR ("Fix: PR #<n>" note, rebuild.sh) runs next, ahead of every
+# new build whatever its priority: behind them it waited hours for a place (2026-11-11).
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
 # < none); within one priority every non-follow-up ticket before a fix-after-merge one
 # (release.followUpLabel, or a queue note "follow-up of PR #": owner call 2026-10-23, after
@@ -716,12 +718,13 @@ coord_queue_ordered() {
                  class: coord_class($t.class; $t.note)}
          | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
          | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
+         | .fix = (($t.note // "") | test("^Fix: PR #[0-9]"))
          | . + {tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # Every P0 first (owner, 2026-10-30: urgent first), then the tiers. .top (the PM putting it on top
      # with add --front) leads its tier; .front (a resume, an answer, a requeue) leads its own priority.
      | if $sheet then sort_by(if .proc then 0 else 1 end, if .top or .front then 0 else 1 end, .pos)
-       else sort_by(if .proc then 0 else 1 end, (if .prin == 0 then 0 else 1 end), .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
+       else sort_by(if .proc then 0 elif .fix then 1 else 2 end, (if .prin == 0 then 0 else 1 end), .tier, coord_tier_keys(.tier; .focus; .screen), if .top then 0 else 1 end, (if .top then .pos else 0 end), .prin,
                (if .fu then 1 else 0 end), (if .front then 0 else 1 end), (if .front then .pos else 0 end), (if .tool then 1 else 0 end),
                (if .class == "new" then ({"half-built":0, feature:1, other:2, polish:3}[.kind] // 2) else 0 end), .pos) end
      | if $wide == 2 then ([range(0; 5) as $k | [.[] | select(.tier == $k)] | length | tostring] | join("\t"))

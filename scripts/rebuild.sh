@@ -29,8 +29,11 @@
 # then parks for the PM"). While a stuck PR waits, or with the rebuild off, one whose required
 # check settled red on its own code is queued for its builder with a "Fix:" brief: the PR's
 # branch, the failing checks and their job logs, nothing else. The driver continues that
-# branch and pushes to the same PR. One round per PR head (a round that ended without a
-# push spends the next on the same head), coordinator.fixRounds (2) per PR,
+# branch and pushes to the same PR. A queued round goes ahead of every new build
+# (coord_queue_ordered) and is spent only once its run starts (rebuild_fix_started, from the
+# tick's spawn); queued and not started, it has cost nothing. One round per PR head: a started
+# round whose run is gone (no claim, no live process) and left the head where it was is
+# released, and the next is spent on the same head. coordinator.fixRounds (2) per PR,
 # counted in fix-rounds.<mode>.tsv and never reset by a new head; past it the ticket parks
 # for the PM with the PR left open. A clash gets one update from its base first
 # (clash-updates.<mode>.tsv), then counts as a red. Never for a cancelled check (re-run
@@ -77,7 +80,7 @@ case "$REBUILD_MAX" in ''|*[!0-9]*) REBUILD_MAX=2 ;; esac
 # deleted when the 12 most-repaired PRs used 48% of repair usage.
 FIX_ROUNDS="${COORDINATOR_FIX_ROUNDS:-$(swarm_opt coordinator.fixRounds 2)}"
 case "$FIX_ROUNDS" in ''|*[!0-9]*) FIX_ROUNDS=2 ;; esac
-FIX_LEDGER="$COORD_DIR/fix-rounds.$(coord_mode).tsv"        # pr \t rounds \t last head sent for a fix
+FIX_LEDGER="$COORD_DIR/fix-rounds.$(coord_mode).tsv"        # pr \t round \t the head it was sent for \t queued|started
 CLASH_UPDATES="$COORD_DIR/clash-updates.$(coord_mode).tsv"  # pr \t epoch: its one update from the base
 # A cancelled, timed-out or runner-less required check is re-run this many times a head.
 COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
@@ -377,10 +380,24 @@ rebuild_fix_brief() {
 
 # rebuild_fix_note_pr <queue note> — the PR a fix round's note names, or nothing.
 rebuild_fix_note_pr() { printf '%s\n' "${1:-}" | sed -n '1s/^Fix: PR #\([0-9][0-9]*\).*/\1/p'; }
-# rebuild_fix_queued <ticket> — 0 while the ticket is on the coordinator's queue (its own read).
+# rebuild_fix_queued <ticket> <pr> — 0 while that PR's fix round is on the coordinator's queue.
 rebuild_fix_queued() {
-  local q; q=$(coord_queue_ordered 2>/dev/null)
-  awk -F'\t' -v t="$1" '$1 == t { f = 1 } END { exit !f }' <<<"$q"
+  [ "$(rebuild_fix_note_pr "$(jq -r --argjson n "$1" '.tickets[]? | select(.n == $n) | .note // ""' "$COORD_QUEUE" 2>/dev/null)")" = "$2" ]
+}
+# rebuild_fix_run_alive <ticket> — 0 while something works the ticket: a claim on any host, or a live run here.
+rebuild_fix_run_alive() { grep -qx "$1" <<<"${CLAIMED:-}" || swarm_ticket_live "$1"; }
+# rebuild_fix_started <queue note> — the run of the fix round that note carries has started:
+# the round is spent from now. The tick calls it when the spawn succeeded.
+rebuild_fix_started() {
+  local pr n; pr=$(rebuild_fix_note_pr "${1:-}"); [ -n "$pr" ] || return 0
+  if awk -F'\t' -v p="$pr" '$1 == p { f = 1 } END { exit !f }' "$FIX_LEDGER" 2>/dev/null; then
+    awk -F'\t' -v OFS='\t' -v p="$pr" '$1 == p { $4 = "started" } { print }' "$FIX_LEDGER" > "$FIX_LEDGER.$$" 2>/dev/null \
+      && mv -f "$FIX_LEDGER.$$" "$FIX_LEDGER"
+  else
+    # No row to mark: counted from the brief, so a lost ledger never makes a round free.
+    n=$(printf '%s\n' "$1" | sed -n 's/^Fix round \([0-9][0-9]*\) of .*/\1/p' | head -1)
+    printf '%s\t%s\t-\tstarted\n' "$pr" "${n:-1}" >> "$FIX_LEDGER"
+  fi
 }
 # rebuild_fix_due <ticket> — 0 while the ticket's open PR is still red or clashing, so a
 # queued fix round has something to fix. A re-run that passed meanwhile sends no builder.
@@ -417,7 +434,7 @@ $fails}" >/dev/null 2>&1 || say "rebuild: #$t could not be told why it parked"
 # (queued, waiting on its round, updated from its base, or parked); 1 when it is not the fix
 # path's: coordinator.fixRounds 0, or a stuck that is neither the PR's own red nor a clash.
 rebuild_fix() {
-  local t="$1" pj="$2" why="$3" kind="${4:-}" pr head br base rounds last checks="" brief
+  local t="$1" pj="$2" why="$3" kind="${4:-}" pr head br base rounds last state onq="" checks="" brief
   [ "$FIX_ROUNDS" -gt 0 ] || return 1
   case "$kind" in red|clash) ;; *) return 1 ;; esac
   # One ledger counts the rounds. Under a shared sheet only its owner sends a PR back:
@@ -427,17 +444,27 @@ rebuild_fix() {
   br=$(jq -r '.headRefName // empty' <<<"$pj" 2>/dev/null)
   base=$(jq -r '.baseRefName // empty' <<<"$pj" 2>/dev/null); base="${base:-$INTEGRATION_BRANCH}"
   [ -n "$pr" ] && [ -n "$head" ] && [ -n "$br" ] || return 1
-  IFS=$'\t' read -r rounds last <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2; h = $3 } END { printf "%s\t%s\n", r + 0, h }' "$FIX_LEDGER" 2>/dev/null)"
+  IFS=$'\t' read -r rounds last state <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2; h = $3; s = $4 } END { printf "%s\t%s\t%s\n", r + 0, h, s }' "$FIX_LEDGER" 2>/dev/null)"
   case "$rounds" in ''|*[!0-9]*) rounds=0 ;; esac
-  # One round per head while its fix is still queued. Nothing claims or runs the ticket here
-  # (rebuild_pass), so off the queue too means that round ended without a push: the next
-  # round is spent on the same head, or the ticket parks at the cap. Never left red for ever.
+  ! rebuild_fix_queued "$t" "$pr" || onq=1
+  # A row with no state was written when its round was queued: still queued, it never started.
+  case "$state" in queued|started) ;; *) state=started; [ -z "$onq" ] || state=queued ;; esac
+  # A round is spent once its run has started; a queued one has cost nothing yet.
+  if [ "$state" = queued ] && [ "$rounds" -gt 0 ]; then rounds=$((rounds - 1)); else state=started; fi
+  # One round per head. A queued round waits for its start, a started one for its run; a run
+  # that is gone and left the head where it was is released: the next round is spent on the
+  # same head, or the ticket parks at the cap. Never left red for ever.
   if [ "$last" = "$head" ]; then
-    if rebuild_fix_queued "$t"; then
+    if [ "$state" = queued ] && [ -n "$onq" ]; then
+      say "rebuild: PR #$pr is stuck ($why) — fix round $((rounds + 1)) of $FIX_ROUNDS is queued for this head and has not started; it goes ahead of new builds"
+      return 0
+    fi
+    if [ "$state" = started ] && rebuild_fix_run_alive "$t"; then
       say "rebuild: PR #$pr is stuck ($why) — fix round $rounds of $FIX_ROUNDS was spent on this head; it waits for that run"
       return 0
     fi
-    say "rebuild: PR #$pr — fix round $rounds ended without a push"
+    if [ "$state" = queued ]; then say "rebuild: PR #$pr — fix round $((rounds + 1)) left the queue without starting; no round spent"
+    else say "rebuild: PR #$pr — fix round $rounds ended without a push; its run is gone, so it is released"; fi
   fi
   # A clash is updated from its base once per PR before any builder is sent.
   if [ "$kind" = clash ] && ! awk -F'\t' -v p="$pr" '$1 == p { f = 1 } END { exit !f }' "$CLASH_UPDATES" 2>/dev/null; then
@@ -464,7 +491,7 @@ rebuild_fix() {
   bash "$QUEUE" add "$t" --class new --first --note "$brief" >/dev/null 2>&1 \
     || { say "rebuild: #$t could not be queued for its fix — no round spent, tried again next tick"; return 0; }
   awk -F'\t' -v p="$pr" '$1 != p' "$FIX_LEDGER" > "$FIX_LEDGER.$$" 2>/dev/null; mv -f "$FIX_LEDGER.$$" "$FIX_LEDGER" 2>/dev/null
-  printf '%s\t%s\t%s\n' "$pr" "$((rounds + 1))" "$head" >> "$FIX_LEDGER"
+  printf '%s\t%s\t%s\tqueued\n' "$pr" "$((rounds + 1))" "$head" >> "$FIX_LEDGER"
   say "rebuild: PR #$pr goes back to its builder on $br — fix round $((rounds + 1)) of $FIX_ROUNDS ($why)"
 }
 

@@ -1080,7 +1080,7 @@ else
       spawn_out=$(SWARM_SPAWN_REPO="$in_repo" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
-        coord_record_class "$t" "$cls"; count_live
+        coord_record_class "$t" "$cls"; count_live; rebuild_fix_started "$note"
         say "spawned #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
         SHEET_STARTED="${SHEET_STARTED:+$SHEET_STARTED,}$t"
       else

@@ -725,7 +725,7 @@ rm -rf "$STATE/driver/501"; fix_required
 echo "--- the fix rounds: a red PR's ticket goes back to its builder, on the PR it has ---"
 # fix_tick — one live tick with the rebuild off and coordinator.fixRounds at its default (2).
 # Label edits stick (gh-labels): the pass sets the ticket ready, and the next tick reads that.
-fix_tick() { env -u COORDINATOR_FIX_ROUNDS COORDINATOR_REBUILD_AFTER_MIN=0 SWARM_IDLE=90 COORDINATOR_CAP=6 SWARM_GH="$BIN/gh-labels" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
+fix_tick() { env -u COORDINATOR_FIX_ROUNDS COORDINATOR_REBUILD_AFTER_MIN=0 SWARM_IDLE=90 COORDINATOR_CAP="${FIX_CAP:-6}" SWARM_GH="$BIN/gh-labels" SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 bash "$T" 2>&1; }
 note_of() { jq -r --argjson n "$1" '.tickets[]? | select(.n == $n) | .note' "$C/queue.json" 2>/dev/null; }
 rb_world
 out=$(fix_tick)
@@ -736,8 +736,27 @@ out="$out
 $(fix_tick)"
 want "  its ticket is spawned, open PR and all" "501" "$(spawned)"
 want "  one round spent, however many ticks saw the head" "1" "$(cut -f2 "$C/fix-rounds.did.tsv" 2>/dev/null)"
+want "  spent because its run started"          "started" "$(cut -f4 "$C/fix-rounds.did.tsv" 2>/dev/null)"
 want_in "  with the Fix: brief on the act log"  'spawn	501	new — Fix: PR #5501 — required check\(s\) failed: Typecheck' "$(cat "$C/actions.log" 2>/dev/null)"
 want_not_in "  never skipped for its open PR"   'skip #501' "$out"
+echo "  queued and never started, the round is not spent"
+rb_world
+out=$(FIX_CAP=0 fix_tick)
+want "  no place to start it: nothing spawned"  "" "$(spawned)"
+want "  the round is queued, not spent"         "1 queued" "$(cut -f2,4 "$C/fix-rounds.did.tsv" 2>/dev/null | tr '\t' ' ')"
+out=$(FIX_CAP=0 fix_tick)
+want_in "  the next tick says it has not started" 'rebuild: PR #5501 is stuck .* — fix round 1 of 2 is queued for this head and has not started' "$out"
+echo "  one free place and a P0 queued: the fix round takes it, ahead of the new build"
+rb_world; fix_issue 601 OPEN "P0,status:ready"; bash "$Q" add 601 >/dev/null
+out="$(FIX_CAP=1 fix_tick)
+$(FIX_CAP=1 fix_tick)"
+want "  the P1's fix round starts, the P0 waits" "501" "$(spawned)"
+echo "  a started round whose run is gone is released: the next tick queues round 2"
+rb_world; printf '5501\t1\tf501\tstarted\n' > "$C/fix-rounds.did.tsv"
+out=$(FIX_CAP=0 fix_tick)
+want_in "  it says the round is released"       'rebuild: PR #5501 — fix round 1 ended without a push; its run is gone, so it is released' "$out"
+want "  round 2 is queued on the same head"     "2 f501 queued" "$(tr '\t' ' ' < "$C/fix-rounds.did.tsv" | cut -d' ' -f2-)"
+want_in "  with its own brief"                  'Fix round 2 of 2' "$(note_of 501)"
 echo "  a machine reading another's sheet sends no PR back: one ledger counts the rounds"
 rb_world
 out=$(COORDINATOR_SHEET_OWNER=some-other-host fix_tick)
