@@ -15,6 +15,9 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# Run from inside a build, the live state paths are inherited: each host's tick would read them.
+for v in $(env | grep -oE '^(COORD|COORDINATOR|SWARM|DRIVER|HARNESS)_[A-Z0-9_]*='); do unset "${v%=}"; done
+unset RUNS_DIR STATE_DIR KIT_ROOT
 HERE="$(cd "$(dirname "$0")" && pwd)"
 KIT="$(cd "$HERE/.." && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
@@ -282,6 +285,24 @@ want "the plant removed the hold's gate"              "0" "$(grep -c 'SKILL_HOLD
 tick box 1 >/dev/null
 want "planted: the tripped host starts work, which the gate above refuses" "502" "$(by box)"
 cp "$FIX/tick.orig" "$PT"
+
+echo "--- each skill-check row records the wanted Skill's plugin version, read from the registry ---"
+world 0.7.12 0.7.12 0.7.12
+REG="$FIX/cc-box/plugins/installed_plugins.json"
+jq '.plugins["superpowers@superpowers-marketplace"] = [{scope: "user", installPath: "/x", version: "7.0.2"}]' "$REG" > "$REG.tmp" && mv "$REG.tmp" "$REG"
+BOXKIT="$FIX/cc-box/plugins/cache/agent-harness/agent-harness/0.7.12"
+skillv() { SWARM_PLUGIN_REGISTRY="$1" bash "$BOXKIT/scripts/plugin-ensure.sh" skill-version "$2" 2>/dev/null; }
+want "the skill's plugin version, not the harness's"  "7.0.2" "$(skillv "$REG" superpowers:writing-plans)"
+want "an unreadable registry prints nothing"          "" "$(skillv "$FIX/no-such-registry.json" superpowers:writing-plans)"
+rec() { # <registry> — one row written by the installed driver
+  HARNESS_SKILL_CHECKS="$FIX/rec.tsv" SWARM_PLUGIN_REGISTRY="$1" bash -c 'unset DRIVER_DIR DRIVER_HOME HARNESS_KIT_ROOT; export KIT_ROOT="$1"
+    . "$1/driver/driver-env.sh" && . "$1/driver/ai-step.sh" && driver_skill_check_record 601 plan none 2.1.999 not-loaded superpowers:writing-plans' _ "$BOXKIT" >/dev/null 2>&1
+}
+rm -f "$FIX/rec.tsv"; rec "$REG"
+want "the driver writes it as column 9"               "7.0.2" "$(tail -1 "$FIX/rec.tsv" | cut -f9)"
+want "beside the harness version in column 6"         "0.7.12" "$(tail -1 "$FIX/rec.tsv" | cut -f6)"
+rec "$FIX/no-such-registry.json"
+want "an unread version leaves column 9 empty"        "9:" "$(tail -1 "$FIX/rec.tsv" | awk -F'\t' '{ print NF ":" $9 }')"
 
 # ---- the self-update on its own -----------------------------------------------------
 su() { # <host> <args…> — harness_self_update from that host's installed kit
