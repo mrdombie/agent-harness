@@ -20,11 +20,14 @@ mkdir -p "$REPO/src"; : > "$REPO/src/x.test.ts"; git -C "$REPO" add src/x.test.t
 
 # The forge: the open-ticket search answers $FIX/open.json, the all-markers search
 # $FIX/markers.json (fails while $FIX/markers.fail exists); a create numbers from 901.
+# CI's check runs on any commit answer $FIX/ci.json (none ran when absent; fail while $FIX/ci.fail exists).
 # develop's rules answer $FIX/rules.json (fail while $FIX/rules.fail exists).
 cat > "$BIN/fgh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/fgh.log"
 case "$*" in
+  *"/check-runs"*) [ -f "$FIX/ci.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+                   cat "$FIX/ci.json" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}'; exit 0 ;;
   *"rules/branches/develop"*) [ -f "$FIX/rules.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
                               cat "$FIX/rules.json"; exit 0 ;;
   *"protection/required_status_checks"*) echo '{"message":"Branch not protected"}'; exit 1 ;;
@@ -44,7 +47,7 @@ requires() { # <context…> — what develop's live rules require
   printf '%s\n' "$@" | jq -R 'select(. != "")' | jq -sc '[{type: "pull_request"}, {type: "required_status_checks", parameters: {required_status_checks: map({context: .})}}]' > "$FIX/rules.json"
 }
 fresh() { # <rows…> — that develop-red.tsv, an empty ledger, a forge with nothing filed, chk-* required
-  rm -f "$FIX"/open.json "$FIX"/markers.json "$FIX"/markers.fail "$FIX"/rules.fail "$FIX"/fgh.next "$STATE/swarm/gh-backoff"*
+  rm -f "$FIX"/ci.json "$FIX"/ci.fail "$FIX"/open.json "$FIX"/markers.json "$FIX"/markers.fail "$FIX"/rules.fail "$FIX"/fgh.next "$STATE/swarm/gh-backoff"*
   : > "$FIX/fgh.log"; : > "$LEDGER"; : > "$PENDING"; : > "$COUNT"; unset FGH_APPEND
   requires chk-a chk-b chk-z chk-q
   local r; for r in "$@"; do printf '%s\n' "$r" >> "$PENDING"; done
@@ -56,6 +59,10 @@ run() { # [dry] — R the output, R_RC the exit
 searches() { grep -c 'search/issues' "$FIX/fgh.log" | tr -d ' '; }
 creates() { grep -c 'repos/acme/widgets/issues -X POST' "$FIX/fgh.log" | tr -d ' '; }
 comments() { grep -c '/comments -X POST' "$FIX/fgh.log" | tr -d ' '; }
+ci() { # <name>=<status>[:<conclusion>]… — CI's check runs on the row's commit
+  local a; for a in "$@"; do printf '%s\n' "$a"; done | jq -R 'split("=") | {name: .[0], status: (.[1] | split(":")[0]), conclusion: (.[1] | split(":")[1] // null)}' \
+    | jq -sc '{total_count: length, check_runs: .}' > "$FIX/ci.json"
+}
 issue() { # <number> <state> <marker checks> <sha7> — one search hit
   printf '{"total_count":1,"items":[{"number":%s,"state":"%s","body":"x\\n<!-- develop-red: checks=%s sha=%s -->"}]}\n' "$1" "$2" "$3" "$4"
 }
@@ -207,6 +214,58 @@ run
 want "the open ticket takes a comment"         "1" "$(comments)"
 want_in "naming the tracked file"              'now on: chk-a, src/x\.test\.ts\.' "$(cat "$FIX/fgh.log")"
 want "with no host path"                       "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
+
+echo "--- CI on the row's commit fails other checks: the ticket names what CI reports ---"
+fresh "$A	test:api	627		27"; requires test:api "Code gates" Lint
+ci "Code gates=completed:failure" "Lint=completed:failure" "Build=completed:success"
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "titled by CI's failing checks"        'title=develop is red: Code gates, Lint \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want_in "the body says what the pre-push named" 'pre-push named `test:api`' "$(cat "$FIX/fgh.log")"
+want "CI's commit was read"                    "1" "$(grep -c "commits/$A/check-runs" "$FIX/fgh.log" | tr -d ' ')"
+want "the row's own set is ledgered"           "$A	test:api	901" "$(cat "$LEDGER")"
+body=$(grep 'issues -X POST' "$FIX/fgh.log" | sed -n 's/.*body=\(.*\) -f labels.*/\1/p' | head -1)
+grep -q . <<<"$body" || body=$(tr '\n' ' ' < "$FIX/fgh.log")
+mk=$(grep -oE 'develop-red: checks=[^ ]+ sha=[0-9a-f]+' <<<"$body" | head -1)
+fresh "$B	test:api	628		28"; requires test:api "Code gates" Lint
+ci "Code gates=completed:failure" "Lint=completed:failure"
+jq -nc --arg b "x <!-- $mk -->" '{total_count: 1, items: [{number: 901, state: "open", body: $b}]}' > "$FIX/open.json"
+run
+want "the same CI red on a newer commit is the open ticket's: nothing created" "0" "$(creates)"
+want "and nothing commented"                   "0" "$(comments)"
+
+echo "--- CI still running on the commit: nothing filed, the row kept ---"
+fresh "$A	test:api	629		29"; requires test:api Lint; cp "$PENDING" "$FIX/before"
+ci "Lint=in_progress" "Code gates=completed:failure"
+run
+want "nothing created"                         "0" "$(creates)"
+want "nothing searched"                        "0" "$(searches)"
+want "the row is kept"                         "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
+want "nothing ledgered"                        "" "$(cat "$LEDGER")"
+want_in "it says it waits for CI"              'CI is still running' "$R"
+
+echo "--- CI unreadable: nothing filed, the row kept, the pass not done ---"
+fresh "$A	test:api	630		30"; requires test:api; cp "$PENDING" "$FIX/before"; touch "$FIX/ci.fail"
+run
+want "nothing created"                         "0" "$(creates)"
+want "the row is kept"                         "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
+want_in "it is unknown"                        '^unknown — ' "$R"
+want "and the pass is not done"                "1" "$R_RC"
+
+echo "--- CI green on the commit: the local set is filed, as before ---"
+fresh "$A	test:api	631		31"; requires test:api Lint
+ci "Lint=completed:success" "Build=completed:skipped"
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "for the local set"                    'title=develop is red: test:api \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+
+echo "--- CI fails the same checks: one ticket, unchanged ---"
+fresh "$A	test:api	632		32"; requires test:api
+ci "test:api=completed:failure"
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "for the same set"                     'title=develop is red: test:api \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "the body names no other pre-push set"    "0" "$(grep -c 'pre-push named' "$FIX/fgh.log" | tr -d ' ')"
 
 echo "--- plants: each rule out of a copy of the script, its case fails ---"
 KIT="$FIX/kit"
