@@ -4,6 +4,7 @@
 
 ### GAP-01 · STRANDS · No way back to the queue
 **Axis:** 7 Exit & aftermath · [CORE]
+**Rows:** X-02
 **The move:** open an item, finish reading it
 **What happens now:** no control returns to the queue
 **What should happen:** a Back to queue control is on the item

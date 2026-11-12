@@ -120,7 +120,30 @@ out=$(bash "$SUT" gate "$LIES" 2>&1); rc=$?
 [ "$rc" -eq 1 ] && ok "open LIES gap exits 1" || bad "open LIES: exit $rc, want 1: $out"
 printf '%s' "$out" | grep -qF 'GAP-01' && ok "LIES names GAP-01" || bad "open LIES does not name GAP-01: $out"
 out=$(bash "$SUT" gate "$FX/fixed-strands.md" 2>&1); rc=$?
-[ "$rc" -eq 0 ] && ok "a STRANDS gap with a Fixed line exits 0" || bad "fixed STRANDS: exit $rc, want 0: $out"
+[ "$rc" -eq 0 ] && ok "a fixed STRANDS gap whose row re-checks PRESENT exits 0" || bad "fixed STRANDS: exit $rc, want 0: $out"
+
+echo "--- gate: a Fixed line is the builder's note; only the re-checked row closes the gap ---"
+STILL="$REPO/fixed-still-absent.md"
+sed 's/| PRESENT | re-check: item story, Back to queue click |/| ABSENT | re-check: no control |/' "$FX/fixed-strands.md" > "$STILL"
+grep -q '| X-02 .*| ABSENT |' "$STILL" && ok "still-absent fixture built" || bad "still-absent fixture not built"
+out=$(bash "$SUT" gate "$STILL" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "a Fixed line whose row still reads ABSENT exits 1" || bad "Fixed but ABSENT: exit $rc, want 1: $out"
+printf '%s' "$out" | grep -qF 'X-02' && ok "names the row that did not re-check PRESENT" || bad "does not name X-02: $out"
+NOROWS="$REPO/fixed-no-rows-line.md"; grep -v '^\*\*Rows:\*\*' "$FX/fixed-strands.md" > "$NOROWS"
+out=$(bash "$SUT" gate "$NOROWS" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "a STRANDS gap naming no row exits 1" || bad "no Rows line: exit $rc, want 1: $out"
+GONE="$REPO/fixed-row-gone.md"; grep -v '^| X-02 ' "$FX/fixed-strands.md" > "$GONE"
+out=$(bash "$SUT" gate "$GONE" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "a gap whose row is missing from the ledger exits 1" || bad "row gone: exit $rc, want 1: $out"
+
+echo "--- the re-check brief carries only the open rows ---"
+out=$(bash "$SUT" brief checker --rows "$ROWS" --story "$STORY" --only A-03 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "--only exits 0" || bad "--only: exit $rc, want 0: $out"
+printf '%s\n' "$out" | grep -qxF '2. A-03 · [EDGE] Somebody approves an item twice → the second click does nothing' \
+  && ok "--only carries its row unchanged" || bad "--only dropped or rewrote A-03: $out"
+printf '%s' "$out" | grep -qE 'E-01|F-12' && bad "--only still carries other rows" || ok "--only carries no other row"
+out=$(bash "$SUT" brief checker --rows "$ROWS" --story "$STORY" --only Z-99 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "--only naming no row in the file exits 2" || bad "--only Z-99: exit $rc, want 2: $out"
 EMPTYFIX="$REPO/empty-fixed.md"; sed 's/^\*\*Fixed:\*\* .*/**Fixed:**  /' "$FX/fixed-strands.md" > "$EMPTYFIX"
 grep -qx '\*\*Fixed:\*\*  ' "$EMPTYFIX" && ok "empty-Fixed fixture built" || bad "empty-Fixed fixture not built"
 out=$(bash "$SUT" gate "$EMPTYFIX" 2>&1); rc=$?
