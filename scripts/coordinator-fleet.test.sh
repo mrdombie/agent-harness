@@ -286,6 +286,19 @@ sp_set box 7.0.3
 tick box 1 >/dev/null
 want "a new superpowers re-arms it"                   "502" "$(by box)"
 
+echo "--- a host held under the older seen file shape stays held after the upgrade ---"
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+tick box 1 >/dev/null
+S="$FIX/m-box/coordinator/skill-checks.seen"
+awk -F'\t' -v OFS='\t' '{ split($1, k, "|"); print k[1], "0.7.12", $2 }' "$S" > "$S.tmp" && mv "$S.tmp" "$S"
+want "the seen file is in the old <cli> <harness> <since> shape" "2.1.999	0.7.12" "$(cut -f1,2 "$S")"
+age_rows box
+tick box 1 >/dev/null
+want "the old-shape seen file keeps box held"         "" "$(by box)"
+want "and is rewritten in the new shape"              "2.1.999|7.0.2" "$(cut -f1 "$S")"
+
 echo "--- plant the absence: the seen key back on the harness version, the update releases box ---"
 breaker_world 7.0.2
 age_seen box
