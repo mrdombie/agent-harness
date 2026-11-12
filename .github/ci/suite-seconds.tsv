@@ -25,6 +25,7 @@
 1	hooks/block-hookify-rules.test.sh
 0	hooks/block-push-no-verify.test.sh
 0	hooks/block-write-traps.test.sh
+0	hooks/context-size.test.sh
 19	hooks/guard-pre-approved-writes.test.sh
 0	hooks/heartbeat.test.sh
 2	hooks/keep-working.test.sh
