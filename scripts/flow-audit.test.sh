@@ -134,4 +134,24 @@ printf '%s' "$out" | grep -qiF 'void' && ok "no rows says void" || bad "no rows 
 out=$(bash "$SUT" gate "$REPO/missing.md" 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "a missing report is exit 2" || bad "missing report: exit $rc, want 2"
 
+echo "--- owed: only a picture label pays for the two agents; every other change runs none ---"
+NOCFG="$REPO/none.json"; printf '{}\n' > "$NOCFG"
+out=$(HARNESS_CFG="$NOCFG" bash "$SUT" owed screen:redesign P0 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "screen:redesign among other labels is owed" || bad "screen:redesign P0: exit $rc, want 0: $out"
+out=$(HARNESS_CFG="$NOCFG" bash "$SUT" owed type:feature 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "type:feature is not owed" || bad "type:feature: exit $rc, want 1: $out"
+out=$(HARNESS_CFG="$NOCFG" bash "$SUT" owed P0,screen:new 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a comma list holding screen:new is owed" || bad "P0,screen:new: exit $rc, want 0: $out"
+out=$(HARNESS_CFG="$REPO/absent.json" bash "$SUT" owed screen:new 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "no project config takes the default labels" || bad "no cfg: exit $rc, want 0: $out"
+out=$(HARNESS_CFG="$NOCFG" bash "$SUT" owed 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "no labels is not owed" || bad "no labels: exit $rc, want 1: $out"
+
+echo "--- owed: a project's custom pictureLabels replace the default ---"
+CUSTOM="$REPO/custom.json"; printf '{"design":{"baselineRoute":{"pictureLabels":["ui:new"]}}}\n' > "$CUSTOM"
+out=$(HARNESS_CFG="$CUSTOM" bash "$SUT" owed ui:new 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "custom ui:new is owed" || bad "custom ui:new: exit $rc, want 0: $out"
+out=$(HARNESS_CFG="$CUSTOM" bash "$SUT" owed screen:new 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "screen:new is not owed once the project replaces the labels" || bad "custom screen:new: exit $rc, want 1: $out"
+
 suite_end "$fail"
