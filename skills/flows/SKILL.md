@@ -65,7 +65,9 @@ scripts/flow-audit.sh brief checker --rows <cartographer-rows.md> --story "<http
 ```
 
 That carries every row of the cartographer's file unchanged, the five verdicts and the rule
-that no row is added. A story URL without `iframe.html?id=` (a freehand HTML mock) or a rows
+that no row is added. After the redraw, the same brief with `--only <the open STRANDS/LIES
+row ids>` is the re-check: its verdicts replace those rows in the ledger, and
+`flow-audit.sh gate` clears a gap only when each of its rows now reads `PRESENT`. A story URL without `iframe.html?id=` (a freehand HTML mock) or a rows
 file with no `E-01`-shaped row is refused with exit 2.
 
 ## Verdicts
@@ -106,6 +108,7 @@ reproducible move can.
 ```markdown
 ### GAP-NN · SEVERITY · short name
 **Axis:** N Axis-name (sub-case)
+**Rows:** the ledger row ids this gap is
 **The move:** the concrete thing a person does, in steps, from a state that is easy to reach.
 **What happens now:** the observable outcome, with `path:line` proof.
 **What should happen:** one sentence.

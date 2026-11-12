@@ -7,18 +7,22 @@
 #       inherits the code's blind spots. A job line holding a path, a file name
 #       or a URL is refused with exit 2, because it smuggles the code back in.
 #
-#   flow-audit.sh brief checker --rows <rows.md> --story <url>
+#   flow-audit.sh brief checker --rows <rows.md> --story <url> [--only <ids>]
 #       prints the checker's prompt: the clickable Storybook story to drive,
 #       every row line of the cartographer's file byte for byte, the five
 #       verdicts and the rule that no row is added, merged or reworded. A story
 #       URL without iframe.html?id= (a freehand HTML mock, the manager UI) is
-#       refused, and so is a rows file holding no 'E-01'-shaped row.
+#       refused, and so is a rows file holding no 'E-01'-shaped row. --only
+#       'X-02,A-03' is the re-check after the redraw: just those rows, each of
+#       which must be in the file.
 #
 #   flow-audit.sh gate <report.md>
-#       holds the picture while the report has an open STRANDS or LIES gap: a
-#       '### GAP-NN · STRANDS|LIES' section with no non-empty '**Fixed:**' line.
-#       SILENT and ROUGH never hold it. A report with no '| E-01 |' ledger row
-#       is void, never green.
+#       holds the picture while the report has an open STRANDS or LIES gap. A
+#       '### GAP-NN · STRANDS|LIES' section is closed only by a non-empty
+#       '**Fixed:**' line AND every row its '**Rows:**' line names reading
+#       PRESENT in the ledger — the re-check's verdict, not the builder's note.
+#       A gap naming no row stays open. SILENT and ROUGH never hold it. A
+#       report with no '| E-01 |' ledger row is void, never green.
 #
 #   flow-audit.sh owed <label>...
 #       exits 0 when one label (arguments, or comma lists) is one of
@@ -33,7 +37,7 @@ ROW_RE='(^|[^A-Za-z0-9])[EAIDFRXC]-[0-9]{2}'
 
 usage() {
   echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2
-  echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...>" >&2
+  echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...> [--only <ids>]" >&2
   echo "       flow-audit.sh gate <report.md>" >&2
   echo "       flow-audit.sh owed <label>..." >&2
   exit 2
@@ -75,12 +79,13 @@ brief_cartographer() {
 }
 
 brief_checker() {
-  local rows="" story=""
+  local rows="" story="" only=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --rows)  [ $# -ge 2 ] || usage; rows=$2; shift 2 ;;
       --story) [ $# -ge 2 ] || usage; story=$2; shift 2 ;;
-      *) echo "flow-audit: the checker takes --rows and --story only — refused: $1" >&2; exit 2 ;;
+      --only)  [ $# -ge 2 ] || usage; only=$2; shift 2 ;;
+      *) echo "flow-audit: the checker takes --rows, --story and --only only — refused: $1" >&2; exit 2 ;;
     esac
   done
   [ -n "$rows" ] && [ -n "$story" ] || usage
@@ -93,6 +98,16 @@ brief_checker() {
   local lines
   lines=$(grep -E "$ROW_RE" "$rows")
   [ -n "$lines" ] || { echo "flow-audit: $rows holds no row (want lines like 'E-01 · ...')" >&2; exit 2; }
+  if [ -n "$only" ]; then
+    local id kept="" hit
+    for id in $(printf '%s' "$only" | tr ',' ' '); do
+      printf '%s' "$id" | grep -qE '^[EAIDFRXC]-[0-9]{2}$' || { echo "flow-audit: --only wants row ids like X-02 — got: $id" >&2; exit 2; }
+      hit=$(printf '%s\n' "$lines" | grep -E "(^|[^A-Za-z0-9])$id([^0-9]|\$)")
+      [ -n "$hit" ] || { echo "flow-audit: --only $id is no row in $rows" >&2; exit 2; }
+      kept=$(printf '%s\n%s' "$kept" "$hit")
+    done
+    lines=$(printf '%s\n' "$lines" | grep -xF -f <(printf '%s\n' "$kept" | sed '/^$/d'))
+  fi
   cat <<EOF
 Drive this clickable picture in a browser: $story
 
@@ -122,19 +137,46 @@ gate() {
   fi
   local open
   open=$(awk '
-    function close_gap() { if (id != "" && !fixed) print id; id = "" }
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    # Pass 1: the ledger, row id -> verdict.
+    NR == FNR {
+      if ($0 ~ /^\|[[:space:]]*[EAIDFRXC]-[0-9][0-9][[:space:]]*\|/) {
+        n = split($0, c, "|"); verdict[trim(c[2])] = trim(c[5])
+      }
+      next
+    }
+    function close_gap(   why, k, r) {
+      if (id == "") return
+      why = ""
+      if (!fixed) why = "no **Fixed:** line"
+      if (nrows == 0) why = why (why ? "; " : "") "names no row on a **Rows:** line"
+      for (k = 1; k <= nrows; k++) {
+        r = want[k]
+        if (!(r in verdict)) why = why (why ? "; " : "") r " is not in the ledger"
+        else if (verdict[r] != "PRESENT") why = why (why ? "; " : "") r " reads " verdict[r] ", not PRESENT"
+      }
+      if (why != "") print id " (" why ")"
+      id = ""
+    }
     /^#{2,3}[[:space:]]/ {
       close_gap()
       if ($0 ~ /^###[[:space:]]+GAP-[0-9]+[[:space:]]+·[[:space:]]+(STRANDS|LIES)([[:space:]]|$)/) {
-        id = $2; fixed = 0
+        id = $2; fixed = 0; nrows = 0
       }
       next
     }
     id != "" && /^\*\*Fixed:\*\*[[:space:]]*[^[:space:]]/ { fixed = 1 }
+    id != "" && /^\*\*Rows:\*\*/ {
+      line = $0
+      while (match(line, /[EAIDFRXC]-[0-9][0-9]/)) {
+        want[++nrows] = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
+      }
+    }
     END { close_gap() }
-  ' "$report")
+  ' "$report" "$report")
   if [ -n "$open" ]; then
-    echo "flow-audit: held — open STRANDS/LIES gap(s) with no **Fixed:** line: $(printf '%s' "$open" | tr '\n' ' ')" >&2
+    echo "flow-audit: held — open STRANDS/LIES gap(s), each closed only by a **Fixed:** line and its rows re-checked PRESENT:" >&2
+    printf '  %s\n' "$open" >&2
     exit 1
   fi
   echo "flow-audit: clear — no open STRANDS or LIES gap in $report"

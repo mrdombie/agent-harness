@@ -37,6 +37,7 @@ Severity order — STRANDS, then LIES, then SILENT, then ROUGH.
 
 ### GAP-01 · STRANDS · <short name>
 **Axis:** <N Axis-name (sub-case)> · <[CORE] | [EDGE]>
+**Rows:** <the ledger row ids this gap is, e.g. X-02>
 **The move:** <concrete steps a person takes, from a state that is easy to reach>
 **What happens now:** <observable outcome, with proof>
 **What should happen:** <one sentence>
@@ -89,8 +90,11 @@ totality: no rendered/reachability leg, any route excluded, any actor not modell
 - **The gap row is a test, not a conclusion.** If `The move` is missing, downgrade the row to
   `UNVERIFIED` — a finding nobody can reproduce is a suspicion with formatting.
 - **An open STRANDS or LIES gap holds the picture.** `flow-audit.sh gate <report.md>` exits 1
-  naming each STRANDS or LIES gap with no filled `**Fixed:**` line; an empty `**Fixed:**` is
-  still open. SILENT and ROUGH never hold it. A report with no ledger row exits 3 — void,
-  never green.
+  naming each STRANDS or LIES gap that is not closed. A gap closes only when it has a filled
+  `**Fixed:**` line AND every row on its `**Rows:**` line reads `PRESENT` in the ledger. That
+  verdict comes from re-running `flow-checker` on the redrawn picture with just those rows
+  (`flow-audit.sh brief checker ... --only <ids>`), never from the builder's own note. A gap
+  naming no row stays open. SILENT and ROUGH never hold it. A report with no ledger row
+  exits 3 — void, never green.
 - **"Did the method work" is not optional.** It is what stops a bad run being read as a clean
   surface.
