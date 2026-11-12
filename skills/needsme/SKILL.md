@@ -240,7 +240,7 @@ redrawn as "picture drawn from tidy data".
 **Only a concept the flow audit cleared reaches the operator** — on a new or redesigned screen
 (`bash "$KIT_ROOT/scripts/flow-audit.sh" owed <its labels>` exits 0). The report is the
 ticket's newest `## Flow audit report` comment: `flow-audit.sh report get <ticket> > report.md`,
-and `flow-audit.sh gate report.md` exits 0 on it. `report get` exit 3 means no report: run the
+and `flow-audit.sh gate report.md` exits 0 on it. `report get` exit 3 means no report: run the `/agent-harness:flows`
 audit first. Exit 1 means the comments could not be read: retry, never treat it as no report.
 With no report and no clickable story (`flow-audit.sh story <surface>` exits 2), the row
 moves to the agents' list as "picture has no clickable story", never to the operator.
