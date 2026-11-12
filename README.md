@@ -251,6 +251,7 @@ Invoke a skill as `/agent-harness:<name>` — plugin skills are namespaced by Cl
 | Stop | `ask-dont-narrate.sh` | refuses a hand-back that leaves a decision in prose (the operator's tells, or a question to him); a report's shape alone never fires it |
 | Stop | `keep-working.sh` | refuses a hand-back mid-loop while the scope still has runnable tickets (the loop is marked by `scripts/loop-start.sh`) |
 | Stop, UserPromptSubmit | `heartbeat.sh` | asks a loop wake with no status to add one plain `Status:` line (the old block still passes); a status naming only a wait gets advice on the next prompt, never a refusal |
+| Stop | `context-size.sh` | tells the operator, in the window and by a desktop ping naming it, when the window's context passes `HARNESS_CONTEXT_WARN_TOKENS` (default 300k) and at each 100k above it; never refuses the stop |
 | StopFailure (rate_limit) | `usage-limit.sh` | records when the plan's usage limit resets in `$STATE_DIR/usage-hold`, so the coordinator and the scheduler spawn nothing until then |
 
 The git-safety rules are hooks, not hookify rules, on purpose: hookify loads rules with a relative glob on `.claude/hookify.*.local.md`, so every rule is inert unless the session started inside a checkout. A hook reads the command text before bash does and does not care about cwd. **A consuming repo that carried these as hookify rules removes them**, or they fire twice.
