@@ -112,6 +112,15 @@ printf '%s\ttest:api\tred\t1\t1\n' "$SHA" > "$FIX/br3.tsv"
 want "it names the check script, not the file" "test:api" \
   "$(BASE_CHECKS="$FIX/br3.tsv"; driver_base_red_gate "$FIX/t602" "" "$FIX/o3" prepush)"
 
+echo "--- a summary over a FAIL line on a test this branch changed still refuses base-red ---"
+git -C "$REPO" worktree add -q "$FIX/t606" -b tkt-606/work develop
+mkdir -p "$FIX/t606/apps/api/src"; printf 'x\n' > "$FIX/t606/apps/api/src/a606.test.ts"
+git -C "$FIX/t606" add -A; git -C "$FIX/t606" commit -qm "test: a606"
+printf ' FAIL  %s/apps/api/src/a606.test.ts > a\n✗ verify:push — 1 of 3 failed: test:api\nerror: failed to push some refs\n' "$FIX/t606" > "$FIX/o6"
+R6=$(BASE_CHECKS="$FIX/br3.tsv"; driver_base_red_gate "$FIX/t606" "" "$FIX/o6" prepush >/dev/null; r=$?; echo "$DRIVER_BASE_RED_WHY" > "$FIX/why6"; echo "$r")
+want "it is not base-red" "1" "$R6"
+want "  and names the branch's own test" "apps/api/src/a606.test.ts is a file this branch changed" "$(cat "$FIX/why6")"
+
 echo "--- the coordinator files ONE develop-red ticket for both ---"
 file_red
 want "one ticket"                        "1" "$(creates)"
