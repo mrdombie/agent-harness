@@ -57,6 +57,17 @@ audit is warranted it has normally read some of the code. Never write the rows y
 The checker may be several agents in parallel over row ranges, provided each gets the same
 tree and the same instruction not to invent rows.
 
+On a picture (before the screen is built) the checker is the `flow-checker` agent, which
+clicks the clickable Storybook story rather than reading code. Its prompt is printed by:
+
+```bash
+scripts/flow-audit.sh brief checker --rows <cartographer-rows.md> --story "<http(s)://.../iframe.html?id=...>"
+```
+
+That carries every row of the cartographer's file unchanged, the five verdicts and the rule
+that no row is added. A story URL without `iframe.html?id=` (a freehand HTML mock) or a rows
+file with no `E-01`-shaped row is refused with exit 2.
+
 ## Verdicts
 
 The checker returns exactly one per row:

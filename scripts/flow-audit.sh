@@ -7,12 +7,24 @@
 #       inherits the code's blind spots. A job line holding a path, a file name
 #       or a URL is refused with exit 2, because it smuggles the code back in.
 #
+#   flow-audit.sh brief checker --rows <rows.md> --story <url>
+#       prints the checker's prompt: the clickable Storybook story to drive,
+#       every row line of the cartographer's file byte for byte, the five
+#       verdicts and the rule that no row is added, merged or reworded. A story
+#       URL without iframe.html?id= (a freehand HTML mock, the manager UI) is
+#       refused, and so is a rows file holding no 'E-01'-shaped row.
+#
 # Exit: 0 printed · 2 refused or bad usage.
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAXONOMY="$KIT/skills/flows/TAXONOMY.md"
+ROW_RE='(^|[^A-Za-z0-9])[EAIDFRXC]-[0-9]{2}'
 
-usage() { echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2; exit 2; }
+usage() {
+  echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2
+  echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...>" >&2
+  exit 2
+}
 
 # The first token that points at code rather than at what a person is doing.
 leak_in() {
@@ -49,8 +61,47 @@ brief_cartographer() {
   cat "$TAXONOMY"
 }
 
+brief_checker() {
+  local rows="" story=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --rows)  [ $# -ge 2 ] || usage; rows=$2; shift 2 ;;
+      --story) [ $# -ge 2 ] || usage; story=$2; shift 2 ;;
+      *) echo "flow-audit: the checker takes --rows and --story only — refused: $1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$rows" ] && [ -n "$story" ] || usage
+  case "$story" in
+    http://*/iframe.html\?id=?* | https://*/iframe.html\?id=?*) ;;
+    *) echo "flow-audit: not a clickable story — want a Storybook http(s)://.../iframe.html?id=... URL, got: $story" >&2
+       exit 2 ;;
+  esac
+  [ -f "$rows" ] || { echo "flow-audit: no rows file at $rows" >&2; exit 2; }
+  local lines
+  lines=$(grep -E "$ROW_RE" "$rows")
+  [ -n "$lines" ] || { echo "flow-audit: $rows holds no row (want lines like 'E-01 · ...')" >&2; exit 2; }
+  cat <<EOF
+Drive this clickable picture in a browser: $story
+
+Check each expected-flow row below against what the picture does when you click it.
+Never add, merge, split, renumber or reword a row. Return every row id exactly once,
+in this order, each with exactly one verdict and the clicks that showed it:
+
+- PRESENT — a click path handles it; name the clicks.
+- PARTIAL — handled on one branch and not the others; say which.
+- WRONG — handled, but the behaviour contradicts what the screen states or promises.
+- ABSENT — no click path handles it. The finding.
+- UNVERIFIED — something for it is on screen, but no click you made reached it.
+
+## Expected rows
+
+EOF
+  printf '%s\n' "$lines"
+}
+
 [ $# -ge 2 ] || usage
 case "$1 $2" in
   "brief cartographer") shift 2; brief_cartographer "$@" ;;
+  "brief checker")      shift 2; brief_checker "$@" ;;
   *) usage ;;
 esac
