@@ -485,8 +485,10 @@ coord_skill_hold() {
   f="${HARNESS_SKILL_CHECKS:-${DRIVER_DIR:-$STATE_DIR/driver}/skill-checks.tsv}"
   [ ! -s "$f" ] || want=$(tail -n 1 "$f" | cut -f8 | cut -d' ' -f1)
   sv=$(harness_skill_plugin_version "$want" 2>/dev/null | head -1)
-  # <cli>|<plugin version> \t <since>. The older <cli> \t <harness> \t <since> reads as a change once, then is rewritten.
-  [ ! -f "$seen" ] || IFS=$'\t' read -r sk since _ < "$seen" || true
+  # <cli>|<plugin version> \t <since>. The older <cli> \t <harness> \t <since> keeps its since on the same CLI, or an upgrade releases every held host.
+  local old=""
+  [ ! -f "$seen" ] || IFS=$'\t' read -r sk since old < "$seen" || true
+  case "$sk" in *'|'*) ;; *) [ -z "$old" ] || { [ "$sk" = "$cli" ] && since=$old || since=""; sk="$cli|"; } ;; esac
   case "$since" in ''|*[!0-9]*) since="" ;; esac
   # A version not yet known (no rows, an unread registry) is the last one seen, not a change.
   case "$sk" in *'|'*) [ -n "$sv" ] || sv="${sk#*|}" ;; esac
