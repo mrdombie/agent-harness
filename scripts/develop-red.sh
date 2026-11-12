@@ -115,8 +115,9 @@ required_check() { # <check name>
   return 1
 }
 # develop_red_clean <check> — the name a ticket may carry. A path is named from the repo root:
-# a builder's worktree path becomes the tracked file it ends with (the longest), and one no
-# tracked file ends with is unplaceable (status 1), never sent. Anything else is kept.
+# a builder's worktree path becomes the tracked file it ends with (the longest). One no tracked
+# file ends with is unplaceable (status 1), never sent, when it looks like a path (a leading
+# '/' or a file's extension last); any other name, 'lint/web' too, is kept as the check's.
 TRACKED=""; TRACKED_READ=""
 develop_red_clean() {
   case "$1" in */*) ;; *) printf '%s' "$1"; return 0 ;; esac
@@ -125,8 +126,11 @@ develop_red_clean() {
   while :; do
     p="${p#./}"
     grep -qFx -- "$p" <<<"$TRACKED" && { printf '%s' "$p"; return 0; }
-    case "$p" in */*) p="${p#*/}" ;; *) return 1 ;; esac
+    case "$p" in */*) p="${p#*/}" ;; *) break ;; esac
   done
+  case "$1" in /*) return 1 ;; esac
+  [[ "${1##*/}" =~ \.[A-Za-z][A-Za-z0-9]{0,5}$ ]] && return 1
+  printf '%s' "$1"
 }
 # develop_red_ci <sha> — "pending" while any run is unfinished, else "done<TAB><failed names,>".
 # Status 1 when CI's runs could not be read.
