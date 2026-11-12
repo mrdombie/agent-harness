@@ -109,4 +109,29 @@ for t in pnpm npx storybook-shot playwright.config 'apps/'; do
   grep -qiF "$t" "$CHK" 2>/dev/null && bad "checker agent names project tool '$t'" || ok "checker agent does not name '$t'"
 done
 
+echo "--- gate: an open STRANDS or LIES gap holds the picture; SILENT and ROUGH never do; no rows is void ---"
+FX="$KIT/scripts/fixtures/flow-audit"
+out=$(bash "$SUT" gate "$FX/open-strands.md" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "open STRANDS gap exits 1" || bad "open STRANDS: exit $rc, want 1: $out"
+printf '%s' "$out" | grep -qF 'GAP-01' && ok "names GAP-01" || bad "open STRANDS does not name GAP-01: $out"
+printf '%s' "$out" | grep -qF 'GAP-02' && bad "names the ROUGH GAP-02 as holding" || ok "ROUGH GAP-02 is not named"
+LIES="$REPO/open-lies.md"; sed 's/^### GAP-01 · STRANDS ·/### GAP-01 · LIES ·/' "$FX/open-strands.md" > "$LIES"
+out=$(bash "$SUT" gate "$LIES" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "open LIES gap exits 1" || bad "open LIES: exit $rc, want 1: $out"
+printf '%s' "$out" | grep -qF 'GAP-01' && ok "LIES names GAP-01" || bad "open LIES does not name GAP-01: $out"
+out=$(bash "$SUT" gate "$FX/fixed-strands.md" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a STRANDS gap with a Fixed line exits 0" || bad "fixed STRANDS: exit $rc, want 0: $out"
+EMPTYFIX="$REPO/empty-fixed.md"; sed 's/^\*\*Fixed:\*\* .*/**Fixed:**  /' "$FX/fixed-strands.md" > "$EMPTYFIX"
+grep -qx '\*\*Fixed:\*\*  ' "$EMPTYFIX" && ok "empty-Fixed fixture built" || bad "empty-Fixed fixture not built"
+out=$(bash "$SUT" gate "$EMPTYFIX" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "an empty Fixed line exits 1" || bad "empty Fixed: exit $rc, want 1: $out"
+printf '%s' "$out" | grep -qF 'GAP-01' && ok "empty Fixed names GAP-01" || bad "empty Fixed does not name GAP-01: $out"
+out=$(bash "$SUT" gate "$FX/rough-only.md" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "SILENT/ROUGH only exits 0" || bad "rough-only: exit $rc, want 0: $out"
+out=$(bash "$SUT" gate "$FX/no-rows.md" 2>&1); rc=$?
+[ "$rc" -eq 3 ] && ok "no coverage rows exits 3" || bad "no rows: exit $rc, want 3: $out"
+printf '%s' "$out" | grep -qiF 'void' && ok "no rows says void" || bad "no rows does not say void: $out"
+out=$(bash "$SUT" gate "$REPO/missing.md" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "a missing report is exit 2" || bad "missing report: exit $rc, want 2"
+
 suite_end "$fail"
