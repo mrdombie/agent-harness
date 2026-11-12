@@ -244,7 +244,7 @@ breaker_world
 check_rows box none 601 602 603
 out=$(tick box 1)
 want "box spawns nothing"                             "" "$(by box)"
-want_in "the tick names the cause"                    'spawn: starting nothing new — the last 3 builds here could not run superpowers:writing-plans \(the session did not list superpowers:writing-plans\) — held until Claude Code 2\.1\.999 changes' "$out"
+want_in "the tick names the cause"                    'spawn: starting nothing new — the last 3 builds here could not run superpowers:writing-plans \(not listed in the session\) — held until Claude Code 2\.1\.999 changes' "$out"
 want_in "and raises it once"                          'event: skill-hold — box takes no builds' "$out"
 want_in "box's heartbeat carries its CLI and the hold" '"cli":"2\.1\.999","hold":"the last 3 builds here' "$(jq -r '.[0].body' "$SH/comments.json")"
 tick mac 1 >/dev/null

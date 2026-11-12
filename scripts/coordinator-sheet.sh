@@ -506,17 +506,17 @@ coord_skill_hold() {
     [ -z "$newest" ] || ! harness_ver_lt "$newest" "$fixed" || return 1
   fi
   case "$want" in *:*) plug="${want%%:*}" ;; esac
-  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" '
+  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" -v fb="${f##*/}" '
     { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8 }
     END {
       if (bad || rows < n || at < since) exit 1
       k = 0; for (x in tk) k++; if (k < 2) exit 1
       w = (want == "" ? "its skill" : want)
-      if (cause == "not-loaded") why = "the session did not list " w
+      if (cause == "not-loaded") why = "not listed in the session"
       else if (cause == "no-skill-tool") why = "the session had no Skill tool"
-      else if (cause == "loaded") why = "the session listed " w " and never called it"
+      else if (cause == "loaded") why = "listed, never called"
       else why = "no session start in the transcript"
-      printf "the last %d builds here could not run %s (%s) — held until Claude Code %s%s changes, or a harness release fixes it", n, w, why, cli, (plug == "" || sv == "" ? "" : " or " plug " " sv)
+      printf "the last %d builds here could not run %s (%s) — held until Claude Code %s%s changes, or a harness release fixes it, or clear %s", n, w, why, cli, (plug == "" || sv == "" ? "" : " or " plug " " sv), fb
     }'
 }
 
