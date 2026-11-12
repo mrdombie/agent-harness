@@ -27,8 +27,10 @@
 # CI ON THE SAME COMMIT IS READ FIRST (develop_red_ci, one check-runs read per sha a pass):
 # when it fails other required checks than the pre-push did, the ticket names CI's and the
 # body says what the pre-push named. CI still running: the row waits. CI unreadable: the row
-# waits and the pass is not done. CI green, or failing none the trunk requires, files the
-# local set: a check only the hooks run is never lost.
+# waits and the pass is not done. Still running past coordinator.developRedCiWaitMins (120)
+# after the row was noted: the local set files and the body says CI had not finished. CI
+# green, or failing none the trunk requires, files the local set: a check only the hooks run
+# is never lost.
 #
 # FILED ONCE, the follow-up.sh way: a ledger on this host (develop-red-filed.tsv) and a
 # marker in the body, searched on the forge, so another builder, a resumed tick or another
@@ -73,10 +75,11 @@ PROC=$(toolkit_cfg coordinator.processLabel 2>/dev/null); PROC="${PROC:-process}
 rows() {
   awk -F'\t' 'NF >= 2 && $1 != "" && $2 != "" {
     k = $1 "\t" $2
-    if (!(k in seen)) { seen[k] = 1; order[++n] = k; who[k] = ""; prs[k] = "" }
+    if (!(k in seen)) { seen[k] = 1; order[++n] = k; who[k] = ""; prs[k] = ""; at[k] = "-" }
+    if ($5 ~ /^[0-9]+$/ && (at[k] == "-" || $5 + 0 < at[k] + 0)) at[k] = $5
     if ($3 != "" && index("," who[k] ",", "," "#" $3 ",") == 0) who[k] = who[k] (who[k] == "" ? "" : ",") "#" $3
     if ($4 != "" && index("," prs[k] ",", "," "#" $4 ",") == 0) prs[k] = prs[k] (prs[k] == "" ? "" : ",") "#" $4
-  } END { for (i = 1; i <= n; i++) print order[i] "\t" who[order[i]] "\t" prs[order[i]] }' "$PENDING"
+  } END { for (i = 1; i <= n; i++) print order[i] "\t" at[order[i]] "\t" who[order[i]] "\t" prs[order[i]] }' "$PENDING"
 }
 ledgered() { awk -F'\t' -v s="$1" -v c="$2" '$1 == s && $2 == c { print $3; exit }' "$LEDGER" 2>/dev/null; }
 ledger() { [ -n "$DRY" ] || printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$LEDGER"; }
@@ -91,7 +94,7 @@ prune() {
 }
 
 prune
-TODO=$(rows | while IFS=$'\t' read -r sha checks who prs; do [ -n "$(ledgered "$sha" "$checks")" ] || printf '%s\t%s\t%s\t%s\n' "$sha" "$checks" "$who" "$prs"; done)
+TODO=$(rows | while IFS=$'\t' read -r sha checks at who prs; do [ -n "$(ledgered "$sha" "$checks")" ] || printf '%s\t%s\t%s\t%s\t%s\n' "$sha" "$checks" "$at" "$who" "$prs"; done)
 [ -n "$TODO" ] || exit 0
 pending_n=$(printf '%s\n' "$TODO" | grep -c .)
 
@@ -142,7 +145,8 @@ develop_red_ci() {
 }
 WEEK=$(date -u +%G-W%V)
 KEEP=""; CI_FAILED=0
-while IFS=$'\t' read -r sha checks who prs; do
+CI_WAIT_MINS=$(toolkit_cfg coordinator.developRedCiWaitMins 2>/dev/null); [[ "$CI_WAIT_MINS" =~ ^[0-9]+$ ]] || CI_WAIT_MINS=120
+while IFS=$'\t' read -r sha checks at who prs; do
   [ -n "$sha" ] && [ -n "$checks" ] || continue
   s7=$(printf '%s' "$sha" | cut -c1-7); req=""; other=""
   IFS=, read -ra names <<<"$checks"
@@ -173,13 +177,22 @@ while IFS=$'\t' read -r sha checks who prs; do
     rm -f "${TMPDIR:-/tmp}/develop-red-ci.$$"; CI_FAILED=1; continue
   fi
   rm -f "${TMPDIR:-/tmp}/develop-red-ci.$$"
-  if [ "$ci" = pending ]; then echo "CI is still running on $TRUNK@$s7: the red on ${req//,/, } waits for it"; continue; fi
+  waited="-"
+  if [ "$ci" = pending ]; then
+    # A run stuck queued would hold a real red unfiled for ever: past the wait, the local set files.
+    if [[ "$at" =~ ^[0-9]+$ ]] && [ $(( ($(date +%s) - at) / 60 )) -ge "$CI_WAIT_MINS" ]; then
+      waited=$(( ($(date +%s) - at) / 60 )); ci="done"$'\t'
+      echo "CI has not finished on $TRUNK@$s7 after $waited min: the red on ${req//,/, } is filed from the pre-push"
+    else
+      echo "CI is still running on $TRUNK@$s7: the red on ${req//,/, } waits for it"; continue
+    fi
+  fi
   local_set="-"; ci_req=""
   while IFS= read -r c; do [ -n "$c" ] && required_check "$c" && ci_req="$ci_req${ci_req:+,}$c"; done <<<"$(printf '%s' "${ci#done$'\t'}" | tr , '\n')"
   if [ -n "$ci_req" ] && [ "$ci_req" != "$(printf '%s\n' "${req//,/$'\n'}" | LC_ALL=C sort -u | paste -sd, -)" ]; then
     local_set="$req"; req="$ci_req"
   fi
-  KEEP="$KEEP$sha"$'\t'"$req"$'\t'"$local_set"$'\t'"$checks"$'\t'"$who"$'\t'"$prs"$'\n'
+  KEEP="$KEEP$sha"$'\t'"$req"$'\t'"$local_set"$'\t'"$waited"$'\t'"$checks"$'\t'"$who"$'\t'"$prs"$'\n'
 done <<<"$TODO"
 TODO="$KEEP"
 [ -n "$TODO" ] || { prune; exit "$CI_FAILED"; }
@@ -210,7 +223,7 @@ if [ -z "$OPEN_N" ] && ! MARKERS=$(SWARM_GH="$GH" gh_read "which $TRUNK reds wer
 fi
 
 failed=0
-while IFS=$'\t' read -r sha checks local_set own who prs; do
+while IFS=$'\t' read -r sha checks local_set waited own who prs; do
   [ -n "$sha" ] && [ -n "$checks" ] || continue
   s7=$(printf '%s' "$sha" | cut -c1-7)
   # A marker's set carries no space: the search scans up to the first one.
@@ -239,6 +252,11 @@ while IFS=$'\t' read -r sha checks local_set own who prs; do
     cmds="$cmds
 
 CI on this commit fails the check(s) above; the pre-push named \`${local_set//,/\`, \`}\`."
+  fi
+  if [ "$waited" != - ]; then
+    cmds="$cmds
+
+CI had not finished on this commit after $waited min, so these are the pre-push's checks."
   fi
   # No builder on the row: the coordinator's sweep of the hooks' checks found it first.
   if [ -n "$who" ]; then
