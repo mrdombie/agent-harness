@@ -55,4 +55,58 @@ for t in Read Bash Grep Glob; do
   printf '%s' "$tools" | grep -qw "$t" && bad "cartographer has $t" || ok "cartographer lacks $t"
 done
 
+echo "--- the checker brief carries every row unchanged, the five verdicts and the no-new-rows rule ---"
+ROWS="$REPO/rows.md"
+cat > "$ROWS" <<'ROWS_EOF'
+1. E-01 · [CORE] Somebody opens the queue from the nav → sees the oldest item first
+2. A-03 · [EDGE] Somebody approves an item twice → the second click does nothing
+3. F-12 · [CORE] The save fails → the screen says so and offers a retry
+
+Self-check: every axis walked — yes
+ROWS_EOF
+STORY="http://localhost:6006/iframe.html?id=pictures-x--populated"
+out=$(bash "$SUT" brief checker --rows "$ROWS" --story "$STORY" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "checker brief exits 0" || bad "checker brief: exit $rc, want 0: $out"
+while IFS= read -r row; do
+  printf '%s\n' "$out" | grep -qxF "$row" && ok "row carried unchanged: ${row:0:12}" \
+    || bad "row rewritten or dropped: $row"
+done < <(grep -E '(^|[^A-Z])[EAIDFRXC]-[0-9]{2}' "$ROWS")
+printf '%s' "$out" | grep -qF "$STORY" && ok "carries the story URL" || bad "story URL missing"
+for v in PRESENT PARTIAL WRONG ABSENT UNVERIFIED; do
+  printf '%s' "$out" | grep -qw "$v" && ok "names verdict $v" || bad "verdict $v missing"
+done
+printf '%s' "$out" | grep -qiF 'never add' && ok "carries the no-new-rows rule" || bad "no-new-rows rule missing"
+n_in=$(grep -cE '[EAIDFRXC]-[0-9]{2}' "$ROWS")
+n_out=$(printf '%s\n' "$out" | grep -cE '[EAIDFRXC]-[0-9]{2}')
+[ "$n_out" -eq "$n_in" ] && ok "no row added: $n_in in, $n_out out" || bad "row count changed: $n_in in, $n_out out"
+
+echo "--- a story that is not a clickable Storybook story is refused ---"
+for s in ".design/x-mock.html" "http://localhost:6006/?path=/story/pictures-x--populated" "file:///tmp/x.html"; do
+  out=$(bash "$SUT" brief checker --rows "$ROWS" --story "$s" 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && ok "exit 2 for story: $s" || bad "story $s: exit $rc, want 2"
+  printf '%s' "$out" | grep -qF 'not a clickable story' && ok "names 'not a clickable story' for: $s" \
+    || bad "refusal for $s does not say 'not a clickable story': $out"
+  printf '%s' "$out" | grep -qF 'E-01' && bad "refusal still printed the rows for: $s" || ok "no brief for: $s"
+done
+
+echo "--- a rows file with no row is refused ---"
+EMPTY="$REPO/empty.md"; printf 'Self-check: every axis walked — yes\n' > "$EMPTY"
+out=$(bash "$SUT" brief checker --rows "$EMPTY" --story "$STORY" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "rows file with no row is exit 2" || bad "empty rows: exit $rc, want 2: $out"
+printf '%s' "$out" | grep -qF 'UNVERIFIED' && bad "empty rows still printed the brief" || ok "no brief for empty rows"
+printf '%s' "$out" | grep -qF 'no row' && ok "the refusal says the file holds no row" || bad "empty-rows refusal does not say 'no row': $out"
+out=$(bash "$SUT" brief checker --rows "$REPO/missing.md" --story "$STORY" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "missing rows file is exit 2" || bad "missing rows: exit $rc, want 2"
+out=$(bash "$SUT" brief checker --story "$STORY" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "no --rows is exit 2" || bad "no --rows: exit $rc, want 2"
+
+echo "--- the checker agent names no project tool ---"
+CHK="$KIT/agents/flow-checker.md"
+[ -f "$CHK" ] && ok "agents/flow-checker.md exists" || bad "no agents/flow-checker.md"
+cfm=$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$CHK" 2>/dev/null)
+printf '%s\n' "$cfm" | grep -q '^name: flow-checker$' && ok "agent is named flow-checker" || bad "agent name is not flow-checker"
+for t in pnpm npx storybook-shot playwright.config 'apps/'; do
+  grep -qiF "$t" "$CHK" 2>/dev/null && bad "checker agent names project tool '$t'" || ok "checker agent does not name '$t'"
+done
+
 suite_end "$fail"
