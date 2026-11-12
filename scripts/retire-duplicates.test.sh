@@ -14,6 +14,11 @@ mkdir -p "$C/commands" "$C/agents" "$C/hooks/lib"
 : > "$C/hooks/keep-working.sh"; : > "$C/hooks/keep-working.test.sh"
 : > "$C/hooks/no-repo-wide-format.sh"; : > "$C/hooks/no-repo-wide-format.py"
 : > "$C/hooks/lib/claude-session.sh"
+# The old local name of the plugin's flows skill, edited on this machine.
+mkdir -p "$C/skills/screen-flow-audit/references"
+echo "local edit" > "$C/skills/screen-flow-audit/SKILL.md"
+echo "rows" > "$C/skills/screen-flow-audit/references/rows.md"
+echo "old flows command" > "$C/commands/flows.md"
 cat > "$C/settings.json" <<'S'
 {"model":"opus","hooks":{
   "Stop":[{"hooks":[{"type":"command","command":"$HOME/.claude/hooks/keep-working.sh"}]}],
@@ -41,12 +46,23 @@ printf '%s' "$out" | grep -q 'my-own-thing.md' && ok "a command the kit does not
 printf '%s' "$out" | grep -q 'no-repo-wide-format.py' && ok "the python judge goes with its wrapper" \
   || bad "the python judge was not listed"
 
+printf '%s' "$out" | grep -q 'skills/screen-flow-audit' && ok "--check names the old screen-flow-audit skill" \
+  || bad "--check did not name skills/screen-flow-audit"
+printf '%s' "$out" | grep -q 'commands/flows.md' && ok "--check names the old flows command" \
+  || bad "--check did not name commands/flows.md"
+[ -f "$C/skills/screen-flow-audit/SKILL.md" ] && ok "--check left screen-flow-audit in place" || bad "--check moved screen-flow-audit"
+
 echo "--- apply ---"
 bash "$D/retire-duplicates.sh" >/dev/null 2>&1
 A="$C/retired-$(date +%Y-%m-%d)"
 [ ! -e "$C/commands/claim.md" ] && [ -f "$A/commands/claim.md" ] && ok "the duplicate command was moved, not deleted" || bad "commands/claim.md"
 [ -f "$C/commands/my-own-thing.md" ] && ok "the unshipped command was left alone" || bad "an unshipped command was moved"
 [ -f "$A/hooks/no-repo-wide-format.py" ] && ok "the python judge went with its wrapper" || bad "the .py was left behind"
+[ ! -e "$C/skills/screen-flow-audit" ] && [ "$(cat "$A/skills/screen-flow-audit/SKILL.md" 2>/dev/null)" = "local edit" ] \
+  && [ "$(cat "$A/skills/screen-flow-audit/references/rows.md" 2>/dev/null)" = "rows" ] \
+  && ok "the old screen-flow-audit skill was moved intact, not deleted" || bad "skills/screen-flow-audit"
+[ ! -e "$C/commands/flows.md" ] && [ "$(cat "$A/commands/flows.md" 2>/dev/null)" = "old flows command" ] \
+  && ok "the old flows command was moved intact" || bad "commands/flows.md"
 [ -f "$A/hooks/lib/claude-session.sh" ] && ok "the shared lib went with it" || bad "hooks/lib left behind"
 
 echo "--- settings.json ---"
@@ -59,6 +75,9 @@ jq -e '.hooks | to_entries[] | .value[] | select((.hooks|length)==0)' "$C/settin
   && bad "an empty hook group was left behind" || ok "no empty hook group left behind"
 
 echo "--- it is idempotent, and the gate agrees ---"
+out=$(bash "$D/retire-duplicates.sh" 2>&1)
+printf '%s' "$out" | grep -q 'screen-flow-audit\|commands/flows.md' && bad "a second apply still lists the flows copies" \
+  || ok "a second apply has nothing of flows to retire"
 bash "$D/retire-duplicates.sh" --check >/dev/null 2>&1 && ok "a second --check is LEVEL" || bad "not idempotent"
 HOME="$C" bash "$D/check-single-source.sh" "$REPO" --strict >/dev/null 2>&1 \
   && ok "check-single-source --strict passes afterwards" || bad "the gate still finds duplicates"
