@@ -14,7 +14,13 @@
 #       URL without iframe.html?id= (a freehand HTML mock, the manager UI) is
 #       refused, and so is a rows file holding no 'E-01'-shaped row.
 #
-# Exit: 0 printed · 2 refused or bad usage.
+#   flow-audit.sh gate <report.md>
+#       holds the picture while the report has an open STRANDS or LIES gap: a
+#       '### GAP-NN · STRANDS|LIES' section with no non-empty '**Fixed:**' line.
+#       SILENT and ROUGH never hold it. A report with no '| E-01 |' ledger row
+#       is void, never green.
+#
+# Exit: 0 printed or gate clear · 1 gate held · 2 refused or bad usage · 3 void report.
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAXONOMY="$KIT/skills/flows/TAXONOMY.md"
@@ -23,6 +29,7 @@ ROW_RE='(^|[^A-Za-z0-9])[EAIDFRXC]-[0-9]{2}'
 usage() {
   echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2
   echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...>" >&2
+  echo "       flow-audit.sh gate <report.md>" >&2
   exit 2
 }
 
@@ -99,6 +106,36 @@ EOF
   printf '%s\n' "$lines"
 }
 
+gate() {
+  [ $# -eq 1 ] || usage
+  local report=$1
+  [ -f "$report" ] || { echo "flow-audit: no report at $report" >&2; exit 2; }
+  if ! grep -qE '^\|[[:space:]]*[EAIDFRXC]-[0-9]{2}[[:space:]]*\|' "$report"; then
+    echo "flow-audit: void — $report has no coverage row (want ledger rows like '| E-01 | ...')" >&2
+    exit 3
+  fi
+  local open
+  open=$(awk '
+    function close_gap() { if (id != "" && !fixed) print id; id = "" }
+    /^#{2,3}[[:space:]]/ {
+      close_gap()
+      if ($0 ~ /^###[[:space:]]+GAP-[0-9]+[[:space:]]+·[[:space:]]+(STRANDS|LIES)([[:space:]]|$)/) {
+        id = $2; fixed = 0
+      }
+      next
+    }
+    id != "" && /^\*\*Fixed:\*\*[[:space:]]*[^[:space:]]/ { fixed = 1 }
+    END { close_gap() }
+  ' "$report")
+  if [ -n "$open" ]; then
+    echo "flow-audit: held — open STRANDS/LIES gap(s) with no **Fixed:** line: $(printf '%s' "$open" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  echo "flow-audit: clear — no open STRANDS or LIES gap in $report"
+}
+
+[ $# -ge 1 ] || usage
+if [ "$1" = gate ]; then shift; gate "$@"; exit $?; fi
 [ $# -ge 2 ] || usage
 case "$1 $2" in
   "brief cartographer") shift 2; brief_cartographer "$@" ;;

@@ -36,6 +36,7 @@ Severity order — STRANDS, then LIES, then SILENT, then ROUGH.
 **What happens now:** <observable outcome, with proof>
 **What should happen:** <one sentence>
 **Evidence:** `path:line`, `path:line`
+**Fixed:** <what changed, one line — leave the line out until it is fixed>
 
 <repeat per gap>
 
@@ -82,5 +83,9 @@ totality: no rendered/reachability leg, any route excluded, any actor not modell
   the next run incomparable.
 - **The gap row is a test, not a conclusion.** If `The move` is missing, downgrade the row to
   `UNVERIFIED` — a finding nobody can reproduce is a suspicion with formatting.
+- **An open STRANDS or LIES gap holds the picture.** `flow-audit.sh gate <report.md>` exits 1
+  naming each STRANDS or LIES gap with no filled `**Fixed:**` line; an empty `**Fixed:**` is
+  still open. SILENT and ROUGH never hold it. A report with no ledger row exits 3 — void,
+  never green.
 - **"Did the method work" is not optional.** It is what stops a bad run being read as a clean
   surface.
