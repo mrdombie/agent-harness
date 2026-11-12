@@ -24,6 +24,13 @@
 #       A gap naming no row stays open. SILENT and ROUGH never hold it. A
 #       report with no '| E-01 |' ledger row is void, never green.
 #
+#   flow-audit.sh story <surface>
+#       prints the clickable story URL of the surface's picture, from the
+#       project's design.pictureStory template ('<surface>' is replaced). A
+#       project with no template, or one that is not an iframe.html?id= URL,
+#       draws no clickable story: exit 2, and the picture parks rather than
+#       skipping the audit.
+#
 #   flow-audit.sh report post <ticket> <report.md>
 #   flow-audit.sh report get <ticket>
 #       the report's one home: a ticket comment whose first line is
@@ -47,6 +54,7 @@ usage() {
   echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2
   echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...> [--only <ids>]" >&2
   echo "       flow-audit.sh gate <report.md>" >&2
+  echo "       flow-audit.sh story <surface>" >&2
   echo "       flow-audit.sh report post <ticket> <report.md> | report get <ticket>" >&2
   echo "       flow-audit.sh owed <label>..." >&2
   exit 2
@@ -191,6 +199,21 @@ gate() {
   echo "flow-audit: clear — no open STRANDS or LIES gap in $report"
 }
 
+story() {
+  [ $# -eq 1 ] || usage
+  local surface=$1 tpl url
+  printf '%s' "$surface" | grep -qE '^[a-z0-9][a-z0-9-]*$' \
+    || { echo "flow-audit: the surface is a slug (a-z, 0-9, -) — got: $surface" >&2; exit 2; }
+  HARNESS_CFG="${HARNESS_CFG:-$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json}"
+  tpl=$(jq -r '.design.pictureStory // empty' "$HARNESS_CFG" 2>/dev/null)
+  url=${tpl//<surface>/$surface}
+  case "$url" in
+    http://*/iframe.html\?id=?* | https://*/iframe.html\?id=?*) printf '%s\n' "$url" ;;
+    *) echo "flow-audit: no clickable story — park the picture: this project's design.pictureStory is '${tpl:-unset}', not an http(s)://.../iframe.html?id=...<surface>... template" >&2
+       exit 2 ;;
+  esac
+}
+
 REPORT_HEAD="## Flow audit report"
 
 report_repo() {
@@ -242,6 +265,7 @@ owed() {
 [ $# -ge 1 ] || usage
 if [ "$1" = owed ]; then shift; owed "$@"; exit $?; fi
 if [ "$1" = gate ]; then shift; gate "$@"; exit $?; fi
+if [ "$1" = story ]; then shift; story "$@"; exit $?; fi
 if [ "$1" = report ]; then shift; report "$@"; exit $?; fi
 [ $# -ge 2 ] || usage
 case "$1 $2" in

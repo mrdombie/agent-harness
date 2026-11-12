@@ -58,7 +58,11 @@ The checker may be several agents in parallel over row ranges, provided each get
 tree and the same instruction not to invent rows.
 
 On a picture (before the screen is built) the checker is the `flow-checker` agent, which
-clicks the clickable Storybook story rather than reading code. Its prompt is printed by:
+clicks the clickable Storybook story rather than reading code. The story is the page the
+project's picture phase builds; `scripts/flow-audit.sh story <surface>` prints its URL from
+the project's `design.pictureStory` template (`<surface>` in it is replaced). A project with
+no such template draws no clickable story: that exits 2, and the picture parks rather than
+going out unaudited. Its prompt is printed by:
 
 ```bash
 scripts/flow-audit.sh brief checker --rows <cartographer-rows.md> --story "<http(s)://.../iframe.html?id=...>"

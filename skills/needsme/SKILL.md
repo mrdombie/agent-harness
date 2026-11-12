@@ -242,6 +242,8 @@ redrawn as "picture drawn from tidy data".
 ticket's newest `## Flow audit report` comment: `flow-audit.sh report get <ticket> > report.md`,
 and `flow-audit.sh gate report.md` exits 0 on it. `report get` exit 3 means no report: run the
 audit first. Exit 1 means the comments could not be read: retry, never treat it as no report.
+With no report and no clickable story (`flow-audit.sh story <surface>` exits 2), the row
+moves to the agents' list as "picture has no clickable story", never to the operator.
 An open STRANDS or LIES gap sends the concept back as "picture strands or lies", its fixes
 joined with the critic's Critical/Major fixes in one redraw, then its rows re-checked by the
 `flow-checker`; the critic still runs once. A void report (gate exit 3) is no report.
