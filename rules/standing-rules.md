@@ -20,6 +20,8 @@ to hold the work against.
 
 **A picture is checked against the kit before the owner sees it** (the owner, 2026-10-17): the design critic runs in picture mode against the project's `design.reference`, and a picture that comes back `KIT: DRIFT` (flat cards, off-kit controls, a primary not drawn as the primary, the current screen redrawn) is redrawn first, never sent; 5 of 8 approved pictures measured that day had drawn the flat look, and the builds copied it.
 
+**A picture is flow-audited before the owner sees it**: on a new or redesigned screen (`flow-audit.sh owed`) every skill that sends a picture runs the `/agent-harness:flows` audit on it and sends it only when `flow-audit.sh gate` passes, no open STRANDS or LIES gap. Those fixes join the critic's Critical/Major fixes in one redraw; the critic still runs once. `scripts/check-picture-mode.sh` refuses a sender that drops it.
+
 Show the rendered thing for a design call, never a bullet list describing it.
 Anything graphic gets a rendered artifact, not ASCII.
 
