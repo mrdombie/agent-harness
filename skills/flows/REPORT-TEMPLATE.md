@@ -7,8 +7,12 @@ Coverage first, gaps second, method's-own-verdict last. Tables over prose throug
 
 **Job audited:** <the one line handed to the cartographer, verbatim>
 **Screens in scope:** <routes, as one sequence>
-**Pinned at:** `<integration branch>` @ `<sha>` · <YYYY-MM-DD>
+**Pinned at:** `<integration branch>` @ `<sha>` · <YYYY-MM-DD>   (a built screen)
+**Pinned at:** the story `<http(s)://.../iframe.html?id=...>` · <YYYY-MM-DD>   (a picture)
 **Method:** blind derivation → static check. Reachability not verified (no rendered leg).
+**Method:** blind derivation → the picture clicked by `flow-checker`. Reachability is what was clicked.
+
+Keep the one **Pinned at** and the one **Method** line that fit, and delete the other.
 
 ## Coverage
 
@@ -21,6 +25,7 @@ Coverage first, gaps second, method's-own-verdict last. Tables over prose throug
 | 5 Failure | | | | | | |
 | 6 Repeat & race | | | | | | |
 | 7 Exit & aftermath | | | | | | |
+| 8 Continuity | | | | | | |
 | **Total** | | | | | | |
 
 <One line: what the shape of that table says. Which axis is thinnest, and whether the
@@ -35,7 +40,7 @@ Severity order — STRANDS, then LIES, then SILENT, then ROUGH.
 **The move:** <concrete steps a person takes, from a state that is easy to reach>
 **What happens now:** <observable outcome, with proof>
 **What should happen:** <one sentence>
-**Evidence:** `path:line`, `path:line`
+**Evidence:** `path:line`, `path:line` — or, on a picture, the clicks and the screenshot that showed it
 **Fixed:** <what changed, one line — leave the line out until it is fixed>
 
 <repeat per gap>
