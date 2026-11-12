@@ -242,7 +242,7 @@ want "the same CI red on a newer commit is the open ticket's: nothing created" "
 want "and nothing commented"                   "0" "$(comments)"
 
 echo "--- CI still running on the commit: nothing filed, the row kept ---"
-fresh "$A	test:api	629		29"; requires test:api Lint; cp "$PENDING" "$FIX/before"
+fresh "$A	test:api	629		$(date +%s)"; requires test:api Lint; cp "$PENDING" "$FIX/before"
 ci "Lint=in_progress" "Code gates=completed:failure"
 run
 want "nothing created"                         "0" "$(creates)"
@@ -250,6 +250,15 @@ want "nothing searched"                        "0" "$(searches)"
 want "the row is kept"                         "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
 want "nothing ledgered"                        "" "$(cat "$LEDGER")"
 want_in "it says it waits for CI"              'CI is still running' "$R"
+
+echo "--- CI stuck on the commit past the wait: the local set is filed, the body says CI had not finished ---"
+fresh "$A	test:api	634		$(( $(date +%s) - 3 * 3600 ))"; requires test:api Lint
+ci "Lint=queued" "Code gates=completed:failure"
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "for the local set"                    'title=develop is red: test:api \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want_in "the body says CI had not finished"    'CI had not finished on this commit after [0-9]+ min' "$(cat "$FIX/fgh.log")"
+want "the row's own set is ledgered"           "$A	test:api	901" "$(cat "$LEDGER")"
 
 echo "--- CI unreadable: nothing filed, the row kept, the pass not done ---"
 fresh "$A	test:api	630		30"; requires test:api; cp "$PENDING" "$FIX/before"; touch "$FIX/ci.fail"
