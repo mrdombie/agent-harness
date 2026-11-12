@@ -154,4 +154,14 @@ out=$(HARNESS_CFG="$CUSTOM" bash "$SUT" owed ui:new 2>&1); rc=$?
 out=$(HARNESS_CFG="$CUSTOM" bash "$SUT" owed screen:new 2>&1); rc=$?
 [ "$rc" -eq 1 ] && ok "screen:new is not owed once the project replaces the labels" || bad "custom screen:new: exit $rc, want 1: $out"
 
+echo "--- the report template counts every taxonomy axis and has a picture leg ---"
+TPL="$KIT/skills/flows/REPORT-TEMPLATE.md"
+cov=$(awk '/^## Coverage/{f=1;next} f&&/^## /{exit} f' "$TPL")
+while IFS= read -r n; do
+  printf '%s\n' "$cov" | grep -qE "^\| $n [A-Z]" && ok "coverage counts axis $n" || bad "coverage has no row for axis $n"
+done < <(sed -nE 's/^## Axis ([0-9]+) — .*/\1/p' "$TAX")
+grep -qE '^\*\*Method:\*\*.*click' "$TPL" && ok "a Method line for the picture leg (clicks)" || bad "no Method line for the clicked picture"
+grep -qE '^\*\*Pinned at:\*\*.*story' "$TPL" && ok "a Pinned-at line for the story URL" || bad "no Pinned-at line naming the story"
+grep -qE '^\*\*Evidence:\*\*.*screenshot' "$TPL" && ok "gap Evidence allows clicks and a screenshot" || bad "gap Evidence allows only path:line"
+
 suite_end "$fail"
