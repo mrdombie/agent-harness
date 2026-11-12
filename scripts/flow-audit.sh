@@ -20,6 +20,11 @@
 #       SILENT and ROUGH never hold it. A report with no '| E-01 |' ledger row
 #       is void, never green.
 #
+#   flow-audit.sh owed <label>...
+#       exits 0 when one label (arguments, or comma lists) is one of
+#       design.baselineRoute.pictureLabels — a new or redesigned screen, whose
+#       picture pays for the two agents — and 1 for every other change.
+#
 # Exit: 0 printed or gate clear · 1 gate held · 2 refused or bad usage · 3 void report.
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +35,7 @@ usage() {
   echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2
   echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...>" >&2
   echo "       flow-audit.sh gate <report.md>" >&2
+  echo "       flow-audit.sh owed <label>..." >&2
   exit 2
 }
 
@@ -134,7 +140,21 @@ gate() {
   echo "flow-audit: clear — no open STRANDS or LIES gap in $report"
 }
 
+owed() {
+  HARNESS_CFG="${HARNESS_CFG:-$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json}"
+  . "$KIT/driver/size-rules.sh" || exit 2
+  # An absent config still has the default labels; jq on a missing file prints none.
+  [ -r "$HARNESS_CFG" ] || HARNESS_CFG=<(printf '{}')
+  local want l
+  want=$(driver_picture_labels)
+  for l in $(printf '%s\n' "$@" | tr ',' '\n'); do
+    printf '%s\n' "$want" | grep -qxF -- "$l" && return 0
+  done
+  return 1
+}
+
 [ $# -ge 1 ] || usage
+if [ "$1" = owed ]; then shift; owed "$@"; exit $?; fi
 if [ "$1" = gate ]; then shift; gate "$@"; exit $?; fi
 [ $# -ge 2 ] || usage
 case "$1 $2" in
