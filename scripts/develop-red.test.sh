@@ -20,7 +20,8 @@ A=aaaaaaa000000000000000000000000000000000; B=bbbbbbb000000000000000000000000000
 # The forge: the open-ticket search answers $FIX/open.json, the all-markers search
 # $FIX/markers.json (fails while $FIX/markers.fail exists); a create numbers from 901.
 # develop's rules answer $FIX/rules.json (fail while $FIX/rules.fail exists). A commit's
-# check runs answer $FIX/runs.json (fail while $FIX/runs.fail exists), a job's log $FIX/log.<id>.
+# check runs answer $FIX/runs.json (fail while $FIX/runs.fail exists; a --paginate read also
+# gets the second page $FIX/runs.2.json), a job's log $FIX/log.<id>.
 cat > "$BIN/fgh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/fgh.log"
@@ -32,7 +33,8 @@ case "$*" in
   *"-X GET search/issues"*) [ -f "$FIX/markers.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
                             cat "$FIX/markers.json" 2>/dev/null || echo '{"total_count":0,"items":[]}'; exit 0 ;;
   *"commits/"*"/check-runs"*) [ -f "$FIX/runs.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
-                             cat "$FIX/runs.json" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}'; exit 0 ;;
+                             cat "$FIX/runs.json" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}'
+                             case "$*" in *--paginate*) cat "$FIX/runs.2.json" 2>/dev/null ;; esac; exit 0 ;;
   *"actions/jobs/"*"/logs"*) a="$*"; id=${a#*actions/jobs/}; id=${id%%/*}
                              [ -f "$FIX/log.$id" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
                              cat "$FIX/log.$id"; exit 0 ;;
@@ -50,7 +52,7 @@ requires() { # <context…> — what develop's live rules require
 }
 fresh() { # <rows…> — that develop-red.tsv, an empty ledger, a forge with nothing filed, chk-* required
   rm -f "$FIX"/open.json "$FIX"/markers.json "$FIX"/markers.fail "$FIX"/rules.fail "$FIX"/fgh.next "$STATE/swarm/gh-backoff"*
-  rm -f "$FIX"/runs.json "$FIX"/runs.fail "$FIX"/log.*
+  rm -f "$FIX"/runs.json "$FIX"/runs.2.json "$FIX"/runs.fail "$FIX"/log.*
   : > "$FIX/fgh.log"; : > "$LEDGER"; : > "$PENDING"; : > "$COUNT"; unset FGH_APPEND
   requires chk-a chk-b chk-z chk-q
   local r; for r in "$@"; do printf '%s\n' "$r" >> "$PENDING"; done
@@ -228,19 +230,50 @@ want "no passing leg's, no other suite's"      "0 0 0" "$(grep -c 'actions/jobs/
 want_in "test:unit filed, lint:x only counted" 'title=develop is red: test:unit \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
 want "lint:x is counted"                       "lint:x" "$(cut -f2 "$COUNT")"
 
-echo "--- the check runs or a leg's log unreadable: unknown, nothing filed, counted or ledgered ---"
+echo "--- the check runs or a leg's log unreadable: that commit's rows wait, the others file ---"
 for broken in runs.fail log.12; do
   fresh "$B	chk-b	627		27" "$A	lint:all	628		28" "$A	check:mock-drift	629		29"; requires chk-b "Typecheck + Unit tests"; leg_runs
   case $broken in runs.fail) touch "$FIX/runs.fail" ;; *) rm -f "$FIX/$broken" ;; esac
-  cp "$PENDING" "$FIX/before"
+  grep "^$A" "$PENDING" > "$FIX/before"
   run
-  want "$broken: nothing created"              "0" "$(creates)"
+  want "$broken: the row required by name at bbbbbbb files" "1" "$(creates)"
+  want_in "$broken: titled for chk-b"          'title=develop is red: chk-b \(develop@bbbbbbb\)' "$(cat "$FIX/fgh.log")"
   want "$broken: nothing counted"              "" "$(cat "$COUNT")"
-  want "$broken: nothing ledgered"             "" "$(cat "$LEDGER")"
-  want "$broken: develop-red.tsv is untouched" "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
-  want_in "$broken: it is unknown"             '^unknown — the checks on aaaaaaa could not be read — 3 row\(s\) not filed this pass$' "$R"
+  want "$broken: only bbbbbbb's row ledgered"  "$B	chk-b	901" "$(cat "$LEDGER")"
+  want "$broken: aaaaaaa's rows wait in develop-red.tsv" "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
+  want_in "$broken: it is unknown"             '^unknown — the checks on aaaaaaa could not be read — 2 row\(s\) at it not filed this pass$' "$R"
   want "$broken: the pass is not done"         "1" "$R_RC"
 done
+
+echo "--- a multi-line run step: every line of it is a command the leg ran ---"
+case_multiline() {
+  fresh "$A	lint:all,check:after	630		30"; requires "Typecheck + Unit tests"; leg_runs
+  printf '%s\n' '2026-11-07T05:40:00Z ##[group]Run npm ci' '2026-11-07T05:40:00Z npm run lint:all' \
+    '2026-11-07T05:40:00Z shell: /usr/bin/bash -e {0}' '2026-11-07T05:40:00Z env:' '2026-11-07T05:40:00Z   CHK: check:after' \
+    '2026-11-07T05:40:00Z ##[endgroup]' '2026-11-07T05:40:09Z npm run check:after' > "$FIX/log.12"
+  run
+}
+case_multiline
+want_in "lint:all on the run block's second line files" 'title=develop is red: lint:all \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "check:after, outside the run block, is counted" "check:after" "$(cut -f2 "$COUNT")"
+
+echo "--- the red summary on the second page of check runs: still found ---"
+fresh "$A	lint:all	631		31"; requires "Typecheck + Unit tests"
+printf '%s\n' '{"total_count":2,"check_runs":[{"id":42,"name":"Lint + Typecheck","conclusion":"failure","check_suite":{"id":7}}]}' > "$FIX/runs.json"
+printf '%s\n' '{"total_count":2,"check_runs":[{"id":41,"name":"Typecheck + Unit tests","conclusion":"failure","check_suite":{"id":7}}]}' > "$FIX/runs.2.json"
+printf '%s\n' '2026-11-07T05:40:00Z ##[group]Run npm run lint:all' > "$FIX/log.42"
+run
+want "one create"                              "1" "$(creates)"
+want "nothing counted"                         "" "$(cat "$COUNT")"
+
+echo "--- a glob in a run line is a word, not the coordinator's files ---"
+fresh "$A	lint:all	632		32"; requires "Typecheck + Unit tests"; leg_runs
+printf '%s\n' '2026-11-07T05:40:00Z ##[group]Run npm run lint:*' > "$FIX/log.12"
+mkdir -p "$FIX/cwd"; : > "$FIX/cwd/lint:all"; cd "$FIX/cwd" || exit 1
+run
+cd "$HERE" || exit 1
+want "lint:* matches no check: nothing created" "0" "$(creates)"
+want "lint:all is counted"                     "lint:all" "$(cut -f2 "$COUNT")"
 
 echo "--- only a red summary and its own legs make a check required ---"
 runs_json() { # <summary conclusion> <summary suite> <leg suite> — summary 31, leg 32 failed
