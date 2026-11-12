@@ -10,6 +10,7 @@
 #
 # WHAT IT TOUCHES — only a machine's own ~/.claude:
 #   commands/<name>.md            for every skill the plugin ships
+#   skills/<name>/                and for the old local name it replaces
 #   agents/<name>.md              for every agent the plugin ships
 #   hooks/<name>                  for every hook the plugin registers
 #   settings.json                 the registrations for those hooks
@@ -42,8 +43,13 @@ HOOKS=(); while read -r n; do [ -n "$n" ] && HOOKS+=("$n"); done < <(
   jq -r '[.hooks[][].hooks[].command] | .[] | capture("hooks/(?<n>[A-Za-z0-9._-]+)").n' \
     "$KIT/hooks/hooks.json" 2>/dev/null | sort -u)
 
-MOVE=(); KEEP=()
-for n in "${SKILLS[@]}"; do
+# A kit skill that replaces a machine-local one under an older name: new:old.
+REPLACES=("flows:screen-flow-audit")
+MOVE=(); KEEP=(); OLD=()
+for r in "${REPLACES[@]}"; do
+  for n in "${SKILLS[@]}"; do [ "$n" = "${r%%:*}" ] && OLD+=("${r#*:}"); done
+done
+for n in "${SKILLS[@]}" ${OLD[@]+"${OLD[@]}"}; do
   [ -f "$C/commands/$n.md" ] && MOVE+=("commands/$n.md")
   [ -f "$C/skills/$n/SKILL.md" ] && MOVE+=("skills/$n")
 done
@@ -72,7 +78,7 @@ if [ -d "$C/commands" ]; then
   for f in "$C"/commands/*.md; do
     [ -f "$f" ] || continue
     b=$(basename "$f" .md); mine=0
-    for n in "${SKILLS[@]}"; do [ "$n" = "$b" ] && mine=1; done
+    for n in "${SKILLS[@]}" ${OLD[@]+"${OLD[@]}"}; do [ "$n" = "$b" ] && mine=1; done
     [ "$mine" -eq 0 ] && KEEP+=("commands/$b.md")
   done
 fi
