@@ -184,8 +184,8 @@ driver_repo_clone_trunk() {
 # nothing when the clone's trunk carries its own .claude/harness.json: the run reads that.
 # Otherwise writes one under the state dir and prints its path: the queue's facts from
 # this project's config (where the tickets live, the labels, the branch prefix, the state
-# dir) and the clone's own git facts (its repo, its trunk). It names no local gate: the
-# required checks on the clone's pull request are its gate. Fails when it cannot be written.
+# dir) and the clone's own git facts (its repo, its trunk), two local gates that need no
+# install, and no screen. Fails when it cannot be written.
 driver_repo_clone_config() {
   local dir="${1:?driver_repo_clone_config: need a clone}" trunk ref url slug out
   trunk=$(driver_repo_clone_trunk "$dir") || return 1
@@ -199,9 +199,20 @@ driver_repo_clone_config() {
   case "$slug" in */*) ;; *) return 1 ;; esac
   out="$STATE_DIR/clone-config/$(printf '%s' "${slug##*/}" | tr '[:upper:]' '[:lower:]').json"
   mkdir -p "$(dirname "$out")" 2>/dev/null || return 1
+  # ITS LOCAL GATES RUN IN ANY REPO, WITH NO INSTALL. A config naming none built the
+  # first ticket whole and parked it at self-check, which refuses to pass on nothing run.
+  # Two true checks of the change itself: git's own whitespace and conflict-marker check
+  # of the diff, and a parse of every shell script it adds or changes. They are the local
+  # set (localOnly): the full suite is the required checks on the pull request.
+  # IT DECLARES NO SCREEN. With no screen set every build took the screen process, design
+  # steps and sign-off hold included, in a repo whose config names no screen at all.
   jq --arg repo "$slug" --arg trunk "$trunk" --arg state "$STATE_DIR" '
     { repo: $repo, issueRepo: (.issueRepo // .repo), integrationBranch: $trunk, trunks: [$trunk],
-      branchPrefix, stateDir: $state, labels, gates: { prePush: false } }
+      branchPrefix, stateDir: $state, labels,
+      gates: { localOnly: true, prePush: false,
+               local: [ "git diff --check origin/\($trunk)...HEAD",
+                        "git diff --name-only --diff-filter=ACMR origin/\($trunk)...HEAD -- \("*.sh" | @sh) | while IFS= read -r f; do bash -n \"$f\" || exit 1; done" ] },
+      tiers: { enabled: true }, design: { surfacePaths: [], surfacePathsComplete: true } }
     + (if (.legacyEnvPrefix // "") != "" then { legacyEnvPrefix } else {} end)' "$HARNESS_CFG" > "$out.$$" 2>/dev/null \
     && mv -f "$out.$$" "$out" || { rm -f "$out.$$"; return 1; }
   printf '%s' "$out"

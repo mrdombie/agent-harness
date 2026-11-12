@@ -223,7 +223,7 @@ blocked_by_us() { awk -v n="$1" -v p="$2" '$1 == n && $2 == p { f = 1 } END { ex
 said_blocked_on() { # <ticket> <pr> [parent ticket] — a comment says it is blocked on, or waits for, either
   local c re="#$2"
   [ -z "${3:-}" ] || re="#($2|$3)"
-  c=$(SWARM_GH="$GH" gh_read "#$1's comments" api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100" \
+  c=$(SWARM_GH="$GH" gh_read "#$1's comments" api --paginate "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$1/comments?per_page=100" \
         -q '.[] | .body // "" | select(test("(block|wait)[^\\n]{0,40}'"$re"'([^0-9]|$)"; "i")) | "y"' 2>/dev/null) || return 2
   [ -n "$c" ]
 }

@@ -118,6 +118,7 @@ REBUILD_BASE_RERUNS="$COORD_DIR/base-red-reruns.$(coord_mode).tsv"  # pr_red_rer
 REBUILD_BASE_CACHE="$COORD_DIR/base-red-cache.$(coord_mode)"        # the base's runs, read once a tick
 rm -rf "$REBUILD_BASE_CACHE" 2>/dev/null; mkdir -p "$REBUILD_BASE_CACHE" 2>/dev/null
 REBUILD_BASE_DEPTH="${REBUILD_BASE_DEPTH:-5}"
+REBUILD_RERUNS="$COORD_DIR/reruns.tsv"                              # pr_red_rerun's ledger for a cancelled check
 BASE_RED_MARK='<!-- harness:base-red -->'
 
 open_pr_json() { # <ticket> — its open PR as this tick read it, or nothing
@@ -216,7 +217,7 @@ rebuild_pr_state() {
     rerun)
       local did
       if coord_shadow; then did="would re-run ${ids:-nothing named}"
-      else did=$(pr_red_rerun "$n" "$(jq -r '.headRefOid // ""' <<<"$pj")" "$ids" "$COORD_DIR/reruns.tsv" "$COORD_RERUN_MAX"); fi
+      else did=$(pr_red_rerun "$n" "$(jq -r '.headRefOid // ""' <<<"$pj")" "$ids" "$REBUILD_RERUNS" "$COORD_RERUN_MAX"); fi
       say "rebuild: PR #$n $why — $did" >&2
       printf 'stuck\t%s\n' "$why" ;;
     pending|green) printf '%s\t%s\n' "$kind" "$why" ;;
@@ -711,4 +712,122 @@ rebuild_pass() {
     fi
     rebuild_fresh "$t" "$why" "$pj" || say "rebuild: #$t could not be rebuilt this tick — tried again next tick"
   done <<< "$rows"
+}
+
+# ---- pull requests in a clone's repo -----------------------------------------------
+# A repo:<name> ticket is built in a clone of <name> (driver_repo_clone_for) and its pull
+# request opens in that repo, not this project's. The pass above reads this project's open
+# PRs only, so a red, clashing or half-built one there was never sent back to its builder.
+#
+# CLONE_BUILDS (ticket \t repo name) is every ticket this queue started in a clone: the tick
+# adds a row when that spawn succeeds. For each repo named there the pass makes ONE batched
+# read of that repo's open PRs a tick, keeps the ones on those tickets' branches, and runs
+# the same pass on them: the same caps, and ledgers of their own (a PR number in one repo is
+# another PR in the other). Checks, rules, updates and the PR's own comments are read and
+# written in the clone's repo; the ticket's labels and comments in this queue's. A row is
+# dropped once its ticket has no open PR there, no claim and no live run, so a repo with
+# nothing built in it costs no request at all.
+CLONE_BUILDS="$COORD_DIR/clone-builds.tsv"
+_rebuild_clone_key() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '_'; }
+# rebuild_clone_prs_file <name> — that repo's open PRs for this queue's tickets, as this tick read them.
+rebuild_clone_prs_file() { printf '%s/clone-prs.%s.json' "$COORD_DIR" "$(_rebuild_clone_key "$1")"; }
+# rebuild_clone_note <ticket> <clone dir> — the ticket was started in that clone.
+rebuild_clone_note() {
+  local t="$1" url name
+  url=$(git -C "$2" config --get remote.origin.url 2>/dev/null) || return 1
+  url="${url%/}"; url="${url%.git}"; name=$(_rebuild_clone_key "${url##*/}"); [ -n "$name" ] || return 1
+  awk -F'\t' -v t="$t" -v n="$name" '$1 == t && $2 == n { f = 1 } END { exit !f }' "$CLONE_BUILDS" 2>/dev/null \
+    || printf '%s\t%s\n' "$t" "$name" >> "$CLONE_BUILDS"
+}
+# rebuild_clone_of <ticket> — the repo name whose clone the ticket was started in, or 1.
+rebuild_clone_of() {
+  local n; n=$(awk -F'\t' -v t="$1" '$1 == t { print $2; exit }' "$CLONE_BUILDS" 2>/dev/null)
+  [ -n "$n" ] && printf '%s' "$n"
+}
+# rebuild_in_clone <name> <function> [args…] — run it as the pass reads that clone's repo:
+# REPO_SLUG its repo, the tickets still this queue's, its own ledgers, PRS its open PRs as
+# this tick read them (CLONE_PRS_READ=1 when it did). 1 when this host has no such clone.
+rebuild_in_clone() {
+  local name dir url slug trunk queue f
+  name=$(_rebuild_clone_key "${1:-}"); shift
+  dir=$(driver_repo_clone "$name") || return 1
+  trunk=$(driver_repo_clone_trunk "$dir") || return 1
+  url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null) || return 1
+  url="${url%/}"; url="${url%.git}"; slug=$(printf '%s' "$url" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#')
+  case "$slug" in */*) ;; *) return 1 ;; esac
+  queue="${ISSUE_REF:-$REPO_SLUG}"
+  (
+    ISSUE_REF="$queue"; ISSUE_SLUG="$queue"; REPO_SLUG="$slug"; INTEGRATION_BRANCH="$trunk"; OPEN_WORK_REPO="$slug"
+    REBUILD_CLONE="$name"
+    for f in REBUILD_CLOCK FIX_LEDGER CLASH_UPDATES STALE_UPDATES FIX_PARKS DRAFT_RESUMES REBUILD_BASE_RED REBUILD_BASE_RERUNS REBUILD_RERUNS OPEN_WORK_DRAFTED_CACHE; do
+      eval "$f=\"\${$f%.tsv}.$name.tsv\""
+    done
+    PR_RED_REQ_FILE="$PR_RED_REQ_FILE.$name"; REBUILD_BASE_CACHE="$REBUILD_BASE_CACHE.$name"
+    # The labels a release rule reads are asked of one repo for a PR and its ticket; here they are two.
+    release_labels_of() { return 0; }
+    PRS="[]"; PRS_STALE=0; CLONE_PRS_READ=0
+    f=$(rebuild_clone_prs_file "$name")
+    if [ -s "$f" ]; then PRS=$(cat "$f"); CLONE_PRS_READ=1; fi
+    "$@"
+  )
+}
+# _rebuild_clone_pass — inside rebuild_in_clone: the one read of that repo's open PRs, then the pass.
+_rebuild_clone_pass() {
+  local name="$REBUILD_CLONE" mine prs f t n kept=""
+  f=$(rebuild_clone_prs_file "$name"); rm -f "$f"
+  mine=$(awk -F'\t' -v n="$name" '$2 == n { print $1 }' "$CLONE_BUILDS" 2>/dev/null)
+  if ! prs=$(gh_prs_paged "$GH_PRS_FIELDS" 2>/dev/null) || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$prs"; then
+    say "rebuild: the open PRs of $REPO_SLUG could not be read — nothing there is sent back to its builder this tick"
+    return 0
+  fi
+  PRS=$(printf '%s' "$prs" | jq -c --arg pre "$BRANCH_PREFIX" --arg mine "$mine" "$BRANCH_TICKET_JQ"'
+    ($mine | split("\n") | map(select(length > 0))) as $m
+    | [.[] | select((.headRefName | branch_ticket($pre)) as $t | $t != "" and ($m | index($t | tostring) != null))]' 2>/dev/null) || PRS="[]"
+  [ -n "$PRS" ] || PRS="[]"
+  printf '%s\n' "$PRS" > "$f.$$" && mv -f "$f.$$" "$f"
+  # A ticket with no open PR there, no claim and no run is finished with: its row goes.
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if [ -n "$(open_pr_json "$t")" ] || grep -qx "$t" <<<"${CLAIMED:-}" || swarm_ticket_live "$t"; then kept="$kept$t"$'\n'; fi
+  done <<<"$mine"
+  { awk -F'\t' -v n="$name" '$2 != n' "$CLONE_BUILDS" 2>/dev/null
+    printf '%s' "$kept" | awk -v n="$name" 'NF { print $1 "\t" n }'; } > "$CLONE_BUILDS.$$" && mv -f "$CLONE_BUILDS.$$" "$CLONE_BUILDS"
+  n=$(jq 'length' <<<"$PRS" 2>/dev/null)
+  say "rebuild: $REPO_SLUG — ${n:-0} open PR(s) on ticket(s) this queue built there"
+  [ "${n:-0}" -gt 0 ] || return 0
+  : > "$PR_RED_REQ_FILE" 2>/dev/null
+  rm -rf "$REBUILD_BASE_CACHE" 2>/dev/null; mkdir -p "$REBUILD_BASE_CACHE" 2>/dev/null
+  rebuild_pass
+  return 0
+}
+# rebuild_clone_seed — once per host: the tickets already built in a clone before the ledger
+# existed, read off this host's newest driver records (the worktree each names, and that
+# tree's origin). No GitHub request. A ticket long finished is dropped by the first pass.
+rebuild_clone_seed() {
+  local stamp="$COORD_DIR/clone-builds.seeded" d="${DRIVER_DIR:-$STATE_DIR/driver}" f wt t url name self dir
+  [ ! -e "$stamp" ] || return 0
+  mkdir -p "$COORD_DIR" 2>/dev/null; : > "$stamp" 2>/dev/null || return 0
+  self=$(driver_repo_self)
+  while IFS=$'\t' read -r f wt; do
+    t=$(basename "$(dirname "$f")")
+    case "$t" in ''|*[!0-9]*) continue ;; esac
+    [ -n "$wt" ] && [ -d "$wt" ] || continue
+    url=$(git -C "$wt" config --get remote.origin.url 2>/dev/null) || continue
+    url="${url%/}"; url="${url%.git}"; name=$(_rebuild_clone_key "${url##*/}")
+    [ -n "$name" ] && [ "$name" != "$self" ] || continue
+    dir=$(driver_repo_clone "$name") || continue
+    rebuild_clone_note "$t" "$dir" && say "rebuild: #$t was built in the clone of $name before now — its pull request there is watched from this tick"
+  done <<<"$(ls -t "$d" 2>/dev/null | head -300 | while IFS= read -r t; do [ ! -f "$d/$t/state.json" ] || printf '%s\n' "$d/$t/state.json"; done \
+             | xargs -n 50 jq -r '[input_filename, (.worktree // "")] | @tsv' 2>/dev/null)"
+}
+# rebuild_pass_clones — rebuild_pass for the open PRs in each clone's repo that this queue's
+# tickets were built in. One PR list per such repo; none when no ticket was built in one.
+rebuild_pass_clones() {
+  local name
+  rebuild_clone_seed
+  [ -s "$CLONE_BUILDS" ] || return 0
+  for name in $(cut -f2 "$CLONE_BUILDS" | awk 'NF && !s[$0]++'); do
+    rebuild_in_clone "$name" _rebuild_clone_pass \
+      || say "rebuild: this host has no clone of $name — its pull requests are not read here"
+  done
 }

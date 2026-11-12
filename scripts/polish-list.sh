@@ -140,7 +140,7 @@ for_screen() { # <slug>
   slug_ok "$1" || die "a screen slug is lower-case letters, digits and dashes: '$1'"
   local out labels mine have
   labels=$(jq -rn --arg a "$LBL_POLISH_LIST" --arg b "$LBL_SCREEN_PREFIX$1" '[$a, $b] | map(@uri) | join(",")')
-  out=$(swarm_gh api "repos/$REPO_SLUG/issues?state=open&labels=$labels&per_page=50" 2>/dev/null) || return 2
+  out=$(swarm_gh api "repos/${ISSUE_REF:-$REPO_SLUG}/issues?state=open&labels=$labels&per_page=50" 2>/dev/null) || return 2
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$out" || return 2
   out=$(jq -r '.[] | select(.pull_request | not) | .number' <<<"$out")
   mine=$(cat "$LISTS_DIR/$1" 2>/dev/null)
@@ -191,7 +191,7 @@ own_ticket() {
   local slug="$1" g="$2" text="$3" title pri open n url
   title="$(screen_name "$slug"): $(printf '%s' "$text" | sed -E 's/^[[:space:]*]*\[?[A-Za-z]+\]?[^A-Za-z0-9]+//' | cut -c1-110)"
   pri=P1; [ "$g" = critical ] && pri=P0
-  open=$(swarm_gh api "repos/$REPO_SLUG/issues?state=open&labels=$(jq -rn --arg l "$LBL_SCREEN_PREFIX$slug" '$l | @uri')&per_page=100" 2>/dev/null) \
+  open=$(swarm_gh api "repos/${ISSUE_REF:-$REPO_SLUG}/issues?state=open&labels=$(jq -rn --arg l "$LBL_SCREEN_PREFIX$slug" '$l | @uri')&per_page=100" 2>/dev/null) \
     || die "the open tickets for $slug could not be read — nothing added"
   n=$(jq -r --arg t "$title" 'if type == "array" then .[] | select(.pull_request | not) | select(.title == $t) | .number else empty end' <<<"$open" 2>/dev/null | head -1)
   if [ -z "$n" ]; then

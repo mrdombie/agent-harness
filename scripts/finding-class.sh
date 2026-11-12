@@ -131,10 +131,10 @@ fc_tally_issue() {
   n=$(cat "$ISSUE_CACHE" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n="" ;; esac
   [ -n "$n" ] && { printf '%s' "$n"; return 0; }
-  n=$(gh_read "the finding-class tally" api "repos/$REPO_SLUG/issues?labels=$LABEL&state=open&per_page=5" \
+  n=$(gh_read "the finding-class tally" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues?labels=$LABEL&state=open&per_page=5" \
         -q '[.[]? | select(.pull_request == null)][0].number // empty') || return 1
   if [ -z "$n" ] && [ "${1:-}" = create ]; then
-    n=$(gh_call api -X POST "repos/$REPO_SLUG/issues" -f title="Finding classes: the shared tally (not a ticket)" \
+    n=$(gh_call api -X POST "repos/${ISSUE_REF:-$REPO_SLUG}/issues" -f title="Finding classes: the shared tally (not a ticket)" \
           -f body="Each build machine keeps one comment here: the review-finding classes it has seen (scripts/finding-class.sh). A class past its limit in a week, on any change or machine, gets one notice comment here and one line in the PM's channel. Not a ticket: nothing builds from it. \`finding-class.sh weekly\` prints the count." \
           -f "labels[]=$LABEL" -q .number 2>/dev/null) || n=""
   fi
@@ -147,7 +147,7 @@ fc_tally_issue() {
 # host's, {s: <sighting>} for each of the other hosts', {n: <key>} for each notice posted.
 fc_tally_read() {
   local raw rc=0
-  raw=$(gh_read "the finding-class tally's comments" api --paginate "repos/$REPO_SLUG/issues/$1/comments?per_page=100") || rc=$?
+  raw=$(gh_read "the finding-class tally's comments" api --paginate "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$1/comments?per_page=100") || rc=$?
   if [ "$rc" -eq "${GH_READ_MISSING:-68}" ]; then rm -f "$ISSUE_CACHE"; return 1; fi
   [ "$rc" -eq 0 ] || return 1
   printf '%s' "$raw" | jq -s -c --arg host "$HOST" '
@@ -175,9 +175,9 @@ Review-finding classes seen on **$HOST**, the last $WINDOW_WEEKS weeks. Written 
 $rows
 \`\`\`"
   if [ -n "$id" ]; then
-    jq -n --arg b "$body" '{body: $b}' | gh_call api --method PATCH "repos/$REPO_SLUG/issues/comments/$id" --input - >/dev/null 2>&1
+    jq -n --arg b "$body" '{body: $b}' | gh_call api --method PATCH "repos/${ISSUE_REF:-$REPO_SLUG}/issues/comments/$id" --input - >/dev/null 2>&1
   else
-    jq -n --arg b "$body" '{body: $b}' | gh_call api --method POST "repos/$REPO_SLUG/issues/$n/comments" --input - >/dev/null 2>&1
+    jq -n --arg b "$body" '{body: $b}' | gh_call api --method POST "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$n/comments" --input - >/dev/null 2>&1
   fi
 }
 
@@ -258,7 +258,7 @@ fc_tell() {
     say "told the PM once: $line"
     [ "$share" = 1 ] || continue
     nb=$(jq -n --arg b "**Seen again.** $line"$'\n\n'"<!-- finding-class-notice: $k@$wk -->" '{body: $b}')
-    printf '%s' "$nb" | gh_call api --method POST "repos/$REPO_SLUG/issues/$issue/comments" --input - >/dev/null 2>&1 \
+    printf '%s' "$nb" | gh_call api --method POST "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$issue/comments" --input - >/dev/null 2>&1 \
       || say "the notice for '$k' could not be posted on the tally (#$issue); another host may tell the PM again"
   done <<<"$hits"
   if [ "$share" = 1 ] && [ "$(fc_rows)" != "$(cat "$PUBLISHED" 2>/dev/null)" ]; then
