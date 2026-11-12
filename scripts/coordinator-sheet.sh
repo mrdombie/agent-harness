@@ -45,7 +45,7 @@
 #   skillBreaker COORDINATOR_SKILL_BREAKER  3      newest skill checks (driver/ai-step.sh's
 #                                                   record), on two tickets or more, that all
 #                                                   read no Skill call: this host takes no builds
-#                                                   until its Claude Code or harness changes. 0: off
+#                                                   until Claude Code or that Skill's plugin changes. 0: off
 #   minClaudeCli COORDINATOR_MIN_CLAUDE_CLI unset  a Claude Code version floor: under it, no builds
 #
 # THE FLEET. Every host's heartbeat — {host, version, free disk, builds, last tick} —
@@ -468,25 +468,38 @@ COORD_MIN_CLAUDE_CLI="${COORDINATOR_MIN_CLAUDE_CLI:-$(swarm_opt coordinator.minC
 
 # coord_skill_hold <cli version> <harness version> — prints why this host takes no builds, or
 # returns 1. Under coordinator.minClaudeCli; or when its newest skillBreaker skill checks, on
-# two tickets or more, all read no Skill call and neither the CLI nor the harness has changed
-# since the newest of them: a change re-arms it, and the next build tests the change.
+# two tickets or more, all read no Skill call and neither the CLI nor the wanted Skill's plugin
+# has changed since the newest of them: a change re-arms it, and the next build tests the change.
+# A harness update does not: it rarely touches why a session cannot load a Skill.
 coord_skill_hold() {
-  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" sc="" sh="" since="" now
+  # hv is kept out of the key: a harness update must not release the hold.
+  # shellcheck disable=SC2034
+  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" want="" sv="" key sk="" since="" now plug=""
   if [ -n "$COORD_MIN_CLAUDE_CLI" ] && [ -n "$cli" ] && harness_ver_lt "$cli" "$COORD_MIN_CLAUDE_CLI"; then
     printf 'this machine runs Claude Code %s, under coordinator.minClaudeCli %s — it takes no builds until the CLI is updated' "$cli" "$COORD_MIN_CLAUDE_CLI"
     return 0
   fi
   [ "$COORD_SKILL_BREAKER" -gt 0 ] || return 1
   now=$(swarm_now)
-  [ ! -f "$seen" ] || IFS=$'\t' read -r sc sh since < "$seen" || true
-  case "$since" in ''|*[!0-9]*) since="" ;; esac
-  if [ "$sc" != "$cli" ] || [ "$sh" != "$hv" ] || [ -z "$since" ]; then
-    since=$now; mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\t%s\n' "$cli" "$hv" "$since" > "$seen" 2>/dev/null
-  fi
   f="${HARNESS_SKILL_CHECKS:-${DRIVER_DIR:-$STATE_DIR/driver}/skill-checks.tsv}"
+  [ ! -s "$f" ] || want=$(tail -n 1 "$f" | cut -f8 | cut -d' ' -f1)
+  sv=$(harness_skill_plugin_version "$want" 2>/dev/null | head -1)
+  # <cli>|<plugin version> \t <since>. The older <cli> \t <harness> \t <since> reads as a change once, then is rewritten.
+  [ ! -f "$seen" ] || IFS=$'\t' read -r sk since _ < "$seen" || true
+  case "$since" in ''|*[!0-9]*) since="" ;; esac
+  # A version not yet known (no rows, an unread registry) is the last one seen, not a change.
+  case "$sk" in *'|'*) [ -n "$sv" ] || sv="${sk#*|}" ;; esac
+  key="$cli|$sv"
+  if [ "$sk" != "$key" ]; then
+    [ "$sk" = "$cli|" ] && [ -n "$since" ] || since=$now
+    mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\n' "$key" "$since" > "$seen" 2>/dev/null
+  elif [ -z "$since" ]; then
+    since=$now; mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\n' "$key" "$since" > "$seen" 2>/dev/null
+  fi
   [ -s "$f" ] || return 1
-  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v f="$f" '
-    { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8; c = $5 }
+  case "$want" in *:*) plug="${want%%:*}" ;; esac
+  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" '
+    { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8 }
     END {
       if (bad || rows < n || at < since) exit 1
       k = 0; for (x in tk) k++; if (k < 2) exit 1
@@ -495,7 +508,7 @@ coord_skill_hold() {
       else if (cause == "no-skill-tool") why = "the session had no Skill tool"
       else if (cause == "loaded") why = "the session listed " w " and never called it"
       else why = "no session start in the transcript"
-      printf "the last %d builds here could not run %s (%s, Claude Code %s) — it takes no builds until Claude Code or the harness changes, or %s is cleared", n, w, why, (c == "" ? "?" : c), f
+      printf "the last %d builds here could not run %s (%s) — held until Claude Code %s%s changes, or a harness release fixes it", n, w, why, cli, (plug == "" || sv == "" ? "" : " or " plug " " sv)
     }'
 }
 
