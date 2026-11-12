@@ -10,6 +10,7 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+unset PR_RED_REQ_FILE PR_RED_REQ_CACHE  # a host's cached required checks would answer for the fake rules
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -18,7 +19,8 @@ A=aaaaaaa000000000000000000000000000000000; B=bbbbbbb000000000000000000000000000
 
 # The forge: the open-ticket search answers $FIX/open.json, the all-markers search
 # $FIX/markers.json (fails while $FIX/markers.fail exists); a create numbers from 901.
-# develop's rules answer $FIX/rules.json (fail while $FIX/rules.fail exists).
+# develop's rules answer $FIX/rules.json (fail while $FIX/rules.fail exists). A commit's
+# check runs answer $FIX/runs.json (fail while $FIX/runs.fail exists), a job's log $FIX/log.<id>.
 cat > "$BIN/fgh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FIX/fgh.log"
@@ -29,6 +31,11 @@ case "$*" in
   *"-X GET search/issues"*"is:open"*) cat "$FIX/open.json" 2>/dev/null || echo '{"total_count":0,"items":[]}'; exit 0 ;;
   *"-X GET search/issues"*) [ -f "$FIX/markers.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
                             cat "$FIX/markers.json" 2>/dev/null || echo '{"total_count":0,"items":[]}'; exit 0 ;;
+  *"commits/"*"/check-runs"*) [ -f "$FIX/runs.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+                             cat "$FIX/runs.json" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}'; exit 0 ;;
+  *"actions/jobs/"*"/logs"*) a="$*"; id=${a#*actions/jobs/}; id=${id%%/*}
+                             [ -f "$FIX/log.$id" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+                             cat "$FIX/log.$id"; exit 0 ;;
   *"/comments -X POST"*) [ -z "${FGH_APPEND:-}" ] || printf '%s\n' "$FGH_APPEND" >> "$PENDING"; exit 0 ;;
   *"repos/acme/widgets/issues -X POST"*) [ -z "${FGH_APPEND:-}" ] || printf '%s\n' "$FGH_APPEND" >> "$PENDING"
     n=$(( $(cat "$FIX/fgh.next" 2>/dev/null || echo 900) + 1 )); echo "$n" > "$FIX/fgh.next"; echo "$n"; exit 0 ;;
@@ -43,6 +50,7 @@ requires() { # <context…> — what develop's live rules require
 }
 fresh() { # <rows…> — that develop-red.tsv, an empty ledger, a forge with nothing filed, chk-* required
   rm -f "$FIX"/open.json "$FIX"/markers.json "$FIX"/markers.fail "$FIX"/rules.fail "$FIX"/fgh.next "$STATE/swarm/gh-backoff"*
+  rm -f "$FIX"/runs.json "$FIX"/runs.fail "$FIX"/log.*
   : > "$FIX/fgh.log"; : > "$LEDGER"; : > "$PENDING"; : > "$COUNT"; unset FGH_APPEND
   requires chk-a chk-b chk-z chk-q
   local r; for r in "$@"; do printf '%s\n' "$r" >> "$PENDING"; done
@@ -184,6 +192,56 @@ want "develop-red.tsv is untouched"            "same" "$(cmp -s "$FIX/before" "$
 want_in "it is unknown"                        '^unknown — the checks develop requires could not be read' "$R"
 want "and the pass is not done"                "1" "$R_RC"
 
+echo "--- a red required summary whose failing leg ran lint:all: filed ---"
+leg_runs() { # the summary (11) and its legs in suite 7: 12, 13 failed, 14 passed; 15 failed in suite 8
+  cat > "$FIX/runs.json" <<'JSON'
+{"total_count":5,"check_runs":[
+ {"id":11,"name":"Typecheck + Unit tests","conclusion":"failure","check_suite":{"id":7}},
+ {"id":12,"name":"Lint + Typecheck","conclusion":"failure","check_suite":{"id":7}},
+ {"id":13,"name":"Unit","conclusion":"failure","check_suite":{"id":7}},
+ {"id":14,"name":"Build","conclusion":"success","check_suite":{"id":7}},
+ {"id":15,"name":"Other","conclusion":"failure","check_suite":{"id":8}}]}
+JSON
+  printf '%s\n' '2026-11-07T05:39:59.1000000Z ##[group]Run actions/checkout@v4' \
+    '2026-11-07T05:40:00.1234567Z ##[group]Run npm run lint:all' '2026-11-07T05:40:09Z lint:all failed' > "$FIX/log.12"
+  printf '%s\n' '2026-11-07T05:40:00Z ##[group]Run npm run test:unit' > "$FIX/log.13"
+  printf '%s\n' '2026-11-07T05:40:00Z ##[group]Run npm run lint:x' > "$FIX/log.14"
+  printf '%s\n' '2026-11-07T05:40:00Z ##[group]Run npm run lint:x' > "$FIX/log.15"
+}
+case_leg() { fresh "$A	lint:all	624		24"; requires "Typecheck + Unit tests"; leg_runs; run; }
+case_leg
+want "one create"                              "1" "$(creates)"
+want_in "titled for the script"                'title=develop is red: lint:all \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "nothing counted"                         "" "$(cat "$COUNT")"
+want "ledgered to it"                          "$A	lint:all	901" "$(cat "$LEDGER")"
+want "the pass is done"                        "0" "$R_RC"
+
+echo "--- the legs are read once a commit, and not for a row required by name ---"
+fresh "$A	chk-a	625		25"; leg_runs
+run
+want "a check required by name reads no check runs" "0" "$(grep -c 'check-runs' "$FIX/fgh.log" | tr -d ' ')"
+fresh "$A	lint:x,test:unit	626		26"; requires "Typecheck + Unit tests"; leg_runs
+run
+want "two checks at one commit: check runs read once" "1" "$(grep -c 'commits/'"$A"'/check-runs' "$FIX/fgh.log" | tr -d ' ')"
+want "each failing leg's log once"             "1 1" "$(grep -c 'actions/jobs/12/logs' "$FIX/fgh.log" | tr -d ' ') $(grep -c 'actions/jobs/13/logs' "$FIX/fgh.log" | tr -d ' ')"
+want "no passing leg's, no other suite's"      "0 0 0" "$(grep -c 'actions/jobs/14/logs' "$FIX/fgh.log" | tr -d ' ') $(grep -c 'actions/jobs/15/logs' "$FIX/fgh.log" | tr -d ' ') $(grep -c 'actions/jobs/11/logs' "$FIX/fgh.log" | tr -d ' ')"
+want_in "test:unit filed, lint:x only counted" 'title=develop is red: test:unit \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "lint:x is counted"                       "lint:x" "$(cut -f2 "$COUNT")"
+
+echo "--- the check runs or a leg's log unreadable: unknown, nothing filed, counted or ledgered ---"
+for broken in runs.fail log.12; do
+  fresh "$B	chk-b	627		27" "$A	lint:all	628		28" "$A	check:mock-drift	629		29"; requires chk-b "Typecheck + Unit tests"; leg_runs
+  case $broken in runs.fail) touch "$FIX/runs.fail" ;; *) rm -f "$FIX/$broken" ;; esac
+  cp "$PENDING" "$FIX/before"
+  run
+  want "$broken: nothing created"              "0" "$(creates)"
+  want "$broken: nothing counted"              "" "$(cat "$COUNT")"
+  want "$broken: nothing ledgered"             "" "$(cat "$LEDGER")"
+  want "$broken: develop-red.tsv is untouched" "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
+  want_in "$broken: it is unknown"             '^unknown — the checks on aaaaaaa could not be read — 3 row\(s\) not filed this pass$' "$R"
+  want "$broken: the pass is not done"         "1" "$R_RC"
+done
+
 echo "--- plants: each rule out of a copy of the script, its case fails ---"
 KIT="$FIX/kit"
 plant() { # <label> <exact text> <replacement>
@@ -197,5 +255,7 @@ plant "a non-required check is only counted" '  jq -e --arg n "$lc" ' '  return 
   && { case_not_required; want "planted (every check required): the ratchet files a ticket" "creates=1 counted=0" "$R"; }
 plant "a required check files" '  jq -e --arg n "$lc" ' '  return 1; jq -e --arg n "$lc" ' \
   && { case_required; want "planted (no check required): the required red files nothing" "creates=0" "$R"; }
+plant "a red summary's legs make their scripts required" 'required_leg_check "$sha" "$c" && return 0' '' \
+  && { SUT="$KIT"; case_leg; unset SUT; R="creates=$(creates)"; want "planted (no leg lookup): lint:all files nothing" "creates=0" "$R"; }
 
 suite_end "$FAILED"
