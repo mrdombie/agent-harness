@@ -66,6 +66,7 @@ fi
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/claim-proc.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/self-update.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/plugin-ensure.sh" || return 1 2>/dev/null || exit 1
+COORD_SKILL_FIXED_IN="${COORDINATOR_SKILL_FIXED_IN:-$(cd "$(dirname "$_sheet_self")" && pwd)/skill-hold-fixed-in}"
 unset _sheet_self
 
 COORD_HOST="${COORDINATOR_HOST:-$(claim_host)}"
@@ -470,11 +471,11 @@ COORD_MIN_CLAUDE_CLI="${COORDINATOR_MIN_CLAUDE_CLI:-$(swarm_opt coordinator.minC
 # returns 1. Under coordinator.minClaudeCli; or when its newest skillBreaker skill checks, on
 # two tickets or more, all read no Skill call and neither the CLI nor the wanted Skill's plugin
 # has changed since the newest of them: a change re-arms it, and the next build tests the change.
-# A harness update does not: it rarely touches why a session cannot load a Skill.
+# A harness update does not, unless its scripts/skill-hold-fixed-in names a version at or
+# below it and above the harness every failing row ran on: that release declares the fix.
 coord_skill_hold() {
   # hv is kept out of the key: a harness update must not release the hold.
-  # shellcheck disable=SC2034
-  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" want="" sv="" key sk="" since="" now plug=""
+  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" want="" sv="" key sk="" since="" now plug="" fixed newest
   if [ -n "$COORD_MIN_CLAUDE_CLI" ] && [ -n "$cli" ] && harness_ver_lt "$cli" "$COORD_MIN_CLAUDE_CLI"; then
     printf 'this machine runs Claude Code %s, under coordinator.minClaudeCli %s — it takes no builds until the CLI is updated' "$cli" "$COORD_MIN_CLAUDE_CLI"
     return 0
@@ -497,6 +498,11 @@ coord_skill_hold() {
     since=$now; mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\n' "$key" "$since" > "$seen" 2>/dev/null
   fi
   [ -s "$f" ] || return 1
+  fixed=$(head -1 "$COORD_SKILL_FIXED_IN" 2>/dev/null | tr -d '[:space:]')
+  if _su_is_ver "$fixed" && _su_is_ver "$hv" && ! harness_ver_lt "$hv" "$fixed"; then
+    newest=$(tail -n "$COORD_SKILL_BREAKER" "$f" | cut -f6 | { set --; while read -r v; do set -- "$@" "$v"; done; _su_max "$@"; })
+    [ -z "$newest" ] || ! harness_ver_lt "$newest" "$fixed" || return 1
+  fi
   case "$want" in *:*) plug="${want%%:*}" ;; esac
   tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" '
     { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8 }
