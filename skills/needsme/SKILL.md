@@ -238,12 +238,13 @@ duplicate names, the longest names, the empty state, scrolled): it goes back to 
 redrawn as "picture drawn from tidy data".
 
 **Only a concept the flow audit cleared reaches the operator** — on a new or redesigned screen
-(`bash "$KIT_ROOT/scripts/flow-audit.sh" owed <its labels>` exits 0). The ticket carries the
-`/agent-harness:flows` report for the picture, and `flow-audit.sh gate <report.md>` exits
-0 on it. Without a report, run the audit first. An open STRANDS or LIES gap
-sends the concept back as "picture strands or lies", its fixes joined with the critic's
-Critical/Major fixes in one redraw; the critic still runs once, with no second critic run for
-the flow fixes. A void report (exit 3) is no report.
+(`bash "$KIT_ROOT/scripts/flow-audit.sh" owed <its labels>` exits 0). The report is the
+ticket's newest `## Flow audit report` comment: `flow-audit.sh report get <ticket> > report.md`,
+and `flow-audit.sh gate report.md` exits 0 on it. `report get` exit 3 means no report: run the
+audit first. Exit 1 means the comments could not be read: retry, never treat it as no report.
+An open STRANDS or LIES gap sends the concept back as "picture strands or lies", its fixes
+joined with the critic's Critical/Major fixes in one redraw, then its rows re-checked by the
+`flow-checker`; the critic still runs once. A void report (gate exit 3) is no report.
 
 ### 1d · Claims vs live processes
 

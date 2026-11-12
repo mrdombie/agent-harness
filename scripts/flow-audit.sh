@@ -24,12 +24,20 @@
 #       A gap naming no row stays open. SILENT and ROUGH never hold it. A
 #       report with no '| E-01 |' ledger row is void, never green.
 #
+#   flow-audit.sh report post <ticket> <report.md>
+#   flow-audit.sh report get <ticket>
+#       the report's one home: a ticket comment whose first line is
+#       '## Flow audit report', the report below it unchanged. get prints the
+#       newest one; exit 3 when the ticket has none, 1 when its comments cannot
+#       be read (an unread list is not "no report"). The repo is GH_REPO, else
+#       the project config's repo.
+#
 #   flow-audit.sh owed <label>...
 #       exits 0 when one label (arguments, or comma lists) is one of
 #       design.baselineRoute.pictureLabels — a new or redesigned screen, whose
 #       picture pays for the two agents — and 1 for every other change.
 #
-# Exit: 0 printed or gate clear · 1 gate held · 2 refused or bad usage · 3 void report.
+# Exit: 0 printed or gate clear · 1 gate held or gh failed · 2 refused or bad usage · 3 void or no report.
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAXONOMY="$KIT/skills/flows/TAXONOMY.md"
@@ -39,6 +47,7 @@ usage() {
   echo "usage: flow-audit.sh brief cartographer --job \"<one line>\"" >&2
   echo "       flow-audit.sh brief checker --rows <rows.md> --story <http(s)://.../iframe.html?id=...> [--only <ids>]" >&2
   echo "       flow-audit.sh gate <report.md>" >&2
+  echo "       flow-audit.sh report post <ticket> <report.md> | report get <ticket>" >&2
   echo "       flow-audit.sh owed <label>..." >&2
   exit 2
 }
@@ -182,6 +191,41 @@ gate() {
   echo "flow-audit: clear — no open STRANDS or LIES gap in $report"
 }
 
+REPORT_HEAD="## Flow audit report"
+
+report_repo() {
+  [ -n "${GH_REPO:-}" ] && { printf '%s' "$GH_REPO"; return 0; }
+  ( . "$KIT/scripts/toolkit-env.sh" >/dev/null 2>&1 && printf '%s' "${REPO_SLUG:-}" )
+}
+
+report() {
+  local verb=${1:-} t=${2:-} repo
+  case "$t" in ''|*[!0-9]*) usage ;; esac
+  case "$verb" in
+    post) [ $# -eq 3 ] && [ -f "$3" ] || { echo "flow-audit: no report at ${3:-<none>}" >&2; exit 2; } ;;
+    get)  [ $# -eq 2 ] || usage ;;
+    *)    usage ;;
+  esac
+  repo=$(report_repo); [ -n "$repo" ] || { echo "flow-audit: no repo — set GH_REPO or the project config's repo" >&2; exit 2; }
+  if [ "$verb" = post ]; then
+    local body; body=$(mktemp) || exit 1
+    { printf '%s\n\n' "$REPORT_HEAD"; cat "$3"; } > "$body"
+    gh issue comment "$t" --repo "$repo" --body-file "$body" >/dev/null 2>&1 \
+      || { rm -f "$body"; echo "flow-audit: the report comment on #$t was refused" >&2; exit 1; }
+    rm -f "$body"; echo "flow-audit: report posted on #$t"
+    return 0
+  fi
+  local comments last
+  comments=$(gh issue view "$t" --repo "$repo" --json comments 2>/dev/null) \
+    && jq -e '.comments | type == "array"' >/dev/null 2>&1 <<<"$comments" \
+    || { echo "flow-audit: #$t's comments could not be read" >&2; exit 1; }
+  last=$(jq -r --arg h "$REPORT_HEAD" '
+    [.comments[] | .body // "" | select(startswith($h + "\n"))] | last // empty
+    | ltrimstr($h + "\n") | ltrimstr("\n")' <<<"$comments")
+  [ -n "$last" ] || { echo "flow-audit: #$t carries no '$REPORT_HEAD' comment" >&2; exit 3; }
+  printf '%s\n' "$last"
+}
+
 owed() {
   HARNESS_CFG="${HARNESS_CFG:-$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json}"
   . "$KIT/driver/size-rules.sh" || exit 2
@@ -198,6 +242,7 @@ owed() {
 [ $# -ge 1 ] || usage
 if [ "$1" = owed ]; then shift; owed "$@"; exit $?; fi
 if [ "$1" = gate ]; then shift; gate "$@"; exit $?; fi
+if [ "$1" = report ]; then shift; report "$@"; exit $?; fi
 [ $# -ge 2 ] || usage
 case "$1 $2" in
   "brief cartographer") shift 2; brief_cartographer "$@" ;;

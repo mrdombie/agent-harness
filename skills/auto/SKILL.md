@@ -361,9 +361,11 @@ say-so. Do not block the loop on it:
    exits 0) the picture also takes the `/agent-harness:flows` audit: the `flow-cartographer`
    on `flow-audit.sh brief cartographer`, then the `flow-checker` on `flow-audit.sh brief
    checker` against its clickable story. Its STRANDS and LIES fixes join the critic's
-   Critical/Major fixes in the same single redraw; the critic still runs once, with no
-   second critic run for the flow fixes. The URL is posted only when
-   `flow-audit.sh gate <report.md>` exits 0.
+   Critical/Major fixes in the same single redraw; then the `flow-checker` runs again on
+   just the open STRANDS/LIES rows (`brief checker ... --only <ids>`), and its verdicts
+   replace those rows in the ledger. The critic still runs once. Post the report on the
+   ticket, its one home: `flow-audit.sh report post <ticket> <report.md>`. The URL is
+   posted only when `flow-audit.sh gate <report.md>` exits 0.
 2. Label `$HOLD_LABEL`, append to `.auto-skip` with reason `needs-human`.
 3. **Move to the next row immediately.**
 4. When the operator approves the picture, publish it for every machine before
