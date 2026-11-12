@@ -8,7 +8,8 @@
 #   . driver/feature-list.sh
 #   feature_list_problems <plan.json>        what is wrong with how the plan builds its list; exit 1 when any
 #   feature_list_uncovered <plan.json> <body> each ticket item (ticket-parts.sh) no list item covers and
-#                                            `outside` does not name, and each id covered that the ticket lacks
+#                                            `outside` does not name by id (a `note` entry names none), and each
+#                                            id covered that the ticket lacks
 #   feature_list_of <plan.json> <ticket>     the list, every item failing, no part filed yet
 #   feature_list_guard <old.json> <new.json> exit 0 when only passes changed (or a part was named once); 3 with why
 #   feature_list_store <ticket> <list.json>  keep it in the ticket's driver state; 3 when it edits the one kept
@@ -63,7 +64,7 @@ feature_list_uncovered() { # <plan.json> <body-file>
   declare -F ticket_parts_items >/dev/null 2>&1 || . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ticket-parts.sh" || return 0
   items=$(ticket_parts_items "$2" | jq -Rn '[inputs | split("\t") | {id: .[0], text: (.[1] // "")}]')
   out=$(jq -r --argjson items "$items" '
-    ([(.features // [])[] | (.covers // [])[]] + [(.outside // [])[].item]) as $named
+    ([(.features // [])[] | (.covers // [])[]] + [(.outside // [])[] | .item // empty]) as $named
     | ($items | map(.id)) as $ids
     | ($items[] | select(.id as $i | $named | index($i) | not)
         | "\(.id) (“\(.text[0:140])”) is in no item'"'"'s covers and not in outside: say which behaviour delivers it, or put it in outside with why"),
@@ -126,6 +127,7 @@ feature_list_comment() { # <list.json>
     | "**Feature list** — " + (if $parts then "one behaviour a part" else "one behaviour an item, built here as one change" end) + ", each passing only when its test steps pass. Only `passes` changes; an item'"'"'s steps are never edited or removed. " + (if $parts then "The feature is done when every item passes and its clean-up part has merged." else "The feature is done when every item passes and this change has merged." end) + "\n\n"
     + ([.items[] | "- " + (if .passes then "✅" else "⬜" end) + " **" + .id + "** " + .behaviour
         + (if .part then " — #\(.part)" else "" end) + (if .passes then " (passes)" else " (failing)" end)] | join("\n"))
+    + (if ((.outside // []) | length) > 0 then "\n\nLeft out, with why:\n" + ([.outside[] | "- " + (.item // .note // "?") + ": " + (.why // "")] | join("\n")) else "" end)
     + "\n\n```json\n" + (. | tojson) + "\n```\n" + $m' "$1"
 }
 
