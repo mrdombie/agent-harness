@@ -187,4 +187,37 @@ grep -qE '^\*\*Method:\*\*.*click' "$TPL" && ok "a Method line for the picture l
 grep -qE '^\*\*Pinned at:\*\*.*story' "$TPL" && ok "a Pinned-at line for the story URL" || bad "no Pinned-at line naming the story"
 grep -qE '^\*\*Evidence:\*\*.*screenshot' "$TPL" && ok "gap Evidence allows clicks and a screenshot" || bad "gap Evidence allows only path:line"
 
+echo "--- the report lives in one place: a ticket comment headed '## Flow audit report' ---"
+GHB="$REPO/bin"; mkdir -p "$GHB"; CJ="$REPO/comments.json"; printf '[]\n' > "$CJ"
+cat > "$GHB/gh" <<'GH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue view")    [ -f "$CJ.down" ] && exit 1; jq '{comments: .}' "$CJ" ;;
+  "issue comment") f=""; prev=""; for a in "$@"; do [ "$prev" = --body-file ] && f="$a"; prev="$a"; done
+                   [ -n "$f" ] || exit 1
+                   jq --rawfile b "$f" '. + [{body: $b}]' "$CJ" > "$CJ.t" && mv "$CJ.t" "$CJ" ;;
+  *) exit 1 ;;
+esac
+GH
+chmod +x "$GHB/gh"
+ghrun() { PATH="$GHB:$PATH" CJ="$CJ" GH_REPO=o/r bash "$SUT" "$@"; }
+out=$(ghrun report get 41 2>&1); rc=$?
+[ "$rc" -eq 3 ] && ok "a ticket with no report is exit 3" || bad "no report: exit $rc, want 3: $out"
+out=$(ghrun report post 41 "$FX/open-strands.md" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "post exits 0" || bad "post: exit $rc, want 0: $out"
+jq -r '.[0].body' "$CJ" | head -1 | grep -qx '## Flow audit report' && ok "the comment opens with the fixed heading" \
+  || bad "the posted comment does not open with '## Flow audit report'"
+ghrun report post 41 "$FX/fixed-strands.md" >/dev/null 2>&1
+GOT="$REPO/got.md"; ghrun report get 41 > "$GOT" 2>/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "get exits 0" || bad "get: exit $rc, want 0"
+cmp -s "$GOT" "$FX/fixed-strands.md" && ok "get returns the newest report byte for byte" || bad "get did not return the newest report unchanged"
+out=$(bash "$SUT" gate "$GOT" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "the fetched report gates like the file it came from" || bad "fetched report: gate exit $rc: $out"
+: > "$CJ.down"
+out=$(ghrun report get 41 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "unreadable comments are exit 1, never 'no report'" || bad "comments down: exit $rc, want 1: $out"
+rm -f "$CJ.down"
+out=$(ghrun report post 41 "$REPO/missing.md" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "posting a missing report is exit 2" || bad "post missing: exit $rc, want 2"
+
 suite_end "$fail"
