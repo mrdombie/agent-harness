@@ -313,13 +313,13 @@ plant "a non-required check is only counted" '  jq -e --arg n "$lc" ' '  return 
   && { case_not_required; want "planted (every check required): the ratchet files a ticket" "creates=1 counted=0" "$R"; }
 plant "a required check files" '  jq -e --arg n "$lc" ' '  return 1; jq -e --arg n "$lc" ' \
   && { case_required; want "planted (no check required): the required red files nothing" "creates=0" "$R"; }
-plant "a red summary's legs make their scripts required" 'required_leg_check "$sha" "$c" && return 0' '' \
+plant "a red summary's legs make their scripts required" '  required_leg_check "$sha" "$c"' '  return 1' \
   && { SUT="$KIT"; case_leg; unset SUT; R="creates=$(creates)"; want "planted (no leg lookup): lint:all files nothing" "creates=0" "$R"; }
 plant "a leg needs a red required summary" '[$f[] | . as $x | select(any($s[]; .check_suite.id == $x.check_suite.id and .id != $x.id)) | .id]' '[$f[] | .id]' \
   && { SUT="$KIT"; case_green_summary; unset SUT; R="creates=$(creates)"; want "planted (every failing run a leg): the ratchet files" "creates=1" "$R"; }
 plant "legs share the summary's suite" '.check_suite.id == $x.check_suite.id and ' '' \
   && { SUT="$KIT"; case_other_suite; unset SUT; R="creates=$(creates)"; want "planted (no suite filter): lint:all files" "creates=1" "$R"; }
-plant "a leg makes only the checks it ran required" 'for w in $cmd; do [ "$w" = "$2" ] && return 0; done' '[ -n "$cmd" ] && return 0' \
+plant "a leg makes only the checks it ran required" 'for w in "${words[@]}"; do [ "$w" = "$2" ] && return 0; done' 'return 0' \
   && { SUT="$KIT"; case_unnamed; unset SUT; R="creates=$(creates)"; want "planted (any leg, any check): lint:all files" "creates=1" "$R"; }
 plant "unreadable check runs are unknown" 'filter=latest" 2>/dev/null) || return 1' "filter=latest\" 2>/dev/null) || runs='{}'" \
   && { SUT="$KIT"; case_runs_502; unset SUT; R="rc=$R_RC ledger=$(cut -f3 "$LEDGER")"; want "planted (502 read as no summary): counted and ledgered" "rc=0 ledger=-" "$R"; }
