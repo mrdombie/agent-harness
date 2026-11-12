@@ -809,6 +809,22 @@ EOC
     # one never blocks (the contract exempts it), so it never turns a SHIP.
     jq 'del(..|nulls) | if (.verdict? == "SHIP") and ([.findings[]? | select((.tag // "") != "pre-existing") | select((.grade // "") | IN("critical","major","minor"))] | length > 0) then .verdict = "BLOCKED" else . end' \
       "$ans" > "$ans.norm" 2>/dev/null && [ -s "$ans.norm" ] && mv "$ans.norm" "$ans" || rm -f "$ans.norm"
+    # A left-out entry whose `item` is prose names no ticket item: it is a note. Moved
+    # here, by the contract's own pattern, so it never costs a second planning call.
+    local idre moved
+    idre=$(jq -r '.properties.outside.items.properties | select(has("note")) | .item.pattern // empty' "$DRIVER_SCHEMAS/$step.json" 2>/dev/null)
+    if [ -n "$idre" ]; then
+      moved=$(jq -r --arg re "$idre" '
+        def prose: type == "object" and ((.item | type) == "string") and (.item != "") and (.item | test($re) | not);
+        [(.outside | arrays)[] | select(prose)] | length' "$ans" 2>/dev/null)
+      if [ "${moved:-0}" -gt 0 ] 2>/dev/null && jq --arg re "$idre" '
+          def prose: type == "object" and ((.item | type) == "string") and (.item != "") and (.item | test($re) | not);
+          .outside |= map(if prose then (.note = (if ((.note | type) == "string") and .note != "" then .item + " — " + .note else .item end) | del(.item)) else . end)' \
+          "$ans" > "$ans.norm" 2>/dev/null && [ -s "$ans.norm" ]; then
+        mv "$ans.norm" "$ans"
+        driver_say "   $step: $moved left-out entr$([ "$moved" = 1 ] && printf y || printf ies) named no ticket item id — kept as a note, not asked again"
+      else rm -f "$ans.norm"; fi
+    fi
     # From a directory that exists: npx refuses to start ("getcwd: cannot access parent
     # directories") when the step's working folder was deleted under it, and that crash
     # read as "the answer was never checked" and parked finished work.

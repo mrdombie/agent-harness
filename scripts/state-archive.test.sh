@@ -43,11 +43,12 @@ for i in range(20000):
         open(f, "w").close(); os.utime(f, (old, old))
 PY
 }
-# The newest run began an hour ago by its name: a fixed date falls behind the account's start a day on.
-NEWAT=$(python3 -c 'import sys, time; print(time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(int(sys.argv[1]))))' $(( NOWE - 3600 )))
-NEWLOG="$STATE/logs/claim-77-$NEWAT-1.log"; NEWREC="$STATE/runs/claim-77-$NEWAT-1.json"
+# Stamped a minute ago: a fixed date falls behind the account's start a day after it.
+NEWSTAMP=$(date -u -r $(( NOWE - 60 )) +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d "@$(( NOWE - 60 ))" +%Y%m%dT%H%M%SZ)
+NEWRUN="claim-77-$NEWSTAMP-1"
+NEWLOG="$STATE/logs/$NEWRUN.log"; NEWREC="$STATE/runs/$NEWRUN.json"
 # newest <event json…> — the newest log, a minute old, holding those lines; and its record.
-newest() { printf '%s\n' "$@" > "$NEWLOG"; at "$NEWLOG" $(( NOWE - 60 )); printf '{"run_id":"claim-77-%s-1"}\n' "$NEWAT" > "$NEWREC"; at "$NEWREC" $(( NOWE - 60 )); }
+newest() { printf '%s\n' "$@" > "$NEWLOG"; at "$NEWLOG" $(( NOWE - 60 )); printf '{"run_id":"%s"}\n' "$NEWRUN" > "$NEWREC"; at "$NEWREC" $(( NOWE - 60 )); }
 ev() { # <status> <utilization>
   jq -nc --arg s "$1" --argjson u "$2" --argjson r "$WEEK" \
     '{type:"rate_limit_event", rate_limit_info:{status:$s, resetsAt:$r, rateLimitType:"seven_day", unifiedWindows:{seven_day:{utilization:$u, resetsAt:$r, status:$s}}}}'
@@ -75,7 +76,7 @@ want_in "a week at 97% in the newest log holds"       'seven_day window at 97%' 
 want    "the freshest reading is the newest log's"    "0.97	$WEEK" "$(row "$out" freshest)"
 want    "a minute-old log is seen: no probe call"     "0" "$(row "$out" probe-gate)"
 want    "the CLI's error text in the newest log holds" "9pm" "$(row "$out" text-hold)"
-want    "the newest of a ticket's 20,001 records"     "claim-77-$NEWAT-1" "$(row "$out" run-record)"
+want    "the newest of a ticket's 20,001 records"     "$NEWRUN" "$(row "$out" run-record)"
 
 # plant <name> — a copy of the kit with one rule removed; its case must go red.
 plant() {
