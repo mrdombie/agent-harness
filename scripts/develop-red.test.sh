@@ -215,6 +215,13 @@ want "the open ticket takes a comment"         "1" "$(comments)"
 want_in "naming the tracked file"              'now on: chk-a, src/x\.test\.ts\.' "$(cat "$FIX/fgh.log")"
 want "with no host path"                       "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
 
+echo "--- a required check whose name has a slash, not a path: filed under that name ---"
+fresh "$A	lint/web	633		33"; requires lint/web
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "titled by the check's own name"       'title=develop is red: lint/web \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "the row's own set is ledgered"           "$A	lint/web	901" "$(cat "$LEDGER")"
+
 echo "--- CI on the row's commit fails other checks: the ticket names what CI reports ---"
 fresh "$A	test:api	627		27"; requires test:api "Code gates" Lint
 ci "Code gates=completed:failure" "Lint=completed:failure" "Build=completed:success"
