@@ -115,5 +115,13 @@ mkdir -p "$REPO/.claude/skills/finish"; : > "$REPO/.claude/skills/finish/SKILL.m
 HOME="$C" bash "$D/check-single-source.sh" "$REPO" >/dev/null 2>&1 \
   && bad "a repo copy of a plugin skill passed the gate" || ok "a repo copy of a plugin skill fails the gate"
 
+echo "--- no kit instruction names a skill this script retires ---"
+olds=$(sed -n 's/^REPLACES=(\(.*\))$/\1/p' "$D/retire-duplicates.sh" | tr -d '"' | tr ' ' '\n' | sed -n 's/^[^:]*://p')
+[ -n "$olds" ] && ok "read the retired names: $(printf '%s' "$olds" | tr '\n' ' ')" || bad "no REPLACES names read"
+for o in $olds; do
+  hits=$(cd "$KIT" && git ls-files 'skills/*' 'shared/*' 'agents/*' | xargs grep -n -F -- "$o" 2>/dev/null)
+  [ -z "$hits" ] && ok "no kit instruction points at the retired $o" || bad "a kit instruction points at the retired $o: $hits"
+done
+
 [ "$fail" -eq 0 ] && echo "retire-duplicates: all cases pass"
 suite_end "$fail"
