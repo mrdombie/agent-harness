@@ -242,6 +242,31 @@ for broken in runs.fail log.12; do
   want "$broken: the pass is not done"         "1" "$R_RC"
 done
 
+echo "--- only a red summary and its own legs make a check required ---"
+runs_json() { # <summary conclusion> <summary suite> <leg suite> — summary 31, leg 32 failed
+  printf '{"total_count":2,"check_runs":[{"id":31,"name":"Typecheck + Unit tests","conclusion":"%s","check_suite":{"id":%s}},{"id":32,"name":"Lint + Typecheck","conclusion":"failure","check_suite":{"id":%s}}]}\n' "$1" "$2" "$3" > "$FIX/runs.json"
+}
+leg_log() { printf '2026-11-07T05:40:00Z ##[group]Run %s\n' "$1" > "$FIX/log.32"; }
+case_green_summary() { fresh "$A	check:clone-ratchet	625		25"; requires "Typecheck + Unit tests"; runs_json success 7 7; leg_log "npm run check:clone-ratchet"; run; }
+case_other_suite() { fresh "$A	lint:all	626		26"; requires "Typecheck + Unit tests"; runs_json failure 7 8; leg_log "npm run lint:all"; run; }
+case_unnamed() { fresh "$A	lint:all	627		27"; requires "Typecheck + Unit tests"; runs_json failure 7 7; leg_log "npm run typecheck"; run; }
+case_runs_502() { fresh "$A	lint:all	628		28"; requires "Typecheck + Unit tests"; touch "$FIX/runs.fail"; cp "$PENDING" "$FIX/before"; run; }
+case_green_summary
+want "summary green, another check red: nothing created" "0" "$(creates)"
+want "check:clone-ratchet is counted"          "check:clone-ratchet" "$(cut -f2 "$COUNT")"
+case_other_suite
+want "the red leg in another suite: nothing created" "0" "$(creates)"
+want "lint:all is counted"                     "lint:all" "$(cut -f2 "$COUNT")"
+case_unnamed
+want "the leg ran no lint:all: nothing created" "0" "$(creates)"
+want "lint:all is counted"                     "lint:all" "$(cut -f2 "$COUNT")"
+case_runs_502
+want_in "check runs 502: it is unknown"        '^unknown — ' "$R"
+want "check runs 502: the pass is not done"    "1" "$R_RC"
+want "check runs 502: develop-red.tsv is untouched" "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
+want "check runs 502: nothing counted"         "" "$(cat "$COUNT")"
+want "check runs 502: nothing ledgered"        "" "$(cat "$LEDGER")"
+
 echo "--- plants: each rule out of a copy of the script, its case fails ---"
 KIT="$FIX/kit"
 plant() { # <label> <exact text> <replacement>
@@ -257,5 +282,13 @@ plant "a required check files" '  jq -e --arg n "$lc" ' '  return 1; jq -e --arg
   && { case_required; want "planted (no check required): the required red files nothing" "creates=0" "$R"; }
 plant "a red summary's legs make their scripts required" 'required_leg_check "$sha" "$c" && return 0' '' \
   && { SUT="$KIT"; case_leg; unset SUT; R="creates=$(creates)"; want "planted (no leg lookup): lint:all files nothing" "creates=0" "$R"; }
+plant "a leg needs a red required summary" '[$f[] | . as $x | select(any($s[]; .check_suite.id == $x.check_suite.id and .id != $x.id)) | .id]' '[$f[] | .id]' \
+  && { SUT="$KIT"; case_green_summary; unset SUT; R="creates=$(creates)"; want "planted (every failing run a leg): the ratchet files" "creates=1" "$R"; }
+plant "legs share the summary's suite" '.check_suite.id == $x.check_suite.id and ' '' \
+  && { SUT="$KIT"; case_other_suite; unset SUT; R="creates=$(creates)"; want "planted (no suite filter): lint:all files" "creates=1" "$R"; }
+plant "a leg makes only the checks it ran required" 'for w in $cmd; do [ "$w" = "$2" ] && return 0; done' '[ -n "$cmd" ] && return 0' \
+  && { SUT="$KIT"; case_unnamed; unset SUT; R="creates=$(creates)"; want "planted (any leg, any check): lint:all files" "creates=1" "$R"; }
+plant "unreadable check runs are unknown" 'filter=latest" 2>/dev/null) || return 1' "filter=latest\" 2>/dev/null) || runs='{}'" \
+  && { SUT="$KIT"; case_runs_502; unset SUT; R="rc=$R_RC ledger=$(cut -f3 "$LEDGER")"; want "planted (502 read as no summary): counted and ledgered" "rc=0 ledger=-" "$R"; }
 
 suite_end "$FAILED"
