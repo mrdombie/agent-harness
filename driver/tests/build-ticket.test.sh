@@ -569,6 +569,14 @@ want "only start ran"                        "start" "$(tr '\n' ' ' < "$RAN" | s
 want "nothing parks"                         "" "$(cat "$FIX/park.log")"
 want "nothing went back on the queue"        "" "$(jq -r '.tickets[]? | select(.n == 426) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
 
+echo "--- start reading another repo's ticket ends the run: exit 36, no park, no requeue, nothing after it ---"
+reset_fakes "start:36"; rm -rf "$STATE/coordinator"
+out=$(bt 429 --brief "$FIX/brief-g.md"); rc=$?
+want "it exits as another repo's"            "36" "$rc"
+want "only start ran"                        "start" "$(tr '\n' ' ' < "$RAN" | sed 's/ $//')"
+want "nothing parks"                         "" "$(cat "$FIX/park.log")"
+want "nothing went back on the queue"        "" "$(jq -r '.tickets[]? | select(.n == 429) | .n' "$STATE/coordinator/queue.json" 2>/dev/null)"
+
 echo "--- a Fix: brief on a shipped ticket walks the steps again; any other brief does not ---"
 # The coordinator's fix round sends a red PR back to its builder (scripts/rebuild.sh). This
 # host shipped it, so its record says every step finished: read as that, nothing would run.

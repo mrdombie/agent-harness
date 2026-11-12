@@ -822,12 +822,14 @@ swarm_spawn() { # <ticket> [brief-file] [budget]
   (
     [ -n "$brief" ] && [ -f "$brief" ] && CLAIM_EXTRA="$(cat "$brief")" && export CLAIM_EXTRA
     # Another repo's clone (driver_repo_clone_for): the run starts there and reads that
-    # clone's config, never this project's. Its state dir and its claim stay this project's
+    # clone's config (or SWARM_SPAWN_CFG, written for a clone with none), never this project's. Its state dir and its claim stay this project's
     # (CLAIM_REPO below), so every host's coordinator counts the run.
     if [ -n "${SWARM_SPAWN_REPO:-}" ]; then
       cd "$SWARM_SPAWN_REPO" || exit 1
       unset HARNESS_CFG_PATH HARNESS_CFG HARNESS_REPO_ROOT HARNESS_INTEGRATION_BRANCH HARNESS_CFG_REF
       export HARNESS_MAIN_REPO="$SWARM_SPAWN_REPO" HARNESS_STATE_DIR="${STATE_DIR:-${HARNESS_STATE_DIR:-}}"
+      # A clone whose trunk carries no config is handed the one written for it.
+      [ -z "${SWARM_SPAWN_CFG:-}" ] || export HARNESS_CFG_PATH="$SWARM_SPAWN_CFG"
     fi
     CLAIM_BUDGET_USD="$budget" CLAIM_REPO="${CLAIM_REPO:-$MAIN_REPO}" \
       "$SWARM_SPAWN" "$t" > "$out" 2>&1 < /dev/null

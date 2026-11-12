@@ -198,7 +198,7 @@ for ended in "$RUNS_DIR"/*.ended; do
   printf '%s\tended\t%s\t%s\texit=%s %s%s\n' "$(swarm_stamp)" "$rid" "${ticket:-?}" "$code" "$last" "$rt" >> "$COORD_DIR/runs.log"
   say "ended: $rid exit $code — ${last:-no result line}"
   case "$code" in
-    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}") ;;
+    ghost|"${DRIVER_E_UNREAD:-26}"|"${DRIVER_E_MACHINE:-33}"|"${DRIVER_E_HAS_PR:-31}"|"${DRIVER_E_ELSEWHERE:-36}") ;;
     # A claim lost to another machine's coordinator is the race's, not the ticket's.
     "${DRIVER_E_REQUEUE:-28}") case "$last" in *"peer took the claim"*) ;; *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;; esac ;;
     *) limit_hit "$log" || swarm_login_log_lost "$log" || no_progress "$ticket" "$rid" "$code" "$last" "$(run_secs "$rec" "$ended")" ;;
@@ -228,6 +228,9 @@ for ended in "$RUNS_DIR"/*.ended; do
   elif [ "$code" = "${DRIVER_E_HAS_PR:-31}" ]; then
     # The ticket already has an open PR: it merges, or the rebuild pass closes it and builds fresh.
     say "has a PR: run $rid found #${ticket:-?}'s open pull request and built nothing — it merges, or is rebuilt once it cannot (coordinator.rebuildAfterMin)"
+  elif [ "$code" = "${DRIVER_E_ELSEWHERE:-36}" ]; then
+    # Started in this project's repo by something other than this tick: nothing was claimed or cut.
+    say "another repo's: run $rid was started here on #${ticket:-?}, which its repo label sends elsewhere — nothing was claimed or built; it stays ready"
   elif [ "$code" = "${DRIVER_E_MACHINE:-33}" ]; then
     # The machine's, never the ticket's: an API error twice, or a host missing a tool. Left ready.
     case "$last" in
@@ -1075,9 +1078,14 @@ else
       brief=""
       if [ -n "$note" ]; then brief=$(mktemp); printf 'Coordinator note (%s): %s\n' "$cls" "$note" > "$brief"; fi
       # A repo:<name> ticket with a clone of <name> here runs in that clone (driver_repo_clone_for).
+      # A clone with no config of its own is handed one (driver_repo_clone_config).
       in_repo=$(driver_repo_clone_for "$(coord_issue_labels "$t" 2>/dev/null)") || in_repo=""
-      [ -z "$in_repo" ] || say "#$t runs in $in_repo, the clone its repo label names"
-      spawn_out=$(SWARM_SPAWN_REPO="$in_repo" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
+      in_cfg=""
+      if [ -n "$in_repo" ]; then
+        in_cfg=$(driver_repo_clone_config "$in_repo") || say "#$t: no config could be written for the clone at $in_repo — its run reads whatever that clone carries"
+        say "#$t runs in $in_repo, the clone its repo label names$([ -z "$in_cfg" ] || echo ", on the queue's facts ($in_cfg): that clone's trunk carries no config of its own")"
+      fi
+      spawn_out=$(SWARM_SPAWN_REPO="$in_repo" SWARM_SPAWN_CFG="$in_cfg" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
         coord_record_class "$t" "$cls"; count_live; rebuild_fix_started "$note"
