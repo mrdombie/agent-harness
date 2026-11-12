@@ -300,6 +300,43 @@ tick box 1 >/dev/null
 want "planted: the harness update releases box, which the check above refuses" "502" "$(by box)"
 cp "$BASEKIT/scripts/coordinator-sheet.sh" "$PS"
 
+echo "--- a harness release that declares the fix in scripts/skill-hold-fixed-in releases box ---"
+fixed_in() { printf '%s\n' "$3" > "$FIX/cc-$1/plugins/cache/agent-harness/agent-harness/$2/scripts/skill-hold-fixed-in"; }
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+tick box 1 >/dev/null
+want "box held on harness 0.7.12"                     "" "$(by box)"
+harness_up box 0.7.13; fixed_in box 0.7.13 0.7.13
+age_rows box
+tick box 1 >/dev/null
+want "a harness at the declared fix, the rows on an older one, releases box" "502" "$(by box)"
+
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+harness_up box 0.7.13; fixed_in box 0.7.13 ""
+age_rows box
+tick box 1 >/dev/null
+want "an empty skill-hold-fixed-in releases nothing"  "" "$(by box)"
+
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+harness_up box 0.7.11; fixed_in box 0.7.11 0.7.13
+age_rows box
+tick box 1 >/dev/null
+want "a downgrade below the declared fix releases nothing" "" "$(by box)"
+
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+awk -F'\t' -v OFS='\t' '{ $6 = "0.7.13"; print }' "$(checks_file box)" > "$FIX/checks.tmp" && mv "$FIX/checks.tmp" "$(checks_file box)"
+harness_up box 0.7.13; fixed_in box 0.7.13 0.7.13
+age_rows box
+tick box 1 >/dev/null
+want "rows that already ran the fix keep box held"    "" "$(by box)"
+
 echo "--- below the trip: an ok among them, or one ticket three times, holds nothing ---"
 breaker_world
 check_rows box none 601 602; check_rows box ok 603
