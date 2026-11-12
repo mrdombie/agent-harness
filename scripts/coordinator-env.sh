@@ -688,6 +688,7 @@ coord_jq() { # <jq args…> — jq with COORD_TICKET_JQ and the label names it n
 # even an entry the PM put on top, in the sheet's order as in this machine's own.
 # A fix round of an open PR ("Fix: PR #<n>" note, rebuild.sh) runs next, ahead of every
 # new build whatever its priority: behind them it waited hours for a place (2026-11-11).
+# So does the resume of a draft whose build is unfinished ("Resume: PR #<n>" note).
 # Owner call 2026-10-19: priority decides first, across classes (P0 < P1 < P2 < P3
 # < none); within one priority every non-follow-up ticket before a fix-after-merge one
 # (release.followUpLabel, or a queue note "follow-up of PR #": owner call 2026-10-23, after
@@ -718,7 +719,7 @@ coord_queue_ordered() {
                  class: coord_class($t.class; $t.note)}
          | .last = (if $ls then coord_last($ls; .prin) else (($t.last // false) and .prin != 0) end)
          | .fu = (if $ls then ($ls | index($fulabel)) != null else (($t.note // "") | test("^follow-up of PR #")) end)
-         | .fix = (($t.note // "") | test("^Fix: PR #[0-9]"))
+         | .fix = (($t.note // "") | test("^(Fix|Resume): PR #[0-9]"))
          | . + {tier: coord_tier(.screen; .prin; .proc; .last; .focus)})
      # A queue taken from the shared sheet keeps the order its owner wrote, exactly.
      # Every P0 first (owner, 2026-10-30: urgent first), then the tiers. .top (the PM putting it on top

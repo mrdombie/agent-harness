@@ -10,6 +10,7 @@
 #   rebuild_park <ticket> <why> <pr-json> <builds>  past coordinator.rebuildMax: close, keep the head, park for the PM
 #   rebuild_fix <ticket> <pr-json> <why> <kind>     a red or clashing PR goes back to its builder, on its own branch
 #   rebuild_park_open <ticket> <why> <pr-json> <rounds>  past coordinator.fixRounds: park for the PM, the PR left open
+#   rebuild_resume_draft <ticket> <pr-json>         a draft whose build is unfinished here is queued to be resumed
 #
 # WHY. Measured 22 Oct: 80% of build time went to repairs of stale changes, and the 12
 # most-repaired PRs used 48% of three days' repair usage. A repair re-enters a stale
@@ -39,6 +40,23 @@
 # (clash-updates.<mode>.tsv), then counts as a red. Never for a cancelled check (re-run
 # above), a base-red, a PR a person owns or a ticket something works. Nothing else sends
 # work to an open PR: no fixer, no stall guard.
+#
+# BEFORE A ROUND IS SPENT (measured 2026-11-11/12: four PRs red only on tests their base had
+# since fixed, a draft one plan task into its build, and seven tickets re-parked every tick):
+#   - a red PR is brought up to date with its base first, with no builder: one request per
+#     PR head and base tip (stale-updates.<mode>.tsv). Whether it is behind is not asked: an
+#     update never changes the PR's own code, so a red of its own is still red afterwards and
+#     the round is spent then, on the head the update made. Refused (up to date, or it
+#     conflicts), the round is spent at once.
+#   - a draft whose build is unfinished on this host (the driver's record has steps done and
+#     no ship) and that nothing is running is queued to be resumed, ahead of new builds;
+#     its ticket set ready as a fix round's is; never a fix round, never parked for its
+#     checks. coordinator.draftResumes (2) times per
+#     head and step count; a record on another host cannot be seen, and it says so.
+#   - the park for the PM after the fix rounds is written once per PR head
+#     (fix-parks.<mode>.tsv); the same head later writes nothing, a new head re-arms it.
+#   - the ticket's labels are read again the moment before a park or a fix round is written:
+#     a person's label put on since the tick's read is left exactly as it is.
 #
 # WHAT IS NEVER REBUILT.
 #   - a person owns it: the hold label, do-not-merge, a person's own draft (person-stop.sh),
@@ -82,6 +100,14 @@ FIX_ROUNDS="${COORDINATOR_FIX_ROUNDS:-$(swarm_opt coordinator.fixRounds 2)}"
 case "$FIX_ROUNDS" in ''|*[!0-9]*) FIX_ROUNDS=2 ;; esac
 FIX_LEDGER="$COORD_DIR/fix-rounds.$(coord_mode).tsv"        # pr \t round \t the head it was sent for \t queued|started
 CLASH_UPDATES="$COORD_DIR/clash-updates.$(coord_mode).tsv"  # pr \t epoch: its one update from the base
+STALE_UPDATES="$COORD_DIR/stale-updates.$(coord_mode).tsv"  # pr \t head \t base tip \t epoch \t ok|refused \t the head after it (- until seen)
+FIX_PARKS="$COORD_DIR/fix-parks.$(coord_mode).tsv"          # pr \t the head it was parked for the PM at \t epoch
+DRAFT_RESUMES="$COORD_DIR/draft-resumes.$(coord_mode).tsv"  # pr \t head \t steps done \t times queued to resume
+# An accepted update moves the head within seconds; this long with the old head still read, it is waited for.
+REBUILD_UPDATE_WAIT_SEC="${REBUILD_UPDATE_WAIT_SEC:-600}"
+case "$REBUILD_UPDATE_WAIT_SEC" in ''|*[!0-9]*) REBUILD_UPDATE_WAIT_SEC=600 ;; esac
+DRAFT_RESUME_MAX="${COORDINATOR_DRAFT_RESUMES:-$(swarm_opt coordinator.draftResumes 2)}"
+case "$DRAFT_RESUME_MAX" in ''|*[!0-9]*) DRAFT_RESUME_MAX=2 ;; esac
 # A cancelled, timed-out or runner-less required check is re-run this many times a head.
 COORD_RERUN_MAX="${COORDINATOR_RERUN_CANCELLED:-$(swarm_opt coordinator.rerunCancelled 2)}"
 case "$COORD_RERUN_MAX" in ''|*[!0-9]*) COORD_RERUN_MAX=2 ;; esac
@@ -411,16 +437,134 @@ rebuild_fix_due() {
   case "${v%%$'\t'*}" in red|clash) return 0 ;; *) return 1 ;; esac
 }
 
+# rebuild_labels_now <ticket> — the ticket's labels read this moment into REBUILD_LABELS_NOW,
+# one a line. 0 when a person holds it, the label in REBUILD_HELD_BY; 1 when nobody does; 2 unread.
+# The read issue_status_set would make itself: handed on as ISSUE_STATUS_CURRENT, it costs nothing
+# more. Never called inside $( ): it answers in variables.
+rebuild_labels_now() {
+  local l
+  REBUILD_HELD_BY=""
+  REBUILD_LABELS_NOW=$(swarm_gh issue view "$1" --repo "$REPO_SLUG" --json labels -q '.labels[].name' 2>/dev/null) || return 2
+  while read -r l; do
+    [ -n "$l" ] || continue
+    if grep -qxF -- "$l" <<<"$REBUILD_LABELS_NOW"; then REBUILD_HELD_BY="$l"; return 0; fi
+  done <<< "$(rebuild_person_labels)"
+  return 1
+}
+
+# rebuild_parked_at <pr> <head> — 0 when the PM park after the fix rounds was written for this head.
+rebuild_parked_at() { awk -F'\t' -v p="$1" -v h="$2" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$FIX_PARKS" 2>/dev/null; }
+
+# rebuild_ledger_put <file> <pr> <row…> — the PR's one row in a ledger, replaced.
+rebuild_ledger_put() {
+  local f="$1" p="$2"; shift 2
+  { awk -F'\t' -v p="$p" '$1 != p' "$f" 2>/dev/null; (IFS=$'\t'; printf '%s\n' "$p${*:+$IFS$*}"); } > "$f.$$" && mv -f "$f.$$" "$f"
+}
+
+# rebuild_base_tip <base> — its newest commit as this tick read it (rebuild_base_red's cache), or -.
+rebuild_base_tip() {
+  local f s=""
+  f="$REBUILD_BASE_CACHE/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')/base-shas"
+  [ -s "$f" ] && s=$(sed -n 1p "$f")
+  printf '%s' "${s:--}"
+}
+
+# rebuild_stale_update <pr> <head> <base> <why> — 0 when the red PR was just brought up to date
+# with its base, or waits on that update; 1 when the red is to be treated as its own. One
+# request per PR head and base tip. The head an update made gets no second one: red there,
+# the round is spent.
+rebuild_stale_update() {
+  local pr="$1" head="$2" base="$3" why="$4" tip uh="" ub="" at="" res="" after="" now
+  tip=$(rebuild_base_tip "$base"); now=$(swarm_now)
+  IFS=$'\t' read -r uh ub at res after <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 } END { print r }' "$STALE_UPDATES" 2>/dev/null)"
+  if [ "$res" = ok ]; then
+    if [ "$uh" = "$head" ]; then
+      case "$at" in ''|*[!0-9]*) at=0 ;; esac
+      if [ $((now - at)) -lt "$REBUILD_UPDATE_WAIT_SEC" ]; then
+        say "rebuild: PR #$pr is stuck ($why) — its update from $base was accepted and the new head is not read yet; it waits for that"
+        return 0
+      fi
+    elif [ "${after:--}" = - ]; then
+      after="$head"; rebuild_ledger_put "$STALE_UPDATES" "$pr" "$uh" "$ub" "$at" ok "$after"
+      say "rebuild: PR #$pr is still red on the head its update from $base made ($why) — the red is its own"
+    fi
+    [ "$after" != "$head" ] || return 1
+  fi
+  [ "$uh" != "$head" ] || [ "$ub" != "$tip" ] || return 1
+  if coord_shadow; then say "rebuild: would bring PR #$pr up to date with $base once ($why) before any fix round"; return 1; fi
+  if swarm_gh api "repos/$REPO_SLUG/pulls/$pr/update-branch" -X PUT -f expected_head_sha="$head" >/dev/null 2>&1; then
+    rebuild_ledger_put "$STALE_UPDATES" "$pr" "$head" "$tip" "$now" ok -
+    say "rebuild: PR #$pr is red ($why) and was brought up to date with $base first — no builder sent, no fix round spent"
+    return 0
+  fi
+  rebuild_ledger_put "$STALE_UPDATES" "$pr" "$head" "$tip" "$now" refused -
+  say "rebuild: PR #$pr could not be brought up to date with $base (up to date already, or it conflicts) — the red is its own"
+  return 1
+}
+
+# rebuild_draft_steps <ticket> — how many steps this host's driver record of it has finished,
+# when its build is unfinished (steps done, none of them ship). 1 when it is not: no record
+# here, an unreadable one, nothing done, or shipped.
+rebuild_draft_steps() {
+  local f n
+  f="${DRIVER_DIR:-$STATE_DIR/driver}/$1/state.json"; [ -f "$f" ] || return 1
+  n=$(jq -r '(.done // []) | if type == "array" and length > 0 and index("ship") == null then length else empty end' "$f" 2>/dev/null)
+  [ -n "$n" ] && printf '%s' "$n"
+}
+
+# rebuild_resume_draft <ticket> <pr-json> — 0 when the PR is a draft whose build is unfinished
+# on this host and it was queued to be resumed, or its resume already waits for a place.
+# Never a fix round and never a park: unfinished work is not a red. 1 when it is not that.
+rebuild_resume_draft() {
+  local t="$1" pj="$2" pr head steps note tries
+  [ "$(jq -r '.isDraft // false' <<<"$pj" 2>/dev/null)" = true ] || return 1
+  [ "$DRAFT_RESUME_MAX" -gt 0 ] || return 1
+  steps=$(rebuild_draft_steps "$t") || return 1
+  pr=$(jq -r '.number // empty' <<<"$pj" 2>/dev/null); head=$(jq -r '.headRefOid // empty' <<<"$pj" 2>/dev/null)
+  [ -n "$pr" ] && [ -n "$head" ] || return 1
+  note=$(jq -r --argjson n "$t" '.tickets[]? | select(.n == $n) | .note // ""' "$COORD_QUEUE" 2>/dev/null)
+  case "$note" in Resume:*)
+    say "rebuild: PR #$pr is a draft part-way through its build ($steps step(s) done) — its resume is queued and waits for a place; no fix round"
+    return 0 ;;
+  esac
+  tries=$(awk -F'\t' -v p="$pr" -v h="$head" -v s="$steps" '$1 == p && $2 == h && $3 == s { n = $4 } END { print n + 0 }' "$DRAFT_RESUMES" 2>/dev/null)
+  case "$tries" in ''|*[!0-9]*) tries=0 ;; esac
+  if [ "$tries" -ge "$DRAFT_RESUME_MAX" ]; then
+    say "rebuild: PR #$pr is a draft part-way through its build, resumed $tries time(s) with no step finished and no push — treated as any stuck PR"
+    return 1
+  fi
+  coord_act_log resume-draft "$t" "PR #$pr: $steps step(s) done, not shipped"
+  if coord_shadow; then say "rebuild: would queue #$t to resume its unfinished build of draft PR #$pr ($steps step(s) done) — no fix round, no park"; return 0; fi
+  # Ready, as a fix round sets it: an entry whose ticket wears another status never starts.
+  rebuild_labels_now "$t"
+  case $? in
+    0) say "rebuild: PR #$pr left as it is — #$t waits on a person ($REBUILD_HELD_BY); its build is not resumed"; return 0 ;;
+    1) ISSUE_STATUS_CURRENT="$REBUILD_LABELS_NOW" issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY" ;;
+    *) say "rebuild: #$t could not be set $LBL_READY" ;;
+  esac
+  bash "$QUEUE" add "$t" --class new --first --note "Resume: PR #$pr is a draft part-way through its build ($steps step(s) done, not shipped) and no run holds it. Carry on from its branch and this host's record: cut no new branch and open no new pull request." >/dev/null 2>&1 \
+    || { say "rebuild: #$t could not be queued to resume draft PR #$pr — tried again next tick"; return 0; }
+  rebuild_ledger_put "$DRAFT_RESUMES" "$pr" "$head" "$steps" "$((tries + 1))"
+  say "rebuild: PR #$pr is a draft part-way through its build ($steps step(s) done) — #$t is queued to resume it, ahead of new builds; no fix round, no park"
+}
+
 # rebuild_park_open <ticket> <why> <pr-json> <rounds> — 0 when the ticket was parked for the
 # PM. The PR is left open, exactly as it is: its branch is the work the PM decides on.
+# Written once per PR head (FIX_PARKS), and never over a label a person has put on since.
 rebuild_park_open() {
-  local t="$1" why="$2" pj="$3" n="$4" pr fails
-  pr=$(jq -r .number <<<"$pj")
+  local t="$1" why="$2" pj="$3" n="$4" pr head fails
+  pr=$(jq -r .number <<<"$pj"); head=$(jq -r '.headRefOid // ""' <<<"$pj")
   coord_act_log fix-park "$t" "PR #$pr: $why ($n fix rounds)"
   if coord_shadow; then say "rebuild: would park #$t for the PM — $n fix round(s), PR #$pr still cannot merge ($why); the PR would stay open"; return 0; fi
+  rebuild_labels_now "$t"
+  case $? in
+    0) say "rebuild: PR #$pr left as it is — #$t waits on a person ($REBUILD_HELD_BY); not parked over it"; return 0 ;;
+    2) say "rebuild: #$t could not be read before its park — tried again next tick"; return 1 ;;
+  esac
   # The label first: a park that could not be set is said again next tick, never twice on the ticket.
-  issue_status_set "$t" "$LBL_PARKED" --also "${LBL_PM_DECISION:-status:pm-decision}" >/dev/null 2>&1 \
+  ISSUE_STATUS_CURRENT="$REBUILD_LABELS_NOW" issue_status_set "$t" "$LBL_PARKED" --also "${LBL_PM_DECISION:-status:pm-decision}" >/dev/null 2>&1 \
     || { say "rebuild: #$t could not be parked after its fix rounds — tried again next tick"; return 1; }
+  rebuild_ledger_put "$FIX_PARKS" "$pr" "$head" "$(swarm_now)"
   fails=$(rebuild_fix_checks "$t" "$pj" 2>/dev/null | awk -F'\t' 'NF { printf "- %s%s\n", $1, ($2 != "" ? ": " $2 : "") }')
   swarm_gh issue comment "$t" --repo "$REPO_SLUG" --body "Parked for the PM: PR #$pr had $n fix round(s) on its own branch and still cannot merge ($why), so no builder is sent to it again (coordinator.fixRounds $FIX_ROUNDS). The PR is left open.${fails:+
 
@@ -444,6 +588,10 @@ rebuild_fix() {
   br=$(jq -r '.headRefName // empty' <<<"$pj" 2>/dev/null)
   base=$(jq -r '.baseRefName // empty' <<<"$pj" 2>/dev/null); base="${base:-$INTEGRATION_BRANCH}"
   [ -n "$pr" ] && [ -n "$head" ] && [ -n "$br" ] || return 1
+  if rebuild_parked_at "$pr" "$head"; then
+    say "rebuild: PR #$pr is stuck ($why) — already parked for the PM at this head; nothing is written until it moves"
+    return 0
+  fi
   IFS=$'\t' read -r rounds last state <<<"$(awk -F'\t' -v p="$pr" '$1 == p { r = $2; h = $3; s = $4 } END { printf "%s\t%s\t%s\n", r + 0, h, s }' "$FIX_LEDGER" 2>/dev/null)"
   case "$rounds" in ''|*[!0-9]*) rounds=0 ;; esac
   ! rebuild_fix_queued "$t" "$pr" || onq=1
@@ -466,6 +614,10 @@ rebuild_fix() {
     if [ "$state" = queued ]; then say "rebuild: PR #$pr — fix round $((rounds + 1)) left the queue without starting; no round spent"
     else say "rebuild: PR #$pr — fix round $rounds ended without a push; its run is gone, so it is released"; fi
   fi
+  # A red may be the base's, since fixed there: one free update before any round or park.
+  if [ "$kind" = red ] && rebuild_stale_update "$pr" "$head" "$base" "$why"; then return 0; fi
+  [ "$(jq -r '.isDraft // false' <<<"$pj" 2>/dev/null)" != true ] || [ -f "${DRIVER_DIR:-$STATE_DIR/driver}/$t/state.json" ] \
+    || say "rebuild: PR #$pr is a draft and #$t's build record is not on this host — whether its build is unfinished could not be seen; treated as any stuck PR"
   # A clash is updated from its base once per PR before any builder is sent.
   if [ "$kind" = clash ] && ! awk -F'\t' -v p="$pr" '$1 == p { f = 1 } END { exit !f }' "$CLASH_UPDATES" 2>/dev/null; then
     if coord_shadow; then say "rebuild: would update PR #$pr from $base once ($why) before any fix round"; return 0; fi
@@ -487,7 +639,13 @@ rebuild_fix() {
   coord_act_log fix "$t" "PR #$pr round $((rounds + 1)) of $FIX_ROUNDS: $why"
   if coord_shadow; then say "rebuild: would send PR #$pr back to its builder — fix round $((rounds + 1)) of $FIX_ROUNDS ($why)"; return 0; fi
   brief=$(rebuild_fix_brief "$pr" "$br" "$base" "$why" "$kind" "$((rounds + 1))" "$checks")
-  issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY"
+  # Read again now: a person's label put on since the tick's read is never set back to ready.
+  rebuild_labels_now "$t"
+  case $? in
+    0) say "rebuild: PR #$pr left as it is — #$t waits on a person ($REBUILD_HELD_BY); no fix round queued"; return 0 ;;
+    1) ISSUE_STATUS_CURRENT="$REBUILD_LABELS_NOW" issue_status_set "$t" "$LBL_READY" >/dev/null 2>&1 || say "rebuild: #$t could not be set $LBL_READY" ;;
+    *) say "rebuild: #$t could not be set $LBL_READY" ;;
+  esac
   bash "$QUEUE" add "$t" --class new --first --note "$brief" >/dev/null 2>&1 \
     || { say "rebuild: #$t could not be queued for its fix — no round spent, tried again next tick"; return 0; }
   awk -F'\t' -v p="$pr" '$1 != p' "$FIX_LEDGER" > "$FIX_LEDGER.$$" 2>/dev/null; mv -f "$FIX_LEDGER.$$" "$FIX_LEDGER" 2>/dev/null
@@ -507,6 +665,12 @@ rebuild_pass() {
     jq -r '.pr.number' <<<"$rows" 2>/dev/null | awk -F'\t' 'NR == FNR { open[$1] = 1; next } $1 in open' - "$REBUILD_CLOCK" \
       > "$REBUILD_CLOCK.$$" 2>/dev/null && mv -f "$REBUILD_CLOCK.$$" "$REBUILD_CLOCK"
   fi
+  local led
+  for led in "$STALE_UPDATES" "$FIX_PARKS" "$DRAFT_RESUMES"; do
+    [ -f "$led" ] || continue
+    jq -r '.pr.number' <<<"$rows" 2>/dev/null | awk -F'\t' 'NR == FNR { open[$1] = 1; next } $1 in open' - "$led" \
+      > "$led.$$" 2>/dev/null && mv -f "$led.$$" "$led"
+  done
   [ -n "$rows" ] || return 0
   tickets=$(jq -r '.t' <<<"$rows" | sort -un | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
@@ -522,6 +686,8 @@ rebuild_pass() {
     lab=${lab#* }
     if why=$(rebuild_held "$t" "$pj" "$lab"); then rebuild_clock_stop "$pr"; say "rebuild: PR #$pr left as it is — $why"; continue; fi
     if grep -qx "$t" <<<"${CLAIMED:-}" || swarm_ticket_live "$t"; then rebuild_clock_stop "$pr"; continue; fi
+    # Unfinished work is not a red: its build is resumed, and no check of it is read.
+    if rebuild_resume_draft "$t" "$pj"; then rebuild_clock_stop "$pr"; continue; fi
     IFS=$'\t' read -r st why kind <<<"$(rebuild_pr_state "$t" "$pj")"
     case "$st" in
       green)    rebuild_clock_stop "$pr"; continue ;;

@@ -775,6 +775,28 @@ $(fix_tick)"
 want_in "  the cap is over"                     'open changes 13 / cap 10: finishing before starting' "$out"
 want "  the fix round starts, the new ticket waits" "501" "$(spawned)"
 want_in "  and the tick says why"               'cap: over \(13/10\) — fix-round #501 starts anyway' "$out"
+echo "  a draft part-way through its build is resumed by its own build: no fix round"
+rb_world
+jq '.[0].isDraft = true' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
+jq -n '{ticket:"501", mode:"build", step:"build", done:["start","plan"], counters:{}}' > "$STATE/driver/501/state.json"
+out="$(OPEN_WORK_PERSON_STOP="$BIN/pstop-none" OPEN_WORK_DRAFTED_CACHE="$FIX/pdrafted-none.tsv" fix_tick)
+$(OPEN_WORK_PERSON_STOP="$BIN/pstop-none" OPEN_WORK_DRAFTED_CACHE="$FIX/pdrafted-none.tsv" fix_tick)"
+want "  its ticket is spawned on its open draft" "501" "$(spawned)"
+want_in "  with the resume brief"               'spawn	501	new — Resume: PR #5501 is a draft part-way through its build' "$(cat "$C/actions.log" 2>/dev/null)"
+want "  no fix round is queued or spent"        "" "$(cat "$C"/fix-rounds.* 2>/dev/null)"
+want "  the ticket is never parked"             "0" "$(grep -c 'status:parked' "$GH_LOG")"
+want_not_in "  nor said to be"  'parked #501' "$out"
+echo "  its rounds spent: parked for the PM once per head, whatever the ticket wears afterwards"
+rb_world; printf '5501\t2\told-head\tstarted\n' > "$C/fix-rounds.did.tsv"
+out=$(fix_tick)
+want_in "  the first tick parks it"             'rebuild: parked #501 for the PM — 2 fix round\(s\), PR #5501 left open' "$out"
+want "  one note on the ticket"                 "1" "$(grep -c '^issue comment 501 ' "$GH_LOG")"
+fix_issue 501 OPEN "P1,status:ready"; : > "$GH_LOG"
+out="$(fix_tick)
+$(fix_tick)"
+want "  set ready again by a PM answer, two ticks on: no label written" "0" "$(grep -c '^issue edit 501' "$GH_LOG")"
+want "  and no second note"                     "0" "$(grep -c '^issue comment 501 ' "$GH_LOG")"
+want_in "  each tick says it once"              'rebuild: PR #5501 is stuck .* — already parked for the PM at this head' "$out"
 echo "  a queued fix round whose PR is no longer red sends no builder"
 rb_world "P1,status:ready"; bash "$Q" add 501 --first --note "Fix: PR #5501 — required check(s) failed: Typecheck" >/dev/null 2>&1
 jq '.[0].statusCheckRollup[0].conclusion = "SUCCESS" | .[0].mergeStateStatus = "CLEAN"' "$FIX/gh/prs-all.json" > "$FIX/p.json" && mv "$FIX/p.json" "$FIX/gh/prs-all.json"
