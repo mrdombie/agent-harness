@@ -10,11 +10,13 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+unset PR_RED_REQ_FILE PR_RED_REQ_CACHE   # a coordinator's live required-checks cache is no case's input
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 PENDING="$STATE/swarm/develop-red.tsv"; LEDGER="$STATE/swarm/develop-red-filed.tsv"
 A=aaaaaaa000000000000000000000000000000000; B=bbbbbbb000000000000000000000000000000000
+mkdir -p "$REPO/src"; : > "$REPO/src/x.test.ts"; git -C "$REPO" add src/x.test.ts
 
 # The forge: the open-ticket search answers $FIX/open.json, the all-markers search
 # $FIX/markers.json (fails while $FIX/markers.fail exists); a create numbers from 901.
@@ -183,6 +185,28 @@ want "nothing counted"                         "" "$(cat "$COUNT")"
 want "develop-red.tsv is untouched"            "same" "$(cmp -s "$FIX/before" "$PENDING" && echo same || echo changed)"
 want_in "it is unknown"                        '^unknown — the checks develop requires could not be read' "$R"
 want "and the pass is not done"                "1" "$R_RC"
+
+echo "--- a check named by a builder's worktree path: filed under the tracked file, no host path reaches the forge ---"
+HOSTP="Users/dominabox/maktura-wt/sh-18944-0cd326/src/x.test.ts"
+fresh "$A	$HOSTP	624		24"; requires src/x.test.ts
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "titled by the repo-relative name"     'title=develop is red: src/x\.test\.ts \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "no host path in title, body or marker"   "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
+want "the row's own set is ledgered"           "$A	$HOSTP	901" "$(cat "$LEDGER")"
+want "and pruned"                              "" "$(cat "$PENDING")"
+fresh "$A	Users/dominabox/maktura-wt/sh-1-abc/lib/gone.test.ts	625		25"; requires lib/gone.test.ts
+run
+want "a host path no tracked file ends with: nothing created" "0" "$(creates)"
+want "nothing searched"                        "0" "$(searches)"
+want "and no host path counted"                "" "$(cat "$COUNT")"
+want "ledgered as not filed"                   "$A	Users/dominabox/maktura-wt/sh-1-abc/lib/gone.test.ts	-" "$(cat "$LEDGER")"
+want "no host path in anything sent"           "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
+fresh "$B	chk-a,$HOSTP	626		26"; requires chk-a src/x.test.ts; issue 880 open chk-a aaaaaaa > "$FIX/open.json"
+run
+want "the open ticket takes a comment"         "1" "$(comments)"
+want_in "naming the tracked file"              'now on: chk-a, src/x\.test\.ts\.' "$(cat "$FIX/fgh.log")"
+want "with no host path"                       "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
 
 echo "--- plants: each rule out of a copy of the script, its case fails ---"
 KIT="$FIX/kit"
