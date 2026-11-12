@@ -226,8 +226,13 @@ check_rows() { # <host> <ok|none> <ticket>… — one row each, stamped now, on 
   local h="$1" r="$2" t; shift 2; mkdir -p "$(dirname "$(checks_file "$h")")"
   for t in "$@"; do printf '%s\t%s\tplan\t%s\t2.1.999\t0.7.12\tnot-loaded\tsuperpowers:writing-plans\n' "$(date +%s)" "$t" "$r" >> "$(checks_file "$h")"; done
 }
-breaker_world() {
+sp_set() { # <host> <version> — superpowers at that version in its registry file
+  local reg="$FIX/cc-$1/plugins/installed_plugins.json"
+  jq --arg v "$2" '.plugins["superpowers@superpowers-marketplace"] = [{scope: "user", installPath: "/x", version: $v}]' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
+}
+breaker_world() { # [superpowers version on box]
   world 0.7.12 0.7.12 0.7.12
+  [ -z "${1:-}" ] || sp_set box "$1"
   queue_on mac 501 502 503
   tick mac 1 >/dev/null
   tick box 0 >/dev/null   # box first sees this CLI and harness; nothing older than that counts
@@ -239,7 +244,7 @@ breaker_world
 check_rows box none 601 602 603
 out=$(tick box 1)
 want "box spawns nothing"                             "" "$(by box)"
-want_in "the tick names the cause"                    'spawn: starting nothing new — the last 3 builds here could not run superpowers:writing-plans \(the session did not list superpowers:writing-plans, Claude Code 2\.1\.999\)' "$out"
+want_in "the tick names the cause"                    'spawn: starting nothing new — the last 3 builds here could not run superpowers:writing-plans \(the session did not list superpowers:writing-plans\) — held until Claude Code 2\.1\.999 changes' "$out"
 want_in "and raises it once"                          'event: skill-hold — box takes no builds' "$out"
 want_in "box's heartbeat carries its CLI and the hold" '"cli":"2\.1\.999","hold":"the last 3 builds here' "$(jq -r '.[0].body' "$SH/comments.json")"
 tick mac 1 >/dev/null
@@ -252,6 +257,48 @@ echo "2.1.1000 (Claude Code)" > "$FIX/cc-box/cli-version"
 awk -F'\t' -v OFS='\t' '{ $1 = $1 - 10; print }' "$(checks_file box)" > "$FIX/checks.tmp" && mv "$FIX/checks.tmp" "$(checks_file box)"
 tick box 1 >/dev/null
 want "box takes work again on a new CLI"              "502" "$(by box)"
+
+echo "--- a harness update alone keeps the hold: only Claude Code or the Skill's plugin re-arms it ---"
+harness_up() { # <host> <version> — that harness installed in the host's cache, its registry moved to it
+  local cache="$FIX/cc-$1/plugins/cache/agent-harness/agent-harness" reg="$FIX/cc-$1/plugins/installed_plugins.json"
+  cp -R "$BASEKIT" "$cache/$2"
+  jq --arg v "$2" '.version = $v' "$BASEKIT/.claude-plugin/plugin.json" > "$cache/$2/.claude-plugin/plugin.json"
+  jq --arg p "$cache/$2" --arg v "$2" '.plugins["agent-harness@agent-harness"][0] |= (.installPath = $p | .version = $v)' "$reg" > "$reg.tmp" && mv "$reg.tmp" "$reg"
+}
+age_rows() { awk -F'\t' -v OFS='\t' '{ $1 = $1 - 10; print }' "$(checks_file "$1")" > "$FIX/checks.tmp" && mv "$FIX/checks.tmp" "$(checks_file "$1")"; }
+# Box first saw this CLI a minute before the failures, not the same few seconds.
+age_seen() { local s="$FIX/m-$1/coordinator/skill-checks.seen"; awk -F'\t' -v OFS='\t' '{ $NF = $NF - 60; print }' "$s" > "$s.tmp" && mv "$s.tmp" "$s"; }
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+tick box 1 >/dev/null
+want "box held before the update"                     "" "$(by box)"
+harness_up box 0.7.13
+want "box's registry now runs harness 0.7.13"         "0.7.13" "$(registry_v box)"
+age_rows box
+out=$(tick box 1)
+want "a harness update with the same CLI and superpowers keeps box off builds" "" "$(by box)"
+want_in "the tick names what releases it"            'until Claude Code 2\.1\.999 or superpowers 7\.0\.2 changes, or a harness release fixes it' "$out"
+want_in "and so does box's heartbeat hold"           '"hold":"the last 3 builds here[^"]*until Claude Code 2\.1\.999 or superpowers 7\.0\.2 changes, or a harness release fixes it' "$(jq -r '.[0].body' "$SH/comments.json")"
+tick mac 1 >/dev/null
+want_in "the owner's sheet line keeps the release whole" 'takes no builds\*\*: the last 3 builds here.*or a harness release fixes it' "$(cat "$SH/body")"
+sp_set box 7.0.3
+tick box 1 >/dev/null
+want "a new superpowers re-arms it"                   "502" "$(by box)"
+
+echo "--- plant the absence: the seen key back on the harness version, the update releases box ---"
+breaker_world 7.0.2
+age_seen box
+check_rows box none 601 602 603
+tick box 1 >/dev/null
+harness_up box 0.7.13
+PS="$FIX/cc-box/plugins/cache/agent-harness/agent-harness/0.7.13/scripts/coordinator-sheet.sh"
+sed -i.bak 's/^  key="\$cli|\$sv"$/  key="$cli|$hv"/' "$PS" && rm -f "$PS.bak"
+want "the plant keyed the hold on the harness version" "1" "$(grep -c '^  key="\$cli|\$hv"$' "$PS" | tr -d ' ')"
+age_rows box
+tick box 1 >/dev/null
+want "planted: the harness update releases box, which the check above refuses" "502" "$(by box)"
+cp "$BASEKIT/scripts/coordinator-sheet.sh" "$PS"
 
 echo "--- below the trip: an ok among them, or one ticket three times, holds nothing ---"
 breaker_world
