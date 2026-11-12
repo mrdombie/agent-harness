@@ -220,4 +220,28 @@ rm -f "$CJ.down"
 out=$(ghrun report post 41 "$REPO/missing.md" 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "posting a missing report is exit 2" || bad "post missing: exit $rc, want 2"
 
+echo "--- story: the clickable story comes from the project's picture-story template, or the picture parks ---"
+SCFG="$REPO/story.json"
+printf '{"design":{"pictureStory":"http://localhost:6006/iframe.html?id=pictures-<surface>--populated"}}\n' > "$SCFG"
+out=$(HARNESS_CFG="$SCFG" bash "$SUT" story compliance-queue 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "a project that draws stories prints the URL" || bad "story: exit $rc, want 0: $out"
+[ "$out" = "http://localhost:6006/iframe.html?id=pictures-compliance-queue--populated" ] \
+  && ok "the surface is put into the template" || bad "story URL is wrong: $out"
+bash "$SUT" brief checker --rows "$ROWS" --story "$out" >/dev/null 2>&1 \
+  && ok "the printed URL is one brief checker takes" || bad "brief checker refuses the printed URL"
+out=$(HARNESS_CFG="$NOCFG" bash "$SUT" story compliance-queue 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "no picture-story template is exit 2" || bad "no template: exit $rc, want 2: $out"
+printf '%s' "$out" | grep -qiF 'park' && ok "and says to park, not skip" || bad "no-template refusal does not say park: $out"
+HCFG="$REPO/html.json"; printf '{"design":{"pictureStory":".design/<surface>-mock.html"}}\n' > "$HCFG"
+out=$(HARNESS_CFG="$HCFG" bash "$SUT" story compliance-queue 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "a template that is not a clickable story is exit 2" || bad "html template: exit $rc, want 2: $out"
+out=$(HARNESS_CFG="$SCFG" bash "$SUT" story "../x y" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "a surface that is not a slug is exit 2" || bad "bad surface: exit $rc, want 2: $out"
+for f in auto bug needsme; do
+  grep -qF 'flow-audit.sh story' "$KIT/skills/$f/SKILL.md" && ok "$f says where the story comes from" \
+    || bad "skills/$f/SKILL.md does not get the story from flow-audit.sh story"
+  grep -qF 'no clickable story' "$KIT/skills/$f/SKILL.md" && ok "$f parks a picture with no story" \
+    || bad "skills/$f/SKILL.md does not park a picture with no clickable story"
+done
+
 suite_end "$fail"
