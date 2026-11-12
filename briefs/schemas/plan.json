@@ -325,19 +325,36 @@
       }
     },
     "outside": {
-      "description": "A ticket item no behaviour can carry (a run on the trunk, a shot in the pull request, a review verdict), each with why. Every other item is in some list item's `covers`.",
+      "description": "What the plan knowingly leaves out, each with why. Two cases, never mixed up. A ticket item no behaviour can carry (a run on the trunk, a shot in the pull request, a review verdict) is named by its id in `item`. Anything left out that is not one of the ticket's listed items (a later sweep, a job red by design) is described in `note`, in plain words. Every other ticket item is in some list item's `covers`.",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "item",
           "why"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "item"
+            ]
+          },
+          {
+            "required": [
+              "note"
+            ]
+          }
         ],
         "properties": {
           "item": {
+            "description": "The id of a ticket item left out, exactly as the ticket items list gives it: `C<n>` or `A<n>`. Never prose: what has no id goes in `note`.",
             "type": "string",
             "pattern": "^[CA][1-9][0-9]*$"
+          },
+          "note": {
+            "description": "In plain words, something left out that is not one of the ticket's listed items. It marks no ticket item as left out.",
+            "type": "string",
+            "minLength": 1
           },
           "why": {
             "type": "string",

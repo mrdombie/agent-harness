@@ -125,7 +125,7 @@ EOF
   if [ -n "$list" ] && [ -s "$list" ] && jq -e '[.items[]? | has("covers")] | any' "$list" >/dev/null 2>&1; then
     while IFS='	' read -r id text; do
       [ -n "$id" ] || continue
-      jq -e --arg i "$id" '[.outside[]?.item] | index($i) != null' "$list" >/dev/null 2>&1 && continue
+      jq -e --arg i "$id" '[.outside[]? | .item // empty] | index($i) != null' "$list" >/dev/null 2>&1 && continue
       jq -e --arg i "$id" '[.items[] | select(.passes == true and ((.covers // []) | index($i) != null))] | length > 0' "$list" >/dev/null 2>&1 && continue
       cov=$(jq -r --arg i "$id" '[.items[] | select((.covers // []) | index($i) != null) | .id] | join(", ")' "$list" 2>/dev/null)
       if [ -n "$cov" ]; then

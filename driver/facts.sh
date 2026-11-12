@@ -106,7 +106,7 @@ driver_fact_ticket_items() { # <ticket>
   b=$(driver_ticket_view "$1" body '.body // ""' 2>/dev/null) || { _driver_fact_none "#$1 could not be read"; return 0; }
   f=$(mktemp "${TMPDIR:-/tmp}/ticket-items.XXXXXX") || return 0
   printf '%s\n' "$b" > "$f"; out=$(ticket_parts_items "$f" | awk -F'\t' '{ print "- " $1 ": " $2 }'); rm -f "$f"
-  [ -n "$out" ] || { _driver_fact_none "the ticket numbers no change item and ticks no acceptance box, so each feature's \`covers\` is empty"; return 0; }
+  [ -n "$out" ] || { _driver_fact_none "the ticket numbers no change item and ticks no acceptance box, so each feature's \`covers\` is empty, and anything left out is a \`note\` in \`outside\`"; return 0; }
   printf 'Each id below is in some feature'"'"'s `covers` (the behaviour that delivers it), or in `outside` with why when no behaviour can carry it:\n%s' "$out"
 }
 
