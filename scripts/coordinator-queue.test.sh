@@ -429,5 +429,7 @@ fix_issue 806 OPEN "P3,process,status:ready"; bash "$Q" add 806 >/dev/null
 want "a process fix still goes first of all" "806:new 804:new 801:new" "$(order | cut -d' ' -f1-3)"
 bash "$Q" add 804 --first --note "Resume: run r1 was cut off" >/dev/null 2>&1
 want "the same ticket without a Fix: note is back at its priority" "806:new 801:new" "$(order | cut -d' ' -f1-2)"
+bash "$Q" add 804 --first --note "Resume: PR #42 is a draft part-way through its build" >/dev/null 2>&1
+want "the resume of a draft's unfinished build leads like a fix round" "806:new 804:new 801:new" "$(order | cut -d' ' -f1-3)"
 
 suite_end "$FAILED"
