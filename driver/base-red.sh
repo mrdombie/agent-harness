@@ -151,8 +151,8 @@ driver_base_red_note() {
 }
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/failing-tests.sh"
-# _driver_base_failing_tests <output> — test files a runner printed on a failure line.
-_driver_base_failing_tests() { failing_test_files "$1"; }
+# _driver_base_failing_tests <output> <tree> — test files a runner printed on a failure line.
+_driver_base_failing_tests() { failing_test_files "$1" "$2"; }
 
 driver_base_red_gate() {
   local wt="$1" cmd="$2" out="$3" mode="${4:-}" sha tests branch f c v red="" kind="" s7
@@ -160,8 +160,11 @@ driver_base_red_gate() {
   [ -f "$out" ] || return 1
   sha=$(driver_base_red_sha "$wt") || { DRIVER_BASE_RED_WHY="the $INTEGRATION_BRANCH commit this branch merged could not be read"; return 1; }
   s7=$(printf '%s' "$sha" | cut -c1-7)
-  tests=$(_driver_base_failing_tests "$out")
+  # A pre-push's own summary names the checks to rerun; the test files under it are not.
+  tests=""; [ "$mode" = prepush ] && tests=$(driver_base_red_checks "$out")
   if [ -n "$tests" ]; then
+    :
+  elif tests=$(_driver_base_failing_tests "$out" "$wt"); [ -n "$tests" ]; then
     kind=test
     branch=$(driver_branch_files "$wt" 2>/dev/null)
     while IFS= read -r f; do
