@@ -52,6 +52,12 @@
 # That is also why this is not `git commit -m "UI-Gate: SHIP"`: the driver has no
 # opinion to record.
 #
+# ONE THING IS ASKED TWICE: THE VERDICT LINE. An agent reviewer that answers with its
+# findings and no `VERDICT:` line is asked for that line once, in the session that
+# reviewed, and the line it gives is put above its findings before the recorder reads
+# them. No second review. Still none, and the ticket parks as the reviewer's, not as a
+# recorder's refusal. The line is the reviewer's own; the driver still writes no verdict.
+#
 # AND IT IS READ BY EXIT CODE. A recorder that refuses — because the reviewer said
 # SPIT-BACK, or said nothing, or reviewed a commit that is no longer HEAD — parks
 # the ticket carrying the recorder's own words. A wrapped call here would hand back
@@ -132,7 +138,48 @@ _driver_attest_agent() {
     sleep "${DRIVER_API_RETRY_SEC:-30}"
   done
   jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$log" > "$out" 2>/dev/null
+  # AN ANSWER WITH NO VERDICT LINE IS ASKED FOR IT, ONCE, in the session that reviewed.
+  if [ "$rc" -eq 0 ] && [ -s "$out" ] && ! _driver_attest_has_verdict "$out"; then
+    _driver_attest_ask_verdict "$t" "$name" "$agent" "$wt" "$slot" "$log" "$out" || return $?
+  fi
   return "$rc"
+}
+
+# _driver_attest_has_verdict <reviewer-output> — 0 when it carries a verdict line a
+# recorder can read: VERDICT:, then SHIP, SPIT-BACK or SLOP.
+_driver_attest_has_verdict() {
+  grep -iE 'VERDICT:[^A-Za-z]*(SHIP|SPIT-BACK|SLOP)' "$1" >/dev/null 2>&1
+}
+
+# _driver_attest_ask_verdict <ticket> <name> <agent> <tree> <slot> <log> <out> — the
+# reviewer answered and left out its verdict line. A recorder reads only that line, so
+# the whole review was thrown away and the build parked: 2 of 6 such parks measured on
+# 2026-11-12, the reviewer's findings paid for and discarded. The session that reviewed
+# is resumed once and asked for that line alone: no second review, no new diff. The
+# line it answers with is put, as it wrote it, above its findings in <out>. An answer
+# still without one leaves <out> as it was, and the caller parks. The driver never
+# writes a verdict of its own. Returns 0, or DRIVER_E_USAGE on the plan's usage limit.
+_driver_attest_ask_verdict() {
+  local t="$1" name="$2" agent="$3" wt="$4" slot="$5" log="$6" out="$7" d sid ask alog line
+  d="$(driver_state_dir "$t")/steps"; ask="$d/$slot-verdict.prompt"; alog="$d/$slot-verdict.log"
+  sid=$(driver_log_events "$log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+  if [ -z "$sid" ]; then
+    driver_say "   push-requires: the '$name' reviewer's answer has no VERDICT line, and its session left no id to ask it again by"
+    return 0
+  fi
+  printf 'Your review above has no verdict line, and the recorder reads only that line. Do not review again, run nothing and change nothing. Answer with exactly one line and nothing else: `VERDICT: SHIP` or `VERDICT: SPIT-BACK`, whichever the review you just gave comes to.\n' > "$ask"
+  driver_say "↻ push-requires: the '$name' reviewer's answer has no VERDICT line — asking it once, in the same session, for that line only"
+  ( cd "$wt" && export HARNESS_DRIVER_RUN="$t:$slot" && \
+    driver_bounded_argv "$DRIVER_CMD_TIMEOUT" "$ask" "$DRIVER_CLAUDE" -p --resume "$sid" --output-format stream-json --verbose \
+      --name "$slot-verdict" --agent "$agent" --permission-mode "$DRIVER_PERMISSION_MODE" "${DRIVER_LEAN_ARGS[@]}" --add-dir "$wt" \
+  ) > "$alog" 2>"$alog.err" || true
+  driver_record_usage "$t" "$slot-verdict" "$alog" "$ask"
+  driver_usage_wall "$t" "$slot-verdict" "$alog" && return "$DRIVER_E_USAGE"
+  line=$(jq -Rrs '[ split("\n")[] | fromjson? // empty | select(.type == "result") ] | last | .result // empty' "$alog" 2>/dev/null \
+    | grep -m1 -iE 'VERDICT:[^A-Za-z]*(SHIP|SPIT-BACK|SLOP)')
+  [ -n "$line" ] || return 0
+  { printf '%s\n\n' "$line"; cat "$out"; } > "$out.asked" && mv -f "$out.asked" "$out"
+  return 0
 }
 
 # _driver_first_line <file> — the first line that says something: a ✗/✓ line when
@@ -408,6 +455,13 @@ driver_push_requires() { # <ticket>
       return "$DRIVER_E_REFUSED"
     fi
     driver_say "   push-requires: the '$name' reviewer ran (exit $rc), $(wc -l < "$out" | tr -d ' ') line(s) of output"
+    # NO VERDICT LINE, ASKED ONCE MORE AND STILL NONE: the reviewer's, said as that. The
+    # recorder is not handed an answer it can only refuse as if the fault were its own.
+    if [ -n "$agent" ] && ! _driver_attest_has_verdict "$out"; then
+      driver_say "✋ push-requires: the '$name' reviewer gave no VERDICT line, and asked once more for that line alone still gave none — nothing to record."
+      driver_state_set "$t" park_note "this project's pre-push requires a '$name' verdict, and the reviewer's answer has no VERDICT line: it was asked once more, in the same session, for that line alone and still gave none. Its findings are kept in $out. The next run reviews again."
+      return "$DRIVER_E_REFUSED"
+    fi
 
     # The recorder, reading that output on stdin. Its exit code is the verdict on
     # the verdict.
