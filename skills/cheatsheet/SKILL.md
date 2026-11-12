@@ -79,7 +79,7 @@ guessable from either name. Always print this map:
 | Command | Skill it runs |
 |---|---|
 | `/reinvented` | `reimplementation-audit` |
-| `/flows` | `screen-flow-audit` |
+| `/flows` | `screen-flow-audit` | <!-- harness:bare-ok: the project's own command, until the kit's flows skill retires it -->
 | `/design` | the skill named in `.claude/skills/design/SKILL.md` ("Invoke the … skill") |
 
 ## Arguments
