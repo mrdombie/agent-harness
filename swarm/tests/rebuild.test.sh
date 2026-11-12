@@ -53,6 +53,7 @@ lib() {
     fix-released) perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/[ "\$state" = started ]; then/' "$p" ;;
     fix-alive)    perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/false; then/' "$p" ;;
     fix-mark)     perl -0pi -e 's/\$4 = "started"/\$4 = \$4/' "$p" ;;
+    runners)      perl -0pi -e 's/case "\$\(ci_runners_state\)" in/case planted in/' "$p" ;;
     fix-head)     perl -0pi -e 's/if \[ "\$last" = "\$head" \]; then/if false; then/' "$p" ;;
   esac
   cmp -s "$LIB" "$p" && { echo "plant $PLANT did not apply" >&2; exit 3; }
@@ -314,6 +315,36 @@ age 0; COORDINATOR_SHADOW=1 pass; age 61; COORDINATOR_SHADOW=1 pass
 want "nothing closed in shadow"                  "0" "$(closes 78)"
 want_in "  it says it would"                     'rebuild: would close PR #78' "$OUT"
 
+echo "--- every CI runner offline: nothing closed, nothing queued, and it says why ---"
+RUNNERS="$FIX/gh/api-repos_acme_widgets_actions_runners_per_page_100.json"
+fresh; base unit:success lint:success
+printf '{"total_count":2,"runners":[{"id":1,"status":"offline"},{"id":2,"status":"offline"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "red 61 minutes, every runner offline: not closed" "0" "$(closes 71)"
+want "  nothing queued"                          "" "$(cat "$QLOG")"
+want_in "  it says every CI runner is offline"   'rebuild: every CI runner is offline' "$OUT"
+FR=2 MIN=60 fixpass
+want "  with fix rounds on: no fix round queued" "0" "$(grep -c 'Fix: PR #' "$QLOG")"
+want "  and none spent"                          "" "$(rounds 71)"
+echo "  the runner list cannot be read: the same"
+fresh; rm -f "$RUNNERS"; : > "$FIX/gh/runners-unread"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "  not closed"                              "0" "$(closes 71)"
+want "  nothing queued"                          "" "$(cat "$QLOG")"
+want_in "  it says the list could not be read"   'rebuild: the CI runner list could not be read' "$OUT"
+rm -f "$FIX/gh/runners-unread"
+echo "  one runner online: rebuilt as before"
+fresh; printf '{"total_count":2,"runners":[{"id":1,"status":"offline"},{"id":2,"status":"online"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; pass
+want "  closed"                                  "1" "$(closes 71)"
+rm -f "$RUNNERS"
+
 echo "--- the rebuild off, a required check red on the PR's own code: back to its builder, on its branch ---"
 fresh; base unit:success lint:success
 pr 90 101 head20 BLOCKED '[]' unit:FAILURE:7101 lint:SUCCESS:7102
@@ -521,7 +552,7 @@ rm -f "$C"/fix-rounds.*
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark; do
+  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark runners; do
     PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
     want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
   done
