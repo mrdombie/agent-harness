@@ -318,7 +318,7 @@ plant "a silent check is read as an answer" driver/steps/review.sh \
 # The hunter's bounds, carried over from the vote it replaced.
 plant "the cap is deleted" driver/steps/review.sh \
   '  _driver_review_capped "$t" review-hunter "the hunter" || return "$DRIVER_E_REFUSED"' '' case_capped "rc=30"
-plant "commands count as subagents again" driver/steps/review.sh \
+plant "commands count as subagents again" driver/ai-step.sh \
   '          | select((.task_type // "local_agent") | test("agent"))' '' case_bash "rc=24"
 plant "the effort defaults to max again" driver/steps/review.sh \
   'effort=$(driver_opt review.effort high)' 'effort=$(driver_opt review.effort max)' \
