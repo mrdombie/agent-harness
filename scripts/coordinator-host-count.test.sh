@@ -9,6 +9,9 @@
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# Nor the operator's swarm: a tick run from a live session would read its real state dir.
+for v in $(env | sed -nE 's/^((SWARM|COORDINATOR|COORD|HARNESS|CLAIM|DRIVER)_[A-Z_]*)=.*/\1/p'); do unset "$v"; done
+unset RUNS_DIR STATE_DIR KIT_ROOT MAIN_REPO REPO_ROOT REPO_SLUG CL PR_RED_REQ_FILE
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -45,5 +48,57 @@ want "only the fix session and the lint sweep" \
 echo "--- a tracked ancestor drops its descendants too ---"
 want "the sweep's tree tracked at its root" \
   "$(printf '501\tbuild\t18295\n610\tfix\tsh-18178')" "$(untracked 700 1234)"
+
+echo "--- the tick: an untracked build on the real host is live and takes a place under the cap ---"
+T="$HERE/coordinator-tick.sh"; Q="$HERE/coordinator-queue.sh"
+for s in reconcile sweep wtsweep unblock featureclose polish notify claude; do
+  printf '#!/usr/bin/env bash\n:\n' > "$BIN/$s"; chmod +x "$BIN/$s"
+done
+printf '%s\n' 'live_view_watchdog() { :; }' > "$FIX/watchdog-stub.sh"
+cat > "$BIN/diskguard" <<'SH'
+#!/usr/bin/env bash
+case "$1" in tick) printf '500\tdisk: 500 GB free\n' ;; limits) echo "30 50" ;; free) echo 500 ;; esac
+SH
+chmod +x "$BIN/diskguard"
+export COORDINATOR_RECONCILE="$BIN/reconcile" COORDINATOR_SWEEP="$BIN/sweep" COORDINATOR_WORKTREE_SWEEP="$BIN/wtsweep" \
+  COORDINATOR_UNBLOCK="$BIN/unblock" COORDINATOR_FEATURE_CLOSE="$BIN/featureclose" COORDINATOR_POLISH_LIST="$BIN/polish" \
+  COORDINATOR_CLAUDE="$BIN/claude" COORDINATOR_NOTIFY_CMD="$BIN/notify" COORDINATOR_DISK_GUARD="$BIN/diskguard" \
+  COORDINATOR_LIVE_VIEW_WATCHDOG="$FIX/watchdog-stub.sh" COORDINATOR_MACHINE_PARKS=off \
+  COORDINATOR_HOUSEKEEPING=inline COORDINATOR_HOUSEKEEPING_EVERY_MIN=0 COORDINATOR_REFRESH=0 \
+  COORDINATOR_FREE_GB=500 COORDINATOR_CLAIMS_CMD="cat $FIX/claims.txt" COORDINATOR_FIX_ROUNDS=0 SWARM_FREE_MEM_GB=16
+unset COORDINATOR_SHADOW COORDINATOR_START_CPU_IDLE COORDINATOR_MIN_FREE_MEM_GB
+: > "$FIX/claims.txt"; printf '[]\n' > "$FIX/gh/prs-all.json"
+fix_issue 501 OPEN "status:ready"; bash "$Q" add 501 >/dev/null
+
+# Stand-ins the real ps lists. Each starts detached (its parent is gone), so a heavy
+# unit running this suite — a proof under build-ticket — is not their ancestor.
+mkdir -p "$FIX/proof-tree/driver" "$FIX/wt/sh-77777" "$FIX/wt/sh-98762"
+cat > "$FIX/proof-tree/driver/build-ticket" <<'SH'
+#!/usr/bin/env bash
+kids=""; trap 'kill $kids 2>/dev/null; exit 0' TERM
+if [ -n "${WITH_CLAUDE:-}" ]; then
+  (exec -a claude perl -e 'sleep 300' -- -p --name build --add-dir "$WITH_CLAUDE") & kids="$kids $!"
+fi
+sleep 300 & kids="$kids $!"; wait
+SH
+STANDIN_PIDS="$FIX/standin.pids"; : > "$STANDIN_PIDS"
+detach() { ( "$@" >/dev/null 2>&1 & echo $! >> "$STANDIN_PIDS" ); }
+on_exit_keep_status 'kill $(cat "$STANDIN_PIDS" 2>/dev/null) 2>/dev/null; rm -rf "$FIX"'
+detach bash "$FIX/proof-tree/driver/build-ticket" 98761
+detach bash -c 'exec -a claude perl -e "sleep 300" -- -p --name fix --add-dir "$0"' "$FIX/wt/sh-77777"
+WITH_CLAUDE="$FIX/wt/sh-98762" detach bash "$FIX/proof-tree/driver/build-ticket" 98762
+sleep 0.5
+
+out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=1 bash "$T" 2>&1)
+live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
+echo "  $live"
+n=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
+want "the live line counts the untracked builds" "yes" "$([ "${n:-0}" -ge 1 ] && echo yes || echo no)"
+want_in "it names the hand-run build under untracked" 'untracked: .*(^|[^0-9])98761([^0-9]|$)' "$live"
+want_in "it names a fix session with its worktree" 'fix sh-77777' "$live"
+want_in "a build-ticket with a claude child is named" '(^|[^0-9])98762([^0-9]|$)' "$live"
+want_not_in "and its claude child is not a second unit" 'build sh-98762' "$live"
+want_in "the untracked build fills the one place" 'spawn: [0-9]+ live, cap 1 — no slot' "$out"
+want_not_in "nothing would start" 'would spawn' "$out"
 
 suite_end "$FAILED"
