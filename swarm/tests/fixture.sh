@@ -28,6 +28,8 @@ swarm_fixture() {
   export HARNESS_DISK_GUARD=off
   # Nor is its own plugin estate: no case updates the runner's installed harness.
   export COORDINATOR_SELF_UPDATE=off COORDINATOR_PLUGINS_ENSURE=off
+  # Nor are its own builds: the host lists no process unless a case plants its ps.
+  export COORDINATOR_HOST_PS=true
   FIX=$(mktemp -d)
   # The runner's installed harness is no case's version: the floor and the self-update read this.
   export SWARM_PLUGIN_REGISTRY="$FIX/no-plugin-registry.json"
