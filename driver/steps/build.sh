@@ -848,6 +848,7 @@ driver_step_build() { # <ticket>
       if jq -e --arg g "$got_task" --arg w "$want_task" \
            '[.tasks[]?.title] | index($g) != null and $g != $w' \
            "$(driver_state_dir "$t")/steps/plan.json" >/dev/null 2>&1; then
+        printf "this call was given '%s' and the answer builds '%s', which is another task in this plan\n" "$want_task" "$got_task" > "$(driver_state_dir "$t")/steps/$slot.refused"
         driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task', which is another task in this plan. A task nobody built is a task that ships unbuilt."
         bad=1; continue
       fi
