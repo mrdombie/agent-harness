@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci-runners.sh — is any of the repo's self-hosted CI runners online? Read once a tick.
+# ci-runners.sh — is any self-hosted CI runner, the repo's or its org's, online? Read once a tick.
 #
 #   sourced by coordinator-env.sh (needs its swarm_gh, REPO_SLUG, COORD_DIR, coord_mode)
 #   ci_runners_state          online | none | offline | unread
@@ -51,8 +51,15 @@ _ci_runners_read() {
 }
 
 ci_runners_state() {
-  local r rc=0
-  r=$(_ci_runners_read "repos/${REPO_SLUG:?}/actions/runners") || rc=$?
-  case "$rc" in 1) echo unread; return 0 ;; 2) r='[]' ;; esac
-  jq -r 'if length == 0 then "none" elif any(.[]; .status == "online") then "online" else "offline" end' <<<"$r"
+  local ep r all='[]' failed=""
+  # The repo's own runners and its org's: an org-wide outage is the usual shared setup.
+  for ep in "repos/${REPO_SLUG:?}/actions/runners" "orgs/${REPO_SLUG%%/*}/actions/runners"; do
+    if r=$(_ci_runners_read "$ep"); then all=$(jq -c --argjson r "$r" '. + $r' <<<"$all")
+    elif [ $? -eq 1 ]; then failed=1; fi
+  done
+  # One online is enough; otherwise a list not read could hold the one that is.
+  if jq -e 'any(.[]; .status == "online")' >/dev/null <<<"$all"; then echo online
+  elif [ -n "$failed" ]; then echo unread
+  elif jq -e 'length == 0' >/dev/null <<<"$all"; then echo none
+  else echo offline; fi
 }
