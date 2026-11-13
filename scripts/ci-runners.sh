@@ -5,7 +5,7 @@
 #   ci_runners_state          online | none | offline | unread
 #
 #   online   at least one self-hosted runner is online
-#   none     the repo has no self-hosted runners (hosted CI): nothing to wait for
+#   none     no self-hosted runner, or none but left-overs (hosted CI): nothing to wait for
 #   offline  it has runners and every one is offline: no check can run, so no red is the PR's
 #   unread   the list could not be read: offline cannot be ruled out, and stderr names the repo and why
 #
@@ -17,6 +17,12 @@
 _CI_RUNNERS_SH=1
 
 CI_RUNNERS_REFUSED="${COORD_DIR:?}/ci-runners-refused.$(coord_mode).tsv"   # endpoint whose refusal was said
+# A runner offline this long is a left-over, not an outage (GitHub keeps a dead one 14 days):
+# it is not counted, so one stale runner cannot hold every rebuild. Its first offline sighting
+# is kept per runner (CI_RUNNERS_OFFLINE: <endpoint>#<id> \t epoch), dropped once it is online.
+CI_RUNNERS_STALE_MIN="${COORDINATOR_CI_RUNNER_STALE_MIN:-$(swarm_opt coordinator.ciRunnerStaleMin 720)}"
+case "$CI_RUNNERS_STALE_MIN" in ''|*[!0-9]*) CI_RUNNERS_STALE_MIN=720 ;; esac
+CI_RUNNERS_OFFLINE="$COORD_DIR/ci-runners-offline.$(coord_mode).tsv"
 
 # _ci_runners_read <endpoint> — its runners as one JSON array. 0 read, 2 refused, 1 failed;
 # stderr says why when it is not read.
@@ -51,15 +57,26 @@ _ci_runners_read() {
 }
 
 ci_runners_state() {
-  local ep r all='[]' failed=""
+  local ep r all='[]' failed="" read_eps='[]' seen res
   # The repo's own runners and its org's: an org-wide outage is the usual shared setup.
   for ep in "repos/${REPO_SLUG:?}/actions/runners" "orgs/${REPO_SLUG%%/*}/actions/runners"; do
-    if r=$(_ci_runners_read "$ep"); then all=$(jq -c --argjson r "$r" '. + $r' <<<"$all")
+    if r=$(_ci_runners_read "$ep"); then
+      all=$(jq -c --argjson r "$r" --arg ep "$ep" '. + ($r | map(. + {key: "\($ep)#\(.id)"}))' <<<"$all")
+      read_eps=$(jq -c --arg ep "$ep" '. + [$ep]' <<<"$read_eps")
     elif [ $? -eq 1 ]; then failed=1; fi
   done
+  seen=$(jq -Rn '[inputs | split("\t") | select(length >= 2 and (.[1] | test("^[0-9]+$"))) | {key: .[0], value: (.[1] | tonumber)}] | from_entries' \
+    < "$CI_RUNNERS_OFFLINE" 2>/dev/null) || seen='{}'
+  [ -n "$seen" ] || seen='{}'
+  res=$(jq -c --argjson seen "$seen" --argjson eps "$read_eps" --argjson now "$(swarm_now)" --argjson cut "$((CI_RUNNERS_STALE_MIN * 60))" '
+    (map(select(.status != "online")) | map({key, value: ($seen[.key] // $now)}) | from_entries) as $off
+    | {off: (($seen | with_entries(select(.key as $k | $eps | any(. as $e | $k | startswith($e + "#")) | not))) + $off),
+       live: map(select(.status == "online" or ($now - $off[.key]) < $cut))}' <<<"$all") || { echo unread; return 0; }
+  jq -r '.off | to_entries[] | "\(.key)\t\(.value)"' <<<"$res" > "$CI_RUNNERS_OFFLINE.$$" 2>/dev/null \
+    && mv -f "$CI_RUNNERS_OFFLINE.$$" "$CI_RUNNERS_OFFLINE" 2>/dev/null; rm -f "$CI_RUNNERS_OFFLINE.$$" 2>/dev/null
   # One online is enough; otherwise a list not read could hold the one that is.
-  if jq -e 'any(.[]; .status == "online")' >/dev/null <<<"$all"; then echo online
+  if jq -e '.live | any(.[]; .status == "online")' >/dev/null <<<"$res"; then echo online
   elif [ -n "$failed" ]; then echo unread
-  elif jq -e 'length == 0' >/dev/null <<<"$all"; then echo none
+  elif jq -e '.live | length == 0' >/dev/null <<<"$res"; then echo none
   else echo offline; fi
 }
