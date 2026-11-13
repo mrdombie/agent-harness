@@ -720,6 +720,7 @@ EOB
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_REFUSED" ;;
       4) driver_say "✋ fix $bid — $why"
+         driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_TIMEOUT" ;;
       *) if [ "${bid#polish-}" != "$bid" ]; then
            _driver_fix_polish_back "$t" "$review" "$bid" "its test did not prove it red then green"; continue
@@ -749,6 +750,7 @@ EOB
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_REFUSED" ;;
       4) driver_say "✋ fix $bid — $why"
+         driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_TIMEOUT" ;;
       *) driver_say "✋ fix $bid — the $kind proof is not accepted: $why"; bad=1
          fails="$fails- $bid: the $kind proof (PM answer $ref) is not accepted: $(printf '%s' "$why" | cut -c1-1000)
@@ -776,6 +778,7 @@ EOB
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_REFUSED" ;;
       4) driver_say "✋ fix $bid — $why"
+         driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_TIMEOUT" ;;
       *) driver_say "✋ fix $bid — the $kind proof is not accepted: $why"; bad=1
          fails="$fails- $bid: the $kind proof is not accepted: $(printf '%s' "$why" | cut -c1-1000)
@@ -797,6 +800,7 @@ EOB
       0) driver_say "   fix $bid — proved on the PR description: $why"
          jq -nc --arg b "$bid" --arg w "$why" --arg c "$(jq -r '.command' <<<"$e")" '{blockerId:$b, proof:"pr-body", pmAnswer:null, command:$c, why:$w}' >> "$rec" ;;
       4) driver_say "✋ fix $bid — $why"
+         driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_TIMEOUT" ;;
       *) driver_say "✋ fix $bid — the description proof is not accepted: $why"; bad=1
          fails="$fails- $bid: the description proof is not accepted: $(printf '%s' "$why" | cut -c1-1000)
