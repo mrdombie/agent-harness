@@ -239,6 +239,9 @@ for ended in "$RUNS_DIR"/*.ended; do
           bash "$NOTIFY" --class owner "host-tools:$(swarm_day)" "A build host is missing tools the builds need: ${last#*machine fault: }"
         fi
         say "machine: run $rid did not start #${ticket:-?} — ${last#*machine fault: }" ;;
+      *"machine fault: cannot claim: "*)
+        cerr="${last#*cannot claim: }"
+        say "machine: run $rid cannot claim #${ticket:-?}: ${cerr%% — *}" ;;
       *) say "machine: run $rid hit an API error twice on #${ticket:-?} — left ready, the next tick picks it again" ;;
     esac
   elif [ "$code" = 26 ]; then
