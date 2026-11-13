@@ -202,6 +202,15 @@ if suite_case "a failed read of the cited PR judges nothing that pass, never the
   check "no model call" 0 "$(calls)"
 fi
 
+if suite_case "a live scan with nothing to judge still makes both labels"; then
+  reset; blank
+  run >/dev/null
+  grep -q '^label create broken-on-uat' "$GH_LOG" && t=yes || t=no
+  check "broken-on-uat is made before anyone needs it" yes "$t"
+  grep -q '^label create escaped-layer' "$GH_LOG" && t=yes || t=no
+  check "escaped-layer too" yes "$t"
+fi
+
 if suite_case "finding-class weekly prints an escapes row per layer"; then
   reset; blank
   now=$(date +%s)
