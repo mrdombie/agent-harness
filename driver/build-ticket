@@ -756,7 +756,8 @@ while [ "$i" -lt "$N" ]; do
 
     "$DRIVER_E_TIMEOUT")
       park_reason="$step ran past its time limit"
-      park_question="Something it ran does not return — a watch-mode test runner is the usual cause. Which command was it?"
+      # The step's own note names the command and how long it ran; this stands in only when it left none.
+      park_question="A command it ran did not finish inside the limit, and the step left no note of which. Its lines are in the run log on $PARK_HOST at $PARK_LOG"
       ;;
 
     *)

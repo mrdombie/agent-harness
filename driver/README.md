@@ -424,6 +424,17 @@ A gate that outruns its limit (25) is tried once more after the machine quietens
 limit scaled by load per core (1x to `DRIVER_GATE_TIMEOUT_MAX_SCALE`, 3x); a second
 timeout on a loaded machine goes back on the queue (29), on a quiet one it parks.
 
+A proof (the test run without the change, then with it) that runs out of time waits for
+the machine's gate and is taken once more, alone in a gate slot, with twice the limit.
+Out of time again it parks (25), and the park note names the command, the limit and what
+each half took. A proof runs its command twice inside that limit, so it runs the case, not
+the suite: a test file that carries a `# case-filter: <VAR>=… <command>` line in its first
+40 lines is proved with that variable set, and a proof command that runs the whole file is
+refused before any tree is built, with the command to give. Every step's project facts name
+the files that take one. The kit's own suites take `SUITE_ONLY='<case title or pattern>'`
+(`suite_case` in `tests/lib/suite.sh`): a case runs when its title matches, and a filter
+that matches no case fails the suite.
+
 `build-ticket` itself exits 0 when the walk completes, 20 when it parked, and 2
 when the call or the configuration was wrong (an unreadable `--brief` brief
 included).
