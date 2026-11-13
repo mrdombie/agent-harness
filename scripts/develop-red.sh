@@ -21,8 +21,9 @@
 # no build. Unreadable rules are unknown: the rows wait for the next pass.
 #
 # NO HOST PATH LEAVES THIS HOST: each check is named from the repo root before it reaches a
-# title, body, marker, comment or the week's count (develop_red_clean); a path no tracked file
-# ends with is dropped. The ledger keeps the row's own set, so prune still clears the row.
+# title, body, marker, comment or the week's count (develop_red_clean), against the files this
+# checkout or the red's own commit tracks. A path neither tracks is dropped; one whose commit is
+# not in this clone yet waits. The ledger keeps the row's own set, so prune still clears the row.
 #
 # CI ON THE SAME COMMIT IS READ FIRST (develop_red_ci, one check-runs read per sha a pass):
 # when it fails other required checks than the pre-push did, the ticket names CI's and the
@@ -117,22 +118,30 @@ required_check() { # <check name>
   done <<<"$RUN_GLOBS"
   return 1
 }
-# develop_red_clean <check> — the name a ticket may carry. A path is named from the repo root:
-# a builder's worktree path becomes the tracked file it ends with (the longest). One no tracked
-# file ends with is unplaceable (status 1), never sent, when it looks like a path (a leading
-# '/' or a file's extension last); any other name, 'lint/web' too, is kept as the check's.
-TRACKED=""; TRACKED_READ=""
+# develop_red_clean <check> <sha> — the name a ticket may carry. A path is named from the repo
+# root: a builder's worktree path becomes the file it ends with (the longest) that this checkout
+# or the red's own commit tracks. One no tracked file ends with is unplaceable when it looks like
+# a path (a leading '/' or a file's extension last): status 1, never sent, or 3 when that commit
+# is not in this clone yet, so the row waits. Any other name, 'lint/web' too, is the check's.
+TRACKED=""; TRACKED_HEAD=""; TRACKED_SHA="-"; SHA_HERE=""
 develop_red_clean() {
   case "$1" in */*) ;; *) printf '%s' "$1"; return 0 ;; esac
-  [ -n "$TRACKED_READ" ] || { TRACKED=$(git -C "${REPO_ROOT:-.}" ls-files 2>/dev/null) || return 2; TRACKED_READ=1; }
+  [ -n "$TRACKED_HEAD" ] || { TRACKED_HEAD=$(git -C "${REPO_ROOT:-.}" ls-files 2>/dev/null) && TRACKED_HEAD="$TRACKED_HEAD"$'\n' || return 2; }
+  if [ "$TRACKED_SHA" != "${2:-}" ]; then
+    TRACKED_SHA="${2:-}"; TRACKED="$TRACKED_HEAD"; SHA_HERE=""
+    if [ -n "$TRACKED_SHA" ] && git -C "${REPO_ROOT:-.}" cat-file -e "$TRACKED_SHA^{commit}" 2>/dev/null; then
+      SHA_HERE=1; TRACKED="$TRACKED$(git -C "${REPO_ROOT:-.}" ls-tree -r --name-only "$TRACKED_SHA" 2>/dev/null)" || return 2
+    fi
+  fi
   local p="${1#/}"
   while :; do
     p="${p#./}"
     grep -qFx -- "$p" <<<"$TRACKED" && { printf '%s' "$p"; return 0; }
     case "$p" in */*) p="${p#*/}" ;; *) break ;; esac
   done
-  case "$1" in /*) return 1 ;; esac
-  [[ "${1##*/}" =~ \.[A-Za-z][A-Za-z0-9]{0,5}$ ]] && return 1
+  local miss=1; [ -n "$SHA_HERE" ] || miss=3
+  case "$1" in /*) return "$miss" ;; esac
+  [[ "${1##*/}" =~ \.[A-Za-z][A-Za-z0-9]{0,5}$ ]] && return "$miss"
   printf '%s' "$1"
 }
 # develop_red_ci <sha> — "pending" while any run is unfinished, else "done<TAB><failed names,>".
@@ -152,10 +161,11 @@ while IFS=$'\t' read -r sha checks at who prs; do
   IFS=, read -ra names <<<"$checks"
   for c in "${names[@]}"; do
     [ -n "$c" ] || continue
-    rc=0; c=$(develop_red_clean "$c") || rc=$?
+    rc=0; c=$(develop_red_clean "$c" "$sha") || rc=$?
     if [ "$rc" = 2 ]; then
       echo "unknown — the files $REPO_ROOT tracks could not be read — $pending_n row(s) not filed this pass"; exit 1
     fi
+    if [ "$rc" = 3 ]; then echo "the $TRUNK red at $s7 names a path, and $s7 is not in this clone yet: the row waits"; continue 2; fi
     if [ "$rc" != 0 ]; then echo "the $TRUNK red at $s7 names a path no tracked file ends with: not filed"; continue; fi
     case ",$req,$other," in *",$c,"*) continue ;; esac
     if required_check "$c"; then req="$req${req:+,}$c"; else other="$other${other:+,}$c"; fi
