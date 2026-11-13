@@ -122,4 +122,24 @@ echo "  $live"
 want_not_in "once it exits it is no longer named" '(^|[^0-9])98762([^0-9]|$)' "$live"
 want_in "and a slot opens" 'would spawn' "$out"
 
+echo "--- housekeeping's hook sweep is a heavy job while it runs ---"
+base=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
+mkdir -p "$FIX/proof-tree/scripts"
+cat > "$FIX/proof-tree/scripts/develop-hook-red.sh" <<'SH'
+#!/usr/bin/env bash
+kids=""; trap 'kill $kids 2>/dev/null; exit 0' TERM
+(exec -a npm perl -e 'sleep 300' -- run lint:all) & kids="$kids $!"
+sleep 300 & kids="$kids $!"; wait
+SH
+detach bash "$FIX/proof-tree/scripts/develop-hook-red.sh" sweep abc1234
+sleep 0.5
+out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=$(( ${base:-0} + 1 )) bash "$T" 2>&1)
+live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
+echo "  $live"
+want_in "the live line names the sweep" 'untracked: .*hook-sweep' "$live"
+want "its lint:all child is not counted again" "$(( ${base:-0} + 1 ))" \
+  "$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')"
+want_in "the sweep fills the last place" 'spawn: [0-9]+ live, cap [0-9]+ — no slot' "$out"
+want_not_in "nothing would start" 'would spawn' "$out"
+
 suite_end "$FAILED"
