@@ -417,6 +417,7 @@ SHIM
   # The build writes one log per task (build-task-N.log); the newest is the one that ran last.
   local rsid="" rlog=""
   if [ -n "$resume_of" ]; then
+    # argv-bounded: one ticket's steps dir, one log per plan task
     rlog=$(ls -t "$d/steps/$resume_of.log" "$d/steps/$resume_of"-task-*.log 2>/dev/null | head -1)
     [ -z "$rlog" ] || rsid=$(driver_log_events "$rlog" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
     [ -n "$rsid" ] || driver_say "   $step: no session in steps/$resume_of.log or steps/$resume_of-task-*.log — this call starts a fresh one"
