@@ -135,7 +135,7 @@ recon_calls() { # <count> — that many tickets in review, each with a branch on
   fix_issue_list "status:in-review" "$nums"
   : > "$GH_LOG"
   CLAIM_REMOTE="$ORIGIN" NOTIFY=0 bash "$HERE/reconcile-claims.sh" --dry-run >/dev/null 2>&1
-  grep -vc '^api repos/acme/widgets' "$GH_LOG" | tr -d ' '
+  grep -vE '^api repos/acme/widgets|^api rate_limit|rateLimit\{' "$GH_LOG" | grep -c . | tr -d ' '
 }
 small=$(recon_calls 3); big=$(recon_calls 30)
 want "30 claimed tickets cost what 3 do"           "$small" "$big"
@@ -157,7 +157,7 @@ recon_live_calls() { # <count> — that many in-review tickets, each with an ope
   fix_issue_list "status:in-review" "$nums"
   : > "$GH_LOG"
   CLAIM_REMOTE="$ORIGIN" NOTIFY=0 bash "$HERE/reconcile-claims.sh" > "$FIX/recon.out" 2>&1
-  grep -vc '^api repos/acme/widgets' "$GH_LOG" | tr -d ' '
+  grep -vE '^api repos/acme/widgets|^api rate_limit|rateLimit\{' "$GH_LOG" | grep -c . | tr -d ' '
 }
 small=$(recon_live_calls 2); big=$(recon_live_calls 20)
 echo "  calls: 2 claimed → $small, 20 claimed → $big"
