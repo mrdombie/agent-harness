@@ -72,4 +72,10 @@ hasnt "a guide the branch adds is not" "NEW-GUIDE" "$out"
 has   "an edit to its own guide is said" "this change edits its own guide apps/feed/REVIEW.md" "$out"
 has   "a guide the branch adds is said" "this change edits its own guide apps/new/REVIEW.md" "$out"
 
+# This repo's own shape file is not a guide: a change under templates/ gets no placeholders.
+KIT="$(cd "$HERE/.." && pwd)"
+out=$(printf 'templates/x.md\n' | bash "$G" "$KIT")
+hasnt "the shipped template is not read as a guide" "templates/REVIEW.md" "$out"
+hasnt "no placeholder text reaches the reviewer" "At most <N> nits" "$out"
+
 suite_end "$FAILED"
