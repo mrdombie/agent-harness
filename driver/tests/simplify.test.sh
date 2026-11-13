@@ -92,6 +92,39 @@ want "the step finishes"                          "0" "$rc"
 want "the clean-up commit stays"                  "$before" "$(git -C "$FIX/sp303" rev-parse HEAD~1)"
 rm -f "$FIX/act"
 
+echo "--- an edit the build left uncommitted is never swept into simplify, so a reset cannot erase it ---"
+sp_tree 308; : > "$CLAUDE_LOG"; sp_ai 0
+printf 'builder work\n' > "$FIX/sp308/b.sh"
+printf '#!/usr/bin/env bash\nprintf "BROKEN\\n" >> a.sh; git add a.sh; git commit -qm "refactor: simplify"\n' > "$FIX/act"; chmod +x "$FIX/act"
+before=$(head_of 308)
+rc=0; out=$(driver_step_simplify 308 2>&1) || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "the builder's edit is still in the tree"    "builder work" "$(cat "$FIX/sp308/b.sh" 2>/dev/null)"
+want "the model is not called on a dirty tree"    "0" "$(calls)"
+want "HEAD is where the build left it"            "$before" "$(head_of 308)"
+want_in "saying why simplify skipped"             'uncommitted' "$out"
+rm -f "$FIX/act"
+
+echo "--- a clean-up that edits a file outside the change is dropped ---"
+sp_tree 309; : > "$CLAUDE_LOG"; sp_ai 0
+printf '#!/usr/bin/env bash\nprintf "x\\n" > stray.sh; git add stray.sh; git commit -qm "refactor: simplify"\n' > "$FIX/act"; chmod +x "$FIX/act"
+before=$(head_of 309)
+rc=0; out=$(driver_step_simplify 309 2>&1) || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "HEAD is back where it was"                  "$before" "$(head_of 309)"
+want_in "saying the clean-up went outside"        'outside' "$out"
+
+echo "--- an uncommitted clean-up commits tracked edits only; a stray new file stays out ---"
+sp_tree 310; : > "$CLAUDE_LOG"; sp_ai 0
+printf '#!/usr/bin/env bash\nprintf "b\\n" >> a.sh; printf "x\\n" > stray.sh\n' > "$FIX/act"; chmod +x "$FIX/act"
+before=$(head_of 310)
+rc=0; out=$(driver_step_simplify 310 2>&1) || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "the in-change clean-up is committed"        "$before" "$(git -C "$FIX/sp310" rev-parse HEAD~1)"
+want "the stray file is not in it"                "a.sh" "$(git -C "$FIX/sp310" diff --name-only HEAD~1 HEAD)"
+want "nor left behind in the tree"                "" "$(git -C "$FIX/sp310" status --porcelain)"
+rm -f "$FIX/act"
+
 echo "--- once per change: a second run, an empty diff and a repair call no model ---"
 : > "$CLAUDE_LOG"; sp_ai 0
 rc=0; out=$(driver_step_simplify 303 2>&1) || rc=$?
