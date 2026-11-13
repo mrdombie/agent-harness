@@ -101,4 +101,25 @@ want_not_in "and its claude child is not a second unit" 'build sh-98762' "$live"
 want_in "the untracked build fills the one place" 'spawn: [0-9]+ live, cap 1 — no slot' "$out"
 want_not_in "nothing would start" 'would spawn' "$out"
 
+echo "--- a run the coordinator stopped tracking still holds its place while its process lives ---"
+# Its record has .ended (a requeue, a frozen judgement) but its build-ticket has not exited.
+standin() { pgrep -f "$FIX/proof-tree/driver/build-ticket $1" | head -1; }
+kill "$(standin 98761)" 2>/dev/null; pkill -f "sh-77777" 2>/dev/null; sleep 0.3
+p98762=$(standin 98762)
+jq -n --argjson p "$p98762" '{run_id:"claim-98762-x", ticket:"98762", pid:$p}' > "$STATE/runs/claim-98762-x.json"
+printf '{"run_id":"claim-98762-x","exit_code":"requeued"}\n' > "$STATE/runs/claim-98762-x.ended"
+out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=1 bash "$T" 2>&1)
+live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
+echo "  $live"
+want_in "the ended run's live build is named untracked" 'untracked: .*(^|[^0-9])98762([^0-9]|$)' "$live"
+want_in "and it fills the one place" 'spawn: [0-9]+ live, cap 1 — no slot' "$out"
+n=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
+# Other heavy work on the real host (a proof's own driver) keeps its places: the cap is set to this count.
+kill "$p98762" 2>/dev/null; sleep 0.3
+out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP="${n:-1}" bash "$T" 2>&1)
+live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
+echo "  $live"
+want_not_in "once it exits it is no longer named" '(^|[^0-9])98762([^0-9]|$)' "$live"
+want_in "and a slot opens" 'would spawn' "$out"
+
 suite_end "$FAILED"
