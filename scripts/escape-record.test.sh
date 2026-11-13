@@ -31,6 +31,7 @@ case "$1 $2" in
       *) echo '[]' ;;
     esac ;;
   "pr view")
+    [ -f "$FIX/gh/pr-$3.fail" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     [ -f "$FIX/gh/pr-$3.json" ] || { echo "HTTP 404: Not Found" >&2; exit 1; }
     cat "$FIX/gh/pr-$3.json" ;;
   "issue create")
@@ -68,7 +69,7 @@ run() { bash "$S" scan > "$FIX/out" 2>&1; echo $?; }
 creates() { grep -c '^issue create' "$GH_LOG"; }
 calls() { ls "$FIX/calls" 2>/dev/null | wc -l | tr -d ' '; }
 rows() { if [ -f "$LEDGER" ]; then grep -c . "$LEDGER"; else echo 0; fi; }
-reset() { : > "$GH_LOG"; rm -rf "$FIX/calls" "$FIX/bodies" "$LEDGER"; mkdir -p "$FIX/bodies"; }
+reset() { : > "$GH_LOG"; rm -rf "$FIX/calls" "$FIX/bodies" "$LEDGER" "$FIX"/gh/pr-*.fail; rm -f "${LEDGER%.jsonl}.labels"; mkdir -p "$FIX/bodies"; }
 check() { # <name> <want> <got>
   if [ "$2" = "$3" ]; then echo "  ok   $1"; else echo "  FAIL $1 — want '$2', got '$3'"; sed 's/^/       | /' "$FIX/out"; FAILED=1; fi
 }
@@ -174,6 +175,31 @@ if suite_case "shadow writes nothing and opens nothing"; then
   check "no model call" 0 "$(calls)"
   grep -q 'would judge #700' "$FIX/out" && t=yes || t=no
   check "it says what it would judge" yes "$t"
+fi
+
+if suite_case "a revert records the PR it cites as reverted, not a lower merged PR it also mentions"; then
+  reset; blank
+  pr 650 "Older screen"; pr 700 "Voices screen"
+  reverts '[{"number":701,"title":"Revert \"Voices\"","body":"Reverts acme/widgets#700\n\nFirst shipped alongside #650."}]'
+  answer picture
+  run >/dev/null
+  check "one record" 1 "$(rows)"
+  check "it is the cited #700's" 700 "$(jq -r '.pr' "$LEDGER" 2>/dev/null)"
+  reset; blank
+  pr 650 "Older screen"; pr 700 "Voices screen"
+  jq -nc '[{number:900, title:"Voices is blank on UAT", body:"Broken since #700 merged; #650 is fine.", author:{login:"dom", is_bot:false}}]' > "$FIX/gh/uat.json"
+  run >/dev/null
+  check "a uat issue records the first PR it names" 700 "$(jq -r '.pr' "$LEDGER" 2>/dev/null)"
+fi
+
+if suite_case "a failed read of the cited PR judges nothing that pass, never the next number"; then
+  reset; blank
+  pr 650 "Older screen"; pr 700 "Voices screen"; touch "$FIX/gh/pr-700.fail"
+  reverts '[{"number":701,"title":"Revert \"Voices\"","body":"Reverts acme/widgets#700, which built on #650."}]'
+  answer picture
+  check "the scan exits 1" 1 "$(run)"
+  check "no record" 0 "$(rows)"
+  check "no model call" 0 "$(calls)"
 fi
 
 if suite_case "finding-class weekly prints an escapes row per layer"; then
