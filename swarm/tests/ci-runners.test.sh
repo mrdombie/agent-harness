@@ -71,4 +71,29 @@ state
 want "  repo none, org refused: none"            "none" "$ST"
 rm -f "$REPO_RUNNERS" "$FIX/gh/refuse-orgs_acme_actions_runners_per_page_100"
 
+echo "--- a runner offline past coordinator.ciRunnerStaleMin (720) is left over, not down: not counted ---"
+rm -f "$ORG_RUNNERS"
+runners "$REPO_RUNNERS" offline
+fix_at "$T0"; state
+want "one runner, first seen offline: offline"   "offline" "$ST"
+fix_at $(( T0 + 719 * 60 )); state
+want "  offline 719 min: offline"                "offline" "$ST"
+fix_at $(( T0 + 720 * 60 )); state
+want "  offline 720 min: left over, none"        "none" "$ST"
+echo "  a left-over runner beside one that just went down: offline"
+runners "$REPO_RUNNERS" offline offline
+state
+want "  the new one first seen offline: offline" "offline" "$ST"
+echo "  a left-over runner that comes back online counts again from scratch"
+runners "$REPO_RUNNERS" online
+state
+want "  back online: online"                     "online" "$ST"
+runners "$REPO_RUNNERS" offline
+fix_at $(( T0 + 721 * 60 )); state
+want "  offline again: its clock starts again, offline" "offline" "$ST"
+echo "  the cutoff is read from coordinator.ciRunnerStaleMin"
+fix_at $(( T0 + 782 * 60 )); COORDINATOR_CI_RUNNER_STALE_MIN=60 state
+want "  60: offline 61 min is none"              "none" "$ST"
+rm -f "$REPO_RUNNERS"
+
 suite_end "$FAILED"
