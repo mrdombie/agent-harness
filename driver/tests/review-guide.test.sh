@@ -64,6 +64,24 @@ want_in "the trunk's guide text is handed over" '^FEED-GUIDE: skip generated fix
 want_not_in "the branch's guide text is not"   '^INJECTED' "$(fact 404 DIFF)"
 want_in "the block says the change edits its guide" 'edits its own guide' "$(fact 404 DIFF)"
 
+echo "--- a non-ASCII area folder still finds its guide ---"
+mkdir -p "$REPO/apps/café"
+printf 'CAFE-GUIDE: ask for a fixture.\n' > "$REPO/apps/café/REVIEW.md"; printf 'x\n' > "$REPO/apps/café/x.ts"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm "cafe guide"
+rg_tree 405 "apps/café/x.ts"
+fix_ai review "$ship" superpowers:requesting-code-review
+rc=0; driver_step_review 405 >/dev/null 2>&1 || rc=$?
+want_in "the café guide is handed over"        'CAFE-GUIDE: ask for a fixture' "$(fact 405 DIFF)"
+
+echo "--- a repair's own non-ASCII path still finds its guide ---"
+command -v driver_adopted >/dev/null 2>&1 || driver_adopted() { return 1; }
+rg_tree 406 "apps/café/x.ts"
+driver_state_set 406 mode repair
+driver_state_set 406 repair_base "$(git -C "$REPO" rev-parse develop)"
+fix_ai review "$ship" superpowers:requesting-code-review
+rc=0; driver_step_review 406 >/dev/null 2>&1 || rc=$?
+want_in "the repair's café guide is handed over" 'CAFE-GUIDE: ask for a fixture' "$(fact 406 DIFF)"
+
 echo "--- planted: the step without its review-guide.sh lines hands no guide ---"
 sed '/review-guide\.sh/d' "$HERE/../steps/review.sh" > "$PLANTED"
 . "$PLANTED" || exit 1
