@@ -344,9 +344,23 @@ driver_bounded() { # <seconds> <command>
 # pins. A launcher exports HARNESS_CFG_PATH so the kit reads the right config; a
 # project test that builds its own fixture config reads that same variable first and
 # fails on a change that is fine.
+#
+# AND WITHOUT THE BUILD RUN'S OWN STATE. The driver exports where its run lives (RUNS_DIR,
+# SWARM_DIR, SWARM_LOGS, DRIVER_DIR, STATE_DIR, KIT_ROOT, the repo and its labels) for its
+# own scripts. A project whose tests run those same scripts read every one of them: a suite
+# of this kit, proved in a clone, walked the build machine's 5,274 run records on each tick
+# it started and did not finish in an hour (245 s by itself), and ran the installed kit's
+# code where it meant the tree's. So the command's environment carries none of it: the
+# names below, and every COORDINATOR_*, COORD_*, SWARM_*, DRIVER_*, CLAIM_*, LBL_* and
+# GIT_* variable, are taken out of what the command inherits. The driver's own shell keeps
+# them; what a person exported for the project (a token, a PATH) is left alone.
+DRIVER_PROJECT_ENV_DROP="STATE_DIR KIT_ROOT REPO_ROOT MAIN_REPO SUPPORT_REPO PROGRAMMES_DIR CL RUNS_DIR QUEUE REPO_SLUG ISSUE_SLUG ISSUE_REF INTEGRATION_BRANCH BRANCH_PREFIX DESIGN_KIT STATUS_PREFIX HOLD_LABEL DECISION_LABELS FINDING_CLASS PR_RED_REQ_FILE"
 driver_run_project() { # <seconds> <command>
   (
     for _v in $(env | sed -n 's/^\(HARNESS_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_v"; done
+    for _v in $DRIVER_PROJECT_ENV_DROP $(env | sed -n -E 's/^((COORDINATOR|COORD|SWARM|DRIVER|CLAIM|LBL|GIT)_[A-Za-z0-9_]*)=.*/\1/p'); do
+      export -n "$_v" 2>/dev/null || true
+    done
     unset _v
     driver_bounded "$@"
   )
