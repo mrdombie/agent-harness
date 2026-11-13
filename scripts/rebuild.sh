@@ -694,15 +694,6 @@ rebuild_fix() {
 rebuild_pass() {
   local pj pr t st why kind since age lab metas rows tickets now n
   [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ] || { say "rebuild: the open PRs are a snapshot this tick — no clock moves"; return 0; }
-  # No runner to run a check: a red, a cancel or a never-run is not the PR's, so nothing is sent
-  # or closed. What does not wait on CI still runs: resumes, clash updates, holds, the ledgers.
-  local runners REBUILD_CI_HOLD=""; runners=$(ci_runners_state)
-  rebuild_clock_pause "$runners"
-  case "$runners" in
-    offline) REBUILD_CI_HOLD="every CI runner is offline" ;;
-    unread)  REBUILD_CI_HOLD="the CI runner list could not be read" ;;
-  esac
-  [ -z "$REBUILD_CI_HOLD" ] || say "rebuild: $REBUILD_CI_HOLD — no PR is closed, rebuilt or sent back to its builder this tick"
   rows=$(printf '%s' "$PRS" | jq -c --arg pre "$BRANCH_PREFIX" "$BRANCH_TICKET_JQ"'
     sort_by(.number) | .[] | (.headRefName | branch_ticket($pre)) as $t | select($t != "") | {t: $t, pr: .}' 2>/dev/null)
   # Only the PRs open now keep a clock.
@@ -717,6 +708,15 @@ rebuild_pass() {
       > "$led.$$" 2>/dev/null && mv -f "$led.$$" "$led"
   done
   [ -n "$rows" ] || return 0
+  # No runner to run a check: a red, a cancel or a never-run is not the PR's, so nothing is sent
+  # or closed. What does not wait on CI still runs: resumes, clash updates, holds, the ledgers.
+  local runners REBUILD_CI_HOLD=""; runners=$(ci_runners_state)
+  rebuild_clock_pause "$runners"
+  case "$runners" in
+    offline) REBUILD_CI_HOLD="every CI runner is offline" ;;
+    unread)  REBUILD_CI_HOLD="the CI runner list could not be read" ;;
+  esac
+  [ -z "$REBUILD_CI_HOLD" ] || say "rebuild: $REBUILD_CI_HOLD — no PR is closed, rebuilt or sent back to its builder this tick"
   tickets=$(jq -r '.t' <<<"$rows" | sort -un | tr '\n' ' ')
   # shellcheck disable=SC2086  # a list of numbers, split on purpose
   metas=$(gh_issues_batch $tickets 2>/dev/null) || metas="{}"
