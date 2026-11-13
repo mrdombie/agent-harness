@@ -66,7 +66,8 @@ leak_in() {
   for w in $1; do
     case "$w" in
       *://* | www.*) printf '%s' "$w"; return 0 ;;
-      */*)           printf '%s' "$w"; return 0 ;;
+      # A path, not a plain 'in/out': rooted, ./ or ~/, or three segments.
+      /* | ./* | ../* | '~/'* | */*/*) printf '%s' "$w"; return 0 ;;
     esac
     if printf '%s' "$w" | grep -qE '[A-Za-z0-9_-]{2,}\.[A-Za-z][A-Za-z0-9]{0,5}[[:punct:]]*$'; then
       printf '%s' "$w"; return 0
