@@ -282,7 +282,7 @@ want_in "the tick names what releases it"            'until Claude Code 2\.1\.99
 want_in "and so does box's heartbeat hold"           '"hold":"the last 3 builds here[^"]*until Claude Code 2\.1\.999 or superpowers 7\.0\.2 changes, or a harness release fixes it' "$(jq -r '.[0].body' "$SH/comments.json")"
 tick mac 1 >/dev/null
 want_in "the owner's sheet line keeps the release whole" 'takes no builds\*\*: the last 3 builds here.*or a harness release fixes it' "$(cat "$SH/body")"
-want_in "and still says how to release it by hand"    'takes no builds\*\*: the last 3 builds here[^|]*or clear skill-checks\.tsv' "$(cat "$SH/body")"
+want_in "and still says how to release it by hand, with the file's whole path" "takes no builds\\*\\*: the last 3 builds here[^|]*or clear $(printf '%s' "$(checks_file box)" | sed 's/[][\.*^$]/\\&/g')" "$(cat "$SH/body")"
 sp_set box 7.0.3
 tick box 1 >/dev/null
 want "a new superpowers re-arms it"                   "502" "$(by box)"
