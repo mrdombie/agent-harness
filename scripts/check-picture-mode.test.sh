@@ -77,9 +77,11 @@ rm -rf "$d"
 
 # The standing rule is deleted.
 d="$(fresh)"; r="$d/rules/standing-rules.md"
-grep -vi 'picture mode' "$r" > "$r.new" && mv "$r.new" "$r"
+grep -vF 'checked against the kit before the owner sees it' "$r" > "$r.new" && mv "$r.new" "$r"
+grep -qF 'checked against the kit before the owner sees it' "$r" && bad "rule plant did not land"
+grep -qF 'checked again after its fixes' "$r" || bad "the plant took the re-check rule too"
 out="$(run "$d")"; rc=$?
-[ $rc -eq 1 ] && printf '%s' "$out" | grep -q 'standing-rules.md' && ok "rules without the picture-mode line are refused" || bad "rules without the line passed: $out"
+[ $rc -eq 1 ] && printf '%s' "$out" | grep -q 'no longer states the picture-mode rule' && ok "rules without the picture-mode line are refused" || bad "rules without the line passed: $out"
 rm -rf "$d"
 
 # The re-check rule and the prototype-first rule are each deleted, from each file.
