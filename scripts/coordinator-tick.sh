@@ -484,7 +484,7 @@ ticket_open_pr() { # <ticket> — echoes the number of its open PR, draft or not
 # (rebuild.sh). Before that, or with the rebuild off, one red on its own code goes back to
 # its builder for coordinator.fixRounds fix rounds on its own branch, then parks for the PM.
 # Never on a claim list nobody could read: a claimed ticket is being worked.
-if [ "$CLAIMS_OK" = 1 ]; then rebuild_pass
+if [ "$CLAIMS_OK" = 1 ]; then rebuild_pass; rebuild_pass_clones
 else say "rebuild: the claim list could not be read — no PR is rebuilt this tick"; fi
 
 # ---- 4d. the open work: being finished, or not counted ------------------------
@@ -590,8 +590,19 @@ spawn_block() { # <ticket> <class> [note] — echoes why not, returns 0 when blo
   # this host's own unshipped build of it (a park's draft, answered) resumes on it, and a
   # fix round of that PR (a "Fix: PR #<n>" note, rebuild.sh) continues its branch while
   # the PR is still red or clashing.
-  local pr="" fpr
+  # A ticket built in a clone has its PR in that clone's repo: the same questions, asked there.
+  local cn=""
+  if cn=$(rebuild_clone_of "$t"); then rebuild_in_clone "$cn" spawn_pr_block "$t" "$note" clone; return $?; fi
+  spawn_pr_block "$t" "$note"
+}
+spawn_pr_block() { # <ticket> <note> [clone] — the open-PR part of spawn_block; echoes why not, 0 when blocked
+  local t="$1" note="${2:-}" pr="" fpr
   fpr=$(rebuild_fix_note_pr "$note")
+  # That repo's open PRs unread this tick: a fix round is neither started blind nor thrown away.
+  if [ "${3:-}" = clone ] && [ "${CLONE_PRS_READ:-0}" != 1 ]; then
+    [ -z "$fpr" ] || { echo "its fix round waits — the open PRs of $REPO_SLUG were not read this tick"; return 0; }
+    return 1
+  fi
   if pr=$(ticket_open_pr "$t") && ! coord_unshipped_here "$t"; then
     if [ "$fpr" != "$pr" ]; then
       echo "has an open PR #$pr — it merges, or is rebuilt fresh once it cannot (coordinator.rebuildAfterMin)"; return 0
@@ -1088,7 +1099,12 @@ else
       spawn_out=$(SWARM_SPAWN_REPO="$in_repo" SWARM_SPAWN_CFG="$in_cfg" CLAIM_CLASS="$cls" DRIVER_CAP_BYPASS="$bypass" swarm_spawn "$t" "$brief" 2>&1); spawn_rc=$?
       printf '%s\n' "$spawn_out" >> "$COORD_LOG"
       if [ "$spawn_rc" -eq 0 ]; then
-        coord_record_class "$t" "$cls"; count_live; rebuild_fix_started "$note"
+        coord_record_class "$t" "$cls"; count_live
+        # Started in a clone: its pull request is that repo's, and so is the round's ledger.
+        if [ -n "$in_repo" ]; then
+          rebuild_clone_note "$t" "$in_repo" || say "#$t: its start in $in_repo could not be noted — its pull request there is not watched"
+          rebuild_in_clone "$(rebuild_clone_of "$t")" rebuild_fix_started "$note" || true
+        else rebuild_fix_started "$note"; fi
         say "spawned #$t ($cls)${lent:+ in $lent$([ -n "$proc" ] && [ "$pick" = "$proc" ] || echo ', nothing else spawnable')}"; bash "$QUEUE" remove "$t" >/dev/null 2>&1
         SHEET_STARTED="${SHEET_STARTED:+$SHEET_STARTED,}$t"
       else

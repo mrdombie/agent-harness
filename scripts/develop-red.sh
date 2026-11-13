@@ -233,7 +233,7 @@ while IFS=$'\t' read -r sha checks local_set waited own who prs; do
       *" $mkey "*) ledger "$sha" "$own" "$OPEN_N"; echo "the $TRUNK red on ${checks//,/, } at $s7 is the open #$OPEN_N's, already filed"; continue ;;
     esac
     if [ -n "$DRY" ]; then echo "would add the $TRUNK red on ${checks//,/, } at $s7 to the open #$OPEN_N"; continue; fi
-    "$GH" api "repos/$REPO_SLUG/issues/$OPEN_N/comments" -X POST \
+    "$GH" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$OPEN_N/comments" -X POST \
       -f body="$TRUNK is still red at \`$sha\`, now on: ${checks//,/, }.${who:+ Builders that hit it: ${who//,/, }.} This ticket covers it; no second one is filed." >/dev/null 2>&1 \
       || { echo "the $TRUNK red on ${checks//,/, } at $s7 could not be added to #$OPEN_N"; failed=1; continue; }
     ledger "$sha" "$own" "$OPEN_N"; OPEN_SETS="$OPEN_SETS$mkey "
@@ -276,7 +276,7 @@ No builder has hit it yet.
 
 $marker"
   fi
-  if ! n=$("$GH" api "repos/$REPO_SLUG/issues" -X POST -f title="$title" -f body="$body" \
+  if ! n=$("$GH" api "repos/${ISSUE_REF:-$REPO_SLUG}/issues" -X POST -f title="$title" -f body="$body" \
              -f "labels[]=$PRI" -f "labels[]=$PROC" -q .number 2>/dev/null) || [ -z "$n" ]; then
     echo "the $TRUNK red on ${checks//,/, } at $s7 could not be filed"; failed=1; continue
   fi

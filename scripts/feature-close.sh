@@ -107,7 +107,7 @@ check() {
     fi
   fi
   write issue comment "$p" --repo "$REPO_SLUG" --body "**Feature done:** every item of its feature list passes ($(jq -r '[.items[].id] | join(", ")' "$first"))$([ -z "$cl" ] || printf ' and its clean-up part #%s has merged' "$cl"). Closed as completed."
-  write api -X PATCH "repos/$REPO_SLUG/issues/$p" -f state=closed -f state_reason=completed
+  write api -X PATCH "repos/${ISSUE_REF:-$REPO_SLUG}/issues/$p" -f state=closed -f state_reason=completed
   echo "done: #$p"
 }
 

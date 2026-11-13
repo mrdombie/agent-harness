@@ -710,6 +710,8 @@ gh_issues_batch() {
   local _o _r n q="" k=0 out="{}" part fail=0 nums="" one b=""
   [ "${GH_BATCH_BODY:-0}" = 1 ] && b=" body"
   _gh_batch_repo || return 1
+  # Tickets filed in another repo's queue (issueRepo) are read there, as gh_call sends `gh issue`.
+  if [ -z "${GH_REPO:-}" ] && [ -n "${ISSUE_REF:-}" ] && [ "${ISSUE_REF#*/}" != "$ISSUE_REF" ]; then _o="${ISSUE_REF%%/*}"; _r="${ISSUE_REF#*/}"; fi
   # GraphQL under its low mark on any host while REST still has room: one REST read a
   # ticket costs the allowance that is left, not the one that is spent.
   local rest_only=0
