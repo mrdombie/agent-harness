@@ -192,6 +192,7 @@ $BASE_RED_MARK" >/dev/null 2>&1 || true
   # The base passes again: a head that waited on it is re-run once before its clock runs.
   awk -F'\t' -v p="$n" -v h="$head" '$1 == p && $2 == h { f = 1 } END { exit !f }' "$REBUILD_BASE_RED" 2>/dev/null || return 0
   [ -n "$rids" ] || return 0
+  if [ -n "${REBUILD_CI_HOLD:-}" ]; then echo "PR #$n waited on $base, which passes $notred now — not re-run: $REBUILD_CI_HOLD"; return 1; fi
   if coord_shadow; then echo "PR #$n waited on $base, which passes $notred now — would re-run its failed jobs ($rids) first"; return 1; fi
   did=$(pr_red_rerun "$n" "$head" "$rids" "$REBUILD_BASE_RERUNS" 1) || return 0
   echo "PR #$n waited on $base, which passes $notred now — $did, its failed jobs, first"; return 1
