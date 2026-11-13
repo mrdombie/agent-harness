@@ -1004,6 +1004,35 @@ short_run 864 1 33 "machine fault: x"; short_run 864 2 33 "machine fault: x"; sh
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
 want_not_in "an API fault three times parks nothing" 'issue edit 864 .*status:parked' "$(cat "$GH_LOG")"
 
+echo "--- a run that could not push its claim says so on the sheet, with git's own error ---"
+# 23 h of a corrupt clone read as 'hit an API error twice': the bad object stayed hidden.
+CANT="⏸ #866 parked (driver): machine fault: cannot claim: fatal: bad object 6332dafe — machine fault, nothing to answer: the claim push for #866 failed (exit 1): fatal: bad object 6332dafe"
+fresh; : > "$GH_LOG"
+short_run 866 1 33 "$CANT"
+out=$(tick)
+want_in "the sheet names the claim and git's error" 'machine: run claim-866-r1 cannot claim #866: fatal: bad object 6332dafe' "$out"
+want_not_in "never the API's"                   'claim-866-r1 hit an API error' "$out"
+
+echo "--- three failed claim pushes in a row on this host: nothing more starts here, and the owner is told ---"
+cant() { printf '⏸ #%s parked (driver): machine fault: cannot claim: fatal: bad object 6332dafe — machine fault, nothing to answer' "$1"; }
+fresh; queue 870; : > "$GH_LOG"
+short_run 867 1 33 "$(cant 867)"; short_run 868 2 33 "$(cant 868)"; short_run 869 3 33 "$(cant 869)"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "nothing is spawned on this host"          "" "$(spawned)"
+want_in "the hold is said, with the error"      'spawn: starting nothing new — 3 claim pushes in a row failed on this host.*fatal: bad object 6332dafe' "$out"
+want_in "it is an event"                        '"kind":"claim-push-fails"' "$(cat "$C/events.did.jsonl" 2>/dev/null)"
+want_in "and the owner is told"                 'claim-push-fails:' "$(cat "$FIX/notify.log")"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "the next tick still holds"                "" "$(spawned)"
+want "told once, not every tick"                "1" "$(grep -c 'claim-push-fails:' "$FIX/notify.log")"
+
+echo "--- a claim that went through in between starts the count again ---"
+fresh; queue 870; : > "$GH_LOG"
+short_run 867 1 33 "$(cant 867)"; short_run 868 2 33 "$(cant 868)"
+short_run 871 3 0 "Handed off at abc123"; short_run 869 4 33 "$(cant 869)"
+out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
+want "two, a claim, then one: it spawns"        "870" "$(spawned)"
+
 echo "--- once a parked loop is put back, its count starts again ---"
 fresh; queue 865
 short_run 865 1 0 "$NOTHING"; short_run 865 2 0 "$NOTHING"; short_run 865 3 0 "$NOTHING"

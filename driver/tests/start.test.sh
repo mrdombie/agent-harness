@@ -180,6 +180,7 @@ want_in "it names the first git error"         'cannot claim: fatal: bad object 
 want_in "the git error is in the park note"    'fatal: bad object 6332dafe.*remote end hung up' "$(driver_state_get 191 park_note)"
 want "no claim was taken"                      "" "$(awk '$1==191' "$CLAIMS")"
 want "no worktree was cut"                     "" "$(driver_state_get 191 worktree)"
+want "the run's park line names git's error"  'cannot claim: fatal: bad object 6332dafe' "$(driver_state_get 191 machine_fault)"
 echo "--- a lost compare-and-swap is still a peer's ---"
 fix_issue 192 OPEN "status:ready"
 # Free in the cache (holds says 11), taken on origin by the time acquire pushes.
