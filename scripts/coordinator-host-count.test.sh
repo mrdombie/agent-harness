@@ -28,6 +28,8 @@ cat > "$FIX/ps.txt" <<'PS'
   502   501 bash /kit/driver/build-ticket 18295 --step build
   503   501 claude -p --output-format stream-json --verbose --name build --permission-mode auto --add-dir /wt/sh-18295
   610     1 claude -p --output-format stream-json --verbose --name fix --permission-mode auto --add-dir /wt/sh-18178
+  620     1 node /usr/lib/node_modules/.bin/claude -p --name fix --add-dir /wt/sh-1
+  621     1 node /app/server.js -p --name fix --add-dir /wt/sh-2
   700     1 bash /kit/scripts/develop-hook-red.sh sweep
   701   700 npm run lint:all
   800     1 claude -p --output-format json --max-turns 4
@@ -38,16 +40,16 @@ printf '#!/usr/bin/env bash\ncat "%s"\n' "$FIX/ps.txt" > "$BIN/host-ps"; chmod +
 export COORDINATOR_HOST_PS="$BIN/host-ps"
 
 echo "--- nothing tracked: each heavy unit once, at its top-most process ---"
-want "a build driver, a fix session, the lint sweep" \
-  "$(printf '501\tbuild\t18295\n610\tfix\tsh-18178\n700\thook-sweep\t-')" "$(untracked)"
+want "a build driver, a fix session, one under node, the lint sweep" \
+  "$(printf '501\tbuild\t18295\n610\tfix\tsh-18178\n620\tfix\tsh-1\n700\thook-sweep\t-')" "$(untracked)"
 
 echo "--- a tracked run's whole tree is the coordinator's own count ---"
-want "only the fix session and the lint sweep" \
-  "$(printf '610\tfix\tsh-18178\n700\thook-sweep\t-')" "$(untracked 501)"
+want "only the fix sessions and the lint sweep" \
+  "$(printf '610\tfix\tsh-18178\n620\tfix\tsh-1\n700\thook-sweep\t-')" "$(untracked 501)"
 
 echo "--- a tracked ancestor drops its descendants too ---"
 want "the sweep's tree tracked at its root" \
-  "$(printf '501\tbuild\t18295\n610\tfix\tsh-18178')" "$(untracked 700 1234)"
+  "$(printf '501\tbuild\t18295\n610\tfix\tsh-18178\n620\tfix\tsh-1')" "$(untracked 700 1234)"
 
 echo "--- the tick: an untracked build on the real host is live and takes a place under the cap ---"
 T="$HERE/coordinator-tick.sh"; Q="$HERE/coordinator-queue.sh"
@@ -94,7 +96,7 @@ live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
 echo "  $live"
 n=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
 want "the live line counts the untracked builds" "yes" "$([ "${n:-0}" -ge 1 ] && echo yes || echo no)"
-want_in "it names the hand-run build under untracked" 'untracked: .*(^|[^0-9])98761([^0-9]|$)' "$live"
+want_in "it names the hand-run build under untracked" 'untracked:.*(^|[^0-9])98761([^0-9]|$)' "$live"
 want_in "it names a fix session with its worktree" 'fix sh-77777' "$live"
 want_in "a build-ticket with a claude child is named" '(^|[^0-9])98762([^0-9]|$)' "$live"
 want_not_in "and its claude child is not a second unit" 'build sh-98762' "$live"
@@ -111,7 +113,7 @@ printf '{"run_id":"claim-98762-x","exit_code":"requeued"}\n' > "$STATE/runs/clai
 out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=1 bash "$T" 2>&1)
 live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
 echo "  $live"
-want_in "the ended run's live build is named untracked" 'untracked: .*(^|[^0-9])98762([^0-9]|$)' "$live"
+want_in "the ended run's live build is named untracked" 'untracked:.*(^|[^0-9])98762([^0-9]|$)' "$live"
 want_in "and it fills the one place" 'spawn: [0-9]+ live, cap 1 — no slot' "$out"
 n=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
 # Other heavy work on the real host (a proof's own driver) keeps its places: the cap is set to this count.
