@@ -18,14 +18,14 @@ _driver_fa_dir() { printf '%s' "$(driver_state_dir "$1")/steps"; }
 
 # [deferred]: the close is a deferral the PR lists under its own section.
 driver_finding_answer() { # <ticket> <finding-json> <fixed|closed> <sha|reason> [deferred]
-  local t="$1" f="$2" how="$3" what="${4:-}" df="${5:-}" keydef d
+  local t="$1" f="$2" how="$3" what="${4:-}" mark="${5:-}" keydef d
   case "$how" in fixed|closed) ;; *) return 1 ;; esac
   [ -n "$(printf '%s' "$what" | tr -d '[:space:]')" ] || return 1
   keydef=$(_driver_fa_keydef) || return 1
   d=$(_driver_fa_dir "$t"); mkdir -p "$d" || return 1
-  jq -ec --arg a "$how" --arg w "$what" --arg df "$df" "$keydef"' {key: finding_key, id: (.id // null), answer: $a}
+  jq -ec --arg a "$how" --arg w "$what" --arg mark "$mark" "$keydef"' {key: finding_key, id: (.id // null), answer: $a}
       + (if $a == "fixed" then {commit: $w} else {reason: $w} end)
-      + (if $df == "deferred" then {deferred: true} else {} end)' <<<"$f" >> "$d/review.answers.jsonl" 2>/dev/null
+      + (if $mark == "deferred" then {deferred: true} else {} end)' <<<"$f" >> "$d/review.answers.jsonl" 2>/dev/null
 }
 
 # One finding of <review.json> by its id; nothing found, nothing written.
