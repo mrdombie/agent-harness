@@ -229,6 +229,17 @@ _driver_proof_unreachable_why() { # <test-file> <out-file>
     "$1" "$(grep -oE -- "$DRIVER_PROOF_UNREACHABLE_RE" "$2" 2>/dev/null | head -1)" "$DRIVER_PROOF_E2E_HOW"
 }
 
+# driver_case_filter_of <test file> — how that file runs one of its cases, as the file says
+# it on a `# case-filter: <VAR>=… <command>` line in its first 40 lines. 1 when it says none.
+driver_case_filter_of() {
+  local l
+  [ -f "${1:-}" ] || return 1
+  l=$(sed -n '1,40s/^#[[:space:]]*case-filter:[[:space:]]*//p' "$1" 2>/dev/null | head -1)
+  case "${l%%=*}" in ''|*[!A-Za-z0-9_]*|[0-9]*) return 1 ;; esac
+  [ "${l%%=*}" != "$l" ] || return 1
+  printf '%s' "$l"
+}
+
 # driver_proof_cmd_check <tree> <command> [<test-file>] — 0 when the command can be
 # run verbatim from the tree's root; else prints why and returns 1.
 #
@@ -256,6 +267,13 @@ driver_proof_cmd_check() {
   fi
   if [ "$tfile" != "<file>" ] && driver_gates_local_only && [[ "$cmd" != *"$(basename "$tfile")"* ]]; then
     printf 'the command does not name %s, and under gates.localOnly a proof runs that one test file and nothing more — %s\n' "$tfile" "$eg"
+    return 1
+  fi
+  # A TEST FILE THAT TAKES A CASE FILTER IS PROVED BY THE CASE, never whole: the proof runs
+  # the command twice inside one time limit, and a whole suite of minutes ran out of it.
+  local cf
+  if [ "$tfile" != "<file>" ] && cf=$(driver_case_filter_of "$tree/$tfile") && [[ "$cmd" != *"${cf%%=*}="* ]]; then
+    printf 'the command runs all of %s, which takes a case filter, and a proof runs the case the change adds or changes, never the whole file (it runs twice, inside one time limit) — give it as: %s\n' "$tfile" "$cf"
     return 1
   fi
   # read -a, not `for w in $cmd`: a bare `*.test.ts` would glob against the cwd.
@@ -295,12 +313,46 @@ driver_proof_cmd_check() {
 # missing module, while the tree's install is behind its lockfile, is installed again
 # and taken once more. Still behind, it is 8 — a machine fault, back on the queue,
 # never "not proved".
+# _driver_proof_took <exit> <seconds> — one half of a proof, as a park note says it.
+_driver_proof_took() { if [ "$1" -eq 124 ]; then printf 'stopped at %ss' "$2"; else printf 'finished in %ss' "$2"; fi; }
+# _driver_proof_filter_hint <tree> <test file> <command> — when the file takes a case filter
+# the command did not use, say so: the next run can prove the one case.
+_driver_proof_filter_hint() {
+  local cf; cf=$(driver_case_filter_of "$1/$2") || return 0
+  [[ "$3" == *"${cf%%=*}="* ]] && return 0
+  printf ' %s takes a case filter: %s' "$2" "$cf"
+}
+# _driver_proof_gate — wait for the machine as self-check's gates do. 1 when it cannot.
+_driver_proof_gate() {
+  declare -F machine_gate_acquire >/dev/null 2>&1 || . "$KIT_ROOT/scripts/machine-gate.sh" 2>/dev/null || return 1
+  machine_gate_wait_load 0 >&2 && machine_gate_acquire 0 "proof #${DRIVER_TICKET:-?}" >&2
+}
 DRIVER_PROOF_MISSING_RE="Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Failed to resolve import|Failed to load url"
 _driver_proof_machine() { # <proof fn> <repo> <args…>
   local fn="$1" repo="$2" out rc try=0 behind mod
   shift 2
+  local t0 slow=0 secs
   while :; do
+    t0=$(date +%s)
     rc=0; out=$("$fn" "$repo" "$@") || rc=$?
+    secs=$(( $(date +%s) - t0 ))
+    # OUT OF TIME ONCE IS THE MACHINE UNTIL IT IS SHOWN TWICE. Two harness builds parked on a
+    # suite that takes four minutes alone and ran past 30 beside five other builders. So the
+    # proof waits for the machine's gate (the load ceiling, then a slot of its own), is taken
+    # once more with twice the limit, and only then is it the command's.
+    if [ "$rc" -eq 4 ] && [ "$slow" -eq 0 ]; then
+      slow=1
+      driver_say "⏳ proof: out of time after ${secs}s (limit ${DRIVER_CMD_TIMEOUT}s a half, load $(swarm_load 2>/dev/null || echo ?) on $(swarm_cores 2>/dev/null || echo ?) cores) — waiting for the machine, then taken once more with twice the limit" >&2
+      if _driver_proof_gate; then
+        t0=$(date +%s)
+        rc=0; out=$(DRIVER_CMD_TIMEOUT=$(( DRIVER_CMD_TIMEOUT * 2 )) "$fn" "$repo" "$@") || rc=$?
+        secs=$(( $(date +%s) - t0 ))
+        machine_gate_release 2>/dev/null || true
+        [ "$rc" -ne 4 ] || out="$out It was taken twice, the second time alone in a machine gate slot with twice the limit (${secs}s)."
+      else
+        out="$out The machine's gate could not be waited for, so it was not taken again."
+      fi
+    fi
     case "$rc" in 1|2|6) ;; *) break ;; esac
     grep -qE -- "$DRIVER_PROOF_MISSING_RE" <<<"$out" || break
     behind=$(bash "$KIT_ROOT/scripts/builder-install.sh" --behind "$repo" 2>/dev/null) || break
@@ -409,8 +461,10 @@ _driver_prove_red_green_at() {
     && git -C "$repo" cat-file -e "$asha:$tfile" 2>/dev/null && vsha="$asha"
   mkdir -p "$(dirname "$tmp/before/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/before/$tfile"
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/before" && driver_with_test_db --for "$tfile" "$tmp/before.db" "$tmp/before" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/before.out" 2>&1
   rc_red=$?
+  local secs_red; secs_red=$(( $(date +%s) - _pt0 ))
 
   prc=0
   if [ -n "$keep" ]; then _driver_proof_tree "$repo" "$tmp/after" "$asha" || prc=$?
@@ -429,8 +483,10 @@ _driver_prove_red_green_at() {
   # one measures a different test in each half. One version, two trees.
   mkdir -p "$(dirname "$tmp/after/$tfile")"
   git -C "$repo" show "$vsha:$tfile" > "$tmp/after/$tfile"
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/after" && driver_with_test_db --for "$tfile" "$tmp/after.db" "$tmp/after" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/after.out" 2>&1
   rc_green=$?
+  local secs_green; secs_green=$(( $(date +%s) - _pt0 ))
   # GREEN UNDER A RUNNER IS NOT GREEN UNDER THE COMPILER. vitest strips types, so a
   # test whose calls do not type-check passed this proof and then failed self-check's
   # typecheck on the same file. Only once the test is green — a red half is allowed to
@@ -474,8 +530,8 @@ _driver_prove_red_green_at() {
   # reported before the red/green reading so a watch-mode runner cannot be read as a
   # test that failed honestly.
   if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
-    printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
-      "$tfile" "$DRIVER_CMD_TIMEOUT"
+    printf '%s ran out of time: `%s` did not finish within %ss (without the change: %s; with it: %s) — a proof cut off proves nothing.%s\n' \
+      "$tfile" "$cmd" "$DRIVER_CMD_TIMEOUT" "$(_driver_proof_took "$rc_red" "$secs_red")" "$(_driver_proof_took "$rc_green" "$secs_green")" "$(_driver_proof_filter_hint "$repo" "$tfile" "$cmd")"
     return 4
   fi
   if [ "$rc_red" -eq 0 ]; then
@@ -551,11 +607,15 @@ _driver_prove_by_break_once() {
     printf 'the break text is not in %s at %s — nothing was broken, so nothing would be measured\n' "$bfile" "$(printf '%s' "$tsha" | cut -c1-8)"
     return 3
   fi
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/tree" && driver_with_test_db --for "$tfile" "$tmp/red.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/red.out" 2>&1
   rc_red=$?
+  local secs_red; secs_red=$(( $(date +%s) - _pt0 ))
   cp "$tmp/original" "$tmp/tree/$bfile"
+  local _pt0; _pt0=$(date +%s)
   ( cd "$tmp/tree" && driver_with_test_db --for "$tfile" "$tmp/green.db" "$tmp/tree" driver_run_project "$DRIVER_CMD_TIMEOUT" "$cmd" ) >"$tmp/green.out" 2>&1
   rc_green=$?
+  local secs_green; secs_green=$(( $(date +%s) - _pt0 ))
   # The same compile check as the red/green proof, on the restored tree.
   local tc_rc=0 tc_out="" tc
   tc=$(driver_proof_typecheck_cmd)
@@ -589,8 +649,8 @@ _driver_prove_by_break_once() {
   fi
 
   if [ "$rc_red" -eq 124 ] || [ "$rc_green" -eq 124 ]; then
-    printf '%s ran out of time (over %ss) — a command that does not return cannot prove anything. A watch-mode runner is the usual cause.\n' \
-      "$tfile" "$DRIVER_CMD_TIMEOUT"
+    printf '%s ran out of time: `%s` did not finish within %ss (with the break: %s; with the code restored: %s) — a proof cut off proves nothing.%s\n' \
+      "$tfile" "$cmd" "$DRIVER_CMD_TIMEOUT" "$(_driver_proof_took "$rc_red" "$secs_red")" "$(_driver_proof_took "$rc_green" "$secs_green")" "$(_driver_proof_filter_hint "$repo" "$tfile" "$cmd")"
     return 4
   fi
   if [ "$rc_red" -eq 0 ]; then
@@ -972,6 +1032,7 @@ driver_step_build() { # <ticket>
       # the change, which is what this step's own header forbids. It returns its own
       # code so the orchestrator parks with the real reason immediately.
       driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
+      driver_state_set "$t" park_note "$why"
       return "$DRIVER_E_TIMEOUT"
     else
       driver_say "✋ build $(jq -r '.task // "?"' "$ans") — $why"
