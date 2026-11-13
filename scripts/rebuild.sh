@@ -89,6 +89,7 @@ declare -F ci_runners_state >/dev/null || . "$KIT_ROOT/scripts/ci-runners.sh" ||
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
 REBUILD_CLOCK="$COORD_DIR/rebuild-clock.$(coord_mode).tsv"   # pr \t epoch first seen stuck \t why
+REBUILD_CI_DOWN="$COORD_DIR/rebuild-ci-down.$(coord_mode).tsv"   # epoch every CI runner was first seen down
 # A ticket built this many times already parks for the PM instead of building again
 # (coordinator.rebuildMax; 0 is no cap). Measured 2026-11-09: one ticket rebuilt 12
 # times in a week, 568 PRs thrown away against 478 merged. Each build left a
@@ -259,6 +260,24 @@ rebuild_clock_start() { # <pr> <why> — the epoch the clock started, set now if
   local s; s=$(rebuild_clock_since "$1")
   case "$s" in ''|*[!0-9]*) s=$(swarm_now); printf '%s\t%s\t%s\n' "$1" "$s" "$(printf '%s' "$2" | tr '\t\n' '  ')" >> "$REBUILD_CLOCK" ;; esac
   printf '%s' "$s"
+}
+# rebuild_clock_pause <runner state> — down: the epoch CI went down is kept; up again: every
+# clock moves on by the time it was down, so a stuck PR is not charged for an outage.
+rebuild_clock_pause() {
+  local now down slide; now=$(swarm_now)
+  case "$1" in
+    offline|unread) [ -s "$REBUILD_CI_DOWN" ] || printf '%s\n' "$now" > "$REBUILD_CI_DOWN"; return 0 ;;
+  esac
+  [ -f "$REBUILD_CI_DOWN" ] || return 0
+  down=$(head -1 "$REBUILD_CI_DOWN" 2>/dev/null)
+  case "$down" in ''|*[!0-9]*) rm -f "$REBUILD_CI_DOWN"; return 0 ;; esac
+  slide=$(( now - down )); [ "$slide" -gt 0 ] || slide=0
+  if [ -f "$REBUILD_CLOCK" ]; then
+    awk -F'\t' -v s="$slide" 'BEGIN { OFS = "\t" } $2 ~ /^[0-9]+$/ { $2 += s; } { print }' "$REBUILD_CLOCK" > "$REBUILD_CLOCK.$$" 2>/dev/null \
+      && mv -f "$REBUILD_CLOCK.$$" "$REBUILD_CLOCK" || return 0
+  fi
+  rm -f "$REBUILD_CI_DOWN"
+  say "rebuild: CI was down $(( slide / 60 )) min — every stuck clock moves on by that"
 }
 rebuild_clock_stop() { # <pr>
   [ -f "$REBUILD_CLOCK" ] || return 0
@@ -662,7 +681,9 @@ rebuild_pass() {
   local pj pr t st why kind since age lab metas rows tickets now n
   [ -n "${PRS:-}" ] && [ "${PRS_STALE:-0}" = 0 ] || { say "rebuild: the open PRs are a snapshot this tick — no clock moves"; return 0; }
   # No runner to run a check: a red, a cancel or a never-run is not the PR's, so nothing is sent or closed.
-  case "$(ci_runners_state)" in
+  local runners; runners=$(ci_runners_state)
+  rebuild_clock_pause "$runners"
+  case "$runners" in
     offline) say "rebuild: every CI runner is offline — no PR is closed, rebuilt or sent back to its builder this tick"; return 0 ;;
     unread)  say "rebuild: the CI runner list could not be read — no PR is closed, rebuilt or sent back to its builder this tick"; return 0 ;;
   esac
@@ -766,7 +787,7 @@ rebuild_in_clone() {
   (
     ISSUE_REF="$queue"; ISSUE_SLUG="$queue"; REPO_SLUG="$slug"; INTEGRATION_BRANCH="$trunk"; OPEN_WORK_REPO="$slug"
     REBUILD_CLONE="$name"
-    for f in REBUILD_CLOCK FIX_LEDGER CLASH_UPDATES STALE_UPDATES FIX_PARKS DRAFT_RESUMES REBUILD_BASE_RED REBUILD_BASE_RERUNS REBUILD_RERUNS OPEN_WORK_DRAFTED_CACHE; do
+    for f in REBUILD_CLOCK REBUILD_CI_DOWN FIX_LEDGER CLASH_UPDATES STALE_UPDATES FIX_PARKS DRAFT_RESUMES REBUILD_BASE_RED REBUILD_BASE_RERUNS REBUILD_RERUNS OPEN_WORK_DRAFTED_CACHE; do
       eval "$f=\"\${$f%.tsv}.$name.tsv\""
     done
     PR_RED_REQ_FILE="$PR_RED_REQ_FILE.$name"; REBUILD_BASE_CACHE="$REBUILD_BASE_CACHE.$name"
