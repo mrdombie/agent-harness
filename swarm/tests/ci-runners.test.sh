@@ -12,6 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
 KIT="$(cd "$HERE/../.." && pwd)"
 REPO_RUNNERS="$FIX/gh/api-repos_acme_widgets_actions_runners_per_page_100.json"
+ORG_RUNNERS="$FIX/gh/api-orgs_acme_actions_runners_per_page_100.json"
 T0=1762160000
 
 # runners <file> <status…> — that list of runners, ids 1…n.
@@ -50,5 +51,24 @@ rm -f "$REFUSE"; : > "$FIX/gh/runners-unread"
 state
 want "  a failed read: unread"                   "unread" "$ST"
 rm -f "$FIX/gh/runners-unread"
+
+echo "--- the org's runners count: none on the repo, every one on the org offline ---"
+runners "$REPO_RUNNERS"; runners "$ORG_RUNNERS" offline offline
+state
+want "repo none, org all offline: offline"       "offline" "$ST"
+runners "$ORG_RUNNERS" offline online
+state
+want "  one org runner online: online"           "online" "$ST"
+runners "$REPO_RUNNERS" offline; runners "$ORG_RUNNERS" online
+state
+want "  the repo's offline, the org's online: online" "online" "$ST"
+echo "  the org list refused (a user's repo, a token without org scope): the repo's alone decide"
+runners "$REPO_RUNNERS" online; rm -f "$ORG_RUNNERS"; echo 404 > "$FIX/gh/refuse-orgs_acme_actions_runners_per_page_100"
+state
+want "  repo online, org refused: online"        "online" "$ST"
+runners "$REPO_RUNNERS"
+state
+want "  repo none, org refused: none"            "none" "$ST"
+rm -f "$REPO_RUNNERS" "$FIX/gh/refuse-orgs_acme_actions_runners_per_page_100"
 
 suite_end "$FAILED"
