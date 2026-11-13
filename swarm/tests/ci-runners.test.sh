@@ -33,4 +33,22 @@ state 'rm -rf "$COORD_DIR"/ci-runners.*'
 want "one runner online, the shared dir gone: online" "online" "$ST"
 want_not_in "  and no failed read is logged"             'could not be read' "$OUT"
 
+echo "--- a token GitHub refuses the runner list (403, 404): no self-hosted runners, said once ---"
+REFUSE="$FIX/gh/refuse-repos_acme_widgets_actions_runners_per_page_100"
+rm -f "$REPO_RUNNERS"; echo 403 > "$REFUSE"
+state
+want "refused with 403: none"                    "none" "$ST"
+want_in "  it says the token may not read it"    'runner list of acme/widgets is refused \(HTTP 403\)' "$OUT"
+state
+want "  read again: none"                        "none" "$ST"
+want_not_in "  and not said a second time"       'refused' "$OUT"
+echo 404 > "$REFUSE"
+state
+want "refused with 404: none"                    "none" "$ST"
+echo "  any other failure is still unread"
+rm -f "$REFUSE"; : > "$FIX/gh/runners-unread"
+state
+want "  a failed read: unread"                   "unread" "$ST"
+rm -f "$FIX/gh/runners-unread"
+
 suite_end "$FAILED"

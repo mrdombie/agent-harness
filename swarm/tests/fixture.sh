@@ -160,9 +160,12 @@ case "$1 $2" in
     # Keyed by the endpoint with every / and ? flattened, so "the commits on the
     # trunk" and "the branch compared with the trunk" can answer differently.
     f="$FIX/gh/api-$(printf '%s' "$2" | tr '/?&=' '____').json"
-    # A repo's self-hosted runners: none unless a case seeds them; runners-unread fails the read.
-    case "$2" in repos/*/actions/runners*)
+    # Self-hosted runners, a repo's or its org's: none unless a case seeds them; runners-unread
+    # fails the read, and refuse-<endpoint> holding an HTTP status refuses it as GitHub does.
+    case "$2" in repos/*/actions/runners*|orgs/*/actions/runners*)
       [ ! -e "$FIX/gh/runners-unread" ] || exit 1
+      r="$FIX/gh/refuse-$(printf '%s' "$2" | tr '/?&=' '____')"
+      [ ! -s "$r" ] || { printf 'gh: Resource not accessible by integration (HTTP %s)\n' "$(cat "$r")" >&2; exit 1; }
       [ -f "$f" ] || { printf '{"total_count":0,"runners":[]}\n'; exit 0; } ;;
     esac
     [ -f "$f" ] || exit 1
