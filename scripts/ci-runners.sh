@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # ci-runners.sh — is any self-hosted CI runner, the repo's or its org's, online? Read once a tick.
+# Only a runner that can run a self-hosted job counts: its labels cover that job's runs-on, read
+# from the repo's .github/workflows, or coordinator.ciRunnerLabels (comma list) when set. A
+# runs-on written as an expression is not read; with no self-hosted label set, every runner counts.
 #
 #   sourced by coordinator-env.sh (needs its swarm_gh, REPO_SLUG, COORD_DIR, coord_mode)
 #   ci_runners_state          online | none | offline | unread
@@ -23,6 +26,31 @@ CI_RUNNERS_REFUSED="${COORD_DIR:?}/ci-runners-refused.$(coord_mode).tsv"   # end
 CI_RUNNERS_STALE_MIN="${COORDINATOR_CI_RUNNER_STALE_MIN:-$(swarm_opt coordinator.ciRunnerStaleMin 720)}"
 case "$CI_RUNNERS_STALE_MIN" in ''|*[!0-9]*) CI_RUNNERS_STALE_MIN=720 ;; esac
 CI_RUNNERS_OFFLINE="$COORD_DIR/ci-runners-offline.$(coord_mode).tsv"
+CI_RUNNERS_LABELS="${COORDINATOR_CI_RUNNER_LABELS:-$(swarm_opt coordinator.ciRunnerLabels "")}"
+
+# _ci_runners_needed — the label sets a self-hosted job asks for, as a JSON array of arrays.
+_ci_runners_needed() {
+  local root="${HARNESS_MAIN_REPO:-$PWD}" f
+  if [ -n "$CI_RUNNERS_LABELS" ]; then
+    jq -cn --arg l "$CI_RUNNERS_LABELS" '[$l | ascii_downcase | split(",") | map(gsub("^ +| +$"; "")) | map(select(. != ""))]'
+    return
+  fi
+  for f in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
+    [ -f "$f" ] && awk '
+      function emit() { if (n && set !~ /\$\{\{/ && ("," set ",") ~ /,self-hosted,/) print set; n = 0; set = "" }
+      function add(v) { gsub(/^[ \t"\047]+|[ \t"\047]+$/, "", v); if (v != "") { set = set (n ? "," : "") tolower(v); n++ } }
+      inlist && /^[ \t]*-[ \t]*/ { v = $0; sub(/^[ \t]*-[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v); add(v); next }
+      inlist { inlist = 0; emit() }
+      /^[ \t]*runs-on:/ {
+        v = $0; sub(/^[ \t]*runs-on:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v)
+        if (v == "") { inlist = 1; next }
+        if (v ~ /^\[/) { gsub(/^\[|\][ \t]*$/, "", v); k = split(v, a, ","); for (i = 1; i <= k; i++) add(a[i]) }
+        else if (v !~ /^\{/) add(v)
+        emit()
+      }
+      END { if (inlist) emit() }' "$f"
+  done | jq -Rcs 'split("\n") | map(select(. != "") | split(",")) | unique'
+}
 
 # _ci_runners_read <endpoint> — its runners as one JSON array. 0 read, 2 refused, 1 failed;
 # stderr says why when it is not read.
@@ -57,11 +85,16 @@ _ci_runners_read() {
 }
 
 ci_runners_state() {
-  local ep r all='[]' failed="" read_eps='[]' seen res
+  local ep r all='[]' failed="" read_eps='[]' seen res need
+  need=$(_ci_runners_needed 2>/dev/null) || need='[]'
+  [ -n "$need" ] || need='[]'
   # The repo's own runners and its org's: an org-wide outage is the usual shared setup.
   for ep in "repos/${REPO_SLUG:?}/actions/runners" "orgs/${REPO_SLUG%%/*}/actions/runners"; do
     if r=$(_ci_runners_read "$ep"); then
-      all=$(jq -c --argjson r "$r" --arg ep "$ep" '. + ($r | map(. + {key: "\($ep)#\(.id)"}))' <<<"$all")
+      all=$(jq -c --argjson r "$r" --arg ep "$ep" --argjson need "$need" '
+        . + ($r | map(select(. as $x | ($need | length) == 0
+                        or ([$x.labels[]?.name | ascii_downcase] as $l | any($need[]; all(.[]; IN($l[])))))
+                      | . + {key: "\($ep)#\(.id)"}))' <<<"$all")
       read_eps=$(jq -c --arg ep "$ep" '. + [$ep]' <<<"$read_eps")
     elif [ $? -eq 1 ]; then failed=1; fi
   done

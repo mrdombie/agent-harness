@@ -100,7 +100,7 @@ rm -f "$REPO_RUNNERS"
 
 echo "--- only a runner whose labels cover a self-hosted job's runs-on counts ---"
 mkdir -p "$REPO/.github/workflows"
-printf 'jobs:\n  test:\n    runs-on: [self-hosted, ci]\n' > "$REPO/.github/workflows/ci.yml"
+printf 'jobs:\n  test:\n    runs-on: [self-hosted, \047ci\047]  # the CI box\n' > "$REPO/.github/workflows/ci.yml"
 printf 'jobs:\n  build:\n    runs-on: ubuntu-24.04\n' > "$REPO/.github/workflows/hosted.yml"
 runners "$REPO_RUNNERS" offline:self-hosted,ci; runners "$ORG_RUNNERS" online:self-hosted,deploy
 state
