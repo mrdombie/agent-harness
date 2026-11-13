@@ -253,6 +253,25 @@ for broken in runs.fail log.12; do
   want "$broken: the pass is not done"         "1" "$R_RC"
 done
 
+echo "--- a leg's log never readable: a check required by name at that commit still files ---"
+case_log_gone_row() { # one row: chk-a by name, lint:all only by a leg whose log is gone
+  fresh "$A	chk-a,lint:all	633		33"; requires chk-a "Typecheck + Unit tests"; leg_runs; rm -f "$FIX/log.12"
+  ci "chk-a=completed:failure" "lint:all=completed:failure"; run
+}
+case_log_gone_row
+want "chk-a files"                             "1" "$(creates)"
+want_in "titled for chk-a alone"               'title=develop is red: chk-a \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
+want "lint:all is not counted"                 "" "$(cat "$COUNT")"
+want_in "lint:all is said to be unknown"       '^unknown — .*lint:all.* aaaaaaa' "$R"
+fresh "$A	chk-a	634		34" "$A	lint:all	635		35"; requires chk-a "Typecheck + Unit tests"; leg_runs; rm -f "$FIX/log.12"
+ci "chk-a=completed:failure" "lint:all=completed:failure"
+grep 'lint:all' "$PENDING" > "$FIX/before"
+run
+want "two rows: chk-a's files"                 "1" "$(creates)"
+want "only chk-a's row ledgered"               "$A	chk-a	901" "$(cat "$LEDGER")"
+want "lint:all's row waits"                    "same" "$(grep 'lint:all' "$PENDING" | cmp -s "$FIX/before" - && echo same || echo changed)"
+want_in "one row said to wait"                 '^unknown — the checks on aaaaaaa could not be read — 1 row\(s\) at it not filed this pass$' "$R"
+
 echo "--- a multi-line run step: every line of it is a command the leg ran ---"
 case_multiline() {
   fresh "$A	lint:all,check:after	630		30"; requires "Typecheck + Unit tests"; leg_runs
