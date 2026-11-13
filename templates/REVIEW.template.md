@@ -1,6 +1,6 @@
 # How to review this area
 
-Put this file in a folder (a screen folder, a package). The reviewer reads the
+Copy this file as REVIEW.md into a folder (a screen folder, a package). The reviewer reads the
 nearest REVIEW.md above each changed file; this one covers everything under its
 folder that has no nearer one. Keep it short: every line is read on every review.
 

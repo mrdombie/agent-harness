@@ -10,7 +10,7 @@
 #                                 trunk), never the working tree: a change may not write
 #                                 the guide it is reviewed by. A changed REVIEW.md is named.
 #
-# The nearest REVIEW.md wins; the repo root's is the fallback (templates/REVIEW.md).
+# The nearest REVIEW.md wins; the repo root's is the fallback. Shape: templates/REVIEW.template.md.
 # Bounded: REVIEW_GUIDE_MAX guides (default 8), REVIEW_GUIDE_BYTES each (default 4000).
 set -uo pipefail
 root="${1:?usage: review-guide.sh <repo-root> [<ref>] < changed-paths}"
