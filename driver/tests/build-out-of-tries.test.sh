@@ -56,6 +56,18 @@ DRIVER_MAX_MACHINE_PARKS=0 driver_park 162 "build refused" "$note" driver >/dev/
 want_in "the comment carries it under What stopped it" \
   'What stopped it:\*\* 5 of 5 tries used.*task 2 \(second task\): proof ran red on both sides' "$(cat "$GH_LOG")"
 
+echo "--- the last try builds another plan task: that reason, not a stale one ---"
+driver_state_init 165 --worktree "$REPO" --repo "$REPO"
+last_try 165
+fix_plan 165 "wire the widget" "paint the widget"
+printf 'stale reason from an earlier try\n' > "$(driver_state_dir 165)/steps/build-task-1.refused"
+fix_ai build '{"step":"build","skills":["superpowers:subagent-driven-development"],"status":"built","task":"paint the widget","changed":[{"path":"a.sh","action":"modify"}],"changelog":{"skipped":"none"}}' superpowers:subagent-driven-development
+rc=0; DRIVER_TICKET=165 driver_step_build 165 >/dev/null 2>&1 || rc=$?
+want "out of tries refuses" "24" "$rc"
+note=$(driver_state_get 165 park_note)
+want_in "the note gives the wrong-task reason" 'task 1 \(wire the widget\): .*another task in this plan' "$note"
+want_not_in "and not the stale one"            'stale reason' "$note"
+
 echo "--- a proved task is not reported as refused ---"
 driver_state_init 163 --worktree "$REPO" --repo "$REPO"
 fix_plan 163 "done task"
