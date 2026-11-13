@@ -397,7 +397,9 @@ driver_step_start() { # <ticket>
           return "$DRIVER_E_BUSY"
         elif [ "$arc" != 0 ]; then
           aerr=$(printf '%s\n' "$DRIVER_START_ACQUIRE_ERR" | sed '/^[[:space:]]*$/d')
-          driver_say "✋ start: machine fault: cannot claim: $(printf '%s\n' "$aerr" | head -1) (claim-lock exit $arc on #$t). Nothing was claimed or cut."
+          l=$(printf '%s\n' "$aerr" | head -1); [ -n "$l" ] || l="claim-lock exit $arc"
+          driver_state_set "$t" machine_fault "cannot claim: $l"
+          driver_say "✋ start: machine fault: cannot claim: $l (claim-lock exit $arc on #$t). Nothing was claimed or cut."
           driver_state_set "$t" park_note "machine fault, nothing to answer: the claim push for #$t failed (exit $arc): $(printf '%s' "$aerr" | tr '\n' ' ' | cut -c1-600)"
           return "$DRIVER_E_MACHINE"
         fi ;;
