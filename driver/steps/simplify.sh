@@ -61,12 +61,24 @@ driver_step_simplify() { # <ticket>
   case "$rc" in "$DRIVER_E_USAGE"|"$DRIVER_E_MACHINE") ;; *) driver_state_bump "$t" simplify ;; esac
   driver_state_set "$t" simplify_agents "$(driver_log_spawns "$d/simplify.log")"
 
-  # A clean-up left uncommitted is still the clean-up.
-  if [ -n "$(git -C "$wt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ]; then
-    git -C "$wt" add -A -- . ':!node_modules' >/dev/null 2>&1
+  # A clean-up left uncommitted is still the clean-up; a new file it left is not (the tree was clean).
+  if [ -n "$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    git -C "$wt" add -u >/dev/null 2>&1
     git -C "$wt" commit -q -m "refactor(#$t): simplify" >/dev/null 2>&1
   fi
+  git -C "$wt" clean -fdq -- . ':!node_modules' >/dev/null 2>&1
   after=$(git -C "$wt" rev-parse HEAD)
+
+  if [ "$rc" -eq 0 ] && [ "$after" != "$before" ]; then
+    local outside
+    outside=$(comm -23 <(git -C "$wt" diff --name-only "$before..$after" | sort -u) \
+                       <(git -C "$wt" diff --name-only "$trunk...$before" | sort -u) | head -3 | tr '\n' ' ')
+    if [ -n "$outside" ]; then
+      git -C "$wt" reset -q --hard "$before"
+      driver_say "   simplify: clean-up dropped — it touched files outside the change: $outside"
+      return "$DRIVER_OK"
+    fi
+  fi
 
   if [ "$rc" -ne 0 ]; then
     [ "$after" = "$before" ] || git -C "$wt" reset -q --hard "$before"
