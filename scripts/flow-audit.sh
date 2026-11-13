@@ -21,8 +21,10 @@
 #       '### GAP-NN · STRANDS|LIES' section is closed only by a non-empty
 #       '**Fixed:**' line AND every row its '**Rows:**' line names reading
 #       PRESENT in the ledger — the re-check's verdict, not the builder's note.
-#       A gap naming no row stays open. SILENT and ROUGH never hold it. A
-#       report with no '| E-01 |' ledger row is void, never green.
+#       A gap naming no row stays open. SILENT and ROUGH never hold it. The
+#       severity is read in any case after any separator. Void (exit 3), never
+#       green: no '| E-01 |' ledger row, a GAP heading with no severity it
+#       reads, or an ABSENT/WRONG/PARTIAL row no gap's '**Rows:**' line names.
 #
 #   flow-audit.sh story <surface>
 #       prints the clickable story URL of the surface's picture, from the
@@ -120,7 +122,8 @@ brief_checker() {
     local id kept="" hit
     for id in $(printf '%s' "$only" | tr ',' ' '); do
       printf '%s' "$id" | grep -qE '^[EAIDFRXC]-[0-9]{2}$' || { echo "flow-audit: --only wants row ids like X-02 — got: $id" >&2; exit 2; }
-      hit=$(printf '%s\n' "$lines" | grep -E "(^|[^A-Za-z0-9])$id([^0-9]|\$)")
+      # The id leads its row; a row that only cites it is another row.
+      hit=$(printf '%s\n' "$lines" | grep -E "^[[:space:]]*([0-9]+\.[[:space:]]*)?$id([^0-9]|\$)")
       [ -n "$hit" ] || { echo "flow-audit: --only $id is no row in $rows" >&2; exit 2; }
       kept=$(printf '%s\n%s' "$kept" "$hit")
     done
@@ -153,18 +156,18 @@ gate() {
     echo "flow-audit: void — $report has no coverage row (want ledger rows like '| E-01 | ...')" >&2
     exit 3
   fi
-  local open
+  local open void
   open=$(awk '
     function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
     # Pass 1: the ledger, row id -> verdict.
     NR == FNR {
       if ($0 ~ /^\|[[:space:]]*[EAIDFRXC]-[0-9][0-9][[:space:]]*\|/) {
-        n = split($0, c, "|"); verdict[trim(c[2])] = trim(c[5])
+        n = split($0, c, "|"); r = trim(c[2]); verdict[r] = toupper(trim(c[5])); order[++nled] = r
       }
       next
     }
     function close_gap(   why, k, r) {
-      if (id == "") return
+      if (id == "" || !holds) { id = ""; return }
       why = ""
       if (!fixed) why = "no **Fixed:** line"
       if (nrows == 0) why = why (why ? "; " : "") "names no row on a **Rows:** line"
@@ -173,13 +176,17 @@ gate() {
         if (!(r in verdict)) why = why (why ? "; " : "") r " is not in the ledger"
         else if (verdict[r] != "PRESENT") why = why (why ? "; " : "") r " reads " verdict[r] ", not PRESENT"
       }
-      if (why != "") print id " (" why ")"
+      if (why != "") print "OPEN " id " (" why ")"
       id = ""
     }
-    /^#{2,3}[[:space:]]/ {
+    /^#+[[:space:]]/ {
       close_gap()
-      if ($0 ~ /^###[[:space:]]+GAP-[0-9]+[[:space:]]+·[[:space:]]+(STRANDS|LIES)([[:space:]]|$)/) {
-        id = $2; fixed = 0; nrows = 0
+      if (toupper($0) ~ /^#+[[:space:]]*GAP-[0-9]/) {
+        h = toupper($0); sub(/^#+[[:space:]]*/, "", h)
+        match(h, /^GAP-[0-9]+/); gid = substr(h, 1, RLENGTH); rest = substr(h, RLENGTH + 1)
+        if (match(rest, /^[^A-Z0-9]+(STRANDS|LIES|SILENT|ROUGH)([^A-Z0-9]|$)/)) {
+          id = gid; holds = (rest ~ /^[^A-Z0-9]+(STRANDS|LIES)([^A-Z0-9]|$)/); fixed = 0; nrows = 0
+        } else print "VOID " gid " heading names no severity this gate reads (STRANDS, LIES, SILENT, ROUGH): " trim($0)
       }
       next
     }
@@ -187,11 +194,26 @@ gate() {
     id != "" && /^\*\*Rows:\*\*/ {
       line = $0
       while (match(line, /[EAIDFRXC]-[0-9][0-9]/)) {
-        want[++nrows] = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
+        r = substr(line, RSTART, RLENGTH); named[r] = 1
+        want[++nrows] = r; line = substr(line, RSTART + RLENGTH)
       }
     }
-    END { close_gap() }
+    END {
+      close_gap()
+      for (k = 1; k <= nled; k++) {
+        r = order[k]
+        if (verdict[r] ~ /^(ABSENT|WRONG|PARTIAL)$/ && !(r in named))
+          print "VOID " r " reads " verdict[r] " in the ledger, but no gap names it on a **Rows:** line"
+      }
+    }
   ' "$report" "$report")
+  void=$(printf '%s\n' "$open" | sed -n 's/^VOID //p')
+  if [ -n "$void" ]; then
+    echo "flow-audit: void — $report cannot be read as holding or clear:" >&2
+    printf '  %s\n' "$void" >&2
+    exit 3
+  fi
+  open=$(printf '%s\n' "$open" | sed -n 's/^OPEN //p')
   if [ -n "$open" ]; then
     echo "flow-audit: held — open STRANDS/LIES gap(s), each closed only by a **Fixed:** line and its rows re-checked PRESENT:" >&2
     printf '  %s\n' "$open" >&2

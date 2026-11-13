@@ -94,7 +94,8 @@ totality: no rendered/reachability leg, any route excluded, any actor not modell
   `**Fixed:**` line AND every row on its `**Rows:**` line reads `PRESENT` in the ledger. That
   verdict comes from re-running `flow-checker` on the redrawn picture with just those rows
   (`flow-audit.sh brief checker ... --only <ids>`), never from the builder's own note. A gap
-  naming no row stays open. SILENT and ROUGH never hold it. A report with no ledger row
-  exits 3 — void, never green.
+  naming no row stays open. SILENT and ROUGH never hold it. Exit 3 — void, never green — for
+  a report with no ledger row, a `GAP-` heading with no STRANDS/LIES/SILENT/ROUGH after it,
+  or an ABSENT, WRONG or PARTIAL row that no gap's `**Rows:**` line names.
 - **"Did the method work" is not optional.** It is what stops a bad run being read as a clean
   surface.
