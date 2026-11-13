@@ -115,7 +115,7 @@ driver_step_review() { # <ticket>
   # AN ADOPTED DRAFT IS REVIEWED WHOLE: the driver never reviewed any of it.
   if [ "$(driver_state_get "$t" mode)" = repair ] && [ -n "$rbase" ] && ! driver_adopted "$t"; then
     # --first-parent: a merge's second side is the trunk's commits, never the repair's.
-    own_paths=$(git -C "$wt" log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
+    own_paths=$(git -C "$wt" -c core.quotePath=false log --first-parent --diff-merges=cc --name-only --format= "$rbase"..HEAD 2>/dev/null | sed '/^$/d' | sort -u)
     dargs=("$rbase"..HEAD --); own_scope=1
     while IFS= read -r p; do [ -n "$p" ] && dargs+=("$p"); done <<<"$own_paths"
     if [ -n "$own_paths" ]; then diff=$(git -C "$wt" diff "${dargs[@]}" 2>/dev/null); else diff=""; fi
@@ -196,7 +196,7 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   # change never writes the guide it is judged by. On a repair the changed set is its own.
   local changed guides=""
   if [ -n "$own_scope" ]; then changed="$own_paths"
-  elif [ "${#dargs[@]}" -gt 0 ]; then changed=$(git -C "$wt" diff --name-only "${dargs[@]}" 2>/dev/null)
+  elif [ "${#dargs[@]}" -gt 0 ]; then changed=$(git -C "$wt" -c core.quotePath=false diff --name-only "${dargs[@]}" 2>/dev/null)
   else changed=""; fi
   [ -z "$changed" ] || [ -z "$trunk" ] \
     || guides=$(printf '%s\n' "$changed" | bash "$KIT_ROOT/scripts/review-guide.sh" "$wt" "$trunk" 2>/dev/null)
