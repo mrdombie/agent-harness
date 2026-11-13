@@ -202,13 +202,28 @@ want_in "titled by the repo-relative name"     'title=develop is red: src/x\.tes
 want "no host path in title, body or marker"   "0" "$(grep -cE 'Users/|proj-wt' "$FIX/fgh.log" | tr -d ' ')"
 want "the row's own set is ledgered"           "$A	$HOSTP	901" "$(cat "$LEDGER")"
 want "and pruned"                              "" "$(cat "$PENDING")"
-fresh "$A	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	625		25"; requires lib/gone.test.ts
+# C: a commit on another branch adds lib/new.test.ts, which this checkout does not have.
+C=$(cd "$REPO" && export GIT_INDEX_FILE="$FIX/side.index" && git read-tree --empty \
+  && git update-index --add --cacheinfo "100644,$(git hash-object -w /dev/null),lib/new.test.ts" \
+  && git -c user.email=t@e.invalid -c user.name=T commit-tree -m "test: new" "$(git write-tree)")
+fresh "$C	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	625		25"; requires lib/gone.test.ts
 run
 want "a host path no tracked file ends with: nothing created" "0" "$(creates)"
 want "nothing searched"                        "0" "$(searches)"
 want "and no host path counted"                "" "$(cat "$COUNT")"
-want "ledgered as not filed"                   "$A	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	-" "$(cat "$LEDGER")"
+want "ledgered as not filed"                   "$C	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	-" "$(cat "$LEDGER")"
 want "no host path in anything sent"           "0" "$(grep -cE 'Users/|proj-wt' "$FIX/fgh.log" | tr -d ' ')"
+echo "--- a test file added at the red's commit, not in this checkout: named from that commit's tree ---"
+fresh "$C	Users/someone/proj-wt/sh-1-abc/lib/new.test.ts	627		27"; requires lib/new.test.ts
+run
+want "one ticket"                              "1" "$(creates)"
+want_in "titled by the file the red's commit tracks" 'title=develop is red: lib/new\.test\.ts \(develop@' "$(cat "$FIX/fgh.log")"
+echo "--- an unplaceable path at a commit this clone does not have: the row waits, never ledgered ---"
+fresh "$A	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	628		28"; requires lib/gone.test.ts
+run
+want "nothing created"                         "0" "$(creates)"
+want "nothing ledgered"                        "" "$(cat "$LEDGER")"
+want "the row is kept"                         "$A	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	628		28" "$(cat "$PENDING")"
 fresh "$B	chk-a,$HOSTP	626		26"; requires chk-a src/x.test.ts; issue 880 open chk-a aaaaaaa > "$FIX/open.json"
 run
 want "the open ticket takes a comment"         "1" "$(comments)"
