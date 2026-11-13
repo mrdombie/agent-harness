@@ -20,7 +20,7 @@
 # or a required check is red at that commit and one of its failing legs ran it.
 # Any other red adds one line per check to check-class-count.tsv and is ledgered: no ticket,
 # no build. Unreadable rules are unknown: the rows wait for the next pass; unreadable check
-# runs or leg logs hold only that commit's rows.
+# runs or leg logs hold only the checks that needed them.
 #
 # NO HOST PATH LEAVES THIS HOST: each check is named from the repo root before it reaches a
 # title, body, marker, comment or the week's count (develop_red_clean), against the files this
@@ -189,14 +189,14 @@ develop_red_ci() {
           | select(test(",") | not)] | unique | join(",")) end'
 }
 WEEK=$(date -u +%G-W%V)
-# A commit whose check runs or leg logs cannot be read is unknown: its rows wait in
-# develop-red.tsv, uncounted and unledgered; every other commit's rows go on.
+# A check whose commit's check runs or leg logs cannot be read is unknown. A row with a
+# required check files under those and drops the unknown ones; a row with none waits in
+# develop-red.tsv, uncounted and unledgered. Every other row goes on.
 SORTED=""; UNREAD=""; CI_FAILED=0
 CI_WAIT_MINS=$(toolkit_cfg coordinator.developRedCiWaitMins 2>/dev/null); [[ "$CI_WAIT_MINS" =~ ^[0-9]+$ ]] || CI_WAIT_MINS=120
 while IFS=$'\t' read -r sha checks at who prs; do
   [ -n "$sha" ] && [ -n "$checks" ] || continue
-  case " $UNREAD " in *" $sha "*) continue ;; esac
-  req=""; other=""; rc=0
+  req=""; other=""; unk=""
   s7=$(printf '%s' "$sha" | cut -c1-7)
   IFS=, read -ra names <<<"$checks"
   for c in "${names[@]}"; do
@@ -209,9 +209,12 @@ while IFS=$'\t' read -r sha checks at who prs; do
     if [ "$crc" != 0 ]; then echo "the $TRUNK red at $s7 names a path no tracked file ends with: not filed"; continue; fi
     case ",$req,$other," in *",$c,"*) continue ;; esac
     required_check "$sha" "$c"; rc=$?
-    case $rc in 0) req="$req${req:+,}$c" ;; 1) other="$other${other:+,}$c" ;; *) break ;; esac
+    case $rc in 0) req="$req${req:+,}$c" ;; 1) other="$other${other:+,}$c" ;; *) unk="$unk${unk:+,}$c" ;; esac
   done
-  if [ "$rc" -gt 1 ]; then UNREAD="$UNREAD $sha"; continue; fi
+  if [ -n "$unk" ]; then
+    [ -n "$req" ] || { UNREAD="$UNREAD$sha"$'\n'; continue; }
+    echo "unknown — the legs that ran ${unk//,/, } at $s7 could not be read — filed under ${req//,/, } only"
+  fi
   SORTED="$SORTED$sha"$'\t'"$checks"$'\t'"${req:--}"$'\t'"${other:--}"$'\t'"${at:--}"$'\t'"${who:--}"$'\t'"${prs:--}"$'\n'
 done <<<"$TODO"
 KEEP=""
@@ -247,13 +250,13 @@ while IFS=$'\t' read -r sha checks req other at who prs; do
     fi
   fi
   local_set="-"; ci_req=""
-  crc=0
+  cunk=""
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     required_check "$sha" "$c"; crc=$?
-    case $crc in 0) ci_req="$ci_req${ci_req:+,}$c" ;; 1) ;; *) break ;; esac
+    case $crc in 0) ci_req="$ci_req${ci_req:+,}$c" ;; 1) ;; *) cunk=1 ;; esac
   done <<<"$(printf '%s' "${ci#done$'\t'}" | tr , '\n')"
-  if [ "$crc" -gt 1 ]; then
+  if [ -n "$cunk" ] && [ -z "$ci_req" ]; then
     echo "unknown — the checks on $TRUNK@$s7 could not be read — the $TRUNK red at $s7 is not filed this pass"; CI_FAILED=1; continue
   fi
   if [ -n "$ci_req" ] && [ "$ci_req" != "$(printf '%s\n' "${req//,/$'\n'}" | LC_ALL=C sort -u | paste -sd, -)" ]; then
@@ -262,8 +265,8 @@ while IFS=$'\t' read -r sha checks req other at who prs; do
   KEEP="$KEEP$sha"$'\t'"$req"$'\t'"$local_set"$'\t'"$waited"$'\t'"$checks"$'\t'"$who"$'\t'"$prs"$'\n'
 done <<<"$SORTED"
 unread=0
-for sha in $UNREAD; do
-  echo "unknown — the checks on $(printf '%s' "$sha" | cut -c1-7) could not be read — $(printf '%s\n' "$TODO" | grep -c "^$sha") row(s) at it not filed this pass"; unread=1
+for sha in $(printf '%s' "$UNREAD" | awk '!s[$0]++'); do
+  echo "unknown — the checks on $(printf '%s' "$sha" | cut -c1-7) could not be read — $(printf '%s' "$UNREAD" | grep -c "^$sha") row(s) at it not filed this pass"; unread=1
 done
 TODO="$KEEP"
 [ -n "$TODO" ] || { prune; exit $(( CI_FAILED || unread )); }
