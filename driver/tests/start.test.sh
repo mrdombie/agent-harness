@@ -4,6 +4,7 @@
 # mostly about saying no: to a closed ticket, to one a person holds, to one the
 # PM has gated, and to one a peer already claimed.
 # Run: bash "$0"
+# case-filter: SUITE_ONLY='<a case title, or a pattern over them>' bash driver/tests/start.test.sh
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -28,10 +29,12 @@ t="$2"
 argval() { local k="$1"; shift; while [ $# -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1" in
   acquire)
+    [ -n "${CLAIM_PUSH_SILENT:-}" ] && exit 1
+    [ -n "${CLAIM_PUSH_FAIL:-}" ] && { printf '%s\n' "$CLAIM_PUSH_FAIL" "claim-lock: push failed for #$t" >&2; exit 1; }
     [ -n "$(field "$t" 2)" ] && exit 10
     printf '%s\t%s\t%s\t%s\n' "$t" "$me" "$(argval --branch "$@")" "$(argval --worktree "$@")" >> "$CLAIMS"
     echo "acquired #$t" ;;
-  holds) o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
+  holds) [ -n "${CLAIM_HOLDS_RC:-}" ] && exit "$CLAIM_HOLDS_RC"; o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
   show)
     o=$(field "$t" 2); [ -n "$o" ] || { echo "#$t is not claimed" >&2; exit 11; }
     jq -n --arg a "$o" --arg b "$(field "$t" 3)" --arg w "$(field "$t" 4)" \
@@ -56,6 +59,9 @@ claimed_tickets() { awk '{print $1}' "$CLAIMS" | tr '\n' ' ' | sed 's/ $//'; }
 # claim_row <ticket> <owner> <branch> <worktree>
 claim_row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-}" "${4:-}" >> "$CLAIMS"; }
 
+# The cases below this fence build on each other (101 is started, then resumed), so
+# they run as one; a case that plants its own fixture is its own suite_case after it.
+if suite_case "start's sequential cases, from a ready ticket to a Fix: run"; then
 echo "--- a ready ticket starts ---"
 fix_issue 101 OPEN "status:ready,type:feature"
 mkdir -p "$(driver_state_dir 101)/steps"
@@ -462,5 +468,36 @@ rc=0; out=$(driver_step_start 162 2>&1) || rc=$?
 want "  a Fix: of another PR than the open one: has-a-PR" "31" "$rc"
 want "  no worktree was cut"               "" "$(driver_state_get 162 worktree)"
 printf '[]\n' > "$FIX/gh/prs.json"
+fi
+
+if suite_case "a claim push that fails for a reason other than a race is the machine's"; then
+# A corrupt object in the clone failed every acquire push for 23 h, and each one was
+# reported as a peer winning a race that never happened.
+fix_issue 191 OPEN "status:ready"
+out=$(CLAIM_PUSH_FAIL="fatal: bad object 6332dafe
+fatal: the remote end hung up unexpectedly" driver_step_start 191 2>&1); rc=$?
+want "a failed push is a machine fault"        "33" "$rc"
+want_not_in "and never blames a peer"          'peer' "$out"
+want_in "it names the first git error"         'cannot claim: fatal: bad object 6332dafe' "$out"
+want_in "the git error is in the park note"    'fatal: bad object 6332dafe.*remote end hung up' "$(driver_state_get 191 park_note)"
+want "no claim was taken"                      "" "$(awk '$1==191' "$CLAIMS")"
+want "no worktree was cut"                     "" "$(driver_state_get 191 worktree)"
+want_in "the run's park line names git's error" 'cannot claim: fatal: bad object 6332dafe' "$(driver_state_get 191 machine_fault)"
+# A push that failed with nothing on stderr still names something after the colon.
+fix_issue 193 OPEN "status:ready"
+out=$(CLAIM_PUSH_SILENT=1 driver_step_start 193 2>&1); rc=$?
+want "a silent failed push is a machine fault" "33" "$rc"
+want_in "it names the lock's exit"             'cannot claim: claim-lock exit 1' "$(driver_state_get 193 machine_fault)"
+fi
+
+if suite_case "a lost compare-and-swap is still a peer's"; then
+fix_issue 192 OPEN "status:ready"
+# Free in the cache (holds says 11), taken on origin by the time acquire pushes.
+claim_row 192 somebody@else tkt-192/theirs "$FIX/theirs"
+out=$(CLAIM_HOLDS_RC=11 driver_step_start 192 2>&1); rc=$?
+want "a lost race is busy"                     "29" "$rc"
+want_in "and says a peer took it first"        'peer took the claim on #192 first' "$out"
+bash "$CL" release 192
+fi
 
 suite_end "$FAILED"
