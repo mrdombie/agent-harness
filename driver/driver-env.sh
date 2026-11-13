@@ -60,7 +60,7 @@ mkdir -p "$DRIVER_DIR" 2>/dev/null || true
 # edit is never linted, typechecked or tested, and the change ships behind gates
 # that ran on the code before it. A render run on a branch whose gates then go red
 # is the cheaper mistake.
-DRIVER_STEPS="${DRIVER_STEPS:-start size plan build fix compare self-check review record ship}"
+DRIVER_STEPS="${DRIVER_STEPS:-start size plan build fix compare self-check simplify review record ship}"
 # THE QUICK ROUTE (steps/size.sh): a ticket sized quick walks this order instead, once
 # size has said so. One agent session edits, commits and runs the gates; one review;
 # ship opens the PR. A diff bigger than its size goes back to the full order from plan.

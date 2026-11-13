@@ -138,7 +138,7 @@ kit_copy() { rm -rf "$KIT"; mkdir -p "$KIT"; cp -R "$ROOT/driver" "$ROOT/scripts
 fakes() {
   rm -rf "$FAKE"; mkdir -p "$FAKE"; : > "$RAN"; : > "$FIX/park.log"
   local s
-  for s in size plan build fix compare self-check review record ship quick; do
+  for s in size plan build fix compare self-check simplify review record ship quick; do
     printf '#!/usr/bin/env bash\ndriver_step_%s() { printf "%%s\\n" %s >> "$RAN"; return 0; }\n' "${s//-/_}" "$s" > "$FAKE/$s.sh"
   done
   printf '#!/usr/bin/env bash\n. "%s/driver/steps/start.sh"\nCL="%s"\n' "$KIT" "$BIN/claim-lock" > "$FAKE/start.sh"
