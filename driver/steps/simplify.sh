@@ -49,6 +49,11 @@ driver_step_simplify() { # <ticket>
     driver_say "   simplify: harness.json names no gates.local, so a clean-up could not be checked — skipped"
     return "$DRIVER_OK"
   fi
+  # A reset below must only ever drop simplify's own work.
+  if [ -n "$(git -C "$wt" status --porcelain -- . ':!node_modules' 2>/dev/null)" ]; then
+    driver_say "   simplify: the tree holds uncommitted edits — skipped, so none is swept in or reset away"
+    return "$DRIVER_OK"
+  fi
 
   before=$(git -C "$wt" rev-parse HEAD)
   driver_fact_put "$t" simplify TARGET "$trunk"
