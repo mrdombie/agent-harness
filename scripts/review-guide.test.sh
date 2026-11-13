@@ -57,4 +57,19 @@ has   "the area count is bounded" "(1 more guide(s) not shown" "$out"
 has   "the eighth guide is shown" "GUIDE-8" "$out"
 hasnt "the ninth guide is not" "GUIDE-9" "$out"
 
+# Read from a ref: the trunk's guide applies, never the branch's edit of it.
+GR="$T/git"; mkdir -p "$GR/apps/feed" "$GR/apps/new"
+git -C "$GR" init -q -b trunk; git -C "$GR" config user.email t@t; git -C "$GR" config user.name t
+echo "TRUNK-GUIDE" > "$GR/apps/feed/REVIEW.md"; echo x > "$GR/apps/feed/a.ts"
+git -C "$GR" add -A; git -C "$GR" commit -qm trunk
+git -C "$GR" checkout -qb work
+echo "BRANCH-GUIDE" > "$GR/apps/feed/REVIEW.md"; echo "NEW-GUIDE" > "$GR/apps/new/REVIEW.md"
+git -C "$GR" add -A; git -C "$GR" commit -qm work
+out=$(printf 'apps/feed/a.ts\napps/feed/REVIEW.md\napps/new/REVIEW.md\n' | bash "$G" "$GR" trunk)
+has   "the trunk's guide is read" "TRUNK-GUIDE" "$out"
+hasnt "the branch's edit is not" "BRANCH-GUIDE" "$out"
+hasnt "a guide the branch adds is not" "NEW-GUIDE" "$out"
+has   "an edit to its own guide is said" "this change edits its own guide apps/feed/REVIEW.md" "$out"
+has   "a guide the branch adds is said" "this change edits its own guide apps/new/REVIEW.md" "$out"
+
 suite_end "$FAILED"
