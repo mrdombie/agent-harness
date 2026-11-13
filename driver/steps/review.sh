@@ -192,12 +192,14 @@ $(printf '%s\n' "$pstop" | sed 's/^/- /')]"
 
 [ALREADY RAISED ON THIS CHANGE — never return any of these again, reworded or not:
 $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
-  # AREA GUIDES: the nearest REVIEW.md above each changed path. On a repair the changed set is its own.
+  # AREA GUIDES: the nearest REVIEW.md above each changed path, read from the trunk so a
+  # change never writes the guide it is judged by. On a repair the changed set is its own.
   local changed guides=""
   if [ -n "$own_scope" ]; then changed="$own_paths"
   elif [ "${#dargs[@]}" -gt 0 ]; then changed=$(git -C "$wt" diff --name-only "${dargs[@]}" 2>/dev/null)
   else changed=""; fi
-  [ -z "$changed" ] || guides=$(printf '%s\n' "$changed" | bash "$KIT_ROOT/scripts/review-guide.sh" "$wt" 2>/dev/null)
+  [ -z "$changed" ] || [ -z "$trunk" ] \
+    || guides=$(printf '%s\n' "$changed" | bash "$KIT_ROOT/scripts/review-guide.sh" "$wt" "$trunk" 2>/dev/null)
   [ -z "$guides" ] || diff="${diff}
 
 [AREA REVIEW GUIDES — what each area asks of its reviewer: what to skip, the nit cap, the evidence wanted. Hold the change to the guide of every file it touches:
