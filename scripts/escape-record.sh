@@ -60,16 +60,19 @@ gh_read "the issues labelled $UAT_LABEL" issue list --repo "$ISSUE_SLUG" --state
 gh_read "the escapes already filed" issue list --repo "$ISSUE_SLUG" --state all --label "$LAYER_LABEL" \
   --limit 500 --json number,body > "$TMP/filed.json" || die "nothing judged this pass"
 
-# A revert names its target first as "Reverts <repo>#N" or "PR #N", then by any #N; its own never.
-jq -r '[.data.search.nodes[]? | select(.title | test("^Revert\\b"; "i"))] | sort_by(.mergedAt)[]
+# Candidates keep the order they are named in: the first merged one is the target. A revert that
+# cites "Reverts <repo>#N", "PR #N" or /pull/N names only those; else any #N. Its own never.
+DEDUP='def ordered: reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end);'
+jq -r "$DEDUP"'[.data.search.nodes[]? | select(.title | test("^Revert\\b"; "i"))] | sort_by(.mergedAt)[]
   | .number as $own | ((.body // "") as $b
-     | ([$b | scan("(?i)(?:reverts\\s+\\S*#|pr\\s*#|/pull/)([0-9]+)") | .[0]]
-        + [$b, .title | scan("#([0-9]+)") | .[0]]) | map(tonumber) | map(select(. != $own)) | unique) as $c
+     | [$b, .title | scan("(?i)(?:reverts\\s+\\S*#|pr\\s*#|/pull/)([0-9]+)") | .[0] | tonumber] | map(select(. != $own)) as $cited
+     | if ($cited | length) > 0 then $cited else [$b, .title | scan("#([0-9]+)") | .[0] | tonumber] end
+     | map(select(. != $own)) | ordered) as $c
   | select($c | length > 0) | [($c | map(tostring) | join(",")), "revert", $own] | @tsv' "$TMP/reverts.json" > "$TMP/cand.tsv" \
   || die "the revert search could not be read as JSON"
-jq -r 'def human: (.type // "User") != "Bot" and ((.is_bot // false) | not) and ((.login // "") | endswith("[bot]") | not);
+jq -r "$DEDUP"'def human: (.type // "User") != "Bot" and ((.is_bot // false) | not) and ((.login // "") | endswith("[bot]") | not);
   [.[] | select(.author | human)] | sort_by(.createdAt)[]
-  | .number as $own | ([(.title + "\n" + (.body // "")) | scan("#([0-9]+)") | .[0] | tonumber] | map(select(. != $own)) | unique) as $c
+  | .number as $own | ([(.title + "\n" + (.body // "")) | scan("#([0-9]+)") | .[0] | tonumber] | map(select(. != $own)) | ordered) as $c
   | select($c | length > 0) | [($c | map(tostring) | join(",")), "uat", $own] | @tsv' "$TMP/uat.json" >> "$TMP/cand.tsv" \
   || die "the $UAT_LABEL issues could not be read as JSON"
 jq -r '.[] | (.body // "") | scan("<!-- escape-pr: ([0-9]+) -->") | .[0]' "$TMP/filed.json" > "$TMP/filed-prs.txt" 2>/dev/null || : > "$TMP/filed-prs.txt"
@@ -81,10 +84,11 @@ seen() { # <pr> — on the record, on a filed issue, or judged earlier this pass
 : > "$TMP/done.txt"
 
 # ---- the merged PR's facts -------------------------------------------------------------------
-facts() { # <pr> → facts JSON, or fail when it is no merged PR
-  local v
+facts() { # <pr> → facts JSON; 1 when it is no merged PR, 2 when it could not be read
+  local v rc=0
   v=$(gh_read "PR #$1" pr view "$1" --repo "$REPO_SLUG" \
-        --json number,title,body,state,mergedAt,files,reviews,statusCheckRollup,comments 2>/dev/null) || return 1
+        --json number,title,body,state,mergedAt,files,reviews,statusCheckRollup,comments 2>/dev/null) || rc=$?
+  [ "$rc" = 0 ] || { [ "$rc" = "$GH_READ_MISSING" ] && return 1; return 2; }
   jq -ce 'select(.state == "MERGED") | ([.body // "", (.comments // [])[].body // ""] | join("\n")) as $all
     | {pr: .number, title, mergedAt,
        compare: (if (.body // "") | test("[Nn]o picture, compare") then "off"
@@ -92,7 +96,7 @@ facts() { # <pr> → facts JSON, or fail when it is no merged PR
        screenshots: ([$all | scan("!\\[[^]]*\\]\\(|<img ")] | length),
        reviews: [(.reviews // [])[] | .state],
        checks: [(.statusCheckRollup // [])[] | {name: (.name // .context // "?"), conclusion: (.conclusion // .state // "?")}],
-       files: [(.files // [])[] | .path]}' <<<"$v"
+       files: [(.files // [])[] | .path]}' <<<"$v"  || return 1
 }
 
 # ---- the judgement ---------------------------------------------------------------------------
@@ -154,8 +158,12 @@ while IFS=$'\t' read -r cands cause source; do
   pr="" f=""
   for c in ${cands//,/ }; do
     seen "$c" && { pr=skip; break; }
-    if f=$(facts "$c"); then pr="$c"; break; fi
+    rc=0; f=$(facts "$c") || rc=$?
+    [ "$rc" = 0 ] && { pr="$c"; break; }
+    [ "$rc" = 1 ] || { pr=unread; break; }
   done
+  # A failed read is unknown: trying the next number would blame the wrong PR.
+  [ "$pr" = unread ] && { failed=1; say "#$c could not be read; nothing more judged this pass"; break; }
   [ -n "$pr" ] && [ "$pr" != skip ] || continue
   if [ "$judged" -ge "$PER_PASS" ]; then waiting=$((waiting + 1)); continue; fi
   judged=$((judged + 1)); printf '%s\n' "$pr" >> "$TMP/done.txt"
