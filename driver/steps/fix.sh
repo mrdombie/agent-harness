@@ -425,6 +425,7 @@ _driver_fix_mf_file_deferred() {
     jq -c --arg l "$list" --argjson r "$round" --arg why "$(jq -r '.reason // ""' <<<"$x")" '{id, grade, file, line, summary: (.summary + " — the fix round could not fix it here: " + $why), round: $r, list: $l}' <<<"$f" \
       >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
     done_ids="$done_ids $bid"
+    driver_finding_answer "$t" "$f" closed "the fix round could not fix it here ($(jq -r '.reason // ""' <<<"$x")): merge first, dropped"
     driver_say "   fix: $bid ($g) could not be fixed here — merge first: dropped, noted in the PR, and the change ships" >&2
   done < <(jq -c '.[]' <<<"$left")
   if [ -n "$done_ids" ]; then
@@ -456,6 +457,11 @@ _driver_fix_drop_nonblocking() {
   [ "${dropped:-[]}" != "[]" ] && [ -n "$dropped" ] || return 0
   kept=$(jq -c --argjson x "$dropped" '[.deferred[]? | .blockerId as $b | select([$x[].blockerId] | index($b) | not)]' "$ans")
   jq --argjson d "$kept" '.deferred = $d' "$ans" > "$ans.t" && mv "$ans.t" "$ans"
+  local x
+  while IFS= read -r x; do
+    driver_finding_answer_id "$t" "$(driver_state_dir "$t")/steps/review.json" "$(jq -r '.blockerId' <<<"$x")" closed \
+      "graded $(jq -r '.grade' <<<"$x") in review round $round, below its blocking set: dropped"
+  done < <(jq -c '.[]' <<<"$dropped")
   driver_say "   fix: $(jq -r 'length' <<<"$dropped") deferred finding(s) do not block in review round $round ($late) — $(jq -r '[.[] | "\(.blockerId) (\(.grade))"] | join(", ")' <<<"$dropped"): a Minor was dropped or sent to the sweep, a Nit was dropped; no refusal"
 }
 
@@ -715,7 +721,8 @@ EOB
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_BUSY" ;;
       0) driver_say "   fix $bid — $why"
-         jq -nc --arg b "$bid" --arg w "$why" '{blockerId:$b, proof:"red-green", pmAnswer:null, why:$w}' >> "$rec" ;;
+         jq -nc --arg b "$bid" --arg w "$why" '{blockerId:$b, proof:"red-green", pmAnswer:null, why:$w}' >> "$rec"
+         driver_finding_answer_id "$t" "$review" "$bid" fixed "$isha" ;;
       5) driver_say "✋ fix $bid — $why"
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_REFUSED" ;;
@@ -745,7 +752,8 @@ EOB
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_BUSY" ;;
       0) driver_say "   fix $bid — $kind proof allowed by PM answer $ref — $why"
-         jq -nc --arg b "$bid" --arg k "$kind" --arg r "$ref" --arg w "$why" '{blockerId:$b, proof:$k, pmAnswer:$r, why:$w}' >> "$rec" ;;
+         jq -nc --arg b "$bid" --arg k "$kind" --arg r "$ref" --arg w "$why" '{blockerId:$b, proof:$k, pmAnswer:$r, why:$w}' >> "$rec"
+         driver_finding_answer_id "$t" "$review" "$bid" fixed "$(jq -r '.commit // ""' <<<"$e")" ;;
       5) driver_say "✋ fix $bid — $why"
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_REFUSED" ;;
@@ -773,7 +781,8 @@ EOB
          return "$DRIVER_E_BUSY" ;;
       0) driver_say "   fix $bid — $kind, checked by the driver — $why"
          jq -nc --arg b "$bid" --arg k "$kind" --arg c "$(jq -r '.commit' <<<"$e")" --arg w "$why" \
-           '{blockerId:$b, proof:(if $k == "test-only" then "mutation" else "commit" end), kind:$k, commit:$c, pmAnswer:null, why:$w}' >> "$rec" ;;
+           '{blockerId:$b, proof:(if $k == "test-only" then "mutation" else "commit" end), kind:$k, commit:$c, pmAnswer:null, why:$w}' >> "$rec"
+         driver_finding_answer_id "$t" "$review" "$bid" fixed "$(jq -r '.commit // ""' <<<"$e")" ;;
       5) driver_say "✋ fix $bid — $why"
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_REFUSED" ;;
@@ -798,7 +807,8 @@ EOB
     why=$(_driver_fix_body_proof "$wt" "$trunk" "$bpr" "$review" "$e" "$d/steps") || prc=$?
     case "$prc" in
       0) driver_say "   fix $bid — proved on the PR description: $why"
-         jq -nc --arg b "$bid" --arg w "$why" --arg c "$(jq -r '.command' <<<"$e")" '{blockerId:$b, proof:"pr-body", pmAnswer:null, command:$c, why:$w}' >> "$rec" ;;
+         jq -nc --arg b "$bid" --arg w "$why" --arg c "$(jq -r '.command' <<<"$e")" '{blockerId:$b, proof:"pr-body", pmAnswer:null, command:$c, why:$w}' >> "$rec"
+         driver_finding_answer_id "$t" "$review" "$bid" closed "proved on the PR description" ;;
       4) driver_say "✋ fix $bid — $why"
          driver_state_set "$t" park_note "$why"
          return "$DRIVER_E_TIMEOUT" ;;

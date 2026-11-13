@@ -22,6 +22,7 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/push-requires.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/git-actions.sh" || exit 1
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base-red.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/finding-answers.sh" || exit 1
 # driver_step_self_check: the gates again, on a tree the merge from origin changed.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-check.sh" || exit 1
 
@@ -756,6 +757,7 @@ driver_step_ship() { # <ticket>
   fi
   tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
   deferred=$(_driver_ship_deferred "$t")
+  local answered; answered=$(driver_findings_answered_section "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
 $closes ${ISSUE_REF:-}#$t
@@ -786,6 +788,8 @@ $pmsteps
 $polish
 }${deferred:+
 $deferred
+}${answered:+
+$answered
 }${replaced:+
 ## Deleted tests
 $replaced}
@@ -889,6 +893,13 @@ $polish"
       driver_state_set "$t" park_note "${nblock} blocking finding(s) from the review to clear: $blist"
       _driver_ship_findings_to_fix "$t" && return "$DRIVER_E_REWORK"
     fi
+    return "$DRIVER_E_REFUSED"
+  fi
+  # EVERY POSTED FINDING ENDS FIXED OR CLOSED. One with neither was answered by nobody.
+  local open_f; open_f=$(driver_findings_unanswered_lines "$t" | paste -sd ';' - | sed 's/;/; /g')
+  if [ -n "$open_f" ]; then
+    driver_say "✋ ship: review finding(s) neither fixed nor closed — $open_f"
+    driver_state_set "$t" park_note "review finding(s) with no answer (fixed by a commit, or closed with a reason): $open_f"
     return "$DRIVER_E_REFUSED"
   fi
 
