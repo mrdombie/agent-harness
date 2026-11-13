@@ -98,3 +98,10 @@ It refuses a picture with no regions, a missing phone or laptop frame, or a
 real-data case neither drawn nor excused. Then the `design-critic` agent runs in
 **picture mode**, which grades the same things by eye (its `REAL DATA:` line), and
 only a picture that comes back `KIT: MATCH` with `REAL DATA: COVERED` is sent.
+
+A picture changed after its picture mode run is checked again after its fixes: the
+verdict sent with it is the verdict on the picture as sent, never on the one before.
+
+A new screen that needs parts the kit lacks starts as a prototype drawn from the
+project's `design.reference`, and the kit ticket is filed from the approved prototype;
+a kit-only picture that lists its own missing parts is not sent.

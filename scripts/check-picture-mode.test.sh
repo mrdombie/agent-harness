@@ -82,6 +82,18 @@ out="$(run "$d")"; rc=$?
 [ $rc -eq 1 ] && printf '%s' "$out" | grep -q 'standing-rules.md' && ok "rules without the picture-mode line are refused" || bad "rules without the line passed: $out"
 rm -rf "$d"
 
+# The re-check rule and the prototype-first rule are each deleted, from each file.
+for want in 'checked again after its fixes' 'starts as a prototype'; do
+  for rel in rules/standing-rules.md shared/picture-rules.md; do
+    d="$(fresh)"; r="$d/$rel"
+    grep -vF -- "$want" "$r" > "$r.new" && mv "$r.new" "$r"
+    grep -qF -- "$want" "$r" && bad "plant did not land in $rel"
+    out="$(run "$d")"; rc=$?
+    [ $rc -eq 1 ] && printf '%s' "$out" | grep -qF "$rel no longer states '$want'" && ok "$rel without '$want' is refused" || bad "$rel without '$want' passed: $out"
+    rm -rf "$d"
+  done
+done
+
 # A skill that never sends a picture is not asked for picture mode.
 d="$(fresh)"; mkdir -p "$d/skills/plain"
 printf '# plain\n\nList the queue.\n' > "$d/skills/plain/SKILL.md"
