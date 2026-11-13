@@ -54,6 +54,7 @@ lib() {
     fix-alive)    perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/false; then/' "$p" ;;
     fix-mark)     perl -0pi -e 's/\$4 = "started"/\$4 = \$4/' "$p" ;;
     runners)      perl -0pi -e 's/case "\$\(ci_runners_state\)" in/case planted in/' "$p" ;;
+    pause)        perl -0pi -e 's/\$2 \+= s; //' "$p" ;;
     fix-head)     perl -0pi -e 's/if \[ "\$last" = "\$head" \]; then/if false; then/' "$p" ;;
   esac
   cmp -s "$LIB" "$p" && { echo "plant $PLANT did not apply" >&2; exit 3; }
@@ -103,7 +104,7 @@ plan_on_record() {
   printf '{"step":"plan","status":"planned","tasks":[{"title":"Add the export button","files":["src/export.ts"]},{"title":"Test the empty state","files":["src/export.test.ts"]}]}\n' > "$d/steps/plan.json"
   printf '{"step":"review","verdict":"pass","findings":[{"grade":"minor","summary":"the empty state reads as an error","file":"src/export.tsx"}]}\n' > "$d/steps/review.json"
 }
-fresh() { : > "$GH_LOG"; : > "$QLOG"; rm -f "$C"/rebuild-clock.* "$C"/base-red.* "$C"/base-red-reruns.* "$C"/reruns.tsv "$C"/run-classes.tsv "$C"/fix-rounds.* "$C"/clash-updates.* "$C"/stale-updates.* "$C"/fix-parks.* "$C"/draft-resumes.* "$C"/queue.json; rm -rf "$STATE/driver"; CLAIMED=""; }
+fresh() { : > "$GH_LOG"; : > "$QLOG"; rm -f "$C"/rebuild-clock.* "$C"/rebuild-ci-down.* "$C"/base-red.* "$C"/base-red-reruns.* "$C"/reruns.tsv "$C"/run-classes.tsv "$C"/fix-rounds.* "$C"/clash-updates.* "$C"/stale-updates.* "$C"/fix-parks.* "$C"/draft-resumes.* "$C"/queue.json; rm -rf "$STATE/driver"; CLAIMED=""; }
 closes() { grep -c "^pr close $1 " "$GH_LOG"; }
 age() { fix_at $(( T0 + $1 * 60 )); }   # minutes since the first pass
 # fixpass — one pass with the rebuild off and the fix rounds at their default (2), or FR's.
@@ -354,6 +355,18 @@ age 61; pass
 want "  closed once"                             "1" "$(closes 71)"
 want_in "  queued with a Rebuild: brief"         '^add 101 --class new --first --note Rebuild: PR #71 could not merge within 60 min' "$(cat "$QLOG")"
 want "  queued once"                             "1" "$(adds 101)"
+echo "  the time CI was down is not counted: down at +30 and +50, up at +70"
+fresh; printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+age 0; pass
+printf '{"total_count":1,"runners":[{"id":1,"status":"offline"}]}\n' > "$RUNNERS"
+age 30; pass; age 50; pass
+printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+age 70; pass
+want "  at +70, 30 counted min: not closed"      "0" "$(closes 71)"
+want_in "  it says how long CI was down"         'rebuild: CI was down 40 min' "$OUT"
+age 100; pass
+want "  at +100, 60 counted min: closed once"    "1" "$(closes 71)"
 rm -f "$RUNNERS"
 
 echo "--- the rebuild off, a required check red on the PR's own code: back to its builder, on its branch ---"
@@ -563,7 +576,7 @@ rm -f "$C"/fix-rounds.*
 
 if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
   echo "--- every rule's plant fails its case ---"
-  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark runners; do
+  for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark runners pause; do
     PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
     want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
   done
