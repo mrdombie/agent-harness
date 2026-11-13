@@ -114,4 +114,9 @@ rc=0; driver_step_simplify 306 >/dev/null 2>&1 || rc=$?
 want "the step finishes"                          "0" "$rc"
 want "simplify_agents counts the spawns"          "3" "$(driver_state_get 306 simplify_agents)"
 
+echo "--- the pull request states the subagents simplify started on this change ---"
+. "$HERE/../steps/ship.sh" || exit 1
+want "the body line names the count"              "Simplify: 3 subagent(s) started on this change." "$(_driver_ship_simplify_line 306)"
+want "a change simplify never ran on says nothing" "" "$(_driver_ship_simplify_line 305)"
+
 suite_end "$FAILED"
