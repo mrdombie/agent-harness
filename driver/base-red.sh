@@ -151,8 +151,8 @@ driver_base_red_note() {
 }
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/failing-tests.sh"
-# _driver_base_failing_tests <output> <tree> — test files a runner printed on a failure line.
-_driver_base_failing_tests() { failing_test_files "$1" "$2"; }
+# _driver_base_failing_tests <output> [tree] — test files a runner printed on a failure line.
+_driver_base_failing_tests() { failing_test_files "$1" "${2:-}"; }
 
 driver_base_red_gate() {
   local wt="$1" cmd="$2" out="$3" mode="${4:-}" sha tests branch f c v red="" kind="" s7
