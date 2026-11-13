@@ -260,12 +260,14 @@ rebuild_clock_start() { # <pr> <why> — the epoch the clock started, set now if
   case "$s" in ''|*[!0-9]*) s=$(swarm_now); printf '%s\t%s\t%s\n' "$1" "$s" "$(printf '%s' "$2" | tr '\t\n' '  ')" >> "$REBUILD_CLOCK" ;; esac
   printf '%s' "$s"
 }
-# rebuild_clock_pause <runner state> — down: the epoch CI went down is kept; up again: every
-# clock moves on by the time it was down, so a stuck PR is not charged for an outage.
+# rebuild_clock_pause <runner state> — offline: the epoch CI went down is kept; up again: every
+# clock moves on by the time it was down, so a stuck PR is not charged for an outage. Unread
+# is no outage: it marks nothing and slides nothing, or a flaky read would push every clock back.
 rebuild_clock_pause() {
   local now down slide; now=$(swarm_now)
   case "$1" in
-    offline|unread) [ -s "$REBUILD_CI_DOWN" ] || printf '%s\n' "$now" > "$REBUILD_CI_DOWN"; return 0 ;;
+    offline) [ -s "$REBUILD_CI_DOWN" ] || printf '%s\n' "$now" > "$REBUILD_CI_DOWN"; return 0 ;;
+    unread) return 0 ;;
   esac
   [ -f "$REBUILD_CI_DOWN" ] || return 0
   down=$(head -1 "$REBUILD_CI_DOWN" 2>/dev/null)
