@@ -16,7 +16,7 @@
 # <stateDir>/swarm/escapes.jsonl. A layer outside picture|guideline|review|test|ci, or a fix
 # naming only screen files, is recorded "unjudged" and files nothing. A judged one opens one
 # issue titled for the layer's check, labelled labels.escapedLayer (default escaped-layer),
-# marked <!-- escape-pr: N --> so no host files it twice. Both labels are made on first use.
+# marked <!-- escape-pr: N --> so no host files it twice. Both labels are made on each live pass.
 #
 # A PR already on the record, or already marked on a filed issue, is never judged again. The
 # rest past escapes.perPass (3) wait for the next pass. A failed read is unknown: nothing is
@@ -50,6 +50,17 @@ live() { [ "${COORDINATOR_SHADOW:-1}" = 0 ]; }
 if live; then mkdir -p "$(dirname "$LEDGER")" && touch "$LEDGER" || die "cannot write $LEDGER"; fi
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/escape.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
+
+make_labels() { # both, once per state dir: a person needs broken-on-uat before any escape is filed
+  local l stamp="${LEDGER%.jsonl}.labels"
+  for l in "$LAYER_LABEL" "$UAT_LABEL"; do
+    grep -qxF "$l" "$stamp" 2>/dev/null && continue
+    gh_call label create "$l" --repo "$ISSUE_SLUG" --force --color B60205 \
+      --description "escape-record.sh: a merged change that got past the checks" >/dev/null || return 1
+    printf '%s\n' "$l" >> "$stamp"
+  done
+}
+if live; then make_labels || die "the labels could not be made; nothing judged this pass"; fi
 
 # ---- the candidates: <pr> \t <cause> \t <source #> \t <text naming it>, oldest first ---------
 GQL='query($q:String!){search(query:$q,type:ISSUE,first:100){nodes{... on PullRequest{number title body mergedAt}}}}'
@@ -96,7 +107,7 @@ facts() { # <pr> → facts JSON; 1 when it is no merged PR, 2 when it could not 
        screenshots: ([$all | scan("!\\[[^]]*\\]\\(|<img ")] | length),
        reviews: [(.reviews // [])[] | .state],
        checks: [(.statusCheckRollup // [])[] | {name: (.name // .context // "?"), conclusion: (.conclusion // .state // "?")}],
-       files: [(.files // [])[] | .path]}' <<<"$v"  || return 1
+       files: [(.files // [])[] | .path]}' <<<"$v" || return 1
 }
 
 # ---- the judgement ---------------------------------------------------------------------------
@@ -139,18 +150,6 @@ body() { # <record> → the issue body
     ([.fixFiles[] | "- `\(.)`"] | join("\n")) +
     "\n\n## What the merged PR had\n- compare: \(.facts.compare)\n- proof screenshots: \(.facts.screenshots)\n- reviews: \(if (.facts.reviews | length) == 0 then "none" else (.facts.reviews | join(", ")) end)\n- checks: \(if (.facts.checks | length) == 0 then "none ran" else ([.facts.checks[] | "\(.name) \(.conclusion)"] | join(", ")) end)\n\nFiled by escape-record.sh.\n\n<!-- escape-pr: \(.pr) -->"' <<<"$1"
 }
-labels_made=0
-make_labels() {
-  [ "$labels_made" = 1 ] && return 0
-  local l stamp="${LEDGER%.jsonl}.labels"
-  for l in "$LAYER_LABEL" "$UAT_LABEL"; do
-    grep -qxF "$l" "$stamp" 2>/dev/null && continue
-    gh_call label create "$l" --repo "$ISSUE_SLUG" --force --color B60205 \
-      --description "escape-record.sh: a merged change that got past the checks" >/dev/null || return 1
-    printf '%s\n' "$l" >> "$stamp"
-  done
-  labels_made=1
-}
 
 # ---- the pass --------------------------------------------------------------------------------
 judged=0 waiting=0 failed=0
@@ -180,7 +179,6 @@ while IFS=$'\t' read -r cands cause source; do
   if [ -n "$why" ]; then
     printf '%s\n' "$rec" >> "$LEDGER"; say "#$pr ($cause): unjudged — $why"; continue
   fi
-  make_labels || { failed=1; say "#$pr: the labels could not be made; next pass"; break; }
   layer=$(jq -r '.layer' <<<"$rec")
   title="$(check_name "$layer"): $(jq -r '.check' <<<"$rec" | cut -c1-100) (let #$pr through)"
   body "$rec" > "$TMP/body.md"
