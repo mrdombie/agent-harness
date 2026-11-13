@@ -194,26 +194,26 @@ want_in "it is unknown"                        '^unknown — the checks develop 
 want "and the pass is not done"                "1" "$R_RC"
 
 echo "--- a check named by a builder's worktree path: filed under the tracked file, no host path reaches the forge ---"
-HOSTP="Users/dominabox/maktura-wt/sh-18944-0cd326/src/x.test.ts"
+HOSTP="Users/someone/proj-wt/sh-1-abc/src/x.test.ts"
 fresh "$A	$HOSTP	624		24"; requires src/x.test.ts
 run
 want "one ticket"                              "1" "$(creates)"
 want_in "titled by the repo-relative name"     'title=develop is red: src/x\.test\.ts \(develop@aaaaaaa\)' "$(cat "$FIX/fgh.log")"
-want "no host path in title, body or marker"   "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
+want "no host path in title, body or marker"   "0" "$(grep -cE 'Users/|proj-wt' "$FIX/fgh.log" | tr -d ' ')"
 want "the row's own set is ledgered"           "$A	$HOSTP	901" "$(cat "$LEDGER")"
 want "and pruned"                              "" "$(cat "$PENDING")"
-fresh "$A	Users/dominabox/maktura-wt/sh-1-abc/lib/gone.test.ts	625		25"; requires lib/gone.test.ts
+fresh "$A	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	625		25"; requires lib/gone.test.ts
 run
 want "a host path no tracked file ends with: nothing created" "0" "$(creates)"
 want "nothing searched"                        "0" "$(searches)"
 want "and no host path counted"                "" "$(cat "$COUNT")"
-want "ledgered as not filed"                   "$A	Users/dominabox/maktura-wt/sh-1-abc/lib/gone.test.ts	-" "$(cat "$LEDGER")"
-want "no host path in anything sent"           "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
+want "ledgered as not filed"                   "$A	Users/someone/proj-wt/sh-1-abc/lib/gone.test.ts	-" "$(cat "$LEDGER")"
+want "no host path in anything sent"           "0" "$(grep -cE 'Users/|proj-wt' "$FIX/fgh.log" | tr -d ' ')"
 fresh "$B	chk-a,$HOSTP	626		26"; requires chk-a src/x.test.ts; issue 880 open chk-a aaaaaaa > "$FIX/open.json"
 run
 want "the open ticket takes a comment"         "1" "$(comments)"
 want_in "naming the tracked file"              'now on: chk-a, src/x\.test\.ts\.' "$(cat "$FIX/fgh.log")"
-want "with no host path"                       "0" "$(grep -cE 'Users/|maktura-wt' "$FIX/fgh.log" | tr -d ' ')"
+want "with no host path"                       "0" "$(grep -cE 'Users/|proj-wt' "$FIX/fgh.log" | tr -d ' ')"
 
 echo "--- a required check whose name has a slash, not a path: filed under that name ---"
 fresh "$A	lint/web	633		33"; requires lint/web

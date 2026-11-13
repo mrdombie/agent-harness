@@ -18,9 +18,9 @@ git -C "$TREE" add -A; git -C "$TREE" -c user.email=t@t -c user.name=t commit -q
 names() { printf '%s\n' "$1" > "$FIX/log"; failing_test_files "$FIX/log" "${2:-}" | tr '\n' ' ' | sed 's/ $//'; }
 
 want "a worktree host path is the tracked repo-relative path" "apps/api/src/lib/jobs/x.test.ts" \
-  "$(names ' FAIL  /Users/dominabox/maktura-wt/sh-18944-0cd326/apps/api/src/lib/jobs/x.test.ts > jobs > runs' "$TREE")"
+  "$(names ' FAIL  /Users/someone/proj-wt/sh-1-abc/apps/api/src/lib/jobs/x.test.ts > jobs > runs' "$TREE")"
 want "an absolute path no tracked file ends with is nothing" "" \
-  "$(names ' FAIL  /Users/dominabox/maktura-wt/sh-18944-0cd326/apps/web/src/gone.test.ts' "$TREE")"
+  "$(names ' FAIL  /Users/someone/proj-wt/sh-1-abc/apps/web/src/gone.test.ts' "$TREE")"
 want "a ./ path loses its ./" "src/y.test.ts" "$(names 'FAIL ./src/y.test.ts' "$TREE")"
 want "a relative path is kept without a tree" "src/y.test.ts" "$(names 'FAIL src/y.test.ts')"
 
