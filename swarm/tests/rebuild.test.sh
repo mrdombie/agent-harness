@@ -53,7 +53,7 @@ lib() {
     fix-released) perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/[ "\$state" = started ]; then/' "$p" ;;
     fix-alive)    perl -0pi -e 's/\[ "\$state" = started \] && rebuild_fix_run_alive "\$t"; then/false; then/' "$p" ;;
     fix-mark)     perl -0pi -e 's/\$4 = "started"/\$4 = \$4/' "$p" ;;
-    runners)      perl -0pi -e 's/case "\$\(ci_runners_state\)" in/case planted in/' "$p" ;;
+    runners)      perl -0pi -e 's/case "\$runners" in/case planted in/' "$p" ;;
     pause)        perl -0pi -e 's/\$2 \+= s; //' "$p" ;;
     fix-head)     perl -0pi -e 's/if \[ "\$last" = "\$head" \]; then/if false; then/' "$p" ;;
   esac
@@ -337,6 +337,15 @@ age 61; pass
 want "  not closed"                              "0" "$(closes 71)"
 want "  nothing queued"                          "" "$(cat "$QLOG")"
 want_in "  it says the list could not be read"   'rebuild: the CI runner list could not be read' "$OUT"
+want_in "  it names the repo whose read failed"  'runner list of acme/widgets could not be read' "$OUT"
+echo "  the caller's KIT_ROOT names an older install with no runner read: the same"
+OLD_KIT="$FIX/old-kit"; mkdir -p "$OLD_KIT"; cp -R "$KIT/scripts" "$OLD_KIT/"; rm -f "$OLD_KIT/scripts/ci-runners.sh"
+fresh; rm -f "$RUNNERS"; : > "$FIX/gh/runners-unread"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+printf '71\t%s\trequired check(s) failed: unit\n' "$T0" > "$C/rebuild-clock.did.tsv"
+age 61; KIT_ROOT="$OLD_KIT" pass
+want "  not closed"                              "0" "$(closes 71)"
+want "  nothing queued"                          "" "$(cat "$QLOG")"
 want_in "  it names the repo whose read failed"  'runner list of acme/widgets could not be read' "$OUT"
 rm -f "$FIX/gh/runners-unread"
 echo "  one runner online: rebuilt as before"
