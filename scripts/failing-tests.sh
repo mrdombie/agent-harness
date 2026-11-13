@@ -2,7 +2,7 @@
 # failing-tests.sh — failing_test_files <log> [tree]: the test files a runner printed on a
 # failure line, each once, in the order they appear, named from the repo root. Given <tree>,
 # an absolute path becomes the tracked file it ends with (the longest), or nothing when no
-# tracked file does; without one it is kept as printed. Sourced, the only copy of this parse.
+# tracked file does; without one it is kept as printed, less a leading '/'. Sourced, the only copy of this parse.
 failing_test_files() {
   local tree="${2:-}"
   perl -ne 's/\e\[[0-9;]*[A-Za-z]//g;
@@ -17,5 +17,6 @@ failing_test_files() {
           if (hit == "") next
           $0 = hit
         }
+        tree == "" { sub(/^\/+/, "") }
         !seen[$0]++'
 }
