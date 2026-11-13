@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ci-runners.sh — is any of the repo's self-hosted CI runners online? Read once a tick.
 #
-#   . scripts/ci-runners.sh   (after coordinator-env.sh: swarm_gh, REPO_SLUG, COORD_DIR)
+#   sourced by coordinator-env.sh (needs its swarm_gh, REPO_SLUG, COORD_DIR, coord_mode)
 #   ci_runners_state          online | none | offline | unread
 #
 #   online   at least one self-hosted runner is online

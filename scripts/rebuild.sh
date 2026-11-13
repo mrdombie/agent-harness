@@ -84,7 +84,6 @@ _REBUILD_SH=1
 : "${FINDING_CLASS:=$KIT_ROOT/scripts/finding-class.sh}"
 declare -F say >/dev/null || say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 declare -F open_work_person_drafted >/dev/null || . "$KIT_ROOT/scripts/open-work.sh" || return 1
-declare -F ci_runners_state >/dev/null || . "$KIT_ROOT/scripts/ci-runners.sh" || return 1
 
 REBUILD_AFTER_MIN="${COORDINATOR_REBUILD_AFTER_MIN:-$(swarm_opt coordinator.rebuildAfterMin 60)}"
 case "$REBUILD_AFTER_MIN" in ''|*[!0-9]*) REBUILD_AFTER_MIN=60 ;; esac
