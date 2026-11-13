@@ -270,7 +270,7 @@ progress_mtime() { # <record> <log>
   printf '%s' "$best"
 }
 NOW=$(swarm_now)
-LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""; RUN_BEATS=""
+LIVE=0; LIVE_TICKETS=""; LIVE_RECS=""; RUN_BEATS=""; TRACKED_PIDS=""
 for rec in "$RUNS_DIR"/claim-*.json; do
   [ -f "$rec" ] || continue
   # A run whose pid now answers for another process (macOS reuses pids) is over:
@@ -283,6 +283,7 @@ for rec in "$RUNS_DIR"/claim-*.json; do
   fi
   swarm_record_alive "$rec" || continue
   LIVE=$((LIVE+1)); LIVE_RECS="$LIVE_RECS$rec"$'\n'
+  TRACKED_PIDS="$TRACKED_PIDS $(jq -r '[.pid, .child_pid] | map(select(. != null)) | map(tostring) | join(" ")' "$rec" 2>/dev/null)"
   rid=$(basename "$rec" .json)
   ticket=$(jq -r '.ticket // empty' "$rec" 2>/dev/null)
   LIVE_TICKETS="$LIVE_TICKETS${ticket:-?} "
@@ -295,7 +296,19 @@ for rec in "$RUNS_DIR"/claim-*.json; do
     event "frozen:$rid:$seen_at" frozen true "$ticket" "" "run $rid: no log growth for ${quiet} min" || true
   fi
 done
-say "live: $LIVE run(s) ${LIVE_TICKETS:+[${LIVE_TICKETS% }]}"
+# A build no record owns (hand-run, briefed, a proof tree's) still holds a place under the cap.
+UNTRACKED_SAID=""
+# shellcheck disable=SC2086  # a list of pids, split on purpose
+while IFS=$'\t' read -r _upid ukind ulabel; do
+  [ -n "$ukind" ] || continue
+  LIVE=$((LIVE+1))
+  if [ "$ukind" = build ]; then UNTRACKED_SAID="$UNTRACKED_SAID, $ulabel"
+  elif [ "$ulabel" = - ]; then UNTRACKED_SAID="$UNTRACKED_SAID, $ukind"
+  else UNTRACKED_SAID="$UNTRACKED_SAID, $ukind $ulabel"; fi
+done < <(host_heavy_untracked $TRACKED_PIDS)
+LIVE_SAID="${LIVE_TICKETS% }"
+[ -z "$UNTRACKED_SAID" ] || LIVE_SAID="${LIVE_SAID:+$LIVE_SAID }untracked: ${UNTRACKED_SAID#, }"
+say "live: $LIVE run(s) ${LIVE_SAID:+[$LIVE_SAID]}"
 
 # ---- 4. pull requests --------------------------------------------------------
 # One read of the open PRs serves the whole tick and the queue refresh. A refused

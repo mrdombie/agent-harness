@@ -85,6 +85,8 @@ _coord_self="${BASH_SOURCE[0]}"
 COORD_MAX_LOAD_SET="${SWARM_MAX_LOAD:-}"
 . "$(cd "$(dirname "$_coord_self")/../swarm" && pwd)/swarm-env.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_coord_self")" && pwd)/branch-ticket.sh" || return 1 2>/dev/null || exit 1
+# host_heavy_untracked: the heavy jobs on this host that no tracked run owns.
+. "$(cd "$(dirname "$_coord_self")" && pwd)/host-heavy.sh" || return 1 2>/dev/null || exit 1
 # driver_repo_self / driver_repo_foreign: a repo:<other> ticket is never seeded, ordered or started here.
 . "$(cd "$(dirname "$_coord_self")/../driver" && pwd)/size-rules.sh" || return 1 2>/dev/null || exit 1
 unset _coord_self
