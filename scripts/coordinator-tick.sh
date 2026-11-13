@@ -298,13 +298,13 @@ for rec in "$RUNS_DIR"/claim-*.json; do
 done
 # A build no record owns (hand-run, briefed, a proof tree's) still holds a place under the cap.
 UNTRACKED_SAID=""
-# shellcheck disable=SC2086  # a list of pids, split on purpose
 while IFS=$'\t' read -r _upid ukind ulabel; do
   [ -n "$ukind" ] || continue
   LIVE=$((LIVE+1))
   if [ "$ukind" = build ]; then UNTRACKED_SAID="$UNTRACKED_SAID, $ulabel"
   elif [ "$ulabel" = - ]; then UNTRACKED_SAID="$UNTRACKED_SAID, $ukind"
   else UNTRACKED_SAID="$UNTRACKED_SAID, $ukind $ulabel"; fi
+# shellcheck disable=SC2086  # a list of pids, split on purpose
 done < <(host_heavy_untracked $TRACKED_PIDS)
 LIVE_SAID="${LIVE_TICKETS% }"
 [ -z "$UNTRACKED_SAID" ] || LIVE_SAID="${LIVE_SAID:+$LIVE_SAID }untracked: ${UNTRACKED_SAID#, }"
