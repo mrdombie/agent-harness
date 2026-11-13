@@ -252,10 +252,10 @@ report() {
 owed() {
   HARNESS_CFG="${HARNESS_CFG:-$(git rev-parse --show-toplevel 2>/dev/null)/.claude/harness.json}"
   . "$KIT/driver/size-rules.sh" || exit 2
-  # An absent config still has the default labels; jq on a missing file prints none.
-  [ -r "$HARNESS_CFG" ] || HARNESS_CFG=<(printf '{}')
+  # An absent config still has the default labels; a <( ) fd closes once any command is reaped.
   local want l
-  want=$(driver_picture_labels)
+  if [ -r "$HARNESS_CFG" ]; then want=$(driver_picture_labels)
+  else want=$(printf '{}' | HARNESS_CFG=/dev/stdin driver_picture_labels); fi
   for l in $(printf '%s\n' "$@" | tr ',' '\n'); do
     printf '%s\n' "$want" | grep -qxF -- "$l" && return 0
   done
