@@ -23,5 +23,7 @@ want "an absolute path no tracked file ends with is nothing" "" \
   "$(names ' FAIL  /Users/someone/proj-wt/sh-1-abc/apps/web/src/gone.test.ts' "$TREE")"
 want "a ./ path loses its ./" "src/y.test.ts" "$(names 'FAIL ./src/y.test.ts' "$TREE")"
 want "a relative path is kept without a tree" "src/y.test.ts" "$(names 'FAIL src/y.test.ts')"
+want "an absolute path without a tree is printed as before, no leading /" "home/runner/work/r/r/src/y.test.ts" \
+  "$(names 'FAIL /home/runner/work/r/r/src/y.test.ts')"
 
 suite_end "$FAILED"
