@@ -29,15 +29,19 @@ exec "$BIN/claude.real" "$@"
 SH
 chmod +x "$BIN/claude"
 
-# sp_tree <ticket> — a branch with one change, a.sh, and a build log naming its session.
+# sp_tree <ticket> — a branch with one change, a.sh, and two build-task logs as the build
+# step writes them (build --as build-task-N); task 2 ran last and names the session to resume.
 sp_tree() {
   git -C "$REPO" worktree add -q "$FIX/sp$1" -b "tkt-$1/work" develop
   printf 'a\n' > "$FIX/sp$1/a.sh"; git -C "$FIX/sp$1" add -A; git -C "$FIX/sp$1" commit -qm "feat: a"
   driver_state_init "$1" --worktree "$FIX/sp$1" --branch "tkt-$1/work"
   fix_issue "$1" OPEN "status:claimed"
   mkdir -p "$(driver_state_dir "$1")/steps"
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-task1-'"$1"'"}' > "$(driver_state_dir "$1")/steps/build-task-1.log"
   printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-old"}' \
-    '{"type":"system","subtype":"init","session_id":"sess-build-'"$1"'"}' > "$(driver_state_dir "$1")/steps/build.log"
+    '{"type":"system","subtype":"init","session_id":"sess-build-'"$1"'"}' > "$(driver_state_dir "$1")/steps/build-task-2.log"
+  touch -t 202601010000 "$(driver_state_dir "$1")/steps/build-task-1.log"
+  touch -t 202601010100 "$(driver_state_dir "$1")/steps/build-task-2.log"
 }
 # sp_ai [agents] — the simplify transcript: the Skill call, <agents> Agent spawns, an answer.
 sp_ai() {
@@ -58,9 +62,17 @@ sp_tree 301; : > "$CLAUDE_LOG"; sp_ai 0; rm -f "$FIX/act"
 rc=0; out=$(driver_step_simplify 301 2>&1) || rc=$?
 want "the step finishes"                          "0" "$rc"
 want "the model is called once"                   "1" "$(calls)"
-want "it resumes the last session in build.log"   "sess-build-301" "$(grep -A1 -x -- '--resume' "$FIX/claude-args-simplify.txt" | tail -1)"
+want "it resumes the last build task's session"  "sess-build-301" "$(grep -A1 -x -- '--resume' "$FIX/claude-args-simplify.txt" | tail -1)"
+want_not_in "and does not start a fresh one"      'starts a fresh one' "$out"
 want_in "with the simplify brief"                 'Simplify the change against' "$(cat "$FIX/claude-stdin-simplify.txt")"
 want_in "and says what it removed"                'a.sh: dropped a dead branch' "$out"
+
+echo "--- the task that ran last is resumed, not the highest number: task 2 kept from an earlier pass ---"
+sp_tree 307; : > "$CLAUDE_LOG"; sp_ai 0; rm -f "$FIX/act"
+touch -t 202601010200 "$(driver_state_dir 307)/steps/build-task-1.log"
+rc=0; out=$(driver_step_simplify 307 2>&1) || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "it resumes task 1, rebuilt last"            "sess-task1-307" "$(grep -A1 -x -- '--resume' "$FIX/claude-args-simplify.txt" | tail -1)"
 
 echo "--- a clean-up that turns a fast gate red is dropped ---"
 sp_tree 302; : > "$CLAUDE_LOG"; sp_ai 0
