@@ -71,7 +71,7 @@ want_in "and it says so"  'shipped|finished|done' "$out"
 echo "--- and each one is recorded as finished ---"
 export HARNESS_STATE_DIR="$STATE"
 . "$HERE/../state.sh" || exit 1
-want "the record lists them in order" "start,size,plan,build,fix,compare,self-check,review,record,ship" \
+want "the record lists them in order" "start,size,plan,build,fix,compare,self-check,simplify,review,record,ship" \
   "$(driver_state_get 101 'done|join(",")')"
 
 echo "--- nothing is lost on a stop: a resumed run picks up where it stopped ---"
@@ -466,7 +466,7 @@ want "the real seven finish"        "0" "$rc"
 want "start kept the branch it was given" "tkt-$TICKET/work" "$(driver_state_get "$TICKET" branch)"
 want "and recorded the ticket's subject for the PR title" "Ticket $TICKET" "$(driver_state_get "$TICKET" title)"
 want_in "which is what the pull request is titled with" "Ticket $TICKET" "$(cat "$GH_LOG")"
-want "every one is recorded"        "start,size,plan,build,fix,compare,self-check,review,record,ship" \
+want "every one is recorded"        "start,size,plan,build,fix,compare,self-check,simplify,review,record,ship" \
   "$(driver_state_get "$TICKET" 'done|join(",")')"
 want_in "the plan named its Skill and the log showed it" 'superpowers:writing-plans ran' "$out"
 want_in "the build proved red before green" 'red .*then green' "$out"
