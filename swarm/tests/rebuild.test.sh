@@ -378,6 +378,16 @@ want "  at +70, 30 counted min: not closed"      "0" "$(closes 71)"
 want_in "  it says how long CI was down"         'rebuild: CI was down 40 min' "$OUT"
 age 100; pass
 want "  at +100, 60 counted min: closed once"    "1" "$(closes 71)"
+echo "  a runner list not read is no outage: unread at +30 and +50, online at +70, nothing slides"
+fresh; printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
+age 0; pass
+: > "$FIX/gh/runners-unread"
+age 30; pass; age 50; pass
+rm -f "$FIX/gh/runners-unread"
+age 70; pass
+want_not_in "  it does not say CI was down"      'CI was down' "$OUT"
+want "  at +70, 70 counted min: closed once"     "1" "$(closes 71)"
 rm -f "$RUNNERS"
 
 echo "--- the rebuild off, a required check red on the PR's own code: back to its builder, on its branch ---"
