@@ -35,11 +35,12 @@ cat > "$FIX/ps.txt" <<'PS'
   800     1 claude -p --output-format json --max-turns 4
   900     1 grep build-ticket
   901     1 vim /kit/driver/build-ticket
+  902     1 claude -p --output-format json --name judge-frozen_claim-18295 --permission-mode auto
 PS
 printf '#!/usr/bin/env bash\ncat "%s"\n' "$FIX/ps.txt" > "$BIN/host-ps"; chmod +x "$BIN/host-ps"
 export COORDINATOR_HOST_PS="$BIN/host-ps"
 
-echo "--- nothing tracked: each heavy unit once, at its top-most process ---"
+echo "--- nothing tracked: each heavy unit once, at its top-most process; a coordinator judge is not one ---"
 want "a build driver, a fix session, one under node, the lint sweep" \
   "$(printf '501\tbuild\t18295\n610\tfix\tsh-18178\n620\tfix\tsh-1\n700\thook-sweep\t-')" "$(untracked)"
 
