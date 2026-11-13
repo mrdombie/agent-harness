@@ -4,8 +4,8 @@
 #   . "$KIT_ROOT/scripts/host-heavy.sh"
 #   host_heavy_untracked [tracked pid…]
 #
-# A heavy unit is a build-ticket driver, a `claude -p --name <step>` session or the
-# develop-hook-red sweep. Each prints once, at its top-most process, as
+# A heavy unit is a build-ticket driver, a `claude -p --name <step>` session (run directly
+# or under node) or the develop-hook-red sweep. Each prints once, at its top-most process, as
 #   <pid>\t<kind>\t<label>
 # kind: build (label: the ticket), the session's step name (label: its --add-dir
 # tree's basename, else -), hook-sweep (label: -). A unit under another heavy unit,
@@ -29,9 +29,13 @@ host_heavy_untracked() { # [tracked pid…]
         if (i == 4 && $3 !~ /(^|\/)(ba|z)?sh$/) break
         if ($i ~ /(^|\/)build-ticket$/ && $(i+1) ~ /^[0-9]+$/) { k = "build"; l = $(i+1); break }
       }
-      if (k == "" && base($3) == "claude") {
+      # The CLI run directly, or as a script under node (an npm install).
+      c = 0
+      if (base($3) == "claude") c = 4
+      else if (base($3) == "node" && NF >= 4 && base($4) == "claude") c = 5
+      if (k == "" && c) {
         p = 0; nm = ""; dir = ""
-        for (i = 4; i <= NF; i++) {
+        for (i = c; i <= NF; i++) {
           if ($i == "-p") p = 1
           else if ($i == "--name" && i < NF) nm = $(i+1)
           else if ($i == "--add-dir" && i < NF) dir = $(i+1)
