@@ -65,21 +65,21 @@ not a command, so the tree cannot show it:
 
 ## Skills
 
-Three directories in the tree are skills a command wraps, not commands in their
-own right: the design skill `/design` invokes (named in its SKILL.md),
-`reimplementation-audit`, `screen-flow-audit`.
+Two directories in the tree are skills a command wraps, not commands in their
+own right: the design skill `/design` invokes (named in its SKILL.md) and
+`reimplementation-audit`.
 Print them in their own table, and `review-gate` (run on a loop, not typed)
 alongside them.
 
 A directory in none of these lists goes under `Other` for the same reason.
 
-Three commands are thin shells over a skill with a different name, which is not
+Three commands are thin shells over a skill whose name is not
 guessable from either name. Always print this map:
 
 | Command | Skill it runs |
 |---|---|
 | `/reinvented` | `reimplementation-audit` |
-| `/flows` | `screen-flow-audit` |
+| `/agent-harness:flows` | `flows` — the kit's own; the machine-local copy is retired |
 | `/design` | the skill named in `.claude/skills/design/SKILL.md` ("Invoke the … skill") |
 
 ## Arguments

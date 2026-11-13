@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Refuses a skill that hands the operator a picture without the critic's picture mode, or a critic that lost it.
+# Refuses a skill that hands the operator a picture without the critic's picture mode and the flow audit, or a critic that lost it.
 # Usage: check-picture-mode.sh [kit-root]   (default: this kit)
-# Exit 0: every sender names picture mode and KIT: MATCH, and the critic defines the mode. Exit 1: names each gap.
+# Exit 0: every sender names picture mode, KIT: MATCH and the flow-audit gate, and the critic defines the mode. Exit 1: names each gap.
 set -uo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 [ -d "$ROOT" ] || { echo "check-picture-mode: no such kit root: $ROOT" >&2; exit 2; }
@@ -17,6 +17,8 @@ while IFS= read -r f; do
   grep -qi 'picture mode' "$f" || { echo "check-picture-mode: $rel hands the operator a picture and never runs the critic's picture mode" >&2; fail=1; }
   grep -q 'KIT: MATCH' "$f" || { echo "check-picture-mode: $rel hands the operator a picture and never says it waits for KIT: MATCH" >&2; fail=1; }
   grep -q 'picture-rules.md' "$f" || { echo "check-picture-mode: $rel hands the operator a picture and never holds it to shared/picture-rules.md (evidence regions, real data)" >&2; fail=1; }
+  grep -qF 'agent-harness:flows' "$f" || { echo "check-picture-mode: $rel hands the operator a picture and never runs the agent-harness:flows audit on it" >&2; fail=1; }
+  grep -qF 'flow-audit.sh gate' "$f" || { echo "check-picture-mode: $rel hands the operator a picture and never holds it on flow-audit.sh gate (open STRANDS or LIES)" >&2; fail=1; }
 done < <(find "$ROOT/skills" "$ROOT/shared" "$ROOT/briefs" -name '*.md' -type f 2>/dev/null | sort)
 
 CRITIC="$ROOT/agents/design-critic.md"

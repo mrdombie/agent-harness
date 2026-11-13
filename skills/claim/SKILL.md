@@ -687,7 +687,7 @@ fi
 # fix is to stop labelling features `code-health`, not to widen this.
 #
 # SECOND EXEMPTION (2026-08-30): `flow-gap` + `type:bug`. A flow-gap bug is an
-# ABSENCE found by /flows in a flow that already ships — an unhandled state, a
+# ABSENCE found by /agent-harness:flows in a flow that already ships — an unhandled state, a
 # step that cannot be resumed, a failure with no copy. The surface exists and the
 # endpoints it consumes exist, so there is no EXISTS/NET-NEW list to write; the
 # contract would restate the status quo. Note the tickets name `apps/web` paths in
