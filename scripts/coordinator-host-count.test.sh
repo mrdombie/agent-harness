@@ -87,16 +87,27 @@ SH
 STANDIN_PIDS="$FIX/standin.pids"; : > "$STANDIN_PIDS"
 detach() { ( "$@" >/dev/null 2>&1 & echo $! >> "$STANDIN_PIDS" ); }
 on_exit_keep_status 'kill $(cat "$STANDIN_PIDS" 2>/dev/null) 2>/dev/null; rm -rf "$FIX"'
+# The tick reads the real ps cut to the stand-ins' trees: a heavy job that starts or
+# ends elsewhere on the host between two ticks does not move the count.
+cat > "$BIN/standin-ps" <<SH
+#!/usr/bin/env bash
+ps -Ao pid=,ppid=,command= | awk -v roots="\$(tr '\\n' ' ' < "$STANDIN_PIDS")" '
+  BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) keep[r[i]] = 1 }
+  { par[\$1] = \$2; line[\$1] = \$0; order[++rows] = \$1 }
+  END { for (i = 1; i <= rows; i++) { a = order[i]
+          for (d = 0; d < 64 && a != "" && a != "0"; d++) { if (a in keep) { print line[order[i]]; break }; a = par[a] } } }'
+SH
+chmod +x "$BIN/standin-ps"
 detach bash "$FIX/proof-tree/driver/build-ticket" 98761
 detach bash -c 'exec -a claude perl -e "sleep 300" -- -p --name fix --add-dir "$0"' "$FIX/wt/sh-77777"
 WITH_CLAUDE="$FIX/wt/sh-98762" detach bash "$FIX/proof-tree/driver/build-ticket" 98762
 sleep 0.5
 
-out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=1 bash "$T" 2>&1)
+out=$(COORDINATOR_HOST_PS="$BIN/standin-ps" COORDINATOR_CAP=1 bash "$T" 2>&1)
 live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
 echo "  $live"
 n=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
-want "the live line counts the untracked builds" "yes" "$([ "${n:-0}" -ge 1 ] && echo yes || echo no)"
+want "the live line counts the three untracked units" "3" "$n"
 want_in "it names the hand-run build under untracked" 'untracked:.*(^|[^0-9])98761([^0-9]|$)' "$live"
 want_in "it names a fix session with its worktree" 'fix sh-77777' "$live"
 want_in "a build-ticket with a claude child is named" '(^|[^0-9])98762([^0-9]|$)' "$live"
@@ -111,22 +122,20 @@ kill "$(standin 98761)" 2>/dev/null; pkill -f "sh-77777" 2>/dev/null; sleep 0.3
 p98762=$(standin 98762)
 jq -n --argjson p "$p98762" '{run_id:"claim-98762-x", ticket:"98762", pid:$p}' > "$STATE/runs/claim-98762-x.json"
 printf '{"run_id":"claim-98762-x","exit_code":"requeued"}\n' > "$STATE/runs/claim-98762-x.ended"
-out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=1 bash "$T" 2>&1)
+out=$(COORDINATOR_HOST_PS="$BIN/standin-ps" COORDINATOR_CAP=1 bash "$T" 2>&1)
 live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
 echo "  $live"
 want_in "the ended run's live build is named untracked" 'untracked:.*(^|[^0-9])98762([^0-9]|$)' "$live"
 want_in "and it fills the one place" 'spawn: [0-9]+ live, cap 1 — no slot' "$out"
 n=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
-# Other heavy work on the real host (a proof's own driver) keeps its places: the cap is set to this count.
 kill "$p98762" 2>/dev/null; sleep 0.3
-out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP="${n:-1}" bash "$T" 2>&1)
+out=$(COORDINATOR_HOST_PS="$BIN/standin-ps" COORDINATOR_CAP=1 bash "$T" 2>&1)
 live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
 echo "  $live"
 want_not_in "once it exits it is no longer named" '(^|[^0-9])98762([^0-9]|$)' "$live"
 want_in "and a slot opens" 'would spawn' "$out"
 
 echo "--- housekeeping's hook sweep is a heavy job while it runs ---"
-base=$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')
 mkdir -p "$FIX/proof-tree/scripts"
 cat > "$FIX/proof-tree/scripts/develop-hook-red.sh" <<'SH'
 #!/usr/bin/env bash
@@ -136,11 +145,11 @@ sleep 300 & kids="$kids $!"; wait
 SH
 detach bash "$FIX/proof-tree/scripts/develop-hook-red.sh" sweep abc1234
 sleep 0.5
-out=$(env -u COORDINATOR_HOST_PS COORDINATOR_CAP=$(( ${base:-0} + 1 )) bash "$T" 2>&1)
+out=$(COORDINATOR_HOST_PS="$BIN/standin-ps" COORDINATOR_CAP=1 bash "$T" 2>&1)
 live=$(printf '%s\n' "$out" | grep -E 'live: [0-9]+ run\(s\)' | head -1)
 echo "  $live"
 want_in "the live line names the sweep" 'untracked: .*hook-sweep' "$live"
-want "its lint:all child is not counted again" "$(( ${base:-0} + 1 ))" \
+want "its lint:all child is not counted again" "1" \
   "$(printf '%s' "$live" | sed -nE 's/.*live: ([0-9]+) run\(s\).*/\1/p')"
 want_in "the sweep fills the last place" 'spawn: [0-9]+ live, cap [0-9]+ — no slot' "$out"
 want_not_in "nothing would start" 'would spawn' "$out"
