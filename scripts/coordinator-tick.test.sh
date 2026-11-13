@@ -4,9 +4,12 @@
 # never a claimed / gated / held ticket, shadow does nothing,
 # a frozen run is noticed. Plus the events, the owner channel and the judge.
 # Run: bash "$0"
+# case-filter: SUITE_ONLY='<a case title, or a pattern over them>' bash scripts/coordinator-tick.test.sh
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/lib/suite.sh" || exit 1
 for v in $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+# A live coordinator's env points the tick at the real runs dir.
+for v in RUNS_DIR STATE_DIR DRIVER_DIR CLAIM_RUN_LOG PR_RED_REQ_FILE $(env | sed -nE 's/^((SWARM|COORDINATOR|COORD|HARNESS)_[A-Z_]*)=.*/\1/p'); do unset "$v"; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../swarm/tests/fixture.sh"
 swarm_fixture; on_exit_keep_status 'rm -rf "$FIX"'
@@ -109,6 +112,18 @@ live_as() { # <ticket> <class|-> — a live run whose record carries that class,
 }
 ticks() { local i out=""; for i in $(seq 1 "$1"); do out=$(SWARM_SPAWN="$BIN/spawn-live" COORDINATOR_SHADOW=0 tick); done; printf '%s' "$out"; }
 
+# 15735 (2026-10-31): "nothing left to do", exit 0, in a minute, 22 times in a day; 17008:
+# requeued at the front over a missing picture 43 times in 4 hours.
+short_run() { # <ticket> <i> <exit> <result> [secs] — a run that ended that long after it started
+  local t="$1" i="$2" st="2026-10-31T06:2${2}:00Z" en
+  en=$(jq -nr --arg s "$st" --argjson d "${5:-60}" '$s | fromdateiso8601 + $d | todate')
+  printf '{"run_id":"claim-%s-r%s","ticket":"%s","log":"%s","started_at":"%s"}\n' "$t" "$i" "$t" "$STATE/logs/claim-$t-r$i.log" "$st" > "$STATE/runs/claim-$t-r$i.json"
+  printf '%s\n' "$4" > "$STATE/logs/claim-$t-r$i.log"
+  printf '{"run_id":"claim-%s-r%s","exit_code":%s,"ended_at":"%s"}\n' "$t" "$i" "$3" "$en" > "$STATE/runs/claim-$t-r$i.ended"
+}
+NOTHING="✓ #860 has nothing left to do — all 9 step(s) were already finished."
+
+if suite_case "the tick's sequential cases, from shadow to a machine stop that parks nothing"; then
 echo "--- shadow is the default, and it does nothing ---"
 fresh; queue 501 502
 out=$(tick)
@@ -949,16 +964,6 @@ want "each ended run is read once"         "4" "$(grep -c 'ended' "$C/runs.log")
 rm -f "$STATE/logs/claim-803-x.log" "$STATE/logs/claim-804-x.log"
 
 echo "--- a ticket whose last 3 runs ended fast with the same result is parked for the PM, not spawned again ---"
-# 15735 (2026-10-31): "nothing left to do", exit 0, in a minute, 22 times in a day; 17008:
-# requeued at the front over a missing picture 43 times in 4 hours.
-short_run() { # <ticket> <i> <exit> <result> [secs] — a run that ended that long after it started
-  local t="$1" i="$2" st="2026-10-31T06:2${2}:00Z" en
-  en=$(jq -nr --arg s "$st" --argjson d "${5:-60}" '$s | fromdateiso8601 + $d | todate')
-  printf '{"run_id":"claim-%s-r%s","ticket":"%s","log":"%s","started_at":"%s"}\n' "$t" "$i" "$t" "$STATE/logs/claim-$t-r$i.log" "$st" > "$STATE/runs/claim-$t-r$i.json"
-  printf '%s\n' "$4" > "$STATE/logs/claim-$t-r$i.log"
-  printf '{"run_id":"claim-%s-r%s","exit_code":%s,"ended_at":"%s"}\n' "$t" "$i" "$3" "$en" > "$STATE/runs/claim-$t-r$i.ended"
-}
-NOTHING="✓ #860 has nothing left to do — all 9 step(s) were already finished."
 fresh; queue 860; : > "$GH_LOG"
 short_run 860 1 0 "$NOTHING"; short_run 860 2 0 "$NOTHING"; short_run 860 3 0 "$NOTHING"
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
@@ -1003,18 +1008,20 @@ fresh; queue 864; : > "$GH_LOG"
 short_run 864 1 33 "machine fault: x"; short_run 864 2 33 "machine fault: x"; short_run 864 3 33 "machine fault: x"
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
 want_not_in "an API fault three times parks nothing" 'issue edit 864 .*status:parked' "$(cat "$GH_LOG")"
+fi
 
-echo "--- a run that could not push its claim says so on the sheet, with git's own error ---"
 # 23 h of a corrupt clone read as 'hit an API error twice': the bad object stayed hidden.
+cant() { printf '⏸ #%s parked (driver): machine fault: cannot claim: fatal: bad object 6332dafe — machine fault, nothing to answer' "$1"; }
+if suite_case "a run that could not push its claim says so on the sheet, with git's own error"; then
 CANT="⏸ #866 parked (driver): machine fault: cannot claim: fatal: bad object 6332dafe — machine fault, nothing to answer: the claim push for #866 failed (exit 1): fatal: bad object 6332dafe"
 fresh; : > "$GH_LOG"
 short_run 866 1 33 "$CANT"
 out=$(tick)
 want_in "the sheet names the claim and git's error" 'machine: run claim-866-r1 cannot claim #866: fatal: bad object 6332dafe' "$out"
 want_not_in "never the API's"                   'claim-866-r1 hit an API error' "$out"
+fi
 
-echo "--- three failed claim pushes in a row on this host: nothing more starts here, and the owner is told ---"
-cant() { printf '⏸ #%s parked (driver): machine fault: cannot claim: fatal: bad object 6332dafe — machine fault, nothing to answer' "$1"; }
+if suite_case "three failed claim pushes in a row on this host: nothing more starts here, and the owner is told"; then
 fresh; queue 870; : > "$GH_LOG"
 short_run 867 1 33 "$(cant 867)"; short_run 868 2 33 "$(cant 868)"; short_run 869 3 33 "$(cant 869)"
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
@@ -1025,14 +1032,17 @@ want_in "and the owner is told"                 'claim-push-fails:' "$(cat "$FIX
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
 want "the next tick still holds"                "" "$(spawned)"
 want "told once, not every tick"                "1" "$(grep -c 'claim-push-fails:' "$FIX/notify.log")"
+fi
 
-echo "--- a claim that went through in between starts the count again ---"
+if suite_case "a claim that went through in between starts the count again"; then
 fresh; queue 870; : > "$GH_LOG"
 short_run 867 1 33 "$(cant 867)"; short_run 868 2 33 "$(cant 868)"
 short_run 871 3 0 "Handed off at abc123"; short_run 869 4 33 "$(cant 869)"
 out=$(COORDINATOR_SHADOW=0 COORDINATOR_CAP=2 SWARM_SPAWN="$BIN/spawn-live" SWARM_IDLE=90 SWARM_CORES=10 tick)
 want "two, a claim, then one: it spawns"        "870" "$(spawned)"
+fi
 
+if suite_case "the tick's sequential cases, from a put-back loop to the live-view watchdog"; then
 echo "--- once a parked loop is put back, its count starts again ---"
 fresh; queue 865
 short_run 865 1 0 "$NOTHING"; short_run 865 2 0 "$NOTHING"; short_run 865 3 0 "$NOTHING"
@@ -1697,5 +1707,6 @@ bash "$K/scripts/coordinator-tick.sh" >/dev/null 2>&1
 want_in "planted: the copy's tick ran" 'tick: ' "$(cat "$C/tick.log" 2>/dev/null)"
 [ -s "$FIX/watchdog.log" ] && bad "planted: the hook removed and the tick still probed → the test cannot see it" \
   || ok "planted: the hook removed → no probe → red"
+fi
 
 suite_end "$FAILED"
