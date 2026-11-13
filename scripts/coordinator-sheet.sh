@@ -45,7 +45,7 @@
 #   skillBreaker COORDINATOR_SKILL_BREAKER  3      newest skill checks (driver/ai-step.sh's
 #                                                   record), on two tickets or more, that all
 #                                                   read no Skill call: this host takes no builds
-#                                                   until its Claude Code or harness changes. 0: off
+#                                                   until Claude Code or that Skill's plugin changes. 0: off
 #   minClaudeCli COORDINATOR_MIN_CLAUDE_CLI unset  a Claude Code version floor: under it, no builds
 #
 # THE FLEET. Every host's heartbeat — {host, version, free disk, builds, last tick} —
@@ -66,6 +66,7 @@ fi
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/claim-proc.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/self-update.sh" || return 1 2>/dev/null || exit 1
 . "$(cd "$(dirname "$_sheet_self")" && pwd)/plugin-ensure.sh" || return 1 2>/dev/null || exit 1
+COORD_SKILL_FIXED_IN="${COORDINATOR_SKILL_FIXED_IN:-$(cd "$(dirname "$_sheet_self")" && pwd)/skill-hold-fixed-in}"
 unset _sheet_self
 
 COORD_HOST="${COORDINATOR_HOST:-$(claim_host)}"
@@ -220,7 +221,7 @@ coord_sheet_render() {
        else empty end),
       (if (.fleet // []) | length > 0 then
         "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)\(if .hostCap then " · at most \(.hostCap.perHost) building on each" else "" end)",
-        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end)"
+        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end)"
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
@@ -468,34 +469,54 @@ COORD_MIN_CLAUDE_CLI="${COORDINATOR_MIN_CLAUDE_CLI:-$(swarm_opt coordinator.minC
 
 # coord_skill_hold <cli version> <harness version> — prints why this host takes no builds, or
 # returns 1. Under coordinator.minClaudeCli; or when its newest skillBreaker skill checks, on
-# two tickets or more, all read no Skill call and neither the CLI nor the harness has changed
-# since the newest of them: a change re-arms it, and the next build tests the change.
+# two tickets or more, all read no Skill call and neither the CLI nor the wanted Skill's plugin
+# has changed since the newest of them: a change re-arms it, and the next build tests the change.
+# A harness update does not, unless its scripts/skill-hold-fixed-in names a version at or
+# below it and above the harness every failing row ran on: that release declares the fix.
 coord_skill_hold() {
-  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" sc="" sh="" since="" now
+  # hv is kept out of the key: a harness update must not release the hold.
+  local cli="${1:-}" hv="${2:-}" f seen="$COORD_DIR/skill-checks.seen" want="" sv="" key sk="" since="" now plug="" fixed newest
   if [ -n "$COORD_MIN_CLAUDE_CLI" ] && [ -n "$cli" ] && harness_ver_lt "$cli" "$COORD_MIN_CLAUDE_CLI"; then
     printf 'this machine runs Claude Code %s, under coordinator.minClaudeCli %s — it takes no builds until the CLI is updated' "$cli" "$COORD_MIN_CLAUDE_CLI"
     return 0
   fi
   [ "$COORD_SKILL_BREAKER" -gt 0 ] || return 1
   now=$(swarm_now)
-  [ ! -f "$seen" ] || IFS=$'\t' read -r sc sh since < "$seen" || true
-  case "$since" in ''|*[!0-9]*) since="" ;; esac
-  if [ "$sc" != "$cli" ] || [ "$sh" != "$hv" ] || [ -z "$since" ]; then
-    since=$now; mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\t%s\n' "$cli" "$hv" "$since" > "$seen" 2>/dev/null
-  fi
   f="${HARNESS_SKILL_CHECKS:-${DRIVER_DIR:-$STATE_DIR/driver}/skill-checks.tsv}"
+  [ ! -s "$f" ] || want=$(tail -n 1 "$f" | cut -f8 | cut -d' ' -f1)
+  sv=$(harness_skill_plugin_version "$want" 2>/dev/null | head -1)
+  # <cli>|<plugin version> \t <since>. The older <cli> \t <harness> \t <since> keeps its since on the same CLI, or an upgrade releases every held host.
+  local old=""
+  [ ! -f "$seen" ] || IFS=$'\t' read -r sk since old < "$seen" || true
+  case "$sk" in *'|'*) ;; *) [ -z "$old" ] || { [ "$sk" = "$cli" ] && since=$old || since=""; sk="$cli|"; } ;; esac
+  case "$since" in ''|*[!0-9]*) since="" ;; esac
+  # A version not yet known (no rows, an unread registry) is the last one seen, not a change.
+  case "$sk" in *'|'*) [ -n "$sv" ] || sv="${sk#*|}" ;; esac
+  key="$cli|$sv"
+  if [ "$sk" != "$key" ]; then
+    [ "$sk" = "$cli|" ] && [ -n "$since" ] || since=$now
+    mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\n' "$key" "$since" > "$seen" 2>/dev/null
+  elif [ -z "$since" ]; then
+    since=$now; mkdir -p "$COORD_DIR" 2>/dev/null; printf '%s\t%s\n' "$key" "$since" > "$seen" 2>/dev/null
+  fi
   [ -s "$f" ] || return 1
-  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v f="$f" '
-    { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8; c = $5 }
+  fixed=$(head -1 "$COORD_SKILL_FIXED_IN" 2>/dev/null | tr -d '[:space:]')
+  if _su_is_ver "$fixed" && _su_is_ver "$hv" && ! harness_ver_lt "$hv" "$fixed"; then
+    newest=$(tail -n "$COORD_SKILL_BREAKER" "$f" | cut -f6 | { set --; while read -r v; do set -- "$@" "$v"; done; _su_max "$@"; })
+    [ -z "$newest" ] || ! harness_ver_lt "$newest" "$fixed" || return 1
+  fi
+  case "$want" in *:*) plug="${want%%:*}" ;; esac
+  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" -v fb="$f" '
+    { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8 }
     END {
       if (bad || rows < n || at < since) exit 1
       k = 0; for (x in tk) k++; if (k < 2) exit 1
       w = (want == "" ? "its skill" : want)
-      if (cause == "not-loaded") why = "the session did not list " w
+      if (cause == "not-loaded") why = "not listed in the session"
       else if (cause == "no-skill-tool") why = "the session had no Skill tool"
-      else if (cause == "loaded") why = "the session listed " w " and never called it"
+      else if (cause == "loaded") why = "listed, never called"
       else why = "no session start in the transcript"
-      printf "the last %d builds here could not run %s (%s, Claude Code %s) — it takes no builds until Claude Code or the harness changes, or %s is cleared", n, w, why, (c == "" ? "?" : c), f
+      printf "the last %d builds here could not run %s (%s) — held until Claude Code %s%s changes, or a harness release fixes it, or clear %s", n, w, why, cli, (plug == "" || sv == "" ? "" : " or " plug " " sv), fb
     }'
 }
 
@@ -551,7 +572,7 @@ coord_heartbeat_post() {
   if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
-  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
+  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
                 + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)
                 + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                 + (why_words | if . == null then "" else "\n" + . end)' <<<"$hb")

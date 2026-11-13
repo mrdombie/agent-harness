@@ -63,7 +63,7 @@ answer() { jq -nc --arg r "$plan_ok" '{type:"result", subtype:"success", is_erro
 rc=0; driver_ai_step 101 plan >/dev/null 2>&1 || rc=$?
 want    "a session without the skill still refuses" "21" "$rc"
 want_in "the note says the session did not list it" 'Claude Code 2\.1\.300\) did not list the skill' "$(driver_state_get 101 park_note)"
-want_in "the host's record has the check as none, with the CLI and the cause" $'\t101\tplan\tnone\t2\\.1\\.300\t[0-9.]*\tnot-loaded\tsuperpowers:writing-plans$' "$(tail -1 "$HARNESS_SKILL_CHECKS")"
+want_in "the host's record has the check as none, with the CLI and the cause" $'\t101\tplan\tnone\t2\\.1\\.300\t[0-9.]*\tnot-loaded\tsuperpowers:writing-plans\t[^\t]*$' "$(tail -1 "$HARNESS_SKILL_CHECKS")"
 { init '["superpowers:writing-plans"]' '["Read"]'; answer; } > "$FIX/ai/plan.jsonl"
 driver_ai_step 101 plan >/dev/null 2>&1
 want_in "a session with no Skill tool says so" 'had no Skill tool' "$(driver_state_get 101 park_note)"
