@@ -120,6 +120,7 @@ driver_fact_project() {
       printf '\nLocal checks are gates.local and nothing more (gates.localOnly): run those and the one test file you wrote, never gates.changed or the whole suite. Every test runs once, in CI.'
       _driver_fact_local_only_limits; printf '\n'
     fi
+    _driver_fact_case_filters
   else
     _driver_fact_none "this run resolved no harness.json"
   fi
@@ -555,6 +556,19 @@ driver_fact_proof_limits() {
 _driver_fact_base_red_limits() {
   printf ' A check or test red on %s itself is base-red: never yours, never a question, never a deferral, and "wait or fix here" is not asked. The driver runs it on the commit this branch merged, files the one develop-red ticket and does not count it here. This check is red on %s itself; the develop-red ticket owns it; carry on. A red only on this branch is yours.' \
     "${INTEGRATION_BRANCH:-the integration branch}" "${INTEGRATION_BRANCH:-the integration branch}"
+}
+
+# _driver_fact_case_filters — the test files here that run one case at a time, and how.
+# Read off the files themselves (a `# case-filter:` line near the top): no config names them.
+_driver_fact_case_filters() {
+  local wt files n eg
+  wt=$(driver_state_get "${DRIVER_TICKET:-}" worktree 2>/dev/null); [ -n "$wt" ] && [ -d "$wt" ] || wt="${MAIN_REPO:-}"
+  [ -n "$wt" ] || return 0
+  files=$(git -C "$wt" grep -lE '^#[[:space:]]*case-filter:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' -- 2>/dev/null) || return 0
+  n=$(printf '%s\n' "$files" | grep -c .); [ "$n" -gt 0 ] || return 0
+  eg=$(sed -n '1,40s/^#[[:space:]]*case-filter:[[:space:]]*//p' "$wt/$(printf '%s\n' "$files" | head -1)" 2>/dev/null | head -1)
+  printf '\nSome test files here run one case at a time (%s: %s). Each says how on its `# case-filter:` line, e.g. %s. A test you add to one of them is one named case, and its proof command carries that filter: a command that runs the whole file is refused, because a proof runs it twice inside one time limit.\n' \
+    "$n" "$(printf '%s\n' "$files" | head -4 | paste -sd, - | sed 's/,/, /g')$([ "$n" -le 4 ] || printf ', …')" "$eg"
 }
 
 # _driver_fact_local_only_limits — what a model never runs here under gates.localOnly.

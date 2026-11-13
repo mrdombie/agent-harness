@@ -9,6 +9,7 @@
 # on its own branch, one round a head, two a PR, then parks for the PM with the PR left open.
 # A round is spent only once its run started, and one whose run is gone is released.
 # PLANT=<name> turns one rule off in a copy of rebuild.sh, so the case that pins it must fail.
+# case-filter: SUITE_ONLY='<a case title, or a pattern over them>' bash swarm/tests/rebuild.test.sh
 # Run: bash "$0"
 set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
@@ -138,7 +139,12 @@ fix_required unit lint
 printf '{}\n' > "$FIX/gh/api-repos_acme_widgets_git_refs.json"   # the stale ref is made
 fix_issue 101 OPEN "status:in-review,P1"
 
-echo "--- a required check red past the threshold: closed and requeued fresh, the brief carrying the plan ---"
+# Helpers and paths the cases share, defined before any case so one case can run alone (SUITE_ONLY).
+LED="$STATE/swarm/finding-classes.jsonl"
+REFS="$FIX/gh/api-repos_acme_widgets_git_matching-refs_stale_101_.json"
+UPD="$FIX/gh/api-repos_acme_widgets_pulls_95_update-branch.json"
+
+if suite_case "a required check red past the threshold: closed and requeued fresh, the brief carrying the plan"; then
 fresh; plan_on_record 101; base unit:success lint:success
 pr 71 101 head1 BLOCKED '[]' unit:FAILURE:7001 lint:SUCCESS:7002
 age 0; pass
@@ -159,7 +165,8 @@ want "  this host's record forgets its steps"    "[]" "$(jq -c .done "$STATE/dri
 want "  the class is recorded as a rebuild"      "rebuild" "$(cut -f3 "$C/run-classes.tsv" | tail -1)"
 want "  and its clock is gone"                   "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 
-echo "--- a clash past the threshold: rebuilt ---"
+fi
+if suite_case "a clash past the threshold: rebuilt"; then
 fresh; base unit:success lint:success
 pr 72 101 head2 DIRTY '[]' unit:SUCCESS:7003 lint:SUCCESS:7004
 age 0; pass
@@ -169,7 +176,8 @@ want "70 minutes on: closed"                     "1" "$(closes 72)"
 want_in "  and queued fresh"                     '^add 101 --class new --first --note Rebuild: PR #72 could not merge within 60 min \(it conflicts with its base branch\)' "$(cat "$QLOG")"
 want_in "  with no plan on this host, it says to plan again" "plan again from the ticket" "$(cat "$QLOG")"
 
-echo "--- red only because develop is red: it waits, never rebuilt ---"
+fi
+if suite_case "red only because develop is red: it waits, never rebuilt"; then
 fresh; base unit:failure lint:success
 pr 73 101 head3 BLOCKED '[]' unit:FAILURE:7005 lint:SUCCESS:7006
 age 0; pass; age 200; pass
@@ -187,7 +195,8 @@ want "  still red: its clock starts now"         "73" "$(cut -f1 "$C/rebuild-clo
 age 280; pass
 want "  and an hour on it is rebuilt"            "1" "$(closes 73)"
 
-echo "--- a required check cancelled past the threshold: re-run, then rebuilt as for a red ---"
+fi
+if suite_case "a required check cancelled past the threshold: re-run, then rebuilt as for a red"; then
 fresh; base unit:success lint:success
 pr 79 101 head11 BLOCKED '[]' "unit:CANCELLED:7015" lint:SUCCESS:7016
 age 0; pass
@@ -205,20 +214,23 @@ for k in TIMED_OUT:"timed out" ACTION_REQUIRED:"action required" STARTUP_FAILURE
   want_in "  and the reason says so"             "required check\(s\) ${k#*:}: unit" "$(cat "$GH_LOG")"
 done
 
-echo "--- a required check still running is not stuck, however long ---"
+fi
+if suite_case "a required check still running is not stuck, however long"; then
 fresh; base unit:success
 pr 80 101 head12 BLOCKED '[]' unit:IN_PROGRESS:7017
 age 0; pass; age 300; pass
 want "300 minutes running: not closed"           "0" "$(closes 80)"
 want "  and no clock runs"                       "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 
-echo "--- a red the base cannot be read for decides nothing: on the clock as the PR's own ---"
+fi
+if suite_case "a red the base cannot be read for decides nothing: on the clock as the PR's own"; then
 fresh; rm -f "$FIX/gh/api-repos_acme_widgets_commits_sha_develop_per_page_5.json"
 pr 74 101 head4 BLOCKED '[]' unit:FAILURE:7007
 age 0; pass; age 61; pass
 want "rebuilt"                                   "1" "$(closes 74)"
 
-echo "--- a person owns it: never touched, however long ---"
+fi
+if suite_case "a person owns it: never touched, however long"; then
 for held in '[{"name":"needs:human-approval"}]' '[{"name":"do-not-merge"}]'; do
   fresh; base unit:success
   pr 75 101 head5 DIRTY "$held" unit:FAILURE:7008
@@ -238,14 +250,16 @@ pr 75 101 head5 DIRTY '[]' unit:FAILURE:7008
 age 0; pass; age 500; pass
 want "a ticket claimed on any host: not closed"  "0" "$(closes 75)"
 
-echo "--- red only on checks develop does not require: not red ---"
+fi
+if suite_case "red only on checks develop does not require: not red"; then
 fresh; base unit:success lint:success
 pr 76 101 head6 BLOCKED '[]' unit:SUCCESS:7009 "Capture and pin the evidence:FAILURE:7010"
 age 0; pass; age 300; pass
 want "300 minutes red on a check develop does not require: not closed" "0" "$(closes 76)"
 want "  and no clock runs"                       "" "$(cut -f1 "$C/rebuild-clock.did.tsv" 2>/dev/null)"
 
-echo "--- a PR that goes green stops its clock; red again starts a new one ---"
+fi
+if suite_case "a PR that goes green stops its clock; red again starts a new one"; then
 fresh; base unit:success
 pr 77 101 head7 BLOCKED '[]' unit:FAILURE:7011
 age 0; pass
@@ -257,8 +271,8 @@ want "green between: the clock started again, not rebuilt at 70" "0" "$(closes 7
 age 131; pass
 want "  an hour after it went red again: rebuilt" "1" "$(closes 77)"
 
-echo "--- a thrown-away change is counted: one sighting per failed required check, its log queued ---"
-LED="$STATE/swarm/finding-classes.jsonl"
+fi
+if suite_case "a thrown-away change is counted: one sighting per failed required check, its log queued"; then
 fresh; rm -f "$LED" "${LED%.jsonl}.logs.tsv"; base unit:success
 pr 79 101 head11 BLOCKED '[]' unit:FAILURE:7015
 age 0; pass; age 61; pass
@@ -275,8 +289,8 @@ pr 81 101 head13 BLOCKED '[]' unit:FAILURE:7017
 age 0; COORDINATOR_SHADOW=1 pass; age 61; COORDINATOR_SHADOW=1 pass
 want "shadow counts nothing"                     "0" "$(cat "$LED" 2>/dev/null | grep -c .)"
 
-echo "--- built twice already: parked for the PM, not built a third time ---"
-REFS="$FIX/gh/api-repos_acme_widgets_git_matching-refs_stale_101_.json"
+fi
+if suite_case "built twice already: parked for the PM, not built a third time"; then
 fresh; base unit:success lint:success
 printf '[{"ref":"refs/stale/101/pr-60"},{"ref":"refs/stale/101/pr-65"}]\n' > "$REFS"
 pr 82 101 head14 BLOCKED '[]' unit:FAILURE:7018 lint:SUCCESS:7019
@@ -290,7 +304,8 @@ want_in "  and told which check failed"          'issue comment 101 .*Failing ch
 want "  it is not queued again"                  "0" "$(grep -c '^add 101' "$QLOG")"
 want_in "  it says so"                           'rebuild: parked #101 for the PM — built 2 times, PR #82 closed' "$OUT"
 
-echo "--- built once: rebuilt as before ---"
+fi
+if suite_case "built once: rebuilt as before"; then
 fresh; base unit:success
 printf '[{"ref":"refs/stale/101/pr-60"}]\n' > "$REFS"
 pr 83 101 head15 BLOCKED '[]' unit:FAILURE:7020
@@ -298,7 +313,8 @@ age 0; pass; age 61; pass
 want "closed"                                    "1" "$(closes 83)"
 want_in "  and queued fresh"                     '^add 101 --class new --first' "$(cat "$QLOG")"
 
-echo "--- coordinator.rebuildMax 0: no cap ---"
+fi
+if suite_case "coordinator.rebuildMax 0: no cap"; then
 fresh; base unit:success
 printf '[{"ref":"refs/stale/101/pr-60"},{"ref":"refs/stale/101/pr-65"},{"ref":"refs/stale/101/pr-70"}]\n' > "$REFS"
 pr 84 101 head16 BLOCKED '[]' unit:FAILURE:7021
@@ -307,14 +323,16 @@ want_in "built 3 times, no cap: queued fresh"    '^add 101 --class new --first' 
 rm -f "$REFS"
 fix_issue 101 OPEN "status:in-review,P1"
 
-echo "--- shadow: says what it would do, closes nothing ---"
+fi
+if suite_case "shadow: says what it would do, closes nothing"; then
 fresh; base unit:success
 pr 78 101 head10 DIRTY '[]' unit:SUCCESS:7014
 age 0; COORDINATOR_SHADOW=1 pass; age 61; COORDINATOR_SHADOW=1 pass
 want "nothing closed in shadow"                  "0" "$(closes 78)"
 want_in "  it says it would"                     'rebuild: would close PR #78' "$OUT"
 
-echo "--- the rebuild off, a required check red on the PR's own code: back to its builder, on its branch ---"
+fi
+if suite_case "the rebuild off, a required check red on the PR's own code: back to its builder, on its branch"; then
 fresh; base unit:success lint:success
 pr 90 101 head20 BLOCKED '[]' unit:FAILURE:7101 lint:SUCCESS:7102
 age 0; fixpass
@@ -357,7 +375,8 @@ want_in "  and told its rounds and the check"    'issue comment 101 .*PR #90 had
 want "  the count did not reset on the new head" "2/head21" "$(rounds 90)"
 want_in "  it says so"                           'rebuild: parked #101 for the PM — 2 fix round\(s\), PR #90 left open' "$OUT"
 
-echo "--- a fix round that ended without a push: the next round on the same head, then the park ---"
+fi
+if suite_case "a fix round that ended without a push: the next round on the same head, then the park"; then
 fresh; base unit:success
 pr 99 101 head40 BLOCKED '[]' unit:FAILURE:7120
 age 0; fixpass; queued 101 99; age 5; fixpass
@@ -376,7 +395,8 @@ want "  the PR is left open"                     "0" "$(closes 99)"
 want "  the cap held"                            "2/head40" "$(rounds 99)"
 want_in "  it says so"                           'rebuild: parked #101 for the PM — 2 fix round\(s\), PR #99 left open' "$OUT"
 
-echo "--- a round is spent only once its run has started ---"
+fi
+if suite_case "a round is spent only once its run has started"; then
 fresh; base unit:success
 pr 88 101 head50 BLOCKED '[]' unit:FAILURE:7130
 age 0; fixpass; queued 101 88; age 5; fixpass
@@ -401,7 +421,8 @@ echo "  a start with no row to mark is counted from its brief"
 rm -f "$C"/fix-rounds.*; ran 88
 want "  one round, started"                      "1/- started" "$(rounds 88) $(state 88)"
 
-echo "--- a started round whose run is gone is released, whatever the queue holds ---"
+fi
+if suite_case "a started round whose run is gone is released, whatever the queue holds"; then
 fresh; base unit:success
 pr 89 101 head60 BLOCKED '[]' unit:FAILURE:7140
 printf '89\t1\thead60\tstarted\n' > "$C/fix-rounds.did.tsv"; queued 101 89
@@ -426,14 +447,16 @@ rm -f "$STATE/runs/claim-101-live.json"
 CLAIMED="" fixcall 101
 want "the run gone: the next round"              "1" "$(adds 101)"
 
-echo "--- under the rebuild threshold the fix round replaces the wait too ---"
+fi
+if suite_case "under the rebuild threshold the fix round replaces the wait too"; then
 fresh; base unit:success
 pr 91 101 head23 BLOCKED '[]' unit:FAILURE:7107
 age 0; MIN=60 fixpass
 want "queued for its fix at minute 0"            "1" "$(adds 101)"
 want "  and not closed"                          "0" "$(closes 91)"
 
-echo "--- never sent for a fix: a base-red, a cancelled check, a person's PR, a claimed ticket ---"
+fi
+if suite_case "never sent for a fix: a base-red, a cancelled check, a person's PR, a claimed ticket"; then
 fresh; base unit:failure lint:success
 pr 92 101 head24 BLOCKED '[]' unit:FAILURE:7108 lint:SUCCESS:7109
 age 0; fixpass; age 30; fixpass
@@ -462,8 +485,8 @@ want "a claimed ticket: no fix"                  "0" "$(adds 101)"
 want "  no round spent"                          "" "$(rounds 94)"
 want "  and its labels are not touched"          "0" "$(grep -c '^issue edit 101' "$GH_LOG")"
 
-echo "--- a clash: one update from its base, then a fix round like a red ---"
-UPD="$FIX/gh/api-repos_acme_widgets_pulls_95_update-branch.json"
+fi
+if suite_case "a clash: one update from its base, then a fix round like a red"; then
 fresh; base unit:success; printf '{"message":"Updating pull request branch."}\n' > "$UPD"
 pr 95 101 head27 DIRTY '[]' unit:SUCCESS:7112
 age 0; fixpass
@@ -484,7 +507,8 @@ want "  and the clash is a fix round at once"    "1" "$(adds 101)"
 age 5; fixpass
 want "  never tried again"                       "1" "$(updates 95)"
 
-echo "--- coordinator.fixRounds 0: off, exactly as before ---"
+fi
+if suite_case "coordinator.fixRounds 0: off, exactly as before"; then
 fresh; base unit:success
 pr 96 101 head29 BLOCKED '[]' unit:FAILURE:7114
 age 0; FR=0 fixpass
@@ -497,7 +521,8 @@ pr 95 101 head28 DIRTY '[]' unit:SUCCESS:7113
 age 0; FR=0 fixpass
 want "  a clash is not updated either"           "0" "$(updates 95)"
 
-echo "--- shadow: says what the fix path would do, changes nothing ---"
+fi
+if suite_case "shadow: says what the fix path would do, changes nothing"; then
 fresh; base unit:success
 pr 97 101 head30 BLOCKED '[]' unit:FAILURE:7115
 age 0; COORDINATOR_SHADOW=1 fixpass
@@ -519,11 +544,32 @@ want "  a PR past its rounds is not parked in shadow" "0" "$(grep -c '^issue ' "
 want_in "  it says it would"                     'rebuild: would park #101 for the PM — 2 fix round\(s\)' "$OUT"
 rm -f "$C"/fix-rounds.*
 
-if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ]; then
+fi
+
+# EACH PLANT RUNS THE CASES THAT PIN ITS RULE, not the whole suite again. Seventeen whole
+# runs made this suite about half an hour on a build machine (96 s of cases, then 17 more
+# passes of them), past any proof's time limit. A plant that fails none of its cases is red.
+plant_cases() { # <plant> — the cases that pin it, as a SUITE_ONLY pattern
+  case "$1" in
+    threshold|plan) echo '^a required check red past the threshold' ;;
+    base-red)       echo '^red only because develop is red' ;;
+    held)           echo '^a person owns it' ;;
+    required)       echo '^red only on checks develop does not require|^a PR that goes green' ;;
+    clash)          echo '^a clash past the threshold' ;;
+    cancelled)      echo '^a required check cancelled past the threshold' ;;
+    counted)        echo '^a thrown-away change is counted' ;;
+    cap)            echo '^built twice already' ;;
+    fix-base-red)   echo '^never sent for a fix' ;;
+    fix-*)          echo '^the rebuild off, a required check red|^a fix round that ended without a push|^a round is spent only once|^a started round whose run is gone' ;;
+  esac
+}
+if [ -z "${PLANT:-}" ] && [ -z "${NO_PLANTS:-}" ] && [ -z "${SUITE_ONLY:-}" ]; then
   echo "--- every rule's plant fails its case ---"
   for p in threshold base-red held required clash plan cancelled counted cap fix-cap fix-base-red fix-head fix-queued fix-started fix-released fix-alive fix-mark; do
-    PLANT=$p bash "$0" >/dev/null 2>&1; rc=$?
-    want "plant $p: the suite fails"             "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
+    only=$(plant_cases "$p")
+    PLANT=$p SUITE_ONLY="$only" bash "$0" >"$FIX/plant.out" 2>&1; rc=$?
+    want "plant $p: its case fails"              "1" "$([ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && echo 1 || echo "rc=$rc")"
+    want_in "  on an assertion, not for want of a case" 'MISMATCH' "$(grep -m1 -E 'MISMATCH|no case matches' "$FIX/plant.out")"
   done
 fi
 
