@@ -690,9 +690,9 @@ _driver_review_defer() {
   while IFS= read -r x; do
     [ -n "$x" ] || continue
     if [ "$(jq -r '.inChange // false' <<<"$x")" = true ]; then
-      driver_finding_answer "$t" "$x" closed "graded $(jq -r '.grade // "?"' <<<"$x") in round $round, below its blocking set: dropped"
+      driver_finding_answer "$t" "$x" closed "graded $(jq -r '.grade // "?"' <<<"$x") in round $round, below its blocking set: dropped" deferred
     else
-      driver_finding_answer "$t" "$x" closed "outside this change's files: to the nightly sweep"
+      driver_finding_answer "$t" "$x" closed "outside this change's files: to the nightly sweep" deferred
     fi
   done < <(jq -c '.[]' <<<"$defer")
   jq --arg late "$late" '

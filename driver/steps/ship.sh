@@ -304,6 +304,21 @@ _driver_ship_deferred() {
     | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(.grade // "") — \(if .list == "sweep" then "outside the files of this change: to the nightly sweep" else "dropped, not filed" end))"' "$f" 2>/dev/null
 }
 
+# _driver_ship_findings_sections <ticket> — the deferred section, then the answered one
+# without the deferrals the first already names: each finding once.
+_driver_ship_findings_sections() {
+  local deferred answered
+  deferred=$(_driver_ship_deferred "$1")
+  if [ -n "$deferred" ]; then
+    answered=$(driver_findings_answered_section "$1" --without-deferred)
+  else
+    answered=$(driver_findings_answered_section "$1")
+  fi
+  printf '%s' "$deferred${deferred:+${answered:+
+
+}}$answered"
+}
+
 # _driver_ship_drop_old_verdicts <ticket> <tree> <trunk> <key> <not-refs…> — every design
 # verdict commit on the branch authored before this run started is taken out: rebased away
 # when no merge follows it, else its changes reverted and its sha recorded as excluded
@@ -763,8 +778,7 @@ driver_step_ship() { # <ticket>
     [ "$(driver_screen_route "$t" | cut -f1)" = baseline ] || required=$(_driver_ship_required "$t")
   fi
   tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
-  deferred=$(_driver_ship_deferred "$t")
-  local answered; answered=$(driver_findings_answered_section "$t")
+  deferred=$(_driver_ship_findings_sections "$t")
   local simplified; simplified=$(_driver_ship_simplify_line "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
@@ -797,8 +811,6 @@ $pmsteps
 $polish
 }${deferred:+
 $deferred
-}${answered:+
-$answered
 }${replaced:+
 ## Deleted tests
 $replaced}

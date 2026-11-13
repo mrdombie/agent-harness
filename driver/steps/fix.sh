@@ -425,7 +425,7 @@ _driver_fix_mf_file_deferred() {
     jq -c --arg l "$list" --argjson r "$round" --arg why "$(jq -r '.reason // ""' <<<"$x")" '{id, grade, file, line, summary: (.summary + " — the fix round could not fix it here: " + $why), round: $r, list: $l}' <<<"$f" \
       >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
     done_ids="$done_ids $bid"
-    driver_finding_answer "$t" "$f" closed "the fix round could not fix it here ($(jq -r '.reason // ""' <<<"$x")): merge first, dropped"
+    driver_finding_answer "$t" "$f" closed "the fix round could not fix it here ($(jq -r '.reason // ""' <<<"$x")): merge first, dropped" deferred
     driver_say "   fix: $bid ($g) could not be fixed here — merge first: dropped, noted in the PR, and the change ships" >&2
   done < <(jq -c '.[]' <<<"$left")
   if [ -n "$done_ids" ]; then
