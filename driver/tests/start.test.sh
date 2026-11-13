@@ -28,10 +28,11 @@ t="$2"
 argval() { local k="$1"; shift; while [ $# -gt 0 ]; do [ "$1" = "$k" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$1" in
   acquire)
+    [ -n "${CLAIM_PUSH_FAIL:-}" ] && { printf '%s\n' "$CLAIM_PUSH_FAIL" "claim-lock: push failed for #$t" >&2; exit 1; }
     [ -n "$(field "$t" 2)" ] && exit 10
     printf '%s\t%s\t%s\t%s\n' "$t" "$me" "$(argval --branch "$@")" "$(argval --worktree "$@")" >> "$CLAIMS"
     echo "acquired #$t" ;;
-  holds) o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
+  holds) [ -n "${CLAIM_HOLDS_RC:-}" ] && exit "$CLAIM_HOLDS_RC"; o=$(field "$t" 2); [ -n "$o" ] || exit 11; [ "$o" = "$me" ] || exit 12 ;;
   show)
     o=$(field "$t" 2); [ -n "$o" ] || { echo "#$t is not claimed" >&2; exit 11; }
     jq -n --arg a "$o" --arg b "$(field "$t" 3)" --arg w "$(field "$t" 4)" \
@@ -166,6 +167,27 @@ want "no worktree was cut"             ""     "$(driver_state_get 106 worktree)"
 # rc-12 arm is never entered — rc 12 falls to the default, `acquire` loses, and that
 # message also contains "peer", so the arm could be deleted with the suite green.
 want_in "the cache knowing says so, not 'took it first'" 'holds the claim' "$out"
+
+echo "--- a claim push that fails for a reason other than a race is the machine's ---"
+# A corrupt object in the clone failed every acquire push for 23 h, and each one was
+# reported as a peer winning a race that never happened.
+fix_issue 191 OPEN "status:ready"
+out=$(CLAIM_PUSH_FAIL="fatal: bad object 6332dafe
+fatal: the remote end hung up unexpectedly" driver_step_start 191 2>&1); rc=$?
+want "a failed push is a machine fault"        "33" "$rc"
+want_not_in "and never blames a peer"          'peer' "$out"
+want_in "it names the first git error"         'cannot claim: fatal: bad object 6332dafe' "$out"
+want_in "the git error is in the park note"    'fatal: bad object 6332dafe.*remote end hung up' "$(driver_state_get 191 park_note)"
+want "no claim was taken"                      "" "$(awk '$1==191' "$CLAIMS")"
+want "no worktree was cut"                     "" "$(driver_state_get 191 worktree)"
+echo "--- a lost compare-and-swap is still a peer's ---"
+fix_issue 192 OPEN "status:ready"
+# Free in the cache (holds says 11), taken on origin by the time acquire pushes.
+claim_row 192 somebody@else tkt-192/theirs "$FIX/theirs"
+out=$(CLAIM_HOLDS_RC=11 driver_step_start 192 2>&1); rc=$?
+want "a lost race is busy"                     "29" "$rc"
+want_in "and says a peer took it first"        'peer took the claim on #192 first' "$out"
+bash "$CL" release 192
 
 echo "--- OUR OWN claim, taken but not yet recorded, is not a peer's ---"
 # The window is real: a run killed between `acquire` and recording the worktree
