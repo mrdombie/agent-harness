@@ -392,7 +392,11 @@ test or CI. One line goes on `<stateDir>/swarm/escapes.jsonl`, and one issue lab
 `labels.escapedLayer` (default `escaped-layer`) asks for that layer's check to be fixed,
 not the screen. A layer outside the five, or a fix naming only screen files, is recorded
 `unjudged` and files nothing. A PR is judged once; a machine's own issue and a commit
-revert never count; shadow writes nothing. Both labels are made on first use.
+revert never count; shadow writes nothing. Both labels are made at the start of each live
+pass, so `broken-on-uat` exists before anyone needs it.
+
+Cost: no extra agents. At most `escapes.perPass` (3) low-effort calls a pass, and a PR is
+judged once, so a day costs one call per escape — never more than the day's merges (~85).
 
 ## Building one ticket
 

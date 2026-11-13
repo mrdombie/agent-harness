@@ -321,7 +321,8 @@ even when inherited. A push still refused falls back to a bundle under
   said. A `breaks-rule` finding cites its rule as `file:line` and is graded as any
   finding; a `stale-rule` finding never blocks and is listed in the PR under
   "Rules to update". A rule finding with no citation, or one citing a file `RULES`
-  did not carry, is refused.
+  did not carry, is refused. Cost: no extra agents; up to `review.rulesMaxBytes`
+  (40000 bytes, ~10k tokens) more prompt per review, ~85 reviews a day.
 - **At most two review rounds.** Then the reviewer stops sending the work back.
   What is **non-blocking** leaves as its own ticket, carrying the finding verbatim
   and the parent's programme label. A **Critical or Major** — a dead control, a broken flow or
