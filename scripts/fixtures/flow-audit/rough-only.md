@@ -4,6 +4,7 @@
 
 ### GAP-01 · SILENT · Save gives no confirmation
 **Axis:** 5 Failure · [EDGE]
+**Rows:** X-02
 **The move:** save an item
 **What happens now:** nothing says it saved
 **What should happen:** a short saved note
@@ -19,4 +20,4 @@
 | # | Axis | Expected flow | Verdict | Evidence |
 |---|---|---|---|---|
 | E-01 | 1 Entry | Somebody opens the queue from the nav | PRESENT | queue story, nav click |
-| X-02 | 7 Exit & aftermath | Somebody leaves an item and wants the queue back | ABSENT | no control |
+| X-02 | 7 Exit & aftermath | Somebody leaves an item and wants the queue back | PARTIAL | saves, no note |

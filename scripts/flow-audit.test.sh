@@ -165,6 +165,40 @@ printf '%s' "$out" | grep -qiF 'void' && ok "no rows says void" || bad "no rows 
 out=$(bash "$SUT" gate "$REPO/missing.md" 2>&1); rc=$?
 [ "$rc" -eq 2 ] && ok "a missing report is exit 2" || bad "missing report: exit $rc, want 2"
 
+echo "--- gate: a report it cannot read never clears ---"
+CASE="$REPO/strands-case.md"; sed 's/^### GAP-01 · STRANDS ·/### GAP-01 · Strands ·/' "$FX/open-strands.md" > "$CASE"
+out=$(bash "$SUT" gate "$CASE" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "a 'Strands' heading still holds" || bad "Strands heading: exit $rc, want 1: $out"
+DASH="$REPO/strands-dash.md"; sed 's/^### GAP-01 · STRANDS ·/### GAP-01 - STRANDS -/' "$FX/open-strands.md" > "$DASH"
+out=$(bash "$SUT" gate "$DASH" 2>&1); rc=$?
+[ "$rc" -eq 1 ] && ok "a '-' separated heading still holds" || bad "dash heading: exit $rc, want 1: $out"
+ODD="$REPO/strands-odd.md"; sed 's/^### GAP-01 · STRANDS ·/### GAP-01 · BLOCKER ·/' "$FX/open-strands.md" > "$ODD"
+out=$(bash "$SUT" gate "$ODD" 2>&1); rc=$?
+[ "$rc" -eq 3 ] && ok "a GAP heading with no known severity is void" || bad "unknown severity: exit $rc, want 3: $out"
+printf '%s' "$out" | grep -qF 'GAP-01' && ok "void names the heading it cannot read" || bad "unknown severity does not name GAP-01: $out"
+ORPHAN="$REPO/orphan-absent.md"; awk '/^### GAP-01 /{skip=1;next} /^###? /{skip=0} !skip' "$FX/open-strands.md" > "$ORPHAN"
+grep -q '^### GAP-01' "$ORPHAN" && bad "orphan fixture still has GAP-01" || ok "orphan fixture built"
+out=$(bash "$SUT" gate "$ORPHAN" 2>&1); rc=$?
+[ "$rc" -eq 3 ] && ok "an ABSENT row no gap names is void" || bad "orphan ABSENT: exit $rc, want 3: $out"
+printf '%s' "$out" | grep -qF 'X-02' && ok "void names the orphan row" || bad "orphan void does not name X-02: $out"
+for v in WRONG PARTIAL; do
+  OV="$REPO/orphan-$v.md"; sed "s/| ABSENT | no control |/| $v | no control |/" "$ORPHAN" > "$OV"
+  out=$(bash "$SUT" gate "$OV" 2>&1); rc=$?
+  [ "$rc" -eq 3 ] && ok "a $v row no gap names is void" || bad "orphan $v: exit $rc, want 3: $out"
+done
+
+echo "--- the re-check brief keeps only rows the id leads ---"
+CITE="$REPO/rows-cite.md"
+cat > "$CITE" <<'ROWS_EOF'
+1. X-02 · [CORE] Somebody leaves an item and wants the queue back
+2. C-07 · [EDGE] Somebody closes the item, unlike X-02 the queue keeps its place
+ROWS_EOF
+out=$(bash "$SUT" brief checker --rows "$CITE" --story "$STORY" --only X-02 2>&1); rc=$?
+[ "$rc" -eq 0 ] && ok "--only X-02 exits 0" || bad "--only X-02: exit $rc, want 0: $out"
+printf '%s' "$out" | grep -qF 'C-07' && bad "--only X-02 carried C-07, which only cites it" || ok "--only X-02 leaves out the row that cites it"
+printf '%s\n' "$out" | grep -qxF '1. X-02 · [CORE] Somebody leaves an item and wants the queue back' \
+  && ok "--only X-02 carries its own row" || bad "--only X-02 dropped its row: $out"
+
 echo "--- owed: only a picture label pays for the two agents; every other change runs none ---"
 NOCFG="$REPO/none.json"; printf '{}\n' > "$NOCFG"
 out=$(HARNESS_CFG="$NOCFG" bash "$SUT" owed screen:redesign P0 2>&1); rc=$?
