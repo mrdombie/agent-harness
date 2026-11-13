@@ -283,7 +283,7 @@ _driver_gate_db_flake() {
   DRIVER_FLAKE_FILES=""
   [ -f "$out" ] || return 1
   perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$out" 2>/dev/null | grep -Eq -- "$DRIVER_DB_TIMEOUT_RE" || return 1
-  failing=$(_driver_base_failing_tests "$out"); [ -n "$failing" ] || return 1
+  failing=$(_driver_base_failing_tests "$out" "$wt"); [ -n "$failing" ] || return 1
   branch=$(driver_branch_files "$wt" 2>/dev/null) || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
