@@ -221,7 +221,7 @@ coord_sheet_render() {
        else empty end),
       (if (.fleet // []) | length > 0 then
         "", "### Machines\(if (.minHarness // "") != "" then " · harness floor " + .minHarness else "" end)\(if .hostCap then " · at most \(.hostCap.perHost) building on each" else "" end)",
-        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end)"
+        (.fleet[] | "- \(.host) · harness \(.version // "?")\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if .behind then " — **behind**, starts nothing new until it updates" else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end)"
                     + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                     + " · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds // 0) building"
                     + " · last tick \(((($at | tonumber) - (.tick // 0)) / 60 | floor | if . < 0 then 0 else . end)) min before this update"
@@ -506,7 +506,7 @@ coord_skill_hold() {
     [ -z "$newest" ] || ! harness_ver_lt "$newest" "$fixed" || return 1
   fi
   case "$want" in *:*) plug="${want%%:*}" ;; esac
-  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" -v fb="${f##*/}" '
+  tail -n "$COORD_SKILL_BREAKER" "$f" | awk -F'\t' -v n="$COORD_SKILL_BREAKER" -v since="$since" -v cli="${cli:-?}" -v plug="$plug" -v sv="$sv" -v fb="$f" '
     { rows++; if ($4 != "none") bad = 1; tk[$2] = 1; at = $1 + 0; cause = $7; want = $8 }
     END {
       if (bad || rows < n || at < since) exit 1
@@ -572,7 +572,7 @@ coord_heartbeat_post() {
   if [ -n "$id" ] && [ "$h" = "$old_h" ] && [ $(( now - old_at )) -lt "$beat" ]; then printf 'heartbeat: unchanged — not posted'; return 0; fi
   if coord_shadow; then printf 'heartbeat: would post it'; return 0; fi
   n=$(coord_sheet_issue) || { printf 'heartbeat: no sheet issue to post on'; return 1; }
-  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:240]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
+  line=$(jq -r "$COORD_WHY_JQ"'"**\(.host)** · harness \(.version)\(if (.cli // "") != "" then " · Claude Code " + .cli else "" end)\(if (.hold // "") != "" then " — **takes no builds**: " + (.hold | .[0:400]) else "" end) · \(if .freeGb == null then "disk not read" else "\(.freeGb) GB free" end) · \(.builds) building"
                 + (if .usage.five_hour then " · five-hour usage \(.usage.five_hour.u * 100 | round)%" else "" end)
                 + ((.plugins // {}) | to_entries | map(" · \(.key) \(if .value.v == null then "not installed" elif .value.on then .value.v else "\(.value.v) (off)" end)") | join(""))
                 + (why_words | if . == null then "" else "\n" + . end)' <<<"$hb")
