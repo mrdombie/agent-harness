@@ -20,6 +20,10 @@ to hold the work against.
 
 **A picture is checked against the kit before the owner sees it** (the owner, 2026-10-17): the design critic runs in picture mode against the project's `design.reference`, and a picture that comes back `KIT: DRIFT` (flat cards, off-kit controls, a primary not drawn as the primary, the current screen redrawn) is redrawn first, never sent; 5 of 8 approved pictures measured that day had drawn the flat look, and the builds copied it.
 
+**A fixed picture is checked again after its fixes** (the owner, 2026-11-13: "the ui looks poor quality … out of alignment"). The verdict the owner's link carries is the critic's verdict on the picture as sent: a picture whose last picture mode run said `SLOP` or `KIT: DRIFT` is never sent with "fixed since", it gets one more run and goes only on `KIT: MATCH` with `REAL DATA: COVERED`. Measured that day: 40 onboarding pictures went to the owner fixed but unchecked, and he rejected the set.
+
+**A new screen the kit cannot draw starts as a prototype** (the owner, 2026-11-13: "we should expand the kit out with this because it looks so good"). When a new screen needs parts the kit lacks, the picture is a hand-written prototype built from the project's approved reference (`design.reference`), its own tokens and parts, never a kit-only picture that works around the gaps; once the owner approves it, the kit ticket is filed from it and names each part it draws. Measured that day: the kit-only pictures listed eight missing parts in their own footnote and were rejected; the prototype of the same screens was approved at first look.
+
 Show the rendered thing for a design call, never a bullet list describing it.
 Anything graphic gets a rendered artifact, not ASCII.
 
