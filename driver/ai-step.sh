@@ -178,13 +178,16 @@ driver_log_session() {
 }
 
 # The host's record of every step's skill check, newest last: <epoch> \t <ticket> \t <step>
-# \t ok|none \t <CLI version> \t <harness version> \t <cause> \t <skills wanted>. The coordinator stops this
-# host taking builds when the newest few all read none (coordinator-tick.sh).
+# \t ok|none \t <CLI version> \t <harness version> \t <cause> \t <skills wanted> \t <the first wanted
+# Skill's plugin version, empty when unread>. The coordinator stops this host taking builds when the
+# newest few all read none (coordinator-tick.sh).
 driver_skill_check_record() { # <ticket> <step> <ok|none> <cli> <cause> <skills wanted>
-  local f="${HARNESS_SKILL_CHECKS:-$DRIVER_DIR/skill-checks.tsv}" hv
+  local f="${HARNESS_SKILL_CHECKS:-$DRIVER_DIR/skill-checks.tsv}" hv sk pv
   hv=$(jq -r '.version // empty' "$KIT_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
+  sk=$(printf '%s' "${6:-}" | tr '\t\n' '  ' | sed 's/ *$//')
+  pv=$(bash "$KIT_ROOT/scripts/plugin-ensure.sh" skill-version "${sk%% *}" 2>/dev/null | head -1 | tr -d '\t')
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" "$4" "$hv" "$5" "$(printf '%s' "${6:-}" | tr '\t\n' '  ' | sed 's/ *$//')" >> "$f" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" "$4" "$hv" "$5" "$sk" "$pv" >> "$f" 2>/dev/null || return 0
   # Kept short: only the newest rows are ever read.
   if [ "$(wc -l < "$f" 2>/dev/null | tr -d ' ')" -gt 200 ]; then
     tail -100 "$f" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"

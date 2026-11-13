@@ -848,6 +848,7 @@ driver_step_build() { # <ticket>
       if jq -e --arg g "$got_task" --arg w "$want_task" \
            '[.tasks[]?.title] | index($g) != null and $g != $w' \
            "$(driver_state_dir "$t")/steps/plan.json" >/dev/null 2>&1; then
+        printf "this call was given '%s' and the answer builds '%s', which is another task in this plan\n" "$want_task" "$got_task" > "$(driver_state_dir "$t")/steps/$slot.refused"
         driver_say "✋ build: this call was given '$want_task' and the answer builds '$got_task', which is another task in this plan. A task nobody built is a task that ships unbuilt."
         bad=1; continue
       fi
@@ -897,6 +898,7 @@ driver_step_build() { # <ticket>
       tsha=$(jq -r  '.testOnly.testCommit // ""' "$ans")
       bfile=$(jq -r '.testOnly.break.file // ""' "$ans")
       if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$bfile" ]; then
+        printf 'the answer is test-only and names no break to prove it (testOnly needs test.file, command, testCommit and break)\n' > "$(driver_state_dir "$t")/steps/$slot.refused"
         driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' is test-only and names no break to prove it (testOnly needs test.file, command, testCommit and break)."
         bad=1; continue
       fi
@@ -917,6 +919,7 @@ driver_step_build() { # <ticket>
     tsha=$(jq -r  '.testFirst.testCommit // ""' "$ans")
     isha=$(jq -r  '.testFirst.implCommit // ""' "$ans")
     if [ -z "$tfile" ] || [ -z "$tcmd" ] || [ -z "$tsha" ] || [ -z "$isha" ]; then
+      printf 'the answer names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)\n' > "$(driver_state_dir "$t")/steps/$slot.refused"
       driver_say "✋ build '$(jq -r '.task // "?"' "$ans")' names no test to prove it (testFirst needs test.file, command, testCommit and implCommit)."
       bad=1; continue
     fi
@@ -992,7 +995,7 @@ driver_step_build() { # <ticket>
     fi
     return "$DRIVER_OK"
   fi
-  _driver_build_out_of_tries "$t" "$tries" && return "$DRIVER_E_REFUSED"
+  _driver_build_out_of_tries "$t" "$tries" "$ntasks" && return "$DRIVER_E_REFUSED"
   return "$DRIVER_E_REWORK"
 }
 
@@ -1127,8 +1130,23 @@ _driver_build_same_proof() {
 
 # True when this was the last try. Five, per the approved design's flowchart: a
 # loop with no ceiling is a run that never parks and never finishes.
+# The park note names each unproved task and its last refusal: the .refused files stay on
+# the building machine, which the PM host may not reach.
 _driver_build_out_of_tries() {
   [ "$2" -ge "$DRIVER_MAX_BUILD_TRIES" ] || return 1
-  driver_say "✋ build: $2 of $DRIVER_MAX_BUILD_TRIES tries used and the tests still do not prove the change. Parking."
+  local d i=0 title why reasons="" line
+  d="$(driver_state_dir "$1")/steps"
+  while [ "$i" -lt "${3:-0}" ]; do
+    i=$((i+1))
+    [ -s "$d/build-task-$i.refused" ] && [ ! -s "$d/build-task-$i.proved" ] || continue
+    title=$(jq -r --argjson i "$((i-1))" '.tasks[$i].title // empty' "$d/plan.json" 2>/dev/null)
+    why=$(tr '\n' ' ' < "$d/build-task-$i.refused" | sed 's/  */ /g; s/ $//')
+    [ "${#why}" -le 300 ] || why="$(printf '%s' "$why" | cut -c1-297)..."
+    reasons="$reasons; task $i (${title:-untitled}): $why"
+  done
+  line="$2 of $DRIVER_MAX_BUILD_TRIES tries used and the tests still do not prove the change"
+  [ -z "$reasons" ] || line="$line. Last refusal per unproved task${reasons#;}"
+  driver_say "✋ build: $line. Parking."
+  driver_state_set "$1" park_note "$line"
   return 0
 }

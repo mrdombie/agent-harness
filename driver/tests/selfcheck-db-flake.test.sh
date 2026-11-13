@@ -43,7 +43,7 @@ branch() { # <ticket> [file to touch] — a branch off the trunk with one commit
 }
 step() { # <ticket> — self-check from ${SUT_KIT:-the kit}; R_RC its exit, R_OUT its output
   R_RC=0
-  R_OUT=$(HARNESS_CFG="$FIX/cfg.json" HARNESS_CFG_PATH="$FIX/cfg.json" bash -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT
+  R_OUT=$(HARNESS_CFG="$FIX/cfg.json" HARNESS_CFG_PATH="$FIX/cfg.json" bash ${STEP_U:+-uo pipefail} -c 'unset DRIVER_DIR DRIVER_HOME KIT_ROOT HARNESS_KIT_ROOT
     . "$1/driver/driver-env.sh" && . "$1/driver/ai-step.sh" && . "$1/driver/steps/self-check.sh" && driver_step_self_check "$2"' \
     _ "${SUT_KIT:-$ROOT}" "$1" 2>&1) || R_RC=$?
 }
@@ -61,6 +61,11 @@ want "self-check is green"                    "rc=0 findings=absent" "$R"
 want_in "and says why"                        'a database timeout in t/agent.test.sh, outside this change; each passed run again alone' "$R_OUT"
 want "the files are on the record"            "t/agent.test.sh" "$(driver_state_get "$N" db_flake)"
 want "never parked"                           "" "$(driver_state_get "$N" park_note)"
+
+echo "--- under set -u, as the driver runs it, the timeout is still the load's ---"
+STEP_U=1 case_flake
+want "self-check is green under set -u"       "rc=0 findings=absent" "$R"
+want_not_in "and no unbound variable"         'unbound variable' "$R_OUT"
 
 echo "--- a database timeout in a file the change touched still blocks ---"
 case_touched

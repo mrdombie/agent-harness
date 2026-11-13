@@ -7,6 +7,8 @@
 #   harness_plugins_tick <role> [sheet set]       the tick's call: declared, then ensured
 #   harness_plugins_state                         this host's readings, for the heartbeat
 #   plugin-ensure.sh show | check                 the same, run by hand
+#   harness_skill_plugin_version <plugin:skill>   that plugin's user-scope version in the registry
+#   plugin-ensure.sh skill-version <plugin:skill> the same, for the driver (needs no coordinator)
 #
 # self-update.sh moves agent-harness itself. The plugins a build leans on (superpowers,
 # say) were upgraded by hand on one host, and nothing carried the upgrade to the others.
@@ -38,8 +40,20 @@
 #   COORDINATOR_PLUGINS_EVERY_MIN    coordinator.selfUpdate.everyMin (15)
 #   COORDINATOR_SELF_UPDATE_CLAUDE   claude   (shared with self-update.sh)
 
+# harness_skill_plugin_version <plugin:skill> — the user-scope version of <plugin>@* in the
+# CLI's registry, or nothing (no plugin prefix, no entry, or the registry unread).
+harness_skill_plugin_version() {
+  local p="${1%%:*}" reg="${SWARM_PLUGIN_REGISTRY:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json}"
+  case "$1" in *:*) ;; *) return 0 ;; esac
+  [ -n "$p" ] || return 0
+  jq -r --arg p "$p@" '[.plugins // {} | to_entries[] | select(.key | startswith($p)) | .value[]?
+    | select(.scope == "user") | .version // empty | strings] | first // empty' "$reg" 2>/dev/null
+}
+
 _pe_self="${BASH_SOURCE[0]}"
 _pe_dir="$(cd "$(dirname "$_pe_self")" && pwd)"
+# Read before the coordinator's setup: a build step asks this, and has none.
+if [ "$_pe_self" = "$0" ] && [ "${1:-}" = "skill-version" ]; then harness_skill_plugin_version "${2:-}"; exit 0; fi
 if [ "$_pe_self" = "$0" ]; then
   set -uo pipefail
   . "$_pe_dir/coordinator-env.sh" || exit 1
