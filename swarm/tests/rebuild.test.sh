@@ -388,6 +388,19 @@ rm -f "$FIX/gh/runners-unread"
 age 70; pass
 want_not_in "  it does not say CI was down"      'CI was down' "$OUT"
 want "  at +70, 70 counted min: closed once"     "1" "$(closes 71)"
+echo "  a head that waited on a red develop, develop green again, every runner offline: not re-run"
+fresh; base unit:failure lint:success; rm -f "$RUNNERS"
+pr 74 101 head4 BLOCKED '[]' unit:FAILURE:7007 lint:SUCCESS:7008
+age 0; pass
+want_in "  it waits on develop first"            'rebuild: PR #74 waits — base-red on unit' "$OUT"
+base unit:success lint:success; : > "$GH_LOG"
+printf '{"total_count":1,"runners":[{"id":1,"status":"offline"}]}\n' > "$RUNNERS"
+age 10; pass
+want "  no re-run asked for"                     "0" "$(grep -c '^run rerun 7007' "$GH_LOG")"
+want_in "  it says why"                          'not re-run: every CI runner is offline' "$OUT"
+printf '{"total_count":1,"runners":[{"id":1,"status":"online"}]}\n' > "$RUNNERS"
+age 20; pass
+want "  runners back: re-run once"               "1" "$(grep -c '^run rerun 7007 --failed' "$GH_LOG")"
 rm -f "$RUNNERS"
 
 echo "--- the rebuild off, a required check red on the PR's own code: back to its builder, on its branch ---"
