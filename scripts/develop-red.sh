@@ -201,14 +201,15 @@ while IFS=$'\t' read -r sha checks at who prs; do
   IFS=, read -ra names <<<"$checks"
   for c in "${names[@]}"; do
     [ -n "$c" ] || continue
-    rc=0; c=$(develop_red_clean "$c" "$sha") || rc=$?
-    if [ "$rc" = 2 ]; then
+    crc=0; c=$(develop_red_clean "$c" "$sha") || crc=$?
+    if [ "$crc" = 2 ]; then
       echo "unknown — the files $REPO_ROOT tracks could not be read — $pending_n row(s) not filed this pass"; exit 1
     fi
-    if [ "$rc" = 3 ]; then echo "the $TRUNK red at $s7 names a path, and $s7 is not in this clone yet: the row waits"; continue 2; fi
-    if [ "$rc" != 0 ]; then echo "the $TRUNK red at $s7 names a path no tracked file ends with: not filed"; continue; fi
+    if [ "$crc" = 3 ]; then echo "the $TRUNK red at $s7 names a path, and $s7 is not in this clone yet: the row waits"; continue 2; fi
+    if [ "$crc" != 0 ]; then echo "the $TRUNK red at $s7 names a path no tracked file ends with: not filed"; continue; fi
     case ",$req,$other," in *",$c,"*) continue ;; esac
-    if required_check "$c"; then req="$req${req:+,}$c"; else other="$other${other:+,}$c"; fi
+    required_check "$sha" "$c"; rc=$?
+    case $rc in 0) req="$req${req:+,}$c" ;; 1) other="$other${other:+,}$c" ;; *) break ;; esac
   done
   if [ "$rc" -gt 1 ]; then UNREAD="$UNREAD $sha"; continue; fi
   SORTED="$SORTED$sha"$'\t'"$checks"$'\t'"${req:--}"$'\t'"${other:--}"$'\t'"${at:--}"$'\t'"${who:--}"$'\t'"${prs:--}"$'\n'
@@ -246,7 +247,15 @@ while IFS=$'\t' read -r sha checks req other at who prs; do
     fi
   fi
   local_set="-"; ci_req=""
-  while IFS= read -r c; do [ -n "$c" ] && required_check "$c" && ci_req="$ci_req${ci_req:+,}$c"; done <<<"$(printf '%s' "${ci#done$'\t'}" | tr , '\n')"
+  crc=0
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    required_check "$sha" "$c"; crc=$?
+    case $crc in 0) ci_req="$ci_req${ci_req:+,}$c" ;; 1) ;; *) break ;; esac
+  done <<<"$(printf '%s' "${ci#done$'\t'}" | tr , '\n')"
+  if [ "$crc" -gt 1 ]; then
+    echo "unknown — the checks on $TRUNK@$s7 could not be read — the $TRUNK red at $s7 is not filed this pass"; CI_FAILED=1; continue
+  fi
   if [ -n "$ci_req" ] && [ "$ci_req" != "$(printf '%s\n' "${req//,/$'\n'}" | LC_ALL=C sort -u | paste -sd, -)" ]; then
     local_set="$req"; req="$ci_req"
   fi
