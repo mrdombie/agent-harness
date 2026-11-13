@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# simplify.test.sh — before review, the builder's own session runs /simplify once per
+# change. Its clean-up stays only while the fast gates (gates.local) stay green.
+# Run: bash "$0"
+set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/suite.sh" || exit 1
+HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/fixture.sh"
+driver_fixture; on_exit_keep_status 'rm -rf "$FIX"'
+
+echo "--- the default order puts simplify between self-check and review ---"
+order=$(env -u DRIVER_STEPS -u DRIVER_DIR bash -c '. "$1/../driver-env.sh" >/dev/null 2>&1; printf "%s" "$DRIVER_STEPS"' _ "$HERE")
+want_in "simplify straight after self-check, straight before review" ' self-check simplify review ' " $order "
+
+. "$HERE/../steps/simplify.sh" || exit 1
+fix_brief simplify simplify "Simplify the change against {{TARGET}}."
+
+# The fast gates: green while a.sh carries no BROKEN line.
+jq '.gates.local = ["! grep -q BROKEN a.sh"]' "$HARNESS_CFG" > "$FIX/sp-gates.json"
+HARNESS_CFG="$FIX/sp-gates.json"
+
+# The model stub, wrapped: $FIX/act (when present) runs in the step's tree first, which is
+# how a "clean-up commit" lands while the model is called.
+mv "$BIN/claude" "$BIN/claude.real"
+cat > "$BIN/claude" <<'SH'
+#!/usr/bin/env bash
+[ ! -x "$FIX/act" ] || "$FIX/act"
+exec "$BIN/claude.real" "$@"
+SH
+chmod +x "$BIN/claude"
+
+# sp_tree <ticket> — a branch with one change, a.sh, and a build log naming its session.
+sp_tree() {
+  git -C "$REPO" worktree add -q "$FIX/sp$1" -b "tkt-$1/work" develop
+  printf 'a\n' > "$FIX/sp$1/a.sh"; git -C "$FIX/sp$1" add -A; git -C "$FIX/sp$1" commit -qm "feat: a"
+  driver_state_init "$1" --worktree "$FIX/sp$1" --branch "tkt-$1/work"
+  fix_issue "$1" OPEN "status:claimed"
+  mkdir -p "$(driver_state_dir "$1")/steps"
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-old"}' \
+    '{"type":"system","subtype":"init","session_id":"sess-build-'"$1"'"}' > "$(driver_state_dir "$1")/steps/build.log"
+}
+# sp_ai [agents] — the simplify transcript: the Skill call, <agents> Agent spawns, an answer.
+sp_ai() {
+  local f="$FIX/ai/simplify.jsonl" i=0
+  jq -nc '{type:"assistant", message:{content:[{type:"tool_use", id:"s1", name:"Skill", input:{skill:"simplify"}}]}}' > "$f"
+  while [ "$i" -lt "${1:-0}" ]; do
+    i=$((i+1))
+    jq -nc --arg id "ag$i" '{type:"assistant", message:{content:[{type:"tool_use", id:$id, name:"Agent", input:{description:"look"}}]}}' >> "$f"
+  done
+  jq -nc '{type:"result", subtype:"success", is_error:false, result:"",
+    structured_output:{step:"simplify", skills:["simplify"], changes:[{file:"a.sh", what:"dropped a dead branch"}]}}' >> "$f"
+}
+calls() { grep -c '^simplify$' "$CLAUDE_LOG"; }
+head_of() { git -C "$FIX/sp$1" rev-parse HEAD; }
+
+echo "--- one call, resuming the builder's session ---"
+sp_tree 301; : > "$CLAUDE_LOG"; sp_ai 0; rm -f "$FIX/act"
+rc=0; out=$(driver_step_simplify 301 2>&1) || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "the model is called once"                   "1" "$(calls)"
+want "it resumes the last session in build.log"   "sess-build-301" "$(grep -A1 -x -- '--resume' "$FIX/claude-args-simplify.txt" | tail -1)"
+want_in "with the simplify brief"                 'Simplify the change against' "$(cat "$FIX/claude-stdin-simplify.txt")"
+want_in "and says what it removed"                'a.sh: dropped a dead branch' "$out"
+
+echo "--- a clean-up that turns a fast gate red is dropped ---"
+sp_tree 302; : > "$CLAUDE_LOG"; sp_ai 0
+printf '#!/usr/bin/env bash\nprintf "BROKEN\\n" >> a.sh; git add -A; git commit -qm "refactor: simplify"\n' > "$FIX/act"; chmod +x "$FIX/act"
+before=$(head_of 302)
+rc=0; out=$(driver_step_simplify 302 2>&1) || rc=$?
+want "the step still finishes"                    "0" "$rc"
+want "HEAD is back where it was"                  "$before" "$(head_of 302)"
+want_in "saying the clean-up was dropped"         'dropped' "$out"
+
+echo "--- a clean-up with green gates stays ---"
+sp_tree 303; : > "$CLAUDE_LOG"; sp_ai 0
+printf '#!/usr/bin/env bash\nprintf "b\\n" >> a.sh; git add -A; git commit -qm "refactor: simplify"\n' > "$FIX/act"; chmod +x "$FIX/act"
+before=$(head_of 303)
+rc=0; out=$(driver_step_simplify 303 2>&1) || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "the clean-up commit stays"                  "$before" "$(git -C "$FIX/sp303" rev-parse HEAD~1)"
+rm -f "$FIX/act"
+
+echo "--- once per change: a second run, an empty diff and a repair call no model ---"
+: > "$CLAUDE_LOG"; sp_ai 0
+rc=0; out=$(driver_step_simplify 303 2>&1) || rc=$?
+want "the second run finishes"                    "0" "$rc"
+want "and calls no model"                         "0" "$(calls)"
+want_in "saying simplify already ran"             'already ran on this change' "$out"
+git -C "$REPO" worktree add -q "$FIX/sp304" -b "tkt-304/work" develop
+driver_state_init 304 --worktree "$FIX/sp304" --branch "tkt-304/work"; fix_issue 304 OPEN "status:claimed"
+rc=0; driver_step_simplify 304 >/dev/null 2>&1 || rc=$?
+want "an empty diff finishes"                     "0" "$rc"
+want "and calls no model"                         "0" "$(calls)"
+sp_tree 305; driver_state_set 305 mode repair
+rc=0; driver_step_simplify 305 >/dev/null 2>&1 || rc=$?
+want "a repair finishes"                          "0" "$rc"
+want "and calls no model"                         "0" "$(calls)"
+
+echo "--- the subagents the call started are recorded ---"
+sp_tree 306; : > "$CLAUDE_LOG"; sp_ai 3
+rc=0; driver_step_simplify 306 >/dev/null 2>&1 || rc=$?
+want "the step finishes"                          "0" "$rc"
+want "simplify_agents counts the spawns"          "3" "$(driver_state_get 306 simplify_agents)"
+
+suite_end "$FAILED"
