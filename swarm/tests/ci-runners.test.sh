@@ -15,10 +15,12 @@ REPO_RUNNERS="$FIX/gh/api-repos_acme_widgets_actions_runners_per_page_100.json"
 ORG_RUNNERS="$FIX/gh/api-orgs_acme_actions_runners_per_page_100.json"
 T0=1762160000
 
-# runners <file> <status…> — that list of runners, ids 1…n.
+# runners <file> <status[:label,label…]…> — that list of runners, ids 1…n; labels default to self-hosted.
 runners() {
   local f="$1" i=0 s rows="[]"; shift
-  for s in "$@"; do i=$((i + 1)); rows=$(jq -c --argjson i "$i" --arg s "$s" '. + [{id: $i, name: "r\($i)", status: $s}]' <<<"$rows"); done
+  for s in "$@"; do i=$((i + 1)); rows=$(jq -c --argjson i "$i" --arg s "$s" '
+    ($s | split(":")) as $p
+    | . + [{id: $i, name: "r\($i)", status: $p[0], labels: (($p[1] // "self-hosted") | split(",") | map({name: .}))}]' <<<"$rows"); done
   jq -n --argjson r "$rows" '{total_count: ($r | length), runners: $r}' > "$f"
 }
 # state [shell before the read] — what ci_runners_state answers in a fresh coordinator process.
@@ -95,5 +97,32 @@ echo "  the cutoff is read from coordinator.ciRunnerStaleMin"
 fix_at $(( T0 + 782 * 60 )); COORDINATOR_CI_RUNNER_STALE_MIN=60 state
 want "  60: offline 61 min is none"              "none" "$ST"
 rm -f "$REPO_RUNNERS"
+
+echo "--- only a runner whose labels cover a self-hosted job's runs-on counts ---"
+mkdir -p "$REPO/.github/workflows"
+printf 'jobs:\n  test:\n    runs-on: [self-hosted, ci]\n' > "$REPO/.github/workflows/ci.yml"
+printf 'jobs:\n  build:\n    runs-on: ubuntu-24.04\n' > "$REPO/.github/workflows/hosted.yml"
+runners "$REPO_RUNNERS" offline:self-hosted,ci; runners "$ORG_RUNNERS" online:self-hosted,deploy
+state
+want "repo's CI runner offline, org's deploy box online: offline" "offline" "$ST"
+runners "$ORG_RUNNERS" online:self-hosted,deploy online:Self-Hosted,Linux,CI
+state
+want "  an org runner labelled self-hosted, linux, ci online: online" "online" "$ST"
+runners "$REPO_RUNNERS"; runners "$ORG_RUNNERS" online:self-hosted,deploy
+state
+want "  only the deploy box, online: none of them runs a check, none" "none" "$ST"
+echo "  a block-list runs-on is read the same"
+printf 'jobs:\n  test:\n    runs-on:\n      - self-hosted\n      - "ci"\n' > "$REPO/.github/workflows/ci.yml"
+runners "$REPO_RUNNERS" offline:self-hosted,ci
+state
+want "  block list, CI runner offline, deploy box online: offline" "offline" "$ST"
+echo "  coordinator.ciRunnerLabels names the labels when the workflows cannot say"
+rm -f "$REPO/.github/workflows/ci.yml"
+COORDINATOR_CI_RUNNER_LABELS="self-hosted,ci" state
+want "  labels set, CI runner offline, deploy box online: offline" "offline" "$ST"
+echo "  no self-hosted job and no labels set: any runner counts"
+state
+want "  hosted jobs only, deploy box online: online" "online" "$ST"
+rm -rf "$REPO/.github" "$REPO_RUNNERS" "$ORG_RUNNERS"
 
 suite_end "$FAILED"
