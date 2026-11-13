@@ -282,6 +282,13 @@ _driver_ship_tier_line() {
   printf '\n'
 }
 
+# _driver_ship_simplify_line <ticket> — the subagents simplify started on this change, for
+# the body; summed over the day's PRs it is the per-day cost. Never ran, nothing said.
+_driver_ship_simplify_line() {
+  local n; n=$(driver_state_get "$1" simplify_agents)
+  [ -z "$n" ] || printf 'Simplify: %s subagent(s) started on this change.\n' "$n"
+}
+
 # _driver_ship_deferred <ticket> — the "## Minor, deferred" section: what a review graded
 # outside its blocking set (review.sh _driver_review_defer). Each says where it went: the
 # nightly sweep, or dropped. A note that does not block; nothing deferred, nothing said.
@@ -758,6 +765,7 @@ driver_step_ship() { # <ticket>
   tierline=$(_driver_ship_tier_line "$t" "$tier" "$tierwhy")
   deferred=$(_driver_ship_deferred "$t")
   local answered; answered=$(driver_findings_answered_section "$t")
+  local simplified; simplified=$(_driver_ship_simplify_line "$t")
   local pmsteps; pmsteps=$(driver_state_get "$t" pm_after_merge)
   body=$(cat <<PRBODY
 $closes ${ISSUE_REF:-}#$t
@@ -765,7 +773,8 @@ $closes ${ISSUE_REF:-}#$t
 Built by the driver: $(driver_state_get "$t" 'done|join(" → ")')
 
 Review rounds: ${rounds:-0} of $DRIVER_MAX_REVIEW_ROUNDS
-$tierline
+$tierline${simplified:+
+$simplified}
 Claimed at: ${sha:-unknown}
 Head: $head
 
