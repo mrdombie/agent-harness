@@ -40,7 +40,8 @@ host_heavy_untracked() { # [tracked pid…]
           else if ($i == "--name" && i < NF) nm = $(i+1)
           else if ($i == "--add-dir" && i < NF) dir = $(i+1)
         }
-        if (p && nm != "") { k = nm; if (dir != "") l = base(dir) }
+        # A coordinator judge session is short and never a build.
+        if (p && nm != "" && nm !~ /^judge-/) { k = nm; if (dir != "") l = base(dir) }
       }
       if (k == "") for (i = 3; i < NF; i++)
         if ($i ~ /(^|\/)develop-hook-red\.sh$/ && $(i+1) == "sweep") { k = "hook-sweep"; break }
