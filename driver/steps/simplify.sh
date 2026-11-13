@@ -3,9 +3,9 @@
 #
 #   driver_step_simplify <ticket>
 #
-# In the builder's own session (--resume-of build), so it starts from what the builder
-# already read rather than paying to read it again. Once per change: a fix round that
-# reopens the walk does not run it twice. Its clean-up stays only while every fast gate
+# In the builder's own session (--resume-of build: the build task that ran last), so it
+# starts from what the builder already read rather than paying to read it again. Once per
+# change: a fix round that reopens the walk does not run it twice. Its clean-up stays only while every fast gate
 # (gates.local) is green on the new head; a red one resets the branch to where it was.
 # Never parks over a clean-up: the step is an offer, and the change goes on without it.
 # Only a skill check it fails, a usage wall or a machine fault stops the walk.

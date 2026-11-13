@@ -413,11 +413,13 @@ SHIM
     before=$(git -C "$wt" ls-remote origin "refs/heads/$pbranch" 2>/dev/null); brc=$?
   fi
 
-  # --resume-of: the last session another slot's transcript names, so this step works in it.
-  local rsid=""
+  # --resume-of: the last session another step's transcript names, so this step works in it.
+  # The build writes one log per task (build-task-N.log); the newest is the one that ran last.
+  local rsid="" rlog=""
   if [ -n "$resume_of" ]; then
-    rsid=$(driver_log_events "$d/steps/$resume_of.log" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
-    [ -n "$rsid" ] || driver_say "   $step: no session in steps/$resume_of.log — this call starts a fresh one"
+    rlog=$(ls -t "$d/steps/$resume_of.log" "$d/steps/$resume_of"-task-*.log 2>/dev/null | head -1)
+    [ -z "$rlog" ] || rsid=$(driver_log_events "$rlog" | jq -r 'select(.session_id? != null) | .session_id' 2>/dev/null | tail -1)
+    [ -n "$rsid" ] || driver_say "   $step: no session in steps/$resume_of.log or steps/$resume_of-task-*.log — this call starts a fresh one"
   fi
 
   local crc=0
