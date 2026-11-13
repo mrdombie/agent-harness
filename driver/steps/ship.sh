@@ -287,12 +287,22 @@ _driver_ship_tier_line() {
 _driver_ship_deferred() {
   local f; f="$(driver_state_dir "$1")/steps/review.deferred.jsonl"
   [ -s "$f" ] || return 0
+  # A written rule the change shows is out of date is the rule's to change, not a finding.
+  if jq -se 'any(.[]; .list == "rule")' "$f" >/dev/null 2>&1; then
+    printf '## Rules to update
+The review found these written rules out of date against this change. Not blocking:
+'
+    jq -rs '[.[] | select(.list == "rule")] | unique_by([.rule, .summary])[]
+      | "- \(.rule // "?") — \(.summary // "") (seen at \(.file // "?"):\(.line // "?"))"' "$f" 2>/dev/null
+    jq -se 'any(.[]; .list != "rule")' "$f" >/dev/null 2>&1 || return 0
+    printf '\n'
+  fi
   if driver_merge_first; then
     printf '## Review findings, deferred\nMerge first until the release: only a Critical blocks. Not blocking:\n'
   else
     printf '## Minor, deferred\nFound in a review round where only Critical and Major block. Not blocking:\n'
   fi
-  jq -rs 'unique_by([.file, .line, .summary])[]
+  jq -rs '[.[] | select(.list != "rule")] | unique_by([.file, .line, .summary])[]
     | "- \(.file // "?"):\(.line // "?") — \(.summary // "") (round \(.round // "?"); \(.grade // "") — \(if .list == "sweep" then "outside the files of this change: to the nightly sweep" else "dropped, not filed" end))"' "$f" 2>/dev/null
 }
 

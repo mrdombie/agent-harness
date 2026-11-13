@@ -213,6 +213,11 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
   driver_fact_put "$t" review RENDERS \
     "$(driver_state_get "$t" renders | sed -e 's/^$/(none — this run took no renders, so judge no screen from them)/')"
   driver_fact_put "$t" review ROUND "$((round + 1))"
+  # THE WRITTEN RULES, and the files they came from: a cited rule must name one of them.
+  local -a changed=()
+  while IFS= read -r p; do [ -n "$p" ] && changed+=("$p"); done < <(git -C "$wt" diff --name-only ${dargs[@]+"${dargs[@]}"} 2>/dev/null)
+  driver_fact_put "$t" review RULES "$(driver_fact_rules "$wt" ${changed[@]+"${changed[@]}"})"
+  driver_rule_files "$wt" ${changed[@]+"${changed[@]}"} > "$(driver_state_dir "$t")/steps/review.rules.txt"
 
   # The build answers: one per plan task, so the whole file rather than the last one.
   local built="$(driver_state_dir "$t")/steps/build.all.json"
@@ -261,6 +266,19 @@ $(jq -r '"- \(.file // "?") — \(.summary // "")"' "$posted" 2>/dev/null)]"
     "$ans_file")
   if [ -n "$ungraded" ]; then
     driver_say "✋ review: '$ungraded' is not a grade. It is one of: $DRIVER_GRADES. A finding the scale does not name has no effect defined for it."
+    return "$DRIVER_E_REFUSED"
+  fi
+
+  # A CITED RULE IS ONE THE REVIEW WAS HANDED. The contract makes a rule finding cite one;
+  # only the driver knows which files RULES held.
+  local unheld
+  unheld=$(jq -r --rawfile held "$(driver_state_dir "$t")/steps/review.rules.txt" '
+      ($held | split("\n") | map(select(length > 0))) as $H
+      | [.findings[]? | select(.kind == "breaks-rule" or .kind == "stale-rule")
+         | select(((.rule // "") | sub(":[0-9]+$"; "")) as $f | $H | index($f) | not)
+         | "\(.id) cites \(.rule // "(none)")"] | join("; ")' "$ans_file" 2>/dev/null)
+  if [ -n "$unheld" ]; then
+    driver_say "✋ review: a rule finding cites a file the review was not handed as RULES — $unheld. A rule is cited as <file>:<line> from RULES."
     return "$DRIVER_E_REFUSED"
   fi
 
@@ -327,6 +345,15 @@ _driver_review_panel() {
   _driver_review_check "$t" "$f" || return 1
   m=$(jq '(.findings // []) | length' "$f" 2>/dev/null)
   dropped=$((dropped + ${n:-0} - ${m:-0}))
+  # A STALE RULE IS THE RULE'S TO CHANGE, never the builder's: to the PR notes, never blocking.
+  n=$(jq '[.findings[]? | select(.kind == "stale-rule")] | length' "$f" 2>/dev/null)
+  if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+    jq -c --argjson r "$round" '.findings[]? | select(.kind == "stale-rule")
+        | {id, grade, file, line, summary, rule, round: $r, list: "rule"}' "$f" >> "$(driver_state_dir "$t")/steps/review.deferred.jsonl"
+    jq '.findings = [(.findings // [])[] | select(.kind != "stale-rule")]' "$f" > "$f.t" && mv "$f.t" "$f" || return 1
+    dropped=$((dropped + n))
+    driver_say "   review: $n written rule(s) this change shows are out of date — to the PR notes as rules to update, never blocking"
+  fi
   # STYLE AND CLEANUP NEVER BLOCK, and the drop is said.
   n=$(jq '[.findings[]? | select(.tag == "nit")] | length' "$f" 2>/dev/null)
   if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
@@ -411,6 +438,14 @@ _driver_review_context() {
   awk -v a="$from" -v b="$to" 'NR >= a && NR <= b { printf "%6d  %s\n", NR, $0 } NR > b { exit }' "$wt/$p"
 }
 
+# _driver_review_rule_line <tree> <file:line> — the cited rule's own line, for the check.
+_driver_review_rule_line() {
+  local p="${2%:*}" l="${2##*:}"
+  [ -n "$2" ] && [ -f "$1/$p" ] || return 0
+  case "$l" in ''|*[!0-9]*) return 0 ;; esac
+  printf '\n  %s' "$(sed -n "${l}p" "$1/$p")"
+}
+
 # _driver_review_check <ticket> <review.json> — the check: ONE session (step review-check,
 # Read Grep Glob only, at review.checkEffort) judges each candidate the hunter raised that is
 # not a nit, and a finding it judges not real leaves the answer. Not run when there is no
@@ -437,7 +472,7 @@ _driver_review_check() {
       fl=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].file // "" | tostring')
       ln=$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].line // 0 | tostring')
       # The claim and where it is, never the hunter's reasoning: a check handed the argument inherits it.
-      block="${block}$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i] | "### \(.id)\n- file: \(.file // "?"), line \(.line // 0)\n- claim: \(.summary // "")"')
+      block="${block}$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i] | "### \(.id)\n- file: \(.file // "?"), line \(.line // 0)\n- claim: \(.summary // "")" + (if .rule then "\n- the written rule it cites: \(.rule)" else "" end)')$(_driver_review_rule_line "$wt" "$(printf '%s' "$cand" | jq -r --argjson i "$i" '.[$i].rule // ""')")
 - the code around it:
 \`\`\`
 $(_driver_review_context "$wt" "$fl" "$ln")
